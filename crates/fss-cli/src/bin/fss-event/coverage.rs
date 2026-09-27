@@ -126,6 +126,17 @@ fn pose_provenance(value: &CoverageRecord) -> Option<String> {
 /// policy with its perturbation count and the pose covariance digest.
 fn pose_uncertainty(value: &PoseUncertainty) -> String {
     match value {
+        PoseUncertainty::SigmaPointsGuarded { receipt, .. } => object(&[
+            ("status", string(value.as_str())),
+            ("policy", string(POSE_SENSITIVITY_POLICY)),
+            ("perturbations", POSE_SENSITIVITY_PERTURBATIONS.to_string()),
+            ("uncertainty_digest", string(&value.digest().to_text())),
+            ("guard_receipt_digest", string(&receipt.digest().to_text())),
+            ("guard_input_digest", string(&receipt.input_digest().to_text())),
+            ("privacy_binding_digest", string(&receipt.privacy_digest().to_text())),
+            ("privacy_generation", receipt.privacy_generation().to_string()),
+            ("claim", string("conditional_linearized_screen_not_physical_observability_or_probability")),
+        ]),
         PoseUncertainty::NotProvided => object(&[
             ("status", string(value.as_str())),
             ("uncertainty_digest", string(&value.digest().to_text())),
@@ -148,7 +159,7 @@ fn pose_uncertainty(value: &PoseUncertainty) -> String {
 }
 
 /// `pose_robustness` of one zone under sigma points.
-fn pose_robustness(value: &PoseRobustness) -> String {
+fn pose_robustness(value: &PoseRobustness, guard_allows: bool) -> String {
     let classes: Vec<String> = value
         .classes()
         .into_iter()
@@ -167,7 +178,7 @@ fn pose_robustness(value: &PoseRobustness) -> String {
         ("classes", array(&classes)),
         (
             "absence_evidence",
-            (!value.observable_but_sensitive()).to_string(),
+            (guard_allows && !value.observable_but_sensitive()).to_string(),
         ),
     ])
 }
@@ -234,8 +245,24 @@ fn record(value: &CoverageRecord) -> String {
             if let Some(value) = &zone.visibility {
                 fields.push(("visibility", visibility(value)));
             }
+            let guard = value.pose_uncertainty.as_ref().and_then(PoseUncertainty::guard_receipt);
+            let guard_allows = guard.is_none_or(|receipt| {
+                receipt.zone(zone).is_ok_and(|assessment| !assessment.requires_abstention())
+            });
             if let Some(value) = &zone.pose_robustness {
-                fields.push(("pose_robustness", pose_robustness(value)));
+                fields.push(("pose_robustness", pose_robustness(value, guard_allows)));
+            }
+            if let Some(receipt) = value.pose_uncertainty.as_ref().and_then(PoseUncertainty::guard_receipt) {
+                if let Ok(assessment) = receipt.zone(zone) {
+                    let counts: Vec<_> = assessment.counts().iter().map(ToString::to_string).collect();
+                    fields.push(("calibration_guard", object(&[
+                        ("receipt_digest", string(&receipt.digest().to_text())),
+                        ("samples", assessment.samples().to_string()),
+                        ("requires_abstention", assessment.requires_abstention().to_string()),
+                        ("counts", array(&counts)),
+                        ("absence_evidence", (!assessment.requires_abstention() && !zone.witnesses.is_empty()).to_string()),
+                    ])));
+                }
             }
             object(&fields)
         })

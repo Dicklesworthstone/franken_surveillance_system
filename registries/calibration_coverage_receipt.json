@@ -1,0 +1,36 @@
+{
+  "id": "FSS-CALIBRATION-COVERAGE-RECEIPT-001",
+  "requirement": "fss-x8j0v",
+  "status": "reference_implemented_native_unverified",
+  "owner": "fss-reference::ingest::calibration_coverage",
+  "coverage_record_version": 6,
+  "legacy_versions_unchanged": [1, 2, 3, 4, 5],
+  "uncertainty_spelling": "sigma_points_with_full_camera_guard",
+  "uncovered_reason": "calibration_uncertainty",
+  "domains": {
+    "receipt": "fss.calibration_coverage_receipt.v1",
+    "zone_binding": "fss.calibration_coverage_zone.v1",
+    "analysis": "fss.guarded_coverage_analysis.v1",
+    "pipeline": "fss.guarded_coverage_pipeline.v1"
+  },
+  "receipt_fields_in_order": [
+    "domain:text", "screen_policy:text",
+    "input_digest:sha256", "calibration_digest:sha256", "sensor_digest:sha256",
+    "import_identity:sha256", "import_root:sha256", "privacy_binding:sha256",
+    "base_analysis:sha256", "camera:u64", "intrinsics_generation:u64",
+    "extrinsics_generation:u64", "privacy_generation:u64", "pose_bits:36*u64",
+    "zone_count:u8", "zones:zone_count*(binding:sha256,base_pipeline:sha256,counts:7*u32)"
+  ],
+  "zone_order": "strictly_ascending_binding_digest",
+  "count_order": [
+    "inside_unmasked", "outside_frustum", "frustum_boundary", "camera_plane_crossing",
+    "privacy_masked", "privacy_boundary", "mean_behind_camera"
+  ],
+  "bounds": {"zones": 16, "samples_per_zone": 1024, "receipt_bytes": 8192, "record_bytes": 4194304},
+  "operation_cost": "4096 + sum_per_zone(4096 + 128*(witnesses+uncovered) + predicate_bytes)",
+  "effects": "none",
+  "claim": "conditional_linearized_screen_not_physical_observability_or_probability",
+  "native_tests": "cargo test -p fss-reference calibration_coverage --locked --offline",
+  "independent_model": "python3 scripts/calibration_coverage_receipt_model.py",
+  "qualification": "not_run_no_rust_toolchain"
+}

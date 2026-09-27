@@ -15,7 +15,7 @@
 use fss_core::{CanonicalEncoder, ContentDigest, DigestAlgorithm, SensorId};
 use fss_geometry::{
     AdjustedCamera, BundleParameter, CAMERA_BLOCK_PARAMETERS, CAMERA_UNCERTAINTY_WORK_UNITS,
-    CameraCovariance, FRUSTUM_UNCERTAINTY_WORK_UNITS, GeometryError, LinearizedFrustumRelation,
+    CameraCovariance, CameraGeneration, FRUSTUM_UNCERTAINTY_WORK_UNITS, GeometryError, LinearizedFrustumRelation,
     ProjectionUncertaintyError, RadialDistortion, WorkBudget,
 };
 
@@ -23,6 +23,9 @@ use super::ground_visibility::{VisibilityError, VisibilityPolicy, ground_samples
 use super::privacy_mask::{MAX_MASK_REGIONS, MaskBinding};
 use super::recorded_corroboration::{CorroborationError, GroundZone, MAX_CORROBORATION_ZONES};
 use super::site_calibration::CalibratedCamera;
+
+mod receipt;
+pub use receipt::{CalibrationCoverageReceipt, CalibrationZoneReceipt, MAX_CALIBRATION_COVERAGE_RECEIPT_BYTES, apply_calibration_coverage};
 
 /// Exact reference screen; the radius is not a confidence probability.
 pub const CALIBRATION_COVERAGE_POLICY: &str = "fss.calibration_coverage_guard.v1:full-camera-marginal:\
@@ -139,6 +142,7 @@ const RELATIONS: [CalibrationSampleRelation; 7] = [
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct CalibrationZoneAssessment {
     zone_id: String,
+    geometry: String,
     counts: [u32; 7],
 }
 impl CalibrationZoneAssessment {
@@ -157,6 +161,10 @@ impl CalibrationZoneAssessment {
 #[derive(Clone, Debug)]
 pub struct CalibrationCoverageAssessment {
     camera_name: String,
+    camera_identity: CameraGeneration,
+    policy: VisibilityPolicy,
+    pose_covariance_bits: [u64; 36],
+    privacy_generation: u64,
     sensor: SensorId,
     calibration_digest: ContentDigest,
     input_digest: ContentDigest,
@@ -345,11 +353,18 @@ pub fn assess_calibration_coverage(
         }
         e.text(&zone.zone_id);
         for value in [zone.x, zone.y, zone.width, zone.height] { e.u64(value.to_bits()); }
-        assessments.push(CalibrationZoneAssessment { zone_id: zone.zone_id.clone(), counts });
+        assessments.push(CalibrationZoneAssessment {
+            zone_id: zone.zone_id.clone(),
+            geometry: format!("{},{},{},{}", zone.x, zone.y, zone.width, zone.height),
+            counts,
+        });
     }
     budget.charge(0).map_err(geometry)?;
     Ok(CalibrationCoverageAssessment {
-        camera_name: input.camera_name.to_owned(), sensor: input.sensor.clone(),
+        camera_name: input.camera_name.to_owned(), camera_identity: camera.identity,
+        policy: input.policy, pose_covariance_bits: receipt::pose_covariance_bits(camera),
+        privacy_generation: input.privacy.generation().unwrap_or(0),
+        sensor: input.sensor.clone(),
         calibration_digest: input.calibration_digest, input_digest: ContentDigest::sha256(&e.finish()),
         privacy_digest: input.privacy.digest(), zones: assessments,
         work_units: budget.used() - start, work_units_remaining: budget.remaining(),

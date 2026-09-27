@@ -77,6 +77,12 @@
 //! Records without a bound uncertainty keep their exact version 1/2/3/4 bytes. Sigma-point
 //! robustness is a local linear approximation, not a guarantee.
 //!
+//! Version 6 extends sigma-point records with a full-camera guard receipt. It binds
+//! the screened calibration, sensor, current privacy generation, exact zones and
+//! nominal analysis. Rejected zones retain former witness ranges as explicit
+//! `calibration_uncertainty` intervals; safe zones keep their original ranges with
+//! guard-bound predicates. Version 1..5 bytes and historical reads are unchanged.
+//!
 //! **Reason precedence.** One segment of one zone carries exactly one reason. When several apply
 //! the first of this order wins, deterministically:
 //!
@@ -95,6 +101,8 @@
 //!    `interval_too_short`.
 
 use std::fmt;
+
+use super::calibration_coverage::CalibrationCoverageReceipt;
 
 use fss_core::{
     BatchId, CanonicalDecode, CanonicalDecoder, CanonicalEncode, CanonicalEncoder, CaptureInterval,
@@ -142,6 +150,8 @@ pub const POSE_PROVENANCE_DOMAIN: &str = "fss.coverage_pose_provenance.v1";
 /// [`PoseRobustness`] block after every zone's visibility block (fss-x8j0v covariance
 /// propagation).
 const RECORD_VERSION_POSE_UNCERTAINTY: u32 = 5;
+/// Version 6 embeds a full-camera guard receipt and lossless per-zone abstentions.
+const RECORD_VERSION_CALIBRATION_GUARD: u32 = 6;
 /// Pose-uncertainty digest domain (bound into the corroborate camera analysis identity).
 pub const POSE_UNCERTAINTY_DOMAIN: &str = "fss.coverage_pose_uncertainty.v1";
 /// Canonical record domain.
@@ -392,7 +402,7 @@ impl PoseProvenance {
 /// Whether (and how) a posed corroborate camera's pose uncertainty was propagated into its
 /// ground-zone visibility.
 // One value per record (never stored in bulk), and `Copy` like the provenance it extends: the
-// 288-byte covariance stays inline rather than boxed.
+// covariance and the bounded version-6 receipt stay inline rather than boxed.
 #[allow(clippy::large_enum_variant)]
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum PoseUncertainty {
@@ -405,23 +415,51 @@ pub enum PoseUncertainty {
         /// The calibration's pose block the perturbations were drawn from.
         covariance: PoseCovariance,
     },
+    /// Pose sigma points plus a full-camera (pose/lens correlation) screen. The
+    /// receipt is embedded in version 6; it can only remove nominal witnesses.
+    SigmaPointsGuarded {
+        /// The same pose marginal used by the nominal sigma-point assessment.
+        covariance: PoseCovariance,
+        /// Exact source, privacy, calibration and per-zone screening evidence.
+        receipt: CalibrationCoverageReceipt,
+    },
 }
 
 impl PoseUncertainty {
-    /// Stable spelling: `uncertainty_not_provided` or `sigma_points`.
+    /// Stable spelling of the explicit nominal, pose-only or full-camera mode.
     #[must_use]
     pub const fn as_str(&self) -> &'static str {
         match self {
             Self::NotProvided => "uncertainty_not_provided",
             Self::SigmaPoints { .. } => "sigma_points",
+            Self::SigmaPointsGuarded { .. } => "sigma_points_with_full_camera_guard",
         }
     }
 
     fn encode(&self, e: &mut CanonicalEncoder) {
         e.text(self.as_str());
-        if let Self::SigmaPoints { covariance } = self {
+        if let Some(covariance) = self.pose_covariance() {
             e.text(POSE_SENSITIVITY_POLICY);
             covariance.encode(e);
+        }
+        if let Some(receipt) = self.guard_receipt() {
+            receipt.encode(e);
+        }
+    }
+
+    /// Pose marginal, when sigma-point assessments are bound.
+    pub const fn pose_covariance(&self) -> Option<&PoseCovariance> {
+        match self {
+            Self::NotProvided => None,
+            Self::SigmaPoints { covariance } | Self::SigmaPointsGuarded { covariance, .. } => Some(covariance),
+        }
+    }
+
+    /// Embedded full-camera screening evidence, only in version 6 records.
+    pub const fn guard_receipt(&self) -> Option<&CalibrationCoverageReceipt> {
+        match self {
+            Self::SigmaPointsGuarded { receipt, .. } => Some(receipt),
+            _ => None,
         }
     }
 
@@ -434,6 +472,15 @@ impl PoseUncertainty {
                 }
                 Ok(Self::SigmaPoints {
                     covariance: PoseCovariance::decode(d)?,
+                })
+            }
+            "sigma_points_with_full_camera_guard" => {
+                if d.text()? != POSE_SENSITIVITY_POLICY {
+                    return Err(ContractError::InvalidIdentifier);
+                }
+                Ok(Self::SigmaPointsGuarded {
+                    covariance: PoseCovariance::decode(d)?,
+                    receipt: CalibrationCoverageReceipt::decode(d)?,
                 })
             }
             _ => Err(ContractError::InvalidIdentifier),
@@ -458,6 +505,11 @@ pub fn pose_predicate_clause(
     robustness: Option<&PoseRobustness>,
 ) -> String {
     match (uncertainty, robustness) {
+        (Some(PoseUncertainty::SigmaPointsGuarded { covariance, receipt }), _) => {
+            format!("{}; full-camera conditional linearized screen {} (not physical observability or a probability)",
+                pose_predicate_clause(Some(&PoseUncertainty::SigmaPoints { covariance: *covariance }), robustness),
+                receipt.digest())
+        }
         (Some(PoseUncertainty::NotProvided), _) => {
             "; pose uncertainty_not_provided: the visibility rests on the nominal pose alone and \
              its robustness to pose error was not assessed"
@@ -515,6 +567,9 @@ pub enum UncoveredReason {
     /// The ground zone is observable under the nominal pose but not under every sigma-point
     /// perturbation of the calibration pose covariance: its silence is not absence evidence.
     PoseSensitive,
+    /// A former nominal witness was removed by the embedded full-camera guard.
+    /// Other uncovered reasons, observed entries and exact segment bounds survive.
+    CalibrationUncertainty,
 }
 
 impl UncoveredReason {
@@ -535,6 +590,7 @@ impl UncoveredReason {
             Self::OutsideFrustum => "outside_frustum",
             Self::PrivacyMasked => "privacy_masked",
             Self::PoseSensitive => "pose_sensitive",
+            Self::CalibrationUncertainty => "calibration_uncertainty",
         }
     }
 }
@@ -1159,7 +1215,9 @@ impl CoverageRecord {
             || self.zones.iter().any(|zone| zone.visibility.is_some());
         let masked_samples = self.masked_samples();
         e.bytes(RECORD_MAGIC);
-        e.u32(if self.pose_uncertainty.is_some() {
+        e.u32(if self.pose_uncertainty.as_ref().and_then(PoseUncertainty::guard_receipt).is_some() {
+            RECORD_VERSION_CALIBRATION_GUARD
+        } else if self.pose_uncertainty.is_some() {
             RECORD_VERSION_POSE_UNCERTAINTY
         } else if self.pose_provenance.is_some() {
             RECORD_VERSION_POSE_PROVENANCE
@@ -1272,7 +1330,8 @@ impl CoverageRecord {
             RECORD_VERSION => (false, false),
             RECORD_VERSION_VISIBILITY
             | RECORD_VERSION_POSE_PROVENANCE
-            | RECORD_VERSION_POSE_UNCERTAINTY => (true, false),
+            | RECORD_VERSION_POSE_UNCERTAINTY
+            | RECORD_VERSION_CALIBRATION_GUARD => (true, false),
             RECORD_VERSION_MASKED_VISIBILITY => (true, true),
             _ => return Err(ContractError::InvalidIdentifier),
         };
@@ -1285,12 +1344,12 @@ impl CoverageRecord {
         } else {
             None
         };
-        let pose_uncertainty = if version == RECORD_VERSION_POSE_UNCERTAINTY {
+        let pose_uncertainty = if version >= RECORD_VERSION_POSE_UNCERTAINTY {
             Some(PoseUncertainty::decode(&mut d)?)
         } else {
             None
         };
-        let sigma_points = matches!(pose_uncertainty, Some(PoseUncertainty::SigmaPoints { .. }));
+        let sigma_points = pose_uncertainty.as_ref().and_then(PoseUncertainty::pose_covariance).is_some();
         let source = CoverageSource::parse(d.text()?)?;
         let import_identity = d.digest()?;
         let import_root = d.digest()?;
@@ -1375,6 +1434,8 @@ impl CoverageRecord {
                     "outside_frustum" => UncoveredReason::OutsideFrustum,
                     "privacy_masked" => UncoveredReason::PrivacyMasked,
                     "pose_sensitive" => UncoveredReason::PoseSensitive,
+                    "calibration_uncertainty" if version >= RECORD_VERSION_CALIBRATION_GUARD =>
+                        UncoveredReason::CalibrationUncertainty,
                     _ => return Err(ContractError::InvalidIdentifier),
                 };
                 uncovered.push(UncoveredInterval {
@@ -1447,18 +1508,27 @@ impl CoverageRecord {
         let sigma_points = match (&self.pose_uncertainty, &self.pose_provenance) {
             (None, _) | (Some(PoseUncertainty::NotProvided), Some(_)) => false,
             (
-                Some(PoseUncertainty::SigmaPoints { .. }),
+                Some(PoseUncertainty::SigmaPoints { .. } | PoseUncertainty::SigmaPointsGuarded { .. }),
                 Some(PoseProvenance::SiteCalibration { .. }),
             ) => true,
             (Some(_), None)
             | (
-                Some(PoseUncertainty::SigmaPoints { .. }),
+                Some(PoseUncertainty::SigmaPoints { .. } | PoseUncertainty::SigmaPointsGuarded { .. }),
                 Some(PoseProvenance::OwnerPoseArgument),
             ) => {
                 return Err(ContractError::InvalidIdentifier);
             }
         };
+        let guard = self.pose_uncertainty.as_ref().and_then(PoseUncertainty::guard_receipt);
+        if let Some(receipt) = guard {
+            receipt.validate_for(self)?;
+        }
         for zone in &self.zones {
+            if guard.is_none() && zone.uncovered.iter().any(|interval| {
+                interval.reason == UncoveredReason::CalibrationUncertainty
+            }) {
+                return Err(ContractError::CoverageUncertified);
+            }
             if zone.scope != format!("{}{}", self.source.scope_prefix(), zone.zone_id)
                 || zone.zone_id.is_empty()
             {
