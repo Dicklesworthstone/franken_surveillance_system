@@ -143,6 +143,10 @@ fn commit_is_idempotent_and_survives_reopen() -> Test {
     let retry=commit_export(&mut reopened,&request,preview.approval(),&f.auth,&f.cx)?;
     assert!(!retry.published);
     assert_eq!(*reopened.current_anchor(),after.0);
+    let (verified, authority_anchor)=read_export(&reopened, preview.root(), &f.auth, &f.cx)?;
+    assert_eq!(verified.digest(), preview.record().digest());
+    assert_eq!(verified.request(), &request);
+    assert_eq!(authority_anchor, after.0);
     Ok(())
 }
 

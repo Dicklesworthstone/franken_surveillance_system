@@ -29,6 +29,20 @@ The manifest's only child is the redacted export record. Event/source roots name
 are metadata references, not manifest children, so the export root cannot be used as a capability
 to traverse the live archive namespace.
 
+## Verified readback
+
+After commit or process restart, verify the exact committed export from retained authority rather
+than trusting previously emitted terminal output:
+
+```sh
+fss-export show --root "$ROOT" --site "$SITE" --export-root "$EXPORT_ROOT"
+```
+
+Readback requires prepare/read authority only. It verifies the reserved `evidence_export` delta,
+its generation and object namespace, the root manifest's one-child redaction closure, the canonical
+record bytes, and the record-derived root/object identities. Missing, duplicated, altered, or
+noncanonical custody fails closed. It still does not hydrate raw evidence or follow the event root.
+
 ## Authority and recovery
 
 `CAP-EXPORT-PREPARE-001` is read-only. `CAP-EXPORT-COMMIT-001` commits only the exact approved

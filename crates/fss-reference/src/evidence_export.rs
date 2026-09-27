@@ -8,7 +8,7 @@
 use std::fmt;
 use fss_core::region::ContextAuthority;
 use fss_core::{
-    BatchId, CanonicalEncode, CanonicalEncoder, CaptureInterval, ContentDigest, ContractError,
+    BatchId, CanonicalDecode, CanonicalDecoder, CanonicalEncode, CanonicalEncoder, CaptureInterval, ContentDigest, ContractError,
     DigestAlgorithm, EventId, EventKind, EventState, EvidenceClass, EvidenceDelta,
     EvidenceEdgeRelation, LedgerAnchor, ObjectId, Plane, PrincipalId, TimestampNs,
 };
@@ -26,6 +26,8 @@ pub const EXPORT_PROFILE: &str = "event-summary-redacted-v1";
 pub const MAX_EXPORT_RECORD_BYTES: usize = 64 * 1024;
 pub const MAX_RECIPIENT_BYTES: usize = 256;
 pub const MAX_PURPOSE_BYTES: usize = 512;
+/// Maximum authority batches examined during verified export readback.
+pub const MAX_EXPORT_LEDGER_BATCHES: usize = 65_536;
 const POLICY: &[u8] = b"fss.evidence_export.policy.v1:event-summary-redacted-v1:no-raw-media:no-source-device-identities:no-zone-track-identifiers:hashed-failure-domains:exact-current-event:recipient-purpose-expiry:root-last:strong-approval";
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -164,6 +166,90 @@ impl EventExportRecord {
         v.dedup();
         Ok(v)
     }
+    /// Strictly decode and verify a retained canonical export record.
+    pub fn from_bytes(bytes: &[u8], expected: ContentDigest) -> Result<Self, ExportError> {
+        if bytes.len() > MAX_EXPORT_RECORD_BYTES || ContentDigest::sha256(bytes) != expected {
+            return Err(ExportError::CustodyMismatch);
+        }
+        let mut d = CanonicalDecoder::new(bytes);
+        if d.bytes()? != b"FSSEXP01" || d.u32()? != 1 || d.text()? != EXPORT_DOMAIN {
+            return Err(ExportError::CustodyMismatch);
+        }
+        let request = EventExportRequest {
+            event_id: EventId::parse(d.text()?)?,
+            expected_revision: d.digest()?,
+            recipient: d.text()?.to_owned(),
+            purpose: d.text()?.to_owned(),
+            expires_at: TimestampNs(d.i128()?),
+        };
+        let principal = d.text()?.to_owned();
+        let site = d.text()?.to_owned();
+        let event_root = d.digest()?;
+        let event_anchor = LedgerAnchor::decode_canonical(&mut d)?;
+        let event_revision = d.u64()?;
+        let event_state = EventState::from_u8(d.u8()?)?;
+        let event_kind = EventKind::from_u8(d.u8()?)?;
+        let event_interval = CaptureInterval::decode_canonical(&mut d)?;
+        let uncertainty_reason = if d.bool()? { Some(d.text()?.to_owned()) } else { None };
+        let probability_bits = [d.u64()?, d.u64()?];
+        let evidence_len = usize::try_from(d.u64()?).map_err(|_| ExportError::Limit)?;
+        if evidence_len > fss_core::MAX_EVIDENCE_COUNT { return Err(ExportError::Limit); }
+        let mut evidence = Vec::with_capacity(evidence_len);
+        for _ in 0..evidence_len {
+            evidence.push(EvidenceSummary {
+                digest: d.digest()?,
+                class: fss_core::evidence_class_from_u8(d.u8()?)?,
+                relation: EvidenceEdgeRelation::from_u8(d.u8()?)?,
+                supports: d.bool()?,
+                failure_domain_digest: d.digest()?,
+            });
+        }
+        let model_len = usize::try_from(d.u64()?).map_err(|_| ExportError::Limit)?;
+        if model_len > fss_core::MAX_MODEL_RECEIPTS_COUNT { return Err(ExportError::Limit); }
+        let mut model_receipts = Vec::with_capacity(model_len);
+        for _ in 0..model_len { model_receipts.push(d.digest()?); }
+        let policy_generation = d.digest()?;
+        let decision_fingerprint = d.digest()?;
+        let decision_abstained = d.bool()?;
+        let zone_count = d.u64()?;
+        let track_count = d.u64()?;
+        if d.text()? != EXPORT_PROFILE { return Err(ExportError::CustodyMismatch); }
+        d.ensure_finished()?;
+        let record = Self {
+            request, principal, site, event_root, event_anchor, event_revision, event_state,
+            event_kind, event_interval, uncertainty_reason, probability_bits, evidence,
+            model_receipts, policy_generation, decision_fingerprint, decision_abstained,
+            zone_count, track_count,
+        };
+        record.validate()?;
+        if record.to_bytes() != bytes { return Err(ExportError::CustodyMismatch); }
+        Ok(record)
+    }
+    fn validate(&self) -> Result<(), ExportError> {
+        self.request.validate()?;
+        PrincipalId::parse(&self.principal)?;
+        crate::reference_deployment::validate_site_lineage(&self.site)?;
+        let lower = f64::from_bits(self.probability_bits[0]);
+        let upper = f64::from_bits(self.probability_bits[1]);
+        if self.principal.len() > 256 || self.site.len() > 256 || self.event_revision == 0
+            || self.event_root.algorithm() != DigestAlgorithm::Sha256 || self.event_root.bytes() == [0;32]
+            || self.zone_count > fss_core::MAX_ZONES_COUNT as u64
+            || self.track_count > fss_core::MAX_TRACKS_COUNT as u64
+            || self.request.expires_at <= self.event_interval.latest
+            || !lower.is_finite() || !upper.is_finite()
+            || !(0.0..=1.0).contains(&lower) || !(0.0..=1.0).contains(&upper) || lower > upper
+            || self.evidence.iter().any(|item| {
+                item.digest.algorithm() != DigestAlgorithm::Sha256
+                    || item.digest.bytes() == [0;32]
+                    || item.failure_domain_digest.algorithm() != DigestAlgorithm::Sha256
+                    || item.failure_domain_digest.bytes() == [0;32]
+                    || item.supports != item.relation.required_supports_flag()
+            })
+        {
+            return Err(ExportError::CustodyMismatch);
+        }
+        Ok(())
+    }
     pub fn to_redacted_json(&self) -> String {
         let lower = f64::from_bits(self.probability_bits[0]);
         let upper = f64::from_bits(self.probability_bits[1]);
@@ -263,6 +349,14 @@ impl fmt::Display for ExportError {
 }
 impl std::error::Error for ExportError {}
 impl From<ContractError> for ExportError { fn from(v: ContractError) -> Self { Self::Contract(v) } }
+impl From<fss_core::EventDecodeError> for ExportError {
+    fn from(v: fss_core::EventDecodeError) -> Self {
+        match v {
+            fss_core::EventDecodeError::Contract(c) => Self::Contract(c),
+            _ => Self::CustodyMismatch,
+        }
+    }
+}
 impl From<ReferenceError> for ExportError { fn from(v: ReferenceError) -> Self { Self::Reference(Box::new(v)) } }
 impl From<ObjectError> for ExportError { fn from(v: ObjectError) -> Self { Self::Object(v) } }
 impl From<SpoolError> for ExportError { fn from(v: SpoolError) -> Self { Self::Spool(v) } }
@@ -355,6 +449,7 @@ pub fn preview_export(
         zone_count: event.zone_ids.len() as u64,
         track_count: event.track_ids.len() as u64,
     };
+    record.validate()?;
     if record.to_bytes().len() > MAX_EXPORT_RECORD_BYTES { return Err(ExportError::Limit); }
     let root = record.manifest()?.root();
     let already_committed = match deployment.ledger().current().objects.get(&record.object_id()?) {
@@ -368,6 +463,61 @@ pub fn preview_export(
     };
     checkpoint(cx, "evidence_export:prepared")?;
     Ok(EventExportPreview { record, root, already_committed })
+}
+
+/// Verified cold readback of one committed export authority root.
+///
+/// This verifies the reserved authority delta, redacted root manifest, canonical record bytes,
+/// and derived identities. It never follows event/source custody or executes a model.
+pub fn read_export(
+    deployment: &ReferenceDeployment,
+    export_root: ContentDigest,
+    authority: &ContextAuthority,
+    cx: &ReplayCx,
+) -> Result<(EventExportRecord, LedgerAnchor), ExportError> {
+    authorize(deployment, authority, cx, CAP_EXPORT_PREPARE)?;
+    if export_root.algorithm() != DigestAlgorithm::Sha256 || export_root.bytes() == [0;32] {
+        return Err(ExportError::InvalidRequest("nonzero SHA-256 export root required"));
+    }
+    if deployment.ledger().batches().len() > MAX_EXPORT_LEDGER_BATCHES {
+        return Err(ExportError::Limit);
+    }
+    let mut found = None;
+    for batch in deployment.ledger().batches() {
+        checkpoint(cx, "evidence_export:readback")?;
+        for delta in &batch.deltas {
+            if delta.family != FAMILY_EVIDENCE_EXPORT || delta.payload_digest != export_root {
+                continue;
+            }
+            if found.is_some()
+                || delta.new_generation != 1
+                || delta.prior_generation.is_some()
+                || delta.plane != Plane::Authority
+                || !delta.object_id.as_str().starts_with(EXPORT_OBJECT_PREFIX)
+            {
+                return Err(ExportError::CustodyMismatch);
+            }
+            let witness = delta.witness_digest.ok_or(ExportError::CustodyMismatch)?;
+            found = Some((delta.object_id.clone(), witness, batch.new_anchor.clone()));
+        }
+    }
+    let (object_id, record_digest, anchor) = found.ok_or(ExportError::CustodyMismatch)?;
+    let manifest_bytes = deployment.publisher().spool().read(export_root)?;
+    let manifest = ObjectManifest::from_canonical_bytes(&manifest_bytes)?;
+    if manifest.root() != export_root || manifest.kind() != EXPORT_PROFILE
+        || manifest.metadata_digest().is_some()
+        || manifest.children() != [record_digest]
+    {
+        return Err(ExportError::CustodyMismatch);
+    }
+    let bytes = deployment.publisher().spool().read(record_digest)?;
+    let record = EventExportRecord::from_bytes(&bytes, record_digest)?;
+    if record.object_id()? != object_id || record.manifest()? != manifest {
+        return Err(ExportError::CustodyMismatch);
+    }
+    verify_custody(deployment, &record)?;
+    checkpoint(cx, "evidence_export:readback_complete")?;
+    Ok((record, anchor))
 }
 
 pub fn commit_export(
