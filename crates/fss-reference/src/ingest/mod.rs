@@ -115,6 +115,8 @@ pub mod rgb_package;
 /// Retained recordings through a verified RGB detector package into source-space proposals.
 pub mod package_detect;
 
+// Native implementation is private: callers enter through the context-bound owner.
+mod detector_cascade_engine;
 /// Detection cascade: cheap-gate-selected frames through a verified detector package.
 pub mod detector_cascade;
 
