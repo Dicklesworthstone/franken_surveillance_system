@@ -1,0 +1,34 @@
+{
+  "format": "fss.calibration_coverage_guard_registry.v1",
+  "status": "reference_implementation_unqualified",
+  "owner": "fss-reference::ingest::calibration_coverage",
+  "command": "fss-event corroborate --calibration FILE --calibration-digest DIGEST",
+  "schema": "schemas/calibration_coverage_guard.v1.json",
+  "documentation": "docs/CALIBRATION_COVERAGE_GUARD.md",
+  "direction": "additional_abstention_only",
+  "retention": "refuse_before_any_publication_when_a_screened_nominal_witness_is_unsafe",
+  "preview": "keep_positive_event_proposals_but_withhold_the_whole_two_camera_coverage_proposal",
+  "existing_coverage": "not_retracted_or_rewritten",
+  "legacy_library_entrypoints": "pose_only_until_caller_applies_additional_screen",
+  "diagnostic_families": [
+    "ERR-CORROBORATE-POSE-INVALID-001",
+    "ERR-CORROBORATE-VISIBILITY-001"
+  ],
+  "limits": {
+    "camera_parameters": 12,
+    "zones_per_camera": 16,
+    "grid_per_axis": 32,
+    "command_cameras": 2,
+    "command_shared_work_units": 64000000,
+    "sigma_multiplier": 3
+  },
+  "non_claims": [
+    "calibrated_probability",
+    "nonlinear_bound",
+    "physical_currency",
+    "coverage_witness",
+    "detection_quality",
+    "production_qualification"
+  ],
+  "native_validation": "not_run_toolchain_unavailable"
+}

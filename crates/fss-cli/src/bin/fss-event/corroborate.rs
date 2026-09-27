@@ -8,6 +8,11 @@
 //! exact rerun command that publishes it. With exact proposal digests it publishes those events;
 //! policy may report the `prepare_alert` affordance, but no alert is prepared here. Each report
 //! also proposes one coverage record per camera; `--retain-coverage DIGEST` retains both exactly.
+//! With a pinned calibration, full camera covariance also screens every ground sample against
+//! image/depth boundaries and the current privacy mask. If this screen rejects a zone that had a
+//! nominal witness, the entire two-camera coverage proposal is withheld (no digest or approval
+//! command), while positive event proposals remain independent. A simultaneous retention request
+//! is refused before any publication. Previously retained coverage is not silently retracted.
 //! The detector-cascade options of `watch` add uncalibrated class evidence to each ground entry
 //! (one inference budget for both recordings); it never changes the policy's event or alert.
 //! Ground-zone coverage is geometric: `--visibility-grid N` and `--visibility-threshold-ppm N`
@@ -42,6 +47,9 @@
 //! exclude later frame-index capture hints from association. Custody, privacy, cancellation and
 //! budget failures still abort, as does a detector cascade over a gapped range. Recovery is kept
 //! in every exact approval rerun and in the post-publication coverage reanalysis.
+
+// Full calibration covariance is an additional coverage-denial gate, not an event classifier.
+mod calibration_coverage;
 
 use std::collections::BTreeSet;
 use std::ffi::OsString;
@@ -597,12 +605,14 @@ fn read_scene_mesh(path: &Path) -> RunResult<Vec<u8>> {
 }
 
 /// Per-camera poses, their sources, the verified calibration identity (if any), and each
-/// calibrated camera's 6-DoF pose covariance (an owner `--pose` has none).
+/// calibrated camera's 6-DoF pose covariance (an owner `--pose` has none). The verified
+/// full record is retained for the camera-covariance coverage guard; it is never reread.
 type ResolvedPoses = (
     [Option<CameraPose>; 2],
     [PoseSource; 2],
     Option<ContentDigest>,
     [Option<PoseCovariance>; 2],
+    Option<SiteCalibration>,
 );
 
 /// The retained [`PoseProvenance`] of each plan camera (none for a camera without a pose).
@@ -649,7 +659,7 @@ fn resolve_poses(action: &CorroborateAction) -> RunResult<ResolvedPoses> {
     });
     let mut covariances = [None, None];
     let Some(option) = &action.calibration else {
-        return Ok((poses, sources, None, covariances));
+        return Ok((poses, sources, None, covariances, None));
     };
     let bytes = super::calibrate::read_bounded(&option.path, MAX_CALIBRATION_BYTES, "calibration")?;
     let (calibration, identity) = SiteCalibration::decode(&bytes, Some(option.digest))?;
@@ -721,7 +731,7 @@ fn resolve_poses(action: &CorroborateAction) -> RunResult<ResolvedPoses> {
             .into());
         }
     }
-    Ok((poses, sources, Some(identity), covariances))
+    Ok((poses, sources, Some(identity), covariances, Some(calibration)))
 }
 
 /// Consults the deployment's retained calibration adoptions (`fss-event calibration adopt`) for
@@ -854,7 +864,7 @@ fn run_with(
     out: &mut impl Write,
 ) -> RunResult<()> {
     // The calibration is verified against its pinned digest before any source is read.
-    let (poses, mut sources, calibration, covariances) = resolve_poses(action)?;
+    let (poses, mut sources, calibration, covariances, calibration_record) = resolve_poses(action)?;
     // Retained adoptions decide currency (or refuse a superseded calibration) before any frame is
     // decoded and before anything is appended.
     if let Some(calibration) = calibration {
@@ -907,6 +917,15 @@ fn run_with(
         action.recovery,
         cx,
     )?;
+    // The full camera covariance may deny nominal absence evidence without changing
+    // positive event proposals. A mixed request is refused before either write.
+    let coverage_guard = calibration_coverage::assess(
+        action, calibration_record.as_ref(), calibration, deployment, &report, cx,
+    )?;
+    if let Some(guard) = &coverage_guard {
+        guard.check_retention(action.retain_coverage.is_some())?;
+    }
+    let coverage_blocked = coverage_guard.as_ref().is_some_and(|guard| guard.blocked());
     // Both approvals are checked against the fresh analysis before anything is written.
     if let Some(approval) = action.retain_coverage {
         report.check_coverage_approval(deployment, approval)?;
@@ -921,7 +940,7 @@ fn run_with(
     }
     // A coverage proposal binds the authority anchor its analysis read; after this run published
     // candidates, the proposal is recomputed against the new anchor so its approval is current.
-    let reproposed = if published > 0 && action.retain_coverage.is_none() {
+    let reproposed = if published > 0 && action.retain_coverage.is_none() && !coverage_blocked {
         Some(CorroborationReport::analyze_with_pose_uncertainty(
             deployment,
             &action.plan,
@@ -938,12 +957,15 @@ fn run_with(
     };
     let proposal = reproposed.as_ref().unwrap_or(&report);
     let records: Vec<_> = proposal.coverage().iter().collect();
-    let coverage = super::coverage::render(
-        &records,
-        proposal.coverage_status(),
-        proposal.coverage_approval(),
-        &action.rerun,
-    );
+    let coverage = match &coverage_guard {
+        Some(guard) if guard.blocked() => guard.withheld_coverage_json(),
+        _ => super::coverage::render(
+            &records,
+            proposal.coverage_status(),
+            proposal.coverage_approval(),
+            &action.rerun,
+        ),
+    };
     let alert_hint = format!(
         "fss-event alert --root {} --site {}",
         quote(&action.root.to_string_lossy()),
@@ -967,6 +989,14 @@ fn run_with(
         )
     } else {
         json
+    };
+    let json = match &coverage_guard {
+        Some(guard) => {
+            let body = json.strip_suffix('}')
+                .ok_or_else(|| io::Error::other("report is not one JSON object"))?;
+            format!("{body},\"calibration_uncertainty_guard\":{}}}", guard.to_json())
+        }
+        None => json,
     };
     let json = format!("{json}\n");
     if let Some(path) = &action.report_out {

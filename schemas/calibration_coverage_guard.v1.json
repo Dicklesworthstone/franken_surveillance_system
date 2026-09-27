@@ -1,0 +1,251 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "fss.calibration_coverage_guard.v1",
+  "title": "Conditional full-camera coverage screen and explicit proposal refusal",
+  "oneOf": [
+    {
+      "$ref": "#/$defs/guard"
+    },
+    {
+      "$ref": "#/$defs/refusal"
+    }
+  ],
+  "$defs": {
+    "zone": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "zone_id",
+        "samples",
+        "requires_abstention",
+        "counts"
+      ],
+      "properties": {
+        "zone_id": {
+          "type": "string",
+          "pattern": "^[A-Za-z0-9_.-]{1,64}$"
+        },
+        "samples": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 1024
+        },
+        "requires_abstention": {
+          "type": "boolean"
+        },
+        "counts": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "inside_unmasked",
+            "outside_frustum",
+            "frustum_boundary",
+            "camera_plane_crossing",
+            "privacy_masked",
+            "privacy_boundary",
+            "mean_behind_camera"
+          ],
+          "properties": {
+            "inside_unmasked": {
+              "type": "integer",
+              "minimum": 0,
+              "maximum": 1024
+            },
+            "outside_frustum": {
+              "type": "integer",
+              "minimum": 0,
+              "maximum": 1024
+            },
+            "frustum_boundary": {
+              "type": "integer",
+              "minimum": 0,
+              "maximum": 1024
+            },
+            "camera_plane_crossing": {
+              "type": "integer",
+              "minimum": 0,
+              "maximum": 1024
+            },
+            "privacy_masked": {
+              "type": "integer",
+              "minimum": 0,
+              "maximum": 1024
+            },
+            "privacy_boundary": {
+              "type": "integer",
+              "minimum": 0,
+              "maximum": 1024
+            },
+            "mean_behind_camera": {
+              "type": "integer",
+              "minimum": 0,
+              "maximum": 1024
+            }
+          }
+        }
+      }
+    },
+    "camera": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "format",
+        "camera",
+        "sensor_id",
+        "calibration_digest",
+        "input_digest",
+        "privacy_binding_digest",
+        "policy",
+        "sigma_multiplier",
+        "zones",
+        "work_units",
+        "work_units_remaining",
+        "claim"
+      ],
+      "properties": {
+        "format": {
+          "const": "fss.calibration_camera_coverage.v1"
+        },
+        "camera": {
+          "type": "string",
+          "pattern": "^[A-Za-z0-9_.-]{1,64}$"
+        },
+        "sensor_id": {
+          "type": "string",
+          "minLength": 1
+        },
+        "calibration_digest": {
+          "type": "string",
+          "pattern": "^sha256:[0-9a-f]{64}$"
+        },
+        "input_digest": {
+          "type": "string",
+          "pattern": "^sha256:[0-9a-f]{64}$"
+        },
+        "privacy_binding_digest": {
+          "type": "string",
+          "pattern": "^sha256:[0-9a-f]{64}$"
+        },
+        "policy": {
+          "type": "string",
+          "pattern": "^fss\\.calibration_coverage_guard\\.v1:"
+        },
+        "sigma_multiplier": {
+          "const": 3.0
+        },
+        "zones": {
+          "type": "array",
+          "minItems": 1,
+          "maxItems": 16,
+          "items": {
+            "$ref": "#/$defs/zone"
+          }
+        },
+        "work_units": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "work_units_remaining": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "claim": {
+          "const": "conditional_linearized_screen_not_coverage_or_physical_currency"
+        }
+      }
+    },
+    "guard": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "format",
+        "coverage_withheld",
+        "absence_claim_authorized",
+        "existing_coverage_retracted",
+        "positive_event_approvals_changed",
+        "cameras"
+      ],
+      "properties": {
+        "format": {
+          "const": "fss.calibration_coverage_guard.v1"
+        },
+        "coverage_withheld": {
+          "type": "boolean"
+        },
+        "absence_claim_authorized": {
+          "const": false
+        },
+        "existing_coverage_retracted": {
+          "const": false
+        },
+        "positive_event_approvals_changed": {
+          "const": false
+        },
+        "cameras": {
+          "type": "array",
+          "minItems": 1,
+          "maxItems": 2,
+          "items": {
+            "$ref": "#/$defs/camera"
+          }
+        }
+      }
+    },
+    "refusal": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "format",
+        "status",
+        "knowledge_state",
+        "reason",
+        "approval_digest",
+        "approve_command",
+        "records",
+        "existing_coverage_retracted",
+        "guard"
+      ],
+      "properties": {
+        "format": {
+          "const": "fss.calibration_coverage_refusal.v1"
+        },
+        "status": {
+          "const": "blocked"
+        },
+        "knowledge_state": {
+          "const": "not_observable"
+        },
+        "reason": {
+          "const": "calibration_uncertainty"
+        },
+        "approval_digest": {
+          "type": "null"
+        },
+        "approve_command": {
+          "type": "null"
+        },
+        "records": {
+          "type": "array",
+          "maxItems": 0
+        },
+        "existing_coverage_retracted": {
+          "const": false
+        },
+        "guard": {
+          "allOf": [
+            {
+              "$ref": "#/$defs/guard"
+            },
+            {
+              "properties": {
+                "coverage_withheld": {
+                  "const": true
+                }
+              }
+            }
+          ]
+        }
+      }
+    }
+  }
+}

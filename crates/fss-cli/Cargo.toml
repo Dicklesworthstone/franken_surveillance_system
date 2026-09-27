@@ -65,13 +65,13 @@ path = "src/bin/fss-cover.rs"
 
 [dependencies]
 fss-core = { path = "../fss-core" }
+fss-geometry = { path = "../fss-geometry" }
 fss-graph-algorithms = { path = "../fss-graph-algorithms" }
 fss-object = { path = "../fss-object" }
 fss-publication = { path = "../fss-publication" }
 fss-reference = { path = "../fss-reference" }
 
 [dev-dependencies]
-fss-geometry = { path = "../fss-geometry" }
 fss-packet = { path = "../fss-packet" }
 fss-twin = { path = "../fss-twin" }
 
