@@ -273,31 +273,30 @@ fn record(value: &CoverageRecord) -> String {
                 .pose_uncertainty
                 .as_ref()
                 .and_then(PoseUncertainty::guard_receipt)
+                && let Ok(assessment) = receipt.zone(zone)
             {
-                if let Ok(assessment) = receipt.zone(zone) {
-                    let counts: Vec<_> = assessment
-                        .counts()
-                        .iter()
-                        .map(ToString::to_string)
-                        .collect();
-                    fields.push((
-                        "calibration_guard",
-                        object(&[
-                            ("receipt_digest", string(&receipt.digest().to_text())),
-                            ("samples", assessment.samples().to_string()),
-                            (
-                                "requires_abstention",
-                                assessment.requires_abstention().to_string(),
-                            ),
-                            ("counts", array(&counts)),
-                            (
-                                "absence_evidence",
-                                (!assessment.requires_abstention() && !zone.witnesses.is_empty())
-                                    .to_string(),
-                            ),
-                        ]),
-                    ));
-                }
+                let counts: Vec<_> = assessment
+                    .counts()
+                    .iter()
+                    .map(ToString::to_string)
+                    .collect();
+                fields.push((
+                    "calibration_guard",
+                    object(&[
+                        ("receipt_digest", string(&receipt.digest().to_text())),
+                        ("samples", assessment.samples().to_string()),
+                        (
+                            "requires_abstention",
+                            assessment.requires_abstention().to_string(),
+                        ),
+                        ("counts", array(&counts)),
+                        (
+                            "absence_evidence",
+                            (!assessment.requires_abstention() && !zone.witnesses.is_empty())
+                                .to_string(),
+                        ),
+                    ]),
+                ));
             }
             object(&fields)
         })

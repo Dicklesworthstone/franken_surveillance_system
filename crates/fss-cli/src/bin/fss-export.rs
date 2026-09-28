@@ -404,7 +404,7 @@ mod tests {
             "--expires-at-ns",
         ] {
             let mut args = arguments();
-            let at = args.iter().position(|v| v == key).expect("key");
+            let at = args.iter().position(|v| v == key).ok_or("key")?;
             args.drain(at..=at + 1);
             assert!(parse(&args).is_err(), "accepted missing {key}");
         }

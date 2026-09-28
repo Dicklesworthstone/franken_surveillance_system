@@ -180,7 +180,7 @@ fn parse(args: &[OsString]) -> Result<Option<Request>, CommandError> {
     let mut report_limit = MAX_REPORT_BYTES;
     let mut timeout = Duration::from_millis(30_000);
     let mut seen = BTreeSet::new();
-    for pair in args[1..].chunks_exact(2) {
+    for pair in args[1..].as_chunks::<2>().0 {
         let key = text(&pair[0])?;
         let value = &pair[1];
         if value.is_empty() || value.to_str().is_some_and(|s| s.starts_with("--")) {

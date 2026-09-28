@@ -94,7 +94,7 @@ fn parse(args: &[OsString]) -> Result<Option<ResilientRequest>, CommandError> {
     // domain declarations are removed. Invalid common options retain their original refusal.
     let mut common = vec![OsString::from("select")];
     let mut domains = BTreeMap::new();
-    for pair in args[1..].chunks_exact(2) {
+    for pair in args[1..].as_chunks::<2>().0 {
         if pair[0] != "--failure-domain" {
             common.extend_from_slice(pair);
             continue;
@@ -209,7 +209,7 @@ fn render(
                 ("node_id", string(&domain.node_id())),
                 (
                     "members",
-                    strings(&domain.members().iter().cloned().collect::<Vec<_>>()),
+                    strings(domain.members().iter().cloned().collect::<Vec<_>>()),
                 ),
             ])
         })

@@ -1,4 +1,5 @@
 #![forbid(unsafe_code)]
+#![allow(clippy::unwrap_used)]
 use super::*;
 use fss_geometry::{
     AdjustedCamera, BundleParameter, CameraCovariance, CameraGeneration, PinholeIntrinsics,
