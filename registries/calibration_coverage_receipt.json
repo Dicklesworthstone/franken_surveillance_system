@@ -29,6 +29,20 @@
   "bounds": {"zones": 16, "samples_per_zone": 1024, "receipt_bytes": 8192, "record_bytes": 4194304},
   "operation_cost": "4096 + sum_per_zone(4096 + 128*(witnesses+uncovered) + predicate_bytes)",
   "effects": "none",
+  "retention_owner": "fss-reference::ingest::recorded_coverage::check_approval",
+  "approval_currency": {
+    "scope": "version_6_only",
+    "required": [
+      "current_sensor_privacy_binding_digest_and_generation",
+      "current_calibration_camera_generations_and_sensor",
+      "exact_adoption_receipt_or_unchanged_no_adoption_basis",
+      "sensor_not_adopted_under_another_camera_handle"
+    ],
+    "checked_before": ["staging", "already_retained_return"],
+    "failure": "CoverageError::Currency via ERR-COVERAGE-001",
+    "historical_decode": "unchanged",
+    "legacy_approval_semantics": "versions_1_through_5_unchanged"
+  },
   "claim": "conditional_linearized_screen_not_physical_observability_or_probability",
   "native_tests": "cargo test -p fss-reference calibration_coverage --locked --offline",
   "independent_model": "python3 scripts/calibration_coverage_receipt_model.py",

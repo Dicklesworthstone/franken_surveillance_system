@@ -100,6 +100,8 @@
 //!    sigma-point pose perturbation), `background_warmup`, `confirmation_latency` and finally
 //!    `interval_too_short`.
 
+mod currency;
+
 use std::fmt;
 
 use super::calibration_coverage::CalibrationCoverageReceipt;
@@ -1689,6 +1691,13 @@ impl CoverageStatus {
 pub enum CoverageError {
     /// The approval matches neither this analysis's proposal nor its retained records.
     StaleApproval(ContentDigest),
+    /// A version-6 screening receipt no longer matches current privacy/calibration authority.
+    Currency {
+        /// Sensor whose screened coverage was refused.
+        sensor: String,
+        /// Exact required reanalysis, without leaking mask coordinates or secrets.
+        reason: &'static str,
+    },
     /// Record construction or validation failed.
     Contract(ContractError),
     /// Spool or ledger refusal.
@@ -1701,7 +1710,7 @@ impl CoverageError {
     pub fn stable_id(&self) -> &'static str {
         match self {
             Self::StaleApproval(_) => "ERR-COVERAGE-APPROVAL-STALE-001",
-            Self::Contract(_) | Self::Reference(_) => "ERR-COVERAGE-001",
+            Self::Contract(_) | Self::Reference(_) | Self::Currency { .. } => "ERR-COVERAGE-001",
         }
     }
 }
@@ -1714,6 +1723,9 @@ impl fmt::Display for CoverageError {
                 "coverage approval {digest} matches neither this analysis's proposal nor its \
                  retained coverage"
             ),
+            Self::Currency { sensor, reason } => {
+                write!(f, "coverage for {sensor} cannot be retained: {reason}")
+            }
             Self::Contract(error) => write!(f, "coverage record: {error}"),
             Self::Reference(error) => write!(f, "coverage retention: {error}"),
         }
@@ -1764,6 +1776,9 @@ pub fn coverage_status(
 
 /// Checks, without writing, that `approval` is [`approval_digest`] of `records` or the approval
 /// of the records already retained for these analyses; returns each record's committed payload.
+/// Version-6 full-camera receipts additionally require the exact current sensor mask digest and
+/// generation, camera/sensor adoption and provenance receipt. Revalidation precedes staging and
+/// the idempotent return; historical decoding and version-1..5 approval semantics are unchanged.
 pub fn check_approval(
     deployment: &ReferenceDeployment,
     records: &[&CoverageRecord],
@@ -1772,6 +1787,8 @@ pub fn check_approval(
     let mut committed = Vec::with_capacity(records.len());
     for record in records {
         record.validate()?;
+        // Check every guarded member before any staging or an already-retained fast path.
+        currency::check_guard_current(deployment, record)?;
         committed.push(committed_record(deployment, record)?);
     }
     let retained: Option<Vec<ContentDigest>> = committed.iter().copied().collect();
