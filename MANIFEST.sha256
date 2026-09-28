@@ -86,7 +86,7 @@ c5c00751a94f91820cd70737b16df59cbed45df22e519bb938f6e08ee4656332  crates/fss-cli
 2c5591847c794b96f49ad0b9b93bf58763329f2ff55ba744e9049f3448706cad  crates/fss-cli/src/bin/fss-archive/work.rs
 8be927c3027c4d988eb29cc9f91c13c557ecd0f7d9936d4d8ac176ffe6bc086a  crates/fss-cli/src/bin/fss-archive.rs
 2ea14883fc2c03e66a98843e4a0aa62895fe901423b165f30ca7cd1a3ebba9dc  crates/fss-cli/src/bin/fss-capture/privacy.rs
-2e5fadf29991b891ff025a14583ee489360acd4bb939d52207035276cc6d3870  crates/fss-cli/src/bin/fss-capture.rs
+a3b3776f1eaa2847eb405ba5f563f6134d415e89844d6cf4f29dee4a516b6d52  crates/fss-cli/src/bin/fss-capture.rs
 124cb803382168ba3d592a866ff3c19e0986dfe1e94781d734f69a977b0d2dd1  crates/fss-cli/src/bin/fss-evaluate.rs
 dac847e29d53ffedacfcc5ed486f7be4eb70536c0ad62fb609721429a9e039b4  crates/fss-cli/src/bin/fss-event/alert.rs
 1e9643dbed615fff02668d450d6c7fb05be59b157b936e3c5248f951ff42d5ea  crates/fss-cli/src/bin/fss-event/calibrate.rs
