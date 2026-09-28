@@ -197,14 +197,18 @@ fn parse(args: &[OsString]) -> Result<Options, &'static str> {
         return Err("principal byte bound");
     }
     let timeout_ns = number("--timeout-ms", 30_000, 1, 600_000)? * 1_000_000;
-    let mut limits = HttpRecordingLimits::default();
-    limits.decode = match values.get("--decode").copied().unwrap_or("none") {
+    let decode = match values.get("--decode").copied().unwrap_or("none") {
         "none" => HttpCheckDecode::None,
         "grayscale" => HttpCheckDecode::Grayscale,
         "ycbcr" => HttpCheckDecode::YCbCr,
         _ => return Err("select none, grayscale or ycbcr"),
     };
-    limits.connect_timeout_ns = number("--connect-timeout-ms", 5_000, 1, 60_000)? * 1_000_000;
+    let connect_timeout_ns = number("--connect-timeout-ms", 5_000, 1, 60_000)? * 1_000_000;
+    let mut limits = HttpRecordingLimits {
+        decode,
+        connect_timeout_ns,
+        ..HttpRecordingLimits::default()
+    };
     limits.media.maximum_frames = number("--max-frames", 128, 1, 4096)? as usize;
     limits.media.maximum_reads = number("--max-reads", 1024, 1, 4096)? as usize;
     limits.media.maximum_source_bytes =
