@@ -16,15 +16,25 @@ use fss_object::{ObjectError, ObjectManifest, SpoolError};
 use fss_publication::SlotName;
 use std::fmt;
 
+/// Capability to preview a redacted event export (`CAP-EXPORT-PREPARE-001`).
 pub const CAP_EXPORT_PREPARE: &str = "CAP-EXPORT-PREPARE-001";
+/// Capability to commit an exactly approved export (`CAP-EXPORT-COMMIT-001`).
 pub const CAP_EXPORT_COMMIT: &str = "CAP-EXPORT-COMMIT-001";
+/// Authority-ledger delta family that retains committed export records.
 pub const FAMILY_EVIDENCE_EXPORT: &str = "evidence_export";
+/// Reserved ledger object namespace of export records.
 pub const EXPORT_OBJECT_PREFIX: &str = "object:evidence-export:";
+/// Canonical digest domain of an export record.
 pub const EXPORT_DOMAIN: &str = "fss.evidence_export.v1";
+/// Canonical digest domain of an export approval.
 pub const EXPORT_APPROVAL_DOMAIN: &str = "fss.evidence_export_approval.v1";
+/// The only export profile: redacted event summary, no raw media.
 pub const EXPORT_PROFILE: &str = "event-summary-redacted-v1";
+/// Upper bound on one encoded export record.
 pub const MAX_EXPORT_RECORD_BYTES: usize = 64 * 1024;
+/// Upper bound on the recipient label.
 pub const MAX_RECIPIENT_BYTES: usize = 256;
+/// Upper bound on the stated purpose.
 pub const MAX_PURPOSE_BYTES: usize = 512;
 /// Maximum authority batches examined during verified export readback.
 pub const MAX_EXPORT_LEDGER_BATCHES: usize = 65_536;
@@ -39,15 +49,22 @@ struct EvidenceSummary {
     failure_domain_digest: ContentDigest,
 }
 
+/// Owner request to export one exact event revision to a named recipient.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct EventExportRequest {
+    /// Event to export.
     pub event_id: EventId,
+    /// Revision the owner reviewed; any other current revision is stale.
     pub expected_revision: ContentDigest,
+    /// Recipient label (bounded, no control characters).
     pub recipient: String,
+    /// Stated purpose (bounded, no control characters).
     pub purpose: String,
+    /// Export expiry bound into the record.
     pub expires_at: TimestampNs,
 }
 impl EventExportRequest {
+    /// Refuses a malformed or unbounded request before any read.
     pub fn validate(&self) -> Result<(), ExportError> {
         if self.expected_revision.algorithm() != DigestAlgorithm::Sha256
             || self.expected_revision.bytes() == [0; 32]
@@ -66,6 +83,7 @@ impl EventExportRequest {
     }
 }
 
+/// The single redacted metadata record an export root contains.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct EventExportRecord {
     request: EventExportRequest,
@@ -88,24 +106,31 @@ pub struct EventExportRecord {
     track_count: u64,
 }
 impl EventExportRecord {
+    /// The approved request.
     pub fn request(&self) -> &EventExportRequest {
         &self.request
     }
+    /// The approving principal.
     pub fn principal(&self) -> &str {
         &self.principal
     }
+    /// The deployment site lineage.
     pub fn site(&self) -> &str {
         &self.site
     }
+    /// Digest of the exported event revision.
     pub fn event_root(&self) -> ContentDigest {
         self.event_root
     }
+    /// Ledger anchor the event was read at.
     pub fn event_anchor(&self) -> &LedgerAnchor {
         &self.event_anchor
     }
+    /// Number of redacted evidence summaries.
     pub fn evidence_count(&self) -> usize {
         self.evidence.len()
     }
+    /// Canonical record bytes.
     pub fn to_bytes(&self) -> Vec<u8> {
         let mut e = CanonicalEncoder::new();
         e.bytes(b"FSSEXP01");
@@ -150,12 +175,15 @@ impl EventExportRecord {
         e.text(EXPORT_PROFILE);
         e.finish()
     }
+    /// Record digest (the export's identity).
     pub fn digest(&self) -> ContentDigest {
         ContentDigest::sha256(&self.to_bytes())
     }
+    /// Root-last manifest whose only child is the record.
     pub fn manifest(&self) -> Result<ObjectManifest, ExportError> {
         Ok(ObjectManifest::new(EXPORT_PROFILE, [self.digest()], None)?)
     }
+    /// Publication slot derived from the record digest.
     pub fn slot(&self) -> Result<SlotName, ExportError> {
         SlotName::parse(&format!("export-{}", hex(self.digest())))
             .map_err(|_| ExportError::InvalidRequest("export slot identity"))
@@ -310,6 +338,7 @@ impl EventExportRecord {
         }
         Ok(())
     }
+    /// Redacted JSON projection for the recipient.
     pub fn to_redacted_json(&self) -> String {
         let lower = f64::from_bits(self.probability_bits[0]);
         let upper = f64::from_bits(self.probability_bits[1]);
@@ -358,6 +387,7 @@ impl EventExportRecord {
     }
 }
 
+/// A read-only export preview and the approval it requires.
 #[derive(Clone, Debug)]
 pub struct EventExportPreview {
     record: EventExportRecord,
@@ -365,15 +395,19 @@ pub struct EventExportPreview {
     already_committed: bool,
 }
 impl EventExportPreview {
+    /// The record that would be published.
     pub fn record(&self) -> &EventExportRecord {
         &self.record
     }
+    /// The manifest root that would be published.
     pub fn root(&self) -> ContentDigest {
         self.root
     }
+    /// True when this exact export is already retained.
     pub fn already_committed(&self) -> bool {
         self.already_committed
     }
+    /// Exact approval digest over policy, record and root.
     pub fn approval(&self) -> ContentDigest {
         let mut e = CanonicalEncoder::new();
         e.text(EXPORT_APPROVAL_DOMAIN);
@@ -384,28 +418,45 @@ impl EventExportPreview {
     }
 }
 
+/// Outcome of a committed export.
 #[derive(Clone, Debug)]
 pub struct EventExportReceipt {
+    /// The approved preview.
     pub preview: EventExportPreview,
+    /// Authority anchor after the commit.
     pub anchor: LedgerAnchor,
+    /// False when an identical export was already retained.
     pub published: bool,
 }
 
+/// Why no export was previewed or committed.
 #[derive(Debug)]
 pub enum ExportError {
+    /// Malformed or out-of-bounds request.
     InvalidRequest(&'static str),
+    /// The principal lacks the export capability.
     Unauthorized,
+    /// The event's current revision differs from the reviewed one.
     StaleRevision,
+    /// The approval does not name the current exact preview.
     StaleApproval,
+    /// Retained custody differs from the record being exported.
     CustodyMismatch,
+    /// A declared bound was exhausted.
     Limit,
+    /// Cooperative cancellation.
     Cancelled,
+    /// Canonical contract refusal.
     Contract(ContractError),
+    /// Deployment refusal.
     Reference(Box<ReferenceError>),
+    /// Object manifest refusal.
     Object(ObjectError),
+    /// Spool refusal.
     Spool(SpoolError),
 }
 impl ExportError {
+    /// Registered stable error identity.
     pub const fn stable_id(&self) -> &'static str {
         match self {
             Self::InvalidRequest(_) => "ERR-EXPORT-REQUEST-001",
@@ -539,6 +590,7 @@ fn verify_custody(d: &ReferenceDeployment, record: &EventExportRecord) -> Result
     Ok(())
 }
 
+/// Read-only preview of an export of the current exact event revision.
 pub fn preview_export(
     deployment: &ReferenceDeployment,
     request: &EventExportRequest,
@@ -678,6 +730,7 @@ pub fn read_export(
     Ok((record, anchor))
 }
 
+/// Commits an exactly approved export root-last and retains its record.
 pub fn commit_export(
     deployment: &mut ReferenceDeployment,
     request: &EventExportRequest,
@@ -729,6 +782,7 @@ pub fn commit_export(
 }
 
 #[cfg(test)]
+#[allow(clippy::unwrap_used, clippy::expect_used)]
 mod tests {
     use super::*;
     #[test]

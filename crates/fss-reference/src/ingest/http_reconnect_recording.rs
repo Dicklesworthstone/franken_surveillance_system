@@ -118,7 +118,10 @@ pub enum HttpReconnectRecordingStep {
     /// External owner must wait for readiness while checking live cancellation/deadline.
     Pending,
     /// External owner must wait until the capped backoff has elapsed.
-    Waiting { not_before_ns: u64 },
+    Waiting {
+        /// Earliest reconnect time, in the caller's nanosecond clock.
+        not_before_ns: u64,
+    },
     /// Save the expected pin before calling `commit_wire`; no parsing or next connection yet.
     WirePrepared(HttpReconnectWirePlan),
     /// Complete part whose source is durable; `take_frame` revalidates its original custody.

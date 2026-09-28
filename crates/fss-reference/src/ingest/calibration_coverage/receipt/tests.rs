@@ -1,4 +1,5 @@
 #![forbid(unsafe_code)]
+#![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 use super::*;
 use crate::ingest::calibration_coverage::{
     CalibrationCoverageInput, MAX_CALIBRATION_COVERAGE_WORK, assess_calibration_coverage,

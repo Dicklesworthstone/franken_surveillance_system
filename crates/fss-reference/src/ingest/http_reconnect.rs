@@ -173,7 +173,10 @@ pub enum HttpReconnectStep {
     /// Existing source progress, with the same raw-read/frame backpressure contract.
     Source(HttpCameraStep),
     /// External owner must wait, checking readiness, cancellation and deadline independently.
-    Waiting { not_before_ns: u64 },
+    Waiting {
+        /// Earliest reconnect time, in the caller's nanosecond clock.
+        not_before_ns: u64,
+    },
     /// Transfer and acknowledge this exact handoff before any later network attempt.
     HandoffReady(HttpReconnectReceipt),
     /// All mandatory handoffs were accepted and no further connection is planned.

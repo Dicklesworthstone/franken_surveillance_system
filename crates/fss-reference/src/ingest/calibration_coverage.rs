@@ -345,17 +345,16 @@ pub fn assess_calibration_coverage(
             ));
         }
     }
-    if let MaskBinding::Policy(retained) = input.privacy {
-        if retained.generation == 0
+    if let MaskBinding::Policy(retained) = input.privacy
+        && (retained.generation == 0
             || retained.digest != retained.policy.digest()
             || retained.policy.sensor_id() != input.sensor
-            || retained.policy.resolution() != camera.intrinsics.dimensions()
-        {
-            return Err(invalid(
-                input.camera_name,
-                "privacy binding differs from the calibrated sensor or image mode",
-            ));
-        }
+            || retained.policy.resolution() != camera.intrinsics.dimensions())
+    {
+        return Err(invalid(
+            input.camera_name,
+            "privacy binding differs from the calibrated sensor or image mode",
+        ));
     }
     let mut zones: Vec<_> = input.zones.iter().collect();
     zones.sort_by(|a, b| a.zone_id.cmp(&b.zone_id));

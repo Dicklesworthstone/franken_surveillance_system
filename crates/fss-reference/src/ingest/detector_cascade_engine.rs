@@ -771,30 +771,6 @@ impl<'a> DetectorCascade<'a> {
         }
     }
 
-    /// Runs the detector on the selected frames of one recording within `budget`.
-    pub fn run(
-        &mut self,
-        deployment: &ReferenceDeployment,
-        source: CascadeSource<'_>,
-        tracks: &[CascadeTrack],
-        budget: &mut CascadeBudget,
-        limits: &WatchLimits,
-        cx: &ReplayCx,
-    ) -> Result<CascadeOutcome, CascadeError> {
-        self.run_recovered(
-            deployment,
-            RecoveredCascadeSource {
-                source,
-                decode_refusals: &[],
-                tracking_restarts: &[],
-            },
-            tracks,
-            budget,
-            limits,
-            cx,
-        )
-    }
-
     /// Runs selected frames across explicitly recovered watch epochs. Admission occurs once
     /// against the caller's allowance, and one detection-work budget spans all video epochs.
     /// Each native video reader independently requires an IDR/IRAP and validates custody,

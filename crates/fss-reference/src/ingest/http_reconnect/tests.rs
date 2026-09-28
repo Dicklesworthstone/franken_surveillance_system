@@ -1,4 +1,5 @@
 #![forbid(unsafe_code)]
+#![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 
 use super::super::http_camera::{HttpCameraDenial, HttpCameraSecurity};
 use super::*;

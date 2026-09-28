@@ -1,4 +1,5 @@
 #![forbid(unsafe_code)]
+#![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 //! Real loopback TCP, root-last disk publication and cold source recovery; no mock archive.
 use super::*;
 use crate::ingest::http_camera::{

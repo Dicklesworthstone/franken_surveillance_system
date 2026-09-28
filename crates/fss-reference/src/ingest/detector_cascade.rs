@@ -301,8 +301,10 @@ mod tests {
 
     #[test]
     fn tighter_resource_limits_do_not_inherit_success() {
-        let mut limits = WatchLimits::default();
-        limits.jpeg_work_units = 0;
+        let limits = WatchLimits {
+            jpeg_work_units: 0,
+            ..WatchLimits::default()
+        };
         assert_ne!(
             key(source()),
             cache_basis(&"authority", source(), &[], 2, &limits)

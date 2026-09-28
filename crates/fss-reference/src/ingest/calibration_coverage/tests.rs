@@ -1,4 +1,5 @@
 #![forbid(unsafe_code)]
+#![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 use super::super::privacy_mask::{PrivacyMaskPolicy, RetainedMaskPolicy};
 use super::*;
 use fss_geometry::{CameraGeneration, PinholeIntrinsics, RigidPose};
