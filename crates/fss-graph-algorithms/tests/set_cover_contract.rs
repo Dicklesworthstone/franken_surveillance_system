@@ -136,7 +136,7 @@ fn zero_and_full_word_universes_and_zero_selection_limit_are_total() -> TestResu
     );
     let universe: Vec<String> = (0..MAX_ELEMENTS).map(|n| format!("z{n:02}")).collect();
     let all = CoverSet::new("whole", &universe)?;
-    let p = SetCoverProblem::new(&universe, &[all.clone()], &[], &[], 1)?;
+    let p = SetCoverProblem::new(&universe, std::slice::from_ref(&all), &[], &[], 1)?;
     for method in [CoverMethod::ExactSmall, CoverMethod::Greedy] {
         let answer = p.solve(method, budget())?;
         assert_eq!(answer.status(), CoverStatus::Covered);
@@ -161,10 +161,21 @@ fn invalid_identities_duplicate_members_and_unknown_constraints_fail_closed() ->
     }
     assert!(set("x", &["a", "a"]).is_err());
     let a = set("a", &["x"])?;
-    assert!(SetCoverProblem::new(&ids(&["x", "x"]), &[a.clone()], &[], &[], 1).is_err());
+    assert!(
+        SetCoverProblem::new(&ids(&["x", "x"]), std::slice::from_ref(&a), &[], &[], 1).is_err()
+    );
     assert!(SetCoverProblem::new(&ids(&["x"]), &[a.clone(), a.clone()], &[], &[], 2).is_err());
-    assert!(SetCoverProblem::new(&ids(&["y"]), &[a.clone()], &[], &[], 1).is_err());
-    assert!(SetCoverProblem::new(&ids(&["x"]), &[a.clone()], &ids(&["unknown"]), &[], 1).is_err());
+    assert!(SetCoverProblem::new(&ids(&["y"]), std::slice::from_ref(&a), &[], &[], 1).is_err());
+    assert!(
+        SetCoverProblem::new(
+            &ids(&["x"]),
+            std::slice::from_ref(&a),
+            &ids(&["unknown"]),
+            &[],
+            1
+        )
+        .is_err()
+    );
     assert!(SetCoverProblem::new(&ids(&["x"]), &[a], &[], &ids(&["unknown"]), 1).is_err());
     Ok(())
 }

@@ -97,7 +97,7 @@ fn fixture(name: &str) -> TestResult<Fixture> {
         screens.push(assessment);
     }
     for record in &mut records {
-        record.basis = deployment.current_anchor();
+        record.basis = deployment.current_anchor().clone();
         for zone in &mut record.zones {
             for witness in &mut zone.witnesses {
                 witness.witness.anchor = record.basis.clone();
@@ -180,12 +180,12 @@ fn exact_guarded_retention_is_one_batch_and_a_restart_rerun_writes_nothing() -> 
     drop(deployment);
     let mut reopened = ReferenceDeployment::open(&root, SITE, &cx)?;
     let files = inventory(&root)?;
-    let anchor = reopened.current_anchor();
+    let anchor = reopened.current_anchor().clone();
     assert_eq!(
         set.retain(&mut reopened, approval, RetainedReadLimits::default(), &cx)?,
         CoverageStatus::AlreadyRetained
     );
-    assert_eq!(reopened.current_anchor(), anchor);
+    assert_eq!(reopened.current_anchor(), &anchor);
     assert_eq!(inventory(&root)?, files);
     drop(reopened);
     drop(_directory);
@@ -197,7 +197,7 @@ fn nominal_or_wrong_approvals_never_stage_any_guarded_record() -> TestResult {
     let mut f = fixture("approvals")?;
     for approval in [f.nominal_approval, ContentDigest::sha256(b"wrong approval")] {
         let files = inventory(&f.root)?;
-        let anchor = f.deployment.current_anchor();
+        let anchor = f.deployment.current_anchor().clone();
         assert!(matches!(
             f.set.retain(
                 &mut f.deployment,
@@ -207,7 +207,7 @@ fn nominal_or_wrong_approvals_never_stage_any_guarded_record() -> TestResult {
             ),
             Err(GuardedCoverageRetentionError::Coverage(_))
         ));
-        assert_eq!(f.deployment.current_anchor(), anchor);
+        assert_eq!(f.deployment.current_anchor(), &anchor);
         assert_eq!(inventory(&f.root)?, files);
     }
     Ok(())

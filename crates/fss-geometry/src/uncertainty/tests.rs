@@ -1,4 +1,5 @@
 #![forbid(unsafe_code)]
+#![allow(clippy::unwrap_used)]
 
 use super::*;
 use crate::{CameraCovariance, PinholeIntrinsics, RadialDistortion, RigidPose};

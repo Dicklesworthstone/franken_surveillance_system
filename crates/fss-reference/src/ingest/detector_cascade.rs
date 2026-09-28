@@ -44,6 +44,13 @@ impl fmt::Debug for DetectorCascade<'_> {
     }
 }
 
+/// The cascade's canonical policy JSON. The glob re-export names the engine's function, which
+/// takes the engine type; callers hold this context-bound owner.
+#[must_use]
+pub fn cascade_policy_json(cascade: &DetectorCascade<'_>) -> String {
+    engine::cascade_policy_json(&cascade.engine)
+}
+
 impl<'a> DetectorCascade<'a> {
     /// Bind a verified package to a validated, immutable cascade policy.
     pub fn new(

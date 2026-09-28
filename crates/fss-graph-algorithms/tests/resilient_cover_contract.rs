@@ -256,7 +256,15 @@ fn invalid_declarations_and_tampered_projection_fail_closed() -> TestResult {
         ResilientCoverProblem::from_coverage(&source, &ids(&["gate"]), &[], &[], &[], 3).is_err()
     );
     assert!(
-        ResilientCoverProblem::from_coverage(&source, &[], &[power.clone()], &[], &[], 3).is_err()
+        ResilientCoverProblem::from_coverage(
+            &source,
+            &[],
+            std::slice::from_ref(&power),
+            &[],
+            &[],
+            3
+        )
+        .is_err()
     );
     assert!(
         ResilientCoverProblem::from_coverage(
@@ -374,7 +382,7 @@ fn next(seed: &mut u64) -> u64 {
 
 #[test]
 fn exact_reduction_matches_direct_scenario_oracle_on_seeded_constraints() -> TestResult {
-    let mut seed = 0xfeed_cafe_41_u64;
+    let mut seed = 0xfe_edca_fe41_u64;
     for trial in 0..1000 {
         let n = 1 + (next(&mut seed) % 6) as usize;
         let m = 1 + (next(&mut seed) % 4) as usize;

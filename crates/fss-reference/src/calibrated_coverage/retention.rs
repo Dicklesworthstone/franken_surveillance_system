@@ -170,7 +170,7 @@ impl GuardedCoverageSet {
             record
                 .validate()
                 .map_err(GuardedCoverageRetentionError::Contract)?;
-            if record.basis != deployment.current_anchor()
+            if &record.basis != deployment.current_anchor()
                 && !deployment
                     .ledger()
                     .batches()
