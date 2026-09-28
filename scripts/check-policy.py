@@ -1163,9 +1163,27 @@ def main() -> int:
         schema = load_json(relative)
         if schema.get("$schema") != "https://json-schema.org/draft/2020-12/schema":
             fail(f"{stable_id} does not declare JSON Schema Draft 2020-12")
-        if schema.get("type") != "object":
+        # A oneOf union of local $defs (e.g. result | refusal) is checked per branch.
+        defs = schema.get("$defs", {})
+        branches = [
+            defs.get(str(b.get("$ref", "")).removeprefix("#/$defs/"), {})
+            for b in schema.get("oneOf", [])
+            if isinstance(b, dict)
+        ] if schema.get("type") is None and isinstance(schema.get("oneOf"), list) else []
+        if schema.get("type") != "object" and not (
+            branches and all(b.get("type") == "object" for b in branches)
+        ):
             fail(f"{stable_id} top-level schema type must be object")
-        if schema.get("properties", {}).get("schema", {}).get("const") != schema_name:
+
+        def identity(node: dict) -> object:
+            # Records name their schema under `schema`; CLI reports that emit `format` use it.
+            props = node.get("properties", {})
+            if "schema" in props:
+                return props["schema"].get("const")
+            return props.get("format", {}).get("const")
+
+        names = [identity(schema)] + [identity(b) for b in branches]
+        if schema_name not in names:
             fail(f"{stable_id} registry name disagrees with schema const")
         if not str(schema.get("$id", "")).endswith("/" + Path(relative).name):
             fail(f"{stable_id} has a nonmatching $id")
