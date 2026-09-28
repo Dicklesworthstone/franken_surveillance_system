@@ -9,10 +9,11 @@
 //! policy may report the `prepare_alert` affordance, but no alert is prepared here. Each report
 //! also proposes one coverage record per camera; `--retain-coverage DIGEST` retains both exactly.
 //! With a pinned calibration, full camera covariance also screens every ground sample against
-//! image/depth boundaries and the current privacy mask. If this screen rejects a zone that had a
-//! nominal witness, the entire two-camera coverage proposal is withheld (no digest or approval
-//! command), while positive event proposals remain independent. A simultaneous retention request
-//! is refused before any publication. Previously retained coverage is not silently retracted.
+//! image/depth boundaries and the current privacy mask. Rejected zones lose only their nominal
+//! witnesses, retained as explicit `calibration_uncertainty` intervals; safe-zone witnesses and
+//! every existing observation or exclusion survive in version-6 guard-bound records. The guarded
+//! approval is checked before any mixed event/coverage publication. Positive event proposals and
+//! previously retained coverage are not rewritten. Post-publication coverage is screened again.
 //! The detector-cascade options of `watch` add uncalibrated class evidence to each ground entry
 //! (one inference budget for both recordings); it never changes the policy's event or alert.
 //! Ground-zone coverage is geometric: `--visibility-grid N` and `--visibility-threshold-ppm N`
@@ -924,23 +925,27 @@ fn run_with(
         action.recovery,
         cx,
     )?;
-    // The full camera covariance may deny nominal absence evidence without changing
-    // positive event proposals. A mixed request is refused before either write.
-    let coverage_guard = calibration_coverage::assess(
+    // Full-camera screening changes coverage identities, not event proposals. One allowance
+    // covers both cameras, receipt application and any post-publication coverage reanalysis.
+    let mut guard_budget = fss_geometry::WorkBudget::new(
+        fss_reference::ingest::calibration_coverage::MAX_CALIBRATION_COVERAGE_WORK,
+    );
+    let mut coverage_guard = calibration_coverage::assess(
         action,
         calibration_record.as_ref(),
         calibration,
         deployment,
         &report,
         cx,
+        &mut guard_budget,
     )?;
-    if let Some(guard) = &coverage_guard {
-        guard.check_retention(action.retain_coverage.is_some())?;
-    }
-    let coverage_blocked = coverage_guard.as_ref().is_some_and(|guard| guard.blocked());
-    // Both approvals are checked against the fresh analysis before anything is written.
+    // Validate the GUARDED approval before either write. A nominal approval cannot retain
+    // screened records or partially publish the event side of a mixed request.
     if let Some(approval) = action.retain_coverage {
-        report.check_coverage_approval(deployment, approval)?;
+        match &coverage_guard {
+            Some(guard) => guard.check_retention(deployment, approval, cx)?,
+            None => report.check_coverage_approval(deployment, approval)?,
+        }
     }
     let published = if action.approvals.is_empty() {
         0
@@ -948,11 +953,16 @@ fn run_with(
         report.publish(deployment, &action.approvals, cx)?
     };
     if let Some(approval) = action.retain_coverage {
-        report.retain_coverage(deployment, approval, cx)?;
+        match &mut coverage_guard {
+            Some(guard) => guard.retain(deployment, approval, cx)?,
+            None => {
+                report.retain_coverage(deployment, approval, cx)?;
+            }
+        }
     }
-    // A coverage proposal binds the authority anchor its analysis read; after this run published
-    // candidates, the proposal is recomputed against the new anchor so its approval is current.
-    let reproposed = if published > 0 && action.retain_coverage.is_none() && !coverage_blocked {
+    // A newly offered proposal must name the new anchor after positive events were published.
+    // Reapply the guard too: never combine a new nominal record with an old guarded approval.
+    let reproposed = if published > 0 && action.retain_coverage.is_none() {
         Some(CorroborationReport::analyze_with_pose_uncertainty(
             deployment,
             &action.plan,
@@ -967,11 +977,28 @@ fn run_with(
     } else {
         None
     };
+    let reproposed_guard = match &reproposed {
+        Some(proposal) => calibration_coverage::assess(
+            action,
+            calibration_record.as_ref(),
+            calibration,
+            deployment,
+            proposal,
+            cx,
+            &mut guard_budget,
+        )?,
+        None => None,
+    };
+    let selected_guard = if reproposed.is_some() {
+        reproposed_guard.as_ref()
+    } else {
+        coverage_guard.as_ref()
+    };
     let proposal = reproposed.as_ref().unwrap_or(&report);
     let records: Vec<_> = proposal.coverage().iter().collect();
-    let coverage = match &coverage_guard {
-        Some(guard) if guard.blocked() => guard.withheld_coverage_json(),
-        _ => super::coverage::render(
+    let coverage = match selected_guard {
+        Some(guard) => guard.coverage_json(&action.rerun),
+        None => super::coverage::render(
             &records,
             proposal.coverage_status(),
             proposal.coverage_approval(),
@@ -1002,7 +1029,7 @@ fn run_with(
     } else {
         json
     };
-    let json = match &coverage_guard {
+    let json = match selected_guard {
         Some(guard) => {
             let body = json
                 .strip_suffix('}')
