@@ -1439,7 +1439,24 @@ def validate_schema_constitution(
                 try:
                     doc = json.loads(disk_path.read_text(encoding="utf-8"))
                     if isinstance(doc, dict):
-                        const_val = doc.get("properties", {}).get("schema", {}).get("const")
+                        # The instance names its schema under `schema` (records) or `format`
+                        # (CLI reports that already emit `format`); either must equal the name.
+                        props = doc.get("properties", {})
+                        const_val = props.get("schema", {}).get("const")
+                        if const_val is None and "schema" not in props:
+                            const_val = props.get("format", {}).get("const")
+                        if const_val is None and isinstance(doc.get("oneOf"), list):
+                            # A oneOf union of local $defs (e.g. result | refusal) is named by
+                            # the branch whose identity const equals the registered name.
+                            defs = doc.get("$defs", {})
+                            for branch in doc["oneOf"]:
+                                ref = branch.get("$ref", "") if isinstance(branch, dict) else ""
+                                target = defs.get(ref.removeprefix("#/$defs/"), {})
+                                bprops = target.get("properties", {}) if isinstance(target, dict) else {}
+                                bconst = bprops.get("schema", bprops.get("format", {})).get("const")
+                                if bconst == sname:
+                                    const_val = bconst
+                                    break
                         if const_val != sname:
                             validator.emit(
                                 CODE_SCHEMA_CONST_MISMATCH,

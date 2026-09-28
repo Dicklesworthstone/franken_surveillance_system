@@ -1,6 +1,6 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
-  "$id": "fss.calibration_coverage_guard.v1",
+  "$id": "https://franken-surveillance-system.invalid/schemas/calibration_coverage_guard.v1.json",
   "title": "Conditional full-camera coverage screen and explicit proposal refusal",
   "oneOf": [
     {
