@@ -139,3 +139,6 @@ pub mod http_rgb_history;
 
 /// Whole-session native replay from an exact committed HTTP RGB history tip.
 pub mod http_rgb_history_replay;
+
+/// Bounded native HTTP reacquisition with exact source-generation handoffs.
+pub mod http_reconnect;
