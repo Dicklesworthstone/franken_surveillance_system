@@ -281,6 +281,28 @@ impl HttpReconnectRecording {
         self.work.charge(1)?;
         self.steps += 1;
         if let Some(plan) = self.wire_plan {
+            // The unacknowledged read is a parse/I/O barrier, not an authority lease.
+            // Poll the held owner even while the caller is persisting the prepared pin.
+            // Revocation/deadline must retire its socket and preserve this SAME plan so
+            // independently authorized storage can salvage the bytes without an ACK.
+            if self.handoff.is_none() {
+                match self.source.step(access.now_ns, access.camera)? {
+                    HttpReconnectStep::Source(HttpCameraStep::WireReady(wire))
+                        if wire == plan.wire => {}
+                    HttpReconnectStep::HandoffReady(_) => {
+                        self.handoff = self.source.take_handoff();
+                        let held = self
+                            .handoff
+                            .as_ref()
+                            .and_then(|h| h.source.as_ref())
+                            .and_then(|source| source.wire.as_ref());
+                        if held.is_none_or(|read| read.receipt() != plan.wire) {
+                            return Err(HttpReconnectRecordingError::PlanMismatch);
+                        }
+                    }
+                    _ => return Err(HttpReconnectRecordingError::PlanMismatch),
+                }
+            }
             return Ok(HttpReconnectRecordingStep::WirePrepared(plan));
         }
         if self.handoff.is_some() {
@@ -546,3 +568,6 @@ pub struct HttpReconnectRecordingRetirement {
 
 #[cfg(test)]
 mod tests;
+
+#[cfg(test)]
+mod pending_wire_tests;
