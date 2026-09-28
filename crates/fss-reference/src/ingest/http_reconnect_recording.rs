@@ -295,6 +295,9 @@ impl HttpReconnectRecording {
             self.reverify(publisher, access)?;
             self.validated = true;
         }
+        // A source step may open TCP or parse network bytes, so it needs its own unit of work:
+        // an exhausted source budget refuses before any connection attempt.
+        self.work.charge(1)?;
         match self.source.step(access.now_ns, access.camera)? {
             HttpReconnectStep::Connected(basis) => Ok(HttpReconnectRecordingStep::Connected(basis)),
             HttpReconnectStep::Waiting { not_before_ns } => {

@@ -491,9 +491,11 @@ fn test_schema_domain_and_pinned_counts() -> Result<(), Box<dyn Error>> {
     // 77 = 76 + SCHEMA-MJPEG-FIXTURE-MANIFEST-001 (schemas/mjpeg_fixture_manifest.v1.json, fss-2h5zq.5).
     // 79 = 77 + SCHEMA-AGENT-OPERATIONS-001 (deeae5a, fss-x4a.30.83.17) and
     // SCHEMA-AGENT-VIEWS-001 (8da2c7d, fss-x4a.30.83.31); pin repair by fss-2h5zq.23 round-3.
+    // 82 = 79 + SCHEMA-CALIBRATION-COVERAGE-GUARD-001, SCHEMA-COVERAGE-SET-SELECTION-001 and
+    // SCHEMA-COVERAGE-RESILIENT-SELECTION-001 (owner schema files, registered by fss-x4a.1.9).
     assert_eq!(
-        schema_count, 79,
-        "registries/SCHEMAS.md count must remain pinned at 79"
+        schema_count, 82,
+        "registries/SCHEMAS.md count must remain pinned at 82"
     );
     Ok(())
 }

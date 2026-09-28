@@ -104,6 +104,8 @@ impl Fixture {
         let mut deployment = ReferenceDeployment::open(&root, SITE, &cx)?;
         let event = event()?;
         deployment.stage_payload(b"synthetic source assertion")?;
+        // publish_event requires every referenced digest, including model receipts, in custody.
+        deployment.stage_payload(b"model receipt")?;
         deployment.publish_event(
             &ReferencePolicyDecision {
                 event: event.clone(),
