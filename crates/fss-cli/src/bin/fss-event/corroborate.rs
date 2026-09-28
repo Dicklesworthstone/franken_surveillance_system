@@ -49,6 +49,7 @@
 //! in every exact approval rerun and in the post-publication coverage reanalysis.
 
 // Full calibration covariance is an additional coverage-denial gate, not an event classifier.
+#[path = "corroborate/calibration_coverage.rs"]
 mod calibration_coverage;
 
 use std::collections::BTreeSet;
@@ -731,7 +732,13 @@ fn resolve_poses(action: &CorroborateAction) -> RunResult<ResolvedPoses> {
             .into());
         }
     }
-    Ok((poses, sources, Some(identity), covariances, Some(calibration)))
+    Ok((
+        poses,
+        sources,
+        Some(identity),
+        covariances,
+        Some(calibration),
+    ))
 }
 
 /// Consults the deployment's retained calibration adoptions (`fss-event calibration adopt`) for
@@ -920,7 +927,12 @@ fn run_with(
     // The full camera covariance may deny nominal absence evidence without changing
     // positive event proposals. A mixed request is refused before either write.
     let coverage_guard = calibration_coverage::assess(
-        action, calibration_record.as_ref(), calibration, deployment, &report, cx,
+        action,
+        calibration_record.as_ref(),
+        calibration,
+        deployment,
+        &report,
+        cx,
     )?;
     if let Some(guard) = &coverage_guard {
         guard.check_retention(action.retain_coverage.is_some())?;
@@ -992,9 +1004,13 @@ fn run_with(
     };
     let json = match &coverage_guard {
         Some(guard) => {
-            let body = json.strip_suffix('}')
+            let body = json
+                .strip_suffix('}')
                 .ok_or_else(|| io::Error::other("report is not one JSON object"))?;
-            format!("{body},\"calibration_uncertainty_guard\":{}}}", guard.to_json())
+            format!(
+                "{body},\"calibration_uncertainty_guard\":{}}}",
+                guard.to_json()
+            )
         }
         None => json,
     };
