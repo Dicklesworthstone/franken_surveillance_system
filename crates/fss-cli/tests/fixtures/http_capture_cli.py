@@ -155,7 +155,7 @@ def parse_rows(result: subprocess.CompletedProcess[str]) -> list[dict]:
 
 
 def main() -> None:
-    capture, archive, event, jpeg_path = sys.argv[1:]
+    capture, archive, event, file_tool, jpeg_path = sys.argv[1:]
     jpeg = Path(jpeg_path).read_bytes()
     width, height = dimensions(jpeg)
     scenarios = 0
@@ -293,6 +293,11 @@ def main() -> None:
         # Real retained privacy declaration -> live full JPEG decode -> masked cold replay.
         privacy_root = base / "privacy"
         site, sensor = "site:http-capture", "sensor:owned-camera"
+        # fss-event operates only on an existing deployment: retain the sensor's first import.
+        command([file_tool, "import", "--root", str(privacy_root), "--site", site, "--input", jpeg_path,
+                 "--sensor", sensor, "--stream", "stream:privacy-authority", "--media-format", "mjpeg",
+                 "--receive-time-ns", "10000000000000", "--capture-start-ns", "1000000000",
+                 "--capture-uncertainty-ns", "1000000", "--assumed-fps", "10"])
         declare = [event, "privacy-mask", "declare", "--root", str(privacy_root), "--site", site,
                    "--sensor", sensor, "--resolution", f"{width}x{height}", "--rect", f"0,0,{width},{height}"]
         mask_preview = json.loads(command(declare).stdout)

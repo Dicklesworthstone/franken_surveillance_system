@@ -677,11 +677,11 @@ fn export(path: &Path, bytes: &[u8], root: &Path, cx: &ReplayCx) -> RunResult<()
     Ok(())
 }
 fn run(options: Options, out: &mut impl Write) -> RunResult<()> {
-    if !fs::symlink_metadata(&options.root)?.file_type().is_dir()
-        || !fs::symlink_metadata(options.root.join("LAYOUT"))?
-            .file_type()
-            .is_file()
-    {
+    // A missing root or LAYOUT is the same refusal as a non-deployment, not a bare NotFound.
+    let is_dir = fs::symlink_metadata(&options.root).is_ok_and(|m| m.file_type().is_dir());
+    let has_layout =
+        fs::symlink_metadata(options.root.join("LAYOUT")).is_ok_and(|m| m.file_type().is_file());
+    if !is_dir || !has_layout {
         return Err(io::Error::other("existing non-symlink deployment required").into());
     }
     // The authenticated local process and filesystem are the boundary. The principal is an

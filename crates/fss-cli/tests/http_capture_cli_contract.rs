@@ -13,6 +13,7 @@ fn native_http_capture_cold_replay_privacy_and_refusals() -> Result<(), Box<dyn 
         .arg(env!("CARGO_BIN_EXE_fss-capture"))
         .arg(env!("CARGO_BIN_EXE_fss-archive"))
         .arg(env!("CARGO_BIN_EXE_fss-event"))
+        .arg(env!("CARGO_BIN_EXE_fss-file"))
         .arg(root.join("../fss-codec-mjpeg/tests/fixtures/gray.jpg"))
         .output()?;
     assert!(
