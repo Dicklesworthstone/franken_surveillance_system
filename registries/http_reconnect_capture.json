@@ -1,0 +1,33 @@
+{
+  "id": "HTTP-RECONNECT-CAPTURE-001",
+  "status": "implemented_native_unverified",
+  "command": "fss-capture-reconnect",
+  "owner": "fss-reference::ingest::http_reconnect_recording",
+  "source": "crates/fss-cli/src/bin/fss-capture-reconnect.rs",
+  "documentation": "docs/HTTP_RECONNECT_CAPTURE.md",
+  "report_format": "fss.http_reconnect_capture.v1",
+  "approval_domain": "fss.http_reconnect_capture_plan.v1",
+  "mode": "explicit_owner_approved_plaintext_original_custody",
+  "connection_reservation": "explicit_strictly_increasing_source_generations",
+  "generation_boundary": "verified_prefix_output_then_recorder_reverification_before_release",
+  "retry_semantics": "existing_HttpReconnect_owner_no_cli_override",
+  "shared_limits": ["absolute_deadline", "source_work", "framing_work", "poll_steps", "report_bytes"],
+  "maximum_connections": 32,
+  "maximum_reserved_reads": 8192,
+  "maximum_reserved_source_bytes": 536870912,
+  "error_ids": [
+    "ERR-CAPTURE-RECONNECT-ARGUMENT-001",
+    "ERR-CAPTURE-RECONNECT-APPROVAL-STALE-001",
+    "ERR-CAPTURE-RECONNECT-CONFIG-001",
+    "ERR-CAPTURE-RECONNECT-ROOT-001",
+    "ERR-CAPTURE-RECONNECT-STORAGE-001",
+    "ERR-CAPTURE-RECONNECT-SOURCE-001",
+    "ERR-CAPTURE-RECONNECT-AUTHORITY-001",
+    "ERR-CAPTURE-RECONNECT-OUTPUT-001",
+    "ERR-CAPTURE-RECONNECT-LIMIT-001",
+    "ERR-CAPTURE-RECONNECT-STATE-001"
+  ],
+  "unchanged_commands": ["fss-capture"],
+  "non_claims": ["camera_authentication", "encrypted_storage", "capture_clock", "physical_continuity", "absence", "event_authority", "pixel_decode", "crash_resume", "production_qualification"],
+  "native_validation": "not_run_no_rust_toolchain"
+}

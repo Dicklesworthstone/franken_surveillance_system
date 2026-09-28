@@ -52,6 +52,10 @@ name = "fss-capture"
 path = "src/bin/fss-capture.rs"
 
 [[bin]]
+name = "fss-capture-reconnect"
+path = "src/bin/fss-capture-reconnect.rs"
+
+[[bin]]
 name = "fss-replay"
 path = "src/bin/fss-replay.rs"
 
