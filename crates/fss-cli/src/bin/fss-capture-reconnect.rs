@@ -14,6 +14,10 @@ use fss_cli::ExitIdentity;
 mod plan;
 #[path = "fss-capture-reconnect/driver.rs"]
 mod driver;
+#[path = "fss-capture/privacy.rs"]
+mod privacy;
+#[path = "fss-capture-reconnect/decode.rs"]
+mod decode;
 
 fn main() -> ExitCode {
     let args: Vec<_> = std::env::args_os().skip(1).take(plan::MAX_ARGUMENTS + 1).collect();
@@ -47,4 +51,12 @@ fn main() -> ExitCode {
             ExitCode::from(ExitIdentity::RUNTIME_FAILURE.code)
         }
     }
+}
+
+// Shared privacy renderer uses the same exact digest/number presentation as fss-capture.
+fn byte_digest(bytes: [u8; 32]) -> String {
+    format!("sha256:{}", bytes.iter().map(|b| format!("{b:02x}")).collect::<String>())
+}
+fn optional_number(value: Option<u64>) -> String {
+    value.map_or_else(|| "null".into(), |n| n.to_string())
 }

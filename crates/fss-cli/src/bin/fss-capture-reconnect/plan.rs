@@ -19,7 +19,9 @@ use fss_reference::ingest::http_reconnect_recording::{
 use fss_reference::ingest::http_recording::{HttpRecordingLimits, HttpRecordingRequest};
 use fss_reference::ingest::http_replay::check::HttpCheckSource;
 
-pub(super) const MAX_ARGUMENTS: usize = 64;
+pub(super) const MAX_ARGUMENTS: usize = 80;
+
+use super::decode;
 pub(super) const RESERVE: usize = 64 * 1024;
 pub(super) const FORMAT: &str = "fss.http_reconnect_capture.v1";
 const DOMAIN: &str = "fss.http_reconnect_capture_plan.v1";
@@ -44,6 +46,9 @@ pub(super) const HELP: &str = "fss-capture-reconnect --root ABSOLUTE_ARCHIVE_DIR
   --principal ID is an audit label, not authentication. No credentials, DNS, redirects or TLS.\n\
   Save stdout JSONL independently. Prepared pins precede disk writes; verified boundaries precede\n\
   the next connect. Output acceptance is NOT a durable external checkpoint acknowledgement.\n\
+  Optional --decode grayscale|ycbcr requires --privacy-root EXISTING_DEPLOYMENT --site SITE --sensor ID.\n\
+  --max-decode-work 1000000000 is shared across ALL connections; --max-dimension 4096 and\n\
+  --max-pixels 4194304 bound each frame. Current privacy masks apply before pixel digests.\n\
   No pixels, raw headers, capture timestamps, detection, events, alerts or absence claims.\n\
   Original source is private local UNENCRYPTED custody. This is not crash-resume or a daemon.\n";
 
@@ -68,6 +73,7 @@ pub(super) struct Options {
     pub report_bytes: usize,
     pub stop_after: Option<u64>,
     pub approve: Option<ContentDigest>,
+    pub decode: Option<decode::Options>,
 }
 
 fn digest(text: &str) -> Result<ContentDigest, &'static str> {
@@ -99,6 +105,7 @@ impl Options {
             "--read-bytes", "--max-frame-bytes", "--max-io-calls", "--max-steps",
             "--max-source-work", "--max-framing-work", "--max-report-bytes",
             "--stop-after-frames", "--initial-backoff-ms", "--maximum-backoff-ms", "--after-complete",
+            "--decode", "--privacy-root", "--site", "--sensor", "--max-decode-work", "--max-dimension", "--max-pixels",
         ];
         let mut values = BTreeMap::new();
         for pair in args.chunks_exact(2) {
@@ -156,8 +163,9 @@ impl Options {
         let after_complete = match values.get("--after-complete").copied().unwrap_or("no") {
             "yes" => true, "no" => false, _ => return Err("--after-complete requires yes or no"),
         };
+        let decode = decode::Options::parse(&values, &root, native.multipart.frame_bytes)?;
         let options = Self {
-            root, generations, principal, native, archive, per_slot_frames,
+            root, generations, principal, native, archive, per_slot_frames, decode,
             peer: required("--peer")?.parse().map_err(|_| "literal IP:PORT required")?,
             host: required("--host")?.to_owned(), target: required("--target")?.to_owned(),
             source: digest(required("--source")?)?, receive_clock: digest(required("--receive-clock")?)?,
@@ -222,7 +230,8 @@ impl Options {
     }
     pub fn approval(&self) -> ContentDigest {
         let mut e = CanonicalEncoder::new();
-        e.text(DOMAIN); e.text(POLICY);
+        e.text(if self.decode.is_some() { "fss.http_reconnect_capture_plan.v2" } else { DOMAIN });
+        e.text(POLICY);
         let peer = self.peer.to_string();
         for text in [self.root.to_str().unwrap_or("invalid"), &peer, &self.host, &self.target, &self.principal] { e.text(text); }
         for digest in [self.source, self.receive_clock, self.retention_evidence] { e.digest(digest); }
@@ -231,12 +240,13 @@ impl Options {
         e.bool(self.policy.reconnect_after_complete);
         let numbers = self.bound_numbers(); e.u64(numbers.len() as u64);
         for (name, value) in numbers { e.text(name); e.u64(value); }
+        if let Some(decode) = &self.decode { decode.encode(&mut e); }
         ContentDigest::sha256(&e.finish())
     }
     pub fn preview(&self) -> String {
         let generations: Vec<_> = self.generations.iter().map(|g| string(&g.to_string())).collect();
         let numbers: Vec<_> = self.bound_numbers().iter().map(|(k,v)| (*k, v.to_string())).collect();
-        object(&[
+        let mut fields = vec![
             ("format", string(FORMAT)), ("kind", string("plan")),
             ("approval_digest", string(&self.approval().to_text())),
             ("root", string(self.root.to_str().unwrap_or("invalid"))), ("peer", string(&self.peer.to_string())),
@@ -250,7 +260,9 @@ impl Options {
             ("policy", string(POLICY)), ("writes", string("none")), ("network", string("none")),
             ("retention", string("original_headers_and_media_local_unencrypted")),
             ("capture_time", string("unknown_receive_clock_only")), ("coverage_certified", "false".into()),
-        ])
+        ];
+        if let Some(decode) = &self.decode { fields.push(("native_decode", decode.to_json())); }
+        object(&fields)
     }
 }
 

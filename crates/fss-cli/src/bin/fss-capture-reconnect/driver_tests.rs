@@ -194,3 +194,89 @@ fn transcript_keeps_a_terminal_reserve_and_finite_interrupted_writes() {
     }
     assert!(write_bounded(&mut Interrupted, b"x").is_err());
 }
+
+fn decode_options(options: &mut Options, privacy_root: &std::path::Path, work: u64) -> Result<(), &'static str> {
+    let values = std::collections::BTreeMap::from([
+        ("--decode", "grayscale"), ("--privacy-root", privacy_root.to_str().ok_or("path")?),
+        ("--site", "site:reconnect-native-privacy"), ("--sensor", "sensor:front"),
+    ]);
+    let mut decode = decode::Options::parse(&values, &options.root, options.native.multipart.frame_bytes)?.ok_or("decode")?;
+    decode.work = work;
+    options.decode = Some(decode);
+    options.approve = Some(options.approval());
+    Ok(())
+}
+fn retained_privacy(root: &std::path::Path) -> TestResult {
+    use fss_core::SensorId;
+    use fss_reference::ReferenceDeployment;
+    use fss_reference::ingest::privacy_mask::{PrivacyMaskPolicy, declare_mask, preview_mask};
+    let authority = ContextAuthority::new_root(RootAuthoritySpec {
+        trace_id: "trace:reconnect-native-privacy".into(),
+        operation_id: OperationId::parse("operation:reconnect-native-privacy")?,
+        principal: "principal:test".into(), capabilities: vec!["ADP-REPLAY-001".into()],
+        deadline: None, priority: 10,
+        budgets: BudgetVector::builder().bytes(64 * 1024 * 1024).storage_operations(8192).build()?,
+        privacy_scope: "privacy:test".into(), retention_scope: "retention:test".into(),
+        anchor_universe: ContentDigest::sha256(b"site:reconnect-native-privacy"), generation: 1,
+    })?;
+    let cx = ReplayCx::from_context_authority(&authority, root.to_path_buf())?;
+    let mut deployment = ReferenceDeployment::open(root, "site:reconnect-native-privacy", &cx)?;
+    let image = fss_codec_mjpeg::decode_luma(JPEG, ContentDigest::sha256(JPEG).bytes(),
+        fss_codec_mjpeg::ComponentInterpretation::Grayscale, fss_codec_mjpeg::DecodeLimits::default(),
+        &mut fss_codec_mjpeg::DecodeBudget::new(1_000_000_000))?;
+    let [width, height] = image.dimensions();
+    let policy = PrivacyMaskPolicy::new(SensorId::parse("sensor:front")?, [width, height], &[[0, 0, width, height]])?;
+    let approval = preview_mask(&deployment, &policy)?.approval;
+    declare_mask(&mut deployment, &policy, approval, &cx)?;
+    cx.drain_and_finalize();
+    Ok(())
+}
+#[test]
+fn real_reconnected_frames_use_current_mask_and_one_shared_decode_budget() -> TestResult {
+    for limited in [false, true] {
+        let directory = Directory::new(if limited { "decode-budget" } else { "decode-masked" })?;
+        let privacy_root = directory.0.join("privacy"); retained_privacy(&privacy_root)?;
+        let listener = TcpListener::bind("127.0.0.1:0")?;
+        let mut options = options(&directory.0.join("archive"), listener.local_addr()?, "10,20", "yes")?;
+        let mut budget = fss_codec_mjpeg::DecodeBudget::new(1_000_000_000);
+        let image = fss_codec_mjpeg::decode_luma(JPEG, ContentDigest::sha256(JPEG).bytes(),
+            fss_codec_mjpeg::ComponentInterpretation::Grayscale, fss_codec_mjpeg::DecodeLimits::default(), &mut budget)?;
+        let one_frame = budget.used();
+        let original = sha_bytes(image.receipt().luma_sha256);
+        let masked = sha_bytes(ContentDigest::sha256(&vec![16; image.pixels().len()]).bytes());
+        decode_options(&mut options, &privacy_root, if limited { one_frame } else { one_frame * 2 })?;
+        let server = serve(listener, vec![response(), response()]);
+        let mut out = Vec::new(); let result = capture(&options, &mut out);
+        assert_eq!(joined(server)?, 2); assert_eq!(result, Ok(!limited));
+        let text = String::from_utf8(out)?;
+        assert!(text.contains(&masked)); assert!(!text.contains(&original));
+        assert!(text.contains("\"policy_generation\":1"));
+        assert!(text.contains("\"pixels_emitted\":false"));
+        assert!(text.contains("\"work_remaining\":0"));
+        assert!(text.contains("\"frames_taken\":2"));
+        if limited {
+            assert!(text.contains("ERR-CAPTURE-RECONNECT-DECODE-001"));
+            assert!(text.contains("\"frames_decoded\":1"));
+            assert!(text.contains("\"pending_frame\":{\"generation\":\"20\""));
+        } else {
+            assert!(text.contains("\"frames_decoded\":2"));
+            assert!(text.contains("\"pending_frame\":null"));
+        }
+    }
+    Ok(())
+}
+#[test]
+fn missing_privacy_custody_refuses_before_capture_root_or_tcp() -> TestResult {
+    let directory = Directory::new("missing-privacy")?;
+    let listener = TcpListener::bind("127.0.0.1:0")?;
+    listener.set_nonblocking(true)?;
+    let root = directory.0.join("archive");
+    let mut options = options(&root, listener.local_addr()?, "1,2", "yes")?;
+    let missing = directory.0.join("absent-privacy");
+    decode_options(&mut options, &missing, 1_000_000)?;
+    let mut out = Vec::new();
+    assert_eq!(capture(&options, &mut out), Err("ERR-CAPTURE-PRIVACY-001"));
+    assert!(!root.exists()); assert!(!missing.exists()); assert!(out.is_empty());
+    assert!(matches!(listener.accept(), Err(e) if e.kind() == io::ErrorKind::WouldBlock));
+    Ok(())
+}

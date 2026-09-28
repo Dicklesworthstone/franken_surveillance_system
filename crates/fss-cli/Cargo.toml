@@ -68,6 +68,7 @@ name = "fss-cover"
 path = "src/bin/fss-cover.rs"
 
 [dependencies]
+fss-codec-mjpeg = { path = "../fss-codec-mjpeg" }
 fss-core = { path = "../fss-core" }
 fss-geometry = { path = "../fss-geometry" }
 fss-graph-algorithms = { path = "../fss-graph-algorithms" }

@@ -11,7 +11,13 @@
   "connection_reservation": "explicit_strictly_increasing_source_generations",
   "generation_boundary": "verified_prefix_output_then_recorder_reverification_before_release",
   "retry_semantics": "existing_HttpReconnect_owner_no_cli_override",
-  "shared_limits": ["absolute_deadline", "source_work", "framing_work", "poll_steps", "report_bytes"],
+  "shared_limits": [
+    "absolute_deadline",
+    "source_work",
+    "framing_work",
+    "poll_steps",
+    "report_bytes"
+  ],
   "maximum_connections": 32,
   "maximum_reserved_reads": 8192,
   "maximum_reserved_source_bytes": 536870912,
@@ -25,9 +31,34 @@
     "ERR-CAPTURE-RECONNECT-AUTHORITY-001",
     "ERR-CAPTURE-RECONNECT-OUTPUT-001",
     "ERR-CAPTURE-RECONNECT-LIMIT-001",
-    "ERR-CAPTURE-RECONNECT-STATE-001"
+    "ERR-CAPTURE-RECONNECT-STATE-001",
+    "ERR-CAPTURE-RECONNECT-DECODE-001"
   ],
-  "unchanged_commands": ["fss-capture"],
-  "non_claims": ["camera_authentication", "encrypted_storage", "capture_clock", "physical_continuity", "absence", "event_authority", "pixel_decode", "crash_resume", "production_qualification"],
-  "native_validation": "not_run_no_rust_toolchain"
+  "unchanged_commands": [
+    "fss-capture"
+  ],
+  "non_claims": [
+    "camera_authentication",
+    "encrypted_storage",
+    "capture_clock",
+    "physical_continuity",
+    "absence",
+    "event_authority",
+    "crash_resume",
+    "production_qualification"
+  ],
+  "native_validation": "not_run_no_rust_toolchain",
+  "optional_decode": {
+    "modes": [
+      "grayscale",
+      "ycbcr"
+    ],
+    "approval_domain": "fss.http_reconnect_capture_plan.v2",
+    "owner": "existing_native_JPEG_decoder_and_current_sensor_privacy_mask",
+    "shared_work": "one_decode_budget_across_all_connections",
+    "privacy_context": "existing_named_deployment_and_sensor_no_default_or_new_store",
+    "output": "masked_luma_digest_dimensions_and_policy_identity_only",
+    "refusal": "terminal_no_reconnect_or_unmasked_fallback",
+    "raw_mode_compatibility": "unchanged_approval_bytes_and_report_fields"
+  }
 }

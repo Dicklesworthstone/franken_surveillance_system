@@ -21,6 +21,7 @@ use fss_reference::ingest::http_reconnect_recording::{
 use fss_reference::ingest::http_recording::HttpRecordingAccess;
 
 use super::plan::{FORMAT, Options, RESERVE, reservation_json};
+use super::{decode, privacy};
 
 const STORAGE_CAPS: [&str; 4] = ["CAP-READ-MEDIA-001", "CAP-OBJECT-STAGE-001", "CAP-OBJECT-PUBLISH-001", "CAP-RETENTION-COMMIT-001"];
 
@@ -70,6 +71,13 @@ impl Owner<'_> {
         self.now()?;
         Ok(())
     }
+    fn decode_authority(&self) -> Result<(), HttpCameraDenial> {
+        self.live("capture_reconnect:decode")?;
+        if !self.authority.has_capability("CAP-MEDIA-DECODE-001") {
+            return Err(HttpCameraDenial::Unauthorized);
+        }
+        Ok(())
+    }
     fn access(&self) -> Result<HttpRecordingAccess<'_>, HttpCameraDenial> {
         Ok(HttpRecordingAccess { now_ns: self.now()?, camera: self, storage: self })
     }
@@ -104,7 +112,7 @@ impl PublishCancellation for Owner<'_> {
 #[derive(Debug)]
 enum Failure {
     Source(HttpReconnectRecordingError), Authority(HttpCameraDenial), Output,
-    FrameLimit, Inconsistent, Stopped(HttpReconnectStop),
+    FrameLimit, Inconsistent, Stopped(HttpReconnectStop), Decode(decode::Failure),
 }
 impl From<HttpReconnectRecordingError> for Failure { fn from(e: HttpReconnectRecordingError) -> Self { Self::Source(e) } }
 impl From<HttpCameraDenial> for Failure { fn from(e: HttpCameraDenial) -> Self { Self::Authority(e) } }
@@ -116,6 +124,7 @@ impl Failure {
             Self::Output => "ERR-CAPTURE-RECONNECT-OUTPUT-001",
             Self::FrameLimit | Self::Stopped(_) => "ERR-CAPTURE-RECONNECT-LIMIT-001",
             Self::Inconsistent => "ERR-CAPTURE-RECONNECT-STATE-001",
+            Self::Decode(error) => error.code(),
         }
     }
     fn reason(&self) -> String {
@@ -126,6 +135,7 @@ impl Failure {
             Self::FrameLimit => "per-generation frame allowance exhausted; not EOF".into(),
             Self::Inconsistent => "source boundary or generation disagrees with the frozen plan".into(),
             Self::Stopped(reason) => format!("native reacquisition stopped: {reason:?}"),
+            Self::Decode(error) => error.to_string(),
         }
     }
 }
@@ -134,6 +144,9 @@ enum End { FinalResponseComplete, RequestedCount }
 #[derive(Default)]
 struct Statistics {
     frames: u64,
+    // A released original frame whose optional decode failed is recoverable through this key
+    // and its durable prefix, not by silently retrying the network or widening the budget.
+    decode_pending: Option<(u64, u64, [u8; 32])>,
     per_generation: BTreeMap<u64, u64>,
     // At most the explicitly reserved generation count, never a frame-sized history.
     prefixes: BTreeMap<u64, HttpWirePin>,
@@ -178,7 +191,8 @@ fn stopped(last: Option<HttpReconnectBoundary>) -> Result<End, Failure> {
 }
 
 fn drive<W: Write>(options: &Options, recording: &mut HttpReconnectRecording,
-    publisher: &mut LocalRootPublisher, owner: &Owner<'_>, log: &mut Transcript<'_, W>, stats: &mut Statistics)
+    publisher: &mut LocalRootPublisher, owner: &Owner<'_>, log: &mut Transcript<'_, W>, stats: &mut Statistics,
+    mut decoder: Option<&mut decode::Decoder>, privacy: Option<&privacy::Context>)
     -> Result<End, Failure>
 {
     loop {
@@ -215,16 +229,27 @@ fn drive<W: Write>(options: &Options, recording: &mut HttpReconnectRecording,
                 if key.ordinal() > options.per_slot_frames { return Err(Failure::FrameLimit); }
                 if !options.generations.contains(&generation) { return Err(Failure::Inconsistent); }
                 let frame = recording.take_frame(key, publisher, owner.access()?)?;
-                // Original bytes stay in private custody; no unmasked pixels/header values escape.
-                drop(frame);
                 stats.frames += 1;
                 *stats.per_generation.entry(generation).or_default() += 1;
+                let decoded = match (decoder.as_deref_mut(), privacy) {
+                    (None, None) => None,
+                    (Some(decoder), Some(privacy)) => {
+                        stats.decode_pending = Some((generation, key.ordinal(), key.encoded_sha256()));
+                        let image = decoder.decode(&frame, privacy.sensor(), || owner.decode_authority())
+                            .map_err(Failure::Decode)?;
+                        stats.decode_pending = None;
+                        Some(image)
+                    }
+                    _ => return Err(Failure::Inconsistent),
+                };
+                // Original bytes remain private custody; only an authorized masked digest leaves.
+                drop(frame);
                 log.emit("frame_verified", object(&[
                     ("generation", string(&generation.to_string())), ("ordinal", key.ordinal().to_string()),
                     ("encoded_digest", string(&sha_bytes(key.encoded_sha256()))),
                     ("response_header_digest", string(&sha_bytes(key.head().header_sha256))),
                     ("verification", string("original_source_mapping_reverified")),
-                    ("pixel_decode", "null".into()), ("coverage_certified", "false".into()),
+                    ("pixel_decode", decoded.as_ref().map_or_else(|| "null".into(), |image| privacy::frame_json(Some(image)))), ("coverage_certified", "false".into()),
                 ]), false)?;
                 if options.stop_after == Some(stats.frames) { return Ok(End::RequestedCount); }
             }
@@ -246,7 +271,7 @@ fn drive<W: Write>(options: &Options, recording: &mut HttpReconnectRecording,
     }
 }
 
-fn finish(options: &Options, recording: &HttpReconnectRecording, stats: &mut Statistics, result: &Result<End, Failure>) -> String {
+fn finish(options: &Options, recording: &HttpReconnectRecording, stats: &mut Statistics, result: &Result<End, Failure>, decoder: Option<&decode::Decoder>) -> String {
     let totals = recording.totals();
     stats.prefixes.insert(recording.scope().stream.generation, recording.pin());
     let prefixes: Vec<_> = stats.prefixes.iter().map(|(generation, pin)| object(&[
@@ -255,7 +280,7 @@ fn finish(options: &Options, recording: &HttpReconnectRecording, stats: &mut Sta
     ])).collect();
     let boundaries: Vec<_> = stats.boundaries.iter().map(|(b, released)| boundary_json(*b, *released)).collect();
     let durable_bytes: u64 = stats.prefixes.values().map(|p| p.bytes).sum();
-    object(&[
+    let mut fields = vec![
         ("status", string(match result { Ok(End::FinalResponseComplete) => "final_response_complete", Ok(End::RequestedCount) => "requested_count_reached", Err(_) => "refused" })),
         ("approval_digest", string(&options.approval().to_text())), ("source", string(&options.source.to_text())),
         ("receive_clock", string(&options.receive_clock.to_text())), ("retention_evidence", string(&options.retention_evidence.to_text())),
@@ -274,7 +299,20 @@ fn finish(options: &Options, recording: &HttpReconnectRecording, stats: &mut Sta
         ("durable_completion_root", "null".into()), ("capture_time", string("unknown_receive_clock_only")),
         ("coverage_certified", "false".into()), ("event_published", "false".into()),
         ("qualification", string("implemented_not_qualified")),
-    ])
+    ];
+    if let Some(decoder) = decoder {
+        fields.push(("native_decode", object(&[
+            ("frames_decoded", decoder.frames().to_string()),
+            ("pixels_reconstructed", decoder.pixels().to_string()),
+            ("work_used", decoder.used().to_string()), ("work_remaining", decoder.remaining().to_string()),
+            ("pending_frame", stats.decode_pending.map_or_else(|| "null".into(), |(generation, ordinal, encoded)| object(&[
+                ("generation", string(&generation.to_string())), ("ordinal", ordinal.to_string()),
+                ("encoded_digest", string(&sha_bytes(encoded))), ("custody", string("retained_original_prefix")),
+            ]))),
+            ("pixels_emitted", "false".into()),
+        ])));
+    }
+    object(&fields)
 }
 
 pub(super) fn capture<W: Write>(options: &Options, out: &mut W) -> Result<bool, &'static str> {
@@ -282,6 +320,7 @@ pub(super) fn capture<W: Write>(options: &Options, out: &mut W) -> Result<bool, 
     if options.approve != Some(options.approval()) { return Err("ERR-CAPTURE-RECONNECT-APPROVAL-STALE-001"); }
     let mut capabilities: Vec<String> = STORAGE_CAPS.iter().map(|s| (*s).into()).collect();
     capabilities.extend(["ADP-REPLAY-001".into(), "CAP-ADAPTER-NET-001".into()]);
+    if options.decode.is_some() { capabilities.push("CAP-MEDIA-DECODE-001".into()); }
     let authority = ContextAuthority::new_root(RootAuthoritySpec {
         trace_id: "trace:http-reconnect-capture".into(),
         operation_id: OperationId::parse("operation:http-reconnect-capture").map_err(|_| "ERR-CAPTURE-RECONNECT-CONFIG-001")?,
@@ -295,6 +334,11 @@ pub(super) fn capture<W: Write>(options: &Options, out: &mut W) -> Result<bool, 
     let plan = options.plan().map_err(|_| "ERR-CAPTURE-RECONNECT-CONFIG-001")?;
     let routes = plan.slots.iter().map(|slot| slot.source.route.clone()).collect();
     let mut recording = HttpReconnectRecording::new(plan, 0).map_err(|_| "ERR-CAPTURE-RECONNECT-CONFIG-001")?;
+    // Resolve a real current policy store BEFORE any archive open or TCP attempt. No empty
+    // replacement policy store is created. The existing privacy adapter owns its own Cx.
+    let privacy = options.decode.as_ref().map(|decode| decode.privacy.open(&options.principal)).transpose()?;
+    let mut decoder = options.decode.as_ref().map(decode::Decoder::new).transpose()
+        .map_err(|_| "ERR-CAPTURE-RECONNECT-CONFIG-001")?;
     let cx = ReplayCx::from_context_authority(&authority, options.root.clone()).map_err(|_| "ERR-CAPTURE-RECONNECT-ROOT-001")?;
     let owner = Owner { cx: &cx, authority: &authority, routes, start: Instant::now(), deadline: options.timeout_ns };
     let result = (|| {
@@ -311,8 +355,8 @@ pub(super) fn capture<W: Write>(options: &Options, out: &mut W) -> Result<bool, 
             SpoolLimits::new(65536, 1024 * 1024 * 1024, options.archive.maximum_spool_object_bytes, 131072));
         let mut publisher = LocalRootPublisher::open(&options.root, storage).map_err(|_| "ERR-CAPTURE-RECONNECT-STORAGE-001")?;
         let mut stats = Statistics::default();
-        let outcome = drive(options, &mut recording, &mut publisher, &owner, &mut log, &mut stats);
-        let report = finish(options, &recording, &mut stats, &outcome);
+        let outcome = drive(options, &mut recording, &mut publisher, &owner, &mut log, &mut stats, decoder.as_mut(), privacy.as_ref());
+        let report = finish(options, &recording, &mut stats, &outcome, decoder.as_ref());
         let success = outcome.is_ok();
         // Retire closes the socket without a request. Only published prefix pins survive process
         // exit; report pending accepted bytes honestly instead of attempting unapproved rescue I/O.

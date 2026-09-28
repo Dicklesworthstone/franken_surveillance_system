@@ -117,3 +117,30 @@ fn malformed_paths_credentials_duplicate_options_and_budget_resets_are_rejected(
     }
     Ok(())
 }
+
+#[test]
+fn optional_decode_binds_mode_policy_context_codec_and_limits_without_changing_raw_approval() -> TestResult {
+    let args = arguments();
+    let raw = Options::parse(&args)?;
+    let mut explicit_none = args.clone(); explicit_none.extend(["--decode".into(), "none".into()]);
+    assert_eq!(Options::parse(&explicit_none)?.approval(), raw.approval());
+    assert_eq!(Options::parse(&explicit_none)?.preview(), raw.preview());
+    let mut decoded = args;
+    decoded.extend(["--decode", "grayscale", "--privacy-root", "/tmp/existing-privacy", "--site", "site:home", "--sensor", "sensor:front"].into_iter().map(OsString::from));
+    let approval = Options::parse(&decoded)?.approval();
+    assert_ne!(approval, raw.approval());
+    for (key, value) in [("--decode", "ycbcr"), ("--privacy-root", "/tmp/other-privacy"), ("--site", "site:other"), ("--sensor", "sensor:other")] {
+        let mut args = decoded.clone(); replace(&mut args, key, value)?;
+        assert_ne!(Options::parse(&args)?.approval(), approval);
+    }
+    for (key, value) in [("--max-decode-work", "0"), ("--max-dimension", "100"), ("--max-pixels", "10000")] {
+        let mut args = decoded.clone(); args.extend([key.into(), value.into()]);
+        assert_ne!(Options::parse(&args)?.approval(), approval);
+    }
+    let mut parsed = Options::parse(&decoded)?;
+    parsed.decode.as_mut().ok_or("decode")?.limits.maximum_markers -= 1;
+    assert_ne!(parsed.approval(), approval);
+    let mut nested = decoded; replace(&mut nested, "--privacy-root", "/tmp/fss-reconnect-preview/child")?;
+    assert!(Options::parse(&nested).is_err());
+    Ok(())
+}

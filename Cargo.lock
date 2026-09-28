@@ -6,6 +6,7 @@ version = 4
 name = "fss-cli"
 version = "0.0.1"
 dependencies = [
+ "fss-codec-mjpeg",
  "fss-core",
  "fss-geometry",
  "fss-graph-algorithms",

@@ -71,15 +71,54 @@ There is one extra native lookahead part per slot to recognize EOF after exactly
 count; it is never transferred if it exceeds the frame allowance. Count limits are not clean EOF.
 Generation identities are decimal strings in output, preserving all 64 bits.
 
-No event, alert, coverage witness, calibrated capture time, physical-camera identity, pixel decode
-or durable completion root is created. The existing recorder owns raw source durability; the CLI
+No event, alert, coverage witness, calibrated capture time, physical-camera identity
+or durable completion root is created. Pixel decoding is disabled unless explicitly requested below. The existing recorder owns raw source durability; the CLI
 adds no new ledger, journal, effect protocol or universal agent operation.
+
+## Optional native decoding under current privacy policy
+
+Add these options to the preview and exact approved rerun:
+
+```sh
+  --decode grayscale \
+  --privacy-root /absolute/path/to/existing-deployment \
+  --site site:home --sensor sensor:front \
+  --max-decode-work 1000000000 --max-dimension 4096 --max-pixels 4194304
+```
+
+`grayscale` and `ycbcr` are explicit JPEG component interpretations, not guesses. Both return
+luma diagnostics; the YCbCr path also validates chroma entropy but does not claim RGB output.
+The existing native decoder validates the entire frame. Its identity and every byte, dimension,
+pixel, marker and work limit are bound into the version-2 acquisition approval. Raw-mode approval
+bytes and reports are unchanged; a raw approval cannot authorize decoding.
+
+A single decode budget is created for the complete run, never per frame, retry, or connection.
+A second connection cannot revive an exhausted budget. The named privacy deployment must already
+exist and its current sensor mask must resolve before any TCP or archive open. It is not silently
+created, and it must be separate from the archive. Each frame resolves the existing retained mask,
+applies it before exposing pixel digests, rechecks the binding and generation before returning,
+and checks separate decode authority before and after the work. Missing policy custody, mismatched
+resolution, stale authority and decode errors stop the run without reconnect or unmasked fallback.
+
+`frame_verified.pixel_decode` then contains dimensions, the **masked** luma digest and the exact
+policy digest/generation (or explicit no-policy marker). No pixels or raw response headers are
+printed. Original encoded source remains private, unmasked local custody, as in the original
+capture command. Masking a derived plane does not encrypt or delete that original.
+
+The finish record distinguishes originals transferred from successful decodes and reports shared
+decode work used/remaining and reconstructed pixels. If a decode fails after the original frame
+was verified and released by the recorder, its generation/ordinal/encoded digest remain in
+`native_decode.pending_frame`, backed by the reported durable original prefix. There is no
+claim of a durable decoded object, automatic recovery, or physical absence.
 
 ## Validation boundary
 
 Native regressions in the binary cover exact approvals, malformed plans, aggregate ceilings,
 integer extremes, real loopback truncation followed by a fresh generation, complete-response
 policy, terminal HTTP errors, occupied namespaces and failure of the boundary output sink.
+Additional native tests cover multi-connection masked decoding, exact shared decode-budget
+exhaustion, missing privacy custody before TCP, mask updates between frames, resolution refusal,
+and authority withdrawal after native work without emitting a result.
 
 ```sh
 cargo test -p fss-cli --bin fss-capture-reconnect --locked --offline
