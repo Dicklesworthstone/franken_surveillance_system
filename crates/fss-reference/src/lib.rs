@@ -21,6 +21,8 @@ pub use alert::webhook;
 
 mod bundle;
 mod calibration;
+/// Full-camera screened, per-zone coverage proposals; no effect authority.
+pub mod calibrated_coverage;
 mod capture;
 mod clock;
 mod clock_sync;
