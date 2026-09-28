@@ -142,3 +142,6 @@ pub mod http_rgb_history_replay;
 
 /// Bounded native HTTP reacquisition with exact source-generation handoffs.
 pub mod http_reconnect;
+
+/// Durable-before-parse native HTTP reacquisition with exact per-generation custody pins.
+pub mod http_reconnect_recording;
