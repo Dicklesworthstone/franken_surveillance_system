@@ -30,7 +30,14 @@ fn invalid_timeline_requests_fail_before_reading_and_emit_no_json() -> Result<()
     ];
     for extra in cases {
         let output = Command::new(env!("CARGO_BIN_EXE_fss-event"))
-            .args(["graph", "timeline", "--root", "not-opened", "--site", "site:test"])
+            .args([
+                "graph",
+                "timeline",
+                "--root",
+                "not-opened",
+                "--site",
+                "site:test",
+            ])
             .args(*extra)
             .output()?;
         assert!(!output.status.success());

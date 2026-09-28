@@ -80,7 +80,9 @@ fn render(
     let mut operations = value.operations;
     let mut output_entries = value.output_entries;
     if operations > limit.max_operations || output_entries > limit.max_output_entries {
-        return Err("ERR-GRAPH-BUDGET-EXHAUSTED-001: timeline base exceeds aggregate budget".to_owned());
+        return Err(
+            "ERR-GRAPH-BUDGET-EXHAUSTED-001: timeline base exceeds aggregate budget".to_owned(),
+        );
     }
     let mut rows = Vec::with_capacity(value.segments.len());
     let mut bytes = 0_usize;
@@ -104,10 +106,13 @@ fn render(
             ("capture_window", window_json(segment.window)),
             ("result", report),
         ]);
-        bytes = bytes.checked_add(row.len() + 1)
+        bytes = bytes
+            .checked_add(row.len() + 1)
             .ok_or("ERR-GRAPH-BUDGET-EXHAUSTED-001: timeline report size overflow")?;
         if bytes > max_bytes {
-            return Err("ERR-GRAPH-BUDGET-EXHAUSTED-001: timeline report exceeds byte budget".to_owned());
+            return Err(
+                "ERR-GRAPH-BUDGET-EXHAUSTED-001: timeline report exceeds byte budget".to_owned(),
+            );
         }
         rows.push(row);
     }
@@ -120,30 +125,39 @@ fn render(
         ("clock_alignment", string("operator_hints_not_calibration")),
         ("segment_count", rows.len().to_string()),
         ("segments", array(&rows)),
-        ("budget", object(&[
-            ("operations", operations.to_string()),
-            ("output_entries", output_entries.to_string()),
-            ("interval_checks", value.interval_checks.to_string()),
-            ("max_operations", limit.max_operations.to_string()),
-            ("max_output_entries", limit.max_output_entries.to_string()),
-            ("max_segments", MAX_TIMELINE_SEGMENTS.to_string()),
-            ("max_report_bytes", max_bytes.to_string()),
-        ])),
+        (
+            "budget",
+            object(&[
+                ("operations", operations.to_string()),
+                ("output_entries", output_entries.to_string()),
+                ("interval_checks", value.interval_checks.to_string()),
+                ("max_operations", limit.max_operations.to_string()),
+                ("max_output_entries", limit.max_output_entries.to_string()),
+                ("max_segments", MAX_TIMELINE_SEGMENTS.to_string()),
+                ("max_report_bytes", max_bytes.to_string()),
+            ]),
+        ),
         ("completion", string("complete")),
         ("authority", string("derived_cognition_no_effect_authority")),
         ("qualification", string("implemented_not_qualified")),
-        ("claim", string(
-            "exact partition of retained certain coverage witnesses at one anchor, conditional on operator capture hints; a witness gap may contain observed activity or excluded analysis and proves neither sensor failure nor absence; not current availability, calibrated clock alignment or an independence certificate",
-        )),
+        (
+            "claim",
+            string(
+                "exact partition of retained certain coverage witnesses at one anchor, conditional on operator capture hints; a witness gap may contain observed activity or excluded analysis and proves neither sensor failure nor absence; not current availability, calibrated clock alignment or an independence certificate",
+            ),
+        ),
     ]);
     if rendered.len() > max_bytes {
-        return Err("ERR-GRAPH-BUDGET-EXHAUSTED-001: timeline report exceeds byte budget".to_owned());
+        return Err(
+            "ERR-GRAPH-BUDGET-EXHAUSTED-001: timeline report exceeds byte budget".to_owned(),
+        );
     }
     Ok(rendered)
 }
 
 pub(super) fn main(args: &[OsString]) -> ExitCode {
-    if matches!(args, [command, flag] if command.to_str() == Some("timeline") && matches!(flag.to_str(), Some("--help" | "-h"))) {
+    if matches!(args, [command, flag] if command.to_str() == Some("timeline") && matches!(flag.to_str(), Some("--help" | "-h")))
+    {
         return match io::stdout().lock().write_all(HELP.as_bytes()) {
             Ok(()) => ExitCode::from(ExitIdentity::SUCCESS.code),
             Err(_) => ExitCode::from(ExitIdentity::RUNTIME_FAILURE.code),
@@ -170,7 +184,12 @@ pub(super) fn main(args: &[OsString]) -> ExitCode {
             return ExitCode::from(ExitIdentity::RUNTIME_FAILURE.code);
         }
     };
-    match render(&value, &request.domains, budget(), shared_failures::MAX_REPORT_BYTES) {
+    match render(
+        &value,
+        &request.domains,
+        budget(),
+        shared_failures::MAX_REPORT_BYTES,
+    ) {
         Ok(rendered) => match writeln!(io::stdout().lock(), "{rendered}") {
             Ok(()) => ExitCode::from(ExitIdentity::SUCCESS.code),
             Err(_) => ExitCode::from(ExitIdentity::RUNTIME_FAILURE.code),
@@ -186,33 +205,68 @@ pub(super) fn main(args: &[OsString]) -> ExitCode {
 mod tests {
     use super::*;
     use fss_core::{LedgerAnchor, TimestampNs};
-    use fss_graph_algorithms::coverage_timeline::{TimedCoverageObservation, analyse_coverage_timeline};
+    use fss_graph_algorithms::coverage_timeline::{
+        TimedCoverageObservation, analyse_coverage_timeline,
+    };
     use fss_reference::coverage_graph::CoverageGraphReport;
     use fss_reference::coverage_timeline::CoverageTimelineReportSegment;
 
     fn sample() -> Result<CoverageTimelineReport, Box<dyn std::error::Error>> {
         let window = CaptureInterval::new(TimestampNs(-10), TimestampNs(10))?;
         let facts = vec![
-            TimedCoverageObservation { sensor_id: "sensor:a".into(), zone_scope: "zone:door".into(), covered: vec![CaptureInterval::new(TimestampNs(-10), TimestampNs(0))?] },
-            TimedCoverageObservation { sensor_id: "sensor:b".into(), zone_scope: "zone:door".into(), covered: vec![CaptureInterval::new(TimestampNs(0), TimestampNs(10))?] },
+            TimedCoverageObservation {
+                sensor_id: "sensor:a".into(),
+                zone_scope: "zone:door".into(),
+                covered: vec![CaptureInterval::new(TimestampNs(-10), TimestampNs(0))?],
+            },
+            TimedCoverageObservation {
+                sensor_id: "sensor:b".into(),
+                zone_scope: "zone:door".into(),
+                covered: vec![CaptureInterval::new(TimestampNs(0), TimestampNs(10))?],
+            },
         ];
         let timeline = analyse_coverage_timeline("site:test", &facts, window, budget())?;
         let anchor = LedgerAnchor::genesis("site:test");
         let mut segments = Vec::new();
         for segment in timeline.segments {
-            let projection_id = format!("SensorCoverageGraph@t1:0:-10:10:{}:{}", segment.window.earliest.0, segment.window.latest.0);
-            let witness = segment.answer.analysis.witness(&projection_id, anchor.clone())?;
+            let projection_id = format!(
+                "SensorCoverageGraph@t1:0:-10:10:{}:{}",
+                segment.window.earliest.0, segment.window.latest.0
+            );
+            let witness = segment
+                .answer
+                .analysis
+                .witness(&projection_id, anchor.clone())?;
             segments.push(CoverageTimelineReportSegment {
                 window: segment.window,
-                report: CoverageGraphReport { site: "site:test".into(), anchor: anchor.clone(), projection_id, records: 2, projection: segment.projection, answer: segment.answer, witness },
+                report: CoverageGraphReport {
+                    site: "site:test".into(),
+                    anchor: anchor.clone(),
+                    projection_id,
+                    records: 2,
+                    projection: segment.projection,
+                    answer: segment.answer,
+                    witness,
+                },
             });
         }
-        Ok(CoverageTimelineReport { site: "site:test".into(), anchor, window, segments, operations: timeline.operations, output_entries: timeline.output_entries, interval_checks: timeline.interval_checks })
+        Ok(CoverageTimelineReport {
+            site: "site:test".into(),
+            anchor,
+            window,
+            segments,
+            operations: timeline.operations,
+            output_entries: timeline.output_entries,
+            interval_checks: timeline.interval_checks,
+        })
     }
 
     #[test]
     fn timeline_requires_window_and_reuses_strict_parser() -> Result<(), String> {
-        let base: Vec<OsString> = ["timeline", "--root", "not-opened", "--site", "site:test"].into_iter().map(Into::into).collect();
+        let base: Vec<OsString> = ["timeline", "--root", "not-opened", "--site", "site:test"]
+            .into_iter()
+            .map(Into::into)
+            .collect();
         assert!(parse(&base).is_err());
         let mut valid = base.clone();
         valid.extend(["--during".into(), "-10:10".into()]);
@@ -228,7 +282,8 @@ mod tests {
     }
 
     #[test]
-    fn rendered_segments_keep_exact_bounds_and_witnesses() -> Result<(), Box<dyn std::error::Error>> {
+    fn rendered_segments_keep_exact_bounds_and_witnesses() -> Result<(), Box<dyn std::error::Error>>
+    {
         let value = sample()?;
         let json = render(&value, &[], budget(), shared_failures::MAX_REPORT_BYTES)?;
         assert!(json.contains("\"format\":\"fss.coverage_timeline.v1\""));
@@ -240,15 +295,21 @@ mod tests {
         for segment in &value.segments {
             assert!(json.contains(&segment.report.witness.digest().to_text()));
         }
-        assert_eq!(json, render(&value, &[], budget(), shared_failures::MAX_REPORT_BYTES)?);
+        assert_eq!(
+            json,
+            render(&value, &[], budget(), shared_failures::MAX_REPORT_BYTES)?
+        );
         assert!(render(&value, &[], budget(), json.len() - 1).is_err());
         Ok(())
     }
 
     #[test]
-    fn shared_scenarios_consume_one_budget_across_all_segments() -> Result<(), Box<dyn std::error::Error>> {
+    fn shared_scenarios_consume_one_budget_across_all_segments()
+    -> Result<(), Box<dyn std::error::Error>> {
         let value = sample()?;
-        let domains = [shared_failures::parse_domain("network:lan=sensor:a,sensor:b")?];
+        let domains = [shared_failures::parse_domain(
+            "network:lan=sensor:a,sensor:b",
+        )?];
         let mut operations = value.operations;
         let mut output_entries = value.output_entries;
         for segment in &value.segments {
@@ -256,12 +317,40 @@ mod tests {
             operations += shared.operations;
             output_entries += shared.output_entries;
         }
-        let exact = GraphBudget { max_operations: operations, max_output_entries: output_entries };
+        let exact = GraphBudget {
+            max_operations: operations,
+            max_output_entries: output_entries,
+        };
         let json = render(&value, &domains, exact, shared_failures::MAX_REPORT_BYTES)?;
-        assert_eq!(json.matches("\"shared_failure_scenarios\"").count(), value.segments.len());
+        assert_eq!(
+            json.matches("\"shared_failure_scenarios\"").count(),
+            value.segments.len()
+        );
         assert!(json.contains("\"lost_zones\":[\"zone:door\"]"));
-        assert!(render(&value, &domains, GraphBudget { max_operations: operations - 1, ..exact }, shared_failures::MAX_REPORT_BYTES).is_err());
-        assert!(render(&value, &domains, GraphBudget { max_output_entries: output_entries - 1, ..exact }, shared_failures::MAX_REPORT_BYTES).is_err());
+        assert!(
+            render(
+                &value,
+                &domains,
+                GraphBudget {
+                    max_operations: operations - 1,
+                    ..exact
+                },
+                shared_failures::MAX_REPORT_BYTES
+            )
+            .is_err()
+        );
+        assert!(
+            render(
+                &value,
+                &domains,
+                GraphBudget {
+                    max_output_entries: output_entries - 1,
+                    ..exact
+                },
+                shared_failures::MAX_REPORT_BYTES
+            )
+            .is_err()
+        );
         Ok(())
     }
 }

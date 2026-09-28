@@ -127,7 +127,11 @@ fn analyse_records<'a>(
             observations.push(TimedCoverageObservation {
                 sensor_id: record.sensor_id.clone(),
                 zone_scope: zone.scope.clone(),
-                covered: zone.witnesses.iter().map(|witness| witness.covered).collect(),
+                covered: zone
+                    .witnesses
+                    .iter()
+                    .map(|witness| witness.covered)
+                    .collect(),
             });
         }
     }
@@ -144,7 +148,10 @@ fn analyse_records<'a>(
     let mut segments = Vec::with_capacity(timeline.segments.len());
     for segment in timeline.segments {
         let projection_id = projection_identity(anchor, window, segment.window);
-        let witness = segment.answer.analysis.witness(&projection_id, anchor.clone())
+        let witness = segment
+            .answer
+            .analysis
+            .witness(&projection_id, anchor.clone())
             .map_err(CoverageGraphError::Contract)?;
         fss_graph_algorithms::bridges::check_witness_bound(&witness)
             .map_err(CoverageGraphError::Graph)?;
@@ -203,8 +210,8 @@ pub fn read_coverage_timeline(
 ) -> Result<CoverageTimelineReport, CoverageGraphError> {
     let window = CaptureInterval::new(window.earliest, window.latest)
         .map_err(CoverageGraphError::Contract)?;
-    let snapshot = read_deployment(root, &OrientLimits::default())
-        .map_err(CoverageGraphError::Read)?;
+    let snapshot =
+        read_deployment(root, &OrientLimits::default()).map_err(CoverageGraphError::Read)?;
     if snapshot.site_lineage != site {
         return Err(CoverageGraphError::SiteMismatch {
             expected: site.to_owned(),
@@ -227,18 +234,33 @@ mod tests {
     type TestResult = Result<(), Box<dyn std::error::Error>>;
 
     fn window(first: i128, last: i128) -> CaptureInterval {
-        CaptureInterval { earliest: TimestampNs(first), latest: TimestampNs(last) }
+        CaptureInterval {
+            earliest: TimestampNs(first),
+            latest: TimestampNs(last),
+        }
     }
 
     fn budget() -> GraphBudget {
-        GraphBudget { max_operations: MAX_TIMELINE_OPERATIONS, max_output_entries: MAX_TIMELINE_OUTPUT_ENTRIES }
+        GraphBudget {
+            max_operations: MAX_TIMELINE_OPERATIONS,
+            max_output_entries: MAX_TIMELINE_OUTPUT_ENTRIES,
+        }
     }
 
-    fn record(sensor: &str, start: i128, entry: Option<usize>) -> Result<CoverageRecord, Box<dyn std::error::Error>> {
-        let frames: Vec<_> = (0..20).map(|segment| {
-            let time = start + segment as i128 * 10;
-            CoverageFrame { segment, capture: window(time - 1, time + 1) }
-        }).collect();
+    fn record(
+        sensor: &str,
+        start: i128,
+        entry: Option<usize>,
+    ) -> Result<CoverageRecord, Box<dyn std::error::Error>> {
+        let frames: Vec<_> = (0..20)
+            .map(|segment| {
+                let time = start + segment as i128 * 10;
+                CoverageFrame {
+                    segment,
+                    capture: window(time - 1, time + 1),
+                }
+            })
+            .collect();
         let digest = ContentDigest::sha256(sensor.as_bytes());
         Ok(build_coverage(&CoverageInput {
             source: CoverageSource::Corroborate,
@@ -258,7 +280,14 @@ mod tests {
                 pipeline_generation: digest,
                 geometry: "0,0,10,10".to_owned(),
                 inside_frame: true,
-                entries: entry.map(|segment| CoverageEntry { segment, candidate: digest, event_id: None }).into_iter().collect(),
+                entries: entry
+                    .map(|segment| CoverageEntry {
+                        segment,
+                        candidate: digest,
+                        event_id: None,
+                    })
+                    .into_iter()
+                    .collect(),
             }],
         })?)
     }
@@ -267,14 +296,43 @@ mod tests {
     fn recorded_history_yields_witnessed_handover_and_explicit_gap() -> TestResult {
         let records = [record("a", 0, None)?, record("b", 1000, None)?];
         let anchor = LedgerAnchor::genesis("site:timeline-tests");
-        let result = analyse_records("site:timeline-tests", &anchor, records.iter(), window(0, 1200), budget())?;
-        assert!(result.segments.iter().any(|s| s.report.answer.zones[0].observers == ["a"]));
-        assert!(result.segments.iter().any(|s| s.report.answer.zones[0].observers == ["b"]));
-        assert!(result.segments.iter().any(|s| s.report.answer.zones[0].state == ZoneState::NotObservable));
-        assert!(result.segments.iter().all(|s| s.report.answer.zones[0].observers.len() <= 1));
+        let result = analyse_records(
+            "site:timeline-tests",
+            &anchor,
+            records.iter(),
+            window(0, 1200),
+            budget(),
+        )?;
+        assert!(
+            result
+                .segments
+                .iter()
+                .any(|s| s.report.answer.zones[0].observers == ["a"])
+        );
+        assert!(
+            result
+                .segments
+                .iter()
+                .any(|s| s.report.answer.zones[0].observers == ["b"])
+        );
+        assert!(
+            result
+                .segments
+                .iter()
+                .any(|s| s.report.answer.zones[0].state == ZoneState::NotObservable)
+        );
+        assert!(
+            result
+                .segments
+                .iter()
+                .all(|s| s.report.answer.zones[0].observers.len() <= 1)
+        );
         for segment in result.segments {
             assert_eq!(segment.report.witness.anchor(), &anchor);
-            assert_eq!(segment.report.witness.projection_id(), projection_identity(&anchor, result.window, segment.window));
+            assert_eq!(
+                segment.report.witness.projection_id(),
+                projection_identity(&anchor, result.window, segment.window)
+            );
             fss_graph_algorithms::bridges::check_witness_bound(&segment.report.witness)?;
         }
         Ok(())
@@ -285,12 +343,28 @@ mod tests {
         let record = record("a", 0, Some(10))?;
         assert_eq!(record.zones[0].witnesses.len(), 2);
         let anchor = LedgerAnchor::genesis("site:timeline-tests");
-        let result = analyse_records("site:timeline-tests", &anchor, [&record].into_iter(), window(-1, 191), budget())?;
+        let result = analyse_records(
+            "site:timeline-tests",
+            &anchor,
+            [&record].into_iter(),
+            window(-1, 191),
+            budget(),
+        )?;
         for time in -1..=191 {
-            let segments: Vec<_> = result.segments.iter().filter(|s| s.window.earliest.0 <= time && time <= s.window.latest.0).collect();
+            let segments: Vec<_> = result
+                .segments
+                .iter()
+                .filter(|s| s.window.earliest.0 <= time && time <= s.window.latest.0)
+                .collect();
             assert_eq!(segments.len(), 1);
-            let expected = record.zones[0].witnesses.iter().any(|w| w.covered.earliest.0 <= time && time <= w.covered.latest.0);
-            assert_eq!(!segments[0].report.answer.zones[0].observers.is_empty(), expected);
+            let expected = record.zones[0]
+                .witnesses
+                .iter()
+                .any(|w| w.covered.earliest.0 <= time && time <= w.covered.latest.0);
+            assert_eq!(
+                !segments[0].report.answer.zones[0].observers.is_empty(),
+                expected
+            );
         }
         Ok(())
     }
@@ -299,36 +373,109 @@ mod tests {
     fn identities_bind_full_query_segment_and_anchor_within_256_bytes() -> TestResult {
         let anchor = LedgerAnchor::genesis("site:timeline-tests");
         let records = [record("a", 0, None)?];
-        let a = analyse_records("site:timeline-tests", &anchor, records.iter(), window(60, 120), budget())?;
-        let b = analyse_records("site:timeline-tests", &anchor, records.iter(), window(70, 110), budget())?;
-        assert_eq!(a.segments[0].report.answer.analysis.input_digest, b.segments[0].report.answer.analysis.input_digest);
-        assert_ne!(a.segments[0].report.witness.digest(), b.segments[0].report.witness.digest());
+        let a = analyse_records(
+            "site:timeline-tests",
+            &anchor,
+            records.iter(),
+            window(60, 120),
+            budget(),
+        )?;
+        let b = analyse_records(
+            "site:timeline-tests",
+            &anchor,
+            records.iter(),
+            window(70, 110),
+            budget(),
+        )?;
+        assert_eq!(
+            a.segments[0].report.answer.analysis.input_digest,
+            b.segments[0].report.answer.analysis.input_digest
+        );
+        assert_ne!(
+            a.segments[0].report.witness.digest(),
+            b.segments[0].report.witness.digest()
+        );
         let extreme = window(i128::MIN, i128::MAX);
         let id = projection_identity(&anchor, extreme, extreme);
         assert!(id.len() < 256);
-        let _ = a.segments[0].report.answer.analysis.witness(&id, anchor.clone())?;
-        assert_ne!(projection_identity(&anchor, window(0, 20), window(0, 10)), projection_identity(&anchor, window(0, 30), window(0, 10)));
-        assert_ne!(projection_identity(&anchor, window(0, 20), window(0, 10)), projection_identity(&anchor, window(0, 20), window(1, 10)));
+        let _ = a.segments[0]
+            .report
+            .answer
+            .analysis
+            .witness(&id, anchor.clone())?;
+        assert_ne!(
+            projection_identity(&anchor, window(0, 20), window(0, 10)),
+            projection_identity(&anchor, window(0, 30), window(0, 10))
+        );
+        assert_ne!(
+            projection_identity(&anchor, window(0, 20), window(0, 10)),
+            projection_identity(&anchor, window(0, 20), window(1, 10))
+        );
         let mut newer = anchor.clone();
         newer.commit_sequence += 1;
-        assert_ne!(projection_identity(&anchor, extreme, extreme), projection_identity(&newer, extreme, extreme));
+        assert_ne!(
+            projection_identity(&anchor, extreme, extreme),
+            projection_identity(&newer, extreme, extreme)
+        );
         Ok(())
     }
 
     #[test]
     fn invalid_window_refused_before_opening_deployment() {
-        assert!(matches!(read_coverage_timeline(Path::new("not-opened"), "s", window(2, 1), budget()), Err(CoverageGraphError::Contract(_))));
+        assert!(matches!(
+            read_coverage_timeline(Path::new("not-opened"), "s", window(2, 1), budget()),
+            Err(CoverageGraphError::Contract(_))
+        ));
     }
 
     #[test]
     fn source_copying_is_charged_and_full_result_is_order_independent() -> TestResult {
         let records = [record("a", 0, None)?, record("b", 1000, None)?];
         let anchor = LedgerAnchor::genesis("site:timeline-tests");
-        let result = analyse_records("site:timeline-tests", &anchor, records.iter(), window(0, 1200), budget())?;
-        assert_eq!(result, analyse_records("site:timeline-tests", &anchor, records.iter().rev(), window(0, 1200), budget())?);
-        let exact = GraphBudget { max_operations: result.operations, max_output_entries: result.output_entries };
-        assert_eq!(result, analyse_records("site:timeline-tests", &anchor, records.iter(), window(0, 1200), exact)?);
-        assert!(analyse_records("site:timeline-tests", &anchor, records.iter(), window(0, 1200), GraphBudget { max_operations: result.operations - 1, ..exact }).is_err());
+        let result = analyse_records(
+            "site:timeline-tests",
+            &anchor,
+            records.iter(),
+            window(0, 1200),
+            budget(),
+        )?;
+        assert_eq!(
+            result,
+            analyse_records(
+                "site:timeline-tests",
+                &anchor,
+                records.iter().rev(),
+                window(0, 1200),
+                budget()
+            )?
+        );
+        let exact = GraphBudget {
+            max_operations: result.operations,
+            max_output_entries: result.output_entries,
+        };
+        assert_eq!(
+            result,
+            analyse_records(
+                "site:timeline-tests",
+                &anchor,
+                records.iter(),
+                window(0, 1200),
+                exact
+            )?
+        );
+        assert!(
+            analyse_records(
+                "site:timeline-tests",
+                &anchor,
+                records.iter(),
+                window(0, 1200),
+                GraphBudget {
+                    max_operations: result.operations - 1,
+                    ..exact
+                }
+            )
+            .is_err()
+        );
         Ok(())
     }
 }

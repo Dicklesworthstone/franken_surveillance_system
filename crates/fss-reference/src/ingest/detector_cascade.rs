@@ -165,12 +165,8 @@ impl<'a> DetectorCascade<'a> {
     }
 
     fn reset_engine(&mut self) -> Result<(), CascadeError> {
-        let next = engine::DetectorCascade::new(
-            self.package,
-            self.config,
-            self.limits,
-            self.scalar,
-        )?;
+        let next =
+            engine::DetectorCascade::new(self.package, self.config, self.limits, self.scalar)?;
         self.retired_executions = self
             .retired_executions
             .saturating_add(self.engine.executed_inferences());
@@ -191,7 +187,10 @@ fn validate_shape(
         || tracks
             .iter()
             .any(|track| track.selections.len() > MAX_CASCADE_FRAMES_PER_TRACK)
-        || source.decode_refusals.iter().any(|r| r.error_id.len() > 256)
+        || source
+            .decode_refusals
+            .iter()
+            .any(|r| r.error_id.len() > 256)
     {
         return Err(CascadeError::InvalidConfig(
             "cascade cache input exceeds watch bounds",
@@ -258,8 +257,14 @@ mod tests {
     fn authority_and_allowance_cannot_be_substituted() {
         let limits = WatchLimits::default();
         let original = key(source());
-        assert_ne!(original, cache_basis(&"new privacy authority", source(), &[], 2, &limits));
-        assert_ne!(original, cache_basis(&"authority", source(), &[], 1, &limits));
+        assert_ne!(
+            original,
+            cache_basis(&"new privacy authority", source(), &[], 2, &limits)
+        );
+        assert_ne!(
+            original,
+            cache_basis(&"authority", source(), &[], 1, &limits)
+        );
     }
 
     #[test]
@@ -291,7 +296,10 @@ mod tests {
     fn tighter_resource_limits_do_not_inherit_success() {
         let mut limits = WatchLimits::default();
         limits.jpeg_work_units = 0;
-        assert_ne!(key(source()), cache_basis(&"authority", source(), &[], 2, &limits));
+        assert_ne!(
+            key(source()),
+            cache_basis(&"authority", source(), &[], 2, &limits)
+        );
     }
 
     #[test]
@@ -305,11 +313,17 @@ mod tests {
             }],
         }];
         let limits = WatchLimits::default();
-        assert_ne!(key(source()), cache_basis(&"authority", source(), &tracks, 2, &limits));
+        assert_ne!(
+            key(source()),
+            cache_basis(&"authority", source(), &tracks, 2, &limits)
+        );
         let before = cache_basis(&"authority", source(), &tracks, 2, &limits);
         let mut changed = tracks;
         changed[0].selections[0].track_box[0] = 11;
-        assert_ne!(before, cache_basis(&"authority", source(), &changed, 2, &limits));
+        assert_ne!(
+            before,
+            cache_basis(&"authority", source(), &changed, 2, &limits)
+        );
     }
 
     #[test]

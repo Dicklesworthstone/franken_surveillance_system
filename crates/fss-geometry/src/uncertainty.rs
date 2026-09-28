@@ -68,7 +68,9 @@ impl std::fmt::Display for ProjectionUncertaintyError {
             Self::Geometry(error) => std::fmt::Display::fmt(error, f),
             Self::InvalidGeneration => f.write_str("zero camera generation handle"),
             Self::InvalidDependencySet => f.write_str("invalid current bundle dependency set"),
-            Self::InvalidatedBundle(changes) => write!(f, "bundle uncertainty invalidated: {changes:?}"),
+            Self::InvalidatedBundle(changes) => {
+                write!(f, "bundle uncertainty invalidated: {changes:?}")
+            }
             Self::UnknownCamera(camera) => write!(f, "camera {camera} absent from bundle"),
             Self::InvalidSigmaMultiplier => f.write_str("invalid linearized contour multiplier"),
             Self::GenerationMismatch { estimated, current } => write!(
@@ -80,7 +82,9 @@ impl std::fmt::Display for ProjectionUncertaintyError {
             Self::InvalidMatrixShape => f.write_str("invalid camera covariance dimensions"),
             Self::NonFiniteCovariance => f.write_str("nonfinite camera covariance"),
             Self::AsymmetricCovariance => f.write_str("asymmetric camera covariance"),
-            Self::NotPositiveSemidefinite => f.write_str("camera covariance is not numerically PSD"),
+            Self::NotPositiveSemidefinite => {
+                f.write_str("camera covariance is not numerically PSD")
+            }
         }
     }
 }
@@ -176,7 +180,12 @@ impl AdjustedCamera {
         }
         budget.charge(CAMERA_UNCERTAINTY_WORK_UNITS)?;
         let mut seen = [false; N];
-        for &parameter in self.covariance.parameters.iter().chain(&self.covariance.fixed) {
+        for &parameter in self
+            .covariance
+            .parameters
+            .iter()
+            .chain(&self.covariance.fixed)
+        {
             let slot = parameter_slot(parameter)?;
             if seen[slot] {
                 return Err(ProjectionUncertaintyError::InvalidParameterPartition);
@@ -196,7 +205,11 @@ impl AdjustedCamera {
         let camera_depth = self.pose.transform(world_point)?[2];
         let rotation = self.pose.rotation();
         let rotate = |row: usize| -> f64 {
-            rotation[row].iter().zip(world_point).map(|(r, w)| r * w).sum()
+            rotation[row]
+                .iter()
+                .zip(world_point)
+                .map(|(r, w)| r * w)
+                .sum()
         };
         let mut depth_jacobian = [0.0; N];
         depth_jacobian[0] = rotate(1);
@@ -342,8 +355,14 @@ fn projection_jacobian(
     let slope = k1 + 2.0 * k2 * r2;
     let pixel = [fx * x * radial + cx, fy * y * radial + cy];
     let normalized = [
-        [fx * (radial + 2.0 * x * x * slope), fx * 2.0 * x * y * slope],
-        [fy * 2.0 * x * y * slope, fy * (radial + 2.0 * y * y * slope)],
+        [
+            fx * (radial + 2.0 * x * x * slope),
+            fx * 2.0 * x * y * slope,
+        ],
+        [
+            fy * 2.0 * x * y * slope,
+            fy * (radial + 2.0 * y * y * slope),
+        ],
     ];
     // Compute R * world directly rather than subtracting t from q: subtraction
     // loses the rotation signal when translation dominates the coordinates.
@@ -369,12 +388,15 @@ fn projection_jacobian(
     jacobian[1][10] = fy * y * r2;
     jacobian[0][11] = fx * x * r4;
     jacobian[1][11] = fy * y * r4;
-    if pixel.iter().chain(jacobian.iter().flatten()).any(|v| !v.is_finite()) {
+    if pixel
+        .iter()
+        .chain(jacobian.iter().flatten())
+        .any(|v| !v.is_finite())
+    {
         return Err(GeometryError::NonFinite.into());
     }
     Ok((pixel, jacobian))
 }
-
 
 /// Fixed reference charge for validating the at-most-32-camera dependency set.
 pub const BUNDLE_UNCERTAINTY_VALIDATION_WORK_UNITS: u64 = 4_096;
@@ -438,8 +460,12 @@ impl BundleAdjustment {
         }
         budget.charge(BUNDLE_UNCERTAINTY_VALIDATION_WORK_UNITS)?;
         for (i, generation) in current.iter().enumerate() {
-            if generation.camera == 0 || generation.intrinsics == 0 || generation.extrinsics == 0
-                || current[..i].iter().any(|other| other.camera == generation.camera)
+            if generation.camera == 0
+                || generation.intrinsics == 0
+                || generation.extrinsics == 0
+                || current[..i]
+                    .iter()
+                    .any(|other| other.camera == generation.camera)
             {
                 return Err(ProjectionUncertaintyError::InvalidDependencySet);
             }
@@ -447,7 +473,9 @@ impl BundleAdjustment {
         if let BundleValidity::Invalidated(changes) = self.validity(current) {
             return Err(ProjectionUncertaintyError::InvalidatedBundle(changes));
         }
-        let adjusted = self.camera(camera).ok_or(ProjectionUncertaintyError::UnknownCamera(camera))?;
+        let adjusted = self
+            .camera(camera)
+            .ok_or(ProjectionUncertaintyError::UnknownCamera(camera))?;
         // Equality with the caller-resolved set was established above for every dependency.
         let projection = adjusted.project_uncertainty(adjusted.identity, world_point, budget)?;
         budget.charge(0)?;
@@ -514,19 +542,31 @@ impl CameraProjectionUncertainty {
         let pixel_min = [self.pixel[0] - radius[0], self.pixel[1] - radius[1]];
         let pixel_max = [self.pixel[0] + radius[0], self.pixel[1] + radius[1]];
         let depth_radius = sigma_multiplier * self.depth_variance.sqrt();
-        let depth_interval = [self.camera_depth - depth_radius, self.camera_depth + depth_radius];
-        if pixel_min.iter().chain(&pixel_max).chain(&depth_interval).any(|v| !v.is_finite()) {
+        let depth_interval = [
+            self.camera_depth - depth_radius,
+            self.camera_depth + depth_radius,
+        ];
+        if pixel_min
+            .iter()
+            .chain(&pixel_max)
+            .chain(&depth_interval)
+            .any(|v| !v.is_finite())
+        {
             return Err(GeometryError::NonFinite.into());
         }
         let [width, height] = self.dimensions.map(f64::from);
         let relation = if depth_interval[0] <= 1e-9 {
             LinearizedFrustumRelation::CrossesCameraPlane
-        } else if pixel_max[0] < 0.0 || pixel_max[1] < 0.0
-            || pixel_min[0] >= width || pixel_min[1] >= height
+        } else if pixel_max[0] < 0.0
+            || pixel_max[1] < 0.0
+            || pixel_min[0] >= width
+            || pixel_min[1] >= height
         {
             LinearizedFrustumRelation::Outside
-        } else if pixel_min[0] >= 0.0 && pixel_min[1] >= 0.0
-            && pixel_max[0] < width && pixel_max[1] < height
+        } else if pixel_min[0] >= 0.0
+            && pixel_min[1] >= 0.0
+            && pixel_max[0] < width
+            && pixel_max[1] < height
         {
             LinearizedFrustumRelation::Inside
         } else {
@@ -534,7 +574,11 @@ impl CameraProjectionUncertainty {
         };
         budget.charge(0)?;
         Ok(LinearizedFrustumAssessment {
-            sigma_multiplier, pixel_min, pixel_max, depth_interval, relation,
+            sigma_multiplier,
+            pixel_min,
+            pixel_max,
+            depth_interval,
+            relation,
         })
     }
 }

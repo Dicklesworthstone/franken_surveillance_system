@@ -48,23 +48,27 @@ fn invalid(reason: &'static str) -> CorroborationError {
 }
 
 fn charge(budget: &mut WorkBudget<'_>, units: u64) -> Result<(), CorroborationError> {
-    budget.charge(units).map_err(|error| {
-        CorroborationError::Visibility(VisibilityError::Geometry(error))
-    })
+    budget
+        .charge(units)
+        .map_err(|error| CorroborationError::Visibility(VisibilityError::Geometry(error)))
 }
 
 // Bound even the uncalibrated companion before validation, encoding, or cloning. The wire
 // estimate deliberately overcounts fixed fields and length prefixes; there is no allocation
 // proportional to an unchecked caller-owned string or collection.
 fn check_copy_bound(record: &CoverageRecord) -> Result<u64, CorroborationError> {
-    if record.sensor_id.len() > 512 || record.capture_time_label.len() > 64
-        || record.zones.is_empty() || record.zones.len() > MAX_COVERAGE_ZONES
+    if record.sensor_id.len() > 512
+        || record.capture_time_label.len() > 64
+        || record.zones.is_empty()
+        || record.zones.len() > MAX_COVERAGE_ZONES
     {
         return Err(CorroborationError::Limit);
     }
     let mut bytes = 16_384_u64;
     for zone in &record.zones {
-        if zone.zone_id.len() > 64 || zone.scope.len() > 80 || zone.geometry.len() > 256
+        if zone.zone_id.len() > 64
+            || zone.scope.len() > 80
+            || zone.geometry.len() > 256
             || zone.witnesses.len() > MAX_COVERAGE_INTERVALS
             || zone.uncovered.len() > MAX_COVERAGE_INTERVALS
         {
@@ -74,9 +78,13 @@ fn check_copy_bound(record: &CoverageRecord) -> Result<u64, CorroborationError> 
         for witness in &zone.witnesses {
             let inner = &witness.witness;
             if inner.negative_predicate.len() > 4_096
-                || inner.authorized_domain.len() != 1 || inner.observed_domain.len() != 1
+                || inner.authorized_domain.len() != 1
+                || inner.observed_domain.len() != 1
                 || !inner.excluded_domain.is_empty()
-                || inner.authorized_domain.iter().chain(&inner.observed_domain)
+                || inner
+                    .authorized_domain
+                    .iter()
+                    .chain(&inner.observed_domain)
                     .any(|domain| domain.len() > 512)
             {
                 return Err(CorroborationError::Limit);
@@ -86,14 +94,20 @@ fn check_copy_bound(record: &CoverageRecord) -> Result<u64, CorroborationError> 
         for interval in &zone.uncovered {
             let extra = match &interval.reason {
                 UncoveredReason::DecodeRefused { error_id } => error_id.len(),
-                UncoveredReason::ZoneEntry { event_id, .. } => event_id.as_ref().map_or(0, String::len),
+                UncoveredReason::ZoneEntry { event_id, .. } => {
+                    event_id.as_ref().map_or(0, String::len)
+                }
                 _ => 0,
             };
-            if extra > 512 { return Err(CorroborationError::Limit); }
+            if extra > 512 {
+                return Err(CorroborationError::Limit);
+            }
             bytes += 256 + extra as u64;
         }
     }
-    if bytes > MAX_COVERAGE_RECORD_BYTES as u64 { return Err(CorroborationError::Limit); }
+    if bytes > MAX_COVERAGE_RECORD_BYTES as u64 {
+        return Err(CorroborationError::Limit);
+    }
     Ok(bytes)
 }
 
@@ -110,7 +124,9 @@ impl GuardedCoverageSet {
     ) -> Result<Self, CorroborationError> {
         charge(budget, 0)?;
         if inputs.is_empty() || inputs.len() > 2 {
-            return Err(invalid("a guarded coverage set requires one or two cameras"));
+            return Err(invalid(
+                "a guarded coverage set requires one or two cameras",
+            ));
         }
         let mut sensors = BTreeSet::new();
         let mut imports = BTreeSet::new();
@@ -124,20 +140,32 @@ impl GuardedCoverageSet {
                 || !sensors.insert(record.sensor_id.as_str())
                 || !imports.insert(record.import_identity)
             {
-                return Err(invalid("guarded coverage requires distinct sensors/imports at one anchor"));
+                return Err(invalid(
+                    "guarded coverage requires distinct sensors/imports at one anchor",
+                ));
             }
-            let calibrated = matches!(record.pose_provenance, Some(PoseProvenance::SiteCalibration { .. }));
+            let calibrated = matches!(
+                record.pose_provenance,
+                Some(PoseProvenance::SiteCalibration { .. })
+            );
             if calibrated != input.assessment.is_some() {
-                return Err(invalid("each calibrated camera requires exactly its own full-camera screen"));
+                return Err(invalid(
+                    "each calibrated camera requires exactly its own full-camera screen",
+                ));
             }
-            if let Some(PoseProvenance::SiteCalibration { camera_handle, .. }) = record.pose_provenance
+            if let Some(PoseProvenance::SiteCalibration { camera_handle, .. }) =
+                record.pose_provenance
                 && !cameras.insert(camera_handle)
             {
-                return Err(invalid("one calibrated camera cannot occupy two sensor slots"));
+                return Err(invalid(
+                    "one calibrated camera cannot occupy two sensor slots",
+                ));
             }
             has_screen |= calibrated;
         }
-        if !has_screen { return Err(invalid("guarded coverage requires a calibrated camera")); }
+        if !has_screen {
+            return Err(invalid("guarded coverage requires a calibrated camera"));
+        }
         let mut records = Vec::with_capacity(inputs.len());
         let mut privacy = Vec::with_capacity(inputs.len());
         for input in inputs {
@@ -148,8 +176,14 @@ impl GuardedCoverageSet {
                     input.record.clone()
                 }
             };
-            let binding = (input.privacy.digest(), input.privacy.generation().unwrap_or(0));
-            if let Some(receipt) = record.pose_uncertainty.as_ref().and_then(PoseUncertainty::guard_receipt)
+            let binding = (
+                input.privacy.digest(),
+                input.privacy.generation().unwrap_or(0),
+            );
+            if let Some(receipt) = record
+                .pose_uncertainty
+                .as_ref()
+                .and_then(PoseUncertainty::guard_receipt)
                 && (receipt.privacy_digest(), receipt.privacy_generation()) != binding
             {
                 return Err(ContractError::DigestMismatch.into());
@@ -166,7 +200,9 @@ impl GuardedCoverageSet {
 
     /// Exact projected records in the original camera order; never the nominal fallback.
     #[must_use]
-    pub fn records(&self) -> &[CoverageRecord] { &self.records }
+    pub fn records(&self) -> &[CoverageRecord] {
+        &self.records
+    }
 
     /// The ordinary coverage approval, recomputed over the guarded records and their anchors.
     #[must_use]
@@ -178,14 +214,19 @@ impl GuardedCoverageSet {
     /// This is not a count of physical outages or threats.
     #[must_use]
     pub fn abstained_intervals(&self) -> usize {
-        self.records.iter().flat_map(|record| &record.zones)
+        self.records
+            .iter()
+            .flat_map(|record| &record.zones)
             .flat_map(|zone| &zone.uncovered)
-            .filter(|interval| interval.reason == UncoveredReason::CalibrationUncertainty).count()
+            .filter(|interval| interval.reason == UncoveredReason::CalibrationUncertainty)
+            .count()
     }
 
     /// Exact privacy bindings captured at projection, including explicit no-policy generations.
     #[must_use]
-    pub fn privacy_bindings(&self) -> &[(ContentDigest, u64)] { &self.privacy }
+    pub fn privacy_bindings(&self) -> &[(ContentDigest, u64)] {
+        &self.privacy
+    }
 }
 
 mod retention;

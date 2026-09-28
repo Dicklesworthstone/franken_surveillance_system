@@ -118,9 +118,9 @@ pub mod rgb_package;
 pub mod package_detect;
 
 // Native implementation is private: callers enter through the context-bound owner.
-mod detector_cascade_engine;
 /// Detection cascade: cheap-gate-selected frames through a verified detector package.
 pub mod detector_cascade;
+mod detector_cascade_engine;
 
 /// Retained package detections tracked into unresolved recorded events (report/prepare/publish).
 pub mod package_event;

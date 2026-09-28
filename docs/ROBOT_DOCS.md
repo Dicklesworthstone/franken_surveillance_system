@@ -337,11 +337,14 @@ All authoritative schemas cataloged from `registries/SCHEMAS.md`:
 | `SCHEMA-AGENT-WORK-CLAIM-001` | `fss.agent_work_claim.v1` | `schemas/agent_work_claim.v1.json` | `multi-agent coordination` | `scope, basis, owner, lease, progress, result, expiry, and no-effect-authority property remain explicit` |
 | `SCHEMA-AGENT-WORLD-ENVELOPE-001` | `fss.agent_world_envelope.v1` | `schemas/agent_world_envelope.v1.json` | `agent world model` | `nominal estimate, certified core and absences, material alternatives, adversarial residuals, unresolved dimensions, discriminators, and selection witness remain separate and anchor-pinned` |
 | `SCHEMA-CALIBRATION-CERT-001` | `fss.calibration_certificate.v1` | `schemas/calibration_certificate.v1.json` | `authority` | `generation immutable; invalidation creates new state` |
+| `SCHEMA-CALIBRATION-COVERAGE-GUARD-001` | `fss.calibration_coverage_guard.v1` | `schemas/calibration_coverage_guard.v1.json` | `derived/coverage` | `conditional full-camera coverage screen and explicit proposal refusal; additions require a new version` |
 | `SCHEMA-CANCEL-DRAIN-001` | `fss.cancellation_drain_certificate.v1` | `schemas/cancellation_drain_certificate.v1.json` | `runtime evidence` | `terminal/indeterminate outcome and outstanding effects preserved` |
 | `SCHEMA-CAPABILITIES-001` | `fss.capabilities.v1` | `CLI output` | `product boundary` | `additions compatible; changed meaning requires new schema` |
 | `SCHEMA-CLI-DIAGNOSTIC-001` | `fss.cli_diagnostic.v1` | `schemas/cli_diagnostic.v1.json` | `authority/diagnostic` | `diagnostic schema immutable; errors follow structured envelope` |
 | `SCHEMA-AGENT-CONTEXT-BINDING-001` | `fss.context_expansion_binding.v1` | `schemas/context_expansion_binding.v1.json` | `context/hydration projection` | `one emitted expansion slot maps to one exact descriptor revision, purpose, level, and descriptor-owned full cost` |
 | `SCHEMA-AGENT-CONTEXT-BINDING-SET-001` | `fss.context_expansion_binding_set.v1` | `schemas/context_expansion_binding_set.v1.json` | `context/hydration projection` | `every emitted expansion slot is bound exactly once; missing, duplicate, unexpected, stale, or ambient descriptors fail closed` |
+| `SCHEMA-COVERAGE-RESILIENT-SELECTION-001` | `fss.coverage_resilient_selection.v1` | `schemas/coverage_resilient_selection.v1.json` | `derived/query` | `read-only selection across explicit failure scenarios; operator hints are not calibration` |
+| `SCHEMA-COVERAGE-SET-SELECTION-001` | `fss.coverage_set_selection.v1` | `schemas/coverage_set_selection.v1.json` | `derived/query` | `read-only retained evidence set selection; selection never grants authority` |
 | `SCHEMA-COVERAGE-WITNESS-001` | `fss.coverage_witness.v1` | `schemas/coverage_witness.v1.json` | `authority/query` | `absence claims require declared domain and stop reason` |
 | `SCHEMA-DECISION-CARD-001` | `fss.decision_card.v1` | `schemas/decision_card.v1.json` | `policy/evidence` | `hard constraints and alternatives retained; no silent rewrite` |
 | `SCHEMA-DEVICE-IDENTITY-001` | `fss.device_identity.v1` | `schemas/device_identity.v1.json` | `device authority` | `immutable hardware, firmware, and model generation; generation change produces a new identity` |
@@ -611,6 +614,13 @@ All stable error identities and normative recovery guidance cataloged from `regi
 | `ERR-EFFECT-INDETERMINATE-001` | dispatch outcome cannot be determined | reconcile before retry |
 | `ERR-EVIDENCE-DELETED-001` | the requested import (or its derivative) was deleted under a committed deletion record; availability 'deleted', not missing; a deleted import identity is never re-imported | do not retry; the record names the deletion plan |
 | `ERR-EVIDENCE-MISSING-001` | canonical root references unavailable required evidence | repair; no adjudication requiring it |
+| `ERR-EXPORT-APPROVAL-STALE-001` | approval does not bind the exact current redacted export | preview and approve the exact package |
+| `ERR-EXPORT-BOUND-001` | complete redacted export exceeds a registered bound | narrow the supported export request; nothing is truncated |
+| `ERR-EXPORT-CANCELLED-001` | export was cancelled before its authoritative commit | retry the exact request after reconciling any published root |
+| `ERR-EXPORT-CUSTODY-001` | retained export/event custody differs from the approved package | stop export and inspect deployment custody |
+| `ERR-EXPORT-REQUEST-001` | event export request is malformed, unbounded, or has expiry not later than the event interval | correct the exact event/recipient/purpose/expiry and preview again |
+| `ERR-EXPORT-REVISION-STALE-001` | selected event revision is no longer current | read the current event and preview a new export |
+| `ERR-EXPORT-STORAGE-001` | local root-last export publication or authority append failed | inspect local custody/recovery before retrying |
 | `ERR-FIRMWARE-DRIFT-001` | observed device generation differs from registry | disable/move to shadow; no optimistic retry |
 | `ERR-FROZEN-DIGEST-MISMATCH-001` | frozen public registry digest does not match canonical encoding of sorted rows | recompute canonical freeze digest over sorted rows |
 | `ERR-FROZEN-REGISTRY-DRIFT-001` | public operation or resource was added, removed, renamed, or renumbered without a new registry generation | bump the registry generation and update the frozen public registry |

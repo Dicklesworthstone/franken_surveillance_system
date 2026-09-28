@@ -15,8 +15,8 @@
 use fss_core::{CanonicalEncoder, ContentDigest, DigestAlgorithm, SensorId};
 use fss_geometry::{
     AdjustedCamera, BundleParameter, CAMERA_BLOCK_PARAMETERS, CAMERA_UNCERTAINTY_WORK_UNITS,
-    CameraCovariance, CameraGeneration, FRUSTUM_UNCERTAINTY_WORK_UNITS, GeometryError, LinearizedFrustumRelation,
-    ProjectionUncertaintyError, RadialDistortion, WorkBudget,
+    CameraCovariance, CameraGeneration, FRUSTUM_UNCERTAINTY_WORK_UNITS, GeometryError,
+    LinearizedFrustumRelation, ProjectionUncertaintyError, RadialDistortion, WorkBudget,
 };
 
 use super::ground_visibility::{VisibilityError, VisibilityPolicy, ground_samples, rectangle};
@@ -25,7 +25,10 @@ use super::recorded_corroboration::{CorroborationError, GroundZone, MAX_CORROBOR
 use super::site_calibration::CalibratedCamera;
 
 mod receipt;
-pub use receipt::{CalibrationCoverageReceipt, CalibrationZoneReceipt, MAX_CALIBRATION_COVERAGE_RECEIPT_BYTES, apply_calibration_coverage};
+pub use receipt::{
+    CalibrationCoverageReceipt, CalibrationZoneReceipt, MAX_CALIBRATION_COVERAGE_RECEIPT_BYTES,
+    apply_calibration_coverage,
+};
 
 /// Exact reference screen; the radius is not a confidence probability.
 pub const CALIBRATION_COVERAGE_POLICY: &str = "fss.calibration_coverage_guard.v1:full-camera-marginal:\
@@ -41,7 +44,10 @@ const SAMPLE_WORK: u64 =
     CAMERA_UNCERTAINTY_WORK_UNITS + FRUSTUM_UNCERTAINTY_WORK_UNITS + SAMPLE_OVERHEAD;
 
 fn invalid(camera: &str, reason: &'static str) -> CorroborationError {
-    CorroborationError::InvalidPose { camera: camera.to_owned(), reason }
+    CorroborationError::InvalidPose {
+        camera: camera.to_owned(),
+        reason,
+    }
 }
 
 fn geometry(error: GeometryError) -> CorroborationError {
@@ -51,22 +57,35 @@ fn geometry(error: GeometryError) -> CorroborationError {
 fn projection(error: ProjectionUncertaintyError, camera: &str) -> CorroborationError {
     match error {
         ProjectionUncertaintyError::Geometry(error) => geometry(error),
-        _ => invalid(camera, "full camera covariance is malformed, stale or not numerically positive semidefinite"),
+        _ => invalid(
+            camera,
+            "full camera covariance is malformed, stale or not numerically positive semidefinite",
+        ),
     }
 }
 
 /// Convert the exact retained candidate, without dropping covariance or fixed slots.
 /// This checks pinhole compatibility and bounds before cloning caller-owned vectors.
-pub fn calibrated_camera_model(camera: &CalibratedCamera) -> Result<AdjustedCamera, CorroborationError> {
+pub fn calibrated_camera_model(
+    camera: &CalibratedCamera,
+) -> Result<AdjustedCamera, CorroborationError> {
     let k = camera.covariance_parameters.len();
     if k > CAMERA_BLOCK_PARAMETERS
         || camera.fixed_parameters.len() > CAMERA_BLOCK_PARAMETERS
         || k + camera.fixed_parameters.len() != CAMERA_BLOCK_PARAMETERS
         || camera.covariance.len() != k * k
     {
-        return Err(invalid(&camera.name, "full camera covariance has an invalid parameter partition or shape"));
+        return Err(invalid(
+            &camera.name,
+            "full camera covariance has an invalid parameter partition or shape",
+        ));
     }
-    let pose = camera.pinhole_pose().map_err(|_| invalid(&camera.name, "coverage requires a valid undistorted pinhole candidate"))?;
+    let pose = camera.pinhole_pose().map_err(|_| {
+        invalid(
+            &camera.name,
+            "coverage requires a valid undistorted pinhole candidate",
+        )
+    })?;
     Ok(AdjustedCamera {
         identity: camera.identity,
         intrinsics: pose.intrinsics,
@@ -132,9 +151,12 @@ impl CalibrationSampleRelation {
     }
 }
 const RELATIONS: [CalibrationSampleRelation; 7] = [
-    CalibrationSampleRelation::InsideUnmasked, CalibrationSampleRelation::OutsideFrustum,
-    CalibrationSampleRelation::FrustumBoundary, CalibrationSampleRelation::CameraPlaneCrossing,
-    CalibrationSampleRelation::PrivacyMasked, CalibrationSampleRelation::PrivacyBoundary,
+    CalibrationSampleRelation::InsideUnmasked,
+    CalibrationSampleRelation::OutsideFrustum,
+    CalibrationSampleRelation::FrustumBoundary,
+    CalibrationSampleRelation::CameraPlaneCrossing,
+    CalibrationSampleRelation::PrivacyMasked,
+    CalibrationSampleRelation::PrivacyBoundary,
     CalibrationSampleRelation::MeanBehindCamera,
 ];
 
@@ -147,14 +169,22 @@ pub struct CalibrationZoneAssessment {
 }
 impl CalibrationZoneAssessment {
     /// Owner zone identifier.
-    pub fn zone_id(&self) -> &str { &self.zone_id }
+    pub fn zone_id(&self) -> &str {
+        &self.zone_id
+    }
     /// Number of assessed ground samples.
-    pub fn samples(&self) -> u32 { self.counts.iter().sum() }
+    pub fn samples(&self) -> u32 {
+        self.counts.iter().sum()
+    }
     /// Count of one mutually exclusive relation.
-    pub fn count(&self, relation: CalibrationSampleRelation) -> u32 { self.counts[relation as usize] }
+    pub fn count(&self, relation: CalibrationSampleRelation) -> u32 {
+        self.counts[relation as usize]
+    }
     /// Whether a pre-existing nominal witness needs to be withheld by this screen.
     /// A false result never grants a witness: the other coverage gates still apply.
-    pub fn requires_abstention(&self) -> bool { self.counts[0] != self.samples() }
+    pub fn requires_abstention(&self) -> bool {
+        self.counts[0] != self.samples()
+    }
 }
 
 /// Candidate-calibration screen, bound to the exact consumed model, zones and mask.
@@ -175,11 +205,17 @@ pub struct CalibrationCoverageAssessment {
 }
 impl CalibrationCoverageAssessment {
     /// Per-zone counts, in canonical zone-name order.
-    pub fn zones(&self) -> &[CalibrationZoneAssessment] { &self.zones }
+    pub fn zones(&self) -> &[CalibrationZoneAssessment] {
+        &self.zones
+    }
     /// Exact consumed inputs, including full covariance, geometry, mask and policy.
-    pub fn input_digest(&self) -> ContentDigest { self.input_digest }
+    pub fn input_digest(&self) -> ContentDigest {
+        self.input_digest
+    }
     /// Charged reference work, not a wall-time or instruction count.
-    pub fn work_units(&self) -> u64 { self.work_units }
+    pub fn work_units(&self) -> u64 {
+        self.work_units
+    }
     /// Bounded JSON. Passing means only that this additional screen did not object.
     pub fn to_json(&self) -> String {
         let zones: Vec<String> = self.zones.iter().map(|zone| {
@@ -189,15 +225,25 @@ impl CalibrationCoverageAssessment {
             format!("{{\"zone_id\":{},\"samples\":{},\"requires_abstention\":{},\"counts\":{{{counts}}}}}",
                 quoted(zone.zone_id()), zone.samples(), zone.requires_abstention())
         }).collect();
-        format!(concat!(
-            "{{\"format\":\"fss.calibration_camera_coverage.v1\",\"camera\":{},\"sensor_id\":{},",
-            "\"calibration_digest\":\"{}\",\"input_digest\":\"{}\",\"privacy_binding_digest\":\"{}\",",
-            "\"policy\":\"{}\",\"sigma_multiplier\":{},\"zones\":[{}],",
-            "\"work_units\":{},\"work_units_remaining\":{},",
-            "\"claim\":\"conditional_linearized_screen_not_coverage_or_physical_currency\"}}"),
-            quoted(&self.camera_name), quoted(self.sensor.as_str()), self.calibration_digest,
-            self.input_digest, self.privacy_digest, CALIBRATION_COVERAGE_POLICY,
-            CALIBRATION_COVERAGE_SIGMA, zones.join(","), self.work_units, self.work_units_remaining)
+        format!(
+            concat!(
+                "{{\"format\":\"fss.calibration_camera_coverage.v1\",\"camera\":{},\"sensor_id\":{},",
+                "\"calibration_digest\":\"{}\",\"input_digest\":\"{}\",\"privacy_binding_digest\":\"{}\",",
+                "\"policy\":\"{}\",\"sigma_multiplier\":{},\"zones\":[{}],",
+                "\"work_units\":{},\"work_units_remaining\":{},",
+                "\"claim\":\"conditional_linearized_screen_not_coverage_or_physical_currency\"}}"
+            ),
+            quoted(&self.camera_name),
+            quoted(self.sensor.as_str()),
+            self.calibration_digest,
+            self.input_digest,
+            self.privacy_digest,
+            CALIBRATION_COVERAGE_POLICY,
+            CALIBRATION_COVERAGE_SIGMA,
+            zones.join(","),
+            self.work_units,
+            self.work_units_remaining
+        )
     }
 }
 
@@ -216,28 +262,43 @@ fn quoted(text: &str) -> String {
 }
 
 fn valid_name(name: &str) -> bool {
-    !name.is_empty() && name.len() <= 64
-        && name.bytes().all(|b| b.is_ascii_alphanumeric() || b"_.-".contains(&b))
+    !name.is_empty()
+        && name.len() <= 64
+        && name
+            .bytes()
+            .all(|b| b.is_ascii_alphanumeric() || b"_.-".contains(&b))
 }
 
 /// Closed contour enclosure intersects a half-open privacy rectangle. Touching
 /// its included left/top edges counts; touching only its excluded right/bottom does not.
 fn meets_mask(min: [f64; 2], max: [f64; 2], privacy: &MaskBinding) -> bool {
-    privacy.policy().is_some_and(|policy| policy.regions().iter().any(|region| {
-        max[0] >= f64::from(region.x()) && max[1] >= f64::from(region.y())
-            && min[0] < f64::from(region.x()) + f64::from(region.width())
-            && min[1] < f64::from(region.y()) + f64::from(region.height())
-    }))
+    privacy.policy().is_some_and(|policy| {
+        policy.regions().iter().any(|region| {
+            max[0] >= f64::from(region.x())
+                && max[1] >= f64::from(region.y())
+                && min[0] < f64::from(region.x()) + f64::from(region.width())
+                && min[1] < f64::from(region.y()) + f64::from(region.height())
+        })
+    })
 }
 
 fn encode_parameter(e: &mut CanonicalEncoder, parameter: BundleParameter) {
     // Named tags retain the aspect-held Focal/Fx distinction.
     match parameter {
-        BundleParameter::Rotation(axis) => { e.u8(0); e.u64(axis as u64); }
-        BundleParameter::Translation(axis) => { e.u8(1); e.u64(axis as u64); }
-        BundleParameter::Focal => e.u8(2), BundleParameter::Fx => e.u8(3),
-        BundleParameter::Fy => e.u8(4), BundleParameter::Cx => e.u8(5),
-        BundleParameter::Cy => e.u8(6), BundleParameter::K1 => e.u8(7),
+        BundleParameter::Rotation(axis) => {
+            e.u8(0);
+            e.u64(axis as u64);
+        }
+        BundleParameter::Translation(axis) => {
+            e.u8(1);
+            e.u64(axis as u64);
+        }
+        BundleParameter::Focal => e.u8(2),
+        BundleParameter::Fx => e.u8(3),
+        BundleParameter::Fy => e.u8(4),
+        BundleParameter::Cx => e.u8(5),
+        BundleParameter::Cy => e.u8(6),
+        BundleParameter::K1 => e.u8(7),
         BundleParameter::K2 => e.u8(8),
     }
 }
@@ -255,37 +316,56 @@ pub fn assess_calibration_coverage(
     input.policy.validate()?;
     let camera = input.camera;
     let k = camera.covariance.parameters.len();
-    if !valid_name(input.camera_name) || input.zones.is_empty()
+    if !valid_name(input.camera_name)
+        || input.zones.is_empty()
         || input.zones.len() > MAX_CORROBORATION_ZONES
-        || k > CAMERA_BLOCK_PARAMETERS || camera.covariance.fixed.len() > CAMERA_BLOCK_PARAMETERS
+        || k > CAMERA_BLOCK_PARAMETERS
+        || camera.covariance.fixed.len() > CAMERA_BLOCK_PARAMETERS
         || k + camera.covariance.fixed.len() != CAMERA_BLOCK_PARAMETERS
         || camera.covariance.matrix.len() != k * k
         || camera.distortion != RadialDistortion::NONE
         || input.calibration_digest.algorithm() != DigestAlgorithm::Sha256
         || input.calibration_digest.bytes() == [0; 32]
     {
-        return Err(invalid(input.camera_name, "invalid bounded pinhole calibration coverage inputs"));
+        return Err(invalid(
+            input.camera_name,
+            "invalid bounded pinhole calibration coverage inputs",
+        ));
     }
     for zone in input.zones {
         if !valid_name(&zone.zone_id)
-            || [zone.x, zone.y, zone.width, zone.height].iter().any(|x| !x.is_finite() || x.abs() > 1e12)
-            || zone.width <= 0.0 || zone.height <= 0.0
+            || [zone.x, zone.y, zone.width, zone.height]
+                .iter()
+                .any(|x| !x.is_finite() || x.abs() > 1e12)
+            || zone.width <= 0.0
+            || zone.height <= 0.0
         {
-            return Err(CorroborationError::InvalidPlan("invalid calibration coverage zone"));
+            return Err(CorroborationError::InvalidPlan(
+                "invalid calibration coverage zone",
+            ));
         }
     }
     if let MaskBinding::Policy(retained) = input.privacy {
-        if retained.generation == 0 || retained.digest != retained.policy.digest()
+        if retained.generation == 0
+            || retained.digest != retained.policy.digest()
             || retained.policy.sensor_id() != input.sensor
             || retained.policy.resolution() != camera.intrinsics.dimensions()
         {
-            return Err(invalid(input.camera_name, "privacy binding differs from the calibrated sensor or image mode"));
+            return Err(invalid(
+                input.camera_name,
+                "privacy binding differs from the calibrated sensor or image mode",
+            ));
         }
     }
     let mut zones: Vec<_> = input.zones.iter().collect();
     zones.sort_by(|a, b| a.zone_id.cmp(&b.zone_id));
-    if zones.windows(2).any(|pair| pair[0].zone_id == pair[1].zone_id) {
-        return Err(CorroborationError::InvalidPlan("duplicate calibration coverage zone"));
+    if zones
+        .windows(2)
+        .any(|pair| pair[0].zone_id == pair[1].zone_id)
+    {
+        return Err(CorroborationError::InvalidPlan(
+            "duplicate calibration coverage zone",
+        ));
     }
     let samples_bound = (zones.len() as u64) * u64::from(input.policy.grid).pow(2);
     let required = SETUP_WORK + samples_bound * (SAMPLE_WORK + 8);
@@ -303,35 +383,55 @@ pub fn assess_calibration_coverage(
     e.u64(camera.identity.camera);
     e.u64(camera.identity.intrinsics);
     e.u64(camera.identity.extrinsics);
-    for dimension in camera.intrinsics.dimensions() { e.u32(dimension); }
-    for value in camera.intrinsics.focal_lengths().into_iter()
+    for dimension in camera.intrinsics.dimensions() {
+        e.u32(dimension);
+    }
+    for value in camera
+        .intrinsics
+        .focal_lengths()
+        .into_iter()
         .chain(camera.intrinsics.principal_point())
         .chain(camera.pose.rotation().into_iter().flatten())
         .chain(camera.pose.translation())
-    { e.u64(value.to_bits()); }
+    {
+        e.u64(value.to_bits());
+    }
     e.u64(k as u64);
-    for &parameter in &camera.covariance.parameters { encode_parameter(&mut e, parameter); }
-    for &value in &camera.covariance.matrix { e.u64(value.to_bits()); }
+    for &parameter in &camera.covariance.parameters {
+        encode_parameter(&mut e, parameter);
+    }
+    for &value in &camera.covariance.matrix {
+        e.u64(value.to_bits());
+    }
     e.u64(camera.covariance.fixed.len() as u64);
-    for &parameter in &camera.covariance.fixed { encode_parameter(&mut e, parameter); }
+    for &parameter in &camera.covariance.fixed {
+        encode_parameter(&mut e, parameter);
+    }
     e.u32(input.policy.grid);
     e.u32(input.policy.threshold_ppm);
     e.u64(CALIBRATION_COVERAGE_SIGMA.to_bits());
     e.u64(zones.len() as u64);
     let mut assessments = Vec::with_capacity(zones.len());
     for zone in zones {
-        budget.charge(u64::from(input.policy.grid).pow(2) * 8).map_err(geometry)?;
-        let samples = ground_samples(&rectangle(zone.x, zone.y, zone.width, zone.height), input.policy)?;
+        budget
+            .charge(u64::from(input.policy.grid).pow(2) * 8)
+            .map_err(geometry)?;
+        let samples = ground_samples(
+            &rectangle(zone.x, zone.y, zone.width, zone.height),
+            input.policy,
+        )?;
         let mut counts = [0; 7];
         for (x, y) in samples {
             budget.charge(SAMPLE_OVERHEAD).map_err(geometry)?;
             let estimate = camera.project_uncertainty(camera.identity, [x, y, 0.0], budget);
             let relation = match estimate {
-                Err(ProjectionUncertaintyError::Geometry(GeometryError::BehindCamera)) =>
-                    CalibrationSampleRelation::MeanBehindCamera,
+                Err(ProjectionUncertaintyError::Geometry(GeometryError::BehindCamera)) => {
+                    CalibrationSampleRelation::MeanBehindCamera
+                }
                 Err(error) => return Err(projection(error, input.camera_name)),
                 Ok(estimate) => {
-                    let contour = estimate.linearized_frustum(CALIBRATION_COVERAGE_SIGMA, budget)
+                    let contour = estimate
+                        .linearized_frustum(CALIBRATION_COVERAGE_SIGMA, budget)
                         .map_err(|error| projection(error, input.camera_name))?;
                     if contour.relation == LinearizedFrustumRelation::CrossesCameraPlane {
                         CalibrationSampleRelation::CameraPlaneCrossing
@@ -341,10 +441,18 @@ pub fn assess_calibration_coverage(
                         CalibrationSampleRelation::PrivacyBoundary
                     } else {
                         match contour.relation {
-                            LinearizedFrustumRelation::Inside => CalibrationSampleRelation::InsideUnmasked,
-                            LinearizedFrustumRelation::Outside => CalibrationSampleRelation::OutsideFrustum,
-                            LinearizedFrustumRelation::Boundary => CalibrationSampleRelation::FrustumBoundary,
-                            LinearizedFrustumRelation::CrossesCameraPlane => CalibrationSampleRelation::CameraPlaneCrossing,
+                            LinearizedFrustumRelation::Inside => {
+                                CalibrationSampleRelation::InsideUnmasked
+                            }
+                            LinearizedFrustumRelation::Outside => {
+                                CalibrationSampleRelation::OutsideFrustum
+                            }
+                            LinearizedFrustumRelation::Boundary => {
+                                CalibrationSampleRelation::FrustumBoundary
+                            }
+                            LinearizedFrustumRelation::CrossesCameraPlane => {
+                                CalibrationSampleRelation::CameraPlaneCrossing
+                            }
                         }
                     }
                 }
@@ -352,7 +460,9 @@ pub fn assess_calibration_coverage(
             counts[relation as usize] += 1;
         }
         e.text(&zone.zone_id);
-        for value in [zone.x, zone.y, zone.width, zone.height] { e.u64(value.to_bits()); }
+        for value in [zone.x, zone.y, zone.width, zone.height] {
+            e.u64(value.to_bits());
+        }
         assessments.push(CalibrationZoneAssessment {
             zone_id: zone.zone_id.clone(),
             geometry: format!("{},{},{},{}", zone.x, zone.y, zone.width, zone.height),
@@ -361,13 +471,18 @@ pub fn assess_calibration_coverage(
     }
     budget.charge(0).map_err(geometry)?;
     Ok(CalibrationCoverageAssessment {
-        camera_name: input.camera_name.to_owned(), camera_identity: camera.identity,
-        policy: input.policy, pose_covariance_bits: receipt::pose_covariance_bits(camera),
+        camera_name: input.camera_name.to_owned(),
+        camera_identity: camera.identity,
+        policy: input.policy,
+        pose_covariance_bits: receipt::pose_covariance_bits(camera),
         privacy_generation: input.privacy.generation().unwrap_or(0),
         sensor: input.sensor.clone(),
-        calibration_digest: input.calibration_digest, input_digest: ContentDigest::sha256(&e.finish()),
-        privacy_digest: input.privacy.digest(), zones: assessments,
-        work_units: budget.used() - start, work_units_remaining: budget.remaining(),
+        calibration_digest: input.calibration_digest,
+        input_digest: ContentDigest::sha256(&e.finish()),
+        privacy_digest: input.privacy.digest(),
+        zones: assessments,
+        work_units: budget.used() - start,
+        work_units_remaining: budget.remaining(),
     })
 }
 

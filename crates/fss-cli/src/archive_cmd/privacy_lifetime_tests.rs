@@ -27,7 +27,10 @@ fn context(root: &Path) -> std::result::Result<ReplayCx, Box<dyn std::error::Err
         generation: 1,
     })?;
     authority.validate()?;
-    Ok(ReplayCx::from_context_authority(&authority, root.to_path_buf())?)
+    Ok(ReplayCx::from_context_authority(
+        &authority,
+        root.to_path_buf(),
+    )?)
 }
 
 fn fixture(name: &str) -> std::result::Result<ArchiveOptions, Box<dyn std::error::Error>> {
@@ -83,7 +86,10 @@ fn privacy_authority_is_owned_until_the_export_guard_drops() -> TestResult {
 #[test]
 fn archive_refusal_releases_privacy_authority_without_creating_output() -> TestResult {
     let options = fixture("archive-refusal")?;
-    assert!(matches!(execute_archive(&options), Err(ArchiveCommandError::NotArchive)));
+    assert!(matches!(
+        execute_archive(&options),
+        Err(ArchiveCommandError::NotArchive)
+    ));
     assert!(!options.root.exists());
     assert!(!options.output.as_ref().ok_or("output")?.exists());
     assert!(probe(&options)?.try_lock().is_ok());
@@ -110,7 +116,9 @@ fn competing_privacy_owner_refuses_before_opening_the_archive() -> TestResult {
     let options = fixture("held-authority")?;
     let contender = probe(&options)?;
     assert!(contender.try_lock().is_ok());
-    let error = execute_archive(&options).err().ok_or("export unexpectedly allowed")?;
+    let error = execute_archive(&options)
+        .err()
+        .ok_or("export unexpectedly allowed")?;
     assert_eq!(error.code(), ERR_PRIVACY_MASK);
     assert!(!options.root.exists());
     assert!(!options.output.as_ref().ok_or("output")?.exists());
@@ -121,7 +129,9 @@ fn competing_privacy_owner_refuses_before_opening_the_archive() -> TestResult {
 fn invalid_privacy_site_releases_any_acquired_lock() -> TestResult {
     let mut options = fixture("wrong-site")?;
     options.privacy.as_mut().ok_or("privacy")?.1 = "site:wrong".to_owned();
-    let error = refuse_masked_export(&options).err().ok_or("wrong site accepted")?;
+    let error = refuse_masked_export(&options)
+        .err()
+        .ok_or("wrong site accepted")?;
     assert_eq!(error.code(), ERR_PRIVACY_MASK);
     assert!(probe(&options)?.try_lock().is_ok());
     Ok(())
@@ -133,7 +143,10 @@ fn non_export_commands_do_not_acquire_privacy_authority() -> TestResult {
     let contender = probe(&options)?;
     assert!(contender.try_lock().is_ok());
     options.action = Action::Inspect;
-    assert!(matches!(execute_archive(&options), Err(ArchiveCommandError::NotArchive)));
+    assert!(matches!(
+        execute_archive(&options),
+        Err(ArchiveCommandError::NotArchive)
+    ));
     Ok(())
 }
 
@@ -141,7 +154,9 @@ fn non_export_commands_do_not_acquire_privacy_authority() -> TestResult {
 fn missing_privacy_authority_is_still_a_typed_refusal_before_output() -> TestResult {
     let mut options = fixture("missing-authority")?;
     options.privacy = None;
-    let error = execute_archive(&options).err().ok_or("missing authority accepted")?;
+    let error = execute_archive(&options)
+        .err()
+        .ok_or("missing authority accepted")?;
     assert_eq!(error.code(), ERR_PRIVACY_UNMASKED_ACCESS_REFUSED);
     assert!(!options.root.exists());
     assert!(!options.output.as_ref().ok_or("output")?.exists());
@@ -180,7 +195,10 @@ fn exports_cannot_add_files_to_the_privacy_authority() -> TestResult {
         assert!(!output.exists());
     }
     assert_eq!(fs::read(privacy_root.join("LAYOUT"))?, layout_before);
-    assert_eq!(fs::read(privacy_root.join("ledger/journal.fssj"))?, journal_before);
+    assert_eq!(
+        fs::read(privacy_root.join("ledger/journal.fssj"))?,
+        journal_before
+    );
     assert_locked(&probe(&options)?);
     drop(guard);
     Ok(())
@@ -238,7 +256,10 @@ impl OperationClock for LockCheckingClock {
         if self.fail_after_payload {
             let has_playback = fs::read_dir(&self.output).is_ok_and(|entries| {
                 entries.filter_map(std::result::Result::ok).any(|entry| {
-                    entry.file_name().to_str().is_some_and(|name| name.ends_with(".playback.mp4"))
+                    entry
+                        .file_name()
+                        .to_str()
+                        .is_some_and(|name| name.ends_with(".playback.mp4"))
                 })
             });
             if has_playback {
@@ -277,7 +298,10 @@ fn real_export_holds_privacy_authority_through_payloads_and_completion() -> Test
     assert!(report.contains("\"verified_windows\":2"));
     assert!(clock.checks.get() > 1);
     assert!(clock.pending_seen.get());
-    assert_eq!(fs::read_to_string(clock.output.join("COMPLETE.json"))?, report);
+    assert_eq!(
+        fs::read_to_string(clock.output.join("COMPLETE.json"))?,
+        report
+    );
     assert!(clock.contender.try_lock().is_ok());
     Ok(())
 }
@@ -294,7 +318,6 @@ fn partial_export_retains_no_completion_and_releases_privacy_authority() -> Test
     assert!(clock.contender.try_lock().is_ok());
     Ok(())
 }
-
 
 fn colocated_export(name: &str) -> std::result::Result<ArchiveOptions, Box<dyn std::error::Error>> {
     let privacy = fixture(name)?;
@@ -326,7 +349,10 @@ fn colocated_export_reuses_authority_without_unlocking_it() -> TestResult {
     let report = execute_archive_with_clock(&options, &clock)?;
     assert!(report.contains("\"verified_windows\":2"));
     assert!(clock.pending_seen.get());
-    assert_eq!(fs::read_to_string(clock.output.join("COMPLETE.json"))?, report);
+    assert_eq!(
+        fs::read_to_string(clock.output.join("COMPLETE.json"))?,
+        report
+    );
     assert!(clock.contender.try_lock().is_ok());
     Ok(())
 }

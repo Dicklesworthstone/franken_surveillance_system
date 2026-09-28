@@ -519,8 +519,10 @@ fn execute_archive_with_clock(
             // storage bounds through the SAME read-only recovery classifier.
             let mut inspected = fss_publication::inspect(&root, options.storage_limits)
                 .map_err(ArchiveCommandError::Storage)?;
-            if inspected.missing_layout || inspected.spool_over_capacity
-                || inspected.holds_migration_pending || !inspected.redundant_temps.is_empty()
+            if inspected.missing_layout
+                || inspected.spool_over_capacity
+                || inspected.holds_migration_pending
+                || !inspected.redundant_temps.is_empty()
             {
                 return Err(ArchiveCommandError::NotArchive);
             }
@@ -627,8 +629,8 @@ fn refuse_masked_export(options: &ArchiveOptions) -> Result<PrivacyExportGuard> 
         ReplayCx::from_context_authority(&authority, root.clone())
             .map_err(|e| failed(e.to_string()))?,
     );
-    let deployment = ReferenceDeployment::reopen(root, site, &cx.0)
-        .map_err(|e| failed(e.to_string()))?;
+    let deployment =
+        ReferenceDeployment::reopen(root, site, &cx.0).map_err(|e| failed(e.to_string()))?;
     refuse_unmasked_source(&deployment, &options.scope.recording.sensor).map_err(|e| match e {
         PrivacyMaskError::UnmaskedAccessRefused => ArchiveCommandError::Privacy {
             code: ERR_PRIVACY_UNMASKED_ACCESS_REFUSED,

@@ -34,13 +34,19 @@ pub struct CoverageObligation {
 impl CoverageObligation {
     /// Opaque canonical identity used as the set-cover element. Includes the full context digest.
     #[must_use]
-    pub fn id(&self) -> &str { &self.id }
+    pub fn id(&self) -> &str {
+        &self.id
+    }
     /// Requested zone, never synthesized or removed because its support is absent.
     #[must_use]
-    pub fn zone_scope(&self) -> &str { &self.zone_scope }
+    pub fn zone_scope(&self) -> &str {
+        &self.zone_scope
+    }
     /// Failed domain node identity, or `None` for the normal baseline.
     #[must_use]
-    pub fn failure_domain(&self) -> Option<&str> { self.failure_domain.as_deref() }
+    pub fn failure_domain(&self) -> Option<&str> {
+        self.failure_domain.as_deref()
+    }
 }
 
 /// An immutable, fully bound reduction. A covered result refers to all declared obligations,
@@ -72,13 +78,18 @@ impl ResilientCoverProblem {
         maximum_sets: usize,
     ) -> Result<Self, CoverError> {
         if domains.is_empty() || zones.is_empty() {
-            return Err(CoverError::InvalidConstraints("resilient selection needs explicit zones and failure domains"));
+            return Err(CoverError::InvalidConstraints(
+                "resilient selection needs explicit zones and failure domains",
+            ));
         }
-        if domains.len() > MAX_FAILURE_DOMAINS || zones.len() > MAX_ELEMENTS
-            || (domains.len() + 1) * zones.len() > MAX_ELEMENTS {
+        if domains.len() > MAX_FAILURE_DOMAINS
+            || zones.len() > MAX_ELEMENTS
+            || (domains.len() + 1) * zones.len() > MAX_ELEMENTS
+        {
             return Err(GraphError::TooLarge.into());
         }
-        let nominal = SetCoverProblem::from_coverage(projection, zones, mandatory, excluded, maximum_sets)?;
+        let nominal =
+            SetCoverProblem::from_coverage(projection, zones, mandatory, excluded, maximum_sets)?;
         let inputs = prepare_failure_inputs(projection, domains)?;
         let domains: Vec<FailureDomain> = inputs.ordered.iter().map(|d| (**d).clone()).collect();
 
@@ -99,11 +110,16 @@ impl ResilientCoverProblem {
             encoder.text(domain.kind().as_str());
             encoder.text(domain.id());
             encoder.u64(domain.members().len() as u64);
-            for member in domain.members() { encoder.text(member); }
+            for member in domain.members() {
+                encoder.text(member);
+            }
         }
         let input_digest = ContentDigest::sha256(&encoder.finish());
         let mut obligations = Vec::with_capacity((domains.len() + 1) * nominal.elements().len());
-        for (scenario, domain) in std::iter::once(None).chain(domains.iter().map(Some)).enumerate() {
+        for (scenario, domain) in std::iter::once(None)
+            .chain(domains.iter().map(Some))
+            .enumerate()
+        {
             for (zone_index, zone) in nominal.elements().iter().enumerate() {
                 obligations.push(CoverageObligation {
                     // Compact context-bound tokens cannot exceed the graph identity limit even
@@ -117,47 +133,81 @@ impl ResilientCoverProblem {
         let mut sets = Vec::with_capacity(nominal.sets().len());
         for set in nominal.sets() {
             let mut support = Vec::new();
-            for (scenario, domain) in std::iter::once(None).chain(domains.iter().map(Some)).enumerate() {
-                if domain.is_some_and(|domain| domain.members().contains(set.id())) { continue; }
+            for (scenario, domain) in std::iter::once(None)
+                .chain(domains.iter().map(Some))
+                .enumerate()
+            {
+                if domain.is_some_and(|domain| domain.members().contains(set.id())) {
+                    continue;
+                }
                 for (zone_index, zone) in nominal.elements().iter().enumerate() {
                     if set.elements().contains(zone) {
-                        support.push(obligations[scenario * nominal.elements().len() + zone_index].id.clone());
+                        support.push(
+                            obligations[scenario * nominal.elements().len() + zone_index]
+                                .id
+                                .clone(),
+                        );
                     }
                 }
             }
             sets.push(CoverSet::new(set.id(), &support)?);
         }
-        let elements = obligations.iter().map(|obligation| obligation.id.clone()).collect::<Vec<_>>();
+        let elements = obligations
+            .iter()
+            .map(|obligation| obligation.id.clone())
+            .collect::<Vec<_>>();
         let expanded = SetCoverProblem::new(&elements, &sets, mandatory, excluded, maximum_sets)?;
-        Ok(Self { input_digest, domains, obligations, expanded })
+        Ok(Self {
+            input_digest,
+            domains,
+            obligations,
+            expanded,
+        })
     }
 
     /// Complete input/reduction identity. The expanded solver also has its own distinct digest.
     #[must_use]
-    pub const fn digest(&self) -> ContentDigest { self.input_digest }
+    pub const fn digest(&self) -> ContentDigest {
+        self.input_digest
+    }
     /// Canonical explicit scenarios, in the existing `(kind, id)` order. No joint failures implied.
     #[must_use]
-    pub fn domains(&self) -> &[FailureDomain] { &self.domains }
+    pub fn domains(&self) -> &[FailureDomain] {
+        &self.domains
+    }
     /// Baseline obligations followed by each declared domain, with zones in canonical order.
     #[must_use]
-    pub fn obligations(&self) -> &[CoverageObligation] { &self.obligations }
+    pub fn obligations(&self) -> &[CoverageObligation] {
+        &self.obligations
+    }
     /// Resolve a certificate/uncovered element. Unknown or foreign context tokens return `None`.
     #[must_use]
     pub fn obligation(&self, id: &str) -> Option<&CoverageObligation> {
-        self.obligations.iter().find(|obligation| obligation.id == id)
+        self.obligations
+            .iter()
+            .find(|obligation| obligation.id == id)
     }
     /// Immutable expanded problem, including every scenario and all original hard constraints.
     #[must_use]
-    pub const fn expanded_problem(&self) -> &SetCoverProblem { &self.expanded }
+    pub const fn expanded_problem(&self) -> &SetCoverProblem {
+        &self.expanded
+    }
     /// Solve one selection for all scenarios. Exact/greedy, unsupported/infeasible/incomplete,
     /// work/output bounds and failure semantics are exactly those of the bounded solver.
-    pub fn solve(&self, method: CoverMethod, budget: CoverBudget) -> Result<CoverAnalysis, CoverError> {
+    pub fn solve(
+        &self,
+        method: CoverMethod,
+        budget: CoverBudget,
+    ) -> Result<CoverAnalysis, CoverError> {
         self.expanded.solve(method, budget)
     }
     /// Request-owned cancellation applies to every charged expanded-solver step. No partial
     /// selection or witness is returned on cancellation; input compilation has structural bounds.
     pub fn solve_cancellable(
-        &self, method: CoverMethod, budget: CoverBudget, cancelled: &impl Fn() -> bool,
+        &self,
+        method: CoverMethod,
+        budget: CoverBudget,
+        cancelled: &impl Fn() -> bool,
     ) -> Result<CoverAnalysis, CoverError> {
         self.expanded.solve_cancellable(method, budget, cancelled)
     }

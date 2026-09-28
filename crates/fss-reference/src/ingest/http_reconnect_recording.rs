@@ -63,9 +63,13 @@ pub struct HttpReconnectWirePlan {
 }
 impl HttpReconnectWirePlan {
     /// Retain this expected prefix before invoking the publication operation.
-    pub fn expected_pin(self) -> HttpWirePin { self.pin }
+    pub fn expected_pin(self) -> HttpWirePin {
+        self.pin
+    }
     /// Original source, range, digest and receive-admission time, never a capture timestamp.
-    pub fn wire(self) -> HttpWireReceipt { self.wire }
+    pub fn wire(self) -> HttpWireReceipt {
+        self.wire
+    }
 }
 /// Exact held frame key, source-generation-bound even when part ordinals restart.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -76,14 +80,24 @@ pub struct HttpReconnectFrameKey {
 }
 impl HttpReconnectFrameKey {
     /// Exact original response identity, not physical camera authentication.
-    pub fn head(self) -> HttpHeadIdentity { self.head }
+    pub fn head(self) -> HttpHeadIdentity {
+        self.head
+    }
     /// One-based part ordinal within this response generation.
-    pub fn ordinal(self) -> u64 { self.ordinal }
+    pub fn ordinal(self) -> u64 {
+        self.ordinal
+    }
     /// Digest of the entire unchanged compressed frame.
-    pub fn encoded_sha256(self) -> [u8; 32] { self.encoded }
+    pub fn encoded_sha256(self) -> [u8; 32] {
+        self.encoded
+    }
     fn of(frame: &HttpJpegFrame) -> Self {
         let part = frame.part().receipt();
-        Self { head: frame.head(), ordinal: part.ordinal, encoded: part.encoded_sha256 }
+        Self {
+            head: frame.head(),
+            ordinal: part.ordinal,
+            encoded: part.encoded_sha256,
+        }
     }
 }
 /// Exact original-prefix and discontinuity handoff; independently preserve before release.
@@ -145,13 +159,19 @@ pub enum HttpReconnectRecordingError {
     Work(GeometryError),
 }
 impl From<HttpReconnectError> for HttpReconnectRecordingError {
-    fn from(error: HttpReconnectError) -> Self { Self::Source(error) }
+    fn from(error: HttpReconnectError) -> Self {
+        Self::Source(error)
+    }
 }
 impl From<HttpArchiveError> for HttpReconnectRecordingError {
-    fn from(error: HttpArchiveError) -> Self { Self::Archive(error) }
+    fn from(error: HttpArchiveError) -> Self {
+        Self::Archive(error)
+    }
 }
 impl From<GeometryError> for HttpReconnectRecordingError {
-    fn from(error: GeometryError) -> Self { Self::Work(error) }
+    fn from(error: GeometryError) -> Self {
+        Self::Work(error)
+    }
 }
 impl std::fmt::Display for HttpReconnectRecordingError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
@@ -178,134 +198,210 @@ pub struct HttpReconnectRecording {
 impl HttpReconnectRecording {
     /// Validate every source and archive slot before any I/O. Existing namespaces are rechecked
     /// against an empty pin immediately before their connection; recovery never means reacquisition.
-    pub fn new(plan: HttpReconnectRecordingPlan, now_ns: u64)
-        -> Result<Self, HttpReconnectRecordingError>
-    {
-        if plan.slots.is_empty() || plan.slots.len() > MAX_RECONNECT_CONNECTIONS
-            || plan.source_work == 0 || !(1..=1_000_000).contains(&plan.maximum_steps)
-        { return Err(HttpReconnectRecordingError::Configuration); }
+    pub fn new(
+        plan: HttpReconnectRecordingPlan,
+        now_ns: u64,
+    ) -> Result<Self, HttpReconnectRecordingError> {
+        if plan.slots.is_empty()
+            || plan.slots.len() > MAX_RECONNECT_CONNECTIONS
+            || plan.source_work == 0
+            || !(1..=1_000_000).contains(&plan.maximum_steps)
+        {
+            return Err(HttpReconnectRecordingError::Configuration);
+        }
         let mut archives = Vec::with_capacity(plan.slots.len());
         let mut sources = Vec::with_capacity(plan.slots.len());
         for slot in plan.slots {
             if slot.scope.stream != slot.source.route.basis()
                 || slot.source.limits.http.wire_bytes > slot.archive.maximum_bytes
-            { return Err(HttpReconnectRecordingError::Configuration); }
+            {
+                return Err(HttpReconnectRecordingError::Configuration);
+            }
             archives.push(HttpWireArchive::new(slot.scope, slot.archive)?);
             sources.push(slot.source);
         }
         let source = HttpReconnect::new(sources, plan.policy, now_ns, plan.deadline_ns)?;
         Ok(Self {
-            source, archives, index: 0, validated: false,
-            work: WorkBudget::new(plan.source_work), steps: 0,
-            maximum_steps: plan.maximum_steps, clock: now_ns, deadline_ns: plan.deadline_ns,
-            wire_plan: None, handoff: None, boundary: None,
+            source,
+            archives,
+            index: 0,
+            validated: false,
+            work: WorkBudget::new(plan.source_work),
+            steps: 0,
+            maximum_steps: plan.maximum_steps,
+            clock: now_ns,
+            deadline_ns: plan.deadline_ns,
+            wire_plan: None,
+            handoff: None,
+            boundary: None,
         })
     }
     /// Immutable whole-plan network/parser ceilings; reservations do not refill.
-    pub fn reservation(&self) -> HttpReconnectReservation { self.source.reservation() }
+    pub fn reservation(&self) -> HttpReconnectReservation {
+        self.source.reservation()
+    }
     /// Actual aggregate native network/parser usage, including ended sources.
-    pub fn totals(&self) -> HttpReconnectTotals { self.source.totals() }
+    pub fn totals(&self) -> HttpReconnectTotals {
+        self.source.totals()
+    }
     /// Current generation's acknowledged durable prefix, not a fresh custody re-verification.
-    pub fn pin(&self) -> HttpWirePin { self.archives[self.index].pin() }
+    pub fn pin(&self) -> HttpWirePin {
+        self.archives[self.index].pin()
+    }
     /// Source and raw-byte retention interpretation of the current generation.
-    pub fn scope(&self) -> HttpWireScope { self.archives[self.index].scope() }
+    pub fn scope(&self) -> HttpWireScope {
+        self.archives[self.index].scope()
+    }
     /// Consumed source/storage work across all generations and all refused operations.
-    pub fn source_work_used(&self) -> u64 { self.work.used() }
+    pub fn source_work_used(&self) -> u64 {
+        self.work.used()
+    }
     /// Admitted poll calls, including repeated pending/prepared observations.
-    pub fn steps(&self) -> u64 { self.steps }
+    pub fn steps(&self) -> u64 {
+        self.steps
+    }
     /// Exact outstanding expected pin, including after a failed/ambiguous disk publication.
-    pub fn pending_wire_plan(&self) -> Option<HttpReconnectWirePlan> { self.wire_plan }
+    pub fn pending_wire_plan(&self) -> Option<HttpReconnectWirePlan> {
+        self.wire_plan
+    }
 
     /// One bounded source step or custody verification. No storage mutation occurs here.
-    pub fn poll(&mut self, publisher: &LocalRootPublisher, access: HttpRecordingAccess<'_>)
-        -> Result<HttpReconnectRecordingStep, HttpReconnectRecordingError>
-    {
+    pub fn poll(
+        &mut self,
+        publisher: &LocalRootPublisher,
+        access: HttpRecordingAccess<'_>,
+    ) -> Result<HttpReconnectRecordingStep, HttpReconnectRecordingError> {
         self.admit(access)?;
-        if self.steps >= self.maximum_steps { return Err(HttpReconnectRecordingError::Limit); }
+        if self.steps >= self.maximum_steps {
+            return Err(HttpReconnectRecordingError::Limit);
+        }
         self.work.charge(1)?;
         self.steps += 1;
         if let Some(plan) = self.wire_plan {
             return Ok(HttpReconnectRecordingStep::WirePrepared(plan));
         }
-        if self.handoff.is_some() { return self.prepare_boundary(publisher, access); }
+        if self.handoff.is_some() {
+            return self.prepare_boundary(publisher, access);
+        }
         if !self.validated {
             self.reverify(publisher, access)?; // exact EMPTY namespace before any connect
             self.validated = true;
         }
         match self.source.step(access.now_ns, access.camera)? {
             HttpReconnectStep::Connected(basis) => Ok(HttpReconnectRecordingStep::Connected(basis)),
-            HttpReconnectStep::Waiting { not_before_ns } =>
-                Ok(HttpReconnectRecordingStep::Waiting { not_before_ns }),
+            HttpReconnectStep::Waiting { not_before_ns } => {
+                Ok(HttpReconnectRecordingStep::Waiting { not_before_ns })
+            }
             HttpReconnectStep::Stopped => Ok(HttpReconnectRecordingStep::Stopped),
-            HttpReconnectStep::Source(HttpCameraStep::Advanced) => Ok(HttpReconnectRecordingStep::Advanced),
-            HttpReconnectStep::Source(HttpCameraStep::Pending) => Ok(HttpReconnectRecordingStep::Pending),
+            HttpReconnectStep::Source(HttpCameraStep::Advanced) => {
+                Ok(HttpReconnectRecordingStep::Advanced)
+            }
+            HttpReconnectStep::Source(HttpCameraStep::Pending) => {
+                Ok(HttpReconnectRecordingStep::Pending)
+            }
             HttpReconnectStep::Source(HttpCameraStep::WireReady(_)) => self.prepare_wire(),
             HttpReconnectStep::Source(HttpCameraStep::FrameReady) => {
-                let frame = self.source.camera().and_then(|c| c.pending_frame())
+                let frame = self
+                    .source
+                    .camera()
+                    .and_then(|c| c.pending_frame())
                     .ok_or(HttpReconnectRecordingError::NotReady)?;
-                Ok(HttpReconnectRecordingStep::FrameReady(HttpReconnectFrameKey::of(frame)))
+                Ok(HttpReconnectRecordingStep::FrameReady(
+                    HttpReconnectFrameKey::of(frame),
+                ))
             }
             HttpReconnectStep::HandoffReady(_) => {
                 self.handoff = self.source.take_handoff();
                 self.prepare_boundary(publisher, access)
             }
-            HttpReconnectStep::Source(HttpCameraStep::Complete) =>
-                Err(HttpReconnectRecordingError::Configuration),
+            HttpReconnectStep::Source(HttpCameraStep::Complete) => {
+                Err(HttpReconnectRecordingError::Configuration)
+            }
         }
     }
     fn prepare_wire(&mut self) -> Result<HttpReconnectRecordingStep, HttpReconnectRecordingError> {
         let read = match &self.handoff {
             Some(h) => h.source.as_ref().and_then(|s| s.wire.as_ref()),
             None => self.source.pending_wire(),
-        }.ok_or(HttpReconnectRecordingError::NotReady)?;
+        }
+        .ok_or(HttpReconnectRecordingError::NotReady)?;
         let prepared = self.archives[self.index].prepare(read, &mut self.work)?;
-        let plan = HttpReconnectWirePlan { wire: read.receipt(), pin: prepared.pin() };
+        let plan = HttpReconnectWirePlan {
+            wire: read.receipt(),
+            pin: prepared.pin(),
+        };
         self.wire_plan = Some(plan);
         Ok(HttpReconnectRecordingStep::WirePrepared(plan))
     }
-    fn prepare_boundary(&mut self, publisher: &LocalRootPublisher, access: HttpRecordingAccess<'_>)
-        -> Result<HttpReconnectRecordingStep, HttpReconnectRecordingError>
-    {
-        let h = self.handoff.as_ref().ok_or(HttpReconnectRecordingError::NotReady)?;
+    fn prepare_boundary(
+        &mut self,
+        publisher: &LocalRootPublisher,
+        access: HttpRecordingAccess<'_>,
+    ) -> Result<HttpReconnectRecordingStep, HttpReconnectRecordingError> {
+        let h = self
+            .handoff
+            .as_ref()
+            .ok_or(HttpReconnectRecordingError::NotReady)?;
         let receipt = h.receipt();
         // A post-read revocation may retire raw bytes before normal WireReady preparation.
         // They remain original custody: publish under independent storage authority, never parse.
-        if h.source.as_ref().and_then(|s| s.wire.as_ref())
+        if h.source
+            .as_ref()
+            .and_then(|s| s.wire.as_ref())
             .is_some_and(|w| w.receipt().range[1] > self.pin().bytes)
-        { return self.prepare_wire(); }
+        {
+            return self.prepare_wire();
+        }
         if self.pin().bytes != receipt.totals.received_bytes {
             return Err(HttpReconnectRecordingError::IncompleteCustody);
         }
         if self.boundary.is_none() {
             self.reverify(publisher, access)?;
-            self.boundary = Some(HttpReconnectBoundary { source: receipt, prefix: self.pin() });
+            self.boundary = Some(HttpReconnectBoundary {
+                source: receipt,
+                prefix: self.pin(),
+            });
         }
         Ok(HttpReconnectRecordingStep::BoundaryReady(
-            self.boundary.ok_or(HttpReconnectRecordingError::NotReady)?
+            self.boundary.ok_or(HttpReconnectRecordingError::NotReady)?,
         ))
     }
     /// Revalidate the exact prepared read and publish root-last BEFORE releasing parse backpressure.
     /// On an outer error preserve the same key/source and recover the publisher, not the camera.
-    pub fn commit_wire(&mut self, expected: HttpReconnectWirePlan,
-        publisher: &mut LocalRootPublisher, access: HttpRecordingAccess<'_>)
-        -> Result<HttpReconnectWireCommit, HttpReconnectRecordingError>
-    {
-        if self.wire_plan != Some(expected) { return Err(HttpReconnectRecordingError::PlanMismatch); }
+    pub fn commit_wire(
+        &mut self,
+        expected: HttpReconnectWirePlan,
+        publisher: &mut LocalRootPublisher,
+        access: HttpRecordingAccess<'_>,
+    ) -> Result<HttpReconnectWireCommit, HttpReconnectRecordingError> {
+        if self.wire_plan != Some(expected) {
+            return Err(HttpReconnectRecordingError::PlanMismatch);
+        }
         self.admit(access)?;
         let ended = self.handoff.is_some();
         if !ended {
-            let camera = self.source.camera().ok_or(HttpReconnectRecordingError::NotReady)?;
+            let camera = self
+                .source
+                .camera()
+                .ok_or(HttpReconnectRecordingError::NotReady)?;
             if access.now_ns >= self.deadline_ns {
                 return Err(HttpReconnectError::Source(HttpCameraError::Deadline).into());
             }
-            access.camera.checkpoint(camera.route(), HttpCameraOperation::AcknowledgeWire,
-                access.now_ns, self.deadline_ns)
+            access
+                .camera
+                .checkpoint(
+                    camera.route(),
+                    HttpCameraOperation::AcknowledgeWire,
+                    access.now_ns,
+                    self.deadline_ns,
+                )
                 .map_err(|e| HttpReconnectError::Source(HttpCameraError::Denied(e)))?;
         }
         let read = match &self.handoff {
             Some(h) => h.source.as_ref().and_then(|s| s.wire.as_ref()),
             None => self.source.pending_wire(),
-        }.ok_or(HttpReconnectRecordingError::NotReady)?;
+        }
+        .ok_or(HttpReconnectRecordingError::NotReady)?;
         let archive = &mut self.archives[self.index];
         let prepared = archive.prepare(read, &mut self.work)?;
         if read.receipt() != expected.wire || prepared.pin() != expected.pin {
@@ -313,40 +409,65 @@ impl HttpReconnectRecording {
         }
         let publication = archive.publish(&prepared, publisher, access.storage, &mut self.work)?;
         self.wire_plan = None; // durable publication remains visible even if a later ACK fails
-        let acknowledgement = if ended { None } else {
-            Some(self.source.acknowledge_wire(expected.wire, access.now_ns, access.camera))
+        let acknowledgement = if ended {
+            None
+        } else {
+            Some(
+                self.source
+                    .acknowledge_wire(expected.wire, access.now_ns, access.camera),
+            )
         };
-        Ok(HttpReconnectWireCommit { publication, acknowledgement })
+        Ok(HttpReconnectWireCommit {
+            publication,
+            acknowledgement,
+        })
     }
     /// Reverify the complete encoded frame's original custody, then release it under live authority.
     /// No pixels are decoded here; downstream decoding still requires the current sensor mask.
-    pub fn take_frame(&mut self, expected: HttpReconnectFrameKey,
-        publisher: &LocalRootPublisher, access: HttpRecordingAccess<'_>)
-        -> Result<HttpJpegFrame, HttpReconnectRecordingError>
-    {
+    pub fn take_frame(
+        &mut self,
+        expected: HttpReconnectFrameKey,
+        publisher: &LocalRootPublisher,
+        access: HttpRecordingAccess<'_>,
+    ) -> Result<HttpJpegFrame, HttpReconnectRecordingError> {
         self.admit(access)?;
-        let frame = self.source.camera().and_then(|c| c.pending_frame())
+        let frame = self
+            .source
+            .camera()
+            .and_then(|c| c.pending_frame())
             .ok_or(HttpReconnectRecordingError::NotReady)?;
         if HttpReconnectFrameKey::of(frame) != expected {
             return Err(HttpReconnectRecordingError::PlanMismatch);
         }
         self.archives[self.index].verify_frame(publisher, frame, access.storage, &mut self.work)?;
-        Ok(self.source.take_frame(expected.ordinal, expected.encoded, access.now_ns, access.camera)?)
+        Ok(self.source.take_frame(
+            expected.ordinal,
+            expected.encoded,
+            access.now_ns,
+            access.camera,
+        )?)
     }
     /// Accept this exact independently preserved boundary and transfer its complete original owner.
     /// Reverify again after external delay; missing/deleted/corrupt source prevents the next attempt.
-    pub fn release_boundary(&mut self, expected: HttpReconnectBoundary,
-        publisher: &LocalRootPublisher, access: HttpRecordingAccess<'_>)
-        -> Result<HttpReconnectHandoff, HttpReconnectRecordingError>
-    {
+    pub fn release_boundary(
+        &mut self,
+        expected: HttpReconnectBoundary,
+        publisher: &LocalRootPublisher,
+        access: HttpRecordingAccess<'_>,
+    ) -> Result<HttpReconnectHandoff, HttpReconnectRecordingError> {
         if self.boundary != Some(expected) || self.handoff.is_none() || self.wire_plan.is_some() {
             return Err(HttpReconnectRecordingError::PlanMismatch);
         }
         self.admit(access)?;
         self.reverify(publisher, access)?;
-        if self.pin() != expected.prefix { return Err(HttpReconnectRecordingError::PlanMismatch); }
+        if self.pin() != expected.prefix {
+            return Err(HttpReconnectRecordingError::PlanMismatch);
+        }
         self.source.acknowledge_handoff(expected.source)?;
-        let handoff = self.handoff.take().ok_or(HttpReconnectRecordingError::NotReady)?;
+        let handoff = self
+            .handoff
+            .take()
+            .ok_or(HttpReconnectRecordingError::NotReady)?;
         self.boundary = None;
         if expected.source.next_source.is_some() {
             self.index += 1;
@@ -354,19 +475,35 @@ impl HttpReconnectRecording {
         }
         Ok(handoff)
     }
-    fn reverify(&mut self, publisher: &LocalRootPublisher, access: HttpRecordingAccess<'_>)
-        -> Result<(), HttpReconnectRecordingError>
-    {
+    fn reverify(
+        &mut self,
+        publisher: &LocalRootPublisher,
+        access: HttpRecordingAccess<'_>,
+    ) -> Result<(), HttpReconnectRecordingError> {
         let archive = &self.archives[self.index];
-        let verified = HttpWireArchive::load(publisher, archive.scope(), archive.pin(),
-            archive.limits(), access.storage, &mut self.work)?;
+        let verified = HttpWireArchive::load(
+            publisher,
+            archive.scope(),
+            archive.pin(),
+            archive.limits(),
+            access.storage,
+            &mut self.work,
+        )?;
         self.archives[self.index] = verified;
         Ok(())
     }
-    fn admit(&mut self, access: HttpRecordingAccess<'_>) -> Result<(), HttpReconnectRecordingError> {
-        if access.now_ns < self.clock { return Err(HttpReconnectError::ClockReversed.into()); }
+    fn admit(
+        &mut self,
+        access: HttpRecordingAccess<'_>,
+    ) -> Result<(), HttpReconnectRecordingError> {
+        if access.now_ns < self.clock {
+            return Err(HttpReconnectError::ClockReversed.into());
+        }
         self.clock = access.now_ns;
-        if access.storage.cancel_requested(PublishCutPoint::AfterChildrenVerified) {
+        if access
+            .storage
+            .cancel_requested(PublishCutPoint::AfterChildrenVerified)
+        {
             return Err(HttpReconnectRecordingError::Cancelled);
         }
         Ok(())
@@ -375,9 +512,13 @@ impl HttpReconnectRecording {
     /// Nothing is repaired, silently discarded, reconnected or labelled complete during retirement.
     pub fn retire(self) -> HttpReconnectRecordingRetirement {
         HttpReconnectRecordingRetirement {
-            source_work: self.work.used(), steps: self.steps,
-            source: self.source.retire(), archives: self.archives,
-            handoff: self.handoff, wire_plan: self.wire_plan, boundary: self.boundary,
+            source_work: self.work.used(),
+            steps: self.steps,
+            source: self.source.retire(),
+            archives: self.archives,
+            handoff: self.handoff,
+            wire_plan: self.wire_plan,
+            boundary: self.boundary,
         }
     }
 }

@@ -267,8 +267,14 @@ mod tests {
         };
         assert_eq!(render_with_budget(&value, &domains, exact)?.json, full.json);
         for limited in [
-            GraphBudget { max_operations: full.operations - 1, ..exact },
-            GraphBudget { max_output_entries: full.output_entries - 1, ..exact },
+            GraphBudget {
+                max_operations: full.operations - 1,
+                ..exact
+            },
+            GraphBudget {
+                max_output_entries: full.output_entries - 1,
+                ..exact
+            },
         ] {
             assert!(render_with_budget(&value, &domains, limited).is_err());
         }

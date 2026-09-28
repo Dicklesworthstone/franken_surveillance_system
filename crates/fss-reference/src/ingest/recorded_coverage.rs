@@ -451,7 +451,9 @@ impl PoseUncertainty {
     pub const fn pose_covariance(&self) -> Option<&PoseCovariance> {
         match self {
             Self::NotProvided => None,
-            Self::SigmaPoints { covariance } | Self::SigmaPointsGuarded { covariance, .. } => Some(covariance),
+            Self::SigmaPoints { covariance } | Self::SigmaPointsGuarded { covariance, .. } => {
+                Some(covariance)
+            }
         }
     }
 
@@ -505,10 +507,23 @@ pub fn pose_predicate_clause(
     robustness: Option<&PoseRobustness>,
 ) -> String {
     match (uncertainty, robustness) {
-        (Some(PoseUncertainty::SigmaPointsGuarded { covariance, receipt }), _) => {
-            format!("{}; full-camera conditional linearized screen {} (not physical observability or a probability)",
-                pose_predicate_clause(Some(&PoseUncertainty::SigmaPoints { covariance: *covariance }), robustness),
-                receipt.digest())
+        (
+            Some(PoseUncertainty::SigmaPointsGuarded {
+                covariance,
+                receipt,
+            }),
+            _,
+        ) => {
+            format!(
+                "{}; full-camera conditional linearized screen {} (not physical observability or a probability)",
+                pose_predicate_clause(
+                    Some(&PoseUncertainty::SigmaPoints {
+                        covariance: *covariance
+                    }),
+                    robustness
+                ),
+                receipt.digest()
+            )
         }
         (Some(PoseUncertainty::NotProvided), _) => {
             "; pose uncertainty_not_provided: the visibility rests on the nominal pose alone and \
@@ -1215,19 +1230,26 @@ impl CoverageRecord {
             || self.zones.iter().any(|zone| zone.visibility.is_some());
         let masked_samples = self.masked_samples();
         e.bytes(RECORD_MAGIC);
-        e.u32(if self.pose_uncertainty.as_ref().and_then(PoseUncertainty::guard_receipt).is_some() {
-            RECORD_VERSION_CALIBRATION_GUARD
-        } else if self.pose_uncertainty.is_some() {
-            RECORD_VERSION_POSE_UNCERTAINTY
-        } else if self.pose_provenance.is_some() {
-            RECORD_VERSION_POSE_PROVENANCE
-        } else if masked_samples {
-            RECORD_VERSION_MASKED_VISIBILITY
-        } else if versioned {
-            RECORD_VERSION_VISIBILITY
-        } else {
-            RECORD_VERSION
-        });
+        e.u32(
+            if self
+                .pose_uncertainty
+                .as_ref()
+                .and_then(PoseUncertainty::guard_receipt)
+                .is_some()
+            {
+                RECORD_VERSION_CALIBRATION_GUARD
+            } else if self.pose_uncertainty.is_some() {
+                RECORD_VERSION_POSE_UNCERTAINTY
+            } else if self.pose_provenance.is_some() {
+                RECORD_VERSION_POSE_PROVENANCE
+            } else if masked_samples {
+                RECORD_VERSION_MASKED_VISIBILITY
+            } else if versioned {
+                RECORD_VERSION_VISIBILITY
+            } else {
+                RECORD_VERSION
+            },
+        );
         e.text(RECORD_DOMAIN);
         if let Some(provenance) = &self.pose_provenance {
             e.bool(masked_samples);
@@ -1349,7 +1371,10 @@ impl CoverageRecord {
         } else {
             None
         };
-        let sigma_points = pose_uncertainty.as_ref().and_then(PoseUncertainty::pose_covariance).is_some();
+        let sigma_points = pose_uncertainty
+            .as_ref()
+            .and_then(PoseUncertainty::pose_covariance)
+            .is_some();
         let source = CoverageSource::parse(d.text()?)?;
         let import_identity = d.digest()?;
         let import_root = d.digest()?;
@@ -1434,8 +1459,9 @@ impl CoverageRecord {
                     "outside_frustum" => UncoveredReason::OutsideFrustum,
                     "privacy_masked" => UncoveredReason::PrivacyMasked,
                     "pose_sensitive" => UncoveredReason::PoseSensitive,
-                    "calibration_uncertainty" if version >= RECORD_VERSION_CALIBRATION_GUARD =>
-                        UncoveredReason::CalibrationUncertainty,
+                    "calibration_uncertainty" if version >= RECORD_VERSION_CALIBRATION_GUARD => {
+                        UncoveredReason::CalibrationUncertainty
+                    }
                     _ => return Err(ContractError::InvalidIdentifier),
                 };
                 uncovered.push(UncoveredInterval {
@@ -1508,25 +1534,37 @@ impl CoverageRecord {
         let sigma_points = match (&self.pose_uncertainty, &self.pose_provenance) {
             (None, _) | (Some(PoseUncertainty::NotProvided), Some(_)) => false,
             (
-                Some(PoseUncertainty::SigmaPoints { .. } | PoseUncertainty::SigmaPointsGuarded { .. }),
+                Some(
+                    PoseUncertainty::SigmaPoints { .. }
+                    | PoseUncertainty::SigmaPointsGuarded { .. },
+                ),
                 Some(PoseProvenance::SiteCalibration { .. }),
             ) => true,
             (Some(_), None)
             | (
-                Some(PoseUncertainty::SigmaPoints { .. } | PoseUncertainty::SigmaPointsGuarded { .. }),
+                Some(
+                    PoseUncertainty::SigmaPoints { .. }
+                    | PoseUncertainty::SigmaPointsGuarded { .. },
+                ),
                 Some(PoseProvenance::OwnerPoseArgument),
             ) => {
                 return Err(ContractError::InvalidIdentifier);
             }
         };
-        let guard = self.pose_uncertainty.as_ref().and_then(PoseUncertainty::guard_receipt);
+        let guard = self
+            .pose_uncertainty
+            .as_ref()
+            .and_then(PoseUncertainty::guard_receipt);
         if let Some(receipt) = guard {
             receipt.validate_for(self)?;
         }
         for zone in &self.zones {
-            if guard.is_none() && zone.uncovered.iter().any(|interval| {
-                interval.reason == UncoveredReason::CalibrationUncertainty
-            }) {
+            if guard.is_none()
+                && zone
+                    .uncovered
+                    .iter()
+                    .any(|interval| interval.reason == UncoveredReason::CalibrationUncertainty)
+            {
                 return Err(ContractError::CoverageUncertified);
             }
             if zone.scope != format!("{}{}", self.source.scope_prefix(), zone.zone_id)

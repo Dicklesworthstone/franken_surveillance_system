@@ -54,8 +54,11 @@ struct ShowOptions {
 }
 
 fn text<'a>(values: &'a BTreeMap<String, OsString>, key: &str) -> Result<&'a str, String> {
-    values.get(key).ok_or_else(|| format!("required option {key}"))?
-        .to_str().ok_or_else(|| format!("{key} requires UTF-8"))
+    values
+        .get(key)
+        .ok_or_else(|| format!("required option {key}"))?
+        .to_str()
+        .ok_or_else(|| format!("{key} requires UTF-8"))
 }
 fn digest(value: &str) -> Result<ContentDigest, String> {
     let digest = ContentDigest::parse(value).map_err(|_| "expected sha256:HEX".to_owned())?;
@@ -69,15 +72,26 @@ fn parse(args: &[OsString]) -> Result<Options, String> {
         return Err("expected bounded 'event' export command".into());
     }
     let allowed = [
-        "--root", "--site", "--principal", "--event-id", "--expected-revision",
-        "--recipient", "--purpose", "--expires-at-ns", "--approve",
+        "--root",
+        "--site",
+        "--principal",
+        "--event-id",
+        "--expected-revision",
+        "--recipient",
+        "--purpose",
+        "--expires-at-ns",
+        "--approve",
     ];
     let mut values = BTreeMap::new();
     let mut index = 1;
     while index < args.len() {
         let key = args[index].to_str().ok_or("option names require UTF-8")?;
-        if !allowed.contains(&key) { return Err(format!("unknown option {key}")); }
-        let value = args.get(index + 1).ok_or_else(|| format!("missing value for {key}"))?;
+        if !allowed.contains(&key) {
+            return Err(format!("unknown option {key}"));
+        }
+        let value = args
+            .get(index + 1)
+            .ok_or_else(|| format!("missing value for {key}"))?;
         if value.is_empty() || value.to_str().is_some_and(|v| v.starts_with("--")) {
             return Err(format!("missing value for {key}"));
         }
@@ -90,16 +104,18 @@ fn parse(args: &[OsString]) -> Result<Options, String> {
     let site = text(&values, "--site")?.to_owned();
     fss_reference::reference_deployment::validate_site_lineage(&site)
         .map_err(|_| "invalid site lineage")?;
-    let principal = values.get("--principal")
+    let principal = values
+        .get("--principal")
         .map(|_| text(&values, "--principal"))
         .transpose()?
         .unwrap_or("principal:local-operator")
         .to_owned();
     PrincipalId::parse(&principal).map_err(|_| "invalid principal")?;
-    let event_id = EventId::parse(text(&values, "--event-id")?)
-        .map_err(|_| "invalid event identity")?;
+    let event_id =
+        EventId::parse(text(&values, "--event-id")?).map_err(|_| "invalid event identity")?;
     let expected_revision = digest(text(&values, "--expected-revision")?)?;
-    let expires_at = text(&values, "--expires-at-ns")?.parse::<i128>()
+    let expires_at = text(&values, "--expires-at-ns")?
+        .parse::<i128>()
         .map_err(|_| "--expires-at-ns requires signed decimal i128")?;
     let request = EventExportRequest {
         event_id,
@@ -109,10 +125,17 @@ fn parse(args: &[OsString]) -> Result<Options, String> {
         expires_at: TimestampNs(expires_at),
     };
     request.validate().map_err(|e| e.to_string())?;
-    let approval = values.get("--approve")
+    let approval = values
+        .get("--approve")
         .map(|_| text(&values, "--approve").and_then(digest))
         .transpose()?;
-    Ok(Options { root, site, principal, request, approval })
+    Ok(Options {
+        root,
+        site,
+        principal,
+        request,
+        approval,
+    })
 }
 
 fn parse_show(args: &[OsString]) -> Result<ShowOptions, String> {
@@ -124,8 +147,12 @@ fn parse_show(args: &[OsString]) -> Result<ShowOptions, String> {
     let mut index = 1;
     while index < args.len() {
         let key = args[index].to_str().ok_or("option names require UTF-8")?;
-        if !allowed.contains(&key) { return Err(format!("unknown option {key}")); }
-        let value = args.get(index + 1).ok_or_else(|| format!("missing value for {key}"))?;
+        if !allowed.contains(&key) {
+            return Err(format!("unknown option {key}"));
+        }
+        let value = args
+            .get(index + 1)
+            .ok_or_else(|| format!("missing value for {key}"))?;
         if value.is_empty() || value.to_str().is_some_and(|v| v.starts_with("--")) {
             return Err(format!("missing value for {key}"));
         }
@@ -138,7 +165,8 @@ fn parse_show(args: &[OsString]) -> Result<ShowOptions, String> {
     let site = text(&values, "--site")?.to_owned();
     fss_reference::reference_deployment::validate_site_lineage(&site)
         .map_err(|_| "invalid site lineage")?;
-    let principal = values.get("--principal")
+    let principal = values
+        .get("--principal")
         .map(|_| text(&values, "--principal"))
         .transpose()?
         .unwrap_or("principal:local-operator")
@@ -154,7 +182,9 @@ fn parse_show(args: &[OsString]) -> Result<ShowOptions, String> {
 
 fn run_show(options: &ShowOptions) -> RunResult<String> {
     if !fs::symlink_metadata(&options.root)?.file_type().is_dir()
-        || !fs::symlink_metadata(options.root.join("LAYOUT"))?.file_type().is_file()
+        || !fs::symlink_metadata(options.root.join("LAYOUT"))?
+            .file_type()
+            .is_file()
     {
         return Err(io::Error::other("existing regular deployment and LAYOUT required").into());
     }
@@ -198,12 +228,16 @@ fn run_show(options: &ShowOptions) -> RunResult<String> {
 
 fn run(options: &Options) -> RunResult<String> {
     if !fs::symlink_metadata(&options.root)?.file_type().is_dir()
-        || !fs::symlink_metadata(options.root.join("LAYOUT"))?.file_type().is_file()
+        || !fs::symlink_metadata(options.root.join("LAYOUT"))?
+            .file_type()
+            .is_file()
     {
         return Err(io::Error::other("existing regular deployment and LAYOUT required").into());
     }
     let mut capabilities = vec!["ADP-REPLAY-001".to_owned(), CAP_EXPORT_PREPARE.to_owned()];
-    if options.approval.is_some() { capabilities.push(CAP_EXPORT_COMMIT.to_owned()); }
+    if options.approval.is_some() {
+        capabilities.push(CAP_EXPORT_COMMIT.to_owned());
+    }
     let authority = ContextAuthority::new_root(RootAuthoritySpec {
         trace_id: "trace:export-cli".into(),
         operation_id: OperationId::parse("operation:export-cli")?,
@@ -233,7 +267,11 @@ fn run_with(options: &Options, authority: &ContextAuthority, cx: &ReplayCx) -> R
             None => {
                 let preview = preview_export(&deployment, &options.request, authority, cx)?;
                 (
-                    if preview.already_committed() { "already_committed" } else { "proposed" },
+                    if preview.already_committed() {
+                        "already_committed"
+                    } else {
+                        "proposed"
+                    },
                     false,
                     preview.approval(),
                     preview.root(),
@@ -243,9 +281,14 @@ fn run_with(options: &Options, authority: &ContextAuthority, cx: &ReplayCx) -> R
                 )
             }
             Some(approval) => {
-                let receipt = commit_export(&mut deployment, &options.request, approval, authority, cx)?;
+                let receipt =
+                    commit_export(&mut deployment, &options.request, approval, authority, cx)?;
                 (
-                    if receipt.published { "published" } else { "already_committed" },
+                    if receipt.published {
+                        "published"
+                    } else {
+                        "already_committed"
+                    },
                     receipt.published,
                     receipt.preview.approval(),
                     receipt.preview.root(),
@@ -267,7 +310,10 @@ fn run_with(options: &Options, authority: &ContextAuthority, cx: &ReplayCx) -> R
         ("package", package),
         ("external_transport_performed", "false".into()),
         ("raw_media_read", "false".into()),
-        ("expiry_enforcement", string("metadata_only_no_trusted_clock")),
+        (
+            "expiry_enforcement",
+            string("metadata_only_no_trusted_clock"),
+        ),
         ("qualification", string("implemented_not_qualified")),
     ]))
 }
@@ -291,7 +337,8 @@ fn main() -> ExitCode {
                 Err(_) => ExitCode::from(ExitIdentity::RUNTIME_FAILURE.code),
             },
             Err(error) => {
-                let id = error.downcast_ref::<ExportError>()
+                let id = error
+                    .downcast_ref::<ExportError>()
                     .map_or(ERR_CLI_RUNTIME_FAILURE, ExportError::stable_id);
                 eprintln!("{id}: {error}");
                 ExitCode::from(ExitIdentity::RUNTIME_FAILURE.code)
@@ -311,7 +358,8 @@ fn main() -> ExitCode {
             Err(_) => ExitCode::from(ExitIdentity::RUNTIME_FAILURE.code),
         },
         Err(error) => {
-            let id = error.downcast_ref::<ExportError>()
+            let id = error
+                .downcast_ref::<ExportError>()
                 .map_or(ERR_CLI_RUNTIME_FAILURE, ExportError::stable_id);
             eprintln!("{id}: {error}");
             ExitCode::from(ExitIdentity::RUNTIME_FAILURE.code)
@@ -324,18 +372,37 @@ mod tests {
     use super::*;
     fn arguments() -> Vec<OsString> {
         [
-            "event", "--root", "/existing", "--site", "site:export", "--event-id", "event:test",
-            "--expected-revision", &ContentDigest::sha256(b"revision").to_text(),
-            "--recipient", "recipient:insurer-case-7", "--purpose", "Owner incident review",
-            "--expires-at-ns", "1000",
-        ].into_iter().map(OsString::from).collect()
+            "event",
+            "--root",
+            "/existing",
+            "--site",
+            "site:export",
+            "--event-id",
+            "event:test",
+            "--expected-revision",
+            &ContentDigest::sha256(b"revision").to_text(),
+            "--recipient",
+            "recipient:insurer-case-7",
+            "--purpose",
+            "Owner incident review",
+            "--expires-at-ns",
+            "1000",
+        ]
+        .into_iter()
+        .map(OsString::from)
+        .collect()
     }
     #[test]
     fn exact_revision_recipient_purpose_and_expiry_are_required() -> Result<(), String> {
         let options = parse(&arguments())?;
         assert!(options.approval.is_none());
         assert_eq!(options.request.recipient, "recipient:insurer-case-7");
-        for key in ["--expected-revision", "--recipient", "--purpose", "--expires-at-ns"] {
+        for key in [
+            "--expected-revision",
+            "--recipient",
+            "--purpose",
+            "--expires-at-ns",
+        ] {
             let mut args = arguments();
             let at = args.iter().position(|v| v == key).expect("key");
             args.drain(at..=at + 1);
@@ -359,7 +426,13 @@ mod tests {
     }
     #[test]
     fn include_all_or_raw_media_escape_hatches_do_not_exist() {
-        for key in ["--raw", "--include-all", "--include-media", "--include-identities", "--force"] {
+        for key in [
+            "--raw",
+            "--include-all",
+            "--include-media",
+            "--include-identities",
+            "--force",
+        ] {
             let mut args = arguments();
             args.extend([key.into(), "yes".into()]);
             assert!(parse(&args).is_err(), "accepted {key}");
@@ -369,9 +442,17 @@ mod tests {
     fn show_requires_only_exact_export_root_and_read_scope() -> Result<(), String> {
         let root = ContentDigest::sha256(b"export");
         let args = [
-            "show", "--root", "/existing", "--site", "site:export",
-            "--export-root", &root.to_text(),
-        ].into_iter().map(OsString::from).collect::<Vec<_>>();
+            "show",
+            "--root",
+            "/existing",
+            "--site",
+            "site:export",
+            "--export-root",
+            &root.to_text(),
+        ]
+        .into_iter()
+        .map(OsString::from)
+        .collect::<Vec<_>>();
         let options = parse_show(&args)?;
         assert_eq!(options.export_root, root);
         let mut bad = args.clone();

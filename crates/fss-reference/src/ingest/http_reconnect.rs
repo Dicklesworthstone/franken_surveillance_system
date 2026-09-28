@@ -582,7 +582,9 @@ fn retryable(error: HttpCameraError) -> bool {
         HttpCameraError::Io { operation, kind } => {
             matches!(
                 operation,
-                HttpCameraOperation::Connect | HttpCameraOperation::Read | HttpCameraOperation::Write
+                HttpCameraOperation::Connect
+                    | HttpCameraOperation::Read
+                    | HttpCameraOperation::Write
             ) && matches!(
                 kind,
                 ErrorKind::ConnectionRefused

@@ -1132,6 +1132,41 @@
       "id": "ERR-EVIDENCE-MISSING-001"
     },
     {
+      "description": "approval does not bind the exact current redacted export",
+      "guidance": "preview and approve the exact package",
+      "id": "ERR-EXPORT-APPROVAL-STALE-001"
+    },
+    {
+      "description": "complete redacted export exceeds a registered bound",
+      "guidance": "narrow the supported export request; nothing is truncated",
+      "id": "ERR-EXPORT-BOUND-001"
+    },
+    {
+      "description": "export was cancelled before its authoritative commit",
+      "guidance": "retry the exact request after reconciling any published root",
+      "id": "ERR-EXPORT-CANCELLED-001"
+    },
+    {
+      "description": "retained export/event custody differs from the approved package",
+      "guidance": "stop export and inspect deployment custody",
+      "id": "ERR-EXPORT-CUSTODY-001"
+    },
+    {
+      "description": "event export request is malformed, unbounded, or has expiry not later than the event interval",
+      "guidance": "correct the exact event/recipient/purpose/expiry and preview again",
+      "id": "ERR-EXPORT-REQUEST-001"
+    },
+    {
+      "description": "selected event revision is no longer current",
+      "guidance": "read the current event and preview a new export",
+      "id": "ERR-EXPORT-REVISION-STALE-001"
+    },
+    {
+      "description": "local root-last export publication or authority append failed",
+      "guidance": "inspect local custody/recovery before retrying",
+      "id": "ERR-EXPORT-STORAGE-001"
+    },
+    {
       "description": "observed device generation differs from registry",
       "guidance": "disable/move to shadow; no optimistic retry",
       "id": "ERR-FIRMWARE-DRIFT-001"
@@ -3267,6 +3302,13 @@
       "schema": "fss.calibration_certificate.v1"
     },
     {
+      "authority": "derived/coverage",
+      "compatibilityRule": "conditional full-camera coverage screen and explicit proposal refusal; additions require a new version",
+      "file": "schemas/calibration_coverage_guard.v1.json",
+      "id": "SCHEMA-CALIBRATION-COVERAGE-GUARD-001",
+      "schema": "fss.calibration_coverage_guard.v1"
+    },
+    {
       "authority": "runtime evidence",
       "compatibilityRule": "terminal/indeterminate outcome and outstanding effects preserved",
       "file": "schemas/cancellation_drain_certificate.v1.json",
@@ -3300,6 +3342,20 @@
       "file": "schemas/context_expansion_binding_set.v1.json",
       "id": "SCHEMA-AGENT-CONTEXT-BINDING-SET-001",
       "schema": "fss.context_expansion_binding_set.v1"
+    },
+    {
+      "authority": "derived/query",
+      "compatibilityRule": "read-only selection across explicit failure scenarios; operator hints are not calibration",
+      "file": "schemas/coverage_resilient_selection.v1.json",
+      "id": "SCHEMA-COVERAGE-RESILIENT-SELECTION-001",
+      "schema": "fss.coverage_resilient_selection.v1"
+    },
+    {
+      "authority": "derived/query",
+      "compatibilityRule": "read-only retained evidence set selection; selection never grants authority",
+      "file": "schemas/coverage_set_selection.v1.json",
+      "id": "SCHEMA-COVERAGE-SET-SELECTION-001",
+      "schema": "fss.coverage_set_selection.v1"
     },
     {
       "authority": "authority/query",

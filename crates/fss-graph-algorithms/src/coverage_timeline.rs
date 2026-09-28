@@ -174,7 +174,12 @@ pub fn analyse_coverage_timeline(
     let mut facts: BTreeMap<(String, String), Vec<CaptureInterval>> = BTreeMap::new();
     let mut starts = BTreeSet::from([window.earliest.0]);
     for observation in observations {
-        consume(&mut operations, 1, ceiling.max_operations, "timeline_operations")?;
+        consume(
+            &mut operations,
+            1,
+            ceiling.max_operations,
+            "timeline_operations",
+        )?;
         validate_identity(SENSOR_PREFIX, &observation.sensor_id)?;
         validate_identity(ZONE_PREFIX, &observation.zone_scope)?;
         witness_count = witness_count
@@ -184,10 +189,18 @@ pub fn analyse_coverage_timeline(
             return Err(GraphError::TooLarge.into());
         }
         let intervals = facts
-            .entry((observation.sensor_id.clone(), observation.zone_scope.clone()))
+            .entry((
+                observation.sensor_id.clone(),
+                observation.zone_scope.clone(),
+            ))
             .or_default();
         for covered in &observation.covered {
-            consume(&mut operations, 1, ceiling.max_operations, "timeline_operations")?;
+            consume(
+                &mut operations,
+                1,
+                ceiling.max_operations,
+                "timeline_operations",
+            )?;
             let covered = CaptureInterval::new(covered.earliest, covered.latest)?;
             intervals.push(covered);
             let first = covered.earliest.0.max(window.earliest.0);
@@ -221,7 +234,9 @@ pub fn analyse_coverage_timeline(
     };
     for (index, first) in starts.iter().copied().enumerate() {
         // Sorted distinct starts ensure the successor is strictly above i128::MIN.
-        let last = starts.get(index + 1).map_or(window.latest.0, |next| next - 1);
+        let last = starts
+            .get(index + 1)
+            .map_or(window.latest.0, |next| next - 1);
         let segment_window = CaptureInterval::new(TimestampNs(first), TimestampNs(last))?;
         consume(
             &mut result.output_entries,
@@ -231,10 +246,20 @@ pub fn analyse_coverage_timeline(
         )?;
         let mut selected = Vec::with_capacity(facts.len());
         for ((sensor, zone), intervals) in &facts {
-            consume(&mut result.operations, 1, ceiling.max_operations, "timeline_operations")?;
+            consume(
+                &mut result.operations,
+                1,
+                ceiling.max_operations,
+                "timeline_operations",
+            )?;
             let mut witnesses = 0;
             for covered in intervals {
-                consume(&mut result.operations, 1, ceiling.max_operations, "timeline_operations")?;
+                consume(
+                    &mut result.operations,
+                    1,
+                    ceiling.max_operations,
+                    "timeline_operations",
+                )?;
                 result.interval_checks += 1;
                 if covered.earliest.0 <= first && covered.latest.0 >= last {
                     witnesses += 1;
