@@ -22,7 +22,7 @@ use std::sync::atomic::AtomicBool;
 type TestResult = Result<(), Box<dyn std::error::Error>>;
 static NO_POLICY: MaskBinding = MaskBinding::NoPolicy;
 
-fn fixture(index: u64, calibrated: bool)
+pub(super) fn fixture(index: u64, calibrated: bool)
     -> Result<(CoverageRecord, CalibrationCoverageAssessment), Box<dyn std::error::Error>>
 {
     use BundleParameter::{Cx, Cy, Fx, Fy, K1, K2, Rotation, Translation};

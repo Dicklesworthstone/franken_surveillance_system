@@ -188,5 +188,8 @@ impl GuardedCoverageSet {
     pub fn privacy_bindings(&self) -> &[(ContentDigest, u64)] { &self.privacy }
 }
 
+mod retention;
+pub use retention::GuardedCoverageRetentionError;
+
 #[cfg(test)]
 mod tests;
