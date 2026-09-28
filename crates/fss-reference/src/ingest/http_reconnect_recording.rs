@@ -189,6 +189,7 @@ pub struct HttpReconnectRecording {
     archives: Vec<HttpWireArchive>,
     index: usize,
     validated: bool,
+    connect_not_before_ns: u64,
     work: WorkBudget<'static>,
     steps: u64,
     maximum_steps: u64,
@@ -229,6 +230,7 @@ impl HttpReconnectRecording {
             archives,
             index: 0,
             validated: false,
+            connect_not_before_ns: now_ns,
             work: WorkBudget::new(plan.source_work),
             steps: 0,
             maximum_steps: plan.maximum_steps,
@@ -281,35 +283,16 @@ impl HttpReconnectRecording {
         self.work.charge(1)?;
         self.steps += 1;
         if let Some(plan) = self.wire_plan {
-            // The unacknowledged read is a parse/I/O barrier, not an authority lease.
-            // Poll the held owner even while the caller is persisting the prepared pin.
-            // Revocation/deadline must retire its socket and preserve this SAME plan so
-            // independently authorized storage can salvage the bytes without an ACK.
-            if self.handoff.is_none() {
-                match self.source.step(access.now_ns, access.camera)? {
-                    HttpReconnectStep::Source(HttpCameraStep::WireReady(wire))
-                        if wire == plan.wire => {}
-                    HttpReconnectStep::HandoffReady(_) => {
-                        self.handoff = self.source.take_handoff();
-                        let held = self
-                            .handoff
-                            .as_ref()
-                            .and_then(|h| h.source.as_ref())
-                            .and_then(|source| source.wire.as_ref());
-                        if held.is_none_or(|read| read.receipt() != plan.wire) {
-                            return Err(HttpReconnectRecordingError::PlanMismatch);
-                        }
-                    }
-                    _ => return Err(HttpReconnectRecordingError::PlanMismatch),
-                }
-            }
+            self.refresh_prepared_wire(access)?;
             return Ok(HttpReconnectRecordingStep::WirePrepared(plan));
         }
         if self.handoff.is_some() {
             return self.prepare_boundary(publisher, access);
         }
-        if !self.validated {
-            self.reverify(publisher, access)?; // exact EMPTY namespace before any connect
+        if !self.validated && access.now_ns >= self.connect_not_before_ns {
+            // Do not cache an empty namespace across backoff. A previously captured generation
+            // may have been published while waiting; reverify only when connection is due.
+            self.reverify(publisher, access)?;
             self.validated = true;
         }
         match self.source.step(access.now_ns, access.camera)? {
@@ -342,6 +325,38 @@ impl HttpReconnectRecording {
             HttpReconnectStep::Source(HttpCameraStep::Complete) => {
                 Err(HttpReconnectRecordingError::Configuration)
             }
+        }
+    }
+    // A prepared read is backpressured, not exempt from cancellation. The native step can
+    // only return this same unacknowledged read or retire it; it cannot parse, read or reconnect.
+    // A revoked/expired source still has an independent storage-custody obligation. Preserve its
+    // exact prepared pin and move its bytes into the drain path instead of stranding the socket.
+    fn refresh_prepared_wire(
+        &mut self,
+        access: HttpRecordingAccess<'_>,
+    ) -> Result<(), HttpReconnectRecordingError> {
+        if self.handoff.is_some() {
+            return Ok(());
+        }
+        let expected = self.wire_plan.ok_or(HttpReconnectRecordingError::NotReady)?;
+        match self.source.step(access.now_ns, access.camera)? {
+            HttpReconnectStep::Source(HttpCameraStep::WireReady(wire))
+                if wire == expected.wire => Ok(()),
+            HttpReconnectStep::HandoffReady(receipt) => {
+                // Take ownership before validation so even an internal mismatch cannot drop raw
+                // input. Retirement will transfer it to the caller on any subsequent refusal.
+                self.handoff = self.source.take_handoff();
+                let handoff = self.handoff.as_ref()
+                    .ok_or(HttpReconnectRecordingError::NotReady)?;
+                if handoff.receipt() != receipt
+                    || handoff.source.as_ref().and_then(|s| s.wire.as_ref())
+                        .is_none_or(|wire| wire.receipt() != expected.wire)
+                {
+                    return Err(HttpReconnectRecordingError::PlanMismatch);
+                }
+                Ok(())
+            }
+            _ => Err(HttpReconnectRecordingError::PlanMismatch),
         }
     }
     fn prepare_wire(&mut self) -> Result<HttpReconnectRecordingStep, HttpReconnectRecordingError> {
@@ -403,6 +418,7 @@ impl HttpReconnectRecording {
             return Err(HttpReconnectRecordingError::PlanMismatch);
         }
         self.admit(access)?;
+        self.refresh_prepared_wire(access)?;
         let ended = self.handoff.is_some();
         if !ended {
             let camera = self
@@ -494,9 +510,10 @@ impl HttpReconnectRecording {
             .take()
             .ok_or(HttpReconnectRecordingError::NotReady)?;
         self.boundary = None;
-        if expected.source.next_source.is_some() {
+        if let Some(not_before_ns) = expected.source.retry_at_ns {
             self.index += 1;
             self.validated = false;
+            self.connect_not_before_ns = not_before_ns;
         }
         Ok(handoff)
     }

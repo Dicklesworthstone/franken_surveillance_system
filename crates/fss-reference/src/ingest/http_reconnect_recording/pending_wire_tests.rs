@@ -106,7 +106,8 @@ fn held_read_failure(deadline: bool) -> Test {
         assert_eq!(run.totals(), before, "live prepared polls must neither parse nor read");
         let now_ns = if deadline { DEADLINE } else { authority.revoked.set(true); 2 };
         let late = HttpRecordingAccess { now_ns, ..access };
-        assert!(run.commit_wire(prepared, &mut publisher, late).is_err());
+        // Keep exercising the poll-first path. Direct commit now performs the same retirement
+        // and storage-only drain; its no-intervening-poll cases live in http_reconnect_barriers.
         assert_eq!(run.pin().bytes, 0);
         assert_eq!(publisher.visible_roots().count(), 0);
         // Previously this returned forever without retiring the live source owner.
