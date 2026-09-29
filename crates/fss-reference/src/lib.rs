@@ -49,6 +49,8 @@ pub mod event_review;
 pub mod evidence_export;
 mod extrinsics;
 mod hydration;
+/// Durable native reconnect boundaries and bounded cold history verification.
+pub mod http_reconnect_history;
 pub mod ingest;
 mod meaningful_delta;
 pub mod media_fixture;

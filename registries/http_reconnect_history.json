@@ -1,0 +1,33 @@
+{
+  "format": "fss.http_reconnect_history_registry.v1",
+  "status": "reference_implemented_native_unverified",
+  "owner": "fss-reference::http_reconnect_history",
+  "kind": "http_reconnect_boundary_v1",
+  "metadata_magic": "FSSHRB01",
+  "metadata_version": 1,
+  "metadata_domain": "fss.http_reconnect_boundary.v1",
+  "slot": "fsshrb1-<plan-sha256-hex>-<connection-decimal>",
+  "publication": "existing_immutable_object_graph_root_last",
+  "children": ["metadata", "previous_boundary_when_present", "every_current_original_read_root"],
+  "metadata_fields_in_order": [
+    "magic:bytes", "version:u32", "domain:text", "session:sha256", "connection:u32",
+    "prior_tag:u8", "prior_root:sha256_if_present", "claim_policy:sha256",
+    "source:sha256", "generation:u64", "receive_clock:sha256", "retention_scope:sha256",
+    "prefix_scope:sha256", "prefix_head:sha256", "prefix_reads:u64", "prefix_bytes:u64",
+    "outcome:u8", "tcp_attempted:bool_for_connect_failed", "uninterpreted_diagnostic:text",
+    "sent_bytes:u64", "received_bytes:u64", "read_calls:u64", "write_calls:u64", "frames:u64",
+    "peer_eof:bool", "admitted_ns:u64", "next_tag:u8", "next_source:sha256_if_present",
+    "next_generation:u64_if_present", "retry_at_ns:u64_if_present", "stop:u8"
+  ],
+  "outcome_tags": {"0": "native_complete", "1": "connect_failed", "2": "source_failed"},
+  "stop_tags": {"0": "none", "1": "complete", "2": "not_retryable", "3": "connections_exhausted", "4": "framing_work_exhausted", "5": "deadline"},
+  "limits": {"connections": 32, "metadata_bytes": 2048, "diagnostic_bytes": 512, "total_reads": 8192, "total_bytes": 536870912},
+  "work": "one_explicit_history_budget_in_addition_to_unchanged_native_source_and_framing_budgets",
+  "diagnostic_text": "bound_uninterpreted_payload_free_data_never_retry_or_authority_semantics",
+  "read_result": "exact_selected_prefix_not_a_latest_head_or_complete_run",
+  "release": "only_after_durable_boundary_publication_and_full_history_reverification",
+  "qualification": "not_run_no_rust_toolchain",
+  "native_test": "cargo test -p fss-reference http_reconnect_history --locked --offline",
+  "documentation": "docs/HTTP_RECONNECT_HISTORY.md",
+  "non_claims": ["physical_continuity", "coverage", "camera_authentication", "calibrated_capture_time", "automatic_resume", "replay_eof_authority", "encrypted_originals"]
+}
