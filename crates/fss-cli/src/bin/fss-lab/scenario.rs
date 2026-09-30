@@ -23,7 +23,7 @@ use fss_core::{
     ObligationId, ObligationState, OperationId, PrincipalId, ProbabilityInterval, SensorCapsule,
     SensorId, SensorSourceBytesSpec, SessionId, StreamId, TimestampNs,
 };
-use fss_object::{ObjectManifest, SpoolLimits, StagingSpool};
+use fss_object::ObjectManifest;
 use fss_publication::SlotName;
 use fss_reference::{
     DurableEffectError, MockModelOutcome, MockModelResult, MockModelScript, MockModelSpec,
@@ -240,7 +240,8 @@ pub struct KnowledgeReport {
     pub absence_certified: bool,
     /// Reason absence could not be certified, if any.
     pub absence_not_certifiable_reason: Option<&'static str>,
-    /// Corroboration status: "corroborated", "single_source", or "not_applicable".
+    /// Corroboration status: "corroborated", "single_source", "not_corroborated" (several
+    /// independent supports the policy did not corroborate), or "not_applicable".
     pub corroboration: &'static str,
     /// Identifiers of any coverage gaps observed.
     pub coverage_gaps: Vec<String>,
@@ -467,7 +468,7 @@ pub fn run_scenario(kind: ScenarioKind, root: &Path) -> Result<ScenarioReport, S
 
             if has_corruption_fault(&faults, camera.sensor, tick) {
                 // Verify that the real staging spool detects corrupted bytes on disk.
-                verify_spool_detects_corruption(&packet_bytes)?;
+                deployment_spool_detects_corruption(&mut deployment, &packet_bytes)?;
                 warnings.push(format!("source_corrupt:{}:{tick}", camera.sensor));
                 continue;
             }
@@ -547,200 +548,183 @@ pub fn run_scenario(kind: ScenarioKind, root: &Path) -> Result<ScenarioReport, S
         ),
     )?;
 
-    // Policy decision formulation.
-    let (decision, coverage_witness, envelope, event_disposition, knowledge) = match kind {
-        ScenarioKind::Quiet => {
-            let authorized_domain = BTreeSet::from([
-                "front-power-and-network".to_string(),
-                "side-power-and-network".to_string(),
-            ]);
-            let observed_domain = authorized_domain.clone();
-            let witness = CoverageWitness {
-                anchor: deployment.current_anchor().clone(),
-                authorized_domain: authorized_domain.clone(),
-                observed_domain,
-                excluded_domain: BTreeSet::new(),
-                continuity: CoverageContinuity::Continuous,
-                completeness: Completeness::Complete,
-                negative_predicate: "no_unknown_person_present".to_string(),
-                stop_reason: CoverageStopReason::Complete,
-                authorized_generation: deployment.current_anchor().policy_epoch,
-                observed_generation: deployment.current_anchor().policy_epoch,
-            };
+    // Every outcome below is derived from what the run actually recorded: the real policy's
+    // decision over the model observations, and the coverage gaps and corrupt sources. No
+    // scenario name selects a result.
+    let gaps: Vec<String> = warnings
+        .iter()
+        .filter_map(|w| {
+            w.strip_prefix("coverage_gap:")
+                .or_else(|| w.strip_prefix("source_corrupt:"))
+                .map(str::to_owned)
+        })
+        .collect();
+    let corrupt = warnings.iter().any(|w| w.starts_with("source_corrupt:"));
+    let event_id = EventId::parse(format!("event:lab:{}", kind.as_str()))?;
+    let (decision, coverage_witness) = if !observations.is_empty() {
+        (evaluate_unknown_presence(event_id, observations)?, None)
+    } else if gaps.is_empty() {
+        let event_id_quiet = event_id;
+        let authorized_domain = BTreeSet::from([
+            "front-power-and-network".to_string(),
+            "side-power-and-network".to_string(),
+        ]);
+        let observed_domain = authorized_domain.clone();
+        let witness = CoverageWitness {
+            anchor: deployment.current_anchor().clone(),
+            authorized_domain: authorized_domain.clone(),
+            observed_domain,
+            excluded_domain: BTreeSet::new(),
+            continuity: CoverageContinuity::Continuous,
+            completeness: Completeness::Complete,
+            negative_predicate: "no_unknown_person_present".to_string(),
+            stop_reason: CoverageStopReason::Complete,
+            authorized_generation: deployment.current_anchor().policy_epoch,
+            observed_generation: deployment.current_anchor().policy_epoch,
+        };
 
-            let witness_bytes = witness.canonical_bytes();
-            let witness_digest = deployment.stage_payload(&witness_bytes)?;
-            staged_digests.push(witness_digest);
+        let witness_bytes = witness.canonical_bytes();
+        let witness_digest = deployment.stage_payload(&witness_bytes)?;
+        staged_digests.push(witness_digest);
 
-            let event_id = EventId::parse("event:lab:quiet")?;
-            let mut evidence = Vec::new();
-            for domain in &authorized_domain {
-                evidence.push(EventEvidence {
-                    digest: witness_digest,
-                    class: EvidenceClass::Derived,
-                    failure_domain: domain.clone(),
-                    supports: false,
-                    relation: EvidenceEdgeRelation::Contradicts,
-                    capsule_digest: None,
-                    identity_digest: None,
-                });
-            }
+        let event_id = event_id_quiet;
+        let mut evidence = Vec::new();
+        for domain in &authorized_domain {
+            evidence.push(EventEvidence {
+                digest: witness_digest,
+                class: EvidenceClass::Derived,
+                failure_domain: domain.clone(),
+                supports: false,
+                relation: EvidenceEdgeRelation::Contradicts,
+                capsule_digest: None,
+                identity_digest: None,
+            });
+        }
 
-            let decision_path = policy_decision_path(
-                &event_id,
-                &evidence,
-                EventState::Rejected,
-                ReferencePolicyAction::Hold,
-            );
-            let event = EventHypothesis {
-                schema: EventHypothesis::SCHEMA.to_string(),
-                event_id,
-                revision: 1,
-                supersedes: None,
-                state: EventState::Rejected,
-                kind: EventKind::UnknownPresence,
-                interval,
-                uncertainty_reason: None,
-                zone_ids: Vec::new(),
-                track_ids: Vec::new(),
-                probability: ProbabilityInterval::new(0.0, 1.0)?,
-                evidence,
-                model_receipts: Vec::new(),
-                decision_path,
-            };
-            event.validate()?;
-            let decision = ReferencePolicyDecision {
+        let decision_path = policy_decision_path(
+            &event_id,
+            &evidence,
+            EventState::Rejected,
+            ReferencePolicyAction::Hold,
+        );
+        let event = EventHypothesis {
+            schema: EventHypothesis::SCHEMA.to_string(),
+            event_id,
+            revision: 1,
+            supersedes: None,
+            state: EventState::Rejected,
+            kind: EventKind::UnknownPresence,
+            interval,
+            uncertainty_reason: None,
+            zone_ids: Vec::new(),
+            track_ids: Vec::new(),
+            probability: ProbabilityInterval::new(0.0, 1.0)?,
+            evidence,
+            model_receipts: Vec::new(),
+            decision_path,
+        };
+        event.validate()?;
+        let decision = ReferencePolicyDecision {
+            event,
+            action: ReferencePolicyAction::Hold,
+        };
+
+        (decision, Some(witness))
+    } else {
+        // Nothing was observed, but coverage is incomplete: the event stays hypothesized with no
+        // evidence, and absence cannot be certified.
+        let decision_path = policy_decision_path(
+            &event_id,
+            &[],
+            EventState::Hypothesized,
+            ReferencePolicyAction::Hold,
+        );
+        let event = EventHypothesis {
+            schema: EventHypothesis::SCHEMA.to_string(),
+            event_id,
+            revision: 1,
+            supersedes: None,
+            state: EventState::Hypothesized,
+            kind: EventKind::UnknownPresence,
+            interval,
+            uncertainty_reason: Some(
+                if corrupt {
+                    "source corrupted"
+                } else {
+                    "coverage gap"
+                }
+                .to_string(),
+            ),
+            zone_ids: Vec::new(),
+            track_ids: Vec::new(),
+            probability: ProbabilityInterval::new(0.0, 1.0)?,
+            evidence: Vec::new(),
+            model_receipts: Vec::new(),
+            decision_path,
+        };
+        event.validate()?;
+        (
+            ReferencePolicyDecision {
                 event,
                 action: ReferencePolicyAction::Hold,
-            };
-
-            let knowledge = KnowledgeReport {
-                absence_certified: true,
-                absence_not_certifiable_reason: None,
-                corroboration: "not_applicable",
-                coverage_gaps: Vec::new(),
-            };
-
-            (
-                decision,
-                Some(witness),
-                EnvelopeClass::CertifiedQuiet,
-                "quiet",
-                knowledge,
-            )
-        }
-        ScenarioKind::Raccoon => {
-            let event_id = EventId::parse("event:lab:raccoon")?;
-            let decision = evaluate_unknown_presence(event_id, observations)?;
-            let knowledge = KnowledgeReport {
-                absence_certified: false,
-                absence_not_certifiable_reason: Some("activity_present"),
-                corroboration: "not_applicable",
-                coverage_gaps: Vec::new(),
-            };
-            (
-                decision,
-                None,
-                EnvelopeClass::BenignActivity,
-                "benign",
-                knowledge,
-            )
-        }
-        ScenarioKind::Intrusion => {
-            let event_id = EventId::parse("event:lab:intrusion")?;
-            let decision = evaluate_unknown_presence(event_id, observations)?;
-            let knowledge = KnowledgeReport {
-                absence_certified: false,
-                absence_not_certifiable_reason: Some("threat_present"),
-                corroboration: "corroborated",
-                coverage_gaps: Vec::new(),
-            };
-            (
-                decision,
-                None,
-                EnvelopeClass::CorroboratedThreat,
-                "corroborated_threat",
-                knowledge,
-            )
-        }
-        ScenarioKind::Sneaky => {
-            let event_id = EventId::parse("event:lab:sneaky")?;
-            let decision = evaluate_unknown_presence(event_id, observations)?;
-            let knowledge = KnowledgeReport {
-                absence_certified: false,
-                absence_not_certifiable_reason: Some("coverage_gap"),
-                corroboration: "single_source",
-                coverage_gaps: vec!["cam-side:2".to_string()],
-            };
-            (
-                decision,
-                None,
-                EnvelopeClass::ProtectedResidual,
-                "protected_residual",
-                knowledge,
-            )
-        }
-        ScenarioKind::LostAcknowledgement => {
-            let event_id = EventId::parse("event:lab:lost-ack")?;
-            let decision = evaluate_unknown_presence(event_id, observations)?;
-            let knowledge = KnowledgeReport {
-                absence_certified: false,
-                absence_not_certifiable_reason: Some("threat_present"),
-                corroboration: "corroborated",
-                coverage_gaps: Vec::new(),
-            };
-            (
-                decision,
-                None,
-                EnvelopeClass::CorroboratedThreat,
-                "corroborated_threat",
-                knowledge,
-            )
-        }
-        ScenarioKind::CorruptSource => {
-            // Source corruption prevents certified absence and preserves residual world.
-            let event_id = EventId::parse("event:lab:corrupt-source")?;
-            let decision_path = policy_decision_path(
-                &event_id,
-                &[],
-                EventState::Hypothesized,
-                ReferencePolicyAction::Hold,
-            );
-            let event = EventHypothesis {
-                schema: EventHypothesis::SCHEMA.to_string(),
-                event_id,
-                revision: 1,
-                supersedes: None,
-                state: EventState::Hypothesized,
-                kind: EventKind::UnknownPresence,
-                interval,
-                uncertainty_reason: Some("source corrupted".to_string()),
-                zone_ids: Vec::new(),
-                track_ids: Vec::new(),
-                probability: ProbabilityInterval::new(0.0, 1.0)?,
-                evidence: Vec::new(),
-                model_receipts: Vec::new(),
-                decision_path,
-            };
-            event.validate()?;
-            let decision = ReferencePolicyDecision {
-                event,
-                action: ReferencePolicyAction::Hold,
-            };
-            let knowledge = KnowledgeReport {
-                absence_certified: false,
-                absence_not_certifiable_reason: Some("source_corrupt"),
-                corroboration: "not_applicable",
-                coverage_gaps: vec!["cam-side:2".to_string()],
-            };
-            (
-                decision,
-                None,
-                EnvelopeClass::ProtectedResidual,
-                "protected_residual",
-                knowledge,
-            )
-        }
+            },
+            None,
+        )
+    };
+    let support_domains: BTreeSet<&str> = decision
+        .event
+        .evidence
+        .iter()
+        .filter(|e| e.relation == EvidenceEdgeRelation::Supports)
+        .map(|e| e.failure_domain.as_str())
+        .collect();
+    let contradicting = decision
+        .event
+        .evidence
+        .iter()
+        .any(|e| e.relation == EvidenceEdgeRelation::Contradicts);
+    let state = decision.event.state;
+    let certified = coverage_witness.is_some();
+    let envelope = if certified {
+        EnvelopeClass::CertifiedQuiet
+    } else if state == EventState::Corroborated {
+        EnvelopeClass::CorroboratedThreat
+    } else if state == EventState::Rejected && gaps.is_empty() {
+        EnvelopeClass::BenignActivity
+    } else {
+        EnvelopeClass::ProtectedResidual
+    };
+    let event_disposition = match envelope {
+        EnvelopeClass::CertifiedQuiet => "quiet",
+        EnvelopeClass::CorroboratedThreat => "corroborated_threat",
+        EnvelopeClass::BenignActivity => "benign",
+        EnvelopeClass::ProtectedResidual => "protected_residual",
+    };
+    let absence_not_certifiable_reason = if certified {
+        None
+    } else if state == EventState::Corroborated {
+        Some("threat_present")
+    } else if corrupt {
+        Some("source_corrupt")
+    } else if !gaps.is_empty() {
+        Some("coverage_gap")
+    } else if !support_domains.is_empty() {
+        Some("threat_present")
+    } else if contradicting {
+        Some("activity_present")
+    } else {
+        Some("unresolved_evidence")
+    };
+    let knowledge = KnowledgeReport {
+        absence_certified: certified,
+        absence_not_certifiable_reason,
+        corroboration: match support_domains.len() {
+            0 => "not_applicable",
+            1 => "single_source",
+            _ if state == EventState::Corroborated => "corroborated",
+            _ => "not_corroborated",
+        },
+        coverage_gaps: gaps,
     };
 
     // Publish event revision through the deployment.
@@ -1076,45 +1060,22 @@ fn policy_decision_path(
     }
 }
 
-fn verify_spool_detects_corruption(bytes: &[u8]) -> Result<(), ScenarioError> {
-    let temp_dir = std::env::temp_dir().join(format!(
-        "fss-lab-corrupt-check-{}-{}",
-        std::process::id(),
-        std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .map(|d| d.as_nanos())
-            .unwrap_or(0)
-    ));
-    fs::create_dir_all(&temp_dir).map_err(|e| ScenarioError::Reference(e.to_string()))?;
-
-    let limits = SpoolLimits::new(1024, 16 * 1024 * 1024, 1024 * 1024, 1024);
-    let mut spool =
-        StagingSpool::open(&temp_dir, limits).map_err(|e| ScenarioError::Spool(e.to_string()))?;
-
-    let declared = ContentDigest::sha256(bytes);
-    let receipt = spool
-        .stage(declared, bytes)
-        .map_err(|e| ScenarioError::Spool(e.to_string()))?;
-    let digest = receipt.digest;
-
-    // Corrupt the staged payload on disk.
-    let object_file = spool.object_path(digest);
-    if object_file.exists() {
-        let mut file_bytes =
-            fs::read(&object_file).map_err(|e| ScenarioError::Reference(e.to_string()))?;
-        if let Some(last) = file_bytes.last_mut() {
-            *last ^= 0xff;
-        }
-        fs::write(&object_file, file_bytes).map_err(|e| ScenarioError::Reference(e.to_string()))?;
-    }
-
-    // Verification must detect the corruption.
-    let verified = spool.verify(digest);
-    let detected = verified.is_err();
-
-    let _ = fs::remove_dir_all(&temp_dir);
-
-    if detected {
+fn deployment_spool_detects_corruption(
+    deployment: &mut ReferenceDeployment,
+    bytes: &[u8],
+) -> Result<(), ScenarioError> {
+    // The corrupt source is staged in this deployment's own spool, damaged on disk, and must be
+    // refused by the same verified read every consumer uses. It is then never referenced.
+    let digest = deployment.stage_payload(bytes)?;
+    let object_file = deployment.publisher().spool().object_path(digest);
+    let mut file_bytes =
+        fs::read(&object_file).map_err(|e| ScenarioError::Reference(e.to_string()))?;
+    let last = file_bytes
+        .last_mut()
+        .ok_or(ScenarioError::Packet("empty staged source"))?;
+    *last ^= 0xff;
+    fs::write(&object_file, file_bytes).map_err(|e| ScenarioError::Reference(e.to_string()))?;
+    if deployment.publisher().spool().read(digest).is_err() {
         Ok(())
     } else {
         Err(ScenarioError::Packet("spool corruption was not detected"))
