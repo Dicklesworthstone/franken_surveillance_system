@@ -152,7 +152,13 @@ impl ZoneAssessment {
                     (Some(PoseUncertainty::NotProvided), _) => {
                         " Pose uncertainty_not_provided.".to_owned()
                     }
-                    (Some(PoseUncertainty::SigmaPoints { .. }), Some(robustness)) => format!(
+                    (
+                        Some(
+                            PoseUncertainty::SigmaPoints { .. }
+                            | PoseUncertainty::SigmaPointsGuarded { .. },
+                        ),
+                        Some(robustness),
+                    ) => format!(
                         " Pose {} {}/{}.",
                         robustness.state(),
                         robustness.agreeing(),
