@@ -225,51 +225,135 @@ fn http_status_denial_is_terminal_and_never_uses_the_next_reserved_slot() -> Tes
     assert!(text.contains("\"request_satisfied\":false"));
     Ok(())
 }
+#[derive(Clone, Copy, Debug)]
+enum SinkFault {
+    BeforeWrite,
+    PartialWrite,
+    Flush,
+}
 struct FailingBoundary {
     bytes: Vec<u8>,
+    fault: SinkFault,
+    fail_next_write: bool,
+    boundary_written: bool,
     failed: bool,
+    calls_after_failure: usize,
+}
+impl FailingBoundary {
+    fn new(fault: SinkFault) -> Self {
+        Self {
+            bytes: Vec::new(),
+            fault,
+            fail_next_write: false,
+            boundary_written: false,
+            failed: false,
+            calls_after_failure: 0,
+        }
+    }
 }
 impl Write for FailingBoundary {
     fn write(&mut self, bytes: &[u8]) -> io::Result<usize> {
-        if !self.failed
-            && bytes
-                .windows(b"boundary_verified".len())
-                .any(|w| w == b"boundary_verified")
-        {
+        if self.failed {
+            // Deliberately recover: the transcript, not a permanently broken fixture, must
+            // prevent appending another object to an incomplete or unacknowledged row.
+            self.calls_after_failure += 1;
+        } else if self.fail_next_write {
             self.failed = true;
             return Err(io::ErrorKind::BrokenPipe.into());
+        } else if bytes
+            .windows(b"boundary_verified".len())
+            .any(|w| w == b"boundary_verified")
+        {
+            match self.fault {
+                SinkFault::BeforeWrite => {
+                    self.failed = true;
+                    return Err(io::ErrorKind::BrokenPipe.into());
+                }
+                SinkFault::PartialWrite => {
+                    let count = bytes.len().min(16);
+                    self.bytes.extend_from_slice(&bytes[..count]);
+                    self.fail_next_write = true;
+                    return Ok(count);
+                }
+                SinkFault::Flush => self.boundary_written = true,
+            }
         }
         self.bytes.extend_from_slice(bytes);
         Ok(bytes.len())
     }
     fn flush(&mut self) -> io::Result<()> {
+        if self.failed {
+            self.calls_after_failure += 1;
+        } else if self.boundary_written {
+            self.failed = true;
+            return Err(io::ErrorKind::BrokenPipe.into());
+        }
         Ok(())
     }
 }
 #[test]
 fn output_failure_at_the_boundary_prevents_a_second_connect() -> TestResult {
-    let directory = Directory::new("output")?;
-    let listener = TcpListener::bind("127.0.0.1:0")?;
-    let options = options(
-        &directory.0.join("archive"),
-        listener.local_addr()?,
-        "7,9",
-        "yes",
-    )?;
-    let server = serve(listener, vec![response()]);
-    let mut out = FailingBoundary {
-        bytes: Vec::new(),
-        failed: false,
-    };
-    let result = capture(&options, &mut out);
-    assert_eq!(joined(server)?, 1);
-    assert_eq!(result, Ok(false));
-    assert!(out.failed);
-    let text = String::from_utf8(out.bytes)?;
-    assert!(text.contains("ERR-CAPTURE-RECONNECT-OUTPUT-001"));
-    assert!(text.contains("\"connections_started\":1"));
-    assert!(text.contains("\"released\":false"));
+    for fault in [SinkFault::BeforeWrite, SinkFault::PartialWrite, SinkFault::Flush] {
+        let directory = Directory::new(&format!("output-{fault:?}"))?;
+        let listener = TcpListener::bind("127.0.0.1:0")?;
+        listener.set_nonblocking(true)?;
+        let options = options(
+            &directory.0.join("archive"),
+            listener.local_addr()?,
+            "7,9",
+            "yes",
+        )?;
+        // Keep the listening socket alive so an illicit second connect cannot hide behind
+        // connection refusal after the fixture has served its one allowed response.
+        let server = serve(listener.try_clone()?, vec![response()]);
+        let mut out = FailingBoundary::new(fault);
+        let result = capture(&options, &mut out);
+        assert_eq!(joined(server)?, 1);
+        assert_eq!(result, Err("ERR-CAPTURE-RECONNECT-OUTPUT-001"));
+        assert!(out.failed);
+        assert_eq!(out.calls_after_failure, 0);
+        assert!(matches!(listener.accept(), Err(e) if e.kind() == io::ErrorKind::WouldBlock));
+        let text = String::from_utf8(out.bytes)?;
+        assert!(text.contains("\"kind\":\"wire_durable\""));
+        assert_eq!(text.matches("\"kind\":\"connected\"").count(), 1);
+        assert!(!text.contains("\"kind\":\"finish\""));
+        if matches!(fault, SinkFault::PartialWrite) {
+            assert!(!text.ends_with('\n'));
+        }
+    }
     Ok(())
+}
+#[test]
+fn transcript_never_reuses_a_sink_after_write_or_flush_failure() {
+    for fault in [SinkFault::BeforeWrite, SinkFault::PartialWrite, SinkFault::Flush] {
+        let mut out = FailingBoundary::new(fault);
+        let mut log = Transcript {
+            out: &mut out,
+            used: 0,
+            maximum: RESERVE * 4,
+            sequence: 0,
+            io_failed: false,
+        };
+        assert!(log.emit("admitted", "{}".into(), false).is_ok());
+        assert!(matches!(
+            log.emit("boundary_verified", "{}".into(), false),
+            Err(Failure::Output)
+        ));
+        assert!(log.io_failed);
+        assert_eq!(log.sequence, 1);
+        let used = log.used;
+        let prefix = log.out.bytes.clone();
+        for terminal in [false, true] {
+            assert!(matches!(
+                log.emit("finish", "{}".into(), terminal),
+                Err(Failure::Output)
+            ));
+            assert_eq!(log.used, used);
+            assert_eq!(log.sequence, 1);
+            assert_eq!(log.out.bytes, prefix);
+            assert_eq!(log.out.calls_after_failure, 0);
+        }
+    }
 }
 #[test]
 fn stale_approval_and_failed_admission_output_create_no_archive_or_connection() -> TestResult {
@@ -309,12 +393,19 @@ fn transcript_keeps_a_terminal_reserve_and_finite_interrupted_writes() {
         used: 0,
         maximum: RESERVE * 2,
         sequence: 0,
+        io_failed: false,
     };
     assert!(matches!(
         log.emit("too_large", string(&"x".repeat(RESERVE)), false),
         Err(Failure::Output)
     ));
+    // Budget refusal happens before sink I/O and must not poison its terminal reserve.
+    assert!(!log.io_failed);
+    assert_eq!(log.used, 0);
+    assert_eq!(log.sequence, 0);
+    assert!(log.out.is_empty());
     assert!(log.emit("finish", "{}".into(), true).is_ok());
+    assert_eq!(log.sequence, 1);
     struct Interrupted;
     impl Write for Interrupted {
         fn write(&mut self, _: &[u8]) -> io::Result<usize> {
@@ -325,6 +416,96 @@ fn transcript_keeps_a_terminal_reserve_and_finite_interrupted_writes() {
         }
     }
     assert!(write_bounded(&mut Interrupted, b"x").is_err());
+}
+
+#[test]
+fn transcript_latches_zero_invalid_and_exhausted_interrupted_writes() {
+    struct Refusing {
+        mode: usize,
+        writes: usize,
+        flushes: usize,
+    }
+    impl Write for Refusing {
+        fn write(&mut self, bytes: &[u8]) -> io::Result<usize> {
+            self.writes += 1;
+            match self.mode {
+                0 => Ok(0),
+                1 => Ok(bytes.len() + 1),
+                _ => Err(io::ErrorKind::Interrupted.into()),
+            }
+        }
+        fn flush(&mut self) -> io::Result<()> {
+            self.flushes += 1;
+            Ok(())
+        }
+    }
+    for (mode, expected_writes) in [(0, 1), (1, 1), (2, 8)] {
+        let mut out = Refusing {
+            mode,
+            writes: 0,
+            flushes: 0,
+        };
+        let mut log = Transcript {
+            out: &mut out,
+            used: 0,
+            maximum: RESERVE * 2,
+            sequence: 0,
+            io_failed: false,
+        };
+        assert!(matches!(
+            log.emit("admitted", "{}".into(), false),
+            Err(Failure::Output)
+        ));
+        assert!(log.io_failed);
+        assert_eq!(log.out.writes, expected_writes);
+        assert_eq!(log.out.flushes, 0);
+        assert!(matches!(
+            log.emit("finish", "{}".into(), true),
+            Err(Failure::Output)
+        ));
+        assert_eq!(log.out.writes, expected_writes);
+        assert_eq!(log.out.flushes, 0);
+        assert_eq!(log.sequence, 0);
+    }
+}
+#[test]
+fn transcript_allows_short_writes_and_finite_interruptions_before_acknowledgement() {
+    #[derive(Default)]
+    struct InterruptedThenShort {
+        bytes: Vec<u8>,
+        calls: usize,
+        flushes: usize,
+    }
+    impl Write for InterruptedThenShort {
+        fn write(&mut self, bytes: &[u8]) -> io::Result<usize> {
+            self.calls += 1;
+            if self.calls <= 3 {
+                return Err(io::ErrorKind::Interrupted.into());
+            }
+            let count = bytes.len().min(7);
+            self.bytes.extend_from_slice(&bytes[..count]);
+            Ok(count)
+        }
+        fn flush(&mut self) -> io::Result<()> {
+            self.flushes += 1;
+            Ok(())
+        }
+    }
+    let mut out = InterruptedThenShort::default();
+    let mut log = Transcript {
+        out: &mut out,
+        used: 0,
+        maximum: RESERVE * 2,
+        sequence: 0,
+        io_failed: false,
+    };
+    assert!(log.emit("admitted", "{}".into(), false).is_ok());
+    assert!(log.emit("finish", "{}".into(), true).is_ok());
+    assert!(!log.io_failed);
+    assert_eq!(log.sequence, 2);
+    assert_eq!(log.used, log.out.bytes.len());
+    assert_eq!(log.out.flushes, 2);
+    assert_eq!(log.out.bytes.iter().filter(|&&b| b == b'\n').count(), 2);
 }
 
 fn decode_options(

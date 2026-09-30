@@ -57,9 +57,15 @@ struct Transcript<'a, W> {
     used: usize,
     maximum: usize,
     sequence: u64,
+    io_failed: bool,
 }
 impl<W: Write> Transcript<'_, W> {
     fn emit(&mut self, kind: &str, detail: String, terminal: bool) -> Result<(), Failure> {
+        // A failed write may have exposed a partial row; a failed flush leaves acknowledgement
+        // indeterminate. Neither permits another row, including the terminal report, on this sink.
+        if self.io_failed {
+            return Err(Failure::Output);
+        }
         let row = object(&[
             ("format", string(FORMAT)),
             ("sequence", self.sequence.to_string()),
@@ -73,8 +79,13 @@ impl<W: Write> Transcript<'_, W> {
             return Err(Failure::Output);
         }
         self.used += row.len();
-        write_bounded(self.out, row.as_bytes()).map_err(|_| Failure::Output)?;
-        self.out.flush().map_err(|_| Failure::Output)?;
+        if write_bounded(self.out, row.as_bytes())
+            .and_then(|()| self.out.flush())
+            .is_err()
+        {
+            self.io_failed = true;
+            return Err(Failure::Output);
+        }
         self.sequence += 1;
         Ok(())
     }
@@ -652,6 +663,7 @@ pub(super) fn capture<W: Write>(options: &Options, out: &mut W) -> Result<bool, 
             used: 0,
             maximum: options.report_bytes,
             sequence: 0,
+            io_failed: false,
         };
         log.emit(
             "admitted",
