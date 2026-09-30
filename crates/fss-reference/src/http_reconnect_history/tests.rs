@@ -15,7 +15,7 @@ use fss_publication::{LocalPublicationLimits, NeverCancel, PublishCancellation, 
 use std::fs;
 use std::io::{self, Read, Write};
 use std::net::{SocketAddr, TcpListener, TcpStream};
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 use std::time::{Duration, Instant};
 
 type Test = Result<(), Box<dyn std::error::Error>>;
