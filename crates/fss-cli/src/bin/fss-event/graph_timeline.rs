@@ -299,7 +299,18 @@ mod tests {
             json,
             render(&value, &[], budget(), shared_failures::MAX_REPORT_BYTES)?
         );
-        assert!(render(&value, &[], budget(), json.len() - 1).is_err());
+        // The report embeds its own byte limit, so a smaller limit can shorten the output: the
+        // bound is that no limit ever yields a report longer than itself, and a tiny one refuses.
+        for limit in json.len().saturating_sub(16)..=json.len() + 16 {
+            if let Ok(tight) = render(&value, &[], budget(), limit) {
+                assert!(
+                    tight.len() <= limit,
+                    "report of {} bytes under limit {limit}",
+                    tight.len()
+                );
+            }
+        }
+        assert!(render(&value, &[], budget(), 64).is_err());
         Ok(())
     }
 
