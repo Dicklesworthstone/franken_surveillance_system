@@ -783,5 +783,8 @@ fn require_root(
     Ok(())
 }
 
+/// Explicit cold recovery of one independently pinned, already-staged original read.
+pub mod recovery;
+
 #[cfg(test)]
 mod tests;
