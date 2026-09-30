@@ -446,21 +446,12 @@ fn corrupt_published_boundary_cannot_release_its_source_or_reconnect() -> Test {
             .observation
             .encode()?;
         // Only files inside the fixture-owned archive may be modified.
-        fn corrupt(dir: &Path, wanted: &[u8]) -> io::Result<bool> {
-            for item in fs::read_dir(dir)? {
-                let path = item?.path();
-                if path.is_dir() {
-                    if corrupt(&path, wanted)? {
-                        return Ok(true);
-                    }
-                } else if fs::read(&path).is_ok_and(|bytes| bytes == wanted) {
-                    fs::write(path, b"corrupt history metadata")?;
-                    return Ok(true);
-                }
-            }
-            Ok(false)
-        }
-        assert!(corrupt(&dir.0, &metadata)?);
+        // Spool objects carry a format header, so locate the metadata object by its digest.
+        let object = publisher
+            .spool()
+            .object_path(ContentDigest::sha256(&metadata));
+        assert!(object.is_file());
+        fs::write(&object, b"corrupt history metadata")?;
         assert!(
             run.release_boundary(pin, &publisher, auth.access(&NeverCancel))
                 .is_err()
