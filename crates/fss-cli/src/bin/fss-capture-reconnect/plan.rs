@@ -49,6 +49,8 @@ pub(super) const HELP: &str = "fss-capture-reconnect --root ABSOLUTE_ARCHIVE_DIR
   Optional --decode grayscale|ycbcr requires --privacy-root EXISTING_DEPLOYMENT --site SITE --sensor ID.\n\
   --max-decode-work 1000000000 is shared across ALL connections; --max-dimension 4096 and\n\
   --max-pixels 4194304 bound each frame. Current privacy masks apply before pixel digests.\n\
+  --recoverable yes emits a lossless recovery key before each original-read publication.\n\
+  Save it independently; fss-recover-http can reconcile already-staged bytes, not resume capture.\n\
   No pixels, raw headers, capture timestamps, detection, events, alerts or absence claims.\n\
   Original source is private local UNENCRYPTED custody. This is not crash-resume or a daemon.\n";
 
@@ -74,6 +76,7 @@ pub(super) struct Options {
     pub stop_after: Option<u64>,
     pub approve: Option<ContentDigest>,
     pub decode: Option<decode::Options>,
+    pub recoverable: bool,
 }
 
 fn digest(text: &str) -> Result<ContentDigest, &'static str> {
@@ -128,6 +131,7 @@ impl Options {
             "--initial-backoff-ms",
             "--maximum-backoff-ms",
             "--after-complete",
+            "--recoverable",
             "--decode",
             "--privacy-root",
             "--site",
@@ -225,6 +229,11 @@ impl Options {
             "no" => false,
             _ => return Err("--after-complete requires yes or no"),
         };
+        let recoverable = match values.get("--recoverable").copied().unwrap_or("no") {
+            "yes" => true,
+            "no" => false,
+            _ => return Err("--recoverable requires yes or no"),
+        };
         let decode = decode::Options::parse(&values, &root, native.multipart.frame_bytes)?;
         let options = Self {
             root,
@@ -234,6 +243,7 @@ impl Options {
             archive,
             per_slot_frames,
             decode,
+            recoverable,
             peer: required("--peer")?
                 .parse()
                 .map_err(|_| "literal IP:PORT required")?,
@@ -392,6 +402,15 @@ impl Options {
         if let Some(decode) = &self.decode {
             decode.encode(&mut e);
         }
+        let base = ContentDigest::sha256(&e.finish());
+        if !self.recoverable {
+            return base;
+        }
+        // Existing raw/v2 decode approvals are byte-identical unless explicitly opted in.
+        let mut e = CanonicalEncoder::new();
+        e.text("fss.http_recoverable_capture_plan.v1");
+        e.digest(base);
+        e.text("fss.http_wire_recovery_key.v1:preserve-before-publication:no-network-resume");
         ContentDigest::sha256(&e.finish())
     }
     pub fn preview(&self) -> String {
@@ -451,6 +470,9 @@ impl Options {
         if let Some(decode) = &self.decode {
             fields.push(("native_decode", decode.to_json()));
         }
+        if self.recoverable {
+            fields.push(("wire_recovery", string("save_key_before_publication_no_capture_resume")));
+        }
         object(&fields)
     }
 }
@@ -471,3 +493,7 @@ pub(super) fn reservation_json(r: HttpReconnectReservation) -> String {
 #[cfg(test)]
 #[path = "plan_tests.rs"]
 mod tests;
+
+#[cfg(test)]
+#[path = "recovery_plan_tests.rs"]
+mod recovery_tests;

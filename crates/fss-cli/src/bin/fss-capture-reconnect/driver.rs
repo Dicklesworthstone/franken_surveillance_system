@@ -14,6 +14,7 @@ use fss_publication::{
 };
 use fss_reference::ReplayCx;
 use fss_reference::ingest::http_archive::HttpWirePin;
+use fss_reference::ingest::http_archive::recovery::HttpWireRecoveryKey;
 use fss_reference::ingest::http_camera::{
     HttpCameraAuthority, HttpCameraDenial, HttpCameraOperation, HttpCameraRoute,
 };
@@ -344,15 +345,22 @@ fn drive<W: Write>(
             }
             HttpReconnectRecordingStep::WirePrepared(plan) => {
                 let wire = plan.wire();
-                log.emit(
-                    "wire_prepared",
-                    object(&[
-                        ("generation", string(&wire.basis.generation.to_string())),
-                        ("pin", pin_json(plan.expected_pin())),
-                        ("publication", string("not_yet_confirmed")),
-                    ]),
-                    false,
-                )?;
+                let mut fields = vec![
+                    ("generation", string(&wire.basis.generation.to_string())),
+                    ("pin", pin_json(plan.expected_pin())),
+                    ("publication", string("not_yet_confirmed")),
+                ];
+                if options.recoverable {
+                    // Preserve the complete descriptor BEFORE storage. It grants no authority
+                    // and can recover only bytes/metadata already staged by this exact attempt.
+                    let key = HttpWireRecoveryKey::new(
+                        recording.scope(), recording.pin(), wire, plan.expected_pin(),
+                    )
+                    .and_then(|key| key.to_text())
+                    .map_err(|error| Failure::Source(HttpReconnectRecordingError::Archive(error)))?;
+                    fields.push(("recovery_key", string(&key)));
+                }
+                log.emit("wire_prepared", object(&fields), false)?;
                 // Sink delay never extends authority or acknowledges an uncommitted source read.
                 let committed = recording.commit_wire(plan, publisher, owner.access()?)?;
                 stats
@@ -728,3 +736,7 @@ pub(super) fn capture<W: Write>(options: &Options, out: &mut W) -> Result<bool, 
 #[cfg(test)]
 #[path = "driver_tests.rs"]
 mod tests;
+
+#[cfg(test)]
+#[path = "driver_recovery_tests.rs"]
+mod recovery_tests;
