@@ -298,6 +298,7 @@ fn stopped(last: Option<HttpReconnectBoundary>) -> Result<End, Failure> {
     }
 }
 
+#[allow(clippy::too_many_arguments)]
 fn drive<W: Write>(
     options: &Options,
     recording: &mut HttpReconnectRecording,
