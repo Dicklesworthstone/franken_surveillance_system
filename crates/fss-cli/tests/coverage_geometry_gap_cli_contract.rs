@@ -1435,7 +1435,7 @@ fn a_pose_sensitive_edge_zone_is_never_certified_absent_and_breaks_silence() -> 
             assert_eq!(uncertainty.get("perturbations")?.number()?, 12);
             assert_eq!(
                 uncertainty.get("claim")?.text()?,
-                "local_linear_approximation_not_a_guarantee"
+                "conditional_linearized_screen_not_physical_observability_or_probability"
             );
         }
         for edge in zones(&preview, "edge")? {
