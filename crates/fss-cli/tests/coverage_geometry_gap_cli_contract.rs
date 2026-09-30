@@ -1427,7 +1427,11 @@ fn a_pose_sensitive_edge_zone_is_never_certified_absent_and_breaks_silence() -> 
         assert_eq!(run(&[])?.stdout, run(&[])?.stdout, "{label}");
         for record in preview.path(&["coverage", "records"])?.items()? {
             let uncertainty = record.get("pose_uncertainty")?;
-            assert_eq!(uncertainty.get("status")?.text()?, "sigma_points");
+            // Calibrated runs also pass the owner full-camera guard (3b45140).
+            assert_eq!(
+                uncertainty.get("status")?.text()?,
+                "sigma_points_with_full_camera_guard"
+            );
             assert_eq!(uncertainty.get("perturbations")?.number()?, 12);
             assert_eq!(
                 uncertainty.get("claim")?.text()?,
