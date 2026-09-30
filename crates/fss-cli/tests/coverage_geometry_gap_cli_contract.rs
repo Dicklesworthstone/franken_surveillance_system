@@ -1321,11 +1321,14 @@ fn calibration_file(
         translation,
         covariance_parameters: pose_parameters.clone(),
         covariance: covariance.clone(),
+        // The full 12-parameter camera block: pose free, intrinsics and radial terms fixed.
         fixed_parameters: vec![
             BundleParameter::Fx,
             BundleParameter::Fy,
             BundleParameter::Cx,
             BundleParameter::Cy,
+            BundleParameter::K1,
+            BundleParameter::K2,
         ],
         seed_rms_px: 0.1,
         refined_rms_px: 0.1,
