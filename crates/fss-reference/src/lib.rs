@@ -48,9 +48,9 @@ pub mod event_review;
 /// Approval-gated, redacted P5 event evidence export roots.
 pub mod evidence_export;
 mod extrinsics;
-mod hydration;
 /// Durable native reconnect boundaries and bounded cold history verification.
 pub mod http_reconnect_history;
+mod hydration;
 pub mod ingest;
 mod meaningful_delta;
 pub mod media_fixture;

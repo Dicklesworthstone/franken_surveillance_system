@@ -3309,6 +3309,13 @@
       "schema": "fss.calibration_coverage_guard.v1"
     },
     {
+      "authority": "derived coverage diagnostics",
+      "compatibilityRule": "lossless per-zone abstention; full-camera assessments and aggregate guard work; creates no witness or effect authority; existing guard/refusal identities remain historical",
+      "file": "schemas/calibration_coverage_proposal.v1.json",
+      "id": "SCHEMA-CALIBRATION-COVERAGE-PROPOSAL-001",
+      "schema": "fss.calibration_coverage_proposal.v1"
+    },
+    {
       "authority": "runtime evidence",
       "compatibilityRule": "terminal/indeterminate outcome and outstanding effects preserved",
       "file": "schemas/cancellation_drain_certificate.v1.json",

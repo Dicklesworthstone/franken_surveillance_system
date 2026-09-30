@@ -6,8 +6,8 @@ use std::collections::BTreeMap;
 use std::path::Path;
 
 use fss_cli::agent_json::{object, string};
-use fss_codec_mjpeg::{ComponentInterpretation, DecodeBudget, DecodeError, DecodeLimits};
 use fss_codec_mjpeg::http_mjpeg::HttpJpegFrame;
+use fss_codec_mjpeg::{ComponentInterpretation, DecodeBudget, DecodeError, DecodeLimits};
 use fss_core::{CanonicalEncoder, ContentDigest};
 use fss_reference::ingest::http_camera::HttpCameraDenial;
 use fss_reference::ingest::http_replay::check::HttpCheckDecode;
@@ -24,9 +24,11 @@ pub(super) struct Options {
 }
 impl Options {
     /// No default sensor, policy or interpretation. This is a pure parse, not a grant.
-    pub fn parse(values: &BTreeMap<&str, &str>, root: &Path, maximum_bytes: usize)
-        -> Result<Option<Self>, &'static str>
-    {
+    pub fn parse(
+        values: &BTreeMap<&str, &str>,
+        root: &Path,
+        maximum_bytes: usize,
+    ) -> Result<Option<Self>, &'static str> {
         let mode = match values.get("--decode").copied().unwrap_or("none") {
             "none" => HttpCheckDecode::None,
             "grayscale" => HttpCheckDecode::Grayscale,
@@ -35,7 +37,10 @@ impl Options {
         };
         let privacy = privacy::Options::parse(values, mode, root)?;
         if mode == HttpCheckDecode::None {
-            if ["--max-decode-work", "--max-dimension", "--max-pixels"].iter().any(|key| values.contains_key(key)) {
+            if ["--max-decode-work", "--max-dimension", "--max-pixels"]
+                .iter()
+                .any(|key| values.contains_key(key))
+            {
                 return Err("decode limits require an explicit decode mode");
             }
             return Ok(None);
@@ -43,11 +48,14 @@ impl Options {
         let number = |key: &str, default: u64, min: u64, max: u64| -> Result<u64, &'static str> {
             let value = match values.get(key) {
                 None => default,
-                Some(text) if !text.is_empty() && text.bytes().all(|b| b.is_ascii_digit()) =>
-                    text.parse::<u64>().map_err(|_| "decode integer overflow")?,
+                Some(text) if !text.is_empty() && text.bytes().all(|b| b.is_ascii_digit()) => {
+                    text.parse::<u64>().map_err(|_| "decode integer overflow")?
+                }
                 Some(_) => return Err("unsigned decimal decode limit required"),
             };
-            if !(min..=max).contains(&value) { return Err("decode limit exceeded"); }
+            if !(min..=max).contains(&value) {
+                return Err("decode limit exceeded");
+            }
             Ok(value)
         };
         Ok(Some(Self {
@@ -65,22 +73,41 @@ impl Options {
     pub fn encode(&self, e: &mut CanonicalEncoder) {
         e.text("complete-native-luma:current-mask-before-disclosure:one-decode-budget:v1");
         e.text(privacy::label(self.mode));
-        e.digest(ContentDigest::new(fss_core::DigestAlgorithm::Sha256, fss_codec_mjpeg::decoder_identity()));
-        for value in [self.limits.maximum_bytes as u64, u64::from(self.limits.maximum_dimension),
-            self.limits.maximum_pixels as u64, self.limits.maximum_markers as u64, self.work]
-        { e.u64(value); }
+        e.digest(ContentDigest::new(
+            fss_core::DigestAlgorithm::Sha256,
+            fss_codec_mjpeg::decoder_identity(),
+        ));
+        for value in [
+            self.limits.maximum_bytes as u64,
+            u64::from(self.limits.maximum_dimension),
+            self.limits.maximum_pixels as u64,
+            self.limits.maximum_markers as u64,
+            self.work,
+        ] {
+            e.u64(value);
+        }
         self.privacy.encode(e);
     }
     pub fn to_json(&self) -> String {
         object(&[
             ("interpretation", string(privacy::label(self.mode))),
-            ("plane", string("luma_only_all_entropy_components_validated")),
-            ("decoder_identity", string(&super::byte_digest(fss_codec_mjpeg::decoder_identity()))),
+            (
+                "plane",
+                string("luma_only_all_entropy_components_validated"),
+            ),
+            (
+                "decoder_identity",
+                string(&super::byte_digest(fss_codec_mjpeg::decoder_identity())),
+            ),
             ("maximum_bytes", self.limits.maximum_bytes.to_string()),
-            ("maximum_dimension", self.limits.maximum_dimension.to_string()),
+            (
+                "maximum_dimension",
+                self.limits.maximum_dimension.to_string(),
+            ),
             ("maximum_pixels", self.limits.maximum_pixels.to_string()),
             ("maximum_markers", self.limits.maximum_markers.to_string()),
-            ("shared_work", self.work.to_string()), ("privacy", self.privacy.to_json()),
+            ("shared_work", self.work.to_string()),
+            ("privacy", self.privacy.to_json()),
             ("pixels_emitted", "false".into()),
         ])
     }
@@ -131,26 +158,49 @@ impl Decoder {
             HttpCheckDecode::YCbCr => ComponentInterpretation::YCbCr,
             HttpCheckDecode::None => return Err(Failure::Configuration),
         };
-        Ok(Self { interpretation, limits: options.limits, work: DecodeBudget::new(options.work), frames: 0, pixels: 0 })
+        Ok(Self {
+            interpretation,
+            limits: options.limits,
+            work: DecodeBudget::new(options.work),
+            frames: 0,
+            pixels: 0,
+        })
     }
-    pub fn used(&self) -> u64 { self.work.used() }
-    pub fn remaining(&self) -> u64 { self.work.remaining() }
-    pub fn frames(&self) -> u64 { self.frames }
-    pub fn pixels(&self) -> u64 { self.pixels }
+    pub fn used(&self) -> u64 {
+        self.work.used()
+    }
+    pub fn remaining(&self) -> u64 {
+        self.work.remaining()
+    }
+    pub fn frames(&self) -> u64 {
+        self.frames
+    }
+    pub fn pixels(&self) -> u64 {
+        self.pixels
+    }
 
-    pub fn decode(&mut self, frame: &HttpJpegFrame, sensor: SensorMask<'_>,
-        permit: impl FnMut() -> Result<(), HttpCameraDenial>) -> Result<MaskedLuma, Failure>
-    {
+    pub fn decode(
+        &mut self,
+        frame: &HttpJpegFrame,
+        sensor: SensorMask<'_>,
+        permit: impl FnMut() -> Result<(), HttpCameraDenial>,
+    ) -> Result<MaskedLuma, Failure> {
         // This private worker also allows fixture tests to supply exact native JPEG bytes without
         // inventing a live HTTP receipt. Production always uses HttpJpegFrame::decode.
         let interpretation = self.interpretation;
         let limits = self.limits;
-        self.masked(sensor, permit, |work| frame.decode(interpretation, limits, work))
+        self.masked(sensor, permit, |work| {
+            frame.decode(interpretation, limits, work)
+        })
     }
-    fn masked(&mut self, sensor: SensorMask<'_>, mut permit: impl FnMut() -> Result<(), HttpCameraDenial>,
-        native: impl FnOnce(&mut DecodeBudget<'static>) -> Result<fss_codec_mjpeg::DecodedLuma, DecodeError>)
-        -> Result<MaskedLuma, Failure>
-    {
+    fn masked(
+        &mut self,
+        sensor: SensorMask<'_>,
+        mut permit: impl FnMut() -> Result<(), HttpCameraDenial>,
+        native: impl FnOnce(
+            &mut DecodeBudget<'static>,
+        ) -> Result<fss_codec_mjpeg::DecodedLuma, DecodeError>,
+    ) -> Result<MaskedLuma, Failure> {
         permit().map_err(Failure::Authority)?;
         let mask = sensor.resolve().map_err(|e| Failure::Privacy(e.into()))?;
         let identity = (mask.digest(), mask.generation());
@@ -159,7 +209,9 @@ impl Decoder {
         // Account native reconstruction even if a later mask/resolution/authority check refuses.
         self.pixels += u64::from(dimensions[0]) * u64::from(dimensions[1]);
         permit().map_err(Failure::Authority)?;
-        let masked = mask.mask_luma(image).map_err(|e| Failure::Privacy(e.into()))?;
+        let masked = mask
+            .mask_luma(image)
+            .map_err(|e| Failure::Privacy(e.into()))?;
         let current = sensor.resolve().map_err(|e| Failure::Privacy(e.into()))?;
         if (current.digest(), current.generation()) != identity {
             return Err(Failure::Privacy(MaskRefusal::UnmaskedAccess));

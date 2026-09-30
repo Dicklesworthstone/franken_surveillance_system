@@ -12,9 +12,7 @@ use fss_geometry::CameraGeneration;
 
 use super::{CoverageError, CoverageRecord, GenerationCurrency, PoseProvenance, PoseUncertainty};
 use crate::ReferenceDeployment;
-use crate::ingest::calibration_adoption::{
-    RetainedAdoption, adopted_currency, retained_adoptions,
-};
+use crate::ingest::calibration_adoption::{RetainedAdoption, adopted_currency, retained_adoptions};
 use crate::ingest::privacy_mask::current_mask;
 
 fn refused(record: &CoverageRecord, reason: &'static str) -> CoverageError {
@@ -65,13 +63,23 @@ pub(super) fn check_guard_current(
         mask.digest(),
         mask.generation().unwrap_or(0),
     ) {
-        return Err(refused(record, "privacy changed after full-camera screening; reanalyse"));
+        return Err(refused(
+            record,
+            "privacy changed after full-camera screening; reanalyse",
+        ));
     }
     let Some(PoseProvenance::SiteCalibration { currency, .. }) = record.pose_provenance else {
-        return Err(refused(record, "full-camera receipt has no calibration provenance"));
+        return Err(refused(
+            record,
+            "full-camera receipt has no calibration provenance",
+        ));
     };
-    let adoptions = retained_adoptions(deployment)
-        .map_err(|_| refused(record, "current calibration authority could not be verified"))?;
+    let adoptions = retained_adoptions(deployment).map_err(|_| {
+        refused(
+            record,
+            "current calibration authority could not be verified",
+        )
+    })?;
     check_adoption_binding(
         &sensor,
         receipt.camera(),
@@ -94,7 +102,9 @@ fn check_adoption_binding(
 ) -> Result<(), &'static str> {
     for (handle, history) in adoptions {
         if *handle != camera.camera
-            && history.last().is_some_and(|current| current.receipt.sensor_id == *sensor)
+            && history
+                .last()
+                .is_some_and(|current| current.receipt.sensor_id == *sensor)
         {
             return Err("sensor is adopted under a different camera; reanalyse");
         }
@@ -134,7 +144,10 @@ mod tests {
     #[test]
     fn owner_assertions_do_not_silently_become_retained_adoptions() {
         let receipt = ContentDigest::sha256(b"adoption");
-        for currency in [GenerationCurrency::Unasserted, GenerationCurrency::OwnerAsserted] {
+        for currency in [
+            GenerationCurrency::Unasserted,
+            GenerationCurrency::OwnerAsserted,
+        ] {
             assert!(same_adoption(currency, None));
             assert!(!same_adoption(currency, Some(receipt)));
         }
@@ -155,43 +168,80 @@ mod tests {
     -> Result<(), Box<dyn std::error::Error>> {
         use crate::ingest::calibration_adoption::AdoptionReceipt;
         let sensor = SensorId::parse("sensor:front")?;
-        let camera = CameraGeneration { camera: 1, intrinsics: 2, extrinsics: 3 };
+        let camera = CameraGeneration {
+            camera: 1,
+            intrinsics: 2,
+            extrinsics: 3,
+        };
         let calibration = ContentDigest::sha256(b"calibration");
         let receipt = AdoptionReceipt {
-            adoption: 1, camera_handle: 1, camera_name: "front".to_owned(),
-            sensor_id: sensor.clone(), calibration_digest: calibration,
+            adoption: 1,
+            camera_handle: 1,
+            camera_name: "front".to_owned(),
+            sensor_id: sensor.clone(),
+            calibration_digest: calibration,
             twin_package: ContentDigest::sha256(b"twin"),
-            intrinsics_generation: 2, extrinsics_generation: 3, supersedes: None,
+            intrinsics_generation: 2,
+            extrinsics_generation: 3,
+            supersedes: None,
         };
         let retained = RetainedAdoption {
-            digest: receipt.digest(), receipt, committed_sequence: 10,
+            digest: receipt.digest(),
+            receipt,
+            committed_sequence: 10,
         };
-        let currency = GenerationCurrency::AdoptedCurrent { receipt: retained.digest };
+        let currency = GenerationCurrency::AdoptedCurrent {
+            receipt: retained.digest,
+        };
         let good = BTreeMap::from([(camera.camera, vec![retained.clone()])]);
         assert!(check_adoption_binding(&sensor, camera, calibration, currency, &good).is_ok());
         for changed in 0..6 {
             let mut adoption = retained.clone();
             match changed {
                 0 => adoption.receipt.sensor_id = SensorId::parse("sensor:other")?,
-                1 => adoption.receipt.calibration_digest = ContentDigest::sha256(b"new calibration"),
+                1 => {
+                    adoption.receipt.calibration_digest = ContentDigest::sha256(b"new calibration")
+                }
                 2 => adoption.receipt.intrinsics_generation += 1,
                 3 => adoption.receipt.extrinsics_generation += 1,
                 4 => adoption.digest = ContentDigest::sha256(b"different receipt"),
                 _ => adoption.receipt.camera_handle = 2,
             }
-            if changed != 4 { adoption.digest = adoption.receipt.digest(); }
+            if changed != 4 {
+                adoption.digest = adoption.receipt.digest();
+            }
             let map = BTreeMap::from([(adoption.receipt.camera_handle, vec![adoption])]);
-            assert!(check_adoption_binding(&sensor, camera, calibration, currency, &map).is_err(),
-                "accepted binding change {changed}");
+            assert!(
+                check_adoption_binding(&sensor, camera, calibration, currency, &map).is_err(),
+                "accepted binding change {changed}"
+            );
         }
         // Without retained adoption, an explicit owner assertion remains an assertion.
-        assert!(check_adoption_binding(&sensor, camera, calibration,
-            GenerationCurrency::OwnerAsserted, &BTreeMap::new()).is_ok());
+        assert!(
+            check_adoption_binding(
+                &sensor,
+                camera,
+                calibration,
+                GenerationCurrency::OwnerAsserted,
+                &BTreeMap::new()
+            )
+            .is_ok()
+        );
         // A camera with no history cannot reuse a sensor already owned by another camera.
-        let invented = CameraGeneration { camera: 99, ..camera };
-        assert!(check_adoption_binding(&sensor, invented, calibration,
-            GenerationCurrency::OwnerAsserted, &good).is_err());
+        let invented = CameraGeneration {
+            camera: 99,
+            ..camera
+        };
+        assert!(
+            check_adoption_binding(
+                &sensor,
+                invented,
+                calibration,
+                GenerationCurrency::OwnerAsserted,
+                &good
+            )
+            .is_err()
+        );
         Ok(())
     }
-
 }

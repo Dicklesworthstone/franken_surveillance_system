@@ -10,17 +10,20 @@ use std::process::ExitCode;
 
 use fss_cli::ExitIdentity;
 
-#[path = "fss-capture-reconnect/plan.rs"]
-mod plan;
-#[path = "fss-capture-reconnect/driver.rs"]
-mod driver;
-#[path = "fss-capture/privacy.rs"]
-mod privacy;
 #[path = "fss-capture-reconnect/decode.rs"]
 mod decode;
+#[path = "fss-capture-reconnect/driver.rs"]
+mod driver;
+#[path = "fss-capture-reconnect/plan.rs"]
+mod plan;
+#[path = "fss-capture/privacy.rs"]
+mod privacy;
 
 fn main() -> ExitCode {
-    let args: Vec<_> = std::env::args_os().skip(1).take(plan::MAX_ARGUMENTS + 1).collect();
+    let args: Vec<_> = std::env::args_os()
+        .skip(1)
+        .take(plan::MAX_ARGUMENTS + 1)
+        .collect();
     if args.len() == 1 && matches!(args[0].to_str(), Some("help" | "--help" | "-h")) {
         return match driver::write_bounded(&mut io::stdout().lock(), plan::HELP.as_bytes()) {
             Ok(()) => ExitCode::SUCCESS,
@@ -47,7 +50,9 @@ fn main() -> ExitCode {
         Ok(true) => ExitCode::SUCCESS,
         Ok(false) => ExitCode::from(ExitIdentity::RUNTIME_FAILURE.code),
         Err(code) => {
-            eprintln!("{code}: preserve all complete prefix pins; inspect storage, not automatic reacquisition");
+            eprintln!(
+                "{code}: preserve all complete prefix pins; inspect storage, not automatic reacquisition"
+            );
             ExitCode::from(ExitIdentity::RUNTIME_FAILURE.code)
         }
     }
@@ -55,7 +60,10 @@ fn main() -> ExitCode {
 
 // Shared privacy renderer uses the same exact digest/number presentation as fss-capture.
 fn byte_digest(bytes: [u8; 32]) -> String {
-    format!("sha256:{}", bytes.iter().map(|b| format!("{b:02x}")).collect::<String>())
+    format!(
+        "sha256:{}",
+        bytes.iter().map(|b| format!("{b:02x}")).collect::<String>()
+    )
 }
 fn optional_number(value: Option<u64>) -> String {
     value.map_or_else(|| "null".into(), |n| n.to_string())

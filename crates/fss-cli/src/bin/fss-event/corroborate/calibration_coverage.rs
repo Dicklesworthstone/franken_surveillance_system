@@ -9,14 +9,14 @@
 use fss_cli::agent_json::{array, object, string};
 use fss_core::{ContentDigest, SensorId};
 use fss_geometry::WorkBudget;
+use fss_reference::calibrated_coverage::{CoverageProjectionInput, GuardedCoverageSet};
+use fss_reference::ingest::RetainedReadLimits;
 use fss_reference::ingest::calibration_coverage::{
-    CalibrationCoverageAssessment, CalibrationCoverageInput,
-    assess_calibration_coverage, calibrated_camera_model,
+    CalibrationCoverageAssessment, CalibrationCoverageInput, assess_calibration_coverage,
+    calibrated_camera_model,
 };
 use fss_reference::ingest::privacy_mask::current_mask;
 use fss_reference::ingest::recorded_corroboration::{CorroborationError, CorroborationReport};
-use fss_reference::calibrated_coverage::{CoverageProjectionInput, GuardedCoverageSet};
-use fss_reference::ingest::RetainedReadLimits;
 use fss_reference::ingest::recorded_coverage::{CoverageStatus, PoseProvenance};
 use fss_reference::ingest::recorded_decode::RecordedDecodeError;
 use fss_reference::ingest::site_calibration::SiteCalibration;
@@ -44,7 +44,8 @@ impl CoverageGuard {
         approval: ContentDigest,
         cx: &ReplayCx,
     ) -> RunResult<()> {
-        self.guarded.check_approval(deployment, approval, self.read_limits, cx)?;
+        self.guarded
+            .check_approval(deployment, approval, self.read_limits, cx)?;
         Ok(())
     }
 
@@ -57,19 +58,16 @@ impl CoverageGuard {
     ) -> RunResult<()> {
         cx.checkpoint("calibration_coverage:retain")
             .map_err(|_| RecordedDecodeError::Cancelled)?;
-        self.status = self.guarded.retain(deployment, approval, self.read_limits, cx)?;
+        self.status = self
+            .guarded
+            .retain(deployment, approval, self.read_limits, cx)?;
         Ok(())
     }
 
     /// The ordinary coverage renderer emits version-6 receipts and the *guarded* approval.
     pub(super) fn coverage_json(&self, rerun: &str) -> String {
         let records: Vec<_> = self.guarded.records().iter().collect();
-        super::super::coverage::render(
-            &records,
-            self.status,
-            self.guarded.approval(),
-            rerun,
-        )
+        super::super::coverage::render(&records, self.status, self.guarded.approval(), rerun)
     }
 
     pub(super) fn to_json(&self) -> String {
@@ -80,7 +78,10 @@ impl CoverageGuard {
             ("assessments", array(&assessments)),
             ("work_units", self.work_units.to_string()),
             ("work_units_total", self.work_units_total.to_string()),
-            ("work_units_remaining", self.work_units_remaining.to_string()),
+            (
+                "work_units_remaining",
+                self.work_units_remaining.to_string(),
+            ),
             ("absence_claim_authorized", "false".to_owned()),
             ("positive_event_approvals_changed", "false".to_owned()),
             ("existing_coverage_retracted", "false".to_owned()),
@@ -143,7 +144,10 @@ pub(super) fn assess(
         let mask = current_mask(deployment, &sensor)?;
         let Some(calibrated) = calibration.camera(&planned.name) else {
             // An unmatched owner pose may coexist with a calibrated camera; do not reinterpret it.
-            if matches!(record.pose_provenance, Some(PoseProvenance::SiteCalibration { .. })) {
+            if matches!(
+                record.pose_provenance,
+                Some(PoseProvenance::SiteCalibration { .. })
+            ) {
                 return Err(invalid().into());
             }
             assessments.push(None);
@@ -169,10 +173,17 @@ pub(super) fn assess(
     // Reuse the new shared owner rather than duplicating its mixed-anchor, duplicate-camera,
     // companion-copy bounds, privacy bindings or immutable prepared-set semantics in the CLI.
     let guarded = {
-        let inputs: Vec<_> = report.coverage().iter().zip(&assessments).zip(&privacy)
+        let inputs: Vec<_> = report
+            .coverage()
+            .iter()
+            .zip(&assessments)
+            .zip(&privacy)
             .map(|((record, assessment), privacy)| CoverageProjectionInput {
-                record, assessment: assessment.as_ref(), privacy,
-            }).collect();
+                record,
+                assessment: assessment.as_ref(),
+                privacy,
+            })
+            .collect();
         GuardedCoverageSet::project(&inputs, budget)?
     };
     cx.checkpoint("calibration_coverage:screened")
