@@ -295,6 +295,9 @@ impl HttpReconnectRecording {
             self.reverify(publisher, access)?;
             self.validated = true;
         }
+        // A source step may open TCP or parse network bytes, so it needs its own unit of work:
+        // an exhausted source budget refuses before any connection attempt.
+        self.work.charge(1)?;
         match self.source.step(access.now_ns, access.camera)? {
             HttpReconnectStep::Connected(basis) => Ok(HttpReconnectRecordingStep::Connected(basis)),
             HttpReconnectStep::Waiting { not_before_ns } => {
@@ -338,18 +341,26 @@ impl HttpReconnectRecording {
         if self.handoff.is_some() {
             return Ok(());
         }
-        let expected = self.wire_plan.ok_or(HttpReconnectRecordingError::NotReady)?;
+        let expected = self
+            .wire_plan
+            .ok_or(HttpReconnectRecordingError::NotReady)?;
         match self.source.step(access.now_ns, access.camera)? {
-            HttpReconnectStep::Source(HttpCameraStep::WireReady(wire))
-                if wire == expected.wire => Ok(()),
+            HttpReconnectStep::Source(HttpCameraStep::WireReady(wire)) if wire == expected.wire => {
+                Ok(())
+            }
             HttpReconnectStep::HandoffReady(receipt) => {
                 // Take ownership before validation so even an internal mismatch cannot drop raw
                 // input. Retirement will transfer it to the caller on any subsequent refusal.
                 self.handoff = self.source.take_handoff();
-                let handoff = self.handoff.as_ref()
+                let handoff = self
+                    .handoff
+                    .as_ref()
                     .ok_or(HttpReconnectRecordingError::NotReady)?;
                 if handoff.receipt() != receipt
-                    || handoff.source.as_ref().and_then(|s| s.wire.as_ref())
+                    || handoff
+                        .source
+                        .as_ref()
+                        .and_then(|s| s.wire.as_ref())
                         .is_none_or(|wire| wire.receipt() != expected.wire)
                 {
                     return Err(HttpReconnectRecordingError::PlanMismatch);
