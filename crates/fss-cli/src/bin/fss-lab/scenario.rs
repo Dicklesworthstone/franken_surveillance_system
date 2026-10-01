@@ -440,6 +440,16 @@ impl ScenarioReport {
 
 /// Executes one laboratory scenario against `ReferenceDeployment` under `root`.
 pub fn run_scenario(kind: ScenarioKind, root: &Path) -> Result<ScenarioReport, ScenarioError> {
+    run_scenario_with(kind, root, &class_for)
+}
+
+/// [`run_scenario`] with the virtual cameras' scene script supplied by the caller, so tests can
+/// plant observations; every outcome is still derived by the real pipeline.
+fn run_scenario_with(
+    kind: ScenarioKind,
+    root: &Path,
+    classes: &dyn Fn(ScenarioKind, &str, u64) -> ObservationClass,
+) -> Result<ScenarioReport, ScenarioError> {
     let cameras = [
         VirtualCamera::new("cam-front", "front-power-and-network"),
         VirtualCamera::new("cam-side", "side-power-and-network"),
@@ -462,7 +472,7 @@ pub fn run_scenario(kind: ScenarioKind, root: &Path) -> Result<ScenarioReport, S
                 continue;
             }
 
-            let class = class_for(kind, camera.sensor, tick);
+            let class = classes(kind, camera.sensor, tick);
             let packet_bytes = camera.capture(tick, class, confidence_for(class))?;
 
             if has_corruption_fault(&faults, camera.sensor, tick) {
@@ -1263,6 +1273,49 @@ mod tests {
         assert_eq!(report.effect_state, Some(EffectState::Verified));
         assert_eq!(report.obligation_state, Some(ObligationState::Verified));
         assert_eq!(report.knowledge.corroboration, "corroborated");
+        let _ = std::fs::remove_dir_all(&root);
+        Ok(())
+    }
+
+    #[test]
+    fn a_person_planted_in_quiet_is_never_certified_absent()
+    -> Result<(), Box<dyn std::error::Error>> {
+        // Review mutant M8: the quiet scene with one unknown person on cam-front.
+        let root = temp_test_root("quiet-planted");
+        let report = run_scenario_with(ScenarioKind::Quiet, &root, &|_, sensor, tick| {
+            if sensor == "cam-front" && tick == 2 {
+                ObservationClass::UnknownPerson
+            } else {
+                ObservationClass::Empty
+            }
+        })?;
+        assert!(!report.absence_certified);
+        assert!(!report.knowledge.absence_certified);
+        assert_ne!(report.envelope, EnvelopeClass::CertifiedQuiet);
+        assert_eq!(report.knowledge.corroboration, "single_source");
+        assert_eq!(
+            report.knowledge.absence_not_certifiable_reason,
+            Some("threat_present")
+        );
+        let _ = std::fs::remove_dir_all(&root);
+        Ok(())
+    }
+
+    #[test]
+    fn sneaky_with_a_person_on_both_cameras_is_corroborated()
+    -> Result<(), Box<dyn std::error::Error>> {
+        // Review mutant M7: a second, independent camera also sees the person.
+        let root = temp_test_root("sneaky-both");
+        let report = run_scenario_with(ScenarioKind::Sneaky, &root, &|_, sensor, tick| {
+            if (sensor == "cam-front" && tick == 2) || (sensor == "cam-side" && tick == 3) {
+                ObservationClass::UnknownPerson
+            } else {
+                ObservationClass::Empty
+            }
+        })?;
+        assert_eq!(report.knowledge.corroboration, "corroborated");
+        assert_eq!(report.envelope, EnvelopeClass::CorroboratedThreat);
+        assert!(!report.absence_certified);
         let _ = std::fs::remove_dir_all(&root);
         Ok(())
     }
