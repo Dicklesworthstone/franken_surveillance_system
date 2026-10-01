@@ -133,7 +133,7 @@ f228d9a9cc64bd781f2db641e326aa0de1131a27d27de6f44885089cf43d13b8  crates/fss-cli
 9b80afef99a47daa0d2dda50c52a683ff0334713ef27188a50d49cfd7f04ce81  crates/fss-cli/src/bin/fss-lab/effects.rs
 46f517e456c45923ddc5a49b9b988dd0ad346d19444b2ea44ff8b2de58180966  crates/fss-cli/src/bin/fss-lab/ledger.rs
 44ca393915220a388f95c8fc8c3301d763353fefb7ef30b56cc69581fed71986  crates/fss-cli/src/bin/fss-lab/main.rs
-7d29fd94981e4b06b5daccf28d441b38f34998053e1d0d62e606e5f0736e636d  crates/fss-cli/src/bin/fss-lab/scenario.rs
+447799396625cc4c2d8a01c8cc146ec446d9328030e9cad6f1877a4b969fe396  crates/fss-cli/src/bin/fss-lab/scenario.rs
 4efd7cf0d29af16e16ed85595f9fcf125952a64382138589d2df0c926c406410  crates/fss-cli/src/bin/fss-lab/spool.rs
 13ea098d9916822a96bdeb4c637f0568d25c29768cabcbf4a46dafafb57b11e7  crates/fss-cli/src/bin/fss-mcp.rs
 5a55713718fd2c0e454b8f0b622f09f2966f9888c613ce05a10269d7efbfe3cf  crates/fss-cli/src/bin/fss-recover-http/tests.rs
