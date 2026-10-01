@@ -264,6 +264,8 @@
     "crates/fss-reference/src/ingest/hevc_annexb.rs": "support",
     "crates/fss-reference/src/ingest/hevc_annexb/tests.rs": "support",
     "crates/fss-reference/src/ingest/http_archive.rs": "support",
+    "crates/fss-reference/src/ingest/http_archive/recovery.rs": "support",
+    "crates/fss-reference/src/ingest/http_archive/recovery/tests.rs": "support",
     "crates/fss-reference/src/ingest/http_archive/tests.rs": "support",
     "crates/fss-reference/src/ingest/http_camera.rs": "support",
     "crates/fss-reference/src/ingest/http_camera/learned.rs": "support",

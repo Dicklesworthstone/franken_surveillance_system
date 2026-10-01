@@ -293,7 +293,11 @@ impl Write for FailingBoundary {
 }
 #[test]
 fn output_failure_at_the_boundary_prevents_a_second_connect() -> TestResult {
-    for fault in [SinkFault::BeforeWrite, SinkFault::PartialWrite, SinkFault::Flush] {
+    for fault in [
+        SinkFault::BeforeWrite,
+        SinkFault::PartialWrite,
+        SinkFault::Flush,
+    ] {
         let directory = Directory::new(&format!("output-{fault:?}"))?;
         let listener = TcpListener::bind("127.0.0.1:0")?;
         listener.set_nonblocking(true)?;
@@ -325,7 +329,11 @@ fn output_failure_at_the_boundary_prevents_a_second_connect() -> TestResult {
 }
 #[test]
 fn transcript_never_reuses_a_sink_after_write_or_flush_failure() {
-    for fault in [SinkFault::BeforeWrite, SinkFault::PartialWrite, SinkFault::Flush] {
+    for fault in [
+        SinkFault::BeforeWrite,
+        SinkFault::PartialWrite,
+        SinkFault::Flush,
+    ] {
         let mut out = FailingBoundary::new(fault);
         let mut log = Transcript {
             out: &mut out,

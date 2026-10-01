@@ -471,7 +471,10 @@ impl Options {
             fields.push(("native_decode", decode.to_json()));
         }
         if self.recoverable {
-            fields.push(("wire_recovery", string("save_key_before_publication_no_capture_resume")));
+            fields.push((
+                "wire_recovery",
+                string("save_key_before_publication_no_capture_resume"),
+            ));
         }
         object(&fields)
     }

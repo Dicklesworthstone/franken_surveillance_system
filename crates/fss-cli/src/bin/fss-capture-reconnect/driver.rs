@@ -354,10 +354,15 @@ fn drive<W: Write>(
                     // Preserve the complete descriptor BEFORE storage. It grants no authority
                     // and can recover only bytes/metadata already staged by this exact attempt.
                     let key = HttpWireRecoveryKey::new(
-                        recording.scope(), recording.pin(), wire, plan.expected_pin(),
+                        recording.scope(),
+                        recording.pin(),
+                        wire,
+                        plan.expected_pin(),
                     )
                     .and_then(|key| key.to_text())
-                    .map_err(|error| Failure::Source(HttpReconnectRecordingError::Archive(error)))?;
+                    .map_err(|error| {
+                        Failure::Source(HttpReconnectRecordingError::Archive(error))
+                    })?;
                     fields.push(("recovery_key", string(&key)));
                 }
                 log.emit("wire_prepared", object(&fields), false)?;

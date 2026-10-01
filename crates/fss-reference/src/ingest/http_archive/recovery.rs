@@ -52,20 +52,30 @@ impl HttpWireRecoveryKey {
     ) -> Result<Self, HttpArchiveError> {
         let scope_digest = scope.digest()?;
         let digests = [prior.scope, prior.head, expected.scope, expected.head];
-        if digests.iter().any(|d| d.algorithm() != DigestAlgorithm::Sha256 || d.bytes() == [0; 32])
-            || prior.scope != scope_digest || expected.scope != scope_digest
-            || wire.basis != scope.stream || wire.sha256 == [0; 32]
+        if digests
+            .iter()
+            .any(|d| d.algorithm() != DigestAlgorithm::Sha256 || d.bytes() == [0; 32])
+            || prior.scope != scope_digest
+            || expected.scope != scope_digest
+            || wire.basis != scope.stream
+            || wire.sha256 == [0; 32]
             || prior.reads >= MAX_HTTP_WIRE_READS as u64
             || expected.reads != prior.reads + 1
-            || prior.bytes != wire.range[0] || expected.bytes != wire.range[1]
-            || wire.range[1] <= wire.range[0] || wire.range[1] > MAX_BYTES
+            || prior.bytes != wire.range[0]
+            || expected.bytes != wire.range[1]
+            || wire.range[1] <= wire.range[0]
+            || wire.range[1] > MAX_BYTES
             || wire.range[1] - wire.range[0] > MAX_READ as u64
             || (prior.reads == 0 && (prior.bytes != 0 || prior.head != scope_digest))
             || (prior.reads > 0 && prior.bytes == 0)
         {
             return Err(HttpArchiveError::Source);
         }
-        let entry = Entry { prior, wire, root: expected.head };
+        let entry = Entry {
+            prior,
+            wire,
+            root: expected.head,
+        };
         if entry.manifest()?.root() != expected.head || entry.pin() != expected {
             return Err(HttpArchiveError::Source);
         }
@@ -73,13 +83,21 @@ impl HttpWireRecoveryKey {
     }
 
     /// Exact source and original-header/media retention interpretation; not an access grant.
-    pub fn scope(&self) -> HttpWireScope { self.scope }
+    pub fn scope(&self) -> HttpWireScope {
+        self.scope
+    }
     /// Last prefix acknowledged before this publication attempt.
-    pub fn prior_pin(&self) -> HttpWirePin { self.entry.prior }
+    pub fn prior_pin(&self) -> HttpWirePin {
+        self.entry.prior
+    }
     /// Exact prefix the interrupted publication intended to make durable.
-    pub fn expected_pin(&self) -> HttpWirePin { self.entry.pin() }
+    pub fn expected_pin(&self) -> HttpWirePin {
+        self.entry.pin()
+    }
     /// Original read identity and RECEIVE admission, never a camera capture timestamp.
-    pub fn wire(&self) -> HttpWireReceipt { self.entry.wire }
+    pub fn wire(&self) -> HttpWireReceipt {
+        self.entry.wire
+    }
 
     /// Canonical descriptor bytes. Includes no response headers, image bytes or credentials.
     pub fn to_bytes(&self) -> Result<Vec<u8>, HttpArchiveError> {
@@ -90,24 +108,32 @@ impl HttpWireRecoveryKey {
         e.bytes(&self.entry.metadata()?);
         e.digest(self.entry.root);
         let bytes = e.finish_checked().map_err(|_| HttpArchiveError::Metadata)?;
-        if bytes.len() > MAX_HTTP_WIRE_RECOVERY_KEY_BYTES { return Err(HttpArchiveError::Limit); }
+        if bytes.len() > MAX_HTTP_WIRE_RECOVERY_KEY_BYTES {
+            return Err(HttpArchiveError::Limit);
+        }
         Ok(bytes)
     }
 
     /// Decode an exact bounded descriptor. Unknown versions, trailing bytes and noncanonical
     /// encodings fail closed. A valid descriptor is not proof of staged or durable custody.
     pub fn from_bytes(bytes: &[u8]) -> Result<Self, HttpArchiveError> {
-        if bytes.len() > MAX_HTTP_WIRE_RECOVERY_KEY_BYTES { return Err(HttpArchiveError::Limit); }
+        if bytes.len() > MAX_HTTP_WIRE_RECOVERY_KEY_BYTES {
+            return Err(HttpArchiveError::Limit);
+        }
         let parsed = (|| -> Result<Self, fss_core::ContractError> {
             let mut d = CanonicalDecoder::new(bytes);
-            if d.text()? != KEY_DOMAIN { return Err(fss_core::ContractError::InvalidIdentifier); }
+            if d.text()? != KEY_DOMAIN {
+                return Err(fss_core::ContractError::InvalidIdentifier);
+            }
             let receive_clock = d.digest()?;
             let retention_evidence = d.digest()?;
             let metadata = d.bytes()?;
             if metadata.len() > MAX_METADATA
                 || receive_clock.algorithm() != DigestAlgorithm::Sha256
                 || retention_evidence.algorithm() != DigestAlgorithm::Sha256
-            { return Err(fss_core::ContractError::InvalidIdentifier); }
+            {
+                return Err(fss_core::ContractError::InvalidIdentifier);
+            }
             let root = d.digest()?;
             d.ensure_finished()?;
             let entry = Entry::decode(metadata, root)
@@ -117,15 +143,24 @@ impl HttpWireRecoveryKey {
                 receive_clock: receive_clock.bytes(),
                 retention_evidence: retention_evidence.bytes(),
             };
-            let reads = entry.prior.reads.checked_add(1)
+            let reads = entry
+                .prior
+                .reads
+                .checked_add(1)
                 .ok_or(fss_core::ContractError::InvalidIdentifier)?;
             let expected = HttpWirePin {
-                scope: entry.prior.scope, head: root, reads, bytes: entry.wire.range[1],
+                scope: entry.prior.scope,
+                head: root,
+                reads,
+                bytes: entry.wire.range[1],
             };
             Self::new(scope, entry.prior, entry.wire, expected)
                 .map_err(|_| fss_core::ContractError::InvalidIdentifier)
-        })().map_err(|_| HttpArchiveError::Metadata)?;
-        if parsed.to_bytes()? != bytes { return Err(HttpArchiveError::Metadata); }
+        })()
+        .map_err(|_| HttpArchiveError::Metadata)?;
+        if parsed.to_bytes()? != bytes {
+            return Err(HttpArchiveError::Metadata);
+        }
         Ok(parsed)
     }
 
@@ -152,8 +187,13 @@ impl HttpWireRecoveryKey {
         if text.len() > 4 + MAX_HTTP_WIRE_RECOVERY_KEY_BYTES * 2 {
             return Err(HttpArchiveError::Limit);
         }
-        let digits = text.strip_prefix("hex:").ok_or(HttpArchiveError::Metadata)?.as_bytes();
-        if digits.is_empty() || digits.len() % 2 != 0 { return Err(HttpArchiveError::Metadata); }
+        let digits = text
+            .strip_prefix("hex:")
+            .ok_or(HttpArchiveError::Metadata)?
+            .as_bytes();
+        if digits.is_empty() || digits.len() % 2 != 0 {
+            return Err(HttpArchiveError::Metadata);
+        }
         let digit = |b: u8| -> Result<u8, HttpArchiveError> {
             match b {
                 b'0'..=b'9' => Ok(b - b'0'),
@@ -162,8 +202,12 @@ impl HttpWireRecoveryKey {
             }
         };
         let mut bytes = Vec::new();
-        bytes.try_reserve_exact(digits.len() / 2).map_err(|_| HttpArchiveError::Limit)?;
-        for pair in digits.chunks_exact(2) { bytes.push(digit(pair[0])? * 16 + digit(pair[1])?); }
+        bytes
+            .try_reserve_exact(digits.len() / 2)
+            .map_err(|_| HttpArchiveError::Limit)?;
+        for pair in digits.chunks_exact(2) {
+            bytes.push(digit(pair[0])? * 16 + digit(pair[1])?);
+        }
         Self::from_bytes(&bytes)
     }
 
@@ -186,28 +230,50 @@ impl HttpWireRecoveryKey {
         let slot = archive.slot(expected.reads)?;
         // Only the exact pending ordinal may exist beyond the prior prefix. Broken roots,
         // indeterminate visibility markers, foreign temps and later roots remain refusals.
-        archive.inventory(p, self.entry.prior.reads, expected.reads, Some(&slot), cancel, budget)?;
-        archive.entries.try_reserve_exact(self.entry.prior.reads as usize)
+        archive.inventory(
+            p,
+            self.entry.prior.reads,
+            expected.reads,
+            Some(&slot),
+            cancel,
+            budget,
+        )?;
+        archive
+            .entries
+            .try_reserve_exact(self.entry.prior.reads as usize)
             .map_err(|_| HttpArchiveError::Limit)?;
         for ordinal in 1..=self.entry.prior.reads {
             let prior_slot = archive.slot(ordinal)?;
-            let root = p.root(&prior_slot).ok_or(HttpArchiveError::NotDurable)?.root;
+            let root = p
+                .root(&prior_slot)
+                .ok_or(HttpArchiveError::NotDurable)?
+                .root;
             let (entry, _) = archive.read_entry(p, &prior_slot, root, cancel, budget)?;
             archive.validate_next(entry.wire)?;
-            if entry.prior != archive.pin() { return Err(HttpArchiveError::Sequence); }
+            if entry.prior != archive.pin() {
+                return Err(HttpArchiveError::Sequence);
+            }
             archive.entries.push(entry);
         }
-        if archive.pin() != self.entry.prior { return Err(HttpArchiveError::Sequence); }
+        if archive.pin() != self.entry.prior {
+            return Err(HttpArchiveError::Sequence);
+        }
         archive.validate_next(self.entry.wire)?;
         let state = match p.root(&slot) {
             None => HttpWireRecoveryState::Staged,
-            Some(root) if root.root == expected.head && root.state == LocalPublicationState::Staged => {
+            Some(root)
+                if root.root == expected.head && root.state == LocalPublicationState::Staged =>
+            {
                 HttpWireRecoveryState::Staged
             }
-            Some(root) if root.root == expected.head && root.state == LocalPublicationState::Durable => {
+            Some(root)
+                if root.root == expected.head && root.state == LocalPublicationState::Durable =>
+            {
                 // Reverify the complete existing object, not merely the in-memory root table.
                 let (entry, _) = archive.read_entry(p, &slot, expected.head, cancel, budget)?;
-                if entry != self.entry { return Err(HttpArchiveError::Sequence); }
+                if entry != self.entry {
+                    return Err(HttpArchiveError::Sequence);
+                }
                 HttpWireRecoveryState::Durable
             }
             Some(_) => return Err(HttpArchiveError::Sequence),
@@ -215,9 +281,18 @@ impl HttpWireRecoveryKey {
         // Both existed BEFORE every native publisher crash cut. In particular, recovery must
         // not create read metadata from a caller-supplied descriptor when that metadata is absent.
         let metadata = self.entry.metadata()?;
-        let retained = archive.read_object(p, ContentDigest::sha256(&metadata), MAX_METADATA, cancel, budget)?;
-        if retained != metadata { return Err(HttpArchiveError::Metadata); }
-        let bytes = archive.read_object(p, sha(self.entry.wire.sha256), MAX_READ, cancel, budget)?;
+        let retained = archive.read_object(
+            p,
+            ContentDigest::sha256(&metadata),
+            MAX_METADATA,
+            cancel,
+            budget,
+        )?;
+        if retained != metadata {
+            return Err(HttpArchiveError::Metadata);
+        }
+        let bytes =
+            archive.read_object(p, sha(self.entry.wire.sha256), MAX_READ, cancel, budget)?;
         if bytes.len() as u64 != self.entry.wire.range[1] - self.entry.wire.range[0] {
             return Err(HttpArchiveError::Source);
         }
@@ -241,7 +316,8 @@ impl HttpWireRecoveryKey {
         cancel: &dyn PublishCancellation,
         budget: &mut WorkBudget<'_>,
     ) -> Result<HttpWireRecoveryState, HttpArchiveError> {
-        self.prepare_recovery(p, limits, cancel, budget).map(|(_, _, state)| state)
+        self.prepare_recovery(p, limits, cancel, budget)
+            .map(|(_, _, state)| state)
     }
 
     /// Reconcile exactly this one source read using only already-staged original custody.
@@ -261,7 +337,9 @@ impl HttpWireRecoveryKey {
     ) -> Result<HttpWirePublication, HttpArchiveError> {
         let (mut archive, bytes, _) = self.prepare_recovery(p, limits, cancel, budget)?;
         let plan = archive.prepare_bytes(self.entry.wire, &bytes, budget)?;
-        if plan.pin() != self.expected_pin() { return Err(HttpArchiveError::Source); }
+        if plan.pin() != self.expected_pin() {
+            return Err(HttpArchiveError::Source);
+        }
         archive.publish(&plan, p, cancel, budget)
     }
 }
