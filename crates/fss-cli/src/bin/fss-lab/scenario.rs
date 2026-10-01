@@ -903,8 +903,12 @@ pub fn run_scenario(kind: ScenarioKind, root: &Path) -> Result<ScenarioReport, S
         )));
     }
     let recon2 = reopened.recovery_report();
-    // Clean apart from the exactly withheld corrupt sources checked above.
-    if !(recon2.spool.is_clean()
+    // Clean apart from the exactly withheld corrupt sources: the spool reports exactly those as
+    // corrupt on reopen, and nothing else is corrupt, orphaned or foreign.
+    let corrupt: BTreeSet<ContentDigest> = recon2.spool.corrupt.iter().map(|c| c.digest).collect();
+    if !(corrupt == withheld
+        && recon2.spool.orphaned_staging.is_empty()
+        && recon2.spool.foreign.is_empty()
         && recon2.broken_roots.is_empty()
         && recon2.orphaned_temps.is_empty()
         && recon2.foreign.is_empty())
