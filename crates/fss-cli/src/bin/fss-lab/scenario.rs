@@ -452,6 +452,8 @@ pub fn run_scenario(kind: ScenarioKind, root: &Path) -> Result<ScenarioReport, S
     let mut warnings: Vec<String> = Vec::new();
 
     let mut observations: Vec<ReferenceModelObservation> = Vec::new();
+    // Corrupt sources detected in the deployment spool: withheld, never referenced.
+    let mut withheld: BTreeSet<ContentDigest> = BTreeSet::new();
 
     for tick in SCENARIO_START..SCENARIO_END {
         for camera in &cameras {
@@ -465,7 +467,10 @@ pub fn run_scenario(kind: ScenarioKind, root: &Path) -> Result<ScenarioReport, S
 
             if has_corruption_fault(&faults, camera.sensor, tick) {
                 // Verify that the real staging spool detects corrupted bytes on disk.
-                deployment_spool_detects_corruption(&mut deployment, &packet_bytes)?;
+                withheld.insert(deployment_spool_detects_corruption(
+                    &mut deployment,
+                    &packet_bytes,
+                )?);
                 warnings.push(format!("source_corrupt:{}:{tick}", camera.sensor));
                 continue;
             }
@@ -884,14 +889,26 @@ pub fn run_scenario(kind: ScenarioKind, root: &Path) -> Result<ScenarioReport, S
 
     // Reopen deployment to verify zero unreferenced objects and clean state on recovery.
     let reopened = ReferenceDeployment::reopen(root, "site:lab", &cx)?;
-    if !reopened.recovery_report().unreferenced_objects.is_empty() {
+    // The only unreferenced objects allowed are the corrupt sources this run withheld.
+    let unreferenced: BTreeSet<ContentDigest> = reopened
+        .recovery_report()
+        .unreferenced_objects
+        .iter()
+        .copied()
+        .collect();
+    if unreferenced != withheld {
         return Err(ScenarioError::Reference(format!(
             "unreferenced objects detected on reopen: {:?}",
             reopened.recovery_report().unreferenced_objects
         )));
     }
     let recon2 = reopened.recovery_report();
-    if !recon2.is_clean() {
+    // Clean apart from the exactly withheld corrupt sources checked above.
+    if !(recon2.spool.is_clean()
+        && recon2.broken_roots.is_empty()
+        && recon2.orphaned_temps.is_empty()
+        && recon2.foreign.is_empty())
+    {
         return Err(ScenarioError::Reference(
             "recovery report on reopen was not clean".to_owned(),
         ));
@@ -1060,7 +1077,7 @@ fn policy_decision_path(
 fn deployment_spool_detects_corruption(
     deployment: &mut ReferenceDeployment,
     bytes: &[u8],
-) -> Result<(), ScenarioError> {
+) -> Result<ContentDigest, ScenarioError> {
     // The corrupt source is staged in this deployment's own spool, damaged on disk, and must be
     // refused by the same verified read every consumer uses. It is then never referenced.
     let digest = deployment.stage_payload(bytes)?;
@@ -1073,7 +1090,7 @@ fn deployment_spool_detects_corruption(
     *last ^= 0xff;
     fs::write(&object_file, file_bytes).map_err(|e| ScenarioError::Reference(e.to_string()))?;
     if deployment.publisher().spool().read(digest).is_err() {
-        Ok(())
+        Ok(digest)
     } else {
         Err(ScenarioError::Packet("spool corruption was not detected"))
     }
