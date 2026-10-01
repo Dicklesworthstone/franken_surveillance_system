@@ -60,7 +60,7 @@ impl Options {
     fn parse(args: &[OsString]) -> Result<Self, &'static str> {
         if args.is_empty()
             || args.len() > MAX_ARGS
-            || args.len() % 2 != 0
+            || !args.len().is_multiple_of(2)
             || args.iter().any(|s| s.as_encoded_bytes().len() > 4096)
         {
             return Err("argument count or byte bound");
@@ -80,7 +80,7 @@ impl Options {
             "--max-object-bytes",
         ];
         let mut values = BTreeMap::new();
-        for pair in args.chunks_exact(2) {
+        for pair in args.as_chunks::<2>().0 {
             let key = pair[0].to_str().ok_or("UTF-8 option required")?;
             let value = pair[1].to_str().ok_or("UTF-8 value required")?;
             if !allowed.contains(&key) || value.is_empty() || value.starts_with("--") {
