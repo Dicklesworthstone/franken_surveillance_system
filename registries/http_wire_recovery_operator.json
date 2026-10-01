@@ -1,0 +1,22 @@
+{
+  "format": "fss.http_wire_recovery_operator_registry.v1",
+  "status": "implementation_native_unverified",
+  "command": "fss-recover-http",
+  "capture_opt_in": "fss-capture-reconnect --recoverable yes",
+  "output_format": "fss.http_wire_recovery_operator.v1",
+  "approval_domain": "fss.http_wire_recovery_approval.v1",
+  "opt_in_capture_domain": "fss.http_recoverable_capture_plan.v1",
+  "default_capture_compatibility": "existing_approval_and_output_bytes_unchanged",
+  "publication": "approved_saved_original_read_only_no_network",
+  "error_codes": [
+    "ERR-HTTP-WIRE-RECOVERY-001",
+    "ERR-HTTP-WIRE-RECOVERY-ARGUMENT-001",
+    "ERR-HTTP-WIRE-RECOVERY-APPROVAL-001",
+    "ERR-HTTP-WIRE-RECOVERY-AUTHORITY-001",
+    "ERR-HTTP-WIRE-RECOVERY-ROOT-001",
+    "ERR-HTTP-WIRE-RECOVERY-CUSTODY-001",
+    "ERR-HTTP-WIRE-RECOVERY-OUTPUT-001"
+  ],
+  "documentation": "docs/HTTP_WIRE_RECOVERY_OPERATOR.md",
+  "native_validation": "not_run_no_rust_toolchain"
+}

@@ -1,0 +1,38 @@
+{
+  "format": "fss.http_wire_recovery_registry.v1",
+  "requirement": "fss-22vo0",
+  "status": "implementation_native_unverified",
+  "owner": "fss-reference::ingest::http_archive::recovery",
+  "key_domain": "fss.http_wire_recovery_key.v1",
+  "key_maximum_canonical_bytes": 1024,
+  "key_text": "strict_lowercase_hex_prefixed_hex:",
+  "key_fields": [
+    "domain:text",
+    "receive_clock:sha256",
+    "retention_evidence:sha256",
+    "existing_read_metadata:bytes",
+    "expected_root:sha256"
+  ],
+  "requires": "all_predecessor_roots_and_original_bytes_and_read_metadata_already_staged",
+  "publication": "existing_root_last_exact_retry_only",
+  "output_states": [
+    "staged",
+    "durable"
+  ],
+  "no_claims": [
+    "key_authenticity",
+    "key_is_authority",
+    "source_generation_resume",
+    "parser_acknowledgement",
+    "http_mime_completion",
+    "camera_authentication",
+    "capture_time",
+    "decoded_pixels",
+    "event_publication",
+    "coverage",
+    "production_qualification"
+  ],
+  "documentation": "docs/HTTP_WIRE_COLD_RECOVERY.md",
+  "native_tests": "cargo test -p fss-reference --lib ingest::http_archive:: --locked --offline",
+  "native_validation": "not_run_no_rust_toolchain"
+}
