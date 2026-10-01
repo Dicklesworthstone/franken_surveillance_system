@@ -1222,7 +1222,7 @@ fn push_json_string(output: &mut String, value: &str) {
 
 #[cfg(test)]
 mod tests {
-    use super::{EnvelopeClass, ScenarioKind, run_scenario};
+    use super::{EnvelopeClass, ObservationClass, ScenarioKind, run_scenario, run_scenario_with};
     use fss_core::{EffectState, ObligationState};
 
     fn temp_test_root(tag: &str) -> std::path::PathBuf {
