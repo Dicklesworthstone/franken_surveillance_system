@@ -133,7 +133,7 @@ f228d9a9cc64bd781f2db641e326aa0de1131a27d27de6f44885089cf43d13b8  crates/fss-cli
 9b80afef99a47daa0d2dda50c52a683ff0334713ef27188a50d49cfd7f04ce81  crates/fss-cli/src/bin/fss-lab/effects.rs
 46f517e456c45923ddc5a49b9b988dd0ad346d19444b2ea44ff8b2de58180966  crates/fss-cli/src/bin/fss-lab/ledger.rs
 44ca393915220a388f95c8fc8c3301d763353fefb7ef30b56cc69581fed71986  crates/fss-cli/src/bin/fss-lab/main.rs
-447799396625cc4c2d8a01c8cc146ec446d9328030e9cad6f1877a4b969fe396  crates/fss-cli/src/bin/fss-lab/scenario.rs
+ad7d673ebd1a4811f160dd73c3ee37cc922971e62721e258e11f804d581dbd6d  crates/fss-cli/src/bin/fss-lab/scenario.rs
 4efd7cf0d29af16e16ed85595f9fcf125952a64382138589d2df0c926c406410  crates/fss-cli/src/bin/fss-lab/spool.rs
 13ea098d9916822a96bdeb4c637f0568d25c29768cabcbf4a46dafafb57b11e7  crates/fss-cli/src/bin/fss-mcp.rs
 5a55713718fd2c0e454b8f0b622f09f2966f9888c613ce05a10269d7efbfe3cf  crates/fss-cli/src/bin/fss-recover-http/tests.rs
@@ -1016,7 +1016,7 @@ f69e5f63389206e32c6a02ca768d4e37ebefbdf743cb835d3322283fd008f16f  crates/fss-ref
 ae6df228e0f395e0d9a7b4cf60348e6e6e663a13c86d7a22a46d33e877661740  crates/fss-reference/src/ingest/virtual_mjpeg/scene.rs
 71d1da4a010c831ad7cd15df0d92ad25800e5254f675b85db1d65ccc73931c5c  crates/fss-reference/src/ingest/virtual_mjpeg/tests.rs
 9c9ab51be0701a8566c3dbcb0852bfcb31a0500b563908f138f302c51937ec1e  crates/fss-reference/src/ingest/virtual_mjpeg.rs
-deed3826c9406888285f672822d2f36199d0aad0601bf1fa1e0ce4f00af20957  crates/fss-reference/src/lib.rs
+1a800b408b5a98e847cb048d5d824661c57b13165c455144a4484e11bce65ff2  crates/fss-reference/src/lib.rs
 ca3343c74e127337539e09b730375dcd05d45702daa7e157d3a9b7e6122a4b70  crates/fss-reference/src/meaningful_delta.rs
 58a407dd5fa80212133943c2231e19127e3523fd880df19ea406b7f14bc79006  crates/fss-reference/src/meaningful_delta_tests.rs
 f069abcd1162b3078479d3babcf9e2d41336007ed8a8bb780e1c410d15a99524  crates/fss-reference/src/media_fixture/h264.rs
@@ -1038,7 +1038,7 @@ eefb7722928d85675b3d2c044834791a827df924d0184fdf34949029b18f9bca  crates/fss-ref
 680077d8dc3dcc454801b1b86a4aaefeb9a644ad7c9d1ddca8288faf6a152711  crates/fss-reference/src/packet_fault.rs
 1c0c6d00c1b08d2e0b33231c73bb0c2dbdbc7204175be99ca3af6ad4346d87b2  crates/fss-reference/src/planned_scalar/budget.rs
 765db754bb9c2fd074dabc8f2be44d05eae3016ffe8b097cc30455050b6d3361  crates/fss-reference/src/planned_scalar.rs
-4195c5eb9072f758682967de057353690a2a8c977c427b7c3d9b9b753d7b8478  crates/fss-reference/src/policy.rs
+0c02fb5f57a7beb3e890d2e28e98bf66fb69b6f5dcf58d6bcfb77610994e1f1b  crates/fss-reference/src/policy.rs
 6cfae449f8fe0b6b11db19fa2c0ac3ad0b9e5cf8c46423ca8928ca7adec80736  crates/fss-reference/src/policy_tests.rs
 de603fe19eddc8505c6e8af729288d51a76aa574c128ad4e59828741dd6f4a9c  crates/fss-reference/src/preprocess.rs
 0680f002e7c4a6ca218faba25b212807fa24b1bfb1835fe7900733d104d6435f  crates/fss-reference/src/reference_deployment.rs
