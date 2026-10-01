@@ -137,7 +137,7 @@ f228d9a9cc64bd781f2db641e326aa0de1131a27d27de6f44885089cf43d13b8  crates/fss-cli
 4efd7cf0d29af16e16ed85595f9fcf125952a64382138589d2df0c926c406410  crates/fss-cli/src/bin/fss-lab/spool.rs
 13ea098d9916822a96bdeb4c637f0568d25c29768cabcbf4a46dafafb57b11e7  crates/fss-cli/src/bin/fss-mcp.rs
 5a55713718fd2c0e454b8f0b622f09f2966f9888c613ce05a10269d7efbfe3cf  crates/fss-cli/src/bin/fss-recover-http/tests.rs
-b9beb867a4615e5660f7f908abf512a9efd0cb0e3efefb4fc36c1380985d559d  crates/fss-cli/src/bin/fss-recover-http.rs
+a3eb2119e6c185564b3e8c70ea82ad1c9e4eb78d3b157214496ac198dc4d3d1c  crates/fss-cli/src/bin/fss-recover-http.rs
 9d620c2f527ae4d577491e3ae039df2c4c99605eba1281eab5d6c5c5ac2b90f7  crates/fss-cli/src/bin/fss-replay/selection.rs
 15df72dae6048b3fa0a067ccc92e43f147fa81f4562ae39e666cc0b2257dc4c4  crates/fss-cli/src/bin/fss-replay.rs
 7d2e47006abf6d155623900b1e0717e78f2f56f695aa49fe659b63a5190f2355  crates/fss-cli/src/bin/fss-review.rs
