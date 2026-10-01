@@ -18,10 +18,10 @@ use std::path::Path;
 use fss_core::{
     CanonicalEncode, CapsuleId, CaptureInterval, ClockBasis, Completeness, ContentDigest,
     ContractBasis, ContractBasisRegistryBytes, CoverageContinuity, CoverageStopReason,
-    CoverageWitness, DecisionPath, EffectState, EventEvidence, EventHypothesis, EventId, EventKind,
-    EventState, EvidenceClass, EvidenceEdgeRelation, HandoffId, IdempotencyKey, MissionId,
-    ObligationId, ObligationState, OperationId, PrincipalId, ProbabilityInterval, SensorCapsule,
-    SensorId, SensorSourceBytesSpec, SessionId, StreamId, TimestampNs,
+    CoverageWitness, EffectState, EventEvidence, EventHypothesis, EventId, EventKind, EventState,
+    EvidenceClass, EvidenceEdgeRelation, HandoffId, IdempotencyKey, MissionId, ObligationId,
+    ObligationState, OperationId, PrincipalId, ProbabilityInterval, SensorCapsule, SensorId,
+    SensorSourceBytesSpec, SessionId, StreamId, TimestampNs,
 };
 use fss_object::ObjectManifest;
 use fss_publication::SlotName;
