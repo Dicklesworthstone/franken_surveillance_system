@@ -897,36 +897,7 @@ fn run_scenario_with(
 
     drop(deployment);
 
-    // Reopen deployment to verify zero unreferenced objects and clean state on recovery.
-    let reopened = ReferenceDeployment::reopen(root, "site:lab", &cx)?;
-    // The only unreferenced objects allowed are the corrupt sources this run withheld.
-    let unreferenced: BTreeSet<ContentDigest> = reopened
-        .recovery_report()
-        .unreferenced_objects
-        .iter()
-        .copied()
-        .collect();
-    if unreferenced != withheld {
-        return Err(ScenarioError::Reference(format!(
-            "unreferenced objects detected on reopen: {:?}",
-            reopened.recovery_report().unreferenced_objects
-        )));
-    }
-    let recon2 = reopened.recovery_report();
-    // Clean apart from the exactly withheld corrupt sources: the spool reports exactly those as
-    // corrupt on reopen, and nothing else is corrupt, orphaned or foreign.
-    let corrupt: BTreeSet<ContentDigest> = recon2.spool.corrupt.iter().map(|c| c.digest).collect();
-    if !(corrupt == withheld
-        && recon2.spool.orphaned_staging.is_empty()
-        && recon2.spool.foreign.is_empty()
-        && recon2.broken_roots.is_empty()
-        && recon2.orphaned_temps.is_empty()
-        && recon2.foreign.is_empty())
-    {
-        return Err(ScenarioError::Reference(
-            "recovery report on reopen was not clean".to_owned(),
-        ));
-    }
+    verify_reopen(root, &cx, &withheld)?;
 
     let affordances = affordances_for(envelope, transient_indeterminate);
 
@@ -1088,6 +1059,47 @@ fn policy_decision_path(
     }
 }
 
+/// Reopens the deployment and requires a clean recovery, apart from exactly the corrupt sources
+/// this run withheld: they must be the only unreferenced objects and the only corrupt ones.
+fn verify_reopen(
+    root: &Path,
+    cx: &ReplayCx,
+    withheld: &BTreeSet<ContentDigest>,
+) -> Result<(), ScenarioError> {
+    // Reopen deployment to verify zero unreferenced objects and clean state on recovery.
+    let reopened = ReferenceDeployment::reopen(root, "site:lab", cx)?;
+    // The only unreferenced objects allowed are the corrupt sources this run withheld.
+    let unreferenced: BTreeSet<ContentDigest> = reopened
+        .recovery_report()
+        .unreferenced_objects
+        .iter()
+        .copied()
+        .collect();
+    if &unreferenced != withheld {
+        return Err(ScenarioError::Reference(format!(
+            "unreferenced objects detected on reopen: {:?}",
+            reopened.recovery_report().unreferenced_objects
+        )));
+    }
+    let recon2 = reopened.recovery_report();
+    // Clean apart from the exactly withheld corrupt sources: the spool reports exactly those as
+    // corrupt on reopen, and nothing else is corrupt, orphaned or foreign.
+    let corrupt: BTreeSet<ContentDigest> = recon2.spool.corrupt.iter().map(|c| c.digest).collect();
+    if !(&corrupt == withheld
+        && recon2.spool.orphaned_staging.is_empty()
+        && recon2.spool.foreign.is_empty()
+        && recon2.broken_roots.is_empty()
+        && recon2.orphaned_temps.is_empty()
+        && recon2.foreign.is_empty())
+    {
+        return Err(ScenarioError::Reference(
+            "recovery report on reopen was not clean".to_owned(),
+        ));
+    }
+
+    Ok(())
+}
+
 fn deployment_spool_detects_corruption(
     deployment: &mut ReferenceDeployment,
     bytes: &[u8],
@@ -1222,8 +1234,13 @@ fn push_json_string(output: &mut String, value: &str) {
 
 #[cfg(test)]
 mod tests {
-    use super::{EnvelopeClass, ObservationClass, ScenarioKind, run_scenario, run_scenario_with};
+    use super::{
+        EnvelopeClass, ObservationClass, ScenarioKind, make_cx, run_scenario, run_scenario_with,
+        verify_reopen,
+    };
     use fss_core::{EffectState, ObligationState};
+    use fss_reference::ReferenceDeployment;
+    use std::collections::BTreeSet;
 
     fn temp_test_root(tag: &str) -> std::path::PathBuf {
         let dir = std::env::temp_dir().join(format!(
@@ -1273,6 +1290,25 @@ mod tests {
         assert_eq!(report.effect_state, Some(EffectState::Verified));
         assert_eq!(report.obligation_state, Some(ObligationState::Verified));
         assert_eq!(report.knowledge.corroboration, "corroborated");
+        let _ = std::fs::remove_dir_all(&root);
+        Ok(())
+    }
+
+    #[test]
+    fn reopen_refuses_any_unreferenced_object_it_did_not_withhold()
+    -> Result<(), Box<dyn std::error::Error>> {
+        // Review mutant M2: a clean run, then one extra staged object nothing references.
+        let root = temp_test_root("reopen-planted");
+        run_scenario(ScenarioKind::Quiet, &root)?;
+        let cx = make_cx(ScenarioKind::Quiet)?;
+        assert!(verify_reopen(&root, &cx, &BTreeSet::new()).is_ok());
+        let planted = {
+            let mut deployment = ReferenceDeployment::reopen(&root, "site:lab", &cx)?;
+            deployment.stage_payload(b"planted unreferenced object")?
+        };
+        assert!(verify_reopen(&root, &cx, &BTreeSet::new()).is_err());
+        // Declaring it withheld is not enough when it is not corrupt.
+        assert!(verify_reopen(&root, &cx, &BTreeSet::from([planted])).is_err());
         let _ = std::fs::remove_dir_all(&root);
         Ok(())
     }
