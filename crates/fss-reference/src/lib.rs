@@ -233,7 +233,7 @@ pub use packet_fault::{
 pub use policy::{
     ReferenceEventReceipt, ReferenceModelObservation, ReferencePolicyAction,
     ReferencePolicyDecision, ZoneEntryCorroboration, ZoneEntryWitness, evaluate_unknown_presence,
-    evaluate_zone_entry_corroboration, publish_reference_event,
+    evaluate_zone_entry_corroboration, policy_decision_path, publish_reference_event,
 };
 pub use reference_deployment::{
     DEPLOYMENT_CANCEL_STAGES, DEPLOYMENT_LAYOUT_FILENAME, DEPLOYMENT_LAYOUT_FORMAT_VERSION,

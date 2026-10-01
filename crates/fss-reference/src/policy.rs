@@ -457,7 +457,12 @@ fn authority_predecessor(
     Ok((Some(current.generation), Some(witness)))
 }
 
-pub(crate) fn policy_decision_path(
+/// Decision path of the reference unknown-presence policy for `event_id`: the policy generation
+/// and a fingerprint over the event, its state, the action and every evidence edge. Callers that
+/// publish a decision outside [`evaluate_unknown_presence`] (for example a certified-quiet event)
+/// use this so the path cannot drift from the policy's own encoding.
+#[must_use]
+pub fn policy_decision_path(
     event_id: &EventId,
     evidence: &[EventEvidence],
     state: EventState,

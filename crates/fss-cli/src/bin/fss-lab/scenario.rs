@@ -30,7 +30,7 @@ use fss_reference::{
     MockSemanticLabel, PrepareAlertParams, ReferenceAlertPlan, ReferenceDeployment,
     ReferenceModelObservation, ReferencePolicyAction, ReferencePolicyDecision,
     ReferenceProviderBehavior, ReferenceSituationRequest, ReplayCx, ReplayIoAuthority,
-    evaluate_unknown_presence,
+    evaluate_unknown_presence, policy_decision_path,
 };
 
 const SCENARIO_START: u64 = 0;
@@ -1030,33 +1030,6 @@ fn affordances_for(envelope: EnvelopeClass, transient_indeterminate: bool) -> Ve
         });
     }
     affordances
-}
-
-fn policy_decision_path(
-    event_id: &EventId,
-    evidence: &[EventEvidence],
-    state: EventState,
-    action: ReferencePolicyAction,
-) -> DecisionPath {
-    let mut encoder = fss_core::CanonicalEncoder::new();
-    encoder.text("fss.reference_unknown_presence_policy.v2");
-    event_id.encode_canonical(&mut encoder);
-    encoder.text(state.as_str());
-    encoder.u8(match action {
-        ReferencePolicyAction::Hold => 1,
-        ReferencePolicyAction::PrepareAlert => 2,
-    });
-    encoder.u64(evidence.len() as u64);
-    for edge in evidence {
-        edge.encode_canonical(&mut encoder);
-    }
-    let fingerprint = ContentDigest::sha256(&encoder.finish());
-    DecisionPath {
-        policy_generation: ContentDigest::sha256(b"fss.reference_unknown_presence_policy.v2"),
-        fingerprint,
-        abstained: false,
-        abstention_reason: None,
-    }
 }
 
 /// Reopens the deployment and requires a clean recovery, apart from exactly the corrupt sources
