@@ -205,7 +205,7 @@ impl HttpWireRecoveryKey {
         bytes
             .try_reserve_exact(digits.len() / 2)
             .map_err(|_| HttpArchiveError::Limit)?;
-        for pair in digits.chunks_exact(2) {
+        for pair in digits.as_chunks::<2>().0 {
             bytes.push(digit(pair[0])? * 16 + digit(pair[1])?);
         }
         Self::from_bytes(&bytes)

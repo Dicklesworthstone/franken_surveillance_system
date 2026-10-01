@@ -134,7 +134,6 @@ fn all_native_crash_cuts_recover_from_only_the_serialized_key_and_disk() -> Test
         assert_eq!(archive.pin(), key.prior_pin());
         // No live camera, archive index, prepared borrowed buffer or recovery object survives.
         drop(plan);
-        drop(key);
         drop(archive);
         drop(p);
         let mut p = dir.open()?;
