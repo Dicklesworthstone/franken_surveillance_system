@@ -92,8 +92,6 @@ pub enum ScenarioError {
     Reference(String),
     /// Virtual packet encoding or decoding error.
     Packet(&'static str),
-    /// Spool verification error.
-    Spool(String),
     /// Time math overflow.
     TimeOverflow,
 }
@@ -105,7 +103,6 @@ impl fmt::Display for ScenarioError {
             Self::Core(msg) => write!(f, "core contract failure: {msg}"),
             Self::Reference(msg) => write!(f, "reference deployment failure: {msg}"),
             Self::Packet(msg) => write!(f, "virtual camera packet error: {msg}"),
-            Self::Spool(msg) => write!(f, "spool verification error: {msg}"),
             Self::TimeOverflow => f.write_str("scenario time overflow"),
         }
     }
