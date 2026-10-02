@@ -183,6 +183,8 @@ pub use extrinsics::{
     MAX_EXTRINSICS_REPROJECTION_TOLERANCE_UPX, MIN_EXTRINSICS_CORRESPONDENCES,
     ReferenceExtrinsicsSolver, RigidTransform3D, solve_extrinsics,
 };
+/// Journal append phase named by [`ReferenceDeployment::fail_ledger_append_after_phase`].
+pub use fss_ledger::AppendPhase;
 pub use hydration::{
     PublishedSourceReader, ReferenceHydrationCatalog, ReferenceHydrationLimits,
     SOURCE_OBJECT_CONTENT_TYPE, SourceHydrationError, SourceObjectBinding,

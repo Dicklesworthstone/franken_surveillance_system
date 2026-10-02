@@ -25,13 +25,13 @@ use fss_core::{
     SensorSourceBytesSpec, SessionId, StreamId, TimestampNs,
 };
 use fss_object::ObjectManifest;
-use fss_publication::SlotName;
+use fss_publication::{LedgerCutPoint, PublishCutPoint, SlotName};
 use fss_reference::{
-    DurableEffectError, MockModelOutcome, MockModelResult, MockModelScript, MockModelSpec,
-    MockSemanticLabel, PrepareAlertParams, ReferenceAlertPlan, ReferenceDeployment,
+    AppendPhase, DurableEffectError, MockModelOutcome, MockModelResult, MockModelScript,
+    MockModelSpec, MockSemanticLabel, PrepareAlertParams, ReferenceAlertPlan, ReferenceDeployment,
     ReferenceModelObservation, ReferencePolicyAction, ReferencePolicyDecision,
     ReferenceProviderBehavior, ReferenceSituationRequest, ReplayCx, ReplayIoAuthority,
-    evaluate_unknown_presence, policy_decision_path,
+    policy_decision_path, rehydrate_reference_alert_plan,
 };
 
 const SCENARIO_START: u64 = 0;
@@ -99,6 +99,9 @@ pub enum ScenarioError {
     Packet(&'static str),
     /// Time math overflow.
     TimeOverflow,
+    /// A crash-matrix fault the scenario driver itself injected fired at the named fault point;
+    /// the run stops there as an in-process stand-in for process death.
+    InjectedCrash(&'static str),
 }
 
 impl fmt::Display for ScenarioError {
@@ -109,6 +112,7 @@ impl fmt::Display for ScenarioError {
             Self::Reference(msg) => write!(f, "reference deployment failure: {msg}"),
             Self::Packet(msg) => write!(f, "virtual camera packet error: {msg}"),
             Self::TimeOverflow => f.write_str("scenario time overflow"),
+            Self::InjectedCrash(point) => write!(f, "injected crash at {point}"),
         }
     }
 }
@@ -130,6 +134,76 @@ impl From<fss_reference::ReferenceError> for ScenarioError {
 impl From<DurableEffectError> for ScenarioError {
     fn from(err: DurableEffectError) -> Self {
         Self::Reference(err.to_string())
+    }
+}
+
+/// One in-process fault the crash matrix arms on a scenario run (fss-2h5zq.15).
+///
+/// Every variant drives a seam the owning crate already exposes for fault injection; none of them
+/// is process death or power loss (fss-publication's `process_death_crash_harness` covers real
+/// process death).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Injection {
+    /// No fault: the ordinary scenario.
+    None,
+    /// `LocalRootPublisher::inject_crash_at` on the final `slot-sources` publication.
+    PublishCrash(PublishCutPoint),
+    /// `LedgeredRootPublisher::inject_crash_at` on the final `slot-sources` publication.
+    LedgerCrash(LedgerCutPoint),
+    /// `DurableReferenceLedger::fail_journal_after_phase` on the next authority append, which is
+    /// the `slot-sources` root reachability batch.
+    LedgerAppendFailure(AppendPhase),
+    /// The alert provider loses the acknowledgement after delivery, and the run stops before
+    /// reconciliation.
+    CrashAfterLostAck,
+    /// The alert operation is durably committed through the effect journal, and the run stops
+    /// before the provider is called.
+    CrashAfterCommitBeforeDispatch,
+    /// Cooperative cancellation requested at the named `DEPLOYMENT_CANCEL_STAGES` checkpoint.
+    CancelAt(&'static str),
+}
+
+impl Injection {
+    /// Requests cancellation on `cx` when this injection cancels at `stage`.
+    ///
+    /// The deployment polls `cx` at the entry of the operation that owns `stage`, so requesting
+    /// it immediately before that call is a cancellation arriving while the run is at the stage.
+    fn cancel_before(self, stage: &'static str, cx: &ReplayCx) {
+        if self == Self::CancelAt(stage) {
+            cx.request_cancellation();
+        }
+    }
+}
+
+/// Registered `DEPLOYMENT_CANCEL_STAGES` names the scenario driver polls, spelled exactly as
+/// `fss_reference` registers them (the crash-matrix tests check them against the registry).
+pub mod stage {
+    /// `STAGE_DEPLOYMENT_OPEN`.
+    pub const DEPLOYMENT_OPEN: &str = "deployment_open";
+    /// `STAGE_EVALUATE_POLICY`.
+    pub const EVALUATE_POLICY: &str = "evaluate_policy";
+    /// `STAGE_PUBLISH_EVENT`.
+    pub const PUBLISH_EVENT: &str = "publish_event";
+    /// `STAGE_DISPATCH_ALERT`.
+    pub const DISPATCH_ALERT: &str = "dispatch_alert";
+    /// `STAGE_PUBLISH_ROOT`.
+    pub const PUBLISH_ROOT: &str = "publish_root";
+    /// `STAGE_COMPILE_SITUATION`.
+    pub const COMPILE_SITUATION: &str = "compile_situation";
+    /// `STAGE_SEAL_HANDOFF`.
+    pub const SEAL_HANDOFF: &str = "seal_handoff";
+
+    /// Whether `stage` names a publication cut point the publisher polls through the
+    /// deployment's cancellation bridge.
+    #[must_use]
+    pub fn is_publish_cut(stage: &str) -> bool {
+        matches!(
+            stage,
+            "after_children_verified"
+                | "after_manifest_body"
+                | "after_root_temp_write"
+                | "after_root_rename"
+        )
     }
 }
 
@@ -309,6 +383,11 @@ pub struct ScenarioReport {
     pub handoff_digest: ContentDigest,
     /// Executor-backed observations (`file-activity` only; absent from every mock report).
     pub executor: Option<FileActivityReport>,
+    /// Operations this run handed to the alert provider (not rendered in the v2 report).
+    pub dispatched_operations: Vec<OperationId>,
+    /// Delivery and failure records the run's in-memory alert provider holds at the end of the
+    /// run (not rendered in the v2 report). The provider starts empty on every open.
+    pub provider_effects: usize,
 }
 
 impl ScenarioReport {
@@ -461,7 +540,13 @@ fn run_scenario_with(
     root: &Path,
     classes: &dyn Fn(ScenarioKind, &str, u64) -> ObservationClass,
 ) -> Result<ScenarioReport, ScenarioError> {
-    run_scenario_impl(kind, root, classes, FileActivityOptions::reference()?)
+    run_scenario_impl(
+        kind,
+        root,
+        classes,
+        FileActivityOptions::reference()?,
+        Injection::None,
+    )
 }
 
 /// `file-activity` with test-only executor options (threshold generation, failure injection).
@@ -470,14 +555,45 @@ fn run_file_activity_with(
     root: &Path,
     options: FileActivityOptions,
 ) -> Result<ScenarioReport, ScenarioError> {
-    run_scenario_impl(ScenarioKind::FileActivity, root, &class_for, options)
+    run_scenario_impl(
+        ScenarioKind::FileActivity,
+        root,
+        &class_for,
+        options,
+        Injection::None,
+    )
 }
 
+/// [`run_scenario`] with one crash-matrix fault armed; with [`Injection::None`] it is the
+/// ordinary scenario. See [`run_scenario_impl`].
+pub fn run_injected(
+    kind: ScenarioKind,
+    root: &Path,
+    injection: Injection,
+) -> Result<ScenarioReport, ScenarioError> {
+    run_scenario_impl(
+        kind,
+        root,
+        &class_for,
+        FileActivityOptions::reference()?,
+        injection,
+    )
+}
+
+/// One scenario run, optionally with one crash-matrix fault armed ([`Injection::None`] is the
+/// ordinary scenario).
+///
+/// The run is resumable on a root an earlier, interrupted run left behind: staging, event
+/// publication and root publication are idempotent by content, an alert operation the effect
+/// journal already holds is rehydrated instead of prepared again, and only a still-`Prepared`
+/// operation is dispatched (operation lookup precedes retry), so a rerun never blindly retries an
+/// effect.
 fn run_scenario_impl(
     kind: ScenarioKind,
     root: &Path,
     classes: &dyn Fn(ScenarioKind, &str, u64) -> ObservationClass,
     file_options: FileActivityOptions,
+    injection: Injection,
 ) -> Result<ScenarioReport, ScenarioError> {
     // A recorded file replaces the virtual cameras; it has no live continuity (fss-2h5zq.51).
     let file_source = kind == ScenarioKind::FileActivity;
@@ -489,6 +605,7 @@ fn run_scenario_impl(
     let faults = faults_for(kind);
     let cx = make_cx(kind)?;
 
+    injection.cancel_before(stage::DEPLOYMENT_OPEN, &cx);
     let mut deployment = ReferenceDeployment::open(root, "site:lab", &cx)?;
     let mut staged_digests: Vec<ContentDigest> = Vec::new();
     let mut warnings: Vec<String> = Vec::new();
@@ -614,7 +731,11 @@ fn run_scenario_impl(
     let corrupt = warnings.iter().any(|w| w.starts_with("source_corrupt:"));
     let event_id = EventId::parse(format!("event:lab:{}", kind.as_str()))?;
     let (decision, coverage_witness) = if !observations.is_empty() {
-        (evaluate_unknown_presence(event_id, observations)?, None)
+        injection.cancel_before(stage::EVALUATE_POLICY, &cx);
+        (
+            deployment.evaluate_policy(event_id, observations, &cx)?,
+            None,
+        )
     } else if gaps.is_empty() && !file_source {
         let event_id_quiet = event_id;
         let authorized_domain = BTreeSet::from([
@@ -785,6 +906,7 @@ fn run_scenario_impl(
     };
 
     // Publish event revision through the deployment.
+    injection.cancel_before(stage::PUBLISH_EVENT, &cx);
     let event_receipt = deployment.publish_event(&decision, &cx)?;
     staged_digests.push(event_receipt.event_root);
     staged_digests.push(event_receipt.event_object_digest);
@@ -794,6 +916,7 @@ fn run_scenario_impl(
     // Alert dispatch and reconciliation for corroborated threat scenarios.
     let mut transient_indeterminate = false;
     let mut alert_plan: Option<ReferenceAlertPlan> = None;
+    let mut dispatched_operations: Vec<OperationId> = Vec::new();
     let (effect_state, obligation_state) = if envelope == EnvelopeClass::CorroboratedThreat {
         let channel = "owner-alert".to_owned();
         let t_prepare = TimestampNs(
@@ -801,20 +924,45 @@ fn run_scenario_impl(
                 .checked_mul(1_000_000_000)
                 .ok_or(ScenarioError::TimeOverflow)?,
         );
+        let operation_id = OperationId::parse("op:alert:intrusion:1")?;
 
-        let (effects, ledger) = deployment.effects_and_ledger();
-        let plan = effects.prepare_alert(PrepareAlertParams {
-            decision: &decision,
-            event_receipt: &event_receipt,
-            authority: ledger,
-            operation_id: OperationId::parse("op:alert:intrusion:1")?,
-            idempotency_key: IdempotencyKey::parse("idemp:alert:intrusion:1")?,
-            obligation_id: ObligationId::parse("ob:alert:intrusion:1")?,
-            channel,
-            now: t_prepare,
-        })?;
+        // Operation lookup precedes retry: an operation an earlier run prepared is rehydrated from
+        // the durable effect journal, never prepared a second time.
+        let existing = deployment.effects().operation(&operation_id).cloned();
+        let plan = if let Some(operation) = existing {
+            let obligation_id = deployment
+                .effects()
+                .obligations()
+                .find(|obligation| obligation.operation_id == operation_id)
+                .map(|obligation| obligation.obligation_id.clone())
+                .ok_or_else(|| {
+                    ScenarioError::Reference("journaled alert has no obligation".to_owned())
+                })?;
+            rehydrate_reference_alert_plan(
+                &operation,
+                obligation_id,
+                &decision.event,
+                &event_receipt,
+                deployment.ledger(),
+                &channel,
+            )?
+        } else {
+            let (effects, ledger) = deployment.effects_and_ledger();
+            effects.prepare_alert(PrepareAlertParams {
+                decision: &decision,
+                event_receipt: &event_receipt,
+                authority: ledger,
+                operation_id: operation_id.clone(),
+                idempotency_key: IdempotencyKey::parse("idemp:alert:intrusion:1")?,
+                obligation_id: ObligationId::parse("ob:alert:intrusion:1")?,
+                channel,
+                now: t_prepare,
+            })?
+        };
 
-        let behavior = if faults.contains(&Fault::LoseAlertAcknowledgement) {
+        let behavior = if faults.contains(&Fault::LoseAlertAcknowledgement)
+            || injection == Injection::CrashAfterLostAck
+        {
             ReferenceProviderBehavior::LoseAckAfterDelivery
         } else {
             ReferenceProviderBehavior::Deliver
@@ -822,10 +970,36 @@ fn run_scenario_impl(
 
         let t_commit = TimestampNs(t_prepare.0 + 10_000_000);
         let t_outcome = TimestampNs(t_prepare.0 + 20_000_000);
-        let dispatch_receipt =
-            deployment.dispatch_alert(&plan, behavior, t_commit, t_outcome, &cx)?;
-
-        if dispatch_receipt.state == EffectState::Indeterminate {
+        let journaled_state = deployment
+            .effects()
+            .operation(&operation_id)
+            .map(|operation| operation.state);
+        if journaled_state == Some(EffectState::Prepared) {
+            injection.cancel_before(stage::DISPATCH_ALERT, &cx);
+            if injection == Injection::CrashAfterCommitBeforeDispatch {
+                // Exactly the journal step `dispatch_alert` takes before the provider is called.
+                deployment.effects_mut().transition(
+                    &operation_id,
+                    EffectState::Committed,
+                    t_commit,
+                    None,
+                    None,
+                )?;
+                return Err(ScenarioError::InjectedCrash(
+                    "effect.after_commit_before_dispatch",
+                ));
+            }
+            let dispatch_receipt =
+                deployment.dispatch_alert(&plan, behavior, t_commit, t_outcome, &cx)?;
+            dispatched_operations.push(operation_id.clone());
+            if injection == Injection::CrashAfterLostAck {
+                return Err(ScenarioError::InjectedCrash("effect.lost_ack"));
+            }
+            if dispatch_receipt.state == EffectState::Indeterminate {
+                transient_indeterminate = true;
+                warnings.push("effect_indeterminate:alert-operation-1".to_owned());
+            }
+        } else if journaled_state == Some(EffectState::Indeterminate) {
             transient_indeterminate = true;
             warnings.push("effect_indeterminate:alert-operation-1".to_owned());
         }
@@ -859,6 +1033,18 @@ fn run_scenario_impl(
         .map_err(|e| ScenarioError::Reference(e.to_string()))?;
     let slot_name =
         SlotName::parse("slot-sources").map_err(|e| ScenarioError::Reference(e.to_string()))?;
+    injection.cancel_before(stage::PUBLISH_ROOT, &cx);
+    match injection {
+        // The publisher polls these through the deployment's cancellation bridge, which reports
+        // reaching the stage to `cx`; the target fires there and nowhere else.
+        Injection::CancelAt(name) if stage::is_publish_cut(name) => {
+            cx.set_cancel_at_checkpoint(name);
+        }
+        Injection::PublishCrash(point) => deployment.publisher_mut().inject_crash_at(point),
+        Injection::LedgerCrash(point) => deployment.inject_ledger_crash_at(point),
+        Injection::LedgerAppendFailure(phase) => deployment.fail_ledger_append_after_phase(phase),
+        _ => {}
+    }
     let slot_receipt =
         deployment.publish_and_commit(&slot_name, &sources_manifest, interval, &cx)?;
     let publication_root = slot_receipt.root;
@@ -907,9 +1093,11 @@ fn run_scenario_impl(
         ),
     };
 
+    injection.cancel_before(stage::COMPILE_SITUATION, &cx);
     let situation = deployment.compile_situation(situation_req, &cx)?;
     let situation_digest = situation.verify()?;
 
+    injection.cancel_before(stage::SEAL_HANDOFF, &cx);
     let handoff = deployment.seal_handoff(
         &situation,
         HandoffId::parse(format!("handoff:lab:{}", kind.as_str()))?,
@@ -928,6 +1116,8 @@ fn run_scenario_impl(
     )?;
     let handoff_digest = handoff.handoff_root;
 
+    let provider_effects =
+        deployment.alert_provider().message_count() + deployment.alert_provider().failure_count();
     let ledger_sequence = deployment.current_anchor().commit_sequence;
     let ledger_anchor_root = deployment.current_anchor().state_root;
     let absence_certified = knowledge.absence_certified;
@@ -963,6 +1153,8 @@ fn run_scenario_impl(
         situation_digest,
         handoff_digest,
         executor,
+        dispatched_operations,
+        provider_effects,
     })
 }
 
@@ -1141,7 +1333,8 @@ fn deployment_spool_detects_corruption(
     }
 }
 
-fn make_cx(scenario: ScenarioKind) -> Result<ReplayCx, ScenarioError> {
+/// The laboratory's replay context for `scenario`: fixed authority, no deadline.
+pub fn make_cx(scenario: ScenarioKind) -> Result<ReplayCx, ScenarioError> {
     let spec = fss_core::RootAuthoritySpec {
         trace_id: format!("trace:lab:{}", scenario.as_str()),
         operation_id: OperationId::parse(format!("op:lab:{}", scenario.as_str()))

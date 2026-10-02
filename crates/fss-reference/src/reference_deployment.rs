@@ -15,15 +15,15 @@ use fss_core::{
     HandoffId, LedgerAnchor, ObjectId, OperationReceipt, Plane, TimestampNs,
 };
 use fss_ledger::{
-    DurableLedgerError, DurableReferenceLedger, IncompleteTailPolicy, JournalError, RepairReceipt,
-    doctor,
+    AppendPhase, DurableLedgerError, DurableReferenceLedger, IncompleteTailPolicy, JournalError,
+    RepairReceipt, doctor,
 };
 use fss_object::{ObjectManifest, SpoolLimits};
 use fss_publication::{
-    AuthorityPublisher, LedgeredRootPublisher, LocalPublicationError, LocalPublicationLimits,
-    LocalRecoveryReport, LocalRootPublisher, PublishCancellation, PublishCutPoint,
-    ROOT_REACHABILITY_FAMILY, ROOT_RETRACTION_FAMILY, RootLedgerReceipt, RootLedgerReconciliation,
-    SlotName,
+    AuthorityPublisher, LedgerCutPoint, LedgeredRootPublisher, LocalPublicationError,
+    LocalPublicationLimits, LocalRecoveryReport, LocalRootPublisher, PublishCancellation,
+    PublishCutPoint, ROOT_REACHABILITY_FAMILY, ROOT_RETRACTION_FAMILY, RootLedgerReceipt,
+    RootLedgerReconciliation, SlotName,
 };
 
 use crate::adapter_replay::ReplayCx;
@@ -949,6 +949,9 @@ pub struct ReferenceDeployment {
     effects: DurableEffectJournal,
     layout: DeploymentLayout,
     alert_provider: ReferenceAlertProvider,
+    /// One-shot ledger-linkage crash armed by [`Self::inject_ledger_crash_at`] for the next
+    /// [`Self::publish_and_commit`]; `None` outside fault-injection runs.
+    injected_ledger_crash: Option<LedgerCutPoint>,
 }
 
 impl ReferenceDeployment {
@@ -1114,6 +1117,7 @@ impl ReferenceDeployment {
             effects,
             layout,
             alert_provider,
+            injected_ledger_crash: None,
         })
     }
 
@@ -1392,9 +1396,35 @@ impl ReferenceDeployment {
         }
 
         let bridge = ReplayCancellationBridge(cx);
+        let injected = self.injected_ledger_crash.take();
         let mut ledgered = LedgeredRootPublisher::new(&mut self.publisher, &mut self.ledger);
+        if let Some(point) = injected {
+            ledgered.inject_crash_at(point);
+        }
         let receipt = ledgered.publish_and_commit_cancellable(slot, manifest, validity, &bridge)?;
         Ok(receipt)
+    }
+
+    /// Arms a one-shot ledger-linkage crash for the next [`Self::publish_and_commit`].
+    ///
+    /// Fault-injection seam for the laboratory crash matrix (fss-2h5zq.15): it forwards to
+    /// [`LedgeredRootPublisher::inject_crash_at`], so the call returns the linkage's
+    /// `InjectedCrash` and poisons the local publisher exactly as that seam documents. It is
+    /// in-process injection, not process death.
+    #[doc(hidden)]
+    pub fn inject_ledger_crash_at(&mut self, point: LedgerCutPoint) {
+        self.injected_ledger_crash = Some(point);
+    }
+
+    /// Arms a one-shot failure after `phase` of the next authority-ledger journal append.
+    ///
+    /// Fault-injection seam for the laboratory crash matrix (fss-2h5zq.15): it forwards to
+    /// [`DurableReferenceLedger::fail_journal_after_phase`], so the append returns
+    /// `AppendIndeterminate` with the bytes that phase left on disk. It is in-process injection,
+    /// not process death or power loss.
+    #[doc(hidden)]
+    pub fn fail_ledger_append_after_phase(&mut self, phase: AppendPhase) {
+        self.ledger.fail_journal_after_phase(phase);
     }
 
     /// Prepares and commits an authority batch to the canonical ledger, verifying child custody.

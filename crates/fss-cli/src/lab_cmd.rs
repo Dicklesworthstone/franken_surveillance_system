@@ -43,6 +43,16 @@ pub enum LabAction {
         /// Target root directory.
         root: PathBuf,
     },
+    /// Inject one in-process fault per registered fault point and report recovery
+    /// (`fss.lab.crash_matrix.v1`).
+    CrashMatrix {
+        /// Target root directory; every fault point gets a sub-root under it.
+        root: PathBuf,
+        /// Scenario the matrix runs (only `intrusion` has an expected-class table).
+        scenario: String,
+        /// Emit the JSON document instead of the human table.
+        json: bool,
+    },
     /// Replay a scenario N times to prove determinism.
     Replay {
         /// Selected scenario identifier.
@@ -58,9 +68,13 @@ pub enum LabAction {
 #[must_use]
 pub const fn help_text() -> &'static str {
     "fss-lab — deterministic reference surveillance laboratory\n\n\
-USAGE\n  fss-lab list\n  fss-lab run <scenario> --root <dir>\n  fss-lab matrix --root <dir>\n  fss-lab replay <scenario> --root <dir> [--repeat N]\n  fss-lab self-test --root <dir>\n\n\
-SCENARIOS\n  quiet           complete coverage and a certified absence\n  raccoon         benign wildlife with no alert effect\n  intrusion       independently corroborated person and verified alert\n  sneaky          material person residual plus an observability gap\n  lost-ack        indeterminate alert dispatch resolved by reconciliation\n  corrupt-source  source corruption detected before evidence publication\n  file-activity   recorded JPEG frames scored by the real scalar executor (run/replay only)\n"
+USAGE\n  fss-lab list\n  fss-lab run <scenario> --root <dir>\n  fss-lab matrix --root <dir>\n  fss-lab replay <scenario> --root <dir> [--repeat N]\n  fss-lab self-test --root <dir>\n  fss-lab crash-matrix --root <dir> [--scenario intrusion] [--json]\n\n\
+SCENARIOS\n  quiet           complete coverage and a certified absence\n  raccoon         benign wildlife with no alert effect\n  intrusion       independently corroborated person and verified alert\n  sneaky          material person residual plus an observability gap\n  lost-ack        indeterminate alert dispatch resolved by reconciliation\n  corrupt-source  source corruption detected before evidence publication\n  file-activity   recorded JPEG frames scored by the real scalar executor (run/replay only)\n\n\
+CRASH MATRIX\n  Injects one in-process fault per publish cut point, ledger cut point, journal append phase,\n  lost alert acknowledgement and cancellation stage, reopens each sub-root, and compares the\n  recovery class with the documented one. Exit 0 when the verdict is pass, 1 otherwise.\n  In-process injection is not process death or power loss.\n"
 }
+
+/// Scenarios the crash matrix has an expected-class table for.
+pub const CRASH_MATRIX_SCENARIOS: [&str; 1] = ["intrusion"];
 
 /// Parses OS-native arguments for `fss-lab` with total validation and exact grammar exhaustion.
 pub fn parse_lab_args<I>(args: I) -> Result<LabAction, CliError>
@@ -103,6 +117,7 @@ pub fn parse_lab_tokens(tokens: &[ArgToken]) -> Result<LabAction, CliError> {
         "self-test" => parse_self_test_command(tokens),
         "run" => parse_run_command(tokens),
         "replay" => parse_replay_command(tokens),
+        "crash-matrix" => parse_crash_matrix_command(tokens),
         unknown => {
             if unknown.starts_with('-') {
                 Err(CliError::UnknownOption {
@@ -510,6 +525,112 @@ fn parse_replay_command(tokens: &[ArgToken]) -> Result<LabAction, CliError> {
         repeat,
         root,
     })
+}
+
+fn parse_crash_matrix_command(tokens: &[ArgToken]) -> Result<LabAction, CliError> {
+    const COMMAND: &str = "crash-matrix";
+    let mut root: Option<PathBuf> = None;
+    let mut scenario: Option<String> = None;
+    let mut json = false;
+    let mut idx = 1;
+
+    while idx < tokens.len() {
+        let tok = &tokens[idx];
+        let s = tok.as_str();
+        let duplicate = |option: &str| CliError::DuplicateOption {
+            option: option.to_owned(),
+            command: Some(COMMAND.to_owned()),
+            index: tok.index,
+        };
+        if s == "--json" {
+            if json {
+                return Err(duplicate("--json"));
+            }
+            json = true;
+            idx += 1;
+        } else if s == "--root" || s == "--scenario" {
+            if (s == "--root" && root.is_some()) || (s == "--scenario" && scenario.is_some()) {
+                return Err(duplicate(s));
+            }
+            let missing = || CliError::MissingValue {
+                option: s.to_owned(),
+                command: Some(COMMAND.to_owned()),
+                expected: if s == "--root" {
+                    "directory path".to_owned()
+                } else {
+                    format!("one of: {}", CRASH_MATRIX_SCENARIOS.join(", "))
+                },
+            };
+            let val_tok = tokens.get(idx + 1).ok_or_else(missing)?;
+            if is_option_shaped(val_tok.as_str()) {
+                return Err(missing());
+            }
+            if s == "--root" {
+                root = Some(parse_root_value(
+                    &val_tok.raw,
+                    val_tok.index,
+                    Some(COMMAND),
+                )?);
+            } else {
+                validate_crash_matrix_scenario(&val_tok.raw, val_tok.index)?;
+                scenario = Some(val_tok.raw.clone());
+            }
+            idx += 2;
+        } else if let Some(val_str) = s.strip_prefix("--root=") {
+            if root.is_some() {
+                return Err(duplicate("--root"));
+            }
+            root = Some(parse_root_value(val_str, tok.index, Some(COMMAND))?);
+            idx += 1;
+        } else if let Some(val_str) = s.strip_prefix("--scenario=") {
+            if scenario.is_some() {
+                return Err(duplicate("--scenario"));
+            }
+            validate_crash_matrix_scenario(val_str, tok.index)?;
+            scenario = Some(val_str.to_owned());
+            idx += 1;
+        } else if s.starts_with('-') {
+            return Err(CliError::UnknownOption {
+                option: s.to_owned(),
+                command: Some(COMMAND.to_owned()),
+                index: tok.index,
+            });
+        } else {
+            return Err(CliError::TrailingArgument {
+                argument: s.to_owned(),
+                index: tok.index,
+                command: Some(COMMAND.to_owned()),
+            });
+        }
+    }
+
+    let root = root.ok_or_else(|| CliError::MissingValue {
+        option: "--root".to_owned(),
+        command: Some(COMMAND.to_owned()),
+        expected: "directory path".to_owned(),
+    })?;
+    Ok(LabAction::CrashMatrix {
+        root,
+        scenario: scenario.unwrap_or_else(|| "intrusion".to_owned()),
+        json,
+    })
+}
+
+fn validate_crash_matrix_scenario(name: &str, index: usize) -> Result<(), CliError> {
+    if CRASH_MATRIX_SCENARIOS.contains(&name) {
+        Ok(())
+    } else {
+        Err(CliError::MalformedValue {
+            option: "--scenario".to_owned(),
+            value: name.to_owned(),
+            reason: format!(
+                "the crash matrix has an expected-class table only for: {}",
+                CRASH_MATRIX_SCENARIOS.join(", ")
+            ),
+            command: Some("crash-matrix".to_owned()),
+            index,
+        })
+    }
 }
 
 fn parse_root_value(val: &str, index: usize, command: Option<&str>) -> Result<PathBuf, CliError> {
