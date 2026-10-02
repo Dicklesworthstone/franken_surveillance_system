@@ -857,7 +857,9 @@ class TestSchemaConstitution(unittest.TestCase):
         # 130 = 128 + the adoption receipt and adoption approval domains (fss-x8j0v adoption).
         # 131 = 130 + the coverage pose-uncertainty domain (fss-x8j0v covariance propagation).
         # 138 = 131 + seven owner FSS-160 set-cover and budgeted-coverage digest domains.
-        self.assertEqual(result["digestDomainCount"], 138)
+        # 142 = 138 + the executor model result, activity threshold policy, activity model and
+        # RGB decode receipt domains (fss-2h5zq.51).
+        self.assertEqual(result["digestDomainCount"], 142)
 
         # Continuation cursor is verified implemented
         implemented_names = {s["name"] for s in result["schemas"] if s["status"] == "implemented"}
@@ -1359,7 +1361,9 @@ class TestSchemaConstitutionCrossReviewRegressions(unittest.TestCase):
         # 130 = 128 + the adoption receipt and adoption approval domains (fss-x8j0v adoption).
         # 131 = 130 + the coverage pose-uncertainty domain (fss-x8j0v covariance propagation).
         # 138 = 131 + seven owner FSS-160 set-cover and budgeted-coverage digest domains.
-        self.assertEqual(result["digestDomainCount"], 138)
+        # 142 = 138 + the executor model result, activity threshold policy, activity model and
+        # RGB decode receipt domains (fss-2h5zq.51).
+        self.assertEqual(result["digestDomainCount"], 142)
         # 36 = 28 + fss.sensor_tamper_status.v1 (owner SensorTamperStatus, fss-2uftm)
         # + fss.agent_operations.v1 / fss.agent_views.v1 / fss.agent_request_envelope.v1
         #   (owners AgentOperation / AgentView / AgentRequestEnvelope, fss-x4a.30.83.17-40)

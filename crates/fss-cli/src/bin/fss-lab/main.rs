@@ -4,6 +4,7 @@
 //! Laboratory scenarios drive the real pure-Rust stack through [`ReferenceDeployment`](fss_reference::ReferenceDeployment)
 //! under a caller-given `--root` directory.
 
+mod file_activity;
 mod scenario;
 
 use std::env;
@@ -196,7 +197,7 @@ fn self_test(root: &Path) -> Result<String, String> {
 const fn help_text() -> &'static str {
     "fss-lab — deterministic reference surveillance laboratory\n\n\
 USAGE\n  fss-lab list\n  fss-lab run <scenario> --root <dir>\n  fss-lab matrix --root <dir>\n  fss-lab replay <scenario> --root <dir> [--repeat N]\n  fss-lab self-test --root <dir>\n\n\
-SCENARIOS\n  quiet           complete coverage and a certified absence\n  raccoon         benign wildlife with no alert effect\n  intrusion       independently corroborated person and verified alert\n  sneaky          material person residual plus an observability gap\n  lost-ack        indeterminate alert dispatch resolved by reconciliation\n  corrupt-source  source corruption detected before evidence publication\n"
+SCENARIOS\n  quiet           complete coverage and a certified absence\n  raccoon         benign wildlife with no alert effect\n  intrusion       independently corroborated person and verified alert\n  sneaky          material person residual plus an observability gap\n  lost-ack        indeterminate alert dispatch resolved by reconciliation\n  corrupt-source  source corruption detected before evidence publication\n  file-activity   recorded JPEG frames scored by the real scalar executor (run/replay only)\n"
 }
 
 #[cfg(test)]
@@ -241,6 +242,55 @@ mod tests {
         let _ = std::fs::remove_dir_all(&root_mat);
         let _ = std::fs::remove_dir_all(&root_st);
         let _ = std::fs::remove_dir_all(&root_rep);
+    }
+
+    /// SHA-256 and length of the exact `fss-lab matrix` stdout line (without the trailing
+    /// newline) produced by origin/main d958255, before the executor-backed observation
+    /// variant existed (fss-2h5zq.51; the `lab_matrix_baseline_sha256` of fss-2h5zq.12).
+    const MAIN_MATRIX_SHA256: &str =
+        "sha256:aa5923d94cc427c524c0d2172cbf53a91fb8c4c81f77c073949284e463c8ac0e";
+    const MAIN_MATRIX_BYTES: usize = 8621;
+
+    #[test]
+    fn six_mock_scenario_matrix_is_byte_identical_to_main() {
+        let root = temp_root("mat-baseline");
+        let matrix = render_matrix(&root);
+        let _ = std::fs::remove_dir_all(&root);
+        let matrix = matrix.unwrap_or_default();
+        assert_eq!(matrix.len(), MAIN_MATRIX_BYTES);
+        assert_eq!(
+            fss_core::ContentDigest::sha256(matrix.as_bytes()).to_string(),
+            MAIN_MATRIX_SHA256
+        );
+        assert!(!matrix.contains("file-activity"));
+        assert!(!matrix.contains("\"executor\""));
+    }
+
+    #[test]
+    fn file_activity_runs_and_replays_but_stays_out_of_the_matrix() {
+        let root = temp_root("file-activity-run");
+        let run_output = run(vec![
+            "run".to_owned(),
+            "file-activity".to_owned(),
+            "--root".to_owned(),
+            root.display().to_string(),
+        ]);
+        let _ = std::fs::remove_dir_all(&root);
+        let report = run_output.unwrap_or_default();
+        assert!(report.contains("\"scenario\":\"file-activity\""));
+        assert!(report.contains("\"corroboration\":\"single_source\""));
+        assert!(!report.contains("\"corroboration\":\"corroborated\""));
+        assert!(report.contains("\"not_certifiable\":\"continuity_not_observable\""));
+        let root = temp_root("file-activity-replay");
+        let replayed = replay("file-activity", 2, &root);
+        let _ = std::fs::remove_dir_all(&root);
+        assert!(
+            replayed
+                .unwrap_or_default()
+                .contains("\"deterministic\":true")
+        );
+        let list = run(vec!["list".to_owned()]).unwrap_or_default();
+        assert!(!list.contains("file-activity"));
     }
 
     #[test]

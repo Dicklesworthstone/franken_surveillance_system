@@ -11,16 +11,78 @@ use fss_ledger::DurableReferenceLedger;
 use fss_object::{InMemoryObjectStore, ObjectManifest, VerifiedObjectCatalog};
 use fss_publication::AuthorityPublisher;
 
+use crate::executor_activity::{ExecutorModelOutcome, ExecutorModelResult};
 use crate::{MockModelOutcome, MockModelResult, MockSemanticLabel, ReferenceError};
 
 const MAX_POLICY_OBSERVATIONS: usize = 64;
 const MAX_FAILURE_DOMAIN_BYTES: usize = 256;
 
+/// The retained model result a policy observation carries: a scripted mock result, or the result
+/// of a real scalar-executor invocation over decoded pixels. An executor result is never encoded
+/// as a [`MockModelResult`]; each variant keeps its own canonical encoding and domain.
+#[derive(Clone, Debug, PartialEq)]
+pub enum ReferenceModelResult {
+    /// Scripted reference result (policy-semantics fixtures).
+    Mock(MockModelResult),
+    /// Executor-backed result bound to its invocation and decode receipts (fss-2h5zq.51).
+    ScalarExecutor(ExecutorModelResult),
+}
+
+impl ReferenceModelResult {
+    /// Canonical object identity of the retained result bytes (dedup key of the policy).
+    #[must_use]
+    pub fn object_digest(&self) -> ContentDigest {
+        match self {
+            Self::Mock(result) => result.object_digest(),
+            Self::ScalarExecutor(result) => result.object_digest(),
+        }
+    }
+
+    /// Exact retained bytes whose SHA-256 is [`Self::object_digest`].
+    #[must_use]
+    pub fn canonical_bytes(&self) -> Vec<u8> {
+        match self {
+            Self::Mock(result) => result.canonical_bytes(),
+            Self::ScalarExecutor(result) => result.canonical_bytes(),
+        }
+    }
+
+    /// Recording sensor.
+    #[must_use]
+    pub fn sensor_id(&self) -> &fss_core::SensorId {
+        match self {
+            Self::Mock(result) => &result.sensor_id,
+            Self::ScalarExecutor(result) => &result.sensor_id,
+        }
+    }
+
+    /// Exact capture object consumed (corroboration counts distinct capture roots).
+    #[must_use]
+    pub fn input_capture_root(&self) -> ContentDigest {
+        match self {
+            Self::Mock(result) => result.input_capture_root,
+            Self::ScalarExecutor(result) => result.input_capture_root,
+        }
+    }
+}
+
+impl From<MockModelResult> for ReferenceModelResult {
+    fn from(result: MockModelResult) -> Self {
+        Self::Mock(result)
+    }
+}
+
+impl From<ExecutorModelResult> for ReferenceModelResult {
+    fn from(result: ExecutorModelResult) -> Self {
+        Self::ScalarExecutor(result)
+    }
+}
+
 /// One retained model result with the physical/shared failure domain assigned by deployment truth.
 #[derive(Clone, Debug, PartialEq)]
 pub struct ReferenceModelObservation {
     /// Exact retained model result.
-    pub result: MockModelResult,
+    pub result: ReferenceModelResult,
     /// Failure-domain identity used for corroboration accounting.
     pub failure_domain: String,
     /// Physical validity interval represented by this observation.
@@ -30,10 +92,11 @@ pub struct ReferenceModelObservation {
 impl ReferenceModelObservation {
     /// Constructs a bounded observation without granting any event/effect authority.
     pub fn new(
-        result: MockModelResult,
+        result: impl Into<ReferenceModelResult>,
         failure_domain: impl Into<String>,
         interval: CaptureInterval,
     ) -> Result<Self, ReferenceError> {
+        let result = result.into();
         let failure_domain = failure_domain.into();
         if failure_domain.is_empty() || failure_domain.len() > MAX_FAILURE_DOMAIN_BYTES {
             return Err(ReferenceError::InvalidSpec("failure_domain"));
@@ -129,14 +192,47 @@ pub fn evaluate_unknown_presence(
             latest = observation.interval.latest;
         }
 
-        let relation = match &observation.result.outcome {
+        let mock_outcome = match &observation.result {
+            ReferenceModelResult::Mock(result) => &result.outcome,
+            ReferenceModelResult::ScalarExecutor(result) => {
+                let relation = match result.outcome {
+                    // Pixel activity above the documented threshold supports the hypothesis from
+                    // this one sensor only; corroboration still needs independent sensors.
+                    ExecutorModelOutcome::Activity { .. } => {
+                        support_domains.insert(observation.failure_domain.clone());
+                        support_capture_roots.insert(result.input_capture_root);
+                        support_sensors.insert(result.sensor_id.clone());
+                        EvidenceEdgeRelation::Supports
+                    }
+                    // Below threshold is not absence and not a contradiction: a neutral edge.
+                    ExecutorModelOutcome::NoActivity { .. } => EvidenceEdgeRelation::DerivedFrom,
+                    // An executor failure says nothing about presence and holds the event open.
+                    ExecutorModelOutcome::Abstained { .. } => {
+                        unresolved += 1;
+                        EvidenceEdgeRelation::DerivedFrom
+                    }
+                };
+                evidence.push(EventEvidence {
+                    digest: result_digest,
+                    class: EvidenceClass::Derived,
+                    failure_domain: observation.failure_domain.clone(),
+                    supports: relation.required_supports_flag(),
+                    relation,
+                    capsule_digest: None,
+                    identity_digest: None,
+                });
+                model_receipts.push(result_digest);
+                continue;
+            }
+        };
+        let relation = match mock_outcome {
             MockModelOutcome::Finding {
                 label: MockSemanticLabel::PersonLike,
                 ..
             } => {
                 support_domains.insert(observation.failure_domain.clone());
-                support_capture_roots.insert(observation.result.input_capture_root);
-                support_sensors.insert(observation.result.sensor_id.clone());
+                support_capture_roots.insert(observation.result.input_capture_root());
+                support_sensors.insert(observation.result.sensor_id().clone());
                 EvidenceEdgeRelation::Supports
             }
             // A benign alternative explanation is evidence against unknown-person presence.
@@ -175,7 +271,7 @@ pub fn evaluate_unknown_presence(
         let identity_digest = match relation {
             EvidenceEdgeRelation::SensorTamper
             | EvidenceEdgeRelation::SensorIntegrityRestoration => Some(ContentDigest::sha256(
-                observation.result.sensor_id.as_str().as_bytes(),
+                observation.result.sensor_id().as_str().as_bytes(),
             )),
             _ => None,
         };

@@ -47,6 +47,8 @@ pub mod evaluation;
 pub mod event_review;
 /// Approval-gated, redacted P5 event evidence export roots.
 pub mod evidence_export;
+/// Executor-backed activity observations over decoded pixels (fss-2h5zq.51); cognition only.
+pub mod executor_activity;
 mod extrinsics;
 /// Durable native reconnect boundaries and bounded cold history verification.
 pub mod http_reconnect_history;
@@ -80,6 +82,8 @@ mod alert_tests;
 mod bundle_tests;
 #[cfg(test)]
 mod context_binding_tests;
+#[cfg(test)]
+mod executor_activity_tests;
 #[cfg(test)]
 mod hydration_tests;
 #[cfg(test)]
@@ -231,7 +235,7 @@ pub use packet_fault::{
     inject_stream,
 };
 pub use policy::{
-    ReferenceEventReceipt, ReferenceModelObservation, ReferencePolicyAction,
+    ReferenceEventReceipt, ReferenceModelObservation, ReferenceModelResult, ReferencePolicyAction,
     ReferencePolicyDecision, ZoneEntryCorroboration, ZoneEntryWitness, evaluate_unknown_presence,
     evaluate_zone_entry_corroboration, policy_decision_path, publish_reference_event,
 };

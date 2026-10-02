@@ -49,9 +49,7 @@ fn field<'a>(json: &'a str, key: &str) -> TestResult<&'a str> {
         let end = quoted.find('"').ok_or(format!("unterminated {key}"))?;
         Ok(&quoted[..end])
     } else {
-        let end = rest
-            .find(|c: char| c == ',' || c == '}')
-            .ok_or(format!("unterminated {key}"))?;
+        let end = rest.find([',', '}']).ok_or(format!("unterminated {key}"))?;
         Ok(&rest[..end])
     }
 }

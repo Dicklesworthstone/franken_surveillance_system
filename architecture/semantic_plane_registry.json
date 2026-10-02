@@ -223,6 +223,8 @@
     "crates/fss-reference/src/event_review/inspection.rs": "support",
     "crates/fss-reference/src/event_review/tests.rs": "support",
     "crates/fss-reference/src/evidence_export.rs": "support",
+    "crates/fss-reference/src/executor_activity.rs": "cognition",
+    "crates/fss-reference/src/executor_activity_tests.rs": "support",
     "crates/fss-reference/src/extrinsics.rs": "authority",
     "crates/fss-reference/src/http_reconnect_history.rs": "support",
     "crates/fss-reference/src/http_reconnect_history/record.rs": "support",
