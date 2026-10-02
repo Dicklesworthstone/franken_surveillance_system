@@ -4,6 +4,7 @@
 //! Laboratory scenarios drive the real pure-Rust stack through [`ReferenceDeployment`](fss_reference::ReferenceDeployment)
 //! under a caller-given `--root` directory.
 
+mod crash_matrix;
 mod scenario;
 
 use std::env;
@@ -13,7 +14,7 @@ use std::process::ExitCode;
 
 #[cfg(test)]
 use fss_cli::{ArgToken, parse_lab_tokens};
-use fss_cli::{LabAction, emit_diagnostic, parse_lab_args};
+use fss_cli::{LabAction, emit_diagnostic, lab_help_text, parse_lab_args};
 use scenario::{ScenarioKind, run_scenario};
 
 const ALL_SCENARIOS: [ScenarioKind; 6] = [
@@ -46,7 +47,7 @@ fn main() -> ExitCode {
 
 fn run_action(action: LabAction) -> Result<String, String> {
     match action {
-        LabAction::Help => Ok(help_text().to_owned()),
+        LabAction::Help => Ok(lab_help_text().to_owned()),
         LabAction::List => Ok(render_scenario_list()),
         LabAction::Matrix { root } => {
             check_root_empty(&root)?;
@@ -71,6 +72,41 @@ fn run_action(action: LabAction) -> Result<String, String> {
             check_root_empty(&root)?;
             replay(&scenario, repeat, &root)
         }
+        LabAction::CrashMatrix {
+            root,
+            scenario,
+            json,
+        } => {
+            check_root_empty(&root)?;
+            crash_matrix_command(&scenario, json, &root)
+        }
+    }
+}
+
+/// Runs the crash matrix. A failing verdict is still reported in full on stdout, and the command
+/// then exits non-zero.
+fn crash_matrix_command(scenario: &str, json: bool, root: &Path) -> Result<String, String> {
+    if scenario != crash_matrix::MATRIX_SCENARIO.as_str() {
+        return Err(format!(
+            "crash-matrix has an expected-class table only for {}",
+            crash_matrix::MATRIX_SCENARIO.as_str()
+        ));
+    }
+    let rows = crash_matrix::run_matrix(root)?;
+    let rendered = if json {
+        crash_matrix::render_json(&rows)
+    } else {
+        crash_matrix::render_text(&rows)
+    };
+    if crash_matrix::verdict(&rows) {
+        Ok(rendered)
+    } else {
+        println!("{rendered}");
+        Err(format!(
+            "crash matrix verdict fail: {} of {} rows differ from the documented recovery contract",
+            rows.iter().filter(|row| !row.passes()).count(),
+            rows.len()
+        ))
     }
 }
 
@@ -191,12 +227,6 @@ fn self_test(root: &Path) -> Result<String, String> {
         ALL_SCENARIOS.len(),
         digest
     ))
-}
-
-const fn help_text() -> &'static str {
-    "fss-lab — deterministic reference surveillance laboratory\n\n\
-USAGE\n  fss-lab list\n  fss-lab run <scenario> --root <dir>\n  fss-lab matrix --root <dir>\n  fss-lab replay <scenario> --root <dir> [--repeat N]\n  fss-lab self-test --root <dir>\n\n\
-SCENARIOS\n  quiet           complete coverage and a certified absence\n  raccoon         benign wildlife with no alert effect\n  intrusion       independently corroborated person and verified alert\n  sneaky          material person residual plus an observability gap\n  lost-ack        indeterminate alert dispatch resolved by reconciliation\n  corrupt-source  source corruption detected before evidence publication\n"
 }
 
 #[cfg(test)]
