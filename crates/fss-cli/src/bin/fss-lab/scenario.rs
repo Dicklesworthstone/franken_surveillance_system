@@ -15,6 +15,7 @@ use std::fmt;
 use std::fs;
 use std::path::Path;
 
+use crate::file_activity::{self, FileActivityOptions, FileActivityReport};
 use fss_core::{
     CanonicalEncode, CapsuleId, CaptureInterval, ClockBasis, Completeness, ContentDigest,
     ContractBasis, ContractBasisRegistryBytes, CoverageContinuity, CoverageStopReason,
@@ -51,6 +52,8 @@ pub enum ScenarioKind {
     LostAcknowledgement,
     /// Corrupted source packet detected by spool verification and withheld from evidence.
     CorruptSource,
+    /// Recorded single-camera JPEG frames scored by the real scalar executor (fss-2h5zq.51).
+    FileActivity,
 }
 
 impl ScenarioKind {
@@ -63,6 +66,7 @@ impl ScenarioKind {
             "sneaky" => Ok(Self::Sneaky),
             "lost-ack" => Ok(Self::LostAcknowledgement),
             "corrupt-source" => Ok(Self::CorruptSource),
+            "file-activity" => Ok(Self::FileActivity),
             _ => Err(ScenarioError::UnknownScenario(value.to_owned())),
         }
     }
@@ -77,6 +81,7 @@ impl ScenarioKind {
             Self::Sneaky => "sneaky",
             Self::LostAcknowledgement => "lost-ack",
             Self::CorruptSource => "corrupt-source",
+            Self::FileActivity => "file-activity",
         }
     }
 }
@@ -302,6 +307,8 @@ pub struct ScenarioReport {
     pub situation_digest: ContentDigest,
     /// Content digest of the root-closed handoff capsule.
     pub handoff_digest: ContentDigest,
+    /// Executor-backed observations (`file-activity` only; absent from every mock report).
+    pub executor: Option<FileActivityReport>,
 }
 
 impl ScenarioReport {
@@ -401,6 +408,10 @@ impl ScenarioReport {
             &self.handoff_digest.to_string(),
             false,
         );
+        if let Some(executor) = &self.executor {
+            output.push_str(",\"executor\":");
+            executor.render_json(&mut output);
+        }
         output.push_str(",\"crate_generations\":{");
         push_json_field(&mut output, "fss-cli", env!("CARGO_PKG_VERSION"), true);
         push_json_field(&mut output, "fss-core", env!("CARGO_PKG_VERSION"), false);
@@ -450,10 +461,31 @@ fn run_scenario_with(
     root: &Path,
     classes: &dyn Fn(ScenarioKind, &str, u64) -> ObservationClass,
 ) -> Result<ScenarioReport, ScenarioError> {
-    let cameras = [
+    run_scenario_impl(kind, root, classes, FileActivityOptions::reference()?)
+}
+
+/// `file-activity` with test-only executor options (threshold generation, failure injection).
+#[cfg(test)]
+fn run_file_activity_with(
+    root: &Path,
+    options: FileActivityOptions,
+) -> Result<ScenarioReport, ScenarioError> {
+    run_scenario_impl(ScenarioKind::FileActivity, root, &class_for, options)
+}
+
+fn run_scenario_impl(
+    kind: ScenarioKind,
+    root: &Path,
+    classes: &dyn Fn(ScenarioKind, &str, u64) -> ObservationClass,
+    file_options: FileActivityOptions,
+) -> Result<ScenarioReport, ScenarioError> {
+    // A recorded file replaces the virtual cameras; it has no live continuity (fss-2h5zq.51).
+    let file_source = kind == ScenarioKind::FileActivity;
+    let mock_cameras = [
         VirtualCamera::new("cam-front", "front-power-and-network"),
         VirtualCamera::new("cam-side", "side-power-and-network"),
     ];
+    let cameras: &[VirtualCamera] = if file_source { &[] } else { &mock_cameras };
     let faults = faults_for(kind);
     let cx = make_cx(kind)?;
 
@@ -465,8 +497,25 @@ fn run_scenario_with(
     // Corrupt sources detected in the deployment spool: withheld, never referenced.
     let mut withheld: BTreeSet<ContentDigest> = BTreeSet::new();
 
+    let interval = CaptureInterval::new(
+        TimestampNs(0),
+        TimestampNs(
+            (SCENARIO_END as i128)
+                .checked_mul(1_000_000_000)
+                .ok_or(ScenarioError::TimeOverflow)?,
+        ),
+    )?;
+    let executor = if file_source {
+        let (file_observations, report) =
+            file_activity::gather(&mut deployment, &mut staged_digests, interval, file_options)?;
+        observations.extend(file_observations);
+        Some(report)
+    } else {
+        None
+    };
+
     for tick in SCENARIO_START..SCENARIO_END {
-        for camera in &cameras {
+        for camera in cameras {
             if has_drop_fault(&faults, camera.sensor, tick) {
                 warnings.push(format!("coverage_gap:{}:{tick}", camera.sensor));
                 continue;
@@ -551,15 +600,6 @@ fn run_scenario_with(
         }
     }
 
-    let interval = CaptureInterval::new(
-        TimestampNs(0),
-        TimestampNs(
-            (SCENARIO_END as i128)
-                .checked_mul(1_000_000_000)
-                .ok_or(ScenarioError::TimeOverflow)?,
-        ),
-    )?;
-
     // Every outcome below is derived from what the run actually recorded: the real policy's
     // decision over the model observations, and the coverage gaps and corrupt sources. No
     // scenario name selects a result.
@@ -575,7 +615,7 @@ fn run_scenario_with(
     let event_id = EventId::parse(format!("event:lab:{}", kind.as_str()))?;
     let (decision, coverage_witness) = if !observations.is_empty() {
         (evaluate_unknown_presence(event_id, observations)?, None)
-    } else if gaps.is_empty() {
+    } else if gaps.is_empty() && !file_source {
         let event_id_quiet = event_id;
         let authorized_domain = BTreeSet::from([
             "front-power-and-network".to_string(),
@@ -662,6 +702,8 @@ fn run_scenario_with(
             uncertainty_reason: Some(
                 if corrupt {
                     "source corrupted"
+                } else if file_source {
+                    "file source continuity not observable"
                 } else {
                     "coverage gap"
                 }
@@ -714,6 +756,9 @@ fn run_scenario_with(
     };
     let absence_not_certifiable_reason = if certified {
         None
+    } else if file_source {
+        // A recording without a continuity witness can never certify absence.
+        Some("continuity_not_observable")
     } else if state == EventState::Corroborated {
         Some("threat_present")
     } else if corrupt {
@@ -917,6 +962,7 @@ fn run_scenario_with(
         warnings,
         situation_digest,
         handoff_digest,
+        executor,
     })
 }
 
@@ -1208,8 +1254,8 @@ fn push_json_string(output: &mut String, value: &str) {
 #[cfg(test)]
 mod tests {
     use super::{
-        EnvelopeClass, ObservationClass, ScenarioKind, make_cx, run_scenario, run_scenario_with,
-        verify_reopen,
+        EnvelopeClass, ObservationClass, ScenarioKind, make_cx, run_file_activity_with,
+        run_scenario, run_scenario_with, verify_reopen,
     };
     use fss_core::{EffectState, ObligationState};
     use fss_reference::ReferenceDeployment;
@@ -1407,6 +1453,247 @@ mod tests {
                 scenario.as_str()
             );
         }
+        Ok(())
+    }
+
+    fn file_activity_executor(
+        report: &super::ScenarioReport,
+    ) -> Result<&crate::file_activity::FileActivityReport, Box<dyn std::error::Error>> {
+        Ok(report
+            .executor
+            .as_ref()
+            .ok_or("file-activity report has no executor section")?)
+    }
+
+    #[test]
+    fn file_activity_runs_the_real_executor_on_decoded_pixels()
+    -> Result<(), Box<dyn std::error::Error>> {
+        use fss_core::{ContentDigest, EventId, EventState, EvidenceEdgeRelation};
+        use fss_reference::executor_activity::{
+            ActivityThresholdPolicy, ContinuityNotObservableReason, ExecutorContinuity,
+            ExecutorModelOutcome,
+        };
+
+        let root = temp_test_root("file-activity");
+        let report = run_scenario(ScenarioKind::FileActivity, &root)?;
+        let executor = file_activity_executor(&report)?;
+        let threshold = ActivityThresholdPolicy::reference()?.threshold();
+        assert_eq!(executor.policy.generation(), 1);
+        assert_eq!(executor.observations.len(), 2);
+        let quiet = &executor.observations[0];
+        let changed = &executor.observations[1];
+        println!(
+            "CAPLOG {{\"bead\":\"fss-2h5zq.51\",\"step\":\"file_activity_scores\",\"frame1\":{:?},\"frame2\":{:?},\"threshold\":{threshold}}}",
+            quiet.result.outcome.score(),
+            changed.result.outcome.score()
+        );
+        // Frame 1 repeats the reference: below threshold, which is not absence.
+        assert!(matches!(
+            quiet.result.outcome,
+            ExecutorModelOutcome::NoActivity { .. }
+        ));
+        assert_eq!(quiet.result.outcome.score(), Some(0.0));
+        // Frame 2 has real content: the executor-computed score crosses the threshold.
+        assert!(matches!(
+            changed.result.outcome,
+            ExecutorModelOutcome::Activity { .. }
+        ));
+        assert!(
+            changed
+                .result
+                .outcome
+                .score()
+                .is_some_and(|score| score > threshold)
+        );
+
+        // One camera: never corroborated, never certified absent, no alert effect.
+        assert_eq!(report.knowledge.corroboration, "single_source");
+        assert_ne!(report.envelope, EnvelopeClass::CorroboratedThreat);
+        assert_eq!(report.envelope, EnvelopeClass::ProtectedResidual);
+        assert!(!report.absence_certified);
+        assert!(!report.knowledge.absence_certified);
+        assert_eq!(
+            report.knowledge.absence_not_certifiable_reason,
+            Some("continuity_not_observable")
+        );
+        assert!(report.effect_state.is_none());
+        assert!(report.obligation_state.is_none());
+
+        // Every bound digest resolves to retained bytes in the deployment left on disk.
+        let cx = make_cx(ScenarioKind::FileActivity)?;
+        let reopened = ReferenceDeployment::reopen(&root, "site:lab", &cx)?;
+        let spool = reopened.publisher().spool();
+        let resolves = |digest: ContentDigest| -> Result<Vec<u8>, Box<dyn std::error::Error>> {
+            let bytes = spool.read(digest)?;
+            assert_eq!(ContentDigest::sha256(&bytes), digest);
+            Ok(bytes)
+        };
+        resolves(executor.reference_decode_receipt)?;
+        for observation in &executor.observations {
+            let result = &observation.result;
+            assert_eq!(observation.result_digest, result.object_digest());
+            assert_eq!(resolves(observation.result_digest)?, {
+                use fss_core::CanonicalEncode as _;
+                result.canonical_bytes()
+            });
+            resolves(result.invocation_receipt_object)?;
+            resolves(result.decode_receipt_digest)?;
+            assert_eq!(
+                result.reference_decode_receipt_digest,
+                executor.reference_decode_receipt
+            );
+            resolves(result.reference_capture_root)?;
+            resolves(result.capsule_digest)?;
+            let source = resolves(result.input_capture_root)?;
+            assert_eq!(
+                &source[..2],
+                &[0xff, 0xd8],
+                "source bytes are the JPEG frame"
+            );
+            assert_eq!(
+                result.continuity,
+                ExecutorContinuity::NotObservable {
+                    reason: ContinuityNotObservableReason::FileSource
+                }
+            );
+            assert!(result.reference_only);
+            assert!(!result.supports_absence_claim());
+        }
+
+        // The published event revision names exactly these executor results.
+        let (event, _) =
+            reopened.current_event_authority(&EventId::parse("event:lab:file-activity")?)?;
+        assert_eq!(event.state, EventState::Witnessed);
+        assert_ne!(event.state, EventState::Corroborated);
+        let mut expected: Vec<ContentDigest> = executor
+            .observations
+            .iter()
+            .map(|observation| observation.result_digest)
+            .collect();
+        expected.sort();
+        assert_eq!(event.model_receipts, expected);
+        for edge in &event.evidence {
+            let supporting = edge.digest == changed.result_digest;
+            assert_eq!(
+                edge.relation,
+                if supporting {
+                    EvidenceEdgeRelation::Supports
+                } else {
+                    EvidenceEdgeRelation::DerivedFrom
+                }
+            );
+            assert_ne!(edge.relation, EvidenceEdgeRelation::Contradicts);
+        }
+
+        let json = report.render_json();
+        assert!(json.contains("\"scenario\":\"file-activity\""));
+        assert!(json.contains("\"continuity\":{\"not_observable\":\"file_source\"}"));
+        assert!(json.contains("\"score_calibrated\":false"));
+        assert!(json.contains(&format!(
+            "\"invocation_receipt_digest\":\"{}\"",
+            changed.result.invocation_receipt_digest
+        )));
+        drop(reopened);
+        let _ = std::fs::remove_dir_all(&root);
+        Ok(())
+    }
+
+    #[test]
+    fn file_activity_executor_failure_is_an_abstention() -> Result<(), Box<dyn std::error::Error>> {
+        use fss_reference::executor_activity::{
+            ActivityThresholdPolicy, ExecutorAbstentionReason, ExecutorModelOutcome,
+        };
+        use fss_reference::model_receipt::ReceiptOutcome;
+
+        let root = temp_test_root("file-activity-starved");
+        let report = run_file_activity_with(
+            &root,
+            crate::file_activity::FileActivityOptions {
+                policy: ActivityThresholdPolicy::reference()?,
+                starve_frame: Some(2),
+            },
+        )?;
+        let executor = file_activity_executor(&report)?;
+        match executor.observations[1].result.outcome {
+            ExecutorModelOutcome::Abstained {
+                reason,
+                receipt_outcome,
+            } => {
+                assert_eq!(reason, ExecutorAbstentionReason::ExecutorFailed);
+                assert_ne!(receipt_outcome, ReceiptOutcome::Ok);
+            }
+            other => return Err(format!("starved frame produced {other:?}").into()),
+        }
+        // Abstention is not a no-detection: nothing is certified, rejected or benign.
+        assert!(!report.absence_certified);
+        assert_eq!(report.envelope, EnvelopeClass::ProtectedResidual);
+        assert_ne!(report.envelope, EnvelopeClass::BenignActivity);
+        assert_eq!(report.knowledge.corroboration, "not_applicable");
+        assert!(
+            report
+                .render_json()
+                .contains("\"abstention\":\"executor_failed\"")
+        );
+        let _ = std::fs::remove_dir_all(&root);
+        Ok(())
+    }
+
+    #[test]
+    fn file_activity_threshold_policy_generation_is_reported_and_governs()
+    -> Result<(), Box<dyn std::error::Error>> {
+        use fss_reference::executor_activity::{ActivityThresholdPolicy, ExecutorModelOutcome};
+
+        let reference_root = temp_test_root("file-activity-reference");
+        let reference = run_scenario(ScenarioKind::FileActivity, &reference_root)?;
+        let observed = file_activity_executor(&reference)?.observations[1]
+            .result
+            .outcome
+            .score()
+            .ok_or("no score")?;
+        // A later policy generation whose threshold equals the observed score: not strictly
+        // greater, so no activity; still never absence.
+        let root = temp_test_root("file-activity-strict");
+        let strict = ActivityThresholdPolicy::new(2, observed)?;
+        let report = run_file_activity_with(
+            &root,
+            crate::file_activity::FileActivityOptions {
+                policy: strict,
+                starve_frame: None,
+            },
+        )?;
+        let executor = file_activity_executor(&report)?;
+        assert_eq!(executor.policy.generation(), 2);
+        assert!(
+            executor
+                .observations
+                .iter()
+                .all(|o| matches!(o.result.outcome, ExecutorModelOutcome::NoActivity { .. }))
+        );
+        assert_eq!(
+            executor.observations[1].result.outcome.score(),
+            Some(observed)
+        );
+        assert!(!report.absence_certified);
+        assert_eq!(report.envelope, EnvelopeClass::ProtectedResidual);
+        assert!(
+            report
+                .render_json()
+                .contains("\"threshold_policy\":{\"generation\":2,")
+        );
+        let _ = std::fs::remove_dir_all(&reference_root);
+        let _ = std::fs::remove_dir_all(&root);
+        Ok(())
+    }
+
+    #[test]
+    fn file_activity_replay_is_byte_identical() -> Result<(), Box<dyn std::error::Error>> {
+        let root1 = temp_test_root("file-activity-1");
+        let root2 = temp_test_root("file-activity-2");
+        let first = run_scenario(ScenarioKind::FileActivity, &root1)?.render_json();
+        let second = run_scenario(ScenarioKind::FileActivity, &root2)?.render_json();
+        let _ = std::fs::remove_dir_all(&root1);
+        let _ = std::fs::remove_dir_all(&root2);
+        assert_eq!(first, second);
         Ok(())
     }
 }

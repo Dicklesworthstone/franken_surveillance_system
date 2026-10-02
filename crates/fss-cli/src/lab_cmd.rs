@@ -7,14 +7,16 @@ use std::path::PathBuf;
 use crate::error::CliError;
 use crate::token::{ArgToken, is_option_shaped, tokenize_os_args};
 
-/// Closed registry of recognized laboratory scenario identifiers.
-pub const VALID_SCENARIOS: [&str; 6] = [
+/// Closed registry of recognized laboratory scenario identifiers. `file-activity` (fss-2h5zq.51)
+/// is accepted by `run` and `replay`; `matrix`, `list` and `self-test` keep the six mock scenarios.
+pub const VALID_SCENARIOS: [&str; 7] = [
     "quiet",
     "raccoon",
     "intrusion",
     "sneaky",
     "lost-ack",
     "corrupt-source",
+    "file-activity",
 ];
 
 /// Typed action requested of the `fss-lab` binary.
@@ -57,7 +59,7 @@ pub enum LabAction {
 pub const fn help_text() -> &'static str {
     "fss-lab — deterministic reference surveillance laboratory\n\n\
 USAGE\n  fss-lab list\n  fss-lab run <scenario> --root <dir>\n  fss-lab matrix --root <dir>\n  fss-lab replay <scenario> --root <dir> [--repeat N]\n  fss-lab self-test --root <dir>\n\n\
-SCENARIOS\n  quiet           complete coverage and a certified absence\n  raccoon         benign wildlife with no alert effect\n  intrusion       independently corroborated person and verified alert\n  sneaky          material person residual plus an observability gap\n  lost-ack        indeterminate alert dispatch resolved by reconciliation\n  corrupt-source  source corruption detected before evidence publication\n"
+SCENARIOS\n  quiet           complete coverage and a certified absence\n  raccoon         benign wildlife with no alert effect\n  intrusion       independently corroborated person and verified alert\n  sneaky          material person residual plus an observability gap\n  lost-ack        indeterminate alert dispatch resolved by reconciliation\n  corrupt-source  source corruption detected before evidence publication\n  file-activity   recorded JPEG frames scored by the real scalar executor (run/replay only)\n"
 }
 
 /// Parses OS-native arguments for `fss-lab` with total validation and exact grammar exhaustion.
@@ -268,8 +270,9 @@ fn parse_run_command(tokens: &[ArgToken]) -> Result<LabAction, CliError> {
         return Err(CliError::MissingValue {
             option: "<scenario>".to_owned(),
             command: Some("run".to_owned()),
-            expected: "one of: quiet, raccoon, intrusion, sneaky, lost-ack, corrupt-source"
-                .to_owned(),
+            expected:
+                "one of: quiet, raccoon, intrusion, sneaky, lost-ack, corrupt-source, file-activity"
+                    .to_owned(),
         });
     }
 
@@ -342,7 +345,7 @@ fn parse_run_command(tokens: &[ArgToken]) -> Result<LabAction, CliError> {
             return Err(CliError::MissingValue {
                 option: "<scenario>".to_owned(),
                 command: Some("run".to_owned()),
-                expected: "one of: quiet, raccoon, intrusion, sneaky, lost-ack, corrupt-source"
+                expected: "one of: quiet, raccoon, intrusion, sneaky, lost-ack, corrupt-source, file-activity"
                     .to_owned(),
             });
         }
@@ -367,8 +370,9 @@ fn parse_replay_command(tokens: &[ArgToken]) -> Result<LabAction, CliError> {
         return Err(CliError::MissingValue {
             option: "<scenario>".to_owned(),
             command: Some("replay".to_owned()),
-            expected: "one of: quiet, raccoon, intrusion, sneaky, lost-ack, corrupt-source"
-                .to_owned(),
+            expected:
+                "one of: quiet, raccoon, intrusion, sneaky, lost-ack, corrupt-source, file-activity"
+                    .to_owned(),
         });
     }
 
@@ -484,7 +488,7 @@ fn parse_replay_command(tokens: &[ArgToken]) -> Result<LabAction, CliError> {
             return Err(CliError::MissingValue {
                 option: "<scenario>".to_owned(),
                 command: Some("replay".to_owned()),
-                expected: "one of: quiet, raccoon, intrusion, sneaky, lost-ack, corrupt-source"
+                expected: "one of: quiet, raccoon, intrusion, sneaky, lost-ack, corrupt-source, file-activity"
                     .to_owned(),
             });
         }
