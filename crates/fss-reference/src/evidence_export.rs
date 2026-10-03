@@ -760,8 +760,22 @@ pub fn commit_export(
         }
         verify_custody(deployment, &preview.record)?;
     } else {
-        let staged = deployment.stage_and_publish(&slot, &[&bytes], cx)?;
-        if staged.root != manifest.root() || staged.manifest != manifest {
+        // Stage the record's own `EXPORT_PROFILE` manifest. `stage_and_publish` would name the
+        // manifest after the slot, which is a different root than the approved one and is
+        // refused by readback's profile check.
+        let publisher = deployment.publisher_mut();
+        let digest = publisher
+            .stage_object(&bytes)
+            .map_err(ReferenceError::from)?;
+        // `stage_object` re-reads and rehashes before returning the digest.
+        if digest != preview.record.digest() {
+            return Err(ExportError::CustodyMismatch);
+        }
+        checkpoint(cx, "evidence_export:record_staged")?;
+        let staged = publisher
+            .stage_manifest(&slot, &manifest)
+            .map_err(ReferenceError::from)?;
+        if staged != manifest.root() {
             return Err(ExportError::CustodyMismatch);
         }
     }
