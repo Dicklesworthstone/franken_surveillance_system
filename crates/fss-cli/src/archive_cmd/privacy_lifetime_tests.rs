@@ -376,3 +376,61 @@ fn colocated_export_cannot_hide_roots_excluded_by_narrower_bounds() -> TestResul
     assert!(probe(&options)?.try_lock().is_ok());
     Ok(())
 }
+
+/// Planted negative: co-location reuses the owner, not a wider archive bound. A genuinely
+/// over-bound archive (three durable windows; two admitted) and an over-bound root scan are
+/// still the archive's typed `Limit`, with no output and the authority released.
+#[test]
+fn colocated_over_bound_archive_still_gives_limit() -> TestResult {
+    for (name, window_bound, scan_bound) in [
+        ("colocated-window-bound", 2, 16_384),
+        ("colocated-scan-bound", 4096, 1),
+    ] {
+        let mut options = colocated_export(name)?;
+        options.archive_limits.max_windows = window_bound;
+        options.archive_limits.max_scan_roots = scan_bound;
+        let error = execute_archive(&options)
+            .err()
+            .ok_or("over-bound co-located archive accepted")?;
+        assert!(
+            matches!(error, ArchiveCommandError::Archive(ArchiveError::Limit)),
+            "{name}: {error:?}"
+        );
+        assert!(!options.output.as_ref().ok_or("output")?.exists());
+        assert!(probe(&options)?.try_lock().is_ok());
+    }
+    Ok(())
+}
+
+/// Planted negative for the reader's allocation guard: an owner whose object bound is wider
+/// than `MAX_RECORDING_BYTES` is still refused with `Limit`; only a tightened owner is read.
+#[test]
+fn archive_reader_still_refuses_an_owner_wider_than_a_recording() -> TestResult {
+    let (options, publisher) = tests::setup("wide-owner")?;
+    drop(publisher);
+    let mut wide = options.storage_limits;
+    wide.spool.max_object_bytes = MAX_RECORDING_BYTES + 1;
+    let mut publisher = LocalRootPublisher::open(&options.root, wide)?;
+    let namespace = || CodecArchiveNamespace::<HevcArchiveCodec>::new(options.scope.clone());
+    assert!(matches!(
+        CodecArchiveSnapshot::<HevcArchiveCodec>::load(
+            &publisher,
+            namespace()?,
+            options.archive_limits,
+            &fss_publication::NeverCancel,
+        ),
+        Err(ArchiveError::Limit)
+    ));
+    assert_eq!(
+        publisher.tighten_max_object_bytes(MAX_RECORDING_BYTES),
+        MAX_RECORDING_BYTES
+    );
+    let snapshot = CodecArchiveSnapshot::<HevcArchiveCodec>::load(
+        &publisher,
+        namespace()?,
+        options.archive_limits,
+        &fss_publication::NeverCancel,
+    )?;
+    assert_eq!(Some(snapshot.digest()?), options.expected);
+    Ok(())
+}
