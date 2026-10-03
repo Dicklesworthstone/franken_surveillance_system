@@ -386,9 +386,14 @@ fn a_generation_published_during_backoff_is_rejected_before_tcp() -> Test {
                 not_before_ns: retry_at
             }
         );
+        // A waiting poll costs exactly two documented units: poll admission plus the unit charged
+        // before every source step (`HttpReconnectRecording::poll`: a step may open TCP, so an
+        // exhausted budget must refuse first). A rescan would instead charge at least 128 per
+        // visible root, and generation 1's durable roots are visible here.
+        assert!(publisher.visible_roots().count() > 0);
         assert_eq!(
             target.source_work_used(),
-            used + 1,
+            used + 2,
             "waiting must not rescan the store"
         );
         clock += 1;
