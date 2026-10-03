@@ -394,6 +394,34 @@ fn stale_approval_and_failed_admission_output_create_no_archive_or_connection() 
     Ok(())
 }
 #[test]
+fn non_directory_or_symlinked_root_is_refused_before_the_cx_owner_or_tcp() -> TestResult {
+    // The path check runs on the operator's exact path before `ReplayCx` can create or follow it.
+    let directory = Directory::new("root-kind")?;
+    let file = directory.0.join("file");
+    fs::write(&file, b"not an archive")?;
+    let target = directory.0.join("real");
+    fs::create_dir(&target)?;
+    let link = directory.0.join("link");
+    std::os::unix::fs::symlink(&target, &link)?;
+    let listener = TcpListener::bind("127.0.0.1:0")?;
+    listener.set_nonblocking(true)?;
+    for root in [&file, &link] {
+        let options = options(root, listener.local_addr()?, "1,2", "no")?;
+        let mut out = Vec::new();
+        assert_eq!(
+            capture(&options, &mut out),
+            Err("ERR-CAPTURE-RECONNECT-ROOT-001")
+        );
+        // Only the admission row was accepted; no finish row claims anything was captured.
+        assert_eq!(String::from_utf8(out)?.lines().count(), 1);
+        assert!(matches!(listener.accept(), Err(e) if e.kind() == io::ErrorKind::WouldBlock));
+    }
+    assert_eq!(fs::read(&file)?, b"not an archive");
+    assert!(fs::symlink_metadata(&link)?.file_type().is_symlink());
+    assert_eq!(fs::read_dir(&target)?.count(), 0);
+    Ok(())
+}
+#[test]
 fn transcript_keeps_a_terminal_reserve_and_finite_interrupted_writes() {
     let mut out = Vec::new();
     let mut log = Transcript {

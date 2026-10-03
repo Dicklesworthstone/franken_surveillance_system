@@ -661,6 +661,33 @@ pub(super) fn capture<W: Write>(options: &Options, out: &mut W) -> Result<bool, 
         .map(decode::Decoder::new)
         .transpose()
         .map_err(|_| "ERR-CAPTURE-RECONNECT-CONFIG-001")?;
+    let mut log = Transcript {
+        out,
+        used: 0,
+        maximum: options.report_bytes,
+        sequence: 0,
+        io_failed: false,
+    };
+    // The sink must accept the admission row BEFORE any filesystem owner exists: constructing
+    // `ReplayCx` materializes the archive root, so a refused sink would otherwise leave an
+    // archive directory behind with no transcript naming it.
+    log.emit(
+        "admitted",
+        object(&[
+            ("plan", options.preview()),
+            ("reservation", reservation_json(recording.reservation())),
+        ]),
+        false,
+    )
+    .map_err(|_| "ERR-CAPTURE-RECONNECT-OUTPUT-001")?;
+    // Inspect the operator's exact path before the Cx owner can create (or follow) it.
+    match std::fs::symlink_metadata(&options.root) {
+        Ok(m) if !m.file_type().is_dir() => return Err("ERR-CAPTURE-RECONNECT-ROOT-001"),
+        Err(e) if e.kind() != io::ErrorKind::NotFound => {
+            return Err("ERR-CAPTURE-RECONNECT-ROOT-001");
+        }
+        _ => {}
+    }
     let cx = ReplayCx::from_context_authority(&authority, options.root.clone())
         .map_err(|_| "ERR-CAPTURE-RECONNECT-ROOT-001")?;
     let owner = Owner {
@@ -671,32 +698,9 @@ pub(super) fn capture<W: Write>(options: &Options, out: &mut W) -> Result<bool, 
         deadline: options.timeout_ns,
     };
     let result = (|| {
-        let mut log = Transcript {
-            out,
-            used: 0,
-            maximum: options.report_bytes,
-            sequence: 0,
-            io_failed: false,
-        };
-        log.emit(
-            "admitted",
-            object(&[
-                ("plan", options.preview()),
-                ("reservation", reservation_json(recording.reservation())),
-            ]),
-            false,
-        )
-        .map_err(|_| "ERR-CAPTURE-RECONNECT-OUTPUT-001")?;
         owner
             .live("capture_reconnect:open")
             .map_err(|_| "ERR-CAPTURE-RECONNECT-AUTHORITY-001")?;
-        match std::fs::symlink_metadata(&options.root) {
-            Ok(m) if !m.file_type().is_dir() => return Err("ERR-CAPTURE-RECONNECT-ROOT-001"),
-            Err(e) if e.kind() != io::ErrorKind::NotFound => {
-                return Err("ERR-CAPTURE-RECONNECT-ROOT-001");
-            }
-            _ => {}
-        }
         let storage = LocalPublicationLimits::new(
             8192,
             MAX_MANIFEST_CHILDREN,
