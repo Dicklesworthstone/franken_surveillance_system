@@ -501,18 +501,26 @@ fn execute_archive_with_clock(
     // Keep the authority owner alive until all payload writes, readbacks and the
     // completion publication finish. A preflight-only check lets another owner
     // commit a mask between validation and disclosure of the original packets.
-    let privacy_guard = if options.action == Action::Export {
+    let mut privacy_guard = if options.action == Action::Export {
         Some(refuse_masked_export(options)?)
     } else {
         None
     };
     let root = existing_archive(&options.root)?;
     clock.check()?;
-    if let Some(guard) = &privacy_guard {
-        let publisher = guard._deployment.publisher();
-        let owned_root = fs::canonicalize(publisher.root_dir())
+    if let Some(guard) = &mut privacy_guard {
+        let owned_root = fs::canonicalize(guard._deployment.publisher().root_dir())
             .map_err(|e| io_error("canonicalize owned archive", e))?;
         if owned_root == root {
+            // The deployment owner was opened with the deployment's object admission bound,
+            // which is wider than the archive reader's allocation contract (MAX_RECORDING_BYTES)
+            // and is refused by it. Lower the borrowed owner's read cap to this command's bound
+            // for the rest of its life; it is never raised, so no wider bound is inherited.
+            guard
+                ._deployment
+                .publisher_mut()
+                .tighten_max_object_bytes(options.storage_limits.spool.max_object_bytes);
+            let publisher = guard._deployment.publisher();
             // A co-located archive already has an exclusive owner. Reopening it
             // would deadlock/refuse; dropping that owner would reopen the privacy
             // race. Reuse it, but independently apply this command's narrower

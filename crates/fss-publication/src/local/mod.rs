@@ -752,6 +752,18 @@ impl LocalRootPublisher {
         self.limits
     }
 
+    /// Lowers the owned spool's per-object payload bound; never raises it.
+    ///
+    /// For a borrowed exclusive owner serving a reader whose allocation contract is narrower than
+    /// the bound this publisher was opened with. Every later stage and read, including closure and
+    /// manifest reads, is capped at the returned effective bound, and [`Self::limits`] reports it.
+    /// An admitted object longer than it fails closed on read; nothing is reclassified or removed.
+    pub fn tighten_max_object_bytes(&mut self, maximum: usize) -> usize {
+        let effective = self.spool.tighten_max_object_bytes(maximum);
+        self.limits.spool.max_object_bytes = effective;
+        effective
+    }
+
     /// Read access to the owned staging spool.
     #[must_use]
     pub const fn spool(&self) -> &StagingSpool {
@@ -2850,6 +2862,35 @@ mod tests {
     use std::path::{Path, PathBuf};
 
     use super::{LocalPublicationError, record_directory};
+
+    #[test]
+    fn tightening_the_object_bound_never_widens_it_and_refuses_larger_admitted_objects()
+    -> Result<(), Box<dyn std::error::Error>> {
+        use super::{LocalPublicationLimits, LocalRootPublisher};
+        use fss_object::{SpoolError, SpoolLimits};
+        let root = std::env::temp_dir().join(format!(
+            "fss-publication-tighten-object-bound-{}",
+            std::process::id()
+        ));
+        let limits = LocalPublicationLimits::new(8, 8, 8, 64, SpoolLimits::new(8, 4096, 256, 64));
+        let mut publisher = LocalRootPublisher::open(&root, limits)?;
+        let small = publisher.stage_object(&[1; 16])?;
+        let large = publisher.stage_object(&[2; 128])?;
+        assert_eq!(publisher.tighten_max_object_bytes(1024), 256);
+        assert_eq!(publisher.tighten_max_object_bytes(64), 64);
+        assert_eq!(publisher.tighten_max_object_bytes(4096), 64);
+        assert_eq!(publisher.limits().spool.max_object_bytes, 64);
+        assert_eq!(publisher.spool().limits().max_object_bytes, 64);
+        assert_eq!(publisher.spool().read(small)?, vec![1; 16]);
+        assert!(matches!(
+            publisher.spool().read(large),
+            Err(SpoolError::Corrupt { digest, .. }) if digest == large
+        ));
+        assert!(publisher.stage_object(&[3; 65]).is_err());
+        drop(publisher);
+        let _ = std::fs::remove_dir_all(&root);
+        Ok(())
+    }
 
     #[test]
     fn record_directory_is_a_typed_error_for_a_path_without_a_parent_directory() {

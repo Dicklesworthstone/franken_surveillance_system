@@ -491,6 +491,16 @@ impl StagingSpool {
         self.limits
     }
 
+    /// Lowers the per-object payload bound for every later stage and read; never raises it.
+    ///
+    /// Returns the effective bound. Reads cap allocation at this bound before reading, so an
+    /// indexed object longer than it is refused as [`SpoolError::Corrupt`] instead of loaded.
+    /// The owner's lock, index, and recovery report are unchanged.
+    pub fn tighten_max_object_bytes(&mut self, maximum: usize) -> usize {
+        self.limits.max_object_bytes = self.limits.max_object_bytes.min(maximum);
+        self.limits.max_object_bytes
+    }
+
     /// Classification of every entry observed when this instance opened.
     #[must_use]
     pub const fn recovery_report(&self) -> &SpoolRecoveryReport {
