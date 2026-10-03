@@ -421,6 +421,96 @@ pub(crate) fn alert_cancellation_is_bound(
         })
 }
 
+/// Reason the effect journal records on an alert that a cooperative cancellation cancelled before
+/// commitment (fss-51xqy); the situation guard admits a cooperative cancellation proof only on a
+/// receipt that carries exactly this reason.
+pub const ALERT_COOPERATIVE_CANCEL_REASON: &str = "cooperative_cancellation_requested";
+
+/// Registered cancellation stages at which a cooperative cancellation drains a still-prepared
+/// alert to a terminal cancellation (fss-51xqy). Each is a `DEPLOYMENT_CANCEL_STAGES` name; a
+/// cooperative cancellation proof over any other stage is never admitted by the situation guard.
+pub const ALERT_COOPERATIVE_CANCEL_STAGES: &[&str] =
+    &[crate::reference_deployment::STAGE_DISPATCH_ALERT];
+
+/// Computes the cancel-request evidence of a prepared alert that a cooperative cancellation
+/// drained before commitment, bound to the operation identity, the prepared authority anchor, and
+/// the registered cancellation stage at which the cancellation was observed (fss-51xqy).
+///
+/// The effect journal binds this evidence with its whole prepared record into the cancellation
+/// proof ([`fss_core::EffectCancellationRecord`]); the situation guard recomputes it from the
+/// plan's prepared anchor, which the authority ledger must have published, and each registered
+/// stage in [`ALERT_COOPERATIVE_CANCEL_STAGES`]. A cooperative cancellation is admissible without
+/// a displacing anchor because it is recorded only for an operation still `Prepared`: nothing was
+/// committed, so nothing external can have happened.
+#[must_use]
+pub fn alert_cooperative_cancel_proof(
+    operation_id: &OperationId,
+    prepared_anchor: &LedgerAnchor,
+    stage: &str,
+) -> ContentDigest {
+    let mut encoder = CanonicalEncoder::new();
+    encoder.text("fss.alert_cooperative_cancel_proof.v1");
+    operation_id.encode_canonical(&mut encoder);
+    prepared_anchor.encode_canonical(&mut encoder);
+    encoder.text(stage);
+    ContentDigest::sha256(&encoder.finish())
+}
+
+/// The cancellation proof of a prepared alert drained by a cooperative cancellation at `stage`
+/// (fss-51xqy): the [`fss_core::EffectCancellationRecord`] binding the whole prepared record
+/// `prepared` to the [`alert_cooperative_cancel_proof`] evidence.
+#[must_use]
+pub(crate) fn alert_cooperative_cancellation_proof(
+    prepared: &fss_core::PreparedEffect,
+    prepared_anchor: &LedgerAnchor,
+    stage: &str,
+) -> ContentDigest {
+    fss_core::EffectCancellationRecord::for_prepared(
+        prepared,
+        alert_cooperative_cancel_proof(&prepared.intent.operation_id, prepared_anchor, stage),
+    )
+    .proof_digest()
+}
+
+/// Whether `proof` is the cooperative cancellation proof of `prepared` for `plan` (fss-51xqy).
+///
+/// Admitted only when the receipt names [`ALERT_COOPERATIVE_CANCEL_REASON`], the authority ledger
+/// published the plan's prepared anchor with the planned event revision at or before it (the
+/// plan is grounded in this ledger), and the proof recomputes, from the prepared record and the
+/// plan's prepared anchor, for one registered stage in [`ALERT_COOPERATIVE_CANCEL_STAGES`]. The
+/// proof is never read from the fields of the receipt that carries it.
+pub(crate) fn alert_cooperative_cancellation_is_bound(
+    proof: ContentDigest,
+    reason: Option<&str>,
+    prepared: &fss_core::PreparedEffect,
+    plan: &ReferenceAlertPlan,
+    authority: &DurableReferenceLedger,
+) -> bool {
+    if reason != Some(ALERT_COOPERATIVE_CANCEL_REASON) {
+        return false;
+    }
+    let batches = authority.batches();
+    let Some(prepared_index) = batches
+        .iter()
+        .position(|batch| batch.new_anchor == plan.authority_anchor)
+    else {
+        return false;
+    };
+    let grounded = batches
+        .iter()
+        .take(prepared_index.saturating_add(1))
+        .flat_map(|batch| batch.deltas.iter())
+        .any(|delta| {
+            delta.family == "event_revision"
+                && delta.payload_digest == plan.event_root
+                && delta.witness_digest == Some(plan.event_revision_digest)
+        });
+    grounded
+        && ALERT_COOPERATIVE_CANCEL_STAGES.iter().any(|stage| {
+            alert_cooperative_cancellation_proof(prepared, &plan.authority_anchor, stage) == proof
+        })
+}
+
 /// Verifies event alert eligibility against policy, corroboration, and sensor integrity.
 pub(crate) fn verify_event_alert_eligibility(
     state: fss_core::EventState,

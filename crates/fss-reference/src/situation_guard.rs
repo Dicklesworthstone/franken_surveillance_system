@@ -386,8 +386,12 @@ fn validate_operation_receipt(
 /// them from the journal itself. Every other cancelled receipt, including
 /// a v2 receipt handed in by a caller, must carry the proof the journal binds for a v3 record: the
 /// [`fss_core::EffectCancellationRecord`] of the prepared record and the evidence that caused the
-/// cancel. For a reference alert that evidence is [`crate::alert_cancel_proof`] over the plan's
-/// prepared authority anchor and an anchor the authority ledger published at or after it. The
+/// cancel. For a reference alert that evidence is either [`crate::alert_cancel_proof`] over the
+/// plan's prepared authority anchor and an anchor the authority ledger published at or after it,
+/// or, for a cancellation a cooperative cancel request drained before commitment (fss-51xqy),
+/// [`crate::alert_cooperative_cancel_proof`] over the plan's ledger-published prepared anchor and
+/// a registered cooperative cancellation stage, on a receipt naming
+/// [`crate::ALERT_COOPERATIVE_CANCEL_REASON`]. The
 /// proof is recomputed from the journal's prepared record (the plan's, for a caller receipt) and
 /// the ledger, never from the receipt's own fields.
 fn cancellation_proof_is_admissible(
@@ -420,6 +424,13 @@ fn cancellation_proof_is_admissible(
     prepared.intent == plan.intent
         && receipt.result_digest.is_some_and(|proof| {
             crate::alert::alert_cancellation_is_bound(proof, &prepared, plan, authority)
+                || crate::alert::alert_cooperative_cancellation_is_bound(
+                    proof,
+                    receipt.error_code.as_deref(),
+                    &prepared,
+                    plan,
+                    authority,
+                )
         })
 }
 

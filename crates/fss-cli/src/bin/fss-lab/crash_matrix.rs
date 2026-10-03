@@ -1159,6 +1159,15 @@ mod tests {
         assert_eq!(first_json, render_json(&second));
         println!("CRASH-MATRIX {first_json}");
         assert_eq!(first.len(), fault_table().len());
+        // Every row meets its documented class since fss-51xqy (cooperative cancel at
+        // dispatch_alert drains to a terminal cancellation) and fss-mc9c4 (a committed alert with
+        // no provider record is indeterminate after restart).
+        let failing: Vec<&str> = first
+            .iter()
+            .filter(|result| !result.passes())
+            .map(|result| result.row.fault)
+            .collect();
+        assert!(verdict(&first), "failing rows: {failing:?}");
 
         for result in &first {
             let Some(observation) = &result.observation else {
