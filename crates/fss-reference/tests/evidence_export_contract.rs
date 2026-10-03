@@ -233,3 +233,79 @@ fn stale_approval_revision_and_missing_commit_capability_fail_closed() -> Test {
     assert_eq!(f.snapshot(), before);
     Ok(())
 }
+
+/// Planted negative for the commit staging fix: a different root already visible in the export's
+/// own slot is foreign custody, never adopted, and no export authority delta is appended.
+#[test]
+fn commit_refuses_foreign_root_planted_in_the_export_slot() -> Test {
+    let mut f = Fixture::new("planted-slot")?;
+    let request = f.request();
+    let preview = preview_export(&f.deployment, &request, &f.auth, &f.cx)?;
+    let slot = preview.record().slot()?;
+    let forged = f
+        .deployment
+        .stage_and_publish(&slot, &[b"forged export record"], &f.cx)?;
+    assert_ne!(forged.root, preview.root());
+    f.deployment.publish_and_commit(
+        &slot,
+        &forged.manifest,
+        CaptureInterval::new(TimestampNs(10), TimestampNs(20))?,
+        &f.cx,
+    )?;
+    let before = f.snapshot();
+    assert!(matches!(
+        commit_export(
+            &mut f.deployment,
+            &request,
+            preview.approval(),
+            &f.auth,
+            &f.cx
+        ),
+        Err(ExportError::CustodyMismatch)
+    ));
+    assert_eq!(f.snapshot(), before);
+    assert!(matches!(
+        read_export(&f.deployment, preview.root(), &f.auth, &f.cx),
+        Err(ExportError::CustodyMismatch)
+    ));
+    Ok(())
+}
+
+/// Planted negative for restart readback: altering the retained record bytes on disk after a
+/// successful commit never yields a verified export or a silent idempotent retry.
+#[test]
+fn tampered_record_custody_is_refused_after_reopen() -> Test {
+    let mut f = Fixture::new("tampered-record")?;
+    let request = f.request();
+    let preview = preview_export(&f.deployment, &request, &f.auth, &f.cx)?;
+    assert!(
+        commit_export(
+            &mut f.deployment,
+            &request,
+            preview.approval(),
+            &f.auth,
+            &f.cx
+        )?
+        .published
+    );
+    let record_path = f
+        .deployment
+        .publisher()
+        .spool()
+        .object_path(preview.record().digest());
+    let root = f.deployment.root().to_path_buf();
+    drop(f.deployment);
+    let mut bytes = fs::read(&record_path)?;
+    let last = bytes.last_mut().ok_or("empty record object")?;
+    *last ^= 0x01;
+    fs::write(&record_path, &bytes)?;
+    // Refusing the whole reopen is also fail-closed; otherwise every export path must refuse.
+    if let Ok(mut reopened) = ReferenceDeployment::reopen(&root, SITE, &f.cx) {
+        assert!(read_export(&reopened, preview.root(), &f.auth, &f.cx).is_err());
+        assert!(preview_export(&reopened, &request, &f.auth, &f.cx).is_err());
+        assert!(
+            commit_export(&mut reopened, &request, preview.approval(), &f.auth, &f.cx).is_err()
+        );
+    }
+    Ok(())
+}
