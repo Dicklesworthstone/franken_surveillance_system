@@ -474,9 +474,11 @@ fn test_schema_domain_and_pinned_counts() -> Result<(), Box<dyn Error>> {
     // 142 = 138 + SCHEMA-DOMAIN-EXECUTOR-MODEL-RESULT-001,
     // SCHEMA-DOMAIN-EXECUTOR-ACTIVITY-THRESHOLD-POLICY-001, SCHEMA-DOMAIN-EXECUTOR-ACTIVITY-MODEL-001
     // and SCHEMA-DOMAIN-RGB-DECODE-RECEIPT-001 (executor-backed lab observations, fss-2h5zq.51).
+    // 144 = 142 + SCHEMA-DOMAIN-REFERENCE-ALERT-CANCEL-PROOF-001 (fss-thzlz, previously
+    // unregistered) and SCHEMA-DOMAIN-REFERENCE-ALERT-COOPERATIVE-CANCEL-PROOF-001 (fss-51xqy).
     assert_eq!(
-        domain_count, 142,
-        "registries/DIGEST_DOMAINS.md count must remain pinned at 142"
+        domain_count, 144,
+        "registries/DIGEST_DOMAINS.md count must remain pinned at 144"
     );
 
     let schemas_path = Path::new(env!("CARGO_MANIFEST_DIR"))

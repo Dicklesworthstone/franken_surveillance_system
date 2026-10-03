@@ -11,8 +11,9 @@ use std::path::{Path, PathBuf};
 
 use fss_core::{
     BatchId, CanonicalDecode, CanonicalEncode, CanonicalEncoder, CaptureInterval, ContentDigest,
-    ContractError, EventHypothesis, EventId, EvidenceDelta, EvidenceDeltaBatch, HandoffCapsule,
-    HandoffId, LedgerAnchor, ObjectId, OperationReceipt, Plane, TimestampNs,
+    ContractError, EffectState, EventHypothesis, EventId, EvidenceDelta, EvidenceDeltaBatch,
+    HandoffCapsule, HandoffId, LedgerAnchor, ObjectId, OperationId, OperationReceipt, Plane,
+    TimestampNs,
 };
 use fss_ledger::{
     AppendPhase, DurableLedgerError, DurableReferenceLedger, IncompleteTailPolicy, JournalError,
@@ -949,6 +950,8 @@ pub struct ReferenceDeployment {
     effects: DurableEffectJournal,
     layout: DeploymentLayout,
     alert_provider: ReferenceAlertProvider,
+    /// Operations this open's restart reconciliation moved from `Committed` to `Indeterminate`.
+    restart_reclassified: Vec<OperationId>,
     /// One-shot ledger-linkage crash armed by [`Self::inject_ledger_crash_at`] for the next
     /// [`Self::publish_and_commit`]; `None` outside fault-injection runs.
     injected_ledger_crash: Option<LedgerCutPoint>,
@@ -1090,23 +1093,32 @@ impl ReferenceDeployment {
         };
 
         // 4. Open durable effect journal: reject incomplete tails on open.
-        let effects = match DurableEffectJournal::open(&effects_path, IncompleteTailPolicy::Reject)
-        {
-            Ok(e) => e,
-            Err(DurableEffectError::Journal(JournalError::IncompleteTail { offset })) => {
-                return Err(ReferenceError::IncompleteJournalTail {
-                    offset,
-                    path: effects_path,
-                    next_affordance: format!(
-                        "fss-lab recover --root {} --truncate-effect-tail",
-                        root.display()
-                    ),
-                });
-            }
-            Err(other) => return Err(ReferenceError::DurableEffect(Box::new(other))),
-        };
+        let mut effects =
+            match DurableEffectJournal::open(&effects_path, IncompleteTailPolicy::Reject) {
+                Ok(e) => e,
+                Err(DurableEffectError::Journal(JournalError::IncompleteTail { offset })) => {
+                    return Err(ReferenceError::IncompleteJournalTail {
+                        offset,
+                        path: effects_path,
+                        next_affordance: format!(
+                            "fss-lab recover --root {} --truncate-effect-tail",
+                            root.display()
+                        ),
+                    });
+                }
+                Err(other) => return Err(ReferenceError::DurableEffect(Box::new(other))),
+            };
 
         let alert_provider = ReferenceAlertProvider::new(format!("alert:{}", site_lineage));
+
+        // 5. Restart reconciliation (fss-mc9c4): the deployment-owned provider is created empty on
+        // every open, so a `Committed` operation found here has no provider record in this
+        // process; whatever dispatch it began died with the process that committed it. It becomes
+        // explicitly `Indeterminate` (`restart_reconciliation_pending_observation`) and is never
+        // re-dispatched. The deployment lock is held, so no live dispatch can own it.
+        let restart_reclassified = effects
+            .reclassify_committed_without_provider_record(&alert_provider)
+            .map_err(|error| ReferenceError::DurableEffect(Box::new(error)))?;
 
         Ok(Self {
             root: root_buf,
@@ -1117,6 +1129,7 @@ impl ReferenceDeployment {
             effects,
             layout,
             alert_provider,
+            restart_reclassified,
             injected_ledger_crash: None,
         })
     }
@@ -1994,6 +2007,16 @@ impl ReferenceDeployment {
     }
 
     /// Dispatches an alert durably through the deployment-owned simulated provider.
+    ///
+    /// A cooperative cancellation observed at entry is request → drain → finalize with no orphan
+    /// obligation (fss-51xqy): the drain step durably cancels the plan's still-`Prepared`
+    /// operation with [`crate::alert_cooperative_cancel_proof`] evidence and the
+    /// [`crate::ALERT_COOPERATIVE_CANCEL_REASON`] reason, so its obligation is terminal
+    /// (`cancelled`) and the situation guard verifies the cancellation; then the context is
+    /// finalized and [`ReferenceError::CancellationRequested`] is returned. The provider is never
+    /// called. An operation past `Prepared`, or one whose prepared intent is not exactly the
+    /// plan's, is never touched by the drain. If the durable cancel itself fails, the context is
+    /// still finalized and that failure is returned instead.
     pub fn dispatch_alert(
         &mut self,
         plan: &ReferenceAlertPlan,
@@ -2003,7 +2026,10 @@ impl ReferenceDeployment {
         cx: &ReplayCx,
     ) -> Result<OperationReceipt, ReferenceError> {
         if cx.is_cancelled() {
-            cx.drain_and_finalize();
+            cx.drain();
+            let drained = self.drain_prepared_alert_on_cancel(plan, committed_at);
+            cx.finalize();
+            drained?;
             return Err(ReferenceError::CancellationRequested {
                 stage: STAGE_DISPATCH_ALERT,
             });
@@ -2038,6 +2064,51 @@ impl ReferenceDeployment {
             other => other,
         })?;
         Ok(receipt)
+    }
+
+    /// Drain step of a cooperative cancellation at [`STAGE_DISPATCH_ALERT`] (fss-51xqy): durably
+    /// cancels the plan's operation when, and only when, it is still `Prepared` under exactly the
+    /// plan's intent and obligation. The cancellation time is `requested_at`, or the instant after
+    /// the operation's last update when `requested_at` is not later, as dispatch revalidation does.
+    fn drain_prepared_alert_on_cancel(
+        &mut self,
+        plan: &ReferenceAlertPlan,
+        requested_at: TimestampNs,
+    ) -> Result<(), ReferenceError> {
+        let operation_id = &plan.intent.operation_id;
+        let Some(operation) = self.effects.operation(operation_id) else {
+            return Ok(());
+        };
+        let owns_obligation = self
+            .effects
+            .obligation(&plan.obligation_id)
+            .is_some_and(|obligation| obligation.operation_id == *operation_id);
+        if operation.state != EffectState::Prepared
+            || operation.intent != plan.intent
+            || !owns_obligation
+        {
+            return Ok(());
+        }
+        let updated_at = operation.updated_at;
+        let cancel_at = if requested_at > updated_at {
+            requested_at
+        } else {
+            TimestampNs(updated_at.0.saturating_add(1))
+        };
+        let evidence = crate::alert::alert_cooperative_cancel_proof(
+            operation_id,
+            &plan.authority_anchor,
+            STAGE_DISPATCH_ALERT,
+        );
+        self.effects
+            .cancel(
+                operation_id,
+                cancel_at,
+                evidence,
+                Some(crate::alert::ALERT_COOPERATIVE_CANCEL_REASON.to_owned()),
+            )
+            .map_err(|error| ReferenceError::DurableEffect(Box::new(error)))?;
+        Ok(())
     }
 
     /// Compiles a situation projection bound to this deployment's durable effect journal and ledger.
@@ -2160,6 +2231,15 @@ impl ReferenceDeployment {
         &LocalRootPublisher,
     ) {
         (&mut self.effects, &self.ledger, &self.publisher)
+    }
+
+    /// Operations this open's restart reconciliation reclassified from `Committed` to
+    /// `Indeterminate` with reason
+    /// [`crate::RESTART_RECONCILIATION_PENDING_OBSERVATION`], in canonical identity order
+    /// (fss-mc9c4). Empty when nothing was committed without a provider record.
+    #[must_use]
+    pub fn restart_reclassified(&self) -> &[OperationId] {
+        &self.restart_reclassified
     }
 
     /// Returns a reference to the deployment-owned simulated alert provider.

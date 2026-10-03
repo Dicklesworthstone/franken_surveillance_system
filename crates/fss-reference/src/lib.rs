@@ -77,6 +77,8 @@ pub mod time_tolerance;
 #[cfg(test)]
 mod adapter_replay_tests;
 #[cfg(test)]
+mod alert_recovery_tests;
+#[cfg(test)]
 mod alert_tests;
 #[cfg(test)]
 mod bundle_tests;
@@ -123,9 +125,10 @@ pub use agent_session::{
     SessionAlias, SessionBindingRequest, SessionRefresh,
 };
 pub use alert::{
-    AlertDispatchTimes, PrepareAlertParams, ProviderDispatch, ProviderFailureReceipt,
-    ProviderObservationReceipt, REFERENCE_ALERT_TERMINAL_PREDICATE, ReferenceAlertPlan,
-    ReferenceAlertProvider, ReferenceProviderBehavior, alert_cancel_proof,
+    ALERT_COOPERATIVE_CANCEL_REASON, ALERT_COOPERATIVE_CANCEL_STAGES, AlertDispatchTimes,
+    PrepareAlertParams, ProviderDispatch, ProviderFailureReceipt, ProviderObservationReceipt,
+    REFERENCE_ALERT_TERMINAL_PREDICATE, ReferenceAlertPlan, ReferenceAlertProvider,
+    ReferenceProviderBehavior, alert_cancel_proof, alert_cooperative_cancel_proof,
     committed_reference_policy_action, dispatch_reference_alert, observe_reference_alert,
     prepare_reference_alert, reconcile_failed_reference_alert, reconcile_reference_alert,
     rehydrate_reference_alert_plan, verify_reference_alert,
@@ -167,7 +170,7 @@ pub use durable_effect::{
     DurableEffectError, DurableEffectJournal, EFFECT_TRANSITION_RECORD_KIND,
     EFFECT_TRANSITION_V2_RECORD_KIND, EFFECT_TRANSITION_V3_RECORD_KIND, EffectJournalInspection,
     EffectJournalStatus, IndeterminateOperationInfo, LedgeredObligation, ObligationCounts,
-    ObligationLedgerState, PendingLedgerObligation,
+    ObligationLedgerState, PendingLedgerObligation, RESTART_RECONCILIATION_PENDING_OBSERVATION,
 };
 pub use encoded_fixture::{
     ContainerFormat, EncodedCameraGenerator, EncodedCameraSpec, EncodedFixtureError,

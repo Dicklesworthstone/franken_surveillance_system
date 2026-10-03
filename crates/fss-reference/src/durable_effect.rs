@@ -52,6 +52,12 @@ pub const EFFECT_TRANSITION_V2_RECORD_KIND: u16 = 3;
 /// journal's own prepared record and the recorded cancel-request evidence.
 pub const EFFECT_TRANSITION_V3_RECORD_KIND: u16 = 4;
 
+/// Indeterminate reason recorded when restart reconciliation finds a `Committed` operation of
+/// which the provider holds no record (fss-mc9c4): the dispatch outcome is unknown until an
+/// observation, and dispatch is never retried.
+pub const RESTART_RECONCILIATION_PENDING_OBSERVATION: &str =
+    "restart_reconciliation_pending_observation";
+
 /// Errors raised by the durable effect journal.
 #[derive(Debug)]
 pub enum DurableEffectError {
@@ -984,7 +990,55 @@ impl DurableEffectJournal {
         Ok(receipt.clone())
     }
 
+    /// Restart reconciliation (fss-mc9c4, fss-2h5zq.15 refinement round 3): every `Committed`
+    /// operation of which `provider` holds no delivery or failure record becomes `Indeterminate`
+    /// with reason [`RESTART_RECONCILIATION_PENDING_OBSERVATION`], and its obligation becomes
+    /// indeterminate. Dispatch is never retried; a later provider observation reconciles the
+    /// operation through [`Self::reconcile_alert`] (`Indeterminate` → `Observed` → `Verified`).
+    ///
+    /// An operation the provider has a record of is left `Committed` for the existing
+    /// [`Self::reconcile_alert`] path, which consumes that record. The transition time is the
+    /// instant after the operation's last update: the journal holds no clock authority, so the
+    /// time is derived from the journal alone, which keeps the record deterministic. Idempotent:
+    /// a second call finds nothing `Committed` and writes nothing. Returns the reclassified
+    /// operations in canonical identity order.
+    pub fn reclassify_committed_without_provider_record(
+        &mut self,
+        provider: &ReferenceAlertProvider,
+    ) -> Result<Vec<OperationId>, DurableEffectError> {
+        let mut pending = Vec::new();
+        for operation in self.memory.operations() {
+            if operation.state != EffectState::Committed {
+                continue;
+            }
+            let has_record = provider.lookup(&operation.intent)?.is_some()
+                || provider.lookup_failure(&operation.intent)?.is_some();
+            if !has_record {
+                pending.push((
+                    operation.intent.operation_id.clone(),
+                    TimestampNs(operation.updated_at.0.saturating_add(1)),
+                ));
+            }
+        }
+        let mut reclassified = Vec::with_capacity(pending.len());
+        for (operation_id, at) in pending {
+            self.mark_indeterminate(
+                &operation_id,
+                at,
+                RESTART_RECONCILIATION_PENDING_OBSERVATION,
+            )?;
+            reclassified.push(operation_id);
+        }
+        Ok(reclassified)
+    }
+
     /// Reconciles an indeterminate reference alert durably using provider observation receipt.
+    ///
+    /// A `Committed` operation of which the provider holds neither a delivery nor a failure
+    /// record becomes `Indeterminate` with reason
+    /// [`RESTART_RECONCILIATION_PENDING_OBSERVATION`] (fss-mc9c4): dispatch is never retried, and
+    /// the obligation is explicitly indeterminate rather than pending. Any other operation with
+    /// no provider record is left as it is, and `Ok(None)` is returned.
     pub fn reconcile_alert(
         &mut self,
         plan: &ReferenceAlertPlan,
@@ -1006,7 +1060,20 @@ impl DurableEffectJournal {
         }
 
         let Some(provider_receipt) = provider.lookup(&plan.intent)? else {
-            return Ok(None);
+            let Some(operation) = self.operation(op) else {
+                return Ok(None);
+            };
+            if operation.state != EffectState::Committed || operation.intent != plan.intent {
+                return Ok(None);
+            }
+            let at = if now > operation.updated_at {
+                now
+            } else {
+                TimestampNs(operation.updated_at.0.saturating_add(1))
+            };
+            let receipt =
+                self.mark_indeterminate(op, at, RESTART_RECONCILIATION_PENDING_OBSERVATION)?;
+            return Ok(Some(receipt.clone()));
         };
         let current_state = self
             .operation(op)
@@ -1042,11 +1109,7 @@ impl DurableEffectJournal {
                 let ind_time = now;
                 let obs_time = TimestampNs(now.0.saturating_add(1));
                 let ver_time = TimestampNs(now.0.saturating_add(2));
-                self.mark_indeterminate(
-                    op,
-                    ind_time,
-                    "restart_reconciliation_pending_observation",
-                )?;
+                self.mark_indeterminate(op, ind_time, RESTART_RECONCILIATION_PENDING_OBSERVATION)?;
                 self.transition(
                     op,
                     EffectState::Observed,
