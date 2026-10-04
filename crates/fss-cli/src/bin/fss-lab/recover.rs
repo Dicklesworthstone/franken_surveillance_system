@@ -11,16 +11,22 @@
 //! | `--plan-{ledger,effects}-repair` | `fss_reference::inspect_deployment` (read-only doctor: bounded read, `fss_ledger::doctor`, sealed plan digest; no lock) |
 //! | `--apply-{ledger,effects}-repair <digest>` | `open_for_recovery` with `RecoveryAction::ApplySealed{Ledger,Effect}Repair` (refuses corrupt history and a different digest) |
 //! | `--discard-orphaned-temps` | `LocalRootPublisher::discard_orphaned_temps` through a `ReferenceDeployment::reopen` |
-//! | `--discard-orphaned-staging` | none: `LocalRootPublisher` has no pass-through to `StagingSpool::discard_orphaned_staging`; refused as `recover_action_unsupported` |
+//! | `--discard-orphaned-staging` | `ReferenceDeployment::discard_orphaned_staging` -> `LocalRootPublisher::discard_orphaned_staging` -> `StagingSpool::discard_orphaned_staging` (fss-vmau3), through a `ReferenceDeployment::reopen` |
 //! | `--reconcile-effects` | `DurableEffectJournal::transition` (`Indeterminate` -> `Observed`) then `reconcile_verified`, or `reconcile_failed`, against the lab's durable simulated provider record only |
 //!
 //! Mutating actions hold `<root>/objects/LOCK` for their whole duration (`open_for_recovery`
 //! and `ReferenceDeployment::reopen` both take it) and run in one fixed order: ledger bytes,
-//! effect bytes, a normal `Reject` reopen check, orphan discards, effect reconciliation. A held
-//! lock refuses the action (`recover_root_locked`). The first refusal or failure stops the
-//! sequence; later actions are reported `skipped`. A rerun of the same command resumes: steps
-//! already completed report `nothing_to_do`, and a run whose every step had nothing to do is
-//! refused as `recover_nothing_to_do`.
+//! effect bytes, a normal `Reject` reopen check, orphan discards (root temps, then staging
+//! files), effect reconciliation. A held lock refuses the action (`recover_root_locked`). The
+//! first refusal, failure or indeterminate outcome stops the sequence; later actions are reported
+//! `skipped`. A rerun of the same command resumes: steps already completed report
+//! `nothing_to_do`, and a run whose every step had nothing to do is refused as
+//! `recover_nothing_to_do`.
+//!
+//! A staging discard whose outcome cannot be observed (the spool's `DiscardIndeterminate`, or an
+//! accounting overflow) is never reported as applied or as nothing to do: the step is
+//! `indeterminate`, the spool and the publisher are poisoned, and the next affordance is a reopen,
+//! which reclassifies the staging directory from disk.
 //!
 //! Reconciliation never guesses: an indeterminate operation with no simulated-provider
 //! observation, or with a conflicting one, stays indeterminate. A `Committed` operation is
@@ -32,11 +38,12 @@ use std::fs;
 use std::path::{Path, PathBuf};
 
 use fss_cli::{
-    ERR_LAB_RECOVER_ACTION_UNSUPPORTED, ERR_LAB_RECOVER_CORRUPT_HISTORY,
-    ERR_LAB_RECOVER_NOTHING_TO_DO, ERR_LAB_RECOVER_PLAN_MISMATCH, ERR_LAB_RECOVER_ROOT_LOCKED,
-    RecoverJournal, RecoverRequest,
+    ERR_LAB_RECOVER_CORRUPT_HISTORY, ERR_LAB_RECOVER_NOTHING_TO_DO, ERR_LAB_RECOVER_PLAN_MISMATCH,
+    ERR_LAB_RECOVER_ROOT_LOCKED, RecoverJournal, RecoverRequest,
 };
 use fss_core::{EffectState, ObligationState, OperationId, TimestampNs};
+use fss_object::{DiscardReceipt, SpoolError};
+use fss_publication::LocalPublicationError;
 use fss_reference::{
     DEPLOYMENT_LAYOUT_FILENAME, DeploymentLayout, DoctorCheck, DoctorValue, RecoveryAction,
     RecoveryReceipt, ReferenceDeployment, ReferenceError, RepairError, ReplayCx,
@@ -63,8 +70,6 @@ pub enum Refusal {
     PlanMismatch,
     /// The foreign range holds a structurally valid record.
     CorruptHistory,
-    /// The action has no supporting API.
-    ActionUnsupported,
 }
 
 impl Refusal {
@@ -76,7 +81,6 @@ impl Refusal {
             Self::NothingToDo => "recover_nothing_to_do",
             Self::PlanMismatch => "recover_plan_mismatch",
             Self::CorruptHistory => "recover_corrupt_history",
-            Self::ActionUnsupported => "recover_action_unsupported",
         }
     }
 
@@ -88,7 +92,6 @@ impl Refusal {
             Self::NothingToDo => ERR_LAB_RECOVER_NOTHING_TO_DO,
             Self::PlanMismatch => ERR_LAB_RECOVER_PLAN_MISMATCH,
             Self::CorruptHistory => ERR_LAB_RECOVER_CORRUPT_HISTORY,
-            Self::ActionUnsupported => ERR_LAB_RECOVER_ACTION_UNSUPPORTED,
         }
     }
 }
@@ -108,7 +111,10 @@ pub enum StepStatus {
     Refused(Refusal),
     /// The action failed for a reason without a registered refusal.
     Failed(String),
-    /// Not run, because an earlier step was refused or failed.
+    /// Whether the action took effect durably cannot be observed; the owning store is poisoned
+    /// and must be reopened to reconcile. Never reported as applied or as nothing to do.
+    Indeterminate(String),
+    /// Not run, because an earlier step was refused, failed or was indeterminate.
     Skipped,
     /// The reopen check succeeded (not an action).
     Ok,
@@ -124,12 +130,16 @@ impl StepStatus {
             Self::NothingToDo => "nothing_to_do",
             Self::Refused(refusal) => refusal.code(),
             Self::Failed(_) => "failed",
+            Self::Indeterminate(_) => "indeterminate",
             Self::Skipped => "skipped",
         }
     }
 
     const fn stops(&self) -> bool {
-        matches!(self, Self::Refused(_) | Self::Failed(_))
+        matches!(
+            self,
+            Self::Refused(_) | Self::Failed(_) | Self::Indeterminate(_)
+        )
     }
 }
 
@@ -175,6 +185,8 @@ pub enum RecoverOutcome {
     Refused(Refusal),
     /// A failure without a registered refusal.
     Failed(String),
+    /// An action's durable outcome cannot be observed; reopen to reconcile.
+    Indeterminate(String),
 }
 
 impl RecoverOutcome {
@@ -187,6 +199,7 @@ impl RecoverOutcome {
             Self::IndeterminateRemains => "indeterminate_remains",
             Self::Refused(refusal) => refusal.code(),
             Self::Failed(_) => "failed",
+            Self::Indeterminate(_) => "indeterminate",
         }
     }
 }
@@ -227,9 +240,7 @@ impl StateAfter {
             next.push("fss-lab recover --discard-orphaned-temps");
         }
         if self.orphaned_staging > 0 {
-            next.push(
-                "discard_orphaned_staging: no supporting API yet (recover_action_unsupported)",
-            );
+            next.push("fss-lab recover --discard-orphaned-staging");
         }
         if self.indeterminate > 0 {
             next.push("wait for a provider observation, then fss-lab recover --reconcile-effects; dispatch is never retried");
@@ -254,8 +265,9 @@ pub struct RecoverReport {
 }
 
 impl RecoverReport {
-    /// Overall outcome: the first refusal or failure; otherwise applied, planned or
-    /// indeterminate-remains; `recover_nothing_to_do` when every action had nothing to do.
+    /// Overall outcome: the first refusal, failure or indeterminate step; otherwise applied,
+    /// planned or indeterminate-remains; `recover_nothing_to_do` when every action had nothing
+    /// to do.
     #[must_use]
     pub fn outcome(&self) -> RecoverOutcome {
         let mut applied = false;
@@ -266,6 +278,9 @@ impl RecoverReport {
                 StepStatus::Refused(refusal) => return RecoverOutcome::Refused(*refusal),
                 StepStatus::Failed(reason) => {
                     return RecoverOutcome::Failed(format!("{}: {reason}", step.action));
+                }
+                StepStatus::Indeterminate(reason) => {
+                    return RecoverOutcome::Indeterminate(format!("{}: {reason}", step.action));
                 }
                 StepStatus::Applied => applied = true,
                 StepStatus::Planned => planned = true,
@@ -315,7 +330,7 @@ impl RecoverReport {
                 out.push_str(",\"error_id\":");
                 push_string(&mut out, refusal.error_id());
             }
-            if let StepStatus::Failed(reason) = &step.status {
+            if let StepStatus::Failed(reason) | StepStatus::Indeterminate(reason) = &step.status {
                 out.push_str(",\"reason\":");
                 push_string(&mut out, reason);
             }
@@ -423,21 +438,6 @@ pub fn run(root: &Path, request: &RecoverRequest) -> RecoverReport {
         restart_reclassified: Vec::new(),
         state_after: None,
     };
-    if request.discard_orphaned_staging {
-        // Refused up front, before anything runs: no API to do it, so nothing is approximated.
-        report.steps.push(
-            Step::new(
-                "discard_orphaned_staging",
-                Some("objects"),
-                StepStatus::Refused(Refusal::ActionUnsupported),
-            )
-            .with(
-                "reason",
-                json_string("fss-publication LocalRootPublisher has no pass-through to fss-object StagingSpool::discard_orphaned_staging, which needs &mut access to the spool the publisher owns"),
-            ),
-        );
-        return report;
-    }
     if let Some(journal) = request.plan_repair {
         report.steps.push(plan_step(root, journal));
         return report;
@@ -544,6 +544,31 @@ pub fn run(root: &Path, request: &RecoverRequest) -> RecoverReport {
         let stop = step.status.stops();
         report.steps.push(step);
         if stop {
+            skip_remaining(&mut report, request, true);
+            return report;
+        }
+    }
+    if request.discard_orphaned_staging {
+        // Exactly the staging files the spool classified when this reopen took the lock.
+        let orphans: Vec<String> = deployment
+            .publisher()
+            .spool()
+            .orphaned_staging()
+            .map(|orphan| orphan.path.display().to_string())
+            .collect();
+        let step = if orphans.is_empty() {
+            Step::new(
+                "discard_orphaned_staging",
+                Some("objects"),
+                StepStatus::NothingToDo,
+            )
+        } else {
+            staging_step(deployment.discard_orphaned_staging(), &orphans)
+        };
+        let stop = step.status.stops();
+        report.steps.push(step);
+        if stop {
+            skip_remaining(&mut report, request, true);
             return report;
         }
     }
@@ -570,6 +595,9 @@ fn skip_remaining(report: &mut RecoverReport, request: &RecoverRequest, after_re
     }
     if request.discard_orphaned_temps {
         remaining.push("discard_orphaned_temps");
+    }
+    if request.discard_orphaned_staging {
+        remaining.push("discard_orphaned_staging");
     }
     if request.reconcile_effects {
         remaining.push("reconcile_effects");
@@ -696,6 +724,90 @@ fn byte_step(root: &Path, action: RecoveryAction, cx: &ReplayCx) -> Step {
             }
         }
     }
+}
+
+/// The `discard_orphaned_staging` step for the discard of `orphans` (spool-relative paths), with
+/// the spool's indeterminate and poison outcomes kept typed.
+fn staging_step(result: Result<DiscardReceipt, ReferenceError>, orphans: &[String]) -> Step {
+    const ACTION: &str = "discard_orphaned_staging";
+    let orphan_list = json_list(orphans);
+    match result {
+        Ok(receipt) if receipt.removed == 0 => {
+            Step::new(ACTION, Some("objects"), StepStatus::NothingToDo)
+        }
+        Ok(receipt) => Step::new(ACTION, Some("objects"), StepStatus::Applied)
+            .with("discarded", receipt.removed.to_string())
+            .with("released_bytes", receipt.released_bytes.to_string())
+            .with("orphans", orphan_list),
+        Err(ReferenceError::DeploymentLocked { .. }) => Step::new(
+            ACTION,
+            Some("objects"),
+            StepStatus::Refused(Refusal::RootLocked),
+        ),
+        Err(ReferenceError::LocalPublication(error)) => {
+            let code = json_string(error.code());
+            // Exactly the outcomes after which the spool (and so the publisher) is poisoned.
+            let indeterminate = matches!(
+                *error,
+                LocalPublicationError::Poisoned
+                    | LocalPublicationError::Spool(
+                        SpoolError::DiscardIndeterminate { .. }
+                            | SpoolError::AccountingOverflow
+                            | SpoolError::Poisoned
+                    )
+            );
+            if !indeterminate {
+                return Step::new(
+                    ACTION,
+                    Some("objects"),
+                    StepStatus::Failed(error.to_string()),
+                )
+                .with("error_code", code);
+            }
+            let mut step = Step::new(
+                ACTION,
+                Some("objects"),
+                StepStatus::Indeterminate(error.to_string()),
+            )
+            .with("error_code", code)
+            .with("publisher_poisoned", "true".to_owned())
+            .with(
+                "next",
+                json_string(
+                    "reopen the root (rerun fss-lab recover --discard-orphaned-staging, or fss doctor --root) to reclassify the staging directory from disk",
+                ),
+            );
+            if let LocalPublicationError::Spool(SpoolError::DiscardIndeterminate {
+                path,
+                operation,
+                kind,
+            }) = &*error
+            {
+                step = step
+                    .with("path", json_string(&path.display().to_string()))
+                    .with("operation", json_string(&operation.to_string()))
+                    .with("io_kind", json_string(&kind.to_string()));
+            }
+            step.with("orphans", orphan_list)
+        }
+        Err(other) => Step::new(
+            ACTION,
+            Some("objects"),
+            StepStatus::Failed(other.to_string()),
+        ),
+    }
+}
+
+fn json_list(values: &[String]) -> String {
+    let mut out = String::from("[");
+    for (index, value) in values.iter().enumerate() {
+        if index > 0 {
+            out.push(',');
+        }
+        push_string(&mut out, value);
+    }
+    out.push(']');
+    out
 }
 
 /// Read-only plan: the deployment doctor's bounded read of the journal, its classification and
@@ -983,10 +1095,14 @@ mod tests {
     use super::{RecoverOutcome, RecoverReport, Refusal, StepStatus, run};
     use crate::scenario::{Injection, ScenarioKind, make_cx, run_injected};
     use crate::sim_provider::{self, ObservationKind, ProviderObservation};
-    use fss_cli::{RecoverJournal, RecoverRequest};
+    use fss_cli::{LabAction, RecoverJournal, RecoverRequest, parse_lab_args};
     use fss_core::{CanonicalEncode, ContentDigest, EffectState, OperationId};
-    use fss_publication::LedgerCutPoint;
-    use fss_reference::{AppendPhase, ReferenceDeployment};
+    use fss_object::{SpoolError, SpoolIoOperation};
+    use fss_publication::{LedgerCutPoint, LocalPublicationError, PublishCutPoint};
+    use fss_reference::{
+        AppendPhase, DoctorAffordance, ReferenceDeployment, ReferenceError, inspect_deployment,
+    };
+    use std::ffi::OsString;
     use std::path::{Path, PathBuf};
 
     type TestResult = Result<(), String>;
@@ -1412,25 +1528,290 @@ mod tests {
         Ok(())
     }
 
+    /// The command line the read-only doctor names for `finding` in check `check_id`.
+    fn doctor_command(root: &Path, check_id: &str, finding: &str) -> Result<String, String> {
+        let report = inspect_deployment(root);
+        let check = report
+            .check(check_id)
+            .ok_or_else(|| format!("no {check_id} check: {}", report.to_json()))?;
+        let found = check
+            .findings
+            .iter()
+            .find(|candidate| candidate.kind == finding)
+            .ok_or_else(|| format!("no {finding} finding: {}", check.to_json()))?;
+        match &found.next_affordance {
+            Some(DoctorAffordance::Command { command, .. }) => Ok(command.clone()),
+            other => Err(format!("{finding}: not a command: {other:?}")),
+        }
+    }
+
+    /// Runs a doctor-named `fss-lab recover ...` command line through the `fss-lab` argument
+    /// parser and the recover code path, exactly as the binary does.
+    fn run_command(command: &str) -> Result<RecoverReport, String> {
+        let argv = command
+            .strip_prefix("fss-lab ")
+            .ok_or_else(|| format!("not an fss-lab command: {command}"))?;
+        match parse_lab_args(argv.split(' ').map(OsString::from)) {
+            Ok(LabAction::Recover { root, request, .. }) => Ok(run(&root, &request)),
+            other => Err(format!("{command}: {other:?}")),
+        }
+    }
+
+    fn finding_kinds(root: &Path, check_id: &str) -> Vec<String> {
+        inspect_deployment(root)
+            .check(check_id)
+            .map(|check| check.findings.iter().map(|f| f.kind.clone()).collect())
+            .unwrap_or_default()
+    }
+
     #[test]
-    fn unsupported_and_uninitialized_roots_are_refused_without_writes() -> TestResult {
-        let scratch = Scratch::new("refusals")?;
-        let root = corpus(&scratch, "clean", Injection::None);
-        let staging = run(
+    fn each_doctor_named_command_on_a_crash_matrix_sub_root_clears_its_finding() -> TestResult {
+        let scratch = Scratch::new("doctor-commands")?;
+        let rows: [(&str, Injection, &str, &str, &str); 3] = [
+            (
+                "append.body_write",
+                Injection::LedgerAppendFailure(AppendPhase::BodyWrite),
+                "ledger.journal",
+                "incomplete_tail",
+                "--truncate-incomplete-tail ledger",
+            ),
+            (
+                "publish.after_root_temp_write",
+                Injection::PublishCrash(PublishCutPoint::AfterRootTempWrite),
+                "publication.roots",
+                "orphaned_root_temps",
+                "--discard-orphaned-temps",
+            ),
+            (
+                "effect.lost_ack",
+                Injection::CrashAfterLostAck,
+                "effects.obligations",
+                "indeterminate_obligations",
+                "--reconcile-effects",
+            ),
+        ];
+        for (name, injection, check_id, finding, flags) in rows {
+            let root = corpus(&scratch, name, injection);
+            let command = doctor_command(&root, check_id, finding)?;
+            assert_eq!(
+                command,
+                format!("fss-lab recover --root {} {flags}", root.display()),
+                "{name}"
+            );
+            let report = run_command(&command)?;
+            assert_eq!(
+                report.outcome(),
+                RecoverOutcome::Applied,
+                "{name}: {}",
+                report.render_json()
+            );
+            assert!(
+                !finding_kinds(&root, check_id).contains(&finding.to_owned()),
+                "{name}: the doctor still reports {finding}"
+            );
+        }
+
+        // Foreign trailing bytes: the doctor names the apply of exactly its sealed plan digest.
+        let root = corpus(&scratch, "foreign", Injection::None);
+        let journal = root.join("ledger").join("journal.fssj");
+        append_bytes(&journal, b"foreign trailing bytes for the doctor")?;
+        let planned = run(
             &root,
             &RecoverRequest {
-                discard_orphaned_staging: true,
-                reconcile_effects: true,
+                plan_repair: Some(RecoverJournal::Ledger),
                 ..RecoverRequest::default()
             },
         );
+        let digest = plan_digest(&planned)?;
+        let command = doctor_command(&root, "ledger.journal", "foreign_trailing_bytes")?;
         assert_eq!(
-            staging.outcome(),
-            RecoverOutcome::Refused(Refusal::ActionUnsupported)
+            command,
+            format!(
+                "fss-lab recover --root {} --apply-ledger-repair {digest}",
+                root.display()
+            )
         );
-        // Refused up front: nothing else ran.
-        assert_eq!(staging.steps.len(), 1);
+        let report = run_command(&command)?;
+        assert_eq!(report.outcome(), RecoverOutcome::Applied);
+        assert!(finding_kinds(&root, "ledger.journal").is_empty());
+        Ok(())
+    }
 
+    /// Writes an orphaned staging file as an interrupted ingest of `payload` leaves it.
+    fn plant_orphan(root: &Path, payload: &[u8], attempt: u32) -> Result<String, String> {
+        let name = format!(
+            "{}.{attempt}.tmp",
+            ContentDigest::sha256(payload)
+                .to_text()
+                .trim_start_matches("sha256:")
+        );
+        std::fs::write(staging_dir(root).join(&name), payload).map_err(|e| e.to_string())?;
+        Ok(name)
+    }
+
+    fn staging_dir(root: &Path) -> PathBuf {
+        root.join("objects").join("spool").join("staging")
+    }
+
+    fn staging_names(root: &Path) -> Result<Vec<String>, String> {
+        let mut names = Vec::new();
+        for entry in std::fs::read_dir(staging_dir(root)).map_err(|e| e.to_string())? {
+            names.push(
+                entry
+                    .map_err(|e| e.to_string())?
+                    .file_name()
+                    .to_string_lossy()
+                    .into_owned(),
+            );
+        }
+        names.sort();
+        Ok(names)
+    }
+
+    #[test]
+    fn orphaned_staging_is_discarded_exactly_and_a_rerun_has_nothing_to_do() -> TestResult {
+        let scratch = Scratch::new("staging")?;
+        let root = corpus(
+            &scratch,
+            "cancel.publish_root",
+            Injection::CancelAt(crate::scenario::stage::PUBLISH_ROOT),
+        );
+        let request = RecoverRequest {
+            discard_orphaned_staging: true,
+            ..RecoverRequest::default()
+        };
+        // Nothing to discard yet.
+        let none = run(&root, &request);
+        assert_eq!(
+            none.outcome(),
+            RecoverOutcome::Refused(Refusal::NothingToDo)
+        );
+        assert_eq!(
+            status_of(&none, "discard_orphaned_staging"),
+            Some(StepStatus::NothingToDo)
+        );
+
+        let mut orphans = vec![
+            plant_orphan(&root, b"interrupted ingest one", 0)?,
+            plant_orphan(&root, b"interrupted ingest two!", 2)?,
+        ];
+        orphans.sort();
+        std::fs::write(staging_dir(&root).join("operator-notes"), b"keep")
+            .map_err(|e| e.to_string())?;
+        let mut before = orphans.clone();
+        before.push("operator-notes".to_owned());
+        before.sort();
+        assert_eq!(staging_names(&root)?, before);
+
+        // The doctor names exactly this command for the finding.
+        let command = doctor_command(&root, "publication.staging", "orphaned_staging")?;
+        assert_eq!(
+            command,
+            format!(
+                "fss-lab recover --root {} --discard-orphaned-staging",
+                root.display()
+            )
+        );
+        let report = run_command(&command)?;
+        let json = report.render_json();
+        assert_eq!(report.outcome(), RecoverOutcome::Applied, "{json}");
+        let orphan_list: Vec<String> = orphans
+            .iter()
+            .map(|name| format!("\"staging/{name}\""))
+            .collect();
+        assert!(
+            json.contains(&format!(
+                "{{\"action\":\"discard_orphaned_staging\",\"target\":\"objects\",\"status\":\"applied\",\"receipt\":{{\"discarded\":2,\"released_bytes\":45,\"orphans\":[{}]}}}}",
+                orphan_list.join(",")
+            )),
+            "{json}"
+        );
+        assert!(json.contains("\"schema\":\"fss.lab.recover_report.v1\""));
+        // Exactly the orphans went; the foreign entry stays; the spool reports clean.
+        assert_eq!(staging_names(&root)?, vec!["operator-notes".to_owned()]);
+        assert_eq!(
+            std::fs::read(staging_dir(&root).join("operator-notes")).map_err(|e| e.to_string())?,
+            b"keep"
+        );
+        let state = report.state_after.as_ref().ok_or("state_after")?;
+        assert_eq!(state.orphaned_staging, 0);
+        assert!(finding_kinds(&root, "publication.staging").is_empty());
+
+        // The completed command, rerun: nothing to do, nothing touched.
+        let again = run(&root, &request);
+        assert_eq!(
+            again.outcome(),
+            RecoverOutcome::Refused(Refusal::NothingToDo)
+        );
+        assert_eq!(staging_names(&root)?, vec!["operator-notes".to_owned()]);
+        Ok(())
+    }
+
+    #[test]
+    fn an_indeterminate_staging_discard_is_a_typed_failure_never_applied_or_nothing_to_do() {
+        let orphans = vec!["staging/a.0.tmp".to_owned()];
+        let indeterminate = ReferenceError::from(LocalPublicationError::Spool(
+            SpoolError::DiscardIndeterminate {
+                path: PathBuf::from("/r/objects/spool/staging"),
+                operation: SpoolIoOperation::SyncDirectory,
+                kind: std::io::ErrorKind::Other,
+            },
+        ));
+        let step = super::staging_step(Err(indeterminate), &orphans);
+        assert!(matches!(step.status, StepStatus::Indeterminate(_)));
+        assert!(step.status.stops());
+        let report = RecoverReport {
+            root: PathBuf::from("/r"),
+            requested: vec!["--discard-orphaned-staging".to_owned()],
+            steps: vec![step],
+            restart_reclassified: Vec::new(),
+            state_after: None,
+        };
+        assert!(matches!(report.outcome(), RecoverOutcome::Indeterminate(_)));
+        let json = report.render_json();
+        assert!(json.contains("\"status\":\"indeterminate\""), "{json}");
+        assert!(
+            json.contains("\"error_code\":\"ERR-PUBLICATION-LOCAL-SPOOL-001\""),
+            "{json}"
+        );
+        assert!(json.contains("\"publisher_poisoned\":true"), "{json}");
+        assert!(
+            json.contains("\"path\":\"/r/objects/spool/staging\""),
+            "{json}"
+        );
+        assert!(json.contains("\"outcome\":\"indeterminate\""), "{json}");
+
+        // A poisoned spool is indeterminate too; a settled failure is an ordinary failure.
+        let poisoned = super::staging_step(
+            Err(ReferenceError::from(LocalPublicationError::Spool(
+                SpoolError::Poisoned,
+            ))),
+            &orphans,
+        );
+        assert!(matches!(poisoned.status, StepStatus::Indeterminate(_)));
+        let settled = super::staging_step(
+            Err(ReferenceError::from(LocalPublicationError::Spool(
+                SpoolError::InvalidLayout {
+                    path: PathBuf::from("/r/objects/spool/staging/a.0.tmp"),
+                },
+            ))),
+            &orphans,
+        );
+        assert!(matches!(settled.status, StepStatus::Failed(_)));
+        // A receipt that removed nothing is nothing to do, never applied.
+        let empty = super::staging_step(
+            Ok(fss_object::DiscardReceipt {
+                removed: 0,
+                released_bytes: 0,
+            }),
+            &orphans,
+        );
+        assert_eq!(empty.status, StepStatus::NothingToDo);
+    }
+
+    #[test]
+    fn uninitialized_roots_are_refused_without_writes() -> TestResult {
+        let scratch = Scratch::new("refusals")?;
         let empty = scratch.0.join("empty");
         std::fs::create_dir(&empty).map_err(|e| e.to_string())?;
         let report = run(&empty, &reconcile());

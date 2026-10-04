@@ -106,6 +106,9 @@ fn run_action(action: LabAction) -> Result<String, String> {
                     refusal.code()
                 )),
                 recover::RecoverOutcome::Failed(reason) => Err(format!("recover failed: {reason}")),
+                recover::RecoverOutcome::Indeterminate(reason) => Err(format!(
+                    "recover indeterminate: {reason}; reopen to reconcile: {rendered}"
+                )),
                 _ => Ok(rendered),
             }
         }
@@ -122,7 +125,8 @@ fn render_recover(report: &recover::RecoverReport, json: bool) -> String {
 
 /// `fss-lab recover`: the report always goes to stdout. A typed refusal exits 6
 /// (`EXIT-LAB-RECOVER-REFUSED-006`) with an `fss.cli_diagnostic.v1` line naming the
-/// `ERR-LAB-RECOVER-*` identity on stderr; a failure without a registered refusal exits 1.
+/// `ERR-LAB-RECOVER-*` identity on stderr; a failure without a registered refusal, or an
+/// indeterminate outcome (the store is poisoned and must be reopened), exits 1.
 fn recover_command(root: &Path, request: &RecoverRequest, json: bool) -> ExitCode {
     let report = recover::run(root, request);
     println!("{}", render_recover(&report, json));
@@ -139,6 +143,12 @@ fn recover_command(root: &Path, request: &RecoverRequest, json: bool) -> ExitCod
         }
         recover::RecoverOutcome::Failed(reason) => {
             eprintln!("fss-lab: recover failed: {reason}");
+            ExitCode::from(1)
+        }
+        recover::RecoverOutcome::Indeterminate(reason) => {
+            eprintln!(
+                "fss-lab: recover indeterminate: {reason}; the store is poisoned, reopen to reconcile"
+            );
             ExitCode::from(1)
         }
         _ => ExitCode::SUCCESS,

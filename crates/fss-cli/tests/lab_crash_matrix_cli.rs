@@ -265,7 +265,7 @@ fn the_json_document_has_one_row_per_fault_point_and_the_exit_code_follows_the_v
         ),
         (
             "cancel.dispatch_alert",
-            "[\"--discard-orphaned-temps\",\"--reconcile-effects\"]",
+            "[\"--discard-orphaned-temps\",\"--discard-orphaned-staging\",\"--reconcile-effects\"]",
         ),
     ] {
         let row = rows

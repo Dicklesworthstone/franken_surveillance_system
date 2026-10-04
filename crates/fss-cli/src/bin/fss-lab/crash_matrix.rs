@@ -17,7 +17,7 @@
 //!    (`fss-lab recover --truncate-incomplete-tail ledger`), reopen, and record orphaned staging
 //!    and root temps, broken roots, unreferenced objects, pending roots and obligations by state.
 //! 4. Apply the row's remaining operator actions (`--discard-orphaned-temps`,
-//!    `--reconcile-effects`), then rerun the scenario with no fault on the copy, and count
+//!    `--discard-orphaned-staging`, `--reconcile-effects`), then rerun the scenario with no fault on the copy, and count
 //!    duplicate effects: a provider call for an
 //!    operation the journal had already dispatched, a provider record nothing in the rerun
 //!    dispatched, a second operation under one idempotency key, or a second batch under one
@@ -149,6 +149,8 @@ pub enum OperatorAction {
     TruncateLedgerTail,
     /// `--discard-orphaned-temps`.
     DiscardOrphanedTemps,
+    /// `--discard-orphaned-staging` (fss-vmau3).
+    DiscardOrphanedStaging,
     /// `--reconcile-effects`.
     ReconcileEffects,
 }
@@ -165,6 +167,7 @@ impl OperatorAction {
                 request.truncate_incomplete_tail = Some(RecoverJournal::Ledger);
             }
             Self::DiscardOrphanedTemps => request.discard_orphaned_temps = true,
+            Self::DiscardOrphanedStaging => request.discard_orphaned_staging = true,
             Self::ReconcileEffects => request.reconcile_effects = true,
         }
     }
@@ -208,7 +211,9 @@ impl OperatorOutcome {
             RecoverOutcome::IndeterminateRemains => Self::IndeterminateRemains,
             RecoverOutcome::Refused(Refusal::NothingToDo) => Self::NothingToDo,
             RecoverOutcome::Refused(refusal) => Self::Refused(refusal.code()),
-            RecoverOutcome::Planned | RecoverOutcome::Failed(_) => Self::Failed,
+            RecoverOutcome::Planned
+            | RecoverOutcome::Failed(_)
+            | RecoverOutcome::Indeterminate(_) => Self::Failed,
         }
     }
 
@@ -312,10 +317,11 @@ const RECONCILE_UNOBSERVED: Operator = Operator {
 const CANCEL_LEAVES_NOTHING: Operator = Operator {
     actions: &[
         OperatorAction::DiscardOrphanedTemps,
+        OperatorAction::DiscardOrphanedStaging,
         OperatorAction::ReconcileEffects,
     ],
     expect: OperatorOutcome::NothingToDo,
-    note: "cancellation is request->drain->finalize with no orphan work and terminal obligations, so the orphan and effect actions find nothing",
+    note: "cancellation is request->drain->finalize with no orphan work and terminal obligations, so the orphan (root temp and staging) and effect actions find nothing",
 };
 
 const fn run(injection: Injection, interrupts: bool) -> Exercise {
@@ -1303,7 +1309,11 @@ mod tests {
                     && matches!(row.exercise, Exercise::Run { .. }) =>
                 {
                     (
-                        &[A::DiscardOrphanedTemps, A::ReconcileEffects],
+                        &[
+                            A::DiscardOrphanedTemps,
+                            A::DiscardOrphanedStaging,
+                            A::ReconcileEffects,
+                        ],
                         O::NothingToDo,
                     )
                 }

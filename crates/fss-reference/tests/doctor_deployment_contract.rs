@@ -48,7 +48,6 @@ type TestResult = Result<(), Box<dyn Error>>;
 type Res<T> = Result<T, Box<dyn Error>>;
 
 const LINEAGE: &str = "site:doctor-contract";
-const TRACKING: &str = "fss-2h5zq.15";
 const DEFAULT_LIMITS_JSON: &str = "{\"max_journal_bytes\":67108864,\"max_layout_bytes\":4096,\"max_listed_ids\":32,\"max_sidecar_entries\":4096}";
 const LEFTOVER_REPAIR_TEMPS_DETAIL: &str = "no foreign-byte repair of this journal is pending, so no fss-lab recover action addresses these leftover repair staging files; removing them is an owner decision";
 const OVER_BUDGET_DETAIL: &str = "the file exceeds the doctor's read bound; it was not read and no claim is made about its contents";
@@ -323,21 +322,6 @@ fn check(
         parts.push(format!("\"next_affordance\":{next}"));
     }
     format!("{{{}}}", parts.join(","))
-}
-
-fn not_yet(action: &str, target: Option<&str>, plan_digest: Option<&str>) -> String {
-    let mut pairs = vec![
-        ("availability", s("not_yet_available")),
-        ("action", s(action)),
-    ];
-    if let Some(target) = target {
-        pairs.push(("target", s(target)));
-    }
-    if let Some(plan_digest) = plan_digest {
-        pairs.push(("plan_digest", s(plan_digest)));
-    }
-    pairs.push(("tracking", s(TRACKING)));
-    obj(&pairs)
 }
 
 /// The exact `fss-lab recover --root <dep> <flags>` command the doctor names (fss-93udx).
@@ -1298,7 +1282,11 @@ fn orphaned_staging_is_listed_with_discard_action() -> TestResult {
     fs::write(staging.join(&name), b"staging-data")?;
 
     let report = inspect_read_only("orphaned staging", &dep)?;
-    let aff = not_yet("discard_orphaned_staging", Some("objects"), None);
+    let aff = recover(
+        &dep,
+        "discard_orphaned_staging",
+        "--discard-orphaned-staging",
+    );
     let mut expected = Expect::clean(&dep)?.attention();
     expected.set(
         "publication.staging",
