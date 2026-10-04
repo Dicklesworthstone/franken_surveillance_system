@@ -10,7 +10,7 @@
 //! - Guarded situation projection compiled and sealed into a root-closed `HandoffCapsule`;
 //! - Clean reconciliation and zero unreferenced objects verified on reopen.
 
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet};
 use std::fmt;
 use std::fs;
 use std::path::Path;
@@ -21,9 +21,10 @@ use fss_core::{
     CanonicalEncode, CapsuleId, CaptureInterval, ClockBasis, Completeness, ContentDigest,
     ContractBasis, ContractBasisRegistryBytes, CoverageContinuity, CoverageStopReason,
     CoverageWitness, EffectState, EventEvidence, EventHypothesis, EventId, EventKind, EventState,
-    EvidenceClass, EvidenceEdgeRelation, HandoffId, IdempotencyKey, MissionId, ObligationId,
-    ObligationState, OperationId, PrincipalId, ProbabilityInterval, SensorCapsule, SensorId,
-    SensorSourceBytesSpec, SessionId, StreamId, TimestampNs,
+    EvidenceClass, EvidenceEdgeRelation, HandoffCapsule, HandoffId, IdempotencyKey, KnowledgeCell,
+    KnowledgeState, MissionId, ObligationId, ObligationState, OperationId, PrincipalId,
+    ProbabilityInterval, SensorCapsule, SensorId, SensorSourceBytesSpec, SessionId, StreamId,
+    TimestampNs,
 };
 use fss_object::ObjectManifest;
 use fss_publication::{LedgerCutPoint, PublishCutPoint, SlotName};
@@ -31,8 +32,8 @@ use fss_reference::{
     AppendPhase, DurableEffectError, MockModelOutcome, MockModelResult, MockModelScript,
     MockModelSpec, MockSemanticLabel, PrepareAlertParams, ReferenceAlertPlan, ReferenceDeployment,
     ReferenceModelObservation, ReferencePolicyAction, ReferencePolicyDecision,
-    ReferenceProviderBehavior, ReferenceSituationRequest, ReplayCx, ReplayIoAuthority,
-    policy_decision_path, rehydrate_reference_alert_plan,
+    ReferenceProviderBehavior, ReferenceSituation, ReferenceSituationRequest, ReplayCx,
+    ReplayIoAuthority, policy_decision_path, rehydrate_reference_alert_plan,
 };
 
 const SCENARIO_START: u64 = 0;
@@ -222,6 +223,9 @@ enum ObservationClass {
     Empty,
     Raccoon,
     UnknownPerson,
+    /// The camera delivers no packet at this tick (power or network loss): nothing is staged,
+    /// so its failure domain does not cover the interval.
+    Silent,
 }
 
 struct VirtualCamera {
@@ -368,13 +372,21 @@ pub struct ScenarioReport {
     pub envelope: EnvelopeClass,
     /// Event disposition string label.
     pub event_disposition: &'static str,
-    /// Whether absence was certified.
+    /// Whether absence was certified: exactly [`SituationAbsence::certified`] of the compiled
+    /// situation and sealed handoff, never an independent lab judgement.
     pub absence_certified: bool,
-    /// Whether an indeterminate dispatch was temporarily observed before reconciliation.
+    /// Whether the alert dispatch ended `Indeterminate` (acknowledgement lost after delivery),
+    /// as journaled before reconciliation ran.
+    ///
+    /// Rendered as `transient_indeterminate`: it records the state the effect passed through,
+    /// not its final state, which is `effect_state`. For `lost-ack` the effect is indeterminate
+    /// after dispatch (`pre_reconcile_effect_state`), and operation lookup against the provider
+    /// then resolves it to `verified` without a second dispatch, so the report carries
+    /// `transient_indeterminate: true` beside `effect_state: "verified"`.
     pub transient_indeterminate: bool,
-    /// Terminal effect lifecycle state, if an alert was executed.
+    /// Effect lifecycle state after reconciliation, if an alert was executed.
     pub effect_state: Option<EffectState>,
-    /// Terminal obligation state, if an alert was executed.
+    /// Obligation state after reconciliation, if an alert was executed.
     pub obligation_state: Option<ObligationState>,
     /// Machine-readable epistemic knowledge object.
     pub knowledge: KnowledgeReport,
@@ -396,6 +408,68 @@ pub struct ScenarioReport {
     /// Delivery and failure records the run's in-memory alert provider holds at the end of the
     /// run (not rendered in the v2 report). The provider starts empty on every open.
     pub provider_effects: usize,
+    /// Journaled effect state after dispatch and before reconciliation, if an alert was executed
+    /// (not rendered in the v2 report).
+    pub pre_reconcile_effect_state: Option<EffectState>,
+    /// What the compiled situation and sealed handoff say about absence (not rendered in the v2
+    /// report; `absence_certified` is derived from it).
+    pub situation_absence: SituationAbsence,
+}
+
+/// Absence certification as the real situation projection and sealed handoff record it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct SituationAbsence {
+    /// Knowledge state of the situation's `absence-certification` cell; `None` when the event is
+    /// not rejected, so the situation states no absence claim at all.
+    pub cell: Option<KnowledgeState>,
+    /// Whether the situation retains the protected `absence-uncertified` residual world.
+    pub uncertified_world: bool,
+    /// Whether the sealed handoff's child roots name the certifying coverage witness.
+    pub handoff_names_witness: bool,
+}
+
+impl SituationAbsence {
+    fn read(
+        situation: &ReferenceSituation,
+        handoff: &HandoffCapsule,
+        event_id: &EventId,
+        witness: Option<&CoverageWitness>,
+    ) -> Self {
+        let frame = &situation.capsule.frame;
+        let cell_id = format!("claim:event:{}:absence-certification", event_id.as_str());
+        let world_id = format!("world:event:{}:absence-uncertified", event_id.as_str());
+        Self {
+            cell: frame
+                .knowledge_cells
+                .iter()
+                .find(|cell| cell.claim_id() == cell_id)
+                .map(KnowledgeCell::knowledge_state),
+            uncertified_world: frame
+                .world_envelope
+                .adversarial_residuals
+                .iter()
+                .any(|world| world.protected && world.world_id == world_id),
+            handoff_names_witness: witness
+                .is_some_and(|witness| handoff.child_roots.contains(&witness.witness_digest())),
+        }
+    }
+
+    /// Absence is certified only when the cell is known, no uncertified residual world
+    /// survives, and the handoff carries the witness; any partial agreement fails closed.
+    fn certified(&self) -> Result<bool, ScenarioError> {
+        let known = self.cell == Some(KnowledgeState::Known);
+        if known == !self.uncertified_world && known == self.handoff_names_witness {
+            Ok(known)
+        } else if !known && !self.handoff_names_witness {
+            // A refused or absent absence claim: uncertified, whether or not a residual world
+            // is recorded for this event state.
+            Ok(false)
+        } else {
+            Err(ScenarioError::Reference(format!(
+                "situation absence certification is inconsistent: {self:?}"
+            )))
+        }
+    }
 }
 
 impl ScenarioReport {
@@ -656,6 +730,11 @@ fn run_scenario_impl(
     let mut observations: Vec<ReferenceModelObservation> = Vec::new();
     // Corrupt sources detected in the deployment spool: withheld, never referenced.
     let mut withheld: BTreeSet<ContentDigest> = BTreeSet::new();
+    // Ticks at which each failure domain delivered a verified, staged capsule; the quiet
+    // coverage witness observes exactly the domains that delivered the whole interval.
+    let mut delivered: BTreeMap<&'static str, BTreeSet<u64>> = BTreeMap::new();
+    // `sensor:tick` of every frame a camera never delivered.
+    let mut silent: Vec<String> = Vec::new();
 
     let interval = CaptureInterval::new(
         TimestampNs(0),
@@ -686,6 +765,12 @@ fn run_scenario_impl(
         }
         for camera in cameras {
             let scripted = classes(kind, camera.sensor, tick);
+            if scripted == ObservationClass::Silent {
+                // Nothing arrives, so nothing is staged: the camera's failure domain does not
+                // cover this tick. Never read as an empty frame.
+                silent.push(format!("{}:{tick}", camera.sensor));
+                continue;
+            }
             // A camera whose view of the path zone is occluded or outside its frustum cannot
             // report what is in the zone; its frame carries no finding.
             let class = match path_zone {
@@ -734,6 +819,10 @@ fn run_scenario_impl(
             let capsule_bytes = capsule.canonical_bytes();
             let capsule_digest = deployment.stage_payload(&capsule_bytes)?;
             staged_digests.push(capsule_digest);
+            delivered
+                .entry(camera.failure_domain)
+                .or_default()
+                .insert(tick);
 
             // Per-scenario model finding derivation.
             if let Some(semantic_label) = semantic_label_for(class) {
@@ -804,7 +893,7 @@ fn run_scenario_impl(
     // Every outcome below is derived from what the run actually recorded: the real policy's
     // decision over the model observations, and the coverage gaps and corrupt sources. No
     // scenario name selects a result.
-    let gaps: Vec<String> = warnings
+    let mut gaps: Vec<String> = warnings
         .iter()
         .filter_map(|w| {
             w.strip_prefix("coverage_gap:")
@@ -814,28 +903,52 @@ fn run_scenario_impl(
         .collect();
     let corrupt = warnings.iter().any(|w| w.starts_with("source_corrupt:"));
     let event_id = EventId::parse(format!("event:lab:{}", kind.as_str()))?;
+    // The quiet witness is authorized over every camera's failure domain and observes exactly
+    // the domains whose camera delivered a verified capsule at every tick of the interval. A
+    // domain that went silent is unobserved, so the witness is gapped and cannot certify.
+    let authorized_domain: BTreeSet<String> = cameras
+        .iter()
+        .map(|camera| camera.failure_domain.to_owned())
+        .collect();
+    let interval_ticks: BTreeSet<u64> = (SCENARIO_START..SCENARIO_END).collect();
+    let observed_domain: BTreeSet<String> = delivered
+        .iter()
+        .filter(|(_, ticks)| **ticks == interval_ticks)
+        .map(|(domain, _)| (*domain).to_owned())
+        .collect();
     let (decision, coverage_witness) = if !observations.is_empty() {
         injection.cancel_before(stage::EVALUATE_POLICY, &cx);
         (
             deployment.evaluate_policy(event_id, observations, &cx)?,
             None,
         )
-    } else if gaps.is_empty() && !file_source {
+    } else if gaps.is_empty() && !file_source && !observed_domain.is_empty() {
         let event_id_quiet = event_id;
-        let authorized_domain = BTreeSet::from([
-            "front-power-and-network".to_string(),
-            "side-power-and-network".to_string(),
-        ]);
-        let observed_domain = authorized_domain.clone();
+        let complete = observed_domain == authorized_domain;
+        // Retained with the run's sources and cited by the event. It is anchored where the
+        // evidence was gathered; the copy the situation evaluates is re-anchored after the last
+        // authority commit, and the real situation alone decides certification.
         let witness = CoverageWitness {
             anchor: deployment.current_anchor().clone(),
             authorized_domain: authorized_domain.clone(),
-            observed_domain,
+            observed_domain: observed_domain.clone(),
             excluded_domain: BTreeSet::new(),
-            continuity: CoverageContinuity::Continuous,
-            completeness: Completeness::Complete,
+            continuity: if complete {
+                CoverageContinuity::Continuous
+            } else {
+                CoverageContinuity::Gapped
+            },
+            completeness: if complete {
+                Completeness::Complete
+            } else {
+                Completeness::Partial
+            },
             negative_predicate: "no_unknown_person_present".to_string(),
-            stop_reason: CoverageStopReason::Complete,
+            stop_reason: if complete {
+                CoverageStopReason::Complete
+            } else {
+                CoverageStopReason::SourceGap
+            },
             authorized_generation: deployment.current_anchor().policy_epoch,
             observed_generation: deployment.current_anchor().policy_epoch,
         };
@@ -845,8 +958,9 @@ fn run_scenario_impl(
         staged_digests.push(witness_digest);
 
         let event_id = event_id_quiet;
+        // Only a domain that actually delivered the interval contradicts the candidate.
         let mut evidence = Vec::new();
-        for domain in &authorized_domain {
+        for domain in &observed_domain {
             evidence.push(EventEvidence {
                 digest: witness_digest,
                 class: EvidenceClass::Derived,
@@ -930,12 +1044,19 @@ fn run_scenario_impl(
             None,
         )
     };
-    let support_domains: BTreeSet<&str> = decision
+    // A frame a camera never delivered is a coverage gap wherever it falls. It is recorded after
+    // the witness is built, so the witness's observed domain (not this list) is what keeps a
+    // silenced quiet uncertified in the real situation.
+    for frame in silent {
+        warnings.push(format!("coverage_gap:{frame}"));
+        gaps.push(frame);
+    }
+    let support_domains: BTreeSet<String> = decision
         .event
         .evidence
         .iter()
         .filter(|e| e.relation == EvidenceEdgeRelation::Supports)
-        .map(|e| e.failure_domain.as_str())
+        .map(|e| e.failure_domain.clone())
         .collect();
     let contradicting = decision
         .event
@@ -943,51 +1064,6 @@ fn run_scenario_impl(
         .iter()
         .any(|e| e.relation == EvidenceEdgeRelation::Contradicts);
     let state = decision.event.state;
-    let certified = coverage_witness.is_some();
-    let envelope = if certified {
-        EnvelopeClass::CertifiedQuiet
-    } else if state == EventState::Corroborated {
-        EnvelopeClass::CorroboratedThreat
-    } else if state == EventState::Rejected && gaps.is_empty() {
-        EnvelopeClass::BenignActivity
-    } else {
-        EnvelopeClass::ProtectedResidual
-    };
-    let event_disposition = match envelope {
-        EnvelopeClass::CertifiedQuiet => "quiet",
-        EnvelopeClass::CorroboratedThreat => "corroborated_threat",
-        EnvelopeClass::BenignActivity => "benign",
-        EnvelopeClass::ProtectedResidual => "protected_residual",
-    };
-    let absence_not_certifiable_reason = if certified {
-        None
-    } else if file_source {
-        // A recording without a continuity witness can never certify absence.
-        Some("continuity_not_observable")
-    } else if state == EventState::Corroborated {
-        Some("threat_present")
-    } else if corrupt {
-        Some("source_corrupt")
-    } else if !gaps.is_empty() {
-        Some("coverage_gap")
-    } else if !support_domains.is_empty() {
-        Some("threat_present")
-    } else if contradicting {
-        Some("activity_present")
-    } else {
-        Some("unresolved_evidence")
-    };
-    let knowledge = KnowledgeReport {
-        absence_certified: certified,
-        absence_not_certifiable_reason,
-        corroboration: match support_domains.len() {
-            0 => "not_applicable",
-            1 => "single_source",
-            _ if state == EventState::Corroborated => "corroborated",
-            _ => "not_corroborated",
-        },
-        coverage_gaps: gaps,
-    };
 
     // Publish event revision through the deployment.
     injection.cancel_before(stage::PUBLISH_EVENT, &cx);
@@ -1001,7 +1077,8 @@ fn run_scenario_impl(
     let mut transient_indeterminate = false;
     let mut alert_plan: Option<ReferenceAlertPlan> = None;
     let mut dispatched_operations: Vec<OperationId> = Vec::new();
-    let (effect_state, obligation_state) = if envelope == EnvelopeClass::CorroboratedThreat {
+    let mut pre_reconcile_effect_state: Option<EffectState> = None;
+    let (effect_state, obligation_state) = if state == EventState::Corroborated {
         let channel = "owner-alert".to_owned();
         let t_prepare = TimestampNs(
             (SCENARIO_END as i128)
@@ -1098,6 +1175,11 @@ fn run_scenario_impl(
             warnings.push("effect_indeterminate:alert-operation-1".to_owned());
         }
 
+        // The journaled state the dispatch left, read before reconciliation can resolve it.
+        pre_reconcile_effect_state = deployment
+            .effects()
+            .operation(&operation_id)
+            .map(|operation| operation.state);
         let t_reconcile = TimestampNs(t_prepare.0 + 30_000_000);
         let provider = deployment.alert_provider().clone();
         deployment
@@ -1165,6 +1247,19 @@ fn run_scenario_impl(
         .with_accepted_nightly("nightly-2026-08-31"),
     );
 
+    // `compile_reference_situation` certifies absence only for a witness bound to the anchor it
+    // compiles against, and both the event publication and the slot commit above moved the
+    // anchor. The witness the situation evaluates is therefore the retained witness, unchanged
+    // in every coverage field, re-anchored to the final authority anchor and its policy epoch.
+    // It is not staged: staging it would need one more commit, which would move the anchor
+    // again. Whether it certifies is decided by the real situation alone (below).
+    let final_anchor = deployment.current_anchor().clone();
+    let certification_witness = coverage_witness.map(|retained| CoverageWitness {
+        authorized_generation: final_anchor.policy_epoch,
+        observed_generation: final_anchor.policy_epoch,
+        anchor: final_anchor.clone(),
+        ..retained
+    });
     let situation_req = ReferenceSituationRequest {
         mission_id: MissionId::parse("mission:lab")?,
         session_id: SessionId::parse("session:lab")?,
@@ -1178,7 +1273,7 @@ fn run_scenario_impl(
         event_receipt: &event_receipt,
         alert_plan: alert_plan.as_ref(),
         alert_outcome: None,
-        coverage_witness: coverage_witness.as_ref(),
+        coverage_witness: certification_witness.as_ref(),
         available_capabilities,
         created_at: TimestampNs(
             (SCENARIO_END as i128)
@@ -1210,11 +1305,68 @@ fn run_scenario_impl(
     )?;
     let handoff_digest = handoff.handoff_root;
 
+    // The lab's certification label is read from what the real situation and the sealed
+    // handoff certify; it is never asserted independently of them.
+    let situation_absence = SituationAbsence::read(
+        &situation,
+        &handoff,
+        &decision.event.event_id,
+        certification_witness.as_ref(),
+    );
+    let certified = situation_absence.certified()?;
+    let witness_offered = certification_witness.is_some();
+    let envelope = if certified {
+        EnvelopeClass::CertifiedQuiet
+    } else if state == EventState::Corroborated {
+        EnvelopeClass::CorroboratedThreat
+    } else if state == EventState::Rejected && gaps.is_empty() && !witness_offered {
+        EnvelopeClass::BenignActivity
+    } else {
+        EnvelopeClass::ProtectedResidual
+    };
+    let event_disposition = match envelope {
+        EnvelopeClass::CertifiedQuiet => "quiet",
+        EnvelopeClass::CorroboratedThreat => "corroborated_threat",
+        EnvelopeClass::BenignActivity => "benign",
+        EnvelopeClass::ProtectedResidual => "protected_residual",
+    };
+    let absence_not_certifiable_reason = if certified {
+        None
+    } else if file_source {
+        // A recording without a continuity witness can never certify absence.
+        Some("continuity_not_observable")
+    } else if state == EventState::Corroborated {
+        Some("threat_present")
+    } else if corrupt {
+        Some("source_corrupt")
+    } else if !gaps.is_empty() {
+        Some("coverage_gap")
+    } else if !support_domains.is_empty() {
+        Some("threat_present")
+    } else if witness_offered {
+        // A witness was offered and the real situation refused to certify it.
+        Some("coverage_uncertified")
+    } else if contradicting {
+        Some("activity_present")
+    } else {
+        Some("unresolved_evidence")
+    };
+    let knowledge = KnowledgeReport {
+        absence_certified: certified,
+        absence_not_certifiable_reason,
+        corroboration: match support_domains.len() {
+            0 => "not_applicable",
+            1 => "single_source",
+            _ if state == EventState::Corroborated => "corroborated",
+            _ => "not_corroborated",
+        },
+        coverage_gaps: gaps,
+    };
+
     let provider_effects =
         deployment.alert_provider().message_count() + deployment.alert_provider().failure_count();
     let ledger_sequence = deployment.current_anchor().commit_sequence;
     let ledger_anchor_root = deployment.current_anchor().state_root;
-    let absence_certified = knowledge.absence_certified;
 
     // Verify that the deployment reconciles clean.
     let recon = deployment.reconcile()?;
@@ -1257,7 +1409,7 @@ fn run_scenario_impl(
         publication_root,
         envelope,
         event_disposition,
-        absence_certified,
+        absence_certified: certified,
         transient_indeterminate,
         effect_state,
         obligation_state,
@@ -1270,6 +1422,8 @@ fn run_scenario_impl(
         executor,
         dispatched_operations,
         provider_effects,
+        pre_reconcile_effect_state,
+        situation_absence,
     })
 }
 
@@ -1316,12 +1470,13 @@ const fn confidence_for(class: ObservationClass) -> u16 {
         ObservationClass::Empty => 10_000,
         ObservationClass::Raccoon => 9_200,
         ObservationClass::UnknownPerson => 9_000,
+        ObservationClass::Silent => 0,
     }
 }
 
 const fn semantic_label_for(class: ObservationClass) -> Option<MockSemanticLabel> {
     match class {
-        ObservationClass::Empty => None,
+        ObservationClass::Empty | ObservationClass::Silent => None,
         ObservationClass::Raccoon => Some(MockSemanticLabel::AnimalLike),
         ObservationClass::UnknownPerson => Some(MockSemanticLabel::PersonLike),
     }
@@ -1498,6 +1653,9 @@ fn encode_packet(
         ObservationClass::Empty => 0,
         ObservationClass::Raccoon => 1,
         ObservationClass::UnknownPerson => 2,
+        ObservationClass::Silent => {
+            return Err(ScenarioError::Packet("a silent camera delivers no packet"));
+        }
     });
     bytes.extend_from_slice(&confidence_basis_points.to_be_bytes());
     Ok(bytes)
@@ -1555,11 +1713,12 @@ fn push_json_string(output: &mut String, value: &str) {
 #[cfg(test)]
 mod tests {
     use super::{
-        ControlClass, EnvelopeClass, ObservationClass, ScenarioKind, class_for, make_cx,
-        run_file_activity_with, run_scenario, run_scenario_with, run_sneaky_in, verify_reopen,
+        ControlClass, EnvelopeClass, ObservationClass, ScenarioKind, SituationAbsence, class_for,
+        make_cx, run_file_activity_with, run_scenario, run_scenario_with, run_sneaky_in,
+        verify_reopen,
     };
     use crate::scene::LabScene;
-    use fss_core::{EffectState, ObligationState};
+    use fss_core::{EffectState, KnowledgeState, ObligationState, OperationId};
     use fss_reference::ReferenceDeployment;
     use std::collections::BTreeSet;
 
@@ -1584,6 +1743,17 @@ mod tests {
         assert!(report.absence_certified);
         assert!(report.knowledge.absence_certified);
         assert!(report.effect_state.is_none());
+        // Review r12 defect 1: the certification is the real situation's, not the lab's. The
+        // compiled situation holds a known absence cell, no `absence-uncertified` residual
+        // world, and the sealed handoff names the certifying witness.
+        assert_eq!(
+            report.situation_absence,
+            SituationAbsence {
+                cell: Some(KnowledgeState::Known),
+                uncertified_world: false,
+                handoff_names_witness: true,
+            }
+        );
         let _ = std::fs::remove_dir_all(&root);
         Ok(())
     }
@@ -1924,9 +2094,265 @@ mod tests {
         let root = temp_test_root("lost-ack");
         let report = run_scenario(ScenarioKind::LostAcknowledgement, &root)?;
         assert!(report.transient_indeterminate);
+        // The journal held the effect indeterminate after dispatch; reconciliation, not a
+        // second dispatch, resolved it.
+        assert_eq!(
+            report.pre_reconcile_effect_state,
+            Some(EffectState::Indeterminate)
+        );
         assert_eq!(report.effect_state, Some(EffectState::Verified));
         assert_eq!(report.obligation_state, Some(ObligationState::Verified));
+        // The alert provider was called exactly once: one dispatch of the one operation, and
+        // the provider holds exactly one delivery and no failure.
+        assert_eq!(
+            report.dispatched_operations,
+            [OperationId::parse("op:alert:intrusion:1")?]
+        );
+        assert_eq!(report.provider_effects, 1);
+        assert_eq!(report.warnings, ["effect_indeterminate:alert-operation-1"]);
+        assert!(
+            report
+                .affordances
+                .iter()
+                .any(|affordance| affordance.class == ControlClass::Reconcile)
+        );
         let _ = std::fs::remove_dir_all(&root);
+        Ok(())
+    }
+
+    #[test]
+    fn delivered_alert_is_never_reported_transiently_indeterminate()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let root = temp_test_root("intrusion-dispatch");
+        let report = run_scenario(ScenarioKind::Intrusion, &root)?;
+        assert!(!report.transient_indeterminate);
+        assert_ne!(
+            report.pre_reconcile_effect_state,
+            Some(EffectState::Indeterminate)
+        );
+        assert_eq!(
+            report.dispatched_operations,
+            [OperationId::parse("op:alert:intrusion:1")?]
+        );
+        assert_eq!(report.provider_effects, 1);
+        Ok(())
+    }
+
+    /// Asserts the lab's certification label is exactly what the compiled situation and the
+    /// sealed handoff certify, and that the situation's own facts agree with one another.
+    fn assert_label_is_the_situations(name: &str, report: &super::ScenarioReport) {
+        let situation = report.situation_absence;
+        let situation_certifies = situation.cell == Some(KnowledgeState::Known);
+        assert_eq!(report.absence_certified, situation_certifies, "{name}");
+        assert_eq!(
+            report.knowledge.absence_certified, situation_certifies,
+            "{name}"
+        );
+        assert_eq!(
+            report.envelope == EnvelopeClass::CertifiedQuiet,
+            situation_certifies,
+            "{name}"
+        );
+        assert_eq!(
+            report.knowledge.absence_not_certifiable_reason.is_none(),
+            situation_certifies,
+            "{name}"
+        );
+        assert_eq!(
+            situation.handoff_names_witness, situation_certifies,
+            "{name}"
+        );
+        if situation.cell.is_some() {
+            // A rejected event: the residual world survives exactly when absence is uncertified.
+            assert_eq!(situation.uncertified_world, !situation_certifies, "{name}");
+        }
+        println!(
+            "CAPLOG {{\"bead\":\"fss-2h5zq.11\",\"step\":\"label_vs_situation\",\"case\":\"{name}\",\"lab_absence_certified\":{},\"situation\":\"{situation:?}\"}}",
+            report.absence_certified
+        );
+    }
+
+    #[test]
+    fn every_scenario_label_is_what_the_real_situation_certifies()
+    -> Result<(), Box<dyn std::error::Error>> {
+        for scenario in [
+            ScenarioKind::Quiet,
+            ScenarioKind::Raccoon,
+            ScenarioKind::Intrusion,
+            ScenarioKind::Sneaky,
+            ScenarioKind::LostAcknowledgement,
+            ScenarioKind::CorruptSource,
+            ScenarioKind::FileActivity,
+        ] {
+            let root = temp_test_root(&format!("label-{}", scenario.as_str()));
+            let report = run_scenario(scenario, &root)?;
+            assert_label_is_the_situations(scenario.as_str(), &report);
+            // Only quiet earns certification, and it earns it from the real situation.
+            assert_eq!(
+                report.absence_certified,
+                scenario == ScenarioKind::Quiet,
+                "{}",
+                scenario.as_str()
+            );
+        }
+        // The planted and silenced variants below must agree as well.
+        let silenced = |_: ScenarioKind, sensor: &str, _: u64| {
+            if sensor == "cam-side" {
+                ObservationClass::Silent
+            } else {
+                ObservationClass::Empty
+            }
+        };
+        let root = temp_test_root("label-quiet-silenced");
+        let report = run_scenario_with(ScenarioKind::Quiet, &root, &silenced)?;
+        assert_label_is_the_situations("quiet-silenced", &report);
+        assert!(!report.absence_certified);
+        let root = temp_test_root("label-sneaky-raccoon");
+        let report = run_sneaky_in(&root, &LabScene::REFERENCE, &raccoon_on_the_path)?;
+        assert_label_is_the_situations("sneaky-raccoon", &report);
+        assert!(!report.absence_certified);
+        Ok(())
+    }
+
+    #[test]
+    fn quiet_with_a_silenced_camera_is_a_coverage_gap_not_certified_absence()
+    -> Result<(), Box<dyn std::error::Error>> {
+        use fss_core::{
+            CanonicalDecode as _, Completeness, CoverageContinuity, CoverageWitness, EventId,
+            EventState,
+        };
+
+        // Review r12 defect 2 (mutant B): cam-side delivers nothing for the whole interval, or
+        // for a single tick. The quiet witness observes only the domains that delivered the
+        // interval, so the real situation refuses certification.
+        let whole = |_: ScenarioKind, sensor: &str, _: u64| {
+            if sensor == "cam-side" {
+                ObservationClass::Silent
+            } else {
+                ObservationClass::Empty
+            }
+        };
+        let one_tick = |_: ScenarioKind, sensor: &str, tick: u64| {
+            if sensor == "cam-side" && tick == 2 {
+                ObservationClass::Silent
+            } else {
+                ObservationClass::Empty
+            }
+        };
+        type Script<'a> = &'a dyn Fn(ScenarioKind, &str, u64) -> ObservationClass;
+        let cases: [(&str, Script<'_>, &[&str]); 2] = [
+            (
+                "whole",
+                &whole,
+                &[
+                    "cam-side:0",
+                    "cam-side:1",
+                    "cam-side:2",
+                    "cam-side:3",
+                    "cam-side:4",
+                ],
+            ),
+            ("one-tick", &one_tick, &["cam-side:2"]),
+        ];
+        for (name, script, expected_gaps) in cases {
+            let root = temp_test_root(&format!("quiet-silenced-{name}"));
+            let report = run_scenario_with(ScenarioKind::Quiet, &root, script)?;
+            assert!(!report.absence_certified, "{name}");
+            assert!(!report.knowledge.absence_certified, "{name}");
+            assert_eq!(
+                report.situation_absence,
+                SituationAbsence {
+                    cell: Some(KnowledgeState::Unknown),
+                    uncertified_world: true,
+                    handoff_names_witness: false,
+                },
+                "{name}"
+            );
+            assert_eq!(
+                report.knowledge.absence_not_certifiable_reason,
+                Some("coverage_gap"),
+                "{name}"
+            );
+            assert_eq!(report.envelope, EnvelopeClass::ProtectedResidual, "{name}");
+            assert_eq!(report.knowledge.coverage_gaps, expected_gaps, "{name}");
+            assert!(report.effect_state.is_none(), "{name}");
+
+            // The retained witness is gapped: authorized over both domains, observed over the
+            // one that delivered; only that domain contradicts the candidate.
+            let cx = make_cx(ScenarioKind::Quiet)?;
+            let reopened = ReferenceDeployment::reopen(&root, "site:lab", &cx)?;
+            let (event, _) =
+                reopened.current_event_authority(&EventId::parse("event:lab:quiet")?)?;
+            assert_eq!(event.state, EventState::Rejected, "{name}");
+            let domains: BTreeSet<&str> = event
+                .evidence
+                .iter()
+                .map(|edge| edge.failure_domain.as_str())
+                .collect();
+            assert_eq!(
+                domains,
+                BTreeSet::from(["front-power-and-network"]),
+                "{name}"
+            );
+            let witness_digest = event.evidence.first().ok_or("no evidence")?.digest;
+            let witness = CoverageWitness::from_canonical_bytes(
+                &reopened.publisher().spool().read(witness_digest)?,
+            )?;
+            assert_eq!(
+                witness.observed_domain,
+                BTreeSet::from(["front-power-and-network".to_owned()]),
+                "{name}"
+            );
+            assert_eq!(
+                witness.authorized_domain,
+                BTreeSet::from([
+                    "front-power-and-network".to_owned(),
+                    "side-power-and-network".to_owned()
+                ]),
+                "{name}"
+            );
+            assert_eq!(witness.continuity, CoverageContinuity::Gapped, "{name}");
+            assert_eq!(witness.completeness, Completeness::Partial, "{name}");
+            assert!(!witness.certifies_absence(), "{name}");
+        }
+        Ok(())
+    }
+
+    /// A raccoon on the sneaky path at ticks 2 and 3.
+    fn raccoon_on_the_path(_: ScenarioKind, _: &str, tick: u64) -> ObservationClass {
+        if tick == 2 || tick == 3 {
+            ObservationClass::Raccoon
+        } else {
+            ObservationClass::Empty
+        }
+    }
+
+    #[test]
+    fn a_benign_animal_seen_across_a_coverage_gap_stays_protected()
+    -> Result<(), Box<dyn std::error::Error>> {
+        use fss_core::{EventId, EventState};
+
+        // Review r12 mutant A: the policy rejects the person candidate on cam-front's raccoon
+        // at tick 2, but the path crosses the unobserved side passage at tick 3. Rejection
+        // inside a coverage gap is never benign activity.
+        let root = temp_test_root("sneaky-raccoon");
+        let report = run_sneaky_in(&root, &LabScene::REFERENCE, &raccoon_on_the_path)?;
+        let cx = make_cx(ScenarioKind::Sneaky)?;
+        let reopened = ReferenceDeployment::reopen(&root, "site:lab", &cx)?;
+        let (event, _) = reopened.current_event_authority(&EventId::parse("event:lab:sneaky")?)?;
+        // The guard under test is reached: the real policy rejected the candidate.
+        assert_eq!(event.state, EventState::Rejected);
+        drop(reopened);
+        assert_eq!(report.knowledge.coverage_gaps, ["zone:side-passage:3"]);
+        assert_eq!(report.envelope, EnvelopeClass::ProtectedResidual);
+        assert_ne!(report.envelope, EnvelopeClass::BenignActivity);
+        assert_eq!(report.event_disposition, "protected_residual");
+        assert!(!report.absence_certified);
+        assert_eq!(
+            report.knowledge.absence_not_certifiable_reason,
+            Some("coverage_gap")
+        );
+        assert!(report.effect_state.is_none());
         Ok(())
     }
 
