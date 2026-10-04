@@ -1,12 +1,19 @@
 #![forbid(unsafe_code)]
 //! Public-API loopback regressions for cancellation while a raw-read plan is held.
+//!
+//! Time is explicit: every admission `now_ns` and the authority's independent live check read
+//! one test-owned [`TestClock`], never wall time, so a stalled worker or a slow loopback peer
+//! cannot spend the lease. Deadline refusals are forced by moving that clock. A `Pending` poll
+//! never spins: the client blocks on the peer's progress signal, so injected scheduling delay
+//! cannot exhaust the step budget either. Wall-clock bounds remain only as harness hang guards.
 
 use std::cell::Cell;
 use std::io::{self, Read, Write};
 use std::net::{SocketAddr, TcpListener};
 use std::path::PathBuf;
-use std::sync::atomic::{AtomicU64, Ordering};
-use std::time::{Duration, Instant};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+use std::sync::mpsc;
+use std::time::Duration;
 
 use fss_codec_mjpeg::stream::StreamBasis;
 use fss_geometry::WorkBudget;
@@ -29,7 +36,16 @@ use fss_reference::ingest::http_reconnect_recording::{
 use fss_reference::ingest::http_recording::HttpRecordingAccess;
 
 type Test = Result<(), Box<dyn std::error::Error>>;
-const DEADLINE: u64 = 5_000_000_000;
+// Test-clock lease. Large enough that the native connect timeout (min(limit, lease left)) is a
+// hang guard, not a contract, even if a worker stalls inside the kernel `connect`.
+const DEADLINE: u64 = 60_000_000_000;
+// Test-clock nanoseconds per admission; at most `maximum_steps` ticks can ever elapse.
+const TICK: u64 = 1_000;
+// Harness-only wall bound for a broken fixture; never reached while the client is live.
+const HANG_GUARD: Duration = Duration::from_secs(300);
+const NO_STALL: Duration = Duration::ZERO;
+// Longer than the old 5 s wall-clock lease, which this peer used to exhaust.
+const INJECTED_STALL: Duration = Duration::from_secs(6);
 const RAW: &[u8] = b"HTTP/1.1 200 OK\r\n";
 static NEXT: AtomicU64 = AtomicU64::new(0);
 
@@ -61,9 +77,27 @@ impl Drop for Directory {
     }
 }
 
+/// The single time source for admission and for the authority's independent live check.
+#[derive(Default)]
+struct TestClock(Cell<u64>);
+impl TestClock {
+    fn now(&self) -> u64 {
+        self.0.get()
+    }
+    fn advance(&self, ns: u64) -> u64 {
+        let next = self.0.get().saturating_add(ns);
+        self.0.set(next);
+        next
+    }
+    /// Monotone: forcing expiry can only move the live clock forward.
+    fn set(&self, at: u64) {
+        self.0.set(at.max(self.0.get()));
+    }
+}
+
 struct Authority<'a> {
     peer: SocketAddr,
-    start: &'a Instant,
+    live: &'a TestClock,
     revoked: Cell<bool>,
 }
 impl HttpCameraAuthority for Authority<'_> {
@@ -80,7 +114,7 @@ impl HttpCameraAuthority for Authority<'_> {
         if route.peer() != self.peer || ![1, 2].contains(&route.basis().generation) {
             return Err(HttpCameraDenial::Unauthorized);
         }
-        if now >= deadline || self.start.elapsed().as_nanos() >= u128::from(deadline) {
+        if now >= deadline || self.live.now() >= deadline {
             return Err(HttpCameraDenial::Deadline);
         }
         Ok(())
@@ -103,6 +137,8 @@ fn plan(peer: SocketAddr) -> Result<HttpReconnectRecordingPlan, HttpCameraError>
         let mut limits = HttpCameraLimits::default();
         limits.http.wire_bytes = 65536;
         limits.http.entity_bytes = 65536;
+        // Kernel connect is real wall time: keep it a generous hang guard (validated maximum).
+        limits.connect_timeout_ns = 60_000_000_000;
         slots.push(HttpReconnectRecordingSlot {
             source: HttpReconnectSlot {
                 route: HttpCameraRoute::new(
@@ -141,19 +177,71 @@ fn plan(peer: SocketAddr) -> Result<HttpReconnectRecordingPlan, HttpCameraError>
     })
 }
 
-fn serve(listener: &TcpListener, start: &Instant) -> io::Result<()> {
-    let (mut socket, _) = loop {
-        if start.elapsed() >= Duration::from_nanos(DEADLINE) {
-            return Err(io::ErrorKind::TimedOut.into());
+/// Loopback peer: optionally stalls (injected scheduling delay) before responding, then reports
+/// that its response bytes were written.
+struct Peer<'a> {
+    stall: Duration,
+    written: mpsc::Sender<()>,
+    abandoned: &'a AtomicBool,
+}
+/// Set when the client side ends, so a peer still waiting for a connection stops.
+struct Abandon<'a>(&'a AtomicBool);
+impl Drop for Abandon<'_> {
+    fn drop(&mut self) {
+        self.0.store(true, Ordering::Release);
+    }
+}
+
+/// Client side of a `Pending` poll. Until the peer has written the awaited response, block on
+/// its progress signal: no admission, step or clock tick is spent while it stalls. Afterwards a
+/// bounded backoff covers loopback delivery. Nothing here decides a deadline.
+struct Readiness {
+    written: mpsc::Receiver<()>,
+    responses: usize,
+    backoff: Duration,
+}
+impl Readiness {
+    fn new(written: mpsc::Receiver<()>) -> Self {
+        Self {
+            written,
+            responses: 0,
+            backoff: Duration::from_millis(1),
         }
+    }
+    /// Wait before re-polling connection number `connection` (1-based).
+    fn pending(&mut self, connection: usize) -> Test {
+        if self.responses < connection {
+            while self.responses < connection {
+                self.written
+                    .recv()
+                    .map_err(|_| "loopback peer stopped before responding")?;
+                self.responses += 1;
+            }
+            self.backoff = Duration::from_millis(1);
+        } else {
+            std::thread::sleep(self.backoff);
+            self.backoff = (self.backoff * 2).min(Duration::from_millis(50));
+        }
+        Ok(())
+    }
+}
+
+fn serve(listener: &TcpListener, peer: &Peer<'_>) -> io::Result<()> {
+    let (mut socket, _) = loop {
         match listener.accept() {
             Ok(pair) => break pair,
-            Err(e) if e.kind() == io::ErrorKind::WouldBlock => std::thread::yield_now(),
+            Err(e) if e.kind() == io::ErrorKind::WouldBlock => {
+                if peer.abandoned.load(Ordering::Acquire) {
+                    return Err(io::Error::other("client ended before connecting"));
+                }
+                std::thread::sleep(Duration::from_millis(1));
+            }
             Err(e) => return Err(e),
         }
     };
-    socket.set_read_timeout(Some(Duration::from_secs(2)))?;
-    socket.set_write_timeout(Some(Duration::from_secs(2)))?;
+    socket.set_nonblocking(false)?;
+    socket.set_read_timeout(Some(HANG_GUARD))?;
+    socket.set_write_timeout(Some(HANG_GUARD))?;
     let mut request = Vec::new();
     while !request.ends_with(b"\r\n\r\n") {
         if request.len() == 4096 {
@@ -163,52 +251,88 @@ fn serve(listener: &TcpListener, start: &Instant) -> io::Result<()> {
         socket.read_exact(&mut byte)?;
         request.push(byte[0]);
     }
-    socket.write_all(RAW)
+    std::thread::sleep(peer.stall);
+    socket.write_all(RAW)?;
+    // A client that already failed dropped its receiver; its own error is the report.
+    let _ = peer.written.send(());
+    Ok(())
+}
+
+/// How live authority ends while the raw-read plan is held.
+#[derive(Clone, Copy, PartialEq)]
+enum Cut {
+    /// The grant is revoked at a current admission time.
+    Revoked,
+    /// Admission time itself reaches the lease end; the authority's live clock has not.
+    AdmissionExpired,
+    /// Admission time is current, but the authority's independent live clock reached the lease end.
+    LiveClockExpired,
 }
 
 // Exercise both admission surfaces independently; commit must not rely on another poll having
 // observed revocation first. Source authority and drain-storage authority are intentionally split.
-fn held_read_cut(poll_first: bool, expired: bool, refuse_storage: bool) -> Test {
+fn held_read_cut(poll_first: bool, cut: Cut, refuse_storage: bool, stall: Duration) -> Test {
     let listener = TcpListener::bind(("127.0.0.1", 0))?;
     listener.set_nonblocking(true)?;
     let peer = listener.local_addr()?;
-    let start = Instant::now();
+    let clock = TestClock::default();
+    let abandoned = AtomicBool::new(false);
+    let (written, ready) = mpsc::channel();
+    let mut ready = Readiness::new(ready);
     let directory = Directory::new();
     let mut publisher = directory.open()?;
     std::thread::scope(|scope| -> Test {
-        let server = scope.spawn(|| serve(&listener, &start));
+        let fixture = Peer {
+            stall,
+            written,
+            abandoned: &abandoned,
+        };
+        let server = scope.spawn(move || serve(&listener, &fixture));
+        let _abandon = Abandon(&abandoned);
         let request = plan(peer)?;
         let first = request.slots[0].clone();
         let authority = Authority {
             peer,
-            start: &start,
+            live: &clock,
             revoked: Cell::new(false),
         };
         let mut recording = HttpReconnectRecording::new(request, 0)?;
         let wire = loop {
             let access = HttpRecordingAccess {
-                now_ns: u64::try_from(start.elapsed().as_nanos())?,
+                now_ns: clock.advance(TICK),
                 camera: &authority,
                 storage: &NeverCancel,
             };
-            if let HttpReconnectRecordingStep::WirePrepared(wire) =
-                recording.poll(&publisher, access)?
-            {
-                break wire;
+            match recording.poll(&publisher, access)? {
+                HttpReconnectRecordingStep::WirePrepared(wire) => break wire,
+                HttpReconnectRecordingStep::Pending => ready.pending(1)?,
+                HttpReconnectRecordingStep::Connected(_) | HttpReconnectRecordingStep::Advanced => {
+                }
+                other => {
+                    return Err(format!("unexpected step before the raw read: {other:?}").into());
+                }
             }
-            std::thread::yield_now();
         };
         let before = recording.totals();
         assert!(wire.wire().range[1] > 0);
         assert_eq!(recording.pin().bytes, 0);
         assert_eq!(publisher.visible_roots().count(), 0);
-        authority.revoked.set(!expired);
+        let now_ns = match cut {
+            Cut::Revoked => {
+                authority.revoked.set(true);
+                clock.advance(TICK)
+            }
+            // Forced through the controlled clock, never by waiting out real time.
+            Cut::AdmissionExpired => DEADLINE,
+            Cut::LiveClockExpired => {
+                let admitted = clock.advance(TICK);
+                clock.set(DEADLINE);
+                admitted
+            }
+        };
+        assert!(now_ns < DEADLINE || cut == Cut::AdmissionExpired);
         let access = HttpRecordingAccess {
-            now_ns: if expired {
-                DEADLINE
-            } else {
-                u64::try_from(start.elapsed().as_nanos())?
-            },
+            now_ns,
             camera: &authority,
             storage: &NeverCancel,
         };
@@ -244,10 +368,10 @@ fn held_read_cut(poll_first: bool, expired: bool, refuse_storage: bool) -> Test 
         };
         assert_eq!(
             boundary.source.outcome,
-            HttpReconnectOutcome::SourceFailed(if expired {
-                HttpCameraError::Deadline
-            } else {
-                HttpCameraError::Denied(HttpCameraDenial::Revoked)
+            HttpReconnectOutcome::SourceFailed(match cut {
+                Cut::Revoked => HttpCameraError::Denied(HttpCameraDenial::Revoked),
+                Cut::AdmissionExpired => HttpCameraError::Deadline,
+                Cut::LiveClockExpired => HttpCameraError::Denied(HttpCameraDenial::Deadline),
             })
         );
         assert_eq!(boundary.source.stop, Some(HttpReconnectStop::NotRetryable));
@@ -300,46 +424,81 @@ fn held_read_cut(poll_first: bool, expired: bool, refuse_storage: bool) -> Test 
 
 #[test]
 fn poll_drains_revocation_while_a_wire_plan_is_held() -> Test {
-    held_read_cut(true, false, false)
+    held_read_cut(true, Cut::Revoked, false, NO_STALL)
 }
 #[test]
 fn commit_drains_revocation_without_an_intervening_poll() -> Test {
-    held_read_cut(false, false, false)
+    held_read_cut(false, Cut::Revoked, false, NO_STALL)
 }
 #[test]
 fn poll_drains_expired_network_lease_under_independent_storage_authority() -> Test {
-    held_read_cut(true, true, false)
+    held_read_cut(true, Cut::AdmissionExpired, false, NO_STALL)
 }
 #[test]
 fn commit_drains_expired_network_lease_without_an_intervening_poll() -> Test {
-    held_read_cut(false, true, false)
+    held_read_cut(false, Cut::AdmissionExpired, false, NO_STALL)
 }
 #[test]
 fn refused_drain_storage_keeps_the_same_pin_and_original_read() -> Test {
-    held_read_cut(true, false, true)
+    held_read_cut(true, Cut::Revoked, true, NO_STALL)
 }
-
+// The authority's own live-clock deadline refusal, forced through the controlled clock.
+#[test]
+fn poll_drains_an_authority_live_clock_expiry_at_a_current_admission_time() -> Test {
+    held_read_cut(true, Cut::LiveClockExpired, false, NO_STALL)
+}
+#[test]
+fn commit_drains_an_authority_live_clock_expiry_without_an_intervening_poll() -> Test {
+    held_read_cut(false, Cut::LiveClockExpired, false, NO_STALL)
+}
+// Injected scheduling delay: the peer stalls longer than the former 5 s wall-clock lease. Under
+// wall time these refused with Source(Source(Deadline)) or exhausted the step budget (Limit).
+#[test]
+fn a_peer_stalled_past_the_old_wall_lease_still_drains_revocation() -> Test {
+    held_read_cut(true, Cut::Revoked, false, INJECTED_STALL)
+}
+#[test]
+fn a_peer_stalled_past_the_old_wall_lease_expires_only_by_the_controlled_clock() -> Test {
+    held_read_cut(false, Cut::AdmissionExpired, true, INJECTED_STALL)
+}
 #[test]
 fn a_generation_published_during_backoff_is_rejected_before_tcp() -> Test {
+    generation_published_during_backoff(NO_STALL)
+}
+#[test]
+fn a_generation_published_during_a_stalled_backoff_is_rejected_before_tcp() -> Test {
+    generation_published_during_backoff(INJECTED_STALL)
+}
+
+fn generation_published_during_backoff(stall: Duration) -> Test {
     let listener = TcpListener::bind(("127.0.0.1", 0))?;
     listener.set_nonblocking(true)?;
     let peer = listener.local_addr()?;
-    let start = Instant::now();
+    let clock = TestClock::default();
+    let abandoned = AtomicBool::new(false);
+    let (written, ready) = mpsc::channel();
+    let mut ready = Readiness::new(ready);
     let directory = Directory::new();
     let mut publisher = directory.open()?;
     std::thread::scope(|scope| -> Test {
-        let server = scope.spawn(|| -> io::Result<()> {
+        let fixture = Peer {
+            stall,
+            written,
+            abandoned: &abandoned,
+        };
+        let listener = &listener;
+        let server = scope.spawn(move || -> io::Result<()> {
             // One earlier generation-2 acquisition, then the target generation-1 acquisition.
             // A third connection is forbidden: generation 2 becomes occupied during backoff.
-            serve(&listener, &start)?;
-            serve(&listener, &start)
+            serve(listener, &fixture)?;
+            serve(listener, &fixture)
         });
+        let _abandon = Abandon(&abandoned);
         let authority = Authority {
             peer,
-            start: &start,
+            live: &clock,
             revoked: Cell::new(false),
         };
-        let mut clock = 0;
         let access = |now_ns| HttpRecordingAccess {
             now_ns,
             camera: &authority,
@@ -349,39 +508,36 @@ fn a_generation_published_during_backoff_is_rejected_before_tcp() -> Test {
         previous.slots.remove(0);
         let mut previous = HttpReconnectRecording::new(previous, 0)?;
         let old_wire = loop {
-            clock += 1;
-            if let HttpReconnectRecordingStep::WirePrepared(wire) =
-                previous.poll(&publisher, access(clock))?
-            {
-                break wire;
+            match previous.poll(&publisher, access(clock.advance(1)))? {
+                HttpReconnectRecordingStep::WirePrepared(wire) => break wire,
+                HttpReconnectRecordingStep::Pending => ready.pending(1)?,
+                _ => {}
             }
-            std::thread::yield_now();
         };
         // Hold the actual opaque read without publishing it yet. The namespace is still empty.
         let mut request = plan(peer)?;
         request.policy.initial_backoff_ns = 1_000_000_000;
         request.policy.maximum_backoff_ns = 1_000_000_000;
-        let mut target = HttpReconnectRecording::new(request, clock)?;
+        let mut target = HttpReconnectRecording::new(request, clock.now())?;
         let boundary = loop {
-            clock += 1;
-            match target.poll(&publisher, access(clock))? {
+            let now = clock.advance(1);
+            match target.poll(&publisher, access(now))? {
                 HttpReconnectRecordingStep::WirePrepared(wire) => {
-                    target.commit_wire(wire, &mut publisher, access(clock))?;
+                    target.commit_wire(wire, &mut publisher, access(now))?;
                 }
                 HttpReconnectRecordingStep::BoundaryReady(b) => break b,
-                _ => std::thread::yield_now(),
+                HttpReconnectRecordingStep::Pending => ready.pending(2)?,
+                _ => {}
             }
         };
         let retry_at = boundary
             .source
             .retry_at_ns
             .ok_or("expected a bounded retry")?;
-        clock += 1;
-        drop(target.release_boundary(boundary, &publisher, access(clock))?);
-        clock += 1;
+        drop(target.release_boundary(boundary, &publisher, access(clock.advance(1)))?);
         let used = target.source_work_used();
         assert_eq!(
-            target.poll(&publisher, access(clock))?,
+            target.poll(&publisher, access(clock.advance(1)))?,
             HttpReconnectRecordingStep::Waiting {
                 not_before_ns: retry_at
             }
@@ -396,11 +552,11 @@ fn a_generation_published_during_backoff_is_rejected_before_tcp() -> Test {
             used + 2,
             "waiting must not rescan the store"
         );
-        clock += 1;
-        let old = previous.commit_wire(old_wire, &mut publisher, access(clock))?;
+        let old = previous.commit_wire(old_wire, &mut publisher, access(clock.advance(1)))?;
         assert_eq!(old.publication.wire.basis.generation, 2);
+        clock.set(retry_at);
         assert!(
-            target.poll(&publisher, access(retry_at)).is_err(),
+            target.poll(&publisher, access(clock.now())).is_err(),
             "the namespace changed after waiting began; it must be reverified before connection"
         );
         assert_eq!(target.totals().connect_attempts, 1);
