@@ -214,3 +214,31 @@ fn missing_deployment_and_incomplete_arguments_do_not_initialize_storage() -> Te
     assert!(!root.exists());
     Ok(())
 }
+
+#[test]
+fn import_and_inspect_show_the_retained_acquisition_lifecycle() -> TestResult {
+    let temp = OwnedTestDir::new("acquisition")?;
+    let root = temp.0.join("deployment");
+    let source = temp.0.join("camera.mjpeg");
+    fs::write(&source, [JPEG, JPEG].concat())?;
+    let imported = import(&root, &source, None)?;
+    success(&imported);
+    let identity = field(&imported, "import_identity")?;
+    // A separate process reopens the ledger and replays the retained history through the core.
+    let inspected = command(&root, "inspect")
+        .args(["--import-id", &identity])
+        .output()?;
+    success(&inspected);
+    for output in [&imported, &inspected] {
+        assert_eq!(
+            field(output, "acquisition_history")?,
+            "requested,authenticated,adapter_accepted,degraded,cancelled"
+        );
+        assert_eq!(field(output, "acquisition_terminal")?, "cancelled");
+        assert_eq!(field(output, "acquisition_ending")?, "end_of_file_source");
+        let refusal = field(output, "acquisition_absence_refusal")?;
+        assert!(refusal.contains("cancelled"), "{refusal}");
+        assert_eq!(field(output, "absence_certifiable")?, "false");
+    }
+    Ok(())
+}

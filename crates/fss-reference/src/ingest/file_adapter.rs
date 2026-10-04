@@ -19,6 +19,12 @@
 //!   the host system wall clock.
 //! - File import never emits [`ContinuityWitness`] or [`CoverageWitness`] certifying absence;
 //!   an absence query over an imported window is not certifiable.
+//!
+//! # Acquisition lifecycle
+//!
+//! Each import drives one core `AcquisitionSession` ([`super::file_session`]); a completed import
+//! retains its transition history in its completing ledger batch, and
+//! [`FileIngestReceipt::absence_certifiable`] is the core absence gate over that session.
 
 use std::fs;
 use std::path::PathBuf;
@@ -27,9 +33,10 @@ use fss_core::identity::{
     AdapterCapabilities, AdapterIdentity, AdapterKind, CredentialMethod, IsolationMode,
 };
 use fss_core::{
-    AdapterGeneration, AdapterId, BatchId, CanonicalEncode, CanonicalEncoder, CapsuleId,
-    CaptureInterval, ClockBasis, ContentDigest, ContractError, EvidenceDelta, LedgerAnchor,
-    ObjectId, Plane, SensorCapsule, SensorId, SensorSourceBytesSpec, StreamId, TimestampNs,
+    AcquisitionError, AdapterGeneration, AdapterId, BatchId, CanonicalEncode, CanonicalEncoder,
+    CapsuleId, CaptureInterval, ClockBasis, ContentDigest, ContractError, EvidenceDelta,
+    LedgerAnchor, ObjectId, Plane, SensorCapsule, SensorId, SensorSourceBytesSpec, StreamId,
+    TimestampNs,
 };
 use fss_object::{ObjectError, ObjectManifest, SpoolError};
 use fss_publication::{LocalPublicationError, SlotName};
@@ -37,6 +44,9 @@ use fss_publication::{LocalPublicationError, SlotName};
 use crate::adapter_replay::ReplayCx;
 use crate::error::ReferenceError;
 use crate::ingest::annexb::{AnnexBError, AnnexBLimits, SourceSpan, split_annexb};
+use crate::ingest::file_session::{
+    AcquisitionRetention, FileAcquisitionHistory, FileSessionDriver, FileSourceFacts,
+};
 use crate::ingest::hevc_annexb::split_hevc_annexb;
 use crate::ingest::mjpeg::{JpegSplitError, MjpegLimits, split_jpeg_stream};
 use crate::reference_deployment::ReferenceDeployment;
@@ -475,8 +485,22 @@ pub struct FileIngestReceipt {
     pub chunk_bytes: u64,
     /// Capture time truth classification label.
     pub capture_time_label: &'static str,
-    /// Always `false`: file import emits no coverage witness.
+    /// The core absence gate over this import's acquisition session: always `false`, because a
+    /// file session never reaches `ContinuityVerified` (and file import emits no coverage witness).
     pub absence_certifiable: bool,
+    /// The acquisition lifecycle retained in the completing batch (fss-2h5zq.25).
+    pub acquisition: AcquisitionRetention,
+}
+
+/// A failed import and the acquisition history the attempt reached.
+#[derive(Debug)]
+pub struct FileIngestFailure {
+    /// The import error.
+    pub error: FileIngestError,
+    /// The concluded (never retained) acquisition history; `None` when the request was refused
+    /// at admission, before an acquisition session was requested (stat, read, format, identity,
+    /// deletion and receive-time refusals).
+    pub acquisition: Option<FileAcquisitionHistory>,
 }
 
 /// Typed deterministic error enum for file ingestion.
@@ -598,6 +622,8 @@ pub enum FileIngestError {
         /// Pipeline stage where cancellation was requested.
         stage: &'static str,
     },
+    /// The core acquisition lifecycle refused a transition or witness.
+    Acquisition(Box<AcquisitionError>),
     /// Low-level filesystem I/O error.
     Io(std::io::Error),
     /// Reference deployment or publication error.
@@ -726,6 +752,7 @@ impl std::fmt::Display for FileIngestError {
             Self::CancellationRequested { stage } => {
                 write!(f, "cancellation requested at stage {}", stage)
             }
+            Self::Acquisition(e) => write!(f, "acquisition lifecycle refusal: {}", e),
             Self::Io(e) => write!(f, "I/O error: {}", e),
             Self::Reference(e) => write!(f, "reference error: {}", e),
             Self::Contract(e) => write!(f, "contract error: {}", e),
@@ -757,6 +784,12 @@ impl FileIngestError {
 impl From<std::io::Error> for FileIngestError {
     fn from(e: std::io::Error) -> Self {
         Self::Io(e)
+    }
+}
+
+impl From<AcquisitionError> for FileIngestError {
+    fn from(e: AcquisitionError) -> Self {
+        Self::Acquisition(Box::new(e))
     }
 }
 
@@ -983,6 +1016,22 @@ struct ScannedSegments {
     segment_spans: Vec<SegmentSpan>,
     omission_spans: Vec<FileOmissionSpan>,
     capsules: Vec<SensorCapsule>,
+    truncated_frames: usize,
+}
+
+impl ScannedSegments {
+    fn source_facts(&self) -> FileSourceFacts {
+        FileSourceFacts {
+            segments: self.segment_spans.len(),
+            omitted_spans: self
+                .omission_spans
+                .iter()
+                .filter(|o| o.reason != "annexb_padding")
+                .count(),
+            truncated_frames: self.truncated_frames,
+            gapped_segments: self.segment_spans.iter().filter(|s| s.gap_before).count(),
+        }
+    }
 }
 
 /// Pure Rust file ingest adapter implementing `ADP-FILE-001`.
@@ -994,6 +1043,29 @@ impl FileIngestAdapter {
         request: FileIngestRequest,
         cx: &ReplayCx,
         deployment: &mut ReferenceDeployment,
+    ) -> Result<FileIngestReceipt, FileIngestError> {
+        Self::ingest_with_session(request, cx, deployment).map_err(|failure| failure.error)
+    }
+
+    /// Ingests a media file and, on failure, returns the acquisition history the attempt reached,
+    /// concluded through the core session (`Failed`, `Cancelled` or `Indeterminate`).
+    pub fn ingest_with_session(
+        request: FileIngestRequest,
+        cx: &ReplayCx,
+        deployment: &mut ReferenceDeployment,
+    ) -> Result<FileIngestReceipt, Box<FileIngestFailure>> {
+        let mut driver = None;
+        Self::ingest_driven(request, cx, deployment, &mut driver).map_err(|error| {
+            let acquisition = driver.take().map(|d| d.conclude_error(&error));
+            Box::new(FileIngestFailure { error, acquisition })
+        })
+    }
+
+    fn ingest_driven(
+        request: FileIngestRequest,
+        cx: &ReplayCx,
+        deployment: &mut ReferenceDeployment,
+        driver: &mut Option<FileSessionDriver>,
     ) -> Result<FileIngestReceipt, FileIngestError> {
         // Step 1: Check cancellation & stat file
         if cx.is_cancelled() {
@@ -1132,6 +1204,12 @@ impl FileIngestAdapter {
         let receive_time = request
             .receive_time
             .ok_or(FileIngestError::MissingReceiveTime {})?;
+        // Acquisition lifecycle: Requested -> Authenticated (CredentialMethod::None).
+        let session = driver.insert(FileSessionDriver::open(
+            import_identity,
+            &import_identity_hex,
+            receive_time,
+        )?);
         let capture_time_label = if request.capture_hint.is_some() {
             "operator_assumption"
         } else {
@@ -1159,6 +1237,8 @@ impl FileIngestAdapter {
                 });
             }
         }
+        // The request is admissible: AdapterAccepted.
+        session.accept()?;
 
         // Step 6: Stream splitting into segments & SensorCapsules
         cx.reach_stage(STAGE_SPLIT);
@@ -1175,6 +1255,8 @@ impl FileIngestAdapter {
             receive_time,
             cx,
         )?;
+        // No observable continuity and no decode: Degraded, invalidating absence.
+        session.degrade(scanned.source_facts())?;
 
         if scanned.capsules.len() > request.limits.max_segments {
             return Err(FileIngestError::SpoolCapacityExceeded {
@@ -1244,6 +1326,9 @@ impl FileIngestAdapter {
                 }
             })?;
             let anchor = deployment.current_anchor().clone();
+            // This attempt appends nothing; the receipt carries the retained history.
+            *driver = None;
+            let acquisition = AcquisitionRetention::open(deployment, import_identity)?;
             let batch_ids = vec![
                 BatchId::parse(format!("batch:file-import:{import_identity_hex}:c0"))?,
                 manifest_batch_id,
@@ -1266,8 +1351,23 @@ impl FileIngestAdapter {
                 unique_chunk_count,
                 chunk_bytes: request.limits.chunk_bytes,
                 capture_time_label,
-                absence_certifiable: false,
+                absence_certifiable: acquisition
+                    .history()
+                    .is_some_and(|h| h.absence_claim().is_ok()),
+                acquisition,
             });
+        }
+
+        // A resumed import whose capsule batch an earlier attempt committed is already partially
+        // published: a failure from here on leaves completion indeterminate, never "failed".
+        let capsule_batch_name = format!("batch:file-import:{import_identity_hex}:c0");
+        let capsule_batch_committed = deployment
+            .ledger()
+            .batches()
+            .iter()
+            .any(|b| b.batch_id.as_str() == capsule_batch_name);
+        if capsule_batch_committed && let Some(session) = driver.as_mut() {
+            session.mark_capsules_committed();
         }
 
         // Step 10: Exact capacity check after hashing and BEFORE the first stage
@@ -1298,14 +1398,26 @@ impl FileIngestAdapter {
         }
         candidate_objects.push((manifest_digest, &manifest_bytes));
 
+        // The end-of-file closing is proposed now so its retained records count against capacity;
+        // they are ledger objects only, never children of the import slot root.
+        let closing = driver
+            .as_ref()
+            .ok_or_else(|| FileIngestError::CorruptSegment {
+                detail: "acquisition session missing".to_string(),
+            })?
+            .propose_end_of_file()?;
+
         // Deduplicate candidate objects by digest
         let mut seen_digests = std::collections::BTreeSet::new();
         let mut new_bytes: u64 = 0;
         let mut new_objects: usize = 0;
 
-        for (digest, slice) in &candidate_objects {
-            if seen_digests.insert(*digest)
-                && deployment.publisher().spool().state(*digest).is_none()
+        for (digest, slice) in candidate_objects
+            .iter()
+            .copied()
+            .chain(closing.object_bytes())
+        {
+            if seen_digests.insert(digest) && deployment.publisher().spool().state(digest).is_none()
             {
                 new_bytes = new_bytes.saturating_add(slice.len() as u64);
                 new_objects = new_objects.saturating_add(1);
@@ -1353,9 +1465,18 @@ impl FileIngestAdapter {
         // Stage FileImportManifest
         deployment.publisher_mut().stage_object(&manifest_bytes)?;
 
+        // Stage the retained acquisition records and witnesses
+        for (_, bytes) in closing.object_bytes() {
+            deployment.stage_payload(bytes)?;
+        }
+
         // Verify staged objects
-        for (digest, _) in &candidate_objects {
-            deployment.publisher_mut().verify_object(*digest)?;
+        for (digest, _) in candidate_objects
+            .iter()
+            .copied()
+            .chain(closing.object_bytes())
+        {
+            deployment.publisher_mut().verify_object(digest)?;
         }
 
         // Step 12: Construct Import Slot Manifest (holds all children for reachability)
@@ -1448,6 +1569,9 @@ impl FileIngestAdapter {
             cx,
         )?;
         committed_batches.push(capsule_batch_id);
+        if let Some(session) = driver.as_mut() {
+            session.mark_capsules_committed();
+        }
 
         // Step 14: Publish root to slot fi-<id>
         cx.reach_stage(STAGE_PUBLISH_ROOT);
@@ -1476,7 +1600,7 @@ impl FileIngestAdapter {
 
         let final_manifest_object_id =
             ObjectId::parse(format!("object:file-import-manifest:{import_identity_hex}"))?;
-        let final_deltas = vec![
+        let mut final_deltas = vec![
             EvidenceDelta {
                 delta_id: format!("delta:file-import:{import_identity_hex}:complete"),
                 family: "file_import".to_string(),
@@ -1502,11 +1626,23 @@ impl FileIngestAdapter {
                 operation_id: None,
             },
         ];
-        let final_children = vec![manifest_digest, import_root];
+        let mut final_children = vec![manifest_digest, import_root];
+        // The acquisition history (ending end_of_file_source) completes with the import.
+        let (acquisition_deltas, acquisition_children) =
+            closing.deltas(&import_identity_hex, overall_validity)?;
+        final_deltas.extend(acquisition_deltas);
+        final_children.extend(acquisition_children);
 
         let final_anchor =
             deployment.append_batch(manifest_batch_id.clone(), final_deltas, final_children, cx)?;
         committed_batches.push(manifest_batch_id);
+        let history = driver
+            .take()
+            .ok_or_else(|| FileIngestError::CorruptSegment {
+                detail: "acquisition session missing".to_string(),
+            })?
+            .commit_end_of_file(closing);
+        let absence_certifiable = history.absence_claim().is_ok();
 
         let outcome = if existing_slot {
             FileIngestOutcome::Resumed
@@ -1532,7 +1668,8 @@ impl FileIngestAdapter {
             unique_chunk_count,
             chunk_bytes: request.limits.chunk_bytes,
             capture_time_label,
-            absence_certifiable: false,
+            absence_certifiable,
+            acquisition: AcquisitionRetention::Recorded(Box::new(history)),
         })
     }
 
@@ -1548,6 +1685,7 @@ impl FileIngestAdapter {
         let mut segment_spans = Vec::new();
         let mut omission_spans = Vec::new();
         let mut capsules = Vec::new();
+        let mut truncated_frames = 0_usize;
 
         match format {
             DetectedFileFormat::AnnexB => {
@@ -1594,6 +1732,7 @@ impl FileIngestAdapter {
                     // Truncated frames without EOI are omitted from valid decoded capsules
                     if frame.is_truncated {
                         prev_was_truncated = true;
+                        truncated_frames += 1;
                         continue;
                     }
                     let frame_slice =
@@ -1656,6 +1795,7 @@ impl FileIngestAdapter {
             segment_spans,
             omission_spans,
             capsules,
+            truncated_frames,
         })
     }
 
@@ -1733,6 +1873,7 @@ impl FileIngestAdapter {
             segment_spans,
             omission_spans,
             capsules,
+            truncated_frames: 0,
         })
     }
 
