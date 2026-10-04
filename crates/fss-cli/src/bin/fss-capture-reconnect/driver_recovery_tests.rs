@@ -8,10 +8,11 @@ use fss_reference::ingest::http_archive::recovery::HttpWireRecoveryState;
 use fss_core::ContentDigest;
 use std::ffi::OsString;
 use std::fs;
-use std::io::Read;
-use std::net::{TcpListener, TcpStream};
+use std::net::TcpListener;
 use std::path::PathBuf;
-use std::thread;
+
+// The loopback peer and the owner's controlled clock are shared with the driver tests.
+use super::tests::{NO_STALL, joined, serve};
 
 type TestResult = Result<(), Box<dyn std::error::Error>>;
 const JPEG: &[u8] = include_bytes!("../../../../fss-codec-mjpeg/tests/fixtures/gray.jpg");
@@ -68,8 +69,11 @@ fn options(
         "yes",
         "--retain-originals",
         "yes",
+        // Test-clock lease; the real-time kernel connect bound is only a hang guard.
         "--timeout-ms",
-        "5000",
+        "60000",
+        "--connect-timeout-ms",
+        "60000",
         "--initial-backoff-ms",
         "1",
         "--maximum-backoff-ms",
@@ -95,54 +99,6 @@ fn response() -> Vec<u8> {
     let mut result = format!("HTTP/1.1 200 OK\r\nContent-Type: multipart/x-mixed-replace; boundary=camera\r\nContent-Length: {}\r\n\r\n", body.len()).into_bytes();
     result.extend(body);
     result
-}
-fn read_request(socket: &mut TcpStream) -> io::Result<()> {
-    socket.set_read_timeout(Some(Duration::from_secs(3)))?;
-    let mut request = Vec::new();
-    while !request.ends_with(b"\r\n\r\n") {
-        if request.len() >= 4096 {
-            return Err(io::Error::other("request bound"));
-        }
-        let mut byte = [0];
-        if socket.read(&mut byte)? == 0 {
-            return Err(io::ErrorKind::UnexpectedEof.into());
-        }
-        request.push(byte[0]);
-    }
-    if !request.starts_with(b"GET /stream HTTP/1.1\r\n") {
-        return Err(io::Error::other("wrong request"));
-    }
-    Ok(())
-}
-fn serve(listener: TcpListener, responses: Vec<Vec<u8>>) -> thread::JoinHandle<io::Result<usize>> {
-    thread::spawn(move || {
-        listener.set_nonblocking(true)?;
-        let deadline = Instant::now() + Duration::from_secs(6);
-        let mut served = 0;
-        for response in responses {
-            let mut socket = loop {
-                match listener.accept() {
-                    Ok((socket, _)) => break socket,
-                    Err(e)
-                        if e.kind() == io::ErrorKind::WouldBlock && Instant::now() < deadline =>
-                    {
-                        thread::sleep(Duration::from_millis(1))
-                    }
-                    Err(e) => return Err(e),
-                }
-            };
-            read_request(&mut socket)?;
-            socket.set_write_timeout(Some(Duration::from_secs(3)))?;
-            socket.write_all(&response)?;
-            served += 1;
-        }
-        Ok(served)
-    })
-}
-fn joined(handle: thread::JoinHandle<io::Result<usize>>) -> Result<usize, io::Error> {
-    handle
-        .join()
-        .map_err(|_| io::Error::other("fixture thread panicked"))?
 }
 
 fn keys(text: &str) -> Result<Vec<HttpWireRecoveryKey>, Box<dyn std::error::Error>> {
@@ -183,9 +139,9 @@ fn opt_in_keys_round_trip_across_real_connections_and_default_reports_have_none(
         )?;
         options.recoverable = enabled;
         options.approve = Some(options.approval());
-        let server = serve(listener, vec![response(), response()]);
+        let (server, clock) = serve(listener, vec![response(), response()], NO_STALL);
         let mut out = Vec::new();
-        let result = capture(&options, &mut out);
+        let result = capture_with(&options, &mut out, || &clock);
         assert_eq!(joined(server)?, 2);
         assert_eq!(result, Ok(true));
         let text = String::from_utf8(out)?;
@@ -272,6 +228,7 @@ fn every_publication_cut_recovers_from_the_real_prepared_jsonl_without_a_camera(
         })?;
         authority.validate()?;
         let cx = ReplayCx::from_context_authority(&authority, options.root.clone())?;
+        let (server, clock) = serve(listener, vec![response()], NO_STALL);
         let owner = Owner {
             cx: &cx,
             authority: &authority,
@@ -281,13 +238,12 @@ fn every_publication_cut_recovers_from_the_real_prepared_jsonl_without_a_camera(
                 .into_iter()
                 .map(|s| s.source.route)
                 .collect(),
-            start: Instant::now(),
+            clock: &clock,
             deadline: options.timeout_ns,
         };
         let mut p = LocalRootPublisher::open(&options.root, storage())?;
         p.inject_crash_at(cut);
         let mut recording = options.recording()?;
-        let server = serve(listener, vec![response()]);
         let mut saved = Vec::new();
         let result = drive(
             &options,
