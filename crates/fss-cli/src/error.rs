@@ -29,6 +29,20 @@ pub const ERR_CLI_RUNTIME_FAILURE: &str = "ERR-CLI-RUNTIME-FAILURE-001";
 pub const ERR_DOCTOR_ATTENTION_REQUIRED: &str = "ERR-DOCTOR-ATTENTION-REQUIRED-001";
 /// Stable error identity when target is not a recognized deployment.
 pub const ERR_DOCTOR_NOT_A_DEPLOYMENT: &str = "ERR-DOCTOR-NOT-A-DEPLOYMENT-001";
+/// `fss-lab recover`: another holder has `<root>/objects/LOCK`; nothing was changed
+/// (`recover_root_locked`).
+pub const ERR_LAB_RECOVER_ROOT_LOCKED: &str = "ERR-LAB-RECOVER-ROOT-LOCKED-001";
+/// `fss-lab recover`: every requested action found nothing to recover (`recover_nothing_to_do`).
+pub const ERR_LAB_RECOVER_NOTHING_TO_DO: &str = "ERR-LAB-RECOVER-NOTHING-TO-DO-001";
+/// `fss-lab recover`: the journal's current sealed repair plan has a different digest than the
+/// one given to apply; nothing was applied (`recover_plan_mismatch`).
+pub const ERR_LAB_RECOVER_PLAN_MISMATCH: &str = "ERR-LAB-RECOVER-PLAN-MISMATCH-001";
+/// `fss-lab recover`: the foreign range holds a structurally valid record, so a foreign-byte
+/// repair would quarantine committed history; refused (`recover_corrupt_history`).
+pub const ERR_LAB_RECOVER_CORRUPT_HISTORY: &str = "ERR-LAB-RECOVER-CORRUPT-HISTORY-001";
+/// `fss-lab recover`: the requested action has no supporting API in the owning crate; refused
+/// rather than approximated (`recover_action_unsupported`).
+pub const ERR_LAB_RECOVER_ACTION_UNSUPPORTED: &str = "ERR-LAB-RECOVER-ACTION-UNSUPPORTED-001";
 
 /// Stable exit identity representing an exit code and a registered identifier.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -116,6 +130,13 @@ impl ExitIdentity {
     pub const AGENT_REFUSED: Self = Self {
         code: 5,
         identifier: "EXIT-AGENT-REFUSED-005",
+    };
+
+    /// `fss-lab recover` refused an action; the diagnostic carries the `ERR-LAB-RECOVER-*`
+    /// identity that says why.
+    pub const LAB_RECOVER_REFUSED: Self = Self {
+        code: 6,
+        identifier: "EXIT-LAB-RECOVER-REFUSED-006",
     };
 }
 

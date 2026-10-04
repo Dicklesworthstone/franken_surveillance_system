@@ -271,7 +271,7 @@ fn incomplete_journal_tail_surfaces_typed_error_and_open_for_recovery_truncates(
 
     // Reopen must reject incomplete tail with next_affordance naming recover.
     let expected_affordance = format!(
-        "fss-lab recover --root {} --truncate-ledger-tail",
+        "fss-lab recover --root {} --truncate-incomplete-tail ledger",
         dir.display()
     );
     let err = match ReferenceDeployment::open(&dir, "site:tail:test", &cx) {

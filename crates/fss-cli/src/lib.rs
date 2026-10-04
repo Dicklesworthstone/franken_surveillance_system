@@ -41,7 +41,9 @@ pub use error::{
     CliError, ERR_CLI_DUPLICATE_OPTION, ERR_CLI_INVALID_UNICODE, ERR_CLI_MALFORMED_VALUE,
     ERR_CLI_MISSING_VALUE, ERR_CLI_RUNTIME_FAILURE, ERR_CLI_TRAILING_ARGUMENT,
     ERR_CLI_UNEXPECTED_POSITIONAL, ERR_CLI_UNKNOWN_COMMAND, ERR_CLI_UNKNOWN_OPTION,
-    ERR_DOCTOR_ATTENTION_REQUIRED, ERR_DOCTOR_NOT_A_DEPLOYMENT, ExitIdentity,
+    ERR_DOCTOR_ATTENTION_REQUIRED, ERR_DOCTOR_NOT_A_DEPLOYMENT, ERR_LAB_RECOVER_ACTION_UNSUPPORTED,
+    ERR_LAB_RECOVER_CORRUPT_HISTORY, ERR_LAB_RECOVER_NOTHING_TO_DO, ERR_LAB_RECOVER_PLAN_MISMATCH,
+    ERR_LAB_RECOVER_ROOT_LOCKED, ExitIdentity,
 };
 pub use follow_cmd::{
     ERR_AGENT_FOLLOW_ANCHOR_AHEAD, ERR_AGENT_FOLLOW_ANCHOR_FOREIGN,
@@ -56,8 +58,8 @@ pub use hydration_cmd::{
     parse_hydration_args, parse_hydration_tokens,
 };
 pub use lab_cmd::{
-    LabAction, VALID_SCENARIOS as VALID_LAB_SCENARIOS, help_text as lab_help_text, parse_lab_args,
-    parse_lab_tokens,
+    LabAction, RecoverJournal, RecoverRequest, VALID_SCENARIOS as VALID_LAB_SCENARIOS,
+    help_text as lab_help_text, lab_recover_diagnostic, parse_lab_args, parse_lab_tokens,
 };
 pub use negative_evidence_cmd::{
     NEGATIVE_EVIDENCE_REPORT_SCHEMA, NegativeEvidenceAction, execute_negative_evidence,

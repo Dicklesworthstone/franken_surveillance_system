@@ -6,8 +6,10 @@
 
 mod crash_matrix;
 mod file_activity;
+mod recover;
 mod scenario;
 mod scene;
+mod sim_provider;
 
 use std::env;
 use std::fs;
@@ -16,7 +18,10 @@ use std::process::ExitCode;
 
 #[cfg(test)]
 use fss_cli::{ArgToken, parse_lab_tokens};
-use fss_cli::{LabAction, emit_diagnostic, lab_help_text, parse_lab_args};
+use fss_cli::{
+    LabAction, RecoverRequest, emit_diagnostic, lab_help_text, lab_recover_diagnostic,
+    parse_lab_args,
+};
 use scenario::{ScenarioKind, run_scenario};
 
 const ALL_SCENARIOS: [ScenarioKind; 6] = [
@@ -30,6 +35,11 @@ const ALL_SCENARIOS: [ScenarioKind; 6] = [
 
 fn main() -> ExitCode {
     match parse_lab_args(env::args_os().skip(1)) {
+        Ok(LabAction::Recover {
+            root,
+            request,
+            json,
+        }) => recover_command(&root, &request, json),
         Ok(action) => match run_action(action) {
             Ok(output) => {
                 println!("{output}");
@@ -82,6 +92,56 @@ fn run_action(action: LabAction) -> Result<String, String> {
             check_root_empty(&root)?;
             crash_matrix_command(&scenario, json, &root)
         }
+        LabAction::Recover {
+            root,
+            request,
+            json,
+        } => {
+            let report = recover::run(&root, &request);
+            let rendered = render_recover(&report, json);
+            match report.outcome() {
+                recover::RecoverOutcome::Refused(refusal) => Err(format!(
+                    "{}: {}: {rendered}",
+                    refusal.error_id(),
+                    refusal.code()
+                )),
+                recover::RecoverOutcome::Failed(reason) => Err(format!("recover failed: {reason}")),
+                _ => Ok(rendered),
+            }
+        }
+    }
+}
+
+fn render_recover(report: &recover::RecoverReport, json: bool) -> String {
+    if json {
+        report.render_json()
+    } else {
+        report.render_text()
+    }
+}
+
+/// `fss-lab recover`: the report always goes to stdout. A typed refusal exits 6
+/// (`EXIT-LAB-RECOVER-REFUSED-006`) with an `fss.cli_diagnostic.v1` line naming the
+/// `ERR-LAB-RECOVER-*` identity on stderr; a failure without a registered refusal exits 1.
+fn recover_command(root: &Path, request: &RecoverRequest, json: bool) -> ExitCode {
+    let report = recover::run(root, request);
+    println!("{}", render_recover(&report, json));
+    match report.outcome() {
+        recover::RecoverOutcome::Refused(refusal) => {
+            eprintln!(
+                "fss-lab: error[{}]: {}: recover refused on {}",
+                refusal.error_id(),
+                refusal.code(),
+                root.display()
+            );
+            eprintln!("{}", lab_recover_diagnostic(refusal.error_id(), root));
+            ExitCode::from(fss_cli::ExitIdentity::LAB_RECOVER_REFUSED.code)
+        }
+        recover::RecoverOutcome::Failed(reason) => {
+            eprintln!("fss-lab: recover failed: {reason}");
+            ExitCode::from(1)
+        }
+        _ => ExitCode::SUCCESS,
     }
 }
 

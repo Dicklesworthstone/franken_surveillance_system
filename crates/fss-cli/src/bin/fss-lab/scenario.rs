@@ -1073,8 +1073,18 @@ fn run_scenario_impl(
                     "effect.after_commit_before_dispatch",
                 ));
             }
-            let dispatch_receipt =
-                deployment.dispatch_alert(&plan, behavior, t_commit, t_outcome, &cx)?;
+            let dispatched = deployment.dispatch_alert(&plan, behavior, t_commit, t_outcome, &cx);
+            // The simulated provider's side of the dispatch is made durable before this step
+            // returns, whatever the dispatch outcome (fss-2h5zq.15): a separate `fss-lab recover`
+            // process reconciles only against this record.
+            crate::sim_provider::persist_dispatch(
+                deployment.root(),
+                deployment.alert_provider(),
+                &plan.intent,
+                behavior,
+            )
+            .map_err(ScenarioError::Reference)?;
+            let dispatch_receipt = dispatched?;
             dispatched_operations.push(operation_id.clone());
             if injection == Injection::CrashAfterLostAck {
                 return Err(ScenarioError::InjectedCrash("effect.lost_ack"));
@@ -1430,9 +1440,15 @@ fn deployment_spool_detects_corruption(
 
 /// The laboratory's replay context for `scenario`: fixed authority, no deadline.
 pub fn make_cx(scenario: ScenarioKind) -> Result<ReplayCx, ScenarioError> {
+    make_named_cx(scenario.as_str())
+}
+
+/// The laboratory's replay context for the lab activity `name` (a scenario, or `recover`):
+/// fixed authority, no deadline.
+pub fn make_named_cx(name: &str) -> Result<ReplayCx, ScenarioError> {
     let spec = fss_core::RootAuthoritySpec {
-        trace_id: format!("trace:lab:{}", scenario.as_str()),
-        operation_id: OperationId::parse(format!("op:lab:{}", scenario.as_str()))
+        trace_id: format!("trace:lab:{name}"),
+        operation_id: OperationId::parse(format!("op:lab:{name}"))
             .map_err(|e| ScenarioError::Core(e.to_string()))?,
         principal: "operator:lab".to_string(),
         capabilities: vec![
@@ -1453,11 +1469,8 @@ pub fn make_cx(scenario: ScenarioKind) -> Result<ReplayCx, ScenarioError> {
     };
     let root_auth = fss_core::ContextAuthority::new_root(spec)
         .map_err(|e| ScenarioError::Core(e.to_string()))?;
-    let scratch_root = std::env::temp_dir().join(format!(
-        "fss-lab-cx-{}-{}",
-        scenario.as_str(),
-        std::process::id()
-    ));
+    let scratch_root =
+        std::env::temp_dir().join(format!("fss-lab-cx-{name}-{}", std::process::id()));
     let io = ReplayIoAuthority::from_context_authority(&root_auth, scratch_root)
         .map_err(|e| ScenarioError::Reference(e.to_string()))?;
     Ok(ReplayCx::new(io))
