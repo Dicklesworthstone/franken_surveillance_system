@@ -92,17 +92,59 @@ impl<W: Write> Transcript<'_, W> {
     }
 }
 
+/// The owner's only time source. Every admission `now_ns`, live lease check and wait reads it,
+/// so a test can drive the lease explicitly instead of racing wall time. Production uses
+/// [`WallClock`]; nothing here is global.
+pub(super) trait CaptureClock {
+    /// Monotone nanoseconds since the owner started; `None` when not representable.
+    fn now_ns(&self) -> Option<u64>;
+    /// Wait after a `Pending` poll for peer progress, for at most `bound_ns` of the lease left.
+    fn await_peer(&self, bound_ns: u64);
+    /// Wait out `ns` of a retry backoff; the caller already capped it by the lease left.
+    fn sleep(&self, ns: u64);
+}
+impl<C: CaptureClock + ?Sized> CaptureClock for &C {
+    fn now_ns(&self) -> Option<u64> {
+        (**self).now_ns()
+    }
+    fn await_peer(&self, bound_ns: u64) {
+        (**self).await_peer(bound_ns);
+    }
+    fn sleep(&self, ns: u64) {
+        (**self).sleep(ns);
+    }
+}
+/// Wall time from the instant the owner is constructed.
+pub(super) struct WallClock(Instant);
+impl WallClock {
+    pub(super) fn start() -> Self {
+        Self(Instant::now())
+    }
+}
+impl CaptureClock for WallClock {
+    fn now_ns(&self) -> Option<u64> {
+        u64::try_from(self.0.elapsed().as_nanos()).ok()
+    }
+    fn await_peer(&self, bound_ns: u64) {
+        self.sleep(bound_ns.min(1_000_000));
+    }
+    fn sleep(&self, ns: u64) {
+        if ns > 0 {
+            std::thread::sleep(Duration::from_nanos(ns));
+        }
+    }
+}
+
 struct Owner<'a> {
     cx: &'a ReplayCx,
     authority: &'a ContextAuthority,
     routes: Vec<HttpCameraRoute>,
-    start: Instant,
+    clock: &'a dyn CaptureClock,
     deadline: u64,
 }
 impl Owner<'_> {
     fn now(&self) -> Result<u64, HttpCameraDenial> {
-        let now = u64::try_from(self.start.elapsed().as_nanos())
-            .map_err(|_| HttpCameraDenial::Deadline)?;
+        let now = self.clock.now_ns().ok_or(HttpCameraDenial::Deadline)?;
         if now >= self.deadline {
             return Err(HttpCameraDenial::Deadline);
         }
@@ -135,9 +177,12 @@ impl Owner<'_> {
     fn pause(&self, not_before: Option<u64>) -> Result<(), HttpCameraDenial> {
         self.live("capture_reconnect:wait")?;
         let now = self.now()?;
-        let delay = not_before.map_or(1_000_000, |due| due.saturating_sub(now).min(10_000_000));
-        if delay > 0 {
-            std::thread::sleep(Duration::from_nanos(delay.min(self.deadline - now)));
+        let left = self.deadline - now;
+        match not_before {
+            None => self.clock.await_peer(left),
+            Some(due) => self
+                .clock
+                .sleep(due.saturating_sub(now).min(10_000_000).min(left)),
         }
         self.live("capture_reconnect:wait")
     }
@@ -607,6 +652,15 @@ fn finish(
 }
 
 pub(super) fn capture<W: Write>(options: &Options, out: &mut W) -> Result<bool, &'static str> {
+    capture_with(options, out, WallClock::start)
+}
+
+/// [`capture`] with an explicit owner clock, started exactly where the lease begins.
+fn capture_with<W: Write, C: CaptureClock>(
+    options: &Options,
+    out: &mut W,
+    start_clock: impl FnOnce() -> C,
+) -> Result<bool, &'static str> {
     // Exact approval BEFORE constructing clocks, filesystem owners, or network authority.
     if options.approve != Some(options.approval()) {
         return Err("ERR-CAPTURE-RECONNECT-APPROVAL-STALE-001");
@@ -690,11 +744,12 @@ pub(super) fn capture<W: Write>(options: &Options, out: &mut W) -> Result<bool, 
     }
     let cx = ReplayCx::from_context_authority(&authority, options.root.clone())
         .map_err(|_| "ERR-CAPTURE-RECONNECT-ROOT-001")?;
+    let clock = start_clock();
     let owner = Owner {
         cx: &cx,
         authority: &authority,
         routes,
-        start: Instant::now(),
+        clock: &clock,
         deadline: options.timeout_ns,
     };
     let result = (|| {

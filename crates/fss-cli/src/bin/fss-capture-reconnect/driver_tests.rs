@@ -1,15 +1,29 @@
 #![forbid(unsafe_code)]
+//! Loopback driver tests. The capture owner's lease runs on a test-owned [`TestClock`], never
+//! wall time, so a stalled worker or a slow peer cannot spend it; deadline refusals are forced by
+//! moving that clock. Socket and fixture wall bounds remain only as hang guards.
 use super::*;
 use fss_core::ContentDigest;
+use std::cell::Cell;
 use std::ffi::OsString;
 use std::fs;
 use std::io::Read;
 use std::net::{TcpListener, TcpStream};
 use std::path::PathBuf;
+use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::mpsc;
 use std::thread;
 
 type TestResult = Result<(), Box<dyn std::error::Error>>;
 const JPEG: &[u8] = include_bytes!("../../../../fss-codec-mjpeg/tests/fixtures/gray.jpg");
+// Harness-only wall bound for a broken fixture; never reached while the client is live.
+const HANG_GUARD: Duration = Duration::from_secs(300);
+pub(super) const NO_STALL: Duration = Duration::ZERO;
+// Longer than both the old 5 s wall-clock lease and the old 6 s fixture accept deadline.
+const INJECTED_STALL: Duration = Duration::from_secs(6);
+// Test-clock nanoseconds per owner clock read.
+const TICK: u64 = 1_000;
 
 struct Directory(PathBuf);
 impl Directory {
@@ -63,8 +77,12 @@ fn options(
         "yes",
         "--retain-originals",
         "yes",
+        // Test-clock lease. Kernel connect is real wall time and capped by the lease left, so
+        // both stay generous hang guards rather than a race against a stalled worker.
         "--timeout-ms",
-        "5000",
+        "60000",
+        "--connect-timeout-ms",
+        "60000",
         "--initial-backoff-ms",
         "1",
         "--maximum-backoff-ms",
@@ -91,8 +109,108 @@ fn response() -> Vec<u8> {
     result.extend(body);
     result
 }
+fn truncated() -> Vec<u8> {
+    b"HTTP/1.1 200 OK\r\nContent-Type: multipart/x-mixed-replace; boundary=camera\r\nContent-Length: 1000\r\n\r\n--camera\r\n".to_vec()
+}
+
+/// What the loopback peer has done, reported to the client's [`TestClock`].
+enum PeerEvent {
+    RequestRead,
+    ResponseWritten,
+}
+/// Which owner wait a clock-forced lease expiry fires on.
+#[derive(Clone, Copy, PartialEq)]
+pub(super) enum Wait {
+    /// While the peer holds a request it has read but not answered.
+    Pending,
+    /// While backing off before the next explicit generation.
+    Backoff,
+}
+/// Test-owned monotone clock: the capture owner's only time source. Each read ticks by
+/// [`TICK`]; a retry backoff advances it without sleeping; a `Pending` wait blocks on the peer's
+/// progress instead of spending lease, steps or wall time. Wall bounds are only hang guards.
+pub(super) struct TestClock {
+    now: Cell<u64>,
+    events: mpsc::Receiver<PeerEvent>,
+    outstanding: Cell<u64>,
+    backoff: Cell<Duration>,
+    expire: Cell<Option<(Wait, u64)>>,
+}
+impl TestClock {
+    pub(super) fn now(&self) -> u64 {
+        self.now.get()
+    }
+    /// Force lease expiry: the first wait of this kind moves the clock to `at` (never back).
+    pub(super) fn expire_at(&self, wait: Wait, at: u64) {
+        self.expire.set(Some((wait, at)));
+    }
+    fn forced(&self, wait: Wait) -> bool {
+        match self.expire.get() {
+            Some((kind, at)) if kind == wait => {
+                self.expire.set(None);
+                self.now.set(at.max(self.now.get()));
+                true
+            }
+            _ => false,
+        }
+    }
+    fn record(&self, event: PeerEvent) {
+        let outstanding = self.outstanding.get();
+        self.outstanding.set(match event {
+            PeerEvent::RequestRead => outstanding + 1,
+            PeerEvent::ResponseWritten => outstanding.saturating_sub(1),
+        });
+    }
+}
+impl CaptureClock for TestClock {
+    fn now_ns(&self) -> Option<u64> {
+        let now = self.now.get().checked_add(TICK)?;
+        self.now.set(now);
+        Some(now)
+    }
+    fn await_peer(&self, _: u64) {
+        while let Ok(event) = self.events.try_recv() {
+            self.record(event);
+        }
+        if self.outstanding.get() == 0 {
+            // Request or response bytes still in loopback transit: bounded backoff.
+            thread::sleep(self.backoff.get());
+            self.backoff
+                .set((self.backoff.get() * 2).min(Duration::from_millis(50)));
+            return;
+        }
+        if self.forced(Wait::Pending) {
+            return;
+        }
+        // The peer holds a request: block on its response, however long it stalls.
+        while self.outstanding.get() > 0 {
+            match self.events.recv_timeout(HANG_GUARD) {
+                Ok(event) => self.record(event),
+                Err(mpsc::RecvTimeoutError::Timeout) => break,
+                Err(mpsc::RecvTimeoutError::Disconnected) => self.outstanding.set(0),
+            }
+        }
+        self.backoff.set(Duration::from_millis(1));
+    }
+    fn sleep(&self, ns: u64) {
+        if !self.forced(Wait::Backoff) {
+            self.now.set(self.now.get().saturating_add(ns));
+        }
+    }
+}
+/// A running loopback peer. Dropping or joining it tells the peer the client has ended.
+pub(super) struct Fixture {
+    thread: Option<thread::JoinHandle<io::Result<usize>>>,
+    abandoned: Arc<AtomicBool>,
+}
+impl Drop for Fixture {
+    fn drop(&mut self) {
+        self.abandoned.store(true, Ordering::Release);
+    }
+}
+
 fn read_request(socket: &mut TcpStream) -> io::Result<()> {
-    socket.set_read_timeout(Some(Duration::from_secs(3)))?;
+    socket.set_read_timeout(Some(HANG_GUARD))?;
     let mut request = Vec::new();
     while !request.ends_with(b"\r\n\r\n") {
         if request.len() >= 4096 {
@@ -109,33 +227,71 @@ fn read_request(socket: &mut TcpStream) -> io::Result<()> {
     }
     Ok(())
 }
-fn serve(listener: TcpListener, responses: Vec<Vec<u8>>) -> thread::JoinHandle<io::Result<usize>> {
-    thread::spawn(move || {
+/// Serve `responses` in order, each after an injected `stall` (scheduling delay) that follows the
+/// complete request. No wall deadline decides anything: the peer stops only when every response
+/// is written or the client has ended. Returns the peer and the client clock it reports to.
+pub(super) fn serve(
+    listener: TcpListener,
+    responses: Vec<Vec<u8>>,
+    stall: Duration,
+) -> (Fixture, TestClock) {
+    let (events, progress) = mpsc::channel();
+    let abandoned = Arc::new(AtomicBool::new(false));
+    let ended = Arc::clone(&abandoned);
+    let thread = thread::spawn(move || {
         listener.set_nonblocking(true)?;
-        let deadline = Instant::now() + Duration::from_secs(6);
         let mut served = 0;
         for response in responses {
             let mut socket = loop {
                 match listener.accept() {
                     Ok((socket, _)) => break socket,
-                    Err(e)
-                        if e.kind() == io::ErrorKind::WouldBlock && Instant::now() < deadline =>
-                    {
-                        thread::sleep(Duration::from_millis(1))
+                    Err(e) if e.kind() == io::ErrorKind::WouldBlock => {
+                        if ended.load(Ordering::Acquire) {
+                            return Ok(served);
+                        }
+                        thread::sleep(Duration::from_millis(1));
                     }
                     Err(e) => return Err(e),
                 }
             };
+            socket.set_nonblocking(false)?;
             read_request(&mut socket)?;
-            socket.set_write_timeout(Some(Duration::from_secs(3)))?;
+            // A client that already ended dropped its clock; its own result is the report.
+            let _ = events.send(PeerEvent::RequestRead);
+            let stalled = Instant::now();
+            while stalled.elapsed() < stall {
+                if ended.load(Ordering::Acquire) {
+                    return Ok(served);
+                }
+                thread::sleep(Duration::from_millis(5));
+            }
+            socket.set_write_timeout(Some(HANG_GUARD))?;
             socket.write_all(&response)?;
+            let _ = events.send(PeerEvent::ResponseWritten);
             served += 1;
         }
         Ok(served)
-    })
+    });
+    let clock = TestClock {
+        now: Cell::new(0),
+        events: progress,
+        outstanding: Cell::new(0),
+        backoff: Cell::new(Duration::from_millis(1)),
+        expire: Cell::new(None),
+    };
+    let fixture = Fixture {
+        thread: Some(thread),
+        abandoned,
+    };
+    (fixture, clock)
 }
-fn joined(handle: thread::JoinHandle<io::Result<usize>>) -> Result<usize, io::Error> {
-    handle
+/// End the client side, then join the peer: responses written, or its I/O error.
+pub(super) fn joined(mut fixture: Fixture) -> Result<usize, io::Error> {
+    fixture.abandoned.store(true, Ordering::Release);
+    fixture
+        .thread
+        .take()
+        .ok_or_else(|| io::Error::other("fixture already joined"))?
         .join()
         .map_err(|_| io::Error::other("fixture thread panicked"))?
 }
@@ -150,10 +306,9 @@ fn real_truncation_is_retained_then_reacquired_in_the_next_explicit_generation()
         "40,50",
         "no",
     )?;
-    let truncated = b"HTTP/1.1 200 OK\r\nContent-Type: multipart/x-mixed-replace; boundary=camera\r\nContent-Length: 1000\r\n\r\n--camera\r\n".to_vec();
-    let server = serve(listener, vec![truncated, response()]);
+    let (server, clock) = serve(listener, vec![truncated(), response()], NO_STALL);
     let mut out = Vec::new();
-    let result = capture(&options, &mut out);
+    let result = capture_with(&options, &mut out, || &clock);
     assert_eq!(joined(server)?, 2);
     assert_eq!(result, Ok(true));
     let text = String::from_utf8(out)?;
@@ -174,7 +329,7 @@ fn real_truncation_is_retained_then_reacquired_in_the_next_explicit_generation()
     assert!(first_boundary < second_connect);
     // The same source namespace cannot be restarted even with its exact acquisition approval.
     let mut rerun = Vec::new();
-    assert_eq!(capture(&options, &mut rerun), Ok(false));
+    assert_eq!(capture_with(&options, &mut rerun, || &clock), Ok(false));
     assert!(String::from_utf8(rerun)?.contains("\"connect_attempts\":0"));
     Ok(())
 }
@@ -189,9 +344,9 @@ fn complete_responses_reconnect_only_when_explicitly_approved() -> TestResult {
             "1,3",
             after_complete,
         )?;
-        let server = serve(listener, vec![response(); expected]);
+        let (server, clock) = serve(listener, vec![response(); expected], NO_STALL);
         let mut out = Vec::new();
-        let result = capture(&options, &mut out);
+        let result = capture_with(&options, &mut out, || &clock);
         assert_eq!(joined(server)?, expected);
         assert_eq!(result, Ok(true));
         let text = String::from_utf8(out)?;
@@ -210,17 +365,123 @@ fn http_status_denial_is_terminal_and_never_uses_the_next_reserved_slot() -> Tes
         "4,5",
         "yes",
     )?;
-    let server = serve(
+    let (server, clock) = serve(
         listener,
         vec![b"HTTP/1.1 503 Service Unavailable\r\nContent-Length: 0\r\n\r\n".to_vec()],
+        NO_STALL,
     );
     let mut out = Vec::new();
-    let result = capture(&options, &mut out);
+    let result = capture_with(&options, &mut out, || &clock);
     assert_eq!(joined(server)?, 1);
     assert_eq!(result, Ok(false));
     let text = String::from_utf8(out)?;
     assert!(text.contains("\"connections_started\":1"));
     assert!(text.contains("NotRetryable"));
+    assert!(text.contains("\"frames_taken\":0"));
+    assert!(text.contains("\"request_satisfied\":false"));
+    Ok(())
+}
+// Injected scheduling delay: each response is held longer than the old 5 s wall lease, and the
+// second accept happens after the old 6 s fixture deadline. Under wall time this refused.
+#[test]
+fn a_peer_stalled_past_the_old_wall_lease_is_retained_and_reacquired_on_the_controlled_clock()
+-> TestResult {
+    let directory = Directory::new("stalled")?;
+    let listener = TcpListener::bind("127.0.0.1:0")?;
+    let options = options(
+        &directory.0.join("archive"),
+        listener.local_addr()?,
+        "40,50",
+        "no",
+    )?;
+    let (server, clock) = serve(listener, vec![truncated(), response()], INJECTED_STALL);
+    let mut out = Vec::new();
+    let result = capture_with(&options, &mut out, || &clock);
+    assert_eq!(joined(server)?, 2);
+    assert_eq!(result, Ok(true));
+    let text = String::from_utf8(out)?;
+    assert!(text.contains("\"outcome\":\"source_failed\""));
+    assert!(text.contains("\"generation\":\"40\""));
+    assert!(text.contains("\"generation\":\"50\""));
+    assert!(text.contains("\"connections_started\":2"));
+    assert!(text.contains("\"connect_attempts\":2"));
+    assert!(text.contains("\"frames_taken\":1"));
+    assert_eq!(text.matches("\"kind\":\"wire_durable\"").count(), 2);
+    assert!(text.contains("\"unpublished_received_bytes\":0"));
+    // The stall spent no lease: only clock reads and the bounded backoff moved it.
+    assert!(clock.now() < 1_000_000_000);
+    Ok(())
+}
+// Deadline refusal forced through the controlled clock while backing off after a truncated
+// response: the durable first prefix stays, and no second generation ever connects.
+#[test]
+fn lease_expiry_during_backoff_is_refused_by_the_controlled_clock_before_a_second_connect()
+-> TestResult {
+    let directory = Directory::new("expired-backoff")?;
+    let listener = TcpListener::bind("127.0.0.1:0")?;
+    listener.set_nonblocking(true)?;
+    let options = options(
+        &directory.0.join("archive"),
+        listener.local_addr()?,
+        "40,50",
+        "no",
+    )?;
+    let (server, clock) = serve(listener.try_clone()?, vec![truncated()], NO_STALL);
+    clock.expire_at(Wait::Backoff, options.timeout_ns);
+    let mut out = Vec::new();
+    let result = capture_with(&options, &mut out, || &clock);
+    assert_eq!(joined(server)?, 1);
+    assert_eq!(result, Ok(false));
+    assert!(clock.now() >= options.timeout_ns);
+    assert!(matches!(listener.accept(), Err(e) if e.kind() == io::ErrorKind::WouldBlock));
+    let text = String::from_utf8(out)?;
+    assert!(text.contains("\"error_code\":\"ERR-CAPTURE-RECONNECT-AUTHORITY-001\""));
+    assert!(text.contains("owner authority refused: Deadline"));
+    assert!(text.contains("\"outcome\":\"source_failed\""));
+    assert!(text.contains("\"kind\":\"wire_durable\""));
+    assert!(
+        !text
+            .lines()
+            .any(|row| row.contains("\"kind\":\"connected\"") && row.contains("\"50\""))
+    );
+    assert_eq!(text.matches("\"kind\":\"connected\"").count(), 1);
+    assert!(text.contains("\"connect_attempts\":1"));
+    assert!(text.contains("\"unpublished_received_bytes\":0"));
+    assert!(text.contains("\"request_satisfied\":false"));
+    Ok(())
+}
+// Deadline refusal forced through the controlled clock while the peer holds the request and
+// never answers: nothing is claimed durable, and no further connection is attempted.
+#[test]
+fn lease_expiry_while_the_peer_stalls_is_refused_by_the_controlled_clock() -> TestResult {
+    let directory = Directory::new("expired-stall")?;
+    let listener = TcpListener::bind("127.0.0.1:0")?;
+    listener.set_nonblocking(true)?;
+    let options = options(
+        &directory.0.join("archive"),
+        listener.local_addr()?,
+        "40,50",
+        "yes",
+    )?;
+    // The peer answers only after the client has ended, i.e. never within the capture.
+    let (server, clock) = serve(listener.try_clone()?, vec![response()], HANG_GUARD);
+    clock.expire_at(Wait::Pending, options.timeout_ns);
+    let mut out = Vec::new();
+    let result = capture_with(&options, &mut out, || &clock);
+    assert_eq!(joined(server)?, 0);
+    assert_eq!(result, Ok(false));
+    assert!(clock.now() >= options.timeout_ns);
+    assert!(matches!(listener.accept(), Err(e) if e.kind() == io::ErrorKind::WouldBlock));
+    let text = String::from_utf8(out)?;
+    assert!(text.contains("\"error_code\":\"ERR-CAPTURE-RECONNECT-AUTHORITY-001\""));
+    assert!(text.contains("owner authority refused: Deadline"));
+    assert!(!text.contains("\"kind\":\"wire_durable\""));
+    assert!(
+        !text
+            .lines()
+            .any(|row| row.contains("\"kind\":\"connected\"") && row.contains("\"50\""))
+    );
+    assert!(text.contains("\"connect_attempts\":1"));
     assert!(text.contains("\"frames_taken\":0"));
     assert!(text.contains("\"request_satisfied\":false"));
     Ok(())
@@ -309,9 +570,9 @@ fn output_failure_at_the_boundary_prevents_a_second_connect() -> TestResult {
         )?;
         // Keep the listening socket alive so an illicit second connect cannot hide behind
         // connection refusal after the fixture has served its one allowed response.
-        let server = serve(listener.try_clone()?, vec![response()]);
+        let (server, clock) = serve(listener.try_clone()?, vec![response()], NO_STALL);
         let mut out = FailingBoundary::new(fault);
-        let result = capture(&options, &mut out);
+        let result = capture_with(&options, &mut out, || &clock);
         assert_eq!(joined(server)?, 1);
         assert_eq!(result, Err("ERR-CAPTURE-RECONNECT-OUTPUT-001"));
         assert!(out.failed);
@@ -636,9 +897,9 @@ fn real_reconnected_frames_use_current_mask_and_one_shared_decode_budget() -> Te
             &privacy_root,
             if limited { one_frame } else { one_frame * 2 },
         )?;
-        let server = serve(listener, vec![response(), response()]);
+        let (server, clock) = serve(listener, vec![response(), response()], NO_STALL);
         let mut out = Vec::new();
-        let result = capture(&options, &mut out);
+        let result = capture_with(&options, &mut out, || &clock);
         assert_eq!(joined(server)?, 2);
         assert_eq!(result, Ok(!limited));
         let text = String::from_utf8(out)?;
