@@ -13,18 +13,26 @@
 //! 2. Reopen the sub-root with [`ReferenceDeployment::reopen`]. An incomplete journal tail is
 //!    refused by that reopen; it is recorded as the tail state.
 //! 3. Copy the sub-root to `<root>/rerun/<family>.<variant>/`, so the crashed sub-root stays on
-//!    disk untouched as the doctor's corpus. On the copy, apply the byte recovery the class needs
-//!    (`ReferenceDeployment::open_for_recovery` truncation of an incomplete tail), reopen, and
-//!    record orphaned staging and root temps, broken roots, unreferenced objects, pending roots
-//!    and obligations by state.
-//! 4. Apply the remaining explicit recovery action (discard orphaned root temps), then rerun the
-//!    scenario with no fault on the copy, and count duplicate effects: a provider call for an
+//!    disk untouched as the doctor's corpus. On the copy, apply the row's operator byte actions
+//!    (`fss-lab recover --truncate-incomplete-tail ledger`), reopen, and record orphaned staging
+//!    and root temps, broken roots, unreferenced objects, pending roots and obligations by state.
+//! 4. Apply the row's remaining operator actions (`--discard-orphaned-temps`,
+//!    `--reconcile-effects`), then rerun the scenario with no fault on the copy, and count
+//!    duplicate effects: a provider call for an
 //!    operation the journal had already dispatched, a provider record nothing in the rerun
 //!    dispatched, a second operation under one idempotency key, or a second batch under one
 //!    batch identity.
 //!
 //! The observed class is computed from those counts by [`classify`]; the expected class is the
 //! table's, written from the owning crates' documented recovery contracts and never from a run.
+//!
+//! Every operator action runs through [`recover::run`], the code path of `fss-lab recover`, so
+//! the matrix proves the same operator path a user takes. Each row names its actions and the
+//! outcome they must have ([`Operator`], fixed in the table per refinement round 3: an
+//! incomplete tail is truncated, an orphaned root temp discarded, a lost acknowledgement
+//! reconciled from the durable simulated provider record, an undispatched commit left
+//! indeterminate, and every cancellation leaves the orphan and effect actions nothing to do).
+//! Rows whose recovery is rerunning the producing command name no action and say why.
 //!
 //! # No-Claim
 //!
@@ -39,10 +47,12 @@ use std::fmt::Write as _;
 use std::fs;
 use std::path::Path;
 
+use fss_cli::{RecoverJournal, RecoverRequest};
 use fss_core::{EffectState, ObligationState, OperationId};
 use fss_publication::{LedgerCutPoint, PublishCutPoint};
-use fss_reference::{AppendPhase, RecoveryAction, ReferenceDeployment, ReferenceError};
+use fss_reference::{AppendPhase, ReferenceDeployment, ReferenceError};
 
+use crate::recover::{self, RecoverOutcome, Refusal};
 use crate::scenario::{Injection, ScenarioKind, make_cx, run_injected, stage};
 
 /// Output schema of the crash matrix.
@@ -128,7 +138,185 @@ pub struct FaultRow {
     pub expected: RecoveryClass,
     /// Short citation of the contract the expectation comes from.
     pub contract: &'static str,
+    /// The operator recovery step the rerun after recovery uses, fixed in advance.
+    pub operator: Operator,
 }
+
+/// One `fss-lab recover` action a row's operator step names.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum OperatorAction {
+    /// `--truncate-incomplete-tail ledger` (a byte action: runs before the state is measured).
+    TruncateLedgerTail,
+    /// `--discard-orphaned-temps`.
+    DiscardOrphanedTemps,
+    /// `--reconcile-effects`.
+    ReconcileEffects,
+}
+
+impl OperatorAction {
+    /// Whether the action repairs journal bytes, so the root must run it before it reopens.
+    const fn is_byte_action(self) -> bool {
+        matches!(self, Self::TruncateLedgerTail)
+    }
+
+    fn request_into(self, request: &mut RecoverRequest) {
+        match self {
+            Self::TruncateLedgerTail => {
+                request.truncate_incomplete_tail = Some(RecoverJournal::Ledger);
+            }
+            Self::DiscardOrphanedTemps => request.discard_orphaned_temps = true,
+            Self::ReconcileEffects => request.reconcile_effects = true,
+        }
+    }
+}
+
+/// Outcome of a row's operator step.
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub enum OperatorOutcome {
+    /// No `fss-lab recover` action: the rerun of the producing command is the recovery.
+    #[default]
+    NotRun,
+    /// The actions changed the root.
+    Applied,
+    /// Indeterminate operations remain, none with an observation.
+    IndeterminateRemains,
+    /// Every action had nothing to do (`recover_nothing_to_do`).
+    NothingToDo,
+    /// Another typed refusal, by code.
+    Refused(&'static str),
+    /// A failure without a registered refusal.
+    Failed,
+}
+
+impl OperatorOutcome {
+    /// Stable spelling.
+    #[must_use]
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::NotRun => "none",
+            Self::Applied => "applied",
+            Self::IndeterminateRemains => "indeterminate_remains",
+            Self::NothingToDo => "recover_nothing_to_do",
+            Self::Refused(code) => code,
+            Self::Failed => "failed",
+        }
+    }
+
+    fn from_recover(outcome: &RecoverOutcome) -> Self {
+        match outcome {
+            RecoverOutcome::Applied => Self::Applied,
+            RecoverOutcome::IndeterminateRemains => Self::IndeterminateRemains,
+            RecoverOutcome::Refused(Refusal::NothingToDo) => Self::NothingToDo,
+            RecoverOutcome::Refused(refusal) => Self::Refused(refusal.code()),
+            RecoverOutcome::Planned | RecoverOutcome::Failed(_) => Self::Failed,
+        }
+    }
+
+    /// Combines the outcomes of a row's byte phase and its post-reopen phase.
+    fn combine(self, other: Self) -> Self {
+        let rank = |outcome: Self| match outcome {
+            Self::Refused(_) | Self::Failed => 5,
+            Self::Applied => 4,
+            Self::IndeterminateRemains => 3,
+            Self::NothingToDo => 2,
+            Self::NotRun => 1,
+        };
+        if rank(other) > rank(self) {
+            other
+        } else {
+            self
+        }
+    }
+}
+
+/// The operator step of a row: the exact `fss-lab recover` actions the rerun after recovery
+/// uses and the outcome the cited contract implies for them, both fixed before any run.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct Operator {
+    /// Actions, applied through [`recover::run`], the code path of `fss-lab recover`.
+    pub actions: &'static [OperatorAction],
+    /// Expected outcome.
+    pub expect: OperatorOutcome,
+    /// Why this step (and, for no action, what the operator does instead).
+    pub note: &'static str,
+}
+
+impl Operator {
+    /// The actions as one `fss-lab recover` flag list per phase, in execution order.
+    fn requests(&self) -> (Option<RecoverRequest>, Option<RecoverRequest>) {
+        let mut bytes = RecoverRequest::default();
+        let mut rest = RecoverRequest::default();
+        for action in self.actions {
+            if action.is_byte_action() {
+                action.request_into(&mut bytes);
+            } else {
+                action.request_into(&mut rest);
+            }
+        }
+        let some = |request: RecoverRequest| (!request.is_empty()).then_some(request);
+        (some(bytes), some(rest))
+    }
+
+    /// The actions spelled as `fss-lab recover` flags.
+    #[must_use]
+    pub fn flags(&self) -> Vec<String> {
+        let (bytes, rest) = self.requests();
+        bytes
+            .iter()
+            .chain(rest.iter())
+            .flat_map(RecoverRequest::flags)
+            .collect()
+    }
+}
+
+const NOT_RUN: Operator = Operator {
+    actions: &[],
+    expect: OperatorOutcome::NotRun,
+    note: "not_applicable",
+};
+const UNREFERENCED_RERUN: Operator = Operator {
+    actions: &[],
+    expect: OperatorOutcome::NotRun,
+    note: "no recover action: rerun the producing command, which re-stages the objects as AlreadyPresent and publishes them; no discard API exists for verified or held objects",
+};
+const PENDING_ROOT_RERUN: Operator = Operator {
+    actions: &[],
+    expect: OperatorOutcome::NotRun,
+    note: "no recover action: rerun the producing command (idempotent by deterministic ids); commit_root needs a CaptureInterval a pending root does not carry, and recover never guesses one",
+};
+const COMMITTED_RERUN: Operator = Operator {
+    actions: &[],
+    expect: OperatorOutcome::NotRun,
+    note: "no recover action: the batch is committed and the rerun returns the committed anchor",
+};
+const TRUNCATE_LEDGER: Operator = Operator {
+    actions: &[OperatorAction::TruncateLedgerTail],
+    expect: OperatorOutcome::Applied,
+    note: "the torn final ledger record never committed; truncating it drops only uncommitted bytes",
+};
+const DISCARD_TEMPS: Operator = Operator {
+    actions: &[OperatorAction::DiscardOrphanedTemps],
+    expect: OperatorOutcome::Applied,
+    note: "LocalRootPublisher::discard_orphaned_temps removes the interrupted publication's root temp",
+};
+const RECONCILE_OBSERVED: Operator = Operator {
+    actions: &[OperatorAction::ReconcileEffects],
+    expect: OperatorOutcome::Applied,
+    note: "the durable simulated provider record holds the delivered message: Indeterminate -> Observed -> Verified, no dispatch",
+};
+const RECONCILE_UNOBSERVED: Operator = Operator {
+    actions: &[OperatorAction::ReconcileEffects],
+    expect: OperatorOutcome::IndeterminateRemains,
+    note: "the provider was never called, so no observation exists: the operation stays indeterminate and is never retried",
+};
+const CANCEL_LEAVES_NOTHING: Operator = Operator {
+    actions: &[
+        OperatorAction::DiscardOrphanedTemps,
+        OperatorAction::ReconcileEffects,
+    ],
+    expect: OperatorOutcome::NothingToDo,
+    note: "cancellation is request->drain->finalize with no orphan work and terminal obligations, so the orphan and effect actions find nothing",
+};
 
 const fn run(injection: Injection, interrupts: bool) -> Exercise {
     Exercise::Run {
@@ -200,6 +388,7 @@ pub fn fault_table() -> Vec<FaultRow> {
             ),
             expected: C::UnreferencedObjects,
             contract: "fss-publication local/mod.rs Protocol+Reopen: nothing visible before the rename; unreachable objects reported unreferenced",
+            operator: UNREFERENCED_RERUN,
         },
         // Same contract: the manifest body is staged but no root record names it.
         FaultRow {
@@ -210,6 +399,7 @@ pub fn fault_table() -> Vec<FaultRow> {
             ),
             expected: C::UnreferencedObjects,
             contract: "fss-publication local/mod.rs Protocol+Reopen: nothing visible before the rename; unreachable objects reported unreferenced",
+            operator: UNREFERENCED_RERUN,
         },
         // local/mod.rs "Reopen": temporary records are reported as orphaned_temps (the reopen
         // deletes a temp only when its target record already exists; here none does).
@@ -221,6 +411,7 @@ pub fn fault_table() -> Vec<FaultRow> {
             ),
             expected: C::OrphanedRootTemp,
             contract: "fss-publication local/mod.rs Reopen: temporary records are reported as orphaned_temps",
+            operator: DISCARD_TEMPS,
         },
         // fss-publication ledger.rs crash table: "after the rename, before the directory fsync |
         // Visible | unchanged | PendingLedger (reopen admits and fsyncs)".
@@ -232,6 +423,7 @@ pub fn fault_table() -> Vec<FaultRow> {
             ),
             expected: C::PendingRoot,
             contract: "fss-publication ledger.rs crash table: after the rename, before the fsync -> PendingLedger",
+            operator: PENDING_ROOT_RERUN,
         },
         // ledger.rs crash table: "after the root is Durable, before the append | Durable |
         // unchanged | PendingLedger".
@@ -243,6 +435,7 @@ pub fn fault_table() -> Vec<FaultRow> {
             ),
             expected: C::PendingRoot,
             contract: "fss-publication ledger.rs crash table: root Durable, before the append -> PendingLedger",
+            operator: PENDING_ROOT_RERUN,
         },
         // fss-ledger journal.rs Journal::append: the body is written before the BodyWrite and
         // BodySync checks and the commit trailer after them, so the record is torn; recovery.rs
@@ -253,12 +446,14 @@ pub fn fault_table() -> Vec<FaultRow> {
             exercise: run(Injection::LedgerAppendFailure(AppendPhase::BodyWrite), true),
             expected: C::IncompleteTail,
             contract: "fss-ledger journal.rs append (trailer not yet written) + recovery.rs torn record = incomplete_tail; ReferenceDeployment::open rejects it",
+            operator: TRUNCATE_LEDGER,
         },
         FaultRow {
             fault: append_slug(AppendPhase::BodySync),
             exercise: run(Injection::LedgerAppendFailure(AppendPhase::BodySync), true),
             expected: C::IncompleteTail,
             contract: "fss-ledger journal.rs append (trailer not yet written) + recovery.rs torn record = incomplete_tail; ReferenceDeployment::open rejects it",
+            operator: TRUNCATE_LEDGER,
         },
         // journal.rs Journal::append: the trailer is written before the CommitWrite and
         // CommitSync checks, so the record is complete; recovery.rs replays a complete record as
@@ -272,6 +467,7 @@ pub fn fault_table() -> Vec<FaultRow> {
             ),
             expected: C::Clean,
             contract: "fss-ledger journal.rs append (trailer written) + recovery.rs complete record = committed; ledger.rs -> Ledgered",
+            operator: COMMITTED_RERUN,
         },
         FaultRow {
             fault: append_slug(AppendPhase::CommitSync),
@@ -281,30 +477,35 @@ pub fn fault_table() -> Vec<FaultRow> {
             ),
             expected: C::Clean,
             contract: "fss-ledger journal.rs append (trailer written) + recovery.rs complete record = committed; ledger.rs -> Ledgered",
+            operator: COMMITTED_RERUN,
         },
         FaultRow {
             fault: append_slug(AppendPhase::ReconcileRead),
             exercise: Exercise::NotApplicable(NO_LEDGER_HOOK),
             expected: C::NotApplicable,
             contract: "fss-ledger journal.rs: no fault hook in reconcile_pending",
+            operator: NOT_RUN,
         },
         FaultRow {
             fault: append_slug(AppendPhase::ReconcileTruncate),
             exercise: Exercise::NotApplicable(NO_LEDGER_HOOK),
             expected: C::NotApplicable,
             contract: "fss-ledger journal.rs: no fault hook in reconcile_pending",
+            operator: NOT_RUN,
         },
         FaultRow {
             fault: append_slug(AppendPhase::ReconcileSync),
             exercise: Exercise::NotApplicable(NO_LEDGER_HOOK),
             expected: C::NotApplicable,
             contract: "fss-ledger journal.rs: no fault hook in reconcile_pending",
+            operator: NOT_RUN,
         },
         FaultRow {
             fault: append_slug(AppendPhase::ReconcileSeek),
             exercise: Exercise::NotApplicable(NO_LEDGER_HOOK),
             expected: C::NotApplicable,
             contract: "fss-ledger journal.rs: no fault hook in reconcile_pending",
+            operator: NOT_RUN,
         },
         // fss-reference alert.rs execute_alert_dispatch: a lost acknowledgement is durably marked
         // Indeterminate ("provider_ack_lost") before dispatch returns; durable_effect.rs replays
@@ -315,6 +516,7 @@ pub fn fault_table() -> Vec<FaultRow> {
             exercise: run(Injection::CrashAfterLostAck, true),
             expected: C::EffectIndeterminate,
             contract: "fss-reference alert.rs: lost ack -> journaled Indeterminate; durable_effect.rs exact replay; plan 29.3 GATE-010",
+            operator: RECONCILE_OBSERVED,
         },
         // Plan §29.3 GATE-010: "every injected kill/cancel point yields terminal or indeterminate
         // classified obligations"; plan §8.6: dispatch without a trustworthy result is
@@ -325,6 +527,7 @@ pub fn fault_table() -> Vec<FaultRow> {
             exercise: run(Injection::CrashAfterCommitBeforeDispatch, true),
             expected: C::EffectIndeterminate,
             contract: "plan 29.3 GATE-010: kill points yield terminal or indeterminate obligations; plan 8.6 indeterminate until readback",
+            operator: RECONCILE_UNOBSERVED,
         },
         // ReferenceDeployment::open checks cx before creating anything, so nothing is written.
         FaultRow {
@@ -332,6 +535,7 @@ pub fn fault_table() -> Vec<FaultRow> {
             exercise: run(Injection::CancelAt(stage::DEPLOYMENT_OPEN), true),
             expected: C::Clean,
             contract: "fss-reference reference_deployment.rs open: cancellation checked before any directory or file is created",
+            operator: CANCEL_LEAVES_NOTHING,
         },
         FaultRow {
             fault: "cancel.stage_objects",
@@ -340,6 +544,7 @@ pub fn fault_table() -> Vec<FaultRow> {
             ),
             expected: C::NotApplicable,
             contract: "fss-reference reference_deployment.rs stage_and_publish",
+            operator: NOT_RUN,
         },
         FaultRow {
             fault: "cancel.stage_manifest",
@@ -348,6 +553,7 @@ pub fn fault_table() -> Vec<FaultRow> {
             ),
             expected: C::NotApplicable,
             contract: "fss-reference reference_deployment.rs stage_and_publish",
+            operator: NOT_RUN,
         },
         // publish_and_commit: a cancellation before any work leaves disk and ledger unchanged;
         // the staged objects stay unreferenced (local/mod.rs Reopen).
@@ -356,12 +562,14 @@ pub fn fault_table() -> Vec<FaultRow> {
             exercise: run(Injection::CancelAt(stage::PUBLISH_ROOT), true),
             expected: C::UnreferencedObjects,
             contract: "fss-reference publish_and_commit: cancelled before any work, ledger unchanged; local/mod.rs Reopen: unreachable objects reported",
+            operator: CANCEL_LEAVES_NOTHING,
         },
         FaultRow {
             fault: "cancel.publish_event",
             exercise: run(Injection::CancelAt(stage::PUBLISH_EVENT), true),
             expected: C::UnreferencedObjects,
             contract: "fss-reference publish_event: cancelled before any work; local/mod.rs Reopen: unreachable objects reported",
+            operator: CANCEL_LEAVES_NOTHING,
         },
         FaultRow {
             fault: "cancel.append_batch",
@@ -370,12 +578,14 @@ pub fn fault_table() -> Vec<FaultRow> {
             ),
             expected: C::NotApplicable,
             contract: "fss-reference reference_deployment.rs append_batch",
+            operator: NOT_RUN,
         },
         FaultRow {
             fault: "cancel.evaluate_policy",
             exercise: run(Injection::CancelAt(stage::EVALUATE_POLICY), true),
             expected: C::UnreferencedObjects,
             contract: "fss-reference evaluate_policy: cancelled before any work; local/mod.rs Reopen: unreachable objects reported",
+            operator: CANCEL_LEAVES_NOTHING,
         },
         // AGENTS.md: cancellation is request -> drain -> finalize with no orphan work, and every
         // obligation is left terminal, delegated or explicitly indeterminate; plan §29.3
@@ -387,6 +597,7 @@ pub fn fault_table() -> Vec<FaultRow> {
             exercise: run(Injection::CancelAt(stage::DISPATCH_ALERT), true),
             expected: C::UnreferencedObjects,
             contract: "AGENTS.md cancellation request->drain->finalize, obligations terminal or indeterminate; plan 29.3 GATE-010",
+            operator: CANCEL_LEAVES_NOTHING,
         },
         // Nothing durable follows the ledgered slot-sources root: the situation and the handoff
         // are compiled in memory.
@@ -395,12 +606,14 @@ pub fn fault_table() -> Vec<FaultRow> {
             exercise: run(Injection::CancelAt(stage::COMPILE_SITUATION), true),
             expected: C::Clean,
             contract: "fss-reference compile_situation/seal_handoff write nothing; everything before is published and ledgered",
+            operator: CANCEL_LEAVES_NOTHING,
         },
         FaultRow {
             fault: "cancel.seal_handoff",
             exercise: run(Injection::CancelAt(stage::SEAL_HANDOFF), true),
             expected: C::Clean,
             contract: "fss-reference compile_situation/seal_handoff write nothing; everything before is published and ledgered",
+            operator: CANCEL_LEAVES_NOTHING,
         },
         // publish_and_commit: a cancellation at a pre-commit cut point returns
         // CancellationRequested, removes any temporary root record, and leaves the ledger
@@ -410,18 +623,21 @@ pub fn fault_table() -> Vec<FaultRow> {
             exercise: run(Injection::CancelAt("after_children_verified"), true),
             expected: C::UnreferencedObjects,
             contract: "fss-reference publish_and_commit: pre-commit cancellation removes the temp and leaves the ledger unchanged",
+            operator: CANCEL_LEAVES_NOTHING,
         },
         FaultRow {
             fault: "cancel.after_manifest_body",
             exercise: run(Injection::CancelAt("after_manifest_body"), true),
             expected: C::UnreferencedObjects,
             contract: "fss-reference publish_and_commit: pre-commit cancellation removes the temp and leaves the ledger unchanged",
+            operator: CANCEL_LEAVES_NOTHING,
         },
         FaultRow {
             fault: "cancel.after_root_temp_write",
             exercise: run(Injection::CancelAt("after_root_temp_write"), true),
             expected: C::UnreferencedObjects,
             contract: "fss-reference publish_and_commit: pre-commit cancellation removes the temp and leaves the ledger unchanged",
+            operator: CANCEL_LEAVES_NOTHING,
         },
         // publish_and_commit: "The rename is the commit point: cancellation is never honored
         // after it, so the root becomes durable and is ledgered" (local/mod.rs: "Cancellation is
@@ -431,6 +647,7 @@ pub fn fault_table() -> Vec<FaultRow> {
             exercise: run(Injection::CancelAt("after_root_rename"), false),
             expected: C::Clean,
             contract: "fss-reference publish_and_commit + local/mod.rs: cancellation is never consulted after the rename",
+            operator: CANCEL_LEAVES_NOTHING,
         },
     ]
 }
@@ -458,8 +675,10 @@ pub struct Observation {
     pub indeterminate: usize,
     /// Obligations neither terminal nor indeterminate.
     pub pending: usize,
-    /// Explicit recovery actions applied before the rerun, in order.
-    pub recovery_actions: Vec<&'static str>,
+    /// `fss-lab recover` actions applied before the rerun, as flags, in order.
+    pub recovery_actions: Vec<String>,
+    /// Outcome of those actions.
+    pub operator_outcome: OperatorOutcome,
     /// Whether the rerun after recovery completed.
     pub rerun_completed: bool,
     /// Duplicate effects counted across the rerun.
@@ -506,7 +725,8 @@ pub struct RowResult {
 
 impl RowResult {
     /// Whether the row meets its expectation: observed class equals the expected class, the run
-    /// was interrupted exactly when the contract says so, and no effect was duplicated.
+    /// was interrupted exactly when the contract says so, the operator step had its expected
+    /// outcome, and no effect was duplicated.
     #[must_use]
     pub fn passes(&self) -> bool {
         let interrupts = match self.row.exercise {
@@ -514,8 +734,13 @@ impl RowResult {
             Exercise::NotApplicable(_) => None,
         };
         let observed_interrupt = self.observation.as_ref().map(|o| o.interrupted);
+        let operator_outcome = self
+            .observation
+            .as_ref()
+            .map_or(OperatorOutcome::NotRun, |o| o.operator_outcome);
         self.observed == self.row.expected
             && interrupts == observed_interrupt
+            && operator_outcome == self.row.operator.expect
             && self
                 .observation
                 .as_ref()
@@ -540,7 +765,7 @@ pub fn run_matrix(root: &Path) -> Result<Vec<RowResult>, String> {
                 observation: None,
             },
             Exercise::Run { injection, .. } => {
-                let observation = run_row(root, row.fault, injection)?;
+                let observation = run_row(root, row.fault, injection, row.operator)?;
                 RowResult {
                     row,
                     observed: classify(&observation),
@@ -553,7 +778,12 @@ pub fn run_matrix(root: &Path) -> Result<Vec<RowResult>, String> {
     Ok(results)
 }
 
-fn run_row(root: &Path, slug: &str, injection: Injection) -> Result<Observation, String> {
+fn run_row(
+    root: &Path,
+    slug: &str,
+    injection: Injection,
+    operator: Operator,
+) -> Result<Observation, String> {
     let corpus = root.join(slug);
     let interrupted = run_injected(MATRIX_SCENARIO, &corpus, injection).is_err();
 
@@ -578,21 +808,16 @@ fn run_row(root: &Path, slug: &str, injection: Injection) -> Result<Observation,
         tail_state,
         ..Observation::default()
     };
-    let byte_action = match tail_state {
-        "incomplete_ledger" => Some((
-            RecoveryAction::TruncateIncompleteLedgerTail,
-            "truncate_incomplete_ledger_tail",
-        )),
-        "incomplete_effects" => Some((
-            RecoveryAction::TruncateIncompleteEffectTail,
-            "truncate_incomplete_effect_tail",
-        )),
-        _ => None,
-    };
-    if let Some((action, name)) = byte_action {
-        ReferenceDeployment::open_for_recovery(&work, action, &cx)
-            .map_err(|e| format!("{slug}: {name} failed: {e}"))?;
-        observation.recovery_actions.push(name);
+    // The row's operator step, through the `fss-lab recover` code path: byte actions first (the
+    // root does not reopen before them), then the state is measured, then the post-reopen
+    // actions, in recover's own fixed order.
+    let (byte_request, rest_request) = operator.requests();
+    if let Some(request) = byte_request {
+        let report = recover::run(&work, &request);
+        observation.recovery_actions.extend(request.flags());
+        observation.operator_outcome = observation
+            .operator_outcome
+            .combine(OperatorOutcome::from_recover(&report.outcome()));
     }
 
     let Ok(mut deployment) = ReferenceDeployment::reopen(&work, "site:lab", &cx) else {
@@ -615,14 +840,14 @@ fn run_row(root: &Path, slug: &str, injection: Injection) -> Result<Observation,
             ObligationState::Pending => observation.pending += 1,
         }
     }
-    if observation.orphaned_temps > 0 {
-        deployment
-            .publisher_mut()
-            .discard_orphaned_temps()
-            .map_err(|e| format!("{slug}: discard_orphaned_temps failed: {e}"))?;
-        observation.recovery_actions.push("discard_orphaned_temps");
-    }
     drop(deployment);
+    if let Some(request) = rest_request {
+        let report = recover::run(&work, &request);
+        observation.recovery_actions.extend(request.flags());
+        observation.operator_outcome = observation
+            .operator_outcome
+            .combine(OperatorOutcome::from_recover(&report.outcome()));
+    }
 
     let measured = rerun_after_recovery(&work)?;
     observation.rerun_completed = measured.completed;
@@ -722,7 +947,7 @@ pub fn rerun_after_recovery(work: &Path) -> Result<RerunMeasurement, String> {
 
 /// Copies the directory tree `from` to the new directory `to`. Refuses anything but regular
 /// files and directories, and never overwrites.
-fn copy_tree(from: &Path, to: &Path) -> Result<(), String> {
+pub(crate) fn copy_tree(from: &Path, to: &Path) -> Result<(), String> {
     if to.exists() {
         return Err(format!("copy target already exists: {}", to.display()));
     }
@@ -829,7 +1054,20 @@ fn render_row(out: &mut String, result: &RowResult) {
         }
         push_string(out, action);
     }
-    out.push_str("],\"rerun\":");
+    out.push_str("],\"operator_actions\":[");
+    for (index, flag) in result.row.operator.flags().iter().enumerate() {
+        if index > 0 {
+            out.push(',');
+        }
+        push_string(out, flag);
+    }
+    out.push_str("],\"operator_expected\":");
+    push_string(out, result.row.operator.expect.as_str());
+    out.push_str(",\"operator_outcome\":");
+    push_string(out, observation.operator_outcome.as_str());
+    out.push_str(",\"operator_note\":");
+    push_string(out, result.row.operator.note);
+    out.push_str(",\"rerun\":");
     push_string(
         out,
         match (&result.row.exercise, observation.rerun_completed) {
@@ -858,7 +1096,7 @@ pub fn render_text(rows: &[RowResult]) -> String {
     );
     let _ = writeln!(
         out,
-        "{:<38} {:<22} {:<22} {:>4} {:>4} {:>4} {:<18} {:>4} {:>4} {:>4} {:<9} {:>3}",
+        "{:<38} {:<22} {:<22} {:>4} {:>4} {:>4} {:<18} {:>4} {:>4} {:>4} {:<9} {:>3} {:<22}",
         "fault",
         "expected",
         "observed",
@@ -870,7 +1108,8 @@ pub fn render_text(rows: &[RowResult]) -> String {
         "ind",
         "pend",
         "rerun",
-        "dup"
+        "dup",
+        "operator"
     );
     for result in rows {
         let empty = Observation {
@@ -885,7 +1124,7 @@ pub fn render_text(rows: &[RowResult]) -> String {
         };
         let _ = writeln!(
             out,
-            "{:<38} {:<22} {:<22} {:>4} {:>4} {:>4} {:<18} {:>4} {:>4} {:>4} {:<9} {:>3}{}",
+            "{:<38} {:<22} {:<22} {:>4} {:>4} {:>4} {:<18} {:>4} {:>4} {:>4} {:<9} {:>3} {:<22}{}",
             result.row.fault,
             result.row.expected.as_str(),
             result.observed.as_str(),
@@ -898,6 +1137,7 @@ pub fn render_text(rows: &[RowResult]) -> String {
             o.pending,
             rerun,
             o.duplicate_effects,
+            o.operator_outcome.as_str(),
             if result.passes() { "" } else { "  MISMATCH" }
         );
     }
@@ -1036,6 +1276,53 @@ mod tests {
             }
             assert!(!row.contract.is_empty(), "{} cites no contract", row.fault);
         }
+    }
+
+    /// Refinement round 3's operator column, checked against the table: every row names its
+    /// `fss-lab recover` step (or why there is none) and the outcome that step must have.
+    #[test]
+    fn every_row_names_its_operator_step_per_round_three() {
+        use super::{OperatorAction as A, OperatorOutcome as O};
+        for row in fault_table() {
+            let operator = row.operator;
+            assert!(!operator.note.is_empty(), "{}", row.fault);
+            assert_eq!(
+                operator.actions.is_empty(),
+                operator.expect == O::NotRun,
+                "{}: actions and expected outcome disagree",
+                row.fault
+            );
+            let expected: (&[A], O) = match row.fault {
+                "append.body_write" | "append.body_sync" => (&[A::TruncateLedgerTail], O::Applied),
+                "publish.after_root_temp_write" => (&[A::DiscardOrphanedTemps], O::Applied),
+                "effect.lost_ack" => (&[A::ReconcileEffects], O::Applied),
+                "effect.after_commit_before_dispatch" => {
+                    (&[A::ReconcileEffects], O::IndeterminateRemains)
+                }
+                slug if slug.starts_with("cancel.")
+                    && matches!(row.exercise, Exercise::Run { .. }) =>
+                {
+                    (
+                        &[A::DiscardOrphanedTemps, A::ReconcileEffects],
+                        O::NothingToDo,
+                    )
+                }
+                _ => (&[], O::NotRun),
+            };
+            assert_eq!(operator.actions, expected.0, "{}", row.fault);
+            assert_eq!(operator.expect, expected.1, "{}", row.fault);
+        }
+    }
+
+    #[test]
+    fn a_wrong_operator_outcome_fails_the_verdict() -> Result<(), String> {
+        let good = passing_row()?;
+        let mut wrong = good;
+        if let Some(observation) = wrong.observation.as_mut() {
+            observation.operator_outcome = super::OperatorOutcome::NothingToDo;
+        }
+        assert!(!verdict(&[wrong]));
+        Ok(())
     }
 
     #[test]
@@ -1196,6 +1483,36 @@ mod tests {
                 again.operations_after, again.operations_before,
                 "{}: a second rerun added an effect operation",
                 result.row.fault
+            );
+            // Every row names the operator actions it applied, spelled as `fss-lab recover`
+            // flags, exactly the table's.
+            assert_eq!(
+                observation.recovery_actions,
+                result.row.operator.flags(),
+                "{}",
+                result.row.fault
+            );
+        }
+
+        // The operator reconciliation resolved the lost acknowledgement from the durable
+        // simulated provider record, and left the never-dispatched commit indeterminate.
+        let cx = crate::scenario::make_cx(super::MATRIX_SCENARIO).map_err(|e| e.to_string())?;
+        let alert =
+            fss_core::OperationId::parse("op:alert:intrusion:1").map_err(|e| e.to_string())?;
+        for (slug, state) in [
+            ("effect.lost_ack", fss_core::EffectState::Verified),
+            (
+                "effect.after_commit_before_dispatch",
+                fss_core::EffectState::Indeterminate,
+            ),
+        ] {
+            let work = first_root.0.join("rerun").join(slug);
+            let deployment = fss_reference::ReferenceDeployment::reopen(&work, "site:lab", &cx)
+                .map_err(|e| e.to_string())?;
+            assert_eq!(
+                deployment.effects().operation(&alert).map(|op| op.state),
+                Some(state),
+                "{slug}"
             );
         }
         Ok(())

@@ -1084,7 +1084,7 @@ impl ReferenceDeployment {
                     offset,
                     path: ledger_path,
                     next_affordance: format!(
-                        "fss-lab recover --root {} --truncate-ledger-tail",
+                        "fss-lab recover --root {} --truncate-incomplete-tail ledger",
                         root.display()
                     ),
                 });
@@ -1101,7 +1101,7 @@ impl ReferenceDeployment {
                         offset,
                         path: effects_path,
                         next_affordance: format!(
-                            "fss-lab recover --root {} --truncate-effect-tail",
+                            "fss-lab recover --root {} --truncate-incomplete-tail effects",
                             root.display()
                         ),
                     });

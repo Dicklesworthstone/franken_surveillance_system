@@ -862,7 +862,8 @@ class TestSchemaConstitution(unittest.TestCase):
         # 144 = 142 + the alert cancel proof (fss-thzlz, previously unregistered) and the alert
         # cooperative cancel proof (fss-51xqy) domains.
         # 145 = 144 + the lab geometric coverage domain (fss-2h5zq.55).
-        self.assertEqual(result["digestDomainCount"], 145)
+        # 146 = 145 + the lab simulated provider record domain (fss-2h5zq.15).
+        self.assertEqual(result["digestDomainCount"], 146)
 
         # Continuation cursor is verified implemented
         implemented_names = {s["name"] for s in result["schemas"] if s["status"] == "implemented"}
@@ -1369,7 +1370,8 @@ class TestSchemaConstitutionCrossReviewRegressions(unittest.TestCase):
         # 144 = 142 + the alert cancel proof (fss-thzlz, previously unregistered) and the alert
         # cooperative cancel proof (fss-51xqy) domains.
         # 145 = 144 + the lab geometric coverage domain (fss-2h5zq.55).
-        self.assertEqual(result["digestDomainCount"], 145)
+        # 146 = 145 + the lab simulated provider record domain (fss-2h5zq.15).
+        self.assertEqual(result["digestDomainCount"], 146)
         # 36 = 28 + fss.sensor_tamper_status.v1 (owner SensorTamperStatus, fss-2uftm)
         # + fss.agent_operations.v1 / fss.agent_views.v1 / fss.agent_request_envelope.v1
         #   (owners AgentOperation / AgentView / AgentRequestEnvelope, fss-x4a.30.83.17-40)

@@ -565,7 +565,7 @@ fn p11_effect_tail_typed_and_recoverable() -> R {
             assert_eq!(
                 next_affordance,
                 &format!(
-                    "fss-lab recover --root {} --truncate-effect-tail",
+                    "fss-lab recover --root {} --truncate-incomplete-tail effects",
                     d.display()
                 )
             );
