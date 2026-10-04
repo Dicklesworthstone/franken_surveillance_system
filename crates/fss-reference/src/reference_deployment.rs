@@ -1084,7 +1084,7 @@ impl ReferenceDeployment {
                     offset,
                     path: ledger_path,
                     next_affordance: format!(
-                        "fss-lab recover --root {} --truncate-ledger-tail",
+                        "fss-lab recover --root {} --truncate-incomplete-tail ledger",
                         root.display()
                     ),
                 });
@@ -1101,7 +1101,7 @@ impl ReferenceDeployment {
                         offset,
                         path: effects_path,
                         next_affordance: format!(
-                            "fss-lab recover --root {} --truncate-effect-tail",
+                            "fss-lab recover --root {} --truncate-incomplete-tail effects",
                             root.display()
                         ),
                     });
@@ -2199,6 +2199,21 @@ impl ReferenceDeployment {
     /// Returns a mutable reference to the local root publisher.
     pub fn publisher_mut(&mut self) -> &mut LocalRootPublisher {
         &mut self.publisher
+    }
+
+    /// Removes exactly the orphaned staging files the spool classified when this deployment
+    /// opened (fss-vmau3), under the deployment lock this instance holds for its whole life.
+    ///
+    /// Delegates to [`LocalRootPublisher::discard_orphaned_staging`], which keeps the spool's
+    /// fsync and poison contract: an outcome that cannot be observed is returned as
+    /// `LocalPublicationError::Spool(SpoolError::DiscardIndeterminate { .. })` inside
+    /// [`ReferenceError::LocalPublication`], and the publisher is then poisoned until a reopen.
+    pub fn discard_orphaned_staging(
+        &mut self,
+    ) -> Result<fss_object::DiscardReceipt, ReferenceError> {
+        self.publisher
+            .discard_orphaned_staging()
+            .map_err(ReferenceError::from)
     }
 
     /// Returns a reference to the durable effect journal.

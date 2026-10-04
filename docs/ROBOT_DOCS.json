@@ -1347,6 +1347,31 @@
       "id": "ERR-KSTATE-STABLE-ID-REUSED-001"
     },
     {
+      "description": "tombstone (fss-vmau3): `recover_action_unsupported` was refused for an `fss-lab recover` action with no supporting API; its only case, `--discard-orphaned-staging`, now runs through `LocalRootPublisher::discard_orphaned_staging`, so no action is refused with it",
+      "guidance": "historical identity preserved for audit; never reused",
+      "id": "ERR-LAB-RECOVER-ACTION-UNSUPPORTED-001"
+    },
+    {
+      "description": "`recover_corrupt_history`: the journal's foreign range holds a structurally valid record, so quarantining it as foreign bytes would remove committed history; plan and apply are refused",
+      "guidance": "owner action: inspect the journal; never apply a foreign-byte repair to it",
+      "id": "ERR-LAB-RECOVER-CORRUPT-HISTORY-001"
+    },
+    {
+      "description": "`recover_nothing_to_do`: every action `fss-lab recover` was asked for found nothing to recover (no incomplete tail, no foreign bytes, no orphaned temp, no orphaned staging file, no indeterminate operation); a completed earlier run reports this",
+      "guidance": "do not retry; inspect the report's `state_after` and next affordances",
+      "id": "ERR-LAB-RECOVER-NOTHING-TO-DO-001"
+    },
+    {
+      "description": "`recover_plan_mismatch`: the journal's current sealed foreign-byte repair plan has a different digest than the one given to `--apply-*-repair` (the journal changed, or the digest names another file); nothing was applied",
+      "guidance": "rerun `--plan-*-repair`, review the new plan, and apply exactly its digest",
+      "id": "ERR-LAB-RECOVER-PLAN-MISMATCH-001"
+    },
+    {
+      "description": "`recover_root_locked`: `fss-lab recover` could not take `<root>/objects/LOCK` for a mutating action; another holder has the deployment, and nothing was changed",
+      "guidance": "wait for the holder to exit, then rerun the same command; the read-only `--plan-*-repair` needs no lock",
+      "id": "ERR-LAB-RECOVER-ROOT-LOCKED-001"
+    },
+    {
       "description": "laboratory target root directory already contains files",
       "guidance": "choose an empty or new target root directory",
       "id": "ERR-LAB-ROOT-NOT-EMPTY-001"

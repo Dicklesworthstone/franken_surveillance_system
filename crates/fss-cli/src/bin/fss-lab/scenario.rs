@@ -16,6 +16,7 @@ use std::fs;
 use std::path::Path;
 
 use crate::file_activity::{self, FileActivityOptions, FileActivityReport};
+use crate::scene::{GeometricCoverage, LabScene};
 use fss_core::{
     CanonicalEncode, CapsuleId, CaptureInterval, ClockBasis, Completeness, ContentDigest,
     ContractBasis, ContractBasisRegistryBytes, CoverageContinuity, CoverageStopReason,
@@ -102,6 +103,8 @@ pub enum ScenarioError {
     /// A crash-matrix fault the scenario driver itself injected fired at the named fault point;
     /// the run stops there as an in-process stand-in for process death.
     InjectedCrash(&'static str),
+    /// The lab scene could not be imported or assessed.
+    Geometry(String),
 }
 
 impl fmt::Display for ScenarioError {
@@ -113,6 +116,7 @@ impl fmt::Display for ScenarioError {
             Self::Packet(msg) => write!(f, "virtual camera packet error: {msg}"),
             Self::TimeOverflow => f.write_str("scenario time overflow"),
             Self::InjectedCrash(point) => write!(f, "injected crash at {point}"),
+            Self::Geometry(msg) => write!(f, "lab scene geometry failure: {msg}"),
         }
     }
 }
@@ -209,7 +213,6 @@ pub mod stage {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum Fault {
-    DropSource { sensor: &'static str, tick: u64 },
     CorruptSource { sensor: &'static str, tick: u64 },
     LoseAlertAcknowledgement,
 }
@@ -283,6 +286,8 @@ pub struct Affordance {
     pub operation: String,
     /// Non-empty justification.
     pub reason: String,
+    /// Ground zone the affordance targets (rendered only when present).
+    pub zone: Option<String>,
 }
 
 /// Categorized control envelope.
@@ -373,6 +378,9 @@ pub struct ScenarioReport {
     pub obligation_state: Option<ObligationState>,
     /// Machine-readable epistemic knowledge object.
     pub knowledge: KnowledgeReport,
+    /// Geometry-derived coverage of the intruder path (`sneaky` only; absent from every other
+    /// report, so their bytes are unchanged).
+    pub geometric_coverage: Option<GeometricCoverage>,
     /// Nondominated affordance frontier.
     pub affordances: Vec<Affordance>,
     /// Discovered warnings and faults.
@@ -455,6 +463,10 @@ impl ScenarioReport {
         }
         output.push_str(",\"knowledge\":");
         self.knowledge.render_json(&mut output);
+        if let Some(geometry) = &self.geometric_coverage {
+            output.push_str(",\"geometric_coverage\":");
+            geometry.render_json(&mut output);
+        }
         output.push_str(",\"affordances\":[");
         for (index, affordance) in self.affordances.iter().enumerate() {
             if index > 0 {
@@ -464,6 +476,9 @@ impl ScenarioReport {
             push_json_field(&mut output, "class", affordance.class.as_str(), true);
             push_json_field(&mut output, "operation", &affordance.operation, false);
             push_json_field(&mut output, "reason", &affordance.reason, false);
+            if let Some(zone) = &affordance.zone {
+                push_json_field(&mut output, "zone", zone, false);
+            }
             output.push('}');
         }
         output.push(']');
@@ -546,6 +561,24 @@ fn run_scenario_with(
         classes,
         FileActivityOptions::reference()?,
         Injection::None,
+        &LabScene::REFERENCE,
+    )
+}
+
+/// `sneaky` in a planted scene (the counterfactual fence) with a caller-supplied presence script.
+#[cfg(test)]
+fn run_sneaky_in(
+    root: &Path,
+    scene: &LabScene,
+    classes: &dyn Fn(ScenarioKind, &str, u64) -> ObservationClass,
+) -> Result<ScenarioReport, ScenarioError> {
+    run_scenario_impl(
+        ScenarioKind::Sneaky,
+        root,
+        classes,
+        FileActivityOptions::reference()?,
+        Injection::None,
+        scene,
     )
 }
 
@@ -561,6 +594,7 @@ fn run_file_activity_with(
         &class_for,
         options,
         Injection::None,
+        &LabScene::REFERENCE,
     )
 }
 
@@ -577,6 +611,7 @@ pub fn run_injected(
         &class_for,
         FileActivityOptions::reference()?,
         injection,
+        &LabScene::REFERENCE,
     )
 }
 
@@ -594,6 +629,7 @@ fn run_scenario_impl(
     classes: &dyn Fn(ScenarioKind, &str, u64) -> ObservationClass,
     file_options: FileActivityOptions,
     injection: Injection,
+    scene: &LabScene,
 ) -> Result<ScenarioReport, ScenarioError> {
     // A recorded file replaces the virtual cameras; it has no live continuity (fss-2h5zq.51).
     let file_source = kind == ScenarioKind::FileActivity;
@@ -603,6 +639,13 @@ fn run_scenario_impl(
     ];
     let cameras: &[VirtualCamera] = if file_source { &[] } else { &mock_cameras };
     let faults = faults_for(kind);
+    // `sneaky` places its cameras in a property scene: what each camera can report, and which
+    // path zones no camera observes, follow from geometric visibility (fss-2h5zq.55).
+    let mut geometry = if kind == ScenarioKind::Sneaky {
+        Some(GeometricCoverage::assess(scene)?)
+    } else {
+        None
+    };
     let cx = make_cx(kind)?;
 
     injection.cancel_before(stage::DEPLOYMENT_OPEN, &cx);
@@ -632,13 +675,23 @@ fn run_scenario_impl(
     };
 
     for tick in SCENARIO_START..SCENARIO_END {
+        let path_zone = geometry
+            .as_ref()
+            .and_then(|geometry| geometry.zone_at(tick));
+        if let Some(zone) = path_zone
+            && !zone.observed()
+        {
+            // No camera observes the zone the path crosses now: a gap, never absence.
+            warnings.push(format!("coverage_gap:{}:{tick}", zone.zone));
+        }
         for camera in cameras {
-            if has_drop_fault(&faults, camera.sensor, tick) {
-                warnings.push(format!("coverage_gap:{}:{tick}", camera.sensor));
-                continue;
-            }
-
-            let class = classes(kind, camera.sensor, tick);
+            let scripted = classes(kind, camera.sensor, tick);
+            // A camera whose view of the path zone is occluded or outside its frustum cannot
+            // report what is in the zone; its frame carries no finding.
+            let class = match path_zone {
+                Some(zone) if !zone.observable_from(camera.sensor) => ObservationClass::Empty,
+                _ => scripted,
+            };
             let packet_bytes = camera.capture(tick, class, confidence_for(class))?;
 
             if has_corruption_fault(&faults, camera.sensor, tick) {
@@ -715,6 +768,37 @@ fn run_scenario_impl(
                 observations.push(obs);
             }
         }
+    }
+
+    // The coverage witness of the path: observed domains are the visible zones only. It is
+    // retained with the run's sources; it never certifies absence on its own.
+    if let Some(geometry) = geometry.as_mut() {
+        let authorized_domain = geometry.authorized_domain();
+        let observed_domain = geometry.observed_domain();
+        let complete = observed_domain == authorized_domain;
+        let witness = CoverageWitness {
+            anchor: deployment.current_anchor().clone(),
+            authorized_domain,
+            observed_domain,
+            excluded_domain: BTreeSet::new(),
+            continuity: if complete {
+                CoverageContinuity::Continuous
+            } else {
+                CoverageContinuity::Gapped
+            },
+            completeness: if complete {
+                Completeness::Complete
+            } else {
+                Completeness::Partial
+            },
+            negative_predicate: "no_unknown_person_present".to_string(),
+            stop_reason: CoverageStopReason::Complete,
+            authorized_generation: deployment.current_anchor().policy_epoch,
+            observed_generation: deployment.current_anchor().policy_epoch,
+        };
+        let witness_digest = deployment.stage_payload(&witness.canonical_bytes())?;
+        staged_digests.push(witness_digest);
+        geometry.witness_digest = Some(witness_digest);
     }
 
     // Every outcome below is derived from what the run actually recorded: the real policy's
@@ -989,8 +1073,18 @@ fn run_scenario_impl(
                     "effect.after_commit_before_dispatch",
                 ));
             }
-            let dispatch_receipt =
-                deployment.dispatch_alert(&plan, behavior, t_commit, t_outcome, &cx)?;
+            let dispatched = deployment.dispatch_alert(&plan, behavior, t_commit, t_outcome, &cx);
+            // The simulated provider's side of the dispatch is made durable before this step
+            // returns, whatever the dispatch outcome (fss-2h5zq.15): a separate `fss-lab recover`
+            // process reconciles only against this record.
+            crate::sim_provider::persist_dispatch(
+                deployment.root(),
+                deployment.alert_provider(),
+                &plan.intent,
+                behavior,
+            )
+            .map_err(ScenarioError::Reference)?;
+            let dispatch_receipt = dispatched?;
             dispatched_operations.push(operation_id.clone());
             if injection == Injection::CrashAfterLostAck {
                 return Err(ScenarioError::InjectedCrash("effect.lost_ack"));
@@ -1134,7 +1228,27 @@ fn run_scenario_impl(
 
     verify_reopen(root, &cx, &withheld)?;
 
-    let affordances = affordances_for(envelope, transient_indeterminate);
+    let mut affordances = affordances_for(envelope, transient_indeterminate);
+    if envelope == EnvelopeClass::ProtectedResidual
+        && let Some(geometry) = &geometry
+    {
+        let probes: Vec<Affordance> = geometry
+            .uncovered()
+            .map(|zone| Affordance {
+                class: ControlClass::Probe,
+                operation: "investigate.probe_uncovered_zone".to_owned(),
+                reason: format!(
+                    "{} on the intruder path at tick {} is observed by no camera ({}); absence \
+                     there is unknown",
+                    zone.zone,
+                    zone.tick,
+                    zone.causes()
+                ),
+                zone: Some(zone.zone.to_owned()),
+            })
+            .collect();
+        affordances.splice(0..0, probes);
+    }
 
     Ok(ScenarioReport {
         scenario: kind,
@@ -1148,6 +1262,7 @@ fn run_scenario_impl(
         effect_state,
         obligation_state,
         knowledge,
+        geometric_coverage: geometry,
         affordances,
         warnings,
         situation_digest,
@@ -1160,10 +1275,6 @@ fn run_scenario_impl(
 
 fn faults_for(kind: ScenarioKind) -> Vec<Fault> {
     match kind {
-        ScenarioKind::Sneaky => vec![Fault::DropSource {
-            sensor: "cam-side",
-            tick: 2,
-        }],
         ScenarioKind::LostAcknowledgement => vec![Fault::LoseAlertAcknowledgement],
         ScenarioKind::CorruptSource => vec![Fault::CorruptSource {
             sensor: "cam-side",
@@ -1171,18 +1282,6 @@ fn faults_for(kind: ScenarioKind) -> Vec<Fault> {
         }],
         _ => Vec::new(),
     }
-}
-
-fn has_drop_fault(faults: &[Fault], sensor: &str, tick: u64) -> bool {
-    faults.iter().any(|fault| {
-        matches!(
-            fault,
-            Fault::DropSource {
-                sensor: fault_sensor,
-                tick: fault_tick,
-            } if *fault_sensor == sensor && *fault_tick == tick
-        )
-    })
 }
 
 fn has_corruption_fault(faults: &[Fault], sensor: &str, tick: u64) -> bool {
@@ -1205,9 +1304,9 @@ fn class_for(kind: ScenarioKind, sensor: &str, tick: u64) -> ObservationClass {
         {
             ObservationClass::UnknownPerson
         }
-        ScenarioKind::Sneaky if sensor == "cam-front" && tick == 2 => {
-            ObservationClass::UnknownPerson
-        }
+        // The intruder is on the property at ticks 2 and 3; the scene geometry decides which
+        // camera can see the zone the path crosses.
+        ScenarioKind::Sneaky if tick == 2 || tick == 3 => ObservationClass::UnknownPerson,
         _ => ObservationClass::Empty,
     }
 }
@@ -1234,11 +1333,13 @@ fn affordances_for(envelope: EnvelopeClass, transient_indeterminate: bool) -> Ve
             class: ControlClass::Observe,
             operation: "session.follow".to_owned(),
             reason: "continuous authorized coverage certifies no unknown person".to_owned(),
+            zone: None,
         }],
         EnvelopeClass::BenignActivity => vec![Affordance {
             class: ControlClass::Observe,
             operation: "session.follow".to_owned(),
             reason: "activity is classified as a known benign animal".to_owned(),
+            zone: None,
         }],
         EnvelopeClass::ProtectedResidual => vec![
             Affordance {
@@ -1246,18 +1347,21 @@ fn affordances_for(envelope: EnvelopeClass, transient_indeterminate: bool) -> Ve
                 operation: "investigate.hydrate_adjacent_sensor".to_owned(),
                 reason: "a material person hypothesis remains without independent corroboration"
                     .to_owned(),
+                zone: None,
             },
             Affordance {
                 class: ControlClass::Observe,
                 operation: "session.follow".to_owned(),
                 reason: "wait for a discriminating observation while preserving the residual"
                     .to_owned(),
+                zone: None,
             },
         ],
         EnvelopeClass::CorroboratedThreat => vec![Affordance {
             class: ControlClass::Act,
             operation: "commit.owner_intrusion_alert".to_owned(),
             reason: "independent failure domains corroborate an unknown person".to_owned(),
+            zone: None,
         }],
     };
     if transient_indeterminate {
@@ -1265,6 +1369,7 @@ fn affordances_for(envelope: EnvelopeClass, transient_indeterminate: bool) -> Ve
             class: ControlClass::Reconcile,
             operation: "wait.reconcile_alert_delivery".to_owned(),
             reason: "dispatch acknowledgement was lost; operation lookup precedes retry".to_owned(),
+            zone: None,
         });
     }
     affordances
@@ -1335,9 +1440,15 @@ fn deployment_spool_detects_corruption(
 
 /// The laboratory's replay context for `scenario`: fixed authority, no deadline.
 pub fn make_cx(scenario: ScenarioKind) -> Result<ReplayCx, ScenarioError> {
+    make_named_cx(scenario.as_str())
+}
+
+/// The laboratory's replay context for the lab activity `name` (a scenario, or `recover`):
+/// fixed authority, no deadline.
+pub fn make_named_cx(name: &str) -> Result<ReplayCx, ScenarioError> {
     let spec = fss_core::RootAuthoritySpec {
-        trace_id: format!("trace:lab:{}", scenario.as_str()),
-        operation_id: OperationId::parse(format!("op:lab:{}", scenario.as_str()))
+        trace_id: format!("trace:lab:{name}"),
+        operation_id: OperationId::parse(format!("op:lab:{name}"))
             .map_err(|e| ScenarioError::Core(e.to_string()))?,
         principal: "operator:lab".to_string(),
         capabilities: vec![
@@ -1358,11 +1469,8 @@ pub fn make_cx(scenario: ScenarioKind) -> Result<ReplayCx, ScenarioError> {
     };
     let root_auth = fss_core::ContextAuthority::new_root(spec)
         .map_err(|e| ScenarioError::Core(e.to_string()))?;
-    let scratch_root = std::env::temp_dir().join(format!(
-        "fss-lab-cx-{}-{}",
-        scenario.as_str(),
-        std::process::id()
-    ));
+    let scratch_root =
+        std::env::temp_dir().join(format!("fss-lab-cx-{name}-{}", std::process::id()));
     let io = ReplayIoAuthority::from_context_authority(&root_auth, scratch_root)
         .map_err(|e| ScenarioError::Reference(e.to_string()))?;
     Ok(ReplayCx::new(io))
@@ -1447,9 +1555,10 @@ fn push_json_string(output: &mut String, value: &str) {
 #[cfg(test)]
 mod tests {
     use super::{
-        EnvelopeClass, ObservationClass, ScenarioKind, make_cx, run_file_activity_with,
-        run_scenario, run_scenario_with, verify_reopen,
+        ControlClass, EnvelopeClass, ObservationClass, ScenarioKind, class_for, make_cx,
+        run_file_activity_with, run_scenario, run_scenario_with, run_sneaky_in, verify_reopen,
     };
+    use crate::scene::LabScene;
     use fss_core::{EffectState, ObligationState};
     use fss_reference::ReferenceDeployment;
     use std::collections::BTreeSet;
@@ -1552,18 +1661,237 @@ mod tests {
     #[test]
     fn sneaky_with_a_person_on_both_cameras_is_corroborated()
     -> Result<(), Box<dyn std::error::Error>> {
-        // Review mutant M7: a second, independent camera also sees the person.
-        let root = temp_test_root("sneaky-both");
-        let report = run_scenario_with(ScenarioKind::Sneaky, &root, &|_, sensor, tick| {
+        // Review mutant M7: a second, independent camera also sees the person. Since
+        // fss-2h5zq.55 a camera can only see the person where the scene lets it, so the second
+        // view needs the fence moved out of cam-side's sight line.
+        let both = |_: ScenarioKind, sensor: &str, tick: u64| {
             if (sensor == "cam-front" && tick == 2) || (sensor == "cam-side" && tick == 3) {
                 ObservationClass::UnknownPerson
             } else {
                 ObservationClass::Empty
             }
-        })?;
+        };
+        let root = temp_test_root("sneaky-both");
+        let report = run_sneaky_in(&root, &LabScene::FENCE_MOVED, &both)?;
         assert_eq!(report.knowledge.corroboration, "corroborated");
         assert_eq!(report.envelope, EnvelopeClass::CorroboratedThreat);
         assert!(!report.absence_certified);
+        let _ = std::fs::remove_dir_all(&root);
+
+        // The same planted script behind the reference fence: cam-side cannot report a person
+        // in a zone it cannot see, so the run stays single-source.
+        let root = temp_test_root("sneaky-both-occluded");
+        let occluded = run_scenario_with(ScenarioKind::Sneaky, &root, &both)?;
+        assert_eq!(occluded.knowledge.corroboration, "single_source");
+        assert_eq!(occluded.envelope, EnvelopeClass::ProtectedResidual);
+        assert!(!occluded.absence_certified);
+        let _ = std::fs::remove_dir_all(&root);
+        Ok(())
+    }
+
+    /// One `CAPLOG` line with the geometric visibility counts of a sneaky report.
+    fn log_geometry(step: &str, report: &super::ScenarioReport) {
+        if let Some(geometry) = &report.geometric_coverage {
+            let mut json = String::new();
+            geometry.render_json(&mut json);
+            println!(
+                "CAPLOG {{\"bead\":\"fss-2h5zq.55\",\"step\":\"{step}\",\"corroboration\":\"{}\",\"geometric_coverage\":{json}}}",
+                report.knowledge.corroboration
+            );
+        }
+    }
+
+    #[test]
+    fn sneaky_gap_is_derived_from_occlusion_not_a_scripted_drop()
+    -> Result<(), Box<dyn std::error::Error>> {
+        use fss_core::{CanonicalDecode as _, Completeness, CoverageContinuity, CoverageWitness};
+
+        let root = temp_test_root("sneaky-geometry");
+        let report = run_scenario(ScenarioKind::Sneaky, &root)?;
+        log_geometry("sneaky_reference", &report);
+        let geometry = report
+            .geometric_coverage
+            .as_ref()
+            .ok_or("sneaky has no geometric coverage")?;
+
+        // The side passage (tick 3) is occluded from cam-side and outside cam-front's frustum.
+        let gap = geometry.zone_at(3).ok_or("no path zone at tick 3")?;
+        assert_eq!(gap.zone, "zone:side-passage");
+        assert!(!gap.observed());
+        for view in &gap.views {
+            let v = &view.visibility;
+            match view.camera {
+                "cam-side" => {
+                    assert_eq!(view.state(), "occluded");
+                    assert_eq!((v.samples, v.visible, v.occluded), (64, 0, 64));
+                }
+                "cam-front" => {
+                    assert_eq!(view.state(), "outside_frustum");
+                    assert_eq!((v.samples, v.visible, v.outside_frustum), (64, 0, 64));
+                }
+                other => return Err(format!("unexpected camera {other}").into()),
+            }
+            assert_eq!(v.claim(), "frustum_and_mesh_occlusion");
+        }
+        // The front walk (tick 2) is fully visible from cam-front only.
+        let walk = geometry.zone_at(2).ok_or("no path zone at tick 2")?;
+        assert!(walk.observable_from("cam-front"));
+        assert!(!walk.observable_from("cam-side"));
+
+        // The gap is the uncovered zone, not a dropped camera.
+        assert_eq!(report.warnings, ["coverage_gap:zone:side-passage:3"]);
+        assert_eq!(report.knowledge.coverage_gaps, ["zone:side-passage:3"]);
+        assert!(
+            !report
+                .warnings
+                .iter()
+                .any(|warning| warning.starts_with("coverage_gap:cam-"))
+        );
+        // Absence is never certified; the only person finding is cam-front's.
+        assert!(!report.absence_certified);
+        assert!(!report.knowledge.absence_certified);
+        assert_eq!(
+            report.knowledge.absence_not_certifiable_reason,
+            Some("coverage_gap")
+        );
+        assert_eq!(report.knowledge.corroboration, "single_source");
+        assert_eq!(report.envelope, EnvelopeClass::ProtectedResidual);
+
+        // The probe names the uncovered zone and why it is uncovered.
+        let probe = report.affordances.first().ok_or("no affordances")?;
+        assert_eq!(probe.class, ControlClass::Probe);
+        assert_eq!(probe.operation, "investigate.probe_uncovered_zone");
+        assert_eq!(probe.zone.as_deref(), Some("zone:side-passage"));
+        assert!(
+            probe.reason.contains("cam-side occluded"),
+            "{}",
+            probe.reason
+        );
+        assert!(
+            probe.reason.contains("cam-front outside_frustum"),
+            "{}",
+            probe.reason
+        );
+
+        // The retained coverage witness observes the visible zones only.
+        let witness_digest = geometry.witness_digest.ok_or("no witness digest")?;
+        let cx = make_cx(ScenarioKind::Sneaky)?;
+        let reopened = ReferenceDeployment::reopen(&root, "site:lab", &cx)?;
+        let witness = CoverageWitness::from_canonical_bytes(
+            &reopened.publisher().spool().read(witness_digest)?,
+        )?;
+        assert_eq!(
+            witness.observed_domain,
+            BTreeSet::from(["zone:front-walk".to_owned()])
+        );
+        assert_eq!(
+            witness.authorized_domain,
+            BTreeSet::from(["zone:front-walk".to_owned(), "zone:side-passage".to_owned()])
+        );
+        assert_eq!(witness.completeness, Completeness::Partial);
+        assert_eq!(witness.continuity, CoverageContinuity::Gapped);
+        assert!(!witness.certifies_absence());
+        drop(reopened);
+
+        let json = report.render_json();
+        assert!(json.contains(&format!(
+            "\"geometric_coverage\":{{\"basis_digest\":\"{}\",\"mesh_digest\":\"{}\"",
+            geometry.basis_digest, geometry.mesh_digest
+        )));
+        assert!(
+            json.contains("\"zone\":\"zone:side-passage\",\"tick\":3,\"state\":\"not_observable\"")
+        );
+        assert!(json.contains("\"zone\":\"zone:side-passage\"}"));
+        assert!(json.contains("\"schema\":\"fss.lab.scenario.v2\""));
+        let _ = std::fs::remove_dir_all(&root);
+        Ok(())
+    }
+
+    #[test]
+    fn moving_the_fence_removes_the_gap_and_corroborates() -> Result<(), Box<dyn std::error::Error>>
+    {
+        use fss_core::{EventId, EvidenceEdgeRelation};
+
+        let reference_root = temp_test_root("sneaky-reference");
+        let reference = run_scenario(ScenarioKind::Sneaky, &reference_root)?;
+        let root = temp_test_root("sneaky-fence-moved");
+        // The same presence script as the reference run: only the scene differs.
+        let moved = run_sneaky_in(&root, &LabScene::FENCE_MOVED, &class_for)?;
+        log_geometry("sneaky_fence_moved", &moved);
+        let geometry = moved
+            .geometric_coverage
+            .as_ref()
+            .ok_or("no geometric coverage")?;
+        let passage = geometry.zone_at(3).ok_or("no path zone at tick 3")?;
+        assert!(passage.observed());
+        assert!(passage.observable_from("cam-side"));
+        assert_eq!(geometry.uncovered().count(), 0);
+        assert_eq!(geometry.observed_domain(), geometry.authorized_domain());
+        let reference_geometry = reference
+            .geometric_coverage
+            .as_ref()
+            .ok_or("no reference geometry")?;
+        assert_ne!(geometry.basis_digest, reference_geometry.basis_digest);
+        assert_ne!(geometry.mesh_digest, reference_geometry.mesh_digest);
+
+        // No gap, and cam-side's tick-3 observation enters the policy: two independent failure
+        // domains corroborate.
+        assert!(moved.warnings.is_empty(), "{:?}", moved.warnings);
+        assert!(moved.knowledge.coverage_gaps.is_empty());
+        assert_eq!(reference.knowledge.corroboration, "single_source");
+        assert_eq!(moved.knowledge.corroboration, "corroborated");
+        assert_eq!(moved.envelope, EnvelopeClass::CorroboratedThreat);
+        assert!(!moved.absence_certified);
+        assert_eq!(
+            moved.knowledge.absence_not_certifiable_reason,
+            Some("threat_present")
+        );
+        assert!(
+            !moved
+                .affordances
+                .iter()
+                .any(|affordance| affordance.zone.is_some())
+        );
+        let cx = make_cx(ScenarioKind::Sneaky)?;
+        let reopened = ReferenceDeployment::reopen(&root, "site:lab", &cx)?;
+        let (event, _) = reopened.current_event_authority(&EventId::parse("event:lab:sneaky")?)?;
+        let supporting: BTreeSet<&str> = event
+            .evidence
+            .iter()
+            .filter(|edge| edge.relation == EvidenceEdgeRelation::Supports)
+            .map(|edge| edge.failure_domain.as_str())
+            .collect();
+        assert_eq!(
+            supporting,
+            BTreeSet::from(["front-power-and-network", "side-power-and-network"])
+        );
+        drop(reopened);
+        let _ = std::fs::remove_dir_all(&reference_root);
+        let _ = std::fs::remove_dir_all(&root);
+        Ok(())
+    }
+
+    #[test]
+    fn an_occluded_camera_cannot_report_a_planted_person() -> Result<(), Box<dyn std::error::Error>>
+    {
+        // Only cam-side is scripted to see a person, at the two ticks the path crosses zones it
+        // cannot see: no finding survives, and the gap still blocks any absence claim.
+        let root = temp_test_root("sneaky-side-only");
+        let report = run_scenario_with(ScenarioKind::Sneaky, &root, &|_, sensor, tick| {
+            if sensor == "cam-side" && (tick == 2 || tick == 3) {
+                ObservationClass::UnknownPerson
+            } else {
+                ObservationClass::Empty
+            }
+        })?;
+        assert_eq!(report.knowledge.corroboration, "not_applicable");
+        assert_eq!(report.envelope, EnvelopeClass::ProtectedResidual);
+        assert!(!report.absence_certified);
+        assert_eq!(
+            report.knowledge.absence_not_certifiable_reason,
+            Some("coverage_gap")
+        );
+        assert_eq!(report.knowledge.coverage_gaps, ["zone:side-passage:3"]);
         let _ = std::fs::remove_dir_all(&root);
         Ok(())
     }

@@ -434,6 +434,11 @@ operation states rather than generic errors.
 | `ERR-DOCTOR-ATTENTION-REQUIRED-001` | doctor inspection detected deployment conditions requiring attention | inspect doctor report and follow next affordance |
 | `ERR-DOCTOR-NOT-A-DEPLOYMENT-001` | target directory is not a recognized reference deployment root | provide a valid reference deployment root |
 | `ERR-LAB-ROOT-NOT-EMPTY-001` | laboratory target root directory already contains files | choose an empty or new target root directory |
+| `ERR-LAB-RECOVER-ROOT-LOCKED-001` | `recover_root_locked`: `fss-lab recover` could not take `<root>/objects/LOCK` for a mutating action; another holder has the deployment, and nothing was changed | wait for the holder to exit, then rerun the same command; the read-only `--plan-*-repair` needs no lock |
+| `ERR-LAB-RECOVER-NOTHING-TO-DO-001` | `recover_nothing_to_do`: every action `fss-lab recover` was asked for found nothing to recover (no incomplete tail, no foreign bytes, no orphaned temp, no orphaned staging file, no indeterminate operation); a completed earlier run reports this | do not retry; inspect the report's `state_after` and next affordances |
+| `ERR-LAB-RECOVER-PLAN-MISMATCH-001` | `recover_plan_mismatch`: the journal's current sealed foreign-byte repair plan has a different digest than the one given to `--apply-*-repair` (the journal changed, or the digest names another file); nothing was applied | rerun `--plan-*-repair`, review the new plan, and apply exactly its digest |
+| `ERR-LAB-RECOVER-CORRUPT-HISTORY-001` | `recover_corrupt_history`: the journal's foreign range holds a structurally valid record, so quarantining it as foreign bytes would remove committed history; plan and apply are refused | owner action: inspect the journal; never apply a foreign-byte repair to it |
+| `ERR-LAB-RECOVER-ACTION-UNSUPPORTED-001` | tombstone (fss-vmau3): `recover_action_unsupported` was refused for an `fss-lab recover` action with no supporting API; its only case, `--discard-orphaned-staging`, now runs through `LocalRootPublisher::discard_orphaned_staging`, so no action is refused with it | historical identity preserved for audit; never reused |
 
 
 
@@ -516,6 +521,7 @@ Stable process exit identities map command-line interface outcomes to determinis
 | `EXIT-DOCTOR-ATTENTION-REQUIRED-003` | 3 | doctor inspection detected deployment conditions requiring attention | inspect doctor JSON output for failing checks and follow recommended next affordances |
 | `EXIT-DOCTOR-NOT-A-DEPLOYMENT-004` | 4 | target directory is not a recognized reference deployment root | verify root path points to a deployment directory initialized with fss reference layout |
 | `EXIT-AGENT-REFUSED-005` | 5 | an agent read (orient, explain, follow) was refused; the response envelope carries the registered error identity | read `errorId` and `degradation` in the envelope and follow the refused operation's recovery class |
+| `EXIT-LAB-RECOVER-REFUSED-006` | 6 | `fss-lab recover` refused an action; the `fss.cli_diagnostic.v1` line and the report carry the `ERR-LAB-RECOVER-*` identity | read `error_id` and follow that identity's recovery guidance |
 
 ## Contract error codes (`fss-core`)
 Canonical machine error codes returned by `ContractError::code()` (AGT-LAYER-002, INV-003):

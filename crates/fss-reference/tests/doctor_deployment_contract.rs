@@ -33,7 +33,7 @@ use fss_publication::{
     StringLockTableSource, decode_st_dev,
 };
 use fss_reference::doctor::{
-    DoctorIo, DoctorLimits, DoctorReport, DoctorVerdict, inspect_deployment,
+    DoctorAffordance, DoctorIo, DoctorLimits, DoctorReport, DoctorVerdict, inspect_deployment,
     inspect_deployment_with,
 };
 use fss_reference::reference_deployment::{
@@ -48,8 +48,8 @@ type TestResult = Result<(), Box<dyn Error>>;
 type Res<T> = Result<T, Box<dyn Error>>;
 
 const LINEAGE: &str = "site:doctor-contract";
-const TRACKING: &str = "fss-2h5zq.15";
 const DEFAULT_LIMITS_JSON: &str = "{\"max_journal_bytes\":67108864,\"max_layout_bytes\":4096,\"max_listed_ids\":32,\"max_sidecar_entries\":4096}";
+const LEFTOVER_REPAIR_TEMPS_DETAIL: &str = "no foreign-byte repair of this journal is pending, so no fss-lab recover action addresses these leftover repair staging files; removing them is an owner decision";
 const OVER_BUDGET_DETAIL: &str = "the file exceeds the doctor's read bound; it was not read and no claim is made about its contents";
 const CONTENT_DIGEST_MAX: u64 = 1024 * 1024;
 
@@ -218,12 +218,52 @@ fn inspect_read_only(label: &str, dep: &Path) -> Res<DoctorReport> {
     if after != before {
         return Err(format!("tree changed by {label}: before={before:#?} after={after:#?}").into());
     }
-    if json.contains("fss-lab") {
-        return Err(
-            format!("{label}: doctor printed a command that does not exist: {json}").into(),
-        );
+    // Every printed command line is one that exists in this build: a doctor rerun, or one
+    // `fss-lab recover` action on exactly this root (fss-93udx).
+    for check in &report.checks {
+        let affordances = check
+            .findings
+            .iter()
+            .filter_map(|finding| finding.next_affordance.as_ref())
+            .chain(check.next_affordance.as_ref());
+        for affordance in affordances {
+            if let DoctorAffordance::Command { command, .. } = affordance
+                && !is_existing_command(dep, command)
+            {
+                return Err(format!(
+                    "{label}: doctor printed a command that does not exist: {command}: {json}"
+                )
+                .into());
+            }
+        }
     }
     Ok(report)
+}
+
+/// Whether `command` is `fss doctor --json --root <dep>` or `fss-lab recover --root <dep>` with
+/// exactly one action flag `fss-lab recover` accepts (crates/fss-cli/src/lab_cmd.rs).
+fn is_existing_command(dep: &Path, command: &str) -> bool {
+    if command == format!("fss doctor --json --root {}", dep.display()) {
+        return true;
+    }
+    let Some(action) = command.strip_prefix(&format!("fss-lab recover --root {} ", dep.display()))
+    else {
+        return false;
+    };
+    let plan_digest = |digest: &str| {
+        digest
+            .strip_prefix("sha256:")
+            .is_some_and(|hex| hex.len() == 64 && hex.bytes().all(|b| b.is_ascii_hexdigit()))
+    };
+    match action.split_once(' ') {
+        None => matches!(
+            action,
+            "--discard-orphaned-temps" | "--discard-orphaned-staging" | "--reconcile-effects"
+        ),
+        Some(("--truncate-incomplete-tail", journal)) => matches!(journal, "ledger" | "effects"),
+        Some(("--apply-ledger-repair" | "--apply-effects-repair", digest)) => plan_digest(digest),
+        Some(_) => false,
+    }
 }
 
 // ---------------------------------------------------------------- expected JSON builders
@@ -284,19 +324,16 @@ fn check(
     format!("{{{}}}", parts.join(","))
 }
 
-fn not_yet(action: &str, target: Option<&str>, plan_digest: Option<&str>) -> String {
-    let mut pairs = vec![
-        ("availability", s("not_yet_available")),
+/// The exact `fss-lab recover --root <dep> <flags>` command the doctor names (fss-93udx).
+fn recover(dep: &Path, action: &str, flags: &str) -> String {
+    obj(&[
+        ("availability", s("available")),
         ("action", s(action)),
-    ];
-    if let Some(target) = target {
-        pairs.push(("target", s(target)));
-    }
-    if let Some(plan_digest) = plan_digest {
-        pairs.push(("plan_digest", s(plan_digest)));
-    }
-    pairs.push(("tracking", s(TRACKING)));
-    obj(&pairs)
+        (
+            "command",
+            s(&format!("fss-lab recover --root {} {flags}", dep.display())),
+        ),
+    ])
 }
 
 fn owner(action: &str, detail: &str) -> String {
@@ -880,7 +917,11 @@ fn ledger_incomplete_tail_is_attention_with_named_truncate_action() -> TestResul
     let report = inspect_read_only("ledger tail", &dep)?;
     let j = journal(&ledger_path)?;
     let tail = j.incomplete_tail.ok_or("no incomplete tail")?;
-    let aff = not_yet("truncate_incomplete_tail", Some("ledger"), None);
+    let aff = recover(
+        &dep,
+        "truncate_incomplete_tail",
+        "--truncate-incomplete-tail ledger",
+    );
     let mut expected = Expect::clean(&dep)?.attention();
     expected.set(
         "ledger.journal",
@@ -923,7 +964,11 @@ fn effects_incomplete_tail_is_attention_with_named_truncate_action() -> TestResu
     let report = inspect_read_only("effects tail", &dep)?;
     let j = journal(&effects_path)?;
     let tail = j.incomplete_tail.ok_or("no incomplete tail")?;
-    let aff = not_yet("truncate_incomplete_tail", Some("effects"), None);
+    let aff = recover(
+        &dep,
+        "truncate_incomplete_tail",
+        "--truncate-incomplete-tail effects",
+    );
     let mut expected = Expect::clean(&dep)?.attention();
     expected.set(
         "effects.journal",
@@ -956,14 +1001,14 @@ fn effects_incomplete_tail_is_attention_with_named_truncate_action() -> TestResu
     Ok(())
 }
 
-fn foreign_check(id: &str, path: &Path, action: &str, target: &str) -> Res<String> {
+fn foreign_check(dep: &Path, id: &str, path: &Path, action: &str, flag: &str) -> Res<String> {
     let j = journal(path)?;
     let (offset, length, digest) = j.foreign.clone().ok_or("no foreign range")?;
     let plan = fss_ledger::doctor(&j.bytes)?
         .plan(path)?
         .plan_digest()
         .to_string();
-    let aff = not_yet(action, Some(target), Some(&plan));
+    let aff = recover(dep, action, &format!("{flag} {plan}"));
     Ok(check(
         id,
         "foreign_trailing_bytes",
@@ -1005,10 +1050,11 @@ fn ledger_foreign_bytes_name_the_plan_digest() -> TestResult {
     expected.set(
         "ledger.journal",
         foreign_check(
+            &dep,
             "ledger.journal",
             &ledger_path,
-            "plan_ledger_repair_then_apply_ledger_repair",
-            "ledger",
+            "apply_ledger_repair",
+            "--apply-ledger-repair",
         )?,
     )?;
     assert_eq!(report.to_json(), expected.json());
@@ -1025,10 +1071,11 @@ fn effects_foreign_bytes_name_the_effects_repair_plan() -> TestResult {
     expected.set(
         "effects.journal",
         foreign_check(
+            &dep,
             "effects.journal",
             &effects_path,
-            "plan_effects_repair_then_apply_effects_repair",
-            "effects",
+            "apply_effects_repair",
+            "--apply-effects-repair",
         )?,
     )?;
     assert_eq!(report.to_json(), expected.json());
@@ -1235,7 +1282,11 @@ fn orphaned_staging_is_listed_with_discard_action() -> TestResult {
     fs::write(staging.join(&name), b"staging-data")?;
 
     let report = inspect_read_only("orphaned staging", &dep)?;
-    let aff = not_yet("discard_orphaned_staging", Some("objects"), None);
+    let aff = recover(
+        &dep,
+        "discard_orphaned_staging",
+        "--discard-orphaned-staging",
+    );
     let mut expected = Expect::clean(&dep)?.attention();
     expected.set(
         "publication.staging",
@@ -1275,7 +1326,7 @@ fn orphaned_root_temps_are_listed_with_discard_action() -> TestResult {
         b"temp-root",
     )?;
     let report = inspect_read_only("orphaned root temps", &dep)?;
-    let aff = not_yet("discard_orphaned_temps", Some("objects"), None);
+    let aff = recover(&dep, "discard_orphaned_temps", "--discard-orphaned-temps");
     let mut expected = Expect::clean(&dep)?.attention();
     expected.set(
         "publication.roots",
@@ -1448,8 +1499,8 @@ fn failed_linkage_replay_is_unknown_never_clean() -> TestResult {
     Ok(())
 }
 
-fn indeterminate_check(ids: &[String], total: u64) -> String {
-    let aff = not_yet("reconcile_effects", Some("effects"), None);
+fn indeterminate_check(dep: &Path, ids: &[String], total: u64) -> String {
+    let aff = recover(dep, "reconcile_effects", "--reconcile-effects");
     let mut fields = vec![
         ("counts", obligations_counts(total, 0, total, total)),
         ("indeterminate_operations", list(ids)),
@@ -1493,7 +1544,7 @@ fn indeterminate_obligation_is_listed_with_reconcile_action() -> TestResult {
     )?;
     expected.set(
         "effects.obligations",
-        indeterminate_check(&["op:doctor-test:0".to_owned()], 1),
+        indeterminate_check(&dep, &["op:doctor-test:0".to_owned()], 1),
     )?;
     assert_eq!(report.to_json(), expected.json());
     Ok(())
@@ -1509,7 +1560,7 @@ fn id_lists_are_bounded_with_total_and_continuation() -> TestResult {
     let listed: Vec<String> = all.into_iter().take(32).collect();
     assert_eq!(
         check_json(&report, "effects.obligations")?,
-        indeterminate_check(&listed, 80)
+        indeterminate_check(&dep, &listed, 80)
     );
     Ok(())
 }
@@ -1645,8 +1696,14 @@ fn repair_sidecars_are_split_by_journal() -> TestResult {
     fs::write(effects_dir.join(&effects_temp), b"t")?;
 
     let report = inspect_read_only("sidecars", &dep)?;
-    let ledger_aff = not_yet("rerun_apply_ledger_repair", Some("ledger"), None);
-    let effects_aff = not_yet("rerun_apply_effects_repair", Some("effects"), None);
+    // Neither journal has foreign bytes left, so no fss-lab recover action addresses the
+    // leftover repair temps (fss-93udx).
+    let leftover_aff = owner(
+        "inspect_leftover_repair_temps",
+        LEFTOVER_REPAIR_TEMPS_DETAIL,
+    );
+    let ledger_aff = leftover_aff.clone();
+    let effects_aff = leftover_aff;
     let mut expected = Expect::clean(&dep)?.attention();
     expected.set(
         "ledger.sidecars",
@@ -1703,6 +1760,67 @@ fn repair_sidecars_are_split_by_journal() -> TestResult {
         ),
     )?;
     assert_eq!(report.to_json(), expected.json());
+    Ok(())
+}
+
+#[test]
+fn leftover_repair_temps_with_a_pending_plan_name_the_rerun_apply_command() -> TestResult {
+    let dep = init("sidecars_pending_plan")?;
+    let ledger_path = dep.join(RELATIVE_PATH_LEDGER);
+    append_bytes(&ledger_path, b"FOREIGN_GARBAGE_BYTES_WITHOUT_MAGIC")?;
+    let ledger_temp = format!("{}.tmp.1234.0", hex64(b"interrupted-apply"));
+    fs::write(dep.join("ledger").join(&ledger_temp), b"t")?;
+
+    let report = inspect_read_only("sidecars pending plan", &dep)?;
+    let j = journal(&ledger_path)?;
+    let plan = fss_ledger::doctor(&j.bytes)?
+        .plan(&ledger_path)?
+        .plan_digest()
+        .to_string();
+    // The interrupted apply is completed by rerunning it with the journal's current sealed plan.
+    let aff = recover(
+        &dep,
+        "rerun_apply_ledger_repair",
+        &format!("--apply-ledger-repair {plan}"),
+    );
+    assert_eq!(
+        check_json(&report, "ledger.sidecars")?,
+        check(
+            "ledger.sidecars",
+            "leftover_repair_temps",
+            "attention",
+            &[
+                (
+                    "counts",
+                    nums(&[("leftover_repair_temps", 1), ("quarantine_sidecars", 0)]),
+                ),
+                ("leftover_repair_temps", list(&[ledger_temp])),
+                ("leftover_repair_temps_total", "1".to_owned()),
+            ],
+            &[finding(
+                "leftover_repair_temps",
+                "attention",
+                Some(1),
+                Some(&aff),
+            )],
+            Some(&aff),
+        )
+    );
+    assert_eq!(
+        check_json(&report, "ledger.journal")?,
+        foreign_check(
+            &dep,
+            "ledger.journal",
+            &ledger_path,
+            "apply_ledger_repair",
+            "--apply-ledger-repair",
+        )?
+    );
+    // The effects journal has no foreign bytes, so its sidecars stay clean.
+    assert_eq!(
+        check_json(&report, "effects.sidecars")?,
+        sidecars_clean("effects.sidecars")
+    );
     Ok(())
 }
 

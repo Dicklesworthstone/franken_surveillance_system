@@ -6,7 +6,10 @@
 
 mod crash_matrix;
 mod file_activity;
+mod recover;
 mod scenario;
+mod scene;
+mod sim_provider;
 
 use std::env;
 use std::fs;
@@ -15,7 +18,10 @@ use std::process::ExitCode;
 
 #[cfg(test)]
 use fss_cli::{ArgToken, parse_lab_tokens};
-use fss_cli::{LabAction, emit_diagnostic, lab_help_text, parse_lab_args};
+use fss_cli::{
+    LabAction, RecoverRequest, emit_diagnostic, lab_help_text, lab_recover_diagnostic,
+    parse_lab_args,
+};
 use scenario::{ScenarioKind, run_scenario};
 
 const ALL_SCENARIOS: [ScenarioKind; 6] = [
@@ -29,6 +35,11 @@ const ALL_SCENARIOS: [ScenarioKind; 6] = [
 
 fn main() -> ExitCode {
     match parse_lab_args(env::args_os().skip(1)) {
+        Ok(LabAction::Recover {
+            root,
+            request,
+            json,
+        }) => recover_command(&root, &request, json),
         Ok(action) => match run_action(action) {
             Ok(output) => {
                 println!("{output}");
@@ -81,6 +92,66 @@ fn run_action(action: LabAction) -> Result<String, String> {
             check_root_empty(&root)?;
             crash_matrix_command(&scenario, json, &root)
         }
+        LabAction::Recover {
+            root,
+            request,
+            json,
+        } => {
+            let report = recover::run(&root, &request);
+            let rendered = render_recover(&report, json);
+            match report.outcome() {
+                recover::RecoverOutcome::Refused(refusal) => Err(format!(
+                    "{}: {}: {rendered}",
+                    refusal.error_id(),
+                    refusal.code()
+                )),
+                recover::RecoverOutcome::Failed(reason) => Err(format!("recover failed: {reason}")),
+                recover::RecoverOutcome::Indeterminate(reason) => Err(format!(
+                    "recover indeterminate: {reason}; reopen to reconcile: {rendered}"
+                )),
+                _ => Ok(rendered),
+            }
+        }
+    }
+}
+
+fn render_recover(report: &recover::RecoverReport, json: bool) -> String {
+    if json {
+        report.render_json()
+    } else {
+        report.render_text()
+    }
+}
+
+/// `fss-lab recover`: the report always goes to stdout. A typed refusal exits 6
+/// (`EXIT-LAB-RECOVER-REFUSED-006`) with an `fss.cli_diagnostic.v1` line naming the
+/// `ERR-LAB-RECOVER-*` identity on stderr; a failure without a registered refusal, or an
+/// indeterminate outcome (the store is poisoned and must be reopened), exits 1.
+fn recover_command(root: &Path, request: &RecoverRequest, json: bool) -> ExitCode {
+    let report = recover::run(root, request);
+    println!("{}", render_recover(&report, json));
+    match report.outcome() {
+        recover::RecoverOutcome::Refused(refusal) => {
+            eprintln!(
+                "fss-lab: error[{}]: {}: recover refused on {}",
+                refusal.error_id(),
+                refusal.code(),
+                root.display()
+            );
+            eprintln!("{}", lab_recover_diagnostic(refusal.error_id(), root));
+            ExitCode::from(fss_cli::ExitIdentity::LAB_RECOVER_REFUSED.code)
+        }
+        recover::RecoverOutcome::Failed(reason) => {
+            eprintln!("fss-lab: recover failed: {reason}");
+            ExitCode::from(1)
+        }
+        recover::RecoverOutcome::Indeterminate(reason) => {
+            eprintln!(
+                "fss-lab: recover indeterminate: {reason}; the store is poisoned, reopen to reconcile"
+            );
+            ExitCode::from(1)
+        }
+        _ => ExitCode::SUCCESS,
     }
 }
 
@@ -277,21 +348,71 @@ mod tests {
     /// SHA-256 and length of the exact `fss-lab matrix` stdout line (without the trailing
     /// newline) produced by origin/main d958255, before the executor-backed observation
     /// variant existed (fss-2h5zq.51; the `lab_matrix_baseline_sha256` of fss-2h5zq.12).
+    /// Re-measured unchanged on origin/main e4c68b7 before fss-2h5zq.55.
     const MAIN_MATRIX_SHA256: &str =
         "sha256:aa5923d94cc427c524c0d2172cbf53a91fb8c4c81f77c073949284e463c8ac0e";
     const MAIN_MATRIX_BYTES: usize = 8621;
 
+    /// The exact `sneaky` report inside that main matrix (scripted `cam-side` drop at tick 2),
+    /// recorded from origin/main e4c68b7. Since fss-2h5zq.55 sneaky derives its gap from the
+    /// scene geometry, so only its bytes change; splicing this report back in place of the new
+    /// one must reproduce the main matrix byte for byte, which proves the other five reports
+    /// (and the matrix framing) are unchanged.
+    const MAIN_SNEAKY_REPORT: &str = concat!(
+        r#"{"schema":"fss.lab.scenario.v2","scenario":"sneaky","ledger_sequence":2"#,
+        r#","anchor_sequence":2"#,
+        r#","ledger_anchor_root":"sha256:14fdc97ae2228310d89ef43c5cf01c721fd50a65da3ec115d00c8a1356727dc3""#,
+        r#","anchor_root":"sha256:14fdc97ae2228310d89ef43c5cf01c721fd50a65da3ec115d00c8a1356727dc3""#,
+        r#","publication_root":"sha256:45dde405cf9c585aea03959707ce067b1db4813dc756c53203b6bea0a91d2fdd""#,
+        r#","source_root":"sha256:45dde405cf9c585aea03959707ce067b1db4813dc756c53203b6bea0a91d2fdd""#,
+        r#","envelope":"protected_residual","event_disposition":"protected_residual""#,
+        r#","absence_certified":false,"transient_indeterminate":false,"effect_state":null"#,
+        r#","obligation_state":null"#,
+        r#","knowledge":{"absence":{"not_certifiable":"coverage_gap"}"#,
+        r#","corroboration":"single_source","coverage_gaps":["cam-side:2"]}"#,
+        r#","affordances":[{"class":"probe""#,
+        r#","operation":"investigate.hydrate_adjacent_sensor""#,
+        r#","reason":"a material person hypothesis remains without independent corroboration"}"#,
+        r#",{"class":"observe","operation":"session.follow""#,
+        r#","reason":"wait for a discriminating observation while preserving the residual"}]"#,
+        r#","warnings":["coverage_gap:cam-side:2"]"#,
+        r#","situation_digest":"sha256:567a96d7216918cf09691693c4c3f0117e9c969332f639a0ee76ccc49075e00e""#,
+        r#","handoff_digest":"sha256:b6a5c5e9693d158ae7215ab158019db50917a54743d6fa36f966d01c4e6da3b7""#,
+        r#","crate_generations":{"fss-cli":"0.0.1","fss-core":"0.0.1""#,
+        r#","fss-geometry":"0.0.1","fss-ledger":"0.0.1","fss-model-ir":"0.0.1""#,
+        r#","fss-object":"0.0.1","fss-packet":"0.0.1","fss-publication":"0.0.1""#,
+        r#","fss-reference":"0.0.1","fss-tensor":"0.0.1","fss-twin":"0.0.1"}}"#,
+    );
+    const MAIN_SNEAKY_REPORT_SHA256: &str =
+        "sha256:37a3ee18ff78d17d4d89262289399aafc665d98a85376528854c0ec448ca9f75";
+
     #[test]
-    fn six_mock_scenario_matrix_is_byte_identical_to_main() {
+    fn five_mock_scenarios_are_byte_identical_to_main_and_only_sneaky_changes() {
+        assert_eq!(
+            fss_core::ContentDigest::sha256(MAIN_SNEAKY_REPORT.as_bytes()).to_string(),
+            MAIN_SNEAKY_REPORT_SHA256
+        );
         let root = temp_root("mat-baseline");
         let matrix = render_matrix(&root);
         let _ = std::fs::remove_dir_all(&root);
         let matrix = matrix.unwrap_or_default();
-        assert_eq!(matrix.len(), MAIN_MATRIX_BYTES);
+        let start = matrix
+            .find("{\"schema\":\"fss.lab.scenario.v2\",\"scenario\":\"sneaky\"")
+            .unwrap_or(matrix.len());
+        let end = matrix
+            .find(",{\"schema\":\"fss.lab.scenario.v2\",\"scenario\":\"lost-ack\"")
+            .unwrap_or(matrix.len());
+        assert!(start < end, "sneaky report not found in the matrix");
+        let sneaky = &matrix[start..end];
+        assert!(sneaky.contains("\"geometric_coverage\":{\"basis_digest\":"));
+        assert_ne!(sneaky, MAIN_SNEAKY_REPORT);
+        let spliced = format!("{}{MAIN_SNEAKY_REPORT}{}", &matrix[..start], &matrix[end..]);
+        assert_eq!(spliced.len(), MAIN_MATRIX_BYTES);
         assert_eq!(
-            fss_core::ContentDigest::sha256(matrix.as_bytes()).to_string(),
+            fss_core::ContentDigest::sha256(spliced.as_bytes()).to_string(),
             MAIN_MATRIX_SHA256
         );
+        assert_eq!(matrix.matches("geometric_coverage").count(), 1);
         assert!(!matrix.contains("file-activity"));
         assert!(!matrix.contains("\"executor\""));
     }

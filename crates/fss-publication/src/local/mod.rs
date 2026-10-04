@@ -90,9 +90,9 @@ use std::sync::Arc;
 
 use fss_core::{CanonicalEncode, ContentDigest, TombstoneRecord};
 use fss_object::{
-    HostSpoolIo, MAX_INTERRUPTED_ATTEMPTS, MAX_MANIFEST_CHILDREN, ObjectManifest, SpoolError,
-    SpoolInspection, SpoolIo, SpoolLimits, SpoolObjectState, SpoolRecoveryReport, StagingSpool,
-    VerifiedObjectCatalog,
+    DiscardReceipt, HostSpoolIo, MAX_INTERRUPTED_ATTEMPTS, MAX_MANIFEST_CHILDREN, ObjectManifest,
+    SpoolError, SpoolInspection, SpoolIo, SpoolLimits, SpoolObjectState, SpoolRecoveryReport,
+    StagingSpool, VerifiedObjectCatalog,
 };
 
 pub use error::{
@@ -1314,6 +1314,31 @@ impl LocalRootPublisher {
                 .map_err(|error| io_error(LocalIoOperation::SyncDirectory, directory, &error))?;
         }
         Ok(removed)
+    }
+
+    /// Removes exactly the orphaned staging files the owned spool classified on open, through
+    /// [`StagingSpool::discard_orphaned_staging`] (fss-vmau3). Spool objects, root records,
+    /// tombstones, and foreign entries are never touched.
+    ///
+    /// The spool's contract is kept unchanged: every removal it released is fsynced before this
+    /// returns, a settled failure leaves the remaining orphans charged and listed, and an outcome
+    /// that cannot be observed ([`SpoolError::DiscardIndeterminate`], or an accounting overflow)
+    /// poisons the spool. Such a failure also poisons this publisher, so every later mutating
+    /// call fails until a reopen reclassifies the staging directory; a retry can never report an
+    /// empty success for removals that may not be durable.
+    pub fn discard_orphaned_staging(&mut self) -> Result<DiscardReceipt, LocalPublicationError> {
+        self.require_live()?;
+        self.spool.discard_orphaned_staging().map_err(|error| {
+            if matches!(
+                error,
+                SpoolError::DiscardIndeterminate { .. }
+                    | SpoolError::AccountingOverflow
+                    | SpoolError::Poisoned
+            ) {
+                self.poisoned = true;
+            }
+            LocalPublicationError::Spool(error)
+        })
     }
 
     /// Every orphaned temporary record this instance currently knows, in path order: those

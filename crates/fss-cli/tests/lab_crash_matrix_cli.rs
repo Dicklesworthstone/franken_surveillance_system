@@ -205,6 +205,10 @@ fn the_json_document_has_one_row_per_fault_point_and_the_exit_code_follows_the_v
             "tail_state",
             "obligations",
             "recovery_actions",
+            "operator_actions",
+            "operator_expected",
+            "operator_outcome",
+            "operator_note",
             "rerun",
             "duplicate_effects",
             "contract",
@@ -242,6 +246,100 @@ fn the_json_document_has_one_row_per_fault_point_and_the_exit_code_follows_the_v
         let ran = !row.contains("\"observed_class\":\"not_applicable\"");
         assert_eq!(root.join(slug).is_dir(), ran, "{slug}");
         assert_eq!(root.join("rerun").join(slug).is_dir(), ran, "{slug}");
+    }
+
+    // Every row names its operator step; the effect rows name --reconcile-effects.
+    for (slug, actions) in [
+        ("effect.lost_ack", "[\"--reconcile-effects\"]"),
+        (
+            "effect.after_commit_before_dispatch",
+            "[\"--reconcile-effects\"]",
+        ),
+        (
+            "append.body_write",
+            "[\"--truncate-incomplete-tail ledger\"]",
+        ),
+        (
+            "publish.after_root_temp_write",
+            "[\"--discard-orphaned-temps\"]",
+        ),
+        (
+            "cancel.dispatch_alert",
+            "[\"--discard-orphaned-temps\",\"--discard-orphaned-staging\",\"--reconcile-effects\"]",
+        ),
+    ] {
+        let row = rows
+            .iter()
+            .find(|row| row.starts_with(&format!("\"{slug}\"")))
+            .ok_or(slug)?;
+        assert!(
+            row.contains(&format!("\"recovery_actions\":{actions}")),
+            "{slug}: {row}"
+        );
+    }
+
+    // A separate `fss-lab recover` process reconciles the lost acknowledgement of the crashed
+    // corpus (copied, so the corpus stays untouched) only from the durable simulated provider
+    // record: verified, and a rerun has nothing to do.
+    let lost_ack = dir.0.join("lost-ack-copy");
+    copy_tree(&root.join("effect.lost_ack"), &lost_ack)?;
+    assert!(
+        lost_ack
+            .join("effects")
+            .join("simulated_provider.fssj")
+            .is_file()
+    );
+    let output = recover_effects(&lost_ack)?;
+    let report = String::from_utf8(output.stdout)?;
+    assert_eq!(output.status.code(), Some(0), "{report}");
+    assert!(report.contains("\"outcome\":\"applied\""), "{report}");
+    assert!(
+        report.contains("\"observation\":\"delivered_ack_lost\",\"to\":\"verified\""),
+        "{report}"
+    );
+    assert!(report.contains("\"indeterminate\":0"), "{report}");
+    let output = recover_effects(&lost_ack)?;
+    assert_eq!(output.status.code(), Some(6));
+    assert!(String::from_utf8(output.stderr)?.contains("ERR-LAB-RECOVER-NOTHING-TO-DO-001"));
+
+    // The commit that never reached the provider has no observation: it stays indeterminate.
+    let unobserved = dir.0.join("unobserved-copy");
+    copy_tree(
+        &root.join("effect.after_commit_before_dispatch"),
+        &unobserved,
+    )?;
+    let output = recover_effects(&unobserved)?;
+    let report = String::from_utf8(output.stdout)?;
+    assert_eq!(output.status.code(), Some(0), "{report}");
+    assert!(
+        report.contains("\"outcome\":\"indeterminate_remains\""),
+        "{report}"
+    );
+    assert!(
+        report.contains("\"observation\":\"none\",\"to\":\"indeterminate\""),
+        "{report}"
+    );
+    assert!(report.contains("\"indeterminate\":1"), "{report}");
+    Ok(())
+}
+
+fn recover_effects(root: &Path) -> TestResult<Output> {
+    Ok(Command::new(env!("CARGO_BIN_EXE_fss-lab"))
+        .args(["recover", "--reconcile-effects", "--json", "--root"])
+        .arg(root)
+        .output()?)
+}
+
+fn copy_tree(from: &Path, to: &Path) -> TestResult {
+    std::fs::create_dir_all(to)?;
+    for entry in std::fs::read_dir(from)? {
+        let entry = entry?;
+        let target = to.join(entry.file_name());
+        if entry.file_type()?.is_dir() {
+            copy_tree(&entry.path(), &target)?;
+        } else {
+            std::fs::copy(entry.path(), &target)?;
+        }
     }
     Ok(())
 }

@@ -576,6 +576,7 @@ impl LocalPublicationError {
             Self::Spool(error) => match error {
                 SpoolError::InjectedCrash { .. }
                 | SpoolError::StageIndeterminate { .. }
+                | SpoolError::DiscardIndeterminate { .. }
                 | SpoolError::Poisoned => LocalPublicationGuidance::ReopenAndReconcile,
                 SpoolError::Locked { .. } => LocalPublicationGuidance::WaitForOwner,
                 _ => LocalPublicationGuidance::RepairStorage,

@@ -4,7 +4,11 @@
 use std::ffi::OsString;
 use std::path::PathBuf;
 
-use crate::error::CliError;
+use fss_core::ContentDigest;
+
+use crate::diagnostic::escape_json_str;
+use crate::error::{CliError, ExitIdentity};
+use crate::redact::redact_value_or_digest;
 use crate::token::{ArgToken, is_option_shaped, tokenize_os_args};
 
 /// Closed registry of recognized laboratory scenario identifiers. `file-activity` (fss-2h5zq.51)
@@ -53,6 +57,16 @@ pub enum LabAction {
         /// Emit the JSON document instead of the human table.
         json: bool,
     },
+    /// Apply explicit operator recovery actions to a deployment root
+    /// (`fss.lab.recover_report.v1`, fss-2h5zq.15).
+    Recover {
+        /// Deployment root to recover.
+        root: PathBuf,
+        /// The explicit actions requested; never empty.
+        request: RecoverRequest,
+        /// Emit the JSON report instead of the human summary.
+        json: bool,
+    },
     /// Replay a scenario N times to prove determinism.
     Replay {
         /// Selected scenario identifier.
@@ -68,9 +82,10 @@ pub enum LabAction {
 #[must_use]
 pub const fn help_text() -> &'static str {
     "fss-lab — deterministic reference surveillance laboratory\n\n\
-USAGE\n  fss-lab list\n  fss-lab run <scenario> --root <dir>\n  fss-lab matrix --root <dir>\n  fss-lab replay <scenario> --root <dir> [--repeat N]\n  fss-lab self-test --root <dir>\n  fss-lab crash-matrix --root <dir> [--scenario intrusion] [--json]\n\n\
+USAGE\n  fss-lab list\n  fss-lab run <scenario> --root <dir>\n  fss-lab matrix --root <dir>\n  fss-lab replay <scenario> --root <dir> [--repeat N]\n  fss-lab self-test --root <dir>\n  fss-lab crash-matrix --root <dir> [--scenario intrusion] [--json]\n  fss-lab recover --root <dir> <action>... [--json]\n\n\
 SCENARIOS\n  quiet           complete coverage and a certified absence\n  raccoon         benign wildlife with no alert effect\n  intrusion       independently corroborated person and verified alert\n  sneaky          material person residual plus an observability gap\n  lost-ack        indeterminate alert dispatch resolved by reconciliation\n  corrupt-source  source corruption detected before evidence publication\n  file-activity   recorded JPEG frames scored by the real scalar executor (run/replay only)\n\n\
-CRASH MATRIX\n  Injects one in-process fault per publish cut point, ledger cut point, journal append phase,\n  lost alert acknowledgement and cancellation stage, reopens each sub-root, and compares the\n  recovery class with the documented one. Exit 0 when the verdict is pass, 1 otherwise.\n  In-process injection is not process death or power loss.\n"
+CRASH MATRIX\n  Injects one in-process fault per publish cut point, ledger cut point, journal append phase,\n  lost alert acknowledgement and cancellation stage, reopens each sub-root, and compares the\n  recovery class with the documented one. Exit 0 when the verdict is pass, 1 otherwise.\n  In-process injection is not process death or power loss.\n\n\
+RECOVER\n  Explicit operator recovery of a deployment root; every action is named, nothing is implicit:\n    --truncate-incomplete-tail ledger|effects   drop an incomplete journal tail\n    --plan-ledger-repair | --plan-effects-repair  print the sealed foreign-byte repair plan and\n                                                its digest; read-only, changes nothing\n    --apply-ledger-repair <digest>              apply only the plan with exactly this digest\n    --apply-effects-repair <digest>\n    --discard-orphaned-temps                    remove root temps an interrupted publish left\n    --discard-orphaned-staging                  remove staging files an interrupted ingest left\n    --reconcile-effects                         resolve indeterminate alerts only from the lab's\n                                                durable simulated provider record; never retries\n  Mutating actions hold <root>/objects/LOCK and run in a fixed order: ledger bytes, effect\n  bytes, a reopen check, orphan discards, effect reconciliation. Refusals exit 6 with\n  ERR-LAB-RECOVER-* identities (root locked, nothing to do, plan mismatch, corrupt history).\n  An indeterminate staging discard exits 1 and needs a reopen. The simulated provider is not a\n  real vendor.\n"
 }
 
 /// Scenarios the crash matrix has an expected-class table for.
@@ -118,6 +133,7 @@ pub fn parse_lab_tokens(tokens: &[ArgToken]) -> Result<LabAction, CliError> {
         "run" => parse_run_command(tokens),
         "replay" => parse_replay_command(tokens),
         "crash-matrix" => parse_crash_matrix_command(tokens),
+        "recover" => parse_recover_command(tokens),
         unknown => {
             if unknown.starts_with('-') {
                 Err(CliError::UnknownOption {
@@ -612,6 +628,311 @@ fn parse_crash_matrix_command(tokens: &[ArgToken]) -> Result<LabAction, CliError
     Ok(LabAction::CrashMatrix {
         root,
         scenario: scenario.unwrap_or_else(|| "intrusion".to_owned()),
+        json,
+    })
+}
+
+/// Journal an explicit `fss-lab recover` byte action targets.
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Ord, PartialOrd)]
+pub enum RecoverJournal {
+    /// The authority ledger journal (`ledger/journal.fssj`).
+    Ledger,
+    /// The durable effect journal (`effects/journal.fssj`).
+    Effects,
+}
+
+impl RecoverJournal {
+    /// Stable spelling, as the doctor's affordance targets name it.
+    #[must_use]
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::Ledger => "ledger",
+            Self::Effects => "effects",
+        }
+    }
+}
+
+/// The explicit actions one `fss-lab recover` invocation requests (fss-2h5zq.15).
+///
+/// Nothing is implied: an action runs only when it is named here. The binary runs the mutating
+/// actions in one fixed order (ledger bytes, effect bytes, a reopen check, orphan discards,
+/// effect reconciliation), whatever order the flags were given in.
+#[derive(Clone, Debug, Default, Eq, PartialEq)]
+pub struct RecoverRequest {
+    /// `--truncate-incomplete-tail <journal>`.
+    pub truncate_incomplete_tail: Option<RecoverJournal>,
+    /// `--plan-ledger-repair` or `--plan-effects-repair`: read-only, exclusive with every other
+    /// action.
+    pub plan_repair: Option<RecoverJournal>,
+    /// `--apply-ledger-repair <digest>`.
+    pub apply_ledger_repair: Option<ContentDigest>,
+    /// `--apply-effects-repair <digest>`.
+    pub apply_effects_repair: Option<ContentDigest>,
+    /// `--discard-orphaned-temps`.
+    pub discard_orphaned_temps: bool,
+    /// `--discard-orphaned-staging`.
+    pub discard_orphaned_staging: bool,
+    /// `--reconcile-effects`.
+    pub reconcile_effects: bool,
+}
+
+impl RecoverRequest {
+    /// Whether no action is requested.
+    #[must_use]
+    pub fn is_empty(&self) -> bool {
+        self == &Self::default()
+    }
+
+    /// Whether any action other than a read-only plan is requested.
+    #[must_use]
+    pub const fn mutates(&self) -> bool {
+        self.truncate_incomplete_tail.is_some()
+            || self.apply_ledger_repair.is_some()
+            || self.apply_effects_repair.is_some()
+            || self.discard_orphaned_temps
+            || self.discard_orphaned_staging
+            || self.reconcile_effects
+    }
+
+    /// The requested actions spelled as `fss-lab recover` flags, in the fixed execution order.
+    #[must_use]
+    pub fn flags(&self) -> Vec<String> {
+        let mut flags = Vec::new();
+        if let Some(journal) = self.plan_repair {
+            flags.push(format!("--plan-{}-repair", journal.as_str()));
+        }
+        if self.truncate_incomplete_tail == Some(RecoverJournal::Ledger) {
+            flags.push("--truncate-incomplete-tail ledger".to_owned());
+        }
+        if let Some(digest) = self.apply_ledger_repair {
+            flags.push(format!("--apply-ledger-repair {digest}"));
+        }
+        if self.truncate_incomplete_tail == Some(RecoverJournal::Effects) {
+            flags.push("--truncate-incomplete-tail effects".to_owned());
+        }
+        if let Some(digest) = self.apply_effects_repair {
+            flags.push(format!("--apply-effects-repair {digest}"));
+        }
+        if self.discard_orphaned_temps {
+            flags.push("--discard-orphaned-temps".to_owned());
+        }
+        if self.discard_orphaned_staging {
+            flags.push("--discard-orphaned-staging".to_owned());
+        }
+        if self.reconcile_effects {
+            flags.push("--reconcile-effects".to_owned());
+        }
+        flags
+    }
+}
+
+/// Execution-phase `fss.cli_diagnostic.v1` line for a refused `fss-lab recover` action.
+///
+/// The exit identity is always [`ExitIdentity::LAB_RECOVER_REFUSED`]; `error_id` (one of the
+/// `ERR-LAB-RECOVER-*` identities) says why. Only `recover_root_locked` is retryable unchanged,
+/// after the lock holder exits.
+#[must_use]
+pub fn lab_recover_diagnostic(error_id: &str, root: &std::path::Path) -> String {
+    let exit = ExitIdentity::LAB_RECOVER_REFUSED;
+    let retryable = error_id == crate::error::ERR_LAB_RECOVER_ROOT_LOCKED;
+    let recovery_class = if retryable {
+        "backoff"
+    } else {
+        "operator_action_required"
+    };
+    let input = redact_value_or_digest(&root.to_string_lossy());
+    format!(
+        "{{\"schema\":\"fss.cli_diagnostic.v1\",\"phase\":\"execution\",\"binary\":\"fss-lab\",\"command\":\"recover\",\"argument_index\":null,\"redacted_input\":\"{}\",\"error_id\":\"{}\",\"exit_id\":\"{}\",\"exit_code\":{},\"contract_basis\":\"fss/1\",\"effect_started\":false,\"retryable\":{retryable},\"recovery_class\":\"{recovery_class}\",\"correlation_id\":\"corr-fss-lab-{}\",\"proof_handle\":\"fss://proof/cli/recover-refusal\"}}",
+        escape_json_str(&input),
+        escape_json_str(error_id),
+        exit.identifier,
+        exit.code,
+        escape_json_str(error_id),
+    )
+}
+
+const RECOVER_ACTIONS: &str = "--truncate-incomplete-tail, --plan-ledger-repair, --plan-effects-repair, --apply-ledger-repair, --apply-effects-repair, --discard-orphaned-temps, --discard-orphaned-staging or --reconcile-effects";
+
+/// One recover flag after `--name=value` splitting; `value` is `(text, argument index)`.
+fn recover_value<'a>(
+    tokens: &'a [ArgToken],
+    idx: &mut usize,
+    name: &str,
+    inline: Option<&'a str>,
+) -> Result<(&'a str, usize), CliError> {
+    let expected = match name {
+        "--root" => "directory path",
+        "--truncate-incomplete-tail" => "one of: ledger, effects",
+        _ => "repair plan digest (sha256:<64 lowercase hex>)",
+    };
+    let missing = || CliError::MissingValue {
+        option: name.to_owned(),
+        command: Some("recover".to_owned()),
+        expected: expected.to_owned(),
+    };
+    let tok = &tokens[*idx];
+    if let Some(value) = inline {
+        return Ok((value, tok.index));
+    }
+    let val_tok = tokens.get(*idx + 1).ok_or_else(missing)?;
+    if is_option_shaped(val_tok.as_str()) {
+        return Err(missing());
+    }
+    *idx += 1;
+    Ok((val_tok.raw.as_str(), val_tok.index))
+}
+
+fn parse_recover_command(tokens: &[ArgToken]) -> Result<LabAction, CliError> {
+    const COMMAND: &str = "recover";
+    let mut root: Option<PathBuf> = None;
+    let mut json = false;
+    let mut request = RecoverRequest::default();
+    let mut idx = 1;
+
+    while idx < tokens.len() {
+        let tok = &tokens[idx];
+        let raw = tok.as_str();
+        let duplicate = |option: &str| CliError::DuplicateOption {
+            option: option.to_owned(),
+            command: Some(COMMAND.to_owned()),
+            index: tok.index,
+        };
+        let (name, inline) = match raw.split_once('=') {
+            Some((name, value)) if name.starts_with("--") => (name, Some(value)),
+            _ => (raw, None),
+        };
+        match name {
+            "--root" => {
+                let (value, index) = recover_value(tokens, &mut idx, name, inline)?;
+                if root.is_some() {
+                    return Err(duplicate(name));
+                }
+                root = Some(parse_root_value(value, index, Some(COMMAND))?);
+            }
+            "--truncate-incomplete-tail" => {
+                let (value, index) = recover_value(tokens, &mut idx, name, inline)?;
+                if request.truncate_incomplete_tail.is_some() {
+                    return Err(duplicate(name));
+                }
+                request.truncate_incomplete_tail = Some(match value {
+                    "ledger" => RecoverJournal::Ledger,
+                    "effects" => RecoverJournal::Effects,
+                    _ => {
+                        return Err(CliError::MalformedValue {
+                            option: name.to_owned(),
+                            value: value.to_owned(),
+                            reason: "expected one of: ledger, effects".to_owned(),
+                            command: Some(COMMAND.to_owned()),
+                            index,
+                        });
+                    }
+                });
+            }
+            "--apply-ledger-repair" | "--apply-effects-repair" => {
+                let (value, index) = recover_value(tokens, &mut idx, name, inline)?;
+                let digest =
+                    value
+                        .parse::<ContentDigest>()
+                        .map_err(|_| CliError::MalformedValue {
+                            option: name.to_owned(),
+                            value: value.to_owned(),
+                            reason: "expected a repair plan digest sha256:<64 lowercase hex>"
+                                .to_owned(),
+                            command: Some(COMMAND.to_owned()),
+                            index,
+                        })?;
+                let slot = if name == "--apply-ledger-repair" {
+                    &mut request.apply_ledger_repair
+                } else {
+                    &mut request.apply_effects_repair
+                };
+                if slot.is_some() {
+                    return Err(duplicate(name));
+                }
+                *slot = Some(digest);
+            }
+            "--plan-ledger-repair"
+            | "--plan-effects-repair"
+            | "--discard-orphaned-temps"
+            | "--discard-orphaned-staging"
+            | "--reconcile-effects"
+            | "--json" => {
+                if inline.is_some() {
+                    return Err(CliError::MalformedValue {
+                        option: name.to_owned(),
+                        value: raw.to_owned(),
+                        reason: format!("{name} takes no value"),
+                        command: Some(COMMAND.to_owned()),
+                        index: tok.index,
+                    });
+                }
+                let already = match name {
+                    "--plan-ledger-repair" | "--plan-effects-repair" => {
+                        let seen = request.plan_repair.is_some();
+                        request.plan_repair = Some(if name == "--plan-ledger-repair" {
+                            RecoverJournal::Ledger
+                        } else {
+                            RecoverJournal::Effects
+                        });
+                        seen
+                    }
+                    "--discard-orphaned-temps" => {
+                        std::mem::replace(&mut request.discard_orphaned_temps, true)
+                    }
+                    "--discard-orphaned-staging" => {
+                        std::mem::replace(&mut request.discard_orphaned_staging, true)
+                    }
+                    "--reconcile-effects" => {
+                        std::mem::replace(&mut request.reconcile_effects, true)
+                    }
+                    _ => std::mem::replace(&mut json, true),
+                };
+                if already {
+                    return Err(duplicate(name));
+                }
+            }
+            _ if raw.starts_with('-') => {
+                return Err(CliError::UnknownOption {
+                    option: raw.to_owned(),
+                    command: Some(COMMAND.to_owned()),
+                    index: tok.index,
+                });
+            }
+            _ => {
+                return Err(CliError::TrailingArgument {
+                    argument: raw.to_owned(),
+                    index: tok.index,
+                    command: Some(COMMAND.to_owned()),
+                });
+            }
+        }
+        idx += 1;
+    }
+
+    let root = root.ok_or_else(|| CliError::MissingValue {
+        option: "--root".to_owned(),
+        command: Some(COMMAND.to_owned()),
+        expected: "directory path".to_owned(),
+    })?;
+    if request.is_empty() {
+        return Err(CliError::MissingValue {
+            option: "<action>".to_owned(),
+            command: Some(COMMAND.to_owned()),
+            expected: format!("at least one explicit action: {RECOVER_ACTIONS}"),
+        });
+    }
+    if request.plan_repair.is_some() && request.mutates() {
+        // A plan is read-only and is reviewed before its digest is applied: planning and any
+        // mutating action never run in one invocation.
+        return Err(CliError::DuplicateOption {
+            option: "--plan-*-repair with a mutating action".to_owned(),
+            command: Some(COMMAND.to_owned()),
+            index: tokens.last().map_or(0, |tok| tok.index),
+        });
+    }
+    Ok(LabAction::Recover {
+        root,
+        request,
         json,
     })
 }

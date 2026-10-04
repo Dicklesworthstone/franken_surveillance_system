@@ -188,6 +188,12 @@ pub use extrinsics::{
 };
 /// Journal append phase named by [`ReferenceDeployment::fail_ledger_append_after_phase`].
 pub use fss_ledger::AppendPhase;
+/// Crash-classifying journal primitives, re-exported so the laboratory's durable simulated
+/// provider record is written and read with the same framing as the deployment journals
+/// (fss-2h5zq.15).
+pub use fss_ledger::{
+    IncompleteTailPolicy, Journal, JournalError, RepairError, inspect as inspect_journal,
+};
 pub use hydration::{
     PublishedSourceReader, ReferenceHydrationCatalog, ReferenceHydrationLimits,
     SOURCE_OBJECT_CONTENT_TYPE, SourceHydrationError, SourceObjectBinding,
