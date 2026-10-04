@@ -16,6 +16,17 @@ import threading
 import time
 from pathlib import Path
 
+# Harness-only wall bounds (fss-hszxu). They catch a hung binary or fixture thread; they are not
+# capture contracts. A stalled build worker can pause a child for tens of seconds, so they sit
+# well above every native bound below. The native owner deadline under test is --timeout-ms.
+HARNESS_TIMEOUT_S = 600
+# Native run lease for scenarios that do not exercise it (fss-capture accepts up to 600000 ms).
+GENEROUS_TIMEOUT_MS = "300000"
+# Native per-attempt connect cap; the binary's validated maximum.
+GENEROUS_CONNECT_TIMEOUT_MS = "60000"
+# The deadline scenario's deliberately short native lease.
+DEADLINE_TIMEOUT_MS = 500
+
 
 def sha(data: bytes) -> str:
     return "sha256:" + hashlib.sha256(data).hexdigest()
@@ -65,7 +76,7 @@ class Endpoint:
         self.listener = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
         self.listener.bind(("127.0.0.1", 0))
         self.listener.listen(2)
-        self.listener.settimeout(10)
+        self.listener.settimeout(HARNESS_TIMEOUT_S)
         self.requests: list[bytes] = []
         self.errors: list[BaseException] = []
         self.thread: threading.Thread | None = None
@@ -84,14 +95,14 @@ class Endpoint:
             connection.close()
             raise AssertionError("unexpected native TCP attempt")
         finally:
-            self.listener.settimeout(10)
+            self.listener.settimeout(HARNESS_TIMEOUT_S)
 
     def serve(self, response: bytes, stall: bool = False) -> None:
         def run() -> None:
             try:
                 connection, _ = self.listener.accept()
                 with connection:
-                    connection.settimeout(10)
+                    connection.settimeout(HARNESS_TIMEOUT_S)
                     request = b""
                     while not request.endswith(b"\r\n\r\n"):
                         chunk = connection.recv(512)
@@ -119,7 +130,7 @@ class Endpoint:
 
     def join(self) -> None:
         assert self.thread is not None
-        self.thread.join(12)
+        self.thread.join(HARNESS_TIMEOUT_S + 30)
         assert not self.thread.is_alive(), "bounded loopback server did not stop"
         if self.errors:
             raise self.errors[0]
@@ -131,7 +142,8 @@ class Endpoint:
 
 
 def command(args: list[str], *, success: bool | None = True) -> subprocess.CompletedProcess[str]:
-    result = subprocess.run(args, text=True, capture_output=True, timeout=25, check=False)
+    result = subprocess.run(args, text=True, capture_output=True, timeout=HARNESS_TIMEOUT_S,
+                            check=False)
     assert len(result.stdout.encode()) <= 32 * 1024 * 1024
     if success is True:
         assert result.returncode == 0, (result.returncode, result.stderr, result.stdout[-4000:])
@@ -168,7 +180,9 @@ def main() -> None:
                     "--receive-clock", sha(b"fixture receive clock"),
                     "--retention-evidence", sha(b"fixture original header/media retention"),
                     "--owner-authorized", "yes", "--plaintext", "yes", "--retain-originals", "yes",
-                    "--timeout-ms", "5000", "--read-bytes", "257"] + (extra or [])
+                    "--timeout-ms", GENEROUS_TIMEOUT_MS,
+                    "--connect-timeout-ms", GENEROUS_CONNECT_TIMEOUT_MS,
+                    "--read-bytes", "257"] + (extra or [])
 
         def preview(args: list[str], root: Path, endpoint: Endpoint) -> str:
             result = command(args)
@@ -268,13 +282,16 @@ def main() -> None:
         endpoint = Endpoint()
         root = base / "deadline"
         args = options(root, endpoint)
-        args[args.index("--timeout-ms") + 1] = "500"
+        args[args.index("--timeout-ms") + 1] = str(DEADLINE_TIMEOUT_MS)
         approval = preview(args, root, endpoint)
         endpoint.serve(b"", True)
         start = time.monotonic()
         rows = parse_rows(command(args + ["--approve", approval], success=False))
+        elapsed = time.monotonic() - start
         endpoint.join()
-        assert time.monotonic() - start < 20
+        # The refusal is the native lease firing, never an early invented EOF: it cannot precede
+        # the requested lease. The upper bound is the harness hang guard, not a latency claim.
+        assert DEADLINE_TIMEOUT_MS / 1000 <= elapsed < HARNESS_TIMEOUT_S
         finish = rows[-1]["detail"]
         assert finish["status"] == "refused" and not finish["stream_complete"]
         assert not finish["peer_eof_observed"] and finish["completion"] is None
