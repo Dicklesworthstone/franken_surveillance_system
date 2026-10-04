@@ -279,7 +279,9 @@ pub struct ReplayCx {
     state: Arc<AtomicU8>,
     checkpoints: AtomicUsize,
     io: ReplayIoAuthority,
-    cancel_at_stage: Mutex<Option<&'static str>>,
+    /// Armed cancellation target: the stage and how many more reaches of it pass before the
+    /// cancellation fires (`1` fires on the next reach).
+    cancel_at_stage: Mutex<Option<(&'static str, usize)>>,
 }
 
 impl ReplayCx {
@@ -314,8 +316,33 @@ impl ReplayCx {
     /// Injects cooperative cancellation when the specified checkpoint stage is reached.
     /// Driver/test support for cancellation-drain evidence.
     pub fn set_cancel_at_checkpoint(&self, stage: &'static str) {
+        self.set_cancel_at_checkpoint_occurrence(stage, 1);
+    }
+
+    /// Injects cooperative cancellation at the `occurrence`-th (1-based) reach of `stage`.
+    ///
+    /// Driver/test support for stages a pipeline reaches repeatedly, such as one checkpoint per
+    /// ledger batch: occurrence `k + 1` cancels after the first `k` batches. An occurrence of 0
+    /// is treated as 1.
+    pub fn set_cancel_at_checkpoint_occurrence(&self, stage: &'static str, occurrence: usize) {
         if let Ok(mut guard) = self.cancel_at_stage.lock() {
-            *guard = Some(stage);
+            *guard = Some((stage, occurrence.max(1)));
+        }
+    }
+
+    /// Counts one reach of `stage` against the armed target and requests cancellation when the
+    /// armed occurrence is reached.
+    fn arm_reach(&self, stage: &'static str) {
+        if let Ok(mut guard) = self.cancel_at_stage.lock()
+            && let Some((target, remaining)) = guard.as_mut()
+            && *target == stage
+        {
+            if *remaining <= 1 {
+                *guard = None;
+                self.request_cancellation();
+            } else {
+                *remaining -= 1;
+            }
         }
     }
 
@@ -398,12 +425,7 @@ impl ReplayCx {
     /// Returns [`ReplayAdapterError::CancellationRequested`] if cancellation was signaled.
     pub fn checkpoint(&self, _stage: &'static str) -> Result<(), ReplayAdapterError> {
         self.checkpoints.fetch_add(1, Ordering::SeqCst);
-        if let Ok(guard) = self.cancel_at_stage.lock()
-            && let Some(target) = *guard
-            && target == _stage
-        {
-            self.request_cancellation();
-        }
+        self.arm_reach(_stage);
         if self.is_cancelled() {
             self.drain_and_finalize();
             Err(ReplayAdapterError::CancellationRequested)
@@ -434,12 +456,7 @@ impl ReplayCx {
     /// but never returns an error so already-committed work is not reported as cancelled.
     pub fn checkpoint_post_commit(&self, _stage: &'static str) {
         self.checkpoints.fetch_add(1, Ordering::SeqCst);
-        if let Ok(guard) = self.cancel_at_stage.lock()
-            && let Some(target) = *guard
-            && target == _stage
-        {
-            self.request_cancellation();
-        }
+        self.arm_reach(_stage);
         if self.is_cancelled() {
             self.drain_and_finalize();
         }
@@ -451,12 +468,7 @@ impl ReplayCx {
     /// [`Self::is_cancelled`] and decides how to honor a pending cancellation at that stage.
     pub(crate) fn reach_stage(&self, _stage: &'static str) {
         self.checkpoints.fetch_add(1, Ordering::SeqCst);
-        if let Ok(guard) = self.cancel_at_stage.lock()
-            && let Some(target) = *guard
-            && target == _stage
-        {
-            self.request_cancellation();
-        }
+        self.arm_reach(_stage);
     }
 
     /// Explicit I/O authority held by this context.
