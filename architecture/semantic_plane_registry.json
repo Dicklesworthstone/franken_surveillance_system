@@ -259,6 +259,7 @@
     "crates/fss-reference/src/ingest/eventgen/lineage.rs": "support",
     "crates/fss-reference/src/ingest/eventgen/lineage_tests.rs": "support",
     "crates/fss-reference/src/ingest/file_adapter.rs": "authority",
+    "crates/fss-reference/src/ingest/file_session.rs": "authority",
     "crates/fss-reference/src/ingest/foreground.rs": "support",
     "crates/fss-reference/src/ingest/ground_visibility.rs": "support",
     "crates/fss-reference/src/ingest/ground_visibility/pose_sensitivity.rs": "support",

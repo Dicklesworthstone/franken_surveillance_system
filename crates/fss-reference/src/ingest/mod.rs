@@ -19,6 +19,8 @@ pub mod detections;
 /// Zone-gated event generation from confirmed tracks into the event plane.
 pub mod eventgen;
 pub mod file_adapter;
+/// The acquisition lifecycle of one file import, driven through the core session (ADP-FILE-001).
+pub mod file_session;
 /// Deterministic scene-model foreground detection on decoded luma planes.
 pub mod foreground;
 /// Geometric (frustum and scene-mesh occlusion) visibility of owner ground-plane zones.
@@ -67,10 +69,11 @@ pub use annexb::{
 pub use file_adapter::{
     ADP_FILE_GENERATION, ADP_FILE_ROW_ID, CaptureHint, DEFAULT_CHUNK_BYTES, DetectedFileFormat,
     FILE_IMPORT_MANIFEST_SCHEMA, FileFormatHint, FileImportManifest, FileIngestAdapter,
-    FileIngestError, FileIngestLimits, FileIngestOutcome, FileIngestReceipt, FileIngestRequest,
-    FileOmissionSpan, MAX_BATCH_DELTAS, SegmentSpan, compute_import_identity,
+    FileIngestError, FileIngestFailure, FileIngestLimits, FileIngestOutcome, FileIngestReceipt,
+    FileIngestRequest, FileOmissionSpan, MAX_BATCH_DELTAS, SegmentSpan, compute_import_identity,
     default_adapter_identity, fetch_segment_bytes, sniff_format, sniff_format_with_hint,
 };
+pub use file_session::{AcquisitionRetention, FileAcquisitionHistory, FileSessionEnding};
 pub use hevc_annexb::{HEVC_AU_GROUPING, HevcAccessUnit, HevcNal, HevcScan, split_hevc_annexb};
 pub use mjpeg::{
     JpegFinding, JpegFrameSpan, JpegProcess, JpegScan, JpegSofInfo, JpegSplitError, MjpegLimits,
