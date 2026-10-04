@@ -550,26 +550,38 @@ pub(crate) fn source_capsule(
         .segment_spans
         .get(index)
         .ok_or(RecordedDecodeError::Unavailable)?;
-    let source_batch = BatchId::parse(format!(
-        "batch:file-import:{}:c0",
-        hex(retained.import_identity())
-    ))?;
-    let batch = deployment
+    // The capsule's delta lives in one of the import's capsule batches c0..c<K-1>
+    // (fss-2h5zq.23 deterministic partition); a small import has only c0.
+    let capsule_batch_prefix = format!("batch:file-import:{}:c", hex(retained.import_identity()));
+    let capsule_batches: Vec<_> = deployment
         .ledger()
         .batches()
         .iter()
-        .find(|b| b.batch_id == source_batch)
-        .ok_or(RecordedDecodeError::Unavailable)?;
+        .filter(|b| {
+            b.batch_id
+                .as_str()
+                .strip_prefix(capsule_batch_prefix.as_str())
+                .is_some_and(|k| !k.is_empty() && k.bytes().all(|b| b.is_ascii_digit()))
+        })
+        .collect();
+    if capsule_batches.is_empty() {
+        return Err(RecordedDecodeError::Unavailable);
+    }
     let object = format!("object:capsule:{}", span.capsule_id.as_str());
-    let delta = batch
-        .deltas
+    let (batch, delta) = capsule_batches
         .iter()
-        .find(|d| {
-            d.object_id.as_str() == object
-                && d.family == "sensor_capsule"
-                && d.plane == Plane::Authority
-                && d.prior_generation.is_none()
-                && d.new_generation == 1
+        .find_map(|batch| {
+            batch
+                .deltas
+                .iter()
+                .find(|d| {
+                    d.object_id.as_str() == object
+                        && d.family == "sensor_capsule"
+                        && d.plane == Plane::Authority
+                        && d.prior_generation.is_none()
+                        && d.new_generation == 1
+                })
+                .map(|delta| (*batch, delta))
         })
         .ok_or(RecordedDecodeError::InvalidReceipt)?;
     if !batch.children.contains(&delta.payload_digest) {
