@@ -19,8 +19,10 @@
 //!
 //! Unknown is never flattened. Every writer state keeps its typed name. A failed linkage replay
 //! is `linkage_unknown` with its reason, and an exceeded limit is `over_budget` naming the limit.
-//! A recovery command that does not exist in this build is named as a `not_yet_available`
-//! affordance and never printed as a command line.
+//! A finding that an explicit operator recovery action addresses names the exact
+//! `fss-lab recover --root <dir> <action>` command line (fss-2h5zq.15, fss-93udx); the doctor
+//! itself never runs it. A recovery command that does not exist in this build is named as a
+//! `not_yet_available` affordance and never printed as a command line.
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::fmt;
@@ -61,9 +63,10 @@ pub const MAX_LAYOUT_BYTES: usize = 4096;
 /// Default bound on the entries listed from one journal directory while scanning for repair
 /// sidecars.
 pub const MAX_SIDECAR_ENTRIES: usize = 4096;
-/// Tracking bead of the explicit recovery commands (`fss-lab recover`), which do not exist in
-/// this build yet.
+/// Tracking bead of the explicit recovery actions that `fss-lab recover` does not support yet.
 pub const RECOVER_TRACKING_BEAD: &str = "fss-2h5zq.15";
+/// Binary and subcommand of the explicit operator recovery commands the doctor names.
+pub const RECOVER_COMMAND: &str = "fss-lab recover";
 /// Tracking bead of file import. Re-running an import completes an incomplete one.
 pub const IMPORT_TRACKING_BEAD: &str = "fss-2h5zq.23";
 /// Batch-id prefix of file-import batches (fss-2h5zq.23 deterministic partition:
@@ -728,6 +731,7 @@ pub fn inspect_deployment_with(
         &ledger_file,
         &ledger_read,
         tail_may_be_in_flight,
+        root,
         &rerun,
     );
     let ledger_inspection =
@@ -741,10 +745,11 @@ pub fn inspect_deployment_with(
         &effects_file,
         &effects_read,
         tail_may_be_in_flight,
+        root,
         &rerun,
     );
     let obligations_check = match effects_inspection(&effects_file, &effects_read, limits) {
-        Ok(eff_report) => obligations_check(&eff_report, limits),
+        Ok(eff_report) => obligations_check(&eff_report, root, limits),
         Err(unavailable) => unavailable.check("effects.obligations"),
     };
 
@@ -762,7 +767,7 @@ pub fn inspect_deployment_with(
             Ok(local) => (
                 staging_check(local, limits),
                 spool_check(local, limits),
-                roots_check(local, &ledger_inspection, limits),
+                roots_check(local, &ledger_inspection, root, limits),
                 unreferenced_check(local, limits),
                 tombstones_check(local, limits),
             ),
@@ -801,11 +806,14 @@ pub fn inspect_deployment_with(
     let imports_check = imports_check(&ledger_inspection, limits);
 
     // 7. Repair sidecars beside each journal
+    // An interrupted repair apply is completed by rerunning it with the journal's current
+    // sealed plan, which the journal check computed when foreign bytes remain.
     let ledger_sidecars = sidecar_check(
         "ledger.sidecars",
         JournalKind::Ledger,
         io,
         &ledger_dir,
+        pending_plan(&ledger_check).map(|plan| (root, plan)),
         limits,
     );
     let effects_sidecars = sidecar_check(
@@ -813,6 +821,7 @@ pub fn inspect_deployment_with(
         JournalKind::Effects,
         io,
         &effects_dir,
+        pending_plan(&effects_check).map(|plan| (root, plan)),
         limits,
     );
 
@@ -856,8 +865,33 @@ pub fn inspect_deployment_with(
 fn rerun_doctor(root: &Path) -> DoctorAffordance {
     DoctorAffordance::command(
         "wait_for_writer_then_rerun_doctor",
-        format!("fss doctor --json --root {}", root.display()),
+        format!("fss doctor --json --root {}", shell_path(root)),
     )
+}
+
+/// The exact `fss-lab recover --root <root> <flags>` command that performs `action`. The doctor
+/// only names it; the command takes the deployment lock and runs the action itself.
+fn recover_command(action: &str, root: &Path, flags: &str) -> DoctorAffordance {
+    DoctorAffordance::command(
+        action,
+        format!("{RECOVER_COMMAND} --root {} {flags}", shell_path(root)),
+    )
+}
+
+/// `path` as one POSIX shell word: unchanged when every character is unambiguous, otherwise
+/// single-quoted with each `'` written as `'\''`.
+fn shell_path(path: &Path) -> String {
+    let text = path.display().to_string();
+    let plain = !text.is_empty()
+        && text.chars().all(|c| {
+            c.is_ascii_alphanumeric()
+                || matches!(c, '/' | '.' | '_' | '-' | '+' | ':' | '@' | ',' | '=')
+        });
+    if plain {
+        text
+    } else {
+        format!("'{}'", text.replace('\'', "'\\''"))
+    }
 }
 
 fn select_root() -> DoctorAffordance {
@@ -1162,10 +1196,18 @@ impl JournalKind {
         }
     }
 
-    const fn repair_action(self) -> &'static str {
+    /// Action name of `fss-lab recover --apply-<target>-repair`, as its report spells it.
+    const fn apply_action(self) -> &'static str {
         match self {
-            Self::Ledger => "plan_ledger_repair_then_apply_ledger_repair",
-            Self::Effects => "plan_effects_repair_then_apply_effects_repair",
+            Self::Ledger => "apply_ledger_repair",
+            Self::Effects => "apply_effects_repair",
+        }
+    }
+
+    const fn apply_flag(self) -> &'static str {
+        match self {
+            Self::Ledger => "apply-ledger-repair",
+            Self::Effects => "apply-effects-repair",
         }
     }
 
@@ -1244,6 +1286,7 @@ fn journal_check(
     path: &Path,
     read: &JournalRead,
     tail_may_be_in_flight: bool,
+    root: &Path,
     rerun: &DoctorAffordance,
 ) -> DoctorCheck {
     let mut check = DoctorCheck::new(id);
@@ -1352,15 +1395,22 @@ fn journal_check(
                 check.field("plan_digest", text(plan_digest));
             }
             let unavailable = plan_digest.is_none();
+            let next = match &plan_digest {
+                Some(plan_digest) => recover_command(
+                    kind.apply_action(),
+                    root,
+                    &format!("--{} {plan_digest}", kind.apply_flag()),
+                ),
+                None => DoctorAffordance::owner(
+                    "owner_action",
+                    "no sealed repair plan could be computed (see plan_unavailable_reason), so fss-lab recover cannot apply a foreign-byte repair to this journal",
+                ),
+            };
             check.find(
                 "foreign_trailing_bytes",
                 DoctorSeverity::Attention,
                 None,
-                Some(DoctorAffordance::not_yet(
-                    kind.repair_action(),
-                    Some(kind.target()),
-                    plan_digest,
-                )),
+                Some(next),
             );
             if unavailable {
                 check.find("plan_unavailable", DoctorSeverity::Attention, None, None);
@@ -1382,10 +1432,10 @@ fn journal_check(
                 "incomplete_tail",
                 DoctorSeverity::Attention,
                 None,
-                Some(DoctorAffordance::not_yet(
+                Some(recover_command(
                     "truncate_incomplete_tail",
-                    Some(kind.target()),
-                    None,
+                    root,
+                    &format!("--truncate-incomplete-tail {}", kind.target()),
                 )),
             );
         }
@@ -1489,7 +1539,11 @@ fn effects_inspection(
     }
 }
 
-fn obligations_check(eff_report: &EffectJournalInspection, limits: DoctorLimits) -> DoctorCheck {
+fn obligations_check(
+    eff_report: &EffectJournalInspection,
+    root: &Path,
+    limits: DoctorLimits,
+) -> DoctorCheck {
     let mut check = DoctorCheck::new("effects.obligations");
     let counts = &eff_report.obligation_counts;
     check.count("total", counts.total);
@@ -1516,10 +1570,10 @@ fn obligations_check(eff_report: &EffectJournalInspection, limits: DoctorLimits)
             "indeterminate_obligations",
             DoctorSeverity::Attention,
             Some(count),
-            Some(DoctorAffordance::not_yet(
+            Some(recover_command(
                 "reconcile_effects",
-                Some("effects"),
-                None,
+                root,
+                "--reconcile-effects",
             )),
         );
     }
@@ -1685,6 +1739,7 @@ fn spool_check(local: &LocalInspection, limits: DoctorLimits) -> DoctorCheck {
 fn roots_check(
     local: &LocalInspection,
     ledger: &Result<LedgerInspection, String>,
+    root: &Path,
     limits: DoctorLimits,
 ) -> DoctorCheck {
     let mut check = DoctorCheck::new("publication.roots");
@@ -1791,10 +1846,10 @@ fn roots_check(
             "orphaned_root_temps",
             DoctorSeverity::Attention,
             Some(count),
-            Some(DoctorAffordance::not_yet(
+            Some(recover_command(
                 "discard_orphaned_temps",
-                Some("objects"),
-                None,
+                root,
+                "--discard-orphaned-temps",
             )),
         );
     }
@@ -1949,6 +2004,14 @@ fn imports_check(ledger: &Result<LedgerInspection, String>, limits: DoctorLimits
     check
 }
 
+/// The sealed repair plan digest a journal check computed for remaining foreign bytes.
+fn pending_plan(check: &DoctorCheck) -> Option<&str> {
+    match check.fields.get("plan_digest") {
+        Some(DoctorValue::String(plan_digest)) => Some(plan_digest),
+        _ => None,
+    }
+}
+
 fn is_hex64(s: &str) -> bool {
     s.len() == 64 && s.bytes().all(|b| matches!(b, b'0'..=b'9' | b'a'..=b'f'))
 }
@@ -1964,6 +2027,7 @@ fn sidecar_check(
     kind: JournalKind,
     io: DoctorIo<'_>,
     directory: &Path,
+    pending_repair: Option<(&Path, &str)>,
     limits: DoctorLimits,
 ) -> DoctorCheck {
     let mut check = DoctorCheck::new(id);
@@ -2061,11 +2125,17 @@ fn sidecar_check(
             "leftover_repair_temps",
             DoctorSeverity::Attention,
             Some(count),
-            Some(DoctorAffordance::not_yet(
-                kind.rerun_apply_action(),
-                Some(kind.target()),
-                None,
-            )),
+            Some(match pending_repair {
+                Some((root, plan_digest)) => recover_command(
+                    kind.rerun_apply_action(),
+                    root,
+                    &format!("--{} {plan_digest}", kind.apply_flag()),
+                ),
+                None => DoctorAffordance::owner(
+                    "inspect_leftover_repair_temps",
+                    "no foreign-byte repair of this journal is pending, so no fss-lab recover action addresses these leftover repair staging files; removing them is an owner decision",
+                ),
+            }),
         );
     }
     if !quarantined.is_empty() {
@@ -2093,6 +2163,33 @@ mod tests {
             DurableLedgerLimits::DEFAULT_MAX_JOURNAL_BYTES
         );
         assert_eq!(DoctorLimits::default().max_listed_ids, MAX_LISTED_IDS);
+    }
+
+    #[test]
+    fn named_commands_quote_a_root_that_is_not_one_plain_shell_word() {
+        use std::path::Path;
+        assert_eq!(
+            super::shell_path(Path::new("/srv/fss/site-1_a.b")),
+            "/srv/fss/site-1_a.b"
+        );
+        assert_eq!(
+            super::shell_path(Path::new("/srv/my site")),
+            "'/srv/my site'"
+        );
+        assert_eq!(
+            super::shell_path(Path::new("/srv/it's;rm")),
+            "'/srv/it'\\''s;rm'"
+        );
+        assert_eq!(super::shell_path(Path::new("")), "''");
+        assert_eq!(
+            super::recover_command(
+                "discard_orphaned_temps",
+                Path::new("/srv/a b"),
+                "--discard-orphaned-temps"
+            )
+            .to_json(),
+            "{\"availability\":\"available\",\"action\":\"discard_orphaned_temps\",\"command\":\"fss-lab recover --root '/srv/a b' --discard-orphaned-temps\"}"
+        );
     }
 
     #[test]
