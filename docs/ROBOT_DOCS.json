@@ -1347,8 +1347,8 @@
       "id": "ERR-KSTATE-STABLE-ID-REUSED-001"
     },
     {
-      "description": "`recover_action_unsupported`: the requested `fss-lab recover` action has no supporting API in the owning crate (`--discard-orphaned-staging`: no `LocalRootPublisher` pass-through to `StagingSpool::discard_orphaned_staging`); refused before any action runs, never approximated",
-      "guidance": "wait for the supporting API; do not retry unchanged",
+      "description": "tombstone (fss-vmau3): `recover_action_unsupported` was refused for an `fss-lab recover` action with no supporting API; its only case, `--discard-orphaned-staging`, now runs through `LocalRootPublisher::discard_orphaned_staging`, so no action is refused with it",
+      "guidance": "historical identity preserved for audit; never reused",
       "id": "ERR-LAB-RECOVER-ACTION-UNSUPPORTED-001"
     },
     {
@@ -1357,7 +1357,7 @@
       "id": "ERR-LAB-RECOVER-CORRUPT-HISTORY-001"
     },
     {
-      "description": "`recover_nothing_to_do`: every action `fss-lab recover` was asked for found nothing to recover (no incomplete tail, no foreign bytes, no orphaned temp, no indeterminate operation); a completed earlier run reports this",
+      "description": "`recover_nothing_to_do`: every action `fss-lab recover` was asked for found nothing to recover (no incomplete tail, no foreign bytes, no orphaned temp, no orphaned staging file, no indeterminate operation); a completed earlier run reports this",
       "guidance": "do not retry; inspect the report's `state_after` and next affordances",
       "id": "ERR-LAB-RECOVER-NOTHING-TO-DO-001"
     },

@@ -63,8 +63,6 @@ pub const MAX_LAYOUT_BYTES: usize = 4096;
 /// Default bound on the entries listed from one journal directory while scanning for repair
 /// sidecars.
 pub const MAX_SIDECAR_ENTRIES: usize = 4096;
-/// Tracking bead of the explicit recovery actions that `fss-lab recover` does not support yet.
-pub const RECOVER_TRACKING_BEAD: &str = "fss-2h5zq.15";
 /// Binary and subcommand of the explicit operator recovery commands the doctor names.
 pub const RECOVER_COMMAND: &str = "fss-lab recover";
 /// Tracking bead of file import. Re-running an import completes an incomplete one.
@@ -271,15 +269,6 @@ impl DoctorAffordance {
         Self::Command {
             action: action.to_owned(),
             command,
-        }
-    }
-
-    fn not_yet(action: &str, target: Option<&str>, plan_digest: Option<String>) -> Self {
-        Self::NotYetAvailable {
-            action: action.to_owned(),
-            target: target.map(str::to_owned),
-            plan_digest,
-            tracking: RECOVER_TRACKING_BEAD.to_owned(),
         }
     }
 
@@ -765,7 +754,7 @@ pub fn inspect_deployment_with(
     let (staging_check, spool_check, roots_check, unreferenced_check, tombstones_check) =
         match &local_result {
             Ok(local) => (
-                staging_check(local, limits),
+                staging_check(local, root, limits),
                 spool_check(local, limits),
                 roots_check(local, &ledger_inspection, root, limits),
                 unreferenced_check(local, limits),
@@ -1626,7 +1615,7 @@ fn publication_unavailable(error: &LocalPublicationError, root: &Path) -> Unavai
     }
 }
 
-fn staging_check(local: &LocalInspection, limits: DoctorLimits) -> DoctorCheck {
+fn staging_check(local: &LocalInspection, root: &Path, limits: DoctorLimits) -> DoctorCheck {
     let mut check = DoctorCheck::new("publication.staging");
     let orphaned = &local.report.spool.orphaned_staging;
     check.count("orphaned_staging", orphaned.len());
@@ -1647,10 +1636,10 @@ fn staging_check(local: &LocalInspection, limits: DoctorLimits) -> DoctorCheck {
             "orphaned_staging",
             DoctorSeverity::Attention,
             Some(count),
-            Some(DoctorAffordance::not_yet(
+            Some(recover_command(
                 "discard_orphaned_staging",
-                Some("objects"),
-                None,
+                root,
+                "--discard-orphaned-staging",
             )),
         );
     }

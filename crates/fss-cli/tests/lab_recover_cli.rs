@@ -1,8 +1,8 @@
 #![forbid(unsafe_code)]
 //! CLI contract of `fss-lab recover` (fss-2h5zq.15 refinement rounds 2 and 3): argument
 //! refusals, the typed refusals and their registered identities (root locked, nothing to do,
-//! plan mismatch, corrupt history, action unsupported), the read-only plan, and the plan/apply
-//! digest round trip, each through a separate `fss-lab` process.
+//! plan mismatch, corrupt history), the read-only plan, the plan/apply digest round trip, and the
+//! orphaned staging discard (fss-vmau3), each through a separate `fss-lab` process.
 //!
 //! The effect reconciliation of a crash-matrix corpus in a separate process is exercised by
 //! `lab_crash_matrix_cli.rs`, which already builds that corpus.
@@ -14,10 +14,9 @@ use std::process::{Command, Output};
 
 use fss_cli::{
     ERR_CLI_DUPLICATE_OPTION, ERR_CLI_MALFORMED_VALUE, ERR_CLI_MISSING_VALUE,
-    ERR_CLI_TRAILING_ARGUMENT, ERR_CLI_UNKNOWN_OPTION, ERR_LAB_RECOVER_ACTION_UNSUPPORTED,
-    ERR_LAB_RECOVER_CORRUPT_HISTORY, ERR_LAB_RECOVER_NOTHING_TO_DO, ERR_LAB_RECOVER_PLAN_MISMATCH,
-    ERR_LAB_RECOVER_ROOT_LOCKED, ExitIdentity, LabAction, RecoverJournal, RecoverRequest,
-    parse_lab_args,
+    ERR_CLI_TRAILING_ARGUMENT, ERR_CLI_UNKNOWN_OPTION, ERR_LAB_RECOVER_CORRUPT_HISTORY,
+    ERR_LAB_RECOVER_NOTHING_TO_DO, ERR_LAB_RECOVER_PLAN_MISMATCH, ERR_LAB_RECOVER_ROOT_LOCKED,
+    ExitIdentity, LabAction, RecoverJournal, RecoverRequest, parse_lab_args,
 };
 use fss_core::ContentDigest;
 
@@ -299,13 +298,45 @@ fn recover_refusals_and_the_plan_apply_round_trip_through_the_binary() -> TestRe
         "recover_nothing_to_do",
     )?;
 
-    // No supporting API: refused, never approximated.
+    // No orphaned staging file: nothing to do (fss-vmau3).
     let output = recover(&root, &["--discard-orphaned-staging"])?;
     assert_refused(
         &output,
-        ERR_LAB_RECOVER_ACTION_UNSUPPORTED,
-        "recover_action_unsupported",
+        ERR_LAB_RECOVER_NOTHING_TO_DO,
+        "recover_nothing_to_do",
     )?;
+
+    // An interrupted ingest's staging file is discarded under the lock; a foreign entry in the
+    // staging directory is never touched; the rerun has nothing to do.
+    let staging = root.join("objects").join("spool").join("staging");
+    let orphan = format!(
+        "{}.0.tmp",
+        ContentDigest::sha256(b"interrupted ingest")
+            .to_text()
+            .trim_start_matches("sha256:")
+    );
+    std::fs::write(staging.join(&orphan), b"partial")?;
+    std::fs::write(staging.join("operator-notes"), b"keep")?;
+    let output = recover(&root, &["--discard-orphaned-staging"])?;
+    let report = String::from_utf8(output.stdout.clone())?;
+    assert_eq!(output.status.code(), Some(0), "{output:?}");
+    assert!(
+        report.contains(&format!(
+            "{{\"action\":\"discard_orphaned_staging\",\"target\":\"objects\",\"status\":\"applied\",\"receipt\":{{\"discarded\":1,\"released_bytes\":7,\"orphans\":[\"staging/{orphan}\"]}}}}"
+        )),
+        "{report}"
+    );
+    assert!(report.contains("\"orphaned_staging\":0"), "{report}");
+    assert!(report.contains("\"outcome\":\"applied\""), "{report}");
+    assert!(!staging.join(&orphan).exists());
+    assert_eq!(std::fs::read(staging.join("operator-notes"))?, b"keep");
+    let output = recover(&root, &["--discard-orphaned-staging"])?;
+    assert_refused(
+        &output,
+        ERR_LAB_RECOVER_NOTHING_TO_DO,
+        "recover_nothing_to_do",
+    )?;
+    assert_eq!(std::fs::read(staging.join("operator-notes"))?, b"keep");
 
     // Foreign trailing bytes: plan (read-only), refuse a different digest, apply the exact one.
     let clean_len = std::fs::metadata(&journal)?.len();

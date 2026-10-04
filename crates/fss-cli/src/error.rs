@@ -40,8 +40,9 @@ pub const ERR_LAB_RECOVER_PLAN_MISMATCH: &str = "ERR-LAB-RECOVER-PLAN-MISMATCH-0
 /// `fss-lab recover`: the foreign range holds a structurally valid record, so a foreign-byte
 /// repair would quarantine committed history; refused (`recover_corrupt_history`).
 pub const ERR_LAB_RECOVER_CORRUPT_HISTORY: &str = "ERR-LAB-RECOVER-CORRUPT-HISTORY-001";
-/// `fss-lab recover`: the requested action has no supporting API in the owning crate; refused
-/// rather than approximated (`recover_action_unsupported`).
+/// Tombstone (fss-vmau3): `fss-lab recover` refused an action with no supporting API
+/// (`recover_action_unsupported`); its only case, `--discard-orphaned-staging`, now has one, so
+/// no action is refused with it. Kept so the stable identity is never reused.
 pub const ERR_LAB_RECOVER_ACTION_UNSUPPORTED: &str = "ERR-LAB-RECOVER-ACTION-UNSUPPORTED-001";
 
 /// Stable exit identity representing an exit code and a registered identifier.
