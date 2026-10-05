@@ -83,8 +83,8 @@ use crate::situation_sections::{
     project_reference_situation_with_source_omissions,
 };
 pub use coverage::{
-    CoverageAssessment, MAX_COVERAGE_CAPSULE_READS, RetainedCoverage, RetainedSourceCoverage,
-    ZoneAssessment, ZoneCoverageState,
+    CoverageAssessment, MAX_COVERAGE_CAPSULE_READS, RECORDED_COVERAGE_PROVENANCE, RetainedCoverage,
+    RetainedSourceCoverage, SOURCE_COVERAGE_PROVENANCE, ZoneAssessment, ZoneCoverageState,
 };
 
 /// Capability registry row that admits a situation read (AOP-003, AOP-004, AOP-009).

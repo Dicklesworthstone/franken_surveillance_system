@@ -4,7 +4,7 @@
 use std::fs;
 use std::path::PathBuf;
 
-use fss_core::region::{ContextAuthority, RootAuthoritySpec};
+use fss_core::region::{ContextAuthority, ContextNarrowingSpec, RootAuthoritySpec};
 use fss_core::{
     BudgetVector, CaptureInterval, ContentDigest, DecisionPath, EventEvidence, EventHypothesis,
     EventId, EventKind, EventState, EvidenceClass, EvidenceEdgeRelation, OperationId,
@@ -424,8 +424,25 @@ fn both_capabilities_original_actor_and_context_scope_are_required() -> Test {
     let root = fixture.commit()?;
     let before = fixture.snapshot()?;
     for cap in [CAP_EXPORT_PREPARE, CAP_EXPORT_COMMIT] {
-        let mut denied = fixture.auth.clone();
-        denied.capabilities.retain(|c| c != cap);
+        let auth = &fixture.auth;
+        let denied = auth.narrow(ContextNarrowingSpec {
+            operation_id: auth.operation_id.clone(),
+            capabilities: auth
+                .capabilities()
+                .iter()
+                .filter(|c| c.as_str() != cap)
+                .cloned()
+                .collect(),
+            deadline: auth.deadline,
+            priority: auth.priority,
+            budgets: auth.budgets,
+            privacy_scope: auth.privacy_scope.clone(),
+            retention_scope: auth.retention_scope.clone(),
+            lease_fence: auth.lease_fence,
+            idempotency_key: auth.idempotency_key.clone(),
+            lab_controls: auth.lab_controls.clone(),
+        })?;
+        assert!(!denied.has_capability(cap));
         assert!(matches!(
             prepare_package(
                 &fixture.deployment,

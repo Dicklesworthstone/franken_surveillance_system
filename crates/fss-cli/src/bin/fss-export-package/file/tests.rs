@@ -209,7 +209,7 @@ fn output_inside_deployment_or_in_a_writable_shared_directory_is_refused() -> Te
         directory.0.join("handoff"),
         fs::Permissions::from_mode(0o777),
     )?;
-    assert!(matches!(directory.target(), Err(_)));
+    assert!(directory.target().is_err());
     assert!(!directory.output().exists());
     Ok(())
 }

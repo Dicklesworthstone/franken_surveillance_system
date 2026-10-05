@@ -608,6 +608,7 @@ fn operator_request_is_required_and_real_alert_situation_accepts_only_its_bound_
             alert_plan: Some(&alert),
             alert_outcome: None,
             coverage_witness: None,
+            coverage_record: None,
             available_capabilities: [
                 "capability:alert.prepare".into(),
                 "capability:alert.commit".into(),
