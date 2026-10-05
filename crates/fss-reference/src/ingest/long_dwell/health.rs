@@ -87,7 +87,7 @@ impl LongDwellHealthSummary {
         format!(concat!(
             "{{\"policy\":{},\"policy_digest\":{},\"status\":{},\"complete\":{},",
             "\"frames_screened\":{},\"samples_screened\":{},\"publication_blocked\":{},",
-            "\"findings\":[{}],\"measurements_retained_in_analysis\":true,",
+            "\"findings\":[{}],\"measurements_embedded_in_analysis\":true,",
             "\"healthy_proved\":false,\"tamper_proved\":false,\"absence_certifiable\":false}}"),
             json(POLICY_NAME), json(&policy_digest().to_text()), json(self.status()), self.complete,
             self.frames, self.samples, self.publication_blocked(), findings,

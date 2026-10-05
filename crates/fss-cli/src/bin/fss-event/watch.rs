@@ -22,6 +22,8 @@
 //! Add `--stream-dwell` for one whole MJPEG range (up to 65536 segments), with persistent
 //! foreground/tracker state and aggregate source-byte, pixel, assignment and trace ceilings.
 //! This mode refuses detector-package flags rather than silently dropping a requested model.
+//! `--stream-dwell --sensor-health conservative-v1` additionally screens the same masked pixels;
+//! suspected degradation or incomplete screening preserves diagnostics but blocks publication.
 
 use std::collections::BTreeSet;
 use std::ffi::OsString;
@@ -41,6 +43,7 @@ use fss_reference::ingest::recorded_watch::{
     MAX_WATCH_FRAMES, MAX_WATCH_ZONES, WatchDetectorConfig, WatchError, WatchLimits, WatchOptions,
     WatchPlan, WatchReport, WatchTrackerConfig, WatchZone,
 };
+use fss_reference::ingest::sensor_health::POLICY_NAME as HEALTH_POLICY_NAME;
 use fss_reference::ingest::zone_dwell::DwellPolicy;
 use fss_reference::{ReferenceDeployment, ReplayCx, ScalarExecCx};
 
@@ -76,6 +79,7 @@ const OPTIONS: &[&str] = &[
     "--dwell-pixel-budget",
     "--dwell-assignment-work",
     "--dwell-trace-bytes",
+    "--sensor-health",
 ];
 
 const STREAM_BUDGET_OPTIONS: &[&str] = &[
@@ -106,6 +110,7 @@ pub(super) struct WatchAction {
     options: WatchOptions,
     dwell: Option<DwellPolicy>,
     stream_dwell: Option<LongDwellLimits>,
+    health_screen: bool,
     rerun: String,
 }
 
@@ -252,6 +257,14 @@ pub(super) fn parse(args: &[OsString]) -> Result<WatchAction, String> {
         }
         index += 2;
     }
+    let health_screen = match text(&values, "--sensor-health") {
+        Ok(value) if value != HEALTH_POLICY_NAME =>
+            return Err(format!("--sensor-health requires policy {HEALTH_POLICY_NAME}")),
+        Ok(_) if !stream_dwell =>
+            return Err("--sensor-health requires --stream-dwell".to_owned()),
+        Ok(_) => true,
+        Err(_) => false,
+    };
     if zones.is_empty() {
         return Err("at least one --zone ID:X,Y,W,H is required".to_owned());
     }
@@ -364,6 +377,7 @@ pub(super) fn parse(args: &[OsString]) -> Result<WatchAction, String> {
         options,
         dwell,
         stream_dwell,
+        health_screen,
         rerun,
     })
 }
@@ -378,6 +392,9 @@ pub(super) fn run(
 ) -> RunResult<()> {
     if let Some(limits) = &action.stream_dwell {
         return run_streaming(action, deployment, root, limits, cx, out);
+    }
+    if action.health_screen {
+        return Err(WatchError::InvalidPlan("sensor-health screening requires streaming dwell").into());
     }
     let scalar = ScalarExecCx::new();
     let result = run_with(action, deployment, root, cx, &scalar, out);
@@ -586,7 +603,12 @@ fn run_streaming(
         detector: action.detector,
         tracker: action.tracker,
     };
-    let mut report = LongDwellReport::analyze(
+    let analyze = if action.health_screen {
+        LongDwellReport::analyze_screened
+    } else {
+        LongDwellReport::analyze
+    };
+    let mut report = analyze(
         deployment, &plan, rule, action.options, limits, cx,
     )?;
     // No partial JSON or oversized approval hints can be discovered only after an event commit.
