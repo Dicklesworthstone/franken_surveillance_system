@@ -165,7 +165,10 @@ fn dwell_policy(values: &[(String, String)]) -> Result<Option<DwellPolicy>, Stri
         return Err("dwell requires both --dwell-for-ns and --dwell-max-gap-ns".to_owned());
     }
     if has("--retain-coverage") {
-        return Err("dwell refuses --retain-coverage: entry coverage does not certify dwell absence".to_owned());
+        return Err(
+            "dwell refuses --retain-coverage: entry coverage does not certify dwell absence"
+                .to_owned(),
+        );
     }
     let rule = DwellPolicy {
         minimum_duration_ns: number(values, "--dwell-for-ns", 0_u64)?,
@@ -394,16 +397,29 @@ fn run_with(
     };
     if let Some(rule) = action.dwell {
         let mut report = DwellReport::analyze(
-            deployment, &plan, rule, &action.limits, cascade.as_mut(), action.options, cx,
+            deployment,
+            &plan,
+            rule,
+            &action.limits,
+            cascade.as_mut(),
+            action.options,
+            cx,
         )?;
         // Bound the actual rerun hint and complete report before any event publication.
-        report.to_json(deployment.current_anchor().commit_sequence, Some(&action.rerun))?;
+        report.to_json(
+            deployment.current_anchor().commit_sequence,
+            Some(&action.rerun),
+        )?;
         if !action.approvals.is_empty() {
             report.publish(deployment, &action.approvals, cx)?;
         }
-        let json = format!("{}\n", report.to_json(
-            deployment.current_anchor().commit_sequence, Some(&action.rerun),
-        )?);
+        let json = format!(
+            "{}\n",
+            report.to_json(
+                deployment.current_anchor().commit_sequence,
+                Some(&action.rerun),
+            )?
+        );
         if let Some(path) = &action.report_out {
             export(path, json.as_bytes(), root, cx)?;
         }
