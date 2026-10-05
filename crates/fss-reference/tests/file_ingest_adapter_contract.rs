@@ -8,7 +8,9 @@
 //! 4. Rejection of symlinks (`SymlinkNotAllowed`).
 //! 5. Rejection of oversize files (`FileTooLarge`) leaving deployment unchanged.
 //! 6. Format conflict detection between file signature and caller hint.
-//! 7. Time truth: refusal of future capture hint (`CaptureHintAfterReceive`).
+//! 7. Time truth: refusal of future capture hint (`CaptureHintAfterReceive`); refusal of a hint
+//!    whose interval for any frame would end after receive time
+//!    (`CaptureHintLatestAfterReceive`, nothing staged), and admission at exact equality.
 //! 8. Chunk boundary spanning and round-trip payload reassembly via [`fetch_segment_bytes`].
 //! 9. Idempotent re-import returning [`FileIngestOutcome::IdempotentExisting`].
 //! 10. Absence query non-certifiability (`NotObservableReason::NoCoverageWitness`).
@@ -342,6 +344,126 @@ fn test_07_capture_hint_after_receive_refusal() -> Result<(), Box<dyn Error>> {
         other => return Err(format!("expected CaptureHintAfterReceive, got {other:?}").into()),
     }
 
+    Ok(())
+}
+
+/// Ingests `clean.264` (5 access units) with `hint` into a fresh deployment and reports the
+/// outcome together with whether the spool, ledger and published roots were left untouched.
+fn ingest_clean_h264_with_hint(
+    label: &str,
+    receive_time: TimestampNs,
+    hint: CaptureHint,
+) -> Result<
+    (
+        Result<fss_reference::ingest::FileIngestReceipt, FileIngestError>,
+        bool,
+    ),
+    Box<dyn Error>,
+> {
+    let root = repo_root()?;
+    let dep_dir = temp_deployment_dir(label)?;
+    let cx = test_cx(label)?;
+    let mut deployment = ReferenceDeployment::open(&dep_dir, &format!("site:deploy:{label}"), &cx)?;
+    let objects_before = deployment.publisher().spool().object_count();
+    let bytes_before = deployment.publisher().spool().occupied_bytes();
+    let batches_before = deployment.ledger().batches().len();
+
+    let request = FileIngestRequest::new(
+        root.join("tests/fixtures/media/h264/clean.264"),
+        SensorId::parse("sensor:cam-roeq0")?,
+        StreamId::parse("stream:h264-roeq0")?,
+    )
+    .with_format_hint(FileFormatHint::AnnexB)
+    .with_receive_time(receive_time)
+    .with_capture_hint(hint);
+    let outcome = FileIngestAdapter::ingest(request, &cx, &mut deployment);
+
+    let untouched = deployment.publisher().spool().object_count() == objects_before
+        && deployment.publisher().spool().occupied_bytes() == bytes_before
+        && deployment.ledger().batches().len() == batches_before;
+    Ok((outcome, untouched))
+}
+
+#[test]
+fn test_07b_capture_hint_latest_after_receive_refused_before_any_stage()
+-> Result<(), Box<dyn Error>> {
+    // fss-roeq0 (owner decision: REFUSE, never clamp). The bead's reproducer: the hint starts
+    // 1 ns before arrival, so segment 0's interval [start - 1 ms, start + 1 ms] would end after
+    // receive_time. Refused before the adapter accepts, with nothing staged and no batch.
+    let receive_time = TimestampNs(2_000_000_000);
+    let start = TimestampNs(receive_time.0 - 1);
+    let hint = CaptureHint::new(start, 1_000_000, 30.0)?;
+    let (outcome, untouched) = ingest_clean_h264_with_hint("roeq0-first", receive_time, hint)?;
+    match outcome {
+        Err(
+            error @ FileIngestError::CaptureHintLatestAfterReceive {
+                hint_start,
+                segment_index,
+                capture_latest,
+                receive_time: rec,
+            },
+        ) => {
+            assert_eq!(hint_start, start);
+            assert_eq!(segment_index, 0);
+            assert_eq!(capture_latest, TimestampNs(start.0 + 1_000_000));
+            assert_eq!(rec, receive_time);
+            assert_eq!(
+                error.stable_id(),
+                Some("ERR-INGEST-CAPTURE-HINT-AFTER-RECEIVE-001")
+            );
+        }
+        other => {
+            return Err(format!("expected CaptureHintLatestAfterReceive, got {other:?}").into());
+        }
+    }
+    assert!(
+        untouched,
+        "a refused hint must stage nothing and append no batch"
+    );
+
+    // A later frame overflowing: at 25 fps the 5th access unit (index 4) is nominally 160 ms
+    // after start, so start = receive - 160 ms with 1 ns uncertainty overflows only there.
+    let start = TimestampNs(receive_time.0 - 160_000_000);
+    let hint = CaptureHint::new(start, 1, 25.0)?;
+    let (outcome, untouched) = ingest_clean_h264_with_hint("roeq0-last", receive_time, hint)?;
+    match outcome {
+        Err(FileIngestError::CaptureHintLatestAfterReceive {
+            segment_index,
+            capture_latest,
+            ..
+        }) => {
+            assert_eq!(segment_index, 4);
+            assert_eq!(capture_latest, TimestampNs(receive_time.0 + 1));
+        }
+        other => {
+            return Err(format!("expected CaptureHintLatestAfterReceive, got {other:?}").into());
+        }
+    }
+    assert!(
+        untouched,
+        "a refused hint must stage nothing and append no batch"
+    );
+    Ok(())
+}
+
+#[test]
+fn test_07c_capture_hint_latest_equal_to_receive_is_admitted() -> Result<(), Box<dyn Error>> {
+    // Boundary (fss-roeq0): the last interval ending exactly at receive_time is admitted, and
+    // every capsule's capture.latest stays <= receive_time.
+    let receive_time = TimestampNs(2_000_000_000);
+    let uncertainty: i128 = 250_000;
+    let start = TimestampNs(receive_time.0 - 160_000_000 - uncertainty);
+    let hint = CaptureHint::new(start, uncertainty as u64, 25.0)?;
+    let (outcome, untouched) = ingest_clean_h264_with_hint("roeq0-equal", receive_time, hint)?;
+    let receipt = outcome?;
+    assert!(!untouched, "an admitted import commits");
+    assert_eq!(receipt.capsule_count, 5);
+    assert_eq!(receipt.capture_time_label, "operator_assumption");
+    for capsule in &receipt.capsules {
+        assert!(capsule.capture.latest <= receive_time);
+    }
+    let last = receipt.capsules.last().ok_or("five capsules expected")?;
+    assert_eq!(last.capture.latest, receive_time);
     Ok(())
 }
 
