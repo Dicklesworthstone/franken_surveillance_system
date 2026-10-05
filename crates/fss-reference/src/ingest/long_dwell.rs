@@ -4,6 +4,8 @@
 //! Pixels are decoded, masked, detected and tracked once in source order. Only scalar temporal
 //! state survives a frame; the bounded trace retains identities and geometry, never pixel arrays.
 //! This is sampled occupancy, not continuous presence, identity, threat or absence evidence.
+//! Opt-in `analyze_screened` applies conservative visual-degradation screening to those same
+//! masked pixels. Its findings remain diagnostics and prevent publication of the complete scan.
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::PathBuf;
@@ -21,6 +23,7 @@ use super::foreground::{ForegroundConfig, ForegroundDetector};
 use super::privacy_mask::{MaskBinding, current_mask};
 use super::recorded_decode::{RecordedDecodeError, source_capsule, validate_limits};
 use super::recorded_watch::{WatchError, WatchLimits, WatchOptions, WatchPlan, WatchStatus, WatchZone};
+use super::sensor_health::{HealthFrame, policy_bytes as health_policy_bytes, policy_digest as health_policy_digest};
 use super::streaming_dwell::{DwellAccumulator, MAX_STREAM_DWELL_SAMPLES, StreamDwellSpan};
 use super::tolerant_decode::{DecodeRefusal, tolerable};
 use super::tracker::{Detection, MultiObjectTracker, TrackStatus, TrackedTarget, TrackerConfig, TrackerLimits};
@@ -30,6 +33,9 @@ use crate::{ReferenceDeployment, ReferenceError, ReferencePolicyAction, Referenc
 
 mod reader;
 use reader::ChunkCursor;
+mod health;
+pub use health::{HEALTH_PUBLICATION_BLOCKED, HealthFindingRun, LongDwellHealthSummary, MAX_HEALTH_FINDING_RUNS};
+use health::Screening;
 
 /// Maximum requested source segments, counted across the complete scan.
 pub const MAX_LONG_DWELL_FRAMES: usize = MAX_STREAM_DWELL_SAMPLES;
@@ -61,6 +67,7 @@ pub struct LongDwellLimits {
     /// Bytes fetched from source chunks; metadata reads are separately bounded by their owners.
     pub maximum_source_chunk_bytes: u64,
     /// Sum of decoded luma sample counts, charged before foreground processing.
+    /// Opt-in screening has a separate cumulative sample counter with this same ceiling.
     pub maximum_pixel_samples: u64,
     /// Sum of checked Hungarian admission bounds, charged before tracker updates.
     pub maximum_assignment_work: u64,
@@ -152,6 +159,7 @@ pub struct LongDwellReport {
     pixel_samples: u64,
     assignment_work: u64,
     jpeg_work: u64,
+    health: Option<LongDwellHealthSummary>,
 }
 
 fn checkpoint(cx: &ReplayCx, stage: &'static str) -> Result<()> {
@@ -278,6 +286,21 @@ impl LongDwellReport {
     pub fn analyze(deployment: &ReferenceDeployment, plan: &WatchPlan, rule: DwellPolicy,
         options: WatchOptions, limits: &LongDwellLimits, cx: &ReplayCx) -> Result<Self>
     {
+        Self::analyze_inner(deployment, plan, rule, options, limits, cx, false)
+    }
+
+    /// Opt-in conservative-v1 screening over the same masked pixels, before perception.
+    /// Findings preserve diagnostic candidates but block publication of the entire request.
+    /// No finding is a diagnosis; a complete screen with no findings is not proof of health.
+    pub fn analyze_screened(deployment: &ReferenceDeployment, plan: &WatchPlan, rule: DwellPolicy,
+        options: WatchOptions, limits: &LongDwellLimits, cx: &ReplayCx) -> Result<Self>
+    {
+        Self::analyze_inner(deployment, plan, rule, options, limits, cx, true)
+    }
+
+    fn analyze_inner(deployment: &ReferenceDeployment, plan: &WatchPlan, rule: DwellPolicy,
+        options: WatchOptions, limits: &LongDwellLimits, cx: &ReplayCx, screened: bool) -> Result<Self>
+    {
         checkpoint(cx, "long_dwell:analyze")?;
         if cx.root_dir() != deployment.root() { return Err(WatchError::Conflict); }
         if deployment.site_lineage().len() > 256 || cx.io_authority().principal().len() > 128 {
@@ -314,6 +337,10 @@ impl LongDwellReport {
         let masked: BTreeSet<usize> = plan.zones.iter().enumerate().filter_map(|(i, zone)| {
             privacy.policy().filter(|p| p.zone_masking([zone.x, zone.y, zone.width, zone.height]).any()).map(|_| i)
         }).collect();
+        let mut health = if screened {
+            Some(Screening::new(plan.segment_count, limits.maximum_pixel_samples)?)
+        } else { None };
+        let health_source = super::recorded_watch::masked_plan_digest(plan.digest(), &privacy);
         let mut time_reliable = source.omission_spans.is_empty()
             && !source.segment_spans[..=plan.first_segment].iter().any(|s| s.gap_before);
         let mut cursor = ChunkCursor::new(limits.maximum_source_chunk_bytes);
@@ -335,6 +362,7 @@ impl LongDwellReport {
             checkpoint(cx, "long_dwell:frame")?;
             let gap = source.segment_spans[segment].gap_before && segment > plan.first_segment;
             if gap {
+                if let Some(screen) = &mut health { screen.discontinuity(); }
                 time_reliable = false;
                 temporal.restart()?;
                 tracker = MultiObjectTracker::new(tracker_config(plan))?;
@@ -345,6 +373,9 @@ impl LongDwellReport {
             }
             let (capsule, capsule_digest) = source_capsule(deployment, &retained, segment)?;
             if capsule.sensor_id != sensor { return Err(RecordedDecodeError::InvalidReceipt.into()); }
+            if screened && capsule.stream_id != first_capsule.stream_id {
+                return Err(RecordedDecodeError::InvalidReceipt.into());
+            }
             if source.segment_spans[segment].len > limits.decode.jpeg_limits.maximum_bytes as u64 {
                 return Err(WatchError::Limit);
             }
@@ -361,6 +392,7 @@ impl LongDwellReport {
             {
                 Ok(image) => image,
                 Err(error) if options.tolerate_decode_refusals && tolerable(&error) => {
+                    if let Some(screen) = &mut health { screen.discontinuity(); }
                     frame_record.bool(false);
                     frame_record.text(error.stable_id());
                     append_trace(&mut trace, &frame_record.finish_checked()?, limits.maximum_trace_bytes)?;
@@ -401,6 +433,14 @@ impl LongDwellReport {
             charge(&mut pixel_samples, u64::from(size[0]) * u64::from(size[1]), limits.maximum_pixel_samples)?;
             let mut pixels = image.pixels().to_vec();
             privacy.apply_luma(&mut pixels, size).map_err(RecordedDecodeError::from)?;
+            let health_observation = match &mut health {
+                Some(screen) => Some(screen.observe(HealthFrame {
+                    source_generation: health_source, segment: segment as u64,
+                    capsule_digest, capture: capsule.capture, dimensions: size,
+                    gap_before: capsule.gap_before || gap, pixels: &pixels,
+                }, time_reliable, cx)?),
+                None => None,
+            };
             if time_reliable {
                 if previous_capture.is_some_and(|old| capsule.capture.earliest < old.earliest
                     || capsule.capture.latest < old.latest)
@@ -447,6 +487,10 @@ impl LongDwellReport {
                     frame_record.u64(value.to_bits());
                 }
             }
+            if let Some(observation) = health_observation {
+                frame_record.text("sensor_health");
+                frame_record.bytes(&observation.canonical_bytes());
+            }
             append_trace(&mut trace, &frame_record.finish_checked()?, limits.maximum_trace_bytes)?;
             decoded += 1;
         }
@@ -454,6 +498,7 @@ impl LongDwellReport {
         temporal.finish_active()?;
         temporal.episodes.sort_by_key(|e| (e.span.trigger.position, e.epoch, e.track, e.zone, e.span.first.position));
         deployment.ledger().verify_durable_head().map_err(ReferenceError::from)?;
+        let health = health.map(|screen| screen.finish(plan.segment_count));
         let mut e = CanonicalEncoder::new();
         e.text(ANALYSIS_DOMAIN); e.digest(ContentDigest::sha256(POLICY));
         e.text(deployment.site_lineage()); e.digest(plan.digest());
@@ -473,11 +518,17 @@ impl LongDwellReport {
         e.text(sensor.as_str()); e.digest(privacy.digest());
         e.u64(rule.minimum_duration_ns); e.u64(rule.maximum_sample_gap_ns); e.u64(rule.minimum_observations as u64);
         e.bool(options.tolerate_decode_refusals); e.u64(plan.segment_count as u64); e.bytes(&trace);
+        if let Some(summary) = &health {
+            e.text("sensor_health");
+            e.bytes(health_policy_bytes());
+            summary.encode(&mut e);
+        }
         let analysis = e.finish_checked()?;
         let analysis_digest = ContentDigest::sha256(&analysis);
         let mut children = BTreeSet::from([retained.import_root(), analysis_digest,
             ContentDigest::sha256(POLICY), ContentDigest::sha256(sensor.as_str().as_bytes())]);
         if let Some(policy) = privacy.policy() { children.insert(policy.digest()); }
+        if health.is_some() { children.insert(health_policy_digest()); }
         let analysis_manifest = ObjectManifest::new("recorded-long-dwell-analysis-v1", children, None)?;
         let analysis_slot = slot("ld-a", analysis_digest)?;
         let principal = cx.io_authority().principal().to_owned();
@@ -493,6 +544,7 @@ impl LongDwellReport {
             read_limits: limits.decode.read_limits, analysis, analysis_manifest, analysis_slot,
             candidates, decoded, unreliable, masked_zones: masked.len(), restarts, refusals,
             source_bytes: cursor.bytes_read(), pixel_samples, assignment_work, jpeg_work: codec_budget.used(),
+            health,
         };
         report.to_json(deployment.current_anchor().commit_sequence, None)?;
         Ok(report)
@@ -506,12 +558,19 @@ impl LongDwellReport {
     pub const fn source_chunk_bytes_read(&self) -> u64 { self.source_bytes }
     /// Successfully decoded source segments.
     pub const fn frames_decoded(&self) -> usize { self.decoded }
+    /// Explicit opt-in diagnostics; `None` means no screening was requested, never healthy.
+    pub fn health_summary(&self) -> Option<&LongDwellHealthSummary> { self.health.as_ref() }
+    /// True when this report's health gate forbids any event publication.
+    pub fn publication_blocked(&self) -> bool {
+        self.health.as_ref().is_some_and(LongDwellHealthSummary::publication_blocked)
+    }
 
     /// Publish only exact, source- and principal-bound proposals after all approvals validate.
     pub fn publish(&mut self, deployment: &mut ReferenceDeployment, approvals: &BTreeSet<ContentDigest>,
         cx: &ReplayCx) -> Result<usize>
     {
         checkpoint(cx, "long_dwell:revalidate")?;
+        if self.publication_blocked() { return Err(WatchError::InvalidPlan(HEALTH_PUBLICATION_BLOCKED)); }
         if deployment.root() != self.root.as_path() || cx.root_dir() != deployment.root()
             || deployment.site_lineage() != self.site.as_str() || cx.io_authority().principal() != self.principal.as_str()
         { return Err(WatchError::Conflict); }
@@ -536,6 +595,10 @@ impl LongDwellReport {
         checkpoint(cx, "long_dwell:stage")?;
         for bytes in [self.analysis.as_slice(), POLICY, self.sensor.as_str().as_bytes()] {
             let digest = deployment.publisher_mut().stage_object(bytes)?;
+            deployment.publisher_mut().verify_object(digest)?;
+        }
+        if self.health.is_some() {
+            let digest = deployment.publisher_mut().stage_object(health_policy_bytes())?;
             deployment.publisher_mut().verify_object(digest)?;
         }
         if let Some(policy) = self.privacy.policy() {
@@ -565,6 +628,7 @@ impl LongDwellReport {
     /// Complete bounded JSON; source time, incomplete decoding, and lack of absence proof remain explicit.
     pub fn to_json(&self, authority_sequence: u64, approve_hint: Option<&str>) -> Result<String> {
         if approve_hint.is_some_and(|hint| hint.len() > 8192) { return Err(WatchError::Limit); }
+        let approve_hint = if self.publication_blocked() { None } else { approve_hint };
         let candidates = self.candidates.iter().map(|c| {
             let span = c.span();
             let command = match (c.status, approve_hint) {
@@ -583,7 +647,7 @@ impl LongDwellReport {
         let refusals = self.refusals.iter().map(|r| format!(
             "{{\"first_segment\":{},\"last_segment\":{},\"error_id\":{}}}",
             r.first_segment, r.last_segment, json(&r.error_id))).collect::<Vec<_>>().join(",");
-        let text = format!(concat!("{{\"format\":\"fss.long_dwell_report.v1\",\"site\":{},\"principal\":{},",
+        let mut text = format!(concat!("{{\"format\":\"fss.long_dwell_report.v1\",\"site\":{},\"principal\":{},",
             "\"import_identity\":{},\"import_root\":{},\"plan_digest\":{},\"analysis_digest\":{},\"analysis_root\":{},",
             "\"analysis_basis_sequence\":{},\"analysis_basis_root\":{},\"authority_sequence\":{},\"first_segment\":{},\"segment_count\":{},",
             "\"frames_decoded\":{},\"unreliable_time_frames\":{},\"masked_zones\":{},\"tracking_restarts\":{},",
@@ -603,6 +667,12 @@ impl LongDwellReport {
             json(&self.rule.minimum_duration_ns.to_string()), json(&self.rule.maximum_sample_gap_ns.to_string()), self.rule.minimum_observations,
             self.options.tolerate_decode_refusals, refusals, self.source_bytes, self.pixel_samples, self.assignment_work,
             self.jpeg_work, self.analysis.len(), json(&self.privacy.digest().to_text()), self.candidates.len(), candidates);
+        if let Some(summary) = &self.health {
+            if text.pop() != Some('}') { return Err(WatchError::Conflict); }
+            text.push_str(",\"sensor_health\":");
+            text.push_str(&summary.to_json());
+            text.push('}');
+        }
         if text.len() > MAX_REPORT_BYTES { return Err(WatchError::Limit); }
         Ok(text)
     }
@@ -698,3 +768,5 @@ fn json(value: &str) -> String {
 
 #[cfg(test)]
 mod tests;
+#[cfg(test)]
+mod health_tests;
