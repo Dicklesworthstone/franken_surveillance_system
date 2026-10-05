@@ -31,6 +31,8 @@ pub mod hevc_annexb;
 pub mod inference;
 /// Whole-range MJPEG sampled dwell with bounded streaming perception and source-closed events.
 pub mod long_dwell;
+/// Source-backed native replay of committed whole-recording dwell events and screening.
+pub mod long_dwell_replay;
 pub mod mjpeg;
 /// Offline source-preserving conversion of exact tensor weights into recorded models.
 pub mod model_import;
