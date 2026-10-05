@@ -16,15 +16,17 @@
 use std::fmt;
 
 use fss_core::{
-    CanonicalEncode, CanonicalEncoder, CaptureInterval, ContentDigest, ContextAuthority, ContractError,
-    EffectCancellationRecord, EffectState, Obligation, ObligationState, OperationId,
+    CanonicalEncode, CanonicalEncoder, CaptureInterval, ContentDigest, ContextAuthority,
+    ContractError, EffectCancellationRecord, EffectState, Obligation, ObligationState, OperationId,
     OperationReceipt, PreparedEffect, PrincipalId, TimestampNs,
 };
 use fss_ledger::DurableReferenceLedger;
 use fss_object::ObjectManifest;
 use fss_publication::{ROOT_REACHABILITY_FAMILY, SlotName};
 
-use crate::{DurableEffectError, ReferenceAlertPlan, ReferenceDeployment, ReferenceError, ReplayCx};
+use crate::{
+    DurableEffectError, ReferenceAlertPlan, ReferenceDeployment, ReferenceError, ReplayCx,
+};
 
 /// Existing capability for an owner or explicitly delegated supervisor to cancel owned work.
 pub const CAP_ALERT_CANCEL: &str = "CAP-AGENT-CANCEL-001";
@@ -86,8 +88,12 @@ impl AlertControlError {
             Self::Unauthorized => "ERR-AUTH-DENIED-001",
             Self::ApprovalMismatch => "ERR-ALERT-APPROVAL-STALE-001",
             Self::NotAlert | Self::Inconsistent | Self::Deployment(_) => "ERR-ALERT-AUTHORITY-001",
-            Self::NotPrepared(_) | Self::CancellationMismatch | Self::Limit | Self::Cancelled
-            | Self::Contract(_) | Self::Journal(_) => "ERR-ALERT-DISPATCH-001",
+            Self::NotPrepared(_)
+            | Self::CancellationMismatch
+            | Self::Limit
+            | Self::Cancelled
+            | Self::Contract(_)
+            | Self::Journal(_) => "ERR-ALERT-DISPATCH-001",
         }
     }
 }
@@ -96,27 +102,41 @@ impl fmt::Display for AlertControlError {
         f.write_str(match self {
             Self::Unauthorized => "alert lifecycle authority denied",
             Self::NotAlert => "no retained alert dispatch has this operation identity",
-            Self::NotPrepared(_) => "alert is no longer prepared; cancellation cannot erase a possible dispatch",
-            Self::ApprovalMismatch => "cancellation approval does not match this preparation, principal and store",
-            Self::CancellationMismatch => "the recorded cancellation is not this exact operator request",
+            Self::NotPrepared(_) => {
+                "alert is no longer prepared; cancellation cannot erase a possible dispatch"
+            }
+            Self::ApprovalMismatch => {
+                "cancellation approval does not match this preparation, principal and store"
+            }
+            Self::CancellationMismatch => {
+                "the recorded cancellation is not this exact operator request"
+            }
             Self::Inconsistent => "alert preparation, receipt and obligation are inconsistent",
             Self::Limit => "alert lifecycle input or inventory bound exceeded",
             Self::Cancelled => "alert cancellation request stopped before commit",
             Self::Contract(_) => "alert cancellation contract refused",
             Self::Deployment(_) => "alert lifecycle deployment authority is unavailable",
-            Self::Journal(_) => "cancellation append unresolved; reopen and inspect the existing operation",
+            Self::Journal(_) => {
+                "cancellation append unresolved; reopen and inspect the existing operation"
+            }
         })
     }
 }
 impl std::error::Error for AlertControlError {}
 impl From<ContractError> for AlertControlError {
-    fn from(value: ContractError) -> Self { Self::Contract(value) }
+    fn from(value: ContractError) -> Self {
+        Self::Contract(value)
+    }
 }
 impl From<ReferenceError> for AlertControlError {
-    fn from(value: ReferenceError) -> Self { Self::Deployment(value) }
+    fn from(value: ReferenceError) -> Self {
+        Self::Deployment(value)
+    }
 }
 impl From<DurableEffectError> for AlertControlError {
-    fn from(value: DurableEffectError) -> Self { Self::Journal(value) }
+    fn from(value: DurableEffectError) -> Self {
+        Self::Journal(value)
+    }
 }
 
 /// Immutable, exact cancellation preview. Its fields cannot be substituted by a caller.
@@ -132,22 +152,34 @@ pub struct AlertCancellationPlan {
 impl AlertCancellationPlan {
     /// Entire preparation, including obligation and its terminal predicate.
     #[must_use]
-    pub fn prepared(&self) -> &PreparedEffect { &self.prepared }
+    pub fn prepared(&self) -> &PreparedEffect {
+        &self.prepared
+    }
     /// Explicit cancelling actor, not a model or an inferred provider identity.
     #[must_use]
-    pub fn principal(&self) -> &str { &self.principal }
+    pub fn principal(&self) -> &str {
+        &self.principal
+    }
     /// Deployment lineage.
     #[must_use]
-    pub fn site(&self) -> &str { &self.site }
+    pub fn site(&self) -> &str {
+        &self.site
+    }
     /// Operator-request evidence reconstructed from the durable reason and site.
     #[must_use]
-    pub const fn evidence_digest(&self) -> ContentDigest { self.evidence }
+    pub const fn evidence_digest(&self) -> ContentDigest {
+        self.evidence
+    }
     /// Expected terminal cancellation proof, not an external delivery receipt.
     #[must_use]
-    pub const fn proof_digest(&self) -> ContentDigest { self.proof }
+    pub const fn proof_digest(&self) -> ContentDigest {
+        self.proof
+    }
     /// Exact approval to present together with explicit cancellation capability.
     #[must_use]
-    pub const fn approval_digest(&self) -> ContentDigest { self.approval }
+    pub const fn approval_digest(&self) -> ContentDigest {
+        self.approval
+    }
 }
 
 /// Whether this invocation appended a cancellation or observed its exact prior commit.
@@ -162,7 +194,10 @@ impl AlertCancellationOutcome {
     /// Stable report spelling.
     #[must_use]
     pub const fn as_str(self) -> &'static str {
-        match self { Self::Cancelled => "cancelled", Self::AlreadyCancelled => "already_cancelled" }
+        match self {
+            Self::Cancelled => "cancelled",
+            Self::AlreadyCancelled => "already_cancelled",
+        }
     }
 }
 
@@ -180,13 +215,16 @@ pub struct AlertCancellationReceipt {
 }
 
 fn checkpoint(cx: &ReplayCx, stage: &'static str) -> Result<(), AlertControlError> {
-    cx.checkpoint(stage).map_err(|_| AlertControlError::Cancelled)
+    cx.checkpoint(stage)
+        .map_err(|_| AlertControlError::Cancelled)
 }
 
 fn valid_principal(principal: &str) -> bool {
     !principal.is_empty()
         && principal.len() <= MAX_CANCEL_PRINCIPAL_BYTES
-        && !principal.chars().any(|c| c.is_control() || c.is_whitespace())
+        && !principal
+            .chars()
+            .any(|c| c.is_control() || c.is_whitespace())
         && PrincipalId::parse(principal).is_ok()
 }
 
@@ -223,7 +261,9 @@ fn authorize(
     if deployment.effects().committed_len() > MAX_CONTROL_JOURNAL_BYTES {
         return Err(AlertControlError::Limit);
     }
-    deployment.ledger().verify_durable_head()
+    deployment
+        .ledger()
+        .verify_durable_head()
         .map_err(|_| AlertControlError::Inconsistent)?;
     // In-memory state must still be exactly the durable prefix owned by this locked handle.
     deployment.effects().committed_roots()?;
@@ -243,19 +283,38 @@ fn plan(
     {
         return Err(AlertControlError::Limit);
     }
-    let operation = journal.operation(operation_id).ok_or(AlertControlError::NotAlert)?.clone();
-    if operation.intent.effect_class != "alert.dispatch" { return Err(AlertControlError::NotAlert); }
+    let operation = journal
+        .operation(operation_id)
+        .ok_or(AlertControlError::NotAlert)?
+        .clone();
+    if operation.intent.effect_class != "alert.dispatch" {
+        return Err(AlertControlError::NotAlert);
+    }
     let prepared = journal.effect_journal().prepared_record(operation_id)?;
-    let obligation = journal.obligation(&prepared.obligation_id)
-        .ok_or(AlertControlError::Inconsistent)?.clone();
-    if prepared.intent != operation.intent || obligation.operation_id != *operation_id
-        || journal.obligations().filter(|o| o.operation_id == *operation_id).count() != 1
+    let obligation = journal
+        .obligation(&prepared.obligation_id)
+        .ok_or(AlertControlError::Inconsistent)?
+        .clone();
+    if prepared.intent != operation.intent
+        || obligation.operation_id != *operation_id
+        || journal
+            .obligations()
+            .filter(|o| o.operation_id == *operation_id)
+            .count()
+            != 1
     {
         return Err(AlertControlError::Inconsistent);
     }
-    let ledger_pin = deployment.ledger().store_pin().ok_or(AlertControlError::Unauthorized)?;
+    let ledger_pin = deployment
+        .ledger()
+        .store_pin()
+        .ok_or(AlertControlError::Unauthorized)?;
     let journal_pin = journal.store_pin().ok_or(AlertControlError::Unauthorized)?;
-    let evidence = ContentDigest::sha256(&evidence_bytes(deployment.site_lineage(), &authority.principal, &prepared));
+    let evidence = ContentDigest::sha256(&evidence_bytes(
+        deployment.site_lineage(),
+        &authority.principal,
+        &prepared,
+    ));
     let proof = EffectCancellationRecord::for_prepared(&prepared, evidence).proof_digest();
     let mut e = CanonicalEncoder::new();
     e.text(CANCEL_APPROVAL_DOMAIN);
@@ -268,15 +327,22 @@ fn plan(
     e.digest(proof);
     let approval = ContentDigest::sha256(&e.finish());
     let result = AlertCancellationPlan {
-        prepared, principal: authority.principal.clone(), site: deployment.site_lineage().to_owned(),
-        evidence, proof, approval,
+        prepared,
+        principal: authority.principal.clone(),
+        site: deployment.site_lineage().to_owned(),
+        evidence,
+        proof,
+        approval,
     };
     match operation.state {
-        EffectState::Prepared if operation.committed_at.is_none()
-            && operation.result_digest.is_none() && operation.updated_at == operation.prepared_at
-            && operation.error_code.is_none() && operation.indeterminate_reason.is_none()
-            && obligation.state == ObligationState::Pending
-            && obligation.proof_digest.is_none() => {}
+        EffectState::Prepared
+            if operation.committed_at.is_none()
+                && operation.result_digest.is_none()
+                && operation.updated_at == operation.prepared_at
+                && operation.error_code.is_none()
+                && operation.indeterminate_reason.is_none()
+                && obligation.state == ObligationState::Pending
+                && obligation.proof_digest.is_none() => {}
         EffectState::Cancelled if exact_cancel(&result, &operation, &obligation) => {}
         EffectState::Cancelled => return Err(AlertControlError::CancellationMismatch),
         EffectState::Prepared => return Err(AlertControlError::Inconsistent),
@@ -321,29 +387,43 @@ pub fn cancel_prepared_alert(
     cx: &ReplayCx,
 ) -> Result<AlertCancellationReceipt, AlertControlError> {
     let (plan, operation, mut obligation) = plan(deployment, operation_id, authority, cx)?;
-    if approval != plan.approval { return Err(AlertControlError::ApprovalMismatch); }
+    if approval != plan.approval {
+        return Err(AlertControlError::ApprovalMismatch);
+    }
     if operation.state == EffectState::Cancelled {
         verify_request_custody(deployment, &plan)?;
         return Ok(AlertCancellationReceipt {
-            plan, outcome: AlertCancellationOutcome::AlreadyCancelled, operation, obligation,
+            plan,
+            outcome: AlertCancellationOutcome::AlreadyCancelled,
+            operation,
+            obligation,
         });
     }
     let reason = format!("{REASON_PREFIX}{}", plan.principal);
     deployment.effects().effect_journal().validate_cancel(
-        operation_id, now, plan.evidence, Some(&reason),
+        operation_id,
+        now,
+        plan.evidence,
+        Some(&reason),
     )?;
     checkpoint(cx, STAGE_CANCEL_REVALIDATED)?;
     publish_request(deployment, &plan, cx)?;
     checkpoint(cx, STAGE_CANCEL_REQUEST_PUBLISHED)?;
-    let operation = deployment.effects_and_ledger().0
-        .cancel(operation_id, now, plan.evidence, Some(reason))?.clone();
+    let operation = deployment
+        .effects_and_ledger()
+        .0
+        .cancel(operation_id, now, plan.evidence, Some(reason))?
+        .clone();
     // The same core transition atomically installs this obligation state; constructing the
     // already-validated receipt here cannot fail after a successful durable append.
     obligation.state = ObligationState::Cancelled;
     obligation.proof_digest = Some(plan.proof);
     cx.checkpoint_post_commit(STAGE_CANCEL_COMMITTED);
     Ok(AlertCancellationReceipt {
-        plan, outcome: AlertCancellationOutcome::Cancelled, operation, obligation,
+        plan,
+        outcome: AlertCancellationOutcome::Cancelled,
+        operation,
+        obligation,
     })
 }
 
@@ -358,21 +438,31 @@ pub(crate) fn operator_cancellation_is_bound(
     plan: &ReferenceAlertPlan,
     authority: &DurableReferenceLedger,
 ) -> bool {
-    let Some(principal) = reason.and_then(|text| text.strip_prefix(REASON_PREFIX)) else { return false; };
-    if !valid_principal(principal) || prepared.intent != plan.intent
+    let Some(principal) = reason.and_then(|text| text.strip_prefix(REASON_PREFIX)) else {
+        return false;
+    };
+    if !valid_principal(principal)
+        || prepared.intent != plan.intent
         || prepared.intent.effect_class != "alert.dispatch"
         || authority.current().anchor.site_lineage != plan.authority_anchor.site_lineage
-    { return false; }
+    {
+        return false;
+    }
     let grounded = authority.batches().iter().any(|batch| {
-        batch.new_anchor == plan.authority_anchor && batch.deltas.iter().any(|delta| {
-            delta.family == "event_revision" && delta.payload_digest == plan.event_root
-                && delta.witness_digest == Some(plan.event_revision_digest)
-        })
+        batch.new_anchor == plan.authority_anchor
+            && batch.deltas.iter().any(|delta| {
+                delta.family == "event_revision"
+                    && delta.payload_digest == plan.event_root
+                    && delta.witness_digest == Some(plan.event_revision_digest)
+            })
     });
     let request = ContentDigest::sha256(&evidence_bytes(
-        &plan.authority_anchor.site_lineage, principal, prepared,
+        &plan.authority_anchor.site_lineage,
+        principal,
+        prepared,
     ));
-    grounded && request_is_ledgered(authority, request)
+    grounded
+        && request_is_ledgered(authority, request)
         && EffectCancellationRecord::for_prepared(prepared, request).proof_digest() == proof
 }
 
@@ -381,12 +471,20 @@ pub(crate) fn operator_cancellation_is_bound(
 fn request_is_ledgered(authority: &DurableReferenceLedger, request: ContentDigest) -> bool {
     authority.batches().iter().any(|batch| {
         batch.children.contains(&request)
-            && batch.deltas.iter().any(|d| d.family == ROOT_REACHABILITY_FAMILY)
+            && batch
+                .deltas
+                .iter()
+                .any(|d| d.family == ROOT_REACHABILITY_FAMILY)
     })
 }
 
 fn request_slot(plan: &AlertCancellationPlan) -> Result<SlotName, AlertControlError> {
-    let hex: String = plan.proof.bytes().iter().map(|b| format!("{b:02x}")).collect();
+    let hex: String = plan
+        .proof
+        .bytes()
+        .iter()
+        .map(|b| format!("{b:02x}"))
+        .collect();
     SlotName::parse(&format!("alert-cancel-{hex}")).map_err(|_| AlertControlError::Inconsistent)
 }
 
@@ -397,7 +495,10 @@ fn verify_request_custody(
     if !request_is_ledgered(deployment.ledger(), plan.evidence) {
         return Err(AlertControlError::Inconsistent);
     }
-    let bytes = deployment.publisher().spool().read(plan.evidence)
+    let bytes = deployment
+        .publisher()
+        .spool()
+        .read(plan.evidence)
         .map_err(|_| AlertControlError::Inconsistent)?;
     if bytes != evidence_bytes(&plan.site, &plan.principal, &plan.prepared)
         || ContentDigest::sha256(&bytes) != plan.evidence
