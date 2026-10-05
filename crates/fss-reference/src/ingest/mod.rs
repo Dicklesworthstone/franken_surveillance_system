@@ -42,6 +42,8 @@ pub mod recorded_corroboration;
 pub mod recorded_coverage;
 /// Canonical JPEG decoding and durable source-linked luma publications.
 pub mod recorded_decode;
+/// Source-closed, separately approved sampled-dwell hypotheses from retained watch observations.
+pub mod recorded_dwell;
 /// Durable unresolved event candidates from exact replayed analysis reports.
 pub mod recorded_event;
 /// Model-free decode→foreground→Kalman→zone candidates with exact-approval publication.
