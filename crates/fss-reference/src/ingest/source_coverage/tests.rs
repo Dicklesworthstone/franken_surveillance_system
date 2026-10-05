@@ -32,7 +32,9 @@ use super::{
 use crate::agent_orient::{
     CLAIM_COVERAGE, OrientLimits, OrientRequest, orient_deployment, read_deployment,
 };
-use crate::reference_deployment::{FAMILY_PRIVACY_MASK_POLICY, FAMILY_SENSOR_CAPSULE};
+use crate::reference_deployment::{
+    FAMILY_COVERAGE_WITNESS, FAMILY_PRIVACY_MASK_POLICY, FAMILY_SENSOR_CAPSULE,
+};
 use crate::{
     ADP_REPLAY_ROW_ID, ReferenceDeployment, ReferenceEventReceipt, ReferencePolicyAction,
     ReferencePolicyDecision, ReferenceSituation, ReferenceSituationRequest, ReplayCx,
@@ -126,6 +128,9 @@ fn everything(_: &str, _: u64) -> bool {
     true
 }
 
+/// History committed before the witness basis.
+type Prelude = fn(&mut ReferenceDeployment, &ReplayCx) -> Result<(), Box<dyn Error>>;
+
 /// One `quiet` run on a real deployment, stopped after the slot commit.
 struct Quiet {
     root: PathBuf,
@@ -141,9 +146,21 @@ impl Quiet {
     /// Runs the lab flow; `retain` false never retains the record (a stored but unretained
     /// witness).
     fn run(tag: &str, delivery: Delivery, retain: bool) -> Result<Self, Box<dyn Error>> {
+        Self::run_after(tag, delivery, retain, |_, _| Ok(()))
+    }
+
+    /// [`Self::run`] after `prelude` commits earlier history: the witness basis is the anchor the
+    /// prelude leaves.
+    fn run_after(
+        tag: &str,
+        delivery: Delivery,
+        retain: bool,
+        prelude: Prelude,
+    ) -> Result<Self, Box<dyn Error>> {
         let root = fresh_root(tag)?;
         let cx = test_cx(tag)?;
         let mut deployment = ReferenceDeployment::open(&root, SITE, &cx)?;
+        prelude(&mut deployment, &cx)?;
         let mut staged = Vec::new();
         let mut sources = Vec::new();
         for tick in 0..TICKS {
@@ -913,6 +930,123 @@ fn a_gapped_or_partial_stored_witness_does_not_certify() -> TestResult {
         assert_not_certified(&mut quiet, "not complete and continuous")?;
         quiet.cleanup();
     }
+    Ok(())
+}
+
+#[test]
+fn a_coverage_witness_delta_committed_without_source_custody_does_not_certify() -> TestResult {
+    // The exact record and witness reach the ledger through the generic batch writer rather than
+    // the producer's retention: the delta matches the record, but its batch holds custody of the
+    // record and witness only, never of the source capsules and payloads.
+    let mut quiet = Quiet::run("no-custody", everything, false)?;
+    let record = quiet.record.clone();
+    let cx = test_cx("no-custody-append")?;
+    let deployment = quiet.deployment()?;
+    let witness_object = deployment.stage_payload(&record.witness.canonical_bytes())?;
+    let digest = deployment.stage_payload(&record.to_bytes())?;
+    assert_eq!(witness_object, record.witness_object());
+    assert_eq!(digest, record.digest());
+    deployment.append_batch(
+        BatchId::parse("batch:coverage:bypass")?,
+        vec![EvidenceDelta {
+            delta_id: "delta:coverage:bypass".to_owned(),
+            family: FAMILY_COVERAGE_WITNESS.to_owned(),
+            object_id: record.object_id()?,
+            prior_generation: None,
+            new_generation: 1,
+            validity: record.interval,
+            plane: Plane::Authority,
+            payload_digest: digest,
+            witness_digest: Some(witness_object),
+            operation_id: None,
+        }],
+        vec![witness_object, digest],
+        &cx,
+    )?;
+    commit_slot(
+        quiet.deployment()?,
+        "slot-bypass",
+        vec![witness_object, digest],
+        &cx,
+    )?;
+    let (batches, head) = quiet.history()?;
+    // Every other condition holds: only custody is missing.
+    assert!(record.source_objects().count() > 0);
+    assert!(record.witness.certifies_absence());
+    assert_eq!(
+        verify_retained_coverage(&record, Some(&quiet.decision.event), &batches, &head),
+        Err(RetainedCoverageRefusal::NoCustody)
+    );
+    assert_eq!(
+        verify_retained_coverage(&record, None, &batches, &head),
+        Err(RetainedCoverageRefusal::NoCustody)
+    );
+    assert_not_certified(&mut quiet, "does not hold custody of every source object")?;
+    quiet.cleanup();
+    Ok(())
+}
+
+/// Unrelated history before the witness interval: a yard camera's capsule at [-10, -9] s,
+/// committed and made reachable by a slot commit over that interval only.
+fn yard_history(deployment: &mut ReferenceDeployment, cx: &ReplayCx) -> Result<(), Box<dyn Error>> {
+    let yard = CaptureInterval::new(TimestampNs(-10_000_000_000), TimestampNs(-9_000_000_000))?;
+    let packet = b"packet:cam-yard:-10";
+    let payload = deployment.stage_payload(packet)?;
+    let capsule = SensorCapsule::from_source_bytes(SensorSourceBytesSpec {
+        capsule_id: CapsuleId::parse("capsule:cam-yard:0")?,
+        sensor_id: SensorId::parse("sensor:cam-yard")?,
+        stream_id: StreamId::parse("stream:cam-yard")?,
+        sequence: 0,
+        capture: yard,
+        receive_time: yard.latest,
+        clock_basis: ClockBasis::DeviceMonotonic,
+        source: packet,
+        frame_count: 1,
+        gap_before: false,
+    })?;
+    let digest = deployment.stage_payload(&capsule.canonical_bytes())?;
+    let mut capsule_delta = delta(FAMILY_SENSOR_CAPSULE, "capsule:yard", digest)?;
+    capsule_delta.validity = yard;
+    deployment.append_batch(
+        BatchId::parse("batch:yard-capsule")?,
+        vec![capsule_delta],
+        vec![payload, digest],
+        cx,
+    )?;
+    let manifest = ObjectManifest::new("slot-yard", vec![payload, digest], None)?;
+    deployment.publish_and_commit(&SlotName::parse("slot-yard")?, &manifest, yard, cx)?;
+    Ok(())
+}
+
+#[test]
+fn a_witness_based_after_unrelated_earlier_history_is_certified() -> TestResult {
+    let mut quiet = Quiet::run_after("later-basis", everything, true, yard_history)?;
+    // Basis commit 2 (after the yard capsule and its slot commit); after it: the event
+    // publication (3), the record retention (4) and the run's slot commit (5).
+    assert_eq!(quiet.record.witness.anchor.commit_sequence, 2);
+    let (batches, head) = quiet.history()?;
+    assert_eq!(head.commit_sequence, 5);
+    // The pre-basis history is real, not bookkeeping of this witness, and outside its interval.
+    let interval = quiet.record.interval;
+    let pre_basis: Vec<&EvidenceDeltaBatch> = batches
+        .iter()
+        .filter(|batch| batch.new_anchor.commit_sequence <= 2)
+        .collect();
+    assert_eq!(pre_basis.len(), 2);
+    for batch in &pre_basis {
+        assert!(!batch.children.is_empty());
+        assert!(batch.deltas.iter().all(|delta| {
+            delta.validity.latest < interval.earliest || delta.validity.earliest > interval.latest
+        }));
+    }
+    let absence =
+        verify_retained_coverage(&quiet.record, Some(&quiet.decision.event), &batches, &head)
+            .map_err(|refusal| format!("a later basis must certify: {refusal}"))?;
+    assert_eq!(absence.basis_sequence, 2);
+    assert_eq!(absence.record_sequence, 4);
+    assert_eq!(absence.record_digest, quiet.record.digest());
+    assert_certified(&mut quiet)?;
+    quiet.cleanup();
     Ok(())
 }
 
