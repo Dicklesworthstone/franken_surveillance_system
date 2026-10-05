@@ -20,6 +20,15 @@ synthetic one-second reference timeline, not a real capture timestamp. Without a
 `unknown`. A supplied tuple is explicitly an `operator_assumption`, never hardware clock proof.
 The import's output reports `absence_certifiable=false` in either case.
 
+Each import drives the core acquisition lifecycle, and a completed import retains it in its
+completing ledger batch. `import`, `inspect` and `verify` print it after replaying it through the
+core session: `acquisition_history=requested,authenticated,adapter_accepted,degraded,cancelled`,
+`acquisition_terminal=cancelled` and `acquisition_ending=end_of_file_source`. A file is not
+decoded on import and has no packet sequence or live clock. The session therefore degrades
+(`continuity_not_observable`, `first_frame_decode_not_attempted`) instead of observing a first
+frame. `acquisition_absence_refusal` is the core's refusal of any absence claim. An import completed
+before this lifecycle existed prints `acquisition_history=not_recorded`.
+
 The command reports the actual retained manifest and completion anchor, rather than treating a
 newly reconstructed retry receipt as stored truth. A successful import also performs a complete
 source-byte verification. Save the printed `import_identity=sha256:...` for subsequent commands.

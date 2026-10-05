@@ -386,16 +386,89 @@ mod tests {
     const MAIN_SNEAKY_REPORT_SHA256: &str =
         "sha256:37a3ee18ff78d17d4d89262289399aafc665d98a85376528854c0ec448ca9f75";
 
+    /// The exact `quiet` report inside that main matrix, recorded from origin/main 6d4513b
+    /// before review r12 of fss-2h5zq.11. The lab asserted its certification while the real
+    /// situation refused it: the coverage witness was anchored before the event publication and
+    /// the slot commit moved the anchor, so `compile_reference_situation` kept the
+    /// `absence-uncertified` residual world. The witness the situation evaluates is now
+    /// re-anchored to the final anchor and the real situation certifies, so the compiled
+    /// situation and the sealed handoff change, and with them exactly `situation_digest` and
+    /// `handoff_digest`; every other byte of quiet is unchanged.
+    const MAIN_QUIET_REPORT: &str = concat!(
+        r#"{"schema":"fss.lab.scenario.v2","scenario":"quiet","ledger_sequence":2"#,
+        r#","anchor_sequence":2"#,
+        r#","ledger_anchor_root":"sha256:8d90f17cdfd93b708bf776055a4afb4eaf1aa53a6098ea117fe8148b490e660e""#,
+        r#","anchor_root":"sha256:8d90f17cdfd93b708bf776055a4afb4eaf1aa53a6098ea117fe8148b490e660e""#,
+        r#","publication_root":"sha256:a8c1343e01a56abdd91d587fdc5a8f9755496c62928dc1b29888c0dd7478e5bb""#,
+        r#","source_root":"sha256:a8c1343e01a56abdd91d587fdc5a8f9755496c62928dc1b29888c0dd7478e5bb""#,
+        r#","envelope":"certified_quiet","event_disposition":"quiet""#,
+        r#","absence_certified":true,"transient_indeterminate":false,"effect_state":null"#,
+        r#","obligation_state":null"#,
+        r#","knowledge":{"absence":"certified","corroboration":"not_applicable","coverage_gaps":[]}"#,
+        r#","affordances":[{"class":"observe","operation":"session.follow""#,
+        r#","reason":"continuous authorized coverage certifies no unknown person"}]"#,
+        r#","warnings":[]"#,
+        r#","situation_digest":"sha256:6528b0cd924f2cff013ea6a2dc4630e71ecfbc6ceac1524ef967660f5773e2f2""#,
+        r#","handoff_digest":"sha256:c962ba470af5c364b8a67918f20c1d3da1cbf5a2c26d3c54f40c33a1a80e245a""#,
+        r#","crate_generations":{"fss-cli":"0.0.1","fss-core":"0.0.1""#,
+        r#","fss-geometry":"0.0.1","fss-ledger":"0.0.1","fss-model-ir":"0.0.1""#,
+        r#","fss-object":"0.0.1","fss-packet":"0.0.1","fss-publication":"0.0.1""#,
+        r#","fss-reference":"0.0.1","fss-tensor":"0.0.1","fss-twin":"0.0.1"}}"#,
+    );
+    const MAIN_QUIET_REPORT_SHA256: &str =
+        "sha256:0ea57fbc46768ac900a6dd961628a2a3e9034e93db4a58e9777195201bfdaee7";
+    const MAIN_QUIET_SITUATION_DIGEST: &str =
+        "sha256:6528b0cd924f2cff013ea6a2dc4630e71ecfbc6ceac1524ef967660f5773e2f2";
+    const MAIN_QUIET_HANDOFF_DIGEST: &str =
+        "sha256:c962ba470af5c364b8a67918f20c1d3da1cbf5a2c26d3c54f40c33a1a80e245a";
+    /// Quiet's situation and handoff digests once the real situation certifies absence.
+    const QUIET_SITUATION_DIGEST: &str =
+        "sha256:ef276790acaaf6c564a0049ca474dc3908c8bfbe4c80daa6a987d75519283800";
+    const QUIET_HANDOFF_DIGEST: &str =
+        "sha256:ea2ef9d489ea2b3bd029eb1bcdf9ea4f4c237448ef395742803539eeab9e9cb5";
+
     #[test]
-    fn five_mock_scenarios_are_byte_identical_to_main_and_only_sneaky_changes() {
+    fn four_mock_scenarios_are_byte_identical_to_main_and_only_quiet_and_sneaky_change() {
         assert_eq!(
             fss_core::ContentDigest::sha256(MAIN_SNEAKY_REPORT.as_bytes()).to_string(),
             MAIN_SNEAKY_REPORT_SHA256
+        );
+        assert_eq!(
+            fss_core::ContentDigest::sha256(MAIN_QUIET_REPORT.as_bytes()).to_string(),
+            MAIN_QUIET_REPORT_SHA256
         );
         let root = temp_root("mat-baseline");
         let matrix = render_matrix(&root);
         let _ = std::fs::remove_dir_all(&root);
         let matrix = matrix.unwrap_or_default();
+
+        // Quiet differs from main in exactly its situation and handoff digests.
+        let quiet_start = matrix
+            .find("{\"schema\":\"fss.lab.scenario.v2\",\"scenario\":\"quiet\"")
+            .unwrap_or(matrix.len());
+        let quiet_end = matrix
+            .find(",{\"schema\":\"fss.lab.scenario.v2\",\"scenario\":\"raccoon\"")
+            .unwrap_or(matrix.len());
+        assert!(
+            quiet_start < quiet_end,
+            "quiet report not found in the matrix"
+        );
+        let quiet = &matrix[quiet_start..quiet_end];
+        assert_ne!(quiet, MAIN_QUIET_REPORT);
+        assert!(quiet.contains(&format!(
+            "\"situation_digest\":\"{QUIET_SITUATION_DIGEST}\""
+        )));
+        assert!(quiet.contains(&format!("\"handoff_digest\":\"{QUIET_HANDOFF_DIGEST}\"")));
+        let quiet_with_main_digests = quiet
+            .replace(QUIET_SITUATION_DIGEST, MAIN_QUIET_SITUATION_DIGEST)
+            .replace(QUIET_HANDOFF_DIGEST, MAIN_QUIET_HANDOFF_DIGEST);
+        assert_eq!(quiet_with_main_digests, MAIN_QUIET_REPORT);
+        let matrix = format!(
+            "{}{MAIN_QUIET_REPORT}{}",
+            &matrix[..quiet_start],
+            &matrix[quiet_end..]
+        );
+
         let start = matrix
             .find("{\"schema\":\"fss.lab.scenario.v2\",\"scenario\":\"sneaky\"")
             .unwrap_or(matrix.len());

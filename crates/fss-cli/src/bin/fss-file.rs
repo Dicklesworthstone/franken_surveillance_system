@@ -21,8 +21,8 @@ use fss_core::region::{ContextAuthority, RootAuthoritySpec};
 use fss_core::{BudgetVector, ContentDigest, OperationId, SensorId, StreamId, TimestampNs};
 use fss_reference::ingest::retained::{MAX_RETAINED_ENTRIES, MAX_RETAINED_PAYLOAD_BYTES};
 use fss_reference::ingest::{
-    CaptureHint, FileFormatHint, FileIngestAdapter, FileIngestLimits, FileIngestRequest,
-    RetainedFileImport, RetainedReadLimits,
+    AcquisitionRetention, CaptureHint, FileFormatHint, FileIngestAdapter, FileIngestLimits,
+    FileIngestRequest, RetainedFileImport, RetainedReadLimits,
 };
 use fss_reference::{ReferenceDeployment, ReplayCx};
 
@@ -399,7 +399,26 @@ fn run(options: Options, out: &mut impl Write) -> RunResult<()> {
         writeln!(out, "segment_count={}", manifest.segment_spans.len())?;
         writeln!(out, "omission_count={}", manifest.omission_spans.len())?;
         writeln!(out, "capture_time_class={}", manifest.capture_time_label)?;
-        writeln!(out, "absence_certifiable=false")?;
+        // The retained acquisition lifecycle, replayed through the core session; its absence
+        // gate decides `absence_certifiable` (a file session never certifies absence).
+        let acquisition = AcquisitionRetention::open(&deployment, identity)?;
+        match acquisition.history() {
+            Some(history) => {
+                writeln!(out, "acquisition_history={}", history.kinds_text())?;
+                writeln!(out, "acquisition_terminal={}", history.terminal().as_str())?;
+                writeln!(out, "acquisition_ending={}", history.ending().as_str())?;
+                let refusal = match history.absence_claim() {
+                    Ok(()) => "none".to_owned(),
+                    Err(refusal) => refusal.to_string(),
+                };
+                writeln!(out, "acquisition_absence_refusal={refusal}")?;
+            }
+            None => writeln!(out, "acquisition_history=not_recorded")?,
+        }
+        let absence_certifiable = acquisition
+            .history()
+            .is_some_and(|history| history.absence_claim().is_ok());
+        writeln!(out, "absence_certifiable={absence_certifiable}")?;
         match &options.action {
             Action::Import(_) | Action::Verify(_) => {
                 let verified = retained.verify_source(&deployment, options.limits, &cx)?;
