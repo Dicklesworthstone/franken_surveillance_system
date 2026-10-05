@@ -7,9 +7,8 @@
 //! rerun command that would publish it. With `--approve DIGEST[,DIGEST...]` it publishes only
 //! those exact proposals as unclassified, indeterminate, single-sensor candidates through the
 //! deployment's guarded event publisher; already-published candidates are never republished.
-//! Every report also proposes the run's coverage record (one `CoverageWitness` per sensor, zone
-//! and contiguous observable interval, every other frame an explicit uncovered interval); only
-//! `--retain-coverage DIGEST` with its exact approval digest retains it as authority.
+//! Every entry-mode report also proposes the run's coverage record; only `--retain-coverage`
+//! with its exact approval digest retains it as authority.
 //! `--detector-package PATH --detector-digest sha256:HEX --detector-max-inferences N` adds the
 //! detection cascade: the verified package runs only on frames the cheap stage selected, and its
 //! uncalibrated class evidence is attached to each candidate without changing its kind or state.
@@ -17,6 +16,9 @@
 //! refusal or source gap inside the range into a `decode_refused` coverage interval with its
 //! error id instead of refusing the run: H.264/H.265 resume at the next IDR/IRAP and tracking
 //! restarts after the gap. Without the flag the refusal is exactly today's.
+//! `--dwell-for-ns N --dwell-max-gap-ns N [--dwell-min-observations N]` instead evaluates
+//! sustained actual zone observations. It uses the same pipeline once, emits separately approved
+//! dwell hypotheses, and refuses coverage retention: entry coverage is not dwell-absence proof.
 
 use std::collections::BTreeSet;
 use std::ffi::OsString;
@@ -28,10 +30,12 @@ use fss_reference::ingest::RetainedFileImport;
 use fss_reference::ingest::detector_cascade::DetectorCascade;
 use fss_reference::ingest::package_detect::PackageDetectLimits;
 use fss_reference::ingest::recorded_decode::ComponentInterpretation;
+use fss_reference::ingest::recorded_dwell::DwellReport;
 use fss_reference::ingest::recorded_watch::{
     MAX_WATCH_FRAMES, MAX_WATCH_ZONES, WatchDetectorConfig, WatchError, WatchLimits, WatchOptions,
     WatchPlan, WatchReport, WatchTrackerConfig, WatchZone,
 };
+use fss_reference::ingest::zone_dwell::DwellPolicy;
 use fss_reference::{ReferenceDeployment, ReplayCx, ScalarExecCx};
 
 use super::{RunResult, export};
@@ -59,6 +63,9 @@ const OPTIONS: &[&str] = &[
     "--approve",
     "--retain-coverage",
     "--report-out",
+    "--dwell-for-ns",
+    "--dwell-max-gap-ns",
+    "--dwell-min-observations",
 ];
 
 /// Fully parsed watch request; nothing here is authority until `run` validates it.
@@ -80,6 +87,7 @@ pub(super) struct WatchAction {
     report_out: Option<PathBuf>,
     cascade: Option<super::detector::DetectorOptions>,
     options: WatchOptions,
+    dwell: Option<DwellPolicy>,
     rerun: String,
 }
 
@@ -146,6 +154,26 @@ fn quote(argument: &str) -> String {
     } else {
         format!("'{}'", argument.replace('\'', "'\\''"))
     }
+}
+
+fn dwell_policy(values: &[(String, String)]) -> Result<Option<DwellPolicy>, String> {
+    let has = |key| values.iter().any(|(name, _)| name == key);
+    if !has("--dwell-for-ns") && !has("--dwell-max-gap-ns") && !has("--dwell-min-observations") {
+        return Ok(None);
+    }
+    if !has("--dwell-for-ns") || !has("--dwell-max-gap-ns") {
+        return Err("dwell requires both --dwell-for-ns and --dwell-max-gap-ns".to_owned());
+    }
+    if has("--retain-coverage") {
+        return Err("dwell refuses --retain-coverage: entry coverage does not certify dwell absence".to_owned());
+    }
+    let rule = DwellPolicy {
+        minimum_duration_ns: number(values, "--dwell-for-ns", 0_u64)?,
+        maximum_sample_gap_ns: number(values, "--dwell-max-gap-ns", 0_u64)?,
+        minimum_observations: number(values, "--dwell-min-observations", 2_usize)?,
+    };
+    rule.validate().map_err(|e| e.to_string())?;
+    Ok(Some(rule))
 }
 
 /// Parses the arguments after `watch`. Every option takes one separate value; only `--zone`
@@ -290,6 +318,7 @@ pub(super) fn parse(args: &[OsString]) -> Result<WatchAction, String> {
             .map(|(_, v)| PathBuf::from(v)),
         cascade: super::detector::parse(&values)?,
         options,
+        dwell: dwell_policy(&values)?,
         rerun: rerun.join(" "),
     })
 }
@@ -363,6 +392,24 @@ fn run_with(
         detector: action.detector,
         tracker: action.tracker,
     };
+    if let Some(rule) = action.dwell {
+        let mut report = DwellReport::analyze(
+            deployment, &plan, rule, &action.limits, cascade.as_mut(), action.options, cx,
+        )?;
+        // Bound the actual rerun hint and complete report before any event publication.
+        report.to_json(deployment.current_anchor().commit_sequence, Some(&action.rerun))?;
+        if !action.approvals.is_empty() {
+            report.publish(deployment, &action.approvals, cx)?;
+        }
+        let json = format!("{}\n", report.to_json(
+            deployment.current_anchor().commit_sequence, Some(&action.rerun),
+        )?);
+        if let Some(path) = &action.report_out {
+            export(path, json.as_bytes(), root, cx)?;
+        }
+        out.write_all(json.as_bytes())?;
+        return Ok(());
+    }
     let mut report = WatchReport::analyze_with_options(
         deployment,
         &plan,
