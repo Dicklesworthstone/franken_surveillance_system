@@ -18,9 +18,8 @@ check() {
 }
 check deletion-unit cargo test --locked --offline -j 2 -p fss-reference --lib deletion::
 check deletion-cli cargo test --locked --offline -j 2 -p fss-cli --bin fss-event delete::
-if [[ -f crates/fss-reference/tests/retention_contract.rs ]]; then
-    check retention-contract cargo test --locked --offline -j 2 -p fss-reference --test retention_contract
-fi
+check retention-storage cargo test --locked --offline -j 2 -p fss-cli --no-fail-fast \
+    --test retention_cli_contract --test deletion_cli_contract --test deletion_scope_cli_contract
 # Report formatting separately, never convert compilation/test failure into success.
 check formatting cargo fmt --all -- --check
 exit "$status"
