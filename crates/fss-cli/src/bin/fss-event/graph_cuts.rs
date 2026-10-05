@@ -21,9 +21,12 @@ use fss_graph_algorithms::failure_domains::{
 };
 use fss_reference::coverage_graph::{CoverageGraphReport, read_coverage_single_points_during};
 
+#[path = "graph_cuts_timeline.rs"]
+mod timeline;
+
 const MAX_REPORT_BYTES: usize = 8 * 1024 * 1024;
 const HELP: &str = "fss-event graph failure-cuts --root DIR --site SITE --during START_NS:END_NS\n\
-  --max-failed-domains K --failure-domain KIND:ID=SENSOR[,SENSOR...] (repeatable)\n\
+  [--timeline] --max-failed-domains K --failure-domain KIND:ID=SENSOR[,SENSOR...] (repeatable)\n\
   Enumerates EVERY nonempty combination of up to K declared dependencies. A sensor\n\
   shared by several failed dependencies is removed once, not treated as an alternate route.\n\
   KIND: network, power, clock, or host. Use exact sensor IDs from retained coverage.\n\
@@ -32,6 +35,9 @@ const HELP: &str = "fss-event graph failure-cuts --root DIR --site SITE --during
   --during uses inclusive signed 128-bit capture nanoseconds, including point windows.\n\
   Each qualifying witness must cover the whole window; capture hints are NOT calibrated\n\
   clock alignment. A no-cut-within-bound result is NOT an independence certificate.\n\
+  --timeline instead splits at every certain witness boundary and evaluates the full\n\
+  failure family in EACH segment, including unwitnessed intervals and camera handovers.\n\
+  One pinned snapshot and one aggregate budget cover ALL segments (at most 256).\n\
   Reads one committed snapshot. No mutation, repair, persisted declaration or effect.\n\
   Limits: 16 declarations, 1024 members each, 256 combinations, 1000000 aggregate\n\
   graph/enumeration operations, 100000 output entries, 8 MiB. No partial report.\n";
@@ -43,6 +49,7 @@ struct Request {
     window: CaptureInterval,
     maximum: usize,
     domains: Vec<FailureDomain>,
+    timeline: bool,
 }
 
 fn domain(value: &str) -> Result<FailureDomain, String> {
@@ -95,9 +102,18 @@ fn parse(args: &[OsString]) -> Result<Request, String> {
     let mut window = None;
     let mut maximum = None;
     let mut domains: Vec<FailureDomain> = Vec::new();
+    let mut timeline = false;
     let mut index = 1;
     while index < args.len() {
         let key = args[index].to_str().ok_or("option names require UTF-8")?;
+        if key == "--timeline" {
+            if timeline {
+                return Err("duplicate option --timeline".into());
+            }
+            timeline = true;
+            index += 1;
+            continue;
+        }
         let value = args.get(index + 1).ok_or_else(|| format!("required value for {key}"))?;
         if key == "--root" && root.is_none() {
             root = Some(PathBuf::from(value));
@@ -147,6 +163,7 @@ fn parse(args: &[OsString]) -> Result<Request, String> {
         window: window.ok_or("required option --during")?,
         maximum,
         domains,
+        timeline,
     })
 }
 
@@ -286,6 +303,10 @@ fn combinations(
 }
 
 fn render_single(value: &CoverageGraphReport, request: &Request, limit: GraphBudget, max_bytes: usize) -> Result<String, String> {
+    let limit = GraphBudget {
+        max_operations: limit.max_operations.min(budget().max_operations),
+        max_output_entries: limit.max_output_entries.min(budget().max_output_entries),
+    };
     let operations = value.answer.analysis.operations;
     let output_entries = value.answer.analysis.output_entries;
     if operations > limit.max_operations || output_entries > limit.max_output_entries {
@@ -328,9 +349,13 @@ pub(super) fn main(args: &[OsString]) -> ExitCode {
             return ExitCode::from(ExitIdentity::MALFORMED_VALUE.code);
         }
     };
-    let rendered = read_coverage_single_points_during(&request.root, &request.site, request.window)
-        .map_err(|error| format!("{}: {error}", error.stable_id().unwrap_or(ERR_CLI_RUNTIME_FAILURE)))
-        .and_then(|value| render_single(&value, &request, budget(), MAX_REPORT_BYTES));
+    let rendered = if request.timeline {
+        timeline::run(&request)
+    } else {
+        read_coverage_single_points_during(&request.root, &request.site, request.window)
+            .map_err(|error| format!("{}: {error}", error.stable_id().unwrap_or(ERR_CLI_RUNTIME_FAILURE)))
+            .and_then(|value| render_single(&value, &request, budget(), MAX_REPORT_BYTES))
+    };
     match rendered {
         Ok(json) => match writeln!(io::stdout().lock(), "{json}") {
             Ok(()) => ExitCode::from(ExitIdentity::SUCCESS.code),
@@ -417,6 +442,12 @@ mod tests {
     #[test]
     fn malformed_and_oversized_requests_fail_before_io() -> Result<(), String> {
         assert_eq!(parse(&args())?.maximum, 2);
+        assert!(!parse(&args())?.timeline);
+        let mut temporal = args();
+        temporal.push("--timeline".into());
+        assert!(parse(&temporal)?.timeline);
+        temporal.push("--timeline".into());
+        assert!(parse(&temporal).is_err());
         for extra in [["--during", "0:1"], ["--max-failed-domains", "1"], ["--failure-domain", "power:left=b"], ["--surprise", "x"]] {
             let mut invalid = args();
             invalid.extend(extra.into_iter().map(OsString::from));
