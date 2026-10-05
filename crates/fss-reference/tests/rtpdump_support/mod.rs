@@ -132,3 +132,93 @@ pub fn real_dump(fragmented: bool) -> Vec<u8> {
     }
     b
 }
+/// RTP packet with an explicit media timestamp and SSRC (the `rtp` helper above keeps a
+/// constant timestamp 90000 and SSRC 7 for the older framing tests).
+pub fn rtp_full(seq: u16, marker: bool, timestamp: u32, ssrc: u32, payload: &[u8]) -> Vec<u8> {
+    let mut b = vec![0x80, 96 | if marker { 128 } else { 0 }];
+    b.extend_from_slice(&seq.to_be_bytes());
+    b.extend_from_slice(&timestamp.to_be_bytes());
+    b.extend_from_slice(&ssrc.to_be_bytes());
+    b.extend_from_slice(payload);
+    b
+}
+/// One planned recorded packet of [`packetize`].
+#[derive(Clone, Debug)]
+pub struct Planned {
+    pub seq: u16,
+    pub timestamp: u32,
+    pub ssrc: u32,
+    pub offset_ms: u32,
+    pub marker: bool,
+    pub payload: Vec<u8>,
+    /// Whether the payload carries (part of) a VCL NAL (type 1 or 5).
+    pub vcl: bool,
+}
+/// Packetizes `repeats` copies of the decodable Baseline fixture as RFC 6184 single-NAL or
+/// FU-A packets of at most `max_payload` bytes. A leading sacrificial AUD packet is the
+/// sequence kernel's probation packet. Each picture advances the media clock by 3,600 ticks
+/// (25 fps at 90 kHz) and the recorder offset by 40 ms; non-VCL NALs share the timing of the
+/// picture they precede, so the stream has zero interarrival jitter.
+pub fn packetize(
+    repeats: usize,
+    max_payload: usize,
+    first_seq: u16,
+    ssrc: u32,
+    first_timestamp: u32,
+    first_offset_ms: u32,
+) -> Vec<Planned> {
+    let mut out = Vec::new();
+    let mut seq = first_seq;
+    let mut picture = 0_u32;
+    let mut push = |out: &mut Vec<Planned>, payload: Vec<u8>, marker: bool, vcl: bool, pic: u32| {
+        out.push(Planned {
+            seq,
+            timestamp: first_timestamp.wrapping_add(pic * 3600),
+            ssrc,
+            offset_ms: first_offset_ms + pic * 40,
+            marker,
+            payload,
+            vcl,
+        });
+        seq = seq.wrapping_add(1);
+    };
+    push(&mut out, vec![0x09, 0xf0], false, false, 0);
+    for _ in 0..repeats {
+        for n in nals() {
+            let vcl = matches!(n[0] & 31, 1 | 5);
+            if n.len() <= max_payload {
+                push(&mut out, n.to_vec(), vcl, vcl, picture);
+            } else {
+                let body = &n[1..];
+                let chunks: Vec<&[u8]> = body.chunks(max_payload - 2).collect();
+                for (j, chunk) in chunks.iter().enumerate() {
+                    let start = if j == 0 { 0x80 } else { 0 };
+                    let end = if j + 1 == chunks.len() { 0x40 } else { 0 };
+                    let mut payload = vec![(n[0] & 0x60) | 28, (n[0] & 31) | start | end];
+                    payload.extend_from_slice(chunk);
+                    push(&mut out, payload, vcl && end != 0, vcl, picture);
+                }
+            }
+            if vcl {
+                picture += 1;
+            }
+        }
+    }
+    out
+}
+/// Serializes planned packets into an rtpdump file in the given order.
+pub fn dump_planned(packets: &[Planned]) -> Vec<u8> {
+    let mut b = header();
+    for p in packets {
+        let wire = rtp_full(p.seq, p.marker, p.timestamp, p.ssrc, &p.payload);
+        record(&mut b, &wire, wire.len() as u16, p.offset_ms);
+    }
+    b
+}
+/// Replay configuration bound to `ssrc`, with room for longer recordings.
+pub fn config_for(ssrc: u32) -> RtpReplayConfig {
+    let mut c = config();
+    c.key.ssrc = ssrc;
+    c.dump.max_records = 1024;
+    c
+}

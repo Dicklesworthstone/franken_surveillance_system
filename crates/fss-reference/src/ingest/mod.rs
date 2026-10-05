@@ -56,6 +56,8 @@ pub mod recorded_watch;
 pub mod recording_pipeline;
 /// Restart-safe recovery and verified reads of completed file imports.
 pub mod retained;
+/// Recorded RTP continuity driven through the core acquisition session (fss-2h5zq.29).
+pub mod rtp_continuity;
 /// Bounded recorded-RTP framing and source-preserving ingest.
 pub mod rtpdump;
 /// Owner site calibration: atlas localization, joint refinement, digest-bound record.

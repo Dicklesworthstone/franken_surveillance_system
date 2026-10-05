@@ -358,6 +358,7 @@
     "crates/fss-reference/src/ingest/rgb_package.rs": "support",
     "crates/fss-reference/src/ingest/rgb_tracking.rs": "support",
     "crates/fss-reference/src/ingest/rgb_tracking/pipeline.rs": "support",
+    "crates/fss-reference/src/ingest/rtp_continuity.rs": "authority",
     "crates/fss-reference/src/ingest/rtpdump.rs": "support",
     "crates/fss-reference/src/ingest/rtpdump/avc.rs": "support",
     "crates/fss-reference/src/ingest/rtpdump/framing.rs": "support",

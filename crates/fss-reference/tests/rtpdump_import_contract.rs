@@ -81,12 +81,36 @@ fn generic_file_adapter_has_an_explicit_owner_bound_rtp_entrypoint() -> TestResu
     std::fs::write(&source, &b)?;
     let cx = cx()?;
     let mut dep = ReferenceDeployment::open(&root.join("deployment"), "site:rtpdump-file", &cx)?;
-    let req = FileIngestRequest::new(source, scope()?.sensor, scope()?.stream)
-        .with_format_hint(FileFormatHint::RtpPlay);
+    let req = FileIngestRequest::new(source.clone(), scope()?.sensor, scope()?.stream)
+        .with_format_hint(FileFormatHint::RtpPlay)
+        .with_receive_time(scope()?.receive_time);
     let receipt =
         FileIngestAdapter::ingest_rtp(req, config(), RtpImportLimits::default(), &cx, &mut dep)?;
     assert_eq!(receipt.report().input_digest(), ContentDigest::sha256(&b));
     assert_eq!(load_rtp_import(&receipt, &cx, &dep)?.source(), b);
+    // The file path binds the owner receive time it was given: same bytes, same identity as
+    // the direct path with that scope.
+    let direct = prepare_rtp_import(&b, scope()?, config(), RtpImportLimits::default(), &cx)?;
+    assert_eq!(direct.manifest().root(), receipt.root());
+    Ok(())
+}
+/// A request without an owner receive time is refused before the file is opened; no receive
+/// time is invented. Planted negative: the pre-fix fallback `TimestampNs(1_000_000_000)`.
+#[test]
+fn rtp_file_entrypoint_refuses_a_missing_receive_time() -> TestResult {
+    let root = new_directory("no-receive-time")?;
+    let source = root.join("input.rtp");
+    std::fs::write(&source, real_dump(false))?;
+    let cx = cx()?;
+    let mut dep = ReferenceDeployment::open(&root.join("deployment"), "site:rtpdump-nrt", &cx)?;
+    let batches = dep.ledger().batches().len();
+    let req = FileIngestRequest::new(source, scope()?.sensor, scope()?.stream)
+        .with_format_hint(FileFormatHint::RtpPlay);
+    assert!(matches!(
+        FileIngestAdapter::ingest_rtp(req, config(), RtpImportLimits::default(), &cx, &mut dep),
+        Err(RtpImportError::MissingReceiveTime)
+    ));
+    assert_eq!(dep.ledger().batches().len(), batches);
     Ok(())
 }
 #[test]

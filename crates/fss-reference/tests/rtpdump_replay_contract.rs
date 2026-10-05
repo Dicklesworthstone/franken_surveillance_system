@@ -152,8 +152,12 @@ fn rtcp_mode_is_explicit_and_bad_rtcp_does_not_rebind_rtp() -> TestResult {
     }
     Ok(())
 }
+/// Before the bound generation admits its baseline, a foreign SSRC is refused (never adopted).
+/// After the baseline, an SSRC change opens generation + 1 with a fresh sequence epoch and keeps
+/// ingesting: the second SSRC's packets are admitted, not refused.
+/// Planted negative: the pre-fix replay (one fixed key) refuses every second-SSRC packet.
 #[test]
-fn wrong_ssrc_is_refused_without_automatic_generation_change() -> TestResult {
+fn wrong_first_ssrc_is_refused_but_a_later_ssrc_change_opens_a_new_generation() -> TestResult {
     let mut b = header();
     let mut wrong = rtp(0, false, &[9, 0xf0]);
     wrong[11] = 8;
@@ -162,7 +166,84 @@ fn wrong_ssrc_is_refused_without_automatic_generation_change() -> TestResult {
     let mut r = RtpDumpReplay::new(&b, config())?;
     let out = records(&mut r, &cx)?;
     assert!(matches!(out[0].outcome, RtpRecordOutcome::StreamRefused(_)));
+    assert!(out[0].restart.is_none());
     assert_eq!(r.stats().unique, 0);
+    assert_eq!(r.key().generation, 1);
+
+    let mut b = header();
+    for (seq, ssrc, ts, payload) in [
+        (10_u16, 7_u32, 3_000_u32, &[9_u8, 0xf0][..]),
+        (11, 7, 3_000, &[0x65, 0xaa][..]),
+        (12, 7, 6_000, &[0x61, 0xbb][..]),
+        (500, 8, 9_000, &[9, 0xf0][..]),
+        (501, 8, 9_000, &[0x65, 0xcc][..]),
+        (502, 8, 12_000, &[0x61, 0xdd][..]),
+    ] {
+        let wire = rtp_full(seq, true, ts, ssrc, payload);
+        record(&mut b, &wire, wire.len() as u16, u32::from(seq));
+    }
+    let mut r = RtpDumpReplay::new(&b, config())?;
+    let out = records(&mut r, &cx)?;
+    assert!(
+        out[..3]
+            .iter()
+            .all(|o| o.key.generation == 1 && o.restart.is_none())
+    );
+    let restart = out[3].restart.ok_or("no restart at the SSRC change")?;
+    assert_eq!(restart.cause, RestartCause::SsrcChange);
+    assert_eq!((restart.previous.generation, restart.previous.ssrc), (1, 7));
+    assert_eq!((out[3].key.generation, out[3].key.ssrc), (2, 8));
+    assert!(
+        matches!(&out[3].outcome, RtpRecordOutcome::SequenceOnly(o) if o.class == SequenceClass::Probation)
+    );
+    assert!(
+        matches!(&out[4].outcome, RtpRecordOutcome::H264 { observation, nals, .. }
+            if observation.class == SequenceClass::Baseline && nals.len() == 1)
+    );
+    assert!(
+        matches!(&out[5].outcome, RtpRecordOutcome::H264 { observation, gap_before: false, nals, .. }
+            if observation.class == SequenceClass::Advanced && nals.len() == 1)
+    );
+    assert_eq!(out[5].timestamp, Some(12_000));
+    assert!(
+        out.iter()
+            .all(|o| !matches!(o.outcome, RtpRecordOutcome::StreamRefused(_)))
+    );
+    assert_eq!((r.key().generation, r.key().ssrc), (2, 8));
+    Ok(())
+}
+/// A sequence jump: one suspected discontinuity, then the kernel's `RestartRequired` opens
+/// generation + 1 on the same SSRC; the triggering packet starts probation and the stream keeps
+/// ingesting.
+/// Planted negative: the pre-fix replay leaves every later packet `RestartRequired`.
+#[test]
+fn restart_required_opens_a_new_generation_and_keeps_ingesting() -> TestResult {
+    let mut b = header();
+    for (seq, ts) in [
+        (1_u16, 3_000_u32),
+        (2, 6_000),
+        (9_000, 9_000),
+        (9_001, 12_000),
+        (9_002, 15_000),
+    ] {
+        let wire = rtp_full(seq, true, ts, 7, &[0x61, seq as u8]);
+        record(&mut b, &wire, wire.len() as u16, u32::from(seq));
+    }
+    let cx = cx()?;
+    let mut r = RtpDumpReplay::new(&b, config())?;
+    let out = records(&mut r, &cx)?;
+    assert!(
+        matches!(&out[2].outcome, RtpRecordOutcome::SequenceOnly(o) if o.class == SequenceClass::DiscontinuitySuspected)
+    );
+    let restart = out[3].restart.ok_or("no restart")?;
+    assert_eq!(restart.cause, RestartCause::SequenceRestart);
+    assert_eq!(out[3].key.generation, 2);
+    assert!(
+        matches!(&out[3].outcome, RtpRecordOutcome::SequenceOnly(o) if o.class == SequenceClass::Probation)
+    );
+    assert!(
+        matches!(&out[4].outcome, RtpRecordOutcome::H264 { observation, .. } if observation.class == SequenceClass::Baseline)
+    );
     Ok(())
 }
 #[test]

@@ -89,6 +89,9 @@ pub enum RtpImportError {
     Digest,
     /// Owner cancelled; prior staged/published source is retained for reconciliation.
     Cancelled,
+    /// The request names no owner receive time. None is invented: the receive time bounds the
+    /// capture interval and enters the durable import identity.
+    MissingReceiveTime,
     /// I/O failed, without disclosing the source path.
     Io(ErrorKind),
     /// Container or real packet kernel could not construct/progress the replay.
@@ -109,6 +112,7 @@ impl std::fmt::Debug for RtpImportError {
             Self::Binding => f.write_str("Binding"),
             Self::Digest => f.write_str("Digest"),
             Self::Cancelled => f.write_str("Cancelled"),
+            Self::MissingReceiveTime => f.write_str("MissingReceiveTime"),
             Self::Io(e) => f.debug_tuple("Io").field(e).finish(),
             Self::Replay(e) => f.debug_tuple("Replay").field(e).finish(),
             Self::Contract(_) => f.write_str("Contract"),
@@ -182,6 +186,15 @@ pub struct RecordReport {
     pub packet_digest: ContentDigest,
     /// Recorder offset reversed; not a trusted-clock reset or new epoch.
     pub offset_reversed: bool,
+    /// Stream generation in force when the record was processed (owner epoch, then + 1 per
+    /// restart). The process-local ingress handle is deliberately not retained.
+    pub generation: u64,
+    /// SSRC bound to that generation.
+    pub ssrc: u32,
+    /// RTP media timestamp when the record parsed as RTP; sender media clock, not capture time.
+    pub timestamp: Option<u32>,
+    /// The generation opened at this record, if any; its record is always a gap fence.
+    pub restart: Option<RestartCause>,
     /// Sequence observation only when the owner accepted its binding.
     pub sequence: Option<SequenceObservation>,
     /// Typed disposition.
@@ -399,6 +412,7 @@ pub fn prepare_rtp_import<'a>(
                         gap_before,
                     ),
                 };
+                let gap = gap || record.restart.is_some();
                 gap_pending |= gap || record.expired.is_some() || record.discarded.is_some();
                 for n in output {
                     if nals.len() == limits.max_nals
@@ -469,6 +483,10 @@ pub fn prepare_rtp_import<'a>(
                     offset_ms: record.source.offset_ms(),
                     packet_digest: hash(record.source.packet())?,
                     offset_reversed: record.offset_reversed,
+                    generation: record.key.generation,
+                    ssrc: record.key.ssrc,
+                    timestamp: record.timestamp,
+                    restart: record.restart.map(|r| r.cause),
                     sequence,
                     disposition,
                     nals: first..nals.len(),
@@ -908,6 +926,9 @@ impl FileIngestAdapter {
         if limits.max_nals > request.limits.max_segments {
             return Err(RtpImportError::Limit);
         }
+        let receive_time = request
+            .receive_time
+            .ok_or(RtpImportError::MissingReceiveTime)?;
         checkpoint(cx, "rtpdump:open")?;
         let meta =
             std::fs::symlink_metadata(&request.path).map_err(|e| RtpImportError::Io(e.kind()))?;
@@ -919,7 +940,7 @@ impl FileIngestAdapter {
         let scope = RtpImportScope {
             sensor: request.sensor_id,
             stream: request.stream_id,
-            receive_time: request.receive_time.unwrap_or(TimestampNs(1_000_000_000)),
+            receive_time,
         };
         let plan = prepare_rtp_import(&input, scope, config, limits, cx)?;
         publish_rtp_import(plan, cx, deployment)
@@ -1091,6 +1112,16 @@ fn encode_report(
         e.u32(record.offset_ms);
         e.digest(record.packet_digest);
         e.bool(record.offset_reversed);
+        e.u64(record.generation);
+        e.u32(record.ssrc);
+        e.bool(record.timestamp.is_some());
+        if let Some(t) = record.timestamp {
+            e.u32(t);
+        }
+        e.bool(record.restart.is_some());
+        if let Some(cause) = record.restart {
+            e.text(cause.as_str());
+        }
         e.bool(record.sequence.is_some());
         if let Some(o) = record.sequence {
             e.text(&format!("{:?}", o.class));
