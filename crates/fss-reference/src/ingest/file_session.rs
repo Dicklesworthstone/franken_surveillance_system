@@ -733,6 +733,9 @@ fn error_code(error: &FileIngestError) -> &'static str {
         FileIngestError::AmbiguousAnnexBCodec { .. } => "ambiguous_annexb_codec",
         FileIngestError::UnsupportedFormat { .. } => "unsupported_format",
         FileIngestError::CaptureHintAfterReceive { .. } => "capture_hint_after_receive",
+        FileIngestError::CaptureHintLatestAfterReceive { .. } => {
+            "capture_hint_latest_after_receive"
+        }
         FileIngestError::InvalidCaptureHint { .. } => "invalid_capture_hint",
         FileIngestError::MissingReceiveTime {} => "missing_receive_time",
         FileIngestError::InvalidLimits { .. } => "invalid_limits",

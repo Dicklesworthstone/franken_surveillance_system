@@ -409,6 +409,119 @@ def diagnostic_policy() -> None:
             fail(f"DEP-AUD diagnostic {code} trigger mismatch: code={diag.trigger!r}, markdown={trig!r}")
 
 
+# fss-rir2v: every non-test Rust constant whose name contains DOMAIN and whose value is an
+# `fss.*.vN` tag must be registered (backticked domain column) in registries/DIGEST_DOMAINS.md or
+# registries/SCHEMAS.md. Domains used to be registered only after a pinned count tripped.
+DIGEST_DOMAIN_REGISTRIES = ("registries/DIGEST_DOMAINS.md", "registries/SCHEMAS.md")
+# Explicit baseline of domains that were unregistered when the check landed (63 at 027e153). It
+# may only shrink: an entry that is registered or no longer defined in code is itself a failure.
+# Every baseline domain is now registered, so it is empty; keep the mechanism and never refill it.
+DIGEST_DOMAIN_BASELINE_ALLOWLIST: frozenset[str] = frozenset()
+DIGEST_DOMAIN_CONST_RE = re.compile(
+    r'^[ \t]*(?:pub(?:\([^)]*\))?[ \t]+)?const[ \t]+([A-Z0-9_]*DOMAIN[A-Z0-9_]*)[ \t]*:[^=;]*=\s*b?"'
+    r'(fss\.[A-Za-z0-9_.\-]*?\.v[0-9]+)(?![A-Za-z0-9_.\-])',
+    re.MULTILINE,
+)
+CFG_TEST_MODULE_RE = re.compile(r"#\[cfg\(test\)\]\s*(?:pub(?:\([^)]*\))?\s+)?mod\s+[A-Za-z0-9_]+\s*\{")
+
+
+def registered_digest_domain_names(root: Path = ROOT) -> set[str]:
+    """Backticked names in the second column of the digest-domain and schema registry tables."""
+    names: set[str] = set()
+    for relative in DIGEST_DOMAIN_REGISTRIES:
+        path = root / relative
+        if not path.is_file():
+            fail(f"{relative} is missing")
+            continue
+        for line in path.read_text(encoding="utf-8").splitlines():
+            cells = [cell.strip() for cell in line.strip().split("|")[1:-1]]
+            if len(cells) >= 2 and cells[0].startswith("`") and cells[1].startswith("`"):
+                names.add(cells[1].strip("`"))
+    return names
+
+
+def _without_cfg_test_modules(text: str) -> str:
+    """Blank inline `#[cfg(test)] mod name { ... }` bodies, keeping line numbers."""
+    out: list[str] = []
+    position = 0
+    for match in CFG_TEST_MODULE_RE.finditer(text):
+        if match.start() < position:
+            continue
+        depth = 0
+        end = len(text)
+        for index in range(match.end() - 1, len(text)):
+            if text[index] == "{":
+                depth += 1
+            elif text[index] == "}":
+                depth -= 1
+                if depth == 0:
+                    end = index + 1
+                    break
+        out.append(text[position:match.start()])
+        out.append("".join("\n" if ch == "\n" else " " for ch in text[match.start():end]))
+        position = end
+    out.append(text[position:])
+    return "".join(out)
+
+
+def is_test_rust_path(relative: Path) -> bool:
+    name = relative.name
+    return (
+        any(part in ("tests", "benches") for part in relative.parts)
+        or name == "tests.rs"
+        or name.endswith("_tests.rs")
+        or name.endswith("_test.rs")
+    )
+
+
+def digest_domain_constants(root: Path = ROOT) -> list[tuple[str, str, int, str]]:
+    """(domain, path, line, constant) of every non-test DOMAIN constant with an fss.*.vN value."""
+    found: list[tuple[str, str, int, str]] = []
+    crates = root / "crates"
+    if not crates.is_dir():
+        return found
+    for path in sorted(crates.rglob("*.rs")):
+        relative = path.relative_to(root)
+        if "target" in relative.parts or is_test_rust_path(relative):
+            continue
+        text = _without_cfg_test_modules(path.read_text(encoding="utf-8"))
+        for match in DIGEST_DOMAIN_CONST_RE.finditer(text):
+            line = text.count("\n", 0, match.start(1)) + 1
+            found.append((match.group(2), relative.as_posix(), line, match.group(1)))
+    return found
+
+
+def digest_domain_registration_policy(
+    root: Path = ROOT, allowlist: frozenset[str] | None = None
+) -> list[str]:
+    """Problems: unregistered domain constants outside the allowlist, and stale allowlist rows."""
+    allowed = DIGEST_DOMAIN_BASELINE_ALLOWLIST if allowlist is None else allowlist
+    registered = registered_digest_domain_names(root)
+    problems: list[str] = []
+    unregistered_in_code: set[str] = set()
+    for domain, relative, line, constant in digest_domain_constants(root):
+        if domain in registered:
+            continue
+        unregistered_in_code.add(domain)
+        if domain not in allowed:
+            problems.append(
+                f"DIGEST-DOMAIN-UNREGISTERED: {relative}:{line}: {constant} = {domain!r} has no row in "
+                "registries/DIGEST_DOMAINS.md or registries/SCHEMAS.md; register it with an accurate "
+                "description and bump the digest-domain count pins"
+            )
+    for domain in sorted(allowed - unregistered_in_code):
+        problems.append(
+            f"DIGEST-DOMAIN-ALLOWLIST-STALE: {domain!r} is registered or no longer defined in code; "
+            "remove it from DIGEST_DOMAIN_BASELINE_ALLOWLIST in scripts/check-policy.py"
+        )
+    return problems
+
+
+def check_digest_domain_registration(root: Path = ROOT) -> None:
+    for problem in digest_domain_registration_policy(root):
+        fail(problem)
+
+
 def workflow_policy() -> None:
     workflows = sorted((ROOT / ".github/workflows").glob("*.y*ml"))
     if not workflows:
@@ -1372,6 +1485,7 @@ def main() -> int:
     qualify_offline_policy()
     qualify_doctest_policy()
     diagnostic_policy()
+    check_digest_domain_registration()
 
     manifest_entries = 0 if args.skip_manifest else validate_manifest()
 

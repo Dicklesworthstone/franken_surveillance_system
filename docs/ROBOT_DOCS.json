@@ -1292,6 +1292,11 @@
       "id": "ERR-IDEMPOTENCY-CONFLICT-001"
     },
     {
+      "description": "a file import's operator capture hint would place capture after the bytes were received: the hint starts after `receive_time` (`CaptureHintAfterReceive`) or some frame's interval `start + i / fps + uncertainty` would end after it (`CaptureHintLatestAfterReceive`, fss-roeq0); refused before anything is staged and never clamped, since receive time bounds capture; an interval ending exactly at `receive_time` is admitted",
+      "guidance": "correct the hint (earlier start, smaller uncertainty, or the true frame rate) or the receive time; do not retry unchanged",
+      "id": "ERR-INGEST-CAPTURE-HINT-AFTER-RECEIVE-001"
+    },
+    {
       "description": "an Annex-B file's first NAL unit header is valid as both H.264 and H.265 and no media format was declared; the importer never guesses the codec",
       "guidance": "re-import with the explicit media format (`annexb` for H.264, `hevc` for H.265)",
       "id": "ERR-INGEST-FORMAT-AMBIGUOUS-001"

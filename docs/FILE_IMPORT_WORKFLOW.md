@@ -27,7 +27,11 @@ core session: `acquisition_history=requested,authenticated,adapter_accepted,degr
 decoded on import and has no packet sequence or live clock. The session therefore degrades
 (`continuity_not_observable`, `first_frame_decode_not_attempted`) instead of observing a first
 frame. `acquisition_absence_refusal` is the core's refusal of any absence claim. An import completed
-before this lifecycle existed prints `acquisition_history=not_recorded`.
+before this lifecycle existed prints `acquisition_history=not_recorded`. This refusal covers live
+absence only. It does not block `fss-event watch --retain-coverage` from certifying, over the
+recorded capture interval, what the retained pipeline observed in the imported bytes. Such
+coverage is labelled `recorded file source; no live continuity` (fss-dt3qf; see
+[RECORDED_EVENT_WORKFLOW.md](RECORDED_EVENT_WORKFLOW.md)).
 
 The command reports the actual retained manifest and completion anchor, rather than treating a
 newly reconstructed retry receipt as stored truth. A successful import also performs a complete

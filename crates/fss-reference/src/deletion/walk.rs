@@ -715,7 +715,9 @@ impl Universe {
         let Closure { via, keys } = self.closure(&imports);
         let subject = match scope {
             DeletionScope::Import(import) => import.to_text(),
-            DeletionScope::Sensor(_) | DeletionScope::Event(_) | DeletionScope::Retention(_) => scope.text(),
+            DeletionScope::Sensor(_) | DeletionScope::Event(_) | DeletionScope::Retention(_) => {
+                scope.text()
+            }
         };
 
         let in_closure = |index: usize| via[index].is_some();

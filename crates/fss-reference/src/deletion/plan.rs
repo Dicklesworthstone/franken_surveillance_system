@@ -173,21 +173,33 @@ pub struct DeletionPlan {
 }
 
 fn hex(digest: ContentDigest) -> String {
-    digest.bytes().iter().map(|byte| format!("{byte:02x}")).collect()
+    digest
+        .bytes()
+        .iter()
+        .map(|byte| format!("{byte:02x}"))
+        .collect()
 }
 
 fn invalid() -> DeletionError {
     DeletionError::Contract(ContractError::InvalidIdentifier)
 }
 
-fn encode_list<T>(e: &mut CanonicalEncoder, items: &[T], mut item: impl FnMut(&mut CanonicalEncoder, &T)) {
+fn encode_list<T>(
+    e: &mut CanonicalEncoder,
+    items: &[T],
+    mut item: impl FnMut(&mut CanonicalEncoder, &T),
+) {
     e.u64(items.len() as u64);
-    for value in items { item(e, value); }
+    for value in items {
+        item(e, value);
+    }
 }
 
 fn count(d: &mut CanonicalDecoder<'_>, minimum: usize) -> Result<usize, DeletionError> {
     let n = usize::try_from(d.u64()?).map_err(|_| invalid())?;
-    if n > MAX_DELETION_LIST_ENTRIES || n > d.remaining() / minimum.max(1) { return Err(invalid()); }
+    if n > MAX_DELETION_LIST_ENTRIES || n > d.remaining() / minimum.max(1) {
+        return Err(invalid());
+    }
     Ok(n)
 }
 
@@ -209,21 +221,32 @@ fn plane(text: &str) -> Result<Plane, DeletionError> {
 }
 
 fn encode_finding(e: &mut CanonicalEncoder, f: &Finding) {
-    e.text(&f.kind); e.text(&f.subject); e.text(&f.detail);
+    e.text(&f.kind);
+    e.text(&f.subject);
+    e.text(&f.detail);
 }
 
 fn decode_findings(d: &mut CanonicalDecoder<'_>) -> Result<Vec<Finding>, DeletionError> {
     let n = count(d, 24)?;
     let mut out = Vec::with_capacity(n);
     for _ in 0..n {
-        out.push(Finding { kind: d.text()?.to_owned(), subject: d.text()?.to_owned(), detail: d.text()?.to_owned() });
+        out.push(Finding {
+            kind: d.text()?.to_owned(),
+            subject: d.text()?.to_owned(),
+            detail: d.text()?.to_owned(),
+        });
     }
     Ok(out)
 }
 
-fn strictly_sorted<T: Ord>(items: &[T]) -> bool { items.windows(2).all(|pair| pair[0] < pair[1]) }
+fn strictly_sorted<T: Ord>(items: &[T]) -> bool {
+    items.windows(2).all(|pair| pair[0] < pair[1])
+}
 
-fn check_retention_members(scope: &DeletionScope, imports: &[ContentDigest]) -> Result<(), DeletionError> {
+fn check_retention_members(
+    scope: &DeletionScope,
+    imports: &[ContentDigest],
+) -> Result<(), DeletionError> {
     if let DeletionScope::Retention(selection) = scope
         && (imports.is_empty() || selection.imports() != imports)
     {
@@ -240,7 +263,9 @@ impl DeletionPlan {
         e.text("fss.canonical.v1");
         match &self.scope {
             DeletionScope::Import(import) => {
-                if self.imports.as_slice() != [*import] { return Err(invalid()); }
+                if self.imports.as_slice() != [*import] {
+                    return Err(invalid());
+                }
                 e.text(DELETION_PLAN_DOMAIN);
                 e.text(&self.site_lineage);
                 e.digest(*import);
@@ -258,23 +283,41 @@ impl DeletionPlan {
         e.u64(self.scanned_objects);
         e.u64(self.scanned_bytes);
         encode_list(&mut e, &self.units, |e, u| {
-            e.text(&u.id); e.text(&u.kind); e.text(&u.class); e.digest(u.via);
+            e.text(&u.id);
+            e.text(&u.kind);
+            e.text(&u.class);
+            e.digest(u.via);
         });
-        encode_list(&mut e, &self.deletable, |e, o| { e.digest(o.digest); e.u64(o.bytes); });
-        encode_list(&mut e, &self.retained, |e, o| { e.digest(o.digest); e.text(&o.reason); });
+        encode_list(&mut e, &self.deletable, |e, o| {
+            e.digest(o.digest);
+            e.u64(o.bytes);
+        });
+        encode_list(&mut e, &self.retained, |e, o| {
+            e.digest(o.digest);
+            e.text(&o.reason);
+        });
         encode_list(&mut e, &self.tombstones, |e, t| {
-            e.text(&t.object_id); e.u64(t.prior_generation); e.text(t.plane.as_str());
+            e.text(&t.object_id);
+            e.u64(t.prior_generation);
+            e.text(t.plane.as_str());
             t.validity.encode_canonical(e);
         });
         encode_list(&mut e, &self.retractions, |e, r| {
-            e.text(&r.slot); e.digest(r.root);
+            e.text(&r.slot);
+            e.digest(r.root);
             match r.prior_generation {
-                Some(generation) => { e.bool(true); e.u64(generation); }
+                Some(generation) => {
+                    e.bool(true);
+                    e.u64(generation);
+                }
                 None => e.bool(false),
             }
             r.validity.encode_canonical(e);
         });
-        encode_list(&mut e, &self.events, |e, ev| { e.text(&ev.object_id); e.u64(ev.latest_revision); });
+        encode_list(&mut e, &self.events, |e, ev| {
+            e.text(&ev.object_id);
+            e.u64(ev.latest_revision);
+        });
         encode_list(&mut e, &self.blockers, encode_finding);
         encode_list(&mut e, &self.unknown_copies, encode_finding);
         e.u64(self.unattributed.staging_files);
@@ -284,7 +327,9 @@ impl DeletionPlan {
         e.text(DELETION_MECHANISM);
         let bytes = e.finish_checked()?;
         if bytes.len() > MAX_DELETION_RECORD_BYTES {
-            return Err(DeletionError::Bound { limit: "deletion_record_bytes" });
+            return Err(DeletionError::Bound {
+                limit: "deletion_record_bytes",
+            });
         }
         Ok(bytes)
     }
@@ -299,17 +344,28 @@ impl DeletionPlan {
     pub fn is_plan_bytes(bytes: &[u8]) -> bool {
         let mut d = CanonicalDecoder::new(bytes);
         matches!(d.text(), Ok("fss.canonical.v1"))
-            && matches!(d.text(), Ok(DELETION_PLAN_DOMAIN | DELETION_SCOPE_PLAN_DOMAIN | DELETION_RETENTION_PLAN_DOMAIN))
+            && matches!(
+                d.text(),
+                Ok(DELETION_PLAN_DOMAIN
+                    | DELETION_SCOPE_PLAN_DOMAIN
+                    | DELETION_RETENTION_PLAN_DOMAIN)
+            )
     }
 
     /// Decodes exact canonical bytes after checking their digest; fails closed on anything else.
     pub fn decode(bytes: &[u8], expected: ContentDigest) -> Result<Self, DeletionError> {
         if bytes.len() > MAX_DELETION_RECORD_BYTES {
-            return Err(DeletionError::Bound { limit: "deletion_record_bytes" });
+            return Err(DeletionError::Bound {
+                limit: "deletion_record_bytes",
+            });
         }
-        if ContentDigest::sha256(bytes) != expected { return Err(ContractError::DigestMismatch.into()); }
+        if ContentDigest::sha256(bytes) != expected {
+            return Err(ContractError::DigestMismatch.into());
+        }
         let mut d = CanonicalDecoder::new(bytes);
-        if d.text()? != "fss.canonical.v1" { return Err(invalid()); }
+        if d.text()? != "fss.canonical.v1" {
+            return Err(invalid());
+        }
         let version = match d.text()? {
             DELETION_PLAN_DOMAIN => 1,
             DELETION_SCOPE_PLAN_DOMAIN => 2,
@@ -326,18 +382,38 @@ impl DeletionPlan {
         let n = count(&mut d, 57)?;
         let mut units = Vec::with_capacity(n);
         for _ in 0..n {
-            units.push(ClosureUnit { id: d.text()?.to_owned(), kind: d.text()?.to_owned(), class: d.text()?.to_owned(), via: sha(&mut d)? });
+            units.push(ClosureUnit {
+                id: d.text()?.to_owned(),
+                kind: d.text()?.to_owned(),
+                class: d.text()?.to_owned(),
+                via: sha(&mut d)?,
+            });
         }
         let n = count(&mut d, 41)?;
         let mut deletable = Vec::with_capacity(n);
-        for _ in 0..n { deletable.push(DeletableObject { digest: sha(&mut d)?, bytes: d.u64()? }); }
+        for _ in 0..n {
+            deletable.push(DeletableObject {
+                digest: sha(&mut d)?,
+                bytes: d.u64()?,
+            });
+        }
         let n = count(&mut d, 41)?;
         let mut retained = Vec::with_capacity(n);
-        for _ in 0..n { retained.push(RetainedObject { digest: sha(&mut d)?, reason: d.text()?.to_owned() }); }
+        for _ in 0..n {
+            retained.push(RetainedObject {
+                digest: sha(&mut d)?,
+                reason: d.text()?.to_owned(),
+            });
+        }
         let n = count(&mut d, 48)?;
         let mut tombstones = Vec::with_capacity(n);
         for _ in 0..n {
-            tombstones.push(ObjectTombstone { object_id: d.text()?.to_owned(), prior_generation: d.u64()?, plane: plane(d.text()?)?, validity: CaptureInterval::decode_canonical(&mut d)? });
+            tombstones.push(ObjectTombstone {
+                object_id: d.text()?.to_owned(),
+                prior_generation: d.u64()?,
+                plane: plane(d.text()?)?,
+                validity: CaptureInterval::decode_canonical(&mut d)?,
+            });
         }
         let n = count(&mut d, 50)?;
         let mut retractions = Vec::with_capacity(n);
@@ -345,27 +421,69 @@ impl DeletionPlan {
             let slot = d.text()?.to_owned();
             let root = sha(&mut d)?;
             let prior_generation = if d.bool()? { Some(d.u64()?) } else { None };
-            retractions.push(RootRetraction { slot, root, prior_generation, validity: CaptureInterval::decode_canonical(&mut d)? });
+            retractions.push(RootRetraction {
+                slot,
+                root,
+                prior_generation,
+                validity: CaptureInterval::decode_canonical(&mut d)?,
+            });
         }
         let n = count(&mut d, 16)?;
         let mut events = Vec::with_capacity(n);
-        for _ in 0..n { events.push(EventReference { object_id: d.text()?.to_owned(), latest_revision: d.u64()? }); }
+        for _ in 0..n {
+            events.push(EventReference {
+                object_id: d.text()?.to_owned(),
+                latest_revision: d.u64()?,
+            });
+        }
         let blockers = decode_findings(&mut d)?;
         let unknown_copies = decode_findings(&mut d)?;
-        let unattributed = Unattributed { staging_files: d.u64()?, staging_bytes: d.u64()?, objects: d.u64()?, object_bytes: d.u64()? };
-        if d.text()? != DELETION_MECHANISM { return Err(invalid()); }
+        let unattributed = Unattributed {
+            staging_files: d.u64()?,
+            staging_bytes: d.u64()?,
+            objects: d.u64()?,
+            object_bytes: d.u64()?,
+        };
+        if d.text()? != DELETION_MECHANISM {
+            return Err(invalid());
+        }
         d.ensure_finished()?;
-        let plan = Self { site_lineage, scope, imports, basis_anchor, effect_journal_root,
-            validity, scanned_objects, scanned_bytes, units, deletable, retained, tombstones,
-            retractions, events, blockers, unknown_copies, unattributed };
+        let plan = Self {
+            site_lineage,
+            scope,
+            imports,
+            basis_anchor,
+            effect_journal_root,
+            validity,
+            scanned_objects,
+            scanned_bytes,
+            units,
+            deletable,
+            retained,
+            tombstones,
+            retractions,
+            events,
+            blockers,
+            unknown_copies,
+            unattributed,
+        };
         let digests: Vec<ContentDigest> = plan.deletable.iter().map(|o| o.digest).collect();
-        let tombstone_ids: Vec<&str> = plan.tombstones.iter().map(|t| t.object_id.as_str()).collect();
+        let tombstone_ids: Vec<&str> = plan
+            .tombstones
+            .iter()
+            .map(|t| t.object_id.as_str())
+            .collect();
         let slots: Vec<&str> = plan.retractions.iter().map(|r| r.slot.as_str()).collect();
-        if !strictly_sorted(&plan.units) || !strictly_sorted(&digests)
-            || !strictly_sorted(&plan.retained) || !strictly_sorted(&tombstone_ids)
-            || !strictly_sorted(&slots) || !strictly_sorted(&plan.events)
+        if !strictly_sorted(&plan.units)
+            || !strictly_sorted(&digests)
+            || !strictly_sorted(&plan.retained)
+            || !strictly_sorted(&tombstone_ids)
+            || !strictly_sorted(&slots)
+            || !strictly_sorted(&plan.events)
             || plan.canonical_bytes()? != bytes
-        { return Err(ContractError::NonCanonicalOrdering.into()); }
+        {
+            return Err(ContractError::NonCanonicalOrdering.into());
+        }
         Ok(plan)
     }
 
@@ -377,24 +495,34 @@ impl DeletionPlan {
     /// Bytes the plan removes.
     #[must_use]
     pub fn deletable_bytes(&self) -> u64 {
-        self.deletable.iter().fold(0_u64, |total, object| total.saturating_add(object.bytes))
+        self.deletable
+            .iter()
+            .fold(0_u64, |total, object| total.saturating_add(object.bytes))
     }
 
     /// Digests the plan removes.
     #[must_use]
-    pub fn deleted_set(&self) -> BTreeSet<ContentDigest> { self.deletable.iter().map(|o| o.digest).collect() }
+    pub fn deleted_set(&self) -> BTreeSet<ContentDigest> {
+        self.deletable.iter().map(|o| o.digest).collect()
+    }
 
     /// Batch identity of the deletion record (tombstone batch).
     #[must_use]
-    pub fn record_batch_id(plan_digest: ContentDigest) -> String { format!("batch:deletion:{}", hex(plan_digest)) }
+    pub fn record_batch_id(plan_digest: ContentDigest) -> String {
+        format!("batch:deletion:{}", hex(plan_digest))
+    }
 
     /// Batch identity of the deletion-completion record.
     #[must_use]
-    pub fn completion_batch_id(plan_digest: ContentDigest) -> String { format!("batch:deletion:{}:complete", hex(plan_digest)) }
+    pub fn completion_batch_id(plan_digest: ContentDigest) -> String {
+        format!("batch:deletion:{}:complete", hex(plan_digest))
+    }
 
     /// Ledger object identity of the import's deletion record.
     #[must_use]
-    pub fn record_object_id(import_identity: ContentDigest) -> String { format!("object:deletion:{}", hex(import_identity)) }
+    pub fn record_object_id(import_identity: ContentDigest) -> String {
+        format!("object:deletion:{}", hex(import_identity))
+    }
 
     /// Scoped records use the exact plan identity; later cohorts never reuse an old record.
     #[must_use]
@@ -418,31 +546,44 @@ impl DeletionPlan {
 
 /// Each scope has exactly one format version. A v3 cohort cannot be relabelled v2, and its
 /// encoded member list must equal precisely its eligible selection entries.
-fn decode_scope(d: &mut CanonicalDecoder<'_>, version: u8)
-    -> Result<(DeletionScope, Vec<ContentDigest>), DeletionError>
-{
+fn decode_scope(
+    d: &mut CanonicalDecoder<'_>,
+    version: u8,
+) -> Result<(DeletionScope, Vec<ContentDigest>), DeletionError> {
     if version == 1 {
         let import = sha(d)?;
         return Ok((DeletionScope::Import(import), vec![import]));
     }
     let scope = DeletionScope::decode(d)?;
-    if !matches!((version, &scope),
-        (2, DeletionScope::Sensor(_) | DeletionScope::Event(_)) | (3, DeletionScope::Retention(_)))
-    { return Err(invalid()); }
+    if !matches!(
+        (version, &scope),
+        (2, DeletionScope::Sensor(_) | DeletionScope::Event(_)) | (3, DeletionScope::Retention(_))
+    ) {
+        return Err(invalid());
+    }
     let n = count(d, 33)?;
     let mut imports = Vec::with_capacity(n);
-    for _ in 0..n { imports.push(sha(d)?); }
-    if imports.is_empty() || !strictly_sorted(&imports) { return Err(ContractError::NonCanonicalOrdering.into()); }
+    for _ in 0..n {
+        imports.push(sha(d)?);
+    }
+    if imports.is_empty() || !strictly_sorted(&imports) {
+        return Err(ContractError::NonCanonicalOrdering.into());
+    }
     check_retention_members(&scope, &imports)?;
     Ok((scope, imports))
 }
 
 /// Exact approval digest over a plan digest, the site and the approving principal.
-pub fn approval_digest(plan_digest: ContentDigest, site_lineage: &str, principal: &str)
-    -> Result<ContentDigest, DeletionError>
-{
+pub fn approval_digest(
+    plan_digest: ContentDigest,
+    site_lineage: &str,
+    principal: &str,
+) -> Result<ContentDigest, DeletionError> {
     let mut e = CanonicalEncoder::new();
-    e.text(DELETION_APPROVAL_DOMAIN); e.digest(plan_digest); e.text(site_lineage); e.text(principal);
+    e.text(DELETION_APPROVAL_DOMAIN);
+    e.digest(plan_digest);
+    e.text(site_lineage);
+    e.text(principal);
     Ok(ContentDigest::sha256(&e.finish_checked()?))
 }
 
@@ -476,11 +617,19 @@ pub struct DeletionCompletion {
 impl DeletionCompletion {
     /// Builds the record of a fully applied plan.
     pub fn of(plan: &DeletionPlan) -> Result<Self, DeletionError> {
-        Ok(Self { plan_digest: plan.digest()?, scope: plan.scope.clone(), imports: plan.imports.clone(),
-            objects_unlinked: plan.deletable.len() as u64, bytes_unlinked: plan.deletable_bytes(),
-            roots_retracted: plan.retractions.len() as u64, ledger_objects_tombstoned: plan.tombstones.len() as u64,
-            objects_retained: plan.retained.len() as u64, events_with_deleted_evidence: plan.events.len() as u64,
-            blocked: plan.blockers.clone(), not_proven: plan.unknown_copies.clone() })
+        Ok(Self {
+            plan_digest: plan.digest()?,
+            scope: plan.scope.clone(),
+            imports: plan.imports.clone(),
+            objects_unlinked: plan.deletable.len() as u64,
+            bytes_unlinked: plan.deletable_bytes(),
+            roots_retracted: plan.retractions.len() as u64,
+            ledger_objects_tombstoned: plan.tombstones.len() as u64,
+            objects_retained: plan.retained.len() as u64,
+            events_with_deleted_evidence: plan.events.len() as u64,
+            blocked: plan.blockers.clone(),
+            not_proven: plan.unknown_copies.clone(),
+        })
     }
 
     /// Canonical completion domain, preserving every pre-retention byte layout.
@@ -500,40 +649,69 @@ impl DeletionCompletion {
         e.text("fss.canonical.v1");
         match &self.scope {
             DeletionScope::Import(import) => {
-                if self.imports.as_slice() != [*import] { return Err(invalid()); }
-                e.text(DELETION_COMPLETION_DOMAIN); e.digest(self.plan_digest); e.digest(*import);
+                if self.imports.as_slice() != [*import] {
+                    return Err(invalid());
+                }
+                e.text(DELETION_COMPLETION_DOMAIN);
+                e.digest(self.plan_digest);
+                e.digest(*import);
             }
             scope => {
-                e.text(self.domain()); e.digest(self.plan_digest); scope.encode(&mut e);
+                e.text(self.domain());
+                e.digest(self.plan_digest);
+                scope.encode(&mut e);
                 encode_list(&mut e, &self.imports, |e, import| e.digest(*import));
             }
         }
-        e.u64(self.objects_unlinked); e.u64(self.bytes_unlinked); e.u64(self.roots_retracted);
-        e.u64(self.ledger_objects_tombstoned); e.u64(self.objects_retained); e.u64(self.events_with_deleted_evidence);
+        e.u64(self.objects_unlinked);
+        e.u64(self.bytes_unlinked);
+        e.u64(self.roots_retracted);
+        e.u64(self.ledger_objects_tombstoned);
+        e.u64(self.objects_retained);
+        e.u64(self.events_with_deleted_evidence);
         encode_list(&mut e, &self.blocked, encode_finding);
         encode_list(&mut e, &self.not_proven, encode_finding);
-        e.text(DELETION_MECHANISM); e.bool(false); e.u64(DELETION_OUT_OF_SCOPE.len() as u64);
-        for item in DELETION_OUT_OF_SCOPE { e.text(item); }
+        e.text(DELETION_MECHANISM);
+        e.bool(false);
+        e.u64(DELETION_OUT_OF_SCOPE.len() as u64);
+        for item in DELETION_OUT_OF_SCOPE {
+            e.text(item);
+        }
         Ok(e.finish_checked()?)
     }
 
     /// Completion identity.
-    pub fn digest(&self) -> Result<ContentDigest, DeletionError> { Ok(ContentDigest::sha256(&self.canonical_bytes()?)) }
+    pub fn digest(&self) -> Result<ContentDigest, DeletionError> {
+        Ok(ContentDigest::sha256(&self.canonical_bytes()?))
+    }
 
     /// Whether bytes begin with a canonical completion framing.
     #[must_use]
     pub fn is_completion_bytes(bytes: &[u8]) -> bool {
         let mut d = CanonicalDecoder::new(bytes);
         matches!(d.text(), Ok("fss.canonical.v1"))
-            && matches!(d.text(), Ok(DELETION_COMPLETION_DOMAIN | DELETION_SCOPE_COMPLETION_DOMAIN | DELETION_RETENTION_COMPLETION_DOMAIN))
+            && matches!(
+                d.text(),
+                Ok(DELETION_COMPLETION_DOMAIN
+                    | DELETION_SCOPE_COMPLETION_DOMAIN
+                    | DELETION_RETENTION_COMPLETION_DOMAIN)
+            )
     }
 
     /// Decodes exact canonical bytes after checking their digest.
     pub fn decode(bytes: &[u8], expected: ContentDigest) -> Result<Self, DeletionError> {
-        if bytes.len() > MAX_DELETION_RECORD_BYTES { return Err(DeletionError::Bound { limit: "deletion_record_bytes" }); }
-        if ContentDigest::sha256(bytes) != expected { return Err(ContractError::DigestMismatch.into()); }
+        if bytes.len() > MAX_DELETION_RECORD_BYTES {
+            return Err(DeletionError::Bound {
+                limit: "deletion_record_bytes",
+            });
+        }
+        if ContentDigest::sha256(bytes) != expected {
+            return Err(ContractError::DigestMismatch.into());
+        }
         let mut d = CanonicalDecoder::new(bytes);
-        if d.text()? != "fss.canonical.v1" { return Err(invalid()); }
+        if d.text()? != "fss.canonical.v1" {
+            return Err(invalid());
+        }
         let version = match d.text()? {
             DELETION_COMPLETION_DOMAIN => 1,
             DELETION_SCOPE_COMPLETION_DOMAIN => 2,
@@ -542,15 +720,35 @@ impl DeletionCompletion {
         };
         let plan_digest = sha(&mut d)?;
         let (scope, imports) = decode_scope(&mut d, version)?;
-        let record = Self { plan_digest, scope, imports, objects_unlinked: d.u64()?, bytes_unlinked: d.u64()?,
-            roots_retracted: d.u64()?, ledger_objects_tombstoned: d.u64()?, objects_retained: d.u64()?,
-            events_with_deleted_evidence: d.u64()?, blocked: decode_findings(&mut d)?, not_proven: decode_findings(&mut d)? };
-        if d.text()? != DELETION_MECHANISM || d.bool()? { return Err(invalid()); }
+        let record = Self {
+            plan_digest,
+            scope,
+            imports,
+            objects_unlinked: d.u64()?,
+            bytes_unlinked: d.u64()?,
+            roots_retracted: d.u64()?,
+            ledger_objects_tombstoned: d.u64()?,
+            objects_retained: d.u64()?,
+            events_with_deleted_evidence: d.u64()?,
+            blocked: decode_findings(&mut d)?,
+            not_proven: decode_findings(&mut d)?,
+        };
+        if d.text()? != DELETION_MECHANISM || d.bool()? {
+            return Err(invalid());
+        }
         let n = count(&mut d, 8)?;
-        if n != DELETION_OUT_OF_SCOPE.len() { return Err(invalid()); }
-        for item in DELETION_OUT_OF_SCOPE { if d.text()? != *item { return Err(invalid()); } }
+        if n != DELETION_OUT_OF_SCOPE.len() {
+            return Err(invalid());
+        }
+        for item in DELETION_OUT_OF_SCOPE {
+            if d.text()? != *item {
+                return Err(invalid());
+            }
+        }
         d.ensure_finished()?;
-        if record.canonical_bytes()? != bytes { return Err(ContractError::NonCanonicalOrdering.into()); }
+        if record.canonical_bytes()? != bytes {
+            return Err(ContractError::NonCanonicalOrdering.into());
+        }
         Ok(record)
     }
 }

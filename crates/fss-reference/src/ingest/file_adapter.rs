@@ -15,6 +15,15 @@
 //!   `[TimestampNs(0), receive_time]` with [`ClockBasis::Estimated`] and labeled `"unknown"`.
 //! - With an operator [`CaptureHint`], intervals preserve declared uncertainty `u` around nominal
 //!   `start + i / fps` timestamps with [`ClockBasis::Estimated`] and labeled `"operator_assumption"`.
+//! - `receive_time` is a hard upper bound on capture: a capture interval can never end after its
+//!   bytes were received. A hint whose start lies after `receive_time`
+//!   ([`FileIngestError::CaptureHintAfterReceive`]) or whose interval for any frame would end
+//!   after it, `start + i / fps + u > receive_time`
+//!   ([`FileIngestError::CaptureHintLatestAfterReceive`]), is an operator-assumption error and is
+//!   refused before anything is staged or any batch is appended. It is never clamped: clamping
+//!   would silently rewrite an operator-supplied fact (owner decision, fss-roeq0). An interval
+//!   ending exactly at `receive_time` is admitted. Both refusals carry
+//!   `ERR-INGEST-CAPTURE-HINT-AFTER-RECEIVE-001`.
 //! - Ingest arrival time comes strictly from [`VirtualClock`] or explicit [`ReplayCx`] time, never
 //!   the host system wall clock.
 //! - File import never emits [`ContinuityWitness`] or [`CoverageWitness`] certifying absence;
@@ -603,6 +612,18 @@ pub enum FileIngestError {
         /// Ingest arrival time.
         receive_time: TimestampNs,
     },
+    /// The capture hint would make a frame's capture interval end after ingest arrival time
+    /// (`start + i / fps + uncertainty > receive_time`); refused, never clamped (fss-roeq0).
+    CaptureHintLatestAfterReceive {
+        /// Declared capture hint start time.
+        hint_start: TimestampNs,
+        /// Index of the first segment whose interval would end after `receive_time`.
+        segment_index: usize,
+        /// Latest capture time the hint implies for that segment.
+        capture_latest: TimestampNs,
+        /// Ingest arrival time.
+        receive_time: TimestampNs,
+    },
     /// Invalid parameters in capture hint.
     InvalidCaptureHint {
         /// Detail describing why the capture hint was invalid.
@@ -751,6 +772,18 @@ impl std::fmt::Display for FileIngestError {
                     hint_start, receive_time
                 )
             }
+            Self::CaptureHintLatestAfterReceive {
+                hint_start,
+                segment_index,
+                capture_latest,
+                receive_time,
+            } => {
+                write!(
+                    f,
+                    "capture hint start {:?} puts segment {} capture latest {:?} after receive time {:?}",
+                    hint_start, segment_index, capture_latest, receive_time
+                )
+            }
             Self::InvalidCaptureHint { detail } => {
                 write!(f, "invalid capture hint: {}", detail)
             }
@@ -827,14 +860,17 @@ impl std::fmt::Display for FileIngestError {
 impl std::error::Error for FileIngestError {}
 
 impl FileIngestError {
-    /// Registered stable identity (registries/ERRORS.md) of media-format refusals; other import
-    /// failures carry no registered identity yet.
+    /// Registered stable identity (registries/ERRORS.md) of media-format and capture-hint
+    /// time-truth refusals; other import failures carry no registered identity yet.
     #[must_use]
     pub fn stable_id(&self) -> Option<&'static str> {
         match self {
             Self::AmbiguousAnnexBCodec { .. } => Some("ERR-INGEST-FORMAT-AMBIGUOUS-001"),
             Self::FormatConflict { .. } => Some("ERR-INGEST-FORMAT-CONFLICT-001"),
             Self::EvidenceDeleted { .. } => Some("ERR-EVIDENCE-DELETED-001"),
+            Self::CaptureHintAfterReceive { .. } | Self::CaptureHintLatestAfterReceive { .. } => {
+                Some("ERR-INGEST-CAPTURE-HINT-AFTER-RECEIVE-001")
+            }
             _ => None,
         }
     }
@@ -1442,6 +1478,10 @@ impl FileIngestAdapter {
                     detail: "assumed_fps must be finite and strictly positive".to_string(),
                 });
             }
+            // Segment 0's interval ends at `start + uncertainty`; refuse it before the adapter
+            // accepts. Later segments are checked as their intervals are computed, still before
+            // anything is staged (fss-roeq0).
+            Self::compute_capture_interval(0, Some(hint), receive_time)?;
         }
         // The request is admissible: AdapterAccepted.
         session.accept()?;
@@ -2185,6 +2225,15 @@ impl FileIngestAdapter {
                 if earliest > receive_time {
                     return Err(FileIngestError::CaptureHintAfterReceive {
                         hint_start: h.start_ns,
+                        receive_time,
+                    });
+                }
+                // Receive time bounds capture: refuse, never clamp (fss-roeq0).
+                if latest > receive_time {
+                    return Err(FileIngestError::CaptureHintLatestAfterReceive {
+                        hint_start: h.start_ns,
+                        segment_index: index,
+                        capture_latest: latest,
                         receive_time,
                     });
                 }

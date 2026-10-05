@@ -538,5 +538,85 @@ class CheckPolicyRustupInstallAndQuotingTests(CheckPolicyFixtureCase):
         self.assertTrue(any(err.startswith("DEP-AUD-027") and "scripts/release_qualify.sh:5:" in err for err in check_policy.errors), check_policy.errors)
 
 
+class CheckPolicyDigestDomainRegistrationTests(CheckPolicyFixtureCase):
+    """fss-rir2v: every non-test DOMAIN constant with an fss.*.vN value must be registered."""
+
+    REGISTRY_HEADER = "| ID | Domain | Scope | Authority | Invariant rule |\n|---|---|---|---|---|\n"
+
+    def _registries(self, digest_rows: str = "", schema_rows: str = "") -> None:
+        registries = self.root / "registries"
+        registries.mkdir(exist_ok=True)
+        (registries / "DIGEST_DOMAINS.md").write_text("# Domains\n\n" + self.REGISTRY_HEADER + digest_rows, encoding="utf-8")
+        (registries / "SCHEMAS.md").write_text(
+            "# Schemas\n\n| ID | Schema | File | Authority | Compatibility rule |\n|---|---|---|---|---|\n" + schema_rows,
+            encoding="utf-8",
+        )
+
+    def _rust(self, relative: str, body: str) -> None:
+        path = self.root / relative
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(body, encoding="utf-8")
+
+    def test_planted_unregistered_domain_constant_fails(self) -> None:
+        self._registries("| `SCHEMA-DOMAIN-KNOWN-001` | `fss.known.v1` | Core | authority | rule |\n")
+        self._rust(
+            "crates/fss-x/src/lib.rs",
+            'pub const KNOWN_DOMAIN: &str = "fss.known.v1";\n'
+            'pub(crate) const ROGUE_DIGEST_DOMAIN: &[u8] =\n    b"fss.rogue_planted.v2\\0";\n',
+        )
+        problems = check_policy.digest_domain_registration_policy(self.root, allowlist=frozenset())
+        self.assertEqual(len(problems), 1, problems)
+        self.assertTrue(problems[0].startswith("DIGEST-DOMAIN-UNREGISTERED: crates/fss-x/src/lib.rs:2:"), problems)
+        self.assertIn("ROGUE_DIGEST_DOMAIN = 'fss.rogue_planted.v2'", problems[0])
+
+    def test_check_entrypoint_fails_on_planted_constant(self) -> None:
+        # Uses the committed allowlist: a planted domain is never admitted by it.
+        self._registries()
+        self._rust("crates/fss-x/src/codec.rs", '    const DOMAIN: &str = "fss.planted_entrypoint.v1";\n')
+        check_policy.check_digest_domain_registration(self.root)
+        self.assertTrue(
+            any(err.startswith("DIGEST-DOMAIN-UNREGISTERED:") and "fss.planted_entrypoint.v1" in err for err in check_policy.errors),
+            check_policy.errors,
+        )
+
+    def test_registered_in_either_registry_passes(self) -> None:
+        self._registries(
+            "| `SCHEMA-DOMAIN-A-001` | `fss.a.v1` | Core | authority | rule |\n",
+            "| `SCHEMA-B-001` | `fss.b.v1` | `schemas/b.v1.json` | authority | rule |\n",
+        )
+        self._rust("crates/fss-x/src/lib.rs", 'const A_DOMAIN: &str = "fss.a.v1";\nconst B_DOMAIN_TAG: &str = "fss.b.v1";\n')
+        self.assertEqual(check_policy.digest_domain_registration_policy(self.root, allowlist=frozenset()), [])
+
+    def test_test_code_and_non_domain_names_are_out_of_scope(self) -> None:
+        self._registries()
+        self._rust("crates/fss-x/tests/contract.rs", 'const T_DOMAIN: &str = "fss.test_only.v1";\n')
+        self._rust("crates/fss-x/src/tests.rs", 'const T_DOMAIN: &str = "fss.test_only_two.v1";\n')
+        self._rust(
+            "crates/fss-x/src/lib.rs",
+            'const SCHEMA: &str = "fss.not_a_domain_name.v1";\n'
+            '#[cfg(test)]\nmod tests {\n    const INNER_DOMAIN: &str = "fss.inline_test.v1";\n}\n'
+            '/// const DOC_DOMAIN: &str = "fss.doc_example.v1";\n',
+        )
+        self.assertEqual(check_policy.digest_domain_registration_policy(self.root, allowlist=frozenset()), [])
+
+    def test_allowlist_admits_baseline_and_refuses_stale_entries(self) -> None:
+        self._registries("| `SCHEMA-DOMAIN-DONE-001` | `fss.done.v1` | Core | authority | rule |\n")
+        self._rust("crates/fss-x/src/lib.rs", 'const OLD_DOMAIN: &str = "fss.baseline.v1";\nconst DONE_DOMAIN: &str = "fss.done.v1";\n')
+        self.assertEqual(check_policy.digest_domain_registration_policy(self.root, allowlist=frozenset({"fss.baseline.v1"})), [])
+        stale = check_policy.digest_domain_registration_policy(
+            self.root, allowlist=frozenset({"fss.baseline.v1", "fss.done.v1", "fss.gone.v1"})
+        )
+        self.assertEqual(len(stale), 2, stale)
+        self.assertTrue(all(problem.startswith("DIGEST-DOMAIN-ALLOWLIST-STALE:") for problem in stale), stale)
+
+    def test_live_tree_passes_with_the_committed_allowlist(self) -> None:
+        self.assertEqual(check_policy.digest_domain_registration_policy(ROOT), [])
+
+    def test_baseline_allowlist_reached_its_deletion_condition(self) -> None:
+        # All 63 baseline domains are registered; the allowlist stays empty and is never refilled.
+        self.assertEqual(check_policy.DIGEST_DOMAIN_BASELINE_ALLOWLIST, frozenset())
+        self.assertEqual(check_policy.digest_domain_registration_policy(ROOT, allowlist=frozenset()), [])
+
+
 if __name__ == "__main__":
     unittest.main()

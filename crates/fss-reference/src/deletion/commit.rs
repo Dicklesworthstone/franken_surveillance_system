@@ -102,8 +102,12 @@ fn record_deltas(
         operation_id: None,
     });
     for tombstone in &plan.tombstones {
-        let next = tombstone.prior_generation.checked_add(1)
-            .ok_or(DeletionError::Bound { limit: "object_generation" })?;
+        let next = tombstone
+            .prior_generation
+            .checked_add(1)
+            .ok_or(DeletionError::Bound {
+                limit: "object_generation",
+            })?;
         deltas.push(EvidenceDelta {
             delta_id: format!("delta:deletion-tombstone:{}", tombstone.object_id),
             family: FAMILY_DELETION_TOMBSTONE.to_owned(),
@@ -119,10 +123,12 @@ fn record_deltas(
     }
     for retraction in &plan.retractions {
         let slot = SlotName::parse(&retraction.slot).map_err(|_| DeletionError::RecordMismatch)?;
-        let object_id = root_reachability_object_id(&slot).map_err(|_| DeletionError::RecordMismatch)?;
+        let object_id =
+            root_reachability_object_id(&slot).map_err(|_| DeletionError::RecordMismatch)?;
         let new_generation = match retraction.prior_generation {
-            Some(generation) => generation.checked_add(1)
-                .ok_or(DeletionError::Bound { limit: "object_generation" })?,
+            Some(generation) => generation.checked_add(1).ok_or(DeletionError::Bound {
+                limit: "object_generation",
+            })?,
             None => 1,
         };
         deltas.push(EvidenceDelta {
@@ -158,7 +164,9 @@ fn current_plan(
             Err(error) => return Err(error),
         };
         let plan = holds.protect(&universe, deployment, plan, cx)?;
-        if plan.digest()? == plan_digest { return Ok(plan); }
+        if plan.digest()? == plan_digest {
+            return Ok(plan);
+        }
     }
     Err(DeletionError::StalePlan(plan_digest))
 }
@@ -183,7 +191,14 @@ pub(super) fn commit_scope(
     principal: &str,
     cx: &ReplayCx,
 ) -> Result<CommitReceipt, DeletionError> {
-    commit_with_scope(deployment, Some(scope), plan_digest, approval, principal, cx)
+    commit_with_scope(
+        deployment,
+        Some(scope),
+        plan_digest,
+        approval,
+        principal,
+        cx,
+    )
 }
 
 fn commit_with_scope(
@@ -223,7 +238,9 @@ fn commit_with_scope(
         None => current_plan(deployment, &index, plan_digest, cx)?,
         Some(scope) => {
             let plan = super::plan_scope_deletion(deployment, scope, cx)?;
-            if plan.digest()? != plan_digest { return Err(DeletionError::StalePlan(plan_digest)); }
+            if plan.digest()? != plan_digest {
+                return Err(DeletionError::StalePlan(plan_digest));
+            }
             plan
         }
     };
@@ -232,15 +249,21 @@ fn commit_with_scope(
     {
         return Err(DeletionError::ApprovalMismatch(approval));
     }
-    if !plan.blockers.is_empty() { return Err(DeletionError::Blocked(plan.blockers)); }
+    if !plan.blockers.is_empty() {
+        return Err(DeletionError::Blocked(plan.blockers));
+    }
     checkpoint(cx, STAGE_DELETION_REVALIDATED)?;
     let bytes = plan.canonical_bytes()?;
     let staged = deployment.stage_payload(&bytes)?;
-    if staged != plan_digest { return Err(DeletionError::RecordMismatch); }
+    if staged != plan_digest {
+        return Err(DeletionError::RecordMismatch);
+    }
     checkpoint(cx, STAGE_DELETION_PLAN_STAGED)?;
     deployment.append_deletion_batch(
         batch_id(DeletionPlan::record_batch_id(plan_digest))?,
-        record_deltas(&plan, plan_digest)?, vec![plan_digest], cx,
+        record_deltas(&plan, plan_digest)?,
+        vec![plan_digest],
+        cx,
     )?;
     checkpoint(cx, STAGE_DELETION_RECORD_APPENDED)?;
     apply(deployment, plan, plan_digest, CommitOutcome::Completed, cx)
@@ -261,31 +284,52 @@ fn apply(
             && visible.root != retraction.root
         {
             return Err(DeletionError::Incomplete {
-                detail: format!("slot {} holds a root the deletion record does not name", retraction.slot),
+                detail: format!(
+                    "slot {} holds a root the deletion record does not name",
+                    retraction.slot
+                ),
             });
         }
-        deployment.publisher_mut().retract_root(&slot, plan_digest)?;
+        deployment
+            .publisher_mut()
+            .retract_root(&slot, plan_digest)?;
         checkpoint(cx, STAGE_DELETION_ROOT_RETRACTED)?;
     }
     for object in &plan.deletable {
-        deployment.publisher_mut().remove_deleted_object(object.digest, plan_digest)?;
+        deployment
+            .publisher_mut()
+            .remove_deleted_object(object.digest, plan_digest)?;
         checkpoint(cx, STAGE_DELETION_OBJECT_REMOVED)?;
     }
     // Verify on the filesystem, not only in the index, before claiming anything.
     for object in &plan.deletable {
-        if deployment.publisher().spool().state(object.digest).is_some()
+        if deployment
+            .publisher()
+            .spool()
+            .state(object.digest)
+            .is_some()
             || deployment.publisher().object_name_present(object.digest)
         {
-            return Err(DeletionError::Incomplete { detail: format!("{} is still present in the spool", object.digest) });
+            return Err(DeletionError::Incomplete {
+                detail: format!("{} is still present in the spool", object.digest),
+            });
         }
     }
     for retraction in &plan.retractions {
         let slot = SlotName::parse(&retraction.slot).map_err(|_| DeletionError::RecordMismatch)?;
-        let record = deployment.publisher().root_dir()
+        let record = deployment
+            .publisher()
+            .root_dir()
             .join(fss_publication::LOCAL_ROOTS_DIR)
-            .join(format!("{}{}", retraction.slot, fss_publication::ROOT_RECORD_SUFFIX));
+            .join(format!(
+                "{}{}",
+                retraction.slot,
+                fss_publication::ROOT_RECORD_SUFFIX
+            ));
         if deployment.publisher().root(&slot).is_some() || record.exists() {
-            return Err(DeletionError::Incomplete { detail: format!("root {} is still published", retraction.slot) });
+            return Err(DeletionError::Incomplete {
+                detail: format!("root {} is still published", retraction.slot),
+            });
         }
     }
     let completion = DeletionCompletion::of(&plan)?;
@@ -306,12 +350,17 @@ fn apply(
             witness_digest: Some(plan_digest),
             operation_id: None,
         }],
-        vec![completion_digest, plan_digest], cx,
+        vec![completion_digest, plan_digest],
+        cx,
     )?;
     // No fallible work after the completion record: cancellation cannot erase success.
     cx.checkpoint_post_commit(STAGE_DELETION_COMPLETE);
     Ok(CommitReceipt {
-        outcome, plan_digest, plan, completion_digest, completion,
+        outcome,
+        plan_digest,
+        plan,
+        completion_digest,
+        completion,
         authority_sequence: deployment.current_anchor().commit_sequence,
     })
 }

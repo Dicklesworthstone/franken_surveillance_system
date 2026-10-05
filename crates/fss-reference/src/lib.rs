@@ -16,6 +16,8 @@ pub mod agent_orient;
 pub mod agent_query;
 pub mod agent_session;
 mod alert;
+/// Exact owner-approved cancellation of prepared alerts, never a resend or delivery claim.
+pub mod alert_control;
 /// Native HTTP alert relay with durable-before-send commitment and explicit outcomes.
 pub use alert::webhook;
 

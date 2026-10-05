@@ -1,4 +1,6 @@
-# Supplementary reference execution, never a replacement for local DSR qualification.
+# Retention/deletion trigger for the portable qualification specification.
+# Local DSR/direct receipts are authoritative. GitHub-hosted execution is supplementary only;
+# the focused checks live in scripts/check_retention_reference.sh for local use.
 name: retention reference checks
 on:
   push:
@@ -19,22 +21,9 @@ concurrency:
   cancel-in-progress: true
 jobs:
   reference:
-    runs-on: ubuntu-24.04
-    timeout-minutes: 30
+    name: retention-relevant Rust contract
+    runs-on: [self-hosted, fss-linux-amd64]
     steps:
-      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
-      - name: Install repository-pinned toolchain
-        shell: bash
-        run: |
-          toolchain="$(python3 -c 'import tomllib; print(tomllib.load(open("rust-toolchain.toml", "rb"))["toolchain"]["channel"])')"
-          rustup toolchain install "$toolchain" --profile minimal --component rustfmt
-      - name: Run focused reference checks
-        run: bash scripts/check_retention_reference.sh
-      - name: Retain diagnostic logs
-        if: always()
-        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
-        with:
-          name: retention-reference-${{ github.sha }}
-          path: out/retention-reference/
-          if-no-files-found: warn
-          retention-days: 7
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+      - name: Execute repository-owned Rust lane
+        run: bash scripts/qualify.sh --lane rust

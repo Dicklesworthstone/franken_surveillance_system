@@ -185,19 +185,29 @@ pub struct RetentionCandidate {
 impl RetentionCandidate {
     /// Exact completed import.
     #[must_use]
-    pub const fn import_identity(&self) -> ContentDigest { self.import_identity }
+    pub const fn import_identity(&self) -> ContentDigest {
+        self.import_identity
+    }
     /// Manifest that supplied time classification, gaps and omissions.
     #[must_use]
-    pub const fn manifest_digest(&self) -> ContentDigest { self.manifest_digest }
+    pub const fn manifest_digest(&self) -> ContentDigest {
+        self.manifest_digest
+    }
     /// Binding over all source capsule metadata digests in manifest segment order.
     #[must_use]
-    pub const fn timing_digest(&self) -> ContentDigest { self.timing_digest }
+    pub const fn timing_digest(&self) -> ContentDigest {
+        self.timing_digest
+    }
     /// Last-capture bounds, absent when source timing is not admissible.
     #[must_use]
-    pub const fn capture_end(&self) -> Option<CaptureEnd> { self.end }
+    pub const fn capture_end(&self) -> Option<CaptureEnd> {
+        self.end
+    }
     /// Selection decision; eligible is not equivalent to deletion-authorized.
     #[must_use]
-    pub const fn disposition(&self) -> RetentionDisposition { self.disposition }
+    pub const fn disposition(&self) -> RetentionDisposition {
+        self.disposition
+    }
 }
 
 /// Complete, bounded selection. Fields are private; fresh deletion always recomputes it.
@@ -210,16 +220,22 @@ pub struct RetentionSelection {
 impl RetentionSelection {
     /// Exact owner request.
     #[must_use]
-    pub fn request(&self) -> &RetentionRequest { &self.request }
+    pub fn request(&self) -> &RetentionRequest {
+        &self.request
+    }
     /// Every complete recording of the named sensor, including retained exclusions.
     #[must_use]
-    pub fn candidates(&self) -> &[RetentionCandidate] { &self.candidates }
+    pub fn candidates(&self) -> &[RetentionCandidate] {
+        &self.candidates
+    }
     /// Selected members, in strictly ascending import identity order.
     #[must_use]
     pub fn imports(&self) -> Vec<ContentDigest> {
-        self.candidates.iter()
+        self.candidates
+            .iter()
             .filter(|c| c.disposition == RetentionDisposition::Eligible)
-            .map(|c| c.import_identity).collect()
+            .map(|c| c.import_identity)
+            .collect()
     }
     /// Content identity of the request, selected members, exclusions and timing bindings.
     pub fn digest(&self) -> Result<ContentDigest, DeletionError> {
@@ -250,7 +266,9 @@ impl RetentionSelection {
         let request = RetentionRequest::decode(d)?;
         let n = usize::try_from(d.u64()?).map_err(|_| DeletionError::RecordMismatch)?;
         if n > MAX_RETENTION_IMPORTS || n > d.remaining() / 108 {
-            return Err(DeletionError::Bound { limit: "retention_selection_entries" });
+            return Err(DeletionError::Bound {
+                limit: "retention_selection_entries",
+            });
         }
         let mut candidates = Vec::with_capacity(n);
         for _ in 0..n {
@@ -260,24 +278,45 @@ impl RetentionSelection {
             let end = if d.bool()? {
                 let earliest_ns = TimestampNs::decode_canonical(d)?.0;
                 let latest_ns = TimestampNs::decode_canonical(d)?.0;
-                if earliest_ns > latest_ns { return Err(DeletionError::RecordMismatch); }
-                Some(CaptureEnd { earliest_ns, latest_ns })
-            } else { None };
+                if earliest_ns > latest_ns {
+                    return Err(DeletionError::RecordMismatch);
+                }
+                Some(CaptureEnd {
+                    earliest_ns,
+                    latest_ns,
+                })
+            } else {
+                None
+            };
             let disposition = RetentionDisposition::decode(d)?;
             match (end, disposition) {
-                (Some(end), state) if request.classify(end) == state => {},
-                (None, RetentionDisposition::CaptureTimeUnknown
-                    | RetentionDisposition::SourceGap | RetentionDisposition::SourceOmission) => {},
+                (Some(end), state) if request.classify(end) == state => {}
+                (
+                    None,
+                    RetentionDisposition::CaptureTimeUnknown
+                    | RetentionDisposition::SourceGap
+                    | RetentionDisposition::SourceOmission,
+                ) => {}
                 _ => return Err(DeletionError::RecordMismatch),
             }
             candidates.push(RetentionCandidate {
-                import_identity, manifest_digest, timing_digest, end, disposition,
+                import_identity,
+                manifest_digest,
+                timing_digest,
+                end,
+                disposition,
             });
         }
-        if candidates.windows(2).any(|w| w[0].import_identity >= w[1].import_identity) {
+        if candidates
+            .windows(2)
+            .any(|w| w[0].import_identity >= w[1].import_identity)
+        {
             return Err(ContractError::NonCanonicalOrdering.into());
         }
-        Ok(Self { request, candidates })
+        Ok(Self {
+            request,
+            candidates,
+        })
     }
 }
 
@@ -307,25 +346,40 @@ pub struct RetentionAssessment {
 }
 
 #[derive(Default)]
-struct Usage { entries: u64, capsules: u64, bytes: u64 }
+struct Usage {
+    entries: u64,
+    capsules: u64,
+    bytes: u64,
+}
 
-fn charge(used: &mut u64, amount: u64, maximum: u64, limit: &'static str)
-    -> Result<(), DeletionError>
-{
-    *used = used.checked_add(amount).ok_or(DeletionError::Bound { limit })?;
-    if *used > maximum { return Err(DeletionError::Bound { limit }); }
+fn charge(
+    used: &mut u64,
+    amount: u64,
+    maximum: u64,
+    limit: &'static str,
+) -> Result<(), DeletionError> {
+    *used = used
+        .checked_add(amount)
+        .ok_or(DeletionError::Bound { limit })?;
+    if *used > maximum {
+        return Err(DeletionError::Bound { limit });
+    }
     Ok(())
 }
 
 fn checkpoint(cx: &ReplayCx) -> Result<(), DeletionError> {
     cx.checkpoint(STAGE_RETENTION_READ)
-        .map_err(|_| DeletionError::Cancelled { stage: STAGE_RETENTION_READ })
+        .map_err(|_| DeletionError::Cancelled {
+            stage: STAGE_RETENTION_READ,
+        })
 }
 
 fn import_identity(batch: &str) -> Result<Option<(ContentDigest, &str)>, DeletionError> {
-    let Some(rest) = batch.strip_prefix("batch:file-import:") else { return Ok(None); };
+    let Some(rest) = batch.strip_prefix("batch:file-import:") else {
+        return Ok(None);
+    };
     let (hex, phase) = rest.split_once(':').ok_or(DeletionError::RecordMismatch)?;
-    let digest = ContentDigest::parse(&format!("sha256:{hex}"))?;
+    let digest = ContentDigest::parse(format!("sha256:{hex}"))?;
     if hex.len() != 64 || digest.to_text() != format!("sha256:{hex}") || phase.is_empty() {
         return Err(DeletionError::RecordMismatch);
     }
@@ -341,22 +395,34 @@ pub fn assess_retention(
     cx: &ReplayCx,
 ) -> Result<RetentionAssessment, DeletionError> {
     checkpoint(cx)?;
-    if cx.root_dir() != deployment.root() { return Err(DeletionError::RecordMismatch); }
+    if cx.root_dir() != deployment.root() {
+        return Err(DeletionError::RecordMismatch);
+    }
     let deletions = DeletionIndex::read(deployment)?;
     let mut usage = Usage::default();
     let mut inventory: BTreeMap<ContentDigest, Vec<usize>> = BTreeMap::new();
     let mut complete = BTreeSet::new();
     for (position, batch) in deployment.ledger().batches().iter().enumerate() {
         checkpoint(cx)?;
-        charge(&mut usage.entries, 1 + batch.deltas.len() as u64,
-            MAX_RETENTION_LEDGER_ENTRIES, "retention_ledger_entries")?;
+        charge(
+            &mut usage.entries,
+            1 + batch.deltas.len() as u64,
+            MAX_RETENTION_LEDGER_ENTRIES,
+            "retention_ledger_entries",
+        )?;
         if let Some((identity, phase)) = import_identity(batch.batch_id.as_str())? {
-            if deletions.import(identity).is_some() { continue; }
+            if deletions.import(identity).is_some() {
+                continue;
+            }
             if !inventory.contains_key(&identity) && inventory.len() == MAX_RETENTION_IMPORTS {
-                return Err(DeletionError::Bound { limit: "retention_imports" });
+                return Err(DeletionError::Bound {
+                    limit: "retention_imports",
+                });
             }
             inventory.entry(identity).or_default().push(position);
-            if phase == "manifest" { complete.insert(identity); }
+            if phase == "manifest" {
+                complete.insert(identity);
+            }
         }
     }
     let incomplete_imports = inventory.len() - complete.len();
@@ -364,58 +430,108 @@ pub fn assess_retention(
     let mut outside_sensor = 0;
     for identity in complete {
         checkpoint(cx)?;
-        let retained = RetainedFileImport::open(deployment, identity, RetainedReadLimits::default(), cx)
-            .map_err(|_| DeletionError::RecordMismatch)?;
+        let retained =
+            RetainedFileImport::open(deployment, identity, RetainedReadLimits::default(), cx)
+                .map_err(|_| DeletionError::RecordMismatch)?;
         let manifest = retained.manifest();
-        charge(&mut usage.bytes, manifest.canonical_bytes().len() as u64,
-            MAX_RETENTION_METADATA_BYTES, "retention_metadata_bytes")?;
+        charge(
+            &mut usage.bytes,
+            manifest.canonical_bytes().len() as u64,
+            MAX_RETENTION_METADATA_BYTES,
+            "retention_metadata_bytes",
+        )?;
         if manifest.segment_spans.is_empty() {
             return Err(DeletionError::RecordMismatch);
         }
-        let expected: BTreeMap<_, _> = manifest.segment_spans.iter().enumerate()
-            .map(|(position, span)| (span.capsule_id.clone(), position)).collect();
+        let expected: BTreeMap<_, _> = manifest
+            .segment_spans
+            .iter()
+            .enumerate()
+            .map(|(position, span)| (span.capsule_id.clone(), position))
+            .collect();
         let mut capsules = BTreeMap::new();
-        let batches = inventory.get(&identity).ok_or(DeletionError::RecordMismatch)?;
+        let batches = inventory
+            .get(&identity)
+            .ok_or(DeletionError::RecordMismatch)?;
         for &position in batches {
             let batch = &deployment.ledger().batches()[position];
             for delta in &batch.deltas {
-                charge(&mut usage.entries, 1, MAX_RETENTION_LEDGER_ENTRIES, "retention_ledger_entries")?;
-                if delta.family != FAMILY_SENSOR_CAPSULE { continue; }
+                charge(
+                    &mut usage.entries,
+                    1,
+                    MAX_RETENTION_LEDGER_ENTRIES,
+                    "retention_ledger_entries",
+                )?;
+                if delta.family != FAMILY_SENSOR_CAPSULE {
+                    continue;
+                }
                 checkpoint(cx)?;
-                charge(&mut usage.capsules, 1, MAX_RETENTION_CAPSULES, "retention_capsules")?;
+                charge(
+                    &mut usage.capsules,
+                    1,
+                    MAX_RETENTION_CAPSULES,
+                    "retention_capsules",
+                )?;
                 let bytes = deployment.publisher().spool().read(delta.payload_digest)?;
-                charge(&mut usage.bytes, bytes.len() as u64,
-                    MAX_RETENTION_METADATA_BYTES, "retention_metadata_bytes")?;
+                charge(
+                    &mut usage.bytes,
+                    bytes.len() as u64,
+                    MAX_RETENTION_METADATA_BYTES,
+                    "retention_metadata_bytes",
+                )?;
                 if bytes.len() > 16_384 || ContentDigest::sha256(&bytes) != delta.payload_digest {
                     return Err(DeletionError::RecordMismatch);
                 }
                 let capsule = SensorCapsule::from_canonical_bytes(&bytes)?;
-                let segment = *expected.get(&capsule.capsule_id).ok_or(DeletionError::RecordMismatch)?;
-                let span = &manifest.segment_spans[segment];
-                let current = deployment.ledger().current().objects.get(&delta.object_id)
+                let segment = *expected
+                    .get(&capsule.capsule_id)
                     .ok_or(DeletionError::RecordMismatch)?;
-                if delta.plane != Plane::Authority || !batch.children.contains(&delta.payload_digest)
+                let span = &manifest.segment_spans[segment];
+                let current = deployment
+                    .ledger()
+                    .current()
+                    .objects
+                    .get(&delta.object_id)
+                    .ok_or(DeletionError::RecordMismatch)?;
+                if delta.plane != Plane::Authority
+                    || !batch.children.contains(&delta.payload_digest)
                     || current.family != FAMILY_SENSOR_CAPSULE
                     || current.payload_digest != delta.payload_digest
                     || current.generation != delta.new_generation
                     || capsule.source_digest != span.segment_sha256
-                    || capsule.source_bytes != span.len || capsule.gap_before != span.gap_before
-                    || capsules.insert(segment, (delta.payload_digest, capsule)).is_some()
+                    || capsule.source_bytes != span.len
+                    || capsule.gap_before != span.gap_before
+                    || capsules
+                        .insert(segment, (delta.payload_digest, capsule))
+                        .is_some()
                 {
                     return Err(DeletionError::RecordMismatch);
                 }
             }
         }
-        if capsules.len() != expected.len() { return Err(DeletionError::RecordMismatch); }
-        let sensors: BTreeSet<_> = capsules.values().map(|(_, c)| c.sensor_id.clone()).collect();
-        if sensors.len() != 1 { return Err(DeletionError::RecordMismatch); }
-        if !sensors.contains(request.sensor()) { outside_sensor += 1; continue; }
+        if capsules.len() != expected.len() {
+            return Err(DeletionError::RecordMismatch);
+        }
+        let sensors: BTreeSet<_> = capsules
+            .values()
+            .map(|(_, c)| c.sensor_id.clone())
+            .collect();
+        if sensors.len() != 1 {
+            return Err(DeletionError::RecordMismatch);
+        }
+        if !sensors.contains(request.sensor()) {
+            outside_sensor += 1;
+            continue;
+        }
         let mut timing = CanonicalEncoder::new();
         timing.text("fss.retention_capsule_timing.v1");
         timing.digest(identity);
         timing.digest(retained.manifest_digest());
         timing.u64(capsules.len() as u64);
-        let mut end = CaptureEnd { earliest_ns: i128::MIN, latest_ns: i128::MIN };
+        let mut end = CaptureEnd {
+            earliest_ns: i128::MIN,
+            latest_ns: i128::MIN,
+        };
         let mut gap = false;
         for (digest, capsule) in capsules.values() {
             timing.digest(*digest);
@@ -427,9 +543,15 @@ pub fn assess_retention(
             Some(RetentionDisposition::CaptureTimeUnknown)
         } else if gap {
             Some(RetentionDisposition::SourceGap)
-        } else if manifest.omission_spans.iter().any(|o| o.reason != "annexb_padding") {
+        } else if manifest
+            .omission_spans
+            .iter()
+            .any(|o| o.reason != "annexb_padding")
+        {
             Some(RetentionDisposition::SourceOmission)
-        } else { None };
+        } else {
+            None
+        };
         candidates.push(RetentionCandidate {
             import_identity: identity,
             manifest_digest: retained.manifest_digest(),
@@ -440,9 +562,15 @@ pub fn assess_retention(
     }
     checkpoint(cx)?;
     Ok(RetentionAssessment {
-        selection: RetentionSelection { request: request.clone(), candidates },
-        ledger_entries: usage.entries, capsules: usage.capsules, metadata_bytes: usage.bytes,
-        outside_sensor, incomplete_imports,
+        selection: RetentionSelection {
+            request: request.clone(),
+            candidates,
+        },
+        ledger_entries: usage.entries,
+        capsules: usage.capsules,
+        metadata_bytes: usage.bytes,
+        outside_sensor,
+        incomplete_imports,
     })
 }
 
@@ -456,20 +584,32 @@ pub struct RetentionPlan {
 }
 
 /// Prepare one union deletion. Shared derivatives are classified once for the whole cohort.
-pub fn plan_retention(deployment: &ReferenceDeployment, request: &RetentionRequest, cx: &ReplayCx)
-    -> Result<RetentionPlan, DeletionError>
-{
+pub fn plan_retention(
+    deployment: &ReferenceDeployment,
+    request: &RetentionRequest,
+    cx: &ReplayCx,
+) -> Result<RetentionPlan, DeletionError> {
     let assessment = assess_retention(deployment, request, cx)?;
-    let deletion = if assessment.selection.imports().is_empty() { None } else {
-        Some(super::plan_scope_deletion(deployment,
-            &DeletionScope::Retention(assessment.selection.clone()), cx)?)
+    let deletion = if assessment.selection.imports().is_empty() {
+        None
+    } else {
+        Some(super::plan_scope_deletion(
+            deployment,
+            &DeletionScope::Retention(assessment.selection.clone()),
+            cx,
+        )?)
     };
-    Ok(RetentionPlan { assessment, deletion })
+    Ok(RetentionPlan {
+        assessment,
+        deletion,
+    })
 }
 
-pub(super) fn revalidate_selection(deployment: &ReferenceDeployment,
-    selection: &RetentionSelection, cx: &ReplayCx) -> Result<(), DeletionError>
-{
+pub(super) fn revalidate_selection(
+    deployment: &ReferenceDeployment,
+    selection: &RetentionSelection,
+    cx: &ReplayCx,
+) -> Result<(), DeletionError> {
     if assess_retention(deployment, selection.request(), cx)?.selection != *selection {
         return Err(DeletionError::RecordMismatch);
     }
@@ -479,10 +619,14 @@ pub(super) fn revalidate_selection(deployment: &ReferenceDeployment,
 /// Execute exactly the approved cohort, or resume its retained plan after an interruption.
 /// A new request, changed time assertion, later import, hold, or effect invalidates a fresh plan.
 /// Once tombstones are durable, source bytes are not needed to resume the same deletion.
-pub fn commit_retention(deployment: &mut ReferenceDeployment, request: &RetentionRequest,
-    plan_digest: ContentDigest, approval: ContentDigest, principal: &str, cx: &ReplayCx)
-    -> Result<CommitReceipt, DeletionError>
-{
+pub fn commit_retention(
+    deployment: &mut ReferenceDeployment,
+    request: &RetentionRequest,
+    plan_digest: ContentDigest,
+    approval: ContentDigest,
+    principal: &str,
+    cx: &ReplayCx,
+) -> Result<CommitReceipt, DeletionError> {
     checkpoint(cx)?;
     let index = DeletionIndex::read(deployment)?;
     if let Some(entry) = index.plan(plan_digest) {
@@ -501,35 +645,79 @@ mod tests {
     use super::*;
     type TestResult = Result<(), Box<dyn std::error::Error>>;
     fn request(first: i128, last: i128) -> Result<RetentionRequest, DeletionError> {
-        RetentionRequest::new(SensorId::parse("sensor:a")?, 10,
-            CaptureInterval::new(TimestampNs(first), TimestampNs(last))?)
+        RetentionRequest::new(
+            SensorId::parse("sensor:a")?,
+            10,
+            CaptureInterval::new(TimestampNs(first), TimestampNs(last))?,
+        )
     }
     #[test]
     fn last_possible_capture_and_earliest_now_control_eligibility() -> TestResult {
-        let end = CaptureEnd { earliest_ns: 80, latest_ns: 90 };
-        assert_eq!(request(100, 110)?.classify(end), RetentionDisposition::Eligible);
-        assert_eq!(request(99, 110)?.classify(end), RetentionDisposition::AgeUncertain);
+        let end = CaptureEnd {
+            earliest_ns: 80,
+            latest_ns: 90,
+        };
+        assert_eq!(
+            request(100, 110)?.classify(end),
+            RetentionDisposition::Eligible
+        );
+        assert_eq!(
+            request(99, 110)?.classify(end),
+            RetentionDisposition::AgeUncertain
+        );
         assert_eq!(request(70, 89)?.classify(end), RetentionDisposition::NotDue);
-        assert_eq!(request(90, 99)?.classify(end), RetentionDisposition::AgeUncertain);
+        assert_eq!(
+            request(90, 99)?.classify(end),
+            RetentionDisposition::AgeUncertain
+        );
         Ok(())
     }
     #[test]
     fn signed_extremes_never_wrap_into_eligibility() -> TestResult {
-        let end = CaptureEnd { earliest_ns: i128::MAX - 1, latest_ns: i128::MAX };
-        assert_eq!(request(i128::MAX, i128::MAX)?.classify(end), RetentionDisposition::DeadlineOverflow);
-        let end = CaptureEnd { earliest_ns: i128::MIN, latest_ns: i128::MIN };
-        assert_eq!(request(i128::MIN + 10, i128::MIN + 10)?.classify(end), RetentionDisposition::Eligible);
-        assert_eq!(request(i128::MIN + 9, i128::MIN + 9)?.classify(end), RetentionDisposition::NotDue);
+        let end = CaptureEnd {
+            earliest_ns: i128::MAX - 1,
+            latest_ns: i128::MAX,
+        };
+        assert_eq!(
+            request(i128::MAX, i128::MAX)?.classify(end),
+            RetentionDisposition::DeadlineOverflow
+        );
+        let end = CaptureEnd {
+            earliest_ns: i128::MIN,
+            latest_ns: i128::MIN,
+        };
+        assert_eq!(
+            request(i128::MIN + 10, i128::MIN + 10)?.classify(end),
+            RetentionDisposition::Eligible
+        );
+        assert_eq!(
+            request(i128::MIN + 9, i128::MIN + 9)?.classify(end),
+            RetentionDisposition::NotDue
+        );
         Ok(())
     }
     #[test]
     fn inverted_now_and_zero_duration_are_refused() -> TestResult {
         let sensor = SensorId::parse("sensor:a")?;
-        assert!(RetentionRequest::new(sensor.clone(), 0,
-            CaptureInterval::new(TimestampNs(0), TimestampNs(0))?).is_err());
-        assert!(RetentionRequest::new(sensor, 1, CaptureInterval {
-            earliest: TimestampNs(2), latest: TimestampNs(1),
-        }).is_err());
+        assert!(
+            RetentionRequest::new(
+                sensor.clone(),
+                0,
+                CaptureInterval::new(TimestampNs(0), TimestampNs(0))?
+            )
+            .is_err()
+        );
+        assert!(
+            RetentionRequest::new(
+                sensor,
+                1,
+                CaptureInterval {
+                    earliest: TimestampNs(2),
+                    latest: TimestampNs(1),
+                }
+            )
+            .is_err()
+        );
         Ok(())
     }
     #[test]
@@ -540,7 +728,10 @@ mod tests {
                 import_identity: ContentDigest::sha256(b"import"),
                 manifest_digest: ContentDigest::sha256(b"manifest"),
                 timing_digest: ContentDigest::sha256(b"timing"),
-                end: Some(CaptureEnd { earliest_ns: 80, latest_ns: 90 }),
+                end: Some(CaptureEnd {
+                    earliest_ns: 80,
+                    latest_ns: 90,
+                }),
                 disposition: RetentionDisposition::Eligible,
             }],
         };
@@ -556,7 +747,9 @@ mod tests {
         selection.request = request(0, 1)?;
         let mut e = CanonicalEncoder::new();
         selection.encode(&mut e);
-        assert!(RetentionSelection::decode(&mut CanonicalDecoder::new(&e.finish_checked()?)).is_err());
+        assert!(
+            RetentionSelection::decode(&mut CanonicalDecoder::new(&e.finish_checked()?)).is_err()
+        );
         Ok(())
     }
     #[test]
@@ -565,15 +758,21 @@ mod tests {
             import_identity: ContentDigest::sha256(b"import"),
             manifest_digest: ContentDigest::sha256(b"manifest"),
             timing_digest: ContentDigest::sha256(b"timing"),
-            end: None, disposition: RetentionDisposition::CaptureTimeUnknown,
+            end: None,
+            disposition: RetentionDisposition::CaptureTimeUnknown,
         };
-        let selection = RetentionSelection { request: request(100, 100)?, candidates: vec![c.clone()] };
+        let selection = RetentionSelection {
+            request: request(100, 100)?,
+            candidates: vec![c.clone()],
+        };
         assert!(selection.imports().is_empty());
         let mut duplicate = selection;
         duplicate.candidates.push(c);
         let mut e = CanonicalEncoder::new();
         duplicate.encode(&mut e);
-        assert!(RetentionSelection::decode(&mut CanonicalDecoder::new(&e.finish_checked()?)).is_err());
+        assert!(
+            RetentionSelection::decode(&mut CanonicalDecoder::new(&e.finish_checked()?)).is_err()
+        );
         Ok(())
     }
     #[test]
