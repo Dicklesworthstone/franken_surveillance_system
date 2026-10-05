@@ -1,6 +1,6 @@
 #![forbid(unsafe_code)]
 //! Read-only closure walk: every retained derivative reachable from one import, or from every
-//! member import of a sensor or event scope at once.
+//! member import of a sensor, event or verified retention scope at once.
 //!
 //! The deployment is modelled as *units* that hold objects: every authority batch of the ledger
 //! (its children, delta payloads and witnesses, expanded through every manifest they contain) and
@@ -26,6 +26,8 @@
 //! sensor (an import whose capsules cannot be read is a `scope_member_unresolved` blocker, never
 //! guessed); an event scope's members are the retained imports whose own single-import closure
 //! reaches one of the event's committed revisions. Both are computed from this one scan.
+//! Retention selections are revalidated by `plan_scope_deletion` before entering this walker;
+//! their exact eligible member list seeds the same union closure, without special unlink rules.
 
 use std::cell::OnceCell;
 use std::collections::{BTreeMap, BTreeSet, HashSet};
@@ -528,7 +530,8 @@ impl Universe {
 
     /// Every scope the current head admits, in commit-lookup order: each retained import
     /// (ascending), each sensor a retained import's capsules name (ascending), each committed
-    /// event (ascending object identity).
+    /// event (ascending object identity). Retention requests are supplied explicitly rather than
+    /// attempting to enumerate all possible durations and owner time assertions.
     pub(super) fn scopes(&self, deployment: &ReferenceDeployment) -> Vec<DeletionScope> {
         let mut scopes: Vec<DeletionScope> = self
             .imports
@@ -639,6 +642,20 @@ impl Universe {
                 }
                 Ok((members, Vec::new()))
             }
+            DeletionScope::Retention(selection) => {
+                // The public planner revalidates the complete selection before this scan.
+                // Never widen to every recording of the sensor, or drop an unknown member.
+                let members = selection.imports();
+                if members.is_empty() {
+                    return Err(empty());
+                }
+                for import in &members {
+                    if !self.imports.contains_key(import) {
+                        return Err(DeletionError::UnknownImport(*import));
+                    }
+                }
+                Ok((members, Vec::new()))
+            }
         }
     }
 
@@ -698,7 +715,7 @@ impl Universe {
         let Closure { via, keys } = self.closure(&imports);
         let subject = match scope {
             DeletionScope::Import(import) => import.to_text(),
-            DeletionScope::Sensor(_) | DeletionScope::Event(_) => scope.text(),
+            DeletionScope::Sensor(_) | DeletionScope::Event(_) | DeletionScope::Retention(_) => scope.text(),
         };
 
         let in_closure = |index: usize| via[index].is_some();

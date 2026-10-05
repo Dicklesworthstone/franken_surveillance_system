@@ -33,12 +33,17 @@
 //!   stale-plan, tombstone-first and exactly-once guarantees. Evidence holds ([`holds`]) stay
 //!   import-scoped: an active hold on any member import (or on an import whose held closure the
 //!   scoped plan would touch) blocks the whole scoped plan.
+//! - [`retention`] selects an exact age-eligible cohort under an explicit owner duration and
+//!   current-time interval. Its v3 scope retains selection and timing provenance. It is one
+//!   union deletion, never a chain of stale per-import approvals, and never releases holds.
 
 mod commit;
 /// Approval-gated preservation of retained imports and their shared derivative closures.
 pub mod holds;
 mod index;
 mod plan;
+/// Conservative age selection and exact, crash-resumable cleanup of completed recordings.
+pub mod retention;
 pub mod scope;
 mod walk;
 
@@ -53,7 +58,8 @@ pub use index::{DeletionEntry, DeletionIndex, has_records};
 pub use plan::{
     ClosureUnit, DELETION_APPROVAL_DOMAIN, DELETION_COMPLETION_DOMAIN, DELETION_MECHANISM,
     DELETION_OUT_OF_SCOPE, DELETION_PLAN_DOMAIN, DELETION_SCOPE_COMPLETION_DOMAIN,
-    DELETION_SCOPE_PLAN_DOMAIN, DeletableObject, DeletionCompletion, DeletionPlan, EventReference,
+    DELETION_SCOPE_PLAN_DOMAIN, DELETION_RETENTION_PLAN_DOMAIN, DELETION_RETENTION_COMPLETION_DOMAIN,
+    DeletableObject, DeletionCompletion, DeletionPlan, EventReference,
     Finding, MAX_DELETION_RECORD_BYTES, ObjectTombstone, RetainedObject, RootRetraction,
     Unattributed, approval_digest,
 };
@@ -99,8 +105,7 @@ pub enum DeletionError {
     },
     /// No completed, retained import has this identity.
     UnknownImport(ContentDigest),
-    /// A sensor or event scope reaches no completed, retained import (unknown sensor or event,
-    /// or every member already deleted); nothing was written.
+    /// The scope reaches no completed, retained import; nothing was written.
     ScopeEmpty(String),
     /// No plan recomputed against the current head has this digest (stale or unknown).
     StalePlan(ContentDigest),
@@ -113,7 +118,7 @@ pub enum DeletionError {
         /// Bound name.
         limit: &'static str,
     },
-    /// A retained deletion record does not match its ledger delta.
+    /// A retained record or source binding does not match its authoritative metadata.
     RecordMismatch,
     /// Cooperative cancellation at a cut point; rerun the commit to resume.
     Cancelled {
@@ -187,17 +192,13 @@ impl fmt::Display for DeletionError {
             Self::Blocked(blockers) => {
                 write!(f, "deletion blocked by {} blocker(s):", blockers.len())?;
                 for blocker in blockers {
-                    write!(
-                        f,
-                        " [{} {}: {}]",
-                        blocker.kind, blocker.subject, blocker.detail
-                    )?;
+                    write!(f, " [{} {}: {}]", blocker.kind, blocker.subject, blocker.detail)?;
                 }
                 Ok(())
             }
             Self::Bound { limit } => write!(f, "deletion bound exceeded: {limit}"),
             Self::RecordMismatch => {
-                f.write_str("a retained deletion record does not match its ledger delta")
+                f.write_str("a retained record or source binding does not match its authoritative metadata")
             }
             Self::Cancelled { stage } => write!(
                 f,
@@ -217,32 +218,20 @@ impl fmt::Display for DeletionError {
 }
 
 impl std::error::Error for DeletionError {}
-
 impl From<ContractError> for DeletionError {
-    fn from(value: ContractError) -> Self {
-        Self::Contract(value)
-    }
+    fn from(value: ContractError) -> Self { Self::Contract(value) }
 }
 impl From<ReferenceError> for DeletionError {
-    fn from(value: ReferenceError) -> Self {
-        Self::Reference(value)
-    }
+    fn from(value: ReferenceError) -> Self { Self::Reference(value) }
 }
 impl From<LocalPublicationError> for DeletionError {
-    fn from(value: LocalPublicationError) -> Self {
-        Self::Publication(value)
-    }
+    fn from(value: LocalPublicationError) -> Self { Self::Publication(value) }
 }
 impl From<SpoolError> for DeletionError {
-    fn from(value: SpoolError) -> Self {
-        Self::Spool(value)
-    }
+    fn from(value: SpoolError) -> Self { Self::Spool(value) }
 }
-
 impl From<holds::HoldError> for DeletionError {
-    fn from(value: holds::HoldError) -> Self {
-        Self::Hold(Box::new(value))
-    }
+    fn from(value: holds::HoldError) -> Self { Self::Hold(Box::new(value)) }
 }
 
 /// Computes the sealed deletion plan of `import` (`CAP-DELETE-PREPARE-001`). Writes nothing.
@@ -254,21 +243,21 @@ pub fn plan_deletion(
     plan_scope_deletion(deployment, &DeletionScope::Import(import), cx)
 }
 
-/// Computes the sealed deletion plan of `scope` (`CAP-DELETE-PREPARE-001`): one import, or the
-/// union closure of every retained import of a sensor or an event. Writes nothing.
+/// Computes one union-closure plan. A retention scope is always recomputed against retained
+/// metadata first: decoded or caller-supplied selections cannot grant authority by themselves.
 pub fn plan_scope_deletion(
     deployment: &ReferenceDeployment,
     scope: &DeletionScope,
     cx: &ReplayCx,
 ) -> Result<DeletionPlan, DeletionError> {
+    if let DeletionScope::Retention(selection) = scope {
+        retention::revalidate_selection(deployment, selection, cx)?;
+    }
     let index = DeletionIndex::read(deployment)?;
     if let DeletionScope::Import(import) = scope
         && let Some(entry) = index.import(*import)
     {
-        return Err(DeletionError::EvidenceDeleted {
-            import: *import,
-            plan: entry.plan_digest,
-        });
+        return Err(DeletionError::EvidenceDeleted { import: *import, plan: entry.plan_digest });
     }
     let holds = holds::HoldIndex::read(deployment, cx)?;
     let universe = walk::Universe::scan(deployment, &index, cx)?;
@@ -277,7 +266,8 @@ pub fn plan_scope_deletion(
 }
 
 /// Executes a sealed plan under its exact approval (`CAP-DELETE-COMMIT-001`); resumes an
-/// interrupted commit of the same plan. The `commit` module documents the ordering.
+/// interrupted commit of the same plan. Fresh retention commits additionally supply their
+/// explicit request through [`retention::commit_retention`]; durable retries need no source.
 pub fn commit_deletion(
     deployment: &mut ReferenceDeployment,
     plan_digest: ContentDigest,
