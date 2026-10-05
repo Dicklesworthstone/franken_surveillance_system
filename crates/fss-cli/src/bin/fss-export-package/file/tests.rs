@@ -22,6 +22,9 @@ impl Directory {
                     fs::set_permissions(&path, fs::Permissions::from_mode(0o700))?;
                     fs::create_dir(path.join("deployment"))?;
                     fs::create_dir(path.join("handoff"))?;
+                    // Explicit mode: the writer refuses group/world-writable parents, so the
+                    // fixture must not inherit a permissive process umask (e.g. 0002).
+                    fs::set_permissions(path.join("handoff"), fs::Permissions::from_mode(0o700))?;
                     return Ok(Self(path));
                 }
                 Err(error) if error.kind() == io::ErrorKind::AlreadyExists => {}
