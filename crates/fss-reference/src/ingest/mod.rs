@@ -60,6 +60,8 @@ pub mod tolerant_decode;
 pub mod tracker;
 /// Bounded, history-linked, single-camera association of detector proposals.
 pub mod tracking;
+/// Conservative sampled-occupancy episodes from consecutive actual track observations.
+pub mod zone_dwell;
 
 pub use annexb::{
     AnnexBAccessUnit, AnnexBError, AnnexBLimits, AnnexBNal, AnnexBScan, CEILING_MAX_NAL_BYTES,
