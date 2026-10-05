@@ -75,6 +75,10 @@ path = "src/bin/fss-cover.rs"
 name = "fss-alert"
 path = "src/bin/fss-alert.rs"
 
+[[bin]]
+name = "fss-export-package"
+path = "src/bin/fss-export-package.rs"
+
 [dependencies]
 fss-codec-mjpeg = { path = "../fss-codec-mjpeg" }
 fss-core = { path = "../fss-core" }
