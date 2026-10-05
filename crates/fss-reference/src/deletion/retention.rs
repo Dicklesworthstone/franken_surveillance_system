@@ -379,7 +379,7 @@ fn import_identity(batch: &str) -> Result<Option<(ContentDigest, &str)>, Deletio
         return Ok(None);
     };
     let (hex, phase) = rest.split_once(':').ok_or(DeletionError::RecordMismatch)?;
-    let digest = ContentDigest::parse(&format!("sha256:{hex}"))?;
+    let digest = ContentDigest::parse(format!("sha256:{hex}"))?;
     if hex.len() != 64 || digest.to_text() != format!("sha256:{hex}") || phase.is_empty() {
         return Err(DeletionError::RecordMismatch);
     }
