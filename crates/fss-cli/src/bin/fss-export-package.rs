@@ -85,14 +85,19 @@ fn text<'a>(values: &'a BTreeMap<String, OsString>, key: &str) -> Result<&'a str
         .ok_or_else(|| format!("{key} requires UTF-8"))
 }
 fn path(values: &BTreeMap<String, OsString>, key: &str) -> Result<PathBuf, String> {
-    let value = values.get(key).ok_or_else(|| format!("required option {key}"))?;
+    let value = values
+        .get(key)
+        .ok_or_else(|| format!("required option {key}"))?;
     if value.as_encoded_bytes().len() > 4096 {
         return Err(format!("{key} exceeds path bound"));
     }
     Ok(PathBuf::from(value))
 }
 fn parse(args: &[OsString]) -> Result<Options, String> {
-    let command = args.first().and_then(|v| v.to_str()).ok_or("pack or verify required")?;
+    let command = args
+        .first()
+        .and_then(|v| v.to_str())
+        .ok_or("pack or verify required")?;
     if !matches!(command, "pack" | "verify") || args.len() > 21 {
         return Err("expected bounded pack or verify command".into());
     }
@@ -101,15 +106,21 @@ fn parse(args: &[OsString]) -> Result<Options, String> {
     while index < args.len() {
         let key = args[index].to_str().ok_or("option names require UTF-8")?;
         let common = matches!(key, "--export-root" | "--recipient" | "--attested-now-ns");
-        let allowed = common || match command {
-            "pack" => matches!(key, "--root" | "--site" | "--principal" | "--out" | "--approve"),
-            "verify" => key == "--input",
-            _ => false,
-        };
+        let allowed = common
+            || match command {
+                "pack" => matches!(
+                    key,
+                    "--root" | "--site" | "--principal" | "--out" | "--approve"
+                ),
+                "verify" => key == "--input",
+                _ => false,
+            };
         if !allowed {
             return Err(format!("unknown or inapplicable option {key}"));
         }
-        let value = args.get(index + 1).ok_or_else(|| format!("missing value for {key}"))?;
+        let value = args
+            .get(index + 1)
+            .ok_or_else(|| format!("missing value for {key}"))?;
         if value.is_empty() || value.to_str().is_some_and(|v| v.starts_with("--")) {
             return Err(format!("missing value for {key}"));
         }
@@ -125,9 +136,15 @@ fn parse(args: &[OsString]) -> Result<Options, String> {
     if times.len() > 81 {
         return Err("current-time interval exceeds bound".into());
     }
-    let (earliest, latest) = times.split_once(':').ok_or("current time requires EARLIEST:LATEST")?;
-    let earliest = earliest.parse::<i128>().map_err(|_| "invalid earliest current time")?;
-    let latest = latest.parse::<i128>().map_err(|_| "invalid latest current time")?;
+    let (earliest, latest) = times
+        .split_once(':')
+        .ok_or("current time requires EARLIEST:LATEST")?;
+    let earliest = earliest
+        .parse::<i128>()
+        .map_err(|_| "invalid earliest current time")?;
+    let latest = latest
+        .parse::<i128>()
+        .map_err(|_| "invalid latest current time")?;
     let scope = PackageScope {
         recipient: text(&values, "--recipient")?.to_owned(),
         attested_now: CaptureInterval::new(TimestampNs(earliest), TimestampNs(latest))
@@ -136,18 +153,24 @@ fn parse(args: &[OsString]) -> Result<Options, String> {
     scope.validate().map_err(|e| e.to_string())?;
     let export_root = digest(text(&values, "--export-root")?)?;
     if command == "verify" {
-        return Ok(Options::Verify { input: path(&values, "--input")?, export_root, scope });
+        return Ok(Options::Verify {
+            input: path(&values, "--input")?,
+            export_root,
+            scope,
+        });
     }
     let site = text(&values, "--site")?.to_owned();
     if site.len() > 256 {
         return Err("site exceeds bound".into());
     }
-    fss_reference::reference_deployment::validate_site_lineage(&site).map_err(|_| "invalid site")?;
+    fss_reference::reference_deployment::validate_site_lineage(&site)
+        .map_err(|_| "invalid site")?;
     let principal = if values.contains_key("--principal") {
         text(&values, "--principal")?
     } else {
         "principal:local-operator"
-    }.to_owned();
+    }
+    .to_owned();
     PrincipalId::parse(&principal).map_err(|_| "invalid principal")?;
     let approval = if values.contains_key("--approve") {
         Some(digest(text(&values, "--approve")?)?)
@@ -170,13 +193,31 @@ fn report(verified: &VerifiedPackage, scope: &PackageScope, status: &str) -> Str
         ("format", string("fss.export_package_report.v1")),
         ("status", string(status)),
         ("export_root", string(&verified.root().to_text())),
-        ("package_digest", string(&verified.package_digest().to_text())),
-        ("record_digest", string(&verified.record().digest().to_text())),
+        (
+            "package_digest",
+            string(&verified.package_digest().to_text()),
+        ),
+        (
+            "record_digest",
+            string(&verified.record().digest().to_text()),
+        ),
         ("recipient", string(&scope.recipient)),
-        ("attested_now_earliest_ns", string(&scope.attested_now.earliest.0.to_string())),
-        ("attested_now_latest_ns", string(&scope.attested_now.latest.0.to_string())),
-        ("expiry_interpretation", string("exclusive_under_supplied_time_bounds_not_a_trusted_clock")),
-        ("verification_claim", string("exact_record_and_manifest_match_independently_supplied_root")),
+        (
+            "attested_now_earliest_ns",
+            string(&scope.attested_now.earliest.0.to_string()),
+        ),
+        (
+            "attested_now_latest_ns",
+            string(&scope.attested_now.latest.0.to_string()),
+        ),
+        (
+            "expiry_interpretation",
+            string("exclusive_under_supplied_time_bounds_not_a_trusted_clock"),
+        ),
+        (
+            "verification_claim",
+            string("exact_record_and_manifest_match_independently_supplied_root"),
+        ),
         ("signature_verified", "false".into()),
         ("current_ledger_state_verified_offline", "false".into()),
         ("recipient_authenticated", "false".into()),
@@ -215,13 +256,25 @@ fn preflight(root: &Path, site: &str) -> RunResult<PathBuf> {
 fn quote(value: &str) -> String {
     format!("'{}'", value.replace('\'', "'\\''"))
 }
-fn approve_command(options: &Pack, root: &Path, output: &Path, approval: ContentDigest) -> Option<String> {
+fn approve_command(
+    options: &Pack,
+    root: &Path,
+    output: &Path,
+    approval: ContentDigest,
+) -> Option<String> {
     Some(format!(
         "fss-export-package pack --root {} --site {} --principal {} --export-root {} --recipient {} --attested-now-ns {} --out {} --approve {}",
-        quote(root.to_str()?), quote(&options.site), quote(&options.principal),
-        options.export_root, quote(&options.scope.recipient),
-        quote(&format!("{}:{}", options.scope.attested_now.earliest.0, options.scope.attested_now.latest.0)),
-        quote(output.to_str()?), approval,
+        quote(root.to_str()?),
+        quote(&options.site),
+        quote(&options.principal),
+        options.export_root,
+        quote(&options.scope.recipient),
+        quote(&format!(
+            "{}:{}",
+            options.scope.attested_now.earliest.0, options.scope.attested_now.latest.0
+        )),
+        quote(output.to_str()?),
+        approval,
     ))
 }
 
@@ -234,10 +287,17 @@ fn run_pack(options: &Pack) -> RunResult<String> {
         trace_id: "trace:export-package-cli".into(),
         operation_id: OperationId::parse("operation:export-package-cli")?,
         principal: options.principal.clone(),
-        capabilities: vec!["ADP-REPLAY-001".into(), CAP_EXPORT_PREPARE.into(), CAP_EXPORT_COMMIT.into()],
+        capabilities: vec![
+            "ADP-REPLAY-001".into(),
+            CAP_EXPORT_PREPARE.into(),
+            CAP_EXPORT_COMMIT.into(),
+        ],
         deadline: None,
         priority: 10,
-        budgets: BudgetVector::builder().bytes(128 * 1024 * 1024).storage_operations(65_536).build()?,
+        budgets: BudgetVector::builder()
+            .bytes(128 * 1024 * 1024)
+            .storage_operations(65_536)
+            .build()?,
         privacy_scope: "privacy:redacted-event-export-v1".into(),
         retention_scope: "retention:existing-deployment-policy".into(),
         anchor_universe: ContentDigest::sha256(options.site.as_bytes()),
@@ -246,18 +306,36 @@ fn run_pack(options: &Pack) -> RunResult<String> {
     let cx = ReplayCx::from_context_authority(&authority, root.clone())?;
     let result = (|| -> RunResult<String> {
         let deployment = ReferenceDeployment::open(&root, &options.site, &cx)?;
-        let package = prepare_package(&deployment, options.export_root, &options.scope, &authority, &cx)?;
-        let approval = target.approval(&package, &options.scope, &options.principal, &options.site)?;
-        let details = report(package.verified(), &options.scope, "verified_committed_export_for_copy");
+        let package = prepare_package(
+            &deployment,
+            options.export_root,
+            &options.scope,
+            &authority,
+            &cx,
+        )?;
+        let approval =
+            target.approval(&package, &options.scope, &options.principal, &options.site)?;
+        let details = report(
+            package.verified(),
+            &options.scope,
+            "verified_committed_export_for_copy",
+        );
         // Bound every complete report BEFORE the external output filename can become visible.
         let render = |status: &str, cleanup: bool| -> RunResult<String> {
             bounded_report(object(&[
                 ("format", string("fss.export_package_file_report.v1")),
                 ("status", string(status)),
                 ("approval_digest", string(&approval.to_text())),
-                ("approve_command", approve_command(options, &root, target.path(), approval)
-                    .as_deref().map_or_else(|| "null".into(), string)),
-                ("output", target.path().to_str().map_or_else(|| "null".into(), string)),
+                (
+                    "approve_command",
+                    approve_command(options, &root, target.path(), approval)
+                        .as_deref()
+                        .map_or_else(|| "null".into(), string),
+                ),
+                (
+                    "output",
+                    target.path().to_str().map_or_else(|| "null".into(), string),
+                ),
                 ("package_bytes", package.bytes().len().to_string()),
                 ("temporary_cleanup_pending", cleanup.to_string()),
                 ("deployment_open_may_reconcile", "true".into()),
@@ -271,7 +349,9 @@ fn run_pack(options: &Pack) -> RunResult<String> {
         let existing = render("already_present", false)?;
         let created_cleanup_pending = render("created", true)?;
         let existing_cleanup_pending = render("already_present", true)?;
-        let Some(given) = options.approval else { return Ok(proposed); };
+        let Some(given) = options.approval else {
+            return Ok(proposed);
+        };
         if given != approval {
             return Err(ExportError::StaleApproval.into());
         }
@@ -279,12 +359,14 @@ fn run_pack(options: &Pack) -> RunResult<String> {
             cx.checkpoint(stage).map_err(|_| file::FileError::Cancelled)
         })?;
         cx.checkpoint_post_commit("export_package:file_complete");
-        Ok(match (receipt.already_present, receipt.temporary_cleanup_pending) {
-            (false, false) => created,
-            (true, false) => existing,
-            (false, true) => created_cleanup_pending,
-            (true, true) => existing_cleanup_pending,
-        })
+        Ok(
+            match (receipt.already_present, receipt.temporary_cleanup_pending) {
+                (false, false) => created,
+                (true, false) => existing,
+                (false, true) => created_cleanup_pending,
+                (true, true) => existing_cleanup_pending,
+            },
+        )
     })();
     cx.drain_and_finalize();
     result
@@ -293,7 +375,11 @@ fn run_pack(options: &Pack) -> RunResult<String> {
 fn run(options: &Options) -> RunResult<String> {
     match options {
         Options::Pack(options) => run_pack(options),
-        Options::Verify { input, export_root, scope } => {
+        Options::Verify {
+            input,
+            export_root,
+            scope,
+        } => {
             let bytes = file::read_bounded(input, MAX_PACKAGE_BYTES)?;
             let verified = verify_package(&bytes, *export_root, scope)?;
             bounded_report(report(&verified, scope, "verified_against_supplied_root"))
@@ -310,7 +396,10 @@ fn main() -> ExitCode {
     let options = match parse(&args) {
         Ok(options) => options,
         Err(error) => {
-            eprintln!("refusal_id={}\nreason={error}", fss_cli::ERR_CLI_MALFORMED_VALUE);
+            eprintln!(
+                "refusal_id={}\nreason={error}",
+                fss_cli::ERR_CLI_MALFORMED_VALUE
+            );
             return ExitCode::from(2);
         }
     };
@@ -320,22 +409,33 @@ fn main() -> ExitCode {
             match writeln!(output, "{report}") {
                 Ok(()) => ExitCode::SUCCESS,
                 Err(_) => {
-                    eprintln!("refusal_id=ERR-EXPORT-STORAGE-001\nreason=report_output_failed_check_output_file_before_retry");
+                    eprintln!(
+                        "refusal_id=ERR-EXPORT-STORAGE-001\nreason=report_output_failed_check_output_file_before_retry"
+                    );
                     ExitCode::from(1)
                 }
             }
         }
         Err(error) => {
             if let Some(package) = error.downcast_ref::<PackageError>() {
-                eprintln!("refusal_id={}\nreason={}", package.stable_id(), package.reason());
+                eprintln!(
+                    "refusal_id={}\nreason={}",
+                    package.stable_id(),
+                    package.reason()
+                );
             } else if let Some(export) = error.downcast_ref::<ExportError>() {
                 eprintln!("refusal_id={}\nreason={export}", export.stable_id());
             } else if let Some(file) = error.downcast_ref::<file::FileError>() {
-                let id = if matches!(file, file::FileError::Cancelled) { "ERR-EXPORT-CANCELLED-001" }
-                    else { "ERR-EXPORT-STORAGE-001" };
+                let id = if matches!(file, file::FileError::Cancelled) {
+                    "ERR-EXPORT-CANCELLED-001"
+                } else {
+                    "ERR-EXPORT-STORAGE-001"
+                };
                 eprintln!("refusal_id={id}\nreason={}", file.reason());
             } else {
-                eprintln!("refusal_id=ERR-EXPORT-STORAGE-001\nreason=package_storage_or_deployment_refusal");
+                eprintln!(
+                    "refusal_id=ERR-EXPORT-STORAGE-001\nreason=package_storage_or_deployment_refusal"
+                );
             }
             ExitCode::from(1)
         }

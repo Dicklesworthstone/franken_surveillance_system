@@ -866,8 +866,9 @@ class TestSchemaConstitution(unittest.TestCase):
         # 209 = 146 + the 63 previously unregistered digest-domain constants of the fss-rir2v
         # baseline (the bead's 57 plus the alert operator cancel evidence/approval, deletion
         # plan/completion v3, retention selection and Model IR operator table domains).
-        # 211 = 209 + SCHEMA-DOMAIN-SOURCE-COVERAGE-{RECORD,APPROVAL}-001 (fss-tch7u).
-        self.assertEqual(result["digestDomainCount"], 211)
+        # 216 = 209 + SCHEMA-DOMAIN-SOURCE-COVERAGE-{RECORD,APPROVAL}-001 (fss-tch7u)
+        # + SCHEMA-DOMAIN-RECORDED-DWELL-{RULE,ANALYSIS,OBSERVATION,CANDIDATE,APPROVAL}-001 (FSS-083).
+        self.assertEqual(result["digestDomainCount"], 216)
 
         # Continuation cursor is verified implemented
         implemented_names = {s["name"] for s in result["schemas"] if s["status"] == "implemented"}
@@ -1378,8 +1379,9 @@ class TestSchemaConstitutionCrossReviewRegressions(unittest.TestCase):
         # 209 = 146 + the 63 previously unregistered digest-domain constants of the fss-rir2v
         # baseline (the bead's 57 plus the alert operator cancel evidence/approval, deletion
         # plan/completion v3, retention selection and Model IR operator table domains).
-        # 211 = 209 + SCHEMA-DOMAIN-SOURCE-COVERAGE-{RECORD,APPROVAL}-001 (fss-tch7u).
-        self.assertEqual(result["digestDomainCount"], 211)
+        # 216 = 209 + SCHEMA-DOMAIN-SOURCE-COVERAGE-{RECORD,APPROVAL}-001 (fss-tch7u)
+        # + SCHEMA-DOMAIN-RECORDED-DWELL-{RULE,ANALYSIS,OBSERVATION,CANDIDATE,APPROVAL}-001 (FSS-083).
+        self.assertEqual(result["digestDomainCount"], 216)
         # 36 = 28 + fss.sensor_tamper_status.v1 (owner SensorTamperStatus, fss-2uftm)
         # + fss.agent_operations.v1 / fss.agent_views.v1 / fss.agent_request_envelope.v1
         #   (owners AgentOperation / AgentView / AgentRequestEnvelope, fss-x4a.30.83.17-40)

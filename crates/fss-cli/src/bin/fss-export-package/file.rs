@@ -30,10 +30,14 @@ impl FileError {
     pub(super) const fn reason(&self) -> &'static str {
         match self {
             Self::Unsupported => "package_publication_unsupported_platform",
-            Self::InvalidOutput => "output_requires_protected_existing_directory_outside_deployment",
+            Self::InvalidOutput => {
+                "output_requires_protected_existing_directory_outside_deployment"
+            }
             Self::Conflict => "output_exists_or_identity_changed",
             Self::Cancelled => "package_file_cancelled_before_publication",
-            Self::PublicationIndeterminate => "package_file_publication_indeterminate_verify_before_retry",
+            Self::PublicationIndeterminate => {
+                "package_file_publication_indeterminate_verify_before_retry"
+            }
             Self::Io(_) => "package_file_io_refused",
         }
     }
@@ -45,21 +49,32 @@ impl fmt::Display for FileError {
 }
 impl std::error::Error for FileError {
     fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
-        match self { Self::Io(error) => Some(error), _ => None }
+        match self {
+            Self::Io(error) => Some(error),
+            _ => None,
+        }
     }
 }
 impl From<io::Error> for FileError {
-    fn from(error: io::Error) -> Self { Self::Io(error) }
+    fn from(error: io::Error) -> Self {
+        Self::Io(error)
+    }
 }
 
 fn supported_writer() -> bool {
-    cfg!(all(target_os = "linux", any(target_arch = "x86_64", target_arch = "aarch64")))
+    cfg!(all(
+        target_os = "linux",
+        any(target_arch = "x86_64", target_arch = "aarch64")
+    ))
 }
 
 fn open_read(path: &Path, directory: bool) -> io::Result<File> {
     let mut options = OpenOptions::new();
     options.read(true);
-    #[cfg(all(target_os = "linux", any(target_arch = "x86_64", target_arch = "aarch64")))]
+    #[cfg(all(
+        target_os = "linux",
+        any(target_arch = "x86_64", target_arch = "aarch64")
+    ))]
     {
         use std::os::unix::fs::OpenOptionsExt;
         // Linux UAPI asm-generic/fcntl.h: O_NONBLOCK, O_NOFOLLOW, O_DIRECTORY.
@@ -70,7 +85,10 @@ fn open_read(path: &Path, directory: bool) -> io::Result<File> {
     let file = options.open(path)?;
     let metadata = file.metadata()?;
     if metadata.is_dir() != directory || (!directory && !metadata.is_file()) {
-        return Err(io::Error::new(io::ErrorKind::InvalidInput, "regular file or directory required"));
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "regular file or directory required",
+        ));
     }
     Ok(file)
 }
@@ -78,16 +96,25 @@ fn open_read(path: &Path, directory: bool) -> io::Result<File> {
 /// Read from one opened regular file, never allocate from an unchecked file length.
 pub(super) fn read_bounded(path: &Path, maximum: usize) -> io::Result<Vec<u8>> {
     if !fs::symlink_metadata(path)?.file_type().is_file() {
-        return Err(io::Error::new(io::ErrorKind::InvalidInput, "regular non-symlink file required"));
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "regular non-symlink file required",
+        ));
     }
     let file = open_read(path, false)?;
     if file.metadata()?.len() > maximum as u64 {
-        return Err(io::Error::new(io::ErrorKind::InvalidData, "file exceeds byte bound"));
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            "file exceeds byte bound",
+        ));
     }
     let mut bytes = Vec::new();
     file.take(maximum as u64 + 1).read_to_end(&mut bytes)?;
     if bytes.len() > maximum {
-        return Err(io::Error::new(io::ErrorKind::InvalidData, "file exceeds byte bound"));
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            "file exceeds byte bound",
+        ));
     }
     Ok(bytes)
 }
@@ -126,7 +153,9 @@ pub(super) struct Target {
 }
 impl Target {
     pub(super) fn new(path: &Path, deployment_root: &Path) -> Result<Self, FileError> {
-        if !supported_writer() { return Err(FileError::Unsupported); }
+        if !supported_writer() {
+            return Err(FileError::Unsupported);
+        }
         if path.as_os_str().as_encoded_bytes().len() > MAX_PATH_BYTES {
             return Err(FileError::InvalidOutput);
         }
@@ -134,23 +163,37 @@ impl Target {
             Some(Component::Normal(name)) => name.to_owned(),
             _ => return Err(FileError::InvalidOutput),
         };
-        let raw_parent = path.parent().filter(|p| !p.as_os_str().is_empty()).unwrap_or(Path::new("."));
+        let raw_parent = path
+            .parent()
+            .filter(|p| !p.as_os_str().is_empty())
+            .unwrap_or(Path::new("."));
         let parent_path = fs::canonicalize(raw_parent)?;
         let deployment = fs::canonicalize(deployment_root)?;
-        if parent_path.starts_with(&deployment) { return Err(FileError::InvalidOutput); }
+        if parent_path.starts_with(&deployment) {
+            return Err(FileError::InvalidOutput);
+        }
         let path = parent_path.join(&name);
         if path.as_os_str().as_encoded_bytes().len() > MAX_PATH_BYTES {
             return Err(FileError::InvalidOutput);
         }
         let parent = open_read(&parent_path, true)?;
-        if !protected_directory(&parent.metadata()?) { return Err(FileError::InvalidOutput); }
+        if !protected_directory(&parent.metadata()?) {
+            return Err(FileError::InvalidOutput);
+        }
         let parent_identity = identity(&parent.metadata()?)?;
-        let target = Self { path, name, parent, parent_identity };
+        let target = Self {
+            path,
+            name,
+            parent,
+            parent_identity,
+        };
         target.check_current()?;
         Ok(target)
     }
 
-    pub(super) fn path(&self) -> &Path { &self.path }
+    pub(super) fn path(&self) -> &Path {
+        &self.path
+    }
 
     fn held_path(&self, name: &std::ffi::OsStr) -> Result<PathBuf, FileError> {
         #[cfg(target_os = "linux")]
@@ -176,14 +219,21 @@ impl Target {
             || !protected_directory(&metadata)
             || identity(&metadata)? != self.parent_identity
             || identity(&self.parent.metadata()?)? != self.parent_identity
-        { return Err(FileError::Conflict); }
+        {
+            return Err(FileError::Conflict);
+        }
         Ok(())
     }
 
     /// Exact approval binds the immutable package, actor, recipient/time, OS path and actual
     /// destination directory. Replacing a directory at the same name invalidates the approval.
-    pub(super) fn approval(&self, package: &PreparedPackage, scope: &PackageScope,
-        actor: &str, site: &str) -> Result<ContentDigest, FileError> {
+    pub(super) fn approval(
+        &self,
+        package: &PreparedPackage,
+        scope: &PackageScope,
+        actor: &str,
+        site: &str,
+    ) -> Result<ContentDigest, FileError> {
         self.check_current()?;
         let mut e = CanonicalEncoder::new();
         e.text("fss.export_package_file_approval.v1");
@@ -212,10 +262,16 @@ impl Target {
         }
         let mut file = open_read(&path, false)?;
         let original = identity(&file.metadata()?)?;
-        if file.metadata()?.len() != bytes.len() as u64 { return Err(FileError::Conflict); }
+        if file.metadata()?.len() != bytes.len() as u64 {
+            return Err(FileError::Conflict);
+        }
         let mut retained = Vec::new();
-        (&mut file).take(MAX_PACKAGE_BYTES as u64 + 1).read_to_end(&mut retained)?;
-        if retained != bytes { return Err(FileError::Conflict); }
+        (&mut file)
+            .take(MAX_PACKAGE_BYTES as u64 + 1)
+            .read_to_end(&mut retained)?;
+        if retained != bytes {
+            return Err(FileError::Conflict);
+        }
         file.sync_all()?;
         self.parent.sync_all()?;
         let named = fs::symlink_metadata(&path)?;
@@ -254,7 +310,9 @@ impl Temporary<'_> {
 }
 impl Drop for Temporary<'_> {
     fn drop(&mut self) {
-        if self.remove_own_name() { let _ = self.target.parent.sync_all(); }
+        if self.remove_own_name() {
+            let _ = self.target.parent.sync_all();
+        }
     }
 }
 
@@ -266,16 +324,24 @@ pub(super) fn publish(
     bytes: &[u8],
     mut checkpoint: impl FnMut(&'static str) -> Result<(), FileError>,
 ) -> Result<FileReceipt, FileError> {
-    if bytes.is_empty() || bytes.len() > MAX_PACKAGE_BYTES { return Err(FileError::InvalidOutput); }
+    if bytes.is_empty() || bytes.len() > MAX_PACKAGE_BYTES {
+        return Err(FileError::InvalidOutput);
+    }
     target.check_current()?;
     checkpoint("export_package:file_begin")?;
     if target.existing(bytes)? {
-        return Ok(FileReceipt { already_present: true, temporary_cleanup_pending: false });
+        return Ok(FileReceipt {
+            already_present: true,
+            temporary_cleanup_pending: false,
+        });
     }
     let mut temporary = None;
     for _ in 0..64 {
         let ordinal = NEXT_TEMP.fetch_add(1, Ordering::Relaxed);
-        let name = OsString::from(format!(".fss-export-package-{}-{ordinal}.tmp", std::process::id()));
+        let name = OsString::from(format!(
+            ".fss-export-package-{}-{ordinal}.tmp",
+            std::process::id()
+        ));
         let path = target.held_path(&name)?;
         let mut options = OpenOptions::new();
         options.read(true).write(true).create_new(true);
@@ -285,7 +351,10 @@ pub(super) fn publish(
             options.mode(0o600);
         }
         match options.open(&path) {
-            Ok(file) => { temporary = Some(Temporary { target, path, file }); break; }
+            Ok(file) => {
+                temporary = Some(Temporary { target, path, file });
+                break;
+            }
             Err(error) if error.kind() == io::ErrorKind::AlreadyExists => {}
             Err(error) => return Err(error.into()),
         }
@@ -297,11 +366,16 @@ pub(super) fn publish(
     temporary.file.sync_all()?;
     temporary.file.seek(SeekFrom::Start(0))?;
     let mut readback = Vec::new();
-    (&mut temporary.file).take(MAX_PACKAGE_BYTES as u64 + 1).read_to_end(&mut readback)?;
-    if readback != bytes { return Err(FileError::Conflict); }
+    (&mut temporary.file)
+        .take(MAX_PACKAGE_BYTES as u64 + 1)
+        .read_to_end(&mut readback)?;
+    if readback != bytes {
+        return Err(FileError::Conflict);
+    }
     target.check_current()?;
     checkpoint("export_package:file_publish")?;
-    if identity(&fs::symlink_metadata(&temporary.path)?)? != identity(&temporary.file.metadata()?)? {
+    if identity(&fs::symlink_metadata(&temporary.path)?)? != identity(&temporary.file.metadata()?)?
+    {
         return Err(FileError::Conflict);
     }
     let output = target.held_path(&target.name)?;
@@ -321,15 +395,25 @@ pub(super) fn publish(
         Err(_) => return Err(FileError::PublicationIndeterminate),
     }
     // No cancellation check after visibility. All failures below preserve uncertainty.
-    let final_meta = fs::symlink_metadata(&output).map_err(|_| FileError::PublicationIndeterminate)?;
-    let owned_meta = temporary.file.metadata().map_err(|_| FileError::PublicationIndeterminate)?;
+    let final_meta =
+        fs::symlink_metadata(&output).map_err(|_| FileError::PublicationIndeterminate)?;
+    let owned_meta = temporary
+        .file
+        .metadata()
+        .map_err(|_| FileError::PublicationIndeterminate)?;
     if !final_meta.file_type().is_file()
         || identity(&final_meta).ok() != identity(&owned_meta).ok()
         || target.parent.sync_all().is_err()
         || target.check_current().is_err()
-    { return Err(FileError::PublicationIndeterminate); }
-    Ok(FileReceipt { already_present: false, temporary_cleanup_pending: temporary.cleanup_pending() })
+    {
+        return Err(FileError::PublicationIndeterminate);
+    }
+    Ok(FileReceipt {
+        already_present: false,
+        temporary_cleanup_pending: temporary.cleanup_pending(),
+    })
 }
 
 #[cfg(test)]
+#[path = "file/tests.rs"]
 mod tests;
