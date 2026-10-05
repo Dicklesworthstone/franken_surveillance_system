@@ -863,7 +863,10 @@ class TestSchemaConstitution(unittest.TestCase):
         # cooperative cancel proof (fss-51xqy) domains.
         # 145 = 144 + the lab geometric coverage domain (fss-2h5zq.55).
         # 146 = 145 + the lab simulated provider record domain (fss-2h5zq.15).
-        self.assertEqual(result["digestDomainCount"], 146)
+        # 209 = 146 + the 63 previously unregistered digest-domain constants of the fss-rir2v
+        # baseline (the bead's 57 plus the alert operator cancel evidence/approval, deletion
+        # plan/completion v3, retention selection and Model IR operator table domains).
+        self.assertEqual(result["digestDomainCount"], 209)
 
         # Continuation cursor is verified implemented
         implemented_names = {s["name"] for s in result["schemas"] if s["status"] == "implemented"}
@@ -1371,7 +1374,10 @@ class TestSchemaConstitutionCrossReviewRegressions(unittest.TestCase):
         # cooperative cancel proof (fss-51xqy) domains.
         # 145 = 144 + the lab geometric coverage domain (fss-2h5zq.55).
         # 146 = 145 + the lab simulated provider record domain (fss-2h5zq.15).
-        self.assertEqual(result["digestDomainCount"], 146)
+        # 209 = 146 + the 63 previously unregistered digest-domain constants of the fss-rir2v
+        # baseline (the bead's 57 plus the alert operator cancel evidence/approval, deletion
+        # plan/completion v3, retention selection and Model IR operator table domains).
+        self.assertEqual(result["digestDomainCount"], 209)
         # 36 = 28 + fss.sensor_tamper_status.v1 (owner SensorTamperStatus, fss-2uftm)
         # + fss.agent_operations.v1 / fss.agent_views.v1 / fss.agent_request_envelope.v1
         #   (owners AgentOperation / AgentView / AgentRequestEnvelope, fss-x4a.30.83.17-40)
@@ -1456,6 +1462,13 @@ class TestSchemaConstitutionCrossReviewRegressions(unittest.TestCase):
             ]
             self.assertEqual(len(unreg_errors), 1)
             self.assertIn("fss.rogue_unregistered_domain.v1", unreg_errors[0].message)
+
+    def test_digest_domain_names_admit_published_hyphenated_tags_only_there(self) -> None:
+        """fss-rir2v: a published hyphenated digest tag is registrable byte-exact; schema names stay strict."""
+        self.assertTrue(schema_validate.DIGEST_DOMAIN_NAME_PATTERN.match("fss.rgb-evidence-custody.reference.v1"))
+        self.assertIsNone(schema_validate.SCHEMA_NAME_PATTERN.match("fss.rgb-evidence-custody.reference.v1"))
+        self.assertIsNone(schema_validate.DIGEST_DOMAIN_NAME_PATTERN.match("fss.Upper-Case.v1"))
+        self.assertIsNone(schema_validate.DIGEST_DOMAIN_NAME_PATTERN.match("invalid-name-shape"))
 
     def test_digest_domains_validation_errors(self) -> None:
         """Verify that duplicate or invalid stable IDs / domain names in DIGEST_DOMAINS.md fail."""

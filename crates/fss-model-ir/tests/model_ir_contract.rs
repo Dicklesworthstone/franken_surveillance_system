@@ -478,9 +478,13 @@ fn test_schema_domain_and_pinned_counts() -> Result<(), Box<dyn Error>> {
     // unregistered) and SCHEMA-DOMAIN-REFERENCE-ALERT-COOPERATIVE-CANCEL-PROOF-001 (fss-51xqy).
     // 145 = 144 + SCHEMA-DOMAIN-LAB-GEOMETRIC-COVERAGE-001 (fss-2h5zq.55).
     // 146 = 145 + SCHEMA-DOMAIN-LAB-SIMULATED-PROVIDER-001 (fss-2h5zq.15).
+    // 209 = 146 + 63 previously unregistered digest-domain constants (fss-rir2v baseline: the
+    // bead's 57 plus SCHEMA-DOMAIN-ALERT-OPERATOR-CANCEL-{EVIDENCE,APPROVAL}-001,
+    // SCHEMA-DOMAIN-DELETION-{PLAN,COMPLETION}-003, SCHEMA-DOMAIN-RETENTION-SELECTION-001 and
+    // SCHEMA-DOMAIN-MODEL-IR-OPERATOR-TABLE-001); scripts/check-policy.py now refuses new ones.
     assert_eq!(
-        domain_count, 146,
-        "registries/DIGEST_DOMAINS.md count must remain pinned at 146"
+        domain_count, 209,
+        "registries/DIGEST_DOMAINS.md count must remain pinned at 209"
     );
 
     let schemas_path = Path::new(env!("CARGO_MANIFEST_DIR"))
