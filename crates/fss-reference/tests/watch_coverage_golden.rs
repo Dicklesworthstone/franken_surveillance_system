@@ -150,22 +150,25 @@ fn image_zone_watch_coverage_records_are_byte_identical_to_the_pre_visibility_tr
 
 /// (record digest, approval digest) of: hinted square MJPEG with an in-frame and an
 /// out-of-frame zone, the same scene with unknown capture time, H.264 `p_qcif_ref3_p4x4`, and
-/// H.265 `watch_96x48_moving` (produced at a4d0255).
+/// H.265 `watch_96x48_moving` (produced at a4d0255; re-pinned at b31b988). fss-2h5zq.25 (7751a78) and fss-2h5zq.24
+/// (e10dd6e) made acquisition-session records import-root children, and each record binds the
+/// import and its basis anchor. These record bytes were NOT diffed directly; the watch report
+/// JSON over the same fixtures differs only in import-derived identities (watch_report_golden).
 const GOLDEN_COVERAGE: [[&str; 2]; 4] = [
     [
-        "sha256:4993b68a4dae12dd93478cca8db3bb539d636d41ea0e970595d555c92090730f",
-        "sha256:5ff33d0d902b40afd00037e4b46ddbc0c52d609139cceee3fe251aaaab7e1ecb",
+        "sha256:c6cc6a3d724546848ec0c0b633a18b354152f5233e7c334f19257670a2a5aa2d",
+        "sha256:4c6f9ff030ef4989a68e3b89314734d2cb3cfe4f3bebf209623be88314db2b7d",
     ],
     [
-        "sha256:a1ec4f33b23ff4a8bf3db0b30b85bcef6309c450160d5f201d3273260d7f9cce",
-        "sha256:b2f9a9ce78e96c340fc44593a6a1519db444ad2eec82056e904d3b9fd2bdbd96",
+        "sha256:d0ac7991ac57f0fb9a99d5d7c6ac69fb8e34d9e35d70859248bb04e86c7e9fdc",
+        "sha256:8d777272669350982b41d78b0f69727820468c39c4cd6b668ffc6955eab083d6",
     ],
     [
-        "sha256:9630be8eaf2c94b76017c6b5fe98ad09505f5f00453bcbe1670a4bde40296dd1",
-        "sha256:76fca97407bc96068ee28861c380bc2f047bed132f281214dcd6e521a1960e63",
+        "sha256:aa4696379987577e41819344560c612b0aaa64d729cab321fbc5c3571439753a",
+        "sha256:b210939417f682b1539d1f12912b5fb05bef9913604993185d2fec836833f48a",
     ],
     [
-        "sha256:4a5622a1a23be3f09f6fb838e9aee5d515404151663fa8228ba40f2bb9c4a910",
-        "sha256:cf6bcd6b9152a83e7fc681401af201084814a55ad5f5f90984c924f51ff0425d",
+        "sha256:2f25072079c99145684a5da1ffbae0b13c794f346efe8b03efadce8ad9626c99",
+        "sha256:7e062ee32efcb872044f0e093d451354aaed3f69fe141424d64392d14759c411",
     ],
 ];

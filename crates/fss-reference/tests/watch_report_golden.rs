@@ -206,12 +206,19 @@ fn model_free_corroboration_report_is_byte_identical_to_the_pre_cascade_tree() -
     Ok(())
 }
 
+/// Re-pinned at b31b988 (pins below were produced at 2c0cc07). fss-2h5zq.25 (7751a78) and
+/// fss-2h5zq.24 (e10dd6e) made the acquisition-session records children of every file import
+/// root. Full report JSON diffed between 6d4513b (old pins pass) and b31b988: equal length, and the
+/// only changed fields are import-derived identities (import_root, analysis/watch_analysis
+/// digest, observation_digest, candidate/event id, event_revision_digest, proposal_digest,
+/// provenance_root, the --approve digest); every detection, count, interval and score is
+/// byte-identical.
 /// Square MJPEG, H.264 `p_qcif_ref3_p4x4`, H.265 `watch_96x48_moving` (produced at 2c0cc07).
 const GOLDEN_WATCH: [&str; 3] = [
-    "sha256:841b6ccf7d2a90a200ade290877a6a282599c73e8bf2c3a446ae145122841160",
-    "sha256:97bbdd76ff765d83262827b40b5bd537bfe66a3b26ccae4f1a16bc287484a0d0",
-    "sha256:4b82b295d60cef9df2ac5bdeff8fb0900b29146e23fc8aa60f56e736ecd40bb4",
+    "sha256:e401d2ec3a62e0356e55a86d2df28ac29313b97700224ea3324021d38e3dd709",
+    "sha256:ffece0f940ef3e11dc75706ceb7c0dd6ecf0e145b2022bee29341181adad043e",
+    "sha256:93b85cbe6548a18f7c007ab847c9876fc0c2c090c98d7d0665f02f64b03c7102",
 ];
 /// Two mirrored square MJPEG recordings (produced at 2c0cc07).
 const GOLDEN_CORROBORATION: &str =
-    "sha256:9f51121c0eef5e0fea42be489bbbec58b882c42368544745b253ffb14710353a";
+    "sha256:726106ca2e20a0922e944ff2b4f398dd0f33a2efd41d8863c346a881399bd2b4";
