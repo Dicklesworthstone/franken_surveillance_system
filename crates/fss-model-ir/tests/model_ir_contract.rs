@@ -482,11 +482,12 @@ fn test_schema_domain_and_pinned_counts() -> Result<(), Box<dyn Error>> {
     // bead's 57 plus SCHEMA-DOMAIN-ALERT-OPERATOR-CANCEL-{EVIDENCE,APPROVAL}-001,
     // SCHEMA-DOMAIN-DELETION-{PLAN,COMPLETION}-003, SCHEMA-DOMAIN-RETENTION-SELECTION-001 and
     // SCHEMA-DOMAIN-MODEL-IR-OPERATOR-TABLE-001); scripts/check-policy.py now refuses new ones.
-    // 216 = 209 + SCHEMA-DOMAIN-SOURCE-COVERAGE-{RECORD,APPROVAL}-001 (fss-tch7u)
-    // + SCHEMA-DOMAIN-RECORDED-DWELL-{RULE,ANALYSIS,OBSERVATION,CANDIDATE,APPROVAL}-001 (FSS-083).
+    // Count: 209 + SCHEMA-DOMAIN-SOURCE-COVERAGE-{RECORD,APPROVAL}-001 (fss-tch7u)
+    // + SCHEMA-DOMAIN-RECORDED-DWELL-{RULE,ANALYSIS,OBSERVATION,CANDIDATE,APPROVAL}-001 (FSS-083)
+    // + SCHEMA-DOMAIN-RTPDUMP-IMPORT-{IDENTITY,REPORT}-001 (fss-2h5zq.27) = 218.
     assert_eq!(
-        domain_count, 216,
-        "registries/DIGEST_DOMAINS.md count must remain pinned at 216"
+        domain_count, 218,
+        "registries/DIGEST_DOMAINS.md count must remain pinned at 218"
     );
 
     let schemas_path = Path::new(env!("CARGO_MANIFEST_DIR"))
