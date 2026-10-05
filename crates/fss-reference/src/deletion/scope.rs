@@ -35,7 +35,9 @@ impl DeletionScope {
             Self::Import(digest) => format!("import:{digest}"),
             Self::Sensor(sensor) => format!("sensor:{}", sensor.as_str()),
             Self::Event(event) => format!("event:{}", event.as_str()),
-            Self::Retention(selection) => format!("retention:{}", selection.request().sensor().as_str()),
+            Self::Retention(selection) => {
+                format!("retention:{}", selection.request().sensor().as_str())
+            }
         }
     }
 

@@ -57,11 +57,11 @@ pub use commit::{CommitOutcome, CommitReceipt};
 pub use index::{DeletionEntry, DeletionIndex, has_records};
 pub use plan::{
     ClosureUnit, DELETION_APPROVAL_DOMAIN, DELETION_COMPLETION_DOMAIN, DELETION_MECHANISM,
-    DELETION_OUT_OF_SCOPE, DELETION_PLAN_DOMAIN, DELETION_SCOPE_COMPLETION_DOMAIN,
-    DELETION_SCOPE_PLAN_DOMAIN, DELETION_RETENTION_PLAN_DOMAIN, DELETION_RETENTION_COMPLETION_DOMAIN,
-    DeletableObject, DeletionCompletion, DeletionPlan, EventReference,
-    Finding, MAX_DELETION_RECORD_BYTES, ObjectTombstone, RetainedObject, RootRetraction,
-    Unattributed, approval_digest,
+    DELETION_OUT_OF_SCOPE, DELETION_PLAN_DOMAIN, DELETION_RETENTION_COMPLETION_DOMAIN,
+    DELETION_RETENTION_PLAN_DOMAIN, DELETION_SCOPE_COMPLETION_DOMAIN, DELETION_SCOPE_PLAN_DOMAIN,
+    DeletableObject, DeletionCompletion, DeletionPlan, EventReference, Finding,
+    MAX_DELETION_RECORD_BYTES, ObjectTombstone, RetainedObject, RootRetraction, Unattributed,
+    approval_digest,
 };
 pub use scope::DeletionScope;
 
@@ -192,14 +192,18 @@ impl fmt::Display for DeletionError {
             Self::Blocked(blockers) => {
                 write!(f, "deletion blocked by {} blocker(s):", blockers.len())?;
                 for blocker in blockers {
-                    write!(f, " [{} {}: {}]", blocker.kind, blocker.subject, blocker.detail)?;
+                    write!(
+                        f,
+                        " [{} {}: {}]",
+                        blocker.kind, blocker.subject, blocker.detail
+                    )?;
                 }
                 Ok(())
             }
             Self::Bound { limit } => write!(f, "deletion bound exceeded: {limit}"),
-            Self::RecordMismatch => {
-                f.write_str("a retained record or source binding does not match its authoritative metadata")
-            }
+            Self::RecordMismatch => f.write_str(
+                "a retained record or source binding does not match its authoritative metadata",
+            ),
             Self::Cancelled { stage } => write!(
                 f,
                 "deletion interrupted at {stage}; rerun the same commit to resume"
@@ -219,19 +223,29 @@ impl fmt::Display for DeletionError {
 
 impl std::error::Error for DeletionError {}
 impl From<ContractError> for DeletionError {
-    fn from(value: ContractError) -> Self { Self::Contract(value) }
+    fn from(value: ContractError) -> Self {
+        Self::Contract(value)
+    }
 }
 impl From<ReferenceError> for DeletionError {
-    fn from(value: ReferenceError) -> Self { Self::Reference(value) }
+    fn from(value: ReferenceError) -> Self {
+        Self::Reference(value)
+    }
 }
 impl From<LocalPublicationError> for DeletionError {
-    fn from(value: LocalPublicationError) -> Self { Self::Publication(value) }
+    fn from(value: LocalPublicationError) -> Self {
+        Self::Publication(value)
+    }
 }
 impl From<SpoolError> for DeletionError {
-    fn from(value: SpoolError) -> Self { Self::Spool(value) }
+    fn from(value: SpoolError) -> Self {
+        Self::Spool(value)
+    }
 }
 impl From<holds::HoldError> for DeletionError {
-    fn from(value: holds::HoldError) -> Self { Self::Hold(Box::new(value)) }
+    fn from(value: holds::HoldError) -> Self {
+        Self::Hold(Box::new(value))
+    }
 }
 
 /// Computes the sealed deletion plan of `import` (`CAP-DELETE-PREPARE-001`). Writes nothing.
@@ -257,7 +271,10 @@ pub fn plan_scope_deletion(
     if let DeletionScope::Import(import) = scope
         && let Some(entry) = index.import(*import)
     {
-        return Err(DeletionError::EvidenceDeleted { import: *import, plan: entry.plan_digest });
+        return Err(DeletionError::EvidenceDeleted {
+            import: *import,
+            plan: entry.plan_digest,
+        });
     }
     let holds = holds::HoldIndex::read(deployment, cx)?;
     let universe = walk::Universe::scan(deployment, &index, cx)?;

@@ -5,10 +5,10 @@ use std::ffi::OsString;
 use std::io::{self, Write};
 use std::process::ExitCode;
 
-#[path = "graph_legacy.rs"]
-mod legacy;
 #[path = "graph_cuts.rs"]
 mod cuts;
+#[path = "graph_legacy.rs"]
+mod legacy;
 
 pub(super) fn main(args: &[OsString]) -> ExitCode {
     if args.first().and_then(|arg| arg.to_str()) == Some("failure-cuts") {

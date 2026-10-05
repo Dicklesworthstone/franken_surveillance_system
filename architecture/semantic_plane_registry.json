@@ -208,6 +208,7 @@
     "crates/fss-reference/src/deletion/holds/state.rs": "effect",
     "crates/fss-reference/src/deletion/index.rs": "effect",
     "crates/fss-reference/src/deletion/plan.rs": "effect",
+    "crates/fss-reference/src/deletion/retention.rs": "effect",
     "crates/fss-reference/src/deletion/scope.rs": "effect",
     "crates/fss-reference/src/deletion/tests.rs": "support",
     "crates/fss-reference/src/deletion/walk.rs": "effect",
