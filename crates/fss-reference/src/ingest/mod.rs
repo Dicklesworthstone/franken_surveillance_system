@@ -58,6 +58,8 @@ pub mod rtpdump;
 pub mod site_calibration;
 /// Retained continuity witnesses of live or virtual sources and the stored-witness absence rule.
 pub mod source_coverage;
+/// Constant-space sampled occupancy across caller batches, with atomic bounded admission.
+pub mod streaming_dwell;
 /// Opt-in decode refusals as typed coverage gaps with IDR/IRAP resumption.
 pub mod tolerant_decode;
 /// Constant-velocity Kalman filter tracker with IoU-based data association.
