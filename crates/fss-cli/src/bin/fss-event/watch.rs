@@ -19,6 +19,9 @@
 //! `--dwell-for-ns N --dwell-max-gap-ns N [--dwell-min-observations N]` instead evaluates
 //! sustained actual zone observations. It uses the same pipeline once, emits separately approved
 //! dwell hypotheses, and refuses coverage retention: entry coverage is not dwell-absence proof.
+//! Add `--stream-dwell` for one whole MJPEG range (up to 65536 segments), with persistent
+//! foreground/tracker state and aggregate source-byte, pixel, assignment and trace ceilings.
+//! This mode refuses detector-package flags rather than silently dropping a requested model.
 
 use std::collections::BTreeSet;
 use std::ffi::OsString;
@@ -28,6 +31,9 @@ use std::path::{Path, PathBuf};
 use fss_core::{ContentDigest, DigestAlgorithm, PrincipalId};
 use fss_reference::ingest::RetainedFileImport;
 use fss_reference::ingest::detector_cascade::DetectorCascade;
+use fss_reference::ingest::long_dwell::{
+    LongDwellLimits, LongDwellReport, MAX_LONG_DWELL_FRAMES,
+};
 use fss_reference::ingest::package_detect::PackageDetectLimits;
 use fss_reference::ingest::recorded_decode::ComponentInterpretation;
 use fss_reference::ingest::recorded_dwell::DwellReport;
@@ -66,6 +72,17 @@ const OPTIONS: &[&str] = &[
     "--dwell-for-ns",
     "--dwell-max-gap-ns",
     "--dwell-min-observations",
+    "--dwell-read-bytes",
+    "--dwell-pixel-budget",
+    "--dwell-assignment-work",
+    "--dwell-trace-bytes",
+];
+
+const STREAM_BUDGET_OPTIONS: &[&str] = &[
+    "--dwell-read-bytes",
+    "--dwell-pixel-budget",
+    "--dwell-assignment-work",
+    "--dwell-trace-bytes",
 ];
 
 /// Fully parsed watch request; nothing here is authority until `run` validates it.
@@ -88,6 +105,7 @@ pub(super) struct WatchAction {
     cascade: Option<super::detector::DetectorOptions>,
     options: WatchOptions,
     dwell: Option<DwellPolicy>,
+    stream_dwell: Option<LongDwellLimits>,
     rerun: String,
 }
 
@@ -186,9 +204,19 @@ pub(super) fn parse(args: &[OsString]) -> Result<WatchAction, String> {
     let mut zones = Vec::new();
     let mut rerun = vec!["fss-event".to_owned(), "watch".to_owned()];
     let mut options = WatchOptions::default();
+    let mut stream_dwell = false;
     let mut index = 0;
     while index < args.len() {
         let key = args[index].to_str().ok_or("option names require UTF-8")?;
+        if key == "--stream-dwell" {
+            if stream_dwell {
+                return Err("duplicate --stream-dwell".to_owned());
+            }
+            stream_dwell = true;
+            rerun.push(key.to_owned());
+            index += 1;
+            continue;
+        }
         if key == "--tolerate-decode-refusals" {
             if options.tolerate_decode_refusals {
                 return Err("duplicate --tolerate-decode-refusals".to_owned());
@@ -244,8 +272,9 @@ pub(super) fn parse(args: &[OsString]) -> Result<WatchAction, String> {
         Ok(_) => Some(number(&values, "--segment-count", 0_usize)?),
         Err(_) => None,
     };
-    if segment_count.is_some_and(|count| count == 0 || count > MAX_WATCH_FRAMES) {
-        return Err("segment count must be 1..128".to_owned());
+    let maximum_frames = if stream_dwell { MAX_LONG_DWELL_FRAMES } else { MAX_WATCH_FRAMES };
+    if segment_count.is_some_and(|count| count == 0 || count > maximum_frames) {
+        return Err(format!("segment count must be 1..{maximum_frames}"));
     }
     let defaults = WatchDetectorConfig::default();
     let detector = WatchDetectorConfig {
@@ -298,6 +327,18 @@ pub(super) fn parse(args: &[OsString]) -> Result<WatchAction, String> {
             }
         }
     }
+    let dwell = dwell_policy(&values)?;
+    if stream_dwell && dwell.is_none() {
+        return Err("--stream-dwell requires the explicit dwell duration and gap rule".to_owned());
+    }
+    let stream_dwell = streaming_limits(&values, stream_dwell, limits)?;
+    if stream_dwell.is_some() && (site.len() > 256 || principal.len() > 128) {
+        return Err("long-dwell site or principal exceeds byte bound".to_owned());
+    }
+    let rerun = rerun.join(" ");
+    if stream_dwell.is_some() && rerun.len() > 8192 {
+        return Err("long-dwell rerun command exceeds byte bound".to_owned());
+    }
     Ok(WatchAction {
         root: PathBuf::from(text(&values, "--root")?),
         site,
@@ -321,8 +362,9 @@ pub(super) fn parse(args: &[OsString]) -> Result<WatchAction, String> {
             .map(|(_, v)| PathBuf::from(v)),
         cascade: super::detector::parse(&values)?,
         options,
-        dwell: dwell_policy(&values)?,
-        rerun: rerun.join(" "),
+        dwell,
+        stream_dwell,
+        rerun,
     })
 }
 
@@ -334,6 +376,9 @@ pub(super) fn run(
     cx: &ReplayCx,
     out: &mut impl Write,
 ) -> RunResult<()> {
+    if let Some(limits) = &action.stream_dwell {
+        return run_streaming(action, deployment, root, limits, cx, out);
+    }
     let scalar = ScalarExecCx::new();
     let result = run_with(action, deployment, root, cx, &scalar, out);
     scalar.drain_and_finalize();
@@ -474,6 +519,84 @@ fn run_with(
         Some(&coverage),
     );
     let json = format!("{json}\n");
+    if let Some(path) = &action.report_out {
+        export(path, json.as_bytes(), root, cx)?;
+    }
+    out.write_all(json.as_bytes())?;
+    Ok(())
+}
+
+
+fn streaming_limits(
+    values: &[(String, String)],
+    enabled: bool,
+    decode: WatchLimits,
+) -> Result<Option<LongDwellLimits>, String> {
+    if !enabled {
+        if values.iter().any(|(key, _)| STREAM_BUDGET_OPTIONS.contains(&key.as_str())) {
+            return Err("aggregate dwell budgets require --stream-dwell".to_owned());
+        }
+        return Ok(None);
+    }
+    if values.iter().any(|(key, _)| super::detector::OPTIONS.contains(&key.as_str())) {
+        return Err("--stream-dwell does not admit detector-package options".to_owned());
+    }
+    let defaults = LongDwellLimits::default();
+    let limits = LongDwellLimits {
+        decode,
+        maximum_source_chunk_bytes: number(values, "--dwell-read-bytes", defaults.maximum_source_chunk_bytes)?,
+        maximum_pixel_samples: number(values, "--dwell-pixel-budget", defaults.maximum_pixel_samples)?,
+        maximum_assignment_work: number(values, "--dwell-assignment-work", defaults.maximum_assignment_work)?,
+        maximum_trace_bytes: number(values, "--dwell-trace-bytes", defaults.maximum_trace_bytes)?,
+    };
+    limits.validate().map_err(|error| error.to_string())?;
+    Ok(Some(limits))
+}
+
+fn run_streaming(
+    action: &WatchAction,
+    deployment: &mut ReferenceDeployment,
+    root: &Path,
+    limits: &LongDwellLimits,
+    cx: &ReplayCx,
+    out: &mut impl Write,
+) -> RunResult<()> {
+    // Refuse inapplicable modes even when a future internal caller bypasses parse.
+    if action.cascade.is_some() || action.retain_coverage.is_some() {
+        return Err(WatchError::InvalidPlan("streaming dwell has no model or coverage owner").into());
+    }
+    let rule = action.dwell.ok_or(WatchError::InvalidPlan("streaming dwell requires a rule"))?;
+    let segment_count = match action.segment_count {
+        Some(count) => count,
+        None => {
+            let retained = RetainedFileImport::open(
+                deployment, action.import, limits.decode.read_limits, cx,
+            ).map_err(WatchError::from)?;
+            retained.manifest().segment_spans.len().checked_sub(action.first_segment)
+                .filter(|count| (1..=MAX_LONG_DWELL_FRAMES).contains(count))
+                .ok_or(WatchError::InvalidPlan("select a nonempty long-dwell range of at most 65536 segments"))?
+        }
+    };
+    let plan = WatchPlan {
+        import_identity: action.import,
+        interpretation: action.interpretation,
+        first_segment: action.first_segment,
+        segment_count,
+        zones: action.zones.clone(),
+        detector: action.detector,
+        tracker: action.tracker,
+    };
+    let mut report = LongDwellReport::analyze(
+        deployment, &plan, rule, action.options, limits, cx,
+    )?;
+    // No partial JSON or oversized approval hints can be discovered only after an event commit.
+    report.to_json(deployment.current_anchor().commit_sequence, Some(&action.rerun))?;
+    if !action.approvals.is_empty() {
+        report.publish(deployment, &action.approvals, cx)?;
+    }
+    let json = format!("{}\n", report.to_json(
+        deployment.current_anchor().commit_sequence, Some(&action.rerun),
+    )?);
     if let Some(path) = &action.report_out {
         export(path, json.as_bytes(), root, cx)?;
     }

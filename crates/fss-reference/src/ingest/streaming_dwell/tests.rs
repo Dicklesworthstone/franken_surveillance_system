@@ -80,7 +80,7 @@ fn long_episode_crosses_every_artificial_chunk_boundary_once() -> Test {
 fn rejected_clock_or_position_does_not_consume_or_close_state() -> Test {
     let mut state = DwellAccumulator::new(policy(), 10)?;
     for p in 0..3 { assert!(state.push(sample(p, true))?.is_none()); }
-    let before = state;
+    let before = state.staged();
     assert_eq!(state.push(sample(2, true)), Err(DwellError::InvalidSamples));
     assert_eq!(state, before);
     let mut reversed = sample(3, true);
@@ -121,7 +121,7 @@ fn uncertainty_uses_conservative_endpoints_not_midpoints() -> Test {
 fn declared_budget_applies_across_batches_and_refusal_is_atomic() -> Test {
     let mut state = DwellAccumulator::new(policy(), 3)?;
     for p in 0..3 { let _ = state.push(sample(p, true))?; }
-    let before = state;
+    let before = state.staged();
     assert_eq!(state.push(sample(3, false)), Err(DwellError::Limit));
     assert_eq!(state, before);
     assert_eq!(state.consumed(), 3);
@@ -134,7 +134,7 @@ fn output_capacity_does_not_silently_drop_a_qualifying_episode() -> Test {
     let mut state = DwellAccumulator::new(policy(), 200)?;
     for p in 0..128 { let _ = state.push(sample(p, p % 4 != 3))?; }
     for p in 128..131 { let _ = state.push(sample(p, true))?; }
-    let before = state;
+    let before = state.staged();
     assert_eq!(state.push(sample(131, false)), Err(DwellError::Limit));
     assert_eq!(state, before);
     assert_eq!(state.finish(), Err(DwellError::Limit));
@@ -150,10 +150,11 @@ fn signed_extremes_and_inverted_intervals_never_wrap() -> Test {
     let mut last = sample(1, true);
     last.capture = Some(CaptureInterval::point(TimestampNs(i128::MAX)));
     assert!(state.push(last)?.is_none()); // A huge gap starts a new, unqualified episode.
-    let before = state;
+    let before = state.staged();
     let mut inverted = sample(2, true);
     inverted.capture = Some(CaptureInterval { earliest: TimestampNs(1), latest: TimestampNs(0) });
     assert_eq!(state.push(inverted), Err(DwellError::InvalidSamples));
     assert_eq!(state, before);
     assert!(state.finish()?.is_none());
     Ok(())
+}

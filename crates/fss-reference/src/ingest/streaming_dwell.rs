@@ -43,7 +43,7 @@ struct Run {
 /// this complete value unchanged. `finish` consumes the accumulator, so it cannot emit an episode
 /// twice. There is deliberately no serialized checkpoint that could be detached from source,
 /// decoder, foreground, tracker, privacy, or clock-generation custody.
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[derive(Debug, Eq, PartialEq)]
 pub struct DwellAccumulator {
     policy: DwellPolicy,
     maximum_samples: usize,
@@ -78,7 +78,7 @@ impl DwellAccumulator {
 
     /// Admit one position atomically, returning at most one completed qualifying episode.
     pub fn push(&mut self, sample: DwellSample) -> Result<Option<StreamDwellSpan>, DwellError> {
-        let mut next = *self;
+        let mut next = self.staged();
         let completed = next.push_checked(sample)?;
         *self = next;
         Ok(completed)
@@ -87,6 +87,18 @@ impl DwellAccumulator {
     /// End the declared input range. No later input can reuse this accumulator.
     pub fn finish(mut self) -> Result<Option<StreamDwellSpan>, DwellError> {
         self.close_run()
+    }
+
+    // Private transaction snapshot; callers cannot implicitly copy or clone a finished episode.
+    fn staged(&self) -> Self {
+        Self {
+            policy: self.policy,
+            maximum_samples: self.maximum_samples,
+            consumed: self.consumed,
+            completed: self.completed,
+            last_position: self.last_position,
+            run: self.run,
+        }
     }
 
     fn push_checked(&mut self, sample: DwellSample) -> Result<Option<StreamDwellSpan>, DwellError> {
