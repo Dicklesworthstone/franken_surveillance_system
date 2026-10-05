@@ -525,6 +525,40 @@ decode gaps (a corrupt MJPEG frame with and without the flag, no track bridging,
 corrupted P slice resuming at the next IDR, no silence over a gap, determinism). They prove the
 contract, not detection quality.
 
+### Recorded coverage over a degraded file acquisition (fss-dt3qf)
+
+Every file import's acquisition session degrades (`continuity_not_observable`,
+`first_frame_decode_not_attempted`) and the core refuses any absence claim through it
+(`AbsenceClaimForbidden`; `fss-file import` prints `absence_certifiable=false`). Owner decision
+(2026-10-05): this does **not** block `--retain-coverage`. ALLOW, qualified:
+
+- **Why it is legitimate.** A retained record is witness-bound and claims only that the retained
+  pipeline generation, run over the authorized zones of the retained bytes, emitted no confirmed
+  entry during the recorded capture interval. That is a claim about evidence, not a live absence
+  claim. The acquisition session governs source continuity, not analysis of retained bytes, so the
+  two claims are distinct: neither `recorded_coverage` nor orient reads the session state.
+- **Condition 1: recorded-file provenance.** The certification carries it structurally. Every
+  record binds its file import (identity and root), the import's `capture_time_label`, the
+  analysed segment range and capture hull, and the basis anchor. The only producers are
+  `watch`/`corroborate` over a file import (`CoverageSource`). Each witness predicate names its
+  pipeline generation and capture interval (`recorded_coverage::witness_predicate`); the witness
+  bytes do not change. Every orientation coverage claim (a covered zone cell and a complete site
+  cell) also states `Provenance: recorded file source; no live continuity.`
+  (`agent_orient::RECORDED_COVERAGE_PROVENANCE`). The quiet-scene test in
+  `crates/fss-cli/tests/coverage_cli_contract.rs` asserts both cells carry it.
+- **Condition 2: it must never feed live or follow silence.** No live source produces a coverage
+  record (the only producers are `watch`/`corroborate` over file imports), and a file
+  acquisition session never certifies absence. Recorded coverage therefore never becomes a
+  live absence claim. **Follow is not yet reconciled with the decision:** `fss follow`
+  since a complete orientation still returns the engine's silence certificate, and that
+  certificate's authorized domain names the recorded witnesses (the silence documented above,
+  asserted by `quiet_scene_coverage_is_approval_gated_orients_complete_and_follow_certifies_silence`
+  and `a_harmless_successor_commit_keeps_certified_silence_and_a_material_one_does_not`). That
+  certificate means "no decision-relevant change between two committed anchors over the declared
+  domain". It is not a claim of live quiet. Whether recorded coverage may back it at all is an open
+  owner question: the decision's literal condition says it may not, and the fss-fnrgr contract says
+  it may.
+
 ## Detection cascade: `--detector-package` on `watch` and `corroborate`
 
 Detection is a cascade, not a monolith (README): the model-free watch stage decodes every frame,

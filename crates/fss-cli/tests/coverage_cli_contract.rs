@@ -799,6 +799,17 @@ fn quiet_scene_coverage_is_approval_gated_orients_complete_and_follow_certifies_
     assert_eq!(frame.get("absenceClaimsCertified")?, &Json::Bool(true));
     assert_eq!(state(zone_cell(&oriented, ":zone:door")?)?, "known");
     assert_eq!(state(zone_cell(&oriented, ":site")?)?, "known");
+    // fss-dt3qf: every coverage claim names its recorded-file provenance, never live continuity.
+    for scope in [":zone:door", ":site"] {
+        let statement = zone_cell(&oriented, scope)?.get("value")?.text()?;
+        assert!(
+            statement.contains(&format!(
+                "Provenance: {}.",
+                fss_reference::agent_orient::RECORDED_COVERAGE_PROVENANCE
+            )),
+            "{scope}: {statement}"
+        );
+    }
     let (again, _, _) = orient(&root, &directory.0, "covered again")?;
     assert_eq!(again, stdout, "byte-identical orientation");
 

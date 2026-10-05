@@ -80,8 +80,8 @@ use crate::situation_sections::{
     project_reference_situation_with_source_omissions,
 };
 pub use coverage::{
-    CoverageAssessment, MAX_COVERAGE_CAPSULE_READS, RetainedCoverage, ZoneAssessment,
-    ZoneCoverageState,
+    CoverageAssessment, MAX_COVERAGE_CAPSULE_READS, RECORDED_COVERAGE_PROVENANCE, RetainedCoverage,
+    ZoneAssessment, ZoneCoverageState,
 };
 
 /// Capability registry row that admits a situation read (AOP-003, AOP-004, AOP-009).
@@ -2371,8 +2371,9 @@ fn site_coverage_cell(
             format!(
                 "Retained CoverageWitness records cover all {total} objective zone(s) over their \
                  declared windows ({}); absence of confirmed zone entries is certified only there, \
-                 and activity outside those zones and windows remains unobserved.",
-                assessment.declared_domains().join("; ")
+                 and activity outside those zones and windows remains unobserved. Provenance: {}.",
+                assessment.declared_domains().join("; "),
+                RECORDED_COVERAGE_PROVENANCE
             )
         } else {
             format!(
@@ -2418,13 +2419,14 @@ fn zone_coverage_cell(
     let statement = match (zone.state, zone.window) {
         (ZoneCoverageState::Covered, Some(window)) => format!(
             "{} is covered over [{}, {}] ns by {} retained witness(es) of pipeline generation {}: \
-             no confirmed zone entry other than published candidates.{}",
+             no confirmed zone entry other than published candidates. Provenance: {}.{}",
             zone.label(),
             window.earliest.0,
             window.latest.0,
             zone.witnesses.len(),
             zone.pipeline_generation
                 .map_or_else(|| "unknown".to_owned(), |generation| generation.to_text()),
+            RECORDED_COVERAGE_PROVENANCE,
             match zone.visibility.as_ref() {
                 Some(visibility) if visibility.frustum_only() => format!(
                     " The claim is frustum-only: occlusion_unknown ({}).",
