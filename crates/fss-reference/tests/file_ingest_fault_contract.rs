@@ -660,11 +660,11 @@ fn t03_bad_span_metadata_is_a_typed_custody_mismatch() -> TestResult {
     // A wrong chunk geometry reassembles the wrong bytes or the wrong length; either is typed.
     let mut wrong_geometry = base.clone();
     wrong_geometry.chunk_bytes = CHUNK * 2;
-    for index in 0..base.segment_spans.len() {
+    for (index, span) in base.segment_spans.iter().enumerate() {
         match fetch_segment_bytes(&wrong_geometry, &dep, index) {
             Err(FileIngestError::SegmentDigestMismatch { .. })
             | Err(FileIngestError::CorruptSegment { .. }) => {}
-            Ok(_) if base.segment_spans[index].offset + base.segment_spans[index].len <= CHUNK => {
+            Ok(_) if span.offset + span.len <= CHUNK => {
                 // Wholly inside chunk 0, which both geometries place identically.
             }
             other => failures.push(format!("wrong geometry segment {index}: {other:?}")),
@@ -750,7 +750,12 @@ fn m01_knob_partitions_capsule_batches_in_order() -> TestResult {
             b.batch_id.as_str().strip_prefix(&prefix).map(|part| {
                 (
                     part.to_owned(),
-                    b.deltas.len(),
+                    // The acquisition history (fss-2h5zq.25) rides in the manifest batch only;
+                    // the partition counts the import's own deltas.
+                    b.deltas
+                        .iter()
+                        .filter(|d| d.family != "acquisition_transition")
+                        .count(),
                     b.deltas
                         .iter()
                         .any(|d| d.family == "file_import" && d.new_generation == 1),
@@ -767,6 +772,15 @@ fn m01_knob_partitions_capsule_batches_in_order() -> TestResult {
             ("manifest".to_owned(), 2, false),
         ]
     );
+    for batch in dep.ledger().batches() {
+        if batch
+            .deltas
+            .iter()
+            .any(|d| d.family == "acquisition_transition")
+        {
+            assert_eq!(batch.batch_id.as_str(), format!("{prefix}manifest"));
+        }
+    }
     Ok(())
 }
 
@@ -862,11 +876,15 @@ fn m04_different_knob_is_a_new_identity() -> TestResult {
 
 /// m05: a deployment journal record bound below the single-batch size splits the capsule phase
 /// further (fss-2h5zq.23 round 3 "Split a batch at the first of ... encode_batch(..).len()"), and
-/// every committed batch fits the bound.
+/// every committed batch fits the bound. The input is one JPEG repeated 24 times, so the single
+/// c0 (init + 24 capsules) is the largest record of the probe import.
 #[test]
 fn m05_record_bound_splits_batches() -> TestResult {
-    let source = fixture(H264)?;
-    let bytes = fs::read(&source)?;
+    let frame = fs::read(fixture("jpeg/gray_16x16_flat.jpg")?)?;
+    let bytes = frame.repeat(24);
+    let source_dir = fresh_dir("m05-source")?;
+    let source = source_dir.join("frames24.mjpeg");
+    fs::write(&source, &bytes)?;
     // Probe: record sizes of one default-knob import.
     let probe_dir = fresh_dir("m05-probe")?;
     let cx0 = cx("m05-probe")?;

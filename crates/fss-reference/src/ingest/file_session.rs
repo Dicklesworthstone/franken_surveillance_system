@@ -738,6 +738,7 @@ fn error_code(error: &FileIngestError) -> &'static str {
         FileIngestError::InvalidLimits { .. } => "invalid_limits",
         FileIngestError::ImportPlanConflict { .. } => "import_plan_conflict",
         FileIngestError::SegmentDigestMismatch { .. } => "segment_digest_mismatch",
+        FileIngestError::CustodyUnavailable { .. } => "custody_unavailable",
         FileIngestError::SegmentIndexOutOfBounds { .. } => "segment_index_out_of_bounds",
         FileIngestError::CorruptSegment { .. } => "corrupt_segment",
         FileIngestError::EvidenceDeleted { .. } => "evidence_deleted",

@@ -309,7 +309,7 @@ fn run_case(case: usize, family: &str, bytes: &[u8], fault: Fault) -> Result<Cla
                 return Err(format!("case {case}: second re-import not idempotent").into());
             }
             drop(dep);
-            if case % 16 == 0 {
+            if case.is_multiple_of(16) {
                 assert_clean_after_reopen(&deployment_dir, standard())?;
             }
             Ok(match outcome {
