@@ -391,7 +391,9 @@ fn validate_operation_receipt(
 /// or, for a cancellation a cooperative cancel request drained before commitment (fss-51xqy),
 /// [`crate::alert_cooperative_cancel_proof`] over the plan's ledger-published prepared anchor and
 /// a registered cooperative cancellation stage, on a receipt naming
-/// [`crate::ALERT_COOPERATIVE_CANCEL_REASON`]. The
+/// [`crate::ALERT_COOPERATIVE_CANCEL_REASON`]. Explicit operator cancellation instead requires
+/// the exact ledger-published request of [`crate::alert_control`], bound to the whole preparation.
+/// Neither a request root alone nor an actor string is a terminal cancellation proof. The
 /// proof is recomputed from the journal's prepared record (the plan's, for a caller receipt) and
 /// the ledger, never from the receipt's own fields.
 fn cancellation_proof_is_admissible(
@@ -425,6 +427,13 @@ fn cancellation_proof_is_admissible(
         && receipt.result_digest.is_some_and(|proof| {
             crate::alert::alert_cancellation_is_bound(proof, &prepared, plan, authority)
                 || crate::alert::alert_cooperative_cancellation_is_bound(
+                    proof,
+                    receipt.error_code.as_deref(),
+                    &prepared,
+                    plan,
+                    authority,
+                )
+                || crate::alert_control::operator_cancellation_is_bound(
                     proof,
                     receipt.error_code.as_deref(),
                     &prepared,
