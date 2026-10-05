@@ -649,18 +649,22 @@ fn assess_source_domains(source_records: &[RetainedSourceCoverage]) -> Vec<ZoneA
                 }
                 Err(refusal) if !witness.observed_domain.contains(domain) => {
                     assessment.gaps.push(format!(
-                        "{label}: not observable over [{}, {}] ns: the domain did not deliver                          continuously ({refusal}).",
+                        "{label}: not observable over [{}, {}] ns: the domain did not deliver \
+                         continuously ({refusal}).",
                         interval.earliest.0, interval.latest.0
                     ));
                 }
                 Err(refusal) if refusal.invalidated() => {
                     assessment.state = ZoneCoverageState::Stale;
                     assessment.gaps.push(format!(
-                        "{label}: stale: {refusal}; the witness no longer certifies the current                          anchor."
+                        "{label}: stale: {refusal}; the witness no longer certifies the current \
+                         anchor."
                     ));
                 }
                 Err(refusal) => {
-                    assessment.gaps.push(format!("{label}: not observable: {refusal}."));
+                    assessment
+                        .gaps
+                        .push(format!("{label}: not observable: {refusal}."));
                 }
             }
             assessment
