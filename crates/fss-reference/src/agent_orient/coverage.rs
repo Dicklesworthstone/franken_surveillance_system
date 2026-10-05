@@ -36,6 +36,16 @@
 //! sigma-point perturbations of the calibration pose covariance. A zone observable only under the
 //! nominal pose (`pose_sensitive`) carries no witness, so it is `not_observable` here with a named
 //! `pose_sensitive` gap, never covered, and no silence rests on it.
+//!
+//! Every retained record is produced by analysing a file import's retained bytes, so every
+//! coverage claim an orientation makes (a covered zone, a complete site) carries the
+//! [`RECORDED_COVERAGE_PROVENANCE`] marker in its statement (fss-dt3qf): it certifies what the
+//! retained pipeline observed over the recorded capture interval, not live source continuity.
+
+/// Provenance every orientation coverage claim states (fss-dt3qf owner decision): retained
+/// coverage is certified over a recorded file's capture interval and says nothing about live
+/// continuity of the source.
+pub const RECORDED_COVERAGE_PROVENANCE: &str = "recorded file source; no live continuity";
 
 use std::collections::{BTreeMap, BTreeSet};
 
