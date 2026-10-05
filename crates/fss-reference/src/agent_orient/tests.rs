@@ -447,8 +447,11 @@ fn source_domains_are_covered_stale_or_not_observable_with_exact_operator_text()
     recorded.scope = "zone:door".to_owned();
     assert_eq!(recorded.provenance(), RECORDED_COVERAGE_PROVENANCE);
 
-    // The operator cells carry the exact text and state.
-    let covered_cell = super::zone_coverage_cell(covered_zone, &anchor)?;
+    // The operator cells carry the exact text and state, at the head the invalidating commit
+    // (5) reached.
+    let mut head = anchor.clone();
+    head.commit_sequence = 5;
+    let covered_cell = super::zone_coverage_cell(covered_zone, &head)?;
     assert_eq!(covered_cell.knowledge_state(), KnowledgeState::Known);
     assert_eq!(
         covered_cell.statement(),
@@ -458,13 +461,13 @@ fn source_domains_are_covered_stale_or_not_observable_with_exact_operator_text()
              candidates. Provenance: {SOURCE_COVERAGE_PROVENANCE}."
         )
     );
-    let stale_cell = super::zone_coverage_cell(stale_zone, &anchor)?;
+    let stale_cell = super::zone_coverage_cell(stale_zone, &head)?;
     assert_eq!(stale_cell.knowledge_state(), KnowledgeState::Stale);
     assert_eq!(
         stale_cell.statement(),
         format!("source-domain:domain-stale is stale: {stale_gap}")
     );
-    let silent_cell = super::zone_coverage_cell(silent_zone, &anchor)?;
+    let silent_cell = super::zone_coverage_cell(silent_zone, &head)?;
     assert_eq!(silent_cell.knowledge_state(), KnowledgeState::NotObservable);
     assert_eq!(
         silent_cell.statement(),
