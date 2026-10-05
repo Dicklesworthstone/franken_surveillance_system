@@ -18,16 +18,19 @@ use std::path::Path;
 use crate::file_activity::{self, FileActivityOptions, FileActivityReport};
 use crate::scene::{GeometricCoverage, LabScene};
 use fss_core::{
-    CanonicalEncode, CapsuleId, CaptureInterval, ClockBasis, Completeness, ContentDigest,
-    ContractBasis, ContractBasisRegistryBytes, CoverageContinuity, CoverageStopReason,
-    CoverageWitness, EffectState, EventEvidence, EventHypothesis, EventId, EventKind, EventState,
-    EvidenceClass, EvidenceEdgeRelation, HandoffCapsule, HandoffId, IdempotencyKey, KnowledgeCell,
-    KnowledgeState, MissionId, ObligationId, ObligationState, OperationId, PrincipalId,
-    ProbabilityInterval, SensorCapsule, SensorId, SensorSourceBytesSpec, SessionId, StreamId,
-    TimestampNs,
+    AgentView, CanonicalEncode, CapsuleId, CaptureInterval, ClockBasis, Completeness,
+    ContentDigest, ContractBasis, ContractBasisRegistryBytes, CoverageContinuity,
+    CoverageStopReason, CoverageWitness, EffectState, EventEvidence, EventHypothesis, EventId,
+    EventKind, EventState, EvidenceClass, EvidenceEdgeRelation, HandoffCapsule, HandoffId,
+    IdempotencyKey, KnowledgeCell, KnowledgeState, MissionId, ObligationId, ObligationState,
+    OperationId, PrincipalId, ProbabilityInterval, SensorCapsule, SensorId, SensorSourceBytesSpec,
+    SessionId, StreamId, TimestampNs,
 };
 use fss_object::ObjectManifest;
 use fss_publication::{LedgerCutPoint, PublishCutPoint, SlotName};
+use fss_reference::agent_orient::{
+    CLAIM_COVERAGE, OrientLimits, OrientRequest, orient_deployment, read_deployment,
+};
 use fss_reference::{
     AppendPhase, DurableEffectError, MockModelOutcome, MockModelResult, MockModelScript,
     MockModelSpec, MockSemanticLabel, PrepareAlertParams, ReferenceAlertPlan, ReferenceDeployment,
@@ -42,7 +45,10 @@ const SCENARIO_END: u64 = 5;
 /// Closed enumeration of supported laboratory scenarios.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ScenarioKind {
-    /// Complete coverage certifying physical absence of an unknown person.
+    /// Both cameras deliver every tick and see nothing: the run retains a complete, continuous
+    /// coverage witness, and absence is reported certified only where the compiled situation and
+    /// the durable `fss orient` reader both certify it from stored evidence (today neither does;
+    /// see [`QUIET_NOT_DURABLY_CERTIFIED`]).
     Quiet,
     /// Benign wildlife detection with no alert effect.
     Raccoon,
@@ -372,8 +378,9 @@ pub struct ScenarioReport {
     pub envelope: EnvelopeClass,
     /// Event disposition string label.
     pub event_disposition: &'static str,
-    /// Whether absence was certified: exactly [`SituationAbsence::certified`] of the compiled
-    /// situation and sealed handoff, never an independent lab judgement.
+    /// Whether absence was certified: the verdict on which the compiled situation and sealed
+    /// handoff ([`SituationAbsence`]) and the durable orient reader ([`DurableAbsence`]) agree;
+    /// never an independent lab judgement. A disagreement fails the run.
     pub absence_certified: bool,
     /// Whether the alert dispatch ended `Indeterminate` (acknowledgement lost after delivery),
     /// as journaled before reconciliation ran.
@@ -414,6 +421,102 @@ pub struct ScenarioReport {
     /// What the compiled situation and sealed handoff say about absence (not rendered in the v2
     /// report; `absence_certified` is derived from it).
     pub situation_absence: SituationAbsence,
+    /// What the durable reader `fss orient` uses says about absence on the run's root (not
+    /// rendered in the v2 report; `absence_certified` must equal its verdict).
+    pub durable_absence: DurableAbsence,
+}
+
+/// `absence_not_certifiable_reason` of a run that retained a complete, continuous coverage
+/// witness, observed nothing and had no coverage gap, but whose absence neither the compiled
+/// situation nor the durable orient reader certifies from stored evidence.
+///
+/// This is `quiet` today, for two reasons in the real crates (fss-tch7u):
+/// - `compile_reference_situation` certifies only a witness whose anchor equals the anchor it
+///   compiles against. A stored witness is anchored before the commits that follow it (here the
+///   event publication and the slot commit), so it never matches;
+/// - `orient_deployment` reads coverage only from retained `coverage_witness` ledger records
+///   (`ingest::recorded_coverage`, produced by the recorded watch and corroborate pipelines over
+///   a retained import; the lab's virtual cameras have neither), and it keeps every rejected
+///   event's protected `absence-uncertified` world whatever coverage is retained.
+///
+/// The lab never re-anchors or rewrites a witness to get past either rule.
+pub const QUIET_NOT_DURABLY_CERTIFIED: &str = "coverage_not_durably_certified";
+
+/// Absence as the durable reader `fss orient` uses reports it for one root: the read-only
+/// [`read_deployment`] snapshot of the committed bytes, oriented by [`orient_deployment`] in the
+/// `epistemic_map` view.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct DurableAbsence {
+    /// Knowledge state of the orientation's site coverage cell ([`CLAIM_COVERAGE`]).
+    pub site_coverage: Option<KnowledgeState>,
+    /// Whether the orientation keeps the protected per-kind `absence-uncertified` event world.
+    /// The run's root holds exactly the run's one event, so the world is that event's.
+    pub uncertified_world: bool,
+}
+
+impl DurableAbsence {
+    /// Per-kind aggregate of every published event's `absence-uncertified` world.
+    const UNCERTIFIED_WORLD: &'static str = "world:events:absence-uncertified";
+
+    /// Reads `root` exactly as `fss orient --view epistemic_map` does.
+    pub fn read(root: &Path, event_id: &EventId) -> Result<Self, ScenarioError> {
+        let limits = OrientLimits::default();
+        let snapshot = read_deployment(root, &limits)
+            .map_err(|error| ScenarioError::Reference(format!("durable read: {error}")))?;
+        if snapshot
+            .events
+            .iter()
+            .any(|retained| retained.event.event_id != *event_id)
+        {
+            return Err(ScenarioError::Reference(
+                "durable read: the root holds an event this run did not publish".to_owned(),
+            ));
+        }
+        let request = OrientRequest {
+            view: AgentView::EpistemicMap,
+            principal: PrincipalId::parse("principal:lab")?,
+            budget_tokens: None,
+        };
+        let orientation = orient_deployment(&snapshot, &request, &limits)
+            .map_err(|error| ScenarioError::Reference(format!("durable orient: {error}")))?;
+        let frame = &orientation.publication.situation.capsule.frame;
+        Ok(Self {
+            site_coverage: frame
+                .knowledge_cells
+                .iter()
+                .find(|cell| cell.claim_id() == CLAIM_COVERAGE)
+                .map(KnowledgeCell::knowledge_state),
+            uncertified_world: frame
+                .world_envelope
+                .adversarial_residuals
+                .iter()
+                .any(|world| world.protected && world.world_id == Self::UNCERTIFIED_WORLD),
+        })
+    }
+
+    /// The durable reader certifies absence only when the site coverage cell is known and no
+    /// protected `absence-uncertified` event world survives.
+    #[must_use]
+    pub fn certified(&self) -> bool {
+        self.site_coverage == Some(KnowledgeState::Known) && !self.uncertified_world
+    }
+}
+
+/// The run's certification: the compiled situation's verdict, which must equal the durable
+/// reader's. Any disagreement fails closed.
+fn certification(
+    situation: &SituationAbsence,
+    durable: &DurableAbsence,
+) -> Result<bool, ScenarioError> {
+    let compiled = situation.certified()?;
+    if compiled == durable.certified() {
+        Ok(compiled)
+    } else {
+        Err(ScenarioError::Reference(format!(
+            "absence certification disagrees: compiled situation {situation:?}, durable reader \
+             {durable:?}"
+        )))
+    }
 }
 
 /// Absence certification as the real situation projection and sealed handoff record it.
@@ -925,9 +1028,11 @@ fn run_scenario_impl(
     } else if gaps.is_empty() && !file_source && !observed_domain.is_empty() {
         let event_id_quiet = event_id;
         let complete = observed_domain == authorized_domain;
-        // Retained with the run's sources and cited by the event. It is anchored where the
-        // evidence was gathered; the copy the situation evaluates is re-anchored after the last
-        // authority commit, and the real situation alone decides certification.
+        // Retained with the run's sources and cited by the event. Its anchor is the authority
+        // anchor this run read before any of its own commits (commit 0 on a fresh root): the
+        // capsules above are only staged, and the event publication and the slot commit below
+        // move the anchor past it. It is never re-anchored or rewritten; whether it certifies is
+        // decided by the compiled situation and the durable reader alone.
         let witness = CoverageWitness {
             anchor: deployment.current_anchor().clone(),
             authorized_domain: authorized_domain.clone(),
@@ -1247,19 +1352,9 @@ fn run_scenario_impl(
         .with_accepted_nightly("nightly-2026-08-31"),
     );
 
-    // `compile_reference_situation` certifies absence only for a witness bound to the anchor it
-    // compiles against, and both the event publication and the slot commit above moved the
-    // anchor. The witness the situation evaluates is therefore the retained witness, unchanged
-    // in every coverage field, re-anchored to the final authority anchor and its policy epoch.
-    // It is not staged: staging it would need one more commit, which would move the anchor
-    // again. Whether it certifies is decided by the real situation alone (below).
-    let final_anchor = deployment.current_anchor().clone();
-    let certification_witness = coverage_witness.map(|retained| CoverageWitness {
-        authorized_generation: final_anchor.policy_epoch,
-        observed_generation: final_anchor.policy_epoch,
-        anchor: final_anchor.clone(),
-        ..retained
-    });
+    // The situation is offered exactly the stored witness the event cites, byte for byte. A
+    // stored witness predates the commits after it, so `compile_reference_situation`'s anchor
+    // equality refuses it (fss-tch7u); the lab does not mint a re-anchored copy to pass it.
     let situation_req = ReferenceSituationRequest {
         mission_id: MissionId::parse("mission:lab")?,
         session_id: SessionId::parse("session:lab")?,
@@ -1273,7 +1368,7 @@ fn run_scenario_impl(
         event_receipt: &event_receipt,
         alert_plan: alert_plan.as_ref(),
         alert_outcome: None,
-        coverage_witness: certification_witness.as_ref(),
+        coverage_witness: coverage_witness.as_ref(),
         available_capabilities,
         created_at: TimestampNs(
             (SCENARIO_END as i128)
@@ -1305,16 +1400,36 @@ fn run_scenario_impl(
     )?;
     let handoff_digest = handoff.handoff_root;
 
-    // The lab's certification label is read from what the real situation and the sealed
-    // handoff certify; it is never asserted independently of them.
+    // What the real situation and the sealed handoff say about absence; the label below is
+    // read from them and the durable reader, never asserted independently of them.
     let situation_absence = SituationAbsence::read(
         &situation,
         &handoff,
         &decision.event.event_id,
-        certification_witness.as_ref(),
+        coverage_witness.as_ref(),
     );
-    let certified = situation_absence.certified()?;
-    let witness_offered = certification_witness.is_some();
+    let witness_offered = coverage_witness.is_some();
+    let event_id = decision.event.event_id.clone();
+    let provider_effects =
+        deployment.alert_provider().message_count() + deployment.alert_provider().failure_count();
+    let ledger_sequence = deployment.current_anchor().commit_sequence;
+    let ledger_anchor_root = deployment.current_anchor().state_root;
+
+    // Verify that the deployment reconciles clean.
+    let recon = deployment.reconcile()?;
+    if !recon.is_clean() {
+        return Err(ScenarioError::Reference(
+            "deployment reconciliation was not clean".to_owned(),
+        ));
+    }
+
+    drop(deployment);
+
+    verify_reopen(root, &cx, &withheld)?;
+
+    // The durable reader `fss orient` uses, on the committed bytes this run left behind.
+    let durable_absence = DurableAbsence::read(root, &event_id)?;
+    let certified = certification(&situation_absence, &durable_absence)?;
     let envelope = if certified {
         EnvelopeClass::CertifiedQuiet
     } else if state == EventState::Corroborated {
@@ -1344,8 +1459,8 @@ fn run_scenario_impl(
     } else if !support_domains.is_empty() {
         Some("threat_present")
     } else if witness_offered {
-        // A witness was offered and the real situation refused to certify it.
-        Some("coverage_uncertified")
+        // A complete witness was retained and offered, and neither reader certifies it.
+        Some(QUIET_NOT_DURABLY_CERTIFIED)
     } else if contradicting {
         Some("activity_present")
     } else {
@@ -1363,24 +1478,21 @@ fn run_scenario_impl(
         coverage_gaps: gaps,
     };
 
-    let provider_effects =
-        deployment.alert_provider().message_count() + deployment.alert_provider().failure_count();
-    let ledger_sequence = deployment.current_anchor().commit_sequence;
-    let ledger_anchor_root = deployment.current_anchor().state_root;
-
-    // Verify that the deployment reconciles clean.
-    let recon = deployment.reconcile()?;
-    if !recon.is_clean() {
-        return Err(ScenarioError::Reference(
-            "deployment reconciliation was not clean".to_owned(),
-        ));
-    }
-
-    drop(deployment);
-
-    verify_reopen(root, &cx, &withheld)?;
-
-    let mut affordances = affordances_for(envelope, transient_indeterminate);
+    let mut affordances =
+        if knowledge.absence_not_certifiable_reason == Some(QUIET_NOT_DURABLY_CERTIFIED) {
+            // Nothing was observed, so no person hypothesis needs an adjacent sensor; what is
+            // missing is a durable certification of the retained coverage.
+            vec![Affordance {
+                class: ControlClass::Observe,
+                operation: "session.follow".to_owned(),
+                reason: "the retained coverage witness is not certified by the durable stack; \
+                         absence stays unknown and the absence-uncertified residual is preserved"
+                    .to_owned(),
+                zone: None,
+            }]
+        } else {
+            affordances_for(envelope, transient_indeterminate)
+        };
     if envelope == EnvelopeClass::ProtectedResidual
         && let Some(geometry) = &geometry
     {
@@ -1424,6 +1536,7 @@ fn run_scenario_impl(
         provider_effects,
         pre_reconcile_effect_state,
         situation_absence,
+        durable_absence,
     })
 }
 
@@ -1713,9 +1826,9 @@ fn push_json_string(output: &mut String, value: &str) {
 #[cfg(test)]
 mod tests {
     use super::{
-        ControlClass, EnvelopeClass, ObservationClass, ScenarioKind, SituationAbsence, class_for,
-        make_cx, run_file_activity_with, run_scenario, run_scenario_with, run_sneaky_in,
-        verify_reopen,
+        ControlClass, DurableAbsence, EnvelopeClass, ObservationClass, QUIET_NOT_DURABLY_CERTIFIED,
+        ScenarioKind, SituationAbsence, certification, class_for, make_cx, run_file_activity_with,
+        run_scenario, run_scenario_with, run_sneaky_in, verify_reopen,
     };
     use crate::scene::LabScene;
     use fss_core::{EffectState, KnowledgeState, ObligationState, OperationId};
@@ -1736,23 +1849,173 @@ mod tests {
     }
 
     #[test]
-    fn quiet_requires_and_earns_certified_absence() -> Result<(), Box<dyn std::error::Error>> {
+    fn quiet_is_not_certified_because_the_durable_stack_cannot_certify_it()
+    -> Result<(), Box<dyn std::error::Error>> {
+        use fss_core::{CanonicalDecode as _, CoverageWitness, EventId, EventState};
+
         let root = temp_test_root("quiet");
         let report = run_scenario(ScenarioKind::Quiet, &root)?;
-        assert_eq!(report.envelope, EnvelopeClass::CertifiedQuiet);
-        assert!(report.absence_certified);
-        assert!(report.knowledge.absence_certified);
+        // Review r13: the label is what the stored evidence earns, read by the compiled
+        // situation and by the durable orient reader. Neither certifies quiet today.
+        assert!(!report.absence_certified);
+        assert!(!report.knowledge.absence_certified);
+        assert_eq!(report.envelope, EnvelopeClass::ProtectedResidual);
+        assert_eq!(report.event_disposition, "protected_residual");
+        assert_eq!(
+            report.knowledge.absence_not_certifiable_reason,
+            Some(QUIET_NOT_DURABLY_CERTIFIED)
+        );
+        assert_eq!(report.knowledge.corroboration, "not_applicable");
+        assert!(report.knowledge.coverage_gaps.is_empty());
+        assert!(report.warnings.is_empty());
         assert!(report.effect_state.is_none());
-        // Review r12 defect 1: the certification is the real situation's, not the lab's. The
-        // compiled situation holds a known absence cell, no `absence-uncertified` residual
-        // world, and the sealed handoff names the certifying witness.
+        assert_eq!(report.affordances.len(), 1);
+        assert_eq!(report.affordances[0].class, ControlClass::Observe);
+        // The compiled situation keeps an unknown absence cell and the residual world, and the
+        // sealed handoff does not name the witness.
         assert_eq!(
             report.situation_absence,
             SituationAbsence {
-                cell: Some(KnowledgeState::Known),
-                uncertified_world: false,
-                handoff_names_witness: true,
+                cell: Some(KnowledgeState::Unknown),
+                uncertified_world: true,
+                handoff_names_witness: false,
             }
+        );
+        // The durable reader agrees: no site coverage, and the residual world is kept. A fresh
+        // read of the root says exactly what the run recorded.
+        let durable = DurableAbsence {
+            site_coverage: Some(KnowledgeState::NotObservable),
+            uncertified_world: true,
+        };
+        assert_eq!(report.durable_absence, durable);
+        let event_id = EventId::parse("event:lab:quiet")?;
+        assert_eq!(DurableAbsence::read(&root, &event_id)?, durable);
+
+        // The obstacle is the durable stack, not the coverage: the stored witness the event
+        // cites certifies absence over both domains at the current policy epoch, and it was
+        // never re-anchored. It is anchored before the run's own commits, so it is not the
+        // anchor the situation compiles against.
+        let cx = make_cx(ScenarioKind::Quiet)?;
+        let reopened = ReferenceDeployment::reopen(&root, "site:lab", &cx)?;
+        let (event, _) = reopened.current_event_authority(&event_id)?;
+        assert_eq!(event.state, EventState::Rejected);
+        let cited: BTreeSet<_> = event.evidence.iter().map(|edge| edge.digest).collect();
+        assert_eq!(cited.len(), 1);
+        let digest = *cited.first().ok_or("no evidence")?;
+        let witness =
+            CoverageWitness::from_canonical_bytes(&reopened.publisher().spool().read(digest)?)?;
+        assert!(witness.certifies_absence());
+        assert_eq!(witness.negative_predicate, "no_unknown_person_present");
+        let domains = BTreeSet::from([
+            "front-power-and-network".to_owned(),
+            "side-power-and-network".to_owned(),
+        ]);
+        assert_eq!(witness.authorized_domain, domains);
+        assert_eq!(witness.observed_domain, domains);
+        let head = reopened.current_anchor();
+        assert_eq!(witness.authorized_generation, head.policy_epoch);
+        assert_eq!(witness.anchor.commit_sequence, 0);
+        assert_eq!(head.commit_sequence, report.ledger_sequence);
+        assert!(witness.anchor.commit_sequence < head.commit_sequence);
+        assert_ne!(&witness.anchor, head);
+        let _ = std::fs::remove_dir_all(&root);
+        Ok(())
+    }
+
+    #[test]
+    fn situation_absence_fails_closed_on_any_partial_agreement() {
+        // Review r13 mutant D: the handoff naming the witness is part of the verdict.
+        let known = Some(KnowledgeState::Known);
+        let unknown = Some(KnowledgeState::Unknown);
+        let verdict = |cell, uncertified_world, handoff_names_witness| {
+            SituationAbsence {
+                cell,
+                uncertified_world,
+                handoff_names_witness,
+            }
+            .certified()
+        };
+        assert_eq!(verdict(known, false, true), Ok(true));
+        assert_eq!(verdict(unknown, true, false), Ok(false));
+        assert_eq!(verdict(None, false, false), Ok(false));
+        assert_eq!(verdict(None, true, false), Ok(false));
+        // A known cell whose handoff does not carry the witness is not a certification.
+        assert!(verdict(known, false, false).is_err());
+        // A handoff naming a witness the situation did not certify is inconsistent.
+        assert!(verdict(unknown, true, true).is_err());
+        assert!(verdict(None, true, true).is_err());
+        // A known cell beside a surviving residual world is inconsistent.
+        assert!(verdict(known, true, true).is_err());
+        assert!(verdict(unknown, false, true).is_err());
+    }
+
+    #[test]
+    fn the_situation_and_the_durable_reader_must_agree() {
+        let certifying = SituationAbsence {
+            cell: Some(KnowledgeState::Known),
+            uncertified_world: false,
+            handoff_names_witness: true,
+        };
+        let refusing = SituationAbsence {
+            cell: Some(KnowledgeState::Unknown),
+            uncertified_world: true,
+            handoff_names_witness: false,
+        };
+        let durable_certifies = DurableAbsence {
+            site_coverage: Some(KnowledgeState::Known),
+            uncertified_world: false,
+        };
+        let durable_refuses = DurableAbsence {
+            site_coverage: Some(KnowledgeState::NotObservable),
+            uncertified_world: true,
+        };
+        assert_eq!(certification(&certifying, &durable_certifies), Ok(true));
+        assert_eq!(certification(&refusing, &durable_refuses), Ok(false));
+        // A situation certifying a witness the durable reader does not (a re-anchored copy,
+        // review r13) fails the run; so does the converse.
+        assert!(certification(&certifying, &durable_refuses).is_err());
+        assert!(certification(&refusing, &durable_certifies).is_err());
+        // Covered site coverage alone does not certify while the residual world survives.
+        let covered_but_residual = DurableAbsence {
+            site_coverage: Some(KnowledgeState::Known),
+            uncertified_world: true,
+        };
+        assert!(!covered_but_residual.certified());
+        assert_eq!(certification(&refusing, &covered_but_residual), Ok(false));
+    }
+
+    #[test]
+    fn two_supports_with_contradicting_evidence_are_not_corroborated()
+    -> Result<(), Box<dyn std::error::Error>> {
+        use fss_core::{EventId, EventState};
+
+        // Review r13 mutant E: a person on each camera, and a raccoon on cam-front at tick 4.
+        // Two independent supporting domains, but the contradiction keeps the real policy from
+        // corroborating, so the label is never "corroborated".
+        let root = temp_test_root("intrusion-contradicted");
+        let report = run_scenario_with(ScenarioKind::Intrusion, &root, &|_, sensor, tick| match (
+            sensor, tick,
+        ) {
+            ("cam-front", 2) | ("cam-side", 3) => ObservationClass::UnknownPerson,
+            ("cam-front", 4) => ObservationClass::Raccoon,
+            _ => ObservationClass::Empty,
+        })?;
+        let cx = make_cx(ScenarioKind::Intrusion)?;
+        let reopened = ReferenceDeployment::reopen(&root, "site:lab", &cx)?;
+        let (event, _) =
+            reopened.current_event_authority(&EventId::parse("event:lab:intrusion")?)?;
+        assert_eq!(event.state, EventState::Indeterminate);
+        drop(reopened);
+        assert_eq!(report.knowledge.corroboration, "not_corroborated");
+        assert_ne!(report.envelope, EnvelopeClass::CorroboratedThreat);
+        assert_eq!(report.envelope, EnvelopeClass::ProtectedResidual);
+        assert!(report.effect_state.is_none());
+        assert!(report.dispatched_operations.is_empty());
+        assert_eq!(report.provider_effects, 0);
+        assert!(!report.absence_certified);
+        assert_eq!(
+            report.knowledge.absence_not_certifiable_reason,
+            Some("threat_present")
         );
         let _ = std::fs::remove_dir_all(&root);
         Ok(())
@@ -2139,8 +2402,14 @@ mod tests {
     }
 
     /// Asserts the lab's certification label is exactly what the compiled situation and the
-    /// sealed handoff certify, and that the situation's own facts agree with one another.
-    fn assert_label_is_the_situations(name: &str, report: &super::ScenarioReport) {
+    /// sealed handoff certify, that the situation's own facts agree with one another, and that
+    /// the durable reader `fss orient` uses, run afresh on the root the run left behind, says
+    /// the same.
+    fn assert_label_is_the_situations(
+        name: &str,
+        root: &std::path::Path,
+        report: &super::ScenarioReport,
+    ) -> Result<(), Box<dyn std::error::Error>> {
         let situation = report.situation_absence;
         let situation_certifies = situation.cell == Some(KnowledgeState::Known);
         assert_eq!(report.absence_certified, situation_certifies, "{name}");
@@ -2166,10 +2435,16 @@ mod tests {
             // A rejected event: the residual world survives exactly when absence is uncertified.
             assert_eq!(situation.uncertified_world, !situation_certifies, "{name}");
         }
+        // The durable reader, read afresh from the committed bytes.
+        let event_id = fss_core::EventId::parse(format!("event:lab:{}", report.scenario.as_str()))?;
+        let durable = DurableAbsence::read(root, &event_id)?;
+        assert_eq!(durable, report.durable_absence, "{name}");
+        assert_eq!(report.absence_certified, durable.certified(), "{name}");
         println!(
-            "CAPLOG {{\"bead\":\"fss-2h5zq.11\",\"step\":\"label_vs_situation\",\"case\":\"{name}\",\"lab_absence_certified\":{},\"situation\":\"{situation:?}\"}}",
+            "CAPLOG {{\"bead\":\"fss-2h5zq.11\",\"step\":\"label_vs_situation\",\"case\":\"{name}\",\"lab_absence_certified\":{},\"situation\":\"{situation:?}\",\"durable\":\"{durable:?}\"}}",
             report.absence_certified
         );
+        Ok(())
     }
 
     #[test]
@@ -2186,14 +2461,11 @@ mod tests {
         ] {
             let root = temp_test_root(&format!("label-{}", scenario.as_str()));
             let report = run_scenario(scenario, &root)?;
-            assert_label_is_the_situations(scenario.as_str(), &report);
-            // Only quiet earns certification, and it earns it from the real situation.
-            assert_eq!(
-                report.absence_certified,
-                scenario == ScenarioKind::Quiet,
-                "{}",
-                scenario.as_str()
-            );
+            assert_label_is_the_situations(scenario.as_str(), &root, &report)?;
+            // No scenario earns certification from stored evidence today: quiet's complete
+            // witness is refused by both readers (QUIET_NOT_DURABLY_CERTIFIED).
+            assert!(!report.absence_certified, "{}", scenario.as_str());
+            let _ = std::fs::remove_dir_all(&root);
         }
         // The planted and silenced variants below must agree as well.
         let silenced = |_: ScenarioKind, sensor: &str, _: u64| {
@@ -2205,12 +2477,14 @@ mod tests {
         };
         let root = temp_test_root("label-quiet-silenced");
         let report = run_scenario_with(ScenarioKind::Quiet, &root, &silenced)?;
-        assert_label_is_the_situations("quiet-silenced", &report);
+        assert_label_is_the_situations("quiet-silenced", &root, &report)?;
         assert!(!report.absence_certified);
+        let _ = std::fs::remove_dir_all(&root);
         let root = temp_test_root("label-sneaky-raccoon");
         let report = run_sneaky_in(&root, &LabScene::REFERENCE, &raccoon_on_the_path)?;
-        assert_label_is_the_situations("sneaky-raccoon", &report);
+        assert_label_is_the_situations("sneaky-raccoon", &root, &report)?;
         assert!(!report.absence_certified);
+        let _ = std::fs::remove_dir_all(&root);
         Ok(())
     }
 

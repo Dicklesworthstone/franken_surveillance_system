@@ -390,10 +390,14 @@ mod tests {
     /// before review r12 of fss-2h5zq.11. The lab asserted its certification while the real
     /// situation refused it: the coverage witness was anchored before the event publication and
     /// the slot commit moved the anchor, so `compile_reference_situation` kept the
-    /// `absence-uncertified` residual world. The witness the situation evaluates is now
-    /// re-anchored to the final anchor and the real situation certifies, so the compiled
-    /// situation and the sealed handoff change, and with them exactly `situation_digest` and
-    /// `handoff_digest`; every other byte of quiet is unchanged.
+    /// `absence-uncertified` residual world.
+    ///
+    /// Review r13 rejected the r12 repair (a lab-minted copy of the witness re-anchored to the
+    /// final anchor). The situation is again offered exactly the stored witness, so the compiled
+    /// situation and the sealed handoff, and with them `situation_digest` and `handoff_digest`,
+    /// are byte-identical to this report again. What changes is the label, which now follows
+    /// both readers: quiet is a protected residual, not certified, for
+    /// `coverage_not_durably_certified`, with the one affordance that names it.
     const MAIN_QUIET_REPORT: &str = concat!(
         r#"{"schema":"fss.lab.scenario.v2","scenario":"quiet","ledger_sequence":2"#,
         r#","anchor_sequence":2"#,
@@ -417,15 +421,21 @@ mod tests {
     );
     const MAIN_QUIET_REPORT_SHA256: &str =
         "sha256:0ea57fbc46768ac900a6dd961628a2a3e9034e93db4a58e9777195201bfdaee7";
-    const MAIN_QUIET_SITUATION_DIGEST: &str =
-        "sha256:6528b0cd924f2cff013ea6a2dc4630e71ecfbc6ceac1524ef967660f5773e2f2";
-    const MAIN_QUIET_HANDOFF_DIGEST: &str =
-        "sha256:c962ba470af5c364b8a67918f20c1d3da1cbf5a2c26d3c54f40c33a1a80e245a";
-    /// Quiet's situation and handoff digests once the real situation certifies absence.
-    const QUIET_SITUATION_DIGEST: &str =
-        "sha256:ef276790acaaf6c564a0049ca474dc3908c8bfbe4c80daa6a987d75519283800";
-    const QUIET_HANDOFF_DIGEST: &str =
-        "sha256:ea2ef9d489ea2b3bd029eb1bcdf9ea4f4c237448ef395742803539eeab9e9cb5";
+    /// Quiet's label as main recorded it, and as both readers now give it.
+    const QUIET_LABEL_REPLACEMENTS: [(&str, &str); 3] = [
+        (
+            r#","envelope":"certified_quiet","event_disposition":"quiet","absence_certified":true"#,
+            r#","envelope":"protected_residual","event_disposition":"protected_residual","absence_certified":false"#,
+        ),
+        (
+            r#""knowledge":{"absence":"certified","#,
+            r#""knowledge":{"absence":{"not_certifiable":"coverage_not_durably_certified"},"#,
+        ),
+        (
+            r#""reason":"continuous authorized coverage certifies no unknown person""#,
+            r#""reason":"the retained coverage witness is not certified by the durable stack; absence stays unknown and the absence-uncertified residual is preserved""#,
+        ),
+    ];
 
     #[test]
     fn four_mock_scenarios_are_byte_identical_to_main_and_only_quiet_and_sneaky_change() {
@@ -442,7 +452,7 @@ mod tests {
         let _ = std::fs::remove_dir_all(&root);
         let matrix = matrix.unwrap_or_default();
 
-        // Quiet differs from main in exactly its situation and handoff digests.
+        // Quiet differs from main in exactly its label; its situation and handoff are main's.
         let quiet_start = matrix
             .find("{\"schema\":\"fss.lab.scenario.v2\",\"scenario\":\"quiet\"")
             .unwrap_or(matrix.len());
@@ -454,15 +464,12 @@ mod tests {
             "quiet report not found in the matrix"
         );
         let quiet = &matrix[quiet_start..quiet_end];
-        assert_ne!(quiet, MAIN_QUIET_REPORT);
-        assert!(quiet.contains(&format!(
-            "\"situation_digest\":\"{QUIET_SITUATION_DIGEST}\""
-        )));
-        assert!(quiet.contains(&format!("\"handoff_digest\":\"{QUIET_HANDOFF_DIGEST}\"")));
-        let quiet_with_main_digests = quiet
-            .replace(QUIET_SITUATION_DIGEST, MAIN_QUIET_SITUATION_DIGEST)
-            .replace(QUIET_HANDOFF_DIGEST, MAIN_QUIET_HANDOFF_DIGEST);
-        assert_eq!(quiet_with_main_digests, MAIN_QUIET_REPORT);
+        let mut expected = MAIN_QUIET_REPORT.to_owned();
+        for (main, now) in QUIET_LABEL_REPLACEMENTS {
+            assert_eq!(expected.matches(main).count(), 1, "{main}");
+            expected = expected.replace(main, now);
+        }
+        assert_eq!(quiet, expected);
         let matrix = format!(
             "{}{MAIN_QUIET_REPORT}{}",
             &matrix[..quiet_start],

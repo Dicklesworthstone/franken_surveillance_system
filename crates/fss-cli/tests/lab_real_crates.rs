@@ -4,7 +4,10 @@
 //! reopened independently by this test.
 
 use fss_core::region::{ContextAuthority, RootAuthoritySpec};
-use fss_core::{BudgetVector, ContentDigest, OperationId};
+use fss_core::{AgentView, BudgetVector, ContentDigest, KnowledgeState, OperationId, PrincipalId};
+use fss_reference::agent_orient::{
+    CLAIM_COVERAGE, OrientLimits, OrientRequest, orient_deployment, read_deployment,
+};
 use fss_reference::{ReferenceDeployment, ReplayCx};
 use std::path::{Path, PathBuf};
 use std::process::{Command, Output};
@@ -74,7 +77,15 @@ fn reopen(root: &Path) -> TestResult<ReferenceDeployment> {
 
 /// (scenario, envelope, event disposition, absence certified, transient indeterminate)
 const EXPECTED: [(&str, &str, &str, &str, &str); 6] = [
-    ("quiet", "certified_quiet", "quiet", "true", "false"),
+    // Quiet's complete witness is not certified by the durable stack (see
+    // `durable_reader_agrees_with_every_report`).
+    (
+        "quiet",
+        "protected_residual",
+        "protected_residual",
+        "false",
+        "false",
+    ),
     ("raccoon", "benign_activity", "benign", "false", "false"),
     (
         "intrusion",
@@ -154,6 +165,60 @@ fn every_report_matches_the_deployment_it_left_on_disk() -> TestResult {
                 .any(|root| root.root.to_string() == publication),
             "{scenario}: publication root {publication} is not a visible root on disk"
         );
+    }
+    Ok(())
+}
+
+/// `absence_certified` of every report is what the durable reader `fss orient` uses says about
+/// the root the run left on disk: the site coverage cell is known and no protected
+/// `absence-uncertified` event world survives. Read here independently of the lab.
+#[test]
+fn durable_reader_agrees_with_every_report() -> TestResult {
+    let directory = Directory::new("durable")?;
+    for (scenario, ..) in EXPECTED {
+        let root = directory.0.join(scenario);
+        let output = lab(&["run", scenario], &root)?;
+        assert!(output.status.success(), "{scenario}");
+        let report = String::from_utf8(output.stdout)?;
+
+        let limits = OrientLimits::default();
+        let snapshot = read_deployment(&root, &limits)?;
+        assert_eq!(snapshot.events.len(), 1, "{scenario}");
+        let orientation = orient_deployment(
+            &snapshot,
+            &OrientRequest {
+                view: AgentView::EpistemicMap,
+                principal: PrincipalId::parse("principal:lab-real-crates")?,
+                budget_tokens: None,
+            },
+            &limits,
+        )?;
+        let frame = &orientation.publication.situation.capsule.frame;
+        let coverage = frame
+            .knowledge_cells
+            .iter()
+            .find(|cell| cell.claim_id() == CLAIM_COVERAGE)
+            .map(|cell| cell.knowledge_state());
+        let uncertified = frame
+            .world_envelope
+            .adversarial_residuals
+            .iter()
+            .any(|world| world.protected && world.world_id == "world:events:absence-uncertified");
+        let durable = coverage == Some(KnowledgeState::Known) && !uncertified;
+        assert_eq!(
+            field(&report, "absence_certified")?,
+            durable.to_string(),
+            "{scenario}"
+        );
+        if scenario == "quiet" {
+            // No coverage_witness ledger record, and the rejected event keeps its residual.
+            assert_eq!(coverage, Some(KnowledgeState::NotObservable));
+            assert!(uncertified);
+            assert!(
+                report
+                    .contains(r#""absence":{"not_certifiable":"coverage_not_durably_certified"}"#)
+            );
+        }
     }
     Ok(())
 }
