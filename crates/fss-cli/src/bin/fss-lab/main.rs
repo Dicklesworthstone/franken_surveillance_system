@@ -393,11 +393,12 @@ mod tests {
     /// `absence-uncertified` residual world.
     ///
     /// Review r13 rejected the r12 repair (a lab-minted copy of the witness re-anchored to the
-    /// final anchor). The situation is again offered exactly the stored witness, so the compiled
-    /// situation and the sealed handoff, and with them `situation_digest` and `handoff_digest`,
-    /// are byte-identical to this report again. What changes is the label, which now follows
-    /// both readers: quiet is a protected residual, not certified, for
-    /// `coverage_not_durably_certified`, with the one affordance that names it.
+    /// final anchor). Since fss-tch7u the stored witness is derived by the source coverage
+    /// producer and retained in a committed `coverage_witness` record (one more commit, and the
+    /// record in the slot), and both readers certify it under the stored-witness rule. So the
+    /// label is main's again, honestly earned; what changes is the ledger position and roots,
+    /// the situation and handoff (which now name the retained record), and the affordance reason,
+    /// which no longer claims more than the No-Claim allows.
     const MAIN_QUIET_REPORT: &str = concat!(
         r#"{"schema":"fss.lab.scenario.v2","scenario":"quiet","ledger_sequence":2"#,
         r#","anchor_sequence":2"#,
@@ -421,19 +422,35 @@ mod tests {
     );
     const MAIN_QUIET_REPORT_SHA256: &str =
         "sha256:0ea57fbc46768ac900a6dd961628a2a3e9034e93db4a58e9777195201bfdaee7";
-    /// Quiet's label as main recorded it, and as both readers now give it.
-    const QUIET_LABEL_REPLACEMENTS: [(&str, &str); 3] = [
+    /// Quiet's report as main recorded it, and what retaining its witness changes (fss-tch7u).
+    /// The label (`certified_quiet`, `quiet`, `absence_certified`, `"absence":"certified"`) is
+    /// main's, unchanged.
+    const QUIET_LABEL_REPLACEMENTS: [(&str, &str); 8] = [
+        (r#""ledger_sequence":2"#, r#""ledger_sequence":3"#),
+        (r#""anchor_sequence":2"#, r#""anchor_sequence":3"#),
         (
-            r#","envelope":"certified_quiet","event_disposition":"quiet","absence_certified":true"#,
-            r#","envelope":"protected_residual","event_disposition":"protected_residual","absence_certified":false"#,
+            r#""ledger_anchor_root":"sha256:8d90f17cdfd93b708bf776055a4afb4eaf1aa53a6098ea117fe8148b490e660e""#,
+            r#""ledger_anchor_root":"sha256:bfde780282050d7d1b422dc7f073067064b3c2b88cd05f258295250eb414580c""#,
         ),
         (
-            r#""knowledge":{"absence":"certified","#,
-            r#""knowledge":{"absence":{"not_certifiable":"coverage_not_durably_certified"},"#,
+            r#""anchor_root":"sha256:8d90f17cdfd93b708bf776055a4afb4eaf1aa53a6098ea117fe8148b490e660e""#,
+            r#""anchor_root":"sha256:bfde780282050d7d1b422dc7f073067064b3c2b88cd05f258295250eb414580c""#,
+        ),
+        (
+            r#"_root":"sha256:a8c1343e01a56abdd91d587fdc5a8f9755496c62928dc1b29888c0dd7478e5bb","source_root":"sha256:a8c1343e01a56abdd91d587fdc5a8f9755496c62928dc1b29888c0dd7478e5bb""#,
+            r#"_root":"sha256:33b100df60a33aca07671a644f2532a189f1ca852953e4cccf6c1e73b2cd29ed","source_root":"sha256:33b100df60a33aca07671a644f2532a189f1ca852953e4cccf6c1e73b2cd29ed""#,
         ),
         (
             r#""reason":"continuous authorized coverage certifies no unknown person""#,
-            r#""reason":"the retained coverage witness is not certified by the durable stack; absence stays unknown and the absence-uncertified residual is preserved""#,
+            r#""reason":"retained continuous authorized coverage observed no unknown person during the interval""#,
+        ),
+        (
+            r#""situation_digest":"sha256:6528b0cd924f2cff013ea6a2dc4630e71ecfbc6ceac1524ef967660f5773e2f2""#,
+            r#""situation_digest":"sha256:987067d3c2e316187fea110eb0321107190d6813e5ac8edc30d2275aa68ecf80""#,
+        ),
+        (
+            r#""handoff_digest":"sha256:c962ba470af5c364b8a67918f20c1d3da1cbf5a2c26d3c54f40c33a1a80e245a""#,
+            r#""handoff_digest":"sha256:90bb5469e92ec595e50cf2d2d2640c3042ca2a3d3e06525ff3585bff9db0a8e3""#,
         ),
     ];
 
@@ -452,7 +469,8 @@ mod tests {
         let _ = std::fs::remove_dir_all(&root);
         let matrix = matrix.unwrap_or_default();
 
-        // Quiet differs from main in exactly its label; its situation and handoff are main's.
+        // Quiet differs from main exactly by its retained coverage record (fss-tch7u); its label
+        // is main's.
         let quiet_start = matrix
             .find("{\"schema\":\"fss.lab.scenario.v2\",\"scenario\":\"quiet\"")
             .unwrap_or(matrix.len());

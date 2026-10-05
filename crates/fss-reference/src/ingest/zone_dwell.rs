@@ -121,8 +121,12 @@ fn finish(
         if spans.len() == MAX_DWELL_EPISODES {
             return Err(DwellError::Limit);
         }
-        let first = samples[run.first].capture.ok_or(DwellError::InvalidSamples)?;
-        let last = samples[run.last].capture.ok_or(DwellError::InvalidSamples)?;
+        let first = samples[run.first]
+            .capture
+            .ok_or(DwellError::InvalidSamples)?;
+        let last = samples[run.last]
+            .capture
+            .ok_or(DwellError::InvalidSamples)?;
         spans.push(DwellSpan {
             first: run.first,
             triggered,
@@ -168,7 +172,9 @@ pub fn dwell_spans(
             finish(run.take(), samples, &mut spans)?;
         }
         if let Some(active) = &run {
-            let previous = samples[active.last].capture.ok_or(DwellError::InvalidSamples)?;
+            let previous = samples[active.last]
+                .capture
+                .ok_or(DwellError::InvalidSamples)?;
             if capture.earliest < previous.earliest || capture.latest < previous.latest {
                 return Err(DwellError::ClockReversed);
             }
@@ -177,10 +183,17 @@ pub fn dwell_spans(
                 finish(run.take(), samples, &mut spans)?;
             }
         }
-        let active = run.get_or_insert(Run { first: i, last: i, count: 0, trigger: None });
+        let active = run.get_or_insert(Run {
+            first: i,
+            last: i,
+            count: 0,
+            trigger: None,
+        });
         active.last = i;
         active.count += 1;
-        let first = samples[active.first].capture.ok_or(DwellError::InvalidSamples)?;
+        let first = samples[active.first]
+            .capture
+            .ok_or(DwellError::InvalidSamples)?;
         let duration = elapsed(first, capture);
         if active.trigger.is_none()
             && active.count >= policy.minimum_observations

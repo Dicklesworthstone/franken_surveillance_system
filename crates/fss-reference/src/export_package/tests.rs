@@ -25,7 +25,8 @@ impl Directory {
     fn new(label: &str) -> Test<Self> {
         for n in 0..100 {
             let path = std::env::temp_dir().join(format!(
-                "fss-portable-export-{label}-{}-{n}", std::process::id()
+                "fss-portable-export-{label}-{}-{n}",
+                std::process::id()
             ));
             match fs::create_dir(&path) {
                 Ok(()) => return Ok(Self(path)),
@@ -57,10 +58,17 @@ impl Fixture {
             trace_id: "trace:portable-export".into(),
             operation_id: OperationId::parse("operation:portable-export")?,
             principal: ACTOR.into(),
-            capabilities: vec!["ADP-REPLAY-001".into(), CAP_EXPORT_PREPARE.into(), CAP_EXPORT_COMMIT.into()],
+            capabilities: vec![
+                "ADP-REPLAY-001".into(),
+                CAP_EXPORT_PREPARE.into(),
+                CAP_EXPORT_COMMIT.into(),
+            ],
             deadline: None,
             priority: 10,
-            budgets: BudgetVector::builder().bytes(64 * 1024 * 1024).storage_operations(8192).build()?,
+            budgets: BudgetVector::builder()
+                .bytes(64 * 1024 * 1024)
+                .storage_operations(8192)
+                .build()?,
             privacy_scope: "privacy:redacted-export-test".into(),
             retention_scope: "retention:test".into(),
             anchor_universe: ContentDigest::sha256(SITE.as_bytes()),
@@ -99,9 +107,13 @@ impl Fixture {
         };
         deployment.stage_payload(b"private raw payload sentinel")?;
         deployment.stage_payload(b"private model payload sentinel")?;
-        deployment.publish_event(&ReferencePolicyDecision {
-            event: event.clone(), action: ReferencePolicyAction::Hold,
-        }, &cx)?;
+        deployment.publish_event(
+            &ReferencePolicyDecision {
+                event: event.clone(),
+                action: ReferencePolicyAction::Hold,
+            },
+            &cx,
+        )?;
         let request = EventExportRequest {
             event_id: event.event_id.clone(),
             expected_revision: event.revision_digest(),
@@ -109,17 +121,35 @@ impl Fixture {
             purpose: "Owner review".into(),
             expires_at: TimestampNs(expiry),
         };
-        Ok(Self { deployment, auth, cx, request, _directory: directory })
+        Ok(Self {
+            deployment,
+            auth,
+            cx,
+            request,
+            _directory: directory,
+        })
     }
 
     fn commit(&mut self) -> Test<ContentDigest> {
         let preview = preview_export(&self.deployment, &self.request, &self.auth, &self.cx)?;
-        commit_export(&mut self.deployment, &self.request, preview.approval(), &self.auth, &self.cx)?;
+        commit_export(
+            &mut self.deployment,
+            &self.request,
+            preview.approval(),
+            &self.auth,
+            &self.cx,
+        )?;
         Ok(preview.root())
     }
 
     fn package(&self, root: ContentDigest) -> Test<PreparedPackage> {
-        Ok(prepare_package(&self.deployment, root, &scope(30, 40)?, &self.auth, &self.cx)?)
+        Ok(prepare_package(
+            &self.deployment,
+            root,
+            &scope(30, 40)?,
+            &self.auth,
+            &self.cx,
+        )?)
     }
 
     fn snapshot(&self) -> Test<(Vec<u8>, Vec<u8>, Vec<ContentDigest>)> {
@@ -151,40 +181,86 @@ fn committed_package_is_exact_deterministic_redacted_and_independently_readable(
     let before = fixture.snapshot()?;
     let package = fixture.package(root)?;
     assert_eq!(fixture.package(root)?.bytes(), package.bytes());
-    assert_eq!(fixture.snapshot()?, before, "preparation writes no authority or objects");
+    assert_eq!(
+        fixture.snapshot()?,
+        before,
+        "preparation writes no authority or objects"
+    );
     let verified = verify_package(package.bytes(), root, &scope(30, 40)?)?;
     assert_eq!(verified, *package.verified());
     assert_eq!(verified.root(), root);
-    assert_eq!(verified.package_digest(), ContentDigest::sha256(package.bytes()));
-    assert_eq!(verified.record().manifest()?.children(), &[verified.record().digest()]);
+    assert_eq!(
+        verified.package_digest(),
+        ContentDigest::sha256(package.bytes())
+    );
+    assert_eq!(
+        verified.record().manifest()?.children(),
+        &[verified.record().digest()]
+    );
     let json = verified.record().to_redacted_json();
     assert!(json.contains("\"state\":\"indeterminate\""));
     assert!(json.contains("\"raw_media_included\":false"));
-    for forbidden in ["private-zone-name", "private-track-name", "sensor:private-front-door",
-        "private raw payload sentinel", "private model payload sentinel"] {
+    for forbidden in [
+        "private-zone-name",
+        "private-track-name",
+        "sensor:private-front-door",
+        "private raw payload sentinel",
+        "private model payload sentinel",
+    ] {
         assert!(!json.contains(forbidden));
-        assert!(!package.bytes().windows(forbidden.len()).any(|window| window == forbidden.as_bytes()));
+        assert!(
+            !package
+                .bytes()
+                .windows(forbidden.len())
+                .any(|window| window == forbidden.as_bytes())
+        );
     }
     drop(fixture);
-    assert_eq!(verify_package(package.bytes(), root, &scope(30, 40)?)?, verified);
+    assert_eq!(
+        verify_package(package.bytes(), root, &scope(30, 40)?)?,
+        verified
+    );
     Ok(())
 }
 
 #[test]
 fn preview_and_root_only_publication_are_not_committed_export_authority() -> Test {
     let mut fixture = Fixture::new("uncommitted", 100)?;
-    let preview = preview_export(&fixture.deployment, &fixture.request, &fixture.auth, &fixture.cx)?;
+    let preview = preview_export(
+        &fixture.deployment,
+        &fixture.request,
+        &fixture.auth,
+        &fixture.cx,
+    )?;
     assert!(fixture.package(preview.root()).is_err());
     let record = preview.record();
     let manifest = record.manifest()?;
     let slot = record.slot()?;
-    fixture.deployment.publisher_mut().stage_object(&record.to_bytes())?;
-    fixture.deployment.publisher_mut().stage_manifest(&slot, &manifest)?;
-    fixture.deployment.publish_and_commit(&slot, &manifest,
-        CaptureInterval::new(TimestampNs(10), TimestampNs(20))?, &fixture.cx)?;
+    fixture
+        .deployment
+        .publisher_mut()
+        .stage_object(&record.to_bytes())?;
+    fixture
+        .deployment
+        .publisher_mut()
+        .stage_manifest(&slot, &manifest)?;
+    fixture.deployment.publish_and_commit(
+        &slot,
+        &manifest,
+        CaptureInterval::new(TimestampNs(10), TimestampNs(20))?,
+        &fixture.cx,
+    )?;
     let before = fixture.snapshot()?;
-    assert!(matches!(prepare_package(&fixture.deployment, preview.root(), &scope(30, 40)?,
-        &fixture.auth, &fixture.cx), Err(PackageError::Export(ExportError::CustodyMismatch))));
+    assert!(matches!(
+        prepare_package(
+            &fixture.deployment,
+            preview.root(),
+            &scope(30, 40)?,
+            &fixture.auth,
+            &fixture.cx
+        ),
+        Err(PackageError::Export(ExportError::CustodyMismatch))
+    ));
     assert_eq!(fixture.snapshot()?, before);
     Ok(())
 }
@@ -197,12 +273,18 @@ fn all_truncations_trailing_bytes_and_header_or_payload_corruption_are_refused()
     let bytes = package.bytes();
     let admitted = scope(30, 40)?;
     for end in 0..bytes.len() {
-        assert!(verify_package(&bytes[..end], root, &admitted).is_err(), "prefix {end}");
+        assert!(
+            verify_package(&bytes[..end], root, &admitted).is_err(),
+            "prefix {end}"
+        );
     }
     for index in [0, 8, 12, 44, PACKAGE_HEADER_BYTES, bytes.len() - 1] {
         let mut corrupted = bytes.to_vec();
         corrupted[index] ^= 1;
-        assert!(verify_package(&corrupted, root, &admitted).is_err(), "byte {index}");
+        assert!(
+            verify_package(&corrupted, root, &admitted).is_err(),
+            "byte {index}"
+        );
     }
     let mut trailing = bytes.to_vec();
     trailing.push(0);
@@ -216,19 +298,33 @@ fn recomputing_a_checksum_cannot_replace_the_independent_trust_root() -> Test {
     let root = fixture.commit()?;
     let package = fixture.package(root)?;
     let mut forged = package.bytes().to_vec();
-    let index = forged.windows(b"Owner review".len()).position(|w| w == b"Owner review")
+    let index = forged
+        .windows(b"Owner review".len())
+        .position(|w| w == b"Owner review")
         .ok_or("fixture purpose absent")?;
     forged[index] = b'P';
     reseal(&mut forged);
-    assert!(matches!(verify_package(&forged, root, &scope(30, 40)?), Err(PackageError::RootMismatch)));
+    assert!(matches!(
+        verify_package(&forged, root, &scope(30, 40)?),
+        Err(PackageError::RootMismatch)
+    ));
     let end = forged.len() - PACKAGE_TRAILER_BYTES;
     let payload = &forged[PACKAGE_HEADER_BYTES..end];
     let replacement = EventExportRecord::from_bytes(payload, ContentDigest::sha256(payload))?;
     forged[12..44].copy_from_slice(&replacement.manifest()?.root().bytes());
     reseal(&mut forged);
-    assert!(matches!(verify_package(&forged, root, &scope(30, 40)?), Err(PackageError::RootMismatch)));
-    assert!(matches!(verify_package(package.bytes(), ContentDigest::sha256(b"another root"),
-        &scope(30, 40)?), Err(PackageError::RootMismatch)));
+    assert!(matches!(
+        verify_package(&forged, root, &scope(30, 40)?),
+        Err(PackageError::RootMismatch)
+    ));
+    assert!(matches!(
+        verify_package(
+            package.bytes(),
+            ContentDigest::sha256(b"another root"),
+            &scope(30, 40)?
+        ),
+        Err(PackageError::RootMismatch)
+    ));
     Ok(())
 }
 
@@ -239,13 +335,27 @@ fn recipient_and_exclusive_expiry_are_enforced_without_time_midpoints() -> Test 
     let package = fixture.package(root)?;
     let mut other = scope(30, 40)?;
     other.recipient = "recipient:other".into();
-    assert!(matches!(verify_package(package.bytes(), root, &other), Err(PackageError::RecipientMismatch)));
+    assert!(matches!(
+        verify_package(package.bytes(), root, &other),
+        Err(PackageError::RecipientMismatch)
+    ));
     assert!(verify_package(package.bytes(), root, &scope(99, 99)?).is_ok());
-    assert!(matches!(verify_package(package.bytes(), root, &scope(90, 100)?), Err(PackageError::ExpiryUncertain)));
-    assert!(matches!(verify_package(package.bytes(), root, &scope(100, 100)?), Err(PackageError::Expired)));
-    assert!(matches!(verify_package(package.bytes(), root, &scope(101, 200)?), Err(PackageError::Expired)));
-    assert!(matches!(verify_package(package.bytes(), root, &scope(i128::MIN, i128::MAX)?),
-        Err(PackageError::ExpiryUncertain)));
+    assert!(matches!(
+        verify_package(package.bytes(), root, &scope(90, 100)?),
+        Err(PackageError::ExpiryUncertain)
+    ));
+    assert!(matches!(
+        verify_package(package.bytes(), root, &scope(100, 100)?),
+        Err(PackageError::Expired)
+    ));
+    assert!(matches!(
+        verify_package(package.bytes(), root, &scope(101, 200)?),
+        Err(PackageError::Expired)
+    ));
+    assert!(matches!(
+        verify_package(package.bytes(), root, &scope(i128::MIN, i128::MAX)?),
+        Err(PackageError::ExpiryUncertain)
+    ));
     Ok(())
 }
 
@@ -255,14 +365,22 @@ fn signed_extremes_and_invalid_scope_never_overflow_or_read_a_package() -> Test 
     let root = fixture.commit()?;
     let package = fixture.package(root)?;
     assert!(verify_package(package.bytes(), root, &scope(i128::MIN, i128::MAX - 1)?).is_ok());
-    assert!(matches!(verify_package(package.bytes(), root, &scope(i128::MAX, i128::MAX)?),
-        Err(PackageError::Expired)));
+    assert!(matches!(
+        verify_package(package.bytes(), root, &scope(i128::MAX, i128::MAX)?),
+        Err(PackageError::Expired)
+    ));
     let mut invalid = scope(30, 40)?;
     invalid.attested_now.earliest = TimestampNs(50);
-    assert!(matches!(verify_package(&[], root, &invalid), Err(PackageError::InvalidScope)));
+    assert!(matches!(
+        verify_package(&[], root, &invalid),
+        Err(PackageError::InvalidScope)
+    ));
     invalid = scope(30, 40)?;
     invalid.recipient = "x".repeat(MAX_RECIPIENT_BYTES + 1);
-    assert!(matches!(verify_package(&[], root, &invalid), Err(PackageError::InvalidScope)));
+    assert!(matches!(
+        verify_package(&[], root, &invalid),
+        Err(PackageError::InvalidScope)
+    ));
     Ok(())
 }
 
@@ -270,10 +388,14 @@ fn signed_extremes_and_invalid_scope_never_overflow_or_read_a_package() -> Test 
 fn format_bound_and_untrusted_lengths_are_checked_before_record_decode() -> Test {
     let root = ContentDigest::sha256(b"root");
     let admitted = scope(30, 40)?;
-    assert!(matches!(verify_package(&vec![0; MAX_PACKAGE_BYTES + 1], root, &admitted),
-        Err(PackageError::Limit)));
-    assert!(matches!(verify_package(&vec![0; MAX_PACKAGE_BYTES], root, &admitted),
-        Err(PackageError::Malformed)));
+    assert!(matches!(
+        verify_package(&vec![0; MAX_PACKAGE_BYTES + 1], root, &admitted),
+        Err(PackageError::Limit)
+    ));
+    assert!(matches!(
+        verify_package(&vec![0; MAX_PACKAGE_BYTES], root, &admitted),
+        Err(PackageError::Malformed)
+    ));
     let mut fixture = Fixture::new("length", 100)?;
     let root = fixture.commit()?;
     let package = fixture.package(root)?;
@@ -281,12 +403,18 @@ fn format_bound_and_untrusted_lengths_are_checked_before_record_decode() -> Test
         let mut bytes = package.bytes().to_vec();
         bytes[44..48].copy_from_slice(&length.to_be_bytes());
         reseal(&mut bytes);
-        assert!(matches!(verify_package(&bytes, root, &admitted), Err(PackageError::Malformed)));
+        assert!(matches!(
+            verify_package(&bytes, root, &admitted),
+            Err(PackageError::Malformed)
+        ));
     }
     let mut bytes = package.bytes().to_vec();
     bytes[8..12].copy_from_slice(&2_u32.to_be_bytes());
     reseal(&mut bytes);
-    assert!(matches!(verify_package(&bytes, root, &admitted), Err(PackageError::Malformed)));
+    assert!(matches!(
+        verify_package(&bytes, root, &admitted),
+        Err(PackageError::Malformed)
+    ));
     Ok(())
 }
 
@@ -298,30 +426,65 @@ fn both_capabilities_original_actor_and_context_scope_are_required() -> Test {
     for cap in [CAP_EXPORT_PREPARE, CAP_EXPORT_COMMIT] {
         let mut denied = fixture.auth.clone();
         denied.capabilities.retain(|c| c != cap);
-        assert!(matches!(prepare_package(&fixture.deployment, root, &scope(30, 40)?, &denied, &fixture.cx),
-            Err(PackageError::Unauthorized)));
+        assert!(matches!(
+            prepare_package(
+                &fixture.deployment,
+                root,
+                &scope(30, 40)?,
+                &denied,
+                &fixture.cx
+            ),
+            Err(PackageError::Unauthorized)
+        ));
     }
     let mut other = fixture.auth.clone();
     other.principal = "principal:other".into();
-    assert!(matches!(prepare_package(&fixture.deployment, root, &scope(30, 40)?, &other, &fixture.cx),
-        Err(PackageError::Unauthorized)));
+    assert!(matches!(
+        prepare_package(
+            &fixture.deployment,
+            root,
+            &scope(30, 40)?,
+            &other,
+            &fixture.cx
+        ),
+        Err(PackageError::Unauthorized)
+    ));
     other = fixture.auth.clone();
     other.anchor_universe = ContentDigest::sha256(b"another site");
-    assert!(matches!(prepare_package(&fixture.deployment, root, &scope(30, 40)?, &other, &fixture.cx),
-        Err(PackageError::Unauthorized)));
+    assert!(matches!(
+        prepare_package(
+            &fixture.deployment,
+            root,
+            &scope(30, 40)?,
+            &other,
+            &fixture.cx
+        ),
+        Err(PackageError::Unauthorized)
+    ));
     assert_eq!(fixture.snapshot()?, before);
     Ok(())
 }
 
 #[test]
 fn cancellation_at_each_package_boundary_returns_no_package_and_writes_nothing() -> Test {
-    for (index, stage) in ["export_package:read", "export_package:ready"].iter().enumerate() {
+    for (index, stage) in ["export_package:read", "export_package:ready"]
+        .iter()
+        .enumerate()
+    {
         let mut fixture = Fixture::new(&format!("cancel-{index}"), 100)?;
         let root = fixture.commit()?;
         let before = fixture.snapshot()?;
         fixture.cx.set_cancel_at_checkpoint(stage);
-        assert!(matches!(prepare_package(&fixture.deployment, root, &scope(30, 40)?,
-            &fixture.auth, &fixture.cx), Err(PackageError::Cancelled)));
+        assert!(matches!(
+            prepare_package(
+                &fixture.deployment,
+                root,
+                &scope(30, 40)?,
+                &fixture.auth,
+                &fixture.cx
+            ),
+            Err(PackageError::Cancelled)
+        ));
         assert_eq!(fixture.snapshot()?, before);
     }
     Ok(())

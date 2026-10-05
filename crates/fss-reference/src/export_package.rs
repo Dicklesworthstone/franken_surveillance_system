@@ -153,7 +153,9 @@ impl PackageError {
             Self::Cancelled => "ERR-EXPORT-CANCELLED-001",
             Self::InvalidScope | Self::Expired | Self::ExpiryUncertain => "ERR-EXPORT-REQUEST-001",
             Self::Deleted => "ERR-EVIDENCE-DELETED-001",
-            Self::Malformed | Self::RootMismatch | Self::AuthorityChanged => "ERR-EXPORT-CUSTODY-001",
+            Self::Malformed | Self::RootMismatch | Self::AuthorityChanged => {
+                "ERR-EXPORT-CUSTODY-001"
+            }
             Self::Export(error) => error.stable_id(),
         }
     }
@@ -209,7 +211,8 @@ fn encode_record(record: &EventExportRecord) -> Result<Vec<u8>, PackageError> {
     EventExportRecord::from_bytes(&payload, record.digest())?;
     let root = record.manifest()?.root();
     let length = u32::try_from(payload.len()).map_err(|_| PackageError::Limit)?;
-    let mut bytes = Vec::with_capacity(PACKAGE_HEADER_BYTES + payload.len() + PACKAGE_TRAILER_BYTES);
+    let mut bytes =
+        Vec::with_capacity(PACKAGE_HEADER_BYTES + payload.len() + PACKAGE_TRAILER_BYTES);
     bytes.extend_from_slice(&PACKAGE_MAGIC);
     bytes.extend_from_slice(&PACKAGE_VERSION.to_be_bytes());
     bytes.extend_from_slice(&root.bytes());
@@ -244,12 +247,16 @@ pub fn verify_package(
         return Err(PackageError::Malformed);
     }
     let length = u32::from_be_bytes(
-        bytes[44..48].try_into().map_err(|_| PackageError::Malformed)?,
+        bytes[44..48]
+            .try_into()
+            .map_err(|_| PackageError::Malformed)?,
     ) as usize;
     if length == 0 || length > MAX_EXPORT_RECORD_BYTES {
         return Err(PackageError::Malformed);
     }
-    let end = PACKAGE_HEADER_BYTES.checked_add(length).ok_or(PackageError::Limit)?;
+    let end = PACKAGE_HEADER_BYTES
+        .checked_add(length)
+        .ok_or(PackageError::Limit)?;
     if end.checked_add(PACKAGE_TRAILER_BYTES) != Some(bytes.len()) {
         return Err(PackageError::Malformed);
     }
@@ -287,7 +294,9 @@ pub fn prepare_package(
     cx: &ReplayCx,
 ) -> Result<PreparedPackage, PackageError> {
     scope.validate()?;
-    authority.validate().map_err(|_| PackageError::Unauthorized)?;
+    authority
+        .validate()
+        .map_err(|_| PackageError::Unauthorized)?;
     if !authority.has_capability(CAP_EXPORT_PREPARE)
         || !authority.has_capability(CAP_EXPORT_COMMIT)
         || authority.deadline.is_some()
@@ -298,8 +307,12 @@ pub fn prepare_package(
     {
         return Err(PackageError::Unauthorized);
     }
-    cx.checkpoint("export_package:read").map_err(|_| PackageError::Cancelled)?;
-    deployment.ledger().verify_durable_head().map_err(|_| PackageError::AuthorityChanged)?;
+    cx.checkpoint("export_package:read")
+        .map_err(|_| PackageError::Cancelled)?;
+    deployment
+        .ledger()
+        .verify_durable_head()
+        .map_err(|_| PackageError::AuthorityChanged)?;
     let deleted = DeletionIndex::read(deployment).map_err(|_| PackageError::AuthorityChanged)?;
     if deleted.object(export_root).is_some() {
         return Err(PackageError::Deleted);
@@ -311,10 +324,19 @@ pub fn prepare_package(
     if authority.principal != record.principal() || record.site() != deployment.site_lineage() {
         return Err(PackageError::Unauthorized);
     }
-    let hex: String = record.digest().bytes().iter().map(|b| format!("{b:02x}")).collect();
+    let hex: String = record
+        .digest()
+        .bytes()
+        .iter()
+        .map(|b| format!("{b:02x}"))
+        .collect();
     let object = ObjectId::parse(format!("{EXPORT_OBJECT_PREFIX}{hex}"))
         .map_err(|_| PackageError::AuthorityChanged)?;
-    let current = deployment.ledger().current().objects.get(&object)
+    let current = deployment
+        .ledger()
+        .current()
+        .objects
+        .get(&object)
         .ok_or(PackageError::AuthorityChanged)?;
     if current.family != FAMILY_EVIDENCE_EXPORT
         || current.generation != 1
@@ -325,8 +347,12 @@ pub fn prepare_package(
     scope.admits(&record)?;
     let bytes = encode_record(&record)?;
     let verified = verify_package(&bytes, export_root, scope)?;
-    deployment.ledger().verify_durable_head().map_err(|_| PackageError::AuthorityChanged)?;
-    cx.checkpoint("export_package:ready").map_err(|_| PackageError::Cancelled)?;
+    deployment
+        .ledger()
+        .verify_durable_head()
+        .map_err(|_| PackageError::AuthorityChanged)?;
+    cx.checkpoint("export_package:ready")
+        .map_err(|_| PackageError::Cancelled)?;
     Ok(PreparedPackage { bytes, verified })
 }
 

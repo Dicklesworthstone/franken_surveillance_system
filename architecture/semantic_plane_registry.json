@@ -364,6 +364,8 @@
     "crates/fss-reference/src/ingest/sensor_health/retained.rs": "support",
     "crates/fss-reference/src/ingest/sensor_health/tests.rs": "support",
     "crates/fss-reference/src/ingest/site_calibration.rs": "support",
+    "crates/fss-reference/src/ingest/source_coverage.rs": "support",
+    "crates/fss-reference/src/ingest/source_coverage/tests.rs": "support",
     "crates/fss-reference/src/ingest/tolerant_decode.rs": "support",
     "crates/fss-reference/src/ingest/tracker.rs": "support",
     "crates/fss-reference/src/ingest/tracker/assignment.rs": "support",

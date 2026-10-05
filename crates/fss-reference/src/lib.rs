@@ -49,10 +49,10 @@ pub mod evaluation;
 pub mod event_review;
 /// Approval-gated, redacted P5 event evidence export roots.
 pub mod evidence_export;
-/// Bounded portable redacted exports, verified offline against an independently supplied root.
-pub mod export_package;
 /// Executor-backed activity observations over decoded pixels (fss-2h5zq.51); cognition only.
 pub mod executor_activity;
+/// Bounded portable redacted exports, verified offline against an independently supplied root.
+pub mod export_package;
 mod extrinsics;
 /// Durable native reconnect boundaries and bounded cold history verification.
 pub mod http_reconnect_history;

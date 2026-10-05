@@ -10,9 +10,9 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::path::PathBuf;
 
 use fss_core::{
-    CanonicalEncode, CanonicalEncoder, CaptureInterval, ContentDigest, DecisionPath,
-    EventEvidence, EventHypothesis, EventId, EventKind, EventState, EvidenceClass,
-    EvidenceEdgeRelation, ObjectId, ProbabilityInterval, SensorId,
+    CanonicalEncode, CanonicalEncoder, CaptureInterval, ContentDigest, DecisionPath, EventEvidence,
+    EventHypothesis, EventId, EventKind, EventState, EvidenceClass, EvidenceEdgeRelation, ObjectId,
+    ProbabilityInterval, SensorId,
 };
 use fss_object::ObjectManifest;
 use fss_publication::SlotName;
@@ -44,11 +44,14 @@ fn gate_error(error: DwellError) -> WatchError {
         DwellError::Limit => WatchError::Limit,
         DwellError::InvalidPolicy => WatchError::InvalidPlan("invalid sampled-dwell rule"),
         DwellError::InvalidSamples => WatchError::InvalidPlan("invalid sampled-dwell sequence"),
-        DwellError::ClockReversed => WatchError::InvalidPlan("sampled-dwell capture clock reversed"),
+        DwellError::ClockReversed => {
+            WatchError::InvalidPlan("sampled-dwell capture clock reversed")
+        }
     }
 }
 fn checkpoint(cx: &ReplayCx, stage: &'static str) -> Result<()> {
-    cx.checkpoint(stage).map_err(|_| RecordedDecodeError::Cancelled.into())
+    cx.checkpoint(stage)
+        .map_err(|_| RecordedDecodeError::Cancelled.into())
 }
 fn hex(digest: ContentDigest) -> String {
     digest.bytes().iter().map(|b| format!("{b:02x}")).collect()
@@ -81,7 +84,8 @@ fn rule_bytes(policy: DwellPolicy) -> Vec<u8> {
 // Boundary cells are excluded, never guessed to be inside. This is not a Kalman covariance bound.
 fn inside(observation: &WatchObservation, zone: &WatchZone) -> bool {
     let [cx, cy, width, height] = observation.track_box;
-    width > 0 && height > 0
+    width > 0
+        && height > 0
         && i128::from(cx) > i128::from(zone.x)
         && i128::from(cy) > i128::from(zone.y)
         && i128::from(cx) < i128::from(zone.x) + i128::from(zone.width)
@@ -95,7 +99,9 @@ struct Observation {
     bytes: Vec<u8>,
 }
 impl Observation {
-    fn digest(&self) -> ContentDigest { ContentDigest::sha256(&self.bytes) }
+    fn digest(&self) -> ContentDigest {
+        ContentDigest::sha256(&self.bytes)
+    }
 }
 
 /// One maximal observed episode and its exact, separately approved event proposal.
@@ -119,19 +125,29 @@ pub struct DwellCandidate {
 }
 impl DwellCandidate {
     /// Immutable hypothesis, always unclassified, indeterminate and single-sensor.
-    pub fn event(&self) -> &EventHypothesis { &self.event }
+    pub fn event(&self) -> &EventHypothesis {
+        &self.event
+    }
     /// Exact approval binds the complete event revision and source-closed provenance root.
-    pub const fn proposal_digest(&self) -> ContentDigest { self.approval }
+    pub const fn proposal_digest(&self) -> ContentDigest {
+        self.approval
+    }
     /// First, threshold-crossing and final retained segment of this episode.
     pub const fn segments(&self) -> [usize; 3] {
         [self.first_segment, self.trigger_segment, self.last_segment]
     }
     /// Exact temporal accounting over actual matched samples.
-    pub const fn span(&self) -> DwellSpan { self.span }
+    pub const fn span(&self) -> DwellSpan {
+        self.span
+    }
     /// Current publication state; a retry never creates another event.
-    pub const fn status(&self) -> WatchStatus { self.status }
+    pub const fn status(&self) -> WatchStatus {
+        self.status
+    }
     /// Root retaining rule, analysis, observation records and original source custody.
-    pub fn provenance_root(&self) -> ContentDigest { self.manifest.root() }
+    pub fn provenance_root(&self) -> ContentDigest {
+        self.manifest.root()
+    }
 }
 
 /// A sealed-by-construction analysis. Callers cannot supply or mutate candidate evidence.
@@ -168,26 +184,45 @@ impl DwellReport {
         checkpoint(cx, "recorded_dwell:analyze")?;
         rule.validate().map_err(gate_error)?;
         plan.validate()?;
-        let retained = RetainedFileImport::open(deployment, plan.import_identity, limits.read_limits, cx)?;
+        let retained =
+            RetainedFileImport::open(deployment, plan.import_identity, limits.read_limits, cx)?;
         if retained.manifest().capture_time_label != "operator_assumption" {
-            return Err(WatchError::InvalidPlan("sampled dwell requires explicit capture-time hints"));
+            return Err(WatchError::InvalidPlan(
+                "sampled dwell requires explicit capture-time hints",
+            ));
         }
         let import_root = retained.import_root();
         let (capsule, _) = source_capsule(deployment, &retained, plan.first_segment)?;
-        let watch = WatchReport::analyze_with_options(deployment, plan, limits, detector, options, cx)?;
+        let watch =
+            WatchReport::analyze_with_options(deployment, plan, limits, detector, options, cx)?;
         let frames = watch.frames();
-        let omissions = retained.manifest().omission_spans.iter().any(|span| span.len > 0);
-        let first_gap = retained.manifest().segment_spans.iter()
+        let omissions = retained
+            .manifest()
+            .omission_spans
+            .iter()
+            .any(|span| span.len > 0);
+        let first_gap = retained
+            .manifest()
+            .segment_spans
+            .iter()
             .find(|span| span.segment_index > 0 && span.gap_before)
             .map(|span| span.segment_index);
-        let reliable: Vec<bool> = frames.iter().map(|frame| {
-            !omissions && first_gap.is_none_or(|gap| frame.segment < gap)
-        }).collect();
-        let masked: BTreeSet<String> = plan.zones.iter().filter(|zone| {
-            watch.privacy_mask().policy().is_some_and(|policy| {
-                policy.zone_masking([zone.x, zone.y, zone.width, zone.height]).any()
+        let reliable: Vec<bool> = frames
+            .iter()
+            .map(|frame| !omissions && first_gap.is_none_or(|gap| frame.segment < gap))
+            .collect();
+        let masked: BTreeSet<String> = plan
+            .zones
+            .iter()
+            .filter(|zone| {
+                watch.privacy_mask().policy().is_some_and(|policy| {
+                    policy
+                        .zone_masking([zone.x, zone.y, zone.width, zone.height])
+                        .any()
+                })
             })
-        }).map(|zone| zone.zone_id.clone()).collect();
+            .map(|zone| zone.zone_id.clone())
+            .collect();
         let mut e = CanonicalEncoder::new();
         e.text(ANALYSIS_DOMAIN);
         e.bytes(&rule_bytes(rule));
@@ -203,7 +238,9 @@ impl DwellReport {
             e.bool(*reliable);
         }
         e.u64(watch.tracking_restarts().len() as u64);
-        for segment in watch.tracking_restarts() { e.u64(*segment as u64); }
+        for segment in watch.tracking_restarts() {
+            e.u64(*segment as u64);
+        }
         e.u64(watch.decode_refusals().len() as u64);
         for refusal in watch.decode_refusals() {
             e.u64(refusal.first_segment as u64);
@@ -227,23 +264,39 @@ impl DwellReport {
             if !seen.insert((candidate.zone_id.clone(), candidate.track_id)) {
                 return Err(WatchError::Conflict);
             }
-            let zone = plan.zones.iter().find(|zone| zone.zone_id == candidate.zone_id)
+            let zone = plan
+                .zones
+                .iter()
+                .find(|zone| zone.zone_id == candidate.zone_id)
                 .ok_or(WatchError::Conflict)?;
-            let entry = frames.iter().position(|frame| frame.segment == candidate.entry_segment)
+            let entry = frames
+                .iter()
+                .position(|frame| frame.segment == candidate.entry_segment)
                 .ok_or(WatchError::Conflict)?;
-            let by_segment: BTreeMap<_, _> = candidate.observations.iter()
-                .map(|observation| (observation.segment, observation)).collect();
-            if by_segment.len() != candidate.observations.len() { return Err(WatchError::Conflict); }
-            let samples: Vec<_> = frames.iter().enumerate().map(|(position, frame)| {
-                DwellSample {
+            let by_segment: BTreeMap<_, _> = candidate
+                .observations
+                .iter()
+                .map(|observation| (observation.segment, observation))
+                .collect();
+            if by_segment.len() != candidate.observations.len() {
+                return Err(WatchError::Conflict);
+            }
+            let samples: Vec<_> = frames
+                .iter()
+                .enumerate()
+                .map(|(position, frame)| DwellSample {
                     position,
                     capture: reliable[position].then_some(frame.capture),
-                    matched_inside: position >= entry && !masked.contains(&zone.zone_id)
-                        && by_segment.get(&frame.segment).is_some_and(|o| inside(o, zone)),
+                    matched_inside: position >= entry
+                        && !masked.contains(&zone.zone_id)
+                        && by_segment
+                            .get(&frame.segment)
+                            .is_some_and(|o| inside(o, zone)),
                     discontinuity: watch.tracking_restarts().contains(&frame.segment)
-                        || (position > 0 && frames[position - 1].segment.checked_add(1) != Some(frame.segment)),
-                }
-            }).collect();
+                        || (position > 0
+                            && frames[position - 1].segment.checked_add(1) != Some(frame.segment)),
+                })
+                .collect();
             // Retain the full selection trace, including excluded and unmatched frames. It is
             // derived cognition; source capsule identities and full rules make replay inspectable.
             e.text(&candidate.zone_id);
@@ -254,11 +307,17 @@ impl DwellReport {
                 e.bool(sample.discontinuity);
                 if let Some(observation) = by_segment.get(&frame.segment) {
                     e.bool(true);
-                    for coordinate in observation.track_box { e.i128(i128::from(coordinate)); }
-                } else { e.bool(false); }
+                    for coordinate in observation.track_box {
+                        e.i128(i128::from(coordinate));
+                    }
+                } else {
+                    e.bool(false);
+                }
             }
             for span in dwell_spans(&samples, rule).map_err(gate_error)? {
-                if pending.len() == MAX_WATCH_CANDIDATES { return Err(WatchError::Limit); }
+                if pending.len() == MAX_WATCH_CANDIDATES {
+                    return Err(WatchError::Limit);
+                }
                 let mut observations = Vec::new();
                 for frame in &frames[span.first..=span.last] {
                     let observed = by_segment.get(&frame.segment).ok_or(WatchError::Conflict)?;
@@ -272,80 +331,147 @@ impl DwellReport {
                     record.digest(frame.capsule_digest);
                     record.digest(frame.luma_digest);
                     frame.capture.encode_canonical(&mut record);
-                    for coordinate in observed.track_box { record.i128(i128::from(coordinate)); }
+                    for coordinate in observed.track_box {
+                        record.i128(i128::from(coordinate));
+                    }
                     observations.push(Observation {
                         frame: WatchFrame {
-                            segment: frame.segment, capsule_digest: frame.capsule_digest,
-                            capture: frame.capture, luma_digest: frame.luma_digest, boxes: Vec::new(),
+                            segment: frame.segment,
+                            capsule_digest: frame.capsule_digest,
+                            capture: frame.capture,
+                            luma_digest: frame.luma_digest,
+                            boxes: Vec::new(),
                         },
-                        track_box: observed.track_box, bytes: record.finish(),
+                        track_box: observed.track_box,
+                        bytes: record.finish(),
                     });
                 }
-                let classes = candidate.class_evidence.iter().filter(|class| {
-                    observations.iter().any(|observation| observation.frame.segment == class.segment)
-                }).cloned().collect::<Vec<_>>();
+                let classes = candidate
+                    .class_evidence
+                    .iter()
+                    .filter(|class| {
+                        observations
+                            .iter()
+                            .any(|observation| observation.frame.segment == class.segment)
+                    })
+                    .cloned()
+                    .collect::<Vec<_>>();
                 pending.push(Pending {
-                    zone: zone.zone_id.clone(), track: candidate.track_id, span,
-                    trigger_segment: frames[span.triggered].segment, observations, classes,
+                    zone: zone.zone_id.clone(),
+                    track: candidate.track_id,
+                    span,
+                    trigger_segment: frames[span.triggered].segment,
+                    observations,
+                    classes,
                 });
             }
         }
-        pending.sort_by(|a, b| (a.span.triggered, a.track, &a.zone, a.span.first)
-            .cmp(&(b.span.triggered, b.track, &b.zone, b.span.first)));
+        pending.sort_by(|a, b| {
+            (a.span.triggered, a.track, &a.zone, a.span.first).cmp(&(
+                b.span.triggered,
+                b.track,
+                &b.zone,
+                b.span.first,
+            ))
+        });
         let analysis = e.finish();
         let mut candidates = Vec::with_capacity(pending.len());
         for pending in pending {
             checkpoint(cx, "recorded_dwell:prepare")?;
-            candidates.push(prepare(deployment, pending, &analysis, import_root, &capsule.sensor_id, watch.privacy_mask(), rule)?);
+            candidates.push(prepare(
+                deployment,
+                pending,
+                &analysis,
+                import_root,
+                &capsule.sensor_id,
+                watch.privacy_mask(),
+                rule,
+            )?);
         }
         let report = Self {
-            plan: plan.clone(), rule, import_root, sensor: capsule.sensor_id,
-            root: deployment.root().to_path_buf(), site: deployment.site_lineage().to_owned(),
-            limits: limits.read_limits, analysis, candidates,
+            plan: plan.clone(),
+            rule,
+            import_root,
+            sensor: capsule.sensor_id,
+            root: deployment.root().to_path_buf(),
+            site: deployment.site_lineage().to_owned(),
+            limits: limits.read_limits,
+            analysis,
+            candidates,
             unreliable_time_frames: reliable.iter().filter(|&&known| !known).count(),
-            masked_zones: masked.len(), watch,
+            masked_zones: masked.len(),
+            watch,
         };
         report.to_json(deployment.current_anchor().commit_sequence, None)?;
         Ok(report)
     }
 
     /// Complete candidate list, ordered by trigger position, track, zone and episode start.
-    pub fn candidates(&self) -> &[DwellCandidate] { &self.candidates }
+    pub fn candidates(&self) -> &[DwellCandidate] {
+        &self.candidates
+    }
     /// Canonical complete selection trace retained with every published episode.
-    pub fn analysis_digest(&self) -> ContentDigest { ContentDigest::sha256(&self.analysis) }
+    pub fn analysis_digest(&self) -> ContentDigest {
+        ContentDigest::sha256(&self.analysis)
+    }
     /// Frames excluded from duration accounting because source timing is unreliable.
-    pub const fn unreliable_time_frames(&self) -> usize { self.unreliable_time_frames }
+    pub const fn unreliable_time_frames(&self) -> usize {
+        self.unreliable_time_frames
+    }
 
     /// Publish only exact approved dwell proposals. Entry approvals cannot authorize this path.
     /// Recheck deletion, source identity and the current privacy generation before any writes.
     /// The existing root-last and event publishers own crash recovery and canonical revisions.
     pub fn publish(
-        &mut self, deployment: &mut ReferenceDeployment,
-        approvals: &BTreeSet<ContentDigest>, cx: &ReplayCx,
+        &mut self,
+        deployment: &mut ReferenceDeployment,
+        approvals: &BTreeSet<ContentDigest>,
+        cx: &ReplayCx,
     ) -> Result<usize> {
         checkpoint(cx, "recorded_dwell:revalidate")?;
-        if deployment.root() != self.root.as_path() || deployment.site_lineage() != self.site.as_str()
+        if deployment.root() != self.root.as_path()
+            || deployment.site_lineage() != self.site.as_str()
             || cx.root_dir() != deployment.root()
-        { return Err(WatchError::Conflict); }
-        deployment.ledger().verify_durable_head().map_err(crate::ReferenceError::from)?;
-        let retained = RetainedFileImport::open(deployment, self.plan.import_identity, self.limits, cx)?;
-        if retained.import_root() != self.import_root { return Err(WatchError::Conflict); }
+        {
+            return Err(WatchError::Conflict);
+        }
+        deployment
+            .ledger()
+            .verify_durable_head()
+            .map_err(crate::ReferenceError::from)?;
+        let retained =
+            RetainedFileImport::open(deployment, self.plan.import_identity, self.limits, cx)?;
+        if retained.import_root() != self.import_root {
+            return Err(WatchError::Conflict);
+        }
         let privacy = current_mask(deployment, &self.sensor).map_err(RecordedDecodeError::from)?;
         if masked_plan_digest(self.plan.digest(), &privacy) != self.watch.plan_digest() {
-            return Err(WatchError::InvalidPlan("privacy generation changed; recompute dwell proposals"));
+            return Err(WatchError::InvalidPlan(
+                "privacy generation changed; recompute dwell proposals",
+            ));
         }
         for approval in approvals {
-            if !self.candidates.iter().any(|candidate| candidate.approval == *approval) {
+            if !self
+                .candidates
+                .iter()
+                .any(|candidate| candidate.approval == *approval)
+            {
                 return Err(WatchError::StaleApproval(*approval));
             }
         }
         for candidate in &mut self.candidates {
-            if approvals.contains(&candidate.approval) { candidate.status = status(deployment, &candidate.event)?; }
+            if approvals.contains(&candidate.approval) {
+                candidate.status = status(deployment, &candidate.event)?;
+            }
         }
         self.to_json(deployment.current_anchor().commit_sequence, None)?;
         let mut published = 0;
         for candidate in &mut self.candidates {
-            if !approvals.contains(&candidate.approval) || candidate.status == WatchStatus::AlreadyPublished { continue; }
+            if !approvals.contains(&candidate.approval)
+                || candidate.status == WatchStatus::AlreadyPublished
+            {
+                continue;
+            }
             checkpoint(cx, "recorded_dwell:stage")?;
             for bytes in candidate.objects.values() {
                 checkpoint(cx, "recorded_dwell:object")?;
@@ -355,16 +481,32 @@ impl DwellReport {
             for digest in candidate.manifest.children() {
                 deployment.publisher_mut().verify_object(*digest)?;
             }
-            let existing = deployment.publisher().root(&candidate.slot).map(|root| root.root);
-            if existing.is_some_and(|root| root != candidate.manifest.root()) { return Err(WatchError::Conflict); }
-            if existing.is_none() {
-                deployment.publisher_mut().stage_manifest(&candidate.slot, &candidate.manifest)?;
+            let existing = deployment
+                .publisher()
+                .root(&candidate.slot)
+                .map(|root| root.root);
+            if existing.is_some_and(|root| root != candidate.manifest.root()) {
+                return Err(WatchError::Conflict);
             }
-            deployment.publish_and_commit(&candidate.slot, &candidate.manifest, candidate.event.interval, cx)?;
+            if existing.is_none() {
+                deployment
+                    .publisher_mut()
+                    .stage_manifest(&candidate.slot, &candidate.manifest)?;
+            }
+            deployment.publish_and_commit(
+                &candidate.slot,
+                &candidate.manifest,
+                candidate.event.interval,
+                cx,
+            )?;
             checkpoint(cx, "recorded_dwell:commit")?;
-            deployment.publish_event(&ReferencePolicyDecision {
-                event: candidate.event.clone(), action: ReferencePolicyAction::Hold,
-            }, cx)?;
+            deployment.publish_event(
+                &ReferencePolicyDecision {
+                    event: candidate.event.clone(),
+                    action: ReferencePolicyAction::Hold,
+                },
+                cx,
+            )?;
             cx.checkpoint_post_commit("recorded_dwell:published");
             candidate.status = WatchStatus::Published;
             published += 1;
@@ -374,7 +516,9 @@ impl DwellReport {
 
     /// Complete, bounded JSON. No zero-candidate result is an absence certificate.
     pub fn to_json(&self, authority_sequence: u64, approve_hint: Option<&str>) -> Result<String> {
-        if approve_hint.is_some_and(|hint| hint.len() > 8192) { return Err(WatchError::Limit); }
+        if approve_hint.is_some_and(|hint| hint.len() > 8192) {
+            return Err(WatchError::Limit);
+        }
         let candidates = self.candidates.iter().map(|candidate| {
             let command = match (candidate.status, approve_hint) {
                 (WatchStatus::Prepared, Some(hint)) => json(&format!("{hint} --approve {}", candidate.approval)),
@@ -403,25 +547,45 @@ impl DwellReport {
                 json(candidate.status.as_str()), command, class_evidence_json(&candidate.classes), evidence,
             )
         }).collect::<Vec<_>>().join(",");
-        let restarts = self.watch.tracking_restarts().iter().map(usize::to_string).collect::<Vec<_>>().join(",");
-        let result = format!(concat!(
-            "{{\"format\":\"fss.recorded_dwell_report.v1\",\"event_rule\":\"sampled_dwell\",",
-            "\"import_identity\":{},\"import_root\":{},\"watch_plan_digest\":{},\"analysis_digest\":{},",
-            "\"minimum_duration_ns\":{},\"maximum_sample_gap_ns\":{},\"minimum_observations\":{},",
-            "\"frames_decoded\":{},\"unreliable_time_frames\":{},\"masked_zone_count\":{},",
-            "\"tracking_restarts\":[{}],\"candidate_count\":{},\"candidates\":[{}],",
-            "\"authority_sequence\":{},\"privacy_mask\":{},\"event_kind\":\"unclassified\",",
-            "\"event_state\":\"indeterminate\",\"time_basis\":\"operator_assumption\",",
-            "\"continuous_occupancy_certified\":false,\"absence_certifiable\":false,",
-            "\"corroborated\":false,\"alert_authorized\":false,\"detection_quality_claim\":false{}}}"),
-            json(&self.plan.import_identity.to_text()), json(&self.import_root.to_text()),
-            json(&self.watch.plan_digest().to_text()), json(&self.analysis_digest().to_text()),
-            json(&self.rule.minimum_duration_ns.to_string()), json(&self.rule.maximum_sample_gap_ns.to_string()),
-            self.rule.minimum_observations, self.watch.frames().len(), self.unreliable_time_frames,
-            self.masked_zones, restarts, self.candidates.len(), candidates, authority_sequence,
-            self.watch.privacy_mask().to_json(), decode_refusals_json(self.watch.decode_refusals()),
+        let restarts = self
+            .watch
+            .tracking_restarts()
+            .iter()
+            .map(usize::to_string)
+            .collect::<Vec<_>>()
+            .join(",");
+        let result = format!(
+            concat!(
+                "{{\"format\":\"fss.recorded_dwell_report.v1\",\"event_rule\":\"sampled_dwell\",",
+                "\"import_identity\":{},\"import_root\":{},\"watch_plan_digest\":{},\"analysis_digest\":{},",
+                "\"minimum_duration_ns\":{},\"maximum_sample_gap_ns\":{},\"minimum_observations\":{},",
+                "\"frames_decoded\":{},\"unreliable_time_frames\":{},\"masked_zone_count\":{},",
+                "\"tracking_restarts\":[{}],\"candidate_count\":{},\"candidates\":[{}],",
+                "\"authority_sequence\":{},\"privacy_mask\":{},\"event_kind\":\"unclassified\",",
+                "\"event_state\":\"indeterminate\",\"time_basis\":\"operator_assumption\",",
+                "\"continuous_occupancy_certified\":false,\"absence_certifiable\":false,",
+                "\"corroborated\":false,\"alert_authorized\":false,\"detection_quality_claim\":false{}}}"
+            ),
+            json(&self.plan.import_identity.to_text()),
+            json(&self.import_root.to_text()),
+            json(&self.watch.plan_digest().to_text()),
+            json(&self.analysis_digest().to_text()),
+            json(&self.rule.minimum_duration_ns.to_string()),
+            json(&self.rule.maximum_sample_gap_ns.to_string()),
+            self.rule.minimum_observations,
+            self.watch.frames().len(),
+            self.unreliable_time_frames,
+            self.masked_zones,
+            restarts,
+            self.candidates.len(),
+            candidates,
+            authority_sequence,
+            self.watch.privacy_mask().to_json(),
+            decode_refusals_json(self.watch.decode_refusals()),
         );
-        if result.len() > MAX_DWELL_REPORT_BYTES { return Err(WatchError::Limit); }
+        if result.len() > MAX_DWELL_REPORT_BYTES {
+            return Err(WatchError::Limit);
+        }
         Ok(result)
     }
 }
@@ -440,8 +604,13 @@ fn insert(objects: &mut BTreeMap<ContentDigest, Vec<u8>>, bytes: Vec<u8>) -> Con
     digest
 }
 fn prepare(
-    deployment: &ReferenceDeployment, pending: Pending, analysis: &[u8],
-    import_root: ContentDigest, sensor: &SensorId, privacy: &MaskBinding, rule: DwellPolicy,
+    deployment: &ReferenceDeployment,
+    pending: Pending,
+    analysis: &[u8],
+    import_root: ContentDigest,
+    sensor: &SensorId,
+    privacy: &MaskBinding,
+    rule: DwellPolicy,
 ) -> Result<DwellCandidate> {
     let first = pending.observations.first().ok_or(WatchError::Conflict)?;
     let last = pending.observations.last().ok_or(WatchError::Conflict)?;
@@ -457,9 +626,13 @@ fn prepare(
     e.u64(pending.trigger_segment as u64);
     e.u64(last_segment as u64);
     e.u64(pending.observations.len() as u64);
-    for observation in &pending.observations { e.digest(observation.digest()); }
+    for observation in &pending.observations {
+        e.digest(observation.digest());
+    }
     e.u64(pending.classes.len() as u64);
-    for class in &pending.classes { e.digest(ContentDigest::sha256(&class.record)); }
+    for class in &pending.classes {
+        e.digest(ContentDigest::sha256(&class.record));
+    }
     let identity = ContentDigest::sha256(&e.finish());
     let mut objects = BTreeMap::new();
     insert(&mut objects, analysis.to_vec());
@@ -472,27 +645,47 @@ fn prepare(
         let digest = insert(&mut objects, observation.bytes.clone());
         children.insert(observation.frame.capsule_digest);
         evidence.push(EventEvidence {
-            digest, class: EvidenceClass::Derived, failure_domain: failure_domain.clone(),
-            supports: false, relation: EvidenceEdgeRelation::DerivedFrom,
-            capsule_digest: Some(observation.frame.capsule_digest), identity_digest: Some(sensor_digest),
+            digest,
+            class: EvidenceClass::Derived,
+            failure_domain: failure_domain.clone(),
+            supports: false,
+            relation: EvidenceEdgeRelation::DerivedFrom,
+            capsule_digest: Some(observation.frame.capsule_digest),
+            identity_digest: Some(sensor_digest),
         });
     }
     for class in &pending.classes {
         let digest = insert(&mut objects, class.record.clone());
-        let observation = pending.observations.iter().find(|o| o.frame.segment == class.segment)
+        let observation = pending
+            .observations
+            .iter()
+            .find(|o| o.frame.segment == class.segment)
             .ok_or(WatchError::Conflict)?;
         let supports = class.supports();
         evidence.push(EventEvidence {
-            digest, class: EvidenceClass::Derived, failure_domain: failure_domain.clone(), supports,
-            relation: if supports { EvidenceEdgeRelation::Supports } else { EvidenceEdgeRelation::DerivedFrom },
-            capsule_digest: Some(observation.frame.capsule_digest), identity_digest: Some(sensor_digest),
+            digest,
+            class: EvidenceClass::Derived,
+            failure_domain: failure_domain.clone(),
+            supports,
+            relation: if supports {
+                EvidenceEdgeRelation::Supports
+            } else {
+                EvidenceEdgeRelation::DerivedFrom
+            },
+            capsule_digest: Some(observation.frame.capsule_digest),
+            identity_digest: Some(sensor_digest),
         });
     }
     if let Some(mask) = privacy.policy() {
         let digest = insert(&mut objects, mask.to_bytes());
         evidence.push(EventEvidence {
-            digest, class: EvidenceClass::Assertion, failure_domain, supports: false,
-            relation: EvidenceEdgeRelation::RequiredBy, capsule_digest: None, identity_digest: Some(sensor_digest),
+            digest,
+            class: EvidenceClass::Assertion,
+            failure_domain,
+            supports: false,
+            relation: EvidenceEdgeRelation::RequiredBy,
+            capsule_digest: None,
+            identity_digest: Some(sensor_digest),
         });
     }
     children.extend(objects.keys().copied());
@@ -520,19 +713,34 @@ fn prepare(
     let approval = ContentDigest::sha256(&e.finish());
     let status = status(deployment, &event)?;
     Ok(DwellCandidate {
-        zone: pending.zone, track: pending.track, span: pending.span,
-        first_segment, trigger_segment: pending.trigger_segment, last_segment,
-        observations: pending.observations, classes: pending.classes,
-        identity, event, slot, manifest, objects, approval, status,
+        zone: pending.zone,
+        track: pending.track,
+        span: pending.span,
+        first_segment,
+        trigger_segment: pending.trigger_segment,
+        last_segment,
+        observations: pending.observations,
+        classes: pending.classes,
+        identity,
+        event,
+        slot,
+        manifest,
+        objects,
+        approval,
+        status,
     })
 }
 fn status(deployment: &ReferenceDeployment, event: &EventHypothesis) -> Result<WatchStatus> {
     let object = ObjectId::parse(format!("object:event:{}", event.event_id.as_str()))?;
-    if !deployment.ledger().current().objects.contains_key(&object) { return Ok(WatchStatus::Prepared); }
+    if !deployment.ledger().current().objects.contains_key(&object) {
+        return Ok(WatchStatus::Prepared);
+    }
     let (current, _) = deployment.current_event_authority(&event.event_id)?;
     if current.revision_digest() == event.revision_digest() {
         Ok(WatchStatus::AlreadyPublished)
-    } else { Err(WatchError::Conflict) }
+    } else {
+        Err(WatchError::Conflict)
+    }
 }
 
 #[cfg(test)]

@@ -293,6 +293,7 @@ fn test_request<'a>(
         alert_plan: None,
         alert_outcome: None,
         coverage_witness: None,
+        coverage_record: None,
         available_capabilities: BTreeSet::new(),
     })
 }

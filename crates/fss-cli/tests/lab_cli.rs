@@ -287,8 +287,8 @@ fn public_commands_are_deterministic_integration() -> Result<(), Box<dyn std::er
         "replay must report deterministic:true"
     );
 
-    // run quiet returns schema v2, non-empty digests, and absence not certified: the durable
-    // stack does not certify quiet's stored coverage witness (fss-2h5zq.11 review r13)
+    // run quiet returns schema v2, non-empty digests, and absence certified: both readers accept
+    // quiet's stored coverage witness from its committed source coverage record (fss-tch7u)
     let quiet_root = base_temp.join("quiet");
     let quiet_root_str = quiet_root.to_str().ok_or("invalid quiet_root path")?;
     let run_q = Command::new(bin_path)
@@ -301,8 +301,8 @@ fn public_commands_are_deterministic_integration() -> Result<(), Box<dyn std::er
     );
     let q_out = String::from_utf8(run_q.stdout)?;
     assert!(q_out.contains("\"schema\":\"fss.lab.scenario.v2\""));
-    assert!(q_out.contains("\"absence_certified\":false"));
-    assert!(q_out.contains("\"not_certifiable\":\"coverage_not_durably_certified\""));
+    assert!(q_out.contains("\"absence_certified\":true"));
+    assert!(q_out.contains("\"absence\":\"certified\""));
     assert!(q_out.contains("\"ledger_anchor_root\":\""));
     assert!(q_out.contains("\"publication_root\":\""));
     assert!(q_out.contains("\"handoff_digest\":\""));

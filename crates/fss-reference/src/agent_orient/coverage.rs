@@ -41,11 +41,21 @@
 //! coverage claim an orientation makes (a covered zone, a complete site) carries the
 //! [`RECORDED_COVERAGE_PROVENANCE`] marker in its statement (fss-dt3qf): it certifies what the
 //! retained pipeline observed over the recorded capture interval, not live source continuity.
-
+//! A retained source coverage record of live or virtual sources (fss-tch7u,
+//! [`crate::ingest::source_coverage`]) contributes one zone per authorized failure domain
+//! (`source-domain:<domain>`) from the most recently committed record naming it: `covered` over the
+//! record's interval only when the shared stored-witness rule accepts it at the snapshot,
+//! `stale` against the witness basis when a coverage-relevant commit or epoch change followed the
+//! basis, and `not_observable` otherwise (a domain that did not deliver continuously, a gapped or
+//! partial witness, or any other refusal, named).
 /// Provenance every orientation coverage claim states (fss-dt3qf owner decision): retained
 /// coverage is certified over a recorded file's capture interval and says nothing about live
 /// continuity of the source.
 pub const RECORDED_COVERAGE_PROVENANCE: &str = "recorded file source; no live continuity";
+/// Provenance of a zone certified by a retained source coverage record of live or virtual
+/// sources (fss-tch7u): the shared stored-witness rule accepted the record at the snapshot.
+pub const SOURCE_COVERAGE_PROVENANCE: &str =
+    "retained live/virtual source delivery record; stored-witness rule verified";
 
 use std::collections::{BTreeMap, BTreeSet};
 
@@ -55,6 +65,9 @@ use crate::ingest::ground_visibility::PoseRobustness;
 use crate::ingest::ground_visibility::{CameraModel, ZoneVisibility};
 use crate::ingest::recorded_coverage::{
     CoverageRecord, PoseProvenance, PoseUncertainty, UncoveredReason, ZoneCoverage, ZoneWitness,
+};
+use crate::ingest::source_coverage::{
+    RetainedAbsence, RetainedCoverageRefusal, SourceCoverageRecord,
 };
 
 /// Sensor-capsule payloads read to attribute the newest evidence of each covered sensor; more is
@@ -70,6 +83,19 @@ pub struct RetainedCoverage {
     pub payload_digest: ContentDigest,
     /// Commit sequence that retained it.
     pub committed_sequence: u64,
+}
+
+/// One committed source coverage record read back from the spool, with its verdict.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct RetainedSourceCoverage {
+    /// Decoded, validated record.
+    pub record: SourceCoverageRecord,
+    /// Committed payload digest.
+    pub payload_digest: ContentDigest,
+    /// Commit sequence that retained it.
+    pub committed_sequence: u64,
+    /// The stored-witness rule at the snapshot (with the rejected event citing it, if any).
+    pub verdict: Result<RetainedAbsence, RetainedCoverageRefusal>,
 }
 
 /// Coverage state of one zone at the snapshot.
@@ -193,6 +219,17 @@ impl ZoneAssessment {
         match &self.sensor_id {
             Some(sensor) => format!("{sensor} {}", self.scope),
             None => self.scope.clone(),
+        }
+    }
+
+    /// Provenance stated by this zone's coverage claim: source coverage records of live or
+    /// virtual sources, or analysis of a recorded file import.
+    #[must_use]
+    pub fn provenance(&self) -> &'static str {
+        if self.scope.starts_with("source-domain:") {
+            SOURCE_COVERAGE_PROVENANCE
+        } else {
+            RECORDED_COVERAGE_PROVENANCE
         }
     }
 }
@@ -352,12 +389,13 @@ fn accounted_hole(
 /// Assesses every objective zone; `None` when no coverage record is retained.
 pub(super) fn assess(
     records: &[RetainedCoverage],
+    source_records: &[RetainedSourceCoverage],
     newest_evidence: &BTreeMap<String, TimestampNs>,
     evidence_unattributed: bool,
     event_zones: &BTreeSet<String>,
     published: &BTreeSet<String>,
 ) -> Option<CoverageAssessment> {
-    if records.is_empty() {
+    if records.is_empty() && source_records.is_empty() {
         return None;
     }
     // (sensor, scope) -> indices of records naming it, in commit order.
@@ -537,6 +575,7 @@ pub(super) fn assess(
         }
         zones.push(assessment);
     }
+    zones.extend(assess_source_domains(source_records));
     let covered_ids: BTreeSet<String> = zones.iter().map(|zone| zone.zone_id.clone()).collect();
     for zone_id in event_zones.difference(&covered_ids) {
         zones.push(ZoneAssessment {
@@ -560,6 +599,71 @@ pub(super) fn assess(
     }
     Some(CoverageAssessment {
         zones,
-        record_count: records.len(),
+        record_count: records.len() + source_records.len(),
     })
+}
+
+/// One zone per authorized failure domain of the retained source records, each from the most
+/// recently committed record naming it.
+fn assess_source_domains(source_records: &[RetainedSourceCoverage]) -> Vec<ZoneAssessment> {
+    let mut latest: BTreeMap<&str, &RetainedSourceCoverage> = BTreeMap::new();
+    for retained in source_records {
+        for domain in &retained.record.witness.authorized_domain {
+            let entry = latest.entry(domain.as_str()).or_insert(retained);
+            if retained.committed_sequence >= entry.committed_sequence {
+                *entry = retained;
+            }
+        }
+    }
+    latest
+        .into_iter()
+        .map(|(domain, retained)| {
+            let witness = &retained.record.witness;
+            let scope = format!("source-domain:{domain}");
+            let label = format!(
+                "{scope} (record {}, commit {})",
+                short(retained.payload_digest),
+                retained.committed_sequence
+            );
+            let interval = retained.record.interval;
+            let mut assessment = ZoneAssessment {
+                sensor_id: None,
+                scope,
+                zone_id: domain.to_owned(),
+                state: ZoneCoverageState::NotObservable,
+                window: None,
+                pipeline_generation: None,
+                witnesses: Vec::new(),
+                basis: Some(witness.anchor.clone()),
+                gaps: Vec::new(),
+                visibility: None,
+                pose_provenance: None,
+                pose_uncertainty: None,
+                pose_robustness: None,
+            };
+            match &retained.verdict {
+                Ok(_) => {
+                    assessment.state = ZoneCoverageState::Covered;
+                    assessment.window = Some(interval);
+                    assessment.witnesses = vec![witness.witness_digest()];
+                }
+                Err(refusal) if !witness.observed_domain.contains(domain) => {
+                    assessment.gaps.push(format!(
+                        "{label}: not observable over [{}, {}] ns: the domain did not deliver                          continuously ({refusal}).",
+                        interval.earliest.0, interval.latest.0
+                    ));
+                }
+                Err(refusal) if refusal.invalidated() => {
+                    assessment.state = ZoneCoverageState::Stale;
+                    assessment.gaps.push(format!(
+                        "{label}: stale: {refusal}; the witness no longer certifies the current                          anchor."
+                    ));
+                }
+                Err(refusal) => {
+                    assessment.gaps.push(format!("{label}: not observable: {refusal}."));
+                }
+            }
+            assessment
+        })
+        .collect()
 }

@@ -308,6 +308,7 @@ fn situation_request<'a>(
         alert_plan: plan,
         alert_outcome: None,
         coverage_witness: None,
+        coverage_record: None,
         available_capabilities: [
             "capability:alert.prepare",
             "capability:alert.commit",

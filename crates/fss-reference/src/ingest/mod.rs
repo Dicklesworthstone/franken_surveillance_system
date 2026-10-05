@@ -56,6 +56,8 @@ pub mod retained;
 pub mod rtpdump;
 /// Owner site calibration: atlas localization, joint refinement, digest-bound record.
 pub mod site_calibration;
+/// Retained continuity witnesses of live or virtual sources and the stored-witness absence rule.
+pub mod source_coverage;
 /// Opt-in decode refusals as typed coverage gaps with IDR/IRAP resumption.
 pub mod tolerant_decode;
 /// Constant-velocity Kalman filter tracker with IoU-based data association.

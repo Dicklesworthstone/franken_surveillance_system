@@ -1,5 +1,8 @@
 #![forbid(unsafe_code)]
-#![cfg(all(target_os = "linux", any(target_arch = "x86_64", target_arch = "aarch64")))]
+#![cfg(all(
+    target_os = "linux",
+    any(target_arch = "x86_64", target_arch = "aarch64")
+))]
 //! Real process handoff of committed redacted exports; fixtures use real local journals.
 
 use std::ffi::OsString;
@@ -18,7 +21,9 @@ use fss_core::{
 use fss_reference::evidence_export::{
     CAP_EXPORT_COMMIT, CAP_EXPORT_PREPARE, EventExportRequest, commit_export, preview_export,
 };
-use fss_reference::{ReferenceDeployment, ReferencePolicyAction, ReferencePolicyDecision, ReplayCx};
+use fss_reference::{
+    ReferenceDeployment, ReferencePolicyAction, ReferencePolicyDecision, ReplayCx,
+};
 
 type Test<T = ()> = Result<T, Box<dyn std::error::Error>>;
 const SITE: &str = "site:portable-export-cli";
@@ -32,7 +37,8 @@ impl Directory {
     fn new(label: &str) -> Test<Self> {
         for n in 0..100 {
             let path = std::env::temp_dir().join(format!(
-                "fss-package-cli-{label}-{}-{n}", std::process::id()
+                "fss-package-cli-{label}-{}-{n}",
+                std::process::id()
             ));
             match fs::create_dir(&path) {
                 Ok(()) => {
@@ -47,7 +53,9 @@ impl Directory {
     }
 }
 impl Drop for Directory {
-    fn drop(&mut self) { let _ = fs::remove_dir_all(&self.0); }
+    fn drop(&mut self) {
+        let _ = fs::remove_dir_all(&self.0);
+    }
 }
 
 struct Fixture {
@@ -66,10 +74,17 @@ impl Fixture {
             trace_id: "trace:portable-export-cli".into(),
             operation_id: OperationId::parse("operation:portable-export-cli")?,
             principal: ACTOR.into(),
-            capabilities: vec!["ADP-REPLAY-001".into(), CAP_EXPORT_PREPARE.into(), CAP_EXPORT_COMMIT.into()],
+            capabilities: vec![
+                "ADP-REPLAY-001".into(),
+                CAP_EXPORT_PREPARE.into(),
+                CAP_EXPORT_COMMIT.into(),
+            ],
             deadline: None,
             priority: 10,
-            budgets: BudgetVector::builder().bytes(64 * 1024 * 1024).storage_operations(8192).build()?,
+            budgets: BudgetVector::builder()
+                .bytes(64 * 1024 * 1024)
+                .storage_operations(8192)
+                .build()?,
             privacy_scope: "privacy:redacted-export-test".into(),
             retention_scope: "retention:test".into(),
             anchor_universe: ContentDigest::sha256(SITE.as_bytes()),
@@ -108,9 +123,13 @@ impl Fixture {
         };
         deployment.stage_payload(b"private source sentinel")?;
         deployment.stage_payload(b"private model sentinel")?;
-        deployment.publish_event(&ReferencePolicyDecision {
-            event: event.clone(), action: ReferencePolicyAction::Hold,
-        }, &cx)?;
+        deployment.publish_event(
+            &ReferencePolicyDecision {
+                event: event.clone(),
+                action: ReferencePolicyAction::Hold,
+            },
+            &cx,
+        )?;
         let request = EventExportRequest {
             event_id: event.event_id.clone(),
             expected_revision: event.revision_digest(),
@@ -120,26 +139,53 @@ impl Fixture {
         };
         let preview = preview_export(&deployment, &request, &authority, &cx)?;
         let export_root = preview.root();
-        commit_export(&mut deployment, &request, preview.approval(), &authority, &cx)?;
+        commit_export(
+            &mut deployment,
+            &request,
+            preview.approval(),
+            &authority,
+            &cx,
+        )?;
         drop(deployment);
         cx.drain_and_finalize();
-        Ok(Self { root, output, export_root, directory })
+        Ok(Self {
+            root,
+            output,
+            export_root,
+            directory,
+        })
     }
 
     fn pack(&self) -> Vec<OsString> {
         vec![
-            "pack".into(), "--root".into(), self.root.as_os_str().to_owned(),
-            "--site".into(), SITE.into(), "--principal".into(), ACTOR.into(),
-            "--export-root".into(), self.export_root.to_text().into(),
-            "--recipient".into(), RECIPIENT.into(), "--attested-now-ns".into(), "30:40".into(),
-            "--out".into(), self.output.as_os_str().to_owned(),
+            "pack".into(),
+            "--root".into(),
+            self.root.as_os_str().to_owned(),
+            "--site".into(),
+            SITE.into(),
+            "--principal".into(),
+            ACTOR.into(),
+            "--export-root".into(),
+            self.export_root.to_text().into(),
+            "--recipient".into(),
+            RECIPIENT.into(),
+            "--attested-now-ns".into(),
+            "30:40".into(),
+            "--out".into(),
+            self.output.as_os_str().to_owned(),
         ]
     }
     fn verify(&self, input: &Path) -> Vec<OsString> {
         vec![
-            "verify".into(), "--input".into(), input.as_os_str().to_owned(),
-            "--export-root".into(), self.export_root.to_text().into(),
-            "--recipient".into(), RECIPIENT.into(), "--attested-now-ns".into(), "30:40".into(),
+            "verify".into(),
+            "--input".into(),
+            input.as_os_str().to_owned(),
+            "--export-root".into(),
+            self.export_root.to_text().into(),
+            "--recipient".into(),
+            RECIPIENT.into(),
+            "--attested-now-ns".into(),
+            "30:40".into(),
         ]
     }
     fn create(&self) -> Test<(String, Output)> {
@@ -159,29 +205,53 @@ impl Fixture {
 }
 
 fn execute(args: &[OsString]) -> Test<Output> {
-    Ok(Command::new(env!("CARGO_BIN_EXE_fss-export-package")).args(args).output()?)
+    Ok(Command::new(env!("CARGO_BIN_EXE_fss-export-package"))
+        .args(args)
+        .output()?)
 }
 fn success(output: &Output) {
-    assert!(output.status.success(), "stdout={} stderr={}",
-        String::from_utf8_lossy(&output.stdout), String::from_utf8_lossy(&output.stderr));
+    assert!(
+        output.status.success(),
+        "stdout={} stderr={}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    );
 }
 fn refused(output: &Output, reason: &str) {
     assert!(!output.status.success());
-    assert!(output.stdout.is_empty(), "refusal must not emit a partial record");
-    assert!(String::from_utf8_lossy(&output.stderr).contains(reason),
-        "expected {reason}, got {}", String::from_utf8_lossy(&output.stderr));
+    assert!(
+        output.stdout.is_empty(),
+        "refusal must not emit a partial record"
+    );
+    assert!(
+        String::from_utf8_lossy(&output.stderr).contains(reason),
+        "expected {reason}, got {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
 }
 // Only read unescaped digest/status values, not arbitrary package JSON or returned shell text.
 fn field(output: &Output, key: &str) -> Test<String> {
     let text = std::str::from_utf8(&output.stdout)?;
     let needle = format!("\"{key}\"");
     let (_, suffix) = text.split_once(&needle).ok_or("missing output field")?;
-    let value = suffix.trim_start().strip_prefix(':').ok_or("missing field separator")?
-        .trim_start().strip_prefix('"').ok_or("expected string field")?;
-    Ok(value.split_once('"').ok_or("unterminated field")?.0.to_owned())
+    let value = suffix
+        .trim_start()
+        .strip_prefix(':')
+        .ok_or("missing field separator")?
+        .trim_start()
+        .strip_prefix('"')
+        .ok_or("expected string field")?;
+    Ok(value
+        .split_once('"')
+        .ok_or("unterminated field")?
+        .0
+        .to_owned())
 }
 fn set(args: &mut [OsString], key: &str, value: OsString) -> Test {
-    let index = args.iter().position(|arg| arg == key).ok_or("option absent")?;
+    let index = args
+        .iter()
+        .position(|arg| arg == key)
+        .ok_or("option absent")?;
     *args.get_mut(index + 1).ok_or("value absent")? = value;
     Ok(())
 }
@@ -212,20 +282,41 @@ fn preview_commit_exact_retry_and_offline_verification_need_no_source_deployment
     assert_eq!(fs::metadata(&fixture.output)?.ino(), inode);
     assert_eq!(fs::read(&fixture.output)?, bytes);
     assert_eq!(fixture.journals()?, before);
-    fs::rename(&fixture.root, fixture.directory.0.join("deployment-unavailable"))?;
+    fs::rename(
+        &fixture.root,
+        fixture.directory.0.join("deployment-unavailable"),
+    )?;
     let verified = execute(&fixture.verify(&fixture.output))?;
     success(&verified);
-    assert_eq!(field(&verified, "status")?, "verified_against_supplied_root");
-    assert_eq!(field(&verified, "package_digest")?, field(&written, "package_digest")?);
+    assert_eq!(
+        field(&verified, "status")?,
+        "verified_against_supplied_root"
+    );
+    assert_eq!(
+        field(&verified, "package_digest")?,
+        field(&written, "package_digest")?
+    );
     let text = std::str::from_utf8(&verified.stdout)?;
     assert!(text.contains("\"signature_verified\":false"));
     assert!(text.contains("\"state\":\"indeterminate\""));
-    for private in ["private-zone-name", "private-track-name", "sensor:private-door",
-        "private source sentinel", "private model sentinel"] {
+    for private in [
+        "private-zone-name",
+        "private-track-name",
+        "sensor:private-door",
+        "private source sentinel",
+        "private model sentinel",
+    ] {
         assert!(!text.contains(private));
-        assert!(!bytes.windows(private.len()).any(|w| w == private.as_bytes()));
+        assert!(
+            !bytes
+                .windows(private.len())
+                .any(|w| w == private.as_bytes())
+        );
     }
-    assert!(!fixture.root.exists(), "offline verification did not open/create a deployment");
+    assert!(
+        !fixture.root.exists(),
+        "offline verification did not open/create a deployment"
+    );
     Ok(())
 }
 
@@ -238,9 +329,21 @@ fn stale_file_approvals_do_not_authorize_another_path_time_or_actor() -> Test {
     let approval = field(&preview, "approval_digest")?;
     let before = fixture.journals()?;
     for (key, value, reason) in [
-        ("--out", fixture.directory.0.join("other.fssp").into_os_string(), "ERR-EXPORT-APPROVAL-STALE-001"),
-        ("--attested-now-ns", OsString::from("31:40"), "ERR-EXPORT-APPROVAL-STALE-001"),
-        ("--principal", OsString::from("principal:other"), "export_authority_denied"),
+        (
+            "--out",
+            fixture.directory.0.join("other.fssp").into_os_string(),
+            "ERR-EXPORT-APPROVAL-STALE-001",
+        ),
+        (
+            "--attested-now-ns",
+            OsString::from("31:40"),
+            "ERR-EXPORT-APPROVAL-STALE-001",
+        ),
+        (
+            "--principal",
+            OsString::from("principal:other"),
+            "export_authority_denied",
+        ),
     ] {
         let mut args = fixture.pack();
         set(&mut args, key, value)?;
@@ -259,10 +362,26 @@ fn offline_verifier_refuses_mismatched_root_recipient_uncertain_expiry_and_tampe
     fixture.create()?;
     let bytes = fs::read(&fixture.output)?;
     for (key, value, reason) in [
-        ("--export-root", ContentDigest::sha256(b"wrong root").to_text(), "expected_export_root_mismatch"),
-        ("--recipient", "recipient:other".to_owned(), "recipient_mismatch"),
-        ("--attested-now-ns", "90:100".to_owned(), "expiry_overlaps_attested_time"),
-        ("--attested-now-ns", "100:100".to_owned(), "expired_under_attested_time"),
+        (
+            "--export-root",
+            ContentDigest::sha256(b"wrong root").to_text(),
+            "expected_export_root_mismatch",
+        ),
+        (
+            "--recipient",
+            "recipient:other".to_owned(),
+            "recipient_mismatch",
+        ),
+        (
+            "--attested-now-ns",
+            "90:100".to_owned(),
+            "expiry_overlaps_attested_time",
+        ),
+        (
+            "--attested-now-ns",
+            "100:100".to_owned(),
+            "expired_under_attested_time",
+        ),
     ] {
         let mut args = fixture.verify(&fixture.output);
         set(&mut args, key, value.into())?;
@@ -289,7 +408,10 @@ fn conflicting_output_and_symlink_alias_into_deployment_are_refused() -> Test {
     let approval = field(&preview, "approval_digest")?;
     fs::write(&fixture.output, b"existing unrelated data")?;
     let inode = fs::metadata(&fixture.output)?.ino();
-    refused(&execute(&approved(fixture.pack(), &approval))?, "output_exists_or_identity_changed");
+    refused(
+        &execute(&approved(fixture.pack(), &approval))?,
+        "output_exists_or_identity_changed",
+    );
     assert_eq!(fs::read(&fixture.output)?, b"existing unrelated data");
     assert_eq!(fs::metadata(&fixture.output)?.ino(), inode);
     let alias = fixture.directory.0.join("deployment-alias");
@@ -315,7 +437,10 @@ fn replacing_the_destination_directory_invalidates_the_previous_file_approval() 
     fs::rename(&destination, fixture.directory.0.join("old-handoff"))?;
     fs::create_dir(&destination)?;
     fs::set_permissions(&destination, fs::Permissions::from_mode(0o700))?;
-    refused(&execute(&approved(fixture.pack(), &approval))?, "ERR-EXPORT-APPROVAL-STALE-001");
+    refused(
+        &execute(&approved(fixture.pack(), &approval))?,
+        "ERR-EXPORT-APPROVAL-STALE-001",
+    );
     assert!(!fixture.output.exists());
     assert!(!fixture.directory.0.join("old-handoff/case.fssp").exists());
     Ok(())
@@ -328,9 +453,15 @@ fn malformed_requests_fail_before_storage_and_help_describes_the_trust_boundary(
     let missing = directory.0.join("does-not-exist.fssp");
     let root = ContentDigest::sha256(b"root").to_text();
     let mut args: Vec<OsString> = vec![
-        "verify".into(), "--input".into(), missing.clone().into_os_string(),
-        "--export-root".into(), root.into(), "--recipient".into(), RECIPIENT.into(),
-        "--attested-now-ns".into(), "40:30".into(),
+        "verify".into(),
+        "--input".into(),
+        missing.clone().into_os_string(),
+        "--export-root".into(),
+        root.into(),
+        "--recipient".into(),
+        RECIPIENT.into(),
+        "--attested-now-ns".into(),
+        "40:30".into(),
     ];
     let bad = execute(&args)?;
     assert_eq!(bad.status.code(), Some(2));
