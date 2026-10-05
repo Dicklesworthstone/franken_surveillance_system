@@ -49,6 +49,10 @@ SUPPORTED_VOCABULARIES = {
 ANCHOR_PATTERN = re.compile(r"^[A-Za-z_][-A-Za-z0-9._]*$")
 STABLE_ID_PATTERN = re.compile(r"^SCHEMA-[A-Z0-9]+(?:-[A-Z0-9]+)*$")
 SCHEMA_NAME_PATTERN = re.compile(r"^fss\.[a-z0-9_.]+\.v\d+$")
+# Digest-domain tags are byte-exact encoder inputs: a published tag that predates the registry
+# keeps its spelling, so DIGEST_DOMAINS.md also admits hyphens (`fss.rgb-evidence-custody.reference.v1`,
+# fss-rir2v). Schema names in SCHEMAS.md keep the stricter SCHEMA_NAME_PATTERN.
+DIGEST_DOMAIN_NAME_PATTERN = re.compile(r"^fss\.[a-z0-9_.\-]+\.v\d+$")
 VALID_SIMPLE_TYPES = frozenset({"null", "boolean", "object", "array", "number", "string", "integer"})
 
 DEFAULT_MAX_DEPTH = 64
@@ -1497,12 +1501,12 @@ def validate_schema_constitution(
                         f"#{line_no}/ID",
                         f"invalid stable ID syntax: '{sid}' (must match {STABLE_ID_PATTERN.pattern})",
                     )
-                if not SCHEMA_NAME_PATTERN.match(dname):
+                if not DIGEST_DOMAIN_NAME_PATTERN.match(dname):
                     validator.emit(
                         CODE_INVALID_SCHEMA_NAME,
                         d_path.as_posix(),
                         f"#{line_no}/Domain",
-                        f"invalid domain name syntax: '{dname}' (must match {SCHEMA_NAME_PATTERN.pattern})",
+                        f"invalid domain name syntax: '{dname}' (must match {DIGEST_DOMAIN_NAME_PATTERN.pattern})",
                     )
                 if sid in seen_ids or sid in seen_domain_ids:
                     validator.emit(

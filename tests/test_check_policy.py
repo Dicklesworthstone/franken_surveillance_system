@@ -612,6 +612,11 @@ class CheckPolicyDigestDomainRegistrationTests(CheckPolicyFixtureCase):
     def test_live_tree_passes_with_the_committed_allowlist(self) -> None:
         self.assertEqual(check_policy.digest_domain_registration_policy(ROOT), [])
 
+    def test_baseline_allowlist_reached_its_deletion_condition(self) -> None:
+        # All 63 baseline domains are registered; the allowlist stays empty and is never refilled.
+        self.assertEqual(check_policy.DIGEST_DOMAIN_BASELINE_ALLOWLIST, frozenset())
+        self.assertEqual(check_policy.digest_domain_registration_policy(ROOT, allowlist=frozenset()), [])
+
 
 if __name__ == "__main__":
     unittest.main()

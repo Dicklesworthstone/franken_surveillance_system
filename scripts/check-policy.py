@@ -413,74 +413,10 @@ def diagnostic_policy() -> None:
 # `fss.*.vN` tag must be registered (backticked domain column) in registries/DIGEST_DOMAINS.md or
 # registries/SCHEMAS.md. Domains used to be registered only after a pinned count tripped.
 DIGEST_DOMAIN_REGISTRIES = ("registries/DIGEST_DOMAINS.md", "registries/SCHEMAS.md")
-# Explicit baseline of domains that were unregistered when the check landed. It may only shrink:
-# an entry that is registered or no longer defined in code is itself a failure. Deletion
-# condition: the allowlist is empty.
-DIGEST_DOMAIN_BASELINE_ALLOWLIST: frozenset[str] = frozenset({
-    "fss.alert_operator_cancel_approval.v1",
-    "fss.alert_operator_cancel_evidence.v1",
-    "fss.archive_pin_journal.v1",
-    "fss.avc_archive_work.v1",
-    "fss.calibration_coverage_receipt.v1",
-    "fss.calibration_coverage_zone.v1",
-    "fss.datagram_recording_recipe.v1",
-    "fss.deletion_completion.v3",
-    "fss.deletion_plan.v3",
-    "fss.evidence_export.v1",
-    "fss.evidence_export_approval.v1",
-    "fss.guarded_coverage_analysis.v1",
-    "fss.guarded_coverage_pipeline.v1",
-    "fss.http_camera_completion.v1",
-    "fss.http_camera_wire.v1",
-    "fss.http_capture_cli_plan.v1",
-    "fss.http_reconnect_boundary.v1",
-    "fss.http_reconnect_capture_plan.v1",
-    "fss.http_rgb_history.v1",
-    "fss.http_rgb_history_config.v1",
-    "fss.http_rgb_history_replay.v1",
-    "fss.http_wire_recovery_approval.v1",
-    "fss.http_wire_recovery_key.v1",
-    "fss.hydration_cursor_checkpoint.v1",
-    "fss.local_hevc_recording_archive_namespace.v1",
-    "fss.local_hevc_recording_archive_snapshot.v1",
-    "fss.local_recording_archive_namespace.v1",
-    "fss.local_recording_archive_snapshot.v1",
-    "fss.model_ir.materialized_liveness.v1",
-    "fss.model_ir.operator_table.v1",
-    "fss.operator_event_review.v1",
-    "fss.operator_event_review_approval.v1",
-    "fss.package_analysis_report.v2",
-    "fss.package_event_track.v2",
-    "fss.recorded_analysis_plan.v1",
-    "fss.recorded_analysis_report.v1",
-    "fss.recorded_event_provenance.v1",
-    "fss.recorded_h264_frame_receipt.v2",
-    "fss.recorded_h265_frame_receipt.v2",
-    "fss.recorded_luma_receipt.v2",
-    "fss.recorded_model.v1",
-    "fss.recorded_model_import.v1",
-    "fss.recorded_model_run.v1",
-    "fss.recorded_watch_analysis.v1",
-    "fss.recorded_watch_candidate.v1",
-    "fss.recorded_watch_observation.v1",
-    "fss.recorded_watch_plan.v1",
-    "fss.recorded_watch_proposal.v1",
-    "fss.recorded_watch_provenance.v1",
-    "fss.reference.image_resize.v1",
-    "fss.reference.planned_scalar.v1",
-    "fss.reference.sampled_activity.v1",
-    "fss.reference_session_disclosure.v1",
-    "fss.reference_session_handoff.v1",
-    "fss.reference_session_mission.v1",
-    "fss.reference_workspace_journal_init.v1",
-    "fss.reference_workspace_journal_rebase.v1",
-    "fss.reference_workspace_journal_write.v1",
-    "fss.reference_workspace_revision.v2",
-    "fss.retention_selection.v1",
-    "fss.rgb-evidence-custody.reference.v1",
-    "fss.rtsp_interleaved_source.v1",
-    "fss.sampled_recording_report.v1",
-})
+# Explicit baseline of domains that were unregistered when the check landed (63 at 027e153). It
+# may only shrink: an entry that is registered or no longer defined in code is itself a failure.
+# Every baseline domain is now registered, so it is empty; keep the mechanism and never refill it.
+DIGEST_DOMAIN_BASELINE_ALLOWLIST: frozenset[str] = frozenset()
 DIGEST_DOMAIN_CONST_RE = re.compile(
     r'^[ \t]*(?:pub(?:\([^)]*\))?[ \t]+)?const[ \t]+([A-Z0-9_]*DOMAIN[A-Z0-9_]*)[ \t]*:[^=;]*=\s*b?"'
     r'(fss\.[A-Za-z0-9_.\-]*?\.v[0-9]+)(?![A-Za-z0-9_.\-])',
