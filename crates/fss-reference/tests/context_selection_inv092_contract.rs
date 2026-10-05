@@ -1202,6 +1202,7 @@ fn test_inv092_pipeline_compilation_and_budget_enforcement() -> Result<(), Box<d
         alert_plan: None,
         alert_outcome: None,
         coverage_witness: None,
+        coverage_record: None,
         available_capabilities: BTreeSet::from(["capability:alert.prepare".to_owned()]),
         created_at: TimestampNs(1_000_000),
     };

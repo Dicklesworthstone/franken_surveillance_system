@@ -478,9 +478,11 @@ fn test_schema_domain_and_pinned_counts() -> Result<(), Box<dyn Error>> {
     // unregistered) and SCHEMA-DOMAIN-REFERENCE-ALERT-COOPERATIVE-CANCEL-PROOF-001 (fss-51xqy).
     // 145 = 144 + SCHEMA-DOMAIN-LAB-GEOMETRIC-COVERAGE-001 (fss-2h5zq.55).
     // 146 = 145 + SCHEMA-DOMAIN-LAB-SIMULATED-PROVIDER-001 (fss-2h5zq.15).
+    // 148 = 146 + SCHEMA-DOMAIN-SOURCE-COVERAGE-RECORD-001 and
+    // SCHEMA-DOMAIN-SOURCE-COVERAGE-APPROVAL-001 (retained live/virtual source coverage, fss-tch7u).
     assert_eq!(
-        domain_count, 146,
-        "registries/DIGEST_DOMAINS.md count must remain pinned at 146"
+        domain_count, 148,
+        "registries/DIGEST_DOMAINS.md count must remain pinned at 148"
     );
 
     let schemas_path = Path::new(env!("CARGO_MANIFEST_DIR"))

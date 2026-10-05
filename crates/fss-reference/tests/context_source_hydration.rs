@@ -182,6 +182,7 @@ impl Fixture {
                 alert_plan: None,
                 alert_outcome: None,
                 coverage_witness: None,
+                coverage_record: None,
                 available_capabilities: BTreeSet::from(["capability:evidence.query".to_owned()]),
                 created_at: TimestampNs(1_000),
             },

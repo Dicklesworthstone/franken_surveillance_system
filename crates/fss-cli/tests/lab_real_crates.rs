@@ -77,15 +77,9 @@ fn reopen(root: &Path) -> TestResult<ReferenceDeployment> {
 
 /// (scenario, envelope, event disposition, absence certified, transient indeterminate)
 const EXPECTED: [(&str, &str, &str, &str, &str); 6] = [
-    // Quiet's complete witness is not certified by the durable stack (see
-    // `durable_reader_agrees_with_every_report`).
-    (
-        "quiet",
-        "protected_residual",
-        "protected_residual",
-        "false",
-        "false",
-    ),
+    // Quiet's complete witness is retained in a committed source coverage record and certified
+    // by both readers (fss-tch7u; see `durable_reader_agrees_with_every_report`).
+    ("quiet", "certified_quiet", "quiet", "true", "false"),
     ("raccoon", "benign_activity", "benign", "false", "false"),
     (
         "intrusion",
@@ -211,13 +205,13 @@ fn durable_reader_agrees_with_every_report() -> TestResult {
             "{scenario}"
         );
         if scenario == "quiet" {
-            // No coverage_witness ledger record, and the rejected event keeps its residual.
-            assert_eq!(coverage, Some(KnowledgeState::NotObservable));
-            assert!(uncertified);
-            assert!(
-                report
-                    .contains(r#""absence":{"not_certifiable":"coverage_not_durably_certified"}"#)
-            );
+            // The retained source coverage record covers both domains, and the rejected event's
+            // residual is retracted for that stated, verified reason (fss-tch7u).
+            assert_eq!(coverage, Some(KnowledgeState::Known));
+            assert!(!uncertified);
+            assert!(report.contains(r#""absence":"certified""#));
+        } else {
+            assert!(!durable, "{scenario}");
         }
     }
     Ok(())

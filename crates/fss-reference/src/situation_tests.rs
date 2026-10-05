@@ -166,6 +166,7 @@ fn request<'a>(
         alert_plan: None,
         alert_outcome: None,
         coverage_witness: None,
+        coverage_record: None,
         available_capabilities: capabilities,
         created_at: TimestampNs(1_000),
     })

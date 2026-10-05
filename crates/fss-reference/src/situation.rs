@@ -5,16 +5,18 @@ use std::collections::{BTreeMap, BTreeSet};
 use fss_core::{
     ActionAffordance, AffordanceClass, BudgetVector, CanonicalEncode, CanonicalEncoder,
     Completeness, ContentDigest, ContractBasis, CoverageContinuity, CoverageStopReason,
-    CoverageWitness, EffectState, EventKind, EventState, HandoffCapsule, HandoffId,
-    HandoffPublishParams, HypothesisDisposition, KnowledgeCell, KnowledgeCellParams,
-    KnowledgeState, KnowledgeStateBasis, LedgerAnchor, MissionId, ObjectId, ObligationId,
-    PossibleWorld, PrincipalId, ProvenanceClass, ReconciliationBasis, SessionId, SituationCapsule,
-    SituationFrame, TimestampNs, WorldEnvelope,
+    CoverageWitness, EffectState, EventState, HandoffCapsule, HandoffId, HandoffPublishParams,
+    HypothesisDisposition, KnowledgeCell, KnowledgeCellParams, KnowledgeState, KnowledgeStateBasis,
+    LedgerAnchor, MissionId, ObjectId, ObligationId, PossibleWorld, PrincipalId, ProvenanceClass,
+    ReconciliationBasis, SessionId, SituationCapsule, SituationFrame, TimestampNs, WorldEnvelope,
 };
 use fss_core::{EventId, OperationId};
 use fss_ledger::DurableReferenceLedger;
 use fss_object::ObjectManifest;
 
+use crate::ingest::source_coverage::{
+    RetainedCoverageRefusal, SourceCoverageRecord, absence_predicate, verify_retained_coverage,
+};
 use crate::{
     ReferenceAlertOutcomeReceipt, ReferenceAlertPlan, ReferenceError, ReferenceEventReceipt,
     ReferencePolicyAction, ReferencePolicyDecision, alert::validate_reference_alert_plan,
@@ -67,6 +69,12 @@ pub struct ReferenceSituationRequest<'a> {
     pub alert_outcome: Option<&'a ReferenceAlertOutcomeReceipt>,
     /// Optional coverage witness for negative reads / absence certification.
     pub coverage_witness: Option<&'a CoverageWitness>,
+    /// The committed source coverage record that retains `coverage_witness`, when the witness is
+    /// a stored one (fss-tch7u). A stored witness is anchored before the commits that follow it,
+    /// so it certifies only under [`verify_retained_coverage`]: the record is committed intact and
+    /// no coverage-relevant commit follows its basis. Without a record, a witness certifies only
+    /// at the exact current anchor.
+    pub coverage_record: Option<&'a SourceCoverageRecord>,
     /// Capabilities currently delegated to the principal.
     pub available_capabilities: BTreeSet<String>,
     /// Deterministic caller-supplied creation time.
@@ -728,22 +736,30 @@ pub fn compile_reference_situation(
     }
 
     let mut coverage_proof_root = None;
+    let mut record_proof_root = None;
     let (absence_certified, absence_non_pass_reason, absence_cell) = if request.decision.event.state
         == EventState::Rejected
     {
         if let Some(witness) = coverage_witness {
-            let matches_anchor = witness.anchor == current_anchor;
+            // A stored witness (fss-tch7u): verified against the committed history under the one
+            // shared rule, never re-anchored. An unstored witness keeps exact anchor equality.
+            let stored = match request.coverage_record {
+                _ if witness.anchor == current_anchor => None,
+                Some(record) if record.witness == *witness => Some(verify_retained_coverage(
+                    record,
+                    Some(&request.decision.event),
+                    authority.batches(),
+                    &current_anchor,
+                )),
+                Some(_) => Some(Err(RetainedCoverageRefusal::NotRetained)),
+                None => None,
+            };
+            let retained = stored.as_ref().and_then(|verdict| verdict.as_ref().ok());
+            let matches_anchor = witness.anchor == current_anchor || retained.is_some();
             let matches_generation = witness.authorized_generation > 0
                 && witness.authorized_generation == witness.observed_generation
                 && witness.authorized_generation == current_anchor.policy_epoch;
-            let expected_predicate = match request.decision.event.kind {
-                EventKind::UnknownPresence => "no_unknown_person_present",
-                EventKind::PerimeterBreach => "no_perimeter_breach",
-                EventKind::CovertApproach => "no_covert_approach",
-                EventKind::SensorTamper => "no_sensor_tamper",
-                EventKind::BenignRoutine => "no_benign_routine",
-                EventKind::Unclassified => "no_unclassified_event",
-            };
+            let expected_predicate = absence_predicate(request.decision.event.kind);
             let matches_predicate = witness.negative_predicate == expected_predicate;
 
             let mut required_domains = BTreeSet::new();
@@ -770,10 +786,18 @@ pub fn compile_reference_situation(
                 && matches_domain
             {
                 coverage_proof_root = Some(witness.witness_digest());
-                let statement = format!(
-                    "Physical absence is certified across authorized domain {:?} at generation {}.",
-                    witness.authorized_domain, witness.authorized_generation
-                );
+                let mut evidence = vec![event_revision_digest, witness.witness_digest()];
+                let statement = match retained {
+                    Some(absence) => {
+                        evidence.push(absence.record_digest);
+                        record_proof_root = Some(absence.record_digest);
+                        absence.statement()
+                    }
+                    None => format!(
+                        "Physical absence is certified across authorized domain {:?} at generation {}.",
+                        witness.authorized_domain, witness.authorized_generation
+                    ),
+                };
                 (
                     true,
                     None,
@@ -783,7 +807,7 @@ pub fn compile_reference_situation(
                         knowledge_state: KnowledgeState::Known,
                         provenance: ProvenanceClass::Derived,
                         hypothesis: Some(HypothesisDisposition::Refuted),
-                        evidence: vec![event_revision_digest, witness.witness_digest()],
+                        evidence,
                         contradictions: Vec::new(),
                         valid_until: None,
                         state_basis: None,
@@ -797,6 +821,8 @@ pub fn compile_reference_situation(
                         witness.observed_generation,
                         current_anchor.policy_epoch
                     )
+                } else if let Some(Err(refusal)) = &stored {
+                    format!("the stored coverage witness does not certify: {refusal}")
                 } else if !matches_anchor {
                     format!(
                         "coverage witness anchor ({:?}, epoch {}, commit {}) conflicts with current anchor ({:?}, epoch {}, commit {})",
@@ -890,6 +916,9 @@ pub fn compile_reference_situation(
         knowledge_cells.push(cell);
     }
     if let Some(digest) = coverage_proof_root {
+        proof_roots.insert(digest);
+    }
+    if let Some(digest) = record_proof_root {
         proof_roots.insert(digest);
     }
 
@@ -1257,6 +1286,11 @@ fn validate_request(
     if coverage_witness.is_some() && request.decision.event.state != EventState::Rejected {
         return Err(ReferenceError::InvalidSpec(
             "situation_coverage_witness_for_non_rejected_event",
+        ));
+    }
+    if request.coverage_record.is_some() && coverage_witness.is_none() {
+        return Err(ReferenceError::InvalidSpec(
+            "situation_coverage_record_without_witness",
         ));
     }
     request.decision.event.validate()?;

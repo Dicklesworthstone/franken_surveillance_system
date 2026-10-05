@@ -61,6 +61,9 @@ use fss_object::ObjectManifest;
 use crate::ReferenceError;
 use crate::doctor::{DoctorVerdict, inspect_deployment};
 use crate::ingest::recorded_coverage::CoverageRecord;
+use crate::ingest::source_coverage::{
+    RetainedAbsence, SourceCoverageRecord, verify_retained_coverage,
+};
 use crate::reference_deployment::{
     DEPLOYMENT_LAYOUT_FILENAME, DeploymentLayout, FAMILY_COVERAGE_WITNESS, FAMILY_EVENT_REVISION,
     FAMILY_FILE_IMPORT_MANIFEST, FAMILY_SENSOR_CAPSULE,
@@ -80,8 +83,8 @@ use crate::situation_sections::{
     project_reference_situation_with_source_omissions,
 };
 pub use coverage::{
-    CoverageAssessment, MAX_COVERAGE_CAPSULE_READS, RetainedCoverage, ZoneAssessment,
-    ZoneCoverageState,
+    CoverageAssessment, MAX_COVERAGE_CAPSULE_READS, RetainedCoverage, RetainedSourceCoverage,
+    ZoneAssessment, ZoneCoverageState,
 };
 
 /// Capability registry row that admits a situation read (AOP-003, AOP-004, AOP-009).
@@ -318,6 +321,12 @@ pub struct DeploymentSnapshot {
     pub events: Vec<RetainedEvent>,
     /// Retained coverage records in commit order.
     pub coverage: Vec<RetainedCoverage>,
+    /// Retained source coverage records (live or virtual sources, fss-tch7u) in commit order,
+    /// each with its verdict under the stored-witness rule at this position.
+    pub source_coverage: Vec<RetainedSourceCoverage>,
+    /// Rejected events whose absence a stored witness certifies at this position, by event
+    /// identity, with the record that is the stated reason.
+    pub retained_absences: BTreeMap<String, RetainedAbsence>,
     /// Newest capture instant of each sensor's retained evidence that could postdate a coverage
     /// analysis (read only when coverage is retained).
     pub sensor_newest_evidence: BTreeMap<String, TimestampNs>,
@@ -865,11 +874,19 @@ impl DeploymentHistory {
         events.sort_by(|left, right| left.event.event_id.cmp(&right.event.event_id));
 
         let mut coverage = Vec::with_capacity(coverage_deltas.len());
+        let mut source_records = Vec::new();
         for (digest, committed_sequence) in coverage_deltas {
             if deletions.object(digest).is_some() {
                 continue;
             }
             let bytes = reader.read_object(objects, digest, limits.max_object_bytes)?;
+            if SourceCoverageRecord::is_source_record(&bytes) {
+                let record = SourceCoverageRecord::from_bytes(&bytes, digest).map_err(|error| {
+                    corrupt(format!("source coverage record {digest}: {error}"))
+                })?;
+                source_records.push((record, digest, committed_sequence));
+                continue;
+            }
             let record = CoverageRecord::from_bytes(&bytes, digest)
                 .map_err(|error| corrupt(format!("coverage record {digest}: {error}")))?;
             coverage.push(RetainedCoverage {
@@ -878,6 +895,45 @@ impl DeploymentHistory {
                 committed_sequence,
             });
         }
+        // A stored witness certifies a rejected event's absence only under the shared rule
+        // (fss-tch7u), evaluated against exactly this position's committed history.
+        let mut retained_absences = BTreeMap::new();
+        for retained in &events {
+            for (record, _, _) in &source_records {
+                if let Ok(absence) =
+                    verify_retained_coverage(record, Some(&retained.event), batches, &anchor)
+                {
+                    retained_absences
+                        .entry(retained.event.event_id.as_str().to_owned())
+                        .or_insert(absence);
+                }
+            }
+        }
+        let source_coverage = source_records
+            .into_iter()
+            .map(|(record, payload_digest, committed_sequence)| {
+                let citing = events.iter().find(|retained| {
+                    retained.event.state == EventState::Rejected
+                        && retained
+                            .event
+                            .evidence
+                            .iter()
+                            .any(|edge| edge.digest == record.witness_object())
+                });
+                let verdict = verify_retained_coverage(
+                    &record,
+                    citing.map(|retained| &retained.event),
+                    batches,
+                    &anchor,
+                );
+                RetainedSourceCoverage {
+                    record,
+                    payload_digest,
+                    committed_sequence,
+                    verdict,
+                }
+            })
+            .collect();
         // The newest evidence of each sensor, read only where it could postdate an analysis.
         let mut sensor_newest_evidence: BTreeMap<String, TimestampNs> = BTreeMap::new();
         let mut coverage_evidence_unattributed = false;
@@ -926,6 +982,8 @@ impl DeploymentHistory {
             operations,
             events,
             coverage,
+            source_coverage,
+            retained_absences,
             sensor_newest_evidence,
             coverage_evidence_unattributed,
             latest_evidence_time,
@@ -1293,7 +1351,10 @@ impl EventSection {
     }
 }
 
-fn event_section(retained: &RetainedEvent) -> Result<EventSection, ReferenceError> {
+fn event_section(
+    retained: &RetainedEvent,
+    absence: Option<&RetainedAbsence>,
+) -> Result<EventSection, ReferenceError> {
     let event = &retained.event;
     let id = &event.event_id;
     let lifecycle_claim = event_claim(id, "lifecycle");
@@ -1417,18 +1478,38 @@ fn event_section(retained: &RetainedEvent) -> Result<EventSection, ReferenceErro
                 consequence_severity: 1,
                 protected: false,
             });
-            residuals.push(PossibleWorld {
-                world_id: world("absence-uncertified"),
-                description: "Activity outside the evaluated evidence remains possible; no CoverageWitness certifies absence.".to_owned(),
-                claim_ids: BTreeSet::from([lifecycle_claim.clone(), CLAIM_COVERAGE.to_owned()]),
-                evidence: vec![retained.revision_digest],
-                consequence_severity: 5,
-                protected: true,
-            });
-            unknown.push(format!(
-                "Rejection of {} is not a certified negative read.",
-                id.as_str()
-            ));
+            if let Some(absence) = absence {
+                // The protected residual is retracted only for a stated, verified reason: the
+                // committed coverage record the rule accepted, named in the cell.
+                cells.push(cell(KnowledgeCellParams {
+                    claim_id: event_claim(id, "absence-certification"),
+                    statement: absence.statement(),
+                    knowledge_state: KnowledgeState::Known,
+                    provenance: ProvenanceClass::Derived,
+                    hypothesis: Some(fss_core::HypothesisDisposition::Refuted),
+                    evidence: vec![
+                        retained.revision_digest,
+                        absence.witness_digest,
+                        absence.record_digest,
+                    ],
+                    contradictions: Vec::new(),
+                    valid_until: None,
+                    state_basis: None,
+                })?);
+            } else {
+                residuals.push(PossibleWorld {
+                    world_id: world("absence-uncertified"),
+                    description: "Activity outside the evaluated evidence remains possible; no CoverageWitness certifies absence.".to_owned(),
+                    claim_ids: BTreeSet::from([lifecycle_claim.clone(), CLAIM_COVERAGE.to_owned()]),
+                    evidence: vec![retained.revision_digest],
+                    consequence_severity: 5,
+                    protected: true,
+                });
+                unknown.push(format!(
+                    "Rejection of {} is not a certified negative read.",
+                    id.as_str()
+                ));
+            }
         }
         EventState::Hypothesized
         | EventState::Witnessed
@@ -1493,6 +1574,9 @@ fn event_section(retained: &RetainedEvent) -> Result<EventSection, ReferenceErro
         });
     }
     let mut proof_roots = vec![retained.event_root, retained.revision_digest];
+    if let Some(absence) = absence {
+        proof_roots.extend([absence.witness_digest, absence.record_digest]);
+    }
     proof_roots.extend(event.evidence.iter().map(|edge| edge.digest));
     proof_roots.extend(event.model_receipts.iter().copied());
     proof_roots.extend(tamper_roots.iter().copied());
@@ -1551,7 +1635,12 @@ fn planned_events<'a>(
     let mut planned = Vec::with_capacity(snapshot.events.len());
     for retained in &snapshot.events {
         planned.push(PlannedEvent {
-            section: event_section(retained)?,
+            section: event_section(
+                retained,
+                snapshot
+                    .retained_absences
+                    .get(retained.event.event_id.as_str()),
+            )?,
             retained,
             inline: false,
         });
@@ -2330,6 +2419,7 @@ fn assess_coverage(snapshot: &DeploymentSnapshot) -> Option<CoverageAssessment> 
         .collect();
     coverage::assess(
         &snapshot.coverage,
+        &snapshot.source_coverage,
         &snapshot.sensor_newest_evidence,
         snapshot.coverage_evidence_unattributed,
         &event_zones,
@@ -3170,7 +3260,7 @@ pub fn explain_event(
     else {
         return Ok(None);
     };
-    let section = event_section(retained)?;
+    let section = event_section(retained, snapshot.retained_absences.get(event_id.as_str()))?;
     let capsule = orientation.capsule();
     let worlds: Vec<PossibleWorld> = section.worlds().cloned().collect();
     let residual_ids = section
