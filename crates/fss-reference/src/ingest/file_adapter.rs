@@ -1666,8 +1666,10 @@ impl FileIngestAdapter {
         }
         candidate_objects.push((manifest_digest, &manifest_bytes));
 
-        // The end-of-file closing is proposed now so its retained records count against capacity;
-        // they are ledger objects only, never children of the import slot root.
+        // The end-of-file closing is proposed now so its retained records count against capacity.
+        // Its records and witnesses are also children of the import slot root: every object an
+        // import stages must be reachable from a durable ledgered root, or reopen reports it
+        // unreferenced and doctor is never clean (fss-2h5zq.23 round 3 "Reachability").
         let closing = driver
             .as_ref()
             .ok_or_else(|| FileIngestError::CorruptSegment {
@@ -1681,9 +1683,13 @@ impl FileIngestAdapter {
         // objects cannot be discarded. Part slots for larger closures (fss-2h5zq.23 round 3) are
         // not implemented: such an import is refused, never half-published.
         let mut all_slot_children = Vec::new();
-        for (d, _) in &candidate_objects {
-            if *d != manifest_digest {
-                all_slot_children.push(*d);
+        for (d, _) in candidate_objects
+            .iter()
+            .copied()
+            .chain(closing.object_bytes())
+        {
+            if d != manifest_digest {
+                all_slot_children.push(d);
             }
         }
         all_slot_children.sort();

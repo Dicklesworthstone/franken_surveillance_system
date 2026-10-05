@@ -376,9 +376,12 @@ pub fn assert_complete_once(
         return Err("retained root differs from the receipt".into());
     }
     assert_spans_match(&receipt.manifest, deployment, source)?;
-    for index in 0..receipt.capsule_count {
+    if receipt.manifest.segment_spans.len() != receipt.capsule_count {
+        return Err("one segment span per capsule".into());
+    }
+    for (index, span) in receipt.manifest.segment_spans.iter().enumerate() {
         let capsule = retained_source_capsule(deployment, &retained, index)?;
-        if capsule.capsule_id != receipt.manifest.segment_spans[index].capsule_id {
+        if capsule.capsule_id != span.capsule_id {
             return Err(format!("retained capsule {index} has the wrong identity").into());
         }
     }
