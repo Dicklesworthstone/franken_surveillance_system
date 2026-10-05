@@ -29,6 +29,8 @@ pub mod ground_visibility;
 pub mod hevc_annexb;
 /// Exact frozen-model execution on retained decoded frames and durable model outputs.
 pub mod inference;
+/// Whole-range MJPEG sampled dwell with bounded streaming perception and source-closed events.
+pub mod long_dwell;
 pub mod mjpeg;
 /// Offline source-preserving conversion of exact tensor weights into recorded models.
 pub mod model_import;
