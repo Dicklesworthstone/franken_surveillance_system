@@ -17,14 +17,22 @@ pub mod retained;
 
 /// Immutable name of the only admitted reference screening policy.
 pub const POLICY_NAME: &str = "conservative-v1";
-/// Maximum distinct frames admitted by one screen.
+/// Maximum distinct frames admitted by the compatibility constructor.
 pub const MAX_HEALTH_FRAMES: usize = 128;
+/// Hard ceiling for an explicitly bounded whole-recording screen.
+pub const MAX_LONG_HEALTH_FRAMES: usize = 65_536;
 /// Maximum luma samples per frame, matching the retained luma ceiling.
 pub const MAX_HEALTH_PIXELS: usize = 4_194_304;
 const POLICY: &[u8] = b"fss.sensor_health.policy.v1:conservative-v1:dark<=20:bright>=235:\
 clipped_fraction>=995000ppm:clipped_run>=3:equal_luma_run>=8:\
 contrast=p95-p05:textured>=32:collapsed<=2:collapsed_run>=3:\
 no_tamper_or_coverage_authority";
+
+/// Exact fixed policy bytes, suitable for retaining beside their digest.
+#[must_use]
+pub const fn policy_bytes() -> &'static [u8] {
+    POLICY
+}
 
 /// Digest of every fixed threshold and interpretation of the screening policy.
 #[must_use]
@@ -111,9 +119,10 @@ pub struct HealthObservation {
 }
 
 impl HealthObservation {
-    /// Binds policy, source, measurements and every finding; confers no authority.
+    /// Existing canonical measurement encoding, without pixels or new authority.
+    /// The byte layout and domain are unchanged from the original digest implementation.
     #[must_use]
-    pub fn digest(&self) -> ContentDigest {
+    pub fn canonical_bytes(&self) -> Vec<u8> {
         let mut e = CanonicalEncoder::new();
         e.text("fss.sensor_health.observation.v1");
         e.digest(policy_digest());
@@ -139,7 +148,13 @@ impl HealthObservation {
         for finding in &self.findings {
             e.text(finding.as_str());
         }
-        ContentDigest::sha256(&e.finish())
+        e.finish()
+    }
+
+    /// Binds policy, source, measurements and every finding; confers no authority.
+    #[must_use]
+    pub fn digest(&self) -> ContentDigest {
+        ContentDigest::sha256(&self.canonical_bytes())
     }
 }
 
@@ -182,6 +197,7 @@ struct Previous {
 #[derive(Debug)]
 pub struct HealthScreen {
     maximum_samples: u64,
+    maximum_frames: usize,
     used_samples: u64,
     seen: BTreeSet<(ContentDigest, u64)>,
     previous: Option<Previous>,
@@ -189,14 +205,32 @@ pub struct HealthScreen {
 
 impl HealthScreen {
     /// Constructs a screen with an explicit cumulative luma-sample allowance.
+    /// This compatibility entry point retains its original 128-frame ceiling.
     #[must_use]
     pub fn new(maximum_samples: u64) -> Self {
         Self {
             maximum_samples,
+            maximum_frames: MAX_HEALTH_FRAMES,
             used_samples: 0,
             seen: BTreeSet::new(),
             previous: None,
         }
+    }
+
+    /// Construct one whole-range screen with an explicit 1..=65536 distinct-frame ceiling.
+    /// Resource ceilings are not policy: an admitted observation keeps the same bytes for any
+    /// sufficient ceiling. Gaps reset comparisons, never the used samples or replay set.
+    pub fn with_frame_limit(
+        maximum_samples: u64,
+        maximum_frames: usize,
+    ) -> Result<Self, HealthError> {
+        if !(1..=MAX_LONG_HEALTH_FRAMES).contains(&maximum_frames) {
+            return Err(HealthError::Limit);
+        }
+        Ok(Self {
+            maximum_frames,
+            ..Self::new(maximum_samples)
+        })
     }
 
     /// Samples processed, including work before cancellation and exact retry validation.
@@ -248,7 +282,7 @@ impl HealthScreen {
         if !retry && self.seen.contains(&key) {
             return Err(HealthError::ReplayedSource);
         }
-        if !retry && self.seen.len() == MAX_HEALTH_FRAMES {
+        if !retry && self.seen.len() >= self.maximum_frames {
             return Err(HealthError::Limit);
         }
         let mut histogram = [0_u64; 256];
@@ -359,3 +393,5 @@ fn percentile(histogram: &[u64; 256], rank: u64) -> u8 {
 
 #[cfg(test)]
 mod tests;
+#[cfg(test)]
+mod long_tests;
