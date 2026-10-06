@@ -274,7 +274,7 @@ fn staged_roots_and_retroactive_publication_do_not_validate_completion() -> Test
     );
     assert!(
         matches!(result, Err(FileIngestError::CorruptSegment { detail })
-        if detail.contains("must precede import completion"))
+        if detail.contains("root reachability must precede its consumer"))
     );
     assert_eq!(snapshot(&root)?, before);
     Ok(())
