@@ -192,7 +192,7 @@ fn family_capability(family: &str) -> Option<&'static str> {
         "sensor_capsule" => "source_custody_capsules",
         "file_import_manifest" => "reference_file_import",
         "rtpdump_import" => "recorded_rtp_session_import",
-        "acquisition_transition" => "recorded_file_acquisition_history",
+        "acquisition_transition" => "recorded_source_session_transitions",
         "decode_receipt" => "reference_decode_receipts",
         "model_invocation_receipt" => "reference_model_invocation",
         "executor_model_result" => "scalar_executor_results",

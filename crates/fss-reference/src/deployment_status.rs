@@ -336,12 +336,15 @@ pub fn inspect_deployment_status_with(
     .map_err(|_| StatusError::NotADeployment)?;
     let writer_before = io.writer_state(root, &layout);
     checkpoint()?;
+    // The ledger is bounded first, so a journal over its byte bound is refused as over budget
+    // (the orientation reader would report it as a failed replay).
+    let ledger = io.ledger(root, &layout, limits.snapshot.max_journal_bytes)?;
+    checkpoint()?;
     let snapshot = io.snapshot(root, &limits.snapshot)?;
     if snapshot.events.len() > limits.snapshot.max_events {
         return Err(StatusError::OverBudget);
     }
     checkpoint()?;
-    let ledger = io.ledger(root, &layout, limits.snapshot.max_journal_bytes)?;
     same_authority(&snapshot, &layout, &ledger)?;
     let witnessed = witnessed_capsules(&snapshot);
     let sources = inventory_witnessed(
