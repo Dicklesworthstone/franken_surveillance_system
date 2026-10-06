@@ -142,9 +142,9 @@ f228d9a9cc64bd781f2db641e326aa0de1131a27d27de6f44885089cf43d13b8  crates/fss-cli
 9b80afef99a47daa0d2dda50c52a683ff0334713ef27188a50d49cfd7f04ce81  crates/fss-cli/src/bin/fss-lab/effects.rs
 f3eabbba94cebadfbf5ca995734475d89b5a6d6c2a0ceedfe3399c32297007d2  crates/fss-cli/src/bin/fss-lab/file_activity.rs
 46f517e456c45923ddc5a49b9b988dd0ad346d19444b2ea44ff8b2de58180966  crates/fss-cli/src/bin/fss-lab/ledger.rs
-1b6c53c134a4821f8f1001625d6d2aa6f47a55a228727828b38273865d0689f0  crates/fss-cli/src/bin/fss-lab/main.rs
+23b8525bfc4fc851e521ce420a322161c064d396523f2886a4b984ac74c73329  crates/fss-cli/src/bin/fss-lab/main.rs
 a628788966beb6494b83fa512b4bc9cdd71adc4f226939ae7ec6552998a756ce  crates/fss-cli/src/bin/fss-lab/recover.rs
-7b4168038f14338a34c7d5fcd08a920f0a9b4364161234e53497daee5e21aa46  crates/fss-cli/src/bin/fss-lab/scenario.rs
+8498da69320a73f3684f2d63074820530c0da2f9d3009ecb08c997efc0bcdc1c  crates/fss-cli/src/bin/fss-lab/scenario.rs
 73fc9969bea8a848ed2dea6c9361f32d03530783fd319a3ecb8f313e8e1a6b94  crates/fss-cli/src/bin/fss-lab/scene.rs
 0b4d4c53e4a75d6664805117d9e95d2c81a1db91eb9a980fd66afe4c92597324  crates/fss-cli/src/bin/fss-lab/sim_provider.rs
 4efd7cf0d29af16e16ed85595f9fcf125952a64382138589d2df0c926c406410  crates/fss-cli/src/bin/fss-lab/spool.rs
@@ -813,7 +813,7 @@ bbac288bd4a5f8bce7828f77e3e66f37764709b21412fdbfa16b5043133abe50  crates/fss-ref
 3db8ddf9db7bbceab36ea7305271ee609e9df8c0ed62434d53eaefbec3042b33  crates/fss-reference/src/agent_follow/tests.rs
 23a87faf440823134f6274b39543735aa0e11b69d854f9dc9557dbd8e58b9847  crates/fss-reference/src/agent_follow.rs
 7b2d3c9b7cbf520662cf7093fd99a340f8c49230391ab8f5bc82f18e1b6d762b  crates/fss-reference/src/agent_orient/coverage.rs
-cc0b8a17790b332b09a0ebd76a348086e3fbfe82c99e1a8e2b475ab625d849ba  crates/fss-reference/src/agent_orient/tests.rs
+a1e14faf6ba1331902872d7f25a79509dc32c99c4ef2787fb7d56c93e4f4cafa  crates/fss-reference/src/agent_orient/tests.rs
 e963eef3f00c4b0db1ae774632bb4028a190f045413e8187e1f3560a259ce2b6  crates/fss-reference/src/agent_orient.rs
 e05379d9fd79c9af7c17e8ed55c276afa72f4df858054b2fa021ff321bb458fe  crates/fss-reference/src/agent_query/tests.rs
 557eb90f3b9f938fb704424b0ccab160281f4adc45a30876e9ba6c8a13b32ec2  crates/fss-reference/src/agent_query.rs
@@ -1059,7 +1059,7 @@ f5175f2ac914ca9b3af857b6ce9620e437da2b48192cce84ec701a14d2842545  crates/fss-ref
 05fcbe1885a21584e1a21bddac65190116f91369a5511d9f123b917bd9aa770d  crates/fss-reference/src/ingest/sensor_health/tests.rs
 2f67d34e762d5058e5d9f30f1258ba3413636192a87602e9b315150cf28eb358  crates/fss-reference/src/ingest/sensor_health.rs
 b71bfaeca31df83ac06bfcfdcfd967c0e7bedd02e9312bed04db0458c6953e8e  crates/fss-reference/src/ingest/site_calibration.rs
-3443c0f2dd869d9d2e0f9b059db175efb0f9b253c896cab22cf3d15dc9a971d3  crates/fss-reference/src/ingest/source_coverage/tests.rs
+9e9a5d08322e235fc831071d48de5420bf8763f7f19788a16068c5dea64fbd69  crates/fss-reference/src/ingest/source_coverage/tests.rs
 904c6c99f047bb6b4a431ad1844cd6e2bb5d04ae2f8fbea5fefde0c05684382a  crates/fss-reference/src/ingest/source_coverage.rs
 03718a45c9fa900628d0fbb11234ac2e596e11b29ae6bdb0c57b9977171f75c7  crates/fss-reference/src/ingest/streaming_dwell/tests.rs
 8d29008ab559c318cf19782e2812705fbab35f65883447f46e032395ec763767  crates/fss-reference/src/ingest/streaming_dwell.rs
