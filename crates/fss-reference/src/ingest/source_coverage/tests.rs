@@ -395,6 +395,19 @@ impl Quiet {
         witness: &CoverageWitness,
         record: Option<&SourceCoverageRecord>,
     ) -> Result<ReferenceSituation, Box<dyn Error>> {
+        self.situation_offered(Some(witness), record)
+    }
+
+    /// The compiled situation offered no coverage at all.
+    fn situation_without_coverage(&mut self) -> Result<ReferenceSituation, Box<dyn Error>> {
+        self.situation_offered(None, None)
+    }
+
+    fn situation_offered(
+        &mut self,
+        witness: Option<&CoverageWitness>,
+        record: Option<&SourceCoverageRecord>,
+    ) -> Result<ReferenceSituation, Box<dyn Error>> {
         let decision = self.decision.clone();
         let receipt = self.receipt.clone();
         let analyses = self.analyses.clone();
@@ -423,7 +436,7 @@ impl Quiet {
             event_receipt: &receipt,
             alert_plan: None,
             alert_outcome: None,
-            coverage_witness: Some(witness),
+            coverage_witness: witness,
             coverage_record: record.map(|record| StoredCoverage {
                 record,
                 analyses: &analyses,
@@ -1534,8 +1547,15 @@ fn an_analysis_of_only_some_frames_does_not_certify() -> TestResult {
             .iter()
             .any(|edge| edge.digest == quiet.record.witness_object())
     );
-    let situation = quiet.situation(true)?;
-    assert!(!situation_certified_or_absent(&situation, &quiet.event_id));
+    // The compiler refuses to be offered a witness for an event that is not rejected; without
+    // one, it states no absence certification at all.
+    assert!(matches!(
+        quiet.situation(true),
+        Err(error) if error.to_string().contains("situation_coverage_witness_for_non_rejected_event")
+    ));
+    let situation = quiet.situation_without_coverage()?;
+    let (cell, _, _) = situation_absence(&situation, &quiet.event_id);
+    assert_ne!(cell, Some(KnowledgeState::Known));
     let durable = quiet.durable()?;
     assert!(!durable.certified(), "{durable:?}");
     assert!(durable.retained.is_none());
@@ -1781,11 +1801,4 @@ fn analysed_nothing_rejects_only_over_a_covering_record() -> TestResult {
 
 fn frame_matches(frame: &super::SourceFrame, capsule: &SensorCapsule) -> bool {
     frame.matches(capsule)
-}
-
-/// The situation's verdict where the event may not be rejected: a missing absence cell is
-/// uncertified.
-fn situation_certified_or_absent(situation: &ReferenceSituation, event_id: &EventId) -> bool {
-    let (cell, _, _) = situation_absence(situation, event_id);
-    cell == Some(KnowledgeState::Known)
 }
