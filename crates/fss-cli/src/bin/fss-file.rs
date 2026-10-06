@@ -436,7 +436,14 @@ fn run(options: Options, out: &mut impl Write) -> RunResult<()> {
                         (receipt.import_identity, receipt.outcome.as_str())
                     }
                     FileImport::RecordedRtp(receipt) => {
-                        return report_rtp_import(&receipt, &deployment, &options, &cx, out);
+                        return report_rtp_import(
+                            &receipt,
+                            &deployment,
+                            options.manifest_output.as_deref(),
+                            &options.root,
+                            &cx,
+                            out,
+                        );
                     }
                 }
             }
@@ -527,7 +534,8 @@ fn run(options: Options, out: &mut impl Write) -> RunResult<()> {
 fn report_rtp_import(
     receipt: &RtpFileImportReceipt,
     deployment: &ReferenceDeployment,
-    options: &Options,
+    report_output: Option<&Path>,
+    deployment_root: &Path,
     cx: &ReplayCx,
     out: &mut impl Write,
 ) -> RunResult<()> {
@@ -583,8 +591,8 @@ fn report_rtp_import(
         "verified_source_sha256={}",
         ContentDigest::sha256(verified.source())
     )?;
-    if let Some(path) = &options.manifest_output {
-        write_new(path, receipt.report_bytes(), &options.root, cx)?;
+    if let Some(path) = report_output {
+        write_new(path, receipt.report_bytes(), deployment_root, cx)?;
         writeln!(out, "canonical_report_written=true")?;
     }
     Ok(())
