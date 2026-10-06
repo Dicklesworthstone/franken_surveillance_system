@@ -158,11 +158,17 @@ pub(super) fn admit_plan(
     plan: DeletionPlan,
     cx: &ReplayCx,
 ) -> Result<DeletionPlan, DeletionError> {
-    if !plan.blockers.iter().any(|finding| finding.kind == "tombstone_batch_bound") {
+    if !plan
+        .blockers
+        .iter()
+        .any(|finding| finding.kind == "tombstone_batch_bound")
+    {
         return Ok(plan);
     }
     let mut candidate = plan.clone();
-    candidate.blockers.retain(|finding| finding.kind != "tombstone_batch_bound");
+    candidate
+        .blockers
+        .retain(|finding| finding.kind != "tombstone_batch_bound");
     let digest = candidate.digest()?;
     match batches::build(deployment, &candidate, digest, cx) {
         Ok(_) => Ok(candidate),
@@ -300,7 +306,10 @@ fn commit_with_scope(
     checkpoint(cx, STAGE_DELETION_REVALIDATED)?;
     // Validate the whole authority publication, including completion, before the first write.
     let planned = batches::build(deployment, &plan, plan_digest, cx)?;
-    let first = planned.into_iter().next().ok_or(DeletionError::RecordMismatch)?;
+    let first = planned
+        .into_iter()
+        .next()
+        .ok_or(DeletionError::RecordMismatch)?;
     for retraction in &plan.retractions {
         checkpoint(cx, STAGE_DELETION_REVALIDATED)?;
         deployment.publisher().spool().read(retraction.root)?;
@@ -311,12 +320,7 @@ fn commit_with_scope(
         return Err(DeletionError::RecordMismatch);
     }
     checkpoint(cx, STAGE_DELETION_PLAN_STAGED)?;
-    deployment.append_deletion_batch(
-        first.id,
-        first.deltas,
-        vec![plan_digest],
-        cx,
-    )?;
+    deployment.append_deletion_batch(first.id, first.deltas, vec![plan_digest], cx)?;
     checkpoint(cx, STAGE_DELETION_RECORD_APPENDED)?;
     apply(deployment, plan, plan_digest, CommitOutcome::Completed, cx)
 }

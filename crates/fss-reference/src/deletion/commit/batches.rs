@@ -28,8 +28,18 @@ fn bound(limit: &'static str) -> DeletionError {
 
 fn ordered(deltas: &mut [EvidenceDelta]) {
     deltas.sort_by(|a, b| {
-        (a.family.as_str(), a.object_id.as_str(), a.new_generation, a.delta_id.as_str())
-            .cmp(&(b.family.as_str(), b.object_id.as_str(), b.new_generation, b.delta_id.as_str()))
+        (
+            a.family.as_str(),
+            a.object_id.as_str(),
+            a.new_generation,
+            a.delta_id.as_str(),
+        )
+            .cmp(&(
+                b.family.as_str(),
+                b.object_id.as_str(),
+                b.new_generation,
+                b.delta_id.as_str(),
+            ))
     });
 }
 
@@ -73,7 +83,10 @@ fn fit(
         DeletionPlan::record_batch_id(digest)
     ))?;
     if encoded_len(plan, &id, group, &[digest])? <= maximum {
-        out.push(PlannedBatch { id, deltas: group.to_vec() });
+        out.push(PlannedBatch {
+            id,
+            deltas: group.to_vec(),
+        });
         return Ok(());
     }
     if group.len() <= 1 {
@@ -105,9 +118,9 @@ pub(super) fn build(
         return Err(bound("batch_entries_max"));
     }
     let record_max = limits.journal_record_max_bytes as usize;
-    let object_max = limits.spool_object_max_bytes.min(
-        deployment.publisher().spool().limits().max_object_bytes as u64,
-    );
+    let object_max = limits
+        .spool_object_max_bytes
+        .min(deployment.publisher().spool().limits().max_object_bytes as u64);
     let completion_bytes = DeletionCompletion::of(plan)?.canonical_bytes()?;
     if bytes.len() as u64 > object_max || completion_bytes.len() as u64 > object_max {
         return Err(bound("spool_object_max_bytes"));
@@ -119,7 +132,8 @@ pub(super) fn build(
         &completion_id,
         &[completion_delta(plan, digest, completion)?],
         &[completion, digest],
-    )? > record_max {
+    )? > record_max
+    {
         return Err(bound("journal_record_max_bytes"));
     }
 
@@ -136,7 +150,10 @@ pub(super) fn build(
     if encoded_len(plan, &id, std::slice::from_ref(record), &[digest])? > record_max {
         return Err(bound("journal_record_max_bytes"));
     }
-    let mut out = vec![PlannedBatch { id, deltas: vec![record.clone()] }];
+    let mut out = vec![PlannedBatch {
+        id,
+        deltas: vec![record.clone()],
+    }];
     for group in deltas[1..].chunks(entries) {
         fit(plan, digest, group, record_max, &mut out, cx)?;
     }
@@ -154,8 +171,12 @@ pub(super) fn finish(
     cx: &ReplayCx,
 ) -> Result<(), DeletionError> {
     let batches = build(deployment, plan, digest, cx)?;
-    let history: BTreeMap<_, _> = deployment.ledger().batches().iter()
-        .map(|batch| (batch.batch_id.as_str(), batch)).collect();
+    let history: BTreeMap<_, _> = deployment
+        .ledger()
+        .batches()
+        .iter()
+        .map(|batch| (batch.batch_id.as_str(), batch))
+        .collect();
     let mut present = 0_usize;
     let mut missing = false;
     let mut previous = plan.basis_anchor.commit_sequence;
@@ -193,7 +214,10 @@ pub(super) fn finish(
         checkpoint(cx, PREFLIGHT)?;
         if ordinal >= present {
             deployment.append_deletion_batch(
-                batch.id.clone(), batch.deltas.clone(), vec![digest], cx,
+                batch.id.clone(),
+                batch.deltas.clone(),
+                vec![digest],
+                cx,
             )?;
         }
         checkpoint(cx, STAGE_DELETION_AUTHORITY_BATCH_APPENDED)?;
@@ -210,7 +234,11 @@ fn verify_current(
     for batch in batches {
         for delta in &batch.deltas {
             checkpoint(cx, PREFLIGHT)?;
-            let current = deployment.ledger().current().objects.get(&delta.object_id)
+            let current = deployment
+                .ledger()
+                .current()
+                .objects
+                .get(&delta.object_id)
                 .ok_or(DeletionError::RecordMismatch)?;
             if current.generation != delta.new_generation
                 || current.family != delta.family

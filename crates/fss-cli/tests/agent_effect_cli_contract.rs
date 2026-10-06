@@ -717,7 +717,10 @@ fn an_indeterminate_alert_is_reconciled_only_by_an_approved_owner_attestation() 
     let bogus = ContentDigest::sha256(b"not the approval").to_text();
     let (code, refused) = reconcile(&agent, &operation, "delivered", &evidence, Some(&bogus))?;
     assert_eq!(code, Some(5));
-    assert_eq!(text(&refused, &["errorId"])?, "ERR-ALERT-APPROVAL-STALE-001");
+    assert_eq!(
+        text(&refused, &["errorId"])?,
+        "ERR-ALERT-APPROVAL-STALE-001"
+    );
 
     let (code, reconciled) =
         reconcile(&agent, &operation, "delivered", &evidence, Some(&approval))?;
@@ -770,8 +773,13 @@ fn a_relay_accepted_alert_attested_not_delivered_fails_its_obligation() -> TestR
     let evidence = ContentDigest::sha256(b"owner: nothing arrived on any device").to_text();
     let (_, preview) = reconcile(&agent, &operation, "not_delivered", &evidence, None)?;
     let approval = texts(&preview, &["proofPointers"])?[0].clone();
-    let (code, failed) =
-        reconcile(&agent, &operation, "not_delivered", &evidence, Some(&approval))?;
+    let (code, failed) = reconcile(
+        &agent,
+        &operation,
+        "not_delivered",
+        &evidence,
+        Some(&approval),
+    )?;
     assert_eq!(code, Some(0));
     assert_eq!(text(&failed, &["payload", "state"])?, "failed");
     assert!(

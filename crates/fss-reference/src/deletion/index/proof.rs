@@ -17,8 +17,13 @@ use crate::reference_deployment::{
 };
 
 fn owned_family(family: &str) -> bool {
-    matches!(family, FAMILY_DELETION_RECORD | FAMILY_DELETION_TOMBSTONE
-        | FAMILY_DELETION_COMPLETION | ROOT_RETRACTION_FAMILY)
+    matches!(
+        family,
+        FAMILY_DELETION_RECORD
+            | FAMILY_DELETION_TOMBSTONE
+            | FAMILY_DELETION_COMPLETION
+            | ROOT_RETRACTION_FAMILY
+    )
 }
 
 pub(super) fn candidate(batch: &EvidenceDeltaBatch) -> bool {
@@ -57,16 +62,33 @@ impl Progress {
         }
         let mut expected = crate::deletion::commit::record_deltas(&plan, digest)?;
         expected.sort_by(|a, b| {
-            (a.family.as_str(), a.object_id.as_str(), a.new_generation, a.delta_id.as_str())
-                .cmp(&(b.family.as_str(), b.object_id.as_str(), b.new_generation, b.delta_id.as_str()))
+            (
+                a.family.as_str(),
+                a.object_id.as_str(),
+                a.new_generation,
+                a.delta_id.as_str(),
+            )
+                .cmp(&(
+                    b.family.as_str(),
+                    b.object_id.as_str(),
+                    b.new_generation,
+                    b.delta_id.as_str(),
+                ))
         });
         let mut objects = BTreeSet::new();
-        if expected.iter().any(|delta| !objects.insert(delta.object_id.clone())) {
+        if expected
+            .iter()
+            .any(|delta| !objects.insert(delta.object_id.clone()))
+        {
             return mismatch();
         }
         let last_sequence = plan.basis_anchor.commit_sequence;
         Ok(Self {
-            entry: DeletionEntry { plan_digest: digest, plan, completion_digest: None },
+            entry: DeletionEntry {
+                plan_digest: digest,
+                plan,
+                completion_digest: None,
+            },
             expected,
             consumed: 0,
             next_part: 1,
@@ -76,7 +98,9 @@ impl Progress {
 
     fn consume(&mut self, batch: &EvidenceDeltaBatch) -> Result<(), DeletionError> {
         sequence(batch, self.last_sequence)?;
-        let end = self.consumed.checked_add(batch.deltas.len())
+        let end = self
+            .consumed
+            .checked_add(batch.deltas.len())
             .ok_or(DeletionError::RecordMismatch)?;
         if self.entry.completion_digest.is_some()
             || batch.deltas.is_empty()
@@ -93,7 +117,9 @@ impl Progress {
 
     fn complete(&mut self, batch: &EvidenceDeltaBatch) -> Result<ContentDigest, DeletionError> {
         sequence(batch, self.last_sequence)?;
-        let [delta] = batch.deltas.as_slice() else { return mismatch(); };
+        let [delta] = batch.deltas.as_slice() else {
+            return mismatch();
+        };
         let digest = self.entry.plan_digest;
         let plan = &self.entry.plan;
         let mut children = vec![digest, delta.payload_digest];
@@ -131,12 +157,17 @@ pub(super) fn read<E: From<DeletionError>>(
         if !candidate(batch) {
             continue;
         }
-        if let Some(marker) = batch.deltas.iter().find(|delta| delta.family == FAMILY_DELETION_RECORD) {
+        if let Some(marker) = batch
+            .deltas
+            .iter()
+            .find(|delta| delta.family == FAMILY_DELETION_RECORD)
+        {
             let digest = marker.payload_digest;
             let bytes = read(digest)?;
             let plan = DeletionPlan::decode(&bytes, digest)?;
             let object = plan.record_object_id_of(digest);
-            if plans.contains_key(&digest) || records.contains_key(&object)
+            if plans.contains_key(&digest)
+                || records.contains_key(&object)
                 || batch.batch_id.as_str() != DeletionPlan::record_batch_id(digest)
                 || batch.basis_anchor != plan.basis_anchor
                 || plan.site_lineage != plan.basis_anchor.site_lineage
@@ -152,8 +183,13 @@ pub(super) fn read<E: From<DeletionError>>(
             plans.insert(digest, states.len());
             records.insert(object, states.len());
             states.push(progress);
-        } else if let Some(completion) = batch.deltas.iter().find(|delta| delta.family == FAMILY_DELETION_COMPLETION) {
-            let position = records.get(completion.object_id.as_str())
+        } else if let Some(completion) = batch
+            .deltas
+            .iter()
+            .find(|delta| delta.family == FAMILY_DELETION_COMPLETION)
+        {
+            let position = records
+                .get(completion.object_id.as_str())
                 .ok_or(DeletionError::RecordMismatch)?;
             let progress = &mut states[*position];
             let digest = progress.complete(batch)?;
@@ -166,15 +202,22 @@ pub(super) fn read<E: From<DeletionError>>(
             progress.last_sequence = batch.new_anchor.commit_sequence;
         } else {
             let first = batch.deltas.first().ok_or(DeletionError::RecordMismatch)?;
-            let position = plans.get(&first.payload_digest).ok_or(DeletionError::RecordMismatch)?;
+            let position = plans
+                .get(&first.payload_digest)
+                .ok_or(DeletionError::RecordMismatch)?;
             let progress = &mut states[*position];
-            let expected_id = format!("{}:part:{:010}",
-                DeletionPlan::record_batch_id(progress.entry.plan_digest), progress.next_part);
+            let expected_id = format!(
+                "{}:part:{:010}",
+                DeletionPlan::record_batch_id(progress.entry.plan_digest),
+                progress.next_part
+            );
             if batch.batch_id.as_str() != expected_id {
                 return Err(DeletionError::RecordMismatch.into());
             }
             progress.consume(batch)?;
-            progress.next_part = progress.next_part.checked_add(1)
+            progress.next_part = progress
+                .next_part
+                .checked_add(1)
                 .ok_or(DeletionError::RecordMismatch)?;
         }
     }

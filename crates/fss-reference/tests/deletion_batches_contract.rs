@@ -13,8 +13,8 @@ use fss_core::{ContentDigest, SensorId};
 use fss_reference::deletion::{
     CommitOutcome, DeletionError, DeletionIndex, DeletionPlan, DeletionScope,
     STAGE_DELETION_AUTHORITY_BATCH_APPENDED, STAGE_DELETION_OBJECT_REMOVED,
-    STAGE_DELETION_RECORD_APPENDED, STAGE_DELETION_ROOT_RETRACTED,
-    commit_deletion, plan_deletion, plan_scope_deletion,
+    STAGE_DELETION_RECORD_APPENDED, STAGE_DELETION_ROOT_RETRACTED, commit_deletion, plan_deletion,
+    plan_scope_deletion,
 };
 use fss_reference::ingest::{FileIngestError, RetainedFileImport, RetainedReadLimits};
 use fss_reference::{
@@ -37,7 +37,11 @@ fn setup(label: &str, frames: usize) -> TestValue<(PathBuf, DeploymentLimits, Fi
         manifest_children_max: 8,
         ..standard()
     };
-    Ok((dir.join("deployment"), limits, request(&path, frame.len() as u64, 8)?))
+    Ok((
+        dir.join("deployment"),
+        limits,
+        request(&path, frame.len() as u64, 8)?,
+    ))
 }
 
 fn prepare(
@@ -59,7 +63,10 @@ fn assert_no_unlinks(deployment: &ReferenceDeployment, plan: &DeletionPlan) -> T
     }
     for retraction in &plan.retractions {
         let slot = fss_publication::SlotName::parse(&retraction.slot)?;
-        assert_eq!(deployment.publisher().root(&slot).map(|root| root.root), Some(retraction.root));
+        assert_eq!(
+            deployment.publisher().root(&slot).map(|root| root.root),
+            Some(retraction.root)
+        );
     }
     Ok(())
 }
@@ -67,8 +74,12 @@ fn assert_no_unlinks(deployment: &ReferenceDeployment, plan: &DeletionPlan) -> T
 fn assert_bounded_complete(deployment: &ReferenceDeployment, plan: &DeletionPlan) -> TestResult {
     let digest = plan.digest()?;
     let prefix = DeletionPlan::record_batch_id(digest);
-    let batches: Vec<_> = deployment.ledger().batches().iter()
-        .filter(|batch| batch.batch_id.as_str().starts_with(&prefix)).collect();
+    let batches: Vec<_> = deployment
+        .ledger()
+        .batches()
+        .iter()
+        .filter(|batch| batch.batch_id.as_str().starts_with(&prefix))
+        .collect();
     let ids: BTreeSet<_> = batches.iter().map(|batch| &batch.batch_id).collect();
     assert_eq!(ids.len(), batches.len());
     let mut tombstones = BTreeSet::new();
@@ -76,7 +87,10 @@ fn assert_bounded_complete(deployment: &ReferenceDeployment, plan: &DeletionPlan
     for batch in &batches {
         assert!(batch.deltas.len() <= ENTRY_LIMIT);
         assert!(batch.children.len() <= ENTRY_LIMIT);
-        assert!(fss_ledger::encode_batch(batch)?.len() <= deployment.limits().journal_record_max_bytes as usize);
+        assert!(
+            fss_ledger::encode_batch(batch)?.len()
+                <= deployment.limits().journal_record_max_bytes as usize
+        );
         for delta in &batch.deltas {
             match delta.family.as_str() {
                 "deletion_tombstone" => assert!(tombstones.insert(delta.object_id.as_str())),
@@ -87,7 +101,10 @@ fn assert_bounded_complete(deployment: &ReferenceDeployment, plan: &DeletionPlan
     }
     assert_eq!(tombstones.len(), plan.tombstones.len());
     assert_eq!(retractions.len(), plan.retractions.len());
-    assert_eq!(batches.last().map(|batch| batch.batch_id.as_str()), Some(DeletionPlan::completion_batch_id(digest).as_str()));
+    assert_eq!(
+        batches.last().map(|batch| batch.batch_id.as_str()),
+        Some(DeletionPlan::completion_batch_id(digest).as_str())
+    );
     let index = DeletionIndex::read(deployment)?;
     assert!(index.plan(digest).ok_or("missing deletion")?.is_complete());
     for object in &plan.deletable {
@@ -108,14 +125,28 @@ fn large_multipart_import_is_deleted_without_raising_any_batch_limit() -> TestRe
     let receipt = commit_deletion(&mut deployment, digest, approval, PRINCIPAL, &context)?;
     assert_eq!(receipt.outcome, CommitOutcome::Completed);
     assert_bounded_complete(&deployment, &plan)?;
-    assert!(input.path.is_file(), "the operator's original file is not owned by deletion");
+    assert!(
+        input.path.is_file(),
+        "the operator's original file is not owned by deletion"
+    );
     drop(deployment);
     let mut deployment = open(&dir, limits)?;
     assert_bounded_complete(&deployment, &plan)?;
     let count = deployment.ledger().batches().len();
-    assert_eq!(commit_deletion(&mut deployment, digest, approval, PRINCIPAL, &context)?.outcome, CommitOutcome::AlreadyComplete);
+    assert_eq!(
+        commit_deletion(&mut deployment, digest, approval, PRINCIPAL, &context)?.outcome,
+        CommitOutcome::AlreadyComplete
+    );
     assert_eq!(deployment.ledger().batches().len(), count);
-    assert!(matches!(RetainedFileImport::open(&deployment, identity, RetainedReadLimits::default(), &context), Err(FileIngestError::EvidenceDeleted { .. })));
+    assert!(matches!(
+        RetainedFileImport::open(
+            &deployment,
+            identity,
+            RetainedReadLimits::default(),
+            &context
+        ),
+        Err(FileIngestError::EvidenceDeleted { .. })
+    ));
     Ok(())
 }
 
@@ -124,10 +155,26 @@ fn every_authority_boundary_denies_reads_but_preserves_all_bytes_until_resume() 
     let (dir, limits, input) = setup("count", 40)?;
     let (mut deployment, _, plan) = prepare(&dir, limits, &input)?;
     let digest = plan.digest()?;
-    commit_deletion(&mut deployment, digest, plan.approval_digest(PRINCIPAL)?, PRINCIPAL, &cx("count")?)?;
+    commit_deletion(
+        &mut deployment,
+        digest,
+        plan.approval_digest(PRINCIPAL)?,
+        PRINCIPAL,
+        &cx("count")?,
+    )?;
     let prefix = DeletionPlan::record_batch_id(digest);
-    let authority_batches = deployment.ledger().batches().iter()
-        .filter(|batch| batch.batch_id.as_str() == prefix || batch.batch_id.as_str().starts_with(&format!("{prefix}:part:"))).count();
+    let authority_batches = deployment
+        .ledger()
+        .batches()
+        .iter()
+        .filter(|batch| {
+            batch.batch_id.as_str() == prefix
+                || batch
+                    .batch_id
+                    .as_str()
+                    .starts_with(&format!("{prefix}:part:"))
+        })
+        .count();
     assert!(authority_batches > 2);
     for occurrence in 1..=authority_batches {
         let (dir, limits, input) = setup(&format!("cut-{occurrence}"), 40)?;
@@ -135,17 +182,36 @@ fn every_authority_boundary_denies_reads_but_preserves_all_bytes_until_resume() 
         let digest = plan.digest()?;
         let approval = plan.approval_digest(PRINCIPAL)?;
         let context = cx("deletion-batches-cut")?;
-        context.set_cancel_at_checkpoint_occurrence(STAGE_DELETION_AUTHORITY_BATCH_APPENDED, occurrence);
-        assert!(matches!(commit_deletion(&mut deployment, digest, approval, PRINCIPAL, &context), Err(DeletionError::Cancelled { stage: STAGE_DELETION_AUTHORITY_BATCH_APPENDED })));
+        context.set_cancel_at_checkpoint_occurrence(
+            STAGE_DELETION_AUTHORITY_BATCH_APPENDED,
+            occurrence,
+        );
+        assert!(matches!(
+            commit_deletion(&mut deployment, digest, approval, PRINCIPAL, &context),
+            Err(DeletionError::Cancelled {
+                stage: STAGE_DELETION_AUTHORITY_BATCH_APPENDED
+            })
+        ));
         assert!(context.is_drain_completed());
         assert_no_unlinks(&deployment, &plan)?;
         let fresh = cx("deletion-batches-read")?;
-        assert!(matches!(RetainedFileImport::open(&deployment, identity, RetainedReadLimits::default(), &fresh), Err(FileIngestError::EvidenceDeleted { .. })));
-        assert!(!DeletionIndex::read(&deployment)?.plan(digest).ok_or("missing plan")?.is_complete());
+        assert!(matches!(
+            RetainedFileImport::open(&deployment, identity, RetainedReadLimits::default(), &fresh),
+            Err(FileIngestError::EvidenceDeleted { .. })
+        ));
+        assert!(
+            !DeletionIndex::read(&deployment)?
+                .plan(digest)
+                .ok_or("missing plan")?
+                .is_complete()
+        );
         drop(deployment);
         let mut deployment = open(&dir, limits)?;
         assert_no_unlinks(&deployment, &plan)?;
-        assert_eq!(commit_deletion(&mut deployment, digest, approval, PRINCIPAL, &fresh)?.outcome, CommitOutcome::Resumed);
+        assert_eq!(
+            commit_deletion(&mut deployment, digest, approval, PRINCIPAL, &fresh)?.outcome,
+            CommitOutcome::Resumed
+        );
         assert_bounded_complete(&deployment, &plan)?;
     }
     Ok(())
@@ -153,22 +219,44 @@ fn every_authority_boundary_denies_reads_but_preserves_all_bytes_until_resume() 
 
 #[test]
 fn torn_and_committed_authority_append_phases_resume_without_duplicate_transitions() -> TestResult {
-    for phase in [AppendPhase::BodyWrite, AppendPhase::BodySync, AppendPhase::CommitWrite, AppendPhase::CommitSync] {
+    for phase in [
+        AppendPhase::BodyWrite,
+        AppendPhase::BodySync,
+        AppendPhase::CommitWrite,
+        AppendPhase::CommitSync,
+    ] {
         let (dir, limits, input) = setup(&format!("append-{phase:?}"), 40)?;
         let (mut deployment, _, plan) = prepare(&dir, limits, &input)?;
         let digest = plan.digest()?;
         let approval = plan.approval_digest(PRINCIPAL)?;
         let stop = cx("deletion-batches-record")?;
         stop.set_cancel_at_checkpoint_occurrence(STAGE_DELETION_RECORD_APPENDED, 1);
-        assert!(matches!(commit_deletion(&mut deployment, digest, approval, PRINCIPAL, &stop), Err(DeletionError::Cancelled { .. })));
+        assert!(matches!(
+            commit_deletion(&mut deployment, digest, approval, PRINCIPAL, &stop),
+            Err(DeletionError::Cancelled { .. })
+        ));
         deployment.fail_ledger_append_after_phase(phase);
-        let result = commit_deletion(&mut deployment, digest, approval, PRINCIPAL, &cx("deletion-batches-append")?);
+        let result = commit_deletion(
+            &mut deployment,
+            digest,
+            approval,
+            PRINCIPAL,
+            &cx("deletion-batches-append")?,
+        );
         assert!(result.is_err());
         assert_no_unlinks(&deployment, &plan)?;
-        deployment.ledgered_publisher().reconcile_ledger_append(IncompleteTailPolicy::Truncate)?;
+        deployment
+            .ledgered_publisher()
+            .reconcile_ledger_append(IncompleteTailPolicy::Truncate)?;
         drop(deployment);
         let mut deployment = open(&dir, limits)?;
-        commit_deletion(&mut deployment, digest, approval, PRINCIPAL, &cx("deletion-batches-resume")?)?;
+        commit_deletion(
+            &mut deployment,
+            digest,
+            approval,
+            PRINCIPAL,
+            &cx("deletion-batches-resume")?,
+        )?;
         assert_bounded_complete(&deployment, &plan)?;
     }
     Ok(())
@@ -183,10 +271,19 @@ fn resume_after_unlinks_does_not_require_intentionally_removed_root_witnesses() 
         let approval = plan.approval_digest(PRINCIPAL)?;
         let stop = cx("deletion-batches-unlink")?;
         stop.set_cancel_at_checkpoint_occurrence(stage, 2);
-        assert!(matches!(commit_deletion(&mut deployment, digest, approval, PRINCIPAL, &stop), Err(DeletionError::Cancelled { .. })));
+        assert!(matches!(
+            commit_deletion(&mut deployment, digest, approval, PRINCIPAL, &stop),
+            Err(DeletionError::Cancelled { .. })
+        ));
         drop(deployment);
         let mut deployment = open(&dir, limits)?;
-        commit_deletion(&mut deployment, digest, approval, PRINCIPAL, &cx("deletion-batches-unlink-resume")?)?;
+        commit_deletion(
+            &mut deployment,
+            digest,
+            approval,
+            PRINCIPAL,
+            &cx("deletion-batches-unlink-resume")?,
+        )?;
         assert_bounded_complete(&deployment, &plan)?;
     }
     Ok(())
@@ -203,13 +300,34 @@ fn sensor_scope_uses_one_approval_and_preserves_a_shared_other_sensor_import() -
     let mut outside = input.clone();
     outside.sensor_id = SensorId::parse("sensor:outside-deletion")?;
     let outside = FileIngestAdapter::ingest(outside, &context, &mut deployment)?;
-    let plan = plan_scope_deletion(&deployment, &DeletionScope::Sensor(input.sensor_id.clone()), &context)?;
+    let plan = plan_scope_deletion(
+        &deployment,
+        &DeletionScope::Sensor(input.sensor_id.clone()),
+        &context,
+    )?;
     assert!(plan.blockers.is_empty(), "{:?}", plan.blockers);
-    assert_eq!(plan.imports.iter().copied().collect::<BTreeSet<_>>(), BTreeSet::from([first, second.import_identity]));
-    commit_deletion(&mut deployment, plan.digest()?, plan.approval_digest(PRINCIPAL)?, PRINCIPAL, &context)?;
+    assert_eq!(
+        plan.imports.iter().copied().collect::<BTreeSet<_>>(),
+        BTreeSet::from([first, second.import_identity])
+    );
+    commit_deletion(
+        &mut deployment,
+        plan.digest()?,
+        plan.approval_digest(PRINCIPAL)?,
+        PRINCIPAL,
+        &context,
+    )?;
     assert_bounded_complete(&deployment, &plan)?;
-    let retained = RetainedFileImport::open(&deployment, outside.import_identity, RetainedReadLimits::default(), &context)?;
-    assert_eq!(retained.verify_source(&deployment, RetainedReadLimits::default(), &context)?, outside.input_sha256);
+    let retained = RetainedFileImport::open(
+        &deployment,
+        outside.import_identity,
+        RetainedReadLimits::default(),
+        &context,
+    )?;
+    assert_eq!(
+        retained.verify_source(&deployment, RetainedReadLimits::default(), &context)?,
+        outside.input_sha256
+    );
     Ok(())
 }
 
@@ -220,13 +338,29 @@ fn small_deletion_keeps_one_legacy_record_batch() -> TestResult {
     let (mut deployment, _, plan) = prepare(&dir, limits, &input)?;
     let digest = plan.digest()?;
     let prefix = DeletionPlan::record_batch_id(digest);
-    commit_deletion(&mut deployment, digest, plan.approval_digest(PRINCIPAL)?, PRINCIPAL, &cx("deletion-batches-legacy")?)?;
-    let batches: Vec<_> = deployment.ledger().batches().iter()
-        .filter(|batch| batch.batch_id.as_str().starts_with(&prefix)).collect();
+    commit_deletion(
+        &mut deployment,
+        digest,
+        plan.approval_digest(PRINCIPAL)?,
+        PRINCIPAL,
+        &cx("deletion-batches-legacy")?,
+    )?;
+    let batches: Vec<_> = deployment
+        .ledger()
+        .batches()
+        .iter()
+        .filter(|batch| batch.batch_id.as_str().starts_with(&prefix))
+        .collect();
     assert_eq!(batches.len(), 2);
     assert_eq!(batches[0].batch_id.as_str(), prefix);
-    assert_eq!(batches[0].deltas.len(), 1 + plan.tombstones.len() + plan.retractions.len());
-    assert_eq!(batches[1].batch_id.as_str(), DeletionPlan::completion_batch_id(digest));
+    assert_eq!(
+        batches[0].deltas.len(),
+        1 + plan.tombstones.len() + plan.retractions.len()
+    );
+    assert_eq!(
+        batches[1].batch_id.as_str(),
+        DeletionPlan::completion_batch_id(digest)
+    );
     Ok(())
 }
 
@@ -235,21 +369,42 @@ fn journal_byte_limit_partitions_deletion_even_when_the_entry_count_fits() -> Te
     let (probe_dir, mut limits, input) = setup("journal-probe", 64)?;
     limits.batch_entries_max = 16_384;
     let (probe, _, _) = prepare(&probe_dir, limits, &input)?;
-    let import_max = probe.ledger().batches().iter()
+    let import_max = probe
+        .ledger()
+        .batches()
+        .iter()
         .map(|batch| fss_ledger::encode_batch(batch).map(|bytes| bytes.len()))
-        .collect::<Result<Vec<_>, _>>()?.into_iter().max().ok_or("no import records")?;
+        .collect::<Result<Vec<_>, _>>()?
+        .into_iter()
+        .max()
+        .ok_or("no import records")?;
     limits.journal_record_max_bytes = u32::try_from(import_max + 512)?;
     let dir = fresh_dir("deletion-batches-byte-bound")?.join("deployment");
     let (mut deployment, _, plan) = prepare(&dir, limits, &input)?;
     let digest = plan.digest()?;
     assert!(plan.tombstones.len() + plan.retractions.len() + 1 < limits.batch_entries_max);
-    commit_deletion(&mut deployment, digest, plan.approval_digest(PRINCIPAL)?, PRINCIPAL, &cx("deletion-batches-byte-bound")?)?;
+    commit_deletion(
+        &mut deployment,
+        digest,
+        plan.approval_digest(PRINCIPAL)?,
+        PRINCIPAL,
+        &cx("deletion-batches-byte-bound")?,
+    )?;
     let prefix = DeletionPlan::record_batch_id(digest);
-    let records: Vec<_> = deployment.ledger().batches().iter()
-        .filter(|batch| batch.batch_id.as_str().starts_with(&prefix)).collect();
-    assert!(records.len() > 2, "the byte bound, not the count bound, must partition");
+    let records: Vec<_> = deployment
+        .ledger()
+        .batches()
+        .iter()
+        .filter(|batch| batch.batch_id.as_str().starts_with(&prefix))
+        .collect();
+    assert!(
+        records.len() > 2,
+        "the byte bound, not the count bound, must partition"
+    );
     for record in records {
-        assert!(fss_ledger::encode_batch(record)?.len() <= limits.journal_record_max_bytes as usize);
+        assert!(
+            fss_ledger::encode_batch(record)?.len() <= limits.journal_record_max_bytes as usize
+        );
     }
     Ok(())
 }
@@ -266,13 +421,28 @@ fn oversized_indivisible_plan_is_refused_before_any_deletion_object_is_staged() 
         request.limits.max_batch_deltas = knob;
         FileIngestAdapter::ingest(request, &context, &mut deployment)?;
     }
-    let plan = plan_scope_deletion(&deployment, &DeletionScope::Sensor(input.sensor_id.clone()), &context)?;
+    let plan = plan_scope_deletion(
+        &deployment,
+        &DeletionScope::Sensor(input.sensor_id.clone()),
+        &context,
+    )?;
     assert!(plan.blockers.is_empty(), "{:?}", plan.blockers);
     assert!(plan.canonical_bytes()?.len() > limits.spool_object_max_bytes as usize);
     let count = deployment.publisher().spool().object_count();
     let occupied = deployment.publisher().spool().occupied_bytes()?;
     let anchor = deployment.current_anchor().clone();
-    assert!(matches!(commit_deletion(&mut deployment, plan.digest()?, plan.approval_digest(PRINCIPAL)?, PRINCIPAL, &context), Err(DeletionError::Bound { limit: "spool_object_max_bytes" })));
+    assert!(matches!(
+        commit_deletion(
+            &mut deployment,
+            plan.digest()?,
+            plan.approval_digest(PRINCIPAL)?,
+            PRINCIPAL,
+            &context
+        ),
+        Err(DeletionError::Bound {
+            limit: "spool_object_max_bytes"
+        })
+    ));
     assert_eq!(deployment.publisher().spool().object_count(), count);
     assert_eq!(deployment.publisher().spool().occupied_bytes()?, occupied);
     assert_eq!(deployment.current_anchor(), &anchor);
