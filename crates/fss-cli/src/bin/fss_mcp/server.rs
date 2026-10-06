@@ -13,12 +13,15 @@ const PROTOCOL_VERSION: &str = "2025-06-18";
 const MAX_TOOL_OUTPUT_BYTES: usize = 4 * 1024 * 1024;
 const MAX_BUDGET_TOKENS: u64 = 4096;
 const MAX_PAGE_ENTRIES: u64 = 4096;
+/// A transport call blocks at most this long; longer waits are a CLI concern.
+const MAX_WAIT_MS: u64 = 10_000;
 
 const TOOLS: &str = r#"{"tools":[
 {"name":"session_orient","description":"Read-only AOP-003: inspect an existing deployment through its anchor-pinned SituationCapsule. Returns the existing fss/1 AgentResponseEnvelope unchanged, including coverage gaps, uncertainty, obligations and affordances. No affordance is executed.","inputSchema":{"type":"object","properties":{"view":{"type":"string","enum":["pulse","brief","epistemic_map"]},"budget_tokens":{"type":"integer","minimum":1,"maximum":4096}},"additionalProperties":false},"annotations":{"readOnlyHint":true,"destructiveHint":false,"idempotentHint":true,"openWorldHint":false}},
 {"name":"explain","description":"Read-only AOP-011: explain one published event, including provenance, contradictions and evidence that would change the conclusion. Returns the existing fss/1 AgentResponseEnvelope unchanged.","inputSchema":{"type":"object","properties":{"event_id":{"type":"string","minLength":1,"maxLength":128}},"required":["event_id"],"additionalProperties":false},"annotations":{"readOnlyHint":true,"destructiveHint":false,"idempotentHint":true,"openWorldHint":false}},
 {"name":"session_follow","description":"Read-only AOP-004: return one exact page of meaningful changes since an orientation anchor. Protected coverage, obligation and effect-uncertainty classes and exact continuations remain in the unchanged fss/1 envelope. A bounded read, not a live subscription.","inputSchema":{"type":"object","properties":{"since":{"type":"string","minLength":1,"maxLength":256},"view":{"type":"string","enum":["pulse","brief"]},"max_entries":{"type":"integer","minimum":1,"maximum":4096},"continuation":{"type":"string","minLength":1,"maxLength":256}},"required":["since"],"additionalProperties":false},"annotations":{"readOnlyHint":true,"destructiveHint":false,"idempotentHint":true,"openWorldHint":false}},
 {"name":"query","description":"Read-only AOP-005: exact conjunctive query of the latest verified committed event records. Returns the unchanged CLI AgentResponseEnvelope with protected context. Empty matches never certify physical absence. Nanosecond endpoints are canonical decimal strings to preserve signed 128-bit precision. Continuations require unchanged filters, principal, page size and authority/effect-history head.","inputSchema":{"type":"object","properties":{"event_id":{"type":"string","minLength":1,"maxLength":128},"kind":{"type":"string","enum":["perimeter_breach","covert_approach","sensor_tamper","unknown_presence","benign_routine","unclassified"]},"state":{"type":"string","enum":["hypothesized","witnessed","corroborated","adjudicated","alert_delivered","resolved","indeterminate","rejected"]},"zone":{"type":"string","minLength":1,"maxLength":64},"from_ns":{"type":"string","pattern":"^(0|-?[1-9][0-9]*)$","maxLength":40},"through_ns":{"type":"string","pattern":"^(0|-?[1-9][0-9]*)$","maxLength":40},"max_entries":{"type":"integer","minimum":1,"maximum":32},"anchor":{"type":"string","minLength":1,"maxLength":256},"continuation":{"type":"string","minLength":1,"maxLength":256}},"additionalProperties":false},"annotations":{"readOnlyHint":true,"destructiveHint":false,"idempotentHint":true,"openWorldHint":false}},
+{"name":"wait","description":"Read-only AOP-009: wait, bounded to 10 s, until one effect operation leaves its current state, polling the committed effect journal without writing or locking. Returns the unchanged fss/1 AgentResponseEnvelope carrying the operation receipt; an unchanged operation at the deadline is a partial answer with ERR-OP-TIMEOUT-001 (silence is not completion). Never prepares, commits, resends or cancels anything.","inputSchema":{"type":"object","properties":{"operation_id":{"type":"string","minLength":1,"maxLength":128},"deadline_ms":{"type":"integer","minimum":1,"maximum":10000}},"required":["operation_id","deadline_ms"],"additionalProperties":false},"annotations":{"readOnlyHint":true,"destructiveHint":false,"idempotentHint":true,"openWorldHint":false}},
 {"name":"doctor","description":"Read-only AOP-014 reference diagnosis of the fixed deployment. Returns the existing fss.doctor.v1 report, not an AgentResponseEnvelope. Does not repair, create directories, acquire locks or execute affordances.","inputSchema":{"type":"object","properties":{},"additionalProperties":false},"annotations":{"readOnlyHint":true,"destructiveHint":false,"idempotentHint":true,"openWorldHint":false}}
 ]}"#;
 
@@ -266,6 +269,21 @@ impl Server {
                 }
                 argv
             }
+            "wait" => {
+                if !only(args, &["operation_id", "deadline_ms"]) {
+                    return Err((-32602, "Unexpected wait argument"));
+                }
+                let operation = bounded_text(args.get("operation_id"), 128)?;
+                let deadline = positive_integer(
+                    args.get("deadline_ms")
+                        .ok_or((-32602, "Expected deadline_ms integer"))?,
+                    MAX_WAIT_MS,
+                )?;
+                let mut argv = self.base_args("wait");
+                argv.push(format!("--operation={operation}").into());
+                argv.push(format!("--deadline-ms={deadline}").into());
+                argv
+            }
             "doctor" => {
                 if !args.is_empty() {
                     return Err((-32602, "Doctor accepts no scope overrides"));
@@ -287,6 +305,10 @@ impl Server {
                 | FssCommand::Follow(_)
                 | FssCommand::Query(_)
                 | FssCommand::Doctor(_)
+        ) && !matches!(
+            &command,
+            FssCommand::Effect(effect)
+                if matches!(effect.as_ref(), fss_cli::effect_cmd::EffectCommand::Wait(_))
         ) {
             return Err((-32603, "Read-only command boundary refused dispatch"));
         }
@@ -576,10 +598,48 @@ mod tests {
             "explain",
             "doctor",
             "query",
+            "wait",
         ] {
             assert!(fss_cli::lookup_by_mcp_tool_name(name).is_some());
         }
         assert!(json::parse(TOOLS).is_ok());
+    }
+
+    #[test]
+    fn wait_dispatches_only_the_bounded_read_and_effect_tools_stay_absent() {
+        let mut server = ready();
+        let mut seen = Vec::new();
+        let reply = server.handle_with(
+            r#"{"jsonrpc":"2.0","id":7,"method":"tools/call","params":{"name":"wait","arguments":{"operation_id":"operation:alert:abc","deadline_ms":250}}}"#,
+            |command| {
+                seen.push(command);
+                ("{}".to_owned(), ExitIdentity::SUCCESS)
+            },
+        );
+        assert!(reply.is_some_and(|r| r.contains("\"isError\":false")));
+        assert_eq!(seen.len(), 1);
+        assert!(matches!(
+            seen.pop(),
+            Some(FssCommand::Effect(effect)) if matches!(
+                effect.as_ref(),
+                fss_cli::effect_cmd::EffectCommand::Wait(args)
+                    if args.operation.as_str() == "operation:alert:abc" && args.deadline_ms == 250
+            )
+        ));
+        let mut calls = 0;
+        for text in [
+            r#"{"jsonrpc":"2.0","id":8,"method":"tools/call","params":{"name":"wait","arguments":{"operation_id":"operation:alert:abc","deadline_ms":60000}}}"#,
+            r#"{"jsonrpc":"2.0","id":9,"method":"tools/call","params":{"name":"wait","arguments":{"operation_id":"operation:alert:abc"}}}"#,
+            r#"{"jsonrpc":"2.0","id":10,"method":"tools/call","params":{"name":"plan","arguments":{}}}"#,
+            r#"{"jsonrpc":"2.0","id":11,"method":"tools/call","params":{"name":"cancel","arguments":{}}}"#,
+            r#"{"jsonrpc":"2.0","id":12,"method":"tools/call","params":{"name":"investigate","arguments":{}}}"#,
+        ] {
+            let _ = server.handle_with(text, |_| {
+                calls += 1;
+                ("{}".to_owned(), ExitIdentity::SUCCESS)
+            });
+        }
+        assert_eq!(calls, 0);
     }
 
     #[test]

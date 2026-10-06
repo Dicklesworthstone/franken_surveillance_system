@@ -16,6 +16,8 @@ pub mod diagnostic;
 /// `fss plan` / `commit` / `wait` / `cancel` (AOP-007..010): the canonical effect grammar.
 pub mod effect_cmd;
 pub mod error;
+/// `fss feedback` (AOP-013): advisory, evidence-linked proposals; never a policy mutation.
+pub mod feedback_cmd;
 /// Read-only `follow` (AOP-004 `session.follow`) since an earlier committed anchor.
 pub mod follow_cmd;
 pub mod fss_cmd;

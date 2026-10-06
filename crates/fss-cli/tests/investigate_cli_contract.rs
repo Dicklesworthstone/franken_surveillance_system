@@ -848,3 +848,103 @@ fn a_case_carried_across_a_resume_is_rebased_and_its_citations_readmitted() -> T
     assert_eq!(dispositions(&assessed)?[0].1, "supported");
     Ok(())
 }
+
+fn feedback(agent: &Agent, extra: &[&str]) -> TestResult<(Option<i32>, String)> {
+    let mut args: Vec<OsString> = vec![
+        "feedback".into(),
+        "--json".into(),
+        "--root".into(),
+        agent.root.as_os_str().to_owned(),
+        "--session".into(),
+        agent.session.clone().into(),
+    ];
+    args.extend(extra.iter().map(OsString::from));
+    run_fss(&args)
+}
+
+#[test]
+fn feedback_is_grounded_evidence_linked_advisory_and_exactly_retried() -> TestResult {
+    let directory = OwnedDirectory::new("feedback")?;
+    let root = empty_deployment(&directory)?;
+    let authority_before = authority_tree(&root)?;
+    let agent = Agent::open(&directory, &root)?;
+    let file = agent.case_file("case.json", &case_document())?;
+    agent.ok("open", &["--case-file", &file])?;
+    let target = format!("case:{CASE}");
+    let seen = evidence("hallway frame 17: person");
+    let args = [
+        "--target",
+        target.as_str(),
+        "--kind",
+        "policy_candidate",
+        "--statement",
+        "Hallway frames should be a standing probe for east-door cases.",
+        "--supporting",
+        seen.as_str(),
+        "--disposition",
+        "create_learning_proposal",
+    ];
+    let (code, stdout) = feedback(&agent, &args)?;
+    assert_eq!(code, Some(0), "{stdout}");
+    assert_answer_conforms(&stdout, &agent.scratch, "feedback")?;
+    let first = parse(stdout.trim_end())?;
+    assert_eq!(text(&first, &["operationId"])?, "AOP-013");
+    assert_eq!(
+        field(&first, &["payload", "activePolicyMutation"])?,
+        &Value::Bool(false)
+    );
+    assert_eq!(text(&first, &["payload", "target", "kind"])?, "case");
+    // An identical proposal is an exact retry.
+    let (code, again) = feedback(&agent, &args)?;
+    assert_eq!(code, Some(0));
+    assert_eq!(raw_payload(&again)?, raw_payload(&stdout)?);
+
+    // Ungrounded or unevidenced proposals are refused.
+    let (code, stdout) = feedback(
+        &agent,
+        &[
+            "--target",
+            "event:event:nowhere",
+            "--kind",
+            "correction",
+            "--statement",
+            "This event was a raccoon.",
+            "--supporting",
+            seen.as_str(),
+        ],
+    )?;
+    assert_eq!(code, Some(5), "{stdout}");
+    assert_eq!(
+        text(&parse(stdout.trim_end())?, &["errorId"])?,
+        "ERR-OP-PRECONDITION-FAILED-001"
+    );
+    let (code, stdout) = feedback(
+        &agent,
+        &[
+            "--target",
+            target.as_str(),
+            "--kind",
+            "helpful",
+            "--statement",
+            "Good case.",
+        ],
+    )?;
+    assert_eq!(code, Some(5), "{stdout}");
+    // A malformed kind is an argument error.
+    let (code, _) = feedback(
+        &agent,
+        &[
+            "--target",
+            target.as_str(),
+            "--kind",
+            "rewrite_policy_now",
+            "--statement",
+            "x",
+            "--supporting",
+            seen.as_str(),
+        ],
+    )?;
+    assert_eq!(code, Some(2));
+    assert_eq!(authority_tree(&root)?, authority_before);
+    Ok(())
+}

@@ -216,6 +216,31 @@ synthetic scenes). None of it has been measured on real camera footage.
   authority ledger, effect journal, and deployment spool stay byte-identical. Leases and handoff
   lifetimes run on the deployment evidence clock; there is no authentication (principals are
   audit labels) and no MCP transport. Open drifts: `architecture/agent_contracts.json`.
+- **Agent operation grammar completed on the CLI (fss/1, 2026-10-06):** all 14 registered
+  operations now have an `fss` surface. `fss investigate` (AOP-006) projects the existing durable
+  case engine onto deployment roots: open (draft at the session's exact anchor and contract
+  basis, deadline on the evidence clock), inspect, list, activate, cite, assess, set-state,
+  conclude, rebase, readmit, expand; dispositions stay orthogonal to knowledge states, every
+  change is an optimistic CAS on the exact revision digest, refusals are typed, and the
+  session-bound situation lists one `affordance:investigate:<case>` per open case (inside the
+  capsule identity) and fills `activeInvestigations` in situation and handoff payloads. After a
+  `session resume`, open cases are listed as invalidated and refused as stale until rebased; old
+  citations then need readmission. `fss plan --intent alert` (AOP-007) publishes a witnessed
+  `fss.agent_control_plan.v1` DAG (observe, decide, prepare, commit, record, reconcile) bound to
+  the session situation's frame and WorldEnvelope digests, naming the activity worlds the commit
+  serves and the artifact worlds where it is a false alarm; with the operator's exact plan
+  approval it durably prepares. `fss commit` (AOP-008) revalidates the plan and both approvals,
+  commits before any I/O and sends exactly one webhook (2xx = relay acceptance only; a lost
+  acknowledgement is indeterminate and never resent). `fss wait` (AOP-009) is a bounded
+  read-only poll; `fss cancel` (AOP-010) previews and then cancels a still-prepared operation
+  under exact approval. `fss feedback` (AOP-013) publishes grounded, evidence-linked advisory
+  proposals (`activePolicyMutation: false`). `fss-event alert` and the agent grammar share one
+  alert core (`fss_cli::alert_effect`), so an operation prepared by either is the same operation.
+  The MCP adapter adds only the read-only `wait` tool. Limits: alert is the only plan intent;
+  no provider reconciliation exists for webhooks (obligations stay pending/indeterminate until an
+  operator reconciles); probes are recorded, never executed; no execution episodes, learning
+  promotion, work-claim CLI, or multi-agent schedules yet; proven on synthetic fixtures and a
+  loopback relay only (`investigate_cli_contract`, `agent_effect_cli_contract`).
 
 Architectural deviations to resolve: device and alert I/O use blocking `std::net` rather than
 Asupersync (owner decision `fss-x4a.8.1` is open), and the workspace has zero third-party crates.

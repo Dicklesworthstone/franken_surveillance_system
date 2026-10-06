@@ -217,6 +217,7 @@
     "crates/fss-reference/src/delivery.rs": "authority",
     "crates/fss-reference/src/deployment_session.rs": "cognition",
     "crates/fss-reference/src/deployment_session/investigation.rs": "cognition",
+    "crates/fss-reference/src/deployment_session/feedback.rs": "cognition",
     "crates/fss-reference/src/deployment_session/plan.rs": "cognition",
     "crates/fss-reference/src/deployment_session/tests.rs": "support",
     "crates/fss-reference/src/deployment_status.rs": "support",

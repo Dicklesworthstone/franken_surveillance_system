@@ -1027,6 +1027,23 @@ fn classify(error: DeploymentSessionError) -> Result<Refusal, DeploymentSessionE
             safe_retry: ResponseSafeRetry::No,
         },
         DeploymentSessionError::CaseRefused(case) => case_refusal(case, error.to_string()),
+        DeploymentSessionError::FeedbackDenied => Refusal {
+            error_id: ERR_AUTH_DENIED,
+            reason: error.to_string(),
+            guidance: "Open a new session: sessions are negotiated with the advisory feedback \
+                       grant.",
+            recovery_class: "operator_action_required",
+            safe_retry: ResponseSafeRetry::No,
+        },
+        DeploymentSessionError::FeedbackRefused(_) => Refusal {
+            error_id: ERR_OP_PRECONDITION_FAILED,
+            reason: error.to_string(),
+            guidance: "Cite 1..256 evidence digests about a target that exists where the session \
+                       can see it (event at the session anchor, visible case, journal operation, \
+                       or published plan).",
+            recovery_class: "never_unchanged",
+            safe_retry: ResponseSafeRetry::No,
+        },
         DeploymentSessionError::PlanUnknown => Refusal {
             error_id: ERR_OP_PRECONDITION_FAILED,
             reason: error.to_string(),

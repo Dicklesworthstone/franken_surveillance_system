@@ -95,6 +95,9 @@ pub mod investigation;
 /// Published, witnessed control plans (AOP-007) for the canonical agent effect grammar.
 pub mod plan;
 
+/// Advisory, evidence-linked feedback proposals (AOP-013); never a policy mutation.
+pub mod feedback;
+
 /// Agent-plane directory under a deployment root; nothing outside it is ever written.
 pub const AGENT_DIR: &str = "agent";
 /// Session journal directory, relative to the deployment root.
@@ -115,9 +118,11 @@ pub const HANDOFF_LIFETIME_NS: i128 = 7 * 24 * 3_600 * 1_000_000_000;
 /// the case grants (`CAP-AGENT-CASE-WRITE-001`, the AOP-006 registry row, and
 /// `CAP-AGENT-INVESTIGATE-001`, the grant the case engine admits) write cognition only, and
 /// `CAP-AGENT-PLAN-PREPARE-001` compiles and publishes plans; preparing or committing an effect
-/// additionally needs the operator's exact approval of that plan, never a session grant.
-pub const SESSION_CAPABILITIES: [&str; 8] = [
+/// additionally needs the operator's exact approval of that plan, never a session grant;
+/// `CAP-AGENT-FEEDBACK-001` appends advisory proposals that never mutate policy.
+pub const SESSION_CAPABILITIES: [&str; 9] = [
     "CAP-AGENT-CASE-WRITE-001",
+    "CAP-AGENT-FEEDBACK-001",
     "CAP-AGENT-HANDOFF-READ-001",
     "CAP-AGENT-HANDOFF-WRITE-001",
     "CAP-AGENT-INVESTIGATE-001",
@@ -165,6 +170,10 @@ pub enum DeploymentSessionError {
     StoreLocked,
     /// The agent-session store failed verification; it is never repaired implicitly.
     StoreInvalid(String),
+    /// The session was not negotiated with the advisory feedback grant.
+    FeedbackDenied,
+    /// A feedback proposal is ungrounded, unevidenced, or conflicts with a published one.
+    FeedbackRefused(String),
     /// No plan with that identity is published in this deployment.
     PlanUnknown,
     /// The published plan is tampered, incomplete, or conflicts with a different plan.
@@ -189,6 +198,8 @@ impl fmt::Display for DeploymentSessionError {
             Self::HandoffInvalid(reason) => write!(f, "handoff refused: {reason}"),
             Self::StoreLocked => f.write_str("the agent-session store is held by another command"),
             Self::StoreInvalid(reason) => write!(f, "agent-session store refused: {reason}"),
+            Self::FeedbackDenied => f.write_str("the session lacks the advisory feedback grant"),
+            Self::FeedbackRefused(reason) => write!(f, "feedback refused: {reason}"),
             Self::PlanUnknown => f.write_str("no plan with that identity is published"),
             Self::PlanInvalid(reason) => write!(f, "plan refused: {reason}"),
             Self::CaseRefused(error) => write!(f, "investigation refused: {error}"),
