@@ -226,7 +226,7 @@ fn rtpplay_binding_is_required_and_never_guessed() -> TestResult {
 #[test]
 fn capabilities_report_rtpplay_file_import_as_implemented() -> TestResult {
     let output = Command::new(env!("CARGO_BIN_EXE_fss"))
-        .arg("capabilities")
+        .args(["capabilities", "--json"])
         .output()?;
     success(&output);
     let text = String::from_utf8(output.stdout)?;
