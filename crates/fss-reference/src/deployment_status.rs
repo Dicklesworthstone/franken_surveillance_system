@@ -15,8 +15,8 @@ use fss_ledger::{HostJournalReadIo, JournalReadIo, LedgerInspection, inspect_dur
 
 use crate::agent_orient::{DeploymentReadError, DeploymentSnapshot, OrientLimits, read_deployment};
 use crate::reference_deployment::{
-    DEPLOYMENT_LAYOUT_FILENAME, DeploymentLayout, FAMILY_DELETION_TOMBSTONE,
-    FAMILY_FILE_IMPORT, FAMILY_SENSOR_CAPSULE,
+    DEPLOYMENT_LAYOUT_FILENAME, DeploymentLayout, FAMILY_DELETION_TOMBSTONE, FAMILY_FILE_IMPORT,
+    FAMILY_SENSOR_CAPSULE,
 };
 
 /// Limits on additional inventory work, independent of orientation's own bounded reads.
@@ -141,80 +141,131 @@ pub struct DeploymentStatus {
 /// A principal label is not an authorization mechanism; the caller supplies access to the root.
 pub trait StatusReadIo {
     /// Read the existing bounded orientation snapshot, preserving its refusal semantics.
-    fn snapshot(&self, root: &Path, limits: &OrientLimits) -> Result<DeploymentSnapshot, StatusError>;
+    fn snapshot(
+        &self,
+        root: &Path,
+        limits: &OrientLimits,
+    ) -> Result<DeploymentSnapshot, StatusError>;
     /// Read the canonical layout through a bounded, non-symlink regular-file read.
     fn layout(&self, root: &Path, max_bytes: usize) -> Result<Vec<u8>, StatusError>;
     /// Read and replay the authority journal without locks or mutation.
-    fn ledger(&self, root: &Path, layout: &DeploymentLayout, max_bytes: usize)
-        -> Result<LedgerInspection, StatusError>;
+    fn ledger(
+        &self,
+        root: &Path,
+        layout: &DeploymentLayout,
+        max_bytes: usize,
+    ) -> Result<LedgerInspection, StatusError>;
     /// Read one content-addressed metadata object; the inventory additionally checks its digest.
-    fn object(&self, root: &Path, layout: &DeploymentLayout, digest: ContentDigest, max_bytes: usize)
-        -> Result<Vec<u8>, StatusError>;
+    fn object(
+        &self,
+        root: &Path,
+        layout: &DeploymentLayout,
+        digest: ContentDigest,
+        max_bytes: usize,
+    ) -> Result<Vec<u8>, StatusError>;
 }
 
 /// Host reference adapter. Every operation delegates to an existing read-only bounded reader.
 #[derive(Clone, Copy, Debug, Default)]
 pub struct HostStatusReadIo;
 impl StatusReadIo for HostStatusReadIo {
-    fn snapshot(&self, root: &Path, limits: &OrientLimits) -> Result<DeploymentSnapshot, StatusError> {
+    fn snapshot(
+        &self,
+        root: &Path,
+        limits: &OrientLimits,
+    ) -> Result<DeploymentSnapshot, StatusError> {
         read_deployment(root, limits).map_err(Into::into)
     }
     fn layout(&self, root: &Path, max_bytes: usize) -> Result<Vec<u8>, StatusError> {
         let path = root.join(DEPLOYMENT_LAYOUT_FILENAME);
         let meta = HostJournalReadIo.symlink_metadata(&path).map_err(|error| {
-            if error.kind() == std::io::ErrorKind::NotFound { StatusError::NotADeployment }
-            else { StatusError::Unreadable }
+            if error.kind() == std::io::ErrorKind::NotFound {
+                StatusError::NotADeployment
+            } else {
+                StatusError::Unreadable
+            }
         })?;
-        if !meta.is_file || meta.is_symlink { return Err(StatusError::NotADeployment); }
-        if meta.len > max_bytes as u64 { return Err(StatusError::OverBudget); }
-        let bytes = HostJournalReadIo.read_bounded(&path, max_bytes.saturating_add(1))
+        if !meta.is_file || meta.is_symlink {
+            return Err(StatusError::NotADeployment);
+        }
+        if meta.len > max_bytes as u64 {
+            return Err(StatusError::OverBudget);
+        }
+        let bytes = HostJournalReadIo
+            .read_bounded(&path, max_bytes.saturating_add(1))
             .map_err(|_| StatusError::Unreadable)?;
-        if bytes.len() > max_bytes { return Err(StatusError::OverBudget); }
+        if bytes.len() > max_bytes {
+            return Err(StatusError::OverBudget);
+        }
         Ok(bytes)
     }
-    fn ledger(&self, root: &Path, layout: &DeploymentLayout, max_bytes: usize)
-        -> Result<LedgerInspection, StatusError> {
-        inspect_durable(root.join(&layout.ledger_relpath), layout.site_lineage.clone(), max_bytes)
-            .map_err(|error| match error {
-                fss_ledger::DurableLedgerError::OverBudget { .. } => StatusError::OverBudget,
-                fss_ledger::DurableLedgerError::Io(_) => StatusError::Unreadable,
-                _ => StatusError::Corrupt,
-            })
+    fn ledger(
+        &self,
+        root: &Path,
+        layout: &DeploymentLayout,
+        max_bytes: usize,
+    ) -> Result<LedgerInspection, StatusError> {
+        inspect_durable(
+            root.join(&layout.ledger_relpath),
+            layout.site_lineage.clone(),
+            max_bytes,
+        )
+        .map_err(|error| match error {
+            fss_ledger::DurableLedgerError::OverBudget { .. } => StatusError::OverBudget,
+            fss_ledger::DurableLedgerError::Io(_) => StatusError::Unreadable,
+            _ => StatusError::Corrupt,
+        })
     }
-    fn object(&self, root: &Path, layout: &DeploymentLayout, digest: ContentDigest, max_bytes: usize)
-        -> Result<Vec<u8>, StatusError> {
+    fn object(
+        &self,
+        root: &Path,
+        layout: &DeploymentLayout,
+        digest: ContentDigest,
+        max_bytes: usize,
+    ) -> Result<Vec<u8>, StatusError> {
         fss_publication::read_verified(&root.join(&layout.objects_relpath), digest, max_bytes)
             .map_err(|_| StatusError::Corrupt)
     }
 }
 
 /// Read the host deployment, with no mutations and no claims of current physical health.
-pub fn inspect_deployment_status(root: &Path, limits: &StatusLimits)
-    -> Result<DeploymentStatus, StatusError> {
+pub fn inspect_deployment_status(
+    root: &Path,
+    limits: &StatusLimits,
+) -> Result<DeploymentStatus, StatusError> {
     inspect_deployment_status_with(&HostStatusReadIo, root, limits, &mut || Ok(()))
 }
 
 /// Read through explicit authority and cooperative cancellation. On a concurrent append or
 /// layout replacement, return `Changed` instead of combining different authority generations.
 pub fn inspect_deployment_status_with(
-    io: &dyn StatusReadIo, root: &Path, limits: &StatusLimits,
+    io: &dyn StatusReadIo,
+    root: &Path,
+    limits: &StatusLimits,
     checkpoint: &mut dyn FnMut() -> Result<(), StatusError>,
 ) -> Result<DeploymentStatus, StatusError> {
     validate_limits(limits)?;
     checkpoint()?;
     let layout_bytes = io.layout(root, limits.snapshot.max_layout_bytes)?;
     let layout = DeploymentLayout::parse_canonical_text(
-        std::str::from_utf8(&layout_bytes).map_err(|_| StatusError::NotADeployment)?
-    ).map_err(|_| StatusError::NotADeployment)?;
+        std::str::from_utf8(&layout_bytes).map_err(|_| StatusError::NotADeployment)?,
+    )
+    .map_err(|_| StatusError::NotADeployment)?;
     checkpoint()?;
     let snapshot = io.snapshot(root, &limits.snapshot)?;
-    if snapshot.events.len() > limits.snapshot.max_events { return Err(StatusError::OverBudget); }
+    if snapshot.events.len() > limits.snapshot.max_events {
+        return Err(StatusError::OverBudget);
+    }
     checkpoint()?;
     let ledger = io.ledger(root, &layout, limits.snapshot.max_journal_bytes)?;
     same_authority(&snapshot, &layout, &ledger)?;
-    let sources = inventory(&ledger.batches, limits,
+    let sources = inventory(
+        &ledger.batches,
+        limits,
         &mut |digest| snapshot.deletions.object(digest).is_some(),
-        &mut |digest, max_bytes| io.object(root, &layout, digest, max_bytes), checkpoint)?;
+        &mut |digest, max_bytes| io.object(root, &layout, digest, max_bytes),
+        checkpoint,
+    )?;
     checkpoint()?;
     // Deletion may race object hydration. No report escapes without this final authority check.
     let after = io.ledger(root, &layout, limits.snapshot.max_journal_bytes)?;
@@ -223,35 +274,55 @@ pub fn inspect_deployment_status_with(
         return Err(StatusError::Changed);
     }
     checkpoint()?;
-    Ok(DeploymentStatus { snapshot, sources,
-        ledger_present: after.status == fss_ledger::DurableLedgerStatus::Present })
+    Ok(DeploymentStatus {
+        snapshot,
+        sources,
+        ledger_present: after.status == fss_ledger::DurableLedgerStatus::Present,
+    })
 }
 
 fn validate_limits(limits: &StatusLimits) -> Result<(), StatusError> {
-    if limits.max_objects == 0 || limits.max_objects > 65_536
-        || limits.max_capsules == 0 || limits.max_capsules > 16_384
-        || limits.max_streams == 0 || limits.max_streams > 1024
-        || limits.max_metadata_bytes == 0 || limits.max_metadata_bytes > 64 * 1024 * 1024
-        || limits.snapshot.max_layout_bytes == 0 || limits.snapshot.max_layout_bytes > 4096
-        || limits.snapshot.max_journal_bytes == 0 || limits.snapshot.max_journal_bytes > 64 * 1024 * 1024
-        || limits.snapshot.max_object_bytes == 0 || limits.snapshot.max_object_bytes > 16 * 1024 * 1024
-        || limits.snapshot.max_events == 0 || limits.snapshot.max_events > 128
-        || limits.snapshot.max_revisions_per_event == 0 || limits.snapshot.max_revisions_per_event > 64
-    { return Err(StatusError::OverBudget); }
+    if limits.max_objects == 0
+        || limits.max_objects > 65_536
+        || limits.max_capsules == 0
+        || limits.max_capsules > 16_384
+        || limits.max_streams == 0
+        || limits.max_streams > 1024
+        || limits.max_metadata_bytes == 0
+        || limits.max_metadata_bytes > 64 * 1024 * 1024
+        || limits.snapshot.max_layout_bytes == 0
+        || limits.snapshot.max_layout_bytes > 4096
+        || limits.snapshot.max_journal_bytes == 0
+        || limits.snapshot.max_journal_bytes > 64 * 1024 * 1024
+        || limits.snapshot.max_object_bytes == 0
+        || limits.snapshot.max_object_bytes > 16 * 1024 * 1024
+        || limits.snapshot.max_events == 0
+        || limits.snapshot.max_events > 128
+        || limits.snapshot.max_revisions_per_event == 0
+        || limits.snapshot.max_revisions_per_event > 64
+    {
+        return Err(StatusError::OverBudget);
+    }
     Ok(())
 }
 
-fn same_authority(snapshot: &DeploymentSnapshot, layout: &DeploymentLayout, ledger: &LedgerInspection)
-    -> Result<(), StatusError> {
-    if snapshot.site_lineage != layout.site_lineage || snapshot.anchor != ledger.snapshot.anchor
-        || snapshot.ledger_root != ledger.last_root {
+fn same_authority(
+    snapshot: &DeploymentSnapshot,
+    layout: &DeploymentLayout,
+    ledger: &LedgerInspection,
+) -> Result<(), StatusError> {
+    if snapshot.site_lineage != layout.site_lineage
+        || snapshot.anchor != ledger.snapshot.anchor
+        || snapshot.ledger_root != ledger.last_root
+    {
         return Err(StatusError::Changed);
     }
     Ok(())
 }
 
 fn inventory(
-    batches: &[EvidenceDeltaBatch], limits: &StatusLimits,
+    batches: &[EvidenceDeltaBatch],
+    limits: &StatusLimits,
     deleted: &mut dyn FnMut(ContentDigest) -> bool,
     read: &mut dyn FnMut(ContentDigest, usize) -> Result<Vec<u8>, StatusError>,
     checkpoint: &mut dyn FnMut() -> Result<(), StatusError>,
@@ -268,11 +339,18 @@ fn inventory(
                 return Err(StatusError::OverBudget);
             }
             latest.insert(id, delta);
-            if delta.family == FAMILY_SENSOR_CAPSULE { capsules.insert(id); }
-            if delta.family == FAMILY_FILE_IMPORT { imports.insert(id); }
+            if delta.family == FAMILY_SENSOR_CAPSULE {
+                capsules.insert(id);
+            }
+            if delta.family == FAMILY_FILE_IMPORT {
+                imports.insert(id);
+            }
         }
     }
-    let mut output = SourceInventory { capsule_objects: capsules.len(), ..SourceInventory::default() };
+    let mut output = SourceInventory {
+        capsule_objects: capsules.len(),
+        ..SourceInventory::default()
+    };
     let mut streams: BTreeMap<(String, String), StreamInventory> = BTreeMap::new();
     let mut identities = BTreeSet::new();
     for id in capsules {
@@ -282,16 +360,29 @@ fn inventory(
             output.deleted_capsules += 1;
             continue;
         }
-        if delta.family != FAMILY_SENSOR_CAPSULE { return Err(StatusError::Corrupt); }
-        if output.retained_capsules == limits.max_capsules { return Err(StatusError::OverBudget); }
+        if delta.family != FAMILY_SENSOR_CAPSULE {
+            return Err(StatusError::Corrupt);
+        }
+        if output.retained_capsules == limits.max_capsules {
+            return Err(StatusError::OverBudget);
+        }
         let remaining = limits.max_metadata_bytes - output.metadata_bytes_read;
-        if remaining == 0 { return Err(StatusError::OverBudget); }
+        if remaining == 0 {
+            return Err(StatusError::OverBudget);
+        }
         let bound = remaining.min(limits.snapshot.max_object_bytes);
         let bytes = read(delta.payload_digest, bound)?;
-        if bytes.len() > bound { return Err(StatusError::OverBudget); }
-        if ContentDigest::sha256(&bytes) != delta.payload_digest { return Err(StatusError::Corrupt); }
-        let capsule = SensorCapsule::from_canonical_bytes(&bytes).map_err(|_| StatusError::Corrupt)?;
-        if !identities.insert(capsule.capsule_id.clone()) { return Err(StatusError::Corrupt); }
+        if bytes.len() > bound {
+            return Err(StatusError::OverBudget);
+        }
+        if ContentDigest::sha256(&bytes) != delta.payload_digest {
+            return Err(StatusError::Corrupt);
+        }
+        let capsule =
+            SensorCapsule::from_canonical_bytes(&bytes).map_err(|_| StatusError::Corrupt)?;
+        if !identities.insert(capsule.capsule_id.clone()) {
+            return Err(StatusError::Corrupt);
+        }
         output.metadata_bytes_read += bytes.len();
         output.retained_capsules += 1;
         add_capsule(&mut streams, &capsule, limits.max_streams)?;
@@ -316,66 +407,118 @@ fn inventory(
     Ok(output)
 }
 
-fn add_capsule(rows: &mut BTreeMap<(String, String), StreamInventory>, capsule: &SensorCapsule,
-    max_streams: usize) -> Result<(), StatusError> {
-    let key = (capsule.sensor_id.as_str().to_owned(), capsule.stream_id.as_str().to_owned());
-    if !rows.contains_key(&key) && rows.len() == max_streams { return Err(StatusError::OverBudget); }
+fn add_capsule(
+    rows: &mut BTreeMap<(String, String), StreamInventory>,
+    capsule: &SensorCapsule,
+    max_streams: usize,
+) -> Result<(), StatusError> {
+    let key = (
+        capsule.sensor_id.as_str().to_owned(),
+        capsule.stream_id.as_str().to_owned(),
+    );
+    if !rows.contains_key(&key) && rows.len() == max_streams {
+        return Err(StatusError::OverBudget);
+    }
     let row = rows.entry(key.clone()).or_insert_with(|| StreamInventory {
-        sensor_id: key.0, stream_id: key.1, capsules: 0, recorded_gaps: 0,
-        declared_source_bytes: 0, clock_bases: BTreeSet::new(),
+        sensor_id: key.0,
+        stream_id: key.1,
+        capsules: 0,
+        recorded_gaps: 0,
+        declared_source_bytes: 0,
+        clock_bases: BTreeSet::new(),
     });
     row.capsules += 1;
     row.recorded_gaps += usize::from(capsule.gap_before);
-    row.declared_source_bytes = row.declared_source_bytes.checked_add(capsule.source_bytes)
+    row.declared_source_bytes = row
+        .declared_source_bytes
+        .checked_add(capsule.source_bytes)
         .ok_or(StatusError::OverBudget)?;
-    row.clock_bases.insert(capsule.clock_basis.as_str().to_owned());
+    row.clock_bases
+        .insert(capsule.clock_basis.as_str().to_owned());
     Ok(())
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use fss_core::{BatchId, CanonicalEncode, CapsuleId, CaptureInterval, ClockBasis, ObjectId,
-        Plane, ReferenceLedger, SensorId, StreamId, TimestampNs};
+    use fss_core::{
+        BatchId, CanonicalEncode, CapsuleId, CaptureInterval, ClockBasis, ObjectId, Plane,
+        ReferenceLedger, SensorId, StreamId, TimestampNs,
+    };
 
     type TestResult = Result<(), Box<dyn std::error::Error>>;
 
-    fn capsule(name: &str, sensor: &str, stream: &str) -> Result<SensorCapsule, fss_core::ContractError> {
+    fn capsule(
+        name: &str,
+        sensor: &str,
+        stream: &str,
+    ) -> Result<SensorCapsule, fss_core::ContractError> {
         Ok(SensorCapsule {
-            capsule_id: CapsuleId::parse(name)?, sensor_id: SensorId::parse(sensor)?,
-            stream_id: StreamId::parse(stream)?, sequence: 1,
+            capsule_id: CapsuleId::parse(name)?,
+            sensor_id: SensorId::parse(sensor)?,
+            stream_id: StreamId::parse(stream)?,
+            sequence: 1,
             capture: CaptureInterval::new(TimestampNs(0), TimestampNs(10))?,
-            receive_time: TimestampNs(10), clock_basis: fss_core::ClockBasis::Estimated,
-            source_digest: ContentDigest::sha256(b"pixels"), source_bytes: 6, frame_count: 1,
+            receive_time: TimestampNs(10),
+            clock_basis: fss_core::ClockBasis::Estimated,
+            source_digest: ContentDigest::sha256(b"pixels"),
+            source_bytes: 6,
+            frame_count: 1,
             gap_before: false,
         })
     }
-    fn delta(id: &str, family: &str, generation: u64, bytes: &[u8])
-        -> Result<EvidenceDelta, fss_core::ContractError> {
+    fn delta(
+        id: &str,
+        family: &str,
+        generation: u64,
+        bytes: &[u8],
+    ) -> Result<EvidenceDelta, fss_core::ContractError> {
         Ok(EvidenceDelta {
-            delta_id: format!("delta:{id}:{generation}"), family: family.to_owned(),
-            object_id: ObjectId::parse(id)?, prior_generation: generation.checked_sub(1).filter(|n| *n > 0),
-            new_generation: generation, validity: CaptureInterval::new(TimestampNs(0), TimestampNs(10))?,
-            plane: Plane::Authority, payload_digest: ContentDigest::sha256(bytes),
-            witness_digest: None, operation_id: None,
+            delta_id: format!("delta:{id}:{generation}"),
+            family: family.to_owned(),
+            object_id: ObjectId::parse(id)?,
+            prior_generation: generation.checked_sub(1).filter(|n| *n > 0),
+            new_generation: generation,
+            validity: CaptureInterval::new(TimestampNs(0), TimestampNs(10))?,
+            plane: Plane::Authority,
+            payload_digest: ContentDigest::sha256(bytes),
+            witness_digest: None,
+            operation_id: None,
         })
     }
     fn append(ledger: &mut ReferenceLedger, changes: Vec<EvidenceDelta>) -> TestResult {
         let roots: Vec<_> = changes.iter().map(|d| d.payload_digest).collect();
-        let batch = ledger.prepare_batch(BatchId::parse(format!("batch:{}", ledger.batches().len()))?, changes, roots)?;
+        let batch = ledger.prepare_batch(
+            BatchId::parse(format!("batch:{}", ledger.batches().len()))?,
+            changes,
+            roots,
+        )?;
         let _ = ledger.append(batch)?;
         Ok(())
     }
-    fn run(ledger: &ReferenceLedger, objects: &BTreeMap<ContentDigest, Vec<u8>>, limits: &StatusLimits)
-        -> Result<SourceInventory, StatusError> {
-        inventory(ledger.batches(), limits, &mut |_| false,
-            &mut |digest, _| objects.get(&digest).cloned().ok_or(StatusError::Unreadable), &mut || Ok(()))
+    fn run(
+        ledger: &ReferenceLedger,
+        objects: &BTreeMap<ContentDigest, Vec<u8>>,
+        limits: &StatusLimits,
+    ) -> Result<SourceInventory, StatusError> {
+        inventory(
+            ledger.batches(),
+            limits,
+            &mut |_| false,
+            &mut |digest, _| objects.get(&digest).cloned().ok_or(StatusError::Unreadable),
+            &mut || Ok(()),
+        )
     }
 
     #[test]
     fn empty_inventory_does_not_read_objects() -> TestResult {
-        let output = inventory(&[], &StatusLimits::default(), &mut |_| false,
-            &mut |_, _| Err(StatusError::Unreadable), &mut || Ok(()))?;
+        let output = inventory(
+            &[],
+            &StatusLimits::default(),
+            &mut |_| false,
+            &mut |_, _| Err(StatusError::Unreadable),
+            &mut || Ok(()),
+        )?;
         assert_eq!(output, SourceInventory::default());
         Ok(())
     }
@@ -408,16 +551,33 @@ mod tests {
         assert_eq!(add_capsule(&mut rows, &b, 1), Err(StatusError::OverBudget));
         let mut huge = a.clone();
         huge.source_bytes = u64::MAX;
-        assert_eq!(add_capsule(&mut rows, &huge, 1), Err(StatusError::OverBudget));
+        assert_eq!(
+            add_capsule(&mut rows, &huge, 1),
+            Err(StatusError::OverBudget)
+        );
         Ok(())
     }
 
     #[test]
     fn import_lifecycle_counts_current_objects_not_historical_deltas() -> TestResult {
         let mut ledger = ReferenceLedger::new("site:status");
-        append(&mut ledger, vec![delta("object:import:a", FAMILY_FILE_IMPORT, 1, b"started")?])?;
-        append(&mut ledger, vec![delta("object:import:a", FAMILY_FILE_IMPORT, 2, b"complete")?])?;
-        append(&mut ledger, vec![delta("object:import:b", FAMILY_FILE_IMPORT, 1, b"pending")?])?;
+        append(
+            &mut ledger,
+            vec![delta("object:import:a", FAMILY_FILE_IMPORT, 1, b"started")?],
+        )?;
+        append(
+            &mut ledger,
+            vec![delta(
+                "object:import:a",
+                FAMILY_FILE_IMPORT,
+                2,
+                b"complete",
+            )?],
+        )?;
+        append(
+            &mut ledger,
+            vec![delta("object:import:b", FAMILY_FILE_IMPORT, 1, b"pending")?],
+        )?;
         let output = run(&ledger, &BTreeMap::new(), &StatusLimits::default())?;
         assert_eq!(output.completed_imports, 1);
         assert_eq!(output.incomplete_imports, ["object:import:b"]);
@@ -427,10 +587,30 @@ mod tests {
     #[test]
     fn tombstoned_capsule_and_import_are_never_hydrated() -> TestResult {
         let mut ledger = ReferenceLedger::new("site:status");
-        append(&mut ledger, vec![delta("object:capsule:a", FAMILY_SENSOR_CAPSULE, 1, b"gone")?,
-            delta("object:import:a", FAMILY_FILE_IMPORT, 1, b"gone")?])?;
-        append(&mut ledger, vec![delta("object:capsule:a", FAMILY_DELETION_TOMBSTONE, 2, b"tombstone")?,
-            delta("object:import:a", FAMILY_DELETION_TOMBSTONE, 2, b"tombstone")?])?;
+        append(
+            &mut ledger,
+            vec![
+                delta("object:capsule:a", FAMILY_SENSOR_CAPSULE, 1, b"gone")?,
+                delta("object:import:a", FAMILY_FILE_IMPORT, 1, b"gone")?,
+            ],
+        )?;
+        append(
+            &mut ledger,
+            vec![
+                delta(
+                    "object:capsule:a",
+                    FAMILY_DELETION_TOMBSTONE,
+                    2,
+                    b"tombstone",
+                )?,
+                delta(
+                    "object:import:a",
+                    FAMILY_DELETION_TOMBSTONE,
+                    2,
+                    b"tombstone",
+                )?,
+            ],
+        )?;
         let output = run(&ledger, &BTreeMap::new(), &StatusLimits::default())?;
         assert_eq!(output.deleted_capsules, 1);
         assert_eq!(output.deleted_imports, 1);
@@ -447,28 +627,64 @@ mod tests {
         let bytes = encoder.finish_checked()?;
         let digest = ContentDigest::sha256(&bytes);
         let mut ledger = ReferenceLedger::new("site:status");
-        append(&mut ledger, vec![delta("object:capsule:a", FAMILY_SENSOR_CAPSULE, 1, &bytes)?])?;
+        append(
+            &mut ledger,
+            vec![delta("object:capsule:a", FAMILY_SENSOR_CAPSULE, 1, &bytes)?],
+        )?;
         let mut objects = BTreeMap::from([(digest, bytes.clone())]);
-        let limits = StatusLimits { max_metadata_bytes: bytes.len(), ..StatusLimits::default() };
+        let limits = StatusLimits {
+            max_metadata_bytes: bytes.len(),
+            ..StatusLimits::default()
+        };
         let output = run(&ledger, &objects, &limits)?;
         assert_eq!(output.retained_capsules, 1);
         assert_eq!(output.metadata_bytes_read, bytes.len());
-        let smaller = StatusLimits { max_metadata_bytes: bytes.len() - 1, ..limits };
-        assert_eq!(run(&ledger, &objects, &smaller), Err(StatusError::OverBudget));
+        let smaller = StatusLimits {
+            max_metadata_bytes: bytes.len() - 1,
+            ..limits
+        };
+        assert_eq!(
+            run(&ledger, &objects, &smaller),
+            Err(StatusError::OverBudget)
+        );
         objects.insert(digest, vec![0; bytes.len()]);
         assert_eq!(run(&ledger, &objects, &limits), Err(StatusError::Corrupt));
         objects.insert(digest, bytes.clone());
-        append(&mut ledger, vec![delta("object:capsule:duplicate", FAMILY_SENSOR_CAPSULE, 1, &bytes)?])?;
-        assert_eq!(run(&ledger, &objects, &StatusLimits::default()), Err(StatusError::Corrupt));
+        append(
+            &mut ledger,
+            vec![delta(
+                "object:capsule:duplicate",
+                FAMILY_SENSOR_CAPSULE,
+                1,
+                &bytes,
+            )?],
+        )?;
+        assert_eq!(
+            run(&ledger, &objects, &StatusLimits::default()),
+            Err(StatusError::Corrupt)
+        );
         Ok(())
     }
 
     #[test]
     fn committed_deletion_index_overrides_still_present_capsule_bytes() -> TestResult {
         let mut ledger = ReferenceLedger::new("site:status");
-        append(&mut ledger, vec![delta("object:capsule:a", FAMILY_SENSOR_CAPSULE, 1, b"removed")?])?;
-        let output = inventory(ledger.batches(), &StatusLimits::default(), &mut |_| true,
-            &mut |_, _| Err(StatusError::Unreadable), &mut || Ok(()))?;
+        append(
+            &mut ledger,
+            vec![delta(
+                "object:capsule:a",
+                FAMILY_SENSOR_CAPSULE,
+                1,
+                b"removed",
+            )?],
+        )?;
+        let output = inventory(
+            ledger.batches(),
+            &StatusLimits::default(),
+            &mut |_| true,
+            &mut |_, _| Err(StatusError::Unreadable),
+            &mut || Ok(()),
+        )?;
         assert_eq!(output.deleted_capsules, 1);
         assert_eq!(output.metadata_bytes_read, 0);
         Ok(())
@@ -477,12 +693,31 @@ mod tests {
     #[test]
     fn cancellation_and_object_budget_return_no_partial_inventory() -> TestResult {
         let mut ledger = ReferenceLedger::new("site:status");
-        append(&mut ledger, vec![delta("object:import:a", FAMILY_FILE_IMPORT, 1, b"a")?,
-            delta("object:import:b", FAMILY_FILE_IMPORT, 1, b"b")?])?;
-        assert_eq!(inventory(ledger.batches(), &StatusLimits::default(), &mut |_| false,
-            &mut |_, _| Err(StatusError::Unreadable), &mut || Err(StatusError::Cancelled)), Err(StatusError::Cancelled));
-        let limits = StatusLimits { max_objects: 1, ..StatusLimits::default() };
-        assert_eq!(run(&ledger, &BTreeMap::new(), &limits), Err(StatusError::OverBudget));
+        append(
+            &mut ledger,
+            vec![
+                delta("object:import:a", FAMILY_FILE_IMPORT, 1, b"a")?,
+                delta("object:import:b", FAMILY_FILE_IMPORT, 1, b"b")?,
+            ],
+        )?;
+        assert_eq!(
+            inventory(
+                ledger.batches(),
+                &StatusLimits::default(),
+                &mut |_| false,
+                &mut |_, _| Err(StatusError::Unreadable),
+                &mut || Err(StatusError::Cancelled)
+            ),
+            Err(StatusError::Cancelled)
+        );
+        let limits = StatusLimits {
+            max_objects: 1,
+            ..StatusLimits::default()
+        };
+        assert_eq!(
+            run(&ledger, &BTreeMap::new(), &limits),
+            Err(StatusError::OverBudget)
+        );
         Ok(())
     }
 }
