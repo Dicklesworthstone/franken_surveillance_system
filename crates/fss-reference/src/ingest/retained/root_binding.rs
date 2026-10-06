@@ -1,6 +1,8 @@
 #![forbid(unsafe_code)]
 //! A completion witness must bind an actual, previously ledgered import publication.
 
+mod parts;
+
 use std::collections::{BTreeMap, BTreeSet};
 
 use fss_core::{CanonicalEncode, ContentDigest, EvidenceDeltaBatch, Plane};
@@ -46,58 +48,28 @@ pub(super) fn verify(
             "publication root does not bind the exact import metadata",
         ));
     }
-
-    let reachability_id = root_reachability_batch_id(slot)
-        .map_err(|_| invalid("import slot has no reachability identity"))?;
-    let object_id = root_reachability_object_id(slot)
-        .map_err(|_| invalid("import slot has no reachability object identity"))?;
+    let reachability = check_reachability(
+        deployment, slot, import_root, completion.new_anchor.commit_sequence,
+    )?;
     let ledger = deployment.ledger();
-    let reachability = ledger
-        .batches()
-        .iter()
-        .find(|batch| batch.batch_id == reachability_id)
-        .ok_or_else(|| invalid("durable import root has no committed reachability proof"))?;
-    if reachability.new_anchor.commit_sequence >= completion.new_anchor.commit_sequence {
-        return Err(invalid("root reachability must precede import completion"));
-    }
-    let [claim] = reachability.deltas.as_slice() else {
-        return Err(invalid("root reachability is not one canonical claim"));
-    };
-    if claim.delta_id != format!("{ROOT_REACHABILITY_DELTA_PREFIX}{}", slot.as_str())
-        || claim.object_id != object_id
-        || claim.family != ROOT_REACHABILITY_FAMILY
-        || claim.plane != Plane::Authority
-        || claim.prior_generation.is_some()
-        || claim.new_generation != 1
-        || claim.payload_digest != import_root
-        || claim.witness_digest.is_some()
-        || claim.operation_id.is_some()
-    {
-        return Err(invalid(
-            "root reachability claim disagrees with the import witness",
-        ));
-    }
-    let current = ledger
-        .current()
-        .objects
-        .get(&object_id)
-        .ok_or_else(|| invalid("root reachability is no longer current"))?;
-    if current.generation != 1
-        || current.family != ROOT_REACHABILITY_FAMILY
-        || current.plane != Plane::Authority
-        || current.payload_digest != import_root
-    {
-        return Err(invalid(
-            "import root reachability is retracted or superseded",
-        ));
-    }
-
     let held: BTreeSet<_> = root.children().iter().copied().collect();
     let ledgered: BTreeSet<_> = reachability.children.iter().copied().collect();
     if !held.is_subset(&ledgered) {
         return Err(invalid(
             "root children are absent from its ledgered closure",
         ));
+    }
+    // Typed parts are independent roots, never native aggregate children. Resolve only their
+    // bounded manifests and ledger proofs; source bytes are verified at their read boundary.
+    let (held, first_publication) = if manifest.part_roots.is_empty() {
+        (held, reachability.new_anchor.commit_sequence)
+    } else {
+        parts::resolve(
+            deployment, slot, &root, manifest, reachability.new_anchor.commit_sequence, cx,
+        )?
+    };
+    if completion.children.iter().any(|digest| *digest != import_root && !held.contains(digest)) {
+        return Err(invalid("import completion references content outside its publication"));
     }
     let chunks: BTreeSet<_> = manifest.ordered_chunks.iter().copied().collect();
     if !chunks.is_subset(&held) {
@@ -145,7 +117,7 @@ pub(super) fn verify(
         if !is_capsule_batch {
             continue;
         }
-        if batch.new_anchor.commit_sequence >= reachability.new_anchor.commit_sequence {
+        if batch.new_anchor.commit_sequence >= first_publication {
             return Err(invalid(
                 "capsule authority must precede import root publication",
             ));
@@ -196,4 +168,50 @@ pub(super) fn verify(
     }
     checkpoint(cx, STAGE)?;
     Ok(())
+}
+
+/// A current, canonical reachability claim must already exist at the consuming publication.
+/// Shared by the aggregate and its typed parts; returning the batch preserves its exact order.
+fn check_reachability<'a>(
+    deployment: &'a ReferenceDeployment,
+    slot: &SlotName,
+    root: ContentDigest,
+    before: u64,
+) -> Result<&'a EvidenceDeltaBatch, FileIngestError> {
+    let reachability_id = root_reachability_batch_id(slot)
+        .map_err(|_| invalid("import slot has no reachability identity"))?;
+    let object_id = root_reachability_object_id(slot)
+        .map_err(|_| invalid("import slot has no reachability object identity"))?;
+    let ledger = deployment.ledger();
+    let reachability = ledger.batches().iter()
+        .find(|batch| batch.batch_id == reachability_id)
+        .ok_or_else(|| invalid("durable import root has no committed reachability proof"))?;
+    if reachability.new_anchor.commit_sequence >= before {
+        return Err(invalid("root reachability must precede its consumer"));
+    }
+    let [claim] = reachability.deltas.as_slice() else {
+        return Err(invalid("root reachability is not one canonical claim"));
+    };
+    if claim.delta_id != format!("{ROOT_REACHABILITY_DELTA_PREFIX}{}", slot.as_str())
+        || claim.object_id != object_id
+        || claim.family != ROOT_REACHABILITY_FAMILY
+        || claim.plane != Plane::Authority
+        || claim.prior_generation.is_some()
+        || claim.new_generation != 1
+        || claim.payload_digest != root
+        || claim.witness_digest.is_some()
+        || claim.operation_id.is_some()
+    {
+        return Err(invalid("root reachability claim disagrees with the import witness"));
+    }
+    let current = ledger.current().objects.get(&object_id)
+        .ok_or_else(|| invalid("root reachability is no longer current"))?;
+    if current.generation != 1
+        || current.family != ROOT_REACHABILITY_FAMILY
+        || current.plane != Plane::Authority
+        || current.payload_digest != root
+    {
+        return Err(invalid("import root reachability is retracted or superseded"));
+    }
+    Ok(reachability)
 }

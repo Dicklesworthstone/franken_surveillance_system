@@ -91,6 +91,18 @@ impl FileImportManifest {
         expected: ContentDigest,
         limits: RetainedReadLimits,
     ) -> Result<Self, FileIngestError> {
+        let manifest = Self::decode_metadata(bytes, expected, limits)?;
+        // Standalone metadata decoding has no publication resolver. Keep this API fail-closed
+        // for typed parts; RetainedFileImport::open proves those roots before returning a handle.
+        manifest.validate_retained(limits)?;
+        Ok(manifest)
+    }
+
+    fn decode_metadata(
+        bytes: &[u8],
+        expected: ContentDigest,
+        limits: RetainedReadLimits,
+    ) -> Result<Self, FileIngestError> {
         if bytes.len() > MAX_RETAINED_MANIFEST_BYTES {
             return Err(invalid("manifest exceeds metadata ceiling"));
         }
@@ -141,6 +153,9 @@ impl FileImportManifest {
         let adapter_id = d.text()?.to_owned();
         let adapter_generation = d.text()?.to_owned();
         let n = count(&mut d, 33)?;
+        if n > super::file_publication::MAX_FILE_PUBLICATION_PARTS {
+            return Err(invalid("part count exceeds the reconstruction bound"));
+        }
         let mut part_roots = Vec::with_capacity(n);
         for _ in 0..n {
             part_roots.push(digest(&mut d)?);
@@ -163,15 +178,24 @@ impl FileImportManifest {
             part_roots,
             capture_time_label,
         };
-        manifest.validate_retained(limits)?;
+        manifest.validate_structure(limits)?;
         if manifest.canonical_bytes() != bytes || manifest.canonical_digest() != expected {
             return Err(ContractError::DigestMismatch.into());
         }
         Ok(manifest)
     }
 
-    /// Checks structural invariants required for safe source assembly and range arithmetic.
+    /// Checks a standalone flat manifest; typed parts require RetainedFileImport::open.
     pub fn validate_retained(&self, limits: RetainedReadLimits) -> Result<(), FileIngestError> {
+        self.validate_structure(limits)?;
+        if !self.part_roots.is_empty() {
+            return Err(invalid("partitioned manifest needs explicit part resolution"));
+        }
+        Ok(())
+    }
+
+    /// Structural checks only. Never substitutes for root, part and completion authority.
+    fn validate_structure(&self, limits: RetainedReadLimits) -> Result<(), FileIngestError> {
         if limits.max_source_bytes == 0
             || limits.max_chunk_bytes == 0
             || limits.max_segment_bytes == 0
@@ -203,10 +227,14 @@ impl FileImportManifest {
                 "unsupported adapter, format or time classification",
             ));
         }
-        if !self.part_roots.is_empty() {
-            return Err(invalid(
-                "partitioned manifest needs explicit part resolution",
-            ));
+        if self.part_roots.len() > super::file_publication::MAX_FILE_PUBLICATION_PARTS {
+            return Err(invalid("part count exceeds the reconstruction bound"));
+        }
+        let mut parts = BTreeSet::new();
+        for part in &self.part_roots {
+            if part.algorithm() != DigestAlgorithm::Sha256 || !parts.insert(*part) {
+                return Err(invalid("part roots are duplicated or use an unsupported digest"));
+            }
         }
         let expected_chunks = 1 + (self.input_bytes - 1) / self.chunk_bytes;
         if self.ordered_chunks.len() as u64 != expected_chunks
@@ -339,7 +367,7 @@ impl RetainedFileImport {
             return Err(ContractError::DigestMismatch.into());
         }
         let bytes = deployment.publisher().spool().read(manifest_digest)?;
-        let manifest = FileImportManifest::from_retained_bytes(&bytes, manifest_digest, limits)?;
+        let manifest = FileImportManifest::decode_metadata(&bytes, manifest_digest, limits)?;
         root_binding::verify(
             deployment,
             &slot,
@@ -488,7 +516,7 @@ fn assemble_segment(
     limits: RetainedReadLimits,
     mut read: impl FnMut(ContentDigest) -> Result<Vec<u8>, FileIngestError>,
 ) -> Result<Vec<u8>, FileIngestError> {
-    manifest.validate_retained(limits)?;
+    manifest.validate_structure(limits)?;
     let span =
         manifest
             .segment_spans
