@@ -166,7 +166,8 @@ fn a_continuity_fence_splits_a_unit_and_fences_the_next_capsule() -> TestResult 
 }
 
 /// Capsule identities and ledger staging are per unit: the manifest holds each NAL digest plus
-/// one source envelope and one capsule object per unit, and capsule ids count units.
+/// one source envelope and one capsule object per unit (plus the report metadata), and capsule
+/// ids count units.
 ///
 /// Planted negative: per-NAL capsule objects (nine capsule objects in the manifest, ids up to
 /// `:000008`).
@@ -209,6 +210,8 @@ fn manifest_and_capsule_ids_are_per_access_unit() -> TestResult {
                 .flat_map(|u| [u.capsule.source_digest, u.capsule_object]),
         )
         .collect();
+    // The object manifest also lists its metadata (the canonical report) as a child.
+    expected.push(ContentDigest::sha256(plan.report_bytes()));
     expected.sort_unstable();
     expected.dedup();
     assert_eq!(children, expected.as_slice());
