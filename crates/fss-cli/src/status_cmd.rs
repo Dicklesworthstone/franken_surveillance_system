@@ -347,6 +347,40 @@ pub fn render_status(status: &DeploymentStatus, limits: &StatusLimits) -> String
         ]));
     }
 
+    // Sources named only by retained source coverage frames (for example lab virtual cameras,
+    // whose capsules are published under a root rather than as `sensor_capsule` ledger objects).
+    // They are listed apart from the ledger inventory and never counted as retained capsules.
+    let mut coverage_sources: BTreeMap<(&str, &str), (usize, &'static str)> = BTreeMap::new();
+    for retained in &snapshot.source_coverage {
+        let continuity = match retained.record.witness.continuity {
+            fss_core::CoverageContinuity::Continuous => "continuous",
+            fss_core::CoverageContinuity::Gapped => "gapped",
+            fss_core::CoverageContinuity::Unknown => "unknown",
+        };
+        for frame in &retained.record.frames {
+            let entry = coverage_sources
+                .entry((frame.sensor_id.as_str(), frame.stream_id.as_str()))
+                .or_insert((0, continuity));
+            entry.0 += 1;
+            if continuity != "continuous" {
+                entry.1 = continuity;
+            }
+        }
+    }
+    let coverage_rows: Vec<String> = coverage_sources
+        .iter()
+        .map(|((sensor, stream), (frames, continuity))| {
+            object(&[
+                ("sensor_id", string(sensor)),
+                ("stream_id", string(stream)),
+                ("frames", frames.to_string()),
+                ("witness_continuity", string(continuity)),
+                ("basis", string("retained_source_coverage_frames")),
+                ("scope", string("committed_history_only")),
+            ])
+        })
+        .collect();
+
     let possibly_stale = status.possibly_stale();
     let mut degradations = vec![degraded("not_release_qualified", None, None)];
     let file_streams = sources
@@ -379,6 +413,22 @@ pub fn render_status(status: &DeploymentStatus, limits: &StatusLimits) -> String
             "continuity_degraded",
             None,
             Some(degraded_streams),
+        ));
+    }
+    let unledgered = coverage_sources
+        .keys()
+        .filter(|(sensor, stream)| {
+            !sources
+                .streams
+                .iter()
+                .any(|row| row.sensor_id == *sensor && row.stream_id == *stream)
+        })
+        .count();
+    if unledgered > 0 {
+        degradations.push(degraded(
+            "coverage_sources_without_ledgered_capsules",
+            None,
+            Some(unledgered),
         ));
     }
     let gaps: usize = sources.streams.iter().map(|row| row.recorded_gaps).sum();
@@ -502,6 +552,7 @@ pub fn render_status(status: &DeploymentStatus, limits: &StatusLimits) -> String
         ),
         ("doctor_verdict", string(snapshot.doctor_verdict.as_str())),
         ("sensors", array(&sensor_rows)),
+        ("coverage_witness_sources", array(&coverage_rows)),
         (
             "capsules",
             object(&[

@@ -650,15 +650,17 @@ fn legacy_status_without_root_is_unchanged() -> TestResult {
     Ok(())
 }
 
-/// Lab roots: virtual cameras on device clocks. `quiet` retains a continuous source coverage
-/// witness of every delivered frame, so its streams are verified over committed history;
-/// `intrusion` retains none, so its streams are not observable. Neither claims liveness.
+/// Lab roots: virtual cameras publish their capsules under roots, not as `sensor_capsule`
+/// ledger objects, so the ledger inventory lists no sensors and status says so instead of
+/// inventing them. `quiet` retains a continuous source coverage witness: its sources are listed
+/// under `coverage_witness_sources` (never counted as retained capsules) with the degradation
+/// that they have no ledgered capsules, and its one event is rejected. Neither root claims
+/// liveness, a file source or a file import.
 #[test]
 fn lab_scenario_roots_report_their_committed_inventory() -> TestResult {
     let dir = directory("lab")?;
     let mut observed = Vec::new();
-    for (scenario, expected_continuity) in [("quiet", "verified"), ("intrusion", "not_observable")]
-    {
+    for scenario in ["quiet", "intrusion"] {
         let root = dir.join(scenario);
         let ran = Command::new(env!("CARGO_BIN_EXE_fss-lab"))
             .args(["run", scenario, "--root"])
@@ -673,63 +675,53 @@ fn lab_scenario_roots_report_their_committed_inventory() -> TestResult {
         );
         assert!(document.path(&["anchor", "commit_sequence"])?.number()? > 0);
         assert!(document.path(&["anchor", "ledger_present"])?.boolean()?);
-        let sensors = document.get("sensors")?.items()?;
-        assert!(
-            !sensors.is_empty(),
-            "{scenario}: virtual cameras retained capsules"
-        );
-        let mut total = 0;
-        for sensor in sensors {
-            assert_eq!(
-                sensor.get("inventory_basis")?.text()?,
-                "retained_capsule_metadata"
-            );
-            for stream in sensor.get("streams")?.items()? {
-                total += stream.get("capsules")?.number()?;
-                assert_eq!(
-                    stream.path(&["capture_interval", "clock_bases"])?.texts()?,
-                    ["device_monotonic"]
-                );
-                assert_eq!(
-                    stream
-                        .path(&["capture_interval", "capture_time_class"])?
-                        .text()?,
-                    "declared_by_source_clock"
-                );
-                assert_eq!(
-                    stream.path(&["continuity", "knowledge"])?.text()?,
-                    expected_continuity,
-                    "{scenario}"
-                );
-            }
-        }
-        assert_eq!(document.path(&["capsules", "retained"])?.number()?, total);
+        assert!(document.get("sensors")?.items()?.is_empty(), "{scenario}");
+        assert_eq!(document.path(&["capsules", "retained"])?.number()?, 0);
         assert_eq!(
             document
                 .path(&["imports", "file_imports_completed"])?
                 .number()?,
             0
         );
-        assert!(document.path(&["events", "count"])?.number()? >= 1);
+        let events = document.path(&["events", "count"])?.number()?;
+        assert!(events >= 1, "{scenario}");
         let exercised = capabilities(&document)?;
-        assert!(exercised.contains(&"source_custody_capsules"));
         assert!(exercised.contains(&"reference_event_publication"));
         assert!(!exercised.contains(&"reference_file_import"));
+        assert!(!exercised.contains(&"source_custody_capsules"));
         let kinds = degraded_kinds(&document)?;
-        assert!(
-            !kinds.contains(&"no_live_continuity"),
-            "{scenario}: no file source"
-        );
-        if expected_continuity == "verified" {
-            assert!(!kinds.contains(&"continuity_not_witnessed"));
+        assert!(!kinds.contains(&"no_live_continuity"), "{scenario}");
+        let sources = document.get("coverage_witness_sources")?.items()?;
+        if scenario == "quiet" {
+            assert_eq!(
+                document
+                    .path(&["events", "by_state", "rejected"])?
+                    .number()?,
+                1
+            );
+            assert!(exercised.contains(&"retained_coverage_witnesses"));
+            assert!(!sources.is_empty(), "quiet retains a coverage witness");
+            for source in sources {
+                assert_eq!(source.get("witness_continuity")?.text()?, "continuous");
+                assert_eq!(source.get("scope")?.text()?, "committed_history_only");
+                assert!(source.get("frames")?.number()? > 0);
+            }
+            assert_eq!(
+                document
+                    .get("degraded")?
+                    .find("kind", "coverage_sources_without_ledgered_capsules")?
+                    .get("count")?
+                    .number()?,
+                u64::try_from(sources.len())?
+            );
         } else {
-            assert!(kinds.contains(&"continuity_not_witnessed"));
+            assert!(sources.is_empty(), "intrusion retains no coverage witness");
             assert!(exercised.contains(&"durable_effect_journal"));
             assert!(document.path(&["effects", "operations"])?.number()? >= 1);
         }
         observed.push(format!(
-            "{scenario}:sensors={} capsules={total} continuity={expected_continuity}",
-            sensors.len()
+            "{scenario}:events={events} coverage_sources={}",
+            sources.len()
         ));
     }
     caplog("lab_roots", &observed.join(" "));
