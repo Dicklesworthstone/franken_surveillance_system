@@ -74,7 +74,9 @@ pub struct ReferenceSituationRequest<'a> {
     /// so it certifies only under [`verify_retained_coverage`]: the record is committed intact and
     /// no coverage-relevant commit follows its basis, and the hydrated results of the event's
     /// model receipts analyse every frame of the record with nothing found under one generation
-    /// (fss-f8jls). Without a record, a witness certifies only at the exact current anchor.
+    /// (fss-f8jls). Without a record, a witness never certifies, even at the exact current anchor:
+    /// it names no frame an analysis could be bound to, so the absence cell stays `Unknown` and
+    /// states [`RetainedCoverageRefusal::WitnessNotStored`] (fss-plt5h).
     pub coverage_record: Option<StoredCoverage<'a>>,
     /// Capabilities currently delegated to the principal.
     pub available_capabilities: BTreeSet<String>,
@@ -743,9 +745,10 @@ pub fn compile_reference_situation(
     {
         if let Some(witness) = coverage_witness {
             // A stored witness (fss-tch7u): verified against the committed history under the one
-            // shared rule, never re-anchored. An unstored witness keeps exact anchor equality.
+            // shared rule, never re-anchored. An unstored witness names no frame, so no analysis
+            // can be bound to it and it never certifies absence, even at the exact current anchor
+            // (fss-plt5h); it is still diagnosed below so its first defect is named.
             let stored = match request.coverage_record {
-                _ if witness.anchor == current_anchor => None,
                 Some(stored) if stored.record.witness == *witness => {
                     Some(verify_retained_coverage(
                         stored.record,
@@ -759,6 +762,7 @@ pub fn compile_reference_situation(
                 None => None,
             };
             let retained = stored.as_ref().and_then(|verdict| verdict.as_ref().ok());
+            // Diagnostic only: certification below requires `retained`.
             let matches_anchor = witness.anchor == current_anchor || retained.is_some();
             let matches_generation = witness.authorized_generation > 0
                 && witness.authorized_generation == witness.observed_generation
@@ -783,31 +787,27 @@ pub fn compile_reference_situation(
                 && !witness.authorized_domain.is_empty()
                 && witness.authorized_domain == witness.observed_domain;
 
-            if witness.certifies_absence()
-                && matches_anchor
-                && matches_generation
-                && matches_predicate
-                && matches_domain
-            {
+            let certifying = retained.filter(|_| {
+                witness.certifies_absence()
+                    && matches_anchor
+                    && matches_generation
+                    && matches_predicate
+                    && matches_domain
+            });
+            if let Some(absence) = certifying {
                 coverage_proof_root = Some(witness.witness_digest());
-                let mut evidence = vec![event_revision_digest, witness.witness_digest()];
-                let statement = match retained {
-                    Some(absence) => {
-                        evidence.push(absence.record_digest);
-                        record_proof_root = Some(absence.record_digest);
-                        absence.statement()
-                    }
-                    None => format!(
-                        "Physical absence is certified across authorized domain {:?} at generation {}.",
-                        witness.authorized_domain, witness.authorized_generation
-                    ),
-                };
+                record_proof_root = Some(absence.record_digest);
+                let evidence = vec![
+                    event_revision_digest,
+                    witness.witness_digest(),
+                    absence.record_digest,
+                ];
                 (
                     true,
                     None,
                     Some(KnowledgeCell::new(KnowledgeCellParams {
                         claim_id: absence_claim_id.clone(),
-                        statement,
+                        statement: absence.statement(),
                         knowledge_state: KnowledgeState::Known,
                         provenance: ProvenanceClass::Derived,
                         hypothesis: Some(HypothesisDisposition::Refuted),
@@ -866,6 +866,11 @@ pub fn compile_reference_situation(
                     format!(
                         "coverage witness observed domain {:?} does not match authorized domain {:?}",
                         witness.observed_domain, witness.authorized_domain
+                    )
+                } else if stored.is_none() {
+                    format!(
+                        "the coverage witness does not certify: {}",
+                        RetainedCoverageRefusal::WitnessNotStored
                     )
                 } else {
                     format!(

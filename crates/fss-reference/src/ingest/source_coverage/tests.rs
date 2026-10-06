@@ -23,9 +23,9 @@ use fss_core::{
     Completeness, ContentDigest, ContextAuthority, ContractBasis, ContractBasisRegistryBytes,
     ContractError, CoverageContinuity, CoverageWitness, EventEvidence, EventHypothesis, EventId,
     EventKind, EventState, EvidenceClass, EvidenceDelta, EvidenceDeltaBatch, EvidenceEdgeRelation,
-    KnowledgeState, LedgerAnchor, MissionId, ObjectId, OperationId, Plane, PrincipalId,
-    ProbabilityInterval, RootAuthoritySpec, SensorCapsule, SensorId, SensorSourceBytesSpec,
-    SessionId, StreamId, TimestampNs,
+    KnowledgeState, LedgerAnchor, MeaningfulDeltaClass, MissionId, ObjectId, OperationId, Plane,
+    PrincipalId, ProbabilityInterval, ResourcePressure, RootAuthoritySpec, SensorCapsule, SensorId,
+    SensorSourceBytesSpec, SessionId, StreamId, TimestampNs,
 };
 use fss_object::ObjectManifest;
 use fss_publication::SlotName;
@@ -44,9 +44,10 @@ use crate::reference_deployment::{
 use crate::{
     ADP_REPLAY_ROW_ID, COVERAGE_ANALYSIS_INCOMPLETE, MockModelResult, MockModelScript,
     MockModelSpec, ReferenceDeployment, ReferenceEventReceipt, ReferenceModelObservation,
-    ReferencePolicyAction, ReferencePolicyDecision, ReferenceSituation, ReferenceSituationRequest,
-    ReplayCx, ReplayIoAuthority, analyse_mock_capsule, evaluate_unknown_presence_over_coverage,
-    policy_decision_path,
+    ReferencePolicyAction, ReferencePolicyDecision, ReferenceProjectionSpec, ReferenceSituation,
+    ReferenceSituationRequest, ReplayCx, ReplayIoAuthority, analyse_mock_capsule,
+    classify_reference_meaningful_delta, evaluate_unknown_presence_over_coverage,
+    policy_decision_path, project_reference_situation,
 };
 
 type TestResult = Result<(), Box<dyn Error>>;
@@ -408,6 +409,16 @@ impl Quiet {
         witness: Option<&CoverageWitness>,
         record: Option<&SourceCoverageRecord>,
     ) -> Result<ReferenceSituation, Box<dyn Error>> {
+        self.situation_revision(witness, record, 1)
+    }
+
+    /// [`Self::situation_offered`] at situation `revision`.
+    fn situation_revision(
+        &mut self,
+        witness: Option<&CoverageWitness>,
+        record: Option<&SourceCoverageRecord>,
+        revision: u64,
+    ) -> Result<ReferenceSituation, Box<dyn Error>> {
         let decision = self.decision.clone();
         let receipt = self.receipt.clone();
         let analyses = self.analyses.clone();
@@ -417,7 +428,7 @@ impl Quiet {
             session_id: SessionId::parse("session:source-coverage")?,
             principal_id: PrincipalId::parse("principal:source-coverage")?,
             objective_id: "objective:source-coverage".to_owned(),
-            revision: 1,
+            revision,
             contract_basis: ContractBasis::from_registry_bytes(
                 ContractBasisRegistryBytes::new(
                     b"schemas",
@@ -1031,6 +1042,190 @@ fn a_reanchored_copy_offered_with_the_stored_record_is_refused() -> TestResult {
     );
     quiet.cleanup();
     Ok(())
+}
+
+// --- an unstored witness at the current anchor (fss-plt5h) ---------------------------------------
+
+/// The run's witness re-anchored to the exact current anchor, to be offered without its record:
+/// the path that, before fss-plt5h, certified on anchor equality alone.
+fn current_anchor_copy(quiet: &mut Quiet) -> Result<CoverageWitness, Box<dyn Error>> {
+    let (_, head) = quiet.history()?;
+    let mut copy = quiet.record.witness.clone();
+    copy.anchor = head;
+    // Intrinsically the copy certifies, so only the missing stored route can refuse it.
+    assert!(copy.certifies_absence());
+    Ok(copy)
+}
+
+/// The compiled situation refuses `copy` offered without a record and states the typed refusal:
+/// the absence cell is `Unknown` (never dropped, never Known), the protected world survives, the
+/// situation's unknowns carry the same reason, and neither the witness nor the record becomes a
+/// proof root.
+fn assert_unstored_refused(quiet: &mut Quiet, copy: &CoverageWitness) -> TestResult {
+    let situation = quiet.situation_with(copy, None)?;
+    let (cell, world, statement) = situation_absence(&situation, &quiet.event_id);
+    assert_eq!(cell, Some(KnowledgeState::Unknown), "{statement}");
+    assert!(world, "{statement}");
+    let refusal = RetainedCoverageRefusal::WitnessNotStored.to_string();
+    assert!(statement.contains(&refusal), "{statement}");
+    assert!(
+        situation
+            .capsule
+            .frame
+            .unknown
+            .iter()
+            .any(|unknown| unknown.contains(&refusal)),
+        "the refusal is not stated in the situation's unknowns: {:?}",
+        situation.capsule.frame.unknown
+    );
+    assert!(!situation.proof_roots.contains(&copy.witness_digest()));
+    assert!(!situation.proof_roots.contains(&quiet.record.digest()));
+    Ok(())
+}
+
+/// Planted negative (fss-plt5h): the pre-fss-f8jls lab rejection (every frame delivered, none
+/// analysed) with its witness re-anchored to the current anchor and offered without its record.
+/// Before the fix the compiler certified it on anchor equality alone.
+#[test]
+fn a_current_anchor_witness_without_analysis_does_not_certify() -> TestResult {
+    let mut quiet = Quiet::run_plan(
+        "current-anchor-unanalysed",
+        Plan {
+            analyse: |_, _| None,
+            decide: lab_written,
+            ..Plan::new(everything, true)
+        },
+    )?;
+    assert!(quiet.analyses.is_empty());
+    assert_eq!(quiet.decision.event.state, EventState::Rejected);
+    let copy = current_anchor_copy(&mut quiet)?;
+    assert_unstored_refused(&mut quiet, &copy)?;
+    // Offered beside the stored record, the copy is not what the record retains.
+    let stored = quiet.record.clone();
+    let situation = quiet.situation_with(&copy, Some(&stored))?;
+    let (cell, world, statement) = situation_absence(&situation, &quiet.event_id);
+    assert_eq!(cell, Some(KnowledgeState::Unknown));
+    assert!(world);
+    assert!(
+        statement.contains("no committed coverage_witness record"),
+        "{statement}"
+    );
+    // And the stored route itself refuses the unanalysed run.
+    assert_not_certified(&mut quiet, "delivered but never analysed")?;
+    quiet.cleanup();
+    Ok(())
+}
+
+/// Every frame analysed and the policy's rejection: the unstored current-anchor copy is still
+/// refused (a bare witness names no frame its analyses could be bound to), while the same run's
+/// stored witness, verified with its hydrated analyses, certifies. The stored route is the only
+/// route.
+#[test]
+fn a_current_anchor_witness_with_every_frame_analysed_certifies_only_through_its_record()
+-> TestResult {
+    let mut quiet = Quiet::run("current-anchor-analysed", everything, true)?;
+    assert_eq!(quiet.decision.event.state, EventState::Rejected);
+    assert_eq!(
+        quiet.decision.event.model_receipts.len(),
+        quiet.record.frames.len()
+    );
+    let copy = current_anchor_copy(&mut quiet)?;
+    assert_unstored_refused(&mut quiet, &copy)?;
+    assert_certified(&mut quiet)?;
+    quiet.cleanup();
+    Ok(())
+}
+
+/// Analysis of all but one frame, under a forged rejection: the unstored current-anchor copy is
+/// refused, as is the stored route (naming the unanalysed frame).
+#[test]
+fn a_current_anchor_witness_with_partial_analysis_does_not_certify() -> TestResult {
+    let mut quiet = Quiet::run_plan(
+        "current-anchor-partial",
+        Plan {
+            analyse: all_but_one_frame,
+            decide: forged,
+            ..Plan::new(everything, true)
+        },
+    )?;
+    assert_eq!(quiet.decision.event.state, EventState::Rejected);
+    assert_eq!(quiet.decision.event.model_receipts.len(), 9);
+    let copy = current_anchor_copy(&mut quiet)?;
+    assert_unstored_refused(&mut quiet, &copy)?;
+    assert_not_certified(&mut quiet, "has no cited analysed-nothing model result")?;
+    quiet.cleanup();
+    Ok(())
+}
+
+/// The meaningful delta of absence certification, from real producers: offering an unstored
+/// current-anchor witness leaves the absence claim `Unknown`, while the stored, fully analysed
+/// witness turns it Known and the change is reported as a material state change.
+#[test]
+fn only_the_stored_route_moves_absence_to_known_in_a_meaningful_delta() -> TestResult {
+    let mut quiet = Quiet::run("current-anchor-delta", everything, true)?;
+    let copy = current_anchor_copy(&mut quiet)?;
+    let stored = quiet.record.clone();
+    let spec = projection_spec()?;
+    let basis = project_reference_situation(quiet.situation_revision(None, None, 1)?, &spec)?;
+    let unstored =
+        project_reference_situation(quiet.situation_revision(Some(&copy), None, 2)?, &spec)?;
+    let certified = project_reference_situation(
+        quiet.situation_revision(Some(&stored.witness), Some(&stored), 2)?,
+        &spec,
+    )?;
+    let cell_id = format!(
+        "claim:event:{}:absence-certification",
+        quiet.event_id.as_str()
+    );
+    let absence_state = |publication: &crate::ReferenceSituationPublication| {
+        publication
+            .situation
+            .capsule
+            .frame
+            .knowledge_cells
+            .iter()
+            .find(|cell| cell.claim_id() == cell_id)
+            .map(|cell| cell.knowledge_state())
+    };
+    assert_eq!(absence_state(&basis), Some(KnowledgeState::Unknown));
+    assert_eq!(absence_state(&unstored), Some(KnowledgeState::Unknown));
+    assert_eq!(absence_state(&certified), Some(KnowledgeState::Known));
+    let delta = classify_reference_meaningful_delta(&basis, &certified)?;
+    assert!(
+        delta.classes.contains(&MeaningfulDeltaClass::MaterialState),
+        "{:?}",
+        delta.classes
+    );
+    quiet.cleanup();
+    Ok(())
+}
+
+fn projection_spec() -> Result<ReferenceProjectionSpec, Box<dyn Error>> {
+    Ok(ReferenceProjectionSpec {
+        view_id: "AVIEW-001".to_owned(),
+        available_resources: BudgetVector::builder()
+            .latency_ms(10_000)
+            .tokens(20_000)
+            .bytes(1_000_000)
+            .model_calls(10)
+            .cpu_millis(10_000)
+            .accelerator_millis(10_000)
+            .energy_millijoules(1_000_000)
+            .network_bytes(1_000_000)
+            .storage_operations(10_000)
+            .privacy_exposure(10.0)
+            .operator_attention_seconds(1_000.0)
+            .build()?,
+        reserved_resources: BudgetVector::builder()
+            .latency_ms(100)
+            .tokens(100)
+            .bytes(1_000)
+            .storage_operations(1)
+            .build()?,
+        pressure: ResourcePressure::Nominal,
+        degraded_dimensions: BTreeSet::new(),
+        target_tokens: 10_000,
+    })
 }
 
 #[test]

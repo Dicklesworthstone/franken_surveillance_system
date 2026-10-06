@@ -21,7 +21,10 @@
 //! own magic `FSSSCW01` and registered digest domain `fss.source_coverage_record.v1`) whose batch
 //! children are the record, the witness and every source capsule and payload: the record's custody.
 //!
-//! [`verify_retained_coverage`] is the shared rule of the situation compiler and `fss orient`.
+//! [`verify_retained_coverage`] is the shared rule of the situation compiler and `fss orient`,
+//! and the only route by which either certifies absence: the compiler refuses a witness offered
+//! without its record ([`RetainedCoverageRefusal::WitnessNotStored`], fss-plt5h), even one
+//! anchored at the exact current anchor, because a bare witness names no frame to analyse.
 //! A stored witness certifies a rejected event's absence only when its record is committed and
 //! intact, the witness certifies absence over a domain covering the event's domains and interval
 //! with the event kind's predicate, the event cites the stored witness as contradicting evidence,
@@ -893,6 +896,11 @@ pub enum RetainedCoverageRefusal {
         /// The receipt.
         receipt: ContentDigest,
     },
+    /// The witness was offered to the situation compiler without the committed record that
+    /// retains it (fss-plt5h). A bare witness names no frame, so no analysis can be bound to it;
+    /// absence is certified only through a stored witness under this rule. The compiler states
+    /// this refusal; [`verify_retained_coverage`] itself always has a record and never returns it.
+    WitnessNotStored,
     /// The witness basis is not a committed anchor of this history.
     BasisNotCommitted,
     /// The witness generation is not the basis and head policy epoch.
@@ -965,6 +973,11 @@ impl fmt::Display for RetainedCoverageRefusal {
             Self::AnalysisUnverified { receipt } => write!(
                 f,
                 "model receipt {receipt} is not a cited analysed-nothing result of a witness frame"
+            ),
+            Self::WitnessNotStored => f.write_str(
+                "the coverage witness is offered without a committed source coverage record that \
+                 retains it, so none of its frames can be bound to an analysis; absence is \
+                 certified only by a stored witness whose every frame was analysed",
             ),
             Self::BasisNotCommitted => {
                 f.write_str("the stored witness basis is not a committed anchor of this ledger")

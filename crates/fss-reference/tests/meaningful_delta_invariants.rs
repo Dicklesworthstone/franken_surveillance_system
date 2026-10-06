@@ -19,6 +19,7 @@ use fss_core::{
 
 use fss_ledger::{DurableReferenceLedger, IncompleteTailPolicy};
 use fss_object::{InMemoryObjectStore, ObjectLimits};
+use fss_reference::ingest::source_coverage::RetainedCoverageRefusal;
 use fss_reference::{
     AlertDispatchTimes, DeliveryPlan, MockModelScript, MockModelSpec, MockSemanticLabel,
     PrepareAlertParams, ReferenceAlertPlan, ReferenceAlertProvider, ReferenceError,
@@ -1741,11 +1742,16 @@ fn test_inv056_rejected_event_with_out_of_domain_coverage_witness_fails_certific
     Ok(())
 }
 
-/// INV-056: Real situation compilation with a fully valid CoverageWitness over the authorized
-/// domain and generation successfully certifies absence: KnowledgeState is Known (Refuted),
-/// witness digest is in proof roots, and uncertified-absence residual world is resolved.
+/// INV-056 / fss-plt5h: a CoverageWitness that is intrinsically complete and continuous over the
+/// authorized domain and generation, anchored at the exact current anchor but offered without the
+/// committed source coverage record that retains it, does NOT certify absence. A bare witness
+/// names no frame an analysis could be bound to (fss-f8jls), so the absence cell stays Unknown,
+/// states the typed `WitnessNotStored` refusal, and the protected residual world survives.
+/// Before fss-plt5h this test pinned the opposite (certification on anchor equality alone); the
+/// positive certification now runs only through the stored route (`source_coverage` tests:
+/// `a_current_anchor_witness_with_every_frame_analysed_certifies_only_through_its_record`).
 #[test]
-fn test_inv056_rejected_event_with_valid_coverage_witness_certifies_absence()
+fn test_inv056_rejected_event_with_unstored_current_anchor_witness_does_not_certify_absence()
 -> Result<(), Box<dyn Error>> {
     let mut harness = TestHarness::new("inv056-certified")?;
     let (decision, receipt) = harness.publish_rejected_decision("inv056-certified")?;
@@ -1789,34 +1795,42 @@ fn test_inv056_rejected_event_with_valid_coverage_witness_certifies_absence()
         .ok_or(ReferenceError::InvalidSpec("missing_absence_cell"))?;
     assert_eq!(
         absence.knowledge_state(),
-        KnowledgeState::Known,
-        "Absence with complete continuous CoverageWitness over authorized domain and generation must be Known!"
+        KnowledgeState::Unknown,
+        "An unstored witness must not certify absence, even at the exact current anchor!"
     );
     assert_eq!(
         absence.hypothesis(),
-        Some(HypothesisDisposition::Refuted),
-        "Absence hypothesis disposition must be Refuted!"
+        None,
+        "An uncertified absence must not carry a Refuted disposition!"
     );
+    let refusal = RetainedCoverageRefusal::WitnessNotStored.to_string();
     assert!(
-        absence
-            .statement()
-            .contains("Physical absence is certified across authorized domain"),
-        "Absence statement must indicate certified absence! Statement: {}",
+        absence.statement().contains(&refusal),
+        "Absence statement must name the typed WitnessNotStored refusal! Statement: {}",
         absence.statement()
     );
     assert!(
-        situation.proof_roots.contains(&witness.witness_digest()),
-        "Situation proof roots must include the CoverageWitness digest!"
+        situation
+            .capsule
+            .frame
+            .unknown
+            .iter()
+            .any(|unknown| unknown.contains(&refusal)),
+        "Unknowns must carry the WitnessNotStored refusal!"
     );
     assert!(
-        !situation
+        !situation.proof_roots.contains(&witness.witness_digest()),
+        "An uncertifying witness must not become a proof root!"
+    );
+    assert!(
+        situation
             .capsule
             .frame
             .world_envelope
             .adversarial_residuals
             .iter()
-            .any(|w| w.world_id.ends_with(":absence-uncertified")),
-        "Protected absence-uncertified residual world MUST NOT be present when absence is certified!"
+            .any(|w| w.protected && w.world_id.ends_with(":absence-uncertified")),
+        "Protected absence-uncertified residual world MUST be retained for an unstored witness!"
     );
 
     situation.verify()?;
@@ -2108,6 +2122,12 @@ fn test_inv056_failing_stale_anchor_commit_sequence_must_not_certify_absence()
 
 /// DEFECT 6 TEST: Planted-negative test driven fully through real producers:
 /// capture -> model -> policy -> ledger event -> compile situation -> project situation -> classify meaningful delta.
+///
+/// fss-plt5h: the second situation is offered an unstored witness at the exact current anchor.
+/// It no longer certifies (no frame of it can be bound to an analysis), so the absence claim stays
+/// Unknown across the delta and its protected world survives. The transition to certified absence
+/// as a MaterialState delta is now driven through the stored route
+/// (`source_coverage` tests: `only_the_stored_route_moves_absence_to_known_in_a_meaningful_delta`).
 #[test]
 fn test_inv056_failing_producer_driven_planted_negative_meaningful_delta()
 -> Result<(), Box<dyn Error>> {
@@ -2178,13 +2198,34 @@ fn test_inv056_failing_producer_driven_planted_negative_meaningful_delta()
         )
     })?;
 
-    let delta = classify_reference_meaningful_delta(&pub1, &pub2)?;
-    // Transition from uncertified to certified absence changes knowledge cell from Unknown to Known
-    assert!(
-        delta.classes.contains(&MeaningfulDeltaClass::MaterialState),
-        "Transition to certified absence must emit MaterialState! Classes: {:?}",
-        delta.classes
+    let absence_state = |publication: &ReferenceSituationPublication| {
+        publication
+            .situation
+            .capsule
+            .frame
+            .knowledge_cells
+            .iter()
+            .find(|cell| cell.claim_id().ends_with(":absence-certification"))
+            .map(KnowledgeCell::knowledge_state)
+    };
+    assert_eq!(absence_state(&pub1), Some(KnowledgeState::Unknown));
+    assert_eq!(
+        absence_state(&pub2),
+        Some(KnowledgeState::Unknown),
+        "An unstored current-anchor witness must not move absence to Known!"
     );
+    assert!(
+        pub2.situation
+            .capsule
+            .frame
+            .world_envelope
+            .adversarial_residuals
+            .iter()
+            .any(|w| w.protected && w.world_id.ends_with(":absence-uncertified")),
+        "Protected absence-uncertified residual world MUST survive an unstored witness!"
+    );
+    // The delta still classifies cleanly between the two exact publications.
+    classify_reference_meaningful_delta(&pub1, &pub2)?;
 
     harness.cleanup();
     Ok(())
