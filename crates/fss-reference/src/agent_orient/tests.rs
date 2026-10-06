@@ -353,6 +353,8 @@ fn source_domains_are_covered_stale_or_not_observable_with_exact_operator_text()
             basis_sequence: anchor.commit_sequence,
             interval,
             domains: covered_record.witness.authorized_domain.clone(),
+            // Site coverage is delivery, assessed without an event: no analysis (fss-f8jls).
+            analysis: None,
         }),
     );
     // Complete at its basis, invalidated by a later commit: stale.
