@@ -6,8 +6,8 @@ use std::collections::{BTreeMap, BTreeSet};
 use fss_core::{CanonicalEncode, ContentDigest, EvidenceDeltaBatch, Plane};
 use fss_object::ObjectManifest;
 use fss_publication::{
-    LocalPublicationState, ROOT_REACHABILITY_DELTA_PREFIX, ROOT_REACHABILITY_FAMILY,
-    SlotName, root_reachability_batch_id, root_reachability_object_id,
+    LocalPublicationState, ROOT_REACHABILITY_DELTA_PREFIX, ROOT_REACHABILITY_FAMILY, SlotName,
+    root_reachability_batch_id, root_reachability_object_id,
 };
 
 use super::{FileImportManifest, FileIngestError, checkpoint, invalid};
@@ -32,7 +32,9 @@ pub(super) fn verify(
         .root(slot)
         .ok_or_else(|| invalid("import root is unavailable"))?;
     if visible.state != LocalPublicationState::Durable || visible.root != import_root {
-        return Err(invalid("import root is not the witnessed durable publication"));
+        return Err(invalid(
+            "import root is not the witnessed durable publication",
+        ));
     }
     let root_bytes = deployment.publisher().spool().read(import_root)?;
     let root = ObjectManifest::from_canonical_bytes(&root_bytes)?;
@@ -40,7 +42,9 @@ pub(super) fn verify(
         || root.kind() != slot.as_str()
         || root.metadata_digest() != Some(manifest_digest)
     {
-        return Err(invalid("publication root does not bind the exact import metadata"));
+        return Err(invalid(
+            "publication root does not bind the exact import metadata",
+        ));
     }
 
     let reachability_id = root_reachability_batch_id(slot)
@@ -69,7 +73,9 @@ pub(super) fn verify(
         || claim.witness_digest.is_some()
         || claim.operation_id.is_some()
     {
-        return Err(invalid("root reachability claim disagrees with the import witness"));
+        return Err(invalid(
+            "root reachability claim disagrees with the import witness",
+        ));
     }
     let current = ledger
         .current()
@@ -81,25 +87,35 @@ pub(super) fn verify(
         || current.plane != Plane::Authority
         || current.payload_digest != import_root
     {
-        return Err(invalid("import root reachability is retracted or superseded"));
+        return Err(invalid(
+            "import root reachability is retracted or superseded",
+        ));
     }
 
     let held: BTreeSet<_> = root.children().iter().copied().collect();
     let ledgered: BTreeSet<_> = reachability.children.iter().copied().collect();
     if !held.is_subset(&ledgered) {
-        return Err(invalid("root children are absent from its ledgered closure"));
+        return Err(invalid(
+            "root children are absent from its ledgered closure",
+        ));
     }
     let chunks: BTreeSet<_> = manifest.ordered_chunks.iter().copied().collect();
     if !chunks.is_subset(&held) {
-        return Err(invalid("import source chunks are outside the publication root"));
+        return Err(invalid(
+            "import source chunks are outside the publication root",
+        ));
     }
     let custody = ObjectManifest::new("custody", chunks, None)?;
     if !held.contains(&custody.root()) {
-        return Err(invalid("import custody manifest is outside the publication root"));
+        return Err(invalid(
+            "import custody manifest is outside the publication root",
+        ));
     }
     checkpoint(cx, STAGE)?;
     if deployment.publisher().spool().read(custody.root())? != custody.canonical_bytes() {
-        return Err(invalid("import custody manifest disagrees with source chunk identities"));
+        return Err(invalid(
+            "import custody manifest disagrees with source chunk identities",
+        ));
     }
 
     // Resolve all capsule identities in one history pass. Do not hydrate every capsule or
@@ -130,7 +146,9 @@ pub(super) fn verify(
             continue;
         }
         if batch.new_anchor.commit_sequence >= reachability.new_anchor.commit_sequence {
-            return Err(invalid("capsule authority must precede import root publication"));
+            return Err(invalid(
+                "capsule authority must precede import root publication",
+            ));
         }
         let children: BTreeSet<_> = batch.children.iter().copied().collect();
         for delta in &batch.deltas {
@@ -143,7 +161,9 @@ pub(super) fn verify(
                     || delta.payload_digest != custody.root()
                     || !children.contains(&custody.root())
                 {
-                    return Err(invalid("initial import authority disagrees with source custody"));
+                    return Err(invalid(
+                        "initial import authority disagrees with source custody",
+                    ));
                 }
                 initial_custody = true;
             } else if delta.family == "sensor_capsule" {
@@ -156,13 +176,17 @@ pub(super) fn verify(
                         .insert(delta.object_id.as_str(), delta.payload_digest)
                         .is_some()
                 {
-                    return Err(invalid("capsule authority is duplicated or outside import custody"));
+                    return Err(invalid(
+                        "capsule authority is duplicated or outside import custody",
+                    ));
                 }
             }
         }
     }
     if !initial_custody || capsules.len() != manifest.capsule_ids.len() {
-        return Err(invalid("import manifest and capsule authority have different membership"));
+        return Err(invalid(
+            "import manifest and capsule authority have different membership",
+        ));
     }
     for capsule_id in &manifest.capsule_ids {
         checkpoint(cx, STAGE)?;

@@ -7,10 +7,8 @@ mod support;
 use std::fs;
 
 use fss_core::{CanonicalEncode, TimestampNs};
-use fss_reference::ingest::{
-    CaptureHint, FileIngestAdapter, FileIngestError, FileIngestOutcome,
-};
 use fss_reference::ReferenceDeployment;
+use fss_reference::ingest::{CaptureHint, FileIngestAdapter, FileIngestError, FileIngestOutcome};
 use support::{TestResult, cx, directory, object_file, request, snapshot};
 
 #[test]
@@ -45,7 +43,10 @@ fn changed_receive_time_is_a_conflict_not_a_new_receipt() -> TestResult {
     let before = snapshot(&root)?;
     let changed = request.with_receive_time(TimestampNs(3_000_000_000));
     let result = FileIngestAdapter::ingest(changed, &context, &mut deployment);
-    assert!(matches!(result, Err(FileIngestError::ImportPlanConflict { .. })));
+    assert!(matches!(
+        result,
+        Err(FileIngestError::ImportPlanConflict { .. })
+    ));
     assert_eq!(snapshot(&root)?, before);
     Ok(())
 }
@@ -70,7 +71,10 @@ fn each_changed_capture_hint_coordinate_is_refused_without_mutation() -> TestRes
         let mut changed = request;
         changed.capture_hint = hint;
         let result = FileIngestAdapter::ingest(changed, &context, &mut deployment);
-        assert!(matches!(result, Err(FileIngestError::ImportPlanConflict { .. })));
+        assert!(matches!(
+            result,
+            Err(FileIngestError::ImportPlanConflict { .. })
+        ));
         assert_eq!(snapshot(&root)?, before);
     }
     Ok(())
@@ -158,7 +162,10 @@ fn interrupted_retry_checks_the_committed_prefix_before_staging_new_evidence() -
         input.limits.max_batch_deltas = 2;
         interrupted.set_cancel_at_checkpoint_occurrence(STAGE_COMMIT_CAPSULES, occurrence);
         let result = FileIngestAdapter::ingest(input.clone(), &interrupted, &mut deployment);
-        assert!(matches!(result, Err(FileIngestError::CancellationRequested { .. })));
+        assert!(matches!(
+            result,
+            Err(FileIngestError::CancellationRequested { .. })
+        ));
         assert_eq!(deployment.ledger().batches().len(), occurrence - 1);
         drop(deployment);
 
@@ -167,7 +174,10 @@ fn interrupted_retry_checks_the_committed_prefix_before_staging_new_evidence() -
         let before = snapshot(&root)?;
         let changed = input.clone().with_receive_time(TimestampNs(3_000_000_000));
         let result = FileIngestAdapter::ingest(changed, &resumed, &mut deployment);
-        assert!(matches!(result, Err(FileIngestError::ImportPlanConflict { .. })));
+        assert!(matches!(
+            result,
+            Err(FileIngestError::ImportPlanConflict { .. })
+        ));
         assert_eq!(snapshot(&root)?, before);
 
         let receipt = FileIngestAdapter::ingest(input.clone(), &resumed, &mut deployment)?;
@@ -192,8 +202,10 @@ fn cancellation_during_retry_verification_never_mutates_authority_or_custody() -
     cancelled.set_cancel_at_checkpoint_occurrence("file_adapter:retry_preflight", 2);
     let before = snapshot(&root)?;
     let result = FileIngestAdapter::ingest(input, &cancelled, &mut deployment);
-    assert!(matches!(result, Err(FileIngestError::CancellationRequested { stage })
-        if stage == "file_adapter:retry_preflight"));
+    assert!(
+        matches!(result, Err(FileIngestError::CancellationRequested { stage })
+        if stage == "file_adapter:retry_preflight")
+    );
     assert_eq!(snapshot(&root)?, before);
     Ok(())
 }

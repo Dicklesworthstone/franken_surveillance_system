@@ -9,9 +9,7 @@ use std::collections::{BTreeMap, BTreeSet};
 use fss_core::{BatchId, ContentDigest, EvidenceDelta, EvidenceDeltaBatch};
 
 use super::{FileImportManifest, FileIngestError, PlannedBatch};
-use crate::ingest::retained::{
-    MAX_RETAINED_PAYLOAD_BYTES, RetainedFileImport, RetainedReadLimits,
-};
+use crate::ingest::retained::{MAX_RETAINED_PAYLOAD_BYTES, RetainedFileImport, RetainedReadLimits};
 use crate::{ReferenceDeployment, ReplayCx};
 
 const STAGE: &str = "file_adapter:retry_preflight";
@@ -79,9 +77,8 @@ pub(super) fn preflight(
             continue;
         };
         if missing
-            || previous_sequence.is_some_and(|sequence| {
-                stored.new_anchor.commit_sequence <= sequence
-            })
+            || previous_sequence
+                .is_some_and(|sequence| stored.new_anchor.commit_sequence <= sequence)
             || completion.is_some_and(|complete| {
                 stored.new_anchor.commit_sequence >= complete.new_anchor.commit_sequence
             })
@@ -103,7 +100,10 @@ pub(super) fn preflight(
 
     // Refuse an old, longer capsule partition rather than silently leaving its tail out of a
     // newly reconstructed receipt. Match canonical capsule-batch suffixes, not unrelated IDs.
-    let planned_ids: BTreeSet<_> = planned.iter().map(|batch| batch.batch_id.as_str()).collect();
+    let planned_ids: BTreeSet<_> = planned
+        .iter()
+        .map(|batch| batch.batch_id.as_str())
+        .collect();
     let prefix = manifest_batch_id
         .as_str()
         .strip_suffix("manifest")

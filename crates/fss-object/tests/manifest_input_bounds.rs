@@ -72,11 +72,7 @@ impl Iterator for MisleadingSizeHint {
 #[test]
 fn iterator_size_hint_is_not_allocation_authority() -> Result<(), ObjectError> {
     let child = digest(7);
-    let manifest = ObjectManifest::new(
-        "bounded",
-        MisleadingSizeHint { value: Some(child) },
-        None,
-    )?;
+    let manifest = ObjectManifest::new("bounded", MisleadingSizeHint { value: Some(child) }, None)?;
     assert_eq!(manifest.children(), &[child]);
     Ok(())
 }

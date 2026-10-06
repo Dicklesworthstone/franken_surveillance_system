@@ -124,8 +124,8 @@ impl FilePublicationPlan {
             .iter()
             .map(|byte| format!("{byte:02x}"))
             .collect();
-        let slot = SlotName::parse(&format!("fi-{hex}"))
-            .map_err(|_| ContractError::InvalidIdentifier)?;
+        let slot =
+            SlotName::parse(&format!("fi-{hex}")).map_err(|_| ContractError::InvalidIdentifier)?;
         let mut unique = BTreeSet::new();
         for (index, digest) in payloads.into_iter().enumerate() {
             if index == MAX_FILE_PUBLICATION_PAYLOADS {
@@ -212,16 +212,23 @@ impl FilePublicationPlan {
             || metadata.adapter_id.len() > 256
             || metadata.adapter_generation.len() > 256
             || metadata.capture_time_label.len() > 256
-            || metadata.omission_spans.iter().any(|span| span.reason.len() > 1024)
+            || metadata
+                .omission_spans
+                .iter()
+                .any(|span| span.reason.len() > 1024)
         {
-            return Err(invalid("metadata exceeds bounded collection or text limits"));
+            return Err(invalid(
+                "metadata exceeds bounded collection or text limits",
+            ));
         }
         if metadata
             .ordered_chunks
             .iter()
             .any(|digest| self.payloads.binary_search(digest).is_err())
         {
-            return Err(invalid("source chunk is absent from the planned custody closure"));
+            return Err(invalid(
+                "source chunk is absent from the planned custody closure",
+            ));
         }
         let encoded_size = metadata_encoded_size(metadata)?;
         if encoded_size > MAX_RETAINED_MANIFEST_BYTES {
@@ -244,7 +251,11 @@ impl FilePublicationPlan {
         } else {
             Vec::new()
         };
-        Ok(ObjectManifest::new(self.slot.as_str(), children, Some(digest))?)
+        Ok(ObjectManifest::new(
+            self.slot.as_str(),
+            children,
+            Some(digest),
+        )?)
     }
 
     /// Publishes already-staged payloads as bounded parts, then the metadata root, with an exact
@@ -277,7 +288,13 @@ impl FilePublicationPlan {
         let mut parts = Vec::new();
         for part in &self.parts {
             checkpoint(cx, STAGE_FILE_PART_PUBLISH)?;
-            parts.push(publish_one(deployment, &part.slot, &part.manifest, validity, cx)?);
+            parts.push(publish_one(
+                deployment,
+                &part.slot,
+                &part.manifest,
+                validity,
+                cx,
+            )?);
         }
         checkpoint(cx, STAGE_FILE_PART_ROOT)?;
         // Typed references do not become native children: explicitly prove all parts before the
@@ -320,7 +337,9 @@ impl FilePublicationPlan {
         if self.child_limit > limits.max_children
             || self.child_limit > deployment.limits().batch_entries_max
         {
-            return Err(invalid("planned child bound exceeds the destination's admitted limits"));
+            return Err(invalid(
+                "planned child bound exceeds the destination's admitted limits",
+            ));
         }
         // This is a leaf-payload protocol. A visible payload root would be recursively expanded
         // by LocalRootPublisher and could invalidate the preflight's per-batch closure bound.
@@ -328,7 +347,9 @@ impl FilePublicationPlan {
         for payload in &self.payloads {
             checkpoint(cx, STAGE_FILE_PART_PREFLIGHT)?;
             if visible.contains(payload) {
-                return Err(invalid("payload is a visible root, not an opaque custody leaf"));
+                return Err(invalid(
+                    "payload is a visible root, not an opaque custody leaf",
+                ));
             }
             if publisher.spool().state(*payload).is_none() {
                 return Err(invalid("planned payload has not been staged"));
@@ -354,7 +375,8 @@ impl FilePublicationPlan {
                         slot: slot.clone(),
                         existing: existing.root,
                         requested: manifest.root(),
-                    }.into());
+                    }
+                    .into());
                 }
                 Some(existing) if existing.state != LocalPublicationState::Staged => {}
                 _ => new_roots += 1,
@@ -365,7 +387,11 @@ impl FilePublicationPlan {
         }
         let required_roots = publisher.visible_roots().count() + new_roots;
         if required_roots > limits.max_roots {
-            return Err(capacity("file_publication_roots", required_roots, limits.max_roots));
+            return Err(capacity(
+                "file_publication_roots",
+                required_roots,
+                limits.max_roots,
+            ));
         }
         let spool = publisher.spool();
         let mut seen = BTreeSet::new();
@@ -380,20 +406,29 @@ impl FilePublicationPlan {
                 ));
             }
             if seen.insert(digest) && spool.state(digest).is_none() {
-                bytes = bytes.checked_add(body.len() as u64).ok_or_else(|| invalid("size overflow"))?;
+                bytes = bytes
+                    .checked_add(body.len() as u64)
+                    .ok_or_else(|| invalid("size overflow"))?;
                 objects += 1;
             }
         }
-        let available = limits.spool.max_total_bytes.saturating_sub(spool.occupied_bytes()?);
+        let available = limits
+            .spool
+            .max_total_bytes
+            .saturating_sub(spool.occupied_bytes()?);
         if bytes > available {
             return Err(FileIngestError::SpoolCapacityExceeded {
-                limit: "file_publication_total_bytes", required: bytes, available,
+                limit: "file_publication_total_bytes",
+                required: bytes,
+                available,
             });
         }
         let required_objects = spool.object_count() + objects;
         if required_objects > limits.spool.max_objects {
             return Err(capacity(
-                "file_publication_objects", required_objects, limits.spool.max_objects,
+                "file_publication_objects",
+                required_objects,
+                limits.spool.max_objects,
             ));
         }
         Ok(())
@@ -407,10 +442,14 @@ fn publish_one(
     validity: CaptureInterval,
     cx: &ReplayCx,
 ) -> Result<RootLedgerReceipt, FileIngestError> {
-    let visible = deployment.publisher().root(slot)
+    let visible = deployment
+        .publisher()
+        .root(slot)
         .is_some_and(|root| root.state != LocalPublicationState::Staged);
     if !visible {
-        deployment.publisher_mut().discard_orphaned_root_temp_for(slot, manifest)?;
+        deployment
+            .publisher_mut()
+            .discard_orphaned_root_temp_for(slot, manifest)?;
         deployment.publisher_mut().stage_manifest(slot, manifest)?;
     }
     Ok(deployment.publish_and_commit(slot, manifest, validity, cx)?)
@@ -463,12 +502,25 @@ fn check_ledger_claim(
     validity: Option<CaptureInterval>,
 ) -> Result<(), FileIngestError> {
     let object = format!("object:local-root:{slot}");
-    let current = deployment.ledger().batches().iter().rev().find_map(|batch| {
-        batch.deltas.iter().rev().find(|delta| delta.object_id.as_str() == object)
-            .map(|delta| (batch, delta))
-    });
+    let current = deployment
+        .ledger()
+        .batches()
+        .iter()
+        .rev()
+        .find_map(|batch| {
+            batch
+                .deltas
+                .iter()
+                .rev()
+                .find(|delta| delta.object_id.as_str() == object)
+                .map(|delta| (batch, delta))
+        });
     let Some((batch, delta)) = current else {
-        return if required { Err(invalid("part or aggregate root is not ledgered")) } else { Ok(()) };
+        return if required {
+            Err(invalid("part or aggregate root is not ledgered"))
+        } else {
+            Ok(())
+        };
     };
     if delta.family != ROOT_REACHABILITY_FAMILY
         || delta.plane != Plane::Authority
@@ -481,7 +533,9 @@ fn check_ledger_claim(
         || batch.batch_id.as_str() != format!("batch:local-root:{slot}")
         || batch.children.as_slice() != manifest.children()
     {
-        return Err(invalid("current root reachability claim differs from the exact plan"));
+        return Err(invalid(
+            "current root reachability claim differs from the exact plan",
+        ));
     }
     Ok(())
 }
@@ -494,9 +548,13 @@ fn verify_one(
 ) -> Result<(), FileIngestError> {
     checkpoint(cx, STAGE_FILE_PART_VERIFY)?;
     let publisher = deployment.publisher();
-    let visible = publisher.root(slot).ok_or_else(|| invalid("part or aggregate root is absent"))?;
+    let visible = publisher
+        .root(slot)
+        .ok_or_else(|| invalid("part or aggregate root is absent"))?;
     if visible.root != manifest.root() || visible.state != LocalPublicationState::Durable {
-        return Err(invalid("part or aggregate root is not the exact durable root"));
+        return Err(invalid(
+            "part or aggregate root is not the exact durable root",
+        ));
     }
     check_ledger_claim(deployment, slot, manifest, true, None)?;
     let mut expected: BTreeSet<_> = manifest.children().iter().copied().collect();
@@ -504,7 +562,9 @@ fn verify_one(
     if publisher.root_closure(slot).as_ref() != Some(&expected)
         || publisher.spool().read(manifest.root())? != manifest.canonical_bytes()
     {
-        return Err(invalid("part or aggregate closure differs from the exact plan"));
+        return Err(invalid(
+            "part or aggregate closure differs from the exact plan",
+        ));
     }
     for digest in expected {
         checkpoint(cx, STAGE_FILE_PART_VERIFY)?;
@@ -517,7 +577,9 @@ fn verify_one(
 fn metadata_encoded_size(metadata: &FileImportManifest) -> Result<usize, FileIngestError> {
     let mut size = 0_usize;
     let mut add = |bytes: usize| -> Result<(), FileIngestError> {
-        size = size.checked_add(bytes).ok_or_else(|| invalid("metadata size overflow"))?;
+        size = size
+            .checked_add(bytes)
+            .ok_or_else(|| invalid("metadata size overflow"))?;
         Ok(())
     };
     for text in [

@@ -73,18 +73,17 @@ pub fn request() -> TestResult<FileIngestRequest> {
 }
 
 pub fn snapshot(root: &Path) -> TestResult<BTreeMap<PathBuf, Vec<u8>>> {
-    fn visit(
-        root: &Path,
-        path: &Path,
-        out: &mut BTreeMap<PathBuf, Vec<u8>>,
-    ) -> TestResult {
+    fn visit(root: &Path, path: &Path, out: &mut BTreeMap<PathBuf, Vec<u8>>) -> TestResult {
         for entry in fs::read_dir(path)? {
             let entry = entry?;
             let kind = entry.file_type()?;
             if kind.is_dir() {
                 visit(root, &entry.path(), out)?;
             } else if kind.is_file() {
-                out.insert(entry.path().strip_prefix(root)?.to_owned(), fs::read(entry.path())?);
+                out.insert(
+                    entry.path().strip_prefix(root)?.to_owned(),
+                    fs::read(entry.path())?,
+                );
             } else {
                 return Err("unexpected non-regular test deployment entry".into());
             }

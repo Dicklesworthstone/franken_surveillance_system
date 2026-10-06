@@ -56,16 +56,24 @@ pub fn recover_file_publication(
     let payloads;
     let child_limit;
     if metadata.part_roots.is_empty() {
-        let metadata_digest = root.metadata_digest()
+        let metadata_digest = root
+            .metadata_digest()
             .ok_or_else(|| invalid("aggregate has no typed file metadata"))?;
-        payloads = root.children().iter().copied()
-            .filter(|digest| *digest != metadata_digest).collect();
+        payloads = root
+            .children()
+            .iter()
+            .copied()
+            .filter(|digest| *digest != metadata_digest)
+            .collect();
         child_limit = root.children().len().max(1);
     } else {
-        let metadata_digest = root.metadata_digest()
+        let metadata_digest = root
+            .metadata_digest()
             .ok_or_else(|| invalid("aggregate has no typed file metadata"))?;
         if root.children() != [metadata_digest].as_slice() {
-            return Err(invalid("partitioned aggregate must contain only its metadata"));
+            return Err(invalid(
+                "partitioned aggregate must contain only its metadata",
+            ));
         }
         let mut children = Vec::new();
         let mut bound = None;
@@ -85,12 +93,22 @@ pub fn recover_file_publication(
             if part_children.len() > expected
                 || (ordinal + 1 < metadata.part_roots.len() && part_children.len() != expected)
             {
-                return Err(invalid("part sizes do not follow the canonical partition boundary"));
+                return Err(invalid(
+                    "part sizes do not follow the canonical partition boundary",
+                ));
             }
-            if children.last().zip(part_children.first()).is_some_and(|(last, first)| last >= first) {
-                return Err(invalid("part payloads are overlapping or out of canonical order"));
+            if children
+                .last()
+                .zip(part_children.first())
+                .is_some_and(|(last, first)| last >= first)
+            {
+                return Err(invalid(
+                    "part payloads are overlapping or out of canonical order",
+                ));
             }
-            let total = children.len().checked_add(part_children.len())
+            let total = children
+                .len()
+                .checked_add(part_children.len())
                 .ok_or_else(|| invalid("payload count overflow"))?;
             if total > MAX_FILE_PUBLICATION_PAYLOADS {
                 return Err(invalid("payload closure exceeds the reconstruction bound"));
@@ -105,7 +123,9 @@ pub fn recover_file_publication(
     // membership. It also rejects omitted parts even when the remaining parts are individually
     // valid: the final root must still be the exact original aggregate.
     if plan.root_manifest(metadata)? != root {
-        return Err(invalid("metadata or reconstructed closure differs from the aggregate"));
+        return Err(invalid(
+            "metadata or reconstructed closure differs from the aggregate",
+        ));
     }
     plan.verify(deployment, metadata, cx)?;
     checkpoint(cx)?;
@@ -120,12 +140,16 @@ fn read_manifest(
 ) -> Result<ObjectManifest, FileIngestError> {
     checkpoint(cx)?;
     let publisher = deployment.publisher();
-    let visible = publisher.root(slot).ok_or_else(|| invalid("publication root is absent"))?;
+    let visible = publisher
+        .root(slot)
+        .ok_or_else(|| invalid("publication root is absent"))?;
     if visible.state != LocalPublicationState::Durable
         || visible.child_count > MAX_MANIFEST_CHILDREN
         || expected.is_some_and(|digest| visible.root != digest)
     {
-        return Err(invalid("publication root is not the exact bounded durable root"));
+        return Err(invalid(
+            "publication root is not the exact bounded durable root",
+        ));
     }
     let bytes = publisher.spool().read(visible.root)?;
     let manifest = ObjectManifest::from_canonical_bytes(&bytes)?;

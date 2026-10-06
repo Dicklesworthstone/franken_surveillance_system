@@ -7,8 +7,7 @@ mod support;
 use std::fs;
 
 use fss_core::{
-    BatchId, CaptureInterval, ContentDigest, EvidenceDelta, ObjectId, Plane,
-    TimestampNs,
+    BatchId, CaptureInterval, ContentDigest, EvidenceDelta, ObjectId, Plane, TimestampNs,
 };
 use fss_object::ObjectManifest;
 use fss_publication::SlotName;
@@ -19,7 +18,11 @@ use fss_reference::{ReferenceDeployment, ReplayCx};
 use support::{TestResult, cx, directory, object_file, request, snapshot};
 
 fn hex(digest: ContentDigest) -> String {
-    digest.bytes().iter().map(|byte| format!("{byte:02x}")).collect()
+    digest
+        .bytes()
+        .iter()
+        .map(|byte| format!("{byte:02x}"))
+        .collect()
 }
 
 /// Deliberately inconsistent authority made with the public reference fixture primitives.
@@ -99,7 +102,10 @@ fn normal_partitioned_capsule_batches_reopen_with_the_same_source() -> TestResul
     let deployment = ReferenceDeployment::open(&root, "site:root-good", &context)?;
     let before = snapshot(&root)?;
     let retained = RetainedFileImport::open(
-        &deployment, receipt.import_identity, RetainedReadLimits::default(), &context,
+        &deployment,
+        receipt.import_identity,
+        RetainedReadLimits::default(),
+        &context,
     )?;
     assert_eq!(retained.manifest(), &receipt.manifest);
     assert_eq!(
@@ -123,9 +129,15 @@ fn corrupted_root_body_cannot_be_ignored_while_metadata_remains_readable() -> Te
     *last ^= 1;
     fs::write(path, bytes)?;
     let before = snapshot(&root)?;
-    assert!(RetainedFileImport::open(
-        &deployment, receipt.import_identity, RetainedReadLimits::default(), &context,
-    ).is_err());
+    assert!(
+        RetainedFileImport::open(
+            &deployment,
+            receipt.import_identity,
+            RetainedReadLimits::default(),
+            &context,
+        )
+        .is_err()
+    );
     assert_eq!(snapshot(&root)?, before);
     Ok(())
 }
@@ -142,21 +154,34 @@ fn unbound_and_substituted_metadata_are_refused() -> TestResult {
         let slot = SlotName::parse(&format!("fi-{}", hex(identity)))?;
         let other = deployment.stage_payload(b"unrelated metadata")?;
         let metadata = substituted.then_some(other);
-        let manifest = ObjectManifest::new(
-            slot.as_str(), vec![receipt.manifest_digest], metadata,
-        )?;
-        deployment.publisher_mut().stage_manifest(&slot, &manifest)?;
+        let manifest = ObjectManifest::new(slot.as_str(), vec![receipt.manifest_digest], metadata)?;
+        deployment
+            .publisher_mut()
+            .stage_manifest(&slot, &manifest)?;
         deployment.publish_and_commit(
-            &slot, &manifest,
-            CaptureInterval::new(TimestampNs(0), TimestampNs(2_000_000_000))?, &context,
+            &slot,
+            &manifest,
+            CaptureInterval::new(TimestampNs(0), TimestampNs(2_000_000_000))?,
+            &context,
         )?;
-        complete_fixture(&mut deployment, identity, manifest.root(), &receipt.manifest, &context)?;
+        complete_fixture(
+            &mut deployment,
+            identity,
+            manifest.root(),
+            &receipt.manifest,
+            &context,
+        )?;
         let before = snapshot(&root)?;
         let result = RetainedFileImport::open(
-            &deployment, identity, RetainedReadLimits::default(), &context,
+            &deployment,
+            identity,
+            RetainedReadLimits::default(),
+            &context,
         );
-        assert!(matches!(result, Err(FileIngestError::CorruptSegment { detail })
-            if detail.contains("exact import metadata")));
+        assert!(
+            matches!(result, Err(FileIngestError::CorruptSegment { detail })
+            if detail.contains("exact import metadata"))
+        );
         assert_eq!(snapshot(&root)?, before);
     }
     Ok(())
@@ -171,18 +196,33 @@ fn source_chunks_outside_the_witnessed_root_are_not_retained_evidence() -> TestR
     let identity = ContentDigest::sha256(b"source outside root");
     let slot = SlotName::parse(&format!("fi-{}", hex(identity)))?;
     let manifest = ObjectManifest::new(slot.as_str(), Vec::new(), Some(receipt.manifest_digest))?;
-    deployment.publisher_mut().stage_manifest(&slot, &manifest)?;
+    deployment
+        .publisher_mut()
+        .stage_manifest(&slot, &manifest)?;
     deployment.publish_and_commit(
-        &slot, &manifest,
-        CaptureInterval::new(TimestampNs(0), TimestampNs(2_000_000_000))?, &context,
+        &slot,
+        &manifest,
+        CaptureInterval::new(TimestampNs(0), TimestampNs(2_000_000_000))?,
+        &context,
     )?;
-    complete_fixture(&mut deployment, identity, manifest.root(), &receipt.manifest, &context)?;
+    complete_fixture(
+        &mut deployment,
+        identity,
+        manifest.root(),
+        &receipt.manifest,
+        &context,
+    )?;
     let before = snapshot(&root)?;
     let result = RetainedFileImport::open(
-        &deployment, identity, RetainedReadLimits::default(), &context,
+        &deployment,
+        identity,
+        RetainedReadLimits::default(),
+        &context,
     );
-    assert!(matches!(result, Err(FileIngestError::CorruptSegment { detail })
-        if detail.contains("source chunks are outside")));
+    assert!(
+        matches!(result, Err(FileIngestError::CorruptSegment { detail })
+        if detail.contains("source chunks are outside"))
+    );
     assert_eq!(snapshot(&root)?, before);
     Ok(())
 }
@@ -196,26 +236,46 @@ fn staged_roots_and_retroactive_publication_do_not_validate_completion() -> Test
     let identity = ContentDigest::sha256(b"retroactive root publication");
     let slot = SlotName::parse(&format!("fi-{}", hex(identity)))?;
     let manifest = ObjectManifest::new(slot.as_str(), Vec::new(), Some(receipt.manifest_digest))?;
-    deployment.publisher_mut().stage_manifest(&slot, &manifest)?;
+    deployment
+        .publisher_mut()
+        .stage_manifest(&slot, &manifest)?;
     deployment.publisher_mut().verify_object(manifest.root())?;
-    complete_fixture(&mut deployment, identity, manifest.root(), &receipt.manifest, &context)?;
-    let before = snapshot(&root)?;
-    let result = RetainedFileImport::open(
-        &deployment, identity, RetainedReadLimits::default(), &context,
-    );
-    assert!(matches!(result, Err(FileIngestError::CorruptSegment { detail })
-        if detail.contains("durable publication")));
-    assert_eq!(snapshot(&root)?, before);
-    deployment.publish_and_commit(
-        &slot, &manifest,
-        CaptureInterval::new(TimestampNs(0), TimestampNs(2_000_000_000))?, &context,
+    complete_fixture(
+        &mut deployment,
+        identity,
+        manifest.root(),
+        &receipt.manifest,
+        &context,
     )?;
     let before = snapshot(&root)?;
     let result = RetainedFileImport::open(
-        &deployment, identity, RetainedReadLimits::default(), &context,
+        &deployment,
+        identity,
+        RetainedReadLimits::default(),
+        &context,
     );
-    assert!(matches!(result, Err(FileIngestError::CorruptSegment { detail })
-        if detail.contains("must precede import completion")));
+    assert!(
+        matches!(result, Err(FileIngestError::CorruptSegment { detail })
+        if detail.contains("durable publication"))
+    );
+    assert_eq!(snapshot(&root)?, before);
+    deployment.publish_and_commit(
+        &slot,
+        &manifest,
+        CaptureInterval::new(TimestampNs(0), TimestampNs(2_000_000_000))?,
+        &context,
+    )?;
+    let before = snapshot(&root)?;
+    let result = RetainedFileImport::open(
+        &deployment,
+        identity,
+        RetainedReadLimits::default(),
+        &context,
+    );
+    assert!(
+        matches!(result, Err(FileIngestError::CorruptSegment { detail })
+        if detail.contains("must precede import completion"))
+    );
     assert_eq!(snapshot(&root)?, before);
     Ok(())
 }

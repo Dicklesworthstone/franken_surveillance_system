@@ -60,7 +60,10 @@ fn metadata(plan: &FilePublicationPlan, count: usize) -> FileImportManifest {
 
 fn stage(deployment: &mut ReferenceDeployment, count: usize) -> TestResult {
     for index in 0..count {
-        assert_eq!(deployment.publisher_mut().stage_object(&payload(index))?, digest(index));
+        assert_eq!(
+            deployment.publisher_mut().stage_object(&payload(index))?,
+            digest(index)
+        );
     }
     Ok(())
 }
@@ -94,10 +97,15 @@ fn partition_boundaries_preserve_every_payload_exactly_once() -> TestResult {
 fn plan_is_order_independent_and_deduplicates_references() -> TestResult {
     let first = FilePublicationPlan::new(identity(), (0..101).map(digest), 32)?;
     let second = FilePublicationPlan::new(
-        identity(), (0..101).rev().flat_map(|n| [digest(n), digest(n)]), 32,
+        identity(),
+        (0..101).rev().flat_map(|n| [digest(n), digest(n)]),
+        32,
     )?;
     assert_eq!(first, second);
-    assert_ne!(first.part_roots(), FilePublicationPlan::new(digest(900), first.payloads().iter().copied(), 32)?.part_roots());
+    assert_ne!(
+        first.part_roots(),
+        FilePublicationPlan::new(digest(900), first.payloads().iter().copied(), 32)?.part_roots()
+    );
     Ok(())
 }
 
@@ -107,12 +115,18 @@ fn infinite_input_and_excessive_part_count_are_bounded() -> TestResult {
     let source = std::iter::repeat(digest(0)).inspect(|_| polls.set(polls.get() + 1));
     assert!(matches!(
         FilePublicationPlan::new(identity(), source, 32),
-        Err(FileIngestError::SpoolCapacityExceeded { limit: "file_publication_payloads", .. })
+        Err(FileIngestError::SpoolCapacityExceeded {
+            limit: "file_publication_payloads",
+            ..
+        })
     ));
     assert_eq!(polls.get(), MAX_FILE_PUBLICATION_PAYLOADS + 1);
     assert!(matches!(
         FilePublicationPlan::new(identity(), (0..=MAX_FILE_PUBLICATION_PARTS).map(digest), 1),
-        Err(FileIngestError::SpoolCapacityExceeded { limit: "file_publication_parts", .. })
+        Err(FileIngestError::SpoolCapacityExceeded {
+            limit: "file_publication_parts",
+            ..
+        })
     ));
     assert!(FilePublicationPlan::new(identity(), [], 0).is_err());
     assert!(FilePublicationPlan::new(identity(), [], 16_385).is_err());
@@ -123,9 +137,16 @@ fn infinite_input_and_excessive_part_count_are_bounded() -> TestResult {
 fn small_publications_keep_the_existing_root_bytes() -> TestResult {
     let plan = FilePublicationPlan::new(identity(), (0..3).map(digest), 32)?;
     let meta = metadata(&plan, 3);
-    let expected = ObjectManifest::new(plan.slot().as_str(), (0..3).map(digest), Some(meta.canonical_digest()))?;
+    let expected = ObjectManifest::new(
+        plan.slot().as_str(),
+        (0..3).map(digest),
+        Some(meta.canonical_digest()),
+    )?;
     assert_eq!(plan.root_manifest(&meta)?, expected);
-    assert_eq!(plan.root_manifest(&meta)?.canonical_bytes(), expected.canonical_bytes());
+    assert_eq!(
+        plan.root_manifest(&meta)?.canonical_bytes(),
+        expected.canonical_bytes()
+    );
     Ok(())
 }
 
@@ -154,7 +175,12 @@ fn real_parts_survive_reopen_and_retry_without_new_ledger_batches() -> TestResul
     let receipt = plan.publish(&mut dep, &meta, validity()?, &cx("parts-write")?)?;
     assert_eq!(receipt.parts.len(), 3);
     assert_eq!(dep.ledger().batches().len(), 4);
-    assert!(dep.ledger().batches().iter().all(|batch| batch.children.len() <= 32));
+    assert!(
+        dep.ledger()
+            .batches()
+            .iter()
+            .all(|batch| batch.children.len() <= 32)
+    );
     plan.verify(&dep, &meta, &cx("parts-verify")?)?;
     let anchor = dep.current_anchor().clone();
     drop(dep);
@@ -163,11 +189,23 @@ fn real_parts_survive_reopen_and_retry_without_new_ledger_batches() -> TestResul
     plan.verify(&dep, &meta, &cx("parts-cold-verify")?)?;
     let retry = plan.publish(&mut dep, &meta, validity()?, &cx("parts-retry")?)?;
     assert_eq!(retry.root.outcome, RootLedgerOutcome::AlreadyLedgered);
-    assert!(retry.parts.iter().all(|part| part.outcome == RootLedgerOutcome::AlreadyLedgered));
+    assert!(
+        retry
+            .parts
+            .iter()
+            .all(|part| part.outcome == RootLedgerOutcome::AlreadyLedgered)
+    );
     assert_eq!(dep.current_anchor(), &anchor);
     assert_eq!(dep.ledger().batches().len(), 4);
     // Publishing parts is not a final import batch and must not weaken the legacy reader gate.
-    assert!(FileImportManifest::from_retained_bytes(&meta.canonical_bytes(), meta.canonical_digest(), RetainedReadLimits::default()).is_err());
+    assert!(
+        FileImportManifest::from_retained_bytes(
+            &meta.canonical_bytes(),
+            meta.canonical_digest(),
+            RetainedReadLimits::default()
+        )
+        .is_err()
+    );
     Ok(())
 }
 
@@ -188,7 +226,10 @@ fn cancellation_keeps_a_part_prefix_incomplete_then_resumes_exactly() -> TestRes
         stage(&mut dep, 70)?;
         let cancelled = cx(label)?;
         cancelled.set_cancel_at_checkpoint_occurrence(checkpoint, occurrence);
-        assert!(plan.publish(&mut dep, &meta, validity()?, &cancelled).is_err());
+        assert!(
+            plan.publish(&mut dep, &meta, validity()?, &cancelled)
+                .is_err()
+        );
         assert_eq!(dep.publisher().visible_roots().count(), prefix);
         assert_eq!(dep.ledger().batches().len(), prefix);
         assert!(dep.publisher().root(plan.slot()).is_none());
@@ -208,7 +249,10 @@ fn every_root_crash_cut_recovers_without_duplicate_part_authority() -> TestResul
         PublishCutPoint::AfterManifestBody,
         PublishCutPoint::AfterRootTempWrite,
         PublishCutPoint::AfterRootRename,
-    ].into_iter().enumerate() {
+    ]
+    .into_iter()
+    .enumerate()
+    {
         let dir = fresh_dir(&format!("parts-crash-{index}"))?;
         let limits = standard();
         let plan = FilePublicationPlan::new(identity(), (0..70).map(digest), 32)?;
@@ -216,7 +260,10 @@ fn every_root_crash_cut_recovers_without_duplicate_part_authority() -> TestResul
         let mut dep = open(&dir, limits)?;
         stage(&mut dep, 70)?;
         dep.publisher_mut().inject_crash_at(cut);
-        assert!(plan.publish(&mut dep, &meta, validity()?, &cx("parts-crash")?).is_err());
+        assert!(
+            plan.publish(&mut dep, &meta, validity()?, &cx("parts-crash")?)
+                .is_err()
+        );
         assert!(dep.publisher().root(plan.slot()).is_none());
         drop(dep);
         let mut dep = open(&dir, limits)?;
@@ -235,7 +282,10 @@ fn missing_payload_or_conflicting_root_never_publishes_a_prefix() -> TestResult 
     let mut dep = open(&dir, standard())?;
     stage(&mut dep, 69)?;
     let objects = dep.publisher().spool().object_count();
-    assert!(plan.publish(&mut dep, &meta, validity()?, &cx("parts-missing")?).is_err());
+    assert!(
+        plan.publish(&mut dep, &meta, validity()?, &cx("parts-missing")?)
+            .is_err()
+    );
     assert_eq!(dep.publisher().spool().object_count(), objects);
     assert_eq!(dep.publisher().visible_roots().count(), 0);
     assert!(dep.ledger().batches().is_empty());
@@ -246,7 +296,10 @@ fn missing_payload_or_conflicting_root_never_publishes_a_prefix() -> TestResult 
     dep.publisher_mut().stage_manifest(last.slot(), &conflict)?;
     dep.publish_and_commit(last.slot(), &conflict, validity()?, &cx("parts-conflict")?)?;
     let objects = dep.publisher().spool().object_count();
-    assert!(plan.publish(&mut dep, &meta, validity()?, &cx("parts-conflict-retry")?).is_err());
+    assert!(
+        plan.publish(&mut dep, &meta, validity()?, &cx("parts-conflict-retry")?)
+            .is_err()
+    );
     assert_eq!(dep.publisher().spool().object_count(), objects);
     assert_eq!(dep.publisher().visible_roots().count(), 1);
     assert_eq!(dep.ledger().batches().len(), 1);
@@ -263,7 +316,11 @@ fn missing_part_record_after_reopen_invalidates_the_aggregate() -> TestResult {
     stage(&mut dep, 70)?;
     plan.publish(&mut dep, &meta, validity()?, &cx("parts-before-loss")?)?;
     let part = plan.parts().first().ok_or("expected a part")?;
-    let record = dep.publisher().root_dir().join("roots").join(format!("{}.root", part.slot()));
+    let record = dep
+        .publisher()
+        .root_dir()
+        .join("roots")
+        .join(format!("{}.root", part.slot()));
     drop(dep);
     fs::remove_file(record)?;
     let dep = open(&dir, limits)?;
@@ -311,7 +368,10 @@ fn a_retry_cannot_relabel_the_existing_publication_validity() -> TestResult {
     plan.publish(&mut dep, &meta, validity()?, &cx("parts-validity-first")?)?;
     let anchor = dep.current_anchor().clone();
     let changed = CaptureInterval::new(TimestampNs(1), TimestampNs(2))?;
-    assert!(plan.publish(&mut dep, &meta, changed, &cx("parts-validity-retry")?).is_err());
+    assert!(
+        plan.publish(&mut dep, &meta, changed, &cx("parts-validity-retry")?)
+            .is_err()
+    );
     assert_eq!(dep.current_anchor(), &anchor);
     Ok(())
 }
@@ -354,12 +414,17 @@ fn reconstruction_rejects_omitted_reordered_foreign_and_unbound_metadata() -> Te
     for case in 0..4 {
         let mut changed = meta.clone();
         match case {
-            0 => { let _ = changed.part_roots.pop(); }
+            0 => {
+                let _ = changed.part_roots.pop();
+            }
             1 => changed.part_roots.reverse(),
             2 => changed.part_roots[0] = digest(900),
             _ => changed.detector_evidence = "unretained replacement".to_owned(),
         }
-        assert!(recover_file_publication(&dep, identity(), &changed, &cx("parts-reconstruct-bad")?).is_err());
+        assert!(
+            recover_file_publication(&dep, identity(), &changed, &cx("parts-reconstruct-bad")?)
+                .is_err()
+        );
     }
     assert_eq!(dep.current_anchor(), &anchor);
     Ok(())
@@ -372,7 +437,12 @@ fn reconstruction_cancellation_is_read_only() -> TestResult {
     let meta = metadata(&plan, 70);
     let mut dep = open(&dir, standard())?;
     stage(&mut dep, 70)?;
-    plan.publish(&mut dep, &meta, validity()?, &cx("parts-reconstruct-ready")?)?;
+    plan.publish(
+        &mut dep,
+        &meta,
+        validity()?,
+        &cx("parts-reconstruct-ready")?,
+    )?;
     let anchor = dep.current_anchor().clone();
     let objects = dep.publisher().spool().object_count();
     for occurrence in [1, 3, 5] {
@@ -380,7 +450,9 @@ fn reconstruction_cancellation_is_read_only() -> TestResult {
         cancelled.set_cancel_at_checkpoint_occurrence(STAGE_FILE_PART_RECOVER, occurrence);
         assert!(matches!(
             recover_file_publication(&dep, identity(), &meta, &cancelled),
-            Err(FileIngestError::CancellationRequested { stage: STAGE_FILE_PART_RECOVER })
+            Err(FileIngestError::CancellationRequested {
+                stage: STAGE_FILE_PART_RECOVER
+            })
         ));
         assert_eq!(dep.current_anchor(), &anchor);
         assert_eq!(dep.publisher().spool().object_count(), objects);
