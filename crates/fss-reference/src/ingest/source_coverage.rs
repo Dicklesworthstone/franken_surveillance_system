@@ -67,6 +67,16 @@
 //! model-generation activation record, so the rule binds the generation into the certification
 //! (and its statement) and refuses mixing, but cannot refuse a consistent unqualified generation.
 //!
+//! **The whole decision is the policy's.** Covering receipts are not enough: an event could cite
+//! them and also carry evidence *for* presence (a supporting edge, a tamper report, another
+//! model's result) that the receipts do not mention. So the rule re-runs the policy over exactly
+//! the cited analyses (each under its citing domain, over its frame's capture interval) and the
+//! record, and requires the committed revision to be that decision exactly (state, kind,
+//! interval, reason, zones, tracks, probability, every evidence edge in order, the model
+//! receipts and the decision path; only the revision number and its predecessor are the
+//! publisher's). Any other event is refused with
+//! [`RetainedCoverageRefusal::DecisionNotReproducible`].
+//!
 //! **No-Claim.** Certification means only that the retained pipeline over the authorized domains
 //! observed nothing during the interval: every authorized domain delivered continuously, one model
 //! generation analysed every delivered frame and found nothing, and the policy rejected the
@@ -89,7 +99,10 @@ use crate::reference_deployment::{
     FAMILY_COVERAGE_WITNESS, FAMILY_EVENT_REVISION, FAMILY_SENSOR_CAPSULE,
     FAMILY_SENSOR_TAMPER_STATUS,
 };
-use crate::{MockModelOutcome, MockModelResult, ReferenceDeployment, ReferenceError, ReplayCx};
+use crate::{
+    MockModelOutcome, MockModelResult, ReferenceDeployment, ReferenceError,
+    ReferenceModelObservation, ReplayCx, evaluate_unknown_presence_over_coverage,
+};
 
 /// Magic prefix of a source coverage record (distinct from the recorded pipelines' `FSSCOV01`).
 pub const SOURCE_RECORD_MAGIC: &[u8] = b"FSSSCW01";
@@ -796,6 +809,43 @@ fn cited_analyses<'a>(
     Ok(cited)
 }
 
+/// Re-runs the policy over exactly the `cited` analyses and `record` and requires `event` to be
+/// that decision, up to its revision number and predecessor (fss-f8jls review D1).
+fn reproduce_decision(
+    record: &SourceCoverageRecord,
+    event: &EventHypothesis,
+    cited: &[(&str, &MockModelResult)],
+) -> Result<(), RetainedCoverageRefusal> {
+    let refused = || RetainedCoverageRefusal::DecisionNotReproducible;
+    let captures: BTreeMap<ContentDigest, CaptureInterval> = record
+        .frames
+        .iter()
+        .map(|frame| (frame.capsule_digest, frame.capture))
+        .collect();
+    let mut observations = Vec::with_capacity(cited.len());
+    for (domain, result) in cited {
+        let MockModelOutcome::NothingFound { analysed_capsule } = result.outcome else {
+            return Err(refused());
+        };
+        let capture = *captures.get(&analysed_capsule).ok_or_else(refused)?;
+        observations.push(
+            ReferenceModelObservation::new((*result).clone(), *domain, capture)
+                .map_err(|_| refused())?,
+        );
+    }
+    let decision =
+        evaluate_unknown_presence_over_coverage(event.event_id.clone(), observations, record)
+            .map_err(|_| refused())?;
+    let mut expected = decision.event;
+    expected.revision = event.revision;
+    expected.supersedes = event.supersedes;
+    if expected == *event {
+        Ok(())
+    } else {
+        Err(refused())
+    }
+}
+
 /// A stored coverage record offered to the situation compiler with the analysis results the
 /// event's model receipts name, hydrated by the caller (fss-f8jls). A result counts only when its
 /// object digest is a receipt of the event, so a caller cannot add evidence the event does not
@@ -901,6 +951,9 @@ pub enum RetainedCoverageRefusal {
     /// absence is certified only through a stored witness under this rule. The compiler states
     /// this refusal; [`verify_retained_coverage`] itself always has a record and never returns it.
     WitnessNotStored,
+    /// The event is not exactly the decision the policy reaches over its cited analyses and the
+    /// record: it carries evidence, a state or a path the policy did not produce (fss-f8jls).
+    DecisionNotReproducible,
     /// The witness basis is not a committed anchor of this history.
     BasisNotCommitted,
     /// The witness generation is not the basis and head policy epoch.
@@ -978,6 +1031,10 @@ impl fmt::Display for RetainedCoverageRefusal {
                 "the coverage witness is offered without a committed source coverage record that \
                  retains it, so none of its frames can be bound to an analysis; absence is \
                  certified only by a stored witness whose every frame was analysed",
+            ),
+            Self::DecisionNotReproducible => f.write_str(
+                "the rejected event is not the policy's decision over its cited analyses and the \
+                 coverage record",
             ),
             Self::BasisNotCommitted => {
                 f.write_str("the stored witness basis is not a committed anchor of this ledger")
@@ -1079,6 +1136,9 @@ pub fn verify_retained_coverage(
         // Delivery is not observation: every frame must have been analysed (fss-f8jls).
         let cited = cited_analyses(event, analyses)?;
         let frames = analysis_covering_frames(record, &cited)?;
+        // Covering receipts are not the decision: the committed revision must be exactly what
+        // the policy decides over them, so no other evidence rides along (fss-f8jls review D1).
+        reproduce_decision(record, event, &cited)?;
         // The cited results are objects of the cited publication (its manifest's children).
         accounted.extend(frames.results.values().copied());
         analysis = Some(frames);

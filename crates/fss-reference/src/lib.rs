@@ -253,10 +253,11 @@ pub use packet_fault::{
     inject_stream,
 };
 pub use policy::{
-    COVERAGE_ANALYSIS_INCOMPLETE, ReferenceEventReceipt, ReferenceModelObservation,
-    ReferenceModelResult, ReferencePolicyAction, ReferencePolicyDecision, ZoneEntryCorroboration,
-    ZoneEntryWitness, evaluate_unknown_presence, evaluate_unknown_presence_over_coverage,
-    evaluate_zone_entry_corroboration, policy_decision_path, publish_reference_event,
+    COVERAGE_ANALYSIS_INCOMPLETE, COVERAGE_WITNESS_NOT_CERTIFYING, ReferenceEventReceipt,
+    ReferenceModelObservation, ReferenceModelResult, ReferencePolicyAction,
+    ReferencePolicyDecision, ZoneEntryCorroboration, ZoneEntryWitness, evaluate_unknown_presence,
+    evaluate_unknown_presence_over_coverage, evaluate_zone_entry_corroboration,
+    policy_decision_path, publish_reference_event,
 };
 pub use reference_deployment::{
     DEPLOYMENT_CANCEL_STAGES, DEPLOYMENT_LAYOUT_FILENAME, DEPLOYMENT_LAYOUT_FORMAT_VERSION,

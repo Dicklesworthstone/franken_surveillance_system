@@ -1522,11 +1522,21 @@ fn event_section(
                     knowledge_state: KnowledgeState::Known,
                     provenance: ProvenanceClass::Derived,
                     hypothesis: Some(fss_core::HypothesisDisposition::Refuted),
-                    evidence: vec![
+                    // The record, and each frame's analysis result, so the certification can be
+                    // hydrated from the cell itself (fss-f8jls review D4).
+                    evidence: [
                         retained.revision_digest,
                         absence.witness_digest,
                         absence.record_digest,
-                    ],
+                    ]
+                    .into_iter()
+                    .chain(
+                        absence
+                            .analysis
+                            .iter()
+                            .flat_map(|analysis| analysis.results.values().copied()),
+                    )
+                    .collect(),
                     contradictions: Vec::new(),
                     valid_until: None,
                     state_basis: None,

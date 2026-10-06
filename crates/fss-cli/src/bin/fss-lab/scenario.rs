@@ -2747,13 +2747,15 @@ mod tests {
     fn quiet_with_a_silenced_camera_is_a_coverage_gap_not_certified_absence()
     -> Result<(), Box<dyn std::error::Error>> {
         use fss_core::{
-            CanonicalDecode as _, Completeness, CoverageContinuity, CoverageWitness, EventId,
-            EventState,
+            Completeness, CoverageContinuity, EventId, EventState, EvidenceEdgeRelation,
         };
+        use fss_reference::COVERAGE_WITNESS_NOT_CERTIFYING;
 
         // Review r12 defect 2 (mutant B): cam-side delivers nothing for the whole interval, or
         // for a single tick. The quiet witness observes only the domains that delivered the
-        // interval, so the real situation refuses certification.
+        // interval, so it never certifies. Since fss-f8jls review D2 the policy itself holds the
+        // candidate indeterminate over that gapped record (it used to reject it and leave the
+        // refusal to the readers).
         let whole = |_: ScenarioKind, sensor: &str, _: u64| {
             if sensor == "cam-side" {
                 ObservationClass::Silent
@@ -2788,11 +2790,14 @@ mod tests {
             let report = run_scenario_with(ScenarioKind::Quiet, &root, script)?;
             assert!(!report.absence_certified, "{name}");
             assert!(!report.knowledge.absence_certified, "{name}");
+            // Nothing was rejected, so the situation states no absence claim at all (before D2 the
+            // policy's rejection carried an Unknown absence cell and its residual world); the
+            // indeterminate event keeps its own protected residual, and the run its gap.
             assert_eq!(
                 report.situation_absence,
                 SituationAbsence {
-                    cell: Some(KnowledgeState::Unknown),
-                    uncertified_world: true,
+                    cell: None,
+                    uncertified_world: false,
                     handoff_names_witness: false,
                 },
                 "{name}"
@@ -2806,40 +2811,40 @@ mod tests {
             assert_eq!(report.knowledge.coverage_gaps, expected_gaps, "{name}");
             assert!(report.effect_state.is_none(), "{name}");
 
-            // The retained witness is gapped: authorized over both domains, observed over the
-            // one that delivered; only that domain cites the witness against the candidate.
+            // The policy held the candidate indeterminate with its typed reason: every delivered
+            // frame was analysed (one neutral edge carrying its capsule each), and no edge cites
+            // the gapped witness against the candidate.
             let cx = make_cx(ScenarioKind::Quiet)?;
             let reopened = ReferenceDeployment::reopen(&root, "site:lab", &cx)?;
             let (event, _) =
                 reopened.current_event_authority(&EventId::parse("event:lab:quiet")?)?;
-            assert_eq!(event.state, EventState::Rejected, "{name}");
-            // Since fss-f8jls the event also cites one analysis per delivered frame (edges that
-            // carry the analysed capsule); the witness edges carry none.
-            let witness_edges: Vec<_> = event
-                .evidence
-                .iter()
-                .filter(|edge| edge.capsule_digest.is_none())
-                .collect();
-            let domains: BTreeSet<&str> = witness_edges
-                .iter()
-                .map(|edge| edge.failure_domain.as_str())
-                .collect();
+            drop(reopened);
+            assert_eq!(event.state, EventState::Indeterminate, "{name}");
             assert_eq!(
-                domains,
-                BTreeSet::from(["front-power-and-network"]),
+                event.uncertainty_reason.as_deref(),
+                Some(COVERAGE_WITNESS_NOT_CERTIFYING),
                 "{name}"
             );
             let delivered_frames = 10 - expected_gaps.len();
             assert_eq!(event.model_receipts.len(), delivered_frames, "{name}");
-            assert_eq!(
-                event.evidence.len() - witness_edges.len(),
-                delivered_frames,
+            assert_eq!(event.evidence.len(), delivered_frames, "{name}");
+            assert!(
+                event
+                    .evidence
+                    .iter()
+                    .all(|edge| edge.capsule_digest.is_some()
+                        && edge.relation == EvidenceEdgeRelation::DerivedFrom),
                 "{name}"
             );
-            let witness_digest = witness_edges.first().ok_or("no witness edge")?.digest;
-            let witness = CoverageWitness::from_canonical_bytes(
-                &reopened.publisher().spool().read(witness_digest)?,
-            )?;
+
+            // The retained witness is gapped: authorized over both domains, observed over the
+            // one that delivered. It is read from its committed source coverage record.
+            let snapshot = super::read_deployment(&root, &super::OrientLimits::default())?;
+            let [retained] = snapshot.source_coverage.as_slice() else {
+                return Err(format!("{name}: expected one source coverage record").into());
+            };
+            assert!(retained.verdict.is_err(), "{name}");
+            let witness = &retained.record.witness;
             assert_eq!(
                 witness.observed_domain,
                 BTreeSet::from(["front-power-and-network".to_owned()]),

@@ -344,6 +344,12 @@ pub fn evaluate_unknown_presence(
 pub const COVERAGE_ANALYSIS_INCOMPLETE: &str =
     "analysed-nothing results do not cover every coverage frame under one model generation";
 
+/// Uncertainty reason of an unknown-presence decision over a coverage record whose witness does
+/// not certify absence (a gapped, partial or excluded delivery): analysed-nothing results of the
+/// frames that were delivered say nothing about the frames that were not (fss-f8jls).
+pub const COVERAGE_WITNESS_NOT_CERTIFYING: &str = "the coverage witness does not certify absence: delivery over the authorized domain is \
+     gapped or partial, so analysed-nothing results cannot reject the candidate";
+
 /// Evaluates "is an unknown person present?" over a retained source coverage `record` and the
 /// model observations of its frames (fss-f8jls).
 ///
@@ -357,7 +363,10 @@ pub const COVERAGE_ANALYSIS_INCOMPLETE: &str =
 /// still certify and survive the stored-witness rule.
 ///
 /// Any finding, abstention or other result is decided exactly as [`evaluate_unknown_presence`]
-/// decides it. Analysed-nothing results that do not cover the record leave the event
+/// decides it. Over a record whose witness does not certify absence (a camera dark for a tick or
+/// the whole interval), analysed-nothing results leave the event indeterminate with reason
+/// [`COVERAGE_WITNESS_NOT_CERTIFYING`]: never rejected, because what was not delivered was not
+/// analysed. Analysed-nothing results that do not cover the record leave the event
 /// indeterminate with reason [`COVERAGE_ANALYSIS_INCOMPLETE`]: a frame that was never analysed is
 /// never read as empty.
 ///
@@ -379,6 +388,14 @@ pub fn evaluate_unknown_presence_over_coverage(
             }
             _ => return Ok(generic),
         }
+    }
+    // A gapped or partial witness never certifies, so nothing analysed over it rejects: the
+    // candidate stays indeterminate and says why (fss-f8jls review D2).
+    if !record.witness.certifies_absence() {
+        let mut decision = generic;
+        decision.event.uncertainty_reason = Some(COVERAGE_WITNESS_NOT_CERTIFYING.to_owned());
+        decision.event.validate()?;
+        return Ok(decision);
     }
     if analysis_covering_frames(record, &analyses).is_err() {
         let mut decision = generic;

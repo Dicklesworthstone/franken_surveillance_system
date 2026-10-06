@@ -797,11 +797,21 @@ pub fn compile_reference_situation(
             if let Some(absence) = certifying {
                 coverage_proof_root = Some(witness.witness_digest());
                 record_proof_root = Some(absence.record_digest);
-                let evidence = vec![
+                // The record, and each frame's analysis result, so the certification can be
+                // hydrated from the cell itself (fss-f8jls review D4).
+                let evidence: Vec<ContentDigest> = [
                     event_revision_digest,
                     witness.witness_digest(),
                     absence.record_digest,
-                ];
+                ]
+                .into_iter()
+                .chain(
+                    absence
+                        .analysis
+                        .iter()
+                        .flat_map(|analysis| analysis.results.values().copied()),
+                )
+                .collect();
                 (
                     true,
                     None,

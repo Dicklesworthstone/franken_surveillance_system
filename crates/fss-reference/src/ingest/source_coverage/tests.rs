@@ -496,6 +496,12 @@ impl Quiet {
                 .iter()
                 .find(|cell| cell.claim_id() == cell_id)
                 .map(|cell| (cell.knowledge_state(), cell.statement().to_owned())),
+            absence_evidence: frame
+                .knowledge_cells
+                .iter()
+                .find(|cell| cell.claim_id() == cell_id)
+                .map(|cell| cell.evidence_digests())
+                .unwrap_or_default(),
             retained: snapshot
                 .retained_absences
                 .get(self.event_id.as_str())
@@ -516,6 +522,8 @@ struct Durable {
     site: Option<KnowledgeState>,
     uncertified_world: bool,
     absence_cell: Option<(KnowledgeState, String)>,
+    /// Evidence the durable absence cell cites.
+    absence_evidence: Vec<ContentDigest>,
     retained: Option<ContentDigest>,
 }
 
@@ -553,6 +561,22 @@ fn situation_absence(
         cell.map(|cell| cell.statement().to_owned())
             .unwrap_or_default(),
     )
+}
+
+/// Evidence the situation's absence cell cites.
+fn situation_absence_evidence(
+    situation: &ReferenceSituation,
+    event_id: &EventId,
+) -> Vec<ContentDigest> {
+    let cell_id = format!("claim:event:{}:absence-certification", event_id.as_str());
+    situation
+        .capsule
+        .frame
+        .knowledge_cells
+        .iter()
+        .find(|cell| cell.claim_id() == cell_id)
+        .map(|cell| cell.evidence_digests())
+        .unwrap_or_default()
 }
 
 fn situation_certified(situation: &ReferenceSituation, event_id: &EventId) -> bool {
@@ -668,9 +692,24 @@ fn assert_certified(quiet: &mut Quiet) -> TestResult {
             .contains(&quiet.record.witness.witness_digest())
     );
 
+    // Both cells cite every frame's analysis result, so the certification hydrates from the cell
+    // (fss-f8jls review D4).
+    let receipts = quiet.decision.event.model_receipts.clone();
+    assert!(!receipts.is_empty());
+    let cited = situation_absence_evidence(&situation, &quiet.event_id);
+    for receipt in &receipts {
+        assert!(cited.contains(receipt), "situation cell omits {receipt}");
+    }
+
     let durable = quiet.durable()?;
     assert!(durable.certified(), "{durable:?}");
     assert_eq!(durable.retained, Some(record));
+    for receipt in &receipts {
+        assert!(
+            durable.absence_evidence.contains(receipt),
+            "durable cell omits {receipt}"
+        );
+    }
     let (_, statement) = durable.absence_cell.ok_or("no durable absence cell")?;
     assert!(statement.contains(&record.to_string()), "{statement}");
     Ok(())
@@ -1294,8 +1333,30 @@ fn a_gapped_or_partial_stored_witness_does_not_certify() -> TestResult {
         ("stored-gap-tick", one_tick as Delivery),
         ("stored-gap-camera", whole),
     ] {
-        // Retained durably: the record names the gap; it certifies nothing.
-        let mut quiet = Quiet::run(tag, delivery, true)?;
+        // Retained durably: the record names the gap; it certifies nothing. Since fss-f8jls
+        // review D2 the policy never rejects over a gapped record (see
+        // `the_policy_holds_a_gapped_record_indeterminate`), so the rejection the readers must
+        // refuse here is written by the caller, citing every delivered frame's analysis.
+        let mut quiet = Quiet::run_plan(
+            tag,
+            Plan {
+                decide: forged,
+                ..Plan::new(delivery, true)
+            },
+        )?;
+        assert_eq!(quiet.decision.event.state, EventState::Rejected, "{tag}");
+        let (batches, head) = quiet.history()?;
+        assert_eq!(
+            verify_retained_coverage(
+                &quiet.record,
+                Some(&quiet.decision.event),
+                &quiet.analyses,
+                &batches,
+                &head
+            ),
+            Err(RetainedCoverageRefusal::WitnessDoesNotCertify),
+            "{tag}"
+        );
         assert_not_certified(&mut quiet, "not complete and continuous")?;
         quiet.cleanup();
     }
@@ -2026,4 +2087,362 @@ fn analysed_nothing_rejects_only_over_a_covering_record() -> TestResult {
 
 fn frame_matches(frame: &super::SourceFrame, capsule: &SensorCapsule) -> bool {
     frame.matches(capsule)
+}
+
+// --- review r17 of fss-f8jls ----------------------------------------------------------------------
+
+/// Observations of `results`, each under its frame's failure domain and capture interval.
+fn observations_of(
+    record: &SourceCoverageRecord,
+    results: &[MockModelResult],
+) -> Result<Vec<ReferenceModelObservation>, Box<dyn Error>> {
+    results
+        .iter()
+        .map(|result| {
+            let crate::MockModelOutcome::NothingFound { analysed_capsule } = result.outcome else {
+                return Err("not an analysed-nothing result".into());
+            };
+            let frame = record
+                .frames
+                .iter()
+                .find(|frame| frame.capsule_digest == analysed_capsule)
+                .ok_or("no frame")?;
+            Ok(ReferenceModelObservation::new(
+                result.clone(),
+                frame.failure_domain.clone(),
+                frame.capture,
+            )?)
+        })
+        .collect()
+}
+
+/// The policy's rejection plus one extra evidence edge it never produced: the receipts still
+/// cover every frame, so only a rule that checks the whole decision refuses it.
+fn with_extra_edge(decision: &mut ReferencePolicyDecision, edge: EventEvidence) -> TestResult {
+    decision.event.evidence.push(edge);
+    decision.event.decision_path = policy_decision_path(
+        &decision.event.event_id,
+        &decision.event.evidence,
+        EventState::Rejected,
+        ReferencePolicyAction::Hold,
+    );
+    decision.event.validate()?;
+    Ok(())
+}
+
+/// A person-like result the event does not list as a model receipt, cited as support.
+fn supporting_edge() -> EventEvidence {
+    EventEvidence {
+        digest: ContentDigest::sha256(b"r17 person-like result not listed as a receipt"),
+        class: EvidenceClass::Derived,
+        failure_domain: FRONT.1.to_owned(),
+        supports: true,
+        relation: EvidenceEdgeRelation::Supports,
+        capsule_digest: None,
+        identity_digest: None,
+    }
+}
+
+/// Reviewer r17's probe (local commit 72f3d0f): the policy's rejection plus a forged supporting
+/// edge. Before the fix both readers certified it.
+fn policy_plus_support(
+    event_id: &EventId,
+    record: &SourceCoverageRecord,
+    observations: Vec<ReferenceModelObservation>,
+) -> Result<ReferencePolicyDecision, Box<dyn Error>> {
+    let mut decision = by_policy(event_id, record, observations)?;
+    assert_eq!(decision.event.state, EventState::Rejected);
+    with_extra_edge(&mut decision, supporting_edge())?;
+    Ok(decision)
+}
+
+/// D1: a rejected event that also carries evidence for presence is not the policy's decision;
+/// neither the situation compiler nor the durable orient reader certifies it.
+#[test]
+fn a_rejection_carrying_evidence_for_presence_does_not_certify() -> TestResult {
+    let mut quiet = Quiet::run_plan(
+        "r17-support",
+        Plan {
+            decide: policy_plus_support,
+            ..Plan::new(everything, true)
+        },
+    )?;
+    // The probe's event really does carry a supporting edge beside covering receipts.
+    assert!(
+        quiet
+            .decision
+            .event
+            .evidence
+            .iter()
+            .any(|edge| edge.counts_as_support())
+    );
+    assert_eq!(
+        quiet.decision.event.model_receipts.len(),
+        quiet.record.frames.len()
+    );
+    let (batches, head) = quiet.history()?;
+    assert_eq!(
+        verify_retained_coverage(
+            &quiet.record,
+            Some(&quiet.decision.event),
+            &quiet.analyses,
+            &batches,
+            &head,
+        ),
+        Err(RetainedCoverageRefusal::DecisionNotReproducible)
+    );
+    assert_not_certified(&mut quiet, "is not the policy's decision")?;
+    quiet.cleanup();
+    Ok(())
+}
+
+/// D1: every other departure from the policy's decision is refused by the shared rule: a tamper
+/// report, a non-receipt model edge, a neutral edge, an edge reordered, an uncertainty reason,
+/// a probability, or a decision path that does not fingerprint the edges.
+#[test]
+fn the_rule_refuses_any_decision_the_policy_did_not_make() -> TestResult {
+    let mut quiet = Quiet::run("r17-shapes", everything, true)?;
+    let (batches, head) = quiet.history()?;
+    let base = quiet.decision.clone();
+    let verdict = |event: &EventHypothesis| {
+        verify_retained_coverage(&quiet.record, Some(event), &quiet.analyses, &batches, &head)
+    };
+    assert!(verdict(&base.event).is_ok());
+    let refused = Err(RetainedCoverageRefusal::DecisionNotReproducible);
+
+    let tamper = EventEvidence {
+        digest: ContentDigest::sha256(b"r17 tamper-like result"),
+        class: EvidenceClass::Derived,
+        failure_domain: SIDE.1.to_owned(),
+        supports: EvidenceEdgeRelation::SensorTamper.required_supports_flag(),
+        relation: EvidenceEdgeRelation::SensorTamper,
+        capsule_digest: None,
+        identity_digest: Some(ContentDigest::sha256(b"sensor:cam-side")),
+    };
+    let other_model = EventEvidence {
+        digest: ContentDigest::sha256(b"r17 another model's result"),
+        class: EvidenceClass::Derived,
+        failure_domain: FRONT.1.to_owned(),
+        supports: false,
+        relation: EvidenceEdgeRelation::Contradicts,
+        capsule_digest: None,
+        identity_digest: None,
+    };
+    let neutral = EventEvidence {
+        relation: EvidenceEdgeRelation::DerivedFrom,
+        supports: EvidenceEdgeRelation::DerivedFrom.required_supports_flag(),
+        ..other_model.clone()
+    };
+    for (name, edge) in [
+        ("support", supporting_edge()),
+        ("tamper", tamper),
+        ("other-model", other_model),
+        ("neutral", neutral),
+    ] {
+        let mut decision = base.clone();
+        with_extra_edge(&mut decision, edge)?;
+        assert_eq!(verdict(&decision.event), refused, "{name}");
+    }
+
+    // The same edges in another order, with a path that fingerprints that order.
+    let mut reordered = base.clone();
+    reordered.event.evidence.reverse();
+    reordered.event.decision_path = policy_decision_path(
+        &reordered.event.event_id,
+        &reordered.event.evidence,
+        EventState::Rejected,
+        ReferencePolicyAction::Hold,
+    );
+    reordered.event.validate()?;
+    assert_eq!(verdict(&reordered.event), refused);
+
+    // The policy's edges under a path the policy did not compute.
+    let mut path = base.event.clone();
+    path.decision_path = policy_decision_path(
+        &path.event_id,
+        &[],
+        EventState::Rejected,
+        ReferencePolicyAction::Hold,
+    );
+    assert_eq!(verdict(&path), refused);
+
+    let mut reason = base.event.clone();
+    reason.uncertainty_reason = Some("operator says nobody was there".to_owned());
+    assert_eq!(verdict(&reason), refused);
+
+    let mut probability = base.event.clone();
+    probability.probability = ProbabilityInterval::new(0.0, 0.1)?;
+    assert_eq!(verdict(&probability), refused);
+    quiet.cleanup();
+    Ok(())
+}
+
+/// D2: over a gapped record (a camera dark for one tick or the whole interval) the policy holds
+/// the candidate indeterminate with a typed reason, citing no witness, even though every
+/// delivered frame was analysed with nothing found.
+#[test]
+fn the_policy_holds_a_gapped_record_indeterminate() -> TestResult {
+    fn one_tick(sensor: &str, tick: u64) -> bool {
+        !(sensor == SIDE.0 && tick == 2)
+    }
+    fn whole(sensor: &str, _: u64) -> bool {
+        sensor != SIDE.0
+    }
+    for (tag, delivery) in [
+        ("policy-gap-tick", one_tick as Delivery),
+        ("policy-gap-camera", whole),
+    ] {
+        let mut quiet = Quiet::run(tag, delivery, true)?;
+        assert!(!quiet.record.witness.certifies_absence(), "{tag}");
+        // Every delivered frame was analysed and found nothing.
+        assert_eq!(quiet.analyses.len(), quiet.record.frames.len(), "{tag}");
+        let event = &quiet.decision.event;
+        assert_eq!(event.state, EventState::Indeterminate, "{tag}");
+        assert_eq!(
+            event.uncertainty_reason.as_deref(),
+            Some(crate::COVERAGE_WITNESS_NOT_CERTIFYING),
+            "{tag}"
+        );
+        assert!(
+            !event
+                .evidence
+                .iter()
+                .any(|edge| edge.digest == quiet.record.witness_object()
+                    || edge.counts_as_contradiction()),
+            "{tag}"
+        );
+        // No absence is stated as known by either reader.
+        let situation = quiet.situation_without_coverage()?;
+        let (cell, _, _) = situation_absence(&situation, &quiet.event_id);
+        assert_ne!(cell, Some(KnowledgeState::Known), "{tag}");
+        let durable = quiet.durable()?;
+        assert!(!durable.certified(), "{tag}: {durable:?}");
+        assert!(durable.retained.is_none(), "{tag}");
+        quiet.cleanup();
+    }
+    Ok(())
+}
+
+/// D3: a result whose sensor, source payload, capsule binding or spec digest disagrees with the
+/// frame it names does not cover that frame: the shared check refuses it, the policy holds the
+/// candidate indeterminate, and a rejection citing it is refused by the rule.
+#[test]
+fn results_with_forged_internal_bindings_do_not_cover_their_frame() -> TestResult {
+    let mut quiet = Quiet::run("r17-forged-fields", everything, true)?;
+    let (batches, head) = quiet.history()?;
+    let event_id = EventId::parse("event:source-coverage:r17-forged-fields")?;
+    let honest = quiet.analyses.clone();
+    let target = honest
+        .iter()
+        .position(|result| result.sensor_id.as_str() == format!("sensor:{}", FRONT.0))
+        .ok_or("no front analysis")?;
+    let original = honest[target].clone();
+    let other_frame = quiet
+        .record
+        .frames
+        .iter()
+        .find(|frame| frame.capsule_digest != original.continuity_digest)
+        .ok_or("no other frame")?
+        .clone();
+    let other_spec = MockModelSpec::with_descriptor(
+        GEN_A,
+        MockModelScript::NothingFound,
+        crate::ModelGenerationDescriptor::for_generation("a different descriptor"),
+    )?
+    .spec_digest();
+    assert_ne!(other_spec, original.model_spec_digest);
+
+    type Forge = fn(&mut MockModelResult, &super::SourceFrame, ContentDigest);
+    let forgeries: [(&str, Forge, bool); 4] = [
+        (
+            "sensor",
+            |result, _, _| {
+                result.sensor_id = SensorId::parse(format!("sensor:{}", SIDE.0))
+                    .unwrap_or_else(|_| result.sensor_id.clone());
+            },
+            false,
+        ),
+        (
+            "input_capture_root",
+            |result, other, _| result.input_capture_root = other.source_digest,
+            false,
+        ),
+        (
+            "continuity_digest",
+            |result, other, _| result.continuity_digest = other.capsule_digest,
+            false,
+        ),
+        (
+            "model_spec_digest",
+            |result, _, spec| result.model_spec_digest = spec,
+            true,
+        ),
+    ];
+    for (name, forge, mixes_generation) in forgeries {
+        let mut results = honest.clone();
+        forge(&mut results[target], &other_frame, other_spec);
+        assert_ne!(results[target], original, "{name}");
+        let forged_digest = results[target].object_digest();
+        let expected = if mixes_generation {
+            RetainedCoverageRefusal::AnalysisGenerationMixed
+        } else {
+            RetainedCoverageRefusal::AnalysisUnverified {
+                receipt: forged_digest,
+            }
+        };
+
+        // The shared check.
+        let cited: Vec<(&str, &MockModelResult)> = results
+            .iter()
+            .map(|result| -> Result<_, Box<dyn Error>> {
+                let frame = quiet
+                    .record
+                    .frames
+                    .iter()
+                    .find(|frame| match result.outcome {
+                        crate::MockModelOutcome::NothingFound { analysed_capsule } => {
+                            frame.capsule_digest == analysed_capsule
+                        }
+                        _ => false,
+                    })
+                    .ok_or("no frame")?;
+                Ok((frame.failure_domain.as_str(), result))
+            })
+            .collect::<Result<_, _>>()?;
+        assert_eq!(
+            super::analysis_covering_frames(&quiet.record, &cited),
+            Err(expected.clone()),
+            "{name}"
+        );
+
+        // The policy does not reject over it.
+        let observations = observations_of(&quiet.record, &results)?;
+        let decision = evaluate_unknown_presence_over_coverage(
+            event_id.clone(),
+            observations.clone(),
+            &quiet.record,
+        )?;
+        assert_eq!(decision.event.state, EventState::Indeterminate, "{name}");
+        assert_eq!(
+            decision.event.uncertainty_reason.as_deref(),
+            Some(COVERAGE_ANALYSIS_INCOMPLETE),
+            "{name}"
+        );
+
+        // A rejection written to cite it is refused by the rule, naming the forged result.
+        let rejection = forged(&event_id, &quiet.record, observations)?;
+        assert_eq!(
+            verify_retained_coverage(
+                &quiet.record,
+                Some(&rejection.event),
+                &results,
+                &batches,
+                &head,
+            ),
+            Err(expected),
+            "{name}"
+        );
+    }
+    quiet.cleanup();
+    Ok(())
 }
