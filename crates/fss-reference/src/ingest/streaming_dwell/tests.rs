@@ -7,7 +7,11 @@ use fss_core::TimestampNs;
 type Test = Result<(), Box<dyn std::error::Error>>;
 
 fn policy() -> DwellPolicy {
-    DwellPolicy { minimum_duration_ns: 20, maximum_sample_gap_ns: 12, minimum_observations: 3 }
+    DwellPolicy {
+        minimum_duration_ns: 20,
+        maximum_sample_gap_ns: 12,
+        minimum_observations: 3,
+    }
 }
 fn sample(position: usize, matched: bool) -> DwellSample {
     DwellSample {
@@ -17,17 +21,23 @@ fn sample(position: usize, matched: bool) -> DwellSample {
         discontinuity: false,
     }
 }
-fn collect(samples: &[DwellSample], policy: DwellPolicy, chunk: usize)
-    -> Result<Vec<StreamDwellSpan>, DwellError>
-{
+fn collect(
+    samples: &[DwellSample],
+    policy: DwellPolicy,
+    chunk: usize,
+) -> Result<Vec<StreamDwellSpan>, DwellError> {
     let mut state = DwellAccumulator::new(policy, samples.len().max(1))?;
     let mut out = Vec::new();
     for batch in samples.chunks(chunk) {
         for sample in batch {
-            if let Some(span) = state.push(*sample)? { out.push(span); }
+            if let Some(span) = state.push(*sample)? {
+                out.push(span);
+            }
         }
     }
-    if let Some(span) = state.finish()? { out.push(span); }
+    if let Some(span) = state.finish()? {
+        out.push(span);
+    }
     Ok(out)
 }
 
@@ -42,7 +52,9 @@ fn every_small_sequence_matches_the_existing_batch_reference() -> Test {
             let kind = digits % 3;
             digits /= 3;
             let mut s = sample(position, kind != 1);
-            if kind == 2 { s.capture = None; }
+            if kind == 2 {
+                s.capture = None;
+            }
             samples.push(s);
         }
         let batch = dwell_spans(&samples, policy())?;
@@ -63,7 +75,10 @@ fn every_small_sequence_matches_the_existing_batch_reference() -> Test {
 #[test]
 fn long_episode_crosses_every_artificial_chunk_boundary_once() -> Test {
     let samples: Vec<_> = (0..4096).map(|p| sample(p, true)).collect();
-    let rule = DwellPolicy { minimum_duration_ns: 30_000, ..policy() };
+    let rule = DwellPolicy {
+        minimum_duration_ns: 30_000,
+        ..policy()
+    };
     let expected = collect(&samples, rule, 4096)?;
     assert_eq!(expected.len(), 1);
     assert_eq!(expected[0].first.position, 0);
@@ -79,7 +94,9 @@ fn long_episode_crosses_every_artificial_chunk_boundary_once() -> Test {
 #[test]
 fn rejected_clock_or_position_does_not_consume_or_close_state() -> Test {
     let mut state = DwellAccumulator::new(policy(), 10)?;
-    for p in 0..3 { assert!(state.push(sample(p, true))?.is_none()); }
+    for p in 0..3 {
+        assert!(state.push(sample(p, true))?.is_none());
+    }
     let before = state.staged();
     assert_eq!(state.push(sample(2, true)), Err(DwellError::InvalidSamples));
     assert_eq!(state, before);
@@ -96,31 +113,56 @@ fn rejected_clock_or_position_does_not_consume_or_close_state() -> Test {
 fn source_discontinuity_and_missing_positions_split_episodes() -> Test {
     let mut samples: Vec<_> = (0..9).map(|p| sample(p, true)).collect();
     samples[3].discontinuity = true;
-    for s in &mut samples[6..] { s.position += 1; }
+    for s in &mut samples[6..] {
+        s.position += 1;
+    }
     let spans = collect(&samples, policy(), 4)?;
-    assert_eq!(spans.iter().map(|s| s.first.position).collect::<Vec<_>>(), vec![0, 3, 7]);
+    assert_eq!(
+        spans.iter().map(|s| s.first.position).collect::<Vec<_>>(),
+        vec![0, 3, 7]
+    );
     assert!(spans.iter().all(|s| s.observations == 3));
     Ok(())
 }
 
 #[test]
 fn uncertainty_uses_conservative_endpoints_not_midpoints() -> Test {
-    let samples: Vec<_> = (0..4).map(|p| DwellSample {
-        capture: Some(CaptureInterval { earliest: TimestampNs(p * 10 - 4), latest: TimestampNs(p * 10 + 4) }),
-        ..sample(p as usize, true)
-    }).collect();
-    let rule = DwellPolicy { maximum_sample_gap_ns: 18, ..policy() };
+    let samples: Vec<_> = (0..4)
+        .map(|p| DwellSample {
+            capture: Some(CaptureInterval {
+                earliest: TimestampNs(p * 10 - 4),
+                latest: TimestampNs(p * 10 + 4),
+            }),
+            ..sample(p as usize, true)
+        })
+        .collect();
+    let rule = DwellPolicy {
+        maximum_sample_gap_ns: 18,
+        ..policy()
+    };
     let spans = collect(&samples, rule, 2)?;
     assert_eq!(spans[0].trigger.position, 3);
     assert_eq!(spans[0].minimum_duration_ns, 22);
-    assert!(collect(&samples, DwellPolicy { maximum_sample_gap_ns: 17, ..rule }, 2)?.is_empty());
+    assert!(
+        collect(
+            &samples,
+            DwellPolicy {
+                maximum_sample_gap_ns: 17,
+                ..rule
+            },
+            2
+        )?
+        .is_empty()
+    );
     Ok(())
 }
 
 #[test]
 fn declared_budget_applies_across_batches_and_refusal_is_atomic() -> Test {
     let mut state = DwellAccumulator::new(policy(), 3)?;
-    for p in 0..3 { let _ = state.push(sample(p, true))?; }
+    for p in 0..3 {
+        let _ = state.push(sample(p, true))?;
+    }
     let before = state.staged();
     assert_eq!(state.push(sample(3, false)), Err(DwellError::Limit));
     assert_eq!(state, before);
@@ -132,8 +174,12 @@ fn declared_budget_applies_across_batches_and_refusal_is_atomic() -> Test {
 #[test]
 fn output_capacity_does_not_silently_drop_a_qualifying_episode() -> Test {
     let mut state = DwellAccumulator::new(policy(), 200)?;
-    for p in 0..128 { let _ = state.push(sample(p, p % 4 != 3))?; }
-    for p in 128..131 { let _ = state.push(sample(p, true))?; }
+    for p in 0..128 {
+        let _ = state.push(sample(p, p % 4 != 3))?;
+    }
+    for p in 128..131 {
+        let _ = state.push(sample(p, true))?;
+    }
     let before = state.staged();
     assert_eq!(state.push(sample(131, false)), Err(DwellError::Limit));
     assert_eq!(state, before);
@@ -152,7 +198,10 @@ fn signed_extremes_and_inverted_intervals_never_wrap() -> Test {
     assert!(state.push(last)?.is_none()); // A huge gap starts a new, unqualified episode.
     let before = state.staged();
     let mut inverted = sample(2, true);
-    inverted.capture = Some(CaptureInterval { earliest: TimestampNs(1), latest: TimestampNs(0) });
+    inverted.capture = Some(CaptureInterval {
+        earliest: TimestampNs(1),
+        latest: TimestampNs(0),
+    });
     assert_eq!(state.push(inverted), Err(DwellError::InvalidSamples));
     assert_eq!(state, before);
     assert!(state.finish()?.is_none());

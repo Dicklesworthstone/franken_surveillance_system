@@ -12,9 +12,9 @@ use std::path::PathBuf;
 
 use fss_codec_mjpeg::{DecodeBudget, decode_luma};
 use fss_core::{
-    CanonicalEncode, CanonicalEncoder, CaptureInterval, ContentDigest, DecisionPath,
-    EventEvidence, EventHypothesis, EventId, EventKind, EventState, EvidenceClass,
-    EvidenceEdgeRelation, LedgerAnchor, ObjectId, ProbabilityInterval, SensorId,
+    CanonicalEncode, CanonicalEncoder, CaptureInterval, ContentDigest, DecisionPath, EventEvidence,
+    EventHypothesis, EventId, EventKind, EventState, EvidenceClass, EvidenceEdgeRelation,
+    LedgerAnchor, ObjectId, ProbabilityInterval, SensorId,
 };
 use fss_object::ObjectManifest;
 use fss_publication::SlotName;
@@ -22,20 +22,30 @@ use fss_publication::SlotName;
 use super::foreground::{ForegroundConfig, ForegroundDetector};
 use super::privacy_mask::{MaskBinding, current_mask};
 use super::recorded_decode::{RecordedDecodeError, source_capsule, validate_limits};
-use super::recorded_watch::{WatchError, WatchLimits, WatchOptions, WatchPlan, WatchStatus, WatchZone};
-use super::sensor_health::{HealthFrame, policy_bytes as health_policy_bytes, policy_digest as health_policy_digest};
+use super::recorded_watch::{
+    WatchError, WatchLimits, WatchOptions, WatchPlan, WatchStatus, WatchZone,
+};
+use super::sensor_health::{
+    HealthFrame, policy_bytes as health_policy_bytes, policy_digest as health_policy_digest,
+};
 use super::streaming_dwell::{DwellAccumulator, MAX_STREAM_DWELL_SAMPLES, StreamDwellSpan};
 use super::tolerant_decode::{DecodeRefusal, tolerable};
-use super::tracker::{Detection, MultiObjectTracker, TrackStatus, TrackedTarget, TrackerConfig, TrackerLimits};
+use super::tracker::{
+    Detection, MultiObjectTracker, TrackStatus, TrackedTarget, TrackerConfig, TrackerLimits,
+};
 use super::zone_dwell::{DwellError, DwellPolicy, DwellSample, MAX_DWELL_EPISODES};
 use super::{RetainedFileImport, RetainedReadLimits};
-use crate::{ReferenceDeployment, ReferenceError, ReferencePolicyAction, ReferencePolicyDecision, ReplayCx};
+use crate::{
+    ReferenceDeployment, ReferenceError, ReferencePolicyAction, ReferencePolicyDecision, ReplayCx,
+};
 
 mod reader;
 use reader::ChunkCursor;
 mod health;
-pub use health::{HEALTH_PUBLICATION_BLOCKED, HealthFindingRun, LongDwellHealthSummary, MAX_HEALTH_FINDING_RUNS};
 use health::Screening;
+pub use health::{
+    HEALTH_PUBLICATION_BLOCKED, HealthFindingRun, LongDwellHealthSummary, MAX_HEALTH_FINDING_RUNS,
+};
 
 /// Maximum requested source segments, counted across the complete scan.
 pub const MAX_LONG_DWELL_FRAMES: usize = MAX_STREAM_DWELL_SAMPLES;
@@ -95,7 +105,9 @@ impl LongDwellLimits {
             || !(1..=MAX_LONG_DWELL_ASSIGNMENT).contains(&self.maximum_assignment_work)
             || !(1..=MAX_LONG_DWELL_TRACE_BYTES).contains(&self.maximum_trace_bytes)
         {
-            return Err(WatchError::InvalidPlan("long-dwell aggregate limits out of bounds"));
+            return Err(WatchError::InvalidPlan(
+                "long-dwell aggregate limits out of bounds",
+            ));
         }
         Ok(())
     }
@@ -122,13 +134,21 @@ pub struct LongDwellCandidate {
 }
 impl LongDwellCandidate {
     /// Exact approval; it cannot be used for entry-mode or short-range dwell proposals.
-    pub const fn proposal_digest(&self) -> ContentDigest { self.approval }
+    pub const fn proposal_digest(&self) -> ContentDigest {
+        self.approval
+    }
     /// Event proposed by this episode; it always remains unclassified and indeterminate.
-    pub fn event(&self) -> &EventHypothesis { &self.event }
+    pub fn event(&self) -> &EventHypothesis {
+        &self.event
+    }
     /// Absolute source positions and conservative duration of the qualifying episode.
-    pub const fn span(&self) -> &StreamDwellSpan { &self.episode.span }
+    pub const fn span(&self) -> &StreamDwellSpan {
+        &self.episode.span
+    }
     /// Current publication classification.
-    pub const fn status(&self) -> WatchStatus { self.status }
+    pub const fn status(&self) -> WatchStatus {
+        self.status
+    }
 }
 
 /// Complete bounded result. Analysis writes no objects or authority; publication is separate.
@@ -163,7 +183,8 @@ pub struct LongDwellReport {
 }
 
 fn checkpoint(cx: &ReplayCx, stage: &'static str) -> Result<()> {
-    cx.checkpoint(stage).map_err(|_| RecordedDecodeError::Cancelled.into())
+    cx.checkpoint(stage)
+        .map_err(|_| RecordedDecodeError::Cancelled.into())
 }
 fn hex(d: ContentDigest) -> String {
     d.bytes().iter().map(|v| format!("{v:02x}")).collect()
@@ -171,7 +192,9 @@ fn hex(d: ContentDigest) -> String {
 fn dwell_error(error: DwellError) -> WatchError {
     match error {
         DwellError::Limit => WatchError::Limit,
-        DwellError::ClockReversed => WatchError::InvalidPlan("capture clock regressed during long dwell"),
+        DwellError::ClockReversed => {
+            WatchError::InvalidPlan("capture clock regressed during long dwell")
+        }
         _ => WatchError::InvalidPlan("invalid streaming dwell input or policy"),
     }
 }
@@ -197,15 +220,28 @@ fn background_config(plan: &WatchPlan, dimensions: [u32; 2]) -> ForegroundConfig
 fn inside(target: &TrackedTarget, zone: &WatchZone) -> bool {
     let x = target.cx.round();
     let y = target.cy.round();
-    x > f64::from(zone.x) && x < f64::from(zone.x) + f64::from(zone.width)
-        && y > f64::from(zone.y) && y < f64::from(zone.y) + f64::from(zone.height)
+    x > f64::from(zone.x)
+        && x < f64::from(zone.x) + f64::from(zone.width)
+        && y > f64::from(zone.y)
+        && y < f64::from(zone.y) + f64::from(zone.height)
 }
-fn add_episode(episodes: &mut Vec<Episode>, epoch: u64, track: u64, zone: usize,
-    span: Option<StreamDwellSpan>) -> Result<()>
-{
+fn add_episode(
+    episodes: &mut Vec<Episode>,
+    epoch: u64,
+    track: u64,
+    zone: usize,
+    span: Option<StreamDwellSpan>,
+) -> Result<()> {
     if let Some(span) = span {
-        if episodes.len() == MAX_DWELL_EPISODES { return Err(WatchError::Limit); }
-        episodes.push(Episode { epoch, track, zone, span });
+        if episodes.len() == MAX_DWELL_EPISODES {
+            return Err(WatchError::Limit);
+        }
+        episodes.push(Episode {
+            epoch,
+            track,
+            zone,
+            span,
+        });
     }
     Ok(())
 }
@@ -218,8 +254,13 @@ struct TemporalState {
 impl TemporalState {
     fn finish_active(&mut self) -> Result<()> {
         for ((track, zone), state) in std::mem::take(&mut self.active) {
-            add_episode(&mut self.episodes, self.epoch, track, zone,
-                state.finish().map_err(dwell_error)?)?;
+            add_episode(
+                &mut self.episodes,
+                self.epoch,
+                track,
+                zone,
+                state.finish().map_err(dwell_error)?,
+            )?;
         }
         Ok(())
     }
@@ -228,13 +269,21 @@ impl TemporalState {
         self.epoch = self.epoch.checked_add(1).ok_or(WatchError::Limit)?;
         Ok(())
     }
-    fn observe(&mut self, plan: &WatchPlan, rule: DwellPolicy, tracks: &[TrackedTarget],
-        masked: &BTreeSet<usize>, segment: usize, capture: Option<CaptureInterval>) -> Result<()>
-    {
+    fn observe(
+        &mut self,
+        plan: &WatchPlan,
+        rule: DwellPolicy,
+        tracks: &[TrackedTarget],
+        masked: &BTreeSet<usize>,
+        segment: usize,
+        capture: Option<CaptureInterval>,
+    ) -> Result<()> {
         let mut eligible = BTreeSet::new();
         if capture.is_some() {
             for target in tracks {
-                if target.status != TrackStatus::Confirmed || target.misses != 0 { continue; }
+                if target.status != TrackStatus::Confirmed || target.misses != 0 {
+                    continue;
+                }
                 for (zone, geometry) in plan.zones.iter().enumerate() {
                     if !masked.contains(&zone) && inside(target, geometry) {
                         eligible.insert((target.id, zone));
@@ -243,22 +292,39 @@ impl TemporalState {
             }
         }
         // End every missed or excluded track/zone now, even if the tracker keeps coasting it.
-        let ended: Vec<_> = self.active.keys().filter(|key| !eligible.contains(*key)).copied().collect();
+        let ended: Vec<_> = self
+            .active
+            .keys()
+            .filter(|key| !eligible.contains(*key))
+            .copied()
+            .collect();
         for (track, zone) in ended {
-            let state = self.active.remove(&(track, zone)).ok_or(WatchError::Conflict)?;
-            add_episode(&mut self.episodes, self.epoch, track, zone,
-                state.finish().map_err(dwell_error)?)?;
+            let state = self
+                .active
+                .remove(&(track, zone))
+                .ok_or(WatchError::Conflict)?;
+            add_episode(
+                &mut self.episodes,
+                self.epoch,
+                track,
+                zone,
+                state.finish().map_err(dwell_error)?,
+            )?;
         }
         for (track, zone) in eligible {
             let state = match self.active.entry((track, zone)) {
                 std::collections::btree_map::Entry::Occupied(entry) => entry.into_mut(),
-                std::collections::btree_map::Entry::Vacant(entry) => {
-                    entry.insert(DwellAccumulator::new(rule, plan.segment_count).map_err(dwell_error)?)
-                }
+                std::collections::btree_map::Entry::Vacant(entry) => entry
+                    .insert(DwellAccumulator::new(rule, plan.segment_count).map_err(dwell_error)?),
             };
-            let span = state.push(DwellSample {
-                position: segment, capture, matched_inside: true, discontinuity: false,
-            }).map_err(dwell_error)?;
+            let span = state
+                .push(DwellSample {
+                    position: segment,
+                    capture,
+                    matched_inside: true,
+                    discontinuity: false,
+                })
+                .map_err(dwell_error)?;
             add_episode(&mut self.episodes, self.epoch, track, zone, span)?;
         }
         Ok(())
@@ -267,49 +333,80 @@ impl TemporalState {
 
 fn append_trace(trace: &mut Vec<u8>, record: &[u8], maximum: usize) -> Result<()> {
     let additional = 8_usize.checked_add(record.len()).ok_or(WatchError::Limit)?;
-    if trace.len().checked_add(additional).is_none_or(|n| n > maximum) {
+    if trace
+        .len()
+        .checked_add(additional)
+        .is_none_or(|n| n > maximum)
+    {
         return Err(WatchError::Limit);
     }
-    trace.try_reserve(additional).map_err(|_| WatchError::Limit)?;
+    trace
+        .try_reserve(additional)
+        .map_err(|_| WatchError::Limit)?;
     trace.extend_from_slice(&(record.len() as u64).to_be_bytes());
     trace.extend_from_slice(record);
     Ok(())
 }
 fn charge(used: &mut u64, amount: u64, maximum: u64) -> Result<()> {
-    *used = used.checked_add(amount).filter(|n| *n <= maximum).ok_or(WatchError::Limit)?;
+    *used = used
+        .checked_add(amount)
+        .filter(|n| *n <= maximum)
+        .ok_or(WatchError::Limit)?;
     Ok(())
 }
 
 impl LongDwellReport {
     /// Decode a whole MJPEG range once, preserving foreground/tracker/dwell state between frames.
     /// No 128-frame windows, model calls, pixel history, implicit retries, or coverage claims.
-    pub fn analyze(deployment: &ReferenceDeployment, plan: &WatchPlan, rule: DwellPolicy,
-        options: WatchOptions, limits: &LongDwellLimits, cx: &ReplayCx) -> Result<Self>
-    {
+    pub fn analyze(
+        deployment: &ReferenceDeployment,
+        plan: &WatchPlan,
+        rule: DwellPolicy,
+        options: WatchOptions,
+        limits: &LongDwellLimits,
+        cx: &ReplayCx,
+    ) -> Result<Self> {
         Self::analyze_inner(deployment, plan, rule, options, limits, cx, false)
     }
 
     /// Opt-in conservative-v1 screening over the same masked pixels, before perception.
     /// Findings preserve diagnostic candidates but block publication of the entire request.
     /// No finding is a diagnosis; a complete screen with no findings is not proof of health.
-    pub fn analyze_screened(deployment: &ReferenceDeployment, plan: &WatchPlan, rule: DwellPolicy,
-        options: WatchOptions, limits: &LongDwellLimits, cx: &ReplayCx) -> Result<Self>
-    {
+    pub fn analyze_screened(
+        deployment: &ReferenceDeployment,
+        plan: &WatchPlan,
+        rule: DwellPolicy,
+        options: WatchOptions,
+        limits: &LongDwellLimits,
+        cx: &ReplayCx,
+    ) -> Result<Self> {
         Self::analyze_inner(deployment, plan, rule, options, limits, cx, true)
     }
 
-    fn analyze_inner(deployment: &ReferenceDeployment, plan: &WatchPlan, rule: DwellPolicy,
-        options: WatchOptions, limits: &LongDwellLimits, cx: &ReplayCx, screened: bool) -> Result<Self>
-    {
+    fn analyze_inner(
+        deployment: &ReferenceDeployment,
+        plan: &WatchPlan,
+        rule: DwellPolicy,
+        options: WatchOptions,
+        limits: &LongDwellLimits,
+        cx: &ReplayCx,
+        screened: bool,
+    ) -> Result<Self> {
         checkpoint(cx, "long_dwell:analyze")?;
-        if cx.root_dir() != deployment.root() { return Err(WatchError::Conflict); }
+        if cx.root_dir() != deployment.root() {
+            return Err(WatchError::Conflict);
+        }
         if deployment.site_lineage().len() > 256 || cx.io_authority().principal().len() > 128 {
-            return Err(WatchError::InvalidPlan("site or principal exceeds long-dwell bounds"));
+            return Err(WatchError::InvalidPlan(
+                "site or principal exceeds long-dwell bounds",
+            ));
         }
         if !(1..=MAX_LONG_DWELL_FRAMES).contains(&plan.segment_count)
             || plan.first_segment.checked_add(plan.segment_count).is_none()
         {
-            return Err(WatchError::InvalidPlan("long dwell requires 1..65536 segments"));
+            return Err(WatchError::InvalidPlan(
+                "long dwell requires 1..65536 segments",
+            ));
         }
         // Reuse every existing zone/config check without broadening ordinary watch's range.
         let mut validation = plan.clone();
@@ -317,38 +414,78 @@ impl LongDwellReport {
         validation.validate()?;
         rule.validate().map_err(dwell_error)?;
         limits.validate()?;
-        deployment.ledger().verify_durable_head().map_err(ReferenceError::from)?;
-        let retained = RetainedFileImport::open(deployment, plan.import_identity, limits.decode.read_limits, cx)?;
+        deployment
+            .ledger()
+            .verify_durable_head()
+            .map_err(ReferenceError::from)?;
+        let retained = RetainedFileImport::open(
+            deployment,
+            plan.import_identity,
+            limits.decode.read_limits,
+            cx,
+        )?;
         let source = retained.manifest();
-        if source.format != "mjpeg" { return Err(RecordedDecodeError::UnsupportedMedia.into()); }
+        if source.format != "mjpeg" {
+            return Err(RecordedDecodeError::UnsupportedMedia.into());
+        }
         if source.capture_time_label != "operator_assumption" {
-            return Err(WatchError::InvalidPlan("long dwell requires explicit capture-time hints"));
+            return Err(WatchError::InvalidPlan(
+                "long dwell requires explicit capture-time hints",
+            ));
         }
         let end = plan.first_segment + plan.segment_count;
-        if end > source.segment_spans.len() { return Err(RecordedDecodeError::Unavailable.into()); }
+        if end > source.segment_spans.len() {
+            return Err(RecordedDecodeError::Unavailable.into());
+        }
         if !options.tolerate_decode_refusals {
             for span in &source.segment_spans[plan.first_segment + 1..end] {
-                if span.gap_before { return Err(WatchError::SourceGap { segment: span.segment_index }); }
+                if span.gap_before {
+                    return Err(WatchError::SourceGap {
+                        segment: span.segment_index,
+                    });
+                }
             }
         }
         let (first_capsule, _) = source_capsule(deployment, &retained, plan.first_segment)?;
         let sensor = first_capsule.sensor_id.clone();
         let privacy = current_mask(deployment, &sensor).map_err(RecordedDecodeError::from)?;
-        let masked: BTreeSet<usize> = plan.zones.iter().enumerate().filter_map(|(i, zone)| {
-            privacy.policy().filter(|p| p.zone_masking([zone.x, zone.y, zone.width, zone.height]).any()).map(|_| i)
-        }).collect();
+        let masked: BTreeSet<usize> = plan
+            .zones
+            .iter()
+            .enumerate()
+            .filter_map(|(i, zone)| {
+                privacy
+                    .policy()
+                    .filter(|p| {
+                        p.zone_masking([zone.x, zone.y, zone.width, zone.height])
+                            .any()
+                    })
+                    .map(|_| i)
+            })
+            .collect();
         let mut health = if screened {
-            Some(Screening::new(plan.segment_count, limits.maximum_pixel_samples)?)
-        } else { None };
+            Some(Screening::new(
+                plan.segment_count,
+                limits.maximum_pixel_samples,
+            )?)
+        } else {
+            None
+        };
         let health_source = super::recorded_watch::masked_plan_digest(plan.digest(), &privacy);
         let mut time_reliable = source.omission_spans.is_empty()
-            && !source.segment_spans[..=plan.first_segment].iter().any(|s| s.gap_before);
+            && !source.segment_spans[..=plan.first_segment]
+                .iter()
+                .any(|s| s.gap_before);
         let mut cursor = ChunkCursor::new(limits.maximum_source_chunk_bytes);
         let mut codec_budget = DecodeBudget::new(limits.decode.jpeg_work_units);
         let mut tracker = MultiObjectTracker::new(tracker_config(plan))?;
         let mut background = None;
         let mut dimensions = None;
-        let mut temporal = TemporalState { active: BTreeMap::new(), episodes: Vec::new(), epoch: 0 };
+        let mut temporal = TemporalState {
+            active: BTreeMap::new(),
+            episodes: Vec::new(),
+            epoch: 0,
+        };
         let mut previous_capture: Option<CaptureInterval> = None;
         let mut previous_tracks = 0_u64;
         let mut trace = Vec::new();
@@ -362,7 +499,9 @@ impl LongDwellReport {
             checkpoint(cx, "long_dwell:frame")?;
             let gap = source.segment_spans[segment].gap_before && segment > plan.first_segment;
             if gap {
-                if let Some(screen) = &mut health { screen.discontinuity(); }
+                if let Some(screen) = &mut health {
+                    screen.discontinuity();
+                }
                 time_reliable = false;
                 temporal.restart()?;
                 tracker = MultiObjectTracker::new(tracker_config(plan))?;
@@ -372,14 +511,22 @@ impl LongDwellReport {
                 restarts += 1;
             }
             let (capsule, capsule_digest) = source_capsule(deployment, &retained, segment)?;
-            if capsule.sensor_id != sensor { return Err(RecordedDecodeError::InvalidReceipt.into()); }
+            if capsule.sensor_id != sensor {
+                return Err(RecordedDecodeError::InvalidReceipt.into());
+            }
             if screened && capsule.stream_id != first_capsule.stream_id {
                 return Err(RecordedDecodeError::InvalidReceipt.into());
             }
             if source.segment_spans[segment].len > limits.decode.jpeg_limits.maximum_bytes as u64 {
                 return Err(WatchError::Limit);
             }
-            let bytes = cursor.segment(deployment, &retained, segment, limits.decode.read_limits, cx)?;
+            let bytes = cursor.segment(
+                deployment,
+                &retained,
+                segment,
+                limits.decode.read_limits,
+                cx,
+            )?;
             let mut frame_record = CanonicalEncoder::new();
             frame_record.text(FRAME_DOMAIN);
             frame_record.u64(segment as u64);
@@ -387,22 +534,43 @@ impl LongDwellReport {
             capsule.capture.encode_canonical(&mut frame_record);
             frame_record.bool(time_reliable);
             frame_record.bool(gap);
-            let image = match decode_luma(&bytes, capsule.source_digest.bytes(), plan.interpretation,
-                limits.decode.jpeg_limits, &mut codec_budget).map_err(RecordedDecodeError::from)
+            let image = match decode_luma(
+                &bytes,
+                capsule.source_digest.bytes(),
+                plan.interpretation,
+                limits.decode.jpeg_limits,
+                &mut codec_budget,
+            )
+            .map_err(RecordedDecodeError::from)
             {
                 Ok(image) => image,
                 Err(error) if options.tolerate_decode_refusals && tolerable(&error) => {
-                    if let Some(screen) = &mut health { screen.discontinuity(); }
+                    if let Some(screen) = &mut health {
+                        screen.discontinuity();
+                    }
                     frame_record.bool(false);
                     frame_record.text(error.stable_id());
-                    append_trace(&mut trace, &frame_record.finish_checked()?, limits.maximum_trace_bytes)?;
+                    append_trace(
+                        &mut trace,
+                        &frame_record.finish_checked()?,
+                        limits.maximum_trace_bytes,
+                    )?;
                     match refusals.last_mut() {
-                        Some(last) if last.last_segment.checked_add(1) == Some(segment)
-                            && last.error_id == error.stable_id() => last.last_segment = segment,
+                        Some(last)
+                            if last.last_segment.checked_add(1) == Some(segment)
+                                && last.error_id == error.stable_id() =>
+                        {
+                            last.last_segment = segment
+                        }
                         _ => {
-                            if refusals.len() == MAX_REFUSAL_RUNS { return Err(WatchError::Limit); }
-                            refusals.push(DecodeRefusal { first_segment: segment, last_segment: segment,
-                                error_id: error.stable_id().to_owned() });
+                            if refusals.len() == MAX_REFUSAL_RUNS {
+                                return Err(WatchError::Limit);
+                            }
+                            refusals.push(DecodeRefusal {
+                                first_segment: segment,
+                                last_segment: segment,
+                                error_id: error.stable_id().to_owned(),
+                            });
                         }
                     }
                     temporal.restart()?;
@@ -425,65 +593,127 @@ impl LongDwellReport {
                     if u64::from(zone.x) + u64::from(zone.width) > u64::from(size[0])
                         || u64::from(zone.y) + u64::from(zone.height) > u64::from(size[1])
                     {
-                        return Err(WatchError::InvalidPlan("long-dwell zones must fit the decoded frame"));
+                        return Err(WatchError::InvalidPlan(
+                            "long-dwell zones must fit the decoded frame",
+                        ));
                     }
                 }
                 dimensions = Some(size);
             }
-            charge(&mut pixel_samples, u64::from(size[0]) * u64::from(size[1]), limits.maximum_pixel_samples)?;
+            charge(
+                &mut pixel_samples,
+                u64::from(size[0]) * u64::from(size[1]),
+                limits.maximum_pixel_samples,
+            )?;
             let mut pixels = image.pixels().to_vec();
-            privacy.apply_luma(&mut pixels, size).map_err(RecordedDecodeError::from)?;
+            privacy
+                .apply_luma(&mut pixels, size)
+                .map_err(RecordedDecodeError::from)?;
             let health_observation = match &mut health {
-                Some(screen) => Some(screen.observe(HealthFrame {
-                    source_generation: health_source, segment: segment as u64,
-                    capsule_digest, capture: capsule.capture, dimensions: size,
-                    gap_before: capsule.gap_before || gap, pixels: &pixels,
-                }, time_reliable, cx)?),
+                Some(screen) => Some(screen.observe(
+                    HealthFrame {
+                        source_generation: health_source,
+                        segment: segment as u64,
+                        capsule_digest,
+                        capture: capsule.capture,
+                        dimensions: size,
+                        gap_before: capsule.gap_before || gap,
+                        pixels: &pixels,
+                    },
+                    time_reliable,
+                    cx,
+                )?),
                 None => None,
             };
             if time_reliable {
-                if previous_capture.is_some_and(|old| capsule.capture.earliest < old.earliest
-                    || capsule.capture.latest < old.latest)
-                {
+                if previous_capture.is_some_and(|old| {
+                    capsule.capture.earliest < old.earliest || capsule.capture.latest < old.latest
+                }) {
                     return Err(dwell_error(DwellError::ClockReversed));
                 }
                 previous_capture = Some(capsule.capture);
-            } else { unreliable += 1; }
-            if background.is_none() { background = Some(ForegroundDetector::new(background_config(plan, size))?); }
-            let foreground = background.as_mut().ok_or(WatchError::Conflict)?.observe(&pixels, size[0], size[1])?;
-            if foreground.boxes.len() > MAX_TRACKS { return Err(WatchError::Limit); }
-            let detections: Vec<_> = foreground.boxes.iter().map(|b| Detection {
-                box_x: f64::from(b.x), box_y: f64::from(b.y),
-                box_w: f64::from(b.width), box_h: f64::from(b.height),
-            }).collect();
-            let work = if detections.is_empty() { 0 }
-                else { previous_tracks * previous_tracks * (previous_tracks + detections.len() as u64) };
+            } else {
+                unreliable += 1;
+            }
+            if background.is_none() {
+                background = Some(ForegroundDetector::new(background_config(plan, size))?);
+            }
+            let foreground = background
+                .as_mut()
+                .ok_or(WatchError::Conflict)?
+                .observe(&pixels, size[0], size[1])?;
+            if foreground.boxes.len() > MAX_TRACKS {
+                return Err(WatchError::Limit);
+            }
+            let detections: Vec<_> = foreground
+                .boxes
+                .iter()
+                .map(|b| Detection {
+                    box_x: f64::from(b.x),
+                    box_y: f64::from(b.y),
+                    box_w: f64::from(b.width),
+                    box_h: f64::from(b.height),
+                })
+                .collect();
+            let work = if detections.is_empty() {
+                0
+            } else {
+                previous_tracks * previous_tracks * (previous_tracks + detections.len() as u64)
+            };
             charge(&mut assignment_work, work, limits.maximum_assignment_work)?;
-            let mut output = tracker.try_step(&detections, TrackerLimits {
-                max_tracks: MAX_TRACKS, max_detections: MAX_TRACKS,
-                ..TrackerLimits::default()
-            })?;
+            let mut output = tracker.try_step(
+                &detections,
+                TrackerLimits {
+                    max_tracks: MAX_TRACKS,
+                    max_detections: MAX_TRACKS,
+                    ..TrackerLimits::default()
+                },
+            )?;
             previous_tracks = output.tracks.len() as u64;
             output.tracks.sort_by_key(|target| target.id);
-            temporal.observe(plan, rule, &output.tracks, &masked, segment,
-                time_reliable.then_some(capsule.capture))?;
+            temporal.observe(
+                plan,
+                rule,
+                &output.tracks,
+                &masked,
+                segment,
+                time_reliable.then_some(capsule.capture),
+            )?;
             frame_record.bool(true);
             frame_record.u64(temporal.epoch);
-            frame_record.u32(size[0]); frame_record.u32(size[1]);
+            frame_record.u32(size[0]);
+            frame_record.u32(size[1]);
             frame_record.digest(ContentDigest::sha256(&pixels));
             frame_record.bool(foreground.baseline_initialized);
             frame_record.u64(detections.len() as u64);
             for detection in &detections {
-                for value in [detection.box_x, detection.box_y, detection.box_w, detection.box_h] {
+                for value in [
+                    detection.box_x,
+                    detection.box_y,
+                    detection.box_w,
+                    detection.box_h,
+                ] {
                     frame_record.u64(value.to_bits());
                 }
             }
             frame_record.u64(output.tracks.len() as u64);
             for target in &output.tracks {
                 frame_record.u64(target.id);
-                frame_record.u8(match target.status { TrackStatus::Tentative => 0, TrackStatus::Confirmed => 1, TrackStatus::Lost => 2 });
-                frame_record.u32(target.hits); frame_record.u32(target.misses);
-                for value in [target.cx, target.cy, target.vx, target.vy, target.box_w, target.box_h] {
+                frame_record.u8(match target.status {
+                    TrackStatus::Tentative => 0,
+                    TrackStatus::Confirmed => 1,
+                    TrackStatus::Lost => 2,
+                });
+                frame_record.u32(target.hits);
+                frame_record.u32(target.misses);
+                for value in [
+                    target.cx,
+                    target.cy,
+                    target.vx,
+                    target.vy,
+                    target.box_w,
+                    target.box_h,
+                ] {
                     frame_record.u64(value.to_bits());
                 }
             }
@@ -491,33 +721,67 @@ impl LongDwellReport {
                 frame_record.text("sensor_health");
                 frame_record.bytes(&observation.canonical_bytes());
             }
-            append_trace(&mut trace, &frame_record.finish_checked()?, limits.maximum_trace_bytes)?;
+            append_trace(
+                &mut trace,
+                &frame_record.finish_checked()?,
+                limits.maximum_trace_bytes,
+            )?;
             decoded += 1;
         }
-        if decoded == 0 { return Err(RecordedDecodeError::Unavailable.into()); }
+        if decoded == 0 {
+            return Err(RecordedDecodeError::Unavailable.into());
+        }
         temporal.finish_active()?;
-        temporal.episodes.sort_by_key(|e| (e.span.trigger.position, e.epoch, e.track, e.zone, e.span.first.position));
-        deployment.ledger().verify_durable_head().map_err(ReferenceError::from)?;
+        temporal.episodes.sort_by_key(|e| {
+            (
+                e.span.trigger.position,
+                e.epoch,
+                e.track,
+                e.zone,
+                e.span.first.position,
+            )
+        });
+        deployment
+            .ledger()
+            .verify_durable_head()
+            .map_err(ReferenceError::from)?;
         let health = health.map(|screen| screen.finish(plan.segment_count));
         let mut e = CanonicalEncoder::new();
-        e.text(ANALYSIS_DOMAIN); e.digest(ContentDigest::sha256(POLICY));
-        e.text(deployment.site_lineage()); e.digest(plan.digest());
+        e.text(ANALYSIS_DOMAIN);
+        e.digest(ContentDigest::sha256(POLICY));
+        e.text(deployment.site_lineage());
+        e.digest(plan.digest());
         // Retain the complete replay recipe, not merely a hash requiring the original CLI.
-        e.digest(plan.import_identity); e.u64(plan.first_segment as u64);
-        e.u64(plan.segment_count as u64); e.u64(plan.zones.len() as u64);
+        e.digest(plan.import_identity);
+        e.u64(plan.first_segment as u64);
+        e.u64(plan.segment_count as u64);
+        e.u64(plan.zones.len() as u64);
         for zone in &plan.zones {
             e.text(&zone.zone_id);
-            for value in [zone.x, zone.y, zone.width, zone.height] { e.u32(value); }
+            for value in [zone.x, zone.y, zone.width, zone.height] {
+                e.u32(value);
+            }
         }
         let parameters = super::recorded_watch::pipeline_parameters(
-            plan.interpretation, &plan.detector, &plan.tracker);
+            plan.interpretation,
+            &plan.detector,
+            &plan.tracker,
+        );
         e.u64(parameters.len() as u64);
-        for parameter in parameters { e.u64(parameter); }
-        e.digest(retained.import_root()); e.digest(retained.manifest_digest());
+        for parameter in parameters {
+            e.u64(parameter);
+        }
+        e.digest(retained.import_root());
+        e.digest(retained.manifest_digest());
         retained.authority_anchor().encode_canonical(&mut e);
-        e.text(sensor.as_str()); e.digest(privacy.digest());
-        e.u64(rule.minimum_duration_ns); e.u64(rule.maximum_sample_gap_ns); e.u64(rule.minimum_observations as u64);
-        e.bool(options.tolerate_decode_refusals); e.u64(plan.segment_count as u64); e.bytes(&trace);
+        e.text(sensor.as_str());
+        e.digest(privacy.digest());
+        e.u64(rule.minimum_duration_ns);
+        e.u64(rule.maximum_sample_gap_ns);
+        e.u64(rule.minimum_observations as u64);
+        e.bool(options.tolerate_decode_refusals);
+        e.u64(plan.segment_count as u64);
+        e.bytes(&trace);
         if let Some(summary) = &health {
             e.text("sensor_health");
             e.bytes(health_policy_bytes());
@@ -525,25 +789,60 @@ impl LongDwellReport {
         }
         let analysis = e.finish_checked()?;
         let analysis_digest = ContentDigest::sha256(&analysis);
-        let mut children = BTreeSet::from([retained.import_root(), analysis_digest,
-            ContentDigest::sha256(POLICY), ContentDigest::sha256(sensor.as_str().as_bytes())]);
-        if let Some(policy) = privacy.policy() { children.insert(policy.digest()); }
-        if health.is_some() { children.insert(health_policy_digest()); }
-        let analysis_manifest = ObjectManifest::new("recorded-long-dwell-analysis-v1", children, None)?;
+        let mut children = BTreeSet::from([
+            retained.import_root(),
+            analysis_digest,
+            ContentDigest::sha256(POLICY),
+            ContentDigest::sha256(sensor.as_str().as_bytes()),
+        ]);
+        if let Some(policy) = privacy.policy() {
+            children.insert(policy.digest());
+        }
+        if health.is_some() {
+            children.insert(health_policy_digest());
+        }
+        let analysis_manifest =
+            ObjectManifest::new("recorded-long-dwell-analysis-v1", children, None)?;
         let analysis_slot = slot("ld-a", analysis_digest)?;
         let principal = cx.io_authority().principal().to_owned();
         let mut candidates = Vec::new();
         for episode in temporal.episodes {
-            candidates.push(prepare_candidate(deployment, episode, plan, analysis_manifest.root(), &sensor, &principal, &privacy)?);
+            candidates.push(prepare_candidate(
+                deployment,
+                episode,
+                plan,
+                analysis_manifest.root(),
+                &sensor,
+                &principal,
+                &privacy,
+            )?);
         }
         let report = Self {
-            plan: plan.clone(), rule, options, root: deployment.root().to_path_buf(),
-            site: deployment.site_lineage().to_owned(), principal,
-            basis: deployment.current_anchor().clone(), import_root: retained.import_root(),
-            manifest_digest: retained.manifest_digest(), sensor, privacy,
-            read_limits: limits.decode.read_limits, analysis, analysis_manifest, analysis_slot,
-            candidates, decoded, unreliable, masked_zones: masked.len(), restarts, refusals,
-            source_bytes: cursor.bytes_read(), pixel_samples, assignment_work, jpeg_work: codec_budget.used(),
+            plan: plan.clone(),
+            rule,
+            options,
+            root: deployment.root().to_path_buf(),
+            site: deployment.site_lineage().to_owned(),
+            principal,
+            basis: deployment.current_anchor().clone(),
+            import_root: retained.import_root(),
+            manifest_digest: retained.manifest_digest(),
+            sensor,
+            privacy,
+            read_limits: limits.decode.read_limits,
+            analysis,
+            analysis_manifest,
+            analysis_slot,
+            candidates,
+            decoded,
+            unreliable,
+            masked_zones: masked.len(),
+            restarts,
+            refusals,
+            source_bytes: cursor.bytes_read(),
+            pixel_samples,
+            assignment_work,
+            jpeg_work: codec_budget.used(),
             health,
         };
         report.to_json(deployment.current_anchor().commit_sequence, None)?;
@@ -551,73 +850,150 @@ impl LongDwellReport {
     }
 
     /// Complete ordered proposals; no qualifying episode is silently dropped to fit a bound.
-    pub fn candidates(&self) -> &[LongDwellCandidate] { &self.candidates }
+    pub fn candidates(&self) -> &[LongDwellCandidate] {
+        &self.candidates
+    }
     /// Exact canonical per-frame trace and its source/rule bindings.
-    pub fn analysis_digest(&self) -> ContentDigest { ContentDigest::sha256(&self.analysis) }
+    pub fn analysis_digest(&self) -> ContentDigest {
+        ContentDigest::sha256(&self.analysis)
+    }
     /// Actual source-chunk bytes fetched, not per-segment logical lengths.
-    pub const fn source_chunk_bytes_read(&self) -> u64 { self.source_bytes }
+    pub const fn source_chunk_bytes_read(&self) -> u64 {
+        self.source_bytes
+    }
     /// Successfully decoded source segments.
-    pub const fn frames_decoded(&self) -> usize { self.decoded }
+    pub const fn frames_decoded(&self) -> usize {
+        self.decoded
+    }
     /// Explicit opt-in diagnostics; `None` means no screening was requested, never healthy.
-    pub fn health_summary(&self) -> Option<&LongDwellHealthSummary> { self.health.as_ref() }
+    pub fn health_summary(&self) -> Option<&LongDwellHealthSummary> {
+        self.health.as_ref()
+    }
     /// True when this report's health gate forbids any event publication.
     pub fn publication_blocked(&self) -> bool {
-        self.health.as_ref().is_some_and(LongDwellHealthSummary::publication_blocked)
+        self.health
+            .as_ref()
+            .is_some_and(LongDwellHealthSummary::publication_blocked)
     }
 
     /// Publish only exact, source- and principal-bound proposals after all approvals validate.
-    pub fn publish(&mut self, deployment: &mut ReferenceDeployment, approvals: &BTreeSet<ContentDigest>,
-        cx: &ReplayCx) -> Result<usize>
-    {
+    pub fn publish(
+        &mut self,
+        deployment: &mut ReferenceDeployment,
+        approvals: &BTreeSet<ContentDigest>,
+        cx: &ReplayCx,
+    ) -> Result<usize> {
         checkpoint(cx, "long_dwell:revalidate")?;
-        if self.publication_blocked() { return Err(WatchError::InvalidPlan(HEALTH_PUBLICATION_BLOCKED)); }
-        if deployment.root() != self.root.as_path() || cx.root_dir() != deployment.root()
-            || deployment.site_lineage() != self.site.as_str() || cx.io_authority().principal() != self.principal.as_str()
-        { return Err(WatchError::Conflict); }
-        for approval in approvals {
-            if !self.candidates.iter().any(|c| c.approval == *approval) { return Err(WatchError::StaleApproval(*approval)); }
+        if self.publication_blocked() {
+            return Err(WatchError::InvalidPlan(HEALTH_PUBLICATION_BLOCKED));
         }
-        deployment.ledger().verify_durable_head().map_err(ReferenceError::from)?;
-        let source = RetainedFileImport::open(deployment, self.plan.import_identity, self.read_limits, cx)?;
-        if source.import_root() != self.import_root || source.manifest_digest() != self.manifest_digest {
+        if deployment.root() != self.root.as_path()
+            || cx.root_dir() != deployment.root()
+            || deployment.site_lineage() != self.site.as_str()
+            || cx.io_authority().principal() != self.principal.as_str()
+        {
             return Err(WatchError::Conflict);
         }
-        if current_mask(deployment, &self.sensor).map_err(RecordedDecodeError::from)?.digest() != self.privacy.digest() {
-            return Err(WatchError::InvalidPlan("privacy generation changed; recompute long dwell"));
+        for approval in approvals {
+            if !self.candidates.iter().any(|c| c.approval == *approval) {
+                return Err(WatchError::StaleApproval(*approval));
+            }
+        }
+        deployment
+            .ledger()
+            .verify_durable_head()
+            .map_err(ReferenceError::from)?;
+        let source =
+            RetainedFileImport::open(deployment, self.plan.import_identity, self.read_limits, cx)?;
+        if source.import_root() != self.import_root
+            || source.manifest_digest() != self.manifest_digest
+        {
+            return Err(WatchError::Conflict);
+        }
+        if current_mask(deployment, &self.sensor)
+            .map_err(RecordedDecodeError::from)?
+            .digest()
+            != self.privacy.digest()
+        {
+            return Err(WatchError::InvalidPlan(
+                "privacy generation changed; recompute long dwell",
+            ));
         }
         for candidate in &mut self.candidates {
-            if approvals.contains(&candidate.approval) { candidate.status = event_status(deployment, &candidate.event)?; }
+            if approvals.contains(&candidate.approval) {
+                candidate.status = event_status(deployment, &candidate.event)?;
+            }
         }
         self.to_json(deployment.current_anchor().commit_sequence, None)?;
-        if !self.candidates.iter().any(|c| approvals.contains(&c.approval) && c.status == WatchStatus::Prepared) {
+        if !self
+            .candidates
+            .iter()
+            .any(|c| approvals.contains(&c.approval) && c.status == WatchStatus::Prepared)
+        {
             return Ok(0);
         }
         checkpoint(cx, "long_dwell:stage")?;
-        for bytes in [self.analysis.as_slice(), POLICY, self.sensor.as_str().as_bytes()] {
+        for bytes in [
+            self.analysis.as_slice(),
+            POLICY,
+            self.sensor.as_str().as_bytes(),
+        ] {
             let digest = deployment.publisher_mut().stage_object(bytes)?;
             deployment.publisher_mut().verify_object(digest)?;
         }
         if self.health.is_some() {
-            let digest = deployment.publisher_mut().stage_object(health_policy_bytes())?;
+            let digest = deployment
+                .publisher_mut()
+                .stage_object(health_policy_bytes())?;
             deployment.publisher_mut().verify_object(digest)?;
         }
         if let Some(policy) = self.privacy.policy() {
-            let digest = deployment.publisher_mut().stage_object(&policy.to_bytes())?;
+            let digest = deployment
+                .publisher_mut()
+                .stage_object(&policy.to_bytes())?;
             deployment.publisher_mut().verify_object(digest)?;
         }
-        let validity = self.candidates.iter().map(|c| c.event.interval).reduce(|a, b| CaptureInterval {
-            earliest: a.earliest.min(b.earliest), latest: a.latest.max(b.latest),
-        }).ok_or(WatchError::Conflict)?;
-        publish_manifest(deployment, &self.analysis_slot, &self.analysis_manifest, validity, cx)?;
+        let validity = self
+            .candidates
+            .iter()
+            .map(|c| c.event.interval)
+            .reduce(|a, b| CaptureInterval {
+                earliest: a.earliest.min(b.earliest),
+                latest: a.latest.max(b.latest),
+            })
+            .ok_or(WatchError::Conflict)?;
+        publish_manifest(
+            deployment,
+            &self.analysis_slot,
+            &self.analysis_manifest,
+            validity,
+            cx,
+        )?;
         let mut published = 0;
         for candidate in &mut self.candidates {
-            if !approvals.contains(&candidate.approval) || candidate.status == WatchStatus::AlreadyPublished { continue; }
+            if !approvals.contains(&candidate.approval)
+                || candidate.status == WatchStatus::AlreadyPublished
+            {
+                continue;
+            }
             checkpoint(cx, "long_dwell:episode")?;
             let digest = deployment.publisher_mut().stage_object(&candidate.record)?;
             deployment.publisher_mut().verify_object(digest)?;
-            publish_manifest(deployment, &candidate.slot, &candidate.manifest, candidate.event.interval, cx)?;
+            publish_manifest(
+                deployment,
+                &candidate.slot,
+                &candidate.manifest,
+                candidate.event.interval,
+                cx,
+            )?;
             checkpoint(cx, "long_dwell:commit")?;
-            deployment.publish_event(&ReferencePolicyDecision { event: candidate.event.clone(), action: ReferencePolicyAction::Hold }, cx)?;
+            deployment.publish_event(
+                &ReferencePolicyDecision {
+                    event: candidate.event.clone(),
+                    action: ReferencePolicyAction::Hold,
+                },
+                cx,
+            )?;
             cx.checkpoint_post_commit("long_dwell:published");
             candidate.status = WatchStatus::Published;
             published += 1;
@@ -627,8 +1003,14 @@ impl LongDwellReport {
 
     /// Complete bounded JSON; source time, incomplete decoding, and lack of absence proof remain explicit.
     pub fn to_json(&self, authority_sequence: u64, approve_hint: Option<&str>) -> Result<String> {
-        if approve_hint.is_some_and(|hint| hint.len() > 8192) { return Err(WatchError::Limit); }
-        let approve_hint = if self.publication_blocked() { None } else { approve_hint };
+        if approve_hint.is_some_and(|hint| hint.len() > 8192) {
+            return Err(WatchError::Limit);
+        }
+        let approve_hint = if self.publication_blocked() {
+            None
+        } else {
+            approve_hint
+        };
         let candidates = self.candidates.iter().map(|c| {
             let span = c.span();
             let command = match (c.status, approve_hint) {
@@ -644,81 +1026,168 @@ impl LongDwellReport {
                 span.observations, json(&span.trigger_minimum_ns.to_string()), json(&span.minimum_duration_ns.to_string()),
                 json(&c.approval.to_text()), json(&c.manifest.root().to_text()), json(c.status.as_str()), command = command)
         }).collect::<Vec<_>>().join(",");
-        let refusals = self.refusals.iter().map(|r| format!(
-            "{{\"first_segment\":{},\"last_segment\":{},\"error_id\":{}}}",
-            r.first_segment, r.last_segment, json(&r.error_id))).collect::<Vec<_>>().join(",");
-        let mut text = format!(concat!("{{\"format\":\"fss.long_dwell_report.v1\",\"site\":{},\"principal\":{},",
-            "\"import_identity\":{},\"import_root\":{},\"plan_digest\":{},\"analysis_digest\":{},\"analysis_root\":{},",
-            "\"analysis_basis_sequence\":{},\"analysis_basis_root\":{},\"authority_sequence\":{},\"first_segment\":{},\"segment_count\":{},",
-            "\"frames_decoded\":{},\"unreliable_time_frames\":{},\"masked_zones\":{},\"tracking_restarts\":{},",
-            "\"minimum_duration_ns\":{},\"maximum_sample_gap_ns\":{},\"minimum_observations\":{},",
-            "\"tolerate_decode_refusals\":{},\"decode_refusals\":[{}],\"source_chunk_bytes_read\":{},",
-            "\"pixel_samples_processed\":{},\"assignment_work_admitted\":{},\"jpeg_work_units\":{},\"trace_record_bytes\":{},",
-            "\"privacy_binding\":{},\"candidate_count\":{},\"candidates\":[{}],",
-            "\"media_format\":\"mjpeg\",\"capture_time_label\":\"operator_assumption\",",
-            "\"event_kind\":\"unclassified\",\"event_state\":\"indeterminate\",\"policy_action\":\"hold\",",
-            "\"calibrated\":false,\"corroborated\":false,\"continuous_occupancy_proved\":false,",
-            "\"absence_certifiable\":false,\"alert_authorized\":false,\"model_invoked\":false,",
-            "\"qualification\":\"implemented_not_qualified\"}}"),
-            json(&self.site), json(&self.principal), json(&self.plan.import_identity.to_text()), json(&self.import_root.to_text()),
-            json(&self.plan.digest().to_text()), json(&self.analysis_digest().to_text()), json(&self.analysis_manifest.root().to_text()),
-            self.basis.commit_sequence, json(&self.basis.state_root.to_text()), authority_sequence, self.plan.first_segment, self.plan.segment_count,
-            self.decoded, self.unreliable, self.masked_zones, self.restarts,
-            json(&self.rule.minimum_duration_ns.to_string()), json(&self.rule.maximum_sample_gap_ns.to_string()), self.rule.minimum_observations,
-            self.options.tolerate_decode_refusals, refusals, self.source_bytes, self.pixel_samples, self.assignment_work,
-            self.jpeg_work, self.analysis.len(), json(&self.privacy.digest().to_text()), self.candidates.len(), candidates);
+        let refusals = self
+            .refusals
+            .iter()
+            .map(|r| {
+                format!(
+                    "{{\"first_segment\":{},\"last_segment\":{},\"error_id\":{}}}",
+                    r.first_segment,
+                    r.last_segment,
+                    json(&r.error_id)
+                )
+            })
+            .collect::<Vec<_>>()
+            .join(",");
+        let mut text = format!(
+            concat!(
+                "{{\"format\":\"fss.long_dwell_report.v1\",\"site\":{},\"principal\":{},",
+                "\"import_identity\":{},\"import_root\":{},\"plan_digest\":{},\"analysis_digest\":{},\"analysis_root\":{},",
+                "\"analysis_basis_sequence\":{},\"analysis_basis_root\":{},\"authority_sequence\":{},\"first_segment\":{},\"segment_count\":{},",
+                "\"frames_decoded\":{},\"unreliable_time_frames\":{},\"masked_zones\":{},\"tracking_restarts\":{},",
+                "\"minimum_duration_ns\":{},\"maximum_sample_gap_ns\":{},\"minimum_observations\":{},",
+                "\"tolerate_decode_refusals\":{},\"decode_refusals\":[{}],\"source_chunk_bytes_read\":{},",
+                "\"pixel_samples_processed\":{},\"assignment_work_admitted\":{},\"jpeg_work_units\":{},\"trace_record_bytes\":{},",
+                "\"privacy_binding\":{},\"candidate_count\":{},\"candidates\":[{}],",
+                "\"media_format\":\"mjpeg\",\"capture_time_label\":\"operator_assumption\",",
+                "\"event_kind\":\"unclassified\",\"event_state\":\"indeterminate\",\"policy_action\":\"hold\",",
+                "\"calibrated\":false,\"corroborated\":false,\"continuous_occupancy_proved\":false,",
+                "\"absence_certifiable\":false,\"alert_authorized\":false,\"model_invoked\":false,",
+                "\"qualification\":\"implemented_not_qualified\"}}"
+            ),
+            json(&self.site),
+            json(&self.principal),
+            json(&self.plan.import_identity.to_text()),
+            json(&self.import_root.to_text()),
+            json(&self.plan.digest().to_text()),
+            json(&self.analysis_digest().to_text()),
+            json(&self.analysis_manifest.root().to_text()),
+            self.basis.commit_sequence,
+            json(&self.basis.state_root.to_text()),
+            authority_sequence,
+            self.plan.first_segment,
+            self.plan.segment_count,
+            self.decoded,
+            self.unreliable,
+            self.masked_zones,
+            self.restarts,
+            json(&self.rule.minimum_duration_ns.to_string()),
+            json(&self.rule.maximum_sample_gap_ns.to_string()),
+            self.rule.minimum_observations,
+            self.options.tolerate_decode_refusals,
+            refusals,
+            self.source_bytes,
+            self.pixel_samples,
+            self.assignment_work,
+            self.jpeg_work,
+            self.analysis.len(),
+            json(&self.privacy.digest().to_text()),
+            self.candidates.len(),
+            candidates
+        );
         if let Some(summary) = &self.health {
-            if text.pop() != Some('}') { return Err(WatchError::Conflict); }
+            if text.pop() != Some('}') {
+                return Err(WatchError::Conflict);
+            }
             text.push_str(",\"sensor_health\":");
             text.push_str(&summary.to_json());
             text.push('}');
         }
-        if text.len() > MAX_REPORT_BYTES { return Err(WatchError::Limit); }
+        if text.len() > MAX_REPORT_BYTES {
+            return Err(WatchError::Limit);
+        }
         Ok(text)
     }
 }
 
 fn slot(prefix: &str, digest: ContentDigest) -> Result<SlotName> {
-    SlotName::parse(&format!("{prefix}-{}", hex(digest))).map_err(|_| WatchError::InvalidPlan("long dwell slot"))
+    SlotName::parse(&format!("{prefix}-{}", hex(digest)))
+        .map_err(|_| WatchError::InvalidPlan("long dwell slot"))
 }
 fn event_status(d: &ReferenceDeployment, event: &EventHypothesis) -> Result<WatchStatus> {
     let object = ObjectId::parse(format!("object:event:{}", event.event_id.as_str()))?;
-    let Some(current) = d.ledger().current().objects.get(&object) else { return Ok(WatchStatus::Prepared); };
-    if d.ledger().batches().iter().any(|b| b.deltas.iter().any(|delta| {
-        delta.object_id == object && delta.family == "event_revision"
-            && delta.new_generation == current.generation && delta.payload_digest == current.payload_digest
-            && delta.witness_digest == Some(event.revision_digest())
-    })) { Ok(WatchStatus::AlreadyPublished) } else { Err(WatchError::Conflict) }
+    let Some(current) = d.ledger().current().objects.get(&object) else {
+        return Ok(WatchStatus::Prepared);
+    };
+    if d.ledger().batches().iter().any(|b| {
+        b.deltas.iter().any(|delta| {
+            delta.object_id == object
+                && delta.family == "event_revision"
+                && delta.new_generation == current.generation
+                && delta.payload_digest == current.payload_digest
+                && delta.witness_digest == Some(event.revision_digest())
+        })
+    }) {
+        Ok(WatchStatus::AlreadyPublished)
+    } else {
+        Err(WatchError::Conflict)
+    }
 }
-fn prepare_candidate(d: &ReferenceDeployment, episode: Episode, plan: &WatchPlan,
-    analysis_root: ContentDigest, sensor: &SensorId, principal: &str,
-    privacy: &MaskBinding) -> Result<LongDwellCandidate>
-{
+fn prepare_candidate(
+    d: &ReferenceDeployment,
+    episode: Episode,
+    plan: &WatchPlan,
+    analysis_root: ContentDigest,
+    sensor: &SensorId,
+    principal: &str,
+    privacy: &MaskBinding,
+) -> Result<LongDwellCandidate> {
     let mut e = CanonicalEncoder::new();
-    e.text(EPISODE_DOMAIN); e.digest(analysis_root); e.text(&plan.zones[episode.zone].zone_id);
-    e.u64(episode.epoch); e.u64(episode.track);
+    e.text(EPISODE_DOMAIN);
+    e.digest(analysis_root);
+    e.text(&plan.zones[episode.zone].zone_id);
+    e.u64(episode.epoch);
+    e.u64(episode.track);
     for sample in [episode.span.first, episode.span.trigger, episode.span.last] {
         e.u64(sample.position as u64);
-        sample.capture.ok_or(WatchError::Conflict)?.encode_canonical(&mut e);
+        sample
+            .capture
+            .ok_or(WatchError::Conflict)?
+            .encode_canonical(&mut e);
     }
     e.u64(episode.span.observations as u64);
-    e.text(&episode.span.trigger_minimum_ns.to_string()); e.text(&episode.span.minimum_duration_ns.to_string());
+    e.text(&episode.span.trigger_minimum_ns.to_string());
+    e.text(&episode.span.minimum_duration_ns.to_string());
     let record = e.finish_checked()?;
     let identity = ContentDigest::sha256(&record);
-    let manifest = ObjectManifest::new("recorded-long-dwell-episode-v1", [analysis_root, identity], None)?;
-    let interval = CaptureInterval::new(episode.span.first.capture.ok_or(WatchError::Conflict)?.earliest,
-        episode.span.last.capture.ok_or(WatchError::Conflict)?.latest)?;
+    let manifest = ObjectManifest::new(
+        "recorded-long-dwell-episode-v1",
+        [analysis_root, identity],
+        None,
+    )?;
+    let interval = CaptureInterval::new(
+        episode
+            .span
+            .first
+            .capture
+            .ok_or(WatchError::Conflict)?
+            .earliest,
+        episode
+            .span
+            .last
+            .capture
+            .ok_or(WatchError::Conflict)?
+            .latest,
+    )?;
     let sensor_digest = ContentDigest::sha256(sensor.as_str().as_bytes());
     let failure_domain = format!("recorded-sensor:{}", hex(sensor_digest));
     let mut evidence = vec![EventEvidence {
-        digest: identity, class: EvidenceClass::Derived, failure_domain: failure_domain.clone(),
-        supports: false, relation: EvidenceEdgeRelation::DerivedFrom, capsule_digest: None,
+        digest: identity,
+        class: EvidenceClass::Derived,
+        failure_domain: failure_domain.clone(),
+        supports: false,
+        relation: EvidenceEdgeRelation::DerivedFrom,
+        capsule_digest: None,
         identity_digest: Some(sensor_digest),
     }];
     if let Some(policy) = privacy.policy() {
         evidence.push(EventEvidence {
-            digest: policy.digest(), class: EvidenceClass::Assertion, failure_domain,
-            supports: false, relation: EvidenceEdgeRelation::RequiredBy, capsule_digest: None,
+            digest: policy.digest(),
+            class: EvidenceClass::Assertion,
+            failure_domain,
+            supports: false,
+            relation: EvidenceEdgeRelation::RequiredBy,
+            capsule_digest: None,
             identity_digest: Some(sensor_digest),
         });
     }
@@ -736,20 +1205,39 @@ fn prepare_candidate(d: &ReferenceDeployment, episode: Episode, plan: &WatchPlan
     };
     event.validate()?;
     let mut e = CanonicalEncoder::new();
-    e.text(APPROVAL_DOMAIN); e.text(d.site_lineage()); e.text(principal);
-    e.digest(event.revision_digest()); e.digest(manifest.root());
+    e.text(APPROVAL_DOMAIN);
+    e.text(d.site_lineage());
+    e.text(principal);
+    e.digest(event.revision_digest());
+    e.digest(manifest.root());
     let approval = ContentDigest::sha256(&e.finish_checked()?);
     let status = event_status(d, &event)?;
-    Ok(LongDwellCandidate { episode, event, record, manifest, slot: slot("ld-e", identity)?, approval, status })
+    Ok(LongDwellCandidate {
+        episode,
+        event,
+        record,
+        manifest,
+        slot: slot("ld-e", identity)?,
+        approval,
+        status,
+    })
 }
-fn publish_manifest(d: &mut ReferenceDeployment, slot: &SlotName, manifest: &ObjectManifest,
-    validity: CaptureInterval, cx: &ReplayCx) -> Result<()>
-{
-    for digest in manifest.children() { d.publisher_mut().verify_object(*digest)?; }
+fn publish_manifest(
+    d: &mut ReferenceDeployment,
+    slot: &SlotName,
+    manifest: &ObjectManifest,
+    validity: CaptureInterval,
+    cx: &ReplayCx,
+) -> Result<()> {
+    for digest in manifest.children() {
+        d.publisher_mut().verify_object(*digest)?;
+    }
     match d.publisher().root(slot) {
         Some(root) if root.root != manifest.root() => return Err(WatchError::Conflict),
         Some(_) => {}
-        None => { d.publisher_mut().stage_manifest(slot, manifest)?; }
+        None => {
+            d.publisher_mut().stage_manifest(slot, manifest)?;
+        }
     }
     d.publish_and_commit(slot, manifest, validity, cx)?;
     Ok(())
@@ -758,15 +1246,17 @@ fn json(value: &str) -> String {
     let mut out = String::from("\"");
     for c in value.chars() {
         match c {
-            '"' => out.push_str("\\\""), '\\' => out.push_str("\\\\"),
+            '"' => out.push_str("\\\""),
+            '\\' => out.push_str("\\\\"),
             c if u32::from(c) < 32 => out.push_str(&format!("\\u{:04x}", u32::from(c))),
             c => out.push(c),
         }
     }
-    out.push('"'); out
+    out.push('"');
+    out
 }
 
 #[cfg(test)]
-mod tests;
-#[cfg(test)]
 mod health_tests;
+#[cfg(test)]
+mod tests;

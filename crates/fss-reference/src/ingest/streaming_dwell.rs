@@ -139,7 +139,10 @@ impl DwellAccumulator {
         });
         active.last = sample;
         active.observations += 1;
-        let duration = elapsed(active.first.capture.ok_or(DwellError::InvalidSamples)?, capture);
+        let duration = elapsed(
+            active.first.capture.ok_or(DwellError::InvalidSamples)?,
+            capture,
+        );
         if active.trigger.is_none()
             && active.observations >= self.policy.minimum_observations
             && duration >= u128::from(self.policy.minimum_duration_ns)

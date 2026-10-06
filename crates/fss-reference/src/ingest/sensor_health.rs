@@ -392,6 +392,6 @@ fn percentile(histogram: &[u64; 256], rank: u64) -> u8 {
 }
 
 #[cfg(test)]
-mod tests;
-#[cfg(test)]
 mod long_tests;
+#[cfg(test)]
+mod tests;

@@ -868,8 +868,9 @@ class TestSchemaConstitution(unittest.TestCase):
         # plan/completion v3, retention selection and Model IR operator table domains).
         # Count: 209 + SCHEMA-DOMAIN-SOURCE-COVERAGE-{RECORD,APPROVAL}-001 (fss-tch7u)
         # + SCHEMA-DOMAIN-RECORDED-DWELL-{RULE,ANALYSIS,OBSERVATION,CANDIDATE,APPROVAL}-001 (FSS-083)
-        # + SCHEMA-DOMAIN-RTPDUMP-IMPORT-{IDENTITY,REPORT}-001 (fss-2h5zq.27) = 218.
-        self.assertEqual(result["digestDomainCount"], 218)
+        # + SCHEMA-DOMAIN-RTPDUMP-IMPORT-{IDENTITY,REPORT}-001 (fss-2h5zq.27)
+        # + SCHEMA-DOMAIN-LONG-DWELL-{ANALYSIS,FRAME,EPISODE,APPROVAL}-001 = 222.
+        self.assertEqual(result["digestDomainCount"], 222)
 
         # Continuation cursor is verified implemented
         implemented_names = {s["name"] for s in result["schemas"] if s["status"] == "implemented"}
@@ -1382,8 +1383,9 @@ class TestSchemaConstitutionCrossReviewRegressions(unittest.TestCase):
         # plan/completion v3, retention selection and Model IR operator table domains).
         # Count: 209 + SCHEMA-DOMAIN-SOURCE-COVERAGE-{RECORD,APPROVAL}-001 (fss-tch7u)
         # + SCHEMA-DOMAIN-RECORDED-DWELL-{RULE,ANALYSIS,OBSERVATION,CANDIDATE,APPROVAL}-001 (FSS-083)
-        # + SCHEMA-DOMAIN-RTPDUMP-IMPORT-{IDENTITY,REPORT}-001 (fss-2h5zq.27) = 218.
-        self.assertEqual(result["digestDomainCount"], 218)
+        # + SCHEMA-DOMAIN-RTPDUMP-IMPORT-{IDENTITY,REPORT}-001 (fss-2h5zq.27)
+        # + SCHEMA-DOMAIN-LONG-DWELL-{ANALYSIS,FRAME,EPISODE,APPROVAL}-001 = 222.
+        self.assertEqual(result["digestDomainCount"], 222)
         # 36 = 28 + fss.sensor_tamper_status.v1 (owner SensorTamperStatus, fss-2uftm)
         # + fss.agent_operations.v1 / fss.agent_views.v1 / fss.agent_request_envelope.v1
         #   (owners AgentOperation / AgentView / AgentRequestEnvelope, fss-x4a.30.83.17-40)
