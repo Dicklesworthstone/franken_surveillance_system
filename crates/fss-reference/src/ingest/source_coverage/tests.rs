@@ -2436,6 +2436,92 @@ fn the_policy_holds_a_gapped_record_indeterminate() -> TestResult {
     Ok(())
 }
 
+/// The plain policy without a record: every analysed-nothing frame leaves the candidate
+/// indeterminate with no coverage reason at all.
+fn plain_policy(
+    event_id: &EventId,
+    _: &SourceCoverageRecord,
+    observations: Vec<ReferenceModelObservation>,
+) -> Result<ReferencePolicyDecision, Box<dyn Error>> {
+    Ok(crate::evaluate_unknown_presence(
+        event_id.clone(),
+        observations,
+    )?)
+}
+
+/// fss-pgwsv N2, negative side: the coverage-gap line is stated only for an event the policy
+/// holds indeterminate because the witness does not certify. An event held indeterminate for
+/// another reason (analysis incomplete over a covering record, analyses under two generations,
+/// or the plain policy with no coverage reason) still states the generic indeterminate line and
+/// never the coverage-gap one.
+#[test]
+fn the_situation_names_the_coverage_gap_reason_only_for_a_gapped_record() -> TestResult {
+    let cases: [(&str, Plan, Option<&str>); 3] = [
+        (
+            "n2-partial-analysis",
+            Plan {
+                analyse: all_but_one_frame,
+                ..Plan::new(everything, true)
+            },
+            Some(COVERAGE_ANALYSIS_INCOMPLETE),
+        ),
+        (
+            "n2-two-generations",
+            Plan {
+                analyse: one_frame_under_b,
+                ..Plan::new(everything, true)
+            },
+            Some(COVERAGE_ANALYSIS_INCOMPLETE),
+        ),
+        (
+            "n2-plain-policy",
+            Plan {
+                decide: plain_policy,
+                ..Plan::new(everything, true)
+            },
+            None,
+        ),
+    ];
+    for (tag, plan, reason) in cases {
+        let mut quiet = Quiet::run_plan(tag, plan)?;
+        // The record is complete: the witness certifies, so the gap reason is never the cause.
+        assert!(quiet.record.witness.certifies_absence(), "{tag}");
+        let event = &quiet.decision.event;
+        assert_eq!(event.state, EventState::Indeterminate, "{tag}");
+        assert_eq!(event.uncertainty_reason.as_deref(), reason, "{tag}");
+        let situation = quiet.situation_without_coverage()?;
+        let frame = &situation.capsule.frame;
+        // The indeterminate arm ran: its generic line is stated exactly once.
+        let generic = frame
+            .unknown
+            .iter()
+            .filter(|line| line.starts_with("The event remains indeterminate"))
+            .count();
+        assert_eq!(generic, 1, "{tag}: {:?}", frame.unknown);
+        // The coverage-gap reason is not.
+        let stated = frame
+            .unknown
+            .iter()
+            .filter(|line| {
+                line.contains(crate::COVERAGE_WITNESS_NOT_CERTIFYING)
+                    || line.contains("not observable over a coverage gap")
+            })
+            .count();
+        assert_eq!(stated, 0, "{tag}: {:?}", frame.unknown);
+        let presence_live = format!("world:event:{}:presence-live", quiet.event_id.as_str());
+        assert!(
+            frame
+                .world_envelope
+                .alternatives
+                .iter()
+                .any(|world| world.protected && world.world_id == presence_live),
+            "{tag}"
+        );
+        quiet.cleanup();
+    }
+    Ok(())
+}
+
 /// D3: a result whose sensor, source payload, capsule binding or spec digest disagrees with the
 /// frame it names does not cover that frame: the shared check refuses it, the policy holds the
 /// candidate indeterminate, and a rejection citing it is refused by the rule.
