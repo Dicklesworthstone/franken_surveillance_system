@@ -2807,14 +2807,20 @@ mod tests {
             assert!(report.effect_state.is_none(), "{name}");
 
             // The retained witness is gapped: authorized over both domains, observed over the
-            // one that delivered; only that domain contradicts the candidate.
+            // one that delivered; only that domain cites the witness against the candidate.
             let cx = make_cx(ScenarioKind::Quiet)?;
             let reopened = ReferenceDeployment::reopen(&root, "site:lab", &cx)?;
             let (event, _) =
                 reopened.current_event_authority(&EventId::parse("event:lab:quiet")?)?;
             assert_eq!(event.state, EventState::Rejected, "{name}");
-            let domains: BTreeSet<&str> = event
+            // Since fss-f8jls the event also cites one analysis per delivered frame (edges that
+            // carry the analysed capsule); the witness edges carry none.
+            let witness_edges: Vec<_> = event
                 .evidence
+                .iter()
+                .filter(|edge| edge.capsule_digest.is_none())
+                .collect();
+            let domains: BTreeSet<&str> = witness_edges
                 .iter()
                 .map(|edge| edge.failure_domain.as_str())
                 .collect();
@@ -2823,7 +2829,14 @@ mod tests {
                 BTreeSet::from(["front-power-and-network"]),
                 "{name}"
             );
-            let witness_digest = event.evidence.first().ok_or("no evidence")?.digest;
+            let delivered_frames = 10 - expected_gaps.len();
+            assert_eq!(event.model_receipts.len(), delivered_frames, "{name}");
+            assert_eq!(
+                event.evidence.len() - witness_edges.len(),
+                delivered_frames,
+                "{name}"
+            );
+            let witness_digest = witness_edges.first().ok_or("no witness edge")?.digest;
             let witness = CoverageWitness::from_canonical_bytes(
                 &reopened.publisher().spool().read(witness_digest)?,
             )?;
