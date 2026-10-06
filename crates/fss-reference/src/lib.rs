@@ -40,6 +40,8 @@ mod delivery;
 /// Durable agent sessions and root-last handoffs over a deployment root (AOP-001, AOP-002,
 /// AOP-012); agent-plane writes only.
 pub mod deployment_session;
+/// Read-only, authority-pinned operational inventory of retained deployment state.
+pub mod deployment_status;
 pub mod doctor;
 mod durable_effect;
 mod encoded_fixture;
