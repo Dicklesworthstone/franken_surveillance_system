@@ -966,7 +966,42 @@ fn stray_foreign_ssrc_packet_is_refused_and_the_stream_keeps_ingesting() -> Test
 /// stops reaching the depacketizer.
 #[test]
 fn foreign_ssrc_on_another_payload_type_opens_no_generation() -> TestResult {
-    const PCMU: u8 = 0;
+    foreign_payload_types_open_no_generation("foreign-pt", [PCMU, PCMU])
+}
+
+/// fss-iui8a review: the foreign SSRC's first packet is on the bound payload type and its second
+/// on PCMU. The first passes the replay's first payload-type check, so only the lookahead's
+/// check on the second packet keeps the pair from opening a generation.
+///
+/// Planted negative: removing only the lookahead payload-type check of `new_source_validated`
+/// (replay.rs, the per-packet check in the probation loop) opens a generation for SSRC_B.
+#[test]
+fn foreign_ssrc_bound_then_other_payload_type_opens_no_generation() -> TestResult {
+    let bound = config_for(SSRC_A).payload_type;
+    foreign_payload_types_open_no_generation("foreign-pt-bound-pcmu", [bound, PCMU])
+}
+
+/// fss-iui8a review: the foreign SSRC's first packet is on PCMU and its second on the bound
+/// payload type. The lookahead from the second packet sees a bound-stream record, so only the
+/// first packet's own payload-type check keeps it from opening a generation with the second.
+///
+/// Planted negative: removing only the first payload-type check of `new_source_validated`
+/// (replay.rs, the check of the candidate packet itself) opens a generation for SSRC_B.
+#[test]
+fn foreign_ssrc_other_then_bound_payload_type_opens_no_generation() -> TestResult {
+    let bound = config_for(SSRC_A).payload_type;
+    foreign_payload_types_open_no_generation("foreign-pt-pcmu-bound", [PCMU, bound])
+}
+
+/// PCMU, payload type 0: an audio stream interleaved in the recording.
+const PCMU: u8 = 0;
+
+/// Two consecutive foreign-SSRC packets with `payload_types` inside a pending FU-A fragment of
+/// the bound stream: both are refused alone as strays, retire no fragment, and the bound stream
+/// keeps ingesting to its end in generation 1.
+fn foreign_payload_types_open_no_generation(label: &str, payload_types: [u8; 2]) -> TestResult {
+    let bound = config_for(SSRC_A).payload_type;
+    assert_eq!(bound, 96, "rtp_full writes payload type 96");
     let planned = packetize(2, MAX_PAYLOAD, 65_534, SSRC_A, 90_000, 0);
     let at_index = 30;
     // Precondition: the foreign packets land inside a fragmented NAL.
@@ -974,9 +1009,12 @@ fn foreign_ssrc_on_another_payload_type_opens_no_generation() -> TestResult {
     assert_eq!(planned[at_index].payload[1] & 0x80, 0);
     let offset_ms = planned[at_index].offset_ms;
     let mut foreign = Vec::new();
-    for (seq, timestamp) in [(500_u16, 8_000_u32), (501, 8_160)] {
+    for ((seq, timestamp), payload_type) in [(500_u16, 8_000_u32), (501, 8_160)]
+        .into_iter()
+        .zip(payload_types)
+    {
         let mut wire = rtp_full(seq, false, timestamp, SSRC_B, &[0xff; 160]);
-        wire[1] = PCMU;
+        wire[1] = payload_type;
         foreign.push(wire);
     }
     let mut bytes = header();
@@ -989,7 +1027,7 @@ fn foreign_ssrc_on_another_payload_type_opens_no_generation() -> TestResult {
         let wire = rtp_full(p.seq, p.marker, p.timestamp, p.ssrc, &p.payload);
         record(&mut bytes, &wire, wire.len() as u16, p.offset_ms);
     }
-    let run = run("foreign-pt", &bytes, config_for(SSRC_A), policy(16))?;
+    let run = run(label, &bytes, config_for(SSRC_A), policy(16))?;
     let records = run.import.records();
     assert_eq!(records.len(), planned.len() + 2);
     let refused: Vec<usize> = records
@@ -998,7 +1036,7 @@ fn foreign_ssrc_on_another_payload_type_opens_no_generation() -> TestResult {
         .filter(|(_, r)| matches!(r.disposition, RecordDisposition::StreamRefused(_)))
         .map(|(i, _)| i)
         .collect();
-    assert_eq!(refused, vec![at_index, at_index + 1]);
+    assert_eq!(refused, vec![at_index, at_index + 1], "{label}");
     for r in &records[at_index..at_index + 2] {
         assert_eq!(
             r.disposition,
@@ -1046,7 +1084,11 @@ fn foreign_ssrc_on_another_payload_type_opens_no_generation() -> TestResult {
     }
     caplog(
         "foreign_payload_type_refused",
-        &format!("{}|{}", kinds_text(report), hit.len()),
+        &format!(
+            "{label}|{payload_types:?}|{}|{}",
+            kinds_text(report),
+            hit.len()
+        ),
     );
     Ok(())
 }
