@@ -216,6 +216,7 @@
     "crates/fss-reference/src/deletion/walk.rs": "effect",
     "crates/fss-reference/src/delivery.rs": "authority",
     "crates/fss-reference/src/deployment_session.rs": "cognition",
+    "crates/fss-reference/src/deployment_session/investigation.rs": "cognition",
     "crates/fss-reference/src/deployment_session/tests.rs": "support",
     "crates/fss-reference/src/deployment_status.rs": "support",
     "crates/fss-reference/src/doctor.rs": "support",

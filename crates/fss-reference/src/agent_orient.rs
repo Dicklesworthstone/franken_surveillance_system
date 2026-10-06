@@ -97,6 +97,10 @@ pub const CAPABILITY_DOCTOR: &str = "CAP-REPAIR-PREPARE-001";
 pub const CAPABILITY_PLAN_PREPARE: &str = "CAP-AGENT-PLAN-PREPARE-001";
 /// Capability registry row that admits an effect commit (AOP-008).
 pub const CAPABILITY_PLAN_COMMIT: &str = "CAP-AGENT-PLAN-COMMIT-001";
+/// Capability every listed investigation-case affordance requires (the AOP-006 registry row).
+pub const CAPABILITY_CASE_WRITE: &str = "CAP-AGENT-CASE-WRITE-001";
+/// Prefix of the affordance a session-bound orientation lists for each open investigation case.
+pub const AFFORDANCE_INVESTIGATE_PREFIX: &str = "affordance:investigate:";
 
 /// Stable claim identity of the ledger-head cell: the registered anchor-position claim
 /// (`anchor_position_restatement` of `meaningfulDeltaComparison`, architecture/agent_contracts.json)
@@ -1288,6 +1292,8 @@ pub struct DeploymentOrientation {
     pub anchor_token: String,
     /// Per-zone coverage from retained witnesses; `None` when no coverage record is retained.
     pub coverage: Option<CoverageAssessment>,
+    /// Open investigation cases of the bound mission (empty when no session is bound).
+    pub active_investigations: Vec<String>,
 }
 
 impl DeploymentOrientation {
@@ -1799,6 +1805,7 @@ struct CompiledSituation {
 fn compile_capsule(
     snapshot: &DeploymentSnapshot,
     request: &OrientRequest,
+    cases: &[OrientCaseBrief],
 ) -> Result<CompiledSituation, OrientError> {
     let heartbeat = request.view == AgentView::Pulse;
     let anchor = snapshot.anchor.clone();
@@ -2257,6 +2264,9 @@ fn compile_capsule(
             }
             .build(),
         );
+        for case in cases {
+            affordances.push(case_affordance(case)?);
+        }
     }
     for operation in &indeterminate {
         affordances.push(
@@ -2906,6 +2916,53 @@ fn epistemic_debt(
 }
 
 /// One listed (never executed) affordance of the orientation frontier.
+/// The probe-class affordance listing one open investigation case.
+fn case_affordance(case: &OrientCaseBrief) -> Result<ActionAffordance, ContractError> {
+    let rationale = if case.rebase_required {
+        format!(
+            "Case {} ({}, revision {}) was opened at an earlier anchor: rebase it before any \
+             change (`fss investigate --transition rebase`).",
+            case.case_id, case.state, case.revision
+        )
+    } else if case.live_hypotheses.is_empty() {
+        format!(
+            "Case {} ({}, revision {}) has no live hypothesis: conclude it against a declared \
+             stop rule or record why it stays open.",
+            case.case_id, case.state, case.revision
+        )
+    } else {
+        let mut live = case.live_hypotheses.clone();
+        let shown = live.len().min(8);
+        let more = live.len() - shown;
+        live.truncate(shown);
+        format!(
+            "Case {} ({}, revision {}) still discriminates {} live hypotheses ({}{}): cite \
+             evidence, assess, or conclude (`fss investigate`).",
+            case.case_id,
+            case.state,
+            case.revision,
+            case.live_hypotheses.len(),
+            live.join(", "),
+            if more > 0 {
+                format!(", +{more} more")
+            } else {
+                String::new()
+            }
+        )
+    };
+    Ok(ListedAffordance {
+        affordance_id: format!("{AFFORDANCE_INVESTIGATE_PREFIX}{}", case.case_id),
+        operation: "investigate",
+        target: format!("fss://case/{}", case.case_id),
+        rationale,
+        class: AffordanceClass::Probe,
+        supported_worlds: BTreeSet::new(),
+        required_capability: CAPABILITY_CASE_WRITE,
+        cost: read_cost(0, 0)?,
+    }
+    .build())
+}
+
 struct ListedAffordance<'a> {
     affordance_id: String,
     operation: &'a str,
@@ -3101,6 +3158,22 @@ pub const UNBOUND_SESSION_DEGRADATION: &str = "No durable agent session is bound
     carries a deterministic read-only session identity and persists nothing (`fss session open` \
     opens a durable one).";
 
+/// One open investigation case of the bound mission (`fss investigate`), as listed by a
+/// session-bound orientation. Cases are cognition: listing one never executes a probe.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct OrientCaseBrief {
+    /// Stable case identity.
+    pub case_id: String,
+    /// Registered lifecycle spelling (`draft`, `active`, `awaiting_evidence`, ...).
+    pub state: String,
+    /// Case revision number.
+    pub revision: u64,
+    /// Hypotheses whose disposition is still live.
+    pub live_hypotheses: Vec<String>,
+    /// True when the case basis anchor is not the session's anchor (rebase before any change).
+    pub rebase_required: bool,
+}
+
 /// The durable agent session and mission an orientation is compiled for (`fss session`).
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct OrientSessionBinding {
@@ -3108,6 +3181,8 @@ pub struct OrientSessionBinding {
     pub mission_id: MissionId,
     /// Durable session identity.
     pub session_id: SessionId,
+    /// Open investigation cases of the mission visible to the session, in identity order.
+    pub cases: Vec<OrientCaseBrief>,
 }
 
 /// [`orient_deployment`] with the capsule bound to a durable session and mission instead of the
@@ -3130,7 +3205,8 @@ pub fn orient_deployment_for(
             maximum: limits.max_events,
         });
     }
-    let mut compiled = compile_capsule(snapshot, request)?;
+    let cases = session.map_or(&[][..], |binding| binding.cases.as_slice());
+    let mut compiled = compile_capsule(snapshot, request, cases)?;
     if let Some(binding) = session {
         compiled.capsule.mission_id = binding.mission_id.clone();
         compiled.capsule.session_id = binding.session_id.clone();
@@ -3260,6 +3336,7 @@ pub fn orient_deployment_for(
         privacy_generation_id: format!("privacy-epoch:{}", snapshot.anchor.privacy_epoch),
         anchor_token: compiled.anchor_token,
         coverage: compiled.coverage,
+        active_investigations: cases.iter().map(|case| case.case_id.clone()).collect(),
         publication,
     })
 }

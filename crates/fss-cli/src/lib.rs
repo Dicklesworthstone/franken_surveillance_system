@@ -16,6 +16,10 @@ pub mod error;
 pub mod follow_cmd;
 pub mod fss_cmd;
 pub mod hydration_cmd;
+/// `fss investigate` (AOP-006): durable mission-scoped investigation cases; agent-plane writes.
+pub mod investigate_cmd;
+/// Bounded strict JSON reading for intent files.
+pub mod json_input;
 pub mod lab_cmd;
 pub mod negative_evidence_cmd;
 /// Read-only `orient` (AOP-003) and `explain` (AOP-011) over a deployment root.

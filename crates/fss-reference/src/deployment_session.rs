@@ -63,8 +63,12 @@ use crate::agent_follow::{
     AnchorRefusal, AnchorToken, FollowItem, follow_items, resolve_anchor, snapshot_anchor_token,
 };
 use crate::agent_orient::{
-    DeploymentHistory, DeploymentOrientation, DeploymentReadError, DeploymentSnapshot, OrientError,
-    OrientLimits, OrientRequest, OrientSessionBinding, orient_deployment_for,
+    DeploymentHistory, DeploymentOrientation, DeploymentReadError, DeploymentSnapshot,
+    OrientCaseBrief, OrientError, OrientLimits, OrientRequest, OrientSessionBinding,
+    orient_deployment_for,
+};
+use crate::agent_session::checkpoint::journal::coordination::investigations::{
+    DurableInvestigationError, InvestigationError, InvestigationLimits,
 };
 use crate::agent_session::checkpoint::journal::workspace::{
     DurableWorkspaceError, JournaledWorkspace,
@@ -72,6 +76,7 @@ use crate::agent_session::checkpoint::journal::workspace::{
 use crate::agent_session::checkpoint::journal::{
     DurableSessionError, DurableSessionLimits, DurableSessionStore, MAX_SESSION_JOURNAL_BYTES,
 };
+use crate::agent_session::work_claims::WorkClaimLimits;
 use crate::agent_session::workspace::{
     WorkspaceError, WorkspaceLimits, WorkspaceRevision, WorkspaceWrite, WorkspaceWriteMode,
 };
@@ -83,6 +88,9 @@ use crate::situation_sections::{
 
 #[cfg(test)]
 mod tests;
+
+/// Durable mission-scoped investigation cases (AOP-006) in the deployment's session journal.
+pub mod investigation;
 
 /// Agent-plane directory under a deployment root; nothing outside it is ever written.
 pub const AGENT_DIR: &str = "agent";
@@ -100,10 +108,14 @@ pub const SESSION_LOCK_FILE: &str = "LOCK";
 pub const SESSION_LEASE_NS: i128 = 7 * 24 * 3_600 * 1_000_000_000;
 /// Handoff lifetime on the deployment evidence clock (seven days).
 pub const HANDOFF_LIFETIME_NS: i128 = 7 * 24 * 3_600 * 1_000_000_000;
-/// Agent-plane capabilities a session is negotiated with. None of them is an effect capability.
-pub const SESSION_CAPABILITIES: [&str; 5] = [
+/// Agent-plane capabilities a session is negotiated with. None of them is an effect capability:
+/// the case grants (`CAP-AGENT-CASE-WRITE-001`, the AOP-006 registry row, and
+/// `CAP-AGENT-INVESTIGATE-001`, the grant the case engine admits) write cognition only.
+pub const SESSION_CAPABILITIES: [&str; 7] = [
+    "CAP-AGENT-CASE-WRITE-001",
     "CAP-AGENT-HANDOFF-READ-001",
     "CAP-AGENT-HANDOFF-WRITE-001",
+    "CAP-AGENT-INVESTIGATE-001",
     "CAP-AGENT-SESSION-READ-001",
     "CAP-AGENT-SESSION-WRITE-001",
     "CAP-AGENT-SITUATION-READ-001",
@@ -147,6 +159,9 @@ pub enum DeploymentSessionError {
     StoreLocked,
     /// The agent-session store failed verification; it is never repaired implicitly.
     StoreInvalid(String),
+    /// The case engine refused an investigation command. Any session or case watermark change
+    /// it caused was committed (and pinned) before the refusal was returned.
+    CaseRefused(InvestigationError),
     /// A contract or encoding invariant failed (an internal failure, never a partial answer).
     Internal(String),
 }
@@ -164,6 +179,7 @@ impl fmt::Display for DeploymentSessionError {
             Self::HandoffInvalid(reason) => write!(f, "handoff refused: {reason}"),
             Self::StoreLocked => f.write_str("the agent-session store is held by another command"),
             Self::StoreInvalid(reason) => write!(f, "agent-session store refused: {reason}"),
+            Self::CaseRefused(error) => write!(f, "investigation refused: {error}"),
             Self::Internal(reason) => write!(f, "internal failure: {reason}"),
         }
     }
@@ -216,6 +232,15 @@ impl From<DurableWorkspaceError> for DeploymentSessionError {
             DurableWorkspaceError::Refused(error) => Self::SessionStale(error.to_string()),
             DurableWorkspaceError::Durability(error) => error.into(),
             other => Self::StoreInvalid(other.to_string()),
+        }
+    }
+}
+
+impl From<DurableInvestigationError> for DeploymentSessionError {
+    fn from(value: DurableInvestigationError) -> Self {
+        match value {
+            DurableInvestigationError::Refused(error) => Self::CaseRefused(error),
+            DurableInvestigationError::Durability(error) => error.into(),
         }
     }
 }
@@ -766,7 +791,14 @@ impl SessionJournal {
                             .to_owned(),
                     ));
                 }
-                DurableSessionStore::open_existing(&journal, last, limits)?
+                // Coordination-aware reader: a journal whose case history was initialized is
+                // replayed in full; a session-only journal reads exactly as before.
+                DurableSessionStore::open_existing_with_coordination(
+                    &journal,
+                    last,
+                    limits,
+                    WorkClaimLimits::default(),
+                )?
             }
         };
         store.initialize_workspaces(WorkspaceLimits::default())?;
@@ -804,6 +836,18 @@ impl SessionJournal {
 
     fn commit_pin(&self) -> Result<(), DeploymentSessionError> {
         self.pin(None)
+    }
+
+    /// One-way, idempotent initialization of coordination and case history (fixed ceilings),
+    /// committed and pinned before any case command runs.
+    fn enable_cases(&mut self) -> Result<(), DeploymentSessionError> {
+        if self.store.investigations_enabled() {
+            return Ok(());
+        }
+        self.store.enable_coordination(WorkClaimLimits::default())?;
+        self.store
+            .enable_investigations(InvestigationLimits::default())?;
+        self.commit_pin()
     }
 }
 
@@ -931,6 +975,7 @@ fn orient_bound(
     mission_id: &MissionId,
     session_id: &SessionId,
     limits: &OrientLimits,
+    cases: Vec<OrientCaseBrief>,
 ) -> Result<DeploymentOrientation, DeploymentSessionError> {
     let request = OrientRequest {
         view,
@@ -940,6 +985,7 @@ fn orient_bound(
     let binding = OrientSessionBinding {
         mission_id: mission_id.clone(),
         session_id: session_id.clone(),
+        cases,
     };
     Ok(orient_deployment_for(
         snapshot,
@@ -1144,6 +1190,7 @@ pub fn open_session(
         &mission_id,
         &session_id,
         &limits,
+        Vec::new(),
     )?;
     let now = evidence_now(&snapshot);
     let mission = MissionRecord {
@@ -1321,6 +1368,7 @@ pub fn prepare_handoff(
             "the workspace anchor token and the session anchor disagree".to_owned(),
         ));
     }
+    let briefs = investigation::case_briefs(&journal.store, &session, &session.current_anchor);
     let orientation = orient_bound(
         &snapshot,
         session.view,
@@ -1328,6 +1376,7 @@ pub fn prepare_handoff(
         &session.mission_id,
         &session.session_id,
         &limits,
+        briefs,
     )?;
     let publication = sealed_publication(orientation.publication.clone())?;
     let situation = orientation.capsule();
@@ -1654,6 +1703,7 @@ pub fn resume_session(
         &session.mission_id,
         session_id,
         &limits,
+        investigation::case_briefs(&journal.store, &session, &basis_snapshot.anchor),
     )?;
     let result = orient_bound(
         &head,
@@ -1662,6 +1712,7 @@ pub fn resume_session(
         &session.mission_id,
         session_id,
         &limits,
+        investigation::case_briefs(&journal.store, &session, &head.anchor),
     )?;
     let delta = classify_reference_meaningful_delta(&basis.publication, &result.publication)?;
     let items = follow_items(&delta);
@@ -1734,6 +1785,17 @@ pub fn resume_session(
     };
     let session = journal.store.session(principal, session_id, now)?;
     journal.commit_pin()?;
+    // Cases are bound to the anchor they were opened or rebased at: every open case whose basis
+    // is not the session's (new) anchor is listed, never silently carried forward.
+    let mut invalidated = invalidated;
+    let cases = investigation::visible_cases(&journal.store, &session);
+    for case in investigation::stale_case_ids(&cases, &session) {
+        invalidated.push(format!(
+            "investigation {case} invalidated: its basis anchor is not the session's anchor \
+             {}; rebase it (`fss investigate --transition rebase`) before any change",
+            result.anchor_token
+        ));
+    }
     let request_digest = digest_of("fss.reference_session_resume_request.v1", |encoder| {
         request.handoff_id.encode_canonical(encoder);
         request.principal.encode_canonical(encoder);

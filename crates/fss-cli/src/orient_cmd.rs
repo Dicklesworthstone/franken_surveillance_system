@@ -810,7 +810,10 @@ pub(crate) fn situation_capsule_payload(
                 .unwrap_or_else(|| "null".to_owned()),
         ),
         ("attentionFrontier", agent_json::array(&attention)),
-        ("activeInvestigations", "[]".to_owned()),
+        (
+            "activeInvestigations",
+            agent_json::strings(&orientation.active_investigations),
+        ),
         ("activeHypotheses", "[]".to_owned()),
         ("activePlans", "[]".to_owned()),
         (

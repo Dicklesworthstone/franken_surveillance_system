@@ -186,6 +186,26 @@ impl InvestigationRevision {
     pub const fn validity(&self) -> Option<&evolution::InvestigationValidity> {
         self.validity.as_ref()
     }
+    /// Principal that owns the case (an audit label, never an authority grant).
+    #[must_use]
+    pub const fn principal(&self) -> &PrincipalId {
+        &self.principal
+    }
+    /// Exact privacy domain the complete case was admitted under.
+    #[must_use]
+    pub fn privacy_class(&self) -> &str {
+        &self.privacy_class
+    }
+    /// Trusted runtime time at which this revision was committed.
+    #[must_use]
+    pub const fn changed_at(&self) -> TimestampNs {
+        self.changed_at
+    }
+    /// Citation or assessment artifact the latest change rests on, absent at creation.
+    #[must_use]
+    pub const fn assessment(&self) -> Option<ContentDigest> {
+        self.assessment
+    }
 }
 
 impl CanonicalEncode for InvestigationRevision {
@@ -295,6 +315,15 @@ impl ReferenceInvestigationStore {
             retained_bytes: 0,
             last_observed_at: None,
         })
+    }
+
+    /// Current head revision of every retained case, in stable case-identity order.
+    ///
+    /// A read-only projection for an owner that already holds the journal: it neither advances
+    /// clocks nor checks session authority, so callers must filter by principal, mission and
+    /// privacy domain before disclosing anything.
+    pub fn heads(&self) -> impl Iterator<Item = &InvestigationRevision> {
+        self.entries.values().map(|entry| &entry.head)
     }
 
     /// Executes using live session authority and a runtime clock, not an agent's claimed grants.

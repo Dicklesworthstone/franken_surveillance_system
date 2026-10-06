@@ -85,6 +85,27 @@ impl DurableSessionStore {
         Ok(())
     }
 
+    /// True once case history has been initialized in this journal.
+    #[must_use]
+    pub fn investigations_enabled(&self) -> bool {
+        self.coordination
+            .as_ref()
+            .is_some_and(|coordination| coordination.cases.is_some())
+    }
+
+    /// Committed head of every retained case, unfiltered (empty before initialization).
+    ///
+    /// Owner-side read: nothing is journaled and no session admission runs, so the caller must
+    /// apply principal, mission and privacy visibility before disclosing a revision.
+    #[must_use]
+    pub fn investigation_heads(&self) -> Vec<InvestigationRevision> {
+        self.coordination
+            .as_ref()
+            .and_then(|coordination| coordination.cases.as_ref())
+            .map(|cases| cases.heads().cloned().collect())
+            .unwrap_or_default()
+    }
+
     /// Commits case and refusal-side session changes before delivering any case revision.
     ///
     /// Exact-root reopening, pending-append reconciliation and cold recovery use the existing

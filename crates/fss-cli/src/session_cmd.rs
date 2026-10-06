@@ -23,6 +23,7 @@ use fss_core::{
 use fss_reference::agent_orient::{
     DeploymentReadError, OrientError, OrientLimits, read_deployment,
 };
+use fss_reference::agent_session::checkpoint::journal::coordination::investigations::InvestigationError;
 use fss_reference::deployment_session::{
     DeploymentSessionError, HandoffRecord, HandoffRequest, MAX_MISSION_BYTES, MAX_NOTE_BYTES,
     MAX_OBJECTIVE_BYTES, MAX_SESSION_TOKEN_BUDGET, OpenSessionRequest, OpenedSession,
@@ -53,6 +54,22 @@ pub const ERR_AGENT_HANDOFF_INVALID: &str = "ERR-AGENT-HANDOFF-INVALID-001";
 pub const ERR_AGENT_SESSION_STORE_LOCKED: &str = "ERR-AGENT-SESSION-STORE-LOCKED-001";
 /// Registered error identity: the agent-session store failed verification.
 pub const ERR_AGENT_SESSION_STORE_INVALID: &str = "ERR-AGENT-SESSION-STORE-INVALID-001";
+/// Registered error identity: an operation precondition does not hold.
+pub const ERR_OP_PRECONDITION_FAILED: &str = "ERR-OP-PRECONDITION-FAILED-001";
+/// Registered error identity: the principal lacks the required capability.
+pub const ERR_AUTH_DENIED: &str = "ERR-AUTH-DENIED-001";
+/// Registered error identity: a stable identity was reused for a different request.
+pub const ERR_IDEMPOTENCY_CONFLICT: &str = "ERR-IDEMPOTENCY-CONFLICT-001";
+/// Registered error identity: the exact precondition (revision, digest) is stale.
+pub const ERR_PRECONDITION_STALE: &str = "ERR-PRECONDITION-STALE-001";
+/// Registered error identity: a deadline elapsed.
+pub const ERR_OP_TIMEOUT: &str = "ERR-OP-TIMEOUT-001";
+/// Registered error identity: required evidence is missing.
+pub const ERR_EVIDENCE_MISSING: &str = "ERR-EVIDENCE-MISSING-001";
+/// Registered error identity: a bounded budget or capacity is exhausted.
+pub const ERR_BUDGET_EXHAUSTED: &str = "ERR-BUDGET-EXHAUSTED-001";
+/// Registered error identity: the clock basis is uncertain or regressed.
+pub const ERR_CLOCK_UNCERTAIN: &str = "ERR-CLOCK-UNCERTAIN-001";
 /// Capability registry row admitting `session.open` (AOP-001).
 pub const CAPABILITY_SESSION_OPEN: &str = "CAP-AGENT-SESSION-OPEN-001";
 /// Capability registry row admitting `session.resume` (AOP-002).
@@ -348,13 +365,13 @@ pub fn parse_session_args(tokens: &[ArgToken]) -> Result<SessionCommand, CliErro
     }
 }
 
-fn idempotency_key(request_digest: ContentDigest) -> String {
+pub(crate) fn idempotency_key(request_digest: ContentDigest) -> String {
     let text = request_digest.to_text();
     let hex = text.split_once(':').map_or(text.as_str(), |(_, hex)| hex);
     format!("idempotency:{hex}")
 }
 
-fn agent_plane_boundary(
+pub(crate) fn agent_plane_boundary(
     completed: String,
     invalidated: Vec<String>,
 ) -> fss_core::ExecutionBoundary {
@@ -497,6 +514,7 @@ fn assumption_objects(record: &HandoffRecord) -> Vec<String> {
 
 fn handoff_payload(
     record: &HandoffRecord,
+    active_investigations: &[String],
     objective: &str,
     publication_receipt: ContentDigest,
     workspace_digest: ContentDigest,
@@ -545,7 +563,10 @@ fn handoff_payload(
             "symbolTableGeneration",
             record.symbol_table_generation.to_string(),
         ),
-        ("activeInvestigations", "[]".to_owned()),
+        (
+            "activeInvestigations",
+            agent_json::strings(active_investigations),
+        ),
         ("findings", "[]".to_owned()),
         ("unresolvedQuestions", agent_json::strings(&record.unknowns)),
         (
@@ -733,6 +754,7 @@ fn handoff_response(
         payload_schema: HANDOFF_PAYLOAD_SCHEMA,
         payload_json: handoff_payload(
             record,
+            &orientation.active_investigations,
             objective,
             published.receipt.record_digest,
             record.workspace_digest,
@@ -924,25 +946,25 @@ fn resume_response(resumed: &ResumedSession) -> Result<String, Box<dyn std::erro
 // Refusals and dispatch.
 // ---------------------------------------------------------------------------------------------
 
-/// What differs between the three commands' refusals.
-struct Operation {
-    command: &'static str,
-    name: &'static str,
-    capability: &'static str,
-    payload_schema: &'static str,
-    view: AgentView,
-    root: PathBuf,
-    principal: PrincipalId,
-    request: Vec<u8>,
+/// What differs between agent-plane commands' refusals.
+pub(crate) struct Operation {
+    pub(crate) command: &'static str,
+    pub(crate) name: &'static str,
+    pub(crate) capability: &'static str,
+    pub(crate) payload_schema: &'static str,
+    pub(crate) view: AgentView,
+    pub(crate) root: PathBuf,
+    pub(crate) principal: PrincipalId,
+    pub(crate) request: Vec<u8>,
 }
 
 /// One typed refusal: what was refused and how to recover.
-struct Refusal {
-    error_id: &'static str,
-    reason: String,
-    guidance: &'static str,
-    recovery_class: &'static str,
-    safe_retry: ResponseSafeRetry,
+pub(crate) struct Refusal {
+    pub(crate) error_id: &'static str,
+    pub(crate) reason: String,
+    pub(crate) guidance: &'static str,
+    pub(crate) recovery_class: &'static str,
+    pub(crate) safe_retry: ResponseSafeRetry,
 }
 
 fn classify(error: DeploymentSessionError) -> Result<Refusal, DeploymentSessionError> {
@@ -1004,8 +1026,112 @@ fn classify(error: DeploymentSessionError) -> Result<Refusal, DeploymentSessionE
             recovery_class: "never_unchanged",
             safe_retry: ResponseSafeRetry::No,
         },
+        DeploymentSessionError::CaseRefused(case) => case_refusal(case, error.to_string()),
         other => return Err(other),
     })
+}
+
+/// The typed refusal of one investigation-engine refusal class.
+fn case_refusal(case: InvestigationError, reason: String) -> Refusal {
+    let (error_id, guidance, recovery_class, safe_retry) = match case {
+        InvestigationError::Unavailable => (
+            ERR_OP_PRECONDITION_FAILED,
+            "No case with that identity is visible to this session (unknown case, another \
+             principal or mission, or an unavailable privacy domain): list cases with \
+             `fss investigate --transition list`.",
+            "operator_action_required",
+            ResponseSafeRetry::No,
+        ),
+        InvestigationError::Denied => (
+            ERR_AUTH_DENIED,
+            "The session was not negotiated with the case grant; open a new session.",
+            "operator_action_required",
+            ResponseSafeRetry::No,
+        ),
+        InvestigationError::InvalidRecord => (
+            ERR_OP_PRECONDITION_FAILED,
+            "The case content fails the investigation contract (identities, bounds, at least \
+             two hypotheses, discriminators naming existing hypotheses, at least one stop rule, \
+             a future deadline); correct it and retry.",
+            "never_unchanged",
+            ResponseSafeRetry::No,
+        ),
+        InvestigationError::Conflict => (
+            ERR_IDEMPOTENCY_CONFLICT,
+            "The case identity already belongs to a different opening; choose another identity \
+             or inspect the existing case.",
+            "never_unchanged",
+            ResponseSafeRetry::No,
+        ),
+        InvestigationError::StaleRevision => (
+            ERR_PRECONDITION_STALE,
+            "Another writer advanced the case: inspect its head and re-derive the change against \
+             that exact revision.",
+            "refresh_and_retry",
+            ResponseSafeRetry::YesAfterRefresh,
+        ),
+        InvestigationError::StaleBasis => (
+            ERR_AGENT_SESSION_STALE,
+            "The case was opened at another anchor than the session's: rebase it with \
+             `--transition rebase` before any change.",
+            "rebase_required",
+            ResponseSafeRetry::YesAfterRefresh,
+        ),
+        InvestigationError::DeadlineElapsed => (
+            ERR_OP_TIMEOUT,
+            "The decision deadline elapsed on the deployment evidence clock: only \
+             indeterminate, cancelled, or closed remain available.",
+            "operator_action_required",
+            ResponseSafeRetry::No,
+        ),
+        InvestigationError::InvalidTransition => (
+            ERR_OP_PRECONDITION_FAILED,
+            "The lifecycle or disposition transition is not legal from the case's current \
+             state; inspect the case.",
+            "never_unchanged",
+            ResponseSafeRetry::No,
+        ),
+        InvestigationError::UnresolvedAlternatives => (
+            ERR_OP_PRECONDITION_FAILED,
+            "Live alternatives remain: a resolved conclusion needs a supported hypothesis and \
+             a refuted one needs every hypothesis refuted. Discriminate first.",
+            "never_unchanged",
+            ResponseSafeRetry::No,
+        ),
+        InvestigationError::EvidenceRequired => (
+            ERR_EVIDENCE_MISSING,
+            "An assessment must cite evidence already attached on the matching side (support or \
+             contradiction), readmitted after a rebase.",
+            "never_unchanged",
+            ResponseSafeRetry::No,
+        ),
+        InvestigationError::ResidualsRequired => (
+            ERR_OP_PRECONDITION_FAILED,
+            "A conclusion must name one declared stop rule exactly and acknowledge every \
+             residual unknown by identity.",
+            "never_unchanged",
+            ResponseSafeRetry::No,
+        ),
+        InvestigationError::CapacityExceeded | InvestigationError::CounterExhausted => (
+            ERR_BUDGET_EXHAUSTED,
+            "A bounded case store limit was reached; history is never evicted to proceed.",
+            "operator_action_required",
+            ResponseSafeRetry::No,
+        ),
+        InvestigationError::ClockRegression => (
+            ERR_CLOCK_UNCERTAIN,
+            "The deployment evidence clock regressed below the case store's watermark.",
+            "operator_action_required",
+            ResponseSafeRetry::No,
+        ),
+    };
+    Refusal {
+        error_id,
+        reason,
+        guidance,
+        recovery_class,
+        safe_retry,
+    }
 }
 
 fn refusal_response(
@@ -1066,7 +1192,10 @@ fn refusal_response(
     })
 }
 
-fn refuse(operation: &Operation, error: DeploymentSessionError) -> (String, ExitIdentity) {
+pub(crate) fn refuse(
+    operation: &Operation,
+    error: DeploymentSessionError,
+) -> (String, ExitIdentity) {
     let refusal = match error {
         DeploymentSessionError::Read(read) => {
             return read_refusal(operation.command, &operation.root, &read);

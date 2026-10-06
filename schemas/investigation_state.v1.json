@@ -109,6 +109,17 @@
               "not_applicable"
             ]
           },
+          "disposition": {
+            "description": "Hypothesis disposition (live/supported/disfavored/refuted/resolved/superseded): an orthogonal coordinate, never folded into epistemicState.",
+            "enum": [
+              "live",
+              "supported",
+              "disfavored",
+              "refuted",
+              "resolved",
+              "superseded"
+            ]
+          },
           "probability": {
             "type": [
               "number",
@@ -491,6 +502,23 @@
     },
     "contractBasis": {
       "$ref": "agent_contract_basis.v1.json"
+    },
+    "revisionDigest": {
+      "description": "Exact case revision digest: the optimistic precondition (--expected) of the next change.",
+      "type": "string",
+      "pattern": "^sha256:[0-9a-f]{64}$"
+    },
+    "predecessorRevision": {
+      "description": "Exact predecessor revision digest; null only at creation.",
+      "anyOf": [
+        {
+          "type": "string",
+          "pattern": "^sha256:[0-9a-f]{64}$"
+        },
+        {
+          "type": "null"
+        }
+      ]
     }
   }
 }
