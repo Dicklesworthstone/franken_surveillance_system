@@ -53,6 +53,8 @@
 //! exactly this plan is discarded before publication is redone. Cancellation is polled before
 //! every batch. The fault campaign is `tests/file_ingest_fault_contract.rs`.
 
+mod retry;
+
 use std::fs;
 use std::path::PathBuf;
 
@@ -1631,20 +1633,18 @@ impl FileIngestAdapter {
             .collect();
         planned_batch_ids.push(manifest_batch_id.clone());
 
-        // Step 10: Check for idempotent complete import
+        // Step 10: Admit retries against retained authority before any staging or append.
+        // The import identity does not include capture hints or receive time. Reconstructing
+        // a receipt from this request alone could therefore silently rebind committed evidence.
         let existing_slot = visible_slot_root(deployment, &import_slot).is_some();
-        let existing_manifest_batch = deployment
-            .ledger()
-            .batches()
-            .iter()
-            .any(|b| b.batch_id == manifest_batch_id);
-
-        if existing_slot && existing_manifest_batch {
-            let visible_root = deployment.publisher().root(&import_slot).ok_or_else(|| {
-                FileIngestError::CorruptSegment {
-                    detail: "import root missing from publisher".to_string(),
-                }
-            })?;
+        if let Some(retained) = retry::preflight(
+            deployment,
+            &capsule_batches,
+            &manifest_batch_id,
+            import_identity,
+            &import_manifest,
+            cx,
+        )? {
             let anchor = deployment.current_anchor().clone();
             // This attempt appends nothing; the receipt carries the retained history.
             *driver = None;
@@ -1657,9 +1657,9 @@ impl FileIngestAdapter {
                 format: detected_format,
                 capsule_count: scanned.capsules.len(),
                 capsules: scanned.capsules,
-                import_root: visible_root.root,
-                manifest_digest,
-                manifest: import_manifest.clone(),
+                import_root: retained.import_root(),
+                manifest_digest: retained.manifest_digest(),
+                manifest: retained.manifest().clone(),
                 root_slot: import_slot.clone(),
                 authority_anchor: anchor,
                 batch_ids: planned_batch_ids,
