@@ -64,8 +64,8 @@ use crate::agent_follow::{
 };
 use crate::agent_orient::{
     DeploymentHistory, DeploymentOrientation, DeploymentReadError, DeploymentSnapshot,
-    OrientCaseBrief, OrientError, OrientLimits, OrientRequest, OrientSessionBinding,
-    orient_deployment_for,
+    OrientCaseBrief, OrientClaimBrief, OrientError, OrientLimits, OrientRequest,
+    OrientSessionBinding, orient_deployment_for,
 };
 use crate::agent_session::checkpoint::journal::coordination::investigations::{
     DurableInvestigationError, InvestigationError, InvestigationLimits,
@@ -76,7 +76,7 @@ use crate::agent_session::checkpoint::journal::workspace::{
 use crate::agent_session::checkpoint::journal::{
     DurableSessionError, DurableSessionLimits, DurableSessionStore, MAX_SESSION_JOURNAL_BYTES,
 };
-use crate::agent_session::work_claims::WorkClaimLimits;
+use crate::agent_session::work_claims::{WorkClaimError, WorkClaimLimits};
 use crate::agent_session::workspace::{
     WorkspaceError, WorkspaceLimits, WorkspaceRevision, WorkspaceWrite, WorkspaceWriteMode,
 };
@@ -97,6 +97,9 @@ pub mod plan;
 
 /// Advisory, evidence-linked feedback proposals (AOP-013); never a policy mutation.
 pub mod feedback;
+
+/// Bounded work-claim leases over mission cases (FSS-226); coordination only, never authority.
+pub mod claims;
 
 /// Immutable execution episodes that close terminal plans (AGT-LAYER-009; AOP-007 `close`).
 pub mod episode;
@@ -122,8 +125,9 @@ pub const HANDOFF_LIFETIME_NS: i128 = 7 * 24 * 3_600 * 1_000_000_000;
 /// `CAP-AGENT-INVESTIGATE-001`, the grant the case engine admits) write cognition only, and
 /// `CAP-AGENT-PLAN-PREPARE-001` compiles and publishes plans; preparing or committing an effect
 /// additionally needs the operator's exact approval of that plan, never a session grant;
-/// `CAP-AGENT-FEEDBACK-001` appends advisory proposals that never mutate policy.
-pub const SESSION_CAPABILITIES: [&str; 9] = [
+/// `CAP-AGENT-FEEDBACK-001` appends advisory proposals that never mutate policy;
+/// `CAP-AGENT-WORK-CLAIM-001` reserves bounded work leases that coordinate cognition only.
+pub const SESSION_CAPABILITIES: [&str; 10] = [
     "CAP-AGENT-CASE-WRITE-001",
     "CAP-AGENT-FEEDBACK-001",
     "CAP-AGENT-HANDOFF-READ-001",
@@ -133,6 +137,7 @@ pub const SESSION_CAPABILITIES: [&str; 9] = [
     "CAP-AGENT-SESSION-READ-001",
     "CAP-AGENT-SESSION-WRITE-001",
     "CAP-AGENT-SITUATION-READ-001",
+    "CAP-AGENT-WORK-CLAIM-001",
 ];
 /// Privacy scope of every session (the only privacy class fss-core uses).
 pub const SESSION_PRIVACY_SCOPE: &str = "private:property";
@@ -186,6 +191,9 @@ pub enum DeploymentSessionError {
     /// The plan's effect is not terminal yet (its registered effect-state spelling; `None`: never
     /// prepared), so it cannot be closed.
     PlanOpen(Option<&'static str>),
+    /// The coordination engine refused a work-claim command. The command (and any session
+    /// watermark change it caused) was committed and pinned before the refusal was returned.
+    ClaimRefused(WorkClaimError),
     /// The case engine refused an investigation command. Any session or case watermark change
     /// it caused was committed (and pinned) before the refusal was returned.
     CaseRefused(InvestigationError),
@@ -219,6 +227,7 @@ impl fmt::Display for DeploymentSessionError {
                 "the plan's effect is {state}, not terminal: it has no outcome to record yet"
             ),
             Self::CaseRefused(error) => write!(f, "investigation refused: {error}"),
+            Self::ClaimRefused(error) => write!(f, "work claim refused: {error}"),
             Self::Internal(reason) => write!(f, "internal failure: {reason}"),
         }
     }
@@ -257,6 +266,10 @@ impl From<DurableSessionError> for DeploymentSessionError {
                 Self::SessionUnknown
             }
             DurableSessionError::Session(error) => Self::SessionStale(error.to_string()),
+            DurableSessionError::WorkClaim(WorkClaimError::Session(
+                ReferenceSessionError::Unavailable,
+            )) => Self::SessionUnknown,
+            DurableSessionError::WorkClaim(error) => Self::ClaimRefused(error),
             other => Self::StoreInvalid(other.to_string()),
         }
     }
@@ -1078,7 +1091,7 @@ fn orient_bound(
     mission_id: &MissionId,
     session_id: &SessionId,
     limits: &OrientLimits,
-    cases: Vec<OrientCaseBrief>,
+    briefs: SessionBriefs,
 ) -> Result<DeploymentOrientation, DeploymentSessionError> {
     let request = OrientRequest {
         view,
@@ -1088,7 +1101,8 @@ fn orient_bound(
     let binding = OrientSessionBinding {
         mission_id: mission_id.clone(),
         session_id: session_id.clone(),
-        cases,
+        cases: briefs.cases,
+        claims: briefs.claims,
         plans: match plans {
             Some((root, head)) => plan::plan_briefs(root, head, mission_id, principal)?,
             None => Vec::new(),
@@ -1100,6 +1114,26 @@ fn orient_bound(
         limits,
         Some(&binding),
     )?)
+}
+
+/// The session's own agent-plane state its situation lists: open cases and non-terminal claims.
+#[derive(Default)]
+struct SessionBriefs {
+    cases: Vec<OrientCaseBrief>,
+    claims: Vec<OrientClaimBrief>,
+}
+
+/// The cases (as of `anchor`) and work claims (live state, at `now`) `session` sees.
+fn session_briefs(
+    store: &DurableSessionStore,
+    session: &AgentSession,
+    anchor: &LedgerAnchor,
+    now: TimestampNs,
+) -> SessionBriefs {
+    SessionBriefs {
+        cases: investigation::case_briefs(store, session, anchor),
+        claims: claims::claim_briefs(store, session, now),
+    }
 }
 
 /// The effect facts of one plan's operation and obligation at the head, projected at this
@@ -1414,7 +1448,7 @@ pub fn open_session(
         &mission_id,
         &session_id,
         &limits,
-        Vec::new(),
+        SessionBriefs::default(),
     )?;
     let now = evidence_now(&snapshot);
     let mission = MissionRecord {
@@ -1592,7 +1626,7 @@ pub fn prepare_handoff(
             "the workspace anchor token and the session anchor disagree".to_owned(),
         ));
     }
-    let briefs = investigation::case_briefs(&journal.store, &session, &session.current_anchor);
+    let briefs = session_briefs(&journal.store, &session, &session.current_anchor, now);
     let orientation = orient_bound(
         Some((root, &head)),
         &snapshot,
@@ -1605,6 +1639,10 @@ pub fn prepare_handoff(
     )?;
     let publication = sealed_publication(orientation.publication.clone())?;
     let situation = orientation.capsule();
+    // The situation fingerprint binds the session's cases, plans, and claims (their affordances
+    // are inside the capsule identity): agent-plane state that changed without a workspace
+    // revision yields a new handoff, while an identical retry keeps its identity.
+    let situation_fingerprint = situation.decision_fingerprint()?;
     let handoff_id = HandoffId::parse(format!(
         "handoff:{}",
         hex(digest_of(
@@ -1615,6 +1653,7 @@ pub fn prepare_handoff(
                 encoder.text(token.as_str());
                 encode_option(encoder, request.note.as_deref());
                 encoder.i128(now.0);
+                encoder.digest(situation_fingerprint);
             }
         ))
         .chars()
@@ -1647,7 +1686,7 @@ pub fn prepare_handoff(
         capsule: sealed,
         anchor_token: token.as_str().to_owned(),
         view: session.view,
-        situation_fingerprint: situation.decision_fingerprint()?,
+        situation_fingerprint,
         publication_digest: publication.publication_digest,
         compression_receipt_id: publication.compression_receipt.receipt_id.clone(),
         continuation: publication.context_pack.continuation.clone(),
@@ -1929,7 +1968,7 @@ pub fn resume_session(
         &session.mission_id,
         session_id,
         &limits,
-        investigation::case_briefs(&journal.store, &session, &basis_snapshot.anchor),
+        session_briefs(&journal.store, &session, &basis_snapshot.anchor, now),
     )?;
     let result = orient_bound(
         Some((root, &head)),
@@ -1939,7 +1978,7 @@ pub fn resume_session(
         &session.mission_id,
         session_id,
         &limits,
-        investigation::case_briefs(&journal.store, &session, &head.anchor),
+        session_briefs(&journal.store, &session, &head.anchor, now),
     )?;
     let delta = classify_reference_meaningful_delta(&basis.publication, &result.publication)?;
     let items = follow_items(&delta);

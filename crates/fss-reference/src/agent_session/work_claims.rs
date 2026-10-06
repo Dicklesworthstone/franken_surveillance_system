@@ -112,6 +112,36 @@ impl WorkClaimRevision {
         self.revision
     }
 
+    /// The principal the claim is scoped to.
+    #[must_use]
+    pub const fn principal(&self) -> &PrincipalId {
+        &self.principal
+    }
+
+    /// The mission the claim is scoped to.
+    #[must_use]
+    pub const fn mission(&self) -> &MissionId {
+        &self.mission
+    }
+
+    /// The privacy class the claim was admitted under.
+    #[must_use]
+    pub fn privacy_class(&self) -> &str {
+        &self.privacy_class
+    }
+
+    /// Content identity of the exact claimed work.
+    #[must_use]
+    pub const fn work_root(&self) -> ContentDigest {
+        self.work_root
+    }
+
+    /// Runtime time of this revision.
+    #[must_use]
+    pub const fn changed_at(&self) -> TimestampNs {
+        self.changed_at
+    }
+
     /// Whether the recorded lease covers this runtime instant. Session admission is still needed.
     #[must_use]
     pub fn lease_covers(&self, now: TimestampNs) -> bool {
@@ -267,6 +297,12 @@ impl ReferenceWorkClaimStore {
             revisions: 0,
             last_observed_at: None,
         }
+    }
+
+    /// Every retained claim head, unfiltered. Owner-side read: no session admission runs, so the
+    /// caller must apply principal, mission and privacy visibility before disclosing a head.
+    pub fn heads(&self) -> impl Iterator<Item = &WorkClaimRevision> {
+        self.claims.values().map(|entry| &entry.head)
     }
 
     /// Reserves exact work once. An identical live opening retry returns the CURRENT revision,

@@ -99,6 +99,8 @@ pub const CAPABILITY_PLAN_PREPARE: &str = "CAP-AGENT-PLAN-PREPARE-001";
 pub const CAPABILITY_PLAN_COMMIT: &str = "CAP-AGENT-PLAN-COMMIT-001";
 /// Capability every listed investigation-case affordance requires (the AOP-006 registry row).
 pub const CAPABILITY_CASE_WRITE: &str = "CAP-AGENT-CASE-WRITE-001";
+/// Registered coordination grant a work-claim affordance requires (never an effect grant).
+pub const CAPABILITY_WORK_CLAIM: &str = "CAP-AGENT-WORK-CLAIM-001";
 /// Prefix of the affordance a session-bound orientation lists for each open investigation case.
 pub const AFFORDANCE_INVESTIGATE_PREFIX: &str = "affordance:investigate:";
 
@@ -1296,6 +1298,8 @@ pub struct DeploymentOrientation {
     pub active_investigations: Vec<String>,
     /// Active plans of the bound mission (empty when no session is bound).
     pub active_plans: Vec<String>,
+    /// Non-terminal work claims (leases) of the bound mission (empty when no session is bound).
+    pub active_claims: Vec<String>,
 }
 
 impl DeploymentOrientation {
@@ -1809,6 +1813,7 @@ fn compile_capsule(
     request: &OrientRequest,
     cases: &[OrientCaseBrief],
     plans: &[OrientPlanBrief],
+    claims: &[OrientClaimBrief],
 ) -> Result<CompiledSituation, OrientError> {
     let heartbeat = request.view == AgentView::Pulse;
     let anchor = snapshot.anchor.clone();
@@ -2272,6 +2277,9 @@ fn compile_capsule(
         }
         for plan in plans {
             affordances.push(plan_affordance(plan)?);
+        }
+        for claim in claims {
+            affordances.push(claim_affordance(claim)?);
         }
     }
     for operation in &indeterminate {
@@ -2971,6 +2979,55 @@ fn case_affordance(case: &OrientCaseBrief) -> Result<ActionAffordance, ContractE
     .build())
 }
 
+/// Prefix of the affordance a session-bound orientation lists for each non-terminal work claim.
+pub const AFFORDANCE_CLAIM_PREFIX: &str = "affordance:claim:";
+
+/// The affordance listing one non-terminal work claim: the holder's next coordination step, an
+/// explicit expire/reclaim once the lease lapsed, or a blocked entry for work another session
+/// holds (so the same work is never duplicated).
+fn claim_affordance(claim: &OrientClaimBrief) -> Result<ActionAffordance, ContractError> {
+    let (rationale, class) = if !claim.lease_live {
+        (
+            format!(
+                "Claim {} on case {} ({}) lapsed at {} ns on the evidence clock: record its \
+                 expiry or reclaim it (`fss investigate --transition claim-expire|claim-reclaim`).",
+                claim.claim_id, claim.case_id, claim.state, claim.expires_at.0
+            ),
+            AffordanceClass::Probe,
+        )
+    } else if claim.held_here {
+        (
+            format!(
+                "This session holds claim {} on case {} ({}) until {} ns: activate, record \
+                 progress, complete, renew, or release it (`fss investigate --transition \
+                 claim-...`). It coordinates cognition only and confers no effect authority.",
+                claim.claim_id, claim.case_id, claim.state, claim.expires_at.0
+            ),
+            AffordanceClass::Probe,
+        )
+    } else {
+        (
+            format!(
+                "Session {} holds claim {} on case {} ({}) until {} ns: do not duplicate this \
+                 work; a transfer comes only from its holder.",
+                claim.owner_session, claim.claim_id, claim.case_id, claim.state, claim.expires_at.0
+            ),
+            AffordanceClass::Blocked,
+        )
+    };
+    Ok(ListedAffordance {
+        affordance_id: format!("{AFFORDANCE_CLAIM_PREFIX}{}", claim.claim_id),
+        operation: "investigate",
+        target: format!("fss://case/{}", claim.case_id),
+        rationale,
+        class,
+        supported_worlds: BTreeSet::new(),
+        required_capability: CAPABILITY_WORK_CLAIM,
+        cost: read_cost(0, 0)?,
+    }
+    .build())
+}
+
 /// Prefix of the affordance a session-bound orientation lists for each active plan.
 pub const AFFORDANCE_PLAN_PREFIX: &str = "affordance:plan:";
 
@@ -3268,6 +3325,29 @@ pub struct OrientSessionBinding {
     pub cases: Vec<OrientCaseBrief>,
     /// Active (non-terminal) plans of the mission, in identity order.
     pub plans: Vec<OrientPlanBrief>,
+    /// Non-terminal work claims of the mission visible to the session, in identity order.
+    pub claims: Vec<OrientClaimBrief>,
+}
+
+/// One non-terminal work claim (a coordination lease) as a session-bound orientation lists it.
+/// Listing a claim grants nothing: work claims coordinate cognition and never confer effect
+/// authority.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct OrientClaimBrief {
+    /// Stable claim identity.
+    pub claim_id: String,
+    /// Case the claimed work belongs to.
+    pub case_id: String,
+    /// Registered claim state (`claimed`, `active`, or `blocked`).
+    pub state: String,
+    /// Session that holds the lease.
+    pub owner_session: String,
+    /// Lease expiry on the deployment evidence clock.
+    pub expires_at: TimestampNs,
+    /// Whether the lease still covers the evidence clock.
+    pub lease_live: bool,
+    /// Whether the orienting session holds the lease.
+    pub held_here: bool,
 }
 
 /// [`orient_deployment`] with the capsule bound to a durable session and mission instead of the
@@ -3292,7 +3372,8 @@ pub fn orient_deployment_for(
     }
     let cases = session.map_or(&[][..], |binding| binding.cases.as_slice());
     let plans = session.map_or(&[][..], |binding| binding.plans.as_slice());
-    let mut compiled = compile_capsule(snapshot, request, cases, plans)?;
+    let claims = session.map_or(&[][..], |binding| binding.claims.as_slice());
+    let mut compiled = compile_capsule(snapshot, request, cases, plans, claims)?;
     if let Some(binding) = session {
         compiled.capsule.mission_id = binding.mission_id.clone();
         compiled.capsule.session_id = binding.session_id.clone();
@@ -3424,6 +3505,7 @@ pub fn orient_deployment_for(
         coverage: compiled.coverage,
         active_investigations: cases.iter().map(|case| case.case_id.clone()).collect(),
         active_plans: plans.iter().map(|plan| plan.plan_id.clone()).collect(),
+        active_claims: claims.iter().map(|claim| claim.claim_id.clone()).collect(),
         publication,
     })
 }

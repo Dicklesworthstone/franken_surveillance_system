@@ -259,7 +259,7 @@ pub fn planning_context(
         &session.mission_id,
         &session.session_id,
         &limits,
-        Vec::new(),
+        super::SessionBriefs::default(),
     )?;
     journal.commit_pin()?;
     Ok(PlanningContext {

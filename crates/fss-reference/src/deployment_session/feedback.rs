@@ -319,7 +319,7 @@ pub fn publish_feedback(
         &session.mission_id,
         &session.session_id,
         &limits,
-        super::investigation::case_briefs(&journal.store, &session, &session.current_anchor),
+        super::session_briefs(&journal.store, &session, &session.current_anchor, now),
     )?;
     journal.commit_pin()?;
     drop(journal);

@@ -245,7 +245,20 @@ synthetic scenes). None of it has been measured on real camera footage.
   and residual uncertainty; one episode per plan, never rewritten. A terminal plan stays in
   `activePlans` (as a probe affordance) until closed. Because the frozen public registry lets
   AOP-007 answer only the control plan, the episode rendering is hydrated through proof pointers
-  (open drift in `architecture/agent_contracts.json`). `fss feedback` (AOP-013) publishes grounded, evidence-linked advisory
+  (open drift in `architecture/agent_contracts.json`). Work claims (FSS-226) are the
+  work-claiming intent family of `fss investigate` (`--transition claim|claim-inspect|claim-list|
+  claim-activate|claim-progress|claim-block|claim-complete|claim-release|claim-renew|
+  claim-expire|claim-transfer|claim-reclaim`): a claim reserves one exact unit of case work (the
+  case, or one hypothesis, discriminator, or probe of it) for one session through the journaled
+  coordination engine, so the same work claimed by another session is a typed
+  `ERR-AGENT-WORK-CLAIM-CONFLICT-001`; only the holder changes it (CAS on the exact revision),
+  dependents activate only after their dependencies complete, transfers need explicit
+  activation, and leases (on the evidence clock, at most 300 s) appear as claim affordances and
+  in the handoff's `leases`. Claims coordinate cognition only and confer no effect authority.
+  Claim answers and the case `list` are the registered `fss.agent_cognitive_envelope.v1`
+  (AOP-006 allowlists only it and the investigation state); a handoff's identity binds the
+  situation fingerprint, so a re-handoff after agent-plane changes at the same anchor is a new
+  handoff. `fss feedback` (AOP-013) publishes grounded, evidence-linked advisory
   proposals (`activePolicyMutation: false`). `fss-event alert` and the agent grammar share one
   alert core (`fss_cli::alert_effect`), so an operation prepared by either is the same operation.
   The MCP adapter adds only the read-only `wait` tool. `fss commit --reconcile
@@ -256,8 +269,9 @@ synthetic scenes). None of it has been measured on real camera footage.
   exact approval; never a resend; explicitly `operator_asserted`, not a provider receipt. Limits:
   alert is the only plan intent; no provider lookup exists for webhook relays; probes are
   recorded, never executed; no learning proposals or
-  promotion, ExperienceCapsule, work-claim CLI, or multi-agent schedules yet; proven on synthetic fixtures and a
-  loopback relay only (`investigate_cli_contract`, `agent_effect_cli_contract`).
+  promotion, ExperienceCapsule, or multi-agent schedule qualification yet; proven on synthetic fixtures and a
+  loopback relay only (`investigate_cli_contract`, `agent_effect_cli_contract`,
+  `work_claim_cli_contract`).
 
 Architectural deviations to resolve: device and alert I/O use blocking `std::net` rather than
 Asupersync (owner decision `fss-x4a.8.1` is open), and the workspace has zero third-party crates.

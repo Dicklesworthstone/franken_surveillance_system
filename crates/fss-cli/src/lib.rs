@@ -11,6 +11,8 @@ pub mod agent_json;
 pub mod alert_effect;
 /// Explicit operator access to existing local AVC/HEVC archives; not an agent operation.
 pub mod archive_cmd;
+/// Work claims (FSS-226): the work-claiming intent family of `fss investigate` (AOP-006).
+pub mod claim_cmd;
 pub mod crosswalk;
 pub mod diagnostic;
 /// `fss plan` / `commit` / `wait` / `cancel` (AOP-007..010): the canonical effect grammar.

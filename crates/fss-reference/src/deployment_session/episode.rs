@@ -936,7 +936,7 @@ pub fn close_plan(
         &session.mission_id,
         &session.session_id,
         &limits,
-        super::investigation::case_briefs(&journal.store, &session, &session.current_anchor),
+        super::session_briefs(&journal.store, &session, &session.current_anchor, now),
     )?;
     journal.commit_pin()?;
     let request_digest = digest_of(EPISODE_REQUEST_DOMAIN, |encoder| {

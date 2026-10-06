@@ -9,7 +9,8 @@
 //!    sessions, and malformed case documents are typed refusals (exit 5 or 2) that write nothing
 //!    outside `agent/`;
 //! 3. the session-bound situation lists every open case as a typed `investigate` affordance and
-//!    in `activeInvestigations`, and so does the handoff;
+//!    in the case list (a bounded cognitive-envelope summary) and in the handoff's
+//!    `activeInvestigations`;
 //! 4. after the deployment head moves and the session is resumed, an open case is refused as
 //!    stale until it is rebased, and its inherited citations must be readmitted before they can
 //!    support an assessment;
@@ -380,6 +381,21 @@ fn evidence(label: &str) -> String {
     ContentDigest::sha256(label.as_bytes()).to_text()
 }
 
+/// The (identity, statement) of every proposition of a `list` answer's cognitive envelope.
+fn listed_cases(envelope: &Value) -> TestResult<Vec<(String, String)>> {
+    field(envelope, &["payload", "epistemic", "propositions"])?
+        .array()
+        .ok_or("propositions")?
+        .iter()
+        .map(|proposition| {
+            Ok((
+                text(proposition, &["id"])?.to_owned(),
+                text(proposition, &["statement"])?.to_owned(),
+            ))
+        })
+        .collect()
+}
+
 fn fingerprint(envelope: &Value) -> TestResult<String> {
     Ok(text(envelope, &["decisionFingerprint"])?.to_owned())
 }
@@ -547,12 +563,16 @@ fn a_case_lives_through_its_lifecycle_durably_typed_and_agent_plane_only() -> Te
         )
     );
 
-    // The session-bound situation and the handoff both carry the open case.
+    // The case list (a bounded cognitive summary) and the handoff both carry the open case.
     let (_, listed) = agent.ok("list", &[])?;
     assert_eq!(
-        texts(&listed, &["payload", "activeInvestigations"])?,
-        vec![CASE.to_owned()]
+        text(&listed, &["payloadSchema"])?,
+        "fss.agent_cognitive_envelope.v1"
     );
+    let cases = listed_cases(&listed)?;
+    assert_eq!(cases.len(), 1);
+    assert_eq!(cases[0].0, CASE);
+    assert!(!cases[0].1.contains(" is resolved"), "{cases:?}");
     let (code, stdout) = run_fss(&[
         "handoff".into(),
         "--json".into(),
@@ -646,7 +666,9 @@ fn a_case_lives_through_its_lifecycle_durably_typed_and_agent_plane_only() -> Te
     let (_, current) = agent.ok("inspect", &["--case", CASE])?;
     assert_eq!(fingerprint(&current)?, fingerprint(&concluded)?);
     let (_, listed) = agent.ok("list", &[])?;
-    assert!(texts(&listed, &["payload", "activeInvestigations"])?.is_empty());
+    let cases = listed_cases(&listed)?;
+    assert_eq!(cases.len(), 1);
+    assert!(cases[0].1.contains(" is resolved"), "{cases:?}");
 
     assert_eq!(authority_tree(&root)?, authority_before);
     Ok(())

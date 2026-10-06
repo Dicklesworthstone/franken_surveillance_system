@@ -12,7 +12,8 @@
 //! ```text
 //! open       --case-file FILE|-                       new case in draft (exact retry is harmless)
 //! inspect    --case ID [--revision sha256:..]         current head or an exact retained revision
-//! list                                                the session-bound situation with every case
+//! list                                                every case, active plan, and work claim
+//!                                                     (a bounded cognitive-envelope summary)
 //! activate   --case ID --expected sha256:..
 //! cite       --case ID --expected .. --hypothesis H --evidence sha256:.. --side support|contradiction
 //! assess     --case ID --expected .. --hypothesis H --disposition supported|disfavored|refuted
@@ -33,10 +34,12 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::path::PathBuf;
 
 use fss_core::{
-    AgentView, CaseDiscriminator, CaseHypothesis, ContentDigest, HypothesisDisposition,
+    AgentView, BudgetVector, CaseDiscriminator, CaseHypothesis, CognitiveAnswerClass,
+    ContentDigest, EnvelopeCoverage, EnvelopeEpistemic, EnvelopeProposition, HypothesisDisposition,
     InvestigationLifecycle, KnowledgeState, KnownStatement, PrincipalId, ResponseOutcome,
     ResponseSafeRetry, SessionId,
 };
+use fss_reference::agent_orient::AFFORDANCE_PLAN_PREFIX;
 use fss_reference::agent_session::checkpoint::journal::coordination::investigations::InvestigationChange;
 use fss_reference::agent_session::checkpoint::journal::coordination::investigations::InvestigationRevision;
 use fss_reference::agent_session::checkpoint::journal::coordination::investigations::evolution::InvestigationCitation;
@@ -49,18 +52,18 @@ use crate::agent_json;
 use crate::error::{CliError, ExitIdentity};
 use crate::json_input::{Value, read_document};
 use crate::orient_cmd::{
-    CapsuleOverrides, RenderError, ResponseParts, build_response, collect_options, contexts,
-    principal, rendered, required_root, situation_capsule_payload, take,
+    CognitiveParts, CognitivePayload, RenderError, ResponseParts, build_response,
+    cognitive_payload, collect_options, contexts, principal, rendered, required_root, take,
 };
-use crate::session_cmd::{
-    Operation, SITUATION_PAYLOAD_SCHEMA, agent_plane_boundary, idempotency_key, refuse,
-};
+use crate::session_cmd::{Operation, agent_plane_boundary, idempotency_key, refuse};
 use crate::token::ArgToken;
 
 /// Capability registry row of AOP-006 (`investigate`).
 pub const CAPABILITY_CASE_WRITE: &str = "CAP-AGENT-CASE-WRITE-001";
 /// Response payload schema of a case answer.
 pub const INVESTIGATION_PAYLOAD_SCHEMA: &str = "fss.investigation_state.v1";
+/// Response payload schema of a `list` answer.
+pub const COGNITIVE_PAYLOAD_SCHEMA: &str = "fss.agent_cognitive_envelope.v1";
 
 const COMMAND: &str = "investigate";
 const OPTIONS: &[&str] = &[
@@ -853,6 +856,130 @@ fn case_index(answer: &CaseAnswer) -> Vec<String> {
         .collect()
 }
 
+/// The `list` answer: a bounded `fss.agent_cognitive_envelope.v1` summary of every case, active
+/// plan, and work claim of the mission visible to the session (the AOP-006 registry allowlists
+/// the investigation state and the cognitive envelope; a list is not one investigation state).
+fn list_payload(
+    answer: &CaseAnswer,
+    decision: ContentDigest,
+) -> Result<CognitivePayload, Box<dyn std::error::Error>> {
+    let orientation = &answer.orientation;
+    let capsule = orientation.capsule();
+    let mut propositions: Vec<EnvelopeProposition> = answer
+        .cases
+        .iter()
+        .map(|case| {
+            let record = case.record();
+            let live: Vec<&str> = case
+                .control()
+                .hypotheses()
+                .iter()
+                .filter(|(_, disposition)| **disposition == HypothesisDisposition::Live)
+                .map(|(hypothesis, _)| hypothesis.as_str())
+                .collect();
+            EnvelopeProposition {
+                id: record.investigation_id.clone(),
+                statement: format!(
+                    "Case {} is {} at revision {} (basis commit {}): {} It informs: {}. Live \
+                     hypotheses: [{}]; decision deadline {} ns.",
+                    record.investigation_id,
+                    record.state.as_str(),
+                    record.revision,
+                    record.basis_anchor.commit_sequence,
+                    record.question,
+                    record.decision_informed,
+                    live.join(", "),
+                    record.decision_deadline_ns
+                ),
+                state: KnowledgeState::Known,
+                provenance: "derived".to_owned(),
+                evidence: vec![case.digest().to_text()],
+            }
+        })
+        .collect();
+    let rationale = |prefix: &str, id: &str| {
+        capsule
+            .affordances
+            .iter()
+            .find(|affordance| affordance.affordance_id == format!("{prefix}{id}"))
+            .map(|affordance| affordance.rationale.clone())
+    };
+    propositions.extend(orientation.active_plans.iter().map(|plan| {
+        EnvelopeProposition {
+            id: plan.clone(),
+            statement: rationale(AFFORDANCE_PLAN_PREFIX, plan)
+                .unwrap_or_else(|| format!("Plan {plan} is active.")),
+            state: KnowledgeState::Known,
+            provenance: "derived".to_owned(),
+            evidence: Vec::new(),
+        }
+    }));
+    propositions.extend(
+        answer
+            .claims
+            .iter()
+            .map(|claim| crate::claim_cmd::claim_proposition(claim, answer.now)),
+    );
+    let mut handles: Vec<agent_json::EvidenceHandle> = answer
+        .cases
+        .iter()
+        .map(|case| agent_json::EvidenceHandle {
+            handle_id: format!(
+                "fss://case/{}/revision/{}",
+                case.record().investigation_id,
+                case.digest()
+            ),
+            object_digest: case.digest(),
+            kind: "investigation_revision".to_owned(),
+            hydration: "H0",
+            allowed_hydration: vec!["H0", "H1"],
+            privacy_class: case.privacy_class().to_owned(),
+            availability: "available",
+            estimated_cost: BudgetVector::ZERO,
+            required_capability: Some(CAPABILITY_CASE_WRITE.to_owned()),
+        })
+        .collect();
+    handles.extend(answer.claims.iter().map(crate::claim_cmd::claim_handle));
+    let domain = format!("fss://mission/{}/cases", answer.session.mission_id.as_str());
+    cognitive_payload(
+        orientation,
+        answer.request_digest,
+        COMMAND,
+        AgentView::Case,
+        CognitiveParts {
+            answer_class: CognitiveAnswerClass::BoundedSummary,
+            epistemic: EnvelopeEpistemic {
+                propositions,
+                assumptions: vec![
+                    "Case and claim revisions are the session journal's committed heads; plans \
+                     are read from the deployment's published plans and the head's effect \
+                     journal."
+                        .to_owned(),
+                ],
+                invalidators: vec![
+                    "Another session of the mission writes a case or claim revision.".to_owned(),
+                ],
+            },
+            coverage: EnvelopeCoverage {
+                authorized_domain: vec![domain.clone()],
+                observed_domain: vec![domain],
+                not_observable_domain: Vec::new(),
+                omitted_count: 0,
+                omission_reasons: Vec::new(),
+                stop_reason: "complete".to_owned(),
+            },
+            evidence_handles: handles,
+            next_actions: capsule
+                .affordances
+                .iter()
+                .filter(|affordance| capsule.frame.next.contains(&affordance.affordance_id))
+                .cloned()
+                .collect(),
+            decision_digest: decision,
+        },
+    )
+}
+
 fn case_response(
     args: &InvestigateArgs,
     answer: &CaseAnswer,
@@ -891,6 +1018,7 @@ fn case_response(
         orientation.anchor_token.clone(),
         publication.publication_digest.to_text(),
     ];
+    let mut list_next = None;
     let (payload_schema, payload_json, decision_fingerprint, mut completed) = match &answer.revision
     {
         Some(revision) => {
@@ -934,20 +1062,14 @@ fn case_response(
                 answer.session.session_id.as_str()
             )];
             completed.extend(case_index(answer));
-            (
-                SITUATION_PAYLOAD_SCHEMA,
-                situation_capsule_payload(
-                    orientation,
-                    &CapsuleOverrides {
-                        symbol_table_generation: answer.session.symbol_table_generation,
-                        ..CapsuleOverrides::default()
-                    },
-                )?,
-                capsule.decision_fingerprint()?,
-                completed,
-            )
+            let decision = capsule.decision_fingerprint()?;
+            let (payload, next_ids, next_objects) = list_payload(answer, decision)?;
+            list_next = Some((next_ids, next_objects));
+            (COGNITIVE_PAYLOAD_SCHEMA, payload, decision, completed)
         }
     };
+    let (affordances, affordance_objects) =
+        list_next.unwrap_or_else(|| (capsule.frame.next.clone(), affordance_objects));
     let mut boundary = agent_plane_boundary(
         completed.remove(0),
         stale
@@ -980,7 +1102,7 @@ fn case_response(
         degradation,
         budgets_json: agent_json::budget_summary(&orientation.requested, &orientation.consumed),
         proof_pointers,
-        affordances: capsule.frame.next.clone(),
+        affordances,
         affordance_objects,
         decision_fingerprint,
         compression_receipt_id: Some(publication.compression_receipt.receipt_id.clone()),

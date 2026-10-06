@@ -1072,24 +1072,42 @@ fn explain_budget(orientation: &DeploymentOrientation) -> (String, String, Strin
     )
 }
 
-/// The answer-specific blocks of one explain cognitive envelope.
-struct CognitiveParts {
-    answer_class: CognitiveAnswerClass,
-    epistemic: EnvelopeEpistemic,
-    coverage: EnvelopeCoverage,
-    evidence_handles: Vec<agent_json::EvidenceHandle>,
-    next_actions: Vec<ActionAffordance>,
-    decision_digest: ContentDigest,
+/// The answer-specific blocks of one cognitive envelope.
+pub(crate) struct CognitiveParts {
+    pub(crate) answer_class: CognitiveAnswerClass,
+    pub(crate) epistemic: EnvelopeEpistemic,
+    pub(crate) coverage: EnvelopeCoverage,
+    pub(crate) evidence_handles: Vec<agent_json::EvidenceHandle>,
+    pub(crate) next_actions: Vec<ActionAffordance>,
+    pub(crate) decision_digest: ContentDigest,
 }
 
-/// Rendered explain payload, next-action identities, and next-action objects.
-type CognitivePayload = (String, Vec<String>, Vec<String>);
+/// Rendered cognitive payload, next-action identities, and next-action objects.
+pub(crate) type CognitivePayload = (String, Vec<String>, Vec<String>);
 
 /// The explain payload (`fss.agent_cognitive_envelope.v1`) and its next-action identities and
 /// objects.
 fn cognitive(
     orientation: &DeploymentOrientation,
     request_digest: ContentDigest,
+    parts: CognitiveParts,
+) -> Result<CognitivePayload, Box<dyn std::error::Error>> {
+    cognitive_payload(
+        orientation,
+        request_digest,
+        "explain",
+        AgentView::DecisionDiff,
+        parts,
+    )
+}
+
+/// One `fss.agent_cognitive_envelope.v1` payload for `operation` (its registered name, which is
+/// also the semantic verb) over `orientation`, with its next-action identities and objects.
+pub(crate) fn cognitive_payload(
+    orientation: &DeploymentOrientation,
+    request_digest: ContentDigest,
+    operation: &str,
+    view: AgentView,
     parts: CognitiveParts,
 ) -> Result<CognitivePayload, Box<dyn std::error::Error>> {
     let CognitiveParts {
@@ -1114,12 +1132,12 @@ fn cognitive(
             .ok_or(RenderError("next action objects"))?;
     let envelope = AgentCognitiveEnvelope::new(
         capsule.contract_basis.clone(),
-        format!("request:explain:{hex}"),
-        format!("response:explain:{hex}"),
-        format!("trace:explain:{hex}"),
-        "explain",
-        "explain",
-        AgentView::DecisionDiff.id(),
+        format!("request:{operation}:{hex}"),
+        format!("response:{operation}:{hex}"),
+        format!("trace:{operation}:{hex}"),
+        operation,
+        operation,
+        view.id(),
         answer_class,
         capsule.anchor.clone(),
         epistemic,

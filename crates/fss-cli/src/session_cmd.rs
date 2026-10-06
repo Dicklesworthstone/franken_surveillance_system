@@ -70,6 +70,8 @@ pub const ERR_EVIDENCE_MISSING: &str = "ERR-EVIDENCE-MISSING-001";
 pub const ERR_BUDGET_EXHAUSTED: &str = "ERR-BUDGET-EXHAUSTED-001";
 /// Registered error identity: the clock basis is uncertain or regressed.
 pub const ERR_CLOCK_UNCERTAIN: &str = "ERR-CLOCK-UNCERTAIN-001";
+/// Registered error identity: the work scope is already reserved by another claim.
+pub const ERR_AGENT_WORK_CLAIM_CONFLICT: &str = "ERR-AGENT-WORK-CLAIM-CONFLICT-001";
 /// Capability registry row admitting `session.open` (AOP-001).
 pub const CAPABILITY_SESSION_OPEN: &str = "CAP-AGENT-SESSION-OPEN-001";
 /// Capability registry row admitting `session.resume` (AOP-002).
@@ -516,6 +518,7 @@ fn handoff_payload(
     record: &HandoffRecord,
     active_investigations: &[String],
     active_plans: &[String],
+    active_claims: &[String],
     objective: &str,
     publication_receipt: ContentDigest,
     workspace_digest: ContentDigest,
@@ -581,7 +584,7 @@ fn handoff_payload(
             agent_json::strings(&record.prepared_operations),
         ),
         ("tasks", "[]".to_owned()),
-        ("leases", "[]".to_owned()),
+        ("leases", agent_json::strings(active_claims)),
         ("obligations", agent_json::strings(&record.obligations)),
         (
             "indeterminateEffects",
@@ -757,6 +760,7 @@ fn handoff_response(
             record,
             &orientation.active_investigations,
             &orientation.active_plans,
+            &orientation.active_claims,
             objective,
             published.receipt.record_digest,
             record.workspace_digest,
@@ -1029,6 +1033,7 @@ fn classify(error: DeploymentSessionError) -> Result<Refusal, DeploymentSessionE
             safe_retry: ResponseSafeRetry::No,
         },
         DeploymentSessionError::CaseRefused(case) => case_refusal(case, error.to_string()),
+        DeploymentSessionError::ClaimRefused(ref claim) => claim_refusal(claim, error.to_string()),
         DeploymentSessionError::FeedbackDenied => Refusal {
             error_id: ERR_AUTH_DENIED,
             reason: error.to_string(),
@@ -1186,6 +1191,106 @@ fn case_refusal(case: InvestigationError, reason: String) -> Refusal {
             ERR_CLOCK_UNCERTAIN,
             "The deployment evidence clock regressed below the case store's watermark.",
             "operator_action_required",
+            ResponseSafeRetry::No,
+        ),
+    };
+    Refusal {
+        error_id,
+        reason,
+        guidance,
+        recovery_class,
+        safe_retry,
+    }
+}
+
+/// The typed refusal of one work-claim refusal class.
+fn claim_refusal(
+    claim: &fss_reference::deployment_session::claims::ClaimError,
+    reason: String,
+) -> Refusal {
+    use fss_reference::deployment_session::claims::ClaimError;
+    let (error_id, guidance, recovery_class, safe_retry) = match claim {
+        ClaimError::Unavailable => (
+            ERR_OP_PRECONDITION_FAILED,
+            "No claim, case, or work item with that identity is visible to this session \
+             (unknown, another principal or mission, or an unavailable privacy domain): list \
+             claims with `fss investigate --transition claim-list`.",
+            "operator_action_required",
+            ResponseSafeRetry::No,
+        ),
+        ClaimError::Conflict => (
+            ERR_AGENT_WORK_CLAIM_CONFLICT,
+            "This exact work is already reserved by a claim: never duplicate it. Wait, work on \
+             something else, or have its holder transfer or release it.",
+            "never_unchanged",
+            ResponseSafeRetry::No,
+        ),
+        ClaimError::StaleRevision => (
+            ERR_PRECONDITION_STALE,
+            "The claim's head moved or this session does not hold it: inspect the claim and \
+             pass its current revision digest as --expected (only the holder can change it).",
+            "refresh_and_retry",
+            ResponseSafeRetry::YesAfterRefresh,
+        ),
+        ClaimError::StaleBasis => (
+            ERR_AGENT_SESSION_STALE,
+            "The claim was taken at another anchor or contract basis than the session's: \
+             reclaim it at the session's current anchor.",
+            "rebase_required",
+            ResponseSafeRetry::YesAfterRefresh,
+        ),
+        ClaimError::InvalidLease => (
+            ERR_OP_PRECONDITION_FAILED,
+            "The lease is lapsed, terminal, or out of bounds (1..=300000 ms on the evidence \
+             clock, within the session's expiry, and a renewal must strictly extend it): expire \
+             or reclaim a lapsed claim.",
+            "never_unchanged",
+            ResponseSafeRetry::No,
+        ),
+        ClaimError::InvalidTransition => (
+            ERR_OP_PRECONDITION_FAILED,
+            "The claim lifecycle does not admit that transition from its current state; \
+             inspect the claim.",
+            "never_unchanged",
+            ResponseSafeRetry::No,
+        ),
+        ClaimError::DependencyPending => (
+            ERR_OP_PRECONDITION_FAILED,
+            "A dependency claim has not completed at the session's anchor; complete it first.",
+            "backoff",
+            ResponseSafeRetry::YesAfterRefresh,
+        ),
+        ClaimError::CapacityExceeded | ClaimError::CounterExhausted => (
+            ERR_BUDGET_EXHAUSTED,
+            "A bounded claim store limit was reached; claim history is never evicted to proceed.",
+            "operator_action_required",
+            ResponseSafeRetry::No,
+        ),
+        ClaimError::ClockRegression => (
+            ERR_CLOCK_UNCERTAIN,
+            "The deployment evidence clock regressed below the claim store's watermark.",
+            "operator_action_required",
+            ResponseSafeRetry::No,
+        ),
+        ClaimError::Contract(_) => (
+            ERR_OP_PRECONDITION_FAILED,
+            "A claim, case, or session identity is malformed.",
+            "never_unchanged",
+            ResponseSafeRetry::No,
+        ),
+        ClaimError::Session(
+            fss_reference::agent_session::ReferenceSessionError::GrantEscalation,
+        ) => (
+            ERR_AUTH_DENIED,
+            "The session was not negotiated with the work-claim grant; open a new session.",
+            "operator_action_required",
+            ResponseSafeRetry::No,
+        ),
+        ClaimError::Session(_) => (
+            ERR_AGENT_SESSION_STALE,
+            "The session no longer admits the command (closed, expired, or rebased); resume or \
+             open a session.",
+            "rebase_required",
             ResponseSafeRetry::No,
         ),
     };

@@ -150,6 +150,18 @@ impl DurableSessionStore {
         Self::inspect_with_coordination_ceiling(path.as_ref(), limits, Some(claim_ceilings))
     }
 
+    /// Committed head of every retained work claim, unfiltered (empty before coordination).
+    ///
+    /// Owner-side read: nothing is journaled and no session admission runs, so the caller must
+    /// apply principal, mission and privacy visibility before disclosing a head.
+    #[must_use]
+    pub fn work_claim_heads(&self) -> Vec<WorkClaimRevision> {
+        self.coordination
+            .as_ref()
+            .map(|coordination| coordination.claims.heads().cloned().collect())
+            .unwrap_or_default()
+    }
+
     /// Commits one coordination command, including refusal-side authority mutations, atomically.
     ///
     /// The result is withheld until its record is synchronized. An uncertain append fences BOTH

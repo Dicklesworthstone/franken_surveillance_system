@@ -181,6 +181,8 @@ pub struct CaseAnswer {
     pub revision: Option<InvestigationRevision>,
     /// Heads of every case visible to the session, in stable identity order.
     pub cases: Vec<InvestigationRevision>,
+    /// Heads of every work claim visible to the session, in stable identity order.
+    pub claims: Vec<crate::agent_session::work_claims::WorkClaimRevision>,
     /// Situation as of the session's anchor, bound to the session.
     pub orientation: DeploymentOrientation,
     /// Whether this command appended a case revision.
@@ -629,9 +631,10 @@ pub fn investigate(
         &session.mission_id,
         &session.session_id,
         &limits,
-        case_briefs(&journal.store, &session, &session.current_anchor),
+        super::session_briefs(&journal.store, &session, &session.current_anchor, now),
     )?;
     Ok(CaseAnswer {
+        claims: super::claims::visible_claims(&journal.store, &session),
         session,
         revision,
         cases,

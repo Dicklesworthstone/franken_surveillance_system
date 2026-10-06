@@ -434,14 +434,22 @@ impl Agent {
         Ok((code, envelope))
     }
 
-    /// The session-bound situation's active plans.
+    /// The session's active plans, as the case list (a cognitive envelope) states them.
     fn active_plans(&self) -> TestResult<Vec<String>> {
         let (code, listed) = self.run(
             "investigate",
             &["--session", self.session.as_str(), "--transition", "list"],
         )?;
         assert_eq!(code, Some(0));
-        texts(&listed, &["payload", "activePlans"])
+        field(&listed, &["payload", "epistemic", "propositions"])?
+            .array()
+            .ok_or("propositions")?
+            .iter()
+            .map(|proposition| Ok(text(proposition, &["id"])?.to_owned()))
+            .filter(|id: &TestResult<String>| {
+                id.as_ref().map_or(true, |id| id.starts_with("plan:"))
+            })
+            .collect()
     }
 
     fn plan(
