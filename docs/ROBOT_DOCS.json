@@ -927,6 +927,11 @@
       "id": "ERR-DECODE-BOUNDS-001"
     },
     {
+      "description": "retained source bytes or import span metadata disagree with the capsule's source digest or byte count; refused before any codec work, nothing is decoded, staged or receipted",
+      "guidance": "treat the import as corrupt custody; re-import from the original file, never decode around it",
+      "id": "ERR-DECODE-CUSTODY-MISMATCH-001"
+    },
+    {
       "description": "a retained source gap lies inside the requested H.264 range; inter prediction cannot bridge omitted bytes",
       "guidance": "split the range at the gap and start after it at an IDR",
       "id": "ERR-DECODE-H264-RANGE-GAP-001"

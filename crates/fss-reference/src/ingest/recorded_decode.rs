@@ -68,6 +68,11 @@ pub enum RecordedDecodeError {
     Unavailable,
     /// Receipt, source, publication or dimensions disagree.
     InvalidReceipt,
+    /// Retained source custody disagrees with the capsule it is decoded for: the capsule's
+    /// source digest or byte count differs from the import's span metadata, or the reassembled
+    /// span bytes do not hash to the capsule's source digest. Checked before any codec work;
+    /// nothing is decoded, staged or receipted (fss-2h5zq.41).
+    CustodyMismatch,
     /// A caller bound or a hard receipt/image bound was exceeded.
     Limit,
     /// Owner cancellation was observed at a composition boundary.
@@ -158,6 +163,7 @@ impl RecordedDecodeError {
                 "ERR-EVIDENCE-DELETED-001"
             }
             Self::Unavailable | Self::Source(_) => "ERR-DECODE-SOURCE-UNAVAILABLE-001",
+            Self::CustodyMismatch => "ERR-DECODE-CUSTODY-MISMATCH-001",
             Self::PrivacyMask(error) => error.stable_id(),
             _ => "ERR-DECODE-001",
         }
@@ -170,6 +176,7 @@ impl fmt::Display for RecordedDecodeError {
             Self::UnsupportedMedia => f.write_str("recorded decode operation does not admit this media format (single-frame decode is JPEG/MJPEG; annexb uses H.264 and hevc uses H.265 range decode)"),
             Self::Unavailable => f.write_str("completed recorded decode unavailable"),
             Self::InvalidReceipt => f.write_str("recorded decode provenance or receipt mismatch"),
+            Self::CustodyMismatch => f.write_str("retained source bytes or span metadata disagree with the capsule source digest; nothing was decoded"),
             Self::Limit => f.write_str("recorded decode bound exceeded"),
             Self::Cancelled => f.write_str("recorded decode cancelled"),
             Self::Source(e) => write!(f, "recorded source: {e}"),
@@ -595,14 +602,30 @@ pub(crate) fn source_capsule(
     }
     let capsule = SensorCapsule::from_canonical_bytes(&bytes)?;
     if capsule.capsule_id != span.capsule_id
-        || capsule.source_digest != span.segment_sha256
-        || capsule.source_bytes != span.len
         || capsule.capture != delta.validity
         || capsule.gap_before != span.gap_before
     {
         return Err(RecordedDecodeError::InvalidReceipt);
     }
+    // The span metadata names the bytes; the capsule names their custody digest. A disagreement
+    // is a custody mismatch, refused before anything is read or decoded.
+    if capsule.source_digest != span.segment_sha256 || capsule.source_bytes != span.len {
+        return Err(RecordedDecodeError::CustodyMismatch);
+    }
     Ok((capsule, delta.payload_digest))
+}
+
+/// Source custody gate run before every codec call: `bytes` (the reassembled span) must have
+/// exactly the capsule's byte count and SHA-256 source digest. A mismatch is the typed
+/// [`RecordedDecodeError::CustodyMismatch`]; the caller decodes nothing (fss-2h5zq.41).
+pub fn verify_custody(capsule: &SensorCapsule, bytes: &[u8]) -> Result<(), RecordedDecodeError> {
+    if capsule.source_digest.algorithm() != DigestAlgorithm::Sha256
+        || bytes.len() as u64 != capsule.source_bytes
+        || ContentDigest::sha256(bytes) != capsule.source_digest
+    {
+        return Err(RecordedDecodeError::CustodyMismatch);
+    }
+    Ok(())
 }
 
 /// Retained source capsule of `segment` of a completed import, verified against its custody
@@ -638,6 +661,7 @@ fn source(
     let (capsule, digest) = source_capsule(deployment, &retained, request.segment_index)?;
     let bytes =
         retained.read_segment(deployment, request.segment_index, request.read_limits, cx)?;
+    verify_custody(&capsule, &bytes)?;
     Ok((retained, capsule, digest, bytes))
 }
 
@@ -954,6 +978,9 @@ fn masked_luma(
 pub mod h264;
 /// Retained H.265/HEVC Annex-B range decoding bound to the same source custody.
 pub mod h265;
+/// Retained receipts of source-determined decode refusals, and the per-capsule outcome
+/// composition (fss-2h5zq.41).
+pub mod refusal;
 /// Declared BT.601 limited-range conversion of retained H.264/H.265 4:2:0 pictures to RGB.
 pub mod video_rgb;
 

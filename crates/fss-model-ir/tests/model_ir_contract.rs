@@ -487,10 +487,15 @@ fn test_schema_domain_and_pinned_counts() -> Result<(), Box<dyn Error>> {
     // + SCHEMA-DOMAIN-RTPDUMP-IMPORT-{IDENTITY,REPORT}-001 (fss-2h5zq.27)
     // + SCHEMA-DOMAIN-LONG-DWELL-{ANALYSIS,FRAME,EPISODE,APPROVAL}-001
     // + SCHEMA-DOMAIN-RTPDUMP-IMPORT-{IDENTITY,REPORT}-002 (fss-2h5zq.27 access units)
-    // + SCHEMA-DOMAIN-MOCK-MODEL-RESULT-001 (fss-f8jls) = 225.
+    // + SCHEMA-DOMAIN-MOCK-MODEL-RESULT-001 (fss-f8jls) = 225
+    // + SCHEMA-DOMAIN-REFERENCE-AGENT-PLAN-001 and -PLAN-IDENTITY-001 (AOP-007) = 227
+    // + SCHEMA-DOMAIN-REFERENCE-AGENT-FEEDBACK-IDENTITY-001 (AOP-013) = 228
+    // + SCHEMA-DOMAIN-ALERT-OPERATOR-RECONCILIATION-{EVIDENCE,APPROVAL}-001 = 230
+    // + SCHEMA-DOMAIN-REFERENCE-AGENT-EPISODE-{,IDENTITY-,REQUEST-}001 (FSS-230) = 233
+    // + SCHEMA-DOMAIN-RECORDED-DECODE-REFUSAL-001 (fss-2h5zq.41) = 234.
     assert_eq!(
-        domain_count, 225,
-        "registries/DIGEST_DOMAINS.md count must remain pinned at 225"
+        domain_count, 234,
+        "registries/DIGEST_DOMAINS.md count must remain pinned at 234"
     );
 
     let schemas_path = Path::new(env!("CARGO_MANIFEST_DIR"))
@@ -513,7 +518,7 @@ fn test_schema_domain_and_pinned_counts() -> Result<(), Box<dyn Error>> {
     // 83 = 82 + SCHEMA-CALIBRATION-COVERAGE-PROPOSAL-001 (owner 3b45140, fss-x8j0v).
     assert_eq!(
         schema_count, 83,
-        "registries/SCHEMAS.md count must remain pinned at 83"
+        "registries/SCHEMAS.md count must remain pinned at 234"
     );
     Ok(())
 }

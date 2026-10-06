@@ -574,6 +574,7 @@ All stable error identities and normative recovery guidance cataloged from `regi
 | `ERR-COVERAGE-UNKNOWN-001` | effective observability cannot be established | abstain/escalate health alert |
 | `ERR-DECODE-001` | media decode failed | preserve source; alternate decoder only if registered |
 | `ERR-DECODE-BOUNDS-001` | media exceeds declared bounds | fail closed |
+| `ERR-DECODE-CUSTODY-MISMATCH-001` | retained source bytes or import span metadata disagree with the capsule's source digest or byte count; refused before any codec work, nothing is decoded, staged or receipted | treat the import as corrupt custody; re-import from the original file, never decode around it |
 | `ERR-DECODE-H264-RANGE-GAP-001` | a retained source gap lies inside the requested H.264 range; inter prediction cannot bridge omitted bytes | split the range at the gap and start after it at an IDR |
 | `ERR-DECODE-H264-RANGE-NOT-IDR-001` | requested H.264 decode range does not begin at an IDR access unit, so its first picture would predict from references outside the range | start the range at an IDR segment |
 | `ERR-DECODE-H264-UNSUPPORTED-001` | H.264 stream uses a profile or coding tool outside the admitted set (progressive 8-bit 4:2:0 Baseline, Main and High); no approximate pixels are produced | transcode in the laboratory or wait for a registered decoder; do not retry unchanged |
