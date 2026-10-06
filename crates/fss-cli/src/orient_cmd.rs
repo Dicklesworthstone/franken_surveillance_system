@@ -815,7 +815,10 @@ pub(crate) fn situation_capsule_payload(
             agent_json::strings(&orientation.active_investigations),
         ),
         ("activeHypotheses", "[]".to_owned()),
-        ("activePlans", "[]".to_owned()),
+        (
+            "activePlans",
+            agent_json::strings(&orientation.active_plans),
+        ),
         (
             "obligations",
             agent_json::strings(capsule.obligations.iter().map(|id| id.as_str())),

@@ -212,6 +212,7 @@ pub fn publish_feedback(
         });
     }
     let orientation = orient_bound(
+        Some((root, &head)),
         &position.snapshot,
         session.view,
         &session.principal_id,

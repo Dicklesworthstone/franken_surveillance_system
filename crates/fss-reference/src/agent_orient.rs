@@ -1294,6 +1294,8 @@ pub struct DeploymentOrientation {
     pub coverage: Option<CoverageAssessment>,
     /// Open investigation cases of the bound mission (empty when no session is bound).
     pub active_investigations: Vec<String>,
+    /// Active plans of the bound mission (empty when no session is bound).
+    pub active_plans: Vec<String>,
 }
 
 impl DeploymentOrientation {
@@ -1806,6 +1808,7 @@ fn compile_capsule(
     snapshot: &DeploymentSnapshot,
     request: &OrientRequest,
     cases: &[OrientCaseBrief],
+    plans: &[OrientPlanBrief],
 ) -> Result<CompiledSituation, OrientError> {
     let heartbeat = request.view == AgentView::Pulse;
     let anchor = snapshot.anchor.clone();
@@ -2266,6 +2269,9 @@ fn compile_capsule(
         );
         for case in cases {
             affordances.push(case_affordance(case)?);
+        }
+        for plan in plans {
+            affordances.push(plan_affordance(plan)?);
         }
     }
     for operation in &indeterminate {
@@ -2965,6 +2971,50 @@ fn case_affordance(case: &OrientCaseBrief) -> Result<ActionAffordance, ContractE
     .build())
 }
 
+/// Prefix of the affordance a session-bound orientation lists for each active plan.
+pub const AFFORDANCE_PLAN_PREFIX: &str = "affordance:plan:";
+
+/// The blocked affordance listing one active plan and the exact owner step it awaits.
+fn plan_affordance(plan: &OrientPlanBrief) -> Result<ActionAffordance, ContractError> {
+    let (operation, rationale) = match plan.state.as_deref() {
+        None => (
+            "plan",
+            format!(
+                "Plan {} is compiled but not prepared: it awaits the operator's exact plan \
+                 approval (`fss plan ... --approve <plan approval>`).",
+                plan.plan_id
+            ),
+        ),
+        Some("prepared") => (
+            "commit",
+            format!(
+                "Plan {} prepared {}: it awaits the operator's exact dispatch approval (`fss \
+                 commit --plan {} --approve <dispatch approval>`); `fss cancel` retires it.",
+                plan.plan_id, plan.operation_id, plan.plan_id
+            ),
+        ),
+        Some(state) => (
+            "commit",
+            format!(
+                "Plan {}'s operation {} is {state}: its obligation stays open until the owner \
+                 reconciles it (`fss commit --reconcile ...`); never resend.",
+                plan.plan_id, plan.operation_id
+            ),
+        ),
+    };
+    Ok(ListedAffordance {
+        affordance_id: format!("{AFFORDANCE_PLAN_PREFIX}{}", plan.plan_id),
+        operation,
+        target: format!("fss://plan/{}", plan.plan_id),
+        rationale,
+        class: AffordanceClass::Blocked,
+        supported_worlds: BTreeSet::new(),
+        required_capability: CAPABILITY_PLAN_COMMIT,
+        cost: read_cost(0, 0)?,
+    }
+    .build())
+}
+
 struct ListedAffordance<'a> {
     affordance_id: String,
     operation: &'a str,
@@ -3176,6 +3226,18 @@ pub struct OrientCaseBrief {
     pub rebase_required: bool,
 }
 
+/// One published, not yet terminal plan of the bound mission (`fss plan`), as listed by a
+/// session-bound orientation. Listing a plan never prepares or commits anything.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct OrientPlanBrief {
+    /// Stable plan identity.
+    pub plan_id: String,
+    /// Effect operation the plan prepares and commits.
+    pub operation_id: String,
+    /// Registered effect state of that operation, or `None` while it is not prepared.
+    pub state: Option<String>,
+}
+
 /// The durable agent session and mission an orientation is compiled for (`fss session`).
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct OrientSessionBinding {
@@ -3185,6 +3247,8 @@ pub struct OrientSessionBinding {
     pub session_id: SessionId,
     /// Open investigation cases of the mission visible to the session, in identity order.
     pub cases: Vec<OrientCaseBrief>,
+    /// Active (non-terminal) plans of the mission, in identity order.
+    pub plans: Vec<OrientPlanBrief>,
 }
 
 /// [`orient_deployment`] with the capsule bound to a durable session and mission instead of the
@@ -3208,7 +3272,8 @@ pub fn orient_deployment_for(
         });
     }
     let cases = session.map_or(&[][..], |binding| binding.cases.as_slice());
-    let mut compiled = compile_capsule(snapshot, request, cases)?;
+    let plans = session.map_or(&[][..], |binding| binding.plans.as_slice());
+    let mut compiled = compile_capsule(snapshot, request, cases, plans)?;
     if let Some(binding) = session {
         compiled.capsule.mission_id = binding.mission_id.clone();
         compiled.capsule.session_id = binding.session_id.clone();
@@ -3339,6 +3404,7 @@ pub fn orient_deployment_for(
         anchor_token: compiled.anchor_token,
         coverage: compiled.coverage,
         active_investigations: cases.iter().map(|case| case.case_id.clone()).collect(),
+        active_plans: plans.iter().map(|plan| plan.plan_id.clone()).collect(),
         publication,
     })
 }

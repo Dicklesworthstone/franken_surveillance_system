@@ -622,6 +622,7 @@ pub fn investigate(
     let committed = heads_before != heads_after;
     let cases = visible_cases(&journal.store, &session);
     let orientation = orient_bound(
+        Some((root, &head)),
         &snapshot,
         session.view,
         &session.principal_id,

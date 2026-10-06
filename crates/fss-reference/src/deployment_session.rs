@@ -961,6 +961,51 @@ fn read_published(
     }))
 }
 
+/// Every verified record published in a slot whose name starts with `prefix`, from one
+/// inspection of the agent publication directory (bounded by its publication limits). A broken
+/// slot is refused, never skipped.
+fn published_records(
+    root: &Path,
+    prefix: &str,
+) -> Result<Vec<PublishedRecord>, DeploymentSessionError> {
+    let directory = root.join(PUBLICATIONS_RELPATH);
+    if !directory.is_dir() {
+        return Ok(Vec::new());
+    }
+    let inspection = fss_publication::inspect(&directory, publication_limits())?;
+    let mut out = Vec::new();
+    for visible in inspection.visible_roots() {
+        if !visible.slot.as_str().starts_with(prefix) {
+            continue;
+        }
+        if inspection.is_broken_slot(&visible.slot) {
+            return Err(DeploymentSessionError::StoreInvalid(format!(
+                "the root in slot {} failed verification",
+                visible.slot
+            )));
+        }
+        let invalid = || {
+            DeploymentSessionError::StoreInvalid(format!(
+                "the record in slot {} failed verification",
+                visible.slot
+            ))
+        };
+        let manifest_bytes =
+            fss_publication::read_verified(&directory, visible.root, MAX_RECORD_BYTES)
+                .map_err(|_| invalid())?;
+        let manifest =
+            ObjectManifest::from_canonical_bytes(&manifest_bytes).map_err(|_| invalid())?;
+        let metadata = manifest.metadata_digest().ok_or_else(invalid)?;
+        let record = fss_publication::read_verified(&directory, metadata, MAX_RECORD_BYTES)
+            .map_err(|_| invalid())?;
+        out.push(PublishedRecord {
+            root: visible.root,
+            record,
+        });
+    }
+    Ok(out)
+}
+
 fn read_mission(
     root: &Path,
     digest: ContentDigest,
@@ -991,7 +1036,12 @@ fn read_mission(
 // Situations.
 // ---------------------------------------------------------------------------------------------
 
+/// `plans` names the deployment root and the head snapshot: plans are mission state whose
+/// effect obligations are live, so their state is always read from the head's effect journal,
+/// whatever anchor the situation itself is compiled at.
+#[allow(clippy::too_many_arguments)]
 fn orient_bound(
+    plans: Option<(&Path, &DeploymentSnapshot)>,
     snapshot: &DeploymentSnapshot,
     view: AgentView,
     principal: &PrincipalId,
@@ -1009,6 +1059,10 @@ fn orient_bound(
         mission_id: mission_id.clone(),
         session_id: session_id.clone(),
         cases,
+        plans: match plans {
+            Some((root, head)) => plan::plan_briefs(root, head, mission_id, principal)?,
+            None => Vec::new(),
+        },
     };
     Ok(orient_deployment_for(
         snapshot,
@@ -1261,6 +1315,7 @@ pub fn open_session(
     let (mission_id, session_id, request_digest) =
         open_identities(&snapshot.site_lineage, request, &token)?;
     let orientation = orient_bound(
+        Some((root, &snapshot)),
         &snapshot,
         request.view,
         &request.principal,
@@ -1447,6 +1502,7 @@ pub fn prepare_handoff(
     }
     let briefs = investigation::case_briefs(&journal.store, &session, &session.current_anchor);
     let orientation = orient_bound(
+        Some((root, &head)),
         &snapshot,
         session.view,
         &session.principal_id,
@@ -1774,6 +1830,7 @@ pub fn resume_session(
         .revision;
     let mission = read_mission(root, handoff.mission_digest)?;
     let basis = orient_bound(
+        Some((root, &head)),
         &basis_snapshot,
         handoff.view,
         principal,
@@ -1783,6 +1840,7 @@ pub fn resume_session(
         investigation::case_briefs(&journal.store, &session, &basis_snapshot.anchor),
     )?;
     let result = orient_bound(
+        Some((root, &head)),
         &head,
         handoff.view,
         principal,

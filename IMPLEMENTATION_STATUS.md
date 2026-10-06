@@ -233,7 +233,10 @@ synthetic scenes). None of it has been measured on real camera footage.
   commits before any I/O and sends exactly one webhook (2xx = relay acceptance only; a lost
   acknowledgement is indeterminate and never resent). `fss wait` (AOP-009) is a bounded
   read-only poll; `fss cancel` (AOP-010) previews and then cancels a still-prepared operation
-  under exact approval. `fss feedback` (AOP-013) publishes grounded, evidence-linked advisory
+  under exact approval. A published plan is mission state, not conversation: until its
+  operation is terminal in the head's effect journal it appears in the session-bound situation as
+  a blocked `affordance:plan:<plan>` (inside the capsule identity) and in `activePlans` of
+  situation and handoff payloads. `fss feedback` (AOP-013) publishes grounded, evidence-linked advisory
   proposals (`activePolicyMutation: false`). `fss-event alert` and the agent grammar share one
   alert core (`fss_cli::alert_effect`), so an operation prepared by either is the same operation.
   The MCP adapter adds only the read-only `wait` tool. `fss commit --reconcile

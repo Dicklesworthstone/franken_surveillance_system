@@ -22,6 +22,8 @@ use fss_core::{
 };
 use fss_publication::SlotName;
 
+use crate::agent_orient::{DeploymentSnapshot, OrientPlanBrief};
+
 use super::{
     DeploymentHistory, DeploymentOrientation, DeploymentSessionError, MAX_RECORD_BYTES,
     OrientLimits, SessionJournal, digest_of, evidence_now, hex, orient_bound, publish_record,
@@ -246,14 +248,18 @@ pub fn planning_context(
                 ))?,
         ),
     };
+    // A plan binds the world situation at the session's anchor, never the agent's own cognition:
+    // no case or plan briefs enter the frame it binds, so recording a case or a plan cannot
+    // change the identity of the plans compiled at that anchor.
     let orientation = orient_bound(
+        None,
         &position.snapshot,
         session.view,
         &session.principal_id,
         &session.mission_id,
         &session.session_id,
         &limits,
-        super::investigation::case_briefs(&journal.store, &session, &session.current_anchor),
+        Vec::new(),
     )?;
     journal.commit_pin()?;
     Ok(PlanningContext {
@@ -321,6 +327,40 @@ fn read_plan_at(
                 })
         })
         .transpose()
+}
+
+/// Active plans of `mission_id` by `principal`, as a session-bound orientation lists them:
+/// every published plan whose operation is not prepared yet or not terminal in the head snapshot.
+pub(super) fn plan_briefs(
+    root: &Path,
+    head: &DeploymentSnapshot,
+    mission_id: &MissionId,
+    principal: &PrincipalId,
+) -> Result<Vec<OrientPlanBrief>, DeploymentSessionError> {
+    let mut briefs = Vec::new();
+    for published in super::published_records(root, "plan-")? {
+        let record = PlanRecord::from_bytes(&published.record).map_err(|error| {
+            DeploymentSessionError::StoreInvalid(format!("a plan record does not verify: {error}"))
+        })?;
+        if record.mission_id != *mission_id || record.principal != *principal {
+            continue;
+        }
+        let state = head
+            .operations
+            .iter()
+            .find(|operation| operation.intent.operation_id.as_str() == record.operation_id)
+            .map(|operation| operation.state);
+        if state.is_some_and(|state| state.is_terminal()) {
+            continue;
+        }
+        briefs.push(OrientPlanBrief {
+            plan_id: record.plan_id,
+            operation_id: record.operation_id,
+            state: state.map(|state| state.as_str().to_owned()),
+        });
+    }
+    briefs.sort_by(|left, right| left.plan_id.cmp(&right.plan_id));
+    Ok(briefs)
 }
 
 /// Reads and verifies the published plan `plan_id` (record, control-plan child, and root).

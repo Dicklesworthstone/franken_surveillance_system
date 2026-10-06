@@ -430,6 +430,16 @@ impl Agent {
         Ok((code, envelope))
     }
 
+    /// The session-bound situation's active plans.
+    fn active_plans(&self) -> TestResult<Vec<String>> {
+        let (code, listed) = self.run(
+            "investigate",
+            &["--session", self.session.as_str(), "--transition", "list"],
+        )?;
+        assert_eq!(code, Some(0));
+        texts(&listed, &["payload", "activePlans"])
+    }
+
     fn plan(
         &self,
         event_id: &str,
@@ -525,6 +535,22 @@ fn plan_prepare_commit_sends_exactly_once_and_shares_the_alert_identity() -> Tes
     assert_ne!(dispatch, plan_approval);
     assert_ne!(fs::read(&effects)?, before);
     assert_eq!(relay.connections(), 0);
+    // The prepared plan is mission state, not conversation: the session's situation and its
+    // handoff both carry it.
+    assert_eq!(agent.active_plans()?, vec![plan_id.clone()]);
+    let (code, stdout) = run_fss(&[
+        "handoff".into(),
+        "--json".into(),
+        "--root".into(),
+        agent.root.as_os_str().to_owned(),
+        "--session".into(),
+        agent.session.clone().into(),
+    ])?;
+    assert_eq!(code, Some(0), "{stdout}");
+    assert_eq!(
+        texts(&parse(stdout.trim_end())?, &["payload", "activePlans"])?,
+        vec![plan_id.clone()]
+    );
 
     let (code, committed) = agent.run("commit", &["--plan", &plan_id, "--approve", &dispatch])?;
     assert_eq!(code, Some(0), "{committed:?}");
@@ -759,6 +785,8 @@ fn an_indeterminate_alert_is_reconciled_only_by_an_approved_owner_attestation() 
     assert_eq!(code, Some(0), "{oriented}");
     let oriented = parse(oriented.trim_end())?;
     assert!(texts(&oriented, &["payload", "obligations"])?.is_empty());
+    // A reconciled plan is no longer active.
+    assert!(agent.active_plans()?.is_empty());
     Ok(())
 }
 

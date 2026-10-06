@@ -515,6 +515,7 @@ fn assumption_objects(record: &HandoffRecord) -> Vec<String> {
 fn handoff_payload(
     record: &HandoffRecord,
     active_investigations: &[String],
+    active_plans: &[String],
     objective: &str,
     publication_receipt: ContentDigest,
     workspace_digest: ContentDigest,
@@ -574,7 +575,7 @@ fn handoff_payload(
             agent_json::array(&assumption_objects(record)),
         ),
         ("invalidatedAssumptions", agent_json::strings(invalidated)),
-        ("activePlans", "[]".to_owned()),
+        ("activePlans", agent_json::strings(active_plans)),
         (
             "preparedOperations",
             agent_json::strings(&record.prepared_operations),
@@ -755,6 +756,7 @@ fn handoff_response(
         payload_json: handoff_payload(
             record,
             &orientation.active_investigations,
+            &orientation.active_plans,
             objective,
             published.receipt.record_digest,
             record.workspace_digest,
