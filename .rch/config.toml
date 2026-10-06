@@ -1,0 +1,60 @@
+# rch transfer settings for franken_surveillance_system (a project layer
+# REPLACES the user's exclude list).
+#
+# Same excludes as the fleet default, minus `**/*.mp4` and `**/*.safetensors`:
+# fss tracks tiny include_bytes! fixtures (crates/fss-container/tests/fixtures/
+# indexed_avc.mp4, 4 KB; fss-reference .../model_import/fixtures/
+# weights.f32.safetensors, 152 B). The user-level media/weight excludes (meant
+# for multi-GB files in other repos) kept them off workers, so
+# `cargo check --all-targets` failed with "couldn't read" on every rch worker.
+[transfer]
+exclude_patterns = [
+    "target/",
+    "target_*/",
+    "target-*/",
+    ".target-*/",
+    ".target_*/",
+    ".cargo-target/",
+    ".cargo-target-rusticmill/",
+    ".cargo-target-*/",
+    ".git/",
+    ".beads/",
+    ".venv/",
+    ".oracle-venv/",
+    ".ee/",
+    ".ntm/",
+    ".ruff_cache/",
+    ".wrangler/",
+    "*.rlib",
+    "*.rmeta",
+    "node_modules/",
+    ".bun/",
+    ".npm/",
+    ".pnpm-store/",
+    "dist/",
+    "build/",
+    ".next/",
+    ".nuxt/",
+    ".turbo/",
+    ".parcel-cache/",
+    ".doctor/",
+    "*.xcframework/",
+    "docs/truth-pack/snapshots/",
+    "**/*.[wW][aA][vV]",
+    "**/*.[mM]4[aA]",
+    "**/*.[nN][eE][mM][oO]",
+    "**/*.[pP][tT]",
+    "**/*.[pP][tT][hH]",
+    "**/*.[cC][kK][pP][tT]",
+    "**/*.[nN][pP][yY]",
+    "**/*.[nN][pP][zZ]",
+    "**/*.[gG][gG][uU][fF]",
+    "**/*.[gG][gG][mM][lL]",
+    "coverage/",
+    ".nyc_output/",
+    "perf.data",
+    "perf.data.old",
+    "tests/artifacts/",
+    "sample_sqlite_db_files/",
+    "legacy_python_mcp_agent_mail_code/mcp_agent_mail/.venv/",
+]
