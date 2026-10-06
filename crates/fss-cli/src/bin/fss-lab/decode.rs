@@ -5,10 +5,14 @@
 //! The import is the real `FileIngestAdapter` path into an empty deployment root, and every
 //! capsule goes through `recorded_decode::refusal::decode_capsule`: custody is verified before
 //! any codec work, a decoded frame is published with its `fss.recorded_luma_receipt.v2` receipt,
-//! and a codec refusal is published with its `fss.recorded_decode_refusal.v1` receipt. Spans
-//! the importer omitted (for example a truncated last frame) are listed as omissions, never as
-//! decoded frames, and make the report degraded. The report carries digests, spans and counters
-//! only, never pixels. A file never certifies absence and has no live continuity.
+//! and a codec refusal is published with its `fss.recorded_decode_refusal.v1` receipt. Source
+//! bytes that became no capsule are listed as omissions, never as decoded frames: the import's
+//! omission spans, plus every input range no segment or omission span covers (a truncated last
+//! frame is dropped this way). The import's retained acquisition degradation (its lost
+//! dimensions, for example `truncated_frame_omitted`) is reported verbatim. Any refusal,
+//! omission or source-loss dimension makes the report degraded. The report carries digests,
+//! spans and counters only, never pixels. A file never certifies absence and has no live
+//! continuity.
 
 use std::fmt::Write as _;
 use std::path::{Path, PathBuf};
@@ -16,14 +20,19 @@ use std::path::{Path, PathBuf};
 use fss_codec_mjpeg::decoder_identity;
 use fss_core::region::{ContextAuthority, RootAuthoritySpec};
 use fss_core::{
-    BudgetVector, ContentDigest, DigestAlgorithm, OperationId, SensorId, StreamId, TimestampNs,
+    AcquisitionStateKind, BudgetVector, CanonicalDecode, CanonicalDecoder, ContentDigest,
+    DegradationEvidence, DigestAlgorithm, OperationId, SensorId, StreamId, TimestampNs,
+};
+use fss_reference::ingest::file_session::{
+    LOST_SEGMENT_GAP, LOST_SOURCE_BYTES_OMITTED, LOST_TRUNCATED_FRAME_OMITTED,
 };
 use fss_reference::ingest::recorded_decode::refusal::{CapsuleDecode, decode_capsule};
 use fss_reference::ingest::recorded_decode::{
     ComponentInterpretation, DecodeBudget, DecodeLimits, RecordedDecodeRequest,
 };
 use fss_reference::ingest::{
-    FileFormatHint, FileIngestAdapter, FileIngestRequest, RetainedFileImport, RetainedReadLimits,
+    AcquisitionRetention, FileFormatHint, FileImportManifest, FileIngestAdapter, FileIngestRequest,
+    RetainedFileImport, RetainedReadLimits,
 };
 use fss_reference::{ReferenceDeployment, ReplayCx};
 
@@ -85,7 +94,18 @@ pub struct DecodeReport {
     interpretation: LabInterpretation,
     frames: Vec<FrameRow>,
     omissions: Vec<(u64, u64, String)>,
+    /// Lost dimensions of the retained acquisition degradation; `None` when not recorded.
+    lost_dimensions: Option<Vec<String>>,
 }
+
+/// Lost dimensions that mean source bytes did not become decodable capsules.
+const SOURCE_LOSS: [&str; 3] = [
+    LOST_SOURCE_BYTES_OMITTED,
+    LOST_TRUNCATED_FRAME_OMITTED,
+    LOST_SEGMENT_GAP,
+];
+/// Reason given to an input range that neither a segment nor an omission span covers.
+const NOT_SEGMENTED: &str = "not_segmented";
 
 impl DecodeReport {
     /// Number of decoded capsules.
@@ -101,10 +121,17 @@ impl DecodeReport {
     pub fn refused(&self) -> usize {
         self.frames.len() - self.decoded()
     }
-    /// Degraded when any capsule was refused or any span was omitted by the importer.
+    /// Degraded when any capsule was refused, any source range became no capsule, or the
+    /// retained acquisition degradation names a source loss.
     #[must_use]
     pub fn degraded(&self) -> bool {
-        self.refused() != 0 || !self.omissions.is_empty()
+        self.refused() != 0
+            || !self.omissions.is_empty()
+            || self
+                .lost_dimensions
+                .iter()
+                .flatten()
+                .any(|lost| SOURCE_LOSS.contains(&lost.as_str()))
     }
 
     /// `fss.lab.decode_report.v1` JSON; root paths and wall-clock time never appear.
@@ -186,10 +213,24 @@ impl DecodeReport {
                 escape(reason)
             );
         }
+        out.push_str("],\"acquisition_lost_dimensions\":");
+        match &self.lost_dimensions {
+            Some(lost) => {
+                out.push('[');
+                for (index, dimension) in lost.iter().enumerate() {
+                    if index > 0 {
+                        out.push(',');
+                    }
+                    let _ = write!(out, "\"{}\"", escape(dimension));
+                }
+                out.push(']');
+            }
+            None => out.push_str("\"not_recorded\""),
+        }
         let listed = self.frames.len().min(MAX_REPORTED_FRAMES);
         let _ = write!(
             out,
-            "],\"frames_listed\":{listed},\"frames_not_listed\":{},\
+            ",\"frames_listed\":{listed},\"frames_not_listed\":{},\
              \"totals\":{{\"capsules\":{},\"decoded\":{},\"refused\":{},\"omitted\":{}}},\
              \"degraded\":{},\"derived_not_evidence\":true}}",
             self.frames.len() - listed,
@@ -239,6 +280,71 @@ impl DecodeReport {
         );
         out
     }
+}
+
+/// Every input range covered by neither a segment span nor an omission span, in file order.
+fn uncovered_spans(manifest: &FileImportManifest) -> Vec<(u64, u64)> {
+    let mut covered: Vec<(u64, u64)> = manifest
+        .segment_spans
+        .iter()
+        .map(|s| (s.offset, s.offset.saturating_add(s.len)))
+        .chain(
+            manifest
+                .omission_spans
+                .iter()
+                .map(|o| (o.offset, o.offset.saturating_add(o.len))),
+        )
+        .collect();
+    covered.sort_unstable();
+    let mut gaps = Vec::new();
+    let mut cursor = 0_u64;
+    for (start, end) in covered {
+        if start > cursor {
+            gaps.push((cursor, start - cursor));
+        }
+        cursor = cursor.max(end);
+    }
+    if manifest.input_bytes > cursor {
+        gaps.push((cursor, manifest.input_bytes - cursor));
+    }
+    gaps
+}
+
+/// Lost dimensions of the import's retained `Degraded` transition witness, verified by digest.
+fn retained_lost_dimensions(
+    deployment: &ReferenceDeployment,
+    import_identity: ContentDigest,
+) -> Result<Option<Vec<String>>, String> {
+    let retention = AcquisitionRetention::open(deployment, import_identity)
+        .map_err(|e| format!("lab decode acquisition history: {e}"))?;
+    let Some(history) = retention.history() else {
+        return Ok(None);
+    };
+    let Some(record) = history
+        .records()
+        .iter()
+        .find(|r| r.to == AcquisitionStateKind::Degraded)
+    else {
+        return Ok(Some(Vec::new()));
+    };
+    let bytes = deployment
+        .publisher()
+        .spool()
+        .read(record.witness_digest)
+        .map_err(|e| format!("lab decode degradation witness: {e}"))?;
+    if ContentDigest::sha256(&bytes) != record.witness_digest {
+        return Err("lab decode degradation witness digest mismatch".to_owned());
+    }
+    let refused = |e: &dyn std::fmt::Display| format!("lab decode degradation witness: {e}");
+    let mut decoder = CanonicalDecoder::new(&bytes);
+    if decoder.text().map_err(|e| refused(&e))? != "fss.canonical.v1"
+        || decoder.text().map_err(|e| refused(&e))? != "fss.acquisition.degradation.v1"
+    {
+        return Err("lab decode degradation witness has an unexpected domain".to_owned());
+    }
+    let evidence = DegradationEvidence::decode_canonical(&mut decoder).map_err(|e| refused(&e))?;
+    decoder.ensure_finished().map_err(|e| refused(&e))?;
+    Ok(Some(evidence.lost_dimensions))
 }
 
 fn escape(text: &str) -> String {
@@ -378,10 +484,20 @@ fn run_in(
         capture_time_class: manifest.capture_time_label.clone(),
         interpretation,
         frames,
-        omissions: manifest
-            .omission_spans
-            .iter()
-            .map(|o| (o.offset, o.len, o.reason.clone()))
-            .collect(),
+        omissions: {
+            let mut omissions: Vec<(u64, u64, String)> = manifest
+                .omission_spans
+                .iter()
+                .map(|o| (o.offset, o.len, o.reason.clone()))
+                .chain(
+                    uncovered_spans(&manifest)
+                        .into_iter()
+                        .map(|(offset, len)| (offset, len, NOT_SEGMENTED.to_owned())),
+                )
+                .collect();
+            omissions.sort();
+            omissions
+        },
+        lost_dimensions: retained_lost_dimensions(&deployment, imported.import_identity)?,
     })
 }
