@@ -21,6 +21,8 @@ pub mod eventgen;
 pub mod file_adapter;
 /// Bounded, resumable file-import part custody with explicit typed-reference verification.
 pub mod file_publication;
+/// Read-only reconstruction of exact file-part publication plans from retained manifests.
+pub mod file_publication_recovery;
 /// The acquisition lifecycle of one file import, driven through the core session (ADP-FILE-001).
 pub mod file_session;
 /// Deterministic scene-model foreground detection on decoded luma planes.
@@ -60,6 +62,8 @@ pub mod recording_pipeline;
 pub mod retained;
 /// Recorded RTP continuity driven through the core acquisition session (fss-2h5zq.29).
 pub mod rtp_continuity;
+/// Bounded recorded-RTP framing and source-preserving ingest.
+pub mod rtpdump;
 /// Owner site calibration: atlas localization, joint refinement, digest-bound record.
 pub mod site_calibration;
 /// Retained continuity witnesses of live or virtual sources and the stored-witness absence rule.

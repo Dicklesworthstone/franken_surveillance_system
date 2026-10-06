@@ -16,6 +16,9 @@ use fss_reference::ingest::file_publication::{
     FilePublicationPlan, MAX_FILE_PUBLICATION_PARTS, MAX_FILE_PUBLICATION_PAYLOADS,
     STAGE_FILE_PART_PREFLIGHT, STAGE_FILE_PART_PUBLISH, STAGE_FILE_PART_ROOT,
 };
+use fss_reference::ingest::file_publication_recovery::{
+    STAGE_FILE_PART_RECOVER, recover_file_publication,
+};
 use fss_reference::ingest::{FileImportManifest, RetainedReadLimits};
 use fss_reference::{ADP_FILE_GENERATION, ADP_FILE_ROW_ID, FileIngestError, ReferenceDeployment};
 
@@ -266,6 +269,7 @@ fn missing_part_record_after_reopen_invalidates_the_aggregate() -> TestResult {
     let dep = open(&dir, limits)?;
     assert!(dep.publisher().root(plan.slot()).is_some());
     assert!(plan.verify(&dep, &meta, &cx("parts-after-loss")?).is_err());
+    assert!(recover_file_publication(&dep, identity(), &meta, &cx("parts-recover-loss")?).is_err());
     Ok(())
 }
 
@@ -309,5 +313,77 @@ fn a_retry_cannot_relabel_the_existing_publication_validity() -> TestResult {
     let changed = CaptureInterval::new(TimestampNs(1), TimestampNs(2))?;
     assert!(plan.publish(&mut dep, &meta, changed, &cx("parts-validity-retry")?).is_err());
     assert_eq!(dep.current_anchor(), &anchor);
+    Ok(())
+}
+
+#[test]
+fn reconstructs_flat_and_partitioned_plans_without_the_original_payload_list() -> TestResult {
+    for count in [3, 70] {
+        let dir = fresh_dir(&format!("parts-reconstruct-{count}"))?;
+        let limits = standard();
+        let plan = FilePublicationPlan::new(identity(), (0..count).map(digest), 32)?;
+        let meta = metadata(&plan, count);
+        let mut dep = open(&dir, limits)?;
+        stage(&mut dep, count)?;
+        let receipt = plan.publish(&mut dep, &meta, validity()?, &cx("parts-original")?)?;
+        let root = receipt.root.root;
+        let anchor = dep.current_anchor().clone();
+        drop(plan);
+        drop(dep);
+        let mut dep = open(&dir, limits)?;
+        let recovered = recover_file_publication(&dep, identity(), &meta, &cx("parts-rebuild")?)?;
+        assert_eq!(recovered.payloads().len(), count);
+        assert_eq!(recovered.root_manifest(&meta)?.root(), root);
+        assert_eq!(dep.current_anchor(), &anchor);
+        let retry = recovered.publish(&mut dep, &meta, validity()?, &cx("parts-rebuild-retry")?)?;
+        assert_eq!(retry.root.outcome, RootLedgerOutcome::AlreadyLedgered);
+        assert_eq!(dep.current_anchor(), &anchor);
+    }
+    Ok(())
+}
+
+#[test]
+fn reconstruction_rejects_omitted_reordered_foreign_and_unbound_metadata() -> TestResult {
+    let dir = fresh_dir("parts-reconstruct-refusals")?;
+    let plan = FilePublicationPlan::new(identity(), (0..70).map(digest), 32)?;
+    let meta = metadata(&plan, 70);
+    let mut dep = open(&dir, standard())?;
+    stage(&mut dep, 70)?;
+    plan.publish(&mut dep, &meta, validity()?, &cx("parts-reconstruct-base")?)?;
+    let anchor = dep.current_anchor().clone();
+    for case in 0..4 {
+        let mut changed = meta.clone();
+        match case {
+            0 => { let _ = changed.part_roots.pop(); }
+            1 => changed.part_roots.reverse(),
+            2 => changed.part_roots[0] = digest(900),
+            _ => changed.detector_evidence = "unretained replacement".to_owned(),
+        }
+        assert!(recover_file_publication(&dep, identity(), &changed, &cx("parts-reconstruct-bad")?).is_err());
+    }
+    assert_eq!(dep.current_anchor(), &anchor);
+    Ok(())
+}
+
+#[test]
+fn reconstruction_cancellation_is_read_only() -> TestResult {
+    let dir = fresh_dir("parts-reconstruct-cancel")?;
+    let plan = FilePublicationPlan::new(identity(), (0..70).map(digest), 32)?;
+    let meta = metadata(&plan, 70);
+    let mut dep = open(&dir, standard())?;
+    stage(&mut dep, 70)?;
+    plan.publish(&mut dep, &meta, validity()?, &cx("parts-reconstruct-ready")?)?;
+    let anchor = dep.current_anchor().clone();
+    let objects = dep.publisher().spool().object_count();
+    for occurrence in [1, 3, 5] {
+        let cancelled = cx("parts-reconstruct-cancel")?;
+        cancelled.set_cancel_at_checkpoint_occurrence(STAGE_FILE_PART_RECOVER, occurrence);
+        assert!(matches!(
+            recover_file_publication(&dep, identity(), &meta, &cancelled),
+            Err(FileIngestError::CancellationRequested { stage: STAGE_FILE_PART_RECOVER })
+        ));
+        assert_eq!(dep.current_anchor(), &anchor);
+        assert_eq!(dep.publisher().spool().object_count(), objects);
+    }
     Ok(())
 }
