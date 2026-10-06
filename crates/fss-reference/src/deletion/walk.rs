@@ -421,20 +421,24 @@ impl Universe {
         let mut records: BTreeSet<ContentDigest> = BTreeSet::new();
         for digest in &spool_digests {
             checkpoint(cx, STAGE_DELETION_SCAN)?;
-            let mut info = ObjectInfo::default();
-            if let Ok(bytes) = spool.read(*digest) {
-                if DeletionPlan::is_plan_bytes(&bytes)
-                    || DeletionCompletion::is_completion_bytes(&bytes)
-                {
-                    records.insert(*digest);
-                    continue;
-                }
-                info.bytes = bytes.len() as u64;
-                embedded(&bytes, &universe, &prefix, &mut info.refs);
-                info.refs.remove(digest);
-                if let Ok(manifest) = ObjectManifest::from_canonical_bytes(&bytes) {
-                    info.manifest_children = manifest.children().to_vec();
-                }
+            // Unreadable bytes have unknown references, not an empty reference set. Even an
+            // apparently unrelated object may hold the only edge into this closure. Refuse the
+            // scan with its custody error rather than authorize a smaller, incomplete deletion.
+            let bytes = spool.read(*digest)?;
+            if DeletionPlan::is_plan_bytes(&bytes)
+                || DeletionCompletion::is_completion_bytes(&bytes)
+            {
+                records.insert(*digest);
+                continue;
+            }
+            let mut info = ObjectInfo {
+                bytes: bytes.len() as u64,
+                ..ObjectInfo::default()
+            };
+            embedded(&bytes, &universe, &prefix, &mut info.refs);
+            info.refs.remove(digest);
+            if let Ok(manifest) = ObjectManifest::from_canonical_bytes(&bytes) {
+                info.manifest_children = manifest.children().to_vec();
             }
             objects.insert(*digest, info);
         }
