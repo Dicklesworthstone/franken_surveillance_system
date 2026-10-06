@@ -2931,3 +2931,259 @@ fn coverage_rotation_resumes_certification_and_refused_domains_stay_blocked() ->
 
     Ok(())
 }
+
+// ---------------------------------------------------------------------------------------------
+// Criterion: authorized-but-not-observed gap witnesses revoke absence (fss-p2gz0)
+//
+// Planted negative for every test in this section: the pre-fix `evaluate_coverage` selected
+// witnesses with `observed_domain` containing the queried domain only. A gap witness that
+// authorizes the domain but observed nothing there was therefore invisible to the store, and an
+// earlier (or later) certifying witness still yielded `AbsentWithCoverage` across the gap.
+// ---------------------------------------------------------------------------------------------
+
+/// The encoding `fss-reference` `ingest/source_coverage.rs` `derive_witness` produces for a
+/// domain where nothing arrived: authorized for `domain`, observed nothing, `Gapped`,
+/// `NotObservable`, `SourceGap`.
+fn silent_gap_witness(domain: &str) -> CoverageWitness {
+    CoverageWitness {
+        anchor: LedgerAnchor::genesis("test-site-lineage"),
+        authorized_domain: BTreeSet::from([domain.to_string()]),
+        observed_domain: BTreeSet::new(),
+        excluded_domain: BTreeSet::new(),
+        continuity: CoverageContinuity::Gapped,
+        completeness: Completeness::NotObservable,
+        negative_predicate: "no_unauthorized_intrusion".to_string(),
+        stop_reason: CoverageStopReason::SourceGap,
+        authorized_generation: 1,
+        observed_generation: 1,
+    }
+}
+
+/// Asserts every absence read path for `domain` refuses with the silent-gap reason set, on the
+/// live store and on the store rebuilt from canonical history.
+fn assert_silent_gap_revokes(store: &EventRevisionStore, site: &str, domain: &str) -> TestResult {
+    let absent_id = EventId::parse("evt_p2gz0_absent")?;
+    let expected_reasons = vec![
+        NotObservableReason::CoverageWitnessGapped,
+        NotObservableReason::CoverageWitnessUncertified,
+    ];
+    let rebuilt =
+        EventRevisionStore::rebuild_from_history(LedgerAnchor::genesis(site), store.history())?;
+    for (label, s) in [("live", store), ("rebuilt", &rebuilt)] {
+        assert_eq!(
+            s.read_event_in_domain(&absent_id, domain, None)?,
+            EventReadResult::NotObservable {
+                domain: domain.to_string(),
+                reason: NotObservableReason::CoverageWitnessGapped,
+                all_reasons: expected_reasons.clone(),
+            },
+            "{label}: event read must not certify absence across a silent gap"
+        );
+        assert_eq!(
+            s.read_lineage_in_domain(&absent_id, domain)?,
+            LineageReadResult::NotObservable {
+                domain: domain.to_string(),
+                reason: NotObservableReason::CoverageWitnessGapped,
+                all_reasons: expected_reasons.clone(),
+            },
+            "{label}: lineage read"
+        );
+        assert_eq!(
+            s.read_evidence_graph("graph_p2gz0_absent", domain)?,
+            GraphReadResult::NotObservable {
+                domain: domain.to_string(),
+                reason: NotObservableReason::CoverageWitnessGapped,
+                all_reasons: expected_reasons.clone(),
+            },
+            "{label}: graph read"
+        );
+        assert_eq!(
+            s.coverage_non_observability_reasons(domain),
+            expected_reasons,
+            "{label}: reasons"
+        );
+    }
+    Ok(())
+}
+
+/// Bug repro (fss-p2gz0): certifying witness for D first, then the silent gap witness for D.
+/// Planted negative: the observed_domain-only filter ignores the gap witness and returns
+/// `AbsentWithCoverage(certifying)`.
+#[test]
+fn coverage_silent_gap_after_certifying_revokes_absence() -> TestResult {
+    let site = "site-p2gz0-cert-then-gap";
+    let domain = "domain.monitored_gate";
+    let mut store = EventRevisionStore::new(LedgerAnchor::genesis(site));
+    store.register_coverage_witness(
+        store.current_anchor().clone(),
+        sample_coverage_witness(domain, true, true, false)?,
+        TimestampNs(1_000),
+    )?;
+    // Precondition: the certifying witness alone certifies absence.
+    let absent_id = EventId::parse("evt_p2gz0_absent")?;
+    assert!(matches!(
+        store.read_event_in_domain(&absent_id, domain, None)?,
+        EventReadResult::AbsentWithCoverage(_)
+    ));
+
+    store.register_coverage_witness(
+        store.current_anchor().clone(),
+        silent_gap_witness(domain),
+        TimestampNs(2_000),
+    )?;
+    assert_silent_gap_revokes(&store, site, domain)
+}
+
+/// Bug repro, reverse registration order: silent gap witness first, then the certifying one.
+/// Planted negative: the observed_domain-only filter sees only the certifying witness and
+/// returns `AbsentWithCoverage`.
+#[test]
+fn coverage_silent_gap_before_certifying_revokes_absence() -> TestResult {
+    let site = "site-p2gz0-gap-then-cert";
+    let domain = "domain.monitored_gate";
+    let mut store = EventRevisionStore::new(LedgerAnchor::genesis(site));
+    store.register_coverage_witness(
+        store.current_anchor().clone(),
+        silent_gap_witness(domain),
+        TimestampNs(1_000),
+    )?;
+    store.register_coverage_witness(
+        store.current_anchor().clone(),
+        sample_coverage_witness(domain, true, true, false)?,
+        TimestampNs(2_000),
+    )?;
+    assert_silent_gap_revokes(&store, site, domain)
+}
+
+/// A multi-domain witness that observed E but nothing in D (the partially silent encoding of
+/// `derive_witness`) revokes D. Planted negative: the observed_domain-only filter does not match
+/// it for D, so the certifying D witness certifies absence.
+#[test]
+fn coverage_partially_silent_multi_domain_witness_revokes_unobserved_domain() -> TestResult {
+    let site = "site-p2gz0-partial";
+    let domain = "domain.monitored_gate";
+    let other = "domain.other_gate";
+    let mut store = EventRevisionStore::new(LedgerAnchor::genesis(site));
+    store.register_coverage_witness(
+        store.current_anchor().clone(),
+        sample_coverage_witness(domain, true, true, false)?,
+        TimestampNs(1_000),
+    )?;
+    let mut partial = silent_gap_witness(domain);
+    partial.authorized_domain.insert(other.to_string());
+    partial.observed_domain.insert(other.to_string());
+    partial.completeness = Completeness::Partial;
+    store.register_coverage_witness(store.current_anchor().clone(), partial, TimestampNs(2_000))?;
+    assert_silent_gap_revokes(&store, site, domain)
+}
+
+/// A silent gap witness for a DIFFERENT domain must not revoke D. Against the planted negative
+/// (the pre-fix observed_domain-only filter) the D assertions pass; they guard the fix against
+/// over-matching, for example revoking on every gap witness regardless of the domains it
+/// authorizes. The final assertion fails pre-fix: the gap domain itself read as
+/// `NoCoverageWitness` instead of the gap reasons.
+#[test]
+fn coverage_silent_gap_for_other_domain_does_not_revoke() -> TestResult {
+    let site = "site-p2gz0-other-domain";
+    let domain = "domain.monitored_gate";
+    let other = "domain.other_gate";
+    let mut store = EventRevisionStore::new(LedgerAnchor::genesis(site));
+    let certifying = sample_coverage_witness(domain, true, true, false)?;
+    store.register_coverage_witness(
+        store.current_anchor().clone(),
+        certifying.clone(),
+        TimestampNs(1_000),
+    )?;
+    store.register_coverage_witness(
+        store.current_anchor().clone(),
+        silent_gap_witness(other),
+        TimestampNs(2_000),
+    )?;
+    let absent_id = EventId::parse("evt_p2gz0_absent")?;
+    assert_eq!(
+        store.read_event_in_domain(&absent_id, domain, None)?,
+        EventReadResult::AbsentWithCoverage(&certifying)
+    );
+    assert!(store.coverage_non_observability_reasons(domain).is_empty());
+    // The other domain itself is refused with the gap reasons (pre-fix it was
+    // `NoCoverageWitness`, which hid that a gap report exists for it).
+    assert_silent_gap_revokes(&store, site, other)
+}
+
+/// A gap that does not overlap the read must not revoke. `CoverageWitness` carries no capture
+/// interval and reads carry no query interval, so the store's only temporal partition is the
+/// live registry epoch: a silent gap witness sealed by `rotate_coverage_registry` lies in an
+/// earlier epoch, and a certifying witness registered after the rotation certifies absence. The
+/// pre-fix filter (the planted negative) also passes here; this test guards the fix against
+/// over-matching sealed witnesses.
+#[test]
+fn coverage_silent_gap_sealed_by_rotation_does_not_revoke() -> TestResult {
+    let site = "site-p2gz0-rotation";
+    let domain = "domain.monitored_gate";
+    let mut store = EventRevisionStore::new(LedgerAnchor::genesis(site));
+    store.register_coverage_witness(
+        store.current_anchor().clone(),
+        silent_gap_witness(domain),
+        TimestampNs(1_000),
+    )?;
+    store.rotate_coverage_registry(
+        store.current_anchor().clone(),
+        Vec::new(),
+        TimestampNs(2_000),
+    )?;
+    let certifying = sample_coverage_witness(domain, true, true, false)?;
+    store.register_coverage_witness(
+        store.current_anchor().clone(),
+        certifying.clone(),
+        TimestampNs(3_000),
+    )?;
+    let absent_id = EventId::parse("evt_p2gz0_absent")?;
+    assert_eq!(
+        store.read_event_in_domain(&absent_id, domain, None)?,
+        EventReadResult::AbsentWithCoverage(&certifying)
+    );
+    let rebuilt =
+        EventRevisionStore::rebuild_from_history(LedgerAnchor::genesis(site), store.history())?;
+    assert_eq!(
+        rebuilt.read_event_in_domain(&absent_id, domain, None)?,
+        EventReadResult::AbsentWithCoverage(&certifying)
+    );
+    Ok(())
+}
+
+/// A silent gap witness recorded as REFUSED by a rotation keeps blocking its authorized domain.
+/// Planted negative: the pre-fix refused-domain check also matched `observed_domain` only, so a
+/// refused silent witness blocked nothing and a post-rotation certifying witness certified.
+#[test]
+fn coverage_refused_silent_gap_blocks_authorized_domain_after_rotation() -> TestResult {
+    let site = "site-p2gz0-refused";
+    let domain = "domain.monitored_gate";
+    let mut store = EventRevisionStore::new(LedgerAnchor::genesis(site));
+    store.rotate_coverage_registry(
+        store.current_anchor().clone(),
+        vec![silent_gap_witness(domain)],
+        TimestampNs(1_000),
+    )?;
+    store.register_coverage_witness(
+        store.current_anchor().clone(),
+        sample_coverage_witness(domain, true, true, false)?,
+        TimestampNs(2_000),
+    )?;
+    let absent_id = EventId::parse("evt_p2gz0_absent")?;
+    let expected = EventReadResult::NotObservable {
+        domain: domain.to_string(),
+        reason: NotObservableReason::CoverageWitnessGapped,
+        all_reasons: vec![NotObservableReason::CoverageWitnessGapped],
+    };
+    assert_eq!(
+        store.read_event_in_domain(&absent_id, domain, None)?,
+        expected
+    );
+    let rebuilt =
+        EventRevisionStore::rebuild_from_history(LedgerAnchor::genesis(site), store.history())?;
+    assert_eq!(
+        rebuilt.read_event_in_domain(&absent_id, domain, None)?,
+        expected
+    );
+    Ok(())
+}

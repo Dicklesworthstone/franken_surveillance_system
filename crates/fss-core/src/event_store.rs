@@ -1630,11 +1630,24 @@ impl EventRevisionStore {
         }
     }
 
-    /// Evaluates coverage-for-absence for `domain` over every registered witness observing it.
+    /// Evaluates coverage-for-absence for `domain` over every registered witness that names it.
     ///
-    /// Absence is certified only when the store is below capacity, at least one witness observes
+    /// A witness names `domain` when the domain is in its `authorized_domain` or its
+    /// `observed_domain` (see [`witness_names_domain`]). Matching on the authorized domain too is
+    /// load-bearing (fss-p2gz0): a gap witness that was authorized for `domain` but observed
+    /// nothing there (`observed_domain` without the domain, typically `Gapped`/`NotObservable`/
+    /// `SourceGap`) reports a coverage gap for `domain` and must revoke absence. Matching on the
+    /// observed domain alone silently ignored such a witness, so an earlier certifying witness
+    /// still certified absence across the gap.
+    ///
+    /// Absence is certified only when the store is below capacity, at least one witness names
     /// the domain, and every such witness certifies absence; any single non-certifying witness
     /// wins (any-gap-wins). The result does not depend on witness registration order.
+    ///
+    /// Temporal scope: `CoverageWitness` carries no capture interval and reads carry no query
+    /// interval, so every witness in the live registry overlaps every read. Witnesses sealed by
+    /// [`Self::rotate_coverage_registry`] no longer apply (only refused witnesses recorded by a
+    /// rotation keep blocking their domains).
     fn evaluate_coverage(&self, domain: &str) -> CoverageOutcome<'_> {
         if is_unknown_domain(domain) {
             return CoverageOutcome::NotObservable {
@@ -1656,12 +1669,12 @@ impl EventRevisionStore {
         let refused_blocks = self
             .rotated_refused
             .iter()
-            .any(|w| w.observed_domain.iter().any(|d| d == domain));
+            .any(|w| witness_names_domain(w, domain));
 
         let matching: Vec<&CoverageWitness> = self
             .coverage_witnesses
             .iter()
-            .filter(|w| w.observed_domain.iter().any(|d| d == domain))
+            .filter(|w| witness_names_domain(w, domain))
             .collect();
 
         // With no live witness there is nothing to certify from; the reasons are fixed here, so
@@ -1765,6 +1778,15 @@ impl EventRevisionStore {
             })),
         }
     }
+}
+
+/// Returns whether `witness` speaks about `domain` for coverage-for-absence (fss-p2gz0).
+///
+/// True when `domain` is authorized or observed by the witness. A witness that authorizes the
+/// domain without observing it is a gap report for that domain, never an irrelevant witness;
+/// any-gap-wins (fss-3qlsa) then makes it revoke absence certification.
+fn witness_names_domain(witness: &CoverageWitness, domain: &str) -> bool {
+    witness.authorized_domain.contains(domain) || witness.observed_domain.contains(domain)
 }
 
 /// Outcome of one coverage-for-absence evaluation, projected onto each read result type.
