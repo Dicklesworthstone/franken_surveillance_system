@@ -21,6 +21,9 @@ impl ObjectManifest {
     /// A metadata digest is a custody-bearing reference, not merely an identity decoration, so it
     /// is also inserted into the canonical child closure. It remains separately encoded to retain
     /// its typed role. Duplicate children are rejected with [`ObjectError::DuplicateChild`].
+    /// Input is consumed only through the first excess child; an oversized or infinite iterator
+    /// cannot allocate an unbounded collection. The excess count is the observed lower bound,
+    /// not a claim to have exhausted an arbitrarily large source iterator.
     pub fn new(
         kind: impl Into<String>,
         children: impl IntoIterator<Item = ContentDigest>,
@@ -30,13 +33,18 @@ impl ObjectManifest {
         if kind.is_empty() || kind.len() > MAX_MANIFEST_KIND_BYTES {
             return Err(ObjectError::InvalidManifestKind);
         }
-        let input_children: Vec<_> = children.into_iter().collect();
-        let total_input_count = input_children.len() + usize::from(metadata_digest.is_some());
-        if total_input_count > MAX_MANIFEST_CHILDREN {
-            return Err(ObjectError::ManifestChildren {
-                count: total_input_count,
-                maximum: MAX_MANIFEST_CHILDREN,
-            });
+        let maximum_input = MAX_MANIFEST_CHILDREN - usize::from(metadata_digest.is_some());
+        let mut input_children = Vec::new();
+        // Do not collect before checking the bound, or reserve from an untrusted size hint.
+        // Retain at most maximum_input digests and inspect only one additional item.
+        for child in children {
+            if input_children.len() == maximum_input {
+                return Err(ObjectError::ManifestChildren {
+                    count: MAX_MANIFEST_CHILDREN + 1,
+                    maximum: MAX_MANIFEST_CHILDREN,
+                });
+            }
+            input_children.push(child);
         }
         let mut seen = BTreeSet::new();
         for child in &input_children {
@@ -93,6 +101,11 @@ impl ObjectManifest {
                 count: child_count_usize,
                 maximum: MAX_MANIFEST_CHILDREN,
             });
+        }
+        // Every canonical digest occupies one algorithm byte and 32 digest bytes. A count
+        // within the format ceiling still must fit the supplied input before it allocates.
+        if child_count_usize > decoder.remaining() / 33 {
+            return Err(ObjectError::Corrupt(ContentDigest::sha256(bytes)));
         }
         let mut children = Vec::with_capacity(child_count_usize);
         for _ in 0..child_count_usize {
