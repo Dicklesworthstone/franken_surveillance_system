@@ -64,8 +64,8 @@ use crate::agent_follow::{
 };
 use crate::agent_orient::{
     DeploymentHistory, DeploymentOrientation, DeploymentReadError, DeploymentSnapshot,
-    OrientCaseBrief, OrientClaimBrief, OrientError, OrientLimits, OrientRequest,
-    OrientSessionBinding, orient_deployment_for,
+    OrientCaseBrief, OrientClaimBrief, OrientError, OrientFindingBrief, OrientLimits,
+    OrientRequest, OrientSessionBinding, orient_deployment_for,
 };
 use crate::agent_session::checkpoint::journal::coordination::investigations::{
     DurableInvestigationError, InvestigationError, InvestigationLimits,
@@ -100,6 +100,9 @@ pub mod feedback;
 
 /// Bounded work-claim leases over mission cases (FSS-226); coordination only, never authority.
 pub mod claims;
+
+/// Immutable shared findings, explicit disagreements, and conflict reports (FSS-227).
+pub mod findings;
 
 /// Immutable execution episodes that close terminal plans (AGT-LAYER-009; AOP-007 `close`).
 pub mod episode;
@@ -191,6 +194,10 @@ pub enum DeploymentSessionError {
     /// The plan's effect is not terminal yet (its registered effect-state spelling; `None`: never
     /// prepared), so it cannot be closed.
     PlanOpen(Option<&'static str>),
+    /// A finding is ungrounded, malformed, or names a finding or case the session cannot see.
+    FindingRefused(String),
+    /// A finding names a superseded or withdrawn finding (one successor each).
+    FindingStale(String),
     /// The coordination engine refused a work-claim command. The command (and any session
     /// watermark change it caused) was committed and pinned before the refusal was returned.
     ClaimRefused(WorkClaimError),
@@ -228,6 +235,8 @@ impl fmt::Display for DeploymentSessionError {
             ),
             Self::CaseRefused(error) => write!(f, "investigation refused: {error}"),
             Self::ClaimRefused(error) => write!(f, "work claim refused: {error}"),
+            Self::FindingRefused(reason) => write!(f, "finding refused: {reason}"),
+            Self::FindingStale(reason) => write!(f, "finding is stale: {reason}"),
             Self::Internal(reason) => write!(f, "internal failure: {reason}"),
         }
     }
@@ -1103,6 +1112,7 @@ fn orient_bound(
         session_id: session_id.clone(),
         cases: briefs.cases,
         claims: briefs.claims,
+        findings: briefs.findings,
         plans: match plans {
             Some((root, head)) => plan::plan_briefs(root, head, mission_id, principal)?,
             None => Vec::new(),
@@ -1116,24 +1126,29 @@ fn orient_bound(
     )?)
 }
 
-/// The session's own agent-plane state its situation lists: open cases and non-terminal claims.
+/// The session's own agent-plane state its situation lists: open cases, non-terminal claims,
+/// and active findings.
 #[derive(Default)]
 struct SessionBriefs {
     cases: Vec<OrientCaseBrief>,
     claims: Vec<OrientClaimBrief>,
+    findings: Vec<OrientFindingBrief>,
 }
 
-/// The cases (as of `anchor`) and work claims (live state, at `now`) `session` sees.
+/// The cases (as of `anchor`), work claims (live state, at `now`), and active findings
+/// `session` sees.
 fn session_briefs(
+    root: &Path,
     store: &DurableSessionStore,
     session: &AgentSession,
     anchor: &LedgerAnchor,
     now: TimestampNs,
-) -> SessionBriefs {
-    SessionBriefs {
+) -> Result<SessionBriefs, DeploymentSessionError> {
+    Ok(SessionBriefs {
         cases: investigation::case_briefs(store, session, anchor),
         claims: claims::claim_briefs(store, session, now),
-    }
+        findings: findings::finding_briefs(root, session)?,
+    })
 }
 
 /// The effect facts of one plan's operation and obligation at the head, projected at this
@@ -1626,7 +1641,7 @@ pub fn prepare_handoff(
             "the workspace anchor token and the session anchor disagree".to_owned(),
         ));
     }
-    let briefs = session_briefs(&journal.store, &session, &session.current_anchor, now);
+    let briefs = session_briefs(root, &journal.store, &session, &session.current_anchor, now)?;
     let orientation = orient_bound(
         Some((root, &head)),
         &snapshot,
@@ -1654,6 +1669,11 @@ pub fn prepare_handoff(
                 encode_option(encoder, request.note.as_deref());
                 encoder.i128(now.0);
                 encoder.digest(situation_fingerprint);
+                // Undisputed findings list no affordance, so they are bound explicitly.
+                encoder.u32(orientation.active_findings.len() as u32);
+                for finding in &orientation.active_findings {
+                    encoder.text(finding);
+                }
             }
         ))
         .chars()
@@ -1971,7 +1991,7 @@ pub fn resume_session(
         &session.mission_id,
         session_id,
         &limits,
-        session_briefs(&journal.store, &session, &basis_snapshot.anchor, now),
+        session_briefs(root, &journal.store, &session, &basis_snapshot.anchor, now)?,
     )?;
     let result = orient_bound(
         Some((root, &head)),
@@ -1981,7 +2001,7 @@ pub fn resume_session(
         &session.mission_id,
         session_id,
         &limits,
-        session_briefs(&journal.store, &session, &head.anchor, now),
+        session_briefs(root, &journal.store, &session, &head.anchor, now)?,
     )?;
     let delta = classify_reference_meaningful_delta(&basis.publication, &result.publication)?;
     let items = follow_items(&delta);

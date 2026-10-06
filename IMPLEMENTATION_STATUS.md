@@ -258,7 +258,16 @@ synthetic scenes). None of it has been measured on real camera footage.
   Claim answers and the case `list` are the registered `fss.agent_cognitive_envelope.v1`
   (AOP-006 allowlists only it and the investigation state); a handoff's identity binds the
   situation fingerprint, so a re-handoff after agent-plane changes at the same anchor is a new
-  handoff, and its obligations, prepared operations, and indeterminate effects are read from
+  handoff. Shared findings (FSS-227) are the case-board intent family of `fss investigate`
+  (`--transition finding|finding-withdraw|finding-list`): an immutable, root-last,
+  evidence-linked claim about a case (optionally a hypothesis) with its own knowledge state,
+  published with a hydratable `fss.agent_finding.v1` rendering; a later finding may supersede
+  (one successor each, only while active), withdraw, or explicitly disagree with findings of the
+  same case. Two active findings in disagreement are both reported `conflicted` (their recorded
+  states kept), the situation lists one probe per disputed finding, and the conflict stays until a
+  supersession or withdrawal ends it; superseded and withdrawn findings stay readable as `stale`.
+  Handoffs carry the active findings (no longer a hard-coded empty list). A handoff's
+  obligations, prepared operations, and indeterminate effects are read from
   the head's effect journal (live state), not from the session's older anchor. The first
   end-to-end agent rehearsal (FSS-240, `agent_rehearsal_contract`) drives one mission through
   the real binaries: orient, explain, session open, case open/activate, probe claim, cite and
@@ -279,7 +288,7 @@ synthetic scenes). None of it has been measured on real camera footage.
   recorded, never executed; no learning proposals or
   promotion, ExperienceCapsule, or multi-agent schedule qualification yet; proven on synthetic fixtures and a
   loopback relay only (`investigate_cli_contract`, `agent_effect_cli_contract`,
-  `work_claim_cli_contract`, `agent_rehearsal_contract`).
+  `work_claim_cli_contract`, `finding_cli_contract`, `agent_rehearsal_contract`).
 
 Architectural deviations to resolve: device and alert I/O use blocking `std::net` rather than
 Asupersync (owner decision `fss-x4a.8.1` is open), and the workspace has zero third-party crates.
