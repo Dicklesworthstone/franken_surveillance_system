@@ -1001,10 +1001,9 @@ impl Universe {
                 continue;
             };
             let state = operation.state;
-            if matches!(
-                state,
-                EffectState::Prepared | EffectState::Committed | EffectState::Indeterminate
-            ) {
+            // Adapter acceptance and observation still have outstanding terminal-proof
+            // obligations. Only the core lifecycle's terminal states release evidence.
+            if !state.is_terminal() {
                 blockers.push(Finding {
                     kind: "open_effect".to_owned(),
                     subject: operation_id.clone(),

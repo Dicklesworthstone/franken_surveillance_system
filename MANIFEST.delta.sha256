@@ -1,0 +1,2 @@
+c00c707ebc834b0ef5b4930ef4c86fc6ef6b1fec52da229f075cdb362af9ed41  crates/fss-reference/src/deletion/walk.rs
+a5aae82b4af2941625da27bf7c950d2043f29ea472489385c70b98e3840947d8  crates/fss-reference/tests/deletion_effect_lifecycle_contract.rs
