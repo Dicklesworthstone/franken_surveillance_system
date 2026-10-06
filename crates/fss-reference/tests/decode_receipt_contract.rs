@@ -132,7 +132,7 @@ struct Imported {
 
 fn import(root: &Root, relative: &str) -> TestResult<Imported> {
     let cx = context(&root.deployment())?;
-    let mut deployment = ReferenceDeployment::open(root.deployment(), SITE, &cx)?;
+    let mut deployment = ReferenceDeployment::open(&root.deployment(), SITE, &cx)?;
     let request = FileIngestRequest::new(
         fixture(relative),
         SensorId::parse("sensor:decode-receipt")?,
@@ -596,7 +596,7 @@ fn receipts_reopen_after_restart_and_rebuild_identically_in_a_fresh_root() -> Te
 
     // Restart: a new deployment instance over the same root reopens every receipt unchanged.
     let cx = context(&first_root.deployment())?;
-    let deployment = ReferenceDeployment::open(first_root.deployment(), SITE, &cx)?;
+    let deployment = ReferenceDeployment::open(&first_root.deployment(), SITE, &cx)?;
     for (segment, frame) in frames.iter().enumerate() {
         let request = RecordedDecodeRequest {
             import_identity: identity,
