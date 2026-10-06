@@ -495,6 +495,8 @@ impl LongDwellReport {
         let mut refusals: Vec<DecodeRefusal> = Vec::new();
         let mut pixel_samples = 0;
         let mut assignment_work = 0;
+        // `segment` is a source position (capsule lookup, cursor), not only a span index.
+        #[allow(clippy::needless_range_loop)]
         for segment in plan.first_segment..end {
             checkpoint(cx, "long_dwell:frame")?;
             let gap = source.segment_spans[segment].gap_before && segment > plan.first_segment;

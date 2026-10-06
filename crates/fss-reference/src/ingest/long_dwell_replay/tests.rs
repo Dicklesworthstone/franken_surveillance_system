@@ -471,7 +471,7 @@ fn self_consistent_forged_hashes_pass_inspection_but_fail_actual_native_replay()
         }
     });
     let shared = ObjectManifest::new(ANALYSIS_KIND, children, None)?;
-    let old_record = ContentDigest::parse(&format!(
+    let old_record = ContentDigest::parse(format!(
         "sha256:{}",
         f.event
             .as_str()

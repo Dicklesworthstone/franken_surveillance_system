@@ -378,7 +378,7 @@ fn load(
     {
         return Err(DwellReplayError::InvalidRecord);
     }
-    let record_digest = ContentDigest::parse(&format!("sha256:{suffix}"))?;
+    let record_digest = ContentDigest::parse(format!("sha256:{suffix}"))?;
     if !event.evidence.iter().any(|item| {
         item.digest == record_digest
             && item.class == EvidenceClass::Derived
@@ -420,10 +420,8 @@ fn load(
     for &child in shared.children() {
         let bytes = reader.read(deployment, child, MAX_ANALYSIS_BYTES, cx)?;
         let mut header = fss_core::CanonicalDecoder::new(&bytes);
-        if header.text().ok() == Some(ANALYSIS_DOMAIN) {
-            if selected.replace(child).is_some() {
-                return Err(DwellReplayError::InvalidRecord);
-            }
+        if header.text().ok() == Some(ANALYSIS_DOMAIN) && selected.replace(child).is_some() {
+            return Err(DwellReplayError::InvalidRecord);
         }
         objects.insert(child, bytes);
     }
