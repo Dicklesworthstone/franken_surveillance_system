@@ -52,10 +52,12 @@ fn root_only(
     for chunk in bytes.chunks(RtpImportLimits::default().chunk_bytes) {
         dep.stage_payload(chunk)?;
     }
-    for (row, nal) in plan.report().nals().iter().zip(nals()) {
-        dep.stage_payload(&bytes[row.source.clone()])?;
+    for nal in nals() {
         dep.stage_payload(nal)?;
-        dep.stage_payload(&row.capsule.try_canonical_bytes()?)?;
+    }
+    for unit in plan.report().access_units() {
+        dep.stage_payload(&bytes[unit.source.clone()])?;
+        dep.stage_payload(&unit.capsule.try_canonical_bytes()?)?;
     }
     dep.stage_payload(plan.report_bytes())?;
     let root = plan.manifest().root();
@@ -106,7 +108,7 @@ fn root_only_publication_is_pending_until_explicit_idempotent_resume() -> TestRe
         recovered.state(),
         &RtpRecoveryState::LedgerPending {
             committed_capsules: 0,
-            total_capsules: nals().len()
+            total_capsules: expected_access_units()
         }
     );
     assert_eq!(dep.current_anchor(), &before);
@@ -145,9 +147,9 @@ fn root_recovery_retains_a_malformed_tail_without_claiming_clean_media() -> Test
     assert!(
         recovered
             .report()
-            .nals()
+            .access_units()
             .iter()
-            .all(|n| n.capsule.frame_count == 0)
+            .all(|u| u.capsule.frame_count == 0)
     );
     Ok(())
 }

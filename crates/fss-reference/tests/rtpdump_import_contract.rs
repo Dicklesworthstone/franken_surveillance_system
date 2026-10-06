@@ -47,16 +47,17 @@ fn real_rtp_import_publishes_source_capsules_and_reopens_exactly() -> TestResult
         &cx,
     )?;
     assert_eq!(plan.report().nals().len(), nals().len());
-    for n in plan.report().nals() {
-        assert_eq!(n.capsule.frame_count, 0);
+    assert!(!plan.report().access_units().is_empty());
+    for u in plan.report().access_units() {
+        assert_eq!(u.capsule.frame_count, 0);
         assert_eq!(
-            n.capsule.source_digest,
-            ContentDigest::sha256(&b[n.source.clone()])
+            u.capsule.source_digest,
+            ContentDigest::sha256(&b[u.source.clone()])
         );
         assert!(
             plan.manifest()
                 .children()
-                .contains(&n.capsule.source_digest)
+                .contains(&u.capsule.source_digest)
         );
     }
     let receipt = publish_rtp_import(plan, &cx, &mut dep)?;

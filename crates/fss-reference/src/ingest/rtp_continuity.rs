@@ -413,8 +413,8 @@ impl RtpContinuityReport {
         &self.windows
     }
 
-    /// The import capsules a window's packets carry (complete NALs whose source records all lie in
-    /// the window).
+    /// The import capsules a window's packets carry (recorded access units whose NAL source
+    /// records all lie in the window).
     pub fn window_capsules<'a>(
         &'a self,
         window: &'a RtpContinuityWindow,
@@ -1345,13 +1345,17 @@ pub fn drive_rtp_continuity(
         session,
         generations,
         windows,
-        capsules: report.nals().iter().map(|n| n.capsule.clone()).collect(),
+        capsules: report
+            .access_units()
+            .iter()
+            .map(|u| u.capsule.clone())
+            .collect(),
         scope: scope.clone(),
     })
 }
 
-/// Indices of the import's capsules whose every source record is an admitted packet of
-/// `generation` within `[start, end]`.
+/// Indices of the import's access-unit capsules whose every NAL source record is an admitted
+/// packet of `generation` within `[start, end]`.
 fn window_capsules(
     report: &crate::ingest::rtpdump::import::RtpImportReport,
     records: &[RecordReport],
@@ -1360,9 +1364,13 @@ fn window_capsules(
     end: u64,
 ) -> Result<Vec<usize>, RtpContinuityError> {
     let mut out = Vec::new();
-    for (index, nal) in report.nals().iter().enumerate() {
-        let mut inside = !nal.spans.is_empty();
-        for span in &nal.spans {
+    for (index, unit) in report.access_units().iter().enumerate() {
+        let nals = report
+            .nals()
+            .get(unit.nals.clone())
+            .ok_or(RtpContinuityError::Binding)?;
+        let mut inside = !nals.is_empty();
+        for span in nals.iter().flat_map(|nal| nal.spans.iter()) {
             let record = records
                 .get(span.record)
                 .ok_or(RtpContinuityError::Binding)?;
@@ -1372,6 +1380,7 @@ fn window_capsules(
                     .and_then(|o| o.extended_sequence)
                     .is_some_and(|seq| (start..=end).contains(&seq));
         }
+        inside &= nals.iter().all(|nal| !nal.spans.is_empty());
         if inside {
             out.push(index);
         }

@@ -110,10 +110,20 @@ fn run() -> Result<()> {
     }
     for (index, nal) in report.nals().iter().enumerate() {
         println!(
-            "{{\"kind\":\"source_linked_nal\",\"ordinal\":{index},\"digest\":\"{}\",\"source_digest\":\"{}\",\"source_spans\":{},\"decoded_frames\":0}}",
+            "{{\"kind\":\"source_linked_nal\",\"ordinal\":{index},\"digest\":\"{}\",\"access_unit\":{},\"source_spans\":{},\"decoded_frames\":0}}",
             nal.digest,
-            nal.capsule.source_digest,
+            nal.access_unit,
             nal.spans.len()
+        );
+    }
+    for (index, unit) in report.access_units().iter().enumerate() {
+        println!(
+            "{{\"kind\":\"access_unit_capsule\",\"ordinal\":{index},\"capsule\":\"{}\",\"source_digest\":\"{}\",\"nals\":{},\"end\":\"{}\",\"gap_before\":{},\"decoded_frames\":0}}",
+            unit.capsule.capsule_id.as_str(),
+            unit.capsule.source_digest,
+            unit.nals.len(),
+            unit.end.as_str(),
+            unit.capsule.gap_before
         );
     }
     println!(

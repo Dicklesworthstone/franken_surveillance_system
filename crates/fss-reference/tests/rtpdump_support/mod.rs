@@ -105,6 +105,15 @@ pub fn nals() -> Vec<&'static [u8]> {
         })
         .collect()
 }
+/// Access units `real_dump` should yield, computed from the fixture's NAL types alone: its
+/// helper packets share one RTP timestamp, and the marker is set only on each VCL NAL's final
+/// packet, so a unit ends after every VCL NAL; a trailing non-VCL run ends at input end.
+pub fn expected_access_units() -> usize {
+    let all = nals();
+    let vcl = all.iter().filter(|n| matches!(n[0] & 31, 1 | 5)).count();
+    let trailing = all.last().is_some_and(|n| !matches!(n[0] & 31, 1 | 5));
+    vcl + usize::from(trailing)
+}
 pub fn real_dump(fragmented: bool) -> Vec<u8> {
     let mut b = header();
     let mut seq = 65534_u16;

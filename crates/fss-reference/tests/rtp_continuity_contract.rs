@@ -162,13 +162,14 @@ fn evidence(window: &RtpContinuityWindow) -> Result<&fss_core::DegradationEviden
     }
 }
 
-/// The capsule of the first complete NAL whose first source record is `record`.
+/// The access-unit capsule holding the first complete NAL whose first source record is `record`.
 fn capsule_from_record(import: &RtpImportReport, record: usize) -> Option<&SensorCapsule> {
     import
         .nals()
         .iter()
         .find(|n| n.spans.first().is_some_and(|s| s.record == record))
-        .map(|n| &n.capsule)
+        .and_then(|n| import.access_units().get(n.access_unit))
+        .map(|u| &u.capsule)
 }
 
 /// Clean recording: exactly one window, verified, covering exactly the recorded interval from the
@@ -560,13 +561,9 @@ fn ssrc_change_opens_a_new_stream_generation() -> TestResult {
     assert_eq!((restart.generation, restart.ssrc), (2, SSRC_B));
     let first_b = run
         .import
-        .nals()
+        .access_units()
         .iter()
-        .find(|n| {
-            n.spans
-                .first()
-                .is_some_and(|s| run.import.records()[s.record].generation == 2)
-        })
+        .find(|u| u.generation == 2)
         .ok_or("no capsule in generation 2")?;
     assert!(first_b.capsule.gap_before);
     let windows = report.windows();
@@ -707,13 +704,9 @@ fn non_decodable_canonical_fixtures_never_reach_continuity() -> TestResult {
     assert_eq!(generations[1].ssrc, 0x5566_7788);
     let fenced = run2
         .import
-        .nals()
+        .access_units()
         .iter()
-        .find(|n| {
-            n.spans
-                .first()
-                .is_some_and(|s| run2.import.records()[s.record].generation == 2)
-        })
+        .find(|u| u.generation == 2)
         .ok_or("no generation-2 capsule")?;
     assert!(fenced.capsule.gap_before);
     caplog("canonical_fixtures_unverified", &kinds_text(&run2.report));

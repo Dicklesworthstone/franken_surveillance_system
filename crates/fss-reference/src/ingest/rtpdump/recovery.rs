@@ -5,8 +5,8 @@
 use super::{
     RtpDumpLimits,
     import::{
-        RtpFileImportReceipt, RtpImportError, RtpImportLimits, RtpImportReport, RtpImportScope,
-        prepare_rtp_import, publish_rtp_import,
+        IMPORT_REPORT_DOMAIN, MANIFEST_KIND, RtpFileImportReceipt, RtpImportError, RtpImportLimits,
+        RtpImportReport, RtpImportScope, prepare_rtp_import, publish_rtp_import,
     },
     replay::RtpReplayConfig,
 };
@@ -209,7 +209,7 @@ pub fn inspect_rtp_import(
     let manifest_bytes = read(root)?;
     let manifest = ObjectManifest::from_canonical_bytes(&manifest_bytes)
         .map_err(|_| RtpImportError::Digest)?;
-    if manifest.root() != root || manifest.kind() != "rtpdump_import_v1" {
+    if manifest.root() != root || manifest.kind() != MANIFEST_KIND {
         return Err(RtpImportError::Binding);
     }
     let metadata = manifest.metadata_digest().ok_or(RtpImportError::Binding)?;
@@ -254,8 +254,10 @@ pub fn inspect_rtp_import(
             if ContentDigest::try_sha256(&bytes)? != nal.digest {
                 return Err(RtpImportError::Digest);
             }
-            if read(nal.capsule.source_digest)?.as_slice() != &source[nal.source.clone()]
-                || read(nal.capsule_object)? != nal.capsule.try_canonical_bytes()?
+        }
+        for unit in plan.report().access_units() {
+            if read(unit.capsule.source_digest)?.as_slice() != &source[unit.source.clone()]
+                || read(unit.capsule_object)? != unit.capsule.try_canonical_bytes()?
             {
                 return Err(RtpImportError::Digest);
             }
@@ -314,7 +316,7 @@ fn decode_recipe(bytes: &[u8], ingress: u128, policy: RtpRecoveryPolicy) -> Resu
         return Err(RtpImportError::Limit);
     }
     let mut d = CanonicalDecoder::new(bytes);
-    if d.text()? != "fss.rtpdump.import.report.v1" || d.u64()? != 1 {
+    if d.text()? != IMPORT_REPORT_DOMAIN || d.u64()? != 2 {
         return Err(RtpImportError::Binding);
     }
     let input = d.digest()?;
@@ -442,7 +444,7 @@ fn ledger_state(
     let validity = CaptureInterval::new(TimestampNs(0), scope.receive_time)?;
     let mut committed = 0;
     let mut pending = false;
-    for (part, group) in report.nals().chunks(64).enumerate() {
+    for (part, group) in report.access_units().chunks(64).enumerate() {
         let id = BatchId::parse(format!("batch:rtp:{hex}:c{part}"))?;
         let Some(batch) = dep.ledger().batches().iter().find(|b| b.batch_id == id) else {
             pending = true;
@@ -500,7 +502,7 @@ fn ledger_state(
     } else {
         Ok(RtpRecoveryState::LedgerPending {
             committed_capsules: committed,
-            total_capsules: report.nals().len(),
+            total_capsules: report.access_units().len(),
         })
     }
 }

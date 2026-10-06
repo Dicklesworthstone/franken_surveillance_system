@@ -1,5 +1,5 @@
 #![forbid(unsafe_code)]
-//! Recorded-RTP source custody, NAL-linked sensor capsules, and ledger publication.
+//! Recorded-RTP source custody, access-unit sensor capsules, and ledger publication.
 //!
 //! NAL reconstruction is NOT picture decoding. Every capsule here explicitly has
 //! frame_count == 0 and binds exact ORIGINAL record bytes, not synthesized NALs.
@@ -209,18 +209,71 @@ pub struct RecordReport {
     pub discarded: Option<FragmentDiscard>,
 }
 /// Each NAL is a derivative of its exact original-record envelope and explicit spans.
+/// NALs carry no capsule of their own: the source capsule is per access unit.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct NalReport {
     /// SHA-256 of the reconstructed NAL bytes, without invented Annex-B prefix.
     pub digest: ContentDigest,
     /// Whole original record envelope; intervening records are not cropped out.
     pub source: Range<usize>,
-    /// Source capsule explicitly declares zero decoded frames.
+    /// Index of the access unit (and so of the capsule) this NAL belongs to.
+    pub access_unit: usize,
+    /// Uninterpreted RTP media timestamp of the NAL (sender clock, not capture time).
+    pub timestamp: u32,
+    /// Sender marker bit on the NAL's final packet; a sender claim, not completeness.
+    pub marker: bool,
+    /// Absolute input copy/synthesis ranges, independent of local filesystem paths.
+    pub spans: Vec<FileNalSource>,
+}
+/// Why a recorded access unit's NAL run was closed. Only [`AccessUnitEnd::Marker`] carries the
+/// sender's own end-of-access-unit claim; the others record that the run was cut without it.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum AccessUnitEnd {
+    /// The final NAL carried the RTP marker bit (RFC 6184 §5.1). A sender claim, not a decoded
+    /// primary-picture completeness certificate.
+    Marker,
+    /// The next complete NAL carried another RTP timestamp or stream generation first.
+    TimestampChange,
+    /// A continuity fence (sequence gap, refusal, restart, retired fragment) came first. NALs
+    /// after a fence never join the earlier access unit.
+    Fence,
+    /// Input ended (clean EOF or framing refusal) first.
+    InputEnd,
+}
+impl AccessUnitEnd {
+    /// Stable label of the closure.
+    #[must_use]
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::Marker => "marker",
+            Self::TimestampChange => "timestamp_change",
+            Self::Fence => "fence",
+            Self::InputEnd => "input_end",
+        }
+    }
+}
+/// One recorded access unit: a maximal run of consecutive complete NALs of one stream generation
+/// and one RTP timestamp, with no continuity fence inside, closed by the marker bit or by the
+/// first event that cuts it. Its capsule binds the exact ORIGINAL record bytes that carried it.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct AccessUnitReport {
+    /// Indices into [`RtpImportReport::nals`], nonempty and contiguous.
+    pub nals: Range<usize>,
+    /// Stream generation of every NAL in the unit.
+    pub generation: u64,
+    /// SSRC of that generation.
+    pub ssrc: u32,
+    /// Shared RTP media timestamp (sender clock, not capture time).
+    pub timestamp: u32,
+    /// Whole original record envelopes from the first to the last carrying record, inclusive;
+    /// intervening records (RTCP, duplicates) are not cropped out.
+    pub source: Range<usize>,
+    /// Why the run was closed.
+    pub end: AccessUnitEnd,
+    /// Source capsule over `source`; explicitly zero decoded frames.
     pub capsule: SensorCapsule,
     /// RAW content-addressed object identity of capsule encoding, not its semantic fingerprint.
     pub capsule_object: ContentDigest,
-    /// Absolute input copy/synthesis ranges, independent of local filesystem paths.
-    pub spans: Vec<FileNalSource>,
 }
 /// EOF and malformed framing remain distinguishable even after durable import.
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -238,6 +291,7 @@ pub struct RtpImportReport {
     chunks: Vec<ContentDigest>,
     records: Vec<RecordReport>,
     nals: Vec<NalReport>,
+    access_units: Vec<AccessUnitReport>,
     end: ImportEnd,
     final_discard: Option<FragmentDiscard>,
     stats: SequenceStats,
@@ -258,6 +312,14 @@ impl RtpImportReport {
     /// Exact source-linked complete transport NALs, not picture certificates.
     pub fn nals(&self) -> &[NalReport] {
         &self.nals
+    }
+    /// Ordered custody chunk digests of the entire original file.
+    pub fn chunk_digests(&self) -> &[ContentDigest] {
+        &self.chunks
+    }
+    /// Recorded access units, one source capsule each, in reconstruction order.
+    pub fn access_units(&self) -> &[AccessUnitReport] {
+        &self.access_units
     }
     /// Terminal container outcome, preserving a framing fault separately from EOF.
     pub fn end(&self) -> &ImportEnd {
@@ -315,6 +377,98 @@ impl PreparedRtpImport<'_> {
     }
 }
 
+/// Object-manifest kind of a published recorded-RTP import root. Version 2 holds one source
+/// capsule per recorded access unit; version 1 (one per NAL) is no longer produced or recovered.
+pub const MANIFEST_KIND: &str = "rtpdump_import_v2";
+/// Digest domain of the durable import identity (version 2: capsules are per access unit, so
+/// the capsule identities this names differ in meaning from version 1).
+pub const IMPORT_IDENTITY_DOMAIN: &str = "fss.rtpdump.import.identity.v2";
+/// Digest domain of the canonical import report (version 2 adds the access-unit section).
+pub const IMPORT_REPORT_DOMAIN: &str = "fss.rtpdump.import.report.v2";
+
+/// An access unit still accepting NALs.
+struct OpenUnit {
+    first_nal: usize,
+    generation: u64,
+    ssrc: u32,
+    timestamp: u32,
+    source: Range<usize>,
+    gap_before: bool,
+}
+
+/// Closes access units into source capsules and accounts their staged bytes.
+struct UnitSink<'s> {
+    input: &'s [u8],
+    scope: &'s RtpImportScope,
+    capture: CaptureInterval,
+    hex: &'s str,
+    units: Vec<AccessUnitReport>,
+    capsule_bytes: Vec<Vec<u8>>,
+    payload_bytes: usize,
+    max_payload_bytes: usize,
+}
+impl UnitSink<'_> {
+    /// Adds staged bytes to the conservative payload total, refusing past the ceiling.
+    fn charge(&mut self, bytes: usize) -> Result<()> {
+        self.payload_bytes = self
+            .payload_bytes
+            .checked_add(bytes)
+            .filter(|total| *total <= self.max_payload_bytes)
+            .ok_or(RtpImportError::Limit)?;
+        Ok(())
+    }
+    /// Seals `unit` (NALs `unit.first_nal..nal_end`) into its capsule.
+    ///
+    /// Clock basis: `Estimated`. The capsule's capture interval is the unknown `[0, receive]`,
+    /// and RTP media timestamps are a sender clock with an unknown origin (no RTCP sender-report
+    /// mapping is trusted here), so `DeviceMonotonic` would claim a device-clock placement the
+    /// recording never witnessed. The RTP timestamp is retained on the access unit as relative
+    /// sender timing only.
+    fn close(&mut self, unit: OpenUnit, nal_end: usize, end: AccessUnitEnd) -> Result<()> {
+        if unit.first_nal >= nal_end {
+            return Err(RtpImportError::Digest);
+        }
+        let original = self
+            .input
+            .get(unit.source.clone())
+            .ok_or(RtpImportError::Digest)?;
+        let index = self.units.len();
+        // Zero decoded frames is intentional: a transported access unit is not a
+        // primary-picture completeness or macroblock-decode claim.
+        let capsule = SensorCapsule::from_source_bytes(SensorSourceBytesSpec {
+            capsule_id: CapsuleId::parse(format!("capsule:rtp:{}:{index:06}", self.hex))?,
+            sensor_id: self.scope.sensor.clone(),
+            stream_id: self.scope.stream.clone(),
+            sequence: index as u64,
+            capture: self.capture,
+            receive_time: self.scope.receive_time,
+            clock_basis: ClockBasis::Estimated,
+            source: original,
+            frame_count: 0,
+            gap_before: unit.gap_before,
+        })?;
+        let encoded = capsule.try_canonical_bytes()?;
+        self.charge(
+            original
+                .len()
+                .checked_add(encoded.len())
+                .ok_or(RtpImportError::Limit)?,
+        )?;
+        self.units.push(AccessUnitReport {
+            nals: unit.first_nal..nal_end,
+            generation: unit.generation,
+            ssrc: unit.ssrc,
+            timestamp: unit.timestamp,
+            source: unit.source,
+            end,
+            capsule,
+            capsule_object: hash(&encoded)?,
+        });
+        self.capsule_bytes.push(encoded);
+        Ok(())
+    }
+}
+
 /// Prepare a complete original-file import. Framing damage can produce an explicit
 /// degraded report; budget/cancellation failures never produce a partial success.
 /// Packet stream binding must be supplied by the owner, not extracted from a header.
@@ -335,7 +489,7 @@ pub fn prepare_rtp_import<'a>(
     }
     let mut replay = RtpDumpReplay::new(input, config)?;
     let mut identity = CanonicalEncoder::new();
-    identity.text("fss.rtpdump.import.identity.v1");
+    identity.text(IMPORT_IDENTITY_DOMAIN);
     let input_digest = hash(input)?;
     identity.digest(input_digest);
     encode_scope(&mut identity, &scope);
@@ -347,14 +501,22 @@ pub fn prepare_rtp_import<'a>(
         .iter()
         .map(|b| format!("{b:02x}"))
         .collect::<String>();
-    let capture = CaptureInterval::new(TimestampNs(0), scope.receive_time)?;
     let mut records = Vec::new();
     let mut reports = Vec::new();
     let mut nals = Vec::new();
-    let mut capsule_bytes = Vec::new();
+    let mut units = UnitSink {
+        input,
+        scope: &scope,
+        capture: CaptureInterval::new(TimestampNs(0), scope.receive_time)?,
+        hex: &hex,
+        units: Vec::new(),
+        capsule_bytes: Vec::new(),
+        payload_bytes: input.len(),
+        max_payload_bytes: limits.max_payload_bytes,
+    };
+    let mut open: Option<OpenUnit> = None;
     let mut derived = 0_usize;
     let mut span_count = 0_usize;
-    let mut payload_bytes = input.len();
     let mut gap_pending = true; // File entry has no witnessed predecessor.
     // Admission counts are bounded before any allocation. A report-vector capacity
     // reservation is independent from the later exact canonical-report byte check.
@@ -366,7 +528,12 @@ pub fn prepare_rtp_import<'a>(
         .map_err(|_| RtpImportError::Limit)?;
     nals.try_reserve_exact(limits.max_nals)
         .map_err(|_| RtpImportError::Limit)?;
-    capsule_bytes
+    units
+        .units
+        .try_reserve_exact(limits.max_nals)
+        .map_err(|_| RtpImportError::Limit)?;
+    units
+        .capsule_bytes
         .try_reserve_exact(limits.max_nals)
         .map_err(|_| RtpImportError::Limit)?;
     let (end, final_discard) = loop {
@@ -413,7 +580,11 @@ pub fn prepare_rtp_import<'a>(
                     ),
                 };
                 let gap = gap || record.restart.is_some();
-                gap_pending |= gap || record.expired.is_some() || record.discarded.is_some();
+                let fence = gap || record.expired.is_some() || record.discarded.is_some();
+                if fence && let Some(unit) = open.take() {
+                    units.close(unit, nals.len(), AccessUnitEnd::Fence)?;
+                }
+                gap_pending |= fence;
                 for n in output {
                     if nals.len() == limits.max_nals
                         || n.nal.bytes().len() > limits.max_derived_bytes.saturating_sub(derived)
@@ -434,48 +605,46 @@ pub fn prepare_rtp_import<'a>(
                         }
                     };
                     let source = envelope(first_record)?.start..envelope(last_record)?.end;
-                    let original = input.get(source.clone()).ok_or(RtpImportError::Digest)?;
-                    // Zero decoded frames is intentional: complete NAL transport is
-                    // not a primary-picture completeness or macroblock-decode claim.
-                    let capsule = SensorCapsule::from_source_bytes(SensorSourceBytesSpec {
-                        capsule_id: CapsuleId::parse(format!(
-                            "capsule:rtp:{hex}:{:06}",
-                            nals.len()
-                        ))?,
-                        sensor_id: scope.sensor.clone(),
-                        stream_id: scope.stream.clone(),
-                        sequence: nals.len() as u64,
-                        capture,
-                        receive_time: scope.receive_time,
-                        clock_basis: ClockBasis::Estimated,
-                        source: original,
-                        frame_count: 0,
-                        gap_before: gap_pending,
-                    })?;
-                    let encoded = capsule.try_canonical_bytes()?;
-                    let extra = original
-                        .len()
-                        .checked_add(n.nal.bytes().len())
-                        .and_then(|v| v.checked_add(encoded.len()))
-                        .ok_or(RtpImportError::Limit)?;
-                    payload_bytes = payload_bytes
-                        .checked_add(extra)
-                        .ok_or(RtpImportError::Limit)?;
-                    if payload_bytes > limits.max_payload_bytes {
-                        return Err(RtpImportError::Limit);
+                    if source.start >= source.end || source.end > input.len() {
+                        return Err(RtpImportError::Digest);
                     }
+                    let key = n.nal.key();
+                    let timestamp = n.nal.timestamp();
+                    let marker = n.nal.marker();
+                    if open.as_ref().is_some_and(|u| {
+                        u.generation != key.generation
+                            || u.ssrc != key.ssrc
+                            || u.timestamp != timestamp
+                    }) && let Some(unit) = open.take()
+                    {
+                        units.close(unit, nals.len(), AccessUnitEnd::TimestampChange)?;
+                    }
+                    let unit = open.get_or_insert(OpenUnit {
+                        first_nal: nals.len(),
+                        generation: key.generation,
+                        ssrc: key.ssrc,
+                        timestamp,
+                        source: source.clone(),
+                        gap_before: gap_pending,
+                    });
+                    unit.source.start = unit.source.start.min(source.start);
+                    unit.source.end = unit.source.end.max(source.end);
+                    units.charge(n.nal.bytes().len())?;
                     derived += n.nal.bytes().len();
                     span_count += n.sources.len();
                     reports.push(NalReport {
                         digest: hash(n.nal.bytes())?,
                         source,
-                        capsule,
-                        capsule_object: hash(&encoded)?,
+                        access_unit: units.units.len(),
+                        timestamp,
+                        marker,
                         spans: n.sources.clone(),
                     });
-                    capsule_bytes.push(encoded);
                     nals.push(n);
                     gap_pending = false;
+                    if marker && let Some(unit) = open.take() {
+                        units.close(unit, nals.len(), AccessUnitEnd::Marker)?;
+                    }
                 }
                 records.push(RecordReport {
                     source: record_span,
@@ -511,8 +680,19 @@ pub fn prepare_rtp_import<'a>(
             RtpReplayStep::Exhausted => return Err(RtpImportError::Digest),
         }
     };
+    if let Some(unit) = open.take() {
+        units.close(unit, nals.len(), AccessUnitEnd::InputEnd)?;
+    }
+    let UnitSink {
+        units: access_units,
+        capsule_bytes,
+        mut payload_bytes,
+        ..
+    } = units;
     checkpoint(cx, "rtpdump:seal")?;
     let chunk_count = input.len().div_ceil(limits.chunk_bytes);
+    // Every access unit holds at least one NAL, so NAL digests plus two objects per unit stay
+    // within three objects per NAL.
     if chunk_count + nals.len() * 3 + 1 > fss_object::MAX_MANIFEST_CHILDREN {
         return Err(RtpImportError::Limit);
     }
@@ -529,6 +709,7 @@ pub fn prepare_rtp_import<'a>(
         chunks,
         records,
         nals: reports,
+        access_units,
         end,
         final_discard,
         stats: replay.stats(),
@@ -539,14 +720,15 @@ pub fn prepare_rtp_import<'a>(
         .ok_or(RtpImportError::Limit)?;
     let mut children = report.chunks.clone();
     children
-        .try_reserve_exact(report.nals.len() * 3)
+        .try_reserve_exact(report.nals.len() + report.access_units.len() * 2)
         .map_err(|_| RtpImportError::Limit)?;
-    for n in &report.nals {
-        children.extend([n.digest, n.capsule.source_digest, n.capsule_object]);
+    children.extend(report.nals.iter().map(|n| n.digest));
+    for u in &report.access_units {
+        children.extend([u.capsule.source_digest, u.capsule_object]);
     }
     children.sort_unstable();
     children.dedup();
-    let manifest = ObjectManifest::new("rtpdump_import_v1", children, Some(hash(&report_bytes)?))
+    let manifest = ObjectManifest::new(MANIFEST_KIND, children, Some(hash(&report_bytes)?))
         .map_err(|_| RtpImportError::Limit)?;
     payload_bytes = payload_bytes
         .checked_add(manifest.canonical_bytes().len())
@@ -637,7 +819,9 @@ pub fn publish_rtp_import(
     let manifest_bytes = plan.manifest.canonical_bytes();
     let mut objects = Vec::new();
     objects
-        .try_reserve_exact(plan.report.chunks.len() + plan.nals.len() * 3 + 2)
+        .try_reserve_exact(
+            plan.report.chunks.len() + plan.nals.len() + plan.report.access_units.len() * 2 + 2,
+        )
         .map_err(|_| RtpImportError::Limit)?;
     objects.extend(
         plan.input
@@ -645,14 +829,12 @@ pub fn publish_rtp_import(
             .zip(&plan.report.chunks)
             .map(|(b, d)| (*d, b)),
     );
-    for (i, n) in plan.nals.iter().enumerate() {
-        let report = &plan.report.nals[i];
-        objects.push((
-            report.capsule.source_digest,
-            &plan.input[report.source.clone()],
-        ));
+    for (n, report) in plan.nals.iter().zip(&plan.report.nals) {
         objects.push((report.digest, n.nal.bytes()));
-        objects.push((report.capsule_object, plan.capsule_bytes[i].as_slice()));
+    }
+    for (unit, encoded) in plan.report.access_units.iter().zip(&plan.capsule_bytes) {
+        objects.push((unit.capsule.source_digest, &plan.input[unit.source.clone()]));
+        objects.push((unit.capsule_object, encoded.as_slice()));
     }
     objects.push((hash(&plan.report_bytes)?, &plan.report_bytes));
     objects.push((root, &manifest_bytes));
@@ -695,7 +877,7 @@ pub fn publish_rtp_import(
     checkpoint(cx, "rtpdump:ledger")?;
     // Fixed partitions are independent of owner capacity/attempt, so retry never
     // changes batch identities. Each batch has at most 64 capsule deltas.
-    for (part, group) in plan.report.nals.chunks(64).enumerate() {
+    for (part, group) in plan.report.access_units.chunks(64).enumerate() {
         checkpoint(cx, "rtpdump:ledger_capsules")?;
         let mut deltas = Vec::new();
         let mut children = Vec::new();
@@ -872,11 +1054,14 @@ pub fn load_rtp_import(
         if plan.manifest != receipt.manifest || plan.report_bytes != receipt.report_bytes {
             return Err(RtpImportError::Digest);
         }
-        for (i, n) in plan.nals.iter().enumerate() {
-            let r = &plan.report.nals[i];
-            if read(r.digest)?.as_slice() != n.nal.bytes()
-                || read(r.capsule.source_digest)?.as_slice() != &source[r.source.clone()]
-                || read(r.capsule_object)?.as_slice() != plan.capsule_bytes[i].as_slice()
+        for (n, r) in plan.nals.iter().zip(&plan.report.nals) {
+            if read(r.digest)?.as_slice() != n.nal.bytes() {
+                return Err(RtpImportError::Digest);
+            }
+        }
+        for (u, encoded) in plan.report.access_units.iter().zip(&plan.capsule_bytes) {
+            if read(u.capsule.source_digest)?.as_slice() != &source[u.source.clone()]
+                || read(u.capsule_object)?.as_slice() != encoded.as_slice()
             {
                 return Err(RtpImportError::Digest);
             }
@@ -1083,6 +1268,7 @@ fn encode_report(
                 .ok_or(RtpImportError::Limit)?,
         )
         .and_then(|n| n.checked_add(r.nals.len() * 1024))
+        .and_then(|n| n.checked_add(r.access_units.len() * 512))
         .and_then(|n| n.checked_add(r.chunks.len() * 33))
         .and_then(|n| n.checked_add(r.nals.iter().map(|n| n.spans.len() * 64).sum::<usize>()))
         .ok_or(RtpImportError::Limit)?;
@@ -1090,8 +1276,8 @@ fn encode_report(
         return Err(RtpImportError::Limit);
     }
     let mut e = CanonicalEncoder::new();
-    e.text("fss.rtpdump.import.report.v1");
-    e.u64(1);
+    e.text(IMPORT_REPORT_DOMAIN);
+    e.u64(2);
     e.digest(r.input);
     e.u64(r.input_bytes as u64);
     encode_scope(&mut e, s);
@@ -1141,9 +1327,9 @@ fn encode_report(
     for nal in &r.nals {
         e.digest(nal.digest);
         span(&mut e, &nal.source);
-        e.digest(nal.capsule_object);
-        e.digest(nal.capsule.source_digest);
-        e.text(nal.capsule.capsule_id.as_str());
+        e.u64(nal.access_unit as u64);
+        e.u32(nal.timestamp);
+        e.bool(nal.marker);
         e.u64(nal.spans.len() as u64);
         for s in &nal.spans {
             e.u64(s.record as u64);
@@ -1154,6 +1340,19 @@ fn encode_report(
                 span(&mut e, r);
             }
         }
+    }
+    e.u64(r.access_units.len() as u64);
+    for unit in &r.access_units {
+        span(&mut e, &unit.nals);
+        e.u64(unit.generation);
+        e.u32(unit.ssrc);
+        e.u32(unit.timestamp);
+        span(&mut e, &unit.source);
+        e.text(unit.end.as_str());
+        e.bool(unit.capsule.gap_before);
+        e.digest(unit.capsule_object);
+        e.digest(unit.capsule.source_digest);
+        e.text(unit.capsule.capsule_id.as_str());
     }
     match &r.end {
         ImportEnd::Ended => e.u8(0),
