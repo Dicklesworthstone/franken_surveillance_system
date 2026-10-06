@@ -3074,8 +3074,9 @@ fn plan_affordance(plan: &OrientPlanBrief) -> Result<ActionAffordance, ContractE
             "plan",
             format!(
                 "Plan {} is compiled but not prepared: it awaits the operator's exact plan \
-                 approval (`fss plan ... --approve <plan approval>`).",
-                plan.plan_id
+                 approval (`fss plan ... --approve <plan approval>`), or withdraw it (`fss plan \
+                 --close {}`).",
+                plan.plan_id, plan.plan_id
             ),
         ),
         Some("prepared") => (

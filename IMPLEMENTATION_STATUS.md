@@ -242,7 +242,9 @@ synthetic scenes). None of it has been measured on real camera footage.
   observed "warranted" prediction), step and effect receipts, the obligation, outcome
   predicates, measured resource use only, attribution hypotheses (rule-derived plus the
   principal's feedback about the plan, operation, or event, under an explicitly uniform prior),
-  and residual uncertainty; one episode per plan, never rewritten. A terminal plan stays in
+  and residual uncertainty; one episode per plan, never rewritten. A compiled plan that was
+  never prepared closes as *withdrawn* (an episode with no effect receipts) under the deployment
+  lock, and its exact approval then never prepares it. A terminal plan stays in
   `activePlans` (as a probe affordance) until closed. Because the frozen public registry lets
   AOP-007 answer only the control plan, the episode rendering is hydrated through proof pointers
   (open drift in `architecture/agent_contracts.json`). Work claims (FSS-226) are the

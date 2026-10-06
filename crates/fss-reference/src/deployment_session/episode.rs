@@ -80,6 +80,8 @@ pub enum TerminalOutcome {
     Failed,
     /// The effect was cancelled before dispatch.
     Cancelled,
+    /// The plan was withdrawn before its effect was ever prepared.
+    Withdrawn,
 }
 
 impl TerminalOutcome {
@@ -90,14 +92,16 @@ impl TerminalOutcome {
             Self::Verified => "verified",
             Self::Failed => "failed",
             Self::Cancelled => "cancelled",
+            Self::Withdrawn => "withdrawn",
         }
     }
 }
 
-const TERMINAL_STATES: [TerminalOutcome; 3] = [
+const TERMINAL_STATES: [TerminalOutcome; 4] = [
     TerminalOutcome::Verified,
     TerminalOutcome::Failed,
     TerminalOutcome::Cancelled,
+    TerminalOutcome::Withdrawn,
 ];
 
 const OUTCOME_STATES: [EpisodeOutcomeState; 5] = [
@@ -430,8 +434,9 @@ struct EpisodeInputs<'a> {
     initial_anchor: LedgerAnchor,
     head: &'a DeploymentSnapshot,
     terminal: TerminalOutcome,
-    facts: &'a OperationFacts,
-    obligation: &'a ObligationFacts,
+    /// The operation's effect facts (`None`: the plan was withdrawn before preparation).
+    facts: Option<&'a OperationFacts>,
+    obligation: Option<&'a ObligationFacts>,
     feedback: &'a [AgentFeedbackProposal],
     omitted_feedback: usize,
 }
@@ -441,7 +446,9 @@ fn compile(inputs: &EpisodeInputs<'_>) -> Result<ExecutionEpisode, ContractError
     let plan = inputs.plan;
     let facts = inputs.facts;
     let state = inputs.terminal;
-    let dispatched = facts.dispatched;
+    let dispatched = facts.is_some_and(|facts| facts.dispatched);
+    let error_code = facts.and_then(|facts| facts.error_code.as_deref());
+    let result_digest = facts.and_then(|facts| facts.result_digest);
     let current_revision = inputs
         .head
         .events
@@ -449,10 +456,8 @@ fn compile(inputs: &EpisodeInputs<'_>) -> Result<ExecutionEpisode, ContractError
         .find(|retained| retained.event.event_id.as_str() == plan.event_id)
         .map(|retained| retained.revision_digest);
     let revision_current = current_revision == Some(plan.event_revision);
-    let operator_not_delivered = facts
-        .error_code
-        .as_deref()
-        .is_some_and(|code| code.starts_with(OPERATOR_NOT_DELIVERED));
+    let operator_not_delivered =
+        error_code.is_some_and(|code| code.starts_with(OPERATOR_NOT_DELIVERED));
     let reconciled = state == TerminalOutcome::Verified || operator_not_delivered;
     let loss = |hit: bool| Some(if hit { 0.0 } else { 1.0 });
 
@@ -465,8 +470,11 @@ fn compile(inputs: &EpisodeInputs<'_>) -> Result<ExecutionEpisode, ContractError
             ),
             expected_state: TerminalOutcome::Verified.as_str().to_owned(),
             observed_state: Some(state.as_str().to_owned()),
-            // A plan withdrawn before dispatch never tested its delivery prediction.
-            error: if state == TerminalOutcome::Cancelled {
+            // A plan withdrawn or cancelled before dispatch never tested its delivery prediction.
+            error: if matches!(
+                state,
+                TerminalOutcome::Cancelled | TerminalOutcome::Withdrawn
+            ) {
                 None
             } else {
                 loss(state == TerminalOutcome::Verified)
@@ -502,7 +510,14 @@ fn compile(inputs: &EpisodeInputs<'_>) -> Result<ExecutionEpisode, ContractError
     let step_receipts = vec![
         step("observe-event", "completed"),
         step("decide-policy", "completed"),
-        step("prepare", "completed"),
+        step(
+            "prepare",
+            if facts.is_some() {
+                "completed"
+            } else {
+                "not_started"
+            },
+        ),
         step(
             "commit",
             if dispatched {
@@ -531,20 +546,24 @@ fn compile(inputs: &EpisodeInputs<'_>) -> Result<ExecutionEpisode, ContractError
         ),
     ];
 
-    let mut effect_receipts = vec![format!(
-        "operation-receipt:{}",
-        facts.receipt_digest.to_text()
-    )];
-    if let Some(result) = facts.result_digest {
+    let mut effect_receipts: Vec<String> = facts
+        .iter()
+        .map(|facts| format!("operation-receipt:{}", facts.receipt_digest.to_text()))
+        .collect();
+    if let Some(result) = result_digest {
         effect_receipts.push(format!("result:{}", result.to_text()));
     }
-    if let Some(proof) = inputs.obligation.proof_digest {
+    if let Some(proof) = inputs
+        .obligation
+        .and_then(|obligation| obligation.proof_digest)
+    {
         effect_receipts.push(format!("obligation-proof:{}", proof.to_text()));
     }
-    let obligations = vec![format!(
-        "{}={}",
-        inputs.obligation.obligation_id, inputs.obligation.state
-    )];
+    let obligations: Vec<String> = inputs
+        .obligation
+        .iter()
+        .map(|obligation| format!("{}={}", obligation.obligation_id, obligation.state))
+        .collect();
 
     let mut success = Vec::new();
     let mut failed = Vec::new();
@@ -565,6 +584,10 @@ fn compile(inputs: &EpisodeInputs<'_>) -> Result<ExecutionEpisode, ContractError
             success.push("not_dispatched".to_owned());
             EpisodeOutcomeState::Cancelled
         }
+        TerminalOutcome::Withdrawn => {
+            success.push("not_prepared".to_owned());
+            EpisodeOutcomeState::Cancelled
+        }
     };
     if revision_current {
         success.push("event_revision_current".to_owned());
@@ -578,7 +601,7 @@ fn compile(inputs: &EpisodeInputs<'_>) -> Result<ExecutionEpisode, ContractError
         indeterminate_predicates: vec!["warranted".to_owned()],
     };
 
-    let effect_span = facts.effect_span_ns.max(0);
+    let effect_span = facts.map_or(0, |facts| facts.effect_span_ns.max(0));
     // Only what the effect journal measures; unmetered dimensions are named in the residual
     // uncertainty instead of being reported as zero.
     let resource_use_json = format!(
@@ -586,8 +609,7 @@ fn compile(inputs: &EpisodeInputs<'_>) -> Result<ExecutionEpisode, ContractError
         u8::from(dispatched)
     );
 
-    let result_handles: Vec<String> = facts
-        .result_digest
+    let result_handles: Vec<String> = result_digest
         .into_iter()
         .map(ContentDigest::to_text)
         .collect();
@@ -620,7 +642,7 @@ fn compile(inputs: &EpisodeInputs<'_>) -> Result<ExecutionEpisode, ContractError
             AttributionCauseClass::Adapter,
             format!(
                 "The relay or route refused or broke the single dispatch ({}).",
-                facts.error_code.as_deref().unwrap_or("no error code")
+                error_code.unwrap_or("no error code")
             ),
             result_handles.clone(),
             Vec::new(),
@@ -629,15 +651,22 @@ fn compile(inputs: &EpisodeInputs<'_>) -> Result<ExecutionEpisode, ContractError
             AttributionCauseClass::Execution,
             format!(
                 "The operation failed before any dispatch ({}).",
-                facts.error_code.as_deref().unwrap_or("no error code")
+                error_code.unwrap_or("no error code")
             ),
             result_handles.clone(),
             Vec::new(),
         )),
-        _ => hypotheses.push((
+        TerminalOutcome::Cancelled => hypotheses.push((
             AttributionCauseClass::Policy,
             "The operator withdrew the prepared alert before dispatch.".to_owned(),
             result_handles.clone(),
+            Vec::new(),
+        )),
+        TerminalOutcome::Withdrawn => hypotheses.push((
+            AttributionCauseClass::Policy,
+            "The plan was withdrawn before preparation: nothing was prepared or dispatched."
+                .to_owned(),
+            Vec::new(),
             Vec::new(),
         )),
     }
@@ -696,9 +725,7 @@ fn compile(inputs: &EpisodeInputs<'_>) -> Result<ExecutionEpisode, ContractError
         residual_uncertainty.push(format!(
             "The delivery outcome is operator_asserted (owner attestation {}), not a provider \
              receipt.",
-            facts
-                .result_digest
-                .map_or_else(|| "unrecorded".to_owned(), |digest| digest.to_text())
+            result_digest.map_or_else(|| "unrecorded".to_owned(), |digest| digest.to_text())
         ));
     }
     residual_uncertainty.push(
@@ -803,19 +830,24 @@ fn close_in(
     if let Some(existing) = read_episode(root, plan_id)? {
         return Ok((existing, false));
     }
-    let facts = operation_facts(head, &plan.operation_id, &plan.obligation_id)
-        .ok_or(DeploymentSessionError::PlanOpen(None))?;
-    let terminal = match facts.state {
-        "verified" => TerminalOutcome::Verified,
-        "failed" => TerminalOutcome::Failed,
-        "cancelled" => TerminalOutcome::Cancelled,
-        open => return Err(DeploymentSessionError::PlanOpen(Some(open))),
+    // A plan never prepared closes as withdrawn; its caller holds the deployment lock, so no
+    // preparation can race the withdrawal (preparing refuses a plan whose episode exists).
+    let facts = operation_facts(head, &plan.operation_id, &plan.obligation_id);
+    let terminal = match facts.as_ref().map(|facts| facts.state) {
+        None => TerminalOutcome::Withdrawn,
+        Some("verified") => TerminalOutcome::Verified,
+        Some("failed") => TerminalOutcome::Failed,
+        Some("cancelled") => TerminalOutcome::Cancelled,
+        Some(open) => return Err(DeploymentSessionError::PlanOpen(Some(open))),
     };
-    let obligation = facts.obligation.as_ref().ok_or_else(|| {
-        DeploymentSessionError::PlanInvalid(
-            "the plan's obligation is not in the effect journal".to_owned(),
-        )
-    })?;
+    let obligation = match &facts {
+        None => None,
+        Some(facts) => Some(facts.obligation.as_ref().ok_or_else(|| {
+            DeploymentSessionError::PlanInvalid(
+                "the plan's obligation is not in the effect journal".to_owned(),
+            )
+        })?),
+    };
     let initial_anchor = AnchorToken::parse(&plan.anchor_token)
         .and_then(|token| resolve_anchor(history, &token).ok())
         .and_then(|position| history.roots_at(position))
@@ -842,7 +874,7 @@ fn close_in(
         initial_anchor,
         head,
         terminal,
-        facts: &facts,
+        facts: facts.as_ref(),
         obligation,
         feedback: &feedback,
         omitted_feedback,
@@ -886,8 +918,9 @@ fn close_in(
 /// Closes a terminal plan by recording its immutable execution episode (AOP-007, `close`).
 ///
 /// The session must be live, hold the plan grant, and belong to the plan's mission and
-/// principal. A plan whose operation is absent or not terminal is refused (`PlanOpen`); a plan
-/// already closed returns its published episode unchanged. The session journal root is pinned
+/// principal. A plan never prepared closes as withdrawn (the caller must hold the deployment
+/// lock so a preparation cannot race it); a plan whose operation is not terminal is refused
+/// (`PlanOpen`); a plan already closed returns its published episode unchanged. The session journal root is pinned
 /// before the answer or refusal is returned.
 ///
 /// `render` produces the public `fss.agent_execution_episode.v1` rendering published as the

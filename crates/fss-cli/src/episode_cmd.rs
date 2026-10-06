@@ -26,12 +26,13 @@ use fss_core::{
 use fss_reference::deployment_session::episode::{CloseRequest, ClosedPlan, close_plan};
 
 use crate::agent_json;
+use crate::effect_cmd::{Failure, finish, hold_deployment};
 use crate::error::{CliError, ExitIdentity};
 use crate::orient_cmd::{
-    RenderError, ResponseParts, build_response, collect_options, contexts, principal, rendered,
+    RenderError, ResponseParts, build_response, collect_options, contexts, principal,
     required_root, take,
 };
-use crate::session_cmd::{Operation, agent_plane_boundary, idempotency_key, refuse};
+use crate::session_cmd::{Operation, agent_plane_boundary, idempotency_key};
 use crate::token::ArgToken;
 
 /// Schema of the episode rendering published beside the record (hydrated, never the payload).
@@ -361,7 +362,9 @@ fn response(closed: &ClosedPlan) -> Result<String, Box<dyn std::error::Error>> {
     })
 }
 
-/// Executes `fss plan --close`, returning the rendered response and its exit identity.
+/// Executes `fss plan --close`, returning the rendered response and its exit identity. The
+/// deployment lock is held for the whole close, so withdrawing a never-prepared plan cannot race
+/// its preparation.
 #[must_use]
 pub fn execute_close(args: &CloseArgs) -> (String, ExitIdentity) {
     let request = CloseRequest {
@@ -369,30 +372,25 @@ pub fn execute_close(args: &CloseArgs) -> (String, ExitIdentity) {
         principal: args.principal.clone(),
         plan_id: args.plan.clone(),
     };
-    match close_plan(&args.root, &request, &episode_json) {
-        Ok(closed) => rendered(
-            response(&closed),
-            ExitIdentity::SUCCESS,
-            COMMAND,
-            &args.root,
-        ),
-        Err(error) => refuse(
-            &Operation {
-                command: COMMAND,
-                name: COMMAND,
-                capability: CAPABILITY_PLAN_PREPARE,
-                payload_schema: CONTROL_PLAN_SCHEMA,
-                view: AgentView::DecisionDiff,
-                root: args.root.clone(),
-                principal: args.principal.clone(),
-                request: [
-                    args.session.as_str().as_bytes(),
-                    b"\0close\0",
-                    args.plan.as_bytes(),
-                ]
-                .concat(),
-            },
-            error,
-        ),
-    }
+    let operation = Operation {
+        command: COMMAND,
+        name: COMMAND,
+        capability: CAPABILITY_PLAN_PREPARE,
+        payload_schema: CONTROL_PLAN_SCHEMA,
+        view: AgentView::DecisionDiff,
+        root: args.root.clone(),
+        principal: args.principal.clone(),
+        request: [
+            args.session.as_str().as_bytes(),
+            b"\0close\0",
+            args.plan.as_bytes(),
+        ]
+        .concat(),
+    };
+    let result = (|| -> Result<Result<String, Box<dyn std::error::Error>>, Failure> {
+        let _lock = hold_deployment(&args.root, &args.principal)?;
+        let closed = close_plan(&args.root, &request, &episode_json)?;
+        Ok(response(&closed))
+    })();
+    finish(result, ExitIdentity::SUCCESS, &operation)
 }
