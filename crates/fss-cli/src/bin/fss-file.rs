@@ -73,7 +73,7 @@ type RunResult<T> = Result<T, Box<dyn Error>>;
 
 #[derive(Debug)]
 enum Action {
-    Import(FileIngestRequest),
+    Import(Box<FileIngestRequest>),
     Inspect(ContentDigest),
     Verify(ContentDigest),
     Extract {
@@ -340,7 +340,7 @@ fn parse(args: &[OsString]) -> ParseResult<Option<Options>> {
                 .map_err(|_| malformed("assumed fps must be finite and positive"))?,
             );
         }
-        Action::Import(request)
+        Action::Import(Box::new(request))
     } else {
         let identity = ContentDigest::parse(text(&values, "--import-id")?)
             .map_err(|_| malformed("invalid import digest"))?;
@@ -431,7 +431,7 @@ fn run(options: Options, out: &mut impl Write) -> RunResult<()> {
         let mut deployment = ReferenceDeployment::open(&options.root, &options.site, &cx)?;
         let (identity, operation) = match &options.action {
             Action::Import(request) => {
-                match FileIngestAdapter::ingest_file(request.clone(), &cx, &mut deployment)? {
+                match FileIngestAdapter::ingest_file((**request).clone(), &cx, &mut deployment)? {
                     FileImport::Media(receipt) => {
                         (receipt.import_identity, receipt.outcome.as_str())
                     }
