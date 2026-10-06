@@ -2277,9 +2277,11 @@ fn compile_capsule(
                 ),
                 operation: "commit",
                 target: format!("fss://operation/{}", operation.intent.operation_id),
-                rationale:
-                    "Reconciliation is not exposed by this build; no resend is safe before lookup."
-                        .to_owned(),
+                rationale: "Never resend. Only the owner can reconcile this operation, by \
+                            attesting delivery or non-delivery with evidence: `fss commit \
+                            --reconcile delivered|not_delivered --operation <id> --evidence \
+                            <sha256> --statement <text>`, previewed then exactly approved."
+                    .to_owned(),
                 class: AffordanceClass::Blocked,
                 supported_worlds: BTreeSet::new(),
                 required_capability: CAPABILITY_PLAN_COMMIT,

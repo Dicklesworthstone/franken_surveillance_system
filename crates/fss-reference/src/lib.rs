@@ -18,6 +18,8 @@ pub mod agent_session;
 mod alert;
 /// Exact owner-approved cancellation of prepared alerts, never a resend or delivery claim.
 pub mod alert_control;
+/// Owner-attested reconciliation of a dispatched alert (operator_asserted, never a provider receipt).
+pub mod alert_reconcile;
 /// Native HTTP alert relay with durable-before-send commitment and explicit outcomes.
 pub use alert::webhook;
 

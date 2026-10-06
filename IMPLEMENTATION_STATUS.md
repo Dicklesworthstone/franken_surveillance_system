@@ -236,9 +236,14 @@ synthetic scenes). None of it has been measured on real camera footage.
   under exact approval. `fss feedback` (AOP-013) publishes grounded, evidence-linked advisory
   proposals (`activePolicyMutation: false`). `fss-event alert` and the agent grammar share one
   alert core (`fss_cli::alert_effect`), so an operation prepared by either is the same operation.
-  The MCP adapter adds only the read-only `wait` tool. Limits: alert is the only plan intent;
-  no provider reconciliation exists for webhooks (obligations stay pending/indeterminate until an
-  operator reconciles); probes are recorded, never executed; no execution episodes, learning
+  The MCP adapter adds only the read-only `wait` tool. `fss commit --reconcile
+  delivered|not_delivered` (the AOP-008 reconcile intent) discharges a dispatched alert's
+  obligation on the owner's attestation (evidence digest and statement, bound to the exact
+  receipt): the attestation is published root-last to the ledger first, then the journal moves
+  `indeterminate`/`adapter_accepted` to `observed` and `verified`, or to `failed`; preview, then
+  exact approval; never a resend; explicitly `operator_asserted`, not a provider receipt. Limits:
+  alert is the only plan intent; no provider lookup exists for webhook relays; probes are
+  recorded, never executed; no execution episodes, learning
   promotion, work-claim CLI, or multi-agent schedules yet; proven on synthetic fixtures and a
   loopback relay only (`investigate_cli_contract`, `agent_effect_cli_contract`).
 

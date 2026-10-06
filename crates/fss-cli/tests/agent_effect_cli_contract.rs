@@ -651,3 +651,135 @@ fn stale_approvals_refuse_before_io_and_a_cancelled_plan_is_never_committed() ->
     assert_eq!(relay.connections(), 0);
     Ok(())
 }
+
+fn reconcile(
+    agent: &Agent,
+    operation: &str,
+    outcome: &str,
+    evidence: &str,
+    approve: Option<&str>,
+) -> TestResult<(Option<i32>, Value)> {
+    let mut args = vec![
+        "--reconcile",
+        outcome,
+        "--operation",
+        operation,
+        "--evidence",
+        evidence,
+        "--statement",
+        "The owner's phone showed the alert at 02:14.",
+    ];
+    if let Some(approve) = approve {
+        args.push("--approve");
+        args.push(approve);
+    }
+    agent.run("commit", &args)
+}
+
+fn dispatched(
+    agent: &Agent,
+    event_id: &str,
+    relay: &Relay,
+) -> TestResult<(String, Option<i32>, Value)> {
+    let (_, planned) = agent.plan(event_id, relay.address, &[])?;
+    let (plan_id, plan_approval, _) = approvals(&planned)?;
+    let operation = operation_of(&planned)?;
+    let (_, prepared) = agent.plan(event_id, relay.address, &["--approve", &plan_approval])?;
+    let (_, _, dispatch) = approvals(&prepared)?;
+    let (code, committed) = agent.run("commit", &["--plan", &plan_id, "--approve", &dispatch])?;
+    Ok((operation, code, committed))
+}
+
+#[test]
+fn an_indeterminate_alert_is_reconciled_only_by_an_approved_owner_attestation() -> TestResult {
+    let (directory, event_id) = corroborated_event("reconcile-delivered")?;
+    let agent = Agent::open(&directory)?;
+    let relay = Relay::spawn(None)?;
+    let (operation, code, _) = dispatched(&agent, &event_id, &relay)?;
+    assert_eq!(code, Some(1));
+    let evidence = ContentDigest::sha256(b"screenshot of the received alert").to_text();
+
+    // A concurrent bounded wait wakes on the reconciliation.
+    let root = agent.root.clone();
+    let watched = operation.clone();
+    let waiter = std::thread::spawn(move || {
+        Command::new(env!("CARGO_BIN_EXE_fss"))
+            .args(["wait", "--json", "--root"])
+            .arg(&root)
+            .args(["--operation", &watched, "--deadline-ms", "20000"])
+            .output()
+    });
+
+    let (code, preview) = reconcile(&agent, &operation, "delivered", &evidence, None)?;
+    assert_eq!(code, Some(0));
+    assert_eq!(text(&preview, &["payload", "state"])?, "indeterminate");
+    let approval = texts(&preview, &["proofPointers"])?[0].clone();
+    let bogus = ContentDigest::sha256(b"not the approval").to_text();
+    let (code, refused) = reconcile(&agent, &operation, "delivered", &evidence, Some(&bogus))?;
+    assert_eq!(code, Some(5));
+    assert_eq!(text(&refused, &["errorId"])?, "ERR-ALERT-APPROVAL-STALE-001");
+
+    let (code, reconciled) =
+        reconcile(&agent, &operation, "delivered", &evidence, Some(&approval))?;
+    assert_eq!(code, Some(0), "{reconciled:?}");
+    assert_eq!(text(&reconciled, &["payload", "state"])?, "verified");
+    assert!(
+        texts(&reconciled, &["degradation"])?
+            .iter()
+            .any(|line| line.contains("operator_asserted")),
+        "the provenance of the reconciliation must be explicit"
+    );
+    // An exact retry observes the same reconciliation; a contrary one is refused.
+    let (code, again) = reconcile(&agent, &operation, "delivered", &evidence, Some(&approval))?;
+    assert_eq!(code, Some(0));
+    assert_eq!(text(&again, &["payload", "state"])?, "verified");
+    let (code, contrary) = reconcile(&agent, &operation, "not_delivered", &evidence, None)?;
+    assert_eq!(code, Some(5));
+    assert_eq!(
+        text(&contrary, &["errorId"])?,
+        "ERR-OP-PRECONDITION-FAILED-001"
+    );
+
+    let waited = waiter.join().map_err(|_| "waiter panicked")??;
+    let waited = parse(String::from_utf8(waited.stdout)?.trim_end())?;
+    assert_eq!(text(&waited, &["outcome"])?, "ok");
+    assert_ne!(text(&waited, &["payload", "state"])?, "indeterminate");
+    // Reconciliation never contacted the relay again.
+    assert_eq!(relay.connections(), 1);
+    // The situation compiles over the reconciled journal and the obligation is discharged.
+    let (code, oriented) = run_fss(&[
+        "orient".into(),
+        "--json".into(),
+        "--root".into(),
+        agent.root.as_os_str().to_owned(),
+    ])?;
+    assert_eq!(code, Some(0), "{oriented}");
+    let oriented = parse(oriented.trim_end())?;
+    assert!(texts(&oriented, &["payload", "obligations"])?.is_empty());
+    Ok(())
+}
+
+#[test]
+fn a_relay_accepted_alert_attested_not_delivered_fails_its_obligation() -> TestResult {
+    let (directory, event_id) = corroborated_event("reconcile-failed")?;
+    let agent = Agent::open(&directory)?;
+    let relay = Relay::spawn(Some(b"HTTP/1.1 202 Accepted\r\nContent-Length: 0\r\n\r\n"))?;
+    let (operation, code, committed) = dispatched(&agent, &event_id, &relay)?;
+    assert_eq!(code, Some(0));
+    assert_eq!(text(&committed, &["payload", "state"])?, "adapter_accepted");
+    let evidence = ContentDigest::sha256(b"owner: nothing arrived on any device").to_text();
+    let (_, preview) = reconcile(&agent, &operation, "not_delivered", &evidence, None)?;
+    let approval = texts(&preview, &["proofPointers"])?[0].clone();
+    let (code, failed) =
+        reconcile(&agent, &operation, "not_delivered", &evidence, Some(&approval))?;
+    assert_eq!(code, Some(0));
+    assert_eq!(text(&failed, &["payload", "state"])?, "failed");
+    assert!(
+        texts(&failed, &["degradation"])?
+            .iter()
+            .any(|line| line.contains("is failed")),
+        "{failed:?}"
+    );
+    assert_eq!(relay.connections(), 1);
+    Ok(())
+}

@@ -183,6 +183,7 @@
     "crates/fss-reference/src/alert/webhook/tests.rs": "support",
     "crates/fss-reference/src/alert/webhook/wire.rs": "effect",
     "crates/fss-reference/src/alert_control.rs": "effect",
+    "crates/fss-reference/src/alert_reconcile.rs": "effect",
     "crates/fss-reference/src/alert_control/tests.rs": "support",
     "crates/fss-reference/src/alert_recovery_tests.rs": "support",
     "crates/fss-reference/src/alert_tests.rs": "support",

@@ -33,6 +33,10 @@ use fss_reference::agent_orient::{DeploymentSnapshot, OrientLimits, read_deploym
 use fss_reference::alert_control::{
     AlertControlError, cancel_prepared_alert, preview_alert_cancellation,
 };
+use fss_reference::alert_reconcile::{
+    AlertAttestation, AlertReconcileError, AlertReconciliationOutcome, CAP_ALERT_RECONCILE,
+    MAX_RECONCILE_STATEMENT_BYTES, preview_alert_reconciliation, reconcile_alert_operation,
+};
 use fss_reference::deployment_session::plan::{
     AlertRoute, PlanRecord, PlanningContext, planning_context, publish_plan, read_plan,
 };
@@ -116,6 +120,21 @@ pub struct CommitArgs {
     pub approve: ContentDigest,
 }
 
+/// Options for `fss commit --reconcile`: an owner-attested reconciliation.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct ReconcileArgs {
+    /// Existing deployment root.
+    pub root: PathBuf,
+    /// Dispatched alert operation to reconcile.
+    pub operation: OperationId,
+    /// Attesting principal.
+    pub principal: PrincipalId,
+    /// The owner's attestation.
+    pub attestation: AlertAttestation,
+    /// Exact reconciliation approval (absent: preview only).
+    pub approve: Option<ContentDigest>,
+}
+
 /// Options for `fss wait`.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct WaitArgs {
@@ -147,8 +166,10 @@ pub struct CancelArgs {
 pub enum EffectCommand {
     /// AOP-007 `plan`.
     Plan(PlanArgs),
-    /// AOP-008 `commit`.
+    /// AOP-008 `commit` of a published plan.
     Commit(CommitArgs),
+    /// AOP-008 `commit`, reconcile intent family: owner-attested reconciliation.
+    Reconcile(ReconcileArgs),
     /// AOP-009 `wait`.
     Wait(WaitArgs),
     /// AOP-010 `cancel`.
@@ -334,15 +355,90 @@ pub fn parse_plan_args(tokens: &[ArgToken]) -> Result<PlanArgs, CliError> {
     })
 }
 
-/// Parses `commit --json --root <dir> --plan <id> --approve <digest>`.
-pub fn parse_commit_args(tokens: &[ArgToken]) -> Result<CommitArgs, CliError> {
+/// Parses `commit --json --root <dir> --plan <id> --approve <digest>` (dispatch), or
+/// `commit --json --root <dir> --reconcile <outcome> --operation <id> --evidence <digest>
+/// --statement <text> [--approve <digest>]` (owner-attested reconciliation).
+pub fn parse_commit_args(tokens: &[ArgToken]) -> Result<EffectCommand, CliError> {
     const COMMAND: &str = "commit";
     let values = collect_options(
         COMMAND,
         tokens,
-        &["--root", "--plan", "--principal", "--approve"],
+        &[
+            "--root",
+            "--plan",
+            "--principal",
+            "--approve",
+            "--reconcile",
+            "--operation",
+            "--evidence",
+            "--statement",
+        ],
     )?;
     let root = required_root(COMMAND, &values)?;
+    if let Some((_, raw, index)) = take(&values, "--reconcile") {
+        if let Some((name, _, index)) = take(&values, "--plan") {
+            return Err(CliError::UnknownOption {
+                option: name.clone(),
+                command: Some("commit --reconcile".to_owned()),
+                index: *index,
+            });
+        }
+        let outcome = match raw.as_str() {
+            "delivered" => AlertReconciliationOutcome::Delivered,
+            "not_delivered" => AlertReconciliationOutcome::NotDelivered,
+            _ => {
+                return Err(malformed(
+                    COMMAND,
+                    "--reconcile",
+                    raw,
+                    "reconciliation outcome must be delivered or not_delivered",
+                    *index,
+                ));
+            }
+        };
+        let evidence = digest_option(COMMAND, &values, "--evidence")?.ok_or_else(|| {
+            CliError::MissingValue {
+                option: "--evidence".to_owned(),
+                command: Some(COMMAND.to_owned()),
+                expected: "the digest of the owner's delivery evidence".to_owned(),
+            }
+        })?;
+        let (_, statement, index) = required(
+            COMMAND,
+            &values,
+            "--statement",
+            "the owner's attestation statement",
+        )?;
+        if statement.len() > MAX_RECONCILE_STATEMENT_BYTES {
+            return Err(malformed(
+                COMMAND,
+                "--statement",
+                statement,
+                &format!("the statement must be at most {MAX_RECONCILE_STATEMENT_BYTES} bytes"),
+                *index,
+            ));
+        }
+        return Ok(EffectCommand::Reconcile(ReconcileArgs {
+            root,
+            operation: operation_id(COMMAND, &values)?,
+            principal: principal(COMMAND, &values)?,
+            attestation: AlertAttestation {
+                outcome,
+                evidence,
+                statement: statement.clone(),
+            },
+            approve: digest_option(COMMAND, &values, "--approve")?,
+        }));
+    }
+    for option in ["--operation", "--evidence", "--statement"] {
+        if let Some((name, _, index)) = take(&values, option) {
+            return Err(CliError::UnknownOption {
+                option: name.clone(),
+                command: Some("commit --plan".to_owned()),
+                index: *index,
+            });
+        }
+    }
     let (_, plan, index) = required(COMMAND, &values, "--plan", "a published plan identity")?;
     if !plan.starts_with("plan:") || plan.len() > 128 {
         return Err(malformed(
@@ -359,12 +455,12 @@ pub fn parse_commit_args(tokens: &[ArgToken]) -> Result<CommitArgs, CliError> {
             command: Some(COMMAND.to_owned()),
             expected: "the operator's exact dispatch approval digest".to_owned(),
         })?;
-    Ok(CommitArgs {
+    Ok(EffectCommand::Commit(CommitArgs {
         root,
         plan: plan.clone(),
         principal: principal(COMMAND, &values)?,
         approve,
-    })
+    }))
 }
 
 /// Parses `wait --json --root <dir> --operation <id> --deadline-ms <n>`.
@@ -1624,6 +1720,170 @@ fn execute_commit(args: &CommitArgs) -> (String, ExitIdentity) {
 }
 
 // ---------------------------------------------------------------------------------------------
+// commit --reconcile (AOP-008, reconcile intent family)
+// ---------------------------------------------------------------------------------------------
+
+fn reconcile_refusal(error: &AlertReconcileError) -> Failure {
+    Failure::Typed(
+        Refusal {
+            error_id: error.stable_id(),
+            reason: error.to_string(),
+            guidance: "Reconcile only a dispatched alert (adapter_accepted or indeterminate; \
+                       not_delivered also from committed) under the exact approval its preview \
+                       returned; a changed operation needs a new preview.",
+            recovery_class: "operator_action_required",
+            safe_retry: ResponseSafeRetry::No,
+        },
+        ExitIdentity::AGENT_REFUSED,
+    )
+}
+
+fn reconcile_answer(
+    args: &ReconcileArgs,
+) -> Result<Result<String, Box<dyn std::error::Error>>, Failure> {
+    let before = snapshot(&args.root)?;
+    let site = before.site_lineage.clone();
+    let (mut deployment, authority, cx) =
+        open_deployment(&args.root, &site, &args.principal, &[CAP_ALERT_RECONCILE])?;
+    let result = (|| {
+        let (plan, outcome) = match args.approve {
+            None => (
+                preview_alert_reconciliation(
+                    &deployment,
+                    &args.operation,
+                    &args.attestation,
+                    &authority,
+                    &cx,
+                )
+                .map_err(|error| reconcile_refusal(&error))?,
+                "proposed",
+            ),
+            Some(approval) => {
+                let now = TimestampNs(i128::from(
+                    wall_ns().map_err(|error| alert_refusal(&error))?,
+                ));
+                let receipt = reconcile_alert_operation(
+                    &mut deployment,
+                    &args.operation,
+                    &args.attestation,
+                    approval,
+                    now,
+                    &authority,
+                    &cx,
+                )
+                .map_err(|error| reconcile_refusal(&error))?;
+                (receipt.plan, receipt.outcome.as_str())
+            }
+        };
+        let receipt = deployment
+            .effects()
+            .operation(&args.operation)
+            .cloned()
+            .ok_or(Failure::Internal)?;
+        let obligation = deployment
+            .effects()
+            .obligation(&plan.prepared().obligation_id)
+            .map(|obligation| obligation_state(obligation.state))
+            .unwrap_or("absent");
+        let after = snapshot(&args.root)?;
+        let request_digest =
+            crate::orient_cmd::request_identity("fss.cli_agent_reconcile.v1", |e| {
+                e.text(args.operation.as_str());
+                e.digest(plan.record_digest());
+                e.bool(args.approve.is_some());
+            });
+        let proposed = outcome == "proposed";
+        let attested = args.attestation.outcome.as_str();
+        Ok(receipt_response(ReceiptAnswer {
+            operation: "commit",
+            capability: CAPABILITY_PLAN_COMMIT,
+            principal: &args.principal,
+            session: None,
+            snapshot: &after,
+            receipt: &receipt,
+            outcome: ResponseOutcome::Ok,
+            error_id: None,
+            degradation: vec![
+                if proposed {
+                    format!(
+                        "Reconciliation proposed, not performed: approve exactly {} with `fss \
+                         commit --reconcile {attested} --operation {} --evidence {} --statement \
+                         <same text> --approve {}`.",
+                        plan.approval_digest(),
+                        args.operation,
+                        args.attestation.evidence,
+                        plan.approval_digest()
+                    )
+                } else {
+                    format!(
+                        "Reconciliation {outcome} as {attested}: obligation {} is {obligation}.",
+                        plan.prepared().obligation_id
+                    )
+                },
+                "The reconciliation rests on the owner's attestation (operator_asserted \
+                 provenance), not on a provider receipt."
+                    .to_owned(),
+            ],
+            proof_pointers: vec![
+                plan.approval_digest().to_text(),
+                plan.record_digest().to_text(),
+                args.attestation.evidence.to_text(),
+                receipt.receipt_digest().to_text(),
+            ],
+            request_digest,
+            recovery_class: "never_unchanged",
+            safe_retry: ResponseSafeRetry::YesSameRequest,
+            boundary: effect_boundary(
+                vec![if proposed {
+                    format!(
+                        "Previewed an owner-attested {attested} reconciliation of {}.",
+                        args.operation
+                    )
+                } else {
+                    format!(
+                        "Published the owner attestation {} root-last, then reconciled {} ({}).",
+                        plan.record_digest(),
+                        args.operation,
+                        receipt.state.as_str()
+                    )
+                }],
+                if proposed {
+                    vec!["The reconciliation itself.".to_owned()]
+                } else {
+                    Vec::new()
+                },
+                Vec::new(),
+                vec![
+                    "No network I/O and no resend: reconciliation only records the owner's \
+                      attestation."
+                        .to_owned(),
+                ],
+            ),
+            idempotency_key: Some(receipt.intent.idempotency_key.as_str().to_owned()),
+        }))
+    })();
+    cx.drain_and_finalize();
+    result
+}
+
+fn execute_reconcile(args: &ReconcileArgs) -> (String, ExitIdentity) {
+    finish(
+        reconcile_answer(args),
+        ExitIdentity::SUCCESS,
+        &Operation {
+            command: "commit",
+            name: "commit",
+            capability: CAPABILITY_PLAN_COMMIT,
+            payload_schema: OPERATION_RECEIPT_SCHEMA,
+            view: AgentView::Operation,
+            root: args.root.clone(),
+            principal: args.principal.clone(),
+            request: args.operation.as_str().as_bytes().to_vec(),
+        },
+    )
+}
+
+// ---------------------------------------------------------------------------------------------
 // wait (AOP-009)
 // ---------------------------------------------------------------------------------------------
 
@@ -1850,6 +2110,7 @@ pub fn execute_effect(command: &EffectCommand) -> (String, ExitIdentity) {
     match command {
         EffectCommand::Plan(args) => execute_plan(args),
         EffectCommand::Commit(args) => execute_commit(args),
+        EffectCommand::Reconcile(args) => execute_reconcile(args),
         EffectCommand::Wait(args) => execute_wait(args),
         EffectCommand::Cancel(args) => execute_cancel(args),
     }
