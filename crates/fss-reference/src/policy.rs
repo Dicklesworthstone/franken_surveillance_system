@@ -12,6 +12,7 @@ use fss_object::{InMemoryObjectStore, ObjectManifest, VerifiedObjectCatalog};
 use fss_publication::AuthorityPublisher;
 
 use crate::executor_activity::{ExecutorModelOutcome, ExecutorModelResult};
+use crate::ingest::source_coverage::{SourceCoverageRecord, analysis_covering_frames};
 use crate::{MockModelOutcome, MockModelResult, MockSemanticLabel, ReferenceError};
 
 const MAX_POLICY_OBSERVATIONS: usize = 64;
@@ -267,6 +268,15 @@ pub fn evaluate_unknown_presence(
                 unresolved += 1;
                 EvidenceEdgeRelation::DerivedFrom
             }
+            // An analysed frame with nothing found says nothing about the rest of the interval:
+            // without a coverage record whose every frame was analysed, it is a neutral edge that
+            // neither supports, contradicts nor holds the event (fss-f8jls). Only
+            // `evaluate_unknown_presence_over_coverage` may reject from it.
+            MockModelOutcome::NothingFound { .. } => EvidenceEdgeRelation::DerivedFrom,
+        };
+        let capsule_digest = match mock_outcome {
+            MockModelOutcome::NothingFound { analysed_capsule } => Some(*analysed_capsule),
+            _ => None,
         };
         let identity_digest = match relation {
             EvidenceEdgeRelation::SensorTamper
@@ -281,7 +291,7 @@ pub fn evaluate_unknown_presence(
             failure_domain: observation.failure_domain.clone(),
             supports: relation.required_supports_flag(),
             relation,
-            capsule_digest: None,
+            capsule_digest,
             identity_digest,
         });
         model_receipts.push(result_digest);
@@ -323,6 +333,101 @@ pub fn evaluate_unknown_presence(
         probability,
         evidence,
         model_receipts,
+        decision_path,
+    };
+    event.validate()?;
+    Ok(ReferencePolicyDecision { event, action })
+}
+
+/// Uncertainty reason of an unknown-presence decision over a coverage record whose frames the
+/// observations do not all analyse with nothing found under one model generation.
+pub const COVERAGE_ANALYSIS_INCOMPLETE: &str =
+    "analysed-nothing results do not cover every coverage frame under one model generation";
+
+/// Evaluates "is an unknown person present?" over a retained source coverage `record` and the
+/// model observations of its frames (fss-f8jls).
+///
+/// The candidate is rejected only when every observation is an analysed-nothing result, the
+/// results are under one model generation, each is bound to a frame of the record (capsule,
+/// source payload, sensor and failure domain), and together they cover every frame
+/// ([`analysis_covering_frames`], the check the stored-witness rule repeats). The rejected event
+/// cites each result as contradicting evidence carrying the analysed capsule's digest, and the
+/// record's witness as contradicting evidence of each observed domain; its interval is the
+/// record's. Whether that rejection certifies absence is not decided here: the witness must
+/// still certify and survive the stored-witness rule.
+///
+/// Any finding, abstention or other result is decided exactly as [`evaluate_unknown_presence`]
+/// decides it. Analysed-nothing results that do not cover the record leave the event
+/// indeterminate with reason [`COVERAGE_ANALYSIS_INCOMPLETE`]: a frame that was never analysed is
+/// never read as empty.
+///
+/// # Errors
+/// [`evaluate_unknown_presence`]'s refusals.
+pub fn evaluate_unknown_presence_over_coverage(
+    event_id: EventId,
+    observations: Vec<ReferenceModelObservation>,
+    record: &SourceCoverageRecord,
+) -> Result<ReferencePolicyDecision, ReferenceError> {
+    let generic = evaluate_unknown_presence(event_id.clone(), observations.clone())?;
+    let mut analyses = Vec::with_capacity(observations.len());
+    for observation in &observations {
+        match &observation.result {
+            ReferenceModelResult::Mock(result)
+                if matches!(result.outcome, MockModelOutcome::NothingFound { .. }) =>
+            {
+                analyses.push((observation.failure_domain.as_str(), result));
+            }
+            _ => return Ok(generic),
+        }
+    }
+    if analysis_covering_frames(record, &analyses).is_err() {
+        let mut decision = generic;
+        decision.event.uncertainty_reason = Some(COVERAGE_ANALYSIS_INCOMPLETE.to_owned());
+        decision.event.validate()?;
+        return Ok(decision);
+    }
+
+    // Every observation is a covering analysed-nothing result. Keep the generic (domain, result)
+    // order; each edge now contradicts the candidate and names the capsule it analysed.
+    let mut evidence: Vec<EventEvidence> = generic
+        .event
+        .evidence
+        .iter()
+        .map(|edge| EventEvidence {
+            supports: false,
+            relation: EvidenceEdgeRelation::Contradicts,
+            ..edge.clone()
+        })
+        .collect();
+    let witness_object = record.witness_object();
+    for domain in &record.witness.observed_domain {
+        evidence.push(EventEvidence {
+            digest: witness_object,
+            class: EvidenceClass::Derived,
+            failure_domain: domain.clone(),
+            supports: false,
+            relation: EvidenceEdgeRelation::Contradicts,
+            capsule_digest: None,
+            identity_digest: None,
+        });
+    }
+    let state = EventState::Rejected;
+    let action = ReferencePolicyAction::Hold;
+    let decision_path = policy_decision_path(&event_id, &evidence, state, action);
+    let event = EventHypothesis {
+        schema: EventHypothesis::SCHEMA.to_string(),
+        event_id,
+        revision: 1,
+        supersedes: None,
+        state,
+        kind: EventKind::UnknownPresence,
+        interval: record.interval,
+        uncertainty_reason: None,
+        zone_ids: Vec::new(),
+        track_ids: Vec::new(),
+        probability: ProbabilityInterval::new(0.0, 1.0)?,
+        evidence,
+        model_receipts: generic.event.model_receipts,
         decision_path,
     };
     event.validate()?;

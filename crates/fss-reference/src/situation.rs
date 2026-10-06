@@ -15,7 +15,7 @@ use fss_ledger::DurableReferenceLedger;
 use fss_object::ObjectManifest;
 
 use crate::ingest::source_coverage::{
-    RetainedCoverageRefusal, SourceCoverageRecord, absence_predicate, verify_retained_coverage,
+    RetainedCoverageRefusal, StoredCoverage, absence_predicate, verify_retained_coverage,
 };
 use crate::{
     ReferenceAlertOutcomeReceipt, ReferenceAlertPlan, ReferenceError, ReferenceEventReceipt,
@@ -72,9 +72,10 @@ pub struct ReferenceSituationRequest<'a> {
     /// The committed source coverage record that retains `coverage_witness`, when the witness is
     /// a stored one (fss-tch7u). A stored witness is anchored before the commits that follow it,
     /// so it certifies only under [`verify_retained_coverage`]: the record is committed intact and
-    /// no coverage-relevant commit follows its basis. Without a record, a witness certifies only
-    /// at the exact current anchor.
-    pub coverage_record: Option<&'a SourceCoverageRecord>,
+    /// no coverage-relevant commit follows its basis, and the hydrated results of the event's
+    /// model receipts analyse every frame of the record with nothing found under one generation
+    /// (fss-f8jls). Without a record, a witness certifies only at the exact current anchor.
+    pub coverage_record: Option<StoredCoverage<'a>>,
     /// Capabilities currently delegated to the principal.
     pub available_capabilities: BTreeSet<String>,
     /// Deterministic caller-supplied creation time.
@@ -745,12 +746,15 @@ pub fn compile_reference_situation(
             // shared rule, never re-anchored. An unstored witness keeps exact anchor equality.
             let stored = match request.coverage_record {
                 _ if witness.anchor == current_anchor => None,
-                Some(record) if record.witness == *witness => Some(verify_retained_coverage(
-                    record,
-                    Some(&request.decision.event),
-                    authority.batches(),
-                    &current_anchor,
-                )),
+                Some(stored) if stored.record.witness == *witness => {
+                    Some(verify_retained_coverage(
+                        stored.record,
+                        Some(&request.decision.event),
+                        stored.analyses,
+                        authority.batches(),
+                        &current_anchor,
+                    ))
+                }
                 Some(_) => Some(Err(RetainedCoverageRefusal::NotRetained)),
                 None => None,
             };

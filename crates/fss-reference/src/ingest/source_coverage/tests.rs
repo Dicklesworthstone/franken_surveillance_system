@@ -7,6 +7,11 @@
 //! reader, which must agree. Epoch and lineage changes and the reserved deletion families have no
 //! generic writer, so those kinds are exercised against the shared rule over the real committed
 //! history extended by one synthetic batch.
+//!
+//! Since fss-f8jls every delivered frame is analysed through the model seam
+//! ([`analyse_mock_capsule`]) and the rejection is the policy's
+//! ([`evaluate_unknown_presence_over_coverage`]); the planted runs write the rejection themselves
+//! (as `fss-lab quiet` did before) or analyse only some frames, or under two generations.
 
 use std::collections::BTreeSet;
 use std::error::Error;
@@ -27,7 +32,8 @@ use fss_publication::SlotName;
 
 use super::{
     RetainedCoverageRefusal, SourceCoverageError, SourceCoverageInput, SourceCoverageRecord,
-    SourceCoverageStatus, build_source_coverage, retain_source_coverage, verify_retained_coverage,
+    SourceCoverageStatus, StoredCoverage, build_source_coverage, retain_source_coverage,
+    verify_retained_coverage,
 };
 use crate::agent_orient::{
     CLAIM_COVERAGE, OrientLimits, OrientRequest, orient_deployment, read_deployment,
@@ -36,9 +42,11 @@ use crate::reference_deployment::{
     FAMILY_COVERAGE_WITNESS, FAMILY_PRIVACY_MASK_POLICY, FAMILY_SENSOR_CAPSULE,
 };
 use crate::{
-    ADP_REPLAY_ROW_ID, ReferenceDeployment, ReferenceEventReceipt, ReferencePolicyAction,
-    ReferencePolicyDecision, ReferenceSituation, ReferenceSituationRequest, ReplayCx,
-    ReplayIoAuthority, policy_decision_path,
+    ADP_REPLAY_ROW_ID, COVERAGE_ANALYSIS_INCOMPLETE, MockModelResult, MockModelScript,
+    MockModelSpec, ReferenceDeployment, ReferenceEventReceipt, ReferenceModelObservation,
+    ReferencePolicyAction, ReferencePolicyDecision, ReferenceSituation, ReferenceSituationRequest,
+    ReplayCx, ReplayIoAuthority, analyse_mock_capsule, evaluate_unknown_presence_over_coverage,
+    policy_decision_path,
 };
 
 type TestResult = Result<(), Box<dyn Error>>;
@@ -48,6 +56,10 @@ const FRONT: (&str, &str) = ("cam-front", "front-power-and-network");
 const SIDE: (&str, &str) = ("cam-side", "side-power-and-network");
 const TICKS: u64 = 5;
 const PREDICATE: &str = "no_unknown_person_present";
+/// The generation that analyses every frame of a certifying run.
+const GEN_A: &str = "mock:model:presence:nothing-found:a";
+/// A second generation, for planted mixes.
+const GEN_B: &str = "mock:model:presence:nothing-found:b";
 
 fn test_cx(label: &str) -> Result<ReplayCx, Box<dyn Error>> {
     let spec = RootAuthoritySpec {
@@ -131,12 +143,109 @@ fn everything(_: &str, _: u64) -> bool {
 /// History committed before the witness basis.
 type Prelude = fn(&mut ReferenceDeployment, &ReplayCx) -> Result<(), Box<dyn Error>>;
 
+/// Which generation, if any, analyses each delivered frame.
+type Analyse = fn(&str, u64) -> Option<&'static str>;
+
+fn all_under_a(_: &str, _: u64) -> Option<&'static str> {
+    Some(GEN_A)
+}
+
+/// How the run's decision is made from the record and the analyses of its frames.
+type Decide = fn(
+    &EventId,
+    &SourceCoverageRecord,
+    Vec<ReferenceModelObservation>,
+) -> Result<ReferencePolicyDecision, Box<dyn Error>>;
+
+/// The real policy over the record (fss-f8jls).
+fn by_policy(
+    event_id: &EventId,
+    record: &SourceCoverageRecord,
+    observations: Vec<ReferenceModelObservation>,
+) -> Result<ReferencePolicyDecision, Box<dyn Error>> {
+    Ok(evaluate_unknown_presence_over_coverage(
+        event_id.clone(),
+        observations,
+        record,
+    )?)
+}
+
+/// The pre-fss-f8jls lab: a rejection written by the caller, citing the witness and no analysis.
+fn lab_written(
+    event_id: &EventId,
+    record: &SourceCoverageRecord,
+    _: Vec<ReferenceModelObservation>,
+) -> Result<ReferencePolicyDecision, Box<dyn Error>> {
+    rejected(event_id, record.witness_object(), &record.witness, 1, None)
+}
+
+/// A rejection written by the caller that cites whatever analyses ran exactly as the policy
+/// would, bypassing the policy's coverage check: the stored-witness rule must catch it alone.
+fn forged(
+    event_id: &EventId,
+    record: &SourceCoverageRecord,
+    observations: Vec<ReferenceModelObservation>,
+) -> Result<ReferencePolicyDecision, Box<dyn Error>> {
+    let mut evidence = Vec::new();
+    let mut model_receipts = Vec::new();
+    for observation in &observations {
+        let crate::ReferenceModelResult::Mock(result) = &observation.result else {
+            return Err("not a mock result".into());
+        };
+        evidence.push(EventEvidence {
+            digest: result.object_digest(),
+            class: EvidenceClass::Derived,
+            failure_domain: observation.failure_domain.clone(),
+            supports: false,
+            relation: EvidenceEdgeRelation::Contradicts,
+            capsule_digest: Some(result.continuity_digest),
+            identity_digest: None,
+        });
+        model_receipts.push(result.object_digest());
+    }
+    let mut decision = rejected(event_id, record.witness_object(), &record.witness, 1, None)?;
+    decision.event.evidence.splice(0..0, evidence);
+    decision.event.model_receipts = model_receipts;
+    decision.event.decision_path = policy_decision_path(
+        event_id,
+        &decision.event.evidence,
+        EventState::Rejected,
+        ReferencePolicyAction::Hold,
+    );
+    decision.event.validate()?;
+    Ok(decision)
+}
+
+/// Everything one run varies.
+#[derive(Clone, Copy)]
+struct Plan {
+    delivery: Delivery,
+    retain: bool,
+    prelude: Prelude,
+    analyse: Analyse,
+    decide: Decide,
+}
+
+impl Plan {
+    fn new(delivery: Delivery, retain: bool) -> Self {
+        Self {
+            delivery,
+            retain,
+            prelude: |_, _| Ok(()),
+            analyse: all_under_a,
+            decide: by_policy,
+        }
+    }
+}
+
 /// One `quiet` run on a real deployment, stopped after the slot commit.
 struct Quiet {
     root: PathBuf,
     cx: ReplayCx,
     deployment: Option<ReferenceDeployment>,
     record: SourceCoverageRecord,
+    /// Every retained analysis result of the run (the event cites the ones its decision names).
+    analyses: Vec<MockModelResult>,
     decision: ReferencePolicyDecision,
     receipt: ReferenceEventReceipt,
     event_id: EventId,
@@ -146,7 +255,7 @@ impl Quiet {
     /// Runs the lab flow; `retain` false never retains the record (a stored but unretained
     /// witness).
     fn run(tag: &str, delivery: Delivery, retain: bool) -> Result<Self, Box<dyn Error>> {
-        Self::run_after(tag, delivery, retain, |_, _| Ok(()))
+        Self::run_plan(tag, Plan::new(delivery, retain))
     }
 
     /// [`Self::run`] after `prelude` commits earlier history: the witness basis is the anchor the
@@ -157,12 +266,30 @@ impl Quiet {
         retain: bool,
         prelude: Prelude,
     ) -> Result<Self, Box<dyn Error>> {
+        Self::run_plan(
+            tag,
+            Plan {
+                prelude,
+                ..Plan::new(delivery, retain)
+            },
+        )
+    }
+
+    fn run_plan(tag: &str, plan: Plan) -> Result<Self, Box<dyn Error>> {
+        let Plan {
+            delivery,
+            retain,
+            prelude,
+            analyse,
+            decide,
+        } = plan;
         let root = fresh_root(tag)?;
         let cx = test_cx(tag)?;
         let mut deployment = ReferenceDeployment::open(&root, SITE, &cx)?;
         prelude(&mut deployment, &cx)?;
         let mut staged = Vec::new();
         let mut sources = Vec::new();
+        let mut analysed = Vec::new();
         for tick in 0..TICKS {
             for (sensor, domain) in [FRONT, SIDE] {
                 if delivery(sensor, tick) {
@@ -173,6 +300,9 @@ impl Quiet {
                         tick,
                         ClockBasis::DeviceMonotonic,
                     )?;
+                    if let Some(generation) = analyse(sensor, tick) {
+                        analysed.push((generation, domain, capsule.clone()));
+                    }
                     sources.push((domain.to_owned(), capsule));
                 }
             }
@@ -188,9 +318,26 @@ impl Quiet {
                 .collect(),
         })?;
         let witness_object = deployment.stage_payload(&record.witness.canonical_bytes())?;
+        assert_eq!(witness_object, record.witness_object());
         staged.push(witness_object);
+        // Each analysed frame goes through the model seam; its result is retained with the run.
+        let mut analyses = Vec::new();
+        let mut observations = Vec::new();
+        for (generation, domain, capsule) in &analysed {
+            let spec = MockModelSpec::new(*generation, MockModelScript::NothingFound)?;
+            let result = analyse_mock_capsule(&spec, capsule);
+            let digest = deployment.stage_payload(&result.canonical_bytes())?;
+            assert_eq!(digest, result.object_digest());
+            staged.push(digest);
+            observations.push(ReferenceModelObservation::new(
+                result.clone(),
+                *domain,
+                capsule.capture,
+            )?);
+            analyses.push(result);
+        }
         let event_id = EventId::parse(format!("event:source-coverage:{tag}"))?;
-        let decision = rejected(&event_id, witness_object, &record.witness, 1, None)?;
+        let decision = decide(&event_id, &record, observations)?;
         let receipt = deployment.publish_event(&decision, &cx)?;
         staged.extend([
             receipt.event_root,
@@ -210,6 +357,7 @@ impl Quiet {
             cx,
             deployment: Some(deployment),
             record,
+            analyses,
             decision,
             receipt,
             event_id,
@@ -249,6 +397,7 @@ impl Quiet {
     ) -> Result<ReferenceSituation, Box<dyn Error>> {
         let decision = self.decision.clone();
         let receipt = self.receipt.clone();
+        let analyses = self.analyses.clone();
         let cx = test_cx("compile")?;
         let request = ReferenceSituationRequest {
             mission_id: MissionId::parse("mission:source-coverage")?,
@@ -275,7 +424,10 @@ impl Quiet {
             alert_plan: None,
             alert_outcome: None,
             coverage_witness: Some(witness),
-            coverage_record: record,
+            coverage_record: record.map(|record| StoredCoverage {
+                record,
+                analyses: &analyses,
+            }),
             available_capabilities: BTreeSet::from(["capability:evidence.query".to_owned()]),
             created_at: seconds(TICKS)?,
         };
@@ -745,16 +897,13 @@ fn an_observation_published_after_the_basis_invalidates_both_readers() -> TestRe
 fn a_revision_of_the_event_invalidates_both_readers() -> TestResult {
     let mut quiet = Quiet::run("revision", everything, true)?;
     let cx = test_cx("revision-publish")?;
-    // Revision 2 of the same event, still rejected and still citing the witness: the witness
-    // basis now precedes two publications of the event, so revision 1's is not bookkeeping.
-    let witness_object = quiet.record.witness_object();
-    let decision = rejected(
-        &quiet.event_id,
-        witness_object,
-        &quiet.record.witness,
-        2,
-        Some(quiet.decision.event.revision_digest()),
-    )?;
+    // Revision 2 of the same event, still rejected and still citing the witness and every
+    // analysis: the witness basis now precedes two publications of the event, so revision 1's is
+    // not bookkeeping.
+    let mut decision = quiet.decision.clone();
+    decision.event.revision = 2;
+    decision.event.supersedes = Some(quiet.decision.event.revision_digest());
+    decision.event.validate()?;
     let receipt = quiet.deployment()?.publish_event(&decision, &cx)?;
     commit_slot(
         quiet.deployment()?,
@@ -829,13 +978,19 @@ fn another_coverage_record_after_the_basis_invalidates_both_readers() -> TestRes
     commit_slot(quiet.deployment()?, "slot-copy", vec![copy.digest()], &cx)?;
     let (batches, head) = quiet.history()?;
     assert_eq!(
-        verify_retained_coverage(&copy, Some(&quiet.decision.event), &batches, &head),
+        verify_retained_coverage(
+            &copy,
+            Some(&quiet.decision.event),
+            &quiet.analyses,
+            &batches,
+            &head
+        ),
         Err(RetainedCoverageRefusal::WitnessNotCited)
     );
     // Nor does the later basis hide what preceded it: the event publication at commit 1 bears on
     // the interval and is not the copy's bookkeeping.
     assert!(matches!(
-        verify_retained_coverage(&copy, None, &batches, &head),
+        verify_retained_coverage(&copy, None, &[], &batches, &head),
         Err(RetainedCoverageRefusal::CoverageRelevantCommit { sequence: 1, .. })
     ));
     assert_not_certified(&mut quiet, "(coverage_witness delta:coverage:source:")?;
@@ -895,7 +1050,13 @@ fn a_tampered_record_does_not_certify() -> TestResult {
     }
     let (batches, head) = quiet.history()?;
     assert_eq!(
-        verify_retained_coverage(&tampered, Some(&quiet.decision.event), &batches, &head),
+        verify_retained_coverage(
+            &tampered,
+            Some(&quiet.decision.event),
+            &quiet.analyses,
+            &batches,
+            &head
+        ),
         Err(RetainedCoverageRefusal::NotRetained)
     );
     // On disk: the committed record's bytes are damaged; the durable reader rehashes every object
@@ -974,11 +1135,17 @@ fn a_coverage_witness_delta_committed_without_source_custody_does_not_certify() 
     assert!(record.source_objects().count() > 0);
     assert!(record.witness.certifies_absence());
     assert_eq!(
-        verify_retained_coverage(&record, Some(&quiet.decision.event), &batches, &head),
+        verify_retained_coverage(
+            &record,
+            Some(&quiet.decision.event),
+            &quiet.analyses,
+            &batches,
+            &head
+        ),
         Err(RetainedCoverageRefusal::NoCustody)
     );
     assert_eq!(
-        verify_retained_coverage(&record, None, &batches, &head),
+        verify_retained_coverage(&record, None, &[], &batches, &head),
         Err(RetainedCoverageRefusal::NoCustody)
     );
     assert_not_certified(&mut quiet, "does not hold custody of every source object")?;
@@ -1039,9 +1206,14 @@ fn a_witness_based_after_unrelated_earlier_history_is_certified() -> TestResult 
             delta.validity.latest < interval.earliest || delta.validity.earliest > interval.latest
         }));
     }
-    let absence =
-        verify_retained_coverage(&quiet.record, Some(&quiet.decision.event), &batches, &head)
-            .map_err(|refusal| format!("a later basis must certify: {refusal}"))?;
+    let absence = verify_retained_coverage(
+        &quiet.record,
+        Some(&quiet.decision.event),
+        &quiet.analyses,
+        &batches,
+        &head,
+    )
+    .map_err(|refusal| format!("a later basis must certify: {refusal}"))?;
     assert_eq!(absence.basis_sequence, 2);
     assert_eq!(absence.record_sequence, 4);
     assert_eq!(absence.record_digest, quiet.record.digest());
@@ -1074,15 +1246,20 @@ fn extended(
         verify_retained_coverage(
             &quiet.record,
             Some(&quiet.decision.event),
+            &quiet.analyses,
             &real,
             &real_head
         )
         .is_ok()
     );
-    Ok(
-        verify_retained_coverage(&quiet.record, Some(&quiet.decision.event), &batches, &head)
-            .map(|_| ()),
+    Ok(verify_retained_coverage(
+        &quiet.record,
+        Some(&quiet.decision.event),
+        &quiet.analyses,
+        &batches,
+        &head,
     )
+    .map(|_| ()))
 }
 
 #[test]
@@ -1171,7 +1348,7 @@ fn the_rule_refuses_events_it_does_not_certify() -> TestResult {
     let (batches, head) = quiet.history()?;
     let base = quiet.decision.event.clone();
     let verdict = |event: &EventHypothesis| {
-        verify_retained_coverage(&quiet.record, Some(event), &batches, &head)
+        verify_retained_coverage(&quiet.record, Some(event), &quiet.analyses, &batches, &head)
     };
     assert!(verdict(&base).is_ok());
 
@@ -1214,9 +1391,401 @@ fn the_rule_refuses_events_it_does_not_certify() -> TestResult {
 
     // Without an event, the event publication after the basis is coverage-relevant.
     assert!(matches!(
-        verify_retained_coverage(&quiet.record, None, &batches, &head),
+        verify_retained_coverage(&quiet.record, None, &quiet.analyses, &batches, &head),
         Err(RetainedCoverageRefusal::CoverageRelevantCommit { sequence: 1, .. })
     ));
     quiet.cleanup();
     Ok(())
+}
+
+// --- analysis (fss-f8jls) -------------------------------------------------------------------------
+
+/// The certifying run: the policy rejected over one analysis per frame, all under one generation,
+/// and the certification names that generation.
+#[test]
+fn quiet_certifies_only_with_an_analysis_of_every_frame_under_one_generation() -> TestResult {
+    let mut quiet = Quiet::run("analysed", everything, true)?;
+    let event = &quiet.decision.event;
+    assert_eq!(event.state, EventState::Rejected);
+    assert_eq!(event.uncertainty_reason, None);
+    assert_eq!(event.interval, quiet.record.interval);
+    assert_eq!(event.model_receipts.len(), quiet.record.frames.len());
+    // Every frame's capsule is cited, as contradicting evidence, under its own domain.
+    for frame in &quiet.record.frames {
+        assert!(
+            event.evidence.iter().any(|edge| {
+                edge.capsule_digest == Some(frame.capsule_digest)
+                    && edge.failure_domain == frame.failure_domain
+                    && edge.counts_as_contradiction()
+            }),
+            "frame {} is not cited",
+            frame.capsule_digest
+        );
+    }
+    let (batches, head) = quiet.history()?;
+    let absence = verify_retained_coverage(
+        &quiet.record,
+        Some(&quiet.decision.event),
+        &quiet.analyses,
+        &batches,
+        &head,
+    )
+    .map_err(|refusal| refusal.to_string())?;
+    let analysis = absence.analysis.as_ref().ok_or("no analysis")?;
+    assert_eq!(analysis.generation_id, GEN_A);
+    assert_eq!(analysis.results.len(), quiet.record.frames.len());
+    let statement = absence.statement();
+    assert!(statement.contains(GEN_A), "{statement}");
+    assert!(
+        statement.contains("analysed all 10 of its frames"),
+        "{statement}"
+    );
+    // The same event offered without its hydrated analyses is refused: the readers never take the
+    // rejection's word for it.
+    assert!(matches!(
+        verify_retained_coverage(
+            &quiet.record,
+            Some(&quiet.decision.event),
+            &[],
+            &batches,
+            &head
+        ),
+        Err(RetainedCoverageRefusal::AnalysisUnverified { .. })
+    ));
+    assert_certified(&mut quiet)?;
+    quiet.cleanup();
+    Ok(())
+}
+
+/// The pre-fss-f8jls lab: every frame delivered, the rejection written by the caller citing the
+/// witness and no analysis. Delivery is not observation: neither reader certifies.
+#[test]
+fn a_rejection_written_without_analysis_does_not_certify() -> TestResult {
+    let mut quiet = Quiet::run_plan(
+        "lab-written",
+        Plan {
+            decide: lab_written,
+            ..Plan::new(everything, true)
+        },
+    )?;
+    assert!(quiet.decision.event.model_receipts.is_empty());
+    let (batches, head) = quiet.history()?;
+    assert_eq!(
+        verify_retained_coverage(
+            &quiet.record,
+            Some(&quiet.decision.event),
+            &quiet.analyses,
+            &batches,
+            &head
+        ),
+        Err(RetainedCoverageRefusal::NoAnalysis)
+    );
+    // Results the event does not cite add nothing, even when they exist and cover every frame.
+    assert_eq!(quiet.analyses.len(), quiet.record.frames.len());
+    assert_not_certified(&mut quiet, "delivered but never analysed")?;
+    quiet.cleanup();
+    Ok(())
+}
+
+fn all_but_one_frame(sensor: &str, tick: u64) -> Option<&'static str> {
+    (!(sensor == SIDE.0 && tick == 3)).then_some(GEN_A)
+}
+
+fn one_frame_under_b(sensor: &str, tick: u64) -> Option<&'static str> {
+    Some(if sensor == SIDE.0 && tick == 3 {
+        GEN_B
+    } else {
+        GEN_A
+    })
+}
+
+/// The unanalysed frame of [`all_but_one_frame`] / the other-generation frame of
+/// [`one_frame_under_b`].
+fn side_tick_3(quiet: &Quiet) -> Result<ContentDigest, Box<dyn Error>> {
+    Ok(quiet
+        .record
+        .frames
+        .iter()
+        .find(|frame| frame.sensor_id == format!("sensor:{}", SIDE.0) && frame.sequence == 3)
+        .ok_or("no side frame at tick 3")?
+        .capsule_digest)
+}
+
+/// Analyses of only some frames: the policy holds the candidate indeterminate, and a forged
+/// rejection citing those analyses is refused by both readers, naming the unanalysed frame.
+#[test]
+fn an_analysis_of_only_some_frames_does_not_certify() -> TestResult {
+    let mut quiet = Quiet::run_plan(
+        "partial-policy",
+        Plan {
+            analyse: all_but_one_frame,
+            ..Plan::new(everything, true)
+        },
+    )?;
+    let event = &quiet.decision.event;
+    assert_eq!(event.state, EventState::Indeterminate);
+    assert_eq!(
+        event.uncertainty_reason.as_deref(),
+        Some(COVERAGE_ANALYSIS_INCOMPLETE)
+    );
+    assert!(
+        !event
+            .evidence
+            .iter()
+            .any(|edge| edge.digest == quiet.record.witness_object())
+    );
+    let situation = quiet.situation(true)?;
+    assert!(!situation_certified_or_absent(&situation, &quiet.event_id));
+    let durable = quiet.durable()?;
+    assert!(!durable.certified(), "{durable:?}");
+    assert!(durable.retained.is_none());
+    quiet.cleanup();
+
+    let mut quiet = Quiet::run_plan(
+        "partial-forged",
+        Plan {
+            analyse: all_but_one_frame,
+            decide: forged,
+            ..Plan::new(everything, true)
+        },
+    )?;
+    assert_eq!(quiet.decision.event.state, EventState::Rejected);
+    assert_eq!(quiet.decision.event.model_receipts.len(), 9);
+    let missing = side_tick_3(&quiet)?;
+    let (batches, head) = quiet.history()?;
+    assert_eq!(
+        verify_retained_coverage(
+            &quiet.record,
+            Some(&quiet.decision.event),
+            &quiet.analyses,
+            &batches,
+            &head
+        ),
+        Err(RetainedCoverageRefusal::AnalysisMissing { capsule: missing })
+    );
+    assert_not_certified(&mut quiet, "has no cited analysed-nothing model result")?;
+    quiet.cleanup();
+    Ok(())
+}
+
+/// Analyses under two generations: the policy does not mix them, and a forged rejection citing
+/// both is refused by both readers.
+#[test]
+fn analyses_under_another_generation_do_not_certify() -> TestResult {
+    let mut quiet = Quiet::run_plan(
+        "generation-policy",
+        Plan {
+            analyse: one_frame_under_b,
+            ..Plan::new(everything, true)
+        },
+    )?;
+    assert_eq!(quiet.decision.event.state, EventState::Indeterminate);
+    assert_eq!(
+        quiet.decision.event.uncertainty_reason.as_deref(),
+        Some(COVERAGE_ANALYSIS_INCOMPLETE)
+    );
+    let durable = quiet.durable()?;
+    assert!(!durable.certified(), "{durable:?}");
+    quiet.cleanup();
+
+    let mut quiet = Quiet::run_plan(
+        "generation-forged",
+        Plan {
+            analyse: one_frame_under_b,
+            decide: forged,
+            ..Plan::new(everything, true)
+        },
+    )?;
+    assert_eq!(quiet.decision.event.state, EventState::Rejected);
+    // Every frame is analysed and cited; one analysis is under the other generation.
+    assert_eq!(
+        quiet.decision.event.model_receipts.len(),
+        quiet.record.frames.len()
+    );
+    let other = side_tick_3(&quiet)?;
+    assert!(
+        quiet
+            .analyses
+            .iter()
+            .any(|result| { result.continuity_digest == other && result.generation_id == GEN_B })
+    );
+    let (batches, head) = quiet.history()?;
+    assert_eq!(
+        verify_retained_coverage(
+            &quiet.record,
+            Some(&quiet.decision.event),
+            &quiet.analyses,
+            &batches,
+            &head
+        ),
+        Err(RetainedCoverageRefusal::AnalysisGenerationMixed)
+    );
+    assert_not_certified(&mut quiet, "span more than one model generation")?;
+    quiet.cleanup();
+    Ok(())
+}
+
+/// An analysis cited under another frame's capsule, domain or sensor does not cover that frame.
+#[test]
+fn an_analysis_bound_to_another_frame_does_not_count() -> TestResult {
+    let mut quiet = Quiet::run("rebound", everything, true)?;
+    let (batches, head) = quiet.history()?;
+    let base = quiet.decision.event.clone();
+    let verdict = |event: &EventHypothesis| {
+        verify_retained_coverage(&quiet.record, Some(event), &quiet.analyses, &batches, &head)
+    };
+    assert!(verdict(&base).is_ok());
+
+    // The edge names another capsule than the one the result analysed.
+    let mut other_capsule = base.clone();
+    if let Some(edge) = other_capsule
+        .evidence
+        .iter_mut()
+        .find(|edge| edge.capsule_digest.is_some())
+    {
+        edge.capsule_digest = Some(ContentDigest::sha256(b"another capsule"));
+    }
+    assert!(matches!(
+        verdict(&other_capsule),
+        Err(RetainedCoverageRefusal::AnalysisUnverified { .. })
+    ));
+
+    // The edge cites a front frame's analysis under the side domain.
+    let mut other_domain = base.clone();
+    if let Some(edge) = other_domain
+        .evidence
+        .iter_mut()
+        .find(|edge| edge.capsule_digest.is_some() && edge.failure_domain == FRONT.1)
+    {
+        edge.failure_domain = SIDE.1.to_owned();
+    }
+    assert!(matches!(
+        verdict(&other_domain),
+        Err(RetainedCoverageRefusal::AnalysisUnverified { .. })
+    ));
+
+    // A receipt the readers cannot hydrate as an analysed-nothing result.
+    let mut unknown_receipt = base.clone();
+    unknown_receipt
+        .model_receipts
+        .push(ContentDigest::sha256(b"an unretained result"));
+    assert!(matches!(
+        verdict(&unknown_receipt),
+        Err(RetainedCoverageRefusal::AnalysisUnverified { .. })
+    ));
+
+    // One frame's analysis dropped from the event: that frame is unanalysed.
+    let mut dropped = base.clone();
+    let first = *dropped.model_receipts.first().ok_or("no receipt")?;
+    dropped.model_receipts.retain(|receipt| *receipt != first);
+    dropped.evidence.retain(|edge| edge.digest != first);
+    let capsule = quiet
+        .analyses
+        .iter()
+        .find(|result| result.object_digest() == first)
+        .ok_or("no analysis")?
+        .continuity_digest;
+    assert_eq!(
+        verdict(&dropped),
+        Err(RetainedCoverageRefusal::AnalysisMissing { capsule })
+    );
+    quiet.cleanup();
+    Ok(())
+}
+
+/// Over a coverage record, any finding is decided as the plain policy decides it; and without a
+/// record an analysed-nothing result is a neutral edge that never rejects.
+#[test]
+fn analysed_nothing_rejects_only_over_a_covering_record() -> TestResult {
+    let quiet = Quiet::run("policy-shape", everything, false)?;
+    let observations = |results: &[MockModelResult]| -> Result<Vec<_>, Box<dyn Error>> {
+        results
+            .iter()
+            .map(|result| {
+                let frame = quiet
+                    .record
+                    .frames
+                    .iter()
+                    .find(|frame| frame.capsule_digest == result.continuity_digest)
+                    .ok_or("no frame")?;
+                Ok(ReferenceModelObservation::new(
+                    result.clone(),
+                    frame.failure_domain.clone(),
+                    frame.capture,
+                )?)
+            })
+            .collect()
+    };
+    let event_id = EventId::parse("event:source-coverage:policy-shape")?;
+
+    // Without a record: every frame analysed with nothing found is indeterminate, never rejected.
+    let plain = crate::evaluate_unknown_presence(event_id.clone(), observations(&quiet.analyses)?)?;
+    assert_eq!(plain.event.state, EventState::Indeterminate);
+    assert!(
+        plain
+            .event
+            .evidence
+            .iter()
+            .all(|edge| edge.relation == EvidenceEdgeRelation::DerivedFrom
+                && edge.capsule_digest.is_some())
+    );
+
+    // A person-like finding on one frame decides as the plain policy decides it.
+    let person = MockModelSpec::new(
+        "mock:model:person:v1",
+        MockModelScript::Fixed {
+            label: crate::MockSemanticLabel::PersonLike,
+            probability: ProbabilityInterval::new(0.9, 1.0)?,
+        },
+    )?;
+    let mut results = quiet.analyses.clone();
+    let first = results.first().ok_or("no analysis")?.clone();
+    let frame = quiet
+        .record
+        .frames
+        .iter()
+        .find(|frame| frame.capsule_digest == first.continuity_digest)
+        .ok_or("no frame")?;
+    let packet = format!(
+        "packet:{}:{}",
+        frame.sensor_id.trim_start_matches("sensor:"),
+        frame.sequence
+    );
+    let capsule = SensorCapsule::from_source_bytes(SensorSourceBytesSpec {
+        capsule_id: CapsuleId::parse(format!(
+            "capsule:{}:{}",
+            frame.sensor_id.trim_start_matches("sensor:"),
+            frame.sequence
+        ))?,
+        sensor_id: SensorId::parse(frame.sensor_id.clone())?,
+        stream_id: StreamId::parse(frame.stream_id.clone())?,
+        sequence: frame.sequence,
+        capture: frame.capture,
+        receive_time: frame.capture.latest,
+        clock_basis: frame.clock_basis,
+        source: packet.as_bytes(),
+        frame_count: 1,
+        gap_before: false,
+    })?;
+    assert!(frame_matches(frame, &capsule));
+    results[0] = analyse_mock_capsule(&person, &capsule);
+    let observed = observations(&results)?;
+    let over =
+        evaluate_unknown_presence_over_coverage(event_id.clone(), observed.clone(), &quiet.record)?;
+    let plain = crate::evaluate_unknown_presence(event_id, observed)?;
+    assert_eq!(over, plain);
+    assert_ne!(over.event.state, EventState::Rejected);
+    quiet.cleanup();
+    Ok(())
+}
+
+fn frame_matches(frame: &super::SourceFrame, capsule: &SensorCapsule) -> bool {
+    frame.matches(capsule)
+}
+
+/// The situation's verdict where the event may not be rejected: a missing absence cell is
+/// uncertified.
+fn situation_certified_or_absent(situation: &ReferenceSituation, event_id: &EventId) -> bool {
+    let (cell, _, _) = situation_absence(situation, event_id);
+    cell == Some(KnowledgeState::Known)
 }

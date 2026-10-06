@@ -485,10 +485,11 @@ fn test_schema_domain_and_pinned_counts() -> Result<(), Box<dyn Error>> {
     // Count: 209 + SCHEMA-DOMAIN-SOURCE-COVERAGE-{RECORD,APPROVAL}-001 (fss-tch7u)
     // + SCHEMA-DOMAIN-RECORDED-DWELL-{RULE,ANALYSIS,OBSERVATION,CANDIDATE,APPROVAL}-001 (FSS-083)
     // + SCHEMA-DOMAIN-RTPDUMP-IMPORT-{IDENTITY,REPORT}-001 (fss-2h5zq.27)
-    // + SCHEMA-DOMAIN-LONG-DWELL-{ANALYSIS,FRAME,EPISODE,APPROVAL}-001 = 222.
+    // + SCHEMA-DOMAIN-LONG-DWELL-{ANALYSIS,FRAME,EPISODE,APPROVAL}-001 = 222
+    // + SCHEMA-DOMAIN-MOCK-MODEL-RESULT-001 (fss-f8jls) = 223.
     assert_eq!(
-        domain_count, 222,
-        "registries/DIGEST_DOMAINS.md count must remain pinned at 222"
+        domain_count, 223,
+        "registries/DIGEST_DOMAINS.md count must remain pinned at 223"
     );
 
     let schemas_path = Path::new(env!("CARGO_MANIFEST_DIR"))

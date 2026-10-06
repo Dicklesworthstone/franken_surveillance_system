@@ -31,9 +31,10 @@ use crate::adapter_replay::ReplayCx;
 use crate::alert::{ReferenceAlertPlan, ReferenceAlertProvider, ReferenceProviderBehavior};
 use crate::durable_effect::{DurableEffectError, DurableEffectJournal};
 use crate::error::ReferenceError;
+use crate::ingest::source_coverage::SourceCoverageRecord;
 use crate::policy::{
     ReferenceEventReceipt, ReferenceModelObservation, ReferencePolicyDecision,
-    evaluate_unknown_presence,
+    evaluate_unknown_presence, evaluate_unknown_presence_over_coverage,
 };
 use crate::situation_guard::{
     ReferenceSituation, ReferenceSituationRequest,
@@ -1712,6 +1713,24 @@ impl ReferenceDeployment {
             });
         }
         evaluate_unknown_presence(event_id, observations)
+    }
+
+    /// Evaluates unknown presence policy over the model observations of a source coverage
+    /// record's frames ([`evaluate_unknown_presence_over_coverage`], fss-f8jls).
+    pub fn evaluate_policy_over_coverage(
+        &self,
+        event_id: EventId,
+        observations: Vec<ReferenceModelObservation>,
+        record: &SourceCoverageRecord,
+        cx: &ReplayCx,
+    ) -> Result<ReferencePolicyDecision, ReferenceError> {
+        if cx.is_cancelled() {
+            cx.drain_and_finalize();
+            return Err(ReferenceError::CancellationRequested {
+                stage: STAGE_EVALUATE_POLICY,
+            });
+        }
+        evaluate_unknown_presence_over_coverage(event_id, observations, record)
     }
 
     /// Publishes a reference event decision into authority.

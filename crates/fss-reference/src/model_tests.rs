@@ -124,3 +124,119 @@ fn model_generation_identity_changes_result_identity() -> Result<(), Box<dyn Err
     let _ = fs::remove_file(path);
     Ok(())
 }
+
+fn delivered_capsule(gap_before: bool) -> Result<fss_core::SensorCapsule, Box<dyn Error>> {
+    use fss_core::{
+        CaptureInterval, ClockBasis, SensorCapsule, SensorSourceBytesSpec, StreamId, TimestampNs,
+    };
+    Ok(SensorCapsule::from_source_bytes(SensorSourceBytesSpec {
+        capsule_id: CapsuleId::parse("capsule:model-camera:7")?,
+        sensor_id: SensorId::parse("sensor:model-camera")?,
+        stream_id: StreamId::parse("stream:model-camera")?,
+        sequence: 7,
+        capture: CaptureInterval::new(TimestampNs(7_000), TimestampNs(8_000))?,
+        receive_time: TimestampNs(8_000),
+        clock_basis: ClockBasis::DeviceMonotonic,
+        source: b"packet:model-camera:7",
+        frame_count: 1,
+        gap_before,
+    })?)
+}
+
+/// fss-f8jls: the analysed-nothing outcome names the exact capsule the generation analysed, is
+/// retained as bytes that decode back exactly, and is never negative evidence on its own.
+#[test]
+fn analysed_nothing_binds_the_exact_capsule_and_round_trips() -> Result<(), Box<dyn Error>> {
+    use fss_core::{CanonicalEncode as _, ContentDigest, ContractError};
+
+    use crate::{MockModelError, MockModelResult, analyse_mock_capsule};
+
+    let capsule = delivered_capsule(false)?;
+    let capsule_digest = ContentDigest::sha256(&capsule.canonical_bytes());
+    let spec = MockModelSpec::new("mock:model:presence:v1", MockModelScript::NothingFound)?;
+    let result = analyse_mock_capsule(&spec, &capsule);
+    assert_eq!(
+        result.outcome,
+        MockModelOutcome::NothingFound {
+            analysed_capsule: capsule_digest
+        }
+    );
+    assert_eq!(result.continuity_digest, capsule_digest);
+    assert_eq!(result.input_capture_root, capsule.source_digest);
+    assert_eq!(result.sensor_id, capsule.sensor_id);
+    assert_eq!(result.generation_id, "mock:model:presence:v1");
+    assert_eq!(result.model_spec_digest, spec.spec_digest());
+    assert!(matches!(
+        result.outcome.assert_not_negative_evidence(),
+        Err(MockModelError::AnalysedNothingRequiresCoverageWitness { analysed_capsule })
+            if analysed_capsule == capsule_digest
+    ));
+
+    // Retained bytes decode to exactly the result, and only against their own digest.
+    let bytes = result.canonical_bytes();
+    assert_eq!(
+        MockModelResult::from_retained_bytes(&bytes, result.object_digest())?,
+        result
+    );
+    assert_eq!(
+        MockModelResult::from_retained_bytes(&bytes, ContentDigest::sha256(b"other")),
+        Err(ContractError::DigestMismatch)
+    );
+    // Another capsule or another generation is another result.
+    let other = analyse_mock_capsule(&spec, &delivered_capsule(true)?);
+    assert_ne!(other.object_digest(), result.object_digest());
+    let other_generation =
+        MockModelSpec::new("mock:model:presence:v2", MockModelScript::NothingFound)?;
+    let regenerated = analyse_mock_capsule(&other_generation, &capsule);
+    assert_ne!(regenerated.model_spec_digest, result.model_spec_digest);
+    assert_ne!(regenerated.object_digest(), result.object_digest());
+
+    // Findings and abstentions round-trip too.
+    let finding_spec = MockModelSpec::new(
+        "mock:model:person:v1",
+        MockModelScript::RequireExactDelivery {
+            label: MockSemanticLabel::PersonLike,
+            probability: ProbabilityInterval::new(0.8, 0.9)?,
+        },
+    )?;
+    for result in [
+        analyse_mock_capsule(&finding_spec, &capsule),
+        analyse_mock_capsule(&finding_spec, &delivered_capsule(true)?),
+    ] {
+        let bytes = result.canonical_bytes();
+        assert_eq!(
+            MockModelResult::from_retained_bytes(&bytes, result.object_digest())?,
+            result
+        );
+    }
+    assert_eq!(
+        analyse_mock_capsule(&finding_spec, &delivered_capsule(true)?).outcome,
+        MockModelOutcome::Abstained {
+            reason: MockAbstentionReason::DeliveryDegraded
+        }
+    );
+    Ok(())
+}
+
+/// A capture is not one capsule: the capture seam refuses a nothing-found generation rather than
+/// invent which capsule it analysed.
+#[test]
+fn the_capture_seam_refuses_an_analysed_nothing_generation() -> Result<(), Box<dyn Error>> {
+    let path = temp_journal("nothing-found");
+    let _ = fs::remove_file(&path);
+    let spec = spec()?;
+    let plan = DeliveryPlan::identity(spec.packet_count)?;
+    let mut objects = InMemoryObjectStore::new(ObjectLimits::new(128, 1024 * 1024));
+    let mut ledger =
+        DurableReferenceLedger::open(&path, "site:model", IncompleteTailPolicy::Reject)?;
+    let capture = run_reference_capture(&spec, &plan, &mut objects, &mut ledger)?;
+    let model = MockModelSpec::new("mock:model:presence:v1", MockModelScript::NothingFound)?;
+    assert!(matches!(
+        execute_mock_model(&model, &capture, &mut objects),
+        Err(crate::ReferenceError::InvalidSpec(
+            "nothing_found_requires_capsule_analysis"
+        ))
+    ));
+    let _ = fs::remove_file(path);
+    Ok(())
+}

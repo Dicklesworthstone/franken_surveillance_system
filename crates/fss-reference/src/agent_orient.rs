@@ -58,7 +58,6 @@ use fss_core::{
 };
 use fss_object::ObjectManifest;
 
-use crate::ReferenceError;
 use crate::doctor::{DoctorVerdict, inspect_deployment};
 use crate::ingest::recorded_coverage::CoverageRecord;
 use crate::ingest::source_coverage::{
@@ -68,6 +67,7 @@ use crate::reference_deployment::{
     DEPLOYMENT_LAYOUT_FILENAME, DeploymentLayout, FAMILY_COVERAGE_WITNESS, FAMILY_EVENT_REVISION,
     FAMILY_FILE_IMPORT_MANIFEST, FAMILY_SENSOR_CAPSULE,
 };
+use crate::{MockModelResult, ReferenceError};
 
 pub mod coverage;
 use crate::situation::EffectCellKind;
@@ -895,14 +895,48 @@ impl DeploymentHistory {
                 committed_sequence,
             });
         }
+        // The hydrated results of each rejected event's model receipts (fss-f8jls): the shared
+        // rule requires them to analyse every frame of the record. A receipt that is deleted,
+        // unreadable or not a mock model result stays unhydrated, so the rule refuses the
+        // certification; it never fails the read.
+        let mut event_analyses: BTreeMap<String, Vec<MockModelResult>> = BTreeMap::new();
+        if !source_records.is_empty() {
+            for retained in &events {
+                if retained.event.state != EventState::Rejected {
+                    continue;
+                }
+                let mut hydrated = Vec::new();
+                for receipt in &retained.event.model_receipts {
+                    if deletions.object(*receipt).is_some() {
+                        continue;
+                    }
+                    if let Ok(bytes) =
+                        reader.read_object(objects, *receipt, limits.max_object_bytes)
+                        && let Ok(result) = MockModelResult::from_retained_bytes(&bytes, *receipt)
+                    {
+                        hydrated.push(result);
+                    }
+                }
+                event_analyses.insert(retained.event.event_id.as_str().to_owned(), hydrated);
+            }
+        }
+        let analyses_of = |event: &EventHypothesis| -> &[MockModelResult] {
+            event_analyses
+                .get(event.event_id.as_str())
+                .map_or(&[], Vec::as_slice)
+        };
         // A stored witness certifies a rejected event's absence only under the shared rule
         // (fss-tch7u), evaluated against exactly this position's committed history.
         let mut retained_absences = BTreeMap::new();
         for retained in &events {
             for (record, _, _) in &source_records {
-                if let Ok(absence) =
-                    verify_retained_coverage(record, Some(&retained.event), batches, &anchor)
-                {
+                if let Ok(absence) = verify_retained_coverage(
+                    record,
+                    Some(&retained.event),
+                    analyses_of(&retained.event),
+                    batches,
+                    &anchor,
+                ) {
                     retained_absences
                         .entry(retained.event.event_id.as_str().to_owned())
                         .or_insert(absence);
@@ -923,6 +957,7 @@ impl DeploymentHistory {
                 let verdict = verify_retained_coverage(
                     &record,
                     citing.map(|retained| &retained.event),
+                    citing.map_or(&[], |retained| analyses_of(&retained.event)),
                     batches,
                     &anchor,
                 );

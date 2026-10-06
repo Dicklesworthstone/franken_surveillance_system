@@ -221,10 +221,11 @@ pub use meaningful_delta::{
 pub use model::{
     ADR_0004_ID, ADR_0004_TITLE, CorroboratedModelFinding, CorroborationStatus,
     MAX_CORROBORATION_SOURCES, MAX_DETECTIONS_PER_OUTPUT, MAX_EMBEDDING_DIM, MAX_FAULT_REASON_LEN,
-    MAX_INPUT_PAYLOAD_BYTES, MAX_MODEL_GENERATION_BYTES, MockAbstentionReason, MockDetection,
-    MockEmbedding, MockExecutorOutcome, MockModelError, MockModelExecutor, MockModelFaultSchedule,
+    MAX_INPUT_PAYLOAD_BYTES, MAX_MOCK_MODEL_RESULT_BYTES, MAX_MODEL_GENERATION_BYTES,
+    MOCK_MODEL_RESULT_DOMAIN, MockAbstentionReason, MockDetection, MockEmbedding,
+    MockExecutorOutcome, MockModelError, MockModelExecutor, MockModelFaultSchedule,
     MockModelOutcome, MockModelOutput, MockModelResult, MockModelScript, MockModelSpec,
-    MockOutputDigestRequest, MockSemanticLabel, ModelGenerationDescriptor,
+    MockOutputDigestRequest, MockSemanticLabel, ModelGenerationDescriptor, analyse_mock_capsule,
     compare_model_embeddings, compare_model_scores, compute_output_digest,
     encode_coord_to_basis_point, evaluate_corroboration, execute_mock_model, fuse_model_embeddings,
     fuse_model_scores, is_latest_generation,
@@ -252,8 +253,9 @@ pub use packet_fault::{
     inject_stream,
 };
 pub use policy::{
-    ReferenceEventReceipt, ReferenceModelObservation, ReferenceModelResult, ReferencePolicyAction,
-    ReferencePolicyDecision, ZoneEntryCorroboration, ZoneEntryWitness, evaluate_unknown_presence,
+    COVERAGE_ANALYSIS_INCOMPLETE, ReferenceEventReceipt, ReferenceModelObservation,
+    ReferenceModelResult, ReferencePolicyAction, ReferencePolicyDecision, ZoneEntryCorroboration,
+    ZoneEntryWitness, evaluate_unknown_presence, evaluate_unknown_presence_over_coverage,
     evaluate_zone_entry_corroboration, policy_decision_path, publish_reference_event,
 };
 pub use reference_deployment::{
