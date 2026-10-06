@@ -258,21 +258,36 @@ fn clean_mjpeg_capsules_decode_with_golden_lineage_and_ledgered_receipts() -> Te
     Ok(())
 }
 
-/// The truncated last frame is an importer omission, never a decoded or receipted frame; the
-/// two complete frames decode to the same lineage as in the clean fixture.
+/// The truncated last frame never becomes a capsule (the importer drops it and records
+/// `truncated_frame_omitted` in its degradation), so it is never decoded or receipted; its 633
+/// bytes at offset 1849 are covered by no segment. The two complete frames decode to the same
+/// lineage as in the clean fixture.
 #[test]
-fn truncated_last_frame_is_an_omission_and_complete_frames_still_decode() -> TestResult {
+fn truncated_last_frame_is_never_a_capsule_and_complete_frames_still_decode() -> TestResult {
     let root = Root::new("truncated")?;
     let mut imported = import(&root, "mjpeg/mjpeg_truncated_last.mjpeg")?;
     let manifest = imported.receipt.manifest.clone();
-    let pass = manifest.segment_spans.len() == 2 && !manifest.omission_spans.is_empty();
+    let covered_end = manifest
+        .segment_spans
+        .iter()
+        .map(|s| s.offset + s.len)
+        .max()
+        .unwrap_or(0);
+    let pass = manifest.segment_spans.len() == 2
+        && covered_end == 1849
+        && manifest.input_bytes == 2482
+        && manifest
+            .omission_spans
+            .iter()
+            .all(|o| o.offset + o.len <= 1849);
     caplog(
         "truncated_last_shape",
         pass,
-        "2 segments, >=1 omission",
+        "2 segments ending at 1849 of 2482, tail uncovered",
         &format!(
-            "{} segments, {} omissions",
+            "{} segments ending at {covered_end} of {}, {} omissions",
             manifest.segment_spans.len(),
+            manifest.input_bytes,
             manifest.omission_spans.len()
         ),
     );
