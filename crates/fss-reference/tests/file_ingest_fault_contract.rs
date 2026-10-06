@@ -981,11 +981,10 @@ fn m06_foreign_batch_under_a_planned_id_is_an_import_plan_conflict() -> TestResu
     Ok(())
 }
 
-/// m07: an import whose root closure exceeds the manifest child bound is refused typed before
-/// staging (part slots are not implemented; staged objects cannot be discarded), so the spool
-/// and the ledger are untouched.
+/// m07 (fss-lrgio): an import whose root closure exceeds one manifest completes through
+/// independent part slots, without raising the bound. Retained reads and retries resolve it.
 #[test]
-fn m07_oversized_root_closure_is_refused_before_staging() -> TestResult {
+fn m07_oversized_root_closure_completes_through_part_slots() -> TestResult {
     let dir = fresh_dir("m07-closure")?;
     let source = fixture(H264)?;
     let limits = DeploymentLimits {
@@ -994,17 +993,25 @@ fn m07_oversized_root_closure_is_refused_before_staging() -> TestResult {
     };
     let cx1 = cx("m07")?;
     let mut dep = open(&dir, limits)?;
-    let objects = dep.publisher().spool().object_count();
-    match FileIngestAdapter::ingest(request(&source, CHUNK, KNOB)?, &cx1, &mut dep) {
-        Err(FileIngestError::SpoolCapacityExceeded {
-            limit: "import_root_closure",
-            ..
-        }) => {}
-        other => return Err(format!("expected import_root_closure refusal, got {other:?}").into()),
+    let req = request(&source, CHUNK, KNOB)?;
+    let bytes = fs::read(&source)?;
+    let receipt = FileIngestAdapter::ingest(req.clone(), &cx1, &mut dep)?;
+    assert_eq!(receipt.outcome, FileIngestOutcome::New);
+    assert!(receipt.manifest.part_roots.len() > 1);
+    assert_complete_once(&dep, &receipt, &bytes, &cx1)?;
+    for root in &receipt.manifest.part_roots {
+        assert!(dep.publisher().visible_roots().any(|visible| visible.root == *root));
     }
-    assert_eq!(dep.publisher().spool().object_count(), objects);
-    assert!(dep.ledger().batches().is_empty());
-    Ok(())
+    let batches = dep.ledger().batches().len();
+    let again = FileIngestAdapter::ingest(req, &cx1, &mut dep)?;
+    assert_eq!(again.outcome, FileIngestOutcome::IdempotentExisting);
+    assert_eq!(dep.ledger().batches().len(), batches);
+    drop(dep);
+    assert_clean_after_reopen(&dir, limits)?;
+    let dep = open(&dir, limits)?;
+    let retained = RetainedFileImport::open(&dep, receipt.import_identity, RetainedReadLimits::default(), &cx1)?;
+    assert_eq!(retained.verify_source(&dep, RetainedReadLimits::default(), &cx1)?, ContentDigest::sha256(&bytes));
+    assert_spans_match(&receipt.manifest, &dep, &bytes)
 }
 
 /// m08: a zero batch knob is refused as invalid limits before anything is read.
@@ -1165,8 +1172,8 @@ fn c03_object_count_capacity_is_checked_before_staging() -> TestResult {
                 );
             }
         }
-        assert_eq!(dep.publisher().spool().object_count(), base);
         assert_eq!(dep.publisher().spool().occupied_bytes()?, bytes_before);
+        assert_eq!(dep.publisher().spool().object_count(), base);
         assert!(dep.ledger().batches().is_empty());
     }
 

@@ -24,6 +24,18 @@ use support::{TestResult, cx, directory, object_file, snapshot};
 const SITE: &str = "site:retained-parts";
 const SOURCE: &[u8] = b"abcdefghijklmnop";
 
+
+// Spool objects may be read-only. Tamper only a test-owned file, before taking the
+// no-mutation snapshot; the reader must still refuse the damaged content.
+fn overwrite_fixture(path: &std::path::Path, bytes: &[u8]) -> TestResult {
+    let mut permissions = fs::metadata(path)?.permissions();
+    #[allow(clippy::permissions_set_readonly_false)]
+    permissions.set_readonly(false);
+    fs::set_permissions(path, permissions)?;
+    fs::write(path, bytes)?;
+    Ok(())
+}
+
 struct Fixture {
     identity: ContentDigest,
     metadata: FileImportManifest,
@@ -198,7 +210,7 @@ fn every_corrupted_part_manifest_is_refused_without_mutation() -> TestResult {
         let path = object_file(&dir, &body)?;
         let mut bytes = fs::read(&path)?;
         *bytes.last_mut().ok_or("empty object")? ^= 1;
-        fs::write(path, bytes)?;
+        overwrite_fixture(&path, &bytes)?;
         let before = snapshot(&dir)?;
         assert!(RetainedFileImport::open(&deployment, fixture.identity, RetainedReadLimits::default(), &context).is_err());
         assert_eq!(snapshot(&dir)?, before);
@@ -233,7 +245,7 @@ fn metadata_resolution_does_not_read_unrequested_media_but_source_reads_verify_i
     let path = object_file(&dir, &SOURCE[8..])?;
     let mut bytes = fs::read(&path)?;
     *bytes.last_mut().ok_or("empty source object")? ^= 1;
-    fs::write(path, bytes)?;
+    overwrite_fixture(&path, &bytes)?;
     let before = snapshot(&dir)?;
     let retained = RetainedFileImport::open(&deployment, fixture.identity, RetainedReadLimits::default(), &context)?;
     assert_eq!(retained.read_segment(&deployment, 0, RetainedReadLimits::default(), &context)?, SOURCE[..8]);

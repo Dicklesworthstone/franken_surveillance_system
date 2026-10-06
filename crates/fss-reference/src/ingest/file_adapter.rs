@@ -56,6 +56,11 @@
 //! batch further when its journal record would exceed `journal_record_max_bytes`. Then slot
 //! `fi-<id>` is published root-last and ledgered, and finally `batch:file-import:<id>:manifest`
 //! moves the import object to generation 2. Only that last batch makes an import complete.
+//! When the payload closure exceeds one root, independently ledgered `fi-<id>-p<ordinal>`
+//! parts are published between the capsule batches and the metadata-only aggregate. Their
+//! exact roots are typed references in `FileImportManifest::part_roots`, not native children
+//! whose recursive expansion would recreate the oversized batch. Admission includes every
+//! part and the completion batch before staging; unchanged flat imports keep their bytes.
 //!
 //! A fault before `c0` leaves no committed batch. A fault after `c<j>` leaves an incomplete
 //! import (generation 1, no manifest batch) that doctor lists and that re-running the same
@@ -101,6 +106,7 @@ use fss_publication::{LocalPublicationError, LocalPublicationState, SlotName};
 use crate::adapter_replay::ReplayCx;
 use crate::error::ReferenceError;
 use crate::ingest::annexb::{AnnexBError, AnnexBLimits, SourceSpan, split_annexb};
+use crate::ingest::file_publication::FilePublicationPlan;
 use crate::ingest::file_session::{
     AcquisitionRetention, FileAcquisitionHistory, FileSessionDriver, FileSourceFacts,
 };
@@ -1400,6 +1406,93 @@ fn plan_capsule_batches(
         .collect()
 }
 
+/// Check the completing batch before staging any byte. Its acquisition records and witnesses
+/// are not capsule entries and cannot be split without inventing an intermediate completion.
+fn check_commit_admission(
+    deployment: &ReferenceDeployment,
+    batch_id: &BatchId,
+    deltas: &[EvidenceDelta],
+    children: &[ContentDigest],
+    publication: &FilePublicationPlan,
+    capsules: &[PlannedBatch],
+    cx: &ReplayCx,
+) -> Result<(), FileIngestError> {
+    let history: std::collections::BTreeMap<_, _> = deployment.ledger().batches().iter()
+        .map(|batch| (batch.batch_id.as_str(), batch)).collect();
+    let all_capsules_committed = capsules.iter()
+        .all(|batch| history.contains_key(batch.batch_id.as_str()));
+    let last_capsule_sequence = capsules.iter()
+        .filter_map(|batch| history.get(batch.batch_id.as_str()))
+        .map(|batch| batch.new_anchor.commit_sequence).max();
+    let mut gap = false;
+    let mut previous = last_capsule_sequence;
+    // The aggregate identity is the completion witness. Every ledgered publication must be a
+    // prefix following all capsule authority, never an out-of-order root borrowed from elsewhere.
+    let aggregate_root = deltas.iter().find(|delta| delta.family == "file_import")
+        .and_then(|delta| delta.witness_digest)
+        .ok_or_else(|| FileIngestError::CorruptSegment {
+            detail: "completing import has no root witness".to_owned(),
+        })?;
+    for (slot, root) in publication.parts().iter()
+        .map(|part| (part.slot(), part.manifest().root()))
+        .chain(std::iter::once((publication.slot(), aggregate_root)))
+    {
+        cx.checkpoint("file_adapter:publication_admission")
+            .map_err(|_| FileIngestError::CancellationRequested {
+                stage: "file_adapter:publication_admission",
+            })?;
+        let id = format!("batch:local-root:{slot}");
+        let Some(stored) = history.get(id.as_str()) else {
+            gap = true;
+            continue;
+        };
+        if gap || !all_capsules_committed
+            || previous.is_none_or(|sequence| stored.new_anchor.commit_sequence <= sequence)
+            || !deployment.publisher().root(slot).is_some_and(|visible| {
+                visible.state == LocalPublicationState::Durable && visible.root == root
+            })
+        {
+            return Err(FileIngestError::ImportPlanConflict {
+                batch_id: stored.batch_id.clone(),
+                detail: "published roots are damaged or not an ordered prefix after capsule authority".to_owned(),
+            });
+        }
+        // A retry must not silently repair a lost body behind already-committed custody.
+        let _retained_body = deployment.publisher().spool().read(root)?;
+        previous = Some(stored.new_anchor.commit_sequence);
+    }
+    let maximum = deployment.limits().batch_entries_max;
+    let required = deltas.len().max(children.len());
+    if required > maximum {
+        return Err(FileIngestError::SpoolCapacityExceeded {
+            limit: "batch_entries_max", required: required as u64, available: maximum as u64,
+        });
+    }
+    let mut children = children.to_vec();
+    children.sort_unstable();
+    children.dedup();
+    let mut deltas = deltas.to_vec();
+    deltas.sort_by(|left, right| {
+        (left.family.as_str(), left.object_id.as_str(), left.new_generation, left.delta_id.as_str())
+            .cmp(&(right.family.as_str(), right.object_id.as_str(), right.new_generation, right.delta_id.as_str()))
+    });
+    let anchor = deployment.current_anchor().clone();
+    let mut batch = EvidenceDeltaBatch {
+        batch_id: batch_id.clone(), basis_anchor: anchor.clone(), new_anchor: anchor,
+        deltas, children, batch_digest: ContentDigest::sha256(b""),
+    };
+    batch.batch_digest = batch.computed_digest();
+    let encoded = fss_ledger::encode_batch(&batch)
+        .map_err(|error| ReferenceError::DurableLedger(Box::new(DurableLedgerError::Codec(error))))?;
+    let maximum = u64::from(deployment.limits().journal_record_max_bytes);
+    if encoded.len() as u64 > maximum {
+        return Err(FileIngestError::SpoolCapacityExceeded {
+            limit: "journal_record_max_bytes", required: encoded.len() as u64, available: maximum,
+        });
+    }
+    Ok(())
+}
+
 /// Appends one planned import batch. The deployment skips a batch already committed with
 /// identical content; a committed batch with different content under the same planned identity
 /// is reported as [`FileIngestError::ImportPlanConflict`], never overwritten.
@@ -1795,7 +1888,7 @@ impl FileIngestAdapter {
             .iter()
             .map(|c| c.capsule_id.clone())
             .collect();
-        let import_manifest = FileImportManifest {
+        let mut import_manifest = FileImportManifest {
             input_sha256,
             input_bytes: file_len,
             format: detected_format.as_str().to_string(),
@@ -1811,8 +1904,6 @@ impl FileIngestAdapter {
             part_roots: Vec::new(),
             capture_time_label: capture_time_label.to_string(),
         };
-        let manifest_bytes = import_manifest.canonical_bytes();
-        let manifest_digest = import_manifest.canonical_digest();
 
         // Step 9: Deterministic batch plan (fss-2h5zq.23 round 3). Pure: nothing is staged or
         // appended here, so every refusal below leaves the deployment untouched.
@@ -1833,6 +1924,30 @@ impl FileIngestAdapter {
         };
         let import_object_id =
             ObjectId::parse(format!("object:file-import:{import_identity_hex}"))?;
+
+        // Plan the complete custody closure, including end-of-source records, before the
+        // metadata digest or a retry receipt is constructed. Proposing a closing is pure and
+        // does not change the session; its transition is adopted only after final commit.
+        let closing = driver
+            .as_ref()
+            .ok_or_else(|| FileIngestError::CorruptSegment {
+                detail: "acquisition session missing".to_string(),
+            })?
+            .propose_end_of_file()?;
+        let closure_bound = deployment.limits().manifest_children_max
+            .min(deployment.limits().batch_entries_max);
+        let publication = FilePublicationPlan::new(
+            import_identity,
+            ordered_chunks.iter().copied()
+                .chain(std::iter::once(custody_manifest_digest))
+                .chain(capsule_encodings.iter().map(|(digest, _)| *digest))
+                .chain(closing.object_bytes().map(|(digest, _)| digest)),
+            closure_bound,
+        )?;
+        import_manifest.part_roots = publication.part_roots();
+        let import_slot_manifest = publication.root_manifest(&import_manifest)?;
+        let manifest_bytes = import_manifest.canonical_bytes();
+        let manifest_digest = import_manifest.canonical_digest();
 
         // Entry 0: file_import gen 1 (in_progress); then one sensor_capsule delta per capsule.
         // Each entry carries the one batch child that holds its payload.
@@ -1941,6 +2056,41 @@ impl FileIngestAdapter {
             session.mark_capsules_committed();
         }
 
+        let final_manifest_object_id =
+            ObjectId::parse(format!("object:file-import-manifest:{import_identity_hex}"))?;
+        let mut final_deltas = vec![
+            EvidenceDelta {
+                delta_id: format!("delta:file-import:{import_identity_hex}:complete"),
+                family: "file_import".to_string(),
+                object_id: import_object_id,
+                prior_generation: Some(1),
+                new_generation: 2,
+                validity: overall_validity,
+                plane: Plane::Authority,
+                payload_digest: manifest_digest,
+                witness_digest: Some(import_slot_manifest.root()),
+                operation_id: None,
+            },
+            EvidenceDelta {
+                delta_id: format!("delta:manifest:{import_identity_hex}"),
+                family: "file_import_manifest".to_string(),
+                object_id: final_manifest_object_id,
+                prior_generation: None,
+                new_generation: 1,
+                validity: overall_validity,
+                plane: Plane::Authority,
+                payload_digest: manifest_digest,
+                witness_digest: Some(import_slot_manifest.root()),
+                operation_id: None,
+            },
+        ];
+        let mut final_children = vec![manifest_digest, import_slot_manifest.root()];
+        // The acquisition history (ending end_of_file_source) completes with the import.
+        let (acquisition_deltas, acquisition_children) =
+            closing.deltas(&import_identity_hex, overall_validity)?;
+        final_deltas.extend(acquisition_deltas);
+        final_children.extend(acquisition_children);
+
         // Step 11: Exact capacity check after hashing and BEFORE the first stage
         cx.reach_stage(STAGE_CAPACITY);
         if cx.is_cancelled() {
@@ -1961,117 +2111,20 @@ impl FileIngestAdapter {
         }
         candidate_objects.push((manifest_digest, &manifest_bytes));
 
-        // The end-of-file closing is proposed now so its retained records count against capacity.
-        // Its records and witnesses are also children of the import slot root: every object an
-        // import stages must be reachable from a durable ledgered root, or reopen reports it
-        // unreferenced and doctor is never clean (fss-2h5zq.23 round 3 "Reachability").
-        let closing = driver
-            .as_ref()
-            .ok_or_else(|| FileIngestError::CorruptSegment {
-                detail: "acquisition session missing".to_string(),
-            })?
-            .propose_end_of_file()?;
-
-        // The import root holds every object for reachability. Its closure (children plus the
-        // manifest body) is bounded by the manifest child limit and, through the reachability
-        // batch, by the batch entry limit. It is refused here, before staging, because staged
-        // objects cannot be discarded. Part slots for larger closures (fss-2h5zq.23 round 3) are
-        // not implemented: such an import is refused, never half-published.
-        let mut all_slot_children = Vec::new();
-        for (d, _) in candidate_objects
-            .iter()
-            .copied()
-            .chain(closing.object_bytes())
-        {
-            if d != manifest_digest {
-                all_slot_children.push(d);
-            }
-        }
-        all_slot_children.sort();
-        all_slot_children.dedup();
-        let closure_bound = deployment
-            .limits()
-            .manifest_children_max
-            .min(deployment.limits().batch_entries_max);
-        let closure_required = all_slot_children.len() as u64 + 1;
-        if closure_required > closure_bound as u64 {
-            return Err(FileIngestError::SpoolCapacityExceeded {
-                limit: "import_root_closure",
-                required: closure_required,
-                available: closure_bound as u64,
-            });
-        }
-        let import_slot_manifest = ObjectManifest::new(
-            import_slot.as_str(),
-            all_slot_children,
-            Some(manifest_digest),
+        publication.preflight_unstaged(
+            deployment,
+            &import_manifest,
+            overall_validity,
+            candidate_objects.iter().copied()
+                .filter(|(digest, _)| *digest != manifest_digest)
+                .chain(closing.object_bytes())
+                .map(|(digest, bytes)| (digest, bytes.len())),
+            cx,
         )?;
-        let import_slot_manifest_bytes = import_slot_manifest.canonical_bytes();
-        // An interrupted attempt may already have made the slot root visible (a crash after the
-        // root rename leaves it durable and pending the ledger). It must be exactly this plan's
-        // root; anything else is refused before any stage or append.
-        if let Some(visible) = visible_slot_root(deployment, &import_slot)
-            && visible != import_slot_manifest.root()
-        {
-            return Err(FileIngestError::LocalPublication(
-                LocalPublicationError::SlotConflict {
-                    slot: import_slot.clone(),
-                    existing: visible,
-                    requested: import_slot_manifest.root(),
-                },
-            ));
-        }
-
-        // Deduplicate candidate objects by digest. The slot manifest body is staged too (by
-        // `stage_manifest`), so it is charged here: no spool refusal may surface after staging
-        // begins (fss-2h5zq.31 round 3).
-        let mut seen_digests = std::collections::BTreeSet::new();
-        let mut new_bytes: u64 = 0;
-        let mut new_objects: usize = 0;
-
-        let slot_manifest_object: (ContentDigest, &[u8]) =
-            (import_slot_manifest.root(), &import_slot_manifest_bytes);
-        for (digest, slice) in candidate_objects
-            .iter()
-            .copied()
-            .chain(closing.object_bytes())
-            .chain(std::iter::once(slot_manifest_object))
-        {
-            // No object may exceed the spool's object bound (fss-n62w2): an oversized import
-            // manifest, capsule, custody manifest, acquisition record or slot manifest is refused
-            // here, before the first chunk is staged, never by a stage call part way through.
-            if slice.len() as u64 > object_bound {
-                return Err(FileIngestError::SpoolCapacityExceeded {
-                    limit: "spool_object_max_bytes",
-                    required: slice.len() as u64,
-                    available: object_bound,
-                });
-            }
-            if seen_digests.insert(digest) && deployment.publisher().spool().state(digest).is_none()
-            {
-                new_bytes = new_bytes.saturating_add(slice.len() as u64);
-                new_objects = new_objects.saturating_add(1);
-            }
-        }
-
-        let occupied_bytes = deployment.publisher().spool().occupied_bytes()?;
-        let current_obj_count = deployment.publisher().spool().object_count();
-        let spool_limits = deployment.publisher().spool().limits();
-
-        if new_bytes > spool_limits.max_total_bytes.saturating_sub(occupied_bytes) {
-            return Err(FileIngestError::SpoolCapacityExceeded {
-                limit: "max_total_bytes",
-                required: new_bytes,
-                available: spool_limits.max_total_bytes.saturating_sub(occupied_bytes),
-            });
-        }
-        if (current_obj_count + new_objects) > spool_limits.max_objects {
-            return Err(FileIngestError::SpoolCapacityExceeded {
-                limit: "max_objects",
-                required: (current_obj_count + new_objects) as u64,
-                available: spool_limits.max_objects as u64,
-            });
-        }
+        check_commit_admission(
+            deployment, &manifest_batch_id, &final_deltas, &final_children,
+            &publication, &capsule_batches, cx,
+        )?;
 
         // Step 12: Staging objects
         cx.reach_stage(STAGE_STAGE);
@@ -2166,21 +2219,27 @@ impl FileIngestAdapter {
             });
         }
 
-        // A crash after the temporary root record was written leaves it orphaned, and the
-        // publisher refuses to publish over it. It is discarded only when it is byte-identical
-        // to the record this publication writes (the crashed attempt of exactly this plan), as
-        // `discard_orphaned_root_temp_for` documents; any other temp is kept and refused.
-        if visible_slot_root(deployment, &import_slot).is_none() {
-            deployment
-                .publisher_mut()
-                .discard_orphaned_root_temp_for(&import_slot, &import_slot_manifest)?;
+        if publication.parts().is_empty() {
+            // A crash after the temporary root record was written leaves it orphaned, and the
+            // publisher refuses to publish over it. It is discarded only when it is byte-identical
+            // to the record this publication writes (the crashed attempt of exactly this plan), as
+            // `discard_orphaned_root_temp_for` documents; any other temp is kept and refused.
+            if visible_slot_root(deployment, &import_slot).is_none() {
+                deployment
+                    .publisher_mut()
+                    .discard_orphaned_root_temp_for(&import_slot, &import_slot_manifest)?;
+            }
+            let _publish_receipt = deployment.publish_and_commit(
+                &import_slot,
+                &import_slot_manifest,
+                overall_validity,
+                cx,
+            )?;
+        } else {
+            // Each durable part is independently ledgered. The aggregate is published last;
+            // an interruption leaves generation 1 and an exact retry reuses the part prefix.
+            publication.publish(deployment, &import_manifest, overall_validity, cx)?;
         }
-        let _publish_receipt = deployment.publish_and_commit(
-            &import_slot,
-            &import_slot_manifest,
-            overall_validity,
-            cx,
-        )?;
 
         // Step 16: Commit final manifest batch (moves import to gen 2 = complete)
         cx.reach_stage(STAGE_COMMIT_MANIFEST);
@@ -2190,41 +2249,6 @@ impl FileIngestAdapter {
                 stage: STAGE_COMMIT_MANIFEST,
             });
         }
-
-        let final_manifest_object_id =
-            ObjectId::parse(format!("object:file-import-manifest:{import_identity_hex}"))?;
-        let mut final_deltas = vec![
-            EvidenceDelta {
-                delta_id: format!("delta:file-import:{import_identity_hex}:complete"),
-                family: "file_import".to_string(),
-                object_id: import_object_id,
-                prior_generation: Some(1),
-                new_generation: 2,
-                validity: overall_validity,
-                plane: Plane::Authority,
-                payload_digest: manifest_digest,
-                witness_digest: Some(import_root),
-                operation_id: None,
-            },
-            EvidenceDelta {
-                delta_id: format!("delta:manifest:{import_identity_hex}"),
-                family: "file_import_manifest".to_string(),
-                object_id: final_manifest_object_id,
-                prior_generation: None,
-                new_generation: 1,
-                validity: overall_validity,
-                plane: Plane::Authority,
-                payload_digest: manifest_digest,
-                witness_digest: Some(import_root),
-                operation_id: None,
-            },
-        ];
-        let mut final_children = vec![manifest_digest, import_root];
-        // The acquisition history (ending end_of_file_source) completes with the import.
-        let (acquisition_deltas, acquisition_children) =
-            closing.deltas(&import_identity_hex, overall_validity)?;
-        final_deltas.extend(acquisition_deltas);
-        final_children.extend(acquisition_children);
 
         let final_anchor = append_planned_batch(
             deployment,

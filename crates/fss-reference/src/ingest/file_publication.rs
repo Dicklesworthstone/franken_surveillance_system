@@ -10,10 +10,11 @@
 //! This publishes custody, not import completion: the owning adapter must still commit its
 //! capsule batches and final generation-2 import batch. It grants no effect capability and
 //! certifies neither capture time nor coverage. Payloads must already be staged by the caller.
-//! Existing flat manifests keep their canonical bytes. The legacy ingest entrypoint is not
-//! changed by this module; its large-import refusal remains until it adopts this protocol.
+//! Existing flat manifests keep their canonical bytes. The file adapter admits the complete
+//! payload/publication quota before staging, commits capsule authority, publishes parts and
+//! aggregate through this protocol, and only then commits import completion.
 
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet};
 
 use fss_core::{
     BatchId, CanonicalEncode, CaptureInterval, ContentDigest, ContractError, DigestAlgorithm,
@@ -272,7 +273,7 @@ impl FilePublicationPlan {
         checkpoint(cx, STAGE_FILE_PART_PREFLIGHT)?;
         super::retained::refuse_deleted(deployment, self.import_identity)?;
         let root = self.root_manifest(metadata)?;
-        self.preflight(deployment, metadata, &root, validity, cx)?;
+        self.preflight(deployment, metadata, &root, validity, None, cx)?;
         // Re-read and hash every payload before staging any publication metadata. The publisher
         // repeats custody verification at each root's commit boundary.
         for payload in &self.payloads {
@@ -324,12 +325,47 @@ impl FilePublicationPlan {
         verify_one(deployment, &self.slot, &root, cx)
     }
 
+    /// Admit all payload and publication storage before the owning file adapter stages anything.
+    /// Sizes come from its immutable, already-hashed byte slices. This read-only check grants no
+    /// custody: `publish` still requires staged payloads and rehashes them before publication.
+    pub(crate) fn preflight_unstaged(
+        &self,
+        deployment: &ReferenceDeployment,
+        metadata: &FileImportManifest,
+        validity: CaptureInterval,
+        payload_sizes: impl IntoIterator<Item = (ContentDigest, usize)>,
+        cx: &ReplayCx,
+    ) -> Result<(), FileIngestError> {
+        checkpoint(cx, STAGE_FILE_PART_PREFLIGHT)?;
+        super::retained::refuse_deleted(deployment, self.import_identity)?;
+        let mut proposed = BTreeMap::new();
+        for (index, (digest, bytes)) in payload_sizes.into_iter().enumerate() {
+            checkpoint(cx, STAGE_FILE_PART_PREFLIGHT)?;
+            if index == MAX_FILE_PUBLICATION_PAYLOADS {
+                return Err(capacity(
+                    "file_publication_payloads", index + 1, MAX_FILE_PUBLICATION_PAYLOADS,
+                ));
+            }
+            if proposed.insert(digest, bytes).is_some_and(|previous| previous != bytes) {
+                return Err(invalid("one payload identity has conflicting byte lengths"));
+            }
+        }
+        if proposed.len() != self.payloads.len()
+            || self.payloads.iter().any(|digest| !proposed.contains_key(digest))
+        {
+            return Err(invalid("proposed payload inventory differs from the publication plan"));
+        }
+        let root = self.root_manifest(metadata)?;
+        self.preflight(deployment, metadata, &root, validity, Some(&proposed), cx)
+    }
+
     fn preflight(
         &self,
         deployment: &ReferenceDeployment,
         metadata: &FileImportManifest,
         root: &ObjectManifest,
         validity: CaptureInterval,
+        proposed: Option<&BTreeMap<ContentDigest, usize>>,
         cx: &ReplayCx,
     ) -> Result<(), FileIngestError> {
         let publisher = deployment.publisher();
@@ -351,13 +387,16 @@ impl FilePublicationPlan {
                     "payload is a visible root, not an opaque custody leaf",
                 ));
             }
-            if publisher.spool().state(*payload).is_none() {
+            if proposed.is_none() && publisher.spool().state(*payload).is_none() {
                 return Err(invalid("planned payload has not been staged"));
             }
         }
-        let mut records = Vec::new();
+        let mut records: Vec<(ContentDigest, usize)> = proposed
+            .into_iter()
+            .flat_map(|sizes| sizes.iter().map(|(digest, bytes)| (*digest, *bytes)))
+            .collect();
         let metadata_bytes = metadata.canonical_bytes();
-        records.push((metadata.canonical_digest(), metadata_bytes));
+        records.push((metadata.canonical_digest(), metadata_bytes.len()));
         let mut new_roots = 0_usize;
         for (slot, manifest) in self
             .parts
@@ -383,7 +422,7 @@ impl FilePublicationPlan {
             }
             check_ledger_claim(deployment, slot, manifest, false, Some(validity))?;
             check_record_size(deployment, slot, manifest, validity)?;
-            records.push((manifest.root(), manifest.canonical_bytes()));
+            records.push((manifest.root(), manifest.canonical_bytes().len()));
         }
         let required_roots = publisher.visible_roots().count() + new_roots;
         if required_roots > limits.max_roots {
@@ -397,17 +436,20 @@ impl FilePublicationPlan {
         let mut seen = BTreeSet::new();
         let mut bytes = 0_u64;
         let mut objects = 0_usize;
-        for (digest, body) in records {
-            if body.len() > limits.spool.max_object_bytes {
-                return Err(capacity(
-                    "file_publication_object_bytes",
-                    body.len(),
-                    limits.spool.max_object_bytes,
-                ));
+        let object_bound = deployment.limits().spool_object_max_bytes
+            .min(limits.spool.max_object_bytes as u64);
+        for (digest, length) in records {
+            if length as u64 > object_bound {
+                return Err(FileIngestError::SpoolCapacityExceeded {
+                    limit: if proposed.is_some() { "spool_object_max_bytes" }
+                        else { "file_publication_object_bytes" },
+                    required: length as u64,
+                    available: object_bound,
+                });
             }
             if seen.insert(digest) && spool.state(digest).is_none() {
                 bytes = bytes
-                    .checked_add(body.len() as u64)
+                    .checked_add(length as u64)
                     .ok_or_else(|| invalid("size overflow"))?;
                 objects += 1;
             }
@@ -418,7 +460,8 @@ impl FilePublicationPlan {
             .saturating_sub(spool.occupied_bytes()?);
         if bytes > available {
             return Err(FileIngestError::SpoolCapacityExceeded {
-                limit: "file_publication_total_bytes",
+                limit: if proposed.is_some() { "max_total_bytes" }
+                    else { "file_publication_total_bytes" },
                 required: bytes,
                 available,
             });
@@ -426,7 +469,7 @@ impl FilePublicationPlan {
         let required_objects = spool.object_count() + objects;
         if required_objects > limits.spool.max_objects {
             return Err(capacity(
-                "file_publication_objects",
+                if proposed.is_some() { "max_objects" } else { "file_publication_objects" },
                 required_objects,
                 limits.spool.max_objects,
             ));
