@@ -481,6 +481,21 @@ mod tests {
             r#""handoff_digest":"sha256:6e08c20007535ebea386e58e928e430ec54a0f8e9e2f8a0ece8640e557ec202b""#,
         ),
     ];
+    /// What citing the analyses in the absence cell changes on top of that (fss-f8jls review D4).
+    /// The event, the ledger and the publication are unchanged (the rule's re-run of the policy
+    /// and the gapped-record guard change no byte of a certifying run); the situation's absence
+    /// cell now also cites the ten analysis results, so the situation digest changes, and the
+    /// handoff that seals the situation changes with it.
+    const QUIET_CELL_ANALYSIS_REPLACEMENTS: [(&str, &str); 2] = [
+        (
+            r#""situation_digest":"sha256:8e4ffd749497d893b1c9ce539a89878bcd111c1fc01c3cc77b6a36676230e66c""#,
+            r#""situation_digest":"sha256:f4c90798da794e96a4abc2c7e34feaaa60bca89b775dcd9949f6b1952a6d60b6""#,
+        ),
+        (
+            r#""handoff_digest":"sha256:6e08c20007535ebea386e58e928e430ec54a0f8e9e2f8a0ece8640e557ec202b""#,
+            r#""handoff_digest":"sha256:dc35e8ab5caa58c80b3b191b0c4349e933c70fc5ef933c313598ae54c505d63d""#,
+        ),
+    ];
 
     #[test]
     fn four_mock_scenarios_are_byte_identical_to_main_and_only_quiet_and_sneaky_change() {
@@ -514,6 +529,7 @@ mod tests {
         for (main, now) in QUIET_LABEL_REPLACEMENTS
             .into_iter()
             .chain(QUIET_ANALYSIS_REPLACEMENTS)
+            .chain(QUIET_CELL_ANALYSIS_REPLACEMENTS)
         {
             assert_eq!(expected.matches(main).count(), 1, "{main}");
             expected = expected.replace(main, now);
