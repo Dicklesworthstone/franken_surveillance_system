@@ -13,6 +13,11 @@
 //! consumed budget); set `FSS_REHEARSAL_TRANSCRIPT=<path>` to keep a copy. The assertions pin
 //! the semantic transitions: the case, claim, plan, obligation, and episode states a cold driver
 //! sees at each step, and the mission state a handoff carries.
+//!
+//! A second rehearsal plays scenario NS-9: the alert's acknowledgement is lost, the driver hands
+//! off, and a cold driver resumes; the indeterminate effect, its open obligation, and the
+//! owner-only reconcile move travel through the handoff and the resumed situation, a retried
+//! commit never resends, and only the owner's attestation discharges the obligation.
 
 use std::error::Error;
 use std::ffi::OsString;
@@ -886,5 +891,214 @@ fn orient_investigate_plan_commit_verify_learn_handoff_rehearsal() -> TestResult
     assert_eq!(lines.lines().count(), driver.transcript.len());
     assert!(driver.transcript.len() >= 20);
     assert_eq!(relay.requests()?, 1);
+    Ok(())
+}
+
+fn as_str(argv: &[String]) -> Vec<&str> {
+    argv.iter().map(String::as_str).collect()
+}
+
+/// The affordance identities an answer lists as next moves.
+fn next_moves(envelope: &Value) -> TestResult<Vec<String>> {
+    Ok(field(envelope, &["affordances"])?
+        .array()
+        .ok_or("affordances")?
+        .iter()
+        .filter_map(|item| {
+            item.object()
+                .and_then(|fields| fields.get("affordanceId"))
+                .and_then(Value::text)
+                .map(ToOwned::to_owned)
+        })
+        .collect())
+}
+
+/// Scenario NS-9: an alert may have crossed the relay but its acknowledgement was lost; the
+/// driver hands off and a cold driver resumes. The indeterminate effect, its open obligation,
+/// and the reconcile affordance travel through the handoff and the resumed situation; a retried
+/// commit never resends; only the owner's attestation discharges the obligation; the closed
+/// episode keeps the failure and its residual uncertainty.
+#[test]
+#[allow(clippy::too_many_lines)] // one rehearsal is one ordered transcript
+fn a_lost_acknowledgement_survives_handoff_and_resume_and_is_reconciled_never_resent() -> TestResult
+{
+    let (directory, event_id) = corroborated_event("lost-ack")?;
+    let relay = Relay::spawn(None)?;
+    let scratch = directory.0.join("scratch");
+    fs::create_dir_all(&scratch)?;
+    let mut driver = Driver {
+        root: directory.root(),
+        scratch: scratch.clone(),
+        transcript: Vec::new(),
+    };
+    let opened = driver.ok(
+        "session-open",
+        &[
+            "session",
+            "open",
+            "--mission",
+            "Protect the door.",
+            "--objective",
+            "Alert the owner on a corroborated entry.",
+        ],
+    )?;
+    let session = text(&opened, &["sessionId"])?.to_owned();
+    let relay_address = relay.address.to_string();
+    let approval = plaintext_approval();
+    let plan_argv = |extra: &[&str]| -> Vec<String> {
+        let mut argv: Vec<String> = [
+            "plan",
+            "--session",
+            session.as_str(),
+            "--intent",
+            "alert",
+            "--event-id",
+            event_id.as_str(),
+            "--relay",
+            relay_address.as_str(),
+            "--path",
+            "/fss/alert",
+            "--plaintext-approval",
+            approval.as_str(),
+            "--deadline-ms",
+            "5000",
+        ]
+        .iter()
+        .map(|item| (*item).to_owned())
+        .collect();
+        argv.extend(extra.iter().map(|item| (*item).to_owned()));
+        argv
+    };
+    let planned = driver.ok("plan", &as_str(&plan_argv(&[])))?;
+    let plan_id = text(&planned, &["payload", "planId"])?.to_owned();
+    let plan_approval = pointers(&planned)?[2].clone();
+    let prepared = driver.ok(
+        "plan-approve",
+        &as_str(&plan_argv(&["--approve", &plan_approval])),
+    )?;
+    let dispatch = pointers(&prepared)?
+        .last()
+        .cloned()
+        .ok_or("dispatch approval")?;
+    let (code, lost) = driver.run(
+        "commit",
+        &["commit", "--plan", &plan_id, "--approve", &dispatch],
+    )?;
+    assert_eq!(code, Some(1));
+    assert_eq!(text(&lost, &["errorId"])?, "ERR-EFFECT-INDETERMINATE-001");
+    assert_eq!(relay.connections(), 1);
+
+    // The handoff carries the indeterminate effect and its open obligation, read live.
+    let handed = driver.ok("handoff", &["handoff", "--session", &session])?;
+    let effects = texts(&handed, &["payload", "indeterminateEffects"])?;
+    assert_eq!(effects.len(), 1, "{handed:?}");
+    let operation = effects[0].clone();
+    assert_eq!(text(&lost, &["payload", "state"])?, "indeterminate");
+    assert_eq!(texts(&handed, &["payload", "obligations"])?.len(), 1);
+    assert!(texts(&handed, &["payload", "preparedOperations"])?.is_empty());
+    assert_eq!(
+        texts(&handed, &["payload", "activePlans"])?,
+        vec![plan_id.clone()]
+    );
+    let handoff_id = text(&handed, &["payload", "handoffId"])?.to_owned();
+
+    // A cold driver resumes: the situation names the indeterminate effect and offers
+    // reconciliation, never a resend; a retried commit observes the same indeterminate state.
+    let resumed = driver.ok("resume", &["session", "resume", "--handoff", &handoff_id])?;
+    assert_eq!(
+        texts(&resumed, &["payload", "indeterminateEffects"])?,
+        vec![operation.clone()]
+    );
+    // Reconciliation is the owner's move: listed in the situation as blocked, never a next move
+    // the agent could take itself, and never a resend.
+    let listed: Vec<String> = field(&resumed, &["payload", "affordances"])?
+        .array()
+        .ok_or("affordances")?
+        .iter()
+        .filter_map(|item| {
+            item.object()
+                .and_then(|fields| fields.get("affordanceId"))
+                .and_then(Value::text)
+                .map(ToOwned::to_owned)
+        })
+        .collect();
+    let reconcile = format!("affordance:reconcile:{operation}");
+    assert!(listed.contains(&reconcile), "{listed:?}");
+    assert!(!next_moves(&resumed)?.contains(&reconcile));
+    let (code, retried) = driver.run(
+        "commit-retry",
+        &["commit", "--plan", &plan_id, "--approve", &dispatch],
+    )?;
+    assert_eq!(code, Some(1));
+    assert_eq!(text(&retried, &["payload", "state"])?, "indeterminate");
+    assert_eq!(
+        relay.connections(),
+        1,
+        "a lost acknowledgement is never resent"
+    );
+    let (code, open) = driver.run(
+        "close-early",
+        &["plan", "--session", &session, "--close", &plan_id],
+    )?;
+    assert_eq!(code, Some(5));
+    assert_eq!(text(&open, &["recoveryClass"])?, "reconciliation_required");
+
+    // The owner attests the alert never arrived: the obligation fails, nothing is resent.
+    let attested = ContentDigest::sha256(b"owner: no notification on any device").to_text();
+    let reconcile_argv = |approve: Option<&str>| -> Vec<String> {
+        let mut argv: Vec<String> = [
+            "commit",
+            "--reconcile",
+            "not_delivered",
+            "--operation",
+            operation.as_str(),
+            "--evidence",
+            attested.as_str(),
+            "--statement",
+            "Nothing arrived on the owner's devices.",
+        ]
+        .iter()
+        .map(|item| (*item).to_owned())
+        .collect();
+        if let Some(approve) = approve {
+            argv.push("--approve".to_owned());
+            argv.push(approve.to_owned());
+        }
+        argv
+    };
+    let preview = driver.ok("reconcile-preview", &as_str(&reconcile_argv(None)))?;
+    let reconcile_approval = pointers(&preview)?[0].clone();
+    let failed = driver.ok(
+        "reconcile",
+        &as_str(&reconcile_argv(Some(&reconcile_approval))),
+    )?;
+    assert_eq!(text(&failed, &["payload", "state"])?, "failed");
+    assert_eq!(relay.connections(), 1);
+
+    // The episode keeps the failed delivery, its competing attributions, and the residuals.
+    let closed = driver.ok(
+        "close",
+        &["plan", "--session", &session, "--close", &plan_id],
+    )?;
+    let episode = parse(&String::from_utf8(fss_publication::read_verified(
+        directory.root().join("agent/publications"),
+        ContentDigest::parse(&pointers(&closed)?[1])?,
+        1 << 20,
+    )?)?)?;
+    assert_eq!(text(&episode, &["outcome", "state"])?, "failed");
+    assert!(texts(&episode, &["stepReceipts"])?.contains(&"step:reconcile=completed".to_owned()));
+    let finished = driver.ok("handoff-final", &["handoff", "--session", &session])?;
+    for list in [
+        "activePlans",
+        "obligations",
+        "indeterminateEffects",
+        "preparedOperations",
+    ] {
+        assert!(
+            texts(&finished, &["payload", list])?.is_empty(),
+            "{list}: {finished:?}"
+        );
+    }
+    driver.retain()?;
     Ok(())
 }
