@@ -46,10 +46,29 @@
 //! policy or privacy epoch after the basis invalidates the certification. When in doubt, it
 //! invalidates.
 //!
+//! **Analysis (fss-f8jls).** Delivery alone is not observation. A rejected event certifies only
+//! when the frames were analysed: every frame of the record must carry a
+//! [`MockModelOutcome::NothingFound`] result bound to exactly that capsule digest, source payload
+//! and sensor, cited by the event as contradicting evidence under the frame's failure domain (with
+//! the frame's capsule digest on the edge), and every cited result must be under one model
+//! generation (one generation id and spec digest). Every model receipt the event names must be
+//! such a result. A rejection written without analysis, an analysis of only some frames, and
+//! analyses under two generations are refused ([`RetainedCoverageRefusal::NoAnalysis`],
+//! [`RetainedCoverageRefusal::AnalysisMissing`],
+//! [`RetainedCoverageRefusal::AnalysisGenerationMixed`],
+//! [`RetainedCoverageRefusal::AnalysisUnverified`]). Readers hydrate the results from the spool by
+//! the event's model receipts ([`MockModelResult::from_retained_bytes`]); a result counts only when
+//! its digest is a receipt of the event. [`analysis_covering_frames`] is the one coverage check
+//! the policy ([`crate::evaluate_unknown_presence_over_coverage`]) and this rule share. Which
+//! generation is qualified for a deployment is not decided here: the reference deployment has no
+//! model-generation activation record, so the rule binds the generation into the certification
+//! (and its statement) and refuses mixing, but cannot refuse a consistent unqualified generation.
+//!
 //! **No-Claim.** Certification means only that the retained pipeline over the authorized domains
-//! observed nothing during the interval: every authorized domain delivered continuously and the
-//! policy rejected the candidate over that evidence. It is not physical absence outside the
-//! authorized domains, outside the interval, or below what the sensors and model can perceive.
+//! observed nothing during the interval: every authorized domain delivered continuously, one model
+//! generation analysed every delivered frame and found nothing, and the policy rejected the
+//! candidate over that evidence. It is not physical absence outside the authorized domains,
+//! outside the interval, or below what the sensors and that model generation can perceive.
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::fmt;
@@ -67,7 +86,7 @@ use crate::reference_deployment::{
     FAMILY_COVERAGE_WITNESS, FAMILY_EVENT_REVISION, FAMILY_SENSOR_CAPSULE,
     FAMILY_SENSOR_TAMPER_STATUS,
 };
-use crate::{ReferenceDeployment, ReferenceError, ReplayCx};
+use crate::{MockModelOutcome, MockModelResult, ReferenceDeployment, ReferenceError, ReplayCx};
 
 /// Magic prefix of a source coverage record (distinct from the recorded pipelines' `FSSCOV01`).
 pub const SOURCE_RECORD_MAGIC: &[u8] = b"FSSSCW01";
@@ -665,6 +684,127 @@ pub fn required_domains(event: &EventHypothesis) -> BTreeSet<String> {
         .collect()
 }
 
+/// What the analyses of a record's frames establish (fss-f8jls).
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct FrameAnalysis {
+    /// The one model generation that analysed every frame.
+    pub generation_id: String,
+    /// Its complete spec digest.
+    pub model_spec_digest: ContentDigest,
+    /// Result digest of each frame's analysis, by canonical capsule digest.
+    pub results: BTreeMap<ContentDigest, ContentDigest>,
+}
+
+/// Requires `analyses` (each with the failure domain it is cited under) to be analysed-nothing
+/// results under one model generation, each bound to a frame of `record` (that frame's capsule
+/// digest, source payload, sensor and failure domain), and to cover every frame.
+///
+/// # Errors
+/// [`RetainedCoverageRefusal::NoAnalysis`] for no analysis at all,
+/// [`RetainedCoverageRefusal::AnalysisGenerationMixed`] when the analyses name more than one
+/// generation, [`RetainedCoverageRefusal::AnalysisUnverified`] for a result that is not an
+/// analysed-nothing result of one of the record's frames, and
+/// [`RetainedCoverageRefusal::AnalysisMissing`] for the first frame no analysis covers.
+pub fn analysis_covering_frames(
+    record: &SourceCoverageRecord,
+    analyses: &[(&str, &MockModelResult)],
+) -> Result<FrameAnalysis, RetainedCoverageRefusal> {
+    use RetainedCoverageRefusal as Refusal;
+
+    let Some((_, first)) = analyses.first() else {
+        return Err(Refusal::NoAnalysis);
+    };
+    if analyses.iter().any(|(_, result)| {
+        result.model_spec_digest != first.model_spec_digest
+            || result.generation_id != first.generation_id
+    }) {
+        return Err(Refusal::AnalysisGenerationMixed);
+    }
+    let frames: BTreeMap<ContentDigest, &SourceFrame> = record
+        .frames
+        .iter()
+        .map(|frame| (frame.capsule_digest, frame))
+        .collect();
+    let mut results = BTreeMap::new();
+    for (domain, result) in analyses {
+        let MockModelOutcome::NothingFound { analysed_capsule } = result.outcome else {
+            return Err(Refusal::AnalysisUnverified {
+                receipt: result.object_digest(),
+            });
+        };
+        let bound = frames.get(&analysed_capsule).is_some_and(|frame| {
+            frame.failure_domain == *domain
+                && frame.sensor_id == result.sensor_id.as_str()
+                && frame.source_digest == result.input_capture_root
+                && result.continuity_digest == analysed_capsule
+        });
+        if !bound {
+            return Err(Refusal::AnalysisUnverified {
+                receipt: result.object_digest(),
+            });
+        }
+        results.insert(analysed_capsule, result.object_digest());
+    }
+    if let Some(frame) = record
+        .frames
+        .iter()
+        .find(|frame| !results.contains_key(&frame.capsule_digest))
+    {
+        return Err(Refusal::AnalysisMissing {
+            capsule: frame.capsule_digest,
+        });
+    }
+    Ok(FrameAnalysis {
+        generation_id: first.generation_id.clone(),
+        model_spec_digest: first.model_spec_digest,
+        results,
+    })
+}
+
+/// The analyses `event` cites, with the failure domain of the citing edge: every model receipt
+/// must be one of `hydrated` (by object digest) with an analysed-nothing outcome, cited by a
+/// contradicting edge that names the receipt and carries the analysed capsule's digest.
+fn cited_analyses<'a>(
+    event: &'a EventHypothesis,
+    hydrated: &'a [MockModelResult],
+) -> Result<Vec<(&'a str, &'a MockModelResult)>, RetainedCoverageRefusal> {
+    let by_digest: BTreeMap<ContentDigest, &MockModelResult> = hydrated
+        .iter()
+        .map(|result| (result.object_digest(), result))
+        .collect();
+    let mut cited = Vec::new();
+    for receipt in &event.model_receipts {
+        let unverified = RetainedCoverageRefusal::AnalysisUnverified { receipt: *receipt };
+        let result = by_digest.get(receipt).ok_or_else(|| unverified.clone())?;
+        let MockModelOutcome::NothingFound { analysed_capsule } = result.outcome else {
+            return Err(unverified);
+        };
+        let edge = event
+            .evidence
+            .iter()
+            .find(|edge| {
+                edge.digest == *receipt
+                    && edge.counts_as_contradiction()
+                    && edge.capsule_digest == Some(analysed_capsule)
+            })
+            .ok_or(unverified)?;
+        cited.push((edge.failure_domain.as_str(), *result));
+    }
+    Ok(cited)
+}
+
+/// A stored coverage record offered to the situation compiler with the analysis results the
+/// event's model receipts name, hydrated by the caller (fss-f8jls). A result counts only when its
+/// object digest is a receipt of the event, so a caller cannot add evidence the event does not
+/// cite.
+#[derive(Clone, Copy, Debug)]
+pub struct StoredCoverage<'a> {
+    /// The committed source coverage record.
+    pub record: &'a SourceCoverageRecord,
+    /// Hydrated results of the event's model receipts.
+    pub analyses: &'a [MockModelResult],
+}
+
 /// A verified certification by a stored witness.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct RetainedAbsence {
@@ -682,18 +822,30 @@ pub struct RetainedAbsence {
     pub interval: CaptureInterval,
     /// Authorized (and observed) domains.
     pub domains: BTreeSet<String>,
+    /// The analysis of every frame, when an event's absence was assessed; `None` for delivery
+    /// coverage assessed without an event, which certifies no absence.
+    pub analysis: Option<FrameAnalysis>,
 }
 
 impl RetainedAbsence {
     /// One sentence naming the record, its basis and the No-Claim.
     #[must_use]
     pub fn statement(&self) -> String {
+        let analysis = match &self.analysis {
+            Some(analysis) => format!(
+                "model generation {} (spec {}) analysed all {} of its frames and found nothing",
+                analysis.generation_id,
+                analysis.model_spec_digest,
+                analysis.results.len()
+            ),
+            None => "no analysis of its frames was assessed".to_owned(),
+        };
         format!(
             "Absence is certified by retained coverage_witness record {} (commit {}): its \
              witness {} over domains [{}] for [{}, {}] ns has basis commit {} and no \
-             coverage-relevant commit follows it. This certifies only that the retained pipeline \
-             over the authorized domains observed nothing during the interval; it is not physical \
-             absence outside them.",
+             coverage-relevant commit follows it; {analysis}. This certifies only that the \
+             retained pipeline over the authorized domains observed nothing during the interval; \
+             it is not physical absence outside them.",
             self.record_digest,
             self.record_sequence,
             self.witness_digest,
@@ -726,6 +878,21 @@ pub enum RetainedCoverageRefusal {
     DomainNotCovered,
     /// The event interval lies outside the record's interval.
     IntervalNotCovered,
+    /// The event cites no analysed-nothing result: delivery without analysis (fss-f8jls).
+    NoAnalysis,
+    /// A frame of the record has no cited analysed-nothing result bound to its capsule.
+    AnalysisMissing {
+        /// Canonical digest of the unanalysed frame's capsule.
+        capsule: ContentDigest,
+    },
+    /// The cited analyses are under more than one model generation.
+    AnalysisGenerationMixed,
+    /// A model receipt of the event is not a hydrated analysed-nothing result of one of the
+    /// record's frames, cited as contradicting evidence with that frame's capsule and domain.
+    AnalysisUnverified {
+        /// The receipt.
+        receipt: ContentDigest,
+    },
     /// The witness basis is not a committed anchor of this history.
     BasisNotCommitted,
     /// The witness generation is not the basis and head policy epoch.
@@ -784,6 +951,21 @@ impl fmt::Display for RetainedCoverageRefusal {
             Self::IntervalNotCovered => {
                 f.write_str("the event interval lies outside the stored witness's interval")
             }
+            Self::NoAnalysis => f.write_str(
+                "the event cites no analysed-nothing model result: the witness frames were \
+                 delivered but never analysed",
+            ),
+            Self::AnalysisMissing { capsule } => write!(
+                f,
+                "frame {capsule} of the stored witness has no cited analysed-nothing model result"
+            ),
+            Self::AnalysisGenerationMixed => f.write_str(
+                "the analyses of the stored witness frames span more than one model generation",
+            ),
+            Self::AnalysisUnverified { receipt } => write!(
+                f,
+                "model receipt {receipt} is not a cited analysed-nothing result of a witness frame"
+            ),
             Self::BasisNotCommitted => {
                 f.write_str("the stored witness basis is not a committed anchor of this ledger")
             }
@@ -818,14 +1000,17 @@ fn same_epochs(left: &LedgerAnchor, right: &LedgerAnchor) -> bool {
 
 /// The shared rule: does the stored witness of `record` certify absence at `head` over the
 /// committed `batches` (the whole committed history through `head`)? With `event`, the rejected
-/// event whose absence is certified (its cited publication is bookkeeping); without, coverage is
-/// assessed with no event publication counted as bookkeeping.
+/// event whose absence is certified (its cited publication is bookkeeping) and `analyses`, the
+/// hydrated results of its model receipts, which must cover every frame (see the module docs);
+/// without, delivery coverage is assessed with no event publication counted as bookkeeping and
+/// `analyses` is not consulted.
 ///
 /// # Errors
 /// The first [`RetainedCoverageRefusal`] that applies.
 pub fn verify_retained_coverage(
     record: &SourceCoverageRecord,
     event: Option<&EventHypothesis>,
+    analyses: &[MockModelResult],
     batches: &[EvidenceDeltaBatch],
     head: &LedgerAnchor,
 ) -> Result<RetainedAbsence, RetainedCoverageRefusal> {
@@ -854,6 +1039,7 @@ pub fn verify_retained_coverage(
     accounted.insert(record_digest);
     // The cited publication: (batch index, event object id) when an event is certified.
     let mut citing: Option<(usize, ObjectId)> = None;
+    let mut analysis: Option<FrameAnalysis> = None;
     if let Some(event) = event {
         if event.state != EventState::Rejected {
             return Err(Refusal::EventNotRejected);
@@ -877,6 +1063,12 @@ pub fn verify_retained_coverage(
         {
             return Err(Refusal::IntervalNotCovered);
         }
+        // Delivery is not observation: every frame must have been analysed (fss-f8jls).
+        let cited = cited_analyses(event, analyses)?;
+        let frames = analysis_covering_frames(record, &cited)?;
+        // The cited results are objects of the cited publication (its manifest's children).
+        accounted.extend(frames.results.values().copied());
+        analysis = Some(frames);
         let object = ObjectId::parse(format!("object:event:{}", event.event_id.as_str()))
             .map_err(|_| Refusal::WitnessNotCited)?;
         let revision = event.revision_digest();
@@ -994,6 +1186,7 @@ pub fn verify_retained_coverage(
         basis_sequence: basis.commit_sequence,
         interval: record.interval,
         domains: witness.authorized_domain.clone(),
+        analysis,
     })
 }
 

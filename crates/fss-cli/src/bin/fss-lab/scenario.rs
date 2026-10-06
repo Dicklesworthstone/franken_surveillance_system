@@ -4,7 +4,9 @@
 //! Every scenario drives the real pure-Rust stack:
 //! - Virtual camera source packets wrapped into `SensorCapsule::from_source_bytes`;
 //! - Root-last publication committed to the durable authority ledger (`publish_and_commit`);
-//! - Perception findings evaluated by `evaluate_unknown_presence`;
+//! - Perception findings evaluated by `evaluate_unknown_presence`; a run with no finding has every
+//!   delivered frame analysed through the model seam (`analyse_mock_capsule`) and is decided by
+//!   `evaluate_unknown_presence_over_coverage` over its source coverage record (fss-f8jls);
 //! - Reference events published via `ReferenceDeployment::publish_event`;
 //! - Alert lifecycle prepared, dispatched through the simulated alert provider, and reconciled;
 //! - Guarded situation projection compiled and sealed into a root-closed `HandoffCapsule`;
@@ -20,39 +22,48 @@ use crate::scene::{GeometricCoverage, LabScene};
 use fss_core::{
     AgentView, CanonicalEncode, CapsuleId, CaptureInterval, ClockBasis, Completeness,
     ContentDigest, ContractBasis, ContractBasisRegistryBytes, CoverageContinuity,
-    CoverageStopReason, CoverageWitness, EffectState, EventEvidence, EventHypothesis, EventId,
-    EventKind, EventState, EvidenceClass, EvidenceEdgeRelation, HandoffCapsule, HandoffId,
-    IdempotencyKey, KnowledgeCell, KnowledgeState, MissionId, ObligationId, ObligationState,
-    OperationId, PrincipalId, ProbabilityInterval, SensorCapsule, SensorId, SensorSourceBytesSpec,
-    SessionId, StreamId, TimestampNs,
+    CoverageStopReason, CoverageWitness, EffectState, EventHypothesis, EventId, EventKind,
+    EventState, EvidenceEdgeRelation, HandoffCapsule, HandoffId, IdempotencyKey, KnowledgeCell,
+    KnowledgeState, MissionId, ObligationId, ObligationState, OperationId, PrincipalId,
+    ProbabilityInterval, SensorCapsule, SensorId, SensorSourceBytesSpec, SessionId, StreamId,
+    TimestampNs,
 };
 use fss_object::ObjectManifest;
 use fss_publication::{LedgerCutPoint, PublishCutPoint, SlotName};
 use fss_reference::agent_orient::{
     CLAIM_COVERAGE, OrientLimits, OrientRequest, orient_deployment, read_deployment,
 };
+use fss_reference::ingest::source_coverage::StoredCoverage;
 use fss_reference::ingest::source_coverage::{
     SourceCoverageInput, build_source_coverage, retain_source_coverage,
 };
 use fss_reference::{
-    AppendPhase, DurableEffectError, MockModelOutcome, MockModelResult, MockModelScript,
-    MockModelSpec, MockSemanticLabel, PrepareAlertParams, ReferenceAlertPlan, ReferenceDeployment,
-    ReferenceModelObservation, ReferencePolicyAction, ReferencePolicyDecision,
-    ReferenceProviderBehavior, ReferenceSituation, ReferenceSituationRequest, ReplayCx,
-    ReplayIoAuthority, policy_decision_path, rehydrate_reference_alert_plan,
+    AppendPhase, COVERAGE_ANALYSIS_INCOMPLETE, DurableEffectError, MockModelOutcome,
+    MockModelResult, MockModelScript, MockModelSpec, MockSemanticLabel, PrepareAlertParams,
+    ReferenceAlertPlan, ReferenceDeployment, ReferenceModelObservation, ReferencePolicyAction,
+    ReferencePolicyDecision, ReferenceProviderBehavior, ReferenceSituation,
+    ReferenceSituationRequest, ReplayCx, ReplayIoAuthority, analyse_mock_capsule,
+    policy_decision_path, rehydrate_reference_alert_plan,
 };
 
 const SCENARIO_START: u64 = 0;
 const SCENARIO_END: u64 = 5;
+
+/// The one frozen mock model generation that analyses every delivered frame of a run with no
+/// finding (fss-f8jls). Its script reports, per exact capsule, that it found no label of the
+/// reference vocabulary; a frame it never analysed has no result.
+pub const QUIET_ANALYSIS_GENERATION: &str = "mock:model:presence:nothing-found:v1";
 
 /// Closed enumeration of supported laboratory scenarios.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ScenarioKind {
     /// Both cameras deliver every tick and see nothing: the run retains a complete, continuous
     /// coverage witness through the source coverage producer
-    /// (`fss_reference::ingest::source_coverage`), and absence is reported certified only where
-    /// the compiled situation and the durable `fss orient` reader both certify it from that stored
-    /// record (fss-tch7u).
+    /// (`fss_reference::ingest::source_coverage`), one model generation analyses every delivered
+    /// frame and finds nothing, the real policy rejects the candidate over those analyses, and
+    /// absence is reported certified only where the compiled situation and the durable
+    /// `fss orient` reader both certify it from that stored record and the cited analyses
+    /// (fss-tch7u, fss-f8jls).
     Quiet,
     /// Benign wildlife detection with no alert effect.
     Raccoon,
@@ -236,6 +247,9 @@ enum ObservationClass {
     /// The camera delivers no packet at this tick (power or network loss): nothing is staged,
     /// so its failure domain does not cover the interval.
     Silent,
+    /// The camera delivers a frame of an empty scene, but no model generation ever analyses it
+    /// (a model backlog or crash): the frame is delivered and never observed (fss-f8jls).
+    Unanalysed,
 }
 
 struct VirtualCamera {
@@ -443,6 +457,11 @@ pub struct ScenarioReport {
 /// The lab never re-anchors or rewrites a witness to get past the rule.
 pub const QUIET_NOT_DURABLY_CERTIFIED: &str = "coverage_not_durably_certified";
 
+/// `absence_not_certifiable_reason` of a run whose every frame was delivered under a complete
+/// witness but not every frame was analysed by the model, so the policy did not reject the
+/// candidate (fss-f8jls): delivery is not observation.
+pub const FRAMES_NOT_ANALYSED: &str = "frames_not_analysed";
+
 /// Absence as the durable reader `fss orient` uses reports it for one root: the read-only
 /// [`read_deployment`] snapshot of the committed bytes, oriented by [`orient_deployment`] in the
 /// `epistemic_map` view.
@@ -453,6 +472,10 @@ pub struct DurableAbsence {
     /// Whether the orientation keeps the protected per-kind `absence-uncertified` event world.
     /// The run's root holds exactly the run's one event, so the world is that event's.
     pub uncertified_world: bool,
+    /// Whether the durable snapshot holds a retained absence for the run's event: the stored
+    /// witness and the cited analyses passed the stored-witness rule (fss-tch7u, fss-f8jls).
+    /// Site coverage alone is delivery; a non-rejected event has no absence world to retract.
+    pub retained_absence: bool,
 }
 
 impl DurableAbsence {
@@ -492,14 +515,18 @@ impl DurableAbsence {
                 .adversarial_residuals
                 .iter()
                 .any(|world| world.protected && world.world_id == Self::UNCERTIFIED_WORLD),
+            retained_absence: snapshot.retained_absences.contains_key(event_id.as_str()),
         })
     }
 
-    /// The durable reader certifies absence only when the site coverage cell is known and no
-    /// protected `absence-uncertified` event world survives.
+    /// The durable reader certifies absence only when the site coverage cell is known, no
+    /// protected `absence-uncertified` event world survives, and the snapshot retains a verified
+    /// absence for the event.
     #[must_use]
     pub fn certified(&self) -> bool {
-        self.site_coverage == Some(KnowledgeState::Known) && !self.uncertified_world
+        self.site_coverage == Some(KnowledgeState::Known)
+            && !self.uncertified_world
+            && self.retained_absence
     }
 }
 
@@ -837,8 +864,9 @@ fn run_scenario_impl(
     // Ticks at which each failure domain delivered a verified, staged capsule; the quiet
     // coverage witness observes exactly the domains that delivered the whole interval.
     let mut delivered: BTreeMap<&'static str, BTreeSet<u64>> = BTreeMap::new();
-    // Every verified, staged capsule with its failure domain: the quiet witness's sources.
-    let mut delivered_capsules: Vec<(String, SensorCapsule)> = Vec::new();
+    // Every verified, staged capsule with its failure domain: the quiet witness's sources; and
+    // whether a model generation analyses the frame (an `Unanalysed` frame never reaches one).
+    let mut delivered_capsules: Vec<(String, SensorCapsule, bool)> = Vec::new();
     // `sensor:tick` of every frame a camera never delivered.
     let mut silent: Vec<String> = Vec::new();
 
@@ -929,7 +957,11 @@ fn run_scenario_impl(
                 .entry(camera.failure_domain)
                 .or_default()
                 .insert(tick);
-            delivered_capsules.push((camera.failure_domain.to_owned(), capsule.clone()));
+            delivered_capsules.push((
+                camera.failure_domain.to_owned(),
+                capsule.clone(),
+                class != ObservationClass::Unanalysed,
+            ));
 
             // Per-scenario model finding derivation.
             if let Some(semantic_label) = semantic_label_for(class) {
@@ -1023,6 +1055,8 @@ fn run_scenario_impl(
         .filter(|(_, ticks)| **ticks == interval_ticks)
         .map(|(domain, _)| (*domain).to_owned())
         .collect();
+    // The analysed-nothing results the quiet event cites, retained with the run (fss-f8jls).
+    let mut quiet_analyses: Vec<MockModelResult> = Vec::new();
     let (decision, coverage_record) = if !observations.is_empty() {
         injection.cancel_before(stage::EVALUATE_POLICY, &cx);
         (
@@ -1030,7 +1064,6 @@ fn run_scenario_impl(
             None,
         )
     } else if gaps.is_empty() && !file_source && !observed_domain.is_empty() {
-        let event_id_quiet = event_id;
         // The witness is derived by the source coverage producer from exactly the capsules the
         // cameras delivered (fss-tch7u); the lab never constructs it. Its anchor is the authority
         // anchor this run read before any of its own commits (commit 0 on a fresh root): the
@@ -1039,7 +1072,7 @@ fn run_scenario_impl(
         // whether it certifies is decided by the compiled situation and the durable reader alone.
         let sources: Vec<(String, &SensorCapsule)> = delivered_capsules
             .iter()
-            .map(|(domain, capsule)| (domain.clone(), capsule))
+            .map(|(domain, capsule, _)| (domain.clone(), capsule))
             .collect();
         let record = build_source_coverage(&SourceCoverageInput {
             basis: deployment.current_anchor().clone(),
@@ -1057,48 +1090,53 @@ fn run_scenario_impl(
         let witness_bytes = record.witness.canonical_bytes();
         let witness_digest = deployment.stage_payload(&witness_bytes)?;
         staged_digests.push(witness_digest);
-
-        let event_id = event_id_quiet;
-        // Only a domain that actually delivered the interval contradicts the candidate.
-        let mut evidence = Vec::new();
-        for domain in &record.witness.observed_domain {
-            evidence.push(EventEvidence {
-                digest: witness_digest,
-                class: EvidenceClass::Derived,
-                failure_domain: domain.clone(),
-                supports: false,
-                relation: EvidenceEdgeRelation::Contradicts,
-                capsule_digest: None,
-                identity_digest: None,
-            });
+        if witness_digest != record.witness_object() {
+            return Err(ScenarioError::Reference(
+                "digest mismatch on the coverage witness".to_owned(),
+            ));
         }
 
-        let decision_path = policy_decision_path(
-            &event_id,
-            &evidence,
-            EventState::Rejected,
-            ReferencePolicyAction::Hold,
-        );
-        let event = EventHypothesis {
-            schema: EventHypothesis::SCHEMA.to_string(),
-            event_id,
-            revision: 1,
-            supersedes: None,
-            state: EventState::Rejected,
-            kind: EventKind::UnknownPresence,
-            interval,
-            uncertainty_reason: None,
-            zone_ids: Vec::new(),
-            track_ids: Vec::new(),
-            probability: ProbabilityInterval::new(0.0, 1.0)?,
-            evidence,
-            model_receipts: Vec::new(),
-            decision_path,
-        };
-        event.validate()?;
-        let decision = ReferencePolicyDecision {
-            event,
-            action: ReferencePolicyAction::Hold,
+        // Every delivered frame goes through the model seam: one frozen generation analyses the
+        // exact capsule and retains what it found (fss-f8jls). The lab never writes the
+        // rejection; the real policy decides it over these results and the record, and a frame
+        // no model analysed is never read as empty.
+        let analysis_spec =
+            MockModelSpec::new(QUIET_ANALYSIS_GENERATION, MockModelScript::NothingFound)?;
+        let mut analysis_observations = Vec::new();
+        for (domain, capsule, analysed) in &delivered_capsules {
+            if !*analysed {
+                warnings.push(format!(
+                    "frame_not_analysed:{}:{}",
+                    capsule.sensor_id.as_str(),
+                    capsule.sequence
+                ));
+                continue;
+            }
+            let result = analyse_mock_capsule(&analysis_spec, capsule);
+            let result_digest = deployment.stage_payload(&result.canonical_bytes())?;
+            if result_digest != result.object_digest() {
+                return Err(ScenarioError::Reference(
+                    "digest mismatch on model result".to_owned(),
+                ));
+            }
+            staged_digests.push(result_digest);
+            analysis_observations.push(ReferenceModelObservation::new(
+                result.clone(),
+                domain.clone(),
+                capsule.capture,
+            )?);
+            quiet_analyses.push(result);
+        }
+        let decision = if analysis_observations.is_empty() {
+            unanalysed_decision(event_id)?
+        } else {
+            injection.cancel_before(stage::EVALUATE_POLICY, &cx);
+            deployment.evaluate_policy_over_coverage(
+                event_id,
+                analysis_observations,
+                &record,
+                &cx,
+            )?
         };
 
         (decision, Some(record))
@@ -1185,6 +1223,10 @@ fn run_scenario_impl(
     let coverage_witness: Option<CoverageWitness> = coverage_record
         .as_ref()
         .map(|record| record.witness.clone());
+    let stored_coverage = coverage_record.as_ref().map(|record| StoredCoverage {
+        record,
+        analyses: &quiet_analyses,
+    });
 
     // Alert dispatch and reconciliation for corroborated threat scenarios.
     let mut transient_indeterminate = false;
@@ -1378,7 +1420,7 @@ fn run_scenario_impl(
         alert_plan: alert_plan.as_ref(),
         alert_outcome: None,
         coverage_witness: coverage_witness.as_ref(),
-        coverage_record: coverage_record.as_ref(),
+        coverage_record: stored_coverage,
         available_capabilities,
         created_at: TimestampNs(
             (SCENARIO_END as i128)
@@ -1468,6 +1510,11 @@ fn run_scenario_impl(
         Some("coverage_gap")
     } else if !support_domains.is_empty() {
         Some("threat_present")
+    } else if witness_offered
+        && decision.event.uncertainty_reason.as_deref() == Some(COVERAGE_ANALYSIS_INCOMPLETE)
+    {
+        // Every frame was delivered, but not every frame was analysed (fss-f8jls).
+        Some(FRAMES_NOT_ANALYSED)
     } else if witness_offered {
         // A complete witness was retained and offered, and neither reader certifies it.
         Some(QUIET_NOT_DURABLY_CERTIFIED)
@@ -1550,6 +1597,45 @@ fn run_scenario_impl(
     })
 }
 
+/// The decision of a quiet run in which no delivered frame was analysed: nothing was observed, so
+/// the event stays hypothesized with no evidence and absence cannot be certified (fss-f8jls).
+fn unanalysed_decision(event_id: EventId) -> Result<ReferencePolicyDecision, ScenarioError> {
+    let decision_path = policy_decision_path(
+        &event_id,
+        &[],
+        EventState::Hypothesized,
+        ReferencePolicyAction::Hold,
+    );
+    let event = EventHypothesis {
+        schema: EventHypothesis::SCHEMA.to_string(),
+        event_id,
+        revision: 1,
+        supersedes: None,
+        state: EventState::Hypothesized,
+        kind: EventKind::UnknownPresence,
+        interval: CaptureInterval::new(
+            TimestampNs(0),
+            TimestampNs(
+                (SCENARIO_END as i128)
+                    .checked_mul(1_000_000_000)
+                    .ok_or(ScenarioError::TimeOverflow)?,
+            ),
+        )?,
+        uncertainty_reason: Some(COVERAGE_ANALYSIS_INCOMPLETE.to_owned()),
+        zone_ids: Vec::new(),
+        track_ids: Vec::new(),
+        probability: ProbabilityInterval::new(0.0, 1.0)?,
+        evidence: Vec::new(),
+        model_receipts: Vec::new(),
+        decision_path,
+    };
+    event.validate()?;
+    Ok(ReferencePolicyDecision {
+        event,
+        action: ReferencePolicyAction::Hold,
+    })
+}
+
 fn faults_for(kind: ScenarioKind) -> Vec<Fault> {
     match kind {
         ScenarioKind::LostAcknowledgement => vec![Fault::LoseAlertAcknowledgement],
@@ -1590,7 +1676,7 @@ fn class_for(kind: ScenarioKind, sensor: &str, tick: u64) -> ObservationClass {
 
 const fn confidence_for(class: ObservationClass) -> u16 {
     match class {
-        ObservationClass::Empty => 10_000,
+        ObservationClass::Empty | ObservationClass::Unanalysed => 10_000,
         ObservationClass::Raccoon => 9_200,
         ObservationClass::UnknownPerson => 9_000,
         ObservationClass::Silent => 0,
@@ -1599,7 +1685,7 @@ const fn confidence_for(class: ObservationClass) -> u16 {
 
 const fn semantic_label_for(class: ObservationClass) -> Option<MockSemanticLabel> {
     match class {
-        ObservationClass::Empty | ObservationClass::Silent => None,
+        ObservationClass::Empty | ObservationClass::Silent | ObservationClass::Unanalysed => None,
         ObservationClass::Raccoon => Some(MockSemanticLabel::AnimalLike),
         ObservationClass::UnknownPerson => Some(MockSemanticLabel::PersonLike),
     }
@@ -1775,7 +1861,7 @@ fn encode_packet(
     bytes.extend_from_slice(failure_domain.as_bytes());
     bytes.extend_from_slice(&tick.to_be_bytes());
     bytes.push(match class {
-        ObservationClass::Empty => 0,
+        ObservationClass::Empty | ObservationClass::Unanalysed => 0,
         ObservationClass::Raccoon => 1,
         ObservationClass::UnknownPerson => 2,
         ObservationClass::Silent => {
@@ -1865,8 +1951,9 @@ mod tests {
     {
         use fss_core::{CanonicalDecode as _, CoverageWitness, EventId, EventState};
         use fss_reference::ingest::source_coverage::{
-            SourceCoverageRecord, verify_retained_coverage,
+            RetainedCoverageRefusal, SourceCoverageRecord, verify_retained_coverage,
         };
+        use fss_reference::{MockModelOutcome, MockModelResult};
 
         let root = temp_test_root("quiet");
         let report = run_scenario(ScenarioKind::Quiet, &root)?;
@@ -1897,6 +1984,7 @@ mod tests {
         let durable = DurableAbsence {
             site_coverage: Some(KnowledgeState::Known),
             uncertified_world: false,
+            retained_absence: true,
         };
         assert_eq!(report.durable_absence, durable);
         let event_id = EventId::parse("event:lab:quiet")?;
@@ -1909,7 +1997,13 @@ mod tests {
         let reopened = ReferenceDeployment::reopen(&root, "site:lab", &cx)?;
         let (event, _) = reopened.current_event_authority(&event_id)?;
         assert_eq!(event.state, EventState::Rejected);
-        let cited: BTreeSet<_> = event.evidence.iter().map(|edge| edge.digest).collect();
+        // The witness is the one cited object that names no analysed capsule.
+        let cited: BTreeSet<_> = event
+            .evidence
+            .iter()
+            .filter(|edge| edge.capsule_digest.is_none())
+            .map(|edge| edge.digest)
+            .collect();
         assert_eq!(cited.len(), 1);
         let digest = *cited.first().ok_or("no evidence")?;
         let witness =
@@ -1940,10 +2034,53 @@ mod tests {
         )?;
         assert_eq!(record.witness, witness);
         assert_eq!(record.frames.len(), 10);
-        let absence = verify_retained_coverage(&record, Some(&event), batches, &head)
+
+        // fss-f8jls: the rejection is the policy's, over one retained analysed-nothing result per
+        // delivered frame, all under the one quiet generation, each cited with its capsule.
+        assert_eq!(event.model_receipts.len(), record.frames.len());
+        let mut analyses = Vec::new();
+        for receipt in &event.model_receipts {
+            let result = MockModelResult::from_retained_bytes(
+                &reopened.publisher().spool().read(*receipt)?,
+                *receipt,
+            )?;
+            assert_eq!(result.generation_id, super::QUIET_ANALYSIS_GENERATION);
+            let MockModelOutcome::NothingFound { analysed_capsule } = result.outcome else {
+                return Err(format!("not an analysed-nothing result: {result:?}").into());
+            };
+            assert!(event.evidence.iter().any(|edge| edge.digest == *receipt
+                && edge.counts_as_contradiction()
+                && edge.capsule_digest == Some(analysed_capsule)));
+            analyses.push(result);
+        }
+        let analysed: BTreeSet<_> = analyses
+            .iter()
+            .map(|result| result.continuity_digest)
+            .collect();
+        let frames: BTreeSet<_> = record
+            .frames
+            .iter()
+            .map(|frame| frame.capsule_digest)
+            .collect();
+        assert_eq!(analysed, frames);
+
+        let absence = verify_retained_coverage(&record, Some(&event), &analyses, batches, &head)
             .map_err(|refusal| refusal.to_string())?;
         assert_eq!(absence.record_digest, retained.payload_digest);
         assert_eq!(absence.basis_sequence, 0);
+        let analysis = absence.analysis.as_ref().ok_or("no analysis")?;
+        assert_eq!(analysis.generation_id, super::QUIET_ANALYSIS_GENERATION);
+        assert_eq!(analysis.results.len(), 10);
+        assert!(
+            absence
+                .statement()
+                .contains(super::QUIET_ANALYSIS_GENERATION)
+        );
+        // The same committed event without its hydrated analyses does not certify.
+        assert!(matches!(
+            verify_retained_coverage(&record, Some(&event), &[], batches, &head),
+            Err(RetainedCoverageRefusal::AnalysisUnverified { .. })
+        ));
         let _ = std::fs::remove_dir_all(&root);
         Ok(())
     }
@@ -1990,10 +2127,12 @@ mod tests {
         let durable_certifies = DurableAbsence {
             site_coverage: Some(KnowledgeState::Known),
             uncertified_world: false,
+            retained_absence: true,
         };
         let durable_refuses = DurableAbsence {
             site_coverage: Some(KnowledgeState::NotObservable),
             uncertified_world: true,
+            retained_absence: false,
         };
         assert_eq!(certification(&certifying, &durable_certifies), Ok(true));
         assert_eq!(certification(&refusing, &durable_refuses), Ok(false));
@@ -2005,9 +2144,85 @@ mod tests {
         let covered_but_residual = DurableAbsence {
             site_coverage: Some(KnowledgeState::Known),
             uncertified_world: true,
+            retained_absence: false,
         };
         assert!(!covered_but_residual.certified());
         assert_eq!(certification(&refusing, &covered_but_residual), Ok(false));
+        // Delivered site coverage with no absence world (a non-rejected event) and no retained
+        // absence is not a certification either (fss-f8jls).
+        let delivered_not_analysed = DurableAbsence {
+            site_coverage: Some(KnowledgeState::Known),
+            uncertified_world: false,
+            retained_absence: false,
+        };
+        assert!(!delivered_not_analysed.certified());
+        assert_eq!(certification(&refusing, &delivered_not_analysed), Ok(false));
+    }
+
+    /// fss-f8jls: a camera whose frames are delivered but never analysed cannot certify quiet.
+    /// The witness is complete (every frame was delivered), yet the policy does not reject the
+    /// candidate, neither reader certifies, and the reason names the missing analysis.
+    #[test]
+    fn quiet_with_an_unanalysed_camera_is_never_certified() -> Result<(), Box<dyn std::error::Error>>
+    {
+        use fss_core::{EventId, EventState};
+        use fss_reference::COVERAGE_ANALYSIS_INCOMPLETE;
+
+        for (tag, unanalysed) in [
+            (
+                "one-frame",
+                (|sensor: &str, tick: u64| sensor == "cam-side" && tick == 3)
+                    as fn(&str, u64) -> bool,
+            ),
+            ("one-camera", |sensor: &str, _: u64| sensor == "cam-side"),
+            ("every-frame", |_: &str, _: u64| true),
+        ] {
+            let root = temp_test_root(&format!("quiet-unanalysed-{tag}"));
+            let classes = move |_: ScenarioKind, sensor: &str, tick: u64| {
+                if unanalysed(sensor, tick) {
+                    ObservationClass::Unanalysed
+                } else {
+                    ObservationClass::Empty
+                }
+            };
+            let report = run_scenario_with(ScenarioKind::Quiet, &root, &classes)?;
+            assert!(!report.absence_certified, "{tag}");
+            assert_eq!(report.envelope, EnvelopeClass::ProtectedResidual, "{tag}");
+            assert_eq!(
+                report.knowledge.absence_not_certifiable_reason,
+                Some(super::FRAMES_NOT_ANALYSED),
+                "{tag}"
+            );
+            assert!(
+                report
+                    .warnings
+                    .iter()
+                    .any(|warning| warning.starts_with("frame_not_analysed:sensor:cam-side:")),
+                "{tag}: {:?}",
+                report.warnings
+            );
+            assert!(!report.durable_absence.retained_absence, "{tag}");
+            assert!(!report.durable_absence.certified(), "{tag}");
+            assert_ne!(
+                report.situation_absence.cell,
+                Some(KnowledgeState::Known),
+                "{tag}"
+            );
+
+            let cx = super::make_cx(ScenarioKind::Quiet)?;
+            let reopened = ReferenceDeployment::reopen(&root, "site:lab", &cx)?;
+            let (event, _) =
+                reopened.current_event_authority(&EventId::parse("event:lab:quiet")?)?;
+            assert_ne!(event.state, EventState::Rejected, "{tag}");
+            assert_eq!(
+                event.uncertainty_reason.as_deref(),
+                Some(COVERAGE_ANALYSIS_INCOMPLETE),
+                "{tag}"
+            );
+            drop(reopened);
+            let _ = std::fs::remove_dir_all(&root);
+        }
+        Ok(())
     }
 
     #[test]

@@ -4,9 +4,9 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::fmt;
 
 use fss_core::{
-    CanonicalEncode, CanonicalEncoder, CaptureInterval, ContentDigest, ContractError,
-    KnowledgeState, ModelGeneration, ProbabilityInterval, ProvenanceClass, SensorCapsuleV1,
-    SensorId,
+    CanonicalDecode, CanonicalDecoder, CanonicalEncode, CanonicalEncoder, CaptureInterval,
+    ContentDigest, ContractError, KnowledgeState, ModelGeneration, ProbabilityInterval,
+    ProvenanceClass, SensorCapsule, SensorCapsuleV1, SensorId,
 };
 use fss_object::InMemoryObjectStore;
 
@@ -116,6 +116,10 @@ pub enum MockModelScript {
         /// Explicit probability interval on admitted input.
         probability: ProbabilityInterval,
     },
+    /// Report that no label of the reference vocabulary was found in the analysed input
+    /// (fss-f8jls). Each result binds the exact capsule it analysed
+    /// ([`MockModelOutcome::NothingFound`]); a frame that never reached the model has no result.
+    NothingFound,
 }
 
 /// Normative ADR-0004 model generation descriptor binding the 9 mandatory facets.
@@ -285,18 +289,36 @@ pub enum MockModelOutcome {
         /// Stable abstention reason.
         reason: MockAbstentionReason,
     },
+    /// The model analysed exactly `analysed_capsule` under the result's generation and found no
+    /// label of its vocabulary (fss-f8jls).
+    ///
+    /// This is a positive record of an analysis, not a missing finding and not a low-confidence
+    /// finding. It is never absence on its own: only the policy over a retained source coverage
+    /// record whose every frame carries such an analysis under one generation may reject a
+    /// candidate from it, and only the stored-witness rule may certify that rejection.
+    NothingFound {
+        /// Canonical digest of the exact sensor capsule bytes analysed.
+        analysed_capsule: ContentDigest,
+    },
 }
 
 impl MockModelOutcome {
     /// Validates that this model outcome is not being treated as negative evidence.
     ///
     /// Per NEG-003 and AGENTS.md, model abstention is epistemic `Unknown`, never
-    /// evidence of absence (which strictly requires a verified `CoverageWitness`).
+    /// evidence of absence (which strictly requires a verified `CoverageWitness`). An
+    /// analysed-nothing outcome alone is not negative evidence either: it counts against a
+    /// candidate only together with a coverage witness over the frames it analysed.
     pub fn assert_not_negative_evidence(&self) -> Result<(), MockModelError> {
         match self {
             Self::Abstained { reason } => Err(MockModelError::AbstentionCannotBeNegativeEvidence {
                 outcome: format!("MockModelOutcome::Abstained({reason:?})"),
             }),
+            Self::NothingFound { analysed_capsule } => {
+                Err(MockModelError::AnalysedNothingRequiresCoverageWitness {
+                    analysed_capsule: *analysed_capsule,
+                })
+            }
             Self::Finding { .. } => Ok(()),
         }
     }
@@ -329,7 +351,7 @@ impl MockModelResult {
 
 impl CanonicalEncode for MockModelResult {
     fn encode_canonical(&self, encoder: &mut CanonicalEncoder) {
-        encoder.text("fss.mock_model_result.v1");
+        encoder.text(MOCK_MODEL_RESULT_DOMAIN);
         encoder.text(&self.generation_id);
         self.sensor_id.encode_canonical(encoder);
         encoder.digest(self.model_spec_digest);
@@ -345,7 +367,146 @@ impl CanonicalEncode for MockModelResult {
                 encoder.u8(2);
                 encoder.u8(reason.tag());
             }
+            MockModelOutcome::NothingFound { analysed_capsule } => {
+                encoder.u8(3);
+                encoder.digest(*analysed_capsule);
+            }
         }
+    }
+}
+
+/// Leading domain text of every retained mock model result (registered in DIGEST_DOMAINS.md).
+pub const MOCK_MODEL_RESULT_DOMAIN: &str = "fss.mock_model_result.v1";
+
+/// Largest retained mock model result accepted on read.
+pub const MAX_MOCK_MODEL_RESULT_BYTES: usize = 4096;
+
+fn decode_label(tag: u8) -> Result<MockSemanticLabel, ContractError> {
+    match tag {
+        1 => Ok(MockSemanticLabel::PersonLike),
+        2 => Ok(MockSemanticLabel::AnimalLike),
+        3 => Ok(MockSemanticLabel::TamperLike),
+        4 => Ok(MockSemanticLabel::Unknown),
+        5 => Ok(MockSemanticLabel::IntegrityRestored),
+        _ => Err(ContractError::InvalidIdentifier),
+    }
+}
+
+fn decode_probability(
+    decoder: &mut CanonicalDecoder<'_>,
+) -> Result<ProbabilityInterval, ContractError> {
+    let lower = f64::from_bits(decoder.u64()?);
+    let upper = f64::from_bits(decoder.u64()?);
+    let mut probability = ProbabilityInterval::new(lower, upper)?;
+    if decoder.bool()? {
+        probability.calibration_generation = Some(decoder.digest()?);
+    }
+    Ok(probability)
+}
+
+impl CanonicalDecode for MockModelResult {
+    fn decode_canonical(decoder: &mut CanonicalDecoder<'_>) -> Result<Self, ContractError> {
+        if decoder.text()? != MOCK_MODEL_RESULT_DOMAIN {
+            return Err(ContractError::InvalidIdentifier);
+        }
+        let generation_id = decoder.text()?.to_owned();
+        let sensor_id = SensorId::decode_canonical(decoder)?;
+        let model_spec_digest = decoder.digest()?;
+        let input_capture_root = decoder.digest()?;
+        let continuity_digest = decoder.digest()?;
+        let outcome = match decoder.u8()? {
+            1 => MockModelOutcome::Finding {
+                label: decode_label(decoder.u8()?)?,
+                probability: decode_probability(decoder)?,
+            },
+            2 => match decoder.u8()? {
+                1 => MockModelOutcome::Abstained {
+                    reason: MockAbstentionReason::DeliveryDegraded,
+                },
+                _ => return Err(ContractError::InvalidIdentifier),
+            },
+            3 => MockModelOutcome::NothingFound {
+                analysed_capsule: decoder.digest()?,
+            },
+            _ => return Err(ContractError::InvalidIdentifier),
+        };
+        Ok(Self {
+            generation_id,
+            sensor_id,
+            model_spec_digest,
+            input_capture_root,
+            continuity_digest,
+            outcome,
+        })
+    }
+}
+
+impl MockModelResult {
+    /// Decodes exact retained result bytes against the digest that cites them (an event's model
+    /// receipt).
+    ///
+    /// # Errors
+    /// [`ContractError::BudgetExhausted`] above [`MAX_MOCK_MODEL_RESULT_BYTES`],
+    /// [`ContractError::DigestMismatch`] when the bytes do not hash to `expected`, a decode
+    /// refusal, or [`ContractError::NonCanonicalOrdering`] when re-encoding does not reproduce the
+    /// bytes exactly.
+    pub fn from_retained_bytes(
+        bytes: &[u8],
+        expected: ContentDigest,
+    ) -> Result<Self, ContractError> {
+        if bytes.len() > MAX_MOCK_MODEL_RESULT_BYTES {
+            return Err(ContractError::BudgetExhausted);
+        }
+        if ContentDigest::sha256(bytes) != expected {
+            return Err(ContractError::DigestMismatch);
+        }
+        let result = Self::from_canonical_bytes(bytes)?;
+        if result.canonical_bytes() != bytes {
+            return Err(ContractError::NonCanonicalOrdering);
+        }
+        Ok(result)
+    }
+}
+
+/// Executes one scripted model generation over one exact delivered sensor capsule (fss-f8jls).
+///
+/// The result binds the generation, its complete spec digest, the capsule's source payload digest
+/// (`input_capture_root`) and the canonical capsule digest (`continuity_digest`). A
+/// [`MockModelScript::NothingFound`] generation reports [`MockModelOutcome::NothingFound`] naming
+/// that same capsule digest; [`MockModelScript::RequireExactDelivery`] abstains on a capsule
+/// preceded by a continuity gap. Nothing is retained here: the caller stages
+/// [`MockModelResult::canonical_bytes`].
+#[must_use]
+pub fn analyse_mock_capsule(spec: &MockModelSpec, capsule: &SensorCapsule) -> MockModelResult {
+    let capsule_digest = ContentDigest::sha256(&capsule.canonical_bytes());
+    let outcome = match spec.script() {
+        MockModelScript::Fixed { label, probability } => MockModelOutcome::Finding {
+            label: *label,
+            probability: *probability,
+        },
+        MockModelScript::RequireExactDelivery { label, probability } => {
+            if capsule.gap_before {
+                MockModelOutcome::Abstained {
+                    reason: MockAbstentionReason::DeliveryDegraded,
+                }
+            } else {
+                MockModelOutcome::Finding {
+                    label: *label,
+                    probability: *probability,
+                }
+            }
+        }
+        MockModelScript::NothingFound => MockModelOutcome::NothingFound {
+            analysed_capsule: capsule_digest,
+        },
+    };
+    MockModelResult {
+        generation_id: spec.generation_id().to_string(),
+        sensor_id: capsule.sensor_id.clone(),
+        model_spec_digest: spec.spec_digest(),
+        input_capture_root: capsule.source_digest,
+        continuity_digest: capsule_digest,
+        outcome,
     }
 }
 
@@ -371,6 +532,13 @@ pub fn execute_mock_model(
                     reason: MockAbstentionReason::DeliveryDegraded,
                 }
             }
+        }
+        // A capture is not one sensor capsule: an analysed-nothing outcome must name the exact
+        // capsule it analysed, so this seam refuses rather than invent a binding.
+        MockModelScript::NothingFound => {
+            return Err(ReferenceError::InvalidSpec(
+                "nothing_found_requires_capsule_analysis",
+            ));
         }
     };
     let sensor_id = capture
@@ -406,6 +574,7 @@ fn encode_script(script: &MockModelScript, encoder: &mut CanonicalEncoder) {
             encoder.u8(label.tag());
             probability.encode_canonical(encoder);
         }
+        MockModelScript::NothingFound => encoder.u8(3),
     }
 }
 
@@ -1769,6 +1938,12 @@ pub enum MockModelError {
         /// Rejected outcome detail.
         outcome: String,
     },
+    /// An analysed-nothing outcome used as negative evidence without a coverage witness over the
+    /// frames it analysed (fss-f8jls).
+    AnalysedNothingRequiresCoverageWitness {
+        /// The capsule the outcome analysed.
+        analysed_capsule: ContentDigest,
+    },
 }
 
 impl fmt::Display for MockModelError {
@@ -1889,6 +2064,12 @@ impl fmt::Display for MockModelError {
                 write!(
                     f,
                     "model abstention or failure ({outcome}) cannot be treated as negative evidence; negative evidence requires verified CoverageWitness (NEG-003, INV-056)"
+                )
+            }
+            Self::AnalysedNothingRequiresCoverageWitness { analysed_capsule } => {
+                write!(
+                    f,
+                    "an analysed-nothing outcome over capsule {analysed_capsule} is not negative evidence on its own; it counts only with a coverage witness over the frames it analysed (NEG-003)"
                 )
             }
         }
