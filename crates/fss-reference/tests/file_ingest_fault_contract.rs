@@ -1000,7 +1000,11 @@ fn m07_oversized_root_closure_completes_through_part_slots() -> TestResult {
     assert!(receipt.manifest.part_roots.len() > 1);
     assert_complete_once(&dep, &receipt, &bytes, &cx1)?;
     for root in &receipt.manifest.part_roots {
-        assert!(dep.publisher().visible_roots().any(|visible| visible.root == *root));
+        assert!(
+            dep.publisher()
+                .visible_roots()
+                .any(|visible| visible.root == *root)
+        );
     }
     let batches = dep.ledger().batches().len();
     let again = FileIngestAdapter::ingest(req, &cx1, &mut dep)?;
@@ -1009,8 +1013,16 @@ fn m07_oversized_root_closure_completes_through_part_slots() -> TestResult {
     drop(dep);
     assert_clean_after_reopen(&dir, limits)?;
     let dep = open(&dir, limits)?;
-    let retained = RetainedFileImport::open(&dep, receipt.import_identity, RetainedReadLimits::default(), &cx1)?;
-    assert_eq!(retained.verify_source(&dep, RetainedReadLimits::default(), &cx1)?, ContentDigest::sha256(&bytes));
+    let retained = RetainedFileImport::open(
+        &dep,
+        receipt.import_identity,
+        RetainedReadLimits::default(),
+        &cx1,
+    )?;
+    assert_eq!(
+        retained.verify_source(&dep, RetainedReadLimits::default(), &cx1)?,
+        ContentDigest::sha256(&bytes)
+    );
     assert_spans_match(&receipt.manifest, &dep, &bytes)
 }
 

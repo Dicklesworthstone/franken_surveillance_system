@@ -1417,23 +1417,34 @@ fn check_commit_admission(
     capsules: &[PlannedBatch],
     cx: &ReplayCx,
 ) -> Result<(), FileIngestError> {
-    let history: std::collections::BTreeMap<_, _> = deployment.ledger().batches().iter()
-        .map(|batch| (batch.batch_id.as_str(), batch)).collect();
-    let all_capsules_committed = capsules.iter()
+    let history: std::collections::BTreeMap<_, _> = deployment
+        .ledger()
+        .batches()
+        .iter()
+        .map(|batch| (batch.batch_id.as_str(), batch))
+        .collect();
+    let all_capsules_committed = capsules
+        .iter()
         .all(|batch| history.contains_key(batch.batch_id.as_str()));
-    let last_capsule_sequence = capsules.iter()
+    let last_capsule_sequence = capsules
+        .iter()
         .filter_map(|batch| history.get(batch.batch_id.as_str()))
-        .map(|batch| batch.new_anchor.commit_sequence).max();
+        .map(|batch| batch.new_anchor.commit_sequence)
+        .max();
     let mut gap = false;
     let mut previous = last_capsule_sequence;
     // The aggregate identity is the completion witness. Every ledgered publication must be a
     // prefix following all capsule authority, never an out-of-order root borrowed from elsewhere.
-    let aggregate_root = deltas.iter().find(|delta| delta.family == "file_import")
+    let aggregate_root = deltas
+        .iter()
+        .find(|delta| delta.family == "file_import")
         .and_then(|delta| delta.witness_digest)
         .ok_or_else(|| FileIngestError::CorruptSegment {
             detail: "completing import has no root witness".to_owned(),
         })?;
-    for (slot, root) in publication.parts().iter()
+    for (slot, root) in publication
+        .parts()
+        .iter()
         .map(|part| (part.slot(), part.manifest().root()))
         .chain(std::iter::once((publication.slot(), aggregate_root)))
     {
@@ -1446,7 +1457,8 @@ fn check_commit_admission(
             gap = true;
             continue;
         };
-        if gap || !all_capsules_committed
+        if gap
+            || !all_capsules_committed
             || previous.is_none_or(|sequence| stored.new_anchor.commit_sequence <= sequence)
             || !deployment.publisher().root(slot).is_some_and(|visible| {
                 visible.state == LocalPublicationState::Durable && visible.root == root
@@ -1454,7 +1466,9 @@ fn check_commit_admission(
         {
             return Err(FileIngestError::ImportPlanConflict {
                 batch_id: stored.batch_id.clone(),
-                detail: "published roots are damaged or not an ordered prefix after capsule authority".to_owned(),
+                detail:
+                    "published roots are damaged or not an ordered prefix after capsule authority"
+                        .to_owned(),
             });
         }
         // A retry must not silently repair a lost body behind already-committed custody.
@@ -1465,7 +1479,9 @@ fn check_commit_admission(
     let required = deltas.len().max(children.len());
     if required > maximum {
         return Err(FileIngestError::SpoolCapacityExceeded {
-            limit: "batch_entries_max", required: required as u64, available: maximum as u64,
+            limit: "batch_entries_max",
+            required: required as u64,
+            available: maximum as u64,
         });
     }
     let mut children = children.to_vec();
@@ -1473,21 +1489,38 @@ fn check_commit_admission(
     children.dedup();
     let mut deltas = deltas.to_vec();
     deltas.sort_by(|left, right| {
-        (left.family.as_str(), left.object_id.as_str(), left.new_generation, left.delta_id.as_str())
-            .cmp(&(right.family.as_str(), right.object_id.as_str(), right.new_generation, right.delta_id.as_str()))
+        (
+            left.family.as_str(),
+            left.object_id.as_str(),
+            left.new_generation,
+            left.delta_id.as_str(),
+        )
+            .cmp(&(
+                right.family.as_str(),
+                right.object_id.as_str(),
+                right.new_generation,
+                right.delta_id.as_str(),
+            ))
     });
     let anchor = deployment.current_anchor().clone();
     let mut batch = EvidenceDeltaBatch {
-        batch_id: batch_id.clone(), basis_anchor: anchor.clone(), new_anchor: anchor,
-        deltas, children, batch_digest: ContentDigest::sha256(b""),
+        batch_id: batch_id.clone(),
+        basis_anchor: anchor.clone(),
+        new_anchor: anchor,
+        deltas,
+        children,
+        batch_digest: ContentDigest::sha256(b""),
     };
     batch.batch_digest = batch.computed_digest();
-    let encoded = fss_ledger::encode_batch(&batch)
-        .map_err(|error| ReferenceError::DurableLedger(Box::new(DurableLedgerError::Codec(error))))?;
+    let encoded = fss_ledger::encode_batch(&batch).map_err(|error| {
+        ReferenceError::DurableLedger(Box::new(DurableLedgerError::Codec(error)))
+    })?;
     let maximum = u64::from(deployment.limits().journal_record_max_bytes);
     if encoded.len() as u64 > maximum {
         return Err(FileIngestError::SpoolCapacityExceeded {
-            limit: "journal_record_max_bytes", required: encoded.len() as u64, available: maximum,
+            limit: "journal_record_max_bytes",
+            required: encoded.len() as u64,
+            available: maximum,
         });
     }
     Ok(())
@@ -1934,11 +1967,15 @@ impl FileIngestAdapter {
                 detail: "acquisition session missing".to_string(),
             })?
             .propose_end_of_file()?;
-        let closure_bound = deployment.limits().manifest_children_max
+        let closure_bound = deployment
+            .limits()
+            .manifest_children_max
             .min(deployment.limits().batch_entries_max);
         let publication = FilePublicationPlan::new(
             import_identity,
-            ordered_chunks.iter().copied()
+            ordered_chunks
+                .iter()
+                .copied()
                 .chain(std::iter::once(custody_manifest_digest))
                 .chain(capsule_encodings.iter().map(|(digest, _)| *digest))
                 .chain(closing.object_bytes().map(|(digest, _)| digest)),
@@ -2115,15 +2152,22 @@ impl FileIngestAdapter {
             deployment,
             &import_manifest,
             overall_validity,
-            candidate_objects.iter().copied()
+            candidate_objects
+                .iter()
+                .copied()
                 .filter(|(digest, _)| *digest != manifest_digest)
                 .chain(closing.object_bytes())
                 .map(|(digest, bytes)| (digest, bytes.len())),
             cx,
         )?;
         check_commit_admission(
-            deployment, &manifest_batch_id, &final_deltas, &final_children,
-            &publication, &capsule_batches, cx,
+            deployment,
+            &manifest_batch_id,
+            &final_deltas,
+            &final_children,
+            &publication,
+            &capsule_batches,
+            cx,
         )?;
 
         // Step 12: Staging objects

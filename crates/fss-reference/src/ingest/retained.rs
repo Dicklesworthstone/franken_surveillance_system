@@ -189,7 +189,9 @@ impl FileImportManifest {
     pub fn validate_retained(&self, limits: RetainedReadLimits) -> Result<(), FileIngestError> {
         self.validate_structure(limits)?;
         if !self.part_roots.is_empty() {
-            return Err(invalid("partitioned manifest needs explicit part resolution"));
+            return Err(invalid(
+                "partitioned manifest needs explicit part resolution",
+            ));
         }
         Ok(())
     }
@@ -233,7 +235,9 @@ impl FileImportManifest {
         let mut parts = BTreeSet::new();
         for part in &self.part_roots {
             if part.algorithm() != DigestAlgorithm::Sha256 || !parts.insert(*part) {
-                return Err(invalid("part roots are duplicated or use an unsupported digest"));
+                return Err(invalid(
+                    "part roots are duplicated or use an unsupported digest",
+                ));
             }
         }
         let expected_chunks = 1 + (self.input_bytes - 1) / self.chunk_bytes;

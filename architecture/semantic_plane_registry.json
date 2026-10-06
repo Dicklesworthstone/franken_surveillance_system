@@ -360,6 +360,7 @@
     "crates/fss-reference/src/ingest/recording_pipeline/sampling/report.rs": "support",
     "crates/fss-reference/src/ingest/retained.rs": "authority",
     "crates/fss-reference/src/ingest/retained/root_binding.rs": "authority",
+    "crates/fss-reference/src/ingest/retained/root_binding/parts.rs": "authority",
     "crates/fss-reference/src/ingest/retained/tests.rs": "support",
     "crates/fss-reference/src/ingest/rgb_archive.rs": "support",
     "crates/fss-reference/src/ingest/rgb_detections.rs": "support",

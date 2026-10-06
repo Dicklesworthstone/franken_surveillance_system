@@ -49,7 +49,10 @@ pub(super) fn verify(
         ));
     }
     let reachability = check_reachability(
-        deployment, slot, import_root, completion.new_anchor.commit_sequence,
+        deployment,
+        slot,
+        import_root,
+        completion.new_anchor.commit_sequence,
     )?;
     let ledger = deployment.ledger();
     let held: BTreeSet<_> = root.children().iter().copied().collect();
@@ -65,11 +68,22 @@ pub(super) fn verify(
         (held, reachability.new_anchor.commit_sequence)
     } else {
         parts::resolve(
-            deployment, slot, &root, manifest, reachability.new_anchor.commit_sequence, cx,
+            deployment,
+            slot,
+            &root,
+            manifest,
+            reachability.new_anchor.commit_sequence,
+            cx,
         )?
     };
-    if completion.children.iter().any(|digest| *digest != import_root && !held.contains(digest)) {
-        return Err(invalid("import completion references content outside its publication"));
+    if completion
+        .children
+        .iter()
+        .any(|digest| *digest != import_root && !held.contains(digest))
+    {
+        return Err(invalid(
+            "import completion references content outside its publication",
+        ));
     }
     let chunks: BTreeSet<_> = manifest.ordered_chunks.iter().copied().collect();
     if !chunks.is_subset(&held) {
@@ -183,7 +197,9 @@ fn check_reachability<'a>(
     let object_id = root_reachability_object_id(slot)
         .map_err(|_| invalid("import slot has no reachability object identity"))?;
     let ledger = deployment.ledger();
-    let reachability = ledger.batches().iter()
+    let reachability = ledger
+        .batches()
+        .iter()
         .find(|batch| batch.batch_id == reachability_id)
         .ok_or_else(|| invalid("durable import root has no committed reachability proof"))?;
     if reachability.new_anchor.commit_sequence >= before {
@@ -202,16 +218,23 @@ fn check_reachability<'a>(
         || claim.witness_digest.is_some()
         || claim.operation_id.is_some()
     {
-        return Err(invalid("root reachability claim disagrees with the import witness"));
+        return Err(invalid(
+            "root reachability claim disagrees with the import witness",
+        ));
     }
-    let current = ledger.current().objects.get(&object_id)
+    let current = ledger
+        .current()
+        .objects
+        .get(&object_id)
         .ok_or_else(|| invalid("root reachability is no longer current"))?;
     if current.generation != 1
         || current.family != ROOT_REACHABILITY_FAMILY
         || current.plane != Plane::Authority
         || current.payload_digest != root
     {
-        return Err(invalid("import root reachability is retracted or superseded"));
+        return Err(invalid(
+            "import root reachability is retracted or superseded",
+        ));
     }
     Ok(reachability)
 }

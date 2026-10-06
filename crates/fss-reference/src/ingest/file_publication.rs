@@ -343,17 +343,27 @@ impl FilePublicationPlan {
             checkpoint(cx, STAGE_FILE_PART_PREFLIGHT)?;
             if index == MAX_FILE_PUBLICATION_PAYLOADS {
                 return Err(capacity(
-                    "file_publication_payloads", index + 1, MAX_FILE_PUBLICATION_PAYLOADS,
+                    "file_publication_payloads",
+                    index + 1,
+                    MAX_FILE_PUBLICATION_PAYLOADS,
                 ));
             }
-            if proposed.insert(digest, bytes).is_some_and(|previous| previous != bytes) {
+            if proposed
+                .insert(digest, bytes)
+                .is_some_and(|previous| previous != bytes)
+            {
                 return Err(invalid("one payload identity has conflicting byte lengths"));
             }
         }
         if proposed.len() != self.payloads.len()
-            || self.payloads.iter().any(|digest| !proposed.contains_key(digest))
+            || self
+                .payloads
+                .iter()
+                .any(|digest| !proposed.contains_key(digest))
         {
-            return Err(invalid("proposed payload inventory differs from the publication plan"));
+            return Err(invalid(
+                "proposed payload inventory differs from the publication plan",
+            ));
         }
         let root = self.root_manifest(metadata)?;
         self.preflight(deployment, metadata, &root, validity, Some(&proposed), cx)
@@ -436,13 +446,18 @@ impl FilePublicationPlan {
         let mut seen = BTreeSet::new();
         let mut bytes = 0_u64;
         let mut objects = 0_usize;
-        let object_bound = deployment.limits().spool_object_max_bytes
+        let object_bound = deployment
+            .limits()
+            .spool_object_max_bytes
             .min(limits.spool.max_object_bytes as u64);
         for (digest, length) in records {
             if length as u64 > object_bound {
                 return Err(FileIngestError::SpoolCapacityExceeded {
-                    limit: if proposed.is_some() { "spool_object_max_bytes" }
-                        else { "file_publication_object_bytes" },
+                    limit: if proposed.is_some() {
+                        "spool_object_max_bytes"
+                    } else {
+                        "file_publication_object_bytes"
+                    },
                     required: length as u64,
                     available: object_bound,
                 });
@@ -460,8 +475,11 @@ impl FilePublicationPlan {
             .saturating_sub(spool.occupied_bytes()?);
         if bytes > available {
             return Err(FileIngestError::SpoolCapacityExceeded {
-                limit: if proposed.is_some() { "max_total_bytes" }
-                    else { "file_publication_total_bytes" },
+                limit: if proposed.is_some() {
+                    "max_total_bytes"
+                } else {
+                    "file_publication_total_bytes"
+                },
                 required: bytes,
                 available,
             });
@@ -469,7 +487,11 @@ impl FilePublicationPlan {
         let required_objects = spool.object_count() + objects;
         if required_objects > limits.spool.max_objects {
             return Err(capacity(
-                if proposed.is_some() { "max_objects" } else { "file_publication_objects" },
+                if proposed.is_some() {
+                    "max_objects"
+                } else {
+                    "file_publication_objects"
+                },
                 required_objects,
                 limits.spool.max_objects,
             ));
