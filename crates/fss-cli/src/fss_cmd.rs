@@ -14,6 +14,7 @@ use crate::orient_cmd::{
 };
 use crate::query_cmd::{QueryArgs, execute_query, parse_query_args};
 use crate::session_cmd::{SessionCommand, execute_session, parse_handoff, parse_session_args};
+use crate::status_cmd::{StatusArgs, execute_status, parse_status_args};
 use crate::token::{ArgToken, tokenize_os_args};
 
 const VERSION: &str = env!("CARGO_PKG_VERSION");
@@ -37,7 +38,7 @@ pub enum FssCommand {
     /// Report system diagnostic doctor results in JSON format.
     Doctor(DoctorArgs),
     /// Report system status in JSON format.
-    Status,
+    Status(StatusArgs),
     /// Negative evidence ledger management.
     NegativeEvidence(Box<NegativeEvidenceAction>),
     /// Read-only AOP-003 session.orient over a deployment root: an AgentResponseEnvelope carrying the anchor-pinned SituationCapsule, listing (never executing) its affordances.
@@ -59,7 +60,7 @@ impl FssCommand {
         match self {
             Self::Capabilities
             | Self::Doctor(_)
-            | Self::Status
+            | Self::Status(_)
             | Self::Orient(_)
             | Self::Explain(_)
             | Self::Follow(_)
@@ -74,7 +75,7 @@ impl FssCommand {
 /// Returns the static help text for `fss`.
 #[must_use]
 pub const fn help_text() -> &'static str {
-    "Franken Surveillance System: unqualified reference implementation\n\nUSAGE:\n  fss help\n  fss version\n  fss capabilities --json\n  fss doctor --json [--root <dir>]\n      --root inspects a deployment root read-only (never writes, locks, or repairs)\n  fss status --json\n  fss query --json --root <dir> [--event-id <id>] [--kind <kind>] [--state <state>] [--zone <zone>] [--from-ns <i128>] [--through-ns <i128>] [--max-entries <1..32>] [--anchor <token>] [--continuation <token>] [--principal <id>]\n      read-only AOP-005 exact committed record query; an empty result never certifies physical absence\n  fss session orient --json --root <dir> [--view pulse|brief|epistemic_map] [--principal <id>] [--budget-tokens <n>]\n      (alias: fss orient) read-only AOP-003 session.orient: AgentResponseEnvelope with the SituationCapsule; lists affordances, never executes them\n  fss explain --json --root <dir> --event-id <id> [--principal <id>]\n      read-only AOP-011 explain of one published event\n  fss session follow --json --root <dir> --since <anchor> [--view pulse|brief] [--principal <id>] [--max-entries <n>] [--continuation <token>]\n      (alias: fss follow) read-only AOP-004 session.follow: the MeaningfulDelta since an orient anchor token, paged through exact continuations\n  fss session open --json --root <dir> --mission <text-or-file> --objective <text> [--principal <id>] [--view pulse|brief|epistemic_map] [--budget-tokens <n>]\n      AOP-001 session.open: a durable mission-scoped session and its first workspace revision at the current orient anchor (writes agent/ only)\n  fss handoff --json --root <dir> --session <id> [--principal <id>] [--note <text>]\n      (alias: fss session handoff) AOP-012 handoff: publishes a root-last HandoffCapsule sealed as of the session's anchor\n  fss session resume --json --root <dir> --handoff <id> [--principal <id>]\n      AOP-002 session.resume: accepts the handoff, lists every invalidated assumption, and rebases the session onto the head\n  fss negative-evidence <init|list|verify|append> [--path <file>] [--json]\n\nCompanion binaries: fss-file (import and decode recorded media), fss-infer (scalar model\nexecution, detection, tracking), fss-event (recorded event reports and publication,\nowner site calibration from correspondences),\nfss-archive (RTSP/HTTP capture archives), fss-lab (deterministic scenarios).\nNothing is release-qualified; the capabilities command lists what is implemented."
+    "Franken Surveillance System: unqualified reference implementation\n\nUSAGE:\n  fss help\n  fss version\n  fss capabilities --json\n  fss doctor --json [--root <dir>]\n      --root inspects a deployment root read-only (never writes, locks, or repairs)\n  fss status --json [--root <dir>]\n      --root reports the retained inventory read-only (anchor, sensors, streams, imports, events,\n      obligations); never device acquisition, live streaming, or real-provider alerts\n  fss query --json --root <dir> [--event-id <id>] [--kind <kind>] [--state <state>] [--zone <zone>] [--from-ns <i128>] [--through-ns <i128>] [--max-entries <1..32>] [--anchor <token>] [--continuation <token>] [--principal <id>]\n      read-only AOP-005 exact committed record query; an empty result never certifies physical absence\n  fss session orient --json --root <dir> [--view pulse|brief|epistemic_map] [--principal <id>] [--budget-tokens <n>]\n      (alias: fss orient) read-only AOP-003 session.orient: AgentResponseEnvelope with the SituationCapsule; lists affordances, never executes them\n  fss explain --json --root <dir> --event-id <id> [--principal <id>]\n      read-only AOP-011 explain of one published event\n  fss session follow --json --root <dir> --since <anchor> [--view pulse|brief] [--principal <id>] [--max-entries <n>] [--continuation <token>]\n      (alias: fss follow) read-only AOP-004 session.follow: the MeaningfulDelta since an orient anchor token, paged through exact continuations\n  fss session open --json --root <dir> --mission <text-or-file> --objective <text> [--principal <id>] [--view pulse|brief|epistemic_map] [--budget-tokens <n>]\n      AOP-001 session.open: a durable mission-scoped session and its first workspace revision at the current orient anchor (writes agent/ only)\n  fss handoff --json --root <dir> --session <id> [--principal <id>] [--note <text>]\n      (alias: fss session handoff) AOP-012 handoff: publishes a root-last HandoffCapsule sealed as of the session's anchor\n  fss session resume --json --root <dir> --handoff <id> [--principal <id>]\n      AOP-002 session.resume: accepts the handoff, lists every invalidated assumption, and rebases the session onto the head\n  fss negative-evidence <init|list|verify|append> [--path <file>] [--json]\n\nCompanion binaries: fss-file (import and decode recorded media), fss-infer (scalar model\nexecution, detection, tracking), fss-event (recorded event reports and publication,\nowner site calibration from correspondences),\nfss-archive (RTSP/HTTP capture archives), fss-lab (deterministic scenarios).\nNothing is release-qualified; the capabilities command lists what is implemented."
 }
 
 /// Parses OS-native arguments for `fss` with total validation and exact grammar exhaustion.
@@ -118,7 +119,7 @@ pub fn parse_fss_tokens(tokens: &[ArgToken]) -> Result<FssCommand, CliError> {
             parse_json_only_subcommand("capabilities", tokens, FssCommand::Capabilities)
         }
         "doctor" => parse_doctor_tokens(tokens),
-        "status" => parse_json_only_subcommand("status", tokens, FssCommand::Status),
+        "status" => parse_status_tokens(tokens),
         // The registered spellings (AGENT_OPERATING_MODEL.md section 24.1, the frozen public
         // registry `gen:fss1:public-v1`, and architecture/operation_crosswalk.json) are
         // `fss session orient` (AOP-003), `fss session follow` (AOP-004), and `fss handoff`
@@ -252,6 +253,12 @@ fn parse_doctor_tokens(tokens: &[ArgToken]) -> Result<FssCommand, CliError> {
     Ok(FssCommand::Doctor(DoctorArgs { root }))
 }
 
+/// Parses the `status` subcommand: `--json`, optional `--root <dir>`, and optional
+/// `--max-journal-bytes <n>` (which needs `--root`), each at most once.
+fn parse_status_tokens(tokens: &[ArgToken]) -> Result<FssCommand, CliError> {
+    Ok(FssCommand::Status(parse_status_args(tokens)?))
+}
+
 /// Parses the `orient` subcommand: `--json`, `--root <dir>`, optional `--view`, `--principal`,
 /// and `--budget-tokens`, each at most once, in either `--name value` or `--name=value` form.
 fn parse_orient_tokens(tokens: &[ArgToken]) -> Result<FssCommand, CliError> {
@@ -371,12 +378,7 @@ pub fn execute_fss_with_exit(command: FssCommand) -> (String, ExitIdentity) {
             };
             (report.to_json(), exit_id)
         }
-        FssCommand::Status => (
-            format!(
-                "{{\"schema\":\"fss.status.v1\",\"version\":\"{VERSION}\",\"phase\":\"reference_implementation_unqualified\",\"deployment\":\"not_specified\",\"sensors\":[],\"events\":[],\"degraded\":[\"no_deployment_root_inspected\",\"not_release_qualified\"]}}"
-            ),
-            ExitIdentity::SUCCESS,
-        ),
+        FssCommand::Status(ref args) => execute_status(args),
         FssCommand::NegativeEvidence(ref action) => execute_negative_evidence(action),
         FssCommand::Orient(ref args) => execute_orient(args),
         FssCommand::Explain(ref args) => execute_explain(args),
@@ -427,7 +429,7 @@ mod tests {
         );
         assert_eq!(
             parse_fss_args([OsString::from("status"), OsString::from("--json")]).ok(),
-            Some(FssCommand::Status)
+            Some(FssCommand::Status(StatusArgs::default()))
         );
     }
 

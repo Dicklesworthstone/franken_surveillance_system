@@ -26,6 +26,8 @@ pub mod redact;
 /// Durable agent sessions: `session open` (AOP-001), `session handoff` (AOP-012), and
 /// `session resume` (AOP-002); agent-plane writes only.
 pub mod session_cmd;
+/// `fss status --json [--root <dir>]`: read-only retained inventory (SCHEMA-STATUS-001).
+pub mod status_cmd;
 pub mod token;
 
 pub use crosswalk::{
@@ -77,5 +79,9 @@ pub use session_cmd::{
     ERR_AGENT_HANDOFF_INVALID, ERR_AGENT_HANDOFF_NOT_FOUND, ERR_AGENT_SESSION_NOT_FOUND,
     ERR_AGENT_SESSION_STALE, ERR_AGENT_SESSION_STORE_INVALID, ERR_AGENT_SESSION_STORE_LOCKED,
     SessionCommand, SessionHandoffArgs, SessionOpenArgs, SessionResumeArgs, execute_session,
+};
+pub use status_cmd::{
+    ERR_STATUS_CANCELLED, ERR_STATUS_CHANGED, ERR_STATUS_CORRUPT, ERR_STATUS_OVER_BUDGET,
+    ERR_STATUS_UNREADABLE, STATUS_SCHEMA, StatusArgs, execute_status, parse_status_args,
 };
 pub use token::{ArgToken, MAX_ARG_TOKEN_BYTES, is_option_shaped, tokenize_os_args};

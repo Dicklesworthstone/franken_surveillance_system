@@ -6,14 +6,26 @@
 //! read, and neither an empty inventory nor a gap-free stream certifies physical absence.
 //! The existing orientation reader owns event, deletion and effect semantics. A second bounded
 //! authority read must reproduce its anchor and record root before the inventory is returned.
+//!
+//! Per-stream continuity is knowledge about committed history only: `verified` means a retained
+//! source coverage witness declares continuous delivery of every retained capsule of the stream,
+//! never that the camera is online now. A stream whose capsules all carry an estimated clock is a
+//! recorded-file source and is never a continuity source. Capsules committed by a file import that
+//! never completed are excluded from every stream and capsule count and reported separately.
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::Path;
 
-use fss_core::{CanonicalDecode, ContentDigest, EvidenceDelta, EvidenceDeltaBatch, SensorCapsule};
+use fss_core::{
+    CanonicalDecode, ClockBasis, ContentDigest, CoverageContinuity, EvidenceDelta,
+    EvidenceDeltaBatch, SensorCapsule, TimestampNs,
+};
 use fss_ledger::{HostJournalReadIo, JournalReadIo, LedgerInspection, inspect_durable};
+use fss_object::HostSpoolIo;
+use fss_publication::{HostLockTableSource, WriterDetectionOptions, WriterState, detect_writers};
 
 use crate::agent_orient::{DeploymentReadError, DeploymentSnapshot, OrientLimits, read_deployment};
+use crate::doctor::{FILE_IMPORT_BATCH_PREFIX, writer_lock_paths, writer_state_name};
 use crate::reference_deployment::{
     DEPLOYMENT_LAYOUT_FILENAME, DeploymentLayout, FAMILY_DELETION_TOMBSTONE, FAMILY_FILE_IMPORT,
     FAMILY_SENSOR_CAPSULE,
@@ -101,6 +113,49 @@ pub struct StreamInventory {
     pub declared_source_bytes: u64,
     /// Clock bases observed in capsule metadata, in canonical order.
     pub clock_bases: BTreeSet<String>,
+    /// Earliest declared capture instant over the stream's retained capsules, on the capsules'
+    /// own clock bases (an estimated basis is never capture truth).
+    pub capture_earliest: TimestampNs,
+    /// Latest declared capture instant over the stream's retained capsules.
+    pub capture_latest: TimestampNs,
+    /// Retained capsules that are frames of a retained source coverage witness declaring
+    /// continuous delivery (and of no witness declaring otherwise).
+    pub witnessed_continuous: usize,
+    /// Retained capsules that are frames of a retained witness declaring a gap or unknown
+    /// continuity.
+    pub witnessed_degraded: usize,
+    /// Continuity knowledge of the stream over committed history; never live health.
+    pub continuity: StreamContinuity,
+}
+
+/// Continuity knowledge of one stream over committed history at the status anchor. No value is a
+/// statement about the camera now.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum StreamContinuity {
+    /// Every retained capsule is a frame of a retained source coverage witness declaring
+    /// continuous delivery, and no capsule declares a preceding gap.
+    Verified,
+    /// A capsule declares a preceding gap, a covering witness declares a gap or unknown
+    /// continuity, or only part of the stream is witnessed.
+    Degraded,
+    /// Every capsule carries an estimated clock: a recorded-file source, which is never a
+    /// continuity source and never certifies absence.
+    NotObservableFileSource,
+    /// Device-clocked capsules without any retained continuity witness.
+    NotObservable,
+}
+
+impl StreamContinuity {
+    /// Stable spelling.
+    #[must_use]
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::Verified => "verified",
+            Self::Degraded => "degraded",
+            Self::NotObservableFileSource => "not_observable_file_source",
+            Self::NotObservable => "not_observable",
+        }
+    }
 }
 
 /// Source and import inventory derived from one committed authority prefix.
@@ -118,6 +173,9 @@ pub struct SourceInventory {
     pub deleted_capsules: usize,
     /// Import lifecycle objects still at generation one; their input may need an exact rerun.
     pub incomplete_imports: Vec<String>,
+    /// Capsule objects committed by an import that never completed; excluded from every stream,
+    /// sensor and retained-capsule count and never hydrated.
+    pub incomplete_import_capsules: usize,
     /// Import lifecycle objects at generation two, excluding deleted imports.
     pub completed_imports: usize,
     /// Import lifecycle objects with a committed deletion tombstone.
@@ -135,6 +193,21 @@ pub struct DeploymentStatus {
     pub ledger_present: bool,
     /// Source inventory checked against exactly the same authority anchor and root.
     pub sources: SourceInventory,
+    /// Writer lock state observed before the authority read (lock table only; nothing locked).
+    pub writer_before: WriterState,
+    /// Writer lock state observed after the final authority check.
+    pub writer_after: WriterState,
+}
+
+impl DeploymentStatus {
+    /// Whether the report may already be stale: a writer or shared holder was observed, the
+    /// writer state could not be determined, or it changed during the read.
+    #[must_use]
+    pub fn possibly_stale(&self) -> bool {
+        self.writer_before.possibly_stale()
+            || self.writer_after.possibly_stale()
+            || writer_state_name(&self.writer_before) != writer_state_name(&self.writer_after)
+    }
 }
 
 /// Explicit read boundary for status. Implementations must not write or repair deployment state.
@@ -163,6 +236,8 @@ pub trait StatusReadIo {
         digest: ContentDigest,
         max_bytes: usize,
     ) -> Result<Vec<u8>, StatusError>;
+    /// Observe writer locks on the deployment without taking a lock or modifying anything.
+    fn writer_state(&self, root: &Path, layout: &DeploymentLayout) -> WriterState;
 }
 
 /// Host reference adapter. Every operation delegates to an existing read-only bounded reader.
@@ -226,6 +301,14 @@ impl StatusReadIo for HostStatusReadIo {
         fss_publication::read_verified(root.join(&layout.objects_relpath), digest, max_bytes)
             .map_err(|_| StatusError::Corrupt)
     }
+    fn writer_state(&self, root: &Path, layout: &DeploymentLayout) -> WriterState {
+        detect_writers(
+            &HostSpoolIo,
+            &writer_lock_paths(root, layout),
+            Some(&HostLockTableSource),
+            WriterDetectionOptions::default(),
+        )
+    }
 }
 
 /// Read the host deployment, with no mutations and no claims of current physical health.
@@ -251,6 +334,7 @@ pub fn inspect_deployment_status_with(
         std::str::from_utf8(&layout_bytes).map_err(|_| StatusError::NotADeployment)?,
     )
     .map_err(|_| StatusError::NotADeployment)?;
+    let writer_before = io.writer_state(root, &layout);
     checkpoint()?;
     let snapshot = io.snapshot(root, &limits.snapshot)?;
     if snapshot.events.len() > limits.snapshot.max_events {
@@ -259,9 +343,11 @@ pub fn inspect_deployment_status_with(
     checkpoint()?;
     let ledger = io.ledger(root, &layout, limits.snapshot.max_journal_bytes)?;
     same_authority(&snapshot, &layout, &ledger)?;
-    let sources = inventory(
+    let witnessed = witnessed_capsules(&snapshot);
+    let sources = inventory_witnessed(
         &ledger.batches,
         limits,
+        &witnessed,
         &mut |digest| snapshot.deletions.object(digest).is_some(),
         &mut |digest, max_bytes| io.object(root, &layout, digest, max_bytes),
         checkpoint,
@@ -273,12 +359,37 @@ pub fn inspect_deployment_status_with(
     if io.layout(root, limits.snapshot.max_layout_bytes)? != layout_bytes {
         return Err(StatusError::Changed);
     }
+    let writer_after = io.writer_state(root, &layout);
     checkpoint()?;
     Ok(DeploymentStatus {
         snapshot,
         sources,
         ledger_present: after.status == fss_ledger::DurableLedgerStatus::Present,
+        writer_before,
+        writer_after,
     })
+}
+
+/// Continuity each retained source coverage witness declares for its frames, by capsule digest.
+/// A capsule named by several witnesses keeps the most conservative declaration.
+fn witnessed_capsules(
+    snapshot: &DeploymentSnapshot,
+) -> BTreeMap<ContentDigest, CoverageContinuity> {
+    let mut witnessed = BTreeMap::new();
+    for retained in &snapshot.source_coverage {
+        let continuity = retained.record.witness.continuity;
+        for frame in &retained.record.frames {
+            witnessed
+                .entry(frame.capsule_digest)
+                .and_modify(|seen| {
+                    if continuity != CoverageContinuity::Continuous {
+                        *seen = continuity;
+                    }
+                })
+                .or_insert(continuity);
+        }
+    }
+    witnessed
 }
 
 fn validate_limits(limits: &StatusLimits) -> Result<(), StatusError> {
@@ -320,6 +431,7 @@ fn same_authority(
     Ok(())
 }
 
+#[cfg(test)]
 fn inventory(
     batches: &[EvidenceDeltaBatch],
     limits: &StatusLimits,
@@ -327,7 +439,40 @@ fn inventory(
     read: &mut dyn FnMut(ContentDigest, usize) -> Result<Vec<u8>, StatusError>,
     checkpoint: &mut dyn FnMut() -> Result<(), StatusError>,
 ) -> Result<SourceInventory, StatusError> {
-    let mut latest: BTreeMap<&str, &EvidenceDelta> = BTreeMap::new();
+    inventory_witnessed(batches, limits, &BTreeMap::new(), deleted, read, checkpoint)
+}
+
+/// Whether `batch` may hold capsules of the incomplete import started by batch `start`: every
+/// planned capsule batch of its identity (`batch:file-import:<identity>:c<k>`) or, for an import
+/// started under another batch identity, exactly the batch that started it.
+fn incomplete_import_batch(batch: &str, start: &str) -> bool {
+    match planned_capsule_prefix(start) {
+        Some(prefix) => batch
+            .strip_prefix(prefix)
+            .is_some_and(|k| !k.is_empty() && k.bytes().all(|b| b.is_ascii_digit())),
+        None => batch == start,
+    }
+}
+
+/// `batch:file-import:<identity>:c` of a planned capsule batch identity, if it is one.
+fn planned_capsule_prefix(start: &str) -> Option<&str> {
+    let rest = start.strip_prefix(FILE_IMPORT_BATCH_PREFIX)?;
+    let (identity, k) = rest.rsplit_once(":c")?;
+    if identity.is_empty() || k.is_empty() || !k.bytes().all(|b| b.is_ascii_digit()) {
+        return None;
+    }
+    start.get(..FILE_IMPORT_BATCH_PREFIX.len() + identity.len() + 2)
+}
+
+fn inventory_witnessed(
+    batches: &[EvidenceDeltaBatch],
+    limits: &StatusLimits,
+    witnessed: &BTreeMap<ContentDigest, CoverageContinuity>,
+    deleted: &mut dyn FnMut(ContentDigest) -> bool,
+    read: &mut dyn FnMut(ContentDigest, usize) -> Result<Vec<u8>, StatusError>,
+    checkpoint: &mut dyn FnMut() -> Result<(), StatusError>,
+) -> Result<SourceInventory, StatusError> {
+    let mut latest: BTreeMap<&str, (&EvidenceDelta, &str)> = BTreeMap::new();
     let mut capsules = BTreeSet::new();
     let mut imports = BTreeSet::new();
     for batch in batches {
@@ -338,7 +483,7 @@ fn inventory(
             if !latest.contains_key(id) && latest.len() == limits.max_objects {
                 return Err(StatusError::OverBudget);
             }
-            latest.insert(id, delta);
+            latest.insert(id, (delta, batch.batch_id.as_str()));
             if delta.family == FAMILY_SENSOR_CAPSULE {
                 capsules.insert(id);
             }
@@ -351,17 +496,35 @@ fn inventory(
         capsule_objects: capsules.len(),
         ..SourceInventory::default()
     };
+    // Batches that started an import still at generation one: its capsules are never counted.
+    let mut incomplete_starts = Vec::new();
+    for id in &imports {
+        let (delta, batch) = *latest.get(id).ok_or(StatusError::Corrupt)?;
+        if delta.family == FAMILY_FILE_IMPORT
+            && delta.new_generation == 1
+            && !deleted(delta.payload_digest)
+        {
+            incomplete_starts.push(batch);
+        }
+    }
     let mut streams: BTreeMap<(String, String), StreamInventory> = BTreeMap::new();
     let mut identities = BTreeSet::new();
     for id in capsules {
         checkpoint()?;
-        let delta = latest.get(id).ok_or(StatusError::Corrupt)?;
+        let (delta, batch) = *latest.get(id).ok_or(StatusError::Corrupt)?;
         if delta.family == FAMILY_DELETION_TOMBSTONE || deleted(delta.payload_digest) {
             output.deleted_capsules += 1;
             continue;
         }
         if delta.family != FAMILY_SENSOR_CAPSULE {
             return Err(StatusError::Corrupt);
+        }
+        if incomplete_starts
+            .iter()
+            .any(|start| incomplete_import_batch(batch, start))
+        {
+            output.incomplete_import_capsules += 1;
+            continue;
         }
         if output.retained_capsules == limits.max_capsules {
             return Err(StatusError::OverBudget);
@@ -386,10 +549,23 @@ fn inventory(
         output.metadata_bytes_read += bytes.len();
         output.retained_capsules += 1;
         add_capsule(&mut streams, &capsule, limits.max_streams)?;
+        let key = (
+            capsule.sensor_id.as_str().to_owned(),
+            capsule.stream_id.as_str().to_owned(),
+        );
+        let row = streams.get_mut(&key).ok_or(StatusError::Corrupt)?;
+        match witnessed.get(&delta.payload_digest) {
+            Some(CoverageContinuity::Continuous) => row.witnessed_continuous += 1,
+            Some(_) => row.witnessed_degraded += 1,
+            None => {}
+        }
+    }
+    for row in streams.values_mut() {
+        row.continuity = classify_continuity(row);
     }
     for id in imports {
         checkpoint()?;
-        let delta = latest.get(id).ok_or(StatusError::Corrupt)?;
+        let (delta, _) = *latest.get(id).ok_or(StatusError::Corrupt)?;
         if delta.family == FAMILY_DELETION_TOMBSTONE || deleted(delta.payload_digest) {
             output.deleted_imports += 1;
         } else if delta.family != FAMILY_FILE_IMPORT {
@@ -405,6 +581,23 @@ fn inventory(
     output.sensors = streams.keys().map(|(sensor, _)| sensor.clone()).collect();
     output.streams = streams.into_values().collect();
     Ok(output)
+}
+
+/// The one continuity rule: a file source first, then witnesses. Anything short of a continuous
+/// witness of every capsule with no declared gap is degraded or not observable.
+fn classify_continuity(row: &StreamInventory) -> StreamContinuity {
+    if row.clock_bases.len() == 1 && row.clock_bases.contains(ClockBasis::Estimated.as_str()) {
+        StreamContinuity::NotObservableFileSource
+    } else if row.witnessed_continuous == 0 && row.witnessed_degraded == 0 {
+        StreamContinuity::NotObservable
+    } else if row.witnessed_continuous == row.capsules
+        && row.witnessed_degraded == 0
+        && row.recorded_gaps == 0
+    {
+        StreamContinuity::Verified
+    } else {
+        StreamContinuity::Degraded
+    }
 }
 
 fn add_capsule(
@@ -426,8 +619,15 @@ fn add_capsule(
         recorded_gaps: 0,
         declared_source_bytes: 0,
         clock_bases: BTreeSet::new(),
+        capture_earliest: capsule.capture.earliest,
+        capture_latest: capsule.capture.latest,
+        witnessed_continuous: 0,
+        witnessed_degraded: 0,
+        continuity: StreamContinuity::NotObservable,
     });
     row.capsules += 1;
+    row.capture_earliest = row.capture_earliest.min(capsule.capture.earliest);
+    row.capture_latest = row.capture_latest.max(capsule.capture.latest);
     row.recorded_gaps += usize::from(capsule.gap_before);
     row.declared_source_bytes = row
         .declared_source_bytes
@@ -718,6 +918,221 @@ mod tests {
             run(&ledger, &BTreeMap::new(), &limits),
             Err(StatusError::OverBudget)
         );
+        Ok(())
+    }
+
+    fn append_named(
+        ledger: &mut ReferenceLedger,
+        batch: &str,
+        changes: Vec<EvidenceDelta>,
+    ) -> TestResult {
+        let roots: Vec<_> = changes.iter().map(|d| d.payload_digest).collect();
+        let batch = ledger.prepare_batch(BatchId::parse(batch)?, changes, roots)?;
+        let _ = ledger.append(batch)?;
+        Ok(())
+    }
+
+    fn encoded(capsule: &SensorCapsule) -> Result<Vec<u8>, Box<dyn std::error::Error>> {
+        let mut encoder = fss_core::CanonicalEncoder::new();
+        capsule.encode_canonical(&mut encoder);
+        Ok(encoder.finish_checked()?)
+    }
+
+    #[test]
+    fn capsules_of_an_incomplete_import_are_excluded_from_every_count() -> TestResult {
+        let started = capsule("capsule:ab:000000", "sensor:crashed", "stream:crashed")?;
+        let later = capsule("capsule:ab:000001", "sensor:crashed", "stream:crashed")?;
+        let done = capsule("capsule:cd:000000", "sensor:done", "stream:done")?;
+        let mut objects = BTreeMap::new();
+        for c in [&started, &later, &done] {
+            let bytes = encoded(c)?;
+            objects.insert(ContentDigest::sha256(&bytes), bytes);
+        }
+        let mut ledger = ReferenceLedger::new("site:status");
+        append_named(
+            &mut ledger,
+            "batch:file-import:ab:c0",
+            vec![
+                delta("object:file-import:ab", FAMILY_FILE_IMPORT, 1, b"ab-start")?,
+                delta(
+                    "object:capsule:capsule:ab:000000",
+                    FAMILY_SENSOR_CAPSULE,
+                    1,
+                    &encoded(&started)?,
+                )?,
+            ],
+        )?;
+        append_named(
+            &mut ledger,
+            "batch:file-import:ab:c1",
+            vec![delta(
+                "object:capsule:capsule:ab:000001",
+                FAMILY_SENSOR_CAPSULE,
+                1,
+                &encoded(&later)?,
+            )?],
+        )?;
+        append_named(
+            &mut ledger,
+            "batch:file-import:cd:c0",
+            vec![
+                delta("object:file-import:cd", FAMILY_FILE_IMPORT, 1, b"cd-start")?,
+                delta(
+                    "object:capsule:capsule:cd:000000",
+                    FAMILY_SENSOR_CAPSULE,
+                    1,
+                    &encoded(&done)?,
+                )?,
+            ],
+        )?;
+        append_named(
+            &mut ledger,
+            "batch:file-import:cd:manifest",
+            vec![delta(
+                "object:file-import:cd",
+                FAMILY_FILE_IMPORT,
+                2,
+                b"cd-done",
+            )?],
+        )?;
+        let output = run(&ledger, &objects, &StatusLimits::default())?;
+        assert_eq!(output.incomplete_imports, ["object:file-import:ab"]);
+        assert_eq!(output.completed_imports, 1);
+        assert_eq!(output.incomplete_import_capsules, 2);
+        assert_eq!(output.retained_capsules, 1);
+        assert_eq!(output.capsule_objects, 3);
+        assert_eq!(
+            output.sensors.iter().collect::<Vec<_>>(),
+            [&"sensor:done".to_owned()]
+        );
+        assert_eq!(output.streams.len(), 1);
+        assert_eq!(output.streams[0].capsules, 1);
+        // Planted negative: the started import completes, and its capsules count again.
+        append_named(
+            &mut ledger,
+            "batch:file-import:ab:manifest",
+            vec![delta(
+                "object:file-import:ab",
+                FAMILY_FILE_IMPORT,
+                2,
+                b"ab-done",
+            )?],
+        )?;
+        let output = run(&ledger, &objects, &StatusLimits::default())?;
+        assert!(output.incomplete_imports.is_empty());
+        assert_eq!(output.incomplete_import_capsules, 0);
+        assert_eq!(output.retained_capsules, 3);
+        Ok(())
+    }
+
+    #[test]
+    fn planned_capsule_batches_are_attributed_exactly() {
+        assert!(incomplete_import_batch(
+            "batch:file-import:ab:c12",
+            "batch:file-import:ab:c0"
+        ));
+        assert!(!incomplete_import_batch(
+            "batch:file-import:abc:c1",
+            "batch:file-import:ab:c0"
+        ));
+        assert!(!incomplete_import_batch(
+            "batch:file-import:ab:manifest",
+            "batch:file-import:ab:c0"
+        ));
+        assert!(!incomplete_import_batch(
+            "batch:file-import:ab:c",
+            "batch:file-import:ab:c0"
+        ));
+        assert!(incomplete_import_batch("batch:other", "batch:other"));
+        assert!(!incomplete_import_batch("batch:other:2", "batch:other"));
+    }
+
+    #[test]
+    fn continuity_is_file_source_unwitnessed_verified_or_degraded() -> TestResult {
+        let mut file = capsule("capsule:file", "sensor:file", "stream:file")?;
+        file.gap_before = true;
+        let mut device = Vec::new();
+        for (sensor, n) in [("sensor:full", 2), ("sensor:none", 1), ("sensor:part", 2)] {
+            for i in 0..n {
+                let mut c = capsule(&format!("capsule:{sensor}:{i}"), sensor, "stream:cam")?;
+                c.clock_basis = ClockBasis::DeviceMonotonic;
+                c.sequence = i + 1;
+                device.push(c);
+            }
+        }
+        let mut gapped = capsule("capsule:gap", "sensor:gap", "stream:cam")?;
+        gapped.clock_basis = ClockBasis::DeviceMonotonic;
+        gapped.gap_before = true;
+        let mut objects = BTreeMap::new();
+        let mut deltas = Vec::new();
+        let mut witnessed = BTreeMap::new();
+        for c in std::iter::once(&file).chain(&device).chain([&gapped]) {
+            let bytes = encoded(c)?;
+            let digest = ContentDigest::sha256(&bytes);
+            objects.insert(digest, bytes.clone());
+            deltas.push(delta(
+                &format!("object:{}", c.capsule_id.as_str()),
+                FAMILY_SENSOR_CAPSULE,
+                1,
+                &bytes,
+            )?);
+            let sensor = c.sensor_id.as_str();
+            if sensor == "sensor:full"
+                || sensor == "sensor:gap"
+                || (sensor == "sensor:part" && c.sequence == 1)
+            {
+                witnessed.insert(digest, CoverageContinuity::Continuous);
+            }
+        }
+        let mut ledger = ReferenceLedger::new("site:status");
+        append(&mut ledger, deltas)?;
+        let output = inventory_witnessed(
+            ledger.batches(),
+            &StatusLimits::default(),
+            &witnessed,
+            &mut |_| false,
+            &mut |digest, _| objects.get(&digest).cloned().ok_or(StatusError::Unreadable),
+            &mut || Ok(()),
+        )?;
+        let knowledge: BTreeMap<&str, StreamContinuity> = output
+            .streams
+            .iter()
+            .map(|row| (row.sensor_id.as_str(), row.continuity))
+            .collect();
+        assert_eq!(
+            knowledge["sensor:file"],
+            StreamContinuity::NotObservableFileSource
+        );
+        assert_eq!(knowledge["sensor:full"], StreamContinuity::Verified);
+        assert_eq!(knowledge["sensor:none"], StreamContinuity::NotObservable);
+        assert_eq!(knowledge["sensor:part"], StreamContinuity::Degraded);
+        assert_eq!(knowledge["sensor:gap"], StreamContinuity::Degraded);
+        // A gapped witness of every capsule is never verified.
+        let all_gapped: BTreeMap<_, _> = witnessed
+            .keys()
+            .map(|digest| (*digest, CoverageContinuity::Gapped))
+            .collect();
+        let output = inventory_witnessed(
+            ledger.batches(),
+            &StatusLimits::default(),
+            &all_gapped,
+            &mut |_| false,
+            &mut |digest, _| objects.get(&digest).cloned().ok_or(StatusError::Unreadable),
+            &mut || Ok(()),
+        )?;
+        assert!(
+            output
+                .streams
+                .iter()
+                .all(|row| row.continuity != StreamContinuity::Verified)
+        );
+        let file_row = output
+            .streams
+            .iter()
+            .find(|row| row.sensor_id == "sensor:file")
+            .ok_or("file stream")?;
+        assert_eq!(file_row.capture_earliest, TimestampNs(0));
+        assert_eq!(file_row.capture_latest, TimestampNs(10));
         Ok(())
     }
 }

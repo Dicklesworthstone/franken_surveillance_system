@@ -434,6 +434,11 @@ operation states rather than generic errors.
 | `ERR-SOURCE-EVIDENCE-UNSUPPORTED-VERSION-001` | unsupported source evidence binary wire format version | encode with current supported format version |
 | `ERR-DOCTOR-ATTENTION-REQUIRED-001` | doctor inspection detected deployment conditions requiring attention | inspect doctor report and follow next affordance |
 | `ERR-DOCTOR-NOT-A-DEPLOYMENT-001` | target directory is not a recognized reference deployment root | provide a valid reference deployment root |
+| `ERR-STATUS-UNREADABLE-001` | `fss status --root`: a required status input (`LAYOUT`, a journal, or a capsule metadata object) cannot be read; no inventory is printed | restore read access to the deployment root, then rerun the read-only status |
+| `ERR-STATUS-CORRUPT-001` | `fss status --root`: committed history, a capsule metadata object, or a capsule identity failed verification; no inventory is printed | run `fss doctor --json --root <dir>` and follow its recovery affordances; never repair through status |
+| `ERR-STATUS-OVER-BUDGET-001` | `fss status --root`: a journal, object, stream, capsule, metadata, or output bound was exceeded; the read is refused and no count is ever a total from a partial replay | raise `--max-journal-bytes` within its ceiling or inspect a narrower root; never retry unchanged |
+| `ERR-STATUS-CHANGED-001` | `fss status --root`: committed authority (anchor, record root, or `LAYOUT`) changed while the inventory was read; no mixed-generation report is printed | safe read retry once the writer is idle |
+| `ERR-STATUS-CANCELLED-001` | `fss status --root`: the read was cancelled at a checkpoint; nothing was written | rerun the read-only status |
 | `ERR-LAB-ROOT-NOT-EMPTY-001` | laboratory target root directory already contains files | choose an empty or new target root directory |
 | `ERR-LAB-RECOVER-ROOT-LOCKED-001` | `recover_root_locked`: `fss-lab recover` could not take `<root>/objects/LOCK` for a mutating action; another holder has the deployment, and nothing was changed | wait for the holder to exit, then rerun the same command; the read-only `--plan-*-repair` needs no lock |
 | `ERR-LAB-RECOVER-NOTHING-TO-DO-001` | `recover_nothing_to_do`: every action `fss-lab recover` was asked for found nothing to recover (no incomplete tail, no foreign bytes, no orphaned temp, no orphaned staging file, no indeterminate operation); a completed earlier run reports this | do not retry; inspect the report's `state_after` and next affordances |
@@ -523,6 +528,7 @@ Stable process exit identities map command-line interface outcomes to determinis
 | `EXIT-DOCTOR-NOT-A-DEPLOYMENT-004` | 4 | target directory is not a recognized reference deployment root | verify root path points to a deployment directory initialized with fss reference layout |
 | `EXIT-AGENT-REFUSED-005` | 5 | an agent read (orient, explain, follow) was refused; the response envelope carries the registered error identity | read `errorId` and `degradation` in the envelope and follow the refused operation's recovery class |
 | `EXIT-LAB-RECOVER-REFUSED-006` | 6 | `fss-lab recover` refused an action; the `fss.cli_diagnostic.v1` line and the report carry the `ERR-LAB-RECOVER-*` identity | read `error_id` and follow that identity's recovery guidance |
+| `EXIT-STATUS-REFUSED-007` | 7 | `fss status --root` refused a read; the `fss.cli_diagnostic.v1` document carries the `ERR-STATUS-*` identity and no partial totals | read `error_id` and follow that identity's recovery guidance |
 
 ## Contract error codes (`fss-core`)
 Canonical machine error codes returned by `ContractError::code()` (AGT-LAYER-002, INV-003):

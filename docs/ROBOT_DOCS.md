@@ -31,7 +31,7 @@ Standard machine introspection entrypoints available on every conforming node:
 | `capabilities` | `fss capabilities --json` | Report capabilities in JSON format. |
 | `doctor` | `fss doctor --json [--root &lt;dir&gt;]` | Report system diagnostic doctor results in JSON format. |
 | `negative_evidence` | `fss negative-evidence list --json` | Negative evidence ledger management. |
-| `status` | `fss status --json` | Report system status in JSON format. |
+| `status` | `fss status --json [--root &lt;dir&gt;]` | Report system status in JSON format. |
 
 ## 2. Core Protocol Error Taxonomy
 
@@ -844,6 +844,11 @@ All stable error identities and normative recovery guidance cataloged from `regi
 | `ERR-SOURCE-EVIDENCE-UNSUPPORTED-VERSION-001` | unsupported source evidence binary wire format version | encode with current supported format version |
 | `ERR-SOURCE-EVIDENCE-WITNESS-EQUALS-SOURCE-DIGEST-001` | continuity witness cannot equal source digest | supply distinct continuity witness |
 | `ERR-SOURCE-EVIDENCE-WITNESS-REQUIRED-001` | continuity witness classification requires a continuity witness digest | provide continuity witness or change classification |
+| `ERR-STATUS-CANCELLED-001` | 'fss status --root': the read was cancelled at a checkpoint; nothing was written | rerun the read-only status |
+| `ERR-STATUS-CHANGED-001` | 'fss status --root': committed authority (anchor, record root, or 'LAYOUT') changed while the inventory was read; no mixed-generation report is printed | safe read retry once the writer is idle |
+| `ERR-STATUS-CORRUPT-001` | 'fss status --root': committed history, a capsule metadata object, or a capsule identity failed verification; no inventory is printed | run 'fss doctor --json --root &lt;dir&gt;' and follow its recovery affordances; never repair through status |
+| `ERR-STATUS-OVER-BUDGET-001` | 'fss status --root': a journal, object, stream, capsule, metadata, or output bound was exceeded; the read is refused and no count is ever a total from a partial replay | raise '--max-journal-bytes' within its ceiling or inspect a narrower root; never retry unchanged |
+| `ERR-STATUS-UNREADABLE-001` | 'fss status --root': a required status input ('LAYOUT', a journal, or a capsule metadata object) cannot be read; no inventory is printed | restore read access to the deployment root, then rerun the read-only status |
 | `ERR-STREAM-CONTINUITY-001` | gaps/jitter exceed contract | degrade coverage; bounded recovery |
 | `ERR-STREAM-NO-FIRST-FRAME-001` | adapter accepted but no decodable frame before budget | reconnect or fail; never claim coverage |
 | `ERR-TIME-INTERVAL-INVERTED-001` | capture or transit interval earliest bound exceeds latest bound | correct interval bounds before evaluation |

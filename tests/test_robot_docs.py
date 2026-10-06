@@ -1621,7 +1621,7 @@ class RobotDocsContractTests(unittest.TestCase):
         fss_cmd_file.write_text(orig_text.replace("fss status --json", "fss status --json --verbose", 1), encoding="utf-8")
         _, js_str = generate_docs(self.fake_root)
         disc = json.loads(js_str)["discovery"]
-        self.assertEqual(disc["status"]["cli"], "fss status --json --verbose", "CLI discovery must reflect help_text changes")
+        self.assertEqual(disc["status"]["cli"], "fss status --json --verbose [--root <dir>]", "CLI discovery must reflect help_text changes")
 
         # 2. Changing doctor usage in help_text updates discovery doctor cli string
         fss_cmd_file.write_text(orig_text.replace("fss doctor --json", "fss doctor --format json", 1), encoding="utf-8")
@@ -1642,7 +1642,7 @@ class RobotDocsContractTests(unittest.TestCase):
         )
         _, js_str = generate_docs(self.fake_root)
         disc = json.loads(js_str)["discovery"]
-        self.assertEqual(disc["status"]["cli"], "fss state --json", "CLI discovery must reflect parser match arms")
+        self.assertEqual(disc["status"]["cli"], "fss state --json [--root <dir>]", "CLI discovery must reflect parser match arms")
 
         # 5. Changing status doc comment updates description
         fss_cmd_file.write_text(orig_text.replace("/// Report system status in JSON format.", "/// Report CHANGED status.", 1), encoding="utf-8")
@@ -1651,7 +1651,7 @@ class RobotDocsContractTests(unittest.TestCase):
         self.assertEqual(disc["status"]["description"], "Report CHANGED status.")
 
         # 6. Renaming variant Status to Health triggers missing endpoint error
-        fss_cmd_file.write_text(orig_text.replace("    Status,", "    Health,", 1), encoding="utf-8")
+        fss_cmd_file.write_text(orig_text.replace("    Status(StatusArgs),", "    Health(StatusArgs),", 1), encoding="utf-8")
         with self.assertRaises(RobotDocsError) as ctx:
             generate_docs(self.fake_root)
         self.assertEqual(ctx.exception.code, ERR_ROBOT_DOCS_CORRUPT)
@@ -1664,7 +1664,7 @@ class RobotDocsContractTests(unittest.TestCase):
         _, document = generate_docs(self.fake_root)
         discovery = json.loads(document)["discovery"]
         self.assertEqual(discovery["doctor"]["cli"], "fss doctor --json [--root <dir>]")
-        self.assertEqual(discovery["status"]["cli"], "fss status --json")
+        self.assertEqual(discovery["status"]["cli"], "fss status --json [--root <dir>]")
         fss_cmd_file.write_text(
             content.replace("parse_doctor_tokens(tokens)", "missing_parser(tokens)", 1),
             encoding="utf-8",
@@ -1893,7 +1893,7 @@ class RobotDocsContractTests(unittest.TestCase):
         help_cases = [
             ("capabilities", r"  fss capabilities --json\n"),
             ("doctor", r"  fss doctor --json [--root <dir>]\n"),
-            ("status", r"  fss status --json\n"),
+            ("status", r"  fss status --json [--root <dir>]\n"),
             ("negative_evidence", r"  fss negative-evidence <init|list|verify|append> [--path <file>] [--json]\n"),
         ]
         for name, line in help_cases:
@@ -1930,7 +1930,7 @@ class RobotDocsContractTests(unittest.TestCase):
         """fss-77my8: Removing status usage line from help_text() raises ERR-ROBOT-DOCS-CORRUPT-001 (kills S4)."""
         cmd_file = self.fake_root / "crates/fss-cli/src/fss_cmd.rs"
         orig = cmd_file.read_text(encoding="utf-8")
-        target_line = r"  fss status --json\n"
+        target_line = r"  fss status --json [--root <dir>]\n"
         self.assertIn(target_line, orig)
         cmd_file.write_text(orig.replace(target_line, ""), encoding="utf-8")
         with self.assertRaises(RobotDocsError) as ctx:

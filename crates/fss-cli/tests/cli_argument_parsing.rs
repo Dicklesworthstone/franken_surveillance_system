@@ -37,7 +37,17 @@ fn registered_commands_decode_successfully() {
                 root: Some(std::path::PathBuf::from("/path/to/dep")),
             }),
         ),
-        (&["status", "--json"], FssCommand::Status),
+        (
+            &["status", "--json"],
+            FssCommand::Status(fss_cli::StatusArgs::default()),
+        ),
+        (
+            &["status", "--json", "--root", "/path/to/dep"],
+            FssCommand::Status(fss_cli::StatusArgs {
+                root: Some(std::path::PathBuf::from("/path/to/dep")),
+                max_journal_bytes: None,
+            }),
+        ),
         (
             &["negative-evidence", "help"],
             FssCommand::NegativeEvidence(Box::new(fss_cli::NegativeEvidenceAction::Help)),

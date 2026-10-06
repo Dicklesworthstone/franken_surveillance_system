@@ -136,7 +136,7 @@
       "description": "Negative evidence ledger management."
     },
     "status": {
-      "cli": "fss status --json",
+      "cli": "fss status --json [--root <dir>]",
       "description": "Report system status in JSON format."
     }
   },
@@ -2275,6 +2275,31 @@
       "description": "continuity witness classification requires a continuity witness digest",
       "guidance": "provide continuity witness or change classification",
       "id": "ERR-SOURCE-EVIDENCE-WITNESS-REQUIRED-001"
+    },
+    {
+      "description": "`fss status --root`: the read was cancelled at a checkpoint; nothing was written",
+      "guidance": "rerun the read-only status",
+      "id": "ERR-STATUS-CANCELLED-001"
+    },
+    {
+      "description": "`fss status --root`: committed authority (anchor, record root, or `LAYOUT`) changed while the inventory was read; no mixed-generation report is printed",
+      "guidance": "safe read retry once the writer is idle",
+      "id": "ERR-STATUS-CHANGED-001"
+    },
+    {
+      "description": "`fss status --root`: committed history, a capsule metadata object, or a capsule identity failed verification; no inventory is printed",
+      "guidance": "run `fss doctor --json --root <dir>` and follow its recovery affordances; never repair through status",
+      "id": "ERR-STATUS-CORRUPT-001"
+    },
+    {
+      "description": "`fss status --root`: a journal, object, stream, capsule, metadata, or output bound was exceeded; the read is refused and no count is ever a total from a partial replay",
+      "guidance": "raise `--max-journal-bytes` within its ceiling or inspect a narrower root; never retry unchanged",
+      "id": "ERR-STATUS-OVER-BUDGET-001"
+    },
+    {
+      "description": "`fss status --root`: a required status input (`LAYOUT`, a journal, or a capsule metadata object) cannot be read; no inventory is printed",
+      "guidance": "restore read access to the deployment root, then rerun the read-only status",
+      "id": "ERR-STATUS-UNREADABLE-001"
     },
     {
       "description": "gaps/jitter exceed contract",

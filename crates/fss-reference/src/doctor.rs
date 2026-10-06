@@ -689,14 +689,7 @@ pub fn inspect_deployment_with(
     layout_check.field("site_lineage", text(&layout.site_lineage));
 
     // 2. Writer detection
-    let lock_paths = vec![
-        objects_dir.join(fss_publication::LOCAL_LOCK_FILE),
-        objects_dir
-            .join(fss_publication::LOCAL_SPOOL_DIR)
-            .join(fss_object::SPOOL_LOCK_FILE),
-        ledger_file.clone(),
-        effects_file.clone(),
-    ];
+    let lock_paths = writer_lock_paths(root, &layout);
     let writer_state = detect_writers(
         io.fs,
         &lock_paths,
@@ -1094,8 +1087,24 @@ fn layout_check(
     check
 }
 
+/// The lock files whose holders are deployment writers: the publication and spool locks and both
+/// journals. Observing them through the lock table takes no lock.
+#[must_use]
+pub fn writer_lock_paths(root: &Path, layout: &DeploymentLayout) -> Vec<PathBuf> {
+    let objects_dir = root.join(&layout.objects_relpath);
+    vec![
+        objects_dir.join(fss_publication::LOCAL_LOCK_FILE),
+        objects_dir
+            .join(fss_publication::LOCAL_SPOOL_DIR)
+            .join(fss_object::SPOOL_LOCK_FILE),
+        root.join(&layout.ledger_relpath),
+        root.join(&layout.effects_relpath),
+    ]
+}
+
 /// Stable name of a writer state; never flattened.
-fn writer_state_name(state: &WriterState) -> &'static str {
+#[must_use]
+pub fn writer_state_name(state: &WriterState) -> &'static str {
     match state {
         WriterState::Held { .. } => "held",
         WriterState::SharedHolder { .. } => "shared_holder",

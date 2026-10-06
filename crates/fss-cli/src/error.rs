@@ -139,6 +139,14 @@ impl ExitIdentity {
         code: 6,
         identifier: "EXIT-LAB-RECOVER-REFUSED-006",
     };
+
+    /// `fss status --root` refused a read (unreadable, corrupt, over budget, changed during the
+    /// read, or cancelled); the diagnostic carries the `ERR-STATUS-*` identity and no partial
+    /// totals are printed.
+    pub const STATUS_REFUSED: Self = Self {
+        code: 7,
+        identifier: "EXIT-STATUS-REFUSED-007",
+    };
 }
 
 /// Typed errors produced during CLI argument decoding and validation.
