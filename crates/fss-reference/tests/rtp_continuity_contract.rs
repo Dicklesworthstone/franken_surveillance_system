@@ -13,10 +13,12 @@ mod rtpdump_support;
 use std::collections::BTreeSet;
 
 use fss_core::{
-    AcquisitionStateKind, CaptureInterval, ContractError, CoverageContinuity, EventId,
-    EventReadResult, EventRevisionStore, LedgerAnchor, SensorId, SourceId, StreamId, TimestampNs,
+    AcquisitionStateKind, CaptureInterval, ContractError, CoverageContinuity, CoverageStopReason,
+    EventId, EventReadResult, EventRevisionStore, LedgerAnchor, NotObservableReason, SensorId,
+    SourceId, StreamId, TimestampNs,
 };
 use fss_core::{DeviceId, SensorCapsule};
+use fss_packet::ContinuityError;
 use fss_reference::ReferenceDeployment;
 use fss_reference::ingest::rtp_continuity::*;
 use fss_reference::ingest::rtpdump::import::*;
@@ -179,7 +181,9 @@ fn capsule_from_record(import: &RtpImportReport, record: usize) -> Option<&Senso
 /// Planted negatives: (a) starting the window at the baseline instead of the first picture
 /// (`window_start_seq` assertion); (b) skipping the decode and declaring `Verified` (oracle
 /// digest assertion); (c) a coverage witness naming a site-wide domain (domain assertion);
-/// (d) omitting the session `verify_continuity` call (state-kind assertion).
+/// (d) omitting the session `verify_continuity` call (state-kind assertion); (e) a verified
+/// window minting a self-certifying coverage witness (`certifies_absence` assertion); (f) an
+/// authentication receipt that expires at the instant it is issued (receipt assertions).
 #[test]
 fn clean_recording_reaches_continuity_verified_with_one_exact_witness() -> TestResult {
     let planned = packetize(2, MAX_PAYLOAD, 65_534, SSRC_A, 90_000, 0);
@@ -238,7 +242,41 @@ fn clean_recording_reaches_continuity_verified_with_one_exact_witness() -> TestR
     let only = BTreeSet::from([source()?.as_str().to_owned()]);
     assert_eq!(w.coverage_witness.authorized_domain, only);
     assert_eq!(w.coverage_witness.observed_domain, only);
-    assert!(w.coverage_witness.certifies_absence());
+    // Changed from `certifies_absence()` (fss-2h5zq.29 review D1): the core witness carries no
+    // interval, so a certifying witness would certify absence over all time, outside the
+    // recorded window. The verified witness is continuous and complete (the core requires both)
+    // but stops `Unsupported`, so it never certifies on its own.
+    assert_eq!(
+        (
+            w.coverage_witness.continuity,
+            w.coverage_witness.stop_reason
+        ),
+        (
+            CoverageContinuity::Continuous,
+            CoverageStopReason::Unsupported
+        )
+    );
+    assert!(!w.coverage_witness.certifies_absence());
+    assert_eq!(window.coverage, w.coverage_witness);
+    // The authentication receipt (D5): issued at the generation's first arrival, valid through
+    // the end of the last recorded millisecond, and the one the core recorded.
+    let auth = &generation.auth;
+    assert_eq!(auth.authorized_at_ns, at(planned[0].offset_ms));
+    assert_eq!(
+        auth.expires_at_ns,
+        TimestampNs(at(planned[last].offset_ms).0 + 1_000_000)
+    );
+    assert!(auth.expires_at_ns > auth.authorized_at_ns);
+    assert!(
+        report
+            .session()
+            .history()
+            .iter()
+            .any(|r| r.to == AcquisitionStateKind::Authenticated
+                && r.witness_digest == auth.receipt_digest())
+    );
+    // The first frame's media time is the first picture's own (zero by construction here).
+    assert_eq!(picture.witness.pts_ns, TimestampNs(0));
     assert_eq!(
         window.interval,
         interval(at(planned[vcl].offset_ms), at(planned[last].offset_ms))?
@@ -374,13 +412,19 @@ fn loss_degrades_records_the_gap_and_refuses_absence_over_it() -> TestResult {
     Ok(())
 }
 
-/// fss-3qlsa regression: the verified window's certifying coverage witness and the gap window's
-/// gapped witness are registered in both orders in the core event store; an absence read over the
-/// source domain is never certified, while the certifying witness alone does certify (so the
-/// refusal is the gap's doing).
+/// The module's own verified-window witness never certifies absence in the core event store, and
+/// (fss-3qlsa regression) the gap window's gapped witness revokes a certifying witness in both
+/// registration orders.
+///
+/// The verified window's witness, registered alone, is refused as uncertified: it carries no
+/// interval, so certifying would claim absence over all time (review D1). To keep the any-gap-wins
+/// regression meaningful, a control witness that does certify alone (the same witness with a
+/// `Complete` stop reason, the pre-fix shape) is registered with the gap witness in both orders,
+/// and the gap is named among the refusal reasons.
 ///
 /// Planted negatives: (a) the gap window carrying a continuous coverage witness; (b) the store
-/// evaluating only the first registered witness (certifying-first order).
+/// evaluating only the first registered witness (certifying-first order); (c) a verified window
+/// minting a self-certifying witness (alone assertion).
 #[test]
 fn gap_witness_revokes_absence_in_either_registration_order() -> TestResult {
     let (_, run) = loss_run("store-order", 46)?;
@@ -395,27 +439,61 @@ fn gap_witness_revokes_absence_in_either_registration_order() -> TestResult {
         .ok_or("no degraded window")?;
     let domain = source()?;
     let absent = EventId::parse("evt_rtp_absent")?;
+    // Inverted from the pre-fix test, which asserted `AbsentWithCoverage` here: that answer
+    // certified absence over all time from one recorded window, which is the D1 defect.
     let mut alone = EventRevisionStore::new(LedgerAnchor::genesis("site:rtp-store"));
     alone.register_coverage_witness(
         alone.current_anchor().clone(),
         verified.coverage.clone(),
         TimestampNs(1),
     )?;
+    match alone.read_event_in_domain(&absent, domain.as_str(), None)? {
+        EventReadResult::NotObservable {
+            reason,
+            all_reasons,
+            ..
+        } => {
+            assert_eq!(reason, NotObservableReason::CoverageWitnessUncertified);
+            assert_eq!(
+                all_reasons,
+                vec![NotObservableReason::CoverageWitnessUncertified]
+            );
+        }
+        other => {
+            return Err(format!("the module's witness certified absence alone: {other:?}").into());
+        }
+    }
+    // Control: a certifying witness over the same source certifies alone ...
+    let mut certifying = verified.coverage.clone();
+    certifying.stop_reason = CoverageStopReason::Complete;
+    assert!(certifying.certifies_absence());
+    let mut control = EventRevisionStore::new(LedgerAnchor::genesis("site:rtp-store"));
+    control.register_coverage_witness(
+        control.current_anchor().clone(),
+        certifying.clone(),
+        TimestampNs(1),
+    )?;
     assert!(matches!(
-        alone.read_event_in_domain(&absent, domain.as_str(), None)?,
+        control.read_event_in_domain(&absent, domain.as_str(), None)?,
         EventReadResult::AbsentWithCoverage(_)
     ));
-    for order in [[verified, gap], [gap, verified]] {
+    // ... and the gap window's witness revokes it in either registration order.
+    for order in [
+        [certifying.clone(), gap.coverage.clone()],
+        [gap.coverage.clone(), certifying.clone()],
+    ] {
         let mut store = EventRevisionStore::new(LedgerAnchor::genesis("site:rtp-store"));
-        for (i, window) in order.iter().enumerate() {
+        for (i, witness) in order.into_iter().enumerate() {
             store.register_coverage_witness(
                 store.current_anchor().clone(),
-                window.coverage.clone(),
+                witness,
                 TimestampNs(1 + i as i128),
             )?;
         }
         match store.read_event_in_domain(&absent, domain.as_str(), None)? {
-            EventReadResult::NotObservable { .. } => {}
+            EventReadResult::NotObservable { all_reasons, .. } => {
+                assert!(all_reasons.contains(&NotObservableReason::CoverageWitnessGapped));
+            }
             other => {
                 return Err(format!("absence over a gap was certified: {other:?}").into());
             }
@@ -499,9 +577,15 @@ fn reorder_beyond_tolerance_counts_as_loss() -> TestResult {
 /// whose first capsule carries `gap_before`, whose own first picture is decoded and verified, and
 /// whose continuity never joins the old generation's.
 ///
+/// The new SSRC passes the replay's two-packet validation (its first two packets are consecutive),
+/// so its first packet is the restart record; that record is the new epoch's probation packet.
+///
 /// Planted negatives: (a) the replay refusing the new SSRC (no second generation); (b) reusing the
-/// generation (`stream_generation` ordering); (c) the importer not fencing the restart
-/// (`gap_before`); (d) an absence run spanning the generation boundary.
+/// generation (`stream_generation` ordering); (c) an absence run spanning the generation boundary.
+/// Not a planted negative here: the importer's explicit restart fence
+/// (`gap || record.restart.is_some()`). The restart record is always the new epoch's probation
+/// packet, which is a fence on its own, so removing the explicit fence changes no observable
+/// value; it is kept as defense in depth and the `gap_before` assertions below hold either way.
 #[test]
 fn ssrc_change_opens_a_new_stream_generation() -> TestResult {
     let a = packetize(2, MAX_PAYLOAD, 65_534, SSRC_A, 90_000, 0);
@@ -751,5 +835,395 @@ fn cancellation_refuses_the_run() -> TestResult {
         Err(RtpContinuityError::Cancelled { .. })
     ));
     caplog("cancellation_refused", "cancelled");
+    Ok(())
+}
+
+// ---------------------------------------------------------------------------------------------
+// fss-2h5zq.29 independent-review fixes (D2-D5, mutants E, F, G, H, O). The reviewer's probes
+// P1, P2, P4 and P5 (local commit e2e3fb0) are reused below with exact-variant assertions.
+// ---------------------------------------------------------------------------------------------
+
+/// Serializes `planned` with one extra raw record (`packet`, original length `plen`, recorder
+/// offset `offset_ms`) inserted before planned packet `before`.
+fn dump_with_record(
+    planned: &[Planned],
+    before: usize,
+    packet: &[u8],
+    plen: u16,
+    offset_ms: u32,
+) -> Vec<u8> {
+    let mut b = header();
+    for (i, p) in planned.iter().enumerate() {
+        if i == before {
+            record(&mut b, packet, plen, offset_ms);
+        }
+        let wire = rtp_full(p.seq, p.marker, p.timestamp, p.ssrc, &p.payload);
+        record(&mut b, &wire, wire.len() as u16, p.offset_ms);
+    }
+    b
+}
+
+/// Probe P1 (review D2): one stray foreign-SSRC packet mid-stream, inside a pending FU-A
+/// fragment, then the bound SSRC resumes. The stray fails the replay's two-packet SSRC
+/// validation: it is refused alone, opens no generation and retires no fragment, and the bound
+/// stream keeps ingesting to its end. The windows whose recorder interval contains the stray's
+/// arrival degrade with exactly `packet_refused` (fail-closed: a foreign packet in the recording
+/// is not certified away).
+///
+/// Planted negatives: (a) switching generation on the first foreign packet (the pre-fix replay:
+/// a second generation that never gets a baseline and 31 refused records); (b) the stray retiring
+/// the bound stream's pending fragment (`discarded` and the completed NAL); (c) charging the stray
+/// to no window.
+#[test]
+fn stray_foreign_ssrc_packet_is_refused_and_the_stream_keeps_ingesting() -> TestResult {
+    let mut planned = packetize(2, MAX_PAYLOAD, 65_534, SSRC_A, 90_000, 0);
+    let at_index = 30;
+    // Precondition: the stray lands inside a fragmented NAL (an FU-A continuation follows it).
+    assert_eq!(planned[at_index].payload[0] & 31, 28);
+    assert_eq!(planned[at_index].payload[1] & 0x80, 0);
+    let mut stray = planned[at_index].clone();
+    stray.ssrc = SSRC_B;
+    stray.seq = 12_345;
+    planned.insert(at_index, stray);
+    let run = run(
+        "stray",
+        &dump_planned(&planned),
+        config_for(SSRC_A),
+        policy(16),
+    )?;
+    let records = run.import.records();
+    assert_eq!(records.len(), planned.len());
+    let refused: Vec<usize> = records
+        .iter()
+        .enumerate()
+        .filter(|(_, r)| matches!(r.disposition, RecordDisposition::StreamRefused(_)))
+        .map(|(i, _)| i)
+        .collect();
+    assert_eq!(refused, vec![at_index]);
+    let stray_record = &records[at_index];
+    assert_eq!(
+        stray_record.disposition,
+        RecordDisposition::StreamRefused(ContinuityError::StreamMismatch)
+    );
+    assert!(stray_record.discarded.is_none());
+    assert!(
+        records
+            .iter()
+            .all(|r| r.generation == 1 && r.ssrc == SSRC_A && r.restart.is_none())
+    );
+    // Every bound-SSRC packet after the probation packet reaches the depacketizer ...
+    for (i, r) in records.iter().enumerate().skip(1) {
+        if i != at_index {
+            assert!(
+                matches!(r.disposition, RecordDisposition::H264(_)),
+                "record {i}: {:?}",
+                r.disposition
+            );
+        }
+    }
+    // ... and the fragment pending across the stray completes on the next record.
+    assert!(!records[at_index + 1].nals.is_empty());
+    assert!(records[at_index + 1].discarded.is_none());
+
+    let report = &run.report;
+    assert_eq!(report.generations().len(), 1);
+    let g = &report.generations()[0];
+    assert_eq!((g.generation, g.ssrc, g.cause), (1, SSRC_A, None));
+    assert!(g.first_picture.is_some());
+    // `planned` holds one extra (stray) packet: the last bound packet is planned index len - 1,
+    // at extended sequence 65534 + (len - 2).
+    assert_eq!(
+        report.windows().last().map(|w| w.end_seq),
+        Some(ext(planned.len() - 2))
+    );
+    let stray_at = at(planned[at_index].offset_ms);
+    let hit: Vec<&RtpContinuityWindow> = report
+        .windows()
+        .iter()
+        .filter(|w| w.interval.earliest <= stray_at && stray_at <= w.interval.latest)
+        .collect();
+    assert!(!hit.is_empty());
+    for w in &hit {
+        assert_eq!(w.lost_dimensions, vec![LOST_PACKET_REFUSED.to_owned()]);
+        evidence(w)?;
+    }
+    caplog(
+        "stray_foreign_ssrc_refused",
+        &format!("{}|{}", kinds_text(report), hit.len()),
+    );
+    Ok(())
+}
+
+/// Probe P2 (review mutant G): the packet right before the first picture's first packet (the last
+/// SEI fragment, which the picture does not need) is lost. The picture still decodes, but a lost
+/// position between the baseline and the first frame keeps the generation from a first frame: it
+/// degrades with exactly `first_frame_not_verified` and `packet_loss`, and no window exists.
+///
+/// Planted negative: ignoring lost positions between the baseline and the first frame (the
+/// generation would observe a first frame and only window 0 would degrade).
+#[test]
+fn loss_between_baseline_and_first_frame_blocks_the_first_frame() -> TestResult {
+    let planned = packetize(2, MAX_PAYLOAD, 65_534, SSRC_A, 90_000, 0);
+    let v = first_vcl(&planned)?;
+    assert!(v >= 3, "need a non-VCL packet after the baseline, v={v}");
+    // The dropped packet is not needed for the picture: it ends a non-VCL (SEI) NAL.
+    assert_eq!(planned[v - 1].payload[1] & 31, 6);
+    let mut kept = planned.clone();
+    kept.remove(v - 1);
+    let run = run(
+        "pre-first-loss",
+        &dump_planned(&kept),
+        config_for(SSRC_A),
+        policy(1_000),
+    )?;
+    let g = &run.report.generations()[0];
+    assert!(g.first_picture.is_none());
+    assert_eq!(
+        g.pre_first_frame_lost,
+        vec![
+            LOST_FIRST_FRAME_NOT_VERIFIED.to_owned(),
+            LOST_PACKET_LOSS.to_owned()
+        ]
+    );
+    assert!(run.report.windows().is_empty());
+    assert_eq!(
+        kinds_text(&run.report),
+        "requested,authenticated,adapter_accepted,degraded,cancelled"
+    );
+    caplog(
+        "pre_first_frame_loss_blocks",
+        &g.pre_first_frame_lost.join("+"),
+    );
+    Ok(())
+}
+
+/// Review mutant F: faults before the first frame keep the generation from a first frame, both a
+/// fault on a sequenced packet before it (a reversed recorder offset on the PPS) and an unsequenced
+/// fault arriving no later than it (a stray foreign-SSRC packet between the baseline and the first
+/// picture). The picture itself is intact in both.
+///
+/// Planted negatives: (a) not charging pre-first-frame faults (a first frame is observed);
+/// (b) dropping the reversed-offset fault (review mutant O, pre-first-frame variant).
+#[test]
+fn faults_before_the_first_frame_block_it() -> TestResult {
+    // Sequenced: the PPS's recorder offset runs backwards.
+    let mut planned = packetize(2, MAX_PAYLOAD, 65_534, SSRC_A, 90_000, 100);
+    let v = first_vcl(&planned)?;
+    let pps = 2;
+    assert_eq!(planned[pps].payload[0] & 31, 8);
+    assert!(pps < v);
+    planned[pps].offset_ms = 50;
+    let run1 = run(
+        "pre-first-reversed",
+        &dump_planned(&planned),
+        config_for(SSRC_A),
+        policy(1_000),
+    )?;
+    assert!(run1.import.records()[pps].offset_reversed);
+    let g = &run1.report.generations()[0];
+    assert!(g.first_picture.is_none());
+    assert_eq!(
+        g.pre_first_frame_lost,
+        vec![
+            LOST_FIRST_FRAME_NOT_VERIFIED.to_owned(),
+            LOST_TIMING_UNUSABLE.to_owned()
+        ]
+    );
+
+    // Unsequenced: a stray foreign-SSRC packet right before the first picture, same offset.
+    let mut planned = packetize(2, MAX_PAYLOAD, 65_534, SSRC_A, 90_000, 0);
+    let mut stray = planned[pps].clone();
+    stray.ssrc = SSRC_B;
+    stray.seq = 12_345;
+    planned.insert(v, stray);
+    let run2 = run(
+        "pre-first-stray",
+        &dump_planned(&planned),
+        config_for(SSRC_A),
+        policy(1_000),
+    )?;
+    assert_eq!(
+        run2.import.records()[v].disposition,
+        RecordDisposition::StreamRefused(ContinuityError::StreamMismatch)
+    );
+    let g = &run2.report.generations()[0];
+    assert!(g.first_picture.is_none());
+    assert_eq!(
+        g.pre_first_frame_lost,
+        vec![
+            LOST_FIRST_FRAME_NOT_VERIFIED.to_owned(),
+            LOST_PACKET_REFUSED.to_owned()
+        ]
+    );
+    caplog("pre_first_frame_faults_block", &kinds_text(&run2.report));
+    Ok(())
+}
+
+/// Review mutant O: a reversed recorder offset inside a window degrades exactly that window with
+/// `timing_clock_unusable`, charged to the record's own sequence; the window before it verifies.
+///
+/// Planted negative: ignoring `offset_reversed` (the window would verify).
+#[test]
+fn reversed_recorder_offset_degrades_its_window() -> TestResult {
+    let mut planned = packetize(4, MAX_PAYLOAD, 65_534, SSRC_A, 90_000, 0);
+    let v = first_vcl(&planned)?;
+    let k = v + 20; // inside the second 16-packet window
+    assert!(planned[k - 1].offset_ms > 0);
+    planned[k].offset_ms = planned[k - 1].offset_ms - 1;
+    let mut p = policy(16);
+    p.max_jitter_threshold_ns = 1_000_000_000;
+    let run = run("reversed", &dump_planned(&planned), config_for(SSRC_A), p)?;
+    let records = run.import.records();
+    assert!(records[k].offset_reversed);
+    assert_eq!(records.iter().filter(|r| r.offset_reversed).count(), 1);
+    let windows = run.report.windows();
+    witness(&windows[0])?;
+    assert_eq!(
+        (windows[1].start_seq, windows[1].end_seq),
+        (ext(v + 16), ext(v + 31))
+    );
+    let ev = evidence(&windows[1])?;
+    assert_eq!(ev.lost_dimensions, vec![LOST_TIMING_UNUSABLE.to_owned()]);
+    assert_eq!(windows[1].missing_positions, 0);
+    caplog("reversed_offset_degrades", &ev.lost_dimensions.join("+"));
+    Ok(())
+}
+
+/// Review D4: an unsequenced fault (a snaplen-truncated record) is charged by its recorder
+/// arrival. It follows the last packet of window 0 (the end of the first picture) but carries the
+/// next picture's offset, so it arrives inside window 1 only: window 0 verifies and window 1
+/// degrades with exactly `packet_refused`.
+///
+/// Planted negative: charging unsequenced faults to the window of the highest sequence seen so
+/// far (the pre-fix rule: window 0 would degrade instead).
+#[test]
+fn unsequenced_fault_is_charged_by_arrival() -> TestResult {
+    let planned = packetize(4, MAX_PAYLOAD, 65_534, SSRC_A, 90_000, 0);
+    let v = first_vcl(&planned)?;
+    let end0 = (v..planned.len())
+        .find(|&i| planned[i].marker)
+        .ok_or("no marker packet")?;
+    assert!(planned[end0 + 1].offset_ms > planned[end0].offset_ms);
+    let offset = planned[end0 + 1].offset_ms;
+    let truncated = rtp_full(0, false, 0, SSRC_A, &[0x09, 0xf0]);
+    // Original length one byte longer than captured: a snaplen-truncated record.
+    let bytes = dump_with_record(
+        &planned,
+        end0 + 1,
+        &truncated,
+        truncated.len() as u16 + 1,
+        offset,
+    );
+    let mut p = policy((end0 - v + 1) as u64);
+    p.max_jitter_threshold_ns = 1_000_000_000;
+    let run = run("arrival-charge", &bytes, config_for(SSRC_A), p)?;
+    assert_eq!(
+        run.import.records()[end0 + 1].kind,
+        fss_reference::ingest::rtpdump::RtpDumpKind::CapturedPrefix
+    );
+    let windows = run.report.windows();
+    assert_eq!(
+        (windows[0].start_seq, windows[0].end_seq),
+        (ext(v), ext(end0))
+    );
+    witness(&windows[0])?;
+    assert!(windows[0].interval.latest < at(offset));
+    assert!(windows[1].interval.earliest < at(offset) && at(offset) <= windows[1].interval.latest);
+    let ev = evidence(&windows[1])?;
+    assert_eq!(ev.lost_dimensions, vec![LOST_PACKET_REFUSED.to_owned()]);
+    assert_eq!(windows[1].missing_positions, 0);
+    caplog(
+        "unsequenced_fault_by_arrival",
+        &ev.lost_dimensions.join("+"),
+    );
+    Ok(())
+}
+
+/// Probe P4 (review mutant E): an SSRC change where the new generation's first windowed sequence
+/// is exactly the old generation's last + 1. Both windows verify, yet a query spanning both
+/// generations is refused as outside one run, with that exact variant (the shared stored-witness
+/// rule would refuse too, but for a different reason, hiding the mutant).
+///
+/// Planted negative: treating sequence-contiguous windows of different generations as one run.
+#[test]
+fn query_across_a_contiguous_generation_boundary_is_outside_one_run() -> TestResult {
+    let a = packetize(2, MAX_PAYLOAD, 100, SSRC_A, 90_000, 0);
+    let a_end = a.last().ok_or("empty")?.offset_ms;
+    let v = first_vcl(&a)?;
+    let b_first = (100 + a.len() - v) as u16;
+    let b = packetize(2, MAX_PAYLOAD, b_first, SSRC_B, 900_000, a_end + 40);
+    let mut planned = a.clone();
+    planned.extend(b.iter().cloned());
+    let run = run(
+        "contiguous-generations",
+        &dump_planned(&planned),
+        config_for(SSRC_A),
+        policy(1_000),
+    )?;
+    let windows = run.report.windows();
+    assert_eq!(windows.len(), 2);
+    assert_eq!((windows[0].generation, windows[1].generation), (1, 2));
+    assert_eq!(
+        windows[0].end_seq + 1,
+        windows[1].start_seq,
+        "precondition: contiguous"
+    );
+    witness(&windows[0])?;
+    witness(&windows[1])?;
+    let across = interval(windows[0].interval.earliest, windows[1].interval.latest)?;
+    assert_eq!(
+        run.report.absence_over(across),
+        RtpAbsenceAnswer::NotCertified(RtpAbsenceRefusal::OutsideVerifiedCoverage)
+    );
+    caplog("contiguous_generations_outside", &kinds_text(&run.report));
+    Ok(())
+}
+
+/// Probe P5 (review mutant H): a query inside the generation that starts before the first frame
+/// (the pre-first-frame packets arrive 40 ms earlier) and ends inside the verified window, and a
+/// query that starts inside the window and ends after it, are both refused as outside verified
+/// coverage, with that exact variant. A query inside the window reaches the stored-witness rule.
+///
+/// Planted negative: dropping the query-bounds check against the verified run.
+#[test]
+fn query_reaching_outside_the_verified_run_is_outside_coverage() -> TestResult {
+    let mut planned = packetize(2, MAX_PAYLOAD, 65_534, SSRC_A, 90_000, 0);
+    let v = first_vcl(&planned)?;
+    for p in planned.iter_mut().skip(v) {
+        p.offset_ms += 40;
+    }
+    let run = run(
+        "query-bounds",
+        &dump_planned(&planned),
+        config_for(SSRC_A),
+        policy(1_000),
+    )?;
+    let windows = run.report.windows();
+    assert_eq!(windows.len(), 1);
+    let w = &windows[0];
+    witness(w)?;
+    assert_eq!(w.interval.earliest, at(40));
+    let g = &run.report.generations()[0];
+    assert_eq!(g.interval.earliest, at(0));
+    let before = interval(at(20), w.interval.latest)?;
+    assert_eq!(
+        run.report.absence_over(before),
+        RtpAbsenceAnswer::NotCertified(RtpAbsenceRefusal::OutsideVerifiedCoverage)
+    );
+    let after = interval(
+        w.interval.earliest,
+        TimestampNs(w.interval.latest.0 + 1_000_000),
+    )?;
+    assert_eq!(
+        run.report.absence_over(after),
+        RtpAbsenceAnswer::NotCertified(RtpAbsenceRefusal::OutsideVerifiedCoverage)
+    );
+    assert_eq!(
+        run.report.absence_over(w.interval),
+        RtpAbsenceAnswer::NotCertified(RtpAbsenceRefusal::StoredWitnessRule(
+            ContractError::CoverageUncertified
+        ))
+    );
+    caplog("query_bounds_outside", "outside_verified_coverage");
     Ok(())
 }

@@ -1,7 +1,7 @@
 #![forbid(unsafe_code)]
 //! rtpdump RTP replay into exact NAL units across probation, reordering, wrap and missing fragments.
 mod rtpdump_support;
-use fss_packet::{H264Error, H264Status, RtcpMode, SequenceClass};
+use fss_packet::{ContinuityError, H264Error, H264Status, RtcpMode, SequenceClass};
 use fss_reference::ingest::rtpdump::{RtpDumpFault, replay::*};
 use rtpdump_support::*;
 
@@ -210,6 +210,69 @@ fn wrong_first_ssrc_is_refused_but_a_later_ssrc_change_opens_a_new_generation() 
             .all(|o| !matches!(o.outcome, RtpRecordOutcome::StreamRefused(_)))
     );
     assert_eq!((r.key().generation, r.key().ssrc), (2, 8));
+    Ok(())
+}
+/// fss-2h5zq.29 review D2: a foreign-SSRC packet after the baseline opens a generation only when
+/// the next record is the same SSRC's next sequence (two-packet validation). Strays are refused
+/// (`StreamRefused(StreamMismatch)`) without a restart and without retiring the bound stream's
+/// pending fragment: one lands inside an FU-A, two more have a non-consecutive or bound-SSRC
+/// follower. The bound stream keeps ingesting and the FU completes as one exact NAL.
+/// Planted negatives: switching generation on the first foreign packet (pre-fix replay);
+/// retiring the pending fragment on a stray.
+#[test]
+fn stray_foreign_ssrc_packets_are_refused_without_a_restart() -> TestResult {
+    let mut b = header();
+    for (i, (seq, ssrc, ts, marker, payload)) in [
+        (10_u16, 7_u32, 3_000_u32, true, &[9_u8, 0xf0][..]),
+        (11, 7, 3_000, true, &[0x65, 0xaa][..]),
+        (12, 7, 6_000, false, &[0x7c, 0x85, 0xbb][..]),
+        (500, 8, 9_000, true, &[9, 0xf0][..]),
+        (13, 7, 6_000, true, &[0x7c, 0x45, 0xcc][..]),
+        (600, 8, 9_000, true, &[9, 0xf0][..]),
+        (602, 8, 9_000, true, &[9, 0xf0][..]),
+        (14, 7, 9_000, true, &[0x61, 0xdd][..]),
+    ]
+    .into_iter()
+    .enumerate()
+    {
+        let wire = rtp_full(seq, marker, ts, ssrc, payload);
+        record(&mut b, &wire, wire.len() as u16, i as u32);
+    }
+    let cx = cx()?;
+    let mut r = RtpDumpReplay::new(&b, config())?;
+    let out = records(&mut r, &cx)?;
+    assert_eq!(out.len(), 8);
+    assert!(
+        out.iter()
+            .all(|o| o.restart.is_none() && (o.key.generation, o.key.ssrc) == (1, 7))
+    );
+    for stray in [3, 5, 6] {
+        assert!(
+            matches!(
+                out[stray].outcome,
+                RtpRecordOutcome::StreamRefused(ContinuityError::StreamMismatch)
+            ),
+            "record {stray}: {:?}",
+            out[stray].outcome
+        );
+        assert!(out[stray].discarded.is_none());
+    }
+    match &out[4].outcome {
+        RtpRecordOutcome::H264 {
+            nals, gap_before, ..
+        } => {
+            assert!(!gap_before);
+            assert_eq!(nals.len(), 1);
+            assert_eq!(nals[0].nal.bytes(), &[0x65, 0xbb, 0xcc][..]);
+        }
+        other => return Err(format!("FU end not delivered: {other:?}").into()),
+    }
+    assert!(out[4].discarded.is_none());
+    assert!(
+        matches!(&out[7].outcome, RtpRecordOutcome::H264 { observation, gap_before: false, nals, .. }
+            if observation.class == SequenceClass::Advanced && nals.len() == 1)
+    );
+    assert_eq!((r.key().generation, r.key().ssrc), (1, 7));
     Ok(())
 }
 /// A sequence jump: one suspected discontinuity, then the kernel's `RestartRequired` opens

@@ -23,7 +23,12 @@
 //!   windows of [`RtpContinuityPolicy::window_packets`] positions. A window whose every position
 //!   arrived in time, with no discontinuity, no media-reconstruction fault and jitter within the
 //!   threshold, becomes a [`ContinuityWitness`] (`discontinuities: 0`, `packet_loss: 0`) whose
-//!   coverage names only this one source and is passed to `verify_continuity`. Anything else
+//!   coverage names only this one source and is passed to `verify_continuity`. A fault with no
+//!   sequence of its own (a refused or truncated record, a suspected discontinuity, a reversed
+//!   offset on an unsequenced record) is charged by its recorder arrival: to every window whose
+//!   interval contains that arrival (both windows at a shared boundary), to the pre-first-frame
+//!   span when it arrives no later than the first frame's first packet, and to the last window
+//!   when it arrives after it (no window of its own covers the generation's tail). Anything else
 //!   becomes [`DegradationEvidence`] naming the lost dimensions and invalidating absence over the
 //!   window's interval, passed to `degrade`. The core decides: after any degraded window it
 //!   refuses to re-verify a later clean window of the same generation (its rule requires the next
@@ -53,7 +58,14 @@
 //!
 //! # Absence
 //!
-//! The core coverage witness carries no interval, so the interval binding lives here:
+//! The core coverage witness carries no interval, so a witness that certified absence on its own
+//! would certify it over all time. A verified window's coverage witness is therefore
+//! `Continuous`/`Complete` (the core requires both to verify continuity) but stops with
+//! [`CoverageStopReason::Unsupported`]: absence over capture time is not supported from a
+//! recorder's estimated clock. `certifies_absence()` is false for every witness this module
+//! mints, so registering one in an event store never yields absence on its own.
+//!
+//! The interval binding lives here:
 //! [`RtpContinuityReport::absence_over`] refuses any query that touches a degraded window, an
 //! unverified window, the pre-first-frame span or a generation boundary, and evaluates every
 //! overlapping window (never the first match only). A query inside one run of verified windows
@@ -267,6 +279,11 @@ pub struct RtpGenerationOutcome {
     pub cause: Option<RestartCause>,
     /// Recorder-offset interval of every record of the generation.
     pub interval: CaptureInterval,
+    /// The authentication receipt the core accepted for the generation. A recorded file has no
+    /// credential (`CredentialMethod::None`); the receipt binds the import digest and is valid
+    /// from the generation's first arrival through the end of the recording's last recorder
+    /// millisecond, never expiring at the instant it is issued.
+    pub auth: AuthReceipt,
     /// The verified first picture, when one decoded.
     pub first_picture: Option<RtpFirstPicture>,
     /// Lost dimensions that kept the generation from reaching a first frame (empty when it did).
@@ -321,8 +338,9 @@ pub struct RtpContinuityWindow {
     /// Recorder-offset interval: from the previous window's last arrival (or the first frame's
     /// first packet) to this window's last arrival, so windows tile the generation without slivers.
     pub interval: CaptureInterval,
-    /// RTP media-time span of the window's packets (ns since the generation's first timestamp).
-    pub pts: (TimestampNs, TimestampNs),
+    /// RTP media-time span of the window's packets (ns since the generation's first timestamp),
+    /// `None` when no position of the window carries a media timestamp (nothing arrived).
+    pub pts: Option<(TimestampNs, TimestampNs)>,
     /// Positions that arrived in time.
     pub packets_observed: u64,
     /// Positions that never arrived in time.
@@ -334,7 +352,8 @@ pub struct RtpContinuityWindow {
     /// Lost dimensions (empty for a clean window), sorted.
     pub lost_dimensions: Vec<String>,
     /// Coverage witness of this window over this one source: continuous and complete when
-    /// verified, gapped (or unknown) otherwise.
+    /// verified, gapped (or unknown) otherwise. It never certifies absence on its own (see the
+    /// module documentation on absence).
     pub coverage: CoverageWitness,
     /// The core's judgment.
     pub outcome: RtpWindowOutcome,
@@ -507,15 +526,24 @@ impl RtpContinuityReport {
 #[derive(Clone, Copy, Debug)]
 struct Position {
     arrival_ns: u64,
-    pts_ticks: i64,
+    /// Unwrapped media time; `None` when the packet carried no usable RTP timestamp.
+    pts_ticks: Option<i64>,
     jitter_ticks: u32,
     timely: bool,
 }
 
+/// Where a fault is charged.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum FaultAt {
+    /// The extended sequence of the faulty packet itself.
+    Sequence(u64),
+    /// Recorder arrival (ns since offset zero) of a fault with no sequence of its own.
+    Arrival(u64),
+}
+
 #[derive(Clone, Copy, Debug)]
 struct Fault {
-    /// Window anchor: an extended sequence, or `None` before the generation's baseline.
-    at: Option<u64>,
+    at: FaultAt,
     dimension: &'static str,
 }
 
@@ -553,7 +581,7 @@ impl GenerationFacts {
         }
     }
 
-    fn fault(&mut self, at: Option<u64>, dimension: &'static str) {
+    fn fault(&mut self, at: FaultAt, dimension: &'static str) {
         self.faults.push(Fault { at, dimension });
     }
 
@@ -586,8 +614,11 @@ fn collect_facts(
                 .is_none_or(|g| g.generation != record.generation);
         if opens {
             if let (Some(previous), Some(_)) = (generations.last_mut(), record.discarded.as_ref()) {
-                // The restart retired the old generation's pending fragment.
-                let at = previous.highest;
+                // The restart retired the old generation's pending fragment, whose last packet is
+                // the old generation's highest position.
+                let at = previous
+                    .highest
+                    .map_or(FaultAt::Arrival(previous.last_arrival), FaultAt::Sequence);
                 previous.fault(at, LOST_MEDIA_RECONSTRUCTION);
             }
             if generations.len() > crate::ingest::rtpdump::replay::MAX_STREAM_RESTARTS as usize {
@@ -599,28 +630,29 @@ fn collect_facts(
             return Err(RtpContinuityError::Binding);
         };
         facts.last_arrival = facts.last_arrival.max(arrival);
+        // A reversed recorder offset is charged to the record's own sequence when it has one,
+        // else by arrival.
+        let reversed_at = record
+            .sequence
+            .and_then(|o| o.extended_sequence)
+            .map_or(FaultAt::Arrival(arrival), FaultAt::Sequence);
         if record.offset_reversed {
-            let at = facts.highest;
-            facts.fault(at, LOST_TIMING_UNUSABLE);
+            facts.fault(reversed_at, LOST_TIMING_UNUSABLE);
         }
+        // Faults below carry no sequence of their own: they are charged by arrival.
+        let unsequenced = FaultAt::Arrival(arrival);
         match record.kind {
             RtpDumpKind::Rtcp => continue,
             RtpDumpKind::CapturedPrefix => {
-                let at = facts.highest;
-                facts.fault(at, LOST_PACKET_REFUSED);
+                facts.fault(unsequenced, LOST_PACKET_REFUSED);
                 continue;
             }
             RtpDumpKind::Rtp => {}
         }
         let observation = match (record.disposition, record.sequence) {
-            (RecordDisposition::PacketRefused(_) | RecordDisposition::StreamRefused(_), _) => {
-                let at = facts.highest;
-                facts.fault(at, LOST_PACKET_REFUSED);
-                continue;
-            }
-            (_, None) => {
-                let at = facts.highest;
-                facts.fault(at, LOST_PACKET_REFUSED);
+            (RecordDisposition::PacketRefused(_) | RecordDisposition::StreamRefused(_), _)
+            | (_, None) => {
+                facts.fault(unsequenced, LOST_PACKET_REFUSED);
                 continue;
             }
             (_, Some(observation)) => observation,
@@ -629,10 +661,7 @@ fn collect_facts(
             match observation.class {
                 // Normal epoch establishment and stale pre-baseline input: outside coverage.
                 SequenceClass::Probation | SequenceClass::BeforeBaseline => {}
-                _ => {
-                    let at = facts.highest;
-                    facts.fault(at, LOST_SEQUENCE_DISCONTINUITY);
-                }
+                _ => facts.fault(unsequenced, LOST_SEQUENCE_DISCONTINUITY),
             }
             continue;
         };
@@ -643,12 +672,12 @@ fn collect_facts(
             {
                 Ok(value) => Some(value),
                 Err(_) => {
-                    facts.fault(Some(sequence), LOST_TIMING_UNUSABLE);
+                    facts.fault(FaultAt::Sequence(sequence), LOST_TIMING_UNUSABLE);
                     None
                 }
             },
             None => {
-                facts.fault(Some(sequence), LOST_TIMING_UNUSABLE);
+                facts.fault(FaultAt::Sequence(sequence), LOST_TIMING_UNUSABLE);
                 None
             }
         };
@@ -662,7 +691,7 @@ fn collect_facts(
                     _ => true,
                 };
                 if !timely {
-                    facts.fault(Some(sequence), LOST_LATE_PACKET);
+                    facts.fault(FaultAt::Sequence(sequence), LOST_LATE_PACKET);
                 }
                 if observation.class == SequenceClass::Baseline {
                     facts.baseline = Some(sequence);
@@ -674,7 +703,8 @@ fn collect_facts(
                     sequence,
                     Position {
                         arrival_ns: arrival,
-                        pts_ticks: pts.unwrap_or(0),
+                        pts_ticks: pts,
+                        // A jitter that could not be evaluated is already a timing fault above.
                         jitter_ticks: jitter.unwrap_or(0),
                         timely,
                     },
@@ -688,7 +718,7 @@ fn collect_facts(
                 }
             }
             _ => {
-                facts.fault(Some(sequence), LOST_SEQUENCE_DISCONTINUITY);
+                facts.fault(FaultAt::Sequence(sequence), LOST_SEQUENCE_DISCONTINUITY);
             }
         }
         let after_baseline = facts.baseline.is_some_and(|b| sequence > b);
@@ -700,7 +730,7 @@ fn collect_facts(
         } || record.expired.is_some()
             || (record.discarded.is_some() && record.restart.is_none());
         if media_fault {
-            facts.fault(Some(sequence), LOST_MEDIA_RECONSTRUCTION);
+            facts.fault(FaultAt::Sequence(sequence), LOST_MEDIA_RECONSTRUCTION);
         }
     }
     Ok(generations)
@@ -905,8 +935,12 @@ impl Driver<'_> {
         &mut self,
         facts: &GenerationFacts,
         import_digest: ContentDigest,
-    ) -> Result<(), RtpContinuityError> {
+        expires_at: TimestampNs,
+    ) -> Result<AuthReceipt, RtpContinuityError> {
         let at = self.at(facts.first_arrival)?;
+        if expires_at <= at {
+            return Err(RtpContinuityError::Limit);
+        }
         let request = self.request(facts, at)?;
         match self.session.as_mut() {
             None => self.session = Some(AcquisitionSession::new(request.clone())?),
@@ -920,7 +954,7 @@ impl Driver<'_> {
             principal_digest: import_digest,
             authorized_capabilities: request.requested_capabilities,
             authorized_at_ns: at,
-            expires_at_ns: at,
+            expires_at_ns: expires_at,
         };
         let ack = AdapterAck {
             adapter_id: request.adapter_identity.adapter_id.clone(),
@@ -930,9 +964,9 @@ impl Driver<'_> {
             allocated_buffer_frames: 0,
         };
         let session = self.session()?;
-        session.authenticate(auth, at)?;
+        session.authenticate(auth.clone(), at)?;
         session.accept(ack, at)?;
-        Ok(())
+        Ok(auth)
     }
 
     fn evidence(
@@ -1044,13 +1078,24 @@ pub fn drive_rtp_continuity(
     let mut windows: Vec<RtpContinuityWindow> = Vec::new();
     let mut transitions: usize = 2;
     let mut last_at = TimestampNs(scope.recording_origin.0);
+    // Recorder offsets have millisecond resolution: a record at offset `t` ms may have arrived
+    // anywhere in `[t, t + 1 ms)`. The replay authorization therefore runs through the end of the
+    // last recorded millisecond, so it never expires at the instant it is issued.
+    let recording_end = facts
+        .iter()
+        .map(|g| g.last_arrival)
+        .max()
+        .unwrap_or(0)
+        .checked_add(1_000_000)
+        .ok_or(RtpContinuityError::Limit)?;
+    let expires_at = driver.at(recording_end)?;
     for generation in &facts {
         checkpoint(cx, "rtp_continuity:generation")?;
         transitions = transitions.saturating_add(4);
         if transitions > MAX_TRANSITIONS {
             return Err(RtpContinuityError::Limit);
         }
-        driver.open(generation, report.input_digest())?;
+        let auth = driver.open(generation, report.input_digest(), expires_at)?;
         let interval = CaptureInterval::new(
             driver.at(generation.first_arrival)?,
             driver.at(generation.last_arrival)?,
@@ -1071,10 +1116,23 @@ pub fn drive_rtp_continuity(
                 None
             }
             Some(first) => {
+                // The first picture's first packet is a position (it was delivered to the
+                // depacketizer); its arrival bounds the pre-first-frame span.
+                let first_position = generation.positions.get(&first.sequence);
+                let first_arrival =
+                    first_position.map_or(first.completed_arrival, |p| p.arrival_ns);
                 for fault in &generation.faults {
-                    if fault.at.is_none_or(|at| at < first.sequence) {
+                    let before = match fault.at {
+                        FaultAt::Sequence(at) => at < first.sequence,
+                        FaultAt::Arrival(at) => at <= first_arrival,
+                    };
+                    if before {
                         pre_lost.push(fault.dimension);
                     }
+                }
+                // The first frame's media time must be known: never a silent zero.
+                if first_position.and_then(|p| p.pts_ticks).is_none() {
+                    pre_lost.push(LOST_TIMING_UNUSABLE);
                 }
                 if let Some(baseline) = generation.baseline {
                     let missing = (baseline..first.sequence)
@@ -1102,16 +1160,21 @@ pub fn drive_rtp_continuity(
                 ssrc: generation.ssrc,
                 cause: generation.cause,
                 interval,
+                auth,
                 first_picture: None,
                 pre_first_frame_lost: lost,
             });
             continue;
         };
         let request = driver.session()?.request().clone();
-        let first_pts = generation
+        let first_position = generation
             .positions
             .get(&first.sequence)
-            .map_or(0, |p| p.pts_ticks);
+            .ok_or(RtpContinuityError::Binding)?;
+        // Checked above: a first frame without a known media time never reaches here.
+        let first_pts = first_position
+            .pts_ticks
+            .ok_or(RtpContinuityError::Binding)?;
         let witness = FirstFrameWitness {
             adapter_id: request.adapter_identity.adapter_id.clone(),
             device_id: request.device_identity.device_id.clone(),
@@ -1127,11 +1190,7 @@ pub fn drive_rtp_continuity(
         driver
             .session()?
             .observe_first_frame(witness.clone(), first_at)?;
-        let first_arrival = generation
-            .positions
-            .get(&first.sequence)
-            .map_or(first.completed_arrival, |p| p.arrival_ns);
-        let mut window_start_arrival = first_arrival;
+        let mut window_start_arrival = first_position.arrival_ns;
         let highest = generation.highest.unwrap_or(first.sequence);
         let mut start = first.sequence;
         while start <= highest {
@@ -1164,24 +1223,25 @@ pub fn drive_rtp_continuity(
                 driver.at(window_start_arrival)?,
                 driver.at(window_end_arrival)?,
             )?;
-            let pts_min = in_window
-                .iter()
-                .map(|(_, p)| p.pts_ticks)
-                .min()
-                .unwrap_or(0);
-            let pts_max = in_window
-                .iter()
-                .map(|(_, p)| p.pts_ticks)
-                .max()
-                .unwrap_or(0);
-            let pts = (
-                TimestampNs(ticks_to_ns(pts_min, policy.clock_rate)),
-                TimestampNs(ticks_to_ns(pts_max, policy.clock_rate)),
-            );
+            let pts_known = in_window.iter().filter_map(|(_, p)| p.pts_ticks);
+            let pts = match (pts_known.clone().min(), pts_known.max()) {
+                (Some(min), Some(max)) => Some((
+                    TimestampNs(ticks_to_ns(min, policy.clock_rate)),
+                    TimestampNs(ticks_to_ns(max, policy.clock_rate)),
+                )),
+                _ => None,
+            };
+            let last_window = end == highest;
+            let arrivals = window_start_arrival..=window_end_arrival;
             let faults: Vec<&'static str> = generation
                 .faults
                 .iter()
-                .filter(|f| f.at.is_some_and(|at| (start..=end).contains(&at)))
+                .filter(|f| match f.at {
+                    FaultAt::Sequence(at) => (start..=end).contains(&at),
+                    FaultAt::Arrival(at) => {
+                        arrivals.contains(&at) || (last_window && at > window_end_arrival)
+                    }
+                })
                 .map(|f| f.dimension)
                 .collect();
             let discontinuities = faults
@@ -1232,21 +1292,28 @@ pub fn drive_rtp_continuity(
                     ),
                 )
             } else {
+                // Continuous and complete over this window's packets (the core requires both to
+                // verify continuity), but the witness carries no interval and the recorder clock
+                // is estimated: it must not certify absence on its own, anywhere. `Unsupported`
+                // says absence over capture time is not supported from this evidence; absence
+                // goes through `absence_over` and the shared stored-witness rule instead.
                 let cover = coverage(
                     scope,
                     true,
                     CoverageContinuity::Continuous,
                     Completeness::Complete,
-                    CoverageStopReason::Complete,
+                    CoverageStopReason::Unsupported,
                 );
+                let (window_start_pts_ns, window_end_pts_ns) =
+                    pts.ok_or(RtpContinuityError::Binding)?;
                 let witness = ContinuityWitness {
                     adapter_id: request.adapter_identity.adapter_id.clone(),
                     device_id: request.device_identity.device_id.clone(),
                     source_id: request.source_identity.source_id.clone(),
                     window_start_seq: start,
                     window_end_seq: end,
-                    window_start_pts_ns: pts.0,
-                    window_end_pts_ns: pts.1,
+                    window_start_pts_ns,
+                    window_end_pts_ns,
                     frames_observed: present,
                     discontinuities: 0,
                     packet_loss: 0,
@@ -1302,6 +1369,7 @@ pub fn drive_rtp_continuity(
             ssrc: generation.ssrc,
             cause: generation.cause,
             interval,
+            auth,
             first_picture: Some(RtpFirstPicture {
                 sequence: first.sequence,
                 completed_at_sequence: first.completed_at,

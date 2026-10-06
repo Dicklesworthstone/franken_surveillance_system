@@ -153,6 +153,10 @@ impl std::fmt::Debug for RtpDumpRecord<'_> {
 /// stops at the exact suffix; no scanning for plausible RTP headers can silently
 /// resurrect bytes after a bad length. Valid capture-truncated records are instead
 /// surfaced individually so later independently framed records remain available.
+///
+/// `Clone` copies only the cursor over the same borrowed snapshot, so a caller can look ahead
+/// at later records without consuming them (the replay's new-SSRC validation does).
+#[derive(Clone)]
 pub struct RtpDumpReader<'a> {
     input: &'a [u8],
     limits: RtpDumpLimits,

@@ -137,8 +137,9 @@ pub enum RtpRecordOutcome {
 pub enum RestartCause {
     /// The packet kernel classified consecutive discontinuous packets as `RestartRequired`.
     SequenceRestart,
-    /// The SSRC changed after the bound generation had admitted its baseline (RFC 3550 §8:
-    /// a new synchronization source is a new stream, never merged into the old continuity).
+    /// The SSRC changed after the bound generation had admitted its baseline and the new SSRC
+    /// passed [`SSRC_PROBATION_PACKETS`] validation (RFC 3550 §8: a new synchronization source
+    /// is a new stream, never merged into the old continuity).
     SsrcChange,
 }
 
@@ -246,15 +247,30 @@ struct AdmittedSource {
 /// Most stream generations one replay may open after its owner-bound first one.
 pub const MAX_STREAM_RESTARTS: u32 = 1024;
 
+/// Consecutive in-order packets a new SSRC must present before it opens a stream generation
+/// (RFC 3550 A.1 `MIN_SEQUENTIAL`). A foreign-SSRC packet that is not followed by
+/// `SSRC_PROBATION_PACKETS - 1` records of the same SSRC with consecutive sequence numbers and
+/// the bound payload type is a stray: it is refused (`StreamRefused`) and the bound generation
+/// keeps ingesting.
+pub const SSRC_PROBATION_PACKETS: usize = 2;
+
 /// Incremental, bounded file replay. One call consumes at most one record.
 ///
 /// Stream generations: the owner binds the ingress, the first generation and its SSRC. A
 /// packet of another SSRC before the bound generation admitted its baseline is refused
-/// (`StreamRefused`), never adopted. After the baseline, an SSRC change or the kernel's
-/// `RestartRequired` opens generation + 1 (bounded by [`MAX_STREAM_RESTARTS`]) with a fresh
-/// sequence epoch and depacketizer: the pending fragment is retired, the triggering packet is
-/// re-observed in the new epoch (so it starts probation), and the record carries the
-/// [`StreamRestart`]. Old continuity is never merged into the new generation.
+/// (`StreamRefused`), never adopted. After the baseline, a validated SSRC change (see
+/// [`SSRC_PROBATION_PACKETS`]) or the kernel's `RestartRequired` opens generation + 1 (bounded
+/// by [`MAX_STREAM_RESTARTS`]) with a fresh sequence epoch and depacketizer: the pending
+/// fragment is retired, the triggering packet is re-observed in the new epoch (so it starts
+/// probation), and the record carries the [`StreamRestart`]. Old continuity is never merged into
+/// the new generation. A foreign-SSRC packet that fails validation is refused as a stray without
+/// restarting and without retiring the bound stream's pending fragment (it is not that
+/// stream's packet).
+///
+/// The SSRC validation looks ahead in the recorded snapshot (the replay holds the whole file),
+/// so the record that opens the generation is the new SSRC's first packet, exactly as an
+/// unvalidated switch would place it. A live receiver could not look ahead; it would have to
+/// hold probation packets instead. That is not implemented here.
 ///
 /// Reordering is classified but not repaired: the existing depacketizer ignores
 /// nonincreasing sequence input. The capture-offset clock is a LABORATORY timer:
@@ -341,6 +357,35 @@ impl<'a> RtpDumpReplay<'a> {
     pub fn cancel(&mut self) -> Option<FragmentDiscard> {
         self.stopped = true;
         self.codec.cancel()
+    }
+    /// Whether `first`, a packet of a foreign SSRC, starts a new source: the next
+    /// `SSRC_PROBATION_PACKETS - 1` records are complete RTP packets of the same SSRC and the
+    /// bound payload type with consecutive sequence numbers. Looks ahead without consuming.
+    fn new_source_validated(&self, first: RtpPacket<'_>) -> bool {
+        if first.payload_type() != self.config.payload_type {
+            return false;
+        }
+        let mut reader = self.reader.clone();
+        let mut last = first.sequence();
+        for _ in 1..SSRC_PROBATION_PACKETS {
+            let Ok(Some(next)) = reader.next_record() else {
+                return false;
+            };
+            if next.kind() != RtpDumpKind::Rtp {
+                return false;
+            }
+            let Ok(packet) = RtpPacket::parse(next.packet(), self.config.packet) else {
+                return false;
+            };
+            if packet.ssrc() != first.ssrc()
+                || packet.payload_type() != self.config.payload_type
+                || packet.sequence() != last.wrapping_add(1)
+            {
+                return false;
+            }
+            last = packet.sequence();
+        }
+        true
     }
     /// Opens generation + 1 for `ssrc`: fresh sequence epoch and depacketizer. Returns the
     /// restart receipt and the fragment the old depacketizer retired.
@@ -429,12 +474,19 @@ impl<'a> RtpDumpReplay<'a> {
                 Ok(packet) => {
                     timestamp = Some(packet.timestamp());
                     // An SSRC change is a new source only once the bound generation admitted
-                    // its baseline; before that the owner binding refuses it.
+                    // its baseline and the new SSRC passed validation; before the baseline the
+                    // owner binding refuses it, and an unvalidated (stray) packet is refused
+                    // below by the sequence kernel's stream check.
+                    let mut stray = false;
                     if packet.ssrc() != self.key.ssrc && self.sequence.stats().expected > 0 {
-                        let (receipt, retired) =
-                            self.restart(packet.ssrc(), RestartCause::SsrcChange)?;
-                        restart = Some(receipt);
-                        discarded = retired;
+                        if self.new_source_validated(packet) {
+                            let (receipt, retired) =
+                                self.restart(packet.ssrc(), RestartCause::SsrcChange)?;
+                            restart = Some(receipt);
+                            discarded = retired;
+                        } else {
+                            stray = true;
+                        }
                     }
                     let mut observed = self.sequence.observe(self.key, packet);
                     if matches!(&observed, Ok(o) if o.class == SequenceClass::RestartRequired) {
@@ -446,7 +498,9 @@ impl<'a> RtpDumpReplay<'a> {
                     }
                     match observed {
                         Err(error) => {
-                            if discarded.is_none() {
+                            // A stray foreign-SSRC packet is not the bound stream's packet: the
+                            // bound stream's pending fragment survives it.
+                            if discarded.is_none() && !stray {
                                 discarded = self.codec.discard_gap();
                             }
                             RtpRecordOutcome::StreamRefused(error)
