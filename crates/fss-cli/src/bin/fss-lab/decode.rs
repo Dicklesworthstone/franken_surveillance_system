@@ -501,3 +501,82 @@ fn run_in(
         lost_dimensions: retained_lost_dimensions(&deployment, imported.import_identity)?,
     })
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn report(
+        omissions: Vec<(u64, u64, String)>,
+        lost_dimensions: Option<Vec<String>>,
+    ) -> DecodeReport {
+        DecodeReport {
+            input_sha256: ContentDigest::sha256(b"input"),
+            input_bytes: 10,
+            media_format: "mjpeg".to_owned(),
+            import_identity: ContentDigest::sha256(b"import"),
+            import_root: ContentDigest::sha256(b"root"),
+            import_outcome: "new".to_owned(),
+            capture_time_class: "unknown".to_owned(),
+            interpretation: LabInterpretation::Ycbcr,
+            frames: Vec::new(),
+            omissions,
+            lost_dimensions,
+        }
+    }
+
+    /// Each degradation source is sufficient on its own: an omitted range without a recorded
+    /// acquisition history, and a source-loss dimension without any omitted range.
+    #[test]
+    fn omissions_and_source_loss_each_degrade_the_report() {
+        let continuity_only = Some(vec!["continuity_not_observable".to_owned()]);
+        assert!(!report(Vec::new(), continuity_only.clone()).degraded());
+        assert!(!report(Vec::new(), None).degraded());
+        let omitted = vec![(4, 6, NOT_SEGMENTED.to_owned())];
+        assert!(report(omitted.clone(), None).degraded());
+        assert!(report(omitted, continuity_only).degraded());
+        let truncated = Some(vec![LOST_TRUNCATED_FRAME_OMITTED.to_owned()]);
+        assert!(report(Vec::new(), truncated).degraded());
+        let json = report(Vec::new(), None).render_json();
+        assert!(json.contains("\"acquisition_lost_dimensions\":\"not_recorded\""));
+    }
+
+    /// Ranges covered by neither a segment nor an omission span are found, including the tail.
+    #[test]
+    fn uncovered_spans_include_interior_gaps_and_the_tail() -> Result<(), Box<dyn std::error::Error>>
+    {
+        use fss_core::CapsuleId;
+        use fss_reference::ingest::SegmentSpan;
+        let span = |index: usize, offset: u64, len: u64| -> Result<SegmentSpan, String> {
+            Ok(SegmentSpan {
+                segment_index: index,
+                offset,
+                len,
+                segment_sha256: ContentDigest::sha256(&[index as u8]),
+                capsule_id: CapsuleId::parse(format!("capsule:test-{index}"))
+                    .map_err(|e| e.to_string())?,
+                gap_before: false,
+            })
+        };
+        let mut manifest = FileImportManifest {
+            input_sha256: ContentDigest::sha256(b"input"),
+            input_bytes: 100,
+            format: "mjpeg".to_owned(),
+            detector_evidence: String::new(),
+            chunk_bytes: 100,
+            ordered_chunks: Vec::new(),
+            segment_spans: vec![span(0, 0, 10)?, span(1, 20, 10)?],
+            omission_spans: Vec::new(),
+            capsule_ids: Vec::new(),
+            limits_digest: ContentDigest::sha256(b"limits"),
+            adapter_id: String::new(),
+            adapter_generation: String::new(),
+            part_roots: Vec::new(),
+            capture_time_label: "unknown".to_owned(),
+        };
+        assert_eq!(uncovered_spans(&manifest), vec![(10, 10), (30, 70)]);
+        manifest.input_bytes = 30;
+        assert_eq!(uncovered_spans(&manifest), vec![(10, 10)]);
+        Ok(())
+    }
+}

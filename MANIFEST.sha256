@@ -140,7 +140,7 @@ f0ccfb0817ebe0d634bcd1e723e14c21cf22d2e97fa56bd29010f3b8b2a49ae1  crates/fss-cli
 f228d9a9cc64bd781f2db641e326aa0de1131a27d27de6f44885089cf43d13b8  crates/fss-cli/src/bin/fss-infer/recording_cli.rs
 1e33d144166982560eeb29208ddd96e7c1f863b590f3e20729d157c6351b3f58  crates/fss-cli/src/bin/fss-infer.rs
 6d54e0c4bf8ecac63aaacfb737977450cf2d9f0e2f1d6a28287974f23177da59  crates/fss-cli/src/bin/fss-lab/crash_matrix.rs
-08e83934b8b56fc5f51065bb681a0f20d60987b5f5889928402b801af9e6ece0  crates/fss-cli/src/bin/fss-lab/decode.rs
+2ab84094a7989590122a512c1b779ec0d413c7df565e651276ef3daf780d42a1  crates/fss-cli/src/bin/fss-lab/decode.rs
 36f018d037eabe90beb4984e3da23c2d42f9d1108f2e06852a9362b2a64caa26  crates/fss-cli/src/bin/fss-lab/digest.rs
 9b80afef99a47daa0d2dda50c52a683ff0334713ef27188a50d49cfd7f04ce81  crates/fss-cli/src/bin/fss-lab/effects.rs
 f3eabbba94cebadfbf5ca995734475d89b5a6d6c2a0ceedfe3399c32297007d2  crates/fss-cli/src/bin/fss-lab/file_activity.rs
