@@ -49,6 +49,7 @@ exclude_patterns = [
     "**/*.[nN][pP][yY]",
     "**/*.[nN][pP][zZ]",
     "**/*.[gG][gG][uU][fF]",
+    "**/*.[oO][nN][nN][xX]",
     "**/*.[gG][gG][mM][lL]",
     "coverage/",
     ".nyc_output/",
