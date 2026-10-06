@@ -7,14 +7,15 @@
 //! `deleted` from the moment the record is durable, even while an interrupted commit has not yet
 //! unlinked its bytes: content is never served after the tombstone.
 
+mod proof;
+
 use std::collections::{BTreeMap, BTreeSet};
 
 use fss_core::{ContentDigest, EvidenceDeltaBatch};
 
 use super::DeletionError;
-use super::plan::{DeletionCompletion, DeletionPlan};
+use super::plan::DeletionPlan;
 use crate::ReferenceDeployment;
-use crate::reference_deployment::{FAMILY_DELETION_COMPLETION, FAMILY_DELETION_RECORD};
 
 /// One committed deletion record.
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -45,53 +46,28 @@ pub struct DeletionIndex {
 }
 
 impl DeletionIndex {
-    /// Builds the index from committed batches; `read` returns the retained bytes of a digest.
+    /// Builds the index from verified committed batches and exact retained plan/completion bytes.
+    /// Partial authority prefixes deny reads of their whole closure, but never claim completion.
+    /// Missing, duplicate, reordered or altered transitions and completion payloads fail closed.
     pub fn from_batches<E: From<DeletionError>>(
         batches: &[EvidenceDeltaBatch],
-        mut read: impl FnMut(ContentDigest) -> Result<Vec<u8>, E>,
+        read: impl FnMut(ContentDigest) -> Result<Vec<u8>, E>,
     ) -> Result<Self, E> {
         let mut index = Self::default();
-        let mut completions: BTreeMap<String, ContentDigest> = BTreeMap::new();
-        for batch in batches {
-            for delta in &batch.deltas {
-                if delta.family == FAMILY_DELETION_RECORD {
-                    let bytes = read(delta.payload_digest)?;
-                    let plan = DeletionPlan::decode(&bytes, delta.payload_digest)?;
-                    if plan.record_object_id_of(delta.payload_digest) != delta.object_id.as_str() {
-                        return Err(DeletionError::RecordMismatch.into());
-                    }
-                    let position = index.entries.len();
-                    for import in &plan.imports {
-                        index.imports.insert(*import, position);
-                    }
-                    for object in &plan.deletable {
-                        index.objects.insert(object.digest, position);
-                    }
-                    for unit in &plan.units {
-                        if unit.class == "deletable_content" {
-                            index.units.insert(unit.id.clone(), position);
-                        }
-                    }
-                    index.entries.push(DeletionEntry {
-                        plan_digest: delta.payload_digest,
-                        plan,
-                        completion_digest: None,
-                    });
-                } else if delta.family == FAMILY_DELETION_COMPLETION {
-                    completions.insert(delta.object_id.as_str().to_owned(), delta.payload_digest);
+        for entry in proof::read(batches, read)? {
+            let position = index.entries.len();
+            for import in &entry.plan.imports {
+                index.imports.insert(*import, position);
+            }
+            for object in &entry.plan.deletable {
+                index.objects.insert(object.digest, position);
+            }
+            for unit in &entry.plan.units {
+                if unit.class == "deletable_content" {
+                    index.units.insert(unit.id.clone(), position);
                 }
             }
-        }
-        for entry in &mut index.entries {
-            let object = entry.plan.record_object_id_of(entry.plan_digest);
-            if let Some(digest) = completions.get(&object) {
-                let bytes = read(*digest)?;
-                let completion = DeletionCompletion::decode(&bytes, *digest)?;
-                if completion.plan_digest != entry.plan_digest {
-                    return Err(DeletionError::RecordMismatch.into());
-                }
-                entry.completion_digest = Some(*digest);
-            }
+            index.entries.push(entry);
         }
         Ok(index)
     }
@@ -151,13 +127,9 @@ impl DeletionIndex {
     }
 }
 
-/// Whether any committed batch carries a deletion record (no plan object is read otherwise).
+/// Whether any deletion-family authority or reserved batch identity exists. Orphan transitions
+/// and completions must enter the verifier, even when their initial record is missing.
 #[must_use]
 pub fn has_records(batches: &[EvidenceDeltaBatch]) -> bool {
-    batches.iter().any(|batch| {
-        batch
-            .deltas
-            .iter()
-            .any(|delta| delta.family == FAMILY_DELETION_RECORD)
-    })
+    batches.iter().any(proof::candidate)
 }
