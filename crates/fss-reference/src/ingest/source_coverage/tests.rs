@@ -2403,29 +2403,31 @@ fn the_policy_holds_a_gapped_record_indeterminate() -> TestResult {
         let situation = quiet.situation_without_coverage()?;
         let (cell, _, _) = situation_absence(&situation, &quiet.event_id);
         assert_ne!(cell, Some(KnowledgeState::Known), "{tag}");
-        // The situation states why the event is indeterminate, offered the gapped witness and
-        // its record or not, and keeps the protected presence-live world (fss-pgwsv N2).
-        let offered = quiet.situation(true)?;
-        for compiled in [&situation, &offered] {
-            let frame = &compiled.capsule.frame;
-            let stated = frame
-                .unknown
+        // The situation states why the event is indeterminate and keeps the protected
+        // presence-live world (fss-pgwsv N2). (The compiler refuses a coverage witness offered
+        // for a non-rejected event, so the gapped witness is never offered here.)
+        let frame = &situation.capsule.frame;
+        let stated = frame
+            .unknown
+            .iter()
+            .filter(|line| line.contains(crate::COVERAGE_WITNESS_NOT_CERTIFYING))
+            .count();
+        assert_eq!(stated, 1, "{tag}: {:?}", frame.unknown);
+        let presence_live = format!("world:event:{}:presence-live", quiet.event_id.as_str());
+        assert!(
+            frame
+                .world_envelope
+                .alternatives
                 .iter()
-                .filter(|line| line.contains(crate::COVERAGE_WITNESS_NOT_CERTIFYING))
-                .count();
-            assert_eq!(stated, 1, "{tag}: {:?}", frame.unknown);
-            let presence_live = format!("world:event:{}:presence-live", quiet.event_id.as_str());
-            assert!(
-                frame
-                    .world_envelope
-                    .alternatives
-                    .iter()
-                    .any(|world| world.protected && world.world_id == presence_live),
-                "{tag}"
-            );
-            let (cell, _, _) = situation_absence(compiled, &quiet.event_id);
-            assert_ne!(cell, Some(KnowledgeState::Known), "{tag}");
-        }
+                .any(|world| world.protected && world.world_id == presence_live),
+            "{tag}"
+        );
+        assert!(
+            quiet
+                .situation(true)
+                .is_err_and(|error| format!("{error:?}").contains("non_rejected_event")),
+            "{tag}"
+        );
         let durable = quiet.durable()?;
         assert!(!durable.certified(), "{tag}: {durable:?}");
         assert!(durable.retained.is_none(), "{tag}");
