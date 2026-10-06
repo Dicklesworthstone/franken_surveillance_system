@@ -453,6 +453,34 @@ mod tests {
             r#""handoff_digest":"sha256:90bb5469e92ec595e50cf2d2d2640c3042ca2a3d3e06525ff3585bff9db0a8e3""#,
         ),
     ];
+    /// What analysing quiet's frames changes on top of the fss-tch7u report (fss-f8jls). The
+    /// label, the ledger position (3) and the affordance are unchanged. The event is now the
+    /// policy's rejection over ten retained analysed-nothing results, so its revision bytes (and
+    /// with them the ledger anchor root) change; the slot commit also holds those ten results (the
+    /// publication root); and the situation and handoff name the analysing generation in the
+    /// absence statement and the results as event proof roots.
+    const QUIET_ANALYSIS_REPLACEMENTS: [(&str, &str); 5] = [
+        (
+            r#""ledger_anchor_root":"sha256:bfde780282050d7d1b422dc7f073067064b3c2b88cd05f258295250eb414580c""#,
+            r#""ledger_anchor_root":"sha256:050a33351e364fc72d63d7bc13c41091459652300582a8157a9aac195c4b3fe4""#,
+        ),
+        (
+            r#""anchor_root":"sha256:bfde780282050d7d1b422dc7f073067064b3c2b88cd05f258295250eb414580c""#,
+            r#""anchor_root":"sha256:050a33351e364fc72d63d7bc13c41091459652300582a8157a9aac195c4b3fe4""#,
+        ),
+        (
+            r#"_root":"sha256:33b100df60a33aca07671a644f2532a189f1ca852953e4cccf6c1e73b2cd29ed","source_root":"sha256:33b100df60a33aca07671a644f2532a189f1ca852953e4cccf6c1e73b2cd29ed""#,
+            r#"_root":"sha256:660b059aaa3890f1fd42871e5811c165fb17ff2e44fb9911e5a02895322f664d","source_root":"sha256:660b059aaa3890f1fd42871e5811c165fb17ff2e44fb9911e5a02895322f664d""#,
+        ),
+        (
+            r#""situation_digest":"sha256:987067d3c2e316187fea110eb0321107190d6813e5ac8edc30d2275aa68ecf80""#,
+            r#""situation_digest":"sha256:8e4ffd749497d893b1c9ce539a89878bcd111c1fc01c3cc77b6a36676230e66c""#,
+        ),
+        (
+            r#""handoff_digest":"sha256:90bb5469e92ec595e50cf2d2d2640c3042ca2a3d3e06525ff3585bff9db0a8e3""#,
+            r#""handoff_digest":"sha256:6e08c20007535ebea386e58e928e430ec54a0f8e9e2f8a0ece8640e557ec202b""#,
+        ),
+    ];
 
     #[test]
     fn four_mock_scenarios_are_byte_identical_to_main_and_only_quiet_and_sneaky_change() {
@@ -469,8 +497,8 @@ mod tests {
         let _ = std::fs::remove_dir_all(&root);
         let matrix = matrix.unwrap_or_default();
 
-        // Quiet differs from main exactly by its retained coverage record (fss-tch7u); its label
-        // is main's.
+        // Quiet differs from main exactly by its retained coverage record (fss-tch7u) and the
+        // analysis of its frames (fss-f8jls); its label is main's.
         let quiet_start = matrix
             .find("{\"schema\":\"fss.lab.scenario.v2\",\"scenario\":\"quiet\"")
             .unwrap_or(matrix.len());
@@ -483,7 +511,10 @@ mod tests {
         );
         let quiet = &matrix[quiet_start..quiet_end];
         let mut expected = MAIN_QUIET_REPORT.to_owned();
-        for (main, now) in QUIET_LABEL_REPLACEMENTS {
+        for (main, now) in QUIET_LABEL_REPLACEMENTS
+            .into_iter()
+            .chain(QUIET_ANALYSIS_REPLACEMENTS)
+        {
             assert_eq!(expected.matches(main).count(), 1, "{main}");
             expected = expected.replace(main, now);
         }
