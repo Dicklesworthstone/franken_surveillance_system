@@ -1666,17 +1666,20 @@ pub fn prepare_handoff(
         now,
         TimestampNs(now.0.saturating_add(HANDOFF_LIFETIME_NS)),
     )?;
-    let open_obligations = snapshot
+    // Obligations, indeterminate effects, and prepared operations are live effect state: they
+    // are read from the head's effect journal, so an effect committed, reconciled, or prepared
+    // after the session's anchor is never handed off stale (the situation stays anchor-bound).
+    let open_obligations = head
         .open_obligations()
         .iter()
         .map(|obligation| obligation.obligation_id.as_str().to_owned())
         .collect();
-    let indeterminate = orientation
-        .indeterminate_effects
+    let indeterminate = head
+        .indeterminate_operations()
         .iter()
-        .map(|id| id.as_str().to_owned())
+        .map(|operation| operation.intent.operation_id.as_str().to_owned())
         .collect();
-    let prepared = snapshot
+    let prepared = head
         .operations
         .iter()
         .filter(|operation| operation.state == EffectState::Prepared)

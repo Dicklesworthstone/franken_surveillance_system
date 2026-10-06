@@ -258,7 +258,15 @@ synthetic scenes). None of it has been measured on real camera footage.
   Claim answers and the case `list` are the registered `fss.agent_cognitive_envelope.v1`
   (AOP-006 allowlists only it and the investigation state); a handoff's identity binds the
   situation fingerprint, so a re-handoff after agent-plane changes at the same anchor is a new
-  handoff. `fss feedback` (AOP-013) publishes grounded, evidence-linked advisory
+  handoff, and its obligations, prepared operations, and indeterminate effects are read from
+  the head's effect journal (live state), not from the session's older anchor. The first
+  end-to-end agent rehearsal (FSS-240, `agent_rehearsal_contract`) drives one mission through
+  the real binaries: orient, explain, session open, case open/activate, probe claim, cite and
+  assess, plan on the case, approve, handoff, resume (which names the new obligation), commit
+  (one dispatch), wait, owner-attested reconcile, close (episode), advisory feedback citing the
+  episode, case conclusion, and a final handoff with nothing active, validating every answer
+  against its schema and retaining a JSON-lines transcript (`FSS_REHEARSAL_TRANSCRIPT`).
+  `fss feedback` (AOP-013) publishes grounded, evidence-linked advisory
   proposals (`activePolicyMutation: false`). `fss-event alert` and the agent grammar share one
   alert core (`fss_cli::alert_effect`), so an operation prepared by either is the same operation.
   The MCP adapter adds only the read-only `wait` tool. `fss commit --reconcile
@@ -271,7 +279,7 @@ synthetic scenes). None of it has been measured on real camera footage.
   recorded, never executed; no learning proposals or
   promotion, ExperienceCapsule, or multi-agent schedule qualification yet; proven on synthetic fixtures and a
   loopback relay only (`investigate_cli_contract`, `agent_effect_cli_contract`,
-  `work_claim_cli_contract`).
+  `work_claim_cli_contract`, `agent_rehearsal_contract`).
 
 Architectural deviations to resolve: device and alert I/O use blocking `std::net` rather than
 Asupersync (owner decision `fss-x4a.8.1` is open), and the workspace has zero third-party crates.
