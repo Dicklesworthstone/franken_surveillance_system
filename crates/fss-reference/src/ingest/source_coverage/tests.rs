@@ -1474,13 +1474,16 @@ fn quiet_certifies_only_with_an_analysis_of_every_frame_under_one_generation() -
 /// witness and no analysis. Delivery is not observation: neither reader certifies.
 #[test]
 fn a_rejection_written_without_analysis_does_not_certify() -> TestResult {
+    // Exactly the old lab: nothing reaches a model, and the caller writes the rejection.
     let mut quiet = Quiet::run_plan(
         "lab-written",
         Plan {
+            analyse: |_, _| None,
             decide: lab_written,
             ..Plan::new(everything, true)
         },
     )?;
+    assert!(quiet.analyses.is_empty());
     assert!(quiet.decision.event.model_receipts.is_empty());
     let (batches, head) = quiet.history()?;
     assert_eq!(
@@ -1493,8 +1496,35 @@ fn a_rejection_written_without_analysis_does_not_certify() -> TestResult {
         ),
         Err(RetainedCoverageRefusal::NoAnalysis)
     );
-    // Results the event does not cite add nothing, even when they exist and cover every frame.
-    assert_eq!(quiet.analyses.len(), quiet.record.frames.len());
+    // Results the event does not cite add nothing, even when they cover every frame exactly.
+    let spec = MockModelSpec::new(GEN_A, MockModelScript::NothingFound)?;
+    let offered: Vec<MockModelResult> = quiet
+        .record
+        .frames
+        .iter()
+        .map(|frame| -> Result<MockModelResult, Box<dyn Error>> {
+            Ok(MockModelResult {
+                generation_id: GEN_A.to_owned(),
+                sensor_id: SensorId::parse(frame.sensor_id.clone())?,
+                model_spec_digest: spec.spec_digest(),
+                input_capture_root: frame.source_digest,
+                continuity_digest: frame.capsule_digest,
+                outcome: crate::MockModelOutcome::NothingFound {
+                    analysed_capsule: frame.capsule_digest,
+                },
+            })
+        })
+        .collect::<Result<_, _>>()?;
+    assert_eq!(
+        verify_retained_coverage(
+            &quiet.record,
+            Some(&quiet.decision.event),
+            &offered,
+            &batches,
+            &head
+        ),
+        Err(RetainedCoverageRefusal::NoAnalysis)
+    );
     assert_not_certified(&mut quiet, "delivered but never analysed")?;
     quiet.cleanup();
     Ok(())
