@@ -5,6 +5,8 @@
 //! A published root without final import authority is not a completed import. Custody of a
 //! recorded file never certifies live coverage, capture-time precision, or absence.
 
+mod root_binding;
+
 use super::{
     ADP_FILE_GENERATION, ADP_FILE_ROW_ID, FILE_IMPORT_MANIFEST_SCHEMA, FileImportManifest,
     FileIngestError, FileOmissionSpan, SegmentSpan,
@@ -338,6 +340,15 @@ impl RetainedFileImport {
         }
         let bytes = deployment.publisher().spool().read(manifest_digest)?;
         let manifest = FileImportManifest::from_retained_bytes(&bytes, manifest_digest, limits)?;
+        root_binding::verify(
+            deployment,
+            &slot,
+            import_root,
+            manifest_digest,
+            batch,
+            &manifest,
+            cx,
+        )?;
         checkpoint(cx, STAGE_RETAINED_COMPLETE)?;
         Ok(Self {
             import_identity,
