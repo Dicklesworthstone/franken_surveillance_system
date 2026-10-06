@@ -954,6 +954,103 @@ fn stray_foreign_ssrc_packet_is_refused_and_the_stream_keeps_ingesting() -> Test
     Ok(())
 }
 
+/// fss-iui8a N1: a foreign SSRC sends two consecutive packets on another payload type (PCMU,
+/// payload type 0: an audio stream interleaved in the recording) inside a pending FU-A fragment of
+/// the bound H.264 stream. Two consecutive packets of one SSRC pass the sequence half of the
+/// replay's two-packet validation, so only its payload-type checks keep them from opening a
+/// generation: both are refused alone as strays, retire no fragment, and the bound stream keeps
+/// ingesting to its end in generation 1.
+///
+/// Planted negative: mutant M10 (both payload-type checks removed from `new_source_validated`)
+/// opens a generation for the audio SSRC, so records leave generation 1 and the bound stream
+/// stops reaching the depacketizer.
+#[test]
+fn foreign_ssrc_on_another_payload_type_opens_no_generation() -> TestResult {
+    const PCMU: u8 = 0;
+    let planned = packetize(2, MAX_PAYLOAD, 65_534, SSRC_A, 90_000, 0);
+    let at_index = 30;
+    // Precondition: the foreign packets land inside a fragmented NAL.
+    assert_eq!(planned[at_index].payload[0] & 31, 28);
+    assert_eq!(planned[at_index].payload[1] & 0x80, 0);
+    let offset_ms = planned[at_index].offset_ms;
+    let mut foreign = Vec::new();
+    for (seq, timestamp) in [(500_u16, 8_000_u32), (501, 8_160)] {
+        let mut wire = rtp_full(seq, false, timestamp, SSRC_B, &[0xff; 160]);
+        wire[1] = PCMU;
+        foreign.push(wire);
+    }
+    let mut bytes = header();
+    for (i, p) in planned.iter().enumerate() {
+        if i == at_index {
+            for wire in &foreign {
+                record(&mut bytes, wire, wire.len() as u16, offset_ms);
+            }
+        }
+        let wire = rtp_full(p.seq, p.marker, p.timestamp, p.ssrc, &p.payload);
+        record(&mut bytes, &wire, wire.len() as u16, p.offset_ms);
+    }
+    let run = run("foreign-pt", &bytes, config_for(SSRC_A), policy(16))?;
+    let records = run.import.records();
+    assert_eq!(records.len(), planned.len() + 2);
+    let refused: Vec<usize> = records
+        .iter()
+        .enumerate()
+        .filter(|(_, r)| matches!(r.disposition, RecordDisposition::StreamRefused(_)))
+        .map(|(i, _)| i)
+        .collect();
+    assert_eq!(refused, vec![at_index, at_index + 1]);
+    for r in &records[at_index..at_index + 2] {
+        assert_eq!(
+            r.disposition,
+            RecordDisposition::StreamRefused(ContinuityError::StreamMismatch)
+        );
+        assert!(r.discarded.is_none());
+    }
+    assert!(
+        records
+            .iter()
+            .all(|r| r.generation == 1 && r.ssrc == SSRC_A && r.restart.is_none())
+    );
+    for (i, r) in records.iter().enumerate().skip(1) {
+        if !refused.contains(&i) {
+            assert!(
+                matches!(r.disposition, RecordDisposition::H264(_)),
+                "record {i}: {:?}",
+                r.disposition
+            );
+        }
+    }
+    // The fragment pending across both foreign packets completes on the next bound record.
+    assert!(!records[at_index + 2].nals.is_empty());
+    assert!(records[at_index + 2].discarded.is_none());
+
+    let report = &run.report;
+    assert_eq!(report.generations().len(), 1);
+    let g = &report.generations()[0];
+    assert_eq!((g.generation, g.ssrc, g.cause), (1, SSRC_A, None));
+    assert!(g.first_picture.is_some());
+    assert_eq!(
+        report.windows().last().map(|w| w.end_seq),
+        Some(ext(planned.len() - 1))
+    );
+    let foreign_at = at(offset_ms);
+    let hit: Vec<&RtpContinuityWindow> = report
+        .windows()
+        .iter()
+        .filter(|w| w.interval.earliest <= foreign_at && foreign_at <= w.interval.latest)
+        .collect();
+    assert!(!hit.is_empty());
+    for w in &hit {
+        assert_eq!(w.lost_dimensions, vec![LOST_PACKET_REFUSED.to_owned()]);
+        evidence(w)?;
+    }
+    caplog(
+        "foreign_payload_type_refused",
+        &format!("{}|{}", kinds_text(report), hit.len()),
+    );
+    Ok(())
+}
+
 /// Probe P2 (review mutant G): the packet right before the first picture's first packet (the last
 /// SEI fragment, which the picture does not need) is lost. The picture still decodes, but a lost
 /// position between the baseline and the first frame keeps the generation from a first frame: it

@@ -77,6 +77,24 @@
 //! **No-Claim.** A verified window means the recorded packets of this one stream were contiguous,
 //! timely by the recorder's offsets and reconstructable. It is not live-network RTSP continuity,
 //! capture-time truth or site-wide coverage.
+//!
+//! # Residuals (fss-iui8a)
+//!
+//! * **Spliced streams are adopted (RFC 3550).** A foreign SSRC whose first two packets are
+//!   consecutive on the bound payload type passes the replay's validation and opens a new
+//!   generation under the same device and source id, exactly as a legitimate SSRC change does.
+//!   A complete foreign stream spliced into a recording therefore becomes its own
+//!   `ContinuityVerified` generation, and two forged packets of a fresh SSRC force a restart away
+//!   from the bound stream and back (two restarts, lost decode of the pictures between). Both
+//!   fail closed: every generation boundary is outside any one run, so no absence query spans it,
+//!   and recorded continuity certifies no absence on its own (see Absence). The recording carries
+//!   no authentication that could tell the splice from a real SSRC change. Packets on another
+//!   payload type (an interleaved audio stream) never open a generation.
+//! * **Unsequenced faults are charged at millisecond resolution.** Recorder offsets are whole
+//!   milliseconds, so an unsequenced fault (a stray or refused record) in the same millisecond as
+//!   the first picture's first packet counts as arriving no later than it, even when it was
+//!   recorded after it, and blocks the generation's first frame. This errs toward refusing
+//!   coverage, never toward certifying it.
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::fmt;
