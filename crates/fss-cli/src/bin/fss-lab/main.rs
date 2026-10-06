@@ -5,6 +5,7 @@
 //! under a caller-given `--root` directory.
 
 mod crash_matrix;
+mod decode;
 mod file_activity;
 mod recover;
 mod scenario;
@@ -91,6 +92,20 @@ fn run_action(action: LabAction) -> Result<String, String> {
         } => {
             check_root_empty(&root)?;
             crash_matrix_command(&scenario, json, &root)
+        }
+        LabAction::Decode {
+            input,
+            root,
+            interpretation,
+            json,
+        } => {
+            check_root_empty(&root)?;
+            let report = decode::run(&input, &root, interpretation)?;
+            Ok(if json {
+                report.render_json()
+            } else {
+                report.render_text()
+            })
         }
         LabAction::Recover {
             root,

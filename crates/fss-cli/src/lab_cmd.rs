@@ -67,6 +67,18 @@ pub enum LabAction {
         /// Emit the JSON report instead of the human summary.
         json: bool,
     },
+    /// Import a recorded JPEG/MJPEG file through the real file adapter, decode every retained
+    /// capsule and print `fss.lab.decode_report.v1` (fss-2h5zq.43).
+    Decode {
+        /// Recorded input file (JPEG or MJPEG).
+        input: PathBuf,
+        /// Target root directory; must be absent or empty.
+        root: PathBuf,
+        /// Operator-declared component interpretation; never guessed from the media.
+        interpretation: LabInterpretation,
+        /// Emit the JSON report instead of the human summary.
+        json: bool,
+    },
     /// Replay a scenario N times to prove determinism.
     Replay {
         /// Selected scenario identifier.
@@ -78,12 +90,33 @@ pub enum LabAction {
     },
 }
 
+/// Component interpretation an operator declares for `fss-lab decode`.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum LabInterpretation {
+    /// One grayscale component.
+    Gray,
+    /// Full-range JPEG Y/Cb/Cr components.
+    Ycbcr,
+}
+
+impl LabInterpretation {
+    /// Stable lowercase label (`gray`, `ycbcr`).
+    #[must_use]
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::Gray => "gray",
+            Self::Ycbcr => "ycbcr",
+        }
+    }
+}
+
 /// Returns the static help text for `fss-lab`.
 #[must_use]
 pub const fn help_text() -> &'static str {
     "fss-lab — deterministic reference surveillance laboratory\n\n\
-USAGE\n  fss-lab list\n  fss-lab run <scenario> --root <dir>\n  fss-lab matrix --root <dir>\n  fss-lab replay <scenario> --root <dir> [--repeat N]\n  fss-lab self-test --root <dir>\n  fss-lab crash-matrix --root <dir> [--scenario intrusion] [--json]\n  fss-lab recover --root <dir> <action>... [--json]\n\n\
+USAGE\n  fss-lab list\n  fss-lab run <scenario> --root <dir>\n  fss-lab matrix --root <dir>\n  fss-lab replay <scenario> --root <dir> [--repeat N]\n  fss-lab self-test --root <dir>\n  fss-lab crash-matrix --root <dir> [--scenario intrusion] [--json]\n  fss-lab recover --root <dir> <action>... [--json]\n  fss-lab decode --input <jpeg|mjpeg> --root <dir> --interpretation gray|ycbcr [--json]\n\n\
 SCENARIOS\n  quiet           complete coverage and a certified absence\n  raccoon         benign wildlife with no alert effect\n  intrusion       independently corroborated person and verified alert\n  sneaky          material person residual plus an observability gap\n  lost-ack        indeterminate alert dispatch resolved by reconciliation\n  corrupt-source  source corruption detected before evidence publication\n  file-activity   recorded JPEG frames scored by the real scalar executor (run/replay only)\n\n\
+DECODE\n  Imports the recorded file through the file-ingest adapter into an empty root, decodes every\n  retained capsule with the canonical JPEG decoder after verifying its custody, and prints one\n  row per capsule (decoded tensor digest, or the receipted refusal) plus every omitted span.\n  Never prints pixels. Decoded luma is derived from retained custody, not new evidence.\n\n\
 CRASH MATRIX\n  Injects one in-process fault per publish cut point, ledger cut point, journal append phase,\n  lost alert acknowledgement and cancellation stage, reopens each sub-root, and compares the\n  recovery class with the documented one. Exit 0 when the verdict is pass, 1 otherwise.\n  In-process injection is not process death or power loss.\n\n\
 RECOVER\n  Explicit operator recovery of a deployment root; every action is named, nothing is implicit:\n    --truncate-incomplete-tail ledger|effects   drop an incomplete journal tail\n    --plan-ledger-repair | --plan-effects-repair  print the sealed foreign-byte repair plan and\n                                                its digest; read-only, changes nothing\n    --apply-ledger-repair <digest>              apply only the plan with exactly this digest\n    --apply-effects-repair <digest>\n    --discard-orphaned-temps                    remove root temps an interrupted publish left\n    --discard-orphaned-staging                  remove staging files an interrupted ingest left\n    --reconcile-effects                         resolve indeterminate alerts only from the lab's\n                                                durable simulated provider record; never retries\n  Mutating actions hold <root>/objects/LOCK and run in a fixed order: ledger bytes, effect\n  bytes, a reopen check, orphan discards, effect reconciliation. Refusals exit 6 with\n  ERR-LAB-RECOVER-* identities (root locked, nothing to do, plan mismatch, corrupt history).\n  An indeterminate staging discard exits 1 and needs a reopen. The simulated provider is not a\n  real vendor.\n"
 }
@@ -134,6 +167,7 @@ pub fn parse_lab_tokens(tokens: &[ArgToken]) -> Result<LabAction, CliError> {
         "replay" => parse_replay_command(tokens),
         "crash-matrix" => parse_crash_matrix_command(tokens),
         "recover" => parse_recover_command(tokens),
+        "decode" => parse_decode_command(tokens),
         unknown => {
             if unknown.starts_with('-') {
                 Err(CliError::UnknownOption {
@@ -628,6 +662,124 @@ fn parse_crash_matrix_command(tokens: &[ArgToken]) -> Result<LabAction, CliError
     Ok(LabAction::CrashMatrix {
         root,
         scenario: scenario.unwrap_or_else(|| "intrusion".to_owned()),
+        json,
+    })
+}
+
+fn parse_decode_command(tokens: &[ArgToken]) -> Result<LabAction, CliError> {
+    const COMMAND: &str = "decode";
+    let mut input: Option<PathBuf> = None;
+    let mut root: Option<PathBuf> = None;
+    let mut interpretation: Option<LabInterpretation> = None;
+    let mut json = false;
+    let mut idx = 1;
+    while idx < tokens.len() {
+        let tok = &tokens[idx];
+        let s = tok.as_str();
+        let duplicate = |option: &str| CliError::DuplicateOption {
+            option: option.to_owned(),
+            command: Some(COMMAND.to_owned()),
+            index: tok.index,
+        };
+        if s == "--json" {
+            if json {
+                return Err(duplicate("--json"));
+            }
+            json = true;
+            idx += 1;
+            continue;
+        }
+        let (option, value, value_index, step) =
+            if let Some((option, value)) = s.split_once('=').filter(|(o, _)| o.starts_with("--")) {
+                (option, value.to_owned(), tok.index, 1)
+            } else if matches!(s, "--input" | "--root" | "--interpretation") {
+                let missing = || CliError::MissingValue {
+                    option: s.to_owned(),
+                    command: Some(COMMAND.to_owned()),
+                    expected: match s {
+                        "--interpretation" => "one of: gray, ycbcr".to_owned(),
+                        "--input" => "recorded JPEG or MJPEG file path".to_owned(),
+                        _ => "directory path".to_owned(),
+                    },
+                };
+                let val_tok = tokens.get(idx + 1).ok_or_else(missing)?;
+                if is_option_shaped(val_tok.as_str()) {
+                    return Err(missing());
+                }
+                (s, val_tok.raw.clone(), val_tok.index, 2)
+            } else if s.starts_with('-') {
+                return Err(CliError::UnknownOption {
+                    option: s.to_owned(),
+                    command: Some(COMMAND.to_owned()),
+                    index: tok.index,
+                });
+            } else {
+                return Err(CliError::TrailingArgument {
+                    argument: s.to_owned(),
+                    index: tok.index,
+                    command: Some(COMMAND.to_owned()),
+                });
+            };
+        match option {
+            "--root" => {
+                if root.is_some() {
+                    return Err(duplicate("--root"));
+                }
+                root = Some(parse_root_value(&value, value_index, Some(COMMAND))?);
+            }
+            "--input" => {
+                if input.is_some() {
+                    return Err(duplicate("--input"));
+                }
+                if value.is_empty() {
+                    return Err(CliError::MalformedValue {
+                        option: "--input".to_owned(),
+                        value,
+                        reason: "--input requires a non-empty file path".to_owned(),
+                        command: Some(COMMAND.to_owned()),
+                        index: value_index,
+                    });
+                }
+                input = Some(PathBuf::from(value));
+            }
+            "--interpretation" => {
+                if interpretation.is_some() {
+                    return Err(duplicate("--interpretation"));
+                }
+                interpretation = Some(match value.as_str() {
+                    "gray" => LabInterpretation::Gray,
+                    "ycbcr" => LabInterpretation::Ycbcr,
+                    _ => {
+                        return Err(CliError::MalformedValue {
+                            option: "--interpretation".to_owned(),
+                            value,
+                            reason: "--interpretation must be explicitly gray or ycbcr".to_owned(),
+                            command: Some(COMMAND.to_owned()),
+                            index: value_index,
+                        });
+                    }
+                });
+            }
+            other => {
+                return Err(CliError::UnknownOption {
+                    option: other.to_owned(),
+                    command: Some(COMMAND.to_owned()),
+                    index: tok.index,
+                });
+            }
+        }
+        idx += step;
+    }
+    let missing = |option: &str, expected: &str| CliError::MissingValue {
+        option: option.to_owned(),
+        command: Some(COMMAND.to_owned()),
+        expected: expected.to_owned(),
+    };
+    Ok(LabAction::Decode {
+        input: input.ok_or_else(|| missing("--input", "recorded JPEG or MJPEG file path"))?,
+        root: root.ok_or_else(|| missing("--root", "directory path"))?,
+        interpretation: interpretation
+            .ok_or_else(|| missing("--interpretation", "one of: gray, ycbcr"))?,
         json,
     })
 }

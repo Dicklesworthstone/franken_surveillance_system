@@ -72,8 +72,9 @@ pub use hydration_cmd::{
     parse_hydration_args, parse_hydration_tokens,
 };
 pub use lab_cmd::{
-    LabAction, RecoverJournal, RecoverRequest, VALID_SCENARIOS as VALID_LAB_SCENARIOS,
-    help_text as lab_help_text, lab_recover_diagnostic, parse_lab_args, parse_lab_tokens,
+    LabAction, LabInterpretation, RecoverJournal, RecoverRequest,
+    VALID_SCENARIOS as VALID_LAB_SCENARIOS, help_text as lab_help_text, lab_recover_diagnostic,
+    parse_lab_args, parse_lab_tokens,
 };
 pub use negative_evidence_cmd::{
     NEGATIVE_EVIDENCE_REPORT_SCHEMA, NegativeEvidenceAction, execute_negative_evidence,
