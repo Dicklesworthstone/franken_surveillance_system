@@ -732,6 +732,8 @@ fn error_code(error: &FileIngestError) -> &'static str {
         FileIngestError::UnknownFormat { .. } => "unknown_format",
         FileIngestError::AmbiguousAnnexBCodec { .. } => "ambiguous_annexb_codec",
         FileIngestError::UnsupportedFormat { .. } => "unsupported_format",
+        FileIngestError::RtpBindingRequired {} => "rtp_binding_required",
+        FileIngestError::RecordedRtp(_) => "recorded_rtp_import_refused",
         FileIngestError::CaptureHintAfterReceive { .. } => "capture_hint_after_receive",
         FileIngestError::CaptureHintLatestAfterReceive { .. } => {
             "capture_hint_latest_after_receive"
