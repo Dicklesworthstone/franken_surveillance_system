@@ -1,4 +1,5 @@
 #![forbid(unsafe_code)]
+#![allow(clippy::expect_used)] // fixture lookups over bytes this file just built
 //! Independent sample-table fixtures plus a retained FFmpeg laboratory encoding.
 use super::*;
 

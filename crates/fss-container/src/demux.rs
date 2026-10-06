@@ -191,12 +191,13 @@ impl<'a> AvcMp4<'a> {
         let top = r.children(0..source.len(), true)?;
         let ftyp = one(&top, b"ftyp")?;
         let brands = r.body(&ftyp);
-        if brands.len() < 8 || (brands.len() - 8) % 4 != 0 {
+        if brands.len() < 8 || !(brands.len() - 8).is_multiple_of(4) {
             return Err(DemuxError::Layout);
         }
         // These ordinary ISO BMFF brands do not add an unsupported container interpretation.
         let supported = |b: &[u8]| matches!(b, b"isom" | b"iso2" | b"mp41" | b"mp42" | b"avc1");
-        if !supported(&brands[..4]) && !brands[8..].chunks_exact(4).any(supported) {
+        if !supported(&brands[..4]) && !brands[8..].as_chunks::<4>().0.iter().any(|b| supported(b))
+        {
             return Err(DemuxError::Unsupported);
         }
         if top

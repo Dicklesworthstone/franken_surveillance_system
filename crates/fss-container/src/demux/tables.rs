@@ -116,10 +116,12 @@ pub(super) fn validate_data_reference(
     }
     Ok(())
 }
+/// Coded dimensions, NAL length-field bytes and parameter-set byte ranges of one sample entry.
+pub(super) type Configuration = ([u16; 2], usize, Vec<Range<usize>>);
 pub(super) fn configuration(
     r: &mut Reader<'_, '_>,
     stsd: &BoxRef,
-) -> Result<([u16; 2], usize, Vec<Range<usize>>), DemuxError> {
+) -> Result<Configuration, DemuxError> {
     let b = r.body(stsd);
     full(b, 0, 0)?;
     if be32(b, 4)? != 1 {
@@ -233,7 +235,7 @@ pub(super) fn sizes(r: &mut Reader<'_, '_>, stsz: &BoxRef) -> Result<Vec<u32>, D
         return Ok(vec![fixed; count]);
     }
     let mut sizes = Vec::with_capacity(count);
-    for row in b[12..].chunks_exact(4) {
+    for row in b[12..].as_chunks::<4>().0 {
         let n = be32(row, 0)?;
         if n == 0 {
             return Err(DemuxError::Layout);
@@ -273,7 +275,7 @@ pub(super) fn locations(
         return Err(DemuxError::Layout);
     }
     let mut runs = Vec::with_capacity(count);
-    for row in data.chunks_exact(12) {
+    for row in data.as_chunks::<12>().0 {
         let first = be32(row, 0)? as usize;
         let per_chunk = be32(row, 4)? as usize;
         if first == 0
@@ -330,7 +332,7 @@ pub(super) fn timing(
     let (data, _) = r.table(stts, 8, samples)?;
     let mut result = Vec::with_capacity(samples);
     let mut time = 0_u64;
-    for row in data.chunks_exact(8) {
+    for row in data.as_chunks::<8>().0 {
         let count = be32(row, 0)? as usize;
         let duration = be32(row, 4)?;
         if count == 0 || duration == 0 || count > samples - result.len() {
@@ -369,7 +371,7 @@ pub(super) fn composition(
     exact_table(b, 8, count, 8)?;
     r.entries(count)?;
     let mut result = Vec::with_capacity(samples);
-    for row in b[8..].chunks_exact(8) {
+    for row in b[8..].as_chunks::<8>().0 {
         let count = be32(row, 0)? as usize;
         if count == 0 || count > samples - result.len() {
             return Err(DemuxError::Timeline);
@@ -398,7 +400,7 @@ pub(super) fn sync_samples(
     let (data, _) = r.table(&stss, 4, samples)?;
     let mut result = vec![false; samples];
     let mut previous = 0;
-    for row in data.chunks_exact(4) {
+    for row in data.as_chunks::<4>().0 {
         let index = be32(row, 0)? as usize;
         if index <= previous || index > samples {
             return Err(DemuxError::Layout);
