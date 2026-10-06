@@ -166,20 +166,19 @@ pub(super) fn verify(
                     ));
                 }
                 initial_custody = true;
-            } else if delta.family == "sensor_capsule" {
-                if delta.plane != Plane::Authority
+            } else if delta.family == "sensor_capsule"
+                && (delta.plane != Plane::Authority
                     || delta.prior_generation.is_some()
                     || delta.new_generation != 1
                     || !children.contains(&delta.payload_digest)
                     || !held.contains(&delta.payload_digest)
                     || capsules
                         .insert(delta.object_id.as_str(), delta.payload_digest)
-                        .is_some()
-                {
-                    return Err(invalid(
-                        "capsule authority is duplicated or outside import custody",
-                    ));
-                }
+                        .is_some())
+            {
+                return Err(invalid(
+                    "capsule authority is duplicated or outside import custody",
+                ));
             }
         }
     }

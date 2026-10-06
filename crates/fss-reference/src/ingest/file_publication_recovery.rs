@@ -53,19 +53,17 @@ pub fn recover_file_publication(
     // Use the same slot grammar as the writer, without trusting any caller-supplied path.
     let empty = FilePublicationPlan::new(import_identity, [], 1)?;
     let root = read_manifest(deployment, empty.slot(), None, cx)?;
-    let payloads;
-    let child_limit;
-    if metadata.part_roots.is_empty() {
+    let (payloads, child_limit) = if metadata.part_roots.is_empty() {
         let metadata_digest = root
             .metadata_digest()
             .ok_or_else(|| invalid("aggregate has no typed file metadata"))?;
-        payloads = root
+        let payloads: Vec<_> = root
             .children()
             .iter()
             .copied()
             .filter(|digest| *digest != metadata_digest)
             .collect();
-        child_limit = root.children().len().max(1);
+        (payloads, root.children().len().max(1))
     } else {
         let metadata_digest = root
             .metadata_digest()
@@ -115,9 +113,9 @@ pub fn recover_file_publication(
             }
             children.extend_from_slice(part_children);
         }
-        payloads = children;
-        child_limit = bound.ok_or_else(|| invalid("partitioned aggregate has no parts"))?;
-    }
+        let child_limit = bound.ok_or_else(|| invalid("partitioned aggregate has no parts"))?;
+        (children, child_limit)
+    };
     let plan = FilePublicationPlan::new(import_identity, payloads, child_limit)?;
     // This checks metadata sizes before canonical encoding, exact part roots, and source-chunk
     // membership. It also rejects omitted parts even when the remaining parts are individually
