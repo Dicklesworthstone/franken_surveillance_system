@@ -1223,10 +1223,19 @@ fn run_scenario_impl(
     let coverage_witness: Option<CoverageWitness> = coverage_record
         .as_ref()
         .map(|record| record.witness.clone());
-    let stored_coverage = coverage_record.as_ref().map(|record| StoredCoverage {
-        record,
-        analyses: &quiet_analyses,
-    });
+    // Only a rejected event has an absence to certify: the situation compiler refuses a witness
+    // offered beside any other state, so a quiet run whose frames were not all analysed (the
+    // policy holds it indeterminate) retains its witness but offers none (fss-f8jls).
+    let offered_witness = coverage_witness
+        .as_ref()
+        .filter(|_| decision.event.state == EventState::Rejected);
+    let stored_coverage = coverage_record
+        .as_ref()
+        .filter(|_| offered_witness.is_some())
+        .map(|record| StoredCoverage {
+            record,
+            analyses: &quiet_analyses,
+        });
 
     // Alert dispatch and reconciliation for corroborated threat scenarios.
     let mut transient_indeterminate = false;
@@ -1419,7 +1428,7 @@ fn run_scenario_impl(
         event_receipt: &event_receipt,
         alert_plan: alert_plan.as_ref(),
         alert_outcome: None,
-        coverage_witness: coverage_witness.as_ref(),
+        coverage_witness: offered_witness,
         coverage_record: stored_coverage,
         available_capabilities,
         created_at: TimestampNs(
