@@ -1609,6 +1609,16 @@ fn compile_worlds(params: WorldCompilationParams<'_>) -> (WorldEnvelope, Vec<Str
                 protected: true,
             });
             unknown.push("The event remains indeterminate; contradictory, degraded, or incomplete evidence cannot be compressed away.".to_owned());
+            // The policy's typed reason for holding the candidate over a gapped or partial
+            // coverage record is stated, never flattened into the generic line (fss-pgwsv N2).
+            if params.decision.event.uncertainty_reason.as_deref()
+                == Some(crate::COVERAGE_WITNESS_NOT_CERTIFYING)
+            {
+                unknown.push(format!(
+                    "Physical absence is not observable over a coverage gap; the policy holds the candidate indeterminate because {}.",
+                    crate::COVERAGE_WITNESS_NOT_CERTIFYING
+                ));
+            }
             at_risk.push("An alert effect is blocked until policy reaches independent corroboration or an explicit exception proof.".to_owned());
         }
         EventState::Rejected => {
