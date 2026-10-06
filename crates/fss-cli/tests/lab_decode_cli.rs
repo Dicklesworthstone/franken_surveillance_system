@@ -179,6 +179,12 @@ fn truncated_last_is_degraded_with_one_omission() -> TestResult {
     let report = stdout(&lab_decode(&input, &scratch.0.join("root"), "ycbcr", true)?)?;
     let pass = count(&report, "\"outcome\":\"decoded\"") == 2
         && count(&report, "\"outcome\":\"omitted\"") == 1
+        // The dropped 633-byte truncated frame (fixture_manifest.json frames[2]) is accounted.
+        && report.contains(
+            "{\"outcome\":\"omitted\",\"source_offset\":1849,\"source_bytes\":633,\
+             \"reason\":\"not_segmented\"}",
+        )
+        && report.contains("\"truncated_frame_omitted\"")
         && report.contains("\"degraded\":true")
         && report.contains(&format!("\"source_digest\":\"sha256:{}\"", CLEAN[1].2));
     caplog(
