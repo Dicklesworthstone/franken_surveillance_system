@@ -9,7 +9,11 @@
 //! 2. a relay that closes without acknowledgement leaves the operation indeterminate (exit 1,
 //!    `ERR-EFFECT-INDETERMINATE-001`) and it is never resent;
 //! 3. stale plan and dispatch approvals are typed refusals before any I/O, and a prepared
-//!    operation can be cancelled (preview, then exact approval) so it can never be committed.
+//!    operation can be cancelled (preview, then exact approval) so it can never be committed;
+//! 4. owner-attested reconciliation discharges a dispatched alert's obligation, and `fss plan
+//!    --close` then records the plan's immutable execution episode (refused while the effect is
+//!    open; hydrated from the publication store and validated against its schema; returned
+//!    unchanged on a second close; citing the principal's feedback as competing attribution).
 
 use std::error::Error;
 use std::ffi::OsString;
@@ -469,6 +473,40 @@ impl Agent {
     }
 }
 
+/// One `plan --close` answer: exit, envelope, and the hydrated episode (parsed and raw).
+type Closed = (Option<i32>, Value, Option<(Value, String)>);
+
+impl Agent {
+    /// `plan --close`: records (or returns) the plan's immutable execution episode. Returns the
+    /// exit, the envelope (whose payload is the closed control plan), and the episode rendering
+    /// hydrated from the agent publication store through the second proof pointer, validated
+    /// against `fss.agent_execution_episode.v1`.
+    fn close(&self, plan_id: &str) -> TestResult<Closed> {
+        let (code, envelope) = self.run(
+            "plan",
+            &["--session", self.session.as_str(), "--close", plan_id],
+        )?;
+        if code != Some(0) {
+            return Ok((code, envelope, None));
+        }
+        assert_eq!(
+            text(&envelope, &["payloadSchema"])?,
+            "fss.agent_control_plan.v1"
+        );
+        assert_eq!(text(&envelope, &["payload", "planId"])?, plan_id);
+        let pointer = texts(&envelope, &["proofPointers"])?[1].clone();
+        let bytes = fss_publication::read_verified(
+            self.root.join("agent/publications"),
+            ContentDigest::parse(&pointer)?,
+            1 << 20,
+        )?;
+        let rendering = String::from_utf8(bytes)?;
+        assert_conforms("agent_execution_episode.v1.json", &rendering, &self.scratch)?;
+        let episode = parse(&rendering)?;
+        Ok((code, envelope, Some((episode, rendering))))
+    }
+}
+
 /// The plan's approval digest (third proof pointer) and dispatch digest (last, when prepared).
 fn approvals(plan: &Value) -> TestResult<(String, String, String)> {
     let pointers = texts(plan, &["proofPointers"])?;
@@ -674,6 +712,18 @@ fn stale_approvals_refuse_before_io_and_a_cancelled_plan_is_never_committed() ->
     let (code, reported) = agent.run("commit", &["--plan", &plan_id, "--approve", &bogus])?;
     assert_eq!(code, Some(0));
     assert_eq!(text(&reported, &["payload", "state"])?, "cancelled");
+    // The withdrawn plan closes as cancelled: nothing was dispatched, so its delivery prediction
+    // was never tested.
+    let (code, closed, episode) = agent.close(&plan_id)?;
+    assert_eq!(code, Some(0), "{closed:?}");
+    let (episode, _) = episode.ok_or("episode")?;
+    assert_eq!(text(&episode, &["outcome", "state"])?, "cancelled");
+    assert!(matches!(
+        field(prediction(&episode, "prediction:delivery")?, &["error"])?,
+        Value::Null
+    ));
+    assert!(texts(&episode, &["stepReceipts"])?.contains(&"step:commit=not_started".to_owned()));
+    assert_eq!(causes(&episode)?, vec!["policy".to_owned()]);
     assert_eq!(relay.connections(), 0);
     Ok(())
 }
@@ -702,18 +752,39 @@ fn reconcile(
     agent.run("commit", &args)
 }
 
+/// Plans, prepares, and commits one alert: (plan, operation, commit exit, commit envelope).
 fn dispatched(
     agent: &Agent,
     event_id: &str,
     relay: &Relay,
-) -> TestResult<(String, Option<i32>, Value)> {
+) -> TestResult<(String, String, Option<i32>, Value)> {
     let (_, planned) = agent.plan(event_id, relay.address, &[])?;
     let (plan_id, plan_approval, _) = approvals(&planned)?;
     let operation = operation_of(&planned)?;
     let (_, prepared) = agent.plan(event_id, relay.address, &["--approve", &plan_approval])?;
     let (_, _, dispatch) = approvals(&prepared)?;
     let (code, committed) = agent.run("commit", &["--plan", &plan_id, "--approve", &dispatch])?;
-    Ok((operation, code, committed))
+    Ok((plan_id, operation, code, committed))
+}
+
+/// The episode's attribution cause classes, in order.
+fn causes(episode: &Value) -> TestResult<Vec<String>> {
+    field(episode, &["attributionHypotheses"])?
+        .array()
+        .ok_or("attribution hypotheses")?
+        .iter()
+        .map(|hypothesis| Ok(text(hypothesis, &["causeClass"])?.to_owned()))
+        .collect()
+}
+
+/// The episode prediction `id`.
+fn prediction<'a>(episode: &'a Value, id: &str) -> TestResult<&'a Value> {
+    Ok(field(episode, &["predictions"])?
+        .array()
+        .ok_or("predictions")?
+        .iter()
+        .find(|prediction| text(prediction, &["predictionId"]).is_ok_and(|found| found == id))
+        .ok_or("prediction missing")?)
 }
 
 #[test]
@@ -721,9 +792,14 @@ fn an_indeterminate_alert_is_reconciled_only_by_an_approved_owner_attestation() 
     let (directory, event_id) = corroborated_event("reconcile-delivered")?;
     let agent = Agent::open(&directory)?;
     let relay = Relay::spawn(None)?;
-    let (operation, code, _) = dispatched(&agent, &event_id, &relay)?;
+    let (plan_id, operation, code, _) = dispatched(&agent, &event_id, &relay)?;
     assert_eq!(code, Some(1));
     let evidence = ContentDigest::sha256(b"screenshot of the received alert").to_text();
+    // An indeterminate plan has no outcome to record: closing it needs reconciliation first.
+    let (code, open, _) = agent.close(&plan_id)?;
+    assert_eq!(code, Some(5), "{open:?}");
+    assert_eq!(text(&open, &["errorId"])?, "ERR-OP-PRECONDITION-FAILED-001");
+    assert_eq!(text(&open, &["recoveryClass"])?, "reconciliation_required");
 
     // A concurrent bounded wait wakes on the reconciliation.
     let root = agent.root.clone();
@@ -785,8 +861,47 @@ fn an_indeterminate_alert_is_reconciled_only_by_an_approved_owner_attestation() 
     assert_eq!(code, Some(0), "{oriented}");
     let oriented = parse(oriented.trim_end())?;
     assert!(texts(&oriented, &["payload", "obligations"])?.is_empty());
-    // A reconciled plan is no longer active.
+    // A reconciled plan stays active until its outcome is recorded: closing it is the next move.
+    assert_eq!(agent.active_plans()?, vec![plan_id.clone()]);
+    let (code, closed, episode) = agent.close(&plan_id)?;
+    assert_eq!(code, Some(0), "{closed:?}");
+    let (episode, first) = episode.ok_or("episode")?;
+    assert_eq!(text(&episode, &["outcome", "state"])?, "succeeded");
+    let delivery = prediction(&episode, "prediction:delivery")?;
+    assert_eq!(text(delivery, &["observedState"])?, "verified");
+    // Whether the alert was warranted is never observed by its delivery.
+    let warranted = prediction(&episode, "prediction:warranted")?;
+    assert!(matches!(field(warranted, &["observedState"])?, Value::Null));
+    assert_eq!(
+        texts(&episode, &["outcome", "indeterminatePredicates"])?,
+        vec!["warranted".to_owned()]
+    );
+    // Residual uncertainty is stated in the envelope itself, not only behind hydration.
+    for statements in [
+        texts(&episode, &["residualUncertainty"])?,
+        texts(&closed, &["degradation"])?,
+    ] {
+        assert!(
+            statements
+                .iter()
+                .any(|line| line.contains("operator_asserted"))
+        );
+    }
+    assert!(texts(&episode, &["stepReceipts"])?.contains(&"step:reconcile=completed".to_owned()));
+    assert_eq!(causes(&episode)?, vec!["execution".to_owned()]);
     assert!(agent.active_plans()?.is_empty());
+    // Episodes are immutable: closing again returns the published episode unchanged.
+    let (code, again, episode) = agent.close(&plan_id)?;
+    assert_eq!(code, Some(0));
+    let (_, second) = episode.ok_or("episode")?;
+    assert_eq!(first, second);
+    assert!(
+        texts(&again, &["degradation"])?
+            .iter()
+            .any(|line| line.contains("already closed")),
+        "{again:?}"
+    );
+    assert_eq!(relay.connections(), 1);
     Ok(())
 }
 
@@ -795,7 +910,7 @@ fn a_relay_accepted_alert_attested_not_delivered_fails_its_obligation() -> TestR
     let (directory, event_id) = corroborated_event("reconcile-failed")?;
     let agent = Agent::open(&directory)?;
     let relay = Relay::spawn(Some(b"HTTP/1.1 202 Accepted\r\nContent-Length: 0\r\n\r\n"))?;
-    let (operation, code, committed) = dispatched(&agent, &event_id, &relay)?;
+    let (plan_id, operation, code, committed) = dispatched(&agent, &event_id, &relay)?;
     assert_eq!(code, Some(0));
     assert_eq!(text(&committed, &["payload", "state"])?, "adapter_accepted");
     let evidence = ContentDigest::sha256(b"owner: nothing arrived on any device").to_text();
@@ -816,6 +931,44 @@ fn a_relay_accepted_alert_attested_not_delivered_fails_its_obligation() -> TestR
             .any(|line| line.contains("is failed")),
         "{failed:?}"
     );
+    // The owner's adjudication of the event is advisory feedback; the episode cites it as one
+    // more competing attribution, beside the adapter and external hypotheses.
+    let (code, proposed) = agent.run(
+        "feedback",
+        &[
+            "--session",
+            agent.session.as_str(),
+            "--target",
+            &format!("event:{event_id}"),
+            "--kind",
+            "adjudication",
+            "--statement",
+            "The mirrored camera saw a delivery driver, not an intruder.",
+            "--supporting",
+            &evidence,
+        ],
+    )?;
+    assert_eq!(code, Some(0), "{proposed:?}");
+    let (code, closed, episode) = agent.close(&plan_id)?;
+    assert_eq!(code, Some(0), "{closed:?}");
+    let (episode, _) = episode.ok_or("episode")?;
+    assert_eq!(text(&episode, &["outcome", "state"])?, "failed");
+    assert_eq!(
+        text(
+            prediction(&episode, "prediction:delivery")?,
+            &["observedState"]
+        )?,
+        "failed"
+    );
+    assert_eq!(
+        causes(&episode)?,
+        vec![
+            "adapter".to_owned(),
+            "external".to_owned(),
+            "hypothesis".to_owned()
+        ]
+    );
+    assert!(agent.active_plans()?.is_empty());
     assert_eq!(relay.connections(), 1);
     Ok(())
 }

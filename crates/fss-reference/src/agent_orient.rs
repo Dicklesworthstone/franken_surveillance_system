@@ -2974,7 +2974,8 @@ fn case_affordance(case: &OrientCaseBrief) -> Result<ActionAffordance, ContractE
 /// Prefix of the affordance a session-bound orientation lists for each active plan.
 pub const AFFORDANCE_PLAN_PREFIX: &str = "affordance:plan:";
 
-/// The blocked affordance listing one active plan and the exact owner step it awaits.
+/// The affordance listing one active plan: the exact owner step it awaits (blocked), or, once
+/// its operation is terminal, the agent's own close (`plan --close`, a probe).
 fn plan_affordance(plan: &OrientPlanBrief) -> Result<ActionAffordance, ContractError> {
     let (operation, rationale) = match plan.state.as_deref() {
         None => (
@@ -2993,6 +2994,24 @@ fn plan_affordance(plan: &OrientPlanBrief) -> Result<ActionAffordance, ContractE
                 plan.plan_id, plan.operation_id, plan.plan_id
             ),
         ),
+        Some(state @ ("verified" | "failed" | "cancelled")) => {
+            // Terminal but not closed: the next move is the agent's own, a cognition write.
+            return Ok(ListedAffordance {
+                affordance_id: format!("{AFFORDANCE_PLAN_PREFIX}{}", plan.plan_id),
+                operation: "plan",
+                target: format!("fss://plan/{}", plan.plan_id),
+                rationale: format!(
+                    "Plan {}'s operation {} is {state}: close the plan by recording its \
+                     immutable execution episode (`fss plan --close {}`).",
+                    plan.plan_id, plan.operation_id, plan.plan_id
+                ),
+                class: AffordanceClass::Probe,
+                supported_worlds: BTreeSet::new(),
+                required_capability: CAPABILITY_PLAN_PREPARE,
+                cost: read_cost(0, 0)?,
+            }
+            .build());
+        }
         Some(state) => (
             "commit",
             format!(

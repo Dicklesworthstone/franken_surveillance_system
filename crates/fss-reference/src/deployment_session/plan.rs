@@ -330,13 +330,15 @@ fn read_plan_at(
 }
 
 /// Active plans of `mission_id` by `principal`, as a session-bound orientation lists them:
-/// every published plan whose operation is not prepared yet or not terminal in the head snapshot.
+/// every published plan that is not closed, that is, whose operation is not prepared yet, is not
+/// terminal in the head snapshot, or is terminal but has no published execution episode yet.
 pub(super) fn plan_briefs(
     root: &Path,
     head: &DeploymentSnapshot,
     mission_id: &MissionId,
     principal: &PrincipalId,
 ) -> Result<Vec<OrientPlanBrief>, DeploymentSessionError> {
+    let closed = super::episode::closed_plans(root, mission_id, principal)?;
     let mut briefs = Vec::new();
     for published in super::published_records(root, "plan-")? {
         let record = PlanRecord::from_bytes(&published.record).map_err(|error| {
@@ -350,7 +352,7 @@ pub(super) fn plan_briefs(
             .iter()
             .find(|operation| operation.intent.operation_id.as_str() == record.operation_id)
             .map(|operation| operation.state);
-        if state.is_some_and(|state| state.is_terminal()) {
+        if state.is_some_and(|state| state.is_terminal()) && closed.contains(&record.plan_id) {
             continue;
         }
         briefs.push(OrientPlanBrief {
@@ -361,6 +363,32 @@ pub(super) fn plan_briefs(
     }
     briefs.sort_by(|left, right| left.plan_id.cmp(&right.plan_id));
     Ok(briefs)
+}
+
+/// Reads the published plan `plan_id` with its rendered `fss.agent_control_plan.v1` child, whose
+/// digest must be the record's control-plan digest.
+pub fn read_control_plan(
+    root: &Path,
+    plan_id: &str,
+) -> Result<(PlanRecord, ContentDigest, Vec<u8>), DeploymentSessionError> {
+    let (record, published_root) = read_plan(root, plan_id)?;
+    let invalid = || {
+        DeploymentSessionError::PlanInvalid(
+            "the published control plan does not match the plan record".to_owned(),
+        )
+    };
+    let published = read_published(root, &PlanRecord::slot(plan_id)?)?.ok_or_else(invalid)?;
+    let child = published.children.first().copied().ok_or_else(invalid)?;
+    if child != record.control_plan_digest || published.root != published_root {
+        return Err(invalid());
+    }
+    let bytes = fss_publication::read_verified(
+        root.join(super::PUBLICATIONS_RELPATH),
+        child,
+        MAX_RECORD_BYTES,
+    )
+    .map_err(|_| invalid())?;
+    Ok((record, published_root, bytes))
 }
 
 /// Reads and verifies the published plan `plan_id` (record, control-plan child, and root).

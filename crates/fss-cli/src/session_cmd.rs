@@ -1053,6 +1053,36 @@ fn classify(error: DeploymentSessionError) -> Result<Refusal, DeploymentSessionE
             recovery_class: "operator_action_required",
             safe_retry: ResponseSafeRetry::No,
         },
+        DeploymentSessionError::PlanDenied => Refusal {
+            error_id: ERR_AUTH_DENIED,
+            reason: error.to_string(),
+            guidance: "Open a new session: sessions are negotiated with the plan grant.",
+            recovery_class: "operator_action_required",
+            safe_retry: ResponseSafeRetry::No,
+        },
+        DeploymentSessionError::PlanOpen(state) => {
+            let reconcile = matches!(state, Some("adapter_accepted" | "indeterminate"));
+            Refusal {
+                error_id: ERR_OP_PRECONDITION_FAILED,
+                reason: error.to_string(),
+                guidance: if state.is_none() {
+                    "A plan has an outcome only once its effect is prepared and terminal: \
+                     approve it (`fss plan ... --approve`), then commit or cancel it."
+                } else if reconcile {
+                    "The dispatched alert's outcome is not established: reconcile it on the \
+                     owner's attestation (`fss commit --reconcile ...`), then close the plan."
+                } else {
+                    "The plan's effect is still in flight: `fss wait` for it, commit or cancel \
+                     it, then close the plan."
+                },
+                recovery_class: if reconcile {
+                    "reconciliation_required"
+                } else {
+                    "backoff"
+                },
+                safe_retry: ResponseSafeRetry::YesAfterRefresh,
+            }
+        }
         DeploymentSessionError::PlanInvalid(_) => Refusal {
             error_id: ERR_OP_PRECONDITION_FAILED,
             reason: error.to_string(),

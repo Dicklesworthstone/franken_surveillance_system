@@ -15,6 +15,8 @@ pub mod crosswalk;
 pub mod diagnostic;
 /// `fss plan` / `commit` / `wait` / `cancel` (AOP-007..010): the canonical effect grammar.
 pub mod effect_cmd;
+/// `fss plan --close`: the immutable execution episode of a terminal plan (AOP-007 `close`).
+pub mod episode_cmd;
 pub mod error;
 /// `fss feedback` (AOP-013): advisory, evidence-linked proposals; never a policy mutation.
 pub mod feedback_cmd;

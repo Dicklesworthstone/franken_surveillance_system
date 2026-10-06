@@ -236,7 +236,16 @@ synthetic scenes). None of it has been measured on real camera footage.
   under exact approval. A published plan is mission state, not conversation: until its
   operation is terminal in the head's effect journal it appears in the session-bound situation as
   a blocked `affordance:plan:<plan>` (inside the capsule identity) and in `activePlans` of
-  situation and handoff payloads. `fss feedback` (AOP-013) publishes grounded, evidence-linked advisory
+  situation and handoff payloads. `fss plan --close` (the AOP-007 close intent family,
+  AGT-LAYER-009, FSS-230) closes a terminal plan by publishing its immutable execution episode
+  root-last: predictions with their observed states (delivery, event revision, and a never
+  observed "warranted" prediction), step and effect receipts, the obligation, outcome
+  predicates, measured resource use only, attribution hypotheses (rule-derived plus the
+  principal's feedback about the plan, operation, or event, under an explicitly uniform prior),
+  and residual uncertainty; one episode per plan, never rewritten. A terminal plan stays in
+  `activePlans` (as a probe affordance) until closed. Because the frozen public registry lets
+  AOP-007 answer only the control plan, the episode rendering is hydrated through proof pointers
+  (open drift in `architecture/agent_contracts.json`). `fss feedback` (AOP-013) publishes grounded, evidence-linked advisory
   proposals (`activePolicyMutation: false`). `fss-event alert` and the agent grammar share one
   alert core (`fss_cli::alert_effect`), so an operation prepared by either is the same operation.
   The MCP adapter adds only the read-only `wait` tool. `fss commit --reconcile
@@ -246,8 +255,8 @@ synthetic scenes). None of it has been measured on real camera footage.
   `indeterminate`/`adapter_accepted` to `observed` and `verified`, or to `failed`; preview, then
   exact approval; never a resend; explicitly `operator_asserted`, not a provider receipt. Limits:
   alert is the only plan intent; no provider lookup exists for webhook relays; probes are
-  recorded, never executed; no execution episodes, learning
-  promotion, work-claim CLI, or multi-agent schedules yet; proven on synthetic fixtures and a
+  recorded, never executed; no learning proposals or
+  promotion, ExperienceCapsule, work-claim CLI, or multi-agent schedules yet; proven on synthetic fixtures and a
   loopback relay only (`investigate_cli_contract`, `agent_effect_cli_contract`).
 
 Architectural deviations to resolve: device and alert I/O use blocking `std::net` rather than

@@ -20,8 +20,9 @@
 use std::path::Path;
 
 use fss_core::{
-    AgentFeedbackProposal, AgentSession, CanonicalEncode, ContentDigest, FeedbackPrivacyClass,
-    FeedbackProposalKind, PrincipalId, RequestedDisposition, SessionId,
+    AgentFeedbackProposal, AgentSession, CanonicalDecode, CanonicalDecoder, CanonicalEncode,
+    ContentDigest, ContractError, FeedbackPrivacyClass, FeedbackProposalKind, LedgerAnchor,
+    PrincipalId, RequestedDisposition, SessionId,
 };
 use fss_publication::SlotName;
 
@@ -147,6 +148,105 @@ fn handles(digests: &[ContentDigest]) -> Vec<String> {
     out.sort();
     out.dedup();
     out
+}
+
+const KINDS: [FeedbackProposalKind; 12] = [
+    FeedbackProposalKind::Correction,
+    FeedbackProposalKind::Adjudication,
+    FeedbackProposalKind::Helpful,
+    FeedbackProposalKind::Harmful,
+    FeedbackProposalKind::MissingEvidence,
+    FeedbackProposalKind::BadAffordance,
+    FeedbackProposalKind::BadSummary,
+    FeedbackProposalKind::AdapterQuirk,
+    FeedbackProposalKind::RunbookCandidate,
+    FeedbackProposalKind::HardNegativeCandidate,
+    FeedbackProposalKind::PolicyCandidate,
+    FeedbackProposalKind::ModelCandidate,
+];
+
+const DISPOSITIONS: [RequestedDisposition; 6] = [
+    RequestedDisposition::RecordOnly,
+    RequestedDisposition::CreateLearningProposal,
+    RequestedDisposition::OpenCase,
+    RequestedDisposition::Requalify,
+    RequestedDisposition::Deprecate,
+    RequestedDisposition::OperatorReview,
+];
+
+const PRIVACY_CLASSES: [FeedbackPrivacyClass; 5] = [
+    FeedbackPrivacyClass::Public,
+    FeedbackPrivacyClass::Operational,
+    FeedbackPrivacyClass::Private,
+    FeedbackPrivacyClass::Restricted,
+    FeedbackPrivacyClass::SecretReferenceOnly,
+];
+
+fn handle_list(decoder: &mut CanonicalDecoder<'_>) -> Result<Vec<String>, ContractError> {
+    let count = decoder.u32()? as usize;
+    if count > MAX_FEEDBACK_EVIDENCE {
+        return Err(ContractError::CountBoundExceeded);
+    }
+    let mut out = Vec::with_capacity(count);
+    for _ in 0..count {
+        out.push(decoder.text()?.to_owned());
+    }
+    Ok(out)
+}
+
+/// Decodes exactly the canonical bytes `publish_feedback` publishes (the proposal's
+/// `CanonicalEncode` field order), revalidating every field.
+pub(super) fn decode_proposal(bytes: &[u8]) -> Result<AgentFeedbackProposal, ContractError> {
+    let mut decoder = CanonicalDecoder::new(bytes);
+    if decoder.text()? != AgentFeedbackProposal::SCHEMA {
+        return Err(ContractError::DigestMismatch);
+    }
+    let feedback_id = decoder.text()?.to_owned();
+    let principal_id = PrincipalId::parse(decoder.text()?)?;
+    let session_id = SessionId::decode_canonical(&mut decoder)?;
+    let basis_anchor = LedgerAnchor::decode_canonical(&mut decoder)?;
+    let target = decoder.text()?.to_owned();
+    let kind_text = decoder.text()?;
+    let kind = KINDS
+        .into_iter()
+        .find(|kind| kind.as_str() == kind_text)
+        .ok_or(ContractError::DigestMismatch)?;
+    let statement = decoder.text()?.to_owned();
+    let supporting = handle_list(&mut decoder)?;
+    let contradicting = handle_list(&mut decoder)?;
+    let disposition_text = decoder.text()?;
+    let disposition = DISPOSITIONS
+        .into_iter()
+        .find(|disposition| disposition.as_str() == disposition_text)
+        .ok_or(ContractError::DigestMismatch)?;
+    let privacy_text = decoder.text()?;
+    let privacy = PRIVACY_CLASSES
+        .into_iter()
+        .find(|privacy| privacy.as_str() == privacy_text)
+        .ok_or(ContractError::DigestMismatch)?;
+    let created_at_ns = decoder.i128()?;
+    if decoder.bool()? != AgentFeedbackProposal::ACTIVE_POLICY_MUTATION {
+        return Err(ContractError::DigestMismatch);
+    }
+    decoder.ensure_finished()?;
+    let proposal = AgentFeedbackProposal::new(
+        feedback_id,
+        principal_id,
+        session_id,
+        basis_anchor,
+        target,
+        kind,
+        statement,
+        supporting,
+        contradicting,
+        disposition,
+        privacy,
+        created_at_ns,
+    )?;
+    if proposal.try_canonical_bytes()? != bytes {
+        return Err(ContractError::DigestMismatch);
+    }
+    Ok(proposal)
 }
 
 /// Validates the target against the deployment and publishes the proposal (AOP-013).
@@ -331,4 +431,34 @@ pub fn render_json(proposal: &AgentFeedbackProposal) -> String {
         json_string(proposal.privacy_class.as_str()),
         proposal.created_at_ns.max(0)
     )
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn published_proposals_decode_exactly() -> Result<(), ContractError> {
+        let proposal = AgentFeedbackProposal::new(
+            "feedback:00",
+            PrincipalId::parse("principal:local-operator")?,
+            SessionId::parse("session:a")?,
+            LedgerAnchor::genesis("site:feedback"),
+            target_json(&FeedbackTarget::Event("event:a".to_owned())),
+            FeedbackProposalKind::Adjudication,
+            "A delivery driver, not an intruder.",
+            vec![ContentDigest::sha256(b"support").to_text()],
+            vec![ContentDigest::sha256(b"contra").to_text()],
+            RequestedDisposition::CreateLearningProposal,
+            FeedbackPrivacyClass::Private,
+            42,
+        )?;
+        let bytes = proposal.try_canonical_bytes()?;
+        assert_eq!(decode_proposal(&bytes)?, proposal);
+        let mut trailing = bytes.clone();
+        trailing.push(0);
+        assert!(decode_proposal(&trailing).is_err());
+        assert!(decode_proposal(&bytes[..bytes.len() - 1]).is_err());
+        Ok(())
+    }
 }

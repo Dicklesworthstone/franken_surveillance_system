@@ -522,6 +522,14 @@
       "reconciledValue": "The certified domain is each covered zone's declared window, derived from the retained witnesses (first current witness through the newest analysed evidence); the cursor interval is the delta's basis and result anchors.",
       "reason": "No orient or follow request carries an explicit observation window, so the certified window is derived rather than requested. TO CLOSE: an agent_query_plan.v1 window (or a request field of a later generation) that orient and follow honor, with the certificate's authorized domain clipped to it and a not_observable result for any requested interval the witnesses do not cover.",
       "status": "open"
+    },
+    {
+      "target": "AGT-LAYER-009 ExecutionEpisode (fss.agent_execution_episode.v1) vs the frozen gen:fss1:public-v1 operation and resource registries (architecture/fss1_public_registry.json)",
+      "field": "responsePayloadSchemas",
+      "originalValue": "AGT-LAYER-009 outcome_and_episode requires an inspectable immutable episode, but no public operation answers fss.agent_execution_episode.v1 and no public resource template names it; AOP-007 plan answers only fss.agent_control_plan.v1 and AOP-013 feedback only fss.agent_feedback_proposal.v1 or fss.experience_capsule.v1.",
+      "reconciledValue": "fss plan --close (the AOP-007 close intent family) answers fss.agent_control_plan.v1: the closed plan exactly as published. The immutable episode is identified by proofPointers (episode root, the digest of its fss.agent_execution_episode.v1 rendering, and its canonical digest); its outcome predicates and every residual-uncertainty statement are stated in degradation; the rendering is the episode root's only other child and is hydrated from the agent publication store (crates/fss-cli/tests/agent_effect_cli_contract.rs validates it against schemas/agent_execution_episode.v1.json). No ExperienceCapsule is emitted, because its required cost, confidence, and decay fields would have to be invented for an unmetered single episode.",
+      "reason": "The frozen public registry is followed rather than widened silently; the owner must decide whether a later registry generation adds an episode response payload or resource, or whether episodes surface only through ExperienceCapsule (ARES-014) once cost metering and a calibrated experience confidence exist.",
+      "status": "open"
     }
   ],
   "meaningfulDeltaComparison": {

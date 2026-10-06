@@ -49,8 +49,8 @@ use std::path::{Path, PathBuf};
 use fss_core::{
     AgentSession, AgentSessionParams, AgentView, BudgetVector, CanonicalDecode, CanonicalDecoder,
     CanonicalEncode, CanonicalEncoder, ContentDigest, ContractBasis, ContractError, EffectState,
-    HandoffCapsule, HandoffId, LedgerAnchor, MeaningfulDelta, MissionId, PrincipalId,
-    SessionCapsule, SessionCapsuleParams, SessionId, TimestampNs,
+    HandoffCapsule, HandoffId, LedgerAnchor, MeaningfulDelta, MissionId, ObligationState,
+    PrincipalId, SessionCapsule, SessionCapsuleParams, SessionId, TimestampNs,
 };
 use fss_object::{ObjectManifest, SpoolLimits};
 use fss_publication::{
@@ -97,6 +97,9 @@ pub mod plan;
 
 /// Advisory, evidence-linked feedback proposals (AOP-013); never a policy mutation.
 pub mod feedback;
+
+/// Immutable execution episodes that close terminal plans (AGT-LAYER-009; AOP-007 `close`).
+pub mod episode;
 
 /// Agent-plane directory under a deployment root; nothing outside it is ever written.
 pub const AGENT_DIR: &str = "agent";
@@ -178,6 +181,11 @@ pub enum DeploymentSessionError {
     PlanUnknown,
     /// The published plan is tampered, incomplete, or conflicts with a different plan.
     PlanInvalid(String),
+    /// The session was not negotiated with the plan grant.
+    PlanDenied,
+    /// The plan's effect is not terminal yet (its registered effect-state spelling; `None`: never
+    /// prepared), so it cannot be closed.
+    PlanOpen(Option<&'static str>),
     /// The case engine refused an investigation command. Any session or case watermark change
     /// it caused was committed (and pinned) before the refusal was returned.
     CaseRefused(InvestigationError),
@@ -202,6 +210,14 @@ impl fmt::Display for DeploymentSessionError {
             Self::FeedbackRefused(reason) => write!(f, "feedback refused: {reason}"),
             Self::PlanUnknown => f.write_str("no plan with that identity is published"),
             Self::PlanInvalid(reason) => write!(f, "plan refused: {reason}"),
+            Self::PlanDenied => f.write_str("the session lacks the plan grant"),
+            Self::PlanOpen(None) => {
+                f.write_str("the plan's effect was never prepared, so it has no outcome to record")
+            }
+            Self::PlanOpen(Some(state)) => write!(
+                f,
+                "the plan's effect is {state}, not terminal: it has no outcome to record yet"
+            ),
             Self::CaseRefused(error) => write!(f, "investigation refused: {error}"),
             Self::Internal(reason) => write!(f, "internal failure: {reason}"),
         }
@@ -915,6 +931,8 @@ fn publish_record(
 struct PublishedRecord {
     root: ContentDigest,
     record: Vec<u8>,
+    /// Every other child digest, in manifest order (verified by `read_published` only).
+    children: Vec<ContentDigest>,
 }
 
 fn read_published(
@@ -958,6 +976,12 @@ fn read_published(
     Ok(Some(PublishedRecord {
         root: visible.root,
         record,
+        children: manifest
+            .children()
+            .iter()
+            .copied()
+            .filter(|child| *child != metadata)
+            .collect(),
     }))
 }
 
@@ -1001,6 +1025,12 @@ fn published_records(
         out.push(PublishedRecord {
             root: visible.root,
             record,
+            children: manifest
+                .children()
+                .iter()
+                .copied()
+                .filter(|child| *child != metadata)
+                .collect(),
         });
     }
     Ok(out)
@@ -1070,6 +1100,68 @@ fn orient_bound(
         limits,
         Some(&binding),
     )?)
+}
+
+/// The effect facts of one plan's operation and obligation at the head, projected at this
+/// registered boundary so cognition modules (plans, episodes) never hold effect-plane types.
+struct OperationFacts {
+    /// Registered effect-state spelling.
+    state: &'static str,
+    /// Whether the operation was ever committed (dispatched).
+    dispatched: bool,
+    /// Digest of the journal-owned receipt.
+    receipt_digest: ContentDigest,
+    /// Result or observation digest, when recorded.
+    result_digest: Option<ContentDigest>,
+    /// Stable error code, when recorded.
+    error_code: Option<String>,
+    /// Journal time from preparation to the latest transition.
+    effect_span_ns: i128,
+    /// The operation's obligation, when it is in the journal.
+    obligation: Option<ObligationFacts>,
+}
+
+/// One obligation's identity, registered state spelling, and terminal proof.
+struct ObligationFacts {
+    obligation_id: String,
+    state: &'static str,
+    proof_digest: Option<ContentDigest>,
+}
+
+/// The effect facts of `operation_id` (and `obligation_id`) in `head`, if it was prepared.
+fn operation_facts(
+    head: &DeploymentSnapshot,
+    operation_id: &str,
+    obligation_id: &str,
+) -> Option<OperationFacts> {
+    let receipt = head
+        .operations
+        .iter()
+        .find(|operation| operation.intent.operation_id.as_str() == operation_id)?;
+    let obligation = head
+        .obligations
+        .iter()
+        .find(|obligation| obligation.obligation_id.as_str() == obligation_id)
+        .map(|obligation| ObligationFacts {
+            obligation_id: obligation.obligation_id.as_str().to_owned(),
+            state: match obligation.state {
+                ObligationState::Pending => "pending",
+                ObligationState::Verified => "verified",
+                ObligationState::Failed => "failed",
+                ObligationState::Indeterminate => "indeterminate",
+                ObligationState::Cancelled => "cancelled",
+            },
+            proof_digest: obligation.proof_digest,
+        });
+    Some(OperationFacts {
+        state: receipt.state.as_str(),
+        dispatched: receipt.committed_at.is_some(),
+        receipt_digest: receipt.receipt_digest(),
+        result_digest: receipt.result_digest,
+        error_code: receipt.error_code.clone(),
+        effect_span_ns: receipt.updated_at.0.saturating_sub(receipt.prepared_at.0),
+        obligation,
+    })
 }
 
 /// A live session located in the deployment's committed history.

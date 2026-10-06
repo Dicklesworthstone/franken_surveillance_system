@@ -9,6 +9,7 @@
 //!                       operator's exact dispatch approval
 //! fss wait   (AOP-009)  bounded read until the operation leaves its current state
 //! fss cancel (AOP-010)  preview, then cancel a still-prepared operation under approval
+//! fss plan --close      (AOP-007, close) record a terminal plan's immutable execution episode
 //! ```
 //!
 //! **Authority.** A plan is cognition and grants nothing. Preparation needs the operator's exact
@@ -174,6 +175,8 @@ pub enum EffectCommand {
     Wait(WaitArgs),
     /// AOP-010 `cancel`.
     Cancel(CancelArgs),
+    /// AOP-007 `plan`, close intent family: record a terminal plan's execution episode.
+    Close(crate::episode_cmd::CloseArgs),
 }
 
 // ---------------------------------------------------------------------------------------------
@@ -2113,5 +2116,6 @@ pub fn execute_effect(command: &EffectCommand) -> (String, ExitIdentity) {
         EffectCommand::Reconcile(args) => execute_reconcile(args),
         EffectCommand::Wait(args) => execute_wait(args),
         EffectCommand::Cancel(args) => execute_cancel(args),
+        EffectCommand::Close(args) => crate::episode_cmd::execute_close(args),
     }
 }
