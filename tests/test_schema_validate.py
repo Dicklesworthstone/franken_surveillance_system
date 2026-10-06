@@ -872,7 +872,8 @@ class TestSchemaConstitution(unittest.TestCase):
         # + SCHEMA-DOMAIN-LONG-DWELL-{ANALYSIS,FRAME,EPISODE,APPROVAL}-001
         # + SCHEMA-DOMAIN-RTPDUMP-IMPORT-{IDENTITY,REPORT}-002 (fss-2h5zq.27 access units)
         # + SCHEMA-DOMAIN-MOCK-MODEL-RESULT-001 (fss-f8jls) = 225.
-        self.assertEqual(result["digestDomainCount"], 225)
+        # + SCHEMA-DOMAIN-REFERENCE-AGENT-PLAN-001 and -PLAN-IDENTITY-001 (AOP-007) = 227.
+        self.assertEqual(result["digestDomainCount"], 227)
 
         # Continuation cursor is verified implemented
         implemented_names = {s["name"] for s in result["schemas"] if s["status"] == "implemented"}
@@ -1389,7 +1390,8 @@ class TestSchemaConstitutionCrossReviewRegressions(unittest.TestCase):
         # + SCHEMA-DOMAIN-LONG-DWELL-{ANALYSIS,FRAME,EPISODE,APPROVAL}-001
         # + SCHEMA-DOMAIN-RTPDUMP-IMPORT-{IDENTITY,REPORT}-002 (fss-2h5zq.27 access units)
         # + SCHEMA-DOMAIN-MOCK-MODEL-RESULT-001 (fss-f8jls) = 225.
-        self.assertEqual(result["digestDomainCount"], 225)
+        # + SCHEMA-DOMAIN-REFERENCE-AGENT-PLAN-001 and -PLAN-IDENTITY-001 (AOP-007) = 227.
+        self.assertEqual(result["digestDomainCount"], 227)
         # 36 = 28 + fss.sensor_tamper_status.v1 (owner SensorTamperStatus, fss-2uftm)
         # + fss.agent_operations.v1 / fss.agent_views.v1 / fss.agent_request_envelope.v1
         #   (owners AgentOperation / AgentView / AgentRequestEnvelope, fss-x4a.30.83.17-40)

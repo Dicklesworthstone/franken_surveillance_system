@@ -4,6 +4,10 @@
 use std::ffi::OsString;
 use std::path::PathBuf;
 
+use crate::effect_cmd::{
+    EffectCommand, execute_effect, parse_cancel_args, parse_commit_args, parse_plan_args,
+    parse_wait_args,
+};
 use crate::error::{CliError, ExitIdentity};
 use crate::follow_cmd::{FollowArgs, execute_follow, parse_follow_args};
 use crate::investigate_cmd::{InvestigateArgs, execute_investigate, parse_investigate_args};
@@ -52,6 +56,8 @@ pub enum FssCommand {
     Query(QueryArgs),
     /// AOP-006 investigate: durable mission-scoped investigation cases (agent-plane cognition writes; no probe is executed and no effect authority is granted).
     Investigate(Box<InvestigateArgs>),
+    /// AOP-007 plan, AOP-008 commit, AOP-009 wait, AOP-010 cancel: the canonical effect grammar over the durable alert effect (plans grant nothing; preparation and commitment need the operator's exact approvals; nothing is ever resent).
+    Effect(Box<EffectCommand>),
     /// Durable mission-scoped agent sessions (agent-plane writes only; authority and effect state are never written): AOP-001 session.open opens a session and its first workspace revision at the current orient anchor, AOP-012 handoff publishes a root-last HandoffCapsule, and AOP-002 session.resume accepts a handoff and rebases it onto the head, listing every invalidated assumption.
     Session(SessionCommand),
 }
@@ -69,6 +75,7 @@ impl FssCommand {
             | Self::Follow(_)
             | Self::Query(_)
             | Self::Investigate(_)
+            | Self::Effect(_)
             | Self::Session(_) => true,
             Self::NegativeEvidence(action) => action.is_json(),
             Self::Help | Self::Version => false,
@@ -79,7 +86,7 @@ impl FssCommand {
 /// Returns the static help text for `fss`.
 #[must_use]
 pub const fn help_text() -> &'static str {
-    "Franken Surveillance System: unqualified reference implementation\n\nUSAGE:\n  fss help\n  fss version\n  fss capabilities --json\n  fss doctor --json [--root <dir>]\n      --root inspects a deployment root read-only (never writes, locks, or repairs)\n  fss status --json [--root <dir>]\n      --root reports the retained inventory read-only (anchor, sensors, streams, imports, events,\n      obligations); never device acquisition, live streaming, or real-provider alerts\n  fss query --json --root <dir> [--event-id <id>] [--kind <kind>] [--state <state>] [--zone <zone>] [--from-ns <i128>] [--through-ns <i128>] [--max-entries <1..32>] [--anchor <token>] [--continuation <token>] [--principal <id>]\n      read-only AOP-005 exact committed record query; an empty result never certifies physical absence\n  fss session orient --json --root <dir> [--view pulse|brief|epistemic_map] [--principal <id>] [--budget-tokens <n>]\n      (alias: fss orient) read-only AOP-003 session.orient: AgentResponseEnvelope with the SituationCapsule; lists affordances, never executes them\n  fss explain --json --root <dir> --event-id <id> [--principal <id>]\n      read-only AOP-011 explain of one published event\n  fss session follow --json --root <dir> --since <anchor> [--view pulse|brief] [--principal <id>] [--max-entries <n>] [--continuation <token>]\n      (alias: fss follow) read-only AOP-004 session.follow: the MeaningfulDelta since an orient anchor token, paged through exact continuations\n  fss session open --json --root <dir> --mission <text-or-file> --objective <text> [--principal <id>] [--view pulse|brief|epistemic_map] [--budget-tokens <n>]\n      AOP-001 session.open: a durable mission-scoped session and its first workspace revision at the current orient anchor (writes agent/ only)\n  fss handoff --json --root <dir> --session <id> [--principal <id>] [--note <text>]\n      (alias: fss session handoff) AOP-012 handoff: publishes a root-last HandoffCapsule sealed as of the session's anchor\n  fss session resume --json --root <dir> --handoff <id> [--principal <id>]\n      AOP-002 session.resume: accepts the handoff, lists every invalidated assumption, and rebases the session onto the head\n  fss investigate --json --root <dir> --session <id> --transition <open|inspect|list|activate|cite|assess|set-state|conclude|rebase|readmit|expand> [--principal <id>] [transition options]\n      AOP-006 investigate: durable mission-scoped cases with competing hypotheses, citations, dispositions, and stop rules (writes agent/ only; never executes a probe)\n  fss negative-evidence <init|list|verify|append> [--path <file>] [--json]\n\nCompanion binaries: fss-file (import and decode recorded media), fss-infer (scalar model\nexecution, detection, tracking), fss-event (recorded event reports and publication,\nowner site calibration from correspondences),\nfss-archive (RTSP/HTTP capture archives), fss-lab (deterministic scenarios).\nNothing is release-qualified; the capabilities command lists what is implemented."
+    "Franken Surveillance System: unqualified reference implementation\n\nUSAGE:\n  fss help\n  fss version\n  fss capabilities --json\n  fss doctor --json [--root <dir>]\n      --root inspects a deployment root read-only (never writes, locks, or repairs)\n  fss status --json [--root <dir>]\n      --root reports the retained inventory read-only (anchor, sensors, streams, imports, events,\n      obligations); never device acquisition, live streaming, or real-provider alerts\n  fss query --json --root <dir> [--event-id <id>] [--kind <kind>] [--state <state>] [--zone <zone>] [--from-ns <i128>] [--through-ns <i128>] [--max-entries <1..32>] [--anchor <token>] [--continuation <token>] [--principal <id>]\n      read-only AOP-005 exact committed record query; an empty result never certifies physical absence\n  fss session orient --json --root <dir> [--view pulse|brief|epistemic_map] [--principal <id>] [--budget-tokens <n>]\n      (alias: fss orient) read-only AOP-003 session.orient: AgentResponseEnvelope with the SituationCapsule; lists affordances, never executes them\n  fss explain --json --root <dir> --event-id <id> [--principal <id>]\n      read-only AOP-011 explain of one published event\n  fss session follow --json --root <dir> --since <anchor> [--view pulse|brief] [--principal <id>] [--max-entries <n>] [--continuation <token>]\n      (alias: fss follow) read-only AOP-004 session.follow: the MeaningfulDelta since an orient anchor token, paged through exact continuations\n  fss session open --json --root <dir> --mission <text-or-file> --objective <text> [--principal <id>] [--view pulse|brief|epistemic_map] [--budget-tokens <n>]\n      AOP-001 session.open: a durable mission-scoped session and its first workspace revision at the current orient anchor (writes agent/ only)\n  fss handoff --json --root <dir> --session <id> [--principal <id>] [--note <text>]\n      (alias: fss session handoff) AOP-012 handoff: publishes a root-last HandoffCapsule sealed as of the session's anchor\n  fss session resume --json --root <dir> --handoff <id> [--principal <id>]\n      AOP-002 session.resume: accepts the handoff, lists every invalidated assumption, and rebases the session onto the head\n  fss investigate --json --root <dir> --session <id> --transition <open|inspect|list|activate|cite|assess|set-state|conclude|rebase|readmit|expand> [--principal <id>] [transition options]\n      AOP-006 investigate: durable mission-scoped cases with competing hypotheses, citations, dispositions, and stop rules (writes agent/ only; never executes a probe)\n  fss plan --json --root <dir> --session <id> --intent alert --event-id <id> --relay <ip:port> --path <path> --plaintext-approval <sha256> --deadline-ms <n> [--case <id>] [--approve <plan-approval>] [--principal <id>]\n      AOP-007 plan: publish a witnessed ControlPlan; with the operator's exact plan approval, durably prepare the alert\n  fss commit --json --root <dir> --plan <plan-id> --approve <dispatch-approval> [--principal <id>]\n      AOP-008 commit: revalidate the plan, commit durably, send exactly one webhook; a lost acknowledgement is indeterminate, never resent\n  fss wait --json --root <dir> --operation <id> --deadline-ms <n> [--principal <id>]\n      AOP-009 wait: bounded read until the operation leaves its current state\n  fss cancel --json --root <dir> --operation <id> [--approve <cancel-approval>] [--principal <id>]\n      AOP-010 cancel: preview, then cancel a still-prepared operation under its exact approval\n  fss negative-evidence <init|list|verify|append> [--path <file>] [--json]\n\nCompanion binaries: fss-file (import and decode recorded media), fss-infer (scalar model\nexecution, detection, tracking), fss-event (recorded event reports and publication,\nowner site calibration from correspondences),\nfss-archive (RTSP/HTTP capture archives), fss-lab (deterministic scenarios).\nNothing is release-qualified; the capabilities command lists what is implemented."
 }
 
 /// Parses OS-native arguments for `fss` with total validation and exact grammar exhaustion.
@@ -136,6 +143,14 @@ pub fn parse_fss_tokens(tokens: &[ArgToken]) -> Result<FssCommand, CliError> {
         "investigate" => {
             parse_investigate_args(tokens).map(|args| FssCommand::Investigate(Box::new(args)))
         }
+        "plan" => parse_plan_args(tokens)
+            .map(|args| FssCommand::Effect(Box::new(EffectCommand::Plan(args)))),
+        "commit" => parse_commit_args(tokens)
+            .map(|args| FssCommand::Effect(Box::new(EffectCommand::Commit(args)))),
+        "wait" => parse_wait_args(tokens)
+            .map(|args| FssCommand::Effect(Box::new(EffectCommand::Wait(args)))),
+        "cancel" => parse_cancel_args(tokens)
+            .map(|args| FssCommand::Effect(Box::new(EffectCommand::Cancel(args)))),
         "handoff" => Ok(FssCommand::Session(SessionCommand::Handoff(parse_handoff(
             tokens,
         )?))),
@@ -392,6 +407,7 @@ pub fn execute_fss_with_exit(command: FssCommand) -> (String, ExitIdentity) {
         FssCommand::Follow(ref args) => execute_follow(args),
         FssCommand::Query(ref args) => execute_query(args),
         FssCommand::Investigate(ref args) => execute_investigate(args),
+        FssCommand::Effect(ref command) => execute_effect(command),
         FssCommand::Session(ref command) => execute_session(command),
     }
 }

@@ -27,9 +27,8 @@ use fss_core::{
 };
 
 use super::{
-    AnchorToken, DeploymentHistory, DeploymentOrientation, DeploymentSessionError, OrientCaseBrief,
-    OrientLimits, SESSION_PRIVACY_SCOPE, SessionJournal, capsule_anchor_token, digest_of,
-    evidence_now, orient_bound, resolve_anchor,
+    DeploymentHistory, DeploymentOrientation, DeploymentSessionError, OrientCaseBrief,
+    OrientLimits, SESSION_PRIVACY_SCOPE, SessionJournal, digest_of, evidence_now, orient_bound,
 };
 use crate::agent_session::checkpoint::journal::DurableSessionStore;
 use crate::agent_session::checkpoint::journal::coordination::investigations::evolution::{
@@ -459,32 +458,12 @@ pub fn investigate(
     let mut journal = SessionJournal::open(root)?;
     let principal = &request.principal;
     let session_id = &request.session_id;
-    let session = journal.store.session(principal, session_id, now)?;
-    let workspace = journal
-        .store
-        .workspace_head(principal, session_id, now)?
-        .result
-        .revision;
-    let token_text = capsule_anchor_token(workspace.capsule()).ok_or_else(|| {
-        DeploymentSessionError::StoreInvalid(
-            "the workspace names no anchor-bound position".to_owned(),
-        )
-    })?;
-    let token = AnchorToken::parse(token_text).ok_or_else(|| {
-        DeploymentSessionError::StoreInvalid("the workspace anchor token is malformed".to_owned())
-    })?;
-    let position = resolve_anchor(&history, &token).map_err(|refusal| {
-        DeploymentSessionError::SessionStale(format!(
-            "the session's anchor does not resolve in this deployment ({})",
-            refusal.code()
-        ))
-    })?;
-    let snapshot = history.snapshot_at(position)?;
-    if snapshot.anchor != session.current_anchor {
-        return Err(DeploymentSessionError::SessionStale(
-            "the workspace anchor token and the session anchor disagree".to_owned(),
-        ));
-    }
+    let super::SessionPosition {
+        session,
+        workspace,
+        snapshot,
+        head_moved,
+    } = super::session_position(&mut journal, &history, principal, session_id, now)?;
     let refused = |journal: &SessionJournal, error: InvestigationError| {
         journal.commit_pin()?;
         Err(DeploymentSessionError::CaseRefused(error))
@@ -660,6 +639,6 @@ pub fn investigate(
         journal_root: journal.store.committed_root(),
         request_digest,
         now,
-        head_moved: position != head.position,
+        head_moved,
     })
 }

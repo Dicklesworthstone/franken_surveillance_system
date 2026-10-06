@@ -1027,6 +1027,21 @@ fn classify(error: DeploymentSessionError) -> Result<Refusal, DeploymentSessionE
             safe_retry: ResponseSafeRetry::No,
         },
         DeploymentSessionError::CaseRefused(case) => case_refusal(case, error.to_string()),
+        DeploymentSessionError::PlanUnknown => Refusal {
+            error_id: ERR_OP_PRECONDITION_FAILED,
+            reason: error.to_string(),
+            guidance: "Commit only a plan identity that `fss plan` returned for this deployment.",
+            recovery_class: "operator_action_required",
+            safe_retry: ResponseSafeRetry::No,
+        },
+        DeploymentSessionError::PlanInvalid(_) => Refusal {
+            error_id: ERR_OP_PRECONDITION_FAILED,
+            reason: error.to_string(),
+            guidance: "The published plan failed verification or conflicts: replan with \
+                       `fss plan` and review the new plan.",
+            recovery_class: "never_unchanged",
+            safe_retry: ResponseSafeRetry::No,
+        },
         other => return Err(other),
     })
 }
@@ -1205,6 +1220,15 @@ pub(crate) fn refuse(
             Err(_) => return internal_failure(operation.command, &operation.root),
         },
     };
+    refuse_typed(operation, refusal, ExitIdentity::AGENT_REFUSED)
+}
+
+/// Renders one already-classified refusal as an envelope at the deployment's committed anchor.
+pub(crate) fn refuse_typed(
+    operation: &Operation,
+    refusal: Refusal,
+    exit: ExitIdentity,
+) -> (String, ExitIdentity) {
     let snapshot = match read_deployment(&operation.root, &OrientLimits::default()) {
         Ok(snapshot) => snapshot,
         Err(error @ DeploymentReadError::NotADeployment { .. }) => {
@@ -1219,7 +1243,7 @@ pub(crate) fn refuse(
             snapshot.latest_evidence_time.0,
             refusal,
         ),
-        ExitIdentity::AGENT_REFUSED,
+        exit,
         operation.command,
         &operation.root,
     )

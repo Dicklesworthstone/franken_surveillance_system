@@ -7,10 +7,14 @@
 
 /// Deterministic JSON rendering of the fss-core agent contract types.
 pub mod agent_json;
+/// The one alert-effect core shared by `fss-event alert`, `fss plan`, and `fss commit`.
+pub mod alert_effect;
 /// Explicit operator access to existing local AVC/HEVC archives; not an agent operation.
 pub mod archive_cmd;
 pub mod crosswalk;
 pub mod diagnostic;
+/// `fss plan` / `commit` / `wait` / `cancel` (AOP-007..010): the canonical effect grammar.
+pub mod effect_cmd;
 pub mod error;
 /// Read-only `follow` (AOP-004 `session.follow`) since an earlier committed anchor.
 pub mod follow_cmd;

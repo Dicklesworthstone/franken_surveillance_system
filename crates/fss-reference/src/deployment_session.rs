@@ -92,6 +92,9 @@ mod tests;
 /// Durable mission-scoped investigation cases (AOP-006) in the deployment's session journal.
 pub mod investigation;
 
+/// Published, witnessed control plans (AOP-007) for the canonical agent effect grammar.
+pub mod plan;
+
 /// Agent-plane directory under a deployment root; nothing outside it is ever written.
 pub const AGENT_DIR: &str = "agent";
 /// Session journal directory, relative to the deployment root.
@@ -110,12 +113,15 @@ pub const SESSION_LEASE_NS: i128 = 7 * 24 * 3_600 * 1_000_000_000;
 pub const HANDOFF_LIFETIME_NS: i128 = 7 * 24 * 3_600 * 1_000_000_000;
 /// Agent-plane capabilities a session is negotiated with. None of them is an effect capability:
 /// the case grants (`CAP-AGENT-CASE-WRITE-001`, the AOP-006 registry row, and
-/// `CAP-AGENT-INVESTIGATE-001`, the grant the case engine admits) write cognition only.
-pub const SESSION_CAPABILITIES: [&str; 7] = [
+/// `CAP-AGENT-INVESTIGATE-001`, the grant the case engine admits) write cognition only, and
+/// `CAP-AGENT-PLAN-PREPARE-001` compiles and publishes plans; preparing or committing an effect
+/// additionally needs the operator's exact approval of that plan, never a session grant.
+pub const SESSION_CAPABILITIES: [&str; 8] = [
     "CAP-AGENT-CASE-WRITE-001",
     "CAP-AGENT-HANDOFF-READ-001",
     "CAP-AGENT-HANDOFF-WRITE-001",
     "CAP-AGENT-INVESTIGATE-001",
+    "CAP-AGENT-PLAN-PREPARE-001",
     "CAP-AGENT-SESSION-READ-001",
     "CAP-AGENT-SESSION-WRITE-001",
     "CAP-AGENT-SITUATION-READ-001",
@@ -159,6 +165,10 @@ pub enum DeploymentSessionError {
     StoreLocked,
     /// The agent-session store failed verification; it is never repaired implicitly.
     StoreInvalid(String),
+    /// No plan with that identity is published in this deployment.
+    PlanUnknown,
+    /// The published plan is tampered, incomplete, or conflicts with a different plan.
+    PlanInvalid(String),
     /// The case engine refused an investigation command. Any session or case watermark change
     /// it caused was committed (and pinned) before the refusal was returned.
     CaseRefused(InvestigationError),
@@ -179,6 +189,8 @@ impl fmt::Display for DeploymentSessionError {
             Self::HandoffInvalid(reason) => write!(f, "handoff refused: {reason}"),
             Self::StoreLocked => f.write_str("the agent-session store is held by another command"),
             Self::StoreInvalid(reason) => write!(f, "agent-session store refused: {reason}"),
+            Self::PlanUnknown => f.write_str("no plan with that identity is published"),
+            Self::PlanInvalid(reason) => write!(f, "plan refused: {reason}"),
             Self::CaseRefused(error) => write!(f, "investigation refused: {error}"),
             Self::Internal(reason) => write!(f, "internal failure: {reason}"),
         }
@@ -993,6 +1005,60 @@ fn orient_bound(
         limits,
         Some(&binding),
     )?)
+}
+
+/// A live session located in the deployment's committed history.
+struct SessionPosition {
+    /// The live session.
+    session: AgentSession,
+    /// Its workspace head revision.
+    workspace: WorkspaceRevision,
+    /// The committed snapshot at the session's anchor.
+    snapshot: DeploymentSnapshot,
+    /// True when the deployment head lies past the session's anchor.
+    head_moved: bool,
+}
+
+/// Resolves a live session's workspace anchor token against committed history.
+fn session_position(
+    journal: &mut SessionJournal,
+    history: &DeploymentHistory,
+    principal: &PrincipalId,
+    session_id: &SessionId,
+    now: TimestampNs,
+) -> Result<SessionPosition, DeploymentSessionError> {
+    let session = journal.store.session(principal, session_id, now)?;
+    let workspace = journal
+        .store
+        .workspace_head(principal, session_id, now)?
+        .result
+        .revision;
+    let token_text = capsule_anchor_token(workspace.capsule()).ok_or_else(|| {
+        DeploymentSessionError::StoreInvalid(
+            "the workspace names no anchor-bound position".to_owned(),
+        )
+    })?;
+    let token = AnchorToken::parse(token_text).ok_or_else(|| {
+        DeploymentSessionError::StoreInvalid("the workspace anchor token is malformed".to_owned())
+    })?;
+    let position = resolve_anchor(history, &token).map_err(|refusal| {
+        DeploymentSessionError::SessionStale(format!(
+            "the session's anchor does not resolve in this deployment ({})",
+            refusal.code()
+        ))
+    })?;
+    let snapshot = history.snapshot_at(position)?;
+    if snapshot.anchor != session.current_anchor {
+        return Err(DeploymentSessionError::SessionStale(
+            "the workspace anchor token and the session anchor disagree".to_owned(),
+        ));
+    }
+    Ok(SessionPosition {
+        session,
+        workspace,
+        snapshot,
+        head_moved: position != history.head(),
+    })
 }
 
 /// Seals a projected orientation publication so it can be handed off.
