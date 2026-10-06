@@ -29,6 +29,17 @@
 //! - File import never emits [`ContinuityWitness`] or [`CoverageWitness`] certifying absence;
 //!   an absence query over an imported window is not certifiable.
 //!
+//! # Recorded RTP
+//!
+//! [`FileIngestAdapter::ingest_file`] is the generic routing entry: a sniffed `#!rtpplay1.0`
+//! recording is delegated to the recorded-RTP import (`rtpdump::import`), whose source capsules
+//! are per recorded access unit, and returns [`FileImport::RecordedRtp`]. Packets are never
+//! interpreted without the owner's binding ([`FileIngestRequest::rtp_binding`]: generation,
+//! SSRC, payload type, packetization mode), which is never guessed from the capture; its absence
+//! is [`FileIngestError::RtpBindingRequired`]. The receive time is required as for every format.
+//! [`FileIngestAdapter::ingest`] keeps its media-only receipt type and refuses RTP as
+//! [`FileIngestError::UnsupportedFormat`].
+//!
 //! # Acquisition lifecycle
 //!
 //! Each import drives one core `AcquisitionSession` ([`super::file_session`]); a completed import
@@ -79,6 +90,8 @@ use crate::ingest::file_session::{
 };
 use crate::ingest::hevc_annexb::split_hevc_annexb;
 use crate::ingest::mjpeg::{JpegSplitError, MjpegLimits, split_jpeg_stream};
+use crate::ingest::rtpdump::import::{RtpFileImportReceipt, RtpImportError, import_rtp_snapshot};
+use crate::ingest::rtpdump::replay::RtpReplayConfig;
 use crate::reference_deployment::ReferenceDeployment;
 
 /// Canonical schema domain for [`FileImportManifest`].
@@ -291,8 +304,14 @@ pub struct FileIngestRequest {
     pub stream_id: StreamId,
     /// Optional operator capture timing hint.
     pub capture_hint: Option<CaptureHint>,
-    /// Ingest arrival timestamp (defaults to deterministic 1s if unspecified).
+    /// Ingest arrival timestamp. Required: an import without it is refused
+    /// ([`FileIngestError::MissingReceiveTime`]); none is invented.
     pub receive_time: Option<TimestampNs>,
+    /// Owner binding for a recorded-RTP (`#!rtpplay1.0`) source: stream generation, SSRC,
+    /// payload type, packetization mode and replay bounds. Required to route such a file through
+    /// [`FileIngestAdapter::ingest_file`]; never derived from the capture. Ignored for other
+    /// formats.
+    pub rtp_binding: Option<RtpReplayConfig>,
 }
 
 impl FileIngestRequest {
@@ -306,7 +325,15 @@ impl FileIngestRequest {
             stream_id,
             capture_hint: None,
             receive_time: None,
+            rtp_binding: None,
         }
+    }
+
+    /// Sets the owner binding for a recorded-RTP source.
+    #[must_use]
+    pub fn with_rtp_binding(mut self, binding: RtpReplayConfig) -> Self {
+        self.rtp_binding = Some(binding);
+        self
     }
 
     /// Sets an optional format hint.
@@ -602,7 +629,15 @@ pub enum FileIngestError {
         /// The first two bytes after the first start code.
         first_nal_header: [u8; 2],
     },
-    /// Detected format is not currently supported for splitting.
+    /// A recorded-RTP (`#!rtpplay1.0`) file was routed without the owner's stream binding
+    /// ([`FileIngestRequest::rtp_binding`]); packets are never interpreted under a guessed SSRC,
+    /// payload type or packetization mode.
+    RtpBindingRequired {},
+    /// The recorded-RTP import refused or failed; partial publication is not reclassified.
+    RecordedRtp(RtpImportError),
+    /// Detected format is not supported by this entrypoint (recorded RTP through
+    /// [`FileIngestAdapter::ingest`], whose receipt type is media-only; use
+    /// [`FileIngestAdapter::ingest_file`]).
     UnsupportedFormat {
         /// Detected unsupported format.
         format: DetectedFileFormat,
@@ -761,6 +796,12 @@ impl std::fmt::Display for FileIngestError {
                     first_nal_header[0], first_nal_header[1]
                 )
             }
+            Self::RtpBindingRequired {} => write!(
+                f,
+                "recorded RTP requires the owner's stream binding (generation, SSRC, payload \
+                 type, packetization mode); none is guessed from the capture"
+            ),
+            Self::RecordedRtp(e) => write!(f, "{e}"),
             Self::UnsupportedFormat { format } => {
                 write!(f, "unsupported format for splitting: {:?}", format)
             }
@@ -1268,6 +1309,22 @@ impl ScannedSegments {
 /// Pure Rust file ingest adapter implementing `ADP-FILE-001`.
 pub struct FileIngestAdapter;
 
+/// Result of the generic routing entry [`FileIngestAdapter::ingest_file`].
+#[derive(Debug)]
+pub enum FileImport {
+    /// A media file split into frame/access-unit segments.
+    Media(Box<FileIngestReceipt>),
+    /// A recorded-RTP session: original-file custody, access-unit capsules and the import report.
+    RecordedRtp(Box<RtpFileImportReceipt>),
+}
+
+/// Whether a sniffed recorded-RTP file is routed or refused by the calling entrypoint.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum RtpRoute {
+    Refuse,
+    Import,
+}
+
 impl FileIngestAdapter {
     /// Ingests a media file into [`ReferenceDeployment`].
     pub fn ingest(
@@ -1278,6 +1335,20 @@ impl FileIngestAdapter {
         Self::ingest_with_session(request, cx, deployment).map_err(|failure| failure.error)
     }
 
+    /// Generic routing entry: sniffs the file and imports it by its detected format. Media files
+    /// follow [`Self::ingest`]; a `#!rtpplay1.0` recording is delegated to the recorded-RTP import
+    /// with the request's owner binding (refused as [`FileIngestError::RtpBindingRequired`]
+    /// without it) and the explicit receive time. The file is read once, bounded by
+    /// `max_file_bytes`; the delegated import sees exactly the sniffed bytes.
+    pub fn ingest_file(
+        request: FileIngestRequest,
+        cx: &ReplayCx,
+        deployment: &mut ReferenceDeployment,
+    ) -> Result<FileImport, FileIngestError> {
+        let mut driver = None;
+        Self::ingest_driven(request, cx, deployment, &mut driver, RtpRoute::Import)
+    }
+
     /// Ingests a media file and, on failure, returns the acquisition history the attempt reached,
     /// concluded through the core session (`Failed`, `Cancelled` or `Indeterminate`).
     pub fn ingest_with_session(
@@ -1286,10 +1357,20 @@ impl FileIngestAdapter {
         deployment: &mut ReferenceDeployment,
     ) -> Result<FileIngestReceipt, Box<FileIngestFailure>> {
         let mut driver = None;
-        Self::ingest_driven(request, cx, deployment, &mut driver).map_err(|error| {
-            let acquisition = driver.take().map(|d| d.conclude_error(&error));
-            Box::new(FileIngestFailure { error, acquisition })
-        })
+        match Self::ingest_driven(request, cx, deployment, &mut driver, RtpRoute::Refuse) {
+            Ok(FileImport::Media(receipt)) => Ok(*receipt),
+            // `RtpRoute::Refuse` never imports recorded RTP; kept typed rather than unreachable.
+            Ok(FileImport::RecordedRtp(_)) => Err(Box::new(FileIngestFailure {
+                error: FileIngestError::UnsupportedFormat {
+                    format: DetectedFileFormat::RtpPlay,
+                },
+                acquisition: None,
+            })),
+            Err(error) => {
+                let acquisition = driver.take().map(|d| d.conclude_error(&error));
+                Err(Box::new(FileIngestFailure { error, acquisition }))
+            }
+        }
     }
 
     fn ingest_driven(
@@ -1297,7 +1378,8 @@ impl FileIngestAdapter {
         cx: &ReplayCx,
         deployment: &mut ReferenceDeployment,
         driver: &mut Option<FileSessionDriver>,
-    ) -> Result<FileIngestReceipt, FileIngestError> {
+        rtp: RtpRoute,
+    ) -> Result<FileImport, FileIngestError> {
         // Step 1: Check cancellation & stat file
         if cx.is_cancelled() {
             cx.drain_and_finalize();
@@ -1406,9 +1488,29 @@ impl FileIngestAdapter {
             };
 
         if detected_format == DetectedFileFormat::RtpPlay {
-            return Err(FileIngestError::UnsupportedFormat {
-                format: DetectedFileFormat::RtpPlay,
-            });
+            if rtp == RtpRoute::Refuse {
+                return Err(FileIngestError::UnsupportedFormat {
+                    format: DetectedFileFormat::RtpPlay,
+                });
+            }
+            // A hint naming another format conflicts with the sniffed recording.
+            if let Some(hint) = request.format_hint
+                && hint != FileFormatHint::RtpPlay
+            {
+                return Err(FileIngestError::FormatConflict {
+                    hint,
+                    detected: detected_format,
+                });
+            }
+            let binding = request
+                .rtp_binding
+                .ok_or(FileIngestError::RtpBindingRequired {})?;
+            if request.receive_time.is_none() {
+                return Err(FileIngestError::MissingReceiveTime {});
+            }
+            let receipt = import_rtp_snapshot(&request, binding, &file_bytes, cx, deployment)
+                .map_err(FileIngestError::RecordedRtp)?;
+            return Ok(FileImport::RecordedRtp(Box::new(receipt)));
         }
 
         if let Some(hint) = request.format_hint
@@ -1649,7 +1751,7 @@ impl FileIngestAdapter {
             // This attempt appends nothing; the receipt carries the retained history.
             *driver = None;
             let acquisition = AcquisitionRetention::open(deployment, import_identity)?;
-            return Ok(FileIngestReceipt {
+            return Ok(FileImport::Media(Box::new(FileIngestReceipt {
                 outcome: FileIngestOutcome::IdempotentExisting,
                 import_identity,
                 input_sha256,
@@ -1671,7 +1773,7 @@ impl FileIngestAdapter {
                     .history()
                     .is_some_and(|h| h.absence_claim().is_ok()),
                 acquisition,
-            });
+            })));
         }
 
         // A resumed import whose first capsule batch an earlier attempt committed is already
@@ -1983,7 +2085,7 @@ impl FileIngestAdapter {
             FileIngestOutcome::New
         };
 
-        Ok(FileIngestReceipt {
+        Ok(FileImport::Media(Box::new(FileIngestReceipt {
             outcome,
             import_identity,
             input_sha256,
@@ -2003,7 +2105,7 @@ impl FileIngestAdapter {
             capture_time_label,
             absence_certifiable,
             acquisition: AcquisitionRetention::Recorded(Box::new(history)),
-        })
+        })))
     }
 
     /// Helper scanning media bytes using either Annex-B or MJPEG splitter.

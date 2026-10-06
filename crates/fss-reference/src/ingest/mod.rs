@@ -86,7 +86,7 @@ pub use annexb::{
 };
 pub use file_adapter::{
     ADP_FILE_GENERATION, ADP_FILE_ROW_ID, CaptureHint, DEFAULT_CHUNK_BYTES, DetectedFileFormat,
-    FILE_IMPORT_MANIFEST_SCHEMA, FileFormatHint, FileImportManifest, FileIngestAdapter,
+    FILE_IMPORT_MANIFEST_SCHEMA, FileFormatHint, FileImport, FileImportManifest, FileIngestAdapter,
     FileIngestError, FileIngestFailure, FileIngestLimits, FileIngestOutcome, FileIngestReceipt,
     FileIngestRequest, FileOmissionSpan, MAX_BATCH_DELTAS, SegmentSpan, compute_import_identity,
     default_adapter_identity, fetch_segment_bytes, sniff_format, sniff_format_with_hint,

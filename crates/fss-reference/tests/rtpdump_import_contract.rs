@@ -95,6 +95,62 @@ fn generic_file_adapter_has_an_explicit_owner_bound_rtp_entrypoint() -> TestResu
     assert_eq!(direct.manifest().root(), receipt.root());
     Ok(())
 }
+/// The generic sniffing entry routes a `#!rtpplay1.0` file (no format hint) into the recorded-RTP
+/// import with the request's owner binding: same root as the direct path over the same bytes.
+/// Without a binding it is refused before anything is published; the media-only `ingest` keeps
+/// refusing the format; a conflicting hint is a format conflict.
+///
+/// Planted negatives: (a) the pre-fix `UnsupportedFormat` from the generic adapter; (b) a route
+/// that guesses the binding (accepting the request without `rtp_binding`).
+#[test]
+fn generic_file_entry_routes_sniffed_rtpplay_with_the_owner_binding() -> TestResult {
+    use fss_reference::ingest::{FileImport, FileIngestError};
+    let root = new_directory("route")?;
+    let source = root.join("capture.bin");
+    let b = real_dump(true);
+    std::fs::write(&source, &b)?;
+    let cx = cx()?;
+    let mut dep = ReferenceDeployment::open(&root.join("deployment"), "site:rtpdump-route", &cx)?;
+    let request = || -> Result<FileIngestRequest, Error> {
+        Ok(
+            FileIngestRequest::new(source.clone(), scope()?.sensor, scope()?.stream)
+                .with_receive_time(scope()?.receive_time),
+        )
+    };
+    let batches = dep.ledger().batches().len();
+    assert!(matches!(
+        FileIngestAdapter::ingest_file(request()?, &cx, &mut dep),
+        Err(FileIngestError::RtpBindingRequired {})
+    ));
+    assert!(matches!(
+        FileIngestAdapter::ingest(request()?.with_rtp_binding(config()), &cx, &mut dep),
+        Err(FileIngestError::UnsupportedFormat { .. })
+    ));
+    assert!(matches!(
+        FileIngestAdapter::ingest_file(
+            request()?
+                .with_rtp_binding(config())
+                .with_format_hint(FileFormatHint::AnnexB),
+            &cx,
+            &mut dep
+        ),
+        Err(FileIngestError::FormatConflict { .. })
+    ));
+    assert_eq!(dep.ledger().batches().len(), batches);
+    let FileImport::RecordedRtp(receipt) =
+        FileIngestAdapter::ingest_file(request()?.with_rtp_binding(config()), &cx, &mut dep)?
+    else {
+        return Err("rtpplay was not routed to the recorded-RTP import".into());
+    };
+    let direct = prepare_rtp_import(&b, scope()?, config(), RtpImportLimits::default(), &cx)?;
+    assert_eq!(direct.manifest().root(), receipt.root());
+    assert_eq!(load_rtp_import(&receipt, &cx, &dep)?.source(), b);
+    assert_eq!(
+        receipt.report().access_units().len(),
+        expected_access_units()
+    );
+    Ok(())
+}
 /// A request without an owner receive time is refused before the file is opened; no receive
 /// time is invented. Planted negative: the pre-fix fallback `TimestampNs(1_000_000_000)`.
 #[test]

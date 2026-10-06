@@ -3,10 +3,12 @@
 
 use super::{RtpDumpError, RtpDumpKind, RtpDumpLimits, RtpDumpReader, RtpDumpRecord};
 use crate::adapter_replay::ReplayCx;
+/// RFC 6184 packetization mode named by the owner binding.
+pub use fss_packet::H264Mode;
 use fss_packet::{
-    ContinuityError, FragmentDiscard, H264Depacketizer, H264Failure, H264Limits, H264Mode,
-    H264Status, NalUnit, PacketError, PacketLimits, RtcpCompound, RtcpMode, RtpPacket,
-    SequenceClass, SequenceObservation, SequenceStats, SequenceTracker, StreamKey,
+    ContinuityError, FragmentDiscard, H264Depacketizer, H264Failure, H264Limits, H264Status,
+    NalUnit, PacketError, PacketLimits, RtcpCompound, RtcpMode, RtpPacket, SequenceClass,
+    SequenceObservation, SequenceStats, SequenceTracker, StreamKey,
 };
 use std::ops::Range;
 
@@ -31,6 +33,37 @@ pub struct RtpReplayConfig {
 }
 
 impl RtpReplayConfig {
+    /// Owner binding with the default container, parser and reconstruction bounds and compound
+    /// RTCP. Generation, SSRC, payload type and mode are the owner's statement, never read from
+    /// the capture. The process-local ingress handle is derived from the canonical stream
+    /// identity (never from the SSRC) and does not enter any durable identity.
+    pub fn owner_binding(
+        stream: &fss_core::StreamId,
+        generation: u64,
+        ssrc: u32,
+        payload_type: u8,
+        mode: H264Mode,
+    ) -> Result<Self, RtpReplayError> {
+        let digest = fss_core::ContentDigest::sha256(stream.as_str().as_bytes());
+        let mut handle = [0_u8; 16];
+        handle.copy_from_slice(&digest.bytes()[..16]);
+        let ingress = u128::from_be_bytes(handle).max(1);
+        let config = Self {
+            key: StreamKey {
+                ingress,
+                generation,
+                ssrc,
+            },
+            payload_type,
+            mode,
+            dump: RtpDumpLimits::default(),
+            packet: PacketLimits::default(),
+            codec: H264Limits::default(),
+            rtcp: RtcpMode::Compound,
+        };
+        config.validate()?;
+        Ok(config)
+    }
     /// Validate all owner/parser/reconstruction policies without reading or
     /// retaining source bytes. File entrypoints use this before opening input.
     pub fn validate(self) -> Result<(), RtpReplayError> {

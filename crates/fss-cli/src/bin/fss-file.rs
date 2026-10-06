@@ -20,9 +20,11 @@ use fss_cli::{
 use fss_core::region::{ContextAuthority, RootAuthoritySpec};
 use fss_core::{BudgetVector, ContentDigest, OperationId, SensorId, StreamId, TimestampNs};
 use fss_reference::ingest::retained::{MAX_RETAINED_ENTRIES, MAX_RETAINED_PAYLOAD_BYTES};
+use fss_reference::ingest::rtpdump::import::{ImportEnd, RtpFileImportReceipt, load_rtp_import};
+use fss_reference::ingest::rtpdump::replay::{H264Mode, RtpReplayConfig};
 use fss_reference::ingest::{
-    AcquisitionRetention, CaptureHint, FileFormatHint, FileIngestAdapter, FileIngestLimits,
-    FileIngestRequest, RetainedFileImport, RetainedReadLimits,
+    AcquisitionRetention, CaptureHint, FileFormatHint, FileImport, FileIngestAdapter,
+    FileIngestLimits, FileIngestRequest, RetainedFileImport, RetainedReadLimits,
 };
 use fss_reference::{ReferenceDeployment, ReplayCx};
 
@@ -32,9 +34,13 @@ mod media;
 const HELP: &str = "fss-file <import|inspect|verify|extract|decode|read-decoded|verify-decoded|motion> [options]\n\
   All commands: --root DIR --site SITE [--principal ID] [--manifest-out FILE]\n\
   import: --input FILE --sensor ID --stream ID --receive-time-ns N\n\
-          [--media-format auto|mjpeg|annexb|hevc] (annexb is H.264, hevc is H.265;\n\
+          [--media-format auto|mjpeg|annexb|hevc|rtpplay] (annexb is H.264, hevc is H.265;\n\
           auto refuses an Annex-B stream whose first NAL header fits both codecs)\n\
           [--capture-start-ns N --capture-uncertainty-ns N --assumed-fps F]\n\
+  rtpplay (rtpdump #!rtpplay1.0) also requires the owner's stream binding, never read from\n\
+          the capture: --rtp-generation N (>= 1) --rtp-ssrc N --rtp-payload-type N (96..127)\n\
+          --rtp-mode single-nal|non-interleaved; capsules are per recorded access unit;\n\
+          no capture hint; the import is re-read and verified before it is reported\n\
   inspect/verify: --import-id sha256:HEX\n\
   extract: --import-id sha256:HEX --segment N --output FILE\n\
   decode/read-decoded/verify-decoded: --import-id sha256:HEX --segment N\n\
@@ -156,6 +162,10 @@ fn parse(args: &[OsString]) -> ParseResult<Option<Options>> {
         "--capture-start-ns",
         "--capture-uncertainty-ns",
         "--assumed-fps",
+        "--rtp-generation",
+        "--rtp-ssrc",
+        "--rtp-payload-type",
+        "--rtp-mode",
     ];
     let mut values = Values::new();
     let mut index = 1;
@@ -246,12 +256,54 @@ fn parse(args: &[OsString]) -> ParseResult<Option<Options>> {
                 "mjpeg" => Some(FileFormatHint::JpegStream),
                 "annexb" => Some(FileFormatHint::AnnexB),
                 "hevc" => Some(FileFormatHint::Hevc),
+                "rtpplay" => Some(FileFormatHint::RtpPlay),
                 _ => {
                     return Err(malformed(
-                        "media format must be auto, mjpeg, annexb or hevc",
+                        "media format must be auto, mjpeg, annexb, hevc or rtpplay",
                     ));
                 }
             };
+        }
+        let rtp_keys = [
+            "--rtp-generation",
+            "--rtp-ssrc",
+            "--rtp-payload-type",
+            "--rtp-mode",
+        ];
+        let rtp_supplied = rtp_keys.iter().filter(|k| values.contains_key(**k)).count();
+        if request.format_hint == Some(FileFormatHint::RtpPlay) {
+            if rtp_supplied != rtp_keys.len() {
+                return Err(malformed(
+                    "rtpplay requires --rtp-generation, --rtp-ssrc, --rtp-payload-type and \
+                     --rtp-mode; the stream binding is never guessed from the capture",
+                ));
+            }
+            let generation: u64 = number(&values, "--rtp-generation", None)?;
+            if generation == 0 {
+                return Err(malformed("rtp generation must be at least 1"));
+            }
+            let payload_type: u8 = number(&values, "--rtp-payload-type", None)?;
+            if !(96..=127).contains(&payload_type) {
+                return Err(malformed("rtp payload type must be dynamic (96..127)"));
+            }
+            let mode = match text(&values, "--rtp-mode")? {
+                "single-nal" => H264Mode::SingleNal,
+                "non-interleaved" => H264Mode::NonInterleaved,
+                _ => return Err(malformed("rtp mode must be single-nal or non-interleaved")),
+            };
+            let binding = RtpReplayConfig::owner_binding(
+                &request.stream_id,
+                generation,
+                number(&values, "--rtp-ssrc", None)?,
+                payload_type,
+                mode,
+            )
+            .map_err(|_| malformed("rtp stream binding refused by the packet kernel"))?;
+            request.rtp_binding = Some(binding);
+        } else if rtp_supplied != 0 {
+            return Err(malformed(
+                "rtp binding options require --media-format rtpplay",
+            ));
         }
         let hint_keys = [
             "--capture-start-ns",
@@ -262,6 +314,11 @@ fn parse(args: &[OsString]) -> ParseResult<Option<Options>> {
             .iter()
             .filter(|k| values.contains_key(**k))
             .count();
+        if supplied != 0 && request.format_hint == Some(FileFormatHint::RtpPlay) {
+            return Err(malformed(
+                "recorded RTP has no per-frame capture hint: its capture time stays unknown",
+            ));
+        }
         if supplied != 0 && supplied != hint_keys.len() {
             return Err(malformed(
                 "capture start, uncertainty and assumed fps must be supplied together",
@@ -374,8 +431,14 @@ fn run(options: Options, out: &mut impl Write) -> RunResult<()> {
         let mut deployment = ReferenceDeployment::open(&options.root, &options.site, &cx)?;
         let (identity, operation) = match &options.action {
             Action::Import(request) => {
-                let receipt = FileIngestAdapter::ingest(request.clone(), &cx, &mut deployment)?;
-                (receipt.import_identity, receipt.outcome.as_str())
+                match FileIngestAdapter::ingest_file(request.clone(), &cx, &mut deployment)? {
+                    FileImport::Media(receipt) => {
+                        (receipt.import_identity, receipt.outcome.as_str())
+                    }
+                    FileImport::RecordedRtp(receipt) => {
+                        return report_rtp_import(&receipt, &deployment, &options, &cx, out);
+                    }
+                }
             }
             Action::Inspect(id) => (*id, "inspect"),
             Action::Verify(id) => (*id, "verify"),
@@ -459,6 +522,74 @@ fn run(options: Options, out: &mut impl Write) -> RunResult<()> {
     result
 }
 
+/// Prints a recorded-RTP import after re-reading and re-verifying all of it (original chunks,
+/// packet-kernel replay, every NAL derivative, access-unit source envelope and capsule object).
+fn report_rtp_import(
+    receipt: &RtpFileImportReceipt,
+    deployment: &ReferenceDeployment,
+    options: &Options,
+    cx: &ReplayCx,
+    out: &mut impl Write,
+) -> RunResult<()> {
+    let verified = load_rtp_import(receipt, cx, deployment)?;
+    let report = verified.report();
+    writeln!(out, "operation=rtp_import")?;
+    writeln!(out, "media_format=rtpplay")?;
+    writeln!(out, "import_root={}", receipt.root())?;
+    writeln!(out, "import_slot={}", receipt.slot().as_str())?;
+    writeln!(
+        out,
+        "authority_sequence={}",
+        receipt.anchor().commit_sequence
+    )?;
+    writeln!(out, "input_sha256={}", report.input_digest())?;
+    writeln!(out, "input_bytes={}", report.input_bytes())?;
+    writeln!(out, "record_count={}", report.records().len())?;
+    writeln!(out, "nal_count={}", report.nals().len())?;
+    let units = report.access_units();
+    writeln!(out, "access_unit_count={}", units.len())?;
+    writeln!(out, "capsule_count={}", units.len())?;
+    let gapped = units.iter().filter(|u| u.capsule.gap_before).count();
+    writeln!(out, "gap_before_capsules={gapped}")?;
+    let mut generations: Vec<u64> = report.records().iter().map(|r| r.generation).collect();
+    generations.dedup();
+    writeln!(out, "stream_generations={}", generations.len())?;
+    let stats = report.stats();
+    writeln!(out, "sequence_missing={}", stats.missing)?;
+    let end = match report.end() {
+        ImportEnd::Ended => "ended",
+        ImportEnd::FramingRefused(_) => "framing_refused",
+    };
+    writeln!(out, "container_end={end}")?;
+    writeln!(out, "retired_fragment={}", report.final_discard().is_some())?;
+    for (index, unit) in units.iter().enumerate() {
+        writeln!(
+            out,
+            "access_unit={index} capsule={} nals={} generation={} end={} gap_before={} source_sha256={}",
+            unit.capsule.capsule_id.as_str(),
+            unit.nals.len(),
+            unit.generation,
+            unit.end.as_str(),
+            unit.capsule.gap_before,
+            unit.capsule.source_digest
+        )?;
+    }
+    writeln!(out, "clock_basis=estimated")?;
+    writeln!(out, "capture_time_class=unknown")?;
+    writeln!(out, "decoded_frames=0")?;
+    writeln!(out, "absence_certifiable=false")?;
+    writeln!(
+        out,
+        "verified_source_sha256={}",
+        ContentDigest::sha256(verified.source())
+    )?;
+    if let Some(path) = &options.manifest_output {
+        write_new(path, receipt.report_bytes(), &options.root, cx)?;
+        writeln!(out, "canonical_report_written=true")?;
+    }
+    Ok(())
+}
+
 fn main() -> ExitCode {
     let args: Vec<OsString> = std::env::args_os().skip(1).collect();
     match parse(&args) {
@@ -484,6 +615,11 @@ fn main() -> ExitCode {
                         .and_then(|e| e.stable_id())
                     {
                         eprintln!("refusal_id={refusal}");
+                    }
+                    if let Some(fss_reference::ingest::FileIngestError::RtpBindingRequired {}) =
+                        error.downcast_ref::<fss_reference::ingest::FileIngestError>()
+                    {
+                        eprintln!("refusal=rtp_binding_required");
                     }
                     eprintln!(
                         "Completed imports and decoded frames are not rolled back by later analysis/export failure. An incomplete export may remain."
@@ -535,9 +671,50 @@ mod tests {
             vec!["--max-segment-bytes", "67108865"],
             vec!["--capture-start-ns", "0"],
             vec!["--media-format", "rtpplay"],
+            vec!["--media-format", "rtpplay", "--rtp-ssrc", "7"],
+            vec!["--rtp-generation", "1"],
+            vec![
+                "--media-format",
+                "rtpplay",
+                "--rtp-generation",
+                "0",
+                "--rtp-ssrc",
+                "7",
+                "--rtp-payload-type",
+                "96",
+                "--rtp-mode",
+                "non-interleaved",
+            ],
+            vec![
+                "--media-format",
+                "rtpplay",
+                "--rtp-generation",
+                "1",
+                "--rtp-ssrc",
+                "7",
+                "--rtp-payload-type",
+                "96",
+                "--rtp-mode",
+                "guess",
+            ],
         ] {
             assert!(parse(&args(&extra)).is_err());
         }
+        assert!(
+            parse(&args(&[
+                "--media-format",
+                "rtpplay",
+                "--rtp-generation",
+                "1",
+                "--rtp-ssrc",
+                "7",
+                "--rtp-payload-type",
+                "96",
+                "--rtp-mode",
+                "non-interleaved",
+            ]))
+            .is_ok()
+        );
         let mut missing_time = args(&[]);
         missing_time.truncate(missing_time.len() - 2);
         assert!(parse(&missing_time).is_err());

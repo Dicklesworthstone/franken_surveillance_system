@@ -789,6 +789,10 @@ impl RtpFileImportReceipt {
     pub fn report(&self) -> &RtpImportReport {
         &self.report
     }
+    /// Sealed canonical report bytes (the published root's metadata object).
+    pub fn report_bytes(&self) -> &[u8] {
+        &self.report_bytes
+    }
 }
 
 /// Stage original chunks FIRST, then exact source envelopes and derivatives, then
@@ -1076,41 +1080,82 @@ pub fn load_rtp_import(
     })
 }
 
+/// Owner binding and bounds of one recorded-RTP file request, validated before any source byte
+/// is read: the effective replay configuration and import limits, and the input byte ceiling.
+fn admit_rtp_request(
+    request: &FileIngestRequest,
+    mut config: RtpReplayConfig,
+    mut limits: RtpImportLimits,
+) -> Result<(RtpReplayConfig, RtpImportLimits, usize)> {
+    if request.capture_hint.is_some()
+        || request
+            .format_hint
+            .is_some_and(|h| h != FileFormatHint::RtpPlay)
+        || request.limits.max_file_bytes == 0
+        || request.limits.max_segments == 0
+        || request.limits.chunk_bytes == 0
+    {
+        return Err(RtpImportError::Binding);
+    }
+    limits.validate()?;
+    limits.chunk_bytes = limits
+        .chunk_bytes
+        .min(usize::try_from(request.limits.chunk_bytes).map_err(|_| RtpImportError::Limit)?);
+    let max = usize::try_from(request.limits.max_file_bytes)
+        .map_err(|_| RtpImportError::Limit)?
+        .min(config.dump.max_input_bytes)
+        .min(limits.max_payload_bytes);
+    config.dump.max_input_bytes = max;
+    config.validate()?;
+    if limits.max_nals > request.limits.max_segments {
+        return Err(RtpImportError::Limit);
+    }
+    Ok((config, limits, max))
+}
+
+/// Import an already read, already sniffed `#!rtpplay1.0` snapshot for the generic file adapter
+/// (`FileIngestAdapter::ingest_file`). The owner binding comes from the request
+/// (`FileIngestRequest::rtp_binding`) and its absence is refused by the caller; the receive time
+/// is required and never invented; the same identities as [`FileIngestAdapter::ingest_rtp`]
+/// result for the same bytes, scope, binding and limits.
+pub(crate) fn import_rtp_snapshot(
+    request: &FileIngestRequest,
+    config: RtpReplayConfig,
+    input: &[u8],
+    cx: &ReplayCx,
+    deployment: &mut ReferenceDeployment,
+) -> Result<RtpFileImportReceipt> {
+    let (config, limits, max) = admit_rtp_request(request, config, RtpImportLimits::default())?;
+    let receive_time = request
+        .receive_time
+        .ok_or(RtpImportError::MissingReceiveTime)?;
+    if input.len() > max {
+        return Err(RtpImportError::Limit);
+    }
+    let scope = RtpImportScope {
+        sensor: request.sensor_id.clone(),
+        stream: request.stream_id.clone(),
+        receive_time,
+    };
+    let plan = prepare_rtp_import(input, scope, config, limits, cx)?;
+    publish_rtp_import(plan, cx, deployment)
+}
+
 impl FileIngestAdapter {
     /// Explicit recorded-RTP path. Unlike generic sniffing, this requires the
     /// owner to provide PT/SSRC/mode/epoch before any packet can be interpreted.
     /// Source timing is unknown; a per-frame CaptureHint is refused because this
-    /// path reconstructs NALs but does not count/decode pictures.
+    /// path reconstructs NALs and groups them into access units but does not
+    /// count or decode pictures. `FileIngestAdapter::ingest_file` routes a sniffed
+    /// `#!rtpplay1.0` file here when the request carries an owner binding.
     pub fn ingest_rtp(
         request: FileIngestRequest,
-        mut config: RtpReplayConfig,
-        mut limits: RtpImportLimits,
+        config: RtpReplayConfig,
+        limits: RtpImportLimits,
         cx: &ReplayCx,
         deployment: &mut ReferenceDeployment,
     ) -> Result<RtpFileImportReceipt> {
-        if request.capture_hint.is_some()
-            || request
-                .format_hint
-                .is_some_and(|h| h != FileFormatHint::RtpPlay)
-            || request.limits.max_file_bytes == 0
-            || request.limits.max_segments == 0
-            || request.limits.chunk_bytes == 0
-        {
-            return Err(RtpImportError::Binding);
-        }
-        limits.validate()?;
-        limits.chunk_bytes = limits
-            .chunk_bytes
-            .min(usize::try_from(request.limits.chunk_bytes).map_err(|_| RtpImportError::Limit)?);
-        let max = usize::try_from(request.limits.max_file_bytes)
-            .map_err(|_| RtpImportError::Limit)?
-            .min(config.dump.max_input_bytes)
-            .min(limits.max_payload_bytes);
-        config.dump.max_input_bytes = max;
-        config.validate()?;
-        if limits.max_nals > request.limits.max_segments {
-            return Err(RtpImportError::Limit);
-        }
+        let (config, limits, max) = admit_rtp_request(&request, config, limits)?;
         let receive_time = request
             .receive_time
             .ok_or(RtpImportError::MissingReceiveTime)?;

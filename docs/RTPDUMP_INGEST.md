@@ -16,8 +16,22 @@ rtptools input without sockets, device credentials, new crates or changes under
   original records, typed dispositions and verified absolute-file copy/FU-header
   mappings. This receipt path classifies reordering but does not repair it.
 - `import::{prepare_rtp_import, publish_rtp_import, load_rtp_import}` and
-  `FileIngestAdapter::ingest_rtp`: source-first custody, NAL-linked capsules,
-  root-last publication, deterministic capsule batches and complete readback.
+  `FileIngestAdapter::ingest_rtp`: source-first custody, one source capsule per
+  recorded access unit, root-last publication, deterministic capsule batches and
+  complete readback. An access unit is a maximal run of consecutive complete NALs
+  of one stream generation and one RTP timestamp with no continuity fence inside;
+  it closes on the marker bit, a timestamp/generation change, a fence (gap,
+  refusal, restart, retired fragment) or input end, and the closure is recorded.
+  Its capsule binds the exact original record envelopes from its first to its last
+  carrying record (intervening RTCP or duplicate records are not cropped out);
+  a capsule after a fence carries `gap_before`. Capsules keep `ClockBasis::Estimated`:
+  RTP timestamps are a sender clock with unknown origin, so `DeviceMonotonic`
+  would claim a placement the recording never witnessed.
+- `FileIngestAdapter::ingest_file`: the generic sniffing entry. A `#!rtpplay1.0`
+  file is delegated to the recorded-RTP import when the request carries the owner
+  binding (`FileIngestRequest::rtp_binding`); without one it is refused
+  (`FileIngestError::RtpBindingRequired`). `FileIngestAdapter::ingest` keeps its
+  media-only receipt and refuses RTP as `UnsupportedFormat`.
 - `recovery::inspect_rtp_import`: read-only verification by an exact durable root,
   without the original source pathname or an in-memory receipt. It reconstructs
   ordered source chunks and replays the packet kernel to check the entire stored
@@ -59,8 +73,15 @@ A verified read is point-in-time evidence, not a future availability guarantee.
 
 These local reference commands use deployment lineage `site:recorded-rtp`. They do
 not authenticate remote devices and are not a race-proof filesystem sandbox.
-The generic sniff-only file entrypoint still refuses RTP: explicit stream binding
-is required by `ingest_rtp`.
+The operator CLI routes a recorded session through the generic adapter; the stream
+binding is the owner's statement and is never read from the capture:
+
+```sh
+fss-file import --root deployment-directory --site site:recorded-rtp \
+  --input capture.rtp --sensor sensor:cam-1 --stream stream:recorded-video \
+  --receive-time-ns 1000000000 --media-format rtpplay \
+  --rtp-generation 1 --rtp-ssrc 287454020 --rtp-payload-type 96 --rtp-mode non-interleaved
+```
 
 ```sh
 cargo run --locked -p fss-reference --example ingest_rtpdump -- \
