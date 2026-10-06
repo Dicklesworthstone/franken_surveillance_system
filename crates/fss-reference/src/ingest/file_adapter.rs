@@ -634,7 +634,7 @@ pub enum FileIngestError {
     /// payload type or packetization mode.
     RtpBindingRequired {},
     /// The recorded-RTP import refused or failed; partial publication is not reclassified.
-    RecordedRtp(RtpImportError),
+    RecordedRtp(Box<RtpImportError>),
     /// Detected format is not supported by this entrypoint (recorded RTP through
     /// [`FileIngestAdapter::ingest`], whose receipt type is media-only; use
     /// [`FileIngestAdapter::ingest_file`]).
@@ -1509,7 +1509,7 @@ impl FileIngestAdapter {
                 return Err(FileIngestError::MissingReceiveTime {});
             }
             let receipt = import_rtp_snapshot(&request, binding, &file_bytes, cx, deployment)
-                .map_err(FileIngestError::RecordedRtp)?;
+                .map_err(|e| FileIngestError::RecordedRtp(Box::new(e)))?;
             return Ok(FileImport::RecordedRtp(Box::new(receipt)));
         }
 
