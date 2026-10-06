@@ -29,7 +29,7 @@
 //! - Unknown copies are named, never ignored: the original input file, unrecorded operator
 //!   exports, and any alert that may have been transmitted.
 //! - A sensor or event scope ([`scope`]) is one plan over the union of its member imports'
-//!   closures, one tombstone batch and one completion record, under the same commit, approval,
+//!   closures, bounded tombstone batches and one completion record, under the same commit, approval,
 //!   stale-plan, tombstone-first and exactly-once guarantees. Evidence holds ([`holds`]) stay
 //!   import-scoped: an active hold on any member import (or on an import whose held closure the
 //!   scoped plan would touch) blocks the whole scoped plan.
@@ -73,8 +73,10 @@ pub const STAGE_DELETION_SCAN: &str = "deletion:scan";
 pub const STAGE_DELETION_REVALIDATED: &str = "deletion:revalidated";
 /// Cut point: sealed plan staged in custody; no authority yet.
 pub const STAGE_DELETION_PLAN_STAGED: &str = "deletion:plan_staged";
-/// Cut point: deletion record (tombstones, retractions) durable; no byte removed yet.
+/// Cut point: deletion plan is authoritative for the whole closure; no byte removed yet.
 pub const STAGE_DELETION_RECORD_APPENDED: &str = "deletion:record_appended";
+/// Cut point: after each verified authority batch, including reuse; unlinking has not begun.
+pub const STAGE_DELETION_AUTHORITY_BATCH_APPENDED: &str = "deletion:authority_batch_appended";
 /// Cut point: after each root record is unlinked.
 pub const STAGE_DELETION_ROOT_RETRACTED: &str = "deletion:root_retracted";
 /// Cut point: after each object is unlinked.
@@ -88,6 +90,7 @@ pub const DELETION_CUT_POINTS: &[&str] = &[
     STAGE_DELETION_REVALIDATED,
     STAGE_DELETION_PLAN_STAGED,
     STAGE_DELETION_RECORD_APPENDED,
+    STAGE_DELETION_AUTHORITY_BATCH_APPENDED,
     STAGE_DELETION_ROOT_RETRACTED,
     STAGE_DELETION_OBJECT_REMOVED,
     STAGE_DELETION_COMPLETION_STAGED,
@@ -279,7 +282,8 @@ pub fn plan_scope_deletion(
     let holds = holds::HoldIndex::read(deployment, cx)?;
     let universe = walk::Universe::scan(deployment, &index, cx)?;
     let plan = universe.plan(deployment, scope)?;
-    holds.protect(&universe, deployment, plan, cx)
+    let plan = holds.protect(&universe, deployment, plan, cx)?;
+    commit::admit_plan(deployment, plan, cx)
 }
 
 /// Executes a sealed plan under its exact approval (`CAP-DELETE-COMMIT-001`); resumes an

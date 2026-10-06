@@ -6,10 +6,10 @@
 //! 1. Revalidate: the plan digest must equal the plan recomputed against the current head, and
 //!    the approval must be its exact approval. Any change is a stale plan; any blocker refuses.
 //!    Nothing is written before this point.
-//! 2. Stage the sealed plan and append the deletion record batch: the `deletion_record` delta,
-//!    one `deletion_tombstone` successor per exclusively deleted ledger object and one
-//!    `local_root_retraction` successor per retracted root. From here on every reader resolves
-//!    the closure to `deleted`; nothing in the ledger is rewritten.
+//! 2. Stage the sealed plan and append its deletion record. This denies reads of the entire
+//!    closure immediately. Publish every tombstone and root retraction in deterministic bounded
+//!    batches before unlinking anything; small plans retain their original single batch.
+//!    A partial authority prefix is resumable deletion, never completion.
 //! 3. Unlink each retracted root record (roots directory fsynced), then each deletable object
 //!    and its verification hold (spool directories fsynced).
 //! 4. Verify that no removed name is still present, then stage and append the completion record.
@@ -17,6 +17,8 @@
 //! Every step is idempotent: a rerun after an interruption at any point finds the durable record,
 //! skips what is already gone and appends byte-identical completion bytes exactly once.
 //! Retention supplies its exact scope for fresh lookup, but uses this same write/recovery path.
+
+mod batches;
 
 use fss_core::{BatchId, ContentDigest, EvidenceDelta, ObjectId, Plane};
 use fss_publication::{ROOT_RETRACTION_FAMILY, SlotName, root_reachability_object_id};
@@ -84,7 +86,7 @@ fn batch_id(text: String) -> Result<BatchId, DeletionError> {
 }
 
 /// The deletion record batch: record, tombstones and retractions, deterministic from the plan.
-fn record_deltas(
+pub(super) fn record_deltas(
     plan: &DeletionPlan,
     plan_digest: ContentDigest,
 ) -> Result<Vec<EvidenceDelta>, DeletionError> {
@@ -147,6 +149,48 @@ fn record_deltas(
     Ok(deltas)
 }
 
+/// Reconcile the closure walker's single-batch diagnostic with this writer's bounded protocol.
+/// Only that capacity diagnostic can be discharged, and only after every planned batch fits.
+/// Holds, open effects, unknown members and all other blockers are preserved verbatim. This is
+/// used by both public planning and fresh digest-only lookup, so they seal identical plans.
+pub(super) fn admit_plan(
+    deployment: &ReferenceDeployment,
+    plan: DeletionPlan,
+    cx: &ReplayCx,
+) -> Result<DeletionPlan, DeletionError> {
+    if !plan.blockers.iter().any(|finding| finding.kind == "tombstone_batch_bound") {
+        return Ok(plan);
+    }
+    let mut candidate = plan.clone();
+    candidate.blockers.retain(|finding| finding.kind != "tombstone_batch_bound");
+    let digest = candidate.digest()?;
+    match batches::build(deployment, &candidate, digest, cx) {
+        Ok(_) => Ok(candidate),
+        // Keep the conservative, original diagnostic when even partitioning cannot fit.
+        Err(DeletionError::Bound { .. }) => Ok(plan),
+        Err(error) => Err(error),
+    }
+}
+
+fn completion_delta(
+    plan: &DeletionPlan,
+    plan_digest: ContentDigest,
+    completion_digest: ContentDigest,
+) -> Result<EvidenceDelta, DeletionError> {
+    Ok(EvidenceDelta {
+        delta_id: format!("delta:deletion-complete:{}", plan_digest.to_text()),
+        family: FAMILY_DELETION_COMPLETION.to_owned(),
+        object_id: ObjectId::parse(plan.record_object_id_of(plan_digest))?,
+        prior_generation: Some(1),
+        new_generation: 2,
+        validity: plan.validity,
+        plane: Plane::Authority,
+        payload_digest: completion_digest,
+        witness_digest: Some(plan_digest),
+        operation_id: None,
+    })
+}
+
 /// Legacy digest-only lookup. Parameterized retention requests are supplied to commit_scope;
 /// they cannot be inferred by enumerating all possible durations and current-time assertions.
 fn current_plan(
@@ -164,6 +208,7 @@ fn current_plan(
             Err(error) => return Err(error),
         };
         let plan = holds.protect(&universe, deployment, plan, cx)?;
+        let plan = admit_plan(deployment, plan, cx)?;
         if plan.digest()? == plan_digest {
             return Ok(plan);
         }
@@ -253,6 +298,13 @@ fn commit_with_scope(
         return Err(DeletionError::Blocked(plan.blockers));
     }
     checkpoint(cx, STAGE_DELETION_REVALIDATED)?;
+    // Validate the whole authority publication, including completion, before the first write.
+    let planned = batches::build(deployment, &plan, plan_digest, cx)?;
+    let first = planned.into_iter().next().ok_or(DeletionError::RecordMismatch)?;
+    for retraction in &plan.retractions {
+        checkpoint(cx, STAGE_DELETION_REVALIDATED)?;
+        deployment.publisher().spool().read(retraction.root)?;
+    }
     let bytes = plan.canonical_bytes()?;
     let staged = deployment.stage_payload(&bytes)?;
     if staged != plan_digest {
@@ -260,8 +312,8 @@ fn commit_with_scope(
     }
     checkpoint(cx, STAGE_DELETION_PLAN_STAGED)?;
     deployment.append_deletion_batch(
-        batch_id(DeletionPlan::record_batch_id(plan_digest))?,
-        record_deltas(&plan, plan_digest)?,
+        first.id,
+        first.deltas,
         vec![plan_digest],
         cx,
     )?;
@@ -278,6 +330,7 @@ fn apply(
     cx: &ReplayCx,
 ) -> Result<CommitReceipt, DeletionError> {
     deployment.publisher_mut().verify_object(plan_digest)?;
+    batches::finish(deployment, &plan, plan_digest, cx)?;
     for retraction in &plan.retractions {
         let slot = SlotName::parse(&retraction.slot).map_err(|_| DeletionError::RecordMismatch)?;
         if let Some(visible) = deployment.publisher().root(&slot)
@@ -338,18 +391,7 @@ fn apply(
     checkpoint(cx, STAGE_DELETION_COMPLETION_STAGED)?;
     deployment.append_deletion_batch(
         batch_id(DeletionPlan::completion_batch_id(plan_digest))?,
-        vec![EvidenceDelta {
-            delta_id: format!("delta:deletion-complete:{}", plan_digest.to_text()),
-            family: FAMILY_DELETION_COMPLETION.to_owned(),
-            object_id: ObjectId::parse(plan.record_object_id_of(plan_digest))?,
-            prior_generation: Some(1),
-            new_generation: 2,
-            validity: plan.validity,
-            plane: Plane::Authority,
-            payload_digest: completion_digest,
-            witness_digest: Some(plan_digest),
-            operation_id: None,
-        }],
+        vec![completion_delta(&plan, plan_digest, completion_digest)?],
         vec![completion_digest, plan_digest],
         cx,
     )?;

@@ -1,0 +1,4 @@
+3e2d416c0f0b57eb55ba9f4e7a1e4c5f46c3de84923a739bbf30949511fa1207  crates/fss-reference/src/deletion/commit/batches.rs
+6ca478ebd51cd250a423bce3463fd2aa7babca8af73a5972f2e3e061f8260840  crates/fss-reference/src/deletion/commit.rs
+d6259071ce0768a5e847fa055cde83556ef56cea0582f505a7beb00c49639be7  crates/fss-reference/src/deletion.rs
+eb494b03815d8d544240ddfdfd0357d65dabca3d8c5db890ee53553c45daeebe  crates/fss-reference/tests/deletion_batches_contract.rs
