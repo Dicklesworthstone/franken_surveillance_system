@@ -1183,6 +1183,21 @@ pub fn default_adapter_identity() -> Result<AdapterIdentity, ContractError> {
     Ok(identity)
 }
 
+/// Linux open(2) flag bits for the architectures that apply them. They are NOT uniform: x86_64
+/// uses `asm-generic/fcntl.h`, while aarch64 overrides O_DIRECTORY/O_NOFOLLOW/O_DIRECT/O_LARGEFILE in
+/// `arch/arm64/include/uapi/asm/fcntl.h` (there `1 << 17` is O_LARGEFILE and `1 << 16` O_DIRECT).
+#[cfg(all(target_os = "linux", target_arch = "x86_64"))]
+mod open_flags {
+    pub const O_NONBLOCK: i32 = 0o4_000;
+    pub const O_NOFOLLOW: i32 = 0o400_000;
+}
+/// See the x86_64 table; values from the arm64 UAPI `asm/fcntl.h`.
+#[cfg(all(target_os = "linux", target_arch = "aarch64"))]
+mod open_flags {
+    pub const O_NONBLOCK: i32 = 0o4_000;
+    pub const O_NOFOLLOW: i32 = 0o100_000;
+}
+
 /// Opens the operator-named source `path` for a bounded read, under the explicit I/O authority of
 /// `cx`, as the very file `admitted` (its earlier `symlink_metadata`) described.
 ///
@@ -1230,10 +1245,9 @@ pub fn open_admitted_source(
     ))]
     {
         use std::os::unix::fs::OpenOptionsExt;
-        // Linux UAPI asm-generic/fcntl.h: O_NONBLOCK (1 << 11) and O_NOFOLLOW (1 << 17), the
-        // same ABI constants and architecture restriction as fss-export-package. No foreign
-        // runtime or unsafe syscall wrapper is added.
-        options.custom_flags((1 << 11) | (1 << 17));
+        // Per-architecture Linux UAPI bits (see `open_flags`). No foreign runtime or unsafe
+        // syscall wrapper is added.
+        options.custom_flags(open_flags::O_NONBLOCK | open_flags::O_NOFOLLOW);
     }
     let file = match options.open(path) {
         Ok(file) => file,

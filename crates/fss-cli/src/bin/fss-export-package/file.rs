@@ -61,6 +61,23 @@ impl From<io::Error> for FileError {
     }
 }
 
+/// Linux open(2) flag bits for the architectures that apply them. They are NOT uniform: x86_64
+/// uses `asm-generic/fcntl.h`, while aarch64 overrides O_DIRECTORY/O_NOFOLLOW/O_DIRECT/O_LARGEFILE in
+/// `arch/arm64/include/uapi/asm/fcntl.h` (there `1 << 17` is O_LARGEFILE and `1 << 16` O_DIRECT).
+#[cfg(all(target_os = "linux", target_arch = "x86_64"))]
+mod open_flags {
+    pub const O_NONBLOCK: i32 = 0o4_000;
+    pub const O_DIRECTORY: i32 = 0o200_000;
+    pub const O_NOFOLLOW: i32 = 0o400_000;
+}
+/// See the x86_64 table; values from the arm64 UAPI `asm/fcntl.h`.
+#[cfg(all(target_os = "linux", target_arch = "aarch64"))]
+mod open_flags {
+    pub const O_NONBLOCK: i32 = 0o4_000;
+    pub const O_DIRECTORY: i32 = 0o40_000;
+    pub const O_NOFOLLOW: i32 = 0o100_000;
+}
+
 fn supported_writer() -> bool {
     cfg!(all(
         target_os = "linux",
@@ -77,10 +94,17 @@ fn open_read(path: &Path, directory: bool) -> io::Result<File> {
     ))]
     {
         use std::os::unix::fs::OpenOptionsExt;
-        // Linux UAPI asm-generic/fcntl.h: O_NONBLOCK, O_NOFOLLOW, O_DIRECTORY.
-        // No foreign runtime or unsafe syscall wrapper is added. Restrict these ABI constants
-        // to the two explicitly supported Linux architectures.
-        options.custom_flags((1 << 11) | (1 << 17) | if directory { 1 << 16 } else { 0 });
+        // Per-architecture Linux UAPI bits (see `open_flags`); the two supported architectures
+        // differ. No foreign runtime or unsafe syscall wrapper is added.
+        options.custom_flags(
+            open_flags::O_NONBLOCK
+                | open_flags::O_NOFOLLOW
+                | if directory {
+                    open_flags::O_DIRECTORY
+                } else {
+                    0
+                },
+        );
     }
     let file = options.open(path)?;
     let metadata = file.metadata()?;
