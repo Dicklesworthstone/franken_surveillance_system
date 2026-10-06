@@ -13,13 +13,17 @@
 //!    (`CaptureHintLatestAfterReceive`, nothing staged), and admission at exact equality.
 //! 8. Chunk boundary spanning and round-trip payload reassembly via [`fetch_segment_bytes`].
 //! 9. Idempotent re-import returning [`FileIngestOutcome::IdempotentExisting`].
-//! 10. Absence query non-certifiability (`NotObservableReason::NoCoverageWitness`).
+//! 10. Absence non-certifiability over the reopened ledger the import wrote: no coverage or
+//!     continuity delta, and the retained acquisition session's absence gate refuses.
 //! 11. Time truth honesty: unspecified hint produces full interval with `"unknown"`,
 //!     specified hint produces calculated interval with `"operator_assumption"`.
 //! 12. Empty file refusal (`EmptyFile`).
 //! 13. Tracking of `gap_before` across corrupted / garbage spans in MJPEG.
 //! 14. Capacity pre-check refusal leaves spool and ledger completely unmodified.
 //! 15. Real executed source mutation coverage.
+//! 17. `chunk_bytes` above the spool object bound is invalid limits (fss-n62w2 D3).
+//! 18. An oversized import manifest is refused before any stage (fss-n62w2 D3).
+//! 19. A source path swapped after admission is refused (symlink TOCTOU, fss-n62w2).
 
 use std::error::Error;
 use std::fs;
@@ -27,14 +31,14 @@ use std::os::unix::fs::symlink;
 use std::path::PathBuf;
 
 use fss_core::{
-    BudgetVector, CanonicalDecode, CanonicalDecoder, ContentDigest, ContextAuthority, EventId,
-    EventReadResult, EventRevisionStore, NotObservableReason, OperationId, RootAuthoritySpec,
+    AcquisitionError, AcquisitionStateKind, BudgetVector, CanonicalDecode, CanonicalDecoder,
+    CanonicalEncode, ContentDigest, ContextAuthority, OperationId, RootAuthoritySpec,
     SensorCapsule, SensorId, StreamId, TimestampNs,
 };
 use fss_reference::ingest::{
-    CaptureHint, DetectedFileFormat, FILE_IMPORT_MANIFEST_SCHEMA, FileFormatHint,
-    FileIngestAdapter, FileIngestError, FileIngestLimits, FileIngestOutcome, FileIngestRequest,
-    fetch_segment_bytes, sniff_format,
+    AcquisitionRetention, CaptureHint, DetectedFileFormat, FILE_IMPORT_MANIFEST_SCHEMA,
+    FileFormatHint, FileIngestAdapter, FileIngestError, FileIngestLimits, FileIngestOutcome,
+    FileIngestRequest, fetch_segment_bytes, sniff_format,
 };
 use fss_reference::{
     ADP_FILE_ROW_ID, ADP_REPLAY_ROW_ID, DeploymentLimits, ReferenceDeployment, ReplayCx,
@@ -557,6 +561,13 @@ fn test_09_idempotent_reimport() -> Result<(), Box<dyn Error>> {
     Ok(())
 }
 
+/// test_10 (rewritten, fss-n62w2): the absence question is asked of the deployment the import
+/// actually wrote, reopened from disk, not of a fresh store that never saw it. Expected (module
+/// docs "Time Truth Discipline" and "Acquisition lifecycle"): the reopened ledger holds the
+/// complete import (its manifest batch moves `object:file-import:<id>` to generation 2) and no
+/// coverage or continuity delta of any kind; the acquisition session retained in the completing
+/// batch replays, and its core absence gate refuses with `AbsenceClaimForbidden` in a state that
+/// is not `ContinuityVerified`; the receipt agrees (`absence_certifiable: false`).
 #[test]
 fn test_10_absence_query_not_certifiable() -> Result<(), Box<dyn Error>> {
     let root = repo_root()?;
@@ -564,40 +575,76 @@ fn test_10_absence_query_not_certifiable() -> Result<(), Box<dyn Error>> {
 
     let dep_dir = temp_deployment_dir("absence-test")?;
     let cx = test_cx("absence-test")?;
-    let mut deployment = ReferenceDeployment::open(&dep_dir, "site:deploy:absence-test", &cx)?;
-
-    let request = FileIngestRequest::new(
-        h264_path,
-        SensorId::parse("sensor:cam-001")?,
-        StreamId::parse("stream:h264")?,
-    )
-    .with_receive_time(TimestampNs(2_000_000_000));
-
-    FileIngestAdapter::ingest(request, &cx, &mut deployment)?;
-
-    // Reconstruct an EventRevisionStore from current anchor
-    let store = EventRevisionStore::new(deployment.current_anchor().clone());
-
-    // Proves prime directive: absence query over imported file window is not certifiable
-    let reasons = store.coverage_non_observability_reasons("domain.monitored_perimeter");
-    assert_eq!(
-        reasons,
-        vec![NotObservableReason::NoCoverageWitness],
-        "file import emits no coverage witness; absence must evaluate to NoCoverageWitness"
+    let receipt = {
+        let mut deployment = ReferenceDeployment::open(&dep_dir, "site:deploy:absence-test", &cx)?;
+        let request = FileIngestRequest::new(
+            h264_path,
+            SensorId::parse("sensor:cam-001")?,
+            StreamId::parse("stream:h264")?,
+        )
+        .with_receive_time(TimestampNs(2_000_000_000));
+        FileIngestAdapter::ingest(request, &cx, &mut deployment)?
+    };
+    assert!(
+        !receipt.absence_certifiable,
+        "a file import never certifies absence"
     );
 
-    let query_result = store.read_event_in_domain(
-        &EventId::parse("event:absent-001")?,
-        "domain.monitored_perimeter",
-        None,
-    )?;
-
-    match query_result {
-        EventReadResult::NotObservable { domain, reason, .. } => {
-            assert_eq!(domain, "domain.monitored_perimeter");
-            assert_eq!(reason, NotObservableReason::NoCoverageWitness);
+    // The real ledger, reopened from disk.
+    let deployment = ReferenceDeployment::open(&dep_dir, "site:deploy:absence-test", &cx)?;
+    let hex: String = receipt
+        .import_identity
+        .bytes()
+        .iter()
+        .map(|b| format!("{b:02x}"))
+        .collect();
+    let manifest_batch = format!("batch:file-import:{hex}:manifest");
+    let import_object = format!("object:file-import:{hex}");
+    let completing = deployment
+        .ledger()
+        .batches()
+        .iter()
+        .find(|b| b.batch_id.as_str() == manifest_batch)
+        .ok_or("the reopened ledger must hold the import's completing batch")?;
+    assert!(
+        completing.deltas.iter().any(|d| d.family == "file_import"
+            && d.object_id.as_str() == import_object
+            && d.new_generation == 2),
+        "the completing batch moves the import to generation 2"
+    );
+    let mut capsule_deltas = 0_usize;
+    for batch in deployment.ledger().batches() {
+        for delta in &batch.deltas {
+            assert!(
+                !delta.family.contains("coverage") && !delta.family.contains("continuity"),
+                "file import committed a {} delta in {}",
+                delta.family,
+                batch.batch_id.as_str()
+            );
+            if delta.family == "sensor_capsule" {
+                capsule_deltas += 1;
+            }
         }
-        other => return Err(format!("expected NotObservable, got {other:?}").into()),
+    }
+    assert_eq!(
+        capsule_deltas, receipt.capsule_count,
+        "every imported capsule is in the reopened ledger"
+    );
+
+    // The absence gate over the session retained in that batch.
+    let retained = AcquisitionRetention::open(&deployment, receipt.import_identity)?;
+    let history = retained
+        .history()
+        .ok_or("the completing batch must retain the acquisition session")?;
+    assert!(history.retained());
+    assert_ne!(history.terminal(), AcquisitionStateKind::ContinuityVerified);
+    match history.absence_claim() {
+        Err(AcquisitionError::AbsenceClaimForbidden { state, .. }) => {
+            assert_eq!(state, history.terminal());
+        }
+        other => {
+            return Err(format!("expected AbsenceClaimForbidden, got {other:?}").into());
+        }
     }
 
     Ok(())
@@ -933,5 +980,214 @@ fn test_16_file_too_large_for_limit_refused_typed() -> Result<(), Box<dyn Error>
         other => return Err(format!("expected FileTooLarge, got {other:?}").into()),
     }
 
+    Ok(())
+}
+
+// ---------------------------------------------------------------------------
+// fss-n62w2: object bound, oversized metadata, source-open race
+// ---------------------------------------------------------------------------
+
+/// Deployment whose spool admits objects of at most `object_max` bytes.
+fn deployment_with_object_bound(
+    label: &str,
+    object_max: u64,
+    cx: &ReplayCx,
+) -> Result<ReferenceDeployment, Box<dyn Error>> {
+    let dep_dir = temp_deployment_dir(label)?;
+    let limits = DeploymentLimits {
+        spool_object_max_bytes: object_max,
+        ..DeploymentLimits::standard()
+    };
+    Ok(ReferenceDeployment::open_with_limits(
+        &dep_dir,
+        &format!("site:deploy:{label}"),
+        limits,
+        cx,
+    )?)
+}
+
+fn h264_request(label: &str, chunk_bytes: u64) -> Result<FileIngestRequest, Box<dyn Error>> {
+    let limits = FileIngestLimits {
+        chunk_bytes,
+        ..FileIngestLimits::standard()
+    };
+    Ok(FileIngestRequest::new(
+        repo_root()?.join("tests/fixtures/media/h264/clean.264"),
+        SensorId::parse(format!("sensor:{label}"))?,
+        StreamId::parse(format!("stream:{label}"))?,
+    )
+    .with_limits(limits)
+    .with_receive_time(TimestampNs(2_000_000_000)))
+}
+
+/// test_17 (D3): `chunk_bytes` above the spool object bound is invalid limits, refused before
+/// the file is opened and whatever the file's length (the fixture is smaller than the bound, so
+/// its single chunk would even fit). At exactly the bound the same import completes.
+#[test]
+fn test_17_chunk_bytes_above_spool_object_bound_refused_before_staging()
+-> Result<(), Box<dyn Error>> {
+    const BOUND: u64 = 4096;
+    let file_len = fs::metadata(repo_root()?.join("tests/fixtures/media/h264/clean.264"))?.len();
+    assert!(
+        file_len < BOUND,
+        "precondition: the whole file fits one object"
+    );
+
+    let cx = test_cx("chunk-bound")?;
+    let mut deployment = deployment_with_object_bound("chunk-bound", BOUND, &cx)?;
+    match FileIngestAdapter::ingest(h264_request("chunk-over", BOUND + 1)?, &cx, &mut deployment) {
+        Err(FileIngestError::InvalidLimits { detail }) => {
+            assert!(
+                detail.contains("chunk_bytes") && detail.contains("spool object bound 4096"),
+                "unexpected detail: {detail}"
+            );
+        }
+        other => return Err(format!("expected InvalidLimits, got {other:?}").into()),
+    }
+    assert_eq!(deployment.publisher().spool().object_count(), 0);
+    assert!(deployment.ledger().batches().is_empty());
+
+    let receipt =
+        FileIngestAdapter::ingest(h264_request("chunk-at", BOUND)?, &cx, &mut deployment)?;
+    assert_eq!(receipt.outcome, FileIngestOutcome::New);
+    assert_eq!(receipt.chunk_bytes, BOUND);
+    assert_eq!(receipt.chunk_count, 1);
+    Ok(())
+}
+
+/// test_18 (D3): a `FileImportManifest` larger than the spool object bound is refused typed
+/// (`spool_object_max_bytes`, naming the manifest's exact size) BEFORE any chunk is staged: the
+/// spool, the ledger and the import slot are untouched. The bound is one byte below the
+/// manifest's canonical size measured by a probe import of the same request; the chunks
+/// (512 bytes), capsules and custody manifest all fit it.
+#[test]
+fn test_18_oversized_import_manifest_refused_before_any_stage() -> Result<(), Box<dyn Error>> {
+    let probe_cx = test_cx("manifest-probe")?;
+    let mut probe = deployment_with_object_bound(
+        "manifest-probe",
+        DeploymentLimits::STANDARD_SPOOL_OBJECT_MAX_BYTES,
+        &probe_cx,
+    )?;
+    let request = h264_request("manifest-bound", 512)?;
+    let probe_receipt = FileIngestAdapter::ingest(request.clone(), &probe_cx, &mut probe)?;
+    let manifest_len = probe_receipt.manifest.canonical_bytes().len() as u64;
+    let largest_capsule = probe_receipt
+        .capsules
+        .iter()
+        .map(|c| c.canonical_bytes().len() as u64)
+        .max()
+        .ok_or("probe import has capsules")?;
+    assert!(
+        512 < manifest_len - 1 && largest_capsule < manifest_len - 1,
+        "precondition: only the import metadata exceeds the bound \
+         (manifest {manifest_len}, largest capsule {largest_capsule})"
+    );
+
+    let cx = test_cx("manifest-bound")?;
+    let mut deployment = deployment_with_object_bound("manifest-bound", manifest_len - 1, &cx)?;
+    let objects = deployment.publisher().spool().object_count();
+    let occupied = deployment.publisher().spool().occupied_bytes()?;
+    match FileIngestAdapter::ingest(request, &cx, &mut deployment) {
+        Err(FileIngestError::SpoolCapacityExceeded {
+            limit: "spool_object_max_bytes",
+            required,
+            available,
+        }) => {
+            assert_eq!(required, manifest_len, "the manifest is the refused object");
+            assert_eq!(available, manifest_len - 1);
+        }
+        other => {
+            return Err(format!("expected a pre-stage object-bound refusal, got {other:?}").into());
+        }
+    }
+    assert_eq!(deployment.publisher().spool().object_count(), objects);
+    assert_eq!(deployment.publisher().spool().occupied_bytes()?, occupied);
+    assert!(deployment.ledger().batches().is_empty());
+    assert!(
+        deployment
+            .publisher()
+            .root(&probe_receipt.root_slot)
+            .is_none()
+    );
+    Ok(())
+}
+
+/// test_19 (symlink TOCTOU): the source is opened as the file its `symlink_metadata` admitted, or
+/// not at all. Each case admits a regular file at a path, replaces the path in the window between
+/// that check and the open, and calls the adapter's open step with the stale admission:
+/// (a) a symlink to a different file is `SymlinkNotAllowed`; (b) a symlink to the admitted inode
+/// itself is `SymlinkNotAllowed` on Linux x86_64/aarch64 (`O_NOFOLLOW`; elsewhere the read would
+/// be of the admitted inode); (c) a different regular file renamed over the path is
+/// `SourceChanged`; (d) a revoked I/O authority opens nothing (`CancellationRequested` at the
+/// read stage). The unchanged control opens and reads the admitted bytes. A symlink named
+/// directly is refused up front by `ingest` (test_04), so both orders refuse it.
+#[test]
+fn test_19_source_swapped_after_admission_is_refused() -> Result<(), Box<dyn Error>> {
+    use fss_reference::ingest::file_adapter::{STAGE_READ, open_admitted_source};
+    use std::io::Read;
+
+    let cx = test_cx("toctou")?;
+    let dir = cx.root_dir().join("toctou");
+    let _ = fs::remove_dir_all(&dir);
+    fs::create_dir_all(&dir)?;
+    let path = dir.join("source.264");
+    let other = dir.join("other.264");
+    fs::write(&other, b"other bytes")?;
+
+    // Control: unchanged path opens and reads exactly the admitted file.
+    fs::write(&path, b"admitted bytes")?;
+    let admitted = fs::symlink_metadata(&path)?;
+    let mut bytes = Vec::new();
+    open_admitted_source(&cx, &path, &admitted)?.read_to_end(&mut bytes)?;
+    assert_eq!(bytes, b"admitted bytes");
+
+    // (a) symlink to a different file swapped in after the check.
+    fs::remove_file(&path)?;
+    symlink(&other, &path)?;
+    match open_admitted_source(&cx, &path, &admitted) {
+        Err(FileIngestError::SymlinkNotAllowed { path: refused }) => assert_eq!(refused, path),
+        other => return Err(format!("(a) expected SymlinkNotAllowed, got {other:?}").into()),
+    }
+
+    // (b) symlink to the admitted inode itself (the file moved aside, a link put in its place).
+    fs::remove_file(&path)?;
+    fs::write(&path, b"admitted bytes")?;
+    let admitted = fs::symlink_metadata(&path)?;
+    let moved = dir.join("moved.264");
+    fs::rename(&path, &moved)?;
+    symlink(&moved, &path)?;
+    let same_inode = open_admitted_source(&cx, &path, &admitted);
+    if cfg!(all(
+        target_os = "linux",
+        any(target_arch = "x86_64", target_arch = "aarch64")
+    )) {
+        match same_inode {
+            Err(FileIngestError::SymlinkNotAllowed { path: refused }) => {
+                assert_eq!(refused, path);
+            }
+            other => return Err(format!("(b) expected SymlinkNotAllowed, got {other:?}").into()),
+        }
+    }
+
+    // (c) a different regular file renamed over the admitted path.
+    fs::remove_file(&path)?;
+    fs::write(&path, b"admitted bytes")?;
+    let admitted = fs::symlink_metadata(&path)?;
+    let replacement = dir.join("replacement.264");
+    fs::write(&replacement, b"admitted bytes")?;
+    fs::rename(&replacement, &path)?;
+    match open_admitted_source(&cx, &path, &admitted) {
+        Err(FileIngestError::SourceChanged { path: refused }) => assert_eq!(refused, path),
+        other => return Err(format!("(c) expected SourceChanged, got {other:?}").into()),
+    }
+
+    // (d) a revoked I/O authority opens nothing, even an unchanged admitted file.
+    let admitted = fs::symlink_metadata(&path)?;
+    let revoked = test_cx("toctou-revoked")?;
+    revoked.io_authority().revoke();
+    match open_admitted_source(&revoked, &path, &admitted) {
+        Err(FileIngestError::CancellationRequested { stage }) => assert_eq!(stage, STAGE_READ),
+        other => return Err(format!("(d) expected CancellationRequested, got {other:?}").into()),
+    }
     Ok(())
 }

@@ -1110,6 +1110,79 @@ fn c02_resume_of_staged_import_needs_no_new_capacity() -> TestResult {
     assert_clean_after_reopen(&dir, limits)
 }
 
+/// Spool objects of a fresh deployment, and the objects an import of `request` adds once fully
+/// staged (probe deployment).
+fn staged_objects(
+    label: &str,
+    req: &FileIngestRequest,
+) -> Result<(usize, usize), Box<dyn std::error::Error>> {
+    let dir = fresh_dir(label)?;
+    let cx1 = cx(label)?;
+    cx1.set_cancel_at_checkpoint_occurrence(STAGE_COMMIT_CAPSULES, 1);
+    let mut dep = open(&dir, standard())?;
+    let before = dep.publisher().spool().object_count();
+    let result = FileIngestAdapter::ingest(req.clone(), &cx1, &mut dep);
+    expect_cancelled(label, &result, &cx1)?;
+    Ok((before, dep.publisher().spool().object_count() - before))
+}
+
+/// c03 (fss-n62w2): the capacity check counts every NEW object the import stages against the
+/// spool's `max_objects`. Expected: with room for one object fewer than the full staged
+/// footprint (measured by a probe), the import is refused typed (`max_objects`, required = the
+/// footprint, available = the bound) BEFORE staging, with the spool and the ledger unchanged;
+/// with room for exactly the footprint the same import completes once. Deleting the
+/// `max_objects` branch turns the first case into a spool refusal part way through staging.
+#[test]
+fn c03_object_count_capacity_is_checked_before_staging() -> TestResult {
+    let source = fixture(H264)?;
+    let req = request(&source, CHUNK, KNOB)?;
+    let (base, added) = staged_objects("c03-probe", &req)?;
+    assert!(added > 1, "precondition: the import stages several objects");
+    let footprint = base + added;
+
+    let dir = fresh_dir("c03-tight")?;
+    let tight = DeploymentLimits {
+        spool_max_objects: footprint - 1,
+        ..DeploymentLimits::standard()
+    };
+    {
+        let cx1 = cx("c03")?;
+        let mut dep = open(&dir, tight)?;
+        assert_eq!(dep.publisher().spool().object_count(), base);
+        let bytes_before = dep.publisher().spool().occupied_bytes()?;
+        match FileIngestAdapter::ingest(req.clone(), &cx1, &mut dep) {
+            Err(FileIngestError::SpoolCapacityExceeded {
+                limit: "max_objects",
+                required,
+                available,
+            }) => {
+                assert_eq!(required, footprint as u64);
+                assert_eq!(available, (footprint - 1) as u64);
+            }
+            other => {
+                return Err(
+                    format!("expected a pre-stage max_objects refusal, got {other:?}").into(),
+                );
+            }
+        }
+        assert_eq!(dep.publisher().spool().object_count(), base);
+        assert_eq!(dep.publisher().spool().occupied_bytes()?, bytes_before);
+        assert!(dep.ledger().batches().is_empty());
+    }
+
+    let dir = fresh_dir("c03-exact")?;
+    let exact = DeploymentLimits {
+        spool_max_objects: footprint,
+        ..DeploymentLimits::standard()
+    };
+    let cx2 = cx("c03-exact")?;
+    let mut dep = open(&dir, exact)?;
+    let receipt = FileIngestAdapter::ingest(req, &cx2, &mut dep)?;
+    assert_eq!(receipt.outcome, FileIngestOutcome::New);
+    assert_complete_once(&dep, &receipt, &fs::read(&source)?, &cx2)?;
+    Ok(())
+}
+
 /// Spans of a completed import still match after a reopen (custody survives restarts).
 #[test]
 fn r01_spans_survive_reopen() -> TestResult {

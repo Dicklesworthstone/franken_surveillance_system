@@ -63,11 +63,27 @@
 //! durable from the interrupted attempt is reused, and an orphaned temporary root record of
 //! exactly this plan is discarded before publication is redone. Cancellation is polled before
 //! every batch. The fault campaign is `tests/file_ingest_fault_contract.rs`.
+//!
+//! # Source path authority (fss-n62w2)
+//!
+//! The source is an operator-named recording, and it may live anywhere the operator points: it
+//! is deliberately NOT confined to the I/O authority's `root_dir`, which scopes the adapter's
+//! own scratch and ledger directories, not the media it imports. Confining it would refuse the
+//! intended use (importing a recording from a removable drive or an export directory). The read
+//! is instead gated by the explicit I/O authority: [`open_admitted_source`] refuses a revoked or
+//! finalized [`ReplayIoAuthority`] before it opens anything, and a path is only ever opened
+//! after `symlink_metadata` admitted it as a regular, non-symlink file.
+//!
+//! That check-then-open sequence is not trusted by itself. On Linux x86_64/aarch64 the open uses
+//! `O_NOFOLLOW | O_NONBLOCK` (a symlink swapped in after the check is refused by the kernel, and
+//! a FIFO swapped in cannot block the open), and on every Unix the opened handle is `fstat`ed and
+//! must still be a regular file with the admitted `(dev, ino)` identity. Every byte read and the
+//! post-read size check use that handle, never the path again.
 
 mod retry;
 
 use std::fs;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 use fss_core::identity::{
     AdapterCapabilities, AdapterIdentity, AdapterKind, CredentialMethod, IsolationMode,
@@ -225,7 +241,10 @@ impl CaptureHint {
 pub struct FileIngestLimits {
     /// Maximum file size in bytes admitted for reading.
     pub max_file_bytes: u64,
-    /// Chunk size for chunked custody objects (at most spool object max bytes).
+    /// Chunk size for chunked custody objects. Must be at most the deployment's spool object
+    /// bound (`spool_object_max_bytes`, and the spool's own `max_object_bytes`); a larger value
+    /// is refused as [`FileIngestError::InvalidLimits`] before the file is opened, whatever the
+    /// file's length.
     pub chunk_bytes: u64,
     /// Maximum number of segments (access units or frames) allowed.
     pub max_segments: usize,
@@ -588,6 +607,13 @@ pub enum FileIngestError {
         /// The path of the rejected non-regular file.
         path: PathBuf,
     },
+    /// The file opened at the path is not the file admitted by the earlier `symlink_metadata`
+    /// check (a different `(dev, ino)` identity): the path was replaced between the check and
+    /// the open, and nothing is read from it.
+    SourceChanged {
+        /// The path whose file changed.
+        path: PathBuf,
+    },
     /// Input file is zero bytes.
     EmptyFile {
         /// The path of the empty file.
@@ -755,6 +781,13 @@ impl std::fmt::Display for FileIngestError {
             }
             Self::NotRegularFile { path } => {
                 write!(f, "not a regular file: {}", path.display())
+            }
+            Self::SourceChanged { path } => {
+                write!(
+                    f,
+                    "source file changed between admission and open: {}",
+                    path.display()
+                )
             }
             Self::EmptyFile { path } => {
                 write!(f, "input file is empty: {}", path.display())
@@ -1150,6 +1183,99 @@ pub fn default_adapter_identity() -> Result<AdapterIdentity, ContractError> {
     Ok(identity)
 }
 
+/// Opens the operator-named source `path` for a bounded read, under the explicit I/O authority of
+/// `cx`, as the very file `admitted` (its earlier `symlink_metadata`) described.
+///
+/// The path is not confined to `cx.root_dir()` (see the module's "Source path authority"
+/// section). Refusals, before any byte is read:
+/// - a revoked or finalized I/O authority: [`FileIngestError::CancellationRequested`] at
+///   [`STAGE_READ`], without opening the path;
+/// - `admitted` is not a regular, non-symlink file: [`FileIngestError::SymlinkNotAllowed`] or
+///   [`FileIngestError::NotRegularFile`];
+/// - a symlink now at the path (refused by `O_NOFOLLOW` on Linux x86_64/aarch64):
+///   [`FileIngestError::SymlinkNotAllowed`];
+/// - the opened handle is not a regular file: [`FileIngestError::NotRegularFile`];
+/// - the opened handle's `(dev, ino)` differs from `admitted` (the path was replaced after the
+///   check): [`FileIngestError::SourceChanged`], or `SymlinkNotAllowed` when the replacement is a
+///   symlink.
+///
+/// # Errors
+/// The typed refusals above, or [`FileIngestError::Io`] for any other open failure.
+pub fn open_admitted_source(
+    cx: &ReplayCx,
+    path: &Path,
+    admitted: &fs::Metadata,
+) -> Result<fs::File, FileIngestError> {
+    if !cx.io_authority().is_valid() {
+        return Err(FileIngestError::CancellationRequested { stage: STAGE_READ });
+    }
+    if admitted.file_type().is_symlink() {
+        return Err(FileIngestError::SymlinkNotAllowed {
+            path: path.to_path_buf(),
+        });
+    }
+    if !admitted.file_type().is_file() {
+        return Err(FileIngestError::NotRegularFile {
+            path: path.to_path_buf(),
+        });
+    }
+    // A refusal is reported as a symlink refusal when the path now holds a symlink, whatever the
+    // platform's errno for a refused `O_NOFOLLOW` open.
+    let now_symlink = || fs::symlink_metadata(path).is_ok_and(|m| m.file_type().is_symlink());
+    let mut options = fs::OpenOptions::new();
+    options.read(true);
+    #[cfg(all(
+        target_os = "linux",
+        any(target_arch = "x86_64", target_arch = "aarch64")
+    ))]
+    {
+        use std::os::unix::fs::OpenOptionsExt;
+        // Linux UAPI asm-generic/fcntl.h: O_NONBLOCK (1 << 11) and O_NOFOLLOW (1 << 17), the
+        // same ABI constants and architecture restriction as fss-export-package. No foreign
+        // runtime or unsafe syscall wrapper is added.
+        options.custom_flags((1 << 11) | (1 << 17));
+    }
+    let file = match options.open(path) {
+        Ok(file) => file,
+        Err(_) if now_symlink() => {
+            return Err(FileIngestError::SymlinkNotAllowed {
+                path: path.to_path_buf(),
+            });
+        }
+        Err(error) => return Err(FileIngestError::Io(error)),
+    };
+    let opened = file.metadata()?;
+    if !opened.file_type().is_file() {
+        return Err(FileIngestError::NotRegularFile {
+            path: path.to_path_buf(),
+        });
+    }
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::MetadataExt;
+        if (opened.dev(), opened.ino()) != (admitted.dev(), admitted.ino()) {
+            return Err(if now_symlink() {
+                FileIngestError::SymlinkNotAllowed {
+                    path: path.to_path_buf(),
+                }
+            } else {
+                FileIngestError::SourceChanged {
+                    path: path.to_path_buf(),
+                }
+            });
+        }
+    }
+    Ok(file)
+}
+
+/// The largest object the deployment's spool admits: the smaller of the deployment limit and the
+/// spool's own bound. Every object an import stages must fit it.
+fn spool_object_bound(deployment: &ReferenceDeployment) -> u64 {
+    let spool =
+        u64::try_from(deployment.publisher().spool().limits().max_object_bytes).unwrap_or(u64::MAX);
+    deployment.limits().spool_object_max_bytes.min(spool)
+}
+
 /// Root of `slot` once its record was renamed into place (`Visible` or `Durable`). A manifest
 /// that is only staged in this session is not a visible root.
 fn visible_slot_root(deployment: &ReferenceDeployment, slot: &SlotName) -> Option<ContentDigest> {
@@ -1435,6 +1561,17 @@ impl FileIngestAdapter {
                 detail: "chunk_bytes must be strictly positive".to_string(),
             });
         }
+        // Every custody chunk is one spool object: a chunk size above the spool's object bound
+        // would fail mid-staging, so it is refused here, before the file is opened (fss-n62w2).
+        let object_bound = spool_object_bound(deployment);
+        if request.limits.chunk_bytes > object_bound {
+            return Err(FileIngestError::InvalidLimits {
+                detail: format!(
+                    "chunk_bytes {} exceeds the spool object bound {object_bound}",
+                    request.limits.chunk_bytes
+                ),
+            });
+        }
         if request.limits.max_file_bytes == 0 {
             return Err(FileIngestError::InvalidLimits {
                 detail: "max_file_bytes must be strictly positive".to_string(),
@@ -1447,17 +1584,19 @@ impl FileIngestAdapter {
         }
         // Bounded read: never read past the admitted limit even if the file grew
         // after the stat check (review-2036: the read must be bounded, not fs::read).
-        let file = std::fs::File::open(&request.path)?;
+        // The open is authorized by the I/O authority and bound to the admitted file identity
+        // (fss-n62w2); the read and the post-read size check use the handle, never the path.
+        let file = open_admitted_source(cx, &request.path, &metadata)?;
         let mut file_bytes = Vec::with_capacity(
             usize::try_from(file.metadata()?.len().min(request.limits.max_file_bytes))
                 .unwrap_or(usize::MAX),
         );
         {
             use std::io::Read;
-            let mut handle = file.take(request.limits.max_file_bytes);
+            let mut handle = (&file).take(request.limits.max_file_bytes);
             handle.read_to_end(&mut file_bytes)?;
         }
-        let stat_len = fs::metadata(&request.path)?.len();
+        let stat_len = file.metadata()?.len();
         if stat_len > request.limits.max_file_bytes {
             return Err(FileIngestError::FileTooLarge {
                 path: request.path.clone(),
@@ -1884,6 +2023,16 @@ impl FileIngestAdapter {
             .chain(closing.object_bytes())
             .chain(std::iter::once(slot_manifest_object))
         {
+            // No object may exceed the spool's object bound (fss-n62w2): an oversized import
+            // manifest, capsule, custody manifest, acquisition record or slot manifest is refused
+            // here, before the first chunk is staged, never by a stage call part way through.
+            if slice.len() as u64 > object_bound {
+                return Err(FileIngestError::SpoolCapacityExceeded {
+                    limit: "spool_object_max_bytes",
+                    required: slice.len() as u64,
+                    available: object_bound,
+                });
+            }
             if seen_digests.insert(digest) && deployment.publisher().spool().state(digest).is_none()
             {
                 new_bytes = new_bytes.saturating_add(slice.len() as u64);

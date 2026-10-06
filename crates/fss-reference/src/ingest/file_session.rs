@@ -725,6 +725,7 @@ fn error_code(error: &FileIngestError) -> &'static str {
     match error {
         FileIngestError::SymlinkNotAllowed { .. } => "symlink_not_allowed",
         FileIngestError::NotRegularFile { .. } => "not_regular_file",
+        FileIngestError::SourceChanged { .. } => "source_changed",
         FileIngestError::EmptyFile { .. } => "empty_file",
         FileIngestError::FileTooLarge { .. } => "file_too_large",
         FileIngestError::SpoolCapacityExceeded { .. } => "spool_capacity_exceeded",
