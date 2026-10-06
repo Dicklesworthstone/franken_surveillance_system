@@ -9,22 +9,37 @@
 //!
 //! Per-stream continuity is knowledge about committed history only: `verified` means a retained
 //! source coverage witness declares continuous delivery of every retained capsule of the stream,
-//! never that the camera is online now. A stream whose capsules all carry an estimated clock is a
-//! recorded-file source and is never a continuity source. Capsules committed by a file import that
-//! never completed are excluded from every stream and capsule count and reported separately.
+//! never that the camera is online now. Any capsule with an estimated clock forbids `verified`:
+//! a stream whose capsules all carry an estimated clock is a recorded-file source
+//! (`not_observable_file_source`), and a stream mixing estimated and source-clocked capsules is
+//! `degraded` with the named reason `mixed_estimated_clock`, whatever its witnesses declare.
+//! Capsules committed by a file import that never completed are excluded from every stream and
+//! capsule count and reported separately.
+//!
+//! The last published handoff and the situation capsule root it sealed are read from the agent
+//! plane (`agent/publications`) through the same non-mutating publication inspection and verified
+//! object reads, each record re-verified against its sealed handoff root. The agent plane is not
+//! authority: these digests identify what was published when status read it, they are not pinned
+//! to the status anchor, and a concurrent agent publication is not a writer the lock-table
+//! observation covers.
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::Path;
 
 use fss_core::{
     CanonicalDecode, ClockBasis, ContentDigest, CoverageContinuity, EvidenceDelta,
-    EvidenceDeltaBatch, SensorCapsule, TimestampNs,
+    EvidenceDeltaBatch, HandoffCapsule, SensorCapsule, TimestampNs,
 };
-use fss_ledger::{HostJournalReadIo, JournalReadIo, LedgerInspection, inspect_durable};
-use fss_object::HostSpoolIo;
-use fss_publication::{HostLockTableSource, WriterDetectionOptions, WriterState, detect_writers};
+/// Re-exported so a [`StatusReadIo`] implementation outside this crate can name its ledger type.
+pub use fss_ledger::LedgerInspection;
+use fss_ledger::{HostJournalReadIo, JournalReadIo, inspect_durable};
+use fss_object::{HostSpoolIo, ObjectManifest, SpoolError};
+use fss_publication::{
+    HostLockTableSource, LocalPublicationError, WriterDetectionOptions, WriterState, detect_writers,
+};
 
 use crate::agent_orient::{DeploymentReadError, DeploymentSnapshot, OrientLimits, read_deployment};
+use crate::deployment_session::{HandoffRecord, PUBLICATIONS_RELPATH, publication_limits};
 use crate::doctor::{FILE_IMPORT_BATCH_PREFIX, writer_lock_paths, writer_state_name};
 use crate::reference_deployment::{
     DEPLOYMENT_LAYOUT_FILENAME, DeploymentLayout, FAMILY_DELETION_TOMBSTONE, FAMILY_FILE_IMPORT,
@@ -57,6 +72,13 @@ impl Default for StatusLimits {
         }
     }
 }
+
+/// Maximum published handoffs status reads; more is refused as over budget, never truncated.
+pub const MAX_STATUS_HANDOFFS: usize = 64;
+/// Maximum bytes of one handoff manifest or record read by status.
+pub const MAX_STATUS_HANDOFF_RECORD_BYTES: usize = 1024 * 1024;
+/// Publication slot prefix of agent handoffs (see [`HandoffRecord::slot`]).
+const HANDOFF_SLOT_PREFIX: &str = "handoff-";
 
 /// Fixed, non-disclosing status refusal. No failure returns a fabricated empty inventory.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -126,17 +148,57 @@ pub struct StreamInventory {
     pub witnessed_degraded: usize,
     /// Continuity knowledge of the stream over committed history; never live health.
     pub continuity: StreamContinuity,
+    /// The named reason for `continuity`.
+    pub continuity_reason: ContinuityReason,
+}
+
+/// Why a stream has its [`StreamContinuity`]; exactly one reason per stream.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum ContinuityReason {
+    /// Every capsule carries an estimated clock (a recorded-file source).
+    FileSourceEstimatedClock,
+    /// Some, but not all, capsules carry an estimated clock. A stream holding any estimated
+    /// capsule is never verified, whatever its witnesses declare.
+    MixedEstimatedClock,
+    /// No retained continuity witness names any capsule of the stream.
+    NoContinuityWitness,
+    /// A capsule declares a preceding gap.
+    RecordedGap,
+    /// A witness of some capsule declares a gap or unknown continuity.
+    WitnessNotContinuous,
+    /// Only part of the stream is named by a continuous witness.
+    PartiallyWitnessed,
+    /// Every capsule is a frame of a continuous witness and none declares a gap.
+    ContinuouslyWitnessed,
+}
+
+impl ContinuityReason {
+    /// Stable spelling.
+    #[must_use]
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::FileSourceEstimatedClock => "file_source_estimated_clock",
+            Self::MixedEstimatedClock => "mixed_estimated_clock",
+            Self::NoContinuityWitness => "no_continuity_witness",
+            Self::RecordedGap => "recorded_gap",
+            Self::WitnessNotContinuous => "witness_not_continuous",
+            Self::PartiallyWitnessed => "partially_witnessed",
+            Self::ContinuouslyWitnessed => "continuously_witnessed",
+        }
+    }
 }
 
 /// Continuity knowledge of one stream over committed history at the status anchor. No value is a
 /// statement about the camera now.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum StreamContinuity {
-    /// Every retained capsule is a frame of a retained source coverage witness declaring
-    /// continuous delivery, and no capsule declares a preceding gap.
+    /// Every retained capsule carries a source clock (none is estimated), is a frame of a
+    /// retained source coverage witness declaring continuous delivery, and no capsule declares a
+    /// preceding gap.
     Verified,
-    /// A capsule declares a preceding gap, a covering witness declares a gap or unknown
-    /// continuity, or only part of the stream is witnessed.
+    /// Estimated and source-clocked capsules are mixed, a capsule declares a preceding gap, a
+    /// covering witness declares a gap or unknown continuity, or only part of the stream is
+    /// witnessed.
     Degraded,
     /// Every capsule carries an estimated clock: a recorded-file source, which is never a
     /// continuity source and never certifies absence.
@@ -193,6 +255,8 @@ pub struct DeploymentStatus {
     pub ledger_present: bool,
     /// Source inventory checked against exactly the same authority anchor and root.
     pub sources: SourceInventory,
+    /// Published agent handoffs (agent plane, read at status time; never authority).
+    pub handoffs: HandoffSummary,
     /// Writer lock state observed before the authority read (lock table only; nothing locked).
     pub writer_before: WriterState,
     /// Writer lock state observed after the final authority check.
@@ -208,6 +272,34 @@ impl DeploymentStatus {
             || self.writer_after.possibly_stale()
             || writer_state_name(&self.writer_before) != writer_state_name(&self.writer_after)
     }
+}
+
+/// Identities of the last published handoff. The situation root is the one the handoff sealed at
+/// its own anchor, not a live situation.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct LastHandoff {
+    /// Handoff identity.
+    pub handoff_id: String,
+    /// Sealed handoff root (re-verified from the record).
+    pub handoff_root: ContentDigest,
+    /// Situation capsule root sealed in the handoff.
+    pub situation_capsule_root: ContentDigest,
+    /// Ledger epoch of the handoff's anchor.
+    pub anchor_ledger_epoch: u64,
+    /// Commit sequence of the handoff's anchor.
+    pub anchor_commit_sequence: u64,
+    /// Handoff creation instant on the deployment evidence clock.
+    pub created_at: TimestampNs,
+}
+
+/// Every verified handoff published under the root's agent plane, summarised.
+#[derive(Clone, Debug, Default, Eq, PartialEq)]
+pub struct HandoffSummary {
+    /// Verified handoffs published (zero when the agent plane holds none).
+    pub published: usize,
+    /// The handoff with the greatest (ledger epoch, commit sequence, creation instant, handoff
+    /// root): a canonical order, not a publication-time order.
+    pub last: Option<LastHandoff>,
 }
 
 /// Explicit read boundary for status. Implementations must not write or repair deployment state.
@@ -238,6 +330,13 @@ pub trait StatusReadIo {
     ) -> Result<Vec<u8>, StatusError>;
     /// Observe writer locks on the deployment without taking a lock or modifying anything.
     fn writer_state(&self, root: &Path, layout: &DeploymentLayout) -> WriterState;
+    /// Read every published agent handoff, each verified against its sealed root, without locks,
+    /// directory creation or repair. More than `max_handoffs` is `OverBudget`.
+    fn handoffs(
+        &self,
+        root: &Path,
+        max_handoffs: usize,
+    ) -> Result<Vec<HandoffCapsule>, StatusError>;
 }
 
 /// Host reference adapter. Every operation delegates to an existing read-only bounded reader.
@@ -309,6 +408,112 @@ impl StatusReadIo for HostStatusReadIo {
             WriterDetectionOptions::default(),
         )
     }
+    fn handoffs(
+        &self,
+        root: &Path,
+        max_handoffs: usize,
+    ) -> Result<Vec<HandoffCapsule>, StatusError> {
+        let directory = root.join(PUBLICATIONS_RELPATH);
+        match std::fs::symlink_metadata(&directory) {
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(Vec::new()),
+            Err(_) => return Err(StatusError::Unreadable),
+            Ok(meta) if !meta.file_type().is_dir() => return Err(StatusError::Corrupt),
+            Ok(_) => {}
+        }
+        let inspection = fss_publication::inspect(&directory, publication_limits())
+            .map_err(publication_refusal)?;
+        if inspection
+            .broken_slots()
+            .any(|slot| slot.as_str().starts_with(HANDOFF_SLOT_PREFIX))
+        {
+            return Err(StatusError::Corrupt);
+        }
+        let read = |digest| {
+            fss_publication::read_verified(&directory, digest, MAX_STATUS_HANDOFF_RECORD_BYTES)
+                .map_err(publication_refusal)
+        };
+        let mut out = Vec::new();
+        for visible in inspection.visible_roots() {
+            if !visible.slot.as_str().starts_with(HANDOFF_SLOT_PREFIX) {
+                continue;
+            }
+            if out.len() == max_handoffs {
+                return Err(StatusError::OverBudget);
+            }
+            let manifest = ObjectManifest::from_canonical_bytes(&read(visible.root)?)
+                .map_err(|_| StatusError::Corrupt)?;
+            if manifest.root() != visible.root {
+                return Err(StatusError::Corrupt);
+            }
+            let metadata = manifest.metadata_digest().ok_or(StatusError::Corrupt)?;
+            let record =
+                HandoffRecord::from_bytes(&read(metadata)?).map_err(|_| StatusError::Corrupt)?;
+            if HandoffRecord::slot(&record.capsule.handoff_id)
+                .ok()
+                .as_ref()
+                != Some(&visible.slot)
+            {
+                return Err(StatusError::Corrupt);
+            }
+            out.push(record.capsule);
+        }
+        Ok(out)
+    }
+}
+
+/// Status class of a publication read failure: a bound is over budget, host I/O is unreadable,
+/// and anything else failed verification.
+fn publication_refusal(error: LocalPublicationError) -> StatusError {
+    match error {
+        LocalPublicationError::EntryLimit { .. }
+        | LocalPublicationError::RecordTooLarge { .. }
+        | LocalPublicationError::Capacity { .. }
+        | LocalPublicationError::ManifestChildBound { .. }
+        | LocalPublicationError::Spool(
+            SpoolError::EntryLimit { .. }
+            | SpoolError::ObjectTooLarge { .. }
+            | SpoolError::ObjectCountLimit { .. }
+            | SpoolError::ByteQuotaExceeded { .. },
+        ) => StatusError::OverBudget,
+        LocalPublicationError::Io { .. } => StatusError::Unreadable,
+        _ => StatusError::Corrupt,
+    }
+}
+
+/// The last of `handoffs` by (ledger epoch, commit sequence, creation instant, handoff root). A
+/// handoff sealed under another site lineage is foreign to this deployment and refused.
+fn summarize_handoffs(
+    handoffs: &[HandoffCapsule],
+    site_lineage: &str,
+) -> Result<HandoffSummary, StatusError> {
+    if handoffs
+        .iter()
+        .any(|capsule| capsule.anchor.site_lineage != site_lineage)
+    {
+        return Err(StatusError::Corrupt);
+    }
+    let last = handoffs
+        .iter()
+        .max_by_key(|capsule| {
+            (
+                capsule.anchor.ledger_epoch,
+                capsule.anchor.commit_sequence,
+                capsule.created_at,
+                capsule.handoff_root,
+            )
+        })
+        .map(|capsule| LastHandoff {
+            handoff_id: capsule.handoff_id.as_str().to_owned(),
+            handoff_root: capsule.handoff_root,
+            situation_capsule_root: capsule.situation_capsule_root,
+            anchor_ledger_epoch: capsule.anchor.ledger_epoch,
+            anchor_commit_sequence: capsule.anchor.commit_sequence,
+            created_at: capsule.created_at,
+        });
+    Ok(HandoffSummary {
+        published: handoffs.len(),
+        last,
+    })
 }
 
 /// Read the host deployment, with no mutations and no claims of current physical health.
@@ -356,6 +561,11 @@ pub fn inspect_deployment_status_with(
         checkpoint,
     )?;
     checkpoint()?;
+    let handoffs = summarize_handoffs(
+        &io.handoffs(root, MAX_STATUS_HANDOFFS)?,
+        &layout.site_lineage,
+    )?;
+    checkpoint()?;
     // Deletion may race object hydration. No report escapes without this final authority check.
     let after = io.ledger(root, &layout, limits.snapshot.max_journal_bytes)?;
     same_authority(&snapshot, &layout, &after)?;
@@ -367,6 +577,7 @@ pub fn inspect_deployment_status_with(
     Ok(DeploymentStatus {
         snapshot,
         sources,
+        handoffs,
         ledger_present: after.status == fss_ledger::DurableLedgerStatus::Present,
         writer_before,
         writer_after,
@@ -564,7 +775,7 @@ fn inventory_witnessed(
         }
     }
     for row in streams.values_mut() {
-        row.continuity = classify_continuity(row);
+        (row.continuity, row.continuity_reason) = classify_continuity(row);
     }
     for id in imports {
         checkpoint()?;
@@ -586,20 +797,44 @@ fn inventory_witnessed(
     Ok(output)
 }
 
-/// The one continuity rule: a file source first, then witnesses. Anything short of a continuous
-/// witness of every capsule with no declared gap is degraded or not observable.
-fn classify_continuity(row: &StreamInventory) -> StreamContinuity {
-    if row.clock_bases.len() == 1 && row.clock_bases.contains(ClockBasis::Estimated.as_str()) {
-        StreamContinuity::NotObservableFileSource
+/// The one continuity rule: clock bases first, then witnesses. Any estimated capsule forbids
+/// `Verified`: all estimated is a file source and a mix is degraded. Anything short of a
+/// continuous witness of every source-clocked capsule with no declared gap is degraded or not
+/// observable.
+fn classify_continuity(row: &StreamInventory) -> (StreamContinuity, ContinuityReason) {
+    let estimated = row.clock_bases.contains(ClockBasis::Estimated.as_str());
+    if estimated && row.clock_bases.len() == 1 {
+        (
+            StreamContinuity::NotObservableFileSource,
+            ContinuityReason::FileSourceEstimatedClock,
+        )
+    } else if estimated {
+        (
+            StreamContinuity::Degraded,
+            ContinuityReason::MixedEstimatedClock,
+        )
     } else if row.witnessed_continuous == 0 && row.witnessed_degraded == 0 {
-        StreamContinuity::NotObservable
-    } else if row.witnessed_continuous == row.capsules
-        && row.witnessed_degraded == 0
-        && row.recorded_gaps == 0
-    {
-        StreamContinuity::Verified
+        (
+            StreamContinuity::NotObservable,
+            ContinuityReason::NoContinuityWitness,
+        )
+    } else if row.recorded_gaps > 0 {
+        (StreamContinuity::Degraded, ContinuityReason::RecordedGap)
+    } else if row.witnessed_degraded > 0 {
+        (
+            StreamContinuity::Degraded,
+            ContinuityReason::WitnessNotContinuous,
+        )
+    } else if row.witnessed_continuous == row.capsules {
+        (
+            StreamContinuity::Verified,
+            ContinuityReason::ContinuouslyWitnessed,
+        )
     } else {
-        StreamContinuity::Degraded
+        (
+            StreamContinuity::Degraded,
+            ContinuityReason::PartiallyWitnessed,
+        )
     }
 }
 
@@ -627,6 +862,7 @@ fn add_capsule(
         witnessed_continuous: 0,
         witnessed_degraded: 0,
         continuity: StreamContinuity::NotObservable,
+        continuity_reason: ContinuityReason::NoContinuityWitness,
     });
     row.capsules += 1;
     row.capture_earliest = row.capture_earliest.min(capsule.capture.earliest);
@@ -1137,5 +1373,168 @@ mod tests {
         assert_eq!(file_row.capture_earliest, TimestampNs(0));
         assert_eq!(file_row.capture_latest, TimestampNs(10));
         Ok(())
+    }
+
+    /// Review probe b2b6003, kept as a regression: one estimated capsule in a stream whose every
+    /// capsule is continuously witnessed must never let the stream report `verified`.
+    #[test]
+    fn mixed_clock_stream_is_never_verified_whatever_its_witnesses() -> TestResult {
+        // (stream, clock bases by sequence, witness every capsule continuously)
+        let cases: [(&str, &[ClockBasis], bool); 4] = [
+            (
+                "stream:mix-a",
+                &[ClockBasis::Estimated, ClockBasis::DeviceMonotonic],
+                true,
+            ),
+            (
+                "stream:mix-b",
+                &[
+                    ClockBasis::DeviceMonotonic,
+                    ClockBasis::DeviceMonotonic,
+                    ClockBasis::Estimated,
+                ],
+                true,
+            ),
+            (
+                "stream:mix-c",
+                &[ClockBasis::Estimated, ClockBasis::DeviceMonotonic],
+                false,
+            ),
+            (
+                "stream:dev",
+                &[ClockBasis::DeviceMonotonic, ClockBasis::DeviceMonotonic],
+                true,
+            ),
+        ];
+        let mut objects = BTreeMap::new();
+        let mut deltas = Vec::new();
+        let mut witnessed = BTreeMap::new();
+        for (stream, bases, witness) in cases {
+            for (i, basis) in bases.iter().enumerate() {
+                let mut c = capsule(&format!("capsule:{stream}:{i}"), "sensor:mix", stream)?;
+                c.clock_basis = *basis;
+                c.sequence = u64::try_from(i)? + 1;
+                let bytes = encoded(&c)?;
+                let digest = ContentDigest::sha256(&bytes);
+                objects.insert(digest, bytes.clone());
+                deltas.push(delta(
+                    &format!("object:{}", c.capsule_id.as_str()),
+                    FAMILY_SENSOR_CAPSULE,
+                    1,
+                    &bytes,
+                )?);
+                if witness {
+                    witnessed.insert(digest, CoverageContinuity::Continuous);
+                }
+            }
+        }
+        let mut ledger = ReferenceLedger::new("site:status");
+        append(&mut ledger, deltas)?;
+        let output = inventory_witnessed(
+            ledger.batches(),
+            &StatusLimits::default(),
+            &witnessed,
+            &mut |_| false,
+            &mut |digest, _| objects.get(&digest).cloned().ok_or(StatusError::Unreadable),
+            &mut || Ok(()),
+        )?;
+        let rows: BTreeMap<&str, &StreamInventory> = output
+            .streams
+            .iter()
+            .map(|row| (row.stream_id.as_str(), row))
+            .collect();
+        for stream in ["stream:mix-a", "stream:mix-b", "stream:mix-c"] {
+            let row = rows[stream];
+            assert!(row.clock_bases.contains("estimated"), "{stream}");
+            assert!(row.clock_bases.len() > 1, "{stream}");
+            assert_ne!(
+                row.continuity,
+                StreamContinuity::Verified,
+                "{stream}: an estimated capsule never verifies continuity"
+            );
+            assert_eq!(row.continuity, StreamContinuity::Degraded, "{stream}");
+            assert_eq!(
+                row.continuity_reason,
+                ContinuityReason::MixedEstimatedClock,
+                "{stream}"
+            );
+        }
+        assert_eq!(rows["stream:mix-a"].witnessed_continuous, 2);
+        // The control: the same witnesses over source-clocked capsules only do verify.
+        assert_eq!(rows["stream:dev"].continuity, StreamContinuity::Verified);
+        assert_eq!(
+            rows["stream:dev"].continuity_reason,
+            ContinuityReason::ContinuouslyWitnessed
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn every_classification_has_exactly_its_named_reason() {
+        let row = |bases: &[&str], capsules, gaps, continuous, degraded| StreamInventory {
+            sensor_id: "sensor:r".to_owned(),
+            stream_id: "stream:r".to_owned(),
+            capsules,
+            recorded_gaps: gaps,
+            declared_source_bytes: 0,
+            clock_bases: bases.iter().map(|b| (*b).to_owned()).collect(),
+            capture_earliest: TimestampNs(0),
+            capture_latest: TimestampNs(0),
+            witnessed_continuous: continuous,
+            witnessed_degraded: degraded,
+            continuity: StreamContinuity::NotObservable,
+            continuity_reason: ContinuityReason::NoContinuityWitness,
+        };
+        let dev = "device_monotonic";
+        for (input, expected) in [
+            (
+                row(&["estimated"], 2, 0, 2, 0),
+                (
+                    StreamContinuity::NotObservableFileSource,
+                    ContinuityReason::FileSourceEstimatedClock,
+                ),
+            ),
+            (
+                row(&["estimated", dev], 2, 0, 2, 0),
+                (
+                    StreamContinuity::Degraded,
+                    ContinuityReason::MixedEstimatedClock,
+                ),
+            ),
+            (
+                row(&[dev], 2, 0, 0, 0),
+                (
+                    StreamContinuity::NotObservable,
+                    ContinuityReason::NoContinuityWitness,
+                ),
+            ),
+            (
+                row(&[dev], 2, 1, 2, 0),
+                (StreamContinuity::Degraded, ContinuityReason::RecordedGap),
+            ),
+            (
+                row(&[dev], 2, 0, 1, 1),
+                (
+                    StreamContinuity::Degraded,
+                    ContinuityReason::WitnessNotContinuous,
+                ),
+            ),
+            (
+                row(&[dev], 2, 0, 1, 0),
+                (
+                    StreamContinuity::Degraded,
+                    ContinuityReason::PartiallyWitnessed,
+                ),
+            ),
+            (
+                row(&[dev], 2, 0, 2, 0),
+                (
+                    StreamContinuity::Verified,
+                    ContinuityReason::ContinuouslyWitnessed,
+                ),
+            ),
+        ] {
+            assert_eq!(classify_continuity(&input), expected, "{input:?}");
+        }
     }
 }

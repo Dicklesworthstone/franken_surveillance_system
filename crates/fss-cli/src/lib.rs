@@ -99,6 +99,7 @@ pub use session_cmd::{
 };
 pub use status_cmd::{
     ERR_STATUS_CANCELLED, ERR_STATUS_CHANGED, ERR_STATUS_CORRUPT, ERR_STATUS_OVER_BUDGET,
-    ERR_STATUS_UNREADABLE, STATUS_SCHEMA, StatusArgs, execute_status, parse_status_args,
+    ERR_STATUS_UNREADABLE, MAX_STATUS_OUTPUT_BYTES, STATUS_SCHEMA, StatusArgs, execute_status,
+    execute_status_with, parse_status_args,
 };
 pub use token::{ArgToken, MAX_ARG_TOKEN_BYTES, is_option_shaped, tokenize_os_args};

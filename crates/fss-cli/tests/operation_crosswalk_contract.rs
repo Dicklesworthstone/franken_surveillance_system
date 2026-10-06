@@ -953,3 +953,106 @@ fn test_planted_negative_extra_resource_fails() -> TestResult {
     }
     Ok(())
 }
+
+/// Cells of the markdown table that follows `heading`, one row per data line (inline code marks
+/// removed, comma-separated lists split; header and delimiter rows dropped).
+fn markdown_rows_after(markdown: &str, heading: &str) -> Result<Vec<Vec<Vec<String>>>, String> {
+    let start = markdown
+        .find(heading)
+        .ok_or_else(|| format!("missing heading {heading}"))?;
+    let mut rows = Vec::new();
+    let mut in_table = false;
+    for line in markdown[start..].lines().skip(1) {
+        let line = line.trim();
+        if line.starts_with("## ") {
+            break;
+        }
+        if !line.starts_with('|') {
+            if in_table {
+                break;
+            }
+            continue;
+        }
+        in_table = true;
+        let cells: Vec<Vec<String>> = line
+            .trim_matches('|')
+            .split('|')
+            .map(|cell| {
+                cell.split(',')
+                    .map(|item| item.trim().trim_matches('`').to_owned())
+                    .filter(|item| !item.is_empty())
+                    .collect()
+            })
+            .collect();
+        rows.push(cells);
+    }
+    Ok(rows.into_iter().skip(2).collect())
+}
+
+/// `fss status` is a registered CLI surface outside the operation bijection: its markdown row,
+/// compiled entry, schema row, error and exit registrations, and the identities the command can
+/// actually return all agree, and it never collides with an operation's CLI command.
+#[test]
+fn test_status_cli_surface_row_matches_code_and_registries() -> TestResult {
+    use fss_cli::crosswalk::{REGISTERED_EXIT_IDENTITIES, REGISTERED_NON_OPERATION_CLI_SURFACES};
+    use fss_cli::status_cmd::refusal_identity;
+    use fss_reference::deployment_status::StatusError;
+
+    let markdown = include_str!("../../../registries/OPERATION_CROSSWALK.md");
+    let schemas = include_str!("../../../registries/SCHEMAS.md");
+    let errors = include_str!("../../../registries/ERRORS.md");
+    let rows = markdown_rows_after(markdown, "## CLI surfaces outside the operation bijection")?;
+    assert_eq!(rows.len(), REGISTERED_NON_OPERATION_CLI_SURFACES.len());
+    for (row, entry) in rows.iter().zip(REGISTERED_NON_OPERATION_CLI_SURFACES) {
+        assert_eq!(row.len(), 5, "{row:?}");
+        assert_eq!(row[0], [entry.cli_command]);
+        assert_eq!(row[1], [entry.output_schema]);
+        assert_eq!(row[2], [entry.schema_id]);
+        assert_eq!(row[3], entry.error_identities);
+        assert_eq!(row[4], entry.exit_identities);
+        assert!(
+            lookup_by_cli_command(entry.cli_command).is_none(),
+            "{} is not an operation CLI command",
+            entry.cli_command
+        );
+        assert!(schemas.contains(&format!(
+            "| `{}` | `{}` |",
+            entry.schema_id, entry.output_schema
+        )));
+        for id in entry.error_identities {
+            assert!(errors.contains(&format!("| `{id}` |")), "{id} registered");
+        }
+        for id in entry.exit_identities {
+            assert!(REGISTERED_EXIT_IDENTITIES.contains(id), "{id}");
+            assert!(errors.contains(&format!("| `{id}` |")), "{id} registered");
+        }
+    }
+    let status = REGISTERED_NON_OPERATION_CLI_SURFACES
+        .iter()
+        .find(|entry| entry.cli_command == "fss status")
+        .ok_or("fss status row")?;
+    // Exactly the identities `fss status` returns: success plus one per refusal class.
+    let mut errors_returned = HashSet::new();
+    let mut exits_returned = HashSet::from([ExitIdentity::SUCCESS.identifier]);
+    for error in [
+        StatusError::NotADeployment,
+        StatusError::Unreadable,
+        StatusError::Corrupt,
+        StatusError::OverBudget,
+        StatusError::Changed,
+        StatusError::Cancelled,
+    ] {
+        let (error_id, exit) = refusal_identity(error);
+        errors_returned.insert(error_id);
+        exits_returned.insert(exit.identifier);
+    }
+    assert_eq!(
+        errors_returned,
+        status.error_identities.iter().copied().collect()
+    );
+    assert_eq!(
+        exits_returned,
+        status.exit_identities.iter().copied().collect()
+    );
+    Ok(())
+}

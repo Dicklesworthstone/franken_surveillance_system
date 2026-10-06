@@ -493,6 +493,47 @@ pub static REGISTERED_RESOURCE_CROSSWALK: &[ResourceCrosswalkEntry] = &[
     },
 ];
 
+/// A registered CLI surface that is not an `fss/1` agent operation. It prints its own registered
+/// schema, never an `AgentResponseEnvelope`, so it has no operation ID, library entry point or MCP
+/// tool and stays outside the operation bijection; its schema, error and exit identities are still
+/// registered and crosswalked (`registries/OPERATION_CROSSWALK.md`, "CLI surfaces outside the
+/// operation bijection").
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct CliSurfaceCrosswalkEntry {
+    /// CLI command (e.g. `fss status`).
+    pub cli_command: &'static str,
+    /// Output schema identity (e.g. `fss.status.v1`).
+    pub output_schema: &'static str,
+    /// Schema registry row in `registries/SCHEMAS.md` (e.g. `SCHEMA-STATUS-001`).
+    pub schema_id: &'static str,
+    /// Execution error identities the surface can print (argument-grammar identities are the
+    /// shared `ERR-CLI-*` set and are not repeated).
+    pub error_identities: &'static [&'static str],
+    /// Execution exit identities the surface can return.
+    pub exit_identities: &'static [&'static str],
+}
+
+/// Every registered CLI surface outside the operation bijection.
+pub static REGISTERED_NON_OPERATION_CLI_SURFACES: &[CliSurfaceCrosswalkEntry] =
+    &[CliSurfaceCrosswalkEntry {
+        cli_command: "fss status",
+        output_schema: "fss.status.v1",
+        schema_id: "SCHEMA-STATUS-001",
+        error_identities: &[
+            "ERR-DOCTOR-NOT-A-DEPLOYMENT-001",
+            "ERR-STATUS-UNREADABLE-001",
+            "ERR-STATUS-CORRUPT-001",
+            "ERR-STATUS-OVER-BUDGET-001",
+            "ERR-STATUS-CHANGED-001",
+            "ERR-STATUS-CANCELLED-001",
+        ],
+        exit_identities: &[
+            "EXIT-OK-000",
+            "EXIT-DOCTOR-NOT-A-DEPLOYMENT-004",
+            "EXIT-STATUS-REFUSED-007",
+        ],
+    }];
+
 /// Looks up a resource crosswalk entry by its stable resource ID.
 #[must_use]
 pub fn lookup_resource_by_id(id: &str) -> Option<&'static ResourceCrosswalkEntry> {
