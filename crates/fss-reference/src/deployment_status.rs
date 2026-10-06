@@ -223,7 +223,7 @@ impl StatusReadIo for HostStatusReadIo {
         digest: ContentDigest,
         max_bytes: usize,
     ) -> Result<Vec<u8>, StatusError> {
-        fss_publication::read_verified(&root.join(&layout.objects_relpath), digest, max_bytes)
+        fss_publication::read_verified(root.join(&layout.objects_relpath), digest, max_bytes)
             .map_err(|_| StatusError::Corrupt)
     }
 }
