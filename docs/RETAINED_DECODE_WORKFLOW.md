@@ -152,7 +152,9 @@ ycbcr [--output FILE.pgm]` exposes the same path and writes one binary PGM luma 
 
 ## Retained MP4 (H.264 and H.265) import
 
-**Import.** `FileIngestAdapter` retains an ISO-BMFF/MP4 file, indexed (`moov` sample tables) or
+**Import.** `FileIngestAdapter` retains an ISO-BMFF/MP4 or QuickTime (`.mov`, `qt  ` brand:
+`mhlr` handlers and self-contained `url `/`alis` data references read through the same boxes)
+file, indexed (`moov` sample tables) or
 fragmented (`mvex` plus `moof`/`traf`/`trun`, as written by FFmpeg `frag_keyframe`, CMAF
 packagers, Home Assistant/go2rtc recorders and FSS's own fragment muxer), with one video track
 as media format `mp4avc` (H.264 `avc1`) or `mp4hevc` (H.265 `hvc1`/`hev1`, base

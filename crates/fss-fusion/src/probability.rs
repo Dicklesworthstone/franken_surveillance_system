@@ -55,8 +55,7 @@ pub fn probability_ppm(lo: i64, hi: i64) -> (u32, u32) {
         PPM
     } else {
         // Quotient and remainder avoid negating i64::MIN at the public numeric boundary.
-        let deciban =
-            (hi.div_euclid(100) + i64::from(hi.rem_euclid(100) != 0)).max(MIN_DECIBANS);
+        let deciban = (hi.div_euclid(100) + i64::from(hi.rem_euclid(100) != 0)).max(MIN_DECIBANS);
         CEIL_PPM[(deciban - MIN_DECIBANS) as usize]
     };
     (lower, upper)

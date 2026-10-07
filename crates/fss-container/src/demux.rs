@@ -207,7 +207,8 @@ impl<'a> AvcMp4<'a> {
         if brands.len() < 8 || !(brands.len() - 8).is_multiple_of(4) {
             return Err(DemuxError::Layout);
         }
-        // These ordinary ISO BMFF brands do not add an unsupported container interpretation.
+        // These ordinary ISO BMFF brands, and QuickTime (`qt  `, read through the same boxes:
+        // `mhlr` handlers, self-contained `alis` references), add no unsupported interpretation.
         let supported = |b: &[u8]| {
             matches!(
                 b,
@@ -220,6 +221,7 @@ impl<'a> AvcMp4<'a> {
                     | b"mp41"
                     | b"mp42"
                     | b"avc1"
+                    | b"qt  "
             )
         };
         if !supported(&brands[..4]) && !brands[8..].as_chunks::<4>().0.iter().any(|b| supported(b))

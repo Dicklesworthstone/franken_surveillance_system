@@ -508,27 +508,43 @@ fn recorded_health_composes_with_full_camera_guard_and_roundtrips_version_seven(
         )?;
     }
     let summary = screen.finish(&[9])?;
-    let frames = summary.observations().iter().map(|frame| CoverageFrame {
-        segment: frame.segment as usize,
-        capture: frame.capture,
-    }).collect::<Vec<_>>();
-    let zones = nominal.zones.iter().map(|zone| CoverageZoneInput {
-        zone_id: zone.zone_id.clone(),
-        geometry: zone.geometry.clone(),
-        inside_frame: true,
-        pipeline_generation: zone.pipeline_generation,
-        entries: zone.uncovered.iter().filter_map(|interval| {
-            if let UncoveredReason::ZoneEntry { candidate, event_id } = &interval.reason {
-                Some(CoverageEntry {
-                    segment: interval.first_segment as usize,
-                    candidate: *candidate,
-                    event_id: event_id.clone(),
+    let frames = summary
+        .observations()
+        .iter()
+        .map(|frame| CoverageFrame {
+            segment: frame.segment as usize,
+            capture: frame.capture,
+        })
+        .collect::<Vec<_>>();
+    let zones = nominal
+        .zones
+        .iter()
+        .map(|zone| CoverageZoneInput {
+            zone_id: zone.zone_id.clone(),
+            geometry: zone.geometry.clone(),
+            inside_frame: true,
+            pipeline_generation: zone.pipeline_generation,
+            entries: zone
+                .uncovered
+                .iter()
+                .filter_map(|interval| {
+                    if let UncoveredReason::ZoneEntry {
+                        candidate,
+                        event_id,
+                    } = &interval.reason
+                    {
+                        Some(CoverageEntry {
+                            segment: interval.first_segment as usize,
+                            candidate: *candidate,
+                            event_id: event_id.clone(),
+                        })
+                    } else {
+                        None
+                    }
                 })
-            } else {
-                None
-            }
-        }).collect(),
-    }).collect();
+                .collect(),
+        })
+        .collect();
     let health_record = build_coverage_with(
         &CoverageInput {
             source: nominal.source,
@@ -546,7 +562,11 @@ fn recorded_health_composes_with_full_camera_guard_and_roundtrips_version_seven(
             zones,
         },
         &CoverageExtras {
-            visibility: nominal.zones.iter().map(|zone| zone.visibility.clone()).collect(),
+            visibility: nominal
+                .zones
+                .iter()
+                .map(|zone| zone.visibility.clone())
+                .collect(),
             refusals: vec![crate::ingest::tolerant_decode::DecodeRefusal {
                 first_segment: 8,
                 last_segment: 8,
@@ -555,7 +575,11 @@ fn recorded_health_composes_with_full_camera_guard_and_roundtrips_version_seven(
             restarts: vec![9],
             pose_provenance: nominal.pose_provenance,
             pose_uncertainty: nominal.pose_uncertainty,
-            pose_robustness: nominal.zones.iter().map(|zone| zone.pose_robustness).collect(),
+            pose_robustness: nominal
+                .zones
+                .iter()
+                .map(|zone| zone.pose_robustness)
+                .collect(),
             sensor_health: Some(summary),
         },
     )?;
@@ -570,7 +594,10 @@ fn recorded_health_composes_with_full_camera_guard_and_roundtrips_version_seven(
     let mut decoder = CanonicalDecoder::new(&bytes);
     assert_eq!(decoder.bytes()?, b"FSSCOV01");
     assert_eq!(decoder.u32()?, 7);
-    assert_eq!(CoverageRecord::from_bytes(&bytes, guarded.digest())?, guarded);
+    assert_eq!(
+        CoverageRecord::from_bytes(&bytes, guarded.digest())?,
+        guarded
+    );
     let mut stripped = guarded.clone();
     stripped.sensor_health = None;
     assert!(stripped.validate().is_err());

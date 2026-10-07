@@ -1294,7 +1294,12 @@ impl WatchReport {
         for pending in candidates {
             checkpoint(cx, "recorded_watch:prepare")?;
             let proof = provenance(
-                &pending, &analysis, import_root, sensor.as_str(), &privacy, sensor_health.as_ref(),
+                &pending,
+                &analysis,
+                import_root,
+                sensor.as_str(),
+                &privacy,
+                sensor_health.as_ref(),
             )?;
             let PendingCandidate {
                 zone_id,
@@ -1671,10 +1676,12 @@ impl WatchReport {
                 c.policy_json,
                 cascade_outcome_json(&c.outcome)
             )),
-            self.sensor_health.as_ref().map_or_else(String::new, |summary| format!(
-                ",\"sensor_health\":{}",
-                summary.to_json()
-            )),
+            self.sensor_health
+                .as_ref()
+                .map_or_else(String::new, |summary| format!(
+                    ",\"sensor_health\":{}",
+                    summary.to_json()
+                )),
             coverage_json.map_or_else(String::new, |json| format!(",\"coverage\":{json}")),
         )
     }

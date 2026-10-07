@@ -414,6 +414,8 @@ const MP4_INTERLEAVED: &[u8] =
 /// The same video and audio as fragmented MP4 (`moof`/`trun`, `iso5`), two fragments.
 const MP4_FRAGMENTED: &[u8] =
     include_bytes!("../../../../../fss-container/tests/fixtures/fragmented_av.mp4");
+/// The same video and audio as a QuickTime movie (`qt  ` brand, `mhlr` handlers).
+const MOV: &[u8] = include_bytes!("../../../../../fss-container/tests/fixtures/qt_av.mov");
 /// FFmpeg `yuv420p` framehash of the MP4 fixtures' video track, in presentation order.
 const MP4_ORACLE: &str =
     include_str!("../../../../../fss-container/tests/fixtures/indexed_avc_i420.sha256");
@@ -462,6 +464,7 @@ fn retained_mp4_samples_decode_bit_exact_against_the_ffmpeg_oracle() -> TestResu
         ("mp4-faststart", MP4_FASTSTART),
         ("mp4-interleaved", MP4_INTERLEAVED),
         ("mp4-fragmented", MP4_FRAGMENTED),
+        ("mp4-quicktime", MOV),
     ] {
         // Sniffed without a hint: the ftyp box selects the MP4 path.
         let imported = import_as(name, bytes, None)?;

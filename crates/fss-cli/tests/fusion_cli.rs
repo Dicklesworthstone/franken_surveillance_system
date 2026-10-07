@@ -150,9 +150,7 @@ fn bind_scores(query_text: &str, calibration: &Path) -> TestResult<String> {
 
 fn fuse(dir: &Path, query_text: &str, calibration: Option<&Path>) -> TestResult<Output> {
     match calibration {
-        Some(calibration) => {
-            fuse_many(dir, &bind_scores(query_text, calibration)?, &[calibration])
-        }
+        Some(calibration) => fuse_many(dir, &bind_scores(query_text, calibration)?, &[calibration]),
         None => fuse_many(dir, query_text, &[]),
     }
 }
@@ -190,10 +188,7 @@ fn independently_bound_query(a: &Path, b: &Path, coverage: &str) -> TestResult<S
     let a = calibration_binding(a)?;
     let b = calibration_binding(b)?;
     Ok(query(980_000, 970_000, coverage)
-        .replace(
-            "\"prior\": \"calibration\"",
-            &format!("\"prior\": {{{a}}}"),
-        )
+        .replace("\"prior\": \"calibration\"", &format!("\"prior\": {{{a}}}"))
         .replace(
             "{\"score_ppm\": 980000}",
             &format!("{{\"score_ppm\": 980000, {a}}}"),
@@ -272,7 +267,10 @@ fn one_score_calibration_cannot_independently_corroborate_itself() -> TestResult
         Some(&calibration),
     )?;
     let gapped = output_text(gapped)?;
-    assert!(!gapped.contains("\"decision\":{\"kind\":\"alert"), "{gapped}");
+    assert!(
+        !gapped.contains("\"decision\":{\"kind\":\"alert"),
+        "{gapped}"
+    );
     fs::remove_dir_all(&dir)?;
     Ok(())
 }
@@ -421,18 +419,23 @@ fn distinct_calibrations_are_selected_by_identity_not_argument_order() -> TestRe
     let document = independently_bound_query(&a, &b, r#"{"state": "complete"}"#)?;
     let first = output_text(fuse_many(&dir, &document, &[&a, &b])?)?;
     let reversed = output_text(fuse_many(&dir, &document, &[&b, &a])?)?;
-    assert_eq!(first, reversed, "argument order must not select a calibration");
-    assert!(first.contains("\"decision\":{\"kind\":\"alert\"}"), "{first}");
+    assert_eq!(
+        first, reversed,
+        "argument order must not select a calibration"
+    );
+    assert!(
+        first.contains("\"decision\":{\"kind\":\"alert\"}"),
+        "{first}"
+    );
     assert!(first.contains("\"supporting_clusters\":2"), "{first}");
-    assert!(first.contains("\"score_calibration_digest\":null"), "{first}");
+    assert!(
+        first.contains("\"score_calibration_digest\":null"),
+        "{first}"
+    );
     assert!(first.contains("\"score_calibrations\":["), "{first}");
     assert!(first.contains("\"prior_calibration\":{\"generation\":\"detector-a:cam-a:day:v1\""));
 
-    let gapped = independently_bound_query(
-        &a,
-        &b,
-        r#"{"state": "gap", "reason": "cam-c dark"}"#,
-    )?;
+    let gapped = independently_bound_query(&a, &b, r#"{"state": "gap", "reason": "cam-c dark"}"#)?;
     let gapped = output_text(fuse_many(&dir, &gapped, &[&a, &b])?)?;
     assert!(
         gapped.contains("\"decision\":{\"kind\":\"alert_degraded_coverage\"}"),
@@ -555,9 +558,11 @@ fn exact_prior_identity_and_raw_scores_remain_digest_bound() -> TestResult {
         json_text_field(&first, "input_binding_digest")?,
         json_text_field(&other, "input_binding_digest")?,
     );
-    assert!(other.contains(
-        "\"prior_calibration\":{\"generation\":\"independent-detector-b:cam-b:day:v1\""
-    ));
+    assert!(
+        other.contains(
+            "\"prior_calibration\":{\"generation\":\"independent-detector-b:cam-b:day:v1\""
+        )
+    );
 
     // These two raw values land in the same bin and must still be distinguishable in provenance.
     let within_bin = document.replace("\"score_ppm\": 980000", "\"score_ppm\": 980001");
@@ -591,9 +596,15 @@ fn explicit_llrs_remain_readable_and_conflicting_stdin_is_refused() -> TestResul
             "{\"generation\": \"asserted-b:v1\", \"llr\": [1200, 1600]}",
         );
     let outcome = output_text(fuse_many(&dir, &document, &[])?)?;
-    assert!(outcome.contains("\"decision\":{\"kind\":\"alert\"}"), "{outcome}");
+    assert!(
+        outcome.contains("\"decision\":{\"kind\":\"alert\"}"),
+        "{outcome}"
+    );
     assert!(outcome.contains("\"prior_calibration\":null"), "{outcome}");
-    assert!(outcome.contains("\"score_calibration_bindings\":[]"), "{outcome}");
+    assert!(
+        outcome.contains("\"score_calibration_bindings\":[]"),
+        "{outcome}"
+    );
     let conflict = Command::new(env!("CARGO_BIN_EXE_fss-fuse"))
         .args(["--query", "-", "--calibration", "-"])
         .output()?;

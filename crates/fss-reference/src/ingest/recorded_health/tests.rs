@@ -25,7 +25,8 @@ fn context() -> TestResult<ReplayCx> {
         generation: 1,
     })?;
     Ok(ReplayCx::from_context_authority(
-        &authority, std::env::temp_dir().join("fss-recorded-health-context"),
+        &authority,
+        std::env::temp_dir().join("fss-recorded-health-context"),
     )?)
 }
 
@@ -77,10 +78,17 @@ fn recorded_health_withdraws_complete_clipping_and_repetition_prefixes() -> Test
     }
     assert!(constant(80, 7)?.affected_segments().is_empty());
     let summary = constant(80, 8)?;
-    assert_eq!(summary.affected_segments(), &(0..8).collect::<BTreeSet<_>>());
+    assert_eq!(
+        summary.affected_segments(),
+        &(0..8).collect::<BTreeSet<_>>()
+    );
     assert_eq!(summary.samples_used(), 128);
     assert!(summary.to_json().contains("\"health_certified\":false"));
-    assert!(summary.to_json().contains("\"status\":\"suspected_degradation\""));
+    assert!(
+        summary
+            .to_json()
+            .contains("\"status\":\"suspected_degradation\"")
+    );
     Ok(())
 }
 
@@ -118,7 +126,11 @@ fn recorded_health_gaps_reset_streaks_without_replenishing_work() -> TestResult 
     assert_eq!(last.predecessor_digest, None);
     assert_eq!(last.repeated_frames, 1);
     assert_eq!(summary.samples_used(), 128);
-    assert!(summary.to_json().contains("\"status\":\"clear_screen_not_health_evidence\""));
+    assert!(
+        summary
+            .to_json()
+            .contains("\"status\":\"clear_screen_not_health_evidence\"")
+    );
     Ok(())
 }
 
@@ -139,7 +151,11 @@ fn recorded_health_receipts_reject_changed_findings_runs_work_and_predecessors()
     altered = summary.clone();
     altered.samples_used += 1;
     assert!(RecordedHealthSummary::from_bytes(&altered.to_bytes()).is_err());
-    for truncated in [&bytes[..0], &bytes[..bytes.len() / 2], &bytes[..bytes.len() - 1]] {
+    for truncated in [
+        &bytes[..0],
+        &bytes[..bytes.len() / 2],
+        &bytes[..bytes.len() - 1],
+    ] {
         assert!(RecordedHealthSummary::from_bytes(truncated).is_err());
     }
     assert!(RecordedHealthSummary::from_bytes(&vec![0; MAX_RECORDED_HEALTH_BYTES + 1]).is_err());
@@ -149,7 +165,10 @@ fn recorded_health_receipts_reject_changed_findings_runs_work_and_predecessors()
 #[test]
 fn recorded_health_bounds_and_cancellation_are_typed_without_partial_receipts() -> TestResult {
     assert!(matches!(new_screen(0), Err(HealthError::Limit)));
-    assert!(matches!(new_screen(MAX_HEALTH_FRAMES + 1), Err(HealthError::Limit)));
+    assert!(matches!(
+        new_screen(MAX_HEALTH_FRAMES + 1),
+        Err(HealthError::Limit)
+    ));
     let cx = context()?;
     let mut screen = new_screen(2)?;
     let _ = screen.observe(frame(0, &[80; 16], false)?, &cx)?;
@@ -182,7 +201,8 @@ fn recorded_health_policy_is_opt_in_and_generation_bound() -> TestResult {
     let plan = ContentDigest::sha256(b"plan");
     assert_eq!(screened_plan_digest(plan, None), plan);
     assert_ne!(
-        screened_plan_digest(plan, Some(RecordedHealthPolicy::ConservativeV1)), plan,
+        screened_plan_digest(plan, Some(RecordedHealthPolicy::ConservativeV1)),
+        plan,
     );
     let summary = constant(80, 1)?;
     assert_eq!(summary.policy_digest(), policy_digest());
@@ -200,16 +220,32 @@ fn recorded_health_display_order_preserves_source_positions_and_runs() -> TestRe
     }
     let mut summary = screen.finish(&[])?;
     assert_eq!(
-        summary.observations().iter().map(|frame| frame.segment).collect::<Vec<_>>(),
+        summary
+            .observations()
+            .iter()
+            .map(|frame| frame.segment)
+            .collect::<Vec<_>>(),
         order,
     );
-    assert_eq!(summary.affected_segments(), &(0..8).collect::<BTreeSet<_>>());
-    assert!(summary.observations().iter().skip(1).all(|frame| !frame.baseline_reset));
+    assert_eq!(
+        summary.affected_segments(),
+        &(0..8).collect::<BTreeSet<_>>()
+    );
+    assert!(
+        summary
+            .observations()
+            .iter()
+            .skip(1)
+            .all(|frame| !frame.baseline_reset)
+    );
     // Segment 2 precedes segment 1 in actual display order; span membership follows that order.
     summary.withdraw_track_span(2, 1)?;
     assert_eq!(summary.withdrawn_track_segments(), &BTreeSet::from([1, 2]));
     summary.validate()?;
-    assert_eq!(RecordedHealthSummary::from_bytes(&summary.to_bytes())?, summary);
+    assert_eq!(
+        RecordedHealthSummary::from_bytes(&summary.to_bytes())?,
+        summary
+    );
     Ok(())
 }
 
@@ -241,10 +277,14 @@ fn recorded_health_reordered_coverage_is_uncertain_without_absence_witnesses() -
     }
     let summary = screen.finish(&[])?;
     assert!(summary.affected_segments().is_empty());
-    let frames = summary.observations().iter().map(|frame| CoverageFrame {
-        segment: frame.segment as usize,
-        capture: frame.capture,
-    }).collect::<Vec<_>>();
+    let frames = summary
+        .observations()
+        .iter()
+        .map(|frame| CoverageFrame {
+            segment: frame.segment as usize,
+            capture: frame.capture,
+        })
+        .collect::<Vec<_>>();
     let record = build_coverage_with(
         &CoverageInput {
             source: CoverageSource::Watch,
@@ -274,10 +314,16 @@ fn recorded_health_reordered_coverage_is_uncertain_without_absence_witnesses() -
     )?;
     assert!(record.witnesses().next().is_none());
     assert_eq!(record.zones[0].uncovered.len(), 1);
-    assert_eq!(record.zones[0].uncovered[0].reason, UncoveredReason::CaptureOrderUncertain);
+    assert_eq!(
+        record.zones[0].uncovered[0].reason,
+        UncoveredReason::CaptureOrderUncertain
+    );
     assert_eq!(record.zones[0].uncovered[0].first_segment, 0);
     assert_eq!(record.zones[0].uncovered[0].last_segment, 13);
-    assert_eq!(CoverageRecord::from_bytes(&record.to_bytes(), record.digest())?, record);
+    assert_eq!(
+        CoverageRecord::from_bytes(&record.to_bytes(), record.digest())?,
+        record
+    );
     Ok(())
 }
 

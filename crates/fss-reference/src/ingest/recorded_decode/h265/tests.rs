@@ -564,6 +564,21 @@ const MP4_ORACLE: &str =
 const MP4_FRAGMENTED: &[u8] =
     include_bytes!("../../../../../fss-container/tests/fixtures/hevc_fragmented_av.mp4");
 
+/// The same H.265 encode (video only) as a QuickTime movie.
+const MOV: &[u8] = include_bytes!("../../../../../fss-container/tests/fixtures/qt_hevc.mov");
+
+#[test]
+fn quicktime_hevc_movie_decodes_like_the_mp4() -> TestResult {
+    let imported = import("mov-hevc", MOV)?;
+    assert_eq!(imported.format, "mp4hevc");
+    let digests: Vec<String> = whole_range(&imported)?
+        .iter()
+        .map(|frame| frame.receipt().i420_sha256().to_text())
+        .collect();
+    assert_eq!(digests, oracle(MP4_ORACLE));
+    Ok(())
+}
+
 #[test]
 fn fragmented_hevc_mp4_decodes_like_the_indexed_file() -> TestResult {
     let expected = oracle(MP4_ORACLE);

@@ -162,10 +162,7 @@ impl Fixture {
 
     fn watch(&self, screened: bool) -> Vec<OsString> {
         let mut args = base("watch", &self.root);
-        args.extend([
-            "--import-id".into(),
-            self.imports[0].to_text().into(),
-        ]);
+        args.extend(["--import-id".into(), self.imports[0].to_text().into()]);
         screen_option(&mut args, screened);
         args
     }
@@ -288,7 +285,11 @@ fn check_witness_exclusions(record: &Value) -> Test {
         for witness in items(zone, "witnesses")? {
             let start = number(witness, "first_segment")?;
             let end = number(witness, "last_segment")?;
-            assert!(affected.iter().all(|segment| !(start..=end).contains(segment)));
+            assert!(
+                affected
+                    .iter()
+                    .all(|segment| !(start..=end).contains(segment))
+            );
         }
     }
     Ok(())
@@ -356,16 +357,28 @@ fn persistent_clipping_and_contrast_loss_cannot_supply_absence_witnesses() -> Te
         let (report_bytes, report) = good(&fixture.watch(true))?;
         assert!(report_bytes.contains(finding));
         assert!(report_bytes.contains("sensor_health_degraded"));
-        assert_eq!(text(field(&report, "sensor_health")?, "status")?, "suspected_degradation");
-        assert_eq!(field(&report, "absence_certifiable")?.boolean(), Some(false));
+        assert_eq!(
+            text(field(&report, "sensor_health")?, "status")?,
+            "suspected_degradation"
+        );
+        assert_eq!(
+            field(&report, "absence_certifiable")?.boolean(),
+            Some(false)
+        );
         check_witness_exclusions(&coverage_records(&report)?[0])?;
         assert_eq!(fixture.snapshot()?, before);
 
         let coverage = field(&report, "coverage")?;
         let mut retain = fixture.watch(true);
-        retain.extend(["--retain-coverage".into(), text(coverage, "approval_digest")?.into()]);
+        retain.extend([
+            "--retain-coverage".into(),
+            text(coverage, "approval_digest")?.into(),
+        ]);
         let (_, retained) = good(&retain)?;
-        assert_eq!(text(field(&retained, "coverage")?, "coverage_status")?, "retained");
+        assert_eq!(
+            text(field(&retained, "coverage")?, "coverage_status")?,
+            "retained"
+        );
         check_witness_exclusions(&coverage_records(&retained)?[0])?;
         assert_eq!(fixture.snapshot()?.1, before.1);
     }
@@ -378,8 +391,14 @@ fn clear_screen_approvals_bind_policy_through_publication_reanalysis_and_cold_re
     let before = fixture.snapshot()?;
     let (_, plain) = good(&fixture.watch(false))?;
     let (screened_bytes, screened) = good(&fixture.watch(true))?;
-    assert_eq!(text(field(&screened, "sensor_health")?, "status")?, "clear_screen_not_health_evidence");
-    assert_eq!(field(field(&screened, "sensor_health")?, "health_certified")?.boolean(), Some(false));
+    assert_eq!(
+        text(field(&screened, "sensor_health")?, "status")?,
+        "clear_screen_not_health_evidence"
+    );
+    assert_eq!(
+        field(field(&screened, "sensor_health")?, "health_certified")?.boolean(),
+        Some(false)
+    );
     assert_eq!(number(&screened, "candidate_count")?, 1);
     assert!(screened_bytes.contains("--sensor-health conservative-v1"));
     assert_ne!(proposal(&plain)?, proposal(&screened)?);
@@ -391,8 +410,10 @@ fn clear_screen_approvals_bind_policy_through_publication_reanalysis_and_cold_re
     // A wrong coverage approval must refuse before the otherwise valid event is published.
     let mut mixed = fixture.watch(true);
     mixed.extend([
-        "--approve".into(), proposal(&screened)?.into(),
-        "--retain-coverage".into(), text(field(&plain, "coverage")?, "approval_digest")?.into(),
+        "--approve".into(),
+        proposal(&screened)?.into(),
+        "--retain-coverage".into(),
+        text(field(&plain, "coverage")?, "approval_digest")?.into(),
     ]);
     refuses(&mixed, "ERR-COVERAGE-APPROVAL-STALE-001")?;
     assert_eq!(fixture.snapshot()?, before);
@@ -401,10 +422,20 @@ fn clear_screen_approvals_bind_policy_through_publication_reanalysis_and_cold_re
     approve.extend(["--approve".into(), proposal(&screened)?.into()]);
     let (_, published) = good(&approve)?;
     assert_eq!(number(&published, "published_count")?, 1);
-    assert_eq!(field(&published, "sensor_health")?, field(&screened, "sensor_health")?);
+    assert_eq!(
+        field(&published, "sensor_health")?,
+        field(&screened, "sensor_health")?
+    );
     let bound = field(&coverage_records(&published)?[0], "sensor_health")?;
     let summary = field(&screened, "sensor_health")?;
-    for key in ["policy", "digest", "status", "observations", "affected_segments", "withdrawn_track_segments"] {
+    for key in [
+        "policy",
+        "digest",
+        "status",
+        "observations",
+        "affected_segments",
+        "withdrawn_track_segments",
+    ] {
         assert_eq!(field(bound, key)?, field(summary, key)?);
     }
     ContentDigest::parse(text(bound, "coverage_receipt_digest")?)?;
@@ -415,7 +446,10 @@ fn clear_screen_approvals_bind_policy_through_publication_reanalysis_and_cold_re
     approve.extend(["--report-out".into(), report_path.as_os_str().to_owned()]);
     let (retry_bytes, retry) = good(&approve)?;
     assert_eq!(number(&retry, "already_published_count")?, 1);
-    assert_eq!(text(&retry, "analysis_digest")?, text(&screened, "analysis_digest")?);
+    assert_eq!(
+        text(&retry, "analysis_digest")?,
+        text(&screened, "analysis_digest")?
+    );
     assert_eq!(fs::read_to_string(report_path)?, retry_bytes);
     assert_eq!(fixture.snapshot()?, after);
     Ok(())
@@ -430,8 +464,14 @@ fn a_frozen_second_camera_cannot_corroborate_or_cover_its_suspect_interval() -> 
     let (_, screened) = good(&fixture.corroborate(true))?;
     assert_eq!(number(&screened, "candidate_count")?, 0);
     let cameras = items(&screened, "cameras")?;
-    assert_eq!(text(field(&cameras[0], "sensor_health")?, "status")?, "clear_screen_not_health_evidence");
-    assert_eq!(text(field(&cameras[1], "sensor_health")?, "status")?, "suspected_degradation");
+    assert_eq!(
+        text(field(&cameras[0], "sensor_health")?, "status")?,
+        "clear_screen_not_health_evidence"
+    );
+    assert_eq!(
+        text(field(&cameras[1], "sensor_health")?, "status")?,
+        "suspected_degradation"
+    );
     for record in coverage_records(&screened)? {
         check_witness_exclusions(record)?;
     }
@@ -454,15 +494,24 @@ fn two_clear_screens_keep_distinct_provenance_and_explicit_event_approval() -> T
     assert!(preview_bytes.contains("--sensor-health conservative-v1"));
     let cameras = items(&preview, "cameras")?;
     for camera in cameras {
-        assert_eq!(text(field(camera, "sensor_health")?, "status")?, "clear_screen_not_health_evidence");
+        assert_eq!(
+            text(field(camera, "sensor_health")?, "status")?,
+            "clear_screen_not_health_evidence"
+        );
     }
-    assert_ne!(field(&cameras[0], "sensor_health")?, field(&cameras[1], "sensor_health")?);
+    assert_ne!(
+        field(&cameras[0], "sensor_health")?,
+        field(&cameras[1], "sensor_health")?
+    );
     assert_eq!(fixture.snapshot()?, before);
     let mut args = fixture.corroborate(true);
     args.extend(["--approve".into(), proposal(&preview)?.into()]);
     let (_, published) = good(&args)?;
     assert_eq!(number(&published, "published_count")?, 1);
-    for (old, new) in coverage_records(&preview)?.iter().zip(coverage_records(&published)?) {
+    for (old, new) in coverage_records(&preview)?
+        .iter()
+        .zip(coverage_records(&published)?)
+    {
         assert_eq!(field(old, "sensor_health")?, field(new, "sensor_health")?);
     }
     let after = fixture.snapshot()?;
@@ -481,7 +530,10 @@ fn recovery_keeps_a_decode_gap_even_with_a_clear_visual_screen() -> Test {
     let mut args = fixture.watch(true);
     args.push("--tolerate-decode-refusals".into());
     let (bytes, report) = good(&args)?;
-    assert_eq!(number(field(&report, "sensor_health")?, "frames_screened")?, FRAMES as i128 - 1);
+    assert_eq!(
+        number(field(&report, "sensor_health")?, "frames_screened")?,
+        FRAMES as i128 - 1
+    );
     assert!(bytes.contains("decode_refused"));
     for zone in items(&coverage_records(&report)?[0], "zones")? {
         for witness in items(zone, "witnesses")? {
@@ -500,9 +552,20 @@ fn invalid_policies_and_duplicate_options_refuse_before_deployment_io() -> Test 
     let root = directory.0.join("must-not-exist");
     for command in ["watch", "corroborate"] {
         for (extra, reason) in [
-            (vec!["--sensor-health", "latest"], "requires policy conservative-v1"),
+            (
+                vec!["--sensor-health", "latest"],
+                "requires policy conservative-v1",
+            ),
             (vec!["--sensor-health"], "missing value"),
-            (vec!["--sensor-health", "conservative-v1", "--sensor-health", "conservative-v1"], "duplicate --sensor-health"),
+            (
+                vec![
+                    "--sensor-health",
+                    "conservative-v1",
+                    "--sensor-health",
+                    "conservative-v1",
+                ],
+                "duplicate --sensor-health",
+            ),
         ] {
             let mut args = base(command, &root);
             args.extend(extra.into_iter().map(OsString::from));

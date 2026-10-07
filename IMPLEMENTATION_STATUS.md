@@ -52,7 +52,8 @@ synthetic scenes). None of it has been measured on real camera footage.
 - **Ingest and capture:** file import with custody for Annex-B/MJPEG/rtpplay and indexed MP4
   with an H.264 `avc1` (`mp4avc`) or H.265 `hvc1`/`hev1` (`mp4hevc`) track: one segment per
   sample with exact source spans, every other byte typed container structure, `avcC`/`hvcC`
-  parameter sets read back from custody; indexed and fragmented (`moof`/`trun`) files; decode
+  parameter sets read back from custody; indexed, fragmented (`moof`/`trun`) and QuickTime
+  (`.mov`) files; decode
   bit-exact against FFmpeg on moov-first, interleaved-audio moov-last and fragmented fixtures,
   including CRA-led H.265 ranges, and FSS's own fragment muxer output reads back exactly
   (`ingest::file_adapter`, `fss-file import`); RTSP negotiation, Digest authentication and interleaved-TCP capture

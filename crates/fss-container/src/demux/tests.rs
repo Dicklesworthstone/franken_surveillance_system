@@ -608,3 +608,43 @@ fn fragment_structure_tampering_is_refused_whole() -> Test {
     assert_eq!(parse(&bytes), Err(DemuxError::Timeline));
     Ok(())
 }
+#[test]
+fn quicktime_movies_read_like_their_iso_twins_and_admit_self_contained_alis() -> Test {
+    let mov = include_bytes!("../../tests/fixtures/qt_av.mov");
+    let iso = include_bytes!("../../tests/fixtures/interleaved_av.mp4");
+    let m = AvcMp4::parse(mov, None, DemuxLimits::default())?;
+    let i = AvcMp4::parse(iso, None, DemuxLimits::default())?;
+    assert_eq!(m.codec(), VideoCodec::Avc);
+    assert_eq!(m.samples().len(), 10);
+    for (a, b) in m.samples().iter().zip(i.samples()) {
+        assert_eq!(mov[a.source.clone()], iso[b.source.clone()]);
+        assert_eq!(
+            (a.decode_time, a.duration, a.sync_sample),
+            (b.decode_time, b.duration, b.sync_sample)
+        );
+    }
+    let hevc = include_bytes!("../../tests/fixtures/qt_hevc.mov");
+    let h = AvcMp4::parse(hevc, None, DemuxLimits::default())?;
+    assert_eq!((h.codec(), h.samples().len()), (VideoCodec::Hevc, 10));
+    // Apple writers name the self-contained data reference `alis`; it reads the same.
+    let mut alis = mov.to_vec();
+    // The video track's dref entry type: after `dref`, version/flags, entry count, entry size.
+    // (QuickTime's data-handler `hdlr` also contains the bytes `url `.)
+    let entry = nth_box(&alis, b"dref", 0) + 16;
+    assert_eq!(&alis[entry..entry + 4], b"url ");
+    alis[entry..entry + 4].copy_from_slice(b"alis");
+    assert_eq!(
+        AvcMp4::parse(&alis, None, DemuxLimits::default())?
+            .samples()
+            .len(),
+        10
+    );
+    // An external (flag 0) reference is still refused.
+    let flags = entry + 4 + 3;
+    alis[flags] = 0;
+    assert_eq!(
+        AvcMp4::parse(&alis, None, DemuxLimits::default()).map(|_| ()),
+        Err(DemuxError::Unsupported)
+    );
+    Ok(())
+}

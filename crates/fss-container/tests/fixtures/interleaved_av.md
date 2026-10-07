@@ -64,3 +64,14 @@ pairs (one per GOP; the H.265 second fragment opens at the CRA) and a trailing `
 decodes each to exactly the frames of its indexed twin, so they share `indexed_avc_i420.sha256`
 and `hevc_av_i420.sha256`, and the H.264 fragmented samples carry the same NAL payloads as
 `interleaved_av.mp4`.
+
+## QuickTime variants
+
+`qt_av.mov` (H.264 + AAC, SHA-256
+`4279c2afeccd557bb08f8156113b4bf1a0d497d4521c96d2bd46117975d90382`, 7317 bytes) and
+`qt_hevc.mov` (H.265 only, SHA-256
+`5062cc350bd0defcad3e39e53d035b21195e489d47069f962e5fbc2198c77a51`, 3229 bytes) are the same
+encodes written by FFmpeg 6.1.1's `mov` muxer (`ftyp` `qt  `, `wide`, `mdat`, `moov`; `mhlr`
+media handlers and a `dhlr` data handler naming `url `). FFmpeg decodes them to exactly the frames
+of `indexed_avc_i420.sha256` and `hevc_av_i420.sha256`. The demuxer test renames the video
+track's self-contained `url ` reference to Apple's `alis` to cover that spelling.

@@ -331,10 +331,13 @@ impl RecordedHealthSummary {
         if withdrawing && !touches {
             return Err(ContractError::InvalidIdentifier);
         }
-        let used = self.observations.iter().try_fold(0_u64, |sum, observation| {
-            sum.checked_add(observation.samples)
-                .ok_or(ContractError::BudgetExhausted)
-        })?;
+        let used = self
+            .observations
+            .iter()
+            .try_fold(0_u64, |sum, observation| {
+                sum.checked_add(observation.samples)
+                    .ok_or(ContractError::BudgetExhausted)
+            })?;
         if affected != self.affected_segments || used != self.samples_used {
             return Err(ContractError::InvalidIdentifier);
         }
@@ -468,11 +471,7 @@ fn decode_observation(bytes: &[u8]) -> Result<HealthObservation, ContractError> 
     let segment = d.u64()?;
     let capsule_digest = d.digest()?;
     let luma_digest = d.digest()?;
-    let predecessor_digest = if d.bool()? {
-        Some(d.digest()?)
-    } else {
-        None
-    };
+    let predecessor_digest = if d.bool()? { Some(d.digest()?) } else { None };
     let capture = CaptureInterval::decode_canonical(&mut d)?;
     let dimensions = [d.u32()?, d.u32()?];
     let baseline_reset = d.bool()?;
@@ -593,7 +592,11 @@ fn affected_segments(observations: &[HealthObservation]) -> Result<BTreeSet<u64>
                 let start = (index + 1)
                     .checked_sub(run)
                     .ok_or(ContractError::InvalidIdentifier)?;
-                affected.extend(observations[start..=index].iter().map(|frame| frame.segment));
+                affected.extend(
+                    observations[start..=index]
+                        .iter()
+                        .map(|frame| frame.segment),
+                );
             }
         }
         if observation.repeated_frames != repeated || observation.findings != expected {

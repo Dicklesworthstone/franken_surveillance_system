@@ -106,7 +106,8 @@ pub(super) fn validate_data_reference(
         return Err(DemuxError::Unsupported);
     }
     let entries = r.children(dref.body.start + 8..dref.body.end, false)?;
-    if entries.len() != 1 || entries[0].kind != *b"url " {
+    // ISO `url ` or QuickTime `alis`, either only as the self-contained flag-1 reference.
+    if entries.len() != 1 || !matches!(&entries[0].kind, b"url " | b"alis") {
         return Err(DemuxError::Unsupported);
     }
     let reference = r.body(&entries[0]);

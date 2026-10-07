@@ -253,7 +253,10 @@ fn absent_or_uncalibrated_observations_never_certify_rejection() -> TestResult {
     let outcome = fuse(&observed)?;
     assert_eq!(outcome.decision, Decision::Reject);
     // Removing its only observation leaves the low prior; no counterfactual absence claim.
-    assert_eq!(outcome.counterfactuals[0].decision, Decision::RetainSilently);
+    assert_eq!(
+        outcome.counterfactuals[0].decision,
+        Decision::RetainSilently
+    );
 
     observed.evidence.push(EvidenceItem {
         id: "cam-b/possible-person".to_owned(),
@@ -267,7 +270,11 @@ fn absent_or_uncalibrated_observations_never_certify_rejection() -> TestResult {
     let outcome = fuse(&observed)?;
     assert_eq!(outcome.decision, Decision::RetainSilently);
     assert!(outcome.reasons.contains(&Reason::AbsenceNotCertified));
-    assert!(outcome.reasons.contains(&Reason::UncalibratedEvidenceIgnored));
+    assert!(
+        outcome
+            .reasons
+            .contains(&Reason::UncalibratedEvidenceIgnored)
+    );
     assert_eq!(outcome.uncalibrated, ["cam-b/possible-person"]);
     Ok(())
 }

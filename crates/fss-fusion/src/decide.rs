@@ -42,13 +42,11 @@ fn partition(query: &FusionQuery) -> Partition {
             (Observability::Observed, Calibration::Uncalibrated { .. }) => {
                 uncalibrated.push(item.id.clone());
             }
-            (Observability::Observed, Calibration::Calibrated { llr, .. }) => {
-                admitted.push((
-                    item,
-                    *llr,
-                    effective_domains(&item.sensor, &item.failure_domains),
-                ))
-            }
+            (Observability::Observed, Calibration::Calibrated { llr, .. }) => admitted.push((
+                item,
+                *llr,
+                effective_domains(&item.sensor, &item.failure_domains),
+            )),
         }
     }
     // Union-find over shared failure domains; roots are the smallest admitted index.

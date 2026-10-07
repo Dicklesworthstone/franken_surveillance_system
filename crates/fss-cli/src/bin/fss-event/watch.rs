@@ -507,7 +507,9 @@ fn run_with(
         &action.limits,
         cascade.as_mut(),
         action.options,
-        action.health_screen.then_some(RecordedHealthPolicy::ConservativeV1),
+        action
+            .health_screen
+            .then_some(RecordedHealthPolicy::ConservativeV1),
         cx,
     )?;
     // Both approvals are checked against the fresh analysis before anything is written.
@@ -532,7 +534,9 @@ fn run_with(
             &action.limits,
             cascade.as_mut(),
             action.options,
-            action.health_screen.then_some(RecordedHealthPolicy::ConservativeV1),
+            action
+                .health_screen
+                .then_some(RecordedHealthPolicy::ConservativeV1),
             cx,
         )?)
     } else {

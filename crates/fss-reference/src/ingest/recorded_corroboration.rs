@@ -1314,15 +1314,7 @@ impl CorroborationReport {
         cx: &ReplayCx,
     ) -> Result<Self> {
         Self::analyze_with_health(
-            deployment,
-            plan,
-            limits,
-            detector,
-            visibility,
-            provenance,
-            covariance,
-            options,
-            None,
+            deployment, plan, limits, detector, visibility, provenance, covariance, options, None,
             cx,
         )
     }
@@ -1866,7 +1858,10 @@ fn camera_coverage(
     );
     bind_cascade_parameters(
         &mut parameters,
-        camera.sensor_health.as_ref().map(RecordedHealthSummary::digest),
+        camera
+            .sensor_health
+            .as_ref()
+            .map(RecordedHealthSummary::digest),
     );
     // Ground zones whose image preimage may contain a masked pixel carry no witness
     // (conservative bounding-box rule); zones with a masked visibility sample join below.

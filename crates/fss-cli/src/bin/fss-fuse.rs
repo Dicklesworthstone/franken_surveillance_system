@@ -606,7 +606,9 @@ fn parse_query(
         looks: as_integer(field(query, "looks")?, "looks")?,
         now_ns,
     };
-    bindings.scores.sort_by(|a, b| a.evidence_id.cmp(&b.evidence_id));
+    bindings
+        .scores
+        .sort_by(|a, b| a.evidence_id.cmp(&b.evidence_id));
     Ok((fusion, transit, bindings))
 }
 
@@ -857,10 +859,12 @@ fn run(args: Vec<OsString>) -> Result<String> {
             }
         }
     }
-    let query_path =
-        query_path.ok_or_else(|| fail("fusion.cli.missing_option", "--query"))?;
+    let query_path = query_path.ok_or_else(|| fail("fusion.cli.missing_option", "--query"))?;
     let stdin_uses = usize::from(query_path == "-")
-        + calibration_paths.iter().filter(|path| path.as_str() == "-").count();
+        + calibration_paths
+            .iter()
+            .filter(|path| path.as_str() == "-")
+            .count();
     if stdin_uses > 1 {
         return Err(fail(
             "fusion.cli.stdin_conflict",

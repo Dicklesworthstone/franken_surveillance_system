@@ -412,7 +412,9 @@ pub(super) fn parse(args: &[OsString]) -> Result<CorroborateAction, String> {
     let health_screen = match find(&values, "--sensor-health") {
         Some(HEALTH_POLICY_NAME) => Some(RecordedHealthPolicy::ConservativeV1),
         Some(_) => {
-            return Err(format!("--sensor-health requires policy {HEALTH_POLICY_NAME}"));
+            return Err(format!(
+                "--sensor-health requires policy {HEALTH_POLICY_NAME}"
+            ));
         }
         None => None,
     };

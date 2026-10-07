@@ -177,11 +177,17 @@ impl RecordedHealthCoverageReceipt {
             if position - epoch_start < BACKGROUND_WARMUP_FRAMES
                 || end >= observations.len()
                 || self.summary.affected_segments().contains(&frame.segment)
-                || self.summary.withdrawn_track_segments().contains(&frame.segment)
+                || self
+                    .summary
+                    .withdrawn_track_segments()
+                    .contains(&frame.segment)
                 || observations[position + 1..end + 1].iter().any(|future| {
                     restarts.contains(&future.segment)
                         || self.summary.affected_segments().contains(&future.segment)
-                        || self.summary.withdrawn_track_segments().contains(&future.segment)
+                        || self
+                            .summary
+                            .withdrawn_track_segments()
+                            .contains(&future.segment)
                 })
             {
                 continue;
@@ -210,9 +216,11 @@ impl RecordedHealthCoverageReceipt {
             || self.summary.observations().iter().any(|frame| {
                 frame.segment < self.first_segment || frame.segment > self.last_segment
             })
-            || self.summary.source_gap_segments().iter().any(|segment| {
-                *segment < self.first_segment || *segment > self.last_segment
-            })
+            || self
+                .summary
+                .source_gap_segments()
+                .iter()
+                .any(|segment| *segment < self.first_segment || *segment > self.last_segment)
         {
             return Err(ContractError::InvalidIdentifier);
         }

@@ -45,7 +45,9 @@ fn scene(
         }
         let mut frame = encode_jpeg(96, 48, &pixels, &config)?;
         if corrupt == Some(index) {
-            let sof = frame.windows(2).position(|bytes| bytes == [0xff, 0xc0])
+            let sof = frame
+                .windows(2)
+                .position(|bytes| bytes == [0xff, 0xc0])
                 .ok_or("missing synthetic SOF0")?;
             frame[sof + 12] = 4;
         }
@@ -61,7 +63,11 @@ fn plan(import_identity: ContentDigest) -> WatchPlan {
         first_segment: 0,
         segment_count: FRAMES,
         zones: vec![WatchZone {
-            zone_id: "door".to_owned(), x: 0, y: 0, width: 32, height: 32,
+            zone_id: "door".to_owned(),
+            x: 0,
+            y: 0,
+            width: 32,
+            height: 32,
         }],
         detector: WatchDetectorConfig::default(),
         tracker: WatchTrackerConfig::default(),
@@ -70,13 +76,23 @@ fn plan(import_identity: ContentDigest) -> WatchPlan {
 
 fn analyse(fixture: &Fixture, plan: &WatchPlan, tolerant: bool) -> TestResult<WatchReport> {
     Ok(WatchReport::analyze_with_health(
-        &fixture.deployment, plan, &WatchLimits::default(), None,
-        WatchOptions { tolerate_decode_refusals: tolerant }, HEALTH, &fixture.cx,
+        &fixture.deployment,
+        plan,
+        &WatchLimits::default(),
+        None,
+        WatchOptions {
+            tolerate_decode_refusals: tolerant,
+        },
+        HEALTH,
+        &fixture.cx,
     )?)
 }
 
 fn assert_roundtrip(record: &CoverageRecord) -> TestResult {
-    assert_eq!(CoverageRecord::from_bytes(&record.to_bytes(), record.digest())?, *record);
+    assert_eq!(
+        CoverageRecord::from_bytes(&record.to_bytes(), record.digest())?,
+        *record
+    );
     Ok(())
 }
 
@@ -86,18 +102,30 @@ fn recorded_health_defaults_and_clear_screen_bind_approvals_and_provenance() -> 
     let import = fixture.ingest(
         "sensor:recorded-health-clear",
         &scene(|i| if i % 2 == 0 { 40 } else { 48 }, |i| i >= 3, None)?,
-        FileFormatHint::JpegStream, Some(1_000_000_000),
+        FileFormatHint::JpegStream,
+        Some(1_000_000_000),
     )?;
     let plan = plan(import);
     let legacy = WatchReport::analyze(
-        &fixture.deployment, &plan, &WatchLimits::default(), &fixture.cx,
+        &fixture.deployment,
+        &plan,
+        &WatchLimits::default(),
+        &fixture.cx,
     )?;
     let explicit_none = WatchReport::analyze_with_health(
-        &fixture.deployment, &plan, &WatchLimits::default(), None,
-        WatchOptions::default(), None, &fixture.cx,
+        &fixture.deployment,
+        &plan,
+        &WatchLimits::default(),
+        None,
+        WatchOptions::default(),
+        None,
+        &fixture.cx,
     )?;
     assert_eq!(legacy.to_json(0, None), explicit_none.to_json(0, None));
-    assert_eq!(legacy.coverage().to_bytes(), explicit_none.coverage().to_bytes());
+    assert_eq!(
+        legacy.coverage().to_bytes(),
+        explicit_none.coverage().to_bytes()
+    );
 
     let mut screened = analyse(&fixture, &plan, false)?;
     let summary = screened.sensor_health().ok_or("missing health receipts")?;
@@ -113,11 +141,22 @@ fn recorded_health_defaults_and_clear_screen_bind_approvals_and_provenance() -> 
         legacy.candidates()[0].proposal_digest(),
         screened.candidates()[0].proposal_digest(),
     );
-    assert!(screened.candidates()[0].event().evidence.iter().any(|evidence| {
-        evidence.digest == summary_digest
-            && evidence.relation == EvidenceEdgeRelation::RequiredBy && !evidence.supports
-    }));
-    assert!(summary.to_json().contains("\"status\":\"clear_screen_not_health_evidence\""));
+    assert!(
+        screened.candidates()[0]
+            .event()
+            .evidence
+            .iter()
+            .any(|evidence| {
+                evidence.digest == summary_digest
+                    && evidence.relation == EvidenceEdgeRelation::RequiredBy
+                    && !evidence.supports
+            })
+    );
+    assert!(
+        summary
+            .to_json()
+            .contains("\"status\":\"clear_screen_not_health_evidence\"")
+    );
     assert!(summary.to_json().contains("\"health_certified\":false"));
     assert_roundtrip(screened.coverage())?;
     let approval = screened.candidates()[0].proposal_digest();
@@ -130,7 +169,10 @@ fn recorded_health_defaults_and_clear_screen_bind_approvals_and_provenance() -> 
         1,
     );
     let again = analyse(&fixture, &plan, false)?;
-    assert_eq!(again.sensor_health().map(|summary| summary.digest()), Some(summary_digest));
+    assert_eq!(
+        again.sensor_health().map(|summary| summary.digest()),
+        Some(summary_digest)
+    );
     assert_eq!(again.candidates()[0].proposal_digest(), approval);
     Ok(())
 }
@@ -141,23 +183,36 @@ fn recorded_health_retracts_frozen_track_prefix_before_candidate_or_coverage() -
     let import = fixture.ingest(
         "sensor:recorded-health-frozen",
         &scene(|_| 40, |i| i >= 3, None)?,
-        FileFormatHint::JpegStream, Some(1_000_000_000),
+        FileFormatHint::JpegStream,
+        Some(1_000_000_000),
     )?;
     let plan = plan(import);
     let legacy = WatchReport::analyze(
-        &fixture.deployment, &plan, &WatchLimits::default(), &fixture.cx,
+        &fixture.deployment,
+        &plan,
+        &WatchLimits::default(),
+        &fixture.cx,
     )?;
     assert_eq!(legacy.candidates().len(), 1);
     let screened = analyse(&fixture, &plan, false)?;
     let summary = screened.sensor_health().ok_or("missing health receipts")?;
-    assert_eq!(summary.affected_segments(), &(3..FRAMES as u64).collect::<BTreeSet<_>>());
+    assert_eq!(
+        summary.affected_segments(),
+        &(3..FRAMES as u64).collect::<BTreeSet<_>>()
+    );
     assert!(screened.candidates().is_empty());
     assert!(screened.coverage().witnesses().next().is_none());
     assert!(screened.frames().iter().all(|frame| frame.boxes.is_empty()));
-    assert!(screened.coverage().zones[0].uncovered.iter().any(|interval| {
-        interval.reason == UncoveredReason::SensorHealthDegraded
-            && interval.first_segment == 3 && interval.last_segment == 31
-    }));
+    assert!(
+        screened.coverage().zones[0]
+            .uncovered
+            .iter()
+            .any(|interval| {
+                interval.reason == UncoveredReason::SensorHealthDegraded
+                    && interval.first_segment == 3
+                    && interval.last_segment == 31
+            })
+    );
     assert_roundtrip(screened.coverage())?;
     Ok(())
 }
@@ -168,25 +223,52 @@ fn recorded_health_coverage_restarts_background_and_confirmation_after_a_bad_run
     let import = fixture.ingest(
         "sensor:recorded-health-recovery",
         &scene(
-            |i| if (12..17).contains(&i) { 0 } else if i % 2 == 0 { 40 } else { 48 },
-            |_| false, None,
+            |i| {
+                if (12..17).contains(&i) {
+                    0
+                } else if i % 2 == 0 {
+                    40
+                } else {
+                    48
+                }
+            },
+            |_| false,
+            None,
         )?,
-        FileFormatHint::JpegStream, Some(1_000_000_000),
+        FileFormatHint::JpegStream,
+        Some(1_000_000_000),
     )?;
     let screened = analyse(&fixture, &plan(import), false)?;
     let summary = screened.sensor_health().ok_or("missing health receipts")?;
-    assert_eq!(summary.affected_segments(), &(12..17).collect::<BTreeSet<_>>());
+    assert_eq!(
+        summary.affected_segments(),
+        &(12..17).collect::<BTreeSet<_>>()
+    );
     assert_eq!(screened.tracking_restarts(), &[17]);
     assert!(screened.decode_restarts().is_empty());
-    let witnesses = screened.coverage().zones[0].witnesses.iter()
-        .map(|witness| (witness.first_segment, witness.last_segment)).collect::<Vec<_>>();
+    let witnesses = screened.coverage().zones[0]
+        .witnesses
+        .iter()
+        .map(|witness| (witness.first_segment, witness.last_segment))
+        .collect::<Vec<_>>();
     assert_eq!(witnesses, [(4, 9), (21, 29)]);
-    assert!(screened.coverage().zones[0].uncovered.iter().any(|interval| {
-        interval.reason == UncoveredReason::BackgroundWarmup
-            && interval.first_segment == 17 && interval.last_segment == 20
-    }));
+    assert!(
+        screened.coverage().zones[0]
+            .uncovered
+            .iter()
+            .any(|interval| {
+                interval.reason == UncoveredReason::BackgroundWarmup
+                    && interval.first_segment == 17
+                    && interval.last_segment == 20
+            })
+    );
     for candidate in screened.candidates() {
-        assert!(candidate.observations.iter().all(|frame| !summary.affects(frame.segment)));
+        assert!(
+            candidate
+                .observations
+                .iter()
+                .all(|frame| !summary.affects(frame.segment))
+        );
         let [first, last] = candidate.frame_range();
         assert!(last < 12 || first > 16);
     }
@@ -200,25 +282,46 @@ fn recorded_health_decode_refusals_reset_screening_without_degradation() -> Test
     let import = fixture.ingest(
         "sensor:recorded-health-decode-gap",
         &scene(
-            |i| if i < 7 { 80 } else if i < 15 { 90 } else if i % 2 == 0 { 40 } else { 48 },
-            |_| false, Some(7),
+            |i| {
+                if i < 7 {
+                    80
+                } else if i < 15 {
+                    90
+                } else if i % 2 == 0 {
+                    40
+                } else {
+                    48
+                }
+            },
+            |_| false,
+            Some(7),
         )?,
-        FileFormatHint::JpegStream, Some(1_000_000_000),
+        FileFormatHint::JpegStream,
+        Some(1_000_000_000),
     )?;
     let screened = analyse(&fixture, &plan(import), true)?;
     let summary = screened.sensor_health().ok_or("missing health receipts")?;
     assert_eq!(summary.observations().len(), FRAMES - 1);
     assert!(summary.affected_segments().is_empty());
-    let first_after_gap = summary.observations().iter().find(|frame| frame.segment == 8)
+    let first_after_gap = summary
+        .observations()
+        .iter()
+        .find(|frame| frame.segment == 8)
         .ok_or("missing resumed frame")?;
     assert!(first_after_gap.baseline_reset);
     assert_eq!(first_after_gap.repeated_frames, 1);
     assert_eq!(screened.decode_restarts(), &[8]);
     assert_eq!(screened.tracking_restarts(), &[8]);
-    assert!(screened.coverage().zones[0].uncovered.iter().any(|interval| {
-        matches!(interval.reason, UncoveredReason::DecodeRefused { .. })
-            && interval.first_segment == 7 && interval.last_segment == 7
-    }));
+    assert!(
+        screened.coverage().zones[0]
+            .uncovered
+            .iter()
+            .any(|interval| {
+                matches!(interval.reason, UncoveredReason::DecodeRefused { .. })
+                    && interval.first_segment == 7
+                    && interval.last_segment == 7
+            })
+    );
     for (_, witness) in screened.coverage().witnesses() {
         assert!(witness.last_segment < 7 || witness.first_segment > 7);
     }
@@ -232,11 +335,15 @@ fn recorded_health_receipts_prevent_old_or_forged_witnesses_covering_a_suspect_r
     let import = fixture.ingest(
         "sensor:recorded-health-forged",
         &scene(|_| 80, |_| false, None)?,
-        FileFormatHint::JpegStream, Some(1_000_000_000),
+        FileFormatHint::JpegStream,
+        Some(1_000_000_000),
     )?;
     let plan = plan(import);
     let legacy = WatchReport::analyze(
-        &fixture.deployment, &plan, &WatchLimits::default(), &fixture.cx,
+        &fixture.deployment,
+        &plan,
+        &WatchLimits::default(),
+        &fixture.cx,
     )?;
     assert!(legacy.coverage().witnesses().next().is_some());
     let screened = analyse(&fixture, &plan, false)?;
@@ -247,21 +354,29 @@ fn recorded_health_receipts_prevent_old_or_forged_witnesses_covering_a_suspect_r
     let mut stripped = screened.coverage().clone();
     stripped.sensor_health = None;
     assert!(stripped.validate().is_err());
-    assert!(CoverageRecord::from_bytes(
-        &screened.coverage().to_bytes(), legacy.coverage().digest(),
-    ).is_err());
+    assert!(
+        CoverageRecord::from_bytes(&screened.coverage().to_bytes(), legacy.coverage().digest(),)
+            .is_err()
+    );
     Ok(())
 }
 
 #[test]
-fn recorded_health_source_and_generation_transplants_with_matching_layout_are_rejected() -> TestResult {
+fn recorded_health_source_and_generation_transplants_with_matching_layout_are_rejected()
+-> TestResult {
     let mut fixture = Fixture::new("recorded-health-transplant")?;
     let bytes = scene(|i| if i % 2 == 0 { 80 } else { 88 }, |_| false, None)?;
     let first = fixture.ingest(
-        "sensor:health-first", &bytes, FileFormatHint::JpegStream, Some(1_000_000_000),
+        "sensor:health-first",
+        &bytes,
+        FileFormatHint::JpegStream,
+        Some(1_000_000_000),
     )?;
     let second = fixture.ingest(
-        "sensor:health-second", &bytes, FileFormatHint::JpegStream, Some(1_000_000_000),
+        "sensor:health-second",
+        &bytes,
+        FileFormatHint::JpegStream,
+        Some(1_000_000_000),
     )?;
     let original = analyse(&fixture, &plan(first), false)?;
     let other_source = analyse(&fixture, &plan(second), false)?;
@@ -275,9 +390,9 @@ fn recorded_health_source_and_generation_transplants_with_matching_layout_are_re
         let mut transplanted = original.coverage().clone();
         transplanted.sensor_health = replacement.sensor_health.clone();
         assert!(transplanted.validate().is_err());
-        assert!(CoverageRecord::from_bytes(
-            &transplanted.to_bytes(), transplanted.digest(),
-        ).is_err());
+        assert!(
+            CoverageRecord::from_bytes(&transplanted.to_bytes(), transplanted.digest(),).is_err()
+        );
     }
     Ok(())
 }
@@ -287,14 +402,22 @@ fn recorded_health_late_failure_never_turns_an_earlier_positive_into_absence() -
     let mut fixture = Fixture::new("recorded-health-dependent-track")?;
     let import = fixture.ingest(
         "sensor:recorded-health-dependent-track",
-        &scene(|i| if i >= 14 || i % 2 == 0 { 40 } else { 48 }, |i| i >= 3, None)?,
-        FileFormatHint::JpegStream, Some(1_000_000_000),
+        &scene(
+            |i| if i >= 14 || i % 2 == 0 { 40 } else { 48 },
+            |i| i >= 3,
+            None,
+        )?,
+        FileFormatHint::JpegStream,
+        Some(1_000_000_000),
     )?;
     let mut plan = plan(import);
     // Keep the stationary foreground track observable until the late freeze is detected.
     plan.detector.learning_rate_den = 1024;
     let legacy = WatchReport::analyze(
-        &fixture.deployment, &plan, &WatchLimits::default(), &fixture.cx,
+        &fixture.deployment,
+        &plan,
+        &WatchLimits::default(),
+        &fixture.cx,
     )?;
     assert_eq!(legacy.candidates().len(), 1);
     let earlier_entry = legacy.candidates()[0].entry_segment;
@@ -302,14 +425,23 @@ fn recorded_health_late_failure_never_turns_an_earlier_positive_into_absence() -
     let screened = analyse(&fixture, &plan, false)?;
     let summary = screened.sensor_health().ok_or("missing health receipts")?;
     assert!(!summary.affects(earlier_entry));
-    assert!(summary.withdrawn_track_segments().contains(&(earlier_entry as u64)));
+    assert!(
+        summary
+            .withdrawn_track_segments()
+            .contains(&(earlier_entry as u64))
+    );
     assert!(screened.candidates().is_empty());
     assert!(screened.coverage().witnesses().next().is_none());
-    assert!(screened.coverage().zones[0].uncovered.iter().any(|interval| {
-        interval.reason == UncoveredReason::SensorHealthDependentTrack
-            && interval.first_segment <= earlier_entry as u64
-            && interval.last_segment >= earlier_entry as u64
-    }));
+    assert!(
+        screened.coverage().zones[0]
+            .uncovered
+            .iter()
+            .any(|interval| {
+                interval.reason == UncoveredReason::SensorHealthDependentTrack
+                    && interval.first_segment <= earlier_entry as u64
+                    && interval.last_segment >= earlier_entry as u64
+            })
+    );
     assert_roundtrip(screened.coverage())?;
     Ok(())
 }

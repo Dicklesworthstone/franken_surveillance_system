@@ -1329,28 +1329,26 @@ impl CoverageRecord {
             || self.zones.iter().any(|zone| zone.visibility.is_some());
         let masked_samples = self.masked_samples();
         e.bytes(RECORD_MAGIC);
-        e.u32(
-            if self.sensor_health.is_some() {
-                RECORD_VERSION_SENSOR_HEALTH
-            } else if self
-                .pose_uncertainty
-                .as_ref()
-                .and_then(PoseUncertainty::guard_receipt)
-                .is_some()
-            {
-                RECORD_VERSION_CALIBRATION_GUARD
-            } else if self.pose_uncertainty.is_some() {
-                RECORD_VERSION_POSE_UNCERTAINTY
-            } else if self.pose_provenance.is_some() {
-                RECORD_VERSION_POSE_PROVENANCE
-            } else if masked_samples {
-                RECORD_VERSION_MASKED_VISIBILITY
-            } else if versioned {
-                RECORD_VERSION_VISIBILITY
-            } else {
-                RECORD_VERSION
-            },
-        );
+        e.u32(if self.sensor_health.is_some() {
+            RECORD_VERSION_SENSOR_HEALTH
+        } else if self
+            .pose_uncertainty
+            .as_ref()
+            .and_then(PoseUncertainty::guard_receipt)
+            .is_some()
+        {
+            RECORD_VERSION_CALIBRATION_GUARD
+        } else if self.pose_uncertainty.is_some() {
+            RECORD_VERSION_POSE_UNCERTAINTY
+        } else if self.pose_provenance.is_some() {
+            RECORD_VERSION_POSE_PROVENANCE
+        } else if masked_samples {
+            RECORD_VERSION_MASKED_VISIBILITY
+        } else if versioned {
+            RECORD_VERSION_VISIBILITY
+        } else {
+            RECORD_VERSION
+        });
         e.text(RECORD_DOMAIN);
         if let Some(summary) = &self.sensor_health {
             // Version 7 is compositional: health-only watch records need no synthetic pose.
@@ -1665,7 +1663,9 @@ impl CoverageRecord {
             receipt.validate_for(self)?;
             let summary = receipt.summary();
             let mut observations = summary.observations().iter();
-            let first = observations.next().ok_or(ContractError::InvalidIdentifier)?;
+            let first = observations
+                .next()
+                .ok_or(ContractError::InvalidIdentifier)?;
             let mut observed = first.capture;
             if first.segment < self.first_segment || first.segment > self.last_segment {
                 return Err(ContractError::InvalidIdentifier);
@@ -1818,9 +1818,9 @@ impl CoverageRecord {
                     if frames.len() as u64 != witness.frames
                         || first.segment != witness.first_segment
                         || last.segment != witness.last_segment
-                        || frames.windows(2).any(|pair| {
-                            pair[0].segment.checked_add(1) != Some(pair[1].segment)
-                        })
+                        || frames
+                            .windows(2)
+                            .any(|pair| pair[0].segment.checked_add(1) != Some(pair[1].segment))
                         || frames.iter().any(|frame| {
                             summary.affected_segments().contains(&frame.segment)
                                 || summary.withdrawn_track_segments().contains(&frame.segment)
