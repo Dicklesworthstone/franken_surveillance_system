@@ -1030,7 +1030,7 @@ pub fn split_jpeg_stream(
                 // New SOI encountered without EOI for current frame: current frame was truncated!
                 // The next frame starts at the `0xFF` immediately preceding `0xD8` (as in
                 // `find_soi`); any fill bytes before it stay with the truncated frame.
-                current_pos -= 2;
+                current_pos = marker_prefix;
                 break;
             }
 
