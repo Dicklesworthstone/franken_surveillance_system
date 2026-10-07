@@ -1,0 +1,11 @@
+[package]
+name = "fss-tutk"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license-file.workspace = true
+repository.workspace = true
+description = "Sans-IO TUTK/IOTC NEW-protocol (0xCC51) wire, crypto and session core for owner-authorized Wyze-class cameras"
+
+[lints]
+workspace = true
