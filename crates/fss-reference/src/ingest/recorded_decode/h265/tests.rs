@@ -560,6 +560,36 @@ const MP4: &[u8] = include_bytes!("../../../../../fss-container/tests/fixtures/h
 const MP4_ORACLE: &str =
     include_str!("../../../../../fss-container/tests/fixtures/hevc_av_i420.sha256");
 
+/// The same encode stored as fragmented MP4: the IDR fragment, then the CRA fragment.
+const MP4_FRAGMENTED: &[u8] =
+    include_bytes!("../../../../../fss-container/tests/fixtures/hevc_fragmented_av.mp4");
+
+#[test]
+fn fragmented_hevc_mp4_decodes_like_the_indexed_file() -> TestResult {
+    let expected = oracle(MP4_ORACLE);
+    let imported = import("mp4hevc-fragmented", MP4_FRAGMENTED)?;
+    assert_eq!(imported.format, "mp4hevc");
+    assert_eq!(imported.segments, 10);
+    let digests: Vec<String> = whole_range(&imported)?
+        .iter()
+        .map(|frame| frame.receipt().i420_sha256().to_text())
+        .collect();
+    assert_eq!(digests, expected);
+    // The second fragment opens at the CRA: decodable from there, RASL samples skipped.
+    let mut range = RecordedH265Range::open(
+        &imported.deployment,
+        request(imported.identity, 3, 7),
+        &imported.cx,
+    )?;
+    let mut frames = Vec::new();
+    while let Some(frame) = range.next_frame(&imported.deployment, &imported.cx)? {
+        frames.push(frame.receipt().i420_sha256().to_text());
+    }
+    assert_eq!(range.skipped_rasl_segments(), [4, 5]);
+    assert_eq!(frames, expected[5..].to_vec());
+    Ok(())
+}
+
 #[test]
 fn retained_hevc_mp4_samples_decode_bit_exact_against_the_ffmpeg_oracle() -> TestResult {
     let expected = oracle(MP4_ORACLE);

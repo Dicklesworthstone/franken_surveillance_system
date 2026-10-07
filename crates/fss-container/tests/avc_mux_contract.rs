@@ -267,3 +267,32 @@ fn debug_views_expose_counts_not_media() -> TestResult {
     }
     Ok(())
 }
+
+#[test]
+fn fss_fragmented_output_reads_back_through_the_demuxer() -> TestResult {
+    use fss_container::demux::{AvcMp4, DemuxLimits, VideoCodec};
+    let pictures = groups(BASELINE, KEY, true, false)?;
+    let mut writer = mux(&pictures[0], Mp4Limits::default())?;
+    let pts: Vec<u64> = (0..pictures.len() as u64).map(|i| i * 3600).collect();
+    let fragment = writer.fragment(&timed(&pictures, &pts))?;
+    let mut file = writer.initialization().bytes().to_vec();
+    let offset = file.len();
+    file.extend_from_slice(fragment.bytes());
+    let parsed = AvcMp4::parse(&file, None, DemuxLimits::default())?;
+    assert_eq!(parsed.codec(), VideoCodec::Avc);
+    assert_eq!(parsed.samples().len(), fragment.samples().len());
+    for (sample, written) in parsed.samples().iter().zip(fragment.samples()) {
+        assert_eq!(
+            sample.source,
+            offset + written.range.start..offset + written.range.end
+        );
+        assert_eq!(sample.decode_time, written.decode_time);
+        assert_eq!(sample.duration, written.duration);
+        assert_eq!(
+            sample.presentation_time(),
+            i128::from(written.presentation_time)
+        );
+        assert_eq!(sample.contains_idr, written.idr);
+    }
+    Ok(())
+}

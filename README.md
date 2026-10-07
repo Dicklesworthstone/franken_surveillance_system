@@ -540,8 +540,8 @@ on real camera footage.
 Implemented (reference, unqualified):
 
 - file import with SHA-256 source custody for H.264/H.265 Annex-B, H.264/H.265 in MP4 (indexed
-  `avc1`, `hvc1`/`hev1`; ordinary camera/phone exports, interleaved audio kept as bytes), MJPEG
-  and rtpplay recordings (`fss-file import`);
+  or fragmented `avc1`, `hvc1`/`hev1`; ordinary camera/phone exports and fMP4 recorders,
+  interleaved audio kept as bytes), MJPEG and rtpplay recordings (`fss-file import`);
 - RTP depacketization for H.264/H.265, RTSP negotiation with Digest authentication over interleaved
   TCP, native HTTP MJPEG capture, local capture archives with verify/export (`fss-archive`), and
   fragmented-MP4 remux for AVC/HEVC;

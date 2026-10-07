@@ -51,3 +51,16 @@ Source SHA-256: `042f98fe1a4be0fd186e79cd9d275b0ce33e53aa72a981803b4816486272c5b
 `hevc_av_i420.sha256` is its FFmpeg per-frame I420 framehash (same command as above). A range
 opened at the CRA sample must reproduce entries 5..9 (trailing pictures cannot reference RASL
 pictures, H.265 8.3.2) and skip samples 4 and 5.
+
+## Fragmented variants
+
+`fragmented_av.mp4` (H.264, SHA-256
+`0a026e5c83cc96b32e72489e4827994b7c71597563b48518b11e28a253471a82`, 7488 bytes) and
+`hevc_fragmented_av.mp4` (H.265, SHA-256
+`5ac947d616ad8569841c9183cdf8551dc97074c2957eab85fb3e0046be911dd9`, 6418 bytes) are the same two
+encodes written as fragmented MP4 by adding `-movflags +frag_keyframe+empty_moov+default_base_moof`
+to the commands above: `ftyp` (`iso5`), an empty-sample `moov` with `mvex`, two `moof`+`mdat`
+pairs (one per GOP; the H.265 second fragment opens at the CRA) and a trailing `mfra`. FFmpeg
+decodes each to exactly the frames of its indexed twin, so they share `indexed_avc_i420.sha256`
+and `hevc_av_i420.sha256`, and the H.264 fragmented samples carry the same NAL payloads as
+`interleaved_av.mp4`.

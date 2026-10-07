@@ -6,6 +6,8 @@ use std::ops::Range;
 #[derive(Clone, Debug)]
 pub(super) struct BoxRef {
     pub kind: [u8; 4],
+    /// First byte of the box header.
+    pub start: usize,
     pub body: Range<usize>,
 }
 
@@ -81,6 +83,7 @@ impl<'a, 'c> Reader<'a, 'c> {
                 .ok_or(DemuxError::Truncated)?;
             result.push(BoxRef {
                 kind,
+                start,
                 body: start + header_len..end,
             });
             start = end;

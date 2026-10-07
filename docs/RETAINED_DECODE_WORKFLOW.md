@@ -152,18 +152,26 @@ ycbcr [--output FILE.pgm]` exposes the same path and writes one binary PGM luma 
 
 ## Retained MP4 (H.264 and H.265) import
 
-**Import.** `FileIngestAdapter` retains an indexed (non-fragmented) ISO-BMFF/MP4 file with one
-video track as media format `mp4avc` (H.264 `avc1`) or `mp4hevc` (H.265 `hvc1`/`hev1`, base
+**Import.** `FileIngestAdapter` retains an ISO-BMFF/MP4 file, indexed (`moov` sample tables) or
+fragmented (`mvex` plus `moof`/`traf`/`trun`, as written by FFmpeg `frag_keyframe`, CMAF
+packagers, Home Assistant/go2rtc recorders and FSS's own fragment muxer), with one video track
+as media format `mp4avc` (H.264 `avc1`) or `mp4hevc` (H.265 `hvc1`/`hev1`, base
 layer). An `ftyp`-led file is auto-detected (detector evidence `mp4_ftyp`) and its codec is read
 from the video sample entry; `--media-format mp4avc|mp4hevc` (`FileFormatHint::Mp4Avc`,
 `Mp4Hevc`) must agree with it or the import is `ERR-INGEST-FORMAT-CONFLICT-001`. The pure-Rust
 `fss-container` demuxer validates the whole file first: box layout, sample tables (`stsz`,
 `stco`/`co64`, `stsc`, `stts`, `ctts`, `stss`), the `avcC`/`hvcC` configuration (an `hvcC` must
 carry a VPS, SPS and PPS), and the length-prefixed NAL framing of every sample, with in-band
-parameter sets required to equal the configured ones. Fragmented, encrypted, externally
-referenced, `avc3`, layered-HEVC and multi-video-track files, and any malformed table or bound
-breach, are refused whole with `ERR-INGEST-MP4-REFUSED-001` (failure code `mp4_refused`);
-nothing is retained. Other tracks (audio, metadata) are kept as bytes but not interpreted.
+parameter sets required to equal the configured ones. A fragmented file is read through the
+`trex` defaults and, per `moof` in file order, strictly increasing `mfhd` sequence numbers, the
+selected track's `tfhd` (explicit base offset, `default-base-is-moof`, or the first track
+fragment's moof), optional `tfdt` (never moving backwards) and its `trun` boxes (data offsets,
+first-sample flags, per-sample duration, size, flags and signed composition offsets); every
+sample must lie inside one `mdat` and samples may not overlap. A fragmented movie's `moov` tables
+must declare no samples. Encrypted (`senc`/`saiz`/`saio`), sample-grouped or sub-sample
+fragments, externally referenced, `avc3`, layered-HEVC and multi-video-track files, and any
+malformed table or bound breach, are refused whole with `ERR-INGEST-MP4-REFUSED-001` (failure
+code `mp4_refused`); nothing is retained. Other tracks (audio, metadata) are kept as bytes but not interpreted.
 
 One retained segment is one video sample in decode order: its exact original length-prefixed
 bytes, digest-bound to its source capsule. Every other byte of the file is a typed
@@ -185,15 +193,15 @@ the codec first, then walks each sample's NAL length fields. An H.264 range must
 sample containing an IDR slice; an H.265 range at an IRAP sample, and a range opened at an
 open-GOP CRA sample skips and lists its RASL samples exactly as for `hevc`. The tests import
 FFmpeg `testsrc2` MP4 files (H.264 moov-first; H.264 and H.265 moov-last with an interleaved AAC
-track) and require the retained decode to reproduce FFmpeg's per-frame I420 digests, including
-the CRA-led H.265 range, and to equal the decode of the same H.264 samples imported as an Annex-B
+track; H.264 and H.265 fragmented) and require the retained decode to reproduce FFmpeg's
+per-frame I420 digests, including the CRA-led H.265 range, and to equal the decode of the same H.264 samples imported as an Annex-B
 extraction (`crates/fss-container/tests/fixtures/`); `fss-event watch` over an `hvc1` remux of
 the HEVC watch scene reaches the same decision as over the Annex-B import.
 `fss-file decode`, `fss-event watch`, `fss-event corroborate`, the detector cascade, sensor
 health screening and tolerant decode accept `mp4avc`/`mp4hevc` wherever they accept
 `annexb`/`hevc`.
 
-Not supported: fragmented MP4 (`moof`), `avc3`/in-band-only configuration, layered HEVC
+Not supported: encrypted or sample-grouped fragments, `avc3`/in-band-only configuration, layered HEVC
 (`nuh_layer_id` > 0), and edit-list trimming (edits are preserved metadata; every sample is
 decoded).
 

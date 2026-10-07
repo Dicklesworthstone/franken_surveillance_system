@@ -46,9 +46,10 @@ synthetic scenes). None of it has been measured on real camera footage.
 - **Ingest and capture:** file import with custody for Annex-B/MJPEG/rtpplay and indexed MP4
   with an H.264 `avc1` (`mp4avc`) or H.265 `hvc1`/`hev1` (`mp4hevc`) track: one segment per
   sample with exact source spans, every other byte typed container structure, `avcC`/`hvcC`
-  parameter sets read back from custody; decode bit-exact against FFmpeg on moov-first and
-  interleaved-audio moov-last fixtures, including a CRA-led H.265 range; fragmented MP4 not
-  supported (`ingest::file_adapter`, `fss-file import`); RTSP negotiation, Digest authentication and interleaved-TCP capture
+  parameter sets read back from custody; indexed and fragmented (`moof`/`trun`) files; decode
+  bit-exact against FFmpeg on moov-first, interleaved-audio moov-last and fragmented fixtures,
+  including CRA-led H.265 ranges, and FSS's own fragment muxer output reads back exactly
+  (`ingest::file_adapter`, `fss-file import`); RTSP negotiation, Digest authentication and interleaved-TCP capture
   (`rtsp::*`, `std::net::TcpStream`); native HTTP MJPEG capture (`ingest::http_camera`); local
   capture archives with checkpoints, recovery, pins and verify/export (`fss-archive`).
 - **Media:** RTP H.264/H.265 depacketization (`fss-packet`); baseline JPEG/MJPEG decode, gray and
@@ -408,7 +409,7 @@ A passing developer run demonstrates the exact checked tree only. It does not by
 - Native camera discovery, transport, codec/media, calibration, archive, drone, notification, and vendor-boundary implementations.
 - Persistent FrankenSQLite/FrankenFS/ATP integration beyond the deterministic in-process reference stores.
 - Production pure-Rust model runtime, package verification, generation management, batching, calibration, and fallback.
-- Certified graph/search kernels and incremental graph intelligence (one family, `ALG-BRIDGE-001`, is implemented and oracle-certified; 26 registered algorithms and every graph qualification lane remain open).
+- Certified graph/search kernels and incremental graph intelligence (17 families are implemented and oracle-certified, see "Graph intelligence" above; the other registered algorithms, retained-record projection builders and every graph qualification lane remain open).
 
 ### Agent operating system
 

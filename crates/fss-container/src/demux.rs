@@ -1,8 +1,9 @@
 #![forbid(unsafe_code)]
-//! Source-preserving indexed AVC MP4 demultiplexing (FSS-115).
+//! Source-preserving AVC/HEVC MP4 demultiplexing (FSS-115).
 //!
-//! The admitted profile is self-contained, nonfragmented ISO BMFF with one selected `avc1`
-//! video sample description. Decode/composition ticks, edit lists and the track matrix are
+//! The admitted profile is self-contained ISO BMFF, indexed (`moov` sample tables) or fragmented
+//! (`mvex` plus `moof`/`trun`), with one selected `avc1` or `hvc1`/`hev1` video sample
+//! description. Decode/composition ticks, edit lists and the track matrix are
 //! preserved, not interpreted as capture time or silently applied to an elementary stream.
 //! Other tracks are explicitly outside the selection. No decoder, filesystem or effect runs.
 
@@ -11,6 +12,7 @@ mod reader;
 use reader::{Reader, full, one, optional};
 mod tables;
 use tables::*;
+mod fragments;
 
 /// Hard source byte ceiling, independent of media-decode limits.
 pub const MAX_MP4_INPUT_BYTES: usize = 512 * 1024 * 1024;
@@ -224,12 +226,7 @@ impl<'a> AvcMp4<'a> {
         {
             return Err(DemuxError::Unsupported);
         }
-        if top
-            .iter()
-            .any(|b| matches!(&b.kind, b"moof" | b"sidx" | b"mfra"))
-        {
-            return Err(DemuxError::Unsupported);
-        }
+        let has_fragments = top.iter().any(|b| b.kind == *b"moof");
         let media: Vec<_> = top
             .iter()
             .filter(|b| b.kind == *b"mdat")
@@ -246,7 +243,12 @@ impl<'a> AvcMp4<'a> {
         }
         let moov = one(&top, b"moov")?;
         let movie = r.children(moov.body, false)?;
-        if movie.iter().any(|b| matches!(&b.kind, b"mvex" | b"cmov")) {
+        if movie.iter().any(|b| b.kind == *b"cmov") {
+            return Err(DemuxError::Unsupported);
+        }
+        // Movie fragments are read only when the movie declares them (mvex), and vice versa.
+        let mvex = optional(&movie, b"mvex")?;
+        if mvex.is_some() != has_fragments {
             return Err(DemuxError::Unsupported);
         }
         let mvhd = one(&movie, b"mvhd")?;
@@ -315,23 +317,42 @@ impl<'a> AvcMp4<'a> {
         let stsd = one(&tables, b"stsd")?;
         let (codec, dimensions, length_bytes, parameter_sets) = configuration(&mut r, &stsd)?;
         let sizes = sizes(&mut r, &one(&tables, b"stsz")?)?;
-        if sizes.is_empty() {
-            return Err(DemuxError::Layout);
-        }
-        let offsets = offsets(&mut r, &tables)?;
-        let locations = locations(&mut r, &one(&tables, b"stsc")?, &sizes, &offsets, &media)?;
-        let timing = timing(&mut r, &one(&tables, b"stts")?, sizes.len())?;
-        let total_duration = timing
-            .last()
-            .and_then(|(d, n)| d.checked_add(u64::from(*n)))
-            .ok_or(DemuxError::Timeline)?;
-        if declared_duration != u64::MAX && declared_duration != total_duration {
-            return Err(DemuxError::Timeline);
-        }
-        let composition = composition(&mut r, optional(&tables, b"ctts")?, sizes.len())?;
-        let sync = sync_samples(&mut r, optional(&tables, b"stss")?, sizes.len())?;
-        let mut samples = Vec::with_capacity(sizes.len());
-        for (index, range) in locations.into_iter().enumerate() {
+        let entries: Vec<fragments::FragmentSample> = if let Some(mvex) = mvex {
+            // A fragmented movie keeps its samples in moof/trun, never in the moov tables.
+            if !sizes.is_empty() {
+                return Err(DemuxError::Unsupported);
+            }
+            fragments::fragments(&mut r, &top, &mvex, track, &media)?
+        } else {
+            if sizes.is_empty() {
+                return Err(DemuxError::Layout);
+            }
+            let offsets = offsets(&mut r, &tables)?;
+            let locations = locations(&mut r, &one(&tables, b"stsc")?, &sizes, &offsets, &media)?;
+            let timing = timing(&mut r, &one(&tables, b"stts")?, sizes.len())?;
+            let total_duration = timing
+                .last()
+                .and_then(|(d, n)| d.checked_add(u64::from(*n)))
+                .ok_or(DemuxError::Timeline)?;
+            if declared_duration != u64::MAX && declared_duration != total_duration {
+                return Err(DemuxError::Timeline);
+            }
+            let composition = composition(&mut r, optional(&tables, b"ctts")?, sizes.len())?;
+            let sync = sync_samples(&mut r, optional(&tables, b"stss")?, sizes.len())?;
+            locations
+                .into_iter()
+                .zip(timing)
+                .zip(composition)
+                .zip(sync)
+                .map(|(((range, (decode, duration)), offset), sync)| {
+                    (range, decode, duration, offset, sync)
+                })
+                .collect()
+        };
+        let mut samples = Vec::with_capacity(entries.len());
+        for (index, (range, decode_time, duration, composition_offset, sync_sample)) in
+            entries.into_iter().enumerate()
+        {
             let mut idr = false;
             let mut vcl = false;
             nals(source, range.clone(), length_bytes, &mut |nal| {
@@ -373,10 +394,10 @@ impl<'a> AvcMp4<'a> {
             samples.push(AvcSample {
                 index,
                 source: range,
-                decode_time: timing[index].0,
-                duration: timing[index].1,
-                composition_offset: composition[index],
-                sync_sample: sync[index],
+                decode_time,
+                duration,
+                composition_offset,
+                sync_sample,
                 contains_idr: idr,
             });
         }

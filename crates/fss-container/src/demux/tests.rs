@@ -542,3 +542,69 @@ fn avc_mp4_reports_its_codec_and_avcc_parameter_sets() -> Test {
     assert_eq!(length_prefixed_nals(&[0, 1, 0x65], 3), Err(DemuxError::Nal));
     Ok(())
 }
+/// Byte offset of the `n`th (zero-based) box type `kind` anywhere in `bytes`.
+fn nth_box(bytes: &[u8], kind: &[u8; 4], n: usize) -> usize {
+    bytes
+        .windows(4)
+        .enumerate()
+        .filter(|(_, window)| *window == kind)
+        .nth(n)
+        .map(|(at, _)| at)
+        .expect("fixture box")
+}
+#[test]
+fn fragmented_mp4_indexes_every_moof_sample_like_the_indexed_layout() -> Test {
+    let fragmented = include_bytes!("../../tests/fixtures/fragmented_av.mp4");
+    let indexed = include_bytes!("../../tests/fixtures/interleaved_av.mp4");
+    let f = AvcMp4::parse(fragmented, None, DemuxLimits::default())?;
+    let i = AvcMp4::parse(indexed, None, DemuxLimits::default())?;
+    assert_eq!(f.codec(), VideoCodec::Avc);
+    assert_eq!(f.samples().len(), 10);
+    // FFprobe packet positions of the two fragments' video samples.
+    let positions = [1490, 3230, 3306, 3355, 3388, 4658, 5821, 5920, 5941, 5999];
+    for (k, sample) in f.samples().iter().enumerate() {
+        assert_eq!(sample.source.start, positions[k]);
+        assert_eq!(sample.decode_time, k as u64 * 2048);
+        assert_eq!(sample.sync_sample, k % 5 == 0);
+        assert_eq!(sample.contains_idr, k % 5 == 0);
+    }
+    // The same encode stored indexed and fragmented carries identical NAL payloads.
+    for (a, b) in f.samples().iter().zip(i.samples()) {
+        assert_eq!(fragmented[a.source.clone()], indexed[b.source.clone()]);
+        assert_eq!(a.duration, b.duration);
+    }
+    assert_eq!(f.annex_b(0, 10)?.bytes(), i.annex_b(0, 10)?.bytes());
+    assert_eq!(f.annex_b(5, 5)?.bytes(), i.annex_b(5, 5)?.bytes());
+    Ok(())
+}
+#[test]
+fn fragment_structure_tampering_is_refused_whole() -> Test {
+    let original = include_bytes!("../../tests/fixtures/fragmented_av.mp4").to_vec();
+    let parse = |bytes: &[u8]| AvcMp4::parse(bytes, None, DemuxLimits::default()).map(|_| ());
+    // moof without a movie-level mvex declaration.
+    let mut bytes = original.clone();
+    let mvex = nth_box(&bytes, b"mvex", 0);
+    bytes[mvex..mvex + 4].copy_from_slice(b"free");
+    assert_eq!(parse(&bytes), Err(DemuxError::Unsupported));
+    // Movie fragment sequence numbers must increase.
+    let mut bytes = original.clone();
+    let first = nth_box(&bytes, b"mfhd", 0) + 8;
+    let second = nth_box(&bytes, b"mfhd", 1) + 8;
+    let value = bytes[first..first + 4].to_vec();
+    bytes[second..second + 4].copy_from_slice(&value);
+    assert_eq!(parse(&bytes), Err(DemuxError::Layout));
+    // A run whose data offset leaves its mdat.
+    let mut bytes = original.clone();
+    let offset = nth_box(&bytes, b"trun", 0) + 12;
+    bytes[offset..offset + 4].copy_from_slice(&0x0010_0000_u32.to_be_bytes());
+    assert_eq!(parse(&bytes), Err(DemuxError::Layout));
+    // A decode time that moves backwards across fragments.
+    let mut bytes = original;
+    let tfdt = nth_box(&bytes, b"tfdt", 2);
+    let version = bytes[tfdt + 4];
+    let at = tfdt + 8;
+    let width = if version == 1 { 8 } else { 4 };
+    bytes[at..at + width].fill(0);
+    assert_eq!(parse(&bytes), Err(DemuxError::Timeline));
+    Ok(())
+}
