@@ -352,6 +352,7 @@
     "crates/fss-reference/src/ingest/package_detect.rs": "support",
     "crates/fss-reference/src/ingest/package_detect/sentinel.rs": "support",
     "crates/fss-reference/src/ingest/package_event.rs": "support",
+    "crates/fss-reference/src/ingest/package_event/reader.rs": "support",
     "crates/fss-reference/src/ingest/package_event/source_validation.rs": "support",
     "crates/fss-reference/src/ingest/package_event/tracking.rs": "support",
     "crates/fss-reference/src/ingest/pixel_change.rs": "support",

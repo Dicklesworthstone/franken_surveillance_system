@@ -694,7 +694,7 @@ impl<'a> FrameAdmission<'a> {
     }
 }
 
-fn json_string(value: &str) -> String {
+pub(super) fn json_string(value: &str) -> String {
     let mut out = String::from("\"");
     for c in value.chars() {
         match c {

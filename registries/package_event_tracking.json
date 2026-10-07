@@ -1,6 +1,6 @@
 {
   "registryId": "package_event_tracking",
-  "generation": 2,
+  "generation": 3,
   "owner": "crates/fss-reference/src/ingest/package_event.rs",
   "status": "implemented_unqualified",
   "formats": [
@@ -21,9 +21,17 @@
       "maximumBytes": 4194304,
       "encoding": "fss-core CanonicalEncoder",
       "layout": [
-        "bytes(magic)", "u32(version)", "text(domain)", "digest(policy)",
-        "digest(packageReport)", "digest(record)", "text(label)", "u64(classIndex)",
-        "u32(confirmationHits)", "u32(maximumMissedFrames)", "u32(minimumIouPpm)",
+        "bytes(magic)",
+        "u32(version)",
+        "text(domain)",
+        "digest(policy)",
+        "digest(packageReport)",
+        "digest(record)",
+        "text(label)",
+        "u64(classIndex)",
+        "u32(confirmationHits)",
+        "u32(maximumMissedFrames)",
+        "u32(minimumIouPpm)",
         "digest(retainedRoot)",
         "u64(frameCount); each: u64(segment), digest(capsule), u64(selectedDetectionCount)",
         "u64(boundaryCount); each: u64(beforeSegment), bool(sourceGap), bool(sequenceGap), bool(dimensionsChanged)",
@@ -60,14 +68,59 @@
     "confirmationAcrossBoundary": "forbidden"
   },
   "sourceRevalidation": {
-    "boundaries": ["new_retention", "retained_open", "analysis", "prepare", "publish_reprepare"],
-    "checks": ["complete_unique_segment_set", "exact_import_root", "format", "capsule_digest", "sensor", "capture_interval", "one_clock", "encoded_source_custody"],
+    "boundaries": [
+      "new_retention",
+      "retained_open",
+      "analysis",
+      "prepare",
+      "publish_reprepare",
+      "published_event_read",
+      "exact_publication_retry"
+    ],
+    "checks": [
+      "complete_unique_segment_set",
+      "exact_import_root",
+      "format",
+      "capsule_digest",
+      "sensor",
+      "capture_interval",
+      "one_clock",
+      "encoded_source_custody"
+    ],
     "maximumFrames": 64,
     "maximumSourceBytes": 536870912,
     "maximumSegmentBytes": 16777216,
     "modelRerun": false,
     "automaticRepair": false,
     "numericalInferenceAttestation": false
+  },
+  "publishedEventRead": {
+    "api": "PackageEvent::open",
+    "cli": "fss-event read --event-id event:package:<track>",
+    "exports": [
+      "--event-out canonical_event_json",
+      "--report-out canonical_package_analysis"
+    ],
+    "exportDestination": "create_only_outside_deployment",
+    "supportedEventPolicy": "fss.package_event_policy.v2",
+    "existingDurableEncodings": "unchanged",
+    "authority": "current_event_object_and_complete_exact_revision_chain",
+    "provenance": "rebuild_analysis_and_compare_every_retained_proof_object",
+    "maximumLedgerBatches": 65536,
+    "maximumEventHistoryBytes": 33554432,
+    "maximumLineageRevisions": 256,
+    "exactRetry": "verify_event_and_provenance_preserve_original_root_revision_anchor",
+    "sourceModelOrReportInputFilesRequired": false,
+    "modelRerun": false,
+    "automaticRepair": false,
+    "independentSuccessor": "refuse_without_downgrade"
+  },
+  "privacyRevalidation": {
+    "newRetention": "actual_computation_binding_equals_current_mask",
+    "retainedOpen": "retained_report_canonical_identity_prefix_and_full_mask_equal_current_binding",
+    "authorityCurrency": "retention_anchor_mask_generation_equals_current_generation",
+    "legacyDelayedRetention": "refuse_stale_computation_even_if_retained_under_current_anchor",
+    "staleBindingError": "ERR-PRIVACY-UNMASKED-ACCESS-REFUSED-001"
   },
   "effectsAuthorized": false,
   "absenceCertifiable": false,
@@ -77,11 +130,20 @@
     "pythonEpochCasesPassed": 8184,
     "pythonDisplayBoundaryCasesPassed": 34406,
     "pythonNativeFixtureSyntax": "passed",
-    "rustCompilation": "not_run_toolchain_unavailable",
-    "rustTests": "not_run_toolchain_unavailable",
-    "nativeCliFixture": "not_run_binaries_unavailable",
-    "rustfmt": "not_run",
+    "rustCompilation": "passed_required_cli_targets_on_pinned_toolchain",
+    "rustTests": "focused_native_integration_contracts_passed",
+    "nativeCliFixture": "passed_package_continuity_and_recovery",
+    "rustfmt": "passed_modified_rust_sources",
     "clippy": "not_run",
-    "productionOrQualityClaim": "none"
+    "productionOrQualityClaim": "none",
+    "nativeRecoveryValidation": {
+      "date": "2026-10-07",
+      "referenceTestsPassed": 7,
+      "cliRecoveryTestsPassed": 1,
+      "cliContinuityTestsPassed": 1,
+      "execution": "unchanged_test_sources_compiled_with_pinned_rustc_test_against_cargo_built_production_libraries",
+      "fullWorkspaceQualification": "not_run",
+      "rustUnitTests": "not_run_in_this_session"
+    }
   }
 }

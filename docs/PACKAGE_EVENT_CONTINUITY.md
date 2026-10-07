@@ -88,6 +88,45 @@ Use the returned report digest and confirmed track identity with the existing
 indeterminate and single-sensor. Nothing here grants alert authority or turns a
 model label into corroboration, identity, intent, or certified absence.
 
+## Cold read and recovery of published package events
+
+`fss-event read` now dispatches `event:package:` candidates to `PackageEvent::open`.
+Previously every read entered the luma-event reader, which rejected the package policy
+generation with an unrelated history-extension error. Repeated identical preparation
+or publication did not cause that failure.
+
+```sh
+fss-event read --root /path/to/deployment --site site:home \
+  --event-id "$PUBLISHED_EVENT_ID" \
+  --event-out recovered-event.json --report-out recovered-analysis.bin
+```
+
+The source input, model package and loose detection/analysis report files can all be
+gone. The reader verifies the current event authority and complete revision chain,
+rebuilds the package analysis from retained detection and source custody, and compares
+every retained provenance object to the reconstructed graph. It returns the original
+event root, revision and publication anchor even when unrelated commits moved the
+deployment head. The recovered analysis bytes can be used in an exact `prepare` /
+`publish` retry. Both exports are create-only files outside the deployment; neither
+includes source media or model weights.
+
+Exact publication retries perform the same event/provenance verification. Matching
+ledger witnesses alone cannot report success over missing or damaged objects. Missing,
+corrupt or deleted source, changed analysis, forged nonextending history, and an
+independently superseding event decision are refused without repair or replacement.
+No model runs during read or retry.
+
+Current privacy authority is checked before serving or reusing detection coordinates.
+A mask generation changed after detection retention refuses the older analysis with
+`ERR-PRIVACY-UNMASKED-ACCESS-REFUSED-001`. New retention also checks that the completed
+computation used the sensor's current mask. Reopen checks the retained report's exact
+canonical identity prefix and full declared mask as well as the immutable retention
+anchor; an old unmasked computation retained after mask declaration cannot inherit
+that later authority. This leaves valid v1 detection-record, v2 analysis, event, provenance and approval bytes
+unchanged. The reader supports the current v2 package-event policy; it does not
+reinterpret legacy v1 or unknown policy generations. Candidates remain uncalibrated,
+unclassified, indeterminate and single-sensor.
+
 ## Validation boundaries
 
 Executed in the implementation environment: an independent Python assignment
@@ -114,7 +153,32 @@ cargo test -p fss-cli --test package_continuity_cli_contract
 cargo test -p fss-cli --test sentinel_detection_cli_contract
 ```
 
-**Rust compilation, Rust/native CLI tests, rustfmt and Clippy were not run: this
-session has no Rust toolchain or built binaries.** No release gate or production
-qualification is promoted. Always-on live service integration and deployment-level
-model quality remain separate unfinished work.
+For the original assignment/continuity implementation described above, Rust
+compilation, Rust/native CLI tests, rustfmt and Clippy were not run because that
+implementation session had no Rust toolchain or built binaries. No release gate or
+production qualification was promoted. Always-on live service integration and
+deployment-level model quality remain separate unfinished work.
+
+The cold-read regression targets are:
+
+```sh
+cargo test --locked --offline -p fss-reference --test package_event_reader_contract
+cargo test --locked --offline -p fss-cli --test detector_cascade_cli_contract \
+  retained_package_detection_flows_through_report_prepare_and_publish
+```
+
+These cover restart, read/report export, exact retries, cancellation, damaged and
+missing event/report/provenance/capsule/source objects, changed successors, rejection
+of a nonextending predecessor, later privacy policies, legacy delayed-retention privacy
+checks, deletion, and export destination restrictions. Each reference
+case performs one native YOLOX package inference before exercising retained recovery;
+the CLI case removes the original model package and analysis file before cold read.
+
+Native recovery validation on 2026-10-07 passed all 7 `package_event_reader_contract`
+cases, the extended `retained_package_detection_flows_through_report_prepare_and_publish`
+CLI case, and `package_continuity_cli_contract`. Required binaries and production libraries
+were built with the pinned Cargo toolchain; the unchanged test sources were compiled with
+the same pinned `rustc --test`, exact Cargo artifacts and required binary paths. These are
+focused native integration checks; the full workspace and release qualification lanes were
+not run. The source, model and exported analysis files were removed before the CLI recovery
+check, and the recovered canonical analysis still supported an exact publication retry.

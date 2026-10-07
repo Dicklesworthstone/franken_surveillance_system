@@ -12,6 +12,82 @@ use super::{
 use crate::ingest::recorded_decode::{RecordedDecodeError, source_capsule};
 use crate::ingest::{RetainedFileImport, RetainedReadLimits};
 
+/// Revalidate both the retained report's actual computation binding and the mask at retention
+/// against current authority. An old delayed computation is not blessed by a newer publication
+/// anchor, and a later mask cannot authorize export or reuse of older coordinates.
+pub(super) fn verify_current_privacy(
+    deployment: &ReferenceDeployment,
+    record: &PackageDetectionRecord,
+    anchor: &fss_core::LedgerAnchor,
+    report_json: &[u8],
+    cx: &ReplayCx,
+) -> Result<()> {
+    use crate::ingest::privacy_mask::{PrivacyMaskError, current_mask, mask_object_id};
+    use crate::reference_deployment::FAMILY_PRIVACY_MASK_POLICY;
+
+    let sensor = SensorId::parse(&record.frames[0].sensor_id)?;
+    let object = mask_object_id(&sensor)?;
+    let current = current_mask(deployment, &sensor)?;
+    let mut at_retention = None;
+    for batch in deployment.ledger().batches() {
+        checkpoint(cx, "package_event:privacy")?;
+        if batch.new_anchor.commit_sequence > anchor.commit_sequence {
+            break;
+        }
+        for delta in &batch.deltas {
+            if delta.object_id == object && delta.family == FAMILY_PRIVACY_MASK_POLICY {
+                at_retention = Some((delta.new_generation, delta.payload_digest));
+            }
+        }
+    }
+    if at_retention != current.generation().zip(current.policy_digest()) {
+        return Err(PrivacyMaskError::UnmaskedAccessRefused.into());
+    }
+    verify_report_privacy(record, report_json, &current)
+}
+
+/// The retained report is the exact, digest-pinned output of the first-party report writer.
+/// Its canonical prefix contains the full computation mask before any variable frame data.
+/// Check the entire identity prefix and mask object at that fixed position, never a substring
+/// search (model names, labels and other untrusted strings may contain misleading text).
+/// Prefix construction is bounded by the record's 512-byte text and mask's 32-region ceilings;
+/// it neither parses nor allocates another copy of the potentially large frame arrays.
+pub(super) fn verify_report_privacy(
+    record: &PackageDetectionRecord,
+    report_json: &[u8],
+    privacy: &crate::ingest::privacy_mask::MaskBinding,
+) -> Result<()> {
+    use crate::ingest::package_detect::{PACKAGE_DETECTION_REPORT_SCHEMA, json_string};
+    use crate::ingest::privacy_mask::PrivacyMaskError;
+
+    let identity = format!(
+        "{{\"schema\":\"{PACKAGE_DETECTION_REPORT_SCHEMA}\",\"package_digest\":\"{}\",\"manifest_digest\":\"{}\",\"model_id\":{},\"generation\":{},\"model_digest\":\"{}\",\"graph_digest\":\"{}\",\"contract_digest\":\"{}\",\"source_import\":\"{}\",\"media_format\":{},\"first_segment\":{},\"segment_count\":{},\"privacy_mask\":",
+        record.package_digest,
+        record.manifest_digest,
+        json_string(&record.model_id),
+        json_string(&record.generation),
+        record.model_digest,
+        record.graph_digest,
+        record.contract_digest,
+        record.import_identity,
+        json_string(&record.media_format),
+        record.first_segment,
+        record.segment_count,
+    );
+    let remaining = report_json
+        .strip_prefix(identity.as_bytes())
+        .ok_or(PackageEventError::Mismatch)?;
+    let expected = format!(
+        "{},\"minimum_score_ppm\":{},",
+        privacy.to_json(),
+        record.minimum_score_ppm
+    );
+    if !remaining.starts_with(expected.as_bytes()) {
+        return Err(PrivacyMaskError::UnmaskedAccessRefused.into());
+    }
+    Ok(())
+}
+
 /// A source-coordinate boundary that starts a fresh package-tracking epoch.
 /// Reasons are independent: one boundary may carry several of them.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]

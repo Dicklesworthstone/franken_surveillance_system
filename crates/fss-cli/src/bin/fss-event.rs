@@ -19,7 +19,8 @@ use fss_reference::ingest::analysis::{
 };
 use fss_reference::ingest::detections::{BoxEncoding, CoordinateSpace, DetectionSpec};
 use fss_reference::ingest::package_event::{
-    PackageAnalysisReport, PackageEventProposal, PackageEventStatus, PackageTrackingConfig,
+    PackageAnalysisReport, PackageEvent, PackageEventProposal, PackageEventStatus,
+    PackageTrackingConfig,
 };
 use fss_reference::ingest::recorded_decode::ComponentInterpretation;
 use fss_reference::ingest::recorded_event::{RecordedEvent, RecordedEventProposal};
@@ -58,12 +59,16 @@ const HELP: &str = "fss-event <report|prepare|publish|read|watch|corroborate|cal
           --report-out FILE [--minimum-iou-ppm N --confirmation-hits N --maximum-missed-frames N]\n\
     Consumes a fss.package_detection_report.v1 that `fss-infer package-detect --retain yes`\n\
     retained (by its report digest; no model runs here), tracks the chosen label with the\n\
-    Kalman tracker and exports a canonical fss.package_analysis_report.v1. prepare/publish\n\
+    Kalman tracker and exports a canonical fss.package_analysis_report.v2. prepare/publish\n\
     accept that report exactly like a luma report and record an unclassified, indeterminate,\n\
     single-sensor event; detector scores are uncalibrated supporting evidence only.\n\
   prepare/publish: --report FILE --report-digest sha256:HEX --track sha256:HEX\n\
   publish additionally requires: --proposal-digest sha256:HEX\n\
   read: --event-id ID (report and original source/model files are not required)\n\
+    Reconstructs recorded-luma and event:package: candidates from retained source custody,\n\
+    exact analysis and the authoritative event/provenance graphs. Package reads do not run\n\
+    the model. Missing, damaged or superseded evidence is refused; exact retries preserve\n\
+    the original revision, event root and publication anchor.\n\
   Budgets: --detection-work-units N --association-work-units N --max-report-bytes N\n\
   Exports: --event-out FILE (canonical event JSON); read also accepts --report-out FILE\n\
   An existing operator-authorized deployment is required. Report inputs are complete\n\
@@ -716,7 +721,7 @@ fn run(options: Options, out: &mut impl Write) -> RunResult<()> {
     let authority = ContextAuthority::new_root(RootAuthoritySpec {
         trace_id: "trace:event-cli".into(),
         operation_id: OperationId::parse("operation:event-cli")?,
-        principal: options.principal,
+        principal: options.principal.clone(),
         capabilities,
         deadline: None,
         priority: 10,
@@ -837,6 +842,9 @@ fn run(options: Options, out: &mut impl Write) -> RunResult<()> {
                 return Ok(());
             }
             Action::Read(id) => {
+                if id.as_str().starts_with("event:package:") {
+                    return read_package_event(&options, &deployment, id, &cx, out);
+                }
                 let record =
                     RecordedEvent::open(&deployment, id, &options.limits, &mut budget, &cx)?;
                 (record.event().clone(), Some(record), "read_verified")
@@ -936,6 +944,40 @@ fn run(options: Options, out: &mut impl Write) -> RunResult<()> {
     cx.drain_and_finalize();
     result
 }
+
+fn read_package_event(
+    options: &Options,
+    deployment: &ReferenceDeployment,
+    id: &EventId,
+    cx: &ReplayCx,
+    out: &mut impl Write,
+) -> RunResult<()> {
+    let record = PackageEvent::open(deployment, id, cx)?;
+    if record.report().encoded().len() > options.limits.maximum_report_bytes {
+        return Err(fss_reference::ingest::package_event::PackageEventError::Limit.into());
+    }
+    if let Some(path) = &options.event_out {
+        export(
+            path,
+            record.event().to_canonical_json().as_bytes(),
+            &options.root,
+            cx,
+        )?;
+    }
+    if let Some(path) = &options.report_out {
+        export(path, record.report().encoded(), &options.root, cx)?;
+    }
+    writeln!(
+        out,
+        "event_root={}\nauthority_sequence={}\nreport_digest={}\ntrack={}",
+        record.root(),
+        record.authority_anchor().commit_sequence,
+        record.report().digest(),
+        record.track()
+    )?;
+    print_package_event(record.event(), "read_verified", out)
+}
+
 /// `prepare`/`publish` of a package analysis report (see `ingest::package_event`).
 fn package_event(
     action: &Action,
@@ -982,6 +1024,14 @@ fn package_event(
     if let Some(path) = event_out {
         export(path, event.to_canonical_json().as_bytes(), root, cx)?;
     }
+    print_package_event(&event, operation, out)
+}
+
+fn print_package_event(
+    event: &fss_core::EventHypothesis,
+    operation: &str,
+    out: &mut impl Write,
+) -> RunResult<()> {
     let supporting = event.evidence.iter().filter(|e| e.supports).count();
     writeln!(
         out,

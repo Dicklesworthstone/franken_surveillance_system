@@ -16,6 +16,8 @@
 //! 3. [`PackageEventProposal`] prepares and, with the exact approved proposal digest, publishes
 //!    one confirmed track as an `Unclassified`, `Indeterminate`, abstaining, single-sensor event
 //!    through the deployment's guarded event publisher (`fss-event prepare` / `publish`).
+//! 4. [`PackageEvent::open`] recovers that published candidate and its exact analysis from
+//!    retained authority and custody, without the original media, model or exported reports.
 //!
 //! Version-2 analyses retain the actual one-to-one tracker assignment and explicit source-gap,
 //! sequence-gap and dimension-change boundaries. Each boundary resets confirmation and motion;
@@ -48,8 +50,10 @@ use crate::{
     ReferenceDeployment, ReferenceError, ReferencePolicyAction, ReferencePolicyDecision, ReplayCx,
 };
 
+mod reader;
 mod source_validation;
 mod tracking;
+pub use reader::PackageEvent;
 pub use source_validation::PackageTrackingBoundary;
 
 /// Canonical record of one retained package detection. Valid v1 bytes remain unchanged.
@@ -91,6 +95,8 @@ pub enum PackageEventError {
     InvalidRequest(&'static str),
     /// The deployment retains no package detection with this report digest.
     Unavailable,
+    /// The requested package event has not been published in this deployment.
+    EventUnavailable,
     /// Retained custody, report bytes or rebuilt provenance disagree.
     Mismatch,
     /// A hard frame, detection, track or byte bound was reached.
@@ -107,6 +113,8 @@ pub enum PackageEventError {
     Tracker(String),
     /// Original source custody, identity, read limit, or cancellation refusal.
     Source(Box<RecordedDecodeError>),
+    /// The sensor's current privacy policy no longer permits the retained analysis.
+    Privacy(Box<super::privacy_mask::PrivacyMaskError>),
     /// Shared canonical validation failed.
     Contract(ContractError),
     /// Event schema refusal.
@@ -126,13 +134,14 @@ impl PackageEventError {
     pub fn stable_id(&self) -> &'static str {
         match self {
             Self::InvalidRequest(_) | Self::Tracker(_) => "ERR-PACKAGE-EVENT-REQUEST-001",
-            Self::Unavailable => "ERR-PACKAGE-EVENT-UNAVAILABLE-001",
+            Self::Unavailable | Self::EventUnavailable => "ERR-PACKAGE-EVENT-UNAVAILABLE-001",
             Self::Mismatch => "ERR-PACKAGE-EVENT-MISMATCH-001",
             Self::TrackUnavailable => "ERR-PACKAGE-EVENT-TRACK-001",
             Self::StaleProposal => "ERR-PACKAGE-EVENT-APPROVAL-STALE-001",
             Self::Conflict => "ERR-IDEMPOTENCY-CONFLICT-001",
             Self::Cancelled => "ERR-PACKAGE-EVENT-CANCELLED-001",
             Self::Source(error) => error.stable_id(),
+            Self::Privacy(error) => error.stable_id(),
             _ => "ERR-PACKAGE-EVENT-001",
         }
     }
@@ -144,6 +153,7 @@ impl fmt::Display for PackageEventError {
             Self::Unavailable => f.write_str(
                 "no retained package detection with this report digest (run fss-infer package-detect --retain yes)",
             ),
+            Self::EventUnavailable => f.write_str("published package event unavailable"),
             Self::Mismatch => f.write_str("package detection custody or report mismatch"),
             Self::Limit => f.write_str("package event bound exceeded"),
             Self::TrackUnavailable => {
@@ -156,6 +166,7 @@ impl fmt::Display for PackageEventError {
             Self::Cancelled => f.write_str("package event cancelled"),
             Self::Tracker(why) => write!(f, "package event tracker refused: {why}"),
             Self::Source(e) => write!(f, "package event source: {e}"),
+            Self::Privacy(e) => write!(f, "package event privacy: {e}"),
             Self::Contract(e) => write!(f, "package event contract: {e}"),
             Self::Event(e) => write!(f, "package event schema: {e}"),
             Self::Reference(e) => write!(f, "package event deployment: {e}"),
@@ -176,6 +187,7 @@ macro_rules! conversion {
     };
 }
 conversion!(RecordedDecodeError, Source);
+conversion!(super::privacy_mask::PrivacyMaskError, Privacy);
 conversion!(ContractError, Contract);
 conversion!(EventDecodeError, Event);
 conversion!(ReferenceError, Reference);
@@ -628,7 +640,14 @@ impl RetainedPackageDetection {
         {
             return Err(PackageEventError::Mismatch);
         }
-        read_verified(deployment, record.report_digest)?;
+        let report_json = read_verified(deployment, record.report_digest)?;
+        source_validation::verify_current_privacy(
+            deployment,
+            &record,
+            &batch.new_anchor,
+            &report_json,
+            cx,
+        )?;
         let boundaries = source_validation::verify_sources(deployment, &record, cx)?;
         Ok(Self {
             record,
@@ -689,6 +708,17 @@ pub fn retain_package_detection(
         return Err(PackageEventError::Mismatch);
     }
     let record = PackageDetectionRecord::from_report(package, report)?;
+    // A computation held across an explicit policy change cannot be newly retained under the
+    // later authority anchor. Existing encodings remain unchanged; retained reads additionally
+    // compare that anchor's mask generation to current authority before serving coordinates.
+    let sensor = fss_core::SensorId::parse(&record.frames[0].sensor_id)?;
+    let current_privacy = super::privacy_mask::current_mask(deployment, &sensor)?;
+    if current_privacy.digest() != report.privacy.digest()
+        || current_privacy.generation() != report.privacy.generation()
+    {
+        return Err(super::privacy_mask::PrivacyMaskError::UnmaskedAccessRefused.into());
+    }
+    source_validation::verify_report_privacy(&record, report.json.as_bytes(), &current_privacy)?;
     let target = record.batch_id()?;
     if deployment
         .ledger()
@@ -1055,7 +1085,7 @@ pub struct PackageEventProposal {
     track: ContentDigest,
     proof: Provenance,
     digest: ContentDigest,
-    status: PackageEventStatus,
+    existing: Option<PackageEventReceipt>,
 }
 
 fn insert(objects: &mut BTreeMap<ContentDigest, Vec<u8>>, bytes: Vec<u8>) -> ContentDigest {
@@ -1192,31 +1222,6 @@ fn provenance(report: &PackageAnalysisReport, track: ContentDigest) -> Result<Pr
     })
 }
 
-fn current_status(
-    deployment: &ReferenceDeployment,
-    event: &EventHypothesis,
-) -> Result<PackageEventStatus> {
-    let object = ObjectId::parse(format!("object:event:{}", event.event_id.as_str()))?;
-    let Some(current) = deployment.ledger().current().objects.get(&object) else {
-        return Ok(PackageEventStatus::Prepared);
-    };
-    let revision = event.revision_digest();
-    let exact = deployment.ledger().batches().iter().any(|batch| {
-        batch.deltas.iter().any(|delta| {
-            delta.object_id == object
-                && delta.family == "event_revision"
-                && delta.new_generation == current.generation
-                && delta.payload_digest == current.payload_digest
-                && delta.witness_digest == Some(revision)
-        })
-    });
-    if exact {
-        Ok(PackageEventStatus::AlreadyPublished)
-    } else {
-        Err(PackageEventError::Conflict)
-    }
-}
-
 /// Completed publication.
 #[derive(Clone, Debug)]
 pub struct PackageEventReceipt {
@@ -1247,7 +1252,7 @@ impl PackageEventProposal {
         checkpoint(cx, "package_event:prepare")?;
         let report = PackageAnalysisReport::verify(deployment, report_bytes, report_digest, cx)?;
         let proof = provenance(&report, track)?;
-        let status = current_status(deployment, &proof.event)?;
+        let existing = reader::existing_receipt(deployment, &proof, report.digest(), track, cx)?;
         let mut e = CanonicalEncoder::new();
         e.text(PROPOSAL_DOMAIN);
         e.digest(proof.event.revision_digest());
@@ -1258,7 +1263,7 @@ impl PackageEventProposal {
             track,
             proof,
             digest,
-            status,
+            existing,
         })
     }
     /// Exact approval identity (event revision digest plus provenance root).
@@ -1279,7 +1284,11 @@ impl PackageEventProposal {
     /// Publication state when prepared.
     #[must_use]
     pub fn status(&self) -> PackageEventStatus {
-        self.status
+        if self.existing.is_some() {
+            PackageEventStatus::AlreadyPublished
+        } else {
+            PackageEventStatus::Prepared
+        }
     }
 
     /// Revalidates the exact approval and source custody, retains provenance root-last, then
@@ -1305,35 +1314,8 @@ impl PackageEventProposal {
             return Err(PackageEventError::StaleProposal);
         }
         let proof = &fresh.proof;
-        if fresh.status == PackageEventStatus::AlreadyPublished {
-            let object =
-                ObjectId::parse(format!("object:event:{}", proof.event.event_id.as_str()))?;
-            let revision = proof.event.revision_digest();
-            let (anchor, root) = deployment
-                .ledger()
-                .batches()
-                .iter()
-                .rev()
-                .find_map(|batch| {
-                    batch
-                        .deltas
-                        .iter()
-                        .find(|d| {
-                            d.object_id == object
-                                && d.family == "event_revision"
-                                && d.witness_digest == Some(revision)
-                        })
-                        .map(|d| (batch.new_anchor.clone(), d.payload_digest))
-                })
-                .ok_or(PackageEventError::Mismatch)?;
-            return Ok(PackageEventReceipt {
-                event: proof.event.clone(),
-                event_root: root,
-                authority_anchor: anchor,
-                provenance_root: proof.manifest.root(),
-                report_digest: fresh.report.digest(),
-                track: fresh.track,
-            });
+        if let Some(receipt) = fresh.existing {
+            return Ok(receipt);
         }
         let existing_root = deployment.publisher().root(&proof.slot).map(|r| r.root);
         if existing_root.is_some_and(|root| root != proof.manifest.root()) {

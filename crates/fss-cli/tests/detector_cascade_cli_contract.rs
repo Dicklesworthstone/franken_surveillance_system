@@ -342,6 +342,8 @@ fn retained_package_detection_flows_through_report_prepare_and_publish() -> Test
     let directory = OwnedDirectory::new("report")?;
     let root = directory.root();
     let id = import(&directory, &jpeg(Some(180))?, "mjpeg")?;
+    let package = directory.0.join("detector.fmpk");
+    fs::copy(package_path(), &package)?;
     let detect = Command::new(env!("CARGO_BIN_EXE_fss-infer"))
         .arg("package-detect")
         .arg("--root")
@@ -363,9 +365,10 @@ fn retained_package_detection_flows_through_report_prepare_and_publish() -> Test
             "yes",
         ])
         .arg("--package")
-        .arg(package_path())
+        .arg(&package)
         .output()?;
     success(&detect);
+    fs::remove_file(&package)?;
     let report_digest = ContentDigest::sha256(&detect.stdout).to_text();
     assert_eq!(
         line(&detect.stderr, "package_detection_retained")?,
@@ -422,6 +425,9 @@ fn retained_package_detection_flows_through_report_prepare_and_publish() -> Test
     assert_eq!(line(&prepared.stdout, "failure_domains")?, "1");
     assert_eq!(line(&prepared.stdout, "corroborated")?, "false");
     let proposal = line(&prepared.stdout, "proposal_digest")?;
+    let prepared_again = event(&root, "prepare", &selection)?;
+    success(&prepared_again);
+    assert_eq!(prepared_again.stdout, prepared.stdout);
 
     let stale = ContentDigest::sha256(b"not the proposal").to_text();
     let mut refused_args = selection.to_vec();
@@ -447,5 +453,92 @@ fn retained_package_detection_flows_through_report_prepare_and_publish() -> Test
         line(&again.stdout, "authority_sequence")?.parse::<u64>()?,
         sequence
     );
+    // This was previously misrouted to the luma reader and failed with an unrelated
+    // "analysis history is not an exact extension" error even after just one publication.
+    // Each CLI command is a cold process; source, package and both loose report files are gone.
+    let analysis_bytes = fs::read(&analysis_path)?;
+    fs::remove_file(&analysis_path)?;
+    let event_path = directory.0.join("recovered-event.json");
+    let report_path = directory.0.join("recovered-analysis.bin");
+    let read_args = ["--event-id", &event_id];
+    let mut export_args = read_args.to_vec();
+    export_args.extend([
+        "--event-out",
+        event_path.to_str().ok_or("path is not UTF-8")?,
+        "--report-out",
+        report_path.to_str().ok_or("path is not UTF-8")?,
+    ]);
+    let recovered = event(&root, "read", &export_args)?;
+    success(&recovered);
+    assert_eq!(line(&recovered.stdout, "operation")?, "read_verified");
+    for field in [
+        "event_id",
+        "event_root",
+        "event_revision_digest",
+        "provenance_root",
+        "revision",
+        "authority_sequence",
+        "report_digest",
+        "track",
+    ] {
+        assert_eq!(
+            line(&recovered.stdout, field)?,
+            line(&published.stdout, field)?
+        );
+    }
+    assert_eq!(fs::read(&report_path)?, analysis_bytes);
+    let read_event = fss_core::EventHypothesis::from_json(&fs::read_to_string(&event_path)?)?;
+    assert_eq!(read_event.revision, 1);
+    assert_eq!(read_event.state, fss_core::EventState::Indeterminate);
+    assert!(read_event.decision_path.abstained);
+    assert_eq!(line(&recovered.stdout, "scores")?, "uncalibrated");
+    assert_eq!(line(&recovered.stdout, "corroborated")?, "false");
+    assert_eq!(line(&recovered.stdout, "absence_certifiable")?, "false");
+    assert_eq!(line(&recovered.stdout, "effects_authorized")?, "false");
+    let read_again = event(&root, "read", &read_args)?;
+    success(&read_again);
+    assert_eq!(read_again.stdout, recovered.stdout);
+
+    // Recovered canonical bytes remain consumable by an unchanged exact publication retry.
+    let republished = event(
+        &root,
+        "publish",
+        &[
+            "--report",
+            report_path.to_str().ok_or("path is not UTF-8")?,
+            "--report-digest",
+            &analysis_digest,
+            "--track",
+            &track,
+            "--proposal-digest",
+            &proposal,
+        ],
+    )?;
+    success(&republished);
+    assert_eq!(line(&republished.stdout, "operation")?, "already_published");
+    assert_eq!(
+        line(&republished.stdout, "authority_sequence")?,
+        sequence.to_string()
+    );
+
+    // Export still uses the existing create-only, outside-deployment boundary.
+    let refused = event(&root, "read", &export_args)?;
+    assert!(!refused.status.success());
+    assert!(refused.stdout.is_empty());
+    assert_eq!(fs::read(&report_path)?, analysis_bytes);
+    let inside = root.join("forbidden-export.bin");
+    let refused = event(
+        &root,
+        "read",
+        &[
+            "--event-id",
+            &event_id,
+            "--report-out",
+            inside.to_str().ok_or("path is not UTF-8")?,
+        ],
+    )?;
+    assert!(!refused.status.success());
+    assert!(refused.stdout.is_empty());
+    assert!(!inside.exists());
     Ok(())
 }

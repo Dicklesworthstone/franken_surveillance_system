@@ -104,6 +104,14 @@ synthetic scenes). None of it has been measured on real camera footage.
   reference rule remains, explicitly labelled as an assumption. Health-screened proposals also
   fingerprint all final evidence edges, so preview and stored alert eligibility agree; corrected
   health candidates use new identities. See [the workflow](docs/INTERVAL_CORROBORATION.md).
+- **Verified package-event recovery (fss-xsz23):** `fss-event read --event-id event:package:...`
+  reopens a published package candidate and can export its canonical event and analysis without
+  the original source, model package or loose report files. The reader verifies the actual
+  revision chain, retained proof graph, detections and source custody; exact retries preserve
+  the original root, revision and anchor. Damaged/deleted evidence, changed successors and stale
+  computation/privacy bindings are refused without repair. Seven reference recovery tests and
+  two CLI recovery/continuity tests pass natively. Existing valid durable encodings remain
+  unchanged. See [package-event continuity](docs/PACKAGE_EVENT_CONTINUITY.md).
 - **Coverage witnesses (fss-fnrgr):** every `fss-event watch` / `fss-event corroborate` report
   proposes a coverage record: one fss-core `CoverageWitness` per (sensor, zone, maximal contiguous
   interval) decoded without gap or skipped segment, past background warm-up (4 frames) and
