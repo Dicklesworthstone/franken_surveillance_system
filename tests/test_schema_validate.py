@@ -885,7 +885,8 @@ class TestSchemaConstitution(unittest.TestCase):
         # + SCHEMA-DOMAIN-FUSION-{QUERY,DECISION}-001 (fss-x4a.16.9) = 273.
         # + SCHEMA-DOMAIN-FUSION-SCORE-CALIBRATION-001 (fss-x4a.16.9) = 274.
         # + SCHEMA-DOMAIN-GRAPH-RELIABILITY-{MODEL,OUTPUT,DECISION-PATH}-001 and -INTERDICT-{OUTPUT,DECISION-PATH}-001 (WP-170) = 279.
-        self.assertEqual(result["digestDomainCount"], 279)
+        # + SCHEMA-DOMAIN-COVERAGE-RELIABILITY-001 (fss-event graph reliability) = 280.
+        self.assertEqual(result["digestDomainCount"], 280)
 
         # Continuation cursor is verified implemented
         implemented_names = {s["name"] for s in result["schemas"] if s["status"] == "implemented"}
@@ -1415,7 +1416,8 @@ class TestSchemaConstitutionCrossReviewRegressions(unittest.TestCase):
         # + SCHEMA-DOMAIN-FUSION-{QUERY,DECISION}-001 (fss-x4a.16.9) = 273.
         # + SCHEMA-DOMAIN-FUSION-SCORE-CALIBRATION-001 (fss-x4a.16.9) = 274.
         # + SCHEMA-DOMAIN-GRAPH-RELIABILITY-{MODEL,OUTPUT,DECISION-PATH}-001 and -INTERDICT-{OUTPUT,DECISION-PATH}-001 (WP-170) = 279.
-        self.assertEqual(result["digestDomainCount"], 279)
+        # + SCHEMA-DOMAIN-COVERAGE-RELIABILITY-001 (fss-event graph reliability) = 280.
+        self.assertEqual(result["digestDomainCount"], 280)
         # 36 = 28 + fss.sensor_tamper_status.v1 (owner SensorTamperStatus, fss-2uftm)
         # + fss.agent_operations.v1 / fss.agent_views.v1 / fss.agent_request_envelope.v1
         #   (owners AgentOperation / AgentView / AgentRequestEnvelope, fss-x4a.30.83.17-40)

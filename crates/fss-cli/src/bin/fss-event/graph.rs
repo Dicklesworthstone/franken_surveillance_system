@@ -9,15 +9,21 @@ use std::process::ExitCode;
 mod cuts;
 #[path = "graph_legacy.rs"]
 mod legacy;
+#[path = "graph_reliability.rs"]
+mod reliability;
 
 pub(super) fn main(args: &[OsString]) -> ExitCode {
     if args.first().and_then(|arg| arg.to_str()) == Some("failure-cuts") {
         return cuts::main(args);
     }
+    if args.first().and_then(|arg| arg.to_str()) == Some("reliability") {
+        return reliability::main(args);
+    }
     if matches!(args, [flag] if matches!(flag.to_str(), Some("help" | "--help" | "-h")))
         && writeln!(
             io::stdout().lock(),
-            "Joint dependency failures: fss-event graph failure-cuts --help"
+            "Joint dependency failures: fss-event graph failure-cuts --help\n\
+             Blindness probability bounds: fss-event graph reliability --help"
         )
         .is_err()
     {
