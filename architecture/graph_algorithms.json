@@ -71,7 +71,20 @@
       "outputSizeWitness": "<= |V| component labels and <= |E| condensation edges",
       "exactness": "exact",
       "gate": "INT-FNX-001",
-      "status": "specified"
+      "status": "implemented",
+      "implementationId": "fss-graph-algorithms:alg-scc-001:iterative-tarjan-kahn-condensation:v1",
+      "tieBreakPolicyId": "tie:smallest-member-identity-in-topological-condensation-order:v1",
+      "policyId": "graph-policy:directed:simple-strict:weights-ignored:tie:smallest-member-identity-in-topological-condensation-order:v1",
+      "complexityBoundId": "bound:alg-scc-001:tarjan-linear-plus-heap:v1",
+      "projectionBinding": "caller-built canonical WeightedGraph (fss.graph.weighted_projection.v1) named in the witness projectionId; no retained-record projection builder yet",
+      "qualification": "not_qualified: certified only against the in-tree brute-force oracle (crates/fss-graph-algorithms/src/oracles.rs) on seeded small graphs; the INT-FNX-001 FrankenNetworkX differential, snapshot invalidation, capability noninterference and incremental/full lanes do not exist",
+      "evidence": [
+        "crates/fss-graph-algorithms/src/scc.rs",
+        "crates/fss-graph-algorithms/src/weighted.rs",
+        "crates/fss-graph-algorithms/src/certified.rs",
+        "crates/fss-graph-algorithms/src/oracles.rs",
+        "crates/fss-graph-algorithms/tests/weighted_certification.rs"
+      ]
     },
     {
       "id": "ALG-TOPO-001",
@@ -88,7 +101,20 @@
       "outputSizeWitness": "<= |V| ordered nodes and <= |E| slack records",
       "exactness": "exact",
       "gate": "INT-FNX-001",
-      "status": "specified"
+      "status": "implemented",
+      "implementationId": "fss-graph-algorithms:alg-topo-001:kahn-min-heap-cpm:v1",
+      "tieBreakPolicyId": "tie:smallest-stable-identity-first:v1",
+      "policyId": "graph-policy:directed:simple-strict:acyclic-required:node-duration-arc-lag:numeric:u64-exact:checked:unit-bound:v1:tie:smallest-stable-identity-first:v1",
+      "complexityBoundId": "bound:alg-topo-001:kahn-linear-plus-heap:v1",
+      "projectionBinding": "caller-built canonical WeightedGraph (fss.graph.weighted_projection.v1) named in the witness projectionId; no retained-record projection builder yet",
+      "qualification": "not_qualified: certified only against the in-tree brute-force oracle (crates/fss-graph-algorithms/src/oracles.rs) on seeded small graphs; the INT-FNX-001 FrankenNetworkX differential, snapshot invalidation, capability noninterference and incremental/full lanes do not exist",
+      "evidence": [
+        "crates/fss-graph-algorithms/src/topo.rs",
+        "crates/fss-graph-algorithms/src/weighted.rs",
+        "crates/fss-graph-algorithms/src/certified.rs",
+        "crates/fss-graph-algorithms/src/oracles.rs",
+        "crates/fss-graph-algorithms/tests/weighted_certification.rs"
+      ]
     },
     {
       "id": "ALG-DOM-001",
@@ -106,7 +132,20 @@
       "outputSizeWitness": "<= |V| immediate dominator relationships",
       "exactness": "exact",
       "gate": "INT-FNX-001",
-      "status": "specified"
+      "status": "implemented",
+      "implementationId": "fss-graph-algorithms:alg-dom-001:cooper-harvey-kennedy:v1",
+      "tieBreakPolicyId": "tie:ascending-neighbour-then-arc-dfs-reverse-postorder:v1",
+      "policyId": "graph-policy:directed:simple-strict:weights-ignored:declared-root-or-exit:tie:ascending-neighbour-then-arc-dfs-reverse-postorder:v1",
+      "complexityBoundId": "bound:alg-dom-001:chk-passes-n-plus-3:v1",
+      "projectionBinding": "caller-built canonical WeightedGraph (fss.graph.weighted_projection.v1) named in the witness projectionId; no retained-record projection builder yet",
+      "qualification": "not_qualified: certified only against the in-tree brute-force oracle (crates/fss-graph-algorithms/src/oracles.rs) on seeded small graphs; the INT-FNX-001 FrankenNetworkX differential, snapshot invalidation, capability noninterference and incremental/full lanes do not exist",
+      "evidence": [
+        "crates/fss-graph-algorithms/src/dominators.rs",
+        "crates/fss-graph-algorithms/src/weighted.rs",
+        "crates/fss-graph-algorithms/src/certified.rs",
+        "crates/fss-graph-algorithms/src/oracles.rs",
+        "crates/fss-graph-algorithms/tests/weighted_certification.rs"
+      ]
     },
     {
       "id": "ALG-SP-001",
@@ -124,7 +163,20 @@
       "outputSizeWitness": "<= |V| path nodes and <= |V| - 1 edges",
       "exactness": "exact",
       "gate": "INT-FNX-001",
-      "status": "specified"
+      "status": "implemented",
+      "implementationId": "fss-graph-algorithms:alg-sp-001:lexicographic-dijkstra:v1",
+      "tieBreakPolicyId": "tie:distance-then-hops-then-smallest-parent-arc:v1",
+      "policyId": "graph-policy:directed-or-undirected:simple-strict:nonnegative-arc-length:numeric:u64-exact:checked:unit-bound:v1:tie:distance-then-hops-then-smallest-parent-arc:v1",
+      "complexityBoundId": "bound:alg-sp-001:dijkstra-binary-heap:v1",
+      "projectionBinding": "caller-built canonical WeightedGraph (fss.graph.weighted_projection.v1) named in the witness projectionId; no retained-record projection builder yet",
+      "qualification": "not_qualified: certified only against the in-tree brute-force oracle (crates/fss-graph-algorithms/src/oracles.rs) on seeded small graphs; the INT-FNX-001 FrankenNetworkX differential, snapshot invalidation, capability noninterference and incremental/full lanes do not exist",
+      "evidence": [
+        "crates/fss-graph-algorithms/src/paths.rs",
+        "crates/fss-graph-algorithms/src/weighted.rs",
+        "crates/fss-graph-algorithms/src/certified.rs",
+        "crates/fss-graph-algorithms/src/oracles.rs",
+        "crates/fss-graph-algorithms/tests/weighted_certification.rs"
+      ]
     },
     {
       "id": "ALG-KSP-001",
@@ -175,7 +227,20 @@
       "outputSizeWitness": "<= |V| distance-source records",
       "exactness": "exact",
       "gate": "INT-FNX-001",
-      "status": "specified"
+      "status": "implemented",
+      "implementationId": "fss-graph-algorithms:alg-msd-001:multi-source-lexicographic-dijkstra:v1",
+      "tieBreakPolicyId": "tie:distance-then-smallest-source-identity-then-hops:v1",
+      "policyId": "graph-policy:directed-or-undirected:simple-strict:nonnegative-arc-length:numeric:u64-exact:checked:unit-bound:v1:tie:distance-then-smallest-source-identity-then-hops:v1",
+      "complexityBoundId": "bound:alg-msd-001:dijkstra-binary-heap:v1",
+      "projectionBinding": "caller-built canonical WeightedGraph (fss.graph.weighted_projection.v1) named in the witness projectionId; no retained-record projection builder yet",
+      "qualification": "not_qualified: certified only against the in-tree brute-force oracle (crates/fss-graph-algorithms/src/oracles.rs) on seeded small graphs; the INT-FNX-001 FrankenNetworkX differential, snapshot invalidation, capability noninterference and incremental/full lanes do not exist",
+      "evidence": [
+        "crates/fss-graph-algorithms/src/paths.rs",
+        "crates/fss-graph-algorithms/src/weighted.rs",
+        "crates/fss-graph-algorithms/src/certified.rs",
+        "crates/fss-graph-algorithms/src/oracles.rs",
+        "crates/fss-graph-algorithms/tests/weighted_certification.rs"
+      ]
     },
     {
       "id": "ALG-FLOW-001",
@@ -193,7 +258,20 @@
       "outputSizeWitness": "<= |E| edge flows and <= |V| cut partition flags",
       "exactness": "exact",
       "gate": "INT-FNX-001",
-      "status": "specified"
+      "status": "implemented",
+      "implementationId": "fss-graph-algorithms:alg-flow-001:edmonds-karp-certified-cut:v1",
+      "tieBreakPolicyId": "tie:canonical-arc-order-residual-edges-forward-before-reverse:v1",
+      "policyId": "graph-policy:directed-or-undirected:simple-strict:arc-capacity-or-node-failure-weight:numeric:u64-exact:checked:unit-bound:v1:tie:canonical-arc-order-residual-edges-forward-before-reverse:v1",
+      "complexityBoundId": "bound:alg-flow-001:edmonds-karp-vp-augmentations:v1",
+      "projectionBinding": "caller-built canonical WeightedGraph (fss.graph.weighted_projection.v1) named in the witness projectionId; no retained-record projection builder yet",
+      "qualification": "not_qualified: certified only against the in-tree brute-force oracle (crates/fss-graph-algorithms/src/oracles.rs) on seeded small graphs; the INT-FNX-001 FrankenNetworkX differential, snapshot invalidation, capability noninterference and incremental/full lanes do not exist",
+      "evidence": [
+        "crates/fss-graph-algorithms/src/flow.rs",
+        "crates/fss-graph-algorithms/src/weighted.rs",
+        "crates/fss-graph-algorithms/src/certified.rs",
+        "crates/fss-graph-algorithms/src/oracles.rs",
+        "crates/fss-graph-algorithms/tests/weighted_certification.rs"
+      ]
     },
     {
       "id": "ALG-GH-001",

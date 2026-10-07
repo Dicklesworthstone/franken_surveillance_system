@@ -53,6 +53,13 @@ pub enum GraphError {
     },
     /// A derived projection answer disagrees with its structural invariant.
     Inconsistent(String),
+    /// The input is well formed but violates the algorithm's declared precondition (wrong
+    /// orientation, a cycle where a DAG is required, a source equal to its sink, an empty
+    /// terminal set); nothing was analysed.
+    PreconditionFailed(String),
+    /// A checked sum or product of weights left the exact `u64` domain; no wrapped, saturated or
+    /// approximate answer is returned.
+    ArithmeticOverflow(&'static str),
 }
 
 impl GraphError {
@@ -69,6 +76,8 @@ impl GraphError {
             Self::BudgetExhausted { .. } => "ERR-GRAPH-BUDGET-EXHAUSTED-001",
             Self::ComplexityBoundViolated { .. } => "ERR-GRAPH-COMPLEXITY-BOUND-001",
             Self::Inconsistent(_) => "ERR-GRAPH-RESULT-INCONSISTENT-001",
+            Self::PreconditionFailed(_) => "ERR-GRAPH-PRECONDITION-001",
+            Self::ArithmeticOverflow(_) => "ERR-GRAPH-NUMERIC-OVERFLOW-001",
         }
     }
 }
@@ -94,6 +103,13 @@ impl fmt::Display for GraphError {
                 "counter {counter} observed {observed} above its registered bound {bound}"
             ),
             Self::Inconsistent(reason) => write!(formatter, "inconsistent result: {reason}"),
+            Self::PreconditionFailed(reason) => write!(formatter, "precondition failed: {reason}"),
+            Self::ArithmeticOverflow(quantity) => {
+                write!(
+                    formatter,
+                    "{quantity} overflowed the exact u64 weight domain"
+                )
+            }
         }
     }
 }

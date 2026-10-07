@@ -34,11 +34,33 @@ Machine source: `architecture/graph_algorithms.json`. Full motivation, numeric p
 
 ## Implementation status
 
-Only `ALG-BRIDGE-001` is implemented (`status: implemented` in the machine source, with its
-implementation, tie-break, policy and complexity-bound identities and evidence paths): the
-`fss-graph-algorithms` crate over the `SensorCoverageGraph` projection, certified against a
-brute-force removal oracle and metamorphic tests, with the complexity bound checked in the runtime
-path. It is not qualified: the `INT-FNX-001` differential and the atlas's snapshot-invalidation,
+`ALG-BRIDGE-001` is implemented over the `SensorCoverageGraph` projection (iterative Tarjan,
+certified against a brute-force removal oracle and metamorphic tests).
+
+The weighted/directed families below are implemented (`status: implemented` in the machine
+source, with implementation, tie-break, policy and complexity-bound identities and evidence) on
+the canonical `WeightedGraph` substrate (`crates/fss-graph-algorithms/src/weighted.rs`: stable
+identities, one declared weight unit bound into the digest, exact checked `u64` arithmetic) and
+the shared certification machinery (`certified.rs`: fail-closed budgets, the registered bound
+checked on every run and re-checkable from a stored witness, domain-separated output and
+decision-path digests):
+
+| ID | Implementation | Certified against |
+|---|---|---|
+| `ALG-SCC-001` | iterative Tarjan + Kahn condensation order by smallest member | mutual reachability |
+| `ALG-TOPO-001` | Kahn min-heap order, frontiers, CPM schedule with node durations and arc lags, canonical critical path | smallest-available selection + n-round relaxation |
+| `ALG-DOM-001` | Cooper–Harvey–Kennedy dominators and post-dominators with dominated counts | single-node removal |
+| `ALG-SP-001` | lexicographic `(distance, hops)` Dijkstra, smallest tight parent arc | Bellman–Ford |
+| `ALG-MSD-001` | multi-source `(distance, source, hops)` Dijkstra | per-source Bellman–Ford minimum |
+| `ALG-FLOW-001` | certified Edmonds–Karp: arc cut (inclusion-minimal source side) or minimum-weight node failure set by node splitting | source-side subset enumeration; failure-set enumeration |
+
+Each is certified on 2,500 seeded directed and undirected graphs per family (random, DAG,
+cycle, clique, star, path, layered, joined cycles, empty), insertion-order metamorphic tests,
+budget-one-short refusals and tampered-witness refusals
+(`crates/fss-graph-algorithms/tests/weighted_certification.rs`). The projections are caller-built:
+no retained-record projection builder exists yet for `PlanObligationGraph`, `EvidenceClaimGraph`,
+`IncidentCausalGraph`, `DeviceFailureGraph`, `SpatioTemporalTrackGraph` or `ArchiveObjectGraph`.
+None is qualified: the `INT-FNX-001` differential and the atlas's snapshot-invalidation,
 capability-noninterference and incremental/full lanes do not exist. Every other row is
 `specified`.
 
