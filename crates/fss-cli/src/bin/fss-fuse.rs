@@ -17,6 +17,15 @@ use fss_fusion::{
     Calibration, Coverage, Decision, EvidenceItem, FusionOutcome, FusionPolicy, FusionQuery,
     LlrInterval, Observability, Opportunity, Probe, ScoreCalibration, Severity, fuse,
 };
+use fss_graph_algorithms::certified::Budget;
+use fss_graph_algorithms::temporal::{
+    self, Reachability, TemporalNetworkBuilder, TemporalOutput, Transit,
+};
+
+/// Operation budget of one transit reachability run (fails closed beyond it).
+const TRANSIT_OPERATIONS: u64 = 20_000_000;
+/// Interval cap of one transit presence set.
+const TRANSIT_INTERVALS: u32 = 4_096;
 
 const HELP: &str = "fss-fuse --query QUERY.json|- [--calibration EVALUATION.json]\n\n\
 Read-only evidence fusion; prints a fss.fusion_outcome.v1 JSON decision to stdout. Nothing is\n\
@@ -31,7 +40,13 @@ observed|redacted|stale|{not_observable: reason}, calibration: {generation, llr:
 {uncalibrated: reason} | {score_ppm: N}}], opportunities [{id, sensor, failure_domains[],\n\
 window_start_ns, window_end_ns, positive: [lo, hi], negative: [lo, hi]}], probes [{id, kind,\n\
 failure_domains[], cost, latency_ns, positive, negative}]. Log-likelihood ratios are integer\n\
-millibans (thousandths of log10 odds). A score_ppm needs --calibration.\n";
+millibans (thousandths of log10 odds). A score_ppm needs --calibration.\n\n\
+Optional transit {origin: {zone, earliest_ns, latest_ns}, zones: [{id, max_wait_ns}],\n\
+transits: [{from, to, open_ns, close_ns, min_travel_ns, max_travel_ns}], observers: [{zone,\n\
+sensor, failure_domains[], positive, negative}]}: exact temporal reachability (ALG-TREACH-001)\n\
+from the origin's capture interval turns each observer whose zone the entity can reach within\n\
+policy.max_wait_ns into a corroboration opportunity over the reachable window; observers it\n\
+cannot reach in time are reported as temporally_infeasible or no_path, never waited for.\n";
 
 /// A typed refusal: a stable code and a short detail (never document bytes).
 struct Failure {
@@ -142,7 +157,126 @@ fn load_calibration(path: &str) -> Result<ScoreCalibration> {
     Ok(calibration)
 }
 
-fn parse_query(document: &Value, calibration: Option<&ScoreCalibration>) -> Result<FusionQuery> {
+/// One observer of the transit plan and what reachability says about it.
+struct TransitObserver {
+    zone: String,
+    sensor: String,
+    reachability: Reachability,
+    presence: Vec<(u64, u64)>,
+    window: Option<(u64, u64)>,
+}
+
+/// The transit-derived corroboration plan of one query.
+struct TransitPlan {
+    origin: String,
+    start: (u64, u64),
+    horizon: u64,
+    observers: Vec<TransitObserver>,
+    output_digest: String,
+    decision_path_digest: String,
+}
+
+fn parse_transit(
+    transit: &BTreeMap<String, Value>,
+    now: u64,
+    max_wait: u64,
+    opportunities: &mut Vec<Opportunity>,
+) -> Result<TransitPlan> {
+    let horizon = now.checked_add(max_wait).ok_or_else(|| {
+        fail(
+            "fusion.cli.transit_horizon",
+            "now_ns + max_wait_ns overflows",
+        )
+    })?;
+    let mut builder = TemporalNetworkBuilder::new("ns", horizon);
+    for zone in items(transit, "zones")? {
+        let zone = as_object(zone, "zone")?;
+        builder.add_node(
+            as_text(field(zone, "id")?, "zone id")?,
+            as_integer(field(zone, "max_wait_ns")?, "max_wait_ns")?,
+        );
+    }
+    for edge in items(transit, "transits")? {
+        let edge = as_object(edge, "transit")?;
+        builder.add_transit(
+            as_text(field(edge, "from")?, "from")?,
+            as_text(field(edge, "to")?, "to")?,
+            Transit {
+                open: as_integer(field(edge, "open_ns")?, "open_ns")?,
+                close: as_integer(field(edge, "close_ns")?, "close_ns")?,
+                min_travel: as_integer(field(edge, "min_travel_ns")?, "min_travel_ns")?,
+                max_travel: as_integer(field(edge, "max_travel_ns")?, "max_travel_ns")?,
+            },
+        );
+    }
+    let network = builder
+        .build()
+        .map_err(|error| fail(error.stable_id(), error.to_string()))?;
+    let origin = as_object(field(transit, "origin")?, "origin")?;
+    let origin_zone = as_text(field(origin, "zone")?, "origin zone")?;
+    let start = (
+        as_integer(field(origin, "earliest_ns")?, "earliest_ns")?,
+        as_integer(field(origin, "latest_ns")?, "latest_ns")?,
+    );
+    let run = temporal::temporal_reachability(
+        &network,
+        &origin_zone,
+        start,
+        TRANSIT_INTERVALS,
+        Budget::new(TRANSIT_OPERATIONS, u64::from(TRANSIT_INTERVALS) * 1024),
+    )
+    .map_err(|error| fail(error.stable_id(), error.to_string()))?;
+    let reached: &TemporalOutput = &run.output;
+    let mut observers = Vec::new();
+    for observer in items(transit, "observers")? {
+        let observer = as_object(observer, "observer")?;
+        let zone = as_text(field(observer, "zone")?, "observer zone")?;
+        let sensor = as_text(field(observer, "sensor")?, "observer sensor")?;
+        let row = reached.row(&zone).ok_or_else(|| {
+            fail(
+                "ERR-GRAPH-INPUT-INVALID-001",
+                format!("unknown observer zone {zone}"),
+            )
+        })?;
+        // The first reachable presence interval that is still open now.
+        let window = row
+            .presence
+            .iter()
+            .find(|&&(_, hi)| hi >= now)
+            .map(|&(lo, hi)| (lo.max(now), hi));
+        if let Some((window_start, window_end)) = window {
+            opportunities.push(Opportunity {
+                id: format!("transit:{sensor}:{zone}"),
+                sensor: sensor.clone(),
+                failure_domains: domains(field(observer, "failure_domains")?, "failure_domains")?,
+                window_start,
+                window_end,
+                positive: interval(field(observer, "positive")?, "positive")?,
+                negative: interval(field(observer, "negative")?, "negative")?,
+            });
+        }
+        observers.push(TransitObserver {
+            zone,
+            sensor,
+            reachability: row.reachability,
+            presence: row.presence.clone(),
+            window,
+        });
+    }
+    Ok(TransitPlan {
+        origin: origin_zone,
+        start,
+        horizon,
+        observers,
+        output_digest: run.output_digest.to_text(),
+        decision_path_digest: run.decision_path_digest.to_text(),
+    })
+}
+
+fn parse_query(
+    document: &Value,
+    calibration: Option<&ScoreCalibration>,
+) -> Result<(FusionQuery, Option<TransitPlan>)> {
     let query = as_object(document, "query")?;
     if query.get("schema").and_then(Value::text) != Some("fss.fusion_query.v1") {
         return Err(fail(
@@ -278,7 +412,17 @@ fn parse_query(document: &Value, calibration: Option<&ScoreCalibration>) -> Resu
             negative: interval(field(item, "negative")?, "negative")?,
         });
     }
-    Ok(FusionQuery {
+    let now_ns: u64 = as_integer(field(query, "now_ns")?, "now_ns")?;
+    let transit = match query.get("transit") {
+        None => None,
+        Some(value) => Some(parse_transit(
+            as_object(value, "transit")?,
+            now_ns,
+            policy.max_wait_ns,
+            &mut opportunities,
+        )?),
+    };
+    let fusion = FusionQuery {
         hypothesis: as_text(field(query, "hypothesis")?, "hypothesis")?,
         kind: as_text(field(query, "kind")?, "kind")?,
         prior,
@@ -289,8 +433,50 @@ fn parse_query(document: &Value, calibration: Option<&ScoreCalibration>) -> Resu
         severity,
         policy,
         looks: as_integer(field(query, "looks")?, "looks")?,
-        now_ns: as_integer(field(query, "now_ns")?, "now_ns")?,
-    })
+        now_ns,
+    };
+    Ok((fusion, transit))
+}
+
+fn transit_json(plan: &TransitPlan) -> String {
+    object(&[
+        ("algorithm", text(temporal::IDENTITY.algorithm_id)),
+        ("implementation", text(temporal::IDENTITY.implementation_id)),
+        ("origin", text(&plan.origin)),
+        (
+            "origin_interval_ns",
+            format!("[\"{}\",\"{}\"]", plan.start.0, plan.start.1),
+        ),
+        ("horizon_ns", text(&plan.horizon.to_string())),
+        ("output_digest", text(&plan.output_digest)),
+        ("decision_path_digest", text(&plan.decision_path_digest)),
+        (
+            "observers",
+            array(plan.observers.iter().map(|observer| {
+                object(&[
+                    ("zone", text(&observer.zone)),
+                    ("sensor", text(&observer.sensor)),
+                    ("reachability", text(observer.reachability.as_str())),
+                    (
+                        "presence_ns",
+                        array(
+                            observer
+                                .presence
+                                .iter()
+                                .map(|(lo, hi)| format!("[\"{lo}\",\"{hi}\"]")),
+                        ),
+                    ),
+                    (
+                        "opportunity_window_ns",
+                        observer.window.map_or_else(
+                            || "null".to_owned(),
+                            |(lo, hi)| format!("[\"{lo}\",\"{hi}\"]"),
+                        ),
+                    ),
+                ])
+            })),
+        ),
+    ])
 }
 
 fn text(value: &str) -> String {
@@ -337,7 +523,11 @@ fn decision_json(decision: &Decision) -> String {
     object(&fields)
 }
 
-fn outcome_json(outcome: &FusionOutcome, calibration: Option<&ScoreCalibration>) -> String {
+fn outcome_json(
+    outcome: &FusionOutcome,
+    calibration: Option<&ScoreCalibration>,
+    transit: Option<&TransitPlan>,
+) -> String {
     let optional = |value: Option<i64>| value.map_or_else(|| "null".to_owned(), |v| v.to_string());
     object(&[
         ("schema", text("fss.fusion_outcome.v1")),
@@ -422,6 +612,10 @@ fn outcome_json(outcome: &FusionOutcome, calibration: Option<&ScoreCalibration>)
                 ])
             })),
         ),
+        (
+            "transit",
+            transit.map_or_else(|| "null".to_owned(), transit_json),
+        ),
         ("effect_authority", "false".to_owned()),
     ])
 }
@@ -460,9 +654,13 @@ fn run(args: Vec<OsString>) -> Result<String> {
         .transpose()?;
     let document =
         read_document(query_path).map_err(|detail| fail("fusion.cli.query_unreadable", detail))?;
-    let query = parse_query(&document, calibration.as_ref())?;
+    let (query, transit) = parse_query(&document, calibration.as_ref())?;
     let outcome = fuse(&query).map_err(|error| fail(error.stable_id(), error.to_string()))?;
-    Ok(outcome_json(&outcome, calibration.as_ref()))
+    Ok(outcome_json(
+        &outcome,
+        calibration.as_ref(),
+        transit.as_ref(),
+    ))
 }
 
 fn main() -> ExitCode {

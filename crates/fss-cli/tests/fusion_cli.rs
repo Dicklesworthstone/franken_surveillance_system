@@ -249,3 +249,85 @@ fn tampered_missing_or_malformed_inputs_are_refused() -> TestResult {
     fs::remove_dir_all(&dir)?;
     Ok(())
 }
+
+#[test]
+fn transit_reachability_turns_reachable_observers_into_bounded_waits() -> TestResult {
+    let dir = scratch("transit")?;
+    let calibration = evaluate(&dir)?;
+    // One strong camera at the driveway; the porch camera can see the entity 4-8 s later; the
+    // garden gate only opens after the 30 s wait horizon, so the garden camera is never waited
+    // for.
+    let now: u64 = 1_000_000_000_000;
+    let document = format!(
+        r#"{{
+  "schema": "fss.fusion_query.v1",
+  "hypothesis": "event:driveway-1",
+  "kind": "unknown_presence",
+  "prior": "calibration",
+  "coverage": {{"state": "complete"}},
+  "looks": 1,
+  "now_ns": "{now}",
+  "severity": {{"expected_harm": 10000, "false_alert_cost": 200, "delay_cost_per_second": 5, "reversible": false}},
+  "policy": {{
+    "generation": "policy:unknown-presence:v1",
+    "alert_threshold": 1000, "retain_threshold": -500, "reject_threshold": -2000,
+    "min_independent_support": 2, "urgent_single_domain_threshold": null,
+    "max_wait_ns": "30000000000", "look_penalty_per_doubling": 301,
+    "operator_confirmation_available": false
+  }},
+  "evidence": [
+    {{"id": "cam-a/cand-1", "sensor": "cam-a", "failure_domains": ["sensor:cam-a"], "observability": "observed", "calibration": {{"score_ppm": 980000}}}}
+  ],
+  "transit": {{
+    "origin": {{"zone": "driveway", "earliest_ns": "{origin_lo}", "latest_ns": "{now}"}},
+    "zones": [
+      {{"id": "driveway", "max_wait_ns": "0"}},
+      {{"id": "porch", "max_wait_ns": "0"}},
+      {{"id": "garden", "max_wait_ns": "0"}}
+    ],
+    "transits": [
+      {{"from": "driveway", "to": "porch", "open_ns": "0", "close_ns": "{far}", "min_travel_ns": "5000000000", "max_travel_ns": "8000000000"}},
+      {{"from": "driveway", "to": "garden", "open_ns": "{gate}", "close_ns": "{far}", "min_travel_ns": "1000000000", "max_travel_ns": "2000000000"}}
+    ],
+    "observers": [
+      {{"zone": "porch", "sensor": "cam-b", "failure_domains": ["sensor:cam-b"], "positive": [1200, 1600], "negative": [-1500, -1000]}},
+      {{"zone": "garden", "sensor": "cam-c", "failure_domains": ["sensor:cam-c"], "positive": [1200, 1600], "negative": [-1500, -1000]}}
+    ]
+  }}
+}}"#,
+        origin_lo = now - 1_000_000_000,
+        far = now + 3_600_000_000_000,
+        gate = now + 60_000_000_000,
+    );
+    let output = fuse(&dir, &document, Some(&calibration))?;
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let outcome = String::from_utf8(output.stdout)?;
+    let porch_start = now + 4_000_000_000;
+    let porch_end = now + 8_000_000_000;
+    assert!(
+        outcome.contains(&format!(
+            "\"decision\":{{\"kind\":\"wait_for_corroboration\",\"opportunity\":\"transit:cam-b:porch\",\"deadline_ns\":\"{porch_end}\""
+        )),
+        "{outcome}"
+    );
+    assert!(outcome.contains(&format!(
+        "\"opportunity_window_ns\":[\"{porch_start}\",\"{porch_end}\"]"
+    )));
+    assert!(outcome.contains("\"zone\":\"garden\",\"sensor\":\"cam-c\",\"reachability\":\"temporally_infeasible\",\"presence_ns\":[],\"opportunity_window_ns\":null"));
+    assert!(outcome.contains("\"algorithm\":\"ALG-TREACH-001\""));
+    // An unknown observer zone is a typed refusal.
+    let bad = document.replace(
+        "\"zone\": \"garden\", \"sensor\"",
+        "\"zone\": \"attic\", \"sensor\"",
+    );
+    assert_refusal(
+        &fuse(&dir, &bad, Some(&calibration))?,
+        "ERR-GRAPH-INPUT-INVALID-001",
+    );
+    fs::remove_dir_all(&dir)?;
+    Ok(())
+}

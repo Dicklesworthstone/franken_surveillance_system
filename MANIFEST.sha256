@@ -133,7 +133,7 @@ a5820d69d95cb4c0d029578c2614ce94ece7c78303b3d37e2521c641e5b654fc  crates/fss-cli
 2e35c1f5b78ccd3e3b3eb4cb111372ef881f9304cd82e234f0c0e172a6d92cac  crates/fss-cli/src/bin/fss-export.rs
 7fdf885dd02caadb6d23daebbe207331a95012470afa4e976e29bfbc8b98116c  crates/fss-cli/src/bin/fss-file/media.rs
 10f794d7e1e25827eb432f6193908f33287510fa48514ec531f9aac4dc96a722  crates/fss-cli/src/bin/fss-file.rs
-b99f69134e852e622bdc920b2bb8025071e70ca576bf4ad3b2e48ec1bd91ad1a  crates/fss-cli/src/bin/fss-fuse.rs
+f2f29c492819bd1b763f92016b9b0da8ed8b95e563c254ad6da9d80e158c2e90  crates/fss-cli/src/bin/fss-fuse.rs
 8bb45c803102fe3fd1abab0c6ad86daa7fe8da1cdee1edde9f0e953653252002  crates/fss-cli/src/bin/fss-hold.rs
 3c80126f38a1aa21ec8a3092e0309c67a20cdda11d98b1bca05182c52ee38fe3  crates/fss-cli/src/bin/fss-hydration-rehearsal.rs
 ec662b693cd5cabb1c04b3c1c40a88d20e5689769f3c03ec5629508220fadd21  crates/fss-cli/src/bin/fss-infer/detection_cli.rs
@@ -219,7 +219,7 @@ ce1fe0cb63c6db88ada7cb34e8d7e405e6c63de658e0b04885f9e6e47a8ca3c7  crates/fss-cli
 54d42f054b2742fd9fcca40584bdab4c3978714fcfb06b185f035b751587dd99  crates/fss-cli/tests/fixtures/sentinel_detection_cli.py
 8f509a1defc8af9cb5b0c9e65bc31f48e83a710e4f79d375d7a880315f9f7878  crates/fss-cli/tests/fixtures/shared_failure_domains_cli.py
 0ff5d56a140b11796c153db3a2bd88308d751bbb53448c2df92531711ca297fd  crates/fss-cli/tests/follow_cli_contract.rs
-0ca9915ddcf09e1660913b936c73d31aec9da43ec36e180cadb6e660bc81f162  crates/fss-cli/tests/fusion_cli.rs
+f51498eb838e04b528652383a2b6ccea2f03a2dbc5112df780d96b512237741d  crates/fss-cli/tests/fusion_cli.rs
 ddad63d10b5af4abb890a8e33f3274d67f32e6d49545d20de4f8adae59e125f6  crates/fss-cli/tests/graph_failure_cuts_cli.rs
 28ea8d96d5118526e76c1af662c67083a52945ab70bc7b03f3d056dfc9549783  crates/fss-cli/tests/graph_single_points_cli_contract.rs
 75b1afc3080eb39fbc734dddcfc6f291c96a1d972a236475261b5fe32bb90f08  crates/fss-cli/tests/h264_decode_cli_contract.rs
