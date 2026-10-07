@@ -1,9 +1,10 @@
 #![forbid(unsafe_code)]
 //! FSS-059 malformed-media gauntlet for the AVC and HEVC fragmented-MP4 writers.
 //!
-//! The container crate writes, it does not parse: its untrusted input is the picture
-//! groups that fss-packet assembled from camera RTP, the parameter sets those groups
-//! carry, and the caller-supplied timing. Each mutant therefore mutates the checked-in
+//! This gauntlet covers the writers; the parsers (MP4 and Matroska demuxers) have their own in
+//! `demux_malformed_gauntlet.rs`. A writer's untrusted input is the picture groups that
+//! fss-packet assembled from camera RTP, the parameter sets those groups carry, and the
+//! caller-supplied timing. Each mutant therefore mutates the checked-in
 //! elementary streams (`fss-packet/tests/fixtures/avc/*.264` and the shared HEVC remux
 //! fixture) with the shared fixed-seed engine, re-packetizes and re-assembles them with
 //! the real fss-packet depacketizer/assembler, tries the mutant's own parameter sets
