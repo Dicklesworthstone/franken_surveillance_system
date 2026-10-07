@@ -148,6 +148,8 @@ pub(crate) struct TolerantSource {
     returned_any: bool,
     /// The sensor's current privacy mask, applied to every decoded MJPEG frame.
     mask: MaskBinding,
+    /// Verified custody chunks reused across sequential MJPEG frame reads.
+    chunks: super::VerifiedChunkCache,
 }
 
 impl TolerantSource {
@@ -185,6 +187,7 @@ impl TolerantSource {
             first_error: None,
             returned_any: false,
             mask,
+            chunks: super::VerifiedChunkCache::default(),
         };
         if let Some(codec) = codec {
             let start = request.first_segment;
@@ -473,9 +476,13 @@ impl TolerantSource {
         }
         let gap_before = segment > self.request.first_segment && span.gap_before;
         let (capsule, capsule_digest) = source_capsule(deployment, &self.retained, segment)?;
-        let bytes =
-            self.retained
-                .read_segment(deployment, segment, self.request.read_limits, cx)?;
+        let bytes = self.retained.read_segment_cached(
+            deployment,
+            segment,
+            self.request.read_limits,
+            cx,
+            &mut self.chunks,
+        )?;
         match decode_luma(
             &bytes,
             capsule.source_digest.bytes(),

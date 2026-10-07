@@ -146,3 +146,82 @@ uncontended host.
 cost once instead of per step, but the brief ruled out pools, so that needs an owner decision.
 Other open items: a spatial (column-tile) partition for 1x1 convolutions, which avoids repacking
 input panels per channel chunk, and threading the non-convolution steps (Slice, Concat, Add).
+
+## PERF-003 — Verified custody chunks reused across sequential retained reads
+
+- **Commit:** the `perf(retained)` commit carrying this entry (base `fb8441b`), measured on the
+  working tree that commit records; release profile, default target (x86-64 baseline).
+- **Host:** the session's cloud container, 4 logical CPUs, shared and loaded (load average
+  2–3 during measurement); single-threaded decode. Numbers from other hosts are not comparable.
+- **Workload:** FFmpeg `testsrc2` 1920x1080, 30 fps, libx264 High (`keyint=60:bframes=2`, 6 Mb/s),
+  20 s, 600 access units, 15,030,081 bytes Annex-B: one 16 MiB custody chunk. Imported with
+  `fss-file import --media-format annexb` (default limits), then
+  `fss-file decode --segment 0 --segment-count 60 --interpretation ycbcr` (first 60 frames,
+  every frame's luma/I420/Cb/Cr digests and receipt). One cold-process wall-clock sample per
+  arm; the effect (3x) far exceeds the run-to-run spread observed on this host (< 10%).
+
+| Arm | 60 frames (s) | per frame (ms) |
+|---|---|---|
+| baseline (`fb8441b`, every segment read re-reads and re-hashes its whole chunk) | 16.46 | 274 |
+| candidate (`VerifiedChunkCache`, each chunk verified once per sequential range) | 5.54 | 92 |
+
+**Context (same host):** the codec alone (`fss-codec-h264` `decode_annex_b`, no custody or
+digests) decodes this content at 18.4 fps (54 ms/frame; H.265 Main equivalent 25.0 fps); a
+1.5 MB import of the same picture size decoded at 116 ms/frame before the change, since its whole
+chunk is only 1.5 MB. First-party SHA-256 measured about 200 MB/s here, so the four per-frame
+receipt digests (about 6.2 MB) cost about 28 ms/frame; an unrolled SHA-256 variant gained only
+5–25% within noise and was not adopted.
+
+**Semantic equivalence:** identical `frame_i420_sha256` lines for all 60 frames between the two
+arms. Every chunk is still digest- and length-verified before first use and every assembled
+segment is still checked against its own digest; the cache is keyed by verified chunk digest and
+length, so it can never serve other bytes (unit test
+`a_verified_chunk_cache_reads_each_chunk_once_and_never_substitutes_bytes`). Root availability
+and authority are still rechecked on every read.
+
+**Changed cost terms:** SHA-256 over custody chunks per range drops from
+`segments x chunk_bytes` to `touched chunks x chunk_bytes`; memory rises by at most two chunks
+(32 MiB at the 16 MiB default) per open sequential reader. Applied to the H.264/H.265 range
+decoders and the MJPEG readers of watch, the detector cascade, sensor health, package detection
+and tolerant decode. Single-segment reads are unchanged.
+
+**Excluded:** decoder parallelism, SIMD and SHA-256 changes. The remaining per-frame overhead
+(receipt digests, privacy masking, I420 assembly, per-read authority revalidation) is not
+optimized here.
+
+**Finding (not changed):** a callgrind profile of `fss-file decode --segment-count 10` on this
+import attributes 73% of all instructions to SHA-256. About 22% is `ReferenceDeployment::open`:
+publication recovery (`LocalRootPublisher::recover` -> `check_reference` -> `StagingSpool::verify`)
+re-reads and re-hashes every object a published root references, twice, so every CLI invocation
+costs time proportional to all retained bytes (about 100 s per invocation for 10 GB at the
+measured 200 MB/s). A further 29% is spool reads verifying the durable object format, which the
+chunk check then hashes again. Changing verify-on-open or the double check alters the root-last
+publication and custody contracts, so it is recorded here for the owners, not optimized.
+
+## PERF-004 — H.264 inter prediction from a per-block reference window
+
+- **Commit:** the `perf(retained)` commit carrying this entry (base `fb8441b`).
+- **Host and workload:** as PERF-003. Codec-only harness: `fss_codec_h264::Decoder::decode_annex_b`
+  plus `finish` over FFmpeg `testsrc2` 1920x1080 libx264 High (`keyint=60:bframes=2:threads=1`):
+  a 2 s, 60-frame stream for wall time and a 0.5 s, 15-frame stream for callgrind.
+- **Change:** `predict_4x4` evaluated every quarter-sample luma value with per-tap clamped,
+  bounds-checked reads (up to 36 six-tap intermediates per centre sample). It now loads the
+  block's 9x9 reference window once (direct row copies inside the picture, 8-228/8-229 clamping
+  only near edges), evaluates the same 8.4.2.2.1 formulas from it with one shared grid of
+  horizontal intermediates for the centre positions, copies full-sample vectors directly, and
+  reads chroma from a 3x3 window.
+
+| Metric | before | after |
+|---|---|---|
+| callgrind instructions, 15 frames | 7,143,087,136 | 4,314,563,563 (-40%) |
+| codec wall time, 60 frames (best of 3, loaded host) | 18.4 fps | 27.3 fps |
+
+**Semantic equivalence:** bit-exact. The per-sample clamped predictor stays in the crate as the
+test-only reference (`predict_block`), and `windowed_prediction_equals_the_per_sample_reference`
+compares the two on 12,000 random pictures, positions and vectors (including blocks far outside
+the picture); all FFmpeg-oracle conformance fixtures still match frame for frame.
+
+**Excluded:** a line-at-once deblocking rewrite measured 3% more instructions and was not kept;
+partition-level (8x8/16x16) prediction, SIMD and threading are not attempted. End-to-end retained
+decode is dominated by SHA-256 (PERF-003 finding), so its wall time moved only from 5.54 s to
+5.39 s for the PERF-003 workload.

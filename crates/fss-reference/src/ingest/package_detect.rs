@@ -504,6 +504,7 @@ fn run_selected_detection<T>(
     match media_format.as_str() {
         "mjpeg" => {
             let mut budget = DecodeBudget::new(limits.jpeg_work_units);
+            let mut chunks = super::VerifiedChunkCache::default();
             for segment in first..end {
                 if !admission.admit(segment)? {
                     continue;
@@ -511,7 +512,7 @@ fn run_selected_detection<T>(
                 let (capsule, capsule_digest) =
                     source_capsule(deployment, &retained, segment).map_err(frame_error(segment))?;
                 let bytes = retained
-                    .read_segment(deployment, segment, limits.read, cx)
+                    .read_segment_cached(deployment, segment, limits.read, cx, &mut chunks)
                     .map_err(frame_error(segment))?;
                 let image = decode_rgb(
                     &bytes,

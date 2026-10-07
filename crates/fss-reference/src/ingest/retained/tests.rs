@@ -145,7 +145,13 @@ fn zero_overflow_and_rebound_ranges_are_refused() -> Result<(), FileIngestError>
 fn cross_chunk_segment_and_repeated_chunks_preserve_source_order() -> Result<(), FileIngestError> {
     let m = fixture()?;
     assert_eq!(
-        assemble_segment(&m, 0, RetainedReadLimits::default(), read)?,
+        assemble_segment(
+            &m,
+            0,
+            RetainedReadLimits::default(),
+            &mut VerifiedChunkCache::default(),
+            read
+        )?,
         b"cdabcdx"
     );
     assert_eq!(verify_source_chunks(&m, read)?, m.input_sha256);
@@ -161,7 +167,7 @@ fn allocation_budget_is_checked_before_source_io() -> Result<(), FileIngestError
         ..RetainedReadLimits::default()
     };
     assert!(
-        assemble_segment(&m, 0, limits, |d| {
+        assemble_segment(&m, 0, limits, &mut VerifiedChunkCache::default(), |d| {
             reads += 1;
             read(d)
         })
@@ -195,7 +201,16 @@ fn independent_source_and_segment_digests_are_enforced() -> Result<(), FileInges
     m.input_sha256 = ContentDigest::sha256(b"different source");
     assert!(verify_source_chunks(&m, read).is_err());
     m.segment_spans[0].segment_sha256 = ContentDigest::sha256(b"different segment");
-    assert!(assemble_segment(&m, 0, RetainedReadLimits::default(), read).is_err());
+    assert!(
+        assemble_segment(
+            &m,
+            0,
+            RetainedReadLimits::default(),
+            &mut VerifiedChunkCache::default(),
+            read
+        )
+        .is_err()
+    );
     Ok(())
 }
 
@@ -208,5 +223,60 @@ fn partitioned_and_unknown_capture_classifications_are_not_silently_accepted()
     m.part_roots.clear();
     m.capture_time_label = "trusted_hardware".to_owned();
     assert!(m.validate_retained(RetainedReadLimits::default()).is_err());
+    Ok(())
+}
+
+#[test]
+fn a_verified_chunk_cache_reads_each_chunk_once_and_never_substitutes_bytes()
+-> Result<(), FileIngestError> {
+    let m = fixture()?;
+    let mut cache = VerifiedChunkCache::default();
+    let mut reads = 0;
+    for _ in 0..3 {
+        assert_eq!(
+            assemble_segment(&m, 0, RetainedReadLimits::default(), &mut cache, |d| {
+                reads += 1;
+                read(d)
+            })?,
+            b"cdabcdx"
+        );
+    }
+    // Chunks 0 and 1 share one digest and chunk 2 is distinct: two verified reads in total.
+    assert_eq!(reads, 2);
+    // A manifest naming a different chunk digest is never served the cached bytes: the chunk is
+    // read again and its verification fails closed.
+    let mut other = fixture()?;
+    other.ordered_chunks[0] = ContentDigest::sha256(b"abce");
+    let refused = assemble_range(
+        &other,
+        0,
+        4,
+        RetainedReadLimits::default(),
+        &mut cache,
+        |d| {
+            reads += 1;
+            if d == ContentDigest::sha256(b"abce") {
+                Ok(b"abcd".to_vec())
+            } else {
+                read(d)
+            }
+        },
+    );
+    assert!(refused.is_err());
+    assert_eq!(reads, 3);
+    // A corrupt chunk is not cached: the next read verifies again.
+    let mut fresh = VerifiedChunkCache::default();
+    let corrupt = assemble_segment(&m, 0, RetainedReadLimits::default(), &mut fresh, |d| {
+        if d == ContentDigest::sha256(b"xy") {
+            Ok(b"zz".to_vec())
+        } else {
+            read(d)
+        }
+    });
+    assert!(corrupt.is_err());
+    assert_eq!(
+        assemble_segment(&m, 0, RetainedReadLimits::default(), &mut fresh, read)?,
+        b"cdabcdx"
+    );
     Ok(())
 }

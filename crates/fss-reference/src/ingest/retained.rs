@@ -479,8 +479,29 @@ impl RetainedFileImport {
         limits: RetainedReadLimits,
         cx: &ReplayCx,
     ) -> Result<Vec<u8>, FileIngestError> {
+        self.read_segment_cached(
+            deployment,
+            index,
+            limits,
+            cx,
+            &mut VerifiedChunkCache::default(),
+        )
+    }
+
+    /// [`Self::read_segment`] for sequential readers: a chunk already digest-verified into
+    /// `chunks` is reused instead of being read and hashed again for every segment it holds.
+    /// The assembled segment is still checked against its own digest, and root availability and
+    /// authority are still rechecked on every call.
+    pub fn read_segment_cached(
+        &self,
+        deployment: &ReferenceDeployment,
+        index: usize,
+        limits: RetainedReadLimits,
+        cx: &ReplayCx,
+        chunks: &mut VerifiedChunkCache,
+    ) -> Result<Vec<u8>, FileIngestError> {
         self.revalidate(deployment, limits, cx)?;
-        let bytes = assemble_segment(&self.manifest, index, limits, |d| {
+        let bytes = assemble_segment(&self.manifest, index, limits, chunks, |d| {
             checkpoint(cx, STAGE_RETAINED_CHUNK)?;
             Ok(deployment.publisher().spool().read(d)?)
         })?;
@@ -505,10 +526,18 @@ impl RetainedFileImport {
             .omission_spans
             .get(index)
             .ok_or_else(|| invalid("omission span index"))?;
-        let bytes = assemble_range(&self.manifest, span.offset, span.len, limits, |d| {
-            checkpoint(cx, STAGE_RETAINED_CHUNK)?;
-            Ok(deployment.publisher().spool().read(d)?)
-        })?;
+        let mut chunks = VerifiedChunkCache::default();
+        let bytes = assemble_range(
+            &self.manifest,
+            span.offset,
+            span.len,
+            limits,
+            &mut chunks,
+            |d| {
+                checkpoint(cx, STAGE_RETAINED_CHUNK)?;
+                Ok(deployment.publisher().spool().read(d)?)
+            },
+        )?;
         checkpoint(cx, STAGE_RETAINED_COMPLETE)?;
         Ok(bytes)
     }
@@ -554,11 +583,11 @@ pub(crate) fn refuse_deleted(
     }
 }
 
-fn verified_chunk(
+/// Expected digest and exact length of custody chunk `index`.
+fn chunk_identity(
     manifest: &FileImportManifest,
     index: usize,
-    read: &mut impl FnMut(ContentDigest) -> Result<Vec<u8>, FileIngestError>,
-) -> Result<Vec<u8>, FileIngestError> {
+) -> Result<(ContentDigest, u64), FileIngestError> {
     let expected = *manifest
         .ordered_chunks
         .get(index)
@@ -570,19 +599,64 @@ fn verified_chunk(
         .input_bytes
         .checked_sub(offset)
         .ok_or_else(|| invalid("chunk range"))?;
+    Ok((expected, remaining.min(manifest.chunk_bytes)))
+}
+
+fn verified_chunk(
+    manifest: &FileImportManifest,
+    index: usize,
+    read: &mut impl FnMut(ContentDigest) -> Result<Vec<u8>, FileIngestError>,
+) -> Result<Vec<u8>, FileIngestError> {
+    let (expected, len) = chunk_identity(manifest, index)?;
     let bytes = read(expected)?;
-    if bytes.len() as u64 != remaining.min(manifest.chunk_bytes)
-        || ContentDigest::sha256(&bytes) != expected
-    {
+    if bytes.len() as u64 != len || ContentDigest::sha256(&bytes) != expected {
         return Err(invalid("chunk length or checksum mismatch"));
     }
     Ok(bytes)
+}
+
+/// Custody chunks already read and digest-verified, kept across sequential reads.
+///
+/// Holds at most two chunks (a segment may straddle one boundary), each keyed by its verified
+/// SHA-256 digest and exact length: a chunk is served again only to a manifest naming that same
+/// digest and length at the requested position, so a cache can never substitute other bytes.
+/// Memory is bounded by twice the import's chunk size.
+#[derive(Debug, Default)]
+pub struct VerifiedChunkCache {
+    slots: [Option<(ContentDigest, Vec<u8>)>; 2],
+}
+
+impl VerifiedChunkCache {
+    fn chunk(
+        &mut self,
+        manifest: &FileImportManifest,
+        index: usize,
+        read: &mut impl FnMut(ContentDigest) -> Result<Vec<u8>, FileIngestError>,
+    ) -> Result<&[u8], FileIngestError> {
+        let (expected, len) = chunk_identity(manifest, index)?;
+        let hit = |slot: &Option<(ContentDigest, Vec<u8>)>| {
+            slot.as_ref()
+                .is_some_and(|(digest, bytes)| *digest == expected && bytes.len() as u64 == len)
+        };
+        if hit(&self.slots[1]) {
+            self.slots.swap(0, 1);
+        } else if !hit(&self.slots[0]) {
+            let bytes = verified_chunk(manifest, index, read)?;
+            self.slots[1] = self.slots[0].take();
+            self.slots[0] = Some((expected, bytes));
+        }
+        match &self.slots[0] {
+            Some((_, bytes)) => Ok(bytes),
+            None => Err(invalid("chunk cache")),
+        }
+    }
 }
 
 fn assemble_segment(
     manifest: &FileImportManifest,
     index: usize,
     limits: RetainedReadLimits,
+    chunks: &mut VerifiedChunkCache,
     read: impl FnMut(ContentDigest) -> Result<Vec<u8>, FileIngestError>,
 ) -> Result<Vec<u8>, FileIngestError> {
     manifest.validate_structure(limits)?;
@@ -594,7 +668,7 @@ fn assemble_segment(
                 index,
                 count: manifest.segment_spans.len(),
             })?;
-    let bytes = assemble_range(manifest, span.offset, span.len, limits, read)?;
+    let bytes = assemble_range(manifest, span.offset, span.len, limits, chunks, read)?;
     if ContentDigest::sha256(&bytes) != span.segment_sha256 {
         return Err(invalid("assembled segment checksum or length mismatch"));
     }
@@ -607,6 +681,7 @@ fn assemble_range(
     offset: u64,
     len: u64,
     limits: RetainedReadLimits,
+    chunks: &mut VerifiedChunkCache,
     mut read: impl FnMut(ContentDigest) -> Result<Vec<u8>, FileIngestError>,
 ) -> Result<Vec<u8>, FileIngestError> {
     if len > limits.max_segment_bytes {
@@ -629,7 +704,7 @@ fn assemble_range(
     let last = (end - 1) / manifest.chunk_bytes;
     for position in first..=last {
         let chunk_index = usize::try_from(position).map_err(|_| invalid("chunk index overflow"))?;
-        let chunk = verified_chunk(manifest, chunk_index, &mut read)?;
+        let chunk = chunks.chunk(manifest, chunk_index, &mut read)?;
         let chunk_start = position
             .checked_mul(manifest.chunk_bytes)
             .ok_or_else(|| invalid("offset overflow"))?;

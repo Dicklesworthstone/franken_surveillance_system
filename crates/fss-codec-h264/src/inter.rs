@@ -33,6 +33,7 @@ fn clip(value: i32) -> i32 {
 }
 
 /// Unscaled horizontal half-sample intermediate between (x,y) and (x+1,y).
+#[cfg(test)]
 fn b1(p: &Plane<'_>, x: i32, y: i32) -> i32 {
     tap6(
         p.at(x - 2, y),
@@ -45,6 +46,7 @@ fn b1(p: &Plane<'_>, x: i32, y: i32) -> i32 {
 }
 
 /// Unscaled vertical half-sample intermediate between (x,y) and (x,y+1).
+#[cfg(test)]
 fn h1(p: &Plane<'_>, x: i32, y: i32) -> i32 {
     tap6(
         p.at(x, y - 2),
@@ -56,14 +58,17 @@ fn h1(p: &Plane<'_>, x: i32, y: i32) -> i32 {
     )
 }
 
+#[cfg(test)]
 fn half_h(p: &Plane<'_>, x: i32, y: i32) -> i32 {
     clip((b1(p, x, y) + 16) >> 5)
 }
 
+#[cfg(test)]
 fn half_v(p: &Plane<'_>, x: i32, y: i32) -> i32 {
     clip((h1(p, x, y) + 16) >> 5)
 }
 
+#[cfg(test)]
 fn centre(p: &Plane<'_>, x: i32, y: i32) -> i32 {
     let j1 = tap6(
         b1(p, x, y - 2),
@@ -77,6 +82,7 @@ fn centre(p: &Plane<'_>, x: i32, y: i32) -> i32 {
 }
 
 /// One luma prediction sample at integer position (x, y) plus fraction.
+#[cfg(test)]
 fn luma_sample(p: &Plane<'_>, x: i32, y: i32, fx: i32, fy: i32) -> i32 {
     let avg = |a: i32, b: i32| (a + b + 1) >> 1;
     match (fx, fy) {
@@ -108,14 +114,177 @@ pub(crate) struct BlockPrediction {
     pub cr: [u8; 4],
 }
 
-fn chroma_sample(plane: &Plane<'_>, x: i32, y: i32, fx: i32, fy: i32) -> u8 {
-    let value = ((8 - fx) * (8 - fy) * plane.at(x, y)
-        + fx * (8 - fy) * plane.at(x + 1, y)
-        + (8 - fx) * fy * plane.at(x, y + 1)
-        + fx * fy * plane.at(x + 1, y + 1)
-        + 32)
-        >> 6;
-    u8::try_from(value.clamp(0, 255)).unwrap_or(u8::MAX)
+/// Reference samples around one 4x4 luma block: rows and columns -2..=6 relative to the
+/// block's integer origin, clamped to the picture (8-228/8-229) once per block instead of per
+/// tap. Window position `p + 2` holds relative coordinate `p`.
+struct LumaWindow([[i32; 9]; 9]);
+
+impl LumaWindow {
+    fn load(plane: &Plane<'_>, ox: i32, oy: i32) -> Self {
+        let inside = ox >= 2 && oy >= 2 && ox + 6 < plane.width && oy + 6 < plane.height;
+        Self(std::array::from_fn(|r| {
+            let y = oy - 2 + to_i32(r);
+            if inside {
+                let start = usize::try_from(y * plane.width + ox - 2).unwrap_or(0);
+                if let Some(row) = plane
+                    .samples
+                    .get(start..start + 9)
+                    .and_then(|row| <&[u8; 9]>::try_from(row).ok())
+                {
+                    return row.map(i32::from);
+                }
+            }
+            std::array::from_fn(|c| plane.at(ox - 2 + to_i32(c), y))
+        }))
+    }
+
+    /// Unscaled horizontal half-sample intermediate at window position (x, y).
+    fn b1(&self, x: usize, y: usize) -> i32 {
+        let row = &self.0[y];
+        tap6(
+            row[x - 2],
+            row[x - 1],
+            row[x],
+            row[x + 1],
+            row[x + 2],
+            row[x + 3],
+        )
+    }
+
+    /// Unscaled vertical half-sample intermediate at window position (x, y).
+    fn h1(&self, x: usize, y: usize) -> i32 {
+        let w = &self.0;
+        tap6(
+            w[y - 2][x],
+            w[y - 1][x],
+            w[y][x],
+            w[y + 1][x],
+            w[y + 2][x],
+            w[y + 3][x],
+        )
+    }
+
+    fn half_h(&self, x: usize, y: usize) -> i32 {
+        clip((self.b1(x, y) + 16) >> 5)
+    }
+
+    fn half_v(&self, x: usize, y: usize) -> i32 {
+        clip((self.h1(x, y) + 16) >> 5)
+    }
+}
+
+/// Luma prediction of one 4x4 block from its window: exactly the per-sample formulas of
+/// `luma_sample`, with the centre (j) positions sharing one grid of horizontal intermediates.
+fn predict_luma(window: &LumaWindow, fx: i32, fy: i32) -> [u8; 16] {
+    let avg = |a: i32, b: i32| (a + b + 1) >> 1;
+    // b1 at window rows 0..=8 for the block's four columns; only the j cases read it.
+    let centre_grid = (fx == 2 || fy == 2) && (fx, fy) != (2, 0) && (fx, fy) != (0, 2);
+    let mut b = [[0_i32; 4]; 9];
+    if centre_grid {
+        for (y, row) in b.iter_mut().enumerate() {
+            for (i, value) in row.iter_mut().enumerate() {
+                *value = window.b1(i + 2, y);
+            }
+        }
+    }
+    let centre = |i: usize, j: usize| {
+        let column = |r: usize| b[j + r][i];
+        clip(
+            (tap6(
+                column(0),
+                column(1),
+                column(2),
+                column(3),
+                column(4),
+                column(5),
+            ) + 512)
+                >> 10,
+        )
+    };
+    let w = &window.0;
+    let mut out = [0_u8; 16];
+    for j in 0..4 {
+        for i in 0..4 {
+            let (x, y) = (i + 2, j + 2);
+            let value = match (fx, fy) {
+                (0, 0) => w[y][x],
+                (1, 0) => avg(w[y][x], window.half_h(x, y)),
+                (2, 0) => window.half_h(x, y),
+                (3, 0) => avg(window.half_h(x, y), w[y][x + 1]),
+                (0, 1) => avg(w[y][x], window.half_v(x, y)),
+                (0, 2) => window.half_v(x, y),
+                (0, 3) => avg(window.half_v(x, y), w[y + 1][x]),
+                (1, 1) => avg(window.half_h(x, y), window.half_v(x, y)),
+                (3, 1) => avg(window.half_h(x, y), window.half_v(x + 1, y)),
+                (1, 3) => avg(window.half_v(x, y), window.half_h(x, y + 1)),
+                (3, 3) => avg(window.half_v(x + 1, y), window.half_h(x, y + 1)),
+                (2, 1) => avg(window.half_h(x, y), centre(i, j)),
+                (2, 3) => avg(centre(i, j), window.half_h(x, y + 1)),
+                (1, 2) => avg(window.half_v(x, y), centre(i, j)),
+                (3, 2) => avg(centre(i, j), window.half_v(x + 1, y)),
+                _ => centre(i, j),
+            };
+            out[j * 4 + i] = u8::try_from(value).unwrap_or(u8::MAX);
+        }
+    }
+    out
+}
+
+/// Full-sample luma prediction (both fractions zero): a direct 4x4 copy when the block lies
+/// inside the picture, otherwise the clamped reads.
+fn copy_luma(plane: &Plane<'_>, ox: i32, oy: i32) -> [u8; 16] {
+    let inside = ox >= 0 && oy >= 0 && ox + 3 < plane.width && oy + 3 < plane.height;
+    let mut out = [0_u8; 16];
+    for (j, row) in out.as_chunks_mut::<4>().0.iter_mut().enumerate() {
+        let y = oy + to_i32(j);
+        if inside {
+            let start = usize::try_from(y * plane.width + ox).unwrap_or(0);
+            if let Some(source) = plane.samples.get(start..start + 4) {
+                row.copy_from_slice(source);
+                continue;
+            }
+        }
+        for (i, sample) in row.iter_mut().enumerate() {
+            *sample = u8::try_from(plane.at(ox + to_i32(i), y)).unwrap_or(u8::MAX);
+        }
+    }
+    out
+}
+
+/// Chroma prediction of one 2x2 block: the 3x3 clamped window at (ox, oy), bilinear eighths.
+fn predict_chroma(plane: &Plane<'_>, ox: i32, oy: i32, fx: i32, fy: i32) -> [u8; 4] {
+    let inside = ox >= 0 && oy >= 0 && ox + 2 < plane.width && oy + 2 < plane.height;
+    let window: [[i32; 3]; 3] = std::array::from_fn(|r| {
+        let y = oy + to_i32(r);
+        if inside {
+            let start = usize::try_from(y * plane.width + ox).unwrap_or(0);
+            if let Some(row) = plane
+                .samples
+                .get(start..start + 3)
+                .and_then(|row| <&[u8; 3]>::try_from(row).ok())
+            {
+                return row.map(i32::from);
+            }
+        }
+        std::array::from_fn(|c| plane.at(ox + to_i32(c), y))
+    });
+    if fx == 0 && fy == 0 {
+        return [window[0][0], window[0][1], window[1][0], window[1][1]]
+            .map(|value| u8::try_from(value).unwrap_or(u8::MAX));
+    }
+    let mut out = [0_u8; 4];
+    for j in 0..2 {
+        for i in 0..2 {
+            let value = ((8 - fx) * (8 - fy) * window[j][i]
+                + fx * (8 - fy) * window[j][i + 1]
+                + (8 - fx) * fy * window[j + 1][i]
+                + fx * fy * window[j + 1][i + 1]
+                + 32)
+                >> 6;
+            out[j * 2 + i] = u8::try_from(value.clamp(0, 255)).unwrap_or(u8::MAX);
+        }
+    }
+    out
 }
 
 /// Fractional sample interpolation (clause 8.4.2.2) of the 4x4 luma block
@@ -129,38 +298,30 @@ pub(crate) fn predict_4x4(reference: &Frame, x: usize, y: usize, mv: [i32; 2]) -
     };
     let (fx, fy) = (mv[0] & 3, mv[1] & 3);
     let (ox, oy) = (to_i32(x) + (mv[0] >> 2), to_i32(y) + (mv[1] >> 2));
-    let mut out = BlockPrediction {
-        luma: [0; 16],
-        cb: [0; 4],
-        cr: [0; 4],
+    let luma = if fx == 0 && fy == 0 {
+        copy_luma(&luma, ox, oy)
+    } else {
+        predict_luma(&LumaWindow::load(&luma, ox, oy), fx, fy)
     };
-    for j in 0..4 {
-        for i in 0..4 {
-            let value = luma_sample(&luma, ox + i, oy + j, fx, fy);
-            out.luma[usize::try_from(j * 4 + i).unwrap_or(0)] =
-                u8::try_from(value).unwrap_or(u8::MAX);
-        }
-    }
     let (cw, ch) = (
         to_i32(reference.chroma_width()),
         to_i32(reference.chroma_height()),
     );
     let (fx, fy) = (mv[0] & 7, mv[1] & 7);
     let (ox, oy) = (to_i32(x / 2) + (mv[0] >> 3), to_i32(y / 2) + (mv[1] >> 3));
-    for (source, destination) in [(&reference.cb, &mut out.cb), (&reference.cr, &mut out.cr)] {
+    let chroma = |samples: &[u8]| {
         let plane = Plane {
-            samples: source,
+            samples,
             width: cw,
             height: ch,
         };
-        for j in 0..2 {
-            for i in 0..2 {
-                destination[usize::try_from(j * 2 + i).unwrap_or(0)] =
-                    chroma_sample(&plane, ox + i, oy + j, fx, fy);
-            }
-        }
+        predict_chroma(&plane, ox, oy, fx, fy)
+    };
+    BlockPrediction {
+        luma,
+        cb: chroma(&reference.cb),
+        cr: chroma(&reference.cr),
     }
-    out
 }
 
 /// Stores a block prediction into the picture at luma position (x, y).
@@ -444,6 +605,58 @@ mod tests {
         // w 2 doubles.
         let split = weight_single(&flat(60, 60), [(2, 0), (2, 0), (2, 0)], [1, 0]);
         assert_eq!(split, flat(60, 120));
+    }
+
+    /// The windowed predictor equals the per-sample clamped reference predictor on random
+    /// pictures, positions and vectors, including blocks far outside the picture.
+    #[test]
+    fn windowed_prediction_equals_the_per_sample_reference() {
+        let mut state = 0x9e37_79b9_7f4a_7c15_u64;
+        let mut next = move || {
+            state ^= state << 13;
+            state ^= state >> 7;
+            state ^= state << 17;
+            state
+        };
+        for (width, height) in [(16, 16), (48, 32), (32, 64)] {
+            let mut reference = Frame::new(width, height).unwrap();
+            for sample in reference
+                .y
+                .iter_mut()
+                .chain(reference.cb.iter_mut())
+                .chain(reference.cr.iter_mut())
+            {
+                *sample = (next() >> 24) as u8;
+            }
+            for _ in 0..4000 {
+                let x = (next() as usize % (width / 4)) * 4;
+                let y = (next() as usize % (height / 4)) * 4;
+                let spread = if next() % 4 == 0 { 400 } else { 40 };
+                let mv = [
+                    (next() % (2 * spread + 1)) as i32 - spread as i32,
+                    (next() % (2 * spread + 1)) as i32 - spread as i32,
+                ];
+                let mut target = Frame::new(width, height).unwrap();
+                let block = Block {
+                    x,
+                    y,
+                    width: 4,
+                    height: 4,
+                };
+                predict_block(&reference, &mut target, block, mv);
+                let p = predict_4x4(&reference, x, y, mv);
+                for j in 0..4 {
+                    let row = (y + j) * width + x;
+                    assert_eq!(&target.y[row..row + 4], &p.luma[j * 4..j * 4 + 4], "{mv:?}");
+                }
+                let cw = width / 2;
+                for j in 0..2 {
+                    let row = (y / 2 + j) * cw + x / 2;
+                    assert_eq!(&target.cb[row..row + 2], &p.cb[j * 2..j * 2 + 2], "{mv:?}");
+                    assert_eq!(&target.cr[row..row + 2], &p.cr[j * 2..j * 2 + 2], "{mv:?}");
+                }
+            }
+        }
     }
 
     /// predict_4x4 agrees with the rectangle predictor it replaced.

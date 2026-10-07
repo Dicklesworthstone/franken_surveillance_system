@@ -153,6 +153,7 @@ impl ScreeningReport {
                 let (first, _) = source_capsule(deployment, &retained, plan.first_segment)?;
                 let mask = current_mask(deployment, &first.sensor_id)
                     .map_err(RecordedDecodeError::from)?;
+                let mut chunks = crate::ingest::VerifiedChunkCache::default();
                 for segment in plan.first_segment..end {
                     cx.checkpoint("sensor_health:decode")
                         .map_err(|_| HealthError::Cancelled)?;
@@ -165,7 +166,13 @@ impl ScreeningReport {
                         return Err(RecordedDecodeError::InvalidReceipt.into());
                     }
                     let bytes = retained
-                        .read_segment(deployment, segment, limits.read_limits, cx)
+                        .read_segment_cached(
+                            deployment,
+                            segment,
+                            limits.read_limits,
+                            cx,
+                            &mut chunks,
+                        )
                         .map_err(RecordedDecodeError::from)?;
                     let image = decode_luma(
                         &bytes,

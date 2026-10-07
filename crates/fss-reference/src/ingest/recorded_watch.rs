@@ -686,6 +686,8 @@ enum FrameSource {
         next: usize,
         end: usize,
         mask: Box<MaskBinding>,
+        /// Verified custody chunks reused across the sequential frame reads.
+        chunks: Box<super::VerifiedChunkCache>,
     },
     H264(Box<RecordedH264Range>),
     H265(Box<RecordedH265Range>),
@@ -804,6 +806,7 @@ impl WatchReport {
                 next: plan.first_segment,
                 end,
                 mask: Box::new(privacy.clone()),
+                chunks: Box::default(),
             }),
             "annexb" | "mp4avc" => Some(FrameSource::H264(Box::new(RecordedH264Range::open(
                 deployment,
@@ -1582,6 +1585,7 @@ impl FrameSource {
                 next,
                 end,
                 mask,
+                chunks,
             } => {
                 if *next >= *end {
                     return Ok(None);
@@ -1592,7 +1596,13 @@ impl FrameSource {
                     return Err(RecordedDecodeError::Limit.into());
                 }
                 let (capsule, capsule_digest) = source_capsule(deployment, retained, segment)?;
-                let bytes = retained.read_segment(deployment, segment, limits.read_limits, cx)?;
+                let bytes = retained.read_segment_cached(
+                    deployment,
+                    segment,
+                    limits.read_limits,
+                    cx,
+                    chunks,
+                )?;
                 let image = decode_luma(
                     &bytes,
                     capsule.source_digest.bytes(),

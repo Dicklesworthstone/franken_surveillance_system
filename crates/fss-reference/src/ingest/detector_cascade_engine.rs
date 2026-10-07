@@ -983,12 +983,18 @@ impl<'a> DetectorCascade<'a> {
                     frame: limits.jpeg_limits,
                     maximum_output_bytes: MAX_RGB_BYTES,
                 };
+                let mut chunks = super::VerifiedChunkCache::default();
                 for &segment in wanted {
                     cx.checkpoint("detector_cascade:decode")
                         .map_err(|_| CascadeError::Cancelled)?;
                     let (capsule, capsule_digest) = source_capsule(deployment, &retained, segment)?;
-                    let bytes =
-                        retained.read_segment(deployment, segment, limits.read_limits, cx)?;
+                    let bytes = retained.read_segment_cached(
+                        deployment,
+                        segment,
+                        limits.read_limits,
+                        cx,
+                        &mut chunks,
+                    )?;
                     let decoded = match decode_rgb(
                         &bytes,
                         capsule.source_digest.bytes(),

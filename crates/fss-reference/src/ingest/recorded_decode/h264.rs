@@ -26,7 +26,9 @@ use fss_core::{CanonicalEncode, CanonicalEncoder, ContentDigest, SensorCapsule, 
 
 use super::{ComponentInterpretation, RecordedDecodeError, checkpoint, source_capsule};
 use crate::ingest::privacy_mask::{MaskBinding, binding_digest, current_mask, encode_marker};
-use crate::ingest::{MP4_PARAMETER_SET_REASON_PREFIX, RetainedFileImport, RetainedReadLimits};
+use crate::ingest::{
+    MP4_PARAMETER_SET_REASON_PREFIX, RetainedFileImport, RetainedReadLimits, VerifiedChunkCache,
+};
 use crate::{ReferenceDeployment, ReplayCx};
 
 /// Maximum access units decoded by one range request.
@@ -302,6 +304,8 @@ pub struct RecordedH264Range {
     retained: RetainedFileImport,
     decoder: Decoder,
     framing: Framing,
+    /// Verified custody chunks reused across the range's sequential segment reads.
+    chunks: VerifiedChunkCache,
     next: usize,
     end: usize,
     decoded: u64,
@@ -352,7 +356,14 @@ impl RecordedH264Range {
                 segment: span.segment_index,
             });
         }
-        let first_bytes = retained.read_segment(deployment, first, request.read_limits, cx)?;
+        let mut chunks = VerifiedChunkCache::default();
+        let first_bytes = retained.read_segment_cached(
+            deployment,
+            first,
+            request.read_limits,
+            cx,
+            &mut chunks,
+        )?;
         if !segment_has_idr_slice(&segment_nals(framing, &first_bytes, first)?) {
             return Err(RecordedDecodeError::H264RangeNotIdr { segment: first });
         }
@@ -380,6 +391,7 @@ impl RecordedH264Range {
             retained,
             decoder,
             framing,
+            chunks,
             next: first,
             end,
             decoded: 0,
@@ -432,9 +444,13 @@ impl RecordedH264Range {
             if self.next < self.end {
                 let index = self.next;
                 checkpoint(cx, STAGE_RECORDED_H264_SEGMENT)?;
-                let bytes =
-                    self.retained
-                        .read_segment(deployment, index, self.request.read_limits, cx)?;
+                let bytes = self.retained.read_segment_cached(
+                    deployment,
+                    index,
+                    self.request.read_limits,
+                    cx,
+                    &mut self.chunks,
+                )?;
                 for nal in segment_nals(self.framing, &bytes, index)? {
                     if let Some(picture) = self.decoder.decode_nal(nal)? {
                         self.ready.push_back(picture);
