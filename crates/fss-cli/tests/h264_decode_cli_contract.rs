@@ -290,12 +290,27 @@ fn mp4_and_matroska_imports_are_sniffed_retained_and_decode_bit_exact() -> TestR
         let refused = decode(&root, &id, "1", "2").output()?;
         assert!(!refused.status.success());
         assert_eq!(refusal(&refused), "ERR-DECODE-H264-RANGE-NOT-IDR-001");
-        // A damaged file is refused whole by the demuxer; nothing is retained.
+        // A cut indexed MP4 cannot be recovered (its tables describe the whole file), and a
+        // Matroska byte flip fails a CRC-32: refused whole by the demuxer, nothing retained.
         let damaged = directory.0.join(format!("damaged.{name}"));
-        fs::write(&damaged, &bytes[..bytes.len() - 9])?;
+        let mut bytes_damaged = bytes[..bytes.len() - 9].to_vec();
+        if name == "mkv" {
+            bytes_damaged = bytes.to_vec();
+            bytes_damaged[bytes.len() / 2] ^= 0x40;
+        }
+        fs::write(&damaged, &bytes_damaged)?;
         let refused = import(&damaged)?;
         assert!(!refused.status.success());
         assert_eq!(refusal(&refused), refused_id);
+        if name == "mkv" {
+            // A Matroska file its writer never finished keeps its complete Clusters; the lost
+            // tail is reported as one omission, apart from container structure.
+            let cut = directory.0.join("cut.mkv");
+            fs::write(&cut, &bytes[..bytes.len() - 9])?;
+            let output = import(&cut)?;
+            success(&output);
+            assert_eq!(field(&output, "omission_count")?, "1");
+        }
     }
     Ok(())
 }

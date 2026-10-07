@@ -788,3 +788,44 @@ fn matroska_capture_hints_follow_block_timestamps_and_damage_is_refused_whole() 
     }
     Ok(())
 }
+
+#[test]
+fn recordings_cut_by_their_writer_keep_complete_frames_and_record_the_lost_tail() -> TestResult {
+    let expected = oracle(MP4_ORACLE);
+    // A live Matroska recording cut inside its third Cluster (power loss): its first two
+    // CRC-bound Clusters (nine frames) survive. A fragmented MP4 cut inside its second fragment:
+    // the first fragment (five frames) survives.
+    for (name, bytes, cut, frames) in [
+        ("cut-mkv", MKV_LIVE, 5_400, 9),
+        ("cut-fmp4", MP4_FRAGMENTED, 6_000, 5),
+    ] {
+        let imported = import_as(name, &bytes[..cut], None)?;
+        assert_eq!(imported.segments, frames);
+        let retained = RetainedFileImport::open(
+            &imported.deployment,
+            imported.identity,
+            RetainedReadLimits::default(),
+            &imported.cx,
+        )?;
+        let manifest = retained.manifest();
+        let lost: Vec<_> = manifest
+            .omission_spans
+            .iter()
+            .filter(|span| !span.is_container_structure())
+            .collect();
+        assert_eq!(lost.len(), 1);
+        assert_eq!(
+            lost[0].reason,
+            crate::ingest::CONTAINER_TRUNCATED_TAIL_REASON
+        );
+        assert_eq!(lost[0].offset + lost[0].len, cut as u64);
+        let last = &manifest.segment_spans[frames - 1];
+        assert!(last.offset + last.len <= lost[0].offset);
+        // Every complete frame decodes exactly as in the whole recording.
+        assert_eq!(
+            i420_digests(&imported, 0, frames)?,
+            expected[..frames].to_vec()
+        );
+    }
+    Ok(())
+}

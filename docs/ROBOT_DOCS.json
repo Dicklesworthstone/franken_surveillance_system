@@ -1337,12 +1337,12 @@
       "id": "ERR-INGEST-FORMAT-CONFLICT-001"
     },
     {
-      "description": "the Matroska/WebM demuxer refused the file whole: content-encoded (compressed, header-stripped or encrypted) or track-operation video, laced, invisible or encrypted blocks, a codec-state change, not exactly one `V_MPEG4/ISO/AVC` H.264 or `V_MPEGH/ISO/HEVC` base-layer H.265 video track, a CRC-32 mismatch, more than one Segment or trailing bytes, malformed elements or NAL framing, or a parse bound; nothing is retained",
+      "description": "the Matroska/WebM demuxer refused the file whole: content-encoded (compressed, header-stripped or encrypted) or track-operation video, laced, invisible or encrypted blocks, a codec-state change, not exactly one `V_MPEG4/ISO/AVC` H.264 or `V_MPEGH/ISO/HEVC` base-layer H.265 video track, a CRC-32 mismatch, more than one Segment or trailing bytes, malformed elements or NAL framing, no complete video frame before a truncation, or a parse bound; nothing is retained (a file that merely ends early is recovered up to its last complete Cluster or block, with a `container_truncated_tail` omission)",
       "guidance": "remux to a single-video-track Matroska (or MP4) without transcoding, or import the Annex-B elementary stream; do not retry unchanged",
       "id": "ERR-INGEST-MKV-REFUSED-001"
     },
     {
-      "description": "the MP4 demuxer refused the file whole: encrypted or sample-grouped fragments, externally referenced, not exactly one `avc1` H.264 or `hvc1`/`hev1` base-layer H.265 video track, malformed boxes, sample tables or NAL framing, samples out of decode order in the file, or a parse bound; nothing is retained",
+      "description": "the MP4 demuxer refused the file whole: encrypted or sample-grouped fragments, externally referenced, not exactly one `avc1` H.264 or `hvc1`/`hev1` base-layer H.265 video track, malformed boxes, sample tables or NAL framing, samples out of decode order in the file, an indexed movie cut short, or a parse bound; nothing is retained (a fragmented movie that merely ends early keeps its complete fragments, with a `container_truncated_tail` omission)",
       "guidance": "remux to an indexed single-video-track `avc1`/`hvc1` MP4 without transcoding (or import the Annex-B elementary stream); do not retry unchanged",
       "id": "ERR-INGEST-MP4-REFUSED-001"
     },

@@ -46,10 +46,32 @@ impl<'a, 'c> Reader<'a, 'c> {
         self.checkpoint()
     }
     pub fn children(&mut self, range: Range<usize>, top: bool) -> Result<Vec<BoxRef>, DemuxError> {
+        let mut result = Vec::new();
+        self.collect(range, top, &mut result)?;
+        Ok(result)
+    }
+    /// Top-level boxes up to the first one the bytes run out in, and that box's start. Any other
+    /// malformation still refuses.
+    pub fn complete_top_level(&mut self) -> Result<(Vec<BoxRef>, Option<usize>), DemuxError> {
+        let mut result = Vec::new();
+        match self.collect(0..self.bytes.len(), true, &mut result) {
+            Ok(()) => Ok((result, None)),
+            Err(DemuxError::Truncated) => {
+                let cut = result.last().map_or(0, |b: &BoxRef| b.body.end);
+                Ok((result, Some(cut)))
+            }
+            Err(error) => Err(error),
+        }
+    }
+    fn collect(
+        &mut self,
+        range: Range<usize>,
+        top: bool,
+        result: &mut Vec<BoxRef>,
+    ) -> Result<(), DemuxError> {
         if range.start > range.end || range.end > self.bytes.len() {
             return Err(DemuxError::Layout);
         }
-        let mut result = Vec::new();
         let mut start = range.start;
         while start < range.end {
             self.checkpoint()?;
@@ -88,7 +110,7 @@ impl<'a, 'c> Reader<'a, 'c> {
             });
             start = end;
         }
-        Ok(result)
+        Ok(())
     }
     pub fn body(&self, b: &BoxRef) -> &'a [u8] {
         &self.bytes[b.body.clone()]

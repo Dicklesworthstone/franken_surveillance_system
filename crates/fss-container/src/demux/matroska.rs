@@ -107,6 +107,7 @@ pub struct MatroskaVideo<'a> {
     parameter_sets: Vec<Range<usize>>,
     samples: Vec<MatroskaSample>,
     elements: Vec<MatroskaElement>,
+    tail: Option<usize>,
     elements_visited: usize,
     blocks_visited: usize,
     nals_inspected: usize,
@@ -129,6 +130,31 @@ impl<'a> MatroskaVideo<'a> {
         limits: DemuxLimits,
         check: &mut dyn FnMut() -> Result<(), DemuxError>,
     ) -> Result<Self, DemuxError> {
+        Self::parse_inner(source, track, limits, check, false)
+    }
+
+    /// Like [`Self::parse_with_checkpoint`], but a file its writer never finished (power loss, a
+    /// crashed recorder) is admitted up to its last complete top-level element or, within a
+    /// final Cluster without a CRC-32, its last complete block. A Cluster whose CRC-32 can no
+    /// longer be verified is dropped whole; the header, Info and Tracks must be complete.
+    /// [`Self::truncated_tail`] reports where the unread tail starts. Only running out of bytes
+    /// is recovered: any malformed or refused element still refuses the whole file.
+    pub fn parse_recovering_tail(
+        source: &'a [u8],
+        track: Option<u64>,
+        limits: DemuxLimits,
+        check: &mut dyn FnMut() -> Result<(), DemuxError>,
+    ) -> Result<Self, DemuxError> {
+        Self::parse_inner(source, track, limits, check, true)
+    }
+
+    fn parse_inner(
+        source: &'a [u8],
+        track: Option<u64>,
+        limits: DemuxLimits,
+        check: &mut dyn FnMut() -> Result<(), DemuxError>,
+        recover: bool,
+    ) -> Result<Self, DemuxError> {
         limits.validate()?;
         if source.len() > limits.maximum_input_bytes {
             return Err(DemuxError::Limit);
@@ -146,13 +172,37 @@ impl<'a> MatroskaVideo<'a> {
         if id != SEGMENT {
             return Err(DemuxError::MissingBox(SEGMENT.to_be_bytes()));
         }
-        // One Segment ends the file: trailing bytes or a second Segment are refused.
-        if let Some(size) = size
-            && end_of(segment_data, size, source.len())? != source.len()
-        {
-            return Err(DemuxError::Layout);
+        // One Segment ends the file: trailing bytes or a second Segment are refused. A declared
+        // end beyond the file is a truncation.
+        let mut tail = None;
+        if let Some(size) = size {
+            let end = segment_data.checked_add(size).ok_or(DemuxError::Limit)?;
+            if end < source.len() {
+                return Err(DemuxError::Layout);
+            }
+            if end > source.len() {
+                if !recover {
+                    return Err(DemuxError::Truncated);
+                }
+                tail = Some(source.len());
+            }
         }
-        let level_one = segment_children(&mut r, segment_data..source.len())?;
+        let (level_one, cut) = segment_children(&mut r, segment_data..source.len(), recover)?;
+        // A cut Cluster keeps its complete children only when no CRC-32 binds them.
+        let mut partial = None;
+        if let Some(cut) = cut {
+            tail = Some(cut.at);
+            if let Some(cluster) = cut.cluster {
+                let (kids, stop) = complete_children(&mut r, cluster.data.clone())?;
+                if kids.iter().skip(1).any(|k| k.id == CRC32) {
+                    return Err(DemuxError::Layout);
+                }
+                if kids.first().is_some_and(|k| k.id != CRC32) {
+                    tail = Some(stop);
+                    partial = Some((cluster.start..stop, kids));
+                }
+            }
+        }
         let mut elements = vec![
             MatroskaElement {
                 id: EBML,
@@ -172,18 +222,28 @@ impl<'a> MatroskaVideo<'a> {
                 range: element.start..element.data.end,
             });
         }
+        if let Some((range, _)) = &partial {
+            elements.push(MatroskaElement {
+                id: CLUSTER,
+                name: "cluster",
+                range: range.clone(),
+            });
+        }
         let media = level_one
             .iter()
             .filter(|e| e.id == CLUSTER)
-            .try_fold(0_usize, |n, e| {
-                n.checked_add(e.data.end - e.start).ok_or(DemuxError::Limit)
+            .map(|e| e.data.end - e.start)
+            .chain(partial.as_ref().map(|(range, _)| range.len()))
+            .try_fold(0_usize, |n, len| {
+                n.checked_add(len).ok_or(DemuxError::Limit)
             })?;
-        if source.len() - media > limits.maximum_metadata_bytes {
+        if tail.unwrap_or(source.len()) - media > limits.maximum_metadata_bytes {
             return Err(DemuxError::Limit);
         }
         let first_cluster = level_one
             .iter()
             .position(|e| e.id == CLUSTER)
+            .or(partial.as_ref().map(|_| level_one.len()))
             .ok_or(DemuxError::MissingBox(CLUSTER.to_be_bytes()))?;
         let (info_at, info) = single(&level_one, INFO)?;
         let (tracks_at, tracks_element) = single(&level_one, TRACKS)?;
@@ -212,7 +272,11 @@ impl<'a> MatroskaVideo<'a> {
         };
         let mut samples = Vec::new();
         for cluster in level_one.iter().filter(|e| e.id == CLUSTER) {
-            cluster_frames(&mut r, cluster, &frames, &mut samples)?;
+            let kids = children(&mut r, cluster.data.clone(), true)?;
+            cluster_frames(&mut r, kids, true, &frames, &mut samples)?;
+        }
+        if let Some((_, kids)) = partial {
+            cluster_frames(&mut r, kids, false, &frames, &mut samples)?;
         }
         if samples.is_empty() {
             return Err(DemuxError::Layout);
@@ -230,6 +294,7 @@ impl<'a> MatroskaVideo<'a> {
             parameter_sets,
             samples,
             elements,
+            tail,
             elements_visited: r.boxes,
             blocks_visited: r.entries,
             nals_inspected: r.nals,
@@ -276,9 +341,16 @@ impl<'a> MatroskaVideo<'a> {
     pub fn parameter_sets(&self) -> &[Range<usize>] {
         &self.parameter_sets
     }
-    /// Top-level regions tiling the source, in file order.
+    /// Top-level regions tiling the source up to [`Self::truncated_tail`] (or its end), in file
+    /// order. A recovered final Cluster's region ends after its last kept child.
     pub fn elements(&self) -> &[MatroskaElement] {
         &self.elements
+    }
+    /// Start of the unread tail of a file its writer never finished: always `None` from the
+    /// strict parsers. Equal to the file length when only the declared Segment size shows the
+    /// truncation.
+    pub const fn truncated_tail(&self) -> Option<usize> {
+        self.tail
     }
     /// Exact parser counters: metadata elements visited, cluster and block-group children
     /// visited, inspected NALs.
@@ -387,24 +459,56 @@ fn children(
     Ok(result)
 }
 
+/// Where a recovered file stops: the first incomplete top-level element's start and, when it is
+/// a Cluster with a complete header, that Cluster with its data running to the end of the file.
+struct Cut {
+    at: usize,
+    cluster: Option<Element>,
+}
+
 /// Segment children in file order. An unknown-size Cluster ends at the next top-level element
-/// or the end of the Segment; any other unknown size is refused.
+/// or the end of the Segment; any other unknown size is refused. With `recover`, running out of
+/// bytes ends the list at the incomplete element instead of refusing.
 fn segment_children(
     r: &mut Reader<'_, '_>,
     data: Range<usize>,
-) -> Result<Vec<Element>, DemuxError> {
+    recover: bool,
+) -> Result<(Vec<Element>, Option<Cut>), DemuxError> {
     let mut result = Vec::new();
+    let mut cut = None;
     let mut at = data.start;
     while at < data.end {
         visit(r)?;
-        let (id, start, size) = header(r.bytes, at, data.end)?;
+        let (id, start, size) = match header(r.bytes, at, data.end) {
+            Ok(parsed) => parsed,
+            Err(DemuxError::Truncated) if recover => {
+                cut = Some(Cut { at, cluster: None });
+                break;
+            }
+            Err(error) => return Err(error),
+        };
         if level_one_name(id).is_none() {
             return Err(DemuxError::Unsupported);
         }
         let end = match size {
-            Some(size) => end_of(start, size, data.end)?,
-            None if id == CLUSTER => unknown_cluster_end(r, start, data.end)?,
+            Some(size) => end_of(start, size, data.end),
+            None if id == CLUSTER => unknown_cluster_end(r, start, data.end),
             None => return Err(DemuxError::Unsupported),
+        };
+        let end = match end {
+            Ok(end) => end,
+            Err(DemuxError::Truncated) if recover => {
+                cut = Some(Cut {
+                    at,
+                    cluster: (id == CLUSTER).then_some(Element {
+                        id,
+                        start: at,
+                        data: start..data.end,
+                    }),
+                });
+                break;
+            }
+            Err(error) => return Err(error),
         };
         result.push(Element {
             id,
@@ -430,7 +534,37 @@ fn segment_children(
             verify_crc(r, std::slice::from_ref(&crc), element.data.end)?;
         }
     }
-    Ok(result)
+    Ok((result, cut))
+}
+
+/// The complete children of a cut Cluster's data, and where the first incomplete one starts.
+/// CRC-32 placement is the caller's to judge.
+fn complete_children(
+    r: &mut Reader<'_, '_>,
+    data: Range<usize>,
+) -> Result<(Vec<Element>, usize), DemuxError> {
+    let mut result = Vec::new();
+    let mut at = data.start;
+    while at < data.end {
+        r.entries(1)?;
+        let parsed = header(r.bytes, at, data.end).and_then(|(id, start, size)| {
+            let end = end_of(start, size.ok_or(DemuxError::Unsupported)?, data.end)?;
+            Ok(Element {
+                id,
+                start: at,
+                data: start..end,
+            })
+        });
+        match parsed {
+            Ok(element) => {
+                at = element.data.end;
+                result.push(element);
+            }
+            Err(DemuxError::Truncated) => break,
+            Err(error) => return Err(error),
+        }
+    }
+    Ok((result, at))
 }
 
 fn unknown_cluster_end(
@@ -680,14 +814,17 @@ fn block_header(
     Ok((track, offset, fields[2], at + 3..data.end))
 }
 
+/// Selected-track frames of one Cluster's children. A complete Cluster must carry its
+/// Timestamp; a recovered, cut one may end before it, but never has a block without it.
 fn cluster_frames(
     r: &mut Reader<'_, '_>,
-    cluster: &Element,
+    kids: Vec<Element>,
+    complete: bool,
     frames: &Frames<'_>,
     samples: &mut Vec<MatroskaSample>,
 ) -> Result<(), DemuxError> {
     let mut base = None;
-    for child in children(r, cluster.data.clone(), true)? {
+    for child in kids {
         let (block, keyframe) = match child.id {
             CLUSTER_TIMESTAMP => {
                 let value = uint(&r.bytes[child.data.clone()], 0)?;
@@ -754,7 +891,7 @@ fn cluster_frames(
             contains_idr,
         });
     }
-    if base.is_none() {
+    if complete && base.is_none() {
         return Err(DemuxError::MissingBox(CLUSTER_TIMESTAMP.to_be_bytes()));
     }
     Ok(())

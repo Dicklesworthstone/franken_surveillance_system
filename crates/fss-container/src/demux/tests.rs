@@ -648,3 +648,48 @@ fn quicktime_movies_read_like_their_iso_twins_and_admit_self_contained_alis() ->
     );
     Ok(())
 }
+#[test]
+fn a_cut_fragmented_movie_keeps_its_complete_fragments_and_an_indexed_one_refuses() -> Test {
+    let fragmented = include_bytes!("../../tests/fixtures/fragmented_av.mp4");
+    let recover =
+        |bytes| AvcMp4::parse_recovering_tail(bytes, None, DemuxLimits::default(), &mut || Ok(()));
+    let full = recover(fragmented)?;
+    assert_eq!(full.truncated_tail(), None);
+    let second = nth_box(fragmented, b"moof", 1) - 4;
+    // The second fragment's mdat also carries audio after its last video sample: the fragment
+    // is complete only where the trailing mfra starts.
+    let second_end = nth_box(fragmented, b"mfra", 0) - 4;
+    for cut in 0..fragmented.len() {
+        let prefix = &fragmented[..cut];
+        let expected = match cut {
+            // The trailing mfra (or nothing) is cut: every fragment is complete.
+            _ if cut >= second_end => 10,
+            // The second fragment's moof or mdat is cut: the first fragment survives.
+            _ if cut >= second => 5,
+            _ => 0,
+        };
+        // A movie cut exactly after a complete fragment is itself complete.
+        if let Ok(strict) = AvcMp4::parse(prefix, None, DemuxLimits::default()) {
+            assert_eq!(strict.samples().len(), expected, "cut {cut}");
+        }
+        match recover(prefix) {
+            Ok(video) => {
+                assert_eq!(video.samples().len(), expected, "cut {cut}");
+                assert_eq!(video.samples(), &full.samples()[..expected]);
+                let tail = video.truncated_tail().unwrap_or(cut);
+                assert!(tail <= cut);
+                if expected == 5 && cut > second {
+                    assert_eq!(tail, second);
+                }
+            }
+            Err(_) => assert_eq!(expected, 0, "cut {cut}"),
+        }
+    }
+    // An indexed movie's tables describe the whole file: any cut refuses.
+    let indexed = include_bytes!("../../tests/fixtures/interleaved_av.mp4");
+    assert_eq!(recover(indexed)?.truncated_tail(), None);
+    for cut in [100, indexed.len() / 2, indexed.len() - 1] {
+        assert!(recover(&indexed[..cut]).is_err());
+    }
+    Ok(())
+}

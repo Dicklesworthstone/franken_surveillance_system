@@ -194,3 +194,106 @@ fn limits_and_cancellation_refuse_without_a_partial_index() {
         );
     }
 }
+
+fn recover(bytes: &[u8]) -> Result<MatroskaVideo<'_>, DemuxError> {
+    MatroskaVideo::parse_recovering_tail(bytes, None, DemuxLimits::default(), &mut || Ok(()))
+}
+
+/// Recovered frames are always a prefix of the complete file's frames, and the elements tile the
+/// file up to the reported tail. Returns the recovered frame count per cut.
+fn recovered_counts(bytes: &[u8]) -> Vec<usize> {
+    let full = recover(bytes).expect("complete file");
+    assert_eq!(full.truncated_tail(), None);
+    let mut counts = Vec::new();
+    for cut in 0..bytes.len() {
+        let prefix = &bytes[..cut];
+        // A live file cut exactly between top-level elements is complete: both parsers agree.
+        if let Ok(strict) = parse(prefix) {
+            let recovered = recover(prefix).expect("strictly valid prefix");
+            assert_eq!(recovered.truncated_tail(), None);
+            assert_eq!(recovered.samples(), strict.samples());
+        }
+        let Ok(video) = recover(prefix) else {
+            counts.push(0);
+            continue;
+        };
+        let tail = video.truncated_tail().unwrap_or(cut);
+        assert!(tail <= cut);
+        let k = video.samples().len();
+        assert_eq!(video.samples(), &full.samples()[..k]);
+        assert!(video.samples().iter().all(|s| s.source.end <= tail));
+        let mut cursor = 0;
+        for element in video.elements() {
+            assert_eq!(element.range.start, cursor);
+            cursor = element.range.end;
+        }
+        assert_eq!(cursor, tail, "cut {cut}");
+        counts.push(k);
+    }
+    counts
+}
+
+#[test]
+fn a_cut_recording_keeps_its_complete_crc_bound_clusters_only() {
+    // FFmpeg binds every Cluster with a CRC-32: a cut Cluster cannot be verified, so it is dropped
+    // whole and recovery moves in Cluster steps.
+    let counts = recovered_counts(LIVE);
+    let full = recover(LIVE).expect("complete");
+    let clusters: Vec<_> = full
+        .elements()
+        .iter()
+        .filter(|e| e.name == "cluster")
+        .map(|e| e.range.clone())
+        .collect();
+    assert_eq!(clusters.len(), 3);
+    for (cut, k) in counts.iter().enumerate() {
+        let complete = full
+            .samples()
+            .iter()
+            .filter(|s| {
+                clusters
+                    .iter()
+                    .any(|c| c.contains(&s.source.start) && c.end <= cut)
+            })
+            .count();
+        assert_eq!(*k, complete, "cut {cut}");
+    }
+    // The live fixture's Clusters hold 6, 3 and 1 frames.
+    let steps: std::collections::BTreeSet<_> = counts.iter().copied().collect();
+    assert_eq!(steps, [0, 6, 9].into());
+}
+
+#[test]
+fn a_cut_cluster_without_a_crc_keeps_each_complete_block() -> Test {
+    // Replace each Cluster's leading CRC-32 with a Void element of the same size.
+    let mut bytes = LIVE.to_vec();
+    let starts: Vec<_> = parse(LIVE)?
+        .elements()
+        .iter()
+        .filter(|e| e.name == "cluster")
+        .map(|e| e.range.start)
+        .collect();
+    for start in starts {
+        let (_, data, _) = header(&bytes, start, bytes.len())?;
+        assert_eq!(bytes[data..data + 2], [0xBF, 0x84]);
+        bytes[data..data + 6].copy_from_slice(&[0xEC, 0x84, 0, 0, 0, 0]);
+    }
+    let full = parse(&bytes)?;
+    let counts = recovered_counts(&bytes);
+    for (cut, k) in counts.iter().enumerate() {
+        // A frame survives exactly when its whole block element precedes the cut.
+        let complete = full
+            .samples()
+            .iter()
+            .filter(|s| s.source.end <= cut)
+            .count();
+        assert_eq!(*k, complete, "cut {cut}");
+    }
+    assert!((1..=10).all(|k| counts.contains(&k)));
+    // Only running out of bytes is recovered: a corrupt element still refuses the whole file.
+    let mut corrupt = bytes[..bytes.len() - 40].to_vec();
+    let first = full.samples()[0].source.start;
+    corrupt[first - 4] = 0x00;
+    assert!(recover(&corrupt).is_err());
+    Ok(())
+}

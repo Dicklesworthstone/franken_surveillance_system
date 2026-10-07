@@ -302,8 +302,13 @@ impl FileImportManifest {
             {
                 return Err(invalid("invalid omission span"));
             }
-            if omission.is_container_structure() != container
-                || structure_prefix.is_some_and(|prefix| !omission.reason.starts_with(prefix))
+            // A container import's only lost bytes are one unread tail ending the file.
+            let truncated_tail = container
+                && omission.reason == super::CONTAINER_TRUNCATED_TAIL_REASON
+                && omission.offset + omission.len == self.input_bytes;
+            if (omission.is_container_structure() != container && !truncated_tail)
+                || structure_prefix
+                    .is_some_and(|prefix| !truncated_tail && !omission.reason.starts_with(prefix))
             {
                 return Err(invalid(
                     "container structure span outside its MP4 or Matroska import",

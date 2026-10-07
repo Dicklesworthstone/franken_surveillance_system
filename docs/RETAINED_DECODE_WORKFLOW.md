@@ -212,6 +212,34 @@ Not supported: encrypted or sample-grouped fragments, `avc3`/in-band-only config
 (`nuh_layer_id` > 0), and edit-list trimming (edits are preserved metadata; every sample is
 decoded).
 
+## Recordings their writer never finished
+
+Fragmented MP4 and Matroska are chosen by recorders (OBS, go2rtc/Home Assistant, FFmpeg
+`frag_keyframe`, NVR exports) because they survive a crash or power loss. FSS recovers them the
+same way Annex-B and MJPEG imports already keep their complete frames. The demuxers'
+`parse_recovering_tail` admits a file that simply runs out of bytes:
+
+- a fragmented MP4 keeps every complete movie fragment. Top-level boxes end at the first one the
+  bytes run out in, and a final `moof` without a complete `mdat` after it is dropped.
+- a Matroska file keeps every complete top-level element. Within a cut final Cluster it keeps
+  each complete block only when no CRC-32 binds the Cluster. A Cluster whose CRC-32 can no longer
+  be verified is dropped whole, never trusted. The EBML header, Info and Tracks must be complete.
+  A known Segment size beyond the file is accepted as a truncation.
+
+The unread tail is one omission span with reason `container_truncated_tail`
+(`CONTAINER_TRUNCATED_TAIL_REASON`). It is lost source, not container structure. It must end the
+file, and it is the only non-structure omission a container import may carry. As with any
+omission, the acquisition record reports source bytes omitted. Dwell timing on the import is
+classified unreliable and automated retention excludes it (`SourceOmission`), exactly as for an
+Annex-B or MJPEG import with lost bytes. Recovered frames are a prefix of the complete file's
+frames: same bytes, timestamps and decodes. The demuxer tests check every possible cut of the
+fragmented, seekable and live fixtures (with and without Cluster CRCs), and the import test
+decodes the survivors bit-exact against the oracle prefix.
+
+Still refused: an indexed MP4 cut anywhere (its sample tables describe the whole file, and a
+moov-last file has no index at all), any malformation other than running out of bytes, and a
+file whose complete part holds no video frame.
+
 ## Retained Matroska/WebM (H.264 and H.265) import
 
 **Import.** `FileIngestAdapter` retains a Matroska or WebM file (OBS, FFmpeg segment recorders,
@@ -266,9 +294,9 @@ track, seekable and live/unknown-size; H.265 with audio) and require the retaine
 reproduce FFmpeg's per-frame I420 digests (the CRA-led H.265 range included) and the frames to
 be byte-identical to the MP4 samples.
 
-Not supported: laced or content-encoded video, several Segments (chained files), a file truncated
-mid-element (a crashed recorder's tail is refused, not trimmed), other codecs (VP8/VP9/AV1 in
-WebM), and BlockAdditions or side data (kept as structure, never interpreted).
+Not supported: laced or content-encoded video, several Segments (chained files), other codecs
+(VP8/VP9/AV1 in WebM), and BlockAdditions or side data (kept as structure, never interpreted). A
+file its writer never finished is recovered up to its last complete Cluster or block (see above).
 
 ## Retained H.265 import and range decode
 

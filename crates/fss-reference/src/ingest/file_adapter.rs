@@ -501,6 +501,11 @@ pub const MKV_PARAMETER_SET_REASON_PREFIX: &str = "mkv_avc_parameter_set:nal_len
 /// completed by `nal_length_bytes=N`.
 pub const MKV_HEVC_PARAMETER_SET_REASON_PREFIX: &str = "mkv_hevc_parameter_set:nal_length_bytes=";
 
+/// Omission reason of the unread tail of a fragmented MP4 or Matroska recording its writer never
+/// finished (power loss, a crashed recorder): lost source bytes after the last complete fragment,
+/// Cluster or block, never container structure. At most one, ending the file.
+pub const CONTAINER_TRUNCATED_TAIL_REASON: &str = "container_truncated_tail";
+
 impl FileOmissionSpan {
     /// True for MP4 or Matroska container structure, which is accounted byte for byte but is not
     /// lost or unparsed media: no source gap, omission or time-reliability downgrade follows.
@@ -1176,8 +1181,11 @@ struct ContainerVideo {
     samples: Vec<(usize, std::ops::Range<usize>, i128)>,
     /// Nanoseconds per container tick as `numerator / denominator`.
     tick_ns: (i128, i128),
-    /// Top-level regions tiling the file, with their structure reasons.
+    /// Top-level regions tiling the file up to `tail`, with their structure reasons.
     regions: Vec<(usize, usize, String)>,
+    /// End of the demuxed bytes: the file length, or where the unread tail of a recording its
+    /// writer never finished starts.
+    tail: usize,
 }
 
 impl ContainerVideo {
@@ -1206,8 +1214,9 @@ impl ContainerVideo {
         };
         let video = match family {
             ContainerFamily::Mp4 => {
-                let mp4 = AvcMp4::parse_with_checkpoint(file_bytes, None, limits, &mut check)
+                let mp4 = AvcMp4::parse_recovering_tail(file_bytes, None, limits, &mut check)
                     .map_err(refuse)?;
+                let tail = mp4.truncated_tail().unwrap_or(file_bytes.len());
                 Self {
                     family,
                     parameter_prefix: match mp4.codec() {
@@ -1224,15 +1233,21 @@ impl ContainerVideo {
                     tick_ns: (1_000_000_000, i128::from(mp4.timescale())),
                     regions: top_level_boxes(file_bytes)
                         .into_iter()
+                        .filter(|(start, _, _)| *start < tail)
                         .map(|(start, end, kind)| {
-                            (start, end, format!("mp4_box:{}", box_kind_text(kind)))
+                            (
+                                start,
+                                end.min(tail),
+                                format!("mp4_box:{}", box_kind_text(kind)),
+                            )
                         })
                         .collect(),
+                    tail,
                 }
             }
             ContainerFamily::Matroska => {
                 let mkv =
-                    MatroskaVideo::parse_with_checkpoint(file_bytes, None, limits, &mut check)
+                    MatroskaVideo::parse_recovering_tail(file_bytes, None, limits, &mut check)
                         .map_err(refuse)?;
                 Self {
                     family,
@@ -1259,6 +1274,7 @@ impl ContainerVideo {
                             )
                         })
                         .collect(),
+                    tail: mkv.truncated_tail().unwrap_or(file_bytes.len()),
                 }
             }
         };
@@ -1366,8 +1382,13 @@ pub fn sniff_format_with_hint(
     // the codec (from the one video sample entry); a refused file is refused here, whole.
     if bytes.get(4..8) == Some(b"ftyp".as_slice()) {
         use fss_container::demux::{AvcMp4, VideoCodec};
-        let parsed = AvcMp4::parse(bytes, None, mp4_demux_limits(usize::MAX))
-            .map_err(|refusal| FileIngestError::Mp4Refused { refusal })?;
+        let parsed = AvcMp4::parse_recovering_tail(
+            bytes,
+            None,
+            mp4_demux_limits(usize::MAX),
+            &mut || Ok(()),
+        )
+        .map_err(|refusal| FileIngestError::Mp4Refused { refusal })?;
         return Ok(match parsed.codec() {
             VideoCodec::Avc => (DetectedFileFormat::Mp4Avc, "mp4_ftyp"),
             VideoCodec::Hevc => (DetectedFileFormat::Mp4Hevc, "mp4_ftyp"),
@@ -1377,8 +1398,13 @@ pub fn sniff_format_with_hint(
     // EBML: Matroska or WebM. As for MP4, the demuxer decides support and the codec.
     if bytes.starts_with(&[0x1A, 0x45, 0xDF, 0xA3]) {
         use fss_container::demux::{MatroskaVideo, VideoCodec};
-        let parsed = MatroskaVideo::parse(bytes, None, mp4_demux_limits(usize::MAX))
-            .map_err(|refusal| FileIngestError::MatroskaRefused { refusal })?;
+        let parsed = MatroskaVideo::parse_recovering_tail(
+            bytes,
+            None,
+            mp4_demux_limits(usize::MAX),
+            &mut || Ok(()),
+        )
+        .map_err(|refusal| FileIngestError::MatroskaRefused { refusal })?;
         return Ok(match parsed.codec() {
             VideoCodec::Avc => (DetectedFileFormat::MkvAvc, "ebml_header"),
             VideoCodec::Hevc => (DetectedFileFormat::MkvHevc, "ebml_header"),
@@ -1851,10 +1877,11 @@ impl ScannedSegments {
     fn source_facts(&self) -> FileSourceFacts {
         FileSourceFacts {
             segments: self.segment_spans.len(),
+            // Padding and container structure are accounted bytes, not lost source.
             omitted_spans: self
                 .omission_spans
                 .iter()
-                .filter(|o| o.reason != "annexb_padding")
+                .filter(|o| o.reason != "annexb_padding" && !o.is_container_structure())
                 .count(),
             truncated_frames: self.truncated_frames,
             gapped_segments: self.segment_spans.iter().filter(|s| s.gap_before).count(),
@@ -2848,6 +2875,9 @@ impl FileIngestAdapter {
 
     /// One segment per video sample (MP4 `avc1` or `hvc1`/`hev1`; Matroska `V_MPEG4/ISO/AVC` or
     /// `V_MPEGH/ISO/HEVC`), in decode order, with the sample's exact length-prefixed bytes.
+    /// A fragmented MP4 or Matroska recording its writer never finished keeps its complete
+    /// fragments or Clusters (blocks, when no CRC-32 binds the cut Cluster); the unread tail is
+    /// one [`CONTAINER_TRUNCATED_TAIL_REASON`] omission.
     /// Every other byte is a typed container-structure span: each `avcC`/`hvcC` parameter-set
     /// NAL payload (read back verbatim by the decoder) and, split at top-level box or element
     /// boundaries, the remaining bytes (`mp4_box:<type>`, `mkv_element:<name>`, including other
@@ -2908,7 +2938,18 @@ impl FileIngestAdapter {
             }
             cursor = end;
         }
-        structure(cursor, file_bytes.len(), &mut omission_spans);
+        if cursor > video.tail {
+            return Err(refuse(DemuxError::Layout));
+        }
+        structure(cursor, video.tail, &mut omission_spans);
+        // A recording its writer never finished: the unread tail is lost source, not structure.
+        if video.tail < file_bytes.len() {
+            omission_spans.push(FileOmissionSpan {
+                offset: video.tail as u64,
+                len: (file_bytes.len() - video.tail) as u64,
+                reason: CONTAINER_TRUNCATED_TAIL_REASON.to_owned(),
+            });
+        }
         let accounted = omission_spans.iter().map(|span| span.len).sum::<u64>()
             + video
                 .samples

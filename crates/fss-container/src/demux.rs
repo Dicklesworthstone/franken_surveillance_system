@@ -177,6 +177,7 @@ pub struct AvcMp4<'a> {
     parameter_sets: Vec<Range<usize>>,
     samples: Vec<AvcSample>,
     limits: DemuxLimits,
+    tail: Option<usize>,
     boxes_visited: usize,
     table_entries: usize,
     nals_inspected: usize,
@@ -198,12 +199,47 @@ impl<'a> AvcMp4<'a> {
         limits: DemuxLimits,
         check: &mut dyn FnMut() -> Result<(), DemuxError>,
     ) -> Result<Self, DemuxError> {
+        Self::parse_inner(source, track, limits, check, false)
+    }
+    /// Like [`Self::parse_with_checkpoint`], but a fragmented movie its writer never finished
+    /// (power loss, a crashed recorder) is admitted up to its last complete movie fragment: the
+    /// top-level boxes end at the first one the bytes run out in, and a final `moof` without a
+    /// complete `mdat` after it is dropped. [`Self::truncated_tail`] reports where the unread
+    /// tail starts. An indexed movie cannot be recovered (its sample tables describe the whole
+    /// file) and still refuses; so does any malformation other than running out of bytes.
+    pub fn parse_recovering_tail(
+        source: &'a [u8],
+        track: Option<u32>,
+        limits: DemuxLimits,
+        check: &mut dyn FnMut() -> Result<(), DemuxError>,
+    ) -> Result<Self, DemuxError> {
+        Self::parse_inner(source, track, limits, check, true)
+    }
+    fn parse_inner(
+        source: &'a [u8],
+        track: Option<u32>,
+        limits: DemuxLimits,
+        check: &mut dyn FnMut() -> Result<(), DemuxError>,
+        recover: bool,
+    ) -> Result<Self, DemuxError> {
         limits.validate()?;
         if source.len() > limits.maximum_input_bytes {
             return Err(DemuxError::Limit);
         }
         let mut r = Reader::new(source, limits, check);
-        let top = r.children(0..source.len(), true)?;
+        let (mut top, mut tail) = if recover {
+            r.complete_top_level()?
+        } else {
+            (r.children(0..source.len(), true)?, None)
+        };
+        // A final fragment without media is cut even when the cut fell on a box boundary.
+        if recover
+            && let Some(last) = top.iter().rposition(|b| b.kind == *b"moof")
+            && !top[last..].iter().any(|b| b.kind == *b"mdat")
+        {
+            tail = Some(top[last].start);
+            top.truncate(last);
+        }
         let ftyp = one(&top, b"ftyp")?;
         let brands = r.body(&ftyp);
         if brands.len() < 8 || !(brands.len() - 8).is_multiple_of(4) {
@@ -242,7 +278,7 @@ impl<'a> AvcMp4<'a> {
         let media_bytes = media.iter().try_fold(0_usize, |n, b| {
             n.checked_add(b.len()).ok_or(DemuxError::Limit)
         })?;
-        if source.len() - media_bytes > limits.maximum_metadata_bytes {
+        if tail.unwrap_or(source.len()) - media_bytes > limits.maximum_metadata_bytes {
             return Err(DemuxError::Limit);
         }
         let moov = one(&top, b"moov")?;
@@ -252,6 +288,9 @@ impl<'a> AvcMp4<'a> {
         }
         // Movie fragments are read only when the movie declares them (mvex), and vice versa.
         let mvex = optional(&movie, b"mvex")?;
+        if tail.is_some() && !has_fragments {
+            return Err(DemuxError::Truncated);
+        }
         if mvex.is_some() != has_fragments {
             return Err(DemuxError::Unsupported);
         }
@@ -390,6 +429,7 @@ impl<'a> AvcMp4<'a> {
             parameter_sets,
             samples,
             limits,
+            tail,
             boxes_visited: r.boxes,
             table_entries: r.entries,
             nals_inspected: r.nals,
@@ -444,6 +484,11 @@ impl<'a> AvcMp4<'a> {
     /// ascending file order. Excludes their length fields.
     pub fn parameter_sets(&self) -> &[Range<usize>] {
         &self.parameter_sets
+    }
+    /// Start of the unread tail of a fragmented movie its writer never finished: always `None`
+    /// from the strict parsers.
+    pub const fn truncated_tail(&self) -> Option<usize> {
+        self.tail
     }
     /// Exact parser counters: box visits, declared table entries, inspected NALs.
     pub const fn work(&self) -> [usize; 3] {
