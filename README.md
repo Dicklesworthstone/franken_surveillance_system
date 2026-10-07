@@ -582,7 +582,7 @@ Partial:
 
 Not implemented:
 
-- HEVC Main 10/RExt/tiles/dependent slices/long-term references,
+- HEVC Main 10/RExt/tiles/dependent slices,
   interlaced or 4:2:2/4:4:4/10-bit H.264, progressive JPEG, RTP over UDP,
   UVC, ONVIF;
 - any detection-quality or calibration result for the shipped YOLOX-Nano package (it is checked

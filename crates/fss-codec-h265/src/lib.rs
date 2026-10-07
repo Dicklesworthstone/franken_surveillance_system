@@ -37,13 +37,14 @@
 //! reference pictures, deblocking and SAO, one or more slices per picture
 //! in raster order, wavefront
 //! parallel processing (`entropy_coding_sync_enabled_flag`), scaling
-//! lists, transform skip, transquant bypass, PCM, sign data hiding and
-//! constrained intra prediction. Everything else is refused with
+//! lists, transform skip, transquant bypass, PCM, sign data hiding,
+//! constrained intra prediction and long-term reference pictures (matched by
+//! order-count LSBs or, with a signalled MSB cycle, the full order count; the
+//! long-term motion-vector rules apply). Everything else is refused with
 //! [`DecodeError::Unsupported`] naming the feature: other profiles, chroma
 //! formats and bit depths, the range / multilayer / 3D / screen-content
 //! extensions, tiles, dependent slice segments, field-coded (SEI-based
-//! interlaced) sequences, long-term reference pictures and layers above
-//! the base layer.
+//! interlaced) sequences and layers above the base layer.
 //!
 //! Correctness is established differentially: tests compare every decoded
 //! frame bit-exactly, in output order, against digests produced offline by
@@ -103,7 +104,9 @@ pub enum UnsupportedFeature {
     /// Historical: enabled in-loop filters (deblocking, SAO). Admitted since
     /// in-loop filter support; no longer produced, kept for API stability.
     LoopFilter,
-    /// Long-term reference pictures.
+    /// Long-term reference pictures. No longer returned: long-term references are decoded
+    /// (clauses 8.3.2 and 8.3.4); the variant is kept so the public refusal vocabulary is
+    /// never renumbered.
     LongTermReference,
 }
 

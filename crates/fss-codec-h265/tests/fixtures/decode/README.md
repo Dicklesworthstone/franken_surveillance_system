@@ -95,6 +95,21 @@ Common parameters: `no-deblock=1:no-sao=1:wpp=0` (libx265 enables
 | `pcm_mixed_deblock` | 32x16 | 1 | hand-assembled PCM, deblocking on, `pcm_loop_filter_disabled_flag` 1 |
 | `pcm_mixed_deblock_lf` | 32x16 | 1 | same with `pcm_loop_filter_disabled_flag` 0 (PCM edges filtered) |
 
+## Stage 4: long-term reference pictures
+
+No available encoder emits long-term references (the "smart codec" pattern
+of many IP cameras), so `scripts/generate_h265_ltr_fixture.py` rewrites P-only
+libx265 streams (no temporal MVP, no weighted prediction): the SPS gains
+`long_term_ref_pics_present_flag`, and every P picture keeps all but its
+oldest reference short-term and signals the oldest as a long-term picture.
+Long-term entries follow the short-term ones in RefPicListTemp0, so list order
+is unchanged. The oracle digests are FFmpeg's decode of the rewritten streams.
+
+| Stream | Size | Frames | Exercises |
+| --- | --- | --- | --- |
+| `ltr_qcif_ref1` | 176x144 | 8 | every P picture predicts from one long-term picture (LSB match); the generator checks it decodes to the original pictures |
+| `ltr_qcif_ref3_filters_msb` | 176x144 | 10 | two short-term plus one long-term reference, long-term MV predictor rules, deblocking + SAO, full-POC (`delta_poc_msb_present_flag`) matching on odd pictures |
+
 ## Negative fixtures (refused, never decoded)
 
 | Stream | Expected refusal |

@@ -142,6 +142,37 @@ encode f_qcif_constrained_intra_filters "testsrc2=size=176x144:rate=10,noise=all
   "wpp=0:keyint=3:bframes=0:ref=1:ctu=32:constrained-intra=1:qp=40"
 encode f_qcif_default "testsrc2=size=176x144:rate=10" 8 "keyint=8"
 
+# ----- Stage 4: long-term reference pictures (smart-codec cameras) -----
+# No available encoder emits long-term references, so P-only libx265 streams
+# (no temporal MVP, no weighted prediction) are rewritten so every P picture
+# signals its oldest reference as a long-term picture (see
+# scripts/generate_h265_ltr_fixture.py). With one reference the rewrite decodes
+# to the original pictures (checked here); with three, short- and long-term
+# references mix and the long-term motion-vector rules apply. The oracle digests
+# are FFmpeg's decode of the rewritten streams.
+LTR_TMP="$(mktemp -d)"
+ltr() {
+  local name="$1" source="$2" frames="$3" params="$4"
+  shift 4
+  ffmpeg "${COMMON[@]}" -f lavfi -i "$source" -frames:v "$frames" -an \
+    -c:v libx265 -pix_fmt yuv420p \
+    -x265-params "${X265_BASE}:bframes=0:temporal-mvp=0:weightp=0:${params}" \
+    -f hevc "$LTR_TMP/${name}.h265"
+  python3 scripts/generate_h265_ltr_fixture.py "$LTR_TMP/${name}.h265" "$OUT/${name}.h265" "$@"
+}
+ltr ltr_qcif_ref1 "testsrc2=size=176x144:rate=10" 8 \
+  "no-deblock=1:no-sao=1:wpp=0:keyint=8:ref=1:ctu=32:qp=30"
+ltr ltr_qcif_ref3_filters_msb "testsrc2=size=176x144:rate=10" 10 \
+  "wpp=0:keyint=10:ref=3:ctu=32:rect=1:max-merge=3:qp=30" --msb-on-odd
+same_pictures() {
+  ffmpeg "${COMMON[@]}" -threads 1 -i "$1" -c:v rawvideo -pix_fmt yuv420p -f framehash -hash sha256 - | grep -v '^#'
+}
+if [ "$(same_pictures "$LTR_TMP/ltr_qcif_ref1.h265")" != "$(same_pictures "$OUT/ltr_qcif_ref1.h265")" ]; then
+  echo "long-term rewrite of ltr_qcif_ref1 changed the decoded pictures" >&2
+  exit 1
+fi
+rm -rf "$LTR_TMP"
+
 # ----- Negative fixtures: must be refused, never decoded -----
 # Range-extensions "Main Intra" profile (libx265 with keyint=1).
 encode unsupported_rext_main_intra "testsrc2=size=64x64:rate=10" 1 \
