@@ -113,6 +113,16 @@ release     all required lanes + reproducibility + artifact custody/publication
 Every invocation writes a versioned receipt to an explicit output directory. Human logs are
 siblings, not the machine contract.
 
+CAP- end-to-end scripts (`scripts/e2e/cap_*.sh`, `scripts/e2e/selftest.sh`) are always run
+through the parent runner, `scripts/e2e/run.sh <script> [args]`, by hand, from `qualify.sh` and
+from any loop. The runner runs the script as a child in a fresh log directory
+(`target/e2e-logs/runs/<stamp>-XXXXXX/`) and judges the run from the JSON-lines log, not from the
+child's exit status: PASS needs exit 0, exactly one run log that `validate_log.py` accepts, a
+single closing summary with verdict `pass`, and no fail, harness or malformed record. A script
+that disarms the harness EXIT trap and exits 0 is therefore a FAIL. The policy lane runs the
+runner's planted negatives (`tests/test_e2e_lib_fail_closed.py`, including the cap-script trap
+lint) and the harness self-test through the runner.
+
 ## 3. Source snapshot and sibling closure
 
 ### 3.1 Preflight

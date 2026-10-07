@@ -880,6 +880,16 @@ if [[ $T25_EXIT -eq 0 ]]; then
 fi
 LOG25="${FSS_E2E_LOG_DIR}/suite25/run_0001.log"
 python3 "${REPO_ROOT}/scripts/e2e/validate_log.py" "$LOG25"
+# The lowered cap is honoured for every record, the summary included, and the run names it.
+python3 - "$LOG25" <<'PY'
+import json, os, sys
+path = sys.argv[1]
+size = os.path.getsize(path)
+assert size <= 100000, f"log {size} bytes exceeds the 100000-byte override"
+summary = json.loads(open(path, encoding="utf-8").read().splitlines()[-1])
+assert summary["step"] == "summary" and summary["verdict"] == "fail", summary
+assert "log_cap_exceeded" in summary["run_failures"], summary
+PY
 echo "PASS: Test 25"
 
 echo "=== Test 26: Mutants N43, N44 - CAPLOG step name and bead sanitized ==="

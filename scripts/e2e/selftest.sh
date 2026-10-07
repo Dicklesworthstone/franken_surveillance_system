@@ -2,6 +2,7 @@
 # scripts/e2e/selftest.sh
 # Comprehensive end-to-end self-test script for the FSS e2e harness (lib.sh).
 # Proves logging, expectations, secret redaction, and output excerpt capping.
+# Run it through the parent runner: scripts/e2e/run.sh scripts/e2e/selftest.sh
 
 set -euo pipefail
 

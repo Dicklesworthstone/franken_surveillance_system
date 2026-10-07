@@ -8,7 +8,8 @@
 # each record into one JSON-lines step, and a failed step, a malformed record, a target without
 # any record, or a non-zero cargo exit fails the run. Nothing here patches or overrides lib.sh.
 #
-# Usage: scripts/e2e/cap_inspect.sh [--list] [--only <target>] [--verbose] [--keep-tmp]
+# Usage: scripts/e2e/run.sh scripts/e2e/cap_inspect.sh [--only <target>] [--verbose] [--keep-tmp]
+#        (the parent runner judges the run from its log; --list goes to the script directly)
 
 set -euo pipefail
 

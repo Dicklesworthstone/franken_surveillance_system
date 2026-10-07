@@ -3,8 +3,11 @@
 # Deterministic E2E test harness and structured JSON-lines logging library.
 # Summary failures name retained failed records only. run_failures carries
 # cargo_test_failed, no_caplog_emitted, all_steps_skipped, caplog_parser_failed,
-# script_exit, and no_steps_executed. A valid failure log never implies success.
+# script_exit, no_steps_executed, and log_cap_exceeded. A valid failure log never implies success.
 # Strictly conforms to the CAP- E2E harness specification (fss-2h5zq.1).
+# Run scripts that source this library through the parent runner, scripts/e2e/run.sh: it judges
+# the run from this log (a script that disarms the EXIT trap below and exits 0 still FAILs there).
+# The trap and exit-status protections in this file are defense in depth, not the verdict.
 
 set -euo pipefail
 
@@ -146,11 +149,46 @@ print(json.dumps({
     "verdict": "fail", "repro": repro,
 }))
 ' "$(_e2e_iso8601)" "$_E2E_SCRIPT_NAME" "$_E2E_BEAD" "$step" "$observed" "${_E2E_SCRIPT_PATH}" "$_E2E_LOG_FILE") || return 0
+    # Harness records obey the same cap as step records and leave the summary reserve intact; a
+    # record that does not fit marks the cap exceeded, which fails the run on its own.
+    local cur_size line_bytes
+    cur_size=$(wc -c < "$_E2E_LOG_FILE" 2>/dev/null || echo 0)
+    line_bytes=$(printf "%s\n" "$rec_json" | wc -c)
+    if (( cur_size + line_bytes > _E2E_MAX_LOG_BYTES - _E2E_SUMMARY_RESERVE_BYTES )); then
+        _E2E_CAP_EXCEEDED=1
+        echo "Error: 10 MiB log cap exceeded; harness record '${step}' dropped (failing closed)" >&2
+        # A subshell cannot set the owner's flag; the marker file carries it to e2e_summary.
+        : > "${_E2E_LOG_FILE}.cap_exceeded" 2>/dev/null || true
+        return 0
+    fi
     printf "%s\n" "$rec_json" >> "$_E2E_LOG_FILE"
 }
 
-# Max log file size: 10 MiB (10485760 bytes)
-_E2E_MAX_LOG_BYTES=10485760
+# Max log file size: 10 MiB (10485760 bytes). Every record, the closing summary included, is
+# written inside this cap. A caller may LOWER it (tests do, through FSS_E2E_MAX_LOG_BYTES or a
+# pre-set _E2E_MAX_LOG_BYTES) but never raise it: a value above 10 MiB, a non-numeric value or an
+# absurdly long one is ignored, and a value below the floor is clamped up to the floor so the
+# reserved summary room always exists.
+_E2E_MAX_LOG_BYTES_CEILING=10485760
+_E2E_MAX_LOG_BYTES_FLOOR=16384
+# Bytes kept free for the closing summary record; step records may not eat into it.
+_E2E_SUMMARY_RESERVE_BYTES=4096
+_e2e_resolve_max_log_bytes() {
+    local requested="${FSS_E2E_MAX_LOG_BYTES:-${_E2E_MAX_LOG_BYTES:-}}"
+    local cap="$_E2E_MAX_LOG_BYTES_CEILING"
+    if [[ -n "$requested" ]]; then
+        if [[ "$requested" =~ ^[0-9]{1,9}$ ]] && (( 10#$requested < cap )); then
+            cap=$(( 10#$requested ))
+            if (( cap < _E2E_MAX_LOG_BYTES_FLOOR )); then
+                cap="$_E2E_MAX_LOG_BYTES_FLOOR"
+            fi
+        elif [[ "$requested" != "$_E2E_MAX_LOG_BYTES_CEILING" ]]; then
+            echo "Warning: ignoring log cap override '${requested}' (only a lower numeric cap is honoured)" >&2
+        fi
+    fi
+    printf '%s\n' "$cap"
+}
+_E2E_MAX_LOG_BYTES="$(_e2e_resolve_max_log_bytes)"
 # Max excerpt size: 4 KiB (4096 bytes)
 _E2E_MAX_EXCERPT_BYTES=4096
 
@@ -251,11 +289,11 @@ _e2e_append_log() {
     local line_bytes
     line_bytes=$(printf "%s\n" "$line" | wc -c)
 
-    # Reserve 4096 bytes for the closing summary record.
-    if (( cur_size + line_bytes > _E2E_MAX_LOG_BYTES - 4096 )); then
+    # Reserve room for the closing summary record.
+    if (( cur_size + line_bytes > _E2E_MAX_LOG_BYTES - _E2E_SUMMARY_RESERVE_BYTES )); then
         if [[ "$_E2E_CAP_EXCEEDED" -eq 0 ]]; then
             _E2E_CAP_EXCEEDED=1
-            echo "Error: 10 MiB log cap exceeded" >&2
+            echo "Error: 10 MiB log cap exceeded (cap ${_E2E_MAX_LOG_BYTES} bytes)" >&2
             e2e_summary
         fi
         return 1
@@ -1720,35 +1758,76 @@ _e2e_write_summary_record() {
         fi
     fi
 
-    local summary_json
-    summary_json=$(python3 -c '
-import json, sys
+    # The summary is written inside the log cap like every other record. It gets whatever room is
+    # left (at least the reserve kept by every other writer), bounded by the validator's per-line
+    # cap. When the lists do not fit, the failures/skipped/preserved_tmpdirs lists are truncated
+    # with explicit *_truncated counts, the repro falls back to the bare script path, and the run
+    # fails closed with log_cap_exceeded: a truncated summary never passes. The final verdict is
+    # printed on stdout for e2e_summary.
+    python3 -c '
+import json, os, sys
 
 verdict, steps, failures_raw, skipped_raw, total_ms, log_path, repro, kept_tmpdirs_raw = sys.argv[1:9]
-passed, step_failures, run_failures_raw = sys.argv[9:12]
+passed, step_failures, run_failures_raw, max_bytes, script_path = sys.argv[9:14]
 failures = json.loads(failures_raw)
 run_failures = json.loads(run_failures_raw)
-rec = {
-    "step": "summary",
-    "verdict": verdict,
-    "steps": int(steps),
-    "passed": int(passed),
-    "step_failures": int(step_failures),
-    "fail_count": len(failures) + len(run_failures),
-    "failures": failures,
-    "run_failures": run_failures,
-    "skipped": json.loads(skipped_raw),
-    "duration_ms": max(0, int(total_ms)),
-    "log_path": log_path,
-    "repro": repro,
-    "preserved_tmpdirs": json.loads(kept_tmpdirs_raw)
-}
-print(json.dumps(rec))
-' "$verdict" "$_E2E_STEP_COUNT" "$failures_json" "$skipped_json" "$total_ms" "${_E2E_LOG_FILE:-}" "$repro_cmd" "$kept_tmpdirs_json" "$passed" "$step_failures" "$run_failures_json")
+skipped = json.loads(skipped_raw)
+kept = json.loads(kept_tmpdirs_raw)
+MAX_LINE = 65536
 
-    if [[ -n "${_E2E_LOG_FILE:-}" ]]; then
-        printf "%s\n" "$summary_json" >> "$_E2E_LOG_FILE"
-    fi
+def build(failures, skipped, kept, repro, verdict, run_failures, truncated):
+    rec = {
+        "step": "summary",
+        "verdict": verdict,
+        "steps": int(steps),
+        "passed": int(passed),
+        "step_failures": int(step_failures),
+        "fail_count": len(failures) + truncated[0] + len(run_failures),
+        "failures": failures,
+        "run_failures": run_failures,
+        "skipped": skipped,
+        "duration_ms": max(0, int(total_ms)),
+        "log_path": log_path,
+        "repro": repro,
+        "preserved_tmpdirs": kept,
+    }
+    if truncated[0]:
+        rec["failures_truncated"] = truncated[0]
+    if truncated[1]:
+        rec["skipped_truncated"] = truncated[1]
+    if truncated[2]:
+        rec["preserved_tmpdirs_truncated"] = truncated[2]
+    return json.dumps(rec)
+
+try:
+    cur = os.path.getsize(log_path)
+except OSError:
+    cur = 0
+budget = min(int(max_bytes) - cur, MAX_LINE + 1) - 1  # room for the line, minus its newline
+
+text = build(failures, skipped, kept, repro, verdict, run_failures, (0, 0, 0))
+if len(text.encode("utf-8")) > budget:
+    verdict = "fail"
+    if "log_cap_exceeded" not in run_failures:
+        run_failures = run_failures + ["log_cap_exceeded"]
+    repro = script_path
+    f, sk, kp = list(failures), list(skipped), list(kept)
+    while True:
+        truncated = (len(failures) - len(f), len(skipped) - len(sk), len(kept) - len(kp))
+        text = build(f, sk, kp, repro, verdict, run_failures, truncated)
+        if len(text.encode("utf-8")) <= budget or not (f or sk or kp):
+            break
+        # Drop from the longest list first, halving so huge lists converge quickly.
+        longest = max((f, sk, kp), key=len)
+        if len(longest) > 1:
+            del longest[len(longest) // 2:]
+        else:
+            longest.clear()
+if log_path:
+    with open(log_path, "a", encoding="utf-8") as log:
+        log.write(text + "\n")
+print(verdict)
+' "$verdict" "$_E2E_STEP_COUNT" "$failures_json" "$skipped_json" "$total_ms" "${_E2E_LOG_FILE:-}" "$repro_cmd" "$kept_tmpdirs_json" "$passed" "$step_failures" "$run_failures_json" "$_E2E_MAX_LOG_BYTES" "${_E2E_SCRIPT_PATH}"
 }
 
 e2e_summary() {
@@ -1806,6 +1885,13 @@ for failure in failures:
     elif [[ "$record_count" -eq 0 && "${_E2E_CARGO_USED:-0}" -eq 0 ]]; then
         _E2E_RUN_FAILURES+=("no_steps_executed")
     fi
+    if [[ -f "${_E2E_LOG_FILE}.cap_exceeded" ]]; then
+        _E2E_CAP_EXCEEDED=1
+        rm -f "${_E2E_LOG_FILE}.cap_exceeded"
+    fi
+    if [[ "${_E2E_CAP_EXCEEDED:-0}" -eq 1 ]]; then
+        _E2E_RUN_FAILURES+=("log_cap_exceeded")
+    fi
     local verdict="pass"
     if [[ ${#_E2E_FAILURES[@]} -gt 0 || ${#_E2E_RUN_FAILURES[@]} -gt 0 || "$step_failures" -gt 0 || "${_E2E_CAP_EXCEEDED:-0}" -eq 1 ]]; then
         verdict="fail"
@@ -1826,13 +1912,20 @@ for failure in failures:
         fi
     done
 
+    # The record is written in a command substitution (it reports the final verdict, which a
+    # summary truncated to fit the log cap turns into fail), so mark it written here, in the owner.
+    _E2E_SUMMARY_WRITTEN=1
+    local written_verdict
+    written_verdict=$(_e2e_write_summary_record "$verdict" "$passed" "$step_failures" "${all_tmpdirs[@]}") || written_verdict="fail"
+    if [[ "$written_verdict" != "pass" ]]; then
+        verdict="fail"
+    fi
+
     if [[ "$verdict" == "fail" ]]; then
         for tmp in "${all_tmpdirs[@]}"; do
             python3 -c 'import json, sys; print(json.dumps({"event": "forensics_preserved", "tmpdir": sys.argv[1]}))' "$tmp" >&2
         done
     fi
-
-    _e2e_write_summary_record "$verdict" "$passed" "$step_failures" "${all_tmpdirs[@]}"
 
     # Validate log file using validate_log.py
     local validation_rc=0

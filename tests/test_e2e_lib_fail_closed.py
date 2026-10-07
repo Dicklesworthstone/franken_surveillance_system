@@ -12,6 +12,12 @@ Planted negatives for the review findings on scripts/e2e/lib.sh (fss-2h5zq.1, ro
   ends before e2e_summary fails.
 * A subshell or background job calling e2e_summary must not write a second summary (C3).
 * The value after a dangling "Password:" prompt on the next line is redacted (I5e2).
+* (independent review, 2026-10-07, Defect 1) A cap script that disarms the harness EXIT trap
+  (`builtin trap - EXIT`, or `trap() { builtin trap "$@"; }; trap - EXIT`) and exits 0 is judged
+  FAIL by the parent runner scripts/e2e/run.sh, which reads the verdict from the log; the lint
+  forbids every way a cap script can reach or replace the trap builtin.
+* (Defect 2) Every record, the summary included, stays inside the log cap; an over-long summary is
+  truncated with explicit counts and fails closed; a cap override may only lower the cap.
 
 Every case drives a generated suite script through a stub rch on PATH; nothing here runs real rch,
 cargo or the network, and nothing is written outside target/test_sandboxes/.
@@ -35,6 +41,32 @@ sys.path.insert(0, str(REPO_ROOT / "scripts" / "e2e"))
 from validate_log import validate_file  # noqa: E402
 
 LIB = Path(os.environ.get("FSS_E2E_LIB_UNDER_TEST", REPO_ROOT / "scripts" / "e2e" / "lib.sh"))
+RUNNER = REPO_ROOT / "scripts" / "e2e" / "run.sh"
+
+# Ways a cap script could reach the trap builtin behind the harness wrapper, replace the wrapper,
+# or leave the shell without the harness EXIT trap running. The runner judges the log anyway; the
+# lint keeps cap scripts from even trying.
+CAP_SCRIPT_FORBIDDEN = re.compile(
+    r"(?:^|[;&|({}!\s])(?:"
+    r"builtin\s+(?:-\S+\s+)*trap\b"            # builtin trap ...
+    r"|command\s+(?:-\S+\s+)*trap\b"           # command trap ... / command -v trap
+    r"|enable\b"                                  # enable -n trap, enable -f ...
+    r"|unset\s+(?:-\S+\s+)*trap\b"             # unset -f trap / unset trap
+    r"|function\s+trap\b"                        # function trap { ... }
+    r"|trap\s*\(\s*\)"                          # trap() { ... }
+    r"|exec\b"                                    # exec replaces the shell, no EXIT trap
+    r"|eval\b"                                    # eval can assemble any of the above
+    r")",
+    re.MULTILINE)
+
+
+def lint_cap_script_text(text):
+    """Offending snippets in one cap script, comments ignored."""
+    offenders = []
+    for line in text.splitlines():
+        code = re.sub(r"(?:^|\s)#.*$", "", line)
+        offenders += [m.group(0).strip() for m in CAP_SCRIPT_FORBIDDEN.finditer(code)]
+    return offenders
 
 PASS_A = '{"step": "alpha", "verdict": "pass", "expected": 1, "observed": 1}'
 PASS_B = '{"step": "beta", "verdict": "pass"}'
@@ -343,15 +375,240 @@ class E2eLibFailClosed(unittest.TestCase):
     # ------------------------------------------------------------------ lint
 
     def test_cap_scripts_do_not_bypass_the_harness_trap(self):
-        """cap_*.sh may not reach the builtin trap, unset the wrapper, or exec away the shell."""
-        forbidden = re.compile(
-            r"^\s*(?:builtin\s+trap|command\s+trap|unset\s+-f\s+trap|enable\s+-n\s+trap|exec\s)",
-            re.MULTILINE)
+        """cap_*.sh may not reach the builtin trap, define/unset trap, enable, eval, or exec."""
         scripts = sorted((REPO_ROOT / "scripts" / "e2e").glob("cap_*.sh"))
         self.assertTrue(scripts)
-        offenders = [f"{p.name}: {m.group(0).strip()}" for p in scripts
-                     for m in forbidden.finditer(p.read_text(encoding="utf-8"))]
+        offenders = [f"{p.name}: {hit}" for p in scripts
+                     for hit in lint_cap_script_text(p.read_text(encoding="utf-8"))]
         self.assertEqual(offenders, [])
+
+    def test_lint_catches_every_trap_bypass_shape(self):
+        """Planted negatives: each bypass shape (including the review PoCs) trips the lint."""
+        planted = {
+            "poc1_builtin_trap": "builtin trap - EXIT",
+            "poc2_function_shim": 'trap() { builtin trap "$@"; }; trap - EXIT',
+            "trap_paren_spaced": 'trap ( ) { :; }',
+            "function_keyword": "function trap { :; }",
+            "command_trap": "command trap - EXIT",
+            "builtin_after_semicolon": "true; builtin trap - EXIT",
+            "builtin_in_subshell": "( builtin trap - EXIT )",
+            "builtin_after_and": "true && builtin trap - EXIT",
+            "enable_n": "enable -n trap",
+            "unset_f": "unset -f trap",
+            "unset_plain": "unset trap",
+            "exec_true": "exec true",
+            "exec_after_or": "false || exec bash -c 'exit 0'",
+            "eval_assembled": 'eval "buil""tin trap - EXIT"',
+        }
+        for label, line in planted.items():
+            with self.subTest(shape=label):
+                self.assertTrue(lint_cap_script_text(f"source lib.sh\n{line}\n"), line)
+        # Controls: comments, ordinary words and the harness calls do not trip it.
+        clean = ("# exec builtin trap eval in a comment is fine\n"
+                 'e2e_cargo_test "fss-reference" "rch_exec_contract"\n'
+                 'e2e_on_exit "rm -rf \\"$tmp\\""\n'
+                 "trap 'cleanup' EXIT\n"
+                 "executor=1; evaluate=2; enabled=3\n")
+        self.assertEqual(lint_cap_script_text(clean), [])
+
+    # ------------------------------------------------------------------ Defect 1: parent runner
+
+    def run_via_runner(self, body, *, header=True, stdout="", stderr="", runner_args=()):
+        """Write a suite script and run it through scripts/e2e/run.sh; return (rc, verdict, res)."""
+        type(self).counter += 1
+        name = f"rn{type(self).counter:03d}"
+        case_dir = self.root / name
+        case_dir.mkdir(parents=True, exist_ok=True)
+        out_file = case_dir / "stub_stdout.txt"
+        err_file = case_dir / "stub_stderr.txt"
+        out_file.write_text(stdout, encoding="utf-8")
+        err_file.write_text(stderr, encoding="utf-8")
+        script = case_dir / "cap_planted.sh"
+        prologue = ("#!/usr/bin/env bash\nset -euo pipefail\n"
+                    f'source "{LIB}"\ne2e_init "{name}" "fss-2h5zq.1" "$@"\n') if header else ""
+        script.write_text(prologue + body + "\n", encoding="utf-8")
+        script.chmod(0o755)
+        env = self.env.copy()
+        env.update({
+            "FSS_E2E_LOG_DIR": str(case_dir / "logs"),
+            "STUB_STDOUT_FILE": str(out_file),
+            "STUB_STDERR_FILE": str(err_file),
+            "STUB_EXIT": "0",
+        })
+        res = subprocess.run(["bash", str(RUNNER), str(script), *runner_args], cwd=str(REPO_ROOT),
+                             env=env, capture_output=True, text=True, timeout=300)
+        verdict = None
+        for line in reversed(res.stdout.splitlines()):
+            if line.startswith("{") and '"runner_verdict"' in line:
+                verdict = json.loads(line)
+                break
+        return res.returncode, verdict, res, case_dir, script
+
+    def assert_runner_fail(self, rc, verdict, res, *needles):
+        self.assertEqual(rc, 1, f"runner did not FAIL\nstdout={res.stdout}\nstderr={res.stderr}")
+        self.assertIsNotNone(verdict, res.stdout)
+        self.assertEqual(verdict["runner_verdict"], "fail", verdict)
+        for needle in needles:
+            self.assertTrue(any(needle in r for r in verdict["reasons"]), (needle, verdict))
+
+    def test_runner_poc1_builtin_trap_disarm_exit0_fails(self):
+        """Review PoC 1: `builtin trap - EXIT`, a fail record, `exit 0`: no summary -> FAIL."""
+        body = ("builtin trap - EXIT\n"
+                'e2e_expect_eq "mismatch" "a" "b"\n'
+                "exit 0")
+        rc, verdict, res, case_dir, script = self.run_via_runner(body)
+        self.assert_runner_fail(rc, verdict, res, "log_invalid:ERR_MISSING_SUMMARY",
+                                "log_does_not_end_with_summary", "fail_records:1")
+        # The child itself really did leave with status 0: the runner, not the child, decided.
+        direct = subprocess.run(["bash", str(script)], cwd=str(case_dir), capture_output=True,
+                                text=True, timeout=300,
+                                env={**self.env, "FSS_E2E_LOG_DIR": str(case_dir / "direct")})
+        self.assertEqual(verdict["child_exit"], 0)
+        self.assertEqual(direct.returncode, 0, "PoC 1 no longer exits 0 directly; update the PoC")
+
+    def test_runner_poc2_trap_function_shim_exit0_fails(self):
+        """Review PoC 2: redefine trap() over the wrapper, disarm, `exit 0` -> FAIL."""
+        body = ('trap() { builtin trap "$@"; }\n'
+                "trap - EXIT\n"
+                'e2e_expect_eq "mismatch" "a" "b"\n'
+                "exit 0")
+        rc, verdict, res, _, _ = self.run_via_runner(body)
+        self.assert_runner_fail(rc, verdict, res, "log_invalid:ERR_MISSING_SUMMARY", "fail_records:1")
+        self.assertEqual(verdict["child_exit"], 0)
+
+    def test_runner_other_trap_bypasses_fail(self):
+        """enable -n / unset -f / exec / a disarm with only passing steps: every one is FAIL."""
+        # (body, reason the runner must report). enable -n leaves the harness wrapper function in
+        # place, so lib.sh itself catches that one (script_exit, child exit 1); the others leave
+        # with status 0 and no summary, which only the runner can see.
+        bodies = {
+            "enable_n": ("enable -n trap\ntrap - EXIT\ne2e_step ok echo fine\nexit 0",
+                         "summary_run_failures:script_exit"),
+            "unset_f": ("unset -f trap\ntrap - EXIT\ne2e_step ok echo fine\nexit 0",
+                        "log_does_not_end_with_summary"),
+            "exec_away": ("e2e_step ok echo fine\nexec true", "log_does_not_end_with_summary"),
+            "disarm_passing_only": ("builtin trap - EXIT\ne2e_step ok echo fine\nexit 0",
+                                    "log_does_not_end_with_summary"),
+        }
+        for label, (body, needle) in bodies.items():
+            with self.subTest(bypass=label):
+                rc, verdict, res, _, _ = self.run_via_runner(body)
+                self.assert_runner_fail(rc, verdict, res, needle)
+
+    def test_runner_planted_failures_fail(self):
+        """Failing step, stderr FAIL CAPLOG, malformed CAPLOG and a forged extra log -> FAIL."""
+        cases = {
+            "expect_mismatch": ('e2e_expect_eq "mismatch" "a" "b"\ne2e_summary', {}, "fail_records:1"),
+            "stderr_fail": ('e2e_cargo_test "fss-reference" "contract"\ne2e_summary',
+                            {"stderr": f"CAPLOG {FAIL_H}\n"}, "fail_records:1"),
+            "malformed": ('e2e_cargo_test "fss-reference" "contract"\ne2e_summary',
+                          {"stdout": f"CAPLOG {PASS_A}\n", "stderr": 'CAPLOG {"step": "x", "verdict": "fa\n'},
+                          "harness_or_malformed_records"),
+            "forged_second_log": ('e2e_step ok echo fine\n'
+                                  'mkdir -p "$FSS_E2E_LOG_DIR/forged"\n'
+                                  'cp "$_E2E_LOG_FILE" "$FSS_E2E_LOG_DIR/forged/run_0001.log"\n'
+                                  "e2e_summary", {}, "expected_exactly_one_log_found_2"),
+        }
+        for label, (body, streams, needle) in cases.items():
+            with self.subTest(case=label):
+                rc, verdict, res, _, _ = self.run_via_runner(body, **streams)
+                self.assert_runner_fail(rc, verdict, res, needle)
+
+    def test_runner_script_that_never_initialises_fails(self):
+        rc, verdict, res, _, _ = self.run_via_runner("#!/usr/bin/env bash\nexit 0", header=False)
+        self.assert_runner_fail(rc, verdict, res, "expected_exactly_one_log_found_0")
+
+    def test_runner_passing_control(self):
+        """Positive control: an honest passing suite (real rch shape on stderr) is PASS."""
+        rc, verdict, res, _, _ = self.run_via_runner(
+            'e2e_step "ok_step" echo fine\ne2e_cargo_test "fss-reference" "contract"\ne2e_summary',
+            stderr=REAL_RCH_STDERR)
+        self.assertEqual(rc, 0, f"stdout={res.stdout}\nstderr={res.stderr}")
+        self.assertEqual(verdict["runner_verdict"], "pass", verdict)
+        self.assertEqual(verdict["reasons"], [])
+        self.assertEqual(verdict["child_exit"], 0)
+        validate_file(Path(verdict["log"]))
+
+    def test_runner_judges_nonzero_child_exit_on_a_passing_log(self):
+        """A passing log does not rescue a non-zero child exit."""
+        rc, verdict, res, case_dir, _ = self.run_via_runner('e2e_step "ok_step" echo fine\ne2e_summary')
+        self.assertEqual(rc, 0, res.stderr)
+        run_dir = Path(verdict["log"]).parent.parent
+        judged = subprocess.run([sys.executable, str(REPO_ROOT / "scripts" / "e2e" / "runner_verdict.py"),
+                                 "--run-dir", str(run_dir), "--child-exit", "7", "--script", "x"],
+                                capture_output=True, text=True, timeout=60)
+        self.assertEqual(judged.returncode, 1, judged.stdout)
+        self.assertEqual(json.loads(judged.stdout)["reasons"], ["child_exit_7"])
+
+    def test_runner_list_mode_is_never_a_pass(self):
+        rc, verdict, res, _, _ = self.run_via_runner('e2e_step "ok_step" echo fine\ne2e_summary',
+                                                     runner_args=("--list",))
+        self.assertEqual(rc, 3, res.stderr)
+        self.assertIsNone(verdict)
+        self.assertIn("NO VERDICT", res.stderr)
+
+    # ------------------------------------------------------------------ Defect 2: log cap
+
+    def test_cap_override_is_honoured_and_summary_stays_inside(self):
+        """A lowered cap holds for every record, the summary included, and fails closed."""
+        cap = 100000
+        for var in ("FSS_E2E_MAX_LOG_BYTES", "_E2E_MAX_LOG_BYTES"):
+            with self.subTest(var=var):
+                body = ('big=$(python3 -c \'print("q"*4000)\')\n'
+                        "i=0\n"
+                        "while :; do i=$((i+1)); e2e_expect_eq \"f$i\" \"$big\" \"$big\"; done\n"
+                        "e2e_summary")
+                rc, recs, log, res = self.run_suite(body, extra_env={var: str(cap)})
+                self.assertLessEqual(log.stat().st_size, cap)
+                self.assert_fail_closed(rc, recs, log, res, run_failure="log_cap_exceeded")
+
+    def test_over_long_summary_is_truncated_inside_the_cap(self):
+        """Many long failing step names: the summary would overflow; it is truncated, counted, failed."""
+        cap = 60000
+        long = "g" * 180  # not hex, so the redactor leaves the names intact
+        body = ("i=0\n"
+                f"while :; do i=$((i+1)); e2e_expect_eq \"{long}_$i\" a b; done\n"
+                "e2e_summary")
+        rc, recs, log, res = self.run_suite(body, extra_env={"FSS_E2E_MAX_LOG_BYTES": str(cap)})
+        self.assertLessEqual(log.stat().st_size, cap)
+        self.assert_fail_closed(rc, recs, log, res, run_failure="log_cap_exceeded")
+        summary = recs[-1]
+        failed = [r["step"] for r in recs[1:-1] if r.get("verdict") == "fail"]
+        self.assertGreater(summary["failures_truncated"], 0, summary)
+        self.assertEqual(len(summary["failures"]) + summary["failures_truncated"], len(failed))
+        self.assertEqual(summary["fail_count"], len(failed) + len(summary["run_failures"]))
+
+    def test_cap_override_cannot_raise_or_disable_the_cap(self):
+        probe = 'echo "CAP=$_E2E_MAX_LOG_BYTES" >&2\ne2e_step ok echo fine\ne2e_summary'
+        for value, expected in (("99999999999", 10485760), ("20000000", 10485760),
+                                ("not-a-number", 10485760), ("-5", 10485760), ("10", 16384),
+                                ("50000", 50000)):
+            with self.subTest(value=value):
+                rc, recs, log, res = self.run_suite(probe, extra_env={"FSS_E2E_MAX_LOG_BYTES": value})
+                self.assertIn(f"CAP={expected}", res.stderr)
+                self.assert_pass(rc, recs, log, res, [])
+
+    def test_validator_rejects_truncation_without_cap_failure(self):
+        """A truncated summary that claims pass (or omits log_cap_exceeded) is invalid."""
+        rc, recs, log, res = self.run_suite('e2e_expect_eq "m1" a b\ne2e_expect_eq "m2" a b\ne2e_summary')
+        self.assertNotEqual(rc, 0)
+        summary = dict(recs[-1])
+        forged = dict(summary, failures=["m1"], failures_truncated=1)
+        lines = [json.dumps(r) for r in recs[:-1]]
+        for label, rec in {"no_cap_failure": forged,
+                           "wrong_count": dict(forged, failures_truncated=2,
+                                               run_failures=["log_cap_exceeded"]),
+                           "silently_dropped": dict(summary, failures=["m1"],
+                                                    run_failures=["log_cap_exceeded"])}.items():
+            with self.subTest(case=label):
+                bad = log.parent / f"forged_{label}.log"
+                bad.write_text("\n".join(lines + [json.dumps(rec)]) + "\n", encoding="utf-8")
+                with self.assertRaises(Exception):
+                    validate_file(bad)
+        ok = log.parent / "forged_ok.log"
+        ok.write_text("\n".join(lines + [json.dumps(dict(forged, run_failures=["log_cap_exceeded"]))])
+                      + "\n", encoding="utf-8")
+        validate_file(ok)
 
 
 if __name__ == "__main__":

@@ -335,8 +335,15 @@ policy_lane() {
   run robot-docs python3 scripts/robot_docs_checker.py
   run robot-docs-tests env PYTHONPYCACHEPREFIX="$RECEIPT_DIR/pycache" python3 tests/test_robot_docs.py
   run json-instance-validate-tests env PYTHONPYCACHEPREFIX="$RECEIPT_DIR/pycache" python3 tests/test_json_instance_validate.py
+  # CAP- e2e harness (fss-2h5zq.1/.2): planted negatives for lib.sh and the parent runner (stub
+  # rch only, no cargo or network), the cap-script trap-bypass lint, the validator tests, and the
+  # harness self-test judged by scripts/e2e/run.sh from its log rather than its exit status.
+  run e2e-harness-fail-closed-tests env PYTHONPYCACHEPREFIX="$RECEIPT_DIR/pycache" python3 tests/test_e2e_lib_fail_closed.py
+  run e2e-validate-log-tests env PYTHONPYCACHEPREFIX="$RECEIPT_DIR/pycache" python3 tests/test_e2e_validate_log.py
+  run e2e-selftest-via-runner env FSS_E2E_LOG_DIR="$RECEIPT_DIR/e2e-logs" bash scripts/e2e/run.sh scripts/e2e/selftest.sh
   run diff-check git diff --check
-  run shell-syntax bash -n scripts/qualify.sh scripts/release_qualify.sh scripts/publish_to_github.sh
+  run shell-syntax bash -n scripts/qualify.sh scripts/release_qualify.sh scripts/publish_to_github.sh \
+    scripts/e2e/run.sh scripts/e2e/lib.sh scripts/e2e/selftest.sh
   run python-syntax env PYTHONPYCACHEPREFIX="$RECEIPT_DIR/pycache" python3 -m py_compile \
     scripts/check-policy.py scripts/dependency_audit.py scripts/manifest_audit.py scripts/stable_id_audit.py \
     scripts/schema_validate.py scripts/slo_validate.py scripts/architecture_registry_consistency.py \
@@ -344,6 +351,7 @@ policy_lane() {
     scripts/dependency_closure_scanner.py scripts/semantic_plane_checker.py scripts/qualification_receipt.py \
     scripts/standards_first_adapter_checker.py scripts/generate_robot_docs.py scripts/robot_docs_checker.py \
     scripts/generate-manifest.py scripts/release_artifacts.py scripts/json_instance_validate.py \
+    scripts/e2e/validate_log.py scripts/e2e/runner_verdict.py tests/test_e2e_lib_fail_closed.py \
     tests/test_manifest_audit.py tests/test_stable_id_audit.py tests/test_release_artifacts.py \
     tests/test_schema_validate.py tests/test_slo_validate.py tests/test_slo_operation_cost_consistency.py \
     tests/test_architecture_registry_consistency.py tests/test_dependency_dag_checker.py \

@@ -248,7 +248,7 @@ def validate_summary_record(rec, line_no):
     run_failures = rec.get("run_failures", [])
     allowed_run_failures = {
         "cargo_test_failed", "no_caplog_emitted", "all_steps_skipped", "caplog_parser_failed",
-        "script_exit", "no_steps_executed",
+        "script_exit", "no_steps_executed", "log_cap_exceeded",
     }
     if (not isinstance(run_failures, list)
             or any(not isinstance(value, str) or value not in allowed_run_failures
@@ -263,6 +263,24 @@ def validate_summary_record(rec, line_no):
             "ERR_SUMMARY_INCONSISTENCY", "Passing summary contains run failures",
             line_no=line_no,
         )
+    # A summary squeezed into the log cap truncates its lists with explicit counts; such a
+    # summary is always a failing one that names log_cap_exceeded.
+    for field in ("failures_truncated", "skipped_truncated", "preserved_tmpdirs_truncated"):
+        if field not in rec:
+            continue
+        _strict_int(rec[field], field, line_no)
+        if rec[field] <= 0:
+            raise ValidationError(
+                "ERR_TYPE_MISMATCH",
+                f"Summary record (line {line_no}) field '{field}' must be a positive count when present",
+                line_no=line_no,
+            )
+        if rec["verdict"] != "fail" or "log_cap_exceeded" not in run_failures:
+            raise ValidationError(
+                "ERR_SUMMARY_INCONSISTENCY",
+                f"Summary record (line {line_no}) truncates a list ('{field}') without failing on log_cap_exceeded",
+                line_no=line_no,
+            )
     if not isinstance(rec["skipped"], list):
         raise ValidationError(
             "ERR_TYPE_MISMATCH",
@@ -642,13 +660,21 @@ def validate_file(file_path: Path):
                 line_no=summary_line_no,
             )
 
-    for fs in failed_steps:
-        if fs not in summary_failures:
+    # Failed steps missing from a truncated list must be exactly the declared truncated count.
+    unlisted_failed = [fs for fs in failed_steps if fs not in summary_failures]
+    if len(unlisted_failed) != summary_record.get("failures_truncated", 0):
+        if unlisted_failed:
             raise ValidationError(
                 "ERR_SUMMARY_INCONSISTENCY",
-                f"Step '{fs}' failed but is not in summary failures list",
+                f"Step '{unlisted_failed[0]}' failed but is not in summary failures list",
                 line_no=summary_line_no,
             )
+        raise ValidationError(
+            "ERR_SUMMARY_INCONSISTENCY",
+            f"Summary failures_truncated {summary_record.get('failures_truncated')} does not match "
+            "the failed steps missing from the list (0)",
+            line_no=summary_line_no,
+        )
 
     summary_skipped_names = set()
     for s_item in summary_record["skipped"]:
@@ -661,13 +687,20 @@ def validate_file(file_path: Path):
             )
         summary_skipped_names.add(s_name)
 
-    for ss in skipped_steps:
-        if ss not in summary_skipped_names:
+    unlisted_skipped = [ss for ss in skipped_steps if ss not in summary_skipped_names]
+    if len(unlisted_skipped) != summary_record.get("skipped_truncated", 0):
+        if unlisted_skipped:
             raise ValidationError(
                 "ERR_SUMMARY_INCONSISTENCY",
-                f"Step '{ss}' was skipped but is not in summary skipped list",
+                f"Step '{unlisted_skipped[0]}' was skipped but is not in summary skipped list",
                 line_no=summary_line_no,
             )
+        raise ValidationError(
+            "ERR_SUMMARY_INCONSISTENCY",
+            f"Summary skipped_truncated {summary_record.get('skipped_truncated')} does not match "
+            "the skipped steps missing from the list (0)",
+            line_no=summary_line_no,
+        )
 
     if summary_verdict == "pass":
         if failed_steps:
@@ -683,7 +716,7 @@ def validate_file(file_path: Path):
                 line_no=summary_line_no,
             )
     elif summary_verdict == "fail":
-        if failed_steps and not summary_failures:
+        if failed_steps and not summary_failures and not summary_record.get("failures_truncated"):
             raise ValidationError(
                 "ERR_SUMMARY_INCONSISTENCY",
                 "Summary verdict is 'fail' but summary failures list is empty",

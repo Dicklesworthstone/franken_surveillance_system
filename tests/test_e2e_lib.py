@@ -155,6 +155,23 @@ esac
         self.assertEqual(summary["failures"], [])
         self.assertEqual(summary["steps"], len(records) - 2)
 
+    def test_selftest_passes_through_the_parent_runner(self):
+        """scripts/e2e/run.sh scripts/e2e/selftest.sh judges the selftest log PASS (fss-2h5zq.2)."""
+        log_dir = self.sandbox_root / "selftest_runner" / "logs"
+        res = self._run_script(
+            REPO_ROOT / "scripts" / "e2e" / "run.sh",
+            args=["scripts/e2e/selftest.sh"],
+            extra_env={"FSS_E2E_LOG_DIR": str(log_dir)},
+        )
+        self.assertEqual(res.returncode, 0, f"runner failed: stdout={res.stdout}, stderr={res.stderr}")
+        verdict = json.loads([l for l in res.stdout.splitlines() if '"runner_verdict"' in l][-1])
+        self.assertEqual(verdict["runner_verdict"], "pass", verdict)
+        self.assertEqual(verdict["reasons"], [])
+        log_file = Path(verdict["log"])
+        self.assertEqual(log_file.parent.name, "selftest")
+        self.assertEqual(log_file.parent.parent.parent, log_dir / "runs")
+        validate_file(log_file)
+
     def test_selftest_no_authorization_in_log(self):
         """The log contains no 'Authorization' text anywhere in any record."""
         run_sandbox = self.sandbox_root / "selftest_auth_check"
