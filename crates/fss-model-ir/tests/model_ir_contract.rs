@@ -518,7 +518,7 @@ fn test_schema_domain_and_pinned_counts() -> Result<(), Box<dyn Error>> {
     // 83 = 82 + SCHEMA-CALIBRATION-COVERAGE-PROPOSAL-001 (owner 3b45140, fss-x8j0v).
     assert_eq!(
         schema_count, 83,
-        "registries/SCHEMAS.md count must remain pinned at 234"
+        "registries/SCHEMAS.md count must remain pinned at 83"
     );
     Ok(())
 }

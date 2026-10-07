@@ -240,6 +240,16 @@ pub(crate) fn validate_limits(limits: DecodeLimits) -> Result<(), RecordedDecode
     Ok(())
 }
 
+/// True when every axis of `limits` is the codec's hard ceiling (the `DecodeLimits` default):
+/// no admitted limits are wider, so a frame decodable under any limits is decodable under these.
+fn at_codec_ceilings(limits: DecodeLimits) -> bool {
+    let ceiling = DecodeLimits::default();
+    limits.maximum_bytes == ceiling.maximum_bytes
+        && limits.maximum_dimension == ceiling.maximum_dimension
+        && limits.maximum_pixels == ceiling.maximum_pixels
+        && limits.maximum_markers == ceiling.maximum_markers
+}
+
 fn sha(bytes: [u8; 32]) -> ContentDigest {
     ContentDigest::new(DigestAlgorithm::Sha256, bytes)
 }
@@ -661,6 +671,17 @@ fn source(
     let (capsule, digest) = source_capsule(deployment, &retained, request.segment_index)?;
     let bytes =
         retained.read_segment(deployment, request.segment_index, request.read_limits, cx)?;
+    // Defence in depth, not a reachable branch of this composition (fss-2h5zq.42 D5): the gate
+    // is implied by two earlier checks on the same span. `source_capsule` refused a capsule whose
+    // `source_digest`/`source_bytes` differ from the span's `segment_sha256`/`len`
+    // (CustodyMismatch, before any read), and `read_segment` refused reassembled bytes whose
+    // length or SHA-256 differ from that span (`Source`). Bytes returned here therefore always
+    // satisfy the capsule unless SHA-256 collides, so removing this call is an equivalent
+    // mutant; no ledger, manifest or spool state (forged or not) reaches it. It stays as the
+    // single statement of the custody invariant immediately before every codec call, so that a
+    // future change to either earlier check cannot open a path to decoding unverified bytes.
+    // The gate itself is proven directly by
+    // `decode_receipt_contract::custody_gate_refuses_bytes_that_disagree_with_the_capsule`.
     verify_custody(&capsule, &bytes)?;
     Ok((retained, capsule, digest, bytes))
 }
@@ -683,7 +704,9 @@ impl RecordedFrame {
     /// it. `open` never calls an incomplete decode complete. Staged objects may remain on error.
     /// Parent cancellation is checked at composition boundaries; supply a cancellable codec
     /// budget for cancellation within a frame. A shared budget accumulates across frame calls.
-    /// Completed results are revalidated without codec work. Damaged completed custody fails
+    /// Completed results requested at the codec's ceiling limits are revalidated without codec
+    /// work; under narrower limits the codec re-runs only to decide admission, so the outcome
+    /// equals a fresh root's whatever was decoded before. Damaged completed custody fails
     /// closed; recovery never regenerates it as an undocumented repair operation.
     pub fn decode_and_publish(
         deployment: &mut ReferenceDeployment,
@@ -707,8 +730,25 @@ impl RecordedFrame {
             .any(|batch| batch.batch_id == completion)
         {
             // A completed decode with missing/corrupt custody is not an unattempted decode.
-            // Propagate the precise recovery refusal without spending codec work or staging
-            // replacement bytes. Only absence of its final batch permits execution/resume.
+            // Propagate the precise recovery refusal without staging replacement bytes. Only
+            // absence of its final batch permits execution/resume.
+            //
+            // History independence (fss-2h5zq.42 D4): the success identity excludes the decode
+            // limits (they do not change admitted pixels), so a decode completed under wider
+            // limits must not decide a narrower request. A fresh root runs the codec under the
+            // request's limits; so does this path, unless the limits are the codec's hard
+            // ceilings, which admit every decodable frame (the codec's bounds are monotone).
+            // A `Limit` refusal then surfaces as `Codec(Limit)` exactly as in a fresh root and
+            // retains nothing here; an admitted frame reopens the completed decode.
+            if !at_codec_ceilings(request.decode_limits) {
+                decode_luma(
+                    &encoded,
+                    capsule.source_digest.bytes(),
+                    request.interpretation,
+                    request.decode_limits,
+                    budget,
+                )?;
+            }
             return Self::open(deployment, request, cx);
         }
         let used_before = budget.used();

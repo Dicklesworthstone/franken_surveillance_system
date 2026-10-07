@@ -8,7 +8,8 @@
 //! receipt canonical round trips (every truncation and a suffix fail closed), golden source
 //! digests and an independent codec differential for tensor digests, stored-chunk tamper (typed
 //! refusal, no codec work, nothing receipted), byte/capsule custody mismatch, reopen from the
-//! ledger after restart, and fresh-root rebuild equality. Each check prints one CAPLOG record.
+//! ledger after restart, fresh-root rebuild equality, outcomes independent of prior decodes, and
+//! an incomplete import that is never decoded. Each check prints one CAPLOG record.
 
 use std::error::Error;
 use std::fs;
@@ -19,6 +20,7 @@ use fss_core::{
     BudgetVector, ContentDigest, ContextAuthority, DigestAlgorithm, OperationId, Plane,
     RootAuthoritySpec, SensorId, StreamId, TimestampNs,
 };
+use fss_reference::ingest::file_adapter::STAGE_COMMIT_MANIFEST;
 use fss_reference::ingest::recorded_decode::refusal::{
     CapsuleDecode, RecordedDecodeRefusal, RefusalKind, RetainedRefusal, decode_capsule,
 };
@@ -28,7 +30,8 @@ use fss_reference::ingest::recorded_decode::{
     verify_custody,
 };
 use fss_reference::ingest::{
-    FileIngestAdapter, FileIngestReceipt, FileIngestRequest, RetainedFileImport, RetainedReadLimits,
+    FileIngestAdapter, FileIngestError, FileIngestReceipt, FileIngestRequest, RetainedFileImport,
+    RetainedReadLimits,
 };
 use fss_reference::{ADP_REPLAY_ROW_ID, ReferenceDeployment, ReplayCx};
 
@@ -130,16 +133,19 @@ struct Imported {
     receipt: FileIngestReceipt,
 }
 
-fn import(root: &Root, relative: &str) -> TestResult<Imported> {
-    let cx = context(&root.deployment())?;
-    let mut deployment = ReferenceDeployment::open(&root.deployment(), SITE, &cx)?;
-    let request = FileIngestRequest::new(
+fn file_request(relative: &str) -> TestResult<FileIngestRequest> {
+    Ok(FileIngestRequest::new(
         fixture(relative),
         SensorId::parse("sensor:decode-receipt")?,
         StreamId::parse("stream:decode-receipt")?,
     )
-    .with_receive_time(TimestampNs(1_000_000_000));
-    let receipt = FileIngestAdapter::ingest(request, &cx, &mut deployment)?;
+    .with_receive_time(TimestampNs(1_000_000_000)))
+}
+
+fn import(root: &Root, relative: &str) -> TestResult<Imported> {
+    let cx = context(&root.deployment())?;
+    let mut deployment = ReferenceDeployment::open(&root.deployment(), SITE, &cx)?;
+    let receipt = FileIngestAdapter::ingest(file_request(relative)?, &cx, &mut deployment)?;
     Ok(Imported {
         cx,
         deployment,
@@ -679,5 +685,166 @@ fn single_jpeg_file_is_one_receipted_capsule() -> TestResult {
         &hex(frame.receipt().capsule().source_digest),
     );
     assert!(pass);
+    Ok(())
+}
+
+/// fss-2h5zq.42 D4 (review probe P_REF): a request's outcome does not depend on what was decoded
+/// before. Each request runs alone in a fresh root, then again in a root that first decoded the
+/// same capsule under the widest limits: a narrower bound (dimension 32, or 3 markers, which the
+/// codec counts but the success receipt does not) is the same receipted bounds refusal with the
+/// same digest and work, and an admitting narrower bound (dimension 64) is the same decoded
+/// receipt with the same work. The widest request still reopens without codec work.
+#[test]
+fn decode_outcomes_do_not_depend_on_prior_decodes() -> TestResult {
+    fn outcome(
+        imported: &mut Imported,
+        limits: DecodeLimits,
+    ) -> TestResult<(String, ContentDigest, u64)> {
+        let mut req = request(imported, 1, ComponentInterpretation::YCbCr);
+        req.decode_limits = limits;
+        let mut budget = DecodeBudget::new(100_000_000);
+        let decision = decode_capsule(&mut imported.deployment, &req, &mut budget, &imported.cx)?;
+        Ok(match decision {
+            CapsuleDecode::Decoded(frame) => (
+                "decoded".to_owned(),
+                frame.receipt().digest()?,
+                budget.used(),
+            ),
+            CapsuleDecode::Refused(retained) => (
+                format!("refused:{}", retained.refusal().kind().as_str()),
+                retained.refusal().digest()?,
+                budget.used(),
+            ),
+        })
+    }
+    let cases = [
+        (
+            "dimension-32",
+            DecodeLimits {
+                maximum_dimension: 32,
+                ..DecodeLimits::default()
+            },
+            "refused:bounds",
+        ),
+        (
+            "markers-3",
+            DecodeLimits {
+                maximum_markers: 3,
+                ..DecodeLimits::default()
+            },
+            "refused:bounds",
+        ),
+        (
+            "dimension-64",
+            DecodeLimits {
+                maximum_dimension: 64,
+                ..DecodeLimits::default()
+            },
+            "decoded",
+        ),
+    ];
+    let mut fresh = Vec::new();
+    for (name, limits, expected) in cases {
+        let root = Root::new(&format!("history-fresh-{name}"))?;
+        let mut imported = import(&root, "mjpeg/mjpeg_clean_3frames.mjpeg")?;
+        let observed = outcome(&mut imported, limits)?;
+        assert_eq!(observed.0, expected, "fresh {name}");
+        fresh.push(observed);
+    }
+    let root = Root::new("history-wide-first")?;
+    let mut imported = import(&root, "mjpeg/mjpeg_clean_3frames.mjpeg")?;
+    let wide = outcome(&mut imported, DecodeLimits::default())?;
+    assert_eq!(wide.0, "decoded");
+    for ((name, limits, _), expected) in cases.iter().zip(&fresh) {
+        let observed = outcome(&mut imported, *limits)?;
+        let pass = observed == *expected;
+        caplog(
+            &format!("history_independent_{name}"),
+            pass,
+            &format!("{} {} work {}", expected.0, hex(expected.1), expected.2),
+            &format!("{} {} work {}", observed.0, hex(observed.1), observed.2),
+        );
+        assert!(
+            pass,
+            "{name}: after a wide decode {observed:?}, fresh {expected:?}"
+        );
+    }
+    // The admitting narrower request is the wide decode's own receipt.
+    assert_eq!(fresh[2].1, wide.1);
+    let again = outcome(&mut imported, DecodeLimits::default())?;
+    assert_eq!(again, (wide.0.clone(), wide.1, 0));
+    Ok(())
+}
+
+/// fss-2h5zq.42 round 3: an incomplete import (cut at its manifest commit, after its capsule
+/// batches were committed) is never decoded. After a restart every segment is the typed
+/// source-unavailable refusal with no codec work and nothing retained.
+#[test]
+fn incomplete_import_is_never_decoded() -> TestResult {
+    // The import identity is deterministic; learn it from a complete import in another root.
+    let complete_root = Root::new("incomplete-reference")?;
+    let complete = import(&complete_root, "mjpeg/mjpeg_clean_3frames.mjpeg")?;
+    let identity = complete.receipt.import_identity;
+    let segments = complete.receipt.manifest.segment_spans.len();
+    drop(complete);
+
+    let root = Root::new("incomplete")?;
+    {
+        let cx = context(&root.deployment())?;
+        let mut deployment = ReferenceDeployment::open(&root.deployment(), SITE, &cx)?;
+        cx.set_cancel_at_checkpoint(STAGE_COMMIT_MANIFEST);
+        let cut = FileIngestAdapter::ingest(
+            file_request("mjpeg/mjpeg_clean_3frames.mjpeg")?,
+            &cx,
+            &mut deployment,
+        );
+        match cut {
+            Err(FileIngestError::CancellationRequested { stage }) => {
+                assert_eq!(stage, STAGE_COMMIT_MANIFEST);
+            }
+            other => {
+                return Err(format!("expected a cut at the manifest commit, got {other:?}").into());
+            }
+        }
+    }
+    let cx = context(&root.deployment())?;
+    let mut deployment = ReferenceDeployment::open(&root.deployment(), SITE, &cx)?;
+    let capsule_batches = format!("batch:file-import:{}:c", hex(identity));
+    assert!(
+        deployment
+            .ledger()
+            .batches()
+            .iter()
+            .any(|b| b.batch_id.as_str().starts_with(&capsule_batches)),
+        "the cut import committed its capsule batches"
+    );
+    let before = deployment.ledger().batches().len();
+    for segment in 0..segments {
+        let request = RecordedDecodeRequest {
+            import_identity: identity,
+            segment_index: segment,
+            interpretation: ComponentInterpretation::YCbCr,
+            read_limits: RetainedReadLimits::default(),
+            decode_limits: DecodeLimits::default(),
+        };
+        let mut budget = DecodeBudget::new(100_000_000);
+        let result = decode_capsule(&mut deployment, &request, &mut budget, &cx);
+        let pass = matches!(&result, Err(error)
+                if error.stable_id() == "ERR-DECODE-SOURCE-UNAVAILABLE-001")
+            && budget.used() == 0
+            && deployment.ledger().batches().len() == before;
+        caplog(
+            &format!("incomplete_import_segment_{segment}"),
+            pass,
+            "ERR-DECODE-SOURCE-UNAVAILABLE-001, no work, nothing retained",
+            &format!(
+                "{:?} work {}",
+                result.as_ref().err().map(RecordedDecodeError::stable_id),
+                budget.used()
+            ),
+        );
+        assert!(pass, "segment {segment}: {result:?}");
+    }
+    assert_eq!(decode_receipt_batches(&deployment), 0);
     Ok(())
 }
