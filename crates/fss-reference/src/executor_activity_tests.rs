@@ -110,7 +110,7 @@ fn real_executor_scores_decoded_pixels_both_sides_of_the_threshold() -> TestResu
         .score()
         .ok_or("unchanged frame has no score")?;
     println!(
-        "CAPLOG {{\"bead\":\"fss-2h5zq.51\",\"step\":\"executor_scores\",\"changed\":{changed_score},\"unchanged\":{unchanged_score},\"threshold\":{}}}",
+        "executor_scores changed={changed_score} unchanged={unchanged_score} threshold={}",
         policy.threshold()
     );
     assert!(matches!(

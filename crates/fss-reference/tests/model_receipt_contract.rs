@@ -16,10 +16,13 @@ use fss_codec_mjpeg::color::{DecodedRgb, RgbDecodeLimits, decode_rgb};
 use fss_core::{CanonicalEncoder, ContentDigest, Generation, SensorId, TimestampNs};
 use fss_model_ir::{AttributeMap, GraphNode, ModelIrGraph, OpCode, TensorPort};
 use fss_reference::executor_activity::{
-    ActivityExecutorModel, ActivityFrameBinding, ActivityThresholdPolicy,
+    ACTIVITY_FRAME_INPUT, ACTIVITY_REFERENCE_INPUT, ACTIVITY_SCORE_OUTPUT,
+    ACTIVITY_TENSOR_GENERATION, ACTIVITY_WEIGHTS_INPUT, ActivityExecutorModel,
+    ActivityFrameBinding, ActivityThresholdPolicy, rgb_decode_receipt_bytes,
 };
 use fss_reference::model_receipt::{
     ModelInvocationReceipt, ReceiptDigest, ReceiptOutcome, ReceiptRecordContext,
+    compute_execution_plan_digest, compute_resized_preprocess_program_digest,
     execute_and_record_receipt,
 };
 use fss_reference::{ExecBudget, ScalarExecCx, VirtualClock};
@@ -273,6 +276,139 @@ fn receipts_are_deterministic_and_sentinels_never_parse_as_content() -> TestResu
             "{name}"
         );
     }
+    Ok(())
+}
+
+/// The package-backed receipt binds, each recomputed here from its own inputs rather than read
+/// back from the receipt code: the package manifest, the execution plan over the verified
+/// graph, the recorded resize program, the three input tensors (both preprocessed frames and the
+/// package weights), the two decode-receipt records, and an output root over the score the
+/// result reports.
+#[test]
+fn activity_receipt_binds_package_graph_tensors_and_decode_receipts() -> TestResult {
+    let cx = ScalarExecCx::new();
+    let model = ActivityExecutorModel::load_committed(&cx)?;
+    let package = model.package();
+    let frame = decode(GRADIENT)?;
+    let reference = decode(BACKGROUND)?;
+    let (result, receipt) = model.invoke(
+        &SensorId::parse("sensor:file-cam")?,
+        bind(GRADIENT, &frame),
+        bind(BACKGROUND, &reference),
+        &ActivityThresholdPolicy::reference()?,
+        ExecBudget::new(10_000_000, 16 * 1024 * 1024),
+        "job:receipt-contract:binding",
+        &cx,
+    )?;
+    let [fw, fh] = frame.dimensions();
+    let [rw, rh] = reference.dimensions();
+    let weights = Tensor::from_values(
+        Shape::new(vec![package.mean_weights().len(), 1])?,
+        package.mean_weights(),
+        ACTIVITY_TENSOR_GENERATION,
+    )?;
+    let expected_inputs: Vec<String> = [
+        model
+            .preprocess(frame.pixels(), fw, fh, &cx)?
+            .content_digest()?,
+        model
+            .preprocess(reference.pixels(), rw, rh, &cx)?
+            .content_digest()?,
+        weights.content_digest()?,
+        ContentDigest::sha256(&rgb_decode_receipt_bytes(&frame.receipt())),
+        ContentDigest::sha256(&rgb_decode_receipt_bytes(&reference.receipt())),
+    ]
+    .iter()
+    .map(ToString::to_string)
+    .collect();
+    let observed_inputs: Vec<String> = receipt
+        .input_roots
+        .iter()
+        .map(ReceiptDigest::to_text)
+        .collect();
+    let plan = compute_execution_plan_digest(
+        package.graph(),
+        &[
+            ACTIVITY_FRAME_INPUT,
+            ACTIVITY_REFERENCE_INPUT,
+            ACTIVITY_WEIGHTS_INPUT,
+        ],
+    )?;
+    let spec = package.spec();
+    let preprocess =
+        compute_resized_preprocess_program_digest(&spec.program, spec.filter, spec.aspect);
+    let score = result.outcome.score().ok_or("no score")?;
+    let score_tensor = Tensor::from_values(
+        Shape::new(vec![1, 1])?,
+        &[score],
+        ACTIVITY_TENSOR_GENERATION,
+    )?;
+    let mut encoder = CanonicalEncoder::new();
+    encoder.text("fss.canonical.v1");
+    encoder.text("fss.model_execution_receipt.v1/output_root");
+    encoder.u64(1);
+    encoder.text(ACTIVITY_SCORE_OUTPUT);
+    encoder.digest(score_tensor.content_digest()?);
+    let output_root = ContentDigest::sha256(&encoder.finish());
+    let text = |digest: Option<&ReceiptDigest>| {
+        digest.map_or_else(|| "<absent>".to_owned(), ReceiptDigest::to_text)
+    };
+    let checks = [
+        (
+            "model_package_root",
+            package.manifest_digest().to_string(),
+            receipt.model_package_root.to_text(),
+        ),
+        (
+            "execution_plan_digest",
+            plan.to_string(),
+            receipt.execution_plan_digest.to_text(),
+        ),
+        (
+            "preprocess_program",
+            preprocess.to_string(),
+            receipt.preprocess_program.to_text(),
+        ),
+        (
+            "output_root",
+            output_root.to_string(),
+            text(receipt.output_root.as_ref()),
+        ),
+        (
+            "outcome",
+            "ok".to_owned(),
+            receipt.outcome.as_str().to_owned(),
+        ),
+    ];
+    let mut record = Record::new("receipt_activity_binding").check(
+        "input_roots",
+        expected_inputs.clone(),
+        observed_inputs.clone(),
+    );
+    for (name, expected, observed) in &checks {
+        record = record.check(name, expected.as_str(), observed.as_str());
+    }
+    record.emit_checked(
+        0,
+        expected_inputs == observed_inputs
+            && checks
+                .iter()
+                .all(|(_, expected, observed)| expected == observed),
+    );
+    assert_eq!(observed_inputs, expected_inputs);
+    for (name, expected, observed) in &checks {
+        assert_eq!(observed, expected, "{name}");
+    }
+    // The result links the receipt to the source bytes and the capsule.
+    assert_eq!(result.input_capture_root, ContentDigest::sha256(GRADIENT));
+    assert_eq!(
+        result.reference_capture_root,
+        ContentDigest::sha256(BACKGROUND)
+    );
+    assert_eq!(
+        result.invocation_receipt_digest,
+        receipt.compute_canonical_digest()
+    );
     Ok(())
 }
 

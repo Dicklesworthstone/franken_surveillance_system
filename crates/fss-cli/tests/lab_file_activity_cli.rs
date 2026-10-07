@@ -8,6 +8,7 @@ use std::process::Command;
 
 use fss_core::ContentDigest;
 use fss_reference::ScalarExecCx;
+use fss_reference::executor_activity::ActivityThresholdPolicy;
 use fss_reference::executor_activity_package::{
     ACTIVITY_PACKAGE_V1_SHA256, VerifiedActivityPackage,
 };
@@ -67,6 +68,19 @@ fn observations(json: &str) -> TestResult<Vec<&str>> {
         .collect())
 }
 
+/// The raw JSON token of the first `"key":` member in `json` (a string keeps its quotes).
+fn field<'a>(json: &'a str, key: &str) -> Option<&'a str> {
+    let marker = format!("\"{key}\":");
+    let start = json.find(&marker)? + marker.len();
+    let rest = &json[start..];
+    let end = if let Some(body) = rest.strip_prefix('"') {
+        body.find('"')? + 2
+    } else {
+        rest.find([',', '}', ']']).unwrap_or(rest.len())
+    };
+    Some(&rest[..end])
+}
+
 #[test]
 fn file_activity_cli_runs_the_verified_package_and_never_corroborates() -> TestResult {
     let json = run("a")?;
@@ -99,39 +113,68 @@ fn file_activity_cli_runs_the_verified_package_and_never_corroborates() -> TestR
         "\"reference_only\":true",
         "\"supports_absence\":false",
     ];
-    // Frame 1 repeats the background (score exactly 0); frame 2 is the gradient (activity).
-    let outcomes = [
-        "\"outcome\":\"no_activity\",\"score\":0",
-        "\"outcome\":\"activity\"",
-    ];
+    let threshold = ActivityThresholdPolicy::reference()?.threshold();
+    // Frame 1 repeats the background (score exactly 0, no activity, which is not absence);
+    // frame 2 is the gradient (activity, score strictly above the threshold).
+    let expected = [("\"no_activity\"", false), ("\"activity\"", true)];
     for (index, observation) in observed.iter().enumerate() {
         let missing: Vec<&str> = keys
             .iter()
             .copied()
             .filter(|key| !observation.contains(key))
             .collect();
-        let outcome = observation.contains(outcomes[index]);
-        Record::new(&format!("cli_observation_{index}"))
+        let (expected_outcome, expected_above) = expected[index];
+        let outcome = field(observation, "outcome").unwrap_or("<absent>");
+        let score_text = field(observation, "score").unwrap_or("<absent>");
+        let above = score_text
+            .parse::<f32>()
+            .is_ok_and(|score| score > threshold);
+        let mut record = Record::new(&format!("cli_observation_{index}"))
             .check_eq("missing_receipt_keys", Vec::<&str>::new(), missing.clone())
-            .check_eq("outcome", true, outcome)
-            .emit_checked(0, missing.is_empty() && outcome);
-        println!("observation {index}: {{{observation}}}");
+            .check("outcome", expected_outcome, outcome)
+            .check_eq("score_above_threshold", expected_above, above);
+        let mut checked =
+            missing.is_empty() && outcome == expected_outcome && above == expected_above;
+        if index == 0 {
+            record = record.check("score", "0", score_text);
+            checked &= score_text == "0";
+        }
+        record.emit_checked(0, checked);
+        println!("observation {index} (threshold {threshold}): {{{observation}}}");
         assert!(missing.is_empty(), "{missing:?} missing in {observation}");
-        assert!(outcome, "observation {index}: {observation}");
+        assert_eq!(outcome, expected_outcome, "observation {index}");
+        assert_eq!(above, expected_above, "observation {index}: {observation}");
     }
-    let single_source = json.contains("\"corroboration\":\"single_source\"")
-        && !json.contains("\"envelope\":\"corroborated_threat\"")
-        && json.contains("\"absence_certified\":false");
+    assert_eq!(field(observed[0], "score"), Some("0"));
+    // One camera: single source, never corroborated, never certified absent; the event stays a
+    // protected residual rather than a corroborated threat.
+    let disposition = [
+        ("corroboration", "\"single_source\""),
+        ("envelope", "\"protected_residual\""),
+        ("event_disposition", "\"protected_residual\""),
+        ("absence_certified", "false"),
+    ];
+    let mut record = Record::new("cli_event_disposition");
+    let mut checked = true;
+    for (key, want) in disposition {
+        let got = field(&json, key).unwrap_or("<absent>");
+        record = record.check(key, want, got);
+        checked &= got == want;
+    }
+    record.emit_checked(0, checked);
+    for (key, want) in disposition {
+        assert_eq!(field(&json, key), Some(want), "{key}");
+    }
+    assert!(!json.contains("\"envelope\":\"corroborated_threat\""));
     // The run is deterministic across roots.
     let second = run("b")?;
-    Record::new("cli_single_source_deterministic")
-        .check_eq("single_source_never_corroborated", true, single_source)
+    Record::new("cli_report_deterministic")
         .check(
             "report_sha256",
             ContentDigest::sha256(json.as_bytes()).to_string(),
             ContentDigest::sha256(second.as_bytes()).to_string(),
         )
-        .emit_checked(0, single_source && second == json);
+        .emit_checked(0, second == json);
     assert_eq!(second, json);
     Ok(())
 }
