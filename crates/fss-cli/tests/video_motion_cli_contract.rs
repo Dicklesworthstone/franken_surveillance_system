@@ -568,7 +568,7 @@ fn corrupt_final_picture_preserves_previous_measurements_and_existing_exports() 
     let before = fs::read(&path)?;
     assert!(!motion(&imported, 0, 12, &path).output()?.status.success());
     assert_eq!(fs::read(path)?, before);
-    let forbidden = imported.root.join("unsafe-export.json");
+    let forbidden = imported.root.join("refused-export.json");
     assert!(
         !motion(&imported, 0, 12, &forbidden)
             .output()?

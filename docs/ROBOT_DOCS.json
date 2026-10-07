@@ -1792,8 +1792,8 @@
       "id": "ERR-PACKAGE-EVENT-CANCELLED-001"
     },
     {
-      "description": "retained package-detection custody, its canonical record, or an exported package analysis report disagrees with the rebuild from custody",
-      "guidance": "do not trust the bytes; investigate custody and re-export",
+      "description": "retained package-detection custody, its canonical record or analysis, or the published event's authority/provenance graph disagrees with the exact retained rebuild",
+      "guidance": "do not trust the bytes; investigate custody and authority; reads and publication retries never repair missing or changed evidence",
       "id": "ERR-PACKAGE-EVENT-MISMATCH-001"
     },
     {
@@ -1807,8 +1807,8 @@
       "id": "ERR-PACKAGE-EVENT-TRACK-001"
     },
     {
-      "description": "the deployment retains no package detection with this report digest (only `fss-infer package-detect --retain yes` retains one)",
-      "guidance": "retain the detection first, then rerun",
+      "description": "the deployment retains no package detection with this report digest, or no published package event with the requested event id",
+      "guidance": "retain the detection with `fss-infer package-detect --retain yes` before analysis; for reads, use the event id returned by successful publication in this deployment",
       "id": "ERR-PACKAGE-EVENT-UNAVAILABLE-001"
     },
     {
