@@ -59,13 +59,16 @@ decision-path digests):
 - `ALG-KSP-001`: Yen with lexicographic spur searches, a minimum-distinct-arcs diversity filter, an explicit enumeration cap and a typed stop reason; certified against exhaustive loopless-path enumeration.
 - `ALG-TREACH-001`: exact integer-interval least fixpoint (departure windows, travel bounds, per-node linger) with `reachable` / `temporally_infeasible` / `no_path`; certified against integer-time set fixpoint.
 - `ALG-DYNCONN-001`: offline segment tree over edge lifetimes with rollback union-find; strict insert/delete batches; certified against per-state BFS recomputation.
+- `ALG-RELIABILITY-001`: per-zone blindness probability bounds under independent interval-probability failure domains (outward 10^-18 fixed point) with minimal blinding domain sets; certified against a direct scenario sum over admissible probability vectors and exhaustive minimal cuts.
+- `ALG-INTERDICT-001`: minimum-cost sensor set whose loss opens an unobserved entry-to-target walk (exact up to 20 relevant sensors; explicitly approximate upper bound beyond), or an existing blind path; robust placement not implemented; certified against brute-force subsets.
 
 Each is certified on seeded directed and undirected graphs (random, DAG, cycle, clique, star,
 path, layered, joined cycles, empty) or seeded assignment problems, insertion-order metamorphic
 tests, budget-one-short refusals and tampered-witness refusals
 (`crates/fss-graph-algorithms/tests/weighted_certification.rs`,
 `crates/fss-graph-algorithms/tests/optimization_certification.rs`,
-`crates/fss-graph-algorithms/tests/path_time_certification.rs`). The projections are caller-built:
+`crates/fss-graph-algorithms/tests/path_time_certification.rs`,
+`crates/fss-graph-algorithms/tests/resilience_certification.rs`). The projections are caller-built:
 no retained-record projection builder exists yet for `PlanObligationGraph`, `EvidenceClaimGraph`,
 `IncidentCausalGraph`, `DeviceFailureGraph`, `SpatioTemporalTrackGraph` or `ArchiveObjectGraph`.
 None is qualified: the `INT-FNX-001` differential and the atlas's snapshot-invalidation,

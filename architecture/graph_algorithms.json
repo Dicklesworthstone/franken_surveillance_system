@@ -614,7 +614,19 @@
       "outputSizeWitness": "<= k <= |V| + |E| interdicted elements",
       "exactness": "bounded_exact_or_approximate",
       "gate": "INT-FNX-001",
-      "status": "specified"
+      "status": "implemented",
+      "implementationId": "fss-graph-algorithms:alg-interdict-001:exact-sensor-subset-enumeration-or-node-weighted-path-bound:v1",
+      "tieBreakPolicyId": "tie:cost-then-cardinality-then-lexicographic-sensor-tuple:v1",
+      "policyId": "graph-policy:directed-or-undirected:zones-observed-by-sensors:unobserved-walk-entry-to-target:sensor-disable-cost:numeric:u64-exact:checked:v1:tie:cost-then-cardinality-then-lexicographic-sensor-tuple:v1",
+      "complexityBoundId": "bound:alg-interdict-001:2-pow-s-branch-nodes-times-linear-search:v1",
+      "projectionBinding": "caller-built movement WeightedGraph over zones plus an InterdictionQuery (zone observers, sensor disable costs, entry and target zones); exact up to 20 relevant sensors, an explicitly approximate feasible upper bound beyond; robust placement is not implemented",
+      "qualification": "not_qualified: certified against brute-force sensor-subset enumeration with witness-walk validity checks on seeded sites; the robust-placement half of the row is not implemented; no INT-FNX-001 differential exists",
+      "evidence": [
+        "crates/fss-graph-algorithms/src/interdiction.rs",
+        "crates/fss-graph-algorithms/src/weighted.rs",
+        "crates/fss-graph-algorithms/src/certified.rs",
+        "crates/fss-graph-algorithms/tests/resilience_certification.rs"
+      ]
     },
     {
       "id": "ALG-RELIABILITY-001",
@@ -631,7 +643,18 @@
       "outputSizeWitness": "<= |Scenarios| <= 2^k probability evaluations",
       "exactness": "bounded_statistical",
       "gate": "INT-FNX-001",
-      "status": "specified"
+      "status": "implemented",
+      "implementationId": "fss-graph-algorithms:alg-reliability-001:per-zone-scenario-enumeration-outward-fixed-point:v1",
+      "tieBreakPolicyId": "tie:cut-size-then-domain-identity-tuple:v1",
+      "policyId": "graph-policy:failure-domains:independent-interval-ppm:sensor-down-if-any-domain-fails:zone-blind-if-all-observers-down:outward-fixed-point-1e-18:tie:cut-size-then-domain-identity-tuple:v1",
+      "complexityBoundId": "bound:alg-reliability-001:zones-times-2-pow-k-scenarios:v1",
+      "projectionBinding": "caller-built canonical ReliabilityModel (fss.graph.reliability_model.v1: zones with observing sensors, failure domains with ppm probability intervals and member sensors) as a DeviceFailureGraph; independence between declared domains is a stated model assumption; witness nodeCount is zones + domains and edgeCount the observer links",
+      "qualification": "not_qualified: certified against a direct f64 scenario sum over every admissible probability vector and exhaustive minimal-cut enumeration on seeded models; probabilities are owner declarations, not measured availability; no INT-FNX-001 differential exists",
+      "evidence": [
+        "crates/fss-graph-algorithms/src/reliability.rs",
+        "crates/fss-graph-algorithms/src/certified.rs",
+        "crates/fss-graph-algorithms/tests/resilience_certification.rs"
+      ]
     },
     {
       "id": "ALG-FACTOR-001",

@@ -35,12 +35,14 @@ pub mod failure_domains;
 pub mod flow;
 pub mod gomory_hu;
 pub mod graph;
+pub mod interdiction;
 pub mod ksp;
 pub mod min_cost_flow;
 pub mod oracles;
 pub mod paths;
 pub mod reference;
 pub mod registry;
+pub mod reliability;
 pub mod resilient_cover;
 pub mod scc;
 /// Bounded unit-cost set cover with exact-small and explicitly heuristic selection.
