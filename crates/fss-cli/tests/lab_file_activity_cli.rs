@@ -12,6 +12,10 @@ use fss_reference::executor_activity_package::{
     ACTIVITY_PACKAGE_V1_SHA256, VerifiedActivityPackage,
 };
 
+#[path = "../../fss-reference/tests/caplog_support/mod.rs"]
+mod caplog_support;
+use caplog_support::Record;
+
 type TestResult<T = ()> = Result<T, Box<dyn std::error::Error>>;
 
 struct Directory(PathBuf);
@@ -86,25 +90,48 @@ fn file_activity_cli_runs_the_verified_package_and_never_corroborates() -> TestR
     assert!(json.contains("\"absence_certified\":false"));
     let observed = observations(&json)?;
     assert_eq!(observed.len(), 2);
+    let keys = [
+        "\"invocation_receipt_digest\":\"sha256:",
+        "\"invocation_receipt_object\":\"sha256:",
+        "\"decode_receipt\":\"sha256:",
+        "\"input_capture_root\":\"sha256:",
+        "\"continuity\":{\"not_observable\":\"file_source\"}",
+        "\"reference_only\":true",
+        "\"supports_absence\":false",
+    ];
+    // Frame 1 repeats the background (score exactly 0); frame 2 is the gradient (activity).
+    let outcomes = [
+        "\"outcome\":\"no_activity\",\"score\":0",
+        "\"outcome\":\"activity\"",
+    ];
     for (index, observation) in observed.iter().enumerate() {
-        println!(
-            "CAPLOG {{\"bead\":\"fss-2h5zq.52\",\"step\":\"cli_observation\",\"index\":{index},{observation}}}"
-        );
-        for key in [
-            "\"invocation_receipt_digest\":\"sha256:",
-            "\"invocation_receipt_object\":\"sha256:",
-            "\"decode_receipt\":\"sha256:",
-            "\"input_capture_root\":\"sha256:",
-            "\"continuity\":{\"not_observable\":\"file_source\"}",
-            "\"reference_only\":true",
-            "\"supports_absence\":false",
-        ] {
-            assert!(observation.contains(key), "{key} missing in {observation}");
-        }
+        let missing: Vec<&str> = keys
+            .iter()
+            .copied()
+            .filter(|key| !observation.contains(key))
+            .collect();
+        let outcome = observation.contains(outcomes[index]);
+        Record::new(&format!("cli_observation_{index}"))
+            .check_eq("missing_receipt_keys", Vec::<&str>::new(), missing.clone())
+            .check_eq("outcome", true, outcome)
+            .emit_checked(0, missing.is_empty() && outcome);
+        println!("observation {index}: {{{observation}}}");
+        assert!(missing.is_empty(), "{missing:?} missing in {observation}");
+        assert!(outcome, "observation {index}: {observation}");
     }
-    assert!(observed[0].contains("\"outcome\":\"no_activity\",\"score\":0"));
-    assert!(observed[1].contains("\"outcome\":\"activity\""));
+    let single_source = json.contains("\"corroboration\":\"single_source\"")
+        && !json.contains("\"envelope\":\"corroborated_threat\"")
+        && json.contains("\"absence_certified\":false");
     // The run is deterministic across roots.
-    assert_eq!(run("b")?, json);
+    let second = run("b")?;
+    Record::new("cli_single_source_deterministic")
+        .check_eq("single_source_never_corroborated", true, single_source)
+        .check(
+            "report_sha256",
+            ContentDigest::sha256(json.as_bytes()).to_string(),
+            ContentDigest::sha256(second.as_bytes()).to_string(),
+        )
+        .emit_checked(0, single_source && second == json);
+    assert_eq!(second, json);
     Ok(())
 }

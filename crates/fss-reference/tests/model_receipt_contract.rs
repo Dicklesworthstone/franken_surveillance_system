@@ -25,6 +25,9 @@ use fss_reference::model_receipt::{
 use fss_reference::{ExecBudget, ScalarExecCx, VirtualClock};
 use fss_tensor::{DType, Shape, Tensor};
 
+mod caplog_support;
+use caplog_support::Record;
+
 type TestResult<T = ()> = Result<T, Box<dyn Error>>;
 
 const BACKGROUND: &[u8] = include_bytes!("../../fss-codec-mjpeg/tests/fixtures/background.jpg");
@@ -183,17 +186,34 @@ fn emitted_receipts_match_the_schema_validated_fixtures() -> TestResult {
     for ((name, receipt), (fixture_name, fixture)) in receipts.iter().zip(FIXTURES) {
         assert_eq!(*name, fixture_name);
         let json = receipt.to_json_canonical();
-        let outcome = receipt.outcome.as_str();
-        println!(
-            "CAPLOG {{\"bead\":\"fss-2h5zq.48\",\"step\":\"receipt\",\"case\":\"{name}\",\"outcome\":\"{outcome}\",\"receipt_digest\":\"{}\",\"json_sha256\":\"{}\"}}",
-            receipt.compute_canonical_digest(),
-            ContentDigest::sha256(json.as_bytes())
-        );
-        if json != fixture.trim_end_matches('\n') {
+        let fixture = fixture.trim_end_matches('\n');
+        // The case name states the outcome it exercises; the package case is a successful run.
+        let expected_outcome = if *name == "activity_package" {
+            "ok"
+        } else {
+            *name
+        };
+        let verified = receipt
+            .verify(receipt.generation, &receipt.compute_canonical_digest())
+            .is_ok();
+        let matches = json == fixture;
+        Record::new(&format!("receipt_{name}"))
+            .check("outcome", expected_outcome, receipt.outcome.as_str())
+            .check(
+                "json_sha256",
+                ContentDigest::sha256(fixture.as_bytes()).to_string(),
+                ContentDigest::sha256(json.as_bytes()).to_string(),
+            )
+            .check_eq("verifies", true, verified)
+            .emit_checked(
+                0,
+                matches && verified && receipt.outcome.as_str() == expected_outcome,
+            );
+        if !matches {
             println!("RECEIPT_FIXTURE_DRIFT {name} {json}");
             drift.push(*name);
         }
-        receipt.verify(receipt.generation, &receipt.compute_canonical_digest())?;
+        assert!(verified, "{name} receipt does not verify");
     }
     assert!(drift.is_empty(), "receipt JSON drifted for {drift:?}");
     // Each reachable outcome is covered exactly once by the outcome-only cases.
