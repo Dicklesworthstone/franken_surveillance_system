@@ -126,7 +126,7 @@ pub const ACTIVITY_PACKAGE_V1: &[u8] =
     include_bytes!("../../../models/fss-activity/fss_activity_v1.fmpk");
 /// Pinned whole-archive SHA-256 of [`ACTIVITY_PACKAGE_V1`].
 pub const ACTIVITY_PACKAGE_V1_SHA256: &str =
-    "sha256:0000000000000000000000000000000000000000000000000000000000000000";
+    "sha256:417ce1b61cb18192864c76fccf3606536ff4621a99052d1d84721c4915cde52e";
 
 /// Typed refusal; no partially verified package escapes.
 #[derive(Debug)]
