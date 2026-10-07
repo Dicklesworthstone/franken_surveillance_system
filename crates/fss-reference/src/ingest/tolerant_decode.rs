@@ -81,6 +81,9 @@ pub(crate) struct TolerantRequest {
     pub(crate) jpeg_limits: DecodeLimits,
     pub(crate) h264_limits: DecoderLimits,
     pub(crate) h265_limits: H265DecoderLimits,
+    /// Open inter-coded sub-ranges as whole-recording streams (long dwell) instead of the
+    /// interactive range bound.
+    pub(crate) stream: bool,
 }
 
 /// Whether `error` is a typed stream refusal (as opposed to a composition bound, budget,
@@ -150,6 +153,8 @@ pub(crate) struct TolerantSource {
     mask: MaskBinding,
     /// Verified custody chunks reused across sequential MJPEG frame reads.
     chunks: super::VerifiedChunkCache,
+    /// Chunk bytes read by inter-coded sub-ranges already closed.
+    closed_chunk_bytes: u64,
 }
 
 impl TolerantSource {
@@ -188,6 +193,7 @@ impl TolerantSource {
             returned_any: false,
             mask,
             chunks: super::VerifiedChunkCache::default(),
+            closed_chunk_bytes: 0,
         };
         if let Some(codec) = codec {
             let start = request.first_segment;
@@ -219,7 +225,11 @@ impl TolerantSource {
         cx: &ReplayCx,
     ) -> Result<InterRange, RecordedDecodeError> {
         Ok(match codec {
-            Codec::H264 => InterRange::H264(Box::new(RecordedH264Range::open(
+            Codec::H264 => InterRange::H264(Box::new(if self.request.stream {
+                RecordedH264Range::open_stream
+            } else {
+                RecordedH264Range::open
+            }(
                 deployment,
                 RecordedH264Request {
                     import_identity: self.request.import_identity,
@@ -231,7 +241,11 @@ impl TolerantSource {
                 },
                 cx,
             )?)),
-            Codec::H265 => InterRange::H265(Box::new(RecordedH265Range::open(
+            Codec::H265 => InterRange::H265(Box::new(if self.request.stream {
+                RecordedH265Range::open_stream
+            } else {
+                RecordedH265Range::open
+            }(
                 deployment,
                 RecordedH265Request {
                     import_identity: self.request.import_identity,
@@ -295,6 +309,45 @@ impl TolerantSource {
         }
     }
 
+    /// Every custody chunk byte read so far: MJPEG frames and every inter-coded sub-range.
+    pub(crate) fn chunk_bytes_read(&self) -> u64 {
+        let current = match &self.inner {
+            Inner::Inter {
+                range: Some(InterRange::H264(range)),
+                ..
+            } => range.chunk_bytes_read(),
+            Inner::Inter {
+                range: Some(InterRange::H265(range)),
+                ..
+            } => range.chunk_bytes_read(),
+            _ => 0,
+        };
+        self.chunks
+            .chunk_bytes_read()
+            .saturating_add(self.closed_chunk_bytes)
+            .saturating_add(current)
+    }
+
+    /// Adds the current inter-coded sub-range's chunk reads to the closed total before the
+    /// range is replaced.
+    fn retire_range(&mut self) {
+        let bytes = match &self.inner {
+            Inner::Inter {
+                range: Some(InterRange::H264(range)),
+                ..
+            } => range.chunk_bytes_read(),
+            Inner::Inter {
+                range: Some(InterRange::H265(range)),
+                ..
+            } => range.chunk_bytes_read(),
+            _ => 0,
+        };
+        self.closed_chunk_bytes = self.closed_chunk_bytes.saturating_add(bytes);
+        if let Inner::Inter { range, .. } = &mut self.inner {
+            *range = None;
+        }
+    }
+
     /// Opens the first IDR/IRAP-led sub-range at or after `candidate`; returns the segment it
     /// starts at (or the range end when none opens) and installs it.
     fn resume(
@@ -304,6 +357,7 @@ impl TolerantSource {
         candidate: usize,
         cx: &ReplayCx,
     ) -> Result<usize, RecordedDecodeError> {
+        self.retire_range();
         for start in candidate..self.request.end {
             let end = self.sub_end(start);
             match self.open_range(deployment, codec, start, end, cx) {
@@ -426,6 +480,7 @@ impl TolerantSource {
                     Ok(None) => {
                         // The sub-range ended at a source gap (or the range end).
                         if sub_end >= self.request.end {
+                            self.retire_range();
                             self.inner = Inner::Inter {
                                 codec,
                                 range: None,

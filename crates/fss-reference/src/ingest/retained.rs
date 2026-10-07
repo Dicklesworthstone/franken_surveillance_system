@@ -624,9 +624,16 @@ fn verified_chunk(
 #[derive(Debug, Default)]
 pub struct VerifiedChunkCache {
     slots: [Option<(ContentDigest, Vec<u8>)>; 2],
+    loaded: u64,
 }
 
 impl VerifiedChunkCache {
+    /// Bytes of every chunk this cache has read and verified (each load counted).
+    #[must_use]
+    pub const fn chunk_bytes_read(&self) -> u64 {
+        self.loaded
+    }
+
     fn chunk(
         &mut self,
         manifest: &FileImportManifest,
@@ -642,6 +649,7 @@ impl VerifiedChunkCache {
             self.slots.swap(0, 1);
         } else if !hit(&self.slots[0]) {
             let bytes = verified_chunk(manifest, index, read)?;
+            self.loaded = self.loaded.saturating_add(bytes.len() as u64);
             self.slots[1] = self.slots[0].take();
             self.slots[0] = Some((expected, bytes));
         }

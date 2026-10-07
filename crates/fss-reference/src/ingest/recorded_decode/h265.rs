@@ -42,6 +42,9 @@ use crate::{ReferenceDeployment, ReplayCx};
 
 /// Maximum access units decoded by one range request.
 pub const MAX_H265_RANGE_SEGMENTS: usize = 1024;
+/// Maximum access units of one streaming range ([`RecordedH265Range::open_stream`]), the
+/// long-dwell whole-recording bound.
+pub const MAX_H265_STREAM_SEGMENTS: usize = 65_536;
 /// Versioned label of the canonical decoder semantics bound into every frame receipt.
 pub const H265_DECODER_LABEL: &str =
     "fss-codec-h265:main-420-8bit:scalar-reference:output-order:rasl-skip-at-range-start:v1";
@@ -358,11 +361,31 @@ impl RecordedH265Range {
         request: RecordedH265Request,
         cx: &ReplayCx,
     ) -> Result<Self, RecordedDecodeError> {
+        Self::open_bounded(deployment, request, cx, MAX_H265_RANGE_SEGMENTS)
+    }
+
+    /// [`Self::open`] for whole-recording streaming analysis: up to
+    /// [`MAX_H265_STREAM_SEGMENTS`] segments, decoded one access unit at a time with the same
+    /// custody, mask and refusal semantics. Memory grows only with per-segment bookkeeping.
+    pub fn open_stream(
+        deployment: &ReferenceDeployment,
+        request: RecordedH265Request,
+        cx: &ReplayCx,
+    ) -> Result<Self, RecordedDecodeError> {
+        Self::open_bounded(deployment, request, cx, MAX_H265_STREAM_SEGMENTS)
+    }
+
+    fn open_bounded(
+        deployment: &ReferenceDeployment,
+        request: RecordedH265Request,
+        cx: &ReplayCx,
+        maximum_segments: usize,
+    ) -> Result<Self, RecordedDecodeError> {
         checkpoint(cx, "recorded_h265:open")?;
         if request.interpretation != ComponentInterpretation::YCbCr {
             return Err(RecordedDecodeError::InterpretationMismatch);
         }
-        if request.segment_count == 0 || request.segment_count > MAX_H265_RANGE_SEGMENTS {
+        if request.segment_count == 0 || request.segment_count > maximum_segments {
             return Err(RecordedDecodeError::Limit);
         }
         let retained =
@@ -442,6 +465,12 @@ impl RecordedH265Range {
     #[must_use]
     pub fn retained(&self) -> &RetainedFileImport {
         &self.retained
+    }
+
+    /// Custody chunk bytes this range has read and verified so far.
+    #[must_use]
+    pub const fn chunk_bytes_read(&self) -> u64 {
+        self.chunks.chunk_bytes_read()
     }
 
     /// Privacy mask binding applied to every frame of this range.

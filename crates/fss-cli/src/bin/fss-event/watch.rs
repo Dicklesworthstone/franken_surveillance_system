@@ -19,7 +19,8 @@
 //! `--dwell-for-ns N --dwell-max-gap-ns N [--dwell-min-observations N]` instead evaluates
 //! sustained actual zone observations. It uses the same pipeline once, emits separately approved
 //! dwell hypotheses, and refuses coverage retention: entry coverage is not dwell-absence proof.
-//! Add `--stream-dwell` for one whole MJPEG range (up to 65536 segments), with persistent
+//! Add `--stream-dwell` for one whole MJPEG, H.264 or H.265 (Annex-B or MP4) range (up to 65536
+//! segments; inter-coded frames in display order), with persistent
 //! foreground/tracker state and aggregate source-byte, pixel, assignment and trace ceilings.
 //! This mode refuses detector-package flags rather than silently dropping a requested model.
 //! `--sensor-health conservative-v1` additionally screens the same masked pixels in entry

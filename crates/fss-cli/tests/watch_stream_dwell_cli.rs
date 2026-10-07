@@ -346,3 +346,83 @@ fn complete_default_range_report_exports_without_inventing_absence() -> Test {
     assert_eq!(f.snapshot()?, before);
     Ok(())
 }
+
+/// 300-frame libx264 MP4 (B-pictures, 10 fps) of the same scene as the MJPEG fixture.
+const SQUARE_MP4: &[u8] =
+    include_bytes!("../../fss-reference/tests/fixtures/long_dwell_h264/square_300.mp4");
+
+#[test]
+fn an_h264_mp4_recording_streams_previews_and_publishes_one_episode() -> Test {
+    let directory = Directory::new("mp4")?;
+    let root = directory.0.join("deployment");
+    let input = directory.0.join("camera.mp4");
+    fs::write(&input, SQUARE_MP4)?;
+    let authority = ContextAuthority::new_root(RootAuthoritySpec {
+        trace_id: "trace:stream-dwell-cli".into(),
+        operation_id: OperationId::parse("operation:stream-dwell-cli")?,
+        principal: "principal:fixture".into(),
+        capabilities: vec!["ADP-REPLAY-001".into()],
+        deadline: None,
+        priority: 10,
+        budgets: BudgetVector::builder()
+            .bytes(128 * 1024 * 1024)
+            .storage_operations(65_536)
+            .build()?,
+        privacy_scope: "privacy:test".into(),
+        retention_scope: "retention:test".into(),
+        anchor_universe: ContentDigest::sha256(SITE.as_bytes()),
+        generation: 1,
+    })?;
+    authority.validate()?;
+    let cx = ReplayCx::from_context_authority(&authority, root.clone())?;
+    let mut deployment = ReferenceDeployment::open(&root, SITE, &cx)?;
+    let mut limits = FileIngestLimits::standard();
+    limits.max_segments = FRAMES + 1;
+    limits.chunk_bytes = 4096;
+    let identity = FileIngestAdapter::ingest(
+        FileIngestRequest::new(
+            &input,
+            SensorId::parse("sensor:stream-dwell")?,
+            StreamId::parse("stream:stream-dwell")?,
+        )
+        .with_limits(limits)
+        .with_receive_time(TimestampNs(1_000_000_000_000))
+        .with_capture_hint(CaptureHint::new(TimestampNs(0), 0, 10.0)?),
+        &cx,
+        &mut deployment,
+    )?
+    .import_identity;
+    drop(deployment);
+    cx.drain_and_finalize();
+    fs::remove_file(input)?;
+    let mut args = base(&root, identity);
+    set(&mut args, "--interpretation", "ycbcr")?;
+    args.extend(
+        [
+            "--stream-dwell",
+            "--dwell-for-ns",
+            "20000000000",
+            "--dwell-max-gap-ns",
+            "100000000",
+            "--segment-count",
+            "300",
+        ]
+        .map(OsString::from),
+    );
+    let preview = good(run(&args)?)?;
+    assert!(preview.contains("\"frames_decoded\":300"), "{preview}");
+    assert!(preview.contains("\"candidate_count\":1"), "{preview}");
+    let approval = field(&preview, "proposal_digest")?;
+    args.extend(["--approve".into(), approval.into()]);
+    let published = good(run(&args)?)?;
+    assert!(
+        published.contains("\"status\":\"published\""),
+        "{published}"
+    );
+    // The interpretation must be YCbCr for inter-coded sources.
+    set(&mut args, "--interpretation", "gray")?;
+    let refused = run(&args)?;
+    assert!(!refused.status.success());
+    drop(directory);
+    Ok(())
+}

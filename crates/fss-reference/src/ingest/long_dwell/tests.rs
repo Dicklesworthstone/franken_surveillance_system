@@ -486,3 +486,129 @@ fn analysis_cancellation_and_static_zero_candidates_never_create_authority() -> 
     assert_eq!(f.snapshot(), before);
     Ok(())
 }
+
+/// The same 300-frame scene as `scene(true, ..)`, encoded by libx264 with B-pictures (10 fps):
+/// an MP4 (container presentation times) and its Annex-B elementary stream.
+const SQUARE_MP4: &[u8] = include_bytes!("../../../tests/fixtures/long_dwell_h264/square_300.mp4");
+const SQUARE_ANNEXB: &[u8] =
+    include_bytes!("../../../tests/fixtures/long_dwell_h264/square_300.h264");
+
+fn inter_fixture(label: &str, bytes: &[u8]) -> Test<Fixture> {
+    let directory = Directory::new(label)?;
+    let root = directory.0.join("deployment");
+    let path = directory.0.join("source.media");
+    fs::write(&path, bytes)?;
+    let cx = context(&root, "principal:long-dwell-test")?;
+    let mut deployment = ReferenceDeployment::open(&root, SITE, &cx)?;
+    let mut limits = FileIngestLimits::standard();
+    limits.max_segments = FRAMES + 1;
+    limits.chunk_bytes = 4096;
+    let receipt = FileIngestAdapter::ingest(
+        FileIngestRequest::new(
+            &path,
+            SensorId::parse("sensor:long-dwell")?,
+            StreamId::parse("stream:long-dwell")?,
+        )
+        .with_limits(limits)
+        .with_receive_time(TimestampNs(1_000_000_000_000))
+        .with_capture_hint(CaptureHint::new(TimestampNs(0), 0, 10.0)?),
+        &cx,
+        &mut deployment,
+    )?;
+    fs::remove_file(path)?;
+    Ok(Fixture {
+        deployment,
+        cx,
+        plan: WatchPlan {
+            import_identity: receipt.import_identity,
+            interpretation: ComponentInterpretation::YCbCr,
+            first_segment: 0,
+            segment_count: FRAMES,
+            zones: vec![WatchZone {
+                zone_id: "porch".into(),
+                x: 0,
+                y: 0,
+                width: WIDTH,
+                height: HEIGHT,
+            }],
+            detector: WatchDetectorConfig::default(),
+            tracker: WatchTrackerConfig::default(),
+        },
+        input_bytes: bytes.len() as u64,
+        _directory: directory,
+    })
+}
+
+#[test]
+fn an_h264_mp4_recording_dwells_across_the_whole_range_in_display_order() -> Test {
+    let f = inter_fixture("mp4", SQUARE_MP4)?;
+    let before = f.snapshot();
+    let report = f.analyze(rule())?;
+    assert_eq!(f.snapshot(), before);
+    assert_eq!(report.frames_decoded(), FRAMES);
+    assert_eq!(report.candidates().len(), 1);
+    let span = report.candidates()[0].span();
+    // Display positions run 0..300 although B-pictures are coded out of order.
+    assert_eq!(span.last.position, FRAMES - 1);
+    assert!(span.first.position < 10);
+    assert_eq!(span.trigger.position, span.first.position + 200);
+    assert!(report.source_chunk_bytes_read() > 0);
+    assert!(report.source_chunk_bytes_read() <= f.input_bytes + 4096);
+    // Deterministic: an independent second scan reproduces the analysis exactly.
+    assert_eq!(
+        f.analyze(rule())?.analysis_digest(),
+        report.analysis_digest()
+    );
+    // The same scene as MJPEG uses a different policy, so the identities never collide.
+    let mjpeg = Fixture::new("mp4-twin", &scene(true, None, None, false)?, true)?;
+    assert_ne!(
+        mjpeg.analyze(rule())?.analysis_digest(),
+        report.analysis_digest()
+    );
+    Ok(())
+}
+
+#[test]
+fn tolerant_inter_coded_dwell_matches_the_default_on_a_clean_recording() -> Test {
+    let f = inter_fixture("mp4-tolerant", SQUARE_MP4)?;
+    let strict = f.analyze(rule())?;
+    let tolerant = LongDwellReport::analyze(
+        &f.deployment,
+        &f.plan,
+        rule(),
+        WatchOptions {
+            tolerate_decode_refusals: true,
+        },
+        &LongDwellLimits::default(),
+        &f.cx,
+    )?;
+    assert_eq!(tolerant.frames_decoded(), FRAMES);
+    assert_eq!(tolerant.candidates().len(), 1);
+    assert_eq!(
+        tolerant.candidates()[0].span(),
+        strict.candidates()[0].span()
+    );
+    Ok(())
+}
+
+#[test]
+fn annexb_b_frames_with_index_capture_hints_are_refused_not_reordered() -> Test {
+    // Without container timestamps the hint times frames by coding order; display order then
+    // runs the capture clock backwards, which long dwell refuses rather than guess.
+    let f = inter_fixture("annexb", SQUARE_ANNEXB)?;
+    let refused = LongDwellReport::analyze(
+        &f.deployment,
+        &f.plan,
+        rule(),
+        WatchOptions::default(),
+        &LongDwellLimits::default(),
+        &f.cx,
+    );
+    assert!(matches!(
+        refused,
+        Err(WatchError::InvalidPlan(
+            "capture clock regressed during long dwell"
+        ))
+    ));
+    Ok(())
+}

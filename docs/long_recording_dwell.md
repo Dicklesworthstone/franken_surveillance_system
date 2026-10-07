@@ -1,6 +1,7 @@
 # Whole-recording sampled dwell
 
-`fss-event watch --stream-dwell` scans a bounded MJPEG recording in one forward pass, keeping
+`fss-event watch --stream-dwell` scans a bounded MJPEG, H.264 or H.265 recording (Annex-B, MP4
+or QuickTime import) in one forward pass, keeping
 the foreground model, Kalman tracker and sampled-occupancy state between frames. It removes
 the ordinary watch path's 128-frame analysis-window restriction for this explicit mode.
 A qualifying episode may begin before frame 128 and reach its duration threshold after frame
@@ -28,7 +29,22 @@ fss-event watch \
   --dwell-min-observations 5
 ```
 
-Use `ycbcr` instead of `gray` for an explicitly YCbCr JPEG source. The image-coordinate zone
+Use `ycbcr` instead of `gray` for an explicitly YCbCr JPEG source.
+
+**Inter-coded recordings** (`annexb`, `hevc`, `mp4avc`, `mp4hevc` imports, `--interpretation
+ycbcr`): frames are decoded through the canonical H.264/H.265 range decoders as one streaming
+range (up to 65,536 access units) and analysed in display order. The range must open at an IDR
+(H.264) or IRAP (H.265) picture; B-pictures are handled by the decoders. Dwell positions are
+display positions (`first segment + k`), and each trace record also names the frame's coding
+segment and capsule, so evidence stays resolvable. With `--tolerate-decode-refusals` decoding
+restarts at the next IDR/IRAP after a refusal or source gap, each restart resets tracking, and
+the refused segment runs are reported. These scans bind a distinct analysis policy
+(`inter-coded-display-order-luma`), so their identities never collide with an MJPEG scan of the
+same scene. Capture times must increase in display order: MP4/QuickTime imports with a capture
+hint satisfy this (frames are timed from container presentation times), whereas an Annex-B
+stream with B-pictures is timed by coding order and is refused with "capture clock regressed"
+rather than reordered by guesswork. Tested on a 300-frame libx264 B-picture MP4 of the same
+scene as the MJPEG test (`crates/fss-reference/tests/fixtures/long_dwell_h264/`). The image-coordinate zone
 must fit the decoded frame. `--first-segment` selects a range start. With no segment count,
 the complete remaining recording is selected only when it fits the 65,536-segment ceiling;
 nothing is silently truncated. A separate invocation starts a new analysis: it does not resume

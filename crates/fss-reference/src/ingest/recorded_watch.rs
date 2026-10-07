@@ -822,6 +822,7 @@ impl WatchReport {
                     jpeg_limits: limits.jpeg_limits,
                     h264_limits: limits.h264_limits,
                     h265_limits: limits.h265_limits,
+                    stream: false,
                 },
                 cx,
             )?))

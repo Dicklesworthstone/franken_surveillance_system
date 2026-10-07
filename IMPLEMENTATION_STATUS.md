@@ -92,6 +92,13 @@ synthetic scenes). None of it has been measured on real camera footage.
   retains it (`coverage_witness` ledger family); unknown capture time never yields a witness.
   Proven on synthetic MJPEG scenes only; the witness certifies what the uncalibrated pipeline
   would have emitted, not detection quality.
+- **Whole-recording dwell for inter-coded video:** `fss-event watch --stream-dwell` (long dwell,
+  up to 65,536 frames in one pass) now accepts H.264 and H.265 imports (Annex-B, MP4,
+  QuickTime) as well as MJPEG: frames come from streaming IDR/IRAP-led range decoders in display
+  order, dwell positions are display positions bound to coding segments in the trace, opt-in
+  tolerance restarts at the next IDR/IRAP, and inter-coded scans bind their own analysis
+  policy. Proven on a synthetic 300-frame B-picture MP4 (library and CLI, preview through
+  publication); an Annex-B B-picture stream timed by coding order is refused, not reordered.
 - **Opt-in recorded visual screening:** `fss-event watch --sensor-health conservative-v1`
   and `fss-event corroborate --sensor-health conservative-v1` screen already decoded,
   privacy-masked pixels for exact frame repetition, sustained dark/bright clipping and contrast
