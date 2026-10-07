@@ -1232,6 +1232,16 @@
       "id": "ERR-GRAPH-MISSING-TIE-BREAK-001"
     },
     {
+      "description": "a checked sum of exact u64 graph weights (distance, schedule time, flow, capacity or cost) left the u64 domain; no wrapped, saturated or approximate answer was produced",
+      "guidance": "rescale the projection unit or narrow the projection; do not retry unchanged",
+      "id": "ERR-GRAPH-NUMERIC-OVERFLOW-001"
+    },
+    {
+      "description": "a well-formed graph projection violates the registered algorithm's declared precondition (wrong orientation, a cycle where a DAG is required, source equal to sink, empty or duplicated source set); nothing was analysed",
+      "guidance": "supply a projection that meets the precondition (for a cycle, condense it with ALG-SCC-001 first); do not retry unchanged",
+      "id": "ERR-GRAPH-PRECONDITION-001"
+    },
+    {
       "description": "graph algorithm projections differ between machine source and registry markdown mirror",
       "guidance": "reconcile machine source and registry markdown projections",
       "id": "ERR-GRAPH-PROJECTION-MISMATCH-001"
