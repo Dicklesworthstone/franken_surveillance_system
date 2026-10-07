@@ -51,6 +51,9 @@
 //! `--sensor-health conservative-v1` screens each camera's masked decoded pixels separately.
 //! Suspect visual-degradation runs lose candidate and coverage support; a clear screen does not
 //! establish camera health. Screening is retained in proposal identities and approval reruns.
+//! `--failure-domain KIND:ID=CAMERA[,CAMERA...]` binds owner-declared common causes to the
+//! entry evidence. Cameras connected by any declared dependency form one supporting domain:
+//! their matching entries remain witnessed activity, with no corroborated alert affordance.
 
 // Full calibration covariance is an additional coverage-denial gate, not an event classifier.
 #[path = "corroborate/calibration_coverage.rs"]
@@ -72,8 +75,9 @@ use fss_reference::ingest::ground_visibility::{
 };
 use fss_reference::ingest::package_detect::PackageDetectLimits;
 use fss_reference::ingest::recorded_corroboration::{
-    CorroborationCamera, CorroborationError, CorroborationGates, CorroborationOptions,
-    CorroborationPlan, CorroborationReport, GroundHomography, GroundVisibilityPlan, GroundZone,
+    CorroborationCamera, CorroborationDependencies, CorroborationError, CorroborationGates,
+    CorroborationOptions, CorroborationPlan, CorroborationReport, FailureDomainDeclaration,
+    GroundHomography, GroundVisibilityPlan, GroundZone, MAX_CORROBORATION_FAILURE_DOMAINS,
     MAX_CORROBORATION_ZONES,
 };
 use fss_reference::ingest::recorded_coverage::{GenerationCurrency, PoseProvenance};
@@ -161,6 +165,7 @@ pub(super) struct CorroborateAction {
     limits: WatchLimits,
     recovery: CorroborationOptions,
     health_screen: Option<RecordedHealthPolicy>,
+    dependencies: CorroborationDependencies,
     approvals: BTreeSet<ContentDigest>,
     retain_coverage: Option<ContentDigest>,
     report_out: Option<PathBuf>,
@@ -304,6 +309,41 @@ fn camera_generation(value: &str) -> Result<(String, u64, u64), String> {
     }
 }
 
+/// Owner declarations name the camera labels of this exact request, not unverified sensor IDs.
+/// Bound the input before splitting or allocating strings; the reference type validates the
+/// canonical domain spelling, duplicates and aggregate limits.
+fn failure_domain(value: &str) -> Result<FailureDomainDeclaration, String> {
+    if value.len() > 512 {
+        return Err("--failure-domain declaration exceeds 512 bytes".to_owned());
+    }
+    let (domain, members) = value
+        .split_once('=')
+        .ok_or("--failure-domain requires KIND:ID=CAMERA[,CAMERA...]")?;
+    let (kind, id) = domain
+        .split_once(':')
+        .ok_or("--failure-domain requires KIND:ID=CAMERA[,CAMERA...]")?;
+    if !matches!(
+        kind,
+        "network" | "power" | "clock" | "host" | "model" | "calibration" | "replay"
+    ) {
+        return Err(
+            "failure domain kind must be network, power, clock, host, model, calibration, or replay"
+                .to_owned(),
+        );
+    }
+    if id.is_empty() {
+        return Err("failure domain identity must not be empty".to_owned());
+    }
+    let cameras: Vec<String> = members.split(',').take(3).map(str::to_owned).collect();
+    if cameras.is_empty() || cameras.len() > 2 || cameras.iter().any(String::is_empty) {
+        return Err("failure domain requires one or two camera labels".to_owned());
+    }
+    Ok(FailureDomainDeclaration {
+        domain: domain.to_owned(),
+        cameras,
+    })
+}
+
 fn quote(argument: &str) -> String {
     if !argument.is_empty()
         && argument
@@ -326,6 +366,7 @@ pub(super) fn parse(args: &[OsString]) -> Result<CorroborateAction, String> {
     let mut zones = Vec::new();
     let mut poses: Vec<(String, CameraPose)> = Vec::new();
     let mut generations: Vec<(String, u64, u64)> = Vec::new();
+    let mut dependency_declarations = Vec::new();
     let mut rerun = vec!["fss-event".to_owned(), "corroborate".to_owned()];
     let mut recovery = CorroborationOptions::default();
     let mut index = 0;
@@ -349,6 +390,12 @@ pub(super) fn parse(args: &[OsString]) -> Result<CorroborateAction, String> {
             return Err(format!("missing value for {key}"));
         }
         match key {
+            "--failure-domain" => {
+                if dependency_declarations.len() == MAX_CORROBORATION_FAILURE_DOMAINS {
+                    return Err("at most thirty-two failure-domain declarations".to_owned());
+                }
+                dependency_declarations.push(failure_domain(argument)?);
+            }
             "--camera" => {
                 let (name, import) = argument
                     .split_once(':')
@@ -507,6 +554,15 @@ pub(super) fn parse(args: &[OsString]) -> Result<CorroborateAction, String> {
             return Err(format!("--camera-generation names no --camera: {name}"));
         }
     }
+    for declaration in &dependency_declarations {
+        for name in &declaration.cameras {
+            if !cameras.iter().any(|camera| camera.name == *name) {
+                return Err(format!("--failure-domain names no --camera: {name}"));
+            }
+        }
+    }
+    let dependencies = CorroborationDependencies::new(dependency_declarations)
+        .map_err(|error| error.to_string())?;
     let site = required(&values, "--site")?.to_owned();
     fss_reference::reference_deployment::validate_site_lineage(&site)
         .map_err(|_| "invalid site lineage")?;
@@ -592,6 +648,7 @@ pub(super) fn parse(args: &[OsString]) -> Result<CorroborateAction, String> {
         limits,
         recovery,
         health_screen,
+        dependencies,
         approvals,
         retain_coverage: match find(&values, "--retain-coverage") {
             Some(value) => Some(digest(value, "--retain-coverage")?),
@@ -931,7 +988,7 @@ fn run_with(
         )?),
         _ => None,
     };
-    let mut report = CorroborationReport::analyze_with_health(
+    let mut report = CorroborationReport::analyze_with_dependencies(
         deployment,
         &action.plan,
         &action.limits,
@@ -941,6 +998,7 @@ fn run_with(
         &covariances,
         action.recovery,
         action.health_screen,
+        &action.dependencies,
         cx,
     )?;
     // Full-camera screening changes coverage identities, not event proposals. One allowance
@@ -981,7 +1039,7 @@ fn run_with(
     // A newly offered proposal must name the new anchor after positive events were published.
     // Reapply the guard too: never combine a new nominal record with an old guarded approval.
     let reproposed = if published > 0 && action.retain_coverage.is_none() {
-        Some(CorroborationReport::analyze_with_health(
+        Some(CorroborationReport::analyze_with_dependencies(
             deployment,
             &action.plan,
             &action.limits,
@@ -991,6 +1049,7 @@ fn run_with(
             &covariances,
             action.recovery,
             action.health_screen,
+            &action.dependencies,
             cx,
         )?)
     } else {

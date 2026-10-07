@@ -51,6 +51,52 @@ operator approval is still necessary to publish it. Event publication does not p
 an alert. The two-sensor policy, custody, privacy projection, coverage retention, and recovery
 boundaries remain unchanged. A missing pair does not certify absence or an empty scene.
 
+## Shared failures constrain the event decision
+
+Two camera identities alone do not establish physical independence. Supply known common causes
+to the same corroboration request with repeated declarations using its camera labels:
+
+```sh
+# Add these arguments to the ordinary two-camera corroboration command.
+--failure-domain power:circuit-1=east,west \
+--failure-domain network:east-lan=east \
+--failure-domain network:west-lan=west
+```
+
+The supported kinds are `network`, `power`, `clock`, `host`, `model`, `calibration` and `replay`.
+Each declaration names one or both cameras. At most 32 declarations are accepted; identifiers
+are bounded to 128 bytes, domain names and camera members cannot repeat, and unknown cameras
+are refused before deployment I/O. A domain can name a shared model family, calibration source
+or replay origin when it could explain correlated entry observations. Optional detector class
+scores are neutral evidence in this policy and do not establish extra independent support.
+
+Every camera also retains its intrinsic sensor domain. The reference contracts overlapping
+causes transitively: cameras connected through any cause belong to one supporting component.
+The example's separate networks do not undo its shared power dependency. An associated pair in
+one component remains an observed `Witnessed` event with the `hold` action, and its individual
+entry observations remain available. It offers no alert command; a direct `fss-event alert`
+request for the published event is refused as `ERR-ALERT-NOT-ELIGIBLE-001`.
+
+The report's dependency assessment lists complete declarations, source-bound camera mappings,
+components, and their content digests. Declarations and the rederivable assessment are retained
+in the approved event's provenance graph. Changing a declaration changes its candidate and
+approval identities, even when the component count happens to stay the same. Argument/member
+ordering does not change those identities. Exact rerun commands carry every declaration through
+publication and any coverage reanalysis.
+
+With no declarations, existing unscreened event bytes retain the sensor-only reference rule.
+The report explicitly labels this `sensor_only_assumption`. With declarations, the basis is
+`owner_assertion_not_verified_topology`. Both report independence as unknown and
+`independence_certified: false`: disjoint declared components do not certify the absence of
+unlisted dependencies. This feature constrains the existing event rule; it supplies neither
+measured calibration nor a production independence certificate. Ground visibility and absence
+witnesses retain their own separate qualification boundaries.
+
+Health-screened corroboration also fingerprints its final evidence closure, including the
+screen's neutral `RequiredBy` edges. The stored alert decision therefore agrees with the
+preview. A separate health-decision generation gives corrected candidates new identities;
+older published events and approvals are not silently rewritten or promoted.
+
 ## Compatibility and bounds
 
 The point API's scoring, candidate table, assignment costs, alternatives and numerical behavior
@@ -83,6 +129,7 @@ python3 crates/fss-reference/tests/fixtures/interval_association_model.py
 cargo test -p fss-reference --lib ingest::cross_camera
 cargo test -p fss-reference --lib ingest::recorded_corroboration
 cargo test -p fss-reference --test interval_corroboration_contract
+cargo test -p fss-cli --test corroborate_cli_contract
 ```
 
 The independent Python oracle was executed: 36,864 interval/geometry/global-assignment cases,
@@ -90,6 +137,21 @@ the lost-alternative counterexample, and signed-128 extremes passed. It compares
 formulas with enumeration of actual instants and every optional one-to-one assignment. It is
 not execution of the Rust implementation or a production qualification receipt.
 
-The 24 new Rust regressions cover core matching, the actual recorded-entry adapter and retained
-JPEG-to-event publication. They were authored but not executed: the authoring environment has
-no Rust toolchain. Compilation, native tests, `rustfmt` and Clippy remain unverified.
+The original interval-matching implementation added 24 Rust regressions for core matching,
+the recorded-entry adapter and retained JPEG-to-event publication. Those tests were not run
+in that original authoring environment, which lacked a Rust toolchain.
+
+### Common-cause and stored-decision validation (2026-10-07)
+
+The 13 `corroborate_cli_contract` tests and 2 `corroboration_dependencies_contract` tests
+passed natively. They exercise shared-cause holds, declaration-order identity, exact approvals,
+retained dependency reconstruction, unchanged coverage boundaries, stored health-screened
+alert eligibility, and later intrinsic or declared-domain tamper blocking. All 8
+`recorded_health_cli_contract`, 7 `recorded_health_coverage_contract`, 6
+`guarded_coverage_currency_contract` and 8 `fusion_cli` tests also passed.
+
+Required CLI binaries and production libraries were built with the pinned Cargo toolchain.
+The unchanged integration-test sources were compiled with the same pinned `rustc --test`,
+the exact Cargo artifacts and required CLI binary paths. The seven dependency-helper unit
+regressions and the full workspace qualification lane were not executed in this session.
+These checks do not certify physical independence, real-camera recall or deployment calibration.

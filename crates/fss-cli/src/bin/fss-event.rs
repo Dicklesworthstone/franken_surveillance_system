@@ -123,14 +123,20 @@ const HELP: &str = "fss-event <report|prepare|publish|read|watch|corroborate|cal
           --time-gate-ns N (1..60000000000) --distance-gate D (ground units)\n\
           [watch thresholds and budgets] [watch detector-cascade options] [--approve sha256:PROPOSAL[,...]]\n\
           [--retain-coverage sha256:APPROVAL] [--sensor-health conservative-v1] [--report-out FILE]\n\
+          [--failure-domain KIND:ID=CAMERA[,CAMERA...]]...\n\
     Each recording is tracked over the whole frame; each confirmed track's foot point is\n\
     projected to the ground; ground-zone entries of the two sensors are associated by global\n\
     assignment. A pair is corroborated only if the distance gate holds and the WORST CASE over\n\
     both capture intervals is within the time gate. Both imports need operator capture hints\n\
     (fss-file import --capture-start-ns ...) with overlapping spans: unknown or unaligned\n\
     time and one sensor twice are typed refusals. --approve publishes exact proposals as\n\
-    corroborated, unclassified events; policy may report prepare_alert, but nothing is\n\
+    unclassified events; policy may report prepare_alert, but nothing is\n\
     prepared or sent. Proves wiring, not detection quality; no event never means absence.\n\
+    Shared causes: --failure-domain network:lan=east,west (also power, clock, host, model,\n\
+    calibration, replay) declares dependencies between camera labels. Connected cameras count\n\
+    as one supporting domain: matching entries remain Witnessed/Hold and cannot prepare an\n\
+    alert. Declarations are retained and bound into exact approvals and rerun commands.\n\
+    Unlisted dependencies remain unknown; distinct declared domains are not a certificate.\n\
     Coverage: one record per camera; each ground zone is sampled on the ground plane and\n\
     projected into the camera (homography, or --pose NAME:W,H,fx,fy,cx,cy,r11..r33,tx,ty,tz);\n\
     [--visibility-grid N (2..32, default 8) --visibility-threshold-ppm N (default 1000000)]:\n\

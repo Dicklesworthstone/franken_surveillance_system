@@ -41,7 +41,7 @@ It is also not a complete surveillance product. Native device adapters, producti
   generations are refused. Exact raw scores and selected prior identity remain separately
   digest-bound even when their numerical intervals coincide. See the
   [input migration and provenance contract](docs/FUSION_CALIBRATION.md).
-  The expanded adapter regressions have not run because execution disconnected. No detector has
+  All eight native calibration-adapter CLI regressions pass on the pinned Rust toolchain. No detector has
   a measured deployment calibration, and fusion is not yet wired into
   `fss-event watch`/`corroborate` (their probability stays `[0, 1]`).
 ## Media, perception and I/O added since 2026-09-03 (reference, unqualified)
@@ -93,6 +93,17 @@ synthetic scenes). None of it has been measured on real camera footage.
   only; lost ack = indeterminate; no resend). Proven on synthetic scenes and a loopback relay
   only, not on real cameras or detection quality. `evaluation` scores candidates against labels (AUPRC, recall at a false-alert
   budget, time to detect, not_observable). No real labelled corpus exists yet.
+- **Common-cause-aware event corroboration:** `fss-event corroborate --failure-domain
+  KIND:ID=CAMERA[,CAMERA...]` binds declared network, power, clock, host, model, calibration
+  and replay dependencies to retained sensor identities. Overlapping causes form transitive
+  supporting components. Matching entries in one component remain `Witnessed`/`hold` and
+  cannot prepare an alert; their observations are retained. Canonical declarations and the
+  rederivable source-bound assessment are retained with each approved event and bind its exact
+  proposal. The report exposes the complete decomposition and states that undeclared causes
+  and physical independence remain unknown. With no declarations the existing sensor-only
+  reference rule remains, explicitly labelled as an assumption. Health-screened proposals also
+  fingerprint all final evidence edges, so preview and stored alert eligibility agree; corrected
+  health candidates use new identities. See [the workflow](docs/INTERVAL_CORROBORATION.md).
 - **Coverage witnesses (fss-fnrgr):** every `fss-event watch` / `fss-event corroborate` report
   proposes a coverage record: one fss-core `CoverageWitness` per (sensor, zone, maximal contiguous
   interval) decoded without gap or skipped segment, past background warm-up (4 frames) and
@@ -120,9 +131,9 @@ synthetic scenes). None of it has been measured on real camera footage.
   `clear_screen_not_health_evidence`; policy and measurements bind approvals, including
   post-publication coverage reanalysis. Existing unscreened bytes remain unchanged. The
   128-frame recorded bound remains; streaming dwell keeps its separate whole-scan gate, and
-  short non-stream dwell with screening is refused. New synthetic CLI and reference regressions
-  target the admission and authority boundary; execution is pending after the authoring executor
-  disconnected. No physical-health or tamper-detection claim.
+  short non-stream dwell with screening is refused. All eight native recorded-health CLI
+  regressions pass, targeting the admission and authority boundary. No physical-health or
+  tamper-detection claim.
   See [the screening workflow](docs/long_recording_health.md).
 - **Geometric ground-zone coverage (fss-2h5zq.53):** corroborate ground zones are sampled on the
   ground plane (8x8 grid by default), projected through the owner homography or an owner

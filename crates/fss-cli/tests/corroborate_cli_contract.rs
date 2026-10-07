@@ -437,6 +437,264 @@ fn an_object_seen_by_only_one_sensor_is_never_corroborated() -> TestResult {
 }
 
 #[test]
+fn shared_failure_causes_retain_activity_but_block_alert_preparation() -> TestResult {
+    let directory = OwnedDirectory::new("shared-causes")?;
+    let pair = Pair {
+        east: import(&directory, Motion::Right, "sensor:east", Some(ON_TIME))?,
+        west: import(&directory, Motion::Left, "sensor:west", Some(ON_TIME))?,
+        west_ground: MIRROR,
+        zone: DOOR,
+        time_gate_ns: "250000000",
+    };
+    let root = directory.root();
+    let legacy = corroborate(&root, &pair, &[])?;
+    success(&legacy);
+    let old_approval = json_field(&legacy, "proposal_digest")?;
+    let causes = [
+        "--failure-domain",
+        "power:circuit-1=east,west",
+        "--failure-domain",
+        "network:east-lan=east",
+        "--failure-domain",
+        "network:west-lan=west",
+    ];
+    let screened = corroborate(&root, &pair, &causes)?;
+    success(&screened);
+    assert_eq!(json_field(&screened, "candidate_count")?, "1");
+    assert_eq!(json_field(&screened, "event_state")?, "witnessed");
+    assert_eq!(json_field(&screened, "policy_action")?, "hold");
+    assert_eq!(json_field(&screened, "alert_command")?, "null");
+    assert_eq!(
+        occurrences(&screened, "\"disposition\":\"corroborated\""),
+        0
+    );
+    let proposal = json_field(&screened, "proposal_digest")?;
+    assert_ne!(proposal, old_approval);
+    assert!(json_field(&screened, "publish_command")?.contains("power:circuit-1=east,west"));
+    let before = json_field(&screened, "authority_sequence")?;
+
+    let mut wrong = causes.to_vec();
+    wrong.extend(["--approve", &old_approval]);
+    let refused = corroborate(&root, &pair, &wrong)?;
+    assert!(!refused.status.success());
+    assert_eq!(refusal(&refused), "ERR-CORROBORATE-APPROVAL-STALE-001");
+    let repeated = corroborate(&root, &pair, &causes)?;
+    success(&repeated);
+    assert_eq!(repeated.stdout, screened.stdout);
+
+    let mut approved = causes.to_vec();
+    approved.extend(["--approve", &proposal]);
+    let published = corroborate(&root, &pair, &approved)?;
+    success(&published);
+    assert_eq!(json_field(&published, "status")?, "published");
+    assert_eq!(json_field(&published, "event_state")?, "witnessed");
+    assert_eq!(json_field(&published, "policy_action")?, "hold");
+    assert_eq!(json_field(&published, "alert_command")?, "null");
+    let after = json_field(&published, "authority_sequence")?;
+    assert!(after.parse::<u64>()? > before.parse::<u64>()?);
+    let cold_retry = corroborate(&root, &pair, &approved)?;
+    success(&cold_retry);
+    assert_eq!(json_field(&cold_retry, "status")?, "already_published");
+    assert_eq!(json_field(&cold_retry, "authority_sequence")?, after);
+
+    let alert = event(
+        &root,
+        "alert",
+        &[
+            "--event-id",
+            &json_field(&published, "event_id")?,
+            "--relay",
+            "127.0.0.1:9",
+            "--path",
+            "/fss/alert",
+            "--plaintext-approval",
+            &approval(),
+            "--deadline-ms",
+            "2000",
+        ],
+    )?;
+    assert!(!alert.status.success());
+    assert_eq!(refusal(&alert), "ERR-ALERT-NOT-ELIGIBLE-001");
+    Ok(())
+}
+
+#[test]
+fn dependency_order_is_canonical_and_distinct_causes_keep_the_reference_affordance() -> TestResult {
+    let directory = OwnedDirectory::new("distinct-causes")?;
+    let pair = Pair {
+        east: import(&directory, Motion::Right, "sensor:east", Some(ON_TIME))?,
+        west: import(&directory, Motion::Left, "sensor:west", Some(ON_TIME))?,
+        west_ground: MIRROR,
+        zone: DOOR,
+        time_gate_ns: "250000000",
+    };
+    let root = directory.root();
+    let one = corroborate(
+        &root,
+        &pair,
+        &[
+            "--failure-domain",
+            "power:east=east",
+            "--failure-domain",
+            "power:west=west",
+        ],
+    )?;
+    success(&one);
+    assert_eq!(json_field(&one, "event_state")?, "corroborated");
+    assert_eq!(json_field(&one, "policy_action")?, "prepare_alert");
+    let two = corroborate(
+        &root,
+        &pair,
+        &[
+            "--failure-domain",
+            "power:west=west",
+            "--failure-domain",
+            "power:east=east",
+        ],
+    )?;
+    success(&two);
+    for field in [
+        "proposal_digest",
+        "event_revision_digest",
+        "provenance_root",
+    ] {
+        assert_eq!(json_field(&one, field)?, json_field(&two, field)?);
+    }
+    let shared_one = corroborate(
+        &root,
+        &pair,
+        &[
+            "--failure-domain",
+            "clock:ntp=east,west",
+            "--failure-domain",
+            "host:nvr=east,west",
+        ],
+    )?;
+    success(&shared_one);
+    let shared_two = corroborate(
+        &root,
+        &pair,
+        &[
+            "--failure-domain",
+            "host:nvr=west,east",
+            "--failure-domain",
+            "clock:ntp=west,east",
+        ],
+    )?;
+    success(&shared_two);
+    assert_eq!(json_field(&shared_one, "event_state")?, "witnessed");
+    for field in [
+        "proposal_digest",
+        "event_revision_digest",
+        "provenance_root",
+    ] {
+        assert_eq!(
+            json_field(&shared_one, field)?,
+            json_field(&shared_two, field)?
+        );
+    }
+    Ok(())
+}
+
+#[test]
+fn invalid_failure_declarations_are_refused_before_creating_a_deployment() -> TestResult {
+    let directory = OwnedDirectory::new("invalid-causes")?;
+    let pair = Pair {
+        east: ContentDigest::sha256(b"unread east source").to_text(),
+        west: ContentDigest::sha256(b"unread west source").to_text(),
+        west_ground: MIRROR,
+        zone: DOOR,
+        time_gate_ns: "250000000",
+    };
+    for declaration in [
+        "power:branch=unlisted",
+        "power:branch=east,east",
+        "power:branch=east,west,third",
+        "power:=east",
+        "power:branch=",
+        "sensor:east=east",
+        "power:branch=east,",
+        "power:branch=east\n",
+        "power:branch east=east",
+    ] {
+        let refused = corroborate(&directory.root(), &pair, &["--failure-domain", declaration])?;
+        assert!(!refused.status.success(), "accepted {declaration:?}");
+        assert!(
+            !directory.root().exists(),
+            "created a deployment for {declaration:?}"
+        );
+    }
+    let duplicate = corroborate(
+        &directory.root(),
+        &pair,
+        &[
+            "--failure-domain",
+            "power:branch=east",
+            "--failure-domain",
+            "power:branch=west",
+        ],
+    )?;
+    assert!(!duplicate.status.success());
+    assert!(!directory.root().exists());
+    Ok(())
+}
+
+#[test]
+fn health_screened_corroboration_keeps_the_same_alert_decision_after_publication() -> TestResult {
+    for declared in [false, true] {
+        let directory = OwnedDirectory::new(if declared {
+            "health-with-causes"
+        } else {
+            "health-only"
+        })?;
+        let pair = Pair {
+            east: import(&directory, Motion::Right, "sensor:east", Some(ON_TIME))?,
+            west: import(&directory, Motion::Left, "sensor:west", Some(ON_TIME))?,
+            west_ground: MIRROR,
+            zone: DOOR,
+            time_gate_ns: "250000000",
+        };
+        let mut extra = vec!["--sensor-health", "conservative-v1"];
+        if declared {
+            extra.extend([
+                "--failure-domain",
+                "power:east=east",
+                "--failure-domain",
+                "power:west=west",
+            ]);
+        }
+        let preview = corroborate(&directory.root(), &pair, &extra)?;
+        success(&preview);
+        assert_eq!(json_field(&preview, "event_state")?, "corroborated");
+        assert_eq!(json_field(&preview, "policy_action")?, "prepare_alert");
+        let proposal = json_field(&preview, "proposal_digest")?;
+        extra.extend(["--approve", &proposal]);
+        let published = corroborate(&directory.root(), &pair, &extra)?;
+        success(&published);
+        let alert = event(
+            &directory.root(),
+            "alert",
+            &[
+                "--event-id",
+                &json_field(&published, "event_id")?,
+                "--relay",
+                "127.0.0.1:9",
+                "--path",
+                "/fss/alert",
+                "--plaintext-approval",
+                &approval(),
+                "--deadline-ms",
+                "2000",
+            ],
+        )?;
+        success(&alert);
+        assert_eq!(json_field(&alert, "stage")?, "proposed");
+        assert_eq!(json_field(&alert, "effect_state")?, "null");
+    }
+    Ok(())
+}
+
+#[test]
 fn distant_ground_points_late_entries_and_uncertain_clocks_do_not_associate() -> TestResult {
     // Far apart on the ground: west's homography places its object 500 units away.
     let far = OwnedDirectory::new("far")?;

@@ -7,8 +7,9 @@
 //! through an owner-supplied image→ground homography; ground-zone entries of the two sensors are
 //! associated with the global [`super::cross_camera`] assignment under explicit time and distance
 //! gates; an associated pair becomes one event revision through the zone-entry policy
-//! ([`crate::evaluate_zone_entry_corroboration`]), which marks it `Corroborated` only because the
-//! two supporting witnesses come from distinct sensors, capture roots and failure domains.
+//! ([`crate::evaluate_zone_entry_corroboration`]), which requires distinct sensors, capture roots
+//! and effective support domains. The compatibility policy assumes intrinsic sensor domains;
+//! it does not establish real independence of clocks, networks, models or scene conditions.
 //!
 //! The homography is an owner assertion like a zone, NOT a calibration certificate: no residual,
 //! intrinsics or extrinsics are verified. Capture times are the operator's import hints
@@ -68,12 +69,27 @@
 //! a tolerant run without a refusal or restart has the same analysis and proposal identities.
 //! The optional detector uses the same explicit recovery epochs and one inference allowance
 //! shared by both cameras; class evidence never bridges a restart or repairs uncertain time.
+//!
+//! [`CorroborationReport::analyze_with_dependencies`] additionally contracts explicit
+//! [`CorroborationDependencies`] into transitive common-cause components. Associated entries in
+//! one component stay `Witnessed`/`Hold`, preserving both positive observations without offering
+//! an alert. Canonical declarations, exact retained sensor/root bindings and the complete
+//! decomposition are retained with approval-gated provenance. Individual causes remain neutral
+//! dependencies for cross-event sensor-tamper checks. Undeclared dependencies remain unknown;
+//! disjoint declared components are not verified physical independence.
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::fmt;
 
 mod recovery;
 pub use recovery::CorroborationOptions;
+mod dependencies;
+pub use dependencies::{
+    CameraFailureDomains, CorroborationDependencies, CorroborationDependencyCluster,
+    CorroborationDependencyReport, FailureDomainDeclaration, MAX_CORROBORATION_DEPENDENCY_BYTES,
+    MAX_CORROBORATION_DOMAIN_BYTES, MAX_CORROBORATION_DOMAIN_CAMERAS,
+    MAX_CORROBORATION_FAILURE_DOMAINS,
+};
 use recovery::{camera_diagnostics_json, capture_time_reliable};
 
 use fss_core::{
@@ -623,7 +639,7 @@ pub struct CameraSummary {
     pub import_root: ContentDigest,
     /// Recording sensor identity (from retained source capsules).
     pub sensor_id: String,
-    /// Failure domain derived from the sensor identity.
+    /// Effective transitive support domain; intrinsic sensor-only under the compatibility policy.
     pub failure_domain: String,
     /// Watch plan digest of the per-camera tracking run.
     pub watch_plan_digest: ContentDigest,
@@ -656,6 +672,9 @@ pub struct CameraSummary {
 pub enum EntryDisposition {
     /// Stably associated with the other sensor's entry inside both gates, worst case included.
     Corroborated,
+    /// Associated observations share a declared common-cause component. Retained as witnessed
+    /// evidence; not independent corroboration and never an alert affordance.
+    SharedFailureDomain,
     /// The other sensor has no entry into this zone.
     NoCounterpartEntry,
     /// Every counterpart failed the time or distance gate (not proof of absence).
@@ -674,6 +693,7 @@ impl EntryDisposition {
     pub fn as_str(self) -> &'static str {
         match self {
             Self::Corroborated => "corroborated",
+            Self::SharedFailureDomain => "shared_failure_domain",
             Self::NoCounterpartEntry => "no_counterpart_entry",
             Self::NoAdmissibleCounterpart => "no_admissible_counterpart",
             Self::Ambiguous => "ambiguous",
@@ -803,6 +823,7 @@ pub struct CorroborationReport {
     coverage: Vec<CoverageRecord>,
     coverage_status: CoverageStatus,
     cascade: Option<CorroborationCascade>,
+    dependencies: CorroborationDependencyReport,
 }
 
 #[derive(Clone, Debug)]
@@ -1328,7 +1349,7 @@ impl CorroborationReport {
         deployment: &ReferenceDeployment,
         plan: &CorroborationPlan,
         limits: &WatchLimits,
-        mut detector: Option<&mut DetectorCascade<'_>>,
+        detector: Option<&mut DetectorCascade<'_>>,
         visibility: &GroundVisibilityPlan<'_>,
         provenance: &[Option<PoseProvenance>; 2],
         covariance: &[Option<PoseCovariance>; 2],
@@ -1336,8 +1357,45 @@ impl CorroborationReport {
         health: Option<RecordedHealthPolicy>,
         cx: &ReplayCx,
     ) -> Result<Self> {
+        Self::analyze_with_dependencies(
+            deployment,
+            plan,
+            limits,
+            detector,
+            visibility,
+            provenance,
+            covariance,
+            options,
+            health,
+            &CorroborationDependencies::default(),
+            cx,
+        )
+    }
+
+    /// Applies exact owner-declared common causes to the retained two-camera observations.
+    /// Supporting observations in a transitive shared component remain `Witnessed`/`Hold`;
+    /// neither camera count nor an alternate domain label can upgrade them to corroboration.
+    /// The full source-bound decomposition is retained before event authority and binds each
+    /// approval. Declarations constrain positive event policy, not the per-camera coverage rule.
+    /// Empty declarations preserve prior unscreened event bytes and explicitly expose the
+    /// sensor-only assumption; no declaration combination proves physical independence.
+    #[allow(clippy::too_many_arguments)]
+    pub fn analyze_with_dependencies(
+        deployment: &ReferenceDeployment,
+        plan: &CorroborationPlan,
+        limits: &WatchLimits,
+        mut detector: Option<&mut DetectorCascade<'_>>,
+        visibility: &GroundVisibilityPlan<'_>,
+        provenance: &[Option<PoseProvenance>; 2],
+        covariance: &[Option<PoseCovariance>; 2],
+        options: CorroborationOptions,
+        health: Option<RecordedHealthPolicy>,
+        dependencies: &CorroborationDependencies,
+        cx: &ReplayCx,
+    ) -> Result<Self> {
         checkpoint(cx, "recorded_corroboration:analyze")?;
         plan.validate()?;
+        dependencies.validate_for(plan)?;
         visibility.policy.validate()?;
         for ((camera, pose), source) in plan.cameras.iter().zip(&visibility.poses).zip(provenance) {
             if let Some(source) = source {
@@ -1405,12 +1463,26 @@ impl CorroborationReport {
         if a.latest < b.earliest || b.latest < a.earliest {
             return Err(CorroborationError::TimeUnaligned);
         }
-        let cameras = vec![first.summary, second.summary];
+        let mut cameras = vec![first.summary, second.summary];
+        checkpoint(cx, "recorded_corroboration:dependencies")?;
+        let dependencies = CorroborationDependencyReport::build(dependencies, &cameras)?;
+        for camera in &mut cameras {
+            camera.failure_domain = dependencies.support_domain(&camera.name)?.to_owned();
+        }
         let mut entries: Vec<GroundEntry> = first.entries;
         entries.extend(second.entries);
         let pairs = associate_entries(plan, &mut entries, cx)?;
         if pairs.len() > MAX_CORROBORATION_CANDIDATES {
             return Err(CorroborationError::Limit);
+        }
+        for associated in &pairs {
+            let [left, right] = associated.pair;
+            if cameras[entries[left].camera].failure_domain
+                == cameras[entries[right].camera].failure_domain
+            {
+                entries[left].disposition = EntryDisposition::SharedFailureDomain;
+                entries[right].disposition = EntryDisposition::SharedFailureDomain;
+            }
         }
         let mut candidates = Vec::with_capacity(pairs.len());
         let context = CandidateContext {
@@ -1420,6 +1492,7 @@ impl CorroborationReport {
             cameras: &cameras,
             entries: &entries,
             cascade: cascade.as_ref().map(|c| c.digest),
+            dependencies: &dependencies,
         };
         for associated in pairs {
             checkpoint(cx, "recorded_corroboration:prepare")?;
@@ -1454,7 +1527,14 @@ impl CorroborationReport {
             coverage,
             coverage_status: status,
             cascade,
+            dependencies,
         })
+    }
+
+    /// Source-bound declaration generation and complete transitive common-cause decomposition.
+    #[must_use]
+    pub fn dependencies(&self) -> &CorroborationDependencyReport {
+        &self.dependencies
     }
 
     /// Detector-cascade outcomes (one per camera, plan order), if a detector was supplied.
@@ -1777,7 +1857,7 @@ impl CorroborationReport {
                 "\"prepared_count\":{},\"published_count\":{},\"already_published_count\":{},",
                 "\"authority_sequence\":{},\"alert_prepared\":false,\"effects_authorized\":false,",
                 "\"calibrated\":false,\"absence_certifiable\":false,",
-                "\"detection_quality_claim\":false{}{}}}"
+                "\"detection_quality_claim\":false,\"dependencies\":{}{}{}}}"
             ),
             self.plan_digest,
             ContentDigest::sha256(POLICY),
@@ -1792,6 +1872,7 @@ impl CorroborationReport {
             count(CorroborationStatus::Published),
             count(CorroborationStatus::AlreadyPublished),
             authority_sequence,
+            self.dependencies.to_json(),
             self.cascade.as_ref().map_or_else(String::new, |c| {
                 let cameras: Vec<String> = c
                     .outcomes
@@ -2044,6 +2125,7 @@ struct CandidateContext<'a> {
     cameras: &'a [CameraSummary],
     entries: &'a [GroundEntry],
     cascade: Option<ContentDigest>,
+    dependencies: &'a CorroborationDependencyReport,
 }
 
 struct AssociatedEntries {
@@ -2070,6 +2152,7 @@ fn prepare_candidate(
         cameras,
         entries,
         cascade,
+        dependencies,
     } = *context;
     let AssociatedEntries {
         zone_id,
@@ -2100,6 +2183,16 @@ fn prepare_candidate(
             }
         }
     }
+    if !dependencies.declarations().is_empty() {
+        // Bind the exact declaration and the resolution to retained physical sensor sources.
+        e.digest(dependencies.digest());
+    }
+    if cameras.iter().any(|camera| camera.sensor_health.is_some()) {
+        // The old health composition appended RequiredBy edges after fingerprinting policy.
+        // Corrected final-evidence fingerprints need a fresh candidate identity so historical
+        // health events remain readable and never silently acquire alert eligibility.
+        e.text("fss.recorded_corroboration_health_decision.v2");
+    }
     let association = e.finish();
     let identity = ContentDigest::sha256(&association);
     let mut objects = BTreeMap::new();
@@ -2114,6 +2207,30 @@ fn prepare_candidate(
     let mut children = BTreeSet::new();
     let mut track_ids = Vec::with_capacity(2);
     let mut health_dependencies = Vec::new();
+    let dependency_digest = if dependencies.declarations().is_empty() {
+        None
+    } else {
+        insert(dependencies.declarations().to_bytes());
+        // Keep every intrinsic and declared cause visible to the ledger-wide tamper guard.
+        // These neutral edges never restore the independent support that contraction removes.
+        for (domain, bytes) in dependencies.cause_records()? {
+            let digest = insert(bytes);
+            health_dependencies.push(EventEvidence {
+                digest,
+                class: if domain.starts_with("recorded-sensor:") {
+                    EvidenceClass::Derived
+                } else {
+                    EvidenceClass::Assertion
+                },
+                failure_domain: domain,
+                supports: false,
+                relation: EvidenceEdgeRelation::RequiredBy,
+                capsule_digest: None,
+                identity_digest: None,
+            });
+        }
+        Some(insert(dependencies.to_bytes().to_vec()))
+    };
     for entry in [left, right] {
         let camera = &cameras[entry.camera];
         let sensor = insert(camera.sensor_id.as_bytes().to_vec());
@@ -2161,11 +2278,37 @@ fn prepare_candidate(
         witnesses,
         association_digest: identity,
         association_domain: format!("cross-camera-association:{}", hex(plan_digest)),
-        uncertainty_reason: UNCERTAINTY.to_owned(),
+        uncertainty_reason: if cameras[left.camera].failure_domain
+            == cameras[right.camera].failure_domain
+        {
+            "Two recorded foreground tracks entered one ground zone under owner-supplied \
+homographies and capture-time hints. Their cameras share a common-cause component; independent \
+corroboration is withheld. Not classified, identified or calibrated."
+                .to_owned()
+        } else {
+            UNCERTAINTY.to_owned()
+        },
     })?;
+    if let Some(digest) = dependency_digest {
+        health_dependencies.push(EventEvidence {
+            digest,
+            class: EvidenceClass::Assertion,
+            failure_domain: format!("recorded-dependencies:{}", hex(digest)),
+            supports: false,
+            relation: EvidenceEdgeRelation::RequiredBy,
+            capsule_digest: None,
+            identity_digest: None,
+        });
+    }
     if !health_dependencies.is_empty() {
         decision.event.evidence.extend(health_dependencies);
         decision.event.evidence.sort_by_key(|item| item.digest);
+        decision.event.decision_path = crate::policy::zone_entry_decision_path(
+            &decision.event.event_id,
+            &decision.event.evidence,
+            decision.event.state,
+            decision.action,
+        );
         decision.event.validate()?;
     }
     let mut e = CanonicalEncoder::new();
