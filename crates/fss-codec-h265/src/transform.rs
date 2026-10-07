@@ -36,22 +36,29 @@ pub(crate) fn transform_skip(coeffs: &mut [i32], log2: u32) {
     }
 }
 
-/// One 1-D inverse transform of `n` inputs spaced `stride` apart.
+/// One 1-D inverse transform of `n` inputs.
+///
+/// Accumulates each nonzero input's matrix row into all `n` exact `i64` sums (|coefficient| <=
+/// 90, |input| < 2^31, n <= 32: no overflow), so the result equals the per-output sum in any
+/// order. The row-wise loop reads matrix rows contiguously.
 fn inverse_1d(input: &[i32], output: &mut [i32], n: usize, matrix: &[[i32; 32]; 32], dst: bool) {
     let row_step = 32 / n;
-    for (i, out) in output.iter_mut().take(n).enumerate() {
-        let mut sum: i64 = 0;
-        for (k, &x) in input.iter().take(n).enumerate() {
-            if x == 0 {
-                continue;
-            }
-            let coefficient = if dst {
-                DST_MATRIX[k][i]
-            } else {
-                matrix[k * row_step][i]
-            };
-            sum += i64::from(coefficient) * i64::from(x);
+    let mut sums = [0i64; 32];
+    for (k, &x) in input.iter().take(n).enumerate() {
+        if x == 0 {
+            continue;
         }
+        let x = i64::from(x);
+        let row: &[i32] = if dst {
+            &DST_MATRIX[k]
+        } else {
+            &matrix[k * row_step]
+        };
+        for (sum, &coefficient) in sums[..n].iter_mut().zip(row) {
+            *sum += i64::from(coefficient) * x;
+        }
+    }
+    for (out, &sum) in output.iter_mut().take(n).zip(&sums) {
         *out = sum.clamp(i64::from(i32::MIN), i64::from(i32::MAX)) as i32;
     }
 }

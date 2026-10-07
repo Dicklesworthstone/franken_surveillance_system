@@ -252,3 +252,24 @@ FFmpeg-oracle conformance fixtures still match.
 **Remaining profile:** inter prediction is 44% of instructions (inherently the 8-tap separable
 filter in scalar 32-bit arithmetic; the x86-64 baseline has no 32-bit SIMD multiply), SAO 20%,
 inverse transform 9%. Not attempted: SIMD, i16 first-pass arithmetic, partition scratch reuse.
+
+## PERF-006 — H.265 SAO interior fast path and row-wise inverse transform
+
+- **Commit:** the `perf(h265)` commit carrying this entry; host and workload as PERF-005.
+- **Changes:** (1) SAO (8.7.3): a sample whose four neighbours lie inside its own CTB, in a CTB
+  with no PCM or transquant-bypass block, skips the per-sample `no_filter`, picture-boundary and
+  slice-boundary checks, which cannot apply there (one CTB belongs to one slice and lies inside
+  the picture); every other sample takes the unchanged full path. (2) The 1-D inverse transform
+  accumulates each nonzero input's matrix row into exact `i64` sums instead of re-scanning all
+  inputs per output; integer addition makes the order irrelevant and the bound
+  (|coefficient| <= 90, |input| < 2^31, n <= 32) excludes overflow.
+
+| Metric | before (PERF-005) | after |
+|---|---|---|
+| callgrind instructions, 15 frames | 5,345,121,393 | 4,683,435,588 (-12%; -27% vs 6,423,933,962 before PERF-005) |
+
+**Semantic equivalence:** bit-exact. The previous SAO stays as the test-only `apply_reference`;
+`fast_sao_equals_the_per_sample_reference` compares them on 300 random pictures with random SAO
+types, offsets, classes and band positions, random raster slice layouts with and without
+cross-slice filtering, and random unfiltered blocks. All FFmpeg-oracle conformance fixtures
+(SAO, slices, PCM, lossless) still match.
