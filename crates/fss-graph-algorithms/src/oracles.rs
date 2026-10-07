@@ -511,3 +511,195 @@ pub fn balances(flows: &[(String, String, u64)]) -> BTreeMap<String, i128> {
     }
     balance
 }
+
+/// `ALG-MST-001` by enumerating every edge subset: the spanning forest minimizing the
+/// perturbed weight `weight * (m + 1) + index` (unique, and a minimum forest of the real
+/// weights). Returns `(canonical edge indices, total weight, components)`.
+#[must_use]
+pub fn minimum_spanning_forest(graph: &WeightedGraph) -> (Vec<u32>, u64, u64) {
+    let (n, m) = (graph.node_count(), graph.arc_count());
+    let arcs = graph.arcs();
+    let mut best: Option<(u128, u64)> = None;
+    let mut best_size = 0;
+    for mask in 0_u64..(1 << m) {
+        let mut parent: Vec<usize> = (0..n).collect();
+        fn root(parent: &mut [usize], mut x: usize) -> usize {
+            while parent[x] != x {
+                x = parent[x];
+            }
+            x
+        }
+        let mut acyclic = true;
+        let mut size = 0;
+        let mut key: u128 = 0;
+        for (index, arc) in arcs.iter().enumerate() {
+            if mask & (1 << index) == 0 {
+                continue;
+            }
+            let (a, b) = (
+                root(&mut parent, arc.tail as usize),
+                root(&mut parent, arc.head as usize),
+            );
+            if a == b {
+                acyclic = false;
+                break;
+            }
+            parent[a] = b;
+            size += 1;
+            key += u128::from(arc.weight) * (m as u128 + 1) + index as u128;
+        }
+        if !acyclic {
+            continue;
+        }
+        if size > best_size || (size == best_size && best.is_none_or(|(k, _)| key < k)) {
+            best_size = size;
+            best = Some((key, mask));
+        }
+    }
+    let mask = best.map_or(0, |(_, mask)| mask);
+    let edges: Vec<u32> = (0..m as u32).filter(|&e| mask & (1 << e) != 0).collect();
+    let total = edges.iter().map(|&e| graph.arc(e).weight).sum();
+    (edges.clone(), total, (n - edges.len()) as u64)
+}
+
+/// All-pairs minimum cut values of an undirected capacity graph by subset enumeration.
+#[must_use]
+pub fn all_pairs_min_cut(graph: &WeightedGraph) -> BTreeMap<(u32, u32), u64> {
+    let n = graph.node_count() as u32;
+    let mut values = BTreeMap::new();
+    for a in 0..n {
+        for b in a + 1..n {
+            values.insert((a, b), min_arc_cut(graph, a, b).value);
+        }
+    }
+    values
+}
+
+/// `ALG-MCF-001` by unit augmentations along Bellman–Ford shortest residual paths: returns
+/// `(delivered, total cost)`.
+#[must_use]
+pub fn min_cost_flow(
+    costs: &WeightedGraph,
+    capacities: &WeightedGraph,
+    s: u32,
+    t: u32,
+    demand: u64,
+) -> (u64, u64) {
+    let n = costs.node_count();
+    let mut residual: Vec<(usize, usize, u64, i128)> = Vec::new();
+    for (index, arc) in costs.arcs().iter().enumerate() {
+        let cap = capacities.arc(index as u32).weight;
+        residual.push((
+            arc.tail as usize,
+            arc.head as usize,
+            cap,
+            i128::from(arc.weight),
+        ));
+        residual.push((
+            arc.head as usize,
+            arc.tail as usize,
+            0,
+            -i128::from(arc.weight),
+        ));
+    }
+    let mut delivered = 0;
+    let mut total: i128 = 0;
+    while delivered < demand {
+        let mut distance: Vec<Option<i128>> = vec![None; n];
+        let mut via = vec![usize::MAX; n];
+        distance[s as usize] = Some(0);
+        for _ in 0..n {
+            for (edge, &(u, v, cap, cost)) in residual.iter().enumerate() {
+                if cap == 0 {
+                    continue;
+                }
+                if let Some(du) = distance[u]
+                    && distance[v].is_none_or(|dv| du + cost < dv)
+                {
+                    distance[v] = Some(du + cost);
+                    via[v] = edge;
+                }
+            }
+        }
+        let Some(d) = distance[t as usize] else { break };
+        let mut node = t as usize;
+        while node != s as usize {
+            let edge = via[node];
+            residual[edge].2 -= 1;
+            residual[edge ^ 1].2 += 1;
+            node = residual[edge].0;
+        }
+        total += d;
+        delivered += 1;
+    }
+    (delivered, u64::try_from(total).unwrap_or(u64::MAX))
+}
+
+/// Every assignment of `problem`: per left row the chosen right index or `None`.
+#[must_use]
+pub fn all_assignments(problem: &crate::assignment::AssignmentProblem) -> Vec<Vec<Option<u32>>> {
+    let (l, r) = (problem.left().len(), problem.right().len());
+    let mut result = Vec::new();
+    let mut current: Vec<Option<u32>> = Vec::new();
+    let mut used = vec![false; r];
+    fn recurse(
+        problem: &crate::assignment::AssignmentProblem,
+        l: usize,
+        current: &mut Vec<Option<u32>>,
+        used: &mut Vec<bool>,
+        result: &mut Vec<Vec<Option<u32>>>,
+    ) {
+        let row = current.len();
+        if row == l {
+            result.push(current.clone());
+            return;
+        }
+        for &(li, ri, _) in problem.pairs() {
+            if li as usize == row && !used[ri as usize] {
+                used[ri as usize] = true;
+                current.push(Some(ri));
+                recurse(problem, l, current, used, result);
+                current.pop();
+                used[ri as usize] = false;
+            }
+        }
+        current.push(None);
+        recurse(problem, l, current, used, result);
+        current.pop();
+    }
+    recurse(problem, l, &mut current, &mut used, &mut result);
+    result
+}
+
+/// `(objective key, tuple)` of one assignment under `policy`, ordering exactly as the certified
+/// runs do: maximum cardinality ranks by (fewer unassigned, cost); priced by total objective.
+#[must_use]
+pub fn assignment_key(
+    problem: &crate::assignment::AssignmentProblem,
+    policy: crate::assignment::NonAssignment,
+    choice: &[Option<u32>],
+) -> (i128, Vec<usize>) {
+    let r = problem.right().len();
+    let matched: u64 = choice
+        .iter()
+        .enumerate()
+        .filter_map(|(row, c)| c.and_then(|c| problem.cost(row as u32, c)))
+        .sum();
+    let k = choice.iter().filter(|c| c.is_some()).count() as i128;
+    let (l, r_count) = (choice.len() as i128, r as i128);
+    let key = match policy {
+        crate::assignment::NonAssignment::MaximumCardinality => {
+            let total: i128 = problem.pairs().iter().map(|&(_, _, c)| i128::from(c)).sum();
+            (l + r_count - 2 * k) * (total + 1) + i128::from(matched)
+        }
+        crate::assignment::NonAssignment::Priced { left, right } => {
+            i128::from(matched) + (l - k) * i128::from(left) + (r_count - k) * i128::from(right)
+        }
+    };
+    let tuple = choice
+        .iter()
+        .enumerate()
+        .map(|(row, c)| c.map_or(r + row, |c| c as usize))
+        .collect();
+    (key, tuple)
+}

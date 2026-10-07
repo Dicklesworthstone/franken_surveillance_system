@@ -24,6 +24,7 @@
 //!
 //! Nothing here reads a clock, the filesystem, or the network, and no output grants authority.
 
+pub mod assignment;
 pub mod bridges;
 pub mod certified;
 pub mod coverage;
@@ -31,7 +32,9 @@ pub mod coverage_timeline;
 pub mod dominators;
 pub mod failure_domains;
 pub mod flow;
+pub mod gomory_hu;
 pub mod graph;
+pub mod min_cost_flow;
 pub mod oracles;
 pub mod paths;
 pub mod reference;
@@ -40,6 +43,7 @@ pub mod resilient_cover;
 pub mod scc;
 /// Bounded unit-cost set cover with exact-small and explicitly heuristic selection.
 pub mod set_cover;
+pub mod spanning;
 /// Budgeted positive-weight coverage with exact integer ratio ranking and explicit omissions.
 pub mod submodular;
 pub mod topo;

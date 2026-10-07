@@ -53,11 +53,17 @@ decision-path digests):
 | `ALG-SP-001` | lexicographic `(distance, hops)` Dijkstra, smallest tight parent arc | Bellman–Ford |
 | `ALG-MSD-001` | multi-source `(distance, source, hops)` Dijkstra | per-source Bellman–Ford minimum |
 | `ALG-FLOW-001` | certified Edmonds–Karp: arc cut (inclusion-minimal source side) or minimum-weight node failure set by node splitting | source-side subset enumeration; failure-set enumeration |
+| `ALG-MST-001` | Kruskal over the strict `(weight, edge index)` order, counted merge sort, union by size | exhaustive spanning-forest enumeration |
+| `ALG-GH-001` | Gusfield flow-equivalent tree over `n - 1` certified flow runs | all-pairs subset cuts |
+| `ALG-MCF-001` | successive shortest paths with potentials; certified optimal (no negative residual cycle); exact shortfall | unit-step Bellman–Ford augmentation |
+| `ALG-MATCH-001` | Hungarian (128-bit, self-certified by duality) with exact lexicographic tie-break over the tight subgraph; maximum-cardinality or priced non-assignment | exhaustive assignment enumeration |
+| `ALG-MULTIMATCH-001` | Murty best-first over `(objective, assignment tuple)` with lexicographically minimal subproblems | exhaustive enumeration, first `k` in order |
 
-Each is certified on 2,500 seeded directed and undirected graphs per family (random, DAG,
-cycle, clique, star, path, layered, joined cycles, empty), insertion-order metamorphic tests,
-budget-one-short refusals and tampered-witness refusals
-(`crates/fss-graph-algorithms/tests/weighted_certification.rs`). The projections are caller-built:
+Each is certified on seeded directed and undirected graphs (random, DAG, cycle, clique, star,
+path, layered, joined cycles, empty) or seeded assignment problems, insertion-order metamorphic
+tests, budget-one-short refusals and tampered-witness refusals
+(`crates/fss-graph-algorithms/tests/weighted_certification.rs`,
+`crates/fss-graph-algorithms/tests/optimization_certification.rs`). The projections are caller-built:
 no retained-record projection builder exists yet for `PlanObligationGraph`, `EvidenceClaimGraph`,
 `IncidentCausalGraph`, `DeviceFailureGraph`, `SpatioTemporalTrackGraph` or `ArchiveObjectGraph`.
 None is qualified: the `INT-FNX-001` differential and the atlas's snapshot-invalidation,

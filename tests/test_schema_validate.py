@@ -880,7 +880,8 @@ class TestSchemaConstitution(unittest.TestCase):
         # + SCHEMA-DOMAIN-REFERENCE-AGENT-{WORK-SCOPE,CLAIM-REQUEST}-001 (FSS-226) = 236.
         # + SCHEMA-DOMAIN-REFERENCE-AGENT-FINDING-{,IDENTITY-,REQUEST-}001 (FSS-227) = 239.
         # + SCHEMA-DOMAIN-GRAPH-{WEIGHTED-PROJECTION,QUERY-INPUT}-001 and {SCC,TOPO,DOM,SP,MSD,FLOW}-{OUTPUT,DECISION-PATH}-001 (WP-170) = 253.
-        self.assertEqual(result["digestDomainCount"], 253)
+        # + SCHEMA-DOMAIN-GRAPH-{MST,GH,MCF,MATCH,MULTIMATCH}-{OUTPUT,DECISION-PATH}-001 and -ASSIGNMENT-PROJECTION-001 (WP-170) = 264.
+        self.assertEqual(result["digestDomainCount"], 264)
 
         # Continuation cursor is verified implemented
         implemented_names = {s["name"] for s in result["schemas"] if s["status"] == "implemented"}
@@ -1405,7 +1406,8 @@ class TestSchemaConstitutionCrossReviewRegressions(unittest.TestCase):
         # + SCHEMA-DOMAIN-REFERENCE-AGENT-{WORK-SCOPE,CLAIM-REQUEST}-001 (FSS-226) = 236.
         # + SCHEMA-DOMAIN-REFERENCE-AGENT-FINDING-{,IDENTITY-,REQUEST-}001 (FSS-227) = 239.
         # + SCHEMA-DOMAIN-GRAPH-{WEIGHTED-PROJECTION,QUERY-INPUT}-001 and {SCC,TOPO,DOM,SP,MSD,FLOW}-{OUTPUT,DECISION-PATH}-001 (WP-170) = 253.
-        self.assertEqual(result["digestDomainCount"], 253)
+        # + SCHEMA-DOMAIN-GRAPH-{MST,GH,MCF,MATCH,MULTIMATCH}-{OUTPUT,DECISION-PATH}-001 and -ASSIGNMENT-PROJECTION-001 (WP-170) = 264.
+        self.assertEqual(result["digestDomainCount"], 264)
         # 36 = 28 + fss.sensor_tamper_status.v1 (owner SensorTamperStatus, fss-2uftm)
         # + fss.agent_operations.v1 / fss.agent_views.v1 / fss.agent_request_envelope.v1
         #   (owners AgentOperation / AgentView / AgentRequestEnvelope, fss-x4a.30.83.17-40)
