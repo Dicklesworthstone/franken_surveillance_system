@@ -185,7 +185,7 @@ impl ScreeningReport {
                     )?;
                 }
             }
-            "annexb" => {
+            "annexb" | "mp4avc" => {
                 let mut source = RecordedH264Range::open(
                     deployment,
                     RecordedH264Request {

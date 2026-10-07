@@ -218,7 +218,7 @@ impl FileImportManifest {
         }
         if self.adapter_id != ADP_FILE_ROW_ID
             || self.adapter_generation != ADP_FILE_GENERATION
-            || !matches!(self.format.as_str(), "annexb" | "hevc" | "mjpeg")
+            || !matches!(self.format.as_str(), "annexb" | "hevc" | "mjpeg" | "mp4avc")
             || !matches!(
                 self.capture_time_label.as_str(),
                 "unknown" | "operator_assumption"
@@ -258,6 +258,8 @@ impl FileImportManifest {
         {
             return Err(ContractError::UnsupportedDigestAlgorithm.into());
         }
+        // MP4 samples are separated by container structure, never by lost media.
+        let container = self.format == "mp4avc";
         let mut previous_end = 0;
         let mut ids = BTreeSet::new();
         for (index, segment) in self.segment_spans.iter().enumerate() {
@@ -269,7 +271,8 @@ impl FileImportManifest {
                 || segment.len == 0
                 || end > self.input_bytes
                 || segment.offset < previous_end
-                || (segment.offset > previous_end && !segment.gap_before)
+                || (segment.offset > previous_end && !segment.gap_before && !container)
+                || (container && segment.gap_before)
                 || segment.capsule_id != self.capsule_ids[index]
                 || !ids.insert(segment.capsule_id.clone())
                 || segment.segment_sha256.algorithm() != DigestAlgorithm::Sha256
@@ -290,6 +293,40 @@ impl FileImportManifest {
             {
                 return Err(invalid("invalid omission span"));
             }
+            if omission.is_container_structure() != container {
+                return Err(invalid("container structure span outside an MP4 import"));
+            }
+        }
+        if container {
+            self.validate_container_tiling()?;
+        }
+        Ok(())
+    }
+
+    /// An MP4 import accounts for every source byte exactly once: samples plus typed structure.
+    fn validate_container_tiling(&self) -> Result<(), FileIngestError> {
+        let mut ranges: Vec<(u64, u64)> = self
+            .segment_spans
+            .iter()
+            .map(|span| (span.offset, span.len))
+            .chain(
+                self.omission_spans
+                    .iter()
+                    .map(|span| (span.offset, span.len)),
+            )
+            .collect();
+        ranges.sort_unstable();
+        let mut cursor = 0_u64;
+        for (offset, len) in ranges {
+            if offset != cursor {
+                return Err(invalid("MP4 import does not account for every source byte"));
+            }
+            cursor = offset
+                .checked_add(len)
+                .ok_or_else(|| invalid("span range overflow"))?;
+        }
+        if cursor != self.input_bytes {
+            return Err(invalid("MP4 import does not account for every source byte"));
         }
         Ok(())
     }
@@ -448,6 +485,31 @@ impl RetainedFileImport {
         Ok(bytes)
     }
 
+    /// Returns the exact bytes of one declared omission or structure span (for an MP4 import,
+    /// an `avcC` parameter set), verifying every touched chunk. Root availability and authority
+    /// are rechecked on every call.
+    pub fn read_omission_span(
+        &self,
+        deployment: &ReferenceDeployment,
+        index: usize,
+        limits: RetainedReadLimits,
+        cx: &ReplayCx,
+    ) -> Result<Vec<u8>, FileIngestError> {
+        self.revalidate(deployment, limits, cx)?;
+        self.manifest.validate_structure(limits)?;
+        let span = self
+            .manifest
+            .omission_spans
+            .get(index)
+            .ok_or_else(|| invalid("omission span index"))?;
+        let bytes = assemble_range(&self.manifest, span.offset, span.len, limits, |d| {
+            checkpoint(cx, STAGE_RETAINED_CHUNK)?;
+            Ok(deployment.publisher().spool().read(d)?)
+        })?;
+        checkpoint(cx, STAGE_RETAINED_COMPLETE)?;
+        Ok(bytes)
+    }
+
     /// Verifies the entire source in recorded order with at most one chunk in memory.
     /// Repeated chunks are retained in the stream. Success proves byte custody, not coverage.
     pub fn verify_source(
@@ -518,7 +580,7 @@ fn assemble_segment(
     manifest: &FileImportManifest,
     index: usize,
     limits: RetainedReadLimits,
-    mut read: impl FnMut(ContentDigest) -> Result<Vec<u8>, FileIngestError>,
+    read: impl FnMut(ContentDigest) -> Result<Vec<u8>, FileIngestError>,
 ) -> Result<Vec<u8>, FileIngestError> {
     manifest.validate_structure(limits)?;
     let span =
@@ -529,23 +591,38 @@ fn assemble_segment(
                 index,
                 count: manifest.segment_spans.len(),
             })?;
-    if span.len > limits.max_segment_bytes {
+    let bytes = assemble_range(manifest, span.offset, span.len, limits, read)?;
+    if ContentDigest::sha256(&bytes) != span.segment_sha256 {
+        return Err(invalid("assembled segment checksum or length mismatch"));
+    }
+    Ok(bytes)
+}
+
+/// Exact bytes `offset..offset + len` of the source, from digest-verified chunks.
+fn assemble_range(
+    manifest: &FileImportManifest,
+    offset: u64,
+    len: u64,
+    limits: RetainedReadLimits,
+    mut read: impl FnMut(ContentDigest) -> Result<Vec<u8>, FileIngestError>,
+) -> Result<Vec<u8>, FileIngestError> {
+    if len > limits.max_segment_bytes {
         return Err(FileIngestError::SpoolCapacityExceeded {
             limit: "retained_segment_bytes",
-            required: span.len,
+            required: len,
             available: limits.max_segment_bytes,
         });
     }
-    let size = usize::try_from(span.len).map_err(|_| invalid("segment allocation overflow"))?;
+    let size = usize::try_from(len).map_err(|_| invalid("segment allocation overflow"))?;
     let mut bytes = Vec::new();
     bytes
         .try_reserve_exact(size)
         .map_err(|_| invalid("segment allocation refused"))?;
-    let end = span
-        .offset
-        .checked_add(span.len)
+    let end = offset
+        .checked_add(len)
+        .filter(|end| len > 0 && *end <= manifest.input_bytes)
         .ok_or_else(|| invalid("range overflow"))?;
-    let first = span.offset / manifest.chunk_bytes;
+    let first = offset / manifest.chunk_bytes;
     let last = (end - 1) / manifest.chunk_bytes;
     for position in first..=last {
         let chunk_index = usize::try_from(position).map_err(|_| invalid("chunk index overflow"))?;
@@ -553,7 +630,7 @@ fn assemble_segment(
         let chunk_start = position
             .checked_mul(manifest.chunk_bytes)
             .ok_or_else(|| invalid("offset overflow"))?;
-        let start = usize::try_from(span.offset.saturating_sub(chunk_start))
+        let start = usize::try_from(offset.saturating_sub(chunk_start))
             .map_err(|_| invalid("slice offset"))?;
         let stop = usize::try_from((end - chunk_start).min(chunk.len() as u64))
             .map_err(|_| invalid("slice end"))?;
@@ -562,7 +639,7 @@ fn assemble_segment(
             .ok_or_else(|| invalid("source slice"))?;
         bytes.extend_from_slice(slice);
     }
-    if bytes.len() != size || ContentDigest::sha256(&bytes) != span.segment_sha256 {
+    if bytes.len() != size {
         return Err(invalid("assembled segment checksum or length mismatch"));
     }
     Ok(bytes)

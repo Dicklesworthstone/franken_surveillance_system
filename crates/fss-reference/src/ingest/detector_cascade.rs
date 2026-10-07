@@ -203,7 +203,10 @@ fn validate_shape(
             "cascade cache input exceeds watch bounds",
         ));
     }
-    if !matches!(source.source.media_format, "mjpeg" | "annexb" | "hevc") {
+    if !matches!(
+        source.source.media_format,
+        "mjpeg" | "annexb" | "hevc" | "mp4avc"
+    ) {
         return Err(CascadeError::InvalidConfig(
             "unsupported cascade media format",
         ));

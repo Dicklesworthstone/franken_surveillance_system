@@ -546,7 +546,7 @@ pub fn assess_retention(
         } else if manifest
             .omission_spans
             .iter()
-            .any(|o| o.reason != "annexb_padding")
+            .any(|o| o.reason != "annexb_padding" && !o.is_container_structure())
         {
             Some(RetentionDisposition::SourceOmission)
         } else {

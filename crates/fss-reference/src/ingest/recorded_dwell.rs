@@ -200,7 +200,7 @@ impl DwellReport {
             .manifest()
             .omission_spans
             .iter()
-            .any(|span| span.len > 0);
+            .any(|span| span.len > 0 && !span.is_container_structure());
         let first_gap = retained
             .manifest()
             .segment_spans

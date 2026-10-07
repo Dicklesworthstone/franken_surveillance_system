@@ -234,3 +234,57 @@ fn corrupt_stream_and_unknown_import_fail_closed() -> TestResult {
     assert!(!missing.status.success());
     Ok(())
 }
+
+/// Indexed MP4 with an interleaved AAC track and `moov` last (ten 64x48 frames, two IDRs,
+/// B-picture reordering).
+const MP4: &[u8] = include_bytes!("../../fss-container/tests/fixtures/interleaved_av.mp4");
+/// FFmpeg `yuv420p` framehash of the MP4's video track (offline sealed oracle).
+const MP4_ORACLE: &str = include_str!("../../fss-container/tests/fixtures/indexed_avc_i420.sha256");
+
+#[test]
+fn mp4_import_is_sniffed_retained_and_decodes_bit_exact() -> TestResult {
+    let directory = OwnedDirectory::new("mp4")?;
+    let root = directory.0.join("deployment");
+    let input = directory.0.join("export.mp4");
+    fs::write(&input, MP4)?;
+    let import = |input: &Path| {
+        command(&root, "import")
+            .arg("--input")
+            .arg(input)
+            .args([
+                "--sensor",
+                "sensor:h264-cli",
+                "--stream",
+                "stream:h264-cli",
+                "--receive-time-ns",
+                "1000000000",
+            ])
+            .output()
+    };
+    let output = import(&input)?;
+    success(&output);
+    assert_eq!(field(&output, "media_format")?, "mp4avc");
+    let id = field(&output, "import_identity")?;
+    fs::remove_file(&input)?;
+    let decoded = decode(&root, &id, "0", "10").output()?;
+    success(&decoded);
+    let expected: Vec<String> = MP4_ORACLE
+        .lines()
+        .filter(|line| !line.starts_with('#') && !line.trim().is_empty())
+        .filter_map(|line| line.split_whitespace().nth(2))
+        .map(|digest| format!("sha256:{digest}"))
+        .collect();
+    assert_eq!(values(&decoded, "frame_i420_sha256")?, expected);
+    assert_eq!(field(&decoded, "h264_frames_decoded")?, "10");
+    // A predicted sample cannot open a range.
+    let refused = decode(&root, &id, "1", "2").output()?;
+    assert!(!refused.status.success());
+    assert_eq!(refusal(&refused), "ERR-DECODE-H264-RANGE-NOT-IDR-001");
+    // A damaged MP4 is refused whole by the demuxer; nothing is retained.
+    let damaged = directory.0.join("damaged.mp4");
+    fs::write(&damaged, &MP4[..MP4.len() - 9])?;
+    let refused = import(&damaged)?;
+    assert!(!refused.status.success());
+    assert_eq!(refusal(&refused), "ERR-INGEST-MP4-REFUSED-001");
+    Ok(())
+}

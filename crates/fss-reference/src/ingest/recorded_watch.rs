@@ -649,6 +649,7 @@ pub fn media_decoder_label(media_format: &str) -> &'static str {
     match media_format {
         "mjpeg" => "mjpeg:fss-codec-mjpeg:luma",
         "annexb" => "annexb:fss-codec-h264:idr-led-range:luma",
+        "mp4avc" => "mp4avc:fss-container-demux:fss-codec-h264:idr-led-range:luma",
         _ => "hevc:fss-codec-h265:irap-led-range:rasl-skipped:luma",
     }
 }
@@ -803,7 +804,7 @@ impl WatchReport {
                 end,
                 mask: Box::new(privacy.clone()),
             }),
-            "annexb" => Some(FrameSource::H264(Box::new(RecordedH264Range::open(
+            "annexb" | "mp4avc" => Some(FrameSource::H264(Box::new(RecordedH264Range::open(
                 deployment,
                 RecordedH264Request {
                     import_identity: plan.import_identity,

@@ -57,7 +57,7 @@ impl PackageDetectionRecord {
         }
         let color = match self.media_format.as_str() {
             "mjpeg" => "jpeg_rgb",
-            "annexb" | "hevc" => "ycbcr420_bt601_limited_rgb",
+            "annexb" | "hevc" | "mp4avc" => "ycbcr420_bt601_limited_rgb",
             _ => return Err(PackageEventError::Mismatch),
         };
         if [

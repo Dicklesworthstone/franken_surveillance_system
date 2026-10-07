@@ -1,8 +1,10 @@
 #![forbid(unsafe_code)]
 //! H.264 decoding (Constrained Baseline, Main and High, progressive 8-bit 4:2:0) of retained
-//! Annex-B imports.
+//! Annex-B (`annexb`) and indexed MP4 (`mp4avc`) imports.
 //!
-//! The file adapter retains one access unit per segment. H.264 pictures predict from earlier
+//! The file adapter retains one access unit per segment: an Annex-B access unit, or one MP4
+//! sample with its original length-prefixed NAL framing. An MP4 range first feeds the decoder
+//! the import's retained `avcC` parameter-set spans, read back verbatim from custody. H.264 pictures predict from earlier
 //! pictures, so a single P segment has no meaning on its own: this module decodes a contiguous
 //! segment range that must begin at an IDR access unit and must not cross a retained source
 //! gap. Pictures are returned in display (output) order, which differs from decode order when
@@ -24,7 +26,7 @@ use fss_core::{CanonicalEncode, CanonicalEncoder, ContentDigest, SensorCapsule, 
 
 use super::{ComponentInterpretation, RecordedDecodeError, checkpoint, source_capsule};
 use crate::ingest::privacy_mask::{MaskBinding, binding_digest, current_mask, encode_marker};
-use crate::ingest::{RetainedFileImport, RetainedReadLimits};
+use crate::ingest::{MP4_PARAMETER_SET_REASON_PREFIX, RetainedFileImport, RetainedReadLimits};
 use crate::{ReferenceDeployment, ReplayCx};
 
 /// Maximum access units decoded by one range request.
@@ -256,8 +258,69 @@ impl RecordedH264Frame {
     }
 }
 
-fn segment_has_idr_slice(bytes: &[u8]) -> bool {
-    annex_b_nal_units(bytes).any(|nal| nal.first().is_some_and(|h| h & 0x1f == NAL_IDR_SLICE))
+/// NAL unit framing of a retained H.264 import's segments.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum Framing {
+    /// Annex-B start codes.
+    AnnexB,
+    /// MP4 sample: NAL units behind big-endian length fields of this many bytes.
+    LengthPrefixed(usize),
+}
+
+/// The NAL units of one retained segment. Length-prefixed framing was validated at import and
+/// the segment bytes are digest-verified, so a framing failure is a custody inconsistency.
+fn segment_nals(
+    framing: Framing,
+    bytes: &[u8],
+    segment: usize,
+) -> Result<Vec<&[u8]>, RecordedDecodeError> {
+    match framing {
+        Framing::AnnexB => Ok(annex_b_nal_units(bytes).collect()),
+        Framing::LengthPrefixed(length) => {
+            fss_container::demux::length_prefixed_nals(bytes, length)
+                .map_err(|_| RecordedDecodeError::H264AccessUnit { segment })?
+                .into_iter()
+                .map(|range| {
+                    bytes
+                        .get(range)
+                        .ok_or(RecordedDecodeError::H264AccessUnit { segment })
+                })
+                .collect()
+        }
+    }
+}
+
+fn segment_has_idr_slice(nals: &[&[u8]]) -> bool {
+    nals.iter()
+        .any(|nal| nal.first().is_some_and(|h| h & 0x1f == NAL_IDR_SLICE))
+}
+
+/// The `avcC` parameter-set spans of an MP4 import, in file order, and their common sample NAL
+/// length-field size. An MP4 import without exactly one consistent size is refused.
+fn mp4_parameter_sets(
+    retained: &RetainedFileImport,
+) -> Result<(Vec<usize>, usize), RecordedDecodeError> {
+    let mut indexes = Vec::new();
+    let mut length = None;
+    for (index, span) in retained.manifest().omission_spans.iter().enumerate() {
+        let Some(size) = span.reason.strip_prefix(MP4_PARAMETER_SET_REASON_PREFIX) else {
+            continue;
+        };
+        let size = match size {
+            "1" => 1,
+            "2" => 2,
+            "4" => 4,
+            _ => return Err(RecordedDecodeError::CustodyMismatch),
+        };
+        if length.is_some_and(|known| known != size) {
+            return Err(RecordedDecodeError::CustodyMismatch);
+        }
+        length = Some(size);
+        indexes.push(index);
+    }
+    let length = length.ok_or(RecordedDecodeError::CustodyMismatch)?;
+    indexes.sort_by_key(|index| retained.manifest().omission_spans[*index].offset);
+    Ok((indexes, length))
 }
 
 /// Streaming decoder over one validated, IDR-led, gap-free retained segment range.
@@ -266,6 +329,7 @@ pub struct RecordedH264Range {
     request: RecordedH264Request,
     retained: RetainedFileImport,
     decoder: Decoder,
+    framing: Framing,
     next: usize,
     end: usize,
     decoded: u64,
@@ -294,9 +358,14 @@ impl RecordedH264Range {
         }
         let retained =
             RetainedFileImport::open(deployment, request.import_identity, request.read_limits, cx)?;
-        if retained.manifest().format != "annexb" {
-            return Err(RecordedDecodeError::UnsupportedMedia);
-        }
+        let (framing, parameter_sets) = match retained.manifest().format.as_str() {
+            "annexb" => (Framing::AnnexB, Vec::new()),
+            "mp4avc" => {
+                let (spans, length) = mp4_parameter_sets(&retained)?;
+                (Framing::LengthPrefixed(length), spans)
+            }
+            _ => return Err(RecordedDecodeError::UnsupportedMedia),
+        };
         let first = request.first_segment;
         let end = first
             .checked_add(request.segment_count)
@@ -311,7 +380,7 @@ impl RecordedH264Range {
             });
         }
         let first_bytes = retained.read_segment(deployment, first, request.read_limits, cx)?;
-        if !segment_has_idr_slice(&first_bytes) {
+        if !segment_has_idr_slice(&segment_nals(framing, &first_bytes, first)?) {
             return Err(RecordedDecodeError::H264RangeNotIdr { segment: first });
         }
         let limits = DecoderLimits {
@@ -321,7 +390,14 @@ impl RecordedH264Range {
                 .min(request.segment_count as u64),
             ..request.decoder_limits
         };
-        let decoder = Decoder::new(limits)?;
+        let mut decoder = Decoder::new(limits)?;
+        // Out-of-band configuration precedes the first access unit; it codes no picture.
+        for index in parameter_sets {
+            let nal = retained.read_omission_span(deployment, index, request.read_limits, cx)?;
+            if decoder.decode_nal(&nal)?.is_some() {
+                return Err(RecordedDecodeError::CustodyMismatch);
+            }
+        }
         let (first_capsule, _) = source_capsule(deployment, &retained, first)?;
         let sensor = first_capsule.sensor_id;
         let mask = current_mask(deployment, &sensor)?;
@@ -330,6 +406,7 @@ impl RecordedH264Range {
             request,
             retained,
             decoder,
+            framing,
             next: first,
             end,
             decoded: 0,
@@ -385,7 +462,7 @@ impl RecordedH264Range {
                 let bytes =
                     self.retained
                         .read_segment(deployment, index, self.request.read_limits, cx)?;
-                for nal in annex_b_nal_units(&bytes) {
+                for nal in segment_nals(self.framing, &bytes, index)? {
                     if let Some(picture) = self.decoder.decode_nal(nal)? {
                         self.ready.push_back(picture);
                     }

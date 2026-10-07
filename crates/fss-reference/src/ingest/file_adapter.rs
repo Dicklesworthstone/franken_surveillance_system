@@ -158,6 +158,8 @@ pub enum DetectedFileFormat {
     JpegStream,
     /// Recorded RTP session (`#!rtpplay1.0` header).
     RtpPlay,
+    /// Indexed (non-fragmented) ISO-BMFF/MP4 file with one `avc1` H.264 video track.
+    Mp4Avc,
 }
 
 impl DetectedFileFormat {
@@ -169,6 +171,7 @@ impl DetectedFileFormat {
             Self::Hevc => "hevc",
             Self::JpegStream => "mjpeg",
             Self::RtpPlay => "rtpplay",
+            Self::Mp4Avc => "mp4avc",
         }
     }
 
@@ -180,6 +183,7 @@ impl DetectedFileFormat {
             Self::Hevc => FileFormatHint::Hevc,
             Self::JpegStream => FileFormatHint::JpegStream,
             Self::RtpPlay => FileFormatHint::RtpPlay,
+            Self::Mp4Avc => FileFormatHint::Mp4Avc,
         }
     }
 }
@@ -196,6 +200,8 @@ pub enum FileFormatHint {
     JpegStream,
     /// Expected format is rtpplay packet capture.
     RtpPlay,
+    /// Expected format is an indexed MP4 file with one H.264 (`avc1`) video track.
+    Mp4Avc,
 }
 
 impl FileFormatHint {
@@ -207,6 +213,7 @@ impl FileFormatHint {
             Self::Hevc => "hevc",
             Self::JpegStream => "mjpeg",
             Self::RtpPlay => "rtpplay",
+            Self::Mp4Avc => "mp4avc",
         }
     }
 }
@@ -452,6 +459,22 @@ pub struct FileOmissionSpan {
     pub reason: String,
 }
 
+/// Omission reason prefix of MP4 container structure: box headers and metadata, other tracks'
+/// bytes inside `mdat`, and the `avcC` parameter sets.
+pub const MP4_STRUCTURE_REASON_PREFIX: &str = "mp4_";
+/// Omission reason prefix of one `avcC` parameter-set NAL payload, completed by
+/// `nal_length_bytes=N` (the sample NAL length-field size the decoder needs).
+pub const MP4_PARAMETER_SET_REASON_PREFIX: &str = "mp4_avc_parameter_set:nal_length_bytes=";
+
+impl FileOmissionSpan {
+    /// True for MP4 container structure, which is accounted byte for byte but is not lost or
+    /// unparsed media: no source gap, omission or time-reliability downgrade follows from it.
+    #[must_use]
+    pub fn is_container_structure(&self) -> bool {
+        self.reason.starts_with(MP4_STRUCTURE_REASON_PREFIX)
+    }
+}
+
 impl CanonicalEncode for FileOmissionSpan {
     fn encode_canonical(&self, encoder: &mut CanonicalEncoder) {
         encoder.u64(self.offset);
@@ -667,6 +690,12 @@ pub enum FileIngestError {
     RtpBindingRequired {},
     /// The recorded-RTP import refused or failed; partial publication is not reclassified.
     RecordedRtp(Box<RtpImportError>),
+    /// The MP4 demuxer refused the file (fragmented, encrypted, external media, non-`avc1`,
+    /// several video tracks, malformed tables or NAL framing, or a bound). Nothing is retained.
+    Mp4Refused {
+        /// The demuxer's typed, non-disclosing refusal.
+        refusal: fss_container::demux::DemuxError,
+    },
     /// Detected format is not supported by this entrypoint (recorded RTP through
     /// [`FileIngestAdapter::ingest`], whose receipt type is media-only; use
     /// [`FileIngestAdapter::ingest_file`]).
@@ -931,6 +960,7 @@ impl std::fmt::Display for FileIngestError {
             Self::Reference(e) => write!(f, "reference error: {}", e),
             Self::Contract(e) => write!(f, "contract error: {}", e),
             Self::AnnexB(e) => write!(f, "Annex-B error: {:?}", e),
+            Self::Mp4Refused { refusal } => write!(f, "MP4 demux refused the file: {refusal:?}"),
             Self::Mjpeg(e) => write!(f, "MJPEG error: {:?}", e),
             Self::LocalPublication(e) => write!(f, "local publication error: {}", e),
             Self::Spool(e) => write!(f, "spool error: {}", e),
@@ -949,6 +979,7 @@ impl FileIngestError {
         match self {
             Self::AmbiguousAnnexBCodec { .. } => Some("ERR-INGEST-FORMAT-AMBIGUOUS-001"),
             Self::FormatConflict { .. } => Some("ERR-INGEST-FORMAT-CONFLICT-001"),
+            Self::Mp4Refused { .. } => Some("ERR-INGEST-MP4-REFUSED-001"),
             Self::EvidenceDeleted { .. } => Some("ERR-EVIDENCE-DELETED-001"),
             Self::CaptureHintAfterReceive { .. } | Self::CaptureHintLatestAfterReceive { .. } => {
                 Some("ERR-INGEST-CAPTURE-HINT-AFTER-RECEIVE-001")
@@ -1019,6 +1050,54 @@ impl From<ObjectError> for FileIngestError {
 /// is [`FileIngestError::AmbiguousAnnexBCodec`]: the codec must then be declared explicitly.
 pub fn sniff_format(bytes: &[u8]) -> Result<(DetectedFileFormat, &'static str), FileIngestError> {
     sniff_format_with_hint(bytes, None)
+}
+
+/// Top-level ISO-BMFF boxes as `(start, end, type)`. Parsing stops at the first malformed
+/// header; any bytes after it form one `????` pseudo-box, so the result always tiles the input.
+fn top_level_boxes(bytes: &[u8]) -> Vec<(usize, usize, [u8; 4])> {
+    let mut boxes = Vec::new();
+    let mut at = 0_usize;
+    while at < bytes.len() {
+        let field = |offset: usize, len: usize| {
+            bytes
+                .get(at + offset..at + offset + len)
+                .map(|b| b.iter().fold(0_u64, |n, byte| (n << 8) | u64::from(*byte)))
+        };
+        let kind: Option<[u8; 4]> = bytes
+            .get(at + 4..at + 8)
+            .and_then(|b| <[u8; 4]>::try_from(b).ok());
+        let end = match (field(0, 4), kind) {
+            (Some(0), Some(_)) => Some(bytes.len()),
+            (Some(1), Some(_)) => field(8, 8)
+                .filter(|size| *size >= 16)
+                .and_then(|size| usize::try_from(size).ok())
+                .and_then(|size| at.checked_add(size)),
+            (Some(size), Some(_)) if size >= 8 => usize::try_from(size)
+                .ok()
+                .and_then(|size| at.checked_add(size)),
+            _ => None,
+        };
+        match (end.filter(|end| *end <= bytes.len()), kind) {
+            (Some(end), Some(kind)) => {
+                boxes.push((at, end, kind));
+                at = end;
+            }
+            _ => {
+                boxes.push((at, bytes.len(), *b"????"));
+                break;
+            }
+        }
+    }
+    boxes
+}
+
+/// Printable box type, or its hexadecimal bytes when not printable ASCII.
+fn box_kind_text(kind: [u8; 4]) -> String {
+    if kind.iter().all(|b| b.is_ascii_graphic() || *b == b' ') {
+        kind.iter().map(|b| char::from(*b)).collect()
+    } else {
+        kind.iter().map(|b| format!("{b:02x}")).collect()
+    }
 }
 
 /// Codec plausibility of an Annex-B stream's first NAL unit header.
@@ -1093,6 +1172,11 @@ pub fn sniff_format_with_hint(
     // Check rtpplay: starts with "#!rtpplay1.0"
     if bytes.starts_with(b"#!rtpplay1.0") {
         return Ok((DetectedFileFormat::RtpPlay, "rtpplay_magic"));
+    }
+
+    // ISO-BMFF: the first box is `ftyp`. The demuxer, not the sniffer, decides support.
+    if bytes.get(4..8) == Some(b"ftyp".as_slice()) {
+        return Ok((DetectedFileFormat::Mp4Avc, "mp4_ftyp"));
     }
 
     // Check Annex-B start code: 0x00, 0x00, 0x01 or 0x00, 0x00, 0x00, 0x01
@@ -2455,6 +2539,15 @@ impl FileIngestAdapter {
                     format: DetectedFileFormat::RtpPlay,
                 });
             }
+            DetectedFileFormat::Mp4Avc => {
+                return Self::mp4_segments(
+                    file_bytes,
+                    request,
+                    import_identity_hex,
+                    receive_time,
+                    cx,
+                );
+            }
         }
 
         Ok(ScannedSegments {
@@ -2532,6 +2625,143 @@ impl FileIngestAdapter {
                 segment_sha256: au_sha256,
                 capsule_id,
                 gap_before: has_gap_before,
+            });
+            capsules.push(capsule);
+        }
+        Ok(ScannedSegments {
+            segment_spans,
+            omission_spans,
+            capsules,
+            truncated_frames: 0,
+        })
+    }
+
+    /// One segment per `avc1` sample, in decode order, with the sample's exact length-prefixed
+    /// bytes. Every other byte is a typed container-structure span: each `avcC` parameter-set
+    /// NAL payload (read back verbatim by the decoder) and, split at top-level box boundaries,
+    /// the remaining box bytes (`mp4_box:<type>`, including other tracks' data in `mdat`).
+    /// Samples are complete by construction (the demuxer refuses the whole file otherwise), so
+    /// no sample carries a source gap; samples stored out of decode order are refused.
+    fn mp4_segments(
+        file_bytes: &[u8],
+        request: &FileIngestRequest,
+        import_identity_hex: &str,
+        receive_time: TimestampNs,
+        cx: &ReplayCx,
+    ) -> Result<ScannedSegments, FileIngestError> {
+        use fss_container::demux::{
+            AvcMp4, DemuxError, DemuxLimits, MAX_MP4_INPUT_BYTES, MAX_MP4_SAMPLES,
+        };
+        let limits = DemuxLimits {
+            maximum_input_bytes: MAX_MP4_INPUT_BYTES,
+            maximum_samples: request.limits.max_segments.clamp(1, MAX_MP4_SAMPLES),
+            ..DemuxLimits::default()
+        };
+        let mp4 = AvcMp4::parse_with_checkpoint(file_bytes, None, limits, &mut || {
+            cx.checkpoint(STAGE_SPLIT)
+                .map_err(|_| DemuxError::Cancelled)
+        })
+        .map_err(|refusal| match refusal {
+            DemuxError::Cancelled => FileIngestError::CancellationRequested { stage: STAGE_SPLIT },
+            refusal => FileIngestError::Mp4Refused { refusal },
+        })?;
+        let parameter_reason = format!(
+            "{MP4_PARAMETER_SET_REASON_PREFIX}{}",
+            mp4.nal_length_bytes()
+        );
+        // Claimed ranges: samples (Some(index)) and parameter sets (None), in file order.
+        let mut claimed: Vec<(usize, usize, Option<usize>)> = mp4
+            .parameter_sets()
+            .iter()
+            .map(|range| (range.start, range.end, None))
+            .collect();
+        let mut previous_end = 0_usize;
+        for sample in mp4.samples() {
+            if sample.source.start < previous_end {
+                return Err(FileIngestError::Mp4Refused {
+                    refusal: DemuxError::Layout,
+                });
+            }
+            previous_end = sample.source.end;
+            claimed.push((sample.source.start, sample.source.end, Some(sample.index)));
+        }
+        claimed.sort_unstable();
+        let boxes = top_level_boxes(file_bytes);
+        let mut omission_spans = Vec::new();
+        let mut cursor = 0_usize;
+        let structure = |from: usize, to: usize, spans: &mut Vec<FileOmissionSpan>| {
+            for &(start, end, kind) in &boxes {
+                let (lo, hi) = (from.max(start), to.min(end));
+                if lo < hi {
+                    spans.push(FileOmissionSpan {
+                        offset: lo as u64,
+                        len: (hi - lo) as u64,
+                        reason: format!("mp4_box:{}", box_kind_text(kind)),
+                    });
+                }
+            }
+        };
+        for &(start, end, sample) in &claimed {
+            if start < cursor {
+                return Err(FileIngestError::Mp4Refused {
+                    refusal: DemuxError::Layout,
+                });
+            }
+            structure(cursor, start, &mut omission_spans);
+            if sample.is_none() {
+                omission_spans.push(FileOmissionSpan {
+                    offset: start as u64,
+                    len: (end - start) as u64,
+                    reason: parameter_reason.clone(),
+                });
+            }
+            cursor = end;
+        }
+        structure(cursor, file_bytes.len(), &mut omission_spans);
+        let accounted = omission_spans.iter().map(|span| span.len).sum::<u64>()
+            + mp4
+                .samples()
+                .iter()
+                .map(|sample| sample.source.len() as u64)
+                .sum::<u64>();
+        if accounted != file_bytes.len() as u64 {
+            return Err(FileIngestError::Mp4Refused {
+                refusal: DemuxError::Layout,
+            });
+        }
+
+        let mut segment_spans = Vec::with_capacity(mp4.samples().len());
+        let mut capsules = Vec::with_capacity(mp4.samples().len());
+        for sample in mp4.samples() {
+            let idx = sample.index;
+            let bytes = file_bytes.get(sample.source.clone()).ok_or_else(|| {
+                FileIngestError::CorruptSegment {
+                    detail: "MP4 sample span out of bounds".to_string(),
+                }
+            })?;
+            let capsule_id =
+                CapsuleId::parse(format!("capsule:{}:{:06}", import_identity_hex, idx))?;
+            let capture =
+                Self::compute_capture_interval(idx, request.capture_hint.as_ref(), receive_time)?;
+            let capsule = SensorCapsule::from_source_bytes(SensorSourceBytesSpec {
+                capsule_id: capsule_id.clone(),
+                sensor_id: request.sensor_id.clone(),
+                stream_id: request.stream_id.clone(),
+                sequence: idx as u64,
+                capture,
+                receive_time,
+                clock_basis: ClockBasis::Estimated,
+                source: bytes,
+                frame_count: 1,
+                gap_before: false,
+            })?;
+            segment_spans.push(SegmentSpan {
+                segment_index: idx,
+                offset: sample.source.start as u64,
+                len: sample.source.len() as u64,
+                segment_sha256: ContentDigest::sha256(bytes),
+                capsule_id,
+                gap_before: false,
             });
             capsules.push(capsule);
         }

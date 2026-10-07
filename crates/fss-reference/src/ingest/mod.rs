@@ -88,8 +88,9 @@ pub use file_adapter::{
     ADP_FILE_GENERATION, ADP_FILE_ROW_ID, CaptureHint, DEFAULT_CHUNK_BYTES, DetectedFileFormat,
     FILE_IMPORT_MANIFEST_SCHEMA, FileFormatHint, FileImport, FileImportManifest, FileIngestAdapter,
     FileIngestError, FileIngestFailure, FileIngestLimits, FileIngestOutcome, FileIngestReceipt,
-    FileIngestRequest, FileOmissionSpan, MAX_BATCH_DELTAS, SegmentSpan, compute_import_identity,
-    default_adapter_identity, fetch_segment_bytes, sniff_format, sniff_format_with_hint,
+    FileIngestRequest, FileOmissionSpan, MAX_BATCH_DELTAS, MP4_PARAMETER_SET_REASON_PREFIX,
+    MP4_STRUCTURE_REASON_PREFIX, SegmentSpan, compute_import_identity, default_adapter_identity,
+    fetch_segment_bytes, sniff_format, sniff_format_with_hint,
 };
 pub use file_session::{AcquisitionRetention, FileAcquisitionHistory, FileSessionEnding};
 pub use hevc_annexb::{HEVC_AU_GROUPING, HevcAccessUnit, HevcNal, HevcScan, split_hevc_annexb};

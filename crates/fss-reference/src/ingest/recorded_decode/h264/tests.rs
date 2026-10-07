@@ -404,3 +404,195 @@ fn chroma_planes_reassemble_the_ffmpeg_yuv420p_oracle_and_convert_to_rgb() -> Te
     }
     Ok(())
 }
+
+/// Indexed MP4, `moov` first: the same ten frames, two IDRs, B-picture reordering.
+const MP4_FASTSTART: &[u8] =
+    include_bytes!("../../../../../fss-container/tests/fixtures/indexed_avc.mp4");
+/// The same video interleaved with an AAC track in `mdat`, `moov` last.
+const MP4_INTERLEAVED: &[u8] =
+    include_bytes!("../../../../../fss-container/tests/fixtures/interleaved_av.mp4");
+/// FFmpeg `yuv420p` framehash of both MP4 fixtures' video track, in presentation order.
+const MP4_ORACLE: &str =
+    include_str!("../../../../../fss-container/tests/fixtures/indexed_avc_i420.sha256");
+
+fn import_as(name: &str, bytes: &[u8], hint: Option<FileFormatHint>) -> TestResult<Imported> {
+    let directory = OwnedDirectory::new(name)?;
+    let root = directory.0.join("deployment");
+    let path = directory.0.join("camera.media");
+    fs::write(&path, bytes)?;
+    let cx = context(&root)?;
+    let mut deployment = ReferenceDeployment::open(&root, "site:recorded-h264", &cx)?;
+    let mut request = FileIngestRequest::new(
+        path.clone(),
+        SensorId::parse("sensor:recorded-h264")?,
+        StreamId::parse("stream:recorded-h264")?,
+    )
+    .with_receive_time(TimestampNs(1_000_000_000));
+    request.format_hint = hint;
+    let receipt = FileIngestAdapter::ingest(request, &cx, &mut deployment)?;
+    fs::remove_file(path)?;
+    Ok(Imported {
+        _directory: directory,
+        cx,
+        deployment,
+        identity: receipt.import_identity,
+        segments: receipt.manifest.segment_spans.len(),
+    })
+}
+
+fn i420_digests(imported: &Imported, first: usize, count: usize) -> TestResult<Vec<String>> {
+    Ok(decode_h264_range(
+        &imported.deployment,
+        request(imported.identity, first, count),
+        &imported.cx,
+    )?
+    .iter()
+    .map(|frame| frame.receipt().i420_sha256().to_text())
+    .collect())
+}
+
+#[test]
+fn retained_mp4_samples_decode_bit_exact_against_the_ffmpeg_oracle() -> TestResult {
+    let expected = oracle(MP4_ORACLE);
+    assert_eq!(expected.len(), 10);
+    for (name, bytes) in [
+        ("mp4-faststart", MP4_FASTSTART),
+        ("mp4-interleaved", MP4_INTERLEAVED),
+    ] {
+        // Sniffed without a hint: the ftyp box selects the MP4 path.
+        let imported = import_as(name, bytes, None)?;
+        assert_eq!(imported.segments, 10);
+        let retained = RetainedFileImport::open(
+            &imported.deployment,
+            imported.identity,
+            RetainedReadLimits::default(),
+            &imported.cx,
+        )?;
+        let manifest = retained.manifest();
+        assert_eq!(manifest.format, "mp4avc");
+        assert_eq!(manifest.detector_evidence, "mp4_ftyp");
+        // Every byte is a sample or typed structure; no sample follows a source gap.
+        assert!(manifest.segment_spans.iter().all(|span| !span.gap_before));
+        assert!(
+            manifest
+                .omission_spans
+                .iter()
+                .all(|span| span.is_container_structure())
+        );
+        let accounted: u64 = manifest
+            .segment_spans
+            .iter()
+            .map(|span| span.len)
+            .sum::<u64>()
+            + manifest
+                .omission_spans
+                .iter()
+                .map(|span| span.len)
+                .sum::<u64>();
+        assert_eq!(accounted, bytes.len() as u64);
+        let parameter_sets = manifest
+            .omission_spans
+            .iter()
+            .filter(|span| span.reason == "mp4_avc_parameter_set:nal_length_bytes=4")
+            .count();
+        assert_eq!(parameter_sets, 2);
+        // Each segment is the sample's exact original length-prefixed bytes.
+        for (index, span) in manifest.segment_spans.iter().enumerate() {
+            let segment = retained.read_segment(
+                &imported.deployment,
+                index,
+                RetainedReadLimits::default(),
+                &imported.cx,
+            )?;
+            let range = span.offset as usize..(span.offset + span.len) as usize;
+            assert_eq!(segment.as_slice(), &bytes[range]);
+        }
+        let frames = decode_h264_range(
+            &imported.deployment,
+            request(imported.identity, 0, 10),
+            &imported.cx,
+        )?;
+        assert_eq!(frames.len(), 10);
+        for (index, frame) in frames.iter().enumerate() {
+            assert_eq!(frame.receipt().i420_sha256().to_text(), expected[index]);
+            assert_eq!(frame.receipt().dimensions(), [64, 48]);
+        }
+        // Display order: decode indexes of a two-B-frame GOP map back to their samples.
+        let idr: Vec<bool> = frames.iter().map(|f| f.receipt().is_idr()).collect();
+        assert_eq!(idr.iter().filter(|idr| **idr).count(), 2);
+        assert!(idr[0]);
+        // The second GOP is independently decodable from its IDR sample.
+        assert_eq!(i420_digests(&imported, 5, 5)?, expected[5..].to_vec());
+    }
+    Ok(())
+}
+
+#[test]
+fn mp4_and_its_annexb_extraction_decode_to_identical_frames() -> TestResult {
+    let parsed = fss_container::demux::AvcMp4::parse(
+        MP4_INTERLEAVED,
+        None,
+        fss_container::demux::DemuxLimits::default(),
+    )?;
+    let extraction = parsed.annex_b(0, 10)?;
+    let annexb = import_as(
+        "mp4-extraction",
+        extraction.bytes(),
+        Some(FileFormatHint::AnnexB),
+    )?;
+    let mp4 = import_as(
+        "mp4-original",
+        MP4_INTERLEAVED,
+        Some(FileFormatHint::Mp4Avc),
+    )?;
+    assert_eq!(annexb.segments, mp4.segments);
+    assert_eq!(i420_digests(&annexb, 0, 10)?, i420_digests(&mp4, 0, 10)?);
+    Ok(())
+}
+
+#[test]
+fn mp4_ranges_refuse_predicted_starts_and_damaged_or_mislabelled_files() -> TestResult {
+    let imported = import_as("mp4-refusals", MP4_FASTSTART, Some(FileFormatHint::Mp4Avc))?;
+    for start in [1, 2, 3, 4, 6] {
+        match decode_h264_range(
+            &imported.deployment,
+            request(imported.identity, start, 1),
+            &imported.cx,
+        ) {
+            Err(RecordedDecodeError::H264RangeNotIdr { segment }) => assert_eq!(segment, start),
+            other => return Err(format!("expected a not-IDR refusal, got {other:?}").into()),
+        }
+    }
+    // A truncated file is refused by the demuxer, whole, with a stable identity.
+    let directory = OwnedDirectory::new("mp4-truncated")?;
+    let root = directory.0.join("deployment");
+    let path = directory.0.join("camera.mp4");
+    fs::write(&path, &MP4_FASTSTART[..MP4_FASTSTART.len() - 7])?;
+    let cx = context(&root)?;
+    let mut deployment = ReferenceDeployment::open(&root, "site:recorded-h264", &cx)?;
+    let request = FileIngestRequest::new(
+        path.clone(),
+        SensorId::parse("sensor:recorded-h264")?,
+        StreamId::parse("stream:recorded-h264")?,
+    )
+    .with_receive_time(TimestampNs(1_000_000_000));
+    match FileIngestAdapter::ingest(request.clone(), &cx, &mut deployment) {
+        Err(error @ crate::ingest::FileIngestError::Mp4Refused { .. }) => {
+            assert_eq!(error.stable_id(), Some("ERR-INGEST-MP4-REFUSED-001"));
+        }
+        other => return Err(format!("expected an MP4 refusal, got {other:?}").into()),
+    }
+    // Declaring Annex-B for an MP4 file is a conflict, never a reinterpretation.
+    fs::write(&path, MP4_FASTSTART)?;
+    match FileIngestAdapter::ingest(
+        request.with_format_hint(FileFormatHint::AnnexB),
+        &cx,
+        &mut deployment,
+    ) {
+        Err(error @ crate::ingest::FileIngestError::FormatConflict { .. }) => {
+            assert_eq!(error.stable_id(), Some("ERR-INGEST-FORMAT-CONFLICT-001"));
+        }
+        other => return Err(format!("expected a format conflict, got {other:?}").into()),
+    }
+    Ok(())
+}

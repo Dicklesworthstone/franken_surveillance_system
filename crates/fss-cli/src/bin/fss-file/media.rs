@@ -216,7 +216,9 @@ pub(super) fn run(
     out: &mut impl Write,
 ) -> RunResult<()> {
     match action {
-        Action::Frame(action) if retained.manifest().format == "annexb" => {
+        Action::Frame(action)
+            if matches!(retained.manifest().format.as_str(), "annexb" | "mp4avc") =>
+        {
             run_h264(action, deployment, root, cx, out)
         }
         Action::Frame(action) if retained.manifest().format == "hevc" => {
@@ -235,7 +237,7 @@ fn run_frame(
     out: &mut impl Write,
 ) -> RunResult<()> {
     if action.segment_count != 1 {
-        return Err(std::io::Error::other("--segment-count applies only to annexb and hevc imports; JPEG frames decode one segment").into());
+        return Err(std::io::Error::other("--segment-count applies only to annexb, mp4avc and hevc imports; JPEG frames decode one segment").into());
     }
     let mut budget = DecodeBudget::new(action.work_units);
     let frame = match action.mode {

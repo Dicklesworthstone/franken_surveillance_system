@@ -397,6 +397,15 @@ impl<'a> AvcMp4<'a> {
     pub fn samples(&self) -> &[AvcSample] {
         &self.samples
     }
+    /// Bytes of each sample NAL length field (1, 2 or 4), from `avcC`.
+    pub const fn nal_length_bytes(&self) -> usize {
+        self.length_bytes
+    }
+    /// Exact original byte ranges of the `avcC` SPS, PPS and SPS-extension NAL units, in
+    /// configuration order (which is also ascending file order). Excludes their length fields.
+    pub fn parameter_sets(&self) -> &[Range<usize>] {
+        &self.parameter_sets
+    }
     /// Exact parser counters: box visits, declared table entries, inspected NALs.
     pub const fn work(&self) -> [usize; 3] {
         [self.boxes_visited, self.table_entries, self.nals_inspected]
@@ -476,6 +485,25 @@ impl<'a> AvcMp4<'a> {
             sample_count: count,
         })
     }
+}
+
+/// Validated NAL payload ranges of one length-prefixed sample, relative to `sample`.
+///
+/// Every length field must fit, be non-zero and end inside the sample; the walk covers the
+/// sample exactly. `length_bytes` is 1, 2 or 4 ([`AvcMp4::nal_length_bytes`]).
+pub fn length_prefixed_nals(
+    sample: &[u8],
+    length_bytes: usize,
+) -> Result<Vec<Range<usize>>, DemuxError> {
+    if !matches!(length_bytes, 1 | 2 | 4) {
+        return Err(DemuxError::Nal);
+    }
+    let mut ranges = Vec::new();
+    nals(sample, 0..sample.len(), length_bytes, &mut |nal| {
+        ranges.push(nal);
+        Ok(())
+    })?;
+    Ok(ranges)
 }
 
 /// One copy proof. The four bytes preceding output_start are generated Annex-B start codes.
