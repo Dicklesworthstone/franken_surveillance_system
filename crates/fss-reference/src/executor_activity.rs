@@ -3,9 +3,12 @@
 //!
 //! One first-party Model IR graph, `model:fss-activity:v1`, runs on the scalar reference
 //! executor over two natively decoded RGB frames of one recording: the evaluated frame and an
-//! earlier reference frame of the same file. It computes the mean squared per-channel difference
-//! of the unit-scaled pixels. A documented [`ActivityThresholdPolicy`] with its own generation
-//! turns that score into an [`ExecutorModelResult`]:
+//! earlier reference frame of the same file. The graph ships as an immutable, digest-pinned model
+//! package and is executed only after package verification
+//! ([`crate::executor_activity_package`], fss-2h5zq.49). Both frames are resized to 32x32 unit
+//! luma by the package's recorded preprocessing, and the graph computes their mean squared
+//! difference. A documented [`ActivityThresholdPolicy`] with its own generation turns that score
+//! into an [`ExecutorModelResult`]:
 //!
 //! - score strictly greater than the threshold: [`ExecutorModelOutcome::Activity`];
 //! - score at or below the threshold: [`ExecutorModelOutcome::NoActivity`], which is NOT
@@ -16,24 +19,34 @@
 //! The score is an uncalibrated pixel-change measure, not a probability, an object class or an
 //! identity. A file source has no live transport continuity, so every result carries
 //! [`ExecutorContinuity::NotObservable`] instead of a continuity digest. The model invocation
-//! receipt of an inline reference graph carries `fss-na:` sentinels; the result records that as
-//! `reference_only`, and it is never activation-backed model evidence.
+//! receipt names the verified package manifest, but no activation system exists, so it carries
+//! the `activationGeneration` `fss-na:` sentinel. The result records that as `reference_only`, and
+//! it is never activation-backed model evidence.
+//!
+//! Scores of different model generations or model identities are never compared or mixed:
+//! [`ExecutorModelResult::compare_scores`] refuses such pairs with a typed error.
 
+use std::cmp::Ordering;
 use std::fmt;
 
 use fss_codec_mjpeg::ComponentInterpretation;
 use fss_codec_mjpeg::color::RgbDecodeReceipt;
-use fss_core::{CanonicalEncode, CanonicalEncoder, ContentDigest, Generation, SensorId};
-use fss_model_ir::{
-    AttrValue, AttributeMap, GraphNode, ModelIrError, ModelIrGraph, OpCode, TensorPort,
-    compute_model_ir_digest,
+use fss_core::{
+    CanonicalDecoder, CanonicalEncode, CanonicalEncoder, ContentDigest, ContractError, SensorId,
 };
-use fss_tensor::{DType, Shape, Tensor, TensorError};
+use fss_model_ir::{ModelIrError, ModelIrGraph};
+use fss_tensor::{Shape, Tensor, TensorError};
 
+pub use crate::executor_activity_package::{
+    ACTIVITY_FRAME_INPUT, ACTIVITY_MODEL_GENERATION, ACTIVITY_REFERENCE_INPUT,
+    ACTIVITY_SCORE_OUTPUT, ACTIVITY_TENSOR_GENERATION, ACTIVITY_WEIGHTS_INPUT,
+};
+use crate::executor_activity_package::{ActivityPackageError, VerifiedActivityPackage};
 use crate::model_receipt::{
     ModelInvocationReceipt, ReceiptOutcome, ReceiptRecordContext, execute_and_record_receipt,
 };
-use crate::{ChannelTransform, ExecBudget, ExecError, PreprocessProgram, ScalarExecCx};
+use crate::preprocess::{ImageBytes, ResizeOptions};
+use crate::{ExecBudget, ExecError, ScalarExecCx};
 
 /// Canonical domain of a retained executor model result (`SCHEMA-DOMAIN-EXECUTOR-MODEL-RESULT-001`).
 pub const EXECUTOR_MODEL_RESULT_DOMAIN: &str = "fss.executor_model_result.v1";
@@ -43,16 +56,10 @@ pub const ACTIVITY_THRESHOLD_POLICY_DOMAIN: &str = "fss.executor_activity_thresh
 /// Canonical domain of a retained native RGB decode receipt record
 /// (`SCHEMA-DOMAIN-RGB-DECODE-RECEIPT-001`).
 pub const RGB_DECODE_RECEIPT_DOMAIN: &str = "fss.rgb_decode_receipt.v1";
-/// Canonical domain of the activity model identity (graph digest, weights and preprocessing)
-/// (`SCHEMA-DOMAIN-EXECUTOR-ACTIVITY-MODEL-001`).
+/// Canonical domain of the activity model identity (graph digest, spec, preprocessing, package
+/// manifest and weights) (`SCHEMA-DOMAIN-EXECUTOR-ACTIVITY-MODEL-001`).
 pub const ACTIVITY_MODEL_DOMAIN: &str = "fss.executor_activity_model.v1";
-/// Stable model generation string of the activity graph.
-pub const ACTIVITY_MODEL_GENERATION: &str = "model:fss-activity:v1";
-/// Graph output carrying the `[1, 1]` activity score.
-pub const ACTIVITY_SCORE_OUTPUT: &str = "score";
-/// Tensor generation shared by the activity graph ports and its input tensors.
-pub const ACTIVITY_TENSOR_GENERATION: Generation = Generation(1);
-/// Largest admitted frame (pixels) for the activity graph.
+/// Largest admitted source frame (pixels) for the activity model.
 pub const MAX_ACTIVITY_MODEL_PIXELS: usize = 1 << 20;
 
 /// Failures before a result can be formed. Executor failures are NOT errors: they become an
@@ -67,6 +74,27 @@ pub enum ExecutorActivityError {
     Tensor(TensorError),
     /// Preprocessing of decoded pixels into the input tensor failed.
     Preprocess(ExecError),
+    /// The model package was refused by verification.
+    Package(ActivityPackageError),
+    /// Two scores of different model generations were offered for comparison.
+    CrossGenerationScoreMixing {
+        /// Generation of the left score.
+        left: String,
+        /// Generation of the right score.
+        right: String,
+    },
+    /// Two scores of the same generation string but different model identities (package,
+    /// graph, preprocessing or weights) were offered for comparison.
+    CrossModelScoreMixing {
+        /// Model identity of the left score.
+        left: ContentDigest,
+        /// Model identity of the right score.
+        right: ContentDigest,
+    },
+    /// At least one side abstained, so there is no score to compare.
+    NoScore,
+    /// A retained result's canonical bytes are malformed or non-canonical.
+    Decode(ContractError),
 }
 
 impl fmt::Display for ExecutorActivityError {
@@ -76,7 +104,24 @@ impl fmt::Display for ExecutorActivityError {
             Self::Graph(error) => write!(f, "activity graph refused: {error}"),
             Self::Tensor(error) => write!(f, "activity tensor refused: {error}"),
             Self::Preprocess(error) => write!(f, "activity preprocessing refused: {error}"),
+            Self::Package(error) => write!(f, "activity model package refused: {error}"),
+            Self::CrossGenerationScoreMixing { left, right } => write!(
+                f,
+                "refusing to compare scores across model generations {left} and {right}"
+            ),
+            Self::CrossModelScoreMixing { left, right } => write!(
+                f,
+                "refusing to compare scores across model identities {left} and {right}"
+            ),
+            Self::NoScore => f.write_str("an abstaining result has no score to compare"),
+            Self::Decode(error) => write!(f, "executor model result decode refused: {error}"),
         }
+    }
+}
+
+impl From<ContractError> for ExecutorActivityError {
+    fn from(error: ContractError) -> Self {
+        Self::Decode(error)
     }
 }
 
@@ -235,6 +280,15 @@ impl ExecutorAbstentionReason {
             Self::NonFiniteScore => 3,
         }
     }
+
+    const fn from_tag(tag: u8) -> Option<Self> {
+        match tag {
+            1 => Some(Self::ExecutorFailed),
+            2 => Some(Self::MissingScore),
+            3 => Some(Self::NonFiniteScore),
+            _ => None,
+        }
+    }
 }
 
 /// Typed executor outcome under one threshold policy generation.
@@ -329,6 +383,112 @@ impl ExecutorModelResult {
     pub const fn supports_absence_claim(&self) -> bool {
         false
     }
+
+    /// Orders two scores only when both come from the same model generation AND the same model
+    /// identity. Scores of different generations or identities are never compared or mixed.
+    pub fn compare_scores(&self, other: &Self) -> Result<Ordering, ExecutorActivityError> {
+        if self.model_generation != other.model_generation {
+            return Err(ExecutorActivityError::CrossGenerationScoreMixing {
+                left: self.model_generation.clone(),
+                right: other.model_generation.clone(),
+            });
+        }
+        if self.model_digest != other.model_digest {
+            return Err(ExecutorActivityError::CrossModelScoreMixing {
+                left: self.model_digest,
+                right: other.model_digest,
+            });
+        }
+        match (self.outcome.score(), other.outcome.score()) {
+            (Some(left), Some(right)) => left
+                .partial_cmp(&right)
+                .ok_or(ExecutorActivityError::NoScore),
+            _ => Err(ExecutorActivityError::NoScore),
+        }
+    }
+
+    /// Strict decode of the retained canonical bytes: unknown tags, trailing bytes or any
+    /// non-canonical encoding are refused, and re-encoding must reproduce the input exactly.
+    pub fn decode_canonical(bytes: &[u8]) -> Result<Self, ExecutorActivityError> {
+        let mut d = CanonicalDecoder::new(bytes);
+        if d.text()? != EXECUTOR_MODEL_RESULT_DOMAIN {
+            return Err(ExecutorActivityError::Decode(
+                ContractError::InvalidIdentifier,
+            ));
+        }
+        let model_generation = d.text()?.to_owned();
+        let model_digest = d.digest()?;
+        let threshold_policy_generation = d.u64()?;
+        let threshold_policy_digest = d.digest()?;
+        let sensor_id = SensorId::parse(d.text()?)?;
+        let input_capture_root = d.digest()?;
+        let capsule_digest = d.digest()?;
+        let reference_capture_root = d.digest()?;
+        let decode_receipt_digest = d.digest()?;
+        let reference_decode_receipt_digest = d.digest()?;
+        let invocation_receipt_digest = d.digest()?;
+        let invocation_receipt_object = d.digest()?;
+        let reference_only = d.bool()?;
+        let continuity = match (d.u8()?, d.text()?) {
+            (1, "file_source") => ExecutorContinuity::NotObservable {
+                reason: ContinuityNotObservableReason::FileSource,
+            },
+            _ => {
+                return Err(ExecutorActivityError::Decode(
+                    ContractError::InvalidIdentifier,
+                ));
+            }
+        };
+        let outcome = match d.u8()? {
+            1 => ExecutorModelOutcome::Activity {
+                score_bits: d.u32()?,
+            },
+            2 => ExecutorModelOutcome::NoActivity {
+                score_bits: d.u32()?,
+            },
+            3 => {
+                let reason = ExecutorAbstentionReason::from_tag(d.u8()?).ok_or(
+                    ExecutorActivityError::Decode(ContractError::InvalidIdentifier),
+                )?;
+                let receipt_outcome = ReceiptOutcome::parse(d.text()?).ok_or(
+                    ExecutorActivityError::Decode(ContractError::InvalidIdentifier),
+                )?;
+                ExecutorModelOutcome::Abstained {
+                    reason,
+                    receipt_outcome,
+                }
+            }
+            _ => {
+                return Err(ExecutorActivityError::Decode(
+                    ContractError::InvalidIdentifier,
+                ));
+            }
+        };
+        d.ensure_finished()?;
+        let result = Self {
+            model_generation,
+            model_digest,
+            threshold_policy_generation,
+            threshold_policy_digest,
+            sensor_id,
+            input_capture_root,
+            capsule_digest,
+            reference_capture_root,
+            decode_receipt_digest,
+            reference_decode_receipt_digest,
+            invocation_receipt_digest,
+            invocation_receipt_object,
+            reference_only,
+            continuity,
+            outcome,
+        };
+        if result.canonical_bytes() != bytes {
+            return Err(ExecutorActivityError::Decode(
+                ContractError::InvalidIdentifier,
+            ));
+        }
+        Ok(result)
+    }
 }
 
 impl CanonicalEncode for ExecutorModelResult {
@@ -409,116 +569,120 @@ pub struct ActivityFrameBinding<'a> {
     pub capsule_digest: ContentDigest,
 }
 
-/// The frozen activity graph and its uniform averaging weights for one frame size.
+/// Fixed preprocessing ceiling: the nearest resize of the largest admitted frame to 32x32 luma.
+/// It is independent of the executor budget, so a starved executor still yields a receipt and an
+/// abstention rather than a preprocessing refusal.
+const PREPROCESS_BUDGET: ExecBudget = ExecBudget {
+    max_macs: 64 * 1024 * 1024,
+    max_bytes: 64 * 1024 * 1024,
+};
+
+/// The verified activity package bound to the scalar executor.
+///
+/// The only constructor takes a [`VerifiedActivityPackage`], which exists only after
+/// [`VerifiedActivityPackage::load`] has checked the pinned archive digest, the archive, the
+/// license, the spec, the graph and the weights. There is no inline-graph path.
 #[derive(Debug)]
 pub struct ActivityExecutorModel {
-    graph: ModelIrGraph,
-    program: PreprocessProgram,
-    weights: Vec<f32>,
-    width: u32,
-    height: u32,
+    package: VerifiedActivityPackage,
+    weights: Tensor,
     digest: ContentDigest,
 }
 
 impl ActivityExecutorModel {
-    /// Builds the graph for `width` x `height` RGB frames:
-    /// `score = MatMul(Reshape((frame - reference)^2, [1, 3HW]), w)` with `w = 1/(3HW)`.
-    pub fn new(width: u32, height: u32) -> Result<Self, ExecutorActivityError> {
-        let (w, h) = (width as usize, height as usize);
-        let pixels = w
-            .checked_mul(h)
-            .filter(|n| *n > 0 && *n <= MAX_ACTIVITY_MODEL_PIXELS)
-            .ok_or(ExecutorActivityError::InvalidInput("activity frame size"))?;
-        let elements = pixels * 3;
-        let g = ACTIVITY_TENSOR_GENERATION;
-        let image = Shape::new(vec![1, 3, h, w])?;
-        let mut flatten = AttributeMap::new();
-        flatten.insert("shape".into(), AttrValue::IntList(vec![1, elements as i64]));
-        let graph = ModelIrGraph::builder(ACTIVITY_MODEL_GENERATION, g)
-            .add_input(TensorPort::new("frame", DType::F32, image.clone(), g)?)
-            .add_input(TensorPort::new("reference", DType::F32, image, g)?)
-            .add_input(TensorPort::new(
-                "weights",
-                DType::F32,
-                Shape::new(vec![elements, 1])?,
-                g,
-            )?)
-            .add_output(TensorPort::new(
-                ACTIVITY_SCORE_OUTPUT,
-                DType::F32,
-                Shape::new(vec![1, 1])?,
-                g,
-            )?)
-            .add_node(GraphNode::new(
-                "node:delta",
-                OpCode::Sub,
-                "per-channel difference against the reference frame",
-                vec!["frame".into(), "reference".into()],
-                vec!["delta".into()],
-                AttributeMap::new(),
-            )?)
-            .add_node(GraphNode::new(
-                "node:energy",
-                OpCode::Mul,
-                "squared difference",
-                vec!["delta".into(), "delta".into()],
-                vec!["energy".into()],
-                AttributeMap::new(),
-            )?)
-            .add_node(GraphNode::new(
-                "node:flatten",
-                OpCode::Reshape,
-                "flatten to one row",
-                vec!["energy".into()],
-                vec!["flat".into()],
-                flatten,
-            )?)
-            .add_node(GraphNode::new(
-                "node:mean",
-                OpCode::MatMul,
-                "uniform mean, an uncalibrated change score",
-                vec!["flat".into(), "weights".into()],
-                vec![ACTIVITY_SCORE_OUTPUT.into()],
-                AttributeMap::new(),
-            )?)
-            .build_and_validate()?;
-        let weight = 1.0_f32 / elements as f32;
-        let weights = vec![weight; elements];
-        let program = PreprocessProgram::new(h, w, ChannelTransform::Rgb, true);
+    /// Binds a verified package. The model identity binds the generation, the graph digest, the
+    /// spec bytes, the resize identity, the manifest digest and the weights digest.
+    pub fn from_package(package: VerifiedActivityPackage) -> Result<Self, ExecutorActivityError> {
+        let weights = Tensor::from_values(
+            Shape::new(vec![package.mean_weights().len(), 1])?,
+            package.mean_weights(),
+            ACTIVITY_TENSOR_GENERATION,
+        )?;
+        let spec_bytes = package
+            .spec()
+            .encode()
+            .map_err(ExecutorActivityError::Package)?;
         let mut encoder = CanonicalEncoder::new();
         encoder.text(ACTIVITY_MODEL_DOMAIN);
         encoder.text(ACTIVITY_MODEL_GENERATION);
-        encoder.digest(compute_model_ir_digest(&graph)?);
-        encoder.bytes(&program.canonical_bytes());
-        encoder.u64(elements as u64);
-        encoder.u32(weight.to_bits());
+        encoder.digest(package.graph_digest());
+        encoder.bytes(&spec_bytes);
+        encoder.digest(package.spec().resize_digest());
+        encoder.digest(package.manifest_digest());
+        encoder.digest(package.weights_digest());
         let digest = ContentDigest::sha256(&encoder.finish());
         Ok(Self {
-            graph,
-            program,
+            package,
             weights,
-            width,
-            height,
             digest,
         })
     }
 
-    /// Graph, preprocessing and weight identity.
+    /// Loads the committed, digest-pinned package through verification and binds it.
+    pub fn load_committed(cx: &ScalarExecCx) -> Result<Self, ExecutorActivityError> {
+        Self::from_package(
+            VerifiedActivityPackage::load_committed(cx).map_err(ExecutorActivityError::Package)?,
+        )
+    }
+
+    /// Model identity: graph, spec, preprocessing, package manifest and weights.
     #[must_use]
     pub const fn digest(&self) -> ContentDigest {
         self.digest
     }
 
-    /// Frozen graph.
+    /// Verified graph.
     #[must_use]
     pub const fn graph(&self) -> &ModelIrGraph {
-        &self.graph
+        self.package.graph()
+    }
+
+    /// The verified package this model runs.
+    #[must_use]
+    pub const fn package(&self) -> &VerifiedActivityPackage {
+        &self.package
+    }
+
+    /// Preprocesses one decoded RGB frame into the `[1, 1, 32, 32]` unit-luma model input with the
+    /// package's recorded resize.
+    pub fn preprocess(
+        &self,
+        pixels: &[u8],
+        width: u32,
+        height: u32,
+        cx: &ScalarExecCx,
+    ) -> Result<Tensor, ExecutorActivityError> {
+        let (w, h) = (width as usize, height as usize);
+        w.checked_mul(h)
+            .filter(|n| *n > 0 && *n <= MAX_ACTIVITY_MODEL_PIXELS)
+            .ok_or(ExecutorActivityError::InvalidInput("activity frame size"))?;
+        let spec = self.package.spec();
+        spec.program
+            .execute_resized_bytes(
+                ImageBytes {
+                    bytes: pixels,
+                    height: h,
+                    width: w,
+                    channels: 3,
+                    generation: ACTIVITY_TENSOR_GENERATION,
+                },
+                ResizeOptions {
+                    filter: spec.filter,
+                    aspect: spec.aspect,
+                    budget: PREPROCESS_BUDGET,
+                },
+                cx,
+            )
+            .map(|outcome| outcome.tensor)
+            .map_err(ExecutorActivityError::Preprocess)
     }
 
     /// Runs the graph on the scalar executor and classifies the score.
     ///
     /// Executor failures are recorded in the receipt and become an abstaining result; only
-    /// malformed caller inputs (frame size, pixel digest) are errors.
+    /// malformed caller inputs (frame size, pixel or source digest) and preprocessing refusals are
+    /// errors. The receipt names the package manifest as `modelPackageRoot`, binds the recorded
+    /// resize program, and lists both decode-receipt records after the three input tensors.
     #[allow(clippy::too_many_arguments)]
     pub fn invoke(
         &self,
@@ -530,28 +694,35 @@ impl ActivityExecutorModel {
         job_id: &str,
         cx: &ScalarExecCx,
     ) -> Result<(ExecutorModelResult, ModelInvocationReceipt), ExecutorActivityError> {
-        let frame_tensor = self.tensor(&frame)?;
-        let reference_tensor = self.tensor(&reference)?;
-        let weights = Tensor::from_values(
-            Shape::new(vec![self.weights.len(), 1])?,
-            &self.weights,
-            ACTIVITY_TENSOR_GENERATION,
-        )?;
+        if frame.receipt.dimensions != reference.receipt.dimensions {
+            return Err(ExecutorActivityError::InvalidInput(
+                "frame and reference dimensions differ",
+            ));
+        }
+        let frame_tensor = self.tensor(&frame, cx)?;
+        let reference_tensor = self.tensor(&reference, cx)?;
+        let decode_receipt_digest =
+            ContentDigest::sha256(&rgb_decode_receipt_bytes(&frame.receipt));
+        let reference_decode_receipt_digest =
+            ContentDigest::sha256(&rgb_decode_receipt_bytes(&reference.receipt));
         let inputs = [
-            ("frame", frame_tensor),
-            ("reference", reference_tensor),
-            ("weights", weights),
+            (ACTIVITY_FRAME_INPUT, frame_tensor),
+            (ACTIVITY_REFERENCE_INPUT, reference_tensor),
+            (ACTIVITY_WEIGHTS_INPUT, self.weights.clone()),
         ];
+        let spec = self.package.spec();
         let (run, receipt) = execute_and_record_receipt(
-            &self.graph,
+            self.package.graph(),
             &inputs,
             budget,
             cx,
             ReceiptRecordContext {
                 job_id,
-                preprocess_program: Some(&self.program),
-                model_package_root: None,
+                preprocess_program: Some(&spec.program),
+                model_package_root: Some(self.package.manifest_digest()),
                 virtual_clock: None,
+                source_roots: &[decode_receipt_digest, reference_decode_receipt_digest],
+                preprocess_resize: Some((spec.filter, spec.aspect)),
             },
         );
         let outcome = match (&run, receipt.outcome) {
@@ -579,10 +750,8 @@ impl ActivityExecutorModel {
             input_capture_root: frame.source_digest,
             capsule_digest: frame.capsule_digest,
             reference_capture_root: reference.source_digest,
-            decode_receipt_digest: ContentDigest::sha256(&rgb_decode_receipt_bytes(&frame.receipt)),
-            reference_decode_receipt_digest: ContentDigest::sha256(&rgb_decode_receipt_bytes(
-                &reference.receipt,
-            )),
+            decode_receipt_digest,
+            reference_decode_receipt_digest,
             invocation_receipt_digest: receipt.compute_canonical_digest(),
             invocation_receipt_object: ContentDigest::sha256(
                 receipt.to_json_canonical().as_bytes(),
@@ -596,12 +765,11 @@ impl ActivityExecutorModel {
         Ok((result, receipt))
     }
 
-    fn tensor(&self, frame: &ActivityFrameBinding<'_>) -> Result<Tensor, ExecutorActivityError> {
-        if frame.receipt.dimensions != [self.width, self.height] {
-            return Err(ExecutorActivityError::InvalidInput(
-                "frame dimensions differ from the activity graph",
-            ));
-        }
+    fn tensor(
+        &self,
+        frame: &ActivityFrameBinding<'_>,
+        cx: &ScalarExecCx,
+    ) -> Result<Tensor, ExecutorActivityError> {
         if ContentDigest::sha256(frame.pixels).bytes() != frame.receipt.rgb_sha256 {
             return Err(ExecutorActivityError::InvalidInput(
                 "pixels contradict their decode receipt",
@@ -612,14 +780,7 @@ impl ActivityExecutorModel {
                 "decode receipt names other source bytes",
             ));
         }
-        self.program
-            .execute_bytes(
-                frame.pixels,
-                self.height as usize,
-                self.width as usize,
-                3,
-                ACTIVITY_TENSOR_GENERATION,
-            )
-            .map_err(ExecutorActivityError::Preprocess)
+        let [width, height] = frame.receipt.dimensions;
+        self.preprocess(frame.pixels, width, height, cx)
     }
 }

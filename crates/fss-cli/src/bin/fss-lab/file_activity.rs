@@ -4,6 +4,8 @@
 //! A recorded single-camera JPEG frame sequence (checked-in fss-codec-mjpeg fixtures) is staged
 //! as source bytes with sensor capsules, natively decoded to RGB, and every frame after the first
 //! is scored by the `model:fss-activity:v1` graph on the scalar executor against the first frame.
+//! The graph is loaded only from the committed, digest-pinned model package after verification
+//! (fss-2h5zq.49), and the package archive is retained beside the receipts.
 //! The documented threshold policy turns each score into an executor-backed observation for the
 //! unchanged unknown-presence policy. Every observation binds the retained invocation receipt and
 //! decode receipt records, and carries continuity `not_observable: file_source`; a file never
@@ -21,6 +23,7 @@ use fss_reference::executor_activity::{
     ActivityThresholdPolicy, ExecutorContinuity, ExecutorModelOutcome, ExecutorModelResult,
     rgb_decode_receipt_bytes,
 };
+use fss_reference::executor_activity_package::ACTIVITY_PACKAGE_V1;
 use fss_reference::{ExecBudget, ReferenceDeployment, ReferenceModelObservation, ScalarExecCx};
 
 use crate::scenario::ScenarioError;
@@ -78,6 +81,10 @@ pub struct FileActivityObservation {
 pub struct FileActivityReport {
     /// Graph, preprocessing and weights identity.
     pub model_digest: ContentDigest,
+    /// Whole-archive SHA-256 of the verified model package (retained in the deployment).
+    pub package_sha256: ContentDigest,
+    /// Verified package manifest digest, the receipts' `modelPackageRoot`.
+    pub model_package_root: ContentDigest,
     /// Threshold policy applied.
     pub policy: ActivityThresholdPolicy,
     /// Retained decode receipt record of the reference frame.
@@ -92,8 +99,10 @@ impl FileActivityReport {
         use std::fmt::Write as _;
         let _ = write!(
             output,
-            "{{\"source\":\"file\",\"sensor\":\"sensor:{FILE_SENSOR}\",\"model_generation\":\"{ACTIVITY_MODEL_GENERATION}\",\"model_digest\":\"{}\",\"backend\":\"scalar_reference\",\"threshold_policy\":{{\"generation\":{},\"threshold\":{},\"rule\":\"activity_if_score_strictly_greater\",\"digest\":\"{}\"}},\"score_calibrated\":false,\"reference_decode_receipt\":\"{}\",\"observations\":[",
+            "{{\"source\":\"file\",\"sensor\":\"sensor:{FILE_SENSOR}\",\"model_generation\":\"{ACTIVITY_MODEL_GENERATION}\",\"model_digest\":\"{}\",\"package_sha256\":\"{}\",\"model_package_root\":\"{}\",\"backend\":\"scalar_reference\",\"threshold_policy\":{{\"generation\":{},\"threshold\":{},\"rule\":\"activity_if_score_strictly_greater\",\"digest\":\"{}\"}},\"score_calibrated\":false,\"reference_decode_receipt\":\"{}\",\"observations\":[",
             self.model_digest,
+            self.package_sha256,
+            self.model_package_root,
             self.policy.generation(),
             self.policy.threshold(),
             self.policy.digest(),
@@ -236,9 +245,18 @@ pub fn gather(
     let reference = frames
         .first()
         .ok_or(ScenarioError::Packet("empty recording"))?;
-    let [width, height] = reference.decoded.dimensions();
-    let model = ActivityExecutorModel::new(width, height).map_err(|e| reference_error(&e))?;
     let cx = ScalarExecCx::new();
+    // The graph comes only from the committed, digest-pinned package, verified (archive,
+    // license, spec, graph, weights) before any invocation; its archive bytes are retained.
+    let model = ActivityExecutorModel::load_committed(&cx).map_err(|e| reference_error(&e))?;
+    let package_sha256 = model.package().archive_digest();
+    stage_checked(
+        deployment,
+        staged,
+        ACTIVITY_PACKAGE_V1,
+        package_sha256,
+        "activity model package",
+    )?;
     let mut observations = Vec::new();
     let mut reported = Vec::new();
     for (frame, staged_frame) in frames.iter().enumerate().skip(1) {
@@ -293,6 +311,8 @@ pub fn gather(
         observations,
         FileActivityReport {
             model_digest: model.digest(),
+            package_sha256,
+            model_package_root: model.package().manifest_digest(),
             policy: options.policy,
             reference_decode_receipt: ContentDigest::sha256(&rgb_decode_receipt_bytes(
                 &reference.decoded.receipt(),

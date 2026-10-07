@@ -28,6 +28,7 @@ use fss_model_ir::{
 use fss_tensor::Tensor;
 
 use crate::clock::VirtualClock;
+use crate::preprocess::{ResizeAspect, ResizeFilter};
 use crate::scalar_executor::{
     ChannelTransform, ExecBudget, ExecError, ExecOutcome, PreprocessProgram, ScalarExecCx,
     ScalarExecutor,
@@ -257,6 +258,18 @@ impl ReceiptOutcome {
             Self::Error => "error",
             Self::Cancelled => "cancelled",
             Self::BudgetExhausted => "budget_exhausted",
+        }
+    }
+
+    /// Parses a token produced by [`Self::as_str`]; any other token is `None`.
+    #[must_use]
+    pub fn parse(token: &str) -> Option<Self> {
+        match token {
+            "ok" => Some(Self::Ok),
+            "error" => Some(Self::Error),
+            "cancelled" => Some(Self::Cancelled),
+            "budget_exhausted" => Some(Self::BudgetExhausted),
+            _ => None,
         }
     }
 }
@@ -964,6 +977,23 @@ pub fn compute_preprocess_program_digest(program: Option<&PreprocessProgram>) ->
     ContentDigest::sha256(&encoder.finish())
 }
 
+/// Computes the preprocess program descriptor digest of a strict-size program applied through
+/// the versioned resize (`fss.reference.image_resize.v1`): it binds the program, the filter and
+/// the aspect rule, so two resizes with the same target never share a descriptor.
+#[must_use]
+pub fn compute_resized_preprocess_program_digest(
+    program: &PreprocessProgram,
+    filter: ResizeFilter,
+    aspect: ResizeAspect,
+) -> ContentDigest {
+    let mut encoder = CanonicalEncoder::new();
+    encoder.text("fss.canonical.v1");
+    encoder.text("fss.model_execution_receipt.v1/preprocess_program");
+    encoder.tag(2);
+    encoder.digest(program.resize_digest(filter, aspect));
+    ContentDigest::sha256(&encoder.finish())
+}
+
 /// Computes the postprocess program descriptor digest.
 #[must_use]
 pub fn compute_postprocess_program_digest() -> ContentDigest {
@@ -1040,6 +1070,13 @@ pub struct ReceiptRecordContext<'a> {
     pub model_package_root: Option<ContentDigest>,
     /// Virtual clock used for the recorded wall time; `None` records zero.
     pub virtual_clock: Option<&'a VirtualClock>,
+    /// Upstream source records (for example decode-receipt digests) the input tensors were
+    /// derived from. They are listed in `inputRoots` after the input tensor digests, and
+    /// `backend.featureSet` records the split, so the receipt links to the source bytes.
+    pub source_roots: &'a [ContentDigest],
+    /// Resize applied with `preprocess_program`, if any. When set, `preprocessProgram` binds the
+    /// versioned resize identity instead of the strict-size descriptor.
+    pub preprocess_resize: Option<(ResizeFilter, ResizeAspect)>,
 }
 
 /// Executes a model graph and emits an authoritative, verified [`ModelInvocationReceipt`].
@@ -1055,6 +1092,8 @@ pub fn execute_and_record_receipt(
         preprocess_program,
         model_package_root,
         virtual_clock,
+        source_roots,
+        preprocess_resize,
     } = context;
     // 1. Operator table freeze verification
     let op_registry_gen = match verify_operator_table_frozen() {
@@ -1098,6 +1137,7 @@ pub fn execute_and_record_receipt(
             total_in_bytes = total_in_bytes.saturating_add(b);
         }
     }
+    input_roots.extend(source_roots.iter().copied().map(ReceiptDigest::Content));
 
     // 4. Common descriptors
     let execution_plan = match compute_execution_plan_digest(graph, &bound_names) {
@@ -1109,11 +1149,22 @@ pub fn execute_and_record_receipt(
         Ok(d) => ReceiptDigest::Content(d),
         Err(_) => ReceiptDigest::not_applicable("decisionPathDigest", "decision_path_error"),
     };
-    let preprocess_digest =
-        ReceiptDigest::Content(compute_preprocess_program_digest(preprocess_program));
+    let preprocess_digest = ReceiptDigest::Content(match (preprocess_program, preprocess_resize) {
+        (Some(program), Some((filter, aspect))) => {
+            compute_resized_preprocess_program_digest(program, filter, aspect)
+        }
+        _ => compute_preprocess_program_digest(preprocess_program),
+    });
     let postprocess_digest = ReceiptDigest::Content(compute_postprocess_program_digest());
 
-    let backend = BackendDescriptor::scalar_reference(&sentinels);
+    let mut backend = BackendDescriptor::scalar_reference(&sentinels);
+    if !source_roots.is_empty() {
+        backend.feature_set.push(format!(
+            "input_roots:tensors={},sources={}",
+            inputs.len(),
+            source_roots.len()
+        ));
+    }
 
     // 5. Inferred output byte bounds for budget
     let mut inferred_out_bytes: usize = 0;

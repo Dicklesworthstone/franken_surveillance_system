@@ -63,8 +63,7 @@ fn run(
 ) -> TestResult<ExecutorModelResult> {
     let reference = decode(BACKGROUND)?;
     let current = decode(frame)?;
-    let [width, height] = current.dimensions();
-    let model = ActivityExecutorModel::new(width, height)?;
+    let model = ActivityExecutorModel::load_committed(&ScalarExecCx::new())?;
     let (result, receipt) = model.invoke(
         &SensorId::parse("sensor:file-cam")?,
         binding(frame, &current),
@@ -151,7 +150,7 @@ fn real_executor_scores_decoded_pixels_both_sides_of_the_threshold() -> TestResu
         );
         assert!(
             result.reference_only,
-            "inline graph receipts carry sentinels"
+            "unactivated receipts carry the activationGeneration sentinel"
         );
         assert!(!result.supports_absence_claim());
         assert_eq!(
@@ -320,5 +319,201 @@ fn duplicate_executor_results_are_refused_and_mixing_variants_works() -> TestRes
         ReferenceModelResult::from(mock.clone()).object_digest(),
         mock.object_digest()
     );
+    Ok(())
+}
+
+#[test]
+fn receipt_binds_package_root_resize_program_and_decode_receipts() -> TestResult {
+    use crate::model_receipt::{
+        ReceiptDigest, compute_preprocess_program_digest, compute_resized_preprocess_program_digest,
+    };
+    use crate::preprocess::{ResizeAspect, ResizeFilter};
+
+    let model = ActivityExecutorModel::load_committed(&ScalarExecCx::new())?;
+    let reference = decode(BACKGROUND)?;
+    let current = decode(GRADIENT)?;
+    let (result, receipt) = model.invoke(
+        &SensorId::parse("sensor:file-cam")?,
+        binding(GRADIENT, &current),
+        binding(BACKGROUND, &reference),
+        &ActivityThresholdPolicy::reference()?,
+        budget(),
+        "job:activity:receipt",
+        &ScalarExecCx::new(),
+    )?;
+    let package = model.package();
+    // The verified package manifest is the model package root: not the inline-graph sentinel.
+    assert_eq!(
+        receipt.model_package_root,
+        ReceiptDigest::Content(package.manifest_digest())
+    );
+    // Three input tensors, then the two decode-receipt records they were derived from.
+    assert_eq!(receipt.input_roots.len(), 5);
+    assert_eq!(
+        receipt.input_roots[3..],
+        [
+            ReceiptDigest::Content(result.decode_receipt_digest),
+            ReceiptDigest::Content(result.reference_decode_receipt_digest),
+        ]
+    );
+    assert!(
+        receipt
+            .backend
+            .feature_set
+            .contains(&"input_roots:tensors=3,sources=2".to_owned())
+    );
+    // The preprocessing descriptor binds the recorded resize, not only the target size.
+    let spec = package.spec();
+    let resized = compute_resized_preprocess_program_digest(
+        &spec.program,
+        ResizeFilter::Nearest,
+        ResizeAspect::Stretch,
+    );
+    assert_eq!(receipt.preprocess_program, ReceiptDigest::Content(resized));
+    assert_ne!(
+        resized,
+        compute_preprocess_program_digest(Some(&spec.program))
+    );
+    assert_ne!(
+        resized,
+        compute_resized_preprocess_program_digest(
+            &spec.program,
+            ResizeFilter::Bilinear,
+            ResizeAspect::Stretch
+        )
+    );
+    // Still reference-only: no activation system exists.
+    assert!(receipt.activation_generation.is_not_applicable());
+    assert!(!receipt.model_package_root.is_not_applicable());
+    assert!(result.reference_only);
+    assert!(
+        receipt
+            .backend
+            .feature_set
+            .iter()
+            .all(|f| !f.starts_with("sentinel:modelPackageRoot"))
+    );
+    receipt.verify(receipt.generation, &result.invocation_receipt_digest)?;
+    assert!(receipt.to_json_canonical().contains(&format!(
+        "\"modelPackageRoot\":\"{}\"",
+        package.manifest_digest()
+    )));
+    Ok(())
+}
+
+#[test]
+fn retained_results_round_trip_and_noncanonical_bytes_are_refused() -> TestResult {
+    use crate::executor_activity::ExecutorActivityError;
+
+    let policy = ActivityThresholdPolicy::reference()?;
+    let activity = run(GRADIENT, &policy, budget(), "job:activity:rt-a")?;
+    let quiet = run(BACKGROUND, &policy, budget(), "job:activity:rt-q")?;
+    let failed = run(
+        GRADIENT,
+        &policy,
+        ExecBudget::new(1, 1),
+        "job:activity:rt-f",
+    )?;
+    assert!(matches!(
+        activity.outcome,
+        ExecutorModelOutcome::Activity { .. }
+    ));
+    assert!(matches!(
+        quiet.outcome,
+        ExecutorModelOutcome::NoActivity { .. }
+    ));
+    assert!(matches!(
+        failed.outcome,
+        ExecutorModelOutcome::Abstained { .. }
+    ));
+    for result in [&activity, &quiet, &failed] {
+        let bytes = result.canonical_bytes();
+        let decoded = ExecutorModelResult::decode_canonical(&bytes)?;
+        assert_eq!(&decoded, result);
+        assert_eq!(decoded.object_digest(), result.object_digest());
+        let mut trailing = bytes.clone();
+        trailing.push(0);
+        assert!(matches!(
+            ExecutorModelResult::decode_canonical(&trailing),
+            Err(ExecutorActivityError::Decode(_))
+        ));
+        assert!(ExecutorModelResult::decode_canonical(&bytes[..bytes.len() - 1]).is_err());
+    }
+    // An unknown outcome tag is refused.
+    let mut bytes = activity.canonical_bytes();
+    let tag_at = bytes.len() - 5;
+    assert_eq!(
+        bytes[tag_at], 1,
+        "activity outcome tag precedes the score bits"
+    );
+    bytes[tag_at] = 9;
+    assert!(ExecutorModelResult::decode_canonical(&bytes).is_err());
+    Ok(())
+}
+
+#[test]
+fn scores_are_never_compared_across_generations_or_model_identities() -> TestResult {
+    use crate::executor_activity::ExecutorActivityError;
+    use std::cmp::Ordering;
+
+    let policy = ActivityThresholdPolicy::reference()?;
+    let changed = run(GRADIENT, &policy, budget(), "job:activity:cmp-a")?;
+    let quiet = run(BACKGROUND, &policy, budget(), "job:activity:cmp-b")?;
+    assert_eq!(changed.compare_scores(&quiet)?, Ordering::Greater);
+    assert_eq!(quiet.compare_scores(&changed)?, Ordering::Less);
+
+    let mut other_generation = quiet.clone();
+    other_generation.model_generation = "model:fss-activity:v2".to_owned();
+    assert!(matches!(
+        changed.compare_scores(&other_generation),
+        Err(ExecutorActivityError::CrossGenerationScoreMixing { .. })
+    ));
+    let mut other_model = quiet.clone();
+    other_model.model_digest = ContentDigest::sha256(b"another package");
+    assert!(matches!(
+        changed.compare_scores(&other_model),
+        Err(ExecutorActivityError::CrossModelScoreMixing { .. })
+    ));
+    let failed = run(
+        GRADIENT,
+        &policy,
+        ExecBudget::new(1, 1),
+        "job:activity:cmp-f",
+    )?;
+    assert!(matches!(
+        changed.compare_scores(&failed),
+        Err(ExecutorActivityError::NoScore)
+    ));
+    Ok(())
+}
+
+#[test]
+fn threshold_boundary_at_just_below_and_just_above() -> TestResult {
+    let policy = ActivityThresholdPolicy::reference()?;
+    let t = policy.threshold();
+    let below = f32::from_bits(t.to_bits() - 1);
+    let above = f32::from_bits(t.to_bits() + 1);
+    assert!(below < t && t < above);
+    assert!(matches!(
+        policy.classify(t),
+        ExecutorModelOutcome::NoActivity { score_bits } if score_bits == t.to_bits()
+    ));
+    assert!(matches!(
+        policy.classify(below),
+        ExecutorModelOutcome::NoActivity { .. }
+    ));
+    assert!(matches!(
+        policy.classify(above),
+        ExecutorModelOutcome::Activity { score_bits } if score_bits == above.to_bits()
+    ));
+    for nonfinite in [f32::NAN, f32::INFINITY, f32::NEG_INFINITY] {
+        assert!(matches!(
+            policy.classify(nonfinite),
+            ExecutorModelOutcome::Abstained {
+                reason: ExecutorAbstentionReason::NonFiniteScore,
+                ..
+            }
+        ));
+    }
     Ok(())
 }

@@ -59,6 +59,8 @@ fn test_receipt_ok_outcome() -> Result<(), Box<dyn Error>> {
             preprocess_program: None,
             model_package_root: None,
             virtual_clock: Some(&clock),
+            source_roots: &[],
+            preprocess_resize: None,
         },
     );
 
@@ -129,6 +131,8 @@ fn test_receipt_refused_graph_outcome() -> Result<(), Box<dyn Error>> {
             preprocess_program: None,
             model_package_root: None,
             virtual_clock: None,
+            source_roots: &[],
+            preprocess_resize: None,
         },
     );
 
@@ -190,6 +194,8 @@ fn test_receipt_unsupported_dtype_outcome() -> Result<(), Box<dyn Error>> {
             preprocess_program: None,
             model_package_root: None,
             virtual_clock: None,
+            source_roots: &[],
+            preprocess_resize: None,
         },
     );
 
@@ -232,6 +238,8 @@ fn test_receipt_shape_mismatch_outcome() -> Result<(), Box<dyn Error>> {
             preprocess_program: None,
             model_package_root: None,
             virtual_clock: None,
+            source_roots: &[],
+            preprocess_resize: None,
         },
     );
 
@@ -289,6 +297,8 @@ fn test_receipt_budget_exhausted_outcome() -> Result<(), Box<dyn Error>> {
             preprocess_program: None,
             model_package_root: None,
             virtual_clock: None,
+            source_roots: &[],
+            preprocess_resize: None,
         },
     );
 
@@ -329,6 +339,8 @@ fn test_receipt_cancelled_outcome() -> Result<(), Box<dyn Error>> {
             preprocess_program: None,
             model_package_root: None,
             virtual_clock: None,
+            source_roots: &[],
+            preprocess_resize: None,
         },
     );
 
@@ -372,6 +384,8 @@ fn test_bit_exact_reproducibility() -> Result<(), Box<dyn Error>> {
             preprocess_program: None,
             model_package_root: None,
             virtual_clock: Some(&clock1),
+            source_roots: &[],
+            preprocess_resize: None,
         },
     );
 
@@ -385,6 +399,8 @@ fn test_bit_exact_reproducibility() -> Result<(), Box<dyn Error>> {
             preprocess_program: None,
             model_package_root: None,
             virtual_clock: Some(&clock2),
+            source_roots: &[],
+            preprocess_resize: None,
         },
     );
 
@@ -416,6 +432,8 @@ fn test_tamper_detection() -> Result<(), Box<dyn Error>> {
             preprocess_program: None,
             model_package_root: None,
             virtual_clock: None,
+            source_roots: &[],
+            preprocess_resize: None,
         },
     );
 
@@ -480,6 +498,8 @@ fn test_virtual_clock_determinism() -> Result<(), Box<dyn Error>> {
             preprocess_program: None,
             model_package_root: None,
             virtual_clock: Some(&clock),
+            source_roots: &[],
+            preprocess_resize: None,
         },
     );
 

@@ -55,6 +55,8 @@ pub mod event_review;
 pub mod evidence_export;
 /// Executor-backed activity observations over decoded pixels (fss-2h5zq.51); cognition only.
 pub mod executor_activity;
+/// First-party activity model as an immutable, verified FMPK package (fss-2h5zq.49).
+pub mod executor_activity_package;
 /// Bounded portable redacted exports, verified offline against an independently supplied root.
 pub mod export_package;
 mod extrinsics;

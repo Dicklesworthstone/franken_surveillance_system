@@ -505,9 +505,11 @@ fn test_schema_domain_and_pinned_counts() -> Result<(), Box<dyn Error>> {
     // + SCHEMA-DOMAIN-GRAPH-RELIABILITY-{MODEL,OUTPUT,DECISION-PATH}-001 and -INTERDICT-{OUTPUT,DECISION-PATH}-001 (WP-170) = 279
     // + SCHEMA-DOMAIN-COVERAGE-RELIABILITY-001 (fss-event graph reliability) = 280
     // + SCHEMA-DOMAIN-COVERAGE-BLIND-PATHS-001 (fss-event graph blind-paths) = 281
+    // + 7 rows registered on main without a pin bump (288 rows at dff3068; this pin was red)
+    // + SCHEMA-DOMAIN-EXECUTOR-ACTIVITY-PACKAGE-SPEC-001 (fss-2h5zq.49) = 289
     assert_eq!(
-        domain_count, 281,
-        "registries/DIGEST_DOMAINS.md count must remain pinned at 281"
+        domain_count, 289,
+        "registries/DIGEST_DOMAINS.md count must remain pinned at 289"
     );
 
     let schemas_path = Path::new(env!("CARGO_MANIFEST_DIR"))
