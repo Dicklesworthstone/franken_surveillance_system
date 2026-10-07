@@ -264,6 +264,9 @@ fn mp4_import_is_sniffed_retained_and_decodes_bit_exact() -> TestResult {
     let output = import(&input)?;
     success(&output);
     assert_eq!(field(&output, "media_format")?, "mp4avc");
+    // Container structure is reported apart from omissions: nothing was lost.
+    assert_eq!(field(&output, "omission_count")?, "0");
+    assert_ne!(field(&output, "container_structure_count")?, "0");
     let id = field(&output, "import_identity")?;
     fs::remove_file(&input)?;
     let decoded = decode(&root, &id, "0", "10").output()?;

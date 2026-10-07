@@ -471,7 +471,19 @@ fn run(options: Options, out: &mut impl Write) -> RunResult<()> {
         writeln!(out, "input_bytes={}", manifest.input_bytes)?;
         writeln!(out, "media_format={}", manifest.format)?;
         writeln!(out, "segment_count={}", manifest.segment_spans.len())?;
-        writeln!(out, "omission_count={}", manifest.omission_spans.len())?;
+        // MP4 container structure (boxes, other tracks, parameter sets) is accounted source,
+        // not lost media: it is counted apart from omissions.
+        let structure = manifest
+            .omission_spans
+            .iter()
+            .filter(|span| span.is_container_structure())
+            .count();
+        writeln!(
+            out,
+            "omission_count={}",
+            manifest.omission_spans.len() - structure
+        )?;
+        writeln!(out, "container_structure_count={structure}")?;
         writeln!(out, "capture_time_class={}", manifest.capture_time_label)?;
         // The retained acquisition lifecycle, replayed through the core session; its absence
         // gate decides `absence_certifiable` (a file session never certifies absence).
