@@ -8,6 +8,7 @@ version = "0.0.1"
 dependencies = [
  "fss-codec-mjpeg",
  "fss-core",
+ "fss-fusion",
  "fss-geometry",
  "fss-graph-algorithms",
  "fss-object",

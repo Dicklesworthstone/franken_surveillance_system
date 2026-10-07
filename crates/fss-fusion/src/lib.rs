@@ -24,6 +24,10 @@
 //!   observation, ask the operator, retain silently, reject) or an explicit indeterminate hold.
 //!   Every wait has a deadline and a value bound; the alert threshold rises with the number of
 //!   looks at the same hypothesis (optional-stopping correction).
+//! * **Score calibration.** [`calibration`] turns labelled outcomes (an event-level
+//!   evaluation's true and false positives) into per-score-bin likelihood intervals with exact
+//!   integer Wilson bounds, so a detector score reaches fusion only through a measured,
+//!   digest-bound calibration generation.
 //! * **Counterfactual explanation.** The answer recomputes the decision with each dependency
 //!   cluster removed and states the exact additional independent support that would alert and
 //!   the reduction that would retain.
@@ -31,11 +35,14 @@
 //! Nothing here reads a clock, the filesystem or the network; the caller supplies `now`. A
 //! decision is derived cognition: it grants no effect authority.
 
+pub mod calibration;
 pub mod probability;
 
 mod decide;
+mod log_table;
 mod model;
 
+pub use calibration::{ScoreBin, ScoreCalibration};
 pub use decide::fuse;
 pub use model::{
     Calibration, Cluster, ClusterDirection, Counterfactual, Coverage, Decision, EvidenceItem,

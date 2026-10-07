@@ -12,6 +12,7 @@ use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 
 use fss_cli::escape_json_str;
+use fss_fusion::ScoreCalibration;
 use fss_reference::evaluation::{
     CandidateDisposition, CandidateSet, ClosedIntervalNs, EvaluationError, EvaluationIdentity,
     EvaluationPolicy, EvaluationReport, EventCandidate, FalseAlertBudget, LabelSet, LabeledClip,
@@ -26,8 +27,13 @@ const MAX_ROW_BYTES: usize = 1024;
 const HELP: &str = "fss-evaluate --labels LABELS.tsv --candidates CANDIDATES.tsv \
 --pipeline-generation ID --model-generation ID --policy-generation ID \
 --max-false-alerts N --per-observed-ns N \
-[--early-tolerance-ns N] [--late-tolerance-ns N]\n\n\
+[--early-tolerance-ns N] [--late-tolerance-ns N] \
+[--calibration-bins PPM,PPM,... --calibration-generation ID]\n\n\
 Read-only event evaluation; emits JSON to stdout. No threshold is activated.\n\
+With --calibration-bins (ascending score edges starting at 0) the report also carries a\n\
+score_calibration: per-bin true/false positive counts and log-likelihood-ratio intervals\n\
+(millibans, Wilson z=2, exact integer bounds) for fss-fuse; neutral and gap candidates\n\
+are excluded. It is valid only for the declared generation.\n\
 Labels header: fss-evaluation-labels.v1\n\
 Rows (TAB separated):\n\
   clip  CLIP_ID  DURATION_NS\n\
@@ -70,6 +76,7 @@ struct Options {
     candidates: PathBuf,
     identity: EvaluationIdentity,
     policy: EvaluationPolicy,
+    calibration: Option<(String, Vec<u32>)>,
 }
 
 fn integer(value: &str) -> Result<u64> {
@@ -97,7 +104,7 @@ fn unicode(value: &OsStr) -> Result<&str> {
 fn parse_options(args: impl IntoIterator<Item = OsString>) -> Result<Option<Options>> {
     let mut bounded = Vec::new();
     for arg in args {
-        if bounded.len() == 18 {
+        if bounded.len() == 22 {
             return Err(Failure::new("evaluation.cli.arguments_limit"));
         }
         bounded.push(arg);
@@ -120,6 +127,8 @@ fn parse_options(args: impl IntoIterator<Item = OsString>) -> Result<Option<Opti
                 | "--per-observed-ns"
                 | "--early-tolerance-ns"
                 | "--late-tolerance-ns"
+                | "--calibration-bins"
+                | "--calibration-generation"
         ) {
             return Err(Failure::new("evaluation.cli.unknown_option"));
         }
@@ -154,11 +163,31 @@ fn parse_options(args: impl IntoIterator<Item = OsString>) -> Result<Option<Opti
     if policy.false_alert_budget.per_observed_ns == 0 {
         return Err(Failure::new("evaluation.invalid_budget"));
     }
+    let calibration = match (
+        values.get("--calibration-bins"),
+        values.get("--calibration-generation"),
+    ) {
+        (None, None) => None,
+        (Some(bins), Some(generation)) => {
+            let edges = unicode(bins)?
+                .split(',')
+                .map(|edge| {
+                    integer(edge).and_then(|value| {
+                        u32::try_from(value)
+                            .map_err(|_| Failure::new("evaluation.cli.invalid_integer"))
+                    })
+                })
+                .collect::<Result<Vec<u32>>>()?;
+            Some((unicode(generation)?.to_owned(), edges))
+        }
+        _ => return Err(Failure::new("evaluation.cli.calibration_options")),
+    };
     Ok(Some(Options {
         labels: PathBuf::from(required(&values, "--labels")?),
         candidates: PathBuf::from(required(&values, "--candidates")?),
         identity,
         policy,
+        calibration,
     }))
 }
 
@@ -413,6 +442,58 @@ fn operating(value: OperatingPoint) -> String {
     }
 }
 
+fn calibration_json(calibration: &ScoreCalibration) -> String {
+    let bins = calibration.bins.iter().map(|bin| {
+        object(&[
+            ("lo_ppm", bin.lo_ppm.to_string()),
+            ("hi_ppm", bin.hi_ppm.to_string()),
+            ("true_positives", bin.positives.to_string()),
+            ("false_positives", bin.negatives.to_string()),
+            (
+                "llr_millibans",
+                format!("[{},{}]", bin.llr.lo(), bin.llr.hi()),
+            ),
+        ])
+    });
+    object(&[
+        ("schema", text("fss.score_calibration.v1")),
+        ("generation", text(&calibration.generation)),
+        ("digest", text(&calibration.digest.to_text())),
+        ("true_positives", calibration.positives.to_string()),
+        ("false_positives", calibration.negatives.to_string()),
+        (
+            "prior_log_odds_millibans",
+            format!("[{},{}]", calibration.prior.lo(), calibration.prior.hi()),
+        ),
+        ("interval", text("wilson_z2_per_bin_not_simultaneous")),
+        ("bins", array(bins)),
+    ])
+}
+
+/// `(score, is true event)` of every candidate that ended as a true or false positive.
+fn calibration_outcomes(report: &EvaluationReport, candidates: &CandidateSet) -> Vec<(u32, bool)> {
+    let scores: BTreeMap<&str, u32> = candidates
+        .candidates
+        .iter()
+        .map(|candidate| (candidate.candidate_id.as_str(), candidate.score_ppm))
+        .collect();
+    report
+        .candidate_outcomes
+        .iter()
+        .filter_map(|outcome| {
+            let positive = match outcome.disposition {
+                CandidateDisposition::TruePositive { .. } => true,
+                CandidateDisposition::FalsePositive => false,
+                CandidateDisposition::MatchedNotObservableTruth { .. }
+                | CandidateDisposition::InsideNotObservable => return None,
+            };
+            scores
+                .get(outcome.candidate_id.as_str())
+                .map(|&score| (score, positive))
+        })
+        .collect()
+}
+
 fn report_json(report: &EvaluationReport) -> String {
     let counts = &report.counts;
     let truth = report.truth_outcomes.iter().map(|outcome| {
@@ -578,7 +659,25 @@ fn run(args: impl IntoIterator<Item = OsString>) -> Result<String> {
     let labels = parse_labels(&read_input(&options.labels)?)?;
     let candidates = parse_candidates(&read_input(&options.candidates)?)?;
     let report = evaluate(&options.identity, &options.policy, &labels, &candidates)?;
-    Ok(report_json(&report))
+    let json = report_json(&report);
+    match options.calibration {
+        None => Ok(json),
+        Some((generation, edges)) => {
+            let calibration = ScoreCalibration::build(
+                &generation,
+                &edges,
+                &calibration_outcomes(&report, &candidates),
+            )
+            .map_err(|error| Failure::new(error.stable_id()))?;
+            let body = json
+                .strip_suffix('}')
+                .ok_or_else(|| Failure::new("evaluation.cli.internal"))?;
+            Ok(format!(
+                "{body},\"score_calibration\":{}}}",
+                calibration_json(&calibration)
+            ))
+        }
+    }
 }
 
 fn main() -> ExitCode {

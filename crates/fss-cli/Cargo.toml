@@ -32,6 +32,10 @@ name = "fss-evaluate"
 path = "src/bin/fss-evaluate.rs"
 
 [[bin]]
+name = "fss-fuse"
+path = "src/bin/fss-fuse.rs"
+
+[[bin]]
 name = "fss-archive"
 path = "src/bin/fss-archive.rs"
 
@@ -86,6 +90,7 @@ path = "src/bin/fss-replay-dwell.rs"
 [dependencies]
 fss-codec-mjpeg = { path = "../fss-codec-mjpeg" }
 fss-core = { path = "../fss-core" }
+fss-fusion = { path = "../fss-fusion" }
 fss-geometry = { path = "../fss-geometry" }
 fss-graph-algorithms = { path = "../fss-graph-algorithms" }
 fss-object = { path = "../fss-object" }

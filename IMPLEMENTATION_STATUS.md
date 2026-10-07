@@ -10,6 +10,34 @@ Franken Surveillance System now has a coherent, dependency-light Rust reference 
 
 It is also not a complete surveillance product. Native device adapters, production media/model/graph/storage services, persistent distributed operation, every human and agent surface, complete qualification matrices, and the aggregate release root remain open. Status below distinguishes implemented reference semantics from production completion.
 
+## Graph intelligence, evidence fusion and score calibration (2026-10-07, reference, unqualified)
+
+- **Certified graph families (WP-170):** 15 of the 27 registered graph algorithms are now
+  implemented (`fss-graph-algorithms`): `ALG-BRIDGE-001` plus SCC/condensation, topological
+  order with CPM critical path, dominators/post-dominators, lexicographic shortest paths and
+  multi-source distance, certified max-flow/min-cut (arc cut or minimum-weight node failure set),
+  Gomory-Hu (Gusfield) tree, min-cost flow certified by the no-negative-cycle condition, Hungarian
+  assignment self-certified by duality with an exact lexicographic tie-break, Murty k-best
+  assignments, Kruskal spanning forest, Yen k-shortest diverse paths, exact integer-interval
+  temporal reachability (`reachable` / `temporally_infeasible` / `no_path`) and offline dynamic
+  connectivity. Every run is budgeted, bound-checked and witness-carrying, and each family is
+  certified against an independent brute-force oracle on thousands of seeded inputs. Projections
+  are caller-built: no retained-record builder exists yet for the plan, evidence, failure,
+  track or archive projections, and no `INT-FNX-001` differential or qualification lane exists.
+- **Evidence fusion (`fss-fusion`, fss-x4a.16.9):** deterministic reference fusion over integer
+  log-odds intervals with common-cause dependency clusters (shared failure domains count once and
+  can never raise the robust lower bound), typed exclusion of missing/uncalibrated evidence,
+  coverage-gated rejection, the plan's sequential decisions (alert, alert with degraded coverage,
+  urgent single-domain unconfirmed alert, bounded wait for an independent observation with a
+  deadline and value bound, request a probe, ask the operator, retain, reject, hold), an
+  optional-stopping threshold correction and leave-one-cluster-out counterfactuals.
+- **Score calibration:** `fss-evaluate --calibration-bins` turns an evaluation's true/false
+  positives into a digest-bound per-bin likelihood calibration (exact integer Wilson bounds,
+  rigorous log10 bounds); `fss-fuse --query --calibration` rebuilds it from its counts, refuses
+  it unless the digest matches, and prints the fusion decision. Proven on synthetic labels only:
+  no detector has a measured calibration on deployment data, and fusion is not yet wired into
+  `fss-event watch`/`corroborate` (their probability stays `[0, 1]`).
+
 ## Media, perception and I/O added since 2026-09-03 (reference, unqualified)
 
 All of this is tested only on generated fixtures (FFmpeg `testsrc` encodes, procedural JPEGs,

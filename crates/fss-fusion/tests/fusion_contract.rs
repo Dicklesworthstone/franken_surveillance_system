@@ -589,3 +589,89 @@ fn seeded_invariants_hold() -> TestResult {
     }
     Ok(())
 }
+
+fn synthetic_outcomes(seed: u64, count: usize) -> Vec<(u32, bool)> {
+    let mut rng = Rng(seed);
+    (0..count)
+        .map(|_| {
+            let positive = rng.below(4) == 0;
+            // True events score high more often than false alarms.
+            let score = if positive {
+                600_000 + rng.below(400_001) as u32
+            } else {
+                rng.below(800_001) as u32
+            };
+            (score, positive)
+        })
+        .collect()
+}
+
+#[test]
+fn score_calibration_brackets_point_estimates_and_feeds_fusion() -> TestResult {
+    use fss_fusion::ScoreCalibration;
+    let edges = [0, 300_000, 600_000, 800_000, 950_000];
+    let outcomes = synthetic_outcomes(7, 5_000);
+    let calibration = ScoreCalibration::build("yolox-nano:cam-a:night:v1", &edges, &outcomes)?;
+    let (positives, negatives) = (calibration.positives as f64, calibration.negatives as f64);
+    for bin in &calibration.bins {
+        if bin.positives > 0 && bin.negatives > 0 {
+            let point = ((bin.positives as f64 / positives) / (bin.negatives as f64 / negatives))
+                .log10()
+                * 1000.0;
+            assert!(
+                bin.llr.lo() as f64 <= point && point <= bin.llr.hi() as f64,
+                "bin {}..{}: {point} outside {:?}",
+                bin.lo_ppm,
+                bin.hi_ppm,
+                bin.llr
+            );
+        }
+    }
+    // The lowest bin holds no true events: its upper bound is finite, its lower bound clamps.
+    assert_eq!(calibration.bins[0].positives, 0);
+    assert_eq!(calibration.bins[0].llr.lo(), -fss_fusion::MAX_ABS_LLR);
+    // The top bins hold no false alarms: their upper bound clamps.
+    assert_eq!(calibration.bins[4].negatives, 0);
+    assert_eq!(calibration.bins[4].llr.hi(), fss_fusion::MAX_ABS_LLR);
+    assert!(calibration.bins[4].llr.lo() > 0);
+    let prior_point = (positives / negatives).log10() * 1000.0;
+    assert!(
+        calibration.prior.lo() as f64 <= prior_point
+            && prior_point <= calibration.prior.hi() as f64
+    );
+    // Order of outcomes never changes the calibration.
+    let mut reversed = outcomes.clone();
+    reversed.reverse();
+    assert_eq!(
+        ScoreCalibration::build("yolox-nano:cam-a:night:v1", &edges, &reversed)?,
+        calibration
+    );
+    // Refusals.
+    assert!(ScoreCalibration::build("x", &[100], &outcomes).is_err());
+    assert!(ScoreCalibration::build("x", &[0, 5, 5], &outcomes).is_err());
+    assert!(ScoreCalibration::build("x", &edges, &[(900_000, true)]).is_err());
+    assert!(ScoreCalibration::build("x", &edges, &[(1_000_001, true), (0, false)]).is_err());
+
+    // End to end: two independent cameras with top-bin scores alert; mid-bin scores do not.
+    let evidence = |score: u32| -> TestResult<Vec<EvidenceItem>> {
+        Ok(["cam-a", "cam-b"]
+            .iter()
+            .map(|sensor| EvidenceItem {
+                id: format!("{sensor}/candidate"),
+                sensor: (*sensor).to_owned(),
+                failure_domains: domains(&[&format!("sensor:{sensor}")]),
+                calibration: calibration.calibrate(score),
+                observability: Observability::Observed,
+            })
+            .collect())
+    };
+    let mut strong = query(evidence(970_000)?)?;
+    strong.prior = calibration.prior;
+    let outcome = fuse(&strong)?;
+    assert_eq!(outcome.decision, Decision::Alert, "{outcome:?}");
+    let mut weak = query(evidence(400_000)?)?;
+    weak.prior = calibration.prior;
+    let outcome = fuse(&weak)?;
+    assert_ne!(outcome.decision, Decision::Alert);
+    Ok(())
+}
