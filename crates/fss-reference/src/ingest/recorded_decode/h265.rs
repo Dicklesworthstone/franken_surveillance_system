@@ -34,7 +34,7 @@ use fss_core::{CanonicalEncode, CanonicalEncoder, ContentDigest, SensorCapsule, 
 
 use super::{ComponentInterpretation, RecordedDecodeError, checkpoint, source_capsule};
 use crate::ingest::privacy_mask::{MaskBinding, binding_digest, current_mask, encode_marker};
-use crate::ingest::{RetainedFileImport, RetainedReadLimits};
+use crate::ingest::{MP4_HEVC_PARAMETER_SET_REASON_PREFIX, RetainedFileImport, RetainedReadLimits};
 use crate::{ReferenceDeployment, ReplayCx};
 
 /// Maximum access units decoded by one range request.
@@ -283,9 +283,41 @@ impl RecordedH265Frame {
     }
 }
 
+/// NAL unit framing of a retained H.265 import's segments.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum Framing {
+    /// Annex-B start codes (`hevc`).
+    AnnexB,
+    /// MP4 sample (`mp4hevc`): NAL units behind big-endian length fields of this many bytes.
+    LengthPrefixed(usize),
+}
+
+/// The NAL units of one retained segment. Length-prefixed framing was validated at import and
+/// the segment bytes are digest-verified, so a framing failure is a custody inconsistency.
+fn segment_nals(
+    framing: Framing,
+    bytes: &[u8],
+    segment: usize,
+) -> Result<Vec<&[u8]>, RecordedDecodeError> {
+    match framing {
+        Framing::AnnexB => Ok(annex_b_nal_units(bytes).collect()),
+        Framing::LengthPrefixed(length) => {
+            fss_container::demux::length_prefixed_nals(bytes, length)
+                .map_err(|_| RecordedDecodeError::H265AccessUnit { segment })?
+                .into_iter()
+                .map(|range| {
+                    bytes
+                        .get(range)
+                        .ok_or(RecordedDecodeError::H265AccessUnit { segment })
+                })
+                .collect()
+        }
+    }
+}
+
 /// `nal_unit_type` of every slice segment NAL unit in one retained access unit.
-fn slice_segment_types(bytes: &[u8]) -> Vec<u8> {
-    annex_b_nal_units(bytes)
+fn slice_segment_types(nals: &[&[u8]]) -> Vec<u8> {
+    nals.iter()
         .filter_map(|nal| nal.first().map(|header| (header >> 1) & 0x3f))
         .filter(|nal_unit_type| *nal_unit_type <= 9 || (16..=21).contains(nal_unit_type))
         .collect()
@@ -297,6 +329,7 @@ pub struct RecordedH265Range {
     request: RecordedH265Request,
     retained: RetainedFileImport,
     decoder: Decoder,
+    framing: Framing,
     next: usize,
     end: usize,
     decoded: u64,
@@ -329,9 +362,15 @@ impl RecordedH265Range {
         }
         let retained =
             RetainedFileImport::open(deployment, request.import_identity, request.read_limits, cx)?;
-        if retained.manifest().format != "hevc" {
-            return Err(RecordedDecodeError::UnsupportedMedia);
-        }
+        let (framing, parameter_sets) = match retained.manifest().format.as_str() {
+            "hevc" => (Framing::AnnexB, Vec::new()),
+            "mp4hevc" => {
+                let (spans, length) =
+                    super::mp4_parameter_sets(&retained, MP4_HEVC_PARAMETER_SET_REASON_PREFIX)?;
+                (Framing::LengthPrefixed(length), spans)
+            }
+            _ => return Err(RecordedDecodeError::UnsupportedMedia),
+        };
         let first = request.first_segment;
         let end = first
             .checked_add(request.segment_count)
@@ -346,7 +385,7 @@ impl RecordedH265Range {
             });
         }
         let first_bytes = retained.read_segment(deployment, first, request.read_limits, cx)?;
-        let first_types = slice_segment_types(&first_bytes);
+        let first_types = slice_segment_types(&segment_nals(framing, &first_bytes, first)?);
         if first_types.is_empty() || !first_types.iter().all(|t| (16..=21).contains(t)) {
             return Err(RecordedDecodeError::H265RangeNotIrap { segment: first });
         }
@@ -357,7 +396,14 @@ impl RecordedH265Range {
                 .min(request.segment_count as u64),
             ..request.decoder_limits
         };
-        let decoder = Decoder::new(limits)?;
+        let mut decoder = Decoder::new(limits)?;
+        // Out-of-band configuration precedes the first access unit; it codes no picture.
+        for index in parameter_sets {
+            let nal = retained.read_omission_span(deployment, index, request.read_limits, cx)?;
+            if decoder.decode_nal(&nal)?.is_some() {
+                return Err(RecordedDecodeError::CustodyMismatch);
+            }
+        }
         let (first_capsule, _) = source_capsule(deployment, &retained, first)?;
         let sensor = first_capsule.sensor_id;
         let mask = current_mask(deployment, &sensor)?;
@@ -365,6 +411,7 @@ impl RecordedH265Range {
             request,
             retained,
             decoder,
+            framing,
             next: first,
             end,
             decoded: 0,
@@ -445,7 +492,8 @@ impl RecordedH265Range {
             .retained
             .read_segment(deployment, index, self.request.read_limits, cx)?;
         let before = self.decoder.pictures_decoded();
-        for nal in annex_b_nal_units(&bytes) {
+        let nals = segment_nals(self.framing, &bytes, index)?;
+        for nal in &nals {
             if let Some(picture) = self.decoder.decode_nal(nal)? {
                 self.ready.push_back(picture);
             }
@@ -459,7 +507,7 @@ impl RecordedH265Range {
                 self.seen.push(false);
             }
             Some(0) => {
-                let types = slice_segment_types(&bytes);
+                let types = slice_segment_types(&nals);
                 // Only RASL pictures of the range's leading CRA/BLA are ever skipped; the codec
                 // decides, this module only refuses to call anything else a skip.
                 if index == self.request.first_segment

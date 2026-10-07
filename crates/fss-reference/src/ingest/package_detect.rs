@@ -573,7 +573,7 @@ fn run_selected_detection<T>(
                 })?)?);
             }
         }
-        "hevc" => {
+        "hevc" | "mp4hevc" => {
             let h265 = H265DecoderLimits {
                 max_pictures: request.segment_count as u64,
                 ..limits.h265

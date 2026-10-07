@@ -324,3 +324,22 @@ fn unknown_import_corrupt_source_and_stale_approval_are_typed_refusals() -> Test
     assert!(damaged.stdout.is_empty());
     Ok(())
 }
+
+#[test]
+fn hevc_mp4_remux_of_the_same_scene_reaches_the_same_watch_decision() -> TestResult {
+    const MP4: &[u8] =
+        include_bytes!("../../fss-reference/tests/fixtures/hevc_ingest/watch_96x48_moving.mp4");
+    let door = "door:64,0,32,32";
+    let (_annexb_directory, annexb_root, annexb_id) = import("hevc-annexb", HEVC, "hevc")?;
+    let (_mp4_directory, mp4_root, mp4_id) = import("hevc-mp4", MP4, "mp4hevc")?;
+    let annexb = watch(&annexb_root, &annexb_id, "ycbcr", door, &[])?;
+    let mp4 = watch(&mp4_root, &mp4_id, "ycbcr", door, &[])?;
+    success(&annexb);
+    success(&mp4);
+    assert_eq!(json_field(&mp4, "media_format")?, "mp4hevc");
+    for key in ["frames_decoded", "candidate_count", "zone_id", "status"] {
+        assert_eq!(json_field(&mp4, key)?, json_field(&annexb, key)?, "{key}");
+    }
+    assert_eq!(json_field(&mp4, "candidate_count")?, "1");
+    Ok(())
+}

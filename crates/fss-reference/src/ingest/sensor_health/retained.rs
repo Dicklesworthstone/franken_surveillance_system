@@ -209,7 +209,7 @@ impl ScreeningReport {
                     )?;
                 }
             }
-            "hevc" => {
+            "hevc" | "mp4hevc" => {
                 let mut source = RecordedH265Range::open(
                     deployment,
                     RecordedH265Request {

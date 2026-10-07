@@ -104,6 +104,15 @@ impl std::fmt::Display for DemuxError {
 }
 impl std::error::Error for DemuxError {}
 
+/// Video coding of the selected sample entry.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum VideoCodec {
+    /// H.264 (`avc1` with `avcC`).
+    Avc,
+    /// H.265 (`hvc1` or `hev1` with `hvcC`); base layer only.
+    Hevc,
+}
+
 /// One original media sample in decode order. All offsets address the original MP4 file.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct AvcSample {
@@ -119,7 +128,8 @@ pub struct AvcSample {
     pub composition_offset: i64,
     /// Container sync-table assertion, not proof of a decodable picture.
     pub sync_sample: bool,
-    /// A type-5 NAL was present in the validated length-prefixed sample.
+    /// A random-access picture NAL was present in the validated length-prefixed sample: an
+    /// H.264 IDR slice (type 5) or an H.265 IRAP slice segment (types 16..=21).
     pub contains_idr: bool,
 }
 impl AvcSample {
@@ -151,6 +161,7 @@ pub struct Mp4Track {
 #[derive(Debug)]
 pub struct AvcMp4<'a> {
     source: &'a [u8],
+    codec: VideoCodec,
     track: u32,
     tracks: Vec<Mp4Track>,
     movie_timescale: u32,
@@ -195,7 +206,20 @@ impl<'a> AvcMp4<'a> {
             return Err(DemuxError::Layout);
         }
         // These ordinary ISO BMFF brands do not add an unsupported container interpretation.
-        let supported = |b: &[u8]| matches!(b, b"isom" | b"iso2" | b"mp41" | b"mp42" | b"avc1");
+        let supported = |b: &[u8]| {
+            matches!(
+                b,
+                b"isom"
+                    | b"iso2"
+                    | b"iso3"
+                    | b"iso4"
+                    | b"iso5"
+                    | b"iso6"
+                    | b"mp41"
+                    | b"mp42"
+                    | b"avc1"
+            )
+        };
         if !supported(&brands[..4]) && !brands[8..].as_chunks::<4>().0.iter().any(|b| supported(b))
         {
             return Err(DemuxError::Unsupported);
@@ -289,7 +313,7 @@ impl<'a> AvcMp4<'a> {
             return Err(DemuxError::Unsupported);
         }
         let stsd = one(&tables, b"stsd")?;
-        let (dimensions, length_bytes, parameter_sets) = configuration(&mut r, &stsd)?;
+        let (codec, dimensions, length_bytes, parameter_sets) = configuration(&mut r, &stsd)?;
         let sizes = sizes(&mut r, &one(&tables, b"stsz")?)?;
         if sizes.is_empty() {
             return Err(DemuxError::Layout);
@@ -317,16 +341,30 @@ impl<'a> AvcMp4<'a> {
                     .checked_add(1)
                     .filter(|n| *n <= limits.maximum_nals)
                     .ok_or(DemuxError::Limit)?;
-                let kind = nal_kind(&source[nal.clone()])?;
-                if matches!(kind, 7 | 8 | 13)
+                let (parameter, random_access, picture) = match codec {
+                    VideoCodec::Avc => {
+                        let kind = nal_kind(&source[nal.clone()])?;
+                        (
+                            matches!(kind, 7 | 8 | 13),
+                            kind == 5,
+                            kind == 1 || kind == 5,
+                        )
+                    }
+                    VideoCodec::Hevc => {
+                        let kind = hevc_nal_kind(&source[nal.clone()])?;
+                        let irap = (16..=21).contains(&kind);
+                        (matches!(kind, 32..=34), irap, irap || kind <= 9)
+                    }
+                };
+                if parameter
                     && !parameter_sets
                         .iter()
                         .any(|p| source[p.clone()] == source[nal.clone()])
                 {
                     return Err(DemuxError::Nal);
                 }
-                idr |= kind == 5;
-                vcl |= kind == 1 || kind == 5;
+                idr |= random_access;
+                vcl |= picture;
                 Ok(())
             })?;
             if !vcl {
@@ -345,6 +383,7 @@ impl<'a> AvcMp4<'a> {
         r.checkpoint()?;
         Ok(Self {
             source,
+            codec,
             track,
             tracks,
             movie_timescale,
@@ -364,6 +403,10 @@ impl<'a> AvcMp4<'a> {
     /// Exact borrowed original container bytes, not normalized media.
     pub fn source(&self) -> &'a [u8] {
         self.source
+    }
+    /// Video coding of the selected track.
+    pub const fn codec(&self) -> VideoCodec {
+        self.codec
     }
     /// Selected video track identity.
     pub const fn track_id(&self) -> u32 {
@@ -397,12 +440,13 @@ impl<'a> AvcMp4<'a> {
     pub fn samples(&self) -> &[AvcSample] {
         &self.samples
     }
-    /// Bytes of each sample NAL length field (1, 2 or 4), from `avcC`.
+    /// Bytes of each sample NAL length field (1, 2 or 4), from `avcC` or `hvcC`.
     pub const fn nal_length_bytes(&self) -> usize {
         self.length_bytes
     }
-    /// Exact original byte ranges of the `avcC` SPS, PPS and SPS-extension NAL units, in
-    /// configuration order (which is also ascending file order). Excludes their length fields.
+    /// Exact original byte ranges of the configuration's parameter-set NAL units (`avcC`: SPS,
+    /// PPS, SPS extension; `hvcC`: VPS, SPS, PPS), in configuration order, which is also
+    /// ascending file order. Excludes their length fields.
     pub fn parameter_sets(&self) -> &[Range<usize>] {
         &self.parameter_sets
     }

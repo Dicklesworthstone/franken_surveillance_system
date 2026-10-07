@@ -1059,7 +1059,7 @@ impl<'a> DetectorCascade<'a> {
                     }
                 }
             }
-            "hevc" => {
+            "hevc" | "mp4hevc" => {
                 for &(first_segment, count) in &ranges {
                     let mut range = RecordedH265Range::open(
                         deployment,

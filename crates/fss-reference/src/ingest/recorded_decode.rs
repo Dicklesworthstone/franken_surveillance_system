@@ -1015,6 +1015,36 @@ fn masked_luma(
 }
 
 /// Retained H.264 Annex-B range decoding bound to the same source custody.
+/// The parameter-set spans of an MP4 import whose reason starts with `prefix`, in file order,
+/// and their common sample NAL length-field size. Without exactly one consistent size the import
+/// is a custody inconsistency.
+fn mp4_parameter_sets(
+    retained: &RetainedFileImport,
+    prefix: &str,
+) -> Result<(Vec<usize>, usize), RecordedDecodeError> {
+    let mut indexes = Vec::new();
+    let mut length = None;
+    for (index, span) in retained.manifest().omission_spans.iter().enumerate() {
+        let Some(size) = span.reason.strip_prefix(prefix) else {
+            continue;
+        };
+        let size = match size {
+            "1" => 1,
+            "2" => 2,
+            "4" => 4,
+            _ => return Err(RecordedDecodeError::CustodyMismatch),
+        };
+        if length.is_some_and(|known| known != size) {
+            return Err(RecordedDecodeError::CustodyMismatch);
+        }
+        length = Some(size);
+        indexes.push(index);
+    }
+    let length = length.ok_or(RecordedDecodeError::CustodyMismatch)?;
+    indexes.sort_by_key(|index| retained.manifest().omission_spans[*index].offset);
+    Ok((indexes, length))
+}
+
 pub mod h264;
 /// Retained H.265/HEVC Annex-B range decoding bound to the same source custody.
 pub mod h265;

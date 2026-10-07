@@ -552,3 +552,97 @@ fn chroma_planes_reassemble_the_ffmpeg_yuv420p_oracle_and_convert_to_rgb() -> Te
     }
     Ok(())
 }
+
+/// Indexed `hvc1` MP4 with an interleaved AAC track, `moov` last: ten 64x48 Main pictures, an
+/// IDR, then an open-GOP CRA at sample 3 whose two RASL pictures follow it in decode order.
+const MP4: &[u8] = include_bytes!("../../../../../fss-container/tests/fixtures/hevc_av.mp4");
+/// FFmpeg `yuv420p` framehash of the MP4's video track, in presentation order.
+const MP4_ORACLE: &str =
+    include_str!("../../../../../fss-container/tests/fixtures/hevc_av_i420.sha256");
+
+#[test]
+fn retained_hevc_mp4_samples_decode_bit_exact_against_the_ffmpeg_oracle() -> TestResult {
+    let expected = oracle(MP4_ORACLE);
+    assert_eq!(expected.len(), 10);
+    // Sniffed: the hvc1 sample entry selects mp4hevc.
+    let imported = import("mp4hevc", MP4)?;
+    assert_eq!(imported.format, "mp4hevc");
+    assert_eq!(imported.detector_evidence, "mp4_ftyp");
+    assert_eq!(imported.segments, 10);
+    let retained = RetainedFileImport::open(
+        &imported.deployment,
+        imported.identity,
+        RetainedReadLimits::default(),
+        &imported.cx,
+    )?;
+    let manifest = retained.manifest();
+    assert!(manifest.segment_spans.iter().all(|span| !span.gap_before));
+    assert!(
+        manifest
+            .omission_spans
+            .iter()
+            .all(|span| span.is_container_structure())
+    );
+    let accounted: u64 = manifest
+        .segment_spans
+        .iter()
+        .map(|span| span.len)
+        .sum::<u64>()
+        + manifest
+            .omission_spans
+            .iter()
+            .map(|span| span.len)
+            .sum::<u64>();
+    assert_eq!(accounted, MP4.len() as u64);
+    // VPS, SPS and PPS are retained as typed spans and read back from custody.
+    let parameter_sets = manifest
+        .omission_spans
+        .iter()
+        .filter(|span| span.reason == "mp4_hevc_parameter_set:nal_length_bytes=4")
+        .count();
+    assert_eq!(parameter_sets, 3);
+    let digests: Vec<String> = whole_range(&imported)?
+        .iter()
+        .map(|frame| frame.receipt().i420_sha256().to_text())
+        .collect();
+    assert_eq!(digests, expected);
+    // The open-GOP CRA sample starts a range; its RASL samples are skipped, never fabricated,
+    // and the trailing pictures equal the full decode's last five output pictures.
+    let mut range = RecordedH265Range::open(
+        &imported.deployment,
+        request(imported.identity, 3, 7),
+        &imported.cx,
+    )?;
+    let mut frames = Vec::new();
+    while let Some(frame) = range.next_frame(&imported.deployment, &imported.cx)? {
+        frames.push(frame);
+    }
+    assert_eq!(range.skipped_rasl_segments(), [4, 5]);
+    let first = frames[0].receipt();
+    assert_eq!(first.segment_index(), 3);
+    assert_eq!(first.nal_unit_type(), 21);
+    let from_cra: Vec<String> = frames
+        .iter()
+        .map(|frame| frame.receipt().i420_sha256().to_text())
+        .collect();
+    assert_eq!(from_cra, expected[5..].to_vec());
+    // A trailing or leading sample cannot open a range.
+    for start in [1, 4, 6] {
+        assert!(matches!(
+            RecordedH265Range::open(
+                &imported.deployment,
+                request(imported.identity, start, 1),
+                &imported.cx
+            ),
+            Err(RecordedDecodeError::H265RangeNotIrap { segment }) if segment == start
+        ));
+    }
+    // Declaring the other MP4 codec is a conflict, never a reinterpretation.
+    match try_import("mp4hevc-conflict", MP4, Some(FileFormatHint::Mp4Avc))? {
+        Err(error @ FileIngestError::FormatConflict { .. }) => {
+            assert_eq!(error.stable_id(), Some("ERR-INGEST-FORMAT-CONFLICT-001"));
+        }
+        other => return Err(format!("expected a format conflict, got {:?}", other.err()).into()),
+    }
+    Ok(())
+}

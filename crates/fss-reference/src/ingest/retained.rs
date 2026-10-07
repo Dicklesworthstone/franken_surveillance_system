@@ -218,7 +218,10 @@ impl FileImportManifest {
         }
         if self.adapter_id != ADP_FILE_ROW_ID
             || self.adapter_generation != ADP_FILE_GENERATION
-            || !matches!(self.format.as_str(), "annexb" | "hevc" | "mjpeg" | "mp4avc")
+            || !matches!(
+                self.format.as_str(),
+                "annexb" | "hevc" | "mjpeg" | "mp4avc" | "mp4hevc"
+            )
             || !matches!(
                 self.capture_time_label.as_str(),
                 "unknown" | "operator_assumption"
@@ -259,7 +262,7 @@ impl FileImportManifest {
             return Err(ContractError::UnsupportedDigestAlgorithm.into());
         }
         // MP4 samples are separated by container structure, never by lost media.
-        let container = self.format == "mp4avc";
+        let container = matches!(self.format.as_str(), "mp4avc" | "mp4hevc");
         let mut previous_end = 0;
         let mut ids = BTreeSet::new();
         for (index, segment) in self.segment_spans.iter().enumerate() {

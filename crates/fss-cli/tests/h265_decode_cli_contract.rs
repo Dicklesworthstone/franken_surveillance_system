@@ -251,3 +251,34 @@ fn non_irap_start_gray_ambiguous_and_conflicting_inputs_are_typed_refusals() -> 
     assert_eq!(refusal(&conflict), "ERR-INGEST-FORMAT-CONFLICT-001");
     Ok(())
 }
+
+/// Indexed `hvc1` MP4 with an interleaved AAC track, `moov` last (ten 64x48 pictures: an IDR,
+/// then an open-GOP CRA at sample 3 with two RASL pictures).
+const MP4: &[u8] = include_bytes!("../../fss-container/tests/fixtures/hevc_av.mp4");
+/// FFmpeg `yuv420p` framehash of the MP4's video track (offline sealed oracle).
+const MP4_ORACLE: &str = include_str!("../../fss-container/tests/fixtures/hevc_av_i420.sha256");
+
+#[test]
+fn hevc_mp4_import_is_sniffed_retained_and_decodes_bit_exact() -> TestResult {
+    let directory = OwnedDirectory::new("mp4")?;
+    let output = import(&directory, MP4, None)?;
+    success(&output);
+    assert_eq!(field(&output, "media_format")?, "mp4hevc");
+    let id = field(&output, "import_identity")?;
+    let root = directory.0.join("deployment");
+    let expected = oracle(MP4_ORACLE);
+    let decoded = decode(&root, &id, "0", "10").output()?;
+    success(&decoded);
+    assert_eq!(values(&decoded, "frame_i420_sha256")?, expected);
+    assert_eq!(field(&decoded, "h265_frames_decoded")?, "10");
+    // From the CRA sample the RASL samples are skipped and listed; trailing frames match.
+    let from_cra = decode(&root, &id, "3", "7").output()?;
+    success(&from_cra);
+    assert_eq!(values(&from_cra, "skipped_rasl_segment")?, ["4", "5"]);
+    assert_eq!(values(&from_cra, "frame_i420_sha256")?, expected[5..]);
+    // Declaring the H.264 MP4 format for an H.265 MP4 is a typed conflict.
+    let conflict = import(&OwnedDirectory::new("mp4-conflict")?, MP4, Some("mp4avc"))?;
+    assert!(!conflict.status.success());
+    assert_eq!(refusal(&conflict), "ERR-INGEST-FORMAT-CONFLICT-001");
+    Ok(())
+}

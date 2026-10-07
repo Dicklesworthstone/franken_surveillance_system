@@ -295,34 +295,6 @@ fn segment_has_idr_slice(nals: &[&[u8]]) -> bool {
         .any(|nal| nal.first().is_some_and(|h| h & 0x1f == NAL_IDR_SLICE))
 }
 
-/// The `avcC` parameter-set spans of an MP4 import, in file order, and their common sample NAL
-/// length-field size. An MP4 import without exactly one consistent size is refused.
-fn mp4_parameter_sets(
-    retained: &RetainedFileImport,
-) -> Result<(Vec<usize>, usize), RecordedDecodeError> {
-    let mut indexes = Vec::new();
-    let mut length = None;
-    for (index, span) in retained.manifest().omission_spans.iter().enumerate() {
-        let Some(size) = span.reason.strip_prefix(MP4_PARAMETER_SET_REASON_PREFIX) else {
-            continue;
-        };
-        let size = match size {
-            "1" => 1,
-            "2" => 2,
-            "4" => 4,
-            _ => return Err(RecordedDecodeError::CustodyMismatch),
-        };
-        if length.is_some_and(|known| known != size) {
-            return Err(RecordedDecodeError::CustodyMismatch);
-        }
-        length = Some(size);
-        indexes.push(index);
-    }
-    let length = length.ok_or(RecordedDecodeError::CustodyMismatch)?;
-    indexes.sort_by_key(|index| retained.manifest().omission_spans[*index].offset);
-    Ok((indexes, length))
-}
-
 /// Streaming decoder over one validated, IDR-led, gap-free retained segment range.
 #[derive(Debug)]
 pub struct RecordedH264Range {
@@ -361,7 +333,8 @@ impl RecordedH264Range {
         let (framing, parameter_sets) = match retained.manifest().format.as_str() {
             "annexb" => (Framing::AnnexB, Vec::new()),
             "mp4avc" => {
-                let (spans, length) = mp4_parameter_sets(&retained)?;
+                let (spans, length) =
+                    super::mp4_parameter_sets(&retained, MP4_PARAMETER_SET_REASON_PREFIX)?;
                 (Framing::LengthPrefixed(length), spans)
             }
             _ => return Err(RecordedDecodeError::UnsupportedMedia),

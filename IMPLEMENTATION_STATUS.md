@@ -44,10 +44,11 @@ All of this is tested only on generated fixtures (FFmpeg `testsrc` encodes, proc
 synthetic scenes). None of it has been measured on real camera footage.
 
 - **Ingest and capture:** file import with custody for Annex-B/MJPEG/rtpplay and indexed MP4
-  with an H.264 `avc1` track (`mp4avc`: one segment per sample with exact source spans, every
-  other byte typed container structure, `avcC` parameter sets read back from custody; decode
-  bit-exact against FFmpeg on moov-first and interleaved-audio moov-last fixtures; fragmented
-  MP4 and HEVC-in-MP4 not supported) (`ingest::file_adapter`, `fss-file import`); RTSP negotiation, Digest authentication and interleaved-TCP capture
+  with an H.264 `avc1` (`mp4avc`) or H.265 `hvc1`/`hev1` (`mp4hevc`) track: one segment per
+  sample with exact source spans, every other byte typed container structure, `avcC`/`hvcC`
+  parameter sets read back from custody; decode bit-exact against FFmpeg on moov-first and
+  interleaved-audio moov-last fixtures, including a CRA-led H.265 range; fragmented MP4 not
+  supported (`ingest::file_adapter`, `fss-file import`); RTSP negotiation, Digest authentication and interleaved-TCP capture
   (`rtsp::*`, `std::net::TcpStream`); native HTTP MJPEG capture (`ingest::http_camera`); local
   capture archives with checkpoints, recovery, pins and verify/export (`fss-archive`).
 - **Media:** RTP H.264/H.265 depacketization (`fss-packet`); baseline JPEG/MJPEG decode, gray and

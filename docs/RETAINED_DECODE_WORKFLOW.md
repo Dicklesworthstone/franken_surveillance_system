@@ -3,9 +3,10 @@
 This reference composition connects completed ADP-FILE imports to the canonical production
 `fss-codec-mjpeg` decoder. It does not call the separate reference colour decoder, invoke a
 foreign process. The output is complete, full-range Y (luma), with the original encoded bytes
-and source capsule retained as provenance. Annex-B H.264 (`annexb`), indexed MP4 H.264 (`mp4avc`)
-and H.265 (`hevc`) imports use the separate range paths described in "Retained H.264 range
-decode", "Retained MP4 (H.264) import" and "Retained H.265 import and range decode" below.
+and source capsule retained as provenance. Annex-B H.264 (`annexb`) and H.265 (`hevc`) imports,
+and indexed MP4 imports (`mp4avc`, `mp4hevc`), use the separate range paths described in
+"Retained H.264 range decode", "Retained MP4 (H.264 and H.265) import" and "Retained H.265
+import and range decode" below.
 
 ## Library execution
 
@@ -149,23 +150,26 @@ approximate pixels), `ERR-DECODE-BOUNDS-001`, `ERR-DECODE-SOURCE-UNAVAILABLE-001
 before it remain valid. `fss-file decode --segment N [--segment-count M] --interpretation
 ycbcr [--output FILE.pgm]` exposes the same path and writes one binary PGM luma image per frame.
 
-## Retained MP4 (H.264) import
+## Retained MP4 (H.264 and H.265) import
 
-**Import.** `FileIngestAdapter` retains an indexed (non-fragmented) ISO-BMFF/MP4 file whose one
-video track is H.264 `avc1` as media format `mp4avc` (`--media-format mp4avc`,
-`FileFormatHint::Mp4Avc`; auto-detected when the first box is `ftyp`, detector evidence
-`mp4_ftyp`). The pure-Rust `fss-container` demuxer validates the whole file first: box layout,
-sample tables (`stsz`, `stco`/`co64`, `stsc`, `stts`, `ctts`, `stss`), the `avcC`
-configuration, and the length-prefixed NAL framing of every sample, with in-band parameter sets
-required to equal the configured ones. Fragmented, encrypted, externally referenced, `avc3`,
-HEVC and multi-video-track files, and any malformed table or bound breach, are refused whole with
-`ERR-INGEST-MP4-REFUSED-001` (failure code `mp4_refused`); nothing is retained. Other tracks
-(audio, metadata) are kept as bytes but not interpreted.
+**Import.** `FileIngestAdapter` retains an indexed (non-fragmented) ISO-BMFF/MP4 file with one
+video track as media format `mp4avc` (H.264 `avc1`) or `mp4hevc` (H.265 `hvc1`/`hev1`, base
+layer). An `ftyp`-led file is auto-detected (detector evidence `mp4_ftyp`) and its codec is read
+from the video sample entry; `--media-format mp4avc|mp4hevc` (`FileFormatHint::Mp4Avc`,
+`Mp4Hevc`) must agree with it or the import is `ERR-INGEST-FORMAT-CONFLICT-001`. The pure-Rust
+`fss-container` demuxer validates the whole file first: box layout, sample tables (`stsz`,
+`stco`/`co64`, `stsc`, `stts`, `ctts`, `stss`), the `avcC`/`hvcC` configuration (an `hvcC` must
+carry a VPS, SPS and PPS), and the length-prefixed NAL framing of every sample, with in-band
+parameter sets required to equal the configured ones. Fragmented, encrypted, externally
+referenced, `avc3`, layered-HEVC and multi-video-track files, and any malformed table or bound
+breach, are refused whole with `ERR-INGEST-MP4-REFUSED-001` (failure code `mp4_refused`);
+nothing is retained. Other tracks (audio, metadata) are kept as bytes but not interpreted.
 
 One retained segment is one video sample in decode order: its exact original length-prefixed
 bytes, digest-bound to its source capsule. Every other byte of the file is a typed
-container-structure span: each `avcC` parameter-set NAL payload
-(`mp4_avc_parameter_set:nal_length_bytes=N`) and, split at top-level box boundaries, all
+container-structure span: each configuration parameter-set NAL payload
+(`mp4_avc_parameter_set:nal_length_bytes=N` or `mp4_hevc_parameter_set:nal_length_bytes=N`) and,
+split at top-level box boundaries, all
 remaining box bytes (`mp4_box:<type>`, which includes other tracks' data inside `mdat`). The
 manifest must account for every source byte exactly once, and samples stored out of decode order
 are refused. Container structure is not a source gap or omission: MP4 samples never carry
@@ -174,18 +178,24 @@ accounted structure, not lost media. Capture times follow the same operator capt
 as Annex-B (sample index over the assumed rate); MP4 media timestamps are a media clock, not a
 sensor clock, and are not promoted to capture time.
 
-**Decode.** `RecordedH264Range` accepts `mp4avc` imports with the same request, refusals and
-receipts as `annexb`: it reads the retained parameter-set spans from custody (every touched chunk
-digest-verified), feeds them to `fss-codec-h264` first, then walks each sample's NAL length
-fields. A range must start at a sample containing an IDR slice. The tests import two FFmpeg
-`testsrc2` MP4 files (moov-first, and moov-last with an interleaved AAC track) and require the
-retained decode to reproduce FFmpeg's per-frame I420 digests, and to equal the decode of the same
-samples imported as an Annex-B extraction (`crates/fss-container/tests/fixtures/`).
+**Decode.** `RecordedH264Range` accepts `mp4avc` and `RecordedH265Range` accepts `mp4hevc`
+imports with the same requests, refusals and receipts as `annexb` and `hevc`: each reads the
+retained parameter-set spans from custody (every touched chunk digest-verified), feeds them to
+the codec first, then walks each sample's NAL length fields. An H.264 range must start at a
+sample containing an IDR slice; an H.265 range at an IRAP sample, and a range opened at an
+open-GOP CRA sample skips and lists its RASL samples exactly as for `hevc`. The tests import
+FFmpeg `testsrc2` MP4 files (H.264 moov-first; H.264 and H.265 moov-last with an interleaved AAC
+track) and require the retained decode to reproduce FFmpeg's per-frame I420 digests, including
+the CRA-led H.265 range, and to equal the decode of the same H.264 samples imported as an Annex-B
+extraction (`crates/fss-container/tests/fixtures/`); `fss-event watch` over an `hvc1` remux of
+the HEVC watch scene reaches the same decision as over the Annex-B import.
 `fss-file decode`, `fss-event watch`, `fss-event corroborate`, the detector cascade, sensor
-health screening and tolerant decode accept `mp4avc` wherever they accept `annexb`.
+health screening and tolerant decode accept `mp4avc`/`mp4hevc` wherever they accept
+`annexb`/`hevc`.
 
-Not supported: fragmented MP4 (`moof`), `avc3`/in-band-only configuration, HEVC in MP4
-(`hvc1`/`hev1`), and edit-list trimming (edits are preserved metadata; every sample is decoded).
+Not supported: fragmented MP4 (`moof`), `avc3`/in-band-only configuration, layered HEVC
+(`nuh_layer_id` > 0), and edit-list trimming (edits are preserved metadata; every sample is
+decoded).
 
 ## Retained H.265 import and range decode
 

@@ -13,6 +13,7 @@ scripts/generate_hevc_ingest_fixtures.sh
 | File | Content |
 | --- | --- |
 | `watch_96x48_moving.h265` | 96x48, 14 frames: luma-40 background; from frame 3 a 16x16 luma-220 square enters at the left edge and moves 8 px right per frame along rows 8..24 (the geometry of the MJPEG watch test scene). Neutral chroma. Raw `yuv420p` frames piped to libx265 with `log-level=error:pools=1:frame-threads=1:info=0:scenecut=0:keyint=30:bframes=0:qp=12` (one IDR then P pictures). |
+| `watch_96x48_moving.mp4` | `watch_96x48_moving.h265` remuxed without transcoding into an indexed `hvc1` MP4 (FFmpeg 6.1.1: `ffmpeg -f hevc -i watch_96x48_moving.h265 -c copy -tag:v hvc1 -bitexact -map_metadata -1 -movflags +faststart watch_96x48_moving.mp4`; SHA-256 `9b008f2b1136ac47c91d89915a814612f98d29ef3a3f98622bee955c623c6ece`, 1336 bytes). The same 14 coded pictures, so watch over the `mp4hevc` import must reach the same decision as over the `hevc` import. |
 | `watch_96x48_moving.sha256` | FFmpeg `yuv420p` framehash of that stream, one SHA-256 per frame in output order. |
 | `b_qcif_opengop_from_cra.sha256` | FFmpeg framehash of `crates/fss-codec-h265/tests/fixtures/decode/b_qcif_opengop.h265` decoded from the VPS that opens its CRA access unit (retained segment 5) to the end, fed to FFmpeg on stdin. Decoding starts at the CRA, so FFmpeg skips that CRA's RASL picture (segment 6), as the Rust decoder must for a range that starts there. |
 

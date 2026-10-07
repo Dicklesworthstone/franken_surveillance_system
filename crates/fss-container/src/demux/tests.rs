@@ -477,3 +477,68 @@ fn actual_lab_mp4_preserves_b_frame_timing_edits_and_all_nal_payloads() -> Test 
     }
     Ok(())
 }
+#[test]
+fn hevc_mp4_with_interleaved_audio_exposes_hvcc_parameter_sets_and_irap_samples() -> Test {
+    let bytes = include_bytes!("../../tests/fixtures/hevc_av.mp4");
+    let p = AvcMp4::parse(bytes, None, DemuxLimits::default())?;
+    assert_eq!(p.codec(), VideoCodec::Hevc);
+    assert_eq!(p.dimensions(), [64, 48]);
+    assert_eq!(p.nal_length_bytes(), 4);
+    assert_eq!(p.tracks().len(), 2);
+    // VPS, SPS, PPS in configuration order, each an exact NAL payload of the right type.
+    let kinds: Vec<u8> = p
+        .parameter_sets()
+        .iter()
+        .map(|range| (bytes[range.start] >> 1) & 0x3f)
+        .collect();
+    assert_eq!(kinds, [32, 33, 34]);
+    assert_eq!(p.samples().len(), 10);
+    // The IDR and the open-GOP CRA are the random-access samples, in decode order.
+    let random_access: Vec<usize> = p
+        .samples()
+        .iter()
+        .filter(|sample| sample.contains_idr)
+        .map(|sample| sample.index)
+        .collect();
+    assert_eq!(random_access, [0, 3]);
+    // Audio sits between video samples: sample ranges ascend with gaps.
+    assert!(
+        p.samples()
+            .windows(2)
+            .any(|pair| pair[1].source.start > pair[0].source.end)
+    );
+    for sample in p.samples() {
+        let nals = length_prefixed_nals(&bytes[sample.source.clone()], 4)?;
+        assert!(!nals.is_empty());
+    }
+    // A layered (nuh_layer_id 1) NAL is unsupported, never silently dropped.
+    assert_eq!(
+        super::tables::hevc_nal_kind(&[0x40, 0x09]),
+        Err(DemuxError::Unsupported)
+    );
+    assert_eq!(
+        super::tables::hevc_nal_kind(&[0x40, 0x00]),
+        Err(DemuxError::Nal)
+    );
+    assert_eq!(super::tables::hevc_nal_kind(&[0x26, 0x01]), Ok(19));
+    Ok(())
+}
+#[test]
+fn avc_mp4_reports_its_codec_and_avcc_parameter_sets() -> Test {
+    let bytes = include_bytes!("../../tests/fixtures/indexed_avc.mp4");
+    let p = AvcMp4::parse(bytes, None, DemuxLimits::default())?;
+    assert_eq!(p.codec(), VideoCodec::Avc);
+    let kinds: Vec<u8> = p
+        .parameter_sets()
+        .iter()
+        .map(|range| bytes[range.start] & 31)
+        .collect();
+    assert_eq!(kinds, [7, 8]);
+    assert_eq!(length_prefixed_nals(&[0, 0, 0, 1, 0x65], 4)?, vec![4..5]);
+    assert_eq!(
+        length_prefixed_nals(&[0, 0, 0, 2, 0x65], 4),
+        Err(DemuxError::Nal)
+    );
+    assert_eq!(length_prefixed_nals(&[0, 1, 0x65], 3), Err(DemuxError::Nal));
+    Ok(())
+}

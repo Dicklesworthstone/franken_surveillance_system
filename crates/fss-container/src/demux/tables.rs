@@ -1,7 +1,7 @@
 #![forbid(unsafe_code)]
-//! The indexed avc1 sample-table join and configuration decoder.
+//! The indexed avc1/hvc1 sample-table join and configuration decoder.
 use super::reader::{BoxRef, Reader, be16, be32, be64, exact_table, full, one, optional};
-use super::{DemuxError, Mp4Edit};
+use super::{DemuxError, Mp4Edit, VideoCodec};
 use std::ops::Range;
 
 pub(super) fn time_header(b: &[u8]) -> Result<(u32, u64), DemuxError> {
@@ -116,8 +116,9 @@ pub(super) fn validate_data_reference(
     }
     Ok(())
 }
-/// Coded dimensions, NAL length-field bytes and parameter-set byte ranges of one sample entry.
-pub(super) type Configuration = ([u16; 2], usize, Vec<Range<usize>>);
+/// Codec, coded dimensions, NAL length-field bytes and parameter-set byte ranges of one sample
+/// entry.
+pub(super) type Configuration = (VideoCodec, [u16; 2], usize, Vec<Range<usize>>);
 pub(super) fn configuration(
     r: &mut Reader<'_, '_>,
     stsd: &BoxRef,
@@ -128,9 +129,14 @@ pub(super) fn configuration(
         return Err(DemuxError::Unsupported);
     }
     let entries = r.children(stsd.body.start + 8..stsd.body.end, false)?;
-    if entries.len() != 1 || entries[0].kind != *b"avc1" {
+    if entries.len() != 1 {
         return Err(DemuxError::Unsupported);
     }
+    let codec = match &entries[0].kind {
+        b"avc1" => VideoCodec::Avc,
+        b"hvc1" | b"hev1" => VideoCodec::Hevc,
+        _ => return Err(DemuxError::Unsupported),
+    };
     let avc = &entries[0];
     let data = r.body(avc);
     if data.len() < 78 || data[..6] != [0; 6] || be16(data, 6)? != 1 {
@@ -143,6 +149,10 @@ pub(super) fn configuration(
     let boxes = r.children(avc.body.start + 78..avc.body.end, false)?;
     if boxes.iter().any(|b| b.kind == *b"sinf") {
         return Err(DemuxError::Unsupported);
+    }
+    if codec == VideoCodec::Hevc {
+        let (length, parameters) = hevc_configuration(r, &one(&boxes, b"hvcC")?)?;
+        return Ok((codec, dimensions, length, parameters));
     }
     let config = one(&boxes, b"avcC")?;
     let b = r.body(&config);
@@ -188,7 +198,67 @@ pub(super) fn configuration(
     if position != b.len() {
         return Err(DemuxError::Layout);
     }
-    Ok((dimensions, length, parameters))
+    Ok((codec, dimensions, length, parameters))
+}
+/// `hvcC` (ISO/IEC 14496-15 8.3.3): NAL length-field bytes and the byte ranges of its VPS, SPS
+/// and PPS NAL units in array order. Declarative SEI arrays are validated and kept as container
+/// bytes only. At least one VPS, SPS and PPS is required; a three-byte length field is refused.
+fn hevc_configuration(
+    r: &mut Reader<'_, '_>,
+    config: &BoxRef,
+) -> Result<(usize, Vec<Range<usize>>), DemuxError> {
+    let b = r.body(config);
+    if b.len() < 23 || b[0] != 1 {
+        return Err(DemuxError::Nal);
+    }
+    let length = usize::from((b[21] & 3) + 1);
+    if length == 3 {
+        return Err(DemuxError::Unsupported);
+    }
+    let arrays = usize::from(b[22]);
+    r.entries(arrays)?;
+    let mut position = 23;
+    let mut parameters = Vec::new();
+    let mut present = [false; 3];
+    for _ in 0..arrays {
+        r.checkpoint()?;
+        let kind = *b.get(position).ok_or(DemuxError::Truncated)? & 0x3f;
+        let count = usize::from(be16(b, position + 1)?);
+        position += 3;
+        if !matches!(kind, 32..=34 | 39 | 40) {
+            return Err(DemuxError::Nal);
+        }
+        r.entries(count)?;
+        for _ in 0..count {
+            r.checkpoint()?;
+            let len = usize::from(be16(b, position)?);
+            position += 2;
+            let end = position
+                .checked_add(len)
+                .filter(|end| *end <= b.len())
+                .ok_or(DemuxError::Truncated)?;
+            if hevc_nal_kind(&b[position..end])? != kind {
+                return Err(DemuxError::Nal);
+            }
+            r.nals = r
+                .nals
+                .checked_add(1)
+                .filter(|n| *n <= r.limits.maximum_nals)
+                .ok_or(DemuxError::Limit)?;
+            if let Some(slot) = present.get_mut(usize::from(kind) - 32) {
+                *slot = true;
+                parameters.push(config.body.start + position..config.body.start + end);
+            }
+            position = end;
+        }
+    }
+    if position != b.len() {
+        return Err(DemuxError::Layout);
+    }
+    if !present.iter().all(|present| *present) {
+        return Err(DemuxError::Nal);
+    }
+    Ok((length, parameters))
 }
 fn config_nals(
     r: &mut Reader<'_, '_>,
@@ -409,6 +479,21 @@ pub(super) fn sync_samples(
         previous = index;
     }
     Ok(result)
+}
+/// H.265 `nal_unit_type` of a base-layer NAL unit: VCL types 0..=9 and 16..=21 and non-VCL
+/// types 32..=40. Layers above the base layer are unsupported, never silently dropped.
+pub(super) fn hevc_nal_kind(b: &[u8]) -> Result<u8, DemuxError> {
+    let [first, second, ..] = *b else {
+        return Err(DemuxError::Nal);
+    };
+    let kind = (first >> 1) & 0x3f;
+    if first & 0x80 != 0 || second & 7 == 0 || !matches!(kind, 0..=9 | 16..=21 | 32..=40) {
+        return Err(DemuxError::Nal);
+    }
+    if ((first & 1) << 5) | (second >> 3) != 0 {
+        return Err(DemuxError::Unsupported);
+    }
+    Ok(kind)
 }
 pub(super) fn nal_kind(b: &[u8]) -> Result<u8, DemuxError> {
     let header = *b.first().ok_or(DemuxError::Nal)?;

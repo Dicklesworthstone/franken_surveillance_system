@@ -34,9 +34,10 @@ mod media;
 const HELP: &str = "fss-file <import|inspect|verify|extract|decode|read-decoded|verify-decoded|motion> [options]\n\
   All commands: --root DIR --site SITE [--principal ID] [--manifest-out FILE]\n\
   import: --input FILE --sensor ID --stream ID --receive-time-ns N\n\
-          [--media-format auto|mjpeg|annexb|hevc|mp4avc|rtpplay] (annexb is H.264, hevc is\n\
-          H.265, mp4avc an indexed MP4 with one H.264 avc1 track; auto refuses an Annex-B\n\
-          stream whose first NAL header fits both codecs)\n\
+          [--media-format auto|mjpeg|annexb|hevc|mp4avc|mp4hevc|rtpplay] (annexb is H.264,\n\
+          hevc is H.265, mp4avc/mp4hevc an indexed MP4 with one H.264 avc1 / H.265 hvc1 track;\n\
+          auto reads the MP4 sample entry and refuses an Annex-B stream whose first NAL header\n\
+          fits both codecs)\n\
           [--capture-start-ns N --capture-uncertainty-ns N --assumed-fps F]\n\
   rtpplay (rtpdump #!rtpplay1.0) also requires the owner's stream binding, never read from\n\
           the capture: --rtp-generation N (>= 1) --rtp-ssrc N --rtp-payload-type N (96..127)\n\
@@ -46,7 +47,7 @@ const HELP: &str = "fss-file <import|inspect|verify|extract|decode|read-decoded|
   extract: --import-id sha256:HEX --segment N --output FILE\n\
   decode/read-decoded/verify-decoded: --import-id sha256:HEX --segment N\n\
           --interpretation gray|ycbcr [--output IMAGE.pgm] [--receipt-out FILE]\n\
-  decode of an annexb/mp4avc/hevc import: --segment N must be an IDR access unit (hevc: IDR,\n\
+  decode of an annexb/mp4avc/hevc/mp4hevc import: --segment N must be an IDR access unit (hevc: IDR,\n\
           CRA or BLA) and [--segment-count M] (1..1024) decodes N..N+M in display order;\n\
           RASL pictures of a leading CRA/BLA are skipped and listed; --interpretation ycbcr;\n\
           --output writes one binary PGM luma image per frame; nothing is published\n\
@@ -259,9 +260,10 @@ fn parse(args: &[OsString]) -> ParseResult<Option<Options>> {
                 "hevc" => Some(FileFormatHint::Hevc),
                 "rtpplay" => Some(FileFormatHint::RtpPlay),
                 "mp4avc" => Some(FileFormatHint::Mp4Avc),
+                "mp4hevc" => Some(FileFormatHint::Mp4Hevc),
                 _ => {
                     return Err(malformed(
-                        "media format must be auto, mjpeg, annexb, hevc, mp4avc or rtpplay",
+                        "media format must be auto, mjpeg, annexb, hevc, mp4avc, mp4hevc or rtpplay",
                     ));
                 }
             };

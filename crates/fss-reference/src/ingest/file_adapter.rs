@@ -160,6 +160,8 @@ pub enum DetectedFileFormat {
     RtpPlay,
     /// Indexed (non-fragmented) ISO-BMFF/MP4 file with one `avc1` H.264 video track.
     Mp4Avc,
+    /// Indexed (non-fragmented) ISO-BMFF/MP4 file with one `hvc1`/`hev1` H.265 video track.
+    Mp4Hevc,
 }
 
 impl DetectedFileFormat {
@@ -172,6 +174,7 @@ impl DetectedFileFormat {
             Self::JpegStream => "mjpeg",
             Self::RtpPlay => "rtpplay",
             Self::Mp4Avc => "mp4avc",
+            Self::Mp4Hevc => "mp4hevc",
         }
     }
 
@@ -184,6 +187,7 @@ impl DetectedFileFormat {
             Self::JpegStream => FileFormatHint::JpegStream,
             Self::RtpPlay => FileFormatHint::RtpPlay,
             Self::Mp4Avc => FileFormatHint::Mp4Avc,
+            Self::Mp4Hevc => FileFormatHint::Mp4Hevc,
         }
     }
 }
@@ -202,6 +206,8 @@ pub enum FileFormatHint {
     RtpPlay,
     /// Expected format is an indexed MP4 file with one H.264 (`avc1`) video track.
     Mp4Avc,
+    /// Expected format is an indexed MP4 file with one H.265 (`hvc1`/`hev1`) video track.
+    Mp4Hevc,
 }
 
 impl FileFormatHint {
@@ -214,6 +220,7 @@ impl FileFormatHint {
             Self::JpegStream => "mjpeg",
             Self::RtpPlay => "rtpplay",
             Self::Mp4Avc => "mp4avc",
+            Self::Mp4Hevc => "mp4hevc",
         }
     }
 }
@@ -465,6 +472,9 @@ pub const MP4_STRUCTURE_REASON_PREFIX: &str = "mp4_";
 /// Omission reason prefix of one `avcC` parameter-set NAL payload, completed by
 /// `nal_length_bytes=N` (the sample NAL length-field size the decoder needs).
 pub const MP4_PARAMETER_SET_REASON_PREFIX: &str = "mp4_avc_parameter_set:nal_length_bytes=";
+/// Omission reason prefix of one `hvcC` VPS, SPS or PPS NAL payload, completed by
+/// `nal_length_bytes=N`.
+pub const MP4_HEVC_PARAMETER_SET_REASON_PREFIX: &str = "mp4_hevc_parameter_set:nal_length_bytes=";
 
 impl FileOmissionSpan {
     /// True for MP4 container structure, which is accounted byte for byte but is not lost or
@@ -1052,6 +1062,17 @@ pub fn sniff_format(bytes: &[u8]) -> Result<(DetectedFileFormat, &'static str), 
     sniff_format_with_hint(bytes, None)
 }
 
+/// Demuxer bounds of a file import: the largest admitted MP4 input, at most `max_samples`
+/// samples, and the demuxer's default box, table, NAL and metadata ceilings.
+fn mp4_demux_limits(max_samples: usize) -> fss_container::demux::DemuxLimits {
+    use fss_container::demux::{DemuxLimits, MAX_MP4_INPUT_BYTES, MAX_MP4_SAMPLES};
+    DemuxLimits {
+        maximum_input_bytes: MAX_MP4_INPUT_BYTES,
+        maximum_samples: max_samples.clamp(1, MAX_MP4_SAMPLES),
+        ..DemuxLimits::default()
+    }
+}
+
 /// Top-level ISO-BMFF boxes as `(start, end, type)`. Parsing stops at the first malformed
 /// header; any bytes after it form one `????` pseudo-box, so the result always tiles the input.
 fn top_level_boxes(bytes: &[u8]) -> Vec<(usize, usize, [u8; 4])> {
@@ -1174,9 +1195,16 @@ pub fn sniff_format_with_hint(
         return Ok((DetectedFileFormat::RtpPlay, "rtpplay_magic"));
     }
 
-    // ISO-BMFF: the first box is `ftyp`. The demuxer, not the sniffer, decides support.
+    // ISO-BMFF: the first box is `ftyp`. The demuxer, not the sniffer, decides support and
+    // the codec (from the one video sample entry); a refused file is refused here, whole.
     if bytes.get(4..8) == Some(b"ftyp".as_slice()) {
-        return Ok((DetectedFileFormat::Mp4Avc, "mp4_ftyp"));
+        use fss_container::demux::{AvcMp4, VideoCodec};
+        let parsed = AvcMp4::parse(bytes, None, mp4_demux_limits(usize::MAX))
+            .map_err(|refusal| FileIngestError::Mp4Refused { refusal })?;
+        return Ok(match parsed.codec() {
+            VideoCodec::Avc => (DetectedFileFormat::Mp4Avc, "mp4_ftyp"),
+            VideoCodec::Hevc => (DetectedFileFormat::Mp4Hevc, "mp4_ftyp"),
+        });
     }
 
     // Check Annex-B start code: 0x00, 0x00, 0x01 or 0x00, 0x00, 0x00, 0x01
@@ -2539,9 +2567,10 @@ impl FileIngestAdapter {
                     format: DetectedFileFormat::RtpPlay,
                 });
             }
-            DetectedFileFormat::Mp4Avc => {
+            DetectedFileFormat::Mp4Avc | DetectedFileFormat::Mp4Hevc => {
                 return Self::mp4_segments(
                     file_bytes,
+                    format,
                     request,
                     import_identity_hex,
                     receive_time,
@@ -2636,27 +2665,23 @@ impl FileIngestAdapter {
         })
     }
 
-    /// One segment per `avc1` sample, in decode order, with the sample's exact length-prefixed
-    /// bytes. Every other byte is a typed container-structure span: each `avcC` parameter-set
-    /// NAL payload (read back verbatim by the decoder) and, split at top-level box boundaries,
-    /// the remaining box bytes (`mp4_box:<type>`, including other tracks' data in `mdat`).
+    /// One segment per video sample (`avc1`, or `hvc1`/`hev1`), in decode order, with the
+    /// sample's exact length-prefixed bytes. Every other byte is a typed container-structure
+    /// span: each `avcC`/`hvcC` parameter-set NAL payload (read back verbatim by the decoder)
+    /// and, split at top-level box boundaries, the remaining box bytes (`mp4_box:<type>`,
+    /// including other tracks' data in `mdat`).
     /// Samples are complete by construction (the demuxer refuses the whole file otherwise), so
     /// no sample carries a source gap; samples stored out of decode order are refused.
     fn mp4_segments(
         file_bytes: &[u8],
+        format: DetectedFileFormat,
         request: &FileIngestRequest,
         import_identity_hex: &str,
         receive_time: TimestampNs,
         cx: &ReplayCx,
     ) -> Result<ScannedSegments, FileIngestError> {
-        use fss_container::demux::{
-            AvcMp4, DemuxError, DemuxLimits, MAX_MP4_INPUT_BYTES, MAX_MP4_SAMPLES,
-        };
-        let limits = DemuxLimits {
-            maximum_input_bytes: MAX_MP4_INPUT_BYTES,
-            maximum_samples: request.limits.max_segments.clamp(1, MAX_MP4_SAMPLES),
-            ..DemuxLimits::default()
-        };
+        use fss_container::demux::{AvcMp4, DemuxError, VideoCodec};
+        let limits = mp4_demux_limits(request.limits.max_segments);
         let mp4 = AvcMp4::parse_with_checkpoint(file_bytes, None, limits, &mut || {
             cx.checkpoint(STAGE_SPLIT)
                 .map_err(|_| DemuxError::Cancelled)
@@ -2665,10 +2690,16 @@ impl FileIngestAdapter {
             DemuxError::Cancelled => FileIngestError::CancellationRequested { stage: STAGE_SPLIT },
             refusal => FileIngestError::Mp4Refused { refusal },
         })?;
-        let parameter_reason = format!(
-            "{MP4_PARAMETER_SET_REASON_PREFIX}{}",
-            mp4.nal_length_bytes()
-        );
+        let prefix = match (mp4.codec(), format) {
+            (VideoCodec::Avc, DetectedFileFormat::Mp4Avc) => MP4_PARAMETER_SET_REASON_PREFIX,
+            (VideoCodec::Hevc, DetectedFileFormat::Mp4Hevc) => MP4_HEVC_PARAMETER_SET_REASON_PREFIX,
+            _ => {
+                return Err(FileIngestError::Mp4Refused {
+                    refusal: DemuxError::Unsupported,
+                });
+            }
+        };
+        let parameter_reason = format!("{prefix}{}", mp4.nal_length_bytes());
         // Claimed ranges: samples (Some(index)) and parameter sets (None), in file order.
         let mut claimed: Vec<(usize, usize, Option<usize>)> = mp4
             .parameter_sets()

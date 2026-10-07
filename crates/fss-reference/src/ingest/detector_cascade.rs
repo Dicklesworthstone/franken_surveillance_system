@@ -205,7 +205,7 @@ fn validate_shape(
     }
     if !matches!(
         source.source.media_format,
-        "mjpeg" | "annexb" | "hevc" | "mp4avc"
+        "mjpeg" | "annexb" | "hevc" | "mp4avc" | "mp4hevc"
     ) {
         return Err(CascadeError::InvalidConfig(
             "unsupported cascade media format",

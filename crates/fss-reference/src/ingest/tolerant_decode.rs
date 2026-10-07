@@ -170,7 +170,7 @@ impl TolerantSource {
         let codec = match retained.manifest().format.as_str() {
             "mjpeg" => None,
             "annexb" | "mp4avc" => Some(Codec::H264),
-            "hevc" => Some(Codec::H265),
+            "hevc" | "mp4hevc" => Some(Codec::H265),
             _ => return Err(RecordedDecodeError::UnsupportedMedia),
         };
         let mut source = Self {
