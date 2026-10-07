@@ -3023,6 +3023,11 @@ mod tests {
             Ok(bytes)
         };
         resolves(executor.reference_decode_receipt)?;
+        // The executed graph came from the verified committed package, retained beside it.
+        assert_eq!(
+            resolves(executor.package_sha256)?,
+            fss_reference::executor_activity_package::ACTIVITY_PACKAGE_V1
+        );
         for observation in &executor.observations {
             let result = &observation.result;
             assert_eq!(observation.result_digest, result.object_digest());
@@ -3030,7 +3035,21 @@ mod tests {
                 use fss_core::CanonicalEncode as _;
                 result.canonical_bytes()
             });
-            resolves(result.invocation_receipt_object)?;
+            // The retained receipt names the package root and links the decode receipts.
+            let receipt = String::from_utf8(resolves(result.invocation_receipt_object)?)?;
+            assert!(receipt.contains(&format!(
+                "\"modelPackageRoot\":\"{}\"",
+                executor.model_package_root
+            )));
+            assert!(receipt.contains(&format!("\"{}\"", result.decode_receipt_digest)));
+            assert!(receipt.contains(&format!("\"{}\"", result.reference_decode_receipt_digest)));
+            assert_eq!(
+                fss_reference::executor_activity::ExecutorModelResult::decode_canonical(&{
+                    use fss_core::CanonicalEncode as _;
+                    result.canonical_bytes()
+                })?,
+                *result
+            );
             resolves(result.decode_receipt_digest)?;
             assert_eq!(
                 result.reference_decode_receipt_digest,

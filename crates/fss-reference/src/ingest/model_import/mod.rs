@@ -541,6 +541,73 @@ impl ImportedModel {
     }
 }
 
+/// One exact F32 parameter tensor read from a Safetensors container.
+#[derive(Clone, Debug, PartialEq)]
+pub struct F32Tensor {
+    /// Declared shape.
+    pub shape: Vec<usize>,
+    /// Finite values in row-major order, bit patterns preserved.
+    pub values: Vec<f32>,
+}
+
+/// Reads every tensor of a bounded Safetensors container as exact finite F32 values, keyed by
+/// name. It uses the same data-only parser as [`ImportedModel::build`] (no holes, overlaps,
+/// duplicate keys or unindexed bytes). Only F32 is admitted, and the caller must bind every
+/// returned tensor to a graph port; nothing is silently dropped or converted.
+pub fn read_f32_tensors(
+    bytes: &[u8],
+    limits: &ImportLimits,
+) -> Result<BTreeMap<String, F32Tensor>, ImportError> {
+    limits.validate()?;
+    if bytes.len() > limits.maximum_source_bytes {
+        return Err(ImportError::Limit);
+    }
+    let weights = safetensors::Weights::parse(bytes, limits)?;
+    if weights.entries.len() > limits.maximum_tensors {
+        return Err(ImportError::Limit);
+    }
+    let mut out = BTreeMap::new();
+    let mut expanded = 0_usize;
+    for (name, entry) in &weights.entries {
+        if entry.dtype != safetensors::FloatType::F32 {
+            return Err(ImportError::UnsupportedDType);
+        }
+        let count = safetensors::element_count(&entry.shape)?;
+        expanded = expanded
+            .checked_add(count.checked_mul(4).ok_or(ImportError::Limit)?)
+            .ok_or(ImportError::Limit)?;
+        if expanded > limits.maximum_expanded_bytes {
+            return Err(ImportError::Limit);
+        }
+        let source = weights
+            .data
+            .get(entry.start..entry.end)
+            .ok_or(ImportError::MalformedWeights)?;
+        let mut values = Vec::new();
+        values
+            .try_reserve_exact(count)
+            .map_err(|_| ImportError::Limit)?;
+        for chunk in source.chunks_exact(entry.width()) {
+            values.push(safetensors::value(
+                entry.dtype,
+                chunk,
+                WeightFloatPolicy::F32Only,
+            )?);
+        }
+        if values.len() != count {
+            return Err(ImportError::MalformedWeights);
+        }
+        out.insert(
+            name.clone(),
+            F32Tensor {
+                shape: entry.shape.clone(),
+                values,
+            },
+        );
+    }
+    Ok(out)
+}
+
 #[cfg(test)]
 mod tests;
 
