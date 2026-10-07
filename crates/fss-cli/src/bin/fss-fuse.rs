@@ -1,10 +1,11 @@
 #![forbid(unsafe_code)]
 //! Offline, read-only adapter for the reference evidence fusion rule (`fss-fusion`).
 //!
-//! Reads one fusion query (JSON) and optionally a score calibration (the `fss-evaluate
-//! --calibration-bins` report, rebuilt from its per-bin counts and refused unless its digest
-//! matches), and prints the digest-bound decision as JSON. It decides nothing durable: no
-//! event is published, no threshold is activated, no alert is prepared or sent.
+//! Reads one fusion query (JSON) and up to sixteen score calibrations (the `fss-evaluate
+//! --calibration-bins` reports, rebuilt from their per-bin counts and refused unless their
+//! digests match). Every raw score names its exact calibration generation and digest. It
+//! prints a decision and the selected calibration provenance as JSON, with no durable effect:
+//! no event is published, no threshold is activated, no alert is prepared or sent.
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::ffi::OsString;
@@ -13,6 +14,7 @@ use std::process::ExitCode;
 
 use fss_cli::escape_json_str;
 use fss_cli::json_input::{Value, read_document};
+use fss_core::{CanonicalEncoder, ContentDigest};
 use fss_fusion::{
     Calibration, Coverage, Decision, EvidenceItem, FusionOutcome, FusionPolicy, FusionQuery,
     LlrInterval, Observability, Opportunity, Probe, ScoreCalibration, Severity, fuse,
@@ -26,21 +28,27 @@ use fss_graph_algorithms::temporal::{
 const TRANSIT_OPERATIONS: u64 = 20_000_000;
 /// Interval cap of one transit presence set.
 const TRANSIT_INTERVALS: u32 = 4_096;
+/// Maximum independently named calibration artifacts accepted by one invocation.
+const MAX_CALIBRATIONS: usize = 16;
 
-const HELP: &str = "fss-fuse --query QUERY.json|- [--calibration EVALUATION.json]\n\n\
+const HELP: &str = "fss-fuse --query QUERY.json|- [--calibration EVALUATION.json]...\n\n\
 Read-only evidence fusion; prints a fss.fusion_outcome.v1 JSON decision to stdout. Nothing is\n\
 published, activated or sent; a decision grants no effect authority.\n\n\
-Query (schema fss.fusion_query.v1): hypothesis, kind, prior ([lo, hi] millibans or\n\
-\"calibration\"), coverage ({state: complete|degraded|gap, reason}), looks, now_ns,\n\
+Query (schema fss.fusion_query.v2; v1 remains readable): hypothesis, kind, prior ([lo, hi]\n\
+millibans, {generation, digest}, or\n\
+\"calibration\" with exactly one loaded artifact), coverage ({state: complete|degraded|gap, reason}), looks, now_ns,\n\
 severity {expected_harm, false_alert_cost, delay_cost_per_second, reversible}, policy\n\
 {generation, alert_threshold, retain_threshold, reject_threshold, min_independent_support,\n\
 urgent_single_domain_threshold|null, max_wait_ns, look_penalty_per_doubling,\n\
 operator_confirmation_available}, evidence [{id, sensor, failure_domains[], observability:\n\
 observed|redacted|stale|{not_observable: reason}, calibration: {generation, llr: [lo, hi]} |\n\
-{uncalibrated: reason} | {score_ppm: N}}], opportunities [{id, sensor, failure_domains[],\n\
+{uncalibrated: reason} | {score_ppm: N, generation, digest}}], opportunities [{id, sensor, failure_domains[],\n\
 window_start_ns, window_end_ns, positive: [lo, hi], negative: [lo, hi]}], probes [{id, kind,\n\
 failure_domains[], cost, latency_ns, positive, negative}]. Log-likelihood ratios are integer\n\
-millibans (thousandths of log10 odds). A score_ppm needs --calibration.\n\n\
+millibans (thousandths of log10 odds). A score_ppm needs its exact --calibration artifact.\n\
+Repeat --calibration up to 16 times for distinct producers; raw scores without an explicit\n\
+generation and digest are refused, including legacy v1 scores. Reusing one artifact shares a\n\
+common-cause domain. Caller-declared score spaces do not establish deployment qualification.\n\n\
 Optional transit {origin: {zone, earliest_ns, latest_ns}, zones: [{id, max_wait_ns}],\n\
 transits: [{from, to, open_ns, close_ns, min_travel_ns, max_travel_ns}], observers: [{zone,\n\
 sensor, failure_domains[], positive, negative}]}: exact temporal reachability (ALG-TREACH-001)\n\
@@ -155,6 +163,138 @@ fn load_calibration(path: &str) -> Result<ScoreCalibration> {
         ));
     }
     Ok(calibration)
+}
+
+/// Calibrations are selected by content identity, never by argument order.
+type Calibrations = BTreeMap<String, ScoreCalibration>;
+
+#[derive(Clone)]
+struct CalibrationIdentity {
+    generation: String,
+    digest: ContentDigest,
+}
+
+impl CalibrationIdentity {
+    fn of(calibration: &ScoreCalibration) -> Self {
+        Self {
+            generation: calibration.generation.clone(),
+            digest: calibration.digest,
+        }
+    }
+
+    fn encode(&self, encoder: &mut CanonicalEncoder) {
+        encoder.text(&self.generation);
+        encoder.digest(self.digest);
+    }
+
+    fn to_json(&self) -> String {
+        object(&[
+            ("generation", text(&self.generation)),
+            ("digest", text(&self.digest.to_text())),
+        ])
+    }
+}
+
+struct ScoreBinding {
+    evidence_id: String,
+    score_ppm: u32,
+    calibration: CalibrationIdentity,
+}
+
+/// Adapter provenance retains inputs lost when scores and priors become LLR intervals.
+#[derive(Default)]
+struct CalibrationBindings {
+    prior: Option<CalibrationIdentity>,
+    scores: Vec<ScoreBinding>,
+}
+
+impl CalibrationBindings {
+    fn digest(&self, query_digest: ContentDigest) -> Result<ContentDigest> {
+        let mut encoder = CanonicalEncoder::new();
+        encoder.text("fss.fusion.calibrated_input.v1");
+        encoder.digest(query_digest);
+        encoder.bool(self.prior.is_some());
+        if let Some(prior) = &self.prior {
+            prior.encode(&mut encoder);
+        }
+        encoder.u64(self.scores.len() as u64);
+        for score in &self.scores {
+            encoder.text(&score.evidence_id);
+            encoder.u32(score.score_ppm);
+            score.calibration.encode(&mut encoder);
+        }
+        let bytes = encoder.finish_checked().map_err(|_| {
+            fail(
+                "fusion.cli.binding_encoding",
+                "calibration provenance exceeds canonical encoding bounds",
+            )
+        })?;
+        Ok(ContentDigest::sha256(&bytes))
+    }
+
+    fn scores_json(&self) -> String {
+        array(self.scores.iter().map(|score| {
+            object(&[
+                ("evidence_id", text(&score.evidence_id)),
+                ("score_ppm", score.score_ppm.to_string()),
+                ("calibration", score.calibration.to_json()),
+            ])
+        }))
+    }
+}
+
+fn select_calibration<'a>(
+    binding: &BTreeMap<String, Value>,
+    calibrations: &'a Calibrations,
+) -> Result<&'a ScoreCalibration> {
+    if calibrations.is_empty() {
+        return Err(fail(
+            "fusion.cli.calibration_required",
+            "score_ppm or a calibration prior needs --calibration",
+        ));
+    }
+    let generation = binding.get("generation").and_then(Value::text);
+    let digest = binding.get("digest").and_then(Value::text);
+    let (Some(generation), Some(digest)) = (generation, digest) else {
+        return Err(fail(
+            "fusion.cli.calibration_binding_required",
+            "a raw score or calibration prior must name its generation and digest",
+        ));
+    };
+    let selected = calibrations.get(digest).ok_or_else(|| {
+        fail(
+            "fusion.cli.calibration_unknown",
+            "the named calibration digest was not loaded",
+        )
+    })?;
+    if generation != selected.generation {
+        return Err(fail(
+            "fusion.cli.calibration_generation_mismatch",
+            "the named generation does not match the selected calibration artifact",
+        ));
+    }
+    Ok(selected)
+}
+
+fn implicit_prior(calibrations: &Calibrations) -> Result<&ScoreCalibration> {
+    if calibrations.is_empty() {
+        return Err(fail(
+            "fusion.cli.calibration_required",
+            "a calibration prior needs --calibration",
+        ));
+    }
+    if calibrations.len() != 1 {
+        return Err(fail(
+            "fusion.cli.prior_ambiguous",
+            "with multiple artifacts the prior must name its generation and digest",
+        ));
+    }
+    calibrations.values().next().ok_or_else(|| {
+        fail(
+            "fusion.cli.calibration_required",
+            "a calibration prior needs --calibration",
+        )
+    })
 }
 
 /// One observer of the transit plan and what reachability says about it.
@@ -275,25 +415,30 @@ fn parse_transit(
 
 fn parse_query(
     document: &Value,
-    calibration: Option<&ScoreCalibration>,
-) -> Result<(FusionQuery, Option<TransitPlan>)> {
+    calibrations: &Calibrations,
+) -> Result<(FusionQuery, Option<TransitPlan>, CalibrationBindings)> {
     let query = as_object(document, "query")?;
-    if query.get("schema").and_then(Value::text) != Some("fss.fusion_query.v1") {
+    if !matches!(
+        query.get("schema").and_then(Value::text),
+        Some("fss.fusion_query.v1" | "fss.fusion_query.v2")
+    ) {
         return Err(fail(
             "fusion.cli.query_schema",
-            "expected fss.fusion_query.v1",
+            "expected fss.fusion_query.v1 or fss.fusion_query.v2",
         ));
     }
-    let need_calibration = || {
-        calibration.ok_or_else(|| {
-            fail(
-                "fusion.cli.calibration_required",
-                "score_ppm or a calibration prior needs --calibration",
-            )
-        })
-    };
+    let mut bindings = CalibrationBindings::default();
     let prior = match field(query, "prior")? {
-        Value::Text(text) if text == "calibration" => need_calibration()?.prior,
+        Value::Text(text) if text == "calibration" => {
+            let selected = implicit_prior(calibrations)?;
+            bindings.prior = Some(CalibrationIdentity::of(selected));
+            selected.prior
+        }
+        Value::Object(binding) => {
+            let selected = select_calibration(binding, calibrations)?;
+            bindings.prior = Some(CalibrationIdentity::of(selected));
+            selected.prior
+        }
         value => interval(value, "prior")?,
     };
     let coverage = {
@@ -363,8 +508,34 @@ fn parse_query(
             }
         };
         let calibration_value = as_object(field(item, "calibration")?, "calibration")?;
+        let modes = ["score_ppm", "uncalibrated", "llr"]
+            .iter()
+            .filter(|key| calibration_value.contains_key(**key))
+            .count();
+        if modes != 1 {
+            return Err(fail(
+                "fusion.cli.calibration_mode",
+                "calibration must contain exactly one of score_ppm, uncalibrated, or llr",
+            ));
+        }
+        let evidence_id = as_text(field(item, "id")?, "evidence id")?;
+        let mut failure_domains = domains(field(item, "failure_domains")?, "failure_domains")?;
         let item_calibration = if let Some(score) = calibration_value.get("score_ppm") {
-            need_calibration()?.calibrate(as_integer(score, "score_ppm")?)
+            let selected = select_calibration(calibration_value, calibrations)?;
+            let score_ppm: u32 = as_integer(score, "score_ppm")?;
+            if score_ppm > fss_fusion::calibration::MAX_SCORE_PPM {
+                return Err(fail(
+                    "fusion.cli.score_out_of_range",
+                    "score_ppm must be in 0..=1000000",
+                ));
+            }
+            failure_domains.insert(format!("calibration:{}", selected.digest.to_text()));
+            bindings.scores.push(ScoreBinding {
+                evidence_id: evidence_id.clone(),
+                score_ppm,
+                calibration: CalibrationIdentity::of(selected),
+            });
+            selected.calibrate(score_ppm)
         } else if let Some(reason) = calibration_value.get("uncalibrated") {
             Calibration::Uncalibrated {
                 reason: as_text(reason, "uncalibrated")?,
@@ -379,9 +550,9 @@ fn parse_query(
             }
         };
         evidence.push(EvidenceItem {
-            id: as_text(field(item, "id")?, "evidence id")?,
+            id: evidence_id,
             sensor: as_text(field(item, "sensor")?, "sensor")?,
-            failure_domains: domains(field(item, "failure_domains")?, "failure_domains")?,
+            failure_domains,
             calibration: item_calibration,
             observability,
         });
@@ -435,7 +606,8 @@ fn parse_query(
         looks: as_integer(field(query, "looks")?, "looks")?,
         now_ns,
     };
-    Ok((fusion, transit))
+    bindings.scores.sort_by(|a, b| a.evidence_id.cmp(&b.evidence_id));
+    Ok((fusion, transit, bindings))
 }
 
 fn transit_json(plan: &TransitPlan) -> String {
@@ -525,7 +697,9 @@ fn decision_json(decision: &Decision) -> String {
 
 fn outcome_json(
     outcome: &FusionOutcome,
-    calibration: Option<&ScoreCalibration>,
+    calibrations: &Calibrations,
+    bindings: &CalibrationBindings,
+    input_binding_digest: ContentDigest,
     transit: Option<&TransitPlan>,
 ) -> String {
     let optional = |value: Option<i64>| value.map_or_else(|| "null".to_owned(), |v| v.to_string());
@@ -537,7 +711,34 @@ fn outcome_json(
         ("policy_generation", text(&outcome.policy_generation)),
         (
             "score_calibration_digest",
-            calibration.map_or_else(|| "null".to_owned(), |c| text(&c.digest.to_text())),
+            if calibrations.len() == 1 {
+                calibrations
+                    .values()
+                    .next()
+                    .map_or_else(|| "null".to_owned(), |c| text(&c.digest.to_text()))
+            } else {
+                "null".to_owned()
+            },
+        ),
+        (
+            "score_calibrations",
+            array(
+                calibrations
+                    .values()
+                    .map(|calibration| CalibrationIdentity::of(calibration).to_json()),
+            ),
+        ),
+        (
+            "prior_calibration",
+            bindings
+                .prior
+                .as_ref()
+                .map_or_else(|| "null".to_owned(), CalibrationIdentity::to_json),
+        ),
+        ("score_calibration_bindings", bindings.scores_json()),
+        (
+            "input_binding_digest",
+            text(&input_binding_digest.to_text()),
         ),
         ("decision", decision_json(&outcome.decision)),
         (
@@ -621,13 +822,14 @@ fn outcome_json(
 }
 
 fn run(args: Vec<OsString>) -> Result<String> {
-    if args.len() > 4 {
+    if args.len() > 2 * (MAX_CALIBRATIONS + 1) {
         return Err(fail("fusion.cli.arguments_limit", "too many arguments"));
     }
     if args.len() == 1 && args[0] == "--help" {
         return Ok(HELP.to_owned());
     }
-    let mut values: BTreeMap<String, String> = BTreeMap::new();
+    let mut query_path = None;
+    let mut calibration_paths = Vec::new();
     let mut iter = args.into_iter();
     while let Some(flag) = iter.next() {
         let flag = flag
@@ -641,24 +843,59 @@ fn run(args: Vec<OsString>) -> Result<String> {
             .and_then(|value| value.into_string().ok())
             .filter(|value| !value.starts_with("--"))
             .ok_or_else(|| fail("fusion.cli.missing_value", flag.clone()))?;
-        if values.insert(flag.clone(), value).is_some() {
-            return Err(fail("fusion.cli.duplicate_option", flag));
+        if flag == "--query" {
+            if query_path.replace(value).is_some() {
+                return Err(fail("fusion.cli.duplicate_option", flag));
+            }
+        } else {
+            calibration_paths.push(value);
+            if calibration_paths.len() > MAX_CALIBRATIONS {
+                return Err(fail(
+                    "fusion.cli.arguments_limit",
+                    "at most sixteen calibration artifacts are accepted",
+                ));
+            }
         }
     }
-    let query_path = values
-        .get("--query")
-        .ok_or_else(|| fail("fusion.cli.missing_option", "--query"))?;
-    let calibration = values
-        .get("--calibration")
-        .map(|path| load_calibration(path))
-        .transpose()?;
+    let query_path =
+        query_path.ok_or_else(|| fail("fusion.cli.missing_option", "--query"))?;
+    let stdin_uses = usize::from(query_path == "-")
+        + calibration_paths.iter().filter(|path| path.as_str() == "-").count();
+    if stdin_uses > 1 {
+        return Err(fail(
+            "fusion.cli.stdin_conflict",
+            "only one query or calibration artifact can be read from stdin",
+        ));
+    }
+    let mut calibrations = Calibrations::new();
+    let mut generations = BTreeSet::new();
+    for path in calibration_paths {
+        let calibration = load_calibration(&path)?;
+        let digest = calibration.digest.to_text();
+        if calibrations.contains_key(&digest) {
+            return Err(fail(
+                "fusion.cli.calibration_duplicate",
+                "the same calibration artifact was supplied more than once",
+            ));
+        }
+        if !generations.insert(calibration.generation.clone()) {
+            return Err(fail(
+                "fusion.cli.calibration_generation_conflict",
+                "one calibration generation cannot name different contents",
+            ));
+        }
+        calibrations.insert(digest, calibration);
+    }
     let document =
-        read_document(query_path).map_err(|detail| fail("fusion.cli.query_unreadable", detail))?;
-    let (query, transit) = parse_query(&document, calibration.as_ref())?;
+        read_document(&query_path).map_err(|detail| fail("fusion.cli.query_unreadable", detail))?;
+    let (query, transit, bindings) = parse_query(&document, &calibrations)?;
     let outcome = fuse(&query).map_err(|error| fail(error.stable_id(), error.to_string()))?;
+    let input_binding_digest = bindings.digest(outcome.query_digest)?;
     Ok(outcome_json(
         &outcome,
-        calibration.as_ref(),
+        &calibrations,
+        &bindings,
+        input_binding_digest,
         transit.as_ref(),
     ))
 }
