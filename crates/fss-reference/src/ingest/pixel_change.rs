@@ -6,6 +6,8 @@
 //! Missing coverage, recording changes and decoder/geometry changes reset the baseline instead
 //! of manufacturing zero motion. Every measurement names its exact decoded evidence roots.
 
+use super::recorded_decode::h264::{RecordedH264Frame, h264_decoder_identity};
+use super::recorded_decode::h265::{RecordedH265Frame, h265_decoder_identity};
 use super::recorded_decode::{ComponentInterpretation, RecordedFrame};
 use crate::ReplayCx;
 use fss_core::{CanonicalEncode, CanonicalEncoder, CapsuleId, CaptureInterval, ContentDigest};
@@ -128,6 +130,53 @@ pub struct PixelChangeObservation {
     pub statistics: Option<PixelChangeStatistics>,
 }
 
+/// Pixel change over retained inter-predicted video. Frame identities are canonical decode
+/// receipt digests, explicitly distinct from the published roots in [`PixelChangeObservation`].
+/// Reproduction requires the retained source range; these observations publish no decoded frame.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct VideoPixelChangeObservation {
+    /// Canonical source-to-pixels receipt of the current frame.
+    pub frame_receipt_digest: ContentDigest,
+    /// Receipt of the predecessor actually compared, absent when the baseline was reset.
+    pub predecessor_receipt_digest: Option<ContentDigest>,
+    /// Original source segment (coding order), never substituted with a display position.
+    pub segment_index: u64,
+    /// Position sealed by the range decoder in display order.
+    pub output_index: u64,
+    /// Original source capsule identity.
+    pub capsule_id: CapsuleId,
+    /// Original conservative capture bounds; decoder ordering does not narrow them.
+    pub capture: CaptureInterval,
+    /// Exact caller-supplied threshold configuration.
+    pub configuration_digest: ContentDigest,
+    /// Reasons no comparison was admissible.
+    pub reset_reasons: BTreeSet<PixelChangeReset>,
+    /// Complete comparable-pair measurements or an explicit unmeasured baseline.
+    pub statistics: Option<PixelChangeStatistics>,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+struct VideoBasis {
+    import: ContentDigest,
+    range_start: u64,
+    range_segment_count: usize,
+    output_index: u64,
+    segment: u64,
+    sensor: String,
+    stream: String,
+    gap: bool,
+    dimensions: [u32; 2],
+    decoder: ContentDigest,
+    mask_binding: ContentDigest,
+}
+
+#[derive(Debug)]
+struct PreviousVideo {
+    basis: VideoBasis,
+    pixels: Vec<u8>,
+    observation: VideoPixelChangeObservation,
+}
+
 /// Explicit detector refusals. Failed pushes never advance the previous-frame baseline.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum PixelChangeError {
@@ -223,6 +272,7 @@ pub struct PixelChangeDetector {
     used: u64,
     previous: Option<RecordedFrame>,
     last_observation: Option<PixelChangeObservation>,
+    previous_video: Option<PreviousVideo>,
 }
 impl PixelChangeDetector {
     /// Creates a detector with explicit thresholds and a cumulative comparison allowance.
@@ -237,6 +287,7 @@ impl PixelChangeDetector {
             used: 0,
             previous: None,
             last_observation: None,
+            previous_video: None,
         })
     }
     /// Pixel comparisons actually charged, including rows processed before a cancellation.
@@ -310,6 +361,163 @@ impl PixelChangeDetector {
         };
         self.previous = Some(frame.clone());
         self.last_observation = Some(observation.clone());
+        self.previous_video = None;
+        Ok(observation)
+    }
+
+    /// Accepts a custody-verified H.264 range frame. The opaque frame's decoder-sealed output
+    /// position admits B-picture display reordering without fabricating source continuity.
+    pub fn push_h264(
+        &mut self,
+        frame: &RecordedH264Frame,
+        cx: &ReplayCx,
+    ) -> Result<VideoPixelChangeObservation, PixelChangeError> {
+        let receipt = frame.receipt();
+        let capsule = receipt.capsule();
+        let basis = VideoBasis {
+            import: receipt.import_identity(),
+            range_start: receipt.range_start(),
+            range_segment_count: frame.range_segment_count(),
+            output_index: frame.output_index(),
+            segment: receipt.segment_index(),
+            sensor: capsule.sensor_id.as_str().to_owned(),
+            stream: capsule.stream_id.as_str().to_owned(),
+            gap: capsule.gap_before,
+            dimensions: receipt.dimensions(),
+            decoder: h264_decoder_identity(),
+            mask_binding: receipt.mask_binding(),
+        };
+        self.push_video(basis, receipt.digest(), capsule, frame.pixels(), cx)
+    }
+
+    /// Accepts a custody-verified H.265 range frame, preserving the codec's display order and
+    /// the original source identities even when its random-access range skips leading RASL.
+    pub fn push_h265(
+        &mut self,
+        frame: &RecordedH265Frame,
+        cx: &ReplayCx,
+    ) -> Result<VideoPixelChangeObservation, PixelChangeError> {
+        let receipt = frame.receipt();
+        let capsule = receipt.capsule();
+        let basis = VideoBasis {
+            import: receipt.import_identity(),
+            range_start: receipt.range_start(),
+            range_segment_count: frame.range_segment_count(),
+            output_index: frame.output_index(),
+            segment: receipt.segment_index(),
+            sensor: capsule.sensor_id.as_str().to_owned(),
+            stream: capsule.stream_id.as_str().to_owned(),
+            gap: capsule.gap_before,
+            dimensions: receipt.dimensions(),
+            decoder: h265_decoder_identity(),
+            mask_binding: receipt.mask_binding(),
+        };
+        self.push_video(basis, receipt.digest(), capsule, frame.pixels(), cx)
+    }
+
+    fn push_video(
+        &mut self,
+        basis: VideoBasis,
+        receipt_digest: ContentDigest,
+        capsule: &fss_core::SensorCapsule,
+        pixels: &[u8],
+        cx: &ReplayCx,
+    ) -> Result<VideoPixelChangeObservation, PixelChangeError> {
+        let mut check = || {
+            cx.checkpoint("pixel_change:row")
+                .map_err(|_| PixelChangeError::Cancelled)
+        };
+        check()?;
+        let [width, height] = basis.dimensions;
+        let count = u64::from(width) * u64::from(height);
+        if width == 0
+            || height == 0
+            || width > 4096
+            || height > 4096
+            || count > 4_194_304
+            || pixels.len() as u64 != count
+        {
+            return Err(PixelChangeError::InvalidImage);
+        }
+        if let Some(previous) = &self.previous_video {
+            if previous.basis == basis
+                && previous.observation.frame_receipt_digest == receipt_digest
+            {
+                return Ok(previous.observation.clone());
+            }
+            if previous.basis.import == basis.import
+                && previous.basis.range_start == basis.range_start
+                && previous.basis.range_segment_count == basis.range_segment_count
+                && basis.output_index <= previous.basis.output_index
+            {
+                return Err(PixelChangeError::OutOfOrder);
+            }
+        }
+        let mut reset_reasons = BTreeSet::new();
+        if let Some(previous) = &self.previous_video {
+            let previous = &previous.basis;
+            if previous.import != basis.import {
+                reset_reasons.insert(PixelChangeReset::RecordingChanged);
+            }
+            if previous.sensor != basis.sensor || previous.stream != basis.stream {
+                reset_reasons.insert(PixelChangeReset::SourceChanged);
+            }
+            if previous.range_start != basis.range_start
+                || previous.range_segment_count != basis.range_segment_count
+                || previous.output_index.checked_add(1) != Some(basis.output_index)
+            {
+                reset_reasons.insert(PixelChangeReset::SourceGap);
+            }
+            if previous.dimensions != basis.dimensions {
+                reset_reasons.insert(PixelChangeReset::DimensionsChanged);
+            }
+            if previous.decoder != basis.decoder || previous.mask_binding != basis.mask_binding {
+                reset_reasons.insert(PixelChangeReset::InterpretationChanged);
+            }
+        } else {
+            reset_reasons.insert(PixelChangeReset::NoPredecessor);
+        }
+        if basis.gap {
+            reset_reasons.insert(PixelChangeReset::SourceGap);
+        }
+        let mut predecessor_receipt_digest = None;
+        let statistics = if reset_reasons.is_empty() {
+            let previous = self
+                .previous_video
+                .as_ref()
+                .ok_or(PixelChangeError::InvalidImage)?;
+            predecessor_receipt_digest = Some(previous.observation.frame_receipt_digest);
+            Some(compare_pixels(
+                &previous.pixels,
+                pixels,
+                basis.dimensions,
+                self.config,
+                self.maximum_comparisons,
+                &mut self.used,
+                &mut check,
+            )?)
+        } else {
+            None
+        };
+        check()?;
+        let observation = VideoPixelChangeObservation {
+            frame_receipt_digest: receipt_digest,
+            predecessor_receipt_digest,
+            segment_index: basis.segment,
+            output_index: basis.output_index,
+            capsule_id: capsule.capsule_id.clone(),
+            capture: capsule.capture,
+            configuration_digest: self.config.digest(),
+            reset_reasons,
+            statistics,
+        };
+        self.previous_video = Some(PreviousVideo {
+            basis,
+            pixels: pixels.to_vec(),
+            observation: observation.clone(),
+        });
+        self.previous = None;
+        self.last_observation = None;
         Ok(observation)
     }
 }

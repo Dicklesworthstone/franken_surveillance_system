@@ -32,6 +32,7 @@ pub use fss_codec_h265::{DecodeError as H265DecodeError, DecoderLimits, Unsuppor
 use fss_codec_h265::{Decoder, Picture, annex_b_nal_units};
 use fss_core::{CanonicalEncode, CanonicalEncoder, ContentDigest, SensorCapsule, SensorId};
 
+use super::video_budget::RecordedVideoDecodeBudget;
 use super::{ComponentInterpretation, RecordedDecodeError, checkpoint, source_capsule};
 use crate::ingest::privacy_mask::{MaskBinding, binding_digest, current_mask, encode_marker};
 use crate::ingest::{
@@ -233,6 +234,9 @@ impl RecordedH265FrameReceipt {
 /// of the frame, so it is identical whenever it is computed.
 #[derive(Clone, Debug)]
 pub struct RecordedH265Frame {
+    /// Sealed range-output position; source segment indices themselves are decode order.
+    output_index: u64,
+    range_segment_count: usize,
     /// Receipt fields fixed when the picture is bound; its four plane-digest slots hold
     /// placeholders that are never exposed (sealing replaces every one).
     unsealed: RecordedH265FrameReceipt,
@@ -245,7 +249,9 @@ pub struct RecordedH265Frame {
 
 impl PartialEq for RecordedH265Frame {
     fn eq(&self, other: &Self) -> bool {
-        self.unsealed == other.unsealed
+        self.output_index == other.output_index
+            && self.range_segment_count == other.range_segment_count
+            && self.unsealed == other.unsealed
             && self.luma == other.luma
             && self.cb == other.cb
             && self.cr == other.cr
@@ -255,6 +261,16 @@ impl PartialEq for RecordedH265Frame {
 impl Eq for RecordedH265Frame {}
 
 impl RecordedH265Frame {
+    /// Zero-based position returned by this range in codec display order.
+    #[must_use]
+    pub const fn output_index(&self) -> u64 {
+        self.output_index
+    }
+    /// Exact requested range length, including any RASL access units the codec skipped.
+    #[must_use]
+    pub const fn range_segment_count(&self) -> usize {
+        self.range_segment_count
+    }
     /// Source and codec provenance (plane digests computed on first use).
     #[must_use]
     pub fn receipt(&self) -> &RecordedH265FrameReceipt {
@@ -417,7 +433,24 @@ impl RecordedH265Range {
         request: RecordedH265Request,
         cx: &ReplayCx,
     ) -> Result<Self, RecordedDecodeError> {
-        Self::open_bounded(deployment, request, cx, MAX_H265_RANGE_SEGMENTS)
+        Self::open_bounded(deployment, request, cx, MAX_H265_RANGE_SEGMENTS, None)
+    }
+
+    /// [`Self::open`] with cumulative encoded-byte and coded-luma-capacity admission accounting.
+    /// The same budget must accompany every [`Self::next_frame_with_budget`] call.
+    pub fn open_with_budget(
+        deployment: &ReferenceDeployment,
+        request: RecordedH265Request,
+        budget: &mut RecordedVideoDecodeBudget,
+        cx: &ReplayCx,
+    ) -> Result<Self, RecordedDecodeError> {
+        Self::open_bounded(
+            deployment,
+            request,
+            cx,
+            MAX_H265_RANGE_SEGMENTS,
+            Some(budget),
+        )
     }
 
     /// [`Self::open`] for whole-recording streaming analysis: up to
@@ -428,7 +461,7 @@ impl RecordedH265Range {
         request: RecordedH265Request,
         cx: &ReplayCx,
     ) -> Result<Self, RecordedDecodeError> {
-        Self::open_bounded(deployment, request, cx, MAX_H265_STREAM_SEGMENTS)
+        Self::open_bounded(deployment, request, cx, MAX_H265_STREAM_SEGMENTS, None)
     }
 
     fn open_bounded(
@@ -436,6 +469,7 @@ impl RecordedH265Range {
         request: RecordedH265Request,
         cx: &ReplayCx,
         maximum_segments: usize,
+        mut budget: Option<&mut RecordedVideoDecodeBudget>,
     ) -> Result<Self, RecordedDecodeError> {
         checkpoint(cx, "recorded_h265:open")?;
         if request.interpretation != ComponentInterpretation::YCbCr {
@@ -495,6 +529,10 @@ impl RecordedH265Range {
         // Out-of-band configuration precedes the first access unit; it codes no picture.
         for index in parameter_sets {
             let nal = retained.read_omission_span(deployment, index, request.read_limits, cx)?;
+            if let Some(budget) = budget.as_deref_mut() {
+                budget.reserve(nal.len(), 0, cx)?;
+            }
+            checkpoint(cx, "recorded_h265:parameter_set")?;
             if decoder.decode_nal(&nal)?.is_some() {
                 return Err(RecordedDecodeError::CustodyMismatch);
             }
@@ -545,6 +583,12 @@ impl RecordedH265Range {
         self.decoded
     }
 
+    /// Next access unit to feed the codec, which can be ahead of returned display pictures.
+    #[must_use]
+    pub const fn next_source_segment(&self) -> usize {
+        self.next
+    }
+
     /// Segments read so far whose RASL picture the codec skipped because the range starts a new
     /// coded video sequence at a CRA or BLA picture. They yield no frame.
     #[must_use]
@@ -558,6 +602,26 @@ impl RecordedH265Range {
     pub fn next_frame(
         &mut self,
         deployment: &ReferenceDeployment,
+        cx: &ReplayCx,
+    ) -> Result<Option<RecordedH265Frame>, RecordedDecodeError> {
+        self.next_frame_bounded(deployment, None, cx)
+    }
+
+    /// [`Self::next_frame`] reserving each access unit before decoding, including decode-ahead
+    /// and skipped RASL inputs. Returned frames and reservations survive a later refusal.
+    pub fn next_frame_with_budget(
+        &mut self,
+        deployment: &ReferenceDeployment,
+        budget: &mut RecordedVideoDecodeBudget,
+        cx: &ReplayCx,
+    ) -> Result<Option<RecordedH265Frame>, RecordedDecodeError> {
+        self.next_frame_bounded(deployment, Some(budget), cx)
+    }
+
+    fn next_frame_bounded(
+        &mut self,
+        deployment: &ReferenceDeployment,
+        mut budget: Option<&mut RecordedVideoDecodeBudget>,
         cx: &ReplayCx,
     ) -> Result<Option<RecordedH265Frame>, RecordedDecodeError> {
         loop {
@@ -574,7 +638,7 @@ impl RecordedH265Range {
                 return Ok(None);
             }
             if self.next < self.end {
-                self.decode_segment(deployment, cx)?;
+                self.decode_segment(deployment, budget.as_deref_mut(), cx)?;
             } else {
                 self.ready.extend(self.decoder.finish()?);
                 self.flushed = true;
@@ -586,6 +650,7 @@ impl RecordedH265Range {
     fn decode_segment(
         &mut self,
         deployment: &ReferenceDeployment,
+        budget: Option<&mut RecordedVideoDecodeBudget>,
         cx: &ReplayCx,
     ) -> Result<(), RecordedDecodeError> {
         let index = self.next;
@@ -597,9 +662,17 @@ impl RecordedH265Range {
             cx,
             &mut self.chunks,
         )?;
+        if let Some(budget) = budget {
+            budget.reserve(
+                bytes.len(),
+                self.request.decoder_limits.max_luma_samples,
+                cx,
+            )?;
+        }
         let before = self.decoder.pictures_decoded();
         let nals = segment_nals(self.framing, &bytes, index)?;
         for nal in &nals {
+            checkpoint(cx, "recorded_h265:nal")?;
             if let Some(picture) = self.decoder.decode_nal(nal)? {
                 self.ready.push_back(picture);
             }
@@ -700,6 +773,8 @@ impl RecordedH265Range {
         self.decoded += 1;
         checkpoint(cx, "recorded_h265:decoded")?;
         Ok(RecordedH265Frame {
+            output_index: self.decoded - 1,
+            range_segment_count: self.request.segment_count,
             unsealed,
             receipt: std::sync::OnceLock::new(),
             luma,

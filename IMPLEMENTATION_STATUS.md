@@ -76,6 +76,14 @@ synthetic scenes). None of it has been measured on real camera footage.
   pattern) decode bit-exactly against FFmpeg on two rewritten-reference fixtures. Not
   implemented: HEVC Main 10/RExt, tiles, dependent slices; interlaced and 4:2:2/4:4:4/10-bit
   H.264.
+- **Motion over retained video (fss-21vpr):** `fss-file motion` now accepts H.264/H.265
+  Annex B and supported MP4, QuickTime, fragmented MP4 and Matroska imports. Native range
+  decoders feed luma comparisons in display order while preserving original source segments,
+  capsules and canonical frame receipts. Video reports use v2 and explicitly identify frames
+  as unpublished; JPEG reports keep v1. Decode admission and pixel comparisons have cumulative
+  limits, partial reports preserve successful observations and explicit RASL exclusions, and
+  recovery replays the original IDR/IRAP range. Pixel change remains unclassified activity,
+  never a person, intrusion or absence claim. See [the workflow](docs/MEDIA_ANALYSIS_WORKFLOW.md).
 - **Pipeline and evaluation:** `fss-event watch` runs decode -> foreground -> Kalman -> zone
   eventgen over a retained import and publishes approval-gated, unclassified, single-sensor
   candidates. `fss-event corroborate` associates two sensors' ground-zone entries (owner

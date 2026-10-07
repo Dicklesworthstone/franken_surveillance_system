@@ -1048,6 +1048,8 @@ fn mp4_parameter_sets(
 pub mod h264;
 /// Retained H.265/HEVC Annex-B range decoding bound to the same source custody.
 pub mod h265;
+/// Conservative cumulative admission accounting for retained H.264/H.265 range decoding.
+pub mod video_budget;
 /// Retained receipts of source-determined decode refusals, and the per-capsule outcome
 /// composition (fss-2h5zq.41).
 pub mod refusal;

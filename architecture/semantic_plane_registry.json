@@ -375,6 +375,7 @@
     "crates/fss-reference/src/ingest/recorded_decode/h265/tests.rs": "support",
     "crates/fss-reference/src/ingest/recorded_decode/refusal.rs": "support",
     "crates/fss-reference/src/ingest/recorded_decode/tests.rs": "support",
+    "crates/fss-reference/src/ingest/recorded_decode/video_budget.rs": "support",
     "crates/fss-reference/src/ingest/recorded_decode/video_rgb.rs": "support",
     "crates/fss-reference/src/ingest/recorded_dwell.rs": "support",
     "crates/fss-reference/src/ingest/recorded_dwell/tests.rs": "support",
