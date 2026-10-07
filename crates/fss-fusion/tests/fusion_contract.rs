@@ -122,6 +122,56 @@ fn two_independent_cameras_alert_but_two_models_on_one_camera_do_not() -> TestRe
 }
 
 #[test]
+fn sensor_identity_is_a_common_cause_without_caller_domain_labels() -> TestResult {
+    let mut first = calibrated("frame-a/yolox", "cam-a", &[], 1_600, 2_000)?;
+    let mut second = calibrated("frame-b/hog", "cam-a", &[], 1_500, 1_900)?;
+    // Different frames/models cannot become corroboration just by omitting the sensor label.
+    first.failure_domains = domains(&["model:yolox"]);
+    second.failure_domains = domains(&["model:hog"]);
+    let mut same_sensor = query(vec![first, second])?;
+    let outcome = fuse(&same_sensor)?;
+    assert_eq!(outcome.supporting_clusters, 1);
+    assert_eq!(outcome.posterior, LlrInterval::new(-500, 500)?);
+    assert_eq!(
+        outcome.clusters[0].failure_domains,
+        domains(&["model:yolox", "model:hog", "sensor:cam-a"])
+    );
+    assert!(!matches!(
+        outcome.decision,
+        Decision::Alert | Decision::AlertDegradedCoverage
+    ));
+    same_sensor.evidence.reverse();
+    assert_eq!(fuse(&same_sensor)?, outcome);
+
+    // A genuinely distinct sensor with disjoint declarations retains the reference's
+    // conditional-independence behavior.
+    same_sensor.evidence[0].sensor = "cam-b".to_owned();
+    assert_eq!(fuse(&same_sensor)?.decision, Decision::Alert);
+    Ok(())
+}
+
+#[test]
+fn intrinsic_sensor_domains_join_transitive_shared_failures() -> TestResult {
+    let mut first = calibrated("a/first", "cam-a", &[], 1_600, 2_000)?;
+    let mut second = calibrated("a/second", "cam-a", &[], 1_500, 1_900)?;
+    let mut third = calibrated("c/first", "cam-c", &[], 1_700, 2_100)?;
+    first.failure_domains = domains(&["model:first"]);
+    second.failure_domains = domains(&["clock:shared"]);
+    third.failure_domains = domains(&["clock:shared"]);
+    let linked = query(vec![first, second, third])?;
+    let outcome = fuse(&linked)?;
+    assert_eq!(outcome.clusters.len(), 1);
+    assert_eq!(outcome.supporting_clusters, 1);
+    assert_eq!(
+        outcome.clusters[0].members,
+        ["a/first", "a/second", "c/first"]
+    );
+    assert_eq!(outcome.posterior, LlrInterval::new(-500, 600)?);
+    assert_ne!(outcome.decision, Decision::Alert);
+    Ok(())
+}
+
+#[test]
 fn coverage_gaps_never_become_rejections() -> TestResult {
     let quiet = vec![
         calibrated("cam-a/none", "cam-a", &[], -900, -700)?,
@@ -184,6 +234,67 @@ fn uncalibrated_scores_have_no_numeric_authority() -> TestResult {
             .contains(&Reason::UncalibratedEvidenceIgnored)
     );
     assert_ne!(outcome.decision, Decision::Alert);
+    Ok(())
+}
+
+#[test]
+fn absent_or_uncalibrated_observations_never_certify_rejection() -> TestResult {
+    let mut empty = query(Vec::new())?;
+    empty.prior = LlrInterval::new(-3_000, -2_500)?;
+    let outcome = fuse(&empty)?;
+    assert_eq!(outcome.knowledge_state, "unknown");
+    assert_eq!(outcome.decision, Decision::RetainSilently);
+    assert!(outcome.reasons.contains(&Reason::AbsenceNotCertified));
+
+    let mut observed = empty;
+    observed
+        .evidence
+        .push(calibrated("cam-a/none", "cam-a", &[], -900, -700)?);
+    let outcome = fuse(&observed)?;
+    assert_eq!(outcome.decision, Decision::Reject);
+    // Removing its only observation leaves the low prior; no counterfactual absence claim.
+    assert_eq!(outcome.counterfactuals[0].decision, Decision::RetainSilently);
+
+    observed.evidence.push(EvidenceItem {
+        id: "cam-b/possible-person".to_owned(),
+        sensor: "cam-b".to_owned(),
+        failure_domains: domains(&["sensor:cam-b"]),
+        calibration: Calibration::Uncalibrated {
+            reason: "detector has no calibration for current night mode".to_owned(),
+        },
+        observability: Observability::Observed,
+    });
+    let outcome = fuse(&observed)?;
+    assert_eq!(outcome.decision, Decision::RetainSilently);
+    assert!(outcome.reasons.contains(&Reason::AbsenceNotCertified));
+    assert!(outcome.reasons.contains(&Reason::UncalibratedEvidenceIgnored));
+    assert_eq!(outcome.uncalibrated, ["cam-b/possible-person"]);
+    Ok(())
+}
+
+#[test]
+fn urgent_exception_still_requires_observed_calibrated_support() -> TestResult {
+    let mut unsupported = query(Vec::new())?;
+    unsupported.prior = LlrInterval::new(2_000, 2_500)?;
+    unsupported.policy.urgent_single_domain_threshold = Some(500);
+    assert_eq!(fuse(&unsupported)?.decision, Decision::HoldIndeterminate);
+
+    unsupported.evidence.push(EvidenceItem {
+        id: "cam-a/possible-person".to_owned(),
+        sensor: "cam-a".to_owned(),
+        failure_domains: domains(&["sensor:cam-a"]),
+        calibration: Calibration::Uncalibrated {
+            reason: "calibration unavailable".to_owned(),
+        },
+        observability: Observability::Observed,
+    });
+    assert_eq!(fuse(&unsupported)?.decision, Decision::HoldIndeterminate);
+
+    unsupported.evidence[0] = calibrated("cam-a/person", "cam-a", &[], 100, 200)?;
+    assert_eq!(
+        fuse(&unsupported)?.decision,
+        Decision::AlertSingleDomainUnconfirmed
+    );
     Ok(())
 }
 
@@ -262,6 +373,30 @@ fn bounded_wait_for_an_independent_camera_and_its_refusals() -> TestResult {
     ask.policy.urgent_single_domain_threshold = None;
     ask.policy.operator_confirmation_available = true;
     assert_eq!(fuse(&ask)?.decision, Decision::RequestOperatorConfirmation);
+    Ok(())
+}
+
+#[test]
+fn opportunity_sensor_identity_prevents_false_corroboration_waits() -> TestResult {
+    let mut observed = calibrated("cam-a/yolox", "cam-a", &[], 2_600, 3_000)?;
+    observed.failure_domains = domains(&["model:yolox"]);
+    let mut waiting = query(vec![observed])?;
+    waiting.severity.false_alert_cost = 1_000;
+    waiting.opportunities.push(Opportunity {
+        id: "next-frame/hog".to_owned(),
+        sensor: "cam-a".to_owned(),
+        failure_domains: domains(&["model:hog"]),
+        window_start: waiting.now_ns + 1_000_000_000,
+        window_end: waiting.now_ns + 2_000_000_000,
+        positive: LlrInterval::new(1_200, 1_500)?,
+        negative: LlrInterval::new(-1_500, -1_000)?,
+    });
+    assert_eq!(fuse(&waiting)?.decision, Decision::HoldIndeterminate);
+    waiting.opportunities[0].sensor = "cam-b".to_owned();
+    assert!(matches!(
+        fuse(&waiting)?.decision,
+        Decision::WaitForCorroboration { .. }
+    ));
     Ok(())
 }
 
@@ -390,6 +525,37 @@ fn malformed_queries_are_refused_with_stable_identities() -> TestResult {
     Ok(())
 }
 
+#[test]
+fn all_i64_boundary_values_are_refused_without_panics_or_wrapping() -> TestResult {
+    for value in [i64::MIN, -100_001, 100_001, i64::MAX] {
+        assert_eq!(
+            LlrInterval::point(value).err().map(|e| e.stable_id()),
+            Some("ERR-FUSION-INPUT-INVALID-001")
+        );
+    }
+    assert!(LlrInterval::new(-100_000, 100_000).is_ok());
+    assert!(LlrInterval::new(i64::MIN, 0).is_err());
+    assert!(LlrInterval::new(0, i64::MAX).is_err());
+    for value in [i64::MIN, i64::MAX] {
+        for field in 0..5 {
+            let mut malformed = query(Vec::new())?;
+            match field {
+                0 => malformed.policy.reject_threshold = value,
+                1 => malformed.policy.retain_threshold = value,
+                2 => malformed.policy.alert_threshold = value,
+                3 => malformed.policy.urgent_single_domain_threshold = Some(value),
+                _ => malformed.policy.look_penalty_per_doubling = value,
+            }
+            assert_eq!(
+                fuse(&malformed).err().map(|e| e.stable_id()),
+                Some("ERR-FUSION-POLICY-INVALID-001"),
+                "field {field}, value {value}"
+            );
+        }
+    }
+    Ok(())
+}
+
 /// SplitMix64.
 struct Rng(u64);
 
@@ -510,6 +676,8 @@ fn seeded_invariants_hold() -> TestResult {
         if outcome.decision == Decision::Reject {
             assert_eq!(query.coverage, Coverage::Complete, "seed {seed}");
             assert!(outcome.excluded.is_empty(), "seed {seed}");
+            assert!(outcome.uncalibrated.is_empty(), "seed {seed}");
+            assert!(!outcome.clusters.is_empty(), "seed {seed}");
         }
         if matches!(
             outcome.decision,

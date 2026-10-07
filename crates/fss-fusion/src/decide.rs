@@ -17,6 +17,15 @@ struct Partition {
     uncalibrated: Vec<String>,
 }
 
+/// A caller's declaration cannot remove the producing sensor's common-cause identity.
+/// The same spelling is used for evidence and future observations, so repeated frames cannot
+/// become independent corroboration by changing the optional domain labels.
+fn effective_domains(sensor: &str, declared: &BTreeSet<String>) -> BTreeSet<String> {
+    let mut domains = declared.clone();
+    domains.insert(format!("sensor:{sensor}"));
+    domains
+}
+
 fn partition(query: &FusionQuery) -> Partition {
     let mut items: Vec<_> = query.evidence.iter().collect();
     items.sort_by(|a, b| a.id.cmp(&b.id));
@@ -34,7 +43,11 @@ fn partition(query: &FusionQuery) -> Partition {
                 uncalibrated.push(item.id.clone());
             }
             (Observability::Observed, Calibration::Calibrated { llr, .. }) => {
-                admitted.push((item, *llr))
+                admitted.push((
+                    item,
+                    *llr,
+                    effective_domains(&item.sensor, &item.failure_domains),
+                ))
             }
         }
     }
@@ -48,8 +61,8 @@ fn partition(query: &FusionQuery) -> Partition {
         node
     }
     let mut first_holder: BTreeMap<&str, usize> = BTreeMap::new();
-    for (index, (item, _)) in admitted.iter().enumerate() {
-        for domain in &item.failure_domains {
+    for (index, (_, _, domains)) in admitted.iter().enumerate() {
+        for domain in domains {
             match first_holder.get(domain.as_str()) {
                 Some(&other) => {
                     let (a, b) = (root(&mut parent, index), root(&mut parent, other));
@@ -76,9 +89,9 @@ fn partition(query: &FusionQuery) -> Partition {
             let mut domains = BTreeSet::new();
             let mut members = Vec::with_capacity(indices.len());
             for &index in indices {
-                let (item, item_llr) = admitted[index];
-                llr = llr.hull(item_llr);
-                domains.extend(item.failure_domains.iter().cloned());
+                let (item, item_llr, item_domains) = &admitted[index];
+                llr = llr.hull(*item_llr);
+                domains.extend(item_domains.iter().cloned());
                 members.push(item.id.clone());
             }
             let direction = if llr.lo() > 0 {
@@ -198,7 +211,7 @@ fn decide(
     query: &FusionQuery,
     assessment: &Assessment<'_>,
     threshold: i64,
-    excluded_any: bool,
+    uncertified_evidence: bool,
 ) -> (Decision, Vec<Reason>) {
     let policy = &query.policy;
     let posterior = assessment.posterior;
@@ -215,10 +228,14 @@ fn decide(
             return (Decision::AlertDegradedCoverage, reasons);
         }
         reasons.push(Reason::InsufficientIndependentSupport);
-        single_domain = true;
+        single_domain = assessment.support > 0;
     } else if posterior.hi() <= policy.reject_threshold {
         reasons.push(Reason::BelowRejectThreshold);
-        if complete && !excluded_any && !assessment.conflicted {
+        if complete
+            && !uncertified_evidence
+            && !assessment.clusters.is_empty()
+            && !assessment.conflicted
+        {
             return (Decision::Reject, reasons);
         }
         if !complete {
@@ -249,7 +266,7 @@ fn decide(
             query,
             assessment,
             threshold,
-            &opportunity.failure_domains,
+            &effective_domains(&opportunity.sensor, &opportunity.failure_domains),
             opportunity.positive,
             opportunity.negative,
         ) {
@@ -342,7 +359,10 @@ pub fn fuse(query: &FusionQuery) -> Result<FusionOutcome, FusionError> {
         .checked_add(query.policy.look_penalty_per_doubling * ceil_log2(query.looks))
         .ok_or(FusionError::Overflow("sequential alert threshold"))?;
     let assessment = assess(query.prior, clusters.iter().collect())?;
-    let (decision, mut reasons) = decide(query, &assessment, threshold, !excluded.is_empty());
+    // Uncalibrated observations may contradict the calibrated evidence. A low base rate is
+    // likewise no observation of absence: neither can support a certified rejection.
+    let uncertified_evidence = !excluded.is_empty() || !uncalibrated.is_empty();
+    let (decision, mut reasons) = decide(query, &assessment, threshold, uncertified_evidence);
     if assessment.conflicted {
         reasons.push(Reason::ConflictingEvidence);
     }
@@ -364,7 +384,7 @@ pub fn fuse(query: &FusionQuery) -> Result<FusionOutcome, FusionError> {
             .filter(|cluster| cluster.label != removed.label)
             .collect();
         let without = assess(query.prior, others)?;
-        let (decision, _) = decide(query, &without, threshold, !excluded.is_empty());
+        let (decision, _) = decide(query, &without, threshold, uncertified_evidence);
         counterfactuals.push(Counterfactual {
             removed_cluster: removed.label,
             posterior: without.posterior,

@@ -80,7 +80,10 @@ impl LlrInterval {
     ///
     /// [`FusionError::InvalidInput`] when `lo > hi` or a bound exceeds [`MAX_ABS_LLR`].
     pub fn new(lo: i64, hi: i64) -> Result<Self, FusionError> {
-        if lo > hi || lo.abs() > MAX_ABS_LLR || hi.abs() > MAX_ABS_LLR {
+        if lo > hi
+            || !(-MAX_ABS_LLR..=MAX_ABS_LLR).contains(&lo)
+            || !(-MAX_ABS_LLR..=MAX_ABS_LLR).contains(&hi)
+        {
             return Err(FusionError::InvalidInput(format!(
                 "log-likelihood interval [{lo}, {hi}] (lo <= hi, |bound| <= {MAX_ABS_LLR})"
             )));
@@ -169,7 +172,8 @@ pub struct EvidenceItem {
     pub id: String,
     /// Producing sensor.
     pub sensor: String,
-    /// Every declared failure domain (at least the sensor's).
+    /// Every declared failure domain. Fusion always adds `sensor:<sensor>` as an intrinsic
+    /// common cause, even when the caller omits it here.
     pub failure_domains: BTreeSet<String>,
     /// Likelihood knowledge.
     pub calibration: Calibration,
@@ -201,7 +205,7 @@ pub struct Opportunity {
     pub id: String,
     /// The sensor expected to observe.
     pub sensor: String,
-    /// Its declared failure domains.
+    /// Its declared failure domains. The producing sensor is always an intrinsic common cause.
     pub failure_domains: BTreeSet<String>,
     /// Earliest expected observation (evidence clock, ns).
     pub window_start: u64,
@@ -275,7 +279,7 @@ impl FusionPolicy {
         if !valid_text(&self.generation) {
             return Err(FusionError::InvalidPolicy("generation".to_owned()));
         }
-        let bounded = |value: i64| value.abs() <= 1_000 * MAX_ABS_LLR;
+        let bounded = |value: i64| (-1_000 * MAX_ABS_LLR..=1_000 * MAX_ABS_LLR).contains(&value);
         if !(self.reject_threshold < self.retain_threshold
             && self.retain_threshold <= self.alert_threshold)
             || !bounded(self.reject_threshold)
@@ -560,7 +564,7 @@ pub struct Cluster {
     pub label: u32,
     /// Member observation identities, ascending.
     pub members: Vec<String>,
-    /// Union of the members' failure domains.
+    /// Union of the members' declared and intrinsic sensor failure domains.
     pub failure_domains: BTreeSet<String>,
     /// Hull of the members' likelihood intervals (counted once).
     pub llr: LlrInterval,

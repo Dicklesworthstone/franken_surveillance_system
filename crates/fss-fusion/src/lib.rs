@@ -15,9 +15,13 @@
 //!   dependency cluster, whose likelihood interval is the hull of its members': redundant copies
 //!   count once and, because the hull's lower bound never exceeds any member's, dependent evidence
 //!   can never raise the robust lower bound. Two sizes of one model on one camera are one cluster.
+//!   The producing sensor is always added as a common cause, even when the caller omits its
+//!   domain label. Other common causes still require complete caller declarations; disjoint
+//!   names alone are not measured qualification of verifier independence.
 //! * **Missing data is not evidence.** Not-observable, redacted and stale observations and
 //!   uncalibrated scores are listed with their reasons and contribute nothing. A coverage gap
-//!   never lets a low posterior become a rejection.
+//!   never lets a low posterior become a rejection. Rejection also requires at least one usable
+//!   calibrated cluster and no missing or uncalibrated observations.
 //! * **Sequential decision.** The decision is one of the plan's seven outcomes (alert, alert
 //!   with degraded coverage, single-domain unconfirmed alert under a registered urgent
 //!   exception, bounded wait for imminent independent corroboration, request a better
@@ -56,4 +60,4 @@ pub const FUSION_QUERY_DOMAIN: &str = "fss.fusion.query.v1";
 /// Fusion decision digest domain (`SCHEMA-DOMAIN-FUSION-DECISION-001`).
 pub const FUSION_DECISION_DOMAIN: &str = "fss.fusion.decision.v1";
 /// Implementation generation of the reference fusion rule.
-pub const IMPLEMENTATION_ID: &str = "fss-fusion:reference:hull-cluster-interval-sum:sequential-v1";
+pub const IMPLEMENTATION_ID: &str = "fss-fusion:reference:hull-cluster-interval-sum:sequential-v2";

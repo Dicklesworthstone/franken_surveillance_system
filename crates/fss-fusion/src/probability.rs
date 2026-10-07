@@ -54,7 +54,9 @@ pub fn probability_ppm(lo: i64, hi: i64) -> (u32, u32) {
     let upper = if hi > MAX_DECIBANS * 100 {
         PPM
     } else {
-        let deciban = (-((-hi).div_euclid(100))).max(MIN_DECIBANS);
+        // Quotient and remainder avoid negating i64::MIN at the public numeric boundary.
+        let deciban =
+            (hi.div_euclid(100) + i64::from(hi.rem_euclid(100) != 0)).max(MIN_DECIBANS);
         CEIL_PPM[(deciban - MIN_DECIBANS) as usize]
     };
     (lower, upper)
@@ -86,5 +88,12 @@ mod tests {
         // Negative non-integral decibans round outward too.
         let (low, high) = probability_ppm(-1_050, -1_050);
         assert_eq!((low, high), (FLOOR_PPM[49], CEIL_PPM[50]));
+    }
+
+    #[test]
+    fn full_i64_range_saturates_outward_without_negation_overflow() {
+        assert_eq!(probability_ppm(i64::MIN, i64::MAX), (0, PPM));
+        assert_eq!(probability_ppm(i64::MIN, i64::MIN), (0, 1));
+        assert_eq!(probability_ppm(i64::MAX, i64::MAX), (PPM - 1, PPM));
     }
 }
