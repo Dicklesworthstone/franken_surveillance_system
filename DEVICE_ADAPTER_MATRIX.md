@@ -1,6 +1,6 @@
 # Device adapter matrix
 
-**Evidence snapshot:** 2026-08-31
+**Evidence snapshot:** 2026-10-07 (interoperability-lab update: Wyze TUTK-NEW protocol proven live on owner LAN; AOSU Tuya stack identified)
 **Meaning of this file:** research and admission plan, not a list of working integrations
 
 ## 1. Adapter tiers
@@ -24,8 +24,8 @@
 | `ADP-RTSP-001` | generic RTSP camera/NVR | RTSP/RTP | T1 | DESCRIBE/SETUP/PLAY, auth, RTP continuity, reconnect | specified |
 | `ADP-ONVIF-T-001` | ONVIF Profile T client | H.264/H.265, imaging, events, metadata, PTZ/audio where supported | T1 | discovery, profiles, stream URI, events, settings, PTZ | specified |
 | `ADP-ONVIF-M-001` | ONVIF Profile M metadata | analytics metadata/events | T1 | ingest metadata as derived vendor evidence | specified |
-| `ADP-WYZE-V4-LAB-001` | Wyze Cam v4 | vendor app/cloud/local microSD; no public RTSP/ONVIF contract found | T3 | owner-authenticated live/import path if reproducible | research target only |
-| `ADP-AOSU-P1MAX-LAB-001` | AOSU 4K P1 Max Solar | vendor app/base/local microSD/optional cloud; no public RTSP/ONVIF contract found | T3 | owner-authenticated event/live/import path if reproducible | research target only |
+| `ADP-WYZE-V4-LAB-001` | Wyze Cam v4 | **Lab-proven 2026-10-07:** TUTK/IOTC NEW (0xCC51) — 0x1002 discovery, DTLS 1.2 ECDHE_PSK_CHACHA20_POLY1305 (PSK=SHA256(ENR)), AV login, K-auth, H.264 stream; owner-auth via account API inventory (UID+ENR); LAN-only after inventory | T3 | owner-authenticated live stream; python proof complete; pure-Rust port next | **live python proof on 3/3 owner cams (fss-x4a.21.2.2); compatibility tuple pending** |
+| `ADP-AOSU-P1MAX-LAB-001` | AOSU 4K P1 Max Solar | **Stack identified 2026-10-07:** Glazero/Tuya — UDP 6667 0x55aa cmd-0x23 beacons; Tuya 3.5 listener on TCP 6668; app API plaintext JSON (gz-* auth); encrypted iotbing OEM channel for keys/stream; KVS-class relay markers | T3 | owner-authenticated event/live/import path if reproducible | stack mapped; Tuya 3.5 client built (32/32 vectors); local_key extraction pending fresh-login capture |
 | `ADP-DJI-FLIP-LAB-001` | DJI Flip | DJI Fly live view and QuickTransfer; not listed in current Mobile SDK products | T3/T4 | manual calibration capture bridge or bounded import | research target only |
 | `ADP-S3-IMPORT-001` | owner bucket/NVR export | S3-compatible objects | T4 | immutable import and manifest reconciliation | specified |
 
@@ -45,12 +45,30 @@ H.264, but does not publish an ONVIF or RTSP contract. Community reports are use
 signals, not authoritative capability. The lab must independently establish the exact transport
 and authorization path for devices/accounts owned by the operator.
 
+**Lab resolution (2026-10-07, LAB-2026-10-07-002/003/007):** the transport is TUTK/IOTC over UDP
+32761, NEW variant (magic 0xCC51) on firmware ≥ 4.52.9.5332 (operator fleet: 4.52.17.26,
+model HL_CAM4). Authorization is owner-account inventory (official API yields per-cam
+`p2p_id` + `enr`); afterwards the session is **LAN-only**: 0x1002 discovery (HMAC-SHA1,
+session-port adoption), DTLS 1.2 `ECDHE_PSK_WITH_CHACHA20_POLY1305` with
+PSK = SHA256(ENR) (NUL-truncated per TUTK SDK quirk), AV login, XXTEA K-auth, H.264/H.265
+AV frames. Live python proof streams all 3 owner cams (fss-x4a.21.2.2). No RTSP/ONVIF
+surface exists; credential bypass was not used and is out of scope.
+
 ### AOSU P1 Max
 
 Public pages describe 4K, Wi-Fi, local microSD, app/base and optional cloud behavior, but no stable
 open-stream contract was found. Battery/solar cameras may also be event-driven rather than
 continuous. FSS must never represent an import or wake-on-event feed as continuous perimeter
 coverage.
+
+**Lab resolution (2026-10-07, LAB-2026-10-07-001/004/005/006):** the operator fleet is a
+HomeBase H2E + four C8S2EA11 battery cams (only two online at capture). The homebase runs a
+Glazero/Tuya stack: 0x55aa cmd-0x23 discovery beacons on UDP 6667 every 5 s, a Tuya 3.5
+(6699/GCM) listener on TCP 6668, and silent TCP 443/8888/51028. The owner app API is
+plaintext JSON with `gz-uid/gz-sid/gz-sign` session auth and yields full inventory plus the
+account's Tuya identity (`tuyaUid`); device keys and stream setup ride the encrypted Tuya
+OEM (iotbing) channel keyed at app login. Battery cams remain event-driven: an import or
+wake-on-event feed is never represented as continuous perimeter coverage.
 
 ### DJI Flip
 
