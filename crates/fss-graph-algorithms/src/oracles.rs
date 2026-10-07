@@ -511,3 +511,386 @@ pub fn balances(flows: &[(String, String, u64)]) -> BTreeMap<String, i128> {
     }
     balance
 }
+
+/// `ALG-MST-001` by enumerating every edge subset: the spanning forest minimizing the
+/// perturbed weight `weight * (m + 1) + index` (unique, and a minimum forest of the real
+/// weights). Returns `(canonical edge indices, total weight, components)`.
+#[must_use]
+pub fn minimum_spanning_forest(graph: &WeightedGraph) -> (Vec<u32>, u64, u64) {
+    let (n, m) = (graph.node_count(), graph.arc_count());
+    let arcs = graph.arcs();
+    let mut best: Option<(u128, u64)> = None;
+    let mut best_size = 0;
+    for mask in 0_u64..(1 << m) {
+        let mut parent: Vec<usize> = (0..n).collect();
+        fn root(parent: &mut [usize], mut x: usize) -> usize {
+            while parent[x] != x {
+                x = parent[x];
+            }
+            x
+        }
+        let mut acyclic = true;
+        let mut size = 0;
+        let mut key: u128 = 0;
+        for (index, arc) in arcs.iter().enumerate() {
+            if mask & (1 << index) == 0 {
+                continue;
+            }
+            let (a, b) = (
+                root(&mut parent, arc.tail as usize),
+                root(&mut parent, arc.head as usize),
+            );
+            if a == b {
+                acyclic = false;
+                break;
+            }
+            parent[a] = b;
+            size += 1;
+            key += u128::from(arc.weight) * (m as u128 + 1) + index as u128;
+        }
+        if !acyclic {
+            continue;
+        }
+        if size > best_size || (size == best_size && best.is_none_or(|(k, _)| key < k)) {
+            best_size = size;
+            best = Some((key, mask));
+        }
+    }
+    let mask = best.map_or(0, |(_, mask)| mask);
+    let edges: Vec<u32> = (0..m as u32).filter(|&e| mask & (1 << e) != 0).collect();
+    let total = edges.iter().map(|&e| graph.arc(e).weight).sum();
+    (edges.clone(), total, (n - edges.len()) as u64)
+}
+
+/// All-pairs minimum cut values of an undirected capacity graph by subset enumeration.
+#[must_use]
+pub fn all_pairs_min_cut(graph: &WeightedGraph) -> BTreeMap<(u32, u32), u64> {
+    let n = graph.node_count() as u32;
+    let mut values = BTreeMap::new();
+    for a in 0..n {
+        for b in a + 1..n {
+            values.insert((a, b), min_arc_cut(graph, a, b).value);
+        }
+    }
+    values
+}
+
+/// `ALG-MCF-001` by unit augmentations along Bellman–Ford shortest residual paths: returns
+/// `(delivered, total cost)`.
+#[must_use]
+pub fn min_cost_flow(
+    costs: &WeightedGraph,
+    capacities: &WeightedGraph,
+    s: u32,
+    t: u32,
+    demand: u64,
+) -> (u64, u64) {
+    let n = costs.node_count();
+    let mut residual: Vec<(usize, usize, u64, i128)> = Vec::new();
+    for (index, arc) in costs.arcs().iter().enumerate() {
+        let cap = capacities.arc(index as u32).weight;
+        residual.push((
+            arc.tail as usize,
+            arc.head as usize,
+            cap,
+            i128::from(arc.weight),
+        ));
+        residual.push((
+            arc.head as usize,
+            arc.tail as usize,
+            0,
+            -i128::from(arc.weight),
+        ));
+    }
+    let mut delivered = 0;
+    let mut total: i128 = 0;
+    while delivered < demand {
+        let mut distance: Vec<Option<i128>> = vec![None; n];
+        let mut via = vec![usize::MAX; n];
+        distance[s as usize] = Some(0);
+        for _ in 0..n {
+            for (edge, &(u, v, cap, cost)) in residual.iter().enumerate() {
+                if cap == 0 {
+                    continue;
+                }
+                if let Some(du) = distance[u]
+                    && distance[v].is_none_or(|dv| du + cost < dv)
+                {
+                    distance[v] = Some(du + cost);
+                    via[v] = edge;
+                }
+            }
+        }
+        let Some(d) = distance[t as usize] else { break };
+        let mut node = t as usize;
+        while node != s as usize {
+            let edge = via[node];
+            residual[edge].2 -= 1;
+            residual[edge ^ 1].2 += 1;
+            node = residual[edge].0;
+        }
+        total += d;
+        delivered += 1;
+    }
+    (delivered, u64::try_from(total).unwrap_or(u64::MAX))
+}
+
+/// Every assignment of `problem`: per left row the chosen right index or `None`.
+#[must_use]
+pub fn all_assignments(problem: &crate::assignment::AssignmentProblem) -> Vec<Vec<Option<u32>>> {
+    let (l, r) = (problem.left().len(), problem.right().len());
+    let mut result = Vec::new();
+    let mut current: Vec<Option<u32>> = Vec::new();
+    let mut used = vec![false; r];
+    fn recurse(
+        problem: &crate::assignment::AssignmentProblem,
+        l: usize,
+        current: &mut Vec<Option<u32>>,
+        used: &mut Vec<bool>,
+        result: &mut Vec<Vec<Option<u32>>>,
+    ) {
+        let row = current.len();
+        if row == l {
+            result.push(current.clone());
+            return;
+        }
+        for &(li, ri, _) in problem.pairs() {
+            if li as usize == row && !used[ri as usize] {
+                used[ri as usize] = true;
+                current.push(Some(ri));
+                recurse(problem, l, current, used, result);
+                current.pop();
+                used[ri as usize] = false;
+            }
+        }
+        current.push(None);
+        recurse(problem, l, current, used, result);
+        current.pop();
+    }
+    recurse(problem, l, &mut current, &mut used, &mut result);
+    result
+}
+
+/// `(objective key, tuple)` of one assignment under `policy`, ordering exactly as the certified
+/// runs do: maximum cardinality ranks by (fewer unassigned, cost); priced by total objective.
+#[must_use]
+pub fn assignment_key(
+    problem: &crate::assignment::AssignmentProblem,
+    policy: crate::assignment::NonAssignment,
+    choice: &[Option<u32>],
+) -> (i128, Vec<usize>) {
+    let r = problem.right().len();
+    let matched: u64 = choice
+        .iter()
+        .enumerate()
+        .filter_map(|(row, c)| c.and_then(|c| problem.cost(row as u32, c)))
+        .sum();
+    let k = choice.iter().filter(|c| c.is_some()).count() as i128;
+    let (l, r_count) = (choice.len() as i128, r as i128);
+    let key = match policy {
+        crate::assignment::NonAssignment::MaximumCardinality => {
+            let total: i128 = problem.pairs().iter().map(|&(_, _, c)| i128::from(c)).sum();
+            (l + r_count - 2 * k) * (total + 1) + i128::from(matched)
+        }
+        crate::assignment::NonAssignment::Priced { left, right } => {
+            i128::from(matched) + (l - k) * i128::from(left) + (r_count - k) * i128::from(right)
+        }
+    };
+    let tuple = choice
+        .iter()
+        .enumerate()
+        .map(|(row, c)| c.map_or(r + row, |c| c as usize))
+        .collect();
+    (key, tuple)
+}
+
+/// Every loopless path `s -> t` as `(cost, hops, node indices)`, ascending.
+#[must_use]
+pub fn all_simple_paths(graph: &WeightedGraph, s: u32, t: u32) -> Vec<(u64, u64, Vec<u32>)> {
+    fn walk(
+        graph: &WeightedGraph,
+        t: u32,
+        path: &mut Vec<u32>,
+        cost: u64,
+        result: &mut Vec<(u64, u64, Vec<u32>)>,
+    ) {
+        let Some(&u) = path.last() else { return };
+        if u == t {
+            result.push((cost, path.len() as u64 - 1, path.clone()));
+            return;
+        }
+        for (v, arc) in steps(graph, u, false) {
+            if !path.contains(&v) {
+                path.push(v);
+                walk(graph, t, path, cost + graph.arc(arc).weight, result);
+                path.pop();
+            }
+        }
+    }
+    let mut result = Vec::new();
+    walk(graph, t, &mut vec![s], 0, &mut result);
+    result.sort();
+    result
+}
+
+/// `(admitted paths, enumerated, rejected, stop)` of the k-shortest oracle.
+pub type KShortestAnswer = (Vec<(u64, u64, Vec<u32>)>, u32, u32, &'static str);
+
+/// `ALG-KSP-001` by exhaustive enumeration: `(admitted paths, enumerated, rejected, stop)`
+/// with the same cap and diversity rule.
+#[must_use]
+pub fn k_shortest(
+    graph: &WeightedGraph,
+    s: u32,
+    t: u32,
+    k: u32,
+    min_distinct_arcs: u32,
+    cap: u32,
+) -> KShortestAnswer {
+    let all = all_simple_paths(graph, s, t);
+    let arcs_of = |path: &[u32]| -> BTreeSet<u32> {
+        path.windows(2)
+            .filter_map(|pair| graph.find_arc(pair[0], pair[1]))
+            .collect()
+    };
+    let mut admitted: Vec<(u64, u64, Vec<u32>)> = Vec::new();
+    let mut admitted_arcs: Vec<BTreeSet<u32>> = Vec::new();
+    let (mut enumerated, mut rejected) = (0_u32, 0_u32);
+    for path in &all {
+        if enumerated >= cap {
+            return (admitted, enumerated, rejected, "enumeration_cap");
+        }
+        enumerated += 1;
+        let arcs = arcs_of(&path.2);
+        if admitted_arcs
+            .iter()
+            .all(|other| arcs.difference(other).count() as u32 >= min_distinct_arcs)
+        {
+            admitted.push(path.clone());
+            admitted_arcs.push(arcs);
+            if admitted.len() as u32 == k {
+                return (admitted, enumerated, rejected, "satisfied");
+            }
+        } else {
+            rejected += 1;
+        }
+    }
+    (admitted, enumerated, rejected, "exhausted")
+}
+
+/// `ALG-TREACH-001` over integer time points `0..=horizon` (small horizons only): presence
+/// per node as a boolean vector.
+#[must_use]
+pub fn temporal_presence(
+    network: &crate::temporal::TemporalNetwork,
+    s: u32,
+    start: (u64, u64),
+) -> Vec<Vec<bool>> {
+    let n = network.ids().len();
+    let h = network.horizon() as usize;
+    let mut arrival = vec![vec![false; h + 1]; n];
+    for time in start.0..=start.1.min(network.horizon()) {
+        arrival[s as usize][time as usize] = true;
+    }
+    let presence_of = |arrival: &[bool], wait: u64| -> Vec<bool> {
+        let mut present = vec![false; h + 1];
+        for (time, &arrived) in arrival.iter().enumerate() {
+            if arrived {
+                let last = (time as u64).saturating_add(wait).min(h as u64) as usize;
+                for slot in present.iter_mut().take(last + 1).skip(time) {
+                    *slot = true;
+                }
+            }
+        }
+        present
+    };
+    loop {
+        let presence: Vec<Vec<bool>> = (0..n)
+            .map(|v| presence_of(&arrival[v], network.max_wait(v as u32)))
+            .collect();
+        let mut changed = false;
+        for &(u, v, transit) in network.transits() {
+            for (time, &present) in presence[u as usize].iter().enumerate() {
+                let time = time as u64;
+                if !present || time < transit.open || time > transit.close {
+                    continue;
+                }
+                for travel in transit.min_travel..=transit.max_travel {
+                    let reach = time + travel;
+                    if reach > h as u64 {
+                        break;
+                    }
+                    if !arrival[v as usize][reach as usize] {
+                        arrival[v as usize][reach as usize] = true;
+                        changed = true;
+                    }
+                }
+            }
+        }
+        if !changed {
+            return presence;
+        }
+    }
+}
+
+/// `ALG-DYNCONN-001` by rebuilding every state and counting components with BFS: per state
+/// `(components, adjacency)`.
+#[must_use]
+pub fn connectivity_states(
+    graph: &WeightedGraph,
+    batches: &[Vec<crate::dynconn::EdgeUpdate>],
+) -> Vec<(u64, Vec<u32>)> {
+    let n = graph.node_count();
+    let mut edges: BTreeSet<(u32, u32)> = graph
+        .arcs()
+        .iter()
+        .map(|arc| (arc.tail, arc.head))
+        .collect();
+    let label = |edges: &BTreeSet<(u32, u32)>| -> (u64, Vec<u32>) {
+        let mut component = vec![u32::MAX; n];
+        let mut count = 0_u64;
+        for start in 0..n {
+            if component[start] != u32::MAX {
+                continue;
+            }
+            component[start] = count as u32;
+            let mut queue = VecDeque::from([start as u32]);
+            while let Some(u) = queue.pop_front() {
+                for &(a, b) in edges {
+                    let other = if a == u {
+                        b
+                    } else if b == u {
+                        a
+                    } else {
+                        continue;
+                    };
+                    if component[other as usize] == u32::MAX {
+                        component[other as usize] = count as u32;
+                        queue.push_back(other);
+                    }
+                }
+            }
+            count += 1;
+        }
+        (count, component)
+    };
+    let mut states = vec![label(&edges)];
+    for batch in batches {
+        for update in batch {
+            match update {
+                crate::dynconn::EdgeUpdate::Insert(a, b) => {
+                    if let (Some(x), Some(y)) = (graph.index_of(a), graph.index_of(b)) {
+                        edges.insert((x.min(y), x.max(y)));
+                    }
+                }
+                crate::dynconn::EdgeUpdate::Delete(a, b) => {
+                    if let (Some(x), Some(y)) = (graph.index_of(a), graph.index_of(b)) {
+                        edges.remove(&(x.min(y), x.max(y)));
+                    }
+                }
+            }
+        }
+        states.push(label(&edges));
+    }
+    states
+}

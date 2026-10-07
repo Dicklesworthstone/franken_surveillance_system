@@ -1202,6 +1202,21 @@
       "id": "ERR-FROZEN-UNREGISTERED-OP-001"
     },
     {
+      "description": "an fss-fusion query is outside its contract (empty, oversized or control-character identity, duplicate observation/opportunity/probe, an item without failure domains, an inverted or out-of-bound log-likelihood interval or window, zero looks, too many items); nothing was fused",
+      "guidance": "correct the query; inputs are refused, never repaired; do not retry unchanged",
+      "id": "ERR-FUSION-INPUT-INVALID-001"
+    },
+    {
+      "description": "an exact integer log-odds sum or threshold left its domain; no wrapped or saturated belief was produced",
+      "guidance": "treat as an implementation defect or hostile input; do not retry unchanged",
+      "id": "ERR-FUSION-NUMERIC-OVERFLOW-001"
+    },
+    {
+      "description": "an fss-fusion decision policy is inconsistent (thresholds not reject < retain <= alert, zero independent support, urgent threshold below retain, look penalty out of range); nothing was decided",
+      "guidance": "supply a valid, versioned policy generation; never adapt it online",
+      "id": "ERR-FUSION-POLICY-INVALID-001"
+    },
+    {
       "description": "a declared graph budget (operations or output entries) ran out before the exact answer was complete; no partial answer or witness was produced",
       "guidance": "raise the budget within the registered bound or narrow the projection",
       "id": "ERR-GRAPH-BUDGET-EXHAUSTED-001"

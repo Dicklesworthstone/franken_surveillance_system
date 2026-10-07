@@ -51,6 +51,13 @@ name = "fss-core"
 version = "0.0.1"
 
 [[package]]
+name = "fss-fusion"
+version = "0.0.1"
+dependencies = [
+ "fss-core",
+]
+
+[[package]]
 name = "fss-geometry"
 version = "0.0.1"
 

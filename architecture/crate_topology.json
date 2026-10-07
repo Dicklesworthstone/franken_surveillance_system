@@ -338,7 +338,7 @@
         {
           "name": "fss-fusion",
           "unsafe": "forbid",
-          "status": "planned"
+          "status": "implemented"
         },
         {
           "name": "fss-event",
@@ -368,7 +368,7 @@
         {
           "name": "fss-graph-algorithms",
           "unsafe": "forbid",
-          "status": "skeleton"
+          "status": "implemented"
         },
         {
           "name": "fss-incremental",

@@ -1,0 +1,15 @@
+[package]
+name = "fss-fusion"
+description = "Deterministic calibrated sequential evidence fusion with common-cause and abstention semantics"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+authors.workspace = true
+license-file.workspace = true
+repository.workspace = true
+
+[lints]
+workspace = true
+
+[dependencies]
+fss-core = { path = "../fss-core" }
