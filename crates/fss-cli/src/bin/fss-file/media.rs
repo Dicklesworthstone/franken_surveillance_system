@@ -4,16 +4,22 @@
 use super::{ParseResult, RunResult, Values, malformed, number, text, value, write_new};
 use fss_core::ContentDigest;
 use fss_reference::ingest::pixel_change::{
-    PixelChangeConfig, PixelChangeDetector, PixelChangeObservation,
+    PixelChangeConfig, PixelChangeDetector, PixelChangeError, PixelChangeObservation,
+    PixelChangeStatistics, VideoPixelChangeObservation,
 };
 use fss_reference::ingest::recorded_decode::h264::{
-    DecoderLimits, MAX_H264_RANGE_SEGMENTS, RecordedH264Range, RecordedH264Request,
+    DecoderLimits, MAX_H264_RANGE_SEGMENTS, RecordedH264Frame, RecordedH264Range,
+    RecordedH264Request,
 };
 use fss_reference::ingest::recorded_decode::h265::{
-    DecoderLimits as H265DecoderLimits, RecordedH265Range, RecordedH265Request,
+    DecoderLimits as H265DecoderLimits, RecordedH265Frame, RecordedH265Range, RecordedH265Request,
+};
+use fss_reference::ingest::recorded_decode::video_budget::{
+    RecordedVideoDecodeBudget, VIDEO_DECODE_WORK_MODEL,
 };
 use fss_reference::ingest::recorded_decode::{
-    ComponentInterpretation, DecodeBudget, DecodeLimits, RecordedDecodeRequest, RecordedFrame,
+    ComponentInterpretation, DecodeBudget, DecodeLimits, RecordedDecodeError,
+    RecordedDecodeRequest, RecordedFrame,
 };
 use fss_reference::ingest::{RetainedFileImport, RetainedReadLimits};
 use fss_reference::{ReferenceDeployment, ReplayCx};
@@ -535,7 +541,19 @@ fn observation_json(segment: usize, observation: &PixelChangeObservation) -> Str
         .map(|reason| format!("\"{}\"", reason.as_str()))
         .collect::<Vec<_>>()
         .join(",");
-    let comparison = match &observation.statistics {
+    let comparison = comparison_json(&observation.statistics);
+    // Digests, stable IDs, and enum spellings are validated portable strings, not arbitrary text.
+    format!(
+        "{{\"segment\":{segment},\"frame_root\":\"{}\",\"predecessor_root\":{predecessor},\"capsule_id\":\"{}\",\"capture_earliest_ns\":\"{}\",\"capture_latest_ns\":\"{}\",\"reset_reasons\":[{resets}],\"comparison\":{comparison}}}",
+        observation.frame_root,
+        observation.capsule_id,
+        observation.capture.earliest.0,
+        observation.capture.latest.0
+    )
+}
+
+fn comparison_json(statistics: &Option<PixelChangeStatistics>) -> String {
+    match statistics {
         None => "null".to_owned(),
         Some(statistics) => {
             let bounds = statistics
@@ -552,15 +570,7 @@ fn observation_json(segment: usize, observation: &PixelChangeObservation) -> Str
                 statistics.candidate
             )
         }
-    };
-    // Digests, stable IDs, and enum spellings are validated portable strings, not arbitrary text.
-    format!(
-        "{{\"segment\":{segment},\"frame_root\":\"{}\",\"predecessor_root\":{predecessor},\"capsule_id\":\"{}\",\"capture_earliest_ns\":\"{}\",\"capture_latest_ns\":\"{}\",\"reset_reasons\":[{resets}],\"comparison\":{comparison}}}",
-        observation.frame_root,
-        observation.capsule_id,
-        observation.capture.earliest.0,
-        observation.capture.latest.0
-    )
+    }
 }
 
 fn run_motion(
@@ -580,6 +590,12 @@ fn run_motion(
             "scan range exceeds retained recording; nothing decoded",
         )
         .into());
+    }
+    if matches!(
+        retained.manifest().format.as_str(),
+        "annexb" | "mp4avc" | "mkvavc" | "hevc" | "mp4hevc" | "mkvhevc"
+    ) {
+        return run_video_motion(action, retained, deployment, root, cx, out);
     }
     let mut budget = DecodeBudget::new(action.work_units);
     let mut detector = PixelChangeDetector::new(action.thresholds, action.maximum_comparisons)?;
@@ -638,6 +654,423 @@ fn run_motion(
     writeln!(
         out,
         "motion_pixel_comparisons={}",
+        detector.comparisons_used()
+    )?;
+    if export.is_ok() {
+        writeln!(
+            out,
+            "motion_report_sha256={}",
+            ContentDigest::sha256(report.as_bytes())
+        )?;
+    }
+    result?;
+    export?;
+    Ok(())
+}
+
+/// The canonical video range owns prediction, display order, custody checks and privacy.
+/// This adapter never constructs a JPEG frame or claims an unpublished receipt is a root.
+enum MotionVideoRange {
+    H264(Box<RecordedH264Range>),
+    H265(Box<RecordedH265Range>),
+}
+
+enum MotionVideoFrame {
+    H264(RecordedH264Frame),
+    H265(RecordedH265Frame),
+}
+
+impl MotionVideoRange {
+    fn open(
+        action: &MotionAction,
+        retained: &RetainedFileImport,
+        deployment: &ReferenceDeployment,
+        budget: &mut RecordedVideoDecodeBudget,
+        cx: &ReplayCx,
+    ) -> Result<Self, RecordedDecodeError> {
+        let limits = action.request.decode_limits;
+        match retained.manifest().format.as_str() {
+            "annexb" | "mp4avc" | "mkvavc" => {
+                // Round down: a caller's pixel or dimension ceiling must never be widened to
+                // the next macroblock. The codec checks coded dimensions before allocation.
+                let decoder_limits = DecoderLimits {
+                    max_width: limits.maximum_dimension,
+                    max_height: limits.maximum_dimension,
+                    max_macroblocks: u32::try_from(limits.maximum_pixels / 256)
+                        .map_err(|_| RecordedDecodeError::Limit)?,
+                    max_pictures: action.frame_count as u64,
+                    max_nal_bytes: limits.maximum_bytes.min(16 * 1024 * 1024),
+                    max_slices_per_picture: u32::try_from(limits.maximum_markers)
+                        .map_err(|_| RecordedDecodeError::Limit)?,
+                    ..DecoderLimits::default()
+                };
+                let request = RecordedH264Request {
+                    import_identity: action.request.import_identity,
+                    first_segment: action.request.segment_index,
+                    segment_count: action.frame_count,
+                    interpretation: action.request.interpretation,
+                    read_limits: action.request.read_limits,
+                    decoder_limits,
+                };
+                Ok(Self::H264(Box::new(RecordedH264Range::open_with_budget(
+                    deployment, request, budget, cx,
+                )?)))
+            }
+            "hevc" | "mp4hevc" | "mkvhevc" => {
+                let decoder_limits = H265DecoderLimits {
+                    max_width: limits.maximum_dimension,
+                    max_height: limits.maximum_dimension,
+                    max_luma_samples: limits.maximum_pixels as u64,
+                    max_pictures: action.frame_count as u64,
+                    max_nal_bytes: limits.maximum_bytes.min(16 * 1024 * 1024),
+                    max_slices_per_picture: u32::try_from(limits.maximum_markers)
+                        .map_err(|_| RecordedDecodeError::Limit)?,
+                    ..H265DecoderLimits::default()
+                };
+                let request = RecordedH265Request {
+                    import_identity: action.request.import_identity,
+                    first_segment: action.request.segment_index,
+                    segment_count: action.frame_count,
+                    interpretation: action.request.interpretation,
+                    read_limits: action.request.read_limits,
+                    decoder_limits,
+                };
+                Ok(Self::H265(Box::new(RecordedH265Range::open_with_budget(
+                    deployment, request, budget, cx,
+                )?)))
+            }
+            _ => Err(RecordedDecodeError::UnsupportedMedia),
+        }
+    }
+
+    fn next(
+        &mut self,
+        deployment: &ReferenceDeployment,
+        budget: &mut RecordedVideoDecodeBudget,
+        cx: &ReplayCx,
+    ) -> Result<Option<MotionVideoFrame>, RecordedDecodeError> {
+        match self {
+            Self::H264(range) => range
+                .next_frame_with_budget(deployment, budget, cx)
+                .map(|frame| frame.map(MotionVideoFrame::H264)),
+            Self::H265(range) => range
+                .next_frame_with_budget(deployment, budget, cx)
+                .map(|frame| frame.map(MotionVideoFrame::H265)),
+        }
+    }
+
+    fn next_source_segment(&self) -> usize {
+        match self {
+            Self::H264(range) => range.next_source_segment(),
+            Self::H265(range) => range.next_source_segment(),
+        }
+    }
+
+    fn decoded(&self) -> u64 {
+        match self {
+            Self::H264(range) => range.decoded(),
+            Self::H265(range) => range.decoded(),
+        }
+    }
+
+    fn skipped_rasl_segments(&self) -> &[usize] {
+        match self {
+            Self::H264(_) => &[],
+            Self::H265(range) => range.skipped_rasl_segments(),
+        }
+    }
+}
+
+impl MotionVideoFrame {
+    fn segment(&self) -> u64 {
+        match self {
+            Self::H264(frame) => frame.segment_index(),
+            Self::H265(frame) => frame.segment_index(),
+        }
+    }
+
+    fn observe(
+        &self,
+        detector: &mut PixelChangeDetector,
+        cx: &ReplayCx,
+    ) -> Result<VideoPixelChangeObservation, PixelChangeError> {
+        match self {
+            Self::H264(frame) => detector.push_h264(frame, cx),
+            Self::H265(frame) => detector.push_h265(frame, cx),
+        }
+    }
+
+    fn observation_json(&self, observation: &VideoPixelChangeObservation) -> String {
+        let (receipt, luma, source_root, source_capsule_digest, decoder, mask, policy, dimensions) =
+            match self {
+                Self::H264(frame) => {
+                    let receipt = frame.receipt();
+                    (
+                        receipt.encoded(),
+                        receipt.luma_sha256(),
+                        receipt.import_root(),
+                        receipt.capsule_digest(),
+                        fss_reference::ingest::recorded_decode::h264::h264_decoder_identity(),
+                        receipt.mask_binding(),
+                        receipt.mask_policy(),
+                        receipt.dimensions(),
+                    )
+                }
+                Self::H265(frame) => {
+                    let receipt = frame.receipt();
+                    (
+                        receipt.encoded(),
+                        receipt.luma_sha256(),
+                        receipt.import_root(),
+                        receipt.capsule_digest(),
+                        fss_reference::ingest::recorded_decode::h265::h265_decoder_identity(),
+                        receipt.mask_binding(),
+                        receipt.mask_policy(),
+                        receipt.dimensions(),
+                    )
+                }
+            };
+        let predecessor = observation
+            .predecessor_receipt_digest
+            .map(|digest| format!("\"{digest}\""))
+            .unwrap_or_else(|| "null".to_owned());
+        let policy = policy
+            .map(|digest| format!("\"{digest}\""))
+            .unwrap_or_else(|| "null".to_owned());
+        let resets = observation
+            .reset_reasons
+            .iter()
+            .map(|reason| format!("\"{}\"", reason.as_str()))
+            .collect::<Vec<_>>()
+            .join(",");
+        let encoded = receipt
+            .iter()
+            .map(|byte| format!("{byte:02x}"))
+            .collect::<String>();
+        let comparison = comparison_json(&observation.statistics);
+        format!(
+            concat!(
+                "{{\"segment\":{},\"display_index\":{},\"frame_receipt_digest\":\"{}\",",
+                "\"predecessor_receipt_digest\":{predecessor},\"decode_published\":false,",
+                "\"receipt_encoding\":\"hex\",\"frame_receipt\":\"{encoded}\",",
+                "\"source_import_root\":\"{source_root}\",\"source_capsule_digest\":\"{source_capsule_digest}\",",
+                "\"capsule_id\":\"{}\",\"capture_earliest_ns\":\"{}\",\"capture_latest_ns\":\"{}\",",
+                "\"width\":{},\"height\":{},\"luma_sha256\":\"{luma}\",\"decoder_identity\":\"{decoder}\",",
+                "\"privacy_mask_policy\":{policy},\"privacy_mask_binding_digest\":\"{mask}\",",
+                "\"reset_reasons\":[{resets}],\"comparison\":{comparison}}}"
+            ),
+            observation.segment_index,
+            observation.output_index,
+            observation.frame_receipt_digest,
+            observation.capsule_id,
+            observation.capture.earliest.0,
+            observation.capture.latest.0,
+            dimensions[0],
+            dimensions[1],
+            predecessor = predecessor,
+            encoded = encoded,
+            source_root = source_root,
+            source_capsule_digest = source_capsule_digest,
+            luma = luma,
+            decoder = decoder,
+            policy = policy,
+            mask = mask,
+            resets = resets,
+            comparison = comparison
+        )
+    }
+}
+
+fn motion_error_json(error: &(dyn std::error::Error + 'static)) -> String {
+    if let Some(error) = error.downcast_ref::<RecordedDecodeError>() {
+        return format!(
+            "{{\"kind\":\"decode_refusal\",\"refusal_id\":\"{}\"}}",
+            error.stable_id()
+        );
+    }
+    let kind = match error.downcast_ref::<PixelChangeError>() {
+        Some(PixelChangeError::BudgetExceeded) => "comparison_budget_exceeded",
+        Some(PixelChangeError::Cancelled) => "cancelled",
+        Some(PixelChangeError::OutOfOrder) => "out_of_order",
+        Some(PixelChangeError::InvalidConfig) => "invalid_configuration",
+        Some(PixelChangeError::InvalidImage) => "invalid_image",
+        None => "analysis_incomplete",
+    };
+    format!("{{\"kind\":\"{kind}\"}}")
+}
+
+fn run_video_motion(
+    action: &MotionAction,
+    retained: &RetainedFileImport,
+    deployment: &ReferenceDeployment,
+    root: &Path,
+    cx: &ReplayCx,
+    out: &mut impl Write,
+) -> RunResult<()> {
+    let start = action.request.segment_index;
+    let end = start
+        .checked_add(action.frame_count)
+        .ok_or(RecordedDecodeError::Limit)?;
+    let mut budget = RecordedVideoDecodeBudget::new(action.work_units);
+    let mut detector = PixelChangeDetector::new(action.thresholds, action.maximum_comparisons)?;
+    let mut observations = Vec::with_capacity(action.frame_count);
+    let mut observed = vec![false; action.frame_count];
+    let mut range = None;
+    let mut failure_segment = None;
+    let result = (|| -> RunResult<()> {
+        range = Some(MotionVideoRange::open(
+            action,
+            retained,
+            deployment,
+            &mut budget,
+            cx,
+        )?);
+        let source = range.as_mut().ok_or(RecordedDecodeError::Unavailable)?;
+        loop {
+            let next_frame = source.next(deployment, &mut budget, cx);
+            let next_frame = match next_frame {
+                Ok(frame) => frame,
+                Err(error) => {
+                    // A single call may feed several access units before it can return a B
+                    // picture. Locate input refusals after that work, never at the old cursor.
+                    // Custody/receipt/output failures without a bound source position stay
+                    // unattributed; explicit segment-bearing errors are selected below.
+                    if matches!(
+                        error,
+                        RecordedDecodeError::H264(_)
+                            | RecordedDecodeError::H265(_)
+                            | RecordedDecodeError::Limit
+                            | RecordedDecodeError::Source(_)
+                    ) {
+                        failure_segment = (source.next_source_segment() < end)
+                            .then_some(source.next_source_segment());
+                    }
+                    return Err(error.into());
+                }
+            };
+            let Some(frame) = next_frame else {
+                break;
+            };
+            let segment = usize::try_from(frame.segment())
+                .map_err(|_| RecordedDecodeError::InvalidReceipt)?;
+            failure_segment = Some(segment);
+            let offset = segment
+                .checked_sub(start)
+                .filter(|offset| *offset < observed.len())
+                .ok_or(RecordedDecodeError::InvalidReceipt)?;
+            if observed[offset] {
+                return Err(RecordedDecodeError::InvalidReceipt.into());
+            }
+            let observation = frame.observe(&mut detector, cx)?;
+            observations.push(frame.observation_json(&observation));
+            observed[offset] = true;
+            failure_segment = None;
+        }
+        Ok(())
+    })();
+    let skipped = range
+        .as_ref()
+        .map(MotionVideoRange::skipped_rasl_segments)
+        .unwrap_or(&[]);
+    let unobserved = (start..end)
+        .filter(|segment| !observed[*segment - start])
+        .collect::<Vec<_>>();
+    // A decode cursor can pass B pictures that have not been compared yet. Account by original
+    // source segment instead; a skipped RASL is classified but remains explicitly unobserved.
+    let next = unobserved
+        .iter()
+        .copied()
+        .find(|segment| !skipped.contains(segment))
+        .unwrap_or(end);
+    let complete = result.is_ok();
+    let error = result
+        .as_ref()
+        .err()
+        .map(|error| motion_error_json(error.as_ref()))
+        .unwrap_or_else(|| "null".to_owned());
+    let failure_segment = result
+        .as_ref()
+        .err()
+        .and_then(|error| match error.downcast_ref::<RecordedDecodeError>() {
+            Some(
+                RecordedDecodeError::H264RangeNotIdr { segment }
+                | RecordedDecodeError::H264SourceGap { segment }
+                | RecordedDecodeError::H264AccessUnit { segment }
+                | RecordedDecodeError::H265RangeNotIrap { segment }
+                | RecordedDecodeError::H265SourceGap { segment }
+                | RecordedDecodeError::H265AccessUnit { segment },
+            ) => Some(*segment),
+            _ => failure_segment,
+        })
+        .map(|segment| segment.to_string())
+        .unwrap_or_else(|| "null".to_owned());
+    let segments_json = |segments: &[usize]| {
+        segments
+            .iter()
+            .map(usize::to_string)
+            .collect::<Vec<_>>()
+            .join(",")
+    };
+    let frames_decoded = range.as_ref().map(MotionVideoRange::decoded).unwrap_or(0);
+    let report = format!(
+        concat!(
+            "{{\"format\":\"fss.recorded_pixel_change_report.v2\",\"import_identity\":\"{}\",",
+            "\"source_import_root\":\"{}\",\"source_manifest_digest\":\"{}\",\"media_format\":\"{}\",",
+            "\"configuration_digest\":\"{}\",\"minimum_delta\":{},\"minimum_changed_pixels\":{},\"minimum_changed_fraction_ppm\":{},",
+            "\"start_segment\":{start},\"requested_segments\":{},\"frame_order\":\"decoder_display_order\",",
+            "\"observations\":[{}],\"complete\":{complete},\"next_segment\":{next},\"failure_segment\":{failure_segment},",
+            "\"resume_strategy\":\"replay_original_random_access_range\",\"resume_start_segment\":{start},\"resume_segment_count\":{},",
+            "\"unobserved_segments\":[{}],\"skipped_rasl_segments\":[{}],\"all_requested_segments_observed\":{},",
+            "\"error\":{error},\"decode_work_units\":{},\"decode_work_unit_model\":\"{VIDEO_DECODE_WORK_MODEL}\",",
+            "\"maximum_decode_work_units\":{},\"frames_decoded\":{frames_decoded},\"pixel_comparisons\":{},",
+            "\"decode_published\":false,\"absence_certifiable\":false}}\n"
+        ),
+        retained.import_identity(),
+        retained.import_root(),
+        retained.manifest_digest(),
+        retained.manifest().format,
+        action.thresholds.digest(),
+        action.thresholds.minimum_delta,
+        action.thresholds.minimum_changed_pixels,
+        action.thresholds.minimum_changed_fraction_ppm,
+        action.frame_count,
+        observations.join(",\n"),
+        action.frame_count,
+        segments_json(&unobserved),
+        segments_json(skipped),
+        unobserved.is_empty(),
+        budget.used(),
+        action.work_units,
+        detector.comparisons_used(),
+        start = start,
+        complete = complete,
+        next = next,
+        failure_segment = failure_segment,
+        error = error,
+        VIDEO_DECODE_WORK_MODEL = VIDEO_DECODE_WORK_MODEL,
+        frames_decoded = frames_decoded
+    );
+    // Cancellation/revocation must still pass the common export boundary. Successful earlier
+    // observations remain receipt-backed by custody even if the next decode/comparison refuses.
+    let export = write_new(&action.report_output, report.as_bytes(), root, cx);
+    writeln!(
+        out,
+        "motion_complete={complete}\nmotion_observations={}\nmotion_next_segment={next}",
+        observations.len()
+    )?;
+    writeln!(
+        out,
+        "motion_resume_start_segment={start}\nmotion_resume_segment_count={}",
+        action.frame_count
+    )?;
+    writeln!(
+        out,
+        "motion_decode_work_units={}\nmotion_decode_work_unit_model={VIDEO_DECODE_WORK_MODEL}",
+        budget.used()
+    )?;
+    writeln!(
+        out,
+        "motion_pixel_comparisons={}\ndecode_published=false",
         detector.comparisons_used()
     )?;
     if export.is_ok() {
