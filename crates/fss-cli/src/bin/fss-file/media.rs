@@ -681,6 +681,7 @@ enum MotionVideoFrame {
 }
 
 impl MotionVideoRange {
+    #[allow(clippy::result_large_err)] // RecordedDecodeError is shared with the reference decode path
     fn open(
         action: &MotionAction,
         retained: &RetainedFileImport,
@@ -743,6 +744,7 @@ impl MotionVideoRange {
         }
     }
 
+    #[allow(clippy::result_large_err)] // RecordedDecodeError is shared with the reference decode path
     fn next(
         &mut self,
         deployment: &ReferenceDeployment,

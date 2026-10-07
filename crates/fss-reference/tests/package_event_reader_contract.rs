@@ -451,7 +451,9 @@ fn later_privacy_policy_refuses_historical_coordinates_without_mutating_the_even
     let approval = preview_mask(&f.deployment, &policy)?.approval;
     declare_mask(&mut f.deployment, &policy, approval, &f.cx)?;
     let head = f.deployment.current_anchor().clone();
-    let refused = PackageEvent::open(&f.deployment, &f.receipt.event.event_id, &f.cx).unwrap_err();
+    let refused = PackageEvent::open(&f.deployment, &f.receipt.event.event_id, &f.cx)
+        .err()
+        .ok_or("expected a refusal")?;
     assert_eq!(
         refused.stable_id(),
         "ERR-PRIVACY-UNMASKED-ACCESS-REFUSED-001"
@@ -459,7 +461,8 @@ fn later_privacy_policy_refuses_historical_coordinates_without_mutating_the_even
     assert_eq!(
         f.proposal
             .publish(&mut f.deployment, f.proposal.digest(), &f.cx)
-            .unwrap_err()
+            .err()
+            .ok_or("expected a refusal")?
             .stable_id(),
         refused.stable_id()
     );
@@ -477,7 +480,8 @@ fn legacy_delayed_retention_cannot_relabel_an_unmasked_computation() -> Test {
     // The new writer refuses a completed pre-mask computation at retention time.
     assert_eq!(
         retain_package_detection(&mut f.deployment, &f.package, &f.detection, &f.cx)
-            .unwrap_err()
+            .err()
+            .ok_or("expected a refusal")?
             .stable_id(),
         "ERR-PRIVACY-UNMASKED-ACCESS-REFUSED-001"
     );
@@ -533,7 +537,8 @@ fn legacy_delayed_retention_cannot_relabel_an_unmasked_computation() -> Test {
     let head = f.deployment.current_anchor().clone();
     assert_eq!(
         RetainedPackageDetection::open(&f.deployment, f.detection.digest, &f.cx)
-            .unwrap_err()
+            .err()
+            .ok_or("expected a refusal")?
             .stable_id(),
         "ERR-PRIVACY-UNMASKED-ACCESS-REFUSED-001"
     );
