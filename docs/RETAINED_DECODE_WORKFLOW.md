@@ -212,6 +212,64 @@ Not supported: encrypted or sample-grouped fragments, `avc3`/in-band-only config
 (`nuh_layer_id` > 0), and edit-list trimming (edits are preserved metadata; every sample is
 decoded).
 
+## Retained Matroska/WebM (H.264 and H.265) import
+
+**Import.** `FileIngestAdapter` retains a Matroska or WebM file (OBS, FFmpeg segment recorders,
+many home-lab NVR exports) with one video track as media format `mkvavc` (`V_MPEG4/ISO/AVC`) or
+`mkvhevc` (`V_MPEGH/ISO/HEVC`, base layer). A file starting with the EBML magic is auto-detected
+(detector evidence `ebml_header`) and its codec is read from the video TrackEntry;
+`--media-format mkvavc|mkvhevc` (`FileFormatHint::MkvAvc`, `MkvHevc`) must agree with it or the
+import is `ERR-INGEST-FORMAT-CONFLICT-001`. The pure-Rust `fss-container` Matroska demuxer
+(`MatroskaVideo`) validates the whole file first:
+
+- the EBML header (reader version 1, DocType `matroska` or `webm`);
+- exactly one Segment, of known size or unknown size (a live writer), ending the file;
+- Info (TimestampScale) and Tracks before the first Cluster;
+- the selected track's CodecPrivate as `avcC`/`hvcC` (the same parser as MP4);
+- every Cluster, including unknown-size Clusters that end at the next top-level element.
+
+Every CRC-32 element is verified. Selected-track frames come from unlaced SimpleBlocks or
+BlockGroup Blocks, and each frame's length-prefixed NAL framing is validated exactly as for an
+MP4 sample. Refused whole with `ERR-INGEST-MKV-REFUSED-001` (failure code `mkv_refused`), and
+nothing is retained:
+
+- content encodings (compression, header stripping, encryption) or a track operation on the video
+  track;
+- lacing, invisible frames, EncryptedBlock or CodecState;
+- several video tracks without a selection, or a non-H.264/H.265 codec;
+- a CRC mismatch, a second Segment or trailing bytes, any malformed element, or a bound breach.
+
+Custody matches MP4. One retained segment is one frame in file (decode) order, exactly its
+original length-prefixed bytes. Every other byte is typed structure:
+
+- each CodecPrivate parameter-set NAL payload (`mkv_avc_parameter_set:nal_length_bytes=N` or
+  `mkv_hevc_parameter_set:nal_length_bytes=N`);
+- split at the EBML header, Segment header and each top-level element, all remaining bytes
+  (`mkv_element:<name>`, such as `cluster`, `cues` or `tracks`). This includes block headers and
+  other tracks' blocks.
+
+The manifest accounts for every byte exactly once, `mkv_` spans are never source gaps, and a
+Matroska import's structure must carry the `mkv_` prefix (an MP4 import's, `mp4_`). With an
+operator capture hint, a frame's nominal capture is the hint's start plus its block timestamp
+(Cluster timestamp plus the block's signed offset, times TimestampScale) relative to the earliest
+one. Block timestamps are presentation times, so B-frame reordering is honoured. The assumed rate
+is not used.
+
+**Decode.** `RecordedH264Range`/`RecordedH265Range` accept `mkvavc`/`mkvhevc` with the same
+requests, refusals and receipts as the MP4 formats, feeding the retained CodecPrivate parameter
+sets first. Every consumer of `mp4avc`/`mp4hevc` (`fss-file decode`, `fss-event watch`
+including `--stream-dwell`, `corroborate`, the detector cascade, sensor health and tolerant
+decode) accepts the Matroska formats.
+
+The tests import FFmpeg `-c copy` remuxes of the MP4 fixtures (H.264 with an interleaved audio
+track, seekable and live/unknown-size; H.265 with audio) and require the retained decode to
+reproduce FFmpeg's per-frame I420 digests (the CRA-led H.265 range included) and the frames to
+be byte-identical to the MP4 samples.
+
+Not supported: laced or content-encoded video, several Segments (chained files), a file truncated
+mid-element (a crashed recorder's tail is refused, not trimmed), other codecs (VP8/VP9/AV1 in
+WebM), and BlockAdditions or side data (kept as structure, never interpreted).
+
 ## Retained H.265 import and range decode
 
 **Import.** `FileIngestAdapter` retains an H.265/HEVC Annex-B elementary stream as media format

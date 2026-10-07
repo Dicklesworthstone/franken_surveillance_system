@@ -691,3 +691,53 @@ fn retained_hevc_mp4_samples_decode_bit_exact_against_the_ffmpeg_oracle() -> Tes
     }
     Ok(())
 }
+
+/// The same H.265 encode and AAC track remuxed by FFmpeg into Matroska (`-c copy`).
+const MKV: &[u8] = include_bytes!("../../../../../fss-container/tests/fixtures/hevc_av.mkv");
+
+#[test]
+fn matroska_hevc_decodes_like_the_mp4_and_custodies_every_byte() -> TestResult {
+    let imported = import("mkv-hevc", MKV)?;
+    assert_eq!(imported.format, "mkvhevc");
+    assert_eq!(imported.detector_evidence, "ebml_header");
+    assert_eq!(imported.segments, 10);
+    let digests: Vec<String> = whole_range(&imported)?
+        .iter()
+        .map(|frame| frame.receipt().i420_sha256().to_text())
+        .collect();
+    assert_eq!(digests, oracle(MP4_ORACLE));
+    let retained = RetainedFileImport::open(
+        &imported.deployment,
+        imported.identity,
+        RetainedReadLimits::default(),
+        &imported.cx,
+    )?;
+    let manifest = retained.manifest();
+    assert!(
+        manifest
+            .omission_spans
+            .iter()
+            .all(|span| span.reason.starts_with("mkv_"))
+    );
+    assert_eq!(
+        manifest
+            .omission_spans
+            .iter()
+            .filter(|span| span.reason == "mkv_hevc_parameter_set:nal_length_bytes=4")
+            .count(),
+        3
+    );
+    // The CRA-led range decodes alone, with its RASL pictures skipped.
+    let mut range = RecordedH265Range::open(
+        &imported.deployment,
+        request(imported.identity, 3, 7),
+        &imported.cx,
+    )?;
+    let mut frames = Vec::new();
+    while let Some(frame) = range.next_frame(&imported.deployment, &imported.cx)? {
+        frames.push(frame.receipt().i420_sha256().to_text());
+    }
+    assert_eq!(range.skipped_rasl_segments(), [4, 5]);
+    assert_eq!(frames, oracle(MP4_ORACLE)[5..].to_vec());
+    Ok(())
+}

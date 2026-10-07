@@ -65,6 +65,28 @@ decodes each to exactly the frames of its indexed twin, so they share `indexed_a
 and `hevc_av_i420.sha256`, and the H.264 fragmented samples carry the same NAL payloads as
 `interleaved_av.mp4`.
 
+## Matroska variants
+
+`avc_av.mkv` (H.264 + AAC, SHA-256
+`0e5d5b9690c0e1907187495c120a3722173220d11018f94d1129affcaab3c912`, 6364 bytes),
+`avc_live.mkv` (the same, written to a pipe: unknown Segment size, SHA-256
+`f101c5223e83ff13bbdda42744b3c47d68ee769cc33fd0d5ae5e54435064250f`, 6202 bytes) and
+`hevc_av.mkv` (H.265 + AAC, SHA-256
+`90e62992aa9cbd3a5ec963f7585d050fe8afdaba68f75abdaef19934a2b1c963`, 5289 bytes) are FFmpeg
+6.1.1 `-c copy` remuxes of `interleaved_av.mp4` and `hevc_av.mp4`:
+
+```sh
+ffmpeg -i interleaved_av.mp4 -map 0 -c copy -bitexact -map_metadata -1 avc_av.mkv
+ffmpeg -i interleaved_av.mp4 -map 0 -c copy -bitexact -map_metadata -1 -f matroska - > avc_live.mkv
+ffmpeg -i hevc_av.mp4 -map 0 -c copy -bitexact -map_metadata -1 hevc_av.mkv
+```
+
+Each carries the MP4 sample bytes unchanged as SimpleBlocks (CRC-32 elements in every top-level
+element, `avcC`/`hvcC` as CodecPrivate, millisecond block timestamps that keep the MP4 edit
+list's 128 ms lead). FFmpeg decodes them to exactly the frames of `indexed_avc_i420.sha256` and
+`hevc_av_i420.sha256`. The demuxer test rewrites one live Cluster's size to the unknown value to
+cover live writers that leave Cluster sizes open.
+
 ## QuickTime variants
 
 `qt_av.mov` (H.264 + AAC, SHA-256

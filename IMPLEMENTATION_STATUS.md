@@ -53,7 +53,9 @@ synthetic scenes). None of it has been measured on real camera footage.
   with an H.264 `avc1` (`mp4avc`) or H.265 `hvc1`/`hev1` (`mp4hevc`) track: one segment per
   sample with exact source spans, every other byte typed container structure, `avcC`/`hvcC`
   parameter sets read back from custody; indexed, fragmented (`moof`/`trun`) and QuickTime
-  (`.mov`) files; decode
+  (`.mov`) files; Matroska/WebM with one H.264 or H.265 track (`mkvavc`/`mkvhevc`, CRC-32
+  verified, known or unknown-size Segments and Clusters, frames byte-identical to the MP4
+  samples); decode
   bit-exact against FFmpeg on moov-first, interleaved-audio moov-last and fragmented fixtures,
   including CRA-led H.265 ranges, and FSS's own fragment muxer output reads back exactly
   (`ingest::file_adapter`, `fss-file import`); RTSP negotiation, Digest authentication and interleaved-TCP capture
@@ -94,7 +96,7 @@ synthetic scenes). None of it has been measured on real camera footage.
   would have emitted, not detection quality.
 - **Whole-recording dwell for inter-coded video:** `fss-event watch --stream-dwell` (long dwell,
   up to 65,536 frames in one pass) now accepts H.264 and H.265 imports (Annex-B, MP4,
-  QuickTime) as well as MJPEG: frames come from streaming IDR/IRAP-led range decoders in display
+  QuickTime, Matroska) as well as MJPEG: frames come from streaming IDR/IRAP-led range decoders in display
   order, dwell positions are display positions bound to coding segments in the trace, opt-in
   tolerance restarts at the next IDR/IRAP, and inter-coded scans bind their own analysis
   policy. Proven on a synthetic 300-frame B-picture MP4 (library and CLI, preview through

@@ -220,7 +220,7 @@ impl FileImportManifest {
             || self.adapter_generation != ADP_FILE_GENERATION
             || !matches!(
                 self.format.as_str(),
-                "annexb" | "hevc" | "mjpeg" | "mp4avc" | "mp4hevc"
+                "annexb" | "hevc" | "mjpeg" | "mp4avc" | "mp4hevc" | "mkvavc" | "mkvhevc"
             )
             || !matches!(
                 self.capture_time_label.as_str(),
@@ -261,8 +261,14 @@ impl FileImportManifest {
         {
             return Err(ContractError::UnsupportedDigestAlgorithm.into());
         }
-        // MP4 samples are separated by container structure, never by lost media.
-        let container = matches!(self.format.as_str(), "mp4avc" | "mp4hevc");
+        // MP4 and Matroska samples are separated by container structure, never by lost media;
+        // each family's structure carries its own reason prefix.
+        let structure_prefix = match self.format.as_str() {
+            "mp4avc" | "mp4hevc" => Some(super::MP4_STRUCTURE_REASON_PREFIX),
+            "mkvavc" | "mkvhevc" => Some(super::MKV_STRUCTURE_REASON_PREFIX),
+            _ => None,
+        };
+        let container = structure_prefix.is_some();
         let mut previous_end = 0;
         let mut ids = BTreeSet::new();
         for (index, segment) in self.segment_spans.iter().enumerate() {
@@ -296,8 +302,12 @@ impl FileImportManifest {
             {
                 return Err(invalid("invalid omission span"));
             }
-            if omission.is_container_structure() != container {
-                return Err(invalid("container structure span outside an MP4 import"));
+            if omission.is_container_structure() != container
+                || structure_prefix.is_some_and(|prefix| !omission.reason.starts_with(prefix))
+            {
+                return Err(invalid(
+                    "container structure span outside its MP4 or Matroska import",
+                ));
             }
         }
         if container {
@@ -306,7 +316,8 @@ impl FileImportManifest {
         Ok(())
     }
 
-    /// An MP4 import accounts for every source byte exactly once: samples plus typed structure.
+    /// An MP4 or Matroska import accounts for every source byte exactly once: samples plus typed
+    /// structure.
     fn validate_container_tiling(&self) -> Result<(), FileIngestError> {
         let mut ranges: Vec<(u64, u64)> = self
             .segment_spans

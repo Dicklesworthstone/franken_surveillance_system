@@ -155,7 +155,17 @@ pub(super) fn configuration(
         let (length, parameters) = hevc_configuration(r, &one(&boxes, b"hvcC")?)?;
         return Ok((codec, dimensions, length, parameters));
     }
-    let config = one(&boxes, b"avcC")?;
+    let (length, parameters) = avc_configuration(r, &one(&boxes, b"avcC")?)?;
+    Ok((codec, dimensions, length, parameters))
+}
+/// `avcC` (ISO/IEC 14496-15 5.3.3.1): NAL length-field bytes and the byte ranges of its SPS,
+/// PPS and (High profiles) SPS-extension NAL units in record order. A three-byte length field
+/// is refused.
+pub(super) fn avc_configuration(
+    r: &mut Reader<'_, '_>,
+    config: &BoxRef,
+) -> Result<(usize, Vec<Range<usize>>), DemuxError> {
+    let config = config.clone();
     let b = r.body(&config);
     if b.len() < 7 || b[0] != 1 || b[4] & 0xfc != 0xfc || b[5] & 0xe0 != 0xe0 {
         return Err(DemuxError::Nal);
@@ -199,12 +209,12 @@ pub(super) fn configuration(
     if position != b.len() {
         return Err(DemuxError::Layout);
     }
-    Ok((codec, dimensions, length, parameters))
+    Ok((length, parameters))
 }
 /// `hvcC` (ISO/IEC 14496-15 8.3.3): NAL length-field bytes and the byte ranges of its VPS, SPS
 /// and PPS NAL units in array order. Declarative SEI arrays are validated and kept as container
 /// bytes only. At least one VPS, SPS and PPS is required; a three-byte length field is refused.
-fn hevc_configuration(
+pub(super) fn hevc_configuration(
     r: &mut Reader<'_, '_>,
     config: &BoxRef,
 ) -> Result<(usize, Vec<Range<usize>>), DemuxError> {

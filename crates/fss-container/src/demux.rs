@@ -13,6 +13,8 @@ use reader::{Reader, full, one, optional};
 mod tables;
 use tables::*;
 mod fragments;
+mod matroska;
+pub use matroska::{MatroskaElement, MatroskaSample, MatroskaTrack, MatroskaVideo};
 
 /// Hard source byte ceiling, independent of media-decode limits.
 pub const MAX_MP4_INPUT_BYTES: usize = 512 * 1024 * 1024;
@@ -355,44 +357,14 @@ impl<'a> AvcMp4<'a> {
         for (index, (range, decode_time, duration, composition_offset, sync_sample)) in
             entries.into_iter().enumerate()
         {
-            let mut idr = false;
-            let mut vcl = false;
-            nals(source, range.clone(), length_bytes, &mut |nal| {
-                r.checkpoint()?;
-                r.nals = r
-                    .nals
-                    .checked_add(1)
-                    .filter(|n| *n <= limits.maximum_nals)
-                    .ok_or(DemuxError::Limit)?;
-                let (parameter, random_access, picture) = match codec {
-                    VideoCodec::Avc => {
-                        let kind = nal_kind(&source[nal.clone()])?;
-                        (
-                            matches!(kind, 7 | 8 | 13),
-                            kind == 5,
-                            kind == 1 || kind == 5,
-                        )
-                    }
-                    VideoCodec::Hevc => {
-                        let kind = hevc_nal_kind(&source[nal.clone()])?;
-                        let irap = (16..=21).contains(&kind);
-                        (matches!(kind, 32..=34), irap, irap || kind <= 9)
-                    }
-                };
-                if parameter
-                    && !parameter_sets
-                        .iter()
-                        .any(|p| source[p.clone()] == source[nal.clone()])
-                {
-                    return Err(DemuxError::Nal);
-                }
-                idr |= random_access;
-                vcl |= picture;
-                Ok(())
-            })?;
-            if !vcl {
-                return Err(DemuxError::Nal);
-            }
+            let contains_idr = validate_sample(
+                &mut r,
+                source,
+                codec,
+                length_bytes,
+                &parameter_sets,
+                range.clone(),
+            )?;
             samples.push(AvcSample {
                 index,
                 source: range,
@@ -400,7 +372,7 @@ impl<'a> AvcMp4<'a> {
                 duration,
                 composition_offset,
                 sync_sample,
-                contains_idr: idr,
+                contains_idr,
             });
         }
         r.checkpoint()?;
@@ -552,6 +524,60 @@ impl<'a> AvcMp4<'a> {
             sample_count: count,
         })
     }
+}
+
+/// Validates one sample's length-prefixed NAL framing and NAL types for `codec`: a picture is
+/// required and in-band parameter sets must equal configured ones. Returns whether a
+/// random-access picture (H.264 IDR, H.265 IRAP) is present. Shared by the MP4 and Matroska
+/// demuxers.
+fn validate_sample(
+    r: &mut Reader<'_, '_>,
+    source: &[u8],
+    codec: VideoCodec,
+    length_bytes: usize,
+    parameter_sets: &[Range<usize>],
+    range: Range<usize>,
+) -> Result<bool, DemuxError> {
+    let maximum_nals = r.limits.maximum_nals;
+    let mut idr = false;
+    let mut vcl = false;
+    nals(source, range, length_bytes, &mut |nal| {
+        r.checkpoint()?;
+        r.nals = r
+            .nals
+            .checked_add(1)
+            .filter(|n| *n <= maximum_nals)
+            .ok_or(DemuxError::Limit)?;
+        let (parameter, random_access, picture) = match codec {
+            VideoCodec::Avc => {
+                let kind = nal_kind(&source[nal.clone()])?;
+                (
+                    matches!(kind, 7 | 8 | 13),
+                    kind == 5,
+                    kind == 1 || kind == 5,
+                )
+            }
+            VideoCodec::Hevc => {
+                let kind = hevc_nal_kind(&source[nal.clone()])?;
+                let irap = (16..=21).contains(&kind);
+                (matches!(kind, 32..=34), irap, irap || kind <= 9)
+            }
+        };
+        if parameter
+            && !parameter_sets
+                .iter()
+                .any(|p| source[p.clone()] == source[nal.clone()])
+        {
+            return Err(DemuxError::Nal);
+        }
+        idr |= random_access;
+        vcl |= picture;
+        Ok(())
+    })?;
+    if !vcl {
+        return Err(DemuxError::Nal);
+    }
+    Ok(idr)
 }
 
 /// Validated NAL payload ranges of one length-prefixed sample, relative to `sample`.

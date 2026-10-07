@@ -420,6 +420,11 @@ const MOV: &[u8] = include_bytes!("../../../../../fss-container/tests/fixtures/q
 const MP4_ORACLE: &str =
     include_str!("../../../../../fss-container/tests/fixtures/indexed_avc_i420.sha256");
 
+/// `interleaved_av.mp4` remuxed by FFmpeg into Matroska (`-c copy`), seekable (known sizes,
+/// Cues) and live (unknown Segment size, written to a pipe).
+const MKV: &[u8] = include_bytes!("../../../../../fss-container/tests/fixtures/avc_av.mkv");
+const MKV_LIVE: &[u8] = include_bytes!("../../../../../fss-container/tests/fixtures/avc_live.mkv");
+
 fn import_as(name: &str, bytes: &[u8], hint: Option<FileFormatHint>) -> TestResult<Imported> {
     let directory = OwnedDirectory::new(name)?;
     let root = directory.0.join("deployment");
@@ -667,6 +672,119 @@ fn lazily_sealed_receipts_are_identical_and_do_not_affect_equality() -> TestResu
             ContentDigest::sha256(frame.pixels())
         );
         assert_eq!(frame.receipt().digest(), unread[index].receipt().digest());
+    }
+    Ok(())
+}
+
+#[test]
+fn retained_matroska_frames_decode_bit_exact_and_tile_the_file() -> TestResult {
+    let expected = oracle(MP4_ORACLE);
+    for (name, bytes) in [("mkv-seekable", MKV), ("mkv-live", MKV_LIVE)] {
+        // Sniffed without a hint: the EBML header selects the Matroska path.
+        let imported = import_as(name, bytes, None)?;
+        assert_eq!(imported.segments, 10);
+        let retained = RetainedFileImport::open(
+            &imported.deployment,
+            imported.identity,
+            RetainedReadLimits::default(),
+            &imported.cx,
+        )?;
+        let manifest = retained.manifest();
+        assert_eq!(manifest.format, "mkvavc");
+        assert_eq!(manifest.detector_evidence, "ebml_header");
+        assert!(manifest.segment_spans.iter().all(|span| !span.gap_before));
+        assert!(
+            manifest
+                .omission_spans
+                .iter()
+                .all(|span| { span.is_container_structure() && span.reason.starts_with("mkv_") })
+        );
+        let accounted: u64 = manifest
+            .segment_spans
+            .iter()
+            .map(|span| span.len)
+            .sum::<u64>()
+            + manifest
+                .omission_spans
+                .iter()
+                .map(|span| span.len)
+                .sum::<u64>();
+        assert_eq!(accounted, bytes.len() as u64);
+        assert_eq!(
+            manifest
+                .omission_spans
+                .iter()
+                .filter(|span| span.reason == "mkv_avc_parameter_set:nal_length_bytes=4")
+                .count(),
+            2
+        );
+        assert!(
+            manifest
+                .omission_spans
+                .iter()
+                .any(|span| span.reason == "mkv_element:cluster")
+        );
+        assert_eq!(i420_digests(&imported, 0, 10)?, expected);
+        assert_eq!(i420_digests(&imported, 5, 5)?, expected[5..].to_vec());
+    }
+    // The Matroska frames are the MP4 samples' exact bytes, so their decodes are identical.
+    let mp4 = import_as("mkv-mp4-twin", MP4_INTERLEAVED, None)?;
+    let mkv = import_as("mkv-twin", MKV, Some(FileFormatHint::MkvAvc))?;
+    assert_eq!(i420_digests(&mp4, 0, 10)?, i420_digests(&mkv, 0, 10)?);
+    Ok(())
+}
+
+#[test]
+fn matroska_capture_hints_follow_block_timestamps_and_damage_is_refused_whole() -> TestResult {
+    let directory = OwnedDirectory::new("mkv-capture")?;
+    let root = directory.0.join("deployment");
+    let path = directory.0.join("camera.mkv");
+    fs::write(&path, MKV)?;
+    let cx = context(&root)?;
+    let mut deployment = ReferenceDeployment::open(&root, "site:recorded-h264", &cx)?;
+    let start = 100_000_000_000_i128;
+    let mut ingest = FileIngestRequest::new(
+        path.clone(),
+        SensorId::parse("sensor:recorded-h264")?,
+        StreamId::parse("stream:recorded-h264")?,
+    )
+    .with_receive_time(TimestampNs(1_000_000_000_000));
+    ingest.capture_hint = Some(crate::ingest::CaptureHint::new(
+        TimestampNs(start),
+        1_000_000,
+        7.0,
+    )?);
+    let receipt = FileIngestAdapter::ingest(ingest.clone(), &cx, &mut deployment)?;
+    let frames = decode_h264_range(&deployment, request(receipt.import_identity, 0, 10), &cx)?;
+    // Millisecond block timestamps 200 ms apart in display order, the earliest at the start.
+    for (display, frame) in frames.iter().enumerate() {
+        let capture = frame.receipt().capsule().capture;
+        let centre = start + display as i128 * 200_000_000;
+        assert_eq!(capture.earliest.0, centre - 1_000_000);
+        assert_eq!(capture.latest.0, centre + 1_000_000);
+    }
+    // A damaged cluster (CRC-32 mismatch) is refused whole with a stable identity.
+    let mut damaged = MKV.to_vec();
+    let middle = damaged.len() / 2;
+    damaged[middle] ^= 0x40;
+    fs::write(&path, &damaged)?;
+    match FileIngestAdapter::ingest(ingest.clone(), &cx, &mut deployment) {
+        Err(error @ crate::ingest::FileIngestError::MatroskaRefused { .. }) => {
+            assert_eq!(error.stable_id(), Some("ERR-INGEST-MKV-REFUSED-001"));
+        }
+        other => return Err(format!("expected a Matroska refusal, got {other:?}").into()),
+    }
+    // Declaring MP4 for a Matroska file is a conflict, never a reinterpretation.
+    fs::write(&path, MKV)?;
+    match FileIngestAdapter::ingest(
+        ingest.with_format_hint(FileFormatHint::Mp4Avc),
+        &cx,
+        &mut deployment,
+    ) {
+        Err(error @ crate::ingest::FileIngestError::FormatConflict { .. }) => {
+            assert_eq!(error.stable_id(), Some("ERR-INGEST-FORMAT-CONFLICT-001"));
+        }
+        other => return Err(format!("expected a format conflict, got {other:?}").into()),
     }
     Ok(())
 }

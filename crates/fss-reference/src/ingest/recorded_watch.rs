@@ -664,6 +664,10 @@ pub fn media_decoder_label(media_format: &str) -> &'static str {
         "annexb" => "annexb:fss-codec-h264:idr-led-range:luma",
         "mp4avc" => "mp4avc:fss-container-demux:fss-codec-h264:idr-led-range:luma",
         "mp4hevc" => "mp4hevc:fss-container-demux:fss-codec-h265:irap-led-range:rasl-skipped:luma",
+        "mkvavc" => "mkvavc:fss-container-matroska:fss-codec-h264:idr-led-range:luma",
+        "mkvhevc" => {
+            "mkvhevc:fss-container-matroska:fss-codec-h265:irap-led-range:rasl-skipped:luma"
+        }
         _ => "hevc:fss-codec-h265:irap-led-range:rasl-skipped:luma",
     }
 }
@@ -838,30 +842,34 @@ impl WatchReport {
                 mask: Box::new(privacy.clone()),
                 chunks: Box::default(),
             }),
-            "annexb" | "mp4avc" => Some(FrameSource::H264(Box::new(RecordedH264Range::open(
-                deployment,
-                RecordedH264Request {
-                    import_identity: plan.import_identity,
-                    first_segment: plan.first_segment,
-                    segment_count: plan.segment_count,
-                    interpretation: plan.interpretation,
-                    read_limits: limits.read_limits,
-                    decoder_limits: limits.h264_limits,
-                },
-                cx,
-            )?))),
-            "hevc" | "mp4hevc" => Some(FrameSource::H265(Box::new(RecordedH265Range::open(
-                deployment,
-                RecordedH265Request {
-                    import_identity: plan.import_identity,
-                    first_segment: plan.first_segment,
-                    segment_count: plan.segment_count,
-                    interpretation: plan.interpretation,
-                    read_limits: limits.read_limits,
-                    decoder_limits: limits.h265_limits,
-                },
-                cx,
-            )?))),
+            "annexb" | "mp4avc" | "mkvavc" => {
+                Some(FrameSource::H264(Box::new(RecordedH264Range::open(
+                    deployment,
+                    RecordedH264Request {
+                        import_identity: plan.import_identity,
+                        first_segment: plan.first_segment,
+                        segment_count: plan.segment_count,
+                        interpretation: plan.interpretation,
+                        read_limits: limits.read_limits,
+                        decoder_limits: limits.h264_limits,
+                    },
+                    cx,
+                )?)))
+            }
+            "hevc" | "mp4hevc" | "mkvhevc" => {
+                Some(FrameSource::H265(Box::new(RecordedH265Range::open(
+                    deployment,
+                    RecordedH265Request {
+                        import_identity: plan.import_identity,
+                        first_segment: plan.first_segment,
+                        segment_count: plan.segment_count,
+                        interpretation: plan.interpretation,
+                        read_limits: limits.read_limits,
+                        decoder_limits: limits.h265_limits,
+                    },
+                    cx,
+                )?)))
+            }
             _ => return Err(RecordedDecodeError::UnsupportedMedia.into()),
         };
         let plan_digest = screened_plan_digest(masked_plan_digest(plan.digest(), &privacy), health);

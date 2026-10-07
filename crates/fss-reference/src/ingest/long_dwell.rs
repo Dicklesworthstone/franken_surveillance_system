@@ -617,7 +617,7 @@ impl Scan<'_> {
                 pixels: pixels.to_vec(),
             })
         };
-        if matches!(format, "annexb" | "mp4avc") {
+        if matches!(format, "annexb" | "mp4avc" | "mkvavc") {
             let mut range = RecordedH264Range::open_stream(
                 deployment,
                 RecordedH264Request {
@@ -854,7 +854,7 @@ impl LongDwellReport {
         let source = retained.manifest();
         let inter = match source.format.as_str() {
             "mjpeg" => false,
-            "annexb" | "hevc" | "mp4avc" | "mp4hevc" => true,
+            "annexb" | "hevc" | "mp4avc" | "mp4hevc" | "mkvavc" | "mkvhevc" => true,
             _ => return Err(RecordedDecodeError::UnsupportedMedia.into()),
         };
         let policy: &'static [u8] = if inter { POLICY_INTER } else { POLICY };

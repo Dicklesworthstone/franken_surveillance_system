@@ -90,6 +90,7 @@ mod retry;
 use std::fs;
 use std::path::{Path, PathBuf};
 
+use fss_container::demux::DemuxError;
 use fss_core::identity::{
     AdapterCapabilities, AdapterIdentity, AdapterKind, CredentialMethod, IsolationMode,
 };
@@ -162,6 +163,10 @@ pub enum DetectedFileFormat {
     Mp4Avc,
     /// Indexed (non-fragmented) ISO-BMFF/MP4 file with one `hvc1`/`hev1` H.265 video track.
     Mp4Hevc,
+    /// Matroska or WebM file whose one video track is `V_MPEG4/ISO/AVC` (H.264).
+    MkvAvc,
+    /// Matroska or WebM file whose one video track is `V_MPEGH/ISO/HEVC` (H.265).
+    MkvHevc,
 }
 
 impl DetectedFileFormat {
@@ -175,6 +180,8 @@ impl DetectedFileFormat {
             Self::RtpPlay => "rtpplay",
             Self::Mp4Avc => "mp4avc",
             Self::Mp4Hevc => "mp4hevc",
+            Self::MkvAvc => "mkvavc",
+            Self::MkvHevc => "mkvhevc",
         }
     }
 
@@ -188,6 +195,8 @@ impl DetectedFileFormat {
             Self::RtpPlay => FileFormatHint::RtpPlay,
             Self::Mp4Avc => FileFormatHint::Mp4Avc,
             Self::Mp4Hevc => FileFormatHint::Mp4Hevc,
+            Self::MkvAvc => FileFormatHint::MkvAvc,
+            Self::MkvHevc => FileFormatHint::MkvHevc,
         }
     }
 }
@@ -208,6 +217,10 @@ pub enum FileFormatHint {
     Mp4Avc,
     /// Expected format is an indexed MP4 file with one H.265 (`hvc1`/`hev1`) video track.
     Mp4Hevc,
+    /// Expected format is a Matroska/WebM file with one H.264 (`V_MPEG4/ISO/AVC`) video track.
+    MkvAvc,
+    /// Expected format is a Matroska/WebM file with one H.265 (`V_MPEGH/ISO/HEVC`) video track.
+    MkvHevc,
 }
 
 impl FileFormatHint {
@@ -221,6 +234,8 @@ impl FileFormatHint {
             Self::RtpPlay => "rtpplay",
             Self::Mp4Avc => "mp4avc",
             Self::Mp4Hevc => "mp4hevc",
+            Self::MkvAvc => "mkvavc",
+            Self::MkvHevc => "mkvhevc",
         }
     }
 }
@@ -476,12 +491,23 @@ pub const MP4_PARAMETER_SET_REASON_PREFIX: &str = "mp4_avc_parameter_set:nal_len
 /// `nal_length_bytes=N`.
 pub const MP4_HEVC_PARAMETER_SET_REASON_PREFIX: &str = "mp4_hevc_parameter_set:nal_length_bytes=";
 
+/// Omission reason prefix of Matroska/WebM container structure: EBML elements, other tracks'
+/// blocks, block headers and the CodecPrivate parameter sets.
+pub const MKV_STRUCTURE_REASON_PREFIX: &str = "mkv_";
+/// Omission reason prefix of one Matroska `avcC` CodecPrivate parameter-set NAL payload,
+/// completed by `nal_length_bytes=N`.
+pub const MKV_PARAMETER_SET_REASON_PREFIX: &str = "mkv_avc_parameter_set:nal_length_bytes=";
+/// Omission reason prefix of one Matroska `hvcC` CodecPrivate VPS, SPS or PPS NAL payload,
+/// completed by `nal_length_bytes=N`.
+pub const MKV_HEVC_PARAMETER_SET_REASON_PREFIX: &str = "mkv_hevc_parameter_set:nal_length_bytes=";
+
 impl FileOmissionSpan {
-    /// True for MP4 container structure, which is accounted byte for byte but is not lost or
-    /// unparsed media: no source gap, omission or time-reliability downgrade follows from it.
+    /// True for MP4 or Matroska container structure, which is accounted byte for byte but is not
+    /// lost or unparsed media: no source gap, omission or time-reliability downgrade follows.
     #[must_use]
     pub fn is_container_structure(&self) -> bool {
         self.reason.starts_with(MP4_STRUCTURE_REASON_PREFIX)
+            || self.reason.starts_with(MKV_STRUCTURE_REASON_PREFIX)
     }
 }
 
@@ -703,6 +729,13 @@ pub enum FileIngestError {
     /// The MP4 demuxer refused the file (fragmented, encrypted, external media, non-`avc1`,
     /// several video tracks, malformed tables or NAL framing, or a bound). Nothing is retained.
     Mp4Refused {
+        /// The demuxer's typed, non-disclosing refusal.
+        refusal: fss_container::demux::DemuxError,
+    },
+    /// The Matroska demuxer refused the file (content encodings, lacing, invisible frames, not
+    /// exactly one H.264/H.265 video track, a CRC-32 mismatch, malformed elements or NAL
+    /// framing, or a bound). Nothing is retained.
+    MatroskaRefused {
         /// The demuxer's typed, non-disclosing refusal.
         refusal: fss_container::demux::DemuxError,
     },
@@ -971,6 +1004,9 @@ impl std::fmt::Display for FileIngestError {
             Self::Contract(e) => write!(f, "contract error: {}", e),
             Self::AnnexB(e) => write!(f, "Annex-B error: {:?}", e),
             Self::Mp4Refused { refusal } => write!(f, "MP4 demux refused the file: {refusal:?}"),
+            Self::MatroskaRefused { refusal } => {
+                write!(f, "Matroska demux refused the file: {refusal:?}")
+            }
             Self::Mjpeg(e) => write!(f, "MJPEG error: {:?}", e),
             Self::LocalPublication(e) => write!(f, "local publication error: {}", e),
             Self::Spool(e) => write!(f, "spool error: {}", e),
@@ -990,6 +1026,7 @@ impl FileIngestError {
             Self::AmbiguousAnnexBCodec { .. } => Some("ERR-INGEST-FORMAT-AMBIGUOUS-001"),
             Self::FormatConflict { .. } => Some("ERR-INGEST-FORMAT-CONFLICT-001"),
             Self::Mp4Refused { .. } => Some("ERR-INGEST-MP4-REFUSED-001"),
+            Self::MatroskaRefused { .. } => Some("ERR-INGEST-MKV-REFUSED-001"),
             Self::EvidenceDeleted { .. } => Some("ERR-EVIDENCE-DELETED-001"),
             Self::CaptureHintAfterReceive { .. } | Self::CaptureHintLatestAfterReceive { .. } => {
                 Some("ERR-INGEST-CAPTURE-HINT-AFTER-RECEIVE-001")
@@ -1121,6 +1158,136 @@ fn box_kind_text(kind: [u8; 4]) -> String {
     }
 }
 
+/// Container family of a demuxed length-prefixed video import.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum ContainerFamily {
+    Mp4,
+    Matroska,
+}
+
+/// One demuxed MP4 or Matroska video selection, as the importer custodies it.
+struct ContainerVideo {
+    family: ContainerFamily,
+    /// Reason prefix of the parameter-set spans, completed by the NAL length-field size.
+    parameter_prefix: &'static str,
+    nal_length_bytes: usize,
+    parameter_sets: Vec<std::ops::Range<usize>>,
+    /// Decode-order samples: index, exact source range, presentation time in container ticks.
+    samples: Vec<(usize, std::ops::Range<usize>, i128)>,
+    /// Nanoseconds per container tick as `numerator / denominator`.
+    tick_ns: (i128, i128),
+    /// Top-level regions tiling the file, with their structure reasons.
+    regions: Vec<(usize, usize, String)>,
+}
+
+impl ContainerVideo {
+    /// Parses the whole file as `format` under the request's sample bound, with cancellation at
+    /// demuxer checkpoints. The demuxed codec must equal the declared format's.
+    fn parse(
+        file_bytes: &[u8],
+        format: DetectedFileFormat,
+        request: &FileIngestRequest,
+        cx: &ReplayCx,
+    ) -> Result<Self, FileIngestError> {
+        use fss_container::demux::{AvcMp4, MatroskaVideo, VideoCodec};
+        let limits = mp4_demux_limits(request.limits.max_segments);
+        let mut check = || {
+            cx.checkpoint(STAGE_SPLIT)
+                .map_err(|_| DemuxError::Cancelled)
+        };
+        let family = match format {
+            DetectedFileFormat::Mp4Avc | DetectedFileFormat::Mp4Hevc => ContainerFamily::Mp4,
+            DetectedFileFormat::MkvAvc | DetectedFileFormat::MkvHevc => ContainerFamily::Matroska,
+            format => return Err(FileIngestError::UnsupportedFormat { format }),
+        };
+        let refuse = |refusal| match refusal {
+            DemuxError::Cancelled => FileIngestError::CancellationRequested { stage: STAGE_SPLIT },
+            refusal => Self::refusal(family, refusal),
+        };
+        let video = match family {
+            ContainerFamily::Mp4 => {
+                let mp4 = AvcMp4::parse_with_checkpoint(file_bytes, None, limits, &mut check)
+                    .map_err(refuse)?;
+                Self {
+                    family,
+                    parameter_prefix: match mp4.codec() {
+                        VideoCodec::Avc => MP4_PARAMETER_SET_REASON_PREFIX,
+                        VideoCodec::Hevc => MP4_HEVC_PARAMETER_SET_REASON_PREFIX,
+                    },
+                    nal_length_bytes: mp4.nal_length_bytes(),
+                    parameter_sets: mp4.parameter_sets().to_vec(),
+                    samples: mp4
+                        .samples()
+                        .iter()
+                        .map(|s| (s.index, s.source.clone(), s.presentation_time()))
+                        .collect(),
+                    tick_ns: (1_000_000_000, i128::from(mp4.timescale())),
+                    regions: top_level_boxes(file_bytes)
+                        .into_iter()
+                        .map(|(start, end, kind)| {
+                            (start, end, format!("mp4_box:{}", box_kind_text(kind)))
+                        })
+                        .collect(),
+                }
+            }
+            ContainerFamily::Matroska => {
+                let mkv =
+                    MatroskaVideo::parse_with_checkpoint(file_bytes, None, limits, &mut check)
+                        .map_err(refuse)?;
+                Self {
+                    family,
+                    parameter_prefix: match mkv.codec() {
+                        VideoCodec::Avc => MKV_PARAMETER_SET_REASON_PREFIX,
+                        VideoCodec::Hevc => MKV_HEVC_PARAMETER_SET_REASON_PREFIX,
+                    },
+                    nal_length_bytes: mkv.nal_length_bytes(),
+                    parameter_sets: mkv.parameter_sets().to_vec(),
+                    samples: mkv
+                        .samples()
+                        .iter()
+                        .map(|s| (s.index, s.source.clone(), i128::from(s.timestamp)))
+                        .collect(),
+                    tick_ns: (i128::from(mkv.timestamp_scale_ns()), 1),
+                    regions: mkv
+                        .elements()
+                        .iter()
+                        .map(|e| {
+                            (
+                                e.range.start,
+                                e.range.end,
+                                format!("mkv_element:{}", e.name),
+                            )
+                        })
+                        .collect(),
+                }
+            }
+        };
+        let declared_avc = matches!(
+            format,
+            DetectedFileFormat::Mp4Avc | DetectedFileFormat::MkvAvc
+        );
+        let demuxed_avc = matches!(
+            video.parameter_prefix,
+            MP4_PARAMETER_SET_REASON_PREFIX | MKV_PARAMETER_SET_REASON_PREFIX
+        );
+        if declared_avc != demuxed_avc {
+            return Err(video.refuse(DemuxError::Unsupported));
+        }
+        Ok(video)
+    }
+
+    fn refusal(family: ContainerFamily, refusal: DemuxError) -> FileIngestError {
+        match family {
+            ContainerFamily::Mp4 => FileIngestError::Mp4Refused { refusal },
+            ContainerFamily::Matroska => FileIngestError::MatroskaRefused { refusal },
+        }
+    }
+
+    fn refuse(&self, refusal: DemuxError) -> FileIngestError {
+        Self::refusal(self.family, refusal)
+    }
+}
+
 /// Codec plausibility of an Annex-B stream's first NAL unit header.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 enum AnnexBCodecEvidence {
@@ -1204,6 +1371,17 @@ pub fn sniff_format_with_hint(
         return Ok(match parsed.codec() {
             VideoCodec::Avc => (DetectedFileFormat::Mp4Avc, "mp4_ftyp"),
             VideoCodec::Hevc => (DetectedFileFormat::Mp4Hevc, "mp4_ftyp"),
+        });
+    }
+
+    // EBML: Matroska or WebM. As for MP4, the demuxer decides support and the codec.
+    if bytes.starts_with(&[0x1A, 0x45, 0xDF, 0xA3]) {
+        use fss_container::demux::{MatroskaVideo, VideoCodec};
+        let parsed = MatroskaVideo::parse(bytes, None, mp4_demux_limits(usize::MAX))
+            .map_err(|refusal| FileIngestError::MatroskaRefused { refusal })?;
+        return Ok(match parsed.codec() {
+            VideoCodec::Avc => (DetectedFileFormat::MkvAvc, "ebml_header"),
+            VideoCodec::Hevc => (DetectedFileFormat::MkvHevc, "ebml_header"),
         });
     }
 
@@ -2567,8 +2745,11 @@ impl FileIngestAdapter {
                     format: DetectedFileFormat::RtpPlay,
                 });
             }
-            DetectedFileFormat::Mp4Avc | DetectedFileFormat::Mp4Hevc => {
-                return Self::mp4_segments(
+            DetectedFileFormat::Mp4Avc
+            | DetectedFileFormat::Mp4Hevc
+            | DetectedFileFormat::MkvAvc
+            | DetectedFileFormat::MkvHevc => {
+                return Self::container_segments(
                     file_bytes,
                     format,
                     request,
@@ -2665,14 +2846,15 @@ impl FileIngestAdapter {
         })
     }
 
-    /// One segment per video sample (`avc1`, or `hvc1`/`hev1`), in decode order, with the
-    /// sample's exact length-prefixed bytes. Every other byte is a typed container-structure
-    /// span: each `avcC`/`hvcC` parameter-set NAL payload (read back verbatim by the decoder)
-    /// and, split at top-level box boundaries, the remaining box bytes (`mp4_box:<type>`,
-    /// including other tracks' data in `mdat`).
+    /// One segment per video sample (MP4 `avc1` or `hvc1`/`hev1`; Matroska `V_MPEG4/ISO/AVC` or
+    /// `V_MPEGH/ISO/HEVC`), in decode order, with the sample's exact length-prefixed bytes.
+    /// Every other byte is a typed container-structure span: each `avcC`/`hvcC` parameter-set
+    /// NAL payload (read back verbatim by the decoder) and, split at top-level box or element
+    /// boundaries, the remaining bytes (`mp4_box:<type>`, `mkv_element:<name>`, including other
+    /// tracks' data and Matroska block headers).
     /// Samples are complete by construction (the demuxer refuses the whole file otherwise), so
     /// no sample carries a source gap; samples stored out of decode order are refused.
-    fn mp4_segments(
+    fn container_segments(
         file_bytes: &[u8],
         format: DetectedFileFormat,
         request: &FileIngestRequest,
@@ -2680,63 +2862,41 @@ impl FileIngestAdapter {
         receive_time: TimestampNs,
         cx: &ReplayCx,
     ) -> Result<ScannedSegments, FileIngestError> {
-        use fss_container::demux::{AvcMp4, DemuxError, VideoCodec};
-        let limits = mp4_demux_limits(request.limits.max_segments);
-        let mp4 = AvcMp4::parse_with_checkpoint(file_bytes, None, limits, &mut || {
-            cx.checkpoint(STAGE_SPLIT)
-                .map_err(|_| DemuxError::Cancelled)
-        })
-        .map_err(|refusal| match refusal {
-            DemuxError::Cancelled => FileIngestError::CancellationRequested { stage: STAGE_SPLIT },
-            refusal => FileIngestError::Mp4Refused { refusal },
-        })?;
-        let prefix = match (mp4.codec(), format) {
-            (VideoCodec::Avc, DetectedFileFormat::Mp4Avc) => MP4_PARAMETER_SET_REASON_PREFIX,
-            (VideoCodec::Hevc, DetectedFileFormat::Mp4Hevc) => MP4_HEVC_PARAMETER_SET_REASON_PREFIX,
-            _ => {
-                return Err(FileIngestError::Mp4Refused {
-                    refusal: DemuxError::Unsupported,
-                });
-            }
-        };
-        let parameter_reason = format!("{prefix}{}", mp4.nal_length_bytes());
+        let video = ContainerVideo::parse(file_bytes, format, request, cx)?;
+        let refuse = |refusal| video.refuse(refusal);
+        let parameter_reason = format!("{}{}", video.parameter_prefix, video.nal_length_bytes);
         // Claimed ranges: samples (Some(index)) and parameter sets (None), in file order.
-        let mut claimed: Vec<(usize, usize, Option<usize>)> = mp4
-            .parameter_sets()
+        let mut claimed: Vec<(usize, usize, Option<usize>)> = video
+            .parameter_sets
             .iter()
             .map(|range| (range.start, range.end, None))
             .collect();
         let mut previous_end = 0_usize;
-        for sample in mp4.samples() {
-            if sample.source.start < previous_end {
-                return Err(FileIngestError::Mp4Refused {
-                    refusal: DemuxError::Layout,
-                });
+        for (index, source, _) in &video.samples {
+            if source.start < previous_end {
+                return Err(refuse(DemuxError::Layout));
             }
-            previous_end = sample.source.end;
-            claimed.push((sample.source.start, sample.source.end, Some(sample.index)));
+            previous_end = source.end;
+            claimed.push((source.start, source.end, Some(*index)));
         }
         claimed.sort_unstable();
-        let boxes = top_level_boxes(file_bytes);
         let mut omission_spans = Vec::new();
         let mut cursor = 0_usize;
         let structure = |from: usize, to: usize, spans: &mut Vec<FileOmissionSpan>| {
-            for &(start, end, kind) in &boxes {
-                let (lo, hi) = (from.max(start), to.min(end));
+            for (start, end, reason) in &video.regions {
+                let (lo, hi) = (from.max(*start), to.min(*end));
                 if lo < hi {
                     spans.push(FileOmissionSpan {
                         offset: lo as u64,
                         len: (hi - lo) as u64,
-                        reason: format!("mp4_box:{}", box_kind_text(kind)),
+                        reason: reason.clone(),
                     });
                 }
             }
         };
         for &(start, end, sample) in &claimed {
             if start < cursor {
-                return Err(FileIngestError::Mp4Refused {
-                    refusal: DemuxError::Layout,
-                });
+                return Err(refuse(DemuxError::Layout));
             }
             structure(cursor, start, &mut omission_spans);
             if sample.is_none() {
@@ -2750,40 +2910,41 @@ impl FileIngestAdapter {
         }
         structure(cursor, file_bytes.len(), &mut omission_spans);
         let accounted = omission_spans.iter().map(|span| span.len).sum::<u64>()
-            + mp4
-                .samples()
+            + video
+                .samples
                 .iter()
-                .map(|sample| sample.source.len() as u64)
+                .map(|(_, source, _)| source.len() as u64)
                 .sum::<u64>();
         if accounted != file_bytes.len() as u64 {
-            return Err(FileIngestError::Mp4Refused {
-                refusal: DemuxError::Layout,
-            });
+            return Err(refuse(DemuxError::Layout));
         }
 
         // With a capture hint, a sample's offset from the hint's start is its presentation time
         // relative to the earliest one, on the container's media clock: B-frame reordering and
         // variable frame rates are honoured, and the hint's assumed rate is not used.
-        let earliest = mp4
-            .samples()
+        let earliest = video
+            .samples
             .iter()
-            .map(|sample| sample.presentation_time())
+            .map(|(_, _, time)| *time)
             .min()
             .unwrap_or(0);
-        let timescale = i128::from(mp4.timescale());
-        let mut segment_spans = Vec::with_capacity(mp4.samples().len());
-        let mut capsules = Vec::with_capacity(mp4.samples().len());
-        for sample in mp4.samples() {
-            let idx = sample.index;
-            let bytes = file_bytes.get(sample.source.clone()).ok_or_else(|| {
-                FileIngestError::CorruptSegment {
-                    detail: "MP4 sample span out of bounds".to_string(),
-                }
-            })?;
+        let (numerator, denominator) = video.tick_ns;
+        let mut segment_spans = Vec::with_capacity(video.samples.len());
+        let mut capsules = Vec::with_capacity(video.samples.len());
+        for (idx, source, time) in &video.samples {
+            let idx = *idx;
+            let bytes =
+                file_bytes
+                    .get(source.clone())
+                    .ok_or_else(|| FileIngestError::CorruptSegment {
+                        detail: "container sample span out of bounds".to_string(),
+                    })?;
             let capsule_id =
                 CapsuleId::parse(format!("capsule:{}:{:06}", import_identity_hex, idx))?;
-            let ticks = sample.presentation_time() - earliest;
-            let offset_ns = (ticks * 1_000_000_000 + timescale / 2) / timescale;
+            let offset_ns = (time - earliest)
+                .checked_mul(numerator)
+                .map(|scaled| (scaled + denominator / 2) / denominator)
+                .ok_or_else(|| refuse(DemuxError::Timeline))?;
             let capture = Self::capture_interval_at(
                 idx,
                 offset_ns,
@@ -2804,8 +2965,8 @@ impl FileIngestAdapter {
             })?;
             segment_spans.push(SegmentSpan {
                 segment_index: idx,
-                offset: sample.source.start as u64,
-                len: sample.source.len() as u64,
+                offset: source.start as u64,
+                len: source.len() as u64,
                 segment_sha256: ContentDigest::sha256(bytes),
                 capsule_id,
                 gap_before: false,

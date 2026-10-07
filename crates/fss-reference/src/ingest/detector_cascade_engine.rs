@@ -1027,7 +1027,7 @@ impl<'a> DetectorCascade<'a> {
                     );
                 }
             }
-            "annexb" | "mp4avc" => {
+            "annexb" | "mp4avc" | "mkvavc" => {
                 for &(first_segment, count) in &ranges {
                     let mut range = RecordedH264Range::open(
                         deployment,
@@ -1065,7 +1065,7 @@ impl<'a> DetectorCascade<'a> {
                     }
                 }
             }
-            "hevc" | "mp4hevc" => {
+            "hevc" | "mp4hevc" | "mkvhevc" => {
                 for &(first_segment, count) in &ranges {
                     let mut range = RecordedH265Range::open(
                         deployment,

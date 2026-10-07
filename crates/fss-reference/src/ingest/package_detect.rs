@@ -534,7 +534,7 @@ fn run_selected_detection<T>(
                 )?)?);
             }
         }
-        "annexb" | "mp4avc" => {
+        "annexb" | "mp4avc" | "mkvavc" => {
             let h264 = DecoderLimits {
                 max_pictures: request.segment_count as u64,
                 ..limits.h264
@@ -574,7 +574,7 @@ fn run_selected_detection<T>(
                 })?)?);
             }
         }
-        "hevc" | "mp4hevc" => {
+        "hevc" | "mp4hevc" | "mkvhevc" => {
             let h265 = H265DecoderLimits {
                 max_pictures: request.segment_count as u64,
                 ..limits.h265

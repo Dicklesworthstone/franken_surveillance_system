@@ -192,7 +192,7 @@ impl ScreeningReport {
                     )?;
                 }
             }
-            "annexb" | "mp4avc" => {
+            "annexb" | "mp4avc" | "mkvavc" => {
                 let mut source = RecordedH264Range::open(
                     deployment,
                     RecordedH264Request {
@@ -215,7 +215,7 @@ impl ScreeningReport {
                     )?;
                 }
             }
-            "hevc" | "mp4hevc" => {
+            "hevc" | "mp4hevc" | "mkvhevc" => {
                 let mut source = RecordedH265Range::open(
                     deployment,
                     RecordedH265Request {

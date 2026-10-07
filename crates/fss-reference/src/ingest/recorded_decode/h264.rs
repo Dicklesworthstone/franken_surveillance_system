@@ -27,7 +27,8 @@ use fss_core::{CanonicalEncode, CanonicalEncoder, ContentDigest, SensorCapsule, 
 use super::{ComponentInterpretation, RecordedDecodeError, checkpoint, source_capsule};
 use crate::ingest::privacy_mask::{MaskBinding, binding_digest, current_mask, encode_marker};
 use crate::ingest::{
-    MP4_PARAMETER_SET_REASON_PREFIX, RetainedFileImport, RetainedReadLimits, VerifiedChunkCache,
+    MKV_PARAMETER_SET_REASON_PREFIX, MP4_PARAMETER_SET_REASON_PREFIX, RetainedFileImport,
+    RetainedReadLimits, VerifiedChunkCache,
 };
 use crate::{ReferenceDeployment, ReplayCx};
 
@@ -416,9 +417,13 @@ impl RecordedH264Range {
             RetainedFileImport::open(deployment, request.import_identity, request.read_limits, cx)?;
         let (framing, parameter_sets) = match retained.manifest().format.as_str() {
             "annexb" => (Framing::AnnexB, Vec::new()),
-            "mp4avc" => {
-                let (spans, length) =
-                    super::mp4_parameter_sets(&retained, MP4_PARAMETER_SET_REASON_PREFIX)?;
+            format @ ("mp4avc" | "mkvavc") => {
+                let prefix = if format == "mp4avc" {
+                    MP4_PARAMETER_SET_REASON_PREFIX
+                } else {
+                    MKV_PARAMETER_SET_REASON_PREFIX
+                };
+                let (spans, length) = super::mp4_parameter_sets(&retained, prefix)?;
                 (Framing::LengthPrefixed(length), spans)
             }
             _ => return Err(RecordedDecodeError::UnsupportedMedia),
