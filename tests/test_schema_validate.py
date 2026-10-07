@@ -878,7 +878,8 @@ class TestSchemaConstitution(unittest.TestCase):
         # + SCHEMA-DOMAIN-REFERENCE-AGENT-EPISODE-{,IDENTITY-,REQUEST-}001 (FSS-230) = 233
         # + SCHEMA-DOMAIN-RECORDED-DECODE-REFUSAL-001 (fss-2h5zq.41) = 234.
         # + SCHEMA-DOMAIN-REFERENCE-AGENT-{WORK-SCOPE,CLAIM-REQUEST}-001 (FSS-226) = 236.
-        self.assertEqual(result["digestDomainCount"], 236)
+        # + SCHEMA-DOMAIN-REFERENCE-AGENT-FINDING-{,IDENTITY-,REQUEST-}001 (FSS-227) = 239.
+        self.assertEqual(result["digestDomainCount"], 239)
 
         # Continuation cursor is verified implemented
         implemented_names = {s["name"] for s in result["schemas"] if s["status"] == "implemented"}
@@ -1401,7 +1402,8 @@ class TestSchemaConstitutionCrossReviewRegressions(unittest.TestCase):
         # + SCHEMA-DOMAIN-REFERENCE-AGENT-EPISODE-{,IDENTITY-,REQUEST-}001 (FSS-230) = 233
         # + SCHEMA-DOMAIN-RECORDED-DECODE-REFUSAL-001 (fss-2h5zq.41) = 234.
         # + SCHEMA-DOMAIN-REFERENCE-AGENT-{WORK-SCOPE,CLAIM-REQUEST}-001 (FSS-226) = 236.
-        self.assertEqual(result["digestDomainCount"], 236)
+        # + SCHEMA-DOMAIN-REFERENCE-AGENT-FINDING-{,IDENTITY-,REQUEST-}001 (FSS-227) = 239.
+        self.assertEqual(result["digestDomainCount"], 239)
         # 36 = 28 + fss.sensor_tamper_status.v1 (owner SensorTamperStatus, fss-2uftm)
         # + fss.agent_operations.v1 / fss.agent_views.v1 / fss.agent_request_envelope.v1
         #   (owners AgentOperation / AgentView / AgentRequestEnvelope, fss-x4a.30.83.17-40)

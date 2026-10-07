@@ -516,9 +516,7 @@ fn assumption_objects(record: &HandoffRecord) -> Vec<String> {
 
 fn handoff_payload(
     record: &HandoffRecord,
-    active_investigations: &[String],
-    active_plans: &[String],
-    active_claims: &[String],
+    orientation: &fss_reference::agent_orient::DeploymentOrientation,
     objective: &str,
     publication_receipt: ContentDigest,
     workspace_digest: ContentDigest,
@@ -569,22 +567,28 @@ fn handoff_payload(
         ),
         (
             "activeInvestigations",
-            agent_json::strings(active_investigations),
+            agent_json::strings(&orientation.active_investigations),
         ),
-        ("findings", "[]".to_owned()),
+        (
+            "findings",
+            agent_json::strings(&orientation.active_findings),
+        ),
         ("unresolvedQuestions", agent_json::strings(&record.unknowns)),
         (
             "assumptions",
             agent_json::array(&assumption_objects(record)),
         ),
         ("invalidatedAssumptions", agent_json::strings(invalidated)),
-        ("activePlans", agent_json::strings(active_plans)),
+        (
+            "activePlans",
+            agent_json::strings(&orientation.active_plans),
+        ),
         (
             "preparedOperations",
             agent_json::strings(&record.prepared_operations),
         ),
         ("tasks", "[]".to_owned()),
-        ("leases", agent_json::strings(active_claims)),
+        ("leases", agent_json::strings(&orientation.active_claims)),
         ("obligations", agent_json::strings(&record.obligations)),
         (
             "indeterminateEffects",
@@ -758,9 +762,7 @@ fn handoff_response(
         payload_schema: HANDOFF_PAYLOAD_SCHEMA,
         payload_json: handoff_payload(
             record,
-            &orientation.active_investigations,
-            &orientation.active_plans,
-            &orientation.active_claims,
+            orientation,
             objective,
             published.receipt.record_digest,
             record.workspace_digest,
@@ -1034,6 +1036,24 @@ fn classify(error: DeploymentSessionError) -> Result<Refusal, DeploymentSessionE
         },
         DeploymentSessionError::CaseRefused(case) => case_refusal(case, error.to_string()),
         DeploymentSessionError::ClaimRefused(ref claim) => claim_refusal(claim, error.to_string()),
+        DeploymentSessionError::FindingRefused(_) => Refusal {
+            error_id: ERR_OP_PRECONDITION_FAILED,
+            reason: error.to_string(),
+            guidance: "A finding cites 1..256 evidence digests about a case (and hypothesis) \
+                       visible to the session; it may disagree with or supersede only visible \
+                       findings of the same case. List them with `fss investigate --transition \
+                       finding-list`.",
+            recovery_class: "never_unchanged",
+            safe_retry: ResponseSafeRetry::No,
+        },
+        DeploymentSessionError::FindingStale(_) => Refusal {
+            error_id: ERR_PRECONDITION_STALE,
+            reason: error.to_string(),
+            guidance: "The named finding was superseded or withdrawn: list the findings and refer \
+                       to its current successor.",
+            recovery_class: "refresh_and_retry",
+            safe_retry: ResponseSafeRetry::YesAfterRefresh,
+        },
         DeploymentSessionError::FeedbackDenied => Refusal {
             error_id: ERR_AUTH_DENIED,
             reason: error.to_string(),

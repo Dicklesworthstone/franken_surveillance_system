@@ -223,6 +223,7 @@
     "crates/fss-reference/src/deployment_session/claims.rs": "cognition",
     "crates/fss-reference/src/deployment_session/episode.rs": "cognition",
     "crates/fss-reference/src/deployment_session/feedback.rs": "cognition",
+    "crates/fss-reference/src/deployment_session/findings.rs": "cognition",
     "crates/fss-reference/src/deployment_session/plan.rs": "cognition",
     "crates/fss-reference/src/deployment_session/tests.rs": "support",
     "crates/fss-reference/src/deployment_status.rs": "support",

@@ -6,6 +6,22 @@ Crosswalk establishing the exact bijective mapping between registered `fss/1` op
 
 Under AGENTS.md, machine output uses the registered `AgentResponseEnvelope` with stable exit and error identities; no transport may invent a parallel vocabulary.
 
+## CLI surfaces outside the operation bijection
+
+These CLI commands print their own registered schema, never `fss.agent_response_envelope.v1`, so
+they are not `fss/1` agent operations: they have no operation ID, library entry point, or MCP tool
+and are not part of the operation bijection below. Their schema, execution error identities, and exit
+identities are registered all the same (`registries/SCHEMAS.md`, `registries/ERRORS.md`) and are
+machine-checked against `REGISTERED_NON_OPERATION_CLI_SURFACES` in `crates/fss-cli/src/crosswalk.rs`.
+Argument-grammar failures use the shared `ERR-CLI-*` / `EXIT-CLI-*-002` identities and are not
+repeated here.
+
+| CLI Command | Output Schema | Schema Registry ID | Error Identities | Exit Identities |
+|---|---|---|---|---|
+| `fss status` | `fss.status.v1` | `SCHEMA-STATUS-001` | `ERR-DOCTOR-NOT-A-DEPLOYMENT-001`, `ERR-STATUS-UNREADABLE-001`, `ERR-STATUS-CORRUPT-001`, `ERR-STATUS-OVER-BUDGET-001`, `ERR-STATUS-CHANGED-001`, `ERR-STATUS-CANCELLED-001` | `EXIT-OK-000`, `EXIT-DOCTOR-NOT-A-DEPLOYMENT-004`, `EXIT-STATUS-REFUSED-007` |
+
+## Registered operations
+
 | Operation ID | Operation Name | Owner | CLI Command | Library Entry Point | MCP Tool Name | Primary Error Code | Exit Identity | Status |
 |---|---|---|---|---|---|---|---|---|
 | `AOP-001` | `session.open` | `fss-agent-session` | `fss session open` | `fss_agent_session::session_open` | `session_open` | `ERR-AUTH-DENIED-001` | `EXIT-OK-000` | `specified` |

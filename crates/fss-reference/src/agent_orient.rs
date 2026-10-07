@@ -1300,6 +1300,8 @@ pub struct DeploymentOrientation {
     pub active_plans: Vec<String>,
     /// Non-terminal work claims (leases) of the bound mission (empty when no session is bound).
     pub active_claims: Vec<String>,
+    /// Active (neither superseded nor withdrawn) findings of the bound mission.
+    pub active_findings: Vec<String>,
 }
 
 impl DeploymentOrientation {
@@ -1814,6 +1816,7 @@ fn compile_capsule(
     cases: &[OrientCaseBrief],
     plans: &[OrientPlanBrief],
     claims: &[OrientClaimBrief],
+    findings: &[OrientFindingBrief],
 ) -> Result<CompiledSituation, OrientError> {
     let heartbeat = request.view == AgentView::Pulse;
     let anchor = snapshot.anchor.clone();
@@ -2280,6 +2283,12 @@ fn compile_capsule(
         }
         for claim in claims {
             affordances.push(claim_affordance(claim)?);
+        }
+        for finding in findings
+            .iter()
+            .filter(|finding| !finding.disputed_by.is_empty())
+        {
+            affordances.push(finding_affordance(finding)?);
         }
     }
     for operation in &indeterminate {
@@ -2979,6 +2988,32 @@ fn case_affordance(case: &OrientCaseBrief) -> Result<ActionAffordance, ContractE
     .build())
 }
 
+/// Prefix of the affordance a session-bound orientation lists for each disputed finding.
+pub const AFFORDANCE_FINDING_PREFIX: &str = "affordance:finding:";
+
+/// The probe listing one active finding under explicit disagreement: the conflict stays visible
+/// (never ranked away) until a supersession or withdrawal ends it.
+fn finding_affordance(finding: &OrientFindingBrief) -> Result<ActionAffordance, ContractError> {
+    Ok(ListedAffordance {
+        affordance_id: format!("{AFFORDANCE_FINDING_PREFIX}{}", finding.finding_id),
+        operation: "investigate",
+        target: format!("fss://case/{}", finding.case_id),
+        rationale: format!(
+            "Finding {} on case {} is disputed by {}: discriminate with evidence (`fss \
+             investigate --transition cite|assess`), then supersede or withdraw the finding that \
+             does not hold (`--transition finding --supersedes` or `finding-withdraw`).",
+            finding.finding_id,
+            finding.case_id,
+            finding.disputed_by.join(", ")
+        ),
+        class: AffordanceClass::Probe,
+        supported_worlds: BTreeSet::new(),
+        required_capability: CAPABILITY_CASE_WRITE,
+        cost: read_cost(0, 0)?,
+    }
+    .build())
+}
+
 /// Prefix of the affordance a session-bound orientation lists for each non-terminal work claim.
 pub const AFFORDANCE_CLAIM_PREFIX: &str = "affordance:claim:";
 
@@ -3039,8 +3074,9 @@ fn plan_affordance(plan: &OrientPlanBrief) -> Result<ActionAffordance, ContractE
             "plan",
             format!(
                 "Plan {} is compiled but not prepared: it awaits the operator's exact plan \
-                 approval (`fss plan ... --approve <plan approval>`).",
-                plan.plan_id
+                 approval (`fss plan ... --approve <plan approval>`), or withdraw it (`fss plan \
+                 --close {}`).",
+                plan.plan_id, plan.plan_id
             ),
         ),
         Some("prepared") => (
@@ -3327,6 +3363,19 @@ pub struct OrientSessionBinding {
     pub plans: Vec<OrientPlanBrief>,
     /// Non-terminal work claims of the mission visible to the session, in identity order.
     pub claims: Vec<OrientClaimBrief>,
+    /// Active findings of the mission, in identity order.
+    pub findings: Vec<OrientFindingBrief>,
+}
+
+/// One active finding as a session-bound orientation lists it.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct OrientFindingBrief {
+    /// Stable finding identity.
+    pub finding_id: String,
+    /// The case it is about.
+    pub case_id: String,
+    /// Active findings in explicit disagreement with it.
+    pub disputed_by: Vec<String>,
 }
 
 /// One non-terminal work claim (a coordination lease) as a session-bound orientation lists it.
@@ -3373,7 +3422,8 @@ pub fn orient_deployment_for(
     let cases = session.map_or(&[][..], |binding| binding.cases.as_slice());
     let plans = session.map_or(&[][..], |binding| binding.plans.as_slice());
     let claims = session.map_or(&[][..], |binding| binding.claims.as_slice());
-    let mut compiled = compile_capsule(snapshot, request, cases, plans, claims)?;
+    let findings = session.map_or(&[][..], |binding| binding.findings.as_slice());
+    let mut compiled = compile_capsule(snapshot, request, cases, plans, claims, findings)?;
     if let Some(binding) = session {
         compiled.capsule.mission_id = binding.mission_id.clone();
         compiled.capsule.session_id = binding.session_id.clone();
@@ -3506,6 +3556,10 @@ pub fn orient_deployment_for(
         active_investigations: cases.iter().map(|case| case.case_id.clone()).collect(),
         active_plans: plans.iter().map(|plan| plan.plan_id.clone()).collect(),
         active_claims: claims.iter().map(|claim| claim.claim_id.clone()).collect(),
+        active_findings: findings
+            .iter()
+            .map(|finding| finding.finding_id.clone())
+            .collect(),
         publication,
     })
 }

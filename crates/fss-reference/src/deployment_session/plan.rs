@@ -330,8 +330,8 @@ fn read_plan_at(
 }
 
 /// Active plans of `mission_id` by `principal`, as a session-bound orientation lists them:
-/// every published plan that is not closed, that is, whose operation is not prepared yet, is not
-/// terminal in the head snapshot, or is terminal but has no published execution episode yet.
+/// every published plan without a published execution episode (an episode closes a plan whose
+/// operation is terminal in the head snapshot, or withdraws one never prepared).
 pub(super) fn plan_briefs(
     root: &Path,
     head: &DeploymentSnapshot,
@@ -352,7 +352,9 @@ pub(super) fn plan_briefs(
             .iter()
             .find(|operation| operation.intent.operation_id.as_str() == record.operation_id)
             .map(|operation| operation.state);
-        if state.is_some_and(|state| state.is_terminal()) && closed.contains(&record.plan_id) {
+        // A closed plan (terminal, or withdrawn before preparation) is no longer active; its
+        // operation, if any, stays visible through the effect journal's own lists.
+        if closed.contains(&record.plan_id) {
             continue;
         }
         briefs.push(OrientPlanBrief {

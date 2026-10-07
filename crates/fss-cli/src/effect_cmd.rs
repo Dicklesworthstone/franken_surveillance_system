@@ -38,6 +38,7 @@ use fss_reference::alert_reconcile::{
     AlertAttestation, AlertReconcileError, AlertReconciliationOutcome, CAP_ALERT_RECONCILE,
     MAX_RECONCILE_STATEMENT_BYTES, preview_alert_reconciliation, reconcile_alert_operation,
 };
+use fss_reference::deployment_session::episode::read_episode;
 use fss_reference::deployment_session::plan::{
     AlertRoute, PlanRecord, PlanningContext, planning_context, publish_plan, read_plan,
 };
@@ -506,7 +507,7 @@ pub fn parse_cancel_args(tokens: &[ArgToken]) -> Result<CancelArgs, CliError> {
 type Answered = (Result<String, Box<dyn std::error::Error>>, ExitIdentity);
 
 /// Failures of an effect command before an answer can be rendered.
-enum Failure {
+pub(crate) enum Failure {
     /// A typed refusal (exit 5), or an indeterminate outcome (exit 1).
     Typed(Refusal, ExitIdentity),
     /// An agent-plane refusal classified by the session command.
@@ -613,6 +614,17 @@ fn snapshot(root: &Path) -> Result<DeploymentSnapshot, Failure> {
     read_deployment(root, &OrientLimits::default()).map_err(|error| {
         Failure::Session(fss_reference::deployment_session::DeploymentSessionError::Read(error))
     })
+}
+
+/// Holds the deployment's exclusive lock (no capability beyond replay) for as long as the
+/// returned deployment lives, so agent-plane writes that must not race an effect preparation
+/// (closing a never-prepared plan) are serialized with it.
+pub(crate) fn hold_deployment(
+    root: &Path,
+    principal: &PrincipalId,
+) -> Result<ReferenceDeployment, Failure> {
+    let site = snapshot(root)?.site_lineage;
+    Ok(open_deployment(root, &site, principal, &[])?.0)
 }
 
 /// Opens the deployment under a root authority holding exactly `capabilities`.
@@ -759,7 +771,7 @@ fn receipt_response(answer: ReceiptAnswer<'_>) -> Result<String, Box<dyn std::er
     })
 }
 
-fn finish(
+pub(crate) fn finish(
     result: Result<Result<String, Box<dyn std::error::Error>>, Failure>,
     exit: ExitIdentity,
     operation: &Operation,
@@ -1216,6 +1228,21 @@ fn plan_answer(args: &PlanArgs) -> Result<Result<String, Box<dyn std::error::Err
                 return Err(alert_refusal(&AlertEffectError::StaleApproval(given)));
             }
             (None, Some(_)) => {
+                // A plan closed (withdrawn) before preparation is final: its episode exists and
+                // this deployment lock serializes the check with the withdrawal.
+                let anchor_token = &context.orientation.anchor_token;
+                let plan_id =
+                    PlanRecord::identity(&context.session.session_id, anchor_token, approval);
+                if read_episode(&args.root, &plan_id)?.is_some() {
+                    return Err(Failure::Session(
+                        fss_reference::deployment_session::DeploymentSessionError::PlanInvalid(
+                            format!(
+                                "plan {plan_id} was withdrawn (closed before preparation) and is \
+                                 never prepared; replan at a later anchor"
+                            ),
+                        ),
+                    ));
+                }
                 let (journal, ledger) = deployment.effects_and_ledger();
                 let prepared = journal
                     .prepare_alert(PrepareAlertParams {

@@ -980,3 +980,40 @@ fn a_relay_accepted_alert_attested_not_delivered_fails_its_obligation() -> TestR
     assert_eq!(relay.connections(), 1);
     Ok(())
 }
+
+#[test]
+fn a_plan_withdrawn_before_preparation_closes_and_can_never_be_prepared() -> TestResult {
+    let (directory, event_id) = corroborated_event("withdraw")?;
+    let agent = Agent::open(&directory)?;
+    let relay = Relay::spawn(Some(b"HTTP/1.1 202 Accepted\r\nContent-Length: 0\r\n\r\n"))?;
+    let (_, planned) = agent.plan(&event_id, relay.address, &[])?;
+    let (plan_id, plan_approval, _) = approvals(&planned)?;
+    assert_eq!(agent.active_plans()?, vec![plan_id.clone()]);
+
+    // Closing a compiled, never-prepared plan withdraws it: an immutable episode, no effect.
+    let (code, closed, episode) = agent.close(&plan_id)?;
+    assert_eq!(code, Some(0), "{closed:?}");
+    let (episode, _) = episode.ok_or("episode")?;
+    assert_eq!(text(&episode, &["outcome", "state"])?, "cancelled");
+    assert!(
+        texts(&episode, &["outcome", "successPredicates"])?.contains(&"not_prepared".to_owned())
+    );
+    assert!(texts(&episode, &["stepReceipts"])?.contains(&"step:prepare=not_started".to_owned()));
+    assert!(texts(&episode, &["effectReceipts"])?.is_empty());
+    assert!(texts(&episode, &["obligations"])?.is_empty());
+    assert!(matches!(
+        field(prediction(&episode, "prediction:delivery")?, &["error"])?,
+        Value::Null
+    ));
+    assert!(agent.active_plans()?.is_empty());
+
+    // The withdrawn plan is final: its exact approval never prepares it.
+    let (code, refused) = agent.plan(&event_id, relay.address, &["--approve", &plan_approval])?;
+    assert_eq!(code, Some(5), "{refused:?}");
+    assert_eq!(
+        text(&refused, &["errorId"])?,
+        "ERR-OP-PRECONDITION-FAILED-001"
+    );
+    assert_eq!(relay.connections(), 0);
+    Ok(())
+}

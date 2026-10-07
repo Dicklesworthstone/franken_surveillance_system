@@ -631,7 +631,7 @@ pub fn investigate(
         &session.mission_id,
         &session.session_id,
         &limits,
-        super::session_briefs(&journal.store, &session, &session.current_anchor, now),
+        super::session_briefs(root, &journal.store, &session, &session.current_anchor, now)?,
     )?;
     Ok(CaseAnswer {
         claims: super::claims::visible_claims(&journal.store, &session),

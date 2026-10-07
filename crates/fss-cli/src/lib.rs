@@ -22,6 +22,8 @@ pub mod episode_cmd;
 pub mod error;
 /// `fss feedback` (AOP-013): advisory, evidence-linked proposals; never a policy mutation.
 pub mod feedback_cmd;
+/// Shared findings (FSS-227): the case-board intent family of `fss investigate` (AOP-006).
+pub mod finding_cmd;
 /// Read-only `follow` (AOP-004 `session.follow`) since an earlier committed anchor.
 pub mod follow_cmd;
 pub mod fss_cmd;
@@ -97,6 +99,7 @@ pub use session_cmd::{
 };
 pub use status_cmd::{
     ERR_STATUS_CANCELLED, ERR_STATUS_CHANGED, ERR_STATUS_CORRUPT, ERR_STATUS_OVER_BUDGET,
-    ERR_STATUS_UNREADABLE, STATUS_SCHEMA, StatusArgs, execute_status, parse_status_args,
+    ERR_STATUS_UNREADABLE, MAX_STATUS_OUTPUT_BYTES, STATUS_SCHEMA, StatusArgs, execute_status,
+    execute_status_with, parse_status_args,
 };
 pub use token::{ArgToken, MAX_ARG_TOKEN_BYTES, is_option_shaped, tokenize_os_args};

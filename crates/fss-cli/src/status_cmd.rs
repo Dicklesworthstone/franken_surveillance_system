@@ -8,12 +8,15 @@
 //!
 //! - reports sensors and streams as an inventory of retained capsule metadata, never as devices
 //!   that are connected, online, or acquiring;
-//! - reports per-stream continuity as knowledge about committed history only, and a recorded-file
-//!   source as `not_observable_file_source` with a `no_live_continuity` degradation;
+//! - reports per-stream continuity as knowledge about committed history only, with a named
+//!   reason: a recorded-file source is `not_observable_file_source` with a `no_live_continuity`
+//!   degradation, and a stream mixing estimated and source-clocked capsules is `degraded`
+//!   (`mixed_estimated_clock`, degradation `mixed_clock_bases`), never `verified`;
 //! - names `capabilities_exercised` only from evidence families this root actually committed;
 //! - states `not_claimed` for device acquisition, live streaming, and real-provider alerts;
-//! - reports situation and handoff digests as `not_observable`, because the reader does not read
-//!   them, rather than inventing or omitting them;
+//! - reports the last published handoff and the situation capsule root it sealed, read-only from
+//!   the agent plane and verified against the sealed handoff root, as agent-plane identities that
+//!   are not pinned to the status anchor (null with zero handoffs published, never invented);
 //! - refuses (never truncates) when a read or output bound is exceeded, so no count is ever a
 //!   total from a partial replay.
 
@@ -23,8 +26,8 @@ use std::path::{Path, PathBuf};
 use fss_core::{EffectState, ObligationState};
 use fss_reference::agent_orient::{OrientLimits, obligation_state_str};
 use fss_reference::deployment_status::{
-    DeploymentStatus, StatusError, StatusLimits, StreamContinuity, StreamInventory,
-    inspect_deployment_status,
+    ContinuityReason, DeploymentStatus, HostStatusReadIo, MAX_STATUS_HANDOFFS, StatusError,
+    StatusLimits, StatusReadIo, StreamContinuity, StreamInventory, inspect_deployment_status_with,
 };
 use fss_reference::doctor::writer_state_name;
 
@@ -115,9 +118,29 @@ pub fn legacy_status() -> String {
     )
 }
 
-/// Executes `fss status`.
+/// Executes `fss status` over the host filesystem with no cancellation source and the
+/// [`MAX_STATUS_OUTPUT_BYTES`] document bound.
 #[must_use]
 pub fn execute_status(args: &StatusArgs) -> (String, ExitIdentity) {
+    execute_status_with(
+        args,
+        &HostStatusReadIo,
+        &mut || Ok(()),
+        MAX_STATUS_OUTPUT_BYTES,
+    )
+}
+
+/// Executes `fss status` through an explicit read boundary, cancellation checkpoint and document
+/// bound. A document longer than `max_output_bytes` is refused as over budget, never truncated.
+/// `execute_status` is exactly this with the host reader, no cancellation and
+/// [`MAX_STATUS_OUTPUT_BYTES`].
+#[must_use]
+pub fn execute_status_with(
+    args: &StatusArgs,
+    io: &dyn StatusReadIo,
+    checkpoint: &mut dyn FnMut() -> Result<(), StatusError>,
+    max_output_bytes: usize,
+) -> (String, ExitIdentity) {
     let Some(root) = &args.root else {
         return (legacy_status(), ExitIdentity::SUCCESS);
     };
@@ -128,10 +151,10 @@ pub fn execute_status(args: &StatusArgs) -> (String, ExitIdentity) {
             ..limits.snapshot
         };
     }
-    match inspect_deployment_status(root, &limits) {
+    match inspect_deployment_status_with(io, root, &limits, checkpoint) {
         Ok(status) => {
-            let rendered = render_status(&status, &limits);
-            if rendered.len() > MAX_STATUS_OUTPUT_BYTES {
+            let rendered = render_status(&status, &limits, max_output_bytes);
+            if rendered.len() > max_output_bytes {
                 return refusal(root, StatusError::OverBudget);
             }
             (rendered, ExitIdentity::SUCCESS)
@@ -250,6 +273,7 @@ fn stream_json(row: &StreamInventory) -> String {
             "continuity",
             object(&[
                 ("knowledge", string(row.continuity.as_str())),
+                ("reason", string(row.continuity_reason.as_str())),
                 ("witnessed_continuous", row.witnessed_continuous.to_string()),
                 ("witnessed_degraded", row.witnessed_degraded.to_string()),
                 ("scope", string("committed_history_only")),
@@ -268,9 +292,76 @@ fn counts_json(counts: &BTreeMap<&str, usize>) -> String {
     )
 }
 
-/// Renders one successful read as `fss.status.v1`.
+fn situation_json(status: &DeploymentStatus) -> String {
+    let handoffs = &status.handoffs;
+    let last = handoffs.last.as_ref();
+    let anchor = &status.snapshot.anchor;
+    object(&[
+        ("handoffs_published", handoffs.published.to_string()),
+        (
+            "last_handoff_id",
+            optional_string(last.map(|h| h.handoff_id.as_str())),
+        ),
+        (
+            "last_handoff_digest",
+            optional_string(last.map(|h| h.handoff_root.to_text()).as_deref()),
+        ),
+        (
+            "last_situation_digest",
+            optional_string(last.map(|h| h.situation_capsule_root.to_text()).as_deref()),
+        ),
+        (
+            "last_handoff_anchor",
+            last.map_or_else(
+                || "null".to_owned(),
+                |h| {
+                    object(&[
+                        ("ledger_epoch", h.anchor_ledger_epoch.to_string()),
+                        ("commit_sequence", h.anchor_commit_sequence.to_string()),
+                        (
+                            "at_status_anchor",
+                            (h.anchor_ledger_epoch == anchor.ledger_epoch
+                                && h.anchor_commit_sequence == anchor.commit_sequence)
+                                .to_string(),
+                        ),
+                    ])
+                },
+            ),
+        ),
+        ("knowledge", string("known")),
+        (
+            "basis",
+            string("verified_handoff_publications_in_agent_plane"),
+        ),
+        (
+            "selection",
+            string("greatest_anchor_then_created_at_then_handoff_root"),
+        ),
+        ("scope", string("agent_plane_at_read_not_anchor_pinned")),
+        (
+            "reason",
+            string(if last.is_some() {
+                "the situation digest is the situation capsule root sealed in the last handoff \
+                 at that handoff's anchor, not a live situation"
+            } else {
+                "no handoff is published under agent/publications"
+            }),
+        ),
+        (
+            "affordance",
+            string("fss session orient --json --root <dir>"),
+        ),
+    ])
+}
+
+/// Renders one successful read as `fss.status.v1`; `max_output_bytes` is the document bound the
+/// caller enforces, reported under `bounds`.
 #[must_use]
-pub fn render_status(status: &DeploymentStatus, limits: &StatusLimits) -> String {
+pub fn render_status(
+    status: &DeploymentStatus,
+    limits: &StatusLimits,
+    max_output_bytes: usize,
+) -> String {
     let snapshot = &status.snapshot;
     let sources = &status.sources;
 
@@ -401,6 +492,18 @@ pub fn render_status(status: &DeploymentStatus, limits: &StatusLimits) -> String
             "continuity_not_witnessed",
             None,
             Some(unwitnessed),
+        ));
+    }
+    let mixed_clock_streams = sources
+        .streams
+        .iter()
+        .filter(|row| row.continuity_reason == ContinuityReason::MixedEstimatedClock)
+        .count();
+    if mixed_clock_streams > 0 {
+        degradations.push(degraded(
+            "mixed_clock_bases",
+            None,
+            Some(mixed_clock_streams),
         ));
     }
     let degraded_streams = sources
@@ -627,22 +730,7 @@ pub fn render_status(status: &DeploymentStatus, limits: &StatusLimits) -> String
                 ("provider_identity", string("not_read_by_status")),
             ]),
         ),
-        (
-            "situation",
-            object(&[
-                ("last_situation_digest", "null".to_owned()),
-                ("last_handoff_digest", "null".to_owned()),
-                ("knowledge", string("not_observable")),
-                (
-                    "reason",
-                    string("situation and handoff digests are not read by status"),
-                ),
-                (
-                    "affordance",
-                    string("fss session orient --json --root <dir>"),
-                ),
-            ]),
-        ),
+        ("situation", situation_json(status)),
         ("capabilities_exercised", array(&exercised)),
         ("other_committed_families", array(&other_families)),
         (
@@ -664,7 +752,8 @@ pub fn render_status(status: &DeploymentStatus, limits: &StatusLimits) -> String
                 ),
                 ("max_streams", limits.max_streams.to_string()),
                 ("max_capsules", limits.max_capsules.to_string()),
-                ("max_output_bytes", MAX_STATUS_OUTPUT_BYTES.to_string()),
+                ("max_output_bytes", max_output_bytes.to_string()),
+                ("max_handoffs", MAX_STATUS_HANDOFFS.to_string()),
                 ("complete", "true".to_owned()),
                 ("on_exceed", string("refuse_never_truncate")),
             ]),

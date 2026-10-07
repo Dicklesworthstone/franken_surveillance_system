@@ -2273,7 +2273,95 @@ fn the_rule_refuses_any_decision_the_policy_did_not_make() -> TestResult {
     let mut probability = base.event.clone();
     probability.probability = ProbabilityInterval::new(0.0, 0.1)?;
     assert_eq!(verdict(&probability), refused);
+
+    // An authorized zone, a track, or a narrowed interval the policy did not decide
+    // (fss-pgwsv N1): each passes every earlier check and only the re-run policy refuses it.
+    for (name, departure) in DEPARTURES {
+        let mut decision = base.clone();
+        departure(&mut decision)?;
+        assert_ne!(decision.event, base.event, "{name}");
+        assert_eq!(verdict(&decision.event), refused, "{name}");
+    }
+    // A widened interval leaves the record's interval, which the rule refuses before it re-runs
+    // the policy.
+    let mut widened = base.event.clone();
+    widened.interval = CaptureInterval::new(seconds(0)?, seconds(TICKS + 1)?)?;
+    assert_eq!(
+        verdict(&widened),
+        Err(RetainedCoverageRefusal::IntervalNotCovered)
+    );
     quiet.cleanup();
+    Ok(())
+}
+
+/// A departure from the policy's decision on a field the evidence edges do not carry.
+type Departure = fn(&mut ReferencePolicyDecision) -> TestResult;
+
+/// The departures fss-pgwsv N1 pins: an authorized zone, a track, and the interval narrowed at
+/// either end. The re-review's mutants that skip zone/track or interval in the reproduction, or
+/// compare only state, edges, reason, probability and path, accept every one of them.
+const DEPARTURES: [(&str, Departure); 4] = [
+    ("zone", |decision| {
+        decision.event.zone_ids.push(SIDE.1.to_owned());
+        decision.event.validate()?;
+        Ok(())
+    }),
+    ("track", |decision| {
+        decision.event.track_ids.push("track:pgwsv".to_owned());
+        decision.event.validate()?;
+        Ok(())
+    }),
+    ("narrowed-start", |decision| {
+        decision.event.interval = CaptureInterval::new(seconds(1)?, seconds(TICKS)?)?;
+        decision.event.validate()?;
+        Ok(())
+    }),
+    ("narrowed-end", |decision| {
+        decision.event.interval = CaptureInterval::new(seconds(0)?, seconds(TICKS - 1)?)?;
+        decision.event.validate()?;
+        Ok(())
+    }),
+];
+
+/// fss-pgwsv N1 through both readers: the policy's rejection committed with each departure is
+/// refused by the situation compiler and by the durable `fss orient` reader.
+#[test]
+fn a_rejection_with_a_zone_track_or_interval_the_policy_did_not_decide_does_not_certify()
+-> TestResult {
+    fn departed<const INDEX: usize>(
+        event_id: &EventId,
+        record: &SourceCoverageRecord,
+        observations: Vec<ReferenceModelObservation>,
+    ) -> Result<ReferencePolicyDecision, Box<dyn Error>> {
+        let mut decision = by_policy(event_id, record, observations)?;
+        assert_eq!(decision.event.state, EventState::Rejected);
+        (DEPARTURES[INDEX].1)(&mut decision)?;
+        Ok(decision)
+    }
+    let decides: [Decide; 4] = [departed::<0>, departed::<1>, departed::<2>, departed::<3>];
+    for ((name, _), decide) in DEPARTURES.into_iter().zip(decides) {
+        let mut quiet = Quiet::run_plan(
+            &format!("pgwsv-{name}"),
+            Plan {
+                decide,
+                ..Plan::new(everything, true)
+            },
+        )?;
+        let (batches, head) = quiet.history()?;
+        assert_eq!(
+            verify_retained_coverage(
+                &quiet.record,
+                Some(&quiet.decision.event),
+                &quiet.analyses,
+                &batches,
+                &head,
+            ),
+            Err(RetainedCoverageRefusal::DecisionNotReproducible),
+            "{name}"
+        );
+        assert_not_certified(&mut quiet, "is not the policy's decision")?;
+        quiet.cleanup();
+    }
     Ok(())
 }
 
@@ -2315,9 +2403,120 @@ fn the_policy_holds_a_gapped_record_indeterminate() -> TestResult {
         let situation = quiet.situation_without_coverage()?;
         let (cell, _, _) = situation_absence(&situation, &quiet.event_id);
         assert_ne!(cell, Some(KnowledgeState::Known), "{tag}");
+        // The situation states why the event is indeterminate and keeps the protected
+        // presence-live world (fss-pgwsv N2). (The compiler refuses a coverage witness offered
+        // for a non-rejected event, so the gapped witness is never offered here.)
+        let frame = &situation.capsule.frame;
+        let stated = frame
+            .unknown
+            .iter()
+            .filter(|line| line.contains(crate::COVERAGE_WITNESS_NOT_CERTIFYING))
+            .count();
+        assert_eq!(stated, 1, "{tag}: {:?}", frame.unknown);
+        let presence_live = format!("world:event:{}:presence-live", quiet.event_id.as_str());
+        assert!(
+            frame
+                .world_envelope
+                .alternatives
+                .iter()
+                .any(|world| world.protected && world.world_id == presence_live),
+            "{tag}"
+        );
+        assert!(
+            quiet
+                .situation(true)
+                .is_err_and(|error| format!("{error:?}").contains("non_rejected_event")),
+            "{tag}"
+        );
         let durable = quiet.durable()?;
         assert!(!durable.certified(), "{tag}: {durable:?}");
         assert!(durable.retained.is_none(), "{tag}");
+        quiet.cleanup();
+    }
+    Ok(())
+}
+
+/// The plain policy without a record: every analysed-nothing frame leaves the candidate
+/// indeterminate with no coverage reason at all.
+fn plain_policy(
+    event_id: &EventId,
+    _: &SourceCoverageRecord,
+    observations: Vec<ReferenceModelObservation>,
+) -> Result<ReferencePolicyDecision, Box<dyn Error>> {
+    Ok(crate::evaluate_unknown_presence(
+        event_id.clone(),
+        observations,
+    )?)
+}
+
+/// fss-pgwsv N2, negative side: the coverage-gap line is stated only for an event the policy
+/// holds indeterminate because the witness does not certify. An event held indeterminate for
+/// another reason (analysis incomplete over a covering record, analyses under two generations,
+/// or the plain policy with no coverage reason) still states the generic indeterminate line and
+/// never the coverage-gap one.
+#[test]
+fn the_situation_names_the_coverage_gap_reason_only_for_a_gapped_record() -> TestResult {
+    let cases: [(&str, Plan, Option<&str>); 3] = [
+        (
+            "n2-partial-analysis",
+            Plan {
+                analyse: all_but_one_frame,
+                ..Plan::new(everything, true)
+            },
+            Some(COVERAGE_ANALYSIS_INCOMPLETE),
+        ),
+        (
+            "n2-two-generations",
+            Plan {
+                analyse: one_frame_under_b,
+                ..Plan::new(everything, true)
+            },
+            Some(COVERAGE_ANALYSIS_INCOMPLETE),
+        ),
+        (
+            "n2-plain-policy",
+            Plan {
+                decide: plain_policy,
+                ..Plan::new(everything, true)
+            },
+            None,
+        ),
+    ];
+    for (tag, plan, reason) in cases {
+        let mut quiet = Quiet::run_plan(tag, plan)?;
+        // The record is complete: the witness certifies, so the gap reason is never the cause.
+        assert!(quiet.record.witness.certifies_absence(), "{tag}");
+        let event = &quiet.decision.event;
+        assert_eq!(event.state, EventState::Indeterminate, "{tag}");
+        assert_eq!(event.uncertainty_reason.as_deref(), reason, "{tag}");
+        let situation = quiet.situation_without_coverage()?;
+        let frame = &situation.capsule.frame;
+        // The indeterminate arm ran: its generic line is stated exactly once.
+        let generic = frame
+            .unknown
+            .iter()
+            .filter(|line| line.starts_with("The event remains indeterminate"))
+            .count();
+        assert_eq!(generic, 1, "{tag}: {:?}", frame.unknown);
+        // The coverage-gap reason is not.
+        let stated = frame
+            .unknown
+            .iter()
+            .filter(|line| {
+                line.contains(crate::COVERAGE_WITNESS_NOT_CERTIFYING)
+                    || line.contains("not observable over a coverage gap")
+            })
+            .count();
+        assert_eq!(stated, 0, "{tag}: {:?}", frame.unknown);
+        let presence_live = format!("world:event:{}:presence-live", quiet.event_id.as_str());
+        assert!(
+            frame
+                .world_envelope
+                .alternatives
+                .iter()
+                .any(|world| world.protected && world.world_id == presence_live),
+            "{tag}"
+        );
         quiet.cleanup();
     }
     Ok(())
