@@ -482,7 +482,109 @@ const CHROMA_FILTER: [[i32; 4]; 8] = [
 
 /// Fractional sample interpolation of one block of plane `c` (clauses
 /// 8.5.3.3.3.1 and 8.5.3.3.3.2) into 14-bit intermediate samples.
-fn interpolate(frame: &Frame, c: usize, block: Block, mv: [i16; 2], out: &mut Vec<i32>) {
+///
+/// The reference samples the filters can reach, `(w + taps - 1) x (h + taps - 1)` around the
+/// block, are loaded once into `window` (row copies inside the picture; 8-228/8-229 coordinate
+/// clamping only near an edge), then filtered with the selected coefficient rows.
+fn interpolate(
+    frame: &Frame,
+    c: usize,
+    block: Block,
+    mv: [i16; 2],
+    out: &mut Vec<i32>,
+    window: &mut Vec<i32>,
+) {
+    let Block { x, y, w, h } = block;
+    let plane = &frame.planes[c];
+    let (pw, ph) = (
+        frame.plane_width(c) as isize,
+        frame.plane_height(c) as isize,
+    );
+    let (frac_bits, taps): (u32, usize) = if c == 0 { (2, 8) } else { (3, 4) };
+    let (mvx, mvy) = (i32::from(mv[0]), i32::from(mv[1]));
+    let mask = (1 << frac_bits) - 1;
+    let (fx, fy) = ((mvx & mask) as usize, (mvy & mask) as usize);
+    let half = taps / 2 - 1;
+    let left = x as isize + (mvx >> frac_bits) as isize - half as isize;
+    let top = y as isize + (mvy >> frac_bits) as isize - half as isize;
+    let (ww, wh) = (w + taps - 1, h + taps - 1);
+    window.clear();
+    window.reserve(ww * wh);
+    let inside = left >= 0 && top >= 0 && left + ww as isize <= pw && top + wh as isize <= ph;
+    for r in 0..wh {
+        let ys = top + r as isize;
+        if inside {
+            let start = ys as usize * pw as usize + left as usize;
+            window.extend(plane[start..start + ww].iter().map(|&v| i32::from(v)));
+        } else {
+            let row = ys.clamp(0, ph - 1) as usize * pw as usize;
+            window.extend((0..ww).map(|col| {
+                let xs = (left + col as isize).clamp(0, pw - 1) as usize;
+                i32::from(plane[row + xs])
+            }));
+        }
+    }
+    let filter = |frac: usize| -> &'static [i32] {
+        if c == 0 {
+            &LUMA_FILTER[frac]
+        } else {
+            &CHROMA_FILTER[frac]
+        }
+    };
+    // Weighted sum of `coefficients` against `source[base + t * stride]`.
+    let tap = |coefficients: &[i32], source: &[i32], base: usize, stride: usize| -> i32 {
+        let mut sum = 0;
+        for (t, coefficient) in coefficients.iter().enumerate() {
+            sum += coefficient * source[base + t * stride];
+        }
+        sum
+    };
+    out.clear();
+    out.resize(w * h, 0);
+    if fx == 0 && fy == 0 {
+        for j in 0..h {
+            let row = &window[(j + half) * ww + half..][..w];
+            for (o, &v) in out[j * w..(j + 1) * w].iter_mut().zip(row) {
+                *o = v << 6;
+            }
+        }
+        return;
+    }
+    if fy == 0 {
+        let cx = filter(fx);
+        for j in 0..h {
+            for i in 0..w {
+                out[j * w + i] = tap(cx, window, (j + half) * ww + i, 1);
+            }
+        }
+        return;
+    }
+    if fx == 0 {
+        let cy = filter(fy);
+        for j in 0..h {
+            for i in 0..w {
+                out[j * w + i] = tap(cy, window, j * ww + i + half, ww);
+            }
+        }
+        return;
+    }
+    let (cx, cy) = (filter(fx), filter(fy));
+    let mut temp = vec![0i32; wh * w];
+    for r in 0..wh {
+        for i in 0..w {
+            temp[r * w + i] = tap(cx, window, r * ww + i, 1);
+        }
+    }
+    for j in 0..h {
+        for i in 0..w {
+            out[j * w + i] = tap(cy, &temp, j * w + i, w) >> 6;
+        }
+    }
+}
+
+/// Per-sample clamped reference of [`interpolate`], kept as its test oracle.
+#[cfg(test)]
+fn interpolate_reference(frame: &Frame, c: usize, block: Block, mv: [i16; 2], out: &mut Vec<i32>) {
     let Block { x, y, w, h } = block;
     let plane = &frame.planes[c];
     let (pw, ph) = (
@@ -567,6 +669,16 @@ fn interpolate(frame: &Frame, c: usize, block: Block, mv: [i16; 2], out: &mut Ve
     }
 }
 
+/// Writes `value(k)` for every sample `k` of `area` (raster order), clipped to 8 bits.
+fn store_block(plane: &mut [u8], stride: usize, area: Block, value: impl Fn(usize) -> i32) {
+    for j in 0..area.h {
+        let row = &mut plane[(area.y + j) * stride + area.x..][..area.w];
+        for (i, sample) in row.iter_mut().enumerate() {
+            *sample = value(j * area.w + i).clamp(0, 255) as u8;
+        }
+    }
+}
+
 /// Explicit weighting parameters of one prediction block.
 struct Weights {
     log2_denom: u32,
@@ -596,6 +708,7 @@ pub(crate) fn predict(
 ) -> Option<()> {
     let Block { x, y, w, h } = block;
     let mut preds: [Vec<i32>; 2] = [Vec::new(), Vec::new()];
+    let mut window = Vec::new();
     for c in 0..3 {
         let (cx, cy, cw, ch) = if c == 0 {
             (x, y, w, h)
@@ -614,7 +727,14 @@ pub(crate) fn predict(
                 w: cw,
                 h: ch,
             };
-            interpolate(frame, c, rect, field.mv[list], &mut preds[list]);
+            interpolate(
+                frame,
+                c,
+                rect,
+                field.mv[list],
+                &mut preds[list],
+                &mut window,
+            );
             used[list] = true;
         }
         let explicit = weights.map(|table| {
@@ -649,27 +769,36 @@ pub(crate) fn predict(
         });
         let stride = dst.plane_width(c);
         let plane = &mut dst.planes[c];
-        for j in 0..ch {
-            for i in 0..cw {
-                let k = j * cw + i;
-                let value = match (used, &explicit) {
-                    ([true, true], None) => (preds[0][k] + preds[1][k] + 64) >> 7,
-                    ([true, true], Some(wp)) => {
-                        let log2wd = wp.log2_denom + 6;
-                        (preds[0][k] * wp.weight[0]
-                            + preds[1][k] * wp.weight[1]
-                            + ((wp.offset[0] + wp.offset[1] + 1) << log2wd))
-                            >> (log2wd + 1)
-                    }
-                    ([a, _], None) => (preds[usize::from(!a)][k] + 32) >> 6,
-                    ([a, _], Some(wp)) => {
-                        let l = usize::from(!a);
-                        let log2wd = wp.log2_denom + 6;
-                        ((preds[l][k] * wp.weight[l] + (1 << (log2wd - 1))) >> log2wd)
-                            + wp.offset[l]
-                    }
-                };
-                plane[(cy + j) * stride + cx + i] = value.clamp(0, 255) as u8;
+        // One weighting rule per block (clause 8.5.3.3.4), applied row by row.
+        let area = Block {
+            x: cx,
+            y: cy,
+            w: cw,
+            h: ch,
+        };
+        match (used, &explicit) {
+            ([true, true], None) => store_block(plane, stride, area, |k| {
+                (preds[0][k] + preds[1][k] + 64) >> 7
+            }),
+            ([true, true], Some(wp)) => {
+                let log2wd = wp.log2_denom + 6;
+                let rounding = (wp.offset[0] + wp.offset[1] + 1) << log2wd;
+                store_block(plane, stride, area, |k| {
+                    (preds[0][k] * wp.weight[0] + preds[1][k] * wp.weight[1] + rounding)
+                        >> (log2wd + 1)
+                });
+            }
+            ([a, _], None) => {
+                let p = &preds[usize::from(!a)];
+                store_block(plane, stride, area, |k| (p[k] + 32) >> 6);
+            }
+            ([a, _], Some(wp)) => {
+                let l = usize::from(!a);
+                let log2wd = wp.log2_denom + 6;
+                let p = &preds[l];
+                store_block(plane, stride, area, |k| {
+                    ((p[k] * wp.weight[l] + (1 << (log2wd - 1))) >> log2wd) + wp.offset[l]
+                });
             }
         }
     }
@@ -686,6 +815,47 @@ mod tests {
     /// 32) >> 6 = -256 (floor of -255.5) -> mv 3 -> -((768 + 127) >> 8) =
     /// -3. td = 3, tb = 4: tx = (16384 + 1) / 3 = 5461, factor = (21844 +
     /// 32) >> 6 = 341, mv 9 -> (3069 + 127) >> 8 = 12.
+    /// The windowed interpolation equals the per-sample clamped reference on random pictures,
+    /// block shapes, planes and vectors, including blocks far outside the picture.
+    #[test]
+    fn windowed_interpolation_equals_the_per_sample_reference() {
+        let mut state = 0x2545_f491_4f6c_dd1d_u64;
+        let mut next = move || {
+            state ^= state << 13;
+            state ^= state >> 7;
+            state ^= state << 17;
+            state
+        };
+        let mut frame = Frame::new(48, 32).unwrap_or_else(|_| unreachable!());
+        for plane in &mut frame.planes {
+            for sample in plane.iter_mut() {
+                *sample = (next() >> 24) as u8;
+            }
+        }
+        let (mut fast, mut slow, mut window) = (Vec::new(), Vec::new(), Vec::new());
+        for _ in 0..6000 {
+            let c = (next() % 3) as usize;
+            let (pw, ph) = (frame.plane_width(c), frame.plane_height(c));
+            let shapes = [(4, 4), (8, 4), (4, 8), (8, 8), (16, 8), (12, 16), (16, 16)];
+            let (w, h) = shapes[(next() % shapes.len() as u64) as usize];
+            let (w, h) = if c == 0 { (w, h) } else { (w / 2, h / 2) };
+            let block = Block {
+                x: (next() as usize % pw.saturating_sub(w).max(1)),
+                y: (next() as usize % ph.saturating_sub(h).max(1)),
+                w,
+                h,
+            };
+            let spread = if next() % 4 == 0 { 600 } else { 40 };
+            let mv = [
+                ((next() % (2 * spread + 1)) as i32 - spread as i32) as i16,
+                ((next() % (2 * spread + 1)) as i32 - spread as i32) as i16,
+            ];
+            interpolate(&frame, c, block, mv, &mut fast, &mut window);
+            interpolate_reference(&frame, c, block, mv, &mut slow);
+            assert_eq!(fast, slow, "plane {c} {block:?} {mv:?}");
+        }
+    }
+
     #[test]
     fn mv_scaling_by_hand() {
         assert_eq!(scale_mv([10, -10], 2, 1), [5, -5]);

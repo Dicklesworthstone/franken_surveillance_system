@@ -225,3 +225,30 @@ the picture); all FFmpeg-oracle conformance fixtures still match frame for frame
 partition-level (8x8/16x16) prediction, SIMD and threading are not attempted. End-to-end retained
 decode is dominated by SHA-256 (PERF-003 finding), so its wall time moved only from 5.54 s to
 5.39 s for the PERF-003 workload.
+
+## PERF-005 — H.265 inter interpolation from a per-block reference window
+
+- **Commit:** the `perf(h265)` commit carrying this entry (base `11e941d`).
+- **Host and workload:** as PERF-004, with FFmpeg `testsrc2` 1920x1080 libx265 Main
+  (`keyint=60:bframes=2:pools=1:frame-threads=1`): 2 s / 60 frames for wall time, 0.5 s / 15
+  frames for callgrind, decoded by `fss_codec_h265::Decoder::decode_nal` over every NAL.
+- **Change:** `interpolate` read every filter tap through a clamped closure and selected the
+  luma/chroma coefficient table per tap. It now loads the `(w + taps - 1) x (h + taps - 1)`
+  reference window once per block (row copies inside the picture, 8-228/8-229 clamping only near
+  edges), filters with the selected coefficient rows by plain indexed loops, and applies the
+  block's weighted-prediction rule (8.5.3.3.4) through one monomorphised per-block store instead
+  of a per-sample dispatch.
+
+| Metric | before | after |
+|---|---|---|
+| callgrind instructions, 15 frames | 6,423,933,962 | 5,345,121,393 (-17%) |
+| codec wall time, 60 frames (loaded host, best of 3) | 25.0 fps | 26.7 fps |
+
+**Semantic equivalence:** bit-exact. The previous interpolation stays as the test-only
+`interpolate_reference`; `windowed_interpolation_equals_the_per_sample_reference` compares them on
+6,000 random planes, block shapes and vectors (including blocks far outside the picture), and all
+FFmpeg-oracle conformance fixtures still match.
+
+**Remaining profile:** inter prediction is 44% of instructions (inherently the 8-tap separable
+filter in scalar 32-bit arithmetic; the x86-64 baseline has no 32-bit SIMD multiply), SAO 20%,
+inverse transform 9%. Not attempted: SIMD, i16 first-pass arithmetic, partition scratch reuse.
