@@ -24,6 +24,8 @@
 //! 17. `chunk_bytes` above the spool object bound is invalid limits (fss-n62w2 D3).
 //! 18. An oversized import manifest is refused before any stage (fss-n62w2 D3).
 //! 19. A source path swapped after admission is refused (symlink TOCTOU, fss-n62w2).
+//! 20. Every committed MJPEG fixture imports to exactly the generator manifest's frame spans and
+//!     digests (fss-dazsb: 0xFF fill bytes before SOI belong to no frame).
 
 use std::error::Error;
 use std::fs;
@@ -40,6 +42,7 @@ use fss_reference::ingest::{
     FileFormatHint, FileIngestAdapter, FileIngestError, FileIngestLimits, FileIngestOutcome,
     FileIngestRequest, fetch_segment_bytes, sniff_format,
 };
+use fss_reference::media_fixture::jpeg::{build_mjpeg_manifest_json, generate_all_mjpeg_fixtures};
 use fss_reference::{
     ADP_FILE_ROW_ID, ADP_REPLAY_ROW_ID, DeploymentLimits, ReferenceDeployment, ReplayCx,
     ReplayIoAuthority,
@@ -1188,6 +1191,139 @@ fn test_19_source_swapped_after_admission_is_refused() -> Result<(), Box<dyn Err
     match open_admitted_source(&revoked, &path, &admitted) {
         Err(FileIngestError::CancellationRequested { stage }) => assert_eq!(stage, STAGE_READ),
         other => return Err(format!("(d) expected CancellationRequested, got {other:?}").into()),
+    }
+    Ok(())
+}
+
+/// fss-dazsb: imports every committed MJPEG fixture through the file adapter and requires the
+/// import's segment spans, segment digests, capsule source digests, retained bytes, and omission
+/// spans to equal the fixture manifest the in-repo generator defines (which is byte-identical to
+/// the committed `fixture_manifest.json`). A complete frame (ending in EOI) is one segment at
+/// exactly the manifest offset and length; a truncated frame is no segment; every byte outside the
+/// manifest frames is an omission span.
+#[test]
+fn test_20_every_mjpeg_fixture_imports_to_manifest_spans_and_digests() -> Result<(), Box<dyn Error>>
+{
+    let dir = repo_root()?.join("tests/fixtures/media/mjpeg");
+    let generated = generate_all_mjpeg_fixtures()?;
+    assert_eq!(
+        build_mjpeg_manifest_json(&generated),
+        fs::read_to_string(dir.join("fixture_manifest.json"))?,
+        "committed MJPEG manifest must be the generator's manifest"
+    );
+    let mut committed: Vec<String> = fs::read_dir(&dir)?
+        .filter_map(Result::ok)
+        .map(|entry| entry.file_name().to_string_lossy().into_owned())
+        .filter(|name| name.ends_with(".mjpeg"))
+        .collect();
+    committed.sort();
+    let mut listed: Vec<String> = generated.iter().map(|f| f.name.clone()).collect();
+    listed.sort();
+    assert_eq!(
+        committed, listed,
+        "every committed MJPEG fixture is in the manifest"
+    );
+
+    for (n, fixture) in generated.iter().enumerate() {
+        let path = dir.join(&fixture.name);
+        let bytes = fs::read(&path)?;
+        assert_eq!(
+            bytes, fixture.file_bytes,
+            "{}: committed bytes",
+            fixture.name
+        );
+        let label = format!("mjpeg-manifest-{n}");
+        let dep_dir = temp_deployment_dir(&label)?;
+        let cx = test_cx(&label)?;
+        let mut deployment =
+            ReferenceDeployment::open(&dep_dir, &format!("site:deploy:{label}"), &cx)?;
+        let request = FileIngestRequest::new(
+            path.clone(),
+            SensorId::parse("sensor:cam-mjpeg-manifest")?,
+            StreamId::parse("stream:mjpeg-manifest")?,
+        )
+        .with_receive_time(TimestampNs(2_000_000_000));
+        if fixture.frame_count == 0 {
+            match FileIngestAdapter::ingest(request, &cx, &mut deployment) {
+                Err(FileIngestError::EmptyFile { path: refused }) => assert_eq!(refused, path),
+                other => {
+                    return Err(
+                        format!("{}: expected EmptyFile, got {other:?}", fixture.name).into(),
+                    );
+                }
+            }
+            continue;
+        }
+        let receipt = FileIngestAdapter::ingest(request, &cx, &mut deployment)?;
+        assert_eq!(
+            receipt.format,
+            DetectedFileFormat::JpegStream,
+            "{}",
+            fixture.name
+        );
+
+        let complete: Vec<_> = fixture
+            .frames
+            .iter()
+            .filter(|f| bytes[f.offset..f.offset + f.length].ends_with(&[0xFF, 0xD9]))
+            .collect();
+        let expected: Vec<(u64, u64, String)> = complete
+            .iter()
+            .map(|f| {
+                (
+                    f.offset as u64,
+                    f.length as u64,
+                    format!("sha256:{}", f.frame_sha256),
+                )
+            })
+            .collect();
+        let observed: Vec<(u64, u64, String)> = receipt
+            .manifest
+            .segment_spans
+            .iter()
+            .map(|s| (s.offset, s.len, s.segment_sha256.to_string()))
+            .collect();
+        assert_eq!(
+            observed, expected,
+            "{}: segment spans and digests",
+            fixture.name
+        );
+        assert_eq!(receipt.capsules.len(), complete.len(), "{}", fixture.name);
+        for (i, (capsule, frame)) in receipt.capsules.iter().zip(&complete).enumerate() {
+            assert_eq!(
+                capsule.source_digest.to_string(),
+                format!("sha256:{}", frame.frame_sha256),
+                "{} capsule {i}: source digest",
+                fixture.name
+            );
+            assert_eq!(capsule.source_bytes, frame.length as u64);
+            assert_eq!(
+                fetch_segment_bytes(&receipt.manifest, &deployment, i)?,
+                bytes[frame.offset..frame.offset + frame.length].to_vec(),
+                "{} segment {i}: retained bytes",
+                fixture.name
+            );
+        }
+
+        // Every byte outside the manifest frames is omitted, and nothing else is.
+        let mut gaps = Vec::new();
+        let mut cursor = 0_usize;
+        for frame in &fixture.frames {
+            if frame.offset > cursor {
+                gaps.push((cursor as u64, (frame.offset - cursor) as u64));
+            }
+            cursor = frame.offset + frame.length;
+        }
+        if bytes.len() > cursor {
+            gaps.push((cursor as u64, (bytes.len() - cursor) as u64));
+        }
+        let omitted: Vec<(u64, u64)> = receipt
+            .manifest
+            .omission_spans
+            .iter()
+            .map(|o| (o.offset, o.len))
+            .collect();
+        assert_eq!(omitted, gaps, "{}: omission spans", fixture.name);
     }
     Ok(())
 }

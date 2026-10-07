@@ -844,7 +844,14 @@ impl From<ReplayAdapterError> for JpegSplitError {
     }
 }
 
-/// Finds the first SOI marker (`0xFF, 0xD8`), skipping any leading `0xFF` fill bytes.
+/// Finds the first SOI marker (`0xFF, 0xD8`) and returns the offset of the `0xFF` immediately
+/// preceding `0xD8`.
+///
+/// ITU-T T.81 B.1.1.2 permits any number of `0xFF` fill bytes before a marker, but the fill bytes
+/// are not part of the marker: a JPEG image starts at its SOI, so a run `FF FF .. FF D8` yields the
+/// offset of the last `0xFF`. Leading fill bytes stay outside the frame span and are recorded by
+/// the caller as an omission (fss-dazsb: taking the first `0xFF` of the run made the segment one
+/// byte longer than the image and the codec refused an intact frame as malformed).
 fn find_soi(bytes: &[u8], start: usize) -> Option<usize> {
     let mut i = start;
     while i + 1 < bytes.len() {
@@ -854,7 +861,7 @@ fn find_soi(bytes: &[u8], start: usize) -> Option<usize> {
                 j += 1;
             }
             if j < bytes.len() && bytes[j] == 0xD8 {
-                return Some(i);
+                return Some(j - 1);
             }
             i = j;
         } else {
@@ -1021,7 +1028,9 @@ pub fn split_jpeg_stream(
 
             if marker_code == 0xD8 {
                 // New SOI encountered without EOI for current frame: current frame was truncated!
-                current_pos = marker_prefix;
+                // The next frame starts at the `0xFF` immediately preceding `0xD8` (as in
+                // `find_soi`); any fill bytes before it stay with the truncated frame.
+                current_pos -= 2;
                 break;
             }
 

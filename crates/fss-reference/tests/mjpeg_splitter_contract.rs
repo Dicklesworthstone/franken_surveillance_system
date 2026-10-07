@@ -1335,8 +1335,18 @@ fn probe_fill_before_soi_after_garbage() -> Result<(), Box<dyn Error>> {
     s.extend(helper_frame(8, 8, &[0x11]));
     let scan = split_jpeg_stream(&s, &MjpegLimits::default(), None)?;
     assert_eq!(scan.frames.len(), 1);
-    assert_eq!(scan.frames[0].start_offset, 1);
+    // fss-dazsb: the image starts at the 0xFF immediately preceding 0xD8 (offset 3); the two
+    // 0xFF fill bytes before it are not part of the image and are omitted with the garbage.
+    assert_eq!(scan.frames[0].start_offset, 3);
     assert_eq!(scan.frames[0].end_offset, 31);
+    assert_eq!(
+        scan.omissions,
+        vec![OmissionSpan {
+            start_offset: 0,
+            end_offset: 3,
+            reason: OmissionReason::GarbageBeforeFirstSoi,
+        }]
+    );
     assert!(scan.frames[0].has_eoi);
     assert!(!scan.frames[0].is_truncated);
     Ok(())
