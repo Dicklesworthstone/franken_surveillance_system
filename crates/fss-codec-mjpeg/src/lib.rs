@@ -76,6 +76,34 @@ impl Default for DecodeLimits {
         }
     }
 }
+impl DecodeLimits {
+    /// Upper bound on the work units [`decode_luma`] charges for any frame these limits admit,
+    /// so a caller can size a per-frame [`DecodeBudget`] that never exhausts on an admitted frame.
+    ///
+    /// Derived from the luma charge schedule: the input length once, 32 per marker, every marker
+    /// segment's length (together at most the input), the luma buffer, the final
+    /// `pixels + 1024`, and per MCU `1 + 4096` per entropy block. Every admitted sampling layout
+    /// has at most `ceil(w/8) * ceil(h/8)` MCUs and at most 6 blocks per MCU, and for
+    /// `w, h <= maximum_dimension` with `w * h <= maximum_pixels`,
+    /// `ceil(w/8) * ceil(h/8) <= (maximum_pixels + 14 * maximum_dimension + 49) / 64`.
+    #[must_use]
+    pub fn luma_work_bound(&self) -> u64 {
+        let bytes = self.maximum_bytes as u64;
+        let dimension = u64::from(self.maximum_dimension);
+        let pixels = self.maximum_pixels as u64;
+        let markers = self.maximum_markers as u64;
+        let cells = pixels
+            .saturating_add(dimension.saturating_mul(14))
+            .saturating_add(49)
+            .div_ceil(64);
+        bytes
+            .saturating_mul(2)
+            .saturating_add(markers.saturating_mul(32))
+            .saturating_add(pixels.saturating_mul(2))
+            .saturating_add(1024)
+            .saturating_add(cells.saturating_mul(1 + 6 * 4096))
+    }
+}
 
 /// Bounded synchronous work under an optional owner-controlled cancellation flag.
 /// Units are deterministic reference operations, not time, energy or throughput.

@@ -347,3 +347,41 @@ fn receipt_binds_real_decoded_bytes_and_no_pixels_leak_through_debug() -> Test {
     assert!(!format!("{result:?}").contains("128"));
     Ok(())
 }
+/// `DecodeLimits::luma_work_bound` covers every frame the limits admit (fss-2h5zq.43 D1): the
+/// worst admitted layout (4:4:4, three entropy blocks per 8x8 cell) and grayscale, at the maximum
+/// pixel count, with padded edges and at the dimension ceiling, under limits narrowed to exactly
+/// that frame and under the hard ceilings. A budget of exactly the bound never exhausts.
+#[test]
+fn luma_work_bound_covers_every_admitted_frame() -> Test {
+    for (width, height) in [(2048_u16, 2048_u16), (4095, 1024), (1, 4096), (17, 13)] {
+        for color in [false, true] {
+            let bytes = flat(width, height, color, 0);
+            let exact = DecodeLimits {
+                maximum_bytes: bytes.len(),
+                maximum_dimension: u32::from(width.max(height)),
+                maximum_pixels: usize::from(width) * usize::from(height),
+                maximum_markers: 8,
+            };
+            for limits in [exact, DecodeLimits::default()] {
+                let bound = limits.luma_work_bound();
+                let mut budget = DecodeBudget::new(bound);
+                let image = decode_luma(
+                    &bytes,
+                    ContentDigest::sha256(&bytes).bytes(),
+                    if color {
+                        Color::YCbCr
+                    } else {
+                        Color::Grayscale
+                    },
+                    limits,
+                    &mut budget,
+                )?;
+                assert_eq!(image.dimensions(), [u32::from(width), u32::from(height)]);
+                assert!(budget.used() <= bound, "{width}x{height} color={color}");
+            }
+        }
+    }
+    // The hard-ceiling bound is a fixed, finite allowance.
+    assert_eq!(DecodeLimits::default().luma_work_bound(), 1_674_798_977);
+    Ok(())
+}

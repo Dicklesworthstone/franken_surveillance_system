@@ -3,7 +3,11 @@
 //! fss-2h5zq.44): golden source digests, tensor digests equal to an independent decode of the
 //! exact fixture bytes, receipted refusals, the truncated-last omission, byte-identical reports
 //! across two fresh roots, no pixel bytes in the report, and typed refusals for a non-empty root
-//! and a missing interpretation. Each case prints one CAPLOG record.
+//! and a missing interpretation. Every committed MJPEG fixture is covered: clean, truncated-last,
+//! garbage-between-frames (every frame decoded, the import's omission spans reported),
+//! dimension-change and zero-length (refused, nothing reported). A 1920x1080 MJPEG from the
+//! in-repo encoder decodes under the per-frame budget derived from the decode limits. Each case
+//! prints one CAPLOG record.
 
 use std::error::Error;
 use std::fs;
@@ -135,9 +139,9 @@ fn clean_mjpeg_report_matches_goldens_and_is_identical_across_roots() -> TestRes
     assert_eq!(count(&first, "\"outcome\":\"decoded\""), 3);
     assert_eq!(count(&first, "\"outcome\":\"refused\""), 0);
     assert!(first.contains("\"omissions\":[]"));
-    assert!(
-        first.contains("\"totals\":{\"capsules\":3,\"decoded\":3,\"refused\":0,\"omitted\":0}")
-    );
+    assert!(first.contains(
+        "\"totals\":{\"capsules\":3,\"decoded\":3,\"refused\":0,\"not_decoded\":0,\"omitted\":0}"
+    ));
     assert!(first.contains("\"degraded\":false"));
     assert!(first.contains("\"absence_certifiable\":false"));
     assert!(first.contains("\"derived_not_evidence\":true"));
@@ -166,6 +170,8 @@ fn clean_mjpeg_report_matches_goldens_and_is_identical_across_roots() -> TestRes
         count(&first, "\"tensor_shape\":[48,64,1],\"tensor_dtype\":\"u8\""),
         3
     );
+    // The mask binding is read from each receipt (a fresh lab root has no retained policy).
+    assert_eq!(count(&first, "\"mask_policy\":\"none\""), 3);
     // Bounded report: digests and counters only; far smaller than the 3 * 3072 luma bytes.
     assert!(first.len() < 8 * 1024, "report is {} bytes", first.len());
     Ok(())
@@ -242,7 +248,7 @@ fn single_jpeg_human_summary() -> TestResult {
     let pass = text.contains(&format!(
         "segment 0 decoded 64x48 tensor {}",
         luma_digest(&file)?
-    )) && text.contains("decoded=1 refused=0 omitted=0 degraded=false");
+    )) && text.contains("decoded=1 refused=0 not_decoded=0 omitted=0 degraded=false");
     caplog(
         "single_jpeg_text",
         pass,
@@ -290,5 +296,166 @@ fn non_empty_root_and_missing_interpretation_are_refused() -> TestResult {
         &format!("{:?}", missing.status.code()),
     );
     assert!(pass_missing);
+    Ok(())
+}
+
+/// Garbage between frames (fss-dazsb, fss-2h5zq.44 D3): all three intact frames decode with the
+/// manifest's golden spans and digests, and the two garbage spans the import omitted are reported
+/// verbatim as omissions with the import's reason (mutant C3 drops them).
+#[test]
+fn garbage_between_frames_decodes_every_frame_and_reports_import_omissions() -> TestResult {
+    let scratch = Scratch::new("garbage")?;
+    let input = fixture("mjpeg/mjpeg_garbage_between_frames.mjpeg");
+    let file = fs::read(&input)?;
+    let report = stdout(&lab_decode(&input, &scratch.0.join("root"), "ycbcr", true)?)?;
+    // fixture_manifest.json: frames at 0/907, 940/942 and 1902/661 with the clean frames' bytes.
+    let spans = [(0_usize, 907_usize), (940, 942), (1902, 661)];
+    let mut pass = count(&report, "\"outcome\":\"decoded\"") == 3
+        && count(&report, "\"outcome\":\"refused\"") == 0
+        && report.contains(
+            "\"omissions\":[{\"outcome\":\"omitted\",\"source_offset\":907,\"source_bytes\":33,\
+             \"reason\":\"GarbageBetweenFrames\"},{\"outcome\":\"omitted\",\"source_offset\":1882,\
+             \"source_bytes\":20,\"reason\":\"GarbageBetweenFrames\"}]",
+        )
+        && report.contains(
+            "\"totals\":{\"capsules\":3,\"decoded\":3,\"refused\":0,\"not_decoded\":0,\"omitted\":2}",
+        )
+        && report.contains("\"source_bytes_omitted\"")
+        && report.contains("\"degraded\":true");
+    for (index, (offset, len)) in spans.iter().enumerate() {
+        let tensor = luma_digest(&file[*offset..offset + len])?;
+        pass &= report.contains(&format!("\"segment\":{index},\"capsule_id\":\""))
+            && report.contains(&format!(
+                "\"source_offset\":{offset},\"source_bytes\":{len},\"source_digest\":\"sha256:{}\"",
+                CLEAN[index].2
+            ))
+            && report.contains(&format!("\"tensor_digest\":\"{tensor}\""));
+    }
+    caplog(
+        "garbage_between_frames",
+        pass,
+        "3 decoded at manifest spans, 2 import omissions",
+        &format!(
+            "{} decoded, {} omitted",
+            count(&report, "\"outcome\":\"decoded\""),
+            count(&report, "\"outcome\":\"omitted\"")
+        ),
+    );
+    assert!(pass, "{report}");
+    Ok(())
+}
+
+/// Dimension change: a 16x16 frame then a 64x48 frame, each decoded at its own coded size with
+/// its manifest digest; nothing omitted, not degraded.
+#[test]
+fn dimension_change_decodes_each_frame_at_its_own_size() -> TestResult {
+    let scratch = Scratch::new("dimension")?;
+    let input = fixture("mjpeg/mjpeg_dimension_change.mjpeg");
+    let file = fs::read(&input)?;
+    let report = stdout(&lab_decode(&input, &scratch.0.join("root"), "ycbcr", true)?)?;
+    let small = luma_digest(&file[0..621])?;
+    let large = luma_digest(&file[621..1528])?;
+    let pass = count(&report, "\"outcome\":\"decoded\"") == 2
+        && report.contains(
+            "\"source_offset\":0,\"source_bytes\":621,\"source_digest\":\"sha256:\
+             92b510feca8c4f0c29955a3c00ee54a8ae207c242cf6889666a8cfa4e9ff077a\"",
+        )
+        && report.contains(&format!(
+            "\"source_offset\":621,\"source_bytes\":907,\"source_digest\":\"sha256:{}\"",
+            CLEAN[0].2
+        ))
+        && report.contains(&format!(
+            "\"outcome\":\"decoded\",\"width\":16,\"height\":16,\"tensor_shape\":[16,16,1],\
+             \"tensor_dtype\":\"u8\",\"tensor_layout\":\"hwc_luma\",\"tensor_digest\":\"{small}\""
+        ))
+        && report.contains(&format!(
+            "\"outcome\":\"decoded\",\"width\":64,\"height\":48,\"tensor_shape\":[48,64,1],\
+             \"tensor_dtype\":\"u8\",\"tensor_layout\":\"hwc_luma\",\"tensor_digest\":\"{large}\""
+        ))
+        && report.contains("\"omissions\":[]")
+        && report.contains("\"degraded\":false");
+    caplog(
+        "dimension_change",
+        pass,
+        "16x16 then 64x48 decoded",
+        &format!("{} decoded", count(&report, "\"outcome\":\"decoded\"")),
+    );
+    assert!(pass, "{report}");
+    Ok(())
+}
+
+/// A zero-length file is refused at import: exit 1, no report on stdout, nothing decoded.
+#[test]
+fn zero_length_file_is_refused_with_no_report() -> TestResult {
+    let scratch = Scratch::new("zero")?;
+    let input = fixture("mjpeg/mjpeg_zero_length.mjpeg");
+    let output = lab_decode(&input, &scratch.0.join("root"), "ycbcr", true)?;
+    let stderr = String::from_utf8_lossy(&output.stderr).into_owned();
+    let pass = output.status.code() == Some(1)
+        && output.stdout.is_empty()
+        && stderr.contains("lab decode import: input file is empty");
+    caplog(
+        "zero_length",
+        pass,
+        "exit 1, input file is empty, no report",
+        &format!("{:?}", output.status.code()),
+    );
+    assert!(pass, "status={:?} stderr={stderr}", output.status.code());
+    Ok(())
+}
+
+/// fss-2h5zq.43 D1: 1920x1080 frames (4:2:0 and the worst-case 4:4:4 layout) from the in-repo
+/// encoder decode under the per-frame budget derived from the decode limits; the fixed 100M
+/// budget refused both (a 4:2:0 1080p frame needs about 205M work units).
+#[test]
+fn full_hd_frames_decode_under_the_limit_derived_budget() -> TestResult {
+    use fss_reference::media_fixture::jpeg::{
+        JpegConfig, Subsampling, encode_jpeg, encode_mjpeg, generate_gradient_rgb,
+    };
+    let scratch = Scratch::new("fullhd")?;
+    let pixels = generate_gradient_rgb(1920, 1080);
+    let yuv420 = encode_jpeg(1920, 1080, &pixels, &JpegConfig::default())?;
+    let yuv444 = encode_jpeg(
+        1920,
+        1080,
+        &pixels,
+        &JpegConfig {
+            subsampling: Subsampling::Yuv444,
+            ..JpegConfig::default()
+        },
+    )?;
+    let input = scratch.0.join("fullhd.mjpeg");
+    fs::write(
+        &input,
+        encode_mjpeg(&[yuv420.as_slice(), yuv444.as_slice()]),
+    )?;
+    let report = stdout(&lab_decode(&input, &scratch.0.join("root"), "ycbcr", true)?)?;
+    let bound = DecodeLimits::default().luma_work_bound();
+    let mut pass = count(&report, "\"outcome\":\"decoded\"") == 2
+        && count(&report, "\"tensor_shape\":[1080,1920,1]") == 2
+        && report.contains("\"degraded\":false");
+    for frame in [&yuv420, &yuv444] {
+        let mut budget = DecodeBudget::new(bound);
+        let image = decode_luma(
+            frame,
+            ContentDigest::sha256(frame).bytes(),
+            ComponentInterpretation::YCbCr,
+            DecodeLimits::default(),
+            &mut budget,
+        )?;
+        pass &= budget.used() > 100_000_000
+            && report.contains(&format!(
+                "\"tensor_digest\":\"{}\"",
+                ContentDigest::sha256(image.pixels())
+            ))
+            && report.contains(&format!("\"work_units\":{}}}", budget.used()));
+    }
+    caplog(
+        "full_hd_decode",
+        pass,
+        "2 frames 1920x1080 decoded, each > 100M work units",
+        &format!("{} decoded", count(&report, "\"outcome\":\"decoded\"")),
+    );
+    assert!(pass, "{report}");
     Ok(())
 }

@@ -13,11 +13,18 @@
 //! omission or source-loss dimension makes the report degraded. The report carries digests,
 //! spans and counters only, never pixels. A file never certifies absence and has no live
 //! continuity.
+//!
+//! Each capsule gets its own codec work budget, derived from the effective decode limits
+//! ([`DecodeLimits::luma_work_bound`]), so every frame those limits admit (up to 4096x1024 or
+//! 2048x2048 at the default ceilings) can decode. A frame that still exhausts its budget is a
+//! typed per-frame `not_decoded` row (`ERR-BUDGET-EXHAUSTED-001`, never receipted: the budget
+//! describes the caller, not the source); the remaining capsules are still decoded and reported.
+//! Each row names the privacy mask policy its receipt binds.
 
 use std::fmt::Write as _;
 use std::path::{Path, PathBuf};
 
-use fss_codec_mjpeg::decoder_identity;
+use fss_codec_mjpeg::{DecodeError, decoder_identity};
 use fss_core::region::{ContextAuthority, RootAuthoritySpec};
 use fss_core::{
     AcquisitionStateKind, BudgetVector, CanonicalDecode, CanonicalDecoder, ContentDigest,
@@ -28,7 +35,7 @@ use fss_reference::ingest::file_session::{
 };
 use fss_reference::ingest::recorded_decode::refusal::{CapsuleDecode, decode_capsule};
 use fss_reference::ingest::recorded_decode::{
-    ComponentInterpretation, DecodeBudget, DecodeLimits, RecordedDecodeRequest,
+    ComponentInterpretation, DecodeBudget, DecodeLimits, RecordedDecodeError, RecordedDecodeRequest,
 };
 use fss_reference::ingest::{
     AcquisitionRetention, FileFormatHint, FileImportManifest, FileIngestAdapter, FileIngestRequest,
@@ -49,8 +56,8 @@ const DECODE_STREAM: &str = "stream:lab-decode";
 const RECEIVE_TIME_NS: i128 = 1_000_000_000;
 /// At most this many frame rows are listed; totals always cover every capsule.
 pub const MAX_REPORTED_FRAMES: usize = 1_024;
-/// Canonical codec work allowance per capsule.
-const WORK_UNITS_PER_FRAME: u64 = 100_000_000;
+/// Registered identity of a per-frame codec budget exhaustion (registries/ERRORS.md).
+const ERR_BUDGET_EXHAUSTED: &str = "ERR-BUDGET-EXHAUSTED-001";
 const MAX_SOURCE_BYTES: u64 = 256 * 1024 * 1024;
 
 /// One capsule's outcome row.
@@ -72,13 +79,22 @@ enum RowOutcome {
         tensor_digest: ContentDigest,
         receipt_digest: ContentDigest,
         work_units: u64,
+        mask_policy: Option<ContentDigest>,
     },
     Refused {
         kind: &'static str,
         error_id: &'static str,
         receipt_digest: ContentDigest,
         work_units: u64,
+        mask_policy: Option<ContentDigest>,
     },
+    /// The per-frame codec budget ran out; nothing was decoded or receipted for this capsule.
+    BudgetExhausted { work_units: u64 },
+}
+
+/// Mask binding of a receipt as report text: the policy digest, or `none` (explicit no-policy).
+fn mask_text(policy: Option<ContentDigest>) -> String {
+    policy.map_or_else(|| "none".to_owned(), |digest| digest.to_string())
 }
 
 /// Complete deterministic decode report of one recorded file.
@@ -119,13 +135,22 @@ impl DecodeReport {
     /// Number of receipted refusals.
     #[must_use]
     pub fn refused(&self) -> usize {
-        self.frames.len() - self.decoded()
+        self.frames
+            .iter()
+            .filter(|f| matches!(f.outcome, RowOutcome::Refused { .. }))
+            .count()
     }
-    /// Degraded when any capsule was refused, any source range became no capsule, or the
-    /// retained acquisition degradation names a source loss.
+    /// Number of capsules whose per-frame codec budget ran out (not decoded, not receipted).
+    #[must_use]
+    pub fn not_decoded(&self) -> usize {
+        self.frames.len() - self.decoded() - self.refused()
+    }
+    /// Degraded when any capsule was refused or not decoded, any source range became no
+    /// capsule, or the retained acquisition degradation names a source loss.
     #[must_use]
     pub fn degraded(&self) -> bool {
         self.refused() != 0
+            || self.not_decoded() != 0
             || !self.omissions.is_empty()
             || self
                 .lost_dimensions
@@ -144,7 +169,7 @@ impl DecodeReport {
              \"media_format\":\"{}\",\"import_identity\":\"{}\",\"import_root\":\"{}\",\
              \"import_outcome\":\"{}\",\"capture_time_class\":\"{}\",\"absence_certifiable\":false,\
              \"continuity\":\"not_observable: file_source\",\"decoder_generation\":\"{}\",\
-             \"interpretation\":\"{}\",\"mask_policy\":\"none\",\"frames\":[",
+             \"interpretation\":\"{}\",\"frames\":[",
             self.input_sha256,
             self.input_bytes,
             escape(&self.media_format),
@@ -176,6 +201,7 @@ impl DecodeReport {
                     tensor_digest,
                     receipt_digest,
                     work_units,
+                    mask_policy,
                 } => {
                     let _ = write!(
                         out,
@@ -183,7 +209,9 @@ impl DecodeReport {
                          \"tensor_shape\":[{height},{width},1],\"tensor_dtype\":\"u8\",\
                          \"tensor_layout\":\"hwc_luma\",\"tensor_digest\":\"{tensor_digest}\",\
                          \"receipt_domain\":\"fss.recorded_luma_receipt.v2\",\
-                         \"receipt_digest\":\"{receipt_digest}\",\"work_units\":{work_units}}}"
+                         \"receipt_digest\":\"{receipt_digest}\",\"mask_policy\":\"{}\",\
+                         \"work_units\":{work_units}}}",
+                        mask_text(*mask_policy)
                     );
                 }
                 RowOutcome::Refused {
@@ -191,12 +219,23 @@ impl DecodeReport {
                     error_id,
                     receipt_digest,
                     work_units,
+                    mask_policy,
                 } => {
                     let _ = write!(
                         out,
                         "\"outcome\":\"refused\",\"refusal\":\"{kind}\",\"error_id\":\"{error_id}\",\
                          \"receipt_domain\":\"fss.recorded_decode_refusal.v1\",\
-                         \"receipt_digest\":\"{receipt_digest}\",\"work_units\":{work_units}}}"
+                         \"receipt_digest\":\"{receipt_digest}\",\"mask_policy\":\"{}\",\
+                         \"work_units\":{work_units}}}",
+                        mask_text(*mask_policy)
+                    );
+                }
+                RowOutcome::BudgetExhausted { work_units } => {
+                    let _ = write!(
+                        out,
+                        "\"outcome\":\"not_decoded\",\"reason\":\"budget_exhausted\",\
+                         \"error_id\":\"{ERR_BUDGET_EXHAUSTED}\",\"receipted\":false,\
+                         \"work_units\":{work_units}}}"
                     );
                 }
             }
@@ -231,12 +270,13 @@ impl DecodeReport {
         let _ = write!(
             out,
             ",\"frames_listed\":{listed},\"frames_not_listed\":{},\
-             \"totals\":{{\"capsules\":{},\"decoded\":{},\"refused\":{},\"omitted\":{}}},\
-             \"degraded\":{},\"derived_not_evidence\":true}}",
+             \"totals\":{{\"capsules\":{},\"decoded\":{},\"refused\":{},\"not_decoded\":{},\
+             \"omitted\":{}}},\"degraded\":{},\"derived_not_evidence\":true}}",
             self.frames.len() - listed,
             self.frames.len(),
             self.decoded(),
             self.refused(),
+            self.not_decoded(),
             self.omissions.len(),
             self.degraded(),
         );
@@ -265,6 +305,11 @@ impl DecodeReport {
                 RowOutcome::Refused { kind, error_id, .. } => {
                     writeln!(out, "  segment {} refused {kind} ({error_id})", row.segment)
                 }
+                RowOutcome::BudgetExhausted { .. } => writeln!(
+                    out,
+                    "  segment {} not decoded: budget exhausted ({ERR_BUDGET_EXHAUSTED})",
+                    row.segment
+                ),
             };
         }
         for (offset, len, reason) in &self.omissions {
@@ -272,9 +317,11 @@ impl DecodeReport {
         }
         let _ = write!(
             out,
-            "decoded={} refused={} omitted={} degraded={} (decoded luma is derived, not evidence)",
+            "decoded={} refused={} not_decoded={} omitted={} degraded={} \
+             (decoded luma is derived, not evidence)",
             self.decoded(),
             self.refused(),
+            self.not_decoded(),
             self.omissions.len(),
             self.degraded()
         );
@@ -386,14 +433,30 @@ fn context(root: &Path) -> Result<ReplayCx, String> {
     ReplayCx::from_context_authority(&authority, root.to_path_buf()).map_err(|e| error(&e))
 }
 
-/// Runs the decode into `root` (which the caller checked is absent or empty).
+/// Runs the decode into `root` (which the caller checked is absent or empty), with every
+/// capsule's codec budget derived from the decode limits.
 pub fn run(
     input: &Path,
     root: &Path,
     interpretation: LabInterpretation,
 ) -> Result<DecodeReport, String> {
+    run_with_frame_budget(
+        input,
+        root,
+        interpretation,
+        DecodeLimits::default().luma_work_bound(),
+    )
+}
+
+/// [`run`] with an explicit per-capsule codec work budget.
+fn run_with_frame_budget(
+    input: &Path,
+    root: &Path,
+    interpretation: LabInterpretation,
+    frame_budget: u64,
+) -> Result<DecodeReport, String> {
     let cx = context(root)?;
-    let result = run_in(input, root, interpretation, &cx);
+    let result = run_in(input, root, interpretation, frame_budget, &cx);
     cx.drain_and_finalize();
     result
 }
@@ -402,6 +465,7 @@ fn run_in(
     input: &Path,
     root: &Path,
     interpretation: LabInterpretation,
+    frame_budget: u64,
     cx: &ReplayCx,
 ) -> Result<DecodeReport, String> {
     let mut deployment = ReferenceDeployment::open(root, DECODE_SITE, cx)
@@ -432,7 +496,7 @@ fn run_in(
             read_limits,
             decode_limits: DecodeLimits::default(),
         };
-        let mut budget = DecodeBudget::new(WORK_UNITS_PER_FRAME);
+        let mut budget = DecodeBudget::new(frame_budget);
         let outcome = match decode_capsule(&mut deployment, &request, &mut budget, cx) {
             Ok(CapsuleDecode::Decoded(frame)) => {
                 let receipt = frame.receipt();
@@ -446,6 +510,7 @@ fn run_in(
                     ),
                     receipt_digest: receipt.digest().map_err(|e| e.to_string())?,
                     work_units: receipt.work_units(),
+                    mask_policy: receipt.mask_policy(),
                 }
             }
             Ok(CapsuleDecode::Refused(retained)) => {
@@ -455,6 +520,12 @@ fn run_in(
                     error_id: refusal.error_id(),
                     receipt_digest: refusal.digest().map_err(|e| e.to_string())?,
                     work_units: refusal.work_units(),
+                    mask_policy: refusal.mask_policy(),
+                }
+            }
+            Err(RecordedDecodeError::Codec(DecodeError::BudgetExhausted)) => {
+                RowOutcome::BudgetExhausted {
+                    work_units: budget.used(),
                 }
             }
             Err(error) => {
@@ -539,6 +610,40 @@ mod tests {
         assert!(report(Vec::new(), truncated).degraded());
         let json = report(Vec::new(), None).render_json();
         assert!(json.contains("\"acquisition_lost_dimensions\":\"not_recorded\""));
+    }
+
+    /// fss-2h5zq.43 D1: a capsule that exhausts its per-frame budget is a typed `not_decoded`
+    /// row (never receipted) and the command still reports every capsule instead of aborting.
+    #[test]
+    fn budget_exhaustion_is_a_typed_row_not_an_abort() -> Result<(), Box<dyn std::error::Error>> {
+        let input = Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("../../tests/fixtures/media/mjpeg/mjpeg_clean_3frames.mjpeg");
+        let root =
+            std::env::temp_dir().join(format!("fss-lab-decode-budget-row-{}", std::process::id()));
+        let report = run_with_frame_budget(&input, &root, LabInterpretation::Ycbcr, 1_000);
+        let _ = std::fs::remove_dir_all(&root);
+        let report = report?;
+        assert_eq!(report.frames.len(), 3);
+        assert_eq!(
+            (report.decoded(), report.refused(), report.not_decoded()),
+            (0, 0, 3)
+        );
+        assert!(report.degraded());
+        let json = report.render_json();
+        assert_eq!(
+            json.matches(
+                "\"outcome\":\"not_decoded\",\"reason\":\"budget_exhausted\",\
+                 \"error_id\":\"ERR-BUDGET-EXHAUSTED-001\",\"receipted\":false"
+            )
+            .count(),
+            3
+        );
+        assert!(!json.contains("\"receipt_digest\""));
+        assert!(json.contains(
+            "\"totals\":{\"capsules\":3,\"decoded\":0,\"refused\":0,\"not_decoded\":3,\"omitted\":0}"
+        ));
+        assert!(report.render_text().contains("not_decoded=3"));
+        Ok(())
     }
 
     /// Ranges covered by neither a segment nor an omission span are found, including the tail.

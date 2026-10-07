@@ -15,6 +15,14 @@
 //! custody failures (refused before any codec work), caller budget exhaustion, cancellation
 //! (a cancelled decode exposes no authority), request-level bounds and privacy-mask errors.
 //! A refusal is a derived record, never retained evidence and never an absence claim.
+//!
+//! Plane classification (architecture/semantic_plane_registry.json declares this module
+//! `support`; its `module_declarations` values are bare plane names with no note field, so the
+//! reason is recorded here): like its parent `recorded_decode.rs`, also `support`, this module
+//! composes deployment I/O, root-last publication and ledger append around the codec. The record
+//! it emits is cognition (`Plane::Cognition` `decode_receipt` delta). It reads authority-plane
+//! custody (the capsule, the import anchor and manifest) only as provenance to bind, and it
+//! constructs no authority or effect type and grants no authority or effect.
 
 use std::collections::BTreeSet;
 
@@ -218,6 +226,12 @@ impl RecordedDecodeRefusal {
     /// Exact decode limits the refusal was observed under.
     pub fn limits(&self) -> Result<DecodeLimits, RecordedDecodeError> {
         axes_limits(self.limits)
+    }
+    /// Retained privacy mask policy bound into the refusal identity, or `None` (the explicit
+    /// no-policy marker).
+    #[must_use]
+    pub fn mask_policy(&self) -> Option<ContentDigest> {
+        self.mask_policy
     }
     /// Codec work units spent before the refusal.
     #[must_use]
