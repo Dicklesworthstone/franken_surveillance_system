@@ -496,9 +496,11 @@ fn test_schema_domain_and_pinned_counts() -> Result<(), Box<dyn Error>> {
     // + SCHEMA-DOMAIN-REFERENCE-AGENT-{WORK-SCOPE,CLAIM-REQUEST}-001 (FSS-226) = 236
     // + SCHEMA-DOMAIN-REFERENCE-AGENT-FINDING-{,IDENTITY-,REQUEST-}001 (FSS-227) = 239
     // (registered with the tests/test_schema_validate.py pins; this pin was left at 234).
+    // + SCHEMA-DOMAIN-GRAPH-{WEIGHTED-PROJECTION,QUERY-INPUT}-001 and
+    //   {SCC,TOPO,DOM,SP,MSD,FLOW}-{OUTPUT,DECISION-PATH}-001 (WP-170) = 253
     assert_eq!(
-        domain_count, 239,
-        "registries/DIGEST_DOMAINS.md count must remain pinned at 239"
+        domain_count, 253,
+        "registries/DIGEST_DOMAINS.md count must remain pinned at 253"
     );
 
     let schemas_path = Path::new(env!("CARGO_MANIFEST_DIR"))
