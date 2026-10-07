@@ -58,14 +58,8 @@ const CLEAN_FRAMES: [(u64, u64, &str); 3] = [
     ),
 ];
 
-fn caplog(step: &str, pass: bool, expected: &str, observed: &str) {
-    println!(
-        "CAPLOG {{\"step\":\"{step}\",\"verdict\":\"{}\",\"exit\":{},\"duration_ms\":0,\
-         \"expected\":\"{expected}\",\"observed\":\"{observed}\"}}",
-        if pass { "pass" } else { "fail" },
-        i32::from(!pass)
-    );
-}
+mod caplog_support;
+use caplog_support::Record;
 
 fn hex(digest: ContentDigest) -> String {
     digest.bytes().iter().map(|b| format!("{b:02x}")).collect()
@@ -231,15 +225,31 @@ fn clean_mjpeg_capsules_decode_with_golden_lineage_and_ledgered_receipts() -> Te
             && receipt.dimensions() == [64, 48]
             && frame.pixels() == reference.pixels()
             && receipt.work_units() == reference_budget.used();
-        caplog(
-            &format!("clean_frame_{segment}"),
-            pass,
-            &format!(
-                "source {golden} tensor {}",
-                hex(ContentDigest::sha256(reference.pixels()))
-            ),
-            &format!("source {} tensor {}", hex(source), hex(tensor)),
-        );
+        Record::new(&format!("clean_frame_{segment}"))
+            .check("source_digest", *golden, hex(source))
+            .check("source_bytes", *len, receipt.capsule().source_bytes)
+            .check(
+                "encoded_sha256",
+                hex(source),
+                hex(ContentDigest::new(
+                    DigestAlgorithm::Sha256,
+                    receipt.codec().encoded_sha256,
+                )),
+            )
+            .check(
+                "tensor_digest",
+                hex(ContentDigest::sha256(reference.pixels())),
+                hex(tensor),
+            )
+            .check("dimensions", reference.dimensions(), receipt.dimensions())
+            .check("dimensions_64x48", [64_u32, 48], receipt.dimensions())
+            .check(
+                "pixels_equal_reference",
+                true,
+                frame.pixels() == reference.pixels(),
+            )
+            .check("work_units", reference_budget.used(), receipt.work_units())
+            .emit_checked(0, pass);
         assert!(pass, "segment {segment}: lineage mismatch");
 
         let digest = receipt.digest()?;
@@ -286,17 +296,19 @@ fn truncated_last_frame_is_never_a_capsule_and_complete_frames_still_decode() ->
             .omission_spans
             .iter()
             .all(|o| o.offset + o.len <= 1849);
-    caplog(
-        "truncated_last_shape",
-        pass,
-        "2 segments ending at 1849 of 2482, tail uncovered",
-        &format!(
-            "{} segments ending at {covered_end} of {}, {} omissions",
-            manifest.segment_spans.len(),
-            manifest.input_bytes,
-            manifest.omission_spans.len()
-        ),
-    );
+    Record::new("truncated_last_shape")
+        .check("segments", 2_usize, manifest.segment_spans.len())
+        .check("covered_end", 1849_u64, covered_end)
+        .check("input_bytes", 2482_u64, manifest.input_bytes)
+        .check(
+            "omissions_before_1849",
+            true,
+            manifest
+                .omission_spans
+                .iter()
+                .all(|o| o.offset + o.len <= 1849),
+        )
+        .emit_checked(0, pass);
     assert!(pass);
     for (segment, (_, _, golden)) in CLEAN_FRAMES.iter().take(2).enumerate() {
         let request = request(&imported, segment, ComponentInterpretation::YCbCr);
@@ -333,12 +345,24 @@ fn codec_refusals_are_receipted_reopened_replayed_and_idempotent() -> TestResult
         && refusal.error_id() == "ERR-DECODE-001"
         && hex(refusal.capsule().source_digest) == CLEAN_FRAMES[0].2
         && refusal.decoder() == fss_codec_mjpeg::decoder_identity();
-    caplog(
-        "refusal_unsupported",
-        pass,
-        "unsupported ERR-DECODE-001",
-        &format!("{} {}", refusal.kind().as_str(), refusal.error_id()),
-    );
+    Record::new("refusal_unsupported")
+        .check(
+            "kind",
+            RefusalKind::Unsupported.as_str(),
+            refusal.kind().as_str(),
+        )
+        .check("error_id", "ERR-DECODE-001", refusal.error_id())
+        .check(
+            "source_digest",
+            CLEAN_FRAMES[0].2,
+            hex(refusal.capsule().source_digest),
+        )
+        .check(
+            "decoder_is_codec_identity",
+            true,
+            refusal.decoder() == fss_codec_mjpeg::decoder_identity(),
+        )
+        .emit_checked(0, pass);
     assert!(pass);
 
     // Canonical round trip; every truncation, a suffix and a foreign digest fail closed.
@@ -432,17 +456,29 @@ fn codec_refusals_are_receipted_reopened_replayed_and_idempotent() -> TestResult
         &imported.cx,
     )?)?;
     assert_ne!(other.refusal().identity(), bounds.refusal().identity());
-    caplog(
-        "refusal_bounds_binds_limits",
-        true,
-        "bounds ERR-DECODE-BOUNDS-001 dim 32",
-        &format!(
-            "{} {} dim {}",
+    // Every value below was asserted above; the record reports exactly those comparisons.
+    Record::new("refusal_bounds_binds_limits")
+        .check(
+            "kind",
+            RefusalKind::Bounds.as_str(),
             bounds.refusal().kind().as_str(),
+        )
+        .check(
+            "error_id",
+            "ERR-DECODE-BOUNDS-001",
             bounds.refusal().error_id(),
-            bounds.refusal().limits()?.maximum_dimension
-        ),
-    );
+        )
+        .check(
+            "maximum_dimension",
+            32_u32,
+            bounds.refusal().limits()?.maximum_dimension,
+        )
+        .check(
+            "other_limits_other_identity",
+            true,
+            other.refusal().identity() != bounds.refusal().identity(),
+        )
+        .emit_checked(0, true);
     Ok(())
 }
 
@@ -466,12 +502,23 @@ fn budget_exhaustion_is_typed_and_never_receipted() -> TestResult {
             fss_codec_mjpeg::DecodeError::BudgetExhausted
         ))
     ) && imported.deployment.ledger().batches().len() == before;
-    caplog(
-        "budget_not_receipted",
-        pass,
-        "Codec(BudgetExhausted), no batch",
-        &format!("{result:?}"),
-    );
+    Record::new("budget_not_receipted")
+        .check(
+            "codec_budget_exhausted",
+            true,
+            matches!(
+                result,
+                Err(RecordedDecodeError::Codec(
+                    fss_codec_mjpeg::DecodeError::BudgetExhausted
+                ))
+            ),
+        )
+        .check(
+            "ledger_batches",
+            before,
+            imported.deployment.ledger().batches().len(),
+        )
+        .emit_checked(0, pass);
     assert!(pass);
     Ok(())
 }
@@ -518,12 +565,15 @@ fn stored_chunk_tamper_refuses_before_decode_and_retains_nothing() -> TestResult
         let pass = matches!(result, Err(RecordedDecodeError::Source(_)))
             && observed == "ERR-DECODE-SOURCE-UNAVAILABLE-001"
             && budget.used() == 0;
-        caplog(
-            &format!("tamper_segment_{segment}"),
-            pass,
-            "ERR-DECODE-SOURCE-UNAVAILABLE-001, 0 work",
-            &format!("{observed}, {} work", budget.used()),
-        );
+        Record::new(&format!("tamper_segment_{segment}"))
+            .check(
+                "source_error",
+                true,
+                matches!(result, Err(RecordedDecodeError::Source(_))),
+            )
+            .check("error_id", "ERR-DECODE-SOURCE-UNAVAILABLE-001", observed)
+            .check("work_units", 0_u64, budget.used())
+            .emit_checked(0, pass);
         assert!(pass, "segment {segment}: {result:?}");
     }
     assert_eq!(imported.deployment.ledger().batches().len(), before);
@@ -571,12 +621,18 @@ fn custody_gate_refuses_bytes_that_disagree_with_the_capsule() -> TestResult {
                 .as_ref()
                 .err()
                 .is_some_and(|e| e.stable_id() == "ERR-DECODE-CUSTODY-MISMATCH-001");
-        caplog(
-            &format!("custody_mismatch_{name}"),
-            pass,
-            "ERR-DECODE-CUSTODY-MISMATCH-001",
-            &format!("{result:?}"),
-        );
+        Record::new(&format!("custody_mismatch_{name}"))
+            .check(
+                "custody_mismatch",
+                true,
+                matches!(result, Err(RecordedDecodeError::CustodyMismatch)),
+            )
+            .check(
+                "error_id",
+                Some("ERR-DECODE-CUSTODY-MISMATCH-001"),
+                result.as_ref().err().map(RecordedDecodeError::stable_id),
+            )
+            .emit_checked(0, pass);
         assert!(pass, "{name}: {result:?}");
     }
     Ok(())
@@ -644,19 +700,23 @@ fn receipts_reopen_after_restart_and_rebuild_identically_in_a_fresh_root() -> Te
     for (segment, (a, b)) in frames.iter().zip(&rebuilt).enumerate() {
         let (left, right) = (a.receipt().digest()?, b.receipt().digest()?);
         let pass = left == right && a.receipt().codec() == b.receipt().codec();
-        caplog(
-            &format!("rebuild_frame_{segment}"),
-            pass,
-            &hex(left),
-            &hex(right),
-        );
+        Record::new(&format!("rebuild_frame_{segment}"))
+            .check("receipt_digest", hex(left), hex(right))
+            .check(
+                "codec_equal",
+                true,
+                a.receipt().codec() == b.receipt().codec(),
+            )
+            .emit_checked(0, pass);
         assert!(pass, "segment {segment} rebuilt differently");
     }
     let (left, right) = (
         refusal.refusal().digest()?,
         rebuilt_refusal.refusal().digest()?,
     );
-    caplog("rebuild_refusal", left == right, &hex(left), &hex(right));
+    Record::new("rebuild_refusal")
+        .check("refusal_digest", hex(left), hex(right))
+        .emit_checked(0, left == right);
     assert_eq!(left, right);
     Ok(())
 }
@@ -678,12 +738,14 @@ fn single_jpeg_file_is_one_receipted_capsule() -> TestResult {
     )?)?;
     let pass = frame.receipt().capsule().source_digest == ContentDigest::sha256(&file)
         && frame.receipt().dimensions() == [64, 48];
-    caplog(
-        "single_jpeg",
-        pass,
-        &hex(ContentDigest::sha256(&file)),
-        &hex(frame.receipt().capsule().source_digest),
-    );
+    Record::new("single_jpeg")
+        .check(
+            "source_digest",
+            hex(ContentDigest::sha256(&file)),
+            hex(frame.receipt().capsule().source_digest),
+        )
+        .check("dimensions", [64_u32, 48], frame.receipt().dimensions())
+        .emit_checked(0, pass);
     assert!(pass);
     Ok(())
 }
@@ -758,12 +820,11 @@ fn decode_outcomes_do_not_depend_on_prior_decodes() -> TestResult {
     for ((name, limits, _), expected) in cases.iter().zip(&fresh) {
         let observed = outcome(&mut imported, *limits)?;
         let pass = observed == *expected;
-        caplog(
-            &format!("history_independent_{name}"),
-            pass,
-            &format!("{} {} work {}", expected.0, hex(expected.1), expected.2),
-            &format!("{} {} work {}", observed.0, hex(observed.1), observed.2),
-        );
+        Record::new(&format!("history_independent_{name}"))
+            .check("outcome", expected.0.as_str(), observed.0.as_str())
+            .check("digest", hex(expected.1), hex(observed.1))
+            .check("work_units", expected.2, observed.2)
+            .emit_checked(0, pass);
         assert!(
             pass,
             "{name}: after a wide decode {observed:?}, fresh {expected:?}"
@@ -833,16 +894,19 @@ fn incomplete_import_is_never_decoded() -> TestResult {
                 if error.stable_id() == "ERR-DECODE-SOURCE-UNAVAILABLE-001")
             && budget.used() == 0
             && deployment.ledger().batches().len() == before;
-        caplog(
-            &format!("incomplete_import_segment_{segment}"),
-            pass,
-            "ERR-DECODE-SOURCE-UNAVAILABLE-001, no work, nothing retained",
-            &format!(
-                "{:?} work {}",
+        Record::new(&format!("incomplete_import_segment_{segment}"))
+            .check(
+                "error_id",
+                Some("ERR-DECODE-SOURCE-UNAVAILABLE-001"),
                 result.as_ref().err().map(RecordedDecodeError::stable_id),
-                budget.used()
-            ),
-        );
+            )
+            .check("work_units", 0_u64, budget.used())
+            .check(
+                "ledger_batches",
+                before,
+                deployment.ledger().batches().len(),
+            )
+            .emit_checked(0, pass);
         assert!(pass, "segment {segment}: {result:?}");
     }
     assert_eq!(decode_receipt_batches(&deployment), 0);

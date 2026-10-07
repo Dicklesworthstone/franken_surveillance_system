@@ -39,14 +39,9 @@ const CLEAN: [(usize, usize, &str); 3] = [
     ),
 ];
 
-fn caplog(step: &str, pass: bool, expected: &str, observed: &str) {
-    println!(
-        "CAPLOG {{\"step\":\"{step}\",\"verdict\":\"{}\",\"exit\":{},\"duration_ms\":0,\
-         \"expected\":\"{expected}\",\"observed\":\"{observed}\"}}",
-        if pass { "pass" } else { "fail" },
-        i32::from(!pass)
-    );
-}
+#[path = "../../fss-reference/tests/caplog_support/mod.rs"]
+mod caplog_support;
+use caplog_support::Record;
 
 fn fixture(relative: &str) -> PathBuf {
     Path::new(env!("CARGO_MANIFEST_DIR"))
@@ -128,12 +123,13 @@ fn clean_mjpeg_report_matches_goldens_and_is_identical_across_roots() -> TestRes
     let first = stdout(&lab_decode(&input, &scratch.0.join("a"), "ycbcr", true)?)?;
     let second = stdout(&lab_decode(&input, &scratch.0.join("b"), "ycbcr", true)?)?;
     let identical = first == second;
-    caplog(
-        "clean_determinism_across_roots",
-        identical,
-        &format!("{}", ContentDigest::sha256(first.as_bytes())),
-        &format!("{}", ContentDigest::sha256(second.as_bytes())),
-    );
+    Record::new("clean_determinism_across_roots")
+        .check(
+            "report_digest",
+            ContentDigest::sha256(first.as_bytes()).to_string(),
+            ContentDigest::sha256(second.as_bytes()).to_string(),
+        )
+        .emit_checked(0, identical);
     assert!(identical, "reports differ across roots:\n{first}\n{second}");
     assert!(first.starts_with("{\"schema\":\"fss.lab.decode_report.v1\""));
     assert_eq!(count(&first, "\"outcome\":\"decoded\""), 3);
@@ -158,12 +154,27 @@ fn clean_mjpeg_report_matches_goldens_and_is_identical_across_roots() -> TestRes
                 "\"source_offset\":{offset},\"source_bytes\":{len}"
             ))
             && first.contains(&format!("\"tensor_digest\":\"{tensor}\""));
-        caplog(
-            &format!("clean_frame_{index}"),
-            pass,
-            &format!("sha256:{golden} {tensor}"),
-            if pass { "present" } else { "missing" },
-        );
+        // Each compared value is whether the report carries that exact row field.
+        Record::new(&format!("clean_frame_{index}"))
+            .check("segment_row", true, first.contains(&row))
+            .check(
+                "source_digest_sha256",
+                true,
+                first.contains(&format!("\"source_digest\":\"sha256:{golden}\"")),
+            )
+            .check(
+                "source_span",
+                true,
+                first.contains(&format!(
+                    "\"source_offset\":{offset},\"source_bytes\":{len}"
+                )),
+            )
+            .check(
+                "tensor_digest",
+                true,
+                first.contains(&format!("\"tensor_digest\":\"{tensor}\"")),
+            )
+            .emit_checked(0, pass);
         assert!(pass, "frame {index} lineage missing from report:\n{first}");
     }
     assert_eq!(
@@ -193,16 +204,37 @@ fn truncated_last_is_degraded_with_one_omission() -> TestResult {
         && report.contains("\"truncated_frame_omitted\"")
         && report.contains("\"degraded\":true")
         && report.contains(&format!("\"source_digest\":\"sha256:{}\"", CLEAN[1].2));
-    caplog(
-        "truncated_last",
-        pass,
-        "2 decoded, 1 omitted, degraded",
-        &format!(
-            "{} decoded, {} omitted",
+    Record::new("truncated_last")
+        .check(
+            "decoded",
+            2_usize,
             count(&report, "\"outcome\":\"decoded\""),
-            count(&report, "\"outcome\":\"omitted\"")
-        ),
-    );
+        )
+        .check(
+            "omitted",
+            1_usize,
+            count(&report, "\"outcome\":\"omitted\""),
+        )
+        .check(
+            "omission_row_1849_633_not_segmented",
+            true,
+            report.contains(
+                "{\"outcome\":\"omitted\",\"source_offset\":1849,\"source_bytes\":633,\
+                 \"reason\":\"not_segmented\"}",
+            ),
+        )
+        .check(
+            "truncated_frame_omitted",
+            true,
+            report.contains("\"truncated_frame_omitted\""),
+        )
+        .check("degraded", true, report.contains("\"degraded\":true"))
+        .check(
+            "frame_1_source_digest",
+            true,
+            report.contains(&format!("\"source_digest\":\"sha256:{}\"", CLEAN[1].2)),
+        )
+        .emit_checked(0, pass);
     assert!(pass, "{report}");
     Ok(())
 }
@@ -223,12 +255,30 @@ fn wrong_interpretation_rows_are_receipted_refusals() -> TestResult {
         ) == 3
         && report.contains("\"degraded\":true")
         && !report.contains("\"tensor_digest\"");
-    caplog(
-        "gray_refusals",
-        pass,
-        "3 receipted unsupported refusals",
-        &format!("{} refused", count(&report, "\"outcome\":\"refused\"")),
-    );
+    Record::new("gray_refusals")
+        .check(
+            "unsupported_refusals",
+            3_usize,
+            count(
+                &report,
+                "\"outcome\":\"refused\",\"refusal\":\"unsupported\",\"error_id\":\"ERR-DECODE-001\"",
+            ),
+        )
+        .check(
+            "refusal_receipts",
+            3_usize,
+            count(
+                &report,
+                "\"receipt_domain\":\"fss.recorded_decode_refusal.v1\"",
+            ),
+        )
+        .check("degraded", true, report.contains("\"degraded\":true"))
+        .check(
+            "tensor_digest_present",
+            false,
+            report.contains("\"tensor_digest\""),
+        )
+        .emit_checked(0, pass);
     assert!(pass, "{report}");
     Ok(())
 }
@@ -245,16 +295,13 @@ fn single_jpeg_human_summary() -> TestResult {
         false,
     )?)?;
     let file = fs::read(&input)?;
-    let pass = text.contains(&format!(
-        "segment 0 decoded 64x48 tensor {}",
-        luma_digest(&file)?
-    )) && text.contains("decoded=1 refused=0 not_decoded=0 omitted=0 degraded=false");
-    caplog(
-        "single_jpeg_text",
-        pass,
-        "1 decoded",
-        &text.replace('\n', " | ").replace('"', "'"),
-    );
+    let segment_line = format!("segment 0 decoded 64x48 tensor {}", luma_digest(&file)?);
+    let totals_line = "decoded=1 refused=0 not_decoded=0 omitted=0 degraded=false";
+    let pass = text.contains(&segment_line) && text.contains(totals_line);
+    Record::new("single_jpeg_text")
+        .check("segment_line_present", true, text.contains(&segment_line))
+        .check("totals_line_present", true, text.contains(totals_line))
+        .emit_checked(0, pass);
     assert!(pass, "{text}");
     Ok(())
 }
@@ -271,12 +318,14 @@ fn non_empty_root_and_missing_interpretation_are_refused() -> TestResult {
     let stderr = String::from_utf8_lossy(&occupied.stderr).into_owned();
     let pass_root =
         occupied.status.code() == Some(1) && stderr.contains("ERR-LAB-ROOT-NOT-EMPTY-001");
-    caplog(
-        "non_empty_root",
-        pass_root,
-        "exit 1 ERR-LAB-ROOT-NOT-EMPTY-001",
-        &format!("{:?}", occupied.status.code()),
-    );
+    Record::new("non_empty_root")
+        .check("exit", Some(1), occupied.status.code())
+        .check(
+            "stderr_error_id",
+            true,
+            stderr.contains("ERR-LAB-ROOT-NOT-EMPTY-001"),
+        )
+        .emit_checked(0, pass_root);
     assert!(pass_root, "{stderr}");
     let entries = fs::read_dir(&root)?.count();
     assert_eq!(entries, 1, "nothing written into an occupied root");
@@ -289,12 +338,10 @@ fn non_empty_root_and_missing_interpretation_are_refused() -> TestResult {
         .arg(scratch.0.join("fresh"))
         .output()?;
     let pass_missing = !missing.status.success() && !scratch.0.join("fresh").exists();
-    caplog(
-        "missing_interpretation",
-        pass_missing,
-        "parse refusal, no root created",
-        &format!("{:?}", missing.status.code()),
-    );
+    Record::new("missing_interpretation")
+        .check("exit_success", false, missing.status.success())
+        .check("root_created", false, scratch.0.join("fresh").exists())
+        .emit_checked(0, pass_missing);
     assert!(pass_missing);
     Ok(())
 }
@@ -322,25 +369,45 @@ fn garbage_between_frames_decodes_every_frame_and_reports_import_omissions() -> 
         )
         && report.contains("\"source_bytes_omitted\"")
         && report.contains("\"degraded\":true");
+    let mut frames_present = Vec::new();
     for (index, (offset, len)) in spans.iter().enumerate() {
         let tensor = luma_digest(&file[*offset..offset + len])?;
-        pass &= report.contains(&format!("\"segment\":{index},\"capsule_id\":\""))
+        let present = report.contains(&format!("\"segment\":{index},\"capsule_id\":\""))
             && report.contains(&format!(
                 "\"source_offset\":{offset},\"source_bytes\":{len},\"source_digest\":\"sha256:{}\"",
                 CLEAN[index].2
             ))
             && report.contains(&format!("\"tensor_digest\":\"{tensor}\""));
+        pass &= present;
+        frames_present.push(present);
     }
-    caplog(
-        "garbage_between_frames",
-        pass,
-        "3 decoded at manifest spans, 2 import omissions",
-        &format!(
-            "{} decoded, {} omitted",
-            count(&report, "\"outcome\":\"decoded\""),
-            count(&report, "\"outcome\":\"omitted\"")
-        ),
-    );
+    Record::new("garbage_between_frames")
+        .check("decoded", 3_usize, count(&report, "\"outcome\":\"decoded\""))
+        .check("refused", 0_usize, count(&report, "\"outcome\":\"refused\""))
+        .check(
+            "import_omissions_907_33_and_1882_20",
+            true,
+            report.contains(
+                "\"omissions\":[{\"outcome\":\"omitted\",\"source_offset\":907,\"source_bytes\":33,\
+                 \"reason\":\"GarbageBetweenFrames\"},{\"outcome\":\"omitted\",\"source_offset\":1882,\
+                 \"source_bytes\":20,\"reason\":\"GarbageBetweenFrames\"}]",
+            ),
+        )
+        .check(
+            "totals",
+            true,
+            report.contains(
+                "\"totals\":{\"capsules\":3,\"decoded\":3,\"refused\":0,\"not_decoded\":0,\"omitted\":2}",
+            ),
+        )
+        .check(
+            "source_bytes_omitted",
+            true,
+            report.contains("\"source_bytes_omitted\""),
+        )
+        .check("degraded", true, report.contains("\"degraded\":true"))
+        .check("frames_at_manifest_spans", [true; 3], frames_present)
+        .emit_checked(0, pass);
     assert!(pass, "{report}");
     Ok(())
 }
@@ -355,31 +422,48 @@ fn dimension_change_decodes_each_frame_at_its_own_size() -> TestResult {
     let report = stdout(&lab_decode(&input, &scratch.0.join("root"), "ycbcr", true)?)?;
     let small = luma_digest(&file[0..621])?;
     let large = luma_digest(&file[621..1528])?;
+    let small_source = "\"source_offset\":0,\"source_bytes\":621,\"source_digest\":\"sha256:\
+                        92b510feca8c4f0c29955a3c00ee54a8ae207c242cf6889666a8cfa4e9ff077a\"";
+    let large_source = format!(
+        "\"source_offset\":621,\"source_bytes\":907,\"source_digest\":\"sha256:{}\"",
+        CLEAN[0].2
+    );
+    let small_frame = format!(
+        "\"outcome\":\"decoded\",\"width\":16,\"height\":16,\"tensor_shape\":[16,16,1],\
+         \"tensor_dtype\":\"u8\",\"tensor_layout\":\"hwc_luma\",\"tensor_digest\":\"{small}\""
+    );
+    let large_frame = format!(
+        "\"outcome\":\"decoded\",\"width\":64,\"height\":48,\"tensor_shape\":[48,64,1],\
+         \"tensor_dtype\":\"u8\",\"tensor_layout\":\"hwc_luma\",\"tensor_digest\":\"{large}\""
+    );
     let pass = count(&report, "\"outcome\":\"decoded\"") == 2
-        && report.contains(
-            "\"source_offset\":0,\"source_bytes\":621,\"source_digest\":\"sha256:\
-             92b510feca8c4f0c29955a3c00ee54a8ae207c242cf6889666a8cfa4e9ff077a\"",
-        )
-        && report.contains(&format!(
-            "\"source_offset\":621,\"source_bytes\":907,\"source_digest\":\"sha256:{}\"",
-            CLEAN[0].2
-        ))
-        && report.contains(&format!(
-            "\"outcome\":\"decoded\",\"width\":16,\"height\":16,\"tensor_shape\":[16,16,1],\
-             \"tensor_dtype\":\"u8\",\"tensor_layout\":\"hwc_luma\",\"tensor_digest\":\"{small}\""
-        ))
-        && report.contains(&format!(
-            "\"outcome\":\"decoded\",\"width\":64,\"height\":48,\"tensor_shape\":[48,64,1],\
-             \"tensor_dtype\":\"u8\",\"tensor_layout\":\"hwc_luma\",\"tensor_digest\":\"{large}\""
-        ))
+        && report.contains(small_source)
+        && report.contains(&large_source)
+        && report.contains(&small_frame)
+        && report.contains(&large_frame)
         && report.contains("\"omissions\":[]")
         && report.contains("\"degraded\":false");
-    caplog(
-        "dimension_change",
-        pass,
-        "16x16 then 64x48 decoded",
-        &format!("{} decoded", count(&report, "\"outcome\":\"decoded\"")),
-    );
+    Record::new("dimension_change")
+        .check(
+            "decoded",
+            2_usize,
+            count(&report, "\"outcome\":\"decoded\""),
+        )
+        .check(
+            "source_16x16_span_digest",
+            true,
+            report.contains(small_source),
+        )
+        .check(
+            "source_64x48_span_digest",
+            true,
+            report.contains(&large_source),
+        )
+        .check("frame_16x16_tensor", true, report.contains(&small_frame))
+        .check("frame_64x48_tensor", true, report.contains(&large_frame))
+        .check("no_omissions", true, report.contains("\"omissions\":[]"))
+        .check("not_degraded", true, report.contains("\"degraded\":false"))
+        .emit_checked(0, pass);
     assert!(pass, "{report}");
     Ok(())
 }
@@ -394,12 +478,15 @@ fn zero_length_file_is_refused_with_no_report() -> TestResult {
     let pass = output.status.code() == Some(1)
         && output.stdout.is_empty()
         && stderr.contains("lab decode import: input file is empty");
-    caplog(
-        "zero_length",
-        pass,
-        "exit 1, input file is empty, no report",
-        &format!("{:?}", output.status.code()),
-    );
+    Record::new("zero_length")
+        .check("exit", Some(1), output.status.code())
+        .check("stdout_bytes", 0_usize, output.stdout.len())
+        .check(
+            "stderr_input_file_is_empty",
+            true,
+            stderr.contains("lab decode import: input file is empty"),
+        )
+        .emit_checked(0, pass);
     assert!(pass, "status={:?} stderr={stderr}", output.status.code());
     Ok(())
 }
@@ -434,7 +521,19 @@ fn full_hd_frames_decode_under_the_limit_derived_budget() -> TestResult {
     let mut pass = count(&report, "\"outcome\":\"decoded\"") == 2
         && count(&report, "\"tensor_shape\":[1080,1920,1]") == 2
         && report.contains("\"degraded\":false");
-    for frame in [&yuv420, &yuv444] {
+    let mut record = Record::new("full_hd_decode")
+        .check(
+            "decoded",
+            2_usize,
+            count(&report, "\"outcome\":\"decoded\""),
+        )
+        .check(
+            "tensor_shape_1080x1920",
+            2_usize,
+            count(&report, "\"tensor_shape\":[1080,1920,1]"),
+        )
+        .check("not_degraded", true, report.contains("\"degraded\":false"));
+    for (name, frame) in [("yuv420", &yuv420), ("yuv444", &yuv444)] {
         let mut budget = DecodeBudget::new(bound);
         let image = decode_luma(
             frame,
@@ -443,19 +542,32 @@ fn full_hd_frames_decode_under_the_limit_derived_budget() -> TestResult {
             DecodeLimits::default(),
             &mut budget,
         )?;
+        let tensor_row = format!(
+            "\"tensor_digest\":\"{}\"",
+            ContentDigest::sha256(image.pixels())
+        );
+        let work_row = format!("\"work_units\":{}}}", budget.used());
         pass &= budget.used() > 100_000_000
-            && report.contains(&format!(
-                "\"tensor_digest\":\"{}\"",
-                ContentDigest::sha256(image.pixels())
-            ))
-            && report.contains(&format!("\"work_units\":{}}}", budget.used()));
+            && report.contains(&tensor_row)
+            && report.contains(&work_row);
+        record = record
+            .check(
+                &format!("{name}_work_units_above_100m"),
+                true,
+                budget.used() > 100_000_000,
+            )
+            .check(
+                &format!("{name}_tensor_digest"),
+                true,
+                report.contains(&tensor_row),
+            )
+            .check(
+                &format!("{name}_work_units"),
+                true,
+                report.contains(&work_row),
+            );
     }
-    caplog(
-        "full_hd_decode",
-        pass,
-        "2 frames 1920x1080 decoded, each > 100M work units",
-        &format!("{} decoded", count(&report, "\"outcome\":\"decoded\"")),
-    );
+    record.emit_checked(0, pass);
     assert!(pass, "{report}");
     Ok(())
 }

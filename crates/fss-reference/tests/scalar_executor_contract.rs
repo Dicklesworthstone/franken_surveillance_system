@@ -7,7 +7,8 @@
 //! strict F32 data type enforcement, pre-execution validation, resource budgeting, and cooperative
 //! cancellation.
 //!
-//! Emits structured `CAPLOG` lines per test step conforming to the CAP- E2E harness specification.
+//! Emits one structured `CAPLOG` record per test step (`caplog_support::Record`) carrying the
+//! values the step actually compared, with a verdict derived from them.
 
 use std::error::Error;
 use std::fmt::Write as _;
@@ -24,23 +25,11 @@ use fss_reference::scalar_executor::{
 };
 use fss_tensor::{DType, F16, Shape, Tensor};
 
+mod caplog_support;
+use caplog_support::Record;
+
 fn gen1() -> Generation {
     Generation::from_u64(1)
-}
-
-/// Emits a single-line structured CAPLOG record for digestion by the E2E logging harness.
-fn emit_caplog(
-    step: &str,
-    verdict: &str,
-    exit_code: i32,
-    expected: &str,
-    observed: &str,
-    duration_ms: u128,
-) {
-    println!(
-        r#"CAPLOG {{"step":"{}","verdict":"{}","exit":{},"duration_ms":{},"expected":{},"observed":{}}}"#,
-        step, verdict, exit_code, duration_ms, expected, observed
-    );
 }
 
 /// Computes SHA-256 lower-case hex string using `fss_core::ContentDigest`.
@@ -51,22 +40,6 @@ fn sha256_hex(bytes: &[u8]) -> String {
         let _ = write!(hex, "{b:02x}");
     }
     hex
-}
-
-/// Trait providing lowercase hex rendering of [`ContentDigest`].
-trait DigestHex {
-    /// Renders the digest bytes as a 64-character lowercase hex string.
-    fn to_hex(&self) -> String;
-}
-
-impl DigestHex for ContentDigest {
-    fn to_hex(&self) -> String {
-        let mut hex = String::with_capacity(64);
-        for b in self.bytes() {
-            let _ = write!(hex, "{b:02x}");
-        }
-        hex
-    }
 }
 
 /// Trait providing canonical byte representation of a [`Tensor`].
@@ -252,17 +225,13 @@ fn test_golden_conv2d_relu_add_3op() -> Result<(), Box<dyn Error>> {
         }
     }
 
-    let graph_digest = graph.content_digest()?.to_hex();
-    let out_digest = sha256_hex(&y_out.to_canonical_bytes());
     let dur = start.elapsed().as_millis();
-    let exp_json = r#"{"macs":16,"output_elements":4}"#.to_string();
-    let obs_json = format!(
-        r#"{{"graph_digest":"{}","output_digest":"{}","nodes":3,"macs":{}}}"#,
-        graph_digest,
-        out_digest,
-        outcome.executed_macs()
-    );
-    emit_caplog("conv2d_relu_add_3op", "pass", 0, &exp_json, &obs_json, dur);
+    // The record reports the values asserted above: 24 MACs (Conv 16 + Relu 4 + Add 4).
+    Record::new("conv2d_relu_add_3op")
+        .check_eq("y", expected_y, y_actual)
+        .check_eq("nodes", 3, outcome.nodes_executed())
+        .check_eq("macs", 24, outcome.executed_macs())
+        .emit_checked(dur, true);
 
     Ok(())
 }
@@ -375,23 +344,10 @@ fn test_golden_conv2d_asymmetric_padding_and_strides() -> Result<(), Box<dyn Err
     assert_eq!(outcome.executed_macs(), 36);
 
     let dur = start.elapsed().as_millis();
-    let graph_digest = graph.content_digest()?.to_hex();
-    let out_digest = sha256_hex(&y_out.to_canonical_bytes());
-    let exp_json = r#"{"macs":36,"output_shape":[1,1,2,2]}"#.to_string();
-    let obs_json = format!(
-        r#"{{"graph_digest":"{}","output_digest":"{}","macs":{}}}"#,
-        graph_digest,
-        out_digest,
-        outcome.executed_macs()
-    );
-    emit_caplog(
-        "conv2d_asymmetric_padding",
-        "pass",
-        0,
-        &exp_json,
-        &obs_json,
-        dur,
-    );
+    Record::new("conv2d_asymmetric_padding")
+        .check_eq("y", expected, y_vals)
+        .check_eq("macs", 36, outcome.executed_macs())
+        .emit_checked(dur, true);
 
     Ok(())
 }
@@ -480,16 +436,10 @@ fn test_golden_conv2d_bias_and_grouped() -> Result<(), Box<dyn Error>> {
     assert_eq!(outcome.executed_macs(), 8);
 
     let dur = start.elapsed().as_millis();
-    let graph_digest = graph.content_digest()?.to_hex();
-    let out_digest = sha256_hex(&y_out.to_canonical_bytes());
-    let exp_json = r#"{"macs":8,"groups":2,"bias":true}"#.to_string();
-    let obs_json = format!(
-        r#"{{"graph_digest":"{}","output_digest":"{}","macs":{}}}"#,
-        graph_digest,
-        out_digest,
-        outcome.executed_macs()
-    );
-    emit_caplog("conv2d_grouped_bias", "pass", 0, &exp_json, &obs_json, dur);
+    Record::new("conv2d_grouped_bias")
+        .check_eq("y", expected, y_vals)
+        .check_eq("macs", 8, outcome.executed_macs())
+        .emit_checked(dur, true);
 
     Ok(())
 }
@@ -552,22 +502,14 @@ fn test_golden_conv2d_metamorphic_delta_identity() -> Result<(), Box<dyn Error>>
     }
 
     let dur = start.elapsed().as_millis();
-    let graph_digest = graph.content_digest()?.to_hex();
-    let out_digest = sha256_hex(&y_out.to_canonical_bytes());
-    let in_digest = sha256_hex(&x_t.to_canonical_bytes());
-    let exp_json = format!(r#"{{"input_digest":"{}"}}"#, in_digest);
-    let obs_json = format!(
-        r#"{{"graph_digest":"{}","output_digest":"{}"}}"#,
-        graph_digest, out_digest
-    );
-    emit_caplog(
-        "conv2d_metamorphic_delta",
-        "pass",
-        0,
-        &exp_json,
-        &obs_json,
-        dur,
-    );
+    // The delta kernel reproduces the input: the compared values are the f32 bit patterns.
+    Record::new("conv2d_metamorphic_delta")
+        .check_eq(
+            "y_bits",
+            x_vals.iter().map(|v| v.to_bits()).collect::<Vec<u32>>(),
+            y_vals.iter().map(|v| v.to_bits()).collect::<Vec<u32>>(),
+        )
+        .emit_checked(dur, true);
 
     Ok(())
 }
@@ -620,14 +562,15 @@ fn test_golden_relu_metamorphic_idempotent() -> Result<(), Box<dyn Error>> {
     }
 
     let dur = start.elapsed().as_millis();
-    let graph_digest = graph.content_digest()?.to_hex();
-    let out_digest = sha256_hex(&y_t1.to_canonical_bytes());
-    let exp_json = r#"{"idempotent":true}"#.to_string();
-    let obs_json = format!(
-        r#"{{"graph_digest":"{}","output_digest":"{}"}}"#,
-        graph_digest, out_digest
-    );
-    emit_caplog("relu_idempotent", "pass", 0, &exp_json, &obs_json, dur);
+    // Idempotence: the second pass reproduces the first pass's f32 bit patterns.
+    Record::new("relu_idempotent")
+        .check_eq("relu_once", expected, r1_vals.clone())
+        .check_eq(
+            "relu_twice_bits",
+            r1_vals.iter().map(|v| v.to_bits()).collect::<Vec<u32>>(),
+            r2_vals.iter().map(|v| v.to_bits()).collect::<Vec<u32>>(),
+        )
+        .emit_checked(dur, true);
 
     Ok(())
 }
@@ -664,14 +607,17 @@ fn test_golden_sigmoid() -> Result<(), Box<dyn Error>> {
     assert_eq!(vals[2], deterministic_sigmoid_f32(-1.0));
 
     let dur = start.elapsed().as_millis();
-    let graph_digest = gr.content_digest()?.to_hex();
-    let out_digest = sha256_hex(&y_t.to_canonical_bytes());
-    let exp_json = r#"{"sig_0":0.5}"#.to_string();
-    let obs_json = format!(
-        r#"{{"graph_digest":"{}","output_digest":"{}"}}"#,
-        graph_digest, out_digest
-    );
-    emit_caplog("sigmoid_golden", "pass", 0, &exp_json, &obs_json, dur);
+    Record::new("sigmoid_golden")
+        .check_eq(
+            "y",
+            vec![
+                0.5_f32,
+                deterministic_sigmoid_f32(1.0),
+                deterministic_sigmoid_f32(-1.0),
+            ],
+            vals,
+        )
+        .emit_checked(dur, true);
 
     Ok(())
 }
@@ -712,9 +658,12 @@ fn test_golden_binary_broadcast_add_sub_mul_div() -> Result<(), Box<dyn Error>> 
         9.0_f32, 8.0, 7.0, 6.0, 15.0, 14.0, 13.0, 12.0, 1.0, 0.0, -1.0, -2.0, 7.0, 6.0, 5.0, 4.0,
     ];
 
-    let ops = vec![(OpCode::Add, exp_add), (OpCode::Sub, exp_sub)];
+    let ops = vec![("add", OpCode::Add, exp_add), ("sub", OpCode::Sub, exp_sub)];
 
-    for (op, expected) in ops {
+    // Only Add and Sub are exercised here (Mul and Div goldens live in the kernel goldens), so
+    // the step is named for what it compares.
+    let mut record = Record::new("broadcast_add_sub");
+    for (name, op, expected) in ops {
         let p_a = TensorPort::new("a", DType::F32, Shape::new(vec![1, 2, 1, 1])?, g)?;
         let p_b = TensorPort::new("b", DType::F32, Shape::new(vec![2, 2, 2, 2])?, g)?;
         let p_out = TensorPort::new("out", DType::F32, Shape::new(vec![2, 2, 2, 2])?, g)?;
@@ -740,20 +689,13 @@ fn test_golden_binary_broadcast_add_sub_mul_div() -> Result<(), Box<dyn Error>> 
         let out =
             ScalarExecutor::run(&gr, &[("a", t_a), ("b", t_b)], ExecBudget::unlimited(), &cx)?;
         let out_t = out.get_output("out").ok_or("missing output out")?;
-        assert_eq!(out_t.to_vec::<f32>()?, expected);
+        let observed = out_t.to_vec::<f32>()?;
+        assert_eq!(observed, expected);
+        record = record.check_eq(name, expected, observed);
     }
 
     let dur = start.elapsed().as_millis();
-    let exp_json = r#"{"broadcast_shape":[2,2,2,2]}"#.to_string();
-    let obs_json = r#"{"status":"ok"}"#.to_string();
-    emit_caplog(
-        "broadcast_add_sub_mul_div",
-        "pass",
-        0,
-        &exp_json,
-        &obs_json,
-        dur,
-    );
+    record.emit_checked(dur, true);
 
     Ok(())
 }
@@ -772,7 +714,7 @@ fn test_golden_maxpool2d_ceil_mode_true_and_false() -> Result<(), Box<dyn Error>
     // window (0, 1): max(3, 4, 8, 9) = 9
     // window (1, 0): max(11, 12, 16, 17) = 17
     // window (1, 1): max(13, 14, 18, 19) = 19
-    {
+    let no_ceil = {
         let p_in = TensorPort::new("x", DType::F32, Shape::new(vec![1, 1, 5, 5])?, g)?;
         let p_out = TensorPort::new("y", DType::F32, Shape::new(vec![1, 1, 2, 2])?, g)?;
         let mut attrs = AttributeMap::new();
@@ -797,8 +739,10 @@ fn test_golden_maxpool2d_ceil_mode_true_and_false() -> Result<(), Box<dyn Error>
         let cx = ScalarExecCx::new();
         let out = ScalarExecutor::run(&gr, &[("x", in_t.clone())], ExecBudget::unlimited(), &cx)?;
         let y_t = out.get_output("y").ok_or("missing output y")?;
-        assert_eq!(y_t.to_vec::<f32>()?, vec![7.0_f32, 9.0, 17.0, 19.0]);
-    }
+        let y = y_t.to_vec::<f32>()?;
+        assert_eq!(y, vec![7.0_f32, 9.0, 17.0, 19.0]);
+        y
+    };
 
     // Case 2: ceil_mode = true -> output [1, 1, 3, 3]
     // (5 - 2).div_ceil(2) + 1 = 3
@@ -811,7 +755,7 @@ fn test_golden_maxpool2d_ceil_mode_true_and_false() -> Result<(), Box<dyn Error>
     // window (2, 0): row 4, cols 0..2 -> max(21, 22) = 22.0
     // window (2, 1): row 4, cols 2..4 -> max(23, 24) = 24.0
     // window (2, 2): row 4, col 4 -> 25.0
-    {
+    let ceil = {
         let p_in = TensorPort::new("x", DType::F32, Shape::new(vec![1, 1, 5, 5])?, g)?;
         let p_out = TensorPort::new("y", DType::F32, Shape::new(vec![1, 1, 3, 3])?, g)?;
         let mut attrs = AttributeMap::new();
@@ -836,23 +780,23 @@ fn test_golden_maxpool2d_ceil_mode_true_and_false() -> Result<(), Box<dyn Error>
         let cx = ScalarExecCx::new();
         let out = ScalarExecutor::run(&gr, &[("x", in_t)], ExecBudget::unlimited(), &cx)?;
         let y_t = out.get_output("y").ok_or("missing output y")?;
+        let y = y_t.to_vec::<f32>()?;
         assert_eq!(
-            y_t.to_vec::<f32>()?,
+            y,
             vec![7.0_f32, 9.0, 10.0, 17.0, 19.0, 20.0, 22.0, 24.0, 25.0]
         );
-    }
+        y
+    };
 
     let dur = start.elapsed().as_millis();
-    let exp_json = r#"{"false_shape":[1,1,2,2],"true_shape":[1,1,3,3]}"#.to_string();
-    let obs_json = r#"{"status":"ok"}"#.to_string();
-    emit_caplog(
-        "maxpool2d_ceil_mode_true_false",
-        "pass",
-        0,
-        &exp_json,
-        &obs_json,
-        dur,
-    );
+    Record::new("maxpool2d_ceil_mode_true_false")
+        .check_eq("ceil_false_y", vec![7.0_f32, 9.0, 17.0, 19.0], no_ceil)
+        .check_eq(
+            "ceil_true_y",
+            vec![7.0_f32, 9.0, 10.0, 17.0, 19.0, 20.0, 22.0, 24.0, 25.0],
+            ceil,
+        )
+        .emit_checked(dur, true);
 
     Ok(())
 }
@@ -865,7 +809,7 @@ fn test_golden_maxpool2d_ceil_mode_equality_boundaries() -> Result<(), Box<dyn E
     // 1. Width equality boundary: W=2, k=2, s=2, padding=[0, 0, 0, 1], ceil_mode=true
     // (2 + 1 - 2).div_ceil(2) + 1 = 2, but last window start = (2 - 1)*2 = 2 >= W(2).
     // The clamp drops the last window -> output W=1.
-    {
+    let clamped_w = {
         let p_in = TensorPort::new("x", DType::F32, Shape::new(vec![1, 1, 1, 2])?, g)?;
         let p_out = TensorPort::new("y", DType::F32, Shape::new(vec![1, 1, 1, 1])?, g)?;
         let mut attrs = AttributeMap::new();
@@ -893,12 +837,14 @@ fn test_golden_maxpool2d_ceil_mode_equality_boundaries() -> Result<(), Box<dyn E
         let out = ScalarExecutor::run(&gr, &[("x", in_t)], ExecBudget::unlimited(), &cx)?;
         let y_t = out.get_output("y").ok_or("missing output y")?;
         assert_eq!(y_t.shape().dims(), &[1, 1, 1, 1]);
-        assert_eq!(y_t.to_vec::<f32>()?, vec![8.0_f32]);
-    }
+        let y = y_t.to_vec::<f32>()?;
+        assert_eq!(y, vec![8.0_f32]);
+        (y_t.shape().dims().to_vec(), y)
+    };
 
     // 2. Height equality boundary: H=2, k=2, s=2, padding=[0, 0, 1, 0], ceil_mode=true
     // Output H=1 after boundary clamp.
-    {
+    let clamped_h = {
         let p_in = TensorPort::new("x", DType::F32, Shape::new(vec![1, 1, 2, 1])?, g)?;
         let p_out = TensorPort::new("y", DType::F32, Shape::new(vec![1, 1, 1, 1])?, g)?;
         let mut attrs = AttributeMap::new();
@@ -926,20 +872,18 @@ fn test_golden_maxpool2d_ceil_mode_equality_boundaries() -> Result<(), Box<dyn E
         let out = ScalarExecutor::run(&gr, &[("x", in_t)], ExecBudget::unlimited(), &cx)?;
         let y_t = out.get_output("y").ok_or("missing output y")?;
         assert_eq!(y_t.shape().dims(), &[1, 1, 1, 1]);
-        assert_eq!(y_t.to_vec::<f32>()?, vec![9.0_f32]);
-    }
+        let y = y_t.to_vec::<f32>()?;
+        assert_eq!(y, vec![9.0_f32]);
+        (y_t.shape().dims().to_vec(), y)
+    };
 
     let dur = start.elapsed().as_millis();
-    let exp_json = r#"{"clamped_w":1,"clamped_h":1}"#.to_string();
-    let obs_json = r#"{"status":"ok"}"#.to_string();
-    emit_caplog(
-        "maxpool2d_ceil_mode_equality_boundary",
-        "pass",
-        0,
-        &exp_json,
-        &obs_json,
-        dur,
-    );
+    Record::new("maxpool2d_ceil_mode_equality_boundary")
+        .check_eq("clamped_w_shape", vec![1_usize, 1, 1, 1], clamped_w.0)
+        .check_eq("clamped_w_y", vec![8.0_f32], clamped_w.1)
+        .check_eq("clamped_h_shape", vec![1_usize, 1, 1, 1], clamped_h.0)
+        .check_eq("clamped_h_y", vec![9.0_f32], clamped_h.1)
+        .emit_checked(dur, true);
 
     Ok(())
 }
@@ -993,9 +937,10 @@ fn test_golden_matmul() -> Result<(), Box<dyn Error>> {
     assert_eq!(out.executed_macs(), 12);
 
     let dur = start.elapsed().as_millis();
-    let exp_json = r#"{"macs":12,"output_shape":[2,2]}"#.to_string();
-    let obs_json = r#"{"status":"ok","macs":12}"#.to_string();
-    emit_caplog("matmul_golden", "pass", 0, &exp_json, &obs_json, dur);
+    Record::new("matmul_golden")
+        .check_eq("c", vec![31.0_f32, 19.0, 85.0, 55.0], vals)
+        .check_eq("macs", 12, out.executed_macs())
+        .emit_checked(dur, true);
 
     Ok(())
 }
@@ -1007,7 +952,7 @@ fn test_golden_reshape_cases() -> Result<(), Box<dyn Error>> {
 
     // 1. allowzero = false (or default): shape [0, -1] copies dim 0
     // Input: [2, 6] -> Output: [2, 6]
-    {
+    let allowzero_false = {
         let in_vals: Vec<f32> = (1..=12).map(|v| v as f32).collect();
         let in_t = Tensor::from_values(Shape::new(vec![2, 6])?, &in_vals, g)?;
 
@@ -1036,11 +981,13 @@ fn test_golden_reshape_cases() -> Result<(), Box<dyn Error>> {
         let out = ScalarExecutor::run(&gr, &[("x", in_t)], ExecBudget::unlimited(), &cx)?;
         let y_t = out.get_output("y").ok_or("missing output y")?;
         assert_eq!(y_t.shape().dims(), &[2, 6]);
-        assert_eq!(y_t.to_vec::<f32>()?, in_vals);
-    }
+        let y = y_t.to_vec::<f32>()?;
+        assert_eq!(y, in_vals);
+        (y_t.shape().dims().to_vec(), in_vals, y)
+    };
 
     // 2. allowzero = true with a 0 dim is refused at validation before any execution
-    {
+    let allowzero_true_refused = {
         let p_in = TensorPort::new("x", DType::F32, Shape::new(vec![2, 6])?, g)?;
         let p_out = TensorPort::new("y", DType::F32, Shape::new(vec![0, 6])?, g)?;
 
@@ -1065,6 +1012,7 @@ fn test_golden_reshape_cases() -> Result<(), Box<dyn Error>> {
         match res_build {
             Err(ModelIrError::ShapeMismatch { reason, .. }) => {
                 assert!(reason.contains("element count mismatch"));
+                reason.contains("element count mismatch")
             }
             Ok(_) => {
                 return Err("Expected ShapeMismatch for allowzero=true with 0 dim, got Ok".into());
@@ -1075,10 +1023,10 @@ fn test_golden_reshape_cases() -> Result<(), Box<dyn Error>> {
                 );
             }
         }
-    }
+    };
 
     // 3. Shape-typed shape attribute gives identical result to IntList form
-    {
+    let shape_attr = {
         let in_vals: Vec<f32> = (1..=12).map(|v| v as f32).collect();
         let in_t = Tensor::from_values(Shape::new(vec![2, 6])?, &in_vals, g)?;
 
@@ -1133,19 +1081,31 @@ fn test_golden_reshape_cases() -> Result<(), Box<dyn Error>> {
         assert_eq!(y_sh.shape().dims(), &[3, 4]);
         assert_eq!(y_il.shape().dims(), &[3, 4]);
         assert_eq!(y_sh.to_canonical_bytes(), y_il.to_canonical_bytes());
-    }
+        (
+            y_sh.shape().dims().to_vec(),
+            y_il.shape().dims().to_vec(),
+            sha256_hex(&y_il.to_canonical_bytes()),
+            sha256_hex(&y_sh.to_canonical_bytes()),
+        )
+    };
 
     let dur = start.elapsed().as_millis();
-    let exp_json = r#"{"allowzero_false":true,"shape_attr_equiv":true}"#.to_string();
-    let obs_json = r#"{"status":"ok"}"#.to_string();
-    emit_caplog(
-        "reshape_round3_contract",
-        "pass",
-        0,
-        &exp_json,
-        &obs_json,
-        dur,
-    );
+    Record::new("reshape_round3_contract")
+        .check_eq("allowzero_false_shape", vec![2_usize, 6], allowzero_false.0)
+        .check_eq("allowzero_false_y", allowzero_false.1, allowzero_false.2)
+        .check(
+            "allowzero_true_element_count_refusal",
+            true,
+            allowzero_true_refused,
+        )
+        .check_eq("shape_attr_shape", vec![3_usize, 4], shape_attr.0)
+        .check_eq("int_list_shape", vec![3_usize, 4], shape_attr.1)
+        .check_eq(
+            "shape_attr_equals_int_list_digest",
+            shape_attr.2,
+            shape_attr.3,
+        )
+        .emit_checked(dur, true);
 
     Ok(())
 }
@@ -1218,16 +1178,26 @@ fn test_golden_softmax_metamorphic_invariance() -> Result<(), Box<dyn Error>> {
     }
 
     let dur = start.elapsed().as_millis();
-    let exp_json = r#"{"sum_prob_approx":1.0,"shift_invariant":true}"#.to_string();
-    let obs_json = format!(r#"{{"total_prob":{}}}"#, total_prob);
-    emit_caplog(
-        "softmax_metamorphic_invariance",
-        "pass",
-        0,
-        &exp_json,
-        &obs_json,
-        dur,
-    );
+    Record::new("softmax_metamorphic_invariance")
+        .check_eq("y", vec![e0 * inv, e1 * inv, e2 * inv], vals.clone())
+        .check(
+            "total_prob_within_1e-6_of_1",
+            true,
+            (total_prob - 1.0_f32).abs() < 1e-6,
+        )
+        .check(
+            "shift_invariant_within_1e-6",
+            true,
+            vals.iter()
+                .zip(vals_shifted.iter())
+                .all(|(a, b)| (a - b).abs() < 1e-6),
+        )
+        .check(
+            "large_inputs_finite",
+            true,
+            vals_large.iter().all(|v| !v.is_nan() && !v.is_infinite()),
+        )
+        .emit_checked(dur, true);
 
     Ok(())
 }
@@ -1241,10 +1211,12 @@ fn test_exp_vector_against_f64_reference_and_pinned_bits() -> Result<(), Box<dyn
         -87.0_f32, -50.0, -10.0, -2.0, -1.0, -0.5, 0.0, 0.5, 1.0, 2.0, 10.0, 50.0, 87.0,
     ];
 
+    let mut all_within = true;
     for &x in &test_points {
         let actual = deterministic_exp_f32(x) as f64;
         let expected = (x as f64).exp();
         let rel_err = (actual - expected).abs() / expected;
+        all_within &= rel_err < 1e-6;
         assert!(
             rel_err < 1e-6,
             "deterministic_exp_f32({x}) relative error {rel_err} exceeds 1e-6 (actual={actual}, expected={expected})"
@@ -1258,16 +1230,19 @@ fn test_exp_vector_against_f64_reference_and_pinned_bits() -> Result<(), Box<dyn
     assert_eq!(deterministic_exp_f32(2.0).to_bits(), 0x40ec7326);
 
     let dur = start.elapsed().as_millis();
-    let exp_json = r#"{"pinned_points":4,"max_rel_err":1e-6}"#.to_string();
-    let obs_json = r#"{"status":"ok"}"#.to_string();
-    emit_caplog(
-        "exp_vector_pinned_bits",
-        "pass",
-        0,
-        &exp_json,
-        &obs_json,
-        dur,
-    );
+    Record::new("exp_vector_pinned_bits")
+        .check("all_13_points_rel_err_below_1e-6", true, all_within)
+        .check_eq(
+            "pinned_bits_exp_0_1_neg1_2",
+            vec![0x3f80_0000_u32, 0x402d_f854, 0x3ebc_5ab2, 0x40ec_7326],
+            vec![
+                deterministic_exp_f32(0.0).to_bits(),
+                deterministic_exp_f32(1.0).to_bits(),
+                deterministic_exp_f32(-1.0).to_bits(),
+                deterministic_exp_f32(2.0).to_bits(),
+            ],
+        )
+        .emit_checked(dur, true);
 
     Ok(())
 }
@@ -1309,6 +1284,7 @@ fn test_formerly_unsupported_opcodes_execute_and_unknown_gelu_mode_is_refused()
     };
 
     // GELU (default, explicit none, tanh) executes one node with finite outputs.
+    let mut gelu_modes_executed = 0_usize;
     for mode in [None, Some("none"), Some("tanh")] {
         let graph = gelu_graph(mode)?;
         let in_t = Tensor::from_values(Shape::new(vec![1, 4])?, &[1.0_f32; 4], g)?;
@@ -1319,16 +1295,18 @@ fn test_formerly_unsupported_opcodes_execute_and_unknown_gelu_mode_is_refused()
         let values = y.to_vec::<f32>()?;
         assert_eq!(values.len(), 4);
         assert!(values.iter().all(|v| v.is_finite() && *v > 0.8 && *v < 0.9));
+        gelu_modes_executed += 1;
     }
 
     // An unknown GELU mode is a typed refusal before execution, never a guessed formula.
-    {
+    let refused_attr = {
         let graph = gelu_graph(Some("erf"))?;
         let in_t = Tensor::from_values(Shape::new(vec![1, 4])?, &[1.0_f32; 4], g)?;
         let cx = ScalarExecCx::new();
         match ScalarExecutor::run(&graph, &[("x", in_t)], ExecBudget::unlimited(), &cx) {
             Err(ExecError::Ir(ModelIrError::InvalidAttribute { attr_name, .. })) => {
                 assert_eq!(attr_name, "approximate");
+                attr_name.to_string()
             }
             other => {
                 return Err(format!(
@@ -1337,7 +1315,7 @@ fn test_formerly_unsupported_opcodes_execute_and_unknown_gelu_mode_is_refused()
                 .into());
             }
         }
-    }
+    };
 
     // The ops this test used to list as unsupported are never refused as UnsupportedOperator.
     let formerly_unsupported = [
@@ -1421,19 +1399,19 @@ fn test_formerly_unsupported_opcodes_execute_and_unknown_gelu_mode_is_refused()
     );
 
     let dur = start.elapsed().as_millis();
-    let exp_json = r#"{"gelu_modes_executed":3,"unknown_mode_refused":true}"#.to_string();
-    let obs_json = format!(
-        r#"{{"status":"ok","formerly_unsupported_executed":{}}}"#,
-        executed.len()
-    );
-    emit_caplog(
-        "formerly_unsupported_opcodes_execute",
-        "pass",
-        0,
-        &exp_json,
-        &obs_json,
-        dur,
-    );
+    Record::new("formerly_unsupported_opcodes_execute")
+        .check("gelu_modes_executed", 3_usize, gelu_modes_executed)
+        .check(
+            "unknown_gelu_mode_refused_attr",
+            "approximate",
+            refused_attr,
+        )
+        .check(
+            "silu_and_tanh_executed",
+            true,
+            executed.contains(&OpCode::Silu) && executed.contains(&OpCode::Tanh),
+        )
+        .emit_checked(dur, true);
 
     Ok(())
 }
@@ -1445,7 +1423,7 @@ fn test_dtype_refusal_f16_and_i32() -> Result<(), Box<dyn Error>> {
     let cx = ScalarExecCx::new();
 
     // 1. F16 Relu graph: passes ModelIrGraph validation, refused by executor gate
-    {
+    let f16_refusal = {
         let p_in = TensorPort::new("x", DType::F16, Shape::new(vec![4])?, g)?;
         let p_out = TensorPort::new("y", DType::F16, Shape::new(vec![4])?, g)?;
         let node = GraphNode::new(
@@ -1470,16 +1448,17 @@ fn test_dtype_refusal_f16_and_i32() -> Result<(), Box<dyn Error>> {
             }) => {
                 assert_eq!(expected, DType::F32);
                 assert_eq!(actual, DType::F16);
+                format!("{expected:?}->{actual:?}")
             }
             Ok(_) => return Err("Expected UnsupportedDType for F16 Relu, got Ok".into()),
             Err(other) => {
                 return Err(format!("Expected UnsupportedDType for F16, got {other:?}").into());
             }
         }
-    }
+    };
 
     // 2. I32 Add graph: passes ModelIrGraph validation, refused by executor gate
-    {
+    let i32_refusal = {
         let p_a = TensorPort::new("a", DType::I32, Shape::new(vec![2, 2])?, g)?;
         let p_b = TensorPort::new("b", DType::I32, Shape::new(vec![2, 2])?, g)?;
         let p_out = TensorPort::new("y", DType::I32, Shape::new(vec![2, 2])?, g)?;
@@ -1512,16 +1491,17 @@ fn test_dtype_refusal_f16_and_i32() -> Result<(), Box<dyn Error>> {
             }) => {
                 assert_eq!(expected, DType::F32);
                 assert_eq!(actual, DType::I32);
+                format!("{expected:?}->{actual:?}")
             }
             Ok(_) => return Err("Expected UnsupportedDType for I32 Add, got Ok".into()),
             Err(other) => {
                 return Err(format!("Expected UnsupportedDType for I32, got {other:?}").into());
             }
         }
-    }
+    };
 
     // 3. F64 graph declared input
-    {
+    let f64_refusal = {
         let p_in = TensorPort::new("x", DType::F64, Shape::new(vec![4])?, g)?;
         let p_out = TensorPort::new("y", DType::F64, Shape::new(vec![4])?, g)?;
         let node = GraphNode::new(
@@ -1546,16 +1526,17 @@ fn test_dtype_refusal_f16_and_i32() -> Result<(), Box<dyn Error>> {
             }) => {
                 assert_eq!(expected, DType::F32);
                 assert_eq!(actual, DType::F64);
+                format!("{expected:?}->{actual:?}")
             }
             Ok(_) => return Err("Expected UnsupportedDType for F64, got Ok".into()),
             Err(other) => {
                 return Err(format!("Expected UnsupportedDType for F64, got {other:?}").into());
             }
         }
-    }
+    };
 
     // 4. F32 graph provided with U8 tensor
-    {
+    let u8_refusal = {
         let p_in = TensorPort::new("x", DType::F32, Shape::new(vec![4])?, g)?;
         let p_out = TensorPort::new("y", DType::F32, Shape::new(vec![4])?, g)?;
         let node = GraphNode::new(
@@ -1580,27 +1561,23 @@ fn test_dtype_refusal_f16_and_i32() -> Result<(), Box<dyn Error>> {
             }) => {
                 assert_eq!(expected, DType::F32);
                 assert_eq!(actual, DType::U8);
+                format!("{expected:?}->{actual:?}")
             }
             Ok(_) => return Err("Expected UnsupportedDType for U8, got Ok".into()),
             Err(other) => {
                 return Err(format!("Expected UnsupportedDType for U8, got {other:?}").into());
             }
         }
-    }
+    };
 
     let dur = start.elapsed().as_millis();
-    let exp_json =
-        r#"{"f16_refused":true,"i32_refused":true,"f64_refused":true,"u8_refused":true}"#
-            .to_string();
-    let obs_json = r#"{"status":"ok"}"#.to_string();
-    emit_caplog(
-        "dtype_refusal_before_execution",
-        "pass",
-        0,
-        &exp_json,
-        &obs_json,
-        dur,
-    );
+    // Each compared value is the refusal's UnsupportedDType expected->actual pair.
+    Record::new("dtype_refusal_before_execution")
+        .check("f16_refused", "F32->F16", f16_refusal)
+        .check("i32_refused", "F32->I32", i32_refusal)
+        .check("f64_refused", "F32->F64", f64_refusal)
+        .check("u8_refused", "F32->U8", u8_refusal)
+        .emit_checked(dur, true);
 
     Ok(())
 }
@@ -1611,16 +1588,17 @@ fn test_version_helper_contract() -> Result<(), Box<dyn Error>> {
     let g = gen1();
 
     // 1. from_u32(2) gives VersionMismatch
-    match ModelIrVersion::from_u32(2) {
+    let from_u32_2 = match ModelIrVersion::from_u32(2) {
         Err(ModelIrError::VersionMismatch { expected, actual }) => {
             assert_eq!(expected, 1);
             assert_eq!(actual, 2);
+            (expected, actual)
         }
         Ok(_) => return Err("Expected VersionMismatch for from_u32(2), got Ok".into()),
         Err(other) => {
             return Err(format!("Expected VersionMismatch for from_u32(2), got {other:?}").into());
         }
-    }
+    };
 
     // 2. ModelIrVersion::unsupported(1) is an error
     assert!(ModelIrVersion::unsupported(1).is_err());
@@ -1641,45 +1619,50 @@ fn test_version_helper_contract() -> Result<(), Box<dyn Error>> {
     )?;
 
     let graph = ModelIrGraph::new("g_unsupported_v2", v2, g, vec![p_in], vec![p_out], vec![n])?;
-    match graph.validate() {
+    let validate_v2 = match graph.validate() {
         Err(ModelIrError::VersionMismatch { expected, actual }) => {
             assert_eq!(expected, 1);
             assert_eq!(actual, 2);
+            (expected, actual)
         }
         Ok(_) => return Err("Expected validate() to fail on unsupported version 2, got Ok".into()),
         Err(other) => {
             return Err(format!("Expected VersionMismatch from validate(), got {other:?}").into());
         }
-    }
+    };
 
     // 4. ScalarExecutor::run on graph with version 2 is refused
     let in_t = Tensor::from_values(Shape::new(vec![2])?, &[1.0_f32, 2.0], g)?;
     let cx = ScalarExecCx::new();
     let res = ScalarExecutor::run(&graph, &[("x", in_t)], ExecBudget::unlimited(), &cx);
-    match res {
+    let run_v2 = match res {
         Err(ExecError::UnsupportedVersion { expected, actual }) => {
             assert_eq!(expected, 1);
             assert_eq!(actual, 2);
+            (expected, actual)
         }
         Err(ExecError::Ir(ModelIrError::VersionMismatch { expected, actual })) => {
             assert_eq!(expected, 1);
             assert_eq!(actual, 2);
+            (expected, actual)
         }
         Ok(_) => return Err("Expected UnsupportedVersion or Ir error, got Ok".into()),
         Err(other) => return Err(format!("Expected version error from run, got {other:?}").into()),
-    }
+    };
 
     let dur = start.elapsed().as_millis();
-    let exp_json = r#"{"v2_mismatch":true,"unsupported_1_err":true}"#.to_string();
-    let obs_json = r#"{"status":"ok"}"#.to_string();
-    emit_caplog(
-        "version_helper_contract",
-        "pass",
-        0,
-        &exp_json,
-        &obs_json,
-        dur,
-    );
+    // Each version pair is (expected, actual) as carried by the typed refusal.
+    Record::new("version_helper_contract")
+        .check_eq("from_u32_2_mismatch", (1, 2), from_u32_2)
+        .check(
+            "unsupported_1_err",
+            true,
+            ModelIrVersion::unsupported(1).is_err(),
+        )
+        .check_eq("unsupported_2_as_u32", 2, v2.as_u32())
+        .check_eq("validate_v2_mismatch", (1, 2), validate_v2)
+        .check_eq("run_v2_refused", (1, 2), run_v2)
+        .emit_checked(dur, true);
 
     Ok(())
 }
@@ -1718,25 +1701,19 @@ fn test_weight_input_binding_missing_port() -> Result<(), Box<dyn Error>> {
 
     // Provide only "x", omitting required weight port "w"
     let res = ScalarExecutor::run(&graph, &[("x", x_t)], ExecBudget::unlimited(), &cx);
-    match res {
+    let missing_port = match res {
         Err(ExecError::MissingInputPort { expected_port }) => {
             assert_eq!(expected_port, "w");
+            expected_port.to_string()
         }
         Ok(_) => return Err("Expected MissingInputPort for missing weight port, got Ok".into()),
         Err(other) => return Err(format!("Expected MissingInputPort, got {other:?}").into()),
-    }
+    };
 
     let dur = start.elapsed().as_millis();
-    let exp_json = r#"{"missing_port":"w"}"#.to_string();
-    let obs_json = r#"{"status":"ok"}"#.to_string();
-    emit_caplog(
-        "weight_input_binding_missing_port",
-        "pass",
-        0,
-        &exp_json,
-        &obs_json,
-        dur,
-    );
+    Record::new("weight_input_binding_missing_port")
+        .check("missing_port", "w", missing_port)
+        .emit_checked(dur, true);
 
     Ok(())
 }
@@ -1766,25 +1743,19 @@ fn test_shape_mismatch_refused_before_execution() -> Result<(), Box<dyn Error>> 
     let bad_tensor = Tensor::from_values(Shape::new(vec![1, 1, 4, 4])?, &[1.0_f32; 16], g)?;
     let cx = ScalarExecCx::new();
     let res = ScalarExecutor::run(&graph, &[("x", bad_tensor)], ExecBudget::unlimited(), &cx);
-    match res {
+    let op_id = match res {
         Err(ExecError::ShapeMismatch { op_id, .. }) => {
             assert_eq!(op_id, "graph_input");
+            op_id.to_string()
         }
         Ok(_) => return Err("Expected ShapeMismatch, got Ok".into()),
         Err(other) => return Err(format!("Expected ShapeMismatch, got {other:?}").into()),
-    }
+    };
 
     let dur = start.elapsed().as_millis();
-    let exp_json = r#"{"op_id":"graph_input"}"#.to_string();
-    let obs_json = r#"{"status":"ok"}"#.to_string();
-    emit_caplog(
-        "shape_mismatch_refusal",
-        "pass",
-        0,
-        &exp_json,
-        &obs_json,
-        dur,
-    );
+    Record::new("shape_mismatch_refusal")
+        .check("op_id", "graph_input", op_id)
+        .emit_checked(dur, true);
 
     Ok(())
 }
@@ -1827,42 +1798,39 @@ fn test_budget_macs_and_bytes_exceeded() -> Result<(), Box<dyn Error>> {
     // 1. MACs budget overrun (max_macs = 0, required = 36 MACs)
     let macs_budget = ExecBudget::new(0, 1_000_000);
     let result_macs = ScalarExecutor::run(&graph, &inputs, macs_budget, &cx);
-    match result_macs {
+    let macs_overrun = match result_macs {
         Err(ExecError::BudgetExceeded { macs, max_macs, .. }) => {
             assert_eq!(macs, 36);
             assert_eq!(max_macs, 0);
+            (macs, max_macs)
         }
         Ok(_) => return Err("Expected BudgetExceeded for MACs, got Ok".into()),
         Err(other) => return Err(format!("Expected BudgetExceeded for MACs, got {other:?}").into()),
-    }
+    };
 
     // 2. Memory bytes budget overrun (max_bytes = 10, required = 116 bytes)
     let bytes_budget = ExecBudget::new(1_000_000, 10);
     let result_bytes = ScalarExecutor::run(&graph, &inputs, bytes_budget, &cx);
-    match result_bytes {
+    let bytes_overrun = match result_bytes {
         Err(ExecError::BudgetExceeded {
             bytes, max_bytes, ..
         }) => {
             assert_eq!(bytes, 116);
             assert_eq!(max_bytes, 10);
+            (bytes, max_bytes)
         }
         Ok(_) => return Err("Expected BudgetExceeded for bytes, got Ok".into()),
         Err(other) => {
             return Err(format!("Expected BudgetExceeded for bytes, got {other:?}").into());
         }
-    }
+    };
 
     let dur = start.elapsed().as_millis();
-    let exp_json = r#"{"macs_overrun":true,"bytes_overrun":true}"#.to_string();
-    let obs_json = r#"{"status":"ok"}"#.to_string();
-    emit_caplog(
-        "budget_exceeded_refusal",
-        "pass",
-        0,
-        &exp_json,
-        &obs_json,
-        dur,
-    );
+    // (required, budget) as carried by each BudgetExceeded refusal.
+    Record::new("budget_exceeded_refusal")
+        .check_eq("macs_overrun", (36, 0), macs_overrun)
+        .check_eq("bytes_overrun", (116, 10), bytes_overrun)
+        .emit_checked(dur, true);
 
     Ok(())
 }
@@ -1898,26 +1866,21 @@ fn test_cancellation_pre_execution_and_cooperative() -> Result<(), Box<dyn Error
     assert!(cx.is_cancelled());
 
     let result = ScalarExecutor::run(&graph, &inputs, ExecBudget::unlimited(), &cx);
-    match result {
+    let stage = match result {
         Err(ExecError::CancellationRequested { stage }) => {
             assert_eq!(stage, "pre-execution");
             assert!(cx.is_drain_completed());
+            stage.to_string()
         }
         Ok(_) => return Err("Expected CancellationRequested, got Ok".into()),
         Err(other) => return Err(format!("Expected CancellationRequested, got {other:?}").into()),
-    }
+    };
 
     let dur = start.elapsed().as_millis();
-    let exp_json = r#"{"stage":"pre-execution","drain_completed":true}"#.to_string();
-    let obs_json = r#"{"status":"ok"}"#.to_string();
-    emit_caplog(
-        "cancellation_cooperative",
-        "pass",
-        0,
-        &exp_json,
-        &obs_json,
-        dur,
-    );
+    Record::new("cancellation_cooperative")
+        .check("stage", "pre-execution", stage)
+        .check("drain_completed", true, cx.is_drain_completed())
+        .emit_checked(dur, true);
 
     Ok(())
 }
@@ -1959,9 +1922,25 @@ fn test_preprocess_program_rgb_and_luma() -> Result<(), Box<dyn Error>> {
     assert_eq!(b1, b2);
 
     let dur = start.elapsed().as_millis();
-    let exp_json = r#"{"rgb_shape":[1,3,2,2],"luma_shape":[1,1,2,2]}"#.to_string();
-    let obs_json = r#"{"status":"ok"}"#.to_string();
-    emit_caplog("preprocess_program", "pass", 0, &exp_json, &obs_json, dur);
+    Record::new("preprocess_program")
+        .check_eq(
+            "rgb_shape",
+            vec![1_usize, 3, 2, 2],
+            tensor_nchw.shape().dims().to_vec(),
+        )
+        .check_eq(
+            "rgb_channel_heads",
+            vec![0.0 / 255.0, 128.0 / 255.0, 255.0 / 255.0],
+            vec![f_vals[0], f_vals[4], f_vals[8]],
+        )
+        .check_eq(
+            "luma_shape",
+            vec![1_usize, 1, 2, 2],
+            tensor_luma.shape().dims().to_vec(),
+        )
+        .check_eq("luma_00", expected_luma_00, l_vals[0])
+        .check("canonical_bytes_deterministic", true, b1 == b2)
+        .emit_checked(dur, true);
 
     Ok(())
 }

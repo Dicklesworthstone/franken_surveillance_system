@@ -25,6 +25,8 @@ use fss_reference::ingest::mjpeg::{
 };
 use fss_reference::{ADP_REPLAY_ROW_ID, DeterministicFaultPrng, ReplayCx};
 
+mod caplog_support;
+
 /// Emits a single-line structured CAPLOG record for digestion by the E2E logging harness.
 fn emit_caplog(
     step: &str,
@@ -1344,20 +1346,13 @@ fn test_fixture_manifest_equality() -> Result<(), Box<dyn Error>> {
     }
 
     let duration_ms = start.elapsed().as_millis().max(1);
-    let expected =
-        format!(r#"{{"fixture_manifest_available":true,"fixtures_count":{total_fixtures}}}"#);
-    let observed =
-        format!(r#"{{"fixture_manifest_available":true,"verified_fixtures":{verified_count}}}"#);
     let passed = failures.is_empty() && total_fixtures > 0 && verified_count == total_fixtures;
-    let (verdict, exit_code) = if passed { ("pass", 0) } else { ("fail", 1) };
-    emit_caplog(
-        "fixture_manifest_equality",
-        verdict,
-        exit_code,
-        &expected,
-        &observed,
-        duration_ms,
-    );
+    // The record carries exactly the compared values: its verdict equals `passed`.
+    caplog_support::Record::new("fixture_manifest_equality")
+        .check("fixtures_listed", true, total_fixtures > 0)
+        .check("verified_fixtures", total_fixtures, verified_count)
+        .check("failures", Vec::<String>::new(), failures.clone())
+        .emit(duration_ms);
 
     assert!(
         passed,
@@ -1576,19 +1571,17 @@ fn test_delegated_jpeg_fixtures() -> Result<(), Box<dyn Error>> {
     }
 
     let passed = failure_reasons.is_empty() && fixtures_skipped == 0 && fixtures_verified == 2;
-    let observed = format!(
-        r#"{{"fixtures_verified":{fixtures_verified},"fixtures_skipped":{fixtures_skipped},"failures":{},"failure_reasons":"{}","missing":"{}"}}"#,
-        failure_reasons.len(),
-        escape_json_str(&failure_reasons.join("; ")),
-        escape_json_str(&skip_reasons.join("; "))
-    );
-    emit_verdict(
-        "delegated_jpeg_fixtures",
-        passed,
-        expected,
-        &observed,
-        duration_ms,
-    );
+    // The record carries exactly the compared values: its verdict equals `passed`.
+    caplog_support::Record::new("delegated_jpeg_fixtures")
+        .check("fixtures_verified", 2_usize, fixtures_verified)
+        .check("fixtures_skipped", 0_usize, fixtures_skipped)
+        .check(
+            "failure_reasons",
+            Vec::<String>::new(),
+            failure_reasons.clone(),
+        )
+        .check("missing", Vec::<String>::new(), skip_reasons.clone())
+        .emit(duration_ms);
 
     assert!(
         passed,
@@ -2505,19 +2498,22 @@ fn test_mutation_gauntlet_10k() -> Result<(), Box<dyn Error>> {
         && invariant_violations == 0
         && successful_scans >= MIN_SUCCESSFUL_SCANS
         && unexpected_errors == 0;
-    let expected = format!(
-        r#"{{"panics":0,"invariant_violations":0,"successful_scans_min":{MIN_SUCCESSFUL_SCANS},"unexpected_errors":0}}"#
-    );
+    // The record carries exactly the compared values: its verdict equals `passed`. The floor
+    // is an inequality, so the compared value is whether the floor was met.
+    let record = caplog_support::Record::new("mutation_gauntlet_10k")
+        .check("panics", 0_usize, observed_panics)
+        .check("invariant_violations", 0_usize, invariant_violations)
+        .check(
+            "successful_scans_at_least_8000",
+            true,
+            successful_scans >= MIN_SUCCESSFUL_SCANS,
+        )
+        .check("unexpected_errors", 0_usize, unexpected_errors);
+    record.emit(duration_ms);
     let observed = format!(
-        r#"{{"panics":{observed_panics},"invariant_violations":{invariant_violations},"successful_scans":{successful_scans},"allowed_errors":{allowed_errors},"unexpected_errors":{unexpected_errors},"unexpected_samples":"{}","iterations":{iterations}}}"#,
-        escape_json_str(&unexpected_samples.join("; "))
-    );
-    emit_verdict(
-        "mutation_gauntlet_10k",
-        passed,
-        &expected,
-        &observed,
-        duration_ms,
+        "{} successful_scans={successful_scans} allowed_errors={allowed_errors} \
+         iterations={iterations} unexpected_samples={unexpected_samples:?}",
+        record.observed_json()
     );
 
     assert!(passed, "10k gauntlet: observed {observed}");

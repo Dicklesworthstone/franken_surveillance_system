@@ -135,9 +135,15 @@ fn interval(a: TimestampNs, b: TimestampNs) -> Result<CaptureInterval, Error> {
     Ok(CaptureInterval::new(a, b)?)
 }
 
+mod caplog_support;
+
+/// Prints one CAPLOG record after the test's assertions passed. Step and observed text are
+/// JSON-escaped; every step name is unique within the e2e script.
 fn caplog(step: &str, observed: &str) {
     println!(
-        "CAPLOG {{\"bead\":\"fss-2h5zq.30\",\"step\":\"{step}\",\"verdict\":\"pass\",\"observed\":\"{observed}\"}}"
+        "CAPLOG {{\"bead\":\"fss-2h5zq.30\",\"step\":{},\"verdict\":\"pass\",\"observed\":{}}}",
+        caplog_support::json_string(step),
+        caplog_support::json_string(observed)
     );
 }
 
@@ -1082,8 +1088,9 @@ fn foreign_payload_types_open_no_generation(label: &str, payload_types: [u8; 2])
         assert_eq!(w.lost_dimensions, vec![LOST_PACKET_REFUSED.to_owned()]);
         evidence(w)?;
     }
+    // One record per variant: the label keeps the three variants' step names distinct.
     caplog(
-        "foreign_payload_type_refused",
+        &format!("foreign_payload_type_refused_{}", label.replace('-', "_")),
         &format!(
             "{label}|{payload_types:?}|{}|{}",
             kinds_text(report),
