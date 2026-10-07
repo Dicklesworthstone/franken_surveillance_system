@@ -274,3 +274,97 @@ fn blindness_bounds_follow_shared_and_separate_circuits() -> TestResult {
     }
     Ok(())
 }
+
+fn blind_paths(root: &Path, extra: &[&str]) -> TestResult<Value> {
+    let output = Command::new(env!("CARGO_BIN_EXE_fss-event"))
+        .arg("graph")
+        .arg("blind-paths")
+        .arg("--root")
+        .arg(root)
+        .args(["--site", SITE])
+        .args(extra)
+        .output()?;
+    success(&output);
+    Ok(parse(String::from_utf8(output.stdout)?.trim_end())?)
+}
+
+fn texts(value: &Value) -> Vec<String> {
+    value
+        .array()
+        .map(|items| {
+            items
+                .iter()
+                .filter_map(Value::text)
+                .map(str::to_owned)
+                .collect()
+        })
+        .unwrap_or_default()
+}
+
+#[test]
+fn blind_paths_name_existing_gaps_and_cheapest_interdictions() -> TestResult {
+    let directory = OwnedDirectory::new("paths")?;
+    let root = directory.root();
+    let north = import(&directory, "north", "sensor:north", 40)?;
+    let south = import(&directory, "south", "sensor:south", 60)?;
+    retain(&root, &north, &["door:64,0,32,32", "gate:0,0,32,32"])?;
+    retain(&root, &south, &["door:64,0,32,32"])?;
+    let site = [
+        "--entry",
+        "street",
+        "--move",
+        "street~zone:gate",
+        "--move",
+        "zone:gate~yard",
+        "--move",
+        "yard~zone:door",
+    ];
+
+    // Reaching the unwatched yard requires passing the gate camera: disable north.
+    let mut args = site.to_vec();
+    args.extend(["--target", "yard"]);
+    let report = blind_paths(&root, &args)?;
+    assert_eq!(
+        get(&report, &["format"])?.text(),
+        Some("fss.coverage_blind_paths.v1")
+    );
+    let outcome = get(&report, &["outcome"])?;
+    assert_eq!(get(outcome, &["kind"])?.text(), Some("interdiction"));
+    assert_eq!(
+        texts(get(outcome, &["sensors_to_disable"])?),
+        ["sensor:north"]
+    );
+    assert_eq!(
+        texts(get(outcome, &["walk"])?),
+        ["street", "zone:gate", "yard"]
+    );
+
+    // A fence gap from the street to the yard is an existing blind walk.
+    args.extend(["--move", "street~yard"]);
+    let gap = blind_paths(&root, &args)?;
+    let outcome = get(&gap, &["outcome"])?;
+    assert_eq!(get(outcome, &["kind"])?.text(), Some("blind_path"));
+    assert_eq!(texts(get(outcome, &["walk"])?), ["street", "yard"]);
+
+    // The door is watched by both cameras: both must go, whatever they cost.
+    let mut door = site.to_vec();
+    door.extend(["--target", "zone:door", "--cost", "sensor:north=5"]);
+    let report = blind_paths(&root, &door)?;
+    let outcome = get(&report, &["outcome"])?;
+    assert_eq!(
+        texts(get(outcome, &["sensors_to_disable"])?),
+        ["sensor:north", "sensor:south"]
+    );
+    assert_eq!(get(outcome, &["cost"])?.integer(), Some(6));
+    assert_eq!(get(outcome, &["exact"])?.boolean(), Some(true));
+
+    // A target with no passage is unreachable.
+    let mut attic = site.to_vec();
+    attic.extend(["--target", "attic"]);
+    let report = blind_paths(&root, &attic)?;
+    assert_eq!(
+        get(&report, &["outcome", "kind"])?.text(),
+        Some("unreachable")
+    );
+    Ok(())
+}

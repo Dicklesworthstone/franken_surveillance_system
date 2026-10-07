@@ -5,6 +5,8 @@ use std::ffi::OsString;
 use std::io::{self, Write};
 use std::process::ExitCode;
 
+#[path = "graph_blind_paths.rs"]
+mod blind_paths;
 #[path = "graph_cuts.rs"]
 mod cuts;
 #[path = "graph_legacy.rs"]
@@ -19,11 +21,15 @@ pub(super) fn main(args: &[OsString]) -> ExitCode {
     if args.first().and_then(|arg| arg.to_str()) == Some("reliability") {
         return reliability::main(args);
     }
+    if args.first().and_then(|arg| arg.to_str()) == Some("blind-paths") {
+        return blind_paths::main(args);
+    }
     if matches!(args, [flag] if matches!(flag.to_str(), Some("help" | "--help" | "-h")))
         && writeln!(
             io::stdout().lock(),
             "Joint dependency failures: fss-event graph failure-cuts --help\n\
-             Blindness probability bounds: fss-event graph reliability --help"
+             Blindness probability bounds: fss-event graph reliability --help\n\
+             Adversarial blind paths: fss-event graph blind-paths --help"
         )
         .is_err()
     {
