@@ -45,22 +45,20 @@ the shared certification machinery (`certified.rs`: fail-closed budgets, the reg
 checked on every run and re-checkable from a stored witness, domain-separated output and
 decision-path digests):
 
-| ID | Implementation | Certified against |
-|---|---|---|
-| `ALG-SCC-001` | iterative Tarjan + Kahn condensation order by smallest member | mutual reachability |
-| `ALG-TOPO-001` | Kahn min-heap order, frontiers, CPM schedule with node durations and arc lags, canonical critical path | smallest-available selection + n-round relaxation |
-| `ALG-DOM-001` | Cooper–Harvey–Kennedy dominators and post-dominators with dominated counts | single-node removal |
-| `ALG-SP-001` | lexicographic `(distance, hops)` Dijkstra, smallest tight parent arc | Bellman–Ford |
-| `ALG-MSD-001` | multi-source `(distance, source, hops)` Dijkstra | per-source Bellman–Ford minimum |
-| `ALG-FLOW-001` | certified Edmonds–Karp: arc cut (inclusion-minimal source side) or minimum-weight node failure set by node splitting | source-side subset enumeration; failure-set enumeration |
-| `ALG-MST-001` | Kruskal over the strict `(weight, edge index)` order, counted merge sort, union by size | exhaustive spanning-forest enumeration |
-| `ALG-GH-001` | Gusfield flow-equivalent tree over `n - 1` certified flow runs | all-pairs subset cuts |
-| `ALG-MCF-001` | successive shortest paths with potentials; certified optimal (no negative residual cycle); exact shortfall | unit-step Bellman–Ford augmentation |
-| `ALG-MATCH-001` | Hungarian (128-bit, self-certified by duality) with exact lexicographic tie-break over the tight subgraph; maximum-cardinality or priced non-assignment | exhaustive assignment enumeration |
-| `ALG-MULTIMATCH-001` | Murty best-first over `(objective, assignment tuple)` with lexicographically minimal subproblems | exhaustive enumeration, first `k` in order |
-| `ALG-KSP-001` | Yen with lexicographic spur searches, a minimum-distinct-arcs diversity filter, an explicit enumeration cap and a typed stop reason | exhaustive loopless-path enumeration |
-| `ALG-TREACH-001` | exact integer-interval least fixpoint (departure windows, travel bounds, per-node linger) with `reachable` / `temporally_infeasible` / `no_path` | integer-time set fixpoint |
-| `ALG-DYNCONN-001` | offline segment tree over edge lifetimes with rollback union-find; strict insert/delete batches | per-state BFS recomputation |
+- `ALG-SCC-001`: iterative Tarjan + Kahn condensation order by smallest member; certified against mutual reachability.
+- `ALG-TOPO-001`: Kahn min-heap order, frontiers, CPM schedule with node durations and arc lags, canonical critical path; certified against smallest-available selection + n-round relaxation.
+- `ALG-DOM-001`: Cooper–Harvey–Kennedy dominators and post-dominators with dominated counts; certified against single-node removal.
+- `ALG-SP-001`: lexicographic `(distance, hops)` Dijkstra, smallest tight parent arc; certified against Bellman–Ford.
+- `ALG-MSD-001`: multi-source `(distance, source, hops)` Dijkstra; certified against per-source Bellman–Ford minimum.
+- `ALG-FLOW-001`: certified Edmonds–Karp: arc cut (inclusion-minimal source side) or minimum-weight node failure set by node splitting; certified against source-side subset enumeration; failure-set enumeration.
+- `ALG-MST-001`: Kruskal over the strict `(weight, edge index)` order, counted merge sort, union by size; certified against exhaustive spanning-forest enumeration.
+- `ALG-GH-001`: Gusfield flow-equivalent tree over `n - 1` certified flow runs; certified against all-pairs subset cuts.
+- `ALG-MCF-001`: successive shortest paths with potentials; certified optimal (no negative residual cycle); exact shortfall; certified against unit-step Bellman–Ford augmentation.
+- `ALG-MATCH-001`: Hungarian (128-bit, self-certified by duality) with exact lexicographic tie-break over the tight subgraph; maximum-cardinality or priced non-assignment; certified against exhaustive assignment enumeration.
+- `ALG-MULTIMATCH-001`: Murty best-first over `(objective, assignment tuple)` with lexicographically minimal subproblems; certified against exhaustive enumeration, first `k` in order.
+- `ALG-KSP-001`: Yen with lexicographic spur searches, a minimum-distinct-arcs diversity filter, an explicit enumeration cap and a typed stop reason; certified against exhaustive loopless-path enumeration.
+- `ALG-TREACH-001`: exact integer-interval least fixpoint (departure windows, travel bounds, per-node linger) with `reachable` / `temporally_infeasible` / `no_path`; certified against integer-time set fixpoint.
+- `ALG-DYNCONN-001`: offline segment tree over edge lifetimes with rollback union-find; strict insert/delete batches; certified against per-state BFS recomputation.
 
 Each is certified on seeded directed and undirected graphs (random, DAG, cycle, clique, star,
 path, layered, joined cycles, empty) or seeded assignment problems, insertion-order metamorphic
