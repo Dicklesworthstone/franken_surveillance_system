@@ -199,7 +199,7 @@ picture order count and the `fss-codec-h265` decoder label identity. Frames are 
 derivation: nothing is published, so `read-decoded`/`verify-decoded` refuse `hevc` imports.
 Refusals: `ERR-DECODE-H265-RANGE-NOT-IRAP-001`, `ERR-DECODE-H265-RANGE-GAP-001`,
 `ERR-DECODE-H265-UNSUPPORTED-001` (Main 10, 4:2:2, range extensions, tiles, dependent slices,
-long-term references, layers above the base layer; never approximate pixels),
+layers above the base layer; never approximate pixels),
 `ERR-DECODE-INTERPRETATION-001`, `ERR-DECODE-BOUNDS-001`, `ERR-DECODE-SOURCE-UNAVAILABLE-001`,
 and `ERR-DECODE-001` for corrupt pictures.
 

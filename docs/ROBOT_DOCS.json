@@ -957,7 +957,7 @@
       "id": "ERR-DECODE-H265-RANGE-NOT-IRAP-001"
     },
     {
-      "description": "H.265 stream uses a profile, sample format or coding tool outside the admitted set (Main and Main Still Picture, 8-bit 4:2:0; no range extensions, tiles, dependent slices or long-term references); no approximate pixels are produced",
+      "description": "H.265 stream uses a profile, sample format or coding tool outside the admitted set (Main and Main Still Picture, 8-bit 4:2:0, long-term references included; no range extensions, tiles or dependent slices); no approximate pixels are produced",
       "guidance": "transcode in the laboratory or wait for a registered decoder; do not retry unchanged",
       "id": "ERR-DECODE-H265-UNSUPPORTED-001"
     },

@@ -30,8 +30,10 @@ synthetic scenes). None of it has been measured on real camera footage.
   `hevc` (explicit `--media-format hevc`; auto-detection only for an unambiguous first NAL header,
   otherwise a typed refusal) with H.265 access-unit splitting, and `fss-file decode`,
   `fss-event watch` and `fss-event corroborate` decode IRAP-led ranges (a CRA-led range skips its
-  RASL pictures and lists them). Not implemented: HEVC Main 10/RExt,
-  tiles, dependent slices, long-term refs; interlaced and 4:2:2/4:4:4/10-bit H.264.
+  RASL pictures and lists them). HEVC long-term reference pictures (the "smart codec"
+  pattern) decode bit-exactly against FFmpeg on two rewritten-reference fixtures. Not
+  implemented: HEVC Main 10/RExt, tiles, dependent slices; interlaced and 4:2:2/4:4:4/10-bit
+  H.264.
 - **Pipeline and evaluation:** `fss-event watch` runs decode -> foreground -> Kalman -> zone
   eventgen over a retained import and publishes approval-gated, unclassified, single-sensor
   candidates. `fss-event corroborate` associates two sensors' ground-zone entries (owner

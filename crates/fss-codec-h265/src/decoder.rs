@@ -73,6 +73,7 @@ impl DecoderLimits {
 enum Marking {
     Unused,
     Short,
+    Long,
 }
 
 /// One picture in the decoded picture buffer.
@@ -99,6 +100,8 @@ struct Pending {
     slices: u32,
     /// `PocStCurrBefore` and `PocStCurrAfter` of the picture's RPS.
     st_curr: [Vec<i32>; 2],
+    /// Full order counts of `RefPicSetLtCurr` (clause 8.3.2).
+    lt_curr: Vec<i32>,
 }
 
 /// Streaming H.265 decoder (Main profile, 8-bit 4:2:0).
@@ -376,18 +379,13 @@ impl Decoder {
         } else if self.need_irap {
             return Err(DecodeError::MissingReference);
         }
-        if !header.long_term.is_empty() {
-            return Err(DecodeError::Unsupported(
-                UnsupportedFeature::LongTermReference,
-            ));
-        }
         let poc = self.picture_order_count(nal, header, &sps);
         // A new coded video sequence releases (or, with
         // no_output_of_prior_pics_flag, discards) every earlier picture.
         if nal.is_irap() && self.irap_no_rasl_output {
             self.flush_output(header.no_output_of_prior_pics)?;
         }
-        self.mark_references(nal, header, poc)?;
+        let lt_curr = self.mark_references(nal, header, poc, &sps)?;
         let mut st_curr = [Vec::new(), Vec::new()];
         if let Some(rps) = &header.st_rps {
             for (delta, used) in rps.delta_s0.iter().zip(&rps.used_s0) {
@@ -411,15 +409,25 @@ impl Decoder {
             output: header.pic_output,
             slices: 0,
             st_curr,
+            lt_curr,
         });
         Ok(true)
     }
 
-    /// The short-term reference picture with order count `poc`.
-    fn reference(&self, poc: i32) -> Result<(Arc<Frame>, Arc<Vec<ColMv>>), DecodeError> {
+    /// The short-term (or long-term) reference picture with order count `poc`.
+    fn reference(
+        &self,
+        poc: i32,
+        long_term: bool,
+    ) -> Result<(Arc<Frame>, Arc<Vec<ColMv>>), DecodeError> {
+        let marking = if long_term {
+            Marking::Long
+        } else {
+            Marking::Short
+        };
         self.dpb
             .iter()
-            .find(|p| p.marking == Marking::Short && p.poc == poc)
+            .find(|p| p.marking == marking && p.poc == poc)
             .map(|p| (Arc::clone(&p.frame), Arc::clone(&p.motion)))
             .ok_or(DecodeError::MissingReference)
     }
@@ -436,7 +444,8 @@ impl Decoder {
             return Ok(lists);
         }
         let [before, after] = &pending.st_curr;
-        let total = before.len() + after.len();
+        let long = &pending.lt_curr;
+        let total = before.len() + after.len() + long.len();
         if total == 0 {
             return Err(DecodeError::MissingReference);
         }
@@ -445,22 +454,29 @@ impl Decoder {
             if count == 0 {
                 continue;
             }
-            let order: Vec<i32> = if list == 0 {
-                before.iter().chain(after).copied().collect()
+            // RefPicListTemp (clause 8.3.4): the short-term sets in list order, then the
+            // long-term set, repeated until NumRpsCurrTempList entries.
+            let short = |poc: &i32| (*poc, false);
+            let order: Vec<(i32, bool)> = if list == 0 {
+                before.iter().chain(after).map(short).collect()
             } else {
-                after.iter().chain(before).copied().collect()
+                after.iter().chain(before).map(short).collect()
             };
+            let order: Vec<(i32, bool)> = order
+                .into_iter()
+                .chain(long.iter().map(|poc| (*poc, true)))
+                .collect();
             let temp_len = count.max(total);
-            let temp: Vec<i32> = order.iter().copied().cycle().take(temp_len).collect();
+            let temp: Vec<(i32, bool)> = order.iter().copied().cycle().take(temp_len).collect();
             for i in 0..count {
                 let idx = match &header.list_entry[list] {
                     Some(entries) => *entries.get(i).ok_or(DecodeError::Malformed)? as usize,
                     None => i,
                 };
-                let poc = *temp.get(idx).ok_or(DecodeError::Malformed)?;
-                let (frame, _) = self.reference(poc)?;
+                let (poc, long_term) = *temp.get(idx).ok_or(DecodeError::Malformed)?;
+                let (frame, _) = self.reference(poc, long_term)?;
                 out.pocs.push(poc);
-                out.long_term.push(false);
+                out.long_term.push(long_term);
                 out.frames.push(frame);
             }
         }
@@ -481,11 +497,13 @@ impl Decoder {
         } else {
             0
         };
-        let poc = *refs[list]
-            .pocs
-            .get(header.collocated_ref_idx as usize)
+        let index = header.collocated_ref_idx as usize;
+        let poc = *refs[list].pocs.get(index).ok_or(DecodeError::Malformed)?;
+        let long_term = *refs[list]
+            .long_term
+            .get(index)
             .ok_or(DecodeError::Malformed)?;
-        let (_, motion) = self.reference(poc)?;
+        let (_, motion) = self.reference(poc, long_term)?;
         Ok(Some(ColPic { poc, motion }))
     }
 
@@ -514,25 +532,81 @@ impl Decoder {
         poc
     }
 
-    /// Reference picture set marking (clause 8.3.2): pictures named by the
-    /// current RPS stay short-term references; all others become unused.
+    /// Reference picture set marking (clause 8.3.2). The long-term sets are
+    /// derived first from any reference picture (matching the order count
+    /// LSBs, or the full order count when its MSB cycle is signalled) and
+    /// marked long-term; then pictures named by the short-term sets stay
+    /// short-term; every other reference becomes unused. Returns the full
+    /// order counts of `RefPicSetLtCurr` in signalled order.
     fn mark_references(
         &mut self,
         nal: NalHeader,
         header: &SliceHeader,
         poc: i32,
-    ) -> Result<(), DecodeError> {
+        sps: &Sps,
+    ) -> Result<Vec<i32>, DecodeError> {
         if nal.is_irap() && self.irap_no_rasl_output {
             for picture in &mut self.dpb {
                 picture.marking = Marking::Unused;
             }
         }
+        let max_lsb = 1i64 << sps.log2_max_poc_lsb;
+        let mut long_term: Vec<usize> = Vec::new();
+        let mut lt_curr = Vec::new();
+        for entry in &header.long_term {
+            let target = match entry.msb_cycle {
+                Some(cycle) => {
+                    let full = i64::from(poc)
+                        - i64::from(cycle) * max_lsb
+                        - i64::from(poc).rem_euclid(max_lsb)
+                        + i64::from(entry.poc_lsb);
+                    Some(i32::try_from(full).map_err(|_| DecodeError::Malformed)?)
+                }
+                None => None,
+            };
+            let mut found = None;
+            for (index, picture) in self.dpb.iter().enumerate() {
+                if picture.marking == Marking::Unused {
+                    continue;
+                }
+                let matches = match target {
+                    Some(full) => picture.poc == full,
+                    None => i64::from(picture.poc).rem_euclid(max_lsb) == i64::from(entry.poc_lsb),
+                };
+                if matches {
+                    if found.is_some() {
+                        return Err(DecodeError::Malformed);
+                    }
+                    found = Some(index);
+                }
+            }
+            match found {
+                Some(index) => {
+                    long_term.push(index);
+                    if entry.used {
+                        lt_curr.push(self.dpb[index].poc);
+                    }
+                }
+                // A missing picture of RefPicSetLtCurr is a missing reference; a missing
+                // RefPicSetLtFoll picture is not needed by this picture.
+                None if entry.used => return Err(DecodeError::MissingReference),
+                None => {}
+            }
+        }
+        for &index in &long_term {
+            self.dpb[index].marking = Marking::Long;
+        }
         let mut keep: Vec<i32> = Vec::new();
         if let Some(rps) = &header.st_rps {
             keep.extend(rps.delta_s0.iter().chain(&rps.delta_s1).map(|d| poc + d));
         }
-        for picture in &mut self.dpb {
-            if picture.marking == Marking::Short && !keep.contains(&picture.poc) {
+        for (index, picture) in self.dpb.iter_mut().enumerate() {
+            let stays = match picture.marking {
+                Marking::Short => keep.contains(&picture.poc),
+                Marking::Long => long_term.contains(&index),
+                Marking::Unused => false,
+            };
+            if !stays {
                 picture.marking = Marking::Unused;
             }
         }
@@ -541,7 +615,7 @@ impl Decoder {
         if self.dpb.len() >= MAX_DPB {
             return Err(DecodeError::Limit);
         }
-        Ok(())
+        Ok(lt_curr)
     }
 
     /// Completes the pending picture if its slices are all present.

@@ -255,6 +255,17 @@ oracle_test!(
 oracle_test!(pcm_deblock_protected_bit_exact, "pcm_mixed_deblock");
 oracle_test!(pcm_deblock_filtered_bit_exact, "pcm_mixed_deblock_lf");
 
+// ----- Stage 4: long-term reference pictures (smart-codec cameras) -----
+// P pictures whose oldest reference is a long-term picture (clauses 8.3.2,
+// 8.3.4): matched by order-count LSBs, and on odd pictures by the full order
+// count (delta_poc_msb_present_flag); short- and long-term references mix with
+// the long-term motion-vector rules (8.5.3.2) and in-loop filters on.
+oracle_test!(long_term_reference_ref1_bit_exact, "ltr_qcif_ref1");
+oracle_test!(
+    long_term_reference_mixed_msb_filters_bit_exact,
+    "ltr_qcif_ref3_filters_msb"
+);
+
 /// With pcm_loop_filter_disabled_flag the deblocking filter must leave
 /// every PCM sample exactly as coded (generator pattern), while the
 /// neighbouring intra coding units may change.

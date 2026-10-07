@@ -271,18 +271,19 @@ pub fn parse_slice_header<'p>(
                 } else {
                     (r.uint(sps.log2_max_poc_lsb)?, r.flag()?)
                 };
-                let msb_cycle = if r.flag()? {
-                    let delta = r.ue(1 << 24)?;
-                    let cycle = if i == 0 || i == num_sps {
-                        delta
-                    } else {
-                        delta + previous_cycle
-                    };
-                    previous_cycle = cycle;
-                    Some(cycle)
+                // DeltaPocMsbCycleLt accumulates within the SPS and the slice entries; an
+                // absent delta_poc_msb_cycle_lt is inferred to be zero (clause 7.4.7.1).
+                let present = r.flag()?;
+                let delta = if present { r.ue(1 << 24)? } else { 0 };
+                let cycle = if i == 0 || i == num_sps {
+                    delta
                 } else {
-                    None
+                    delta
+                        .checked_add(previous_cycle)
+                        .ok_or(DecodeError::Malformed)?
                 };
+                previous_cycle = cycle;
+                let msb_cycle = present.then_some(cycle);
                 long_term.push(LongTermEntry {
                     poc_lsb,
                     used,
