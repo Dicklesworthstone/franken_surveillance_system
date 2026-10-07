@@ -58,12 +58,16 @@ decision-path digests):
 | `ALG-MCF-001` | successive shortest paths with potentials; certified optimal (no negative residual cycle); exact shortfall | unit-step Bellman–Ford augmentation |
 | `ALG-MATCH-001` | Hungarian (128-bit, self-certified by duality) with exact lexicographic tie-break over the tight subgraph; maximum-cardinality or priced non-assignment | exhaustive assignment enumeration |
 | `ALG-MULTIMATCH-001` | Murty best-first over `(objective, assignment tuple)` with lexicographically minimal subproblems | exhaustive enumeration, first `k` in order |
+| `ALG-KSP-001` | Yen with lexicographic spur searches, a minimum-distinct-arcs diversity filter, an explicit enumeration cap and a typed stop reason | exhaustive loopless-path enumeration |
+| `ALG-TREACH-001` | exact integer-interval least fixpoint (departure windows, travel bounds, per-node linger) with `reachable` / `temporally_infeasible` / `no_path` | integer-time set fixpoint |
+| `ALG-DYNCONN-001` | offline segment tree over edge lifetimes with rollback union-find; strict insert/delete batches | per-state BFS recomputation |
 
 Each is certified on seeded directed and undirected graphs (random, DAG, cycle, clique, star,
 path, layered, joined cycles, empty) or seeded assignment problems, insertion-order metamorphic
 tests, budget-one-short refusals and tampered-witness refusals
 (`crates/fss-graph-algorithms/tests/weighted_certification.rs`,
-`crates/fss-graph-algorithms/tests/optimization_certification.rs`). The projections are caller-built:
+`crates/fss-graph-algorithms/tests/optimization_certification.rs`,
+`crates/fss-graph-algorithms/tests/path_time_certification.rs`). The projections are caller-built:
 no retained-record projection builder exists yet for `PlanObligationGraph`, `EvidenceClaimGraph`,
 `IncidentCausalGraph`, `DeviceFailureGraph`, `SpatioTemporalTrackGraph` or `ArchiveObjectGraph`.
 None is qualified: the `INT-FNX-001` differential and the atlas's snapshot-invalidation,

@@ -134,7 +134,6 @@ impl UnionFind {
     }
 
     /// Undoes [`Self::join`] given its result.
-    #[allow(dead_code)]
     pub(crate) fn split(&mut self, big: u32, small: u32) {
         self.parent[small as usize] = small;
         self.size[big as usize] -= self.size[small as usize];

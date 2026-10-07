@@ -19,7 +19,21 @@
       "outputSizeWitness": "<= |V| component labels",
       "exactness": "exact",
       "gate": "INT-FNX-001",
-      "status": "specified"
+      "status": "implemented",
+      "implementationId": "fss-graph-algorithms:alg-dynconn-001:offline-segment-tree-rollback-union-find:v1",
+      "tieBreakPolicyId": "tie:canonical-edge-then-batch-order-union-by-size-larger-root:v1",
+      "policyId": "graph-policy:undirected:simple-strict:strict-insert-delete-batches:weights-ignored:tie:canonical-edge-then-batch-order-union-by-size-larger-root:v1",
+      "complexityBoundId": "bound:alg-dynconn-001:segment-tree-2-log-s-per-lifetime:v1",
+      "projectionBinding": "caller-built undirected WeightedGraph as state 0 plus strict insert/delete batches bound into the inputDigest; the witness bound depends on lifetimes, states and queries; no retained-record projection builder yet",
+      "qualification": "not_qualified: certified only against the in-tree brute-force oracle (crates/fss-graph-algorithms/src/oracles.rs) on seeded small graphs; the INT-FNX-001 FrankenNetworkX differential, snapshot invalidation, capability noninterference and incremental/full lanes do not exist",
+      "evidence": [
+        "crates/fss-graph-algorithms/src/dynconn.rs",
+        "crates/fss-graph-algorithms/src/spanning.rs",
+        "crates/fss-graph-algorithms/src/weighted.rs",
+        "crates/fss-graph-algorithms/src/certified.rs",
+        "crates/fss-graph-algorithms/src/oracles.rs",
+        "crates/fss-graph-algorithms/tests/path_time_certification.rs"
+      ]
     },
     {
       "id": "ALG-BRIDGE-001",
@@ -193,7 +207,20 @@
       "outputSizeWitness": "<= k * |V| path nodes and <= k * |E| edges",
       "exactness": "exact_or_bounded",
       "gate": "INT-FNX-001",
-      "status": "specified"
+      "status": "implemented",
+      "implementationId": "fss-graph-algorithms:alg-ksp-001:yen-lexicographic-spur-diversity-filter:v1",
+      "tieBreakPolicyId": "tie:cost-then-hops-then-lexicographic-node-identity-sequence:v1",
+      "policyId": "graph-policy:directed-or-undirected:simple-strict:loopless:nonnegative-arc-length:min-distinct-arcs-diversity:numeric:u64-exact:checked:unit-bound:v1:tie:cost-then-hops-then-lexicographic-node-identity-sequence:v1",
+      "complexityBoundId": "bound:alg-ksp-001:yen-cap-times-n-spur-searches:v1",
+      "projectionBinding": "caller-built canonical WeightedGraph (fss.graph.weighted_projection.v1) named in the witness projectionId; no retained-record projection builder yet",
+      "qualification": "not_qualified: certified only against the in-tree brute-force oracle (crates/fss-graph-algorithms/src/oracles.rs) on seeded small graphs; the INT-FNX-001 FrankenNetworkX differential, snapshot invalidation, capability noninterference and incremental/full lanes do not exist",
+      "evidence": [
+        "crates/fss-graph-algorithms/src/ksp.rs",
+        "crates/fss-graph-algorithms/src/weighted.rs",
+        "crates/fss-graph-algorithms/src/certified.rs",
+        "crates/fss-graph-algorithms/src/oracles.rs",
+        "crates/fss-graph-algorithms/tests/path_time_certification.rs"
+      ]
     },
     {
       "id": "ALG-TREACH-001",
@@ -210,7 +237,19 @@
       "outputSizeWitness": "<= |V| reached nodes and <= |E| valid intervals",
       "exactness": "exact",
       "gate": "INT-FNX-001",
-      "status": "specified"
+      "status": "implemented",
+      "implementationId": "fss-graph-algorithms:alg-treach-001:integer-interval-least-fixpoint-worklist:v1",
+      "tieBreakPolicyId": "tie:ascending-node-identity-worklist-sorted-disjoint-intervals:v1",
+      "policyId": "graph-policy:directed:simple-strict:departure-window-travel-bounds-node-linger:integer-time:checked:horizon-clipped:v1:tie:ascending-node-identity-worklist-sorted-disjoint-intervals:v1",
+      "complexityBoundId": "bound:alg-treach-001:n-times-horizon-node-updates:v1",
+      "projectionBinding": "caller-built canonical TemporalNetwork (fss.graph.temporal_projection.v1: integer time unit, horizon, per-node linger bound, per-transit departure window and travel bounds); the witness bound depends on the horizon and interval cap bound into its inputDigest; no retained-record projection builder yet",
+      "qualification": "not_qualified: certified only against the in-tree brute-force oracle (crates/fss-graph-algorithms/src/oracles.rs) on seeded small graphs; the INT-FNX-001 FrankenNetworkX differential, snapshot invalidation, capability noninterference and incremental/full lanes do not exist",
+      "evidence": [
+        "crates/fss-graph-algorithms/src/temporal.rs",
+        "crates/fss-graph-algorithms/src/certified.rs",
+        "crates/fss-graph-algorithms/src/oracles.rs",
+        "crates/fss-graph-algorithms/tests/path_time_certification.rs"
+      ]
     },
     {
       "id": "ALG-MSD-001",

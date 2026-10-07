@@ -499,9 +499,10 @@ fn test_schema_domain_and_pinned_counts() -> Result<(), Box<dyn Error>> {
     // + SCHEMA-DOMAIN-GRAPH-{WEIGHTED-PROJECTION,QUERY-INPUT}-001 and
     //   {SCC,TOPO,DOM,SP,MSD,FLOW}-{OUTPUT,DECISION-PATH}-001 (WP-170) = 253
     // + SCHEMA-DOMAIN-GRAPH-{MST,GH,MCF,MATCH,MULTIMATCH}-{OUTPUT,DECISION-PATH}-001 and -ASSIGNMENT-PROJECTION-001 (WP-170) = 264
+    // + SCHEMA-DOMAIN-GRAPH-{KSP,TREACH,DYNCONN}-{OUTPUT,DECISION-PATH}-001 and -TEMPORAL-PROJECTION-001 (WP-170) = 271
     assert_eq!(
-        domain_count, 264,
-        "registries/DIGEST_DOMAINS.md count must remain pinned at 264"
+        domain_count, 271,
+        "registries/DIGEST_DOMAINS.md count must remain pinned at 271"
     );
 
     let schemas_path = Path::new(env!("CARGO_MANIFEST_DIR"))
