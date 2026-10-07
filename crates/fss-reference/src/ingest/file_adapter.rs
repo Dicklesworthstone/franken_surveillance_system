@@ -2761,6 +2761,16 @@ impl FileIngestAdapter {
             });
         }
 
+        // With a capture hint, a sample's offset from the hint's start is its presentation time
+        // relative to the earliest one, on the container's media clock: B-frame reordering and
+        // variable frame rates are honoured, and the hint's assumed rate is not used.
+        let earliest = mp4
+            .samples()
+            .iter()
+            .map(|sample| sample.presentation_time())
+            .min()
+            .unwrap_or(0);
+        let timescale = i128::from(mp4.timescale());
         let mut segment_spans = Vec::with_capacity(mp4.samples().len());
         let mut capsules = Vec::with_capacity(mp4.samples().len());
         for sample in mp4.samples() {
@@ -2772,8 +2782,14 @@ impl FileIngestAdapter {
             })?;
             let capsule_id =
                 CapsuleId::parse(format!("capsule:{}:{:06}", import_identity_hex, idx))?;
-            let capture =
-                Self::compute_capture_interval(idx, request.capture_hint.as_ref(), receive_time)?;
+            let ticks = sample.presentation_time() - earliest;
+            let offset_ns = (ticks * 1_000_000_000 + timescale / 2) / timescale;
+            let capture = Self::capture_interval_at(
+                idx,
+                offset_ns,
+                request.capture_hint.as_ref(),
+                receive_time,
+            )?;
             let capsule = SensorCapsule::from_source_bytes(SensorSourceBytesSpec {
                 capsule_id: capsule_id.clone(),
                 sensor_id: request.sensor_id.clone(),
@@ -2810,10 +2826,23 @@ impl FileIngestAdapter {
         hint: Option<&CaptureHint>,
         receive_time: TimestampNs,
     ) -> Result<CaptureInterval, FileIngestError> {
+        let offset_ns = hint.map_or(0, |h| {
+            ((index as f64) * 1_000_000_000.0 / h.assumed_fps).round() as i128
+        });
+        Self::capture_interval_at(index, offset_ns, hint, receive_time)
+    }
+
+    /// Capture interval of segment `index` whose nominal capture is `offset_ns` after the hint's
+    /// start (Annex-B/MJPEG: index over the assumed rate; MP4: container presentation time).
+    fn capture_interval_at(
+        index: usize,
+        offset_ns: i128,
+        hint: Option<&CaptureHint>,
+        receive_time: TimestampNs,
+    ) -> Result<CaptureInterval, FileIngestError> {
         match hint {
             Some(h) => {
-                let frame_ns = ((index as f64) * 1_000_000_000.0 / h.assumed_fps).round() as i128;
-                let center = h.start_ns.0.saturating_add(frame_ns);
+                let center = h.start_ns.0.saturating_add(offset_ns);
                 let earliest = TimestampNs(center.saturating_sub(h.uncertainty_ns as i128));
                 let latest = TimestampNs(center.saturating_add(h.uncertainty_ns as i128));
                 if earliest > receive_time {

@@ -184,9 +184,14 @@ remaining box bytes (`mp4_box:<type>`, which includes other tracks' data inside 
 manifest must account for every source byte exactly once, and samples stored out of decode order
 are refused. Container structure is not a source gap or omission: MP4 samples never carry
 `gap_before`, and dwell time reliability and retention eligibility treat `mp4_` spans as
-accounted structure, not lost media. Capture times follow the same operator capture-hint rule
-as Annex-B (sample index over the assumed rate); MP4 media timestamps are a media clock, not a
-sensor clock, and are not promoted to capture time.
+accounted structure, not lost media. Capture times: without a capture hint every sample is
+`[0, receive_time]`, as for Annex-B. With an operator capture hint, a sample's nominal capture is
+the hint's start plus its presentation time relative to the earliest presentation time on the
+container's media clock (composition offsets included), +/- the hint's uncertainty. B-frame
+reordering and variable frame rates (cameras dropping frames at night) are therefore honoured,
+and the hint's assumed rate, which the Annex-B and MJPEG paths use, is not used for MP4. The start
+and uncertainty remain operator assumptions (`capture_time_label = operator_assumption`); the
+media clock is not a sensor clock and only spaces the samples.
 
 **Decode.** `RecordedH264Range` accepts `mp4avc` and `RecordedH265Range` accepts `mp4hevc`
 imports with the same requests, refusals and receipts as `annexb` and `hevc`: each reads the

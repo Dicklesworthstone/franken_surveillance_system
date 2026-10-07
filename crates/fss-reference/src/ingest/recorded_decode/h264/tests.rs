@@ -603,3 +603,40 @@ fn mp4_ranges_refuse_predicted_starts_and_damaged_or_mislabelled_files() -> Test
     }
     Ok(())
 }
+
+#[test]
+fn mp4_capture_hints_follow_container_presentation_times() -> TestResult {
+    let directory = OwnedDirectory::new("mp4-capture")?;
+    let root = directory.0.join("deployment");
+    let path = directory.0.join("camera.mp4");
+    fs::write(&path, MP4_FASTSTART)?;
+    let cx = context(&root)?;
+    let mut deployment = ReferenceDeployment::open(&root, "site:recorded-h264", &cx)?;
+    let start = 100_000_000_000_i128;
+    let mut ingest = FileIngestRequest::new(
+        path,
+        SensorId::parse("sensor:recorded-h264")?,
+        StreamId::parse("stream:recorded-h264")?,
+    )
+    .with_receive_time(TimestampNs(1_000_000_000_000));
+    // The assumed rate (deliberately wrong) is not used for MP4 timing.
+    ingest.capture_hint = Some(crate::ingest::CaptureHint::new(
+        TimestampNs(start),
+        1_000_000,
+        7.0,
+    )?);
+    let receipt = FileIngestAdapter::ingest(ingest, &cx, &mut deployment)?;
+    let frames = decode_h264_range(&deployment, request(receipt.import_identity, 0, 10), &cx)?;
+    // Ten frames at 5 fps on a 10240 Hz media clock: display index k is 200 ms * k after start,
+    // whatever its decode (segment) position.
+    for (display, frame) in frames.iter().enumerate() {
+        let capture = frame.receipt().capsule().capture;
+        let centre = start + display as i128 * 200_000_000;
+        assert_eq!(capture.earliest.0, centre - 1_000_000);
+        assert_eq!(capture.latest.0, centre + 1_000_000);
+    }
+    // B-frame reordering: decode order differs from display order here.
+    let segments: Vec<u64> = frames.iter().map(|f| f.receipt().segment_index()).collect();
+    assert_ne!(segments, (0..10).collect::<Vec<u64>>());
+    Ok(())
+}
