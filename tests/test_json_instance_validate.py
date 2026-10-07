@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 """Unit tests for json_instance_validate.py."""
 
+import hashlib
 import json
 import os
 import sys
@@ -360,6 +361,117 @@ class TestJsonInstanceValidate(unittest.TestCase):
         # Must start with fss-na: (distinct scheme, never sha256:)
         self.assertTrue(sentinel.startswith("fss-na:"))
         self.assertEqual(len(sentinel), 7 + 64)
+
+
+class TestEmittedModelReceipts(unittest.TestCase):
+    """Receipts emitted by Rust (crates/fss-reference/tests/model_receipt_contract.rs pins these
+    exact bytes) validated against the schema (fss-2h5zq.48)."""
+
+    FIXTURE_DIR = REPO_ROOT / "tests" / "fixtures" / "model_receipts"
+    SCHEMA_PATH = REPO_ROOT / "schemas" / "model_execution_receipt.v1.json"
+    CASES = ("ok", "error", "budget_exhausted", "cancelled", "activity_package")
+    DIGEST_FIELDS = (
+        "modelPackageRoot",
+        "activationGeneration",
+        "preprocessProgram",
+        "postprocessProgram",
+        "operatorRegistryGeneration",
+        "executionPlanDigest",
+        "numericPolicyDigest",
+        "decisionPathDigest",
+    )
+
+    def setUp(self):
+        self.validator = InstanceValidator(REPO_ROOT / "schemas")
+        self.schema = parse_strict_json(self.SCHEMA_PATH.read_text(encoding="utf-8"))
+
+    def load(self, case):
+        text = (self.FIXTURE_DIR / f"{case}.json").read_text(encoding="utf-8")
+        return parse_strict_json(text)
+
+    def test_every_emitted_receipt_validates(self):
+        outcomes = set()
+        for case in self.CASES:
+            with self.subTest(case=case):
+                receipt = self.load(case)
+                validate_instance_file(self.SCHEMA_PATH, self.FIXTURE_DIR / f"{case}.json")
+                outcomes.add(receipt["outcome"])
+                print(
+                    json.dumps(
+                        {
+                            "bead": "fss-2h5zq.48",
+                            "step": "receipt_schema",
+                            "case": case,
+                            "outcome": receipt["outcome"],
+                            "verdict": "valid",
+                        }
+                    )
+                )
+        self.assertEqual(outcomes, {"ok", "error", "budget_exhausted", "cancelled"})
+
+    def test_outcome_fields_are_consistent(self):
+        for case in self.CASES:
+            with self.subTest(case=case):
+                receipt = self.load(case)
+                ok = receipt["outcome"] == "ok"
+                self.assertEqual(receipt["outputRoot"] is not None, ok)
+                self.assertEqual(receipt["operatorTraceDigest"] is not None, ok)
+                self.assertEqual(receipt["errorId"] is not None, receipt["outcome"] == "error")
+                self.assertEqual(
+                    receipt["cancelReason"] is not None, receipt["outcome"] == "cancelled"
+                )
+
+    def test_sentinels_recompute_and_are_declared(self):
+        for case in self.CASES:
+            with self.subTest(case=case):
+                receipt = self.load(case)
+                features = receipt["backend"]["featureSet"]
+                declared = {
+                    f[len("sentinel:"):] for f in features if f.startswith("sentinel:")
+                }
+                seen = set()
+                for field in self.DIGEST_FIELDS:
+                    value = receipt[field]
+                    if value.startswith("fss-na:"):
+                        matches = [d for d in declared if d.startswith(field + "=")]
+                        self.assertEqual(len(matches), 1, field)
+                        reason = matches[0].split("=", 1)[1]
+                        text = f"fss.model_execution_receipt.v1/sentinel/{field}/{reason}"
+                        expected = "fss-na:" + hashlib.sha256(text.encode()).hexdigest()
+                        self.assertEqual(value, expected, field)
+                        seen.add(matches[0])
+                    else:
+                        self.assertRegex(value, r"\Asha256:[0-9a-f]{64}\Z", field)
+                self.assertEqual(seen, declared)
+                self.assertIn("activationGeneration=unactivated_reference_run", declared)
+
+    def test_package_receipt_links_sources_and_names_its_package(self):
+        receipt = self.load("activity_package")
+        self.assertRegex(receipt["modelPackageRoot"], r"\Asha256:[0-9a-f]{64}\Z")
+        features = receipt["backend"]["featureSet"]
+        self.assertIn("input_roots:tensors=3,sources=2", features)
+        self.assertEqual(len(receipt["inputRoots"]), 5)
+        for case in ("ok", "error", "budget_exhausted", "cancelled"):
+            self.assertTrue(self.load(case)["modelPackageRoot"].startswith("fss-na:"))
+
+    def test_planted_mutations_of_emitted_receipts_are_refused(self):
+        base = self.load("activity_package")
+
+        def refused(mutate):
+            receipt = json.loads(json.dumps(base))
+            mutate(receipt)
+            with self.assertRaises(JsonInstanceValidationError):
+                self.validator.validate(self.schema, receipt, self.SCHEMA_PATH.name)
+
+        refused(lambda r: r.__setitem__("modelPackageRoot", "not_applicable"))
+        refused(lambda r: r.__setitem__("modelPackageRoot", r["modelPackageRoot"] + "\n"))
+        refused(lambda r: r.pop("decisionPathDigest"))
+        refused(lambda r: r.__setitem__("extra", 1))
+        refused(lambda r: r.__setitem__("outcome", "succeeded"))
+        refused(lambda r: r["usage"].__setitem__("workUnits", -1))
+        refused(lambda r: r["usage"].__setitem__("wallNs", True))
+        refused(lambda r: r.__setitem__("inputRoots", []))
+        refused(lambda r: r.__setitem__("activationGeneration", None))
 
 
 if __name__ == "__main__":
