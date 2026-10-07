@@ -42,6 +42,113 @@ declare -A _E2E_STEP_STDERR=()
 declare -A _E2E_SEEN_STEPS=()
 declare -A _E2E_STEP_TARGET=()
 
+# The shell that sourced this library owns the run. Only it may write the summary; a subshell or
+# background job that calls e2e_summary records a failed step instead (exactly one summary).
+_E2E_MAIN_PID="$BASHPID"
+_E2E_EXIT_HOOKS=()
+_E2E_EXIT_HOOKS_RAN=0
+
+# e2e_on_exit <command...>: register cleanup that runs once when the run finishes (from
+# e2e_summary or the EXIT trap). Each hook runs in its own subshell, so it can neither change the
+# run's exit status nor its verdict: `exit 0` inside a hook only ends that subshell. A hook that
+# fails is recorded as a failed step, so a broken cleanup cannot pass silently either.
+e2e_on_exit() {
+    if [[ $# -eq 0 ]]; then
+        echo "Usage: e2e_on_exit <command...>" >&2
+        return 1
+    fi
+    if [[ "$BASHPID" != "$_E2E_MAIN_PID" ]]; then
+        echo "Error: e2e_on_exit called from a subshell; the hook would be lost (failing closed)" >&2
+        return 1
+    fi
+    _E2E_EXIT_HOOKS+=("$*")
+}
+
+# A script must not be able to replace the harness EXIT trap: `trap 'exit 0' EXIT` used to turn a
+# failed or unfinished run into exit status 0. In the owning shell, EXIT actions given to `trap`
+# are registered as e2e_on_exit hooks and the harness trap stays installed; `trap - EXIT` and
+# `trap '' EXIT` only clear hooks registered that way. Other signals, listings and subshells go
+# to the builtin unchanged.
+_E2E_TRAP_HOOKS=()
+trap() {
+    if [[ "$BASHPID" != "${_E2E_MAIN_PID:-}" ]]; then
+        builtin trap "$@"
+        return
+    fi
+    local args=("$@")
+    if [[ ${#args[@]} -gt 0 && "${args[0]}" == "--" ]]; then
+        args=("${args[@]:1}")
+    fi
+    if [[ ${#args[@]} -lt 2 || "${args[0]}" == -* && "${args[0]}" != "-" ]]; then
+        builtin trap "$@"
+        return
+    fi
+    local action="${args[0]}" sig upper passthrough=()
+    for sig in "${args[@]:1}"; do
+        upper="${sig^^}"
+        if [[ "$upper" == "EXIT" || "$upper" == "SIGEXIT" || "$upper" == "0" ]]; then
+            if [[ "$action" == "-" || -z "$action" ]]; then
+                _E2E_TRAP_HOOKS=()
+            else
+                _E2E_TRAP_HOOKS=("$action")
+            fi
+        else
+            passthrough+=("$sig")
+        fi
+    done
+    if [[ ${#passthrough[@]} -gt 0 ]]; then
+        builtin trap -- "$action" "${passthrough[@]}"
+    fi
+    return 0
+}
+
+_e2e_run_exit_hooks() {
+    if [[ "${_E2E_EXIT_HOOKS_RAN:-0}" -eq 1 ]]; then
+        return 0
+    fi
+    _E2E_EXIT_HOOKS_RAN=1
+    local hook hook_rc failed=0
+    for hook in "${_E2E_TRAP_HOOKS[@]}" "${_E2E_EXIT_HOOKS[@]}"; do
+        [[ -z "$hook" ]] && continue
+        hook_rc=0
+        ( eval "$hook" ) || hook_rc=$?
+        if [[ $hook_rc -ne 0 ]]; then
+            echo "Error: exit hook failed with status ${hook_rc}: ${hook}" >&2
+            failed=1
+        fi
+    done
+    return $failed
+}
+
+# Append one failed harness record (full step schema) for a harness-detected defect.
+_e2e_harness_fail_record() {
+    local step="$1" observed="$2"
+    [[ -n "${_E2E_LOG_FILE:-}" && -f "${_E2E_LOG_FILE:-}" ]] || return 0
+    local rec_json
+    rec_json=$(python3 -c '
+import json, sys
+ts, script, bead, step, observed, repro = sys.argv[1:7]
+used = set()
+with open(sys.argv[7], encoding="utf-8") as log:
+    for line in log:
+        try:
+            used.add(json.loads(line).get("step"))
+        except ValueError:
+            pass
+candidate, n = step, 1
+while candidate in used:
+    candidate, n = f"{step}_{n}", n + 1
+print(json.dumps({
+    "ts": ts, "script": script, "bead": bead, "step": candidate,
+    "cmd": ["harness", step], "exit": 1, "duration_ms": 0,
+    "expected": "harness invariant holds", "observed": observed,
+    "digest": None, "stdout_sha256": "", "stdout_excerpt": "", "stderr_excerpt": "",
+    "verdict": "fail", "repro": repro,
+}))
+' "$(_e2e_iso8601)" "$_E2E_SCRIPT_NAME" "$_E2E_BEAD" "$step" "$observed" "${_E2E_SCRIPT_PATH}" "$_E2E_LOG_FILE") || return 0
+    printf "%s\n" "$rec_json" >> "$_E2E_LOG_FILE"
+}
+
 # Max log file size: 10 MiB (10485760 bytes)
 _E2E_MAX_LOG_BYTES=10485760
 # Max excerpt size: 4 KiB (4096 bytes)
@@ -191,14 +298,21 @@ token_patterns = [
 ]
 drop_line_pat = re.compile(r"authorization|password|token|secret|cookie", re.IGNORECASE)
 hex_pat = re.compile(r"[0-9a-fA-F]{65,}")
+dangling_pat = re.compile(r"(?i)(?:(?:authorization|password|passwd|passphrase|token|secret|cookie|api_?key|private_?key)\w*\s*[:=]\s*[\x22\x27]?\s*$|^\W*(?:authorization|password|passwd|passphrase|token|secret|cookie|api_?key|private_?key)\w*\s*$)")
 max_bytes = 4096
 
 out_lines = []
 total_bytes = 0
 try:
     with open(input_path, "r", encoding="utf-8", errors="replace") as f:
+        drop_next = False
         for line in f:
+            if drop_next:
+                # The value of a dangling "Password:" style prompt sits on this line.
+                drop_next = False
+                continue
             if drop_line_pat.search(line):
+                drop_next = dangling_pat.search(line) is not None
                 continue
             for s in env_secrets:
                 if s in line:
@@ -276,7 +390,7 @@ e2e_init() {
     _E2E_SEEN_STEPS=()
 
     # Install early EXIT trap so any abort before log file creation fails closed
-    trap _e2e_trap_exit EXIT
+    builtin trap _e2e_trap_exit EXIT
 
     if [[ "$_E2E_LIST" -eq 1 ]]; then
         return 0
@@ -369,7 +483,7 @@ print(json.dumps(rec))
         exit 1
     fi
 
-    trap _e2e_trap_exit EXIT
+    builtin trap _e2e_trap_exit EXIT
 }
 
 _e2e_trap_exit() {
@@ -378,15 +492,17 @@ _e2e_trap_exit() {
         return
     fi
     if [[ -z "${_E2E_LOG_FILE:-}" || ! -f "${_E2E_LOG_FILE:-}" ]]; then
+        _e2e_run_exit_hooks || true
         echo "Error: E2E uninitialized or log file not set (failing closed)" >&2
         exit 1
     fi
     if [[ "${_E2E_SUMMARY_WRITTEN:-0}" -eq 1 ]]; then
         return
     fi
-    if [[ $rc -ne 0 ]]; then
-        _E2E_RUN_FAILURES+=("script_exit")
-    fi
+    # Reaching the EXIT trap without e2e_summary means the script ended early: a non-zero exit,
+    # an `exit 0` before the remaining steps ran, or a signal/ERR handler that exited. The run
+    # did not complete, so it fails whatever status the shell was leaving with (rc=${rc}).
+    _E2E_RUN_FAILURES+=("script_exit")
     if [[ -n "${_E2E_RUN_DIR:-}" && -d "${_E2E_RUN_DIR:-}" ]]; then
         rm -f "${_E2E_RUN_DIR}"/stdout_* "${_E2E_RUN_DIR}"/stderr_* "${_E2E_RUN_DIR}"/cargo_test_* "${_E2E_RUN_DIR}"/cargo_stdout.* 2>/dev/null || true
     fi
@@ -394,7 +510,7 @@ _e2e_trap_exit() {
 }
 
 # Install EXIT trap so any uninitialized exit fails closed
-trap _e2e_trap_exit EXIT
+builtin trap _e2e_trap_exit EXIT
 
 e2e_step() {
     local step="$1"
@@ -479,10 +595,18 @@ token_patterns = [
     re.compile(r"""(?i)\b([A-Za-z0-9_]*(?:authorization|password|passwd|token|secret|cookie|api_key|apikey|mypass|privkey|secret_key|(?:(?<![a-zA-Z])pass)|(?:(?<![a-zA-Z])key))[A-Za-z0-9_]*)\s*[:=]\s*(?:\"[^\"]*\"|\x27[^\x27]*\x27|[^\s,;\x22\x27]+)"""),
 ]
 hex_pat = re.compile(r"[0-9a-fA-F]{65,}")
+dangling_pat = re.compile(r"(?i)(?:(?:authorization|password|passwd|passphrase|token|secret|cookie|api_?key|private_?key)\w*\s*[:=]\s*[\x22\x27]?\s*$|^\W*(?:authorization|password|passwd|passphrase|token|secret|cookie|api_?key|private_?key)\w*\s*$)")
 
 def sanitize(s):
     if not isinstance(s, str):
         return s
+    if "\n" in s:
+        # A dangling "Password:" style prompt carries its value on the next line; redact it.
+        parts = s.split("\n")
+        for i in range(len(parts) - 1):
+            if dangling_pat.search(parts[i]):
+                parts[i + 1] = "<redacted>"
+        s = "\n".join(parts)
     for sec in env_secrets:
         if sec in s:
             s = s.replace(sec, "<redacted>")
@@ -579,10 +703,18 @@ token_patterns = [
     re.compile(r"""(?i)\b([A-Za-z0-9_]*(?:authorization|password|passwd|token|secret|cookie|api_key|apikey|mypass|privkey|secret_key|(?:(?<![a-zA-Z])pass)|(?:(?<![a-zA-Z])key))[A-Za-z0-9_]*)\s*[:=]\s*(?:\"[^\"]*\"|\x27[^\x27]*\x27|[^\s,;\x22\x27]+)"""),
 ]
 hex_pat = re.compile(r"[0-9a-fA-F]{65,}")
+dangling_pat = re.compile(r"(?i)(?:(?:authorization|password|passwd|passphrase|token|secret|cookie|api_?key|private_?key)\w*\s*[:=]\s*[\x22\x27]?\s*$|^\W*(?:authorization|password|passwd|passphrase|token|secret|cookie|api_?key|private_?key)\w*\s*$)")
 
 def sanitize(s):
     if not isinstance(s, str):
         return s
+    if "\n" in s:
+        # A dangling "Password:" style prompt carries its value on the next line; redact it.
+        parts = s.split("\n")
+        for i in range(len(parts) - 1):
+            if dangling_pat.search(parts[i]):
+                parts[i + 1] = "<redacted>"
+        s = "\n".join(parts)
     for sec in env_secrets:
         if sec in s:
             s = s.replace(sec, "<redacted>")
@@ -707,10 +839,18 @@ token_patterns = [
     re.compile(r"""(?i)\b([A-Za-z0-9_]*(?:authorization|password|passwd|token|secret|cookie|api_key|apikey|mypass|privkey|secret_key|(?:(?<![a-zA-Z])pass)|(?:(?<![a-zA-Z])key))[A-Za-z0-9_]*)\s*[:=]\s*(?:\"[^\"]*\"|\x27[^\x27]*\x27|[^\s,;\x22\x27]+)"""),
 ]
 hex_pat = re.compile(r"[0-9a-fA-F]{65,}")
+dangling_pat = re.compile(r"(?i)(?:(?:authorization|password|passwd|passphrase|token|secret|cookie|api_?key|private_?key)\w*\s*[:=]\s*[\x22\x27]?\s*$|^\W*(?:authorization|password|passwd|passphrase|token|secret|cookie|api_?key|private_?key)\w*\s*$)")
 
 def sanitize(s):
     if not isinstance(s, str):
         return s
+    if "\n" in s:
+        # A dangling "Password:" style prompt carries its value on the next line; redact it.
+        parts = s.split("\n")
+        for i in range(len(parts) - 1):
+            if dangling_pat.search(parts[i]):
+                parts[i + 1] = "<redacted>"
+        s = "\n".join(parts)
     for sec in env_secrets:
         if sec in s:
             s = s.replace(sec, "<redacted>")
@@ -817,10 +957,18 @@ token_patterns = [
     re.compile(r"""(?i)\b([A-Za-z0-9_]*(?:authorization|password|passwd|token|secret|cookie|api_key|apikey|mypass|privkey|secret_key|(?:(?<![a-zA-Z])pass)|(?:(?<![a-zA-Z])key))[A-Za-z0-9_]*)\s*[:=]\s*(?:\"[^\"]*\"|\x27[^\x27]*\x27|[^\s,;\x22\x27]+)"""),
 ]
 hex_pat = re.compile(r"[0-9a-fA-F]{65,}")
+dangling_pat = re.compile(r"(?i)(?:(?:authorization|password|passwd|passphrase|token|secret|cookie|api_?key|private_?key)\w*\s*[:=]\s*[\x22\x27]?\s*$|^\W*(?:authorization|password|passwd|passphrase|token|secret|cookie|api_?key|private_?key)\w*\s*$)")
 
 def sanitize(s):
     if not isinstance(s, str):
         return s
+    if "\n" in s:
+        # A dangling "Password:" style prompt carries its value on the next line; redact it.
+        parts = s.split("\n")
+        for i in range(len(parts) - 1):
+            if dangling_pat.search(parts[i]):
+                parts[i + 1] = "<redacted>"
+        s = "\n".join(parts)
     for sec in env_secrets:
         if sec in s:
             s = s.replace(sec, "<redacted>")
@@ -936,10 +1084,18 @@ token_patterns = [
     re.compile(r"""(?i)\b([A-Za-z0-9_]*(?:authorization|password|passwd|token|secret|cookie|api_key|apikey|mypass|privkey|secret_key|(?:(?<![a-zA-Z])pass)|(?:(?<![a-zA-Z])key))[A-Za-z0-9_]*)\s*[:=]\s*(?:\"[^\"]*\"|\x27[^\x27]*\x27|[^\s,;\x22\x27]+)"""),
 ]
 hex_pat = re.compile(r"[0-9a-fA-F]{65,}")
+dangling_pat = re.compile(r"(?i)(?:(?:authorization|password|passwd|passphrase|token|secret|cookie|api_?key|private_?key)\w*\s*[:=]\s*[\x22\x27]?\s*$|^\W*(?:authorization|password|passwd|passphrase|token|secret|cookie|api_?key|private_?key)\w*\s*$)")
 
 def sanitize(s):
     if not isinstance(s, str):
         return s
+    if "\n" in s:
+        # A dangling "Password:" style prompt carries its value on the next line; redact it.
+        parts = s.split("\n")
+        for i in range(len(parts) - 1):
+            if dangling_pat.search(parts[i]):
+                parts[i + 1] = "<redacted>"
+        s = "\n".join(parts)
     for sec in env_secrets:
         if sec in s:
             s = s.replace(sec, "<redacted>")
@@ -1033,10 +1189,18 @@ token_patterns = [
     re.compile(r"""(?i)\b([A-Za-z0-9_]*(?:authorization|password|passwd|token|secret|cookie|api_key|apikey|mypass|privkey|secret_key|(?:(?<![a-zA-Z])pass)|(?:(?<![a-zA-Z])key))[A-Za-z0-9_]*)\s*[:=]\s*(?:\"[^\"]*\"|\x27[^\x27]*\x27|[^\s,;\x22\x27]+)"""),
 ]
 hex_pat = re.compile(r"[0-9a-fA-F]{65,}")
+dangling_pat = re.compile(r"(?i)(?:(?:authorization|password|passwd|passphrase|token|secret|cookie|api_?key|private_?key)\w*\s*[:=]\s*[\x22\x27]?\s*$|^\W*(?:authorization|password|passwd|passphrase|token|secret|cookie|api_?key|private_?key)\w*\s*$)")
 
 def sanitize(s):
     if not isinstance(s, str):
         return s
+    if "\n" in s:
+        # A dangling "Password:" style prompt carries its value on the next line; redact it.
+        parts = s.split("\n")
+        for i in range(len(parts) - 1):
+            if dangling_pat.search(parts[i]):
+                parts[i + 1] = "<redacted>"
+        s = "\n".join(parts)
     for sec in env_secrets:
         if sec in s:
             s = s.replace(sec, "<redacted>")
@@ -1084,10 +1248,18 @@ token_patterns = [
     re.compile(r"""(?i)\b([A-Za-z0-9_]*(?:authorization|password|passwd|token|secret|cookie|api_key|apikey|mypass|privkey|secret_key|(?:(?<![a-zA-Z])pass)|(?:(?<![a-zA-Z])key))[A-Za-z0-9_]*)\s*[:=]\s*(?:\"[^\"]*\"|\x27[^\x27]*\x27|[^\s,;\x22\x27]+)"""),
 ]
 hex_pat = re.compile(r"[0-9a-fA-F]{65,}")
+dangling_pat = re.compile(r"(?i)(?:(?:authorization|password|passwd|passphrase|token|secret|cookie|api_?key|private_?key)\w*\s*[:=]\s*[\x22\x27]?\s*$|^\W*(?:authorization|password|passwd|passphrase|token|secret|cookie|api_?key|private_?key)\w*\s*$)")
 
 def sanitize(s):
     if not isinstance(s, str):
         return s
+    if "\n" in s:
+        # A dangling "Password:" style prompt carries its value on the next line; redact it.
+        parts = s.split("\n")
+        for i in range(len(parts) - 1):
+            if dangling_pat.search(parts[i]):
+                parts[i + 1] = "<redacted>"
+        s = "\n".join(parts)
     for sec in env_secrets:
         if sec in s:
             s = s.replace(sec, "<redacted>")
@@ -1293,10 +1465,18 @@ token_patterns = [
     re.compile(r"""(?i)\b([A-Za-z0-9_]*(?:authorization|password|passwd|token|secret|cookie|api_key|apikey|mypass|privkey|secret_key|(?:(?<![a-zA-Z])pass)|(?:(?<![a-zA-Z])key))[A-Za-z0-9_]*)\s*[:=]\s*(?:\"[^\"]*\"|\x27[^\x27]*\x27|[^\s,;\x22\x27]+)"""),
 ]
 hex_pat = re.compile(r"[0-9a-fA-F]{65,}")
+dangling_pat = re.compile(r"(?i)(?:(?:authorization|password|passwd|passphrase|token|secret|cookie|api_?key|private_?key)\w*\s*[:=]\s*[\x22\x27]?\s*$|^\W*(?:authorization|password|passwd|passphrase|token|secret|cookie|api_?key|private_?key)\w*\s*$)")
 
 def sanitize(s):
     if not isinstance(s, str):
         return s
+    if "\n" in s:
+        # A dangling "Password:" style prompt carries its value on the next line; redact it.
+        parts = s.split("\n")
+        for i in range(len(parts) - 1):
+            if dangling_pat.search(parts[i]):
+                parts[i + 1] = "<redacted>"
+        s = "\n".join(parts)
     for sec in env_secrets:
         if sec in s:
             s = s.replace(sec, "<redacted>")
@@ -1320,7 +1500,8 @@ def sanitize_data(data):
         return [sanitize_data(x) for x in data]
     return data
 
-ansi_re = re.compile(r"\x1b\[[0-?]*[ -/]*[@-~]")
+ansi_re = re.compile(r"\x1b(?:\[[0-?]*[ -/]*[@-~]|\][^\x07\x1b]*(?:\x07|\x1b\\)|[PX^_][^\x1b]*\x1b\\|[ -/]*[0-~])")
+ctrl_re = re.compile(r"[\x00-\x08\x0a-\x1f\x7f]")
 with open(log_path, encoding="utf-8") as existing:
     used_ids = {json.loads(line)["step"] for line in existing}
 seen_caplog_steps = set(used_ids)
@@ -1370,42 +1551,74 @@ def object_pairs(pairs):
 def invalid_constant(value):
     raise ValueError(f"invalid JSON constant: {value}")
 
-with open(stdout_path, encoding="utf-8", errors="replace") as output:
-    for raw_line in output:
-        line = ansi_re.sub("", raw_line).strip()
-        marker = re.search(r"\bCAPLOG(?:\s+|$)", line)
-        if marker is None:
+# Real rch forwards the remote command output on stderr, while local cargo prints test output
+# on stdout, so CAPLOG records are read from BOTH streams. A marker is recognised anywhere in a
+# line, whatever precedes it (libtest prefixes such as "running N tests" or a tab, interleaved
+# test output, carriage-return progress), after escape sequences and control characters are
+# removed. Every marker must be followed by exactly one JSON object; a marker that is not is a
+# malformed record and fails closed. Nothing that carries the marker is ever silently skipped.
+decoder = json.JSONDecoder(object_pairs_hook=object_pairs, parse_constant=invalid_constant)
+
+def caplog_payloads(line):
+    pos = 0
+    while True:
+        at = line.find("CAPLOG", pos)
+        if at < 0:
+            return
+        after = at + len("CAPLOG")
+        brace = after
+        while brace < len(line) and line[brace] in " \t":
+            brace += 1
+        if brace >= len(line) or line[brace] != "{":
+            yield MalformedAt(line[at:at + 200])
+            pos = after
             continue
-        emitted += 1
         try:
-            item = json.loads(line[marker.end():], object_pairs_hook=object_pairs,
-                              parse_constant=invalid_constant)
-            if not isinstance(item, dict):
-                raise ValueError("CAPLOG payload is not an object")
+            item, pos = decoder.raw_decode(line, brace)
         except (ValueError, RecursionError):
-            emit({}, "malformed_caplog", "fail", "malformed CAPLOG line observed")
+            yield MalformedAt(line[at:at + 200])
+            pos = after
             continue
-        step = item.get("step")
-        if not isinstance(step, str) or not step.strip():
-            emit(item, "missing_step", "fail", "missing or invalid step key")
-            continue
-        step = step.strip()
-        if step in ("env", "summary") or any(ord(c) < 32 for c in step):
-            emit(item, "malformed_caplog", "fail", "invalid CAPLOG step name")
-            continue
-        if step in seen_caplog_steps:
-            emit(item, f"{step}:duplicate_step", "fail", f"duplicate step name: {step}")
-            continue
-        seen_caplog_steps.add(step)
-        verdict = item.get("verdict")
-        if verdict is None:
-            emit(item, f"{step}:missing_verdict", "fail", "missing verdict key")
-        elif verdict not in ("pass", "fail", "skip"):
-            emit(item, f"{step}:invalid_verdict", "fail", "invalid CAPLOG verdict")
-        elif verdict == "pass" and item.get("expected") is not None and item.get("observed") is not None and item["expected"] != item["observed"]:
-            emit(item, f"{step}:expected_observed_mismatch", "fail")
-        else:
-            emit(item, step, verdict)
+        yield item
+
+class MalformedAt:
+    def __init__(self, text):
+        self.text = text
+
+def handle(item):
+    if not isinstance(item, dict):
+        where = f": {item.text}" if isinstance(item, MalformedAt) else ""
+        emit({}, "malformed_caplog", "fail", "malformed CAPLOG line observed" + where)
+        return
+    step = item.get("step")
+    if not isinstance(step, str) or not step.strip():
+        emit(item, "missing_step", "fail", "missing or invalid step key")
+        return
+    step = step.strip()
+    if step in ("env", "summary") or any(ord(c) < 32 for c in step):
+        emit(item, "malformed_caplog", "fail", "invalid CAPLOG step name")
+        return
+    if step in seen_caplog_steps:
+        emit(item, f"{step}:duplicate_step", "fail", f"duplicate step name: {step}")
+        return
+    seen_caplog_steps.add(step)
+    verdict = item.get("verdict")
+    if verdict is None:
+        emit(item, f"{step}:missing_verdict", "fail", "missing verdict key")
+    elif verdict not in ("pass", "fail", "skip"):
+        emit(item, f"{step}:invalid_verdict", "fail", "invalid CAPLOG verdict")
+    elif verdict == "pass" and item.get("expected") is not None and item.get("observed") is not None and item["expected"] != item["observed"]:
+        emit(item, f"{step}:expected_observed_mismatch", "fail")
+    else:
+        emit(item, step, verdict)
+
+for stream_path in (stdout_path, stderr_path):
+    with open(stream_path, encoding="utf-8", errors="replace") as output:
+        for raw_line in output:
+            line = ctrl_re.sub("", ansi_re.sub("", raw_line))
+            for item in caplog_payloads(line):
+                emitted += 1
+                handle(item)
 
 if not only_filter:
     for step in dict.fromkeys(s.strip() for s in os.environ.get("FSS_EXPECTED_ROSTER", "").split(",") if s.strip()):
@@ -1436,6 +1649,18 @@ if emitted == 0:
         done < "$parsed_file"
     else
         _E2E_RUN_FAILURES+=("caplog_parser_failed")
+    fi
+    if [[ "$test_exit" -ne 0 ]]; then
+        # The step excerpts keep the head of the transcript (compiler progress under rch); the
+        # cause of a failed cargo run is at its end. Show a redacted tail for forensics.
+        echo "--- cargo test ${target} exited ${test_exit}; redacted transcript tail ---" >&2
+        local tail_file
+        tail_file=$(mktemp "${_E2E_RUN_DIR}/cargo_test_tail_XXXXXX")
+        tail -n 40 "$stdout_file" > "$tail_file" 2>/dev/null || true
+        tail -n 60 "$stderr_file" >> "$tail_file" 2>/dev/null || true
+        _e2e_redact_file "$tail_file" >&2 || true
+        echo "--- end of transcript tail ---" >&2
+        rm -f "$tail_file"
     fi
     rm -f "$stdout_file" "$stderr_file" "$parsed_file"
     _E2E_CURRENT_RUNNING_STEP=""
@@ -1540,6 +1765,19 @@ e2e_summary() {
         return 0
     fi
 
+    if [[ "$BASHPID" != "$_E2E_MAIN_PID" ]]; then
+        # A subshell or background job cannot finalize the run: its summary would be a second
+        # one, and its exit status would not be the script's. Leave a failed record for the
+        # owning shell's summary to count, and end only this subshell.
+        _e2e_harness_fail_record "harness_subshell_summary" "e2e_summary called outside the owning shell (pid ${BASHPID}, owner ${_E2E_MAIN_PID})"
+        echo "Error: e2e_summary called from a subshell or background job; refused (failing closed)" >&2
+        exit 1
+    fi
+
+    if ! _e2e_run_exit_hooks; then
+        _e2e_harness_fail_record "harness_exit_hook" "an e2e_on_exit or trap EXIT hook exited non-zero"
+    fi
+
     local counts passed step_failures skip_count record_count
     counts=$(python3 -c '
 import json, sys
@@ -1557,6 +1795,8 @@ for failure in failures:
     print(failure)
 ' "$_E2E_LOG_FILE")
     read -r passed step_failures skip_count record_count <<< "$counts"
+    # The summary counts what the log retains, including records appended by subshells.
+    _E2E_STEP_COUNT="$record_count"
     _E2E_FAILURES=()
     while IFS= read -r failure; do
         [[ -n "$failure" ]] && _E2E_FAILURES+=("$failure")
@@ -1637,6 +1877,9 @@ for failure in failures:
         fi
     fi
 
+    # The verdict is final: drop any EXIT trap (including one a script installed with
+    # `builtin trap`) so nothing that runs after this point can rewrite the exit status.
+    builtin trap - EXIT
     if [[ "$verdict" == "pass" && "$validation_rc" -eq 0 ]]; then
         exit 0
     else

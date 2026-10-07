@@ -252,7 +252,7 @@ done
         echo "FAIL: _e2e_redact_file leaked secret into excerpt (kills M17)!" >&2
         exit 1
     fi
-    trap - EXIT
+    builtin trap - EXIT
 )
 
 echo "PASS: Test 5"
@@ -628,7 +628,7 @@ fi
         echo "FAIL: _e2e_redact_file failed to drop keyword line (kills N32)!" >&2
         exit 1
     fi
-    trap - EXIT
+    builtin trap - EXIT
 )
 
 echo "PASS: Test 16"
