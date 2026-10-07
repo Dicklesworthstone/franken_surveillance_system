@@ -206,12 +206,11 @@ impl ScreeningReport {
                     cx,
                 )?;
                 while let Some(frame) = source.next_frame(deployment, cx)? {
-                    let receipt = frame.receipt();
                     accept(
-                        receipt.segment_index(),
-                        receipt.capsule(),
-                        receipt.capsule_digest(),
-                        receipt.dimensions(),
+                        frame.segment_index(),
+                        frame.capsule(),
+                        frame.capsule_digest(),
+                        frame.dimensions(),
                         frame.pixels(),
                     )?;
                 }
@@ -230,12 +229,11 @@ impl ScreeningReport {
                     cx,
                 )?;
                 while let Some(frame) = source.next_frame(deployment, cx)? {
-                    let receipt = frame.receipt();
                     accept(
-                        receipt.segment_index(),
-                        receipt.capsule(),
-                        receipt.capsule_digest(),
-                        receipt.dimensions(),
+                        frame.segment_index(),
+                        frame.capsule(),
+                        frame.capsule_digest(),
+                        frame.dimensions(),
                         frame.pixels(),
                     )?;
                 }

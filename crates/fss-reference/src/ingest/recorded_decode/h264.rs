@@ -201,20 +201,74 @@ impl RecordedH264FrameReceipt {
 }
 
 /// One complete decoded picture; unsuccessful decoding never yields partial pixels.
-#[derive(Clone, Debug, Eq, PartialEq)]
+///
+/// The receipt's plane digests are computed from the served (masked) planes on the first
+/// [`Self::receipt`] call, not for every decoded picture: frame consumers that never read a
+/// receipt (streaming analysis, skipped frames) do not hash pictures. The sealed receipt is a
+/// pure function of the frame, so it is identical whenever it is computed.
+#[derive(Clone, Debug)]
 pub struct RecordedH264Frame {
-    receipt: RecordedH264FrameReceipt,
+    /// Receipt fields fixed when the picture is bound; its four plane-digest slots hold
+    /// placeholders that are never exposed (sealing replaces every one).
+    unsealed: RecordedH264FrameReceipt,
+    receipt: std::sync::OnceLock<RecordedH264FrameReceipt>,
     luma: Vec<u8>,
     cb: Vec<u8>,
     cr: Vec<u8>,
     mask: MaskBinding,
 }
 
+impl PartialEq for RecordedH264Frame {
+    fn eq(&self, other: &Self) -> bool {
+        self.unsealed == other.unsealed
+            && self.luma == other.luma
+            && self.cb == other.cb
+            && self.cr == other.cr
+            && self.mask == other.mask
+    }
+}
+impl Eq for RecordedH264Frame {}
+
 impl RecordedH264Frame {
-    /// Source and codec provenance.
+    /// Source and codec provenance (plane digests computed on first use).
     #[must_use]
     pub fn receipt(&self) -> &RecordedH264FrameReceipt {
-        &self.receipt
+        self.receipt.get_or_init(|| {
+            let mut receipt = self.unsealed.clone();
+            let mut i420 = fss_core::Sha256Hasher::new();
+            for plane in [&self.luma, &self.cb, &self.cr] {
+                i420.update(plane);
+            }
+            receipt.luma_sha256 = ContentDigest::sha256(&self.luma);
+            receipt.i420_sha256 = match i420.finalize() {
+                Ok(bytes) => ContentDigest::new(fss_core::DigestAlgorithm::Sha256, bytes),
+                // Unreachable for in-memory planes; the concatenated digest is still exact.
+                Err(_) => ContentDigest::sha256(&[&self.luma[..], &self.cb, &self.cr].concat()),
+            };
+            receipt.cb_sha256 = ContentDigest::sha256(&self.cb);
+            receipt.cr_sha256 = ContentDigest::sha256(&self.cr);
+            receipt
+        })
+    }
+    /// Zero-based retained segment (access unit) of this picture, without sealing the receipt.
+    #[must_use]
+    pub fn segment_index(&self) -> u64 {
+        self.unsealed.segment_index
+    }
+    /// Original source capsule of this picture's segment.
+    #[must_use]
+    pub fn capsule(&self) -> &SensorCapsule {
+        &self.unsealed.capsule
+    }
+    /// Digest of the retained capsule payload bound to this picture's segment.
+    #[must_use]
+    pub fn capsule_digest(&self) -> ContentDigest {
+        self.unsealed.capsule_digest
+    }
+    /// Visible (cropped) luma width and height.
+    #[must_use]
+    pub fn dimensions(&self) -> [u32; 2] {
+        [self.unsealed.width, self.unsealed.height]
     }
     /// Tight row-major Y plane of the visible picture (video range as coded, not RGB).
     #[must_use]
@@ -224,8 +278,11 @@ impl RecordedH264Frame {
     /// Portable binary PGM rendering of the luma plane.
     #[must_use]
     pub fn pgm_bytes(&self) -> Vec<u8> {
-        let mut bytes =
-            format!("P5\n{} {}\n255\n", self.receipt.width, self.receipt.height).into_bytes();
+        let mut bytes = format!(
+            "P5\n{} {}\n255\n",
+            self.unsealed.width, self.unsealed.height
+        )
+        .into_bytes();
         bytes.extend_from_slice(&self.luma);
         bytes
     }
@@ -243,8 +300,8 @@ impl RecordedH264Frame {
     #[must_use]
     pub fn chroma_dimensions(&self) -> [u32; 2] {
         [
-            self.receipt.width.div_ceil(2),
-            self.receipt.height.div_ceil(2),
+            self.unsealed.width.div_ceil(2),
+            self.unsealed.height.div_ceil(2),
         ]
     }
     /// Privacy mask binding applied to every plane of this frame.
@@ -256,7 +313,7 @@ impl RecordedH264Frame {
     /// ([`super::video_rgb::VIDEO_RGB_TRANSFORM`]), over the masked planes; masked pixels are
     /// then set to the fixed RGB fill.
     pub fn to_rgb(&self) -> Result<Vec<u8>, RecordedDecodeError> {
-        let dimensions = [self.receipt.width, self.receipt.height];
+        let dimensions = [self.unsealed.width, self.unsealed.height];
         let mut rgb = super::video_rgb::i420_to_rgb(&self.luma, &self.cb, &self.cr, dimensions)?;
         self.mask.apply_rgb(&mut rgb, dimensions)?;
         Ok(rgb)
@@ -538,11 +595,9 @@ impl RecordedH264Range {
         let mut cr = picture.cr().to_vec();
         self.mask.apply_luma(&mut luma, dimensions)?;
         self.mask.apply_chroma420(&mut cb, &mut cr, dimensions)?;
-        let mut i420 = Vec::with_capacity(luma.len() + cb.len() + cr.len());
-        i420.extend_from_slice(&luma);
-        i420.extend_from_slice(&cb);
-        i420.extend_from_slice(&cr);
-        let receipt = RecordedH264FrameReceipt {
+        // Plane digests are sealed lazily from these exact planes (see `RecordedH264Frame`).
+        let placeholder = ContentDigest::sha256(&[]);
+        let unsealed = RecordedH264FrameReceipt {
             import_identity: self.retained.import_identity(),
             import_root: self.retained.import_root(),
             manifest_digest: self.retained.manifest_digest(),
@@ -555,16 +610,17 @@ impl RecordedH264Range {
             height: picture.height(),
             idr: picture.is_idr(),
             decode_index: picture.decode_index(),
-            luma_sha256: ContentDigest::sha256(&luma),
-            i420_sha256: ContentDigest::sha256(&i420),
-            cb_sha256: ContentDigest::sha256(&cb),
-            cr_sha256: ContentDigest::sha256(&cr),
+            luma_sha256: placeholder,
+            i420_sha256: placeholder,
+            cb_sha256: placeholder,
+            cr_sha256: placeholder,
             mask_policy: self.mask.policy_digest(),
         };
         self.decoded += 1;
         checkpoint(cx, "recorded_h264:decoded")?;
         Ok(RecordedH264Frame {
-            receipt,
+            unsealed,
+            receipt: std::sync::OnceLock::new(),
             luma,
             cb,
             cr,

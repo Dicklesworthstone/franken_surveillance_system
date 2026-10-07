@@ -632,12 +632,11 @@ impl Scan<'_> {
             )?;
             while let Some(decoded) = range.next_frame(deployment, cx)? {
                 checkpoint(cx, "long_dwell:frame")?;
-                let receipt = decoded.receipt();
                 let frame = frame(
-                    receipt.segment_index(),
-                    receipt.capsule(),
-                    receipt.capsule_digest(),
-                    receipt.dimensions(),
+                    decoded.segment_index(),
+                    decoded.capsule(),
+                    decoded.capsule_digest(),
+                    decoded.dimensions(),
                     decoded.pixels(),
                 )?;
                 self.inter_frame(position, frame, first_capsule, screened, cx)?;
@@ -659,12 +658,11 @@ impl Scan<'_> {
             )?;
             while let Some(decoded) = range.next_frame(deployment, cx)? {
                 checkpoint(cx, "long_dwell:frame")?;
-                let receipt = decoded.receipt();
                 let frame = frame(
-                    receipt.segment_index(),
-                    receipt.capsule(),
-                    receipt.capsule_digest(),
-                    receipt.dimensions(),
+                    decoded.segment_index(),
+                    decoded.capsule(),
+                    decoded.capsule_digest(),
+                    decoded.dimensions(),
                     decoded.pixels(),
                 )?;
                 self.inter_frame(position, frame, first_capsule, screened, cx)?;

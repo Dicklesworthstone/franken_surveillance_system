@@ -640,3 +640,33 @@ fn mp4_capture_hints_follow_container_presentation_times() -> TestResult {
     assert_ne!(segments, (0..10).collect::<Vec<u64>>());
     Ok(())
 }
+
+#[test]
+fn lazily_sealed_receipts_are_identical_and_do_not_affect_equality() -> TestResult {
+    let imported = import("lazy-receipt", BASELINE)?;
+    let expected = oracle(BASELINE_ORACLE);
+    let unread = decode_h264_range(
+        &imported.deployment,
+        request(imported.identity, 0, 4),
+        &imported.cx,
+    )?;
+    let read = decode_h264_range(
+        &imported.deployment,
+        request(imported.identity, 0, 4),
+        &imported.cx,
+    )?;
+    for (index, frame) in read.iter().enumerate() {
+        // Sealing one copy's receipt changes neither equality nor any digest.
+        assert_eq!(frame.receipt().i420_sha256().to_text(), expected[index]);
+        assert_eq!(frame, &unread[index]);
+        assert_eq!(frame.segment_index(), frame.receipt().segment_index());
+        assert_eq!(frame.dimensions(), frame.receipt().dimensions());
+        assert_eq!(frame.capsule_digest(), frame.receipt().capsule_digest());
+        assert_eq!(
+            frame.receipt().luma_sha256(),
+            ContentDigest::sha256(frame.pixels())
+        );
+        assert_eq!(frame.receipt().digest(), unread[index].receipt().digest());
+    }
+    Ok(())
+}

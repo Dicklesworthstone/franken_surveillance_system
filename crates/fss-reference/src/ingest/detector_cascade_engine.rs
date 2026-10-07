@@ -1042,12 +1042,12 @@ impl<'a> DetectorCascade<'a> {
                         cx,
                     )?;
                     while let Some(frame) = range.next_frame(deployment, cx)? {
-                        let r = frame.receipt();
-                        let segment = usize::try_from(r.segment_index())
+                        let segment = usize::try_from(frame.segment_index())
                             .map_err(|_| CascadeError::InvalidConfig("segment index"))?;
                         if !wanted.contains(&segment) {
                             continue;
                         }
+                        let r = frame.receipt();
                         let picture = VideoPicture {
                             segment: r.segment_index(),
                             capsule: r.capsule(),
@@ -1080,12 +1080,12 @@ impl<'a> DetectorCascade<'a> {
                         cx,
                     )?;
                     while let Some(frame) = range.next_frame(deployment, cx)? {
-                        let r = frame.receipt();
-                        let segment = usize::try_from(r.segment_index())
+                        let segment = usize::try_from(frame.segment_index())
                             .map_err(|_| CascadeError::InvalidConfig("segment index"))?;
                         if !wanted.contains(&segment) {
                             continue;
                         }
+                        let r = frame.receipt();
                         let picture = VideoPicture {
                             segment: r.segment_index(),
                             capsule: r.capsule(),

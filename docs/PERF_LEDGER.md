@@ -273,3 +273,29 @@ inverse transform 9%. Not attempted: SIMD, i16 first-pass arithmetic, partition 
 types, offsets, classes and band positions, random raster slice layouts with and without
 cross-slice filtering, and random unfiltered blocks. All FFmpeg-oracle conformance fixtures
 (SAO, slices, PCM, lossless) still match.
+
+## PERF-007 — Lazily sealed H.264/H.265 frame receipts
+
+- **Commit:** the `perf(decode)` commit carrying this entry (base `41fa9a0`); host as PERF-003.
+- **Workload:** FFmpeg `color` 1920x1080 30 fps background with one 160x160 white box moving
+  80 px/s (libx264 High, `keyint=60:bframes=2`, MP4, 300 frames), imported with a capture hint;
+  `fss-event watch --stream-dwell --segment-count 150 --interpretation ycbcr` over the whole
+  frame. Release builds of the base and candidate, alternated twice each.
+- **Change:** every decoded inter-coded picture computed four SHA-256 receipt digests (luma,
+  packed I420 built by concatenating the planes, Cb, Cr), about 6 MB hashed per 1080p frame,
+  although streaming analysis, watch, sensor health, tolerant decode and skipped cascade frames
+  never read them. The frame now keeps the receipt's other fields and seals the digests from
+  its served planes on the first `receipt()` call (`OnceLock`; I420 through a streaming hasher,
+  no concatenation). Cheap `segment_index`, `capsule`, `capsule_digest` and `dimensions`
+  accessors serve those consumers.
+
+| Arm | 150 frames (s), two runs |
+|---|---|
+| base | 14.64, 14.60 |
+| candidate | 9.40, 9.82 (-35%) |
+
+**Semantic equivalence:** identical `analysis_digest`; the sealed receipt is a pure function of
+the frame, so receipt bytes are unchanged wherever they are read (all FFmpeg-oracle digest
+tests read sealed receipts). Frame equality compares the receipt fields and planes, never the
+sealing state (`lazily_sealed_receipts_are_identical_and_do_not_affect_equality`).
+`fss-file decode`, which prints every digest, is unchanged in cost.

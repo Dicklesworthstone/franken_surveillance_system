@@ -1781,13 +1781,12 @@ impl FrameSource {
                 let Some(frame) = range.next_frame(deployment, cx)? else {
                     return Ok(None);
                 };
-                let receipt = frame.receipt();
                 Ok(Some(DecodedFrame {
-                    segment: usize::try_from(receipt.segment_index())
+                    segment: usize::try_from(frame.segment_index())
                         .map_err(|_| WatchError::Limit)?,
-                    capsule: receipt.capsule().clone(),
-                    capsule_digest: receipt.capsule_digest(),
-                    dimensions: receipt.dimensions(),
+                    capsule: frame.capsule().clone(),
+                    capsule_digest: frame.capsule_digest(),
+                    dimensions: frame.dimensions(),
                     pixels: frame.pixels().to_vec(),
                 }))
             }
@@ -1796,13 +1795,12 @@ impl FrameSource {
                 let Some(frame) = range.next_frame(deployment, cx)? else {
                     return Ok(None);
                 };
-                let receipt = frame.receipt();
                 Ok(Some(DecodedFrame {
-                    segment: usize::try_from(receipt.segment_index())
+                    segment: usize::try_from(frame.segment_index())
                         .map_err(|_| WatchError::Limit)?,
-                    capsule: receipt.capsule().clone(),
-                    capsule_digest: receipt.capsule_digest(),
-                    dimensions: receipt.dimensions(),
+                    capsule: frame.capsule().clone(),
+                    capsule_digest: frame.capsule_digest(),
+                    dimensions: frame.dimensions(),
                     pixels: frame.pixels().to_vec(),
                 }))
             }

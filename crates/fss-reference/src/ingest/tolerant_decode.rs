@@ -420,12 +420,11 @@ impl TolerantSource {
                         *sub_end,
                         Box::new(range.next_frame(deployment, cx).map(|frame| {
                             frame.map(|frame| {
-                                let receipt = frame.receipt();
                                 (
-                                    receipt.segment_index(),
-                                    receipt.capsule().clone(),
-                                    receipt.capsule_digest(),
-                                    receipt.dimensions(),
+                                    frame.segment_index(),
+                                    frame.capsule().clone(),
+                                    frame.capsule_digest(),
+                                    frame.dimensions(),
                                     frame.pixels().to_vec(),
                                 )
                             })
@@ -437,12 +436,11 @@ impl TolerantSource {
                         *sub_end,
                         Box::new(range.next_frame(deployment, cx).map(|frame| {
                             frame.map(|frame| {
-                                let receipt = frame.receipt();
                                 (
-                                    receipt.segment_index(),
-                                    receipt.capsule().clone(),
-                                    receipt.capsule_digest(),
-                                    receipt.dimensions(),
+                                    frame.segment_index(),
+                                    frame.capsule().clone(),
+                                    frame.capsule_digest(),
+                                    frame.dimensions(),
                                     frame.pixels().to_vec(),
                                 )
                             })
