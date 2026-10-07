@@ -553,7 +553,8 @@ impl VerifiedActivityPackage {
             .check_manifest(manifest)
             .map_err(ActivityPackageError::License)?;
         let weights = artifact(&package, WEIGHTS_ARTIFACT)?;
-        if ContentDigest::sha256(weights) != manifest.weights_digest() {
+        let weights_digest = ContentDigest::sha256(weights);
+        if weights_digest != manifest.weights_digest() {
             return Err(ActivityPackageError::MissingArtifact(WEIGHTS_ARTIFACT));
         }
         let license_text = artifact(&package, LICENSE_ARTIFACT)?;
@@ -604,7 +605,7 @@ impl VerifiedActivityPackage {
             spec,
             graph,
             graph_digest,
-            weights_digest: ContentDigest::sha256(weights),
+            weights_digest,
             mean_weights: tensor.values,
         })
     }
