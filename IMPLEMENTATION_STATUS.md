@@ -25,19 +25,25 @@ It is also not a complete surveillance product. Native device adapters, producti
   are caller-built: no retained-record builder exists yet for the plan, evidence, failure,
   track or archive projections, and no `INT-FNX-001` differential or qualification lane exists.
 - **Evidence fusion (`fss-fusion`, fss-x4a.16.9):** deterministic reference fusion over integer
-  log-odds intervals with common-cause dependency clusters (shared failure domains count once and
-  can never raise the robust lower bound), typed exclusion of missing/uncalibrated evidence,
-  coverage-gated rejection, the plan's sequential decisions (alert, alert with degraded coverage,
-  urgent single-domain unconfirmed alert, bounded wait for an independent observation with a
-  deadline and value bound, request a probe, ask the operator, retain, reject, hold), an
-  optional-stopping threshold correction and leave-one-cluster-out counterfactuals.
+  log-odds intervals with common-cause dependency clusters. Producing-sensor identity is
+  intrinsic, so repeated frames cannot become independent support by omitting domain labels.
+  The cluster hull models one admissible member per dependency cluster; it is not a bound on
+  arbitrary dependent joint evidence. Certified rejection requires complete coverage and
+  nonempty calibrated evidence without excluded, uncalibrated or conflicted inputs. Urgent
+  single-domain alerts also require calibrated support. Sequential-v2 binds these semantics,
+  bounded decisions and leave-one-cluster-out counterfactuals into implementation-specific
+  query/decision identities. See [the reference model and limits](docs/FUSION_REFERENCE.md).
 - **Score calibration:** `fss-evaluate --calibration-bins` turns an evaluation's true/false
-  positives into a digest-bound per-bin likelihood calibration (exact integer Wilson bounds,
-  rigorous log10 bounds); `fss-fuse --query --calibration` rebuilds it from its counts, refuses
-  it unless the digest matches, and prints the fusion decision. Proven on synthetic labels only:
-  no detector has a measured calibration on deployment data, and fusion is not yet wired into
+  positives into a digest-bound per-bin likelihood calibration (exact integer Wilson bounds
+  and bounded log10 conversion). `fss-fuse` accepts up to sixteen `--calibration` artifacts,
+  rebuilds them from their counts and requires every raw score to name its exact generation
+  and digest. One artifact cannot corroborate itself; ambiguous priors and conflicting
+  generations are refused. Exact raw scores and selected prior identity remain separately
+  digest-bound even when their numerical intervals coincide. See the
+  [input migration and provenance contract](docs/FUSION_CALIBRATION.md).
+  The expanded adapter regressions have not run because execution disconnected. No detector has
+  a measured deployment calibration, and fusion is not yet wired into
   `fss-event watch`/`corroborate` (their probability stays `[0, 1]`).
-
 ## Media, perception and I/O added since 2026-09-03 (reference, unqualified)
 
 All of this is tested only on generated fixtures (FFmpeg `testsrc` encodes, procedural JPEGs,
@@ -85,6 +91,21 @@ synthetic scenes). None of it has been measured on real camera footage.
   retains it (`coverage_witness` ledger family); unknown capture time never yields a witness.
   Proven on synthetic MJPEG scenes only; the witness certifies what the uncalibrated pipeline
   would have emitted, not detection quality.
+- **Opt-in recorded visual screening:** `fss-event watch --sensor-health conservative-v1`
+  and `fss-event corroborate --sensor-health conservative-v1` screen already decoded,
+  privacy-masked pixels for exact frame repetition, sustained dark/bright clipping and contrast
+  collapse. Suspect runs cannot support candidates or coverage witnesses; the report and
+  retained coverage carry source-bound measurements, complete qualifying-run
+  `sensor_health_degraded` intervals and `sensor_health_dependent_track` exclusions for withdrawn
+  track histories, preventing an earlier positive entry from becoming false absence.
+  Each corroboration camera is screened separately. Clear results explicitly say
+  `clear_screen_not_health_evidence`; policy and measurements bind approvals, including
+  post-publication coverage reanalysis. Existing unscreened bytes remain unchanged. The
+  128-frame recorded bound remains; streaming dwell keeps its separate whole-scan gate, and
+  short non-stream dwell with screening is refused. New synthetic CLI and reference regressions
+  target the admission and authority boundary; execution is pending after the authoring executor
+  disconnected. No physical-health or tamper-detection claim.
+  See [the screening workflow](docs/long_recording_health.md).
 - **Geometric ground-zone coverage (fss-2h5zq.53):** corroborate ground zones are sampled on the
   ground plane (8x8 grid by default), projected through the owner homography or an owner
   calibrated pose (checked against the homography), and, with an owner fss-twin scene mesh and a

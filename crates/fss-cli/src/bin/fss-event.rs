@@ -109,13 +109,20 @@ const HELP: &str = "fss-event <report|prepare|publish|read|watch|corroborate|cal
     a typed decode refusal or source gap inside the range becomes a decode_refused coverage\n\
     interval with its error id instead of refusing the run; H.264/H.265 resume at the next\n\
     IDR/IRAP and tracking restarts after the gap (no track bridging); no witness spans a gap.\n\
+    --sensor-health conservative-v1 (optional; also accepted by corroborate): screens the\n\
+    same privacy-masked decoded pixels for persistent dark/bright fields, exact repetition\n\
+    and contrast loss. Suspect runs lose candidate support and coverage witnesses; per-frame\n\
+    measurements and sensor_health_degraded intervals preserve the reason. A clear screen\n\
+    does not prove health, tamper absence, or physical absence. Exact approval reruns retain\n\
+    the option. With --stream-dwell the existing whole-scan publication gate applies instead;\n\
+    short non-stream dwell with sensor-health screening is unsupported and refused.\n\
   corroborate (two recordings, two sensors): --camera NAME:sha256:IMPORT (exactly twice)\n\
           --ground NAME:h11,h12,h13,h21,h22,h23,h31,h32,h33 (one per camera; image pixels ->\n\
           ground units; an owner assertion like a zone, NOT a calibration certificate)\n\
           --zone ID:X,Y,W,H [--zone ...] (1..16, ground units) --interpretation gray|ycbcr\n\
           --time-gate-ns N (1..60000000000) --distance-gate D (ground units)\n\
           [watch thresholds and budgets] [watch detector-cascade options] [--approve sha256:PROPOSAL[,...]]\n\
-          [--retain-coverage sha256:APPROVAL] [--report-out FILE]\n\
+          [--retain-coverage sha256:APPROVAL] [--sensor-health conservative-v1] [--report-out FILE]\n\
     Each recording is tracked over the whole frame; each confirmed track's foot point is\n\
     projected to the ground; ground-zone entries of the two sensors are associated by global\n\
     assignment. A pair is corroborated only if the distance gate holds and the WORST CASE over\n\

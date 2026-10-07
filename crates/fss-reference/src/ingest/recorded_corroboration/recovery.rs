@@ -193,6 +193,7 @@ mod tests {
                 Vec::new()
             },
             tracking_restarts: vec![if refused { 9 } else { 8 }],
+            sensor_health: None,
             sensor_digest: digest(b"sensor:east"),
             coverage_frames: frames,
             segment_gaps: gaps,

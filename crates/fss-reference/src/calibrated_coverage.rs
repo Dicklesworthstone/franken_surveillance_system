@@ -65,6 +65,9 @@ fn check_copy_bound(record: &CoverageRecord) -> Result<u64, CorroborationError> 
         return Err(CorroborationError::Limit);
     }
     let mut bytes = 16_384_u64;
+    if record.sensor_health.is_some() {
+        bytes += crate::ingest::recorded_health::MAX_RECORDED_HEALTH_BYTES as u64 + 8_192;
+    }
     for zone in &record.zones {
         if zone.zone_id.len() > 64
             || zone.scope.len() > 80

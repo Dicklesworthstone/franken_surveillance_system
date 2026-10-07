@@ -148,6 +148,7 @@ fn fixture() -> Result<(CoverageRecord, CalibrationCoverageAssessment), Box<dyn 
             zones,
         },
         &CoverageExtras {
+            sensor_health: None,
             visibility: vec![Some(visibility.clone()), Some(visibility)],
             refusals: Vec::new(),
             restarts: vec![9],
@@ -450,5 +451,128 @@ fn budget_and_cancellation_fail_atomically_with_exact_cost_boundary() -> TestRes
         .is_err()
     );
     assert_eq!(nominal.to_bytes(), original);
+    Ok(())
+}
+
+#[test]
+fn recorded_health_composes_with_full_camera_guard_and_roundtrips_version_seven() -> TestResult {
+    use crate::ingest::recorded_health::RecordedHealthScreen;
+    use crate::ingest::sensor_health::HealthFrame;
+    use fss_core::region::{ContextAuthority, RootAuthoritySpec};
+    let (nominal, assessment) = fixture()?;
+    let authority = ContextAuthority::new_root(RootAuthoritySpec {
+        trace_id: "trace:health-guard".to_owned(),
+        operation_id: fss_core::OperationId::parse("operation:health-guard")?,
+        principal: "principal:health-guard".to_owned(),
+        capabilities: vec!["ADP-REPLAY-001".to_owned()],
+        deadline: None,
+        priority: 10,
+        budgets: fss_core::BudgetVector::builder()
+            .bytes(64 * 1024 * 1024)
+            .storage_operations(4096)
+            .build()?,
+        privacy_scope: "privacy:test".to_owned(),
+        retention_scope: "retention:test".to_owned(),
+        anchor_universe: ContentDigest::sha256(b"site:health-guard"),
+        generation: 1,
+    })?;
+    let cx = crate::ReplayCx::from_context_authority(
+        &authority,
+        std::env::temp_dir().join("fss-health-guard-context"),
+    )?;
+    let generation = ContentDigest::sha256(b"health-guard-plan");
+    let mut screen = RecordedHealthScreen::new(
+        20,
+        nominal.import_identity,
+        nominal.import_root,
+        &nominal.sensor_id,
+        generation,
+        std::collections::BTreeSet::new(),
+    )?;
+    for segment in (0..20_u64).filter(|segment| *segment != 8) {
+        let pixels = vec![80 + (segment % 2) as u8; 100 * 100];
+        let _ = screen.observe(
+            HealthFrame {
+                source_generation: generation,
+                segment,
+                capsule_digest: ContentDigest::sha256(&segment.to_le_bytes()),
+                capture: CaptureInterval::new(
+                    TimestampNs(1_000 + i128::from(segment) * 100),
+                    TimestampNs(1_002 + i128::from(segment) * 100),
+                )?,
+                dimensions: [100, 100],
+                gap_before: segment == 9,
+                pixels: &pixels,
+            },
+            &cx,
+        )?;
+    }
+    let summary = screen.finish(&[9])?;
+    let frames = summary.observations().iter().map(|frame| CoverageFrame {
+        segment: frame.segment as usize,
+        capture: frame.capture,
+    }).collect::<Vec<_>>();
+    let zones = nominal.zones.iter().map(|zone| CoverageZoneInput {
+        zone_id: zone.zone_id.clone(),
+        geometry: zone.geometry.clone(),
+        inside_frame: true,
+        pipeline_generation: zone.pipeline_generation,
+        entries: zone.uncovered.iter().filter_map(|interval| {
+            if let UncoveredReason::ZoneEntry { candidate, event_id } = &interval.reason {
+                Some(CoverageEntry {
+                    segment: interval.first_segment as usize,
+                    candidate: *candidate,
+                    event_id: event_id.clone(),
+                })
+            } else {
+                None
+            }
+        }).collect(),
+    }).collect();
+    let health_record = build_coverage_with(
+        &CoverageInput {
+            source: nominal.source,
+            import_identity: nominal.import_identity,
+            import_root: nominal.import_root,
+            sensor_id: &nominal.sensor_id,
+            analysis_digest: nominal.analysis_digest,
+            basis: nominal.basis.clone(),
+            capture_time_label: &nominal.capture_time_label,
+            segment_gaps: &[false; 20],
+            first_segment: 0,
+            last_segment: 19,
+            frames: &frames,
+            confirmation_hits: 3,
+            zones,
+        },
+        &CoverageExtras {
+            visibility: nominal.zones.iter().map(|zone| zone.visibility.clone()).collect(),
+            refusals: vec![crate::ingest::tolerant_decode::DecodeRefusal {
+                first_segment: 8,
+                last_segment: 8,
+                error_id: "ERR-MEDIA-DECODE-001".to_owned(),
+            }],
+            restarts: vec![9],
+            pose_provenance: nominal.pose_provenance,
+            pose_uncertainty: nominal.pose_uncertainty,
+            pose_robustness: nominal.zones.iter().map(|zone| zone.pose_robustness).collect(),
+            sensor_health: Some(summary),
+        },
+    )?;
+    let guarded = apply_calibration_coverage(
+        &health_record,
+        &assessment,
+        &mut WorkBudget::new(MAX_CALIBRATION_COVERAGE_WORK),
+    )?;
+    assert!(guarded.witnesses().next().is_some());
+    assert_eq!(guarded.sensor_health, health_record.sensor_health);
+    let bytes = guarded.to_bytes();
+    let mut decoder = CanonicalDecoder::new(&bytes);
+    assert_eq!(decoder.bytes()?, b"FSSCOV01");
+    assert_eq!(decoder.u32()?, 7);
+    assert_eq!(CoverageRecord::from_bytes(&bytes, guarded.digest())?, guarded);
+    let mut stripped = guarded.clone();
+    stripped.sensor_health = None;
+    assert!(stripped.validate().is_err());
     Ok(())
 }

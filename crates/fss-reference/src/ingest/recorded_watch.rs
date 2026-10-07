@@ -87,6 +87,10 @@ use super::recorded_decode::h265::{
 use super::recorded_decode::{
     ComponentInterpretation, DecodeLimits, RecordedDecodeError, source_capsule, validate_limits,
 };
+use super::recorded_health::{
+    RecordedHealthPolicy, RecordedHealthScreen, RecordedHealthSummary, screened_plan_digest,
+};
+use super::sensor_health::{HealthError, HealthFrame};
 use super::tolerant_decode::{
     DecodeRefusal, TolerantFrame, TolerantItem, TolerantRequest, TolerantSource,
 };
@@ -171,6 +175,8 @@ pub enum WatchError {
     Coverage(CoverageError),
     /// Detector cascade stage refusal (configuration, decode or cancellation).
     Cascade(CascadeError),
+    /// Bounded sensor-health screening refused a frame, budget or cancelled context.
+    Health(HealthError),
 }
 
 impl WatchError {
@@ -180,7 +186,10 @@ impl WatchError {
         match self {
             Self::InvalidPlan(_) => "ERR-WATCH-PLAN-INVALID-001",
             Self::SourceGap { .. } => "ERR-WATCH-SOURCE-GAP-001",
-            Self::Limit | Self::Tracker(TrackerStepError::Limit) => "ERR-WATCH-LIMIT-001",
+            Self::Limit
+            | Self::Tracker(TrackerStepError::Limit)
+            | Self::Health(HealthError::Limit) => "ERR-WATCH-LIMIT-001",
+            Self::Health(HealthError::Cancelled) => RecordedDecodeError::Cancelled.stable_id(),
             Self::StaleApproval(_) => "ERR-WATCH-APPROVAL-STALE-001",
             Self::Conflict => "ERR-IDEMPOTENCY-CONFLICT-001",
             Self::Decode(error) => error.stable_id(),
@@ -227,6 +236,7 @@ impl fmt::Display for WatchError {
             Self::Spool(e) => write!(f, "watch custody: {e}"),
             Self::Coverage(e) => write!(f, "watch coverage: {e}"),
             Self::Cascade(e) => write!(f, "watch detector cascade: {e}"),
+            Self::Health(e) => write!(f, "watch sensor health: {e}"),
         }
     }
 }
@@ -254,6 +264,7 @@ conversion!(LocalPublicationError, Publication);
 conversion!(SpoolError, Spool);
 conversion!(CoverageError, Coverage);
 conversion!(CascadeError, Cascade);
+conversion!(HealthError, Health);
 impl From<FileIngestError> for WatchError {
     fn from(error: FileIngestError) -> Self {
         Self::Decode(Box::new(error.into()))
@@ -632,6 +643,8 @@ pub struct WatchReport {
     cascade: Option<WatchCascade>,
     decode_refusals: Vec<DecodeRefusal>,
     tracking_restarts: Vec<usize>,
+    decode_restarts: Vec<usize>,
+    sensor_health: Option<RecordedHealthSummary>,
     privacy: MaskBinding,
 }
 
@@ -753,6 +766,22 @@ impl WatchReport {
         options: WatchOptions,
         cx: &ReplayCx,
     ) -> Result<Self> {
+        Self::analyze_with_health(deployment, plan, limits, detector, options, None, cx)
+    }
+
+    /// Analyse with an optional conservative visual health screen. Findings withdraw the whole
+    /// qualifying run, discard every track touching it, and restart foreground and tracking
+    /// after it. A clear screen is never evidence of sensor health. `None` preserves all
+    /// existing analysis, candidate, report and coverage bytes.
+    pub fn analyze_with_health(
+        deployment: &ReferenceDeployment,
+        plan: &WatchPlan,
+        limits: &WatchLimits,
+        detector: Option<&mut DetectorCascade<'_>>,
+        options: WatchOptions,
+        health: Option<RecordedHealthPolicy>,
+        cx: &ReplayCx,
+    ) -> Result<Self> {
         checkpoint(cx, "recorded_watch:analyze")?;
         plan.validate()?;
         validate_limits(limits.jpeg_limits)?;
@@ -834,7 +863,26 @@ impl WatchReport {
             )?))),
             _ => return Err(RecordedDecodeError::UnsupportedMedia.into()),
         };
-        let plan_digest = masked_plan_digest(plan.digest(), &privacy);
+        let plan_digest = screened_plan_digest(masked_plan_digest(plan.digest(), &privacy), health);
+        let mut health_screen = health
+            .map(|_| {
+                RecordedHealthScreen::new(
+                    plan.segment_count,
+                    plan.import_identity,
+                    import_root,
+                    first_capsule.sensor_id.as_str(),
+                    plan_digest,
+                    segment_gaps
+                        .iter()
+                        .enumerate()
+                        .skip(plan.first_segment)
+                        .take(plan.segment_count)
+                        .filter(|(_, gap)| **gap)
+                        .map(|(segment, _)| segment as u64)
+                        .collect(),
+                )
+            })
+            .transpose()?;
         let source_generation = format!("import:{}", hex(plan.import_identity));
         let mut budget = DecodeBudget::new(limits.jpeg_work_units);
         let mut generator = ZoneEventGenerator::new(ZoneEventConfig {
@@ -865,11 +913,14 @@ impl WatchReport {
         let mut confirmed_at: BTreeMap<u64, usize> = BTreeMap::new();
         let mut entries: Vec<(String, u64, usize)> = Vec::new();
         let mut sensor = None;
-        // Tolerant decode only: refused runs, tracking restarts, and the offset that keeps track
-        // identities of a restarted tracker distinct from every earlier one.
+        // Tracking restarts include both decode gaps and health degradation. Native decode
+        // restarts remain separate: a health recovery frame need not be an IDR/IRAP.
         let mut decode_refusals: Vec<DecodeRefusal> = Vec::new();
         let mut restarts: Vec<usize> = Vec::new();
+        let mut decode_restarts: Vec<usize> = Vec::new();
         let mut restart_pending = false;
+        let mut decode_restart_pending = false;
+        let mut screening_gap_pending = false;
         let mut track_base = 0_u64;
         let mut last_track = 0_u64;
         loop {
@@ -878,6 +929,8 @@ impl WatchReport {
                     None => break,
                     Some(TolerantItem::Break(refusal)) => {
                         restart_pending = true;
+                        decode_restart_pending = true;
+                        screening_gap_pending = true;
                         if let Some(refusal) = refusal {
                             match decode_refusals.last_mut() {
                                 Some(last)
@@ -917,24 +970,66 @@ impl WatchReport {
                 (None, None) => return Err(RecordedDecodeError::UnsupportedMedia.into()),
             };
             checkpoint(cx, "recorded_watch:frame")?;
-            if restart_pending && !frames.is_empty() {
-                // No track is bridged across a decode gap: a fresh tracker, fresh identities.
-                tracker = MultiObjectTracker::new(plan.tracker_config())?;
-                track_base = last_track;
-                restarts.push(frame.segment);
-            }
-            restart_pending = false;
-            if background.is_none() {
+            if sensor.is_none() {
+                sensor = Some(frame.capsule.sensor_id.clone());
                 dimensions = frame.dimensions;
-                background = Some(ForegroundDetector::new(plan.foreground_config(dimensions))?);
-            } else if frame.dimensions != dimensions {
+            }
+            if frame.capsule.sensor_id != first_capsule.sensor_id {
+                return Err(RecordedDecodeError::InvalidReceipt.into());
+            }
+            if frame.dimensions != dimensions {
                 return Err(WatchError::DimensionChange {
                     segment: frame.segment,
                 });
             }
+            if decode_restart_pending && !frames.is_empty() {
+                decode_restarts.push(frame.segment);
+            }
+            decode_restart_pending = false;
+            let luma_digest = ContentDigest::sha256(&frame.pixels);
+            let degraded = match health_screen.as_mut() {
+                Some(screen) => screen.observe(
+                    HealthFrame {
+                        source_generation: plan_digest,
+                        segment: frame.segment as u64,
+                        capsule_digest: frame.capsule_digest,
+                        capture: frame.capsule.capture,
+                        dimensions,
+                        gap_before: screening_gap_pending || segment_gaps[frame.segment],
+                        pixels: &frame.pixels,
+                    },
+                    cx,
+                )?,
+                None => false,
+            };
+            screening_gap_pending = false;
+            if degraded {
+                // Preserve source-linked measurements, but never feed a suspect frame into the
+                // background model, tracker, zone gate or selected classifier evidence.
+                frames.push(WatchFrame {
+                    segment: frame.segment,
+                    capsule_digest: frame.capsule_digest,
+                    capture: frame.capsule.capture,
+                    luma_digest,
+                    boxes: Vec::new(),
+                });
+                restart_pending = true;
+                continue;
+            }
+            if restart_pending && !frames.is_empty() {
+                tracker = MultiObjectTracker::new(plan.tracker_config())?;
+                track_base = last_track;
+                restarts.push(frame.segment);
+                if health.is_some() {
+                    background = None;
+                }
+            }
+            restart_pending = false;
+            if background.is_none() {
+                background = Some(ForegroundDetector::new(plan.foreground_config(dimensions))?);
+            }
             let detector = background.as_mut().ok_or(WatchError::Limit)?;
             let foreground = detector.observe(&frame.pixels, dimensions[0], dimensions[1])?;
-            let luma_digest = ContentDigest::sha256(&frame.pixels);
             let detections: Vec<Detection> = foreground
                 .boxes
                 .iter()
@@ -956,12 +1051,6 @@ impl WatchReport {
                     target
                 })
                 .collect();
-            if sensor.is_none() {
-                sensor = Some(frame.capsule.sensor_id.clone());
-            }
-            if frame.capsule.sensor_id != first_capsule.sensor_id {
-                return Err(RecordedDecodeError::InvalidReceipt.into());
-            }
             let failure_domain = format!(
                 "recorded-sensor:{}",
                 hex(ContentDigest::sha256(
@@ -1021,6 +1110,39 @@ impl WatchReport {
             });
         }
         let decode_work_units = budget.used();
+        let mut sensor_health = health_screen
+            .map(|screen| screen.finish(&decode_restarts))
+            .transpose()?;
+        if let Some(summary) = &mut sensor_health {
+            // Temporal findings are discovered at the end of their qualifying prefix. Withdraw
+            // that entire run retrospectively, including complete tracks that touched it.
+            let affected_tracks: BTreeSet<u64> = histories
+                .iter()
+                .filter(|(_, history)| {
+                    history
+                        .observations
+                        .iter()
+                        .any(|(segment, _)| summary.affects(*segment))
+                })
+                .map(|(track, _)| *track)
+                .collect();
+            for track in &affected_tracks {
+                let observations = &histories.get(track).ok_or(WatchError::Limit)?.observations;
+                if let (Some(first), Some(last)) = (observations.first(), observations.last()) {
+                    summary.withdraw_track_span(first.0, last.0)?;
+                }
+            }
+            summary.validate()?;
+            histories.retain(|track, _| !affected_tracks.contains(track));
+            confirmed.retain(|track| !affected_tracks.contains(track));
+            confirmed_at.retain(|track, _| !affected_tracks.contains(track));
+            entries.retain(|(_, track, _)| !affected_tracks.contains(track));
+            for frame in &mut frames {
+                if summary.affects(frame.segment) {
+                    frame.boxes.clear();
+                }
+            }
+        }
         let cascade = match detector {
             None => None,
             Some(detector) => {
@@ -1059,7 +1181,7 @@ impl WatchReport {
                             decoded_segments: &decoded,
                         },
                         decode_refusals: &decode_refusals,
-                        tracking_restarts: &restarts,
+                        tracking_restarts: &decode_restarts,
                     },
                     &tracks,
                     &mut allowance,
@@ -1146,6 +1268,7 @@ impl WatchReport {
                 .map(|c| (c.digest, c.outcome.digest(c.digest))),
             &decode_refusals,
             &restarts,
+            sensor_health.as_ref(),
         );
         let sensor = sensor.ok_or(WatchError::Limit)?;
         let coverage = watch_coverage(&WatchCoverageContext {
@@ -1163,13 +1286,16 @@ impl WatchReport {
             cascade: cascade.as_ref().map(|c| c.digest),
             refusals: &decode_refusals,
             restarts: &restarts,
+            sensor_health: sensor_health.as_ref(),
             privacy: &privacy,
         })?;
         let coverage_status = coverage_status(deployment, &[&coverage])?;
         let mut prepared = Vec::with_capacity(candidates.len());
         for pending in candidates {
             checkpoint(cx, "recorded_watch:prepare")?;
-            let proof = provenance(&pending, &analysis, import_root, sensor.as_str(), &privacy)?;
+            let proof = provenance(
+                &pending, &analysis, import_root, sensor.as_str(), &privacy, sensor_health.as_ref(),
+            )?;
             let PendingCandidate {
                 zone_id,
                 track_id,
@@ -1212,6 +1338,8 @@ impl WatchReport {
             cascade,
             decode_refusals,
             tracking_restarts: restarts,
+            decode_restarts,
+            sensor_health,
             privacy,
         })
     }
@@ -1225,10 +1353,23 @@ impl WatchReport {
     /// First decoded segment after each tracking restart, in segment order. These are the
     /// exact boundaries used by coverage and bound into the analysis identity; they cannot be
     /// reconstructed from missing frames alone (a decoder may restart without losing a frame).
-    /// Always empty for strict analyses, and for tolerant analyses with no discontinuity.
+    /// Empty when neither decode continuity nor enabled health screening requires a restart.
     #[must_use]
     pub fn tracking_restarts(&self) -> &[usize] {
         &self.tracking_restarts
+    }
+
+    /// Actual decoder recovery boundaries; health-only tracking resets are excluded because
+    /// they do not imply a new IDR/IRAP. Used when re-decoding selected cascade frames.
+    #[must_use]
+    pub fn decode_restarts(&self) -> &[usize] {
+        &self.decode_restarts
+    }
+
+    /// Bounded source-linked health screening receipts, when explicitly enabled.
+    #[must_use]
+    pub fn sensor_health(&self) -> Option<&RecordedHealthSummary> {
+        self.sensor_health.as_ref()
     }
 
     /// Privacy mask binding applied to every decoded frame of this analysis.
@@ -1494,7 +1635,7 @@ impl WatchReport {
                 "\"authority_sequence\":{},\"event_kind\":\"unclassified\",",
                 "\"event_state\":\"indeterminate\",\"calibrated\":false,\"corroborated\":false,",
                 "\"alert_authorized\":false,\"effects_authorized\":false,",
-                "\"absence_certifiable\":false,\"detection_quality_claim\":false{}{}{}{}}}"
+                "\"absence_certifiable\":false,\"detection_quality_claim\":false{}{}{}{}{}}}"
             ),
             self.plan.import_identity,
             self.import_root,
@@ -1529,6 +1670,10 @@ impl WatchReport {
                 ",\"detector_cascade\":{{{},{}}}",
                 c.policy_json,
                 cascade_outcome_json(&c.outcome)
+            )),
+            self.sensor_health.as_ref().map_or_else(String::new, |summary| format!(
+                ",\"sensor_health\":{}",
+                summary.to_json()
             )),
             coverage_json.map_or_else(String::new, |json| format!(",\"coverage\":{json}")),
         )
@@ -1672,6 +1817,7 @@ struct WatchCoverageContext<'a> {
     cascade: Option<ContentDigest>,
     refusals: &'a [DecodeRefusal],
     restarts: &'a [usize],
+    sensor_health: Option<&'a RecordedHealthSummary>,
     privacy: &'a MaskBinding,
 }
 
@@ -1705,6 +1851,10 @@ fn watch_coverage(context: &WatchCoverageContext<'_>) -> Result<CoverageRecord> 
     bind_cascade_parameters(
         &mut parameters,
         context.privacy.policy().map(|_| context.privacy.digest()),
+    );
+    bind_cascade_parameters(
+        &mut parameters,
+        context.sensor_health.map(RecordedHealthSummary::digest),
     );
     let frames: Vec<CoverageFrame> = context
         .frames
@@ -1765,6 +1915,7 @@ fn watch_coverage(context: &WatchCoverageContext<'_>) -> Result<CoverageRecord> 
         pose_provenance: None,
         pose_uncertainty: None,
         pose_robustness: Vec::new(),
+        sensor_health: context.sensor_health.cloned(),
     };
     let mut record = build_coverage_with(
         &CoverageInput {
@@ -1797,6 +1948,7 @@ struct PendingCandidate {
     identity: ContentDigest,
 }
 
+#[allow(clippy::too_many_arguments)]
 fn analysis_bytes(
     plan_digest: ContentDigest,
     import_root: ContentDigest,
@@ -1805,6 +1957,7 @@ fn analysis_bytes(
     cascade: Option<(ContentDigest, ContentDigest)>,
     refusals: &[DecodeRefusal],
     restarts: &[usize],
+    sensor_health: Option<&RecordedHealthSummary>,
 ) -> Vec<u8> {
     let mut e = CanonicalEncoder::new();
     e.text(ANALYSIS_DOMAIN);
@@ -1852,6 +2005,10 @@ fn analysis_bytes(
             e.u64(*segment as u64);
         }
     }
+    if let Some(summary) = sensor_health {
+        e.text("sensor_health");
+        e.bytes(&summary.to_bytes());
+    }
     e.finish()
 }
 
@@ -1867,6 +2024,7 @@ fn provenance(
     import_root: ContentDigest,
     sensor: &str,
     privacy: &MaskBinding,
+    sensor_health: Option<&RecordedHealthSummary>,
 ) -> Result<Provenance> {
     let observations = &candidate.observations;
     let analysis_digest = ContentDigest::sha256(analysis);
@@ -1933,6 +2091,25 @@ fn provenance(
         evidence.push(EventEvidence {
             digest,
             class: EvidenceClass::Assertion,
+            failure_domain: failure_domain.clone(),
+            supports: false,
+            relation: EvidenceEdgeRelation::RequiredBy,
+            capsule_digest: None,
+            identity_digest: Some(sensor_digest),
+        });
+    }
+    if let Some(summary) = sensor_health {
+        insert(&mut objects, super::sensor_health::policy_bytes().to_vec());
+        let digest = insert(&mut objects, summary.to_bytes());
+        children.extend(
+            summary
+                .observations()
+                .iter()
+                .map(|observation| observation.capsule_digest),
+        );
+        evidence.push(EventEvidence {
+            digest,
+            class: EvidenceClass::Derived,
             failure_domain: failure_domain.clone(),
             supports: false,
             relation: EvidenceEdgeRelation::RequiredBy,

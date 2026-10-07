@@ -116,6 +116,7 @@ use super::ground_visibility::{
     CameraModel, NotVisibleCause, POSE_SENSITIVITY_POLICY, PoseCovariance, PoseRobustness,
     PoseRobustnessClass, ZoneVisibility,
 };
+use super::recorded_health::{RecordedHealthCoverageReceipt, RecordedHealthSummary};
 use super::tolerant_decode::DecodeRefusal;
 use crate::reference_deployment::FAMILY_COVERAGE_WITNESS;
 use crate::{ReferenceDeployment, ReferenceError, ReplayCx};
@@ -154,6 +155,8 @@ pub const POSE_PROVENANCE_DOMAIN: &str = "fss.coverage_pose_provenance.v1";
 const RECORD_VERSION_POSE_UNCERTAINTY: u32 = 5;
 /// Version 6 embeds a full-camera guard receipt and lossless per-zone abstentions.
 const RECORD_VERSION_CALIBRATION_GUARD: u32 = 6;
+/// Version 7 embeds bounded visual health receipts with optional pose fields.
+const RECORD_VERSION_SENSOR_HEALTH: u32 = 7;
 /// Pose-uncertainty digest domain (bound into the corroborate camera analysis identity).
 pub const POSE_UNCERTAINTY_DOMAIN: &str = "fss.coverage_pose_uncertainty.v1";
 /// Canonical record domain.
@@ -587,6 +590,13 @@ pub enum UncoveredReason {
     /// A former nominal witness was removed by the embedded full-camera guard.
     /// Other uncovered reasons, observed entries and exact segment bounds survive.
     CalibrationUncertainty,
+    /// A bounded visual health screen suspects degradation in this complete qualifying run.
+    /// The record retains its measurements; this is not a diagnosis of tampering.
+    SensorHealthDegraded,
+    /// A discarded track touched degraded frames; its entire observed span stays uncovered.
+    SensorHealthDependentTrack,
+    /// Display order differs from retained source indices used by operator capture hints.
+    CaptureOrderUncertain,
 }
 
 impl UncoveredReason {
@@ -608,6 +618,9 @@ impl UncoveredReason {
             Self::PrivacyMasked => "privacy_masked",
             Self::PoseSensitive => "pose_sensitive",
             Self::CalibrationUncertainty => "calibration_uncertainty",
+            Self::SensorHealthDegraded => "sensor_health_degraded",
+            Self::SensorHealthDependentTrack => "sensor_health_dependent_track",
+            Self::CaptureOrderUncertain => "capture_order_uncertain",
         }
     }
 }
@@ -693,6 +706,8 @@ pub struct CoverageRecord {
     pub pose_provenance: Option<PoseProvenance>,
     /// Whether the pose's uncertainty was propagated, when the record binds it (version 5).
     pub pose_uncertainty: Option<PoseUncertainty>,
+    /// Source- and generation-bound visual health receipts and withdrawn segments (version 7).
+    pub sensor_health: Option<RecordedHealthCoverageReceipt>,
 }
 
 /// One decoded frame as coverage sees it.
@@ -777,6 +792,8 @@ pub struct CoverageExtras {
     /// Pose robustness per zone, in [`CoverageInput::zones`] order (empty: none); present for
     /// every zone exactly under [`PoseUncertainty::SigmaPoints`].
     pub pose_robustness: Vec<Option<PoseRobustness>>,
+    /// One bounded health measurement per decoded frame; qualifying runs carry no witness.
+    pub sensor_health: Option<RecordedHealthSummary>,
 }
 
 /// Pipeline-generation digest for one zone: fixed policy digest, pipeline label (decoder and
@@ -885,6 +902,7 @@ struct ZoneBuilder<'a> {
     generation: ContentDigest,
     visibility: Option<ZoneVisibility>,
     pose_clause: String,
+    health_clause: String,
     witnesses: Vec<ZoneWitness>,
     uncovered: Vec<UncoveredInterval>,
     run: Vec<CoverageFrame>,
@@ -956,7 +974,7 @@ impl ZoneBuilder<'_> {
             continuity: CoverageContinuity::Continuous,
             completeness: Completeness::Complete,
             negative_predicate: format!(
-                "{}{}",
+                "{}{}{}",
                 zone_witness_predicate(
                     source,
                     sensor,
@@ -965,7 +983,8 @@ impl ZoneBuilder<'_> {
                     covered,
                     self.visibility.as_ref(),
                 ),
-                self.pose_clause
+                self.pose_clause,
+                self.health_clause
             ),
             stop_reason: CoverageStopReason::Complete,
             authorized_generation: COVERAGE_PRODUCER_GENERATION,
@@ -1029,6 +1048,47 @@ pub fn build_coverage_with(
     {
         return Err(ContractError::InvalidIdentifier);
     }
+    if let Some(summary) = &extras.sensor_health {
+        summary.validate()?;
+        if summary.observations().len() != input.frames.len()
+            || summary
+                .observations()
+                .iter()
+                .zip(input.frames)
+                .any(|(observation, frame)| {
+                    observation.segment != frame.segment as u64
+                        || observation.capture != frame.capture
+                })
+        {
+            return Err(ContractError::InvalidIdentifier);
+        }
+    }
+    let sensor_health = extras
+        .sensor_health
+        .as_ref()
+        .map(|summary| RecordedHealthCoverageReceipt::for_input(input, summary, &extras.restarts))
+        .transpose()?;
+    let reordered = sensor_health
+        .as_ref()
+        .is_some_and(RecordedHealthCoverageReceipt::capture_order_uncertain);
+    // Source indices partition retained custody; they are not a display-order clock.
+    // Preserve the actual measurement sequence, but publish no interval witness when reordered.
+    let ordered_frames;
+    let ordered_input;
+    let input = if reordered {
+        ordered_frames = {
+            let mut frames = input.frames.to_vec();
+            frames.sort_by_key(|frame| frame.segment);
+            frames
+        };
+        ordered_input = CoverageInput {
+            frames: &ordered_frames,
+            ..input.clone()
+        };
+        &ordered_input
+    } else {
+        input
+    };
     let mut analysed = input.frames[0].capture;
     for frame in input.frames {
         analysed = hull(analysed, frame.capture)?;
@@ -1054,15 +1114,22 @@ pub fn build_coverage_with(
         let pose_robustness = extras.pose_robustness.get(zone_index).copied().flatten();
         let pose_sensitive =
             pose_robustness.is_some_and(|robustness| robustness.observable_but_sensitive());
+        let generation = match &sensor_health {
+            Some(receipt) => receipt.pipeline_generation(zone)?,
+            None => zone.pipeline_generation,
+        };
         let mut builder = ZoneBuilder {
             input,
             scope: scope.clone(),
-            generation: zone.pipeline_generation,
+            generation,
             visibility: visibility.clone(),
             pose_clause: pose_predicate_clause(
                 extras.pose_uncertainty.as_ref(),
                 pose_robustness.as_ref(),
             ),
+            health_clause: sensor_health
+                .as_ref()
+                .map_or_else(String::new, RecordedHealthCoverageReceipt::predicate_clause),
             witnesses: Vec::new(),
             uncovered: Vec::new(),
             run: Vec::new(),
@@ -1088,7 +1155,31 @@ pub fn build_coverage_with(
             expected = frame.segment + 1;
             previous = Some(*frame);
             let entry = zone.entries.iter().find(|e| e.segment == frame.segment);
-            let reason = if !time_known {
+            let screened = extras.sensor_health.as_ref();
+            let epoch_start = if screened.is_some() {
+                input.frames[..=position]
+                    .iter()
+                    .rposition(|frame| extras.restarts.contains(&frame.segment))
+                    .unwrap_or(0)
+            } else {
+                0
+            };
+            let health_end = screened.map_or(count, |summary| {
+                input
+                    .frames
+                    .iter()
+                    .enumerate()
+                    .skip(position + 1)
+                    .find(|(_, frame)| summary.excludes_coverage(frame.segment))
+                    .map_or(count, |(index, _)| index)
+            });
+            let reason = if screened.is_some_and(|summary| summary.affects(frame.segment)) {
+                Some(UncoveredReason::SensorHealthDegraded)
+            } else if screened.is_some_and(|summary| summary.excludes_coverage(frame.segment)) {
+                Some(UncoveredReason::SensorHealthDependentTrack)
+            } else if reordered {
+                Some(UncoveredReason::CaptureOrderUncertain)
+            } else if !time_known {
                 Some(UncoveredReason::CaptureTimeUnknown)
             } else if let Some(cause) = not_visible {
                 Some(match cause {
@@ -1109,9 +1200,10 @@ pub fn build_coverage_with(
             } else if pose_sensitive {
                 // Observable under the nominal pose only: never a witness frame.
                 Some(UncoveredReason::PoseSensitive)
-            } else if position < BACKGROUND_WARMUP_FRAMES {
+            } else if position - epoch_start < BACKGROUND_WARMUP_FRAMES {
                 Some(UncoveredReason::BackgroundWarmup)
             } else if position + latency >= count
+                || position + latency >= health_end
                 || (!extras.restarts.is_empty()
                     && position + latency >= epoch_end(input.frames, &extras.restarts, position))
             {
@@ -1172,7 +1264,7 @@ pub fn build_coverage_with(
             scope,
             zone_id: zone.zone_id.clone(),
             geometry: zone.geometry.clone(),
-            pipeline_generation: zone.pipeline_generation,
+            pipeline_generation: generation,
             witnesses: builder.witnesses,
             uncovered: builder.uncovered,
             visibility,
@@ -1184,7 +1276,10 @@ pub fn build_coverage_with(
         import_identity: input.import_identity,
         import_root: input.import_root,
         sensor_id: input.sensor_id.to_owned(),
-        analysis_digest: input.analysis_digest,
+        analysis_digest: sensor_health.as_ref().map_or(
+            input.analysis_digest,
+            RecordedHealthCoverageReceipt::analysis_digest,
+        ),
         basis: input.basis.clone(),
         capture_time_label: input.capture_time_label.to_owned(),
         first_segment: input.first_segment as u64,
@@ -1193,6 +1288,7 @@ pub fn build_coverage_with(
         zones,
         pose_provenance: extras.pose_provenance,
         pose_uncertainty: extras.pose_uncertainty,
+        sensor_health,
     };
     record.validate()?;
     Ok(record)
@@ -1228,12 +1324,15 @@ impl CoverageRecord {
     #[must_use]
     pub fn to_bytes(&self) -> Vec<u8> {
         let mut e = CanonicalEncoder::new();
-        let versioned = self.pose_provenance.is_some()
+        let versioned = self.sensor_health.is_some()
+            || self.pose_provenance.is_some()
             || self.zones.iter().any(|zone| zone.visibility.is_some());
         let masked_samples = self.masked_samples();
         e.bytes(RECORD_MAGIC);
         e.u32(
-            if self
+            if self.sensor_health.is_some() {
+                RECORD_VERSION_SENSOR_HEALTH
+            } else if self
                 .pose_uncertainty
                 .as_ref()
                 .and_then(PoseUncertainty::guard_receipt)
@@ -1253,7 +1352,19 @@ impl CoverageRecord {
             },
         );
         e.text(RECORD_DOMAIN);
-        if let Some(provenance) = &self.pose_provenance {
+        if let Some(summary) = &self.sensor_health {
+            // Version 7 is compositional: health-only watch records need no synthetic pose.
+            e.bool(masked_samples);
+            e.bool(self.pose_provenance.is_some());
+            if let Some(provenance) = &self.pose_provenance {
+                provenance.encode(&mut e);
+            }
+            e.bool(self.pose_uncertainty.is_some());
+            if let Some(uncertainty) = &self.pose_uncertainty {
+                uncertainty.encode(&mut e);
+            }
+            e.bytes(&summary.to_bytes());
+        } else if let Some(provenance) = &self.pose_provenance {
             e.bool(masked_samples);
             provenance.encode(&mut e);
             if let Some(uncertainty) = &self.pose_uncertainty {
@@ -1355,24 +1466,43 @@ impl CoverageRecord {
             RECORD_VERSION_VISIBILITY
             | RECORD_VERSION_POSE_PROVENANCE
             | RECORD_VERSION_POSE_UNCERTAINTY
-            | RECORD_VERSION_CALIBRATION_GUARD => (true, false),
+            | RECORD_VERSION_CALIBRATION_GUARD
+            | RECORD_VERSION_SENSOR_HEALTH => (true, false),
             RECORD_VERSION_MASKED_VISIBILITY => (true, true),
             _ => return Err(ContractError::InvalidIdentifier),
         };
         if d.text()? != RECORD_DOMAIN {
             return Err(ContractError::InvalidIdentifier);
         }
-        let pose_provenance = if version >= RECORD_VERSION_POSE_PROVENANCE {
-            masked_samples = d.bool()?;
-            Some(PoseProvenance::decode(&mut d)?)
-        } else {
-            None
-        };
-        let pose_uncertainty = if version >= RECORD_VERSION_POSE_UNCERTAINTY {
-            Some(PoseUncertainty::decode(&mut d)?)
-        } else {
-            None
-        };
+        let (pose_provenance, pose_uncertainty, sensor_health) =
+            if version == RECORD_VERSION_SENSOR_HEALTH {
+                masked_samples = d.bool()?;
+                let provenance = if d.bool()? {
+                    Some(PoseProvenance::decode(&mut d)?)
+                } else {
+                    None
+                };
+                let uncertainty = if d.bool()? {
+                    Some(PoseUncertainty::decode(&mut d)?)
+                } else {
+                    None
+                };
+                let summary = RecordedHealthCoverageReceipt::from_bytes(d.bytes()?)?;
+                (provenance, uncertainty, Some(summary))
+            } else {
+                let provenance = if version >= RECORD_VERSION_POSE_PROVENANCE {
+                    masked_samples = d.bool()?;
+                    Some(PoseProvenance::decode(&mut d)?)
+                } else {
+                    None
+                };
+                let uncertainty = if version >= RECORD_VERSION_POSE_UNCERTAINTY {
+                    Some(PoseUncertainty::decode(&mut d)?)
+                } else {
+                    None
+                };
+                (provenance, uncertainty, None)
+            };
         let sigma_points = pose_uncertainty
             .as_ref()
             .and_then(PoseUncertainty::pose_covariance)
@@ -1464,6 +1594,15 @@ impl CoverageRecord {
                     "calibration_uncertainty" if version >= RECORD_VERSION_CALIBRATION_GUARD => {
                         UncoveredReason::CalibrationUncertainty
                     }
+                    "sensor_health_degraded" if version == RECORD_VERSION_SENSOR_HEALTH => {
+                        UncoveredReason::SensorHealthDegraded
+                    }
+                    "sensor_health_dependent_track" if version == RECORD_VERSION_SENSOR_HEALTH => {
+                        UncoveredReason::SensorHealthDependentTrack
+                    }
+                    "capture_order_uncertain" if version == RECORD_VERSION_SENSOR_HEALTH => {
+                        UncoveredReason::CaptureOrderUncertain
+                    }
                     _ => return Err(ContractError::InvalidIdentifier),
                 };
                 uncovered.push(UncoveredInterval {
@@ -1499,6 +1638,7 @@ impl CoverageRecord {
             zones,
             pose_provenance,
             pose_uncertainty,
+            sensor_health,
         };
         record.validate()?;
         if record.to_bytes() != bytes {
@@ -1516,6 +1656,31 @@ impl CoverageRecord {
             || self.zones.len() > MAX_COVERAGE_ZONES
         {
             return Err(ContractError::InvalidIdentifier);
+        }
+        let health_summary = self
+            .sensor_health
+            .as_ref()
+            .map(RecordedHealthCoverageReceipt::summary);
+        if let Some(receipt) = &self.sensor_health {
+            receipt.validate_for(self)?;
+            let summary = receipt.summary();
+            let mut observations = summary.observations().iter();
+            let first = observations.next().ok_or(ContractError::InvalidIdentifier)?;
+            let mut observed = first.capture;
+            if first.segment < self.first_segment || first.segment > self.last_segment {
+                return Err(ContractError::InvalidIdentifier);
+            }
+            for observation in observations {
+                if observation.segment < self.first_segment
+                    || observation.segment > self.last_segment
+                {
+                    return Err(ContractError::InvalidIdentifier);
+                }
+                observed = hull(observed, observation.capture)?;
+            }
+            if observed != self.analysed {
+                return Err(ContractError::InvalidIdentifier);
+            }
         }
         // A pose provenance names the source of a corroborate camera's pinhole pose: every zone
         // of its record was assessed through that pose.
@@ -1561,6 +1726,44 @@ impl CoverageRecord {
             receipt.validate_for(self)?;
         }
         for zone in &self.zones {
+            for interval in &zone.uncovered {
+                if interval.reason == UncoveredReason::SensorHealthDegraded
+                    && health_summary.is_none_or(|summary| {
+                        interval.first_segment > interval.last_segment
+                            || interval.last_segment - interval.first_segment
+                                >= summary.observations().len() as u64
+                            || (interval.first_segment..=interval.last_segment).any(|segment| {
+                                usize::try_from(segment)
+                                    .ok()
+                                    .is_none_or(|segment| !summary.affects(segment))
+                            })
+                    })
+                {
+                    return Err(ContractError::CoverageUncertified);
+                }
+            }
+            for interval in &zone.uncovered {
+                if interval.reason == UncoveredReason::SensorHealthDependentTrack
+                    && health_summary.is_none_or(|summary| {
+                        interval.first_segment > interval.last_segment
+                            || interval.last_segment - interval.first_segment
+                                >= summary.observations().len() as u64
+                            || (interval.first_segment..=interval.last_segment).any(|segment| {
+                                !summary.withdrawn_track_segments().contains(&segment)
+                            })
+                    })
+                {
+                    return Err(ContractError::CoverageUncertified);
+                }
+                if interval.reason == UncoveredReason::CaptureOrderUncertain
+                    && self
+                        .sensor_health
+                        .as_ref()
+                        .is_none_or(|receipt| !receipt.capture_order_uncertain())
+                {
+                    return Err(ContractError::CoverageUncertified);
+                }
+            }
             if guard.is_none()
                 && zone
                     .uncovered
@@ -1596,6 +1799,39 @@ impl CoverageRecord {
                 }
             }
             for witness in &zone.witnesses {
+                if let Some(summary) = health_summary {
+                    let frames: Vec<_> = summary
+                        .observations()
+                        .iter()
+                        .filter(|observation| {
+                            observation.segment >= witness.first_segment
+                                && observation.segment <= witness.last_segment
+                        })
+                        .collect();
+                    let (Some(first), Some(last)) = (frames.first(), frames.last()) else {
+                        return Err(ContractError::CoverageUncertified);
+                    };
+                    let mut outer = first.capture;
+                    for observation in &frames {
+                        outer = hull(outer, observation.capture)?;
+                    }
+                    if frames.len() as u64 != witness.frames
+                        || first.segment != witness.first_segment
+                        || last.segment != witness.last_segment
+                        || frames.windows(2).any(|pair| {
+                            pair[0].segment.checked_add(1) != Some(pair[1].segment)
+                        })
+                        || frames.iter().any(|frame| {
+                            summary.affected_segments().contains(&frame.segment)
+                                || summary.withdrawn_track_segments().contains(&frame.segment)
+                        })
+                        || witness.outer != outer
+                        || witness.covered
+                            != CaptureInterval::new(first.capture.latest, last.capture.earliest)?
+                    {
+                        return Err(ContractError::CoverageUncertified);
+                    }
+                }
                 // Unknown capture time never yields a witness.
                 if self.capture_time_label != OPERATOR_TIME_LABEL {
                     return Err(ContractError::CoverageUncertified);
@@ -1603,7 +1839,7 @@ impl CoverageRecord {
                 let domain =
                     witness_domain(self.source, &self.sensor_id, &zone.scope, witness.covered);
                 let predicate = format!(
-                    "{}{}",
+                    "{}{}{}",
                     zone_witness_predicate(
                         self.source,
                         &self.sensor_id,
@@ -1615,7 +1851,10 @@ impl CoverageRecord {
                     pose_predicate_clause(
                         self.pose_uncertainty.as_ref(),
                         zone.pose_robustness.as_ref()
-                    )
+                    ),
+                    self.sensor_health
+                        .as_ref()
+                        .map_or_else(String::new, RecordedHealthCoverageReceipt::predicate_clause)
                 );
                 let inner = &witness.witness;
                 inner.require_certified_absence()?;

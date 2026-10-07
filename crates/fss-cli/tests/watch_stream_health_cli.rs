@@ -320,8 +320,15 @@ fn invalid_health_policy_and_orphan_modes_fail_before_deployment_io() -> Test {
     let prefix = base(&root, ContentDigest::sha256(b"not-an-import"));
     for (extra, reason) in [
         (
-            vec!["--sensor-health", "conservative-v1"],
-            "requires --stream-dwell",
+            vec![
+                "--dwell-for-ns",
+                "20000000000",
+                "--dwell-max-gap-ns",
+                "100000000",
+                "--sensor-health",
+                "conservative-v1",
+            ],
+            "short dwell screening is unsupported",
         ),
         (
             vec!["--stream-dwell", "--sensor-health", "latest"],

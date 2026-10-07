@@ -77,8 +77,8 @@ pub use recovery::CorroborationOptions;
 use recovery::{camera_diagnostics_json, capture_time_reliable};
 
 use fss_core::{
-    CanonicalEncoder, CaptureInterval, ContentDigest, ContractError, EventHypothesis, EventId,
-    ObjectId,
+    CanonicalEncoder, CaptureInterval, ContentDigest, ContractError, EventEvidence,
+    EventHypothesis, EventId, EvidenceClass, EvidenceEdgeRelation, ObjectId,
 };
 use fss_geometry::WorkBudget;
 use fss_object::{ObjectError, ObjectManifest};
@@ -109,6 +109,7 @@ use super::recorded_coverage::{
     retain_coverage,
 };
 use super::recorded_decode::{ComponentInterpretation, RecordedDecodeError, source_capsule};
+use super::recorded_health::{RecordedHealthPolicy, RecordedHealthSummary, screened_plan_digest};
 use super::recorded_watch::{
     MAX_WATCH_FRAMES, WatchDetectorConfig, WatchError, WatchLimits, WatchOptions, WatchPlan,
     WatchReport, WatchTrackerConfig, WatchZone, bind_cascade_parameters, media_decoder_label,
@@ -640,6 +641,8 @@ pub struct CameraSummary {
     pub decode_refusals: Vec<DecodeRefusal>,
     /// Exact first decoded segments after tracking restarts; no track crosses these boundaries.
     pub tracking_restarts: Vec<usize>,
+    /// Optional bounded visual health receipts; findings conservatively withdraw coverage.
+    pub sensor_health: Option<RecordedHealthSummary>,
     sensor_digest: ContentDigest,
     coverage_frames: Vec<CoverageFrame>,
     segment_gaps: Vec<bool>,
@@ -826,6 +829,7 @@ struct CameraAnalysisContext<'a> {
     plan: &'a CorroborationPlan,
     plan_digest: ContentDigest,
     options: CorroborationOptions,
+    health: Option<RecordedHealthPolicy>,
 }
 
 fn analyze_camera(
@@ -840,6 +844,7 @@ fn analyze_camera(
         plan,
         plan_digest,
         options,
+        health,
     } = *context;
     let camera = &plan.cameras[index];
     let retained =
@@ -861,7 +866,7 @@ fn analyze_camera(
     let failure_domain = format!("recorded-sensor:{}", hex(sensor_digest));
     let import_root = retained.import_root();
     let watch_plan = plan.watch_plan(camera, count);
-    let report = WatchReport::analyze_with_options(
+    let report = WatchReport::analyze_with_health(
         deployment,
         &watch_plan,
         limits,
@@ -869,6 +874,7 @@ fn analyze_camera(
         WatchOptions {
             tolerate_decode_refusals: options.tolerate_decode_refusals,
         },
+        health,
         cx,
     )?;
     let frames: BTreeMap<usize, _> = report.frames().iter().map(|f| (f.segment, f)).collect();
@@ -1010,7 +1016,7 @@ fn analyze_camera(
                             decoded_segments: &decoded,
                         },
                         decode_refusals: report.decode_refusals(),
-                        tracking_restarts: report.tracking_restarts(),
+                        tracking_restarts: report.decode_restarts(),
                     },
                     &tracks,
                     budget,
@@ -1040,6 +1046,7 @@ fn analyze_camera(
             homography_digest,
             decode_refusals: report.decode_refusals().to_vec(),
             tracking_restarts: report.tracking_restarts().to_vec(),
+            sensor_health: report.sensor_health().cloned(),
             sensor_digest,
             coverage_frames,
             segment_gaps,
@@ -1299,11 +1306,42 @@ impl CorroborationReport {
         deployment: &ReferenceDeployment,
         plan: &CorroborationPlan,
         limits: &WatchLimits,
+        detector: Option<&mut DetectorCascade<'_>>,
+        visibility: &GroundVisibilityPlan<'_>,
+        provenance: &[Option<PoseProvenance>; 2],
+        covariance: &[Option<PoseCovariance>; 2],
+        options: CorroborationOptions,
+        cx: &ReplayCx,
+    ) -> Result<Self> {
+        Self::analyze_with_health(
+            deployment,
+            plan,
+            limits,
+            detector,
+            visibility,
+            provenance,
+            covariance,
+            options,
+            None,
+            cx,
+        )
+    }
+
+    /// Screen each retained camera before tracking or association, retaining exact bounded
+    /// measurements in coverage and candidate provenance. Suspect runs cannot supply tracks,
+    /// selected classifier evidence or absence witnesses. A clear screen never certifies health.
+    /// `None` preserves the complete existing analysis and encoding.
+    #[allow(clippy::too_many_arguments)]
+    pub fn analyze_with_health(
+        deployment: &ReferenceDeployment,
+        plan: &CorroborationPlan,
+        limits: &WatchLimits,
         mut detector: Option<&mut DetectorCascade<'_>>,
         visibility: &GroundVisibilityPlan<'_>,
         provenance: &[Option<PoseProvenance>; 2],
         covariance: &[Option<PoseCovariance>; 2],
         options: CorroborationOptions,
+        health: Option<RecordedHealthPolicy>,
         cx: &ReplayCx,
     ) -> Result<Self> {
         checkpoint(cx, "recorded_corroboration:analyze")?;
@@ -1336,11 +1374,12 @@ impl CorroborationReport {
                 }
             };
         }
-        let plan_digest = plan.digest();
+        let plan_digest = screened_plan_digest(plan.digest(), health);
         let context = CameraAnalysisContext {
             plan,
             plan_digest,
             options,
+            health,
         };
         let mut allowance = detector.as_ref().map(|d| d.budget());
         let first = analyze_camera(
@@ -1597,7 +1636,7 @@ impl CorroborationReport {
                         "\"capture_time_label\":\"operator_assumption\",",
                         "\"watch_plan_digest\":\"{}\",\"watch_analysis_digest\":\"{}\",",
                         "\"ground_homography_digest\":\"{}\",",
-                        "\"ground_homography\":\"owner_supplied_not_a_calibration_certificate\"{}}}"
+                        "\"ground_homography\":\"owner_supplied_not_a_calibration_certificate\"{}{}}}"
                     ),
                     json_string(&c.name),
                     c.import_identity,
@@ -1616,6 +1655,9 @@ impl CorroborationReport {
                         &c.tracking_restarts,
                         &c.segment_gaps,
                     ),
+                    c.sensor_health.as_ref().map_or_else(String::new, |summary| {
+                        format!(",\"sensor_health\":{}", summary.to_json())
+                    }),
                 )
             })
             .collect();
@@ -1822,6 +1864,10 @@ fn camera_coverage(
         &mut parameters,
         camera.privacy.policy().map(|_| camera.privacy.digest()),
     );
+    bind_cascade_parameters(
+        &mut parameters,
+        camera.sensor_health.as_ref().map(RecordedHealthSummary::digest),
+    );
     // Ground zones whose image preimage may contain a masked pixel carry no witness
     // (conservative bounding-box rule); zones with a masked visibility sample join below.
     let mut masked: BTreeSet<String> = match camera.privacy.policy() {
@@ -1972,6 +2018,7 @@ fn camera_coverage(
         pose_provenance: context.provenance,
         pose_uncertainty: context.uncertainty,
         pose_robustness: robustness,
+        sensor_health: camera.sensor_health.clone(),
     };
     let mut record = build_coverage_with(
         &CoverageInput {
@@ -2071,6 +2118,7 @@ fn prepare_candidate(
     let mut witnesses = Vec::with_capacity(2);
     let mut children = BTreeSet::new();
     let mut track_ids = Vec::with_capacity(2);
+    let mut health_dependencies = Vec::new();
     for entry in [left, right] {
         let camera = &cameras[entry.camera];
         let sensor = insert(camera.sensor_id.as_bytes().to_vec());
@@ -2083,6 +2131,25 @@ fn prepare_candidate(
         }
         children.insert(camera.import_root);
         children.insert(entry.capsule_digest);
+        if let Some(summary) = &camera.sensor_health {
+            insert(super::sensor_health::policy_bytes().to_vec());
+            let digest = insert(summary.to_bytes());
+            children.extend(
+                summary
+                    .observations()
+                    .iter()
+                    .map(|observation| observation.capsule_digest),
+            );
+            health_dependencies.push(EventEvidence {
+                digest,
+                class: EvidenceClass::Derived,
+                failure_domain: camera.failure_domain.clone(),
+                supports: false,
+                relation: EvidenceEdgeRelation::RequiredBy,
+                capsule_digest: None,
+                identity_digest: Some(camera.sensor_digest),
+            });
+        }
         track_ids.push(format!("track:{}:{}", camera.name, entry.track_id));
         witnesses.push(ZoneEntryWitness {
             record_digest: entry.record_digest,
@@ -2092,7 +2159,7 @@ fn prepare_candidate(
             interval: entry.capture,
         });
     }
-    let decision = evaluate_zone_entry_corroboration(ZoneEntryCorroboration {
+    let mut decision = evaluate_zone_entry_corroboration(ZoneEntryCorroboration {
         event_id: EventId::parse(format!("event:corroborated:{}", hex(identity)))?,
         zone_id: zone_id.clone(),
         track_ids,
@@ -2101,6 +2168,11 @@ fn prepare_candidate(
         association_domain: format!("cross-camera-association:{}", hex(plan_digest)),
         uncertainty_reason: UNCERTAINTY.to_owned(),
     })?;
+    if !health_dependencies.is_empty() {
+        decision.event.evidence.extend(health_dependencies);
+        decision.event.evidence.sort_by_key(|item| item.digest);
+        decision.event.validate()?;
+    }
     let mut e = CanonicalEncoder::new();
     e.bytes(b"FSSCORR1");
     e.u32(1);

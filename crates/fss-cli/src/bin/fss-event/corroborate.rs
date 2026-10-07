@@ -48,6 +48,9 @@
 //! exclude later frame-index capture hints from association. Custody, privacy, cancellation and
 //! budget failures still abort, as does a detector cascade over a gapped range. Recovery is kept
 //! in every exact approval rerun and in the post-publication coverage reanalysis.
+//! `--sensor-health conservative-v1` screens each camera's masked decoded pixels separately.
+//! Suspect visual-degradation runs lose candidate and coverage support; a clear screen does not
+//! establish camera health. Screening is retained in proposal identities and approval reruns.
 
 // Full calibration covariance is an additional coverage-denial gate, not an event classifier.
 #[path = "corroborate/calibration_coverage.rs"]
@@ -75,7 +78,9 @@ use fss_reference::ingest::recorded_corroboration::{
 };
 use fss_reference::ingest::recorded_coverage::{GenerationCurrency, PoseProvenance};
 use fss_reference::ingest::recorded_decode::ComponentInterpretation;
+use fss_reference::ingest::recorded_health::RecordedHealthPolicy;
 use fss_reference::ingest::recorded_watch::{WatchDetectorConfig, WatchLimits, WatchTrackerConfig};
+use fss_reference::ingest::sensor_health::POLICY_NAME as HEALTH_POLICY_NAME;
 use fss_reference::ingest::site_calibration::{
     MAX_CALIBRATION_BYTES, SiteCalibration, SiteCalibrationError,
 };
@@ -112,6 +117,7 @@ const OPTIONS: &[&str] = &[
     "--scene-source-digest",
     "--calibration",
     "--calibration-digest",
+    "--sensor-health",
 ];
 
 /// Largest owner scene-mesh package read (the fss-twin format bound).
@@ -154,6 +160,7 @@ pub(super) struct CorroborateAction {
     plan: CorroborationPlan,
     limits: WatchLimits,
     recovery: CorroborationOptions,
+    health_screen: Option<RecordedHealthPolicy>,
     approvals: BTreeSet<ContentDigest>,
     retain_coverage: Option<ContentDigest>,
     report_out: Option<PathBuf>,
@@ -402,6 +409,13 @@ pub(super) fn parse(args: &[OsString]) -> Result<CorroborateAction, String> {
         }
         index += 2;
     }
+    let health_screen = match find(&values, "--sensor-health") {
+        Some(HEALTH_POLICY_NAME) => Some(RecordedHealthPolicy::ConservativeV1),
+        Some(_) => {
+            return Err(format!("--sensor-health requires policy {HEALTH_POLICY_NAME}"));
+        }
+        None => None,
+    };
     let [first, second]: [(String, ContentDigest); 2] = cameras
         .try_into()
         .map_err(|_| "exactly two --camera NAME:sha256:IMPORT recordings are required")?;
@@ -575,6 +589,7 @@ pub(super) fn parse(args: &[OsString]) -> Result<CorroborateAction, String> {
         },
         limits,
         recovery,
+        health_screen,
         approvals,
         retain_coverage: match find(&values, "--retain-coverage") {
             Some(value) => Some(digest(value, "--retain-coverage")?),
@@ -914,7 +929,7 @@ fn run_with(
         )?),
         _ => None,
     };
-    let mut report = CorroborationReport::analyze_with_pose_uncertainty(
+    let mut report = CorroborationReport::analyze_with_health(
         deployment,
         &action.plan,
         &action.limits,
@@ -923,6 +938,7 @@ fn run_with(
         &provenance,
         &covariances,
         action.recovery,
+        action.health_screen,
         cx,
     )?;
     // Full-camera screening changes coverage identities, not event proposals. One allowance
@@ -963,7 +979,7 @@ fn run_with(
     // A newly offered proposal must name the new anchor after positive events were published.
     // Reapply the guard too: never combine a new nominal record with an old guarded approval.
     let reproposed = if published > 0 && action.retain_coverage.is_none() {
-        Some(CorroborationReport::analyze_with_pose_uncertainty(
+        Some(CorroborationReport::analyze_with_health(
             deployment,
             &action.plan,
             &action.limits,
@@ -972,6 +988,7 @@ fn run_with(
             &provenance,
             &covariances,
             action.recovery,
+            action.health_screen,
             cx,
         )?)
     } else {

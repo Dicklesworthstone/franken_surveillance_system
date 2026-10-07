@@ -163,6 +163,7 @@ fn fixture_with_privacy(
                 .collect(),
         },
         &CoverageExtras {
+            sensor_health: None,
             visibility: vec![Some(visibility.clone()), Some(visibility)],
             refusals: Vec::new(),
             restarts: vec![9],

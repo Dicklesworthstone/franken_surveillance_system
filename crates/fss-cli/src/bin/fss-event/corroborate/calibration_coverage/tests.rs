@@ -165,6 +165,7 @@ fn fixture(
                 covariance: PoseCovariance::new([[0.0; 6]; 6])?,
             }),
             pose_robustness: vec![Some(robust), Some(robust)],
+            sensor_health: None,
         },
     )?;
     Ok((record, assessment))

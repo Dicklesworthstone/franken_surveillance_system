@@ -54,6 +54,8 @@ pub mod recorded_decode;
 pub mod recorded_dwell;
 /// Durable unresolved event candidates from exact replayed analysis reports.
 pub mod recorded_event;
+/// Conservative source-linked visual screening with receipt-bound coverage withdrawal.
+pub mod recorded_health;
 /// Model-free decode→foreground→Kalman→zone candidates with exact-approval publication.
 pub mod recorded_watch;
 /// Bounded recording-to-model-to-analysis execution with verified restart reuse.

@@ -31,6 +31,10 @@ pub struct CalibrationZoneReceipt {
     counts: [u32; 7],
 }
 impl CalibrationZoneReceipt {
+    /// Pipeline generation before this additional guard, used by earlier bound screens.
+    pub(crate) const fn base_pipeline_generation(&self) -> ContentDigest {
+        self.base_pipeline
+    }
     /// Counts in the registered `CalibrationSampleRelation` order.
     pub const fn counts(&self) -> [u32; 7] {
         self.counts
@@ -121,6 +125,10 @@ pub(super) fn pose_covariance_bits(camera: &AdjustedCamera) -> [u64; 36] {
 }
 
 impl CalibrationCoverageReceipt {
+    /// Analysis identity before this additional guard, used by earlier bound screens.
+    pub(crate) const fn base_analysis_digest(&self) -> ContentDigest {
+        self.base_analysis
+    }
     /// Identity of the full consumed camera, covariance, mask, grid and ground zones.
     pub const fn input_digest(&self) -> ContentDigest {
         self.input_digest
@@ -513,6 +521,9 @@ pub fn apply_calibration_coverage(
         return Err(ContractError::BudgetExhausted.into());
     }
     let mut work = 4096_u64;
+    if record.sensor_health.is_some() {
+        work += crate::ingest::recorded_health::MAX_RECORDED_HEALTH_BYTES as u64 + 8_192;
+    }
     for zone in &record.zones {
         if zone.zone_id.len() > 64
             || zone.geometry.len() > 256
@@ -604,7 +615,7 @@ pub fn apply_calibration_coverage(
             );
             for witness in &mut zone.witnesses {
                 witness.witness.negative_predicate = format!(
-                    "{}{}",
+                    "{}{}{}",
                     zone_witness_predicate(
                         guarded.source,
                         &guarded.sensor_id,
@@ -613,7 +624,11 @@ pub fn apply_calibration_coverage(
                         witness.covered,
                         zone.visibility.as_ref()
                     ),
-                    clause
+                    clause,
+                    guarded
+                        .sensor_health
+                        .as_ref()
+                        .map_or_else(String::new, |receipt| receipt.predicate_clause())
                 );
             }
         }

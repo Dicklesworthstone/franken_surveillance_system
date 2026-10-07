@@ -22,8 +22,9 @@
 //! Add `--stream-dwell` for one whole MJPEG range (up to 65536 segments), with persistent
 //! foreground/tracker state and aggregate source-byte, pixel, assignment and trace ceilings.
 //! This mode refuses detector-package flags rather than silently dropping a requested model.
-//! `--stream-dwell --sensor-health conservative-v1` additionally screens the same masked pixels;
-//! suspected degradation or incomplete screening preserves diagnostics but blocks publication.
+//! `--sensor-health conservative-v1` additionally screens the same masked pixels in entry
+//! mode. Suspect runs cannot contribute candidates or coverage witnesses. Whole-recording
+//! `--stream-dwell` uses its existing whole-scan publication gate instead; short dwell is refused.
 
 use std::collections::BTreeSet;
 use std::ffi::OsString;
@@ -37,6 +38,7 @@ use fss_reference::ingest::long_dwell::{LongDwellLimits, LongDwellReport, MAX_LO
 use fss_reference::ingest::package_detect::PackageDetectLimits;
 use fss_reference::ingest::recorded_decode::ComponentInterpretation;
 use fss_reference::ingest::recorded_dwell::DwellReport;
+use fss_reference::ingest::recorded_health::RecordedHealthPolicy;
 use fss_reference::ingest::recorded_watch::{
     MAX_WATCH_FRAMES, MAX_WATCH_ZONES, WatchDetectorConfig, WatchError, WatchLimits, WatchOptions,
     WatchPlan, WatchReport, WatchTrackerConfig, WatchZone,
@@ -261,7 +263,6 @@ pub(super) fn parse(args: &[OsString]) -> Result<WatchAction, String> {
                 "--sensor-health requires policy {HEALTH_POLICY_NAME}"
             ));
         }
-        Ok(_) if !stream_dwell => return Err("--sensor-health requires --stream-dwell".to_owned()),
         Ok(_) => true,
         Err(_) => false,
     };
@@ -345,6 +346,12 @@ pub(super) fn parse(args: &[OsString]) -> Result<WatchAction, String> {
         }
     }
     let dwell = dwell_policy(&values)?;
+    if health_screen && dwell.is_some() && !stream_dwell {
+        return Err(
+            "--sensor-health with dwell requires --stream-dwell; short dwell screening is unsupported"
+                .to_owned(),
+        );
+    }
     if stream_dwell && dwell.is_none() {
         return Err("--stream-dwell requires the explicit dwell duration and gap rule".to_owned());
     }
@@ -397,9 +404,9 @@ pub(super) fn run(
     if let Some(limits) = &action.stream_dwell {
         return run_streaming(action, deployment, root, limits, cx, out);
     }
-    if action.health_screen {
+    if action.health_screen && action.dwell.is_some() {
         return Err(
-            WatchError::InvalidPlan("sensor-health screening requires streaming dwell").into(),
+            WatchError::InvalidPlan("short dwell sensor-health screening is unsupported").into(),
         );
     }
     let scalar = ScalarExecCx::new();
@@ -494,12 +501,13 @@ fn run_with(
         out.write_all(json.as_bytes())?;
         return Ok(());
     }
-    let mut report = WatchReport::analyze_with_options(
+    let mut report = WatchReport::analyze_with_health(
         deployment,
         &plan,
         &action.limits,
         cascade.as_mut(),
         action.options,
+        action.health_screen.then_some(RecordedHealthPolicy::ConservativeV1),
         cx,
     )?;
     // Both approvals are checked against the fresh analysis before anything is written.
@@ -518,12 +526,13 @@ fn run_with(
     // candidates, the proposal is recomputed against the new anchor so its approval is current.
     let reproposed = if published > 0 && action.retain_coverage.is_none() {
         // Same cascade instance: completed inferences are reused, never re-run.
-        Some(WatchReport::analyze_with_options(
+        Some(WatchReport::analyze_with_health(
             deployment,
             &plan,
             &action.limits,
             cascade.as_mut(),
             action.options,
+            action.health_screen.then_some(RecordedHealthPolicy::ConservativeV1),
             cx,
         )?)
     } else {

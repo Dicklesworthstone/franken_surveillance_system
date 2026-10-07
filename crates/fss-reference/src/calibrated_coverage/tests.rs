@@ -153,6 +153,7 @@ pub(super) fn fixture(
             zones,
         },
         &CoverageExtras {
+            sensor_health: None,
             visibility: vec![Some(visibility.clone()), Some(visibility)],
             refusals: Vec::new(),
             restarts: vec![9],

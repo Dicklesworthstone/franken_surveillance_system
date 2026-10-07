@@ -319,6 +319,9 @@ fn record(value: &CoverageRecord) -> String {
     if let Some(uncertainty) = &value.pose_uncertainty {
         fields.push(("pose_uncertainty", pose_uncertainty(uncertainty)));
     }
+    if let Some(health) = &value.sensor_health {
+        fields.push(("sensor_health", health.to_json()));
+    }
     fields.push(("zones", array(&zones)));
     object(&fields)
 }

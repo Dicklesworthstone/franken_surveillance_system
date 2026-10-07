@@ -554,6 +554,11 @@ Implemented (reference, unqualified):
   homographies and gated global association (`fss-event corroborate`), and one approval-gated
   plaintext webhook alert per corroborated event with a durable prepare/commit/observe record
   (`fss-event alert`; wiring proven on synthetic scenes, not detection quality);
+- opt-in `--sensor-health conservative-v1` for recorded `watch` and `corroborate`, screening
+  privacy-masked pixels for repetition, persistent dark/bright fields and contrast loss before
+  those runs can support candidates or coverage witnesses; reports retain bounded measurements,
+  and a clear screen explicitly does not establish health (see
+  [visual-degradation screening](docs/long_recording_health.md));
 - a deterministic event-level evaluation harness (AUPRC, recall at a false-alert budget,
   not_observable accounting) with no real labelled corpus yet;
 - a scalar model executor over the frozen FSS IR with Safetensors weights (`fss-infer`);
