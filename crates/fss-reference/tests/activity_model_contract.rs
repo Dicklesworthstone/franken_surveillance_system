@@ -118,6 +118,17 @@ fn load_repinned(bytes: &[u8]) -> Result<VerifiedActivityPackage, ActivityPackag
     )
 }
 
+/// The variant name of a load outcome (`loaded` when verification admitted the package).
+fn variant(result: &Result<VerifiedActivityPackage, ActivityPackageError>) -> String {
+    match result {
+        Ok(_) => "loaded".to_owned(),
+        Err(error) => format!("{error:?}")
+            .chars()
+            .take_while(char::is_ascii_alphanumeric)
+            .collect(),
+    }
+}
+
 /// Deterministic Safetensors with one `mean_weights` tensor of the given values.
 fn weights_safetensors(values: &[f32]) -> Vec<u8> {
     let mut data = Vec::new();
@@ -249,27 +260,35 @@ fn archive_tamper_is_refused_before_parsing() -> TestResult {
     let error = VerifiedActivityPackage::load(&tampered, pinned()?, &policy, &ScalarExecCx::new())
         .err()
         .ok_or("tampered archive loaded")?;
-    assert!(matches!(error, ActivityPackageError::DigestMismatch));
-    assert_eq!(error.stable_id(), "ERR-MODEL-PACKAGE-DIGEST-001");
     // Even re-pinned to the tampered bytes, the archive's own checksum refuses it.
-    assert!(matches!(
-        load_repinned(&tampered),
-        Err(ActivityPackageError::Archive(_))
-    ));
+    let repinned = load_repinned(&tampered);
     // A non-SHA-256 pin is never accepted.
     let blake = ContentDigest::new(DigestAlgorithm::Blake3, pinned()?.bytes());
-    assert!(matches!(
-        VerifiedActivityPackage::load(ACTIVITY_PACKAGE_V1, blake, &policy, &ScalarExecCx::new()),
-        Err(ActivityPackageError::DigestMismatch)
-    ));
+    let blake_pinned =
+        VerifiedActivityPackage::load(ACTIVITY_PACKAGE_V1, blake, &policy, &ScalarExecCx::new());
+    let original_pin = matches!(error, ActivityPackageError::DigestMismatch);
+    let checksum = matches!(repinned, Err(ActivityPackageError::Archive(_)));
+    let non_sha256 = matches!(blake_pinned, Err(ActivityPackageError::DigestMismatch));
     Record::new("archive_tamper_refused")
         .check(
             "stable_id",
             "ERR-MODEL-PACKAGE-DIGEST-001",
             error.stable_id(),
         )
-        .check("error", "DigestMismatch", format!("{error:?}"))
-        .emit_checked(0, true);
+        .check("original_pin", "DigestMismatch", format!("{error:?}"))
+        .check_eq("repinned_refused_by_archive_checksum", true, checksum)
+        .check_eq("non_sha256_pin_refused", true, non_sha256)
+        .emit_checked(
+            0,
+            original_pin
+                && error.stable_id() == "ERR-MODEL-PACKAGE-DIGEST-001"
+                && checksum
+                && non_sha256,
+        );
+    assert!(original_pin, "{error:?}");
+    assert_eq!(error.stable_id(), "ERR-MODEL-PACKAGE-DIGEST-001");
+    assert!(checksum, "{repinned:?}");
+    assert!(non_sha256, "{blake_pinned:?}");
     Ok(())
 }
 
@@ -287,25 +306,28 @@ fn self_consistent_repacks_with_other_weights_graph_or_spec_are_refused() -> Tes
         Some((WEIGHTS_ARTIFACT, weights_safetensors(&values))),
         ACTIVITY_MODEL_GENERATION,
     )?;
-    assert!(matches!(
-        load_repinned(&other_weights),
-        Err(ActivityPackageError::WeightsMismatch)
-    ));
+    let mut cases = vec![(
+        "one_weight_changed",
+        "WeightsMismatch",
+        variant(&load_repinned(&other_weights)),
+    )];
     let short = repack(
         Some((WEIGHTS_ARTIFACT, weights_safetensors(&[0.5; 16]))),
         ACTIVITY_MODEL_GENERATION,
     )?;
-    assert!(matches!(
-        load_repinned(&short),
-        Err(ActivityPackageError::WeightsMismatch)
+    cases.push((
+        "short_weights",
+        "WeightsMismatch",
+        variant(&load_repinned(&short)),
     ));
     let garbage = repack(
         Some((WEIGHTS_ARTIFACT, b"not safetensors".to_vec())),
         ACTIVITY_MODEL_GENERATION,
     )?;
-    assert!(matches!(
-        load_repinned(&garbage),
-        Err(ActivityPackageError::Weights(_))
+    cases.push((
+        "garbage_weights",
+        "Weights",
+        variant(&load_repinned(&garbage)),
     ));
 
     // Another valid graph (frame and reference swapped) is not this model.
@@ -344,9 +366,10 @@ fn self_consistent_repacks_with_other_weights_graph_or_spec_are_refused() -> Tes
         Some((GRAPH_ARTIFACT, encode_canonical_model_ir(&swapped)?)),
         ACTIVITY_MODEL_GENERATION,
     )?;
-    assert!(matches!(
-        load_repinned(&other_graph),
-        Err(ActivityPackageError::GraphMismatch)
+    cases.push((
+        "swapped_graph",
+        "GraphMismatch",
+        variant(&load_repinned(&other_graph)),
     ));
 
     let mut spec = ActivityPackageSpec::v1().encode()?;
@@ -356,10 +379,22 @@ fn self_consistent_repacks_with_other_weights_graph_or_spec_are_refused() -> Tes
         Some((ACTIVITY_SPEC_ARTIFACT, spec)),
         ACTIVITY_MODEL_GENERATION,
     )?;
-    assert!(matches!(
-        load_repinned(&other_spec),
-        Err(ActivityPackageError::InvalidSpec)
+    cases.push((
+        "other_spec",
+        "InvalidSpec",
+        variant(&load_repinned(&other_spec)),
     ));
+    let mut record = Record::new("repinned_tamper_refused");
+    for (case, expected, observed) in &cases {
+        record = record.check(case, *expected, observed.as_str());
+    }
+    let checked = cases
+        .iter()
+        .all(|(_, expected, observed)| expected == observed);
+    record.emit_checked(0, checked);
+    for (case, expected, observed) in &cases {
+        assert_eq!(observed.as_str(), *expected, "{case}");
+    }
     Ok(())
 }
 
@@ -384,35 +419,49 @@ fn license_policy_without_the_first_party_identity_refuses_the_package() -> Test
     // Revoking the identity from the first-party policy refuses it again.
     let mut revoked = activity_license_policy()?;
     revoked.disallow_license(ACTIVITY_LICENSE_IDENTITY);
-    assert!(matches!(
-        VerifiedActivityPackage::load(
-            ACTIVITY_PACKAGE_V1,
-            pinned()?,
-            &revoked,
-            &ScalarExecCx::new()
-        ),
-        Err(ActivityPackageError::License(_))
-    ));
+    let revoked_result = VerifiedActivityPackage::load(
+        ACTIVITY_PACKAGE_V1,
+        pinned()?,
+        &revoked,
+        &ScalarExecCx::new(),
+    );
+    let revoked_variant = variant(&revoked_result);
     Record::new("license_denial_refused")
         .check(
             "stable_id",
             "ERR-MODEL-PACKAGE-LICENSE-001",
             error.stable_id(),
         )
-        .emit_checked(0, true);
+        .check("revoked_policy", "License", revoked_variant.as_str())
+        .emit_checked(
+            0,
+            error.stable_id() == "ERR-MODEL-PACKAGE-LICENSE-001" && revoked_variant == "License",
+        );
+    assert!(matches!(
+        revoked_result,
+        Err(ActivityPackageError::License(_))
+    ));
     Ok(())
 }
 
 #[test]
 fn other_generations_are_refused_and_at_sign_generations_cannot_exist() -> TestResult {
     let v2 = repack(None, "model:fss-activity:v2")?;
-    match load_repinned(&v2) {
-        Err(ActivityPackageError::WrongModel { generation, .. }) => {
-            assert_eq!(generation, "model:fss-activity:v2");
-        }
+    let refused = match load_repinned(&v2) {
+        Err(ActivityPackageError::WrongModel { generation, .. }) => generation,
         other => return Err(format!("expected WrongModel, got {other:?}").into()),
-    }
-    assert!(ModelGeneration::parse("model:fss-activity@1").is_err());
+    };
+    let at_sign_refused = ModelGeneration::parse("model:fss-activity@1").is_err();
+    Record::new("other_generation_refused")
+        .check(
+            "wrong_model_generation",
+            "model:fss-activity:v2",
+            refused.as_str(),
+        )
+        .check_eq("at_sign_generation_unparseable", true, at_sign_refused)
+        .emit_checked(0, refused == "model:fss-activity:v2" && at_sign_refused);
+    assert_eq!(refused, "model:fss-activity:v2");
+    assert!(at_sign_refused);
     Ok(())
 }
 
@@ -420,10 +469,12 @@ fn other_generations_are_refused_and_at_sign_generations_cannot_exist() -> TestR
 fn cancellation_before_load_returns_no_package() -> TestResult {
     let cx = ScalarExecCx::new();
     cx.request_cancellation();
-    assert!(matches!(
-        VerifiedActivityPackage::load_committed(&cx),
-        Err(ActivityPackageError::Cancelled)
-    ));
+    let result = VerifiedActivityPackage::load_committed(&cx);
+    let observed = variant(&result);
+    Record::new("cancelled_load_refused")
+        .check("variant", "Cancelled", observed.as_str())
+        .emit_checked(0, matches!(result, Err(ActivityPackageError::Cancelled)));
+    assert!(matches!(result, Err(ActivityPackageError::Cancelled)));
     Ok(())
 }
 
@@ -561,17 +612,46 @@ fn preprocessing_goldens_and_f64_reference() -> TestResult {
     let tensor = model.preprocess(&frame.pixels, 33, 17, &cx)?;
     assert_eq!(tensor.shape().dims(), &[1, 1, 32, 32]);
     let values = tensor.to_vec::<f32>()?;
-    for (index, value) in values.iter().enumerate() {
-        let expected = if index == 0 || index == 32 { 1.0 } else { 0.0 };
-        assert_eq!(value.to_bits(), f32::to_bits(expected), "index {index}");
-    }
-    // Uniform mid-grey: within one F32 ulp of the f64 luma reference.
+    // Indices holding exactly 1.0, and indices holding anything other than exactly 0.0 or 1.0.
+    let ones: Vec<usize> = (0..values.len())
+        .filter(|&i| values[i].to_bits() == 1.0_f32.to_bits())
+        .collect();
+    let stray: Vec<usize> = (0..values.len())
+        .filter(|&i| ![0.0_f32.to_bits(), 1.0_f32.to_bits()].contains(&values[i].to_bits()))
+        .collect();
+    // Uniform mid-grey: within one F32 epsilon of the f64 luma reference.
     let grey = vec![128_u8; 20 * 10 * 3];
-    let values = model.preprocess(&grey, 20, 10, &cx)?.to_vec::<f32>()?;
+    let grey_values = model.preprocess(&grey, 20, 10, &cx)?.to_vec::<f32>()?;
     let reference = 128.0_f64 * (0.299 + 0.587 + 0.114) / 255.0;
-    for value in values {
-        assert!((f64::from(value) - reference).abs() <= f64::from(f32::EPSILON));
-    }
+    let outside: Vec<usize> = (0..grey_values.len())
+        .filter(|&i| (f64::from(grey_values[i]) - reference).abs() > f64::from(f32::EPSILON))
+        .collect();
+    Record::new("preprocess_goldens")
+        .check_eq(
+            "shape_33x17",
+            vec![1_usize, 1, 32, 32],
+            tensor.shape().dims().to_vec(),
+        )
+        .check_eq("ones_33x17_one_pixel", vec![0_usize, 32], ones.clone())
+        .check_eq("non_binary_33x17", Vec::<usize>::new(), stray.clone())
+        .check_eq(
+            "grey_outside_f64_epsilon",
+            Vec::<usize>::new(),
+            outside.clone(),
+        )
+        .check_eq("grey_elements", 1024_usize, grey_values.len())
+        .emit_checked(
+            0,
+            tensor.shape().dims() == [1, 1, 32, 32]
+                && ones == [0, 32]
+                && stray.is_empty()
+                && outside.is_empty()
+                && grey_values.len() == 1024,
+        );
+    assert_eq!(ones, [0, 32]);
+    assert!(stray.is_empty(), "{stray:?}");
+    assert!(outside.is_empty(), "{outside:?}");
+    assert_eq!(grey_values.len(), 1024);
     // The resize identity is part of the model identity and the spec.
     assert_eq!(
         model.package().spec().resize_digest(),
@@ -648,5 +728,90 @@ fn fixture_frame_score_matches_an_independent_f64_computation() -> TestResult {
     println!("fixture gray.jpg score {observed} f64 reference {expected}");
     assert!(within);
     assert!(is_activity);
+    Ok(())
+}
+
+/// The variant name of a score comparison outcome (`Less`/`Equal`/`Greater` when admitted).
+fn comparison(result: &Result<std::cmp::Ordering, ExecutorActivityError>) -> String {
+    match result {
+        Ok(ordering) => format!("{ordering:?}"),
+        Err(error) => format!("{error:?}")
+            .chars()
+            .take_while(char::is_ascii_alphanumeric)
+            .collect(),
+    }
+}
+
+#[test]
+fn scores_are_compared_only_within_one_generation_and_model_identity() -> TestResult {
+    let model = ActivityExecutorModel::load_committed(&ScalarExecCx::new())?;
+    let white = Frame::new(32, 32, &rows(32, 16), "iso-w");
+    let black = Frame::new(32, 32, &[], "iso-k");
+    let invoke = |frame: &Frame, reference: &Frame, job: &str| -> TestResult<_> {
+        let (result, _) = model.invoke(
+            &SensorId::parse("sensor:isolation")?,
+            frame.binding(),
+            reference.binding(),
+            &ActivityThresholdPolicy::reference()?,
+            ExecBudget::new(10_000_000, 16 * 1024 * 1024),
+            job,
+            &ScalarExecCx::new(),
+        )?;
+        Ok(result)
+    };
+    let changed = invoke(&white, &black, "job:isolation:changed")?;
+    let quiet = invoke(&black, &black, "job:isolation:quiet")?;
+    // Both results name the verified package's model identity and generation.
+    let same_identity =
+        changed.model_digest == model.digest() && quiet.model_digest == model.digest();
+    let mut other_generation = quiet.clone();
+    other_generation.model_generation = "model:fss-activity:v2".to_owned();
+    let mut other_model = quiet.clone();
+    other_model.model_digest = ContentDigest::sha256(b"another activity package");
+    let cases = [
+        (
+            "same_model",
+            "Greater",
+            comparison(&changed.compare_scores(&quiet)),
+        ),
+        (
+            "other_generation",
+            "CrossGenerationScoreMixing",
+            comparison(&changed.compare_scores(&other_generation)),
+        ),
+        (
+            "other_generation_reversed",
+            "CrossGenerationScoreMixing",
+            comparison(&other_generation.compare_scores(&changed)),
+        ),
+        (
+            "other_model_identity",
+            "CrossModelScoreMixing",
+            comparison(&changed.compare_scores(&other_model)),
+        ),
+    ];
+    let mut record = Record::new("generation_isolation")
+        .check_eq("results_bind_package_model_digest", true, same_identity)
+        .check(
+            "model_generation",
+            ACTIVITY_MODEL_GENERATION,
+            changed.model_generation.as_str(),
+        );
+    for (case, expected, observed) in &cases {
+        record = record.check(case, *expected, observed.as_str());
+    }
+    record.emit_checked(
+        0,
+        same_identity
+            && changed.model_generation == ACTIVITY_MODEL_GENERATION
+            && cases
+                .iter()
+                .all(|(_, expected, observed)| expected == observed),
+    );
+    assert!(same_identity);
+    assert_eq!(changed.model_generation, ACTIVITY_MODEL_GENERATION);
+    for (case, expected, observed) in &cases {
+        assert_eq!(observed.as_str(), *expected, "{case}");
+    }
     Ok(())
 }

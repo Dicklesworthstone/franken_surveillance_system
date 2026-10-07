@@ -2977,7 +2977,7 @@ mod tests {
         let quiet = &executor.observations[0];
         let changed = &executor.observations[1];
         println!(
-            "CAPLOG {{\"bead\":\"fss-2h5zq.51\",\"step\":\"file_activity_scores\",\"frame1\":{:?},\"frame2\":{:?},\"threshold\":{threshold}}}",
+            "file_activity_scores frame1={:?} frame2={:?} threshold={threshold}",
             quiet.result.outcome.score(),
             changed.result.outcome.score()
         );
