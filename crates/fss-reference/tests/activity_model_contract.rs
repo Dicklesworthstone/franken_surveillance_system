@@ -34,6 +34,9 @@ use fss_reference::executor_activity_package::{
 };
 use fss_reference::ingest::rgb_package::{GRAPH_ARTIFACT, LICENSE_ARTIFACT, WEIGHTS_ARTIFACT};
 
+mod caplog_support;
+use caplog_support::Record;
+
 type TestResult<T = ()> = Result<T, Box<dyn Error>>;
 
 const BACKGROUND: &[u8] = include_bytes!("../../fss-codec-mjpeg/tests/fixtures/background.jpg");
@@ -141,20 +144,34 @@ fn builder_reproduces_the_committed_package_bit_for_bit() -> TestResult {
         println!("ACTIVITY_PACKAGE_REBUILT_SHA256 {rebuilt_digest}");
         println!("ACTIVITY_PACKAGE_REBUILT_HEX {}", hex(&rebuilt));
     }
+    let rebuilt_again = build_activity_package()?;
+    let committed_digest = ContentDigest::sha256(ACTIVITY_PACKAGE_V1);
+    Record::new("package_rebuilt_bit_exact")
+        .check(
+            "package_sha256",
+            pinned()?.to_string(),
+            rebuilt_digest.to_string(),
+        )
+        .check(
+            "committed_sha256",
+            pinned()?.to_string(),
+            committed_digest.to_string(),
+        )
+        .check_eq("bytes", ACTIVITY_PACKAGE_V1.len(), rebuilt.len())
+        .check_eq("rebuild_deterministic", true, rebuilt_again == rebuilt)
+        .emit_checked(
+            0,
+            rebuilt == ACTIVITY_PACKAGE_V1
+                && rebuilt_digest == pinned()?
+                && committed_digest == pinned()?
+                && rebuilt_again == rebuilt,
+        );
     assert_eq!(
         rebuilt, ACTIVITY_PACKAGE_V1,
         "builder drifted from the committed package"
     );
     assert_eq!(rebuilt_digest, pinned()?);
-    assert_eq!(
-        build_activity_package()?,
-        rebuilt,
-        "builder is deterministic"
-    );
-    println!(
-        "CAPLOG {{\"bead\":\"fss-2h5zq.50\",\"step\":\"package_root\",\"package_sha256\":\"{rebuilt_digest}\",\"bytes\":{}}}",
-        rebuilt.len()
-    );
+    assert_eq!(rebuilt_again, rebuilt, "builder is deterministic");
     Ok(())
 }
 
@@ -192,11 +209,33 @@ fn committed_package_verifies_and_binds_graph_spec_license_and_weights() -> Test
             .iter()
             .all(|w| w.to_bits() == 0x3a80_0000)
     );
-    println!(
-        "CAPLOG {{\"bead\":\"fss-2h5zq.50\",\"step\":\"verify\",\"verdict\":\"ok\",\"manifest\":\"{}\",\"graph\":\"{}\"}}",
-        package.manifest_digest(),
-        package.graph_digest()
-    );
+    let in_tree_graph = compute_model_ir_digest(&activity_graph()?)?;
+    let manifest_digest = package.manifest().manifest_digest()?;
+    Record::new("committed_package_verified")
+        .check(
+            "generation",
+            ACTIVITY_MODEL_GENERATION,
+            package.manifest().generation().as_str(),
+        )
+        .check(
+            "license",
+            ACTIVITY_LICENSE_IDENTITY,
+            package.manifest().license().spdx_or_identity(),
+        )
+        .check(
+            "graph_digest",
+            in_tree_graph.to_string(),
+            package.graph_digest().to_string(),
+        )
+        .check(
+            "manifest_digest",
+            manifest_digest.to_string(),
+            package.manifest_digest().to_string(),
+        )
+        .emit_checked(
+            0,
+            package.graph_digest() == in_tree_graph && package.manifest_digest() == manifest_digest,
+        );
     Ok(())
 }
 
@@ -223,10 +262,14 @@ fn archive_tamper_is_refused_before_parsing() -> TestResult {
         VerifiedActivityPackage::load(ACTIVITY_PACKAGE_V1, blake, &policy, &ScalarExecCx::new()),
         Err(ActivityPackageError::DigestMismatch)
     ));
-    println!(
-        "CAPLOG {{\"bead\":\"fss-2h5zq.50\",\"step\":\"tamper\",\"verdict\":\"refused\",\"stable_id\":\"{}\"}}",
-        error.stable_id()
-    );
+    Record::new("archive_tamper_refused")
+        .check(
+            "stable_id",
+            "ERR-MODEL-PACKAGE-DIGEST-001",
+            error.stable_id(),
+        )
+        .check("error", "DigestMismatch", format!("{error:?}"))
+        .emit_checked(0, true);
     Ok(())
 }
 
@@ -350,10 +393,13 @@ fn license_policy_without_the_first_party_identity_refuses_the_package() -> Test
         ),
         Err(ActivityPackageError::License(_))
     ));
-    println!(
-        "CAPLOG {{\"bead\":\"fss-2h5zq.50\",\"step\":\"license\",\"verdict\":\"refused\",\"stable_id\":\"{}\"}}",
-        error.stable_id()
-    );
+    Record::new("license_denial_refused")
+        .check(
+            "stable_id",
+            "ERR-MODEL-PACKAGE-LICENSE-001",
+            error.stable_id(),
+        )
+        .emit_checked(0, true);
     Ok(())
 }
 
@@ -492,9 +538,11 @@ fn hand_computed_score_goldens_through_the_verified_package() -> TestResult {
     ];
     for (name, frame, reference, expected) in &goldens {
         let observed = score(&model, frame, reference)?;
-        println!(
-            "CAPLOG {{\"bead\":\"fss-2h5zq.50\",\"step\":\"score_golden\",\"case\":\"{name}\",\"score\":{observed},\"golden\":{expected}}}"
-        );
+        let step = format!("score_golden_{}", name.replace(' ', "_"));
+        Record::new(&step)
+            .check("score_bits", expected.to_bits(), observed.to_bits())
+            .check("score", *expected, observed)
+            .emit_checked(0, observed.to_bits() == expected.to_bits());
         assert_eq!(observed.to_bits(), expected.to_bits(), "{name}");
     }
     // The score is symmetric in which frame changed.
@@ -591,13 +639,14 @@ fn fixture_frame_score_matches_an_independent_f64_computation() -> TestResult {
         }
     }
     let expected = sum / 1024.0;
-    println!(
-        "CAPLOG {{\"bead\":\"fss-2h5zq.50\",\"step\":\"fixture_score\",\"frame\":\"gray.jpg\",\"score\":{observed},\"f64\":{expected}}}"
-    );
-    assert!((f64::from(observed) - expected).abs() < 1e-6);
-    assert!(matches!(
-        result.outcome,
-        ExecutorModelOutcome::Activity { .. }
-    ));
+    let within = (f64::from(observed) - expected).abs() < 1e-6;
+    let is_activity = matches!(result.outcome, ExecutorModelOutcome::Activity { .. });
+    Record::new("fixture_score_matches_f64")
+        .check_eq("within_1e-6_of_f64", true, within)
+        .check_eq("activity", true, is_activity)
+        .emit_checked(0, within && is_activity);
+    println!("fixture gray.jpg score {observed} f64 reference {expected}");
+    assert!(within);
+    assert!(is_activity);
     Ok(())
 }
