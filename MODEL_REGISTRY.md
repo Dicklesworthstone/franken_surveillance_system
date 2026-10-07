@@ -61,6 +61,7 @@ It does not acquire a hidden Python/ONNX fallback.
 | `MOD-CUT3R-001` | CUT3R | persistent online RGB 3D state | license/dependency review required | research geometry oracle |
 | `MOD-DAV2S-001` | Depth Anything V2 Small | monocular depth proposal | Small is Apache-2.0; larger weights differ | production candidate for proposal only |
 | `MOD-YOLOXNANO-001` | YOLOX-Nano (Megvii-BaseDetection, release 0.1.1rc0 ONNX, COCO-80, 416x416) | first trained detector: Stage C proposal source | Apache-2.0 (upstream LICENSE text retained; no upstream NOTICE) | **admitted package** (owner decision `fss-x4a.8.1`, `fss-q4ngj`); see section 2.1 |
+| `MOD-FSS-ACTIVITY-001` | first-party frame-difference activity score (`model:fss-activity:v1`, [`models/fss-activity/fss_activity_v1.fmpk`](models/fss-activity/README.md)): mean squared 32x32 unit-luma change against a reference frame, literal weights `2^-10`, no training | executor-backed lab observation source (`fss-lab run file-activity`); uncalibrated pixel change, not a detector | `LicenseRef-FSS-First-Party` (text inside the package) | in-tree reference package, builder-reproduced and verified (pinned archive digest, archive, license, spec, graph, weights) before every load; **not admitted** (no owner admission decision; no quality, calibration or resource gates) |
 
 This table records candidates, not endorsements or measured FSS results.
 
