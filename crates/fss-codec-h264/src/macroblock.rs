@@ -1707,7 +1707,58 @@ impl<'s, 'p, 'r> MbDecoder<'s, 'p, 'r> {
     /// Writes the inter prediction of the whole macroblock from its stored
     /// motion, 4x4 block by 4x4 block (sample values depend only on the
     /// position, vector and reference, so the block granularity is exact).
+    /// The single list, reference index and vector shared by all sixteen 4x4 blocks, when
+    /// exactly one list predicts the whole macroblock with one motion.
+    fn uniform_motion(&self) -> Option<(usize, i8, [i16; 2])> {
+        (0..2).find_map(|list| {
+            let refs = self.info.ref_idx[list];
+            let mv = self.info.mv[list][0];
+            (refs[0] >= 0
+                && refs.iter().all(|&r| r == refs[0])
+                && self.info.ref_idx[1 - list].iter().all(|&r| r < 0)
+                && self.info.mv[list].iter().all(|&m| m == mv))
+            .then_some((list, refs[0], mv))
+        })
+    }
+
     fn predict_inter(&mut self) -> Result<(), DecodeError> {
+        // Static and panning content: one whole-sample motion for the macroblock is a plain
+        // block copy (default and implicit weighting leave single-list samples unchanged).
+        if !matches!(self.ctx.weights, WeightMode::Explicit(_))
+            && let Some((list, ref_idx, mv)) = self.uniform_motion()
+        {
+            let reference = self.reference(list, ref_idx)?;
+            let (x, y) = self.luma_origin(0);
+            if inter::copy_macroblock(
+                reference.frame,
+                self.pic.frame,
+                x,
+                y,
+                [i32::from(mv[0]), i32::from(mv[1])],
+            ) {
+                return Ok(());
+            }
+        }
+        // Lists whose motion is one whole-sample vector for the macroblock read their sixteen
+        // block predictions directly; weighting below is unchanged (bi-prediction included).
+        let mut gathered: [Option<[inter::BlockPrediction; 16]>; 2] = [None, None];
+        for (list, slot) in gathered.iter_mut().enumerate() {
+            let refs = self.info.ref_idx[list];
+            let mv = self.info.mv[list][0];
+            if refs[0] >= 0
+                && refs.iter().all(|&r| r == refs[0])
+                && self.info.mv[list].iter().all(|&m| m == mv)
+            {
+                let reference = self.reference(list, refs[0])?;
+                let (x, y) = self.luma_origin(0);
+                *slot = inter::gather_macroblock(
+                    reference.frame,
+                    x,
+                    y,
+                    [i32::from(mv[0]), i32::from(mv[1])],
+                );
+            }
+        }
         for raster in 0..16 {
             let b8 = b8_of(raster);
             let mut preds: [Option<inter::BlockPrediction>; 2] = [None, None];
@@ -1718,6 +1769,10 @@ impl<'s, 'p, 'r> MbDecoder<'s, 'p, 'r> {
                     continue;
                 }
                 refs[list] = ref_idx;
+                if let Some(blocks) = &gathered[list] {
+                    *slot = Some(blocks[raster]);
+                    continue;
+                }
                 let reference = self.reference(list, ref_idx)?;
                 let mv = self.info.mv[list][raster];
                 let (x, y) = self.luma_origin(raster);

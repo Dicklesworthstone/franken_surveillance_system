@@ -299,3 +299,31 @@ the frame, so receipt bytes are unchanged wherever they are read (all FFmpeg-ora
 tests read sealed receipts). Frame equality compares the receipt fields and planes, never the
 sealing state (`lazily_sealed_receipts_are_identical_and_do_not_affect_equality`).
 `fss-file decode`, which prints every digest, is unchanged in cost.
+
+## PERF-008 — H.264 whole-macroblock prediction for uniform whole-sample motion
+
+- **Commit:** the `perf(h264)` commit carrying this entry (base `3ecf5c7`); host as PERF-003.
+- **Workloads:** (a) the PERF-007 scene (static 1080p background, one moving box; libx264 High,
+  B-pictures with x264's default implicit weighted bi-prediction), codec-only over 150 and 20
+  frames and end-to-end `--stream-dwell` over 150 frames; (b) the PERF-004 `testsrc2` stream.
+- **Change:** every inter macroblock was predicted as sixteen independent 4x4 blocks per list.
+  When one list's motion is a single vector for the whole macroblock and that vector is a whole
+  sample in luma and chroma (both components multiples of 8 quarter-samples) with the source
+  inside the picture, the sixteen block predictions are now read directly from the reference
+  (`gather_macroblock`) and combined by the unchanged default, implicit or explicit weighting;
+  a single-list macroblock without explicit weighting is one direct 16x16 + 2x8x8 copy
+  (`copy_macroblock`). Static backgrounds (skipped and direct macroblocks with zero motion)
+  are the common case in surveillance video.
+
+| Metric | before | after |
+|---|---|---|
+| (a) callgrind instructions, 20 frames | 5,053,470,787 | 3,375,190,056 (-33%) |
+| (a) codec wall time, 150 frames (two alternated runs) | 26.1 / 33.0 fps | 39.1 / 50.6 fps |
+| (a) end-to-end stream dwell, 150 frames | 9.79 / 9.68 s | 7.51 / 7.73 s |
+| (b) callgrind instructions, 15 frames | 4,314,567,051 | 3,282,332,908 (-24%) |
+
+**Semantic equivalence:** bit-exact. `macroblock_copy_equals_sixteen_block_predictions`
+compares both fast paths with sixteen `predict_4x4` calls on 3,000 random macroblocks and
+vectors (half whole-sample); they decline every fractional or out-of-picture case. All
+FFmpeg-oracle conformance fixtures (weighted prediction, B-pictures, direct modes) still match,
+and the end-to-end analysis digest is unchanged.

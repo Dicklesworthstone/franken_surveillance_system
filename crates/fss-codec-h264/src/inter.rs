@@ -324,6 +324,102 @@ pub(crate) fn predict_4x4(reference: &Frame, x: usize, y: usize, mv: [i32; 2]) -
     }
 }
 
+/// Whole-macroblock prediction for one reference and one vector that is a whole sample in
+/// both luma and 4:2:0 chroma (both components multiples of 8 quarter-samples): the 16x16 luma
+/// and two 8x8 chroma blocks are plain copies, exactly the samples [`predict_4x4`] yields for
+/// each of the sixteen 4x4 blocks. Returns `false`, writing nothing, when the vector is
+/// fractional or the source block reaches outside the reference picture (clamping applies).
+pub(crate) fn copy_macroblock(
+    reference: &Frame,
+    target: &mut Frame,
+    x: usize,
+    y: usize,
+    mv: [i32; 2],
+) -> bool {
+    if mv[0] & 7 != 0
+        || mv[1] & 7 != 0
+        || reference.width != target.width
+        || reference.height != target.height
+    {
+        return false;
+    }
+    let (sx, sy) = (to_i32(x) + (mv[0] >> 2), to_i32(y) + (mv[1] >> 2));
+    if sx < 0
+        || sy < 0
+        || sx + 16 > to_i32(reference.width)
+        || sy + 16 > to_i32(reference.height)
+        || x + 16 > target.width
+        || y + 16 > target.height
+    {
+        return false;
+    }
+    let (sx, sy) = (sx as usize, sy as usize);
+    let copy = |source: &[u8], destination: &mut [u8], stride: usize, size: usize, from, to| {
+        let ((fx, fy), (tx, ty)): ((usize, usize), (usize, usize)) = (from, to);
+        for row in 0..size {
+            let (s, d) = ((fy + row) * stride + fx, (ty + row) * stride + tx);
+            if let (Some(source), Some(destination)) =
+                (source.get(s..s + size), destination.get_mut(d..d + size))
+            {
+                destination.copy_from_slice(source);
+            }
+        }
+    };
+    copy(
+        &reference.y,
+        &mut target.y,
+        target.width,
+        16,
+        (sx, sy),
+        (x, y),
+    );
+    let stride = target.chroma_width();
+    let (from, to) = ((sx / 2, sy / 2), (x / 2, y / 2));
+    copy(&reference.cb, &mut target.cb, stride, 8, from, to);
+    copy(&reference.cr, &mut target.cr, stride, 8, from, to);
+    true
+}
+
+/// The sixteen 4x4 block predictions of the macroblock at luma (x, y) for one vector that is a
+/// whole sample in luma and 4:2:0 chroma (both components multiples of 8 quarter-samples), read
+/// directly from `reference`: exactly what [`predict_4x4`] yields for each block. `None` when the
+/// vector is fractional or the source reaches outside the picture (clamping applies).
+pub(crate) fn gather_macroblock(
+    reference: &Frame,
+    x: usize,
+    y: usize,
+    mv: [i32; 2],
+) -> Option<[BlockPrediction; 16]> {
+    if mv[0] & 7 != 0 || mv[1] & 7 != 0 {
+        return None;
+    }
+    let (sx, sy) = (to_i32(x) + (mv[0] >> 2), to_i32(y) + (mv[1] >> 2));
+    if sx < 0 || sy < 0 || sx + 16 > to_i32(reference.width) || sy + 16 > to_i32(reference.height) {
+        return None;
+    }
+    let (sx, sy) = (usize::try_from(sx).ok()?, usize::try_from(sy).ok()?);
+    let (stride, chroma_stride) = (reference.width, reference.chroma_width());
+    let mut out = [BlockPrediction {
+        luma: [0; 16],
+        cb: [0; 4],
+        cr: [0; 4],
+    }; 16];
+    for (raster, block) in out.iter_mut().enumerate() {
+        let (ox, oy) = ((raster % 4) * 4, (raster / 4) * 4);
+        for j in 0..4 {
+            let start = (sy + oy + j) * stride + sx + ox;
+            block.luma[j * 4..j * 4 + 4].copy_from_slice(reference.y.get(start..start + 4)?);
+        }
+        let (cx, cy) = ((sx + ox) / 2, (sy + oy) / 2);
+        for j in 0..2 {
+            let start = (cy + j) * chroma_stride + cx;
+            block.cb[j * 2..j * 2 + 2].copy_from_slice(reference.cb.get(start..start + 2)?);
+            block.cr[j * 2..j * 2 + 2].copy_from_slice(reference.cr.get(start..start + 2)?);
+        }
+    }
+    Some(out)
+}
+
 /// Stores a block prediction into the picture at luma position (x, y).
 pub(crate) fn write_prediction(target: &mut Frame, x: usize, y: usize, p: &BlockPrediction) {
     let stride = target.width;
@@ -657,6 +753,63 @@ mod tests {
                 }
             }
         }
+    }
+
+    /// The whole-macroblock copy equals sixteen 4x4 predictions wherever it applies, and
+    /// declines fractional vectors and sources reaching outside the picture.
+    #[test]
+    fn macroblock_copy_equals_sixteen_block_predictions() {
+        let mut state = 0x1234_5678_9abc_def1_u64;
+        let mut next = move || {
+            state ^= state << 13;
+            state ^= state >> 7;
+            state ^= state << 17;
+            state
+        };
+        let mut reference = Frame::new(64, 48).unwrap();
+        for sample in reference
+            .y
+            .iter_mut()
+            .chain(reference.cb.iter_mut())
+            .chain(reference.cr.iter_mut())
+        {
+            *sample = (next() >> 24) as u8;
+        }
+        let mut copied = 0;
+        for _ in 0..3000 {
+            let (x, y) = ((next() as usize % 4) * 16, (next() as usize % 3) * 16);
+            let mut mv = [(next() % 161) as i32 - 80, (next() % 161) as i32 - 80];
+            if next() % 2 == 0 {
+                // Half the vectors are whole chroma samples, the copyable case.
+                mv = [mv[0] & !7, mv[1] & !7];
+            }
+            let mut fast = Frame::new(64, 48).unwrap();
+            let mut slow = Frame::new(64, 48).unwrap();
+            if !copy_macroblock(&reference, &mut fast, x, y, mv) {
+                assert!(
+                    mv[0] & 7 != 0
+                        || mv[1] & 7 != 0
+                        || x as i32 + (mv[0] >> 2) < 0
+                        || y as i32 + (mv[1] >> 2) < 0
+                        || x as i32 + (mv[0] >> 2) + 16 > 64
+                        || y as i32 + (mv[1] >> 2) + 16 > 48
+                );
+                continue;
+            }
+            copied += 1;
+            for raster in 0..16 {
+                let (bx, by) = (x + (raster % 4) * 4, y + (raster / 4) * 4);
+                let p = predict_4x4(&reference, bx, by, mv);
+                write_prediction(&mut slow, bx, by, &p);
+            }
+            assert_eq!((&fast.y, &fast.cb, &fast.cr), (&slow.y, &slow.cb, &slow.cr));
+            let gathered = gather_macroblock(&reference, x, y, mv).unwrap();
+            for (raster, block) in gathered.iter().enumerate() {
+                let (bx, by) = (x + (raster % 4) * 4, y + (raster / 4) * 4);
+                assert_eq!(*block, predict_4x4(&reference, bx, by, mv));
+            }
+        }
+        assert!(copied > 50);
     }
 
     /// predict_4x4 agrees with the rectangle predictor it replaced.
