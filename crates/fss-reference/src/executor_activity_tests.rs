@@ -550,6 +550,8 @@ fn threshold_boundary_at_just_below_and_just_above() -> TestResult {
 /// reference frame) is refused, and the result names the digest of the capsule it was given.
 #[test]
 fn a_capsule_that_is_not_the_frames_own_is_refused() -> TestResult {
+    use crate::executor_activity::ExecutorActivityError;
+
     let model = ActivityExecutorModel::load_committed(&ScalarExecCx::new())?;
     let sensor = SensorId::parse("sensor:file-cam")?;
     let current = decode(GRADIENT)?;
@@ -671,7 +673,9 @@ fn replay_cx(root: &std::path::Path) -> TestResult<crate::ReplayCx> {
 /// refused, and a retained object damaged on disk is refused on read-back.
 #[test]
 fn executor_results_and_receipts_are_ledgered_and_read_back_after_restart() -> TestResult {
-    use crate::executor_activity::{open_retained_executor_result, retain_executor_result};
+    use crate::executor_activity::{
+        ExecutorActivityError, open_retained_executor_result, retain_executor_result,
+    };
     use crate::reference_deployment::{
         FAMILY_EXECUTOR_MODEL_RESULT, FAMILY_MODEL_INVOCATION_RECEIPT,
     };
