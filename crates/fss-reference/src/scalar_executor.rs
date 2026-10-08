@@ -10,7 +10,7 @@ use std::collections::BTreeMap;
 use std::fmt;
 use std::sync::atomic::{AtomicBool, Ordering};
 
-use fss_core::Generation;
+use fss_core::{ContentDigest, Generation};
 use fss_model_ir::{
     GraphValidator, ModelIrError, ModelIrGraph, ModelIrVersion, OpCode, ProducerId, TensorPort,
     infer_operator_outputs,
@@ -175,6 +175,21 @@ impl ExecBudget {
     }
 }
 
+/// Content digest of the output one executed node produced, in execution order.
+///
+/// The scalar executor records one entry per executed node, including every intermediate whose
+/// tensor is not a declared graph output, so a receipt's operator trace can chain the whole
+/// computation rather than only its final outputs (fss-2h5zq.47).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct NodeOutputDigest {
+    /// Executed node identifier.
+    pub node_id: String,
+    /// Output port the node wrote.
+    pub port: String,
+    /// [`Tensor::content_digest`] of that output.
+    pub digest: ContentDigest,
+}
+
 /// Detailed execution outcome of a completed scalar graph run.
 #[derive(Debug, Clone)]
 pub struct ExecOutcome {
@@ -182,6 +197,7 @@ pub struct ExecOutcome {
     executed_macs: u64,
     allocated_bytes: usize,
     nodes_executed: usize,
+    node_output_digests: Vec<NodeOutputDigest>,
 }
 
 impl ExecOutcome {
@@ -198,7 +214,22 @@ impl ExecOutcome {
             executed_macs,
             allocated_bytes,
             nodes_executed,
+            node_output_digests: Vec::new(),
         }
+    }
+
+    /// Attaches the per-node output digests, in execution order. An outcome without them (for
+    /// example one assembled by another backend) cannot back a receipt's operator trace.
+    #[must_use]
+    pub fn with_node_output_digests(mut self, digests: Vec<NodeOutputDigest>) -> Self {
+        self.node_output_digests = digests;
+        self
+    }
+
+    /// Per-node output digests in execution order; empty when the producer recorded none.
+    #[must_use]
+    pub fn node_output_digests(&self) -> &[NodeOutputDigest] {
+        &self.node_output_digests
     }
 
     /// Returns a reference to the map of output tensors by port name.
@@ -312,6 +343,13 @@ pub enum ExecError {
         /// Operation that caused overflow.
         operation: &'static str,
     },
+    /// The graph ran, but its output root or per-node operator trace could not be bound into the
+    /// invocation receipt. Raised by the receipt layer, never by a kernel: a run whose outputs
+    /// cannot be content-addressed is a failed invocation, not a success with missing fields.
+    OutputBinding {
+        /// What could not be bound.
+        reason: String,
+    },
 }
 
 impl fmt::Display for ExecError {
@@ -374,6 +412,9 @@ impl fmt::Display for ExecError {
             }
             Self::ArithmeticOverflow { operation } => {
                 write!(f, "Arithmetic overflow during: {operation}")
+            }
+            Self::OutputBinding { reason } => {
+                write!(f, "Execution outputs could not be bound: {reason}")
             }
         }
     }
@@ -964,6 +1005,7 @@ impl ScalarExecutor {
 
         // 8. Execute nodes along canonical topological ordering with cooperative cancellation
         let mut executed_count = 0;
+        let mut node_output_digests = Vec::with_capacity(sorted_nodes.len());
 
         for node in &sorted_nodes {
             if let Err(err) = cx.checkpoint("node-execution") {
@@ -1085,6 +1127,11 @@ impl ScalarExecutor {
             };
 
             cx.checkpoint("post-node-execution")?;
+            node_output_digests.push(NodeOutputDigest {
+                node_id: node.id().to_string(),
+                port: out_ports[0].name().to_string(),
+                digest: result_tensor.content_digest()?,
+            });
             env.insert(out_ports[0].name().to_string(), result_tensor);
             executed_count += 1;
         }
@@ -1111,7 +1158,8 @@ impl ScalarExecutor {
             total_macs,
             total_required_bytes,
             executed_count,
-        ))
+        )
+        .with_node_output_digests(node_output_digests))
     }
 
     fn execute_conv2d(
