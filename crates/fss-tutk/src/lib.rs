@@ -27,6 +27,7 @@ pub mod av_stream;
 pub mod chacha;
 pub mod digest;
 pub mod dtls;
+pub mod oldproto;
 pub mod session;
 pub mod wire;
 pub mod x25519;
