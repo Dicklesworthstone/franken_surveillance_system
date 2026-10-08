@@ -561,6 +561,16 @@ impl VerifiedActivityPackage {
         if Some(ContentDigest::sha256(license_text)) != manifest.license().text_digest() {
             return Err(ActivityPackageError::MissingArtifact(LICENSE_ARTIFACT));
         }
+        // A package claiming the first-party activity license identity must
+        // carry exactly the committed first-party text: a different license
+        // text under this identity is not a variant we published, whatever a
+        // self-consistent manifest records.
+        if manifest.license().spdx_or_identity() == ACTIVITY_LICENSE_IDENTITY
+            && manifest.license().text_digest()
+                != Some(ContentDigest::sha256(ACTIVITY_LICENSE_TEXT.as_bytes()))
+        {
+            return Err(ActivityPackageError::MissingArtifact(LICENSE_ARTIFACT));
+        }
         let spec = ActivityPackageSpec::decode(artifact(&package, ACTIVITY_SPEC_ARTIFACT)?)?;
         checkpoint("activity_package:graph")?;
         let graph_bytes = artifact(&package, GRAPH_ARTIFACT)?;
