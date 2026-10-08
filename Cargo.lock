@@ -124,6 +124,7 @@ dependencies = [
  "fss-packet",
  "fss-publication",
  "fss-tensor",
+ "fss-tutk",
  "fss-twin",
 ]
 

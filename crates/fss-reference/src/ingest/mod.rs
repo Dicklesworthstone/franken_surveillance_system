@@ -78,6 +78,9 @@ pub mod tolerant_decode;
 pub mod tracker;
 /// Bounded, history-linked, single-camera association of detector proposals.
 pub mod tracking;
+/// Owner-authorized TUTK/IOTC NEW-protocol (0xCC51) live adapter: acquisition
+/// lifecycle, frame custody capsules, and ledger batches over fss-tutk.
+pub mod tutk;
 /// Conservative sampled-occupancy episodes from consecutive actual track observations.
 pub mod zone_dwell;
 

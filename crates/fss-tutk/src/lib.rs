@@ -23,9 +23,11 @@
 //!   * `0x1202` is a post-discovery session keepalive, not a DTLS frame.
 
 pub mod av;
+pub mod av_stream;
 pub mod chacha;
 pub mod digest;
 pub mod dtls;
+pub mod session;
 pub mod wire;
 pub mod x25519;
 pub mod xxtea;
