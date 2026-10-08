@@ -190,6 +190,10 @@ pub(super) struct Universe {
     units: Vec<Unit>,
     objects: BTreeMap<ContentDigest, ObjectInfo>,
     holders: BTreeMap<ContentDigest, Vec<usize>>,
+    /// Units whose `refs` (embedded custody references) contain the digest.
+    /// A digest a unit outside the closure merely references is shared
+    /// content: it must never become a deletion key that absorbs that unit.
+    ref_holders: BTreeMap<ContentDigest, Vec<usize>>,
     /// Units that publish each identity (payload, witness or root).
     identity_holders: BTreeMap<ContentDigest, Vec<usize>>,
     unheld: BTreeSet<ContentDigest>,
@@ -476,6 +480,12 @@ impl Universe {
             unit.members = members;
             unit.refs = refs;
         }
+        let mut ref_holders: BTreeMap<ContentDigest, Vec<usize>> = BTreeMap::new();
+        for (index, unit) in units.iter().enumerate() {
+            for digest in &unit.refs {
+                ref_holders.entry(*digest).or_default().push(index);
+            }
+        }
         let unheld: BTreeSet<ContentDigest> = objects
             .keys()
             .filter(|digest| !holders.contains_key(digest) && !records.contains(digest))
@@ -510,6 +520,7 @@ impl Universe {
             units,
             objects,
             holders,
+            ref_holders,
             identity_holders,
             unheld,
             staging,
@@ -1095,12 +1106,26 @@ impl Universe {
 
     /// Whether every unit publishing or holding `digest` is closure content.
     fn exclusive_identity(&self, digest: ContentDigest, via: &[Option<ContentDigest>]) -> bool {
-        self.identity_holders
+        let holders_ok = self
+            .identity_holders
             .get(&digest)
             .into_iter()
             .flatten()
             .chain(self.holders.get(&digest).into_iter().flatten())
-            .all(|h| via[*h].is_some() && !self.units[*h].authority)
+            .all(|h| via[*h].is_some() && !self.units[*h].authority);
+        holders_ok && self.foreign_refs_ok(digest, via)
+    }
+
+    /// A digest referenced only through embedded custody refs of a unit
+    /// outside the closure is shared content: an out-of-closure NON-AUTHORITY
+    /// ref-holder blocks key promotion (its import must not be absorbed and
+    /// deleted through a shared-content key). Authority units are exempt —
+    /// referencing a deletion subject is exactly how authority history is
+    /// pulled into the closure and retained.
+    fn foreign_refs_ok(&self, digest: ContentDigest, via: &[Option<ContentDigest>]) -> bool {
+        self.ref_holders
+            .get(&digest)
+            .is_none_or(|refs| refs.iter().all(|h| via[*h].is_some() || self.units[*h].authority))
     }
 
     /// Whether every unit holding `digest` is closure content.
@@ -1109,7 +1134,7 @@ impl Universe {
             holders
                 .iter()
                 .all(|h| via[*h].is_some() && !self.units[*h].authority)
-        })
+        }) && self.foreign_refs_ok(digest, via)
     }
 }
 
