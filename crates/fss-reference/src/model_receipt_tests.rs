@@ -8,10 +8,12 @@ use fss_tensor::{DType, Shape, Tensor};
 
 use crate::clock::VirtualClock;
 use crate::model_receipt::{
-    ReceiptDigest, ReceiptOutcome, ReceiptRecordContext, ReceiptVerificationError,
-    execute_and_record_receipt,
+    ERR_EXEC_OUTPUT_BINDING, ReceiptDigest, ReceiptOutcome, ReceiptRecordContext,
+    ReceiptVerificationError, execute_and_record_receipt, record_run_receipt,
 };
-use crate::scalar_executor::{ExecBudget, ScalarExecCx};
+use crate::scalar_executor::{
+    ExecBudget, ExecError, ExecOutcome, NodeOutputDigest, ScalarExecCx, ScalarExecutor,
+};
 
 fn test_gen() -> Generation {
     Generation::from_u64(1)
@@ -505,5 +507,118 @@ fn test_virtual_clock_determinism() -> Result<(), Box<dyn Error>> {
 
     assert_eq!(receipt.usage.wall_ns, 987_654_321);
 
+    Ok(())
+}
+
+fn binding_context(job_id: &str) -> ReceiptRecordContext<'_> {
+    ReceiptRecordContext {
+        job_id,
+        preprocess_program: None,
+        model_package_root: None,
+        virtual_clock: None,
+        source_roots: &[],
+        preprocess_resize: None,
+    }
+}
+
+/// Review finding (2026-10-08, fss-2h5zq.47): a completed run whose output root or operator trace
+/// cannot be bound used to become `ok` with `outputRoot`/`operatorTraceDigest` silently `None`.
+/// Each unbindable outcome (no per-node digests, a digest that contradicts the output tensor, a
+/// digest recorded for another node, a missing declared output) must now fail the invocation:
+/// `Err(OutputBinding)` and an `error` receipt with `ERR-EXEC-OUTPUT-BINDING-001` that still
+/// verifies, never `Ok` with `None`.
+#[test]
+fn unbindable_completed_runs_fail_the_invocation_with_an_error_receipt()
+-> Result<(), Box<dyn Error>> {
+    let g = test_gen();
+    let graph = build_simple_relu_graph(g)?;
+    let inputs = vec![(
+        "x",
+        Tensor::from_values(Shape::new(vec![1, 3])?, &[-1.5_f32, 0.0, 2.5], g)?,
+    )];
+    let run = || {
+        ScalarExecutor::run(
+            &graph,
+            &inputs,
+            ExecBudget::unlimited(),
+            &ScalarExecCx::new(),
+        )
+    };
+
+    // The intact outcome binds: this is what the failing cases differ from.
+    let intact = run()?;
+    assert_eq!(intact.node_output_digests().len(), 1);
+    let (res, receipt) = record_run_receipt(
+        &graph,
+        &inputs,
+        ExecBudget::unlimited(),
+        binding_context("job:binding:intact"),
+        Ok(intact.clone()),
+    );
+    assert!(res.is_ok());
+    assert_eq!(receipt.outcome, ReceiptOutcome::Ok);
+    assert!(receipt.output_root.is_some() && receipt.operator_trace_digest.is_some());
+
+    let unbindable: Vec<(&str, ExecOutcome)> = vec![
+        (
+            "no_node_digests",
+            run()?.with_node_output_digests(Vec::new()),
+        ),
+        (
+            "contradicting_digest",
+            run()?.with_node_output_digests(vec![NodeOutputDigest {
+                node_id: "relu_1".to_owned(),
+                port: "y".to_owned(),
+                digest: ContentDigest::sha256(b"not the relu output"),
+            }]),
+        ),
+        (
+            "other_node",
+            run()?.with_node_output_digests(vec![NodeOutputDigest {
+                node_id: "relu_9".to_owned(),
+                port: "y".to_owned(),
+                digest: intact.node_output_digests()[0].digest,
+            }]),
+        ),
+        (
+            "missing_output",
+            ExecOutcome::new(
+                std::collections::BTreeMap::new(),
+                intact.executed_macs(),
+                intact.allocated_bytes(),
+                intact.nodes_executed(),
+            )
+            .with_node_output_digests(intact.node_output_digests().to_vec()),
+        ),
+    ];
+    for (case, outcome) in unbindable {
+        let (res, receipt) = record_run_receipt(
+            &graph,
+            &inputs,
+            ExecBudget::unlimited(),
+            binding_context("job:binding:refused"),
+            Ok(outcome),
+        );
+        assert!(
+            matches!(res, Err(ExecError::OutputBinding { .. })),
+            "{case}: {res:?}"
+        );
+        assert_eq!(receipt.outcome, ReceiptOutcome::Error, "{case}");
+        assert_eq!(
+            receipt.error_id.as_deref(),
+            Some(ERR_EXEC_OUTPUT_BINDING),
+            "{case}"
+        );
+        assert_eq!(receipt.output_root, None, "{case}");
+        assert_eq!(receipt.operator_trace_digest, None, "{case}");
+        assert_eq!(receipt.cancel_reason, None, "{case}");
+        receipt.verify(g, &receipt.compute_canonical_digest())?;
+        let json = receipt.to_json_canonical();
+        assert!(json.contains(r#""outcome":"error""#), "{case}");
+        assert!(
+            json.contains(r#""errorId":"ERR-EXEC-OUTPUT-BINDING-001""#),
+            "{case}"
+        );
+    }
     Ok(())
 }

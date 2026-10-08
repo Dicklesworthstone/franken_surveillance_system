@@ -235,11 +235,12 @@ pub use model::{
     fuse_model_scores, is_latest_generation,
 };
 pub use model_receipt::{
-    BackendDescriptor, MODEL_EXECUTION_RECEIPT_DOMAIN, ModelInvocationReceipt, ReceiptBudget,
-    ReceiptDigest, ReceiptOutcome, ReceiptRecordContext, ReceiptUsage, ReceiptVerificationError,
-    compute_decision_path_digest, compute_execution_plan_digest, compute_numeric_policy_digest,
-    compute_operator_trace_chain, compute_output_root, compute_postprocess_program_digest,
-    compute_preprocess_program_digest, execute_and_record_receipt,
+    BackendDescriptor, ERR_EXEC_OUTPUT_BINDING, MODEL_EXECUTION_RECEIPT_DOMAIN,
+    ModelInvocationReceipt, ReceiptBudget, ReceiptDigest, ReceiptOutcome, ReceiptRecordContext,
+    ReceiptUsage, ReceiptVerificationError, compute_decision_path_digest,
+    compute_execution_plan_digest, compute_numeric_policy_digest, compute_operator_trace_chain,
+    compute_output_root, compute_postprocess_program_digest, compute_preprocess_program_digest,
+    execute_and_record_receipt,
 };
 pub use optimized_executor::{
     ExecThreads, ExecThreadsError, KernelBackend, MAX_EXEC_THREADS, OptimizedGraph,
@@ -277,8 +278,8 @@ pub use rtsp::{
     decode_base64, parse_sdp, parse_sdp_bytes,
 };
 pub use scalar_executor::{
-    ChannelTransform, ExecBudget, ExecError, ExecOutcome, PreprocessProgram, ScalarExecCx,
-    ScalarExecutor, deterministic_exp_f32, deterministic_sigmoid_f32,
+    ChannelTransform, ExecBudget, ExecError, ExecOutcome, NodeOutputDigest, PreprocessProgram,
+    ScalarExecCx, ScalarExecutor, deterministic_exp_f32, deterministic_sigmoid_f32,
 };
 pub use situation_guard::{
     CAPABILITY_EFFECT_RECONCILE, EFFECT_RECONCILE_AFFORDANCE, EFFECT_STATUS_AFFORDANCE,

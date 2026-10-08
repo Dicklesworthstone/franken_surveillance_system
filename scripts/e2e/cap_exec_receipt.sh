@@ -11,6 +11,6 @@ source "${SCRIPT_DIR}/lib.sh"
 _E2E_SCRIPT_PATH="scripts/e2e/cap_exec_receipt.sh"
 e2e_init "exec_receipt" "fss-2h5zq.48" "$@"
 # Every record must report; a missing record is a failure, not a silent skip.
-export FSS_EXPECTED_ROSTER="receipt_ok,receipt_error,receipt_budget_exhausted,receipt_cancelled,receipt_activity_package,receipt_activity_binding"
+export FSS_EXPECTED_ROSTER="receipt_ok,receipt_error,receipt_budget_exhausted,receipt_cancelled,receipt_activity_package,receipt_activity_binding,receipt_trace_chains_intermediates,receipt_activity_trace_repin"
 e2e_cargo_test "fss-reference" "model_receipt_contract"
 e2e_summary
