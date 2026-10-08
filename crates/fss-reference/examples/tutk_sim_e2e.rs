@@ -70,8 +70,9 @@ fn main() {
         "legacy-key" => 32885,
         "drift" => 32886,
         "malformed" => 32887,
+        "drop" => 32888,
         other => {
-            eprintln!("FATAL: unknown mode {other} (normal|expired|revoked|flaky|legacy-key|drift|malformed)");
+            eprintln!("FATAL: unknown mode {other} (normal|expired|revoked|flaky|legacy-key|drift|malformed|drop)");
             std::process::exit(2);
         }
     };
@@ -157,7 +158,10 @@ fn main() {
         if matches!(ing.state(), AcquisitionState::Failed { .. } | AcquisitionState::Indeterminate { .. }) {
             break;
         }
-        if ing.stats().capsules_committed >= 30 && ing_pending(&ing) == 0 {
+        // Stop the moment the requested frames are reassembled: the batch
+        // commit happens at flush(), so waiting on capsules_committed would
+        // pump into the stream-silence budget after a finite clip ends.
+        if ing.session_stats().video_frames >= 30 {
             break;
         }
         std::thread::sleep(Duration::from_millis(5));
@@ -234,6 +238,16 @@ fn main() {
                 other => check(&format!("garbage discovery -> Failed (got {other:?})"), false),
             }
             check("no capsules from malformed peer", stats.capsules_committed == 0);
+        }
+        "drop" => {
+            match ing.state() {
+                AcquisitionState::Failed { reason } => {
+                    check("camera vanish -> stream-silence Failed", reason.contains("silent"));
+                }
+                other => check(&format!("camera vanish -> Failed (got {other:?})"), false),
+            }
+            // frames received before the vanish are committed (honest partial custody)
+            check("partial capsules before drop committed", stats.capsules_committed > 0 && stats.capsules_committed < 30);
         }
         _ => unreachable!(),
     }

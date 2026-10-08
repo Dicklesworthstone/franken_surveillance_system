@@ -37,6 +37,10 @@ pub const LOGIN2_DELAY_NS: u64 = 10_000_000;
 pub const EVENT_QUEUE_MAX: usize = 1024;
 /// Cap on incomplete frames held by the reassembler.
 pub const PENDING_FRAMES_MAX: usize = 64;
+/// Mid-stream silence budget: no datagram of ANY kind for this long while
+/// streaming means the camera is gone (power loss, network drop) — the
+/// session fails closed instead of streaming nothing forever.
+pub const STREAM_SILENCE_TIMEOUT_NS: u64 = 10_000_000_000;
 
 /// Owner-supplied session configuration.
 #[derive(Debug, Clone)]
@@ -255,6 +259,7 @@ pub struct TutkSession {
     audio_started: bool,
     // per-packet frame timing + continuity
     pkt_times: std::collections::BTreeMap<(u8, u32), (u64, u64, u16)>, // (first,last,count)
+    last_recv_ns: u64,
     last_frame_no: Option<u32>,
     gap_pending: bool,
     stats: SessionStats,
@@ -302,6 +307,7 @@ impl TutkSession {
             audio_started: false,
             pkt_times: Default::default(),
             last_frame_no: None,
+            last_recv_ns: 0,
             gap_pending: false,
             stats: SessionStats::default(),
         };
@@ -417,6 +423,15 @@ impl TutkSession {
                 }
             }
             Phase::Streaming => {
+                if self.last_recv_ns > 0
+                    && now_ns.saturating_sub(self.last_recv_ns) > STREAM_SILENCE_TIMEOUT_NS
+                {
+                    self.fail(
+                        "stream",
+                        "camera silent beyond stream budget (power loss or network drop)",
+                    );
+                    return;
+                }
                 if let Some(next) = self.ack_ticker_next_ns
                     && now_ns >= next
                 {
@@ -434,6 +449,7 @@ impl TutkSession {
         if self.phase == Phase::Terminal || data.is_empty() {
             return;
         }
+        self.last_recv_ns = now_ns;
         match self.phase {
             Phase::Discovery => self.feed_discovery(data, now_ns),
             Phase::Dtls => self.feed_dtls(data, now_ns),
@@ -712,7 +728,7 @@ impl TutkSession {
         }
     }
 
-    fn handle_stream_start(&mut self, cmd: u16, payload: &[u8], _now_ns: u64) {
+    fn handle_stream_start(&mut self, cmd: u16, payload: &[u8], now_ns: u64) {
         if cmd != 10011 {
             return;
         }
@@ -726,6 +742,9 @@ impl TutkSession {
         }
         self.events.push_back(SessionEvent::StreamStarted { payload: payload.to_vec() });
         self.phase = Phase::Streaming;
+        // Silence budget starts at stream start: a camera that never sends
+        // its first packet dies by the same clock as one that stops mid-stream.
+        self.last_recv_ns = now_ns;
     }
 
     // -- packets, continuity, reassembly -------------------------------------
@@ -971,6 +990,53 @@ mod tests {
     fn discovery_handshake_drives_to_dtls() {
         let (s, _) = session_in_dtls();
         assert!(matches!(s.phase(), PhaseName::Dtls));
+    }
+
+    #[test]
+    fn stream_silence_fails_closed() {
+        let mut s = TutkSession::new(test_cfg()).unwrap();
+        s.phase = Phase::Login;
+        // Drive to streaming via the internal handler (unit scope).
+        s.handle_msg(StreamMsg::LoginResp(crate::av::parse_av_login_response(&{
+            let mut l = vec![0u8; 44];
+            l[0..2].copy_from_slice(&0x2100u16.to_le_bytes());
+            l[4] = 0x10;
+            l[16..20].copy_from_slice(&20u32.to_le_bytes());
+            l
+        }).unwrap()), 1_000);
+        s.handle_msg(StreamMsg::Ioctrl(10003, br#"{"connectionRes":"1","cameraInfo":{"basicInfo":{"model":"SIM-CAM","firmware":"9.99.0.SIM","type":"normal"}}}"#.to_vec(), 7), 1_100);
+        s.handle_msg(StreamMsg::Ioctrl(10011, b"ok".to_vec(), 8), 1_200);
+        assert!(matches!(s.phase(), PhaseName::Streaming));
+        // Camera goes silent: no feed_datagram for > STREAM_SILENCE_TIMEOUT_NS.
+        let t_dead = 1_200 + STREAM_SILENCE_TIMEOUT_NS + 1;
+        s.advance(t_dead);
+        assert!(matches!(s.phase(), PhaseName::Terminal));
+        let mut failure = None;
+        while let Some(ev) = s.poll_event() {
+            if matches!(ev, SessionEvent::Failed { .. }) {
+                failure = Some(ev);
+            }
+        }
+        match failure {
+            Some(SessionEvent::Failed { stage: "stream", reason }) => {
+                assert!(reason.contains("silent"), "reason: {reason}");
+            }
+            other => panic!("expected stream-silence failure, got {other:?}"),
+        }
+        // Within the budget it stays streaming (ACK ticker does not kill it).
+        let mut s2 = TutkSession::new(test_cfg()).unwrap();
+        s2.phase = Phase::Login;
+        s2.handle_msg(StreamMsg::LoginResp(crate::av::parse_av_login_response(&{
+            let mut l = vec![0u8; 44];
+            l[0..2].copy_from_slice(&0x2100u16.to_le_bytes());
+            l[4] = 0x10;
+            l[16..20].copy_from_slice(&20u32.to_le_bytes());
+            l
+        }).unwrap()), 1_000);
+        s2.handle_msg(StreamMsg::Ioctrl(10003, br#"{"connectionRes":"1","cameraInfo":{"basicInfo":{"model":"SIM-CAM","firmware":"9.99.0.SIM","type":"normal"}}}"#.to_vec(), 7), 1_100);
+        s2.handle_msg(StreamMsg::Ioctrl(10011, b"ok".to_vec(), 8), 1_200);
+        s2.advance(1_200 + STREAM_SILENCE_TIMEOUT_NS - 1);
+        assert!(matches!(s2.phase(), PhaseName::Streaming));
     }
 
     #[test]
