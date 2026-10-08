@@ -84,9 +84,14 @@ fn repack(replace: Option<(&str, Vec<u8>)>, generation: &str) -> TestResult<Vec<
             .ok_or("artifact")?
             .digest)
     };
+    // The record names the license text ACTUALLY carried (self-consistent
+    // archive, decodable and re-pinnable); repack(None) still reproduces the
+    // committed bytes because the committed artifact IS the committed text.
+    // A replaced license text therefore reaches the LOADER's license-text
+    // binding — the refusal under test — instead of failing package assembly.
     let license = ModelLicenseRecord::new(
         ACTIVITY_LICENSE_IDENTITY,
-        Some(ContentDigest::sha256(ACTIVITY_LICENSE_TEXT.as_bytes())),
+        Some(digest_of(LICENSE_ARTIFACT)?),
         true,
         Vec::new(),
         ACTIVITY_SOURCE_IDENTITY,
