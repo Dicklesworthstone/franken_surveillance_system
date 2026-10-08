@@ -150,53 +150,20 @@ fn main() {
         stats.gaps
     );
 
-    // Root-last deployment commit: stage custody payloads, then commit each
-    // batch (children must exist before the batch root publishes).
-    let mut staged = 0u64;
-    for batch in ing.ledger().batches() {
-        for child in &batch.children {
-            let bytes = ing
-                .custody(child)
-                .unwrap_or_else(|| panic!("custody missing child {child}"));
-            deployment
-                .publisher_mut()
-                .stage_object(bytes)
-                .expect("stage custody payload");
-            staged += 1;
-        }
-        // witness payloads (access-unit source bytes) must also exist before
-        // the batch root publishes (durable spool checks every digest).
-        for delta in &batch.deltas {
-            if let Some(witness) = delta.witness_digest {
-                let bytes = ing
-                    .custody(&witness)
-                    .unwrap_or_else(|| panic!("custody missing witness {witness}"));
-                deployment
-                    .publisher_mut()
-                    .stage_object(bytes)
-                    .expect("stage witness payload");
-                staged += 1;
-            }
-        }
-        let anchor = deployment
-            .append_batch(
-                batch.batch_id.clone(),
-                batch.deltas.clone(),
-                batch.children.clone(),
-                &cx,
-            )
-            .expect("append batch");
-        println!(
-            "acquire: committed {} ({} deltas) at anchor seq={}",
-            batch.batch_id.as_str(),
-            batch.deltas.len(),
-            anchor.commit_sequence
-        );
-    }
+    // Seal into the deployment as a decodable file-import-shaped custody
+    // contract (RetainedFileImport-compatible): payloads staged, capsule
+    // batches committed, fi- slot published, manifest batch completes gen 2.
+    let seal = ing
+        .seal_acquisition(&mut deployment, "HL_CAM4/4.52.17.26", &cx)
+        .expect("seal acquisition");
     println!(
-        "acquire: DONE — {staged} custody payloads staged, {} batches committed to {}",
-        ing.ledger().batches().len(),
-        root.display()
+        "acquire: SEALED import={} manifest={} root={} batch={} capsules={} bytes={}",
+        seal.import_identity,
+        seal.manifest_digest,
+        seal.import_root,
+        seal.manifest_batch.as_str(),
+        seal.capsule_count,
+        seal.input_bytes
     );
     println!("acquire: inspect with: fss doctor --root {}", root.display());
 }

@@ -216,12 +216,21 @@ impl FileImportManifest {
         {
             return Err(invalid("source or chunk length outside admitted bounds"));
         }
-        if self.adapter_id != ADP_FILE_ROW_ID
-            || self.adapter_generation != ADP_FILE_GENERATION
-            || !matches!(
-                self.format.as_str(),
-                "annexb" | "hevc" | "mjpeg" | "mp4avc" | "mp4hevc" | "mkvavc" | "mkvhevc"
-            )
+        // Per-adapter admission: the file row accepts every registered file
+        // format; the Wyze live-lab row accepts the live annexb bitstreams
+        // its tuple was qualified against. Unknown tuples fail closed.
+        let admitted = if self.adapter_id == ADP_FILE_ROW_ID {
+            self.adapter_generation == ADP_FILE_GENERATION
+                && matches!(
+                    self.format.as_str(),
+                    "annexb" | "hevc" | "mjpeg" | "mp4avc" | "mp4hevc" | "mkvavc" | "mkvhevc"
+                )
+        } else if self.adapter_id == "ADP-WYZE-V4-LAB-001" {
+            matches!(self.format.as_str(), "annexb" | "hevc")
+        } else {
+            false
+        };
+        if !admitted
             || !matches!(
                 self.capture_time_label.as_str(),
                 "unknown" | "operator_assumption"

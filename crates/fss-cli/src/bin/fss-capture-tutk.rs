@@ -229,47 +229,14 @@ fn run(o: &Options) -> Result<String, &'static str> {
         let sess = ing.session_stats();
         let state_text = format!("{:?}", ing.state());
 
-        // Root-last commit: custody payloads (encodings + witness AU bytes)
-        // staged before each batch root publishes.
-        let mut staged = 0u64;
-        let mut committed: Vec<String> = Vec::new();
-        for batch in ing.ledger().batches() {
-            for child in &batch.children {
-                let bytes = ing
-                    .custody(child)
-                    .ok_or("ERR-TUTK-CAPTURE-CUSTODY-001: custody gap")?;
-                deployment
-                    .publisher_mut()
-                    .stage_object(bytes)
-                    .map_err(|_| "ERR-TUTK-CAPTURE-CUSTODY-002: stage failed")?;
-                staged += 1;
-            }
-            for delta in &batch.deltas {
-                if let Some(witness) = delta.witness_digest {
-                    let bytes = ing
-                        .custody(&witness)
-                        .ok_or("ERR-TUTK-CAPTURE-CUSTODY-001: custody gap")?;
-                    deployment
-                        .publisher_mut()
-                        .stage_object(bytes)
-                        .map_err(|_| "ERR-TUTK-CAPTURE-CUSTODY-002: stage failed")?;
-                    staged += 1;
-                }
-            }
-            let anchor = deployment
-                .append_batch(
-                    batch.batch_id.clone(),
-                    batch.deltas.clone(),
-                    batch.children.clone(),
-                    &cx,
-                )
-                .map_err(|_| "ERR-TUTK-CAPTURE-COMMIT-001: batch append refused")?;
-            committed.push(format!(
-                "{}@{}",
-                batch.batch_id.as_str(),
-                anchor.commit_sequence
-            ));
-        }
+        // Seal into the deployment as a decodable file-import-shaped custody
+        // contract: payloads staged, capsule batches committed, fi- slot
+        // published, manifest batch completes the import at generation 2.
+        let seal = ing
+            .seal_acquisition(&mut deployment, "HL_CAM4/4.52.17.26", &cx)
+            .map_err(|_| "ERR-TUTK-CAPTURE-COMMIT-002: seal refused")?;
+        let committed = vec![seal.manifest_batch.as_str().to_owned()];
+        let staged = (seal.capsule_count * 2) as u64;
         let frames = sess.video_frames;
         Ok(format!(
             "{{\"schema\":\"{FORMAT}\",\"site\":\"{}\",\"root\":\"{}\",\"state\":{},\"frames\":{},\"capsules\":{},\"batches\":{},\"gaps\":{},\"resync_bytes\":{},\"acks\":{},\"custody_staged\":{},\"anchors\":{:?}}}",
