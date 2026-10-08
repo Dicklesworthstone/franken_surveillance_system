@@ -75,6 +75,7 @@ mod packet_fault;
 pub mod planned_scalar;
 mod policy;
 pub mod preprocess;
+pub mod discovery;
 pub mod reference_deployment;
 pub mod rtsp;
 pub mod scalar_executor;
