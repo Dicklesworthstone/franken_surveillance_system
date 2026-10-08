@@ -32,9 +32,12 @@ use std::fmt;
 use fss_codec_mjpeg::ComponentInterpretation;
 use fss_codec_mjpeg::color::RgbDecodeReceipt;
 use fss_core::{
-    CanonicalDecoder, CanonicalEncode, CanonicalEncoder, ContentDigest, ContractError, SensorId,
+    BatchId, CanonicalDecoder, CanonicalEncode, CanonicalEncoder, CaptureInterval, ContentDigest,
+    ContractError, EvidenceDelta, LedgerAnchor, ObjectId, Plane, SensorCapsule, SensorId,
 };
 use fss_model_ir::{ModelIrError, ModelIrGraph};
+use fss_object::{ObjectError, ObjectManifest, SpoolError};
+use fss_publication::SlotName;
 use fss_tensor::{Shape, Tensor, TensorError};
 
 pub use crate::executor_activity_package::{
@@ -46,7 +49,8 @@ use crate::model_receipt::{
     ModelInvocationReceipt, ReceiptOutcome, ReceiptRecordContext, execute_and_record_receipt,
 };
 use crate::preprocess::{ImageBytes, ResizeOptions};
-use crate::{ExecBudget, ExecError, ScalarExecCx};
+use crate::reference_deployment::{FAMILY_EXECUTOR_MODEL_RESULT, FAMILY_MODEL_INVOCATION_RECEIPT};
+use crate::{ExecBudget, ExecError, ReferenceDeployment, ReferenceError, ReplayCx, ScalarExecCx};
 
 /// Canonical domain of a retained executor model result (`SCHEMA-DOMAIN-EXECUTOR-MODEL-RESULT-001`).
 pub const EXECUTOR_MODEL_RESULT_DOMAIN: &str = "fss.executor_model_result.v1";
@@ -95,6 +99,16 @@ pub enum ExecutorActivityError {
     NoScore,
     /// A retained result's canonical bytes are malformed or non-canonical.
     Decode(ContractError),
+    /// Deployment custody, publication or ledger append refused retention.
+    Reference(ReferenceError),
+    /// A retained object could not be read back from the spool.
+    Spool(SpoolError),
+    /// The retention manifest is invalid.
+    Object(ObjectError),
+    /// The owner context was cancelled before retention completed.
+    Cancelled,
+    /// A retained result, its receipt, root or ledger batch disagree.
+    RetentionMismatch(&'static str),
 }
 
 impl fmt::Display for ExecutorActivityError {
@@ -115,6 +129,13 @@ impl fmt::Display for ExecutorActivityError {
             ),
             Self::NoScore => f.write_str("an abstaining result has no score to compare"),
             Self::Decode(error) => write!(f, "executor model result decode refused: {error}"),
+            Self::Reference(error) => write!(f, "executor result retention refused: {error}"),
+            Self::Spool(error) => write!(f, "retained executor object unreadable: {error}"),
+            Self::Object(error) => write!(f, "executor result manifest refused: {error}"),
+            Self::Cancelled => f.write_str("executor result retention cancelled"),
+            Self::RetentionMismatch(what) => {
+                write!(f, "retained executor result refused: {what}")
+            }
         }
     }
 }
@@ -557,6 +578,11 @@ pub fn rgb_decode_receipt_bytes(receipt: &RgbDecodeReceipt) -> Vec<u8> {
 }
 
 /// One natively decoded frame and the identities binding it to its source bytes.
+///
+/// The capsule is the frame's actual [`SensorCapsule`], not a caller-supplied digest:
+/// [`ActivityExecutorModel::invoke`] refuses a capsule whose `source_digest` is not this frame's
+/// source bytes or whose sensor is not the invoking sensor, and the result names the digest of
+/// that capsule's canonical bytes, so a result can never cite a capsule it did not see.
 #[derive(Clone, Copy, Debug)]
 pub struct ActivityFrameBinding<'a> {
     /// Tightly packed RGB pixels whose digest the receipt names.
@@ -565,8 +591,8 @@ pub struct ActivityFrameBinding<'a> {
     pub receipt: RgbDecodeReceipt,
     /// Staged source bytes digest of this frame.
     pub source_digest: ContentDigest,
-    /// Canonical sensor capsule digest of this frame.
-    pub capsule_digest: ContentDigest,
+    /// The frame's sensor capsule (decoded from its retained canonical bytes by the caller).
+    pub capsule: &'a SensorCapsule,
 }
 
 /// Fixed preprocessing ceiling: the nearest resize of the largest admitted frame to 32x32 luma.
@@ -699,6 +725,8 @@ impl ActivityExecutorModel {
                 "frame and reference dimensions differ",
             ));
         }
+        let capsule_digest = Self::capsule_digest(sensor_id, &frame)?;
+        Self::capsule_digest(sensor_id, &reference)?;
         let frame_tensor = self.tensor(&frame, cx)?;
         let reference_tensor = self.tensor(&reference, cx)?;
         let decode_receipt_digest =
@@ -748,7 +776,7 @@ impl ActivityExecutorModel {
             threshold_policy_digest: policy.digest(),
             sensor_id: sensor_id.clone(),
             input_capture_root: frame.source_digest,
-            capsule_digest: frame.capsule_digest,
+            capsule_digest,
             reference_capture_root: reference.source_digest,
             decode_receipt_digest,
             reference_decode_receipt_digest,
@@ -763,6 +791,30 @@ impl ActivityExecutorModel {
             outcome,
         };
         Ok((result, receipt))
+    }
+
+    /// Digest of the frame's capsule after checking that the capsule names exactly this frame's
+    /// source bytes and the invoking sensor.
+    fn capsule_digest(
+        sensor_id: &SensorId,
+        frame: &ActivityFrameBinding<'_>,
+    ) -> Result<ContentDigest, ExecutorActivityError> {
+        if frame.capsule.source_digest != frame.source_digest {
+            return Err(ExecutorActivityError::InvalidInput(
+                "capsule names other source bytes",
+            ));
+        }
+        if frame.capsule.sensor_id != *sensor_id {
+            return Err(ExecutorActivityError::InvalidInput(
+                "capsule names another sensor",
+            ));
+        }
+        Ok(ContentDigest::sha256(
+            &frame
+                .capsule
+                .try_canonical_bytes()
+                .map_err(ExecutorActivityError::Decode)?,
+        ))
     }
 
     fn tensor(
@@ -783,4 +835,245 @@ impl ActivityExecutorModel {
         let [width, height] = frame.receipt.dimensions;
         self.preprocess(frame.pixels, width, height, cx)
     }
+}
+
+/// Checkpoint before a retained executor result's objects are staged.
+pub const STAGE_EXECUTOR_RESULT_STAGE: &str = "executor_activity:stage";
+/// Checkpoint after the result's root is published, before its ledger batch.
+pub const STAGE_EXECUTOR_RESULT_COMMIT: &str = "executor_activity:commit";
+
+fn hex(digest: ContentDigest) -> String {
+    digest.bytes().iter().map(|b| format!("{b:02x}")).collect()
+}
+
+fn retention_slot(result: ContentDigest) -> Result<SlotName, ExecutorActivityError> {
+    SlotName::parse(&format!("xr-{}", hex(result)))
+        .map_err(|_| ExecutorActivityError::RetentionMismatch("slot name"))
+}
+
+fn retention_batch(result: ContentDigest) -> Result<BatchId, ExecutorActivityError> {
+    Ok(BatchId::parse(format!(
+        "batch:executor-result:{}",
+        hex(result)
+    ))?)
+}
+
+fn retention_deltas(
+    result_digest: ContentDigest,
+    receipt_object: ContentDigest,
+    root: ContentDigest,
+    validity: CaptureInterval,
+) -> Result<Vec<EvidenceDelta>, ExecutorActivityError> {
+    let id = hex(result_digest);
+    let delta =
+        |family: &str, kind: &str, payload| -> Result<EvidenceDelta, ExecutorActivityError> {
+            Ok(EvidenceDelta {
+                delta_id: format!("delta:executor-{kind}:{id}"),
+                family: family.to_owned(),
+                object_id: ObjectId::parse(format!("object:executor-{kind}:{id}"))?,
+                prior_generation: None,
+                new_generation: 1,
+                validity,
+                plane: Plane::Cognition,
+                payload_digest: payload,
+                witness_digest: Some(root),
+                operation_id: None,
+            })
+        };
+    // Canonical delta order is by family: `executor_model_result` < `model_invocation_receipt`.
+    Ok(vec![
+        delta(FAMILY_EXECUTOR_MODEL_RESULT, "result", result_digest)?,
+        delta(FAMILY_MODEL_INVOCATION_RECEIPT, "receipt", receipt_object)?,
+    ])
+}
+
+/// One executor result retained in a deployment: the result bytes, the exact receipt JSON bytes
+/// the result names, the published root holding both, and the ledger anchor of the batch whose
+/// `executor_model_result` and `model_invocation_receipt` deltas make them reachable.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct RetainedExecutorResult {
+    /// The retained, strictly decoded result.
+    pub result: ExecutorModelResult,
+    /// Object digest of the result bytes (the ledger identity).
+    pub result_digest: ContentDigest,
+    /// Exact canonical receipt JSON bytes ([`ModelInvocationReceipt::to_json_canonical`]).
+    pub receipt_json: Vec<u8>,
+    /// Published manifest root of the result and its receipt.
+    pub root: ContentDigest,
+    /// Ledger anchor after the result's batch.
+    pub anchor: LedgerAnchor,
+}
+
+/// Retains one executor result and its invocation receipt as ledgered objects.
+///
+/// Both objects are staged and verified, published root-last under the slot
+/// `xr-<result digest>` and committed to the ledger, and a batch
+/// `batch:executor-result:<result digest>` appends one cognition `executor_model_result` delta
+/// (payload: the result bytes) and one cognition `model_invocation_receipt` delta (payload: the
+/// receipt JSON bytes), both witnessed by the root. The receipt must be the one the result names
+/// (its canonical digest and its JSON object digest), so a result cannot be ledgered beside
+/// another invocation's receipt. Idempotent: a rerun on a root that already holds the batch
+/// returns the committed anchor and stages nothing new.
+pub fn retain_executor_result(
+    deployment: &mut ReferenceDeployment,
+    result: &ExecutorModelResult,
+    receipt: &ModelInvocationReceipt,
+    validity: CaptureInterval,
+    cx: &ReplayCx,
+) -> Result<RetainedExecutorResult, ExecutorActivityError> {
+    let checkpoint = |stage| {
+        cx.checkpoint(stage)
+            .map_err(|_| ExecutorActivityError::Cancelled)
+    };
+    checkpoint(STAGE_EXECUTOR_RESULT_STAGE)?;
+    let receipt_json = receipt.to_json_canonical().into_bytes();
+    let receipt_object = ContentDigest::sha256(&receipt_json);
+    if receipt_object != result.invocation_receipt_object
+        || receipt.compute_canonical_digest() != result.invocation_receipt_digest
+    {
+        return Err(ExecutorActivityError::RetentionMismatch(
+            "receipt is not the invocation the result names",
+        ));
+    }
+    let result_bytes = result.canonical_bytes();
+    let result_digest = ContentDigest::sha256(&result_bytes);
+    let batch_id = retention_batch(result_digest)?;
+    if deployment
+        .ledger()
+        .batches()
+        .iter()
+        .any(|batch| batch.batch_id == batch_id)
+    {
+        // Already retained: revalidate custody and return it; a damaged retention is refused,
+        // never restaged over.
+        let existing = open_retained_executor_result(deployment, result_digest, cx)?;
+        if existing.result != *result || existing.receipt_json != receipt_json {
+            return Err(ExecutorActivityError::RetentionMismatch(
+                "retained result differs",
+            ));
+        }
+        return Ok(existing);
+    }
+    for (bytes, expected) in [
+        (result_bytes.as_slice(), result_digest),
+        (receipt_json.as_slice(), receipt_object),
+    ] {
+        if deployment
+            .stage_payload(bytes)
+            .map_err(ExecutorActivityError::Reference)?
+            != expected
+        {
+            return Err(ExecutorActivityError::RetentionMismatch("staged digest"));
+        }
+    }
+    let mut children = vec![result_digest, receipt_object];
+    children.sort_unstable();
+    children.dedup();
+    let slot = retention_slot(result_digest)?;
+    let manifest = ObjectManifest::new(slot.as_str(), children, None)
+        .map_err(ExecutorActivityError::Object)?;
+    if deployment
+        .publisher()
+        .root(&slot)
+        .is_some_and(|visible| visible.root != manifest.root())
+    {
+        return Err(ExecutorActivityError::RetentionMismatch(
+            "slot holds another root",
+        ));
+    }
+    deployment
+        .publish_and_commit(&slot, &manifest, validity, cx)
+        .map_err(ExecutorActivityError::Reference)?;
+    checkpoint(STAGE_EXECUTOR_RESULT_COMMIT)?;
+    let deltas = retention_deltas(result_digest, receipt_object, manifest.root(), validity)?;
+    let mut batch_children = manifest.children().to_vec();
+    batch_children.push(manifest.root());
+    batch_children.sort_unstable();
+    batch_children.dedup();
+    let anchor = deployment
+        .append_batch(batch_id, deltas, batch_children, cx)
+        .map_err(ExecutorActivityError::Reference)?;
+    cx.checkpoint_post_commit("executor_activity:complete");
+    Ok(RetainedExecutorResult {
+        result: result.clone(),
+        result_digest,
+        receipt_json,
+        root: manifest.root(),
+        anchor,
+    })
+}
+
+/// Reads a retained executor result back from the ledger and the spool (for example after a
+/// restart): the batch must hold exactly the two expected deltas, both payloads are re-read and
+/// re-hashed, the result is strictly decoded, its receipt digests must name the retained receipt
+/// bytes, and the published root, the batch children and the manifest must all agree. Anything
+/// else is refused; nothing is substituted.
+pub fn open_retained_executor_result(
+    deployment: &ReferenceDeployment,
+    result_digest: ContentDigest,
+    cx: &ReplayCx,
+) -> Result<RetainedExecutorResult, ExecutorActivityError> {
+    cx.checkpoint("executor_activity:open")
+        .map_err(|_| ExecutorActivityError::Cancelled)?;
+    let target = retention_batch(result_digest)?;
+    let batch = deployment
+        .ledger()
+        .batches()
+        .iter()
+        .find(|batch| batch.batch_id == target)
+        .ok_or(ExecutorActivityError::RetentionMismatch(
+            "no retained batch",
+        ))?;
+    let spool = deployment.publisher().spool();
+    let read = |digest: ContentDigest| -> Result<Vec<u8>, ExecutorActivityError> {
+        let bytes = spool.read(digest).map_err(ExecutorActivityError::Spool)?;
+        if ContentDigest::sha256(&bytes) != digest {
+            return Err(ExecutorActivityError::RetentionMismatch("object digest"));
+        }
+        Ok(bytes)
+    };
+    let result = ExecutorModelResult::decode_canonical(&read(result_digest)?)?;
+    let receipt_json = read(result.invocation_receipt_object)?;
+    let slot = retention_slot(result_digest)?;
+    let mut children = vec![result_digest, result.invocation_receipt_object];
+    children.sort_unstable();
+    children.dedup();
+    let manifest = ObjectManifest::new(slot.as_str(), children, None)
+        .map_err(ExecutorActivityError::Object)?;
+    let validity = batch
+        .deltas
+        .first()
+        .ok_or(ExecutorActivityError::RetentionMismatch(
+            "empty retained batch",
+        ))?
+        .validity;
+    let expected = retention_deltas(
+        result_digest,
+        result.invocation_receipt_object,
+        manifest.root(),
+        validity,
+    )?;
+    let mut batch_children = manifest.children().to_vec();
+    batch_children.push(manifest.root());
+    batch_children.sort_unstable();
+    batch_children.dedup();
+    if batch.deltas != expected
+        || batch.children != batch_children
+        || deployment
+            .publisher()
+            .root(&slot)
+            .is_none_or(|visible| visible.root != manifest.root())
+        || read(manifest.root())? != manifest.canonical_bytes()
+    {
+        return Err(ExecutorActivityError::RetentionMismatch(
+            "ledger batch, root and objects disagree",
+        ));
+    }
+    Ok(RetainedExecutorResult {
+        result,
+        result_digest,
+        receipt_json,
+        root: manifest.root(),
+        anchor: batch.new_anchor.clone(),
+    })
 }

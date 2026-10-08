@@ -15,16 +15,18 @@
 use fss_codec_mjpeg::color::{DecodedRgb, RgbDecodeLimits, decode_rgb};
 use fss_codec_mjpeg::{ComponentInterpretation, DecodeBudget};
 use fss_core::{
-    CanonicalEncode, CapsuleId, CaptureInterval, ClockBasis, ContentDigest, SensorCapsule,
-    SensorId, SensorSourceBytesSpec, StreamId,
+    CanonicalDecode, CanonicalDecoder, CanonicalEncode, CapsuleId, CaptureInterval, ClockBasis,
+    ContentDigest, SensorCapsule, SensorId, SensorSourceBytesSpec, StreamId,
 };
 use fss_reference::executor_activity::{
     ACTIVITY_MODEL_GENERATION, ActivityExecutorModel, ActivityFrameBinding,
     ActivityThresholdPolicy, ExecutorContinuity, ExecutorModelOutcome, ExecutorModelResult,
-    rgb_decode_receipt_bytes,
+    open_retained_executor_result, retain_executor_result, rgb_decode_receipt_bytes,
 };
 use fss_reference::executor_activity_package::ACTIVITY_PACKAGE_V1;
-use fss_reference::{ExecBudget, ReferenceDeployment, ReferenceModelObservation, ScalarExecCx};
+use fss_reference::{
+    ExecBudget, ReferenceDeployment, ReferenceModelObservation, ReplayCx, ScalarExecCx,
+};
 
 use crate::scenario::ScenarioError;
 
@@ -155,20 +157,31 @@ impl FileActivityReport {
     }
 }
 
-struct StagedFrame {
-    bytes: &'static [u8],
-    decoded: DecodedRgb,
-    source_digest: ContentDigest,
-    capsule_digest: ContentDigest,
+/// The identities of one staged frame: its source bytes and its canonical sensor capsule, both
+/// already in the deployment's spool.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct StagedSource {
+    /// Spool digest of the frame's source bytes.
+    pub source_digest: ContentDigest,
+    /// Spool digest of the frame's canonical capsule bytes.
+    pub capsule_digest: ContentDigest,
 }
 
-impl StagedFrame {
+/// A frame read back from custody: its capsule decoded from the retained capsule bytes and its
+/// pixels decoded from the retained source bytes, never from the caller's copy.
+struct CustodyFrame {
+    decoded: DecodedRgb,
+    source_digest: ContentDigest,
+    capsule: SensorCapsule,
+}
+
+impl CustodyFrame {
     fn binding(&self) -> ActivityFrameBinding<'_> {
         ActivityFrameBinding {
             pixels: self.decoded.pixels(),
             receipt: self.decoded.receipt(),
             source_digest: self.source_digest,
-            capsule_digest: self.capsule_digest,
+            capsule: &self.capsule,
         }
     }
 }
@@ -190,20 +203,37 @@ fn stage_checked(
     Ok(())
 }
 
-/// Stages, decodes and scores the recording; returns the observations for the policy.
-pub fn gather(
+/// Reads one staged object back from the deployment spool and re-hashes it: the bytes the lab
+/// decodes are the retained bytes, so damage after staging is refused here, before any decode.
+fn read_custody(
+    deployment: &ReferenceDeployment,
+    digest: ContentDigest,
+    what: &str,
+) -> Result<Vec<u8>, ScenarioError> {
+    let bytes =
+        deployment.publisher().spool().read(digest).map_err(|e| {
+            ScenarioError::Reference(format!("{what} unreadable from custody: {e}"))
+        })?;
+    if ContentDigest::sha256(&bytes) != digest {
+        return Err(ScenarioError::Reference(format!(
+            "{what} custody digest mismatch"
+        )));
+    }
+    Ok(bytes)
+}
+
+/// Stages the recording: each frame's source bytes and its sensor capsule. A file carries no
+/// capture clock, so every capsule has one wide estimated interval, never file mtime.
+pub fn stage_recording(
     deployment: &mut ReferenceDeployment,
     staged: &mut Vec<ContentDigest>,
     interval: CaptureInterval,
-    options: FileActivityOptions,
-) -> Result<(Vec<ReferenceModelObservation>, FileActivityReport), ScenarioError> {
-    let reference_error = |e: &dyn std::fmt::Display| ScenarioError::Reference(e.to_string());
+) -> Result<Vec<StagedSource>, ScenarioError> {
     let sensor_id = SensorId::parse(format!("sensor:{FILE_SENSOR}"))?;
-    let mut frames = Vec::with_capacity(FRAMES.len());
+    let mut sources = Vec::with_capacity(FRAMES.len());
     for (sequence, bytes) in FRAMES.iter().copied().enumerate() {
         let source_digest = deployment.stage_payload(bytes)?;
         staged.push(source_digest);
-        // A file carries no capture clock: one wide estimated interval, never file mtime.
         let capsule = SensorCapsule::from_source_bytes(SensorSourceBytesSpec {
             capsule_id: CapsuleId::parse(format!("capsule:{FILE_SENSOR}:{sequence}"))?,
             sensor_id: sensor_id.clone(),
@@ -218,9 +248,43 @@ pub fn gather(
         })?;
         let capsule_digest = deployment.stage_payload(&capsule.canonical_bytes())?;
         staged.push(capsule_digest);
+        sources.push(StagedSource {
+            source_digest,
+            capsule_digest,
+        });
+    }
+    Ok(sources)
+}
+
+/// Re-reads every staged frame from the spool (re-hashed), decodes the retained capsule and the
+/// retained source bytes, scores every frame after the first against the first, and retains each
+/// executor result with its invocation receipt as ledgered objects
+/// ([`retain_executor_result`]). Returns the observations for the policy.
+pub fn evaluate_recording(
+    deployment: &mut ReferenceDeployment,
+    staged: &mut Vec<ContentDigest>,
+    sources: &[StagedSource],
+    interval: CaptureInterval,
+    options: FileActivityOptions,
+    cx: &ReplayCx,
+) -> Result<(Vec<ReferenceModelObservation>, FileActivityReport), ScenarioError> {
+    let reference_error = |e: &dyn std::fmt::Display| ScenarioError::Reference(e.to_string());
+    let sensor_id = SensorId::parse(format!("sensor:{FILE_SENSOR}"))?;
+    let mut frames = Vec::with_capacity(sources.len());
+    for source in sources {
+        let bytes = read_custody(deployment, source.source_digest, "frame source")?;
+        let capsule_bytes = read_custody(deployment, source.capsule_digest, "frame capsule")?;
+        let mut decoder = CanonicalDecoder::new(&capsule_bytes);
+        let capsule = SensorCapsule::decode_canonical(&mut decoder)?;
+        decoder.ensure_finished()?;
+        if capsule.source_digest != source.source_digest || capsule.sensor_id != sensor_id {
+            return Err(ScenarioError::Reference(
+                "capsule does not name its staged frame".to_owned(),
+            ));
+        }
         let decoded = decode_rgb(
-            bytes,
-            source_digest.bytes(),
+            &bytes,
+            source.source_digest.bytes(),
             ComponentInterpretation::Grayscale,
             RgbDecodeLimits::default(),
             &mut DecodeBudget::new(10_000_000),
@@ -235,20 +299,19 @@ pub fn gather(
             receipt_digest,
             "decode receipt",
         )?;
-        frames.push(StagedFrame {
-            bytes,
+        frames.push(CustodyFrame {
             decoded,
-            source_digest,
-            capsule_digest,
+            source_digest: source.source_digest,
+            capsule,
         });
     }
     let reference = frames
         .first()
         .ok_or(ScenarioError::Packet("empty recording"))?;
-    let cx = ScalarExecCx::new();
+    let exec_cx = ScalarExecCx::new();
     // The graph comes only from the committed, digest-pinned package, verified (archive,
     // license, spec, graph, weights) before any invocation; its archive bytes are retained.
-    let model = ActivityExecutorModel::load_committed(&cx).map_err(|e| reference_error(&e))?;
+    let model = ActivityExecutorModel::load_committed(&exec_cx).map_err(|e| reference_error(&e))?;
     let package_sha256 = model.package().archive_digest();
     stage_checked(
         deployment,
@@ -259,7 +322,9 @@ pub fn gather(
     )?;
     let mut observations = Vec::new();
     let mut reported = Vec::new();
-    for (frame, staged_frame) in frames.iter().enumerate().skip(1) {
+    for (frame, custody_frame) in frames.iter().enumerate().skip(1) {
+        cx.checkpoint("file_activity:invoke")
+            .map_err(|e| reference_error(&e))?;
         let budget = if options.starve_frame == Some(frame) {
             ExecBudget::new(1, 1)
         } else {
@@ -268,34 +333,20 @@ pub fn gather(
         let (result, receipt) = model
             .invoke(
                 &sensor_id,
-                staged_frame.binding(),
+                custody_frame.binding(),
                 reference.binding(),
                 &options.policy,
                 budget,
                 &format!("job:lab:file-activity:{frame}"),
-                &cx,
+                &exec_cx,
             )
             .map_err(|e| reference_error(&e))?;
-        if staged_frame.source_digest != ContentDigest::sha256(staged_frame.bytes) {
-            return Err(ScenarioError::Reference(
-                "frame custody mismatch".to_owned(),
-            ));
-        }
-        stage_checked(
-            deployment,
-            staged,
-            receipt.to_json_canonical().as_bytes(),
-            result.invocation_receipt_object,
-            "model invocation receipt",
-        )?;
-        let result_digest = result.object_digest();
-        stage_checked(
-            deployment,
-            staged,
-            &result.canonical_bytes(),
-            result_digest,
-            "executor model result",
-        )?;
+        // The result and its receipt are ledgered (fss-2h5zq.51): reachable from a committed
+        // root and an `executor_model_result` / `model_invocation_receipt` batch.
+        let retained = retain_executor_result(deployment, &result, &receipt, interval, cx)
+            .map_err(|e| reference_error(&e))?;
+        staged.push(result.invocation_receipt_object);
+        staged.push(retained.result_digest);
         observations.push(ReferenceModelObservation::new(
             result.clone(),
             FILE_FAILURE_DOMAIN,
@@ -304,7 +355,7 @@ pub fn gather(
         reported.push(FileActivityObservation {
             frame,
             result,
-            result_digest,
+            result_digest: retained.result_digest,
         });
     }
     Ok((
@@ -320,4 +371,128 @@ pub fn gather(
             observations: reported,
         },
     ))
+}
+
+/// Stages, re-reads, decodes and scores the recording; returns the observations for the policy.
+pub fn gather(
+    deployment: &mut ReferenceDeployment,
+    staged: &mut Vec<ContentDigest>,
+    interval: CaptureInterval,
+    options: FileActivityOptions,
+    cx: &ReplayCx,
+) -> Result<(Vec<ReferenceModelObservation>, FileActivityReport), ScenarioError> {
+    let sources = stage_recording(deployment, staged, interval)?;
+    evaluate_recording(deployment, staged, &sources, interval, options, cx)
+}
+
+/// After a restart: every reported observation's result and receipt read back from the reopened
+/// deployment's ledger and spool, equal to what the run reported.
+pub fn verify_retained(
+    root: &std::path::Path,
+    report: &FileActivityReport,
+    cx: &ReplayCx,
+) -> Result<(), ScenarioError> {
+    let reopened = ReferenceDeployment::reopen(root, "site:lab", cx)?;
+    for observation in &report.observations {
+        let retained = open_retained_executor_result(&reopened, observation.result_digest, cx)
+            .map_err(|e| ScenarioError::Reference(e.to_string()))?;
+        if retained.result != observation.result {
+            return Err(ScenarioError::Reference(format!(
+                "retained executor result of frame {} differs after restart",
+                observation.frame
+            )));
+        }
+    }
+    Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::scenario::{ScenarioKind, make_cx};
+    use fss_core::TimestampNs;
+
+    struct Root(std::path::PathBuf);
+
+    impl Drop for Root {
+        fn drop(&mut self) {
+            let _ = std::fs::remove_dir_all(&self.0);
+        }
+    }
+
+    /// Review finding (2026-10-08, fss-2h5zq.50): the lab staged the frame bytes and then decoded
+    /// its own in-memory copy, so a staged object damaged in the spool was never noticed. The
+    /// lab now decodes only bytes re-read (and re-hashed) from custody: a frame tampered on disk
+    /// after staging is refused before decode, and nothing is scored or retained for it.
+    #[test]
+    fn a_frame_tampered_in_the_spool_after_staging_is_refused()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let root = Root(std::env::temp_dir().join(format!(
+            "fss-lab-file-activity-tamper-{}",
+            std::process::id()
+        )));
+        let cx = make_cx(ScenarioKind::FileActivity)?;
+        let mut deployment = ReferenceDeployment::open(&root.0, "site:lab", &cx)?;
+        let interval = CaptureInterval::new(TimestampNs(0), TimestampNs(5_000_000_000))?;
+        let mut staged = Vec::new();
+        let sources = stage_recording(&mut deployment, &mut staged, interval)?;
+        // Frame 2 (the gradient) is the only frame whose source bytes no other frame shares.
+        let target = sources.get(2).ok_or("no frame 2")?.source_digest;
+        let path = deployment.publisher().spool().object_path(target);
+        let mut bytes = std::fs::read(&path)?;
+        let middle = bytes.len() / 2;
+        bytes[middle] ^= 0x40;
+        std::fs::write(&path, bytes)?;
+        let ledger_before = deployment.current_anchor().commit_sequence;
+        let outcome = evaluate_recording(
+            &mut deployment,
+            &mut staged,
+            &sources,
+            interval,
+            FileActivityOptions::reference()?,
+            &cx,
+        );
+        match outcome {
+            Err(ScenarioError::Reference(message)) => {
+                assert!(message.contains("frame source"), "{message}");
+            }
+            other => return Err(format!("tampered frame was not refused: {other:?}").into()),
+        }
+        // Refused before any invocation: no result or receipt was retained.
+        assert_eq!(deployment.current_anchor().commit_sequence, ledger_before);
+        Ok(())
+    }
+
+    /// The untampered control: the same staged recording re-read from custody scores and
+    /// retains both evaluated frames.
+    #[test]
+    fn an_untampered_staged_recording_is_scored_from_custody()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let root = Root(std::env::temp_dir().join(format!(
+            "fss-lab-file-activity-custody-{}",
+            std::process::id()
+        )));
+        let cx = make_cx(ScenarioKind::FileActivity)?;
+        let mut deployment = ReferenceDeployment::open(&root.0, "site:lab", &cx)?;
+        let interval = CaptureInterval::new(TimestampNs(0), TimestampNs(5_000_000_000))?;
+        let mut staged = Vec::new();
+        let sources = stage_recording(&mut deployment, &mut staged, interval)?;
+        let (observations, report) = evaluate_recording(
+            &mut deployment,
+            &mut staged,
+            &sources,
+            interval,
+            FileActivityOptions::reference()?,
+            &cx,
+        )?;
+        assert_eq!(observations.len(), 2);
+        for (observation, source) in report.observations.iter().zip(&sources[1..]) {
+            assert_eq!(observation.result.input_capture_root, source.source_digest);
+            assert_eq!(observation.result.capsule_digest, source.capsule_digest);
+            let retained =
+                open_retained_executor_result(&deployment, observation.result_digest, &cx)?;
+            assert_eq!(retained.result, observation.result);
+        }
+        Ok(())
+    }
 }

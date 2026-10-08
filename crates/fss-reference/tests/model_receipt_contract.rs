@@ -14,7 +14,10 @@ use std::error::Error;
 use fss_codec_mjpeg::ComponentInterpretation;
 use fss_codec_mjpeg::DecodeBudget;
 use fss_codec_mjpeg::color::{DecodedRgb, RgbDecodeLimits, decode_rgb};
-use fss_core::{CanonicalEncoder, ContentDigest, Generation, SensorId, TimestampNs};
+use fss_core::{
+    CanonicalEncoder, CapsuleId, CaptureInterval, ClockBasis, ContentDigest, Generation,
+    SensorCapsule, SensorId, SensorSourceBytesSpec, StreamId, TimestampNs,
+};
 use fss_model_ir::{AttributeMap, GraphNode, ModelIrGraph, OpCode, TensorPort};
 use fss_reference::executor_activity::{
     ACTIVITY_FRAME_INPUT, ACTIVITY_REFERENCE_INPUT, ACTIVITY_SCORE_OUTPUT,
@@ -107,13 +110,35 @@ fn decode(bytes: &[u8]) -> TestResult<DecodedRgb> {
     )?)
 }
 
-fn bind<'a>(bytes: &[u8], decoded: &'a DecodedRgb) -> ActivityFrameBinding<'a> {
+fn bind<'a>(
+    bytes: &[u8],
+    decoded: &'a DecodedRgb,
+    capsule: &'a SensorCapsule,
+) -> ActivityFrameBinding<'a> {
     ActivityFrameBinding {
         pixels: decoded.pixels(),
         receipt: decoded.receipt(),
         source_digest: ContentDigest::sha256(bytes),
-        capsule_digest: ContentDigest::sha256(bytes),
+        capsule,
     }
+}
+
+/// The sensor capsule of `source` as recorded by `sensor` (fss-2h5zq.51: a binding carries the
+/// frame's actual capsule, checked against its source bytes and sensor).
+fn capsule_for(source: &[u8], sensor: &str, sequence: u64) -> TestResult<SensorCapsule> {
+    let capture = CaptureInterval::new(TimestampNs(0), TimestampNs(5_000_000_000))?;
+    Ok(SensorCapsule::from_source_bytes(SensorSourceBytesSpec {
+        capsule_id: CapsuleId::parse(format!("capsule:contract:{sequence}"))?,
+        sensor_id: SensorId::parse(sensor)?,
+        stream_id: StreamId::parse("stream:contract")?,
+        sequence,
+        capture,
+        receive_time: capture.latest,
+        clock_basis: ClockBasis::Estimated,
+        source,
+        frame_count: 1,
+        gap_before: false,
+    })?)
 }
 
 /// Every case's receipt and the graph it ran (for the trace recomputation).
@@ -169,10 +194,12 @@ fn receipts() -> TestResult<Vec<(&'static str, ModelInvocationReceipt)>> {
     let model = ActivityExecutorModel::load_committed(&ScalarExecCx::new())?;
     let frame = decode(GRADIENT)?;
     let reference = decode(BACKGROUND)?;
+    let frame_capsule = capsule_for(GRADIENT, "sensor:file-cam", 1)?;
+    let reference_capsule = capsule_for(BACKGROUND, "sensor:file-cam", 0)?;
     let (_, activity) = model.invoke(
         &SensorId::parse("sensor:file-cam")?,
-        bind(GRADIENT, &frame),
-        bind(BACKGROUND, &reference),
+        bind(GRADIENT, &frame, &frame_capsule),
+        bind(BACKGROUND, &reference, &reference_capsule),
         &ActivityThresholdPolicy::reference()?,
         ExecBudget::new(10_000_000, 16 * 1024 * 1024),
         "job:receipt-contract:activity",
@@ -292,10 +319,12 @@ fn activity_receipt_binds_package_graph_tensors_and_decode_receipts() -> TestRes
     let package = model.package();
     let frame = decode(GRADIENT)?;
     let reference = decode(BACKGROUND)?;
+    let frame_capsule = capsule_for(GRADIENT, "sensor:file-cam", 1)?;
+    let reference_capsule = capsule_for(BACKGROUND, "sensor:file-cam", 0)?;
     let (result, receipt) = model.invoke(
         &SensorId::parse("sensor:file-cam")?,
-        bind(GRADIENT, &frame),
-        bind(BACKGROUND, &reference),
+        bind(GRADIENT, &frame, &frame_capsule),
+        bind(BACKGROUND, &reference, &reference_capsule),
         &ActivityThresholdPolicy::reference()?,
         ExecBudget::new(10_000_000, 16 * 1024 * 1024),
         "job:receipt-contract:binding",

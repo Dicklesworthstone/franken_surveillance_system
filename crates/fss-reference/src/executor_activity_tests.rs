@@ -9,8 +9,9 @@ use std::error::Error;
 use fss_codec_mjpeg::color::{DecodedRgb, RgbDecodeLimits, decode_rgb};
 use fss_codec_mjpeg::{ComponentInterpretation, DecodeBudget};
 use fss_core::{
-    CanonicalEncode, CaptureInterval, ContentDigest, EventId, EventState, EvidenceEdgeRelation,
-    ProbabilityInterval, SensorId, TimestampNs,
+    CanonicalEncode, CapsuleId, CaptureInterval, ClockBasis, ContentDigest, EventId, EventState,
+    EvidenceEdgeRelation, ProbabilityInterval, SensorCapsule, SensorId, SensorSourceBytesSpec,
+    StreamId, TimestampNs,
 };
 
 use crate::executor_activity::{
@@ -41,13 +42,34 @@ fn decode(bytes: &[u8]) -> TestResult<DecodedRgb> {
     )?)
 }
 
-fn binding<'a>(bytes: &[u8], decoded: &'a DecodedRgb) -> ActivityFrameBinding<'a> {
+fn binding<'a>(
+    bytes: &[u8],
+    decoded: &'a DecodedRgb,
+    capsule: &'a SensorCapsule,
+) -> ActivityFrameBinding<'a> {
     ActivityFrameBinding {
         pixels: decoded.pixels(),
         receipt: decoded.receipt(),
         source_digest: ContentDigest::sha256(bytes),
-        capsule_digest: ContentDigest::sha256(&[bytes, b"capsule"].concat()),
+        capsule,
     }
+}
+
+/// The sensor capsule of `source` as recorded by `sensor`.
+fn capsule_for(source: &[u8], sensor: &str, sequence: u64) -> TestResult<SensorCapsule> {
+    let capture = interval()?;
+    Ok(SensorCapsule::from_source_bytes(SensorSourceBytesSpec {
+        capsule_id: CapsuleId::parse(format!("capsule:executor-test:{sequence}"))?,
+        sensor_id: SensorId::parse(sensor)?,
+        stream_id: StreamId::parse("stream:executor-test")?,
+        sequence,
+        capture,
+        receive_time: capture.latest,
+        clock_basis: ClockBasis::Estimated,
+        source,
+        frame_count: 1,
+        gap_before: false,
+    })?)
 }
 
 fn budget() -> ExecBudget {
@@ -64,10 +86,12 @@ fn run(
     let reference = decode(BACKGROUND)?;
     let current = decode(frame)?;
     let model = ActivityExecutorModel::load_committed(&ScalarExecCx::new())?;
+    let frame_capsule = capsule_for(frame, "sensor:file-cam", 1)?;
+    let reference_capsule = capsule_for(BACKGROUND, "sensor:file-cam", 0)?;
     let (result, receipt) = model.invoke(
         &SensorId::parse("sensor:file-cam")?,
-        binding(frame, &current),
-        binding(BACKGROUND, &reference),
+        binding(frame, &current, &frame_capsule),
+        binding(BACKGROUND, &reference, &reference_capsule),
         policy,
         budget,
         job,
@@ -332,10 +356,12 @@ fn receipt_binds_package_root_resize_program_and_decode_receipts() -> TestResult
     let model = ActivityExecutorModel::load_committed(&ScalarExecCx::new())?;
     let reference = decode(BACKGROUND)?;
     let current = decode(GRADIENT)?;
+    let frame_capsule = capsule_for(GRADIENT, "sensor:file-cam", 1)?;
+    let reference_capsule = capsule_for(BACKGROUND, "sensor:file-cam", 0)?;
     let (result, receipt) = model.invoke(
         &SensorId::parse("sensor:file-cam")?,
-        binding(GRADIENT, &current),
-        binding(BACKGROUND, &reference),
+        binding(GRADIENT, &current, &frame_capsule),
+        binding(BACKGROUND, &reference, &reference_capsule),
         &ActivityThresholdPolicy::reference()?,
         budget(),
         "job:activity:receipt",
@@ -515,5 +541,236 @@ fn threshold_boundary_at_just_below_and_just_above() -> TestResult {
             }
         ));
     }
+    Ok(())
+}
+
+/// Review finding (2026-10-08, fss-2h5zq.51): `capsule_digest` was taken from the caller
+/// unchecked, so a result could name a capsule it never saw. The binding now carries the actual
+/// capsule; one that names other source bytes or another sensor (for the evaluated frame or the
+/// reference frame) is refused, and the result names the digest of the capsule it was given.
+#[test]
+fn a_capsule_that_is_not_the_frames_own_is_refused() -> TestResult {
+    let model = ActivityExecutorModel::load_committed(&ScalarExecCx::new())?;
+    let sensor = SensorId::parse("sensor:file-cam")?;
+    let current = decode(GRADIENT)?;
+    let reference = decode(BACKGROUND)?;
+    let own = capsule_for(GRADIENT, "sensor:file-cam", 1)?;
+    let reference_own = capsule_for(BACKGROUND, "sensor:file-cam", 0)?;
+    let other_bytes = capsule_for(BACKGROUND, "sensor:file-cam", 1)?;
+    let other_sensor = capsule_for(GRADIENT, "sensor:cam-side", 1)?;
+    let reference_other_sensor = capsule_for(BACKGROUND, "sensor:cam-side", 0)?;
+    let invoke = |frame: &SensorCapsule, reference_capsule: &SensorCapsule| {
+        model.invoke(
+            &sensor,
+            binding(GRADIENT, &current, frame),
+            binding(BACKGROUND, &reference, reference_capsule),
+            &ActivityThresholdPolicy::reference()?,
+            budget(),
+            "job:activity:capsule",
+            &ScalarExecCx::new(),
+        )
+    };
+    for (case, frame, reference_capsule, expected) in [
+        (
+            "frame_capsule_of_other_bytes",
+            &other_bytes,
+            &reference_own,
+            "capsule names other source bytes",
+        ),
+        (
+            "frame_capsule_of_other_sensor",
+            &other_sensor,
+            &reference_own,
+            "capsule names another sensor",
+        ),
+        (
+            "reference_capsule_of_other_bytes",
+            &own,
+            &own,
+            "capsule names other source bytes",
+        ),
+        (
+            "reference_capsule_of_other_sensor",
+            &own,
+            &reference_other_sensor,
+            "capsule names another sensor",
+        ),
+    ] {
+        match invoke(frame, reference_capsule) {
+            Err(ExecutorActivityError::InvalidInput(what)) => assert_eq!(what, expected, "{case}"),
+            other => return Err(format!("{case}: expected refusal, got {other:?}").into()),
+        }
+    }
+    let (result, _) = invoke(&own, &reference_own)?;
+    assert_eq!(
+        result.capsule_digest,
+        ContentDigest::sha256(&own.canonical_bytes())
+    );
+    assert_ne!(
+        result.capsule_digest,
+        ContentDigest::sha256(&other_bytes.canonical_bytes())
+    );
+    assert_eq!(result.input_capture_root, own.source_digest);
+    Ok(())
+}
+
+struct RetentionDirectory(std::path::PathBuf);
+
+impl RetentionDirectory {
+    fn new(name: &str) -> TestResult<Self> {
+        for attempt in 0..100_u32 {
+            let path = std::env::temp_dir().join(format!(
+                "fss-executor-retention-{name}-{}-{attempt}",
+                std::process::id()
+            ));
+            match std::fs::create_dir(&path) {
+                Ok(()) => return Ok(Self(path)),
+                Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => {}
+                Err(e) => return Err(e.into()),
+            }
+        }
+        Err(std::io::Error::other("test directory capacity").into())
+    }
+}
+
+impl Drop for RetentionDirectory {
+    fn drop(&mut self) {
+        let _ = std::fs::remove_dir_all(&self.0);
+    }
+}
+
+fn replay_cx(root: &std::path::Path) -> TestResult<crate::ReplayCx> {
+    use fss_core::region::{ContextAuthority, RootAuthoritySpec};
+    let authority = ContextAuthority::new_root(RootAuthoritySpec {
+        trace_id: "trace:executor-retention".to_owned(),
+        operation_id: fss_core::OperationId::parse("operation:executor-retention")?,
+        principal: "principal:executor-retention".to_owned(),
+        capabilities: vec!["ADP-REPLAY-001".to_owned()],
+        deadline: None,
+        priority: 10,
+        budgets: fss_core::BudgetVector::builder()
+            .bytes(64 * 1024 * 1024)
+            .build()?,
+        privacy_scope: "privacy:test".to_owned(),
+        retention_scope: "retention:test".to_owned(),
+        anchor_universe: ContentDigest::sha256(b"site:executor-retention"),
+        generation: 1,
+    })?;
+    authority.validate()?;
+    Ok(crate::ReplayCx::from_context_authority(
+        &authority,
+        root.to_path_buf(),
+    )?)
+}
+
+/// Review finding (2026-10-08, fss-2h5zq.51): executor results and invocation receipts were
+/// staged but never reachable from a ledgered root. A retained result now has a published root
+/// and a ledger batch with one `executor_model_result` and one `model_invocation_receipt` delta;
+/// after the deployment is dropped and reopened, the result and the exact receipt bytes read
+/// back from the ledger and spool. A rerun is idempotent, a receipt of another invocation is
+/// refused, and a retained object damaged on disk is refused on read-back.
+#[test]
+fn executor_results_and_receipts_are_ledgered_and_read_back_after_restart() -> TestResult {
+    use crate::executor_activity::{open_retained_executor_result, retain_executor_result};
+    use crate::reference_deployment::{
+        FAMILY_EXECUTOR_MODEL_RESULT, FAMILY_MODEL_INVOCATION_RECEIPT,
+    };
+
+    let dir = RetentionDirectory::new("roundtrip")?;
+    let root = dir.0.join("deployment");
+    let cx = replay_cx(&root)?;
+    let model = ActivityExecutorModel::load_committed(&ScalarExecCx::new())?;
+    let current = decode(GRADIENT)?;
+    let reference = decode(BACKGROUND)?;
+    let frame_capsule = capsule_for(GRADIENT, "sensor:file-cam", 1)?;
+    let reference_capsule = capsule_for(BACKGROUND, "sensor:file-cam", 0)?;
+    let invoke = |job: &str, budget: ExecBudget| {
+        model.invoke(
+            &SensorId::parse("sensor:file-cam")?,
+            binding(GRADIENT, &current, &frame_capsule),
+            binding(BACKGROUND, &reference, &reference_capsule),
+            &ActivityThresholdPolicy::reference()?,
+            budget,
+            job,
+            &ScalarExecCx::new(),
+        )
+    };
+    let (result, receipt) = invoke("job:activity:retain", budget())?;
+    let (_, other_receipt) = invoke("job:activity:retain-other", ExecBudget::new(1, 1))?;
+
+    let (retained, sequence) = {
+        let mut deployment =
+            crate::ReferenceDeployment::open(&root, "site:executor-retention", &cx)?;
+        // A receipt of another invocation is never ledgered beside this result.
+        assert!(matches!(
+            retain_executor_result(&mut deployment, &result, &other_receipt, interval()?, &cx),
+            Err(ExecutorActivityError::RetentionMismatch(_))
+        ));
+        let retained =
+            retain_executor_result(&mut deployment, &result, &receipt, interval()?, &cx)?;
+        let sequence = deployment.current_anchor().commit_sequence;
+        // Idempotent: the same retention again commits nothing new.
+        let again = retain_executor_result(&mut deployment, &result, &receipt, interval()?, &cx)?;
+        assert_eq!(again, retained);
+        assert_eq!(deployment.current_anchor().commit_sequence, sequence);
+        assert!(deployment.reconcile()?.is_clean());
+        (retained, sequence)
+    };
+    assert_eq!(retained.result_digest, result.object_digest());
+    assert_eq!(
+        retained.receipt_json,
+        receipt.to_json_canonical().into_bytes()
+    );
+
+    // Restart: everything reads back from the reopened deployment's ledger and spool.
+    let reopened = crate::ReferenceDeployment::reopen(&root, "site:executor-retention", &cx)?;
+    assert_eq!(reopened.current_anchor().commit_sequence, sequence);
+    let batch = reopened
+        .ledger()
+        .batches()
+        .iter()
+        .find(|batch| batch.new_anchor == retained.anchor)
+        .ok_or("retained batch missing after restart")?;
+    let families: Vec<&str> = batch.deltas.iter().map(|d| d.family.as_str()).collect();
+    assert_eq!(
+        families,
+        [
+            FAMILY_EXECUTOR_MODEL_RESULT,
+            FAMILY_MODEL_INVOCATION_RECEIPT
+        ]
+    );
+    for delta in &batch.deltas {
+        assert_eq!(delta.witness_digest, Some(retained.root));
+    }
+    assert!(
+        batch
+            .deltas
+            .iter()
+            .any(|d| d.payload_digest == retained.result_digest)
+    );
+    assert!(
+        batch
+            .deltas
+            .iter()
+            .any(|d| d.payload_digest == result.invocation_receipt_object)
+    );
+    let read_back = open_retained_executor_result(&reopened, retained.result_digest, &cx)?;
+    assert_eq!(read_back, retained);
+    assert_eq!(read_back.result, result);
+    assert_eq!(
+        ContentDigest::sha256(&read_back.receipt_json),
+        result.invocation_receipt_object
+    );
+
+    // A retained object damaged on disk after the restart is refused on read-back.
+    let object = reopened
+        .publisher()
+        .spool()
+        .object_path(retained.result_digest);
+    let mut bytes = std::fs::read(&object)?;
+    let last = bytes.last_mut().ok_or("empty object")?;
+    *last ^= 0x01;
+    std::fs::write(&object, bytes)?;
+    assert!(open_retained_executor_result(&reopened, retained.result_digest, &cx).is_err());
     Ok(())
 }
