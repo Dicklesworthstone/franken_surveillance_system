@@ -57,7 +57,8 @@ fn main() {
             eprintln!("FATAL: live lane needs a cfg path: tutk_sim_e2e live <cfg.json>");
             std::process::exit(2);
         });
-        live_lane(&cfg_path);
+        let soak_secs = std::env::args().nth(3).and_then(|v| v.parse::<u64>().ok());
+        live_lane(&cfg_path, soak_secs);
     }
 
     let mode = std::env::args().nth(1).unwrap_or_else(|| "normal".to_string());
@@ -256,7 +257,7 @@ fn cfg_field(json: &str, key: &str) -> Option<String> {
 /// Simulator-vs-live differential: run the adapter against a real
 /// owner-authorized camera over the LAN. Secrets stay in the cfg file; only
 /// state/counters/tuple are printed.
-fn live_lane(cfg_path: &str) -> ! {
+fn live_lane(cfg_path: &str, soak_secs: Option<u64>) -> ! {
     let raw = std::fs::read_to_string(cfg_path).expect("read cfg");
     let get = |k: &str| cfg_field(&raw, k).unwrap_or_else(|| panic!("cfg missing {k}"));
     let (uid, enr, mac) = (get("uid"), get("enr"), get("mac"));
@@ -298,13 +299,16 @@ fn live_lane(cfg_path: &str) -> ! {
     let t0 = Instant::now();
     let mut last_phase = ing.session_phase();
     let mut buf = [0u8; 65535];
-    println!("live: pumping (deadline 60s real)");
-    while t0.elapsed() < Duration::from_secs(60) {
+    let deadline = soak_secs.unwrap_or(60);
+    println!("live: pumping (deadline {deadline}s real{})", soak_secs.map(|_| ", soak").unwrap_or(""));
+    let mut bytes_received = 0u64;
+    while t0.elapsed() < Duration::from_secs(deadline) {
         let now_ns = t0.elapsed().as_nanos() as u64;
         while let Some(d) = ing.poll_send() {
             let _ = sock.send_to(&d, peer);
         }
         if let Ok((n, src)) = sock.recv_from(&mut buf) {
+            bytes_received += n as u64;
             // adopt the responder's address during discovery (live port hop)
             if ing.session_phase() == fss_tutk::session::PhaseName::Discovery && src.ip() == peer.ip() {
                 peer = src;
@@ -323,7 +327,7 @@ fn live_lane(cfg_path: &str) -> ! {
         ) {
             break;
         }
-        if ing.stats().capsules_committed >= 30 {
+        if soak_secs.is_none() && ing.stats().capsules_committed >= 30 {
             break;
         }
     }
@@ -338,6 +342,14 @@ fn live_lane(cfg_path: &str) -> ! {
     println!("live: session frames     : {}", sess.video_frames);
     println!("live: acks sent          : {}", sess.acks_sent);
     println!("live: resync bytes       : {}", sess.resync_bytes);
+    let wall = t0.elapsed();
+    println!("live: ---- cost rows ----");
+    println!("live: wall_s               : {:.1}", wall.as_secs_f64());
+    println!("live: bytes_received       : {}", bytes_received);
+    println!("live: bitrate_kbps         : {:.0}", (bytes_received * 8) as f64 / wall.as_secs_f64() / 1000.0);
+    println!("live: frames_per_sec       : {:.1}", sess.video_frames as f64 / wall.as_secs_f64());
+    println!("live: capsules_per_sec     : {:.1}", stats.capsules_committed as f64 / wall.as_secs_f64());
+    println!("live: reconnects           : 0 (none requested)");
 
     let mut failures = 0;
     let mut check = |name: &str, ok: bool| {
@@ -354,6 +366,10 @@ fn live_lane(cfg_path: &str) -> ! {
         ),
     );
     check("30 capsules committed", stats.capsules_committed >= 30);
+    if soak_secs.is_some() {
+        check("soak: streaming sustained to deadline", wall.as_secs() + 5 >= deadline);
+        check("soak: zero resync bytes", sess.resync_bytes == 0);
+    }
     check("ledger batches present", stats.batches_committed >= 1);
     println!(
         "live: continuity note   : {} gap(s) on the live path (data, not failure)",
