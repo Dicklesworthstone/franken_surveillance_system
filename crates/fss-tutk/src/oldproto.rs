@@ -166,7 +166,10 @@ pub fn build_probe(uid: &[u8], r: u16, fingerprint: [u8; 6]) -> Vec<u8> {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ProbeResponse {
     /// NEW-protocol (`0xCC51`) packet — not an OLD-protocol answer.
-    NewProto { cmd: u16 },
+    NewProto {
+        /// NEW-protocol command word.
+        cmd: u16,
+    },
     /// OLD-protocol answer after inverse TransCode.
     Old {
         /// Command word (0x0602 = LAN-search answer).

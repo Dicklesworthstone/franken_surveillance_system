@@ -88,57 +88,101 @@ pub struct AssembledFrame {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum SessionEvent {
     /// Discovery handshake completed; session lives on the adopted port.
-    DiscoveryComplete { ticket: u16, session_id: [u8; 8] },
+    DiscoveryComplete {
+        /// Server-assigned session ticket.
+        ticket: u16,
+        /// Session id the camera echoed.
+        session_id: [u8; 8],
+    },
     /// DTLS 1.2 handshake finished; the channel is encrypted.
     DtlsEstablished,
     /// Camera accepted the AV login.
-    LoginAccepted { capabilities: u32, two_way_audio: bool },
+    LoginAccepted {
+        /// Advertised capability bitfield.
+        capabilities: u32,
+        /// Whether intercom (two-way audio) is supported.
+        two_way_audio: bool,
+    },
     /// Camera refused the AV login (expiry/revocation shape).
-    LoginRejected { response_type: u8 },
+    LoginRejected {
+        /// Camera refusal code (`0x20` = expiry/revocation shape).
+        response_type: u8,
+    },
     /// K-command auth succeeded; raw K10003 JSON payload included.
-    KAuthComplete { camera_info: String },
+    KAuthComplete {
+        /// Raw K10003 JSON payload (the auth receipt witness).
+        camera_info: String,
+    },
     /// K-command auth refused (`connectionRes` verbatim).
-    KAuthRejected { connection_res: String },
+    KAuthRejected {
+        /// `connectionRes` verbatim.
+        connection_res: String,
+    },
 
     /// Camera authenticated but its (model, firmware) tuple — or a
     /// self-reported non-"normal" `cameraInfo.type` — is absent from the
     /// owner-supplied allowlist; the session fails closed BEFORE any stream
     /// request is dispatched (plan §8.8 unknown-tuple quarantine).
     KAuthQuarantined {
+        /// Camera-reported model.
         model: String,
+        /// Camera-reported firmware.
         firmware: String,
+        /// Why the tuple was quarantined.
         detail: String,
     },
     /// K10011 received; media stream is running. The exact acceptance
     /// payload is the witness for the acquisition ledger.
-    StreamStarted { payload: Vec<u8> },
+    StreamStarted {
+        /// Exact K10011 acceptance bytes (the ledger witness).
+        payload: Vec<u8>,
+    },
     /// One reassembled media frame (video always; audio only if enabled).
     Frame(AssembledFrame),
     /// Terminal failure at a named stage with a concrete reason.
-    Failed { stage: &'static str, reason: String },
+    Failed {
+        /// Stage where the session failed.
+        stage: &'static str,
+        /// Concrete failure reason.
+        reason: String,
+    },
 }
 
 /// Phase names for external state reporting.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum PhaseName {
+    /// Discovery handshake (seq 0..=3) in progress.
     Discovery,
+    /// DTLS 1.2 handshake in progress.
     Dtls,
+    /// AV login exchange in progress.
     Login,
+    /// K-command challenge/response in progress.
     KAuth,
+    /// K10010/K10011 stream negotiation in progress.
     StreamStart,
+    /// Media streaming.
     Streaming,
+    /// Session over (failure, cancellation, or close).
     Terminal,
 }
 
 /// Monotone session counters (drops are always visible here).
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub struct SessionStats {
+    /// Reassembled video frames emitted.
     pub video_frames: u64,
+    /// Audio frames dropped because the privacy gate kept audio off.
     pub audio_frames_dropped: u64,
+    /// Continuity gaps observed (frame-number jumps, evictions, drops).
     pub continuity_gaps: u64,
+    /// msgACK frames sent.
     pub acks_sent: u64,
+    /// Incomplete frames evicted under the pending-frames bound.
     pub pending_frames_dropped: u64,
+    /// Frame events dropped under the event-queue bound.
     pub events_dropped: u64,
+    /// Bytes consumed by stream resync.
     pub resync_bytes: u64,
 }
 
