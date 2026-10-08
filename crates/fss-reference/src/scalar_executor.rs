@@ -433,7 +433,8 @@ impl std::error::Error for ExecError {
             | Self::GenerationMismatch { .. }
             | Self::BudgetExceeded { .. }
             | Self::CancellationRequested { .. }
-            | Self::ArithmeticOverflow { .. } => None,
+            | Self::ArithmeticOverflow { .. }
+            | Self::OutputBinding { .. } => None,
         }
     }
 }
