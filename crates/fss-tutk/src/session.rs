@@ -25,6 +25,10 @@ pub const DISCOVERY_INTERVAL_NS: u64 = 2_000_000_000;
 pub const DISCOVERY_ATTEMPTS: u32 = 5;
 /// IOCTRL retransmit interval while awaiting a K-response (1 s).
 pub const RESEND_INTERVAL_NS: u64 = 1_000_000_000;
+/// DTLS flight retransmit interval (RFC 6347; 1 s, bounded).
+pub const DTLS_RESEND_INTERVAL_NS: u64 = 1_000_000_000;
+/// DTLS flight retransmit cap before the phase deadline fires.
+pub const DTLS_RESEND_MAX: u32 = 5;
 /// Streaming ACK ticker interval (100 ms).
 pub const ACK_TICKER_NS: u64 = 100_000_000;
 /// Delay between login1 and login2 (10 ms, per go2rtc).
@@ -188,6 +192,9 @@ pub struct TutkSession {
     discovery_seq: u16,
     // dtls
     dtls: Option<DtlsClient>,
+    dtls_flight: Vec<Vec<u8>>,
+    dtls_flight_next_ns: Option<u64>,
+    dtls_flight_retries: u32,
     login2_due_ns: Option<u64>,
     // av state
     parser: AvStreamParser,
@@ -233,6 +240,9 @@ impl TutkSession {
             discovery_next_ns: 0,
             discovery_seq: 0,
             dtls: None,
+            dtls_flight: Vec::new(),
+            dtls_flight_next_ns: None,
+            dtls_flight_retries: 0,
             login2_due_ns: None,
             parser: AvStreamParser::new(),
             reasm: FrameReassembler::new(),
@@ -330,6 +340,25 @@ impl TutkSession {
                     self.fail(stage, "phase deadline exceeded");
                     return;
                 }
+                if self.phase == Phase::Dtls
+                    && let (Some(next), false) = (
+                        self.dtls_flight_next_ns,
+                        self.dtls_flight.is_empty(),
+                    )
+                    && now_ns >= next
+                {
+                    if self.dtls_flight_retries >= DTLS_RESEND_MAX {
+                        self.fail("dtls", "flight retransmit budget exhausted");
+                        return;
+                    }
+                    let (ticket, sid) = (self.ticket, self.session_id);
+                    for dgram in self.dtls_flight.clone() {
+                        let wrapped = self.proto.wrap_dtls(&dgram, ticket, &sid, CHANNEL_MAIN);
+                        self.outgoing.push_back(wrapped);
+                    }
+                    self.dtls_flight_retries += 1;
+                    self.dtls_flight_next_ns = Some(now_ns + DTLS_RESEND_INTERVAL_NS);
+                }
                 if let Some(due) = self.login2_due_ns
                     && now_ns >= due
                 {
@@ -425,8 +454,8 @@ impl TutkSession {
             Some(mut c) => {
                 c.start();
                 self.dtls = Some(c);
-                self.drain_dtls_out();
                 self.phase = Phase::Dtls;
+                self.drain_dtls_out();
                 self.phase_deadline = now_ns + PHASE_TIMEOUT_NS;
             }
             None => self.fail("dtls", "empty PSK"),
@@ -460,8 +489,18 @@ impl TutkSession {
     fn drain_dtls_out(&mut self) {
         let (ticket, sid) = (self.ticket, self.session_id);
         if let Some(d) = self.dtls.as_mut() {
-            while let Some(flight) = d.poll_send() {
-                let wrapped = self.proto.wrap_dtls(&flight, ticket, &sid, CHANNEL_MAIN);
+            let mut flight = Vec::new();
+            while let Some(dgram) = d.poll_send() {
+                flight.push(dgram);
+            }
+            if !flight.is_empty() && self.phase == Phase::Dtls {
+                // RFC 6347 retransmission: cache the LATEST flight; resend it
+                // on schedule until the peer answers (bounded).
+                self.dtls_flight = flight.clone();
+                self.dtls_flight_next_ns = Some(self.now_ns + DTLS_RESEND_INTERVAL_NS);
+            }
+            for dgram in flight {
+                let wrapped = self.proto.wrap_dtls(&dgram, ticket, &sid, CHANNEL_MAIN);
                 self.outgoing.push_back(wrapped);
             }
         }
@@ -841,5 +880,83 @@ mod tests {
         b.bytes(&mut y);
         assert_eq!(x, y);
         assert_ne!(x, [0u8; 32]);
+    }
+
+    fn test_cfg() -> SessionConfig {
+        SessionConfig {
+            uid: "SIMCAMSIMCAMSIMCAM11".to_string(),
+            enr: "sim-enr-16byte!!".to_string(),
+            mac: "00AA11BB22CC".to_string(),
+            audio: false,
+            psk_truncated: false,
+            seed: 99,
+            known_tuples: vec![("SIM-CAM".to_string(), "9.99.0.SIM".to_string())],
+        }
+    }
+
+    /// Drive discovery to completion with scripted camera responses; returns
+    /// the session in DTLS phase and the count of DTLS datagrams queued.
+    fn session_in_dtls() -> (TutkSession, usize) {
+        let mut s = TutkSession::new(test_cfg()).unwrap();
+        let first = s.poll_send().expect("discovery seq=0 queued");
+        assert_eq!(first.len(), 52);
+        // camera answers seq=1 with ticket 0x42
+        let resp1 = s.proto.build_discovery_response(1, 0x42, &s.session_id);
+        s.feed_datagram(&resp1, 100_000_000);
+        // session queues seq=2 echo
+        let echo = s.poll_send().expect("seq=2 echo queued");
+        assert_eq!(echo.len(), 52);
+        // camera completes with seq=3
+        let resp3 = s.proto.build_discovery_response(3, 0x42, &s.session_id);
+        s.feed_datagram(&resp3, 200_000_000);
+        assert!(matches!(s.phase(), PhaseName::Dtls));
+        let ev = s.poll_event();
+        assert!(matches!(ev, Some(SessionEvent::DiscoveryComplete { ticket: 0x42, .. })), "{ev:?}");
+        // first DTLS flight (ClientHello) is queued, wrapped
+        let mut dtls_dgrams = 0;
+        let mut first_flight = Vec::new();
+        while let Some(d) = s.poll_send() {
+            dtls_dgrams += 1;
+            first_flight.push(d);
+        }
+        assert!(dtls_dgrams >= 1, "ClientHello flight queued");
+        (s, dtls_dgrams)
+    }
+
+    #[test]
+    fn discovery_handshake_drives_to_dtls() {
+        let (s, _) = session_in_dtls();
+        assert!(matches!(s.phase(), PhaseName::Dtls));
+    }
+
+    #[test]
+    fn dtls_flight_retransmits_bounded_then_fails() {
+        let (mut s, initial) = session_in_dtls();
+        let mut retransmits = 0u32;
+        // no peer answers; advance through resend schedule (1s) x budget (5)
+        for step in 1..=6u64 {
+            let t = 200_000_000 + step * 1_000_000_000; // 1.2s, 2.2s, ...
+            s.advance(t);
+            let mut n = 0;
+            while s.poll_send().is_some() {
+                n += 1;
+            }
+            if n > 0 {
+                retransmits += 1;
+                assert_eq!(n, initial, "retransmit resends the whole flight");
+            }
+            if s.phase() == PhaseName::Terminal {
+                break;
+            }
+        }
+        assert_eq!(retransmits, DTLS_RESEND_MAX, "retransmits={retransmits} phase={:?}", s.phase());
+        // budget exhausted: next resend point fails the session
+        s.advance(200_000_000 + 7 * 1_000_000_000);
+        assert!(matches!(s.phase(), PhaseName::Terminal));
+        let ev = s.poll_event();
+        assert!(
+            matches!(ev, Some(SessionEvent::Failed { stage: "dtls", .. })),
+            "{ev:?}"
+        );
     }
 }
