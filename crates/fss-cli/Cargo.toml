@@ -56,6 +56,10 @@ name = "fss-capture"
 path = "src/bin/fss-capture.rs"
 
 [[bin]]
+name = "fss-capture-tutk"
+path = "src/bin/fss-capture-tutk.rs"
+
+[[bin]]
 name = "fss-capture-reconnect"
 path = "src/bin/fss-capture-reconnect.rs"
 
@@ -96,6 +100,7 @@ fss-graph-algorithms = { path = "../fss-graph-algorithms" }
 fss-object = { path = "../fss-object" }
 fss-publication = { path = "../fss-publication" }
 fss-reference = { path = "../fss-reference" }
+fss-tutk = { path = "../fss-tutk" }
 
 [dev-dependencies]
 fss-packet = { path = "../fss-packet" }

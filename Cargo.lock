@@ -15,6 +15,7 @@ dependencies = [
  "fss-packet",
  "fss-publication",
  "fss-reference",
+ "fss-tutk",
  "fss-twin",
 ]
 
