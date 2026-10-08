@@ -51,6 +51,12 @@ pub struct SessionConfig {
     /// ephemeral key, session id). The owner picks this; it is never
     /// derived from secrets.
     pub seed: u64,
+    /// Known-good compatibility tuples `(model, firmware)` per plan §8.8.
+    /// An unknown tuple — or a camera self-reporting a non-"normal"
+    /// `cameraInfo.type` — fails closed at K-auth: quarantine event, terminal
+    /// failure, and NO stream-start is ever dispatched. An empty list refuses
+    /// every camera (default-deny).
+    pub known_tuples: Vec<(String, String)>,
 }
 
 /// A reassembled access unit with receive timing and continuity context.
@@ -89,6 +95,16 @@ pub enum SessionEvent {
     KAuthComplete { camera_info: String },
     /// K-command auth refused (`connectionRes` verbatim).
     KAuthRejected { connection_res: String },
+
+    /// Camera authenticated but its (model, firmware) tuple — or a
+    /// self-reported non-"normal" `cameraInfo.type` — is absent from the
+    /// owner-supplied allowlist; the session fails closed BEFORE any stream
+    /// request is dispatched (plan §8.8 unknown-tuple quarantine).
+    KAuthQuarantined {
+        model: String,
+        firmware: String,
+        detail: String,
+    },
     /// K10011 received; media stream is running. The exact acceptance
     /// payload is the witness for the acquisition ledger.
     StreamStarted { payload: Vec<u8> },
@@ -579,6 +595,31 @@ impl TutkSession {
                         connection_res: res,
                     });
                     self.fail("kauth", "authentication failed");
+                    return;
+                }
+                // Plan §8.8: unknown (model, firmware) tuples and cameras
+                // self-reporting a non-"normal" cameraInfo.type fail closed
+                // here — before any stream request exists to cancel.
+                let model = extract_json_field(&info, "model").unwrap_or_default();
+                let firmware = extract_json_field(&info, "firmware").unwrap_or_default();
+                let ctype = extract_json_field(&info, "type").unwrap_or_else(|| "normal".into());
+                let known = self
+                    .cfg
+                    .known_tuples
+                    .iter()
+                    .any(|(m, f)| *m == model && *f == firmware);
+                if ctype != "normal" || !known {
+                    let detail = if ctype != "normal" {
+                        format!("camera self-reports type={ctype}")
+                    } else {
+                        "tuple not in owner allowlist".to_string()
+                    };
+                    self.events.push_back(SessionEvent::KAuthQuarantined {
+                        model,
+                        firmware,
+                        detail: detail.clone(),
+                    });
+                    self.fail("kauth", &format!("unknown tuple quarantined ({detail})"));
                     return;
                 }
                 self.events.push_back(SessionEvent::KAuthComplete { camera_info: info });

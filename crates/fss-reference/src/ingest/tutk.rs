@@ -79,22 +79,6 @@ pub enum AcquisitionState {
     Indeterminate { reason: String },
 }
 
-/// Adapter configuration.
-#[derive(Debug, Clone)]
-pub struct TutkIngestConfig {
-    /// Underlying session configuration (uid/enr/mac/seed).
-    pub session: SessionConfig,
-    /// Sensor identity stamped on every capsule.
-    pub sensor_id: SensorId,
-    /// Stream generation identity stamped on every capsule.
-    pub stream_id: StreamId,
-    /// Site lineage for the reference ledger.
-    pub site_lineage: String,
-    /// Audio policy (drives the session request and the drop gate).
-    pub audio: AudioPolicy,
-    /// Adapter limits.
-    pub limits: TutkIngestLimits,
-}
 
 /// Adapter errors (typed, non-secret-bearing).
 #[derive(Debug)]
@@ -120,6 +104,26 @@ impl From<ContractError> for TutkIngestError {
     fn from(e: ContractError) -> Self {
         TutkIngestError::Contract(e)
     }
+}
+
+/// Adapter configuration.
+#[derive(Debug, Clone)]
+pub struct TutkIngestConfig {
+    /// Underlying session configuration (uid/enr/mac/seed).
+    pub session: SessionConfig,
+    /// Sensor identity stamped on every capsule.
+    pub sensor_id: SensorId,
+    /// Stream generation identity stamped on every capsule.
+    pub stream_id: StreamId,
+    /// Site lineage for the reference ledger.
+    pub site_lineage: String,
+    /// Audio policy (drives the session request and the drop gate).
+    pub audio: AudioPolicy,
+    /// Adapter limits.
+    pub limits: TutkIngestLimits,
+    /// Known-good `(model, firmware)` compatibility tuples (plan §8.8);
+    /// forwarded to the session, which fails closed on anything else.
+    pub known_tuples: Vec<(String, String)>,
 }
 
 /// Monotone adapter counters (drops always visible).
@@ -155,6 +159,7 @@ impl TutkIngest {
     /// Construct the adapter and queue the first discovery request.
     pub fn new(mut cfg: TutkIngestConfig) -> Result<Self, TutkIngestError> {
         cfg.session.audio = matches!(cfg.audio, AudioPolicy::Enabled);
+        cfg.session.known_tuples = cfg.known_tuples.clone();
         let session = TutkSession::new(cfg.session.clone()).ok_or(TutkIngestError::SessionConfig)?;
         let sid = session.session_id();
         let mut id_material = b"tutk-acquisition".to_vec();
@@ -286,6 +291,20 @@ impl TutkIngest {
             SessionEvent::KAuthRejected { connection_res } => {
                 self.state = AcquisitionState::Failed {
                     reason: format!("k-auth refused (connectionRes={connection_res})"),
+                };
+                self.failed = true;
+            }
+            SessionEvent::KAuthQuarantined {
+                model,
+                firmware,
+                detail,
+            } => {
+                // Plan §8.8: unknown tuples fail closed. Terminal, witnessed,
+                // and no stream was ever started.
+                self.state = AcquisitionState::Failed {
+                    reason: format!(
+                        "firmware-drift quarantine: model={model} firmware={firmware} ({detail})"
+                    ),
                 };
                 self.failed = true;
             }
@@ -449,14 +468,37 @@ mod tests {
                 audio: matches!(audio, AudioPolicy::Enabled),
                 psk_truncated: false,
                 seed: 42,
+                known_tuples: vec![("SIM-CAM".to_string(), "9.99.0.SIM".to_string())],
             },
             sensor_id: SensorId::parse("sensor:tutk:sim:01").unwrap(),
             stream_id: StreamId::parse("stream:tutk:sim:01").unwrap(),
             site_lineage: "site:lab:tutk".to_string(),
             audio,
             limits: TutkIngestLimits::default(),
+            known_tuples: vec![("SIM-CAM".to_string(), "9.99.0.SIM".to_string())],
         }
     }
+    #[test]
+    fn quarantine_is_terminal_with_tuple_witness() {
+        let mut ing = TutkIngest::new(cfg(AudioPolicy::Disabled)).unwrap();
+        ing.handle_event(
+            SessionEvent::KAuthQuarantined {
+                model: "HL_CAM4".into(),
+                firmware: "9.99.9.UNKNOWN".into(),
+                detail: "tuple not in owner allowlist".into(),
+            },
+            10,
+        );
+        match ing.state() {
+            AcquisitionState::Failed { reason } => {
+                assert!(reason.contains("quarantine"), "reason: {reason}");
+                assert!(reason.contains("9.99.9.UNKNOWN"), "reason: {reason}");
+            }
+            s => panic!("expected Failed, got {s:?}"),
+        }
+        assert_eq!(ing.stats().capsules_committed, 0);
+    }
+
 
     #[test]
     fn constructs_and_queues_discovery() {

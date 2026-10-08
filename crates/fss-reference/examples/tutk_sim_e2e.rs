@@ -55,8 +55,10 @@ fn main() {
         "revoked" => 32883,
         "flaky" => 32884,
         "legacy-key" => 32885,
+        "drift" => 32886,
+        "malformed" => 32887,
         other => {
-            eprintln!("FATAL: unknown mode {other} (normal|expired|revoked|flaky|legacy-key)");
+            eprintln!("FATAL: unknown mode {other} (normal|expired|revoked|flaky|legacy-key|drift|malformed)");
             std::process::exit(2);
         }
     };
@@ -89,13 +91,16 @@ fn main() {
             audio: false,
             psk_truncated: false,
             seed: 0xCC51_2026_1007,
+            known_tuples: vec![("SIM-CAM".to_string(), "9.99.0.SIM".to_string())],
         },
         sensor_id: SensorId::parse("sensor:tutk:sim:01").unwrap(),
         stream_id: StreamId::parse("stream:tutk:sim:e2e:01").unwrap(),
         site_lineage: "site:lab:tutk:e2e".to_string(),
         audio: AudioPolicy::Disabled,
         limits: TutkIngestLimits::default(),
+        known_tuples: vec![("SIM-CAM".to_string(), "9.99.0.SIM".to_string())],
     };
+
     let mut ing = TutkIngest::new(cfg).expect("construct ingest");
 
     let t0 = Instant::now();
@@ -192,6 +197,24 @@ fn main() {
             check("dropped session -> terminal honesty",
                 matches!(ing.state(), AcquisitionState::Failed { .. } | AcquisitionState::Indeterminate { .. }));
             check("no capsules from dead session", stats.capsules_committed == 0);
+        }
+        "drift" => {
+            match ing.state() {
+                AcquisitionState::Failed { reason } => {
+                    check("drift quarantine -> Failed", reason.contains("quarantine"));
+                }
+                other => check(&format!("drift quarantine -> Failed (got {other:?})"), false),
+            }
+            check("no capsules from quarantined camera", stats.capsules_committed == 0);
+        }
+        "malformed" => {
+            match ing.state() {
+                AcquisitionState::Failed { reason } => {
+                    check("garbage discovery -> Failed", reason.contains("discovery"));
+                }
+                other => check(&format!("garbage discovery -> Failed (got {other:?})"), false),
+            }
+            check("no capsules from malformed peer", stats.capsules_committed == 0);
         }
         _ => unreachable!(),
     }
