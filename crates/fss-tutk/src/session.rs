@@ -597,23 +597,20 @@ impl TutkSession {
                     self.fail("kauth", "authentication failed");
                     return;
                 }
-                // Plan §8.8: unknown (model, firmware) tuples and cameras
-                // self-reporting a non-"normal" cameraInfo.type fail closed
-                // here — before any stream request exists to cancel.
+                // Plan §8.8: unknown (model, firmware) tuples fail closed
+                // here — before any stream request exists to cancel. The
+                // cameraInfo.type field is codec info on live firmware
+                // (e.g. "H264"), NOT a health signal; the tuple allowlist is
+                // the quarantine mechanism.
                 let model = extract_json_field(&info, "model").unwrap_or_default();
                 let firmware = extract_json_field(&info, "firmware").unwrap_or_default();
-                let ctype = extract_json_field(&info, "type").unwrap_or_else(|| "normal".into());
                 let known = self
                     .cfg
                     .known_tuples
                     .iter()
                     .any(|(m, f)| *m == model && *f == firmware);
-                if ctype != "normal" || !known {
-                    let detail = if ctype != "normal" {
-                        format!("camera self-reports type={ctype}")
-                    } else {
-                        "tuple not in owner allowlist".to_string()
-                    };
+                if !known {
+                    let detail = "tuple not in owner allowlist".to_string();
                     self.events.push_back(SessionEvent::KAuthQuarantined {
                         model,
                         firmware,

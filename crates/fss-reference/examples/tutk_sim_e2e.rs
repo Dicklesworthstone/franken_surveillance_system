@@ -48,6 +48,18 @@ fn main() {
             std::process::exit(2);
         }
     }
+    // `live <cfg.json>`: run against a real owner-authorized camera over the
+    // LAN (the simulator-vs-live differential). Secrets stay in the cfg file;
+    // nothing secret is printed. The allowlist carries the lab-proven tuple;
+    // if the camera drifted, the quarantine reason reports the exact new one.
+    if std::env::args().nth(1).as_deref() == Some("live") {
+        let cfg_path = std::env::args().nth(2).unwrap_or_else(|| {
+            eprintln!("FATAL: live lane needs a cfg path: tutk_sim_e2e live <cfg.json>");
+            std::process::exit(2);
+        });
+        live_lane(&cfg_path);
+    }
+
     let mode = std::env::args().nth(1).unwrap_or_else(|| "normal".to_string());
     let port: u16 = match mode.as_str() {
         "normal" => 32881,
@@ -83,6 +95,12 @@ fn main() {
     sock.connect(("127.0.0.1", port)).expect("connect");
     sock.set_read_timeout(Some(Duration::from_millis(20))).unwrap();
 
+    // drift lane: empty allowlist — the unknown tuple itself must quarantine
+    let sim_tuples: Vec<(String, String)> = if mode == "drift" {
+        Vec::new()
+    } else {
+        vec![("SIM-CAM".to_string(), "9.99.0.SIM".to_string())]
+    };
     let cfg = TutkIngestConfig {
         session: SessionConfig {
             uid: "SIMCAMSIMCAMSIMCAM11".to_string(),
@@ -91,14 +109,14 @@ fn main() {
             audio: false,
             psk_truncated: false,
             seed: 0xCC51_2026_1007,
-            known_tuples: vec![("SIM-CAM".to_string(), "9.99.0.SIM".to_string())],
+            known_tuples: sim_tuples.clone(),
         },
         sensor_id: SensorId::parse("sensor:tutk:sim:01").unwrap(),
         stream_id: StreamId::parse("stream:tutk:sim:e2e:01").unwrap(),
         site_lineage: "site:lab:tutk:e2e".to_string(),
         audio: AudioPolicy::Disabled,
         limits: TutkIngestLimits::default(),
-        known_tuples: vec![("SIM-CAM".to_string(), "9.99.0.SIM".to_string())],
+        known_tuples: sim_tuples,
     };
 
     let mut ing = TutkIngest::new(cfg).expect("construct ingest");
@@ -221,6 +239,130 @@ fn main() {
     println!("e2e: {}", if failures == 0 { "ALL CHECKS PASSED" } else { "FAILURES PRESENT" });
     std::process::exit(if failures == 0 { 0 } else { 1 });
 }
+/// Flat JSON string/number field extraction for the lab cfg files
+/// ({"key":"value"} or {"key":123}); sufficient for the flat cfg schema.
+fn cfg_field(json: &str, key: &str) -> Option<String> {
+    let needle = format!("\"{key}\"");
+    let start = json.find(&needle)? + needle.len();
+    let rest = json[start..].trim_start_matches([':', ' ', '\t']);
+    if let Some(inner) = rest.strip_prefix('"') {
+        let end = inner.find('"')?;
+        return Some(inner[..end].to_string());
+    }
+    let end = rest.find([',', '}']).unwrap_or(rest.len());
+    Some(rest[..end].trim().to_string())
+}
+
+/// Simulator-vs-live differential: run the adapter against a real
+/// owner-authorized camera over the LAN. Secrets stay in the cfg file; only
+/// state/counters/tuple are printed.
+fn live_lane(cfg_path: &str) -> ! {
+    let raw = std::fs::read_to_string(cfg_path).expect("read cfg");
+    let get = |k: &str| cfg_field(&raw, k).unwrap_or_else(|| panic!("cfg missing {k}"));
+    let (uid, enr, mac) = (get("uid"), get("enr"), get("mac"));
+    let cam_ip = get("camera_ip");
+    let cam_port: u16 = get("camera_port").parse().unwrap();
+    let bind_ip = cfg_field(&raw, "bind_ip").unwrap_or_else(|| "0.0.0.0".into());
+    let audio = cfg_field(&raw, "audio").is_some_and(|v| v == "true" || v == "1");
+    let psk_truncated = cfg_field(&raw, "psk_truncated").is_some_and(|v| v == "true" || v == "1")
+        || cfg_field(&raw, "dtls_nonce_legacy").is_some_and(|v| v == "true" || v == "1");
+
+    println!("live: target {cam_ip}:{cam_port} (credentials loaded, not printed)");
+    // Unconnected socket + send_to/recv_from: live cameras answer discovery
+    // from a DIFFERENT source port and the session must adopt it (live-proven
+    // 2026-10-07: responses arrived from 44650, not 32761).
+    let sock = UdpSocket::bind((bind_ip.as_str(), 0u16)).expect("bind");
+    sock.set_read_timeout(Some(Duration::from_millis(20))).unwrap();
+    let mut peer: std::net::SocketAddr = format!("{cam_ip}:{cam_port}").parse().unwrap();
+
+
+    let cfg = TutkIngestConfig {
+        session: SessionConfig {
+            uid,
+            enr,
+            mac,
+            audio,
+            psk_truncated,
+            seed: 0xCC51_2026_1008,
+            known_tuples: vec![("HL_CAM4".to_string(), "4.52.17.26".to_string())],
+        },
+        sensor_id: SensorId::parse("sensor:tutk:live:01").unwrap(),
+        stream_id: StreamId::parse("stream:tutk:live:01").unwrap(),
+        site_lineage: "site:lab:tutk:live".to_string(),
+        audio: if audio { AudioPolicy::Enabled } else { AudioPolicy::Disabled },
+        limits: TutkIngestLimits::default(),
+        known_tuples: vec![("HL_CAM4".to_string(), "4.52.17.26".to_string())],
+    };
+    let mut ing = TutkIngest::new(cfg).expect("construct ingest");
+
+    let t0 = Instant::now();
+    let mut last_phase = ing.session_phase();
+    let mut buf = [0u8; 65535];
+    println!("live: pumping (deadline 60s real)");
+    while t0.elapsed() < Duration::from_secs(60) {
+        let now_ns = t0.elapsed().as_nanos() as u64;
+        while let Some(d) = ing.poll_send() {
+            let _ = sock.send_to(&d, peer);
+        }
+        if let Ok((n, src)) = sock.recv_from(&mut buf) {
+            // adopt the responder's address during discovery (live port hop)
+            if ing.session_phase() == fss_tutk::session::PhaseName::Discovery && src.ip() == peer.ip() {
+                peer = src;
+            }
+            ing.feed_datagram(&buf[..n], now_ns);
+        }
+        ing.advance(now_ns);
+        let phase = ing.session_phase();
+        if phase != last_phase {
+            println!("live: [{:6.2?}] phase {:?} -> {:?}", t0.elapsed(), last_phase, phase);
+            last_phase = phase;
+        }
+        if matches!(
+            ing.state(),
+            AcquisitionState::Failed { .. } | AcquisitionState::Indeterminate { .. }
+        ) {
+            break;
+        }
+        if ing.stats().capsules_committed >= 30 {
+            break;
+        }
+    }
+    let _ = ing.flush();
+    let stats = ing.stats();
+    let sess = ing.session_stats();
+    println!("live: ---- results ----");
+    println!("live: final state        : {:?}", ing.state());
+    println!("live: capsules committed : {}", stats.capsules_committed);
+    println!("live: batches committed  : {}", stats.batches_committed);
+    println!("live: continuity gaps    : {}", stats.gaps);
+    println!("live: session frames     : {}", sess.video_frames);
+    println!("live: acks sent          : {}", sess.acks_sent);
+    println!("live: resync bytes       : {}", sess.resync_bytes);
+
+    let mut failures = 0;
+    let mut check = |name: &str, ok: bool| {
+        println!("live: {:<38} {}", name, if ok { "PASS" } else { "FAIL" });
+        if !ok {
+            failures += 1;
+        }
+    };
+    check(
+        "frames observed (FirstFrameObserved+)",
+        matches!(
+            ing.state(),
+            AcquisitionState::FirstFrameObserved { .. } | AcquisitionState::ContinuityVerified { .. }
+        ),
+    );
+    check("30 capsules committed", stats.capsules_committed >= 30);
+    check("ledger batches present", stats.batches_committed >= 1);
+    println!(
+        "live: continuity note   : {} gap(s) on the live path (data, not failure)",
+        stats.gaps
+    );
+    println!("live: {}", if failures == 0 { "ALL CHECKS PASSED" } else { "FAILURES PRESENT" });
+    std::process::exit(if failures == 0 { 0 } else { 1 });
+}
+
 
 fn ing_pending(ing: &TutkIngest) -> u64 {
     ing.session_stats()
