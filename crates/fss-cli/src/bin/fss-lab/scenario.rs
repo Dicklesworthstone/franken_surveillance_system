@@ -879,8 +879,13 @@ fn run_scenario_impl(
         ),
     )?;
     let executor = if file_source {
-        let (file_observations, report) =
-            file_activity::gather(&mut deployment, &mut staged_digests, interval, file_options)?;
+        let (file_observations, report) = file_activity::gather(
+            &mut deployment,
+            &mut staged_digests,
+            interval,
+            file_options,
+            &cx,
+        )?;
         observations.extend(file_observations);
         Some(report)
     } else {
@@ -1487,6 +1492,11 @@ fn run_scenario_impl(
     drop(deployment);
 
     verify_reopen(root, &cx, &withheld)?;
+    // Every executor result and invocation receipt reads back from the ledger after the
+    // restart (fss-2h5zq.51).
+    if let Some(report) = &executor {
+        file_activity::verify_retained(root, report, &cx)?;
+    }
 
     // The durable reader `fss orient` uses, on the committed bytes this run left behind.
     let durable_absence = DurableAbsence::read(root, &event_id)?;

@@ -1137,6 +1137,56 @@
       "id": "ERR-EVIDENCE-MISSING-001"
     },
     {
+      "description": "an input tensor's generation differs from the graph generation; tensors of different generations are never mixed, outcome `error`",
+      "guidance": "rebuild the input under the graph's generation; do not retry unchanged",
+      "id": "ERR-EXEC-GENERATION-MISMATCH-001"
+    },
+    {
+      "description": "the Model IR validator or shape inference refused the graph (dangling port, cycle, invalid attribute, version or arity); nothing executed, outcome `error`",
+      "guidance": "repair the graph and re-validate; do not retry unchanged",
+      "id": "ERR-EXEC-IR-VALIDATION-001"
+    },
+    {
+      "description": "a declared graph input port has no bound tensor in the invocation; refused before execution, outcome `error`",
+      "guidance": "bind every declared input; do not retry unchanged",
+      "id": "ERR-EXEC-MISSING-PORT-001"
+    },
+    {
+      "description": "a completed scalar run cannot be bound into its invocation receipt: an output root over the declared outputs or the operator trace over every executed node's output digest (intermediates included) cannot be computed or contradicts the outputs; the invocation fails with outcome `error`, never `ok` with absent digests",
+      "guidance": "treat the run as failed and report it; re-run only after the executor defect is fixed",
+      "id": "ERR-EXEC-OUTPUT-BINDING-001"
+    },
+    {
+      "description": "integer overflow in the executor's MAC, byte or index accounting; refused rather than wrapped, outcome `error`",
+      "guidance": "reduce the graph or input size; do not retry unchanged",
+      "id": "ERR-EXEC-OVERFLOW-001"
+    },
+    {
+      "description": "an input or intermediate tensor shape contradicts the graph declaration or the operator's shape rules, or an intermediate port is missing; outcome `error`, nothing is bound",
+      "guidance": "fix the graph or the preprocessing that produced the input; do not retry unchanged",
+      "id": "ERR-EXEC-SHAPE-MISMATCH-001"
+    },
+    {
+      "description": "a tensor could not be constructed, materialized or digested within its storage bounds during execution; outcome `error`",
+      "guidance": "reduce the tensor sizes or repair the input; do not retry unchanged",
+      "id": "ERR-EXEC-TENSOR-STORAGE-001"
+    },
+    {
+      "description": "a graph port, input tensor or inferred node output has a data type the scalar executor does not admit (F32 only, except exact embedding-index bindings); refused before or during execution, outcome `error`",
+      "guidance": "convert the model or input to the admitted dtype; do not retry unchanged",
+      "id": "ERR-EXEC-UNSUPPORTED-DTYPE-001"
+    },
+    {
+      "description": "a model graph node names an operator the scalar reference executor has no kernel for; the invocation receipt records outcome `error`, no output root or operator trace",
+      "guidance": "use a graph within the frozen operator table; do not retry unchanged",
+      "id": "ERR-EXEC-UNSUPPORTED-OPERATOR-001"
+    },
+    {
+      "description": "the Model IR version of the graph is not the version the scalar executor implements; refused before execution, outcome `error`",
+      "guidance": "re-export the graph at the supported IR version; do not retry unchanged",
+      "id": "ERR-EXEC-UNSUPPORTED-VERSION-001"
+    },
+    {
       "description": "approval does not bind the exact current redacted export",
       "guidance": "preview and approve the exact package",
       "id": "ERR-EXPORT-APPROVAL-STALE-001"

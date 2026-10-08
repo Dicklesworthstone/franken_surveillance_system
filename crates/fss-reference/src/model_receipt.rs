@@ -1004,28 +1004,65 @@ pub fn compute_postprocess_program_digest() -> ContentDigest {
     ContentDigest::sha256(&encoder.finish())
 }
 
-/// Computes the operator trace hash chain over per-node outputs.
+/// Computes the operator trace hash chain over every executed node's output.
+///
+/// `seed = sha256("fss.model_execution_receipt.v1/operator_trace")`, then for each node in the
+/// canonical topological order `link = sha256(prev || node id || opcode || output digest)`. The
+/// output digest is the one the executor recorded for that node
+/// ([`ExecOutcome::node_output_digests`]), so intermediates that are not declared graph outputs
+/// are chained too: two runs with different intermediates never share a trace, even when their
+/// final outputs agree. An outcome that does not record exactly one output digest per node, in
+/// this order, or whose recorded digest of a declared output contradicts the output tensor, is
+/// refused rather than chained partially.
 pub fn compute_operator_trace_chain(
     graph: &ModelIrGraph,
     outcome: &ExecOutcome,
 ) -> Result<ContentDigest, ReceiptVerificationError> {
     let nodes = topological_nodes(graph)?;
+    let recorded = outcome.node_output_digests();
+    if recorded.len() != nodes.len() {
+        return Err(ReceiptVerificationError::InconsistentOutcome {
+            reason: format!(
+                "operator trace needs {} node output digests, the outcome recorded {}",
+                nodes.len(),
+                recorded.len()
+            ),
+        });
+    }
     let seed = b"fss.model_execution_receipt.v1/operator_trace";
     let mut current = ContentDigest::sha256(seed);
 
-    for node in nodes {
+    for (node, entry) in nodes.into_iter().zip(recorded) {
+        if entry.node_id != node.id()
+            || node.outputs().first().map(String::as_str) != Some(entry.port.as_str())
+        {
+            return Err(ReceiptVerificationError::InconsistentOutcome {
+                reason: format!(
+                    "node output digest for '{}' does not follow the canonical node order",
+                    entry.node_id
+                ),
+            });
+        }
+        if let Some(tensor) = outcome.get_output(&entry.port) {
+            let declared = tensor.content_digest().map_err(|e| {
+                ReceiptVerificationError::InconsistentOutcome {
+                    reason: format!("failed to compute output tensor digest: {e}"),
+                }
+            })?;
+            if declared != entry.digest {
+                return Err(ReceiptVerificationError::InconsistentOutcome {
+                    reason: format!(
+                        "recorded digest of '{}' contradicts the output tensor",
+                        entry.port
+                    ),
+                });
+            }
+        }
         let mut encoder = CanonicalEncoder::new();
         encoder.digest(current);
         encoder.text(node.id());
         encoder.text(node.op().stable_id());
-
-        // Bind first output tensor content digest if present in outcome
-        if let Some(first_out) = node.outputs().first()
-            && let Some(tensor) = outcome.get_output(first_out)
-            && let Ok(t_digest) = tensor.content_digest()
-        {
-            encoder.digest(t_digest);
-        }
+        encoder.digest(entry.digest);
         current = ContentDigest::sha256(&encoder.finish());
     }
 
@@ -1080,12 +1117,28 @@ pub struct ReceiptRecordContext<'a> {
 }
 
 /// Executes a model graph and emits an authoritative, verified [`ModelInvocationReceipt`].
+///
+/// A completed run whose output root or operator trace cannot be bound is returned as
+/// [`ExecError::OutputBinding`] with an `error` receipt (`ERR-EXEC-OUTPUT-BINDING-001`).
 pub fn execute_and_record_receipt(
     graph: &ModelIrGraph,
     inputs: &[(&str, Tensor)],
     budget: ExecBudget,
     cx: &ScalarExecCx,
     context: ReceiptRecordContext<'_>,
+) -> (Result<ExecOutcome, ExecError>, ModelInvocationReceipt) {
+    let run_res = ScalarExecutor::run(graph, inputs, budget, cx);
+    record_run_receipt(graph, inputs, budget, context, run_res)
+}
+
+/// Records the receipt of one scalar run result (the second half of
+/// [`execute_and_record_receipt`]); crate-internal so a run result is never supplied from outside.
+pub(crate) fn record_run_receipt(
+    graph: &ModelIrGraph,
+    inputs: &[(&str, Tensor)],
+    budget: ExecBudget,
+    context: ReceiptRecordContext<'_>,
+    run_res: Result<ExecOutcome, ExecError>,
 ) -> (Result<ExecOutcome, ExecError>, ModelInvocationReceipt) {
     let ReceiptRecordContext {
         job_id,
@@ -1181,20 +1234,51 @@ pub fn execute_and_record_receipt(
         budget.max_macs,
         0,
     );
+    let common = ReceiptCommon {
+        input_roots,
+        model_package_root: package_root_digest,
+        activation_generation: activation_gen,
+        preprocess_program: preprocess_digest,
+        postprocess_program: postprocess_digest,
+        operator_registry_generation: op_registry_gen,
+        execution_plan_digest: execution_plan,
+        backend,
+        numeric_policy_digest: numeric_policy,
+        budget: receipt_budget,
+        decision_path_digest: decision_path,
+    };
 
-    // 6. Execute graph
-    let run_res = ScalarExecutor::run(graph, inputs, budget, cx);
-
+    // 6. A completed run must bind its output root and its full operator trace. If either
+    // cannot be computed the invocation failed: the run result becomes a typed error and the
+    // receipt records outcome `error`, never `ok` with absent digests.
     let (outcome, cancel_reason, error_id, output_root, operator_trace_digest, usage) =
         match &run_res {
             Ok(outcome) => {
-                let out_root = match compute_output_root(graph, outcome) {
-                    Ok(d) => Some(ReceiptDigest::Content(d)),
-                    Err(_) => None,
-                };
-                let trace = match compute_operator_trace_chain(graph, outcome) {
-                    Ok(d) => Some(ReceiptDigest::Content(d)),
-                    Err(_) => None,
+                let (out_root, trace) = match bind_completed_run(graph, outcome) {
+                    Ok(bound) => bound,
+                    Err(reason) => {
+                        let usage = ReceiptUsage::new(
+                            total_in_bytes,
+                            0,
+                            outcome.allocated_bytes(),
+                            outcome.executed_macs(),
+                            0,
+                        );
+                        let receipt = assemble_receipt(
+                            graph,
+                            job_id,
+                            common,
+                            (
+                                ReceiptOutcome::Error,
+                                None,
+                                Some(ERR_EXEC_OUTPUT_BINDING.to_string()),
+                                None,
+                                None,
+                                usage,
+                            ),
+                        );
+                        return (Err(ExecError::OutputBinding { reason }), receipt);
+                    }
                 };
                 let wall_ns = virtual_clock
                     .map(|c| u64::try_from(c.now().0).unwrap_or(u64::MAX))
@@ -1206,7 +1290,14 @@ pub fn execute_and_record_receipt(
                     outcome.executed_macs(),
                     wall_ns,
                 );
-                (ReceiptOutcome::Ok, None, None, out_root, trace, rec_usage)
+                (
+                    ReceiptOutcome::Ok,
+                    None,
+                    None,
+                    Some(ReceiptDigest::Content(out_root)),
+                    Some(ReceiptDigest::Content(trace)),
+                    rec_usage,
+                )
             }
             Err(ExecError::CancellationRequested { stage }) => (
                 ReceiptOutcome::Cancelled,
@@ -1296,30 +1387,98 @@ pub fn execute_and_record_receipt(
                 None,
                 ReceiptUsage::new(total_in_bytes, 0, 0, 0, 0),
             ),
+            Err(ExecError::OutputBinding { .. }) => (
+                ReceiptOutcome::Error,
+                None,
+                Some(ERR_EXEC_OUTPUT_BINDING.to_string()),
+                None,
+                None,
+                ReceiptUsage::new(total_in_bytes, 0, 0, 0, 0),
+            ),
         };
 
-    let receipt = ModelInvocationReceipt {
+    let receipt = assemble_receipt(
+        graph,
+        job_id,
+        common,
+        (
+            outcome,
+            cancel_reason,
+            error_id,
+            output_root,
+            operator_trace_digest,
+            usage,
+        ),
+    );
+
+    (run_res, receipt)
+}
+
+/// Stable error id recorded when a completed run's output root or operator trace cannot be
+/// bound (`registries/ERRORS.md`).
+pub const ERR_EXEC_OUTPUT_BINDING: &str = "ERR-EXEC-OUTPUT-BINDING-001";
+
+/// Output root and operator trace of a completed run, or why they cannot be bound.
+pub(crate) fn bind_completed_run(
+    graph: &ModelIrGraph,
+    outcome: &ExecOutcome,
+) -> Result<(ContentDigest, ContentDigest), String> {
+    let output_root = compute_output_root(graph, outcome).map_err(|e| e.to_string())?;
+    let trace = compute_operator_trace_chain(graph, outcome).map_err(|e| e.to_string())?;
+    Ok((output_root, trace))
+}
+
+/// Receipt fields fixed before execution.
+struct ReceiptCommon {
+    input_roots: Vec<ReceiptDigest>,
+    model_package_root: ReceiptDigest,
+    activation_generation: ReceiptDigest,
+    preprocess_program: ReceiptDigest,
+    postprocess_program: ReceiptDigest,
+    operator_registry_generation: ReceiptDigest,
+    execution_plan_digest: ReceiptDigest,
+    backend: BackendDescriptor,
+    numeric_policy_digest: ReceiptDigest,
+    budget: ReceiptBudget,
+    decision_path_digest: ReceiptDigest,
+}
+
+type OutcomeFields = (
+    ReceiptOutcome,
+    Option<String>,
+    Option<String>,
+    Option<ReceiptDigest>,
+    Option<ReceiptDigest>,
+    ReceiptUsage,
+);
+
+fn assemble_receipt(
+    graph: &ModelIrGraph,
+    job_id: &str,
+    common: ReceiptCommon,
+    fields: OutcomeFields,
+) -> ModelInvocationReceipt {
+    let (outcome, cancel_reason, error_id, output_root, operator_trace_digest, usage) = fields;
+    ModelInvocationReceipt {
         schema: "fss.model_execution_receipt.v1".to_string(),
         job_id: job_id.to_string(),
-        input_roots,
-        model_package_root: package_root_digest,
-        activation_generation: activation_gen,
-        preprocess_program: preprocess_digest,
-        postprocess_program: postprocess_digest,
-        operator_registry_generation: op_registry_gen,
-        execution_plan_digest: execution_plan,
-        backend,
-        numeric_policy_digest: numeric_policy,
-        budget: receipt_budget,
+        input_roots: common.input_roots,
+        model_package_root: common.model_package_root,
+        activation_generation: common.activation_generation,
+        preprocess_program: common.preprocess_program,
+        postprocess_program: common.postprocess_program,
+        operator_registry_generation: common.operator_registry_generation,
+        execution_plan_digest: common.execution_plan_digest,
+        backend: common.backend,
+        numeric_policy_digest: common.numeric_policy_digest,
+        budget: common.budget,
         usage,
         outcome,
         cancel_reason,
         error_id,
         output_root,
         operator_trace_digest,
-        decision_path_digest: decision_path,
+        decision_path_digest: common.decision_path_digest,
         generation: graph.generation(),
-    };
-
-    (run_res, receipt)
+    }
 }

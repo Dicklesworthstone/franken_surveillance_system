@@ -12,7 +12,9 @@ use fss_codec_mjpeg::ComponentInterpretation;
 use fss_codec_mjpeg::DecodeBudget;
 use fss_codec_mjpeg::color::{DecodedRgb, RgbDecodeLimits, RgbDecodeReceipt, decode_rgb};
 use fss_core::{
-    CalibrationGeneration, ContentDigest, DigestAlgorithm, ModelGeneration, SchemaId, SensorId,
+    CalibrationGeneration, CapsuleId, CaptureInterval, ClockBasis, ContentDigest, DigestAlgorithm,
+    ModelGeneration, SchemaId, SensorCapsule, SensorId, SensorSourceBytesSpec, StreamId,
+    TimestampNs,
 };
 use fss_model_ir::{compute_model_ir_digest, encode_canonical_model_ir};
 use fss_object::{
@@ -384,6 +386,32 @@ fn self_consistent_repacks_with_other_weights_graph_or_spec_are_refused() -> Tes
         "InvalidSpec",
         variant(&load_repinned(&other_spec)),
     ));
+
+    // Review finding (2026-10-08, fss-2h5zq.50; mutant bbe3faf): a self-consistent repack whose
+    // LICENSE artifact is different text while the manifest's license record still names the
+    // first-party text digest. The archive verifier accepts it (every artifact digest matches its
+    // payload), so only the loader's license-text binding can refuse it.
+    let other_license_text =
+        format!("{ACTIVITY_LICENSE_TEXT}\nAmended: weights may be retrained.\n");
+    let other_license = repack(
+        Some((LICENSE_ARTIFACT, other_license_text.into_bytes())),
+        ACTIVITY_MODEL_GENERATION,
+    )?;
+    assert_ne!(other_license, ACTIVITY_PACKAGE_V1);
+    assert!(
+        ModelPackageArchive::decode(&other_license, &ModelPackageLimits::default()).is_ok(),
+        "the repack must be a structurally valid archive"
+    );
+    let license_refusal = load_repinned(&other_license);
+    cases.push((
+        "other_license_text",
+        "MissingArtifact",
+        variant(&license_refusal),
+    ));
+    assert!(matches!(
+        license_refusal,
+        Err(ActivityPackageError::MissingArtifact(name)) if name == LICENSE_ARTIFACT
+    ));
     let mut record = Record::new("repinned_tamper_refused");
     for (case, expected, observed) in &cases {
         record = record.check(case, *expected, observed.as_str());
@@ -512,12 +540,16 @@ impl Frame {
         }
     }
 
-    fn binding(&self) -> ActivityFrameBinding<'_> {
+    fn capsule(&self, sensor: &str) -> TestResult<SensorCapsule> {
+        capsule_for(&self.source, sensor, 0)
+    }
+
+    fn binding<'a>(&'a self, capsule: &'a SensorCapsule) -> ActivityFrameBinding<'a> {
         ActivityFrameBinding {
             pixels: &self.pixels,
             receipt: self.receipt,
             source_digest: ContentDigest::sha256(&self.source),
-            capsule_digest: ContentDigest::sha256(&[&self.source[..], b"capsule"].concat()),
+            capsule,
         }
     }
 }
@@ -529,10 +561,12 @@ fn rows(width: u32, rows: u32) -> Vec<(u32, u32)> {
 }
 
 fn score(model: &ActivityExecutorModel, frame: &Frame, reference: &Frame) -> TestResult<f32> {
+    let frame_capsule = frame.capsule("sensor:golden")?;
+    let reference_capsule = reference.capsule("sensor:golden")?;
     let (result, _) = model.invoke(
         &SensorId::parse("sensor:golden")?,
-        frame.binding(),
-        reference.binding(),
+        frame.binding(&frame_capsule),
+        reference.binding(&reference_capsule),
         &ActivityThresholdPolicy::reference()?,
         ExecBudget::new(10_000_000, 16 * 1024 * 1024),
         "job:golden",
@@ -665,13 +699,35 @@ fn preprocessing_goldens_and_f64_reference() -> TestResult {
     Ok(())
 }
 
-fn bind<'a>(bytes: &[u8], decoded: &'a DecodedRgb) -> ActivityFrameBinding<'a> {
+fn bind<'a>(
+    bytes: &[u8],
+    decoded: &'a DecodedRgb,
+    capsule: &'a SensorCapsule,
+) -> ActivityFrameBinding<'a> {
     ActivityFrameBinding {
         pixels: decoded.pixels(),
         receipt: decoded.receipt(),
         source_digest: ContentDigest::sha256(bytes),
-        capsule_digest: ContentDigest::sha256(bytes),
+        capsule,
     }
+}
+
+/// The sensor capsule of `source` as recorded by `sensor` (fss-2h5zq.51: a binding carries the
+/// frame's actual capsule, checked against its source bytes and sensor).
+fn capsule_for(source: &[u8], sensor: &str, sequence: u64) -> TestResult<SensorCapsule> {
+    let capture = CaptureInterval::new(TimestampNs(0), TimestampNs(5_000_000_000))?;
+    Ok(SensorCapsule::from_source_bytes(SensorSourceBytesSpec {
+        capsule_id: CapsuleId::parse(format!("capsule:contract:{sequence}"))?,
+        sensor_id: SensorId::parse(sensor)?,
+        stream_id: StreamId::parse("stream:contract")?,
+        sequence,
+        capture,
+        receive_time: capture.latest,
+        clock_basis: ClockBasis::Estimated,
+        source,
+        frame_count: 1,
+        gap_before: false,
+    })?)
 }
 
 #[test]
@@ -688,10 +744,12 @@ fn fixture_frame_score_matches_an_independent_f64_computation() -> TestResult {
     };
     let frame = decode(GRADIENT)?;
     let reference = decode(BACKGROUND)?;
+    let frame_capsule = capsule_for(GRADIENT, "sensor:file-cam", 1)?;
+    let reference_capsule = capsule_for(BACKGROUND, "sensor:file-cam", 0)?;
     let (result, _) = model.invoke(
         &SensorId::parse("sensor:file-cam")?,
-        bind(GRADIENT, &frame),
-        bind(BACKGROUND, &reference),
+        bind(GRADIENT, &frame, &frame_capsule),
+        bind(BACKGROUND, &reference, &reference_capsule),
         &ActivityThresholdPolicy::reference()?,
         ExecBudget::new(10_000_000, 16 * 1024 * 1024),
         "job:fixture",
@@ -748,10 +806,12 @@ fn scores_are_compared_only_within_one_generation_and_model_identity() -> TestRe
     let white = Frame::new(32, 32, &rows(32, 16), "iso-w");
     let black = Frame::new(32, 32, &[], "iso-k");
     let invoke = |frame: &Frame, reference: &Frame, job: &str| -> TestResult<_> {
+        let frame_capsule = frame.capsule("sensor:isolation")?;
+        let reference_capsule = reference.capsule("sensor:isolation")?;
         let (result, _) = model.invoke(
             &SensorId::parse("sensor:isolation")?,
-            frame.binding(),
-            reference.binding(),
+            frame.binding(&frame_capsule),
+            reference.binding(&reference_capsule),
             &ActivityThresholdPolicy::reference()?,
             ExecBudget::new(10_000_000, 16 * 1024 * 1024),
             job,

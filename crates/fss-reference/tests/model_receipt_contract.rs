@@ -8,12 +8,16 @@
 //! Rust actually emits, not on hand-written dictionaries. The operator trace chain is recomputed
 //! here independently of the receipt code.
 
+use std::collections::BTreeMap;
 use std::error::Error;
 
 use fss_codec_mjpeg::ComponentInterpretation;
 use fss_codec_mjpeg::DecodeBudget;
 use fss_codec_mjpeg::color::{DecodedRgb, RgbDecodeLimits, decode_rgb};
-use fss_core::{CanonicalEncoder, ContentDigest, Generation, SensorId, TimestampNs};
+use fss_core::{
+    CanonicalEncoder, CapsuleId, CaptureInterval, ClockBasis, ContentDigest, Generation,
+    SensorCapsule, SensorId, SensorSourceBytesSpec, StreamId, TimestampNs,
+};
 use fss_model_ir::{AttributeMap, GraphNode, ModelIrGraph, OpCode, TensorPort};
 use fss_reference::executor_activity::{
     ACTIVITY_FRAME_INPUT, ACTIVITY_REFERENCE_INPUT, ACTIVITY_SCORE_OUTPUT,
@@ -106,13 +110,35 @@ fn decode(bytes: &[u8]) -> TestResult<DecodedRgb> {
     )?)
 }
 
-fn bind<'a>(bytes: &[u8], decoded: &'a DecodedRgb) -> ActivityFrameBinding<'a> {
+fn bind<'a>(
+    bytes: &[u8],
+    decoded: &'a DecodedRgb,
+    capsule: &'a SensorCapsule,
+) -> ActivityFrameBinding<'a> {
     ActivityFrameBinding {
         pixels: decoded.pixels(),
         receipt: decoded.receipt(),
         source_digest: ContentDigest::sha256(bytes),
-        capsule_digest: ContentDigest::sha256(bytes),
+        capsule,
     }
+}
+
+/// The sensor capsule of `source` as recorded by `sensor` (fss-2h5zq.51: a binding carries the
+/// frame's actual capsule, checked against its source bytes and sensor).
+fn capsule_for(source: &[u8], sensor: &str, sequence: u64) -> TestResult<SensorCapsule> {
+    let capture = CaptureInterval::new(TimestampNs(0), TimestampNs(5_000_000_000))?;
+    Ok(SensorCapsule::from_source_bytes(SensorSourceBytesSpec {
+        capsule_id: CapsuleId::parse(format!("capsule:contract:{sequence}"))?,
+        sensor_id: SensorId::parse(sensor)?,
+        stream_id: StreamId::parse("stream:contract")?,
+        sequence,
+        capture,
+        receive_time: capture.latest,
+        clock_basis: ClockBasis::Estimated,
+        source,
+        frame_count: 1,
+        gap_before: false,
+    })?)
 }
 
 /// Every case's receipt and the graph it ran (for the trace recomputation).
@@ -168,10 +194,12 @@ fn receipts() -> TestResult<Vec<(&'static str, ModelInvocationReceipt)>> {
     let model = ActivityExecutorModel::load_committed(&ScalarExecCx::new())?;
     let frame = decode(GRADIENT)?;
     let reference = decode(BACKGROUND)?;
+    let frame_capsule = capsule_for(GRADIENT, "sensor:file-cam", 1)?;
+    let reference_capsule = capsule_for(BACKGROUND, "sensor:file-cam", 0)?;
     let (_, activity) = model.invoke(
         &SensorId::parse("sensor:file-cam")?,
-        bind(GRADIENT, &frame),
-        bind(BACKGROUND, &reference),
+        bind(GRADIENT, &frame, &frame_capsule),
+        bind(BACKGROUND, &reference, &reference_capsule),
         &ActivityThresholdPolicy::reference()?,
         ExecBudget::new(10_000_000, 16 * 1024 * 1024),
         "job:receipt-contract:activity",
@@ -291,10 +319,12 @@ fn activity_receipt_binds_package_graph_tensors_and_decode_receipts() -> TestRes
     let package = model.package();
     let frame = decode(GRADIENT)?;
     let reference = decode(BACKGROUND)?;
+    let frame_capsule = capsule_for(GRADIENT, "sensor:file-cam", 1)?;
+    let reference_capsule = capsule_for(BACKGROUND, "sensor:file-cam", 0)?;
     let (result, receipt) = model.invoke(
         &SensorId::parse("sensor:file-cam")?,
-        bind(GRADIENT, &frame),
-        bind(BACKGROUND, &reference),
+        bind(GRADIENT, &frame, &frame_capsule),
+        bind(BACKGROUND, &reference, &reference_capsule),
         &ActivityThresholdPolicy::reference()?,
         ExecBudget::new(10_000_000, 16 * 1024 * 1024),
         "job:receipt-contract:binding",
@@ -443,5 +473,274 @@ fn operator_trace_chain_recomputes_independently() -> TestResult {
     // The relu output is exactly [0, 0, 2.5]; the output root binds that tensor.
     let y = outcome.get_output("y").ok_or("missing y")?;
     assert_eq!(y.to_vec::<f32>()?, vec![0.0, 0.0, 2.5]);
+    Ok(())
+}
+
+/// The operator trace as it was computed before fss-2h5zq.47's review fix: every node's id and
+/// opcode were chained, but an output digest was chained only when the node's first output was a
+/// declared graph output. Intermediates (`delta`, `energy`, `flat` in the activity graph) never
+/// reached the chain. Kept here, independent of the receipt code, to show what the fix changes.
+fn final_node_only_trace(
+    graph: &ModelIrGraph,
+    outputs: &BTreeMap<String, Tensor>,
+    order: &[&str],
+) -> TestResult<ContentDigest> {
+    let mut current = ContentDigest::sha256(b"fss.model_execution_receipt.v1/operator_trace");
+    for id in order {
+        let node = graph
+            .nodes()
+            .iter()
+            .find(|node| node.id() == *id)
+            .ok_or("node missing")?;
+        let mut encoder = CanonicalEncoder::new();
+        encoder.digest(current);
+        encoder.text(node.id());
+        encoder.text(node.op().stable_id());
+        if let Some(tensor) = outputs.get(&node.outputs()[0]) {
+            encoder.digest(tensor.content_digest()?);
+        }
+        current = ContentDigest::sha256(&encoder.finish());
+    }
+    Ok(current)
+}
+
+/// The current trace, recomputed here from intermediate tensors this test builds itself from the
+/// graph's documented arithmetic (`delta = frame - reference`, `energy = delta * delta`,
+/// `flat = reshape(energy, [1, 1024])`, `score = flat x mean_weights`), not from the executor.
+fn independent_full_trace(
+    graph: &ModelIrGraph,
+    frame: &[f32],
+    reference: &[f32],
+    score: f32,
+) -> TestResult<ContentDigest> {
+    let delta: Vec<f32> = frame.iter().zip(reference).map(|(f, r)| f - r).collect();
+    let energy: Vec<f32> = delta.iter().map(|d| d * d).collect();
+    let plane = Shape::new(vec![1, 1, 32, 32])?;
+    let tensors = [
+        (
+            "node:delta",
+            Tensor::from_values(plane.clone(), &delta, ACTIVITY_TENSOR_GENERATION)?,
+        ),
+        (
+            "node:energy",
+            Tensor::from_values(plane, &energy, ACTIVITY_TENSOR_GENERATION)?,
+        ),
+        (
+            "node:flatten",
+            Tensor::from_values(
+                Shape::new(vec![1, 1024])?,
+                &energy,
+                ACTIVITY_TENSOR_GENERATION,
+            )?,
+        ),
+        (
+            "node:mean",
+            Tensor::from_values(
+                Shape::new(vec![1, 1])?,
+                &[score],
+                ACTIVITY_TENSOR_GENERATION,
+            )?,
+        ),
+    ];
+    let mut current = ContentDigest::sha256(b"fss.model_execution_receipt.v1/operator_trace");
+    for (id, tensor) in tensors {
+        let node = graph
+            .nodes()
+            .iter()
+            .find(|node| node.id() == id)
+            .ok_or("node missing")?;
+        let mut encoder = CanonicalEncoder::new();
+        encoder.digest(current);
+        encoder.text(node.id());
+        encoder.text(node.op().stable_id());
+        encoder.digest(tensor.content_digest()?);
+        current = ContentDigest::sha256(&encoder.finish());
+    }
+    Ok(current)
+}
+
+const ACTIVITY_NODE_ORDER: [&str; 4] = ["node:delta", "node:energy", "node:flatten", "node:mean"];
+
+fn package_weights(model: &ActivityExecutorModel) -> TestResult<Tensor> {
+    let package = model.package();
+    Ok(Tensor::from_values(
+        Shape::new(vec![package.mean_weights().len(), 1])?,
+        package.mean_weights(),
+        ACTIVITY_TENSOR_GENERATION,
+    )?)
+}
+
+/// Review finding (2026-10-08, fss-2h5zq.47): the trace must chain every node's output, not only
+/// the declared outputs. On the real 4-node activity graph two runs whose intermediates differ
+/// (the changed half of the frame is the top half in one run and the bottom half in the other)
+/// produce the bit-identical score 0.5, so the old final-node-only chain collides; the current
+/// chain separates them and equals an independent recomputation over every intermediate.
+#[test]
+fn activity_trace_chains_every_intermediate_and_separates_equal_scores() -> TestResult {
+    let cx = ScalarExecCx::new();
+    let model = ActivityExecutorModel::load_committed(&cx)?;
+    let package = model.package();
+    let graph = package.graph();
+    let weights = package_weights(&model)?;
+    let half = |top: bool| -> Vec<f32> {
+        (0..1024)
+            .map(|i| if (i < 512) == top { 1.0 } else { 0.0 })
+            .collect()
+    };
+    let reference = vec![0.0_f32; 1024];
+    let plane = Shape::new(vec![1, 1, 32, 32])?;
+    let mut runs = Vec::new();
+    for (name, frame) in [("top", half(true)), ("bottom", half(false))] {
+        let inputs = [
+            (
+                ACTIVITY_FRAME_INPUT,
+                Tensor::from_values(plane.clone(), &frame, ACTIVITY_TENSOR_GENERATION)?,
+            ),
+            (
+                ACTIVITY_REFERENCE_INPUT,
+                Tensor::from_values(plane.clone(), &reference, ACTIVITY_TENSOR_GENERATION)?,
+            ),
+            (ACTIVITY_WEIGHTS_INPUT, weights.clone()),
+        ];
+        let (run, receipt) = execute_and_record_receipt(
+            graph,
+            &inputs,
+            ExecBudget::new(10_000_000, 16 * 1024 * 1024),
+            &cx,
+            ReceiptRecordContext {
+                job_id: "job:receipt-contract:trace-collision",
+                preprocess_program: None,
+                model_package_root: Some(package.manifest_digest()),
+                virtual_clock: None,
+                source_roots: &[],
+                preprocess_resize: None,
+            },
+        );
+        let outcome = run?;
+        let order: Vec<&str> = outcome
+            .node_output_digests()
+            .iter()
+            .map(|entry| entry.node_id.as_str())
+            .collect();
+        assert_eq!(order, ACTIVITY_NODE_ORDER, "{name}");
+        let score = outcome
+            .get_output(ACTIVITY_SCORE_OUTPUT)
+            .ok_or("no score")?
+            .to_vec::<f32>()?;
+        let old = final_node_only_trace(graph, outcome.outputs(), &ACTIVITY_NODE_ORDER)?;
+        let independent = independent_full_trace(graph, &frame, &reference, score[0])?;
+        let trace = match &receipt.operator_trace_digest {
+            Some(ReceiptDigest::Content(trace)) => *trace,
+            other => return Err(format!("{name}: no content trace: {other:?}").into()),
+        };
+        runs.push((score[0], old, independent, trace));
+    }
+    let (score_top, old_top, independent_top, trace_top) = runs[0];
+    let (score_bottom, old_bottom, independent_bottom, trace_bottom) = runs[1];
+    let same_score = score_top.to_bits() == score_bottom.to_bits() && score_top == 0.5;
+    let old_collides = old_top == old_bottom;
+    let new_separates = trace_top != trace_bottom;
+    let independent_matches = trace_top == independent_top && trace_bottom == independent_bottom;
+    Record::new("receipt_trace_chains_intermediates")
+        .check_eq("same_score_bits", true, same_score)
+        .check_eq("final_node_only_chain_collides", true, old_collides)
+        .check_eq("full_chain_separates", true, new_separates)
+        .check_eq("full_chain_matches_independent", true, independent_matches)
+        .emit_checked(
+            0,
+            same_score && old_collides && new_separates && independent_matches,
+        );
+    assert!(same_score, "{score_top} vs {score_bottom}");
+    assert_eq!(old_top, old_bottom);
+    assert_ne!(trace_top, trace_bottom);
+    assert_eq!(trace_top, independent_top);
+    assert_eq!(trace_bottom, independent_bottom);
+    Ok(())
+}
+
+/// `operatorTraceDigest` of `activity_package.json` before fss-2h5zq.47's review fix (main
+/// 81a1c5b), when the chain bound only the declared `score` output.
+const ACTIVITY_PACKAGE_TRACE_BEFORE_FIX: &str =
+    "sha256:d552deb6246e64814b309c44fd303094278511ddd4aa1c9782b16e0a10bcd060";
+/// SHA-256 of the whole `activity_package.json` file (with its trailing newline) before the fix.
+const ACTIVITY_PACKAGE_FIXTURE_BEFORE_FIX_SHA256: &str =
+    "sha256:c3d0f8725bc6ac26a6ad7cf1451abef4cb09764d2423f4fc174d2e95d780a39b";
+
+/// Why `activity_package.json` was re-pinned, and that nothing else in it moved: the old trace is
+/// reproduced from this run by the old final-node-only rule, the fixture differs from its
+/// pre-fix bytes only in `operatorTraceDigest`, and the current trace chains the three
+/// intermediates. The 1-node `ok.json` is unchanged because its only node's output is the
+/// declared output, so both rules chain the same bytes.
+#[test]
+fn activity_package_fixture_repin_is_only_the_intermediate_chain() -> TestResult {
+    let receipts = receipts()?;
+    let (_, activity) = receipts
+        .iter()
+        .find(|(name, _)| *name == "activity_package")
+        .ok_or("activity receipt")?;
+    let cx = ScalarExecCx::new();
+    let model = ActivityExecutorModel::load_committed(&cx)?;
+    let frame = decode(GRADIENT)?;
+    let reference = decode(BACKGROUND)?;
+    let [fw, fh] = frame.dimensions();
+    let [rw, rh] = reference.dimensions();
+    let frame_tensor = model.preprocess(frame.pixels(), fw, fh, &cx)?;
+    let reference_tensor = model.preprocess(reference.pixels(), rw, rh, &cx)?;
+    let frame_values = frame_tensor.to_vec::<f32>()?;
+    let reference_values = reference_tensor.to_vec::<f32>()?;
+    let graph = model.package().graph();
+    let (run, _) = execute_and_record_receipt(
+        graph,
+        &[
+            (ACTIVITY_FRAME_INPUT, frame_tensor),
+            (ACTIVITY_REFERENCE_INPUT, reference_tensor),
+            (ACTIVITY_WEIGHTS_INPUT, package_weights(&model)?),
+        ],
+        ExecBudget::new(10_000_000, 16 * 1024 * 1024),
+        &cx,
+        context("job:receipt-contract:activity"),
+    );
+    let outcome = run?;
+    let old = final_node_only_trace(graph, outcome.outputs(), &ACTIVITY_NODE_ORDER)?;
+    let score = outcome
+        .get_output(ACTIVITY_SCORE_OUTPUT)
+        .ok_or("no score")?
+        .to_vec::<f32>()?[0];
+    let independent = independent_full_trace(graph, &frame_values, &reference_values, score)?;
+    let current = activity
+        .operator_trace_digest
+        .as_ref()
+        .map(ReceiptDigest::to_text)
+        .ok_or("no trace")?;
+    let fixture = FIXTURES
+        .iter()
+        .find(|(name, _)| *name == "activity_package")
+        .ok_or("fixture")?
+        .1;
+    let restored = fixture.replace(&current, ACTIVITY_PACKAGE_TRACE_BEFORE_FIX);
+    let restored_sha = ContentDigest::sha256(restored.as_bytes()).to_string();
+    Record::new("receipt_activity_trace_repin")
+        .check(
+            "old_rule_trace",
+            ACTIVITY_PACKAGE_TRACE_BEFORE_FIX,
+            old.to_string(),
+        )
+        .check("current_trace", independent.to_string(), current.clone())
+        .check(
+            "fixture_with_old_trace_sha256",
+            ACTIVITY_PACKAGE_FIXTURE_BEFORE_FIX_SHA256,
+            restored_sha.as_str(),
+        )
+        .emit_checked(
+            0,
+            old.to_string() == ACTIVITY_PACKAGE_TRACE_BEFORE_FIX
+                && independent.to_string() == current
+                && restored_sha == ACTIVITY_PACKAGE_FIXTURE_BEFORE_FIX_SHA256,
+        );
+    assert_eq!(old.to_string(), ACTIVITY_PACKAGE_TRACE_BEFORE_FIX);
+    assert_eq!(current, independent.to_string());
+    assert_ne!(current, ACTIVITY_PACKAGE_TRACE_BEFORE_FIX);
+    assert_eq!(fixture.matches(current.as_str()).count(), 1);
+    assert_eq!(restored_sha, ACTIVITY_PACKAGE_FIXTURE_BEFORE_FIX_SHA256);
     Ok(())
 }
