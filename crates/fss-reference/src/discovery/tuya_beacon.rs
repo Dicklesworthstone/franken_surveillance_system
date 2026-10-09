@@ -322,67 +322,6 @@ pub fn listen(
 
 // ---- AES-128 (safe Rust, standard tables) --------------------------------
 
-/// AES-128 decryption round keys.
-fn aes128_expand_decrypt(key: &[u8; 16]) -> [[u32; 4]; 11] {
-    let mut rk = aes128_expand_encrypt(key);
-    for round in 1..10 {
-        let r = &mut rk[round];
-        r.rotate_left(0); // placeholder to satisfy borrowing; real inverse below
-    }
-    // invert: swap order, then apply inverse MixColumns to middle rounds
-    rk.reverse();
-    for round in 1..10 {
-        let w = rk[round];
-        rk[round] = [
-            inv_mix_column_word(w[0]),
-            inv_mix_column_word(w[1]),
-            inv_mix_column_word(w[2]),
-            inv_mix_column_word(w[3]),
-        ];
-    }
-    rk
-}
-
-fn aes128_expand_encrypt(key: &[u8; 16]) -> [[u32; 4]; 11] {
-    const RCON: [u8; 10] = [0x01, 0x02, 0x04, 0x08, 0x10, 0x20, 0x40, 0x80, 0x1B, 0x36];
-    let mut w = [[0u32; 4]; 11];
-    for i in 0..4 {
-        w[0][i] = u32::from_be_bytes([key[4 * i], key[4 * i + 1], key[4 * i + 2], key[4 * i + 3]]);
-    }
-    for round in 1..11 {
-        let prev = w[round - 1];
-        let mut temp = prev[3];
-        // SubWord + RotWord + Rcon
-        temp = sub_word(temp.rotate_left(8));
-        temp ^= u32::from(RCON[round - 1]) << 24;
-        let mut cur = [temp ^ prev[0], 0, 0, 0];
-        for i in 1..4 {
-            cur[i] = cur[i - 1] ^ prev[i];
-        }
-        w[round] = cur;
-    }
-    w
-}
-
-fn sub_word(x: u32) -> u32 {
-    u32::from_le_bytes([
-        SBOX[(x & 0xFF) as usize],
-        SBOX[((x >> 8) & 0xFF) as usize],
-        SBOX[((x >> 16) & 0xFF) as usize],
-        SBOX[((x >> 24) & 0xFF) as usize],
-    ])
-}
-
-fn inv_mix_column_word(x: u32) -> u32 {
-    let b = x.to_le_bytes();
-    let mut out = [0u8; 4];
-    for c in 0..4 {
-        let v = b[c];
-        out[c] = gf_mul(v, 14) ^ gf_mul(b[(c + 1) % 4].rotate_left(0), 11) ^ gf_mul(b[(c + 2) % 4], 13) ^ gf_mul(b[(c + 3) % 4], 9);
-    }
-    u32::from_le_bytes(out)
-}
-
 fn gf_mul(mut a: u8, mut b: u8) -> u8 {
     let mut p = 0u8;
     for _ in 0..8 {
@@ -399,7 +338,41 @@ fn gf_mul(mut a: u8, mut b: u8) -> u8 {
     p
 }
 
-/// AES-128 block decrypt (single 16-byte block).
+fn aes128_expand_encrypt(key: &[u8; 16]) -> [[u32; 4]; 11] {
+    const RCON: [u8; 10] = [0x01, 0x02, 0x04, 0x08, 0x10, 0x20, 0x40, 0x80, 0x1B, 0x36];
+    let mut w = [[0u32; 4]; 11];
+    for i in 0..4 {
+        w[0][i] = u32::from_be_bytes([key[4 * i], key[4 * i + 1], key[4 * i + 2], key[4 * i + 3]]);
+    }
+    for round in 1..11 {
+        let prev = w[round - 1];
+        let mut temp = prev[3];
+        temp = sub_word(temp.rotate_left(8));
+        temp ^= u32::from(RCON[round - 1]) << 24;
+        let mut cur = [temp ^ prev[0], 0, 0, 0];
+        for i in 1..4 {
+            cur[i] = cur[i - 1] ^ prev[i];
+        }
+        w[round] = cur;
+    }
+    w
+}
+
+fn sub_word(x: u32) -> u32 {
+    u32::from_be_bytes([
+        SBOX[((x >> 24) & 0xFF) as usize],
+        SBOX[((x >> 16) & 0xFF) as usize],
+        SBOX[((x >> 8) & 0xFF) as usize],
+        SBOX[(x & 0xFF) as usize],
+    ])
+}
+
+/// AES-128 decryption round keys (the direct inverse cipher uses the
+/// ENCRYPTION schedule unmodified; no equivalent-cipher key mixing).
+fn aes128_decrypt_keys(key: &[u8; 16]) -> [[u32; 4]; 11] {
+    aes128_expand_encrypt(key)
+}
+
 fn aes128_decrypt_block(rk: &[[u32; 4]; 11], block: &[u8]) -> [u8; 16] {
     let mut s = [[0u8; 4]; 4];
     for c in 0..4 {
@@ -407,8 +380,8 @@ fn aes128_decrypt_block(rk: &[[u32; 4]; 11], block: &[u8]) -> [u8; 16] {
             s[r][c] = block[c * 4 + r];
         }
     }
-    add_round_key(&mut s, &rk[0]);
-    for round in 1..10 {
+    add_round_key(&mut s, &rk[10]);
+    for round in (1..10).rev() {
         inv_shift_rows(&mut s);
         inv_sub_bytes(&mut s);
         add_round_key(&mut s, &rk[round]);
@@ -416,7 +389,7 @@ fn aes128_decrypt_block(rk: &[[u32; 4]; 11], block: &[u8]) -> [u8; 16] {
     }
     inv_shift_rows(&mut s);
     inv_sub_bytes(&mut s);
-    add_round_key(&mut s, &rk[10]);
+    add_round_key(&mut s, &rk[0]);
     let mut out = [0u8; 16];
     for c in 0..4 {
         for r in 0..4 {
@@ -428,7 +401,7 @@ fn aes128_decrypt_block(rk: &[[u32; 4]; 11], block: &[u8]) -> [u8; 16] {
 
 fn add_round_key(s: &mut [[u8; 4]; 4], rk: &[u32; 4]) {
     for c in 0..4 {
-        let w = rk[c].to_le_bytes();
+        let w = rk[c].to_be_bytes();
         for r in 0..4 {
             s[r][c] ^= w[r];
         }
@@ -436,10 +409,11 @@ fn add_round_key(s: &mut [[u8; 4]; 4], rk: &[u32; 4]) {
 }
 
 fn inv_shift_rows(s: &mut [[u8; 4]; 4]) {
+    // Inverse cipher: row r cyclically shifts RIGHT by r (FIPS-197 §5.3.2).
     for r in 1..4 {
         let row = s[r];
         for c in 0..4 {
-            s[r][c] = row[(c + r) % 4];
+            s[r][c] = row[(c + 4 - r) % 4];
         }
     }
 }
@@ -471,7 +445,7 @@ fn aes128_ecb_decrypt(key: &[u8; 16], data: &[u8]) -> Option<Vec<u8>> {
     if data.len() % 16 != 0 || data.is_empty() {
         return None;
     }
-    let rk = aes128_expand_decrypt(key);
+    let rk = aes128_decrypt_keys(key);
     let mut out = Vec::with_capacity(data.len());
     for block in data.chunks(16) {
         out.extend_from_slice(&aes128_decrypt_block(&rk, block));
@@ -526,7 +500,7 @@ mod tests {
 
     /// Synthetic cmd-0x13 beacon built by the python oracle (aes_ecb_encrypt
     /// with the udpkey over a known JSON body, then pack_55aa).
-    const SYNTHETIC_0X13: &str = "000055aa000000070000001300000098ab11a05381b44bb90b0cb067fefad12b338a1b006c2769ba3cd55a5911a2d4a164d491bcabd037944bc1c6780e96674f4b580142a8f49dd2fe364c4df38de0aec4c01588651621a47422150541e58dc1905cd240c3b681021f101d20f06619b85291ffb4f9c7b9f7d7136d540cb5be4099805f9ecbda436e49f4468e7de68cce6c1b5ac9a93fb8d1a082ad28013bcd5788370f6d0000aa55";
+    const SYNTHETIC_0X13: &str = "000055aa00000007000000130000008c000000005b3b7a768d0e6bf789aeab5c1a83bf58b63a8bbc407f26e69fdbf292ed63137ab39989adf9de967f221c02e70e61265276c579b7a6cbaacb51177501340e10e646c2c35a7641bb15db3b7e1ffd87c1c165d95f416c4c516c727de9b49de29826f8d3effa80902d7174ca5c70d1b019f6794d229cecfdc3bd5b0ce19b15c425daa3e5f6980000aa55";
 
     #[test]
     fn captured_0x23_structure_matches_oracle() {
@@ -593,12 +567,16 @@ mod tests {
     }
 
     #[test]
-    fn aes128_decrypt_fips194_vector() {
-        // FIPS-194-style check via decrypt(encrypt(x)) — instead verify the
-        // synthetic 0x13 payload round-trips (ECB decrypt of oracle ciphertext).
-        let ct = &unhex(SYNTHETIC_0X13)[20..20 + 0x90];
-        let pt = aes128_ecb_decrypt(&UDP_BROADCAST_KEY, ct).unwrap();
-        assert!(pt.starts_with(b"{"));
-        assert!(pt.windows(2).any(|w| w == b"\"}"));
+    fn aes128_decrypt_fips197_c3_vector() {
+        // FIPS-197 Appendix C.3: the canonical AES-128 decryption vector.
+        let key: [u8; 16] = core::array::from_fn(|i| i as u8);
+        let ct = unhex("69c4e0d86a7b0430d8cdb78070b4c55a");
+        let rk = aes128_decrypt_keys(&key);
+        let pt = aes128_decrypt_block(&rk, &ct);
+        assert_eq!(hex_str(&pt), "00112233445566778899aabbccddeeff");
+    }
+
+    fn hex_str(b: &[u8]) -> String {
+        b.iter().map(|x| format!("{x:02x}")).collect()
     }
 }
