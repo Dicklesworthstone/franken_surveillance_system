@@ -194,7 +194,7 @@ fn inv_mix_columns(s: &mut [[u8; 4]; 4]) {
 /// Returns `None` when the input is not block-aligned.
 #[must_use]
 pub fn aes128_ecb_encrypt_raw(key: &[u8; 16], data: &[u8]) -> Option<Vec<u8>> {
-    if data.len() % 16 != 0 {
+    if !data.len().is_multiple_of(16) {
         return None;
     }
     let cipher = Aes128::new(key);
@@ -211,7 +211,7 @@ pub fn aes128_ecb_encrypt_raw(key: &[u8; 16], data: &[u8]) -> Option<Vec<u8>> {
 /// semantics: trailing bytes after the JSON terminator are noise).
 #[must_use]
 pub fn aes128_ecb_decrypt_raw(key: &[u8; 16], data: &[u8]) -> Option<Vec<u8>> {
-    if data.len() % 16 != 0 || data.is_empty() {
+    if !data.len().is_multiple_of(16) || data.is_empty() {
         return None;
     }
     let cipher = Aes128::new(key);
@@ -239,7 +239,7 @@ pub fn pkcs7_pad(data: &[u8]) -> Vec<u8> {
 pub fn pkcs7_unpad(data: &[u8]) -> Option<&[u8]> {
     let &last = data.last()?;
     let padlen = usize::from(last);
-    if padlen < 1 || padlen > 16 || padlen > data.len() {
+    if !(1..=16).contains(&padlen) || padlen > data.len() {
         return None;
     }
     Some(&data[..data.len() - padlen])
@@ -249,10 +249,8 @@ pub fn pkcs7_unpad(data: &[u8]) -> Option<&[u8]> {
 #[must_use]
 pub fn aes128_ecb_encrypt_pkcs7(key: &[u8; 16], data: &[u8]) -> Vec<u8> {
     let padded = pkcs7_pad(data);
-    match aes128_ecb_encrypt_raw(key, &padded) {
-        Some(v) => v,
-        None => Vec::new(), // unreachable: padded is always block-aligned
-    }
+    // padded is always block-aligned, so this never falls back.
+    aes128_ecb_encrypt_raw(key, &padded).unwrap_or_default()
 }
 
 /// AES-128-ECB decrypt with PKCS7 unpadding (structural validation only).

@@ -29,6 +29,7 @@
 //!     well-known udpkey — a public protocol constant) and cmd 0x23
 //!     (`BOARDCAST_LPV34`, AES-128-ECB under the device local_key).
 
+pub mod client;
 pub mod crypto;
 pub mod sim;
 pub mod wire;

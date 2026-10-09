@@ -396,8 +396,9 @@ impl HomebaseSim {
                     Session::Established { key, .. } => key,
                     _ => self.config.local_key,
                 };
-                let no_retcode = inbound_mode == wire::RetcodeMode::Absent;
-                match wire::unpack_55aa(frame, Some(&key), no_retcode) {
+                // Client→device frames never carry a retcode (retcodes are
+                // a response-side field), so inbound is always retcode-less.
+                match wire::unpack_55aa(frame, Some(&key), true) {
                     Ok(mut m) => {
                         match crypto::aes128_ecb_decrypt_pkcs7(&key, &m.payload) {
                             Some(pt) => {

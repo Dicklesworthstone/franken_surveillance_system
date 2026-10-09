@@ -10,6 +10,8 @@ use fss_tuya::wire::{
     self, RetcodeMode, cmd, pack_6699, unpack_55aa, unpack_6699, unpack_6699_mode,
 };
 
+
+
 const CLIENT_KEY: &[u8; 16] = b"fss_sim_test_key"; // == SimConfig::test_key()
 const WRONG_KEY: &[u8; 16] = b"wrongwrongwrong0";
 const CLIENT_NONCE: &[u8; 16] = b"0123456789abcdef";
@@ -44,10 +46,7 @@ fn client_negotiate(sim: &mut HomebaseSim, key: &[u8; 16]) -> Option<([u8; 16], 
 #[test]
 fn negotiation_success_then_session_traffic() {
     let mut sim = sim_35();
-    let (device_nonce, finish) = match client_negotiate(&mut sim, CLIENT_KEY) {
-        Some(v) => v,
-        None => panic!("negotiation steps 1-2 failed"),
-    };
+    let (device_nonce, finish)= client_negotiate(&mut sim, CLIENT_KEY).expect("negotiation steps 1-2 failed");
     assert!(sim.events().contains(&SimEvent::NegotiationStarted));
 
     // Step 3: client proof. The device does not ACK; the session goes live.
@@ -63,17 +62,11 @@ fn negotiation_success_then_session_traffic() {
     assert_eq!(sim.session_key(), Some(expect_key));
 
     // Heartbeat under the session key.
-    let sess = match sim.session_key() {
-        Some(k) => k,
-        None => panic!("no session key"),
-    };
+    let sess = sim.session_key().expect("no session key");
     let hb = pack_6699(3, cmd::HEART_BEAT, None, b"", &sess, CLIENT_IV);
     let resp = sim.handle(&hb);
     assert_eq!(resp.len(), 1);
-    let msg = match unpack_6699(&resp[0], &sess) {
-        Ok(m) => m,
-        Err(e) => panic!("heartbeat resp: {e}"),
-    };
+    let msg = unpack_6699(&resp[0], &sess).expect("heartbeat resp: {e}");
     assert_eq!(msg.cmd, cmd::HEART_BEAT);
     assert!(sim.events().contains(&SimEvent::Heartbeat));
 
@@ -81,10 +74,7 @@ fn negotiation_success_then_session_traffic() {
     let q = pack_6699(4, cmd::DP_QUERY, None, b"", &sess, CLIENT_IV);
     let resp = sim.handle(&q);
     assert_eq!(resp.len(), 1);
-    let msg = match unpack_6699(&resp[0], &sess) {
-        Ok(m) => m,
-        Err(e) => panic!("dp_query resp: {e}"),
-    };
+    let msg = unpack_6699(&resp[0], &sess).expect("dp_query resp: {e}");
     assert_eq!(msg.cmd, cmd::STATUS);
     assert_eq!(
         msg.payload,
@@ -97,23 +87,14 @@ fn negotiation_success_then_session_traffic() {
     let ctl = pack_6699(5, cmd::CONTROL, None, ctl_payload, &sess, CLIENT_IV);
     let resp = sim.handle(&ctl);
     assert_eq!(resp.len(), 1);
-    let msg = match unpack_6699(&resp[0], &sess) {
-        Ok(m) => m,
-        Err(e) => panic!("control resp: {e}"),
-    };
+    let msg = unpack_6699(&resp[0], &sess).expect("control resp: {e}");
     assert_eq!(msg.cmd, cmd::CONTROL);
     assert_eq!(msg.payload, ctl_payload);
     assert!(sim.events().contains(&SimEvent::ControlAcked));
 
     // Unsolicited event frame decodes under the session key.
-    let ev = match sim.event_motion_status() {
-        Some(f) => f,
-        None => panic!("event frame required with live session"),
-    };
-    let msg = match unpack_6699(&ev, &sess) {
-        Ok(m) => m,
-        Err(e) => panic!("event frame: {e}"),
-    };
+    let ev = sim.event_motion_status().expect("event frame required with live session");
+    let msg = unpack_6699(&ev, &sess).expect("event frame: {e}");
     assert_eq!(msg.cmd, cmd::STATUS);
     assert_eq!(msg.payload, ModelFixture::AosuHomebase.event_json().as_bytes());
 }
@@ -132,10 +113,7 @@ fn wrong_key_is_rejected_silently() {
 #[test]
 fn wrong_proof_finish_is_rejected() {
     let mut sim = sim_35();
-    let (_dn, _finish) = match client_negotiate(&mut sim, CLIENT_KEY) {
-        Some(v) => v,
-        None => panic!("negotiation steps 1-2 failed"),
-    };
+    let (_dn, _finish)= client_negotiate(&mut sim, CLIENT_KEY).expect("negotiation steps 1-2 failed");
     let bad_proof = [0xEEu8; 32];
     let fin = pack_6699(2, cmd::SESS_KEY_NEG_FINISH, None, &bad_proof, CLIENT_KEY, CLIENT_IV);
     let resp = sim.handle(&fin);
@@ -149,16 +127,10 @@ fn session_expiry_after_budget() {
     let mut cfg = SimConfig::v35_homebase();
     cfg.session_ttl_msgs = 1;
     let mut sim = HomebaseSim::new(cfg);
-    let (_dn, finish) = match client_negotiate(&mut sim, CLIENT_KEY) {
-        Some(v) => v,
-        None => panic!("negotiation failed"),
-    };
+    let (_dn, finish) = client_negotiate(&mut sim, CLIENT_KEY).expect("negotiation failed");
     let fin = pack_6699(2, cmd::SESS_KEY_NEG_FINISH, None, &finish, CLIENT_KEY, CLIENT_IV);
     sim.handle(&fin);
-    let sess = match sim.session_key() {
-        Some(k) => k,
-        None => panic!("no session key"),
-    };
+    let sess = sim.session_key().expect("no session key");
     // First heartbeat OK (seen=1 <= ttl).
     let hb = pack_6699(3, cmd::HEART_BEAT, None, b"", &sess, CLIENT_IV);
     assert_eq!(sim.handle(&hb).len(), 1);
@@ -225,30 +197,18 @@ fn beacons_decode_with_their_keys() {
     let mut sim = sim_35();
     // cmd 0x13: well-known udpkey path — decrypts without the device key.
     let b13 = sim.beacon_udp_new();
-    let h = match wire::parse_header(&b13) {
-        Ok(h) => h,
-        Err(e) => panic!("beacon header: {e}"),
-    };
+    let h = wire::parse_header(&b13).expect("beacon header: {e}");
     assert_eq!(h.cmd, cmd::UDP_NEW);
-    let m = match unpack_55aa(&b13, None, false) {
-        Ok(m) => m,
-        Err(e) => panic!("beacon unpack: {e}"),
-    };
+    let m = unpack_55aa(&b13, None, false).expect("beacon unpack: {e}");
     let plain = fss_tuya::crypto::aes128_ecb_decrypt_pkcs7(&wire::UDP_BROADCAST_KEY, &m.payload);
-    let plain = match plain {
-        Some(p) => p,
-        None => panic!("udpkey decrypt"),
-    };
+    let plain = plain.expect("udpkey decrypt");
     let json = String::from_utf8_lossy(&plain);
     assert!(json.contains("\"productKey\":\"fsssimhomebase00\""), "{json}");
     assert!(json.contains("\"version\":\"3.5\""), "{json}");
 
     // cmd 0x23: device-key path — decrypts with the test local_key only.
     let b23 = sim.beacon_lpv34();
-    let m = match unpack_55aa(&b23, None, false) {
-        Ok(m) => m,
-        Err(e) => panic!("beacon unpack: {e}"),
-    };
+    let m = unpack_55aa(&b23, None, false).expect("beacon unpack: {e}");
     let plain = fss_tuya::crypto::aes128_ecb_decrypt_pkcs7(CLIENT_KEY, &m.payload);
     assert!(plain.is_some(), "device key decrypts 0x23");
     let wrong = fss_tuya::crypto::aes128_ecb_decrypt_pkcs7(WRONG_KEY, &m.payload);
@@ -271,28 +231,16 @@ fn proto_34_session_roundtrip() {
     let start = wire::pack_55aa(1, cmd::SESS_KEY_NEG_START, None, &start_sealed, Some(CLIENT_KEY));
     let resp = sim.handle(&start);
     assert_eq!(resp.len(), 1, "cmd3 gets a cmd4 response");
-    let m = match wire::unpack_55aa(&resp[0], Some(CLIENT_KEY), false) {
-        Ok(m) => m,
-        Err(e) => panic!("cmd4 unpack: {e}"),
-    };
+    let m = wire::unpack_55aa(&resp[0], Some(CLIENT_KEY), false).expect("cmd4 unpack: {e}");
     assert_eq!(m.cmd, cmd::SESS_KEY_NEG_RESP);
-    let pt = match fss_tuya::crypto::aes128_ecb_decrypt_pkcs7(CLIENT_KEY, &m.payload) {
-        Some(p) => p,
-        None => panic!("cmd4 decrypt"),
-    };
+    let pt = fss_tuya::crypto::aes128_ecb_decrypt_pkcs7(CLIENT_KEY, &m.payload).expect("cmd4 decrypt");
     assert_eq!(pt.len(), 48);
-    let device_nonce: [u8; 16] = match pt[..16].try_into() {
-        Ok(v) => v,
-        Err(_) => panic!("nonce slice"),
-    };
+    let device_nonce: [u8; 16] = pt[..16].try_into().expect("nonce slice");
     let finish = hmac_sha256(CLIENT_KEY, &device_nonce);
     let fin_sealed = fss_tuya::crypto::aes128_ecb_encrypt_pkcs7(CLIENT_KEY, &finish);
     let fin = wire::pack_55aa(2, cmd::SESS_KEY_NEG_FINISH, None, &fin_sealed, Some(CLIENT_KEY));
     sim.handle(&fin);
     assert!(sim.is_established());
-    let expect = match wire::derive_session_key_34(CLIENT_KEY, CLIENT_NONCE, &device_nonce) {
-        Some(k) => k,
-        None => panic!("derive 3.4"),
-    };
+    let expect = wire::derive_session_key_34(CLIENT_KEY, CLIENT_NONCE, &device_nonce).expect("derive 3.4");
     assert_eq!(sim.session_key(), Some(expect));
 }

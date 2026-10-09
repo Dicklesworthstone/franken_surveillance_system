@@ -7,6 +7,8 @@ use fss_tuya::wire::{
     pack_55aa, pack_6699, parse_header, unpack_55aa, unpack_6699, unpack_6699_mode,
 };
 
+
+
 fn unhex(s: &str) -> Vec<u8> {
     (0..s.len())
         .step_by(2)
@@ -29,19 +31,13 @@ fn frame_55aa_crc_roundtrip() {
     let payload = b"{\"dps\":{\"1\":true}}";
     let frame = pack_55aa(42, cmd::DP_QUERY, Some(0), payload, None);
     let h = parse_header(&frame);
-    let h = match h {
-        Ok(h) => h,
-        Err(e) => panic!("header: {e}"),
-    };
+    let h = h.expect("header: {e}");
     assert_eq!(h.prefix, wire::PREFIX_55AA);
     assert_eq!(h.seqno, 42);
     assert_eq!(h.cmd, cmd::DP_QUERY);
     assert_eq!(h.total, frame.len());
     let msg = unpack_55aa(&frame, None, false);
-    let msg = match msg {
-        Ok(m) => m,
-        Err(e) => panic!("unpack: {e}"),
-    };
+    let msg = msg.expect("unpack: {e}");
     assert_eq!(msg.payload, payload);
     assert_eq!(msg.retcode, Some(0));
 }
@@ -59,10 +55,7 @@ fn frame_55aa_hmac_golden() {
     let key = *b"0123456789abcdef";
     let ours = pack_55aa(9, cmd::STATUS, Some(0), b"{\"dps\":{\"20\":false}}", Some(&key));
     assert_eq!(hex(&ours), hex(&golden), "byte-exact vs oracle");
-    let msg = match unpack_55aa(&golden, Some(&key), false) {
-        Ok(m) => m,
-        Err(e) => panic!("unpack golden: {e}"),
-    };
+    let msg = unpack_55aa(&golden, Some(&key), false).expect("unpack golden: {e}");
     assert_eq!(msg.payload, b"{\"dps\":{\"20\":false}}");
     // Wrong HMAC key must fail integrity.
     let bad = unpack_55aa(&golden, Some(b"9999999999999999"), false);
@@ -83,10 +76,7 @@ fn frame_6699_golden() {
         .unwrap_or([0; 12]);
     let ours = pack_6699(7, cmd::DP_QUERY, Some(0), b"{\"dps\":{\"1\":true}}", &key, iv);
     assert_eq!(hex(&ours), hex(&golden), "byte-exact vs oracle");
-    let msg = match unpack_6699(&golden, &key) {
-        Ok(m) => m,
-        Err(e) => panic!("unpack golden: {e}"),
-    };
+    let msg = unpack_6699(&golden, &key).expect("unpack golden: {e}");
     assert_eq!(msg.payload, b"{\"dps\":{\"1\":true}}");
     assert_eq!(msg.retcode, Some(0));
     assert_eq!(msg.iv, Some(iv));
@@ -99,18 +89,12 @@ fn frame_6699_no_retcode_roundtrip() {
     let nonce = *b"fedcba9876543210";
     let iv: [u8; 12] = *b"0123456789ab";
     let frame = pack_6699(1, cmd::SESS_KEY_NEG_START, None, &nonce, &key, iv);
-    let msg = match unpack_6699_mode(&frame, &key, RetcodeMode::Absent) {
-        Ok(m) => m,
-        Err(e) => panic!("unpack: {e}"),
-    };
+    let msg = unpack_6699_mode(&frame, &key, RetcodeMode::Absent).expect("unpack: {e}");
     assert_eq!(msg.payload, nonce);
     assert_eq!(msg.retcode, None);
     // Auto heuristic on binary payloads keeps the payload whole when
     // byte 4 is not '{' (mirrors the laboratory oracle).
-    let auto = match unpack_6699(&frame, &key) {
-        Ok(m) => m,
-        Err(e) => panic!("unpack auto: {e}"),
-    };
+    let auto = unpack_6699(&frame, &key).expect("unpack auto: {e}");
     assert_eq!(auto.payload, nonce);
 }
 
