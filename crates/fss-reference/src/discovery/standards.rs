@@ -376,6 +376,17 @@ fn find_tag_close(text: &str, tag: &str) -> Option<usize> {
     None
 }
 
+impl WsdMatch {
+    /// Camera evidence from the ProbeMatch: an ONVIF NetworkVideoTransmitter
+    /// type with Profile/Streaming scopes. True even when the SOAP listener
+    /// is gated (advertisement alone proves an ONVIF camera stack).
+    #[must_use]
+    pub fn is_onvif_camera(&self) -> bool {
+        self.types.iter().any(|t| t.contains("NetworkVideoTransmitter"))
+            || self.scopes.iter().any(|s| s.contains("Profile/Streaming"))
+    }
+}
+
 /// Typed standards-probe errors.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum StandardsError {

@@ -88,3 +88,30 @@ negative constraints:
   broadcasts).
 - **Revival:** a firmware generation that answers discovery with a well-known or
   identity-less key, or an owner-provisioned credential store wired into discovery.
+
+### NEG-006 — Yi IPC (Zowee ODM) advertises ONVIF but gates the SOAP service pre-provisioning
+
+- **Hypothesis:** a Yi camera (b0:d5:9d Zowee ODM MAC, generic "IPC" ONVIF stack,
+  192.168.6.156) that answers ONVIF WS-Discovery with `dn:NetworkVideoTransmitter` and
+  Profile/Streaming scopes exposes its ONVIF SOAP service for standards-first access
+  (RTSP/ONVIF without the vendor app).
+- **Date / commit:** 2026-10-09; passive LAN observation, owner device.
+- **Setup:** WSD multicast Probe (full WS-Addressing header incl. MessageID) → ProbeMatch
+  with XAddrs `http://192.168.6.156/onvif/device_service`, Scopes
+  `Profile/Streaming hardware/IPC type/video_encoder type/audio_encoder type/ptz
+  type/video_analytics`. Then TCP connects to the advertised port 80 (+554/8554/8899),
+  full 1-65535 scan, source-bound connects from both host interfaces, SOAP-over-UDP to
+  :3702, unicast WSD, and an 8s rapid-retry window immediately after each ProbeMatch.
+- **Result:** the WSD responder is active and reliable (answers within seconds whenever a
+  properly-headered Probe arrives; silently ignores header-less probes — MessageID/Action
+  are mandatory). The TCP listener NEVER opens: port 80 RSTs when idle, times out right
+  after WSD exchanges, zero open ports across the entire range in every state. The SOAP
+  service is gated behind first-time vendor-app provisioning (classic generic-IPC
+  firmware behavior); UDP surface is silent everywhere else.
+- **Decision:** standards-first onboarding of this device requires completing vendor-app
+  provisioning once (owner decision), after which the advertised ONVIF service is the
+  intended path — no exploit sought. The advertisement itself is retained as camera
+  evidence: `WsdMatch::is_onvif_camera()` classifies from ProbeMatch types/scopes even
+  while the SOAP listener is gated. AOSU-style vendor workarounds stay out of scope.
+- **Revival:** provisioning the device through the vendor app (which the owner controls),
+  or a firmware generation that ships with the SOAP listener open.
