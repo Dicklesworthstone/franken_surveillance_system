@@ -369,7 +369,7 @@ pub struct TuyaEventMapper {
     custody: BTreeMap<ContentDigest, Vec<u8>>,
     pending: Vec<(EvidenceDelta, ContentDigest)>,
     trackers: BTreeMap<String, CamTracker>,
-    generation: u64,
+    generations: BTreeMap<ObjectId, u64>,
     batch_seq: u64,
 }
 
@@ -399,7 +399,7 @@ impl TuyaEventMapper {
             custody: BTreeMap::new(),
             pending: Vec::new(),
             trackers,
-            generation: 0,
+            generations: BTreeMap::new(),
             batch_seq: 0,
         }
     }
@@ -422,11 +422,11 @@ impl TuyaEventMapper {
         self.trackers.get(cam_id).map(|t| &t.observability)
     }
 
-    fn next_generation(&mut self) -> u64 {
-        self.generation += 1;
-        self.generation
-    }
-
+    /// Stages one delta with ledger-correct per-object generations:
+    /// new objects start at generation 1; existing objects advance by one.
+    /// The ledger admits at most one delta per object per batch, which the
+    /// object-id scheme guarantees (one id per homebase / cam / dp /
+    /// segment).
     fn stage_delta(
         &mut self,
         family: &str,
@@ -435,19 +435,24 @@ impl TuyaEventMapper {
         payload: Vec<u8>,
     ) -> ContentDigest {
         let digest = ContentDigest::sha256(&payload);
-        let generation = self.next_generation();
+        let current = self.generations.get(&object_id).copied();
+        let (prior_generation, new_generation) = match current {
+            Some(g) => (Some(g), g + 1),
+            None => (None, 1),
+        };
         let delta = EvidenceDelta {
-            delta_id: format!("delta:{family}:{generation}"),
+            delta_id: format!("delta:{family}:{}:g{new_generation}", object_id.as_str()),
             family: family.to_string(),
-            object_id,
-            prior_generation: None,
-            new_generation: generation,
+            object_id: object_id.clone(),
+            prior_generation,
+            new_generation,
             validity,
             plane: Plane::Authority,
             payload_digest: digest,
             witness_digest: None,
             operation_id: None,
         };
+        self.generations.insert(object_id, new_generation);
         self.custody.insert(digest, payload);
         self.pending.push((delta, digest));
         digest
@@ -499,9 +504,8 @@ impl TuyaEventMapper {
             VendorProvenance::DeviceStateReport.as_str()
         );
         let object_id = ObjectId::parse(format!(
-            "object:aosu-device-state:{}:g{}",
-            self.cfg.homebase_id,
-            self.generation + 1
+            "object:aosu-device-state:{}",
+            self.cfg.homebase_id
         ))
         .map_err(|_| TuyaMapError::Malformed("object id"))?;
         Ok(self.stage_delta("aosu_device_state", object_id, observed, payload.into_bytes()))
@@ -538,11 +542,8 @@ impl TuyaEventMapper {
                 observed.latest.0,
                 VendorProvenance::VendorDerived.as_str()
             );
-            let object_id = ObjectId::parse(format!(
-                "object:aosu-event:{cam_id}:g{}",
-                self.generation + 1
-            ))
-            .map_err(|_| TuyaMapError::Malformed("object id"))?;
+            let object_id = ObjectId::parse(format!("object:aosu-event:{cam_id}:dp{dp}"))
+                .map_err(|_| TuyaMapError::Malformed("object id"))?;
             digests.push(self.stage_delta(
                 "aosu_event_candidate",
                 object_id,
@@ -581,11 +582,8 @@ impl TuyaEventMapper {
             span.latest.0,
             VendorProvenance::WakeTriggerReport.as_str()
         );
-        let object_id = ObjectId::parse(format!(
-            "object:aosu-segment:{cam_id}:g{}",
-            self.generation + 1
-        ))
-        .map_err(|_| TuyaMapError::Malformed("object id"))?;
+        let object_id = ObjectId::parse(format!("object:aosu-segment:{cam_id}:{segment_ref}"))
+            .map_err(|_| TuyaMapError::Malformed("object id"))?;
         Ok(self.stage_delta("aosu_video_segment", object_id, span, payload.into_bytes()))
     }
 
