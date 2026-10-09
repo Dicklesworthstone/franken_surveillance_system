@@ -484,6 +484,19 @@ const INV_SBOX: [u8; 256] = {
     t
 };
 
+/// The full captured AOSU homebase beacon bytes (lab scans fixture),
+/// shared with cross-module tests.
+/// The real captured AOSU homebase beacon (lab scans/tuya_beacon.hex).
+pub(crate) const CAPTURED_0X23: &str = "000055aa0000000000000023000000cc0000000058e467256fac78567b1684089fe6e3ad060a3d6bc2679098ffa31a6e0938fd05e9d08260f7f18366fa8f1eb688441a49bd9fdf7dfb4e8dc1ee067101d78b9e54c2fb8459b1155fc75d4bf6699f92cba4c0ba520148045e7605fa0498dfea5aab35736c143092c8a09db76265bde438d3143207e3c2fae04e26c39c14928994350616cd44036f7601ab71f0aa8391a55ce0913a793742322b90964948dad4b60c91deba4f9c7d4813f4828d467080a0e77372664e97a8ecb0d61cdf50388a767c8717798a0000aa55";
+
+#[cfg(test)]
+pub(crate) fn captured_beacon_bytes() -> Vec<u8> {
+    (0..CAPTURED_0X23.len())
+        .step_by(2)
+        .map(|i| u8::from_str_radix(&CAPTURED_0X23[i..i + 2], 16).unwrap())
+        .collect()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -496,7 +509,7 @@ mod tests {
     }
 
     /// The real captured AOSU homebase beacon (lab scans/tuya_beacon.hex).
-    const CAPTURED_0X23: &str = "000055aa0000000000000023000000cc0000000058e467256fac78567b1684089fe6e3ad060a3d6bc2679098ffa31a6e0938fd05e9d08260f7f18366fa8f1eb688441a49bd9fdf7dfb4e8dc1ee067101d78b9e54c2fb8459b1155fc75d4bf6699f92cba4c0ba520148045e7605fa0498dfea5aab35736c143092c8a09db76265bde438d3143207e3c2fae04e26c39c14928994350616cd44036f7601ab71f0aa8391a55ce0913a793742322b90964948dad4b60c91deba4f9c7d4813f4828d467080a0e77372664e97a8ecb0d61cdf50388a767c8717798a0000aa55";
+
 
     /// Synthetic cmd-0x13 beacon built by the python oracle (aes_ecb_encrypt
     /// with the udpkey over a known JSON body, then pack_55aa).

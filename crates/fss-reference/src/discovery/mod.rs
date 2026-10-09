@@ -7,6 +7,8 @@ pub mod tuya_beacon;
 pub use tuya_beacon::{TuyaBeaconObs, TUYA_BEACON_PORT, decode_beacon, listen};
 
 pub mod census;
+pub mod dispatch;
+pub mod fingerprint;
 pub mod standards;
 
 pub use standards::{
@@ -14,6 +16,10 @@ pub use standards::{
     build_msearch, build_wsdiscovery_probe, mdns_probe, parse_mdns_response,
     parse_ssdp_response, parse_wsd_match, ssdp_probe, wsdiscovery_probe,
 };
+
+pub use dispatch::{AdapterDispatch, AdapterPath, AuthIngredient, Readiness, dispatch};
+
+pub use fingerprint::{Brand, BrandConfidence, Confidence, Signal, classify_host};
 
 pub use census::{
     CensusConfig, CensusError, CensusPlan, CensusReport, HostObs, OUI_SNAPSHOT,
