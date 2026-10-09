@@ -35,6 +35,7 @@ fss-packet = { path = "../fss-packet" }
 fss-publication = { path = "../fss-publication" }
 fss-tensor = { path = "../fss-tensor" }
 fss-tutk = { path = "../fss-tutk" }
+fss-tuya = { path = "../fss-tuya" }
 fss-twin = { path = "../fss-twin" }
 
 [dev-dependencies]

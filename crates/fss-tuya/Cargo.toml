@@ -1,0 +1,14 @@
+[package]
+name = "fss-tuya"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license-file.workspace = true
+repository.workspace = true
+description = "Sans-IO Tuya LAN protocol (55AA/6699 framing, AES-128-ECB/GCM, 3.4/3.5 session) wire, crypto, and deterministic homebase simulator core for owner-authorized devices"
+
+[dependencies]
+fss-core = { path = "../fss-core" }
+
+[lints]
+workspace = true
