@@ -2,6 +2,9 @@
 //! family fss-yodhk). Stage 1 is the census engine ([`census`]); later stages
 //! add per-family probes (mDNS/SSDP/WS-Discovery, TUTK search, Tuya beacons)
 //! and brand-confidence fingerprinting.
+pub mod tuya_beacon;
+
+pub use tuya_beacon::{TuyaBeaconObs, TUYA_BEACON_PORT, decode_beacon, listen};
 
 pub mod census;
 
