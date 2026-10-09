@@ -81,6 +81,10 @@ pub mod tracking;
 /// Owner-authorized TUTK/IOTC NEW-protocol (0xCC51) live adapter: acquisition
 /// lifecycle, frame custody capsules, and ledger batches over fss-tutk.
 pub mod tutk;
+/// AOSU/Tuya homebase → evidence semantics: vendor-derived event candidates,
+/// wake-provenanced segments, device-state reports, and battery/event-driven
+/// coverage honesty (LAB-AOSU-6).
+pub mod tuya;
 /// Conservative sampled-occupancy episodes from consecutive actual track observations.
 pub mod zone_dwell;
 
