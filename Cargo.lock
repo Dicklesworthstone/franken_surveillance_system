@@ -126,6 +126,7 @@ dependencies = [
  "fss-publication",
  "fss-tensor",
  "fss-tutk",
+ "fss-tuya",
  "fss-twin",
 ]
 
@@ -139,6 +140,13 @@ dependencies = [
 [[package]]
 name = "fss-tutk"
 version = "0.0.1"
+
+[[package]]
+name = "fss-tuya"
+version = "0.0.1"
+dependencies = [
+ "fss-core",
+]
 
 [[package]]
 name = "fss-twin"
