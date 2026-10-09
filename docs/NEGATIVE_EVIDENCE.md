@@ -67,3 +67,24 @@ negative constraints:
   HL_CAM4/4.52.17.26 tuple. NEW-protocol `0x1002` discovery is the only supported path there.
 - **Revival:** a Wyze firmware generation that answers `0x0601`, or an owner-added device of
   another TUTK brand on the LAN.
+
+### NEG-005 — TUTK-NEW discovery corroboration is not credential-less
+
+- **Hypothesis:** a credential-less 0x1002 NEW-protocol discovery probe can corroborate
+  a Wyze-OUI host as a live TUTK camera during LAN discovery (any response proves a
+  0xCC51 listener, regardless of auth outcome).
+- **Date / commit:** 2026-10-09; probe at `fss-reference/src/discovery/service.rs`
+  (removed; the note remains).
+- **Setup:** identical probe bytes and socket shape, two identities: the owner's real
+  camera identity (uid/enr/mac from the lab cfg) vs a foreign test identity, both to
+  the same awake camera (192.168.4.23:32761, verified answering minutes earlier).
+- **Result:** owner-identity probe → response from :44650 every time; foreign-identity
+  probe (either source bind) → zero responses across repeated attempts. The camera
+  silently absorbs probes whose 0x1002 HMAC is not keyed by ITS OWN uid/enr/mac.
+- **Decision:** discovery cannot corroborate Wyze hosts without owner credentials.
+  Fingerprint keeps bare Wyze-OUI at Possible (Wyze also makes non-camera devices);
+  the dispatch path names UID+ENR as the ingredient that both corroborates and
+  onboardss. Tuya beacons remain credential-less corroboration (unauthenticated
+  broadcasts).
+- **Revival:** a firmware generation that answers discovery with a well-known or
+  identity-less key, or an owner-provisioned credential store wired into discovery.

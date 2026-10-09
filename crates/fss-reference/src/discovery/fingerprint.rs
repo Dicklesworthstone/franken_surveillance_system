@@ -30,6 +30,10 @@ pub enum Signal {
     TuyaBeacon(&'static str),
     /// LAA/private MAC — OUI classification inapplicable.
     LocallyAdministeredMac,
+    /// The host ANSWERED a credential-less TUTK NEW-protocol discovery
+    /// probe (any response — even auth-failing — proves a live 0xCC51
+    /// listener; evidence: responder port).
+    TutkListener(u16),
 }
 
 /// Brand hypothesis with confidence and evidence.
@@ -73,7 +77,11 @@ pub enum Confidence {
 
 /// Classifies one host against the fingerprint rules.
 #[must_use]
-pub fn classify_host(host: &HostObs, beacons_from_host: &[&TuyaBeaconObs]) -> BrandConfidence {
+pub fn classify_host(
+    host: &HostObs,
+    beacons_from_host: &[&TuyaBeaconObs],
+    tutk_listener_port: Option<u16>,
+) -> BrandConfidence {
     let mut signals = Vec::new();
 
     // LAA check first: locally administered bit set → OUI inapplicable.
@@ -90,6 +98,11 @@ pub fn classify_host(host: &HostObs, beacons_from_host: &[&TuyaBeaconObs]) -> Br
             confidence: Confidence::Possible,
             signals,
         };
+    }
+
+    // TUTK listener corroboration (credential-less probe answered).
+    if let Some(port) = tutk_listener_port {
+        signals.push(Signal::TutkListener(port));
     }
 
     // Tuya beacon: decisive.
@@ -136,7 +149,10 @@ pub fn classify_host(host: &HostObs, beacons_from_host: &[&TuyaBeaconObs]) -> Br
         signals.push(Signal::PortSignature(vec![6668, 8888]));
     }
 
-    // Combine: two agreeing signals → Confirmed; one → Likely/Possible.
+    // Combine honestly: Wyze also makes non-camera devices, so a bare OUI
+    // match is Possible (vendor suggests the family, nothing more). OUI
+    // plus an independent corroboration (listener, ports) is Likely; three
+    // agreeing signals are Confirmed.
     let brand = match (&oui_brand, &port_brand) {
         (Some(a), Some(b)) if a == b => Some(a.clone()),
         (Some(a), None) | (None, Some(a)) => Some(a.clone()),
@@ -144,10 +160,19 @@ pub fn classify_host(host: &HostObs, beacons_from_host: &[&TuyaBeaconObs]) -> Br
         (None, None) => None,
     }
     .unwrap_or(Brand::Unknown);
-    let confidence = match signals.len() {
-        0 => Confidence::Possible,
-        1 => Confidence::Likely,
-        _ => Confidence::Confirmed,
+    let has_listener = signals
+        .iter()
+        .any(|s| matches!(s, Signal::TutkListener(_)));
+    let independent = signals
+        .iter()
+        .filter(|s| !matches!(s, Signal::LocallyAdministeredMac))
+        .count();
+    let confidence = if has_listener && independent >= 2 {
+        Confidence::Confirmed
+    } else if independent >= 2 || (has_listener && independent == 1) {
+        Confidence::Likely
+    } else {
+        Confidence::Possible
     };
     BrandConfidence {
         brand,
@@ -171,16 +196,31 @@ mod tests {
     }
 
     #[test]
-    fn wyze_oui_zero_tcp_is_likely_tutk() {
+    fn wyze_oui_alone_is_possible_not_likely() {
+        // Wyze also makes plugs/sensors: a bare OUI match never reaches Likely.
         let h = host("192.168.4.23", "80:48:2c:52:59:05", Some("Wyze Labs Inc"), &[]);
-        let c = classify_host(&h, &[]);
+        let c = classify_host(&h, &[], None);
         assert_eq!(c.brand, Brand::Tutk);
-        assert_eq!(c.confidence, Confidence::Likely);
+        assert_eq!(c.confidence, Confidence::Possible);
         assert!(matches!(&c.signals[0], Signal::OuiVendor(v) if v == "Wyze Labs Inc"));
     }
 
     #[test]
-    fn aosu_homebase_oui_plus_tuya_ports_confirmed() {
+    fn wyze_oui_plus_listener_is_confirmed() {
+        // Vendor (OUI) + live protocol proof (listener) = Confirmed: TUTK is
+        // the camera transport; a Wyze TUTK speaker is a camera.
+        let h = host("192.168.4.23", "80:48:2c:52:59:05", Some("Wyze Labs Inc"), &[]);
+        let c = classify_host(&h, &[], Some(44650));
+        assert_eq!(c.brand, Brand::Tutk);
+        assert_eq!(c.confidence, Confidence::Confirmed);
+        assert!(c
+            .signals
+            .iter()
+            .any(|s| matches!(s, Signal::TutkListener(44650))));
+    }
+
+    #[test]
+    fn aosu_homebase_oui_plus_tuya_ports_likely() {
         // Real captured shape: Glazero OUI + 443/6668/8888/51028 open.
         let h = host(
             "192.168.4.37",
@@ -188,9 +228,11 @@ mod tests {
             Some("Shenzhen Glazero Technology Co., Ltd."),
             &[443, 6668, 51028, 8888],
         );
-        let c = classify_host(&h, &[]);
+        let c = classify_host(&h, &[], None);
         assert_eq!(c.brand, Brand::Tuya);
-        assert_eq!(c.confidence, Confidence::Confirmed);
+        // OUI + port signature (two weak signals, no protocol proof): Likely.
+        // A beacon makes it Confirmed (decisive), as the next test shows.
+        assert_eq!(c.confidence, Confidence::Likely);
     }
 
     #[test]
@@ -202,7 +244,7 @@ mod tests {
         )
         .unwrap();
         let refs = [&beacon];
-        let c = classify_host(&h, &refs);
+        let c = classify_host(&h, &refs, None);
         assert_eq!(c.brand, Brand::Tuya);
         assert_eq!(c.confidence, Confidence::Confirmed);
         assert!(matches!(c.signals[0], Signal::TuyaBeacon("BOARDCAST_LPV34")));
@@ -216,14 +258,14 @@ mod tests {
             Some("Resideo"),
             &[80, 443],
         );
-        let c = classify_host(&h, &[]);
+        let c = classify_host(&h, &[], None);
         assert_eq!(c.brand, Brand::EmbeddedWeb);
     }
 
     #[test]
     fn infrastructure_not_camera() {
         let h = host("192.168.4.1", "48:dd:0c:c9:ec:0d", Some("eero inc."), &[80]);
-        let c = classify_host(&h, &[]);
+        let c = classify_host(&h, &[], None);
         assert_eq!(c.brand, Brand::Infrastructure);
     }
 
@@ -231,7 +273,7 @@ mod tests {
     fn laa_mac_excluded_with_reason() {
         // iPhone: da:91 prefix has the local bit set.
         let h = host("192.168.5.206", "da:91:aa:bb:cc:dd", None, &[]);
-        let c = classify_host(&h, &[]);
+        let c = classify_host(&h, &[], None);
         assert_eq!(c.brand, Brand::Unknown);
         assert!(matches!(c.signals[0], Signal::LocallyAdministeredMac));
     }
@@ -239,7 +281,7 @@ mod tests {
     #[test]
     fn unknown_stays_unknown_with_possible() {
         let h = host("192.168.6.85", "7c:70:bc:5d:4c:09", None, &[]);
-        let c = classify_host(&h, &[]);
+        let c = classify_host(&h, &[], None);
         assert_eq!(c.brand, Brand::Unknown);
         assert_eq!(c.confidence, Confidence::Possible);
     }

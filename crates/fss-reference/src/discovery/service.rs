@@ -107,6 +107,14 @@ pub fn discover(cfg: &DiscoverConfig, cancel: &AtomicBool) -> Result<DiscoverRep
         ping_targets,
     } = run_census(&cfg.census, &oui, cancel)?;
 
+    // NOTE (negative finding, 2026-10-09): TUTK-NEW discovery corroboration
+    // is NOT credential-less — the 0x1002 HMAC is keyed by the CAMERA's own
+    // uid/enr/mac identity, so a probe with any other identity is silently
+    // absorbed (verified live: owner-identity probe answers, foreign-identity
+    // probe to the same camera does not). Bare Wyze-OUI hosts therefore stay
+    // Possible until the owner provisions credentials, which both corroborate
+    // and onboard. See NEG-005 in docs/NEGATIVE_EVIDENCE.md.
+
     // Stage 3+4: classify each host with beacon corroboration, dispatch.
     let mut candidates = Vec::with_capacity(hosts.len());
     for host in hosts {
@@ -114,7 +122,7 @@ pub fn discover(cfg: &DiscoverConfig, cancel: &AtomicBool) -> Result<DiscoverRep
             .get(&host.ip.to_string())
             .map(|v| v.iter().copied().collect())
             .unwrap_or_default();
-        let brand = classify_host(&host, &refs);
+        let brand = classify_host(&host, &refs, None);
         let dp = dispatch(&brand);
         candidates.push(DeviceCandidate {
             host,

@@ -152,6 +152,9 @@ fn run(o: &Options) -> Result<String, &'static str> {
                 fss_reference::discovery::Signal::LocallyAdministeredMac => {
                     "\"laa-mac\"".to_owned()
                 }
+                fss_reference::discovery::Signal::TutkListener(port) => {
+                    format!("\"tutk-listener:{port}\"")
+                }
             })
             .collect();
         rows.push(format!(

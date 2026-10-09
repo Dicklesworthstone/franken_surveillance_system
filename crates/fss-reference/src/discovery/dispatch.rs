@@ -107,7 +107,19 @@ pub fn dispatch(brand: &BrandConfidence) -> AdapterDispatch {
             missing: None,
             blocked_reason: Some("no supporting fingerprint signal; a guess never dispatches"),
         },
-        // weak confidence on a real brand: same honesty rule
+        // Possible-confidence TUTK: the OUI suggests the family, but Wyze also
+        // makes non-camera devices and credential-less corroboration is
+        // impossible (discovery HMAC is keyed by the camera identity — NEG-005).
+        // The owner's UID+ENR both corroborate and onboard, so name them.
+        (Brand::Tutk, false) => AdapterDispatch {
+            adapter: AdapterPath::ImportOnly,
+            readiness: Readiness::Unavailable,
+            missing: Some(AuthIngredient::WyzeUidEnr),
+            blocked_reason: Some(
+                "OUI-only (Possible): provision Wyze UID+ENR to corroborate and onboard",
+            ),
+        },
+        // Other weak-confidence brands: collect more signals first.
         (_, false) => AdapterDispatch {
             adapter: AdapterPath::ImportOnly,
             readiness: Readiness::Unavailable,
@@ -169,10 +181,21 @@ mod tests {
     }
 
     #[test]
-    fn weak_confidence_held_back() {
+    fn weak_tutk_names_the_corroborating_credential() {
         let c = confidence(Brand::Tutk, Confidence::Possible, vec![]);
         let d = dispatch(&c);
         assert_eq!(d.adapter, AdapterPath::ImportOnly);
+        assert_eq!(d.readiness, Readiness::Unavailable);
+        assert_eq!(d.missing, Some(AuthIngredient::WyzeUidEnr));
+        assert!(d
+            .blocked_reason
+            .is_some_and(|r| r.contains("corroborate")));
+    }
+
+    #[test]
+    fn weak_other_brands_held_back() {
+        let c = confidence(Brand::Tuya, Confidence::Possible, vec![]);
+        let d = dispatch(&c);
         assert_eq!(
             d.blocked_reason,
             Some("confidence below Likely; collect more signals first")
