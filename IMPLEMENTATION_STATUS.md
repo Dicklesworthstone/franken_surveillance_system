@@ -49,6 +49,16 @@ It is also not a complete surveillance product. Native device adapters, producti
 All of this is tested only on generated fixtures (FFmpeg `testsrc` encodes, procedural JPEGs,
 synthetic scenes). None of it has been measured on real camera footage.
 
+Separately, the owner-authorized vendor lanes (2026-10-07/09) carry live-LAN evidence rather than
+fixture-only proof: the TUTK/IOTC NEW-protocol lane for Wyze-class cameras (wire, cryptography,
+session, ingest adapter) is live-proven against owner devices; and the Tuya 3.4/3.5 lane for the
+AOSU homebase fleet now has a first-party `fss-tuya` crate (55AA/6699 framing, AES-128-ECB/GCM,
+HMAC-SHA256 session negotiation, oracle byte-exact vectors), a deterministic homebase simulator,
+a sans-IO client, and the ingest/event-semantics mapper with battery/event-driven coverage
+honesty, all differentially tested client-versus-simulator (32/32 + 7/7 green). The AOSU live
+session remains blocked on the owner local_key (NEG-003); the Yi IPC is ONVIF-gated behind
+one-time vendor-app provisioning (NEG-006) with the yi-hack owner-flash path documented.
+
 - **Ingest and capture:** file import with custody for Annex-B/MJPEG/rtpplay and indexed MP4
   with an H.264 `avc1` (`mp4avc`) or H.265 `hvc1`/`hev1` (`mp4hevc`) track: one segment per
   sample with exact source spans, every other byte typed container structure, `avcC`/`hvcC`

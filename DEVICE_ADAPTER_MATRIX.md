@@ -72,6 +72,18 @@ account's Tuya identity (`tuyaUid`); device keys and stream setup ride the encry
 OEM (iotbing) channel keyed at app login. Battery cams remain event-driven: an import or
 wake-on-event feed is never represented as continuous perimeter coverage.
 
+**Lab resolution (2026-10-09, LAB-AOSU-4/5/6 beads):** the full Tuya 3.4/3.5 protocol stack is
+now first-party Rust (`fss-tuya` crate: 55AA/6699 wire, AES-128-ECB/GCM, HMAC-SHA256 session
+proofs, oracle byte-exact against tinytuya-semantics vectors; deterministic `HomebaseSim`;
+sans-IO `TuyaClient`), plus the `ingest/tuya.rs` evidence mapper (vendor-derived provenance
+never ground truth; battery cams never `Continuous`; offline cams `not_observable`, never
+"clear"). TCP surface re-characterized: TCP 443 accepts but completes no TLS handshake without a
+client certificate (mutual-TLS device-cloud channel); TCP 6668 drops a wrong-key cmd-3 silently
+— matching the simulator's wrong-key behavior, confirming Tuya 3.5 session semantics; TCP 8888
+actively closes on unframed input (app local channel; handshake mapping waits on LAB-AOSU-1
+MITM); TCP 51028 is a tinyproxy/1.11.2 instance that does NOT openly forward; no local RTSP
+(554/8554 closed). The only remaining gate is the owner local_key (NEG-003, LAB-AOSU-1).
+
 ### DJI Flip
 
 DJI documents live feed in DJI Fly and file transfer. The current Mobile SDK supported-product list
