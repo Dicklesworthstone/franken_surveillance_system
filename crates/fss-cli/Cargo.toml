@@ -60,6 +60,10 @@ name = "fss-capture-tutk"
 path = "src/bin/fss-capture-tutk.rs"
 
 [[bin]]
+name = "fss-discover"
+path = "src/bin/fss-discover.rs"
+
+[[bin]]
 name = "fss-capture-reconnect"
 path = "src/bin/fss-capture-reconnect.rs"
 

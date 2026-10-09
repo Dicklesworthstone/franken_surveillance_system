@@ -9,7 +9,10 @@ pub use tuya_beacon::{TuyaBeaconObs, TUYA_BEACON_PORT, decode_beacon, listen};
 pub mod census;
 pub mod dispatch;
 pub mod fingerprint;
+pub mod service;
 pub mod standards;
+
+pub use service::{DeviceCandidate, DiscoverConfig, DiscoverReport, discover};
 
 pub use standards::{
     MDNS_CAMERA_TYPES, MdnsAnswer, SsdpResponse, WsdMatch, build_mdns_query,
