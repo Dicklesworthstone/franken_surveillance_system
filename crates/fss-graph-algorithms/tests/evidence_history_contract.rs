@@ -151,7 +151,7 @@ fn unreferenced_ancestors_are_validated_without_bulk_expansion() -> TestResult {
     let new = successor(&old, ContentDigest::sha256(b"new source"))?;
     let projection = build(&[vec![old.clone(), new.clone()]])?;
     assert_eq!(projection.catalogue_revisions(), 2);
-    assert_eq!(projection.records(), &[new.clone()]);
+    assert_eq!(projection.records(), std::slice::from_ref(&new));
     assert_eq!(projection.catalogue_bytes(), old.to_versioned_bytes()?.len() + new.to_versioned_bytes()?.len());
     assert!(projection.graph().index_of(&object_node(old.revision_digest())).is_none());
     let mut invalid_old = old;
@@ -270,5 +270,51 @@ fn seeded_histories_match_independent_removal_and_permutation_oracles() -> TestR
         assert_eq!(projection, shuffled, "seed {seed}");
         assert_eq!(result, shuffled.analyze(anchor(), budget(&shuffled))?, "seed {seed}");
     }
+    Ok(())
+}
+
+#[test]
+fn artifact_impact_reaches_current_dependents_through_old_revisions_only() -> TestResult {
+    let source = ContentDigest::sha256(b"old source");
+    let old = event("event:a", vec![edge(source, EvidenceEdgeRelation::Supports)])?;
+    let new = successor(&old, ContentDigest::sha256(b"unrelated new support"))?;
+    let target = event("event:b", vec![edge(old.revision_digest(), EvidenceEdgeRelation::Supports)])?;
+    let counter = event("event:c", vec![edge(source, EvidenceEdgeRelation::Contradicts)])?;
+    let projection = build(&[vec![old.clone(), new], vec![target.clone()], vec![counter]])?;
+    let impact = projection.support_impact(source, anchor(), budget(&projection))?;
+    assert_eq!(impact.affected_heads, vec![(target.event_id.to_string(), target.revision_digest())]);
+    assert_eq!(impact.run.output.root, object_node(source));
+    let historical = projection.support_impact(old.revision_digest(), anchor(), budget(&projection))?;
+    assert_eq!(impact.affected_heads, historical.affected_heads);
+    assert_ne!(impact.run.input_digest, historical.run.input_digest);
+    assert_ne!(impact.witness.digest(), historical.witness.digest());
+    Ok(())
+}
+
+#[test]
+fn impact_is_possible_dependency_not_indispensability() -> TestResult {
+    let a = ContentDigest::sha256(b"alternative a");
+    let b = ContentDigest::sha256(b"alternative b");
+    let record = event("event:a", vec![edge(a, EvidenceEdgeRelation::Supports), edge(b, EvidenceEdgeRelation::Supports)])?;
+    let projection = build(&[vec![record.clone()]])?;
+    let global = projection.analyze(anchor(), budget(&projection))?;
+    assert_eq!(global.claims[0].immediate_dominator.as_deref(), Some(FRONTIER_ROOT));
+    let impact = projection.support_impact(a, anchor(), budget(&projection))?;
+    assert_eq!(impact.affected_heads, vec![(record.event_id.to_string(), record.revision_digest())]);
+    assert!(projection.support_impact(a, anchor(), Budget::new(impact.run.operations - 1, u64::MAX)).is_err());
+    assert!(projection.support_impact(a, anchor(), Budget::new(u64::MAX, impact.run.output_entries - 1)).is_err());
+    assert!(projection.support_impact(ContentDigest::sha256(b"unknown"), anchor(), budget(&projection)).is_err());
+    Ok(())
+}
+
+#[test]
+fn a_current_revision_is_its_own_zero_length_impact_root() -> TestResult {
+    let record = event("event:a", vec![])?;
+    let projection = build(&[vec![record.clone()]])?;
+    let global = projection.analyze(anchor(), budget(&projection))?;
+    assert_eq!(global.claims[0].reachability, SupportReachability::NoDeclaredSupport);
+    let impact = projection.support_impact(record.revision_digest(), anchor(), budget(&projection))?;
+    assert_eq!(impact.affected_heads, vec![(record.event_id.to_string(), record.revision_digest())]);
+    // Impact is not an assertion that an unsupported event became grounded or true.
     Ok(())
 }

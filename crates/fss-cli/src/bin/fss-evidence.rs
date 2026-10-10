@@ -19,6 +19,9 @@ use fss_graph_algorithms::evidence::{
 };
 use fss_reference::agent_orient::{OrientLimits, read_deployment};
 
+#[path = "fss-evidence/history.rs"]
+mod history;
+
 const FORMAT: &str = "fss.evidence_support_analysis.v1";
 const MAX_ARGS: usize = 17;
 const MAX_ARG_BYTES: usize = 4096;
@@ -55,6 +58,7 @@ const HELP: &str = "fss-evidence analyze --root DIR --site SITE\n\
   separate OrientLimits bounds. Timeout checks bracket read/build/analysis/render;\n\
   they do NOT preempt filesystem calls or the bounded algorithm. Oversized reports\n\
   fail before stdout; there is no partial-answer or heuristic fallback.\n\
+  Historical expansion and artifact impact: fss-evidence analyze-history --help.\n\
   Reference candidate: native tests and production qualification have not run.\n";
 
 #[derive(Clone, Debug)]
@@ -371,13 +375,17 @@ fn emit(writer: &mut impl Write, mut bytes: &[u8]) -> io::Result<()> {
 
 fn main() -> ExitCode {
     let args: Vec<_> = std::env::args_os().skip(1).take(MAX_ARGS + 1).collect();
-    let result = match parse(&args) {
-        Ok(None) => Ok(HELP.to_owned()),
-        Ok(Some(request)) => {
-            let started = Instant::now();
-            execute(&request, &|| started.elapsed() >= request.timeout)
+    let result = if matches!(args.first().and_then(|arg| arg.to_str()), Some("analyze-history" | "impact")) {
+        history::run(&args)
+    } else {
+        match parse(&args) {
+            Ok(None) => Ok(HELP.to_owned()),
+            Ok(Some(request)) => {
+                let started = Instant::now();
+                execute(&request, &|| started.elapsed() >= request.timeout)
+            }
+            Err(error) => Err(error),
         }
-        Err(error) => Err(error),
     };
     match result {
         Ok(report) => match emit(&mut io::stdout().lock(), report.as_bytes()) {

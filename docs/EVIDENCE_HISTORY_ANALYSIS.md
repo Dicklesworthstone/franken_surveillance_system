@@ -67,3 +67,64 @@ cargo test -p fss-graph-algorithms --test evidence_projection
 
 No bead, hardware support claim or release qualification is closed by this code.
 Source custody checks and the universal agent-response integration remain separate.
+
+## Operator commands
+
+```sh
+cargo run -p fss-cli --bin fss-evidence -- analyze-history \
+  --root /path/to/deployment --site site:your-site
+
+cargo run -p fss-cli --bin fss-evidence -- impact \
+  --root /path/to/deployment --site site:your-site \
+  --artifact sha256:REPLACE_WITH_64_HEX_DIGITS
+```
+
+Both commands use the existing read-only deployment reader, verify that the
+selected head matches the retained revision-chain tail and committed revision
+digest, and pass complete retained lineages to the compiler. They preserve native
+filesystem paths, parse all options before I/O, refuse another site's snapshot,
+and never create a deployment, take writer locks, repair, retract or dispatch.
+Existing `analyze` semantics and report bytes remain unchanged.
+
+`analyze-history` reports the historical graph's structure from its explicitly
+unexpanded-reference frontier. `impact` runs the same registered `ALG-DOM-001`
+from the exact requested artifact instead. `heads_reachable_from_query_root`
+identifies current events with at least one explicit positive-support path from
+that artifact, including paths through old revisions. An active revision is
+reachable from itself by a zero-length path. Superseded revisions remain separate
+from their successors: the current-head mapping and full expanded records are
+always reported together.
+
+Impact is **possible positive-support dependence**, not indispensability or proof
+of invalidation. A target with alternate support paths still appears. Conversely,
+no positive path says nothing about contradictory, invalidating, tamper, ordering,
+or other non-support influence. An artifact not present in the expanded graph is
+refused, not reported as unaffected. Catalogue-only ancestors are not implicitly
+promoted into query roots. Source bytes are not hydrated and source custody,
+deletion status and current availability remain unchecked by this diagnostic.
+
+The JSON format is `fss.evidence_support_history.v1`, with an explicit mode and
+query root. Every expanded record keeps its complete canonical event JSON, exact
+digest, current-head mapping and positive-path result. Catalogue-only revisions
+have explicit counts rather than silent disappearance. Both uncommitted-tail flags
+and source read counters are retained. A false `positive_path_from_query_root`
+is a structural fact in this graph, never physical evidence of absence.
+
+The original analysis options apply: `--expected-witness`, `--max-operations`,
+`--max-output-entries`, `--max-report-bytes` and `--timeout-ms`. Impact additionally
+requires one `--artifact`; it is refused for `analyze-history`. The original
+argument count/byte ceilings apply before forwarding shared options. Complete
+reports, including their newline, must fit the byte budget; no record or warning
+is dropped. Pins bind the exact query root, mode's projection policy and authority
+anchor through the registered witness, not changing filesystem availability.
+
+The increment adds three native impact contracts and nine operator contracts
+covering history expansion, exact artifact roots and pins, alternative support,
+complete record preservation, strict parsing, native paths, cancellation, missing
+sources, wrong sites, corrupt chains and exact output limits. These native tests
+are authored but unrun in this environment; the independent Python model is not
+a replacement for them.
+
+```sh
+cargo test -p fss-cli --bin fss-evidence
+```

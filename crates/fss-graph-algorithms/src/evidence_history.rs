@@ -278,3 +278,47 @@ impl EvidenceHistoryProjection {
         Ok(EvidenceClaimAnalysis { run, witness, claims })
     }
 }
+
+/// Witnessed positive-support impact of one exact artifact, never an invalidation or effect.
+#[derive(Clone, Debug, PartialEq)]
+pub struct SupportImpactAnalysis {
+    /// Registered dominator run rooted at the exact artifact rather than the external frontier.
+    pub run: crate::certified::CertifiedRun<dominators::DominanceOutput>,
+    /// Witness binds the requested artifact through the algorithm's query input digest.
+    pub witness: fss_core::GraphAlgorithmWitness,
+    /// Current heads reachable on at least one explicit positive support path, ordered by ID.
+    /// Reachability does not imply that this artifact is necessary on every support path.
+    pub affected_heads: Vec<(String, ContentDigest)>,
+}
+
+impl EvidenceHistoryProjection {
+    /// Find current heads with a positive support path from an exact artifact or revision.
+    ///
+    /// Alternate support paths do not remove a head from this list. Conversely, an absent
+    /// positive path says nothing about contradiction, invalidation, tamper or other relations,
+    /// all of which remain available in the full records. This read authorizes no retraction.
+    ///
+    /// # Errors
+    ///
+    /// A root outside the expanded positive-support graph is refused, not reported as an
+    /// unaffected artifact. Algorithm budgets, registered bounds and anchor checks fail closed.
+    pub fn support_impact(
+        &self,
+        artifact: ContentDigest,
+        anchor: LedgerAnchor,
+        budget: Budget,
+    ) -> Result<SupportImpactAnalysis, EvidenceProjectionError> {
+        let root = object_node(artifact);
+        let run = dominators::dominators(
+            &self.graph, &root, DominanceDirection::Dominators, budget,
+        )?;
+        let witness = run.witness(PROJECTION_ID, anchor).map_err(EvidenceProjectionError::Contract)?;
+        check_witness(&witness, &dominators::IDENTITY, &dominators::bound(run.node_count, run.edge_count))?;
+        let unreachable: BTreeSet<_> = run.output.unreachable.iter().map(String::as_str).collect();
+        let affected_heads = self.heads.iter()
+            .filter(|(_, digest)| !unreachable.contains(object_node(**digest).as_str()))
+            .map(|(id, digest)| (id.clone(), *digest))
+            .collect();
+        Ok(SupportImpactAnalysis { run, witness, affected_heads })
+    }
+}
