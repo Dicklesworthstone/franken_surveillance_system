@@ -896,7 +896,8 @@ class TestSchemaConstitution(unittest.TestCase):
         # + exact durable reconnect capture approval = 304.
         # + whole-recording corroboration plan/camera/analysis/frame/observation/association/proposal = 311.
         # + exact retained HTTP history watch and CLI original-retention plans = 313.
-        self.assertEqual(result["digestDomainCount"], 313)
+        # + exact source-preserving RTSP import request/identity/proof/CLI plan = 317.
+        self.assertEqual(result["digestDomainCount"], 317)
 
         # Continuation cursor is verified implemented
         implemented_names = {s["name"] for s in result["schemas"] if s["status"] == "implemented"}
@@ -1437,7 +1438,8 @@ class TestSchemaConstitutionCrossReviewRegressions(unittest.TestCase):
         # + exact durable reconnect capture approval = 304.
         # + whole-recording corroboration plan/camera/analysis/frame/observation/association/proposal = 311.
         # + exact retained HTTP history watch and CLI original-retention plans = 313.
-        self.assertEqual(result["digestDomainCount"], 313)
+        # + exact source-preserving RTSP import request/identity/proof/CLI plan = 317.
+        self.assertEqual(result["digestDomainCount"], 317)
         # 36 = 28 + fss.sensor_tamper_status.v1 (owner SensorTamperStatus, fss-2uftm)
         # + fss.agent_operations.v1 / fss.agent_views.v1 / fss.agent_request_envelope.v1
         #   (owners AgentOperation / AgentView / AgentRequestEnvelope, fss-x4a.30.83.17-40)

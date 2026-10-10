@@ -1123,7 +1123,7 @@ pub fn sniff_format(bytes: &[u8]) -> Result<(DetectedFileFormat, &'static str), 
 
 /// Demuxer bounds of a file import: the largest admitted MP4 input, at most `max_samples`
 /// samples, and the demuxer's default box, table, NAL and metadata ceilings.
-fn mp4_demux_limits(max_samples: usize) -> fss_container::demux::DemuxLimits {
+pub(crate) fn mp4_demux_limits(max_samples: usize) -> fss_container::demux::DemuxLimits {
     use fss_container::demux::{DemuxLimits, MAX_MP4_INPUT_BYTES, MAX_MP4_SAMPLES};
     DemuxLimits {
         maximum_input_bytes: MAX_MP4_INPUT_BYTES,
@@ -1883,11 +1883,11 @@ pub(crate) fn append_planned_batch(
     }
 }
 
-struct ScannedSegments {
-    segment_spans: Vec<SegmentSpan>,
-    omission_spans: Vec<FileOmissionSpan>,
-    capsules: Vec<SensorCapsule>,
-    truncated_frames: usize,
+pub(crate) struct ScannedSegments {
+    pub(crate) segment_spans: Vec<SegmentSpan>,
+    pub(crate) omission_spans: Vec<FileOmissionSpan>,
+    pub(crate) capsules: Vec<SensorCapsule>,
+    pub(crate) truncated_frames: usize,
 }
 
 impl ScannedSegments {
@@ -2901,7 +2901,7 @@ impl FileIngestAdapter {
     /// tracks' data and Matroska block headers).
     /// Samples are complete by construction (the demuxer refuses the whole file otherwise), so
     /// no sample carries a source gap; samples stored out of decode order are refused.
-    fn container_segments(
+    pub(crate) fn container_segments(
         file_bytes: &[u8],
         format: DetectedFileFormat,
         request: &FileIngestRequest,
@@ -3098,6 +3098,12 @@ impl FileIngestAdapter {
         deployment: &ReferenceDeployment,
         segment_index: usize,
     ) -> Result<Vec<u8>, FileIngestError> {
+        if manifest.adapter_id == super::rtsp_import::ADAPTER {
+            return Err(FileIngestError::CorruptSegment {
+                detail: "RTSP originals require context-bound RetainedFileImport::read_segment"
+                    .to_owned(),
+            });
+        }
         if manifest.adapter_id == super::http_import::ADAPTER {
             return Err(FileIngestError::CorruptSegment {
                 detail: "HTTP originals require context-bound RetainedFileImport::read_segment"

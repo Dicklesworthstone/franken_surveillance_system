@@ -37,7 +37,7 @@ fn fixture() -> Result<FileImportManifest, FileIngestError> {
     })
 }
 
-fn read(d: ContentDigest) -> Result<Vec<u8>, FileIngestError> {
+fn read(d: ContentDigest, _length: u64) -> Result<Vec<u8>, FileIngestError> {
     if d == ContentDigest::sha256(b"abcd") {
         Ok(b"abcd".to_vec())
     } else if d == ContentDigest::sha256(b"xy") {
@@ -167,9 +167,9 @@ fn allocation_budget_is_checked_before_source_io() -> Result<(), FileIngestError
         ..RetainedReadLimits::default()
     };
     assert!(
-        assemble_segment(&m, 0, limits, &mut VerifiedChunkCache::default(), |d| {
+        assemble_segment(&m, 0, limits, &mut VerifiedChunkCache::default(), |d, length| {
             reads += 1;
-            read(d)
+            read(d, length)
         })
         .is_err()
     );
@@ -182,11 +182,11 @@ fn corrupt_short_and_oversized_chunks_are_refused() -> Result<(), FileIngestErro
     let m = fixture()?;
     for replacement in [b"z".as_slice(), b"zz".as_slice(), b"xyz".as_slice()] {
         assert!(
-            verify_source_chunks(&m, |d| {
+            verify_source_chunks(&m, |d, length| {
                 if d == ContentDigest::sha256(b"xy") {
                     Ok(replacement.to_vec())
                 } else {
-                    read(d)
+                    read(d, length)
                 }
             })
             .is_err()
@@ -234,9 +234,9 @@ fn a_verified_chunk_cache_reads_each_chunk_once_and_never_substitutes_bytes()
     let mut reads = 0;
     for _ in 0..3 {
         assert_eq!(
-            assemble_segment(&m, 0, RetainedReadLimits::default(), &mut cache, |d| {
+            assemble_segment(&m, 0, RetainedReadLimits::default(), &mut cache, |d, length| {
                 reads += 1;
-                read(d)
+                read(d, length)
             })?,
             b"cdabcdx"
         );
@@ -253,12 +253,12 @@ fn a_verified_chunk_cache_reads_each_chunk_once_and_never_substitutes_bytes()
         4,
         RetainedReadLimits::default(),
         &mut cache,
-        |d| {
+        |d, length| {
             reads += 1;
             if d == ContentDigest::sha256(b"abce") {
                 Ok(b"abcd".to_vec())
             } else {
-                read(d)
+                read(d, length)
             }
         },
     );
@@ -266,11 +266,11 @@ fn a_verified_chunk_cache_reads_each_chunk_once_and_never_substitutes_bytes()
     assert_eq!(reads, 3);
     // A corrupt chunk is not cached: the next read verifies again.
     let mut fresh = VerifiedChunkCache::default();
-    let corrupt = assemble_segment(&m, 0, RetainedReadLimits::default(), &mut fresh, |d| {
+    let corrupt = assemble_segment(&m, 0, RetainedReadLimits::default(), &mut fresh, |d, length| {
         if d == ContentDigest::sha256(b"xy") {
             Ok(b"zz".to_vec())
         } else {
-            read(d)
+            read(d, length)
         }
     });
     assert!(corrupt.is_err());
@@ -278,5 +278,32 @@ fn a_verified_chunk_cache_reads_each_chunk_once_and_never_substitutes_bytes()
         assemble_segment(&m, 0, RetainedReadLimits::default(), &mut fresh, read)?,
         b"cdabcdx"
     );
+    Ok(())
+}
+
+#[test]
+fn source_callbacks_receive_each_exact_payload_ceiling_including_the_final_chunk()
+-> Result<(), FileIngestError> {
+    let m = fixture()?;
+    let mut requests = Vec::new();
+    assert_eq!(verify_source_chunks(&m, |digest, length| {
+        requests.push((digest, length));
+        read(digest, length)
+    })?, m.input_sha256);
+    assert_eq!(requests, vec![
+        (ContentDigest::sha256(b"abcd"), 4),
+        (ContentDigest::sha256(b"abcd"), 4),
+        (ContentDigest::sha256(b"xy"), 2),
+    ]);
+    requests.clear();
+    let mut cache = VerifiedChunkCache::default();
+    assert_eq!(assemble_segment(&m, 0, RetainedReadLimits::default(), &mut cache, |digest, length| {
+        requests.push((digest, length));
+        read(digest, length)
+    })?, b"cdabcdx");
+    assert_eq!(requests, vec![
+        (ContentDigest::sha256(b"abcd"), 4),
+        (ContentDigest::sha256(b"xy"), 2),
+    ]);
     Ok(())
 }

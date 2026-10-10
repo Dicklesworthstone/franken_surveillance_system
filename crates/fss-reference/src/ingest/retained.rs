@@ -196,6 +196,9 @@ impl FileImportManifest {
                 "partitioned manifest needs explicit part resolution",
             ));
         }
+        if self.adapter_id == super::rtsp_import::ADAPTER {
+            return Err(invalid("RTSP recording needs explicit original-packet resolution"));
+        }
         if self.adapter_id == super::http_import::ADAPTER {
             return Err(invalid(
                 "HTTP recording needs explicit original-wire resolution",
@@ -247,6 +250,11 @@ impl FileImportManifest {
                                 .bytes()
                                 .all(|b| b.is_ascii_digit() || (b'a'..=b'f').contains(&b))
                     })
+        } else if self.adapter_id == super::rtsp_import::ADAPTER {
+            matches!(self.format.as_str(), "mp4avc" | "mp4hevc")
+                && self.adapter_generation.strip_prefix(super::rtsp_import::GENERATION)
+                    .is_some_and(|hex| hex.len() == 64 && hex.bytes()
+                        .all(|b| b.is_ascii_digit() || (b'a'..=b'f').contains(&b)))
         } else {
             false
         };
@@ -546,9 +554,10 @@ impl RetainedFileImport {
         chunks: &mut VerifiedChunkCache,
     ) -> Result<Vec<u8>, FileIngestError> {
         self.revalidate(deployment, limits, cx)?;
-        let bytes = assemble_segment(&self.manifest, index, limits, chunks, |d| {
+        let bytes = assemble_segment(&self.manifest, index, limits, chunks, |d, length| {
             checkpoint(cx, STAGE_RETAINED_CHUNK)?;
-            Ok(deployment.publisher().spool().read(d)?)
+            let maximum = usize::try_from(length).map_err(|_| invalid("chunk allocation"))?;
+            Ok(deployment.publisher().spool().read_bounded(d, maximum)?)
         })?;
         super::http_import::verify_segment_budgeted(
             deployment,
@@ -558,6 +567,9 @@ impl RetainedFileImport {
             cx,
             &mut |n| chunks.reserve_source_bytes(n),
         )?;
+        let offset = self.manifest.segment_spans.get(index)
+            .ok_or_else(|| invalid("origin sample index"))?.offset;
+        chunks.verify_origin(deployment, &self.manifest, offset, &bytes, cx)?;
         checkpoint(cx, STAGE_RETAINED_COMPLETE)?;
         Ok(bytes)
     }
@@ -598,11 +610,13 @@ impl RetainedFileImport {
             span.len,
             limits,
             &mut chunks,
-            |d| {
+            |d, length| {
                 checkpoint(cx, STAGE_RETAINED_CHUNK)?;
-                Ok(deployment.publisher().spool().read(d)?)
+                let maximum = usize::try_from(length).map_err(|_| invalid("chunk allocation"))?;
+                Ok(deployment.publisher().spool().read_bounded(d, maximum)?)
             },
         )?;
+        chunks.verify_origin(deployment, &self.manifest, span.offset, &bytes, cx)?;
         checkpoint(cx, STAGE_RETAINED_COMPLETE)?;
         Ok(bytes)
     }
@@ -616,11 +630,13 @@ impl RetainedFileImport {
         cx: &ReplayCx,
     ) -> Result<ContentDigest, FileIngestError> {
         self.revalidate(deployment, limits, cx)?;
-        let result = verify_source_chunks(&self.manifest, |d| {
+        let result = verify_source_chunks(&self.manifest, |d, length| {
             checkpoint(cx, STAGE_RETAINED_CHUNK)?;
-            Ok(deployment.publisher().spool().read(d)?)
+            let maximum = usize::try_from(length).map_err(|_| invalid("chunk allocation"))?;
+            Ok(deployment.publisher().spool().read_bounded(d, maximum)?)
         })?;
         super::http_import::verify_originals(deployment, &self.manifest, cx)?;
+        super::rtsp_import::verify_originals(deployment, &self.manifest, cx)?;
         checkpoint(cx, STAGE_RETAINED_COMPLETE)?;
         Ok(result)
     }
@@ -671,10 +687,10 @@ fn chunk_identity(
 fn verified_chunk(
     manifest: &FileImportManifest,
     index: usize,
-    read: &mut impl FnMut(ContentDigest) -> Result<Vec<u8>, FileIngestError>,
+    read: &mut impl FnMut(ContentDigest, u64) -> Result<Vec<u8>, FileIngestError>,
 ) -> Result<Vec<u8>, FileIngestError> {
     let (expected, len) = chunk_identity(manifest, index)?;
-    let bytes = read(expected)?;
+    let bytes = read(expected, len)?;
     if bytes.len() as u64 != len || ContentDigest::sha256(&bytes) != expected {
         return Err(invalid("chunk length or checksum mismatch"));
     }
@@ -721,12 +737,15 @@ impl SourceReadBudget {
 /// Holds at most two chunks (a segment may straddle one boundary), each keyed by its verified
 /// SHA-256 digest and exact length: a chunk is served again only to a manifest naming that same
 /// digest and length at the requested position, so a cache can never substitute other bytes.
-/// Memory is bounded by twice the import's chunk size.
+/// Memory is bounded by twice the import's chunk size. RTSP imports additionally keep one
+/// source-verified native recording window (at most 32 MiB); its first read charges the same
+/// optional whole-scan source allowance, and final publication re-reads original custody.
 #[derive(Debug, Default)]
 pub struct VerifiedChunkCache {
     slots: [Option<(ContentDigest, Vec<u8>)>; 2],
     loaded: u64,
     source_budget: Option<SourceReadBudget>,
+    rtsp_origin: Option<super::rtsp_import::OriginCache>,
 }
 
 impl VerifiedChunkCache {
@@ -745,6 +764,21 @@ impl VerifiedChunkCache {
         }
     }
 
+    fn verify_origin(
+        &mut self,
+        deployment: &ReferenceDeployment,
+        manifest: &FileImportManifest,
+        offset: u64,
+        bytes: &[u8],
+        cx: &ReplayCx,
+    ) -> Result<(), FileIngestError> {
+        let budget = self.source_budget.clone();
+        super::rtsp_import::verify_range_budgeted(
+            deployment, manifest, offset, bytes, cx, &mut self.rtsp_origin,
+            &mut |n| budget.as_ref().map_or(Ok(()), |b| b.reserve(n)),
+        )
+    }
+
     /// Bytes of every chunk this cache has read and verified (each load counted).
     #[must_use]
     pub const fn chunk_bytes_read(&self) -> u64 {
@@ -755,7 +789,7 @@ impl VerifiedChunkCache {
         &mut self,
         manifest: &FileImportManifest,
         index: usize,
-        read: &mut impl FnMut(ContentDigest) -> Result<Vec<u8>, FileIngestError>,
+        read: &mut impl FnMut(ContentDigest, u64) -> Result<Vec<u8>, FileIngestError>,
     ) -> Result<&[u8], FileIngestError> {
         let (expected, len) = chunk_identity(manifest, index)?;
         let hit = |slot: &Option<(ContentDigest, Vec<u8>)>| {
@@ -783,7 +817,7 @@ fn assemble_segment(
     index: usize,
     limits: RetainedReadLimits,
     chunks: &mut VerifiedChunkCache,
-    read: impl FnMut(ContentDigest) -> Result<Vec<u8>, FileIngestError>,
+    read: impl FnMut(ContentDigest, u64) -> Result<Vec<u8>, FileIngestError>,
 ) -> Result<Vec<u8>, FileIngestError> {
     manifest.validate_structure(limits)?;
     let span =
@@ -808,7 +842,7 @@ fn assemble_range(
     len: u64,
     limits: RetainedReadLimits,
     chunks: &mut VerifiedChunkCache,
-    mut read: impl FnMut(ContentDigest) -> Result<Vec<u8>, FileIngestError>,
+    mut read: impl FnMut(ContentDigest, u64) -> Result<Vec<u8>, FileIngestError>,
 ) -> Result<Vec<u8>, FileIngestError> {
     if len > limits.max_segment_bytes {
         return Err(FileIngestError::SpoolCapacityExceeded {
@@ -851,7 +885,7 @@ fn assemble_range(
 
 fn verify_source_chunks(
     manifest: &FileImportManifest,
-    mut read: impl FnMut(ContentDigest) -> Result<Vec<u8>, FileIngestError>,
+    mut read: impl FnMut(ContentDigest, u64) -> Result<Vec<u8>, FileIngestError>,
 ) -> Result<ContentDigest, FileIngestError> {
     let mut hasher = Sha256Hasher::new();
     for index in 0..manifest.ordered_chunks.len() {

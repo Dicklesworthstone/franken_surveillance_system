@@ -70,6 +70,8 @@ pub mod recording_pipeline;
 pub mod retained;
 /// Recorded RTP continuity driven through the core acquisition session (fss-2h5zq.29).
 pub mod rtp_continuity;
+/// Source-preserving offline import of exact native AVC/HEVC recording windows.
+pub mod rtsp_import;
 /// Bounded recorded-RTP framing and source-preserving ingest.
 pub mod rtpdump;
 /// Owner site calibration: atlas localization, joint refinement, digest-bound record.

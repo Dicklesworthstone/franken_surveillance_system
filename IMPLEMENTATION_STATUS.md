@@ -10,6 +10,30 @@ Franken Surveillance System now has a coherent, dependency-light Rust reference 
 
 It is also not a complete surveillance product. Native device adapters, production media/model/graph/storage services, persistent distributed operation, every human and agent surface, complete qualification matrices, and the aggregate release root remain open. Status below distinguishes implemented reference semantics from production completion.
 
+## Source-preserving RTSP recording import (2026-10-10, reference, native validation pending)
+
+`fss-import-rtsp` closes the gap between native RTSP recording custody and retained media
+analysis for AVC and HEVC. An exact owner-approved window slot/root/scope is replay-verified
+through its packet-to-NAL-to-MP4 mapping, then imported with the original recording root,
+RTP source pack, index, initialization, fragment and canonical origin proof in destination
+custody. Existing decode, motion, watch and corroboration consume its ordinary retained import
+identity and verify the original ancestry, including decoder parameter reads. Completed
+destination analysis works with the capture archive offline. Exact import retries still verify
+the selected archive and reconcile partial/completed publication without duplicate authority.
+
+Native MP4 presentation offsets, including composition reordering, are preserved. Absolute
+capture origin/uncertainty is optional and explicitly an operator assumption; absent origin
+remains unknown. Current sensor privacy, independent original/media limits, bounded source
+caches and deletion closure remain enforced. Per-read exact chunk bounds are checked before
+allocation. This command opens no network connection and creates no event or alert authority.
+
+Ten native RTSP contracts, two spool-bound tests, one retained chunk-bound unit test, five CLI
+parser tests and two real-binary CLI tests were added. They include both codecs, offline decode,
+cold retry, damage, scope/budget refusal, masks, timestamp overflow and interrupted publication.
+**Native compilation, formatting and execution remain pending because the execution environment
+disconnected.** Source/API cross-review and changed-file Git/checksum checks are not native test
+results. See [the importer workflow](docs/rtsp_recording_import.md).
+
 ## Cold whole-recording event recovery (2026-10-10, reference, native validation pending)
 
 Published `event:long-watch:` and `event:long-corroborated:` candidates now have a cold

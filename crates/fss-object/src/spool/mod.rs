@@ -735,6 +735,22 @@ impl StagingSpool {
         self.load_indexed(digest)
     }
 
+    /// Reads a known object with a caller's additional payload ceiling checked before allocation.
+    /// This never widens the owner's existing bound or changes index/recovery state. A smaller
+    /// per-read allowance may refuse an otherwise valid object; ordinary later reads remain valid.
+    pub fn read_bounded(
+        &self,
+        digest: ContentDigest,
+        maximum_payload_bytes: usize,
+    ) -> Result<Vec<u8>, SpoolError> {
+        self.require_live()?;
+        self.load_indexed_classified_bounded(digest, maximum_payload_bytes)
+            .map_err(|outcome| match outcome {
+                ReadOutcome::Spool(error) => error,
+                ReadOutcome::Corrupt { kind, .. } => SpoolError::Corrupt { digest, kind },
+            })
+    }
+
     /// Removes exactly the orphaned staging files classified on open.
     ///
     /// Foreign entries and anything not classified as an orphan are never touched. An orphan
@@ -1198,6 +1214,14 @@ impl StagingSpool {
     }
 
     fn load_indexed_classified(&self, digest: ContentDigest) -> Result<Vec<u8>, ReadOutcome> {
+        self.load_indexed_classified_bounded(digest, self.limits.max_object_bytes)
+    }
+
+    fn load_indexed_classified_bounded(
+        &self,
+        digest: ContentDigest,
+        maximum_payload_bytes: usize,
+    ) -> Result<Vec<u8>, ReadOutcome> {
         let entry = self
             .index
             .get(&digest)
@@ -1210,7 +1234,7 @@ impl StagingSpool {
             self.io.as_ref(),
             &path,
             digest,
-            self.limits.max_object_bytes,
+            self.limits.max_object_bytes.min(maximum_payload_bytes),
         )
         .map_err(|failure| match failure {
             ReadFailure::Corrupt { kind, file_len } => ReadOutcome::Corrupt { kind, file_len },

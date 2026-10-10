@@ -183,6 +183,9 @@ pub(super) fn verify(
     super::super::http_import::verify_membership(
         deployment, manifest, &held, &capsules, import_hex, cx,
     )?;
+    super::super::rtsp_import::verify_membership(
+        deployment, manifest, &held, &capsules, import_hex, cx,
+    )?;
     checkpoint(cx, STAGE)?;
     Ok(())
 }

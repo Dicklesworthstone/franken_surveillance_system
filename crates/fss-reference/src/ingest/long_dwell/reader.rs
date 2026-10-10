@@ -9,6 +9,7 @@ pub(super) struct ChunkCursor {
     bytes_read: u64,
     maximum: u64,
     last_segment: Option<usize>,
+    rtsp_origin: Option<crate::ingest::rtsp_import::OriginCache>,
 }
 impl ChunkCursor {
     pub(super) fn new(maximum: u64) -> Self {
@@ -17,6 +18,7 @@ impl ChunkCursor {
             bytes_read: 0,
             maximum,
             last_segment: None,
+            rtsp_origin: None,
         }
     }
     pub(super) const fn bytes_read(&self) -> u64 {
@@ -70,7 +72,8 @@ impl ChunkCursor {
                     .min(manifest.chunk_bytes);
                 charge(&mut self.bytes_read, expected_len, self.maximum)?;
                 checkpoint(cx, "long_dwell:chunk")?;
-                let chunk = deployment.publisher().spool().read(digest)?;
+                let maximum = usize::try_from(expected_len).map_err(|_| WatchError::Limit)?;
+                let chunk = deployment.publisher().spool().read_bounded(digest, maximum)?;
                 if chunk.len() as u64 != expected_len || ContentDigest::sha256(&chunk) != digest {
                     return Err(RecordedDecodeError::InvalidReceipt.into());
                 }
@@ -106,6 +109,21 @@ impl ChunkCursor {
             },
         )
         .map_err(|error| source_read_error(error.into()))?;
+        let bytes_read = &mut self.bytes_read;
+        let maximum = self.maximum;
+        crate::ingest::rtsp_import::verify_range_budgeted(
+            deployment, manifest, span.offset, &bytes, cx, &mut self.rtsp_origin,
+            &mut |extra| {
+                let required = bytes_read.saturating_add(extra);
+                if required > maximum {
+                    return Err(crate::ingest::FileIngestError::SpoolCapacityExceeded {
+                        limit: "stream_source_chunk_bytes", required, available: maximum,
+                    });
+                }
+                *bytes_read = required;
+                Ok(())
+            },
+        ).map_err(|error| source_read_error(error.into()))?;
         self.last_segment = Some(index);
         Ok(bytes)
     }

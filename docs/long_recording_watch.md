@@ -24,7 +24,7 @@ fss-event watch \
   --report-out /path/to/review/porch-entries.json
 ```
 
-The source must already be retained by `fss-file import` or `fss-import-http` and have explicit
+The source must already be retained by `fss-file import`, `fss-import-http`, or `fss-import-rtsp` and have explicit
 operator capture-time hints. Those hints remain assumptions; this command does not calibrate camera clocks or infer
 UTC. The original import path is unnecessary once custody is complete.
 

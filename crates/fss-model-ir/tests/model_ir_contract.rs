@@ -509,9 +509,11 @@ fn test_schema_domain_and_pinned_counts() -> Result<(), Box<dyn Error>> {
     // + SCHEMA-DOMAIN-EXECUTOR-ACTIVITY-PACKAGE-SPEC-001 (fss-2h5zq.49) = 289
     // + recorded corroboration dependencies, assessment, cluster, edge and health-decision = 294.
     // + SCHEMA-DOMAIN-ACQUISITION-WINDOWED-DEGRADATION-001 = 295.
+    // + existing retained HTTP history and whole-recording domains = 313.
+    // + RTSP recording import request, identity, origin proof and CLI plan = 317.
     assert_eq!(
-        domain_count, 295,
-        "registries/DIGEST_DOMAINS.md count must remain pinned at 295"
+        domain_count, 317,
+        "registries/DIGEST_DOMAINS.md count must remain pinned at 317"
     );
 
     let schemas_path = Path::new(env!("CARGO_MANIFEST_DIR"))
