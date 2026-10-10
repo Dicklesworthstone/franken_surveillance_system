@@ -39,6 +39,8 @@ pub mod inference;
 pub mod long_dwell;
 /// Source-backed native replay of committed whole-recording dwell events and screening.
 pub mod long_dwell_replay;
+/// Current source-bound cold inspection and native replay of whole-recording entry events.
+pub mod long_event_replay;
 /// Whole-recording zone-entry observation over the native streaming perception pipeline.
 pub mod long_watch;
 pub mod mjpeg;

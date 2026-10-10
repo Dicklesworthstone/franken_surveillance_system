@@ -66,10 +66,10 @@ pub use recipe::{LongCorroborationRecipe, MAX_LONG_CORROBORATION_RECIPE_BYTES};
 
 const MAX_REPORT_BYTES: usize = 1024 * 1024;
 const PLAN_DOMAIN: &str = "fss.long_corroboration_plan.v1";
-const CAMERA_DOMAIN: &str = "fss.long_corroboration_camera.v1";
+pub(crate) const CAMERA_DOMAIN: &str = "fss.long_corroboration_camera.v1";
 const ANALYSIS_DOMAIN: &str = "fss.long_corroboration_analysis.v1";
 const OBSERVATION_DOMAIN: &str = "fss.long_corroboration_observation.v1";
-const POLICY: &[u8] = b"fss.long-corroboration.policy.v1:native-display-order-luma:\
+pub(crate) const POLICY: &[u8] = b"fss.long-corroboration.policy.v1:native-display-order-luma:\
 masked-before-perception:whole-recording-running-variance-and-kalman-global-iou:\
 confirmed-actual-samples:first-ground-zone-sample-per-source-track-and-epoch:\
 rounded-foot-point:owner-homography:ground-zone-mask-preimage-exclusion:\
@@ -540,6 +540,19 @@ impl LongCorroborationReport {
     /// Identity of both complete native analyses, associations, gates and declared dependencies.
     pub const fn analysis_digest(&self) -> ContentDigest {
         self.analysis_digest
+    }
+    /// Complete retained camera identities and actual native work for read-only event replay.
+    pub(crate) fn replay_camera_summaries(
+        &self,
+    ) -> impl Iterator<Item = (ContentDigest, ContentDigest, usize, u64)> + '_ {
+        self.cameras.iter().map(|camera| {
+            (
+                camera.manifest.root(),
+                ContentDigest::sha256(&camera.analysis),
+                camera.summary.frames,
+                camera.source_bytes,
+            )
+        })
     }
     /// Any requested whole-scan screening finding or incomplete screen blocks both cameras.
     pub fn publication_blocked(&self) -> bool {

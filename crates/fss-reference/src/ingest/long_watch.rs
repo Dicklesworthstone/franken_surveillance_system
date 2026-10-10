@@ -51,10 +51,10 @@ pub const HEALTH_PUBLICATION_BLOCKED: &str =
     "sensor-health findings or incomplete screening block long-watch publication";
 
 const MAX_REPORT_BYTES: usize = 1024 * 1024;
-const ANALYSIS_DOMAIN: &str = "fss.long_watch_analysis.v1";
-const ENTRY_DOMAIN: &str = "fss.long_watch_entry.v1";
+pub(super) const ANALYSIS_DOMAIN: &str = "fss.long_watch_analysis.v1";
+pub(super) const ENTRY_DOMAIN: &str = "fss.long_watch_entry.v1";
 const APPROVAL_DOMAIN: &str = "fss.long_watch_approval.v1";
-const POLICY: &[u8] =
+pub(super) const POLICY: &[u8] =
     b"fss.long-watch.policy.v1:native-display-order-luma:masked-before-perception:\
 running-variance:kalman-global-iou:first-confirmed-actual-match-per-epoch-track-zone:\
 strict-rounded-zone-interior:operator-capture-hints:reset-background-and-tracker-on-gap:\
@@ -333,6 +333,10 @@ impl LongWatchReport {
     /// Digest of the complete source-, policy-, privacy- and budget-bound native trace.
     pub fn analysis_digest(&self) -> ContentDigest {
         ContentDigest::sha256(&self.analysis)
+    }
+    /// Exact complete analysis closure for the read-only native replay adapter.
+    pub(crate) fn replay_analysis_root(&self) -> ContentDigest {
+        self.analysis_manifest.root()
     }
     /// Number of successfully decoded frames in the complete scan.
     pub const fn frames_decoded(&self) -> usize {

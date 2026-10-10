@@ -135,3 +135,11 @@ cargo test -p fss-cli --test corroborate_stream_cli
 
 Synthetic fixtures exercise the pipeline and evidence contracts. They do not qualify live
 camera throughput, deployment detection accuracy, a continuous service, or a release.
+
+## Read and verify a published event
+
+Use `fss-event read --root DIR --site SITE --event-id ID` to inspect an original published
+whole-recording candidate after restart. The response explicitly distinguishes inspection from
+native replay and supplies exact revision/provenance pins and a verification command.
+`fss-event verify` reruns the retained computation and compares the complete analysis and event.
+See [cold event recovery](long_event_replay.md) for recipe scope, bounds and validation status.

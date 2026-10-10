@@ -604,7 +604,12 @@ pub(crate) fn source_capsule(
     if !batch.children.contains(&delta.payload_digest) {
         return Err(RecordedDecodeError::InvalidReceipt);
     }
-    let bytes = deployment.publisher().spool().read(delta.payload_digest)?;
+    let bytes = fss_object::read_verified_payload(
+        deployment.publisher().spool().root(),
+        delta.payload_digest,
+        MAX_RECORDED_DECODE_RECEIPT_BYTES,
+        &fss_object::HostSpoolIo,
+    )?;
     if bytes.len() > MAX_RECORDED_DECODE_RECEIPT_BYTES
         || ContentDigest::sha256(&bytes) != delta.payload_digest
     {

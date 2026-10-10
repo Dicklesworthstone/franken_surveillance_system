@@ -144,3 +144,11 @@ approval rejection, aggregate budget failures, unknown capture time, health-scre
 blocking and the empty-result boundary. Existing short-watch, streaming dwell and health CLI
 families remain separate regression gates. This reference feature does not establish a release,
 live-device throughput, detection-quality or complete qualification claim.
+
+## Read and verify a published event
+
+Use `fss-event read --root DIR --site SITE --event-id ID` to inspect an original published
+whole-recording candidate after restart. The response explicitly distinguishes inspection from
+native replay and supplies exact revision/provenance pins and a verification command.
+`fss-event verify` reruns the retained computation and compares the complete analysis and event.
+See [cold event recovery](long_event_replay.md) for recipe scope, bounds and validation status.

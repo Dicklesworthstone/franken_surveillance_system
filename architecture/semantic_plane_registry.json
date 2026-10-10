@@ -555,7 +555,11 @@
     "crates/fss-reference/src/source.rs": "authority",
     "crates/fss-reference/src/source/atomic_tests.rs": "support",
     "crates/fss-reference/src/tests.rs": "support",
-    "crates/fss-reference/src/time_tolerance.rs": "authority"
+    "crates/fss-reference/src/time_tolerance.rs": "authority",
+    "crates/fss-reference/src/ingest/long_event_replay.rs": "support",
+    "crates/fss-reference/src/ingest/long_event_replay/watch.rs": "support",
+    "crates/fss-reference/src/ingest/long_event_replay/corroboration.rs": "support",
+    "crates/fss-reference/src/ingest/long_event_replay/tests.rs": "support"
   },
   "types": {
     "AlertEffectRecord": {

@@ -45,10 +45,12 @@ mod detector;
 mod graph;
 #[path = "fss-event/privacy_mask.rs"]
 mod privacy_mask;
+#[path = "fss-event/replay.rs"]
+mod replay;
 #[path = "fss-event/watch.rs"]
 mod watch;
 
-const HELP: &str = "fss-event <report|prepare|publish|read|watch|corroborate|calibrate|calibration|alert|privacy-mask|graph|delete> [options]\n\
+const HELP: &str = "fss-event <report|prepare|publish|read|verify|watch|corroborate|calibrate|calibration|alert|privacy-mask|graph|delete> [options]\n\
   All: --root DIR --site SITE [--principal ID]\n\
   report: --import-id sha256:HEX --runs FILE --interpretation gray|ycbcr\n\
           --model-digest sha256:HEX --output-port NAME --labels ORDERED,CLASS,NAMES\n\
@@ -69,6 +71,15 @@ const HELP: &str = "fss-event <report|prepare|publish|read|watch|corroborate|cal
     exact analysis and the authoritative event/provenance graphs. Package reads do not run\n\
     the model. Missing, damaged or superseded evidence is refused; exact retries preserve\n\
     the original revision, event root and publication anchor.\n\
+    event:long-watch: and event:long-corroborated: use a bounded cold inspection of the\n\
+    committed event and retained recipe. Their JSON says inspected_not_replayed and provides\n\
+    an exact verification command; inspection does not decode or certify perception.\n\
+  verify: --event-id ID --expected-event-revision sha256:HEX\n\
+          --expected-provenance-root sha256:HEX --execute-perception yes\n\
+    Replays a committed whole-recording watch/corroboration event from retained sources,\n\
+    current privacy and its original recipe. Every analysis and the exact event must match.\n\
+    Source paths, thresholds, zones, detector packages and event approvals are not inputs.\n\
+    Use fss-event verify --help for metadata, per-camera execution and report bounds.\n\
   Budgets: --detection-work-units N --association-work-units N --max-report-bytes N\n\
   Exports: --event-out FILE (canonical event JSON); read also accepts --report-out FILE\n\
   An existing operator-authorized deployment is required. Report inputs are complete\n\
@@ -1078,6 +1089,9 @@ fn print_package_event(
 
 fn main() -> ExitCode {
     let args: Vec<_> = std::env::args_os().skip(1).collect();
+    if replay::handles(&args) {
+        return replay::main(&args);
+    }
     if args.first().is_some_and(|command| command == "graph") {
         return graph::main(&args[1..]);
     }

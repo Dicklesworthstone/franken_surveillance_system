@@ -10,6 +10,27 @@ Franken Surveillance System now has a coherent, dependency-light Rust reference 
 
 It is also not a complete surveillance product. Native device adapters, production media/model/graph/storage services, persistent distributed operation, every human and agent surface, complete qualification matrices, and the aggregate release root remain open. Status below distinguishes implemented reference semantics from production completion.
 
+## Cold whole-recording event recovery (2026-10-10, reference, native validation pending)
+
+Published `event:long-watch:` and `event:long-corroborated:` candidates now have a cold
+`fss-event read` path and an explicit `fss-event verify` path. Inspection verifies the current
+revision, provenance/analysis closure, all selected source capsules and current privacy without
+running perception. Its JSON provides exact revision/provenance pins and a verification command.
+Verification decodes retained MJPEG/H.264/H.265 and reruns the complete native computation,
+comparing both full camera analyses and the committed candidate. Shared causes, source gaps,
+capture assumptions and optional health screening retain their original semantics. Both paths
+append no authority or effects and refuse reviewed successors rather than relabelling them.
+
+Corroboration restores the full retained canonical owner recipe. Historical long-watch restores
+its semantic settings and five retained aggregate budgets, with explicitly current bounded
+codec/read ceilings for fields that were not saved. No old identity or stored format changes.
+The new reference tests include cold native inter-coded replay, late entries, privacy/source
+failure, subranges, cancellation, shared causes and a self-consistent forged trace that only
+actual native execution rejects. New CLI tests exercise exact generated commands and exports.
+These tests were prepared and source-reviewed, but **have not yet been compiled or executed**
+because the execution environment disconnected. Older test results do not qualify this new
+integration. See [the command and bounds](docs/long_event_replay.md).
+
 ## Acquisition continuity recovery (2026-10-10, reference, unqualified)
 
 `fss-jsiq8`: core acquisition sessions can recover the same stream generation after an explicitly
