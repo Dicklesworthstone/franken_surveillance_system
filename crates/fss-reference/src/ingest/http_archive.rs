@@ -7,7 +7,9 @@
 use super::http_camera::{HttpWireRead, HttpWireReceipt};
 use fss_codec_mjpeg::http_mjpeg::HttpJpegFrame;
 use fss_codec_mjpeg::stream::StreamBasis;
-use fss_core::{CanonicalDecoder, CanonicalEncoder, ContentDigest, DigestAlgorithm};
+use fss_core::{
+    CanonicalDecoder, CanonicalEncode, CanonicalEncoder, ContentDigest, DigestAlgorithm,
+};
 use fss_geometry::{GeometryError, WorkBudget};
 use fss_object::ObjectManifest;
 use fss_publication::{
@@ -233,6 +235,34 @@ impl Entry {
         }
         Ok(entry)
     }
+}
+
+/// Verify a copied wire record with the original canonical parser. Copies are opaque custody
+/// leaves in a retained import, not new visible archive slots or fresh acquisition receipts.
+pub(crate) fn detached_read(
+    scope: HttpWireScope,
+    prior: HttpWirePin,
+    root: ContentDigest,
+    root_bytes: &[u8],
+    metadata: &[u8],
+) -> Result<(HttpWirePin, HttpWireReceipt), HttpArchiveError> {
+    if root_bytes.len() > MAX_MANIFEST || metadata.len() > MAX_METADATA || prior.reads >= 4096 {
+        return Err(HttpArchiveError::Limit);
+    }
+    let entry = Entry::decode(metadata, root)?;
+    if entry.prior != prior
+        || prior.scope != scope.digest()?
+        || entry.wire.basis != scope.stream
+        || entry.wire.range[0] != prior.bytes
+        || entry.wire.range[1] <= prior.bytes
+        || entry.wire.range[1] > MAX_BYTES
+        || entry.wire.range[1] - prior.bytes > MAX_READ as u64
+        || entry.manifest()?.canonical_bytes() != root_bytes
+        || ContentDigest::sha256(root_bytes) != root
+    {
+        return Err(HttpArchiveError::Source);
+    }
+    Ok((entry.pin(), entry.wire))
 }
 /// Prepared exact source publication. Keep its pin independently before I/O so a
 /// lost acknowledgement can be resolved after reopening the same storage owner.

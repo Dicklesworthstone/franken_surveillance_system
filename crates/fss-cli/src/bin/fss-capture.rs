@@ -50,6 +50,8 @@ const HELP: &str = "fss-capture http --root ABSOLUTE_ARCHIVE_DIR --peer IP:PORT 
   Preserve stdout JSONL independently: prepared pins are emitted BEFORE their storage writes.\n\
   A prepared pin is not a durable receipt. A refused run may retain a verified prefix and\n\
   staged/visible work. Inspect the exact pin with fss-archive check-http; do not reacquire it.\n\
+  To use the pinned archive with retained decode, inference or watch, see fss-import-http --help.\n\
+  It copies original custody into a separate deployment under its own exact approval.\n\
   Optional: --decode none|grayscale|ycbcr (default none); native full decode requires\n\
   --privacy-root EXISTING_DEPLOYMENT --site SITE --sensor ID. The current retained mask\n\
   applies before luma digests; pixels are never emitted. Bounds: --max-decode-work,\n\

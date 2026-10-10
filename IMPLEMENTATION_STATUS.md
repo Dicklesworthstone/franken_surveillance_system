@@ -151,6 +151,15 @@ one-time vendor-app provisioning (NEG-006) with the yi-hack owner-flash path doc
   retains it (`coverage_witness` ledger family); unknown capture time never yields a witness.
   Proven on synthetic MJPEG scenes only; the witness certifies what the uncalibrated pipeline
   would have emitted, not detection quality.
+- **HTTP archive to retained recording:** `fss-import-http` replays an exact captured HTTP/MJPEG
+  prefix through the native parser and imports every complete JPEG under an explicit camera and
+  timing declaration. The reconstructed MJPEG, original HTTP bytes, root metadata, frame maps and
+  source capsules share one retained publication closure. Native decode, inference and watch can
+  then use the returned identity after the independent archive is removed. Current target-sensor
+  masks still apply; unknown capture times and incomplete source endings stay explicit. The
+  no-I/O plan binds source, destination, principal and bounds; committed retries verify original
+  custody before continuing. This implementation profile adds no live-device certification.
+  See [the import workflow](docs/http_archive_import.md).
 - **Whole-recording zone observations:** `fss-event watch --stream-watch` follows one native
   foreground model and tracker across up to 65,536 retained MJPEG, AVC or HEVC segments, including
   the former 128-frame boundary. Each tracker epoch can produce one unclassified entry candidate

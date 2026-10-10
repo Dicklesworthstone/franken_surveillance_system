@@ -1,5 +1,8 @@
 #![forbid(unsafe_code)]
 //! Native TCP acquisition, actual root-last files, cold parser replay and fault cuts.
+
+#[path = "http_wire_replay/import.rs"]
+mod import;
 use std::cell::Cell;
 use std::io::{self, Read, Write};
 use std::net::{Shutdown, TcpListener, TcpStream};

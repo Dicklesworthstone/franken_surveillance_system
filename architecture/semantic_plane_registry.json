@@ -314,6 +314,8 @@
     "crates/fss-reference/src/ingest/http_camera/rgb/custody.rs": "support",
     "crates/fss-reference/src/ingest/http_camera/tests.rs": "support",
     "crates/fss-reference/src/ingest/http_camera/tests/learned.rs": "support",
+    "crates/fss-reference/src/ingest/http_import.rs": "authority",
+    "crates/fss-reference/src/ingest/http_import/provenance.rs": "authority",
     "crates/fss-reference/src/ingest/http_reconnect.rs": "support",
     "crates/fss-reference/src/ingest/http_reconnect/tests.rs": "support",
     "crates/fss-reference/src/ingest/http_reconnect_recording.rs": "support",

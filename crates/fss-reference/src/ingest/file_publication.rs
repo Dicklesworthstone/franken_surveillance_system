@@ -270,6 +270,20 @@ impl FilePublicationPlan {
         validity: CaptureInterval,
         cx: &ReplayCx,
     ) -> Result<FilePublicationReceipt, FileIngestError> {
+        self.publish_guarded(deployment, metadata, validity, cx, &|_| Ok(()))
+    }
+
+    /// Recheck an owning adapter's additional live permission before each payload and root.
+    /// The existing context remains the publication owner's cancellation authority.
+    pub(crate) fn publish_guarded(
+        &self,
+        deployment: &mut ReferenceDeployment,
+        metadata: &FileImportManifest,
+        validity: CaptureInterval,
+        cx: &ReplayCx,
+        guard: &dyn Fn(&ReferenceDeployment) -> Result<(), FileIngestError>,
+    ) -> Result<FilePublicationReceipt, FileIngestError> {
+        guard(deployment)?;
         checkpoint(cx, STAGE_FILE_PART_PREFLIGHT)?;
         super::retained::refuse_deleted(deployment, self.import_identity)?;
         let root = self.root_manifest(metadata)?;
@@ -277,10 +291,12 @@ impl FilePublicationPlan {
         // Re-read and hash every payload before staging any publication metadata. The publisher
         // repeats custody verification at each root's commit boundary.
         for payload in &self.payloads {
+            guard(deployment)?;
             checkpoint(cx, STAGE_FILE_PART_PREFLIGHT)?;
             deployment.publisher_mut().verify_object(*payload)?;
         }
         let metadata_bytes = metadata.canonical_bytes();
+        guard(deployment)?;
         let metadata_digest = deployment.publisher_mut().stage_object(&metadata_bytes)?;
         if metadata_digest != metadata.canonical_digest() {
             return Err(ContractError::DigestMismatch.into());
@@ -288,6 +304,7 @@ impl FilePublicationPlan {
         deployment.publisher_mut().verify_object(metadata_digest)?;
         let mut parts = Vec::new();
         for part in &self.parts {
+            guard(deployment)?;
             checkpoint(cx, STAGE_FILE_PART_PUBLISH)?;
             parts.push(publish_one(
                 deployment,
@@ -301,8 +318,10 @@ impl FilePublicationPlan {
         // Typed references do not become native children: explicitly prove all parts before the
         // aggregate can become visible. A provider acknowledgment alone never satisfies this.
         for part in &self.parts {
+            guard(deployment)?;
             verify_one(deployment, &part.slot, &part.manifest, cx)?;
         }
+        guard(deployment)?;
         let root = publish_one(deployment, &self.slot, &root, validity, cx)?;
         Ok(FilePublicationReceipt { parts, root })
     }

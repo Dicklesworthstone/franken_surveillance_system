@@ -72,6 +72,10 @@ name = "fss-recover-http"
 path = "src/bin/fss-recover-http.rs"
 
 [[bin]]
+name = "fss-import-http"
+path = "src/bin/fss-import-http.rs"
+
+[[bin]]
 name = "fss-replay"
 path = "src/bin/fss-replay.rs"
 

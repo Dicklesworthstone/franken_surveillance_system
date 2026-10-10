@@ -85,7 +85,7 @@
 //! must still be a regular file with the admitted `(dev, ino)` identity. Every byte read and the
 //! post-read size check use that handle, never the path again.
 
-mod retry;
+pub(crate) mod retry;
 
 use std::fs;
 use std::path::{Path, PathBuf};
@@ -1623,10 +1623,10 @@ fn visible_slot_root(deployment: &ReferenceDeployment, slot: &SlotName) -> Optio
 }
 
 /// One planned capsule batch `batch:file-import:<identity>:c<k>`.
-struct PlannedBatch {
-    batch_id: BatchId,
-    deltas: Vec<EvidenceDelta>,
-    children: Vec<ContentDigest>,
+pub(crate) struct PlannedBatch {
+    pub(crate) batch_id: BatchId,
+    pub(crate) deltas: Vec<EvidenceDelta>,
+    pub(crate) children: Vec<ContentDigest>,
 }
 
 /// Journal-record length of a batch holding `entries`, measured with `batch_id` against the
@@ -1686,7 +1686,7 @@ fn fit_record(
 /// contributes one delta and one child), each split further until its journal record is at most
 /// `record_max` bytes. Record lengths are measured with the longest identifier this plan can
 /// assign, so the partition never depends on the digit count of `k`.
-fn plan_capsule_batches(
+pub(crate) fn plan_capsule_batches(
     entries: Vec<(EvidenceDelta, ContentDigest)>,
     max_entries: usize,
     record_max: usize,
@@ -1724,7 +1724,7 @@ fn plan_capsule_batches(
 
 /// Check the completing batch before staging any byte. Its acquisition records and witnesses
 /// are not capsule entries and cannot be split without inventing an intermediate completion.
-fn check_commit_admission(
+pub(crate) fn check_commit_admission(
     deployment: &ReferenceDeployment,
     batch_id: &BatchId,
     deltas: &[EvidenceDelta],
@@ -1845,7 +1845,7 @@ fn check_commit_admission(
 /// Appends one planned import batch. The deployment skips a batch already committed with
 /// identical content; a committed batch with different content under the same planned identity
 /// is reported as [`FileIngestError::ImportPlanConflict`], never overwritten.
-fn append_planned_batch(
+pub(crate) fn append_planned_batch(
     deployment: &mut ReferenceDeployment,
     batch_id: BatchId,
     deltas: Vec<EvidenceDelta>,
@@ -3023,7 +3023,7 @@ impl FileIngestAdapter {
     }
 
     /// Computes capture interval under truth discipline.
-    fn compute_capture_interval(
+    pub(crate) fn compute_capture_interval(
         index: usize,
         hint: Option<&CaptureHint>,
         receive_time: TimestampNs,
@@ -3081,6 +3081,12 @@ impl FileIngestAdapter {
         deployment: &ReferenceDeployment,
         segment_index: usize,
     ) -> Result<Vec<u8>, FileIngestError> {
+        if manifest.adapter_id == super::http_import::ADAPTER {
+            return Err(FileIngestError::CorruptSegment {
+                detail: "HTTP originals require context-bound RetainedFileImport::read_segment"
+                    .to_owned(),
+            });
+        }
         let segment = manifest.segment_spans.get(segment_index).ok_or(
             FileIngestError::SegmentIndexOutOfBounds {
                 index: segment_index,

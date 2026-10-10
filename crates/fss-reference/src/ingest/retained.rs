@@ -187,12 +187,18 @@ impl FileImportManifest {
         Ok(manifest)
     }
 
-    /// Checks a standalone flat manifest; typed parts require RetainedFileImport::open.
+    /// Checks standalone flat file metadata; typed parts and HTTP origins need the root-bound
+    /// resolver in RetainedFileImport::open.
     pub fn validate_retained(&self, limits: RetainedReadLimits) -> Result<(), FileIngestError> {
         self.validate_structure(limits)?;
         if !self.part_roots.is_empty() {
             return Err(invalid(
                 "partitioned manifest needs explicit part resolution",
+            ));
+        }
+        if self.adapter_id == super::http_import::ADAPTER {
+            return Err(invalid(
+                "HTTP recording needs explicit original-wire resolution",
             ));
         }
         Ok(())
@@ -220,7 +226,8 @@ impl FileImportManifest {
         }
         // Per-adapter admission: the file row accepts every registered file
         // format; the Wyze live-lab row accepts the live annexb bitstreams
-        // its tuple was qualified against. Unknown tuples fail closed.
+        // its tuple was qualified against. HTTP reconstructions require a separate exact
+        // origin-proof generation. Unknown tuples fail closed.
         let admitted = if self.adapter_id == ADP_FILE_ROW_ID {
             self.adapter_generation == ADP_FILE_GENERATION
                 && matches!(
@@ -229,6 +236,17 @@ impl FileImportManifest {
                 )
         } else if self.adapter_id == "ADP-WYZE-V4-LAB-001" {
             matches!(self.format.as_str(), "annexb" | "hevc")
+        } else if self.adapter_id == super::http_import::ADAPTER {
+            self.format == "mjpeg"
+                && self
+                    .adapter_generation
+                    .strip_prefix(super::http_import::GENERATION)
+                    .is_some_and(|hex| {
+                        hex.len() == 64
+                            && hex
+                                .bytes()
+                                .all(|b| b.is_ascii_digit() || (b'a'..=b'f').contains(&b))
+                    })
         } else {
             false
         };
@@ -532,6 +550,14 @@ impl RetainedFileImport {
             checkpoint(cx, STAGE_RETAINED_CHUNK)?;
             Ok(deployment.publisher().spool().read(d)?)
         })?;
+        super::http_import::verify_segment_budgeted(
+            deployment,
+            &self.manifest,
+            index,
+            &bytes,
+            cx,
+            &mut |n| chunks.reserve_source_bytes(n),
+        )?;
         checkpoint(cx, STAGE_RETAINED_COMPLETE)?;
         Ok(bytes)
     }
@@ -594,6 +620,7 @@ impl RetainedFileImport {
             checkpoint(cx, STAGE_RETAINED_CHUNK)?;
             Ok(deployment.publisher().spool().read(d)?)
         })?;
+        super::http_import::verify_originals(deployment, &self.manifest, cx)?;
         checkpoint(cx, STAGE_RETAINED_COMPLETE)?;
         Ok(result)
     }

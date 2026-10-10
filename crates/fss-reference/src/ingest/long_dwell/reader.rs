@@ -86,6 +86,26 @@ impl ChunkCursor {
         if bytes.len() as u64 != span.len || ContentDigest::sha256(&bytes) != span.segment_sha256 {
             return Err(RecordedDecodeError::InvalidReceipt.into());
         }
+        crate::ingest::http_import::verify_segment_budgeted(
+            deployment,
+            manifest,
+            index,
+            &bytes,
+            cx,
+            &mut |extra| {
+                let required = self.bytes_read.saturating_add(extra);
+                if required > self.maximum {
+                    return Err(crate::ingest::FileIngestError::SpoolCapacityExceeded {
+                        limit: "stream_source_chunk_bytes",
+                        required,
+                        available: self.maximum,
+                    });
+                }
+                self.bytes_read = required;
+                Ok(())
+            },
+        )
+        .map_err(|error| source_read_error(error.into()))?;
         self.last_segment = Some(index);
         Ok(bytes)
     }

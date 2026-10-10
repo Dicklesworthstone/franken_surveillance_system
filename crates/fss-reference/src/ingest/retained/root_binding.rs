@@ -180,6 +180,9 @@ pub(super) fn verify(
             return Err(invalid("manifest capsule lacks authority in this import"));
         }
     }
+    super::super::http_import::verify_membership(
+        deployment, manifest, &held, &capsules, import_hex, cx,
+    )?;
     checkpoint(cx, STAGE)?;
     Ok(())
 }

@@ -44,7 +44,7 @@ fn same_payload(stored: &EvidenceDeltaBatch, planned: &PlannedBatch) -> bool {
 /// Validate every already-committed capsule batch before the caller stages any new objects.
 /// A complete retry additionally reopens the retained authority and verifies its byte custody.
 /// No staging, journal append, root publication, repair, or authority mutation occurs here.
-pub(super) fn preflight(
+pub(crate) fn preflight(
     deployment: &ReferenceDeployment,
     planned: &[PlannedBatch],
     manifest_batch_id: &BatchId,

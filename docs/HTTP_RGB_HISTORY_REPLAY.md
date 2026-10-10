@@ -89,3 +89,8 @@ or privacy generation incompatibility is a refusal, not permission to regenerate
 This consumes histories already produced by the RGB recording/history library workflow.
 It does not convert a raw `fss-capture http` archive into a detector history, create missing
 capture timestamps, infer health/absence, or run continuous monitoring.
+
+For raw captures that need the existing retained recording, native decode or watch pipeline,
+use [`fss-import-http`](http_archive_import.md). That separate bridge retains the exact HTTP
+originals and JPEG wire map inside a new MJPEG recording import; it does not fabricate an
+RGB detector history or its missing historical model executions.
