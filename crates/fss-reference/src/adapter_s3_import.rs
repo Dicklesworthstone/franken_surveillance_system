@@ -18,6 +18,12 @@ use fss_core::{
 /// Row identifier in `registries/DEVICE_ADAPTERS.md`.
 pub const ADP_S3_ROW_ID: &str = "ADP-S3-IMPORT-001";
 
+/// Runtime adapter identifier in the canonical `adapter:` grammar, derived
+/// from the registry row (lowercased, hyphen-preserved). The row ID above is
+/// the normative registry namespace; this is the runtime identity the
+/// acquisition path validates.
+pub const ADP_S3_RUNTIME_ID: &str = "adapter:adp-s3-import-001";
+
 /// Surface name for the adapter.
 pub const ADP_S3_SURFACE: &str = "S3-compatible import";
 
@@ -52,7 +58,7 @@ pub const ADP_S3_CAPABILITIES: AdapterCapabilities = AdapterCapabilities::NONE;
 /// invariants (`verify`) and NEG-002 standards compliance must both pass.
 pub fn adapter_identity() -> Result<AdapterIdentity, ContractError> {
     let identity = AdapterIdentity {
-        adapter_id: AdapterId::parse(ADP_S3_ROW_ID)?,
+        adapter_id: AdapterId::parse(ADP_S3_RUNTIME_ID)?,
         generation: AdapterGeneration::parse(ADP_S3_GENERATION)?,
         adapter_kind: AdapterKind::FileArchive,
         protocol_profile: ADP_S3_PROTOCOL_PROFILE.to_string(),

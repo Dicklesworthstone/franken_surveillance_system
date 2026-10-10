@@ -18,6 +18,12 @@ use fss_core::{
 /// Row identifier in `registries/DEVICE_ADAPTERS.md`.
 pub const ADP_DJI_FLIP_ROW_ID: &str = "ADP-DJI-FLIP-LAB-001";
 
+/// Runtime adapter identifier in the canonical `adapter:` grammar, derived
+/// from the registry row (lowercased, hyphen-preserved). The row ID above is
+/// the normative registry namespace; this is the runtime identity the
+/// acquisition path validates.
+pub const ADP_DJI_FLIP_RUNTIME_ID: &str = "adapter:adp-dji-flip-lab-001";
+
 /// Surface name for the adapter.
 pub const ADP_DJI_FLIP_SURFACE: &str = "DJI Flip manual capture/import lab (NEG-001 non-SDK)";
 
@@ -52,7 +58,7 @@ pub const ADP_DJI_FLIP_CAPABILITIES: AdapterCapabilities = AdapterCapabilities::
 /// invariants (`verify`) and NEG-002 standards compliance must both pass.
 pub fn adapter_identity() -> Result<AdapterIdentity, ContractError> {
     let identity = AdapterIdentity {
-        adapter_id: AdapterId::parse(ADP_DJI_FLIP_ROW_ID)?,
+        adapter_id: AdapterId::parse(ADP_DJI_FLIP_RUNTIME_ID)?,
         generation: AdapterGeneration::parse(ADP_DJI_FLIP_GENERATION)?,
         adapter_kind: AdapterKind::FileArchive,
         protocol_profile: ADP_DJI_FLIP_PROTOCOL_PROFILE.to_string(),

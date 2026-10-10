@@ -26,7 +26,7 @@ fn row_constants_match_the_normative_registry_row() {
 #[test]
 fn identity_constructs_verified_and_compliant() {
     let id = adp_aosu_adapter_identity().expect("identity must construct");
-    assert_eq!(id.adapter_id.as_str(), ADP_AOSU_ROW_ID);
+    assert_eq!(id.adapter_id.as_str(), "adapter:adp-aosu-p1max-lab-001");
     assert_eq!(id.adapter_kind, AdapterKind::TuyaLan);
     assert_eq!(id.protocol_profile, ADP_AOSU_PROTOCOL_PROFILE);
     // NEG-002: proprietary lab path is sealed, credential is a device-local

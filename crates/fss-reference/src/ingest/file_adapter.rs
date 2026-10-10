@@ -123,6 +123,11 @@ pub const FILE_IMPORT_MANIFEST_SCHEMA: &str = "fss.file_import.manifest.v1";
 /// Registered adapter identity for `ADP-FILE-001`.
 pub const ADP_FILE_ROW_ID: &str = "ADP-FILE-001";
 
+/// Runtime adapter identifier (canonical `adapter:` grammar; the runtime
+/// identity of record since the lane's first capsules — stable IDs are
+/// never renumbered).
+pub const ADP_FILE_RUNTIME_ID: &str = "adp:file-001";
+
 /// Surface name for the adapter.
 pub const ADP_FILE_SURFACE: &str = "bounded media import";
 
@@ -1498,7 +1503,7 @@ pub fn compute_import_identity(
 
 /// Builds the default [`AdapterIdentity`] for `ADP-FILE-001`.
 pub fn default_adapter_identity() -> Result<AdapterIdentity, ContractError> {
-    let adapter_id = AdapterId::parse(ADP_FILE_ROW_ID)?;
+    let adapter_id = AdapterId::parse(ADP_FILE_RUNTIME_ID)?;
     let generation = AdapterGeneration::parse(ADP_FILE_GENERATION)?;
     let capabilities = AdapterCapabilities::STREAMING.union(AdapterCapabilities::SNAPSHOT);
     let identity = AdapterIdentity {

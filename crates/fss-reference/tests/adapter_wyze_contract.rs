@@ -27,7 +27,7 @@ fn row_constants_match_the_normative_registry_row() {
 #[test]
 fn identity_constructs_verified_and_compliant() {
     let id = adp_wyze_adapter_identity().expect("identity must construct");
-    assert_eq!(id.adapter_id.as_str(), ADP_WYZE_ROW_ID);
+    assert_eq!(id.adapter_id.as_str(), "adapter:adp-wyze-v4-lab-001");
     assert_eq!(id.adapter_kind, AdapterKind::TutkIotc);
     assert_eq!(id.protocol_profile, ADP_WYZE_PROTOCOL_PROFILE);
     assert_eq!(id.isolation_mode, IsolationMode::SealedLaboratoryProcess);

@@ -14,11 +14,11 @@ use fss_reference::{
 };
 
 macro_rules! row_tests {
-    ($name:ident, $ctor:expr, $row_id:literal, $kind:expr, $isolation:expr, $cred:expr) => {
+    ($name:ident, $ctor:expr, $runtime_id:literal, $kind:expr, $isolation:expr, $cred:expr) => {
         #[test]
         fn $name() {
             let id = $ctor.expect("identity must construct");
-            assert_eq!(id.adapter_id.as_str(), $row_id);
+            assert_eq!(id.adapter_id.as_str(), $runtime_id);
             assert_eq!(id.adapter_kind, $kind);
             assert_eq!(id.isolation_mode, $isolation);
             assert_eq!(id.credential_method, $cred);
@@ -38,7 +38,7 @@ macro_rules! row_tests {
 row_tests!(
     rtsp_row,
     adp_rtsp_adapter_identity(),
-    "ADP-RTSP-001",
+    "adapter:adp-rtsp-001",
     AdapterKind::Rtsp,
     IsolationMode::NativePureRust,
     CredentialMethod::DigestAuth
@@ -46,7 +46,7 @@ row_tests!(
 row_tests!(
     uvc_row,
     adp_uvc_adapter_identity(),
-    "ADP-UVC-001",
+    "adapter:adp-uvc-001",
     AdapterKind::Uvc,
     IsolationMode::NativePureRust,
     CredentialMethod::None
@@ -54,7 +54,7 @@ row_tests!(
 row_tests!(
     insta_link_row,
     adp_insta_link_adapter_identity(),
-    "ADP-INSTA-LINK-001",
+    "adapter:adp-insta-link-001",
     AdapterKind::Uvc,
     IsolationMode::NativePureRust,
     CredentialMethod::None
@@ -62,7 +62,7 @@ row_tests!(
 row_tests!(
     onvif_t_row,
     adp_onvif_t_adapter_identity(),
-    "ADP-ONVIF-T-001",
+    "adapter:adp-onvif-t-001",
     AdapterKind::OnvifProfileT,
     IsolationMode::NativePureRust,
     CredentialMethod::DigestAuth
@@ -70,7 +70,7 @@ row_tests!(
 row_tests!(
     onvif_m_row,
     adp_onvif_m_adapter_identity(),
-    "ADP-ONVIF-M-001",
+    "adapter:adp-onvif-m-001",
     AdapterKind::OnvifProfileM,
     IsolationMode::NativePureRust,
     CredentialMethod::DigestAuth
@@ -78,7 +78,7 @@ row_tests!(
 row_tests!(
     dji_flip_row,
     adp_dji_flip_adapter_identity(),
-    "ADP-DJI-FLIP-LAB-001",
+    "adapter:adp-dji-flip-lab-001",
     AdapterKind::FileArchive,
     IsolationMode::SealedLaboratoryProcess,
     CredentialMethod::None
@@ -86,7 +86,7 @@ row_tests!(
 row_tests!(
     s3_import_row,
     adp_s3_adapter_identity(),
-    "ADP-S3-IMPORT-001",
+    "adapter:adp-s3-import-001",
     AdapterKind::FileArchive,
     IsolationMode::SealedLaboratoryProcess,
     CredentialMethod::Token
@@ -143,11 +143,12 @@ fn standards_claims_cite_specifications() {
 
 #[test]
 fn file_row_uses_the_canonical_registry_id() {
-    // The drift repair: default_adapter_identity must produce the normative
-    // row ID, never a transport-local synonym like "adp:file-001".
+    // The runtime id stays the lane's identity of record (`adp:file-001`
+    // normalizes to `adapter:file-001`); the registry row ADP-FILE-001 maps
+    // to it via the ADP_FILE_ROW_ID/ADP_FILE_RUNTIME_ID constants.
     let id = fss_reference::ingest::file_adapter::default_adapter_identity()
         .expect("file identity");
-    assert_eq!(id.adapter_id.as_str(), "ADP-FILE-001");
+    assert_eq!(id.adapter_id.as_str(), "adapter:file-001");
     assert_eq!(id.adapter_kind, AdapterKind::FileArchive);
     id.verify().expect("verify");
     id.verify_standards_compliance().expect("compliance");

@@ -17,6 +17,12 @@ use fss_core::{
 /// Row identifier in `registries/DEVICE_ADAPTERS.md`.
 pub const ADP_UVC_ROW_ID: &str = "ADP-UVC-001";
 
+/// Runtime adapter identifier in the canonical `adapter:` grammar, derived
+/// from the registry row (lowercased, hyphen-preserved). The row ID above is
+/// the normative registry namespace; this is the runtime identity the
+/// acquisition path validates.
+pub const ADP_UVC_RUNTIME_ID: &str = "adapter:adp-uvc-001";
+
 /// Surface name for the adapter.
 pub const ADP_UVC_SURFACE: &str = "UVC/UAC";
 
@@ -51,7 +57,7 @@ pub const ADP_UVC_CAPABILITIES: AdapterCapabilities = AdapterCapabilities::STREA
 /// invariants (`verify`) and NEG-002 standards compliance must both pass.
 pub fn adapter_identity() -> Result<AdapterIdentity, ContractError> {
     let identity = AdapterIdentity {
-        adapter_id: AdapterId::parse(ADP_UVC_ROW_ID)?,
+        adapter_id: AdapterId::parse(ADP_UVC_RUNTIME_ID)?,
         generation: AdapterGeneration::parse(ADP_UVC_GENERATION)?,
         adapter_kind: AdapterKind::Uvc,
         protocol_profile: ADP_UVC_PROTOCOL_PROFILE.to_string(),
