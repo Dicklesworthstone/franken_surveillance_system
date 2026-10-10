@@ -2,8 +2,9 @@
 //! Targeted read-only custody checks over the explicitly published manifest universe.
 //!
 //! Unlike whole-spool inspection, this reads payloads only in the selected roots' closure.
-//! A child is a manifest ONLY when a valid root record declares it as one. Manifest-shaped
-//! opaque bytes are never followed. No locks, holds, repairs, media decode or writes occur.
+//! A manifest role comes from a valid local root record or an explicitly selected manifest
+//! root whose authority the caller verified. Manifest-shaped opaque bytes are never followed.
+//! No locks, holds, repairs, media decode or writes occur.
 //! Root/tombstone catalogues are compared before and after the walk. This detects observed
 //! publication changes, not an atomic filesystem snapshot or a guarantee of future availability.
 
@@ -174,7 +175,7 @@ impl CustodyObjectState {
 pub struct CustodyObjectObservation {
     /// Exact selected or transitively referenced object.
     pub digest: ContentDigest,
-    /// Whether a publication record explicitly declares this object as a manifest.
+    /// Whether a local publication record or the caller-verified root scope declares a manifest.
     pub declared_manifest: bool,
     /// Its observed byte-availability state.
     pub state: CustodyObjectState,
@@ -186,9 +187,30 @@ pub struct CustodyObjectObservation {
     pub denial_digest: Option<ContentDigest>,
 }
 
+/// Where the selected roots' manifest roles came from. Neither variant grants read authority.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum CustodyRootBasis {
+    /// Every selected root must have a validated local `.root` record.
+    LocalPublicationRecords,
+    /// The caller verified these exact manifest roots against its canonical authority.
+    /// This crate does not authenticate or replay that authority on the caller's behalf.
+    CallerVerifiedAuthority,
+}
+impl CustodyRootBasis {
+    /// Stable distinction between local root records and upstream authority declarations.
+    #[must_use]
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::LocalPublicationRecords => "local_publication_records",
+            Self::CallerVerifiedAuthority => "caller_verified_authority",
+        }
+    }
+}
+
 /// Immutable, bounded observations of a selected publication closure. Construction is private.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct LocalCustodyAudit {
+    root_basis: CustodyRootBasis,
     roots: Vec<ContentDigest>,
     objects: Vec<CustodyObjectObservation>,
     publication_records: usize,
@@ -199,6 +221,8 @@ pub struct LocalCustodyAudit {
     edges: usize,
 }
 impl LocalCustodyAudit {
+    /// The selected roots' manifest-role basis, not a newly established authority claim.
+    pub const fn root_basis(&self) -> CustodyRootBasis { self.root_basis }
     /// Exact sorted selected roots. No root was silently filtered.
     pub fn roots(&self) -> &[ContentDigest] { &self.roots }
     /// Complete observations of every discovered object, including failures.
@@ -364,6 +388,49 @@ pub fn audit_local_roots(
     limits: CustodyAuditLimits,
     cancelled: &(impl Fn() -> bool + Sync),
 ) -> Result<LocalCustodyAudit, CustodyAuditError> {
+    audit_roots(io, root, selected_roots, denied, limits, cancelled,
+        CustodyRootBasis::LocalPublicationRecords)
+}
+
+/// Audit exact manifest roots selected by a caller that has verified their canonical authority.
+///
+/// Event revisions may commit an immutable manifest through an `EvidenceDeltaBatch` without a
+/// separate local `.root` slot. This entry point declares ONLY the selected roots as manifests;
+/// descendants still require their own local publication records or membership in the selected
+/// root set. Merely parsing a leaf as a manifest never authorizes expansion.
+///
+/// The caller MUST resolve every root against its verified authority, apply its deletion and
+/// privacy policy before calling, and revalidate that same authority/deletion basis afterwards.
+/// This function verifies bytes, not a ledger, authentication, publication durability or access
+/// permission. The report records that distinction through [`CustodyRootBasis`]. No root record
+/// is manufactured and no existing durable format changes. Use [`audit_local_roots`] when local
+/// root records, rather than a separately verified authority, own the root-selection contract.
+///
+/// Missing or denied selected roots remain declared manifests with incomplete expansion. A
+/// local record, when present, still constrains the root's child count; authority selection does
+/// not override corrupt, pending, changed or conflicting local metadata. Both modes use the
+/// same metered walk, limits, cancellation, local tombstone checks and failure classifications.
+pub fn audit_authority_roots(
+    io: &dyn SpoolIo,
+    root: &Path,
+    selected_roots: &[ContentDigest],
+    denied: &BTreeMap<ContentDigest, ContentDigest>,
+    limits: CustodyAuditLimits,
+    cancelled: &(impl Fn() -> bool + Sync),
+) -> Result<LocalCustodyAudit, CustodyAuditError> {
+    audit_roots(io, root, selected_roots, denied, limits, cancelled,
+        CustodyRootBasis::CallerVerifiedAuthority)
+}
+
+fn audit_roots(
+    io: &dyn SpoolIo,
+    root: &Path,
+    selected_roots: &[ContentDigest],
+    denied: &BTreeMap<ContentDigest, ContentDigest>,
+    limits: CustodyAuditLimits,
+    cancelled: &(impl Fn() -> bool + Sync),
+    root_basis: CustodyRootBasis,
+) -> Result<LocalCustodyAudit, CustodyAuditError> {
     check(cancelled)?;
     limits.validate()?;
     if selected_roots.is_empty() || selected_roots.len() > MAX_AUDIT_ROOTS
@@ -375,7 +442,7 @@ pub fn audit_local_roots(
     if roots.len() != selected_roots.len() { return Err(CustodyAuditError::InvalidRequest); }
     bounded(roots.len(), limits.max_objects, "objects")?;
     let metered = AuditIo::new(io, limits, cancelled);
-    let result = walk(&metered, root, roots, denied, limits, cancelled);
+    let result = walk(&metered, root, roots, denied, limits, cancelled, root_basis);
     // Do not misclassify cancelled/over-budget reads as missing metadata or corrupt content.
     metered.check()?;
     result
@@ -388,9 +455,12 @@ fn walk(
     denied: &BTreeMap<ContentDigest, ContentDigest>,
     limits: CustodyAuditLimits,
     cancelled: &(impl Fn() -> bool + Sync),
+    root_basis: CustodyRootBasis,
 ) -> Result<LocalCustodyAudit, CustodyAuditError> {
     let before = catalogue(io, root, limits.max_catalogue_entries)?;
-    if roots.iter().any(|d| !before.manifests.contains_key(d)) {
+    if root_basis == CustodyRootBasis::LocalPublicationRecords
+        && roots.iter().any(|d| !before.manifests.contains_key(d))
+    {
         return Err(CustodyAuditError::RootNotPublished);
     }
     let mut seen = roots.clone();
@@ -400,8 +470,10 @@ fn walk(
     while let Some(digest) = pending.pop_first() {
         check(cancelled)?;
         let expected_count = before.manifests.get(&digest);
+        let declared_manifest = expected_count.is_some()
+            || (root_basis == CustodyRootBasis::CallerVerifiedAuthority && roots.contains(&digest));
         let mut row = CustodyObjectObservation {
-            digest, declared_manifest: expected_count.is_some(), state: CustodyObjectState::Unreadable,
+            digest, declared_manifest, state: CustodyObjectState::Unreadable,
             verified_payload_bytes: None, children: Vec::new(), denial_digest: None,
         };
         if let Some(proof) = denied.get(&digest) {
@@ -417,9 +489,10 @@ fn walk(
                     io.check()?;
                     row.verified_payload_bytes = Some(bytes.len() as u64);
                     row.state = CustodyObjectState::Verified;
-                    if let Some(count) = expected_count {
+                    if declared_manifest {
                         match ObjectManifest::from_canonical_bytes(&bytes) {
-                            Ok(manifest) if manifest.root() == digest && manifest.children().len() as u64 == *count => {
+                            Ok(manifest) if manifest.root() == digest
+                                && expected_count.is_none_or(|count| manifest.children().len() as u64 == *count) => {
                                 edges = edges.checked_add(manifest.children().len())
                                     .ok_or(CustodyAuditError::Limit("edges"))?;
                                 bounded(edges, limits.max_edges, "edges")?;
@@ -447,6 +520,7 @@ fn walk(
     io.check()?;
     check(cancelled)?;
     Ok(LocalCustodyAudit {
+        root_basis,
         roots: roots.into_iter().collect(),
         objects: objects.into_values().collect(),
         publication_records: before.records.len(),
