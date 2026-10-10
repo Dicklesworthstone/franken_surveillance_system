@@ -508,9 +508,10 @@ fn test_schema_domain_and_pinned_counts() -> Result<(), Box<dyn Error>> {
     // + SCHEMA-DOMAIN-RECORDED-SENSOR-HEALTH-{PLAN,,COVERAGE,COVERAGE-ANALYSIS,COVERAGE-PIPELINE,COVERAGE-ZONE}-001 (7c932d6) and fusion calibrated-input/decision domains (25c396d, aec31c3), registered without a pin bump = 288.
     // + SCHEMA-DOMAIN-EXECUTOR-ACTIVITY-PACKAGE-SPEC-001 (fss-2h5zq.49) = 289
     // + recorded corroboration dependencies, assessment, cluster, edge and health-decision = 294.
+    // + SCHEMA-DOMAIN-ACQUISITION-WINDOWED-DEGRADATION-001 = 295.
     assert_eq!(
-        domain_count, 294,
-        "registries/DIGEST_DOMAINS.md count must remain pinned at 294"
+        domain_count, 295,
+        "registries/DIGEST_DOMAINS.md count must remain pinned at 295"
     );
 
     let schemas_path = Path::new(env!("CARGO_MANIFEST_DIR"))

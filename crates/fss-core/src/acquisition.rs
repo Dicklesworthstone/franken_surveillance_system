@@ -31,6 +31,9 @@ use crate::sensor_capsule::{DecodeState, ExplicitOmission, OmissionReason, Sourc
 use crate::time::TimestampNs;
 use crate::{Completeness, ContentDigest, ContractError};
 
+mod recovery;
+pub use recovery::{SCHEMA_WINDOWED_DEGRADATION, WindowedDegradationEvidence};
+
 /// Canonical schema for acquisition request envelopes.
 pub const SCHEMA_ACQUISITION_REQUEST: &str = "fss.acquisition.request.v1";
 /// Canonical schema for secret-free authentication receipts.
@@ -1463,8 +1466,11 @@ impl ContinuityWitness {
         }
         let expected_frames = self
             .window_end_seq
-            .saturating_sub(self.window_start_seq)
-            .saturating_add(1);
+            .checked_sub(self.window_start_seq)
+            .and_then(|difference| difference.checked_add(1))
+            .ok_or_else(|| AcquisitionError::ContinuityGapDetected {
+                detail: "inclusive continuity span exceeds the representable frame count".to_owned(),
+            })?;
         if self.frames_observed != expected_frames {
             return Err(AcquisitionError::ContinuityGapDetected {
                 detail: format!(
@@ -2347,6 +2353,9 @@ pub enum AcquisitionState {
         last_continuity: Option<Box<ContinuityWitness>>,
         /// Degradation evidence.
         degradation: Box<DegradationEvidence>,
+        /// Exact sequence span and predecessor when degradation was recorded with
+        /// [`AcquisitionSession::degrade_window`]. Unscoped degradation has no recovery cursor.
+        last_windowed_degradation: Option<Box<WindowedDegradationEvidence>>,
     },
     /// Terminal failure.
     Failed {
@@ -2436,6 +2445,8 @@ impl AcquisitionState {
 pub struct AcquisitionSession {
     state: AcquisitionState,
     history: Vec<AcquisitionTransitionRecord>,
+    // Sticky until a validated reconnect: an interval-free witness must never erase a gap.
+    has_windowed_gap: bool,
 }
 
 impl AcquisitionSession {
@@ -2454,6 +2465,7 @@ impl AcquisitionSession {
         Ok(Self {
             state: AcquisitionState::Requested(Box::new(request)),
             history: vec![initial_record],
+            has_windowed_gap: false,
         })
     }
 
@@ -2500,7 +2512,16 @@ impl AcquisitionSession {
     /// Fails closed with [`AcquisitionError::AbsenceClaimForbidden`] if not in
     /// [`AcquisitionStateKind::ContinuityVerified`], or [`AcquisitionError::InvalidCoverageWitness`]
     /// if the coverage witness does not certify absence.
+    /// After a sequence-accounted degradation this interval-free API remains refused until a
+    /// new stream generation. Use [`Self::check_absence_claim_allowed_in_window`] to query only
+    /// the current verified window without erasing the earlier gap.
     pub fn check_absence_claim_allowed(&self) -> Result<&CoverageWitness, AcquisitionError> {
+        if self.has_windowed_gap {
+            return Err(AcquisitionError::AbsenceClaimForbidden {
+                state: self.state_kind(),
+                detail: "recorded sequence gaps require a generation-, sequence- and time-scoped absence query",
+            });
+        }
         match &self.state {
             AcquisitionState::ContinuityVerified { continuity, .. } => {
                 if !continuity.coverage_witness.certifies_absence() {
@@ -2788,9 +2809,10 @@ impl AcquisitionSession {
             }
         };
 
-        if let Some(prior) = &prior_continuity {
-            let expected_next = prior.window_end_seq.saturating_add(1);
-            if witness.window_start_seq != expected_next {
+        if let Some(window) = self.recovery_window_for_verification()? {
+            recovery::require_next_sequence(window.window_end_seq, witness.window_start_seq)?;
+        } else if let Some(prior) = &prior_continuity {
+            if prior.window_end_seq.checked_add(1) != Some(witness.window_start_seq) {
                 return Err(AcquisitionError::ContinuityGapDetected {
                     detail: format!(
                         "sequence gap detected: prior window ended at {}, next window started at {}",
@@ -2801,7 +2823,7 @@ impl AcquisitionSession {
         } else {
             let ff_seq = first_frame.sequence_number;
             if witness.window_start_seq != ff_seq
-                && witness.window_start_seq != ff_seq.saturating_add(1)
+                && ff_seq.checked_add(1) != Some(witness.window_start_seq)
             {
                 return Err(AcquisitionError::ContinuityGapDetected {
                     detail: format!(
@@ -2969,6 +2991,7 @@ impl AcquisitionSession {
             first_frame,
             last_continuity,
             degradation: Box::new(evidence),
+            last_windowed_degradation: None,
         };
         Ok(())
     }
@@ -3101,17 +3124,15 @@ impl AcquisitionSession {
                 to: target_kind,
             });
         }
-        if resolved_state.request().source_identity.source_id
-            != self.request().source_identity.source_id
-            || resolved_state.request().device_identity.device_id
-                != self.request().device_identity.device_id
-            || resolved_state.request().adapter_identity.adapter_id
-                != self.request().adapter_identity.adapter_id
-        {
+        if resolved_state.request() != self.request() {
             return Err(AcquisitionError::WitnessMismatch {
-                detail: "reconciled state identity mismatch".to_string(),
+                detail: "reconciled state must bind the exact acquisition request".to_string(),
             });
         }
+
+        // A caller-supplied state cannot bypass first-frame custody, predecessor adjacency,
+        // an unresolved unscoped degradation, or the request/generation boundary.
+        self.verify_reconciled_continuity_state(&resolved_state, now_ns)?;
 
         let witness_digest = match &resolved_state {
             AcquisitionState::ContinuityVerified { continuity, .. } => {
@@ -3122,13 +3143,20 @@ impl AcquisitionSession {
                 )?;
                 continuity.witness_digest()
             }
-            AcquisitionState::Degraded { degradation, .. } => {
+            AcquisitionState::Degraded {
+                degradation,
+                last_windowed_degradation,
+                ..
+            } => {
                 degradation.verify(
                     &self.request().source_identity.source_id,
                     &self.request().device_identity.device_id,
                     &self.request().adapter_identity.adapter_id,
                 )?;
-                degradation.evidence_digest()
+                last_windowed_degradation.as_ref().map_or_else(
+                    || degradation.evidence_digest(),
+                    |window| window.evidence_digest(),
+                )
             }
             AcquisitionState::Failed {
                 failure,
@@ -3180,6 +3208,13 @@ impl AcquisitionSession {
             now_ns,
             witness_digest,
             note,
+        );
+        self.has_windowed_gap |= matches!(
+            &resolved_state,
+            AcquisitionState::Degraded {
+                last_windowed_degradation: Some(_),
+                ..
+            }
         );
         self.state = resolved_state;
         Ok(())
@@ -3258,6 +3293,7 @@ impl AcquisitionSession {
             "session reconnected with incremented stream generation",
         );
         self.state = AcquisitionState::Requested(Box::new(new_request));
+        self.has_windowed_gap = false;
         Ok(())
     }
 }

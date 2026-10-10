@@ -890,7 +890,8 @@ class TestSchemaConstitution(unittest.TestCase):
         # + SCHEMA-DOMAIN-RECORDED-SENSOR-HEALTH-{PLAN,,COVERAGE,COVERAGE-ANALYSIS,COVERAGE-PIPELINE,COVERAGE-ZONE}-001 (7c932d6) and fusion calibrated-input/decision domains (25c396d, aec31c3), registered without a pin bump = 288.
         # + SCHEMA-DOMAIN-EXECUTOR-ACTIVITY-PACKAGE-SPEC-001 (fss-2h5zq.49) = 289.
         # + recorded corroboration dependencies, assessment, cluster, edge and health-decision = 294.
-        self.assertEqual(result["digestDomainCount"], 294)
+        # + SCHEMA-DOMAIN-ACQUISITION-WINDOWED-DEGRADATION-001 = 295.
+        self.assertEqual(result["digestDomainCount"], 295)
 
         # Continuation cursor is verified implemented
         implemented_names = {s["name"] for s in result["schemas"] if s["status"] == "implemented"}
@@ -1425,7 +1426,8 @@ class TestSchemaConstitutionCrossReviewRegressions(unittest.TestCase):
         # + SCHEMA-DOMAIN-RECORDED-SENSOR-HEALTH-{PLAN,,COVERAGE,COVERAGE-ANALYSIS,COVERAGE-PIPELINE,COVERAGE-ZONE}-001 (7c932d6) and fusion calibrated-input/decision domains (25c396d, aec31c3), registered without a pin bump = 288.
         # + SCHEMA-DOMAIN-EXECUTOR-ACTIVITY-PACKAGE-SPEC-001 (fss-2h5zq.49) = 289.
         # + recorded corroboration dependencies, assessment, cluster, edge and health-decision = 294.
-        self.assertEqual(result["digestDomainCount"], 294)
+        # + SCHEMA-DOMAIN-ACQUISITION-WINDOWED-DEGRADATION-001 = 295.
+        self.assertEqual(result["digestDomainCount"], 295)
         # 36 = 28 + fss.sensor_tamper_status.v1 (owner SensorTamperStatus, fss-2uftm)
         # + fss.agent_operations.v1 / fss.agent_views.v1 / fss.agent_request_envelope.v1
         #   (owners AgentOperation / AgentView / AgentRequestEnvelope, fss-x4a.30.83.17-40)

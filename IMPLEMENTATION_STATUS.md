@@ -10,6 +10,21 @@ Franken Surveillance System now has a coherent, dependency-light Rust reference 
 
 It is also not a complete surveillance product. Native device adapters, production media/model/graph/storage services, persistent distributed operation, every human and agent surface, complete qualification matrices, and the aggregate release root remain open. Status below distinguishes implemented reference semantics from production completion.
 
+## Acquisition continuity recovery (2026-10-10, reference, unqualified)
+
+`fss-jsiq8`: core acquisition sessions can recover the same stream generation after an explicitly
+accounted degraded sequence window. An additive canonical `WindowedDegradationEvidence` binds
+the complete request, exact preceding witness, unavailable sequence span and unchanged v1
+degradation evidence. Consecutive gaps remain recorded; only the immediately following clean
+window can verify. Request replay, changed custody, overlapping/skipped spans and sequence
+overflow are refused before mutation, including through indeterminate-state reconciliation.
+
+The old interval-free absence API stays refused after a gap. A new scoped check returns the
+current continuity witness only for a contained generation/sequence/PTS scope and an independently
+certifying coverage witness; it makes no time-only or clock-continuity claim. Recorded RTP's
+estimated-clock coverage remains uncertified. See [the recovery contract and
+limits](docs/ACQUISITION_CONTINUITY_RECOVERY.md).
+
 ## Graph intelligence, evidence fusion and score calibration (2026-10-07, reference, unqualified)
 
 - **Certified graph families (WP-170):** 15 of the 27 registered graph algorithms are now

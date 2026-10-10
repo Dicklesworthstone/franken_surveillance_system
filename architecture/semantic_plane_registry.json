@@ -66,6 +66,7 @@
     "crates/fss-core/src/abstraction/source_evidence.rs": "authority",
     "crates/fss-core/src/abstraction/world_facts.rs": "authority",
     "crates/fss-core/src/acquisition.rs": "authority",
+    "crates/fss-core/src/acquisition/recovery.rs": "authority",
     "crates/fss-core/src/agent.rs": "authority",
     "crates/fss-core/src/agent_cognitive.rs": "authority",
     "crates/fss-core/src/agent_contracts.rs": "authority",
