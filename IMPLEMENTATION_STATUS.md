@@ -10,7 +10,7 @@ Franken Surveillance System now has a coherent, dependency-light Rust reference 
 
 It is also not a complete surveillance product. Native device adapters, production media/model/graph/storage services, persistent distributed operation, every human and agent surface, complete qualification matrices, and the aggregate release root remain open. Status below distinguishes implemented reference semantics from production completion.
 
-## Source-preserving RTSP recording import (2026-10-10, reference, native validation pending)
+## Source-preserving RTSP recording import (2026-10-10, reference, focused native tests passed)
 
 `fss-import-rtsp` closes the gap between native RTSP recording custody and retained media
 analysis for AVC and HEVC. An exact owner-approved window slot/root/scope is replay-verified
@@ -27,14 +27,18 @@ remains unknown. Current sensor privacy, independent original/media limits, boun
 caches and deletion closure remain enforced. Per-read exact chunk bounds are checked before
 allocation. This command opens no network connection and creates no event or alert authority.
 
-Ten native RTSP contracts, two spool-bound tests, one retained chunk-bound unit test, five CLI
-parser tests and two real-binary CLI tests were added. They include both codecs, offline decode,
-cold retry, damage, scope/budget refusal, masks, timestamp overflow and interrupted publication.
-**Native compilation, formatting and execution remain pending because the execution environment
-disconnected.** Source/API cross-review and changed-file Git/checksum checks are not native test
-results. See [the importer workflow](docs/rtsp_recording_import.md).
+Focused validation now passes on pinned `nightly-2026-08-31`: ten native RTSP contracts,
+two spool-bound tests, one retained chunk-bound unit test, five CLI parser tests and three
+real-binary CLI tests (21 total). They include both codecs, offline decode, cold retry, damage,
+scope/budget refusal, masks, timestamp overflow and interrupted publication. Native testing
+exposed missing trait imports and a refusal-path defect: constructing destination authority
+created its directory before rejecting a missing archive. The importer now checks required
+source directories and canonical destination separation under the approved authority first;
+missing-source and overlapping/invalid destination refusals leave the destination absent.
+These focused tests do not provide camera, release or full-workspace qualification.
+See [the importer workflow](docs/rtsp_recording_import.md).
 
-## Cold whole-recording event recovery (2026-10-10, reference, native validation pending)
+## Cold whole-recording event recovery (2026-10-10, reference, focused native tests passed)
 
 Published `event:long-watch:` and `event:long-corroborated:` candidates now have a cold
 `fss-event read` path and an explicit `fss-event verify` path. Inspection verifies the current
@@ -51,9 +55,12 @@ codec/read ceilings for fields that were not saved. No old identity or stored fo
 The new reference tests include cold native inter-coded replay, late entries, privacy/source
 failure, subranges, cancellation, shared causes and a self-consistent forged trace that only
 actual native execution rejects. New CLI tests exercise exact generated commands and exports.
-These tests were prepared and source-reviewed, but **have not yet been compiled or executed**
-because the execution environment disconnected. Older test results do not qualify this new
-integration. See [the command and bounds](docs/long_event_replay.md).
+Focused native validation now passes on pinned `nightly-2026-08-31`: ten reference tests,
+eight CLI parser/output tests and six real-binary integration tests (24 total). This includes
+actual retained MJPEG/AVC/HEVC replay and two-camera corroboration. A missing `CanonicalDecode`
+trait import found by compilation was repaired. The original authoring environment outage is
+resolved for these tests; full qualification, Clippy and a workspace-wide formatting run are
+not claimed. See [the command and bounds](docs/long_event_replay.md).
 
 ## Acquisition continuity recovery (2026-10-10, reference, unqualified)
 

@@ -10,8 +10,8 @@
 use std::fmt;
 
 use fss_core::{
-    CanonicalEncode, ContentDigest, ContractError, DigestAlgorithm, EventHypothesis, EventId,
-    EventKind, LedgerAnchor, ObjectId, SensorId,
+    CanonicalDecode, CanonicalEncode, ContentDigest, ContractError, DigestAlgorithm, EventHypothesis,
+    EventId, EventKind, LedgerAnchor, ObjectId, SensorId,
 };
 use fss_object::{HostSpoolIo, ObjectManifest, read_verified_payload};
 use fss_publication::{ROOT_REACHABILITY_FAMILY, SlotName};

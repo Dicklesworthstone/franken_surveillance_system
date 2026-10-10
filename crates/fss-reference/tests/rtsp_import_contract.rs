@@ -6,7 +6,7 @@ mod hevc_recording_support;
 
 use fss_core::region::{ContextAuthority, RootAuthoritySpec};
 use fss_core::{
-    BudgetVector, CaptureInterval, ContentDigest, OperationId, TimestampNs,
+    BudgetVector, CanonicalEncode, CaptureInterval, ContentDigest, OperationId, TimestampNs,
 };
 use fss_geometry::WorkBudget;
 use fss_object::SpoolLimits;

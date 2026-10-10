@@ -136,6 +136,17 @@ cargo test -p fss-reference --test rtsp_import_contract
 cargo test -p fss-cli --bin fss-import-rtsp --test rtsp_import_cli
 ```
 
-These new targets were prepared and source-reviewed during an execution-environment outage;
-they have not yet been compiled or executed in this session. Existing codec qualification and
-older test results do not substitute for running these new integration cases.
+All 21 focused native tests now pass on pinned `nightly-2026-08-31`: ten RTSP reference
+contracts, two bounded-spool cases, one final-chunk bound case, five CLI parser/approval cases
+and three real-process integration cases. Compilation exposed a missing trait import; the
+missing-archive integration case also exposed destination-directory creation before source
+admission. Required source directories and canonical destination separation are now checked
+under the approved authority before constructing destination I/O authority. Missing archive
+structure, overlapping paths and a nonexistent destination parent refuse without creating
+the destination or repairing the archive. A new integration case covers those boundaries.
+
+Validation used source `68821e4062acb52dcdfc16636d1eb7850dc6e6df` plus the import/preflight
+corrections, with `--locked --offline -j 1`, test debug information disabled and incremental
+compilation disabled to fit the build store. Debug assertions and the pinned compiler were
+unchanged. These results do not claim full-workspace tests, Clippy, a workspace formatting pass,
+actual camera behavior or release qualification.

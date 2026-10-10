@@ -211,3 +211,44 @@ fn exact_preview_and_missing_archive_refusal_do_not_create_either_store() -> Tes
     assert!(!directory.0.join("destination").exists());
     Ok(())
 }
+
+#[test]
+fn source_and_destination_preflight_refusals_never_materialize_destination_paths() -> Test {
+    let directory = Directory::new()?;
+    let recording = hevc_recording_support::fixture()?;
+    let archive = directory.0.join("source archive");
+    fs::create_dir_all(archive.join("spool"))?;
+    let mut args = arguments(&directory, &recording)?;
+    let preview = good(run(&args)?)?;
+    args.extend(["--approve".into(), field(&preview, "approval_digest")?.into()]);
+    let refused = run(&args)?;
+    assert!(!refused.status.success());
+    assert!(String::from_utf8_lossy(&refused.stderr).contains("ERR-RTSP-IMPORT-SOURCE-001"));
+    assert!(!directory.0.join("destination").exists());
+    assert!(!archive.join("roots").exists(), "preflight repaired the archive");
+
+    fs::create_dir(archive.join("roots"))?;
+    fs::create_dir(archive.join("tombstones"))?;
+    let mut roots = Vec::new();
+    #[cfg(unix)]
+    {
+        let alias = directory.0.join("archive alias");
+        std::os::unix::fs::symlink(&archive, &alias)?;
+        roots.push(alias.join("nested destination"));
+    }
+    roots.push(directory.0.join("missing parent").join("destination"));
+    for root in roots {
+        let mut args = arguments(&directory, &recording)?;
+        let root_index = args.iter().position(|arg| arg == "--root").ok_or("root argument")?;
+        args[root_index + 1] = root.as_os_str().to_owned();
+        let preview = good(run(&args)?)?;
+        args.extend(["--approve".into(), field(&preview, "approval_digest")?.into()]);
+        let refused = run(&args)?;
+        assert!(!refused.status.success());
+        assert!(refused.stdout.is_empty());
+        assert!(String::from_utf8_lossy(&refused.stderr).contains("ERR-RTSP-IMPORT-REQUEST-001"));
+        assert!(!root.exists());
+        assert!(!directory.0.join("missing parent").exists());
+    }
+    Ok(())
+}

@@ -118,13 +118,17 @@ contracts. Long-dwell uses its existing `fss-replay-dwell` workflow.
 
 New library and real-binary regression cases cover cold recovery, exact pins, complete native
 matching, shared causes, source damage, privacy drift, subranges, invalid bounds and create-only
-exports. They were prepared and source-reviewed during an execution-environment outage and
-have not yet been compiled or run in this session.
+exports. After recovering the pinned `nightly-2026-08-31` toolchain and repairing a missing
+trait import, all 24 focused native tests pass: ten reference cases, eight CLI parser/output
+cases and six real-process integration cases. Compilation and execution used the exact source
+at `68821e4062acb52dcdfc16636d1eb7850dc6e6df` plus that import correction.
 
 ```sh
 cargo test -p fss-reference --lib long_event_replay
 cargo test -p fss-cli --bin fss-event --test long_event_replay_cli
 ```
 
-Older successful tests do not establish these new replay integration cases. No release or
-deployment-quality status is advanced by adding the reader.
+The integration builds used `--locked --offline -j 1`, disabled test debug information and
+disabled incremental compilation to fit the transient build store. Debug assertions and the
+pinned compiler remained unchanged. These focused results do not claim full-workspace tests,
+Clippy, a workspace formatting pass, device quality or release qualification.

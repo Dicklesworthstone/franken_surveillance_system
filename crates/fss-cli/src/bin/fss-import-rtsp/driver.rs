@@ -50,24 +50,39 @@ fn existing_directory(path: &Path) -> bool {
     std::fs::symlink_metadata(path).is_ok_and(|metadata| metadata.file_type().is_dir())
 }
 
-fn execute_authorized(
+fn authority_boundary(
     options: &Options,
     authority: &ContextAuthority,
-    cx: &ReplayCx,
     start: Instant,
-) -> Result<String, &'static str> {
+) -> Result<(), &'static str> {
+    if authority.cancellation_reason.is_some()
+        || !CAPS.iter().all(|capability| authority.has_capability(capability))
+        || start.elapsed() >= Duration::from_millis(options.timeout_ms)
+    {
+        return Err("ERR-RTSP-IMPORT-AUTHORITY-001");
+    }
+    Ok(())
+}
+
+fn preflight_source_paths(
+    options: &Options,
+    authority: &ContextAuthority,
+    start: Instant,
+) -> Result<(), &'static str> {
+    // ReplayCx construction creates its root. These read-only checks therefore use the
+    // validated, exact-plan authority before constructing destination I/O authority.
     for name in ["", "spool", "roots", "tombstones"] {
-        boundary(options, cx, start)?;
+        authority_boundary(options, authority, start)?;
         if !existing_directory(&options.archive.join(name)) {
             return Err("ERR-RTSP-IMPORT-SOURCE-001");
         }
     }
-    boundary(options, cx, start)?;
+    authority_boundary(options, authority, start)?;
     let source_path = options
         .archive
         .canonicalize()
         .map_err(|_| "ERR-RTSP-IMPORT-SOURCE-001")?;
-    boundary(options, cx, start)?;
+    authority_boundary(options, authority, start)?;
     let target_path = match std::fs::symlink_metadata(&options.root) {
         Ok(metadata) if metadata.file_type().is_dir() => options
             .root
@@ -85,6 +100,15 @@ fn execute_authorized(
     if source_path.starts_with(&target_path) || target_path.starts_with(&source_path) {
         return Err("ERR-RTSP-IMPORT-REQUEST-001");
     }
+    Ok(())
+}
+
+fn execute_authorized(
+    options: &Options,
+    authority: &ContextAuthority,
+    cx: &ReplayCx,
+    start: Instant,
+) -> Result<String, &'static str> {
     boundary(options, cx, start)?;
     let source = LocalRootPublisher::open(
         &options.archive,
@@ -166,9 +190,11 @@ pub(super) fn execute(options: &Options) -> Result<String, &'static str> {
     })
     .map_err(|_| "ERR-RTSP-IMPORT-AUTHORITY-001")?;
     authority.validate().map_err(|_| "ERR-RTSP-IMPORT-AUTHORITY-001")?;
+    let start = Instant::now();
+    preflight_source_paths(options, &authority, start)?;
     let cx = ReplayCx::from_context_authority(&authority, options.root.clone())
         .map_err(|_| "ERR-RTSP-IMPORT-AUTHORITY-001")?;
-    let result = execute_authorized(options, &authority, &cx, Instant::now());
+    let result = execute_authorized(options, &authority, &cx, start);
     cx.drain_and_finalize();
     result
 }
