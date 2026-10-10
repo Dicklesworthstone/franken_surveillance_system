@@ -104,14 +104,15 @@ fn binding_and_complete_chain_are_checked_before_any_payload_walk() -> TestResul
 fn every_observed_authority_change_refuses_the_whole_result() -> TestResult {
     let f = Fixture::new("authority-change")?;
     let before = read(&f)?;
-    for change in 0..5 {
+    for change in 0..6 {
         let mut after = before.clone();
         match change {
             0 => after.ledger_root = ContentDigest::sha256(b"different ledger"),
             1 => after.effect_journal_root = ContentDigest::sha256(b"different effect journal"),
             2 => after.ledger_tail_uncommitted = !after.ledger_tail_uncommitted,
             3 => after.effect_tail_uncommitted = !after.effect_tail_uncommitted,
-            _ => after.events[0].event_root = ContentDigest::sha256(b"different publication"),
+            4 => after.events[0].event_root = ContentDigest::sha256(b"different publication"),
+            _ => after.events.clear(),
         }
         assert!(matches!(check_with(&f.root, &before, &f.event.event_id,
             CustodyAuditLimits::default(), &HostSpoolIo, || Ok(after), &|| false),

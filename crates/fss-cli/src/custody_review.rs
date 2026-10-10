@@ -188,7 +188,11 @@ fn check_with(
     checkpoint(cancelled)?;
     let after = recheck().map_err(|_| CustodyReviewError::RecheckFailed)?;
     checkpoint(cancelled)?;
-    if binding(&after, event_id)? != basis {
+    let after_basis = binding(&after, event_id).map_err(|error| match error {
+        CustodyReviewError::ContextBound => error,
+        _ => CustodyReviewError::BasisChanged,
+    })?;
+    if after_basis != basis {
         return Err(CustodyReviewError::BasisChanged);
     }
     if after.bytes_read > MAX_RECHECK_ACCOUNTED_BYTES || after.files_read > MAX_RECHECK_ACCOUNTED_FILES {

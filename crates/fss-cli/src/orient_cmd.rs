@@ -10,6 +10,8 @@
 
 #[path = "orient_cmd/evidence.rs"]
 mod evidence;
+#[path = "orient_cmd/custody.rs"]
+mod custody;
 
 use std::path::PathBuf;
 
@@ -64,6 +66,9 @@ pub struct ExplainArgs {
     pub event_id: EventId,
     /// Requesting principal label.
     pub principal: PrincipalId,
+    /// Explicitly rehash the current publication closure and revalidate its authority.
+    /// Defaults to false; this never grants source-media disclosure or effect authority.
+    pub custody: bool,
 }
 
 /// Collects `--json` and `--name value` / `--name=value` options with exact exhaustion.
@@ -252,9 +257,9 @@ pub fn parse_orient_args(tokens: &[ArgToken]) -> Result<OrientArgs, CliError> {
     })
 }
 
-/// Parses `explain --json --root <dir> --event-id <id> [--principal <id>]`.
+/// Parses `explain --json --root <dir> --event-id <id> [--principal <id>] [--custody yes|no]`.
 pub fn parse_explain_args(tokens: &[ArgToken]) -> Result<ExplainArgs, CliError> {
-    let values = collect_options("explain", tokens, &["--root", "--event-id", "--principal"])?;
+    let values = collect_options("explain", tokens, &["--root", "--event-id", "--principal", "--custody"])?;
     let root = required_root("explain", &values)?;
     let (_, raw, index) = take(&values, "--event-id").ok_or_else(|| CliError::MissingValue {
         option: "--event-id".to_owned(),
@@ -272,6 +277,7 @@ pub fn parse_explain_args(tokens: &[ArgToken]) -> Result<ExplainArgs, CliError> 
         root,
         event_id,
         principal: principal("explain", &values)?,
+        custody: custody::parse(&values)?,
     })
 }
 
@@ -407,6 +413,13 @@ impl std::fmt::Display for RenderError {
 impl std::error::Error for RenderError {}
 
 pub(crate) fn build_response(parts: ResponseParts) -> Result<String, Box<dyn std::error::Error>> {
+    build_response_with_resnapshot(parts, false)
+}
+
+fn build_response_with_resnapshot(
+    parts: ResponseParts,
+    resnapshot_required: bool,
+) -> Result<String, Box<dyn std::error::Error>> {
     let payload_digest = ContentDigest::sha256(parts.payload_json.as_bytes());
     let short = parts.request_digest.to_text();
     let hex = short.split_once(':').map_or(short.as_str(), |(_, hex)| hex);
@@ -448,7 +461,7 @@ pub(crate) fn build_response(parts: ResponseParts) -> Result<String, Box<dyn std
         parts.idempotency_key,
         parts.recovery_class,
         parts.safe_retry,
-        false,
+        resnapshot_required,
         parts.boundary,
         parts.created_at_ns,
     )?;
@@ -1225,6 +1238,7 @@ fn explanation_response(
     explanation: &EventExplanation,
     request_digest: ContentDigest,
     support: &evidence::SupportReview,
+    custody_checked: bool,
 ) -> Result<String, Box<dyn std::error::Error>> {
     let event = &explanation.event.event;
     let physical = explanation
@@ -1321,7 +1335,7 @@ fn explanation_response(
             next_actions: explanation.affordances.clone(),
             decision_digest: support.receipt.receipt_digest(),
         },
-        Some(evidence::budget(support)),
+        Some(custody::budget(support, custody_checked)),
     )?;
     let contradictions = explanation
         .cells
@@ -1372,9 +1386,12 @@ fn explanation_response(
         warnings,
         contradictions,
         degradation: vec![
-            "Latency and CPU time are not metered by this reference path; consumed reports \
-             reads, orientation context tokens and the separately priced support brief."
-                .to_owned(),
+            if custody_checked {
+                custody::METER_SCOPE.to_owned()
+            } else {
+                "Latency and CPU time are not metered by this reference path; consumed reports \
+             reads, orientation context tokens and the separately priced support brief.".to_owned()
+            },
             support.cost_statement.clone(),
         ],
         budgets_json: agent_json::budget_summary(&support.requested, &support.consumed),
@@ -1498,6 +1515,9 @@ fn unknown_event_response(
 /// Executes `explain`, returning the rendered response and its exit identity.
 #[must_use]
 pub fn execute_explain(args: &ExplainArgs) -> (String, ExitIdentity) {
+    // No ambient clock is consulted on the existing, unchecked path.
+    let started = args.custody.then(std::time::Instant::now);
+    let cancelled = || started.is_some_and(|at| at.elapsed() >= custody::TIMEOUT);
     let limits = OrientLimits::default();
     let snapshot = match read_deployment(&args.root, &limits) {
         Ok(snapshot) => snapshot,
@@ -1507,6 +1527,8 @@ pub fn execute_explain(args: &ExplainArgs) -> (String, ExitIdentity) {
         encoder.text(args.event_id.as_str());
         args.principal.encode_canonical(encoder);
         snapshot.anchor.encode_canonical(encoder);
+        // Preserve every old request digest when custody was not explicitly requested.
+        if args.custody { encoder.text("custody=yes"); }
     });
     let request = OrientRequest {
         view: AgentView::Brief,
@@ -1538,18 +1560,40 @@ pub fn execute_explain(args: &ExplainArgs) -> (String, ExitIdentity) {
     };
     match explain_event(&snapshot, &orientation, &args.event_id) {
         Ok(Some(explanation)) => {
-            let support = match evidence::compile(&snapshot, &orientation, &explanation) {
+            let mut support = match evidence::compile(&snapshot, &orientation, &explanation) {
                 Ok(support) => support,
                 Err(error) => return rendered(
                     evidence::refusal(&orientation, &explanation, request_digest, evidence::refusal_id(&error)),
                     ExitIdentity::AGENT_REFUSED, "explain", &args.root,
                 ),
             };
-            let response = explanation_response(&orientation, &explanation, request_digest, &support);
+            if args.custody {
+                let checked = crate::custody_review::check_event(
+                    &args.root, &snapshot, &args.event_id,
+                    fss_publication::custody_audit::CustodyAuditLimits::default(), &cancelled,
+                ).and_then(|review| custody::augment(&mut support, &review));
+                if let Err(error) = checked {
+                    return rendered(custody::refusal(&orientation, &explanation,
+                        request_digest, &support, &error), ExitIdentity::AGENT_REFUSED,
+                        "explain", &args.root);
+                }
+            }
+            let response = explanation_response(&orientation, &explanation, request_digest,
+                &support, args.custody);
+            if cancelled() {
+                return rendered(custody::refusal(&orientation, &explanation,
+                    request_digest, &support, &crate::custody_review::CustodyReviewError::Cancelled),
+                    ExitIdentity::AGENT_REFUSED, "explain", &args.root);
+            }
             match response {
                 Ok(json) if json.len().saturating_add(1) <= evidence::MAX_RESPONSE_BYTES => {
                     (json, ExitIdentity::SUCCESS)
                 }
+                Ok(_) if args.custody => rendered(
+                    custody::refusal(&orientation, &explanation, request_digest, &support,
+                        &crate::custody_review::CustodyReviewError::ContextBound),
+                    ExitIdentity::AGENT_REFUSED, "explain", &args.root,
+                ),
                 Ok(_) => rendered(
                     evidence::refusal(&orientation, &explanation, request_digest, ERR_AGENT_CONTEXT_INCOMPLETE),
                     ExitIdentity::AGENT_REFUSED, "explain", &args.root,
