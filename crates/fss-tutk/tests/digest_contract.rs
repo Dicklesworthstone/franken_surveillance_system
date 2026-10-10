@@ -1,3 +1,4 @@
+#![forbid(unsafe_code)]
 //! Known-answer tests for the first-party digest module (FIPS + RFC 2104 vectors).
 
 use fss_tutk::digest::{hmac_sha1, hmac_sha256, Sha1, Sha256};

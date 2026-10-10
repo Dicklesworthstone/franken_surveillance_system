@@ -2007,7 +2007,11 @@ class TestQualifyRunDirectories(unittest.TestCase):
                 )
                 for _ in range(2)
             ]
-            stderrs = [proc.communicate(timeout=300)[1] for proc in procs]
+            # Two concurrent full docs lanes must each finish within the budget. The
+            # lane's duration grew with the registry corpus (a single run exceeded
+            # 900 s on 2026-10-10: manifest audit walks 2300+ files, robot-docs tests,
+            # stable-id audit); the serialized second runner needs > 2x that.
+            stderrs = [proc.communicate(timeout=2400)[1] for proc in procs]
         run_dirs = self._stamp_dirs()
         self.assertEqual(len(run_dirs), 2, f"expected two run directories, got {run_dirs}: {stderrs}")
         for run_dir in run_dirs:

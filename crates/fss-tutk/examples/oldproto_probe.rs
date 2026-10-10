@@ -1,3 +1,4 @@
+#![forbid(unsafe_code)]
 //! TUTK OLD-protocol (0x0601) LAN-search probe driver — owner-authorized
 //! LAN scope only (lab charter). Broadcast + directed modes, bounded retries,
 //! no session, no credentials.

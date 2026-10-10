@@ -1,3 +1,4 @@
+#![forbid(unsafe_code)]
 //! Field-level contract tests for the model registry rows
 //! (`registries/MODELS.md` — the machine authority for model candidates and
 //! their eligibility states), realizing the fss-x4a.30.93 family acceptance:

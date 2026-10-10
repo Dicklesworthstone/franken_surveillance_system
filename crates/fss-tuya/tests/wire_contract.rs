@@ -1,3 +1,4 @@
+#![forbid(unsafe_code)]
 //! Wire-framing contract tests: CRC32 known vector, 55AA round-trips
 //! (CRC + HMAC trailers), the oracle-verified 6699 golden frame, retcode
 //! heuristics, and both session-key derivations.

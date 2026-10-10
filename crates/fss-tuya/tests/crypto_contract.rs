@@ -1,3 +1,4 @@
+#![forbid(unsafe_code)]
 //! Known-answer contract tests for the first-party AES-128 / GCM / HMAC
 //! core. Vectors: FIPS-197 Appendix C.1 (AES), McGrew–Viega/NIST GCM cases
 //! verified against pyca/cryptography (lab oracle), RFC 4231 (HMAC-SHA256),

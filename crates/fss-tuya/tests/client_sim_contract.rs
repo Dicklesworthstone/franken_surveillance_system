@@ -1,3 +1,4 @@
+#![forbid(unsafe_code)]
 //! Client↔simulator differential contract (LAB-AOSU-5): the sans-IO client
 //! and the deterministic homebase simulator speak to each other over pure
 //! byte exchange — no sockets, no clock. This is the development harness of

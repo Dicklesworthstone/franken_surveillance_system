@@ -1,3 +1,4 @@
+#![forbid(unsafe_code)]
 //! Contract tests for the ADP-WYZE-V4-LAB-001 typed registry-row
 //! realization (bead fss-x4a.30.89.8): identity construction, canonical
 //! round-trip, NEG-002 compliance both directions, generation monotonicity,

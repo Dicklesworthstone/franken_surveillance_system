@@ -1,3 +1,4 @@
+#![forbid(unsafe_code)]
 //! Operator vertical slice: acquire a live TUTK camera stream into a REAL FSS
 //! deployment — custody payloads staged root-last, evidence batches committed
 //! to the deployment's durable ledger, inspectable afterward with `fss doctor`

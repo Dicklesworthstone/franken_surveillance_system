@@ -1,3 +1,4 @@
+#![forbid(unsafe_code)]
 //! Contract tests for X25519 (RFC 7748) and ChaCha20-Poly1305 (RFC 8439),
 //! using the RFCs' published test vectors.
 

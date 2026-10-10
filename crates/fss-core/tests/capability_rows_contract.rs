@@ -1,3 +1,4 @@
+#![forbid(unsafe_code)]
 //! Field-level contract tests for the capability registry rows
 //! (`architecture/capabilities.json`, generation `gen:fss1:capabilities-v2`),
 //! realizing the fss-x4a.30.86 family acceptance criteria:

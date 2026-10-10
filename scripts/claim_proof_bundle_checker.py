@@ -5630,9 +5630,15 @@ def _flush_or_silence(stream: Any) -> bool:
         flush_ok = False
     try:
         fd = stream.fileno()
+        # Character devices (/dev/null, terminals) always accept writes; polling them is
+        # meaningless and on some platforms (macOS) returns POLLNVAL, which would falsely
+        # fail an open, writable descriptor. Only pipes/sockets get refusal polling.
+        if stat.S_ISCHR(os.fstat(fd).st_mode):
+            return flush_ok
         poller = select.poll()
         poller.register(fd, select.POLLERR | select.POLLHUP)
-        if poller.poll(0) and flush_ok:
+        events = poller.poll(0)
+        if any(event & (select.POLLERR | select.POLLHUP) for _, event in events) and flush_ok:
             # The kernel has refused this descriptor's pipe: nothing more can be delivered.
             flush_ok = False
     except (OSError, ValueError):

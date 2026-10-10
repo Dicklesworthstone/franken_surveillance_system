@@ -1,3 +1,4 @@
+#![forbid(unsafe_code)]
 //! Field-level contract tests for the schema registry rows
 //! (`registries/SCHEMAS.md` — the machine authority), realizing the
 //! fss-x4a.30.5..54 family acceptance:

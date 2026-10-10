@@ -1,3 +1,4 @@
+#![forbid(unsafe_code)]
 //! Regenerates `models/fss-activity/fss_activity_v1.fmpk` from the current
 //! first-party builder (`build_activity_package`) and prints the new pinned
 //! whole-archive SHA-256. Run from the workspace root whenever an activity

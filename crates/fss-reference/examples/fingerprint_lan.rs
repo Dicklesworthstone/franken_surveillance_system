@@ -1,3 +1,4 @@
+#![forbid(unsafe_code)]
 //! Live fingerprint + dispatch runner (DISC-5/6 qualification): runs a real
 //! census, classifies every host, dispatches candidates to adapter paths,
 //! and prints the full table (including honest Unknown/LAA rows).

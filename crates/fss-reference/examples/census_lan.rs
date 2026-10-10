@@ -1,3 +1,4 @@
+#![forbid(unsafe_code)]
 //! Live census runner (DISC-1 qualification): sweeps the owner LAN and
 //! prints HostObs rows for comparison against the 2026-10-07 golden census.
 //!

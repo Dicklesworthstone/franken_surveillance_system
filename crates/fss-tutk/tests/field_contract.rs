@@ -1,3 +1,4 @@
+#![forbid(unsafe_code)]
 //! Field-operation contract tests for the X25519 gf arithmetic, using
 //! vectors computed by the oracle-verified Python clone (LAB-2026-10-07).
 

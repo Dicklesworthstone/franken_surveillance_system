@@ -1,3 +1,4 @@
+#![forbid(unsafe_code)]
 //! Field-level contract tests for the claim strength classes
 //! (`architecture/claims.json`, mirrored by `registries/CLAIMS.md`),
 //! realizing the fss-x4a.30.87 family acceptance:

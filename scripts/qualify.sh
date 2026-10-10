@@ -161,10 +161,12 @@ run() {
     # Shell function: inherits the script's environment (exports at the top
     # provide the seals). No env(1) scrub needed — the function's own
     # external-command invocations go through run() and get scrubbed there.
+    # Capture output to the step log exactly like command steps: the digest
+    # reader requires the log to exist for every step kind.
     if [[ "$SEAL_MODE" == "namespace" ]]; then
-      unshare -n "$@"
+      unshare -n "$@" > >(tee "$log") 2> >(tee -a "$log" >&2)
     else
-      "$@"
+      "$@" > >(tee "$log") 2> >(tee -a "$log" >&2)
     fi
   elif [[ "$SEAL_MODE" == "namespace" ]]; then
     env "${SCRUB_FLAGS[@]}" unshare -n "$@" > >(tee "$log") 2> >(tee -a "$log" >&2)
