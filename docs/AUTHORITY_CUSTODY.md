@@ -49,3 +49,28 @@ cargo test -p fss-publication --test custody_audit_contract
 These contracts have been authored but not run: the authoring environment has no
 Rust toolchain or network access to obtain one. No release qualification is
 inferred from source inspection or supplementary semantic checks.
+
+
+## Committed-event operator integration
+
+`fss-custody audit --root DIR --site SITE --event-id EVENT` now uses the authority
+entry point. Both its before and after deployment reads resolve the exact current
+event, verify its complete revision chain, bind the canonical event record and
+committed root, and reconstruct deletion denials. The two bindings must agree.
+`--expected-root` still refuses a changed current revision. The diagnostic exposes
+`root_basis: caller_verified_authority`; it grants no new read or effect scope.
+
+Six process contracts use real deployment and event publication before launching
+the custody binary. They cover intact source and counterevidence, missing/corrupt
+sources, lost provenance, local tombstones, exact pins, resource refusals and
+unverifiable authority. No fake `.root` event record is written by their fixture.
+The first contract also establishes that the old local-slot API rejects the same
+ledger-selected root, preventing a fixture from hiding this integration mismatch.
+
+```sh
+cargo test -p fss-cli --test custody_authority_cli
+cargo test -p fss-cli --bin fss-custody
+```
+
+The process targets are authored, not executed here. A full native run remains
+required before claiming this path works end to end on the pinned toolchain.

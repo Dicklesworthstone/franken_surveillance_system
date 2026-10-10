@@ -16,7 +16,7 @@ use fss_object::{HostSpoolIo, SpoolIo};
 use fss_publication::custody_audit::{
     CustodyAuditError, CustodyAuditLimits, LocalCustodyAudit,
     MAX_AUDIT_CATALOGUE_ENTRIES, MAX_AUDIT_EDGES, MAX_AUDIT_IO_CALLS, MAX_AUDIT_OBJECTS,
-    MAX_AUDIT_READ_BYTES, audit_local_roots,
+    MAX_AUDIT_READ_BYTES, audit_authority_roots,
 };
 use fss_reference::agent_orient::{HistoryPosition, OrientLimits, read_deployment};
 use fss_reference::reference_deployment::RELATIVE_PATH_OBJECTS;
@@ -33,7 +33,8 @@ const HELP: &str = "fss-custody audit --root DIR --site SITE --event-id EVENT\n\
   Rehash the published closure of one verified CURRENT event root. No arbitrary\n\
   artifact scope, media output, decoding, locks, writes, repairs or effects.\n\
   Committed deletions and local tombstones deny reads even when bytes remain.\n\
-  Only explicitly published manifests expand; embedded opaque references do not.\n\
+  The selected manifest is bound to the committed event, not a local root slot.\n\
+  Descendant manifests require local publication records; opaque leaves stay opaque.\n\
   Missing/corrupt/deleted/unreadable objects remain explicit. Missing manifests\n\
   leave unknown descendants. Event truth is never upgraded or invalidated here.\n\
 \n\
@@ -167,6 +168,7 @@ fn load_view(request: &Request) -> Result<ReadView, Error> {
         || retained.revision_digest != retained.event.revision_digest()
         || retained.committed_sequence > snapshot.anchor.commit_sequence
     { return Err(Error::Source); }
+    fss_core::EventHypothesis::verify_chain(&retained.revisions).map_err(|_| Error::Source)?;
     let mut denied = BTreeMap::new();
     for entry in snapshot.deletions.entries() {
         for object in &entry.plan.deletable {
@@ -210,7 +212,10 @@ fn execute_with(
     let before = read()?;
     stop(check)?;
     validate_selection(request, &before.basis)?;
-    let audit = audit_local_roots(io, &request.root.join(RELATIVE_PATH_OBJECTS),
+    // publish_event commits a manifest to the ledger without a local .root slot.
+    // Only the exact event root selected by the verifying reader gains a manifest role;
+    // never repair that mismatch by creating a slot or trial-parsing arbitrary leaves.
+    let audit = audit_authority_roots(io, &request.root.join(RELATIVE_PATH_OBJECTS),
         &[before.basis.event_root], &before.basis.denied, request.limits, check).map_err(Error::Audit)?;
     stop(check)?;
     let after = read()?;
@@ -252,6 +257,7 @@ fn render(request: &Request, before: &ReadView, after: &ReadView, audit: &LocalC
         ("effect_tail_uncommitted", b.effect_tail.to_string()),
         ("event_id", string(b.event.as_str())),
         ("event_root", string(&b.event_root.to_text())),
+        ("root_basis", string(audit.root_basis().as_str())),
         ("revision_digest", string(&b.revision_digest.to_text())),
         ("event_record", b.event_json.clone()),
         ("status", string(if audit.all_verified() { "intact_at_observation" } else { "custody_faults" })),
@@ -276,7 +282,7 @@ fn render(request: &Request, before: &ReadView, after: &ReadView, audit: &LocalC
         ("accounting_scope", string("audit IO includes two publication catalogues and selected payload closure; two existing deployment readers and their doctor inspections are separately bounded, not charged to audit allowance")),
         ("authority", string("read_only_operator_diagnostic_no_effect_or_export_authority")),
         ("privacy", string("operator_local_event_metadata; no redaction transform; no media bytes emitted")),
-        ("interpretation", string("exact declared publication closure during sequential reads; not an atomic snapshot, future availability, complete embedded semantic provenance, durability, event truth, independent corroboration or absence")),
+        ("interpretation", string("exact ledger-selected event manifest and locally declared descendant closure during sequential reads; not an atomic snapshot, future availability, complete embedded semantic provenance, durability, event truth, independent corroboration or absence")),
         ("qualification", string("authored_unvalidated_reference_candidate")),
     ]);
     if text.len().saturating_add(1) > request.report_limit { return Err(Error::OutputBound); }

@@ -7,6 +7,11 @@ read-side gap between a retained reference and a fresh check of its actual bytes
 It implements the existing bottom-up publication semantics; it is not an alternate
 source ledger, graph truth model, or authority grant.
 
+The additive `audit_authority_roots` uses the same walker for exact manifest roots
+selected from separately verified canonical authority. It is the entry point the
+operator command uses for committed events, which need not have local root slots.
+See [the authority-root contract](AUTHORITY_CUSTODY.md).
+
 ## Closure and fault semantics
 
 The first metadata pass reads bounded canonical publication and local tombstone
@@ -27,9 +32,13 @@ the undiscovered descendants remain unknown. Other discoverable branches are
 still checked. No object bytes appear in the report.
 
 A second bounded metadata pass must reproduce the first catalogue exactly. A
-changed catalogue, foreign or corrupt metadata, pending publication, an unpublished
-selected root, cancellation, or exhausted aggregate allowance returns a typed
-refusal, never a shortened successful audit. There is no automatic repair/retry.
+changed catalogue, foreign or corrupt metadata, pending publication, cancellation,
+or exhausted aggregate allowance returns a typed refusal, never a shortened
+successful audit. In `audit_local_roots`, a selected root without a local root
+record is also refused. `audit_authority_roots` instead uses the caller-verified
+selection to declare only those selected roots as manifests. It still checks any
+existing local record and never infers manifest roles for opaque descendants.
+There is no automatic repair/retry.
 
 ## Resource and authority boundaries
 
@@ -95,11 +104,20 @@ cargo run -p fss-cli --bin fss-custody -- audit \
 ```
 
 The command selects exactly the requested event's CURRENT publication root from
-`read_deployment`, which replays committed authority and verifies the event's
-revision chain and payloads. The event must be present, and its selected record
-must match both the retained chain tail and committed revision digest. A different
+`read_deployment`, which replays committed authority and rehashes event manifests
+and canonical records. The command additionally verifies the complete selected
+revision chain. The event must be present, and its selected record must match both
+the retained chain tail and committed revision digest. A different
 site, missing event or unreadable canonical history is refused. An arbitrary
 staged artifact cannot be used in place of an authoritative event root.
+
+`publish_event` stages an event manifest and commits it to the ledger without also
+creating a local `.root` record. The command therefore calls `audit_authority_roots`,
+not the local-slot-only entry point. The report's additive `root_basis` is
+`caller_verified_authority`, grounded in the event selection above. No local slot
+is created or implied. Descendant manifests still require local publication
+records. This corrects the initial command's `RootNotPublished` refusal on ordinary
+committed event roots without changing those roots or any publication encoding.
 
 `--expected-root sha256:HEX` optionally pins the event root from a prior report.
 This prevents auditing a silently changed revision; it does not pin or guarantee
@@ -147,4 +165,18 @@ compilation/tests remain unrun in the authoring environment.
 
 ```sh
 cargo test -p fss-cli --bin fss-custody
+```
+
+
+Six additional process contracts in `custody_authority_cli` create a deployment,
+retain a source/provenance root through `publish_and_commit`, commit an actual
+event through `publish_event`, then invoke the `fss-custody` binary. They do not
+inject a snapshot or invent an event slot. They check successful traversal to both
+support and counterevidence, byte-identical read-only retries, missing/corrupt
+sources, incomplete provenance expansion, local tombstones while bytes remain,
+current-revision pins, exhausted allowances and damaged authority. These native
+contracts remain unrun in the authoring environment.
+
+```sh
+cargo test -p fss-cli --test custody_authority_cli
 ```
