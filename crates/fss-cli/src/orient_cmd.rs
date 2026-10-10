@@ -8,6 +8,9 @@
 //! their validated constructors, and renders them with [`crate::agent_json`]. Affordances are
 //! listed, never executed.
 
+#[path = "orient_cmd/evidence.rs"]
+mod evidence;
+
 use std::path::PathBuf;
 
 use fss_core::{
@@ -1110,6 +1113,17 @@ pub(crate) fn cognitive_payload(
     view: AgentView,
     parts: CognitiveParts,
 ) -> Result<CognitivePayload, Box<dyn std::error::Error>> {
+    cognitive_payload_with_budget(orientation, request_digest, operation, view, parts, None)
+}
+
+fn cognitive_payload_with_budget(
+    orientation: &DeploymentOrientation,
+    request_digest: ContentDigest,
+    operation: &str,
+    view: AgentView,
+    parts: CognitiveParts,
+    budget_override: Option<EnvelopeBudget>,
+) -> Result<CognitivePayload, Box<dyn std::error::Error>> {
     let CognitiveParts {
         answer_class,
         epistemic,
@@ -1142,13 +1156,13 @@ pub(crate) fn cognitive_payload(
         capsule.anchor.clone(),
         epistemic,
         coverage,
-        EnvelopeBudget {
+        budget_override.unwrap_or(EnvelopeBudget {
             requested_json: requested,
             consumed_json: consumed,
             remaining_json: remaining,
             degraded_dimensions: Vec::new(),
             marginal_work_declined: Vec::new(),
-        },
+        }),
         evidence_handles
             .iter()
             .map(|handle| handle.handle_id.clone())
@@ -1210,6 +1224,7 @@ fn explanation_response(
     orientation: &DeploymentOrientation,
     explanation: &EventExplanation,
     request_digest: ContentDigest,
+    support: &evidence::SupportReview,
 ) -> Result<String, Box<dyn std::error::Error>> {
     let event = &explanation.event.event;
     let physical = explanation
@@ -1271,19 +1286,25 @@ fn explanation_response(
                 )
             }),
     );
+    propositions.extend(support.propositions.iter().cloned());
+    invalidators.extend(support.invalidators.iter().cloned());
+    let mut assumptions = explanation.assumptions.clone();
+    assumptions.extend(support.assumptions.iter().cloned());
     let answer_class = if event.state == EventState::Indeterminate {
         CognitiveAnswerClass::Indeterminate
     } else {
         CognitiveAnswerClass::HypothesisSet
     };
-    let (payload, next_ids, next_objects) = cognitive(
+    let (payload, next_ids, next_objects) = cognitive_payload_with_budget(
         orientation,
         request_digest,
+        "explain",
+        AgentView::DecisionDiff,
         CognitiveParts {
             answer_class,
             epistemic: EnvelopeEpistemic {
                 propositions,
-                assumptions: explanation.assumptions.clone(),
+                assumptions,
                 invalidators,
             },
             coverage: EnvelopeCoverage {
@@ -1298,8 +1319,9 @@ fn explanation_response(
             },
             evidence_handles: explanation_handles(explanation),
             next_actions: explanation.affordances.clone(),
-            decision_digest: explanation.receipt.receipt_digest(),
+            decision_digest: support.receipt.receipt_digest(),
         },
+        Some(evidence::budget(support)),
     )?;
     let contradictions = explanation
         .cells
@@ -1311,6 +1333,7 @@ fn explanation_response(
         .map(|cell| cell.claim_id().to_owned())
         .collect();
     let mut warnings = explanation.warnings.clone();
+    warnings.extend(support.warnings.iter().cloned());
     warnings.push(
         "An explanation grants no effect authority; it binds the committed revision only."
             .to_owned(),
@@ -1327,6 +1350,7 @@ fn explanation_response(
             .iter()
             .map(|digest| digest.to_text()),
     );
+    proof_pointers.extend(support.proof_pointers.iter().cloned());
     proof_pointers.sort();
     proof_pointers.dedup();
     let capsule = orientation.capsule();
@@ -1349,14 +1373,15 @@ fn explanation_response(
         contradictions,
         degradation: vec![
             "Latency and CPU time are not metered by this reference path; consumed reports \
-             reads and context tokens only."
+             reads, orientation context tokens and the separately priced support brief."
                 .to_owned(),
+            support.cost_statement.clone(),
         ],
-        budgets_json: agent_json::budget_summary(&orientation.requested, &orientation.consumed),
+        budgets_json: agent_json::budget_summary(&support.requested, &support.consumed),
         proof_pointers,
         affordances: next_ids,
         affordance_objects: next_objects,
-        decision_fingerprint: explanation.receipt.receipt_digest(),
+        decision_fingerprint: support.receipt.receipt_digest(),
         compression_receipt_id: None,
         continuation: None,
         recovery_class: "safe_read_retry",
@@ -1512,12 +1537,26 @@ pub fn execute_explain(args: &ExplainArgs) -> (String, ExitIdentity) {
         }
     };
     match explain_event(&snapshot, &orientation, &args.event_id) {
-        Ok(Some(explanation)) => rendered(
-            explanation_response(&orientation, &explanation, request_digest),
-            ExitIdentity::SUCCESS,
-            "explain",
-            &args.root,
-        ),
+        Ok(Some(explanation)) => {
+            let support = match evidence::compile(&snapshot, &orientation, &explanation) {
+                Ok(support) => support,
+                Err(error) => return rendered(
+                    evidence::refusal(&orientation, &explanation, request_digest, evidence::refusal_id(&error)),
+                    ExitIdentity::AGENT_REFUSED, "explain", &args.root,
+                ),
+            };
+            let response = explanation_response(&orientation, &explanation, request_digest, &support);
+            match response {
+                Ok(json) if json.len().saturating_add(1) <= evidence::MAX_RESPONSE_BYTES => {
+                    (json, ExitIdentity::SUCCESS)
+                }
+                Ok(_) => rendered(
+                    evidence::refusal(&orientation, &explanation, request_digest, ERR_AGENT_CONTEXT_INCOMPLETE),
+                    ExitIdentity::AGENT_REFUSED, "explain", &args.root,
+                ),
+                Err(_) => internal_failure("explain", &args.root),
+            }
+        },
         Ok(None) => rendered(
             unknown_event_response(&snapshot, &orientation, &args.event_id, request_digest),
             ExitIdentity::AGENT_REFUSED,
