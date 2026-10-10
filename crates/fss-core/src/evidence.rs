@@ -388,6 +388,10 @@ pub struct EvidenceDeltaBatch {
 }
 
 impl EvidenceDeltaBatch {
+    /// Registered schema identity (registries/SCHEMAS.md row
+    /// SCHEMA-EVIDENCE-DELTA-001; mirrors `schemas/evidence_delta_batch.v1.json`).
+    pub const SCHEMA: &'static str = "fss.evidence_delta_batch.v1";
+
     /// Returns true when deltas follow the frozen canonical order.
     #[must_use]
     pub fn is_canonically_ordered(&self) -> bool {

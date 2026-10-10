@@ -91,6 +91,10 @@ pub struct SemanticHandle {
 }
 
 impl SemanticHandle {
+    /// Registered schema identity (registries/SCHEMAS.md row
+    /// SCHEMA-AGENT-HANDLE-001; mirrors `schemas/semantic_handle.v1.json`).
+    pub const SCHEMA: &'static str = "fss.semantic_handle.v1";
+
     /// Publishes a validated descriptor while deriving its immutable handle identity.
     pub fn publish(spec: SemanticHandleSpec) -> Result<Self, HydrationError> {
         let mut handle = Self {
