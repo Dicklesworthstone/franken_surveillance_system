@@ -60,7 +60,11 @@ run_dir="$(mktemp -d "${log_base}/runs/${stamp}-XXXXXX")" || {
 
 echo "e2e runner: ${script} -> ${run_dir}" >&2
 child_rc=0
-FSS_E2E_LOG_DIR="$run_dir" bash "$script" "$@" || child_rc=$?
+# Every child runs under the supervisor: new process group, optional
+# FSS_E2E_DEADLINE_S wall-clock budget, orphan reaping at exit, and a
+# runner_supervision.json sidecar. A deadline kill or orphan leak can never
+# become a PASS: the verdict still comes from the log the child left.
+FSS_E2E_LOG_DIR="$run_dir" python3 "${RUNNER_DIR}/supervised_child.py" bash "$script" "$@" || child_rc=$?
 
 verdict_rc=0
 python3 "${RUNNER_DIR}/runner_verdict.py" --run-dir "$run_dir" --child-exit "$child_rc" \
