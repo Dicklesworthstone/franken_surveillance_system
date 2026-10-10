@@ -31,6 +31,8 @@ pub mod coverage;
 pub mod coverage_timeline;
 pub mod dominators;
 pub mod dynconn;
+/// Active event-revision support dependencies with certified structural bottlenecks.
+pub mod evidence;
 pub mod failure_domains;
 pub mod flow;
 pub mod gomory_hu;
