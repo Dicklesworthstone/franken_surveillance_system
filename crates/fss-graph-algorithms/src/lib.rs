@@ -33,6 +33,8 @@ pub mod dominators;
 pub mod dynconn;
 /// Active event-revision support dependencies with certified structural bottlenecks.
 pub mod evidence;
+/// Bounded current-head support briefs preserving ungrounded branches and historical corrections.
+pub mod evidence_brief;
 /// Exact historical event references with complete-lineage validation and witnessed support.
 pub mod evidence_history;
 pub mod failure_domains;
