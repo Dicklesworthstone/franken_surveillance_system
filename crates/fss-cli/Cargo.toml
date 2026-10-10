@@ -76,6 +76,10 @@ name = "fss-import-http"
 path = "src/bin/fss-import-http.rs"
 
 [[bin]]
+name = "fss-watch-http-history"
+path = "src/bin/fss-watch-http-history.rs"
+
+[[bin]]
 name = "fss-replay"
 path = "src/bin/fss-replay.rs"
 

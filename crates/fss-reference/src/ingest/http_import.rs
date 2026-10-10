@@ -136,6 +136,9 @@ impl HttpImportEnding {
 pub enum HttpImportError {
     /// Invalid exact selection, timing assumption or independent resource ceiling.
     Invalid(&'static str),
+    /// Native replay reached the exact selected ending without one complete original JPEG.
+    /// This is neither an empty scene nor a claim that the original response completed.
+    NoCompleteFrames,
     /// Current source/destination permission, cancellation or deadline refused.
     Denied,
     /// Archive/framing/origin verification refused; details contain no source bytes.
@@ -147,7 +150,7 @@ impl HttpImportError {
     /// Stable registered error identity.
     pub fn stable_id(&self) -> &'static str {
         match self {
-            Self::Invalid(_) => "ERR-HTTP-IMPORT-REQUEST-001",
+            Self::Invalid(_) | Self::NoCompleteFrames => "ERR-HTTP-IMPORT-REQUEST-001",
             Self::Denied => "ERR-HTTP-IMPORT-AUTHORITY-001",
             Self::Source(_) => "ERR-HTTP-IMPORT-SOURCE-001",
             Self::Import(_) => "ERR-HTTP-IMPORT-CUSTODY-001",
@@ -407,10 +410,11 @@ pub fn import_http<'cx>(
                 _ => {}
             }
         }
+        let ending = ending.ok_or(HttpImportError::Invalid("step limit"))?;
         if frames.is_empty() {
-            return Err(HttpImportError::Invalid("no complete original JPEGs"));
+            return Err(HttpImportError::NoCompleteFrames);
         }
-        (roots, ending.ok_or(HttpImportError::Invalid("step limit"))?)
+        (roots, ending)
     };
     let proof = Proof {
         source: request.source,

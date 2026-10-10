@@ -31,6 +31,8 @@ pub mod foreground;
 pub mod ground_visibility;
 /// Bounded H.265/HEVC Annex-B access-unit splitting with exact source spans.
 pub mod hevc_annexb;
+/// Restartable exact durable HTTP history → retained imports → native streaming watch reports.
+pub mod http_history_watch;
 /// Exact frozen-model execution on retained decoded frames and durable model outputs.
 pub mod inference;
 /// Whole-range MJPEG sampled dwell with bounded streaming perception and source-closed events.

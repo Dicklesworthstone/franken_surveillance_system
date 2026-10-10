@@ -137,6 +137,13 @@ access/retention approval, sensor binding, and explicit capture-time assumptions
 The durable history pin is a selected acquisition prefix, not continuous physical
 coverage or a socket-EOF replay grant.
 
+For a complete selected ended history, [the history watch workflow](HTTP_HISTORY_WATCH.md)
+uses `fss-watch-http-history` to verify that exact pin, reconcile every generation's
+retained import, and run independent streaming zone-entry analyses. Its separately
+approved processing plan binds every camera/time declaration and fixed generation
+allowance. It produces reviewable event rerun commands without publishing events or
+resuming acquisition, and an exact retry reuses completed imports after interruption.
+
 ## Validation
 
 Native tests cover real loopback truncation followed by a fresh generation, durable

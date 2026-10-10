@@ -168,6 +168,17 @@ one-time vendor-app provisioning (NEG-006) with the yi-hack owner-flash path doc
   no-I/O plan binds source, destination, principal and bounds; committed retries verify original
   custody before continuing. This implementation profile adds no live-device certification.
   See [the import workflow](docs/http_archive_import.md).
+- **Restartable HTTP history analysis:** `fss-watch-http-history` verifies an independently saved
+  durable reconnect history and explicitly binds every selected generation to a sensor, stream,
+  receive time and capture-time assumption. One original-retention approval reconciles all
+  source-closed recording imports, then runs native whole-recording entry analysis with fresh
+  tracking per reconnect. Exact retries reuse verified completed imports and recompute reports;
+  empty responses and prefixes without a complete JPEG remain explicit. All per-generation
+  processing reservations are summed before I/O, source/framing budgets remain shared, and the
+  selected original history is reverified before output. Current masks and optional health
+  screening apply. Eligible proposals include separate exact event-publication commands that
+  need only retained destination custody. This finite synchronous workflow creates no daemon,
+  reconnect authority, automatic event or absence claim. See [the workflow](docs/HTTP_HISTORY_WATCH.md).
 - **Whole-recording zone observations:** `fss-event watch --stream-watch` follows one native
   foreground model and tracker across up to 65,536 retained MJPEG, AVC or HEVC segments, including
   the former 128-frame boundary. Each tracker epoch can produce one unclassified entry candidate
