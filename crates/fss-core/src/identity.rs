@@ -319,6 +319,14 @@ pub enum AdapterKind {
     FileArchive = 5,
     /// Synthetic virtual simulator.
     VirtualSimulated = 6,
+    /// Tuya LAN protocol (55AA/6699 framing, 3.4/3.5 session) owner-authorized
+    /// laboratory adapter — first-party safe-Rust protocol core, sealed lab
+    /// isolation per NEG-002 (AOSU-class homebase devices).
+    TuyaLan = 7,
+    /// TUTK/IOTC NEW-protocol (magic 0xCC51) owner-authorized laboratory
+    /// adapter — first-party safe-Rust protocol core, sealed lab isolation
+    /// per NEG-002 (Wyze-class cameras).
+    TutkIotc = 8,
 }
 
 impl AdapterKind {
@@ -332,6 +340,8 @@ impl AdapterKind {
             Self::OnvifProfileM => "onvif_profile_m",
             Self::FileArchive => "file_archive",
             Self::VirtualSimulated => "virtual_simulated",
+            Self::TuyaLan => "tuya_lan",
+            Self::TutkIotc => "tutk_iotc",
         }
     }
 
@@ -344,6 +354,8 @@ impl AdapterKind {
             "onvif_profile_m" => Ok(Self::OnvifProfileM),
             "file_archive" => Ok(Self::FileArchive),
             "virtual_simulated" => Ok(Self::VirtualSimulated),
+            "tuya_lan" => Ok(Self::TuyaLan),
+            "tutk_iotc" => Ok(Self::TutkIotc),
             _ => Err(ContractError::InvalidIdentifier),
         }
     }
@@ -370,6 +382,8 @@ impl CanonicalDecode for AdapterKind {
             4 => Ok(Self::OnvifProfileM),
             5 => Ok(Self::FileArchive),
             6 => Ok(Self::VirtualSimulated),
+            7 => Ok(Self::TuyaLan),
+            8 => Ok(Self::TutkIotc),
             _ => Err(ContractError::InvalidIdentifier),
         }
     }

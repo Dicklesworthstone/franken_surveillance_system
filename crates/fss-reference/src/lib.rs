@@ -7,7 +7,9 @@
 //! canonical authority delta through `fss-publication`.
 
 pub mod activity;
+mod adapter_aosu;
 mod adapter_replay;
+mod adapter_wyze;
 /// Read-only `session.follow` (AOP-004): meaningful deltas since an earlier committed anchor.
 pub mod agent_follow;
 /// Read-only deployment orientation (AOP-003) and event explanation (AOP-011).
@@ -120,6 +122,18 @@ mod situation_tests;
 #[cfg(test)]
 mod tests;
 
+pub use adapter_aosu::{
+    ADP_AOSU_CAPABILITIES, ADP_AOSU_CURRENT_STATE, ADP_AOSU_GENERATION,
+    ADP_AOSU_MAX_BANDWIDTH_BYTES_PER_SEC, ADP_AOSU_MAX_BUFFER_FRAMES, ADP_AOSU_PROMOTION_GATE,
+    ADP_AOSU_PROTOCOL_PROFILE, ADP_AOSU_REQUEST_TIMEOUT_NS, ADP_AOSU_ROW_ID, ADP_AOSU_SURFACE,
+    ADP_AOSU_TIER, adapter_identity as adp_aosu_adapter_identity,
+};
+pub use adapter_wyze::{
+    ADP_WYZE_CAPABILITIES, ADP_WYZE_CURRENT_STATE, ADP_WYZE_GENERATION,
+    ADP_WYZE_MAX_BANDWIDTH_BYTES_PER_SEC, ADP_WYZE_MAX_BUFFER_FRAMES, ADP_WYZE_PROMOTION_GATE,
+    ADP_WYZE_PROTOCOL_PROFILE, ADP_WYZE_REQUEST_TIMEOUT_NS, ADP_WYZE_ROW_ID, ADP_WYZE_SURFACE,
+    ADP_WYZE_TIER, adapter_identity as adp_wyze_adapter_identity,
+};
 pub use adapter_replay::{
     ADP_REPLAY_CURRENT_STATE, ADP_REPLAY_GENERATION, ADP_REPLAY_GOLDEN_AUDIT_HASH,
     ADP_REPLAY_GOLDEN_STATE_ROOT, ADP_REPLAY_MAX_PACKET_BYTES, ADP_REPLAY_MAX_PACKETS,
