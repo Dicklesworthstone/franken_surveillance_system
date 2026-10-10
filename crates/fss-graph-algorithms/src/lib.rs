@@ -33,6 +33,8 @@ pub mod dominators;
 pub mod dynconn;
 /// Active event-revision support dependencies with certified structural bottlenecks.
 pub mod evidence;
+/// Exact historical event references with complete-lineage validation and witnessed support.
+pub mod evidence_history;
 pub mod failure_domains;
 pub mod flow;
 pub mod gomory_hu;
