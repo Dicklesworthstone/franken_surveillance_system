@@ -30,12 +30,12 @@
 //!   span when it arrives no later than the first frame's first packet, and to the last window
 //!   when it arrives after it (no window of its own covers the generation's tail). Anything else
 //!   becomes [`DegradationEvidence`] naming the lost dimensions and invalidating absence over the
-//!   window's interval, passed to `degrade`. The core decides: after any degraded window it
-//!   refuses to re-verify a later clean window of the same generation (its rule requires the next
-//!   witness to start right after the last verified one, and the degraded window lies between),
-//!   and that refusal is recorded as [`RtpWindowOutcome::CleanNotVerified`], never overridden.
-//!   Re-verification after a gap therefore needs a new stream generation, or a core change that
-//!   lets degradation evidence carry its sequence span (recorded as a finding on the bead).
+//!   window's interval. A [`WindowedDegradationEvidence`] binds it to the exact acquisition
+//!   request, predecessor witness, and degraded sequence span before `degrade_window` admits it.
+//!   A later clean window can then recover continuity in the same generation only when it
+//!   immediately follows the accounted span. The skipped span remains degraded evidence, never
+//!   continuous coverage. Every window retains its exact wrapper for replay; a genuine core
+//!   refusal is still [`RtpWindowOutcome::CleanNotVerified`], never overridden.
 //! * **Restart.** An SSRC change or `RestartRequired` opens a new stream generation in the
 //!   replay; here it is `reconnect` with a strictly newer [`StreamGeneration`]. The capsule of the
 //!   first NAL after it carries `gap_before = true` (set by the importer).
@@ -47,7 +47,8 @@
 //!
 //! The core witness field `frames_observed` must equal `window_end_seq - window_start_seq + 1`;
 //! here it counts the RTP sequence positions observed in the window. It is not a decoded-picture
-//! count: only the first picture of each generation is decoded.
+//! count: only the first picture of each generation is decoded. Recovery of packet and NAL
+//! continuity after a gap does not establish decoding of later reference-dependent pictures.
 //!
 //! # Media reconstruction
 //!
@@ -76,7 +77,8 @@
 //!
 //! **No-Claim.** A verified window means the recorded packets of this one stream were contiguous,
 //! timely by the recorder's offsets and reconstructable. It is not live-network RTSP continuity,
-//! capture-time truth or site-wide coverage.
+//! capture-time truth or site-wide coverage. A windowed degradation accounts for a sequence span;
+//! it establishes no clock bridge across that span. Recovery leaves these absence limits intact.
 //!
 //! # Residuals (fss-iui8a)
 //!
@@ -110,7 +112,7 @@ use fss_core::{
     ContractError, CoverageContinuity, CoverageStopReason, CoverageWitness, DecodeState,
     DegradationEvidence, DeviceGeneration, DeviceId, ExplicitOmission, FirmwareGeneration,
     FirstFrameWitness, LedgerAnchor, MAX_HISTORY_LEN, QuiescenceReceipt, SensorCapsule,
-    SourceCustody, SourceId, StreamGeneration, TimestampNs,
+    SourceCustody, SourceId, StreamGeneration, TimestampNs, WindowedDegradationEvidence,
 };
 use fss_packet::{H264Status, JitterEstimator, SequenceClass, arrival_ticks};
 
@@ -316,7 +318,7 @@ pub enum RtpWindowOutcome {
         /// The core witness.
         witness: Box<ContinuityWitness>,
     },
-    /// `degrade` accepted the evidence; the window is a gap for absence.
+    /// `degrade_window` accepted the evidence; the window is a gap for absence.
     Degraded {
         /// The core evidence.
         evidence: Box<DegradationEvidence>,
@@ -375,6 +377,10 @@ pub struct RtpContinuityWindow {
     pub coverage: CoverageWitness,
     /// The core's judgment.
     pub outcome: RtpWindowOutcome,
+    /// Exact request-, predecessor-, and sequence-bound degradation admitted by the core.
+    /// Present only for a degraded sequence window. The embedded legacy degradation is the
+    /// same evidence carried by `outcome`; neither recovery nor a later clean window removes it.
+    pub windowed_degradation: Option<Box<WindowedDegradationEvidence>>,
     capsules: Vec<usize>,
 }
 
@@ -1276,9 +1282,19 @@ pub fn drive_rtp_continuity(
             let lost = sorted_dimensions(dims);
             let at = driver.at(window_end_arrival)?.max(first_at);
             let capsules = window_capsules(report, records, generation.generation, start, end)?;
+            let mut windowed_degradation = None;
             let (outcome, cover) = if !lost.is_empty() {
                 let evidence = driver.evidence(&lost, missing, jitter_ns, window_interval, at)?;
-                driver.session()?.degrade(evidence.clone(), at)?;
+                let session = driver.session()?;
+                let windowed = WindowedDegradationEvidence {
+                    request_digest: request.request_digest(),
+                    predecessor_digest: session.continuity_predecessor_digest()?,
+                    window_start_seq: start,
+                    window_end_seq: end,
+                    degradation: evidence.clone(),
+                };
+                session.degrade_window(windowed.clone(), at)?;
+                windowed_degradation = Some(Box::new(windowed));
                 (
                     RtpWindowOutcome::Degraded {
                         evidence: Box::new(evidence),
@@ -1373,6 +1389,7 @@ pub fn drive_rtp_continuity(
                 lost_dimensions: lost,
                 coverage: cover,
                 outcome,
+                windowed_degradation,
                 capsules,
             });
             window_start_arrival = window_end_arrival;

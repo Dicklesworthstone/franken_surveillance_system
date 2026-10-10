@@ -103,6 +103,23 @@ Recorded RTP continues to use `CoverageStopReason::Unsupported` for its estimate
 coverage, so even a recovered recorded window does not certify absence. This core API does not
 upgrade recorded-file evidence into live coverage or detector accuracy.
 
+## Recorded RTP integration
+
+The RTP driver uses `degrade_window` for sequence-addressable packet loss, excessive jitter and
+reconstruction faults. Each `RtpContinuityWindow` retains the exact wrapper alongside its existing
+`Degraded` outcome. The two embedded degradation values are identical. Pre-first-frame faults
+and an unsequenced framing suffix remain unscoped degradation.
+
+After a gap, adjacent clean windows can become `Verified` in the same generation. A genuine
+core refusal is still reported as `CleanNotVerified`. `absence_over` continues to reject a query
+touching any recorded gap, including a query spanning a gap and a recovered window. Report
+coverage stays uncertified even if a later window is clean.
+
+Retained wrappers can replay consecutive damaged windows from the original request, first frame
+and clean witnesses, reproducing the exact final acquisition state and transition history.
+Packet/NAL recovery does not prove that later reference-dependent pictures decode: this driver
+decodes only the first picture of each generation.
+
 ## Verification and continuation
 
 The independent core regression suite is
@@ -116,6 +133,12 @@ including the 15 new independent recovery cases, and all 22 core doctests. Core 
 Clippy passed with `-D warnings`. The run used locked offline resolution, two build jobs,
 disabled incremental compilation and debug symbols, and a temporary target directory to fit
 the available filesystem. These are reference results, not a controlled DSR release receipt.
+
+All 21 recorded-RTP contract tests also passed natively, including loss/jitter recovery,
+first-window degradation, consecutive gaps, exact canonical replay and permanent gap exclusion.
+The structured E2E runner was attempted but could not execute its required remote build command:
+`rch` is unavailable in this environment (cargo-step exit 127, runner exit 1). Its stricter roster
+is retained; native test success is not reported as a passed remote E2E lane.
 
 Implementation handoff:
 

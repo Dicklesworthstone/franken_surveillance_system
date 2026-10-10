@@ -13,9 +13,10 @@ mod rtpdump_support;
 use std::collections::BTreeSet;
 
 use fss_core::{
-    AcquisitionStateKind, CaptureInterval, ContractError, CoverageContinuity, CoverageStopReason,
-    EventId, EventReadResult, EventRevisionStore, LedgerAnchor, NotObservableReason, SensorId,
-    SourceId, StreamId, TimestampNs,
+    AcquisitionSession, AcquisitionState, AcquisitionStateKind, AdapterAck, CanonicalDecode,
+    CanonicalDecoder, CanonicalEncode, CaptureInterval, ContractError, CoverageContinuity,
+    CoverageStopReason, EventId, EventReadResult, EventRevisionStore, LedgerAnchor,
+    NotObservableReason, SensorId, SourceId, StreamId, TimestampNs, WindowedDegradationEvidence,
 };
 use fss_core::{DeviceId, SensorCapsule};
 use fss_packet::ContinuityError;
@@ -170,6 +171,106 @@ fn evidence(window: &RtpContinuityWindow) -> Result<&fss_core::DegradationEviden
     }
 }
 
+fn windowed_evidence(window: &RtpContinuityWindow) -> Result<&WindowedDegradationEvidence, Error> {
+    let scoped = window
+        .windowed_degradation
+        .as_deref()
+        .ok_or("degraded window is missing its sequence-bound evidence")?;
+    assert_eq!(&scoped.degradation, evidence(window)?);
+    assert_eq!(
+        (scoped.window_start_seq, scoped.window_end_seq),
+        (window.start_seq, window.end_seq)
+    );
+    Ok(scoped)
+}
+
+/// Reconstruct one generation from its retained witnesses, decoding every degraded window from
+/// its canonical bytes. The resulting audit identities and final session must equal the driver.
+fn replay_recorded_windows(report: &RtpContinuityReport) -> TestResult {
+    assert_eq!(report.generations().len(), 1);
+    let generation = &report.generations()[0];
+    let request = report.session().request().clone();
+    let transition_time = |digest| {
+        report
+            .session()
+            .history()
+            .iter()
+            .find(|record| record.witness_digest == digest)
+            .map(|record| record.timestamp_ns)
+            .ok_or("retained witness has no audit transition")
+    };
+    let mut replay = AcquisitionSession::new(request.clone())?;
+    replay.authenticate(
+        generation.auth.clone(),
+        transition_time(generation.auth.receipt_digest())?,
+    )?;
+    let ack = AdapterAck {
+        adapter_id: request.adapter_identity.adapter_id.clone(),
+        request_digest: request.request_digest(),
+        ack_timestamp_ns: generation.auth.authorized_at_ns,
+        session_handle: format!("rtp-g{}", generation.generation),
+        allocated_buffer_frames: 0,
+    };
+    let accepted_at = transition_time(ack.ack_digest())?;
+    replay.accept(ack, accepted_at)?;
+    let first = &generation
+        .first_picture
+        .as_ref()
+        .ok_or("replay needs a retained first picture")?
+        .witness;
+    replay.observe_first_frame(first.clone(), transition_time(first.witness_digest())?)?;
+    let mut gap_seen = false;
+    for window in report.windows() {
+        match &window.outcome {
+            RtpWindowOutcome::Degraded { .. } => {
+                let retained = windowed_evidence(window)?;
+                let bytes = retained.canonical_bytes();
+                let mut decoder = CanonicalDecoder::new(&bytes);
+                let decoded = WindowedDegradationEvidence::decode_canonical(&mut decoder)?;
+                decoder.ensure_finished()?;
+                assert_eq!(&decoded, retained);
+                assert_eq!(decoded.canonical_bytes(), bytes);
+                assert_eq!(decoded.request_digest, request.request_digest());
+                assert_eq!(
+                    decoded.predecessor_digest,
+                    replay.continuity_predecessor_digest()?
+                );
+                let degraded_at = transition_time(decoded.evidence_digest())?;
+                replay.degrade_window(decoded, degraded_at)?;
+                gap_seen = true;
+            }
+            RtpWindowOutcome::Verified { witness } => {
+                assert!(window.windowed_degradation.is_none());
+                replay.verify_continuity(
+                    witness.as_ref().clone(),
+                    transition_time(witness.witness_digest())?,
+                )?;
+                if gap_seen {
+                    assert!(matches!(
+                        replay.check_absence_claim_allowed(),
+                        Err(fss_core::AcquisitionError::AbsenceClaimForbidden { .. })
+                    ));
+                }
+            }
+            RtpWindowOutcome::TooShort => assert!(window.windowed_degradation.is_none()),
+            RtpWindowOutcome::CleanNotVerified { refusal } => {
+                return Err(
+                    format!("unexpected clean-window refusal during replay: {refusal}").into(),
+                );
+            }
+        }
+    }
+    let AcquisitionState::Cancelled { quiescence, .. } = report.session().state() else {
+        return Err("recorded session did not close with verified quiescence".into());
+    };
+    replay.cancel(
+        quiescence.clone(),
+        transition_time(quiescence.receipt_digest())?,
+    )?;
+    assert_eq!(&replay, report.session());
+    Ok(())
+}
+
 /// The access-unit capsule holding the first complete NAL whose first source record is `record`.
 fn capsule_from_record(import: &RtpImportReport, record: usize) -> Option<&SensorCapsule> {
     import
@@ -225,6 +326,7 @@ fn clean_recording_reaches_continuity_verified_with_one_exact_witness() -> TestR
 
     assert_eq!(report.windows().len(), 1);
     let window = &report.windows()[0];
+    assert!(window.windowed_degradation.is_none());
     let w = witness(window)?;
     let last = planned.len() - 1;
     assert_eq!(
@@ -315,13 +417,15 @@ fn loss_run(label: &str, drop: usize) -> Result<(Vec<Planned>, Run), Error> {
 /// Loss: the window holding the lost packet degrades with the gap interval recorded and absence
 /// over it invalidated; absence over the gap (or any query touching it, whatever comes first) is
 /// refused; absence over the verified windows before it reaches the shared stored-witness rule,
-/// which refuses the recorded capsules' estimated clock; later clean windows are refused
-/// re-verification by the core; the first capsule after the gap has `gap_before`.
+/// which refuses the recorded capsules' estimated clock; later clean windows recover verified
+/// transport continuity after the exact degraded span; the first capsule after the gap has
+/// `gap_before`. Recovery does not establish decoding of later reference-dependent pictures.
 ///
 /// Planted negatives: (a) counting a lost position as observed (`observed_packet_loss`);
 /// (b) evaluating only the first overlapping window (spanning query); (c) certifying from the
-/// session alone without the stored rule (clean query answer); (d) re-verifying across the gap
-/// (later windows); (e) the importer clearing `gap_before` after a loss.
+/// session alone without the stored rule (clean query answer); (d) treating recovered continuity
+/// as coverage of the gap (spanning recovered query); (e) the importer clearing `gap_before`
+/// after a loss; (f) retaining an unbound gap while refusing all later clean windows.
 #[test]
 fn loss_degrades_records_the_gap_and_refuses_absence_over_it() -> TestResult {
     let drop = 46;
@@ -358,18 +462,32 @@ fn loss_degrades_records_the_gap_and_refuses_absence_over_it() -> TestResult {
     );
     assert_eq!(gap.coverage.continuity, CoverageContinuity::Gapped);
     assert!(!gap.coverage.certifies_absence());
-    // Later clean windows: the core refuses to re-verify across the gap.
+    let scoped = windowed_evidence(gap)?;
+    assert_eq!(
+        scoped.request_digest,
+        report.session().request().request_digest()
+    );
+    assert_eq!(
+        scoped.predecessor_digest,
+        witness(&windows[gap_index - 1])?.witness_digest()
+    );
+    assert!(report.session().history().iter().any(|transition| {
+        transition.to == AcquisitionStateKind::Degraded
+            && transition.witness_digest == scoped.evidence_digest()
+    }));
+    // Later clean windows recover their own spans, without extending coverage across this gap.
     let later = &windows[gap_index + 1..];
     assert!(!later.is_empty());
     assert!(
         later
             .iter()
-            .all(|w| !matches!(w.outcome, RtpWindowOutcome::Verified { .. }))
+            .all(|w| !matches!(w.outcome, RtpWindowOutcome::CleanNotVerified { .. }))
     );
-    assert!(later.iter().any(|w| matches!(
-        &w.outcome,
-        RtpWindowOutcome::CleanNotVerified { refusal } if refusal.contains("sequence gap")
-    )));
+    let recovered = &later[0];
+    let recovered_witness = witness(recovered)?;
+    assert_eq!(recovered_witness.window_start_seq, gap.end_seq + 1);
+    assert!(recovered.windowed_degradation.is_none());
+    assert!(!recovered.coverage.certifies_absence());
     assert!(report.kinds().contains(&AcquisitionStateKind::Degraded));
 
     // Absence over the gap interval.
@@ -398,6 +516,23 @@ fn loss_degrades_records_the_gap_and_refuses_absence_over_it() -> TestResult {
             ContractError::CoverageUncertified
         ))
     );
+    // Recovery cannot erase the recorded gap even when the query ends in a clean window.
+    let through_recovery = interval(before.interval.earliest, recovered.interval.latest)?;
+    assert!(matches!(
+        report.absence_over(through_recovery),
+        RtpAbsenceAnswer::NotCertified(RtpAbsenceRefusal::GapOverlaps { .. })
+    ));
+    let recovered_interior = interval(
+        TimestampNs(recovered.interval.earliest.0 + 1),
+        recovered.interval.latest,
+    )?;
+    assert!(recovered_interior.earliest > gap.interval.latest);
+    assert_eq!(
+        report.absence_over(recovered_interior),
+        RtpAbsenceAnswer::NotCertified(RtpAbsenceRefusal::StoredWitnessRule(
+            ContractError::CoverageUncertified
+        ))
+    );
 
     // Capsules: none inside the verified windows follows a gap; the first after the loss does.
     for window in &windows[..gap_index] {
@@ -409,9 +544,10 @@ fn loss_degrades_records_the_gap_and_refuses_absence_over_it() -> TestResult {
     caplog(
         "loss_degraded_gap_refused",
         &format!(
-            "{}|{}|{}",
+            "{}|{}|{}|{}",
             kinds_text(report),
-            ev.evidence_digest(),
+            scoped.evidence_digest(),
+            recovered_witness.witness_digest(),
             gap.lost_dimensions.join("+")
         ),
     );
@@ -721,13 +857,14 @@ fn sequence_restart_opens_a_new_stream_generation() -> TestResult {
 }
 
 /// A one-time 100 ms arrival step: the window holding it degrades with exactly `timing_jitter`;
-/// the next clean window is refused re-verification by the core (its witness chain must start
-/// right after the last verified window), and absence over it is not certified.
+/// the next clean window recovers continuity immediately after that accounted sequence span.
+/// The degraded interval remains excluded from negative evidence after recovery.
 ///
 /// Planted negatives: (a) not comparing jitter against the threshold (window verified);
-/// (b) overriding the core refusal (next window verified).
+/// (b) permanently stranding a clean generation after a jitter spike (next window unverified);
+/// (c) treating recovery as proof of absence over the degraded interval.
 #[test]
-fn jitter_step_degrades_and_the_core_refuses_reverification() -> TestResult {
+fn jitter_step_degrades_then_recovers_without_erasing_the_gap() -> TestResult {
     let mut planned = packetize(4, MAX_PAYLOAD, 65_534, SSRC_A, 90_000, 0);
     let vcl = first_vcl(&planned)?;
     let step = vcl + 32; // first position of the third 16-packet window
@@ -745,19 +882,151 @@ fn jitter_step_degrades_and_the_core_refuses_reverification() -> TestResult {
     assert_eq!(ev.lost_dimensions, vec![LOST_TIMING_JITTER.to_owned()]);
     assert_eq!(ev.observed_packet_loss, 0);
     assert!(ev.observed_jitter_ns > 5_000_000);
-    match &windows[3].outcome {
-        RtpWindowOutcome::CleanNotVerified { refusal } => assert!(refusal.contains("sequence gap")),
-        other => return Err(format!("expected a core refusal, got {other:?}").into()),
-    }
+    let recovered = witness(&windows[3])?;
+    assert_eq!(recovered.window_start_seq, windows[2].end_seq + 1);
+    let scoped = windowed_evidence(&windows[2])?;
+    assert_eq!(
+        scoped.predecessor_digest,
+        witness(&windows[1])?.witness_digest()
+    );
     assert!(windows[3].lost_dimensions.is_empty());
+    assert!(!recovered.coverage_witness.certifies_absence());
     assert!(matches!(
-        run.report.absence_over(windows[3].interval),
-        RtpAbsenceAnswer::NotCertified(_)
+        run.report.absence_over(interval(
+            windows[1].interval.earliest,
+            windows[3].interval.latest
+        )?),
+        RtpAbsenceAnswer::NotCertified(RtpAbsenceRefusal::GapOverlaps { .. })
+    ));
+    assert_eq!(
+        run.report.absence_over(interval(
+            TimestampNs(windows[3].interval.earliest.0 + 1),
+            windows[3].interval.latest
+        )?),
+        RtpAbsenceAnswer::NotCertified(RtpAbsenceRefusal::StoredWitnessRule(
+            ContractError::CoverageUncertified
+        ))
+    );
+    assert!(matches!(
+        run.report.absence_over(windows[2].interval),
+        RtpAbsenceAnswer::NotCertified(RtpAbsenceRefusal::GapOverlaps { .. })
     ));
     caplog(
-        "jitter_degraded_not_reverified",
-        &ev.lost_dimensions.join("+"),
+        "jitter_degraded_recovered",
+        &format!(
+            "{}|{}|{}",
+            scoped.evidence_digest(),
+            recovered.witness_digest(),
+            ev.lost_dimensions.join("+")
+        ),
     );
+    Ok(())
+}
+
+/// Two adjacent jitter windows chain through both retained degradation identities and recover
+/// at the following clean window. This works even when no clean window preceded the first gap.
+/// Replaying the exact canonical wrappers preserves the full session and all invalidated claims.
+///
+/// Planted negatives: (a) using the last clean witness as every degradation's predecessor;
+/// (b) requiring an already verified window before admitting the first degraded span;
+/// (c) changing the request, sequence span, or legacy evidence while retaining only its digest;
+/// (d) clearing earlier gaps when continuity resumes.
+#[test]
+fn consecutive_degraded_windows_replay_and_recover_in_the_same_generation() -> TestResult {
+    for (label, first_gap_index, caplog_step) in [
+        ("initial-gaps", 0_usize, "first_window_gap_recovered"),
+        ("later-gaps", 2_usize, "consecutive_gaps_replayed"),
+    ] {
+        let mut planned = packetize(4, MAX_PAYLOAD, 65_534, SSRC_A, 90_000, 0);
+        let vcl = first_vcl(&planned)?;
+        // A first-window step follows the first VCL packet so it belongs to the sequence
+        // window, while the recorded first picture still decodes and establishes its witness.
+        let first_step = vcl + first_gap_index * 16 + usize::from(first_gap_index == 0);
+        let second_step = vcl + (first_gap_index + 1) * 16;
+        for packet in planned.iter_mut().skip(first_step) {
+            packet.offset_ms += 100;
+        }
+        for packet in planned.iter_mut().skip(second_step) {
+            packet.offset_ms += 100;
+        }
+        let mut p = policy(16);
+        p.max_jitter_threshold_ns = 5_000_000;
+        let run = run(label, &dump_planned(&planned), config_for(SSRC_A), p)?;
+        let report = &run.report;
+        assert_eq!(report.generations().len(), 1);
+        let windows = report.windows();
+        for window in &windows[..first_gap_index] {
+            witness(window)?;
+        }
+        let first_gap = &windows[first_gap_index];
+        let second_gap = &windows[first_gap_index + 1];
+        let first_scoped = windowed_evidence(first_gap)?;
+        let second_scoped = windowed_evidence(second_gap)?;
+        let predecessor = if first_gap_index == 0 {
+            let first = &report.generations()[0]
+                .first_picture
+                .as_ref()
+                .ok_or("no first picture")?
+                .witness;
+            assert_eq!(first_gap.start_seq, first.sequence_number);
+            first.witness_digest()
+        } else {
+            witness(&windows[first_gap_index - 1])?.witness_digest()
+        };
+        assert_eq!(first_scoped.predecessor_digest, predecessor);
+        assert_eq!(
+            second_scoped.predecessor_digest,
+            first_scoped.evidence_digest()
+        );
+        assert_eq!(second_gap.start_seq, first_gap.end_seq + 1);
+        for gap in [first_gap, second_gap] {
+            assert_eq!(gap.lost_dimensions, vec![LOST_TIMING_JITTER.to_owned()]);
+            assert_eq!(gap.coverage.continuity, CoverageContinuity::Gapped);
+            assert!(!gap.coverage.certifies_absence());
+        }
+        let recovered = &windows[first_gap_index + 2];
+        let recovered_witness = witness(recovered)?;
+        assert_eq!(recovered_witness.window_start_seq, second_gap.end_seq + 1);
+        assert!(recovered.windowed_degradation.is_none());
+        match report.absence_over(interval(
+            first_gap.interval.earliest,
+            recovered.interval.latest,
+        )?) {
+            RtpAbsenceAnswer::NotCertified(RtpAbsenceRefusal::GapOverlaps { gaps }) => {
+                assert_eq!(
+                    gaps,
+                    vec![
+                        (
+                            1,
+                            first_gap.start_seq,
+                            first_gap.end_seq,
+                            first_gap.interval
+                        ),
+                        (
+                            1,
+                            second_gap.start_seq,
+                            second_gap.end_seq,
+                            second_gap.interval
+                        ),
+                    ]
+                );
+            }
+            other => {
+                return Err(format!("both retained gaps must win after recovery: {other:?}").into());
+            }
+        }
+        replay_recorded_windows(report)?;
+        caplog(
+            caplog_step,
+            &format!(
+                "{}|{}|{}|{}",
+                kinds_text(report),
+                first_scoped.evidence_digest(),
+                second_scoped.evidence_digest(),
+                recovered_witness.witness_digest()
+            ),
+        );
+    }
     Ok(())
 }
 

@@ -18,6 +18,11 @@ the complete request, exact preceding witness, unavailable sequence span and unc
 degradation evidence. Consecutive gaps remain recorded; only the immediately following clean
 window can verify. Request replay, changed custody, overlapping/skipped spans and sequence
 overflow are refused before mutation, including through indeterminate-state reconciliation.
+The recorded RTP driver now emits and retains these wrappers, allowing clean packet/NAL windows
+after loss or jitter to verify without inventing a new stream generation. Its 21 native contract
+tests cover exact replay and permanent exclusion of the earlier gaps; core validation passed
+1,230 tests, 22 doctests and all-target Clippy with warnings denied. The RTP E2E runner remains
+unexecuted because its required `rch` command is unavailable.
 
 The old interval-free absence API stays refused after a gap. A new scoped check returns the
 current continuity witness only for a contained generation/sequence/PTS scope and an independently
