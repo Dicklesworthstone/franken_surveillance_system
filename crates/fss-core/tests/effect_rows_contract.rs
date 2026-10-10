@@ -55,12 +55,14 @@ fn extract_effect_rows(md: &str) -> Result<Vec<EffectRow>, Box<dyn Error>> {
 const EFFECTS_MD: &str = include_str!("../../../registries/EFFECTS.md");
 
 /// The registry's enumerated v1-disposition classes (from the table itself).
-const DISPOSITIONS: [&str; 5] = [
+const DISPOSITIONS: [&str; 7] = [
     "target",
     "target admin path",
     "future",
     "future after standards baseline",
     "disabled by default",
+    "forbidden",
+    "forbidden in v1",
 ];
 
 #[test]
