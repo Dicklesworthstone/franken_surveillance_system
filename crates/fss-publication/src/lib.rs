@@ -14,6 +14,8 @@
 //! reachability to the canonical ledger as one `EvidenceDeltaBatch`, disk-durable first. A durable
 //! root the ledger does not name yet is the explicit [`RootLedgerState::PendingLedger`] state.
 
+/// Targeted read-only verification of published object closures with aggregate I/O bounds.
+pub mod custody_audit;
 mod error;
 mod ledger;
 mod local;
