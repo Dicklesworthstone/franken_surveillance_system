@@ -70,12 +70,21 @@ fn every_primitive_exists_once_with_full_fields() -> Result<(), Box<dyn Error>> 
 
 #[test]
 fn publication_states_vocabulary_is_declared_and_distinct() -> Result<(), Box<dyn Error>> {
-    // Root-last publication distinguishes staged, visible, durable,
-    // replicated, protected, and retrievable states — conflating them is
-    // the exact failure the registry exists to prevent.
-    for state in ["staged", "visible", "durable", "replicated", "protected", "retrievable"] {
+    // The machine authority's lifecycle vocabulary: every state a
+    // publication can occupy, including the terminal-failure distinctions
+    // (quarantined/failed/indeterminate must never flatten into one).
+    for state in [
+        "reserved",
+        "materializing",
+        "verified",
+        "published",
+        "retired",
+        "quarantined",
+        "failed",
+        "indeterminate",
+    ] {
         assert!(
-            PRIMS_JSON.contains(state),
+            PRIMS_JSON.contains(&format!("\"{state}\"")),
             "publication state '{state}' missing from the states vocabulary"
         );
     }
