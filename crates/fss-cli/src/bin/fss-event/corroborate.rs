@@ -58,6 +58,8 @@
 // Full calibration covariance is an additional coverage-denial gate, not an event classifier.
 #[path = "corroborate/calibration_coverage.rs"]
 mod calibration_coverage;
+#[path = "corroborate/streaming.rs"]
+mod streaming;
 
 use std::collections::BTreeSet;
 use std::ffi::OsString;
@@ -163,6 +165,7 @@ pub(super) struct CorroborateAction {
     pub(super) principal: String,
     plan: CorroborationPlan,
     limits: WatchLimits,
+    streaming: Option<streaming::LongCorroborationLimits>,
     recovery: CorroborationOptions,
     health_screen: Option<RecordedHealthPolicy>,
     dependencies: CorroborationDependencies,
@@ -356,7 +359,7 @@ fn quote(argument: &str) -> String {
     }
 }
 
-/// Parses the arguments after `corroborate`. `--tolerate-decode-refusals` is a bare flag;
+/// Parses the arguments after `corroborate`. Recovery and streaming switches are bare flags;
 /// every other option takes one separate value. `--camera`, `--ground` and `--zone` repeat.
 /// Paths must be UTF-8 because the report echoes rerun commands.
 pub(super) fn parse(args: &[OsString]) -> Result<CorroborateAction, String> {
@@ -369,9 +372,19 @@ pub(super) fn parse(args: &[OsString]) -> Result<CorroborateAction, String> {
     let mut dependency_declarations = Vec::new();
     let mut rerun = vec!["fss-event".to_owned(), "corroborate".to_owned()];
     let mut recovery = CorroborationOptions::default();
+    let mut stream_corroborate = false;
     let mut index = 0;
     while index < args.len() {
         let key = args[index].to_str().ok_or("option names require UTF-8")?;
+        if key == "--stream-corroborate" {
+            if stream_corroborate {
+                return Err(format!("duplicate {key}"));
+            }
+            stream_corroborate = true;
+            rerun.push(quote(key));
+            index += 1;
+            continue;
+        }
         if key == "--tolerate-decode-refusals" {
             if recovery.tolerate_decode_refusals {
                 return Err(format!("duplicate {key}"));
@@ -444,7 +457,10 @@ pub(super) fn parse(args: &[OsString]) -> Result<CorroborateAction, String> {
                 }
                 generations.push(parsed);
             }
-            _ if !OPTIONS.contains(&key) && !super::detector::OPTIONS.contains(&key) => {
+            _ if !OPTIONS.contains(&key)
+                && !super::detector::OPTIONS.contains(&key)
+                && !streaming::BUDGET_OPTIONS.contains(&key) =>
+            {
                 return Err("unknown or inapplicable option".to_owned());
             }
             _ if values.iter().any(|(k, _)| k == key) => return Err(format!("duplicate {key}")),
@@ -455,6 +471,12 @@ pub(super) fn parse(args: &[OsString]) -> Result<CorroborateAction, String> {
             rerun.push(quote(argument));
         }
         index += 2;
+    }
+    if stream_corroborate && (!poses.is_empty() || !generations.is_empty()) {
+        return Err(
+            "--stream-corroborate supports owner homographies; pose and calibration generation options are unsupported"
+                .to_owned(),
+        );
     }
     let health_screen = match find(&values, "--sensor-health") {
         Some(HEALTH_POLICY_NAME) => Some(RecordedHealthPolicy::ConservativeV1),
@@ -622,6 +644,13 @@ pub(super) fn parse(args: &[OsString]) -> Result<CorroborateAction, String> {
     limits.h265_limits.max_width = dimension;
     limits.h265_limits.max_height = dimension;
     limits.h265_limits.max_luma_samples = pixels as u64;
+    let streaming = streaming::limits(&values, stream_corroborate, limits)?;
+    let rerun = rerun.join(" ");
+    if streaming.is_some() && (site.len() > 256 || principal.len() > 128 || rerun.len() > 8192) {
+        return Err(
+            "streaming corroboration authority and rerun text exceed their bounds".to_owned(),
+        );
+    }
     let mut approvals = BTreeSet::new();
     if let Some(list) = find(&values, "--approve") {
         for item in list.split(',') {
@@ -646,6 +675,7 @@ pub(super) fn parse(args: &[OsString]) -> Result<CorroborateAction, String> {
             tracker,
         },
         limits,
+        streaming,
         recovery,
         health_screen,
         dependencies,
@@ -661,7 +691,7 @@ pub(super) fn parse(args: &[OsString]) -> Result<CorroborateAction, String> {
         mesh,
         calibration,
         generations,
-        rerun: rerun.join(" "),
+        rerun,
     })
 }
 
@@ -931,6 +961,9 @@ pub(super) fn run(
     cx: &ReplayCx,
     out: &mut impl Write,
 ) -> RunResult<()> {
+    if let Some(limits) = &action.streaming {
+        return streaming::run(action, deployment, root, limits, cx, out);
+    }
     let scalar = ScalarExecCx::new();
     let result = run_with(action, deployment, root, cx, &scalar, out);
     scalar.drain_and_finalize();

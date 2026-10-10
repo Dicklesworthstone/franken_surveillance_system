@@ -24,8 +24,8 @@ fss-event watch \
   --report-out /path/to/review/porch-entries.json
 ```
 
-The source must already be retained by `fss-file import` and have explicit operator capture-time
-hints. Those hints remain assumptions; this command does not calibrate camera clocks or infer
+The source must already be retained by `fss-file import` or `fss-import-http` and have explicit
+operator capture-time hints. Those hints remain assumptions; this command does not calibrate camera clocks or infer
 UTC. The original import path is unnecessary once custody is complete.
 
 MJPEG/JPEG uses the native JPEG decoder. Set `--interpretation ycbcr` for YCbCr images and

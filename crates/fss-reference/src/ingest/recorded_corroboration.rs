@@ -81,6 +81,9 @@
 use std::collections::{BTreeMap, BTreeSet};
 use std::fmt;
 
+/// Whole-recording native tracking and ground-zone corroboration.
+pub mod streaming;
+
 mod recovery;
 pub use recovery::CorroborationOptions;
 mod dependencies;
@@ -1636,50 +1639,13 @@ impl CorroborationReport {
         for guard in &self.publication_guards {
             guard.revalidate(deployment, cx)?;
         }
-        let mut published = 0;
-        for candidate in &mut self.candidates {
-            if !approvals.contains(&candidate.proposal) {
-                continue;
-            }
-            candidate.status = current_status(deployment, &candidate.proof.decision.event)?;
-            if candidate.status == CorroborationStatus::AlreadyPublished {
-                continue;
-            }
-            let proof = &candidate.proof;
-            let existing = deployment
-                .publisher()
-                .root(&proof.slot)
-                .map(|root| root.root);
-            if existing.is_some_and(|root| root != proof.manifest.root()) {
-                return Err(CorroborationError::Conflict);
-            }
-            for bytes in proof.objects.values() {
-                checkpoint(cx, "recorded_corroboration:stage")?;
-                let digest = deployment.publisher_mut().stage_object(bytes)?;
-                deployment.publisher_mut().verify_object(digest)?;
-            }
-            for digest in proof.manifest.children() {
-                checkpoint(cx, "recorded_corroboration:closure")?;
-                deployment.publisher_mut().verify_object(*digest)?;
-            }
-            if existing.is_none() {
-                deployment
-                    .publisher_mut()
-                    .stage_manifest(&proof.slot, &proof.manifest)?;
-            }
-            deployment.publish_and_commit(
-                &proof.slot,
-                &proof.manifest,
-                proof.decision.event.interval,
-                cx,
-            )?;
-            checkpoint(cx, STAGE_RECORDED_CORROBORATION_COMMIT)?;
-            deployment.publish_event(&proof.decision, cx)?;
-            cx.checkpoint_post_commit("recorded_corroboration:published");
-            candidate.status = CorroborationStatus::Published;
-            published += 1;
-        }
-        Ok(published)
+        publish_candidates(
+            deployment,
+            &mut self.candidates,
+            approvals,
+            cx,
+            STAGE_RECORDED_CORROBORATION_COMMIT,
+        )
     }
 
     /// Bounded deterministic JSON rendering. `publish_hint` (the exact rerun command prefix) is
@@ -2128,6 +2094,37 @@ fn camera_coverage(
     Ok(record)
 }
 
+/// Private encoding profile. A new acquisition composition cannot masquerade as a legacy recipe.
+struct CandidateEncoding {
+    policy: &'static [u8],
+    association_domain: &'static str,
+    proposal_domain: &'static str,
+    metadata_magic: &'static [u8],
+    event_prefix: &'static str,
+    slot_prefix: &'static str,
+    uncertainty: &'static str,
+    shared_uncertainty: &'static str,
+}
+const RECORDED_CANDIDATE_ENCODING: CandidateEncoding = CandidateEncoding {
+    policy: POLICY,
+    association_domain: ASSOCIATION_DOMAIN,
+    proposal_domain: PROPOSAL_DOMAIN,
+    metadata_magic: b"FSSCORR1",
+    event_prefix: "event:corroborated",
+    slot_prefix: "rc",
+    uncertainty: UNCERTAINTY,
+    shared_uncertainty: "Two recorded foreground tracks entered one ground zone under owner-supplied \
+homographies and capture-time hints. Their cameras share a common-cause component; independent \
+corroboration is withheld. Not classified, identified or calibrated.",
+};
+
+/// Additional source-derived preconditions are neutral dependencies, never independent support.
+struct CandidateSupplement<'a> {
+    roots: &'a [ContentDigest],
+    evidence: &'a [EventEvidence],
+    principal: Option<&'a str>,
+}
+
 struct CandidateContext<'a> {
     deployment: &'a ReferenceDeployment,
     plan: &'a CorroborationPlan,
@@ -2155,6 +2152,24 @@ fn prepare_candidate(
     context: &CandidateContext<'_>,
     associated: AssociatedEntries,
 ) -> Result<CorroborationCandidate> {
+    prepare_candidate_with_encoding(
+        context,
+        associated,
+        &RECORDED_CANDIDATE_ENCODING,
+        CandidateSupplement {
+            roots: &[],
+            evidence: &[],
+            principal: None,
+        },
+    )
+}
+
+fn prepare_candidate_with_encoding(
+    context: &CandidateContext<'_>,
+    associated: AssociatedEntries,
+    encoding: &CandidateEncoding,
+    supplement: CandidateSupplement<'_>,
+) -> Result<CorroborationCandidate> {
     let CandidateContext {
         deployment,
         plan,
@@ -2173,7 +2188,7 @@ fn prepare_candidate(
     let [left, right] = pair.map(|index| &entries[index]);
     let distance = (left.ground.0 - right.ground.0).hypot(left.ground.1 - right.ground.1);
     let mut e = CanonicalEncoder::new();
-    e.text(ASSOCIATION_DOMAIN);
+    e.text(encoding.association_domain);
     e.digest(plan_digest);
     e.text(&zone_id);
     e.digest(left.record_digest);
@@ -2203,6 +2218,13 @@ fn prepare_candidate(
         // health events remain readable and never silently acquire alert eligibility.
         e.text("fss.recorded_corroboration_health_decision.v2");
     }
+    if !supplement.roots.is_empty() {
+        e.text("streaming-source-analysis");
+        e.u64(supplement.roots.len() as u64);
+        for root in supplement.roots {
+            e.digest(*root);
+        }
+    }
     let association = e.finish();
     let identity = ContentDigest::sha256(&association);
     let mut objects = BTreeMap::new();
@@ -2211,12 +2233,13 @@ fn prepare_candidate(
         objects.insert(digest, bytes);
         digest
     };
-    let policy = insert(POLICY.to_vec());
+    let policy = insert(encoding.policy.to_vec());
     insert(association);
     let mut witnesses = Vec::with_capacity(2);
-    let mut children = BTreeSet::new();
+    let mut children: BTreeSet<ContentDigest> = supplement.roots.iter().copied().collect();
+    children.extend(supplement.evidence.iter().map(|item| item.digest));
     let mut track_ids = Vec::with_capacity(2);
-    let mut health_dependencies = Vec::new();
+    let mut health_dependencies = supplement.evidence.to_vec();
     let dependency_digest = if dependencies.declarations().is_empty() {
         None
     } else {
@@ -2282,7 +2305,7 @@ fn prepare_candidate(
         });
     }
     let mut decision = evaluate_zone_entry_corroboration(ZoneEntryCorroboration {
-        event_id: EventId::parse(format!("event:corroborated:{}", hex(identity)))?,
+        event_id: EventId::parse(format!("{}:{}", encoding.event_prefix, hex(identity)))?,
         zone_id: zone_id.clone(),
         track_ids,
         witnesses,
@@ -2291,12 +2314,9 @@ fn prepare_candidate(
         uncertainty_reason: if cameras[left.camera].failure_domain
             == cameras[right.camera].failure_domain
         {
-            "Two recorded foreground tracks entered one ground zone under owner-supplied \
-homographies and capture-time hints. Their cameras share a common-cause component; independent \
-corroboration is withheld. Not classified, identified or calibrated."
-                .to_owned()
+            encoding.shared_uncertainty.to_owned()
         } else {
-            UNCERTAINTY.to_owned()
+            encoding.uncertainty.to_owned()
         },
     })?;
     if let Some(digest) = dependency_digest {
@@ -2322,22 +2342,26 @@ corroboration is withheld. Not classified, identified or calibrated."
         decision.event.validate()?;
     }
     let mut e = CanonicalEncoder::new();
-    e.bytes(b"FSSCORR1");
+    e.bytes(encoding.metadata_magic);
     e.u32(1);
-    e.text(PROPOSAL_DOMAIN);
+    e.text(encoding.proposal_domain);
     e.digest(policy);
     e.digest(identity);
     e.digest(decision.event.revision_digest());
     let metadata = insert(e.finish());
     children.extend(objects.keys().copied());
     children.remove(&metadata);
-    let slot = SlotName::parse(&format!("rc-{}", hex(identity)))
+    let slot = SlotName::parse(&format!("{}-{}", encoding.slot_prefix, hex(identity)))
         .map_err(|_| CorroborationError::InvalidPlan("candidate slot name"))?;
     let manifest = ObjectManifest::new(slot.as_str(), children, Some(metadata))?;
     let mut e = CanonicalEncoder::new();
-    e.text(PROPOSAL_DOMAIN);
+    e.text(encoding.proposal_domain);
     e.digest(decision.event.revision_digest());
     e.digest(manifest.root());
+    if let Some(principal) = supplement.principal {
+        e.text(deployment.site_lineage());
+        e.text(principal);
+    }
     let proposal = ContentDigest::sha256(&e.finish());
     let status = current_status(deployment, &decision.event)?;
     Ok(CorroborationCandidate {
@@ -2356,6 +2380,60 @@ corroboration is withheld. Not classified, identified or calibrated."
         proposal,
         status,
     })
+}
+
+/// The shared root-last publication owner; callers validate complete approvals and source guards.
+fn publish_candidates(
+    deployment: &mut ReferenceDeployment,
+    candidates: &mut [CorroborationCandidate],
+    approvals: &BTreeSet<ContentDigest>,
+    cx: &ReplayCx,
+    commit_stage: &'static str,
+) -> Result<usize> {
+    let mut published = 0;
+    for candidate in candidates {
+        if !approvals.contains(&candidate.proposal) {
+            continue;
+        }
+        candidate.status = current_status(deployment, &candidate.proof.decision.event)?;
+        if candidate.status == CorroborationStatus::AlreadyPublished {
+            continue;
+        }
+        let proof = &candidate.proof;
+        let existing = deployment
+            .publisher()
+            .root(&proof.slot)
+            .map(|root| root.root);
+        if existing.is_some_and(|root| root != proof.manifest.root()) {
+            return Err(CorroborationError::Conflict);
+        }
+        for bytes in proof.objects.values() {
+            checkpoint(cx, "recorded_corroboration:stage")?;
+            let digest = deployment.publisher_mut().stage_object(bytes)?;
+            deployment.publisher_mut().verify_object(digest)?;
+        }
+        for digest in proof.manifest.children() {
+            checkpoint(cx, "recorded_corroboration:closure")?;
+            deployment.publisher_mut().verify_object(*digest)?;
+        }
+        if existing.is_none() {
+            deployment
+                .publisher_mut()
+                .stage_manifest(&proof.slot, &proof.manifest)?;
+        }
+        deployment.publish_and_commit(
+            &proof.slot,
+            &proof.manifest,
+            proof.decision.event.interval,
+            cx,
+        )?;
+        checkpoint(cx, commit_stage)?;
+        deployment.publish_event(&proof.decision, cx)?;
+        cx.checkpoint_post_commit("recorded_corroboration:published");
+        candidate.status = CorroborationStatus::Published;
+        published += 1;
+    }
+    Ok(published)
 }
 
 fn current_status(

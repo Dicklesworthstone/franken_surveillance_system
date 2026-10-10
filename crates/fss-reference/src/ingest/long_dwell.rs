@@ -260,8 +260,27 @@ fn add_episode(
     Ok(())
 }
 
+/// Borrowed, already masked native perception output. No pixel history is exposed or retained.
+pub(super) struct ScanObservation<'a> {
+    pub(super) epoch: u64,
+    pub(super) position: usize,
+    pub(super) segment: usize,
+    pub(super) capsule: &'a SensorCapsule,
+    pub(super) capsule_digest: ContentDigest,
+    pub(super) luma_digest: ContentDigest,
+    pub(super) dimensions: [u32; 2],
+    pub(super) time_reliable: bool,
+    pub(super) privacy: &'a MaskBinding,
+    pub(super) tracks: &'a [TrackedTarget],
+}
+
+/// A scoped consumer of the existing streaming tracker, with no alternate media engine.
+pub(super) trait ScanObserver {
+    fn observe(&mut self, frame: ScanObservation<'_>) -> Result<()>;
+}
+
 /// Whole-scan state shared by the MJPEG and inter-coded frame sources.
-struct Scan<'a> {
+struct Scan<'a, 'observer> {
     plan: &'a WatchPlan,
     rule: ScanRule,
     masked: &'a BTreeSet<usize>,
@@ -274,6 +293,7 @@ struct Scan<'a> {
     background: Option<ForegroundDetector>,
     dimensions: Option<[u32; 2]>,
     temporal: TemporalAccumulator,
+    observer: Option<&'observer mut dyn ScanObserver>,
     previous_capture: Option<CaptureInterval>,
     previous_tracks: u64,
     trace: Vec<u8>,
@@ -285,7 +305,7 @@ struct Scan<'a> {
     assignment_work: u64,
 }
 
-impl Scan<'_> {
+impl Scan<'_, '_> {
     /// Resets background, tracking and dwell state at a source or decode discontinuity.
     fn restart(&mut self) -> Result<()> {
         self.temporal.restart()?;
@@ -439,11 +459,26 @@ impl Scan<'_> {
             segment,
             capsule_digest,
         )?;
+        let luma_digest = ContentDigest::sha256(&pixels);
+        if let Some(observer) = &mut self.observer {
+            observer.observe(ScanObservation {
+                epoch: self.temporal.epoch(),
+                position,
+                segment,
+                capsule,
+                capsule_digest,
+                luma_digest,
+                dimensions: size,
+                time_reliable: self.time_reliable,
+                privacy: self.privacy,
+                tracks: &output.tracks,
+            })?;
+        }
         frame_record.bool(true);
         frame_record.u64(self.temporal.epoch());
         frame_record.u32(size[0]);
         frame_record.u32(size[1]);
-        frame_record.digest(ContentDigest::sha256(&pixels));
+        frame_record.digest(luma_digest);
         frame_record.bool(foreground.baseline_initialized);
         frame_record.u64(detections.len() as u64);
         for detection in &detections {
@@ -544,7 +579,7 @@ impl Scan<'_> {
         let plan = self.plan;
         let decode = self.limits.decode;
         let mut position = plan.first_segment;
-        let source_budget = matches!(self.rule, ScanRule::ZoneEntry)
+        let source_budget = (!matches!(self.rule, ScanRule::Dwell(_)))
             .then(|| SourceReadBudget::new(self.limits.maximum_source_chunk_bytes));
         if options.tolerate_decode_refusals {
             let request = TolerantRequest {
@@ -698,6 +733,9 @@ struct TemporalState {
 /// not a zero-duration dwell rule: it records the first actual confirmed match per track/zone.
 enum TemporalAccumulator {
     Dwell(TemporalState),
+    Observed {
+        epoch: u64,
+    },
     Entry {
         epoch: u64,
         seen: BTreeSet<(u64, usize)>,
@@ -712,6 +750,7 @@ impl TemporalAccumulator {
                 episodes: Vec::new(),
                 epoch: 0,
             }),
+            ScanRule::Observed => Self::Observed { epoch: 0 },
             ScanRule::ZoneEntry => Self::Entry {
                 epoch: 0,
                 seen: BTreeSet::new(),
@@ -723,13 +762,17 @@ impl TemporalAccumulator {
     fn epoch(&self) -> u64 {
         match self {
             Self::Dwell(state) => state.epoch,
-            Self::Entry { epoch, .. } => *epoch,
+            Self::Entry { epoch, .. } | Self::Observed { epoch } => *epoch,
         }
     }
 
     fn restart(&mut self) -> Result<()> {
         match self {
             Self::Dwell(state) => state.restart(),
+            Self::Observed { epoch } => {
+                *epoch = epoch.checked_add(1).ok_or(WatchError::Limit)?;
+                Ok(())
+            }
             Self::Entry { epoch, seen, .. } => {
                 *epoch = epoch.checked_add(1).ok_or(WatchError::Limit)?;
                 seen.clear();
@@ -751,6 +794,7 @@ impl TemporalAccumulator {
         capsule_digest: ContentDigest,
     ) -> Result<()> {
         match (self, rule) {
+            (Self::Observed { .. }, ScanRule::Observed) => Ok(()),
             (Self::Dwell(state), ScanRule::Dwell(rule)) => {
                 state.observe(plan, rule, tracks, masked, position, capture)
             }
@@ -803,6 +847,7 @@ impl TemporalAccumulator {
 
     fn finish(&mut self) -> Result<(Vec<Episode>, Vec<super::long_watch::LongWatchEntry>)> {
         match self {
+            Self::Observed { .. } => Ok((Vec::new(), Vec::new())),
             Self::Dwell(state) => {
                 state.finish_active()?;
                 let mut episodes = std::mem::take(&mut state.episodes);
@@ -934,12 +979,14 @@ fn charge(used: &mut u64, amount: u64, maximum: u64) -> Result<()> {
 pub(super) enum ScanRule {
     Dwell(DwellPolicy),
     ZoneEntry,
+    Observed,
 }
 impl ScanRule {
     const fn frame_domain(self) -> &'static str {
         match self {
             Self::Dwell(_) => FRAME_DOMAIN,
             Self::ZoneEntry => "fss.long_watch_frame.v1",
+            Self::Observed => "fss.long_corroboration_frame.v1",
         }
     }
 }
@@ -993,6 +1040,42 @@ pub(super) fn run_scan(
     limits: &LongDwellLimits,
     cx: &ReplayCx,
     screened: bool,
+) -> Result<ScanData> {
+    run_scan_inner(deployment, plan, rule, options, limits, cx, screened, None)
+}
+
+#[allow(clippy::too_many_arguments)]
+pub(super) fn run_observed_scan(
+    deployment: &ReferenceDeployment,
+    plan: &WatchPlan,
+    options: WatchOptions,
+    limits: &LongDwellLimits,
+    cx: &ReplayCx,
+    screened: bool,
+    observer: &mut dyn ScanObserver,
+) -> Result<ScanData> {
+    run_scan_inner(
+        deployment,
+        plan,
+        ScanRule::Observed,
+        options,
+        limits,
+        cx,
+        screened,
+        Some(observer),
+    )
+}
+
+#[allow(clippy::too_many_arguments)]
+fn run_scan_inner(
+    deployment: &ReferenceDeployment,
+    plan: &WatchPlan,
+    rule: ScanRule,
+    options: WatchOptions,
+    limits: &LongDwellLimits,
+    cx: &ReplayCx,
+    screened: bool,
+    observer: Option<&mut dyn ScanObserver>,
 ) -> Result<ScanData> {
     checkpoint(cx, "long_dwell:analyze")?;
     if cx.root_dir() != deployment.root() {
@@ -1139,6 +1222,7 @@ pub(super) fn run_scan(
         background: None,
         dimensions: None,
         temporal: TemporalAccumulator::new(rule),
+        observer,
         previous_capture: None,
         previous_tracks: 0,
         trace: Vec::new(),

@@ -180,7 +180,17 @@ one-time vendor-app provisioning (NEG-006) with the yi-hack owner-flash path doc
   synthetic integration cases cover late entries, gaps, codecs, resource refusals, privacy,
   retained custody and recovery; qualification status must come from an executed run.
   See [the workflow](docs/long_recording_watch.md).
-- **Cached analysis publication:** short watch, two-camera corroboration and both streaming
+- **Whole-recording two-camera corroboration:** `fss-event corroborate --stream-corroborate`
+  scans up to 65,536 native MJPEG, AVC or HEVC segments per camera with persistent tracking.
+  Confirmed actual samples can enter an owner ground zone after the former 128-frame boundary;
+  recovery epochs cannot be bridged. Complete retained camera analyses and owner transforms,
+  zones and thresholds support exact proposals under worst-case interval/distance gates and
+  existing common-cause contraction. Current masks apply before perception; degraded whole-scan
+  health blocks publication. Separate scan budgets, explicit exclusions, exact source/privacy
+  revalidation and cold retries preserve the existing authority boundaries. Detector, pose and
+  coverage-retention modes require their existing contracts and are refused in this new mode.
+  See [the workflow](docs/long_recording_corroboration.md).
+- **Cached analysis publication:** short watch, two-camera corroboration and streaming
   modes revalidate their original deployment, principal, current privacy generation, source
   deletion state, retained source bytes and analyzed capsule payloads before publication,
   including exact retries. Short watch and corroboration apply the same check before coverage

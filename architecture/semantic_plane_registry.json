@@ -371,6 +371,8 @@
     "crates/fss-reference/src/ingest/recorded_corroboration/dependencies.rs": "cognition",
     "crates/fss-reference/src/ingest/recorded_corroboration/dependencies/tests.rs": "support",
     "crates/fss-reference/src/ingest/recorded_corroboration/recovery.rs": "support",
+    "crates/fss-reference/src/ingest/recorded_corroboration/streaming.rs": "support",
+    "crates/fss-reference/src/ingest/recorded_corroboration/streaming/recipe.rs": "support",
     "crates/fss-reference/src/ingest/recorded_corroboration/tests.rs": "support",
     "crates/fss-reference/src/ingest/recorded_corroboration/tests/temporal.rs": "support",
     "crates/fss-reference/src/ingest/recorded_coverage.rs": "support",

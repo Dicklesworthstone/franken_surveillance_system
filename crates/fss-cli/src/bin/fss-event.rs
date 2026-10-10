@@ -139,6 +139,14 @@ const HELP: &str = "fss-event <report|prepare|publish|read|watch|corroborate|cal
           [watch thresholds and budgets] [watch detector-cascade options] [--approve sha256:PROPOSAL[,...]]\n\
           [--retain-coverage sha256:APPROVAL] [--sensor-health conservative-v1] [--report-out FILE]\n\
           [--failure-domain KIND:ID=CAMERA[,CAMERA...]]...\n\
+    --stream-corroborate (bare flag): scan both complete retained recordings, up to 65536\n\
+    segments per camera, with native MJPEG/H.264/H.265 and persistent per-camera tracking.\n\
+    Ground entries use actual confirmed matches; gaps reset tracking. The --stream-read-bytes,\n\
+    --stream-pixel-budget, --stream-assignment-work and --stream-trace-bytes ceilings each\n\
+    apply separately to each complete camera scan; defaults match --stream-watch. A bounded\n\
+    global association follows both scans. Supports failure domains, recovery and health\n\
+    screening; refuses detector packages, coverage retention, visibility, poses, calibration\n\
+    and scene-mesh options. Exact approvals are distinct from short corroboration.\n\
     Each recording is tracked over the whole frame; each confirmed track's foot point is\n\
     projected to the ground; ground-zone entries of the two sensors are associated by global\n\
     assignment. A pair is corroborated only if the distance gate holds and the WORST CASE over\n\
