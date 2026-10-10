@@ -17,6 +17,12 @@ use fss_core::{
 /// Row identifier in `registries/DEVICE_ADAPTERS.md`.
 pub const ADP_RTSP_ROW_ID: &str = "ADP-RTSP-001";
 
+/// Runtime adapter identifier in the canonical `adapter:` grammar, derived
+/// from the registry row (lowercased, hyphen-preserved). The row ID above is
+/// the normative registry namespace; this is the runtime identity the
+/// acquisition path validates.
+pub const ADP_RTSP_RUNTIME_ID: &str = "adapter:adp-rtsp-001";
+
 /// Surface name for the adapter.
 pub const ADP_RTSP_SURFACE: &str = "RTSP/RTP";
 
@@ -51,7 +57,7 @@ pub const ADP_RTSP_CAPABILITIES: AdapterCapabilities = AdapterCapabilities::STRE
 /// invariants (`verify`) and NEG-002 standards compliance must both pass.
 pub fn adapter_identity() -> Result<AdapterIdentity, ContractError> {
     let identity = AdapterIdentity {
-        adapter_id: AdapterId::parse(ADP_RTSP_ROW_ID)?,
+        adapter_id: AdapterId::parse(ADP_RTSP_RUNTIME_ID)?,
         generation: AdapterGeneration::parse(ADP_RTSP_GENERATION)?,
         adapter_kind: AdapterKind::Rtsp,
         protocol_profile: ADP_RTSP_PROTOCOL_PROFILE.to_string(),

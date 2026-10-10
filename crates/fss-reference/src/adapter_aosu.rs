@@ -42,6 +42,12 @@ use fss_core::{
 /// Row identifier in `registries/DEVICE_ADAPTERS.md`.
 pub const ADP_AOSU_ROW_ID: &str = "ADP-AOSU-P1MAX-LAB-001";
 
+/// Runtime adapter identifier in the canonical `adapter:` grammar, derived
+/// from the registry row (lowercased, hyphen-preserved). The row ID above is
+/// the normative registry namespace; this is the runtime identity the
+/// acquisition path validates.
+pub const ADP_AOSU_RUNTIME_ID: &str = "adapter:adp-aosu-p1max-lab-001";
+
 /// Surface name for the adapter.
 pub const ADP_AOSU_SURFACE: &str = "AOSU P1 Max owner-auth lab";
 
@@ -79,7 +85,7 @@ pub const ADP_AOSU_CAPABILITIES: AdapterCapabilities = AdapterCapabilities::DEVI
 /// (`verify_standards_compliance`) must both pass at construction.
 pub fn adapter_identity() -> Result<AdapterIdentity, ContractError> {
     let identity = AdapterIdentity {
-        adapter_id: AdapterId::parse(ADP_AOSU_ROW_ID)?,
+        adapter_id: AdapterId::parse(ADP_AOSU_RUNTIME_ID)?,
         generation: AdapterGeneration::parse(ADP_AOSU_GENERATION)?,
         adapter_kind: AdapterKind::TuyaLan,
         protocol_profile: ADP_AOSU_PROTOCOL_PROFILE.to_string(),
