@@ -270,7 +270,7 @@ Aliases reduce token use but are never global identities. Each alias is bound to
 - capability projection;
 - expiry and invalidators.
 
-A stale alias returns `ERR-SYMBOL-TABLE-STALE-001` with a safe refresh affordance. Alias allocation
+A stale alias returns `ERR-AGENT-SESSION-STALE-001` (registry-canonical identity; the older doc spelling `ERR-SYMBOL-TABLE-STALE-001` referred to the same semantic) with a safe refresh affordance. Alias allocation
 must not reveal that a hidden object exists.
 
 ### 4.2 Session restoration
@@ -522,7 +522,7 @@ Compression optimizes a declared loss function. It preferentially preserves:
 
 No token budget may cause FSS to silently omit a known critical alert, capability violation,
 indeterminate effect, or invalidated plan premise. If those cannot fit, the response fails with
-`ERR-CONTEXT-INCOMPLETE-001` and provides a safe larger/minimal-critical view.
+`ERR-AGENT-CONTEXT-INCOMPLETE-001` (registry-canonical identity; the older doc spelling `ERR-CONTEXT-INCOMPLETE-001` referred to the same semantic) and provides a safe larger/minimal-critical view.
 
 ### 8.2 Stable compactness
 
@@ -619,7 +619,7 @@ Material ambiguity never silently becomes an effect. The compiler may:
 
 1. choose a documented harmless read-only default and show alternatives;
 2. execute multiple bounded interpretations and compare them;
-3. return `ERR-QUERY-AMBIGUOUS-001` with discriminating questions;
+3. return `ERR-AGENT-AMBIGUOUS-001` (registry-canonical identity; the older doc spelling `ERR-QUERY-AMBIGUOUS-001` referred to the same semantic) with discriminating questions;
 4. prepare, but never commit, each plausible consequential intent.
 
 ### 10.2 Prompt-injection boundary

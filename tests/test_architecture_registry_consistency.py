@@ -109,7 +109,10 @@ class TestLiveRepoConsistency(unittest.TestCase):
         # 77 = 76 + SCHEMA-MJPEG-FIXTURE-MANIFEST-001 (schemas/mjpeg_fixture_manifest.v1.json, fss-2h5zq.5).
         # 78 = 77 + SCHEMA-AGENT-OPERATIONS-001 (schemas/agent_operations.v1.json, fss-x4a.30.83.17).
         # 79 = 78 + SCHEMA-AGENT-VIEWS-001 (schemas/agent_views.v1.json, fss-x4a.30.83.31-38).
-        self.assertEqual(summary["schemas_count"], 79)
+        # 83 = 79 + SCHEMA-AGENT-{WORK-SCOPE,CLAIM-REQUEST}-001 / agent finding identity
+        # family and coverage schema rows landed 2026-09-24..28 (bd7186e8..3b451405); the pin
+        # was found stale by the policy lane on 2026-10-10 (qualification is the ratchet).
+        self.assertEqual(summary["schemas_count"], 83)
         self.assertGreater(summary["known_active_ids"], 800)
         self.assertGreaterEqual(summary["tombstone_ids"], 14)
 

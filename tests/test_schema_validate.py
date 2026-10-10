@@ -821,7 +821,6 @@ class TestSchemaConstitution(unittest.TestCase):
             "fss.doctor.v1",
             "fss.evidence_anchor.v1",
             "fss.evidence_bundle.v1",
-            "fss.evidence_delta_batch.v1",
             "fss.license_inventory.v1",
             "fss.model_execution_receipt.v1",
             "fss.model_manifest.v1",
@@ -830,7 +829,6 @@ class TestSchemaConstitution(unittest.TestCase):
             "fss.release_build_receipt.v1",
             "fss.release_qualification_receipt.v1",
             "fss.release_stage_verification.v1",
-            "fss.semantic_handle.v1",
             "fss.source_manifest.v1",
             "fss.status.v1",
             "fss.transfer_manifest.v1",
@@ -1462,7 +1460,10 @@ class TestSchemaConstitutionCrossReviewRegressions(unittest.TestCase):
         # -1: the retired unregistered fss.agent_knowledge_cell.v1 digest tag left the Rust
         # corpus when the canonical encoding bumped to v2 (DRIFT-005/DIGEST_DOMAINS v2 row).
         # 50 = 49 + fss.graph_algorithm_witness.v1 (owner GraphAlgorithmWitness, fss-w96u7).
-        self.assertEqual(result["implementedCount"], 50)
+        # 52 = 50 + fss.semantic_handle.v1 (owner SemanticHandle) and
+        # fss.evidence_delta_batch.v1 (owner EvidenceDeltaBatch): typed SCHEMA constants
+        # landed 2026-10-10 (fss-x4a.30.51/30.18 realization, camera-ingest lane).
+        self.assertEqual(result["implementedCount"], 52)
 
         unreg_findings = [
             f for f in validator.findings
