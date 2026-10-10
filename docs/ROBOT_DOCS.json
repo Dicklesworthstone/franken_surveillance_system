@@ -1357,6 +1357,46 @@
       "id": "ERR-HOLD-STORAGE-001"
     },
     {
+      "description": "current original-read or destination-retention permission, cancellation, cooperative timeout or exact CLI approval refused history processing",
+      "guidance": "inspect already retained imports; restore explicit authority before retrying the same plan, or review a new approval for changed bounds",
+      "id": "ERR-HTTP-HISTORY-WATCH-AUTHORITY-001"
+    },
+    {
+      "description": "whole-history reservation, checked aggregate arithmetic, complete report or command capacity exceeds the admitted ceiling",
+      "guidance": "select a smaller exact history or review new bounds; no connection, frame or candidate may be silently omitted or supplied fresh allowances",
+      "id": "ERR-HTTP-HISTORY-WATCH-LIMIT-001"
+    },
+    {
+      "description": "exact history pin, complete ordered generation bindings, explicit capture assumptions, source/destination separation, native watch configuration or per-generation report hints are invalid",
+      "guidance": "correct the complete plan and review a new exact original-retention approval; no implicit generation or time binding is allowed",
+      "id": "ERR-HTTP-HISTORY-WATCH-REQUEST-001"
+    },
+    {
+      "description": "CLI approval does not match the exact HTTP import plan",
+      "guidance": "review the current no-I/O preview and approve that exact plan",
+      "id": "ERR-HTTP-IMPORT-APPROVAL-001"
+    },
+    {
+      "description": "original-read or destination-retention authority, cancellation or deadline refused the import",
+      "guidance": "restore explicit authority or choose new bounds; inspect retained progress before retry",
+      "id": "ERR-HTTP-IMPORT-AUTHORITY-001"
+    },
+    {
+      "description": "retained import construction, existing committed custody, journal capacity or root-last publication refused",
+      "guidance": "inspect the existing owner error and retained progress; exact retry cannot repair damaged committed evidence",
+      "id": "ERR-HTTP-IMPORT-CUSTODY-001"
+    },
+    {
+      "description": "HTTP archive import source selection, storage-owner separation, camera/time declaration or resource bounds are invalid, or native replay reached the exact prefix without a complete original JPEG",
+      "guidance": "correct the exact request and obtain its new approval; a prefix without a complete JPEG is not a quiet-scene or completion claim",
+      "id": "ERR-HTTP-IMPORT-REQUEST-001"
+    },
+    {
+      "description": "pinned original HTTP chain, native framing, source mapping or source-read work allowance was refused",
+      "guidance": "repair or select verified source custody; never substitute reconstructed bytes for damaged originals",
+      "id": "ERR-HTTP-IMPORT-SOURCE-001"
+    },
+    {
       "description": "H2 decision artifact privacy class is not `private:property`, the only privacy class fss-core uses; raw or unredacted media included (code `invalid_privacy_class`)",
       "guidance": "supply the authorized privacy class; do not retry unchanged",
       "id": "ERR-HYDRATION-INVALID-PRIVACY-CLASS-001"
@@ -2172,6 +2212,31 @@
       "id": "ERR-ROBOT-DOCS-UNREGISTERED-001"
     },
     {
+      "description": "CLI approval does not match the complete RTSP import plan",
+      "guidance": "review the current no-I/O preview and approve that exact plan",
+      "id": "ERR-RTSP-IMPORT-APPROVAL-001"
+    },
+    {
+      "description": "current original-read/destination-retention permission, cancellation or cooperative deadline refused import execution",
+      "guidance": "restore explicit authority; inspect retained progress and retry the exact approved request",
+      "id": "ERR-RTSP-IMPORT-AUTHORITY-001"
+    },
+    {
+      "description": "native container/capsule construction, destination graph, journal admission or root-last completion refused the import",
+      "guidance": "inspect exact retained progress; retry can finish an admitted suffix but cannot rewrite damaged committed evidence",
+      "id": "ERR-RTSP-IMPORT-CUSTODY-001"
+    },
+    {
+      "description": "exact native recording selection, destination binding, capture origin or independent sample/original/media ceilings are invalid",
+      "guidance": "correct the complete request and review its new approval; no implicit source or clock substitution",
+      "id": "ERR-RTSP-IMPORT-REQUEST-001"
+    },
+    {
+      "description": "selected native AVC/HEVC recording custody, RTP-to-NAL-to-MP4 mapping, archive availability or source-work reservation was refused",
+      "guidance": "repair source custody or select a separately verified recording; reconstructed media cannot replace damaged originals",
+      "id": "ERR-RTSP-IMPORT-SOURCE-001"
+    },
+    {
       "description": "input durable schema version unsupported",
       "guidance": "migrate with registered path or reject",
       "id": "ERR-SCHEMA-UNSUPPORTED-001"
@@ -2447,13 +2512,13 @@
       "id": "ERR-WATCH-APPROVAL-STALE-001"
     },
     {
-      "description": "watch candidate, detection or active-track bound reached; nothing is silently dropped",
-      "guidance": "narrow the range or zones, or raise thresholds",
+      "description": "watch candidate, detection, active-track, source-read, pixel, assignment-work or trace bound reached; no partial scan is publishable and nothing is silently dropped",
+      "guidance": "narrow the range or zones, or explicitly review larger resource bounds",
       "id": "ERR-WATCH-LIMIT-001"
     },
     {
-      "description": "model-free watch plan is outside its bounds (range 1..128 frames, 1..16 zones, zone ids, detector/tracker thresholds)",
-      "guidance": "correct the plan; do not retry unchanged",
+      "description": "model-free watch plan is outside its bounds (ordinary range 1..128 frames, explicit streaming range 1..65,536 segments, 1..16 zones, zone ids, detector/tracker thresholds), or cached analysis authority/privacy preconditions changed",
+      "guidance": "correct or recompute the plan; do not retry unchanged",
       "id": "ERR-WATCH-PLAN-INVALID-001"
     },
     {
