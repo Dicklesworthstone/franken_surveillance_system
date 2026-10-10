@@ -8,7 +8,14 @@
 
 pub mod activity;
 mod adapter_aosu;
+mod adapter_dji_flip;
+mod adapter_insta_link;
+mod adapter_onvif_m;
+mod adapter_onvif_t;
 mod adapter_replay;
+mod adapter_rtsp_row;
+mod adapter_s3_import;
+mod adapter_uvc;
 mod adapter_wyze;
 /// Read-only `session.follow` (AOP-004): meaningful deltas since an earlier committed anchor.
 pub mod agent_follow;
@@ -122,6 +129,41 @@ mod situation_tests;
 #[cfg(test)]
 mod tests;
 
+pub use adapter_dji_flip::{
+    ADP_DJI_FLIP_CAPABILITIES, ADP_DJI_FLIP_CURRENT_STATE, ADP_DJI_FLIP_GENERATION,
+    ADP_DJI_FLIP_PROMOTION_GATE, ADP_DJI_FLIP_PROTOCOL_PROFILE, ADP_DJI_FLIP_ROW_ID,
+    ADP_DJI_FLIP_SURFACE, ADP_DJI_FLIP_TIER, adapter_identity as adp_dji_flip_adapter_identity,
+};
+pub use adapter_insta_link::{
+    ADP_INSTA_LINK_CAPABILITIES, ADP_INSTA_LINK_CURRENT_STATE, ADP_INSTA_LINK_GENERATION,
+    ADP_INSTA_LINK_PROMOTION_GATE, ADP_INSTA_LINK_PROTOCOL_PROFILE, ADP_INSTA_LINK_ROW_ID,
+    ADP_INSTA_LINK_SURFACE, ADP_INSTA_LINK_TIER, adapter_identity as adp_insta_link_adapter_identity,
+};
+pub use adapter_onvif_m::{
+    ADP_ONVIF_M_CAPABILITIES, ADP_ONVIF_M_CURRENT_STATE, ADP_ONVIF_M_GENERATION,
+    ADP_ONVIF_M_PROMOTION_GATE, ADP_ONVIF_M_PROTOCOL_PROFILE, ADP_ONVIF_M_ROW_ID,
+    ADP_ONVIF_M_SURFACE, ADP_ONVIF_M_TIER, adapter_identity as adp_onvif_m_adapter_identity,
+};
+pub use adapter_onvif_t::{
+    ADP_ONVIF_T_CAPABILITIES, ADP_ONVIF_T_CURRENT_STATE, ADP_ONVIF_T_GENERATION,
+    ADP_ONVIF_T_PROMOTION_GATE, ADP_ONVIF_T_PROTOCOL_PROFILE, ADP_ONVIF_T_ROW_ID,
+    ADP_ONVIF_T_SURFACE, ADP_ONVIF_T_TIER, adapter_identity as adp_onvif_t_adapter_identity,
+};
+pub use adapter_rtsp_row::{
+    ADP_RTSP_CAPABILITIES, ADP_RTSP_CURRENT_STATE, ADP_RTSP_GENERATION, ADP_RTSP_PROMOTION_GATE,
+    ADP_RTSP_PROTOCOL_PROFILE, ADP_RTSP_ROW_ID, ADP_RTSP_SURFACE, ADP_RTSP_TIER,
+    adapter_identity as adp_rtsp_adapter_identity,
+};
+pub use adapter_s3_import::{
+    ADP_S3_CAPABILITIES, ADP_S3_CURRENT_STATE, ADP_S3_GENERATION, ADP_S3_PROMOTION_GATE,
+    ADP_S3_PROTOCOL_PROFILE, ADP_S3_ROW_ID, ADP_S3_SURFACE, ADP_S3_TIER,
+    adapter_identity as adp_s3_adapter_identity,
+};
+pub use adapter_uvc::{
+    ADP_UVC_CAPABILITIES, ADP_UVC_CURRENT_STATE, ADP_UVC_GENERATION, ADP_UVC_PROMOTION_GATE,
+    ADP_UVC_PROTOCOL_PROFILE, ADP_UVC_ROW_ID, ADP_UVC_SURFACE, ADP_UVC_TIER,
+    adapter_identity as adp_uvc_adapter_identity,
+};
 pub use adapter_aosu::{
     ADP_AOSU_CAPABILITIES, ADP_AOSU_CURRENT_STATE, ADP_AOSU_GENERATION,
     ADP_AOSU_MAX_BANDWIDTH_BYTES_PER_SEC, ADP_AOSU_MAX_BUFFER_FRAMES, ADP_AOSU_PROMOTION_GATE,

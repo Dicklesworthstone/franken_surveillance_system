@@ -123,6 +123,18 @@ pub const FILE_IMPORT_MANIFEST_SCHEMA: &str = "fss.file_import.manifest.v1";
 /// Registered adapter identity for `ADP-FILE-001`.
 pub const ADP_FILE_ROW_ID: &str = "ADP-FILE-001";
 
+/// Surface name for the adapter.
+pub const ADP_FILE_SURFACE: &str = "bounded media import";
+
+/// Device adapter tier (reference implementation and general import path).
+pub const ADP_FILE_TIER: &str = "T0/T4";
+
+/// Current qualification lifecycle state.
+pub const ADP_FILE_CURRENT_STATE: &str = "specified";
+
+/// Promotion gate requirement.
+pub const ADP_FILE_PROMOTION_GATE: &str = "GATE-010";
+
 /// Standard adapter generation for `ADP-FILE-001`.
 pub const ADP_FILE_GENERATION: &str = "gen:fss1:adapters-v1";
 
@@ -1486,7 +1498,7 @@ pub fn compute_import_identity(
 
 /// Builds the default [`AdapterIdentity`] for `ADP-FILE-001`.
 pub fn default_adapter_identity() -> Result<AdapterIdentity, ContractError> {
-    let adapter_id = AdapterId::parse("adp:file-001")?;
+    let adapter_id = AdapterId::parse(ADP_FILE_ROW_ID)?;
     let generation = AdapterGeneration::parse(ADP_FILE_GENERATION)?;
     let capabilities = AdapterCapabilities::STREAMING.union(AdapterCapabilities::SNAPSHOT);
     let identity = AdapterIdentity {
