@@ -142,7 +142,7 @@ one-time vendor-app provisioning (NEG-006) with the yi-hack owner-flash path doc
   computation/privacy bindings are refused without repair. Seven reference recovery tests and
   two CLI recovery/continuity tests pass natively. Existing valid durable encodings remain
   unchanged. See [package-event continuity](docs/PACKAGE_EVENT_CONTINUITY.md).
-- **Coverage witnesses (fss-fnrgr):** every `fss-event watch` / `fss-event corroborate` report
+- **Coverage witnesses (fss-fnrgr):** ordinary `fss-event watch` / `fss-event corroborate` reports
   proposes a coverage record: one fss-core `CoverageWitness` per (sensor, zone, maximal contiguous
   interval) decoded without gap or skipped segment, past background warm-up (4 frames) and
   confirmation latency, image zone inside the frame, capture time an operator hint and no source
@@ -151,6 +151,24 @@ one-time vendor-app provisioning (NEG-006) with the yi-hack owner-flash path doc
   retains it (`coverage_witness` ledger family); unknown capture time never yields a witness.
   Proven on synthetic MJPEG scenes only; the witness certifies what the uncalibrated pipeline
   would have emitted, not detection quality.
+- **Whole-recording zone observations:** `fss-event watch --stream-watch` follows one native
+  foreground model and tracker across up to 65,536 retained MJPEG, AVC or HEVC segments, including
+  the former 128-frame boundary. Each tracker epoch can produce one unclassified entry candidate
+  per track and zone, only from a confirmed actual match strictly inside the zone. Source gaps
+  and tolerated decoder refusals restart tracking. Source reads (including inter-coded recovery
+  probes), pixels, assignment work and trace bytes have aggregate limits; none reset at chunk or
+  decoder boundaries. Approvals bind the complete scan, limits and exact privacy generation.
+  Optional conservative health screening blocks publication for the whole scan on findings or
+  incomplete screening. This mode grants neither absence certification nor alerts. Native
+  synthetic integration cases cover late entries, gaps, codecs, resource refusals, privacy,
+  retained custody and recovery; qualification status must come from an executed run.
+  See [the workflow](docs/long_recording_watch.md).
+- **Cached analysis publication:** short watch, two-camera corroboration and both streaming
+  modes revalidate their original deployment, principal, current privacy generation, source
+  deletion state, retained source bytes and analyzed capsule payloads before publication,
+  including exact retries. Short watch and corroboration apply the same check before coverage
+  retention. A changed mask, deleted source or damaged quiet-frame capsule cannot be revived by
+  an old in-memory report. Historical short-watch, corroboration and dwell encodings stay stable.
 - **Whole-recording dwell for inter-coded video:** `fss-event watch --stream-dwell` (long dwell,
   up to 65,536 frames in one pass) now accepts H.264 and H.265 imports (Annex-B, MP4,
   QuickTime, Matroska) as well as MJPEG: frames come from streaming IDR/IRAP-led range decoders in display

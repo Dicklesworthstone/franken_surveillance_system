@@ -18,6 +18,8 @@ use fss_core::{
 };
 use fss_publication::SlotName;
 use std::collections::BTreeSet;
+use std::sync::Arc;
+use std::sync::atomic::{AtomicU64, Ordering};
 
 /// Hard v1 metadata size ceiling.
 pub const MAX_RETAINED_MANIFEST_BYTES: usize = 16 * 1024 * 1024;
@@ -544,6 +546,18 @@ impl RetainedFileImport {
         limits: RetainedReadLimits,
         cx: &ReplayCx,
     ) -> Result<Vec<u8>, FileIngestError> {
+        self.read_omission_span_budgeted(deployment, index, limits, cx, None)
+    }
+
+    /// Internal source-read admission shared with a streaming decoder's recovery attempts.
+    pub(crate) fn read_omission_span_budgeted(
+        &self,
+        deployment: &ReferenceDeployment,
+        index: usize,
+        limits: RetainedReadLimits,
+        cx: &ReplayCx,
+        budget: Option<&SourceReadBudget>,
+    ) -> Result<Vec<u8>, FileIngestError> {
         self.revalidate(deployment, limits, cx)?;
         self.manifest.validate_structure(limits)?;
         let span = self
@@ -551,7 +565,7 @@ impl RetainedFileImport {
             .omission_spans
             .get(index)
             .ok_or_else(|| invalid("omission span index"))?;
-        let mut chunks = VerifiedChunkCache::default();
+        let mut chunks = VerifiedChunkCache::with_source_budget(budget);
         let bytes = assemble_range(
             &self.manifest,
             span.offset,
@@ -640,6 +654,41 @@ fn verified_chunk(
     Ok(bytes)
 }
 
+/// One source-read allowance shared by all decoder ranges and random-access recovery probes.
+/// Reservations happen before reads and are never refunded, including for invalid codec input.
+/// Cloning preserves the same allowance; it cannot reset accounting on a decoder restart.
+#[derive(Clone, Debug)]
+pub(crate) struct SourceReadBudget {
+    maximum: u64,
+    used: Arc<AtomicU64>,
+}
+
+impl SourceReadBudget {
+    pub(crate) fn new(maximum: u64) -> Self {
+        Self {
+            maximum,
+            used: Arc::new(AtomicU64::new(0)),
+        }
+    }
+
+    pub(crate) fn used(&self) -> u64 {
+        self.used.load(Ordering::Relaxed)
+    }
+
+    fn reserve(&self, bytes: u64) -> Result<(), FileIngestError> {
+        self.used
+            .try_update(Ordering::Relaxed, Ordering::Relaxed, |used| {
+                used.checked_add(bytes).filter(|next| *next <= self.maximum)
+            })
+            .map(|_| ())
+            .map_err(|used| FileIngestError::SpoolCapacityExceeded {
+                limit: "stream_source_chunk_bytes",
+                required: used.saturating_add(bytes),
+                available: self.maximum,
+            })
+    }
+}
+
 /// Custody chunks already read and digest-verified, kept across sequential reads.
 ///
 /// Holds at most two chunks (a segment may straddle one boundary), each keyed by its verified
@@ -650,9 +699,25 @@ fn verified_chunk(
 pub struct VerifiedChunkCache {
     slots: [Option<(ContentDigest, Vec<u8>)>; 2],
     loaded: u64,
+    source_budget: Option<SourceReadBudget>,
 }
 
 impl VerifiedChunkCache {
+    pub(crate) fn with_source_budget(source_budget: Option<&SourceReadBudget>) -> Self {
+        Self {
+            source_budget: source_budget.cloned(),
+            ..Self::default()
+        }
+    }
+
+    /// Charge additional origin-proof reads to the same optional whole-scan allowance.
+    pub(crate) fn reserve_source_bytes(&self, bytes: u64) -> Result<(), FileIngestError> {
+        match &self.source_budget {
+            Some(budget) => budget.reserve(bytes),
+            None => Ok(()),
+        }
+    }
+
     /// Bytes of every chunk this cache has read and verified (each load counted).
     #[must_use]
     pub const fn chunk_bytes_read(&self) -> u64 {
@@ -673,6 +738,7 @@ impl VerifiedChunkCache {
         if hit(&self.slots[1]) {
             self.slots.swap(0, 1);
         } else if !hit(&self.slots[0]) {
+            self.reserve_source_bytes(len)?;
             let bytes = verified_chunk(manifest, index, read)?;
             self.loaded = self.loaded.saturating_add(bytes.len() as u64);
             self.slots[1] = self.slots[0].take();

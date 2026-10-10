@@ -38,6 +38,7 @@ use super::recorded_decode::h265::{
 use super::recorded_decode::{
     ComponentInterpretation, DecodeLimits, RecordedDecodeError, source_capsule,
 };
+use super::retained::SourceReadBudget;
 use super::{RetainedFileImport, RetainedReadLimits};
 use crate::{ReferenceDeployment, ReplayCx};
 
@@ -155,6 +156,8 @@ pub(crate) struct TolerantSource {
     chunks: super::VerifiedChunkCache,
     /// Chunk bytes read by inter-coded sub-ranges already closed.
     closed_chunk_bytes: u64,
+    /// All sub-ranges and failed recovery probes debit this same optional allowance.
+    source_budget: Option<SourceReadBudget>,
 }
 
 impl TolerantSource {
@@ -163,6 +166,28 @@ impl TolerantSource {
     pub(crate) fn open(
         deployment: &ReferenceDeployment,
         request: TolerantRequest,
+        cx: &ReplayCx,
+    ) -> Result<Self, RecordedDecodeError> {
+        Self::open_inner(deployment, request, None, cx)
+    }
+
+    /// Streaming source with a single nonrenewable custody-read allowance.
+    pub(crate) fn open_with_source_budget(
+        deployment: &ReferenceDeployment,
+        request: TolerantRequest,
+        source_budget: &SourceReadBudget,
+        cx: &ReplayCx,
+    ) -> Result<Self, RecordedDecodeError> {
+        if !request.stream {
+            return Err(RecordedDecodeError::Limit);
+        }
+        Self::open_inner(deployment, request, Some(source_budget), cx)
+    }
+
+    fn open_inner(
+        deployment: &ReferenceDeployment,
+        request: TolerantRequest,
+        source_budget: Option<&SourceReadBudget>,
         cx: &ReplayCx,
     ) -> Result<Self, RecordedDecodeError> {
         let retained =
@@ -192,8 +217,9 @@ impl TolerantSource {
             first_error: None,
             returned_any: false,
             mask,
-            chunks: super::VerifiedChunkCache::default(),
+            chunks: super::VerifiedChunkCache::with_source_budget(source_budget),
             closed_chunk_bytes: 0,
+            source_budget: source_budget.cloned(),
         };
         if let Some(codec) = codec {
             let start = request.first_segment;
@@ -225,38 +251,46 @@ impl TolerantSource {
         cx: &ReplayCx,
     ) -> Result<InterRange, RecordedDecodeError> {
         Ok(match codec {
-            Codec::H264 => InterRange::H264(Box::new(if self.request.stream {
-                RecordedH264Range::open_stream
-            } else {
-                RecordedH264Range::open
-            }(
-                deployment,
-                RecordedH264Request {
+            Codec::H264 => {
+                let request = RecordedH264Request {
                     import_identity: self.request.import_identity,
                     first_segment: start,
                     segment_count: end - start,
                     interpretation: self.request.interpretation,
                     read_limits: self.request.read_limits,
                     decoder_limits: self.request.h264_limits,
-                },
-                cx,
-            )?)),
-            Codec::H265 => InterRange::H265(Box::new(if self.request.stream {
-                RecordedH265Range::open_stream
-            } else {
-                RecordedH265Range::open
-            }(
-                deployment,
-                RecordedH265Request {
+                };
+                let range = if let Some(budget) = &self.source_budget {
+                    RecordedH264Range::open_stream_with_source_budget(
+                        deployment, request, budget, cx,
+                    )
+                } else if self.request.stream {
+                    RecordedH264Range::open_stream(deployment, request, cx)
+                } else {
+                    RecordedH264Range::open(deployment, request, cx)
+                }?;
+                InterRange::H264(Box::new(range))
+            }
+            Codec::H265 => {
+                let request = RecordedH265Request {
                     import_identity: self.request.import_identity,
                     first_segment: start,
                     segment_count: end - start,
                     interpretation: self.request.interpretation,
                     read_limits: self.request.read_limits,
                     decoder_limits: self.request.h265_limits,
-                },
-                cx,
-            )?)),
+                };
+                let range = if let Some(budget) = &self.source_budget {
+                    RecordedH265Range::open_stream_with_source_budget(
+                        deployment, request, budget, cx,
+                    )
+                } else if self.request.stream {
+                    RecordedH265Range::open_stream(deployment, request, cx)
+                } else {
+                    RecordedH265Range::open(deployment, request, cx)
+                }?;
+                InterRange::H265(Box::new(range))
+            }
         })
     }
 
@@ -311,6 +345,9 @@ impl TolerantSource {
 
     /// Every custody chunk byte read so far: MJPEG frames and every inter-coded sub-range.
     pub(crate) fn chunk_bytes_read(&self) -> u64 {
+        if let Some(budget) = &self.source_budget {
+            return budget.used();
+        }
         let current = match &self.inner {
             Inner::Inter {
                 range: Some(InterRange::H264(range)),

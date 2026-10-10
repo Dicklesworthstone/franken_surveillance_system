@@ -78,7 +78,7 @@ impl LongDwellHealthSummary {
             "no_findings"
         }
     }
-    pub(super) fn encode(&self, e: &mut CanonicalEncoder) {
+    pub(in crate::ingest) fn encode(&self, e: &mut CanonicalEncoder) {
         e.bool(self.complete);
         e.u64(self.frames as u64);
         e.u64(self.samples);
@@ -92,7 +92,7 @@ impl LongDwellHealthSummary {
             e.digest(run.last_observation);
         }
     }
-    pub(super) fn to_json(&self) -> String {
+    pub(in crate::ingest) fn to_json(&self) -> String {
         let findings = self.findings.iter().map(|run| format!(
             "{{\"finding\":{},\"first_segment\":{},\"last_segment\":{},\"affected_frames\":{},\"first_observation_digest\":{},\"last_observation_digest\":{}}}",
             json(run.finding.as_str()), run.first_segment, run.last_segment, run.affected_frames,

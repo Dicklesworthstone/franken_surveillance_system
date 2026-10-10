@@ -37,6 +37,8 @@ pub mod inference;
 pub mod long_dwell;
 /// Source-backed native replay of committed whole-recording dwell events and screening.
 pub mod long_dwell_replay;
+/// Whole-recording zone-entry observation over the native streaming perception pipeline.
+pub mod long_watch;
 pub mod mjpeg;
 /// Offline source-preserving conversion of exact tensor weights into recorded models.
 pub mod model_import;

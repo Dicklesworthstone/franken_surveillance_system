@@ -26,6 +26,10 @@
 //! `--sensor-health conservative-v1` additionally screens the same masked pixels in entry
 //! mode. Suspect runs cannot contribute candidates or coverage witnesses. Whole-recording
 //! `--stream-dwell` uses its existing whole-scan publication gate instead; short dwell is refused.
+//! `--stream-watch` instead scans one whole bounded recording for actual confirmed zone entries,
+//! preserving tracker state across the old 128-frame boundary. It uses its own approval identity,
+//! aggregate `--stream-*` budgets, and the same optional whole-scan health gate. It has no dwell
+//! rule, detector-package invocation, coverage-retention or alert authority.
 
 use std::collections::BTreeSet;
 use std::ffi::OsString;
@@ -36,6 +40,7 @@ use fss_core::{ContentDigest, DigestAlgorithm, PrincipalId};
 use fss_reference::ingest::RetainedFileImport;
 use fss_reference::ingest::detector_cascade::DetectorCascade;
 use fss_reference::ingest::long_dwell::{LongDwellLimits, LongDwellReport, MAX_LONG_DWELL_FRAMES};
+use fss_reference::ingest::long_watch::{LongWatchLimits, LongWatchReport, MAX_LONG_WATCH_FRAMES};
 use fss_reference::ingest::package_detect::PackageDetectLimits;
 use fss_reference::ingest::recorded_decode::ComponentInterpretation;
 use fss_reference::ingest::recorded_dwell::DwellReport;
@@ -80,6 +85,10 @@ const OPTIONS: &[&str] = &[
     "--dwell-pixel-budget",
     "--dwell-assignment-work",
     "--dwell-trace-bytes",
+    "--stream-read-bytes",
+    "--stream-pixel-budget",
+    "--stream-assignment-work",
+    "--stream-trace-bytes",
     "--sensor-health",
 ];
 
@@ -88,6 +97,13 @@ const STREAM_BUDGET_OPTIONS: &[&str] = &[
     "--dwell-pixel-budget",
     "--dwell-assignment-work",
     "--dwell-trace-bytes",
+];
+
+const STREAM_WATCH_BUDGET_OPTIONS: &[&str] = &[
+    "--stream-read-bytes",
+    "--stream-pixel-budget",
+    "--stream-assignment-work",
+    "--stream-trace-bytes",
 ];
 
 /// Fully parsed watch request; nothing here is authority until `run` validates it.
@@ -111,6 +127,7 @@ pub(super) struct WatchAction {
     options: WatchOptions,
     dwell: Option<DwellPolicy>,
     stream_dwell: Option<LongDwellLimits>,
+    stream_watch: Option<LongWatchLimits>,
     health_screen: bool,
     rerun: String,
 }
@@ -211,9 +228,19 @@ pub(super) fn parse(args: &[OsString]) -> Result<WatchAction, String> {
     let mut rerun = vec!["fss-event".to_owned(), "watch".to_owned()];
     let mut options = WatchOptions::default();
     let mut stream_dwell = false;
+    let mut stream_watch = false;
     let mut index = 0;
     while index < args.len() {
         let key = args[index].to_str().ok_or("option names require UTF-8")?;
+        if key == "--stream-watch" {
+            if stream_watch {
+                return Err("duplicate --stream-watch".to_owned());
+            }
+            stream_watch = true;
+            rerun.push(key.to_owned());
+            index += 1;
+            continue;
+        }
         if key == "--stream-dwell" {
             if stream_dwell {
                 return Err("duplicate --stream-dwell".to_owned());
@@ -287,7 +314,14 @@ pub(super) fn parse(args: &[OsString]) -> Result<WatchAction, String> {
         Ok(_) => Some(number(&values, "--segment-count", 0_usize)?),
         Err(_) => None,
     };
-    let maximum_frames = if stream_dwell {
+    if stream_watch && (stream_dwell || values.iter().any(|(key, _)| key.starts_with("--dwell-"))) {
+        return Err(
+            "--stream-watch cannot be combined with --stream-dwell or dwell options".to_owned(),
+        );
+    }
+    let maximum_frames = if stream_watch {
+        MAX_LONG_WATCH_FRAMES
+    } else if stream_dwell {
         MAX_LONG_DWELL_FRAMES
     } else {
         MAX_WATCH_FRAMES
@@ -357,12 +391,19 @@ pub(super) fn parse(args: &[OsString]) -> Result<WatchAction, String> {
         return Err("--stream-dwell requires the explicit dwell duration and gap rule".to_owned());
     }
     let stream_dwell = streaming_limits(&values, stream_dwell, limits)?;
+    let stream_watch = streaming_watch_limits(&values, stream_watch, limits)?;
     if stream_dwell.is_some() && (site.len() > 256 || principal.len() > 128) {
         return Err("long-dwell site or principal exceeds byte bound".to_owned());
+    }
+    if stream_watch.is_some() && (site.len() > 256 || principal.len() > 128) {
+        return Err("streaming watch site or principal exceeds byte bound".to_owned());
     }
     let rerun = rerun.join(" ");
     if stream_dwell.is_some() && rerun.len() > 8192 {
         return Err("long-dwell rerun command exceeds byte bound".to_owned());
+    }
+    if stream_watch.is_some() && rerun.len() > 8192 {
+        return Err("streaming watch rerun command exceeds byte bound".to_owned());
     }
     Ok(WatchAction {
         root: PathBuf::from(text(&values, "--root")?),
@@ -389,6 +430,7 @@ pub(super) fn parse(args: &[OsString]) -> Result<WatchAction, String> {
         options,
         dwell,
         stream_dwell,
+        stream_watch,
         health_screen,
         rerun,
     })
@@ -402,6 +444,9 @@ pub(super) fn run(
     cx: &ReplayCx,
     out: &mut impl Write,
 ) -> RunResult<()> {
+    if let Some(limits) = &action.stream_watch {
+        return run_streaming_watch(action, deployment, root, limits, cx, out);
+    }
     if let Some(limits) = &action.stream_dwell {
         return run_streaming(action, deployment, root, limits, cx, out);
     }
@@ -414,6 +459,125 @@ pub(super) fn run(
     let result = run_with(action, deployment, root, cx, &scalar, out);
     scalar.drain_and_finalize();
     result
+}
+
+fn streaming_watch_limits(
+    values: &[(String, String)],
+    enabled: bool,
+    decode: WatchLimits,
+) -> Result<Option<LongWatchLimits>, String> {
+    if !enabled {
+        if values
+            .iter()
+            .any(|(key, _)| STREAM_WATCH_BUDGET_OPTIONS.contains(&key.as_str()))
+        {
+            return Err("aggregate streaming watch budgets require --stream-watch".to_owned());
+        }
+        return Ok(None);
+    }
+    if values
+        .iter()
+        .any(|(key, _)| super::detector::OPTIONS.contains(&key.as_str()))
+    {
+        return Err("--stream-watch does not admit detector-package options".to_owned());
+    }
+    if values.iter().any(|(key, _)| key == "--retain-coverage") {
+        return Err("--stream-watch refuses --retain-coverage: no whole-recording absence certificate exists".to_owned());
+    }
+    let defaults = LongWatchLimits::default();
+    let limits = LongWatchLimits {
+        decode,
+        maximum_source_chunk_bytes: number(
+            values,
+            "--stream-read-bytes",
+            defaults.maximum_source_chunk_bytes,
+        )?,
+        maximum_pixel_samples: number(
+            values,
+            "--stream-pixel-budget",
+            defaults.maximum_pixel_samples,
+        )?,
+        maximum_assignment_work: number(
+            values,
+            "--stream-assignment-work",
+            defaults.maximum_assignment_work,
+        )?,
+        maximum_trace_bytes: number(values, "--stream-trace-bytes", defaults.maximum_trace_bytes)?,
+    };
+    limits.validate().map_err(|error| error.to_string())?;
+    Ok(Some(limits))
+}
+
+fn run_streaming_watch(
+    action: &WatchAction,
+    deployment: &mut ReferenceDeployment,
+    root: &Path,
+    limits: &LongWatchLimits,
+    cx: &ReplayCx,
+    out: &mut impl Write,
+) -> RunResult<()> {
+    if action.cascade.is_some()
+        || action.retain_coverage.is_some()
+        || action.dwell.is_some()
+        || action.stream_dwell.is_some()
+    {
+        return Err(WatchError::InvalidPlan(
+            "streaming watch has no dwell, model or coverage owner",
+        )
+        .into());
+    }
+    let segment_count = match action.segment_count {
+        Some(count) => count,
+        None => {
+            let retained =
+                RetainedFileImport::open(deployment, action.import, limits.decode.read_limits, cx)
+                    .map_err(WatchError::from)?;
+            retained
+                .manifest()
+                .segment_spans
+                .len()
+                .checked_sub(action.first_segment)
+                .filter(|count| (1..=MAX_LONG_WATCH_FRAMES).contains(count))
+                .ok_or(WatchError::InvalidPlan(
+                    "select a nonempty streaming watch range of at most 65536 segments",
+                ))?
+        }
+    };
+    let plan = WatchPlan {
+        import_identity: action.import,
+        interpretation: action.interpretation,
+        first_segment: action.first_segment,
+        segment_count,
+        zones: action.zones.clone(),
+        detector: action.detector,
+        tracker: action.tracker,
+    };
+    let analyze = if action.health_screen {
+        LongWatchReport::analyze_screened
+    } else {
+        LongWatchReport::analyze
+    };
+    let mut report = analyze(deployment, &plan, action.options, limits, cx)?;
+    // Complete report and exact approval hints must fit before any event commitment.
+    report.to_json(
+        deployment.current_anchor().commit_sequence,
+        Some(&action.rerun),
+    )?;
+    if !action.approvals.is_empty() {
+        report.publish(deployment, &action.approvals, cx)?;
+    }
+    let json = format!(
+        "{}\n",
+        report.to_json(
+            deployment.current_anchor().commit_sequence,
+            Some(&action.rerun),
+        )?
+    );
+    if let Some(path) = &action.report_out {
+        export(path, json.as_bytes(), root, cx)?;
+    }
+    out.write_all(json.as_bytes())?;
+    Ok(())
 }
 
 fn run_with(

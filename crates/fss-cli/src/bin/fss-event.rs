@@ -121,6 +121,16 @@ const HELP: &str = "fss-event <report|prepare|publish|read|watch|corroborate|cal
     does not prove health, tamper absence, or physical absence. Exact approval reruns retain\n\
     the option. With --stream-dwell the existing whole-scan publication gate applies instead;\n\
     short non-stream dwell with sensor-health screening is unsupported and refused.\n\
+    --stream-watch (bare flag): scan one whole recording for confirmed zone entries, keeping\n\
+    foreground/tracker state between frames (1..65536 segments; no silent truncation).\n\
+    Accepts retained MJPEG, H.264 and H.265; inter-coded frames run in display order and need\n\
+    ycbcr plus an IDR/IRAP-led range. Requires explicit operator capture-time hints.\n\
+    Aggregate budgets: --stream-read-bytes N --stream-pixel-budget N\n\
+    --stream-assignment-work N --stream-trace-bytes N (all positive; charged for the whole scan).\n\
+    With --sensor-health conservative-v1 any suspect run blocks the whole scan's publication.\n\
+    Refuses --stream-dwell, all dwell options, detector-package flags and --retain-coverage.\n\
+    Each candidate has its own exact approval; events remain unclassified, indeterminate,\n\
+    single-sensor and Hold. Empty results never certify absence; no alert is prepared or sent.\n\
   corroborate (two recordings, two sensors): --camera NAME:sha256:IMPORT (exactly twice)\n\
           --ground NAME:h11,h12,h13,h21,h22,h23,h31,h32,h33 (one per camera; image pixels ->\n\
           ground units; an owner assertion like a zone, NOT a calibration certificate)\n\

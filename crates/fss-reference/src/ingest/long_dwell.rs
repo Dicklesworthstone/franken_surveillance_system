@@ -25,8 +25,10 @@ use super::recorded_decode::h264::{RecordedH264Range, RecordedH264Request};
 use super::recorded_decode::h265::{RecordedH265Range, RecordedH265Request};
 use super::recorded_decode::{RecordedDecodeError, source_capsule, validate_limits};
 use super::recorded_watch::{
-    WatchError, WatchLimits, WatchOptions, WatchPlan, WatchStatus, WatchZone,
+    SourcePublicationGuard, WatchError, WatchLimits, WatchOptions, WatchPlan, WatchStatus,
+    WatchZone,
 };
+use super::retained::SourceReadBudget;
 use super::sensor_health::{
     HealthFrame, policy_bytes as health_policy_bytes, policy_digest as health_policy_digest,
 };
@@ -83,7 +85,7 @@ type Result<T> = std::result::Result<T, WatchError>;
 /// Whole-scan ceilings, not allowances replenished for each frame, chunk or episode.
 #[derive(Clone, Copy, Debug)]
 pub struct LongDwellLimits {
-    /// Existing retained-read and JPEG ceilings; inter-coded formats are not admitted here.
+    /// Existing retained-read and native JPEG/AVC/HEVC decode ceilings.
     pub decode: WatchLimits,
     /// Bytes fetched from source chunks; metadata reads are separately bounded by their owners.
     pub maximum_source_chunk_bytes: u64,
@@ -173,10 +175,9 @@ pub struct LongDwellReport {
     principal: String,
     basis: LedgerAnchor,
     import_root: ContentDigest,
-    manifest_digest: ContentDigest,
     sensor: SensorId,
     privacy: MaskBinding,
-    read_limits: RetainedReadLimits,
+    publication_guard: SourcePublicationGuard,
     analysis: Vec<u8>,
     analysis_manifest: ObjectManifest,
     analysis_slot: SlotName,
@@ -262,7 +263,7 @@ fn add_episode(
 /// Whole-scan state shared by the MJPEG and inter-coded frame sources.
 struct Scan<'a> {
     plan: &'a WatchPlan,
-    rule: DwellPolicy,
+    rule: ScanRule,
     masked: &'a BTreeSet<usize>,
     limits: &'a LongDwellLimits,
     privacy: &'a MaskBinding,
@@ -272,7 +273,7 @@ struct Scan<'a> {
     tracker: MultiObjectTracker,
     background: Option<ForegroundDetector>,
     dimensions: Option<[u32; 2]>,
-    temporal: TemporalState,
+    temporal: TemporalAccumulator,
     previous_capture: Option<CaptureInterval>,
     previous_tracks: u64,
     trace: Vec<u8>,
@@ -435,9 +436,11 @@ impl Scan<'_> {
             self.masked,
             position,
             self.time_reliable.then_some(capsule.capture),
+            segment,
+            capsule_digest,
         )?;
         frame_record.bool(true);
-        frame_record.u64(self.temporal.epoch);
+        frame_record.u64(self.temporal.epoch());
         frame_record.u32(size[0]);
         frame_record.u32(size[1]);
         frame_record.digest(ContentDigest::sha256(&pixels));
@@ -502,7 +505,7 @@ impl Scan<'_> {
             return Err(RecordedDecodeError::InvalidReceipt.into());
         }
         let mut record = CanonicalEncoder::new();
-        record.text(FRAME_DOMAIN);
+        record.text(self.rule.frame_domain());
         record.u64(position as u64);
         record.u64(frame.segment as u64);
         record.digest(frame.capsule_digest);
@@ -541,22 +544,26 @@ impl Scan<'_> {
         let plan = self.plan;
         let decode = self.limits.decode;
         let mut position = plan.first_segment;
+        let source_budget = matches!(self.rule, ScanRule::ZoneEntry)
+            .then(|| SourceReadBudget::new(self.limits.maximum_source_chunk_bytes));
         if options.tolerate_decode_refusals {
-            let mut source = TolerantSource::open(
-                deployment,
-                TolerantRequest {
-                    import_identity: plan.import_identity,
-                    interpretation: plan.interpretation,
-                    first_segment: plan.first_segment,
-                    end,
-                    read_limits: decode.read_limits,
-                    jpeg_limits: decode.jpeg_limits,
-                    h264_limits: decode.h264_limits,
-                    h265_limits: decode.h265_limits,
-                    stream: true,
-                },
-                cx,
-            )?;
+            let request = TolerantRequest {
+                import_identity: plan.import_identity,
+                interpretation: plan.interpretation,
+                first_segment: plan.first_segment,
+                end,
+                read_limits: decode.read_limits,
+                jpeg_limits: decode.jpeg_limits,
+                h264_limits: decode.h264_limits,
+                h265_limits: decode.h265_limits,
+                stream: true,
+            };
+            let mut source = match &source_budget {
+                Some(budget) => {
+                    TolerantSource::open_with_source_budget(deployment, request, budget, cx)
+                }
+                None => TolerantSource::open(deployment, request, cx),
+            }?;
             let mut budget = DecodeBudget::new(decode.jpeg_work_units);
             while let Some(item) = source.next(deployment, &mut budget, cx)? {
                 checkpoint(cx, "long_dwell:frame")?;
@@ -570,7 +577,7 @@ impl Scan<'_> {
                             screen.discontinuity();
                         }
                         let mut record = CanonicalEncoder::new();
-                        record.text(FRAME_DOMAIN);
+                        record.text(self.rule.frame_domain());
                         record.text("break");
                         record.u64(position as u64);
                         let skipped = match &refusal {
@@ -618,18 +625,20 @@ impl Scan<'_> {
             })
         };
         if matches!(format, "annexb" | "mp4avc" | "mkvavc") {
-            let mut range = RecordedH264Range::open_stream(
-                deployment,
-                RecordedH264Request {
-                    import_identity: plan.import_identity,
-                    first_segment: plan.first_segment,
-                    segment_count: plan.segment_count,
-                    interpretation: plan.interpretation,
-                    read_limits: decode.read_limits,
-                    decoder_limits: decode.h264_limits,
-                },
-                cx,
-            )?;
+            let request = RecordedH264Request {
+                import_identity: plan.import_identity,
+                first_segment: plan.first_segment,
+                segment_count: plan.segment_count,
+                interpretation: plan.interpretation,
+                read_limits: decode.read_limits,
+                decoder_limits: decode.h264_limits,
+            };
+            let mut range = match &source_budget {
+                Some(budget) => RecordedH264Range::open_stream_with_source_budget(
+                    deployment, request, budget, cx,
+                ),
+                None => RecordedH264Range::open_stream(deployment, request, cx),
+            }?;
             while let Some(decoded) = range.next_frame(deployment, cx)? {
                 checkpoint(cx, "long_dwell:frame")?;
                 let frame = frame(
@@ -642,20 +651,24 @@ impl Scan<'_> {
                 self.inter_frame(position, frame, first_capsule, screened, cx)?;
                 position = position.checked_add(1).ok_or(WatchError::Limit)?;
             }
-            Ok(range.chunk_bytes_read())
+            Ok(source_budget
+                .as_ref()
+                .map_or(range.chunk_bytes_read(), SourceReadBudget::used))
         } else {
-            let mut range = RecordedH265Range::open_stream(
-                deployment,
-                RecordedH265Request {
-                    import_identity: plan.import_identity,
-                    first_segment: plan.first_segment,
-                    segment_count: plan.segment_count,
-                    interpretation: plan.interpretation,
-                    read_limits: decode.read_limits,
-                    decoder_limits: decode.h265_limits,
-                },
-                cx,
-            )?;
+            let request = RecordedH265Request {
+                import_identity: plan.import_identity,
+                first_segment: plan.first_segment,
+                segment_count: plan.segment_count,
+                interpretation: plan.interpretation,
+                read_limits: decode.read_limits,
+                decoder_limits: decode.h265_limits,
+            };
+            let mut range = match &source_budget {
+                Some(budget) => RecordedH265Range::open_stream_with_source_budget(
+                    deployment, request, budget, cx,
+                ),
+                None => RecordedH265Range::open_stream(deployment, request, cx),
+            }?;
             while let Some(decoded) = range.next_frame(deployment, cx)? {
                 checkpoint(cx, "long_dwell:frame")?;
                 let frame = frame(
@@ -668,7 +681,9 @@ impl Scan<'_> {
                 self.inter_frame(position, frame, first_capsule, screened, cx)?;
                 position = position.checked_add(1).ok_or(WatchError::Limit)?;
             }
-            Ok(range.chunk_bytes_read())
+            Ok(source_budget
+                .as_ref()
+                .map_or(range.chunk_bytes_read(), SourceReadBudget::used))
         }
     }
 }
@@ -677,6 +692,138 @@ struct TemporalState {
     active: BTreeMap<(u64, usize), DwellAccumulator>,
     episodes: Vec<Episode>,
     epoch: u64,
+}
+
+/// Two temporal consumers share the exact same source/perception walk. Entry observation is
+/// not a zero-duration dwell rule: it records the first actual confirmed match per track/zone.
+enum TemporalAccumulator {
+    Dwell(TemporalState),
+    Entry {
+        epoch: u64,
+        seen: BTreeSet<(u64, usize)>,
+        entries: Vec<super::long_watch::LongWatchEntry>,
+    },
+}
+impl TemporalAccumulator {
+    fn new(rule: ScanRule) -> Self {
+        match rule {
+            ScanRule::Dwell(_) => Self::Dwell(TemporalState {
+                active: BTreeMap::new(),
+                episodes: Vec::new(),
+                epoch: 0,
+            }),
+            ScanRule::ZoneEntry => Self::Entry {
+                epoch: 0,
+                seen: BTreeSet::new(),
+                entries: Vec::new(),
+            },
+        }
+    }
+
+    fn epoch(&self) -> u64 {
+        match self {
+            Self::Dwell(state) => state.epoch,
+            Self::Entry { epoch, .. } => *epoch,
+        }
+    }
+
+    fn restart(&mut self) -> Result<()> {
+        match self {
+            Self::Dwell(state) => state.restart(),
+            Self::Entry { epoch, seen, .. } => {
+                *epoch = epoch.checked_add(1).ok_or(WatchError::Limit)?;
+                seen.clear();
+                Ok(())
+            }
+        }
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn observe(
+        &mut self,
+        plan: &WatchPlan,
+        rule: ScanRule,
+        tracks: &[TrackedTarget],
+        masked: &BTreeSet<usize>,
+        position: usize,
+        capture: Option<CaptureInterval>,
+        segment: usize,
+        capsule_digest: ContentDigest,
+    ) -> Result<()> {
+        match (self, rule) {
+            (Self::Dwell(state), ScanRule::Dwell(rule)) => {
+                state.observe(plan, rule, tracks, masked, position, capture)
+            }
+            (
+                Self::Entry {
+                    epoch,
+                    seen,
+                    entries,
+                },
+                ScanRule::ZoneEntry,
+            ) => {
+                // Lost timing never becomes a physical entry time. The report counts each
+                // excluded decoded frame, and its empty candidate set cannot certify absence.
+                let Some(capture) = capture else {
+                    return Ok(());
+                };
+                for target in tracks {
+                    if target.status != TrackStatus::Confirmed || target.misses != 0 {
+                        continue;
+                    }
+                    for (zone, geometry) in plan.zones.iter().enumerate() {
+                        if masked.contains(&zone)
+                            || !inside(target, geometry)
+                            || seen.contains(&(target.id, zone))
+                        {
+                            continue;
+                        }
+                        if entries.len() == super::long_watch::MAX_LONG_WATCH_CANDIDATES {
+                            return Err(WatchError::Limit);
+                        }
+                        seen.insert((target.id, zone));
+                        entries.push(super::long_watch::LongWatchEntry {
+                            epoch: *epoch,
+                            track: target.id,
+                            zone,
+                            position,
+                            segment,
+                            capsule_digest,
+                            capture,
+                            filtered_box: [target.cx, target.cy, target.box_w, target.box_h]
+                                .map(|value| value.round() as i64),
+                        });
+                    }
+                }
+                Ok(())
+            }
+            _ => Err(WatchError::Conflict),
+        }
+    }
+
+    fn finish(&mut self) -> Result<(Vec<Episode>, Vec<super::long_watch::LongWatchEntry>)> {
+        match self {
+            Self::Dwell(state) => {
+                state.finish_active()?;
+                let mut episodes = std::mem::take(&mut state.episodes);
+                episodes.sort_by_key(|e| {
+                    (
+                        e.span.trigger.position,
+                        e.epoch,
+                        e.track,
+                        e.zone,
+                        e.span.first.position,
+                    )
+                });
+                Ok((episodes, Vec::new()))
+            }
+            Self::Entry { entries, .. } => {
+                let mut entries = std::mem::take(entries);
+                entries.sort_by_key(|e| (e.position, e.epoch, e.track, e.zone));
+                Ok((Vec::new(), entries))
+            }
+        }
+    }
 }
 impl TemporalState {
     fn finish_active(&mut self) -> Result<()> {
@@ -782,6 +929,364 @@ fn charge(used: &mut u64, amount: u64, maximum: u64) -> Result<()> {
     Ok(())
 }
 
+/// The temporal consumer changes, but source decode, authority, privacy and cost do not.
+#[derive(Clone, Copy, Debug)]
+pub(super) enum ScanRule {
+    Dwell(DwellPolicy),
+    ZoneEntry,
+}
+impl ScanRule {
+    const fn frame_domain(self) -> &'static str {
+        match self {
+            Self::Dwell(_) => FRAME_DOMAIN,
+            Self::ZoneEntry => "fss.long_watch_frame.v1",
+        }
+    }
+}
+
+fn source_read_error(error: WatchError) -> WatchError {
+    if let WatchError::Decode(decode) = &error
+        && let RecordedDecodeError::Source(source) = decode.as_ref()
+        && matches!(
+            source.as_ref(),
+            super::FileIngestError::SpoolCapacityExceeded {
+                limit: "stream_source_chunk_bytes",
+                ..
+            }
+        )
+    {
+        return WatchError::Limit;
+    }
+    error
+}
+
+/// Private completed native scan. It contains bounded scalar trace/evidence, never pixel history.
+pub(super) struct ScanData {
+    pub(super) import_root: ContentDigest,
+    pub(super) manifest_digest: ContentDigest,
+    pub(super) import_anchor: LedgerAnchor,
+    pub(super) sensor: SensorId,
+    pub(super) privacy: MaskBinding,
+    pub(super) publication_guard: SourcePublicationGuard,
+    pub(super) trace: Vec<u8>,
+    episodes: Vec<Episode>,
+    pub(super) entries: Vec<super::long_watch::LongWatchEntry>,
+    pub(super) decoded: usize,
+    pub(super) unreliable: usize,
+    pub(super) masked_zones: usize,
+    pub(super) restarts: usize,
+    pub(super) refusals: Vec<DecodeRefusal>,
+    pub(super) source_bytes: u64,
+    pub(super) pixel_samples: u64,
+    pub(super) assignment_work: u64,
+    pub(super) jpeg_work: u64,
+    pub(super) health: Option<LongDwellHealthSummary>,
+    pub(super) media_format: String,
+}
+
+#[allow(clippy::too_many_arguments)]
+pub(super) fn run_scan(
+    deployment: &ReferenceDeployment,
+    plan: &WatchPlan,
+    rule: ScanRule,
+    options: WatchOptions,
+    limits: &LongDwellLimits,
+    cx: &ReplayCx,
+    screened: bool,
+) -> Result<ScanData> {
+    checkpoint(cx, "long_dwell:analyze")?;
+    if cx.root_dir() != deployment.root() {
+        return Err(WatchError::Conflict);
+    }
+    if deployment.site_lineage().len() > 256 || cx.io_authority().principal().len() > 128 {
+        return Err(WatchError::InvalidPlan(
+            "site or principal exceeds long-dwell bounds",
+        ));
+    }
+    if !(1..=MAX_LONG_DWELL_FRAMES).contains(&plan.segment_count)
+        || plan.first_segment.checked_add(plan.segment_count).is_none()
+    {
+        return Err(WatchError::InvalidPlan(
+            "long dwell requires 1..65536 segments",
+        ));
+    }
+    // Reuse every existing zone/config check without broadening ordinary watch's range.
+    let mut validation = plan.clone();
+    validation.segment_count = 1;
+    validation.validate()?;
+    if let ScanRule::Dwell(rule) = rule {
+        rule.validate().map_err(dwell_error)?;
+    }
+    limits.validate()?;
+    deployment
+        .ledger()
+        .verify_durable_head()
+        .map_err(ReferenceError::from)?;
+    let retained = RetainedFileImport::open(
+        deployment,
+        plan.import_identity,
+        limits.decode.read_limits,
+        cx,
+    )?;
+    let source = retained.manifest();
+    let inter = match source.format.as_str() {
+        "mjpeg" => false,
+        "annexb" | "hevc" | "mp4avc" | "mp4hevc" | "mkvavc" | "mkvhevc" => true,
+        _ => return Err(RecordedDecodeError::UnsupportedMedia.into()),
+    };
+    if source.capture_time_label != "operator_assumption" {
+        return Err(WatchError::InvalidPlan(
+            "long dwell requires explicit capture-time hints",
+        ));
+    }
+    let end = plan.first_segment + plan.segment_count;
+    if end > source.segment_spans.len() {
+        return Err(RecordedDecodeError::Unavailable.into());
+    }
+    if !options.tolerate_decode_refusals {
+        for span in &source.segment_spans[plan.first_segment + 1..end] {
+            if span.gap_before {
+                return Err(WatchError::SourceGap {
+                    segment: span.segment_index,
+                });
+            }
+        }
+    }
+    let (first_capsule, _) = source_capsule(deployment, &retained, plan.first_segment)?;
+    let sensor = first_capsule.sensor_id.clone();
+    let privacy = current_mask(deployment, &sensor).map_err(RecordedDecodeError::from)?;
+    let mut publication_guard = SourcePublicationGuard::capture(
+        deployment,
+        &retained,
+        &sensor,
+        &privacy,
+        limits.decode.read_limits,
+        cx,
+    );
+    let capsule_prefix = format!("batch:file-import:{}:c", hex(plan.import_identity));
+    let capsule_objects: BTreeSet<String> = source.segment_spans[plan.first_segment..end]
+        .iter()
+        .map(|span| format!("object:capsule:{}", span.capsule_id.as_str()))
+        .collect();
+    let capsule_digests: BTreeSet<ContentDigest> = deployment
+        .ledger()
+        .batches()
+        .iter()
+        .filter(|batch| {
+            batch
+                .batch_id
+                .as_str()
+                .strip_prefix(&capsule_prefix)
+                .is_some_and(|suffix| {
+                    !suffix.is_empty() && suffix.bytes().all(|b| b.is_ascii_digit())
+                })
+        })
+        .flat_map(|batch| batch.deltas.iter())
+        .filter(|delta| {
+            delta.family == "sensor_capsule"
+                && delta.plane == fss_core::Plane::Authority
+                && delta.prior_generation.is_none()
+                && delta.new_generation == 1
+                && capsule_objects.contains(delta.object_id.as_str())
+        })
+        .map(|delta| delta.payload_digest)
+        .collect();
+    if capsule_digests.len() != capsule_objects.len() {
+        return Err(RecordedDecodeError::InvalidReceipt.into());
+    }
+    publication_guard.bind_capsules(capsule_digests);
+    let masked: BTreeSet<usize> = plan
+        .zones
+        .iter()
+        .enumerate()
+        .filter_map(|(i, zone)| {
+            privacy
+                .policy()
+                .filter(|p| {
+                    p.zone_masking([zone.x, zone.y, zone.width, zone.height])
+                        .any()
+                })
+                .map(|_| i)
+        })
+        .collect();
+    let health = if screened {
+        Some(Screening::new(
+            plan.segment_count,
+            limits.maximum_pixel_samples,
+        )?)
+    } else {
+        None
+    };
+    let health_source = super::recorded_watch::masked_plan_digest(plan.digest(), &privacy);
+    // MP4 container structure is accounted, not lost media (never an MJPEG reason).
+    let first_offset = source.segment_spans[plan.first_segment].offset;
+    let time_reliable = !source.omission_spans.iter().any(|span| {
+        !span.is_container_structure()
+            && (matches!(rule, ScanRule::Dwell(_)) || span.offset < first_offset)
+    }) && !source.segment_spans[..=plan.first_segment]
+        .iter()
+        .any(|s| s.gap_before);
+    let mut scan = Scan {
+        plan,
+        rule,
+        masked: &masked,
+        limits,
+        privacy: &privacy,
+        health_source,
+        health,
+        time_reliable,
+        tracker: MultiObjectTracker::new(tracker_config(plan))?,
+        background: None,
+        dimensions: None,
+        temporal: TemporalAccumulator::new(rule),
+        previous_capture: None,
+        previous_tracks: 0,
+        trace: Vec::new(),
+        decoded: 0,
+        unreliable: 0,
+        restarts: 0,
+        refusals: Vec::new(),
+        pixel_samples: 0,
+        assignment_work: 0,
+    };
+    let (source_bytes, jpeg_work) = if inter {
+        let bytes = scan
+            .inter_frames(
+                deployment,
+                &first_capsule,
+                options,
+                end,
+                source.format.as_str(),
+                screened,
+                cx,
+            )
+            .map_err(source_read_error)?;
+        (bytes, 0)
+    } else {
+        let mut cursor = ChunkCursor::new(limits.maximum_source_chunk_bytes);
+        let mut codec_budget = DecodeBudget::new(limits.decode.jpeg_work_units);
+        // `segment` is a source position (capsule lookup, cursor), not only a span index.
+        #[allow(clippy::needless_range_loop)]
+        for segment in plan.first_segment..end {
+            checkpoint(cx, "long_dwell:frame")?;
+            let gap = source.segment_spans[segment].gap_before && segment > plan.first_segment;
+            if gap {
+                if let Some(screen) = &mut scan.health {
+                    screen.discontinuity();
+                }
+                scan.time_reliable = false;
+                scan.restart()?;
+            }
+            let (capsule, capsule_digest) = source_capsule(deployment, &retained, segment)?;
+            if capsule.sensor_id != sensor {
+                return Err(RecordedDecodeError::InvalidReceipt.into());
+            }
+            if screened && capsule.stream_id != first_capsule.stream_id {
+                return Err(RecordedDecodeError::InvalidReceipt.into());
+            }
+            if source.segment_spans[segment].len > limits.decode.jpeg_limits.maximum_bytes as u64 {
+                return Err(WatchError::Limit);
+            }
+            let bytes = cursor.segment(
+                deployment,
+                &retained,
+                segment,
+                limits.decode.read_limits,
+                cx,
+            )?;
+            let mut frame_record = CanonicalEncoder::new();
+            frame_record.text(rule.frame_domain());
+            frame_record.u64(segment as u64);
+            frame_record.digest(capsule_digest);
+            capsule.capture.encode_canonical(&mut frame_record);
+            frame_record.bool(scan.time_reliable);
+            frame_record.bool(gap);
+            let image = match decode_luma(
+                &bytes,
+                capsule.source_digest.bytes(),
+                plan.interpretation,
+                limits.decode.jpeg_limits,
+                &mut codec_budget,
+            )
+            .map_err(RecordedDecodeError::from)
+            {
+                Ok(image) => image,
+                Err(error) if options.tolerate_decode_refusals && tolerable(&error) => {
+                    if let Some(screen) = &mut scan.health {
+                        screen.discontinuity();
+                    }
+                    frame_record.bool(false);
+                    frame_record.text(error.stable_id());
+                    append_trace(
+                        &mut scan.trace,
+                        &frame_record.finish_checked()?,
+                        limits.maximum_trace_bytes,
+                    )?;
+                    scan.refused(segment, segment, error.stable_id())?;
+                    scan.restart()?;
+                    continue;
+                }
+                Err(error) => return Err(error.into()),
+            };
+            scan.frame(
+                segment,
+                segment,
+                &capsule,
+                capsule_digest,
+                gap,
+                image.dimensions(),
+                image.pixels().to_vec(),
+                frame_record,
+                cx,
+            )?;
+        }
+        (cursor.bytes_read(), codec_budget.used())
+    };
+    let Scan {
+        mut temporal,
+        trace,
+        decoded,
+        unreliable,
+        restarts,
+        refusals,
+        pixel_samples,
+        assignment_work,
+        health,
+        ..
+    } = scan;
+    if decoded == 0 {
+        return Err(RecordedDecodeError::Unavailable.into());
+    }
+    let (episodes, entries) = temporal.finish()?;
+    deployment
+        .ledger()
+        .verify_durable_head()
+        .map_err(ReferenceError::from)?;
+    let health = health.map(|screen| screen.finish(plan.segment_count));
+    Ok(ScanData {
+        import_root: retained.import_root(),
+        manifest_digest: retained.manifest_digest(),
+        import_anchor: retained.authority_anchor().clone(),
+        sensor,
+        privacy,
+        publication_guard,
+        trace,
+        episodes,
+        entries,
+        decoded,
+        unreliable,
+        masked_zones: masked.len(),
+        restarts,
+        refusals,
+        source_bytes,
+        pixel_samples,
+        assignment_work,
+        jpeg_work,
+        health,
+        media_format: source.format.clone(),
+    })
+}
+
 impl LongDwellReport {
     /// Decode a whole MJPEG range once, preserving foreground/tracker/dwell state between frames.
     /// No 128-frame windows, model calls, pixel history, implicit retries, or coverage claims.
@@ -819,247 +1324,41 @@ impl LongDwellReport {
         cx: &ReplayCx,
         screened: bool,
     ) -> Result<Self> {
-        checkpoint(cx, "long_dwell:analyze")?;
-        if cx.root_dir() != deployment.root() {
-            return Err(WatchError::Conflict);
-        }
-        if deployment.site_lineage().len() > 256 || cx.io_authority().principal().len() > 128 {
-            return Err(WatchError::InvalidPlan(
-                "site or principal exceeds long-dwell bounds",
-            ));
-        }
-        if !(1..=MAX_LONG_DWELL_FRAMES).contains(&plan.segment_count)
-            || plan.first_segment.checked_add(plan.segment_count).is_none()
-        {
-            return Err(WatchError::InvalidPlan(
-                "long dwell requires 1..65536 segments",
-            ));
-        }
-        // Reuse every existing zone/config check without broadening ordinary watch's range.
-        let mut validation = plan.clone();
-        validation.segment_count = 1;
-        validation.validate()?;
-        rule.validate().map_err(dwell_error)?;
-        limits.validate()?;
-        deployment
-            .ledger()
-            .verify_durable_head()
-            .map_err(ReferenceError::from)?;
-        let retained = RetainedFileImport::open(
-            deployment,
-            plan.import_identity,
-            limits.decode.read_limits,
-            cx,
-        )?;
-        let source = retained.manifest();
-        let inter = match source.format.as_str() {
-            "mjpeg" => false,
-            "annexb" | "hevc" | "mp4avc" | "mp4hevc" | "mkvavc" | "mkvhevc" => true,
-            _ => return Err(RecordedDecodeError::UnsupportedMedia.into()),
-        };
-        let policy: &'static [u8] = if inter { POLICY_INTER } else { POLICY };
-        if source.capture_time_label != "operator_assumption" {
-            return Err(WatchError::InvalidPlan(
-                "long dwell requires explicit capture-time hints",
-            ));
-        }
-        let end = plan.first_segment + plan.segment_count;
-        if end > source.segment_spans.len() {
-            return Err(RecordedDecodeError::Unavailable.into());
-        }
-        if !options.tolerate_decode_refusals {
-            for span in &source.segment_spans[plan.first_segment + 1..end] {
-                if span.gap_before {
-                    return Err(WatchError::SourceGap {
-                        segment: span.segment_index,
-                    });
-                }
-            }
-        }
-        let (first_capsule, _) = source_capsule(deployment, &retained, plan.first_segment)?;
-        let sensor = first_capsule.sensor_id.clone();
-        let privacy = current_mask(deployment, &sensor).map_err(RecordedDecodeError::from)?;
-        let masked: BTreeSet<usize> = plan
-            .zones
-            .iter()
-            .enumerate()
-            .filter_map(|(i, zone)| {
-                privacy
-                    .policy()
-                    .filter(|p| {
-                        p.zone_masking([zone.x, zone.y, zone.width, zone.height])
-                            .any()
-                    })
-                    .map(|_| i)
-            })
-            .collect();
-        let health = if screened {
-            Some(Screening::new(
-                plan.segment_count,
-                limits.maximum_pixel_samples,
-            )?)
-        } else {
-            None
-        };
-        let health_source = super::recorded_watch::masked_plan_digest(plan.digest(), &privacy);
-        // MP4 container structure is accounted, not lost media (never an MJPEG reason).
-        let time_reliable = !source
-            .omission_spans
-            .iter()
-            .any(|span| !span.is_container_structure())
-            && !source.segment_spans[..=plan.first_segment]
-                .iter()
-                .any(|s| s.gap_before);
-        let mut scan = Scan {
-            plan,
-            rule,
-            masked: &masked,
-            limits,
-            privacy: &privacy,
-            health_source,
-            health,
-            time_reliable,
-            tracker: MultiObjectTracker::new(tracker_config(plan))?,
-            background: None,
-            dimensions: None,
-            temporal: TemporalState {
-                active: BTreeMap::new(),
-                episodes: Vec::new(),
-                epoch: 0,
-            },
-            previous_capture: None,
-            previous_tracks: 0,
-            trace: Vec::new(),
-            decoded: 0,
-            unreliable: 0,
-            restarts: 0,
-            refusals: Vec::new(),
-            pixel_samples: 0,
-            assignment_work: 0,
-        };
-        let (source_bytes, jpeg_work) = if inter {
-            let bytes = scan.inter_frames(
-                deployment,
-                &first_capsule,
-                options,
-                end,
-                source.format.as_str(),
-                screened,
-                cx,
-            )?;
-            (bytes, 0)
-        } else {
-            let mut cursor = ChunkCursor::new(limits.maximum_source_chunk_bytes);
-            let mut codec_budget = DecodeBudget::new(limits.decode.jpeg_work_units);
-            // `segment` is a source position (capsule lookup, cursor), not only a span index.
-            #[allow(clippy::needless_range_loop)]
-            for segment in plan.first_segment..end {
-                checkpoint(cx, "long_dwell:frame")?;
-                let gap = source.segment_spans[segment].gap_before && segment > plan.first_segment;
-                if gap {
-                    if let Some(screen) = &mut scan.health {
-                        screen.discontinuity();
-                    }
-                    scan.time_reliable = false;
-                    scan.restart()?;
-                }
-                let (capsule, capsule_digest) = source_capsule(deployment, &retained, segment)?;
-                if capsule.sensor_id != sensor {
-                    return Err(RecordedDecodeError::InvalidReceipt.into());
-                }
-                if screened && capsule.stream_id != first_capsule.stream_id {
-                    return Err(RecordedDecodeError::InvalidReceipt.into());
-                }
-                if source.segment_spans[segment].len
-                    > limits.decode.jpeg_limits.maximum_bytes as u64
-                {
-                    return Err(WatchError::Limit);
-                }
-                let bytes = cursor.segment(
-                    deployment,
-                    &retained,
-                    segment,
-                    limits.decode.read_limits,
-                    cx,
-                )?;
-                let mut frame_record = CanonicalEncoder::new();
-                frame_record.text(FRAME_DOMAIN);
-                frame_record.u64(segment as u64);
-                frame_record.digest(capsule_digest);
-                capsule.capture.encode_canonical(&mut frame_record);
-                frame_record.bool(scan.time_reliable);
-                frame_record.bool(gap);
-                let image = match decode_luma(
-                    &bytes,
-                    capsule.source_digest.bytes(),
-                    plan.interpretation,
-                    limits.decode.jpeg_limits,
-                    &mut codec_budget,
-                )
-                .map_err(RecordedDecodeError::from)
-                {
-                    Ok(image) => image,
-                    Err(error) if options.tolerate_decode_refusals && tolerable(&error) => {
-                        if let Some(screen) = &mut scan.health {
-                            screen.discontinuity();
-                        }
-                        frame_record.bool(false);
-                        frame_record.text(error.stable_id());
-                        append_trace(
-                            &mut scan.trace,
-                            &frame_record.finish_checked()?,
-                            limits.maximum_trace_bytes,
-                        )?;
-                        scan.refused(segment, segment, error.stable_id())?;
-                        scan.restart()?;
-                        continue;
-                    }
-                    Err(error) => return Err(error.into()),
-                };
-                scan.frame(
-                    segment,
-                    segment,
-                    &capsule,
-                    capsule_digest,
-                    gap,
-                    image.dimensions(),
-                    image.pixels().to_vec(),
-                    frame_record,
-                    cx,
-                )?;
-            }
-            (cursor.bytes_read(), codec_budget.used())
-        };
-        let Scan {
-            mut temporal,
+        let ScanData {
+            import_root,
+            manifest_digest,
+            import_anchor,
+            sensor,
+            privacy,
             trace,
+            episodes,
             decoded,
             unreliable,
+            masked_zones,
             restarts,
             refusals,
+            source_bytes,
             pixel_samples,
             assignment_work,
+            jpeg_work,
             health,
+            media_format,
+            publication_guard,
             ..
-        } = scan;
-        if decoded == 0 {
-            return Err(RecordedDecodeError::Unavailable.into());
-        }
-        temporal.finish_active()?;
-        temporal.episodes.sort_by_key(|e| {
-            (
-                e.span.trigger.position,
-                e.epoch,
-                e.track,
-                e.zone,
-                e.span.first.position,
-            )
-        });
-        deployment
-            .ledger()
-            .verify_durable_head()
-            .map_err(ReferenceError::from)?;
-        let health = health.map(|screen| screen.finish(plan.segment_count));
+        } = run_scan(
+            deployment,
+            plan,
+            ScanRule::Dwell(rule),
+            options,
+            limits,
+            cx,
+            screened,
+        )?;
+        let policy: &'static [u8] = if media_format == "mjpeg" {
+            POLICY
+        } else {
+            POLICY_INTER
+        };
         let mut e = CanonicalEncoder::new();
         e.text(ANALYSIS_DOMAIN);
         e.digest(ContentDigest::sha256(policy));
@@ -1085,9 +1384,9 @@ impl LongDwellReport {
         for parameter in parameters {
             e.u64(parameter);
         }
-        e.digest(retained.import_root());
-        e.digest(retained.manifest_digest());
-        retained.authority_anchor().encode_canonical(&mut e);
+        e.digest(import_root);
+        e.digest(manifest_digest);
+        import_anchor.encode_canonical(&mut e);
         e.text(sensor.as_str());
         e.digest(privacy.digest());
         e.u64(rule.minimum_duration_ns);
@@ -1104,7 +1403,7 @@ impl LongDwellReport {
         let analysis = e.finish_checked()?;
         let analysis_digest = ContentDigest::sha256(&analysis);
         let mut children = BTreeSet::from([
-            retained.import_root(),
+            import_root,
             analysis_digest,
             ContentDigest::sha256(policy),
             ContentDigest::sha256(sensor.as_str().as_bytes()),
@@ -1120,7 +1419,7 @@ impl LongDwellReport {
         let analysis_slot = slot("ld-a", analysis_digest)?;
         let principal = cx.io_authority().principal().to_owned();
         let mut candidates = Vec::new();
-        for episode in temporal.episodes {
+        for episode in episodes {
             candidates.push(prepare_candidate(
                 deployment,
                 episode,
@@ -1140,18 +1439,17 @@ impl LongDwellReport {
             site: deployment.site_lineage().to_owned(),
             principal,
             basis: deployment.current_anchor().clone(),
-            import_root: retained.import_root(),
-            manifest_digest: retained.manifest_digest(),
+            import_root,
             sensor,
             privacy,
-            read_limits: limits.decode.read_limits,
+            publication_guard,
             analysis,
             analysis_manifest,
             analysis_slot,
             candidates,
             decoded,
             unreliable,
-            masked_zones: masked.len(),
+            masked_zones,
             restarts,
             refusals,
             source_bytes,
@@ -1215,26 +1513,7 @@ impl LongDwellReport {
                 return Err(WatchError::StaleApproval(*approval));
             }
         }
-        deployment
-            .ledger()
-            .verify_durable_head()
-            .map_err(ReferenceError::from)?;
-        let source =
-            RetainedFileImport::open(deployment, self.plan.import_identity, self.read_limits, cx)?;
-        if source.import_root() != self.import_root
-            || source.manifest_digest() != self.manifest_digest
-        {
-            return Err(WatchError::Conflict);
-        }
-        if current_mask(deployment, &self.sensor)
-            .map_err(RecordedDecodeError::from)?
-            .digest()
-            != self.privacy.digest()
-        {
-            return Err(WatchError::InvalidPlan(
-                "privacy generation changed; recompute long dwell",
-            ));
-        }
+        self.publication_guard.revalidate(deployment, cx)?;
         for candidate in &mut self.candidates {
             if approvals.contains(&candidate.approval) {
                 candidate.status = event_status(deployment, &candidate.event)?;
@@ -1416,11 +1695,14 @@ impl LongDwellReport {
     }
 }
 
-fn slot(prefix: &str, digest: ContentDigest) -> Result<SlotName> {
+pub(super) fn slot(prefix: &str, digest: ContentDigest) -> Result<SlotName> {
     SlotName::parse(&format!("{prefix}-{}", hex(digest)))
         .map_err(|_| WatchError::InvalidPlan("long dwell slot"))
 }
-fn event_status(d: &ReferenceDeployment, event: &EventHypothesis) -> Result<WatchStatus> {
+pub(super) fn event_status(
+    d: &ReferenceDeployment,
+    event: &EventHypothesis,
+) -> Result<WatchStatus> {
     let object = ObjectId::parse(format!("object:event:{}", event.event_id.as_str()))?;
     let Some(current) = d.ledger().current().objects.get(&object) else {
         return Ok(WatchStatus::Prepared);
@@ -1540,7 +1822,7 @@ fn prepare_candidate(
         status,
     })
 }
-fn publish_manifest(
+pub(super) fn publish_manifest(
     d: &mut ReferenceDeployment,
     slot: &SlotName,
     manifest: &ObjectManifest,
@@ -1560,7 +1842,7 @@ fn publish_manifest(
     d.publish_and_commit(slot, manifest, validity, cx)?;
     Ok(())
 }
-fn json(value: &str) -> String {
+pub(super) fn json(value: &str) -> String {
     let mut out = String::from("\"");
     for c in value.chars() {
         match c {

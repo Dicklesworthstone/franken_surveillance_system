@@ -35,6 +35,7 @@ use fss_core::{CanonicalEncode, CanonicalEncoder, ContentDigest, SensorCapsule, 
 use super::video_budget::RecordedVideoDecodeBudget;
 use super::{ComponentInterpretation, RecordedDecodeError, checkpoint, source_capsule};
 use crate::ingest::privacy_mask::{MaskBinding, binding_digest, current_mask, encode_marker};
+use crate::ingest::retained::SourceReadBudget;
 use crate::ingest::{
     MKV_HEVC_PARAMETER_SET_REASON_PREFIX, MP4_HEVC_PARAMETER_SET_REASON_PREFIX, RetainedFileImport,
     RetainedReadLimits, VerifiedChunkCache,
@@ -433,7 +434,7 @@ impl RecordedH265Range {
         request: RecordedH265Request,
         cx: &ReplayCx,
     ) -> Result<Self, RecordedDecodeError> {
-        Self::open_bounded(deployment, request, cx, MAX_H265_RANGE_SEGMENTS, None)
+        Self::open_bounded(deployment, request, cx, MAX_H265_RANGE_SEGMENTS, None, None)
     }
 
     /// [`Self::open`] with cumulative encoded-byte and coded-luma-capacity admission accounting.
@@ -450,6 +451,7 @@ impl RecordedH265Range {
             cx,
             MAX_H265_RANGE_SEGMENTS,
             Some(budget),
+            None,
         )
     }
 
@@ -461,7 +463,31 @@ impl RecordedH265Range {
         request: RecordedH265Request,
         cx: &ReplayCx,
     ) -> Result<Self, RecordedDecodeError> {
-        Self::open_bounded(deployment, request, cx, MAX_H265_STREAM_SEGMENTS, None)
+        Self::open_bounded(
+            deployment,
+            request,
+            cx,
+            MAX_H265_STREAM_SEGMENTS,
+            None,
+            None,
+        )
+    }
+
+    /// Whole-recording source-read admission shared across all recovery ranges.
+    pub(crate) fn open_stream_with_source_budget(
+        deployment: &ReferenceDeployment,
+        request: RecordedH265Request,
+        source_budget: &SourceReadBudget,
+        cx: &ReplayCx,
+    ) -> Result<Self, RecordedDecodeError> {
+        Self::open_bounded(
+            deployment,
+            request,
+            cx,
+            MAX_H265_STREAM_SEGMENTS,
+            None,
+            Some(source_budget),
+        )
     }
 
     fn open_bounded(
@@ -470,6 +496,7 @@ impl RecordedH265Range {
         cx: &ReplayCx,
         maximum_segments: usize,
         mut budget: Option<&mut RecordedVideoDecodeBudget>,
+        source_budget: Option<&SourceReadBudget>,
     ) -> Result<Self, RecordedDecodeError> {
         checkpoint(cx, "recorded_h265:open")?;
         if request.interpretation != ComponentInterpretation::YCbCr {
@@ -506,7 +533,7 @@ impl RecordedH265Range {
                 segment: span.segment_index,
             });
         }
-        let mut chunks = VerifiedChunkCache::default();
+        let mut chunks = VerifiedChunkCache::with_source_budget(source_budget);
         let first_bytes = retained.read_segment_cached(
             deployment,
             first,
@@ -528,7 +555,13 @@ impl RecordedH265Range {
         let mut decoder = Decoder::new(limits)?;
         // Out-of-band configuration precedes the first access unit; it codes no picture.
         for index in parameter_sets {
-            let nal = retained.read_omission_span(deployment, index, request.read_limits, cx)?;
+            let nal = retained.read_omission_span_budgeted(
+                deployment,
+                index,
+                request.read_limits,
+                cx,
+                source_budget,
+            )?;
             if let Some(budget) = budget.as_deref_mut() {
                 budget.reserve(nal.len(), 0, cx)?;
             }
