@@ -13,6 +13,7 @@ use fss_publication::{
     LocalPublicationLimits, LocalRootPublisher, PublishCancellation, PublishCutPoint,
 };
 use fss_reference::ReplayCx;
+use fss_reference::http_reconnect_history::{DurableReconnectStep, HistoryError};
 use fss_reference::ingest::http_archive::HttpWirePin;
 use fss_reference::ingest::http_archive::recovery::HttpWireRecoveryKey;
 use fss_reference::ingest::http_camera::{
@@ -20,13 +21,16 @@ use fss_reference::ingest::http_camera::{
 };
 use fss_reference::ingest::http_reconnect::{HttpReconnectOutcome, HttpReconnectStop};
 use fss_reference::ingest::http_reconnect_recording::{
-    HttpReconnectBoundary, HttpReconnectRecording, HttpReconnectRecordingError,
-    HttpReconnectRecordingStep,
+    HttpReconnectBoundary, HttpReconnectRecordingError, HttpReconnectRecordingStep,
 };
 use fss_reference::ingest::http_recording::HttpRecordingAccess;
 
 use super::plan::{FORMAT, Options, RESERVE, reservation_json};
 use super::{decode, privacy};
+
+#[path = "recording.rs"]
+mod recording;
+use recording::{Boundary, Recording, history_pin_json};
 
 const STORAGE_CAPS: [&str; 4] = [
     "CAP-READ-MEDIA-001",
@@ -225,6 +229,7 @@ impl PublishCancellation for Owner<'_> {
 #[derive(Debug)]
 enum Failure {
     Source(HttpReconnectRecordingError),
+    History(HistoryError),
     Authority(HttpCameraDenial),
     Output,
     FrameLimit,
@@ -237,6 +242,11 @@ impl From<HttpReconnectRecordingError> for Failure {
         Self::Source(e)
     }
 }
+impl From<HistoryError> for Failure {
+    fn from(e: HistoryError) -> Self {
+        Self::History(e)
+    }
+}
 impl From<HttpCameraDenial> for Failure {
     fn from(e: HttpCameraDenial) -> Self {
         Self::Authority(e)
@@ -245,7 +255,7 @@ impl From<HttpCameraDenial> for Failure {
 impl Failure {
     fn code(&self) -> &'static str {
         match self {
-            Self::Source(_) => "ERR-CAPTURE-RECONNECT-SOURCE-001",
+            Self::Source(_) | Self::History(_) => "ERR-CAPTURE-RECONNECT-SOURCE-001",
             Self::Authority(_) => "ERR-CAPTURE-RECONNECT-AUTHORITY-001",
             Self::Output => "ERR-CAPTURE-RECONNECT-OUTPUT-001",
             Self::FrameLimit | Self::Stopped(_) => "ERR-CAPTURE-RECONNECT-LIMIT-001",
@@ -256,6 +266,7 @@ impl Failure {
     fn reason(&self) -> String {
         match self {
             Self::Source(e) => e.to_string(),
+            Self::History(e) => e.to_string(),
             Self::Authority(e) => format!("owner authority refused: {e:?}"),
             Self::Output => "bounded transcript sink refused; preserve prior complete pins".into(),
             Self::FrameLimit => "per-generation frame allowance exhausted; not EOF".into(),
@@ -281,7 +292,7 @@ struct Statistics {
     per_generation: BTreeMap<u64, u64>,
     // At most the explicitly reserved generation count, never a frame-sized history.
     prefixes: BTreeMap<u64, HttpWirePin>,
-    boundaries: Vec<(HttpReconnectBoundary, bool)>,
+    boundaries: Vec<(Boundary, bool)>,
 }
 
 fn sha_bytes(bytes: [u8; 32]) -> String {
@@ -343,13 +354,12 @@ fn boundary_json(boundary: HttpReconnectBoundary, released: bool) -> String {
         ("durable_completion_root", "null".into()),
     ])
 }
-fn stopped(last: Option<HttpReconnectBoundary>) -> Result<End, Failure> {
+fn stopped(last: Option<&Boundary>) -> Result<End, Failure> {
     let boundary = last.ok_or(Failure::Inconsistent)?;
-    match (boundary.source.outcome, boundary.source.stop) {
-        (
-            HttpReconnectOutcome::Complete,
-            Some(HttpReconnectStop::Complete | HttpReconnectStop::ConnectionsExhausted),
-        ) => Ok(End::FinalResponseComplete),
+    match (boundary.complete(), boundary.stop()) {
+        (true, Some(HttpReconnectStop::Complete | HttpReconnectStop::ConnectionsExhausted)) => {
+            Ok(End::FinalResponseComplete)
+        }
         (_, Some(reason)) => Err(Failure::Stopped(reason)),
         _ => Err(Failure::Inconsistent),
     }
@@ -358,7 +368,7 @@ fn stopped(last: Option<HttpReconnectBoundary>) -> Result<End, Failure> {
 #[allow(clippy::too_many_arguments)]
 fn drive<W: Write>(
     options: &Options,
-    recording: &mut HttpReconnectRecording,
+    recording: &mut dyn Recording,
     publisher: &mut LocalRootPublisher,
     owner: &Owner<'_>,
     log: &mut Transcript<'_, W>,
@@ -367,7 +377,57 @@ fn drive<W: Write>(
     privacy: Option<&privacy::Context>,
 ) -> Result<End, Failure> {
     loop {
-        match recording.poll(publisher, owner.access()?)? {
+        let step = match recording.poll_step(publisher, owner.access()?)? {
+            DurableReconnectStep::Source(step) => step,
+            DurableReconnectStep::BoundaryPrepared(pin) => {
+                let pending = recording
+                    .history()
+                    .and_then(|h| h.pending_boundary())
+                    .filter(|p| p.pin() == pin && !p.published())
+                    .ok_or(Failure::Inconsistent)?;
+                let observation = pending.observation().clone();
+                let generation = observation.scope().stream.generation;
+                if stats.boundaries.len() >= options.generations.len()
+                    || options.generations.get(stats.boundaries.len()).copied() != Some(generation)
+                    || observation.connection() as usize != stats.boundaries.len() + 1
+                {
+                    return Err(Failure::Inconsistent);
+                }
+                stats.prefixes.insert(generation, observation.prefix());
+                let boundary = Boundary::History(observation, pin);
+                let detail = object(&[
+                    ("history_pin", history_pin_json(pin)),
+                    ("boundary", boundary.json(false)),
+                    ("publication", string("not_yet_confirmed")),
+                ]);
+                stats.boundaries.push((boundary, false));
+                // The exact expected history root leaves before any history mutation.
+                log.emit("history_prepared", detail, false)?;
+                recording.commit_history(pin, publisher, owner.access()?)?;
+                continue;
+            }
+            DurableReconnectStep::BoundaryDurable(pin) => {
+                let (boundary, released) = stats.boundaries.last().ok_or(Failure::Inconsistent)?;
+                if *released || boundary.history_pin() != Some(pin) {
+                    return Err(Failure::Inconsistent);
+                }
+                log.emit(
+                    "history_durable",
+                    object(&[
+                        ("history_pin", history_pin_json(pin)),
+                        ("boundary", boundary.json(false)),
+                        ("publication", string("durable")),
+                        ("capture_continuity", "false".into()),
+                    ]),
+                    false,
+                )?;
+                // Output delays or damage never bypass the owner's second full verification.
+                recording.release_history(pin, publisher, owner.access()?)?;
+                stats.boundaries.last_mut().ok_or(Failure::Inconsistent)?.1 = true;
+                continue;
+            }
+        };
+        match step {
             HttpReconnectRecordingStep::Connected(basis) => {
                 if !options.generations.contains(&basis.generation)
                     || basis.source != options.source.bytes()
@@ -399,8 +459,8 @@ fn drive<W: Write>(
                     // Preserve the complete descriptor BEFORE storage. It grants no authority
                     // and can recover only bytes/metadata already staged by this exact attempt.
                     let key = HttpWireRecoveryKey::new(
-                        recording.scope(),
-                        recording.pin(),
+                        recording.native().scope(),
+                        recording.native().pin(),
                         wire,
                         plan.expected_pin(),
                     )
@@ -412,15 +472,15 @@ fn drive<W: Write>(
                 }
                 log.emit("wire_prepared", object(&fields), false)?;
                 // Sink delay never extends authority or acknowledges an uncommitted source read.
-                let committed = recording.commit_wire(plan, publisher, owner.access()?)?;
+                let committed = recording.commit_wire_step(plan, publisher, owner.access()?)?;
                 stats
                     .prefixes
-                    .insert(wire.basis.generation, recording.pin());
+                    .insert(wire.basis.generation, recording.native().pin());
                 log.emit(
                     "wire_durable",
                     object(&[
                         ("generation", string(&wire.basis.generation.to_string())),
-                        ("pin", pin_json(recording.pin())),
+                        ("pin", pin_json(recording.native().pin())),
                         (
                             "parser_acknowledged",
                             committed
@@ -443,7 +503,7 @@ fn drive<W: Write>(
                 if !options.generations.contains(&generation) {
                     return Err(Failure::Inconsistent);
                 }
-                let frame = recording.take_frame(key, publisher, owner.access()?)?;
+                let frame = recording.take_frame_step(key, publisher, owner.access()?)?;
                 stats.frames += 1;
                 *stats.per_generation.entry(generation).or_default() += 1;
                 let decoded = match (decoder.as_deref_mut(), privacy) {
@@ -497,16 +557,15 @@ fn drive<W: Write>(
                 stats
                     .prefixes
                     .insert(boundary.source.source.generation, boundary.prefix);
-                stats.boundaries.push((boundary, false));
+                stats.boundaries.push((Boundary::Native(boundary), false));
                 log.emit("boundary_verified", boundary_json(boundary, false), false)?;
                 // A failed/blocked output or a vanished source prevents release AND next connect.
-                let handoff = recording.release_boundary(boundary, publisher, owner.access()?)?;
+                recording.release_source_boundary(boundary, publisher, owner.access()?)?;
                 let last = stats.boundaries.last_mut().ok_or(Failure::Inconsistent)?;
                 last.1 = true;
-                drop(handoff); // All original reads are in the verified prefix; no capture claim.
             }
             HttpReconnectRecordingStep::Stopped => {
-                return stopped(stats.boundaries.last().map(|b| b.0));
+                return stopped(stats.boundaries.last().map(|b| &b.0));
             }
         }
     }
@@ -514,11 +573,13 @@ fn drive<W: Write>(
 
 fn finish(
     options: &Options,
-    recording: &HttpReconnectRecording,
+    recording: &dyn Recording,
     stats: &mut Statistics,
     result: &Result<End, Failure>,
     decoder: Option<&decode::Decoder>,
 ) -> String {
+    let history = recording.history();
+    let recording = recording.native();
     let totals = recording.totals();
     stats
         .prefixes
@@ -545,7 +606,7 @@ fn finish(
     let boundaries: Vec<_> = stats
         .boundaries
         .iter()
-        .map(|(b, released)| boundary_json(*b, *released))
+        .map(|(b, released)| b.json(*released))
         .collect();
     let durable_bytes: u64 = stats.prefixes.values().map(|p| p.bytes).sum();
     let mut fields = vec![
@@ -622,6 +683,39 @@ fn finish(
         ("event_published", "false".into()),
         ("qualification", string("implemented_not_qualified")),
     ];
+    if let Some(history) = history {
+        fields.push((
+            "durable_history",
+            object(&[
+                ("session", string(&options.approval().to_text())),
+                (
+                    "last_durable",
+                    history
+                        .history_pin()
+                        .map_or_else(|| "null".into(), history_pin_json),
+                ),
+                (
+                    "pending_boundary",
+                    history.pending_boundary().map_or_else(
+                        || "null".into(),
+                        |pending| {
+                            object(&[
+                                ("history_pin", history_pin_json(pending.pin())),
+                                ("publication_acknowledged", pending.published().to_string()),
+                            ])
+                        },
+                    ),
+                ),
+                ("work_used", history.history_work_used().to_string()),
+                (
+                    "work_remaining",
+                    history.history_work_remaining().to_string(),
+                ),
+                ("current_prefix_separate", "true".into()),
+                ("resume_network", "false".into()),
+            ]),
+        ));
+    }
     if let Some(decoder) = decoder {
         fields.push((
             "native_decode",
@@ -653,6 +747,23 @@ fn finish(
 
 pub(super) fn capture<W: Write>(options: &Options, out: &mut W) -> Result<bool, &'static str> {
     capture_with(options, out, WallClock::start)
+}
+
+fn storage_limits(options: &Options) -> LocalPublicationLimits {
+    LocalPublicationLimits::new(
+        8192 + options
+            .history_work
+            .map_or(0, |_| options.generations.len()),
+        MAX_MANIFEST_CHILDREN,
+        8192,
+        65536,
+        SpoolLimits::new(
+            65536,
+            1024 * 1024 * 1024,
+            options.archive.maximum_spool_object_bytes,
+            131072,
+        ),
+    )
 }
 
 /// [`capture`] with an explicit owner clock, started exactly where the lease begins.
@@ -700,8 +811,8 @@ fn capture_with<W: Write, C: CaptureClock>(
         .iter()
         .map(|slot| slot.source.route.clone())
         .collect();
-    let mut recording =
-        HttpReconnectRecording::new(plan, 0).map_err(|_| "ERR-CAPTURE-RECONNECT-CONFIG-001")?;
+    let mut recording = recording::owner(plan, options.approval(), options.history_work)
+        .map_err(|_| "ERR-CAPTURE-RECONNECT-CONFIG-001")?;
     // Resolve a real current policy store BEFORE any archive open or TCP attempt. No empty
     // replacement policy store is created. The existing privacy adapter owns its own Cx.
     let privacy = options
@@ -729,7 +840,10 @@ fn capture_with<W: Write, C: CaptureClock>(
         "admitted",
         object(&[
             ("plan", options.preview()),
-            ("reservation", reservation_json(recording.reservation())),
+            (
+                "reservation",
+                reservation_json(recording.native().reservation()),
+            ),
         ]),
         false,
     )
@@ -756,24 +870,12 @@ fn capture_with<W: Write, C: CaptureClock>(
         owner
             .live("capture_reconnect:open")
             .map_err(|_| "ERR-CAPTURE-RECONNECT-AUTHORITY-001")?;
-        let storage = LocalPublicationLimits::new(
-            8192,
-            MAX_MANIFEST_CHILDREN,
-            8192,
-            65536,
-            SpoolLimits::new(
-                65536,
-                1024 * 1024 * 1024,
-                options.archive.maximum_spool_object_bytes,
-                131072,
-            ),
-        );
-        let mut publisher = LocalRootPublisher::open(&options.root, storage)
+        let mut publisher = LocalRootPublisher::open(&options.root, storage_limits(options))
             .map_err(|_| "ERR-CAPTURE-RECONNECT-STORAGE-001")?;
         let mut stats = Statistics::default();
         let outcome = drive(
             options,
-            &mut recording,
+            recording.as_mut(),
             &mut publisher,
             &owner,
             &mut log,
@@ -781,15 +883,20 @@ fn capture_with<W: Write, C: CaptureClock>(
             decoder.as_mut(),
             privacy.as_ref(),
         );
-        let report = finish(options, &recording, &mut stats, &outcome, decoder.as_ref());
+        let report = finish(
+            options,
+            recording.as_ref(),
+            &mut stats,
+            &outcome,
+            decoder.as_ref(),
+        );
         let success = outcome.is_ok();
         // Retire closes the socket without a request. Only published prefix pins survive process
         // exit; report pending accepted bytes honestly instead of attempting unapproved rescue I/O.
-        let retirement = recording.retire();
+        recording.retire_owner();
         let emitted = log
             .emit("finish", report, true)
             .map_err(|_| "ERR-CAPTURE-RECONNECT-OUTPUT-001");
-        drop(retirement);
         emitted?;
         Ok(success)
     })();

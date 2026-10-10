@@ -25,6 +25,9 @@ const INJECTED_STALL: Duration = Duration::from_secs(6);
 // Test-clock nanoseconds per owner clock read.
 const TICK: u64 = 1_000;
 
+#[path = "driver_history_tests.rs"]
+mod history;
+
 struct Directory(PathBuf);
 impl Directory {
     fn new(name: &str) -> Result<Self, io::Error> {

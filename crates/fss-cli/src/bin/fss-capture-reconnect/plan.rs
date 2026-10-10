@@ -8,6 +8,7 @@ use std::path::{Component, PathBuf};
 
 use fss_cli::agent_json::{array, object, string};
 use fss_core::{CanonicalEncoder, ContentDigest, DigestAlgorithm, PrincipalId};
+use fss_reference::http_reconnect_history::DurableReconnectRecording;
 use fss_reference::ingest::http_archive::HttpArchiveLimits;
 use fss_reference::ingest::http_camera::HttpCameraLimits;
 use fss_reference::ingest::http_reconnect::{
@@ -51,6 +52,10 @@ pub(super) const HELP: &str = "fss-capture-reconnect --root ABSOLUTE_ARCHIVE_DIR
   --max-pixels 4194304 bound each frame. Current privacy masks apply before pixel digests.\n\
   --recoverable yes emits a lossless recovery key before each original-read publication.\n\
   Save it independently; fss-recover-http can reconcile already-staged bytes, not resume capture.\n\
+  --durable-history yes also publishes every ended connection as a source-closed history root.\n\
+  --max-history-work 1000000000000 is a separate WHOLE-RUN allowance (requires durable history).\n\
+  Save history_prepared pins before writes; history_durable precedes a reverified reconnect.\n\
+  Cold history processing uses the exact saved pin. An unfinished current prefix stays separate.\n\
   No pixels, raw headers, capture timestamps, detection, events, alerts or absence claims.\n\
   Original source is private local UNENCRYPTED custody. This is not crash-resume or a daemon.\n";
 
@@ -77,6 +82,7 @@ pub(super) struct Options {
     pub approve: Option<ContentDigest>,
     pub decode: Option<decode::Options>,
     pub recoverable: bool,
+    pub history_work: Option<u64>,
 }
 
 fn digest(text: &str) -> Result<ContentDigest, &'static str> {
@@ -132,6 +138,8 @@ impl Options {
             "--maximum-backoff-ms",
             "--after-complete",
             "--recoverable",
+            "--durable-history",
+            "--max-history-work",
             "--decode",
             "--privacy-root",
             "--site",
@@ -234,6 +242,17 @@ impl Options {
             "no" => false,
             _ => return Err("--recoverable requires yes or no"),
         };
+        let history_work = match values.get("--durable-history").copied().unwrap_or("no") {
+            "yes" => Some(number(
+                "--max-history-work",
+                1_000_000_000_000,
+                1,
+                1_000_000_000_000_000,
+            )?),
+            "no" if !values.contains_key("--max-history-work") => None,
+            "no" => return Err("--max-history-work requires --durable-history yes"),
+            _ => return Err("--durable-history requires yes or no"),
+        };
         let decode = decode::Options::parse(&values, &root, native.multipart.frame_bytes)?;
         let options = Self {
             root,
@@ -244,6 +263,7 @@ impl Options {
             per_slot_frames,
             decode,
             recoverable,
+            history_work,
             peer: required("--peer")?
                 .parse()
                 .map_err(|_| "literal IP:PORT required")?,
@@ -288,6 +308,10 @@ impl Options {
         };
         // The actual native plan validator, not a second permissive CLI interpretation.
         options.recording()?;
+        if let Some(work) = options.history_work {
+            DurableReconnectRecording::new(options.plan()?, options.approval(), work, 0)
+                .map_err(|_| "native durable reconnect plan refused")?;
+        }
         Ok(options)
     }
 
@@ -402,16 +426,26 @@ impl Options {
         if let Some(decode) = &self.decode {
             decode.encode(&mut e);
         }
-        let base = ContentDigest::sha256(&e.finish());
-        if !self.recoverable {
-            return base;
-        }
+        let mut base = ContentDigest::sha256(&e.finish());
         // Existing raw/v2 decode approvals are byte-identical unless explicitly opted in.
-        let mut e = CanonicalEncoder::new();
-        e.text("fss.http_recoverable_capture_plan.v1");
-        e.digest(base);
-        e.text("fss.http_wire_recovery_key.v1:preserve-before-publication:no-network-resume");
-        ContentDigest::sha256(&e.finish())
+        if self.recoverable {
+            let mut e = CanonicalEncoder::new();
+            e.text("fss.http_recoverable_capture_plan.v1");
+            e.digest(base);
+            e.text("fss.http_wire_recovery_key.v1:preserve-before-publication:no-network-resume");
+            base = ContentDigest::sha256(&e.finish());
+        }
+        if let Some(work) = self.history_work {
+            let mut e = CanonicalEncoder::new();
+            e.text("fss.http_durable_reconnect_capture_plan.v1");
+            e.digest(base);
+            e.u64(work);
+            e.text(
+                "source-closed-boundaries:root-before-release:exact-cold-pin:no-network-resume:v1",
+            );
+            base = ContentDigest::sha256(&e.finish());
+        }
+        base
     }
     pub fn preview(&self) -> String {
         let generations: Vec<_> = self
@@ -474,6 +508,18 @@ impl Options {
             fields.push((
                 "wire_recovery",
                 string("save_key_before_publication_no_capture_resume"),
+            ));
+        }
+        if let Some(work) = self.history_work {
+            fields.push((
+                "durable_history",
+                object(&[
+                    ("session", string(&self.approval().to_text())),
+                    ("maximum_work", work.to_string()),
+                    ("boundary_family", string("http_reconnect_boundary_v1")),
+                    ("release", string("durable_root_and_source_reverified")),
+                    ("resume_network", "false".into()),
+                ]),
             ));
         }
         object(&fields)

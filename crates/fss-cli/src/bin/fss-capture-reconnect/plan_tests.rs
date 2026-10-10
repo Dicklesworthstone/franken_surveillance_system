@@ -275,3 +275,45 @@ fn optional_decode_binds_mode_policy_context_codec_and_limits_without_changing_r
     assert!(Options::parse(&nested).is_err());
     Ok(())
 }
+
+#[test]
+fn durable_history_is_opt_in_and_binds_one_separate_whole_run_budget() -> TestResult {
+    let args = arguments();
+    let raw = Options::parse(&args)?;
+    let mut off = args.clone();
+    off.extend(["--durable-history".into(), "no".into()]);
+    assert_eq!(Options::parse(&off)?.approval(), raw.approval());
+    assert_eq!(Options::parse(&off)?.preview(), raw.preview());
+    let mut on = args.clone();
+    on.extend(["--durable-history".into(), "yes".into()]);
+    let enabled = Options::parse(&on)?;
+    assert_eq!(enabled.history_work, Some(1_000_000_000_000));
+    assert_ne!(enabled.approval(), raw.approval());
+    assert!(enabled.preview().contains("\"durable_history\":{"));
+    assert!(enabled.preview().contains("\"network\":\"none\""));
+    assert!(enabled.preview().contains("\"resume_network\":false"));
+    on.extend(["--max-history-work".into(), "900000000000".into()]);
+    assert_ne!(Options::parse(&on)?.approval(), enabled.approval());
+    let mut recoverable = on.clone();
+    recoverable.extend(["--recoverable".into(), "yes".into()]);
+    assert_ne!(
+        Options::parse(&recoverable)?.approval(),
+        Options::parse(&on)?.approval()
+    );
+    for extra in [
+        vec!["--max-history-work", "1"],
+        vec!["--durable-history", "maybe"],
+        vec!["--durable-history", "yes", "--max-history-work", "0"],
+        vec![
+            "--durable-history",
+            "yes",
+            "--max-history-work",
+            "1000000000000001",
+        ],
+    ] {
+        let mut invalid = args.clone();
+        invalid.extend(extra.into_iter().map(OsString::from));
+        assert!(Options::parse(&invalid).is_err());
+    }
+    Ok(())
+}

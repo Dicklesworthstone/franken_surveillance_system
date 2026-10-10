@@ -91,6 +91,14 @@ one-time vendor-app provisioning (NEG-006) with the yi-hack owner-flash path doc
   (`ingest::file_adapter`, `fss-file import`); RTSP negotiation, Digest authentication and interleaved-TCP capture
   (`rtsp::*`, `std::net::TcpStream`); native HTTP MJPEG capture (`ingest::http_camera`); local
   capture archives with checkpoints, recovery, pins and verify/export (`fss-archive`).
+- **Durable HTTP reconnect capture:** `fss-capture-reconnect --durable-history yes` now
+  drives the existing durable history owner. Each ended generation emits its exact prepared
+  history pin before publication, then retains the source-closed boundary root before allowing
+  another connection. Reconnect release rechecks original custody after output delays. A
+  separate whole-run history allowance is bound into the opt-in approval; incomplete current
+  prefixes stay separate from completed history. The selected history can be verified after
+  restart; acquisition still uses an explicit finite generation plan. See
+  [durable reconnect history](docs/HTTP_RECONNECT_HISTORY.md).
 - **Media:** RTP H.264/H.265 depacketization (`fss-packet`); baseline JPEG/MJPEG decode, gray and
   YCbCr 4:4:4/4:2:2/4:2:0 (`fss-codec-mjpeg`, `fss-file decode`); fragmented-MP4 remux for AVC/HEVC
   (`fss-container`); H.264 pixel decode for Baseline, Main and High profile (CABAC and CAVLC,

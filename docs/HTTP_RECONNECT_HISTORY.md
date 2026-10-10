@@ -74,6 +74,69 @@ retention/deletion policy. Retire transfers all unfinished source and the exact 
 boundary identity without extra I/O. Reconcile an ambiguous pin against storage; do not
 reacquire the same generation or silently discard an orphaned publication.
 
+## Operator capture workflow
+
+`fss-capture-reconnect` can now select this durable owner with
+`--durable-history yes`. Its normal bounded generation list, route, retry policy,
+deadline, original-read custody, and optional privacy-masked decoding still apply.
+The following example uses independently assigned SHA-256 identity variables:
+
+```sh
+fss-capture-reconnect \
+  --root /srv/fss/front-camera-originals \
+  --peer 192.0.2.44:80 --host camera.invalid --target /stream \
+  --source "$SOURCE_SHA256" --generations 40,41,42 \
+  --receive-clock "$RECEIVE_CLOCK_SHA256" \
+  --retention-evidence "$RETENTION_SHA256" \
+  --owner-authorized yes --plaintext yes --retain-originals yes \
+  --after-complete yes --durable-history yes \
+  --max-history-work 1000000000000 --recoverable yes
+```
+
+The first invocation is a pure preview: it reads no files, clock, or network.
+Review the exact route, generation reservations, original-retention scope, and work
+ceilings, then repeat with `--approve` set to its `approval_digest`. Preserve the
+JSONL output independently while the approved run is active.
+
+The new mode wraps the existing approval in
+`fss.http_durable_reconnect_capture_plan.v1`. Its history-work allowance is separate
+from native source/framing work and applies to the **whole run**, including failed
+operations and every predecessor verification. The default is 1,000,000,000,000
+units and the maximum is 1,000,000,000,000,000. Passing `--max-history-work` without
+`--durable-history yes` is refused. Existing approvals and output remain unchanged
+when durable history is disabled.
+
+For each connection that reaches a native terminal boundary:
+
+1. `history_prepared` reports the exact `(session, root, connections)` expected pin
+   before the history publication begins. Its publication remains unconfirmed.
+2. The existing history owner verifies the predecessor and original prefixes,
+   stages canonical boundary metadata, and publishes its root last.
+3. `history_durable` reports the acknowledged durable pin. The connection is still
+   held while that output is accepted.
+4. The owner re-verifies the selected history and original source before releasing
+   the next generation. Output refusal, expired authority, missing source, or a
+   depleted work allowance prevents reconnect.
+
+The `finish` record adds `durable_history.last_durable`, an exact
+`pending_boundary` with its publication-acknowledgement state, and consumed/remaining
+history work. A requested frame-count stop or other interruption may leave the
+current wire prefix outside ended-connection history. It stays in `prefixes` and
+`pending_wire`; the CLI does not fabricate a terminal boundary to include it.
+
+After restart, `VerifiedReconnectHistory::load` can verify an independently saved
+pin, including a prepared pin whose publication acknowledgement was lost. A cold
+verification never resumes a socket or invents a newer generation. Starting the
+same occupied session refuses before TCP. Further acquisition needs a new explicit
+plan with fresh source generations. A frame/byte/work limit ends the current run;
+it does not silently roll over into another reservation.
+
+Capture still publishes no event or alert. Source prefixes can be copied into a
+separate retained deployment using `fss-import-http` with its independent original
+access/retention approval, sensor binding, and explicit capture-time assumptions.
+The durable history pin is a selected acquisition prefix, not continuous physical
+coverage or a socket-EOF replay grant.
+
 ## Validation
 
 Native tests cover real loopback truncation followed by a fresh generation, durable
@@ -84,9 +147,12 @@ and integer extremes. Run:
 
 ```sh
 cargo test -p fss-reference http_reconnect_history --locked --offline
+cargo test -p fss-cli --bin fss-capture-reconnect --locked --offline
 ```
 
-Rust compilation, native tests, rustfmt, Clippy and full qualification were not executed
-in the implementation environment: it has no Rust toolchain. Source/hashing checks are
-not substitutes for those lanes. This reference implementation does not close any bead
-or establish device, detection, timing, availability or production qualification.
+The capture CLI's native cases cover exact approval, complete and truncated
+connections, cold reopening, occupied-session refusal, output failure before and
+after history publication, original-byte damage during the output/release boundary,
+history-budget exhaustion before TCP, and separation of a requested frame stop from
+ended-connection history. These cases establish the tested reference behavior; they
+do not establish device, detection, timing, availability, or production qualification.
