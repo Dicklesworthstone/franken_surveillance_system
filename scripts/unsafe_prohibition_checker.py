@@ -80,6 +80,7 @@ EXCLUDED_DIR_NAMES = frozenset({
     ".beads",
     ".claude",
     ".ntm",
+    ".ruff_cache",
 })
 
 FORBID_UNSAFE_RE = re.compile(r"#\s*!\s*\[\s*forbid\s*\(\s*unsafe_code\s*\)\s*\]")

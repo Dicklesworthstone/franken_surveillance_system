@@ -812,7 +812,7 @@ def validate_cargo_metadata_for_f0(
 
 # Only the workspace's own build output and tool state are skipped; a directory named "target" anywhere
 # else (for example a crate root under src/target/) is scanned.
-UNSCANNED_TOP_LEVEL_DIRS = frozenset({".git", ".claude", ".beads", ".ntm", ".ee", "target"})
+UNSCANNED_TOP_LEVEL_DIRS = frozenset({".git", ".claude", ".beads", ".ntm", ".ee", ".ruff_cache", "target"})
 RUSTFLAG_KEYS = frozenset({"rustflags", "rustdocflags", "RUSTFLAGS", "RUSTDOCFLAGS", "CARGO_ENCODED_RUSTFLAGS",
                            "CARGO_ENCODED_RUSTDOCFLAGS", "CARGO_BUILD_RUSTFLAGS", "CARGO_BUILD_RUSTDOCFLAGS"})
 ENV_RUSTFLAGS_RE = re.compile(r"\b(?:CARGO_ENCODED_RUSTFLAGS|CARGO_ENCODED_RUSTDOCFLAGS|CARGO_BUILD_RUSTFLAGS|CARGO_BUILD_RUSTDOCFLAGS|RUSTFLAGS|RUSTDOCFLAGS)\b.*?(?<![\w-])-Z")

@@ -34,6 +34,7 @@ EXCLUDED_TOP_LEVEL = {
     ".beads",
     ".claude",
     ".ntm",
+    ".ruff_cache",
     "target",
     "dist",
     "secrets",

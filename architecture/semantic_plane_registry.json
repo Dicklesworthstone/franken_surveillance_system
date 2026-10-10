@@ -373,6 +373,8 @@
   "crates/fss-reference/src/ingest/long_event_replay/tests.rs": "support",
   "crates/fss-reference/src/ingest/long_event_replay/watch.rs": "support",
   "crates/fss-reference/src/ingest/long_watch.rs": "support",
+  "crates/fss-reference/src/ingest/long_watch/detector.rs": "cognition",
+  "crates/fss-reference/src/ingest/long_watch/detector/recipe.rs": "cognition",
   "crates/fss-reference/src/ingest/mjpeg.rs": "support",
   "crates/fss-reference/src/ingest/mod.rs": "support",
   "crates/fss-reference/src/ingest/model_import/mod.rs": "support",
