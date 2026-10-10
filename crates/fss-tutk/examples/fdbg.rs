@@ -1,3 +1,4 @@
+#![forbid(unsafe_code)]
 // Field-op level differential: gf mul/sqr/inv/pack vs python-computed vectors.
 // (uses only the crate's public x25519 path; prints for manual comparison)
 

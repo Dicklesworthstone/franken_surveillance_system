@@ -1,3 +1,4 @@
+#![forbid(unsafe_code)]
 //! Field-level contract tests for the agent abstraction tower rows
 //! (`architecture/agent_abstraction_stack.json` layers + hydration levels),
 //! realizing the fss-x4a.30.82 family acceptance:

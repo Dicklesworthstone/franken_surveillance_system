@@ -1,3 +1,4 @@
+#![forbid(unsafe_code)]
 //! Field-level contract tests for the stable error registry rows
 //! (`registries/ERRORS.md` — itself the machine authority: "Errors are
 //! machine identities"), realizing the fss-x4a.30.91 family acceptance:

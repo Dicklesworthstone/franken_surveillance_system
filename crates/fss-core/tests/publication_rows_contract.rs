@@ -1,3 +1,4 @@
+#![forbid(unsafe_code)]
 //! Field-level contract tests for the publication primitives
 //! (`architecture/publication_primitives.json`, mirrored by
 //! `registries/PUBLICATION_PRIMITIVES.md`), realizing the fss-x4a.30.95

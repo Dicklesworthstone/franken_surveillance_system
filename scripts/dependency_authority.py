@@ -202,7 +202,15 @@ def read_input_bytes(path: Path, rel: str, root: Path, *, allow_empty: bool = Fa
         return None, [issue(ERR_DEP_CORRUPT_FILE, rel, "#", f"{rel} contains a '..' path component; authority inputs are named by a direct path under the repository")]
     try:
         root_resolved = os.path.realpath(root)
+        # The candidate must stay lexically unresolved (mid-path symlink refusal below
+        # depends on it), but a symlinked prefix on the CALLER'S side of the root (e.g.
+        # macOS /var -> /private/var on tempdirs) must not false-refuse: rewrite a
+        # textual raw-root prefix onto the resolved root without resolving the
+        # candidate's own components.
+        root_raw = os.path.normpath(str(root))
         candidate = os.path.normpath(path if path.is_absolute() else os.path.join(root_resolved, path))
+        if root_raw != root_resolved and candidate.startswith(root_raw + os.sep):
+            candidate = root_resolved + candidate[len(root_raw):]
         if os.path.commonpath([candidate, root_resolved]) != root_resolved:
             return None, [issue(ERR_DEP_CORRUPT_FILE, rel, "#", f"{rel} resolves outside the repository root; authority inputs must live inside it")]
     except (ValueError, OSError) as exc:

@@ -1,3 +1,4 @@
+#![forbid(unsafe_code)]
 //! Simulator contract tests (LAB-AOSU-4): the full 3.5 session flow driven
 //! by a hand-rolled client side over `wire`+`crypto` (the client state
 //! machine proper is LAB-AOSU-5), wrong-key rejection, expiry, dps fixtures,

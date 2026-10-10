@@ -1,3 +1,4 @@
+#![forbid(unsafe_code)]
 //! LAB-AOSU-6 contract tests: the Tuya event/coverage mapper driven by the
 //! fss-tuya simulator (INTEROPERABILITY_LAB §5 — no hardware, no keys beyond
 //! test fixtures). Pins the lane's honesty invariants:

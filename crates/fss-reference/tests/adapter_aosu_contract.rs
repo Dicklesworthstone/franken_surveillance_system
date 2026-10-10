@@ -1,3 +1,4 @@
+#![forbid(unsafe_code)]
 //! Contract tests for the ADP-AOSU-P1MAX-LAB-001 typed registry-row
 //! realization (bead fss-x4a.30.89.9): identity construction, canonical
 //! round-trip and ordering, NEG-002 compliance both directions, generation

@@ -2382,7 +2382,14 @@ def manifest_source_override_audit(findings: list["Finding"], root: Path = ROOT,
             return None
         resolved = os.path.normpath(os.path.join(str(base_dir), target))
         try:
-            if os.path.commonpath([resolved, os.path.realpath(root)]) == os.path.realpath(root):
+            # Normalize caller-side symlinked prefixes (e.g. macOS /var ->
+            # /private/var on tempdirs) so containment compares like with like;
+            # the candidate's own components stay unresolved on purpose.
+            root_resolved = os.path.realpath(root)
+            root_raw = os.path.normpath(str(root))
+            if root_raw != root_resolved and resolved.startswith(root_raw + os.sep):
+                resolved = root_resolved + resolved[len(root_raw):]
+            if os.path.commonpath([resolved, root_resolved]) == root_resolved:
                 return None
         except ValueError:
             pass

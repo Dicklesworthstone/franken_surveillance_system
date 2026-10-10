@@ -1,3 +1,4 @@
+#![forbid(unsafe_code)]
 //! Batch contract tests for the seven remaining device-adapter registry-row
 //! realizations (fss-x4a.30.89.2/.3/.4/.5/.6/.7/.10/.11): construction,
 //! verification, NEG-002 compliance, canonical round-trip, digest

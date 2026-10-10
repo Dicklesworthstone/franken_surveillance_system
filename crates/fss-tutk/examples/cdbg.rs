@@ -1,3 +1,4 @@
+#![forbid(unsafe_code)]
 use fss_tutk::chacha::chacha20_xor;
 use fss_tutk::x25519::{x25519, x25519_base};
 

@@ -1,3 +1,4 @@
+#![forbid(unsafe_code)]
 //! Field-level contract tests for the risk registry rows
 //! (`registries/RISKS.md` — the machine authority for risk identities and
 //! their mitigation/release consequences), realizing the fss-x4a.30.96

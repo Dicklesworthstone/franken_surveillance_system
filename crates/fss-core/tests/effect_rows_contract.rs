@@ -1,3 +1,4 @@
+#![forbid(unsafe_code)]
 //! Field-level contract tests for the effect registry rows
 //! (`registries/EFFECTS.md` — the machine authority for effect identities),
 //! realizing the fss-x4a.30.90 family acceptance:

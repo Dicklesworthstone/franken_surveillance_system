@@ -1,3 +1,4 @@
+#![forbid(unsafe_code)]
 // Debug harness for field ops, chacha block, and poly1305 against known answers.
 use fss_tutk::chacha::{chacha20_xor, poly1305};
 use fss_tutk::x25519::{x25519, x25519_base};

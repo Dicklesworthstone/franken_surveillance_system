@@ -1,3 +1,4 @@
+#![forbid(unsafe_code)]
 //! Field-level contract tests for the operation-cost registry rows
 //! (`architecture/operation_cost_registry.toml`, generation
 //! `gen:fss1:operation-cost-v2`), realizing the fss-x4a.30.94 family

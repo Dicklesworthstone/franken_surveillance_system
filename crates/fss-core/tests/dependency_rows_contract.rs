@@ -1,3 +1,4 @@
+#![forbid(unsafe_code)]
 //! Field-level contract tests for the dependency constitution classes
 //! (`architecture/dependency_constitution.json` machine rows, normative
 //! doctrine in `docs/DEPENDENCY_CONSTITUTION.md`, policy in

@@ -1,3 +1,4 @@
+#![forbid(unsafe_code)]
 //! Live standards-probe runner (DISC-2 qualification): mDNS browse, SSDP
 //! M-SEARCH and ONVIF WS-Discovery on the owner LAN, printing every answer.
 //!

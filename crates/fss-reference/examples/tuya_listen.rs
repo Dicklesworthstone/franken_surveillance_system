@@ -1,3 +1,4 @@
+#![forbid(unsafe_code)]
 //! Live Tuya beacon listener (DISC-4 qualification): listens on UDP :6667
 //! and prints decoded beacons. The AOSU homebase broadcasts cmd 0x23 every
 //! ~5s, so a 15s window captures ~3.

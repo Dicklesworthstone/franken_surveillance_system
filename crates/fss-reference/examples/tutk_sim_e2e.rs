@@ -1,3 +1,4 @@
+#![forbid(unsafe_code)]
 //! End-to-end qualification: TUTK live adapter vs the Python TUTK-NEW camera
 //! simulator (LAB-WYZE-4, fss-x4a.21.2.4) over loopback UDP.
 //!
