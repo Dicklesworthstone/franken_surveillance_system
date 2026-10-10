@@ -23,9 +23,10 @@ use fss_core::{
 use fss_object::ObjectManifest;
 use fss_publication::SlotName;
 
+use super::detector_cascade::{ClassEvidence, cascade_outcome_json, class_evidence_json};
 use super::long_dwell::{
     LongDwellHealthSummary, LongDwellLimits, MAX_LONG_DWELL_FRAMES, ScanRule, event_status, json,
-    publish_manifest, run_scan, slot,
+    publish_manifest, run_scan, run_zone_observed_scan, slot,
 };
 use super::privacy_mask::MaskBinding;
 use super::recorded_decode::RecordedDecodeError;
@@ -37,6 +38,10 @@ use super::sensor_health::{
 };
 use super::tolerant_decode::DecodeRefusal;
 use crate::{ReferenceDeployment, ReferencePolicyAction, ReferencePolicyDecision, ReplayCx};
+
+/// Optional native trained detector and its source-closed whole-recording recipe.
+pub mod detector;
+pub use detector::LongWatchDetector;
 
 /// Same source-byte, pixel, assignment and trace ceilings as the shared whole-recording walker.
 pub type LongWatchLimits = LongDwellLimits;
@@ -105,6 +110,7 @@ impl LongWatchEntry {
 #[derive(Debug)]
 pub struct LongWatchCandidate {
     entry: LongWatchEntry,
+    class_evidence: Vec<ClassEvidence>,
     event: EventHypothesis,
     record: Vec<u8>,
     manifest: ObjectManifest,
@@ -116,6 +122,10 @@ impl LongWatchCandidate {
     /// Observation that produced this entry, never a predicted track position.
     pub fn entry(&self) -> &LongWatchEntry {
         &self.entry
+    }
+    /// Complete uncalibrated class evidence, including explicit budget/refusal outcomes.
+    pub fn class_evidence(&self) -> &[ClassEvidence] {
+        &self.class_evidence
     }
     /// Exact approval, distinct from ordinary watch and dwell approvals.
     pub const fn proposal_digest(&self) -> ContentDigest {
@@ -160,6 +170,7 @@ pub struct LongWatchReport {
     jpeg_work: u64,
     media_format: String,
     health: Option<LongDwellHealthSummary>,
+    detector: Option<detector::Completed>,
 }
 
 fn checkpoint(cx: &ReplayCx, stage: &'static str) -> Result<()> {
@@ -183,7 +194,7 @@ impl LongWatchReport {
         limits: &LongWatchLimits,
         cx: &ReplayCx,
     ) -> Result<Self> {
-        Self::analyze_inner(deployment, plan, options, limits, cx, false)
+        Self::analyze_inner(deployment, plan, options, limits, cx, false, None)
     }
 
     /// Screen the same privacy-masked pixels and block publication on any incomplete/degraded run.
@@ -194,9 +205,34 @@ impl LongWatchReport {
         limits: &LongWatchLimits,
         cx: &ReplayCx,
     ) -> Result<Self> {
-        Self::analyze_inner(deployment, plan, options, limits, cx, true)
+        Self::analyze_inner(deployment, plan, options, limits, cx, true, None)
     }
 
+    /// Complete native tracking followed by explicitly selected trained inference. The original
+    /// archive and exact package/codec recipe are retained with an approved candidate so replay
+    /// does not need loose source/model files. Scores remain uncalibrated, with no alert authority.
+    #[allow(clippy::too_many_arguments)]
+    pub fn analyze_with_detector(
+        deployment: &ReferenceDeployment,
+        plan: &WatchPlan,
+        options: WatchOptions,
+        limits: &LongWatchLimits,
+        detector: &LongWatchDetector<'_>,
+        screened: bool,
+        cx: &ReplayCx,
+    ) -> Result<Self> {
+        Self::analyze_inner(
+            deployment,
+            plan,
+            options,
+            limits,
+            cx,
+            screened,
+            Some(detector),
+        )
+    }
+
+    #[allow(clippy::too_many_arguments)]
     fn analyze_inner(
         deployment: &ReferenceDeployment,
         plan: &WatchPlan,
@@ -204,17 +240,40 @@ impl LongWatchReport {
         limits: &LongWatchLimits,
         cx: &ReplayCx,
         screened: bool,
+        detector: Option<&LongWatchDetector<'_>>,
     ) -> Result<Self> {
         checkpoint(cx, "long_watch:analyze")?;
-        let scan = run_scan(
-            deployment,
-            plan,
-            ScanRule::ZoneEntry,
-            options,
-            limits,
-            cx,
-            screened,
-        )?;
+        // Admission precedes source work; exact decoder/model ceilings are part of the recipe.
+        if let Some(detector) = detector {
+            let _ = detector::LongWatchDetectorRecipe::new(
+                detector.package,
+                detector.config,
+                detector.limits,
+                limits,
+            )?;
+        }
+        let mut selected = detector.map(|detector| detector::Select::new(detector.config));
+        let scan = match &mut selected {
+            Some(selected) => {
+                run_zone_observed_scan(deployment, plan, options, limits, cx, screened, selected)?
+            }
+            None => run_scan(
+                deployment,
+                plan,
+                ScanRule::ZoneEntry,
+                options,
+                limits,
+                cx,
+                screened,
+            )?,
+        };
+        let detector = match (detector, selected) {
+            (Some(detector), Some(selected)) => Some(detector::run(
+                deployment, plan, options, &scan, limits, detector, selected, cx,
+            )?),
+            (None, None) => None,
+            _ => return Err(WatchError::Conflict),
+        };
         let mut e = CanonicalEncoder::new();
         e.text(ANALYSIS_DOMAIN);
         e.digest(ContentDigest::sha256(POLICY));
@@ -265,6 +324,11 @@ impl LongWatchReport {
             e.bytes(health_policy_bytes());
             summary.encode(&mut e);
         }
+        if let Some(detector) = &detector {
+            e.text("detector_cascade");
+            e.bytes(&detector.recipe.to_bytes());
+            e.bytes(&detector.bytes);
+        }
         let analysis = e.finish_checked()?;
         let analysis_digest = ContentDigest::sha256(&analysis);
         let mut children = BTreeSet::from([
@@ -279,11 +343,14 @@ impl LongWatchReport {
         if scan.health.is_some() {
             children.insert(health_policy_digest());
         }
+        if let Some(detector) = &detector {
+            children.extend(detector.children());
+        }
         let analysis_manifest =
             ObjectManifest::new("recorded-long-watch-analysis-v1", children, None)?;
         let principal = cx.io_authority().principal().to_owned();
         let mut candidates = Vec::new();
-        for entry in scan.entries {
+        for (index, entry) in scan.entries.into_iter().enumerate() {
             candidates.push(prepare_candidate(
                 deployment,
                 entry,
@@ -292,6 +359,7 @@ impl LongWatchReport {
                 &scan.sensor,
                 &principal,
                 &scan.privacy,
+                detector.as_ref().map(|value| (value, index)),
             )?);
         }
         let report = Self {
@@ -315,12 +383,22 @@ impl LongWatchReport {
             masked_zones: scan.masked_zones,
             restarts: scan.restarts,
             refusals: scan.refusals,
-            source_bytes: scan.source_bytes,
-            pixel_samples: scan.pixel_samples,
+            source_bytes: scan
+                .source_bytes
+                .checked_add(detector.as_ref().map_or(0, |d| d.source_bytes))
+                .ok_or(WatchError::Limit)?,
+            pixel_samples: scan
+                .pixel_samples
+                .checked_add(detector.as_ref().map_or(0, |d| d.pixel_samples))
+                .ok_or(WatchError::Limit)?,
             assignment_work: scan.assignment_work,
-            jpeg_work: scan.jpeg_work,
+            jpeg_work: scan
+                .jpeg_work
+                .checked_add(detector.as_ref().map_or(0, |d| d.jpeg_work))
+                .ok_or(WatchError::Limit)?,
             media_format: scan.media_format,
             health: scan.health,
+            detector,
         };
         report.to_json(deployment.current_anchor().commit_sequence, None)?;
         Ok(report)
@@ -345,6 +423,29 @@ impl LongWatchReport {
     /// Actual source-chunk bytes fetched; source cache hits do not spend another allowance.
     pub const fn source_chunk_bytes_read(&self) -> u64 {
         self.source_bytes
+    }
+    /// Exact complete trained-stage outcome, absent for the unchanged model-free pipeline.
+    pub fn detector_cascade(&self) -> Option<&super::detector_cascade::CascadeOutcome> {
+        self.detector.as_ref().map(|detector| &detector.outcome)
+    }
+    /// Immutable retained package and execution recipe, if this run selected a detector.
+    pub fn detector_recipe(&self) -> Option<&detector::LongWatchDetectorRecipe> {
+        self.detector.as_ref().map(|detector| &detector.recipe)
+    }
+
+    /// Selected native preprocessing/model/head pipelines entered, including explicit refusals.
+    /// An attempt alone does not prove model MAC execution; preprocessing may refuse first.
+    pub fn inference_pipeline_attempts(&self) -> usize {
+        self.detector
+            .as_ref()
+            .map_or(0, |detector| detector.inference_pipeline_attempts)
+    }
+
+    /// Selected native pipelines that completed both model execution and detection projection.
+    pub fn inferences_completed(&self) -> usize {
+        self.detector
+            .as_ref()
+            .map_or(0, |detector| detector.outcome.inferred_segments().len())
     }
     /// Requested screening diagnostics, or no screening claim when absent.
     pub fn health_summary(&self) -> Option<&LongDwellHealthSummary> {
@@ -406,6 +507,16 @@ impl LongWatchReport {
             self.sensor.as_str().as_bytes(),
         ] {
             let digest = deployment.publisher_mut().stage_object(bytes)?;
+            deployment.publisher_mut().verify_object(digest)?;
+        }
+        if let Some(detector) = &self.detector {
+            for bytes in detector.staged() {
+                let digest = deployment.publisher_mut().stage_object(bytes)?;
+                deployment.publisher_mut().verify_object(digest)?;
+            }
+            let digest = deployment
+                .publisher_mut()
+                .stage_object(&detector.recipe.to_bytes())?;
             deployment.publisher_mut().verify_object(digest)?;
         }
         if self.health.is_some() {
@@ -484,15 +595,18 @@ impl LongWatchReport {
                 (WatchStatus::Prepared, Some(hint)) => json(&format!("{hint} --approve {}", c.approval)),
                 _ => "null".to_owned(),
             };
+            let class_evidence = if self.detector.is_some() {
+                format!(",\"class_evidence\":{}", class_evidence_json(&c.class_evidence))
+            } else { String::new() };
             format!(concat!("{{\"event_id\":{},\"zone_id\":{},\"tracker_epoch\":{},\"track_id\":{},",
                 "\"entry_position\":{},\"entry_segment\":{},\"entry_capsule_digest\":{},",
                 "\"capture_earliest_ns\":{},\"capture_latest_ns\":{},\"filtered_box\":[{},{},{},{}],",
-                "\"proposal_digest\":{},\"provenance_root\":{},\"status\":{},\"publish_command\":{}}}"),
+                "\"proposal_digest\":{},\"provenance_root\":{},\"status\":{},\"publish_command\":{}{}}}"),
                 json(c.event.event_id.as_str()), json(&self.plan.zones[entry.zone].zone_id), entry.epoch,
                 entry.track, entry.position, entry.segment, json(&entry.capsule_digest.to_text()),
                 json(&entry.capture.earliest.0.to_string()), json(&entry.capture.latest.0.to_string()),
                 entry.filtered_box[0], entry.filtered_box[1], entry.filtered_box[2], entry.filtered_box[3],
-                json(&c.approval.to_text()), json(&c.manifest.root().to_text()), json(c.status.as_str()), command)
+                json(&c.approval.to_text()), json(&c.manifest.root().to_text()), json(c.status.as_str()), command, class_evidence)
         }).collect::<Vec<_>>().join(",");
         let refusals = self
             .refusals
@@ -511,6 +625,15 @@ impl LongWatchReport {
             .health
             .as_ref()
             .map_or_else(|| "null".to_owned(), LongDwellHealthSummary::to_json);
+        let detector_json = self.detector.as_ref().map_or_else(String::new, |detector| format!(
+            ",\"detector_cascade\":{{{},{},\"recipe_digest\":{},\"source_chunk_bytes_read\":{},\"jpeg_work_units\":{},\"additional_pixel_samples_processed\":{},\"inference_pipeline_attempts\":{},\"inferences_completed\":{},\"model_invocation_semantics\":\"native_pipeline_attempted_model_mac_execution_not_guaranteed\"}}",
+            detector.policy_json, cascade_outcome_json(&detector.outcome), json(&detector.recipe.digest().to_text()),
+            detector.source_bytes, detector.jpeg_work, detector.pixel_samples,
+            detector.inference_pipeline_attempts, detector.outcome.inferred_segments().len()));
+        let model_invoked = self
+            .detector
+            .as_ref()
+            .is_some_and(|detector| detector.inference_pipeline_attempts != 0);
         let text = format!(
             concat!(
                 "{{\"format\":{},\"site\":{},\"principal\":{},\"import_identity\":{},\"import_root\":{},",
@@ -525,8 +648,8 @@ impl LongWatchReport {
                 "\"assignment_work_budget\":{},\"trace_byte_budget\":{},",
                 "\"event_kind\":\"unclassified\",\"event_state\":\"indeterminate\",\"policy_action\":\"hold\",",
                 "\"calibrated\":false,\"corroborated\":false,\"physical_arrival_proved\":false,",
-                "\"absence_certifiable\":false,\"alert_authorized\":false,\"model_invoked\":false,",
-                "\"qualification\":\"implemented_not_qualified\"}}"
+                "\"absence_certifiable\":false,\"alert_authorized\":false,\"model_invoked\":{},",
+                "\"qualification\":\"implemented_not_qualified\"{}}}"
             ),
             json(LONG_WATCH_REPORT_SCHEMA),
             json(&self.site),
@@ -562,6 +685,8 @@ impl LongWatchReport {
             self.limits.maximum_pixel_samples,
             self.limits.maximum_assignment_work,
             self.limits.maximum_trace_bytes,
+            model_invoked,
+            detector_json,
         );
         if text.len() > MAX_REPORT_BYTES {
             return Err(WatchError::Limit);
@@ -579,6 +704,7 @@ fn prepare_candidate(
     sensor: &SensorId,
     principal: &str,
     privacy: &MaskBinding,
+    detector: Option<(&detector::Completed, usize)>,
 ) -> Result<LongWatchCandidate> {
     let mut e = CanonicalEncoder::new();
     e.text(ENTRY_DOMAIN);
@@ -595,11 +721,29 @@ fn prepare_candidate(
     }
     let record = e.finish_checked()?;
     let identity = ContentDigest::sha256(&record);
-    let manifest = ObjectManifest::new(
-        "recorded-long-watch-entry-v1",
-        [analysis_root, identity],
-        None,
-    )?;
+    let mut children = BTreeSet::from([analysis_root, identity]);
+    let (class_evidence, selections) = match detector {
+        Some((detector, index)) => {
+            let selected = detector.entries.get(index).ok_or(WatchError::Conflict)?;
+            if selected.entry.epoch != entry.epoch
+                || selected.entry.track != entry.track
+                || selected.entry.zone != entry.zone
+                || selected.entry.position != entry.position
+            {
+                return Err(WatchError::Conflict);
+            }
+            let evidence = detector
+                .outcome
+                .evidence
+                .get(index)
+                .ok_or(WatchError::Conflict)?
+                .clone();
+            children.extend(evidence.iter().map(|item| item.digest));
+            (evidence, selected.frames.as_slice())
+        }
+        None => (Vec::new(), &[][..]),
+    };
+    let manifest = ObjectManifest::new("recorded-long-watch-entry-v1", children, None)?;
     let sensor_digest = ContentDigest::sha256(sensor.as_str().as_bytes());
     let failure_domain = format!("recorded-sensor:{}", hex(sensor_digest));
     let mut evidence = vec![EventEvidence {
@@ -611,6 +755,21 @@ fn prepare_candidate(
         capsule_digest: Some(entry.capsule_digest),
         identity_digest: Some(sensor_digest),
     }];
+    for (class, selected) in class_evidence.iter().zip(selections) {
+        evidence.push(EventEvidence {
+            digest: class.digest,
+            class: EvidenceClass::Derived,
+            failure_domain: failure_domain.clone(),
+            supports: class.supports(),
+            relation: if class.supports() {
+                EvidenceEdgeRelation::Supports
+            } else {
+                EvidenceEdgeRelation::DerivedFrom
+            },
+            capsule_digest: Some(selected.capsule),
+            identity_digest: Some(sensor_digest),
+        });
+    }
     if let Some(policy) = privacy.policy() {
         evidence.push(EventEvidence {
             digest: policy.digest(),
@@ -646,6 +805,7 @@ fn prepare_candidate(
     let status = event_status(deployment, &event)?;
     Ok(LongWatchCandidate {
         entry,
+        class_evidence,
         event,
         record,
         manifest,

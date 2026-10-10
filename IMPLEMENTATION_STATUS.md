@@ -10,6 +10,40 @@ Franken Surveillance System now has a coherent, dependency-light Rust reference 
 
 It is also not a complete surveillance product. Native device adapters, production media/model/graph/storage services, persistent distributed operation, every human and agent surface, complete qualification matrices, and the aggregate release root remain open. Status below distinguishes implemented reference semantics from production completion.
 
+## Trained detector evidence for whole recordings (2026-10-10, reference)
+
+`fss-event watch --stream-watch` now accepts the explicit digest-pinned detector package and
+shared inference allowance already available to short watch. It keeps native foreground and
+tracking state across the complete bounded recording, selects confirmed entries and later
+actual matches, then runs a bounded masked-RGB pass for MJPEG, AVC and HEVC. Entries after
+frame 128 can receive native trained class evidence without splitting the recording or
+resetting the tracker. Predictions, source gaps and different tracker epochs cannot supply
+matching class evidence. Source bytes, JPEG work and pixels are accounted across both passes;
+the inference allowance never replenishes per entry or frame.
+
+Publication retains the exact model archive, canonical execution recipe, bounded outcome and
+all class associations in the shared evidence closure. Cold `fss-event read` verifies their
+custody and exact frame-to-capsule bindings; explicit `fss-event verify` reloads the retained
+model and reruns the original native computation without the loose model file. The recipe
+pins the package, model, threshold, backend generation, RGB decoders and complete original
+resource settings. A changed recipe or source/privacy generation invalidates the approval.
+
+Pipeline attempts and completed model-plus-head results are reported separately, including
+explicit model-stage or head refusals. The evidence remains uncalibrated and same-sensor:
+events stay unclassified, indeterminate, probability `[0,1]` and Hold. This adds neither an
+absence certificate nor alert authority. Existing model-free watch publications retain their
+bytes and historical replay semantics. See [the workflow and bounds](docs/long_recording_watch.md)
+and [retained-model replay](docs/long_event_replay.md).
+
+Focused native validation on the pinned toolchain passes all 58 selected tests: 16
+whole-recording reference contracts, 31 CLI regressions and 11 cold replay library cases.
+They include native YOLOX execution, MJPEG/AVC/HEVC, exact
+publication/retry, cold replay after loose model removal, missing retained-package refusal,
+complete recipe recovery, same-camera capsule substitution refusal, privacy, both cancellation
+owners and aggregate budgets. These
+fixture results establish the implemented workflow, without production or detection-quality
+qualification.
+
 ## Source-preserving RTSP recording import (2026-10-10, reference, focused native tests passed)
 
 `fss-import-rtsp` closes the gap between native RTSP recording custody and retained media

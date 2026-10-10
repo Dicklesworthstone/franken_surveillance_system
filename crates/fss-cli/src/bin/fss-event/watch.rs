@@ -29,7 +29,9 @@
 //! `--stream-watch` instead scans one whole bounded recording for actual confirmed zone entries,
 //! preserving tracker state across the old 128-frame boundary. It uses its own approval identity,
 //! aggregate `--stream-*` budgets, and the same optional whole-scan health gate. It has no dwell
-//! rule, detector-package invocation, coverage-retention or alert authority.
+//! rule, coverage-retention or alert authority. The same explicit detector-package options
+//! select native RGB inference at entries and following actual track matches; the complete
+//! recording shares one inference allowance and retains the verified package for cold replay.
 
 use std::collections::BTreeSet;
 use std::ffi::OsString;
@@ -40,7 +42,9 @@ use fss_core::{ContentDigest, DigestAlgorithm, PrincipalId};
 use fss_reference::ingest::RetainedFileImport;
 use fss_reference::ingest::detector_cascade::DetectorCascade;
 use fss_reference::ingest::long_dwell::{LongDwellLimits, LongDwellReport, MAX_LONG_DWELL_FRAMES};
-use fss_reference::ingest::long_watch::{LongWatchLimits, LongWatchReport, MAX_LONG_WATCH_FRAMES};
+use fss_reference::ingest::long_watch::{
+    LongWatchDetector, LongWatchLimits, LongWatchReport, MAX_LONG_WATCH_FRAMES,
+};
 use fss_reference::ingest::package_detect::PackageDetectLimits;
 use fss_reference::ingest::recorded_decode::ComponentInterpretation;
 use fss_reference::ingest::recorded_dwell::DwellReport;
@@ -445,7 +449,10 @@ pub(super) fn run(
     out: &mut impl Write,
 ) -> RunResult<()> {
     if let Some(limits) = &action.stream_watch {
-        return run_streaming_watch(action, deployment, root, limits, cx, out);
+        let scalar = ScalarExecCx::new();
+        let result = run_streaming_watch(action, deployment, root, limits, cx, &scalar, out);
+        scalar.drain_and_finalize();
+        return result;
     }
     if let Some(limits) = &action.stream_dwell {
         return run_streaming(action, deployment, root, limits, cx, out);
@@ -474,12 +481,6 @@ fn streaming_watch_limits(
             return Err("aggregate streaming watch budgets require --stream-watch".to_owned());
         }
         return Ok(None);
-    }
-    if values
-        .iter()
-        .any(|(key, _)| super::detector::OPTIONS.contains(&key.as_str()))
-    {
-        return Err("--stream-watch does not admit detector-package options".to_owned());
     }
     if values.iter().any(|(key, _)| key == "--retain-coverage") {
         return Err("--stream-watch refuses --retain-coverage: no whole-recording absence certificate exists".to_owned());
@@ -514,18 +515,31 @@ fn run_streaming_watch(
     root: &Path,
     limits: &LongWatchLimits,
     cx: &ReplayCx,
+    scalar: &ScalarExecCx,
     out: &mut impl Write,
 ) -> RunResult<()> {
-    if action.cascade.is_some()
-        || action.retain_coverage.is_some()
-        || action.dwell.is_some()
-        || action.stream_dwell.is_some()
-    {
-        return Err(WatchError::InvalidPlan(
-            "streaming watch has no dwell, model or coverage owner",
-        )
-        .into());
+    if action.retain_coverage.is_some() || action.dwell.is_some() || action.stream_dwell.is_some() {
+        return Err(
+            WatchError::InvalidPlan("streaming watch has no dwell or coverage owner").into(),
+        );
     }
+    // Verify the requested package before reading any source. The same archive is retained
+    // with an approved event so a cold replay needs neither this path nor a model download.
+    let package = action
+        .cascade
+        .as_ref()
+        .map(|options| super::detector::load_with_archive(options, cx, scalar))
+        .transpose()?;
+    let detector = match (&action.cascade, &package) {
+        (Some(options), Some((package, archive))) => Some(LongWatchDetector::new(
+            package,
+            archive,
+            options.config,
+            PackageDetectLimits::default(),
+            scalar,
+        )?),
+        _ => None,
+    };
     let segment_count = match action.segment_count {
         Some(count) => count,
         None => {
@@ -552,12 +566,21 @@ fn run_streaming_watch(
         detector: action.detector,
         tracker: action.tracker,
     };
-    let analyze = if action.health_screen {
-        LongWatchReport::analyze_screened
-    } else {
-        LongWatchReport::analyze
+    let mut report = match &detector {
+        Some(detector) => LongWatchReport::analyze_with_detector(
+            deployment,
+            &plan,
+            action.options,
+            limits,
+            detector,
+            action.health_screen,
+            cx,
+        )?,
+        None if action.health_screen => {
+            LongWatchReport::analyze_screened(deployment, &plan, action.options, limits, cx)?
+        }
+        None => LongWatchReport::analyze(deployment, &plan, action.options, limits, cx)?,
     };
-    let mut report = analyze(deployment, &plan, action.options, limits, cx)?;
     // Complete report and exact approval hints must fit before any event commitment.
     report.to_json(
         deployment.current_anchor().commit_sequence,

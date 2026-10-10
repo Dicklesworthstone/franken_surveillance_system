@@ -183,6 +183,7 @@ fn camera(
     Ok((analysis_digest, SourceBinding {
         import_identity, import_root, manifest: manifest_digest, anchor, sensor,
         privacy: privacy_digest, privacy_generation, media_format: format, first: 0, count: segments,
+        capsule_bindings: BTreeMap::new(),
     }))
 }
 

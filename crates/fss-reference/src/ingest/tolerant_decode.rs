@@ -25,7 +25,7 @@
 //! segment's capsule) is applied to MJPEG luma here, and the H.264/H.265 ranges apply it
 //! themselves. A mask error (for example a resolution mismatch) is never tolerated.
 
-use std::collections::VecDeque;
+use std::collections::{BTreeSet, VecDeque};
 
 use fss_codec_mjpeg::{DecodeBudget, DecodeError as JpegError, decode_luma};
 use fss_core::{ContentDigest, SensorCapsule};
@@ -158,9 +158,48 @@ pub(crate) struct TolerantSource {
     closed_chunk_bytes: u64,
     /// All sub-ranges and failed recovery probes debit this same optional allowance.
     source_budget: Option<SourceReadBudget>,
+    /// Selected native colour output is opt-in and transferred before another source poll.
+    selected_rgb: BTreeSet<usize>,
+    pending_rgb: Option<SelectedRgb>,
+}
+
+pub(crate) struct SelectedRgb {
+    pub(crate) segment: usize,
+    pub(crate) frame:
+        Result<super::package_detect::DecodedFrame, super::package_detect::PackageDetectError>,
+}
+impl std::fmt::Debug for SelectedRgb {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("SelectedRgb")
+            .field("segment", &self.segment)
+            .finish_non_exhaustive()
+    }
 }
 
 impl TolerantSource {
+    /// Select at most the existing hard inference count; no RGB buffer is built for other frames.
+    pub(crate) fn select_rgb(
+        &mut self,
+        segments: &BTreeSet<usize>,
+    ) -> Result<(), RecordedDecodeError> {
+        if self.returned_any
+            || self.pending_rgb.is_some()
+            || segments.len() > super::detector_cascade::MAX_CASCADE_INFERENCES
+            || segments.iter().any(|segment| {
+                *segment < self.request.first_segment || *segment >= self.request.end
+            })
+            || matches!(self.inner, Inner::Jpeg { .. })
+        {
+            return Err(RecordedDecodeError::Limit);
+        }
+        self.selected_rgb = segments.clone();
+        Ok(())
+    }
+    /// The same masked native video frame that produced the last luma observation.
+    pub(crate) fn take_rgb(&mut self) -> Option<SelectedRgb> {
+        self.pending_rgb.take()
+    }
+
     /// Opens the range. The first segment is the operator's choice and is never skipped: for
     /// H.264/H.265 it must open as an IDR/IRAP range exactly as without tolerance.
     pub(crate) fn open(
@@ -220,6 +259,8 @@ impl TolerantSource {
             chunks: super::VerifiedChunkCache::with_source_budget(source_budget),
             closed_chunk_bytes: 0,
             source_budget: source_budget.cloned(),
+            selected_rgb: BTreeSet::new(),
+            pending_rgb: None,
         };
         if let Some(codec) = codec {
             let start = request.first_segment;
@@ -430,6 +471,9 @@ impl TolerantSource {
         budget: &mut DecodeBudget<'_>,
         cx: &ReplayCx,
     ) -> Result<Option<TolerantItem>, RecordedDecodeError> {
+        if self.pending_rgb.is_some() {
+            return Err(RecordedDecodeError::InvalidReceipt);
+        }
         loop {
             if let Some(item) = self.pending.pop_front() {
                 return Ok(Some(item));
@@ -457,6 +501,26 @@ impl TolerantSource {
                         *sub_end,
                         Box::new(range.next_frame(deployment, cx).map(|frame| {
                             frame.map(|frame| {
+                                if usize::try_from(frame.segment_index())
+                                    .is_ok_and(|index| self.selected_rgb.contains(&index))
+                                {
+                                    let receipt = frame.receipt();
+                                    self.pending_rgb = Some(SelectedRgb {
+                                        segment: frame.segment_index() as usize,
+                                        frame: super::package_detect::DecodedFrame::video(
+                                            super::package_detect::VideoPicture {
+                                                segment: frame.segment_index(),
+                                                capsule: frame.capsule(),
+                                                capsule_digest: frame.capsule_digest(),
+                                                dimensions: frame.dimensions(),
+                                                codec_receipt: receipt.digest(),
+                                                i420: receipt.i420_sha256(),
+                                                rgb: frame.to_rgb(),
+                                                mask: frame.mask().clone(),
+                                            },
+                                        ),
+                                    });
+                                }
                                 (
                                     frame.segment_index(),
                                     frame.capsule().clone(),
@@ -473,6 +537,26 @@ impl TolerantSource {
                         *sub_end,
                         Box::new(range.next_frame(deployment, cx).map(|frame| {
                             frame.map(|frame| {
+                                if usize::try_from(frame.segment_index())
+                                    .is_ok_and(|index| self.selected_rgb.contains(&index))
+                                {
+                                    let receipt = frame.receipt();
+                                    self.pending_rgb = Some(SelectedRgb {
+                                        segment: frame.segment_index() as usize,
+                                        frame: super::package_detect::DecodedFrame::video(
+                                            super::package_detect::VideoPicture {
+                                                segment: frame.segment_index(),
+                                                capsule: frame.capsule(),
+                                                capsule_digest: frame.capsule_digest(),
+                                                dimensions: frame.dimensions(),
+                                                codec_receipt: receipt.digest(),
+                                                i420: receipt.i420_sha256(),
+                                                rgb: frame.to_rgb(),
+                                                mask: frame.mask().clone(),
+                                            },
+                                        ),
+                                    });
+                                }
                                 (
                                     frame.segment_index(),
                                     frame.capsule().clone(),

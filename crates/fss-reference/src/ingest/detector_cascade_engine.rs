@@ -878,7 +878,7 @@ impl<'a> DetectorCascade<'a> {
         })
     }
 
-    fn record(
+    pub(crate) fn record(
         &self,
         source: &CascadeSource<'_>,
         track_id: u64,
@@ -1122,14 +1122,23 @@ impl<'a> DetectorCascade<'a> {
     }
 }
 
-fn infer_one(
+pub(crate) fn infer_one(
     run: &mut FrameRun<'_>,
     decoded: DecodedFrame,
     labels: &[String],
 ) -> Result<(usize, FrameStatus), CascadeError> {
+    run.scalar
+        .checkpoint("detector_cascade:inference")
+        .map_err(|_| CascadeError::Cancelled)?;
     let segment = decoded.segment;
     let rgb_digest = decoded.rgb_digest();
-    let status = match run.infer(decoded) {
+    let result = run.infer(decoded);
+    // Model/head errors wrap executor cancellation as a per-frame error. Preserve the owner
+    // cancellation before classifying other bounded failures as explicit refused evidence.
+    run.scalar
+        .checkpoint("detector_cascade:inference_complete")
+        .map_err(|_| CascadeError::Cancelled)?;
+    let status = match result {
         Ok(frame) => FrameStatus::Inferred(Box::new(summarize(&frame, rgb_digest, labels))),
         Err(PackageDetectError::Cancelled) => return Err(CascadeError::Cancelled),
         Err(_) => FrameStatus::Refused(CASCADE_FRAME_REFUSED),
@@ -1193,7 +1202,7 @@ pub fn iou_ppm(bounds: [u32; 4], track_box: [i64; 4]) -> u32 {
 }
 
 /// Best detection by IoU, then score, then lower row; below `minimum` is no association.
-fn associate(
+pub(crate) fn associate(
     inferred: &InferredFrame,
     selection: &CascadeSelection,
     minimum: u32,

@@ -6,13 +6,17 @@ use fss_core::{
     CanonicalDecode, CanonicalDecoder, CaptureInterval, ContentDigest, EventHypothesis, EventState,
     EvidenceClass, EvidenceEdgeRelation, LedgerAnchor, SensorId,
 };
-use crate::ingest::long_watch::{ANALYSIS_DOMAIN, ENTRY_DOMAIN, POLICY};
+use crate::ingest::long_watch::{ANALYSIS_DOMAIN, ENTRY_DOMAIN, POLICY, LongWatchDetector, LongWatchReport};
+use crate::ingest::long_watch::detector::{
+    MAX_OUTCOME_BYTES, RetainedInventory, retained_inventory, LongWatchDetectorRecipe,
+};
+use crate::ingest::rgb_package::{MAX_RGB_PACKAGE_BYTES, RgbDetectorPackage};
 use crate::ingest::recorded_decode::ComponentInterpretation;
 use crate::ingest::recorded_watch::{
     WatchDetectorConfig, WatchOptions, WatchPlan, WatchTrackerConfig, WatchZone,
 };
 use crate::ingest::sensor_health::{policy_bytes, policy_digest};
-use crate::{ReferenceDeployment, ReplayCx};
+use crate::{ReferenceDeployment, ReplayCx, ScalarExecCx};
 use super::{
     LoadedProfile, LongEventReplayError as Error, LongEventReplayLimits, LongEventReplayRecipe,
     LongDwellLimits, MAX_LONG_DWELL_FRAMES, MAX_LONG_DWELL_TRACE_BYTES,
@@ -28,6 +32,23 @@ pub struct WatchReplayRecipe {
     limits: LongDwellLimits,
     source: SourceBinding,
     screened: bool,
+    detector: Option<RetainedDetector>,
+}
+
+#[derive(Clone)]
+struct RetainedDetector {
+    recipe: LongWatchDetectorRecipe,
+    inventory: RetainedInventory,
+    outcome_digest: ContentDigest,
+    archive: Vec<u8>,
+}
+impl std::fmt::Debug for RetainedDetector {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("RetainedDetector")
+            .field("recipe", &self.recipe.digest())
+            .field("outcome", &self.outcome_digest)
+            .field("archive_bytes", &self.archive.len()).finish()
+    }
 }
 impl WatchReplayRecipe {
     /// Original image-zone, foreground, tracker and source-range configuration.
@@ -43,8 +64,41 @@ impl WatchReplayRecipe {
     pub fn media_format(&self) -> &str { &self.source.media_format }
     /// Sensor whose current privacy policy must match the recorded analysis.
     pub fn sensor(&self) -> &SensorId { &self.source.sensor }
-    /// V1 recorded five aggregate ceilings, not the complete codec/read configuration.
-    pub const fn complete_codec_limits_retained(&self) -> bool { false }
+    /// Detector-enabled profiles retain every codec/read ceiling in their complete recipe.
+    pub const fn complete_codec_limits_retained(&self) -> bool { self.detector.is_some() }
+    /// Exact trained detector configuration, present only when a model pass was requested.
+    pub fn detector_recipe(&self) -> Option<&LongWatchDetectorRecipe> {
+        self.detector.as_ref().map(|detector| &detector.recipe)
+    }
+
+    pub(super) fn analyze(&self, deployment: &ReferenceDeployment, cx: &ReplayCx) -> Result<LongWatchReport> {
+        let Some(retained) = &self.detector else {
+            return Ok(if self.screened {
+                LongWatchReport::analyze_screened(deployment, &self.plan, self.options, &self.limits, cx)?
+            } else {
+                LongWatchReport::analyze(deployment, &self.plan, self.options, &self.limits, cx)?
+            });
+        };
+        checkpoint(cx, "long_event_replay:model_admission")?;
+        let scalar = ScalarExecCx::new();
+        let result = (|| {
+            let recipe = &retained.recipe;
+            let package = RgbDetectorPackage::load_with_backend(
+                &retained.archive, recipe.package_digest(), recipe.import_work_units(),
+                recipe.backend(), cx, &scalar,
+            ).map_err(|_| Error::UnsupportedProfile)?;
+            recipe.verify_package(&package)?;
+            let detector = LongWatchDetector::new(
+                &package, &retained.archive, recipe.config(), *recipe.package_limits(), &scalar,
+            )?;
+            Ok(LongWatchReport::analyze_with_detector(
+                deployment, &self.plan, self.options, &self.limits, &detector, self.screened, cx,
+            )?)
+        })();
+        scalar.drain_and_finalize();
+        checkpoint(cx, "long_event_replay:model_complete")?;
+        result
+    }
 }
 
 pub(super) fn digest(d: &mut CanonicalDecoder<'_>) -> Result<ContentDigest> {
@@ -80,10 +134,9 @@ pub(super) fn site(d: &mut CanonicalDecoder<'_>) -> Result<String> {
 
 /// Bound every frame record without pretending parsed claims establish their native derivation.
 /// Inter-coded traces contain display-order frames and explicit breaks, unlike source-order JPEG.
-pub(super) fn trace_and_health(
-    d: &mut CanonicalDecoder<'_>, maximum_segments: usize, maximum_trace: usize,
-    maximum_pixels: u64, cx: &ReplayCx,
-) -> Result<bool> {
+fn trace(
+    d: &mut CanonicalDecoder<'_>, maximum_segments: usize, maximum_trace: usize, cx: &ReplayCx,
+) -> Result<()> {
     let trace = d.bytes()?;
     if trace.is_empty() || trace.len() > maximum_trace || trace.len() > MAX_LONG_DWELL_TRACE_BYTES {
         return Err(Error::Limit);
@@ -100,23 +153,64 @@ pub(super) fn trace_and_health(
         }
     }
     records.ensure_finished()?;
+    Ok(())
+}
+fn health(
+    d: &mut CanonicalDecoder<'_>, maximum_segments: usize, maximum_pixels: u64,
+) -> Result<()> {
+    if d.bytes()? != policy_bytes() { return Err(Error::UnsupportedProfile); }
+    let complete = d.bool()?;
+    let frames = d.u64()?;
+    let samples = d.u64()?;
+    let findings = d.u64()?;
+    if !complete || frames == 0 || frames > maximum_segments as u64
+        || samples == 0 || samples > maximum_pixels || findings != 0 {
+        return Err(Error::InvalidRecord);
+    }
+    Ok(())
+}
+
+pub(super) fn trace_and_health(
+    d: &mut CanonicalDecoder<'_>, maximum_segments: usize, maximum_trace: usize,
+    maximum_pixels: u64, cx: &ReplayCx,
+) -> Result<bool> {
+    trace(d, maximum_segments, maximum_trace, cx)?;
     let screened = d.remaining() != 0;
     if screened {
-        if d.text()? != "sensor_health" || d.bytes()? != policy_bytes() {
-            return Err(Error::UnsupportedProfile);
-        }
-        let complete = d.bool()?;
-        let frames = d.u64()?;
-        let samples = d.u64()?;
-        let findings = d.u64()?;
-        // Degraded or incomplete scans cannot have published an original eligible event.
-        if !complete || frames == 0 || frames > maximum_segments as u64
-            || samples == 0 || samples > maximum_pixels || findings != 0 {
-            return Err(Error::InvalidRecord);
-        }
+        if d.text()? != "sensor_health" { return Err(Error::UnsupportedProfile); }
+        health(d, maximum_segments, maximum_pixels)?;
     }
     d.ensure_finished()?;
     Ok(screened)
+}
+
+fn watch_extensions(
+    d: &mut CanonicalDecoder<'_>, maximum_segments: usize, maximum_trace: usize,
+    maximum_pixels: u64, limits: &LongEventReplayLimits, cx: &ReplayCx,
+) -> Result<(bool, Option<RetainedDetector>)> {
+    trace(d, maximum_segments, maximum_trace, cx)?;
+    let mut tag = if d.remaining() == 0 { None } else { Some(d.text()?) };
+    let screened = tag == Some("sensor_health");
+    if screened {
+        health(d, maximum_segments, maximum_pixels)?;
+        tag = if d.remaining() == 0 { None } else { Some(d.text()?) };
+    }
+    let detector = match tag {
+        None => None,
+        Some("detector_cascade") => {
+            let recipe = LongWatchDetectorRecipe::from_bytes(d.bytes()?)?;
+            recipe.validate_within(&limits.execution, &limits.detector)?;
+            let outcome = d.bytes()?;
+            if outcome.len() > MAX_OUTCOME_BYTES { return Err(Error::Limit); }
+            let inventory = retained_inventory(outcome)?;
+            if inventory.recipe != recipe.digest() { return Err(Error::InvalidRecord); }
+            Some(RetainedDetector { recipe, inventory,
+                outcome_digest: ContentDigest::sha256(outcome), archive: Vec::new() })
+        }
+        Some(_) => return Err(Error::UnsupportedProfile),
+    };
+    d.ensure_finished()?;
+    Ok((screened, detector))
 }
 
 fn decode(bytes: &[u8], limits: &LongEventReplayLimits, cx: &ReplayCx) -> Result<WatchReplayRecipe> {
@@ -199,12 +293,25 @@ fn decode(bytes: &[u8], limits: &LongEventReplayLimits, cx: &ReplayCx) -> Result
     execution.maximum_trace_bytes = trace;
     execution.decode.jpeg_work_units = jpeg_work;
     execution.validate()?;
-    let screened = trace_and_health(&mut d, segment_count, trace, pixels, cx)?;
+    let (screened, detector) = watch_extensions(&mut d, segment_count, trace, pixels, limits, cx)?;
+    if let Some(detector) = &detector {
+        let stored = detector.recipe.watch_limits();
+        if stored.maximum_source_chunk_bytes != execution.maximum_source_chunk_bytes
+            || stored.maximum_pixel_samples != execution.maximum_pixel_samples
+            || stored.maximum_assignment_work != execution.maximum_assignment_work
+            || stored.maximum_trace_bytes != execution.maximum_trace_bytes
+            || stored.decode.jpeg_work_units != execution.decode.jpeg_work_units
+            || detector.inventory.import_identity != import_identity {
+            return Err(Error::InvalidRecord);
+        }
+        execution = *stored;
+    }
     Ok(WatchReplayRecipe {
-        plan, options, limits: execution, screened,
+        plan, options, limits: execution, screened, detector,
         source: SourceBinding {
             import_identity, import_root, manifest, anchor, sensor, privacy, privacy_generation,
             media_format, first: first_segment, count: segment_count,
+            capsule_bindings: BTreeMap::new(),
         },
     })
 }
@@ -214,6 +321,9 @@ struct EntryBinding {
     position: usize,
     segment: usize,
     capsule: ContentDigest,
+    epoch: u64,
+    track: u64,
+    zone: String,
 }
 
 fn entry_binding(bytes: &[u8], event: &EventHypothesis) -> Result<EntryBinding> {
@@ -236,7 +346,8 @@ fn entry_binding(bytes: &[u8], event: &EventHypothesis) -> Result<EntryBinding> 
         || event.interval != interval || track == 0 || box_values[2] <= 0 || box_values[3] <= 0 {
         return Err(Error::InvalidRecord);
     }
-    Ok(EntryBinding { analysis_root: root, position, segment, capsule })
+    Ok(EntryBinding { analysis_root: root, position, segment, capsule,
+        epoch, track, zone: zone.to_owned() })
 }
 
 pub(super) fn load(
@@ -257,19 +368,18 @@ pub(super) fn load(
     let analysis_root = entry.analysis_root;
     let entry_manifest = manifest(
         &reader.read(deployment, provenance_root, MAX_MANIFEST_BYTES, cx)?,
-        "recorded-long-watch-entry-v1", 2, false,
+        "recorded-long-watch-entry-v1", 10, false,
     )?;
-    if entry_manifest.children().iter().copied().collect::<BTreeSet<_>>() != BTreeSet::from([identity, analysis_root]) {
-        return Err(Error::InvalidRecord);
-    }
     let shared = manifest(
         &reader.read(deployment, analysis_root, MAX_MANIFEST_BYTES, cx)?,
-        "recorded-long-watch-analysis-v1", 6, false,
+        "recorded-long-watch-analysis-v1", 6 + 3 + 256 * 8, false,
     )?;
     let mut objects = BTreeMap::new();
     let mut selected = None;
     for &child in shared.children() {
-        let bytes = reader.read(deployment, child, MAX_LONG_EVENT_ANALYSIS_BYTES, cx)?;
+        // A retained trained package can be larger than its scalar analysis trace. Every read
+        // still consumes the one selected-metadata allowance; no inferred role grants a refill.
+        let bytes = reader.read(deployment, child, MAX_RGB_PACKAGE_BYTES, cx)?;
         if CanonicalDecoder::new(&bytes).text().ok() == Some(ANALYSIS_DOMAIN) && selected.replace(child).is_some() {
             return Err(Error::InvalidRecord);
         }
@@ -279,7 +389,7 @@ pub(super) fn load(
     if published_root(deployment, &slot("lw-a", analysis_digest)?)? != analysis_root {
         return Err(Error::AuthorityChanged);
     }
-    let recipe = decode(objects.get(&analysis_digest).ok_or(Error::InvalidRecord)?, limits, cx)?;
+    let mut recipe = decode(objects.get(&analysis_digest).ok_or(Error::InvalidRecord)?, limits, cx)?;
     if recipe.source.anchor.site_lineage != deployment.site_lineage() { return Err(Error::InvalidRecord); }
     let privacy = crate::ingest::privacy_mask::current_mask(deployment, &recipe.source.sensor)
         .map_err(crate::ingest::recorded_decode::RecordedDecodeError::from)?;
@@ -294,6 +404,7 @@ pub(super) fn load(
             && item.capsule_digest == Some(entry.capsule) && item.identity_digest == Some(sensor_digest)) {
         return Err(Error::InvalidRecord);
     }
+    recipe.source.capsule_bindings.insert(entry.segment, entry.capsule);
     if objects.get(&sensor_digest).map(Vec::as_slice) != Some(recipe.sensor().as_str().as_bytes())
         || objects.get(&ContentDigest::sha256(POLICY)).map(Vec::as_slice) != Some(POLICY) {
         return Err(Error::InvalidRecord);
@@ -309,7 +420,58 @@ pub(super) fn load(
         if objects.get(&policy_digest()).map(Vec::as_slice) != Some(policy_bytes()) { return Err(Error::InvalidRecord); }
         expected.insert(policy_digest());
     }
-    if shared.children().iter().copied().collect::<BTreeSet<_>>() != expected { return Err(Error::InvalidRecord); }
+    let mut entry_children = BTreeSet::from([identity, analysis_root]);
+    let mut evidence_digests = BTreeSet::from([identity]);
+    if let Some(policy) = privacy.policy() { evidence_digests.insert(policy.digest()); }
+    if let Some(detector) = &mut recipe.detector {
+        let model_digest = detector.recipe.package_digest();
+        let recipe_digest = detector.recipe.digest();
+        if objects.get(&recipe_digest).map(Vec::as_slice) != Some(detector.recipe.to_bytes().as_slice()) {
+            return Err(Error::InvalidRecord);
+        }
+        let outcome = objects.get(&detector.outcome_digest).ok_or(Error::InvalidRecord)?;
+        if retained_inventory(outcome)?.recipe != recipe_digest { return Err(Error::InvalidRecord); }
+        expected.extend([model_digest, recipe_digest, detector.outcome_digest]);
+        let source_edge = event.evidence.iter().find(|edge| edge.digest == identity).ok_or(Error::InvalidRecord)?;
+        let mut selected_count = 0_usize;
+        for class in &detector.inventory.classes {
+            if class.zone >= recipe.plan.zones.len() || class.track == 0
+                || !(recipe.source.first..end).contains(&class.position)
+                || !(recipe.source.first..end).contains(&class.segment)
+                || !(recipe.source.first..end).contains(&class.entry_position)
+                || !objects.contains_key(&class.digest) {
+                return Err(Error::InvalidRecord);
+            }
+            valid_digest(class.capsule)?;
+            if recipe.source.capsule_bindings.insert(class.segment, class.capsule)
+                .is_some_and(|previous| previous != class.capsule) {
+                return Err(Error::InvalidRecord);
+            }
+            expected.insert(class.digest);
+            if class.epoch == entry.epoch && class.track == entry.track
+                && class.entry_position == entry.position && recipe.plan.zones[class.zone].zone_id == entry.zone {
+                selected_count += 1;
+                entry_children.insert(class.digest);
+                evidence_digests.insert(class.digest);
+                if !event.evidence.iter().any(|edge| edge.digest == class.digest
+                    && edge.class == EvidenceClass::Derived && edge.supports == class.supports
+                    && edge.relation == if class.supports { EvidenceEdgeRelation::Supports } else { EvidenceEdgeRelation::DerivedFrom }
+                    && edge.failure_domain == source_edge.failure_domain
+                    && edge.capsule_digest == Some(class.capsule) && edge.identity_digest == Some(sensor_digest)) {
+                    return Err(Error::InvalidRecord);
+                }
+            }
+        }
+        if selected_count == 0 || selected_count > detector.recipe.config().frames_per_track {
+            return Err(Error::InvalidRecord);
+        }
+        detector.archive = objects.remove(&model_digest).ok_or(Error::InvalidRecord)?;
+    }
+    if entry_manifest.children().iter().copied().collect::<BTreeSet<_>>() != entry_children
+        || event.evidence.iter().map(|edge| edge.digest).collect::<BTreeSet<_>>() != evidence_digests
+        || shared.children().iter().copied().collect::<BTreeSet<_>>() != expected {
+        return Err(Error::InvalidRecord);
+    }
     let source = recipe.source.clone();
     Ok(LoadedProfile {
         recipe: LongEventReplayRecipe::Watch(recipe),

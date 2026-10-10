@@ -7,6 +7,7 @@
 //! and the selected event/provenance. Neither operation publishes, repairs or dispatches anything.
 //! Only original revision-one profiles are supported; reviewed successors remain explicit refusals.
 
+use std::collections::BTreeMap;
 use std::fmt;
 
 use fss_core::{
@@ -17,7 +18,6 @@ use fss_object::{HostSpoolIo, ObjectManifest, read_verified_payload};
 use fss_publication::{ROOT_REACHABILITY_FAMILY, SlotName};
 
 use super::long_dwell::{LongDwellLimits, MAX_LONG_DWELL_FRAMES, MAX_LONG_DWELL_TRACE_BYTES};
-use super::long_watch::LongWatchReport;
 use super::privacy_mask::current_mask;
 use super::recorded_corroboration::{CorroborationError, CorroborationStatus};
 use super::recorded_corroboration::streaming::LongCorroborationRecipe;
@@ -31,7 +31,8 @@ mod corroboration;
 pub use watch::WatchReplayRecipe;
 
 /// Maximum complete analysis payload, including its existing bounded trace.
-pub const MAX_LONG_EVENT_ANALYSIS_BYTES: usize = MAX_LONG_DWELL_TRACE_BYTES + 256 * 1024;
+pub const MAX_LONG_EVENT_ANALYSIS_BYTES: usize = MAX_LONG_DWELL_TRACE_BYTES
+    + super::long_watch::detector::MAX_OUTCOME_BYTES + 256 * 1024;
 /// Maximum selected metadata bytes, including all selected source-capsule payloads.
 pub const MAX_LONG_EVENT_METADATA_BYTES: usize = 256 * 1024 * 1024;
 const MAX_METADATA_OBJECTS: usize = MAX_LONG_DWELL_FRAMES * 4 + 1024;
@@ -43,6 +44,9 @@ type Result<T> = std::result::Result<T, LongEventReplayError>;
 pub struct LongEventReplayLimits {
     /// Ceiling on the retained recipe's reservations and native decoder/source work per camera.
     pub execution: LongDwellLimits,
+    /// Current ceiling on each retained trained-detector reservation. A stored recipe must fit
+    /// every field; its original values are then restored without changing threshold or backend.
+    pub detector: super::package_detect::PackageDetectLimits,
     /// Cumulative selected payload reads, including the current-event and source-capsule
     /// owners' second verification reads. Deployment/import opening, privacy-owner lookups and
     /// native source-chunk reads retain their separate existing bounds.
@@ -52,6 +56,7 @@ impl Default for LongEventReplayLimits {
     fn default() -> Self {
         Self {
             execution: LongDwellLimits::default(),
+            detector: super::package_detect::PackageDetectLimits::default(),
             maximum_metadata_bytes: 64 * 1024 * 1024,
         }
     }
@@ -335,6 +340,9 @@ struct SourceBinding {
     media_format: String,
     first: usize,
     count: usize,
+    /// Frame associations claimed by retained entry/class metadata, checked against the same
+    /// capsule authority and payload reads that verify the complete source range.
+    capsule_bindings: BTreeMap<usize, ContentDigest>,
 }
 fn verify_source_metadata(
     deployment: &ReferenceDeployment, source: &SourceBinding,
@@ -355,6 +363,9 @@ fn verify_source_metadata(
     if source.count == 0 || source.count > MAX_LONG_DWELL_FRAMES || end > retained.manifest().segment_spans.len() {
         return Err(LongEventReplayError::InvalidRecord);
     }
+    if source.capsule_bindings.keys().any(|segment| !(source.first..end).contains(segment)) {
+        return Err(LongEventReplayError::InvalidRecord);
+    }
     for segment in source.first..end {
         checkpoint(cx, "long_event_replay:capsule")?;
         let span = &retained.manifest().segment_spans[segment];
@@ -363,6 +374,9 @@ fn verify_source_metadata(
             .ok_or(LongEventReplayError::AuthorityChanged)?;
         if current.family != "sensor_capsule" || current.generation != 1 {
             return Err(LongEventReplayError::AuthorityChanged);
+        }
+        if source.capsule_bindings.get(&segment).is_some_and(|expected| *expected != current.payload_digest) {
+            return Err(LongEventReplayError::InvalidRecord);
         }
         let bytes = reader.read(deployment, current.payload_digest, MAX_RECORDED_DECODE_RECEIPT_BYTES, cx)?;
         reader.reserve_owner_read(bytes.len())?;
@@ -482,11 +496,7 @@ pub fn replay_long_event(
     checkpoint(cx, "long_event_replay:execute")?;
     let (frames, source_bytes) = match &inspection.recipe {
         LongEventReplayRecipe::Watch(recipe) => {
-            let actual = if recipe.screened() {
-                LongWatchReport::analyze_screened(deployment, recipe.plan(), recipe.options(), recipe.limits(), cx)?
-            } else {
-                LongWatchReport::analyze(deployment, recipe.plan(), recipe.options(), recipe.limits(), cx)?
-            };
+            let actual = recipe.analyze(deployment, cx)?;
             if actual.publication_blocked()
                 || inspection.analysis_digests != [actual.analysis_digest()]
                 || inspection.analysis_roots != [actual.replay_analysis_root()] {

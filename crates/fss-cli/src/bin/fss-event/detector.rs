@@ -125,3 +125,16 @@ pub(super) fn load(
         scalar,
     )?)
 }
+
+/// Keep the exact verified archive alongside the package for whole-recording replay custody.
+/// The ordinary short-window loader and its output remain unchanged.
+pub(super) fn load_with_archive(
+    options: &DetectorOptions,
+    cx: &ReplayCx,
+    scalar: &ScalarExecCx,
+) -> RunResult<(RgbDetectorPackage, Vec<u8>)> {
+    cx.checkpoint("long_watch_detector:package_read")?;
+    let bytes = read_package(&options.package)?;
+    let package = RgbDetectorPackage::load(&bytes, options.digest, 1 << 36, cx, scalar)?;
+    Ok((package, bytes))
+}

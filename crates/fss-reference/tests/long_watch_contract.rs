@@ -457,3 +457,641 @@ fn cancellation_after_entry_provenance_recovers_the_same_single_event() -> Test 
     assert_eq!(reopened.effects().operations().count(), 0);
     Ok(())
 }
+
+const DETECTOR_PACKAGE: &[u8] = include_bytes!("../../../models/yolox-nano/yolox_nano.fmpk");
+const DETECTOR_PACKAGE_DIGEST: &str =
+    "sha256:5b6568750faa375de3742e5eb310fbd4e22ff26e1ba727f193b79ab984a68c74";
+
+fn trained_package(
+    f: &Fixture,
+    scalar: &fss_reference::ScalarExecCx,
+) -> Test<fss_reference::ingest::rgb_package::RgbDetectorPackage> {
+    Ok(
+        fss_reference::ingest::rgb_package::RgbDetectorPackage::load(
+            DETECTOR_PACKAGE,
+            ContentDigest::parse(DETECTOR_PACKAGE_DIGEST)?,
+            1 << 36,
+            &f.cx,
+            scalar,
+        )?,
+    )
+}
+
+#[test]
+fn long_detector_runs_after_old_window_boundary_and_retains_complete_model_custody() -> Test {
+    use fss_reference::ingest::detector_cascade::{CascadeConfig, EvidenceOutcome};
+    use fss_reference::ingest::long_watch::LongWatchDetector;
+    use fss_reference::ingest::package_detect::PackageDetectLimits;
+    let mut f = Fixture::new(
+        "trained-late",
+        &scene(170, 150, None, false, false)?,
+        "mjpeg",
+    )?;
+    let scalar = fss_reference::ScalarExecCx::new();
+    let package = trained_package(&f, &scalar)?;
+    let detector = LongWatchDetector::new(
+        &package,
+        DETECTOR_PACKAGE,
+        CascadeConfig {
+            frames_per_track: 3,
+            max_inferences: 1,
+            ..CascadeConfig::default()
+        },
+        PackageDetectLimits::default(),
+        &scalar,
+    )?;
+    let before = f.snapshot();
+    let mut report = LongWatchReport::analyze_with_detector(
+        &f.deployment,
+        &f.plan,
+        WatchOptions::default(),
+        &LongWatchLimits::default(),
+        &detector,
+        false,
+        &f.cx,
+    )?;
+    assert_eq!(f.snapshot(), before, "analysis must remain read-only");
+    assert_eq!(report.frames_decoded(), 170);
+    let outcome = report.detector_cascade().ok_or("trained outcome")?;
+    assert_eq!(outcome.inferred_segments(), [152]);
+    assert_eq!(outcome.budget_skipped_segments(), [153, 154]);
+    assert_eq!(outcome.cascade_skipped.len(), 167);
+    let candidate = &report.candidates()[0];
+    assert_eq!(candidate.class_evidence().len(), 3);
+    assert!(matches!(
+        candidate.class_evidence()[1].outcome,
+        EvidenceOutcome::BudgetExhausted
+    ));
+    assert!(matches!(
+        candidate.class_evidence()[2].outcome,
+        EvidenceOutcome::BudgetExhausted
+    ));
+    assert_eq!(candidate.event().kind, EventKind::Unclassified);
+    assert_eq!(candidate.event().state, EventState::Indeterminate);
+    assert!(candidate.event().decision_path.abstained);
+    assert!(candidate.event().model_receipts.is_empty());
+    assert_eq!(
+        candidate
+            .event()
+            .evidence
+            .iter()
+            .map(|e| &e.failure_domain)
+            .collect::<BTreeSet<_>>()
+            .len(),
+        1
+    );
+    assert!(report.source_chunk_bytes_read() > f.input_bytes);
+    let approvals = BTreeSet::from([candidate.proposal_digest()]);
+    let class_digests = candidate
+        .class_evidence()
+        .iter()
+        .map(|e| e.digest)
+        .collect::<Vec<_>>();
+    assert_eq!(report.publish(&mut f.deployment, &approvals, &f.cx)?, 1);
+    assert_eq!(report.publish(&mut f.deployment, &approvals, &f.cx)?, 0);
+    assert_eq!(
+        f.deployment
+            .publisher()
+            .spool()
+            .read(ContentDigest::parse(DETECTOR_PACKAGE_DIGEST)?)?,
+        DETECTOR_PACKAGE
+    );
+    for digest in class_digests {
+        assert_eq!(
+            ContentDigest::sha256(&f.deployment.publisher().spool().read(digest)?),
+            digest
+        );
+    }
+    assert!(report.to_json(0, None)?.contains("\"model_invoked\":true"));
+    Ok(())
+}
+
+#[test]
+fn long_detector_source_allowance_does_not_restart_after_the_cheap_scan() -> Test {
+    use fss_reference::ingest::detector_cascade::CascadeConfig;
+    use fss_reference::ingest::long_watch::LongWatchDetector;
+    use fss_reference::ingest::package_detect::PackageDetectLimits;
+    let f = Fixture::new(
+        "trained-budget",
+        &scene(40, 3, None, false, false)?,
+        "mjpeg",
+    )?;
+    let scalar = fss_reference::ScalarExecCx::new();
+    let package = trained_package(&f, &scalar)?;
+    let detector = LongWatchDetector::new(
+        &package,
+        DETECTOR_PACKAGE,
+        CascadeConfig::default(),
+        PackageDetectLimits::default(),
+        &scalar,
+    )?;
+    let before = f.snapshot();
+    let limits = LongWatchLimits {
+        maximum_source_chunk_bytes: f.input_bytes,
+        ..LongWatchLimits::default()
+    };
+    assert!(
+        LongWatchReport::analyze(
+            &f.deployment,
+            &f.plan,
+            WatchOptions::default(),
+            &limits,
+            &f.cx
+        )
+        .is_ok()
+    );
+    assert!(matches!(
+        LongWatchReport::analyze_with_detector(
+            &f.deployment,
+            &f.plan,
+            WatchOptions::default(),
+            &limits,
+            &detector,
+            false,
+            &f.cx
+        ),
+        Err(WatchError::Limit)
+    ));
+    assert_eq!(f.snapshot(), before);
+    Ok(())
+}
+
+#[test]
+fn long_detector_recovery_preserves_epochs_and_one_inference_allowance() -> Test {
+    use fss_reference::ingest::detector_cascade::{CascadeConfig, EvidenceOutcome};
+    use fss_reference::ingest::long_watch::LongWatchDetector;
+    use fss_reference::ingest::package_detect::PackageDetectLimits;
+    let f = Fixture::new(
+        "trained-recovery",
+        &scene(40, 3, None, true, false)?,
+        "mjpeg",
+    )?;
+    let scalar = fss_reference::ScalarExecCx::new();
+    let package = trained_package(&f, &scalar)?;
+    let detector = LongWatchDetector::new(
+        &package,
+        DETECTOR_PACKAGE,
+        CascadeConfig {
+            frames_per_track: 3,
+            max_inferences: 1,
+            ..CascadeConfig::default()
+        },
+        PackageDetectLimits::default(),
+        &scalar,
+    )?;
+    let report = LongWatchReport::analyze_with_detector(
+        &f.deployment,
+        &f.plan,
+        WatchOptions {
+            tolerate_decode_refusals: true,
+        },
+        &LongWatchLimits::default(),
+        &detector,
+        false,
+        &f.cx,
+    )?;
+    assert_eq!(report.candidates().len(), 2);
+    assert_eq!(
+        report
+            .detector_cascade()
+            .ok_or("cascade")?
+            .inferred_segments(),
+        [5]
+    );
+    assert!(
+        report.candidates()[0]
+            .class_evidence()
+            .iter()
+            .all(|e| e.segment < 20)
+    );
+    assert!(
+        report.candidates()[1]
+            .class_evidence()
+            .iter()
+            .all(|e| e.segment >= 26 && matches!(e.outcome, EvidenceOutcome::BudgetExhausted))
+    );
+    assert_ne!(
+        report.candidates()[0].entry().tracker_epoch(),
+        report.candidates()[1].entry().tracker_epoch()
+    );
+    Ok(())
+}
+
+#[test]
+fn long_detector_cancellation_during_selected_pass_leaves_no_publication() -> Test {
+    use fss_reference::ingest::detector_cascade::CascadeConfig;
+    use fss_reference::ingest::long_watch::LongWatchDetector;
+    use fss_reference::ingest::package_detect::PackageDetectLimits;
+    let f = Fixture::new(
+        "trained-cancel",
+        &scene(40, 3, None, false, false)?,
+        "mjpeg",
+    )?;
+    let scalar = fss_reference::ScalarExecCx::new();
+    let package = trained_package(&f, &scalar)?;
+    let detector = LongWatchDetector::new(
+        &package,
+        DETECTOR_PACKAGE,
+        CascadeConfig::default(),
+        PackageDetectLimits::default(),
+        &scalar,
+    )?;
+    let before = f.snapshot();
+    f.cx.set_cancel_at_checkpoint("long_watch_detector:frame");
+    assert!(
+        LongWatchReport::analyze_with_detector(
+            &f.deployment,
+            &f.plan,
+            WatchOptions::default(),
+            &LongWatchLimits::default(),
+            &detector,
+            false,
+            &f.cx
+        )
+        .is_err()
+    );
+    assert_eq!(f.snapshot(), before);
+    Ok(())
+}
+
+#[test]
+fn long_detector_refusals_are_explicit_and_changed_privacy_invalidates_publication() -> Test {
+    use fss_reference::ingest::detector_cascade::{CascadeConfig, EvidenceOutcome};
+    use fss_reference::ingest::long_watch::LongWatchDetector;
+    use fss_reference::ingest::package_detect::PackageDetectLimits;
+    let mut f = Fixture::new(
+        "trained-refusal",
+        &scene(40, 3, None, false, false)?,
+        "mjpeg",
+    )?;
+    let scalar = fss_reference::ScalarExecCx::new();
+    let package = trained_package(&f, &scalar)?;
+    let mut limits = PackageDetectLimits::default();
+    // The native model may complete, but a head budget of zero must still record the pipeline
+    // attempt and its explicit refusal instead of falsely claiming no inference was invoked.
+    limits.detection_work_units = 0;
+    let detector = LongWatchDetector::new(
+        &package,
+        DETECTOR_PACKAGE,
+        CascadeConfig {
+            frames_per_track: 1,
+            max_inferences: 1,
+            ..CascadeConfig::default()
+        },
+        limits,
+        &scalar,
+    )?;
+    let mut report = LongWatchReport::analyze_with_detector(
+        &f.deployment,
+        &f.plan,
+        WatchOptions::default(),
+        &LongWatchLimits::default(),
+        &detector,
+        false,
+        &f.cx,
+    )?;
+    assert!(matches!(
+        report.candidates()[0].class_evidence()[0].outcome,
+        EvidenceOutcome::Refused(_)
+    ));
+    assert!(
+        report
+            .detector_cascade()
+            .ok_or("cascade")?
+            .inferred_segments()
+            .is_empty()
+    );
+    assert_eq!(report.inference_pipeline_attempts(), 1);
+    assert_eq!(report.inferences_completed(), 0);
+    let json = report.to_json(0, None)?;
+    assert!(json.contains("\"model_invoked\":true"));
+    assert!(json.contains("\"inference_pipeline_attempts\":1"));
+    assert!(json.contains("\"inferences_completed\":0"));
+    let approvals = BTreeSet::from([report.candidates()[0].proposal_digest()]);
+    f.mask(40)?;
+    let before = f.snapshot();
+    assert!(
+        report
+            .publish(&mut f.deployment, &approvals, &f.cx)
+            .is_err()
+    );
+    assert_eq!(f.snapshot(), before);
+    Ok(())
+}
+
+#[test]
+fn long_detector_scalar_cancellation_is_not_publishable_refused_evidence() -> Test {
+    use fss_reference::ingest::detector_cascade::{CascadeConfig, CascadeError};
+    use fss_reference::ingest::long_watch::LongWatchDetector;
+    use fss_reference::ingest::package_detect::PackageDetectLimits;
+    let f = Fixture::new(
+        "trained-scalar-cancel",
+        &scene(40, 3, None, false, false)?,
+        "mjpeg",
+    )?;
+    let scalar = fss_reference::ScalarExecCx::new();
+    let package = trained_package(&f, &scalar)?;
+    let detector = LongWatchDetector::new(
+        &package,
+        DETECTOR_PACKAGE,
+        CascadeConfig::default(),
+        PackageDetectLimits::default(),
+        &scalar,
+    )?;
+    let before = f.snapshot();
+    scalar.request_cancellation();
+    assert!(matches!(
+        LongWatchReport::analyze_with_detector(
+            &f.deployment,
+            &f.plan,
+            WatchOptions::default(),
+            &LongWatchLimits::default(),
+            &detector,
+            false,
+            &f.cx
+        ),
+        Err(WatchError::Cascade(CascadeError::Cancelled))
+    ));
+    assert!(scalar.is_drain_completed());
+    assert_eq!(f.snapshot(), before);
+    Ok(())
+}
+
+#[test]
+fn long_detector_rejects_package_substitution_before_source_analysis() -> Test {
+    use fss_reference::ingest::detector_cascade::CascadeConfig;
+    use fss_reference::ingest::long_watch::LongWatchDetector;
+    use fss_reference::ingest::package_detect::PackageDetectLimits;
+    let f = Fixture::new(
+        "trained-package",
+        &scene(3, 3, None, false, false)?,
+        "mjpeg",
+    )?;
+    let scalar = fss_reference::ScalarExecCx::new();
+    let package = trained_package(&f, &scalar)?;
+    let before = f.snapshot();
+    assert!(
+        LongWatchDetector::new(
+            &package,
+            b"substituted",
+            CascadeConfig::default(),
+            PackageDetectLimits::default(),
+            &scalar
+        )
+        .is_err()
+    );
+    assert_eq!(f.snapshot(), before);
+    Ok(())
+}
+
+fn assert_same_jpeg_limits(
+    left: fss_codec_mjpeg::DecodeLimits,
+    right: fss_codec_mjpeg::DecodeLimits,
+) {
+    assert_eq!(
+        (
+            left.maximum_bytes,
+            left.maximum_dimension,
+            left.maximum_pixels,
+            left.maximum_markers
+        ),
+        (
+            right.maximum_bytes,
+            right.maximum_dimension,
+            right.maximum_pixels,
+            right.maximum_markers
+        )
+    );
+}
+
+fn assert_same_decode_limits(
+    left: &fss_reference::ingest::recorded_watch::WatchLimits,
+    right: &fss_reference::ingest::recorded_watch::WatchLimits,
+) {
+    assert_eq!(left.read_limits, right.read_limits);
+    assert_same_jpeg_limits(left.jpeg_limits, right.jpeg_limits);
+    assert_eq!(left.jpeg_work_units, right.jpeg_work_units);
+    assert_eq!(left.h264_limits, right.h264_limits);
+    assert_eq!(left.h265_limits, right.h265_limits);
+}
+
+#[test]
+fn long_detector_recipe_round_trip_preserves_every_admitted_ceiling() -> Test {
+    use fss_codec_mjpeg::color::RgbDecodeLimits;
+    use fss_reference::ExecBudget;
+    use fss_reference::ingest::detector_cascade::CascadeConfig;
+    use fss_reference::ingest::long_watch::detector::LongWatchDetectorRecipe;
+    use fss_reference::ingest::package_detect::PackageDetectLimits;
+    use fss_reference::ingest::recorded_watch::WatchLimits;
+    use fss_reference::ingest::rgb_inference::RgbRunLimits;
+    let f = Fixture::new("trained-recipe", &scene(3, 3, None, false, false)?, "mjpeg")?;
+    let scalar = fss_reference::ScalarExecCx::new();
+    let package = trained_package(&f, &scalar)?;
+    let watch = LongWatchLimits {
+        decode: WatchLimits {
+            read_limits: RetainedReadLimits {
+                max_source_bytes: 100_000,
+                max_chunk_bytes: 50_000,
+                max_segment_bytes: 49_000,
+            },
+            jpeg_limits: fss_codec_mjpeg::DecodeLimits {
+                maximum_bytes: 48_000,
+                maximum_dimension: 1024,
+                maximum_pixels: 262_144,
+                maximum_markers: 100,
+            },
+            jpeg_work_units: 1_000_003,
+            h264_limits: fss_codec_h264::DecoderLimits {
+                max_width: 1024,
+                max_height: 576,
+                max_macroblocks: 2048,
+                max_pictures: 65,
+                max_nal_bytes: 32_768,
+                max_slices_per_picture: 64,
+                max_reference_frames: 4,
+            },
+            h265_limits: fss_codec_h265::DecoderLimits {
+                max_width: 960,
+                max_height: 544,
+                max_luma_samples: 522_240,
+                max_pictures: 66,
+                max_nal_bytes: 65_536,
+                max_slices_per_picture: 32,
+                max_dpb_pictures: 6,
+            },
+        },
+        maximum_source_chunk_bytes: 2_000_003,
+        maximum_pixel_samples: 1_000_007,
+        maximum_assignment_work: 2_000_011,
+        maximum_trace_bytes: 1_000_009,
+    };
+    let original = PackageDetectLimits {
+        read: RetainedReadLimits {
+            max_source_bytes: 300_000,
+            max_chunk_bytes: 45_000,
+            max_segment_bytes: 40_000,
+        },
+        jpeg: RgbDecodeLimits {
+            frame: fss_codec_mjpeg::DecodeLimits {
+                maximum_bytes: 40_000,
+                maximum_dimension: 768,
+                maximum_pixels: 524_288,
+                maximum_markers: 128,
+            },
+            maximum_output_bytes: 1_572_864,
+        },
+        jpeg_work_units: 2_000_033,
+        h264: fss_codec_h264::DecoderLimits {
+            max_width: 720,
+            max_height: 480,
+            max_macroblocks: 1350,
+            max_pictures: 70,
+            max_nal_bytes: 16_384,
+            max_slices_per_picture: 24,
+            max_reference_frames: 2,
+        },
+        h265: fss_codec_h265::DecoderLimits {
+            max_width: 800,
+            max_height: 450,
+            max_luma_samples: 360_000,
+            max_pictures: 90,
+            max_nal_bytes: 20_000,
+            max_slices_per_picture: 20,
+            max_dpb_pictures: 8,
+        },
+        run: RgbRunLimits {
+            decode: RgbDecodeLimits {
+                frame: fss_codec_mjpeg::DecodeLimits {
+                    maximum_bytes: 30_000,
+                    maximum_dimension: 640,
+                    maximum_pixels: 200_000,
+                    maximum_markers: 32,
+                },
+                maximum_output_bytes: 600_000,
+            },
+            preprocess: ExecBudget::new(100_003, 900_001),
+            execution: ExecBudget::new(3_000_007, 4_000_009),
+            maximum_output_bytes: 550_001,
+        },
+        detection_work_units: 5_000_009,
+        detection_scratch_bytes: 6_000_011,
+    };
+    let config = CascadeConfig {
+        frames_per_track: 4,
+        max_inferences: 3,
+        minimum_association_iou_ppm: 221_337,
+        minimum_score_ppm: Some(654_321),
+    };
+    let recipe = LongWatchDetectorRecipe::new(&package, config, original, &watch)?;
+    let restored =
+        LongWatchDetectorRecipe::from_retained_bytes(&recipe.to_bytes(), recipe.digest())?;
+    restored.verify_package(&package)?;
+    assert_eq!(restored.config(), config);
+    assert_eq!(restored.package_digest(), package.archive_digest());
+    assert_eq!(restored.manifest_digest(), package.manifest_digest());
+    assert_eq!(restored.model_digest(), package.model().digest());
+    assert_eq!(restored.backend(), package.model().backend());
+    assert_eq!(
+        restored.contract_digest(),
+        package.contract_with_threshold(654_321)?.digest()
+    );
+    let limits = restored.watch_limits();
+    assert_same_decode_limits(&limits.decode, &watch.decode);
+    assert_eq!(
+        (
+            limits.maximum_source_chunk_bytes,
+            limits.maximum_pixel_samples,
+            limits.maximum_assignment_work,
+            limits.maximum_trace_bytes
+        ),
+        (
+            watch.maximum_source_chunk_bytes,
+            watch.maximum_pixel_samples,
+            watch.maximum_assignment_work,
+            watch.maximum_trace_bytes
+        )
+    );
+    let limits = restored.package_limits();
+    assert_eq!(limits.read, original.read);
+    assert_same_jpeg_limits(limits.jpeg.frame, original.jpeg.frame);
+    assert_eq!(
+        limits.jpeg.maximum_output_bytes,
+        original.jpeg.maximum_output_bytes
+    );
+    assert_eq!(limits.jpeg_work_units, original.jpeg_work_units);
+    assert_eq!(limits.h264, original.h264);
+    assert_eq!(limits.h265, original.h265);
+    assert_same_jpeg_limits(limits.run.decode.frame, original.run.decode.frame);
+    assert_eq!(
+        limits.run.decode.maximum_output_bytes,
+        original.run.decode.maximum_output_bytes
+    );
+    assert_eq!(limits.run.preprocess, original.run.preprocess);
+    assert_eq!(limits.run.execution, original.run.execution);
+    assert_eq!(
+        limits.run.maximum_output_bytes,
+        original.run.maximum_output_bytes
+    );
+    assert_eq!(limits.detection_work_units, original.detection_work_units);
+    assert_eq!(
+        limits.detection_scratch_bytes,
+        original.detection_scratch_bytes
+    );
+    restored.validate_within(&LongWatchLimits::default(), &PackageDetectLimits::default())?;
+    assert_eq!(restored.to_bytes(), recipe.to_bytes());
+    Ok(())
+}
+
+#[test]
+fn long_detector_recipe_refuses_narrowed_read_authority_and_changed_native_identity() -> Test {
+    use fss_reference::ingest::detector_cascade::CascadeConfig;
+    use fss_reference::ingest::long_watch::detector::LongWatchDetectorRecipe;
+    use fss_reference::ingest::package_detect::PackageDetectLimits;
+    let f = Fixture::new(
+        "trained-recipe-refusal",
+        &scene(3, 3, None, false, false)?,
+        "mjpeg",
+    )?;
+    let scalar = fss_reference::ScalarExecCx::new();
+    let package = trained_package(&f, &scalar)?;
+    let recipe = LongWatchDetectorRecipe::new(
+        &package,
+        CascadeConfig::default(),
+        PackageDetectLimits::default(),
+        &LongWatchLimits::default(),
+    )?;
+    let mut watch = LongWatchLimits::default();
+    watch.decode.read_limits.max_chunk_bytes -= 1;
+    assert!(matches!(
+        recipe.validate_within(&watch, &PackageDetectLimits::default()),
+        Err(WatchError::Limit)
+    ));
+    let mut detector = PackageDetectLimits::default();
+    detector.read.max_segment_bytes -= 1;
+    assert!(matches!(
+        recipe.validate_within(&LongWatchLimits::default(), &detector),
+        Err(WatchError::Limit)
+    ));
+    let bytes = recipe.to_bytes();
+    assert!(LongWatchDetectorRecipe::from_bytes(b"malformed recipe").is_err());
+    assert!(LongWatchDetectorRecipe::from_bytes(&bytes[..bytes.len() - 1]).is_err());
+    let mut trailing = bytes.clone();
+    trailing.push(0);
+    assert!(LongWatchDetectorRecipe::from_bytes(&trailing).is_err());
+    assert!(
+        LongWatchDetectorRecipe::from_retained_bytes(
+            &bytes,
+            ContentDigest::sha256(b"other package")
+        )
+        .is_err()
+    );
+    let generation = recipe.backend().generation().bytes();
+    let offset = bytes
+        .windows(generation.len())
+        .position(|candidate| candidate == generation)
+        .ok_or("backend generation")?;
+    let mut changed = bytes;
+    changed[offset] ^= 1;
+    assert!(LongWatchDetectorRecipe::from_bytes(&changed).is_err());
+    Ok(())
+}

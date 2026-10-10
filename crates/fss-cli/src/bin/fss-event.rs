@@ -139,7 +139,10 @@ const HELP: &str = "fss-event <report|prepare|publish|read|verify|watch|corrobor
     Aggregate budgets: --stream-read-bytes N --stream-pixel-budget N\n\
     --stream-assignment-work N --stream-trace-bytes N (all positive; charged for the whole scan).\n\
     With --sensor-health conservative-v1 any suspect run blocks the whole scan's publication.\n\
-    Refuses --stream-dwell, all dwell options, detector-package flags and --retain-coverage.\n\
+    The explicit detector-package options run native RGB inference at entries and following\n\
+    actual matches under one whole-recording inference budget. Approved candidates retain\n\
+    the exact package for cold replay. Class evidence remains uncalibrated; budget-skipped\n\
+    or refused frames stay explicit. Refuses --stream-dwell, dwell options and --retain-coverage.\n\
     Each candidate has its own exact approval; events remain unclassified, indeterminate,\n\
     single-sensor and Hold. Empty results never certify absence; no alert is prepared or sent.\n\
   corroborate (two recordings, two sensors): --camera NAME:sha256:IMPORT (exactly twice)\n\

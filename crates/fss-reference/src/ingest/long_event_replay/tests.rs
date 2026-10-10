@@ -2,6 +2,7 @@
 //! Real retained media and current authority, then independent read-only native recomputation.
 
 use super::*;
+use crate::ingest::long_watch::LongWatchReport;
 use crate::ingest::privacy_mask::{PrivacyMaskPolicy, declare_mask, preview_mask};
 use crate::ingest::recorded_decode::ComponentInterpretation;
 use crate::ingest::recorded_watch::{
@@ -333,6 +334,38 @@ fn quiet_source_capsules_and_original_chunks_remain_required_after_event_publica
         ).is_err());
         assert_eq!(f.snapshot(), before);
     }
+    Ok(())
+}
+
+#[test]
+fn source_capsule_bindings_refuse_a_different_valid_segment_payload() -> Test {
+    let mut f = Fixture::new("capsule-binding")?;
+    let (_, event_id, pins) = f.watch(&scene(40, 3, false)?, "mjpeg", [48, 32], false, false)?;
+    let limits = LongEventReplayLimits::default();
+    let (event, _) = f.deployment.current_event_authority(&event_id)?;
+    let identity = event_identity(&event_id, "event:long-watch:")?;
+    let reader = || MetadataReader { remaining: limits.maximum_metadata_bytes, used: 0, objects: 0 };
+    let loaded = watch::load(
+        &f.deployment, &event, identity, pins.provenance_root, &limits, &mut reader(), &f.cx,
+    )?;
+    let mut source = loaded.sources.into_iter().next().ok_or("watch source missing")?;
+    let (&segment, &expected) = source.capsule_bindings.iter().next().ok_or("entry binding missing")?;
+    let retained = RetainedFileImport::open(
+        &f.deployment, source.import_identity, limits.execution.decode.read_limits, &f.cx,
+    )?;
+    let other_segment = if segment == source.first { source.first + 1 } else { source.first };
+    let other = source_capsule(&f.deployment, &retained, other_segment)?.1;
+    assert_ne!(expected, other);
+    let before = f.snapshot();
+    verify_source_metadata(&f.deployment, &source, &limits, &mut reader(), &f.cx)?;
+    // Both payloads are valid capsules from this exact camera and import. Their association
+    // with a different segment must still be refused without running native perception.
+    source.capsule_bindings.insert(segment, other);
+    assert!(matches!(
+        verify_source_metadata(&f.deployment, &source, &limits, &mut reader(), &f.cx),
+        Err(LongEventReplayError::InvalidRecord)
+    ));
+    assert_eq!(f.snapshot(), before);
     Ok(())
 }
 

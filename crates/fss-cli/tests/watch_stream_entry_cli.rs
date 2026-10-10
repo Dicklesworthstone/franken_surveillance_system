@@ -289,7 +289,7 @@ fn inapplicable_modes_and_budget_names_fail_before_deployment_io() -> Test {
         ),
         (
             vec!["--stream-watch", "--detector-package", "/unused/model"],
-            "does not admit detector",
+            "--detector-digest",
         ),
         (
             vec![

@@ -34,6 +34,11 @@ fingerprint can substitute for it.
 
 Inspection checks the retained metadata, capsule authority and source closure without
 performing native image decoding. A stored analysis is not reported as an executed replay.
+For a detector-backed watch event, the response also includes `retained_detector`: the package,
+manifest, model, recipe and threshold-contract digests, kernel generation and inference
+selection bounds. The complete archived package and every class-evidence record must be in
+the analysis closure. Entry and class-frame capsule digests must match the exact retained
+coding segments, rather than merely naming some valid capsule from the same camera.
 Missing custody, corrupted metadata, stale privacy or a reviewed successor revision is refused.
 This reader currently owns the original whole-recording candidate revisions; it does not
 reinterpret a later human review as that original computation.
@@ -63,6 +68,13 @@ absolute entry position. Corroboration replay runs both complete camera scans an
 their ground transforms, association gates, common-cause declarations and optional health
 screen.
 
+Detector-backed watch replay additionally loads the exact retained package archive, verifies
+its manifest, model, threshold contract and kernel generation, and runs the original bounded
+native RGB inference and class association. The original model file can be deleted after
+publication. No loose package path or model/threshold/backend substitution is accepted.
+Selected frames, refused frames, inference attempts, completed inferences and additional
+source/JPEG/pixel work are part of the reproduced analysis.
+
 The full analyses, candidate provenance and committed event must match. A matching event alone
 cannot hide a changed background scan or omitted frame. Divergence or a bound failure returns
 an error without success JSON. Success reports `status: "native_replay_matched"`, frame and
@@ -82,12 +94,23 @@ retained settings and uses the caller's current bounded native codec/read limits
 compares the complete native output with the retained analysis. The response describes this
 scope explicitly; it does not invent missing historical settings or change the stored format.
 
+Detector-backed whole-recording watch publications add a canonical recipe with the complete
+original native scan ceilings and package settings. Replay checks every numeric reservation
+against current caller ceilings and restores the original values. Model-free historical
+publications keep their existing bytes and interpretation. The JSON identifies the complete
+detector recipe separately from the historical five-budget watch recipe.
+
 ## Resource and output bounds
 
 All numeric options require positive unsigned decimal values. Source, pixel, assignment,
 trace and JPEG-work execution ceilings apply separately to each camera's complete recording.
 They never refill at frame or chunk boundaries. For corroboration the complete two-camera
 reservation is therefore twice the selected per-camera reservation.
+For detector-backed watch, source, JPEG and pixel ceilings span both native passes. The
+retained package archive is charged to the cumulative metadata-read bound. The recipe's
+inference allowance remains global to the recording; at most 64 selected frames can enter
+the native inference pipeline. Cooperative cancellation is checked at frame and inference
+boundaries; one admitted model call retains its explicit internal work limits.
 
 | Option | Default | Hard maximum |
 |---|---:|---:|
@@ -132,3 +155,24 @@ The integration builds used `--locked --offline -j 1`, disabled test debug infor
 disabled incremental compilation to fit the transient build store. Debug assertions and the
 pinned compiler remained unchanged. These focused results do not claim full-workspace tests,
 Clippy, a workspace formatting pass, device quality or release qualification.
+
+The detector-backed extension was then validated on 2026-10-10 with 58 passing native tests:
+16 whole-recording reference contracts, 31 focused CLI tests and 11 current cold replay library
+cases. The latter rerun all ten historical library cases and add a wrong-segment capsule-binding
+regression. The CLI cases include native verification after loose source/model removal and
+refusal after the retained model archive itself is removed. All tests passed without failures
+or ignored cases. The test-only cold reader now imports its watch report type explicitly rather
+than relying on a removed parent-module import.
+
+```sh
+cargo test -p fss-reference --test long_watch_contract
+cargo test -p fss-reference --lib ingest::long_event_replay
+cargo test -p fss-cli --test watch_stream_detector_cli --test watch_stream_entry_cli --test detector_cascade_cli_contract
+cargo test -p fss-cli --test long_event_replay_cli
+cargo test -p fss-cli --bin fss-event replay::
+```
+
+These runs used the same pinned native compiler, offline dependencies, one Cargo job, disabled
+test debug information and incremental compilation, and a local serial frontend/backend
+setting for the large reference crate. The serial setting resolved shared build-memory kills;
+it changes neither the retained inference backend nor the project's toolchain or dependencies.

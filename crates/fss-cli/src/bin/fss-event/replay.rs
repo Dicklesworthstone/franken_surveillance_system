@@ -17,8 +17,8 @@ use fss_cli::{ERR_CLI_MALFORMED_VALUE, ERR_CLI_RUNTIME_FAILURE, ExitIdentity};
 use fss_core::region::{ContextAuthority, RootAuthoritySpec};
 use fss_core::{BudgetVector, ContentDigest, DigestAlgorithm, EventId, OperationId, PrincipalId};
 use fss_reference::ingest::long_event_replay::{
-    LongEventReplayInspection, LongEventReplayLimits, LongEventReplayPins, inspect_long_event,
-    replay_long_event,
+    LongEventReplayInspection, LongEventReplayLimits, LongEventReplayPins, LongEventReplayRecipe,
+    inspect_long_event, replay_long_event,
 };
 use fss_reference::{DeploymentLayout, ReferenceDeployment, ReplayCx};
 
@@ -31,11 +31,13 @@ fss-event verify --root EXISTING_DIR --site SITE --event-id EVENT\n\
   --execute-perception yes\n\
 Supports committed event:long-watch: and event:long-corroborated: candidates.\n\
 Read inspects retained event/analysis custody without decoding media. Its JSON contains exact\n\
-verification pins and a verification command. Watch retains its semantic recipe and five\n\
-aggregate budgets; its historical codec/read ceilings were not retained, so replay uses\n\
-current caller-bounded decoder/read ceilings. Corroboration retains a full canonical recipe.\n\
+verification pins and a verification command. Model-free watch retains its semantic recipe\n\
+and five aggregate budgets; historical codec/read ceilings use current caller bounds.\n\
+Detector-backed watch and corroboration retain complete canonical execution recipes.\n\
 Verify natively decodes retained MJPEG/H.264/H.265, applies current privacy and reruns the\n\
 original foreground/tracker, zone or ground gates, dependencies and optional health screen.\n\
+Detector-backed watch also reloads its retained model archive and reruns the exact bounded\n\
+RGB inference, threshold and association policy with the original kernel generation.\n\
 Every complete analysis and the committed event must match. No source file, saved report,\n\
 threshold, zone, model, screening override, publication approval or network is accepted.\n\
 Common bounds: --max-metadata-bytes N (default 64 MiB, maximum 256 MiB)\n\
@@ -96,9 +98,9 @@ fn supported(value: &str) -> bool {
 pub(super) fn handles(args: &[OsString]) -> bool {
     args.first().is_some_and(|value| value == "verify")
         || (args.first().is_some_and(|value| value == "read")
-            && args.windows(2).any(|pair| {
-                pair[0] == "--event-id" && pair[1].to_str().is_some_and(supported)
-            }))
+            && args
+                .windows(2)
+                .any(|pair| pair[0] == "--event-id" && pair[1].to_str().is_some_and(supported)))
 }
 
 fn text<'a>(values: &'a BTreeMap<String, OsString>, key: &str) -> Result<&'a str, String> {
@@ -119,7 +121,9 @@ fn number(
         if value.is_empty() || !value.bytes().all(|b| b.is_ascii_digit()) {
             return Err(format!("{key} requires unsigned decimal"));
         }
-        value.parse().map_err(|_| format!("{key} integer overflow"))?
+        value
+            .parse()
+            .map_err(|_| format!("{key} integer overflow"))?
     } else {
         default
     };
@@ -184,7 +188,9 @@ fn parse(args: &[OsString]) -> Result<Options, String> {
         .or_else(|| event.as_str().strip_prefix("event:long-corroborated:"))
         .ok_or("cold read/verify requires a long-watch or long-corroborated event")?;
     if suffix.len() != 64
-        || !suffix.bytes().all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte))
+        || !suffix
+            .bytes()
+            .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte))
     {
         return Err("long-event ID requires exactly 64 lowercase hexadecimal digits".into());
     }
@@ -353,14 +359,29 @@ fn report(
 ) -> Run<String> {
     let verified = execution.is_some();
     let limits = &options.limits.execution;
-    let body = object(&[
+    let (detector, complete_codec_limits) = match inspection.recipe() {
+        LongEventReplayRecipe::Watch(recipe) => (
+            recipe.detector_recipe(),
+            recipe.complete_codec_limits_retained(),
+        ),
+        LongEventReplayRecipe::Corroboration(_) => (None, true),
+    };
+    let mut fields = vec![
         (
             "operation",
-            string(if verified { "verify_long_event" } else { "read_long_event" }),
+            string(if verified {
+                "verify_long_event"
+            } else {
+                "read_long_event"
+            }),
         ),
         (
             "status",
-            string(if verified { "native_replay_matched" } else { "inspected_not_replayed" }),
+            string(if verified {
+                "native_replay_matched"
+            } else {
+                "inspected_not_replayed"
+            }),
         ),
         ("profile", string(inspection.profile())),
         ("event_id", string(inspection.event().event_id.as_str())),
@@ -393,25 +414,48 @@ fn report(
             "metadata_payload_bytes_read",
             inspection.metadata_bytes_read().to_string(),
         ),
-        ("execution_budget_scope", string("per_camera_complete_recording")),
+        (
+            "execution_budget_scope",
+            string("per_camera_complete_recording"),
+        ),
         (
             "bounds",
             object(&[
-                ("metadata_bytes", options.limits.maximum_metadata_bytes.to_string()),
-                ("source_chunk_bytes", limits.maximum_source_chunk_bytes.to_string()),
+                (
+                    "metadata_bytes",
+                    options.limits.maximum_metadata_bytes.to_string(),
+                ),
+                (
+                    "source_chunk_bytes",
+                    limits.maximum_source_chunk_bytes.to_string(),
+                ),
                 ("pixel_samples", limits.maximum_pixel_samples.to_string()),
-                ("assignment_work", limits.maximum_assignment_work.to_string()),
+                (
+                    "assignment_work",
+                    limits.maximum_assignment_work.to_string(),
+                ),
                 ("trace_bytes", limits.maximum_trace_bytes.to_string()),
                 ("jpeg_work", limits.decode.jpeg_work_units.to_string()),
-                ("max_dimension", limits.decode.jpeg_limits.maximum_dimension.to_string()),
-                ("max_pixels", limits.decode.jpeg_limits.maximum_pixels.to_string()),
-                ("max_segment_bytes", limits.decode.read_limits.max_segment_bytes.to_string()),
+                (
+                    "max_dimension",
+                    limits.decode.jpeg_limits.maximum_dimension.to_string(),
+                ),
+                (
+                    "max_pixels",
+                    limits.decode.jpeg_limits.maximum_pixels.to_string(),
+                ),
+                (
+                    "max_segment_bytes",
+                    limits.decode.read_limits.max_segment_bytes.to_string(),
+                ),
                 ("report_bytes", options.maximum_report_bytes.to_string()),
             ]),
         ),
         (
             "configuration_source",
-            string(if inspection.profile() == "long_watch" {
+            string(if detector.is_some() {
+                "retained_canonical_watch_and_detector_recipe"
+            } else if inspection.profile() == "long_watch" {
                 "retained_semantic_recipe_and_five_aggregate_budgets"
             } else {
                 "retained_canonical_recipe"
@@ -419,10 +463,10 @@ fn report(
         ),
         (
             "decoder_and_read_ceiling_source",
-            string(if inspection.profile() == "long_watch" {
-                "current_caller_bounded_ceilings_historical_ceilings_not_retained"
-            } else {
+            string(if complete_codec_limits {
                 "retained_recipe_subject_to_caller_safety_ceilings"
+            } else {
+                "current_caller_bounded_ceilings_historical_ceilings_not_retained"
             }),
         ),
         (
@@ -441,7 +485,53 @@ fn report(
         ("absence_certifiable", "false".into()),
         ("alert_authorized", "false".into()),
         ("qualification", string("implemented_not_qualified")),
-    ]);
+    ];
+    if let Some(recipe) = detector {
+        let config = recipe.config();
+        fields.push((
+            "retained_detector",
+            object(&[
+                ("recipe_digest", string(&recipe.digest().to_text())),
+                ("package_digest", string(&recipe.package_digest().to_text())),
+                (
+                    "manifest_digest",
+                    string(&recipe.manifest_digest().to_text()),
+                ),
+                ("model_digest", string(&recipe.model_digest().to_text())),
+                (
+                    "contract_digest",
+                    string(&recipe.contract_digest().to_text()),
+                ),
+                ("kernel_backend", string(recipe.backend().stable_id())),
+                (
+                    "kernel_generation",
+                    string(&recipe.backend().generation().to_text()),
+                ),
+                ("maximum_inferences", config.max_inferences.to_string()),
+                ("frames_per_entry", config.frames_per_track.to_string()),
+                (
+                    "minimum_association_iou_ppm",
+                    config.minimum_association_iou_ppm.to_string(),
+                ),
+                (
+                    "minimum_score_ppm_override",
+                    config
+                        .minimum_score_ppm
+                        .map_or_else(|| "null".into(), |value| value.to_string()),
+                ),
+                (
+                    "package_custody",
+                    string("complete_archive_retained_in_analysis_closure"),
+                ),
+                (
+                    "evidence_scope",
+                    string("uncalibrated_same_sensor_class_evidence"),
+                ),
+                ("loose_model_file_required", "false".into()),
+            ]),
+        ));
+    }
+    let body = object(&fields);
     if body
         .len()
         .checked_add(1)
@@ -486,7 +576,10 @@ fn run(options: Options) -> Run<String> {
                     &options,
                     &root,
                     verified.inspection(),
-                    Some((verified.frames_replayed(), verified.source_chunk_bytes_read())),
+                    Some((
+                        verified.frames_replayed(),
+                        verified.source_chunk_bytes_read(),
+                    )),
                 )?;
                 finish(&options, &root, verified.inspection(), output, &cx)
             }
@@ -504,7 +597,12 @@ fn finish(
 ) -> Run<String> {
     // Construct and bound all response bytes before a create-only optional export.
     if let Some(path) = &options.event_out {
-        super::export(path, inspection.event().to_canonical_json().as_bytes(), root, cx)?;
+        super::export(
+            path,
+            inspection.event().to_canonical_json().as_bytes(),
+            root,
+            cx,
+        )?;
     }
     if let Some(path) = &options.report_out {
         super::export(path, output.as_bytes(), root, cx)?;
@@ -521,9 +619,7 @@ fn emit(out: &mut impl Write, bytes: &[u8]) -> io::Result<()> {
             match out.write(&chunk[written..]) {
                 Ok(0) => return Err(io::ErrorKind::WriteZero.into()),
                 Ok(count) => written += count,
-                Err(error)
-                    if error.kind() == io::ErrorKind::Interrupted && interruptions < 8 =>
-                {
+                Err(error) if error.kind() == io::ErrorKind::Interrupted && interruptions < 8 => {
                     interruptions += 1;
                 }
                 Err(error) => return Err(error),
@@ -534,7 +630,11 @@ fn emit(out: &mut impl Write, bytes: &[u8]) -> io::Result<()> {
 }
 
 pub(super) fn main(args: &[OsString]) -> ExitCode {
-    if args.len() == 2 && ["help", "--help", "-h"].iter().any(|value| args[1] == *value) {
+    if args.len() == 2
+        && ["help", "--help", "-h"]
+            .iter()
+            .any(|value| args[1] == *value)
+    {
         return match emit(&mut io::stdout().lock(), HELP.as_bytes()) {
             Ok(()) => ExitCode::SUCCESS,
             Err(_) => ExitCode::from(1),

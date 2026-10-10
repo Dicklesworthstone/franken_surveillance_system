@@ -511,9 +511,10 @@ fn test_schema_domain_and_pinned_counts() -> Result<(), Box<dyn Error>> {
     // + SCHEMA-DOMAIN-ACQUISITION-WINDOWED-DEGRADATION-001 = 295.
     // + existing retained HTTP history and whole-recording domains = 313.
     // + RTSP recording import request, identity, origin proof and CLI plan = 317.
+    // + whole-recording detector recipe and outcome = 319.
     assert_eq!(
-        domain_count, 317,
-        "registries/DIGEST_DOMAINS.md count must remain pinned at 317"
+        domain_count, 319,
+        "registries/DIGEST_DOMAINS.md count must remain pinned at 319"
     );
 
     let schemas_path = Path::new(env!("CARGO_MANIFEST_DIR"))

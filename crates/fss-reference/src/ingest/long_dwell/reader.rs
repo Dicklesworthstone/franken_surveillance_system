@@ -4,7 +4,7 @@
 
 use super::*;
 
-pub(super) struct ChunkCursor {
+pub(crate) struct ChunkCursor {
     chunk: Option<(usize, Vec<u8>)>,
     bytes_read: u64,
     maximum: u64,
@@ -12,7 +12,7 @@ pub(super) struct ChunkCursor {
     rtsp_origin: Option<crate::ingest::rtsp_import::OriginCache>,
 }
 impl ChunkCursor {
-    pub(super) fn new(maximum: u64) -> Self {
+    pub(crate) fn new(maximum: u64) -> Self {
         Self {
             chunk: None,
             bytes_read: 0,
@@ -21,10 +21,10 @@ impl ChunkCursor {
             rtsp_origin: None,
         }
     }
-    pub(super) const fn bytes_read(&self) -> u64 {
+    pub(crate) const fn bytes_read(&self) -> u64 {
         self.bytes_read
     }
-    pub(super) fn segment(
+    pub(crate) fn segment(
         &mut self,
         deployment: &ReferenceDeployment,
         retained: &RetainedFileImport,
@@ -73,7 +73,10 @@ impl ChunkCursor {
                 charge(&mut self.bytes_read, expected_len, self.maximum)?;
                 checkpoint(cx, "long_dwell:chunk")?;
                 let maximum = usize::try_from(expected_len).map_err(|_| WatchError::Limit)?;
-                let chunk = deployment.publisher().spool().read_bounded(digest, maximum)?;
+                let chunk = deployment
+                    .publisher()
+                    .spool()
+                    .read_bounded(digest, maximum)?;
                 if chunk.len() as u64 != expected_len || ContentDigest::sha256(&chunk) != digest {
                     return Err(RecordedDecodeError::InvalidReceipt.into());
                 }
@@ -112,18 +115,26 @@ impl ChunkCursor {
         let bytes_read = &mut self.bytes_read;
         let maximum = self.maximum;
         crate::ingest::rtsp_import::verify_range_budgeted(
-            deployment, manifest, span.offset, &bytes, cx, &mut self.rtsp_origin,
+            deployment,
+            manifest,
+            span.offset,
+            &bytes,
+            cx,
+            &mut self.rtsp_origin,
             &mut |extra| {
                 let required = bytes_read.saturating_add(extra);
                 if required > maximum {
                     return Err(crate::ingest::FileIngestError::SpoolCapacityExceeded {
-                        limit: "stream_source_chunk_bytes", required, available: maximum,
+                        limit: "stream_source_chunk_bytes",
+                        required,
+                        available: maximum,
                     });
                 }
                 *bytes_read = required;
                 Ok(())
             },
-        ).map_err(|error| source_read_error(error.into()))?;
+        )
+        .map_err(|error| source_read_error(error.into()))?;
         self.last_segment = Some(index);
         Ok(bytes)
     }

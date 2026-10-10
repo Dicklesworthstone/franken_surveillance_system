@@ -45,7 +45,7 @@ use crate::{
     ReferenceDeployment, ReferenceError, ReferencePolicyAction, ReferencePolicyDecision, ReplayCx,
 };
 
-mod reader;
+pub(super) mod reader;
 use reader::ChunkCursor;
 mod health;
 use health::Screening;
@@ -89,7 +89,8 @@ pub struct LongDwellLimits {
     pub decode: WatchLimits,
     /// Bytes fetched from source chunks; metadata reads are separately bounded by their owners.
     pub maximum_source_chunk_bytes: u64,
-    /// Sum of decoded luma sample counts, charged before foreground processing.
+    /// Sum of decoded luma sample counts, charged before foreground processing. A whole-recording
+    /// trained detector's optional second pass consumes this same ceiling for its decoded pixels.
     /// Opt-in screening has a separate cumulative sample counter with this same ceiling.
     pub maximum_pixel_samples: u64,
     /// Sum of checked Hungarian admission bounds, charged before tracker updates.
@@ -272,6 +273,7 @@ pub(super) struct ScanObservation<'a> {
     pub(super) time_reliable: bool,
     pub(super) privacy: &'a MaskBinding,
     pub(super) tracks: &'a [TrackedTarget],
+    pub(super) zone_entries: &'a [super::long_watch::LongWatchEntry],
 }
 
 /// A scoped consumer of the existing streaming tracker, with no alternate media engine.
@@ -472,6 +474,13 @@ impl Scan<'_, '_> {
                 time_reliable: self.time_reliable,
                 privacy: self.privacy,
                 tracks: &output.tracks,
+                zone_entries: match &self.temporal {
+                    TemporalAccumulator::Entry { entries, .. } => {
+                        let first = entries.partition_point(|entry| entry.position < position);
+                        &entries[first..]
+                    }
+                    _ => &[],
+                },
             })?;
         }
         frame_record.bool(true);
@@ -1042,6 +1051,28 @@ pub(super) fn run_scan(
     screened: bool,
 ) -> Result<ScanData> {
     run_scan_inner(deployment, plan, rule, options, limits, cx, screened, None)
+}
+
+#[allow(clippy::too_many_arguments)]
+pub(super) fn run_zone_observed_scan(
+    deployment: &ReferenceDeployment,
+    plan: &WatchPlan,
+    options: WatchOptions,
+    limits: &LongDwellLimits,
+    cx: &ReplayCx,
+    screened: bool,
+    observer: &mut dyn ScanObserver,
+) -> Result<ScanData> {
+    run_scan_inner(
+        deployment,
+        plan,
+        ScanRule::ZoneEntry,
+        options,
+        limits,
+        cx,
+        screened,
+        Some(observer),
+    )
 }
 
 #[allow(clippy::too_many_arguments)]
