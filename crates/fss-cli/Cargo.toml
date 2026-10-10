@@ -111,6 +111,10 @@ path = "src/bin/fss-replay-dwell.rs"
 name = "fss-evidence"
 path = "src/bin/fss-evidence.rs"
 
+[[bin]]
+name = "fss-custody"
+path = "src/bin/fss-custody.rs"
+
 [dependencies]
 fss-codec-mjpeg = { path = "../fss-codec-mjpeg" }
 fss-core = { path = "../fss-core" }

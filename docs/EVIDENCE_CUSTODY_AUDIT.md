@@ -86,3 +86,65 @@ Rust compilation, execution, rustfmt and Clippy have not run in the authoring
 environment: no Rust toolchain or network route to one was available. Independent
 semantic/encoding checks do not replace native tests. This is a reference candidate,
 not a production qualification or closure of a broad work package.
+
+## Operator workflow
+
+```sh
+cargo run -p fss-cli --bin fss-custody -- audit \
+  --root /path/to/deployment --site site:your-site --event-id event:your-event
+```
+
+The command selects exactly the requested event's CURRENT publication root from
+`read_deployment`, which replays committed authority and verifies the event's
+revision chain and payloads. The event must be present, and its selected record
+must match both the retained chain tail and committed revision digest. A different
+site, missing event or unreadable canonical history is refused. An arbitrary
+staged artifact cannot be used in place of an authoritative event root.
+
+`--expected-root sha256:HEX` optionally pins the event root from a prior report.
+This prevents auditing a silently changed revision; it does not pin or guarantee
+current byte availability. The custody walk receives only that event root and
+object-to-plan denials derived from the verified committed deletion index. The
+original event, including uncertainty and counterevidence, is rendered by its
+canonical core renderer and remains unchanged by custody findings.
+
+The command then reads the deployment again. Site, ledger/effect roots and
+positions, current event root, revision, canonical event record, deletion denials
+and uncommitted-tail flags must match. Any observed drift refuses the whole report;
+there is no stale-root fallback, retry or repair. This bracket is separate from the
+audit's two publication/tombstone catalogue reads. None of the comparisons creates
+an atomic filesystem snapshot or detects every possible change-and-revert.
+
+Complete reports include every discoverable object's typed state, known child
+edges, verification lengths and denial references. No source payload is printed.
+A nonzero runtime-failure exit accompanies a complete `custody_faults` report;
+exit zero requires all selected publication-closure bytes to verify. Errors,
+cancellation and report overflow emit no successful report. Operator metadata has
+no redaction transform and must not be treated as an approved evidence export.
+
+The following options configure custody allowances (not the entire command's I/O):
+`--max-read-bytes`, `--max-io-calls`, `--max-objects`, `--max-edges`,
+`--max-object-bytes`, and `--max-catalogue-entries`. Their ceilings and defaults are
+those of the library above. `--max-report-bytes` permits 1,024 through 2,097,152
+bytes including the newline. `--timeout-ms` permits 1 through 3,600,000 (default
+30,000). The parser accepts at most 25 arguments of at most 4,096 bytes, preserves
+native filesystem path bytes and rejects duplicate or unknown options before I/O.
+
+Two separately bounded deployment reads use the existing `OrientLimits` defaults
+and doctor inspection. They can inspect unrelated objects; their reported counters
+are kept separate and are NOT charged to the new audit byte/call allowance. The
+new nonrefillable meter covers the custody stage, including both of its publication
+catalogue passes. Deadlines bracket deployment reads and are checked at every
+custody I/O boundary; individual blocking syscalls are not preempted.
+
+Twelve additional operator contracts cover grammar, root/identity pins, real
+publication-envelope traversal, complete canonical metadata, missing/corrupt and
+deleted payloads, authority drift, output boundaries, cancellation and bounded
+output delivery. Their verified-snapshot seam is explicitly injected: these are
+not an end-to-end proof of canonical ledger publication. A publication-only tree
+is also checked to be insufficient for the actual deployment reader. Native
+compilation/tests remain unrun in the authoring environment.
+
+```sh
+cargo test -p fss-cli --bin fss-custody
+```
