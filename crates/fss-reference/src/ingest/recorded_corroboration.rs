@@ -815,6 +815,7 @@ impl CorroborationCandidate {
 /// Complete deterministic corroboration analysis.
 #[derive(Clone, Debug)]
 pub struct CorroborationReport {
+    publication_guards: [super::recorded_watch::SourcePublicationGuard; 2],
     plan: CorroborationPlan,
     plan_digest: ContentDigest,
     cameras: Vec<CameraSummary>,
@@ -834,6 +835,7 @@ struct CorroborationCascade {
 }
 
 struct CameraRun {
+    publication_guard: super::recorded_watch::SourcePublicationGuard,
     summary: CameraSummary,
     entries: Vec<GroundEntry>,
     cascade: Option<CascadeOutcome>,
@@ -1052,6 +1054,7 @@ fn analyze_camera(
         }
     };
     Ok(CameraRun {
+        publication_guard: report.publication_guard().clone(),
         cascade,
         summary: CameraSummary {
             name: camera.name.clone(),
@@ -1519,6 +1522,7 @@ impl CorroborationReport {
         }
         let status = coverage_status(deployment, &coverage.iter().collect::<Vec<_>>())?;
         Ok(Self {
+            publication_guards: [first.publication_guard, second.publication_guard],
             plan: plan.clone(),
             plan_digest,
             cameras,
@@ -1585,6 +1589,9 @@ impl CorroborationReport {
         cx: &ReplayCx,
     ) -> Result<CoverageStatus> {
         checkpoint(cx, "recorded_corroboration:coverage")?;
+        for guard in &self.publication_guards {
+            guard.revalidate(deployment, cx)?;
+        }
         let records: Vec<&CoverageRecord> = self.coverage.iter().collect();
         let status = retain_coverage(deployment, &records, approval, cx)?;
         self.coverage_status = status;
@@ -1625,6 +1632,9 @@ impl CorroborationReport {
             if !self.candidates.iter().any(|c| c.proposal == *approval) {
                 return Err(CorroborationError::StaleApproval(*approval));
             }
+        }
+        for guard in &self.publication_guards {
+            guard.revalidate(deployment, cx)?;
         }
         let mut published = 0;
         for candidate in &mut self.candidates {

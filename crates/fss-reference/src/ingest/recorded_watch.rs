@@ -103,6 +103,9 @@ use crate::{
     ReferenceDeployment, ReferenceError, ReferencePolicyAction, ReferencePolicyDecision, ReplayCx,
 };
 
+mod publication;
+pub(crate) use publication::SourcePublicationGuard;
+
 /// Maximum decoded frames in one watch run.
 pub const MAX_WATCH_FRAMES: usize = 128;
 /// Maximum owner-drawn zones.
@@ -628,6 +631,7 @@ impl WatchCandidate {
 /// Complete deterministic analysis of one plan against retained source.
 #[derive(Clone, Debug)]
 pub struct WatchReport {
+    publication_guard: SourcePublicationGuard,
     plan: WatchPlan,
     plan_digest: ContentDigest,
     import_root: ContentDigest,
@@ -811,9 +815,18 @@ impl WatchReport {
         let segment_gaps: Vec<bool> = spans.iter().map(|s| s.gap_before).collect();
         let basis = deployment.current_anchor().clone();
         // The sensor's current privacy mask, resolved once; every decode path applies it.
-        let (first_capsule, _) = source_capsule(deployment, &retained, plan.first_segment)?;
+        let (first_capsule, first_capsule_digest) =
+            source_capsule(deployment, &retained, plan.first_segment)?;
         let privacy = current_mask(deployment, &first_capsule.sensor_id)
             .map_err(RecordedDecodeError::from)?;
+        let mut publication_guard = SourcePublicationGuard::capture(
+            deployment,
+            &retained,
+            &first_capsule.sensor_id,
+            &privacy,
+            limits.read_limits,
+            cx,
+        );
         let mut tolerant = if options.tolerate_decode_refusals {
             Some(Box::new(TolerantSource::open(
                 deployment,
@@ -1336,7 +1349,11 @@ impl WatchReport {
                 status,
             });
         }
+        publication_guard.bind_capsules(
+            std::iter::once(first_capsule_digest).chain(frames.iter().map(|f| f.capsule_digest)),
+        );
         Ok(Self {
+            publication_guard,
             plan: plan.clone(),
             plan_digest,
             import_root,
@@ -1390,6 +1407,10 @@ impl WatchReport {
     #[must_use]
     pub fn privacy_mask(&self) -> &MaskBinding {
         &self.privacy
+    }
+
+    pub(crate) fn publication_guard(&self) -> &SourcePublicationGuard {
+        &self.publication_guard
     }
 
     /// Detector-cascade outcome of this analysis, if a detector was supplied.
@@ -1449,6 +1470,7 @@ impl WatchReport {
         cx: &ReplayCx,
     ) -> Result<CoverageStatus> {
         checkpoint(cx, "recorded_watch:coverage")?;
+        self.publication_guard.revalidate(deployment, cx)?;
         let status = retain_coverage(deployment, &[&self.coverage], approval, cx)?;
         self.coverage_status = status;
         Ok(status)
@@ -1495,6 +1517,7 @@ impl WatchReport {
                 return Err(WatchError::StaleApproval(*approval));
             }
         }
+        self.publication_guard.revalidate(deployment, cx)?;
         let mut published = 0;
         for candidate in &mut self.candidates {
             if !approvals.contains(&candidate.proposal) {
