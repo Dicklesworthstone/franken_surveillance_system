@@ -14,6 +14,8 @@ pub mod archive_cmd;
 /// Work claims (FSS-226): the work-claiming intent family of `fss investigate` (AOP-006).
 pub mod claim_cmd;
 pub mod crosswalk;
+/// Checked custody observations over verified local event authority; no effect or export grant.
+pub mod custody_review;
 pub mod diagnostic;
 /// `fss plan` / `commit` / `wait` / `cancel` (AOP-007..010): the canonical effect grammar.
 pub mod effect_cmd;
