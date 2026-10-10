@@ -99,6 +99,10 @@ path = "src/bin/fss-export-package.rs"
 name = "fss-replay-dwell"
 path = "src/bin/fss-replay-dwell.rs"
 
+[[bin]]
+name = "fss-evidence"
+path = "src/bin/fss-evidence.rs"
+
 [dependencies]
 fss-codec-mjpeg = { path = "../fss-codec-mjpeg" }
 fss-core = { path = "../fss-core" }
