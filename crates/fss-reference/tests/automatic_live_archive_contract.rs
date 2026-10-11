@@ -65,7 +65,7 @@ fn credentials() -> Test<DigestCredentials<'static>> {
     Ok(DigestCredentials::new("fixture-user", "fixture-password")?)
 }
 fn description() -> &'static str {
-    "v=0\r\no=- 1 1 IN IP4 127.0.0.1\r\ns=fixture\r\nt=0 0\r\na=control:*\r\nm=video 0 RTP/AVP 96\r\na=rtpmap:96 H264/90000\r\na=fmtp:96 packetization-mode=1;sprop-parameter-sets=Z0LAC9oKEbARAAEAAAMAMg8UKqA=,aM4PLIA=\r\na=control:trackID=0\r\n"
+    "v=0\r\no=- 1 1 IN IP4 127.0.0.1\r\ns=fixture\r\nt=0 0\r\na=control:*\r\nm=video 0 RTP/AVP 96\r\na=rtpmap:96 H264/90000\r\na=fmtp:96 packetization-mode=1;sprop-parameter-sets=Z0LAC9oKEbARAAADAAEAAAMAMg8UKqA=,aM4PLIA=\r\na=control:trackID=0\r\n"
 }
 fn response(cseq: u32, headers: &str, body: &str) -> Vec<u8> {
     format!("RTSP/1.0 200 OK\r\nCSeq: {cseq}\r\nContent-Length: {}\r\n{headers}\r\n{body}", body.len()).into_bytes()
@@ -356,8 +356,8 @@ fn automatic_digest_and_keepalive_preserve_control_acknowledgements() -> Test {
     let due = f.driver.next_wake_ns().ok_or("keepalive wake missing")?;
     assert!(due > 7);
     assert!(matches!(f.archive_poll(due)?, CheckpointedLiveArchiveStep::Live(LiveArchiveStep::Recording(s))
-        if matches!(*s, LiveRecordingStep::Network(LiveAvcStep::Protocol { event: DigestAvcPoll::Client { event, .. }, .. })
-            if matches!(*event, AvcClientPoll::Control(ClientProgress::KeepAliveDue)))));
+        if matches!(s.as_ref(), LiveRecordingStep::Network(LiveAvcStep::Protocol { event: DigestAvcPoll::Client { event, .. }, .. })
+            if matches!(event.as_ref(), AvcClientPoll::Control(ClientProgress::KeepAliveDue)))));
     let (keepalive, wire) = f.command(due)?;
     assert_eq!(keepalive.command, ClientCommand::KeepAlive);
     assert!(std::str::from_utf8(&wire)?.starts_with("OPTIONS "));
@@ -494,5 +494,80 @@ fn automatic_uncertain_checkpoint_publication_retires_originals_and_never_resume
     let p = LocalRootPublisher::open(&path, limits())?;
     assert!(p.root(&namespace.window_slot(0)?).is_none());
     assert!(p.visible_roots().count() > 0);
+    Ok(())
+}
+
+#[test]
+fn automatic_pin_wait_expires_without_reading_or_replenishing_the_storage_pause() -> Test {
+    let mut p = LocalRootPublisher::open(fresh()?, limits())?;
+    let mut f = Fixture::playing(&mut p, 7)?;
+    let admission = f.window()?;
+    let pin = f.pin(14)?;
+    let totals = f.driver.totals().ok_or("totals")?;
+    for now in 15..20 {
+        assert!(!f.driver.needs_credentials());
+        assert!(matches!(f.archive_poll(now)?, CheckpointedLiveArchiveStep::Checkpoint(CheckpointedArchiveProgress::PinRequired(p)) if p == pin));
+        assert_eq!(f.driver.next_wake_ns(), Some(13 + PAUSE));
+        assert_eq!(f.driver.totals(), Some(totals));
+    }
+    let error = f.driver.acknowledge_checkpoint(&pin, 13 + PAUSE, &f.authority, &NeverCancel).err().ok_or("expired pin admitted")?;
+    assert!(matches!(error.reason, LiveArchiveError::StoragePauseExpired));
+    let retired = error.retirement.ok_or("retirement")?;
+    assert_eq!(retired.pending_checkpoint, Some(pin));
+    assert_eq!(retired.live.archive.ok_or("archive")?.pending.ok_or("source")?.manifest().root(), admission.root);
+    assert_eq!(f.driver.next_wake_ns(), None);
+    assert!(!f.driver.needs_credentials());
+    assert!(f.driver.cancel().is_none());
+    Ok(())
+}
+
+#[test]
+fn automatic_cancellation_after_pin_acknowledgement_preserves_unpublished_source() -> Test {
+    let mut p = LocalRootPublisher::open(fresh()?, limits())?;
+    let mut f = Fixture::playing(&mut p, 4096)?;
+    let admission = f.window()?;
+    let pin = f.pin(14)?;
+    f.driver.acknowledge_checkpoint(&pin, 14, &f.authority, &NeverCancel)?;
+    let error = f.driver.poll(readiness(), &credentials()?, [4; 16], 14, &f.authority, &Cancel).err().ok_or("cancel ignored")?;
+    assert!(matches!(error.reason, LiveArchiveError::Archive(ArchiveError::Cancelled)));
+    let retired = error.retirement.ok_or("retirement")?;
+    assert_eq!(retired.pending_checkpoint, Some(pin));
+    assert!(retired.last_durable_checkpoint.is_none());
+    assert_eq!(retired.live.archive.ok_or("archive")?.pending.ok_or("source")?.manifest().root(), admission.root);
+    assert!(f.driver.cancel().is_none());
+    drop(f);
+    assert_eq!(p.visible_roots().count(), 0);
+    Ok(())
+}
+
+#[test]
+fn automatic_owner_stop_with_setup_scheduled_never_dispatches_setup_or_fabricates_media() -> Test {
+    let mut p = LocalRootPublisher::open(fresh()?, limits())?;
+    let mut f = Fixture::new(&mut p, 7)?;
+    let (describe, _) = f.command(0)?;
+    f.receive(&response(describe.cseq, "Content-Type: application/sdp\r\n", description()), 1)?;
+    assert!(f.driver.needs_credentials());
+    let before = f.driver.totals().ok_or("totals")?;
+    let retired = f.driver.finish_capture(2, &f.authority)?.ok_or("capture retirement")?;
+    let connection = retired.connection.ok_or("connection retirement")?;
+    assert_eq!(connection.transport.totals, before);
+    assert!(connection.transport.request.is_none());
+    assert!(!f.driver.needs_credentials());
+    let mut finished = false;
+    for _ in 0..64 {
+        match f.archive_poll(2)? {
+            CheckpointedLiveArchiveStep::Live(LiveArchiveStep::Finished { archive, cause }) => {
+                assert_eq!(cause, LiveArchiveCompletion::OwnerStopped);
+                assert!(matches!(archive, ArchiveWriteProgress::Finished { windows: 0, pages: 0, .. }));
+                finished = true;
+                break;
+            }
+            CheckpointedLiveArchiveStep::Live(LiveArchiveStep::Archive(_)) => {}
+            _ => return Err("stopped empty session produced unexpected work".into()),
+        }
+    }
+    assert!(finished);
+    assert_eq!(f.driver.next_wake_ns(), None);
+    assert!(matches!(f.archive_poll(3)?, CheckpointedLiveArchiveStep::Live(LiveArchiveStep::Ended)));
     Ok(())
 }
