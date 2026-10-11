@@ -108,13 +108,15 @@ pub const REFERENCE_COST_REGISTRY_DIGEST: &str =
 pub const SUPERSEDED_COST_REGISTRY_DIGEST_V1: &str =
     "sha256:c885c834fe3d492076090e551c5988d6ed363bcf3a2432c41e67fe527ccf83b9";
 
-/// Pinned canonical semantic basis digest of the reference contract basis.
+/// Pinned canonical semantic basis digest of the reference contract basis
+/// (current: capabilities-v2 + cost-v2 registry freeze).
 pub const REFERENCE_CONTRACT_BASIS_CANONICAL_DIGEST: &str =
-    "sha256:c740c404144769c71ff4460cd717a586abf800008fa969722c341819dc10d679";
+    "sha256:f0fec48539a0f47eb7e5c18100e03e3189d39c1279eab436346bd795370c7f0f";
 
-/// Pinned binary freeze digest of the serialized canonical binary reference contract basis.
+/// Pinned binary freeze digest of the serialized canonical binary reference contract basis
+/// (current: capabilities-v2 + cost-v2 registry freeze; fixture `contract_basis_v2.bin`).
 pub const REFERENCE_CONTRACT_BASIS_FREEZE_DIGEST: &str =
-    "sha256:c595258d1674d3345fcfca5dc0e671c40278411aa5bf8c0d2e157d2e494c1986";
+    "sha256:dea13e470a9840b12901f70086da59388542d404955e9324f0ddb449663c6bb4";
 
 /// Maximum byte size of a canonical contract-basis binary payload (64 KiB).
 pub const MAX_CONTRACT_BASIS_BINARY_BYTES: usize = 64 * 1024;
