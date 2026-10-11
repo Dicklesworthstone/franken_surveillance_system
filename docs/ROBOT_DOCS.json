@@ -437,6 +437,66 @@
       "id": "ERR-AUTH-DENIED-001"
     },
     {
+      "description": "explicit original-read or selected destination-retention grant, or the separate live execution context, refused bounded local backup work",
+      "guidance": "restore explicit authority; replay context alone never grants access to originals",
+      "id": "ERR-BACKUP-AUTHORITY-001"
+    },
+    {
+      "description": "cooperative cancellation stopped backup or restore before activation; any copied historical bytes remain behind the incomplete marker",
+      "guidance": "inspect the partial destination; choose a fresh destination after explicit cleanup, never dispatch copied work",
+      "id": "ERR-BACKUP-CANCELLED-001"
+    },
+    {
+      "description": "selected backup or restore destination already exists; no overwrite or merge occurred",
+      "guidance": "inspect existing retained work and select a new destination",
+      "id": "ERR-BACKUP-DESTINATION-001"
+    },
+    {
+      "description": "final activation may be visible but directory durability could not be established; reported status is indeterminate",
+      "guidance": "inspect the exact destination, manifest and fence before retrying; never overwrite, resend or claim definite refusal",
+      "id": "ERR-BACKUP-INDETERMINATE-001"
+    },
+    {
+      "description": "local I/O failed before a recovery completion could be established",
+      "guidance": "inspect retained partial work and the activation marker before choosing a fresh destination",
+      "id": "ERR-BACKUP-IO-001"
+    },
+    {
+      "description": "complete inventory, journal, file, read-work, report or restore-fence capacity exceeds an explicit current-format ceiling",
+      "guidance": "review larger supported bounds or choose a compatible source; no truncation, sampling or budget refill",
+      "id": "ERR-BACKUP-LIMIT-001"
+    },
+    {
+      "description": "an existing source deployment, spool, authority journal or effect journal writer owns a required lock",
+      "guidance": "quiesce the source and obtain a fresh manifest preview; never repair or reconcile as part of backup",
+      "id": "ERR-BACKUP-LOCKED-001"
+    },
+    {
+      "description": "selected paths overlap or violate the strict supported local path contract",
+      "guidance": "select distinct regular local roots with existing regular parents; do not follow symlinks",
+      "id": "ERR-BACKUP-PATH-001"
+    },
+    {
+      "description": "the complete source preview, independently pinned manifest or a previously checked file changed",
+      "guidance": "review a new complete source preview or restore the independently expected bundle; do not blindly retry a changed pin",
+      "id": "ERR-BACKUP-PIN-001"
+    },
+    {
+      "description": "unknown format/profile, unsupported populated state, unsafe file type or mismatched exact DeploymentLimits prevents complete current-format recovery",
+      "guidance": "supply exact original limits or a recovery profile owning all retained state; never omit independent agent stores or migrate implicitly",
+      "id": "ERR-BACKUP-PROFILE-001"
+    },
+    {
+      "description": "the source or staged restore has incomplete publication/deletion work, journal tails or unresolved recovery state",
+      "guidance": "use its explicit owning recovery path; snapshotting and restore never silently repair the source",
+      "id": "ERR-BACKUP-RECOVERY-001"
+    },
+    {
+      "description": "canonical manifest, native journal, spool object, publication linkage or recovery provenance failed verification",
+      "guidance": "repair or obtain independently verified original custody; do not re-pin tampered bytes as a fix",
+      "id": "ERR-BACKUP-VERIFY-001"
+    },
+    {
       "description": "declared work budget exhausted",
       "guidance": "return bounded partial/abstention",
       "id": "ERR-BUDGET-EXHAUSTED-001"
@@ -2175,6 +2235,11 @@
       "description": "semantic decision fingerprint differs from proof",
       "guidance": "block claim/release",
       "id": "ERR-REPLAY-DIVERGED-001"
+    },
+    {
+      "description": "a restored deployment has immutable provenance whose copied Prepared state cannot prove whether the source dispatched later; all supported alert preparation, dispatch and cancellation paths refuse",
+      "guidance": "retain unresolved operations and obligations; this profile has no unfence or automatic failover/reconciliation operation",
+      "id": "ERR-RESTORE-EFFECT-FENCED-001"
     },
     {
       "description": "`fss-hold expire` names an earliest owner-attested time before the hold's minimum-retention deadline (or an uncertain time); the hold stays active",
