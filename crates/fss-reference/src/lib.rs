@@ -51,6 +51,8 @@ mod delivery;
 /// Durable agent sessions and root-last handoffs over a deployment root (AOP-001, AOP-002,
 /// AOP-012); agent-plane writes only.
 pub mod deployment_session;
+/// Bounded, exact local recovery bundles with fenced restoration and root-last activation.
+pub mod deployment_backup;
 /// Read-only, authority-pinned operational inventory of retained deployment state.
 pub mod deployment_status;
 pub mod doctor;

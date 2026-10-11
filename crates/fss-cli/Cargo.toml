@@ -115,6 +115,10 @@ path = "src/bin/fss-evidence.rs"
 name = "fss-custody"
 path = "src/bin/fss-custody.rs"
 
+[[bin]]
+name = "fss-backup"
+path = "src/bin/fss-backup.rs"
+
 [dependencies]
 fss-codec-mjpeg = { path = "../fss-codec-mjpeg" }
 fss-core = { path = "../fss-core" }

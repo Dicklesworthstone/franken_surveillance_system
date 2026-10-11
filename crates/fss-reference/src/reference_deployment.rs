@@ -115,6 +115,7 @@ pub const KNOWN_LEDGER_DELTA_FAMILIES: &[&str] = &[
     FAMILY_DELETION_RECORD,
     FAMILY_DELETION_TOMBSTONE,
     FAMILY_DELETION_COMPLETION,
+    crate::deployment_backup::FAMILY_RESTORE_FENCE,
 ];
 
 /// Replay cancellation stage: open deployment.
@@ -175,6 +176,7 @@ fn reserved_family_entry_point(family: &str) -> Option<&'static str> {
     match family {
         FAMILY_EVENT_REVISION | FAMILY_SENSOR_TAMPER_STATUS => Some("publish_event"),
         crate::evidence_export::FAMILY_EVIDENCE_EXPORT => Some("evidence_export::commit_export"),
+        crate::deployment_backup::FAMILY_RESTORE_FENCE => Some("deployment_backup::restore_backup"),
         ROOT_REACHABILITY_FAMILY => Some("publish_and_commit"),
         FAMILY_EVIDENCE_HOLD => Some("deletion::holds::commit_hold"),
         FAMILY_DELETION_RECORD
@@ -1001,6 +1003,15 @@ impl ReferenceDeployment {
         validate_site_lineage(site_lineage)?;
 
         let root_buf = root.to_path_buf();
+        // Restore writes this guard before populating a fresh directory and removes it only
+        // after the copied journals, custody and durable effect fence are complete. LAYOUT
+        // alone must never make an interrupted restoration available to ordinary writers.
+        match fs::symlink_metadata(root.join(crate::deployment_backup::RESTORE_INCOMPLETE_FILENAME))
+        {
+            Ok(_) => return Err(ReferenceError::NotADeployment { path: root_buf }),
+            Err(error) if error.kind() == io::ErrorKind::NotFound => {}
+            Err(error) => return Err(error.into()),
+        }
         // A regular file, a symlink to one, or a dangling symlink is never a deployment root.
         if fs::symlink_metadata(root).is_ok() && !root.is_dir() {
             return Err(ReferenceError::NotADeployment { path: root_buf });
@@ -1029,6 +1040,15 @@ impl ReferenceDeployment {
         // becomes `DeploymentLocked`, and an overfull bounded directory scan `ScanLimitExceeded`.
         let publisher = LocalRootPublisher::open(&objects_dir, pub_limits)?;
         after_lock(root);
+
+        // Repeat the guard after acquiring the publisher lock so a concurrent restoration
+        // cannot become an initializer merely by winning the advisory pre-check race.
+        match fs::symlink_metadata(root.join(crate::deployment_backup::RESTORE_INCOMPLETE_FILENAME))
+        {
+            Ok(_) => return Err(ReferenceError::NotADeployment { path: root_buf }),
+            Err(error) if error.kind() == io::ErrorKind::NotFound => {}
+            Err(error) => return Err(error.into()),
+        }
 
         // 2. Initialize or verify layout descriptor atomically.
         // Authoritative classification under the lock, before any cleanup or write: a root without
@@ -1152,6 +1172,14 @@ impl ReferenceDeployment {
         }
 
         let root_buf = root.to_path_buf();
+        // An inert backup payload or incomplete restoration is not a repairable live root.
+        // Refuse before opening locks, truncating journals or clearing temporary layout files.
+        match fs::symlink_metadata(root.join(crate::deployment_backup::RESTORE_INCOMPLETE_FILENAME))
+        {
+            Ok(_) => return Err(ReferenceError::NotADeployment { path: root_buf }),
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+            Err(error) => return Err(ReferenceError::Io(error)),
+        }
         if !root.exists() || !root.is_dir() {
             return Err(ReferenceError::NotADeployment { path: root_buf });
         }
@@ -1187,6 +1215,14 @@ impl ReferenceDeployment {
                 return Err(ReferenceError::DeploymentLocked { path: lock_path });
             }
             Err(TryLockError::Error(e)) => return Err(ReferenceError::Io(e)),
+        }
+
+        // Recheck the activation boundary under the same exclusive deployment lock.
+        match fs::symlink_metadata(root.join(crate::deployment_backup::RESTORE_INCOMPLETE_FILENAME))
+        {
+            Ok(_) => return Err(ReferenceError::NotADeployment { path: root_buf }),
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+            Err(error) => return Err(ReferenceError::Io(error)),
         }
 
         // Under lock: clean up stale LAYOUT.tmp.*
@@ -1465,6 +1501,15 @@ impl ReferenceDeployment {
             });
         }
 
+        // A generic append cannot replace the durable restore fence with another family.
+        if deltas.iter().any(|delta| {
+            delta.object_id.as_str() == crate::deployment_backup::RESTORE_FENCE_OBJECT_ID
+        }) {
+            return Err(ReferenceError::ReservedDeltaFamily {
+                family: crate::deployment_backup::FAMILY_RESTORE_FENCE.to_owned(),
+                entry_point: "deployment_backup::restore_backup",
+            });
+        }
         // Reserve the namespace too: changing family must not shadow an effective hold.
         if deltas.iter().any(|delta| {
             delta
@@ -2044,6 +2089,14 @@ impl ReferenceDeployment {
         outcome_at: TimestampNs,
         cx: &ReplayCx,
     ) -> Result<OperationReceipt, ReferenceError> {
+        // A copied Prepared state does not establish that the source never sent this alert
+        // after the snapshot. Even cooperative cancellation cannot retire that obligation.
+        if let Err(error) = crate::alert::refuse_restored_effect_authority(&self.ledger) {
+            if cx.is_cancelled() {
+                cx.drain_and_finalize();
+            }
+            return Err(error);
+        }
         if cx.is_cancelled() {
             cx.drain();
             let drained = self.drain_prepared_alert_on_cancel(plan, committed_at);

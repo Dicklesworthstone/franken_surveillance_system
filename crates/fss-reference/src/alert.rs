@@ -8,8 +8,8 @@ use std::collections::{BTreeMap, BTreeSet};
 use fss_core::{
     CanonicalDecode, CanonicalDecoder, CanonicalEncode, CanonicalEncoder, ContentDigest,
     EffectIntent, EffectJournal, EffectState, EventHypothesis, EventState, IdempotencyKey,
-    LedgerAnchor, Obligation, ObligationId, OperationId, OperationReceipt, SensorTamperStatus,
-    TimestampNs,
+    LedgerAnchor, ObjectId, Obligation, ObligationId, OperationId, OperationReceipt,
+    SensorTamperStatus, TimestampNs,
 };
 use fss_ledger::{DurableLedgerError, DurableReferenceLedger, JournalError};
 use fss_object::{InMemoryObjectStore, ObjectManifest};
@@ -894,6 +894,21 @@ fn current_event_revision_batch(
     Ok(batch_index)
 }
 
+/// A restored snapshot has no observation of effects sent after it was captured. Its durable
+/// fence survives ordinary unrelated appends and saved-plan rehydration. Refusing here must not
+/// cancel the operation: the source may already have delivered it, so its obligation stays open.
+pub(crate) fn refuse_restored_effect_authority(
+    authority: &DurableReferenceLedger,
+) -> Result<(), ReferenceError> {
+    let id = ObjectId::parse(crate::deployment_backup::RESTORE_FENCE_OBJECT_ID)?;
+    if let Some(fence) = authority.current().objects.get(&id) {
+        return Err(ReferenceError::RestoredDeploymentEffectsFenced {
+            restore_record: fence.payload_digest,
+        });
+    }
+    Ok(())
+}
+
 /// Every dispatch-time check, in order; the first refusal is returned.
 ///
 /// Nothing the caller wrote into the journal is trusted for eligibility: the obligation's terminal
@@ -909,6 +924,7 @@ fn check_alert_dispatch_authority<E>(
 where
     E: Into<ReferenceError>,
 {
+    refuse_restored_effect_authority(authority)?;
     // 1. The plan is internally consistent (request digest binds root, revision, and channel).
     validate_reference_alert_plan(plan)?;
     // 2. The plan names an obligation the journal holds for this exact operation.
@@ -990,7 +1006,9 @@ where
 ///    domains (fss-ct73p), decoded through `objects`.
 /// 7. The prepare-time ledger head is in the ledger's history and bound by the recorded intent.
 ///
-/// Any refusal after step 1 transitions the operation and its obligation to
+/// A restored-deployment fence refuses without changing the operation or its obligation, since
+/// the snapshot cannot establish whether delivery occurred after capture. Other refusals after
+/// step 1 transition the operation and its obligation to
 /// [`EffectState::Cancelled`] before the error is returned. The cancel-request evidence is
 /// [`alert_cancel_proof`] over the plan's prepared anchor and the ledger's current anchor, and the
 /// journal binds it with its prepared record into the cancellation proof (fss-thzlz). Only a
@@ -1009,6 +1027,9 @@ where
     J: AlertEffectTransitioner,
     E: Into<ReferenceError>,
 {
+    // This refusal precedes the ordinary stale-plan cancellation path. A restore is not proof
+    // that the original operation was cancelled or that its provider never received a request.
+    refuse_restored_effect_authority(authority)?;
     let operation_id = &plan.intent.operation_id;
     let operation = journal
         .operation(operation_id)
@@ -1350,6 +1371,7 @@ pub fn prepare_reference_alert(
     params: PrepareAlertParams<'_>,
     journal: &mut EffectJournal,
 ) -> Result<ReferenceAlertPlan, ReferenceError> {
+    refuse_restored_effect_authority(params.authority)?;
     verify_event_alert_eligibility(
         params.decision.event.state,
         params.decision.action,

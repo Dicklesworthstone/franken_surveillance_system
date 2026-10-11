@@ -115,6 +115,12 @@ pub enum ReferenceError {
     },
     /// Event authority in the ledger is stale or has moved since the alert plan was prepared.
     StaleEventAuthority,
+    /// A restored snapshot cannot establish whether an external effect occurred after capture.
+    /// Alert preparation and dispatch remain fenced without changing unresolved operations.
+    RestoredDeploymentEffectsFenced {
+        /// Canonical restore record retained by the copied authority ledger.
+        restore_record: ContentDigest,
+    },
     /// A locally cancelled operation's cancellation proof does not verify against its prepared
     /// record and the evidence the authority ledger published (fss-thzlz).
     ///
@@ -346,6 +352,10 @@ impl fmt::Display for ReferenceError {
             Self::StaleEventAuthority => {
                 formatter.write_str("event authority in the ledger is stale or has moved")
             }
+            Self::RestoredDeploymentEffectsFenced { restore_record } => write!(
+                formatter,
+                "ERR-RESTORE-EFFECT-FENCED-001: restored deployment requires explicit effect recovery; alert preparation and dispatch are disabled by {restore_record}"
+            ),
             Self::UnverifiableCancellationEvidence {
                 operation_id,
                 proof_digest,
@@ -544,6 +554,7 @@ impl Error for ReferenceError {
             | Self::ContradictedEstimate { .. }
             | Self::InvalidEstimatorConfig { .. }
             | Self::StaleEventAuthority
+            | Self::RestoredDeploymentEffectsFenced { .. }
             | Self::UnverifiableCancellationEvidence { .. }
             | Self::DeploymentLocked { .. }
             | Self::IncompleteJournalTail { .. }

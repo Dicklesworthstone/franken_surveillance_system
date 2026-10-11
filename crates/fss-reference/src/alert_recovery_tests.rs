@@ -37,6 +37,12 @@ use crate::{
     alert_cancel_proof, alert_cooperative_cancel_proof, execute_mock_model, run_reference_capture,
 };
 
+#[cfg(all(
+    target_os = "linux",
+    any(target_arch = "x86_64", target_arch = "aarch64")
+))]
+mod backup_restore;
+
 type TestResult = Result<(), Box<dyn Error>>;
 
 const SITE: &str = "site:alert-recovery";
@@ -157,6 +163,10 @@ struct Prepared {
 }
 
 fn prepared(tag: &str) -> Result<Prepared, Box<dyn Error>> {
+    prepared_for_channel(tag, "simulated-channel")
+}
+
+fn prepared_for_channel(tag: &str, channel: &str) -> Result<Prepared, Box<dyn Error>> {
     let root = fresh_root(tag)?;
     let cx = test_cx(&format!("{tag}-setup"))?;
     let mut dep = ReferenceDeployment::open(&root, SITE, &cx)?;
@@ -171,7 +181,7 @@ fn prepared(tag: &str) -> Result<Prepared, Box<dyn Error>> {
             operation_id: OperationId::parse("op:alert:recovery:1")?,
             idempotency_key: IdempotencyKey::parse("idemp:alert:recovery:1")?,
             obligation_id: ObligationId::parse("ob:alert:recovery:1")?,
-            channel: "simulated-channel".to_owned(),
+            channel: channel.to_owned(),
             now: TimestampNs(T_PREPARE),
         })?
     };

@@ -10,6 +10,47 @@ Franken Surveillance System now has a coherent, dependency-light Rust reference 
 
 It is also not a complete surveillance product. Native device adapters, production media/model/graph/storage services, persistent distributed operation, every human and agent surface, complete qualification matrices, and the aggregate release root remain open. Status below distinguishes implemented reference semantics from production completion.
 
+## Current-format core deployment recovery (2026-10-11, reference, focused native tests passed)
+
+`fss-backup plan/create/inspect/restore` adds bounded recovery for exact local deployment
+originals. A separately pinned canonical manifest retains full deployment limits, both
+journals, spool objects including valid unreferenced records, publication roots and
+tombstones. Native owners check custody, linkage, hold history and deletion state. Dirty
+staging, partial journals/deletions, denied originals still present, unsafe links, changed
+pins, existing destinations and unsupported populated stores refuse. Independent agent
+state is explicitly outside this profile and cannot be silently omitted.
+
+Bundles remain inert. Restore preserves the historical authority prefix and exact effect
+journal, creates fresh physical store identities, and appends an irreversible alert-effect
+fence before LAYOUT activation. Saved or rehydrated preparations cannot dispatch from the
+copy or acquire a false terminal cancellation merely because they were Prepared at capture.
+Pending obligations remain unresolved. Original-read and destination-retention grants are
+separate from the execution context and remain live throughout bounded transfer.
+
+This is `reference-core-local-v1`, with no implicit schema migration, populated agent-store
+recovery, external archive/secret-store backup, unfence, automatic reconciliation or failover.
+The scope and commands are in [deployment recovery](docs/deployment_backup.md).
+Fifty-six focused native tests passed on Linux x86_64 with pinned `nightly-2026-08-31`
+and locked, offline dependencies: backup contracts (11), real-process CLI (4), alert
+recovery (15), injected destination-parent replacement (1), existing holds (7), retention
+deadlines (5), and deployment contracts (13). These exercise exact custom-capacity
+roundtrips, source-side dispatch after capture, saved-plan and webhook fencing, live
+revocation, cancellation, invalid hold history and deletion denial. Create/restore writers
+support Linux x86_64 and aarch64; this run qualifies only the exercised reference/process
+paths, without a broad FSS-035 or release qualification claim.
+
+## Explicit forensic explanation budgets (2026-10-11, reference, focused native tests passed)
+
+`fss explain` accepts `--view forensic` and an exact `--budget-tokens` under registered view
+limits. It can serve complete support and checked-custody explanations which cannot fit the
+compact 1800-token view, while retaining that default and refusing explicit smaller caps
+without widening or truncating them. Orientation, support and custody share the requested
+semantic allowance; errors retain the requested view and cap. Combined graph work and all
+counterevidence remain bounded and visible. Thirty-eight focused native tests passed on
+pinned `nightly-2026-08-31`, including exact aggregate admission, one-token-short refusal,
+unchanged compact behavior, custody fault preservation and existing parser/schema contracts.
+See [the explanation workflow](docs/AGENT_EVIDENCE_EXPLANATION.md).
+
 ## Trained detector evidence for whole-recording corroboration (2026-10-11, reference)
 
 `fss-event corroborate --stream-corroborate` now accepts an exact trained detector package and

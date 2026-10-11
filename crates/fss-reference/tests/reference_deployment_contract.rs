@@ -787,7 +787,9 @@ fn exported_constants_and_tables_integrity() -> Result<(), Box<dyn Error>> {
     // 12 = 11 + FAMILY_PRIVACY_MASK_POLICY (fss-bgqkd).
     // 15 = 12 + FAMILY_DELETION_{RECORD,TOMBSTONE,COMPLETION} (fss-x4a.9.7).
     // 16 = 15 + FAMILY_EVIDENCE_HOLD (owner evidence holds, 83f58e5).
-    assert_eq!(KNOWN_LEDGER_DELTA_FAMILIES.len(), 16);
+    // 17 = 16 + the irreversible current-format deployment restore fence.
+    assert_eq!(KNOWN_LEDGER_DELTA_FAMILIES.len(), 17);
+    assert!(KNOWN_LEDGER_DELTA_FAMILIES.contains(&fss_reference::deployment_backup::FAMILY_RESTORE_FENCE));
     for family in KNOWN_LEDGER_DELTA_FAMILIES {
         assert!(!family.is_empty());
     }

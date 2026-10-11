@@ -585,3 +585,21 @@ Canonical machine error codes returned by `ContractError::code()` (AGT-LAYER-002
 | `source_evidence_storage_handle_absolute_path` | Storage handle for retained source evidence contains forbidden absolute path or url | `ERR-SOURCE-EVIDENCE-STORAGE-HANDLE-ABSOLUTE-PATH-001` |
 | `source_evidence_storage_handle_malformed` | Storage handle for retained source evidence is malformed, over-length, or contains invalid characters | `ERR-SOURCE-EVIDENCE-STORAGE-HANDLE-MALFORMED-001` |
 | `source_evidence_raw_wire_packets_with_capsule` | Raw wire packets classification cannot carry a sensor capsule payload | `ERR-SOURCE-EVIDENCE-RAW-WIRE-PACKETS-WITH-CAPSULE-001` |
+
+## Current-format core deployment backup and restoration
+
+| ID | Meaning | Retry policy |
+|---|---|---|
+| `ERR-BACKUP-AUTHORITY-001` | explicit original-read or selected destination-retention grant, or the separate live execution context, refused bounded local backup work | restore explicit authority; replay context alone never grants access to originals |
+| `ERR-BACKUP-CANCELLED-001` | cooperative cancellation stopped backup or restore before activation; any copied historical bytes remain behind the incomplete marker | inspect the partial destination; choose a fresh destination after explicit cleanup, never dispatch copied work |
+| `ERR-BACKUP-LOCKED-001` | an existing source deployment, spool, authority journal or effect journal writer owns a required lock | quiesce the source and obtain a fresh manifest preview; never repair or reconcile as part of backup |
+| `ERR-BACKUP-LIMIT-001` | complete inventory, journal, file, read-work, report or restore-fence capacity exceeds an explicit current-format ceiling | review larger supported bounds or choose a compatible source; no truncation, sampling or budget refill |
+| `ERR-BACKUP-PROFILE-001` | unknown format/profile, unsupported populated state, unsafe file type or mismatched exact DeploymentLimits prevents complete current-format recovery | supply exact original limits or a recovery profile owning all retained state; never omit independent agent stores or migrate implicitly |
+| `ERR-BACKUP-VERIFY-001` | canonical manifest, native journal, spool object, publication linkage or recovery provenance failed verification | repair or obtain independently verified original custody; do not re-pin tampered bytes as a fix |
+| `ERR-BACKUP-RECOVERY-001` | the source or staged restore has incomplete publication/deletion work, journal tails or unresolved recovery state | use its explicit owning recovery path; snapshotting and restore never silently repair the source |
+| `ERR-BACKUP-PIN-001` | the complete source preview, independently pinned manifest or a previously checked file changed | review a new complete source preview or restore the independently expected bundle; do not blindly retry a changed pin |
+| `ERR-BACKUP-DESTINATION-001` | selected backup or restore destination already exists; no overwrite or merge occurred | inspect existing retained work and select a new destination |
+| `ERR-BACKUP-PATH-001` | selected paths overlap or violate the strict supported local path contract | select distinct regular local roots with existing regular parents; do not follow symlinks |
+| `ERR-BACKUP-IO-001` | local I/O failed before a recovery completion could be established | inspect retained partial work and the activation marker before choosing a fresh destination |
+| `ERR-BACKUP-INDETERMINATE-001` | final activation may be visible but directory durability could not be established; reported status is indeterminate | inspect the exact destination, manifest and fence before retrying; never overwrite, resend or claim definite refusal |
+| `ERR-RESTORE-EFFECT-FENCED-001` | a restored deployment has immutable provenance whose copied Prepared state cannot prove whether the source dispatched later; all supported alert preparation, dispatch and cancellation paths refuse | retain unresolved operations and obligations; this profile has no unfence or automatic failover/reconciliation operation |

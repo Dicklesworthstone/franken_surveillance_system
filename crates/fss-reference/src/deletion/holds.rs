@@ -22,8 +22,8 @@ use std::fmt;
 use fss_core::region::ContextAuthority;
 use fss_core::{
     BatchId, CanonicalDecode, CanonicalDecoder, CanonicalEncode, CanonicalEncoder, CaptureInterval,
-    ContentDigest, ContractError, DigestAlgorithm, EvidenceDelta, LedgerAnchor, ObjectId, Plane,
-    PrincipalId, TimestampNs,
+    ContentDigest, ContractError, DigestAlgorithm, EvidenceDelta, EvidenceDeltaBatch, LedgerAnchor,
+    LedgerSnapshot, ObjectId, Plane, PrincipalId, TimestampNs,
 };
 
 use super::walk::Universe;
@@ -464,13 +464,46 @@ pub struct HoldReceipt {
 pub(super) struct HoldIndex {
     current: BTreeMap<String, HoldRecord>,
 }
+
+/// Validate exact retained hold authority through a caller-owned, read-only custody reader.
+/// The caller supplies one verified journal snapshot and its complete committed batches;
+/// no deployment is opened, no hold is released, and no missing record is treated as release.
+pub(crate) fn verify_retained_hold_history(
+    snapshot: &LedgerSnapshot,
+    batches: &[EvidenceDeltaBatch],
+    cx: &ReplayCx,
+    read: impl FnMut(ContentDigest) -> Result<Vec<u8>, HoldError>,
+) -> Result<(), HoldError> {
+    HoldIndex::from_history(snapshot, batches, cx, read).map(|_| ())
+}
+
 impl HoldIndex {
     /// Rebuild solely from validated authoritative batches; never infer missing custody as release.
     pub(super) fn read(deployment: &ReferenceDeployment, cx: &ReplayCx) -> Result<Self, HoldError> {
+        Self::from_history(
+            deployment.ledger().current(),
+            deployment.ledger().batches(),
+            cx,
+            |digest| {
+                deployment
+                    .publisher()
+                    .spool()
+                    .read(digest)
+                    .map_err(HoldError::from)
+            },
+        )
+    }
+
+    fn from_history(
+        snapshot: &LedgerSnapshot,
+        batches: &[EvidenceDeltaBatch],
+        cx: &ReplayCx,
+        mut read: impl FnMut(ContentDigest) -> Result<Vec<u8>, HoldError>,
+    ) -> Result<Self, HoldError> {
         checkpoint(cx, STAGE_HOLD_READ)?;
         let mut index = Self::default();
         let mut records = 0;
-        for batch in deployment.ledger().batches() {
+        for batch in batches {
             checkpoint(cx, STAGE_HOLD_READ)?;
             for delta in &batch.deltas {
                 if delta.family != FAMILY_EVIDENCE_HOLD
@@ -482,9 +515,9 @@ impl HoldIndex {
                 if records > MAX_HOLDS * 2 {
                     return Err(HoldError::Limit);
                 }
-                let bytes = deployment.publisher().spool().read(delta.payload_digest)?;
+                let bytes = read(delta.payload_digest)?;
                 let record = HoldRecord::from_bytes(&bytes, delta.payload_digest)?;
-                if record.site != deployment.site_lineage()
+                if record.site != snapshot.anchor.site_lineage
                     || record.basis != batch.basis_anchor
                     || batch.deltas.len() != 1
                     || *delta != record.delta()?
@@ -514,9 +547,7 @@ impl HoldIndex {
         }
         for record in index.current.values() {
             let object = record.object_id()?;
-            let current = deployment
-                .ledger()
-                .current()
+            let current = snapshot
                 .objects
                 .get(&object)
                 .ok_or(HoldError::InvalidRecord)?;

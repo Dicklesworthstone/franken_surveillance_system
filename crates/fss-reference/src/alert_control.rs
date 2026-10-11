@@ -258,6 +258,9 @@ fn authorize(
     {
         return Err(AlertControlError::Unauthorized);
     }
+    // The snapshot's Prepared record cannot prove that its source was never committed later.
+    // Refuse both preview and commit before publishing a request or a terminal cancellation.
+    crate::alert::refuse_restored_effect_authority(deployment.ledger())?;
     if deployment.effects().committed_len() > MAX_CONTROL_JOURNAL_BYTES {
         return Err(AlertControlError::Limit);
     }
