@@ -462,3 +462,380 @@ fn earlier(a: Option<u64>, b: Option<u64>) -> Option<u64> {
         (a, b) => a.or(b),
     }
 }
+
+/// Exclusive automatic native HEVC acquisition and source-linked recording collection.
+///
+/// The sans-I/O capture owner above remains unchanged. This composition is opt-in, adds
+/// no extra source queue, and never infers picture timing, custody or camera coverage.
+pub mod live {
+    #![forbid(unsafe_code)]
+
+    use super::*;
+    use crate::rtsp::authentication::DigestCredentials;
+    use crate::rtsp::client::{ClientCommand, ClientProgress, ClientState};
+    use crate::rtsp::hevc_client::HevcClientError;
+    use crate::rtsp::hevc_client::pictures::HevcPictureClientError;
+    use crate::rtsp::live_hevc::{
+        LiveHevcConfig, LiveHevcConnection, LiveHevcError, LiveHevcFailure,
+        LiveHevcRetirement, LiveHevcStep, QueuedHevcRequest, SocketReadiness,
+    };
+    use crate::rtsp::recording::RecordingScope;
+    use crate::rtsp::recording_collector::CollectorLimits;
+    use crate::rtsp::tcp::{TcpAuthority, TcpBinding, TcpError, TcpOperation, TcpRetirement, TcpTotals};
+    use fss_packet::hevc::HevcConfiguration;
+
+    /// Independent recording scope, exact configuration and finite collection limits.
+    #[derive(Debug)]
+    pub struct LiveHevcRecordingConfig {
+        /// Canonical sensor/stream/generation and receive-clock provenance.
+        pub scope: RecordingScope,
+        /// Exact expected RTP payload type, checked by the original collector.
+        pub payload_type: u8,
+        /// Independently supplied immutable VPS/SPS/PPS configuration, rechecked at sealing.
+        pub configuration: HevcConfiguration,
+        /// Explicit media timescale; packet arrival and RTP timestamps do not supply DTS.
+        pub time_scale: u32,
+        /// Existing finite source, picture, age and output bounds.
+        pub limits: CollectorLimits,
+    }
+
+    /// Original network and collection failures, without echoing any source bytes.
+    #[derive(Clone, Debug, Eq, PartialEq)]
+    pub enum LiveHevcRecordingError {
+        /// Native connection or its protocol owner refused progress.
+        Network(LiveHevcError),
+        /// Original collection, timing or sealing owner refused progress.
+        Capture(CaptureError),
+    }
+    impl std::fmt::Display for LiveHevcRecordingError {
+        fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+            write!(f, "live HEVC recording refusal: {self:?}")
+        }
+    }
+    impl std::error::Error for LiveHevcRecordingError {}
+
+    /// Invalid collection configuration performs no connection attempt.
+    #[derive(Debug)]
+    pub struct LiveHevcRecordingConnectFailure {
+        /// Original typed reason.
+        pub reason: LiveHevcRecordingError,
+        /// A TCP attempt occurred, not a successful camera session.
+        pub connection_attempted: bool,
+    }
+    impl std::fmt::Display for LiveHevcRecordingConnectFailure {
+        fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+            std::fmt::Display::fmt(&self.reason, f)
+        }
+    }
+    impl std::error::Error for LiveHevcRecordingConnectFailure {}
+
+    /// Complete remaining ownership, with no implicit publication, deletion or resend.
+    #[must_use]
+    #[derive(Debug)]
+    pub struct LiveHevcRecordingRetirement {
+        /// Present unless a previous terminal network event already transferred it.
+        pub connection: Option<LiveHevcRetirement>,
+        /// Prepared windows, exact unsealed packets and any held picture/control event.
+        pub capture: HevcCaptureRetirement,
+        /// Original event returned intact if the capture bridge refused its offer.
+        pub unoffered_event: Option<Box<Event>>,
+        /// Terminal transport accompanying an event whose capture offer failed.
+        /// Successful offers instead transfer this in `ProtocolQueued`.
+        pub terminal_transport: Option<Box<TcpRetirement>>,
+    }
+
+    /// Fatal refusal closes the socket and transfers all work; safe timing refusals preserve it.
+    #[derive(Debug)]
+    pub struct LiveHevcRecordingFailure {
+        /// Payload-free stage and reason.
+        pub reason: LiveHevcRecordingError,
+        /// Present exactly once on fatal retirement.
+        pub retirement: Option<Box<LiveHevcRecordingRetirement>>,
+    }
+    impl std::fmt::Display for LiveHevcRecordingFailure {
+        fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+            std::fmt::Display::fmt(&self.reason, f)
+        }
+    }
+    impl std::error::Error for LiveHevcRecordingFailure {}
+
+    /// One request preparation, native step or collection step; never hidden bulk progress.
+    #[must_use]
+    #[derive(Debug)]
+    pub enum AutomaticHevcRecordingStep {
+        /// One automatically prepared request; any consumed challenge transfers with it.
+        Queued(QueuedHevcRequest),
+        /// Original wire, local write, actual EOF or bounded native wait.
+        Network(LiveHevcStep),
+        /// One original picture-client event moved into the sole capture slot.
+        ProtocolQueued {
+            /// Present when the event also closed the socket. Protocol receipts stay in capture.
+            transport: Option<Box<TcpRetirement>>,
+        },
+        /// Source, explicit timing, prepared window, refusal or terminal collection output.
+        Capture {
+            /// Unchanged result from the existing HEVC capture owner.
+            event: Box<HevcCapturePoll>,
+            /// Socket/protocol retirement when capture stopped before the network did.
+            connection: Option<Box<LiveHevcRetirement>>,
+        },
+        /// All terminal ownership has already transferred.
+        Ended,
+    }
+
+    #[derive(Clone, Copy, Debug)]
+    enum Control {
+        Request(ClientCommand),
+        Respond,
+    }
+
+    /// DESCRIBE/Digest/SETUP/PLAY/keepalive over one native HEVC recording owner.
+    ///
+    /// Every protocol event enters capture in order, including failures and EOF. A picture
+    /// awaiting timing, a prepared window or collector pressure blocks further network reads.
+    /// Protocol deadlines are not renewed while capture is blocked: any overdue protocol work
+    /// is checked before resuming network progress. Capture's own fixed deadline and the live
+    /// lease continue to run, without busy-waking on blocked upstream NAL work.
+    ///
+    /// Returned windows are only prepared: use the existing HEVC root-last publisher, retain
+    /// or explicitly omit all other originals, and never equate PLAY with recorded evidence.
+    #[must_use]
+    #[derive(Debug)]
+    pub struct AutomaticLiveHevcRecording {
+        connection: LiveHevcConnection,
+        capture: HevcRecordingCapture,
+        binding: TcpBinding,
+        deadline_ns: u64,
+        last_ns: u64,
+        remaining_steps: u64,
+        next: Option<Control>,
+        control_blocked: bool,
+        network_ended: bool,
+        closed: bool,
+    }
+    impl AutomaticLiveHevcRecording {
+        /// Validate collection scope before opening the single authorized native connection.
+        pub fn connect(
+            live: LiveHevcConfig,
+            recording: LiveHevcRecordingConfig,
+            now: u64,
+            authority: &dyn TcpAuthority,
+        ) -> Result<Self, LiveHevcRecordingConnectFailure> {
+            let collector = HevcRecordingCollector::new(
+                recording.scope, live.binding.key(), recording.payload_type,
+                recording.configuration, recording.time_scale, recording.limits,
+            )
+            .map_err(|e| LiveHevcRecordingConnectFailure {
+                reason: LiveHevcRecordingError::Capture(CaptureError::Collection(e)),
+                connection_attempted: false,
+            })?;
+            let binding = live.binding.clone();
+            let deadline_ns = live.deadline_ns;
+            let remaining_steps = live.max_steps;
+            let connection = LiveHevcConnection::connect(live, now, authority)
+                .map_err(|e| LiveHevcRecordingConnectFailure {
+                    reason: LiveHevcRecordingError::Network(e.reason),
+                    connection_attempted: e.connection_attempted,
+                })?;
+            Ok(Self {
+                connection, capture: HevcRecordingCapture::new(collector), binding,
+                deadline_ns, last_ns: now, remaining_steps,
+                next: Some(Control::Request(ClientCommand::Describe)),
+                control_blocked: false, network_ended: false, closed: false,
+            })
+        }
+        /// Original protocol state, not camera health or durable custody.
+        pub fn state(&self) -> ClientState { self.connection.state() }
+        /// Read-only collector accounting; no injection path bypasses ordered event admission.
+        pub fn collector(&self) -> &HevcRecordingCollector { self.capture.collector() }
+        /// Actual native transport observations, absent after terminal transfer.
+        pub fn totals(&self) -> Option<TcpTotals> { self.connection.totals() }
+        /// Remaining outer work admissions; timing and sealing also consume this allowance.
+        pub fn remaining_steps(&self) -> u64 { self.remaining_steps }
+        /// Whether the next poll may borrow credentials for one automatic preparation.
+        /// It never stores the supplied credentials or cnonce, including during backpressure.
+        pub fn needs_credentials(&self) -> bool {
+            !self.closed && !self.network_ended && self.next.is_some()
+                && !self.control_blocked && !self.capture_busy()
+        }
+        /// Capture work takes priority. Blocked upstream runnable work cannot busy-poll a
+        /// timing wait; the immutable capture deadline and outer lease still wake the owner.
+        pub fn next_wake_ns(&self) -> Option<u64> {
+            if self.closed { return None; }
+            let mut wake = earlier(Some(self.deadline_ns), self.capture.next_wake_ns());
+            if self.needs_credentials() {
+                wake = earlier(wake, Some(self.last_ns));
+            } else if !self.capture_busy() && !self.network_ended {
+                wake = earlier(wake, self.connection.next_wake_ns());
+            }
+            wake
+        }
+        /// One capture result OR one automatic preparation OR one native connection step.
+        /// Supply fresh owner-generated cnonce entropy whenever `needs_credentials` is true.
+        /// A safe protocol backpressure refusal retains the intent; subsequent polls drain the
+        /// original protocol before attempting it again, never replaying a prepared request.
+        pub fn poll(
+            &mut self,
+            readiness: SocketReadiness,
+            credentials: &DigestCredentials<'_>,
+            cnonce: [u8; 16],
+            now: u64,
+            authority: &dyn TcpAuthority,
+        ) -> Result<AutomaticHevcRecordingStep, LiveHevcRecordingFailure> {
+            if self.closed { return Ok(AutomaticHevcRecordingStep::Ended); }
+            self.admit(now, authority)?;
+            match self.capture.poll(now) {
+                Ok(HevcCapturePoll::Pending { .. }) => {}
+                Ok(event) => {
+                    if let HevcCapturePoll::Receiver(source) = &event {
+                        if let Some(control) = control(source) { self.next = Some(control); }
+                    }
+                    let terminal = matches!(&event,
+                        HevcCapturePoll::Stopped { .. } | HevcCapturePoll::Ended { .. });
+                    let connection = if terminal {
+                        self.closed = true;
+                        self.next = None;
+                        self.connection.cancel().map(Box::new)
+                    } else { None };
+                    return Ok(AutomaticHevcRecordingStep::Capture { event: Box::new(event), connection });
+                }
+                Err(error) => return Err(self.fatal(LiveHevcRecordingError::Capture(error), None, None, None)),
+            }
+            if self.network_ended {
+                return Err(self.fatal(LiveHevcRecordingError::Network(LiveHevcError::Closed), None, None, None));
+            }
+            if let Some(action) = self.next.filter(|_| !self.control_blocked) {
+                let result = match action {
+                    Control::Request(command) => self.connection.request(command, credentials, cnonce, now, authority),
+                    Control::Respond => self.connection.respond(credentials, cnonce, now, authority),
+                };
+                return match result {
+                    Ok(queued) => {
+                        self.next = None;
+                        Ok(AutomaticHevcRecordingStep::Queued(queued))
+                    }
+                    Err(failure) => {
+                        if failure.retirement.is_none() && matches!(&failure.reason,
+                            LiveHevcError::Backpressure
+                                | LiveHevcError::Protocol(HevcPictureClientError::Backpressure)
+                                | LiveHevcError::Protocol(HevcPictureClientError::Client(HevcClientError::Backpressure)))
+                        {
+                            self.control_blocked = true;
+                        }
+                        Err(self.network_failure(failure))
+                    }
+                };
+            }
+            let step = match self.connection.poll(readiness, now, authority) {
+                Ok(step) => step,
+                Err(failure) => return Err(self.network_failure(failure)),
+            };
+            match step {
+                LiveHevcStep::Protocol { event, transport } => {
+                    self.network_ended |= transport.is_some();
+                    match self.capture.offer(event, now) {
+                        Ok(()) => Ok(AutomaticHevcRecordingStep::ProtocolQueued { transport }),
+                        Err(refusal) => Err(self.fatal(LiveHevcRecordingError::Capture(refusal.reason),
+                            None, Some(refusal.event), transport)),
+                    }
+                }
+                LiveHevcStep::Pending(mut wait) => {
+                    self.control_blocked = false;
+                    wait.wake_at_ns = self.next_wake_ns();
+                    Ok(AutomaticHevcRecordingStep::Network(LiveHevcStep::Pending(wait)))
+                }
+                LiveHevcStep::Ended => Err(self.fatal(
+                    LiveHevcRecordingError::Network(LiveHevcError::Closed), None, None, None)),
+                other => Ok(AutomaticHevcRecordingStep::Network(other)),
+            }
+        }
+        /// Supply explicit timing for the exact held picture. A rejected value does not consume
+        /// it, replenish its residence deadline or authorize another network read.
+        pub fn supply_timing(
+            &mut self,
+            timing: HevcRecordingTiming,
+            now: u64,
+            authority: &dyn TcpAuthority,
+        ) -> Result<TimedHevcCapture, LiveHevcRecordingFailure> {
+            self.admit(now, authority)?;
+            self.capture.supply_timing(timing, now).map_err(|e| safe(LiveHevcRecordingError::Capture(e)))
+        }
+        /// Seal only an actually completed prefix. Released original bytes remain caller-owned;
+        /// poll returns the prepared window, which still requires explicit root-last publication.
+        pub fn seal(&mut self, now: u64, authority: &dyn TcpAuthority)
+            -> Result<HevcCollectionSeal, LiveHevcRecordingFailure>
+        {
+            self.admit(now, authority)?;
+            self.capture.seal(now).map_err(|e| safe(LiveHevcRecordingError::Capture(e)))
+        }
+        /// Close without network/storage effects, even after revocation. Prepared roots,
+        /// unsealed packets, held pictures and protocol uncertainty transfer exactly once.
+        pub fn cancel(&mut self) -> Option<LiveHevcRecordingRetirement> {
+            if self.closed { return None; }
+            Some(self.retire(None, None, None))
+        }
+        fn capture_busy(&self) -> bool {
+            self.capture.event.is_some() || self.capture.collector.has_ready()
+                || self.capture.input_ended || self.capture.finished || self.capture.closed
+        }
+        fn admit(&mut self, now: u64, authority: &dyn TcpAuthority)
+            -> Result<(), LiveHevcRecordingFailure>
+        {
+            if self.closed { return Err(safe(LiveHevcRecordingError::Network(LiveHevcError::Closed))); }
+            if now < self.last_ns {
+                return Err(safe(LiveHevcRecordingError::Network(LiveHevcError::ClockReversed)));
+            }
+            if self.remaining_steps == 0 {
+                return Err(self.fatal(LiveHevcRecordingError::Network(LiveHevcError::WorkBudget), None, None, None));
+            }
+            self.remaining_steps -= 1;
+            self.last_ns = now;
+            let result = if now >= self.deadline_ns {
+                Err(TcpError::Deadline)
+            } else {
+                authority.checkpoint(&self.binding, TcpOperation::Poll, now, self.deadline_ns)
+                    .map_err(TcpError::Denied)
+            };
+            result.map_err(|e| self.fatal(LiveHevcRecordingError::Network(LiveHevcError::Transport(e)), None, None, None))
+        }
+        fn network_failure(&mut self, failure: LiveHevcFailure) -> LiveHevcRecordingFailure {
+            let reason = LiveHevcRecordingError::Network(failure.reason);
+            match failure.retirement {
+                Some(retired) => self.fatal(reason, Some(*retired), None, None),
+                None => safe(reason),
+            }
+        }
+        fn fatal(&mut self, reason: LiveHevcRecordingError, connection: Option<LiveHevcRetirement>,
+            event: Option<Box<Event>>, transport: Option<Box<TcpRetirement>>) -> LiveHevcRecordingFailure
+        {
+            LiveHevcRecordingFailure {
+                reason, retirement: Some(Box::new(self.retire(connection, event, transport))),
+            }
+        }
+        fn retire(&mut self, connection: Option<LiveHevcRetirement>, event: Option<Box<Event>>,
+            transport: Option<Box<TcpRetirement>>) -> LiveHevcRecordingRetirement
+        {
+            self.closed = true;
+            self.next = None;
+            LiveHevcRecordingRetirement {
+                connection: connection.or_else(|| self.connection.cancel()),
+                capture: self.capture.cancel(), unoffered_event: event, terminal_transport: transport,
+            }
+        }
+    }
+    fn safe(reason: LiveHevcRecordingError) -> LiveHevcRecordingFailure {
+        LiveHevcRecordingFailure { reason, retirement: None }
+    }
+    fn control(event: &Event) -> Option<Control> {
+        let Event::Client { event, work: None } = event else { return None; };
+        match event.as_ref() {
+            HevcClientPoll::AuthenticationRequired { .. } => Some(Control::Respond),
+            HevcClientPoll::Control { progress: ClientProgress::Accepted(ClientState::Described), .. } =>
+                Some(Control::Request(ClientCommand::Setup)),
+            HevcClientPoll::Control { progress: ClientProgress::Accepted(ClientState::Ready), .. } =>
+                Some(Control::Request(ClientCommand::Play)),
+            HevcClientPoll::KeepAliveDue => Some(Control::Request(ClientCommand::KeepAlive)),
+            _ => None,
+        }
+    }
+}
