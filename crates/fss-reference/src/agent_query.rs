@@ -417,23 +417,6 @@ fn hex(digest: ContentDigest) -> String {
         .to_owned()
 }
 
-fn find_cursor(
-    stream: &ContinuationStream,
-    token: &str,
-    now: TimestampNs,
-) -> Result<ContinuationCursor, ContinuationError> {
-    let mut cursor = stream.initial_cursor()?;
-    loop {
-        if cursor.token() == token {
-            return Ok(cursor);
-        }
-        match stream.read_page(&cursor, now)?.next_cursor {
-            Some(next) => cursor = next,
-            None => return Err(ContinuationError::WrongStream),
-        }
-    }
-}
-
 /// Compiles and executes one bounded metadata query over a verified snapshot.
 ///
 /// Nothing is read or written here. The snapshot must come from the verified deployment
@@ -567,7 +550,7 @@ pub fn query_deployment(
     })?;
     let cursor = match &request.continuation {
         None => stream.initial_cursor()?,
-        Some(token) => find_cursor(&stream, token, issued_at)?,
+        Some(token) => stream.cursor_for_token(token, issued_at)?,
     };
     let page = stream.read_page(&cursor, issued_at)?;
     page.verify()?;

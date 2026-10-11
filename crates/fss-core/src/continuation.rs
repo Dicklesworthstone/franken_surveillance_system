@@ -496,6 +496,39 @@ impl ContinuationStream {
         })
     }
 
+    /// Resolves an exact token previously emitted at a page boundary in this stream.
+    ///
+    /// The complete stream is verified once. Reconstructing the predecessor chain then
+    /// requires only cursor-sized work per preceding page: it does not materialize or
+    /// repeatedly hash earlier result pages. The returned cursor is identical to the one
+    /// obtained by repeated [`Self::read_page`] calls, including its predecessor digest.
+    /// Arbitrary offsets, terminal positions without an emitted cursor, foreign tokens,
+    /// and expired streams are refused.
+    pub fn cursor_for_token(
+        &self,
+        token: &str,
+        now: TimestampNs,
+    ) -> Result<ContinuationCursor, ContinuationError> {
+        let mut cursor = self.initial_cursor()?;
+        cursor.validate_at(now)?;
+        loop {
+            if cursor.token() == token {
+                return Ok(cursor);
+            }
+            let next = cursor.position.saturating_add(u64::from(self.page_size));
+            if next >= cursor.upper_bound {
+                return Err(ContinuationError::WrongStream);
+            }
+            cursor = cursor.advance(
+                next,
+                self.anchor.clone(),
+                self.selection_witness,
+                self.issued_at,
+                self.expires_at,
+            )?;
+        }
+    }
+
     /// Reads one deterministic page and returns the exact next cursor when entries remain.
     pub fn read_page(
         &self,
@@ -763,6 +796,10 @@ mod tests {
         let cursor = stream.initial_cursor()?;
         stream.entries[0].payload_digest = ContentDigest::sha256(b"substituted");
         assert_eq!(
+            stream.cursor_for_token(cursor.token(), TimestampNs(20)),
+            Err(ContinuationError::Contract(ContractError::DigestMismatch))
+        );
+        assert_eq!(
             stream.initial_cursor(),
             Err(ContinuationError::Contract(ContractError::DigestMismatch))
         );
@@ -824,6 +861,99 @@ mod tests {
                 TimestampNs(100),
             ),
             Err(ContinuationError::NonMonotone)
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn token_resolution_matches_native_pages_and_predecessors() -> Result<(), ContinuationError> {
+        for count in [0_u64, 1, 129, 257] {
+            for page_size in [1_u32, 7, 32, u32::MAX] {
+                let mut stream = stream()?;
+                stream.entries = (0..count)
+                    .map(|index| {
+                        ContinuationEntry::new(
+                            index,
+                            "event_revision",
+                            ContentDigest::sha256(&index.to_le_bytes()),
+                            true,
+                        )
+                    })
+                    .collect::<Result<Vec<_>, _>>()?;
+                stream.page_size = page_size;
+                stream.source_digest = stream.computed_source_digest();
+                let mut cursor = stream.initial_cursor()?;
+                loop {
+                    let resolved = stream.cursor_for_token(cursor.token(), TimestampNs(20))?;
+                    assert_eq!(resolved, cursor);
+                    let expected = stream.read_page(&cursor, TimestampNs(20))?;
+                    assert_eq!(stream.read_page(&resolved, TimestampNs(20))?, expected);
+                    match expected.next_cursor {
+                        Some(next) => cursor = next,
+                        None => break,
+                    }
+                }
+                assert_eq!(
+                    stream.cursor_for_token("continuation:not-issued", TimestampNs(20)),
+                    Err(ContinuationError::WrongStream)
+                );
+            }
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn token_resolution_refuses_unissued_positions_and_time_changes()
+    -> Result<(), ContinuationError> {
+        let stream = stream()?;
+        let first = stream.initial_cursor()?;
+        for position in [1, 3] {
+            let unissued = first.advance(
+                position,
+                stream.anchor.clone(),
+                stream.selection_witness,
+                stream.issued_at,
+                stream.expires_at,
+            )?;
+            assert_eq!(
+                stream.cursor_for_token(unissued.token(), TimestampNs(20)),
+                Err(ContinuationError::WrongStream)
+            );
+        }
+        let skipped = first.advance(
+            1,
+            stream.anchor.clone(),
+            stream.selection_witness,
+            stream.issued_at,
+            stream.expires_at,
+        )?;
+        let wrong_predecessor = skipped.advance(
+            2,
+            stream.anchor.clone(),
+            stream.selection_witness,
+            stream.issued_at,
+            stream.expires_at,
+        )?;
+        assert_eq!(
+            stream.cursor_for_token(wrong_predecessor.token(), TimestampNs(20)),
+            Err(ContinuationError::WrongStream)
+        );
+        assert_eq!(
+            stream.cursor_for_token(first.token(), TimestampNs(100)),
+            Err(ContinuationError::Expired)
+        );
+        assert_eq!(
+            stream.cursor_for_token(first.token(), TimestampNs(9)),
+            Err(ContinuationError::Contract(
+                ContractError::InvertedTimeInterval
+            ))
+        );
+        let mut changed = stream;
+        changed.page_size = 1;
+        changed.source_digest = changed.computed_source_digest();
+        assert_eq!(
+            changed.cursor_for_token(first.token(), TimestampNs(20)),
+            Err(ContinuationError::WrongStream)
         );
         Ok(())
     }

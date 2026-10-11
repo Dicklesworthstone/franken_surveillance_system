@@ -1,0 +1,40 @@
+# Supplementary compilation and regression feedback; native DSR qualification remains authoritative.
+name: supplementary reference Rust checks
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'crates/**'
+      - 'Cargo.toml'
+      - 'Cargo.lock'
+      - 'rust-toolchain.toml'
+      - '.github/workflows/reference-rust.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: fss-reference-rust-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  reference-tests:
+    name: pinned-nightly reference tests
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    env:
+      CARGO_PROFILE_DEV_DEBUG: '0'
+      CARGO_PROFILE_TEST_DEBUG: '0'
+      CARGO_INCREMENTAL: '0'
+      CARGO_BUILD_JOBS: '2'
+      CARGO_NET_OFFLINE: 'true'
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+      - name: Provision pinned test toolchain
+        run: rustup toolchain install nightly-2026-08-31 --profile minimal --component rustfmt --component clippy
+      - name: Compile and execute native reference contracts
+        run: rustup run nightly-2026-08-31 cargo test --locked --offline --workspace --all-targets
+      - name: Execute repository-owned Rust qualification lane
+        run: bash scripts/qualify.sh --lane rust
