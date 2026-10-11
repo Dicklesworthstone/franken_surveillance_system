@@ -8,9 +8,8 @@ use fss_core::{
 use fss_publication::SlotName;
 
 use super::{
-    AGENT_BACKUP_MANIFEST_DOMAIN, AGENT_BACKUP_PROFILE, AgentBackupSummary,
-    BACKUP_MANIFEST_DOMAIN, BACKUP_PROFILE, BackupError, BackupLimits, DeploymentLimits,
-    RESTORE_FENCE_DOMAIN, Result,
+    AGENT_BACKUP_MANIFEST_DOMAIN, AGENT_BACKUP_PROFILE, AgentBackupSummary, BACKUP_MANIFEST_DOMAIN,
+    BACKUP_PROFILE, BackupError, BackupLimits, DeploymentLimits, RESTORE_FENCE_DOMAIN, Result,
 };
 
 const VERSION: u32 = 1;
@@ -424,12 +423,20 @@ impl RestoreFence {
     pub fn to_bytes(&self) -> Vec<u8> {
         let mut e = CanonicalEncoder::new();
         e.text(RESTORE_FENCE_DOMAIN);
-        e.text(if self.with_agent { AGENT_BACKUP_PROFILE } else { BACKUP_PROFILE });
+        e.text(if self.with_agent {
+            AGENT_BACKUP_PROFILE
+        } else {
+            BACKUP_PROFILE
+        });
         e.digest(self.source_manifest);
         self.source_anchor.encode_canonical(&mut e);
         e.digest(self.source_ledger_root);
         e.digest(self.source_effects_root);
-        e.text(if self.with_agent { AGENT_FENCE_POLICY } else { FENCE_POLICY });
+        e.text(if self.with_agent {
+            AGENT_FENCE_POLICY
+        } else {
+            FENCE_POLICY
+        });
         e.finish()
     }
     /// Exact content identity of the fence record.
@@ -457,7 +464,11 @@ impl RestoreFence {
             source_ledger_root: d.digest()?,
             source_effects_root: d.digest()?,
         };
-        let policy = if with_agent { AGENT_FENCE_POLICY } else { FENCE_POLICY };
+        let policy = if with_agent {
+            AGENT_FENCE_POLICY
+        } else {
+            FENCE_POLICY
+        };
         if value.source_anchor.site_lineage.len() > 256 || d.text()? != policy {
             return Err(BackupError::Corrupt("restore_fence_policy"));
         }

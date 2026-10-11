@@ -7,10 +7,10 @@ use std::fs;
 use std::path::PathBuf;
 
 use fss_core::{
-    AffordanceClass, AgentView, BudgetVector, CapsuleId, CaptureInterval, ClockBasis,
-    ContentDigest, ContextAuthority, EventId, KnowledgeState, LedgerAnchor, OperationId,
-    PrincipalId, RootAuthoritySpec, SensorCapsule, SensorId, SensorSourceBytesSpec, StreamId,
-    TimestampNs,
+    AffordanceClass, AgentView, BudgetVector, CanonicalEncode, CapsuleId, CaptureInterval,
+    ClockBasis, ContentDigest, ContextAuthority, EventId, KnowledgeState, LedgerAnchor,
+    OperationId, PrincipalId, RootAuthoritySpec, SensorCapsule, SensorId, SensorSourceBytesSpec,
+    StreamId, TimestampNs,
 };
 
 use super::{
@@ -682,9 +682,21 @@ fn grouped_inventory_enumerates_every_exact_event_root_and_reaches_explanation()
     assert!(inventory.handle.len() <= 256);
     assert!(inventory.purpose.len() <= 1024);
     assert!(inventory.purpose.contains("--max-entries 32"));
-    assert!(inventory.purpose.contains("estimated cost is per metadata page"));
-    assert!(inventory.purpose.contains(orient_request.principal.as_str()));
-    assert!(inventory.purpose.contains("metadata, not H1/source hydration"));
+    assert!(
+        inventory
+            .purpose
+            .contains("estimated cost is per metadata page")
+    );
+    assert!(
+        inventory
+            .purpose
+            .contains(orient_request.principal.as_str())
+    );
+    assert!(
+        inventory
+            .purpose
+            .contains("metadata, not H1/source hydration")
+    );
     let mut query_request = EventQueryRequest {
         filter: EventQueryFilter::default(),
         principal: orient_request.principal.clone(),
@@ -752,7 +764,9 @@ fn add_synthetic_edge(
     });
     row.event.verify()?;
     row.revisions = vec![row.event.clone()];
-    row.revision_digest = row.event.canonical_digest(fss_core::EventHypothesis::SCHEMA);
+    row.revision_digest = row
+        .event
+        .canonical_digest(fss_core::EventHypothesis::SCHEMA);
     row.tamper = fss_core::event::compute_sensor_tamper_status(row.revisions.iter(), None);
     Ok(digest)
 }
@@ -762,11 +776,12 @@ fn late_conflicts_and_tamper_remain_inline_and_never_disappear_into_inventory() 
     use fss_core::EvidenceEdgeRelation;
 
     let (root, mut snapshot) = synthetic_catalogue("protected", 258)?;
-    let contradiction = add_synthetic_edge(
-        &mut snapshot.events[256],
-        EvidenceEdgeRelation::Contradicts,
+    let contradiction =
+        add_synthetic_edge(&mut snapshot.events[256], EvidenceEdgeRelation::Contradicts)?;
+    let tamper = add_synthetic_edge(
+        &mut snapshot.events[257],
+        EvidenceEdgeRelation::SensorTamper,
     )?;
-    let tamper = add_synthetic_edge(&mut snapshot.events[257], EvidenceEdgeRelation::SensorTamper)?;
     let compiled =
         super::compile_capsule(&snapshot, &request(AgentView::Brief)?, &[], &[], &[], &[])?;
     for row in &snapshot.events[256..] {
@@ -817,8 +832,12 @@ fn late_conflicts_and_tamper_remain_inline_and_never_disappear_into_inventory() 
     assert!(planned.iter().all(|event| event.inline));
     // The fixed token budget and 256-handle receipt bound still refuse overload.
     assert!(
-        orient_deployment(&snapshot, &request(AgentView::Brief)?, &OrientLimits::default())
-            .is_err()
+        orient_deployment(
+            &snapshot,
+            &request(AgentView::Brief)?,
+            &OrientLimits::default()
+        )
+        .is_err()
     );
     fs::remove_dir_all(&root)?;
     Ok(())

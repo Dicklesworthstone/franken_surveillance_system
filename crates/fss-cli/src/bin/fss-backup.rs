@@ -15,7 +15,8 @@ use fss_core::{
 };
 use fss_reference::deployment_backup::{
     AgentBackupSummary, BackupAccess, BackupAuthority, BackupError, BackupLimits, BackupManifest,
-    RestoreReceipt, create_backup, inspect_agent_state, inspect_backup, prepare_backup, restore_backup,
+    RestoreReceipt, create_backup, inspect_agent_state, inspect_backup, prepare_backup,
+    restore_backup,
 };
 use fss_reference::{ADP_REPLAY_ROW_ID, DeploymentLimits, ReplayCx};
 
@@ -138,7 +139,11 @@ fn parse(args: &[OsString]) -> Result<Option<Request>, Error> {
         Some("create") => Action::Create,
         Some("inspect") => Action::Inspect,
         Some("restore") => Action::Restore,
-        _ => return Err(Error::Usage("expected plan, agent-inspect, create, inspect or restore")),
+        _ => {
+            return Err(Error::Usage(
+                "expected plan, agent-inspect, create, inspect or restore",
+            ));
+        }
     };
     if args.len() == 2 && matches!(args[1].to_str(), Some("--help" | "-h")) {
         return Ok(None);
@@ -293,8 +298,10 @@ impl BackupAuthority for LocalGrant<'_> {
         let r = self.0;
         match access {
             BackupAccess::ReadDeployment { source } => {
-                matches!(r.action, Action::Plan | Action::AgentInspect | Action::Create)
-                    && r.root.as_deref() == Some(source)
+                matches!(
+                    r.action,
+                    Action::Plan | Action::AgentInspect | Action::Create
+                ) && r.root.as_deref() == Some(source)
             }
             BackupAccess::WriteBundle {
                 source,
@@ -357,15 +364,30 @@ fn agent_summary(agent: &AgentBackupSummary) -> String {
         ("journal_root", string(&agent.journal_root.to_text())),
         ("journal_bytes", agent.journal_bytes.to_string()),
         ("journal_records", agent.journal_records.to_string()),
-        ("session_checkpoint", string(&agent.session_checkpoint.to_text())),
-        ("workspace_checkpoint", string(&agent.workspace_checkpoint.to_text())),
+        (
+            "session_checkpoint",
+            string(&agent.session_checkpoint.to_text()),
+        ),
+        (
+            "workspace_checkpoint",
+            string(&agent.workspace_checkpoint.to_text()),
+        ),
         ("session_count", agent.session_count.to_string()),
-        ("closed_session_count", agent.closed_session_count.to_string()),
-        ("workspace_revision_count", agent.workspace_revision_count.to_string()),
+        (
+            "closed_session_count",
+            agent.closed_session_count.to_string(),
+        ),
+        (
+            "workspace_revision_count",
+            agent.workspace_revision_count.to_string(),
+        ),
         ("claim_count", agent.claim_count.to_string()),
         ("case_count", agent.case_count.to_string()),
         ("publication_count", agent.publication_count.to_string()),
-        ("publication_digest", string(&agent.publication_digest.to_text())),
+        (
+            "publication_digest",
+            string(&agent.publication_digest.to_text()),
+        ),
     ])
 }
 
@@ -390,7 +412,12 @@ fn report(
             "source_effects_root",
             string(&manifest.effects_root().to_text()),
         ),
-        ("agent_state", manifest.agent_state().map_or_else(|| "null".to_owned(), agent_summary)),
+        (
+            "agent_state",
+            manifest
+                .agent_state()
+                .map_or_else(|| "null".to_owned(), agent_summary),
+        ),
         ("file_count", manifest.file_count().to_string()),
         ("total_bytes", manifest.total_bytes().to_string()),
         (
@@ -414,7 +441,10 @@ fn report(
                         ),
                         ("fence_digest", string(&receipt.fence_digest().to_text())),
                         ("alert_effects_disabled", "true".to_owned()),
-                        ("agent_mutations_disabled", manifest.agent_state().is_some().to_string()),
+                        (
+                            "agent_mutations_disabled",
+                            manifest.agent_state().is_some().to_string(),
+                        ),
                         ("effect_reconciliation_performed", "false".to_owned()),
                     ])
                 },

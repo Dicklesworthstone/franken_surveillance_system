@@ -14,9 +14,7 @@ mod publication;
 use std::collections::BTreeMap;
 use std::fmt;
 
-use fss_core::{
-    CanonicalEncoder, ContentDigest, ContractError, DigestAlgorithm, TimestampNs,
-};
+use fss_core::{CanonicalEncoder, ContentDigest, ContractError, DigestAlgorithm, TimestampNs};
 use fss_geometry::WorkBudget;
 use fss_publication::{LocalRootPublisher, PublishCancellation, PublishCutPoint, SlotName};
 
@@ -25,14 +23,15 @@ use super::file_adapter::{
     FileIngestLimits, FileIngestRequest, ScannedSegments,
 };
 use crate::rtsp::recording::{
-    MAX_RECORDING_BYTES, MAX_RECORDING_SAMPLES, RecordingScope,
-    hevc::local::load_hevc_recording, local::load_recording,
+    MAX_RECORDING_BYTES, MAX_RECORDING_SAMPLES, RecordingScope, hevc::local::load_hevc_recording,
+    local::load_recording,
 };
 use crate::{ReferenceDeployment, ReplayCx};
 
 pub(crate) use catalog_provenance::{
     OriginCache as CatalogOriginCache, verify_membership as verify_catalog_membership,
-    verify_originals as verify_catalog_originals, verify_range_budgeted as verify_catalog_range_budgeted,
+    verify_originals as verify_catalog_originals,
+    verify_range_budgeted as verify_catalog_range_budgeted,
 };
 
 pub(crate) use provenance::{
@@ -133,10 +132,19 @@ impl RtspImportRequest {
             return Err(RtspImportError::Invalid("source scope, time or bounds"));
         }
         if let Some(h) = self.capture_origin {
-            if h.start_ns.0 < 0 || h.start_ns.0.checked_add(i128::from(h.uncertainty_ns)).is_none() {
+            if h.start_ns.0 < 0
+                || h.start_ns
+                    .0
+                    .checked_add(i128::from(h.uncertainty_ns))
+                    .is_none()
+            {
                 return Err(RtspImportError::Invalid("capture hint"));
             }
-            FileIngestAdapter::compute_capture_interval(0, self.native_hint().as_ref(), self.receive_time)?;
+            FileIngestAdapter::compute_capture_interval(
+                0,
+                self.native_hint().as_ref(),
+                self.receive_time,
+            )?;
         }
         Ok(())
     }
@@ -171,9 +179,17 @@ impl RtspImportRequest {
         media: &[u8],
         cx: &ReplayCx,
     ) -> Result<ScannedSegments, FileIngestError> {
-        scan_media(media, self.codec, &self.source, self.receive_time, self.capture_origin,
-            self.max_frames, self.max_media_bytes,
-            self.identity().map_err(|_| corrupt("request identity"))?, cx)
+        scan_media(
+            media,
+            self.codec,
+            &self.source,
+            self.receive_time,
+            self.capture_origin,
+            self.max_frames,
+            self.max_media_bytes,
+            self.identity().map_err(|_| corrupt("request identity"))?,
+            cx,
+        )
     }
     fn native_hint(&self) -> Option<CaptureHint> {
         self.capture_origin.map(|origin| CaptureHint {
@@ -204,54 +220,67 @@ fn scan_media(
     identity: ContentDigest,
     cx: &ReplayCx,
 ) -> Result<ScannedSegments, FileIngestError> {
-        if let Some(origin) = capture_origin {
-            use fss_container::demux::{AvcMp4, DemuxError};
-            let mut limits = super::file_adapter::mp4_demux_limits(max_frames);
-            limits.maximum_input_bytes = usize::try_from(max_media_bytes)
-                .map_err(|_| corrupt("media byte ceiling"))?;
-            let mut check = || cx.checkpoint(STAGE_RTSP_IMPORT).map_err(|_| DemuxError::Cancelled);
-            let video = AvcMp4::parse_recovering_tail(media, None, limits, &mut check)
-                .map_err(|refusal| FileIngestError::Mp4Refused { refusal })?;
-            let earliest = video.samples().iter().map(|s| s.presentation_time()).min().unwrap_or(0);
-            let denominator = i128::from(video.timescale());
-            for sample in video.samples() {
-                let offset = sample.presentation_time().checked_sub(earliest)
-                    .and_then(|n| n.checked_mul(1_000_000_000))
-                    .and_then(|n| n.checked_add(denominator / 2))
-                    .map(|n| n / denominator)
-                    .ok_or_else(|| corrupt("presentation-time arithmetic"))?;
-                origin.start_ns.0.checked_add(offset)
-                    .and_then(|n| n.checked_add(i128::from(origin.uncertainty_ns)))
-                    .ok_or_else(|| corrupt("capture timestamp overflow"))?;
-            }
-        }
-        let mut native = FileIngestRequest::new(
-            std::path::PathBuf::new(),
-            source.sensor.clone(),
-            source.stream.clone(),
-        );
-        native.limits = FileIngestLimits {
-            max_file_bytes: max_media_bytes,
-            chunk_bytes: CHUNK_BYTES as u64,
-            max_segments: max_frames,
-            max_batch_deltas: 1,
-            ..FileIngestLimits::standard()
+    if let Some(origin) = capture_origin {
+        use fss_container::demux::{AvcMp4, DemuxError};
+        let mut limits = super::file_adapter::mp4_demux_limits(max_frames);
+        limits.maximum_input_bytes =
+            usize::try_from(max_media_bytes).map_err(|_| corrupt("media byte ceiling"))?;
+        let mut check = || {
+            cx.checkpoint(STAGE_RTSP_IMPORT)
+                .map_err(|_| DemuxError::Cancelled)
         };
-        native.capture_hint = capture_origin.map(|origin| CaptureHint {
-            start_ns: origin.start_ns,
-            uncertainty_ns: origin.uncertainty_ns,
-            assumed_fps: 1.0,
-        });
-        native.receive_time = Some(receive_time);
-        FileIngestAdapter::container_segments(
-            media,
-            codec.format(),
-            &native,
-            &hex(identity),
-            receive_time,
-            cx,
-        )
+        let video = AvcMp4::parse_recovering_tail(media, None, limits, &mut check)
+            .map_err(|refusal| FileIngestError::Mp4Refused { refusal })?;
+        let earliest = video
+            .samples()
+            .iter()
+            .map(|s| s.presentation_time())
+            .min()
+            .unwrap_or(0);
+        let denominator = i128::from(video.timescale());
+        for sample in video.samples() {
+            let offset = sample
+                .presentation_time()
+                .checked_sub(earliest)
+                .and_then(|n| n.checked_mul(1_000_000_000))
+                .and_then(|n| n.checked_add(denominator / 2))
+                .map(|n| n / denominator)
+                .ok_or_else(|| corrupt("presentation-time arithmetic"))?;
+            origin
+                .start_ns
+                .0
+                .checked_add(offset)
+                .and_then(|n| n.checked_add(i128::from(origin.uncertainty_ns)))
+                .ok_or_else(|| corrupt("capture timestamp overflow"))?;
+        }
     }
+    let mut native = FileIngestRequest::new(
+        std::path::PathBuf::new(),
+        source.sensor.clone(),
+        source.stream.clone(),
+    );
+    native.limits = FileIngestLimits {
+        max_file_bytes: max_media_bytes,
+        chunk_bytes: CHUNK_BYTES as u64,
+        max_segments: max_frames,
+        max_batch_deltas: 1,
+        ..FileIngestLimits::standard()
+    };
+    native.capture_hint = capture_origin.map(|origin| CaptureHint {
+        start_ns: origin.start_ns,
+        uncertainty_ns: origin.uncertainty_ns,
+        assumed_fps: 1.0,
+    });
+    native.receive_time = Some(receive_time);
+    FileIngestAdapter::container_segments(
+        media,
+        codec.format(),
+        &native,
+        &hex(identity),
+        receive_time,
+        cx,
+    )
+}
 
 /// Independent permission to disclose the selected original packets and retain them in destination.
 /// Callers must check current principal, policy, revocation and deadline. No default grant exists.
@@ -380,38 +409,59 @@ pub fn import_rtsp<'cx>(
         || publisher.root_dir().starts_with(destination.root())
         || destination.root().starts_with(publisher.root_dir())
     {
-        return Err(RtspImportError::Invalid("distinct source and destination owners required"));
+        return Err(RtspImportError::Invalid(
+            "distinct source and destination owners required",
+        ));
     }
     guard(authority, request, destination, cx)?;
     // Native window readers have a fixed bounded original/replay contract. Reserve it before
     // their first read; a narrower request is a retention admission bound, not a syscall meter.
     work.charge(MAX_ORIGINAL_BYTES).map_err(source_error)?;
     let window = {
-        let access = Access { authority, request, destination, cx };
+        let access = Access {
+            authority,
+            request,
+            destination,
+            cx,
+        };
         match request.codec {
             RtspImportCodec::Avc => {
                 let plan = load_recording(
-                    publisher, &request.slot, request.root, &request.source, &access,
-                ).map_err(source_error)?;
+                    publisher,
+                    &request.slot,
+                    request.root,
+                    &request.source,
+                    &access,
+                )
+                .map_err(source_error)?;
                 provenance::Window::from_verified(&plan, request)?
             }
             RtspImportCodec::Hevc => {
                 let plan = load_hevc_recording(
-                    publisher, &request.slot, request.root, &request.source, &access,
-                ).map_err(source_error)?;
+                    publisher,
+                    &request.slot,
+                    request.root,
+                    &request.source,
+                    &access,
+                )
+                .map_err(source_error)?;
                 provenance::Window::from_verified(plan.publication_plan(), request)?
             }
         }
     };
     guard(authority, request, destination, cx)?;
-    work.charge((window.media_len() as u64).saturating_mul(2)).map_err(source_error)?;
+    work.charge((window.media_len() as u64).saturating_mul(2))
+        .map_err(source_error)?;
     let media = window.media()?;
     let scan = request.scan(&media, cx)?;
     if scan.capsules.is_empty()
         || scan.capsules.len() > request.max_frames
         || scan.capsules.len() != window.samples
         || scan.truncated_frames != 0
-        || scan.omission_spans.iter().any(|span| !span.is_container_structure())
+        || scan
+            .omission_spans
+            .iter()
+            .any(|span| !span.is_container_structure())
     {
         return Err(RtspImportError::Invalid("complete native sample set"));
     }
@@ -421,6 +471,14 @@ pub fn import_rtsp<'cx>(
         payloads.insert(digest, bytes.to_vec());
     }
     publication::publish(
-        destination, request, authority, cx, work, proof, media, scan, payloads,
+        destination,
+        request,
+        authority,
+        cx,
+        work,
+        proof,
+        media,
+        scan,
+        payloads,
     )
 }

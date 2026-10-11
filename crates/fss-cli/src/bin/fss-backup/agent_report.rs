@@ -2,8 +2,8 @@
 //! Bounded historical recovery rendering. These records are not live admission responses.
 
 use fss_cli::agent_json::{
-    agent_session, array, contract_basis, digests, evidence_anchor, object, optional_string, session_capsule,
-    string, strings,
+    agent_session, array, contract_basis, digests, evidence_anchor, object, optional_string,
+    session_capsule, string, strings,
 };
 use fss_core::ContractError;
 use fss_reference::deployment_backup::{AgentPublicationState, AgentRecoveryState};
@@ -45,34 +45,79 @@ fn publication(value: &AgentPublicationState) -> Result<String, ContractError> {
         AgentRecoveryRecord::Handoff(record) => object(&[
             ("handoff_id", string(record.capsule.handoff_id.as_str())),
             ("mission_id", string(record.capsule.mission_id.as_str())),
-            ("session_id", string(record.capsule.source_session_id.as_str())),
-            ("principal", string(record.capsule.source_principal_id.as_str())),
+            (
+                "session_id",
+                string(record.capsule.source_session_id.as_str()),
+            ),
+            (
+                "principal",
+                string(record.capsule.source_principal_id.as_str()),
+            ),
             ("anchor", evidence_anchor(&record.capsule.anchor)),
             ("anchor_token", string(&record.anchor_token)),
-            ("contract_basis", contract_basis(&record.capsule.contract_basis)),
+            (
+                "contract_basis",
+                contract_basis(&record.capsule.contract_basis),
+            ),
             ("view", string(record.view.id())),
-            ("situation_capsule_root", string(&record.capsule.situation_capsule_root.to_text())),
+            (
+                "situation_capsule_root",
+                string(&record.capsule.situation_capsule_root.to_text()),
+            ),
             ("child_roots", digests(&record.capsule.child_roots)),
-            ("handoff_root", string(&record.capsule.handoff_root.to_text())),
-            ("situation_fingerprint", string(&record.situation_fingerprint.to_text())),
-            ("publication_digest", string(&record.publication_digest.to_text())),
-            ("compression_receipt_id", string(&record.compression_receipt_id)),
-            ("continuation", optional_string(record.continuation.as_deref())),
+            (
+                "handoff_root",
+                string(&record.capsule.handoff_root.to_text()),
+            ),
+            (
+                "situation_fingerprint",
+                string(&record.situation_fingerprint.to_text()),
+            ),
+            (
+                "publication_digest",
+                string(&record.publication_digest.to_text()),
+            ),
+            (
+                "compression_receipt_id",
+                string(&record.compression_receipt_id),
+            ),
+            (
+                "continuation",
+                optional_string(record.continuation.as_deref()),
+            ),
             ("workspace_revision", record.workspace_revision.to_string()),
-            ("workspace_digest", string(&record.workspace_digest.to_text())),
+            (
+                "workspace_digest",
+                string(&record.workspace_digest.to_text()),
+            ),
             ("session_digest", string(&record.session_digest.to_text())),
-            ("symbol_table_generation", record.symbol_table_generation.to_string()),
+            (
+                "symbol_table_generation",
+                record.symbol_table_generation.to_string(),
+            ),
             ("token_budget", record.token_budget.to_string()),
             ("mission_digest", string(&record.mission_digest.to_text())),
-            ("privacy_generation_id", string(&record.privacy_generation_id)),
+            (
+                "privacy_generation_id",
+                string(&record.privacy_generation_id),
+            ),
             ("note", optional_string(record.note.as_deref())),
             ("assumptions", strings(&record.assumptions)),
-            ("invalidated_assumptions", strings(&record.invalidated_assumptions)),
+            (
+                "invalidated_assumptions",
+                strings(&record.invalidated_assumptions),
+            ),
             ("unknowns", strings(&record.unknowns)),
             ("obligations", strings(&record.obligations)),
-            ("indeterminate_effects", strings(&record.indeterminate_effects)),
+            (
+                "indeterminate_effects",
+                strings(&record.indeterminate_effects),
+            ),
             ("prepared_operations", strings(&record.prepared_operations)),
-            ("recommended_affordances", strings(&record.recommended_affordances)),
+            (
+                "recommended_affordances",
+                strings(&record.recommended_affordances),
+            ),
             ("invalidators", strings(&record.invalidators)),
             ("created_at_ns", record.capsule.created_at.0.to_string()),
             ("expires_at_ns", record.capsule.expires_at.0.to_string()),
@@ -89,20 +134,34 @@ fn publication(value: &AgentPublicationState) -> Result<String, ContractError> {
             ("operation_id", string(&record.operation_id)),
             ("obligation_id", string(&record.obligation_id)),
             ("plan_approval", string(&record.plan_approval.to_text())),
-            ("control_plan_digest", string(&record.control_plan_digest.to_text())),
-            ("route", object(&[
-                ("relay", string(&record.route.relay)),
-                ("path", string(&record.route.path)),
-                ("plaintext_approval", string(&record.route.plaintext_approval.to_text())),
-                ("deadline_ms", record.route.deadline_ms.to_string()),
-            ])),
-            ("case", record.case.as_ref().map_or_else(
-                || "null".to_owned(),
-                |(id, digest)| object(&[
-                    ("case_id", string(id)),
-                    ("revision", string(&digest.to_text())),
+            (
+                "control_plan_digest",
+                string(&record.control_plan_digest.to_text()),
+            ),
+            (
+                "route",
+                object(&[
+                    ("relay", string(&record.route.relay)),
+                    ("path", string(&record.route.path)),
+                    (
+                        "plaintext_approval",
+                        string(&record.route.plaintext_approval.to_text()),
+                    ),
+                    ("deadline_ms", record.route.deadline_ms.to_string()),
                 ]),
-            )),
+            ),
+            (
+                "case",
+                record.case.as_ref().map_or_else(
+                    || "null".to_owned(),
+                    |(id, digest)| {
+                        object(&[
+                            ("case_id", string(id)),
+                            ("revision", string(&digest.to_text())),
+                        ])
+                    },
+                ),
+            ),
             ("created_at_ns", record.created_at.0.to_string()),
         ]),
         AgentRecoveryRecord::Episode(record) => object(&[
@@ -111,7 +170,10 @@ fn publication(value: &AgentPublicationState) -> Result<String, ContractError> {
             ("principal", string(record.principal.as_str())),
             ("operation_id", string(&record.operation_id)),
             ("terminal_state", string(record.terminal_state.as_str())),
-            ("episode", fss_cli::episode_cmd::episode_json(&record.episode)),
+            (
+                "episode",
+                fss_cli::episode_cmd::episode_json(&record.episode),
+            ),
             ("recorded_at_ns", record.recorded_at.0.to_string()),
         ]),
         AgentRecoveryRecord::Finding(record) => fss_cli::finding_cmd::finding_json(record)?,
@@ -137,20 +199,32 @@ pub(super) fn report(state: &AgentRecoveryState) -> Result<String, ContractError
             ("opening_digest", string(&retained.opening_digest.to_text())),
             ("closed", retained.closed.to_string()),
             ("spent_tokens", retained.spent_tokens.to_string()),
-            ("last_observed_at_ns", retained.last_observed_at.0.to_string()),
+            (
+                "last_observed_at_ns",
+                retained.last_observed_at.0.to_string(),
+            ),
         ]))
     })?;
     let workspaces = rows(&state.sessions.workspace_revisions, &mut used, |revision| {
         Ok(object(&[
             ("digest", string(&revision.digest().to_text())),
-            ("parent_digest", optional_string(
-                revision.parent_digest().map(|digest| digest.to_text()).as_deref(),
-            )),
-            ("workspace", session_capsule(
-                revision.capsule(),
-                revision.contract_basis(),
-                revision.invalidated_actions(),
-            )),
+            (
+                "parent_digest",
+                optional_string(
+                    revision
+                        .parent_digest()
+                        .map(|digest| digest.to_text())
+                        .as_deref(),
+                ),
+            ),
+            (
+                "workspace",
+                session_capsule(
+                    revision.capsule(),
+                    revision.contract_basis(),
+                    revision.invalidated_actions(),
+                ),
+            ),
         ]))
     })?;
     let claims = rows(&state.sessions.claims, &mut used, |revision| {
@@ -165,9 +239,15 @@ pub(super) fn report(state: &AgentRecoveryState) -> Result<String, ContractError
             ("work_root", string(&revision.work_root().to_text())),
             ("revision", revision.revision().to_string()),
             ("revision_digest", string(&revision.digest().to_text())),
-            ("predecessor", optional_string(
-                revision.predecessor().map(|digest| digest.to_text()).as_deref(),
-            )),
+            (
+                "predecessor",
+                optional_string(
+                    revision
+                        .predecessor()
+                        .map(|digest| digest.to_text())
+                        .as_deref(),
+                ),
+            ),
             ("privacy_class", string(revision.privacy_class())),
             ("lease_incarnation", claim.lease_incarnation.to_string()),
             ("expires_at_ns", claim.expires_at_ns.to_string()),
@@ -185,7 +265,10 @@ pub(super) fn report(state: &AgentRecoveryState) -> Result<String, ContractError
     let report = object(&[
         ("format", string(super::FORMAT)),
         ("status", string("agent-inspected")),
-        ("profile", string(fss_reference::deployment_backup::AGENT_BACKUP_PROFILE)),
+        (
+            "profile",
+            string(fss_reference::deployment_backup::AGENT_BACKUP_PROFILE),
+        ),
         ("source_anchor", evidence_anchor(&state.source_anchor)),
         ("historical_only", "true".to_owned()),
         ("restore_fence_present", state.restored.to_string()),

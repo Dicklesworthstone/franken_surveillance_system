@@ -211,7 +211,9 @@ pub(super) fn inspect(
         || !local.redundant_temps.is_empty()
         || local.holds_migration_pending
     {
-        return Err(BackupError::RecoveryRequired("agent_publication_incomplete"));
+        return Err(BackupError::RecoveryRequired(
+            "agent_publication_incomplete",
+        ));
     }
     let mut denied = deleted.clone();
     denied.extend(local.report.tombstones.iter().copied());
@@ -271,7 +273,11 @@ pub(super) fn inspect(
         session_checkpoint: sessions.inspection.checkpoint_digest,
         workspace_checkpoint,
         session_count: sessions.sessions.len() as u64,
-        closed_session_count: sessions.sessions.iter().filter(|session| session.closed).count() as u64,
+        closed_session_count: sessions
+            .sessions
+            .iter()
+            .filter(|session| session.closed)
+            .count() as u64,
         workspace_revision_count: sessions.workspace_revisions.len() as u64,
         claim_count: sessions.claims.len() as u64,
         case_count: sessions.cases.len() as u64,

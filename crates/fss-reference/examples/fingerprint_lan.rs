@@ -9,9 +9,9 @@ use std::sync::atomic::AtomicBool;
 use std::time::Duration;
 
 use fss_reference::discovery::{
-    census::{run_census, CensusConfig, OuiTable, OUI_SNAPSHOT},
-    dispatch::{dispatch, AdapterPath, Readiness},
-    fingerprint::{classify_host, Brand},
+    census::{CensusConfig, OUI_SNAPSHOT, OuiTable, run_census},
+    dispatch::{AdapterPath, Readiness, dispatch},
+    fingerprint::{Brand, classify_host},
     tuya_beacon::listen,
 };
 
@@ -45,7 +45,10 @@ fn main() {
             "  beacon {} cmd={} crc={}",
             b.source, b.cmd_name, b.crc_good
         );
-        beacon_ips.entry(ip).or_insert_with(|| vec![]).push(b.clone());
+        beacon_ips
+            .entry(ip)
+            .or_insert_with(|| vec![])
+            .push(b.clone());
     }
 
     println!("== classify + dispatch ==");

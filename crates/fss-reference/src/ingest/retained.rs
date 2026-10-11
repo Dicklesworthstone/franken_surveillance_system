@@ -199,7 +199,9 @@ impl FileImportManifest {
         if self.adapter_id == super::rtsp_import::ADAPTER
             || self.adapter_id == super::rtsp_import::catalog::ADAPTER
         {
-            return Err(invalid("RTSP recording needs explicit original-packet resolution"));
+            return Err(invalid(
+                "RTSP recording needs explicit original-packet resolution",
+            ));
         }
         if self.adapter_id == super::http_import::ADAPTER {
             return Err(invalid(
@@ -254,14 +256,26 @@ impl FileImportManifest {
                     })
         } else if self.adapter_id == super::rtsp_import::ADAPTER {
             matches!(self.format.as_str(), "mp4avc" | "mp4hevc")
-                && self.adapter_generation.strip_prefix(super::rtsp_import::GENERATION)
-                    .is_some_and(|hex| hex.len() == 64 && hex.bytes()
-                        .all(|b| b.is_ascii_digit() || (b'a'..=b'f').contains(&b)))
+                && self
+                    .adapter_generation
+                    .strip_prefix(super::rtsp_import::GENERATION)
+                    .is_some_and(|hex| {
+                        hex.len() == 64
+                            && hex
+                                .bytes()
+                                .all(|b| b.is_ascii_digit() || (b'a'..=b'f').contains(&b))
+                    })
         } else if self.adapter_id == super::rtsp_import::catalog::ADAPTER {
             matches!(self.format.as_str(), "mp4avc" | "mp4hevc")
-                && self.adapter_generation.strip_prefix(super::rtsp_import::catalog::GENERATION)
-                    .is_some_and(|hex| hex.len() == 64 && hex.bytes()
-                        .all(|b| b.is_ascii_digit() || (b'a'..=b'f').contains(&b)))
+                && self
+                    .adapter_generation
+                    .strip_prefix(super::rtsp_import::catalog::GENERATION)
+                    .is_some_and(|hex| {
+                        hex.len() == 64
+                            && hex
+                                .bytes()
+                                .all(|b| b.is_ascii_digit() || (b'a'..=b'f').contains(&b))
+                    })
         } else {
             false
         };
@@ -574,8 +588,12 @@ impl RetainedFileImport {
             cx,
             &mut |n| chunks.reserve_source_bytes(n),
         )?;
-        let offset = self.manifest.segment_spans.get(index)
-            .ok_or_else(|| invalid("origin sample index"))?.offset;
+        let offset = self
+            .manifest
+            .segment_spans
+            .get(index)
+            .ok_or_else(|| invalid("origin sample index"))?
+            .offset;
         chunks.verify_origin(deployment, &self.manifest, offset, &bytes, cx)?;
         checkpoint(cx, STAGE_RETAINED_COMPLETE)?;
         Ok(bytes)
@@ -789,11 +807,21 @@ impl VerifiedChunkCache {
             self.rtsp_catalog_origin = None;
         }
         super::rtsp_import::verify_range_budgeted(
-            deployment, manifest, offset, bytes, cx, &mut self.rtsp_origin,
+            deployment,
+            manifest,
+            offset,
+            bytes,
+            cx,
+            &mut self.rtsp_origin,
             &mut |n| budget.as_ref().map_or(Ok(()), |b| b.reserve(n)),
         )?;
         super::rtsp_import::verify_catalog_range_budgeted(
-            deployment, manifest, offset, bytes, cx, &mut self.rtsp_catalog_origin,
+            deployment,
+            manifest,
+            offset,
+            bytes,
+            cx,
+            &mut self.rtsp_catalog_origin,
             &mut |n| budget.as_ref().map_or(Ok(()), |b| b.reserve(n)),
         )
     }

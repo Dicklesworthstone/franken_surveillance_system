@@ -195,41 +195,68 @@ fn split(bytes: &[u8]) -> Vec<&[u8]> {
 
 /// Repeated real IDR datagrams with distinct sequence/timestamp identities, never cloned pictures.
 pub fn repeated(
-    ingress: u128, count: usize, first_sequence: u16, first_timestamp: u32,
+    ingress: u128,
+    count: usize,
+    first_sequence: u16,
+    first_timestamp: u32,
 ) -> Result<Fixture, Error> {
-    repeated_from(ingress, count, first_sequence, first_timestamp, include_bytes!(
-        "../../../fss-packet/tests/fixtures/avc/baseline.264"
-    ))
+    repeated_from(
+        ingress,
+        count,
+        first_sequence,
+        first_timestamp,
+        include_bytes!("../../../fss-packet/tests/fixtures/avc/baseline.264"),
+    )
 }
 pub fn repeated_from(
-    ingress: u128, count: usize, first_sequence: u16, first_timestamp: u32, bytes: &[u8],
+    ingress: u128,
+    count: usize,
+    first_sequence: u16,
+    first_timestamp: u32,
+    bytes: &[u8],
 ) -> Result<Fixture, Error> {
     if count == 0 || count > 256 || first_sequence == 0 {
         return Err("bounded IDR fixture selection".into());
     }
     let nals = split(bytes);
-    let first_vcl = nals.iter().position(|n| matches!(n[0] & 31, 1 | 5)).ok_or("VCL")?;
+    let first_vcl = nals
+        .iter()
+        .position(|n| matches!(n[0] & 31, 1 | 5))
+        .ok_or("VCL")?;
     let limits = AvcReceiveLimits::default();
     let sps = parse_sps(nals.first().ok_or("SPS")?, limits.syntax)?;
     let pps = parse_pps(nals.get(1).ok_or("PPS")?, &sps, limits.syntax)?;
-    let key = StreamKey { ingress, generation: 1, ssrc: 7 };
+    let key = StreamKey {
+        ingress,
+        generation: 1,
+        ssrc: 7,
+    };
     let mut receiver = AvcReceiver::new(key, 96, H264Mode::NonInterleaved, limits, (sps, pps))?;
     let mut probation = packet(first_sequence - 1, false, nals[0]);
     probation[4..8].copy_from_slice(&first_timestamp.to_be_bytes());
     receiver.ingest(key, &probation, u64::from(first_sequence - 1))?;
-    let mut result = Fixture { pictures: Vec::new(), packets: Vec::new() };
+    let mut result = Fixture {
+        pictures: Vec::new(),
+        packets: Vec::new(),
+    };
     let mut sequence = first_sequence;
     for ordinal in 0..count {
-        let timestamp = first_timestamp.checked_add(ordinal as u32 * 3600).ok_or("timestamp")?;
+        let timestamp = first_timestamp
+            .checked_add(ordinal as u32 * 3600)
+            .ok_or("timestamp")?;
         for (index, nal) in nals[..=first_vcl].iter().enumerate() {
             let mut wire = packet(sequence, index == first_vcl, nal);
             wire[4..8].copy_from_slice(&timestamp.to_be_bytes());
             receiver.ingest(key, &wire, u64::from(sequence))?;
-            result.packets.push((u64::from(sequence), u64::from(sequence), wire));
+            result
+                .packets
+                .push((u64::from(sequence), u64::from(sequence), wire));
             drain(&mut receiver, u64::from(sequence), &mut result.pictures)?;
             sequence = sequence.checked_add(1).ok_or("sequence")?;
         }
     }
-    if result.pictures.len() != count { return Err("fixture picture count".into()); }
+    if result.pictures.len() != count {
+        return Err("fixture picture count".into());
+    }
     Ok(result)
 }

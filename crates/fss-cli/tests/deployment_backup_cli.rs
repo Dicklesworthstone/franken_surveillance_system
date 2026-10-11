@@ -646,21 +646,44 @@ fn populated_agent_process_roundtrip_inspects_history_without_restoring_authorit
     )?;
     let planned = report(&planned_output)?;
     assert!(planned_output.status.success(), "{planned:?}");
-    assert_eq!(field(&planned, "profile")?.text(), Some(AGENT_BACKUP_PROFILE));
-    assert_eq!(field(field(&planned, "agent_state")?, "session_count")?.integer(), Some(5));
+    assert_eq!(
+        field(&planned, "profile")?.text(),
+        Some(AGENT_BACKUP_PROFILE)
+    );
+    assert_eq!(
+        field(field(&planned, "agent_state")?, "session_count")?.integer(),
+        Some(5)
+    );
     assert!(!std::str::from_utf8(&planned_output.stdout)?.contains(mission));
     let source_output = run(
         &fixture.directory,
         &arguments("agent-inspect", Some(&fixture.root), None, None),
     )?;
     let source_state = agent_report(&source_output)?;
-    assert!(source_output.stdout.len() > 16 * 1024, "fixture must exceed the metadata report ceiling");
+    assert!(
+        source_output.stdout.len() > 16 * 1024,
+        "fixture must exceed the metadata report ceiling"
+    );
     assert!(source_output.status.success(), "{source_state:?}");
-    assert_eq!(field(&source_state, "status")?.text(), Some("agent-inspected"));
-    assert_eq!(field(&source_state, "historical_only")?.boolean(), Some(true));
-    assert_eq!(field(&source_state, "restore_fence_present")?.boolean(), Some(false));
-    assert_eq!(field(&source_state, "authority_granted")?.boolean(), Some(false));
-    let sessions = field(&source_state, "sessions")?.array().ok_or("sessions array")?;
+    assert_eq!(
+        field(&source_state, "status")?.text(),
+        Some("agent-inspected")
+    );
+    assert_eq!(
+        field(&source_state, "historical_only")?.boolean(),
+        Some(true)
+    );
+    assert_eq!(
+        field(&source_state, "restore_fence_present")?.boolean(),
+        Some(false)
+    );
+    assert_eq!(
+        field(&source_state, "authority_granted")?.boolean(),
+        Some(false)
+    );
+    let sessions = field(&source_state, "sessions")?
+        .array()
+        .ok_or("sessions array")?;
     assert_eq!(sessions.len(), retained_sessions.len());
     let actual_sessions: std::collections::BTreeSet<_> = sessions
         .iter()
@@ -673,7 +696,10 @@ fn populated_agent_process_roundtrip_inspects_history_without_restoring_authorit
         .collect::<TestResult<_>>()?;
     assert_eq!(
         actual_sessions,
-        retained_sessions.iter().map(ToString::to_string).collect::<std::collections::BTreeSet<_>>(),
+        retained_sessions
+            .iter()
+            .map(ToString::to_string)
+            .collect::<std::collections::BTreeSet<_>>(),
     );
     assert!(std::str::from_utf8(&source_output.stdout)?.contains(mission));
     let expected = pin(&planned)?;
@@ -709,15 +735,36 @@ fn populated_agent_process_roundtrip_inspects_history_without_restoring_authorit
     let restored = agent_report(&output)?;
     assert!(output.stdout.len() > 16 * 1024);
     assert!(output.status.success(), "{restored:?}");
-    assert_eq!(field(&restored, "restore_fence_present")?.boolean(), Some(true));
-    assert_eq!(field(&restored, "authority_granted")?.boolean(), Some(false));
-    for name in ["agent_state", "sessions", "workspace_revisions", "claims", "cases", "publications"] {
-        assert_eq!(field(&restored, name)?, field(&source_state, name)?, "historical state changed: {name}");
+    assert_eq!(
+        field(&restored, "restore_fence_present")?.boolean(),
+        Some(true)
+    );
+    assert_eq!(
+        field(&restored, "authority_granted")?.boolean(),
+        Some(false)
+    );
+    for name in [
+        "agent_state",
+        "sessions",
+        "workspace_revisions",
+        "claims",
+        "cases",
+        "publications",
+    ] {
+        assert_eq!(
+            field(&restored, name)?,
+            field(&source_state, name)?,
+            "historical state changed: {name}"
+        );
     }
     assert!(inventory(&destination)? == before);
     let mut denied = arguments("agent-inspect", Some(&destination), None, None);
     denied.retain(|value| value != "--allow-originals");
-    refused(&run(&fixture.directory, &denied)?, fss_cli::ERR_CLI_MALFORMED_VALUE, 2)?;
+    refused(
+        &run(&fixture.directory, &denied)?,
+        fss_cli::ERR_CLI_MALFORMED_VALUE,
+        2,
+    )?;
     assert!(inventory(&destination)? == before);
     Ok(())
 }

@@ -11,11 +11,13 @@ use fss_core::{BudgetVector, ContentDigest, OperationId};
 use fss_geometry::WorkBudget;
 use fss_object::{MAX_MANIFEST_CHILDREN, SpoolLimits};
 use fss_publication::{LocalPublicationLimits, LocalRootPublisher};
+use fss_reference::ingest::rtsp_import::catalog::{
+    RtspCatalogImportAuthority, RtspCatalogImportRequest, import_rtsp_catalog,
+};
 use fss_reference::ingest::rtsp_import::{
     MAX_ORIGINAL_BYTES, RtspImportAuthority, RtspImportRequest, import_rtsp,
 };
 use fss_reference::{ReferenceDeployment, ReplayCx};
-use fss_reference::ingest::rtsp_import::catalog::{RtspCatalogImportAuthority, RtspCatalogImportRequest, import_rtsp_catalog};
 
 use super::plan::{CAPS, CATALOG_FORMAT, FORMAT, Options};
 
@@ -27,25 +29,37 @@ struct Owner<'a> {
 }
 impl RtspImportAuthority for Owner<'_> {
     fn permit(&self, request: &RtspImportRequest, destination: &ReferenceDeployment) -> bool {
-        self.options.catalog.is_none() && request
-            .digest()
-            .is_ok_and(|digest| self.options.request.digest().ok() == Some(digest))
+        self.options.catalog.is_none()
+            && request
+                .digest()
+                .is_ok_and(|digest| self.options.request.digest().ok() == Some(digest))
             && destination.root() == self.options.root
             && destination.site_lineage() == self.options.site
             && self.authority.cancellation_reason.is_none()
-            && CAPS.iter().all(|capability| self.authority.has_capability(capability))
+            && CAPS
+                .iter()
+                .all(|capability| self.authority.has_capability(capability))
             && boundary(self.options, self.cx, self.start).is_ok()
     }
 }
 
 impl RtspCatalogImportAuthority for Owner<'_> {
-    fn permit(&self, request: &RtspCatalogImportRequest, destination: &ReferenceDeployment) -> bool {
-        self.options.catalog.as_ref().is_some_and(|expected| request.digest().ok() == expected.digest().ok())
+    fn permit(
+        &self,
+        request: &RtspCatalogImportRequest,
+        destination: &ReferenceDeployment,
+    ) -> bool {
+        self.options
+            .catalog
+            .as_ref()
+            .is_some_and(|expected| request.digest().ok() == expected.digest().ok())
             && request.digest().is_ok()
             && destination.root() == self.options.root
             && destination.site_lineage() == self.options.site
             && self.authority.cancellation_reason.is_none()
-            && CAPS.iter().all(|capability| self.authority.has_capability(capability))
+            && CAPS
+                .iter()
+                .all(|capability| self.authority.has_capability(capability))
             && boundary(self.options, self.cx, self.start).is_ok()
     }
 }
@@ -69,7 +83,9 @@ fn authority_boundary(
     start: Instant,
 ) -> Result<(), &'static str> {
     if authority.cancellation_reason.is_some()
-        || !CAPS.iter().all(|capability| authority.has_capability(capability))
+        || !CAPS
+            .iter()
+            .all(|capability| authority.has_capability(capability))
         || start.elapsed() >= Duration::from_millis(options.timeout_ms)
     {
         return Err("ERR-RTSP-IMPORT-AUTHORITY-001");
@@ -107,7 +123,12 @@ fn preflight_source_paths(
             .ok_or("ERR-RTSP-IMPORT-REQUEST-001")?
             .canonicalize()
             .map_err(|_| "ERR-RTSP-IMPORT-REQUEST-001")?
-            .join(options.root.file_name().ok_or("ERR-RTSP-IMPORT-REQUEST-001")?),
+            .join(
+                options
+                    .root
+                    .file_name()
+                    .ok_or("ERR-RTSP-IMPORT-REQUEST-001")?,
+            ),
         _ => return Err("ERR-RTSP-IMPORT-REQUEST-001"),
     };
     if source_path.starts_with(&target_path) || target_path.starts_with(&source_path) {
@@ -130,7 +151,12 @@ fn execute_authorized(
             MAX_MANIFEST_CHILDREN,
             65536,
             65536,
-            SpoolLimits::new(65536, 1024 * 1024 * 1024, MAX_ORIGINAL_BYTES as usize, 131072),
+            SpoolLimits::new(
+                65536,
+                1024 * 1024 * 1024,
+                MAX_ORIGINAL_BYTES as usize,
+                131072,
+            ),
         ),
     )
     .map_err(|_| "ERR-RTSP-IMPORT-SOURCE-001")?;
@@ -147,27 +173,67 @@ fn execute_authorized(
     let (receipt, catalog_result) = if let Some(request) = &options.catalog {
         let result = import_rtsp_catalog(&source, &mut destination, request, &owner, cx, &mut work)
             .map_err(|error| error.stable_id())?;
-        (result.import, Some((result.windows, result.decode_interval)))
+        (
+            result.import,
+            Some((result.windows, result.decode_interval)),
+        )
     } else {
-        let result = import_rtsp(&source, &mut destination, &options.request, &owner, cx, &mut work)
-            .map_err(|error| error.stable_id())?;
+        let result = import_rtsp(
+            &source,
+            &mut destination,
+            &options.request,
+            &owner,
+            cx,
+            &mut work,
+        )
+        .map_err(|error| error.stable_id())?;
         (result, None)
     };
     // Durable completion remains reportable even if the cooperative deadline expires now.
     let mut fields = vec![
-        ("format", string(if options.catalog.is_some() { CATALOG_FORMAT } else { FORMAT })),
+        (
+            "format",
+            string(if options.catalog.is_some() {
+                CATALOG_FORMAT
+            } else {
+                FORMAT
+            }),
+        ),
         ("kind", string("imported")),
         ("approval_digest", string(&options.approval()?.to_text())),
-        ("import_identity", string(&receipt.import_identity.to_text())),
+        (
+            "import_identity",
+            string(&receipt.import_identity.to_text()),
+        ),
         ("import_root", string(&receipt.import_root.to_text())),
-        ("manifest_digest", string(&receipt.manifest_digest.to_text())),
+        (
+            "manifest_digest",
+            string(&receipt.manifest_digest.to_text()),
+        ),
         ("origin_proof", string(&receipt.proof.to_text())),
-        (if options.catalog.is_some() { "catalog_slot" } else { "window_slot" }, string(options.request.slot.as_str())),
-        (if options.catalog.is_some() { "catalog_root" } else { "window_root" }, string(&options.request.root.to_text())),
+        (
+            if options.catalog.is_some() {
+                "catalog_slot"
+            } else {
+                "window_slot"
+            },
+            string(options.request.slot.as_str()),
+        ),
+        (
+            if options.catalog.is_some() {
+                "catalog_root"
+            } else {
+                "window_root"
+            },
+            string(&options.request.root.to_text()),
+        ),
         ("codec", string(receipt.codec.as_str())),
         ("frames", receipt.frames.to_string()),
         ("capture_time_label", string(receipt.capture_time_label)),
-        ("sample_timing", string("retained_mp4_presentation_timestamps")),
+        (
+            "sample_timing",
+            string("retained_mp4_presentation_timestamps"),
+        ),
         ("reused", receipt.reused.to_string()),
         ("source_archive_retained_separately", "true".into()),
         ("destination_contains_original_recording", "true".into()),
@@ -177,7 +243,10 @@ fn execute_authorized(
     if let (Some(request), Some((windows, interval))) = (&options.catalog, catalog_result) {
         fields.extend([
             ("windows", windows.to_string()),
-            ("decode_clock", string(&request.scope.decode_clock.to_text())),
+            (
+                "decode_clock",
+                string(&request.scope.decode_clock.to_text()),
+            ),
             ("time_scale", request.scope.time_scale.to_string()),
             ("decode_start", string(&interval.start.to_string())),
             ("decode_end", string(&interval.end.to_string())),
@@ -213,7 +282,9 @@ pub(super) fn execute(options: &Options) -> Result<String, &'static str> {
         generation: 1,
     })
     .map_err(|_| "ERR-RTSP-IMPORT-AUTHORITY-001")?;
-    authority.validate().map_err(|_| "ERR-RTSP-IMPORT-AUTHORITY-001")?;
+    authority
+        .validate()
+        .map_err(|_| "ERR-RTSP-IMPORT-AUTHORITY-001")?;
     let start = Instant::now();
     preflight_source_paths(options, &authority, start)?;
     let cx = ReplayCx::from_context_authority(&authority, options.root.clone())

@@ -1946,8 +1946,7 @@ fn compile_capsule(
                     )
                 }
             ),
-            if snapshot.completed_imports.is_empty()
-                || planned.len() > DIRECT_EVENT_EXPANSION_LIMIT
+            if snapshot.completed_imports.is_empty() || planned.len() > DIRECT_EVENT_EXPANSION_LIMIT
             {
                 // The retained-import count is replay-derived metadata. The complete ledger
                 // prefix binds all imports and later deletions; listing every import payload

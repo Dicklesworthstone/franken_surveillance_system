@@ -13,13 +13,14 @@ use std::process::{Command, Output, Stdio};
 use fss_cli::{ExitIdentity, escape_json_str, execute_fss_with_exit, parse_fss_args};
 use fss_core::{
     BudgetVector, CaptureInterval, ContentDigest, ContextAuthority, DecisionPath, EventHypothesis,
-    EventId, EventKind, EventState, OperationId, ProbabilityInterval, RootAuthoritySpec, TimestampNs,
+    EventId, EventKind, EventState, OperationId, ProbabilityInterval, RootAuthoritySpec,
+    TimestampNs,
 };
 use fss_reference::agent_orient::{OrientLimits, read_deployment};
 use fss_reference::media_fixture::jpeg::{JpegConfig, Subsampling, encode_jpeg};
 use fss_reference::{
-    ADP_REPLAY_ROW_ID, ReferenceDeployment, ReferencePolicyAction, ReferencePolicyDecision, ReplayCx,
-    ReplayIoAuthority,
+    ADP_REPLAY_ROW_ID, ReferenceDeployment, ReferencePolicyAction, ReferencePolicyDecision,
+    ReplayCx, ReplayIoAuthority,
 };
 
 type TestResult<T = ()> = Result<T, Box<dyn Error>>;
@@ -448,7 +449,12 @@ fn large_native_catalogue_paginates_across_cli_library_and_mcp_without_mutation(
     let ids = fixture.publish_hypotheses(257)?;
     let snapshot = read_deployment(&fixture.root, &OrientLimits::default())?;
     assert_eq!(snapshot.events.len(), ids.len());
-    assert!(snapshot.events.iter().all(|row| row.event.evidence.is_empty()));
+    assert!(
+        snapshot
+            .events
+            .iter()
+            .all(|row| row.event.evidence.is_empty())
+    );
     let before = tree(&fixture.root)?;
     let mut continuation = None;
     let mut seen = BTreeMap::new();
@@ -462,10 +468,7 @@ fn large_native_catalogue_paginates_across_cli_library_and_mcp_without_mutation(
         assert_eq!(answer.1, ExitIdentity::SUCCESS, "{}", answer.0);
         conforms(&fixture, &answer.0)?;
         let arguments = match &continuation {
-            Some(token) => format!(
-                r#"{{"max_entries":32,"continuation":{}}}"#,
-                quote(token)
-            ),
+            Some(token) => format!(r#"{{"max_entries":32,"continuation":{}}}"#, quote(token)),
             None => r#"{"max_entries":32}"#.to_owned(),
         };
         mcp(&fixture.root, &arguments, &answer)?;

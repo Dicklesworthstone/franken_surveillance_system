@@ -10,13 +10,13 @@ use fss_core::{
     CanonicalEncoder, ContentDigest, DigestAlgorithm, PrincipalId, SensorId, StreamId, TimestampNs,
 };
 use fss_publication::SlotName;
+use fss_reference::ingest::rtsp_import::catalog::{self, RtspCatalogImportRequest};
 use fss_reference::ingest::rtsp_import::{
     MAX_FRAMES, MAX_MEDIA_BYTES, MAX_ORIGINAL_BYTES, RtspCaptureOrigin, RtspImportCodec,
     RtspImportRequest,
 };
 use fss_reference::rtsp::recording::RecordingScope;
 use fss_reference::rtsp::recording_catalog::CatalogScope;
-use fss_reference::ingest::rtsp_import::catalog::{self, RtspCatalogImportRequest};
 
 pub(super) const FORMAT: &str = "fss.rtsp_recording_import_operator.v1";
 pub(super) const CATALOG_FORMAT: &str = "fss.rtsp_catalog_import_operator.v1";
@@ -119,9 +119,15 @@ impl Options {
             }
         }
         let required = |key: &str| values.get(key).copied().ok_or("required option missing");
-        for key in ["--owner-authorized", "--read-originals", "--retain-originals"] {
+        for key in [
+            "--owner-authorized",
+            "--read-originals",
+            "--retain-originals",
+        ] {
             if required(key)? != "yes" {
-                return Err("explicit owner, original-read and retention acknowledgements required");
+                return Err(
+                    "explicit owner, original-read and retention acknowledgements required",
+                );
             }
         }
         let number = |key: &str, default: u64, maximum: u64| -> Result<u64, &'static str> {
@@ -155,15 +161,38 @@ impl Options {
             None
         };
         let _ = required("--generation")?;
-        let catalog_selected = ["--catalog-slot", "--catalog-root", "--decode-clock", "--time-scale", "--max-windows"]
-            .iter().any(|key| values.contains_key(key));
-        if catalog_selected && ["--window-slot", "--window-root"].iter().any(|key| values.contains_key(key)) {
+        let catalog_selected = [
+            "--catalog-slot",
+            "--catalog-root",
+            "--decode-clock",
+            "--time-scale",
+            "--max-windows",
+        ]
+        .iter()
+        .any(|key| values.contains_key(key));
+        if catalog_selected
+            && ["--window-slot", "--window-root"]
+                .iter()
+                .any(|key| values.contains_key(key))
+        {
             return Err("select one window or one complete catalog, never both");
         }
         let (slot_key, root_key, frame_max, original_max, media_max) = if catalog_selected {
-            ("--catalog-slot", "--catalog-root", catalog::MAX_FRAMES, catalog::MAX_ORIGINAL_BYTES, catalog::MAX_MEDIA_BYTES)
+            (
+                "--catalog-slot",
+                "--catalog-root",
+                catalog::MAX_FRAMES,
+                catalog::MAX_ORIGINAL_BYTES,
+                catalog::MAX_MEDIA_BYTES,
+            )
         } else {
-            ("--window-slot", "--window-root", MAX_FRAMES, MAX_ORIGINAL_BYTES, MAX_MEDIA_BYTES)
+            (
+                "--window-slot",
+                "--window-root",
+                MAX_FRAMES,
+                MAX_ORIGINAL_BYTES,
+                MAX_MEDIA_BYTES,
+            )
         };
         let request = RtspImportRequest {
             codec: match required("--codec")? {
@@ -183,24 +212,29 @@ impl Options {
             receive_time: timestamp(required("--receive-time-ns")?)?,
             capture_origin,
             max_frames: number("--max-frames", frame_max as u64, frame_max as u64)? as usize,
-            max_original_bytes: number(
-                "--max-original-bytes",
-                original_max,
-                original_max,
-            )?,
+            max_original_bytes: number("--max-original-bytes", original_max, original_max)?,
             max_media_bytes: number("--max-media-bytes", media_max, media_max)?,
         };
         let catalog = if catalog_selected {
             let _ = required("--time-scale")?;
             let selected = RtspCatalogImportRequest {
-                codec: request.codec, slot: request.slot.clone(), root: request.root,
+                codec: request.codec,
+                slot: request.slot.clone(),
+                root: request.root,
                 scope: CatalogScope {
-                    recording: request.source.clone(), decode_clock: digest(required("--decode-clock")?)?,
+                    recording: request.source.clone(),
+                    decode_clock: digest(required("--decode-clock")?)?,
                     time_scale: number("--time-scale", 0, u32::MAX as u64)? as u32,
                 },
-                receive_time: request.receive_time, capture_origin: request.capture_origin,
-                max_windows: number("--max-windows", catalog::MAX_WINDOWS as u64, catalog::MAX_WINDOWS as u64)? as usize,
-                max_frames: request.max_frames, max_original_bytes: request.max_original_bytes,
+                receive_time: request.receive_time,
+                capture_origin: request.capture_origin,
+                max_windows: number(
+                    "--max-windows",
+                    catalog::MAX_WINDOWS as u64,
+                    catalog::MAX_WINDOWS as u64,
+                )? as usize,
+                max_frames: request.max_frames,
+                max_original_bytes: request.max_original_bytes,
                 max_media_bytes: request.max_media_bytes,
             };
             selected.digest().map_err(|_| "invalid catalog request")?;
@@ -238,20 +272,30 @@ impl Options {
             catalog,
             work: number("--max-work", 1_000_000_000_000, 1_000_000_000_000_000)?,
             timeout_ms: number("--timeout-ms", 30_000, 600_000)?,
-            approve: values.get("--approve").map(|text| digest(text)).transpose()?,
+            approve: values
+                .get("--approve")
+                .map(|text| digest(text))
+                .transpose()?,
         })
     }
 
     pub fn request_digest(&self) -> Result<ContentDigest, &'static str> {
         match &self.catalog {
             Some(request) => request.digest().map_err(|_| "invalid catalog request"),
-            None => self.request.digest().map_err(|_| "invalid recording request"),
+            None => self
+                .request
+                .digest()
+                .map_err(|_| "invalid recording request"),
         }
     }
 
     pub fn approval(&self) -> Result<ContentDigest, &'static str> {
         let mut encoded = CanonicalEncoder::new();
-        encoded.text(if self.catalog.is_some() { "fss.rtsp_catalog_import_cli_plan.v1" } else { "fss.rtsp_recording_import_cli_plan.v1" });
+        encoded.text(if self.catalog.is_some() {
+            "fss.rtsp_catalog_import_cli_plan.v1"
+        } else {
+            "fss.rtsp_recording_import_cli_plan.v1"
+        });
         encoded.text("original-read:source-closed-destination-retention:no-network:v1");
         encoded.digest(self.request_digest()?);
         encoded.text(self.archive.to_str().ok_or("UTF-8 path required")?);
@@ -266,7 +310,14 @@ impl Options {
     pub fn preview(&self) -> Result<String, &'static str> {
         let request = &self.request;
         let mut fields = vec![
-            ("format", string(if self.catalog.is_some() { CATALOG_FORMAT } else { FORMAT })),
+            (
+                "format",
+                string(if self.catalog.is_some() {
+                    CATALOG_FORMAT
+                } else {
+                    FORMAT
+                }),
+            ),
             ("kind", string("plan")),
             ("approval_digest", string(&self.approval()?.to_text())),
             (
@@ -279,21 +330,36 @@ impl Options {
             ),
             ("site", string(&self.site)),
             ("principal", string(&self.principal)),
-            (
-                "request_digest",
-                string(
-                    &self.request_digest()?.to_text(),
-                ),
-            ),
+            ("request_digest", string(&self.request_digest()?.to_text())),
             ("codec", string(request.codec.as_str())),
-            (if self.catalog.is_some() { "catalog_slot" } else { "window_slot" }, string(request.slot.as_str())),
-            (if self.catalog.is_some() { "catalog_root" } else { "window_root" }, string(&request.root.to_text())),
+            (
+                if self.catalog.is_some() {
+                    "catalog_slot"
+                } else {
+                    "window_slot"
+                },
+                string(request.slot.as_str()),
+            ),
+            (
+                if self.catalog.is_some() {
+                    "catalog_root"
+                } else {
+                    "window_root"
+                },
+                string(&request.root.to_text()),
+            ),
             ("sensor_id", string(request.source.sensor.as_str())),
             ("stream_id", string(request.source.stream.as_str())),
             ("generation", request.source.generation.to_string()),
             ("source_anchor", string(&request.source.anchor.to_text())),
-            ("receive_clock", string(&request.source.receive_clock.to_text())),
-            ("receive_time_ns", string(&request.receive_time.0.to_string())),
+            (
+                "receive_clock",
+                string(&request.source.receive_clock.to_text()),
+            ),
+            (
+                "receive_time_ns",
+                string(&request.receive_time.0.to_string()),
+            ),
             (
                 "capture_time_label",
                 string(if request.capture_origin.is_some() {
@@ -319,7 +385,10 @@ impl Options {
                 string("retained_mp4_presentation_timestamps"),
             ),
             ("maximum_frames", request.max_frames.to_string()),
-            ("maximum_original_bytes", request.max_original_bytes.to_string()),
+            (
+                "maximum_original_bytes",
+                request.max_original_bytes.to_string(),
+            ),
             ("maximum_media_bytes", request.max_media_bytes.to_string()),
             ("maximum_work", self.work.to_string()),
             ("timeout_ms", self.timeout_ms.to_string()),
@@ -329,16 +398,24 @@ impl Options {
                 "retention",
                 string(if self.catalog.is_some() {
                     "complete_catalog_and_every_original_window_rtp_index_initialization_and_fragment_in_destination"
-                } else { "original_recording_root_rtp_index_initialization_and_fragment_in_destination" }),
+                } else {
+                    "original_recording_root_rtp_index_initialization_and_fragment_in_destination"
+                }),
             ),
         ];
         if let Some(catalog) = &self.catalog {
             fields.extend([
-                ("decode_clock", string(&catalog.scope.decode_clock.to_text())),
+                (
+                    "decode_clock",
+                    string(&catalog.scope.decode_clock.to_text()),
+                ),
                 ("time_scale", catalog.scope.time_scale.to_string()),
                 ("maximum_windows", catalog.max_windows.to_string()),
                 ("selection", string("complete_catalog_page")),
-                ("composition", string("adjacent_decode_intervals_identical_initialization")),
+                (
+                    "composition",
+                    string("adjacent_decode_intervals_identical_initialization"),
+                ),
             ]);
         }
         Ok(object(&fields))

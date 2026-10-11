@@ -21,7 +21,9 @@ mod transfer;
 
 pub use agent::{AgentBackupSummary, AgentPublicationState, AgentRecoveryState};
 pub use manifest::{BackupFile, BackupManifest, RestoreFence};
-pub use transfer::{create_backup, inspect_agent_state, inspect_backup, prepare_backup, restore_backup};
+pub use transfer::{
+    create_backup, inspect_agent_state, inspect_backup, prepare_backup, restore_backup,
+};
 
 /// Exact supported semantic profile. Unknown profiles are refused, never migrated implicitly.
 pub const BACKUP_PROFILE: &str = "reference-core-local-v1";

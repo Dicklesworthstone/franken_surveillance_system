@@ -1,17 +1,18 @@
 #![forbid(unsafe_code)]
 //! Retained native packet ancestry, exact container maps and bounded verified-window caching.
 
+use super::super::file_adapter::{FileOmissionSpan, SegmentSpan};
 use super::*;
+use crate::rtsp::recording::{
+    PreparedRecording, RECORDING_KIND, RecordingObjects,
+    hevc::{HEVC_RECORDING_KIND, verify_hevc_recording},
+    verify_recording,
+};
 use fss_core::{
     CanonicalDecoder, CanonicalEncode, CapsuleId, CaptureInterval, ClockBasis, SensorCapsule,
     SensorId, StreamId,
 };
 use fss_object::ObjectManifest;
-use super::super::file_adapter::{FileOmissionSpan, SegmentSpan};
-use crate::rtsp::recording::{
-    PreparedRecording, RecordingObjects, verify_recording,
-    hevc::{HEVC_RECORDING_KIND, verify_hevc_recording}, RECORDING_KIND,
-};
 use std::collections::BTreeSet;
 
 const MAX_OMISSIONS: usize = 4096;
@@ -52,7 +53,10 @@ impl Window {
         request: &RtspImportRequest,
     ) -> Result<Self, RtspImportError> {
         let o = plan.objects();
-        let media_len = o.initialization.len().checked_add(o.media.len())
+        let media_len = o
+            .initialization
+            .len()
+            .checked_add(o.media.len())
             .ok_or(RtspImportError::Invalid("media size overflow"))?;
         if plan.byte_len() as u64 > request.max_original_bytes
             || media_len as u64 > request.max_media_bytes
@@ -61,7 +65,9 @@ impl Window {
             || plan.manifest().root() != request.root
             || plan.summary().scope != request.source
         {
-            return Err(RtspImportError::Invalid("selected window exceeds exact scope or bounds"));
+            return Err(RtspImportError::Invalid(
+                "selected window exceeds exact scope or bounds",
+            ));
         }
         Ok(Self {
             root: plan.manifest().canonical_bytes(),
@@ -77,7 +83,8 @@ impl Window {
     }
     pub(super) fn media(&self) -> Result<Vec<u8>, FileIngestError> {
         let mut out = Vec::new();
-        out.try_reserve_exact(self.media_len()).map_err(|_| corrupt("media allocation"))?;
+        out.try_reserve_exact(self.media_len())
+            .map_err(|_| corrupt("media allocation"))?;
         out.extend_from_slice(&self.initialization);
         out.extend_from_slice(&self.fragment);
         Ok(out)
@@ -86,7 +93,10 @@ impl Window {
         [
             (ContentDigest::sha256(&self.root), &self.root),
             (ContentDigest::sha256(&self.source), &self.source),
-            (ContentDigest::sha256(&self.initialization), &self.initialization),
+            (
+                ContentDigest::sha256(&self.initialization),
+                &self.initialization,
+            ),
             (ContentDigest::sha256(&self.fragment), &self.fragment),
             (ContentDigest::sha256(&self.index), &self.index),
         ]
@@ -100,9 +110,15 @@ impl Window {
         }
     }
     fn matches_range(&self, offset: u64, bytes: &[u8]) -> bool {
-        let Ok(start) = usize::try_from(offset) else { return false; };
-        let Some(end) = start.checked_add(bytes.len()) else { return false; };
-        if end > self.media_len() { return false; }
+        let Ok(start) = usize::try_from(offset) else {
+            return false;
+        };
+        let Some(end) = start.checked_add(bytes.len()) else {
+            return false;
+        };
+        if end > self.media_len() {
+            return false;
+        }
         let split = self.initialization.len();
         if start >= split {
             return self.fragment.get(start - split..end - split) == Some(bytes);
@@ -132,18 +148,25 @@ impl Proof {
             objects: [object(1), object(2), object(3), object(4)],
             media_digest: ContentDigest::sha256(media),
             media_bytes: media.len() as u64,
-            frames: scan.segment_spans.iter().zip(&scan.capsules).map(|(span, capsule)| FrameOrigin {
-                offset: span.offset,
-                bytes: span.len,
-                digest: span.segment_sha256,
-                capture: capsule.capture,
-            }).collect(),
+            frames: scan
+                .segment_spans
+                .iter()
+                .zip(&scan.capsules)
+                .map(|(span, capsule)| FrameOrigin {
+                    offset: span.offset,
+                    bytes: span.len,
+                    digest: span.segment_sha256,
+                    capture: capsule.capture,
+                })
+                .collect(),
             omissions: scan.omission_spans.clone(),
         };
         value.validate()?;
         Ok(value)
     }
-    pub(super) fn frames(&self) -> usize { self.frames.len() }
+    pub(super) fn frames(&self) -> usize {
+        self.frames.len()
+    }
     pub(super) fn encode(&self) -> Result<Vec<u8>, FileIngestError> {
         self.validate()?;
         let mut e = CanonicalEncoder::new();
@@ -171,11 +194,15 @@ impl Proof {
             e.text(&span.reason);
         }
         let bytes = e.finish_checked()?;
-        if bytes.len() > MAX_PROOF_BYTES { return Err(corrupt("proof byte ceiling")); }
+        if bytes.len() > MAX_PROOF_BYTES {
+            return Err(corrupt("proof byte ceiling"));
+        }
         Ok(bytes)
     }
     fn decode(bytes: &[u8]) -> Result<Self, FileIngestError> {
-        if bytes.len() > MAX_PROOF_BYTES { return Err(corrupt("proof byte ceiling")); }
+        if bytes.len() > MAX_PROOF_BYTES {
+            return Err(corrupt("proof byte ceiling"));
+        }
         let mut d = CanonicalDecoder::new(bytes);
         if d.text()? != DOMAIN || d.text()? != "fss.rtsp_recording_import_request.v1" {
             return Err(corrupt("unknown proof or request"));
@@ -200,21 +227,38 @@ impl Proof {
                 start_ns: TimestampNs(d.i128()?),
                 uncertainty_ns: d.u64()?,
             })
-        } else { None };
+        } else {
+            None
+        };
         let request = RtspImportRequest {
-            codec, slot, root, source, receive_time, capture_origin,
+            codec,
+            slot,
+            root,
+            source,
+            receive_time,
+            capture_origin,
             max_frames: usize::try_from(d.u64()?).map_err(|_| corrupt("sample ceiling"))?,
             max_original_bytes: d.u64()?,
             max_media_bytes: d.u64()?,
         };
         request.validate().map_err(|_| corrupt("request"))?;
         let manifest = d.bytes()?;
-        if manifest.len() > 4096 { return Err(corrupt("native manifest size")); }
+        if manifest.len() > 4096 {
+            return Err(corrupt("native manifest size"));
+        }
         let manifest = manifest.to_vec();
         let mut read_object = || -> Result<ObjectRef, FileIngestError> {
-            Ok(ObjectRef { digest: digest(&mut d)?, bytes: d.u64()? })
+            Ok(ObjectRef {
+                digest: digest(&mut d)?,
+                bytes: d.u64()?,
+            })
         };
-        let objects = [read_object()?, read_object()?, read_object()?, read_object()?];
+        let objects = [
+            read_object()?,
+            read_object()?,
+            read_object()?,
+            read_object()?,
+        ];
         let media_digest = digest(&mut d)?;
         let media_bytes = d.u64()?;
         let n = count(&mut d, MAX_FRAMES, 81)?;
@@ -233,54 +277,97 @@ impl Proof {
             let offset = d.u64()?;
             let len = d.u64()?;
             let reason = d.text()?;
-            if reason.len() > 256 { return Err(corrupt("omission reason bound")); }
-            omissions.push(FileOmissionSpan { offset, len, reason: reason.to_owned() });
+            if reason.len() > 256 {
+                return Err(corrupt("omission reason bound"));
+            }
+            omissions.push(FileOmissionSpan {
+                offset,
+                len,
+                reason: reason.to_owned(),
+            });
         }
         d.ensure_finished()?;
-        let value = Self { request, manifest, objects, media_digest, media_bytes, frames, omissions };
-        if value.encode()? != bytes { return Err(corrupt("noncanonical proof")); }
+        let value = Self {
+            request,
+            manifest,
+            objects,
+            media_digest,
+            media_bytes,
+            frames,
+            omissions,
+        };
+        if value.encode()? != bytes {
+            return Err(corrupt("noncanonical proof"));
+        }
         Ok(value)
     }
     fn validate(&self) -> Result<(), FileIngestError> {
         self.request.validate().map_err(|_| corrupt("request"))?;
         let root = ObjectManifest::from_canonical_bytes(&self.manifest)?;
-        let kind = match self.request.codec { RtspImportCodec::Avc => RECORDING_KIND, RtspImportCodec::Hevc => HEVC_RECORDING_KIND };
+        let kind = match self.request.codec {
+            RtspImportCodec::Avc => RECORDING_KIND,
+            RtspImportCodec::Hevc => HEVC_RECORDING_KIND,
+        };
         let expected = ObjectManifest::new(
             kind,
             self.objects[..3].iter().map(|o| o.digest),
             Some(self.objects[3].digest),
         )?;
-        let original_bytes = self.objects.iter().try_fold(self.manifest.len() as u64, |n, o| {
-            n.checked_add(o.bytes).ok_or_else(|| corrupt("original byte overflow"))
-        })?;
+        let original_bytes = self
+            .objects
+            .iter()
+            .try_fold(self.manifest.len() as u64, |n, o| {
+                n.checked_add(o.bytes)
+                    .ok_or_else(|| corrupt("original byte overflow"))
+            })?;
         if root != expected
             || root.root() != self.request.root
             || self.manifest.len() > 4096
             || original_bytes > self.request.max_original_bytes
-            || self.objects.iter().any(|o| o.bytes == 0 || o.bytes > MAX_ORIGINAL_BYTES)
+            || self
+                .objects
+                .iter()
+                .any(|o| o.bytes == 0 || o.bytes > MAX_ORIGINAL_BYTES)
             || self.media_bytes == 0
             || self.media_bytes > self.request.max_media_bytes
             || self.objects[1].bytes.checked_add(self.objects[2].bytes) != Some(self.media_bytes)
             || self.frames.is_empty()
             || self.frames.len() > self.request.max_frames
             || self.omissions.len() > MAX_OMISSIONS
-        { return Err(corrupt("original closure or bounds")); }
+        {
+            return Err(corrupt("original closure or bounds"));
+        }
         let mut previous = 0u64;
         let mut spans = Vec::with_capacity(self.frames.len() + self.omissions.len());
         for frame in &self.frames {
-            let end = frame.offset.checked_add(frame.bytes).ok_or_else(|| corrupt("frame overflow"))?;
-            if frame.offset < previous || end > self.media_bytes || frame.bytes == 0
+            let end = frame
+                .offset
+                .checked_add(frame.bytes)
+                .ok_or_else(|| corrupt("frame overflow"))?;
+            if frame.offset < previous
+                || end > self.media_bytes
+                || frame.bytes == 0
                 || frame.capture.earliest > frame.capture.latest
                 || frame.capture.latest > self.request.receive_time
                 || (self.request.capture_origin.is_none()
-                    && frame.capture != CaptureInterval::new(TimestampNs(0), self.request.receive_time)?)
-            { return Err(corrupt("frame order, bytes or time")); }
+                    && frame.capture
+                        != CaptureInterval::new(TimestampNs(0), self.request.receive_time)?)
+            {
+                return Err(corrupt("frame order, bytes or time"));
+            }
             previous = end;
             spans.push((frame.offset, end));
         }
         for omission in &self.omissions {
-            let end = omission.offset.checked_add(omission.len).ok_or_else(|| corrupt("omission overflow"))?;
-            if !omission.is_container_structure() || omission.len == 0 || end > self.media_bytes || omission.reason.len() > 256 {
+            let end = omission
+                .offset
+                .checked_add(omission.len)
+                .ok_or_else(|| corrupt("omission overflow"))?;
+            if !omission.is_container_structure()
+                || omission.len == 0
+                || end > self.media_bytes
+                || omission.reason.len() > 256
+            {
                 return Err(corrupt("container accounting"));
             }
             spans.push((omission.offset, end));
@@ -288,38 +375,60 @@ impl Proof {
         spans.sort_unstable();
         let mut cursor = 0u64;
         for (start, end) in spans {
-            if start != cursor { return Err(corrupt("container bytes not tiled")); }
+            if start != cursor {
+                return Err(corrupt("container bytes not tiled"));
+            }
             cursor = end;
         }
-        if cursor != self.media_bytes { return Err(corrupt("unaccounted media")); }
+        if cursor != self.media_bytes {
+            return Err(corrupt("unaccounted media"));
+        }
         Ok(())
     }
     fn verify_window(&self, window: &Window, cx: &ReplayCx) -> Result<(), FileIngestError> {
         let root = ObjectManifest::from_canonical_bytes(&window.root)?;
         let summary = match self.request.codec {
             RtspImportCodec::Avc => verify_recording(&root, window.objects(), &self.request.source),
-            RtspImportCodec::Hevc => verify_hevc_recording(&root, window.objects(), &self.request.source).map(|v| v.recording),
-        }.map_err(|_| corrupt("native packet/source reconstruction"))?;
-        if summary.samples != self.frames.len() { return Err(corrupt("native sample count")); }
+            RtspImportCodec::Hevc => {
+                verify_hevc_recording(&root, window.objects(), &self.request.source)
+                    .map(|v| v.recording)
+            }
+        }
+        .map_err(|_| corrupt("native packet/source reconstruction"))?;
+        if summary.samples != self.frames.len() {
+            return Err(corrupt("native sample count"));
+        }
         checkpoint(cx)?;
         let media = window.media()?;
-        if ContentDigest::sha256(&media) != self.media_digest || media.len() as u64 != self.media_bytes {
+        if ContentDigest::sha256(&media) != self.media_digest
+            || media.len() as u64 != self.media_bytes
+        {
             return Err(corrupt("reconstructed MP4"));
         }
         let scan = self.request.scan(&media, cx)?;
         let rebuilt = Self::new(self.request.clone(), window, &media, &scan)?;
-        if rebuilt.encode()? != self.encode()? { return Err(corrupt("native container or timing map")); }
+        if rebuilt.encode()? != self.encode()? {
+            return Err(corrupt("native container or timing map"));
+        }
         checkpoint(cx)
     }
 }
 fn digest(d: &mut CanonicalDecoder<'_>) -> Result<ContentDigest, FileIngestError> {
     let value = d.digest()?;
-    if value.algorithm() != DigestAlgorithm::Sha256 { return Err(corrupt("digest algorithm")); }
+    if value.algorithm() != DigestAlgorithm::Sha256 {
+        return Err(corrupt("digest algorithm"));
+    }
     Ok(value)
 }
-fn count(d: &mut CanonicalDecoder<'_>, max: usize, minimum: usize) -> Result<usize, FileIngestError> {
+fn count(
+    d: &mut CanonicalDecoder<'_>,
+    max: usize,
+    minimum: usize,
+) -> Result<usize, FileIngestError> {
     let n = usize::try_from(d.u64()?).map_err(|_| corrupt("collection overflow"))?;
-    if n > max || n > d.remaining() / minimum { return Err(corrupt("collection bound")); }
+    if n > max || n > d.remaining() / minimum {
+        return Err(corrupt("collection bound"));
+    }
     Ok(n)
 }
 fn proof(
@@ -327,14 +436,26 @@ fn proof(
     manifest: &FileImportManifest,
     cx: &ReplayCx,
 ) -> Result<Option<(ContentDigest, Proof)>, FileIngestError> {
-    if manifest.adapter_id != ADAPTER { return Ok(None); }
+    if manifest.adapter_id != ADAPTER {
+        return Ok(None);
+    }
     checkpoint(cx)?;
-    let hex = manifest.adapter_generation.strip_prefix(GENERATION)
-        .filter(|h| h.len() == 64).ok_or_else(|| corrupt("adapter generation"))?;
+    let hex = manifest
+        .adapter_generation
+        .strip_prefix(GENERATION)
+        .filter(|h| h.len() == 64)
+        .ok_or_else(|| corrupt("adapter generation"))?;
     let digest = ContentDigest::parse(&format!("sha256:{hex}"))?;
-    if deployment.publisher().tombstones().any(|d| *d == digest) { return Err(corrupt("deleted proof")); }
-    let bytes = deployment.publisher().spool().read_bounded(digest, MAX_PROOF_BYTES)?;
-    if bytes.len() > MAX_PROOF_BYTES || ContentDigest::sha256(&bytes) != digest { return Err(corrupt("proof digest")); }
+    if deployment.publisher().tombstones().any(|d| *d == digest) {
+        return Err(corrupt("deleted proof"));
+    }
+    let bytes = deployment
+        .publisher()
+        .spool()
+        .read_bounded(digest, MAX_PROOF_BYTES)?;
+    if bytes.len() > MAX_PROOF_BYTES || ContentDigest::sha256(&bytes) != digest {
+        return Err(corrupt("proof digest"));
+    }
     Ok(Some((digest, Proof::decode(&bytes)?)))
 }
 fn load_window(
@@ -343,19 +464,32 @@ fn load_window(
     cx: &ReplayCx,
     reserve: &mut dyn FnMut(u64) -> Result<(), FileIngestError>,
 ) -> Result<Window, FileIngestError> {
-    let read = |digest: ContentDigest, length: u64, reserve: &mut dyn FnMut(u64) -> Result<(), FileIngestError>| {
+    let read = |digest: ContentDigest,
+                length: u64,
+                reserve: &mut dyn FnMut(u64) -> Result<(), FileIngestError>| {
         checkpoint(cx)?;
         reserve(length)?;
-        if deployment.publisher().tombstones().any(|d| *d == digest) { return Err(corrupt("deleted original")); }
+        if deployment.publisher().tombstones().any(|d| *d == digest) {
+            return Err(corrupt("deleted original"));
+        }
         let maximum = usize::try_from(length).map_err(|_| corrupt("object length"))?;
-        let bytes = deployment.publisher().spool().read_bounded(digest, maximum)?;
-        if bytes.len() as u64 != length || ContentDigest::sha256(&bytes) != digest { return Err(corrupt("original payload")); }
+        let bytes = deployment
+            .publisher()
+            .spool()
+            .read_bounded(digest, maximum)?;
+        if bytes.len() as u64 != length || ContentDigest::sha256(&bytes) != digest {
+            return Err(corrupt("original payload"));
+        }
         Ok::<_, FileIngestError>(bytes)
     };
     let root = read(proof.request.root, proof.manifest.len() as u64, reserve)?;
-    if root != proof.manifest { return Err(corrupt("original root")); }
+    if root != proof.manifest {
+        return Err(corrupt("original root"));
+    }
     let mut children = Vec::with_capacity(4);
-    for object in &proof.objects { children.push(read(object.digest, object.bytes, reserve)?); }
+    for object in &proof.objects {
+        children.push(read(object.digest, object.bytes, reserve)?);
+    }
     let mut children = children.into_iter();
     let window = Window {
         root,
@@ -377,7 +511,9 @@ pub(crate) struct OriginCache {
 }
 impl fmt::Debug for OriginCache {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.debug_struct("OriginCache").field("proof", &self.digest).finish_non_exhaustive()
+        f.debug_struct("OriginCache")
+            .field("proof", &self.digest)
+            .finish_non_exhaustive()
     }
 }
 pub(crate) fn verify_range_budgeted(
@@ -389,13 +525,22 @@ pub(crate) fn verify_range_budgeted(
     cache: &mut Option<OriginCache>,
     reserve: &mut dyn FnMut(u64) -> Result<(), FileIngestError>,
 ) -> Result<(), FileIngestError> {
-    let Some((digest, proof)) = proof(deployment, manifest, cx)? else { return Ok(()); };
+    let Some((digest, proof)) = proof(deployment, manifest, cx)? else {
+        return Ok(());
+    };
     if cache.as_ref().is_none_or(|cached| cached.digest != digest) {
         let window = load_window(deployment, &proof, cx, reserve)?;
         *cache = Some(OriginCache { digest, window });
     }
-    if !cache.as_ref().ok_or_else(|| corrupt("source cache"))?.window.matches_range(offset, bytes) {
-        return Err(corrupt("MP4 bytes differ from native packet reconstruction"));
+    if !cache
+        .as_ref()
+        .ok_or_else(|| corrupt("source cache"))?
+        .window
+        .matches_range(offset, bytes)
+    {
+        return Err(corrupt(
+            "MP4 bytes differ from native packet reconstruction",
+        ));
     }
     checkpoint(cx)
 }
@@ -404,7 +549,9 @@ pub(crate) fn verify_originals(
     manifest: &FileImportManifest,
     cx: &ReplayCx,
 ) -> Result<(), FileIngestError> {
-    let Some((_, proof)) = proof(deployment, manifest, cx)? else { return Ok(()); };
+    let Some((_, proof)) = proof(deployment, manifest, cx)? else {
+        return Ok(());
+    };
     let _ = load_window(deployment, &proof, cx, &mut |_| Ok(()))?;
     checkpoint(cx)
 }
@@ -416,31 +563,45 @@ pub(crate) fn verify_membership(
     import_hex: &str,
     cx: &ReplayCx,
 ) -> Result<(), FileIngestError> {
-    let Some((digest, proof)) = proof(deployment, manifest, cx)? else { return Ok(()); };
-    if !held.contains(&digest) || !held.contains(&proof.request.root)
+    let Some((digest, proof)) = proof(deployment, manifest, cx)? else {
+        return Ok(());
+    };
+    if !held.contains(&digest)
+        || !held.contains(&proof.request.root)
         || proof.objects.iter().any(|o| !held.contains(&o.digest))
         || hex(proof.request.identity().map_err(|_| corrupt("identity"))?) != import_hex
-        || manifest.limits_digest != proof.request.digest().map_err(|_| corrupt("request digest"))?
+        || manifest.limits_digest
+            != proof
+                .request
+                .digest()
+                .map_err(|_| corrupt("request digest"))?
         || manifest.input_sha256 != proof.media_digest
         || manifest.input_bytes != proof.media_bytes
         || manifest.chunk_bytes != CHUNK_BYTES as u64
         || manifest.format != proof.request.codec.format().as_str()
         || manifest.capture_time_label != proof.request.time_label()
-        || manifest.detector_evidence != "native_rtsp_recording:reconstructed_mp4:original_rtp_retained"
+        || manifest.detector_evidence
+            != "native_rtsp_recording:reconstructed_mp4:original_rtp_retained"
         || manifest.segment_spans.len() != proof.frames.len()
         || manifest.omission_spans != proof.omissions
-    { return Err(corrupt("retained import origin binding")); }
+    {
+        return Err(corrupt("retained import origin binding"));
+    }
     for (index, (span, frame)) in manifest.segment_spans.iter().zip(&proof.frames).enumerate() {
         checkpoint(cx)?;
         let expected_id = CapsuleId::parse(format!("capsule:{import_hex}:{index:06}"))?;
-        if span != &(SegmentSpan {
-            segment_index: index,
-            offset: frame.offset,
-            len: frame.bytes,
-            segment_sha256: frame.digest,
-            capsule_id: expected_id.clone(),
-            gap_before: false,
-        }) { return Err(corrupt("sample map")); }
+        if span
+            != &(SegmentSpan {
+                segment_index: index,
+                offset: frame.offset,
+                len: frame.bytes,
+                segment_sha256: frame.digest,
+                capsule_id: expected_id.clone(),
+                gap_before: false,
+            })
+        {
+            return Err(corrupt("sample map"));
+        }
         let capsule = SensorCapsule {
             capsule_id: expected_id,
             sensor_id: proof.request.source.sensor.clone(),
@@ -455,7 +616,9 @@ pub(crate) fn verify_membership(
             frame_count: 1,
         };
         let object = format!("object:capsule:{}", span.capsule_id.as_str());
-        if capsules.get(object.as_str()).copied() != Some(ContentDigest::sha256(&capsule.canonical_bytes())) {
+        if capsules.get(object.as_str()).copied()
+            != Some(ContentDigest::sha256(&capsule.canonical_bytes()))
+        {
             return Err(corrupt("sensor, time or capsule binding"));
         }
     }

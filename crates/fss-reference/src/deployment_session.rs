@@ -874,12 +874,14 @@ fn ensure_agent_writable(root: &Path) -> Result<PathBuf, DeploymentSessionError>
     }
     let layout = read_bounded(&root.join("LAYOUT"), 4096)
         .map_err(|error| io_failure("deployment layout", &error))?
-        .ok_or_else(|| DeploymentSessionError::StoreInvalid("deployment layout is missing".into()))?;
-    let layout = crate::DeploymentLayout::parse_canonical_text(
-        std::str::from_utf8(&layout)
-            .map_err(|_| DeploymentSessionError::StoreInvalid("deployment layout encoding".into()))?,
-    )
-    .map_err(|_| DeploymentSessionError::StoreInvalid("deployment layout is invalid".into()))?;
+        .ok_or_else(|| {
+            DeploymentSessionError::StoreInvalid("deployment layout is missing".into())
+        })?;
+    let layout =
+        crate::DeploymentLayout::parse_canonical_text(std::str::from_utf8(&layout).map_err(
+            |_| DeploymentSessionError::StoreInvalid("deployment layout encoding".into()),
+        )?)
+        .map_err(|_| DeploymentSessionError::StoreInvalid("deployment layout is invalid".into()))?;
     let ledger = fss_ledger::inspect_durable_with_io(
         &fss_ledger::HostJournalReadIo,
         root.join("ledger/journal.fssj"),
@@ -903,18 +905,18 @@ fn ensure_agent_writable(root: &Path) -> Result<PathBuf, DeploymentSessionError>
                 "deployment recovery fence namespace is invalid".into(),
             ));
         }
-        let bytes = fss_publication::read_verified(
-            root.join("objects"),
-            head.payload_digest,
-            4096,
-        )
-        .map_err(|_| DeploymentSessionError::StoreInvalid(
-            "deployment recovery fence custody is invalid".into(),
-        ))?;
+        let bytes = fss_publication::read_verified(root.join("objects"), head.payload_digest, 4096)
+            .map_err(|_| {
+                DeploymentSessionError::StoreInvalid(
+                    "deployment recovery fence custody is invalid".into(),
+                )
+            })?;
         let fence = crate::deployment_backup::RestoreFence::from_bytes(&bytes, head.payload_digest)
-            .map_err(|_| DeploymentSessionError::StoreInvalid(
-                "deployment recovery fence policy is invalid".into(),
-            ))?;
+            .map_err(|_| {
+                DeploymentSessionError::StoreInvalid(
+                    "deployment recovery fence policy is invalid".into(),
+                )
+            })?;
         if fence.agent_state_read_only() {
             return Err(DeploymentSessionError::StoreInvalid(
                 "restored agent state is historical read-only; use fss-backup agent-inspect".into(),
@@ -1112,12 +1114,22 @@ pub(crate) fn decode_recovery_record(
     bytes: &[u8],
 ) -> Result<AgentRecoveryRecord, ContractError> {
     let record = match kind {
-        "agent-mission" => AgentRecoveryRecord::Mission(Box::new(MissionRecord::from_bytes(bytes)?)),
-        "agent-handoff" => AgentRecoveryRecord::Handoff(Box::new(HandoffRecord::from_bytes(bytes)?)),
+        "agent-mission" => {
+            AgentRecoveryRecord::Mission(Box::new(MissionRecord::from_bytes(bytes)?))
+        }
+        "agent-handoff" => {
+            AgentRecoveryRecord::Handoff(Box::new(HandoffRecord::from_bytes(bytes)?))
+        }
         "agent-plan" => AgentRecoveryRecord::Plan(Box::new(plan::PlanRecord::from_bytes(bytes)?)),
-        "agent-episode" => AgentRecoveryRecord::Episode(Box::new(episode::EpisodeRecord::from_bytes(bytes)?)),
-        "agent-finding" => AgentRecoveryRecord::Finding(Box::new(findings::FindingRecord::from_bytes(bytes)?)),
-        "agent-feedback" => AgentRecoveryRecord::Feedback(Box::new(feedback::decode_proposal(bytes)?)),
+        "agent-episode" => {
+            AgentRecoveryRecord::Episode(Box::new(episode::EpisodeRecord::from_bytes(bytes)?))
+        }
+        "agent-finding" => {
+            AgentRecoveryRecord::Finding(Box::new(findings::FindingRecord::from_bytes(bytes)?))
+        }
+        "agent-feedback" => {
+            AgentRecoveryRecord::Feedback(Box::new(feedback::decode_proposal(bytes)?))
+        }
         _ => return Err(ContractError::DigestMismatch),
     };
     let identity = if matches!(&record, AgentRecoveryRecord::Mission(_)) {
@@ -1125,7 +1137,9 @@ pub(crate) fn decode_recovery_record(
     } else {
         ContentDigest::sha256(record.identity().as_bytes())
     };
-    let prefix = kind.strip_prefix("agent-").ok_or(ContractError::DigestMismatch)?;
+    let prefix = kind
+        .strip_prefix("agent-")
+        .ok_or(ContractError::DigestMismatch)?;
     if slot != format!("{prefix}-{}", hex(identity)) {
         return Err(ContractError::DigestMismatch);
     }

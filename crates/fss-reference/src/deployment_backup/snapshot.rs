@@ -12,8 +12,8 @@ use fss_publication::WriterDetectionOptions;
 use crate::deletion::DeletionIndex;
 use crate::{DeploymentLayout, DurableEffectJournal};
 
-use super::io::{ReadIo, agent_present, directory, regular};
 use super::agent::AgentRecoveryState;
+use super::io::{ReadIo, agent_present, directory, regular};
 use super::manifest::{
     BackupFile, BackupManifest, named_digest, valid_path, validate_deployment_limits,
 };
@@ -52,7 +52,11 @@ pub(super) fn inventory(
     {
         return Err(BackupError::Changed);
     }
-    let agent_directories = if with_agent { super::agent::DIRECTORIES } else { &[] };
+    let agent_directories = if with_agent {
+        super::agent::DIRECTORIES
+    } else {
+        &[]
+    };
     let mut files = Vec::new();
     let mut total = 0_u64;
     let mut seen_dirs = BTreeSet::new();
@@ -161,7 +165,12 @@ pub(super) fn inventory(
         return Err(BackupError::RecoveryRequired("missing_directory"));
     }
     if matches!(kind, SnapshotKind::Source { .. })
-        && seen_locks.len() != 2 + if with_agent { super::agent::LOCKS.len() } else { 0 }
+        && seen_locks.len()
+            != 2 + if with_agent {
+                super::agent::LOCKS.len()
+            } else {
+                0
+            }
     {
         return Err(BackupError::RecoveryRequired("missing_lock"));
     }

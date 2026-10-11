@@ -5,16 +5,17 @@
 //! retained MP4 preserves all samples across archive windows, so whole-recording perception need not
 //! reset its tracker every 256 frames. This proves neither physical coverage nor a capture clock.
 
-use super::*;
 use super::catalog_provenance::{CatalogProof, CatalogTable, WindowReference};
 use super::publication::{PublicationInput, publish_import};
+use super::*;
 use crate::rtsp::recording_catalog::{CatalogScope, MAX_CATALOG_WINDOWS};
 use std::ops::Range;
 
 /// Separate adapter profile; existing single-window import identities and bytes are unchanged.
 pub const ADAPTER: &str = "ADP-RTSP-CATALOG-ARCHIVE-001";
 pub(crate) const GENERATION: &str = "gen:rtsp-catalog-archive:v1:";
-pub(crate) const EVIDENCE: &str = "native_rtsp_catalog:continuous_multifragment_mp4:original_rtp_retained";
+pub(crate) const EVIDENCE: &str =
+    "native_rtsp_catalog:continuous_multifragment_mp4:original_rtp_retained";
 /// A complete bounded page, with independently source-verified recording windows.
 pub const MAX_WINDOWS: usize = MAX_CATALOG_WINDOWS;
 /// Whole-page sample ceiling; each independently sealed native window still admits at most 256.
@@ -57,11 +58,18 @@ impl RtspCatalogImportRequest {
         Ok(ContentDigest::sha256(&e.finish_checked()?))
     }
     pub(super) fn validate(&self) -> Result<(), RtspImportError> {
-        if [self.root, self.scope.decode_clock, self.scope.recording.anchor,
-            self.scope.recording.receive_clock].iter()
-            .any(|d| d.algorithm() != DigestAlgorithm::Sha256 || d.bytes() == [0; 32])
-            || self.scope.recording.generation == 0 || self.scope.time_scale == 0
-            || self.receive_time.0 < 0 || !(1..=MAX_WINDOWS).contains(&self.max_windows)
+        if [
+            self.root,
+            self.scope.decode_clock,
+            self.scope.recording.anchor,
+            self.scope.recording.receive_clock,
+        ]
+        .iter()
+        .any(|d| d.algorithm() != DigestAlgorithm::Sha256 || d.bytes() == [0; 32])
+            || self.scope.recording.generation == 0
+            || self.scope.time_scale == 0
+            || self.receive_time.0 < 0
+            || !(1..=MAX_WINDOWS).contains(&self.max_windows)
             || !(1..=MAX_FRAMES).contains(&self.max_frames)
             || !(1..=MAX_ORIGINAL_BYTES).contains(&self.max_original_bytes)
             || !(1..=MAX_MEDIA_BYTES).contains(&self.max_media_bytes)
@@ -69,46 +77,87 @@ impl RtspCatalogImportRequest {
             return Err(RtspImportError::Invalid("catalog scope, time or bounds"));
         }
         if let Some(h) = self.capture_origin {
-            if h.start_ns.0 < 0 || h.start_ns.0.checked_add(i128::from(h.uncertainty_ns)).is_none() {
+            if h.start_ns.0 < 0
+                || h.start_ns
+                    .0
+                    .checked_add(i128::from(h.uncertainty_ns))
+                    .is_none()
+            {
                 return Err(RtspImportError::Invalid("catalog capture hint"));
             }
-            FileIngestAdapter::compute_capture_interval(0, Some(&CaptureHint {
-                start_ns: h.start_ns, uncertainty_ns: h.uncertainty_ns, assumed_fps: 1.0,
-            }), self.receive_time)?;
+            FileIngestAdapter::compute_capture_interval(
+                0,
+                Some(&CaptureHint {
+                    start_ns: h.start_ns,
+                    uncertainty_ns: h.uncertainty_ns,
+                    assumed_fps: 1.0,
+                }),
+                self.receive_time,
+            )?;
         }
         Ok(())
     }
     pub(super) fn encode(&self, e: &mut CanonicalEncoder) {
         e.text("fss.rtsp_catalog_import_request.v1");
-        e.text(self.codec.as_str()); e.text(self.slot.as_str()); e.digest(self.root);
+        e.text(self.codec.as_str());
+        e.text(self.slot.as_str());
+        e.digest(self.root);
         let s = &self.scope.recording;
-        e.text(s.sensor.as_str()); e.text(s.stream.as_str()); e.u64(s.generation);
-        e.digest(s.anchor); e.digest(s.receive_clock);
-        e.digest(self.scope.decode_clock); e.u32(self.scope.time_scale);
-        e.i128(self.receive_time.0); e.bool(self.capture_origin.is_some());
-        if let Some(h) = self.capture_origin { e.i128(h.start_ns.0); e.u64(h.uncertainty_ns); }
-        e.u64(self.max_windows as u64); e.u64(self.max_frames as u64);
-        e.u64(self.max_original_bytes); e.u64(self.max_media_bytes);
+        e.text(s.sensor.as_str());
+        e.text(s.stream.as_str());
+        e.u64(s.generation);
+        e.digest(s.anchor);
+        e.digest(s.receive_clock);
+        e.digest(self.scope.decode_clock);
+        e.u32(self.scope.time_scale);
+        e.i128(self.receive_time.0);
+        e.bool(self.capture_origin.is_some());
+        if let Some(h) = self.capture_origin {
+            e.i128(h.start_ns.0);
+            e.u64(h.uncertainty_ns);
+        }
+        e.u64(self.max_windows as u64);
+        e.u64(self.max_frames as u64);
+        e.u64(self.max_original_bytes);
+        e.u64(self.max_media_bytes);
     }
     pub(super) fn identity(&self) -> Result<ContentDigest, RtspImportError> {
         let mut e = CanonicalEncoder::new();
-        e.text("fss.rtsp_catalog_import_identity.v1"); e.digest(self.digest()?);
+        e.text("fss.rtsp_catalog_import_identity.v1");
+        e.digest(self.digest()?);
         Ok(ContentDigest::sha256(&e.finish_checked()?))
     }
-    pub(super) fn scan(&self, media: &[u8], cx: &ReplayCx) -> Result<ScannedSegments, FileIngestError> {
-        scan_media(media, self.codec, &self.scope.recording, self.receive_time, self.capture_origin,
-            self.max_frames, self.max_media_bytes,
-            self.identity().map_err(|_| corrupt("catalog identity"))?, cx)
+    pub(super) fn scan(
+        &self,
+        media: &[u8],
+        cx: &ReplayCx,
+    ) -> Result<ScannedSegments, FileIngestError> {
+        scan_media(
+            media,
+            self.codec,
+            &self.scope.recording,
+            self.receive_time,
+            self.capture_origin,
+            self.max_frames,
+            self.max_media_bytes,
+            self.identity().map_err(|_| corrupt("catalog identity"))?,
+            cx,
+        )
     }
     pub(super) fn time_label(&self) -> &'static str {
-        if self.capture_origin.is_some() { "operator_assumption" } else { "unknown" }
+        if self.capture_origin.is_some() {
+            "operator_assumption"
+        } else {
+            "unknown"
+        }
     }
 }
 
 /// Current permission to read original packets and retain them for this exact complete page.
 pub trait RtspCatalogImportAuthority {
     /// Must enforce current principal, privacy/retention policy, revocation and deadline.
-    fn permit(&self, request: &RtspCatalogImportRequest, destination: &ReferenceDeployment) -> bool;
+    fn permit(&self, request: &RtspCatalogImportRequest, destination: &ReferenceDeployment)
+    -> bool;
 }
 
 /// One completed retained import spanning all verified adjacent windows in the page.
@@ -151,21 +200,39 @@ pub fn import_rtsp_catalog(
         || publisher.root_dir().starts_with(destination.root())
         || destination.root().starts_with(publisher.root_dir())
     {
-        return Err(RtspImportError::Invalid("distinct source and destination owners required"));
+        return Err(RtspImportError::Invalid(
+            "distinct source and destination owners required",
+        ));
     }
     let authorize = |current: &ReferenceDeployment| {
         checkpoint(cx)?;
-        if !authority.permit(request, current) { return Err(RtspImportError::Denied); }
+        if !authority.permit(request, current) {
+            return Err(RtspImportError::Denied);
+        }
         Ok(())
     };
     authorize(destination)?;
-    work.charge(super::MAX_ORIGINAL_BYTES).map_err(source_error)?;
-    let access = CatalogAccess { request, destination, authority, cx };
+    work.charge(super::MAX_ORIGINAL_BYTES)
+        .map_err(source_error)?;
+    let access = CatalogAccess {
+        request,
+        destination,
+        authority,
+        cx,
+    };
     let table = CatalogTable::load(publisher, request, &access)?;
     let entries = table.entries(request)?;
     let frames: usize = entries.iter().map(|e| e.samples()).sum();
-    let interval = entries.first().ok_or(RtspImportError::Invalid("empty catalog"))?.decode_interval().start
-        ..entries.last().ok_or(RtspImportError::Invalid("empty catalog"))?.decode_interval().end;
+    let interval = entries
+        .first()
+        .ok_or(RtspImportError::Invalid("empty catalog"))?
+        .decode_interval()
+        .start
+        ..entries
+            .last()
+            .ok_or(RtspImportError::Invalid("empty catalog"))?
+            .decode_interval()
+            .end;
     let mut media = Vec::new();
     let mut payloads = BTreeMap::new();
     table.insert_payloads(&mut payloads);
@@ -173,31 +240,52 @@ pub fn import_rtsp_catalog(
     let mut initialization = None;
     for entry in &entries {
         authorize(destination)?;
-        work.charge(super::MAX_ORIGINAL_BYTES).map_err(source_error)?;
+        work.charge(super::MAX_ORIGINAL_BYTES)
+            .map_err(source_error)?;
         let single = RtspImportRequest {
-            codec: request.codec, slot: entry.slot().clone(), root: entry.root(),
-            source: request.scope.recording.clone(), receive_time: request.receive_time,
-            capture_origin: None, max_frames: super::MAX_FRAMES,
-            max_original_bytes: super::MAX_ORIGINAL_BYTES, max_media_bytes: super::MAX_MEDIA_BYTES,
+            codec: request.codec,
+            slot: entry.slot().clone(),
+            root: entry.root(),
+            source: request.scope.recording.clone(),
+            receive_time: request.receive_time,
+            capture_origin: None,
+            max_frames: super::MAX_FRAMES,
+            max_original_bytes: super::MAX_ORIGINAL_BYTES,
+            max_media_bytes: super::MAX_MEDIA_BYTES,
         };
         let window = match request.codec {
             RtspImportCodec::Avc => {
-                let p = load_recording(publisher, &single.slot, single.root, &single.source, &access)
-                    .map_err(source_error)?;
+                let p = load_recording(
+                    publisher,
+                    &single.slot,
+                    single.root,
+                    &single.source,
+                    &access,
+                )
+                .map_err(source_error)?;
                 CatalogTable::check_window(entry, request, p.summary(), p.byte_len())?;
                 provenance::Window::from_verified(&p, &single)?
             }
             RtspImportCodec::Hevc => {
-                let p = load_hevc_recording(publisher, &single.slot, single.root, &single.source, &access)
-                    .map_err(source_error)?;
+                let p = load_hevc_recording(
+                    publisher,
+                    &single.slot,
+                    single.root,
+                    &single.source,
+                    &access,
+                )
+                .map_err(source_error)?;
                 CatalogTable::check_window(entry, request, p.summary(), p.byte_len())?;
                 provenance::Window::from_verified(p.publication_plan(), &single)?
             }
         };
         let config = ContentDigest::sha256(&window.initialization);
         match initialization {
-            Some(previous) if previous != config =>
-                return Err(RtspImportError::Invalid("catalog changes decoder initialization")),
+            Some(previous) if previous != config => {
+                return Err(RtspImportError::Invalid(
+                    "catalog changes decoder initialization",
+                ));
+            }
             None => {
                 append_media(&mut media, &window.initialization, request.max_media_bytes)?;
                 initialization = Some(config);
@@ -206,31 +294,69 @@ pub fn import_rtsp_catalog(
         }
         append_media(&mut media, &window.fragment, request.max_media_bytes)?;
         windows.push(WindowReference::new(&window));
-        for (digest, bytes) in window.payloads() { payloads.insert(digest, bytes.to_vec()); }
+        for (digest, bytes) in window.payloads() {
+            payloads.insert(digest, bytes.to_vec());
+        }
     }
     drop(access);
     authorize(destination)?;
-    work.charge((media.len() as u64).saturating_mul(2)).map_err(source_error)?;
+    work.charge((media.len() as u64).saturating_mul(2))
+        .map_err(source_error)?;
     let scan = request.scan(&media, cx)?;
-    if scan.capsules.len() != frames || scan.truncated_frames != 0
+    if scan.capsules.len() != frames
+        || scan.truncated_frames != 0
         || scan.segment_spans.iter().any(|s| s.gap_before)
-        || scan.omission_spans.iter().any(|s| !s.is_container_structure())
+        || scan
+            .omission_spans
+            .iter()
+            .any(|s| !s.is_container_structure())
     {
-        return Err(RtspImportError::Invalid("complete continuous catalog sample map"));
+        return Err(RtspImportError::Invalid(
+            "complete continuous catalog sample map",
+        ));
     }
     let proof = CatalogProof::new(request.clone(), table, windows, &media, &scan)?;
-    let imported = publish_import(destination, cx, work, PublicationInput {
-        identity: request.identity()?, limits_digest: request.digest()?, codec: request.codec,
-        adapter: ADAPTER, generation: GENERATION, detector_evidence: EVIDENCE,
-        capture_time_label: request.time_label(), frames, proof: proof.encode()?,
-    }, media, scan, payloads, &authorize)?;
-    Ok(RtspCatalogImportReceipt { import: imported, windows: entries.len(), decode_interval: interval })
+    let imported = publish_import(
+        destination,
+        cx,
+        work,
+        PublicationInput {
+            identity: request.identity()?,
+            limits_digest: request.digest()?,
+            codec: request.codec,
+            adapter: ADAPTER,
+            generation: GENERATION,
+            detector_evidence: EVIDENCE,
+            capture_time_label: request.time_label(),
+            frames,
+            proof: proof.encode()?,
+        },
+        media,
+        scan,
+        payloads,
+        &authorize,
+    )?;
+    Ok(RtspCatalogImportReceipt {
+        import: imported,
+        windows: entries.len(),
+        decode_interval: interval,
+    })
 }
 
-pub(super) fn append_media(out: &mut Vec<u8>, bytes: &[u8], maximum: u64) -> Result<(), FileIngestError> {
-    let next = out.len().checked_add(bytes.len()).ok_or_else(|| corrupt("catalog media overflow"))?;
-    if next as u64 > maximum { return Err(corrupt("catalog media ceiling")); }
-    out.try_reserve_exact(bytes.len()).map_err(|_| corrupt("catalog media allocation"))?;
+pub(super) fn append_media(
+    out: &mut Vec<u8>,
+    bytes: &[u8],
+    maximum: u64,
+) -> Result<(), FileIngestError> {
+    let next = out
+        .len()
+        .checked_add(bytes.len())
+        .ok_or_else(|| corrupt("catalog media overflow"))?;
+    if next as u64 > maximum {
+        return Err(corrupt("catalog media ceiling"));
+    }
+    out.try_reserve_exact(bytes.len())
+        .map_err(|_| corrupt("catalog media allocation"))?;
     out.extend_from_slice(bytes);
     Ok(())
 }

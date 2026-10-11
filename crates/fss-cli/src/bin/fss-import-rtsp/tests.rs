@@ -9,22 +9,40 @@ use super::{driver, plan::Options};
 fn args() -> Vec<OsString> {
     let digest = ContentDigest::sha256(b"rtsp-import-operator-fixture").to_text();
     [
-        "--archive", "/absent-rtsp-import-fixture/source",
-        "--root", "/absent-rtsp-import-fixture/destination",
-        "--site", "site:test",
-        "--window-slot", "recording-test",
-        "--window-root", &digest,
-        "--codec", "avc",
-        "--sensor-id", "sensor:test",
-        "--stream-id", "stream:test",
-        "--generation", "1",
-        "--anchor", &digest,
-        "--receive-clock", &digest,
-        "--receive-time-ns", "2000000000",
-        "--owner-authorized", "yes",
-        "--read-originals", "yes",
-        "--retain-originals", "yes",
-    ].into_iter().map(OsString::from).collect()
+        "--archive",
+        "/absent-rtsp-import-fixture/source",
+        "--root",
+        "/absent-rtsp-import-fixture/destination",
+        "--site",
+        "site:test",
+        "--window-slot",
+        "recording-test",
+        "--window-root",
+        &digest,
+        "--codec",
+        "avc",
+        "--sensor-id",
+        "sensor:test",
+        "--stream-id",
+        "stream:test",
+        "--generation",
+        "1",
+        "--anchor",
+        &digest,
+        "--receive-clock",
+        &digest,
+        "--receive-time-ns",
+        "2000000000",
+        "--owner-authorized",
+        "yes",
+        "--read-originals",
+        "yes",
+        "--retain-originals",
+        "yes",
+    ]
+    .into_iter()
+    .map(OsString::from)
+    .collect()
 }
 
 fn set(args: &mut Vec<OsString>, key: &str, value: &str) {
@@ -84,25 +102,37 @@ fn exact_approval_binds_every_source_destination_and_work_choice() -> Result<(),
         let mut options = Options::parse(&changed)?;
         assert_ne!(options.approval()?, approved, "{key}");
         options.approve = Some(approved);
-        assert_eq!(driver::execute(&options).err(), Some("ERR-RTSP-IMPORT-APPROVAL-001"), "{key}");
+        assert_eq!(
+            driver::execute(&options).err(),
+            Some("ERR-RTSP-IMPORT-APPROVAL-001"),
+            "{key}"
+        );
     }
     Ok(())
 }
 
 #[test]
 fn original_read_and_retention_are_independently_explicit() {
-    for key in ["--owner-authorized", "--read-originals", "--retain-originals"] {
+    for key in [
+        "--owner-authorized",
+        "--read-originals",
+        "--retain-originals",
+    ] {
         let mut input = args();
         set(&mut input, key, "no");
         assert!(Options::parse(&input).is_err(), "{key}");
-        let position = input.iter().position(|argument| argument == key).expect("fixture");
+        let position = input
+            .iter()
+            .position(|argument| argument == key)
+            .expect("fixture");
         input.drain(position..position + 2);
         assert!(Options::parse(&input).is_err(), "{key}");
     }
 }
 
 #[test]
-fn timestamps_preserve_nonnegative_i128_and_capture_origin_is_complete() -> Result<(), &'static str> {
+fn timestamps_preserve_nonnegative_i128_and_capture_origin_is_complete() -> Result<(), &'static str>
+{
     let mut input = args();
     set(&mut input, "--receive-time-ns", "184467440737095516160");
     let unhinted = Options::parse(&input)?;
@@ -112,10 +142,17 @@ fn timestamps_preserve_nonnegative_i128_and_capture_origin_is_complete() -> Resu
     set(&mut input, "--capture-uncertainty-ns", "1000");
     let hinted = Options::parse(&input)?;
     assert_ne!(hinted.approval()?, unhinted.approval()?);
-    assert!(hinted.preview()?.contains("\"capture_time_label\":\"operator_assumption\""));
+    assert!(
+        hinted
+            .preview()?
+            .contains("\"capture_time_label\":\"operator_assumption\"")
+    );
     for (key, value) in [
         ("--receive-time-ns", "-1"),
-        ("--receive-time-ns", "170141183460469231731687303715884105728"),
+        (
+            "--receive-time-ns",
+            "170141183460469231731687303715884105728",
+        ),
         ("--capture-start-ns", "-1"),
         ("--capture-uncertainty-ns", "-1"),
     ] {
@@ -152,60 +189,104 @@ fn malformed_and_out_of_scope_inputs_refuse_before_io() {
     duplicate.extend([OsString::from("--codec"), OsString::from("hevc")]);
     assert!(Options::parse(&duplicate).is_err());
     let mut unknown = args();
-    unknown.extend([OsString::from("--url"), OsString::from("rtsp://example.invalid")]);
+    unknown.extend([
+        OsString::from("--url"),
+        OsString::from("rtsp://example.invalid"),
+    ]);
     assert!(Options::parse(&unknown).is_err());
 }
 
 fn catalog_args() -> Vec<OsString> {
     let mut input = args();
-    for (old, new) in [("--window-slot", "--catalog-slot"), ("--window-root", "--catalog-root")] {
-        let position = input.iter().position(|argument| argument == old).expect("fixture");
+    for (old, new) in [
+        ("--window-slot", "--catalog-slot"),
+        ("--window-root", "--catalog-root"),
+    ] {
+        let position = input
+            .iter()
+            .position(|argument| argument == old)
+            .expect("fixture");
         input[position] = new.into();
     }
-    set(&mut input, "--decode-clock", &ContentDigest::sha256(b"explicit-decode-clock").to_text());
+    set(
+        &mut input,
+        "--decode-clock",
+        &ContentDigest::sha256(b"explicit-decode-clock").to_text(),
+    );
     set(&mut input, "--time-scale", "90000");
     input
 }
 
 #[test]
-fn whole_catalog_preview_and_approval_bind_exact_clock_and_cumulative_bounds() -> Result<(), &'static str> {
+fn whole_catalog_preview_and_approval_bind_exact_clock_and_cumulative_bounds()
+-> Result<(), &'static str> {
     let initial = Options::parse(&catalog_args())?;
     let approved = initial.approval()?;
     assert!(initial.catalog.is_some());
     let preview = initial.preview()?;
-    for expected in ["\"maximum_windows\":64", "\"maximum_frames\":16384", "\"maximum_original_bytes\":134217728",
-        "\"maximum_media_bytes\":67108864", "\"selection\":\"complete_catalog_page\"", "\"writes\":\"none\""] {
+    for expected in [
+        "\"maximum_windows\":64",
+        "\"maximum_frames\":16384",
+        "\"maximum_original_bytes\":134217728",
+        "\"maximum_media_bytes\":67108864",
+        "\"selection\":\"complete_catalog_page\"",
+        "\"writes\":\"none\"",
+    ] {
         assert!(preview.contains(expected), "{expected}");
     }
     assert!(!preview.contains("\"window_root\""));
     let other = ContentDigest::sha256(b"other-catalog-clock").to_text();
-    for (key, value) in [("--decode-clock", other.as_str()), ("--time-scale", "45000"), ("--max-windows", "2"),
-        ("--max-frames", "320"), ("--max-original-bytes", "33554432"), ("--catalog-slot", "other-catalog")] {
+    for (key, value) in [
+        ("--decode-clock", other.as_str()),
+        ("--time-scale", "45000"),
+        ("--max-windows", "2"),
+        ("--max-frames", "320"),
+        ("--max-original-bytes", "33554432"),
+        ("--catalog-slot", "other-catalog"),
+    ] {
         let mut input = catalog_args();
         set(&mut input, key, value);
         let mut options = Options::parse(&input)?;
         assert_ne!(options.approval()?, approved, "{key}");
         options.approve = Some(approved);
-        assert_eq!(driver::execute(&options).err(), Some("ERR-RTSP-IMPORT-APPROVAL-001"));
+        assert_eq!(
+            driver::execute(&options).err(),
+            Some("ERR-RTSP-IMPORT-APPROVAL-001")
+        );
     }
     Ok(())
 }
 
 #[test]
 fn incomplete_mixed_or_oversized_catalog_selection_refuses_before_io() {
-    for key in ["--catalog-slot", "--catalog-root", "--decode-clock", "--time-scale"] {
+    for key in [
+        "--catalog-slot",
+        "--catalog-root",
+        "--decode-clock",
+        "--time-scale",
+    ] {
         let mut input = catalog_args();
         let at = input.iter().position(|a| a == key).expect("fixture");
         input.drain(at..at + 2);
         assert!(Options::parse(&input).is_err(), "{key}");
     }
-    for (key, value) in [("--window-slot", "window"), ("--max-windows", "65"), ("--max-frames", "16385"),
-        ("--max-media-bytes", "67108865"), ("--max-original-bytes", "134217729"), ("--time-scale", "0")] {
+    for (key, value) in [
+        ("--window-slot", "window"),
+        ("--max-windows", "65"),
+        ("--max-frames", "16385"),
+        ("--max-media-bytes", "67108865"),
+        ("--max-original-bytes", "134217729"),
+        ("--time-scale", "0"),
+    ] {
         let mut input = catalog_args();
         set(&mut input, key, value);
         assert!(Options::parse(&input).is_err(), "{key}");
     }
     let mut window = args();
-    set(&mut window, "--decode-clock", &ContentDigest::sha256(b"clock").to_text());
+    set(
+        &mut window,
+        "--decode-clock",
+        &ContentDigest::sha256(b"clock").to_text(),
+    );
     assert!(Options::parse(&window).is_err());
 }
