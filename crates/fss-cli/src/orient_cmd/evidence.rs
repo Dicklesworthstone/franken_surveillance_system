@@ -7,7 +7,7 @@
 
 use fss_core::{
     AgentCognitiveEnvelope, AgentView, BudgetVector, Completeness, ContentDigest,
-    EnvelopeBudget, EnvelopeProposition, ExplainQuestion, ExplainReceipt, KnowledgeState,
+    EnvelopeBudget, EnvelopeProposition, ExplainQuestion, ExplainReceipt, KnowledgeState, LedgerAnchor,
     ResponseOutcome, ResponseSafeRetry,
 };
 use fss_graph_algorithms::GraphError;
@@ -21,8 +21,8 @@ use fss_reference::agent_orient::{DeploymentOrientation, DeploymentSnapshot, Eve
 
 use super::{CAPABILITY_EXPLAIN, ResponseParts, agent_json, build_response, read_only_boundary};
 
-/// One shared allowance across both registered runs, not a per-algorithm refill.
-const GRAPH_BUDGET: Budget = Budget::new(2_000_000, 65_536);
+/// Shared by the support runs and, when requested, both availability-conditioned runs.
+pub(super) const GRAPH_BUDGET: Budget = Budget::new(2_000_000, 65_536);
 /// Extra semantic bytes are also bounded before they join the existing explanation.
 const MAX_SEMANTIC_BYTES: usize = 8 * 1024;
 /// An independent serialization ceiling, including the newline emitted by the CLI.
@@ -45,6 +45,11 @@ pub(super) struct SupportReview {
     pub(super) requested: BudgetVector,
     pub(super) consumed: BudgetVector,
     pub(super) cost_statement: String,
+    /// Existing bounded projection, full anchor and current publication root for the checked join.
+    /// Consumed once by custody augmentation; never serialized or advertised as retained proof.
+    pub(super) availability_basis: Option<(EvidenceHistoryProjection, LedgerAnchor, ContentDigest)>,
+    /// What remains of GRAPH_BUDGET after every already completed registered run.
+    pub(super) graph_remaining: Budget,
 }
 
 fn inconsistent(message: &str) -> EvidenceProjectionError {
@@ -215,7 +220,9 @@ pub(super) fn compile(
     let projection = EvidenceHistoryProjection::build(&lineages, HistoryLimits::default())?;
     let brief = explain_current_support(&projection, target.event.event_id.as_str(),
         snapshot.anchor.clone(), GRAPH_BUDGET, MAX_BRIEF_ENTRIES)?;
-    compose(&projection, &brief, orientation, explanation)
+    let mut review = compose(&projection, &brief, orientation, explanation)?;
+    review.availability_basis = Some((projection, snapshot.anchor.clone(), target.event_root));
+    Ok(review)
 }
 
 fn compose(
@@ -256,6 +263,11 @@ fn compose(
         requested: orientation.requested,
         consumed: orientation.consumed,
         cost_statement,
+        availability_basis: None,
+        graph_remaining: Budget::new(
+            GRAPH_BUDGET.max_operations.checked_sub(brief.graph_operations).ok_or(GraphError::TooLarge)?,
+            GRAPH_BUDGET.max_output_entries.checked_sub(brief.graph_output_entries).ok_or(GraphError::TooLarge)?,
+        ),
     };
     price(&mut review)?;
     Ok(review)

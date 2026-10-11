@@ -7,7 +7,14 @@ use fss_core::{
     AgentCognitiveEnvelope, AgentView, Completeness, ContentDigest, EnvelopeBudget,
     ExplainQuestion, ExplainReceipt, KnowledgeState, ResponseOutcome, ResponseSafeRetry,
 };
-use fss_publication::custody_audit::CustodyAuditLimits;
+use fss_graph_algorithms::GraphError;
+use fss_graph_algorithms::certified::Budget;
+use fss_graph_algorithms::evidence::EvidenceProjectionError;
+use fss_graph_algorithms::evidence_brief::availability::{
+    AvailabilityObservation, EvidenceAvailabilityAnalysis, ObjectAvailability,
+    analyze_current_availability,
+};
+use fss_publication::custody_audit::{CustodyAuditLimits, CustodyObjectState};
 use fss_reference::agent_orient::{DeploymentOrientation, EventExplanation};
 
 use crate::custody_review::{
@@ -53,6 +60,47 @@ fn proposition_bytes(propositions: &[fss_core::EnvelopeProposition]) -> Result<u
     Ok(bytes)
 }
 
+// An inability to establish bytes is not evidence that those bytes are missing.
+fn availability(state: CustodyObjectState) -> ObjectAvailability {
+    match state {
+        CustodyObjectState::Verified => ObjectAvailability::Verified,
+        CustodyObjectState::Unreadable | CustodyObjectState::ObjectOverLimit => ObjectAvailability::Unchecked,
+        CustodyObjectState::Missing | CustodyObjectState::Corrupt | CustodyObjectState::InvalidManifest
+        | CustodyObjectState::Deleted | CustodyObjectState::LocallyTombstoned => ObjectAvailability::Unavailable,
+    }
+}
+
+fn graph_error(error: EvidenceProjectionError) -> CustodyReviewError {
+    match error {
+        EvidenceProjectionError::Graph(GraphError::BudgetExhausted { .. } | GraphError::TooLarge) => {
+            CustodyReviewError::ContextBound
+        }
+        _ => CustodyReviewError::SupportGraph,
+    }
+}
+
+fn conditioned_support(
+    support: &evidence::SupportReview,
+    review: &CustodyReview,
+) -> Result<EvidenceAvailabilityAnalysis, CustodyReviewError> {
+    let (projection, anchor, root) = support.availability_basis.as_ref()
+        .ok_or(CustodyReviewError::InvalidBinding)?;
+    if anchor != review.basis_anchor() || review.audit().roots() != [*root]
+        || support.receipt.subject() != review.receipt().subject()
+        || support.graph_remaining.max_operations > evidence::GRAPH_BUDGET.max_operations
+        || support.graph_remaining.max_output_entries > evidence::GRAPH_BUDGET.max_output_entries
+    {
+        return Err(CustodyReviewError::InvalidBinding);
+    }
+    let target = projection.heads().iter().find(|(_, digest)| **digest == support.receipt.subject())
+        .map(|(id, _)| id).ok_or(CustodyReviewError::InvalidBinding)?;
+    let observations: Vec<_> = review.audit().objects().iter().map(|row| AvailabilityObservation {
+        digest: row.digest, availability: availability(row.state),
+    }).collect();
+    analyze_current_availability(projection, target, &observations, anchor.clone(), support.graph_remaining)
+        .map_err(graph_error)
+}
+
 /// Stage all additions, bindings and pricing before modifying the existing support review.
 /// Replacements retain their old paid charge and pay any additional length; shorter text does
 /// not refill the allowance. This is a semantic-field estimate, not a full-output tokenizer.
@@ -63,16 +111,41 @@ pub(super) fn augment(
     if support.receipt.subject() != review.receipt().subject() {
         return Err(CustodyReviewError::InvalidBinding);
     }
+    let conditioned = conditioned_support(support, review)?;
+    let graph_remaining = Budget::new(
+        support.graph_remaining.max_operations.checked_sub(conditioned.graph_operations)
+            .ok_or(CustodyReviewError::ContextBound)?,
+        support.graph_remaining.max_output_entries.checked_sub(conditioned.graph_output_entries)
+            .ok_or(CustodyReviewError::ContextBound)?,
+    );
     let receipt = ExplainReceipt::compile(ExplainQuestion::Why, support.receipt.subject(),
-        vec![support.receipt.receipt_digest(), review.receipt().receipt_digest()], Vec::new(), 0)
+        vec![support.receipt.receipt_digest(), review.receipt().receipt_digest(),
+            conditioned.possible_witness.digest(), conditioned.verified_witness.digest()], Vec::new(), 0)
         .map_err(|_| CustodyReviewError::InvalidBinding)?;
-    let pointers = [review.receipt().receipt_digest().to_text(), receipt.receipt_digest().to_text()];
+    let pointers = [review.receipt().receipt_digest().to_text(), receipt.receipt_digest().to_text(),
+        conditioned.possible_witness.digest().to_text(), conditioned.verified_witness.digest().to_text()];
+    let support_state = fss_core::EnvelopeProposition {
+        id: format!("claim:event-support:{}:availability", conditioned.target),
+        statement: format!(
+            "Declared support availability: {}. Reference paths only, not proof of truth or sufficiency; all custody faults and original uncertainty still apply.",
+            conditioned.support.as_str(),
+        ),
+        state: KnowledgeState::Known, provenance: "derived".to_owned(),
+        evidence: vec![receipt.receipt_digest().to_text()],
+    };
     let audit = review.audit();
-    let cost = format!(
+    let mut cost = format!(
         " Custody: {} charged bytes, {} peak reserved bytes, {} calls; recheck: {} accounted bytes, {} files. Deadline: 30000 ms at checkpoints.",
         audit.charged_read_bytes(), audit.peak_reserved_read_bytes(), audit.io_calls(),
         review.recheck_bytes(), review.recheck_files(),
     );
+    cost.push_str(&format!(
+        " Availability: {} operations, {} output entries; shared remaining={}/{}. Whole-graph observations: {} mapped, {} outside (not irrelevant); {} unchecked frontiers. Filter construction is separately bounded.",
+        conditioned.graph_operations, conditioned.graph_output_entries,
+        graph_remaining.max_operations, graph_remaining.max_output_entries,
+        conditioned.mapped_observations, conditioned.outside_graph_observations,
+        conditioned.unchecked_frontier_references,
+    ));
     let mut replacements = Vec::new();
     for (index, p) in support.propositions.iter().enumerate() {
         let replacement = if p.id.ends_with(":unexpanded-references") {
@@ -86,7 +159,8 @@ pub(super) fn augment(
     if !audit.all_verified() {
         warnings.push("Custody faults are present. This explanation is not an intact-custody success and does not retract or adjudicate the event.".to_owned());
     }
-    let mut extra_bytes = proposition_bytes(review.propositions())?;
+    let mut extra_bytes = add(proposition_bytes(review.propositions())?,
+        proposition_bytes(std::slice::from_ref(&support_state))?)?;
     for text in pointers.iter().map(String::as_str)
         .chain(warnings.iter().map(String::as_str))
         .chain([cost.as_str(), INVALIDATOR, METER_SCOPE, DECLINED]) {
@@ -112,6 +186,7 @@ pub(super) fn augment(
     requested.latency_ms = requested.latency_ms.max(TIMEOUT.as_millis() as u64);
     for (index, text) in replacements { support.propositions[index].statement = text; }
     support.propositions.extend(review.propositions().iter().cloned());
+    support.propositions.push(support_state);
     support.invalidators.push(INVALIDATOR.to_owned());
     support.warnings.extend(warnings);
     support.proof_pointers.extend(pointers);
@@ -119,6 +194,9 @@ pub(super) fn augment(
     support.receipt = receipt;
     support.requested = requested;
     support.consumed = consumed;
+    support.graph_remaining = graph_remaining;
+    // The same basis cannot be augmented and charged a second time accidentally.
+    support.availability_basis = None;
     Ok(())
 }
 
@@ -156,7 +234,7 @@ pub(super) fn refusal(
         warnings: vec![error.reason().to_owned()], contradictions: orientation.contradictions.clone(),
         degradation: vec![
             "No failed check was replaced by an unchecked explanation; no fault or uncertainty was truncated.".to_owned(),
-            "Counters retain the completed support review and any admitted custody addition. Unreturned audit/recheck work is not measured here and is not claimed to have consumed zero.".to_owned(),
+            "Counters retain the completed support review and any admitted custody addition. Unreturned audit/recheck/availability-graph work is not measured here and is not claimed to have consumed zero.".to_owned(),
         ],
         budgets_json: agent_json::budget_summary(&support.requested, &support.consumed),
         proof_pointers: vec![explanation.event.event_root.to_text(), explanation.event.revision_digest.to_text()],
@@ -189,3 +267,7 @@ mod tests {
         assert_eq!(add(u64::MAX - 1, 1), Ok(u64::MAX));
     }
 }
+
+#[cfg(test)]
+#[path = "availability_tests.rs"]
+mod availability_tests;

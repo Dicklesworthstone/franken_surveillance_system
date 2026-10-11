@@ -49,6 +49,8 @@ pub enum CustodyReviewError {
     Cancelled,
     /// The publication owner refused its bounded check.
     Audit(CustodyAuditError),
+    /// Availability-conditioned support did not satisfy its complete graph contract.
+    SupportGraph,
 }
 
 impl CustodyReviewError {
@@ -62,6 +64,7 @@ impl CustodyReviewError {
             Self::ContextBound => "complete custody context or recheck accounting exceeds its bound",
             Self::Cancelled => "custody check cancelled or deadline reached",
             Self::Audit(error) => error.reason(),
+            Self::SupportGraph => "availability-conditioned support failed its graph contract",
         }
     }
 }
@@ -76,6 +79,7 @@ impl std::error::Error for CustodyReviewError {}
 /// Complete decision-relevant observations. Only the checked constructor can produce this type.
 #[derive(Debug)]
 pub struct CustodyReview {
+    anchor: LedgerAnchor,
     audit: LocalCustodyAudit,
     propositions: Vec<EnvelopeProposition>,
     receipt: ExplainReceipt,
@@ -84,6 +88,10 @@ pub struct CustodyReview {
 }
 
 impl CustodyReview {
+    /// Full authority anchor whose event and deletion basis survived the fresh recheck.
+    /// This is not a fresh filesystem snapshot or a grant to read additional objects.
+    #[must_use]
+    pub const fn basis_anchor(&self) -> &LedgerAnchor { &self.anchor }
     /// Immutable full publication-owner observations, including every discovered fault.
     #[must_use]
     pub const fn audit(&self) -> &LocalCustodyAudit { &self.audit }
@@ -210,7 +218,7 @@ fn check_with(
         vec![basis.root, basis.anchor.state_root, ContentDigest::sha256(projected.as_bytes())],
         Vec::new(), 0).map_err(|_| CustodyReviewError::InvalidBinding)?;
     checkpoint(cancelled)?;
-    Ok(CustodyReview { audit, propositions, receipt,
+    Ok(CustodyReview { anchor: basis.anchor, audit, propositions, receipt,
         recheck_bytes: after.bytes_read, recheck_files: after.files_read })
 }
 

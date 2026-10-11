@@ -54,6 +54,7 @@ fn review(propositions: Vec<EnvelopeProposition>) -> TestResult<SupportReview> {
         receipt: ExplainReceipt::compile(ExplainQuestion::Why, digest, vec![digest], Vec::new(), 0)?,
         requested: BudgetVector::ZERO, consumed: BudgetVector::ZERO,
         cost_statement: "Test accounting fixture; no real storage read.".to_owned(),
+        availability_basis: None, graph_remaining: GRAPH_BUDGET,
     })
 }
 
