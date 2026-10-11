@@ -45,11 +45,11 @@ const MAX_CLASS_BYTES: usize = 16 * 1024;
 /// Package limits supply preprocessing, model execution, output and detection-head budgets;
 /// their unused decoder fields remain in the exact retained recipe for caller-policy identity.
 pub struct LongWatchDetector<'a> {
-    pub(super) package: &'a RgbDetectorPackage,
-    pub(super) archive: &'a [u8],
-    pub(super) config: CascadeConfig,
-    pub(super) limits: PackageDetectLimits,
-    pub(super) scalar: &'a ScalarExecCx,
+    pub(crate) package: &'a RgbDetectorPackage,
+    pub(crate) archive: &'a [u8],
+    pub(crate) config: CascadeConfig,
+    pub(crate) limits: PackageDetectLimits,
+    pub(crate) scalar: &'a ScalarExecCx,
 }
 impl std::fmt::Debug for LongWatchDetector<'_> {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
@@ -89,56 +89,61 @@ impl<'a> LongWatchDetector<'a> {
 }
 
 #[derive(Clone, Debug)]
-pub(super) struct Selection {
-    pub(super) position: usize,
-    pub(super) capsule: ContentDigest,
-    pub(super) item: CascadeSelection,
+pub(crate) struct Selection {
+    pub(crate) position: usize,
+    pub(crate) capsule: ContentDigest,
+    pub(crate) item: CascadeSelection,
 }
 #[derive(Clone, Debug)]
-pub(super) struct SelectedEntry {
-    pub(super) entry: LongWatchEntry,
-    pub(super) frames: Vec<Selection>,
+pub(crate) struct SelectedEntry {
+    pub(crate) entry: LongWatchEntry,
+    pub(crate) frames: Vec<Selection>,
 }
 
 /// Only scalar selection metadata survives a source frame. Candidate and frame counts are hard
 /// bounded independently of recording length; no image cache or track history is accumulated.
-pub(super) struct Select {
+pub(crate) struct Select {
     frames_per_track: usize,
-    pub(super) entries: Vec<SelectedEntry>,
-    pub(super) decoded: Vec<usize>,
+    pub(crate) entries: Vec<SelectedEntry>,
+    pub(crate) decoded: Vec<usize>,
 }
 impl Select {
-    pub(super) fn new(config: CascadeConfig) -> Self {
+    pub(crate) fn new(config: CascadeConfig) -> Self {
         Self {
             frames_per_track: config.frames_per_track,
             entries: Vec::new(),
             decoded: Vec::new(),
         }
     }
-}
-impl ScanObserver for Select {
-    fn observe(&mut self, frame: ScanObservation<'_>) -> Result<()> {
+
+    /// The semantic owner selects an actual image- or ground-zone entry. The native detector
+    /// never projects ground coordinates or substitutes the scan's placeholder image rectangle.
+    pub(crate) fn push_entry(&mut self, entry: LongWatchEntry) -> Result<()> {
+        if self.entries.len() == MAX_LONG_WATCH_CANDIDATES {
+            return Err(WatchError::Limit);
+        }
+        let frame = Selection {
+            position: entry.position,
+            capsule: entry.capsule_digest,
+            item: CascadeSelection {
+                segment: entry.segment,
+                reason: SelectionReason::ZoneEntry,
+                track_box: entry.filtered_box,
+            },
+        };
+        self.entries.push(SelectedEntry {
+            entry,
+            frames: vec![frame],
+        });
+        Ok(())
+    }
+
+    /// Record source order and subsequent actual matches, never predictions or another epoch.
+    pub(in crate::ingest) fn observe_matches(&mut self, frame: &ScanObservation<'_>) -> Result<()> {
         if self.decoded.len() == super::MAX_LONG_WATCH_FRAMES {
             return Err(WatchError::Limit);
         }
         self.decoded.push(frame.segment);
-        for entry in frame.zone_entries {
-            if self.entries.len() == MAX_LONG_WATCH_CANDIDATES {
-                return Err(WatchError::Limit);
-            }
-            self.entries.push(SelectedEntry {
-                entry: entry.clone(),
-                frames: vec![Selection {
-                    position: frame.position,
-                    capsule: frame.capsule_digest,
-                    item: CascadeSelection {
-                        segment: frame.segment,
-                        reason: SelectionReason::ZoneEntry,
-                        track_box: entry.filtered_box,
-                    },
-                }],
-            });
-        }
         for selected in &mut self.entries {
             if selected.entry.epoch != frame.epoch
                 || selected.frames.len() == self.frames_per_track
@@ -169,22 +174,30 @@ impl ScanObserver for Select {
         Ok(())
     }
 }
+impl ScanObserver for Select {
+    fn observe(&mut self, frame: ScanObservation<'_>) -> Result<()> {
+        for entry in frame.zone_entries {
+            self.push_entry(entry.clone())?;
+        }
+        self.observe_matches(&frame)
+    }
+}
 
 #[derive(Debug)]
-pub(super) struct Completed {
-    pub(super) recipe: LongWatchDetectorRecipe,
-    pub(super) archive: Vec<u8>,
-    pub(super) outcome: CascadeOutcome,
-    pub(super) entries: Vec<SelectedEntry>,
-    pub(super) bytes: Vec<u8>,
-    pub(super) source_bytes: u64,
-    pub(super) jpeg_work: u64,
-    pub(super) pixel_samples: u64,
-    pub(super) inference_pipeline_attempts: usize,
-    pub(super) policy_json: String,
+pub(crate) struct Completed {
+    pub(crate) recipe: LongWatchDetectorRecipe,
+    pub(crate) archive: Vec<u8>,
+    pub(crate) outcome: CascadeOutcome,
+    pub(crate) entries: Vec<SelectedEntry>,
+    pub(crate) bytes: Vec<u8>,
+    pub(crate) source_bytes: u64,
+    pub(crate) jpeg_work: u64,
+    pub(crate) pixel_samples: u64,
+    pub(crate) inference_pipeline_attempts: usize,
+    pub(crate) policy_json: String,
 }
 impl Completed {
-    pub(super) fn children(&self) -> BTreeSet<ContentDigest> {
+    pub(crate) fn children(&self) -> BTreeSet<ContentDigest> {
         let mut children = BTreeSet::from([
             ContentDigest::sha256(&self.archive),
             self.recipe.digest(),
@@ -199,7 +212,7 @@ impl Completed {
         );
         children
     }
-    pub(super) fn staged(&self) -> Vec<&[u8]> {
+    pub(crate) fn staged(&self) -> Vec<&[u8]> {
         let mut bytes = vec![self.archive.as_slice(), self.bytes.as_slice()];
         bytes.extend(
             self.outcome
@@ -212,6 +225,34 @@ impl Completed {
     }
 }
 
+/// One analysis owns its admitted inference slots and cumulative detection-head work. Moving
+/// the head budget into a native pass cannot renew it between cameras or decoder recovery epochs.
+pub(crate) struct AnalysisBudget {
+    limit: usize,
+    remaining: usize,
+    head: Option<RgbDetectionBudget>,
+}
+impl AnalysisBudget {
+    pub(crate) fn new(detector: &LongWatchDetector<'_>) -> Self {
+        Self {
+            limit: detector.config.max_inferences,
+            remaining: detector.config.max_inferences,
+            head: Some(RgbDetectionBudget::new(
+                detector.limits.detection_work_units,
+                detector.limits.detection_scratch_bytes,
+            )),
+        }
+    }
+
+    /// Cumulative admission and head-work counters at completed camera boundaries.
+    pub(crate) fn witness(&self) -> Result<(usize, u64)> {
+        Ok((
+            self.limit - self.remaining,
+            self.head.as_ref().ok_or(WatchError::Conflict)?.used(),
+        ))
+    }
+}
+
 pub(super) fn run(
     deployment: &ReferenceDeployment,
     plan: &WatchPlan,
@@ -220,6 +261,38 @@ pub(super) fn run(
     limits: &LongWatchLimits,
     detector: &LongWatchDetector<'_>,
     selected: Select,
+    cx: &ReplayCx,
+) -> Result<Completed> {
+    let mut allowance = AnalysisBudget::new(detector);
+    let completed = run_selected(
+        deployment,
+        plan,
+        options,
+        scan,
+        limits,
+        detector,
+        selected,
+        &mut allowance,
+        cx,
+    )?;
+    // A successful native pass must return its owned head reservation to the analysis.
+    let _ = allowance.witness()?;
+    Ok(completed)
+}
+
+/// Native source and inference work shared by image-zone watch and ground-zone corroboration.
+/// Each caller owns entry selection and retains its own policy for that selection. A complete
+/// multi-camera caller passes the same allowance to every camera in its retained plan order.
+#[allow(clippy::too_many_arguments)]
+pub(in crate::ingest) fn run_selected(
+    deployment: &ReferenceDeployment,
+    plan: &WatchPlan,
+    options: WatchOptions,
+    scan: &ScanData,
+    limits: &LongWatchLimits,
+    detector: &LongWatchDetector<'_>,
+    selected: Select,
+    allowance: &mut AnalysisBudget,
     cx: &ReplayCx,
 ) -> Result<Completed> {
     cx.checkpoint("long_watch_detector:admit")
@@ -245,11 +318,10 @@ pub(super) fn run(
             }
         }
     }
-    let wanted: BTreeSet<usize> = order
-        .iter()
-        .take(detector.config.max_inferences)
-        .copied()
-        .collect();
+    let wanted: BTreeSet<usize> = order.iter().take(allowance.remaining).copied().collect();
+    // Admission is consumed even if frame/model/head execution later refuses. Counting only
+    // successful results would silently renew inference slots at the next camera.
+    allowance.remaining -= wanted.len();
     let remaining_source = limits
         .maximum_source_chunk_bytes
         .checked_sub(scan.source_bytes)
@@ -268,10 +340,7 @@ pub(super) fn run(
         contract: engine.contract(),
         run: detector.limits.run,
         import_root: scan.import_root,
-        budget: RgbDetectionBudget::new(
-            detector.limits.detection_work_units,
-            detector.limits.detection_scratch_bytes,
-        ),
+        budget: allowance.head.take().ok_or(WatchError::Conflict)?,
         scalar: detector.scalar,
         cx,
     };
@@ -409,6 +478,7 @@ pub(super) fn run(
     if statuses.len() != wanted.len() {
         return Err(WatchError::Conflict);
     }
+    allowance.head = Some(run.budget);
     detector
         .scalar
         .checkpoint("long_watch_detector:complete")
