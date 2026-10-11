@@ -24,18 +24,20 @@ decode clock for complete-page retained import and whole-recording analysis.
 
 Selected original RTP and its native remux mapping reach source-verified, root-last recording
 windows; independent pin synchronization precedes work-publication acknowledgement.
-A deliberate target stop closes the socket and drains catalog publication without fabricating
-EOF. Early EOF remains incomplete even when its complete prefix is importable. Protocol
+The final sealed window's admission closes the socket and starts the reserved storage-drain
+allowance before checkpoint, window and catalog publication, without fabricating EOF. Early EOF remains incomplete even when its complete prefix is importable. Protocol
 faults and unpublished tails retain distinct accounting and recovery references. Canonical
 parent checks reject aliased or nested archive/journal destinations before creation.
 
 Parser/approval and timing tests accompany real-process loopback capture → import → cold
 native decode contracts, including stale approval, secret-free authentication refusal,
 early EOF, malformed media, wrong cadence, symlink-parent separation, exact payload selection
-and multi-window catalog import. Native execution
-was blocked by the disconnected implementation workspace at initial publication. A focused
-supplementary GitHub smoke check is provided; this is not a production-camera or release
-qualification. See [the capture workflow](docs/rtsp_capture_cli.md).
+and multi-window catalog import. Pinned native checks have passed 22 capture unit cases,
+12 live-recording cases and seven plain/Digest payload-selection cases. Catalog composition
+renumbers only the derived MP4 fragment sequence fields; every original window remains
+unchanged, and cold proof replay applies the same deterministic composition. The focused
+supplementary GitHub smoke check includes both process and catalog regressions; this is not
+a production-camera or release qualification. See [the capture workflow](docs/rtsp_capture_cli.md).
 
 ## Retained historical sensor-health diagnostics (2026-10-11, reference)
 

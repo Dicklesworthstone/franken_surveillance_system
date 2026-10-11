@@ -64,9 +64,13 @@ are outside this timing model. Capture time remains unknown. Startup pictures be
 the first IDR consume timing but are counted separately as skipped. The target counts
 pictures admitted by the recording collector, not successfully decoded pixels.
 
-At the requested count, further socket reads/writes are disabled, the selected prefix
-is sealed and durably published, the socket closes deliberately, and catalog publication
-drains. Only completion of that path succeeds. Its cause is `owner_stopped`, not EOF.
+At the requested count, further socket reads/writes are disabled and the selected prefix
+is explicitly sealed. Earlier windows cut at an IDR still drain normally. Once the final
+sealed window reaches `window_accepted`, the socket closes with cause `owner_stopped`
+and the reserved storage-drain allowance starts, before its checkpoint, window and final
+catalog publication. Those publications retain their ordinary journal barriers. Success
+requires every collected picture to be durable and every durable window to be indexed;
+the deliberate stop never becomes EOF.
 The remote RTSP session may remain until the camera expires it; that uncertainty is reported.
 
 ## Structured progress and import
@@ -132,6 +136,10 @@ an attempt may publish several pages. Each page is one exact complete selection,
 promise that it covers the entire attempt. The importer independently refuses gaps,
 changed initialization and excessive cumulative work or bytes. A successful import keeps
 the page and every original window in destination custody for cold verification and decode.
+The combined MP4 assigns increasing fragment sequence numbers to copies of the independent
+windows, each of which originally starts at one. Original bytes and manifests stay intact;
+sample payloads, timing, box sizes and fragment-relative offsets are unchanged. Import and
+cold verification apply the same deterministic composition rule.
 
 ## Partial capture, omissions and recovery
 
@@ -185,6 +193,9 @@ refusal without secret disclosure, malformed source, wrong cadence, parent alias
 payload selection and multi-window capture through catalog import and cold decode.
 They use real CLI processes and repository fixtures; they do not qualify actual cameras.
 
-At initial implementation, native execution was blocked by an offline workspace.
-The supplementary GitHub smoke workflow checks this reference feature only.
-Repository-owned qualification lanes and native DSR receipts remain release authority.
+Native checks on pinned `nightly-2026-08-31` have passed the 22 capture plan/timing
+cases, 12 live-recording cases and seven plain/Digest payload-selection cases. The
+nine real-process cases include the catalog composition regression; the dedicated
+catalog suite additionally exercises AVC/HEVC, retained originals and cold replay.
+The supplementary GitHub smoke workflow runs these reference checks. Repository-owned
+qualification lanes and native DSR receipts remain release authority.

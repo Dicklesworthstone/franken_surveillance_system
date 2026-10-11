@@ -22,7 +22,8 @@
     "journal_epoch",
     "every_effective_native_limit",
     "requested_picture_count",
-    "report_limit"
+    "report_limit",
+    "full_nonzero_u128_ingress_identity"
   ],
   "required_acknowledgements": [
     "owner_authorized",
@@ -95,9 +96,10 @@
     "crates/fss-cli/src/bin/fss-capture-rtsp/timing.rs",
     "crates/fss-cli/tests/capture_rtsp_cli.rs",
     "crates/fss-reference/src/rtsp/live_avc/recording/tests.rs",
-    "crates/fss-reference/tests/rtsp_payload_selection_streaming.rs"
+    "crates/fss-reference/tests/rtsp_payload_selection_streaming.rs",
+    "crates/fss-reference/tests/rtsp_catalog_import_contract.rs"
   ],
-  "native_tests_executed": false,
+  "native_tests_executed": true,
   "out_of_scope": [
     "authenticated_or_TLS_transport",
     "HEVC_capture_CLI",
@@ -109,5 +111,7 @@
     "release_qualification"
   ],
   "payload_selection": "owner_exact_AVC_offer_applied_before_DESCRIBE_no_fallback_or_cross_offer_parameters",
-  "catalog_handoff": "each_durable_page_reports_exact_slot_root_recording_scope_decode_clock_time_scale_for_independent_complete_page_import"
+  "catalog_handoff": "each_durable_page_reports_exact_slot_root_recording_scope_decode_clock_time_scale_for_independent_complete_page_import",
+  "drain_entry": "final_explicitly_sealed_window_admission_closes_TCP_before_checkpoint_window_and_catalog_publication",
+  "catalog_composition": "increasing_mfhd_sequences_only_in_derived_MP4_original_windows_unchanged_identical_cold_reconstruction"
 }

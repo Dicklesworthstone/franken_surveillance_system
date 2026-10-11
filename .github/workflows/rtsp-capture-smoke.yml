@@ -44,6 +44,9 @@ jobs:
       - name: Existing plain and Digest payload selection contracts
         if: success() || failure()
         run: cargo +nightly-2026-08-31 test --locked --offline -p fss-reference --test rtsp_payload_selection_streaming
+      - name: Complete catalog custody and cold AVC/HEVC composition
+        if: success() || failure()
+        run: cargo +nightly-2026-08-31 test --locked --offline -p fss-reference --test rtsp_catalog_import_contract
       - name: Capture CLI Clippy
         if: success() || failure()
-        run: cargo +nightly-2026-08-31 clippy --locked --offline -p fss-cli --bin fss-capture-rtsp -- -D warnings
+        run: cargo +nightly-2026-08-31 clippy --no-deps --locked --offline -p fss-cli --bin fss-capture-rtsp -- -D warnings

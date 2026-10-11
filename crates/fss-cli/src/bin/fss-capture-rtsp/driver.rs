@@ -515,6 +515,22 @@ fn archive_progress<W: Write>(
     Ok(())
 }
 
+fn begin_archive_drain(
+    capture: &mut JournaledLiveAvcArchive<'_, '_>,
+    owner: &Owner<'_>,
+    stats: &mut Statistics,
+) -> Result<(), Failure> {
+    let retired = capture
+        .finish_capture(owner.now()?, owner, owner)
+        .map_err(|e| failure(e, stats))?;
+    if let Some(retired) = &retired {
+        stats.recording_retirement(retired);
+    }
+    // Close input without a synthetic EOF or TEARDOWN. Already-admitted windows and the
+    // final catalog retain their ordinary checkpoint barriers and storage drain deadline.
+    owner.begin_drain()
+}
+
 fn drive<W: Write>(
     options: &Options,
     capture: &mut JournaledLiveAvcArchive<'_, '_>,
@@ -552,8 +568,8 @@ fn drive<W: Write>(
         if sealing && ready && !sealed {
             match capture.seal(now, owner, owner) {
                 Ok(true) => {
-                    // Sealing only prepares a window. Drain admission, pin persistence,
-                    // work confirmation, window publication, and Ready before stopping.
+                    // Sealing only prepares a window. Its WindowAccepted event transfers
+                    // the final prefix to storage before input can be stopped.
                     sealed = true;
                     ready = false;
                 }
@@ -567,14 +583,7 @@ fn drive<W: Write>(
             if stats.durable_pictures != stats.collected_pictures {
                 return Err(Failure::State);
             }
-            let retired = capture
-                .finish_capture(owner.now()?, owner, owner)
-                .map_err(|e| failure(e, stats))?;
-            if let Some(retired) = &retired {
-                stats.recording_retirement(retired);
-            }
-            // finish_capture closes the socket without a synthetic EOF or TEARDOWN.
-            owner.begin_drain()?;
+            begin_archive_drain(capture, owner, stats)?;
             draining = true;
             ready = false;
         }
@@ -652,6 +661,13 @@ fn drive<W: Write>(
                 stats.pending_window =
                     Some((admission.root, pending.objects().source.len() as u64));
                 ready = false;
+                if sealing && sealed && !draining {
+                    // This is the final explicitly sealed window, not an earlier IDR cut.
+                    // Close the socket before preparing its first checkpoint, so publication
+                    // can use the drain allowance even when the live deadline is near.
+                    begin_archive_drain(capture, owner, stats)?;
+                    draining = true;
+                }
                 log.emit(
                     "window_accepted",
                     object(&[

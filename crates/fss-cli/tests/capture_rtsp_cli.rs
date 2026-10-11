@@ -747,8 +747,22 @@ fn import_selected_and_decode(
     );
     let decoded = good(run("file", &decode)?)?;
     assert!(
-        !decoded.is_empty(),
-        "native AVC decoder returned no frame output"
+        decoded
+            .lines()
+            .any(|line| line == format!("h264_frames_decoded={frames}")),
+        "native AVC decoder did not return the complete requested range: {decoded}"
+    );
+    assert!(
+        decoded.lines().any(|line| line == "decode_complete=true"),
+        "{decoded}"
+    );
+    assert_eq!(
+        decoded
+            .lines()
+            .filter(|line| line.starts_with("frame_luma_sha256="))
+            .count() as u64,
+        frames,
+        "each requested picture must produce a native decoded-frame digest"
     );
     assert_eq!(
         fs::read(root.join("effects/journal.fssj"))?,
