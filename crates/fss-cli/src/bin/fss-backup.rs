@@ -26,6 +26,7 @@ const FORMAT: &str = "fss.deployment_backup_report.v1";
 const MAX_ARGS: usize = 49;
 const MAX_ARG_BYTES: usize = 4096;
 const MAX_REPORT_BYTES: usize = 16 * 1024;
+const MAX_AGENT_REPORT_BYTES: usize = 1024 * 1024;
 const RESTORE_REPORT_RESERVE: usize = 2048;
 const HELP: &str = "fss-backup plan --root DEPLOYMENT --allow-originals [LIMITS]\n\
 fss-backup agent-inspect --root DEPLOYMENT --allow-originals [LIMITS]\n\
@@ -53,9 +54,10 @@ fss-backup restore --bundle BUNDLE --root NEW_DEPLOYMENT --expect sha256:HEX --a
   Agent-inspect reads historical sessions, all workspace revisions, claim and case\n\
   heads, and mission/handoff/plan/episode/finding/feedback records without admission\n\
   or clock updates. It works on restored copies and reports the canonical fence.\n\
-  All reports have a 16 KiB ceiling and refuse excess output without truncation;\n\
-  the library inspector exposes complete bounded state for larger histories.\n\
-  Other commands emit metadata only. No original media bytes are printed.\n\
+  Agent-inspect has a separate 1 MiB output ceiling; all other reports retain\n\
+  their 16 KiB ceiling. Over-budget output refuses without truncation. The library\n\
+  inspector exposes complete bounded state for larger histories. Other commands\n\
+  emit metadata only. No original media bytes are printed.\n\
   Optional: --json, --principal PRINCIPAL (default operator:local-backup).\n\
   BACKUP_LIMITS: --max-files N --max-file-bytes N --max-total-bytes N\n\
                 --max-manifest-bytes N --max-journal-bytes N\n\

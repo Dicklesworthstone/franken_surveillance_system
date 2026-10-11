@@ -41,7 +41,7 @@ jobs:
       - name: Verify backup operator commands and historical inspection
         run: rustup run nightly-2026-08-31 cargo test --locked --offline -p fss-cli --test deployment_backup_cli
       - name: Verify existing session and restored-effect boundaries
-        run: rustup run nightly-2026-08-31 cargo test --locked --offline -p fss-reference --lib deployment_session::
+        run: 'rustup run nightly-2026-08-31 cargo test --locked --offline -p fss-reference --lib deployment_session::'
       - name: Verify bounded event queries
         run: rustup run nightly-2026-08-31 cargo test --locked --offline -p fss-reference --lib agent_query::tests
       - name: Verify protected deployment orientation

@@ -58,12 +58,20 @@ fn field<'a>(value: &'a Value, name: &str) -> TestResult<&'a Value> {
 }
 
 fn report(output: &Output) -> TestResult<Value> {
+    report_with_limit(output, 16 * 1024)
+}
+
+fn agent_report(output: &Output) -> TestResult<Value> {
+    report_with_limit(output, 1024 * 1024)
+}
+
+fn report_with_limit(output: &Output, limit: usize) -> TestResult<Value> {
     assert!(
         output.stderr.is_empty(),
         "backup must emit one complete JSON report"
     );
     assert!(
-        output.stdout.len() <= 16 * 1024,
+        output.stdout.len() <= limit,
         "backup report exceeded its bound"
     );
     let text = std::str::from_utf8(&output.stdout)?;
@@ -617,6 +625,20 @@ fn populated_agent_process_roundtrip_inspects_history_without_restoring_authorit
             token_budget: 100_000,
         },
     )?;
+    let mut retained_sessions = vec![opened.session.session_id.clone()];
+    for number in 1..5 {
+        let additional = open_session(
+            &fixture.root,
+            &OpenSessionRequest {
+                mission: format!("{mission}; investigation {number}"),
+                objective: "Keep independently retained investigation context".into(),
+                principal: opened.session.principal_id.clone(),
+                view: AgentView::Brief,
+                token_budget: 100_000,
+            },
+        )?;
+        retained_sessions.push(additional.session.session_id);
+    }
     let source_before = inventory(&fixture.root)?;
     let planned_output = run(
         &fixture.directory,
@@ -625,23 +647,33 @@ fn populated_agent_process_roundtrip_inspects_history_without_restoring_authorit
     let planned = report(&planned_output)?;
     assert!(planned_output.status.success(), "{planned:?}");
     assert_eq!(field(&planned, "profile")?.text(), Some(AGENT_BACKUP_PROFILE));
-    assert_eq!(field(field(&planned, "agent_state")?, "session_count")?.integer(), Some(1));
+    assert_eq!(field(field(&planned, "agent_state")?, "session_count")?.integer(), Some(5));
     assert!(!std::str::from_utf8(&planned_output.stdout)?.contains(mission));
     let source_output = run(
         &fixture.directory,
         &arguments("agent-inspect", Some(&fixture.root), None, None),
     )?;
-    let source_state = report(&source_output)?;
+    let source_state = agent_report(&source_output)?;
+    assert!(source_output.stdout.len() > 16 * 1024, "fixture must exceed the metadata report ceiling");
     assert!(source_output.status.success(), "{source_state:?}");
     assert_eq!(field(&source_state, "status")?.text(), Some("agent-inspected"));
     assert_eq!(field(&source_state, "historical_only")?.boolean(), Some(true));
     assert_eq!(field(&source_state, "restore_fence_present")?.boolean(), Some(false));
     assert_eq!(field(&source_state, "authority_granted")?.boolean(), Some(false));
     let sessions = field(&source_state, "sessions")?.array().ok_or("sessions array")?;
-    assert_eq!(sessions.len(), 1);
+    assert_eq!(sessions.len(), retained_sessions.len());
+    let actual_sessions: std::collections::BTreeSet<_> = sessions
+        .iter()
+        .map(|value| {
+            field(field(value, "session")?, "sessionId")?
+                .text()
+                .map(str::to_owned)
+                .ok_or_else(|| "missing retained session identity".into())
+        })
+        .collect::<TestResult<_>>()?;
     assert_eq!(
-        field(field(&sessions[0], "session")?, "sessionId")?.text(),
-        Some(opened.session.session_id.as_str()),
+        actual_sessions,
+        retained_sessions.iter().map(ToString::to_string).collect::<std::collections::BTreeSet<_>>(),
     );
     assert!(std::str::from_utf8(&source_output.stdout)?.contains(mission));
     let expected = pin(&planned)?;
@@ -674,7 +706,8 @@ fn populated_agent_process_roundtrip_inspects_history_without_restoring_authorit
         &fixture.directory,
         &arguments("agent-inspect", Some(&destination), None, None),
     )?;
-    let restored = report(&output)?;
+    let restored = agent_report(&output)?;
+    assert!(output.stdout.len() > 16 * 1024);
     assert!(output.status.success(), "{restored:?}");
     assert_eq!(field(&restored, "restore_fence_present")?.boolean(), Some(true));
     assert_eq!(field(&restored, "authority_granted")?.boolean(), Some(false));

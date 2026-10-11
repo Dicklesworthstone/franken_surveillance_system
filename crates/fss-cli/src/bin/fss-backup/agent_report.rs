@@ -2,7 +2,7 @@
 //! Bounded historical recovery rendering. These records are not live admission responses.
 
 use fss_cli::agent_json::{
-    agent_session, array, digests, evidence_anchor, object, optional_string, session_capsule,
+    agent_session, array, contract_basis, digests, evidence_anchor, object, optional_string, session_capsule,
     string, strings,
 };
 use fss_core::ContractError;
@@ -20,7 +20,7 @@ fn rows<T>(
         *used = used
             .checked_add(row.len().saturating_add(1))
             .ok_or(ContractError::CountBoundExceeded)?;
-        if *used > super::MAX_REPORT_BYTES {
+        if *used > super::MAX_AGENT_REPORT_BYTES {
             return Err(ContractError::CountBoundExceeded);
         }
         out.push(row);
@@ -49,10 +49,22 @@ fn publication(value: &AgentPublicationState) -> Result<String, ContractError> {
             ("principal", string(record.capsule.source_principal_id.as_str())),
             ("anchor", evidence_anchor(&record.capsule.anchor)),
             ("anchor_token", string(&record.anchor_token)),
+            ("contract_basis", contract_basis(&record.capsule.contract_basis)),
+            ("view", string(record.view.id())),
+            ("situation_capsule_root", string(&record.capsule.situation_capsule_root.to_text())),
+            ("child_roots", digests(&record.capsule.child_roots)),
+            ("handoff_root", string(&record.capsule.handoff_root.to_text())),
+            ("situation_fingerprint", string(&record.situation_fingerprint.to_text())),
+            ("publication_digest", string(&record.publication_digest.to_text())),
+            ("compression_receipt_id", string(&record.compression_receipt_id)),
+            ("continuation", optional_string(record.continuation.as_deref())),
             ("workspace_revision", record.workspace_revision.to_string()),
             ("workspace_digest", string(&record.workspace_digest.to_text())),
             ("session_digest", string(&record.session_digest.to_text())),
+            ("symbol_table_generation", record.symbol_table_generation.to_string()),
+            ("token_budget", record.token_budget.to_string()),
             ("mission_digest", string(&record.mission_digest.to_text())),
+            ("privacy_generation_id", string(&record.privacy_generation_id)),
             ("note", optional_string(record.note.as_deref())),
             ("assumptions", strings(&record.assumptions)),
             ("invalidated_assumptions", strings(&record.invalidated_assumptions)),
@@ -153,6 +165,10 @@ pub(super) fn report(state: &AgentRecoveryState) -> Result<String, ContractError
             ("work_root", string(&revision.work_root().to_text())),
             ("revision", revision.revision().to_string()),
             ("revision_digest", string(&revision.digest().to_text())),
+            ("predecessor", optional_string(
+                revision.predecessor().map(|digest| digest.to_text()).as_deref(),
+            )),
+            ("privacy_class", string(revision.privacy_class())),
             ("lease_incarnation", claim.lease_incarnation.to_string()),
             ("expires_at_ns", claim.expires_at_ns.to_string()),
             ("changed_at_ns", revision.changed_at().0.to_string()),
@@ -181,7 +197,7 @@ pub(super) fn report(state: &AgentRecoveryState) -> Result<String, ContractError
         ("cases", cases),
         ("publications", publications),
     ]);
-    if report.len() > super::MAX_REPORT_BYTES {
+    if report.len() > super::MAX_AGENT_REPORT_BYTES {
         return Err(ContractError::CountBoundExceeded);
     }
     Ok(report)

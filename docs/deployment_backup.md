@@ -206,15 +206,18 @@ It reports the canonical restore fence, exact checkpoint identities, historical 
 every immutable workspace revision, claim/case heads and all admitted native publications.
 The session output retains spent-token and clock watermarks and closure tombstones. Cases
 retain questions, alternative hypotheses, knowledge states, counterevidence and stop rules.
-Claims retain recorded owners, revision digests, fencing incarnations, expiry, progress and
-results, explicitly with `lease_admitted: false`. Handoffs retain unknowns, invalidations,
+Claims retain recorded owners, revision and predecessor digests, privacy class, fencing
+incarnations, expiry, progress and results, explicitly with `lease_admitted: false`.
+Handoffs retain exact basis, closure identities, budgets, unknowns, invalidations,
 pending obligations and unresolved effects. Plans remain historical records.
 
 Inspection does not open a mutable session store, advance a clock, expire or renew a claim,
 resume a handoff, or update a workspace. It requires explicit original-custody permission
 because these records include private operator text. All returned content is historical,
-including when the source itself has not been restored. A report exceeding 16 KiB refuses
-without truncation or omission.
+including when the source itself has not been restored. Agent inspection has a separate
+1 MiB JSON output ceiling so multiple sessions and workspace histories remain usable through
+the CLI. Larger reports refuse without truncating text or omitting records. The plan, create,
+bundle inspection and restore metadata reports retain their 16 KiB ceiling.
 
 For larger histories, the bounded library `inspect_agent_state` API takes the same source,
 limits, `BackupAuthority` and `ReplayCx` arguments as `prepare_backup` and returns the complete
@@ -265,7 +268,8 @@ and unknown alternatives, and verify that restored reads and refused writers lea
 bytes unchanged. They also exercise independent agent writer locks, stale pins, incomplete
 journals, correctly framed but semantically foreign records, transient staging, unknown
 subtrees and tampered payloads. Real-process tests exercise plan/create/inspect/restore and
-the historical agent inspector under explicit custody permission.
+the historical agent inspector under explicit custody permission, including a complete
+multi-session report larger than the metadata-only report ceiling.
 
 The existing core cases exercise retained media/events, custom limits, holds, completed and
 incomplete deletions, unreferenced objects, exact history, fresh physical pins, live
