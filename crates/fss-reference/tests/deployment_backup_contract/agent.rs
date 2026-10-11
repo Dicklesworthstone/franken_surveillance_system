@@ -11,6 +11,9 @@ use fss_reference::agent_session::checkpoint::journal::{
     DurableSessionLimits, DurableSessionStore,
 };
 use fss_reference::agent_session::work_claims::WorkClaimLimits;
+use fss_reference::agent_session::workspace::{
+    WorkspaceRevision, WorkspaceWrite, WorkspaceWriteMode,
+};
 use fss_reference::deployment_session::claims::{
     ClaimAction, ClaimChange, ClaimRequest, ClaimWork, work_claim,
 };
@@ -100,10 +103,42 @@ fn retained_plan(opened: &OpenedSession) -> PlanRecord {
     }
 }
 
+fn advance_fixture_workspace(fixture: &Fixture, opened: &OpenedSession) -> Test<WorkspaceRevision> {
+    let journal = fixture.source.join("agent/sessions/journal.fssj");
+    let mut store = DurableSessionStore::open_existing_with_coordination(
+        &journal,
+        opened.journal_root,
+        DurableSessionLimits::default(),
+        WorkClaimLimits::default(),
+    )?;
+    let mut capsule = opened.revision.capsule().clone();
+    capsule.revision += 1;
+    capsule
+        .unknowns
+        .push("The gate movement's cause remains unresolved".into());
+    let revision = store
+        .publish_workspace(
+            &opened.session.principal_id,
+            WorkspaceWrite {
+                expected_head: Some(opened.revision.digest()),
+                capsule,
+                mode: WorkspaceWriteMode::Advance,
+            },
+            TimestampNs(0),
+        )?
+        .result;
+    fs::write(
+        fixture.source.join("agent/sessions/ROOT"),
+        format!("{}\n", store.committed_root().to_text()),
+    )?;
+    Ok(revision)
+}
+
 #[test]
 fn populated_agent_roundtrip_keeps_native_history_and_fences_all_deployment_writers() -> Test {
     let f = Fixture::new("agent-roundtrip")?;
     let opened = open_session(&f.source, &request()?)?;
+    let advanced_workspace = advance_fixture_workspace(&f, &opened)?;
     let case_request = InvestigateRequest {
         session_id: opened.session.session_id.clone(),
         principal: opened.session.principal_id.clone(),
@@ -163,6 +198,22 @@ fn populated_agent_roundtrip_keeps_native_history_and_fences_all_deployment_writ
     assert_eq!(state.summary.case_count, 1);
     assert_eq!(state.summary.publication_count, 3);
     assert!(state.summary.workspace_revision_count > 1);
+    assert!(
+        state
+            .sessions
+            .workspace_revisions
+            .contains(&opened.revision)
+    );
+    assert!(
+        state
+            .sessions
+            .workspace_revisions
+            .contains(&advanced_workspace)
+    );
+    assert_eq!(
+        advanced_workspace.parent_digest(),
+        Some(opened.revision.digest())
+    );
     assert_eq!(state.sessions.claims, vec![claim.clone()]);
     assert_eq!(state.sessions.cases, vec![active]);
     assert_eq!(

@@ -17,6 +17,12 @@ use fss_object::SpoolIo;
 use super::{directory, regular, same_file};
 use crate::deployment_backup::{BackupError, Result};
 
+// A bundle holds its parent, root and payload root in addition to every fixed profile
+// directory. Restoration uses one fewer pin because it has no separate payload root.
+const MAX_PINNED_DIRECTORIES: usize = 3
+    + crate::deployment_backup::snapshot::DIRECTORIES.len()
+    + crate::deployment_backup::agent::DIRECTORIES.len();
+
 // Linux UAPI values differ for these two supported native architectures. See the identical
 // tables and rationale in ingest/file_adapter.rs and fss-export-package/file.rs.
 #[cfg(all(target_os = "linux", target_arch = "x86_64"))]
@@ -179,7 +185,7 @@ impl WriteTree {
     ) -> Result<()> {
         gate()?;
         self.check()?;
-        if self.directories.len() >= 16 || !path.starts_with(&self.root) {
+        if self.directories.len() >= MAX_PINNED_DIRECTORIES || !path.starts_with(&self.root) {
             return Err(BackupError::InvalidPath);
         }
         let parent = self.parent(path)?;
