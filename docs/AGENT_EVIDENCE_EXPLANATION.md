@@ -64,7 +64,8 @@ The normal AOP-011 path now includes this analysis:
 
 ```sh
 cargo run -p fss-cli --bin fss -- explain --json \
-  --root /path/to/deployment --event-id event:your-event
+  --root /path/to/deployment --event-id event:your-event \
+  --view forensic --budget-tokens 8000
 ```
 
 No new verb, binary, request envelope or permission is introduced. The existing
@@ -101,8 +102,15 @@ are admitted. The added semantic fields have an 8 KiB ceiling and a separately
 reported estimate of `ceil(UTF-8 field bytes / 4)` tokens. This estimate includes
 proposition identities/statements/states/provenance/evidence, assumptions, invalidators, warnings,
 proof pointers and accounting explanations. It is added to the pre-existing
-orientation context charge; the combined charge must fit the registered
-`decision_diff` maximum of 1,800. This is an explicit semantic-field estimate,
+orientation context charge; the combined charge must fit the caller's selected
+view and exact allowance. The default `decision_diff` retains its 1,800-token
+maximum. Full support explanations can exceed that compact allowance, so the
+command above explicitly selects the registered `forensic` view, whose default
+target is 8,000 and maximum is 16,000 tokens. Optional `--budget-tokens N` admits
+only 1 through the selected view's maximum, never an automatic budget increase.
+An explicit small allowance also caps the prerequisite orientation; a failure
+there still answers AOP-011 with the requested view and allowance. Unsupported
+views and excessive budgets are rejected before deployment I/O. This is an explicit semantic-field estimate,
 not a claim to have tokenized the complete serialized response with a model's
 tokenizer. Cognitive and outer budget vectors report the same combined charge.
 
@@ -111,8 +119,10 @@ including its final newline. Invalid history, mismatched bindings, failed graph
 bounds or an oversized complete explanation produce a registered AOP-011 refusal,
 not a successful base explanation with a quietly missing support section. No
 list, correction pair, warning or protected alternative is truncated. Unknown-event
-and unreadable-root behavior keep their existing paths. Larger forensic inspection
-can use the existing `fss-evidence analyze-history` operator command under its own
+and unreadable-root behavior keep their existing refusal paths. The selected
+view and explicit allowance bind the request identity; omitted or explicit
+`--view decision_diff` without a budget override retain the old request identity.
+Larger graph inspection can also use `fss-evidence analyze-history` under its own
 limits; that is not permission to bypass an agent capability/privacy projection.
 
 Source reads are still bounded by the existing `OrientLimits`. The graph adds no
@@ -132,7 +142,14 @@ boundaries and no truncation. Two native process contracts use the real
 procedural JPEG scene. They assert standard envelopes, original cells and all
 worlds, physical-state preservation, matching combined budget vectors, deterministic
 read-only retries, no fabricated source handles and the existing unknown-event
-refusal. These tests are authored, not executed in this environment.
+refusal. On 2026-10-11, all six structural support units and both process
+contracts passed on `nightly-2026-08-31` against
+`290e3c8614aeea7c64ae7872d221b2df11d1cb1c` plus the explicit view/budget correction.
+The checked availability CLI additionally verified exact aggregate admission,
+one-token-short refusal, default compact refusal without widening, and invalid
+view/budget rejection before deployment I/O. No semantic price was reduced.
+The existing orient/explain parser and all six process and schema contracts also
+passed, retaining their original compact-default success assertions.
 
 ```sh
 cargo test -p fss-cli --lib orient_cmd::evidence::tests

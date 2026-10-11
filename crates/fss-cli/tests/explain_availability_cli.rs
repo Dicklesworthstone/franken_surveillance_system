@@ -13,54 +13,253 @@ use fss_core::ContentDigest;
 use fss_reference::agent_orient::{OrientLimits, read_deployment};
 
 fn run(f: &Fixture, options: &[&str]) -> TestResult<Output> {
+    run_view(f, &["--view", "forensic"], options)
+}
+fn run_view(f: &Fixture, view: &[&str], options: &[&str]) -> TestResult<Output> {
     Ok(Command::new(env!("CARGO_BIN_EXE_fss"))
-        .args(["explain", "--json", "--root"]).arg(&f.root)
-        .args(["--event-id", fixture::EVENT]).args(options).output()?)
+        .args(["explain", "--json", "--root"])
+        .arg(&f.root)
+        .args(["--event-id", fixture::EVENT])
+        .args(view)
+        .args(options)
+        .output()?)
 }
 fn field<'a>(value: &'a Value, key: &str) -> TestResult<&'a Value> {
-    value.object().and_then(|object| object.get(key)).ok_or_else(|| format!("missing {key}").into())
+    value
+        .object()
+        .and_then(|object| object.get(key))
+        .ok_or_else(|| format!("missing {key}").into())
 }
 fn path<'a>(mut value: &'a Value, keys: &[&str]) -> TestResult<&'a Value> {
-    for key in keys { value = field(value, key)?; }
+    for key in keys {
+        value = field(value, key)?;
+    }
     Ok(value)
 }
 fn json(output: &Output) -> TestResult<Value> {
     Ok(json_input::parse(std::str::from_utf8(&output.stdout)?)?)
 }
 fn successful(output: &Output) -> TestResult<Value> {
-    assert!(output.status.success(), "stdout={} stderr={}",
-        String::from_utf8_lossy(&output.stdout), String::from_utf8_lossy(&output.stderr));
+    assert!(
+        output.status.success(),
+        "stdout={} stderr={}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    );
     json(output)
 }
 fn propositions(value: &Value) -> TestResult<&[Value]> {
-    path(value, &["payload", "epistemic", "propositions"])?.array().ok_or_else(|| "propositions".into())
+    path(value, &["payload", "epistemic", "propositions"])?
+        .array()
+        .ok_or_else(|| "propositions".into())
 }
 fn statement<'a>(value: &'a Value, prefix: &str, suffix: &str) -> TestResult<&'a str> {
-    let row = propositions(value)?.iter().find(|row| {
-        field(row, "id").ok().and_then(Value::text).is_some_and(|id| id.starts_with(prefix) && id.ends_with(suffix))
-    }).ok_or("missing proposition")?;
-    field(row, "statement")?.text().ok_or_else(|| "statement".into())
+    let row = propositions(value)?
+        .iter()
+        .find(|row| {
+            field(row, "id")
+                .ok()
+                .and_then(Value::text)
+                .is_some_and(|id| id.starts_with(prefix) && id.ends_with(suffix))
+        })
+        .ok_or("missing proposition")?;
+    field(row, "statement")?
+        .text()
+        .ok_or_else(|| "statement".into())
 }
 fn available(value: &Value, state: &str) -> TestResult {
-    assert!(statement(value, "claim:event-support:", ":availability")?
-        .starts_with(&format!("Declared support availability: {state}.")));
+    assert!(
+        statement(value, "claim:event-support:", ":availability")?
+            .starts_with(&format!("Declared support availability: {state}."))
+    );
     Ok(())
 }
 fn originals(value: &Value) -> TestResult<Vec<Value>> {
-    Ok(propositions(value)?.iter().filter(|row| {
-        field(row, "id").ok().and_then(Value::text).is_some_and(|id| {
-            !id.starts_with("claim:event-support:") && !id.starts_with("claim:event-custody:")
+    Ok(propositions(value)?
+        .iter()
+        .filter(|row| {
+            field(row, "id")
+                .ok()
+                .and_then(Value::text)
+                .is_some_and(|id| {
+                    !id.starts_with("claim:event-support:")
+                        && !id.starts_with("claim:event-custody:")
+                })
         })
-    }).cloned().collect())
+        .cloned()
+        .collect())
 }
 fn still_original(f: &Fixture, original: &Value, checked: &Value) -> TestResult {
     assert_eq!(originals(original)?, originals(checked)?);
-    assert_eq!(field(original, "epistemicState")?, field(checked, "epistemicState")?);
-    assert_eq!(field(original, "affordances")?, field(checked, "affordances")?);
-    assert_eq!(path(original, &["payload", "evidenceHandles"])?, path(checked, &["payload", "evidenceHandles"])?);
+    assert_eq!(
+        field(original, "epistemicState")?,
+        field(checked, "epistemicState")?
+    );
+    assert_eq!(
+        field(original, "affordances")?,
+        field(checked, "affordances")?
+    );
+    assert_eq!(
+        path(original, &["payload", "evidenceHandles"])?,
+        path(checked, &["payload", "evidenceHandles"])?
+    );
     let snapshot = read_deployment(&f.root, &OrientLimits::default())?;
-    assert_eq!(snapshot.event(&f.event.event_id).ok_or("event")?.event, f.event);
+    assert_eq!(
+        snapshot.event(&f.event.event_id).ok_or("event")?.event,
+        f.event
+    );
     assert!(snapshot.operations.is_empty());
+    Ok(())
+}
+
+fn context_refusal(output: &Output, view: &str, tokens: i128) -> TestResult<Value> {
+    assert!(!output.status.success());
+    let value = json(output)?;
+    assert_eq!(field(&value, "operationId")?.text(), Some("AOP-011"));
+    assert_eq!(field(&value, "effectiveViewId")?.text(), Some(view));
+    assert_eq!(field(&value, "outcome")?.text(), Some("refused"));
+    assert_eq!(
+        field(&value, "errorId")?.text(),
+        Some(fss_cli::ERR_AGENT_CONTEXT_INCOMPLETE)
+    );
+    assert_eq!(field(&value, "payload")?, &Value::Null);
+    assert_eq!(
+        path(&value, &["budgets", "requested", "tokens"])?.integer(),
+        Some(tokens)
+    );
+    assert!(
+        path(&value, &["budgets", "consumed", "tokens"])?
+            .integer()
+            .ok_or("consumed tokens")?
+            <= tokens
+    );
+    Ok(value)
+}
+
+#[test]
+fn compact_default_and_explicit_small_caps_refuse_without_widening() -> TestResult {
+    let f = Fixture::new("availability-process-caps")?;
+    let before = inventory(&f.root)?;
+    let default = run_view(&f, &[], &[])?;
+    let compact = context_refusal(&default, "AVIEW-007", 1800)?;
+    assert_eq!(
+        default.stdout,
+        run_view(&f, &["--view", "decision_diff"], &["--custody", "no"])?.stdout
+    );
+    assert!(String::from_utf8_lossy(&default.stdout).contains("--view forensic"));
+    context_refusal(
+        &run_view(&f, &[], &["--custody", "yes"])?,
+        "AVIEW-007",
+        1800,
+    )?;
+    for allowance in ["1", "1800"] {
+        let refused = context_refusal(
+            &run(&f, &["--custody", "yes", "--budget-tokens", allowance])?,
+            "AVIEW-004",
+            allowance.parse()?,
+        )?;
+        assert_ne!(field(&compact, "requestId")?, field(&refused, "requestId")?);
+    }
+    assert_eq!(inventory(&f.root)?, before);
+    Ok(())
+}
+
+#[test]
+fn forensic_total_charge_is_admitted_exactly_and_one_token_less_refuses() -> TestResult {
+    let f = Fixture::new("availability-process-exact-cap")?;
+    let before = inventory(&f.root)?;
+    let ample = successful(&run(&f, &["--custody", "yes", "--budget-tokens", "8000"])?)?;
+    let consumed = path(&ample, &["budgets", "consumed", "tokens"])?
+        .integer()
+        .ok_or("tokens")?;
+    assert!(consumed > 1800 && consumed <= 8000);
+    let exact_text = consumed.to_string();
+    let exact = successful(&run(
+        &f,
+        &["--custody", "yes", "--budget-tokens", &exact_text],
+    )?)?;
+    available(&exact, "verified_reference_path")?;
+    assert_eq!(
+        path(&exact, &["budgets", "requested", "tokens"])?.integer(),
+        Some(consumed)
+    );
+    assert_eq!(
+        path(&exact, &["budgets", "consumed", "tokens"])?.integer(),
+        Some(consumed)
+    );
+    assert_eq!(
+        path(&exact, &["budgets", "remaining", "tokens"])?.integer(),
+        Some(0)
+    );
+    assert_eq!(
+        field(&ample, "decisionFingerprint")?,
+        field(&exact, "decisionFingerprint")?
+    );
+    assert_ne!(field(&ample, "requestId")?, field(&exact, "requestId")?);
+    let short_text = (consumed - 1).to_string();
+    context_refusal(
+        &run(&f, &["--custody", "yes", "--budget-tokens", &short_text])?,
+        "AVIEW-004",
+        consumed - 1,
+    )?;
+    let maximum = successful(&run(&f, &["--custody", "yes", "--budget-tokens", "16000"])?)?;
+    assert_eq!(
+        path(&maximum, &["budgets", "requested", "tokens"])?.integer(),
+        Some(16000)
+    );
+    assert_eq!(inventory(&f.root)?, before);
+    Ok(())
+}
+
+#[test]
+fn invalid_views_or_excess_allowances_fail_before_reading_the_root() -> TestResult {
+    for (extra, error) in [
+        (vec!["--view", "brief"], fss_cli::ERR_CLI_MALFORMED_VALUE),
+        (
+            vec!["--budget-tokens", "0"],
+            fss_cli::ERR_CLI_MALFORMED_VALUE,
+        ),
+        (
+            vec!["--budget-tokens", "1801"],
+            fss_cli::ERR_CLI_MALFORMED_VALUE,
+        ),
+        (
+            vec!["--view", "forensic", "--budget-tokens", "16001"],
+            fss_cli::ERR_CLI_MALFORMED_VALUE,
+        ),
+        (
+            vec!["--view", "forensic", "--budget-tokens", "many"],
+            fss_cli::ERR_CLI_MALFORMED_VALUE,
+        ),
+        (
+            vec!["--view", "forensic", "--view", "decision_diff"],
+            fss_cli::ERR_CLI_DUPLICATE_OPTION,
+        ),
+        (
+            vec!["--budget-tokens", "1", "--budget-tokens", "2"],
+            fss_cli::ERR_CLI_DUPLICATE_OPTION,
+        ),
+    ] {
+        let output = Command::new(env!("CARGO_BIN_EXE_fss"))
+            .args([
+                "explain",
+                "--json",
+                "--root",
+                "/never-open-this-root",
+                "--event-id",
+                fixture::EVENT,
+            ])
+            .args(extra)
+            .output()?;
+        assert!(!output.status.success());
+        let diagnostic = format!(
+            "{}{}",
+            String::from_utf8(output.stdout)?,
+            String::from_utf8(output.stderr)?
+        );
+        assert!(diagnostic.contains(error), "{diagnostic}");
+        assert!(!diagnostic.contains("ERR-DOCTOR-NOT-A-DEPLOYMENT"));
+    }
     Ok(())
 }
 
@@ -75,14 +274,39 @@ fn verified_reference_paths_use_standard_envelopes_and_default_stays_unchecked()
     let output = run(&f, &["--custody", "yes"])?;
     let checked = successful(&output)?;
     available(&checked, "verified_reference_path")?;
-    assert_eq!(field(&checked, "schema")?.text(), Some("fss.agent_response_envelope.v1"));
+    assert_eq!(
+        field(&checked, "schema")?.text(),
+        Some("fss.agent_response_envelope.v1")
+    );
     assert_eq!(field(&checked, "operationId")?.text(), Some("AOP-011"));
-    assert_eq!(path(&checked, &["payload", "schema"])?.text(), Some("fss.agent_cognitive_envelope.v1"));
-    assert_eq!(field(&checked, "decisionFingerprint")?, path(&checked, &["payload", "decisionDigest"])?);
+    assert_eq!(
+        field(&checked, "effectiveViewId")?.text(),
+        Some("AVIEW-004")
+    );
+    assert_eq!(
+        path(&checked, &["payload", "schema"])?.text(),
+        Some("fss.agent_cognitive_envelope.v1")
+    );
+    assert_eq!(
+        field(&checked, "decisionFingerprint")?,
+        path(&checked, &["payload", "decisionDigest"])?
+    );
     for dimension in ["requested", "consumed", "remaining"] {
-        assert_eq!(path(&checked, &["budgets", dimension])?, path(&checked, &["payload", "budget", dimension])?);
+        assert_eq!(
+            path(&checked, &["budgets", dimension])?,
+            path(&checked, &["payload", "budget", dimension])?
+        );
     }
-    assert!(path(&checked, &["budgets", "consumed", "tokens"])?.integer().ok_or("tokens")? <= 1800);
+    assert_eq!(
+        path(&checked, &["budgets", "requested", "tokens"])?.integer(),
+        Some(8000)
+    );
+    assert!(
+        path(&checked, &["budgets", "consumed", "tokens"])?
+            .integer()
+            .ok_or("tokens")?
+            <= 8000
+    );
     let text = std::str::from_utf8(&output.stdout)?;
     assert!(text.contains("shared remaining="));
     assert!(!text.contains(std::str::from_utf8(fixture::SOURCE)?));
@@ -103,10 +327,23 @@ fn loss_of_the_only_support_changes_the_path_result_not_event_truth() -> TestRes
     let before = inventory(&f.root)?;
     let checked = successful(&run(&f, &["--custody", "yes"])?)?;
     available(&checked, "no_unblocked_reference_path")?;
-    assert!(statement(&checked, "claim:event-custody:", &format!(":fault:{}", f.source))?.contains("object is missing"));
-    assert_ne!(field(&healthy, "decisionFingerprint")?, field(&checked, "decisionFingerprint")?);
+    assert!(
+        statement(
+            &checked,
+            "claim:event-custody:",
+            &format!(":fault:{}", f.source)
+        )?
+        .contains("object is missing")
+    );
+    assert_ne!(
+        field(&healthy, "decisionFingerprint")?,
+        field(&checked, "decisionFingerprint")?
+    );
     assert_eq!(field(&healthy, "requestId")?, field(&checked, "requestId")?);
-    assert_eq!(read_deployment(&f.root, &OrientLimits::default())?.anchor, before_anchor);
+    assert_eq!(
+        read_deployment(&f.root, &OrientLimits::default())?.anchor,
+        before_anchor
+    );
     still_original(&f, &plain, &checked)?;
     assert_eq!(inventory(&f.root)?, before);
     Ok(())
@@ -121,9 +358,22 @@ fn surviving_support_does_not_erase_corrupt_counterevidence() -> TestResult {
     let output = run(&f, &["--custody", "yes"])?;
     let checked = successful(&output)?;
     available(&checked, "verified_reference_path")?;
-    assert!(statement(&checked, "claim:event-custody:", &format!(":fault:{}", f.counter))?.contains("object is corrupt"));
-    assert!(statement(&checked, "claim:event-custody:", ":publication-closure")?.contains("all_verified=false"));
-    assert_ne!(field(&healthy, "decisionFingerprint")?, field(&checked, "decisionFingerprint")?);
+    assert!(
+        statement(
+            &checked,
+            "claim:event-custody:",
+            &format!(":fault:{}", f.counter)
+        )?
+        .contains("object is corrupt")
+    );
+    assert!(
+        statement(&checked, "claim:event-custody:", ":publication-closure")?
+            .contains("all_verified=false")
+    );
+    assert_ne!(
+        field(&healthy, "decisionFingerprint")?,
+        field(&checked, "decisionFingerprint")?
+    );
     assert!(!std::str::from_utf8(&output.stdout)?.contains("corrupt private counterevidence"));
     still_original(&f, &plain, &checked)?;
     Ok(())
@@ -137,15 +387,28 @@ fn undiscovered_descendants_are_unchecked_or_completely_refused_never_verified()
     let value = json(&output)?;
     if output.status.success() {
         available(&value, "unchecked_reference_path")?;
-        assert!(statement(&value, "claim:event-custody:", ":publication-closure")?.contains("manifest_expansion_complete=false"));
+        assert!(
+            statement(&value, "claim:event-custody:", ":publication-closure")?
+                .contains("manifest_expansion_complete=false")
+        );
         assert!(statement(&value, "claim:event-custody:", ":unexamined-references").is_ok());
     } else {
         // Registered complete-context refusal is allowed, but never an unrelated runtime failure.
         assert_eq!(field(&value, "outcome")?.text(), Some("refused"));
-        assert_eq!(field(&value, "errorId")?.text(), Some(fss_cli::ERR_AGENT_CONTEXT_INCOMPLETE));
+        assert_eq!(
+            field(&value, "errorId")?.text(),
+            Some(fss_cli::ERR_AGENT_CONTEXT_INCOMPLETE)
+        );
         assert_eq!(field(&value, "operationId")?.text(), Some("AOP-011"));
         assert_eq!(field(&value, "payload")?, &Value::Null);
     }
-    assert!(ContentDigest::parse(field(&value, "decisionFingerprint")?.text().ok_or("decision")?).is_ok());
+    assert!(
+        ContentDigest::parse(
+            field(&value, "decisionFingerprint")?
+                .text()
+                .ok_or("decision")?
+        )
+        .is_ok()
+    );
     Ok(())
 }

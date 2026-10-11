@@ -69,14 +69,16 @@ not replace native execution. No broad bead or release gate is closed.
 
 ```sh
 cargo run -p fss-cli --bin fss -- explain --json \
-  --root /path/to/deployment --event-id event:your-event --custody yes
+  --root /path/to/deployment --event-id event:your-event \
+  --view forensic --budget-tokens 8000 --custody yes
 ```
 
-Omitting `--custody`, or explicitly passing `--custody no`, keeps the previous
-structural-only execution, request identity and response bytes. The opt-in is
+For the same selected view and allowance, omitting `--custody`, or explicitly
+passing `--custody no`, keeps the structural-only execution, request identity and
+response bytes. The opt-in is
 strictly `yes` or `no` and accepts the normal `--custody=yes` spelling. Rust
-callers constructing `ExplainArgs` directly must initialize its new `custody`
-field (`false` preserves the old behavior). The current MCP transport does not
+callers constructing `ExplainArgs` directly initialize `view`, `budget_tokens`
+and `custody`; the defaults are `DecisionDiff`, `None` and `false`. The current MCP transport does not
 expose this option; it still rejects undeclared client arguments.
 
 With `yes`, the standard AOP-011 response keeps its registered cognitive payload,
@@ -113,12 +115,23 @@ Both cognitive and outer budget vectors use those same totals. The recheck's
 128 MiB/65,536-file limits are still **post-read counter admission**, not a claim
 that its full doctor preflight was metered or preempted.
 
-Additional semantic fields are charged as `ceil(UTF-8 bytes/4)` under the same
-1,800-token `decision_diff` maximum. Replaced graph-scope text keeps its old paid
+Additional semantic fields are charged as `ceil(UTF-8 bytes/4)` under one total
+token allowance, including the prerequisite orientation and structural support.
+The default `decision_diff` retains its 1,800-token maximum and can refuse a
+complete explanation that does not fit. `--view forensic` explicitly selects
+the registered 8,000-token target; `--budget-tokens` may set an exact allowance
+from 1 through the selected view's maximum (1,800 or 16,000). The command never
+widens the view or token allowance automatically. Replaced graph-scope text keeps its old paid
 charge and pays additional length when it grows; shortening it never refills the
 allowance. This is not full serialized-output tokenization. The existing 256 KiB
 whole-success-response limit remains, including the final newline. Failure of
 any complete projection does not return a shortened success.
+
+Earlier native execution found that the added support layer exhausted the old
+compact allowance before custody checking could begin. The explicit forensic
+command above supplies room within an existing registered view without reducing
+semantic prices or dropping counterevidence. Both successful and refused responses
+report the caller's actual total allowance; the outer and cognitive view IDs agree.
 
 The opt-in owns a 30-second checkpoint deadline beginning before the initial
 read; ordinary unchecked explanations do not consult a clock. Checkpoints bracket
@@ -145,7 +158,13 @@ cargo test -p fss-cli --test explain_support_cli_contract
 cargo test -p fss-cli --test orient_cli_contract
 ```
 
-These new native targets are authored, not executed in the toolchain-less authoring
-environment. The read-only principal remains the existing operator-local audit
+On 2026-10-11, the seven custody CLI contracts, two support CLI contracts and the
+two custody parser/accounting units passed on `nightly-2026-08-31`, against
+`290e3c8614aeea7c64ae7872d221b2df11d1cb1c` plus the explicit view/budget correction.
+The availability integration also passed its seven CLI and seven adapter contracts;
+the six structural support units, existing orient/explain parser and six existing
+orient/explain process and schema contracts passed: 38 focused tests in total.
+This run does not establish full workspace or release qualification.
+The read-only principal remains the existing operator-local audit
 label: the option does not authenticate another principal, widen a filesystem
 capability, implement multi-tenant privacy projection, or authorize source export.

@@ -8,10 +8,12 @@
 //! their validated constructors, and renders them with [`crate::agent_json`]. Affordances are
 //! listed, never executed.
 
-#[path = "orient_cmd/evidence.rs"]
-mod evidence;
 #[path = "orient_cmd/custody.rs"]
 mod custody;
+#[path = "orient_cmd/evidence.rs"]
+mod evidence;
+#[path = "orient_cmd/explain_options.rs"]
+mod explain_options;
 
 use std::path::PathBuf;
 
@@ -66,6 +68,10 @@ pub struct ExplainArgs {
     pub event_id: EventId,
     /// Requesting principal label.
     pub principal: PrincipalId,
+    /// Registered explanation view: `decision_diff` by default, or explicit `forensic`.
+    pub view: AgentView,
+    /// Explicit combined context allowance, never above the selected view's maximum.
+    pub budget_tokens: Option<u64>,
     /// Explicitly rehash the current publication closure and revalidate its authority.
     /// Defaults to false; this never grants source-media disclosure or effect authority.
     pub custody: bool,
@@ -257,9 +263,21 @@ pub fn parse_orient_args(tokens: &[ArgToken]) -> Result<OrientArgs, CliError> {
     })
 }
 
-/// Parses `explain --json --root <dir> --event-id <id> [--principal <id>] [--custody yes|no]`.
+/// Parses an explanation with optional registered view, context budget and custody audit.
 pub fn parse_explain_args(tokens: &[ArgToken]) -> Result<ExplainArgs, CliError> {
-    let values = collect_options("explain", tokens, &["--root", "--event-id", "--principal", "--custody"])?;
+    let values = collect_options(
+        "explain",
+        tokens,
+        &[
+            "--root",
+            "--event-id",
+            "--principal",
+            "--custody",
+            "--view",
+            "--budget-tokens",
+        ],
+    )?;
+    let (view, budget_tokens) = explain_options::parse(&values)?;
     let root = required_root("explain", &values)?;
     let (_, raw, index) = take(&values, "--event-id").ok_or_else(|| CliError::MissingValue {
         option: "--event-id".to_owned(),
@@ -277,6 +295,8 @@ pub fn parse_explain_args(tokens: &[ArgToken]) -> Result<ExplainArgs, CliError> 
         root,
         event_id,
         principal: principal("explain", &values)?,
+        view,
+        budget_tokens,
         custody: custody::parse(&values)?,
     })
 }
@@ -1101,22 +1121,6 @@ pub(crate) struct CognitiveParts {
 /// Rendered cognitive payload, next-action identities, and next-action objects.
 pub(crate) type CognitivePayload = (String, Vec<String>, Vec<String>);
 
-/// The explain payload (`fss.agent_cognitive_envelope.v1`) and its next-action identities and
-/// objects.
-fn cognitive(
-    orientation: &DeploymentOrientation,
-    request_digest: ContentDigest,
-    parts: CognitiveParts,
-) -> Result<CognitivePayload, Box<dyn std::error::Error>> {
-    cognitive_payload(
-        orientation,
-        request_digest,
-        "explain",
-        AgentView::DecisionDiff,
-        parts,
-    )
-}
-
 /// One `fss.agent_cognitive_envelope.v1` payload for `operation` (its registered name, which is
 /// also the semantic verb) over `orientation`, with its next-action identities and objects.
 pub(crate) fn cognitive_payload(
@@ -1313,7 +1317,7 @@ fn explanation_response(
         orientation,
         request_digest,
         "explain",
-        AgentView::DecisionDiff,
+        support.view,
         CognitiveParts {
             answer_class,
             epistemic: EnvelopeEpistemic {
@@ -1375,7 +1379,7 @@ fn explanation_response(
         session_id: Some(capsule.session_id.as_str().to_owned()),
         mission_id: Some(capsule.mission_id.as_str().to_owned()),
         anchor: capsule.anchor.clone(),
-        view: AgentView::DecisionDiff,
+        view: support.view,
         capability: CAPABILITY_EXPLAIN,
         outcome: ResponseOutcome::Ok,
         error_id: None,
@@ -1390,7 +1394,8 @@ fn explanation_response(
                 custody::METER_SCOPE.to_owned()
             } else {
                 "Latency and CPU time are not metered by this reference path; consumed reports \
-             reads, orientation context tokens and the separately priced support brief.".to_owned()
+             reads, orientation context tokens and the separately priced support brief."
+                    .to_owned()
             },
             support.cost_statement.clone(),
         ],
@@ -1420,6 +1425,8 @@ fn unknown_event_response(
     orientation: &DeploymentOrientation,
     event_id: &EventId,
     request_digest: ContentDigest,
+    view: AgentView,
+    token_limit: u64,
 ) -> Result<String, Box<dyn std::error::Error>> {
     let capsule = orientation.capsule();
     let evidence = if snapshot.batch_count == 0 {
@@ -1444,9 +1451,13 @@ fn unknown_event_response(
         .filter(|candidate| candidate.affordance_id == AFFORDANCE_REORIENT)
         .cloned()
         .collect();
-    let (payload, next_ids, next_objects) = cognitive(
+    let mut requested = orientation.requested;
+    requested.tokens = token_limit;
+    let (payload, next_ids, next_objects) = cognitive_payload_with_budget(
         orientation,
         request_digest,
+        "explain",
+        view,
         CognitiveParts {
             answer_class: CognitiveAnswerClass::Refusal,
             epistemic: EnvelopeEpistemic {
@@ -1474,6 +1485,13 @@ fn unknown_event_response(
             next_actions: reorient,
             decision_digest: decision,
         },
+        Some(EnvelopeBudget {
+            requested_json: agent_json::budget(&requested),
+            consumed_json: agent_json::budget(&orientation.consumed),
+            remaining_json: agent_json::remaining(&requested, &orientation.consumed),
+            degraded_dimensions: Vec::new(),
+            marginal_work_declined: Vec::new(),
+        }),
     )?;
     build_response(ResponseParts {
         operation: "explain",
@@ -1482,7 +1500,7 @@ fn unknown_event_response(
         session_id: Some(capsule.session_id.as_str().to_owned()),
         mission_id: Some(capsule.mission_id.as_str().to_owned()),
         anchor: capsule.anchor.clone(),
-        view: AgentView::DecisionDiff,
+        view,
         capability: CAPABILITY_EXPLAIN,
         outcome: ResponseOutcome::Refused,
         error_id: Some(ERR_AGENT_EVENT_NOT_FOUND),
@@ -1493,7 +1511,7 @@ fn unknown_event_response(
         warnings: Vec::new(),
         contradictions: Vec::new(),
         degradation: Vec::new(),
-        budgets_json: agent_json::budget_summary(&orientation.requested, &orientation.consumed),
+        budgets_json: agent_json::budget_summary(&requested, &orientation.consumed),
         proof_pointers: vec![evidence.to_text()],
         affordances: next_ids,
         affordance_objects: next_objects,
@@ -1515,6 +1533,9 @@ fn unknown_event_response(
 /// Executes `explain`, returning the rendered response and its exit identity.
 #[must_use]
 pub fn execute_explain(args: &ExplainArgs) -> (String, ExitIdentity) {
+    let Some(token_limit) = explain_options::limit(args.view, args.budget_tokens) else {
+        return internal_failure("explain", &args.root);
+    };
     // No ambient clock is consulted on the existing, unchecked path.
     let started = args.custody.then(std::time::Instant::now);
     let cancelled = || started.is_some_and(|at| at.elapsed() >= custody::TIMEOUT);
@@ -1528,12 +1549,26 @@ pub fn execute_explain(args: &ExplainArgs) -> (String, ExitIdentity) {
         args.principal.encode_canonical(encoder);
         snapshot.anchor.encode_canonical(encoder);
         // Preserve every old request digest when custody was not explicitly requested.
-        if args.custody { encoder.text("custody=yes"); }
+        if args.custody {
+            encoder.text("custody=yes");
+        }
+        if args.view != AgentView::DecisionDiff {
+            encoder.text("view");
+            encoder.text(args.view.id());
+        }
+        if let Some(tokens) = args.budget_tokens {
+            encoder.text("budget_tokens");
+            encoder.u64(tokens);
+        }
     });
     let request = OrientRequest {
         view: AgentView::Brief,
         principal: args.principal.clone(),
-        budget_tokens: None,
+        // An explicit total allowance also caps the prerequisite orientation. The rest is
+        // charged cumulatively by the support and optional custody projections.
+        budget_tokens: args
+            .budget_tokens
+            .map(|tokens| tokens.min(u64::from(AgentView::Brief.maximum_tokens()))),
     };
     let orientation = match orient_deployment(&snapshot, &request, &limits) {
         Ok(orientation) => orientation,
@@ -1541,12 +1576,12 @@ pub fn execute_explain(args: &ExplainArgs) -> (String, ExitIdentity) {
             error @ (OrientError::ContextBudgetExceeded { .. } | OrientError::TooManyEvents { .. }),
         ) => {
             return rendered(
-                budget_refusal(
+                explain_options::orientation_refusal(
                     &snapshot,
                     request_digest,
-                    AgentView::Brief,
+                    args.view,
                     &args.principal,
-                    u64::from(AgentView::Brief.maximum_tokens()),
+                    token_limit,
                     error.to_string(),
                 ),
                 ExitIdentity::AGENT_REFUSED,
@@ -1560,49 +1595,116 @@ pub fn execute_explain(args: &ExplainArgs) -> (String, ExitIdentity) {
     };
     match explain_event(&snapshot, &orientation, &args.event_id) {
         Ok(Some(explanation)) => {
-            let mut support = match evidence::compile(&snapshot, &orientation, &explanation) {
+            let mut support = match evidence::compile(
+                &snapshot,
+                &orientation,
+                &explanation,
+                args.view,
+                token_limit,
+            ) {
                 Ok(support) => support,
-                Err(error) => return rendered(
-                    evidence::refusal(&orientation, &explanation, request_digest, evidence::refusal_id(&error)),
-                    ExitIdentity::AGENT_REFUSED, "explain", &args.root,
-                ),
+                Err(error) => {
+                    return rendered(
+                        evidence::refusal(
+                            &orientation,
+                            &explanation,
+                            request_digest,
+                            evidence::refusal_id(&error),
+                            args.view,
+                            token_limit,
+                        ),
+                        ExitIdentity::AGENT_REFUSED,
+                        "explain",
+                        &args.root,
+                    );
+                }
             };
             if args.custody {
                 let checked = crate::custody_review::check_event(
-                    &args.root, &snapshot, &args.event_id,
-                    fss_publication::custody_audit::CustodyAuditLimits::default(), &cancelled,
-                ).and_then(|review| custody::augment(&mut support, &review));
+                    &args.root,
+                    &snapshot,
+                    &args.event_id,
+                    fss_publication::custody_audit::CustodyAuditLimits::default(),
+                    &cancelled,
+                )
+                .and_then(|review| custody::augment(&mut support, &review));
                 if let Err(error) = checked {
-                    return rendered(custody::refusal(&orientation, &explanation,
-                        request_digest, &support, &error), ExitIdentity::AGENT_REFUSED,
-                        "explain", &args.root);
+                    return rendered(
+                        custody::refusal(
+                            &orientation,
+                            &explanation,
+                            request_digest,
+                            &support,
+                            &error,
+                        ),
+                        ExitIdentity::AGENT_REFUSED,
+                        "explain",
+                        &args.root,
+                    );
                 }
             }
-            let response = explanation_response(&orientation, &explanation, request_digest,
-                &support, args.custody);
+            let response = explanation_response(
+                &orientation,
+                &explanation,
+                request_digest,
+                &support,
+                args.custody,
+            );
             if cancelled() {
-                return rendered(custody::refusal(&orientation, &explanation,
-                    request_digest, &support, &crate::custody_review::CustodyReviewError::Cancelled),
-                    ExitIdentity::AGENT_REFUSED, "explain", &args.root);
+                return rendered(
+                    custody::refusal(
+                        &orientation,
+                        &explanation,
+                        request_digest,
+                        &support,
+                        &crate::custody_review::CustodyReviewError::Cancelled,
+                    ),
+                    ExitIdentity::AGENT_REFUSED,
+                    "explain",
+                    &args.root,
+                );
             }
             match response {
                 Ok(json) if json.len().saturating_add(1) <= evidence::MAX_RESPONSE_BYTES => {
                     (json, ExitIdentity::SUCCESS)
                 }
                 Ok(_) if args.custody => rendered(
-                    custody::refusal(&orientation, &explanation, request_digest, &support,
-                        &crate::custody_review::CustodyReviewError::ContextBound),
-                    ExitIdentity::AGENT_REFUSED, "explain", &args.root,
+                    custody::refusal(
+                        &orientation,
+                        &explanation,
+                        request_digest,
+                        &support,
+                        &crate::custody_review::CustodyReviewError::ContextBound,
+                    ),
+                    ExitIdentity::AGENT_REFUSED,
+                    "explain",
+                    &args.root,
                 ),
                 Ok(_) => rendered(
-                    evidence::refusal(&orientation, &explanation, request_digest, ERR_AGENT_CONTEXT_INCOMPLETE),
-                    ExitIdentity::AGENT_REFUSED, "explain", &args.root,
+                    evidence::refusal(
+                        &orientation,
+                        &explanation,
+                        request_digest,
+                        ERR_AGENT_CONTEXT_INCOMPLETE,
+                        args.view,
+                        token_limit,
+                    ),
+                    ExitIdentity::AGENT_REFUSED,
+                    "explain",
+                    &args.root,
                 ),
                 Err(_) => internal_failure("explain", &args.root),
             }
-        },
+        }
         Ok(None) => rendered(
-            unknown_event_response(&snapshot, &orientation, &args.event_id, request_digest),
+            unknown_event_response(
+                &snapshot,
+                &orientation,
+                &args.event_id,
+                request_digest,
+                args.view,
+                token_limit,
+            ),
             ExitIdentity::AGENT_REFUSED,
             "explain",
             &args.root,

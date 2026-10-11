@@ -86,7 +86,8 @@ compiled history graph:
 
 ```sh
 cargo run -p fss-cli --bin fss -- explain --json \
-  --root /path/to/deployment --event-id event:your-event --custody yes
+  --root /path/to/deployment --event-id event:your-event \
+  --view forensic --budget-tokens 8000 --custody yes
 ```
 
 A `claim:event-support:...:availability` proposition carries the resulting state.
@@ -111,7 +112,12 @@ The initial support projection is moved into the private request-owned review,
 not rebuilt or re-read. Both additional runs spend only the remainder of the
 original 2,000,000-operation/65,536-output allowance, so ALL FOUR graph runs share
 one ceiling. Output states, witness pointers and accounting text pay the same
-semantic-byte token estimate and 1,800-token ceiling as the earlier checked path.
+semantic-byte token estimate and aggregate allowance as the earlier support
+and custody stages. The compact default remains `decision_diff` with a hard
+1,800-token maximum. The command above explicitly requests `forensic` at its
+registered 8,000-token target; an explicit `--budget-tokens` can admit up to its
+16,000-token maximum. Insufficient budgets refuse the complete answer, and
+excessive budgets fail parsing. No stage automatically widens the caller's budget.
 Filter construction remains separately bounded by the input graph and observation
 ceiling. No unmeasured CPU, clock or allocator consumption is inferred from counts.
 A complete result that fails graph or context admission is refused; it is never
@@ -119,22 +125,32 @@ replaced with the earlier unchecked explanation. The join stages all changes
 before mutating the response, and consumes its private basis once on success.
 The existing checkpoint deadline and 256 KiB output limit remain unchanged.
 
-Omitted or disabled `--custody` keeps the same request, receipt and rendering path;
+Within the same selected view and allowance, omitted or disabled `--custody` keeps
+the same request, receipt and rendering path;
 it runs no availability algorithms. The private graph can remain alive until
 rendering completes, but it grants no new authority and is not serialized. The
 public non-durable `CustodyReview` now exposes its revalidated anchor, and its
 error enum has a `SupportGraph` variant for a failed graph contract. Exhaustive
 Rust matches on that error enum must handle the addition. No stored format,
-registry identity, CLI option, transport or model/dependency changes are introduced.
+registry identity, transport or model/dependency changes are introduced. The
+view/budget options use the existing AOP-011 operation and registered AVIEW-004
+forensic view; they grant no extra source access or event/effect authority.
 
 Seven new adapter contracts cover all eight custody-state mappings, same-graph
 reuse, exact remaining budgets, anchor/root mismatch, non-promoting size refusal,
 no partial mutation, one-time augmentation and exact semantic admission. Four
-new process contracts reuse real event publication and cover standard envelopes,
+original process contracts reuse real event publication and cover standard envelopes,
 unchanged disabled behavior, source loss versus damaged counterevidence, matching
 budget/decision fields, read-only deterministic retries and unknown descendants.
-The existing custody/explanation contracts are preserved. These eleven new native
-tests have NOT executed in this environment.
+Three additional process contracts exercise compact/default and explicit small
+allowances, exact total admission versus one-token-short refusal, and invalid or
+excessive requests before deployment I/O. On 2026-10-11, all seven adapter and
+seven process contracts passed on `nightly-2026-08-31` against
+`290e3c8614aeea7c64ae7872d221b2df11d1cb1c` plus the explicit view/budget correction.
+The seven custody CLI, two structural support CLI, six structural support units,
+two custody parser/accounting units and existing orient/explain parser also passed.
+All six existing orient/explain process and schema contracts passed, for 38
+focused tests overall; their compact-default success assertions are unchanged.
 
 ```sh
 cargo test -p fss-cli --lib orient_cmd::custody::availability_tests
@@ -143,6 +159,7 @@ cargo test -p fss-cli --test explain_custody_cli
 cargo test -p fss-cli --test explain_support_cli_contract
 ```
 
-Native qualification remains open. The supplementary model and lexical checks
-do not establish that the Rust code compiles or that filesystem/process contracts
-pass on a deployed system; full workspace or release qualification is not claimed.
+Full workspace and release qualification remain open. These focused native
+filesystem/process results qualify the bounded adapter behavior tested here;
+neither the supplementary model nor these results certify deployment-wide recovery,
+source authenticity, physical event truth or production scalability.

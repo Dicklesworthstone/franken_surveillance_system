@@ -6,8 +6,8 @@
 //! and no newly computed receipt is advertised as a retained or hydratable source artifact.
 
 use fss_core::{
-    AgentCognitiveEnvelope, AgentView, BudgetVector, Completeness, ContentDigest,
-    EnvelopeBudget, EnvelopeProposition, ExplainQuestion, ExplainReceipt, KnowledgeState, LedgerAnchor,
+    AgentCognitiveEnvelope, AgentView, BudgetVector, Completeness, ContentDigest, EnvelopeBudget,
+    EnvelopeProposition, ExplainQuestion, ExplainReceipt, KnowledgeState, LedgerAnchor,
     ResponseOutcome, ResponseSafeRetry,
 };
 use fss_graph_algorithms::GraphError;
@@ -36,6 +36,7 @@ const PROOF_SCOPE: &str = "Graph witnesses and explanation receipts are non-dura
 
 #[derive(Debug)]
 pub(super) struct SupportReview {
+    pub(super) view: AgentView,
     pub(super) propositions: Vec<EnvelopeProposition>,
     pub(super) assumptions: Vec<String>,
     pub(super) invalidators: Vec<String>,
@@ -82,8 +83,11 @@ fn propositions(brief: &EvidenceSupportBrief) -> Vec<EnvelopeProposition> {
         "structure",
         format!(
             "Current revision {} has support reachability {}; direct relations: {} Supports, {} Contradicts, {} other. These are declared edges, not independent observations.",
-            brief.target.revision, brief.reachability.as_str(), brief.direct_support_edges,
-            brief.direct_contradictions, brief.direct_other_relations,
+            brief.target.revision,
+            brief.reachability.as_str(),
+            brief.direct_support_edges,
+            brief.direct_contradictions,
+            brief.direct_other_relations,
         ),
         KnowledgeState::Known,
         vec![target.to_text(), rooted.clone(), ancestry.clone()],
@@ -118,7 +122,11 @@ fn propositions(brief: &EvidenceSupportBrief) -> Vec<EnvelopeProposition> {
         if brief.bottleneck_objects.is_empty() {
             vec![rooted]
         } else {
-            brief.bottleneck_objects.iter().map(|digest| digest.to_text()).collect()
+            brief
+                .bottleneck_objects
+                .iter()
+                .map(|digest| digest.to_text())
+                .collect()
         },
     ));
     for revision in &brief.unsupported_revisions {
@@ -167,9 +175,17 @@ fn semantic_bytes(review: &SupportReview) -> Result<usize, EvidenceProjectionErr
         add(&proposition.statement)?;
         add(proposition.state.as_str())?;
         add(&proposition.provenance)?;
-        for evidence in &proposition.evidence { add(evidence)?; }
+        for evidence in &proposition.evidence {
+            add(evidence)?;
+        }
     }
-    for text in review.assumptions.iter().chain(&review.invalidators).chain(&review.warnings).chain(&review.proof_pointers) {
+    for text in review
+        .assumptions
+        .iter()
+        .chain(&review.invalidators)
+        .chain(&review.warnings)
+        .chain(&review.proof_pointers)
+    {
         add(text)?;
     }
     add(&review.cost_statement)?;
@@ -181,15 +197,24 @@ fn semantic_bytes(review: &SupportReview) -> Result<usize, EvidenceProjectionErr
 fn price(review: &mut SupportReview) -> Result<(), EvidenceProjectionError> {
     let bytes = semantic_bytes(review)?;
     let extra_tokens = (bytes as u64).div_ceil(4);
-    let maximum = u64::from(AgentView::DecisionDiff.maximum_tokens());
-    let next = review.consumed.tokens.checked_add(extra_tokens).ok_or(GraphError::TooLarge)?;
+    let maximum = review.requested.tokens;
+    if super::explain_options::limit(review.view, Some(maximum)).is_none() {
+        return Err(inconsistent(
+            "invalid explanation view or context allowance",
+        ));
+    }
+    let next = review
+        .consumed
+        .tokens
+        .checked_add(extra_tokens)
+        .ok_or(GraphError::TooLarge)?;
     if bytes > MAX_SEMANTIC_BYTES || next > maximum {
         return Err(GraphError::BudgetExhausted {
             dimension: "agent_explain_semantic_tokens",
             limit: maximum,
-        }.into());
+        }
+        .into());
     }
-    review.requested.tokens = maximum;
     review.consumed.tokens = next;
     Ok(())
 }
@@ -199,28 +224,61 @@ pub(super) fn compile(
     snapshot: &DeploymentSnapshot,
     orientation: &DeploymentOrientation,
     explanation: &EventExplanation,
+    view: AgentView,
+    token_limit: u64,
 ) -> Result<SupportReview, EvidenceProjectionError> {
+    if super::explain_options::limit(view, Some(token_limit)).is_none() {
+        return Err(inconsistent(
+            "invalid explanation view or context allowance",
+        ));
+    }
     if snapshot.anchor != orientation.capsule().anchor {
         return Err(inconsistent("support explanation anchor mismatch"));
     }
     let target = &explanation.event;
-    let selected = snapshot.events.iter().find(|retained| retained.event.event_id == target.event.event_id)
+    let selected = snapshot
+        .events
+        .iter()
+        .find(|retained| retained.event.event_id == target.event.event_id)
         .ok_or_else(|| inconsistent("explanation event is outside the snapshot"))?;
-    if selected.event != target.event || selected.event_root != target.event_root
-        || selected.revision_digest != target.revision_digest {
-        return Err(inconsistent("support explanation current revision mismatch"));
+    if selected.event != target.event
+        || selected.event_root != target.event_root
+        || selected.revision_digest != target.revision_digest
+    {
+        return Err(inconsistent(
+            "support explanation current revision mismatch",
+        ));
     }
     for retained in &snapshot.events {
         if retained.revisions.last() != Some(&retained.event)
-            || retained.revision_digest != retained.event.revision_digest() {
-            return Err(inconsistent("support history head is not its committed chain tail"));
+            || retained.revision_digest != retained.event.revision_digest()
+        {
+            return Err(inconsistent(
+                "support history head is not its committed chain tail",
+            ));
         }
     }
-    let lineages: Vec<_> = snapshot.events.iter().map(|retained| retained.revisions.as_slice()).collect();
+    let lineages: Vec<_> = snapshot
+        .events
+        .iter()
+        .map(|retained| retained.revisions.as_slice())
+        .collect();
     let projection = EvidenceHistoryProjection::build(&lineages, HistoryLimits::default())?;
-    let brief = explain_current_support(&projection, target.event.event_id.as_str(),
-        snapshot.anchor.clone(), GRAPH_BUDGET, MAX_BRIEF_ENTRIES)?;
-    let mut review = compose(&projection, &brief, orientation, explanation)?;
+    let brief = explain_current_support(
+        &projection,
+        target.event.event_id.as_str(),
+        snapshot.anchor.clone(),
+        GRAPH_BUDGET,
+        MAX_BRIEF_ENTRIES,
+    )?;
+    let mut review = compose(
+        &projection,
+        &brief,
+        orientation,
+        explanation,
+        view,
+        token_limit,
+    )?;
     review.availability_basis = Some((projection, snapshot.anchor.clone(), target.event_root));
     Ok(review)
 }
@@ -230,14 +288,22 @@ fn compose(
     brief: &EvidenceSupportBrief,
     orientation: &DeploymentOrientation,
     explanation: &EventExplanation,
+    view: AgentView,
+    token_limit: u64,
 ) -> Result<SupportReview, EvidenceProjectionError> {
     let receipt = ExplainReceipt::compile(
         ExplainQuestion::Why,
         explanation.event.revision_digest,
-        vec![explanation.event.event_root, explanation.receipt.receipt_digest(),
-            brief.receipt.receipt_digest(), orientation.capsule().anchor.state_root],
-        Vec::new(), 0,
-    ).map_err(EvidenceProjectionError::Contract)?;
+        vec![
+            explanation.event.event_root,
+            explanation.receipt.receipt_digest(),
+            brief.receipt.receipt_digest(),
+            orientation.capsule().anchor.state_root,
+        ],
+        Vec::new(),
+        0,
+    )
+    .map_err(EvidenceProjectionError::Contract)?;
     let mut warnings = vec![PROOF_SCOPE.to_owned()];
     if !brief.unsupported_revisions.is_empty() {
         warnings.push("At least one support branch terminates at an unsupported event revision; a rooted alternative does not erase that uncertainty.".to_owned());
@@ -247,26 +313,44 @@ fn compose(
     }
     let cost_statement = format!(
         "Support analysis consumed {} of {} shared graph operations and {} of {} shared algorithm output entries across two ALG-DOM-001 runs. Catalogue: {} revisions, {} evidence edges, {} canonical bytes; brief: {} of {} identities. Compiler/brief work is separately cardinality-bounded, not included in the graph counters. Added semantic tokens use ceil(UTF-8 field bytes/4), not a model tokenizer or full JSON size.",
-        brief.graph_operations, GRAPH_BUDGET.max_operations, brief.graph_output_entries,
-        GRAPH_BUDGET.max_output_entries, projection.catalogue_revisions(),
-        projection.catalogue_edges(), projection.catalogue_bytes(), brief.brief_entries,
+        brief.graph_operations,
+        GRAPH_BUDGET.max_operations,
+        brief.graph_output_entries,
+        GRAPH_BUDGET.max_output_entries,
+        projection.catalogue_revisions(),
+        projection.catalogue_edges(),
+        projection.catalogue_bytes(),
+        brief.brief_entries,
         MAX_BRIEF_ENTRIES,
     );
+    let mut requested = orientation.requested;
+    requested.tokens = token_limit;
     let mut review = SupportReview {
+        view,
         propositions: propositions(brief),
         assumptions: vec![SCOPE.to_owned()],
         invalidators: vec![INVALIDATOR.to_owned()],
         warnings,
-        proof_pointers: vec![receipt.receipt_digest().to_text(), brief.receipt.receipt_digest().to_text(),
-            brief.rooted_witness.digest().to_text(), brief.ancestry_witness.digest().to_text()],
+        proof_pointers: vec![
+            receipt.receipt_digest().to_text(),
+            brief.receipt.receipt_digest().to_text(),
+            brief.rooted_witness.digest().to_text(),
+            brief.ancestry_witness.digest().to_text(),
+        ],
         receipt,
-        requested: orientation.requested,
+        requested,
         consumed: orientation.consumed,
         cost_statement,
         availability_basis: None,
         graph_remaining: Budget::new(
-            GRAPH_BUDGET.max_operations.checked_sub(brief.graph_operations).ok_or(GraphError::TooLarge)?,
-            GRAPH_BUDGET.max_output_entries.checked_sub(brief.graph_output_entries).ok_or(GraphError::TooLarge)?,
+            GRAPH_BUDGET
+                .max_operations
+                .checked_sub(brief.graph_operations)
+                .ok_or(GraphError::TooLarge)?,
+            GRAPH_BUDGET
+                .max_output_entries
+                .checked_sub(brief.graph_output_entries)
+                .ok_or(GraphError::TooLarge)?,
         ),
     };
     price(&mut review)?;
@@ -286,7 +370,8 @@ pub(super) fn budget(review: &SupportReview) -> EnvelopeBudget {
 pub(super) fn refusal_id(error: &EvidenceProjectionError) -> &'static str {
     match error {
         EvidenceProjectionError::Graph(GraphError::BudgetExhausted {
-            dimension: "agent_explain_semantic_tokens" | "evidence_brief_entries", ..
+            dimension: "agent_explain_semantic_tokens" | "evidence_brief_entries",
+            ..
         }) => super::ERR_AGENT_CONTEXT_INCOMPLETE,
         _ => error.stable_id(),
     }
@@ -297,13 +382,17 @@ pub(super) fn refusal(
     explanation: &EventExplanation,
     request_digest: ContentDigest,
     error_id: &'static str,
+    view: AgentView,
+    token_limit: u64,
 ) -> Result<String, Box<dyn std::error::Error>> {
     let capsule = orientation.capsule();
+    let mut requested = orientation.requested;
+    requested.tokens = token_limit;
     build_response(ResponseParts {
         operation: "explain", request_digest, principal: capsule.principal_id.clone(),
         session_id: Some(capsule.session_id.as_str().to_owned()),
         mission_id: Some(capsule.mission_id.as_str().to_owned()), anchor: capsule.anchor.clone(),
-        view: AgentView::DecisionDiff, capability: CAPABILITY_EXPLAIN,
+        view, capability: CAPABILITY_EXPLAIN,
         outcome: ResponseOutcome::Refused, error_id: Some(error_id),
         payload_schema: AgentCognitiveEnvelope::SCHEMA, payload_json: "null".to_owned(),
         epistemic_state: KnowledgeState::Unknown, completeness: Completeness::Partial,
@@ -312,9 +401,9 @@ pub(super) fn refusal(
         degradation: vec![
             "The complete support explanation exceeded its bounds or failed its input/witness contract. No dependencies, historical corrections or protected alternatives were truncated.".to_owned(),
             "The reported consumed vector accounts for the existing snapshot orientation only; failed graph work is not reported as zero or as a completed witness.".to_owned(),
-            "For a larger operator-local graph report, inspect fss-evidence analyze-history under its separate explicit limits. This is not authorization to bypass an agent privacy projection.".to_owned(),
+            "For a larger complete explanation, explicitly request --view forensic --budget-tokens 8000 (maximum 16000). fss-evidence analyze-history also has separate operator-local limits; neither route widens privacy or effect authority.".to_owned(),
         ],
-        budgets_json: agent_json::budget_summary(&orientation.requested, &orientation.consumed),
+        budgets_json: agent_json::budget_summary(&requested, &orientation.consumed),
         proof_pointers: vec![explanation.event.event_root.to_text(), explanation.event.revision_digest.to_text()],
         affordances: Vec::new(), affordance_objects: Vec::new(),
         decision_fingerprint: request_digest, compression_receipt_id: None, continuation: None,
