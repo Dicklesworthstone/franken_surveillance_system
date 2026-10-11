@@ -234,3 +234,231 @@ pub fn explain_current_support(
         brief_entries: entries,
     })
 }
+
+
+/// Availability-conditioned support over the same exact history projection.
+pub mod availability {
+    #![forbid(unsafe_code)]
+    //! Availability-conditioned paths through exact retained event support.
+    //!
+    //! A verified-reference path is not a proof of the event, an AND/OR evidence
+    //! argument, sensor independence, or durable custody. Two registered dominator
+    //! runs distinguish paths through rehashed references from paths that still
+    //! depend on unchecked references. Known unavailable objects block both views.
+    //! All observations must come from the caller's same-request authorized audit.
+
+    use std::collections::BTreeSet;
+
+    use fss_core::{ContentDigest, GraphAlgorithmWitness, LedgerAnchor};
+
+    use crate::certified::{Budget, check_witness};
+    use crate::dominators::{self, DominanceDirection};
+    use crate::evidence::{EvidenceProjectionError, FRONTIER_ROOT, object_node};
+    use crate::evidence_history::EvidenceHistoryProjection;
+    use crate::graph::GraphError;
+    use crate::weighted::{WeightedGraph, WeightedGraphBuilder};
+
+    /// Maximum unique observations admitted before any graph construction.
+    pub const MAX_AVAILABILITY_OBSERVATIONS: usize = 65_536;
+    /// Projection identity for paths that may still use unchecked references.
+    pub const POSSIBLE_PROJECTION_ID: &str = "EvidenceClaimGraph:possible-reference-support:v1";
+    /// Projection identity for paths through checked references only.
+    pub const VERIFIED_PROJECTION_ID: &str = "EvidenceClaimGraph:verified-reference-support:v1";
+
+    /// One exact object's observation, never its physical truth or access authority.
+    #[derive(Clone, Copy, Debug, Eq, PartialEq)]
+    pub enum ObjectAvailability {
+        /// The authorized audit rehashed these exact bytes successfully.
+        Verified,
+        /// Bytes are missing, corrupt, invalid for their declared role, or denied.
+        Unavailable,
+        /// Not checked or not established, including an access/per-object limit.
+        Unchecked,
+    }
+
+    /// An already authorized, same-observation-scope digest classification.
+    #[derive(Clone, Copy, Debug, Eq, PartialEq)]
+    pub struct AvailabilityObservation {
+        /// Exact content identity. No generation, label, root or revision substitution.
+        pub digest: ContentDigest,
+        /// Observation supplied by the custody owner, not a conclusion from this graph.
+        pub availability: ObjectAvailability,
+    }
+
+    /// Structural state of one current event's declared positive-support paths.
+    #[derive(Clone, Copy, Debug, Eq, PartialEq)]
+    pub enum AvailableSupport {
+        /// At least one path reaches a verified non-event reference through admitted nodes.
+        VerifiedReferencePath,
+        /// A path remains, but every such path needs at least one unchecked reference.
+        UncheckedReferencePath,
+        /// No frontier path remains; this includes already unrooted historical branches.
+        NoUnblockedReferencePath,
+        /// The target declares no positive-support edge. Not an absence conclusion.
+        NoDeclaredSupport,
+    }
+
+    impl AvailableSupport {
+        /// Stable non-durable diagnostic spelling.
+        #[must_use]
+        pub const fn as_str(self) -> &'static str {
+            match self {
+                Self::VerifiedReferencePath => "verified_reference_path",
+                Self::UncheckedReferencePath => "unchecked_reference_path",
+                Self::NoUnblockedReferencePath => "no_unblocked_reference_path",
+                Self::NoDeclaredSupport => "no_declared_support",
+            }
+        }
+    }
+
+    /// Both complete registered runs share one allowance; no partial success is returned.
+    #[derive(Clone, Debug, PartialEq)]
+    pub struct EvidenceAvailabilityAnalysis {
+        /// Exact current event revision evaluated, not an external publication root.
+        pub target: ContentDigest,
+        /// Reachability only; no event state, probability or effect eligibility is modified.
+        pub support: AvailableSupport,
+        /// Registered witness for the graph excluding known unavailable object vertices.
+        pub possible_witness: GraphAlgorithmWitness,
+        /// Registered witness for the stricter graph also excluding unchecked vertices.
+        pub verified_witness: GraphAlgorithmWitness,
+        /// Observations matching object vertices in the WHOLE input support graph.
+        pub mapped_observations: usize,
+        /// Observations outside that graph, NOT evidence that those objects are irrelevant.
+        pub outside_graph_observations: usize,
+        /// Unchecked external frontiers across the WHOLE graph, not only the target ancestry.
+        pub unchecked_frontier_references: usize,
+        /// Sum charged by the two registered runs, excluding separately bounded graph construction.
+        pub graph_operations: u64,
+        /// Sum of both full registered outputs, not merely the two reachability bits.
+        pub graph_output_entries: u64,
+    }
+
+    fn filtered(
+        graph: &WeightedGraph,
+        blocked: &[bool],
+        unit: &str,
+    ) -> Result<WeightedGraph, GraphError> {
+        let mut builder = WeightedGraphBuilder::directed(unit);
+        // Preserve even isolated node identities, weights and the selected current head.
+        for (index, id) in graph.ids().iter().enumerate() {
+            builder.add_weighted_node(id.clone(), graph.node_weight(index as u32));
+        }
+        for arc in graph.arcs() {
+            if !blocked[arc.tail as usize] && !blocked[arc.head as usize] {
+                builder.add_arc(graph.id(arc.tail), graph.id(arc.head), arc.weight);
+            }
+        }
+        builder.build()
+    }
+
+    /// Analyze the current event's paths under exact custody observations.
+    ///
+    /// Unobserved external references default to Unchecked, never Verified or Missing.
+    /// Canonical event records already validated by `EvidenceHistoryProjection` need
+    /// no extra observation to participate as metadata; an explicit Unchecked or
+    /// Unavailable observation still restricts that exact vertex. Verified metadata
+    /// cannot seed an unsupported event as an external frontier. Supersession and
+    /// non-support relations never become paths. Unavailable vertices are removed
+    /// simultaneously, so independent losses can jointly exhaust alternate paths.
+    ///
+    /// The caller must bind the observations, both witnesses and the original history
+    /// to the same authorized read/revalidation scope. Witnesses certify the filtered
+    /// graph runs, NOT how an observation was obtained. Unmapped faults still belong
+    /// in the caller's custody report. These paths do not certify opaque descendants,
+    /// source authenticity, semantic sufficiency, physical independence or event truth.
+    ///
+    /// # Errors
+    ///
+    /// Unknown current head, duplicate observations (even equal duplicates), input
+    /// admission overflow, graph failure, or either run exhausting the shared budget.
+    /// Construction is bounded by the original history graph and observation ceiling;
+    /// those costs are separate from the registered algorithm work counters.
+    pub fn analyze_current_availability(
+        projection: &EvidenceHistoryProjection,
+        event_id: &str,
+        observations: &[AvailabilityObservation],
+        anchor: LedgerAnchor,
+        budget: Budget,
+    ) -> Result<EvidenceAvailabilityAnalysis, EvidenceProjectionError> {
+        if observations.len() > MAX_AVAILABILITY_OBSERVATIONS {
+            return Err(GraphError::BudgetExhausted {
+                dimension: "availability_observations",
+                limit: MAX_AVAILABILITY_OBSERVATIONS as u64,
+            }.into());
+        }
+        let target = *projection.heads().get(event_id)
+            .ok_or_else(|| GraphError::UnknownNode(event_id.to_owned()))?;
+        let record = projection.records().iter().find(|record| record.revision_digest() == target)
+            .ok_or_else(|| GraphError::Inconsistent("current head is not expanded".to_owned()))?;
+        let graph = projection.graph();
+        let mut seen = BTreeSet::new();
+        let mut possible_blocked = vec![false; graph.node_count()];
+        let mut verified_blocked = vec![false; graph.node_count()];
+        for digest in projection.unexpanded_support() {
+            let index = graph.require(&object_node(*digest))? as usize;
+            verified_blocked[index] = true;
+        }
+        let mut mapped = 0;
+        for observation in observations {
+            if !seen.insert(observation.digest) {
+                return Err(GraphError::DuplicateNode(object_node(observation.digest)).into());
+            }
+            if let Some(index) = graph.index_of(&object_node(observation.digest)) {
+                mapped += 1;
+                let index = index as usize;
+                possible_blocked[index] = observation.availability == ObjectAvailability::Unavailable;
+                verified_blocked[index] = observation.availability != ObjectAvailability::Verified;
+            }
+        }
+        let unchecked_frontier_references = projection.unexpanded_support().iter()
+            .filter(|digest| graph.index_of(&object_node(**digest)).is_some_and(|index| {
+                verified_blocked[index as usize] && !possible_blocked[index as usize]
+            })).count();
+        let possible_graph = filtered(graph, &possible_blocked, "possible-reference-support:v1")?;
+        let possible = dominators::dominators(
+            &possible_graph, FRONTIER_ROOT, DominanceDirection::Dominators, budget,
+        )?;
+        let remaining = Budget::new(
+            budget.max_operations.checked_sub(possible.operations).ok_or(GraphError::TooLarge)?,
+            budget.max_output_entries.checked_sub(possible.output_entries).ok_or(GraphError::TooLarge)?,
+        );
+        let verified_graph = filtered(graph, &verified_blocked, "verified-reference-support:v1")?;
+        let verified = dominators::dominators(
+            &verified_graph, FRONTIER_ROOT, DominanceDirection::Dominators, remaining,
+        )?;
+        let possible_witness = possible.witness(POSSIBLE_PROJECTION_ID, anchor.clone())
+            .map_err(EvidenceProjectionError::Contract)?;
+        let verified_witness = verified.witness(VERIFIED_PROJECTION_ID, anchor)
+            .map_err(EvidenceProjectionError::Contract)?;
+        check_witness(&possible_witness, &dominators::IDENTITY,
+            &dominators::bound(possible.node_count, possible.edge_count))?;
+        check_witness(&verified_witness, &dominators::IDENTITY,
+            &dominators::bound(verified.node_count, verified.edge_count))?;
+        let target_node = object_node(target);
+        let possible_path = possible.output.immediate_dominators.binary_search_by(
+            |(node, _)| node.as_str().cmp(&target_node)).is_ok();
+        let verified_path = verified.output.immediate_dominators.binary_search_by(
+            |(node, _)| node.as_str().cmp(&target_node)).is_ok();
+        if verified_path && !possible_path {
+            return Err(GraphError::Inconsistent("verified graph is not a possible-graph subset".to_owned()).into());
+        }
+        let support = if !record.evidence.iter().any(|edge| edge.counts_as_support()) {
+            AvailableSupport::NoDeclaredSupport
+        } else if verified_path {
+            AvailableSupport::VerifiedReferencePath
+        } else if possible_path {
+            AvailableSupport::UncheckedReferencePath
+        } else {
+            AvailableSupport::NoUnblockedReferencePath
+        };
+        Ok(EvidenceAvailabilityAnalysis {
+            target, support, possible_witness, verified_witness,
+            mapped_observations: mapped,
+            outside_graph_observations: observations.len() - mapped,
+            unchecked_frontier_references,
+            graph_operations: possible.operations.checked_add(verified.operations).ok_or(GraphError::TooLarge)?,
+            graph_output_entries: possible.output_entries.checked_add(verified.output_entries).ok_or(GraphError::TooLarge)?,
+        })
+    }
+}
