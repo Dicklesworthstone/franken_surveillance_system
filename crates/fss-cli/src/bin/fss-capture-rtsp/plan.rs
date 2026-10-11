@@ -57,7 +57,7 @@ Original RTP and derived recording children are published through the native jou
 archive. Raw RTSP/control/RTCP wire and unselected tails are not retained; output accounts\n\
 for omissions. Local custody is UNENCRYPTED. Apply deployment privacy before pixel output.\n\
 \n\
-Expected RTP mapping: --payload-type 96; track/channel: --media-index 0 --rtp-channel 0\n\
+Exact AVC offer: --payload-type 96; track/channel: --media-index 0 --rtp-channel 0\n\
 Audit label: --principal principal:local-operator (not authentication)\n\
 Run limits: --timeout-ms 30000 --drain-timeout-ms 10000 --max-steps 100000\n\
             --max-report-bytes 8388608 --max-source-bytes 67108864 --max-io-calls 1000000\n\
@@ -67,8 +67,9 @@ Storage: --max-window-pictures 128 --max-windows 32 --max-storage-bytes 53687091
 All effective native limits are included in the approval and its JSON preview.\n\
 A successful requested stop closes the socket and drains recording/catalog publication;\n\
 it never certifies remote EOF, complete scene coverage, detection, alerts or absence.\n\
-Preserve stdout JSONL and both directories. Use each window_durable slot/root with\n\
-fss-import-rtsp; interrupted work pins require explicit recovery, never automatic resume.\n";
+Preserve stdout JSONL and both directories. Import each window_durable slot/root or\n\
+a catalog_published slot/root/decode_clock/time_scale with fss-import-rtsp.\n\
+Interrupted work pins require explicit recovery, never automatic resume.\n";
 
 #[derive(Debug)]
 pub(super) struct Options {

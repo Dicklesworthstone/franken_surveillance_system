@@ -16,10 +16,6 @@ on:
 permissions:
   contents: read
 
-concurrency:
-  group: fss-rtsp-capture-smoke-${{ github.ref }}
-  cancel-in-progress: true
-
 jobs:
   capture:
     runs-on: ubuntu-24.04
@@ -38,10 +34,16 @@ jobs:
       - name: Check feature formatting
         run: |
           cargo +nightly-2026-08-31 fmt --all
-          git diff --exit-code -- crates/fss-cli/src/bin/fss-capture-rtsp.rs crates/fss-cli/src/bin/fss-capture-rtsp crates/fss-cli/tests/capture_rtsp_cli.rs
+          git diff --exit-code -- crates/fss-cli/src/bin/fss-capture-rtsp.rs crates/fss-cli/src/bin/fss-capture-rtsp crates/fss-cli/tests/capture_rtsp_cli.rs crates/fss-reference/src/rtsp/live_avc.rs crates/fss-reference/src/rtsp/live_avc/recording.rs crates/fss-reference/src/rtsp/live_avc/recording/tests.rs
       - name: Native capture, retained import and cold decode contracts
         if: success() || failure()
         run: cargo +nightly-2026-08-31 test --locked --offline -p fss-cli --bin fss-capture-rtsp --test capture_rtsp_cli
+      - name: Native live recording payload selection
+        if: success() || failure()
+        run: cargo +nightly-2026-08-31 test --locked --offline -p fss-reference --lib rtsp::live_avc::recording::tests
+      - name: Existing plain and Digest payload selection contracts
+        if: success() || failure()
+        run: cargo +nightly-2026-08-31 test --locked --offline -p fss-reference --test rtsp_payload_selection_streaming
       - name: Capture CLI Clippy
         if: success() || failure()
         run: cargo +nightly-2026-08-31 clippy --locked --offline -p fss-cli --bin fss-capture-rtsp -- -D warnings

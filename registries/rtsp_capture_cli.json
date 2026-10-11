@@ -13,6 +13,7 @@
   "timing_domain": "fss.rtsp_capture_fixed_clock.v1",
   "approval_binds": [
     "literal_peer_and_authority",
+    "exact_media_section_payload_type_and_interleaved_channels",
     "presentation_and_control_scope",
     "new_archive_and_independent_journal_paths",
     "principal",
@@ -92,7 +93,9 @@
   "tests": [
     "crates/fss-cli/src/bin/fss-capture-rtsp/plan_tests.rs",
     "crates/fss-cli/src/bin/fss-capture-rtsp/timing.rs",
-    "crates/fss-cli/tests/capture_rtsp_cli.rs"
+    "crates/fss-cli/tests/capture_rtsp_cli.rs",
+    "crates/fss-reference/src/rtsp/live_avc/recording/tests.rs",
+    "crates/fss-reference/tests/rtsp_payload_selection_streaming.rs"
   ],
   "native_tests_executed": false,
   "out_of_scope": [
@@ -104,5 +107,7 @@
     "archive_encryption",
     "full_agent_protocol",
     "release_qualification"
-  ]
+  ],
+  "payload_selection": "owner_exact_AVC_offer_applied_before_DESCRIBE_no_fallback_or_cross_offer_parameters",
+  "catalog_handoff": "each_durable_page_reports_exact_slot_root_recording_scope_decode_clock_time_scale_for_independent_complete_page_import"
 }

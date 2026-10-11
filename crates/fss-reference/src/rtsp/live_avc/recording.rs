@@ -194,11 +194,18 @@ impl LiveAvcRecording {
         let binding = config.binding.clone();
         let deadline_ns = config.deadline_ns;
         let remaining_steps = config.max_steps;
-        let connection = LiveAvcConnection::connect(config, now, authority).map_err(|e| {
-            LiveRecordingConnectFailure {
-                reason: LiveRecordingError::Network(e.reason),
-                connection_attempted: e.connection_attempted,
-            }
+        // The same owner choice governs both SDP selection and original RTP collection.
+        // Negotiating an arbitrary format first and rejecting it later loses valid offers
+        // when one media section advertises more than one supported AVC payload.
+        let connection = LiveAvcConnection::connect_with_payload_type(
+            config,
+            recording.payload_type,
+            now,
+            authority,
+        )
+        .map_err(|e| LiveRecordingConnectFailure {
+            reason: LiveRecordingError::Network(e.reason),
+            connection_attempted: e.connection_attempted,
         })?;
         Ok(Self {
             connection,

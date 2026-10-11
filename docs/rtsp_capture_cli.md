@@ -106,6 +106,31 @@ offline. Downstream motion, watch and corroboration preserve their own timing, p
 calibration and effect gates. Current destination masks apply before decoded pixels
 reach consumers.
 
+## Import a complete catalog page
+
+Each `catalog_published.detail` also exposes the exact `slot`, `root`, `decode_clock`,
+`time_scale`, recording `source`, and `codec`. These fields are checked against the
+durable native page before reporting. The [whole-catalog importer](RTSP_CATALOG_IMPORT.md)
+can join its adjacent windows into one retained recording for whole-recording analysis:
+
+```sh
+fss-import-rtsp \
+  --archive /owner/private/porch-archive \
+  --root /owner/private/deployment --site site:home \
+  --catalog-slot "$CATALOG_SLOT" --catalog-root "$CATALOG_ROOT" --codec avc \
+  --decode-clock "$DECODE_CLOCK" --time-scale 90000 \
+  --sensor-id sensor:porch --stream-id stream:porch --generation 1 \
+  --anchor "$SOURCE_ANCHOR" --receive-clock "$RECEIVE_CLOCK" \
+  --receive-time-ns 5000000000 \
+  --owner-authorized yes --read-originals yes --retain-originals yes
+```
+
+Review and approve this import separately. A published page contains up to eight windows;
+an attempt may publish several pages. Each page is one exact complete selection, not a
+promise that it covers the entire attempt. The importer independently refuses gaps,
+changed initialization and excessive cumulative work or bytes. A successful import keeps
+the page and every original window in destination custody for cold verification and decode.
+
 ## Partial capture, omissions and recovery
 
 Early EOF before the target returns a failing exit even when its completed prefix was
@@ -138,10 +163,13 @@ pictures arrive or fit the store. Defaults include a 30-second capture deadline,
 switches. Native packet, NAL, picture, source-byte and residence limits remain independent;
 no bound evicts prior state to make room.
 
-Expected payload type defaults to 96, media index to 0 and RTP/RTCP channels to 0/1.
-The initial live path requires a single unambiguous AVC offer whose payload mapping
-matches that expectation. Its negotiated clock must be 90,000 Hz. Final draining has its
-own allowance, capped by capture deadline plus drain timeout.
+Payload type defaults to 96, media index to 0 and RTP/RTCP channels to 0/1.
+`--payload-type` selects that exact AVC mapping during DESCRIBE, even when the chosen
+media section advertises several H.264 alternatives. Missing, unsupported or malformed
+selected offers refuse without borrowing another offer's parameters. The same payload
+type binds native reconstruction and retained original packets. Its negotiated clock
+must be 90,000 Hz. Final draining has its own allowance, capped by capture deadline plus
+drain timeout.
 
 ```sh
 cargo test --locked --offline -p fss-cli \
@@ -151,7 +179,8 @@ cargo clippy --locked --offline -p fss-cli --bin fss-capture-rtsp -- -D warnings
 
 Tests cover pure approval/path/limit validation, fixed-cadence timing, loopback capture
 through archive/import/cold native decode, early-EOF prefix importability, authentication
-refusal without secret disclosure, malformed source, wrong cadence and parent aliases.
+refusal without secret disclosure, malformed source, wrong cadence, parent aliases, exact
+payload selection and multi-window capture through catalog import and cold decode.
 They use real CLI processes and repository fixtures; they do not qualify actual cameras.
 
 At initial implementation, native execution was blocked by an offline workspace.

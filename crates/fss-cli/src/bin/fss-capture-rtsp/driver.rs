@@ -391,6 +391,7 @@ fn archive_progress<W: Write>(
                 ("pictures", entry.samples().to_string()),
                 ("decode_start", interval.start.to_string()),
                 ("decode_end", interval.end.to_string()),
+                ("decode_clock", string(&snapshot.namespace().scope().decode_clock.to_text())),
                 ("time_scale", snapshot.namespace().scope().time_scale.to_string()),
                 ("source_object_bytes", source_bytes.to_string()),
                 ("codec", string("avc")),
@@ -403,10 +404,30 @@ fn archive_progress<W: Write>(
             if receipt.claims.local != LocalPublicationState::Durable {
                 return Err(Failure::State);
             }
+            let snapshot = capture.snapshot().ok_or(Failure::State)?;
+            let page = snapshot.pages().iter()
+                .find(|page| page.first_ordinal() == first_ordinal)
+                .ok_or(Failure::State)?;
+            let catalog = page.catalog();
+            let scope = snapshot.namespace().scope();
+            if page.slot() != &receipt.slot
+                || catalog.manifest().root() != receipt.root
+                || catalog.entries().len() != windows
+                || catalog.scope() != scope
+            {
+                return Err(Failure::State);
+            }
             stats.indexed_windows = first_ordinal + windows;
             log.emit("catalog_published", object(&[
                 ("first_ordinal", first_ordinal.to_string()),
                 ("windows", windows.to_string()),
+                ("slot", string(receipt.slot.as_str())),
+                ("root", string(&receipt.root.to_text())),
+                ("archive_namespace", string(&namespace.to_text())),
+                ("source", scope_json(&scope.recording)),
+                ("decode_clock", string(&scope.decode_clock.to_text())),
+                ("time_scale", scope.time_scale.to_string()),
+                ("codec", string("avc")),
                 ("receipt", receipt_json(&receipt)),
             ]), false)?;
         }
@@ -812,6 +833,7 @@ pub(super) fn execute(options: &Options) -> Result<(), &'static str> {
         ("source", scope_json(&options.recording_config().scope)),
         ("requested_pictures", options.stop_after_pictures.to_string()),
         ("frame_duration_ticks", options.frame_duration.to_string()),
+        ("decode_clock", string(&options.archive_config().namespace.scope().decode_clock.to_text())),
         ("time_scale", options.time_scale.to_string()),
         ("codec", string("avc")),
         ("authentication", string("unsupported")),

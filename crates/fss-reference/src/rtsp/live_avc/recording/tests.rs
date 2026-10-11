@@ -8,7 +8,7 @@ use std::time::Duration;
 use super::*;
 use crate::rtsp::live_avc::tests::{Authority, KEY, credentials, description, response, scope};
 use crate::rtsp::recording::local::{RecordingProgress, RecordingPublication, load_recording};
-use crate::rtsp::recording::{PreparedRecording, RecordingRole};
+use crate::rtsp::recording::{PreparedRecording, RecordingRole, verify_recording};
 use crate::rtsp::recording_capture::PictureTimingRequest;
 use crate::rtsp::recording_collector::CollectionStop;
 use fss_core::{ContentDigest, SensorId, StreamId};
@@ -96,10 +96,19 @@ struct Fixture {
 }
 impl Fixture {
     fn new(chunk: usize, limits: CollectorLimits) -> TestResult<Self> {
+        Self::new_with_payload_type(chunk, limits, 96)
+    }
+    fn new_with_payload_type(
+        chunk: usize,
+        limits: CollectorLimits,
+        payload_type: u8,
+    ) -> TestResult<Self> {
         let listener = TcpListener::bind((std::net::Ipv4Addr::LOCALHOST, 0))?;
         let (mut config, authority) = scope(listener.local_addr()?)?;
         config.transport.chunk_bytes = chunk;
-        let driver = LiveAvcRecording::connect(config, recording(limits)?, 0, &authority)?;
+        let mut recording = recording(limits)?;
+        recording.payload_type = payload_type;
+        let driver = LiveAvcRecording::connect(config, recording, 0, &authority)?;
         let (peer, _) = listener.accept()?;
         peer.set_read_timeout(Some(Duration::from_secs(2)))?;
         peer.set_write_timeout(Some(Duration::from_secs(2)))?;
@@ -193,19 +202,30 @@ impl Fixture {
     }
     fn playing(chunk: usize, limits: CollectorLimits) -> TestResult<Self> {
         let mut f = Self::new(chunk, limits)?;
-        let seq = f.command(ClientCommand::Describe, 0)?;
-        f.receive(
-            &response(seq, "Content-Type: application/sdp\r\n", description()),
-            1,
-        )?;
-        let seq = f.command(ClientCommand::Setup, 2)?;
-        f.receive(&response(seq, "Session: fixture;timeout=60\r\nTransport: RTP/AVP/TCP;unicast;interleaved=0-1;ssrc=7\r\n", ""), 3)?;
-        let seq = f.command(ClientCommand::Play, 4)?;
-        f.receive(&response(seq, "Session: fixture\r\n", ""), 5)?;
-        assert_eq!(f.driver.state(), ClientState::Playing);
+        f.negotiate(description())?;
         Ok(f)
     }
+    fn negotiate(&mut self, description: &str) -> TestResult {
+        let seq = self.command(ClientCommand::Describe, 0)?;
+        self.receive(
+            &response(seq, "Content-Type: application/sdp\r\n", description),
+            1,
+        )?;
+        assert_eq!(self.driver.state(), ClientState::Described);
+        let seq = self.command(ClientCommand::Setup, 2)?;
+        self.receive(&response(seq, "Session: fixture;timeout=60\r\nTransport: RTP/AVP/TCP;unicast;interleaved=0-1;ssrc=7\r\n", ""), 3)?;
+        let seq = self.command(ClientCommand::Play, 4)?;
+        self.receive(&response(seq, "Session: fixture\r\n", ""), 5)?;
+        assert_eq!(self.driver.state(), ClientState::Playing);
+        Ok(())
+    }
     fn idr(&mut self) -> TestResult<(Vec<u8>, PictureTimingRequest)> {
+        self.idr_with_payload_type(96)
+    }
+    fn idr_with_payload_type(
+        &mut self,
+        payload_type: u8,
+    ) -> TestResult<(Vec<u8>, PictureTimingRequest)> {
         let data = nals();
         let sps = data.iter().find(|n| n[0] & 31 == 7).ok_or("missing SPS")?;
         let idr = data
@@ -213,8 +233,11 @@ impl Fixture {
             .find(|n| n[0] & 31 == 5)
             .ok_or("missing real IDR")?;
         // The first sequential packet establishes probation; it is still returned as original wire.
-        self.receive(&wire(&rtp(1, 9_000, false, sps))?, 10)?;
-        let original = rtp(2, 9_000, true, idr);
+        let mut probation = rtp(1, 9_000, false, sps);
+        probation[1] = payload_type;
+        self.receive(&wire(&probation)?, 10)?;
+        let mut original = rtp(2, 9_000, true, idr);
+        original[1] = payload_type | 128;
         let outputs = self.receive(&wire(&original)?, 11)?;
         let request = outputs
             .iter()
@@ -718,5 +741,122 @@ fn eof_mid_fragment_never_becomes_a_completed_recording() -> TestResult {
         }
     }
     assert!(terminal);
+    Ok(())
+}
+
+fn multiple_payload_description() -> String {
+    description()
+        .replace("m=video 0 RTP/AVP 96\r\n", "m=video 0 RTP/AVP 96 97\r\n")
+        .replace(
+            "a=control:trackID=0\r\n",
+            concat!(
+                "a=rtpmap:97 H264/90000\r\n",
+                "a=fmtp:97 packetization-mode=1;",
+                "sprop-parameter-sets=Z0LAC9oKEbARAAADAAEAAAMAMg8UKqA=,aM4PLIA=\r\n",
+                "a=control:trackID=0\r\n",
+            ),
+        )
+}
+
+#[test]
+fn selected_payload_reaches_live_recording_and_preserves_original_rtp() -> TestResult {
+    for chunk in [7, 4096] {
+        let mut f = Fixture::new_with_payload_type(chunk, CollectorLimits::default(), 97)?;
+        f.negotiate(&multiple_payload_description())?;
+        let (original, request) = f.idr_with_payload_type(97)?;
+        assert!(request.idr);
+        assert_eq!(request.key, KEY);
+        assert_eq!(request.rtp_timestamp, 9_000);
+        assert!(matches!(
+            f.driver.supply_timing(timing(700), 12, &f.authority)?,
+            TimedCapture::Collected { .. }
+        ));
+        assert!(f.driver.seal(13, &f.authority)?);
+        let LiveRecordingStep::Capture {
+            event,
+            connection: None,
+        } = f
+            .driver
+            .poll(SocketReadiness::default(), 13, &f.authority)?
+        else {
+            return Err("selected payload did not produce a prepared recording".into());
+        };
+        let CapturePoll::Window(window) = *event else {
+            return Err("selected payload did not produce a prepared recording".into());
+        };
+        assert_eq!(window.summary().packets, 1);
+        assert_eq!(window.summary().samples, 1);
+        assert_eq!(window.summary().decode_interval, 700..4300);
+        assert!(
+            window
+                .objects()
+                .source
+                .windows(original.len())
+                .any(|bytes| bytes == original)
+        );
+        let verified = verify_recording(
+            window.manifest(),
+            window.objects(),
+            &window.summary().scope,
+        )?;
+        assert_eq!(&verified, window.summary());
+        assert!(f.driver.cancel().is_some());
+    }
+    Ok(())
+}
+
+#[test]
+fn absent_recording_payload_refuses_describe_without_fallback_or_setup() -> TestResult {
+    use crate::rtsp::avc_client::AvcClientError;
+    use crate::rtsp::client::ClientError;
+
+    for body in [description().to_owned(), multiple_payload_description()] {
+        let mut f = Fixture::new_with_payload_type(4096, CollectorLimits::default(), 98)?;
+        let cseq = f.command(ClientCommand::Describe, 0)?;
+        let outputs = f.receive(
+            &response(cseq, "Content-Type: application/sdp\r\n", &body),
+            1,
+        )?;
+        let (trigger, retained) = outputs
+            .into_iter()
+            .find_map(|step| match step {
+                LiveRecordingStep::Stopped { trigger, retained } => Some((trigger, retained)),
+                _ => None,
+            })
+            .ok_or("absent selected payload did not close the live recording")?;
+        let LiveAvcStep::Protocol {
+            event: DigestAvcPoll::Client { event, .. },
+            transport: Some(transport),
+        } = *trigger
+        else {
+            return Err("payload refusal lost the native protocol retirement".into());
+        };
+        let AvcClientPoll::Fault {
+            reason: AvcClientError::Session(ClientError::Description),
+            retirement,
+            ..
+        } = *event
+        else {
+            return Err("absent payload did not fail at DESCRIBE selection".into());
+        };
+        assert!(!retirement.session.remote_session_may_exist);
+        assert_eq!(transport.totals.last_sent_cseq, Some(cseq));
+        assert!(retained.collection.ready.is_none());
+        assert!(retained.collection.pending.sources.is_empty());
+        assert!(retained.collection.pending.pictures.is_empty());
+        assert_eq!(f.driver.state(), ClientState::Closed);
+        assert!(
+            f.driver
+                .request(
+                    ClientCommand::Setup,
+                    &credentials()?,
+                    [0; 16],
+                    2,
+                    &f.authority,
+                )
+                .is_err()
+        );
+        assert!(f.driver.cancel().is_none());
+    }
     Ok(())
 }

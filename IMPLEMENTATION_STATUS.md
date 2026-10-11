@@ -17,7 +17,10 @@ bounded camera-to-retained-import path. A pure preview binds the route, source g
 timing assumptions, new archive and independent pin-journal destinations, all native ceilings
 and requested picture count. Approved execution sequences DESCRIBE, SETUP, PLAY and keepalive
 on one literal-IP plaintext TCP session. Authentication challenges, cadence drift, source
-changes and exhausted bounds refuse explicitly.
+changes and exhausted bounds refuse explicitly. The owner-selected payload is carried
+into live DESCRIBE selection and packet collection; multiple AVC offers do not pick an
+implicit alternative. Each durable catalog row exposes its exact source, slot/root and
+decode clock for complete-page retained import and whole-recording analysis.
 
 Selected original RTP and its native remux mapping reach source-verified, root-last recording
 windows; independent pin synchronization precedes work-publication acknowledgement.
@@ -28,7 +31,8 @@ parent checks reject aliased or nested archive/journal destinations before creat
 
 Parser/approval and timing tests accompany real-process loopback capture → import → cold
 native decode contracts, including stale approval, secret-free authentication refusal,
-early EOF, malformed media, wrong cadence and symlink-parent separation. Native execution
+early EOF, malformed media, wrong cadence, symlink-parent separation, exact payload selection
+and multi-window catalog import. Native execution
 was blocked by the disconnected implementation workspace at initial publication. A focused
 supplementary GitHub smoke check is provided; this is not a production-camera or release
 qualification. See [the capture workflow](docs/rtsp_capture_cli.md).

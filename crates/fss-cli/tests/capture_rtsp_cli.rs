@@ -267,6 +267,8 @@ enum Behavior {
     EofAfterOne,
     MalformedAfterOne,
     WrongCadence,
+    Payload97,
+    TwoWindows,
     AuthenticationRequired,
 }
 
@@ -362,11 +364,27 @@ fn nals() -> Vec<&'static [u8]> {
     output
 }
 
-fn video(pictures: usize, frame_duration: u32) -> Test<Vec<u8>> {
+fn video(pictures: usize, frame_duration: u32, payload_type: u8, two_windows: bool) -> Test<Vec<u8>> {
     let mut result = Vec::new();
     let mut sequence = 1_u16;
     let mut count = 0_u32;
-    for nal in nals() {
+    let source = nals();
+    let source = if two_windows {
+        let mut completed = 0;
+        let end = source.iter().position(|nal| {
+            if matches!(nal[0] & 31, 1 | 5) {
+                completed += 1;
+            }
+            completed == 2
+        }).ok_or("fixture has no initial IDR/P pair")?;
+        // Repeat a complete independently decodable pair, keeping RTP sequence and time rising.
+        // The next packet-disjoint IDR lets the native collector cut a two-picture window.
+        let pair = &source[..=end];
+        pair.iter().copied().chain(pair.iter().copied()).collect()
+    } else {
+        source
+    };
+    for nal in source {
         if count as usize == pictures {
             break;
         }
@@ -375,7 +393,7 @@ fn video(pictures: usize, frame_duration: u32) -> Test<Vec<u8>> {
         if !matches!(kind, 1 | 5 | 6 | 7 | 8) {
             continue;
         }
-        let mut packet = vec![0x80, 96 | if picture { 128 } else { 0 }];
+        let mut packet = vec![0x80, payload_type | if picture { 128 } else { 0 }];
         packet.extend_from_slice(&sequence.to_be_bytes());
         packet.extend_from_slice(&(9_000 + count * frame_duration).to_be_bytes());
         packet.extend_from_slice(&7_u32.to_be_bytes());
@@ -429,7 +447,20 @@ fn serve(listener: TcpListener, behavior: Behavior) -> Test<Transcript> {
         );
         return Ok(transcript);
     }
-    response(&mut peer, cseq, "Content-Type: application/sdp\r\n", SDP)?;
+    let description = if matches!(behavior, Behavior::Payload97) {
+        SDP.replace("RTP/AVP 96\r\n", "RTP/AVP 96 97\r\n").replace(
+            "a=control:trackID=0\r\n",
+            concat!(
+                "a=rtpmap:97 H264/90000\r\n",
+                "a=fmtp:97 packetization-mode=1;sprop-parameter-sets=",
+                "Z0LAC9oKEbARAAADAAEAAAMAMg8UKqA=,aM4PLIA=\r\n",
+                "a=control:trackID=0\r\n"
+            ),
+        )
+    } else {
+        SDP.to_owned()
+    };
+    response(&mut peer, cseq, "Content-Type: application/sdp\r\n", &description)?;
     let (method, cseq) = request(&mut peer)?.ok_or("client sent no SETUP")?;
     assert_eq!(method, "SETUP");
     transcript.methods.push(method);
@@ -443,13 +474,14 @@ fn serve(listener: TcpListener, behavior: Behavior) -> Test<Transcript> {
     assert_eq!(method, "PLAY");
     transcript.methods.push(method);
     response(&mut peer, cseq, "Session: fixture\r\n", "")?;
-    transcript.pictures = if matches!(behavior, Behavior::Target | Behavior::WrongCadence) {
-        2
-    } else {
-        1
+    transcript.pictures = match behavior {
+        Behavior::Target | Behavior::WrongCadence | Behavior::Payload97 => 2,
+        Behavior::TwoWindows => 4,
+        _ => 1,
     };
     let cadence = if matches!(behavior, Behavior::WrongCadence) { 4000 } else { 3600 };
-    peer.write_all(&video(transcript.pictures, cadence)?)?;
+    let payload_type = if matches!(behavior, Behavior::Payload97) { 97 } else { 96 };
+    peer.write_all(&video(transcript.pictures, cadence, payload_type, matches!(behavior, Behavior::TwoWindows))?)?;
     if matches!(behavior, Behavior::MalformedAfterOne) {
         // Complete interleaved framing, deliberately truncated RTP header.
         peer.write_all(&[b'$', 0, 0, 4, 0x80, 96, 0, 9])?;
@@ -531,14 +563,28 @@ fn detail<'a>(rows: &'a [Value], kind: &str) -> Test<&'a Value> {
 }
 
 fn import_and_decode(directory: &Directory, rows: &[Value], frames: i128) -> Test {
-    let window = detail(rows, "window_durable")?;
+    import_selected_and_decode(directory, rows, frames, false)
+}
+
+fn import_selected_and_decode(
+    directory: &Directory,
+    rows: &[Value],
+    frames: i128,
+    whole_catalog: bool,
+) -> Test {
+    let selected = detail(rows, if whole_catalog { "catalog_published" } else { "window_durable" })?;
+    let (slot_option, root_option) = if whole_catalog {
+        ("--catalog-slot", "--catalog-root")
+    } else {
+        ("--window-slot", "--window-root")
+    };
     let root = directory.0.join("deployment");
     let mut args: Vec<OsString> = [
         "--archive", directory.root().to_str().ok_or("archive path")?,
         "--root", root.to_str().ok_or("deployment path")?,
         "--site", SITE,
-        "--window-slot", text(window, "slot")?,
-        "--window-root", text(window, "root")?,
+        slot_option, text(selected, "slot")?,
+        root_option, text(selected, "root")?,
         "--codec", "avc",
         "--sensor-id", SENSOR,
         "--stream-id", STREAM,
@@ -553,7 +599,19 @@ fn import_and_decode(directory: &Directory, rows: &[Value], frames: i128) -> Tes
     .into_iter()
     .map(OsString::from)
     .collect();
+    if whole_catalog {
+        args.extend([
+            OsString::from("--decode-clock"),
+            OsString::from(text(selected, "decode_clock")?),
+            OsString::from("--time-scale"),
+            OsString::from(integer(selected, "time_scale")?.to_string()),
+        ]);
+    }
     let preview = parse(&good(run("import", &args)?)?)?;
+    if whole_catalog {
+        assert_eq!(text(&preview, "format")?, "fss.rtsp_catalog_import_operator.v1");
+        assert_eq!(text(&preview, "selection")?, "complete_catalog_page");
+    }
     assert!(!root.exists(), "import preview created destination custody");
     args.extend([
         "--approve".into(),
@@ -563,6 +621,10 @@ fn import_and_decode(directory: &Directory, rows: &[Value], frames: i128) -> Tes
     assert_eq!(integer(&imported, "frames")?, frames);
     assert_eq!(text(&imported, "capture_time_label")?, "unknown");
     assert!(boolean(&imported, "destination_contains_original_recording")?);
+    if whole_catalog {
+        assert!(boolean(&imported, "destination_contains_complete_catalog")?);
+        assert_eq!(integer(&imported, "windows")?, integer(selected, "windows")?);
+    }
     assert!(!boolean(&imported, "reused")?);
     let identity = text(&imported, "import_identity")?.to_owned();
     let origin = text(&imported, "origin_proof")?.to_owned();
@@ -803,4 +865,86 @@ fn approved_aliasing_parent_directories_are_refused_before_storage_or_connection
     assert!(!alias_pins.exists());
     assert!(fs::symlink_metadata(&alias_parent)?.file_type().is_symlink());
     Ok(())
+}
+
+#[test]
+fn selected_secondary_avc_payload_is_retained_and_cold_decoded() -> Test {
+    let directory = Directory::new("payload97")?;
+    let listener = listener()?;
+    let mut args = args(&directory, listener.local_addr()?, 2);
+    args.extend(["--payload-type".into(), "97".into()]);
+    let (preview, approval) = plan(&args)?;
+    assert_eq!(integer(value(&preview, "bounds")?, "payload_type")?, 97);
+    args.extend(["--approve".into(), approval.into()]);
+    let (output, transcript) = captured(listener, &args, Behavior::Payload97)?;
+    assert!(
+        output.status.success(),
+        "selected PT97 capture failed; stdout={} stderr={}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    );
+    assert_eq!(&transcript.methods[..3], ["DESCRIBE", "SETUP", "PLAY"]);
+    assert_eq!(transcript.pictures, 2);
+    assert!(!transcript.source_eof);
+    let rows = rows(&output)?;
+    let terminal = detail(&rows, "terminal")?;
+    assert!(boolean(terminal, "complete")?);
+    assert_eq!(text(terminal, "stop_cause")?, "owner_stopped");
+    assert!(!boolean(terminal, "peer_eof")?);
+    assert_eq!(integer(terminal, "collected_pictures")?, 2);
+    assert_eq!(integer(terminal, "durable_pictures")?, 2);
+    assert_eq!(integer(terminal, "durable_windows")?, 1);
+    assert_eq!(integer(terminal, "indexed_windows")?, 1);
+    import_and_decode(&directory, &rows, 2)
+}
+
+#[test]
+fn native_capture_catalog_imports_both_windows_and_cold_decodes_every_picture() -> Test {
+    let directory = Directory::new("catalog")?;
+    let listener = listener()?;
+    let mut args = args(&directory, listener.local_addr()?, 4);
+    replace(&mut args, "--max-window-pictures", "2")?;
+    let (preview, approval) = plan(&args)?;
+    args.extend(["--approve".into(), approval.into()]);
+    let (output, transcript) = captured(listener, &args, Behavior::TwoWindows)?;
+    assert!(
+        output.status.success(),
+        "multi-window capture failed; stdout={} stderr={}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    );
+    assert_eq!(transcript.pictures, 4);
+    assert!(!transcript.source_eof);
+    let rows = rows(&output)?;
+    let terminal = detail(&rows, "terminal")?;
+    assert!(boolean(terminal, "complete")?);
+    assert_eq!(text(terminal, "stop_cause")?, "owner_stopped");
+    assert!(!boolean(terminal, "peer_eof")?);
+    assert_eq!(integer(terminal, "collected_pictures")?, 4);
+    assert_eq!(integer(terminal, "durable_pictures")?, 4);
+    assert_eq!(integer(terminal, "durable_windows")?, 2);
+    assert_eq!(integer(terminal, "indexed_windows")?, 2);
+    let mut windows = 0;
+    for row in &rows {
+        if text(row, "kind")? == "window_durable" {
+            let window = value(row, "detail")?;
+            assert_eq!(integer(window, "ordinal")?, windows);
+            assert_eq!(integer(window, "pictures")?, 2);
+            assert_eq!(integer(window, "decode_start")?, windows * 7200);
+            assert_eq!(integer(window, "decode_end")?, (windows + 1) * 7200);
+            windows += 1;
+        }
+    }
+    assert_eq!(windows, 2);
+    let catalog = detail(&rows, "catalog_published")?;
+    assert_eq!(integer(catalog, "windows")?, 2);
+    assert_eq!(integer(catalog, "time_scale")?, 90_000);
+    assert_eq!(text(catalog, "decode_clock")?, text(&preview, "decode_clock")?);
+    assert_eq!(text(catalog, "codec")?, "avc");
+    assert_eq!(text(value(catalog, "source")?, "sensor_id")?, SENSOR);
+    assert_eq!(text(value(catalog, "source")?, "stream_id")?, STREAM);
+    let receipt = value(catalog, "receipt")?;
+    assert_eq!(text(catalog, "slot")?, text(receipt, "slot")?);
+    assert_eq!(text(catalog, "root")?, text(receipt, "root")?);
+    import_selected_and_decode(&directory, &rows, 4, true)
 }

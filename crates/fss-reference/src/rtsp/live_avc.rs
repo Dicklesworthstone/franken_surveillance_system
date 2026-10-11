@@ -238,6 +238,24 @@ impl LiveAvcConnection {
         now: u64,
         authority: &dyn TcpAuthority,
     ) -> Result<Self, LiveAvcConnectFailure> {
+        Self::connect_selected(config, None, now, authority)
+    }
+    /// Bind one exact AVC payload type into the actual protocol owner before connecting.
+    /// Existing connection limits, authority probes and no-retry semantics are unchanged.
+    pub fn connect_with_payload_type(
+        config: LiveAvcConfig,
+        payload_type: u8,
+        now: u64,
+        authority: &dyn TcpAuthority,
+    ) -> Result<Self, LiveAvcConnectFailure> {
+        Self::connect_selected(config, Some(payload_type), now, authority)
+    }
+    fn connect_selected(
+        config: LiveAvcConfig,
+        payload_type: Option<u8>,
+        now: u64,
+        authority: &dyn TcpAuthority,
+    ) -> Result<Self, LiveAvcConnectFailure> {
         let refused = |reason| LiveAvcConnectFailure {
             reason,
             connection_attempted: false,
@@ -252,13 +270,23 @@ impl LiveAvcConnection {
         if presentation != Some(config.binding.authority()) || control != presentation {
             return Err(refused(LiveAvcError::Configuration));
         }
-        let protocol = DigestAvcClient::new(
-            config.protocol,
-            config.binding.key(),
-            config.media,
-            &config.realm,
-            config.digest_policy,
-        )
+        let protocol = match payload_type {
+            Some(payload_type) => DigestAvcClient::new_with_payload_type(
+                config.protocol,
+                config.binding.key(),
+                config.media,
+                payload_type,
+                &config.realm,
+                config.digest_policy,
+            ),
+            None => DigestAvcClient::new(
+                config.protocol,
+                config.binding.key(),
+                config.media,
+                &config.realm,
+                config.digest_policy,
+            ),
+        }
         .map_err(|e| refused(LiveAvcError::Protocol(e)))?;
         let transport = RtspTcpLink::connect(
             config.binding,
