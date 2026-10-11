@@ -1,5 +1,5 @@
 #![forbid(unsafe_code)]
-//! Owner-approved, source-preserving import of an exact native RTSP recording window.
+//! Owner-approved, source-preserving import of an exact native RTSP recording window or complete catalog.
 
 use std::io::{self, Write};
 use std::process::ExitCode;
@@ -14,7 +14,10 @@ mod plan;
 use plan::{MAX_ARGUMENTS, Options};
 
 const HELP: &str = "fss-import-rtsp --archive EXISTING_ABSOLUTE_ARCHIVE --root ABSOLUTE_DEPLOYMENT --site SITE\n\
-  --window-slot SLOT --window-root sha256:HEX --codec avc|hevc\n\
+  --codec avc|hevc\n\
+  Select a window: --window-slot SLOT --window-root sha256:HEX\n\
+  Or a whole catalog: --catalog-slot SLOT --catalog-root sha256:HEX\n\
+                     --decode-clock sha256:HEX --time-scale N [--max-windows 64]\n\
   --sensor-id ID --stream-id ID --generation N --anchor sha256:HEX --receive-clock sha256:HEX\n\
   --receive-time-ns N --owner-authorized yes --read-originals yes --retain-originals yes\n\
   [--approve sha256:PLAN] [--principal ID]\n\
@@ -23,9 +26,13 @@ const HELP: &str = "fss-import-rtsp --archive EXISTING_ABSOLUTE_ARCHIVE --root A
   RTP ticks and receive clocks do not establish a capture origin.\n\
   Bounds: --max-frames 256 --max-original-bytes 33554432 --max-media-bytes 33554432\n\
           --max-work 1000000000000 --timeout-ms 30000.\n\
+  Whole-catalog bounds default to 64 windows, 16384 frames, 134217728 original bytes\n\
+  and 67108864 reconstructed media bytes. Oversized, gapped or reconfigured pages refuse.\n\
   Without --approve: exact plan preview without filesystem, clock or network I/O.\n\
   Approved execution verifies the original RTP-to-NAL-to-MP4 mapping and retains the\n\
   original recording root, RTP source pack, index, initialization and media fragment.\n\
+  Catalog imports additionally retain the catalog and every original native window. Adjacent\n\
+  decode intervals and identical initialization bytes form one MP4 for whole-recording watch.\n\
   Native decode, motion, watch and corroboration consume the returned retained import identity.\n\
   Exact retries reconcile completed or partial imports; they still require the selected archive.\n\
   Destination analysis needs only retained destination custody after the import completes.\n\

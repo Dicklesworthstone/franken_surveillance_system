@@ -6,6 +6,8 @@
 //! absolute capture time is an explicit owner assumption, never inferred from RTP or receive time.
 //! This finite offline operation grants neither network access, live continuity nor event authority.
 
+pub mod catalog;
+mod catalog_provenance;
 mod provenance;
 mod publication;
 
@@ -27,6 +29,11 @@ use crate::rtsp::recording::{
     hevc::local::load_hevc_recording, local::load_recording,
 };
 use crate::{ReferenceDeployment, ReplayCx};
+
+pub(crate) use catalog_provenance::{
+    OriginCache as CatalogOriginCache, verify_membership as verify_catalog_membership,
+    verify_originals as verify_catalog_originals, verify_range_budgeted as verify_catalog_range_budgeted,
+};
 
 pub(crate) use provenance::{
     OriginCache, verify_membership, verify_originals, verify_range_budgeted,
@@ -164,10 +171,43 @@ impl RtspImportRequest {
         media: &[u8],
         cx: &ReplayCx,
     ) -> Result<ScannedSegments, FileIngestError> {
-        if let Some(origin) = self.capture_origin {
+        scan_media(media, self.codec, &self.source, self.receive_time, self.capture_origin,
+            self.max_frames, self.max_media_bytes,
+            self.identity().map_err(|_| corrupt("request identity"))?, cx)
+    }
+    fn native_hint(&self) -> Option<CaptureHint> {
+        self.capture_origin.map(|origin| CaptureHint {
+            start_ns: origin.start_ns,
+            uncertainty_ns: origin.uncertainty_ns,
+            // The MP4 scanner uses only sample presentation offsets, never this file-only field.
+            assumed_fps: 1.0,
+        })
+    }
+    pub(crate) const fn time_label(&self) -> &'static str {
+        if self.capture_origin.is_some() {
+            "operator_assumption"
+        } else {
+            "unknown"
+        }
+    }
+}
+
+#[allow(clippy::too_many_arguments)]
+fn scan_media(
+    media: &[u8],
+    codec: RtspImportCodec,
+    source: &RecordingScope,
+    receive_time: TimestampNs,
+    capture_origin: Option<RtspCaptureOrigin>,
+    max_frames: usize,
+    max_media_bytes: u64,
+    identity: ContentDigest,
+    cx: &ReplayCx,
+) -> Result<ScannedSegments, FileIngestError> {
+        if let Some(origin) = capture_origin {
             use fss_container::demux::{AvcMp4, DemuxError};
-            let mut limits = super::file_adapter::mp4_demux_limits(self.max_frames);
-            limits.maximum_input_bytes = usize::try_from(self.max_media_bytes)
+            let mut limits = super::file_adapter::mp4_demux_limits(max_frames);
+            limits.maximum_input_bytes = usize::try_from(max_media_bytes)
                 .map_err(|_| corrupt("media byte ceiling"))?;
             let mut check = || cx.checkpoint(STAGE_RTSP_IMPORT).map_err(|_| DemuxError::Cancelled);
             let video = AvcMp4::parse_recovering_tail(media, None, limits, &mut check)
@@ -187,43 +227,31 @@ impl RtspImportRequest {
         }
         let mut native = FileIngestRequest::new(
             std::path::PathBuf::new(),
-            self.source.sensor.clone(),
-            self.source.stream.clone(),
+            source.sensor.clone(),
+            source.stream.clone(),
         );
         native.limits = FileIngestLimits {
-            max_file_bytes: self.max_media_bytes,
+            max_file_bytes: max_media_bytes,
             chunk_bytes: CHUNK_BYTES as u64,
-            max_segments: self.max_frames,
+            max_segments: max_frames,
             max_batch_deltas: 1,
             ..FileIngestLimits::standard()
         };
-        native.capture_hint = self.native_hint();
-        native.receive_time = Some(self.receive_time);
+        native.capture_hint = capture_origin.map(|origin| CaptureHint {
+            start_ns: origin.start_ns,
+            uncertainty_ns: origin.uncertainty_ns,
+            assumed_fps: 1.0,
+        });
+        native.receive_time = Some(receive_time);
         FileIngestAdapter::container_segments(
             media,
-            self.codec.format(),
+            codec.format(),
             &native,
-            &hex(self.identity().map_err(|_| corrupt("request identity"))?),
-            self.receive_time,
+            &hex(identity),
+            receive_time,
             cx,
         )
     }
-    fn native_hint(&self) -> Option<CaptureHint> {
-        self.capture_origin.map(|origin| CaptureHint {
-            start_ns: origin.start_ns,
-            uncertainty_ns: origin.uncertainty_ns,
-            // The MP4 scanner uses only sample presentation offsets, never this file-only field.
-            assumed_fps: 1.0,
-        })
-    }
-    pub(crate) const fn time_label(&self) -> &'static str {
-        if self.capture_origin.is_some() {
-            "operator_assumption"
-        } else {
-            "unknown"
-        }
-    }
-}
 
 /// Independent permission to disclose the selected original packets and retain them in destination.
 /// Callers must check current principal, policy, revocation and deadline. No default grant exists.

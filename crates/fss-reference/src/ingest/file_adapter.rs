@@ -3098,7 +3098,9 @@ impl FileIngestAdapter {
         deployment: &ReferenceDeployment,
         segment_index: usize,
     ) -> Result<Vec<u8>, FileIngestError> {
-        if manifest.adapter_id == super::rtsp_import::ADAPTER {
+        if manifest.adapter_id == super::rtsp_import::ADAPTER
+            || manifest.adapter_id == super::rtsp_import::catalog::ADAPTER
+        {
             return Err(FileIngestError::CorruptSegment {
                 detail: "RTSP originals require context-bound RetainedFileImport::read_segment"
                     .to_owned(),

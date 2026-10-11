@@ -155,3 +155,57 @@ fn malformed_and_out_of_scope_inputs_refuse_before_io() {
     unknown.extend([OsString::from("--url"), OsString::from("rtsp://example.invalid")]);
     assert!(Options::parse(&unknown).is_err());
 }
+
+fn catalog_args() -> Vec<OsString> {
+    let mut input = args();
+    for (old, new) in [("--window-slot", "--catalog-slot"), ("--window-root", "--catalog-root")] {
+        let position = input.iter().position(|argument| argument == old).expect("fixture");
+        input[position] = new.into();
+    }
+    set(&mut input, "--decode-clock", &ContentDigest::sha256(b"explicit-decode-clock").to_text());
+    set(&mut input, "--time-scale", "90000");
+    input
+}
+
+#[test]
+fn whole_catalog_preview_and_approval_bind_exact_clock_and_cumulative_bounds() -> Result<(), &'static str> {
+    let initial = Options::parse(&catalog_args())?;
+    let approved = initial.approval()?;
+    assert!(initial.catalog.is_some());
+    let preview = initial.preview()?;
+    for expected in ["\"maximum_windows\":64", "\"maximum_frames\":16384", "\"maximum_original_bytes\":134217728",
+        "\"maximum_media_bytes\":67108864", "\"selection\":\"complete_catalog_page\"", "\"writes\":\"none\""] {
+        assert!(preview.contains(expected), "{expected}");
+    }
+    assert!(!preview.contains("\"window_root\""));
+    let other = ContentDigest::sha256(b"other-catalog-clock").to_text();
+    for (key, value) in [("--decode-clock", other.as_str()), ("--time-scale", "45000"), ("--max-windows", "2"),
+        ("--max-frames", "320"), ("--max-original-bytes", "33554432"), ("--catalog-slot", "other-catalog")] {
+        let mut input = catalog_args();
+        set(&mut input, key, value);
+        let mut options = Options::parse(&input)?;
+        assert_ne!(options.approval()?, approved, "{key}");
+        options.approve = Some(approved);
+        assert_eq!(driver::execute(&options).err(), Some("ERR-RTSP-IMPORT-APPROVAL-001"));
+    }
+    Ok(())
+}
+
+#[test]
+fn incomplete_mixed_or_oversized_catalog_selection_refuses_before_io() {
+    for key in ["--catalog-slot", "--catalog-root", "--decode-clock", "--time-scale"] {
+        let mut input = catalog_args();
+        let at = input.iter().position(|a| a == key).expect("fixture");
+        input.drain(at..at + 2);
+        assert!(Options::parse(&input).is_err(), "{key}");
+    }
+    for (key, value) in [("--window-slot", "window"), ("--max-windows", "65"), ("--max-frames", "16385"),
+        ("--max-media-bytes", "67108865"), ("--max-original-bytes", "134217729"), ("--time-scale", "0")] {
+        let mut input = catalog_args();
+        set(&mut input, key, value);
+        assert!(Options::parse(&input).is_err(), "{key}");
+    }
+    let mut window = args();
+    set(&mut window, "--decode-clock", &ContentDigest::sha256(b"clock").to_text());
+    assert!(Options::parse(&window).is_err());
+}

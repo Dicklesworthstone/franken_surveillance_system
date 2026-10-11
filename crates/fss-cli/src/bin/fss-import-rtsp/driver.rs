@@ -15,8 +15,9 @@ use fss_reference::ingest::rtsp_import::{
     MAX_ORIGINAL_BYTES, RtspImportAuthority, RtspImportRequest, import_rtsp,
 };
 use fss_reference::{ReferenceDeployment, ReplayCx};
+use fss_reference::ingest::rtsp_import::catalog::{RtspCatalogImportAuthority, RtspCatalogImportRequest, import_rtsp_catalog};
 
-use super::plan::{CAPS, FORMAT, Options};
+use super::plan::{CAPS, CATALOG_FORMAT, FORMAT, Options};
 
 struct Owner<'a> {
     options: &'a Options,
@@ -26,9 +27,21 @@ struct Owner<'a> {
 }
 impl RtspImportAuthority for Owner<'_> {
     fn permit(&self, request: &RtspImportRequest, destination: &ReferenceDeployment) -> bool {
-        request
+        self.options.catalog.is_none() && request
             .digest()
             .is_ok_and(|digest| self.options.request.digest().ok() == Some(digest))
+            && destination.root() == self.options.root
+            && destination.site_lineage() == self.options.site
+            && self.authority.cancellation_reason.is_none()
+            && CAPS.iter().all(|capability| self.authority.has_capability(capability))
+            && boundary(self.options, self.cx, self.start).is_ok()
+    }
+}
+
+impl RtspCatalogImportAuthority for Owner<'_> {
+    fn permit(&self, request: &RtspCatalogImportRequest, destination: &ReferenceDeployment) -> bool {
+        self.options.catalog.as_ref().is_some_and(|expected| request.digest().ok() == expected.digest().ok())
+            && request.digest().is_ok()
             && destination.root() == self.options.root
             && destination.site_lineage() == self.options.site
             && self.authority.cancellation_reason.is_none()
@@ -131,26 +144,26 @@ fn execute_authorized(
         start,
     };
     let mut work = WorkBudget::new(options.work);
-    let receipt = import_rtsp(
-        &source,
-        &mut destination,
-        &options.request,
-        &owner,
-        cx,
-        &mut work,
-    )
-    .map_err(|error| error.stable_id())?;
+    let (receipt, catalog_result) = if let Some(request) = &options.catalog {
+        let result = import_rtsp_catalog(&source, &mut destination, request, &owner, cx, &mut work)
+            .map_err(|error| error.stable_id())?;
+        (result.import, Some((result.windows, result.decode_interval)))
+    } else {
+        let result = import_rtsp(&source, &mut destination, &options.request, &owner, cx, &mut work)
+            .map_err(|error| error.stable_id())?;
+        (result, None)
+    };
     // Durable completion remains reportable even if the cooperative deadline expires now.
-    Ok(object(&[
-        ("format", string(FORMAT)),
+    let mut fields = vec![
+        ("format", string(if options.catalog.is_some() { CATALOG_FORMAT } else { FORMAT })),
         ("kind", string("imported")),
         ("approval_digest", string(&options.approval()?.to_text())),
         ("import_identity", string(&receipt.import_identity.to_text())),
         ("import_root", string(&receipt.import_root.to_text())),
         ("manifest_digest", string(&receipt.manifest_digest.to_text())),
         ("origin_proof", string(&receipt.proof.to_text())),
-        ("window_slot", string(options.request.slot.as_str())),
-        ("window_root", string(&options.request.root.to_text())),
+        (if options.catalog.is_some() { "catalog_slot" } else { "window_slot" }, string(options.request.slot.as_str())),
+        (if options.catalog.is_some() { "catalog_root" } else { "window_root" }, string(&options.request.root.to_text())),
         ("codec", string(receipt.codec.as_str())),
         ("frames", receipt.frames.to_string()),
         ("capture_time_label", string(receipt.capture_time_label)),
@@ -160,7 +173,18 @@ fn execute_authorized(
         ("destination_contains_original_recording", "true".into()),
         ("network", string("none")),
         ("work_used", work.used().to_string()),
-    ]))
+    ];
+    if let (Some(request), Some((windows, interval))) = (&options.catalog, catalog_result) {
+        fields.extend([
+            ("windows", windows.to_string()),
+            ("decode_clock", string(&request.scope.decode_clock.to_text())),
+            ("time_scale", request.scope.time_scale.to_string()),
+            ("decode_start", string(&interval.start.to_string())),
+            ("decode_end", string(&interval.end.to_string())),
+            ("destination_contains_complete_catalog", "true".into()),
+        ]);
+    }
+    Ok(object(&fields))
 }
 
 pub(super) fn execute(options: &Options) -> Result<String, &'static str> {

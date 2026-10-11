@@ -39,11 +39,11 @@ pub(super) struct Proof {
 }
 
 pub(super) struct Window {
-    root: Vec<u8>,
-    source: Vec<u8>,
-    initialization: Vec<u8>,
-    fragment: Vec<u8>,
-    index: Vec<u8>,
+    pub(super) root: Vec<u8>,
+    pub(super) source: Vec<u8>,
+    pub(super) initialization: Vec<u8>,
+    pub(super) fragment: Vec<u8>,
+    pub(super) index: Vec<u8>,
     pub(super) samples: usize,
 }
 impl Window {
@@ -91,7 +91,7 @@ impl Window {
             (ContentDigest::sha256(&self.index), &self.index),
         ]
     }
-    fn objects(&self) -> RecordingObjects<'_> {
+    pub(super) fn objects(&self) -> RecordingObjects<'_> {
         RecordingObjects {
             source: &self.source,
             initialization: &self.initialization,

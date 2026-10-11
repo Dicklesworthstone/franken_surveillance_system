@@ -25,11 +25,50 @@ pub(super) fn publish(
     proof: Proof,
     media: Vec<u8>,
     scan: ScannedSegments,
-    mut payloads: BTreeMap<ContentDigest, Vec<u8>>,
+    payloads: BTreeMap<ContentDigest, Vec<u8>>,
 ) -> Result<RtspImportReceipt, RtspImportError> {
-    let proof_bytes = proof.encode()?;
+    let input = PublicationInput {
+        identity: request.identity()?,
+        limits_digest: request.digest()?,
+        codec: request.codec,
+        adapter: ADAPTER,
+        generation: GENERATION,
+        detector_evidence: "native_rtsp_recording:reconstructed_mp4:original_rtp_retained",
+        capture_time_label: request.time_label(),
+        frames: proof.frames(),
+        proof: proof.encode()?,
+    };
+    publish_import(destination, cx, work, input, media, scan, payloads,
+        &|current| guard(authority, request, current, cx))
+}
+
+/// Shared root-last publisher with unchanged capsule authority, retry and complete-closure gates.
+pub(super) struct PublicationInput {
+    pub identity: ContentDigest,
+    pub limits_digest: ContentDigest,
+    pub codec: RtspImportCodec,
+    pub adapter: &'static str,
+    pub generation: &'static str,
+    pub detector_evidence: &'static str,
+    pub capture_time_label: &'static str,
+    pub frames: usize,
+    pub proof: Vec<u8>,
+}
+
+#[allow(clippy::too_many_arguments)]
+pub(super) fn publish_import(
+    destination: &mut ReferenceDeployment,
+    cx: &ReplayCx,
+    work: &mut WorkBudget<'_>,
+    input: PublicationInput,
+    media: Vec<u8>,
+    scan: ScannedSegments,
+    mut payloads: BTreeMap<ContentDigest, Vec<u8>>,
+    authorize: &dyn Fn(&ReferenceDeployment) -> Result<(), RtspImportError>,
+) -> Result<RtspImportReceipt, RtspImportError> {
+    let proof_bytes = input.proof;
     let proof_digest = ContentDigest::sha256(&proof_bytes);
-    let identity = request.identity()?;
+    let identity = input.identity;
     let hex = hex(identity);
     super::super::retained::refuse_deleted(destination, identity)?;
     for capsule in &scan.capsules {
@@ -50,18 +89,18 @@ pub(super) fn publish(
     let mut manifest = FileImportManifest {
         input_sha256: ContentDigest::sha256(&media),
         input_bytes: media.len() as u64,
-        format: request.codec.format().as_str().into(),
-        detector_evidence: "native_rtsp_recording:reconstructed_mp4:original_rtp_retained".into(),
+        format: input.codec.format().as_str().into(),
+        detector_evidence: input.detector_evidence.into(),
         chunk_bytes: CHUNK_BYTES as u64,
         ordered_chunks: chunks,
         segment_spans: scan.segment_spans,
         omission_spans: scan.omission_spans,
         capsule_ids: scan.capsules.iter().map(|c| c.capsule_id.clone()).collect(),
-        limits_digest: request.digest()?,
-        adapter_id: ADAPTER.into(),
-        adapter_generation: format!("{GENERATION}{}", super::hex(proof_digest)),
+        limits_digest: input.limits_digest,
+        adapter_id: input.adapter.into(),
+        adapter_generation: format!("{}{}", input.generation, super::hex(proof_digest)),
         part_roots: Vec::new(),
-        capture_time_label: request.time_label().into(),
+        capture_time_label: input.capture_time_label.into(),
     };
     let publication = FilePublicationPlan::new(
         identity,
@@ -138,7 +177,7 @@ pub(super) fn publish(
         },
     ];
     let children = vec![metadata, root];
-    guard(authority, request, destination, cx)?;
+    authorize(destination)?;
     let completed = file_adapter::retry::preflight(
         destination, &batches, &batch, identity, &manifest, cx,
     )?;
@@ -146,16 +185,16 @@ pub(super) fn publish(
         import_identity: identity,
         import_root: root,
         manifest_digest: metadata,
-        frames: proof.frames(),
-        codec: request.codec,
-        capture_time_label: request.time_label(),
+        frames: input.frames,
+        codec: input.codec,
+        capture_time_label: input.capture_time_label,
         proof: proof_digest,
         reused,
     };
     if completed.is_some() {
         publication.verify(destination, &manifest, cx)?;
         for (digest, expected) in &payloads {
-            guard(authority, request, destination, cx)?;
+            authorize(destination)?;
             work.charge(expected.len() as u64).map_err(source_error)?;
             if destination.publisher().spool().read_bounded(*digest, expected.len()).map_err(storage_error)? != *expected {
                 return Err(RtspImportError::Invalid("completed custody differs"));
@@ -179,12 +218,12 @@ pub(super) fn publish(
         if destination.publisher().root(slot)
             .is_some_and(|r| r.state != fss_publication::LocalPublicationState::Staged)
         {
-            guard(authority, request, destination, cx)?;
+            authorize(destination)?;
             if destination.publisher().spool().read_bounded(part.root(), part.canonical_bytes().len())
                 .map_err(storage_error)? != part.canonical_bytes()
             { return Err(RtspImportError::Invalid("committed root differs")); }
             for digest in part.children() {
-                guard(authority, request, destination, cx)?;
+                authorize(destination)?;
                 let part_bytes = publication.parts().iter()
                     .find(|p| p.manifest().root() == *digest)
                     .map(|p| p.manifest().canonical_bytes());
@@ -200,27 +239,27 @@ pub(super) fn publish(
         }
     }
     for (digest, bytes) in &payloads {
-        guard(authority, request, destination, cx)?;
+        authorize(destination)?;
         work.charge(bytes.len() as u64).map_err(source_error)?;
         let staged = destination.publisher_mut().stage_object(bytes).map_err(storage_error)?;
         if staged != *digest { return Err(RtspImportError::Invalid("staged identity")); }
         destination.publisher_mut().verify_object(staged).map_err(storage_error)?;
     }
     for planned in batches {
-        guard(authority, request, destination, cx)?;
+        authorize(destination)?;
         file_adapter::append_planned_batch(
             destination, planned.batch_id, planned.deltas, planned.children, cx,
         )?;
     }
-    guard(authority, request, destination, cx)?;
+    authorize(destination)?;
     publication.publish_guarded(destination, &manifest, validity, cx, &|current| {
         checkpoint(cx)?;
-        if !authority.permit(request, current) {
+        if authorize(current).is_err() {
             return Err(FileIngestError::CancellationRequested { stage: STAGE_RTSP_IMPORT });
         }
         Ok(())
     })?;
-    guard(authority, request, destination, cx)?;
+    authorize(destination)?;
     file_adapter::append_planned_batch(destination, batch, deltas, children, cx)?;
     Ok(receipt(false))
 }

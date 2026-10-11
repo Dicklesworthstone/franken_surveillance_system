@@ -196,7 +196,9 @@ impl FileImportManifest {
                 "partitioned manifest needs explicit part resolution",
             ));
         }
-        if self.adapter_id == super::rtsp_import::ADAPTER {
+        if self.adapter_id == super::rtsp_import::ADAPTER
+            || self.adapter_id == super::rtsp_import::catalog::ADAPTER
+        {
             return Err(invalid("RTSP recording needs explicit original-packet resolution"));
         }
         if self.adapter_id == super::http_import::ADAPTER {
@@ -253,6 +255,11 @@ impl FileImportManifest {
         } else if self.adapter_id == super::rtsp_import::ADAPTER {
             matches!(self.format.as_str(), "mp4avc" | "mp4hevc")
                 && self.adapter_generation.strip_prefix(super::rtsp_import::GENERATION)
+                    .is_some_and(|hex| hex.len() == 64 && hex.bytes()
+                        .all(|b| b.is_ascii_digit() || (b'a'..=b'f').contains(&b)))
+        } else if self.adapter_id == super::rtsp_import::catalog::ADAPTER {
+            matches!(self.format.as_str(), "mp4avc" | "mp4hevc")
+                && self.adapter_generation.strip_prefix(super::rtsp_import::catalog::GENERATION)
                     .is_some_and(|hex| hex.len() == 64 && hex.bytes()
                         .all(|b| b.is_ascii_digit() || (b'a'..=b'f').contains(&b)))
         } else {
@@ -637,6 +644,7 @@ impl RetainedFileImport {
         })?;
         super::http_import::verify_originals(deployment, &self.manifest, cx)?;
         super::rtsp_import::verify_originals(deployment, &self.manifest, cx)?;
+        super::rtsp_import::verify_catalog_originals(deployment, &self.manifest, cx)?;
         checkpoint(cx, STAGE_RETAINED_COMPLETE)?;
         Ok(result)
     }
@@ -738,7 +746,8 @@ impl SourceReadBudget {
 /// SHA-256 digest and exact length: a chunk is served again only to a manifest naming that same
 /// digest and length at the requested position, so a cache can never substitute other bytes.
 /// Memory is bounded by twice the import's chunk size. RTSP imports additionally keep one
-/// source-verified native recording window (at most 32 MiB); its first read charges the same
+/// source-verified native recording window (at most 32 MiB), or one complete catalog MP4 (at most
+/// 64 MiB; original packet packs are dropped after native replay). First reads charge the same
 /// optional whole-scan source allowance, and final publication re-reads original custody.
 #[derive(Debug, Default)]
 pub struct VerifiedChunkCache {
@@ -746,6 +755,7 @@ pub struct VerifiedChunkCache {
     loaded: u64,
     source_budget: Option<SourceReadBudget>,
     rtsp_origin: Option<super::rtsp_import::OriginCache>,
+    rtsp_catalog_origin: Option<super::rtsp_import::CatalogOriginCache>,
 }
 
 impl VerifiedChunkCache {
@@ -773,8 +783,17 @@ impl VerifiedChunkCache {
         cx: &ReplayCx,
     ) -> Result<(), FileIngestError> {
         let budget = self.source_budget.clone();
+        if manifest.adapter_id == super::rtsp_import::catalog::ADAPTER {
+            self.rtsp_origin = None;
+        } else {
+            self.rtsp_catalog_origin = None;
+        }
         super::rtsp_import::verify_range_budgeted(
             deployment, manifest, offset, bytes, cx, &mut self.rtsp_origin,
+            &mut |n| budget.as_ref().map_or(Ok(()), |b| b.reserve(n)),
+        )?;
+        super::rtsp_import::verify_catalog_range_budgeted(
+            deployment, manifest, offset, bytes, cx, &mut self.rtsp_catalog_origin,
             &mut |n| budget.as_ref().map_or(Ok(()), |b| b.reserve(n)),
         )
     }

@@ -136,6 +136,15 @@ impl CatalogEntry {
         self.samples
     }
 
+    /// Advertised original datagram count, independently rechecked by source replay.
+    pub fn packets(&self) -> usize {
+        self.packets
+    }
+    /// Advertised source-linked NAL count, including initialization relocation.
+    pub fn nals(&self) -> usize {
+        self.nals
+    }
+
     fn from_window(slot: &SlotName, recording: &PreparedRecording) -> Self {
         let s = recording.summary();
         Self {

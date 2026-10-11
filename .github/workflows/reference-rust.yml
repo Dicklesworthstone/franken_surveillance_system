@@ -16,8 +16,8 @@ permissions:
   contents: read
 
 concurrency:
-  group: fss-reference-rust-${{ github.ref }}
-  cancel-in-progress: false
+  group: fss-reference-rust-v2-${{ github.ref }}
+  cancel-in-progress: true
 
 jobs:
   reference-tests:
@@ -42,7 +42,14 @@ jobs:
         run: rustup run nightly-2026-08-31 cargo test --locked --offline -p fss-reference --lib agent_orient::tests
       - name: Verify query CLI, library and MCP parity
         run: rustup run nightly-2026-08-31 cargo test --locked --offline -p fss-cli --test query_surface_contract
+      - name: Verify complete RTSP catalog custody and legacy window imports
+        run: rustup run nightly-2026-08-31 cargo test --locked --offline -p fss-reference --test rtsp_catalog_import_contract --test rtsp_import_contract
+      - name: Verify RTSP catalog and window operator commands
+        run: rustup run nightly-2026-08-31 cargo test --locked --offline -p fss-cli --test rtsp_catalog_import_cli --test rtsp_import_cli --bin fss-import-rtsp
       - name: Compile and execute native reference contracts
         run: rustup run nightly-2026-08-31 cargo test --locked --offline --workspace --all-targets
       - name: Execute repository-owned Rust qualification lane
         run: bash scripts/qualify.sh --lane rust
+      - name: Check formatting of changed reference sources
+        if: always()
+        run: rustup run nightly-2026-08-31 rustfmt --check --edition 2024 --config skip_children=true crates/fss-cli/src/bin/fss-import-rtsp.rs crates/fss-cli/src/bin/fss-import-rtsp/driver.rs crates/fss-cli/src/bin/fss-import-rtsp/plan.rs crates/fss-cli/src/bin/fss-import-rtsp/tests.rs crates/fss-cli/tests/query_surface_contract.rs crates/fss-cli/tests/rtsp_catalog_import_cli.rs crates/fss-core/src/agent_query_plan.rs crates/fss-core/src/continuation.rs crates/fss-reference/examples/fingerprint_lan.rs crates/fss-reference/src/agent_orient.rs crates/fss-reference/src/agent_orient/tests.rs crates/fss-reference/src/agent_query.rs crates/fss-reference/src/agent_query/tests.rs crates/fss-reference/src/ingest/file_adapter.rs crates/fss-reference/src/ingest/retained.rs crates/fss-reference/src/ingest/retained/root_binding.rs crates/fss-reference/src/ingest/rtsp_import.rs crates/fss-reference/src/ingest/rtsp_import/catalog.rs crates/fss-reference/src/ingest/rtsp_import/catalog_provenance.rs crates/fss-reference/src/ingest/rtsp_import/provenance.rs crates/fss-reference/src/ingest/rtsp_import/publication.rs crates/fss-reference/src/rtsp/recording_catalog.rs crates/fss-reference/tests/recording_support/mod.rs crates/fss-reference/tests/rtsp_catalog_import_contract.rs
