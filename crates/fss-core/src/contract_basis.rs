@@ -79,14 +79,33 @@ pub const SUPERSEDED_CONTRACT_BASIS_CANONICAL_DIGEST_CAPABILITIES_V1: &str =
     "sha256:fa54646d17da5fc021e5bc1b39647064030d00ea76eebf7f09a315963de07d0f";
 
 /// Every superseded registry freeze digest that a current peer must refuse as stale.
-pub const SUPERSEDED_REGISTRY_DIGESTS: &[&str] = &[SUPERSEDED_CAPABILITY_REGISTRY_DIGEST_V1];
+pub const SUPERSEDED_REGISTRY_DIGESTS: &[&str] = &[
+    SUPERSEDED_CAPABILITY_REGISTRY_DIGEST_V1,
+    SUPERSEDED_COST_REGISTRY_DIGEST_V1,
+];
+
+/// Canonical basis digest of the superseded reference basis bound to cost-v1
+/// (capabilities-v2). Retained as history (never reused).
+pub const SUPERSEDED_CONTRACT_BASIS_CANONICAL_DIGEST_COST_V1: &str =
+    "sha256:c740c404144769c71ff4460cd717a586abf800008fa969722c341819dc10d679";
 
 /// Pinned freeze digest of the error registry (`registries/ERRORS.md`).
 pub const REFERENCE_ERROR_REGISTRY_DIGEST: &str =
     "sha256:94b31547a77d2b1b598acca17e320d7100633f46d4a7a89caee3c230fe204b63";
 
-/// Pinned freeze digest of the operation cost registry (`gen:fss1:operation-cost-v1`).
+/// Pinned freeze digest of the operation cost registry (`gen:fss1:operation-cost-v2`).
+///
+/// v2 is the current cost generation (the machine registry at
+/// `architecture/operation_cost_registry.toml` declares it; `slo_validate.py` treats it
+/// as the baseline). The v1 freeze digest is retained as superseded history below and
+/// refused as stale (bead fss-fbeo8: the basis pin had drifted from the live registry).
 pub const REFERENCE_COST_REGISTRY_DIGEST: &str =
+    "sha256:c86017d6a6674322613e8b88eb6c3ba994df2c9d071cb8b7045ea31c0f37bc3b";
+
+/// Freeze digest of the superseded operation-cost registry generation
+/// (`gen:fss1:operation-cost-v1`). Retained as history (never reused): a basis that still
+/// binds it references a superseded cost registry and is refused as stale.
+pub const SUPERSEDED_COST_REGISTRY_DIGEST_V1: &str =
     "sha256:c885c834fe3d492076090e551c5988d6ed363bcf3a2432c41e67fe527ccf83b9";
 
 /// Pinned canonical semantic basis digest of the reference contract basis.
