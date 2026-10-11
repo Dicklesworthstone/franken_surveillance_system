@@ -6,6 +6,8 @@
 //! received TCP chunk is transferred to the caller, including control/authentication bytes;
 //! that transfer is NOT durable source custody. Do not log those bytes.
 
+/// Opt-in negotiation, Digest response and keepalive sequencing under the same live authority.
+pub mod automatic;
 /// Native connection and loss-aware recording collection under one exclusive owner.
 pub mod recording;
 
@@ -625,3 +627,226 @@ fn uri_authority(uri: &str) -> Option<&str> {
 
 #[cfg(test)]
 mod tests;
+
+#[cfg(test)]
+mod automatic_integration_tests {
+    use super::*;
+    use super::automatic::{AutomaticAvcConnection, AutomaticAvcStep};
+    use super::tests::{Authority, credentials, description, response, scope};
+    use crate::rtsp::client::ClientProgress;
+    use crate::rtsp::tcp::TcpDenial;
+    use std::io::{Read, Write};
+    use std::net::{Ipv4Addr, TcpListener, TcpStream};
+    use std::time::Duration;
+
+    type TestResult<T = ()> = Result<T, Box<dyn std::error::Error>>;
+
+    struct Fixture {
+        connection: AutomaticAvcConnection,
+        peer: TcpStream,
+        authority: Authority,
+        nonce: u128,
+    }
+    impl Fixture {
+        fn new(chunk: usize) -> TestResult<Self> {
+            let listener = TcpListener::bind((Ipv4Addr::LOCALHOST, 0))?;
+            let (mut config, authority) = scope(listener.local_addr()?)?;
+            config.transport.chunk_bytes = chunk;
+            let connection = AutomaticAvcConnection::connect(config, 0, &authority)?;
+            let (peer, _) = listener.accept()?;
+            peer.set_read_timeout(Some(Duration::from_secs(2)))?;
+            peer.set_write_timeout(Some(Duration::from_secs(2)))?;
+            peer.set_nodelay(true)?;
+            Ok(Self { connection, peer, authority, nonce: 0 })
+        }
+
+        fn poll(&mut self, readiness: SocketReadiness, now: u64) -> TestResult<AutomaticAvcStep> {
+            self.nonce += 1;
+            Ok(self.connection.poll(
+                readiness, &credentials()?, self.nonce.to_be_bytes(), now, &self.authority,
+            )?)
+        }
+
+        fn command(&mut self, now: u64) -> TestResult<(QueuedAvcRequest, Vec<u8>)> {
+            let AutomaticAvcStep::Queued(queued) = self.poll(SocketReadiness::default(), now)? else {
+                return Err("expected one automatically queued command".into());
+            };
+            assert!(!self.connection.needs_credentials());
+            for _ in 0..32_768 {
+                match self.poll(SocketReadiness { readable: false, writable: true }, now)? {
+                    AutomaticAvcStep::Live(LiveAvcStep::Write(TcpWriteStep::Sent { cseq, bytes })) => {
+                        assert_eq!((cseq, bytes), (queued.cseq, queued.bytes));
+                        let mut actual = vec![0; bytes];
+                        self.peer.read_exact(&mut actual)?;
+                        return Ok((queued, actual));
+                    }
+                    AutomaticAvcStep::Live(LiveAvcStep::Write(TcpWriteStep::Advanced { .. }))
+                    | AutomaticAvcStep::Live(LiveAvcStep::Pending(_)) => {}
+                    _ => return Err("unexpected output during automatic request write".into()),
+                }
+            }
+            Err("bounded automatic request write did not complete".into())
+        }
+
+        fn receive(&mut self, bytes: &[u8], now: u64) -> TestResult<LiveAvcStep> {
+            self.peer.write_all(bytes)?;
+            let mut original = Vec::new();
+            for _ in 0..32_768 {
+                match self.poll(SocketReadiness { readable: true, writable: false }, now)? {
+                    AutomaticAvcStep::Live(LiveAvcStep::Wire(chunk)) => {
+                        assert_eq!(chunk.admitted_ns(), now);
+                        original.extend_from_slice(chunk.expose());
+                    }
+                    AutomaticAvcStep::Live(step @ LiveAvcStep::Protocol { .. }) => {
+                        let significant = match &step {
+                            LiveAvcStep::Protocol {
+                                event: DigestAvcPoll::AuthenticationRequired { .. }, ..
+                            } => true,
+                            LiveAvcStep::Protocol {
+                                event: DigestAvcPoll::Client { event, .. }, ..
+                            } => matches!(event.as_ref(), AvcClientPoll::Control(_)
+                                | AvcClientPoll::Fault { .. } | AvcClientPoll::Ended { .. }),
+                            _ => false,
+                        };
+                        if significant {
+                            assert_eq!(original, bytes);
+                            return Ok(step);
+                        }
+                    }
+                    AutomaticAvcStep::Live(LiveAvcStep::Pending(_)) => std::thread::yield_now(),
+                    _ => return Err("unexpected output during automatic reply intake".into()),
+                }
+            }
+            Err("bounded automatic reply intake did not complete".into())
+        }
+    }
+
+    #[test]
+    fn automatic_negotiation_and_keepalive_use_real_short_io() -> TestResult {
+        let mut f = Fixture::new(17)?;
+        assert!(f.connection.needs_credentials());
+        assert_eq!(f.connection.next_wake_ns(), Some(0));
+        let (describe, wire) = f.command(0)?;
+        assert_eq!(describe.command, ClientCommand::Describe);
+        assert!(std::str::from_utf8(&wire)?.starts_with("DESCRIBE "));
+        assert_eq!(f.connection.state(), ClientState::Idle);
+        f.receive(&response(describe.cseq, "Content-Type: application/sdp\r\n", description()), 1)?;
+        let (setup, _) = f.command(2)?;
+        assert_eq!(setup.command, ClientCommand::Setup);
+        f.receive(&response(setup.cseq,
+            "Session: fixture;timeout=60\r\nTransport: RTP/AVP/TCP;unicast;interleaved=0-1;ssrc=7\r\n", ""), 3)?;
+        let (play, _) = f.command(4)?;
+        assert_eq!(play.command, ClientCommand::Play);
+        f.receive(&response(play.cseq, "Session: fixture\r\n", ""), 5)?;
+        assert_eq!(f.connection.state(), ClientState::Playing);
+        assert!(!f.connection.needs_credentials());
+        let due = f.connection.next_wake_ns().ok_or("missing keepalive wake")?;
+        assert!(due > 5);
+        let step = f.poll(SocketReadiness::default(), due)?;
+        assert!(matches!(step, AutomaticAvcStep::Live(LiveAvcStep::Protocol {
+            event: DigestAvcPoll::Client { event, .. }, ..
+        }) if matches!(*event, AvcClientPoll::Control(ClientProgress::KeepAliveDue))));
+        let (keepalive, wire) = f.command(due)?;
+        assert_eq!(keepalive.command, ClientCommand::KeepAlive);
+        assert!(keepalive.cseq > play.cseq);
+        assert!(std::str::from_utf8(&wire)?.starts_with("OPTIONS "));
+        f.receive(&response(keepalive.cseq, "Session: fixture\r\n", ""), due + 1)?;
+        assert_eq!(f.connection.state(), ClientState::Playing);
+        assert!(!f.connection.needs_credentials());
+        let retirement = f.connection.cancel().ok_or("missing retirement")?;
+        assert!(retirement.protocol.client.session.remote_session_may_exist);
+        assert!(f.connection.cancel().is_none());
+        Ok(())
+    }
+
+    #[test]
+    fn automatic_digest_preserves_the_challenge_before_preparing_its_answer() -> TestResult {
+        let mut f = Fixture::new(13)?;
+        let (describe, _) = f.command(0)?;
+        let challenge = format!("RTSP/1.0 401 Unauthorized\r\nCSeq: {}\r\nWWW-Authenticate: Digest realm=\"fixture-camera\", nonce=\"server-nonce\", algorithm=SHA-256, qop=\"auth\"\r\nContent-Length: 0\r\n\r\n", describe.cseq);
+        assert!(matches!(f.receive(challenge.as_bytes(), 1)?, LiveAvcStep::Protocol {
+            event: DigestAvcPoll::AuthenticationRequired { .. }, transport: None,
+        }));
+        assert!(f.connection.needs_credentials());
+        let (answer, wire) = f.command(2)?;
+        assert_eq!(answer.command, ClientCommand::Describe);
+        assert!(answer.cseq > describe.cseq);
+        let text = std::str::from_utf8(&wire)?;
+        assert!(text.contains("Authorization: Digest "));
+        assert!(!text.contains("camera-password"));
+        f.receive(&response(answer.cseq, "Content-Type: application/sdp\r\n", description()), 3)?;
+        let (setup, _) = f.command(4)?;
+        assert_eq!(setup.command, ClientCommand::Setup);
+        let _retirement = f.connection.cancel().ok_or("missing retirement")?;
+        Ok(())
+    }
+
+    #[test]
+    fn interim_response_does_not_duplicate_describe_or_start_setup() -> TestResult {
+        let mut f = Fixture::new(4096)?;
+        let (describe, _) = f.command(0)?;
+        let interim = format!("RTSP/1.0 100 Continue\r\nCSeq: {}\r\nContent-Length: 0\r\n\r\n", describe.cseq);
+        f.receive(interim.as_bytes(), 1)?;
+        assert!(!f.connection.needs_credentials());
+        let before = f.connection.totals().ok_or("missing totals")?.sent_bytes;
+        let step = f.poll(SocketReadiness::default(), 2)?;
+        assert!(!matches!(step, AutomaticAvcStep::Queued(_)));
+        assert_eq!(f.connection.totals().ok_or("missing totals")?.sent_bytes, before);
+        let _retirement = f.connection.cancel().ok_or("missing retirement")?;
+        assert!(matches!(f.poll(SocketReadiness::default(), 3)?,
+            AutomaticAvcStep::Live(LiveAvcStep::Ended)));
+        Ok(())
+    }
+
+    #[test]
+    fn revocation_before_automatic_start_sends_nothing_and_retires_once() -> TestResult {
+        let mut f = Fixture::new(4096)?;
+        f.authority.revoked.set(true);
+        let failure = f.connection.poll(SocketReadiness::default(), &credentials()?,
+            [0; 16], 0, &f.authority).err().ok_or("revocation unexpectedly passed")?;
+        assert_eq!(failure.reason, LiveAvcError::Transport(TcpError::Denied(TcpDenial::Revoked)));
+        let retirement = failure.retirement.ok_or("missing fatal retirement")?;
+        assert_eq!(retirement.transport.totals.sent_bytes, 0);
+        assert!(!f.connection.needs_credentials());
+        assert_eq!(f.connection.next_wake_ns(), None);
+        assert!(matches!(f.poll(SocketReadiness::default(), 1)?,
+            AutomaticAvcStep::Live(LiveAvcStep::Ended)));
+        assert!(f.connection.cancel().is_none());
+        Ok(())
+    }
+
+    #[test]
+    fn reversed_clock_preserves_the_unsent_followup() -> TestResult {
+        let mut f = Fixture::new(4096)?;
+        let (describe, _) = f.command(0)?;
+        f.receive(&response(describe.cseq, "Content-Type: application/sdp\r\n", description()), 10)?;
+        let failure = f.connection.poll(SocketReadiness::default(), &credentials()?,
+            [1; 16], 9, &f.authority).err().ok_or("reversed clock unexpectedly passed")?;
+        assert_eq!(failure.reason, LiveAvcError::ClockReversed);
+        assert!(failure.retirement.is_none());
+        assert!(f.connection.needs_credentials());
+        assert_eq!(f.connection.next_wake_ns(), Some(10));
+        let (setup, _) = f.command(11)?;
+        assert_eq!(setup.command, ClientCommand::Setup);
+        let _retirement = f.connection.cancel().ok_or("missing retirement")?;
+        Ok(())
+    }
+
+    #[test]
+    fn partial_write_timeout_never_automatically_resends() -> TestResult {
+        let mut f = Fixture::new(1)?;
+        assert!(matches!(f.poll(SocketReadiness::default(), 0)?, AutomaticAvcStep::Queued(_)));
+        assert!(matches!(f.poll(SocketReadiness { readable: false, writable: true }, 0)?,
+            AutomaticAvcStep::Live(LiveAvcStep::Write(TcpWriteStep::Advanced { sent: 1, .. }))));
+        let step = f.poll(SocketReadiness::default(), 10_000_000_000)?;
+        let AutomaticAvcStep::Live(LiveAvcStep::Protocol {
+            transport: Some(transport), ..
+        }) = step else { return Err("missing timeout retirement".into()); };
+        assert_eq!(transport.request_sent_bytes, 1);
+        assert_eq!(transport.totals.sent_bytes, 1);
+        assert!(!f.connection.needs_credentials());
+        assert!(matches!(f.poll(SocketReadiness::default(), 10_000_000_001)?,
+            AutomaticAvcStep::Live(LiveAvcStep::Ended)));
+        Ok(())
+    }
+}
