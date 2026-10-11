@@ -31,10 +31,17 @@ Before any destination object is staged, the importer:
    interval, packet/sample/NAL counts and byte length to its catalog descriptor.
 4. Requires each preceding decode interval to end exactly where the next starts,
    and requires byte-identical MP4 initialization across all windows.
-5. Constructs one MP4 from the first initialization and every original media
-   fragment, then validates the complete native sample and container byte map.
+5. Constructs one MP4 from the first initialization and every media fragment.
+   Each independently sealed native fragment starts with movie-fragment sequence
+   one, so the derived MP4 renumbers only the four-byte `mfhd` sequence field to
+   one through the window count. Sample bytes, decode/presentation timestamps,
+   durations, box sizes and sample offsets remain unchanged. The complete native
+   sample and container byte map, including strict increasing fragment sequences,
+   must then validate.
 
-There is no transcoding, padding, gap repair or per-window tracker restart.
+Original archived fragments are retained byte for byte; sequence renumbering is
+only a deterministic container remux in the derived MP4. There is no transcoding,
+padding, gap repair or per-window tracker restart.
 A valid archive catalog containing a decode gap or a configuration transition is
 refused as a whole; its original archive remains independently readable.
 
@@ -128,7 +135,8 @@ publication and ordered capsule authority.
 
 A cold retained read verifies that this entire origin closure belongs to the
 import. It independently replays the retained native packet windows, checks every
-catalog descriptor and reconstructs the exact MP4 sample/capture map. A read cursor
+catalog descriptor, repeats the deterministic fragment-sequence remux and
+reconstructs the exact MP4 sample/capture map. A read cursor
 caches at most one verified 64 MiB combined MP4 and drops packet packs after replay;
 it does not repeat original-packet replay or MP4 reconstruction for every frame.
 These origin replay reads charge the same optional whole-recording source allowance.
@@ -157,7 +165,8 @@ proof.
     cargo test --locked --offline -p fss-cli --test rtsp_import_cli
 
 The added contracts exercise a real 320-frame AVC packet catalog through cold
-native stream decoding and whole-recording watch, cumulative read exhaustion,
+native stream decoding and whole-recording watch, original fragment custody and
+sequence-only remux, cumulative read exhaustion,
 HEVC presentation offsets and privacy masks, complete deletion closure, all
 selection bounds, valid gapped/reconfigured catalog refusal, interrupted and cold
 retry, original-packet damage, and the real CLI's offline verify/decode workflow.

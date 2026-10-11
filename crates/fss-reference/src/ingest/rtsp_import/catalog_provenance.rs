@@ -555,7 +555,12 @@ impl CatalogProof {
                     self.request.max_media_bytes,
                 )?;
             }
-            catalog::append_media(&mut media, &window.fragment, self.request.max_media_bytes)?;
+            catalog::append_fragment(
+                &mut media,
+                &window.fragment,
+                ordinal,
+                self.request.max_media_bytes,
+            )?;
         }
         if media.len() as u64 != self.media_bytes
             || ContentDigest::sha256(&media) != self.media_digest
