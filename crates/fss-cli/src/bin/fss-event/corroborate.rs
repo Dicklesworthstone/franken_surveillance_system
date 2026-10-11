@@ -961,9 +961,6 @@ pub(super) fn run(
     cx: &ReplayCx,
     out: &mut impl Write,
 ) -> RunResult<()> {
-    if let Some(limits) = &action.streaming {
-        return streaming::run(action, deployment, root, limits, cx, out);
-    }
     let scalar = ScalarExecCx::new();
     let result = run_with(action, deployment, root, cx, &scalar, out);
     scalar.drain_and_finalize();
@@ -978,6 +975,9 @@ fn run_with(
     scalar: &ScalarExecCx,
     out: &mut impl Write,
 ) -> RunResult<()> {
+    if let Some(limits) = &action.streaming {
+        return streaming::run(action, deployment, root, limits, cx, scalar, out);
+    }
     // The calibration is verified against its pinned digest before any source is read.
     let (poses, mut sources, calibration, covariances, calibration_record) = resolve_poses(action)?;
     // Retained adoptions decide currency (or refuse a superseded calibration) before any frame is

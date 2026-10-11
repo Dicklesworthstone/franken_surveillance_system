@@ -1,6 +1,8 @@
 #![forbid(unsafe_code)]
 //! Real retained media and current authority, then independent read-only native recomputation.
 
+mod corroboration_detector;
+
 use super::*;
 use crate::ingest::long_watch::LongWatchReport;
 use crate::ingest::privacy_mask::{PrivacyMaskPolicy, declare_mask, preview_mask};

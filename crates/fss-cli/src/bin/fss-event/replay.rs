@@ -364,7 +364,7 @@ fn report(
             recipe.detector_recipe(),
             recipe.complete_codec_limits_retained(),
         ),
-        LongEventReplayRecipe::Corroboration(_) => (None, true),
+        LongEventReplayRecipe::Corroboration(recipe) => (recipe.detector_recipe(), true),
     };
     let mut fields = vec![
         (

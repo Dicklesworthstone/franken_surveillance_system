@@ -403,7 +403,7 @@ fn unsupported_options_and_orphan_budgets_refuse_before_deployment_io() -> Test 
                 "--detector-package",
                 "/unused/model",
             ],
-            "does not admit detector",
+            "--detector-digest sha256:HEX is required",
         ),
         (
             vec![

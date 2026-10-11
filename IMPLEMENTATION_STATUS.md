@@ -10,6 +10,39 @@ Franken Surveillance System now has a coherent, dependency-light Rust reference 
 
 It is also not a complete surveillance product. Native device adapters, production media/model/graph/storage services, persistent distributed operation, every human and agent surface, complete qualification matrices, and the aggregate release root remain open. Status below distinguishes implemented reference semantics from production completion.
 
+## Trained detector evidence for whole-recording corroboration (2026-10-11, reference)
+
+`fss-event corroborate --stream-corroborate` now accepts an exact trained detector package and
+annotates ground entries from both complete native recordings, including entries after frame
+128. Ground entry and following actual matches are selected within the same camera/epoch/local
+track. The RGB engine shares one inference allowance and one detection-head work budget across
+both cameras; admitted refusals consume their slot. Per-camera source, JPEG and pixel bounds
+span foreground and RGB passes. Reports distinguish selections admitted, pipeline attempts,
+completed model/head results, refusals and work consumed.
+
+Publication retains the full archive, exact component and ground-selection recipes, both
+outcomes, shared-budget counters and all source/class associations. Cold inspection checks the
+two ground observations, selected-pair class lists, complete camera closures and common-cause
+policy. Explicit native verification reruns both recordings and the retained model after loose
+sources and the model file are gone. Same-camera capsule substitution, missing class/model
+custody and inconsistent global accounting are refused. Watch and corroboration readers also
+bind entry capture intervals to their exact source capsules. Model-free canonical identities remain
+unchanged. Class results stay uncalibrated annotations in provenance; they add no policy votes,
+independent domains, event classifications, probability calibration, absence or alert authority.
+See [the two-camera workflow](docs/long_recording_corroboration.md) and
+[cold recovery](docs/long_event_replay.md).
+
+Validation: 80 distinct focused native tests passed on pinned `nightly-2026-08-31` with
+locked, offline dependencies: `long_watch_contract` (16), `long_corroboration_contract` (16),
+`corroborate_stream_detector_cli` (5), `ingest::long_event_replay::tests` (16),
+`corroborate_stream_cli` (8), the upstream `evidence_availability_contract` (11), and
+`fss-event`'s `replay::tests` (8). The reference and CLI crates also rebuilt successfully
+against the combined main tree after the additive upstream evidence-availability API arrived.
+The cold group retains all five exact legacy identity pins and exercises fully rehashed source
+capsule/capture substitutions, shared head work consumed before refusal, current privacy,
+cancellation and missing model/class custody. These are focused reference and CLI results;
+whole-workspace, deployment-quality and release qualification remain open.
+
 ## Trained detector evidence for whole recordings (2026-10-10, reference)
 
 `fss-event watch --stream-watch` now accepts the explicit digest-pinned detector package and
@@ -284,8 +317,9 @@ one-time vendor-app provisioning (NEG-006) with the yi-hack owner-flash path doc
   zones and thresholds support exact proposals under worst-case interval/distance gates and
   existing common-cause contraction. Current masks apply before perception; degraded whole-scan
   health blocks publication. Separate scan budgets, explicit exclusions, exact source/privacy
-  revalidation and cold retries preserve the existing authority boundaries. Detector, pose and
-  coverage-retention modes require their existing contracts and are refused in this new mode.
+  revalidation and cold retries preserve the existing authority boundaries. Trained packages
+  annotate both recordings under global inference/head work limits and retain full cold replay
+  custody. Pose and coverage-retention modes remain outside this streaming composition.
   See [the workflow](docs/long_recording_corroboration.md).
 - **Cached analysis publication:** short watch, two-camera corroboration and streaming
   modes revalidate their original deployment, principal, current privacy generation, source

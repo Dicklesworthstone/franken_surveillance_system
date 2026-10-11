@@ -9,6 +9,8 @@ use super::{
     health_policy_bytes,
 };
 use crate::ingest::RetainedReadLimits;
+use crate::ingest::long_watch::LongWatchDetector;
+use crate::ingest::long_watch::detector::LongWatchDetectorRecipe;
 use crate::ingest::recorded_corroboration::{
     CorroborationCamera, CorroborationGates, GroundHomography, GroundZone, MAX_CORROBORATION_ZONES,
 };
@@ -16,10 +18,22 @@ use crate::ingest::recorded_decode::ComponentInterpretation;
 use crate::ingest::recorded_decode::h264::H264_DECODER_LABEL;
 use crate::ingest::recorded_decode::h265::H265_DECODER_LABEL;
 use crate::ingest::recorded_watch::{WatchDetectorConfig, WatchLimits, WatchTrackerConfig};
-use crate::{ReferenceDeployment, ReplayCx};
+use crate::{ReferenceDeployment, ReplayCx, ScalarExecCx};
 
 /// Hard ceiling checked before parsing or cloning any variable-length recipe fields.
 pub const MAX_LONG_CORROBORATION_RECIPE_BYTES: usize = 128 * 1024;
+
+/// This composition owns ground selection and a single budget across both recordings. The
+/// embedded long-watch recipe supplies the exact model/execution component, not image-zone
+/// eligibility or a fresh per-camera inference allowance.
+pub(crate) const DETECTOR_POLICY: &[u8] = b"fss.long-corroboration.ground-detector.v1:\
+confirmed-actual-ground-entry-then-following-matches:same-camera-epoch-local-track:\
+admission-camera-order-entry-order-following-display-match-order:\
+execution-camera-order-native-source-traversal:unique-camera-coding-segment-admission:\
+global-inference-and-detection-head-budgets:charge-admitted-refusals:\
+per-camera-native-source-jpeg-pixel-budgets-span-both-passes:\
+exact-masked-source-and-retained-model-custody:uncalibrated-class-annotations:\
+ground-and-common-cause-policy-own-event:no-independent-model-vote";
 
 /// Immutable owner inputs needed to repeat the complete native computation. The import identities
 /// resolve through retained custody; current source and privacy guards still apply when replayed.
@@ -31,6 +45,7 @@ pub struct LongCorroborationRecipe {
     limits: LongCorroborationLimits,
     dependencies: CorroborationDependencies,
     screened: bool,
+    detector: Option<LongWatchDetectorRecipe>,
 }
 impl LongCorroborationRecipe {
     /// Validate an exact owner configuration without opening source custody or running a decoder.
@@ -51,11 +66,46 @@ impl LongCorroborationRecipe {
             limits: *limits,
             dependencies: dependencies.clone(),
             screened,
+            detector: None,
         };
         if value.to_bytes().len() > MAX_LONG_CORROBORATION_RECIPE_BYTES {
             return Err(CorroborationError::Limit);
         }
         Ok(value)
+    }
+
+    /// Capture a trained ground-entry composition before any source is opened. Both camera
+    /// passes share the component's inference and detection-head ceilings; native decode
+    /// ceilings must be exactly those of the enclosing whole-recording recipe.
+    pub fn new_with_detector(
+        plan: &CorroborationPlan,
+        options: CorroborationOptions,
+        limits: &LongCorroborationLimits,
+        dependencies: &CorroborationDependencies,
+        screened: bool,
+        detector: &LongWatchDetectorRecipe,
+    ) -> Result<Self> {
+        let mut value = Self::new(plan, options, limits, dependencies, screened)?;
+        let mut expected = CanonicalEncoder::new();
+        encode_limits(&mut expected, limits);
+        let mut supplied = CanonicalEncoder::new();
+        encode_limits(&mut supplied, detector.watch_limits());
+        if expected.finish() != supplied.finish() {
+            return Err(CorroborationError::InvalidPlan(
+                "detector native limits differ from corroboration limits",
+            ));
+        }
+        detector.validate_within(limits, detector.package_limits())?;
+        value.detector = Some(detector.clone());
+        if value.to_bytes().len() > MAX_LONG_CORROBORATION_RECIPE_BYTES {
+            return Err(CorroborationError::Limit);
+        }
+        Ok(value)
+    }
+
+    /// Exact model and execution component. Its allowance is global to this two-camera recipe.
+    pub fn detector_recipe(&self) -> Option<&LongWatchDetectorRecipe> {
+        self.detector.as_ref()
     }
     /// Both import identities, matrices, ground rectangles, gates and perception settings.
     pub fn plan(&self) -> &CorroborationPlan {
@@ -127,6 +177,11 @@ impl LongCorroborationRecipe {
         encoder.bool(self.screened);
         encoder.bytes(&self.dependencies.to_bytes());
         encode_limits(&mut encoder, &self.limits);
+        if let Some(detector) = &self.detector {
+            encoder.text("ground_detector_cascade");
+            encoder.bytes(DETECTOR_POLICY);
+            encoder.bytes(&detector.to_bytes());
+        }
         // The immutable constructor bounds the whole record below the fixed canonical ceiling.
         encoder.finish()
     }
@@ -213,6 +268,16 @@ impl LongCorroborationRecipe {
         let screened = decoder.bool()?;
         let dependencies = CorroborationDependencies::from_bytes(decoder.bytes()?)?;
         let limits = decode_limits(&mut decoder)?;
+        let retained_detector = if decoder.remaining() == 0 {
+            None
+        } else {
+            if decoder.text()? != "ground_detector_cascade" || decoder.bytes()? != DETECTOR_POLICY {
+                return Err(CorroborationError::InvalidPlan(
+                    "unknown ground detector semantics",
+                ));
+            }
+            Some(LongWatchDetectorRecipe::from_bytes(decoder.bytes()?)?)
+        };
         decoder.ensure_finished()?;
         let plan = CorroborationPlan {
             cameras: cameras.try_into().map_err(|_| CorroborationError::Limit)?,
@@ -225,7 +290,17 @@ impl LongCorroborationRecipe {
         if plan.digest() != declared_plan {
             return Err(ContractError::DigestMismatch.into());
         }
-        let value = Self::new(&plan, options, &limits, &dependencies, screened)?;
+        let value = match retained_detector {
+            Some(detector) => Self::new_with_detector(
+                &plan,
+                options,
+                &limits,
+                &dependencies,
+                screened,
+                &detector,
+            )?,
+            None => Self::new(&plan, options, &limits, &dependencies, screened)?,
+        };
         if value.to_bytes() != bytes {
             return Err(ContractError::NonCanonicalOrdering.into());
         }
@@ -239,6 +314,53 @@ impl LongCorroborationRecipe {
         deployment: &ReferenceDeployment,
         cx: &ReplayCx,
     ) -> Result<LongCorroborationReport> {
+        if let Some(recipe) = &self.detector {
+            if cx.root_dir() != deployment.root() {
+                return Err(CorroborationError::Conflict);
+            }
+            super::checkpoint(cx, "long_corroboration:retained_model")?;
+            let archive = fss_object::read_verified_payload(
+                deployment.publisher().spool().root(),
+                recipe.package_digest(),
+                crate::ingest::rgb_package::MAX_RGB_PACKAGE_BYTES,
+                &fss_object::HostSpoolIo,
+            )?;
+            let scalar = ScalarExecCx::new();
+            let result = (|| {
+                let package = crate::ingest::rgb_package::RgbDetectorPackage::load_with_backend(
+                    &archive,
+                    recipe.package_digest(),
+                    recipe.import_work_units(),
+                    recipe.backend(),
+                    cx,
+                    &scalar,
+                )
+                .map_err(|_| {
+                    CorroborationError::InvalidPlan("retained detector package refused")
+                })?;
+                recipe.verify_package(&package)?;
+                let detector = LongWatchDetector::new(
+                    &package,
+                    &archive,
+                    recipe.config(),
+                    *recipe.package_limits(),
+                    &scalar,
+                )?;
+                LongCorroborationReport::analyze_with_detector(
+                    deployment,
+                    &self.plan,
+                    self.options,
+                    &self.limits,
+                    &self.dependencies,
+                    self.screened,
+                    &detector,
+                    cx,
+                )
+            })();
+            scalar.drain_and_finalize();
+            super::checkpoint(cx, "long_corroboration:retained_model_complete")?;
+            return result;
+        }
         let analyze = if self.screened {
             LongCorroborationReport::analyze_screened
         } else {

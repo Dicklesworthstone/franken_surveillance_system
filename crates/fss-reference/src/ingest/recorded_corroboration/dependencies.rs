@@ -477,7 +477,7 @@ impl CorroborationDependencyReport {
 
     /// Canonical individual cause records for composition with cross-event sensor-integrity
     /// dependencies. Records stay in sorted domain order and confer no event authority.
-    pub(super) fn cause_records(&self) -> Result<Vec<(String, Vec<u8>)>> {
+    pub(crate) fn cause_records(&self) -> Result<Vec<(String, Vec<u8>)>> {
         let domains: BTreeSet<&String> = self
             .cameras
             .iter()

@@ -11,6 +11,9 @@ use fss_core::{
     BudgetVector, ContentDigest, EventState, LedgerAnchor, OperationId, SensorId, StreamId,
     TimestampNs,
 };
+use fss_reference::ingest::detector_cascade::{CascadeConfig, EvidenceOutcome, SelectionReason};
+use fss_reference::ingest::long_watch::LongWatchDetector;
+use fss_reference::ingest::package_detect::PackageDetectLimits;
 use fss_reference::ingest::privacy_mask::{PrivacyMaskPolicy, declare_mask, preview_mask};
 use fss_reference::ingest::recorded_corroboration::streaming::{
     LongCorroborationLimits, LongCorroborationRecipe, LongCorroborationReport,
@@ -23,17 +26,21 @@ use fss_reference::ingest::recorded_corroboration::{
 };
 use fss_reference::ingest::recorded_decode::ComponentInterpretation;
 use fss_reference::ingest::recorded_watch::{WatchDetectorConfig, WatchTrackerConfig};
+use fss_reference::ingest::rgb_package::RgbDetectorPackage;
 use fss_reference::ingest::{
     CaptureHint, FileIngestAdapter, FileIngestLimits, FileIngestRequest, RetainedFileImport,
     RetainedReadLimits,
 };
 use fss_reference::media_fixture::jpeg::{JpegConfig, Subsampling, encode_jpeg};
-use fss_reference::{ReferenceDeployment, ReplayCx};
+use fss_reference::{ReferenceDeployment, ReplayCx, ScalarExecCx};
 
 type Test<T = ()> = Result<T, Box<dyn std::error::Error>>;
 const SITE: &str = "site:long-corroboration-contract";
 const PRINCIPAL: &str = "principal:long-corroboration-contract";
 const IDENTITY: [f64; 9] = [1.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 1.0];
+const DETECTOR_PACKAGE: &[u8] = include_bytes!("../../../models/yolox-nano/yolox_nano.fmpk");
+const DETECTOR_PACKAGE_DIGEST: &str =
+    "sha256:5b6568750faa375de3742e5eb310fbd4e22ff26e1ba727f193b79ab984a68c74";
 
 struct Directory(PathBuf);
 impl Directory {
@@ -212,6 +219,33 @@ impl Fixture {
             },
             &LongCorroborationLimits::default(),
             &CorroborationDependencies::default(),
+            &self.cx,
+        )?)
+    }
+    fn trained_package(&self, scalar: &ScalarExecCx) -> Test<RgbDetectorPackage> {
+        Ok(RgbDetectorPackage::load(
+            DETECTOR_PACKAGE,
+            ContentDigest::parse(DETECTOR_PACKAGE_DIGEST)?,
+            1 << 36,
+            &self.cx,
+            scalar,
+        )?)
+    }
+    fn annotate(
+        &self,
+        detector: &LongWatchDetector<'_>,
+        tolerant: bool,
+    ) -> Test<LongCorroborationReport> {
+        Ok(LongCorroborationReport::analyze_with_detector(
+            &self.deployment,
+            &self.plan,
+            CorroborationOptions {
+                tolerate_decode_refusals: tolerant,
+            },
+            &LongCorroborationLimits::default(),
+            &CorroborationDependencies::default(),
+            false,
+            detector,
             &self.cx,
         )?)
     }
@@ -715,5 +749,418 @@ fn native_inter_coded_sources_keep_the_same_cumulative_per_camera_read_ceiling()
         );
         assert_eq!(f.snapshot(), before);
     }
+    Ok(())
+}
+
+#[test]
+fn trained_ground_entries_after_128_share_one_admission_without_changing_event_policy() -> Test {
+    let mut f = Fixture::new(
+        "trained-ground-late",
+        &scene(170, true, false, false)?,
+        "mjpeg",
+    )?;
+    f.plan.zones[0].x = 28.0;
+    let scalar = ScalarExecCx::new();
+    let package = f.trained_package(&scalar)?;
+    let detector = LongWatchDetector::new(
+        &package,
+        DETECTOR_PACKAGE,
+        CascadeConfig {
+            frames_per_track: 3,
+            max_inferences: 1,
+            ..CascadeConfig::default()
+        },
+        PackageDetectLimits::default(),
+        &scalar,
+    )?;
+    let before = f.snapshot();
+    let report = f.annotate(&detector, false)?;
+    assert_eq!(f.snapshot(), before);
+    assert_eq!(report.entries().len(), 2);
+    assert!(
+        report
+            .samples()
+            .iter()
+            .all(|sample| sample.entry_position > 128)
+    );
+    assert_eq!(report.inference_selections_admitted(), 1);
+    assert_eq!(report.inference_pipeline_attempts(), 1);
+    assert_eq!(report.inferences_completed(), 1);
+    let outcomes: Vec<_> = report.detector_cascades().collect();
+    assert_eq!(outcomes.len(), 2);
+    assert_eq!(
+        outcomes[0].inferred_segments(),
+        [report.entries()[0].segment]
+    );
+    assert!(outcomes[1].inferred_segments().is_empty());
+    assert_eq!(outcomes[1].budget_skipped_segments().len(), 3);
+    for (entry, sample) in report.entries().iter().zip(report.samples()) {
+        assert_eq!(entry.class_evidence.len(), 3);
+        assert_eq!(entry.class_evidence[0].segment, entry.segment);
+        assert_eq!(entry.class_evidence[0].reason, SelectionReason::ZoneEntry);
+        assert!(entry.class_evidence.iter().all(|item| {
+            item.segment >= sample.entry_position
+                && ContentDigest::sha256(&item.record) == item.digest
+        }));
+    }
+    assert!(
+        report.entries()[1]
+            .class_evidence
+            .iter()
+            .all(|item| { matches!(item.outcome, EvidenceOutcome::BudgetExhausted) })
+    );
+    let model_free = f.analyze(false)?;
+    assert_eq!(report.candidates().len(), 1);
+    let candidate = &report.candidates()[0];
+    assert_eq!(
+        candidate.policy_action(),
+        model_free.candidates()[0].policy_action()
+    );
+    assert_eq!(
+        candidate.event().state,
+        model_free.candidates()[0].event().state
+    );
+    assert_eq!(candidate.event().kind, fss_core::EventKind::Unclassified);
+    assert_eq!(
+        (
+            candidate.event().probability.lower,
+            candidate.event().probability.upper
+        ),
+        (0.0, 1.0)
+    );
+    assert!(candidate.event().model_receipts.is_empty());
+    assert!(
+        candidate.event().evidence.iter().all(|edge| {
+            report
+                .entries()
+                .iter()
+                .flat_map(|entry| &entry.class_evidence)
+                .all(|item| item.digest != edge.digest)
+        }),
+        "class annotations must not become independent policy votes"
+    );
+    assert_ne!(
+        candidate.proposal_digest(),
+        model_free.candidates()[0].proposal_digest()
+    );
+    let json = report.to_json(0, None)?;
+    assert!(json.contains("\"budget_scope\":\"both_recordings\""));
+    assert!(json.contains("\"model_invoked\":true"));
+    Ok(())
+}
+
+#[test]
+fn trained_refusals_consume_admission_and_head_work_is_not_renewed_at_camera_two() -> Test {
+    let f = Fixture::new(
+        "trained-ground-head",
+        &scene(12, false, false, false)?,
+        "mjpeg",
+    )?;
+    let scalar = ScalarExecCx::new();
+    let package = f.trained_package(&scalar)?;
+    let config = CascadeConfig {
+        max_inferences: 1,
+        ..CascadeConfig::default()
+    };
+    let mut zero_head = PackageDetectLimits::default();
+    zero_head.detection_work_units = 0;
+    let detector = LongWatchDetector::new(&package, DETECTOR_PACKAGE, config, zero_head, &scalar)?;
+    let before = f.snapshot();
+    let refused = f.annotate(&detector, false)?;
+    assert_eq!(refused.inference_selections_admitted(), 1);
+    assert_eq!(refused.inference_pipeline_attempts(), 1);
+    assert_eq!(refused.inferences_completed(), 0);
+    assert!(matches!(
+        refused.entries()[0].class_evidence[0].outcome,
+        EvidenceOutcome::Refused(_)
+    ));
+    assert!(matches!(
+        refused.entries()[1].class_evidence[0].outcome,
+        EvidenceOutcome::BudgetExhausted
+    ));
+    assert!(refused.to_json(0, None)?.contains("\"model_invoked\":true"));
+    assert_eq!(f.snapshot(), before);
+
+    let detector = LongWatchDetector::new(
+        &package,
+        DETECTOR_PACKAGE,
+        config,
+        PackageDetectLimits::default(),
+        &scalar,
+    )?;
+    let one = f.annotate(&detector, false)?;
+    let one_head = one.detection_head_work_used();
+    assert!(one_head > 0);
+    assert_eq!(one.inferences_completed(), 1);
+    let mut bounded_head = PackageDetectLimits::default();
+    bounded_head.detection_work_units = one_head;
+    let detector = LongWatchDetector::new(
+        &package,
+        DETECTOR_PACKAGE,
+        CascadeConfig {
+            max_inferences: 2,
+            ..config
+        },
+        bounded_head,
+        &scalar,
+    )?;
+    let two = f.annotate(&detector, false)?;
+    assert_eq!(two.inference_selections_admitted(), 2);
+    assert_eq!(two.inference_pipeline_attempts(), 2);
+    assert_eq!(two.inferences_completed(), 1);
+    assert_eq!(two.detection_head_work_used(), one_head);
+    let outcomes: Vec<_> = two.detector_cascades().collect();
+    assert_eq!(outcomes[0].inferred_segments().len(), 1);
+    assert_eq!(outcomes[1].refused_segments().len(), 1);
+    assert!(outcomes[1].budget_skipped_segments().is_empty());
+    assert_eq!(f.snapshot(), before);
+    Ok(())
+}
+
+#[test]
+fn trained_ground_selection_excludes_misses_and_reused_track_ids_after_recovery() -> Test {
+    let quiet = jpeg(None)?;
+    let target = jpeg(Some(8))?;
+    let mut unsupported = quiet.clone();
+    let sof = unsupported
+        .windows(2)
+        .position(|window| window == [0xff, 0xc0])
+        .ok_or("SOF0")?;
+    unsupported[sof + 1] = 0xc2;
+    let mut bytes = Vec::new();
+    for position in 0..28 {
+        bytes.extend_from_slice(if position == 8 {
+            &unsupported
+        } else if position < 3 || position == 6 || (9..12).contains(&position) {
+            &quiet
+        } else {
+            &target
+        });
+    }
+    let f = Fixture::new("trained-ground-epochs", &bytes, "mjpeg")?;
+    let scalar = ScalarExecCx::new();
+    let package = f.trained_package(&scalar)?;
+    let mut model_limits = PackageDetectLimits::default();
+    model_limits.run.execution.max_macs = 0;
+    let detector = LongWatchDetector::new(
+        &package,
+        DETECTOR_PACKAGE,
+        CascadeConfig {
+            frames_per_track: 8,
+            max_inferences: 1,
+            ..CascadeConfig::default()
+        },
+        model_limits,
+        &scalar,
+    )?;
+    let before = f.snapshot();
+    let report = f.annotate(&detector, true)?;
+    assert_eq!(report.entries().len(), 4);
+    let first = &report.entries()[0];
+    let next_epoch = &report.entries()[1];
+    assert_eq!(first.camera, 0);
+    assert_eq!(next_epoch.camera, 0);
+    assert_eq!(
+        first
+            .class_evidence
+            .iter()
+            .map(|item| item.segment)
+            .collect::<Vec<_>>(),
+        [5, 7]
+    );
+    assert_eq!(
+        next_epoch
+            .class_evidence
+            .iter()
+            .map(|item| item.segment)
+            .collect::<Vec<_>>(),
+        [14, 15, 16, 17, 18, 19, 20, 21]
+    );
+    assert_eq!(
+        report.samples()[0].local_track_id,
+        report.samples()[1].local_track_id
+    );
+    assert_ne!(
+        report.samples()[0].tracker_epoch,
+        report.samples()[1].tracker_epoch
+    );
+    assert_ne!(first.track_id, next_epoch.track_id);
+    assert_eq!(
+        first.class_evidence[1].reason,
+        SelectionReason::FollowingMatch
+    );
+    assert!(
+        next_epoch
+            .class_evidence
+            .iter()
+            .all(|item| { matches!(item.outcome, EvidenceOutcome::BudgetExhausted) })
+    );
+    assert_eq!(report.inference_selections_admitted(), 1);
+    assert_eq!(report.inferences_completed(), 0);
+    assert_eq!(f.snapshot(), before);
+    Ok(())
+}
+
+#[test]
+fn trained_ground_masks_withdraw_selection_and_any_camera_privacy_change_invalidates_approval()
+-> Test {
+    let mut f = Fixture::new(
+        "trained-ground-mask",
+        &scene(12, false, false, false)?,
+        "mjpeg",
+    )?;
+    let scalar = ScalarExecCx::new();
+    let package = f.trained_package(&scalar)?;
+    let mut model_limits = PackageDetectLimits::default();
+    model_limits.run.execution.max_macs = 0;
+    let detector = LongWatchDetector::new(
+        &package,
+        DETECTOR_PACKAGE,
+        CascadeConfig {
+            max_inferences: 1,
+            ..CascadeConfig::default()
+        },
+        model_limits,
+        &scalar,
+    )?;
+    let mut report = f.annotate(&detector, false)?;
+    let approvals = BTreeSet::from([report.candidates()[0].proposal_digest()]);
+    f.mask("west", [40, 0, 4, 4])?;
+    let before = f.snapshot();
+    assert!(
+        report
+            .publish(&mut f.deployment, &approvals, &f.cx)
+            .is_err()
+    );
+    assert_eq!(f.snapshot(), before);
+    // A denied preimage corner removes the complete ground-zone claim even though most target
+    // pixels remain visible. It also releases no false model vote for that camera.
+    f.mask("east", [8, 30, 2, 2])?;
+    let before = f.snapshot();
+    let masked = f.annotate(&detector, false)?;
+    assert!(masked.candidates().is_empty());
+    assert_eq!(masked.entries().len(), 1);
+    assert_eq!(masked.entries()[0].camera, 1);
+    assert_eq!(masked.inference_selections_admitted(), 1);
+    let outcomes: Vec<_> = masked.detector_cascades().collect();
+    assert!(outcomes[0].frames.is_empty());
+    assert_eq!(outcomes[1].frames.len(), 1);
+    assert!(outcomes[1].budget_skipped_segments().is_empty());
+    assert_eq!(f.snapshot(), before);
+    Ok(())
+}
+
+#[test]
+fn trained_ground_overlapping_zones_share_the_selected_frame_but_cameras_do_not() -> Test {
+    let mut f = Fixture::new(
+        "trained-ground-selection-scope",
+        &scene(12, false, false, false)?,
+        "mjpeg",
+    )?;
+    let mut overlapping = f.plan.zones[0].clone();
+    overlapping.zone_id = "porch".into();
+    f.plan.zones.push(overlapping);
+    let scalar = ScalarExecCx::new();
+    let package = f.trained_package(&scalar)?;
+    let mut model_limits = PackageDetectLimits::default();
+    model_limits.run.execution.max_macs = 0;
+    let detector = LongWatchDetector::new(
+        &package,
+        DETECTOR_PACKAGE,
+        CascadeConfig {
+            max_inferences: 1,
+            ..CascadeConfig::default()
+        },
+        model_limits,
+        &scalar,
+    )?;
+    let before = f.snapshot();
+    let report = f.annotate(&detector, false)?;
+    assert_eq!(report.entries().len(), 4);
+    assert_eq!(report.inference_selections_admitted(), 1);
+    assert_eq!(report.inference_pipeline_attempts(), 1);
+    let first = &report.entries()[0];
+    let overlapping = &report.entries()[1];
+    assert_eq!(first.camera, 0);
+    assert_eq!(overlapping.camera, 0);
+    assert_eq!(first.segment, overlapping.segment);
+    assert_eq!(first.class_evidence.len(), 1);
+    assert_eq!(
+        first.class_evidence[0].digest, overlapping.class_evidence[0].digest,
+        "one source frame reused for overlapping zones has one retained class record"
+    );
+    assert!(matches!(
+        first.class_evidence[0].outcome,
+        EvidenceOutcome::Refused(_)
+    ));
+    for entry in &report.entries()[2..] {
+        assert_eq!(entry.camera, 1);
+        assert!(matches!(
+            entry.class_evidence[0].outcome,
+            EvidenceOutcome::BudgetExhausted
+        ));
+        assert_ne!(
+            entry.class_evidence[0].digest,
+            first.class_evidence[0].digest
+        );
+    }
+    assert_eq!(f.snapshot(), before);
+    Ok(())
+}
+
+#[test]
+fn trained_ground_cancellation_from_either_owner_is_never_refused_evidence_or_publication() -> Test
+{
+    let f = Fixture::new(
+        "trained-ground-cancel",
+        &scene(12, false, false, false)?,
+        "mjpeg",
+    )?;
+    let scalar = ScalarExecCx::new();
+    let package = f.trained_package(&scalar)?;
+    let detector = LongWatchDetector::new(
+        &package,
+        DETECTOR_PACKAGE,
+        CascadeConfig::default(),
+        PackageDetectLimits::default(),
+        &scalar,
+    )?;
+    let before = f.snapshot();
+    f.cx.set_cancel_at_checkpoint("long_watch_detector:frame");
+    assert!(f.annotate(&detector, false).is_err());
+    assert!(f.cx.is_drain_completed());
+    assert_eq!(f.snapshot(), before);
+
+    let f = Fixture::new(
+        "trained-ground-scalar-cancel",
+        &scene(12, false, false, false)?,
+        "mjpeg",
+    )?;
+    let scalar = ScalarExecCx::new();
+    let package = f.trained_package(&scalar)?;
+    let detector = LongWatchDetector::new(
+        &package,
+        DETECTOR_PACKAGE,
+        CascadeConfig::default(),
+        PackageDetectLimits::default(),
+        &scalar,
+    )?;
+    let before = f.snapshot();
+    scalar.request_cancellation();
+    let result = LongCorroborationReport::analyze_with_detector(
+        &f.deployment,
+        &f.plan,
+        CorroborationOptions::default(),
+        &LongCorroborationLimits::default(),
+        &CorroborationDependencies::default(),
+        false,
+        &detector,
+        &f.cx,
+    );
+    assert!(matches!(result, Err(CorroborationError::Watch(error))
+        if matches!(*error, fss_reference::ingest::recorded_watch::WatchError::Cascade(
+            fss_reference::ingest::detector_cascade::CascadeError::Cancelled))));
+    assert!(scalar.is_drain_completed());
+    assert_eq!(f.snapshot(), before);
     Ok(())
 }

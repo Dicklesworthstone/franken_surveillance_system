@@ -4,10 +4,12 @@
 use std::io::Write;
 use std::path::Path;
 
+use fss_reference::ingest::long_watch::LongWatchDetector;
+use fss_reference::ingest::package_detect::PackageDetectLimits;
 pub(super) use fss_reference::ingest::recorded_corroboration::streaming::LongCorroborationLimits;
 use fss_reference::ingest::recorded_corroboration::streaming::LongCorroborationReport;
 use fss_reference::ingest::recorded_watch::WatchLimits;
-use fss_reference::{ReferenceDeployment, ReplayCx};
+use fss_reference::{ReferenceDeployment, ReplayCx, ScalarExecCx};
 
 use super::{CorroborateAction, RunResult, export, number};
 
@@ -31,12 +33,6 @@ pub(super) fn limits(
             return Err("aggregate corroboration budgets require --stream-corroborate".to_owned());
         }
         return Ok(None);
-    }
-    if values
-        .iter()
-        .any(|(key, _)| super::super::detector::OPTIONS.contains(&key.as_str()))
-    {
-        return Err("--stream-corroborate does not admit detector-package options".to_owned());
     }
     if values.iter().any(|(key, _)| {
         key == "--retain-coverage"
@@ -79,21 +75,54 @@ pub(super) fn run(
     root: &Path,
     limits: &LongCorroborationLimits,
     cx: &ReplayCx,
+    scalar: &ScalarExecCx,
     out: &mut impl Write,
 ) -> RunResult<()> {
-    let analyze = if action.health_screen.is_some() {
-        LongCorroborationReport::analyze_screened
-    } else {
-        LongCorroborationReport::analyze
+    // The exact archive is verified once, before opening either recording. It survives only
+    // this owned invocation unless an exact approved candidate retains it for cold replay.
+    let package = match &action.cascade {
+        Some(options) => Some(super::super::detector::load_with_archive(
+            options, cx, scalar,
+        )?),
+        None => None,
     };
-    let mut report = analyze(
-        deployment,
-        &action.plan,
-        action.recovery,
-        limits,
-        &action.dependencies,
-        cx,
-    )?;
+    let detector = match (&action.cascade, &package) {
+        (Some(options), Some((package, archive))) => Some(LongWatchDetector::new(
+            package,
+            archive,
+            options.config,
+            PackageDetectLimits::default(),
+            scalar,
+        )?),
+        _ => None,
+    };
+    let mut report = match &detector {
+        Some(detector) => LongCorroborationReport::analyze_with_detector(
+            deployment,
+            &action.plan,
+            action.recovery,
+            limits,
+            &action.dependencies,
+            action.health_screen.is_some(),
+            detector,
+            cx,
+        )?,
+        None => {
+            let analyze = if action.health_screen.is_some() {
+                LongCorroborationReport::analyze_screened
+            } else {
+                LongCorroborationReport::analyze
+            };
+            analyze(
+                deployment,
+                &action.plan,
+                action.recovery,
+                limits,
+                &action.dependencies,
+                cx,
+            )?
+        }
+    };
     // Check the whole bounded projection, including exact rerun commands, before event writes.
     report.to_json(
         deployment.current_anchor().commit_sequence,

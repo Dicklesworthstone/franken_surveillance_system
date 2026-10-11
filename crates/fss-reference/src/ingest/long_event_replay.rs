@@ -11,7 +11,7 @@ use std::collections::BTreeMap;
 use std::fmt;
 
 use fss_core::{
-    CanonicalDecode, CanonicalEncode, ContentDigest, ContractError, DigestAlgorithm, EventHypothesis,
+    CanonicalDecode, CanonicalEncode, CaptureInterval, ContentDigest, ContractError, DigestAlgorithm, EventHypothesis,
     EventId, EventKind, LedgerAnchor, ObjectId, SensorId,
 };
 use fss_object::{HostSpoolIo, ObjectManifest, read_verified_payload};
@@ -343,6 +343,8 @@ struct SourceBinding {
     /// Frame associations claimed by retained entry/class metadata, checked against the same
     /// capsule authority and payload reads that verify the complete source range.
     capsule_bindings: BTreeMap<usize, ContentDigest>,
+    /// Entry timing must preserve the exact retained capsule's operator capture interval.
+    capture_bindings: BTreeMap<usize, CaptureInterval>,
 }
 fn verify_source_metadata(
     deployment: &ReferenceDeployment, source: &SourceBinding,
@@ -363,7 +365,8 @@ fn verify_source_metadata(
     if source.count == 0 || source.count > MAX_LONG_DWELL_FRAMES || end > retained.manifest().segment_spans.len() {
         return Err(LongEventReplayError::InvalidRecord);
     }
-    if source.capsule_bindings.keys().any(|segment| !(source.first..end).contains(segment)) {
+    if source.capsule_bindings.keys().chain(source.capture_bindings.keys())
+        .any(|segment| !(source.first..end).contains(segment)) {
         return Err(LongEventReplayError::InvalidRecord);
     }
     for segment in source.first..end {
@@ -384,7 +387,8 @@ fn verify_source_metadata(
         if digest != current.payload_digest {
             return Err(LongEventReplayError::AuthorityChanged);
         }
-        if capsule.sensor_id != source.sensor || bytes != capsule.try_canonical_bytes()? {
+        if capsule.sensor_id != source.sensor || bytes != capsule.try_canonical_bytes()?
+            || source.capture_bindings.get(&segment).is_some_and(|expected| *expected != capsule.capture) {
             return Err(LongEventReplayError::InvalidRecord);
         }
     }

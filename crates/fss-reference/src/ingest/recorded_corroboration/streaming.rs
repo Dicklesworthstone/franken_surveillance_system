@@ -8,8 +8,9 @@
 //!
 //! The first eligible sample per source-track/zone is an observation, not proof of a physical
 //! arrival. Owner homographies and capture hints remain assertions. The existing interval
-//! assignment and common-cause policy own corroboration; no trained model, absence certificate,
-//! or alert effect is introduced. Both complete source traces and current privacy generations
+//! assignment and common-cause policy own corroboration. Optional trained class evidence is
+//! retained without changing that policy or creating absence certificates or alert effects.
+//! Both complete source traces and current privacy generations
 //! are prerequisites of every exact approval, including retries after event publication.
 
 use std::collections::{BTreeMap, BTreeSet};
@@ -30,10 +31,13 @@ use super::{
     json_number, json_string, prepare_candidate_with_encoding, publish_candidates, union,
 };
 use crate::ingest::RetainedFileImport;
+use crate::ingest::detector_cascade::{CascadeOutcome, cascade_outcome_json, class_evidence_json};
 use crate::ingest::long_dwell::{
     LongDwellHealthSummary, LongDwellLimits, MAX_LONG_DWELL_FRAMES, ScanData, ScanObservation,
     ScanObserver, publish_manifest, run_observed_scan, slot,
 };
+use crate::ingest::long_watch::detector::{self, AnalysisBudget, LongWatchDetectorRecipe};
+use crate::ingest::long_watch::{LongWatchDetector, LongWatchEntry};
 use crate::ingest::privacy_mask::coverage::ground_zone_masked;
 use crate::ingest::recorded_decode::{RecordedDecodeError, source_capsule};
 use crate::ingest::recorded_watch::{
@@ -120,6 +124,15 @@ struct CameraScan {
     restarts: usize,
     masked_zones: BTreeSet<usize>,
     health: Option<LongDwellHealthSummary>,
+    detector: Option<CameraDetector>,
+}
+
+#[derive(Debug)]
+struct CameraDetector {
+    completed: detector::Completed,
+    // Cumulative counters in retained plan order; the next camera must begin at this end.
+    before: (usize, u64),
+    after: (usize, u64),
 }
 
 /// Complete bounded analysis. Publication mutates only the exact candidate statuses.
@@ -169,9 +182,14 @@ struct GroundConsumer<'a> {
     dimensions: [u32; 2],
     restart_segments: Vec<usize>,
     error: Option<CorroborationError>,
+    detector: Option<detector::Select>,
 }
 impl<'a> GroundConsumer<'a> {
-    fn new(plan: &'a CorroborationPlan, camera: usize) -> Self {
+    fn new(
+        plan: &'a CorroborationPlan,
+        camera: usize,
+        detector: Option<&LongWatchDetector<'_>>,
+    ) -> Self {
         Self {
             plan,
             camera,
@@ -186,6 +204,7 @@ impl<'a> GroundConsumer<'a> {
             dimensions: [0, 0],
             restart_segments: Vec::new(),
             error: None,
+            detector: detector.map(|value| detector::Select::new(value.config)),
         }
     }
 
@@ -260,6 +279,18 @@ impl<'a> GroundConsumer<'a> {
                     return Err(CorroborationError::Limit);
                 }
                 self.seen.insert((key, zone_index));
+                if let Some(selected) = &mut self.detector {
+                    selected.push_entry(LongWatchEntry {
+                        epoch: frame.epoch,
+                        track: target.id,
+                        zone: zone_index,
+                        position: frame.position,
+                        segment: frame.segment,
+                        capsule_digest: frame.capsule_digest,
+                        capture: frame.capsule.capture,
+                        filtered_box: track_box,
+                    })?;
+                }
                 self.entries.push(RawEntry {
                     track_id: key,
                     zone: zone_index,
@@ -277,6 +308,9 @@ impl<'a> GroundConsumer<'a> {
                     },
                 });
             }
+        }
+        if let Some(selected) = &mut self.detector {
+            selected.observe_matches(&frame)?;
         }
         Ok(())
     }
@@ -303,7 +337,16 @@ impl LongCorroborationReport {
         dependencies: &CorroborationDependencies,
         cx: &ReplayCx,
     ) -> Result<Self> {
-        Self::analyze_inner(deployment, plan, options, limits, dependencies, cx, false)
+        Self::analyze_inner(
+            deployment,
+            plan,
+            options,
+            limits,
+            dependencies,
+            cx,
+            false,
+            None,
+        )
     }
 
     /// Screen each entire native scan; any finding or missing evidence blocks all publication.
@@ -315,7 +358,43 @@ impl LongCorroborationReport {
         dependencies: &CorroborationDependencies,
         cx: &ReplayCx,
     ) -> Result<Self> {
-        Self::analyze_inner(deployment, plan, options, limits, dependencies, cx, true)
+        Self::analyze_inner(
+            deployment,
+            plan,
+            options,
+            limits,
+            dependencies,
+            cx,
+            true,
+            None,
+        )
+    }
+
+    /// Add exact retained trained class annotations to actual ground-zone entries across both
+    /// recordings. One inference allowance and detection-head work reservation spans the two
+    /// cameras; each camera's source/JPEG/pixel allowance spans its scan and selected RGB pass.
+    /// Class scores remain uncalibrated and never change the ground/common-cause event policy.
+    #[allow(clippy::too_many_arguments)]
+    pub fn analyze_with_detector(
+        deployment: &ReferenceDeployment,
+        plan: &CorroborationPlan,
+        options: CorroborationOptions,
+        limits: &LongCorroborationLimits,
+        dependencies: &CorroborationDependencies,
+        screened: bool,
+        detector: &LongWatchDetector<'_>,
+        cx: &ReplayCx,
+    ) -> Result<Self> {
+        Self::analyze_inner(
+            deployment,
+            plan,
+            options,
+            limits,
+            dependencies,
+            cx,
+            screened,
+            Some(detector),
+        )
     }
 
     #[allow(clippy::too_many_arguments)]
@@ -327,11 +406,17 @@ impl LongCorroborationReport {
         declarations: &CorroborationDependencies,
         cx: &ReplayCx,
         screened: bool,
+        detector: Option<&LongWatchDetector<'_>>,
     ) -> Result<Self> {
         checkpoint(cx, "long_corroboration:analyze")?;
         plan.validate()?;
         declarations.validate_for(plan)?;
         limits.validate()?;
+        let detector_recipe = detector
+            .map(|value| {
+                LongWatchDetectorRecipe::new(value.package, value.config, value.limits, limits)
+            })
+            .transpose()?;
         if cx.root_dir() != deployment.root() {
             return Err(CorroborationError::Conflict);
         }
@@ -364,9 +449,20 @@ impl LongCorroborationReport {
         if sensors[0] == sensors[1] {
             return Err(CorroborationError::SameSensor);
         }
-        let recipe =
-            LongCorroborationRecipe::new(plan, options, limits, declarations, screened)?.to_bytes();
+        let recipe = match &detector_recipe {
+            Some(component) => LongCorroborationRecipe::new_with_detector(
+                plan,
+                options,
+                limits,
+                declarations,
+                screened,
+                component,
+            )?,
+            None => LongCorroborationRecipe::new(plan, options, limits, declarations, screened)?,
+        }
+        .to_bytes();
         let plan_digest = ContentDigest::sha256(&recipe);
+        let mut allowance = detector.map(AnalysisBudget::new);
         let mut cameras = Vec::with_capacity(2);
         let mut entries = Vec::new();
         let mut samples = Vec::new();
@@ -390,7 +486,7 @@ impl LongCorroborationReport {
                 detector: plan.detector,
                 tracker: plan.tracker,
             };
-            let mut consumer = GroundConsumer::new(plan, index);
+            let mut consumer = GroundConsumer::new(plan, index, detector);
             let scan = run_observed_scan(
                 deployment,
                 &watch,
@@ -406,6 +502,32 @@ impl LongCorroborationReport {
                 return Err(error);
             }
             let scan = scan?;
+            let detector = match (detector, consumer.detector.take(), allowance.as_mut()) {
+                (Some(detector), Some(selected), Some(allowance)) => {
+                    let before = allowance.witness()?;
+                    let completed = detector::run_selected(
+                        deployment,
+                        &watch,
+                        WatchOptions {
+                            tolerate_decode_refusals: options.tolerate_decode_refusals,
+                        },
+                        &scan,
+                        limits,
+                        detector,
+                        selected,
+                        allowance,
+                        cx,
+                    )?;
+                    let after = allowance.witness()?;
+                    Some(CameraDetector {
+                        completed,
+                        before,
+                        after,
+                    })
+                }
+                (None, None, None) => None,
+                _ => return Err(CorroborationError::Conflict),
+            };
             let camera_scan = prepare_camera(
                 deployment,
                 plan,
@@ -414,9 +536,34 @@ impl LongCorroborationReport {
                 &watch,
                 scan,
                 &consumer,
+                detector,
             )?;
-            for raw in consumer.entries {
-                let (entry, sample) = prepare_entry(plan, index, camera_scan.manifest.root(), raw)?;
+            for (entry_index, raw) in consumer.entries.into_iter().enumerate() {
+                let (mut entry, sample) =
+                    prepare_entry(plan, index, camera_scan.manifest.root(), raw)?;
+                if let Some(detector) = &camera_scan.detector {
+                    let selected = detector
+                        .completed
+                        .entries
+                        .get(entry_index)
+                        .ok_or(CorroborationError::Conflict)?;
+                    if selected.entry.epoch != sample.tracker_epoch
+                        || selected.entry.track != sample.local_track_id
+                        || selected.entry.position != sample.entry_position
+                        || selected.entry.segment != entry.segment
+                        || selected.entry.capsule_digest != entry.capsule_digest
+                        || plan.zones[selected.entry.zone].zone_id != entry.zone_id
+                    {
+                        return Err(CorroborationError::Conflict);
+                    }
+                    entry.class_evidence = detector
+                        .completed
+                        .outcome
+                        .evidence
+                        .get(entry_index)
+                        .ok_or(CorroborationError::Conflict)?
+                        .clone();
+                }
                 entries.push(entry);
                 samples.push(sample);
             }
@@ -468,7 +615,9 @@ impl LongCorroborationReport {
             plan_digest,
             cameras: &summaries,
             entries: &entries,
-            cascade: None,
+            cascade: detector_recipe
+                .as_ref()
+                .map(LongWatchDetectorRecipe::digest),
             dependencies: &dependencies,
         };
         let mut candidates = Vec::with_capacity(associated.len());
@@ -532,6 +681,51 @@ impl LongCorroborationReport {
     /// Display positions and recovery-local identifiers, in the exact order of [`Self::entries`].
     pub fn samples(&self) -> &[LongGroundSample] {
         &self.samples
+    }
+    /// Exact immutable model and execution component, if trained annotation was requested.
+    pub fn detector_recipe(&self) -> Option<&LongWatchDetectorRecipe> {
+        self.cameras
+            .first()?
+            .detector
+            .as_ref()
+            .map(|value| &value.completed.recipe)
+    }
+    /// Per-camera trained outcomes in retained camera order; empty for model-free analysis.
+    pub fn detector_cascades(&self) -> impl Iterator<Item = &CascadeOutcome> {
+        self.cameras.iter().filter_map(|camera| {
+            camera
+                .detector
+                .as_ref()
+                .map(|value| &value.completed.outcome)
+        })
+    }
+    /// Admitted unique camera/segment selections, including later frame/model/head refusals.
+    pub fn inference_selections_admitted(&self) -> usize {
+        self.cameras
+            .last()
+            .and_then(|camera| camera.detector.as_ref())
+            .map_or(0, |value| value.after.0)
+    }
+    /// Pipelines entered after native colour admission; this does not promise model MAC execution.
+    pub fn inference_pipeline_attempts(&self) -> usize {
+        self.cameras
+            .iter()
+            .filter_map(|camera| camera.detector.as_ref())
+            .map(|value| value.completed.inference_pipeline_attempts)
+            .sum()
+    }
+    /// Completed native model-plus-head results, excluding every explicit refusal.
+    pub fn inferences_completed(&self) -> usize {
+        self.detector_cascades()
+            .map(|outcome| outcome.inferred_segments().len())
+            .sum()
+    }
+    /// Actual detection-head work consumed across both cameras, including work before refusal.
+    pub fn detection_head_work_used(&self) -> u64 {
+        self.cameras
+            .last()
+            .and_then(|camera| camera.detector.as_ref())
+            .map_or(0, |value| value.after.1)
     }
     /// Retained canonical owner recipe, including the full matrices, zones and decoder budgets.
     pub const fn plan_digest(&self) -> ContentDigest {
@@ -615,6 +809,35 @@ impl LongCorroborationReport {
             let retained_recipe = deployment.publisher().spool().read(self.plan_digest)?;
             LongCorroborationRecipe::from_retained_bytes(&retained_recipe, self.plan_digest)?;
         }
+        // A completed retry cannot reconstruct lost model evidence from the caller's loose
+        // package. Published camera roots must still own their exact detector closure.
+        for camera in &self.cameras {
+            if let Some(detector) = &camera.detector {
+                if recipe_required || deployment.publisher().root(&camera.slot).is_some() {
+                    for bytes in detector.completed.staged() {
+                        checkpoint(cx, "long_corroboration:retained_detector")?;
+                        let digest = ContentDigest::sha256(bytes);
+                        if deployment
+                            .publisher()
+                            .spool()
+                            .read_bounded(digest, bytes.len())?
+                            != bytes
+                        {
+                            return Err(CorroborationError::Conflict);
+                        }
+                    }
+                    let bytes = detector.completed.recipe.to_bytes();
+                    if deployment
+                        .publisher()
+                        .spool()
+                        .read_bounded(detector.completed.recipe.digest(), bytes.len())?
+                        != bytes
+                    {
+                        return Err(CorroborationError::Conflict);
+                    }
+                }
+            }
+        }
         if !self.candidates.iter().any(|candidate| {
             approvals.contains(&candidate.proposal_digest())
                 && candidate.status() == CorroborationStatus::Prepared
@@ -635,6 +858,17 @@ impl LongCorroborationReport {
                 camera.summary.sensor_id.as_bytes(),
             ] {
                 let digest = deployment.publisher_mut().stage_object(bytes)?;
+                deployment.publisher_mut().verify_object(digest)?;
+            }
+            if let Some(detector) = &camera.detector {
+                for bytes in detector.completed.staged() {
+                    checkpoint(cx, "long_corroboration:stage_detector")?;
+                    let digest = deployment.publisher_mut().stage_object(bytes)?;
+                    deployment.publisher_mut().verify_object(digest)?;
+                }
+                let digest = deployment
+                    .publisher_mut()
+                    .stage_object(&detector.completed.recipe.to_bytes())?;
                 deployment.publisher_mut().verify_object(digest)?;
             }
             if let Some(policy) = camera.summary.privacy.policy() {
@@ -699,16 +933,21 @@ impl LongCorroborationReport {
             .collect::<Vec<_>>()
             .join(",");
         let entries = self.entries.iter().zip(&self.samples).map(|(entry, sample)| {
+            let classes = if self.detector_recipe().is_some() {
+                format!(",\"class_evidence\":{}", class_evidence_json(&entry.class_evidence))
+            } else {
+                String::new()
+            };
             format!(concat!("{{\"camera\":{},\"zone_id\":{},\"track_id\":{},\"local_track_id\":{},",
                 "\"tracker_epoch\":{},\"entry_position\":{},\"segment\":{},\"capture_ns\":[{},{}],",
                 "\"capsule_digest\":\"{}\",\"luma_digest\":\"{}\",\"track_box_cxcywh\":[{},{},{},{}],",
-                "\"ground\":[{},{}],\"observation_digest\":\"{}\",\"disposition\":{}}}"),
+                "\"ground\":[{},{}],\"observation_digest\":\"{}\",\"disposition\":{}{}}}"),
                 json_string(&self.plan.cameras[entry.camera].name), json_string(&entry.zone_id),
                 entry.track_id, sample.local_track_id, sample.tracker_epoch, sample.entry_position,
                 entry.segment, entry.capture.earliest.0, entry.capture.latest.0, entry.capsule_digest,
                 sample.luma_digest, entry.track_box[0], entry.track_box[1], entry.track_box[2],
                 entry.track_box[3], json_number(entry.ground.0), json_number(entry.ground.1),
-                entry.record_digest, json_string(entry.disposition.as_str()))
+                entry.record_digest, json_string(entry.disposition.as_str()), classes)
         }).collect::<Vec<_>>().join(",");
         let candidates = self.candidates.iter().map(|candidate| {
             let event = candidate.event();
@@ -736,6 +975,26 @@ impl LongCorroborationReport {
                 .filter(|candidate| candidate.status() == status)
                 .count()
         };
+        let detector_json = self.detector_recipe().map_or_else(String::new, |recipe| {
+            let policy = self.cameras.first().and_then(|camera| camera.detector.as_ref())
+                .map_or_else(String::new, |value| value.completed.policy_json.replace(
+                    "whole_recording_entry_then_following_actual_matches",
+                    "whole_recording_ground_entry_then_following_actual_matches",
+                ));
+            format!(concat!(",\"detector_cascade\":{{\"recipe_digest\":\"{}\",",
+                "\"budget_scope\":\"both_recordings\",\"shared_inference_allowance\":{},",
+                "\"inference_selections_admitted\":{},\"inference_pipeline_attempts\":{},",
+                "\"inferences_completed\":{},\"shared_detection_head_work_allowance\":{},",
+                "\"detection_head_work_used\":{},",
+                "\"selection_policy\":\"ground_entry_then_following_actual_matches_same_epoch\",",
+                "\"admission_order\":\"camera_then_entry_then_selected_display_position\",",
+                "\"execution_order\":\"camera_then_native_source_traversal\",",
+                "\"model_invocation_semantics\":\"native_pipeline_attempted_model_mac_execution_not_guaranteed\",",
+                "\"class_evidence_changes_ground_policy\":false,{}}}"),
+                recipe.digest(), recipe.config().max_inferences, self.inference_selections_admitted(),
+                self.inference_pipeline_attempts(), self.inferences_completed(),
+                recipe.package_limits().detection_work_units, self.detection_head_work_used(), policy)
+        });
         let text = format!(
             concat!(
                 "{{\"format\":{},\"site\":{},\"principal\":{},\"plan_digest\":\"{}\",",
@@ -747,9 +1006,9 @@ impl LongCorroborationReport {
                 "\"publication_blocked\":{},\"tolerate_decode_refusals\":{},\"per_camera_source_byte_budget\":{},",
                 "\"per_camera_pixel_sample_budget\":{},\"per_camera_assignment_work_budget\":{},",
                 "\"per_camera_trace_byte_budget\":{},\"per_camera_jpeg_work_budget\":{},",
-                "\"model_invoked\":false,\"calibrated\":false,\"physical_arrival_proved\":false,",
+                "\"model_invoked\":{},\"calibrated\":false,\"physical_arrival_proved\":false,",
                 "\"absence_certifiable\":false,\"alert_authorized\":false,\"alert_prepared\":false,",
-                "\"effects_authorized\":false,\"detection_quality_claim\":false,\"qualification\":\"implemented_not_qualified\"}}"
+                "\"effects_authorized\":false,\"detection_quality_claim\":false,\"qualification\":\"implemented_not_qualified\"{}}}"
             ),
             json_string(LONG_CORROBORATION_REPORT_SCHEMA),
             json_string(&self.site),
@@ -778,7 +1037,9 @@ impl LongCorroborationReport {
             self.limits.maximum_pixel_samples,
             self.limits.maximum_assignment_work,
             self.limits.maximum_trace_bytes,
-            self.limits.decode.jpeg_work_units
+            self.limits.decode.jpeg_work_units,
+            self.inference_pipeline_attempts() != 0,
+            detector_json,
         );
         if text.len() > MAX_REPORT_BYTES {
             return Err(CorroborationError::Limit);
@@ -795,6 +1056,7 @@ fn prepare_camera(
     watch: &WatchPlan,
     scan: ScanData,
     consumer: &GroundConsumer<'_>,
+    detector: Option<CameraDetector>,
 ) -> Result<CameraScan> {
     let camera = &plan.cameras[index];
     let mut encoder = CanonicalEncoder::new();
@@ -829,6 +1091,17 @@ fn prepare_camera(
         encoder.bytes(health_policy_bytes());
         summary.encode(&mut encoder);
     }
+    if let Some(detector) = &detector {
+        encoder.text("detector_cascade");
+        encoder.bytes(&detector.completed.recipe.to_bytes());
+        encoder.bytes(&detector.completed.bytes);
+        encoder.text("global_detector_budget");
+        encoder.u64(index as u64);
+        encoder.u64(detector.before.0 as u64);
+        encoder.u64(detector.after.0 as u64);
+        encoder.u64(detector.before.1);
+        encoder.u64(detector.after.1);
+    }
     let analysis = encoder.finish_checked()?;
     let digest = ContentDigest::sha256(&analysis);
     let sensor_digest = ContentDigest::sha256(scan.sensor.as_str().as_bytes());
@@ -844,6 +1117,9 @@ fn prepare_camera(
     }
     if scan.health.is_some() {
         children.insert(health_policy_digest());
+    }
+    if let Some(detector) = &detector {
+        children.extend(detector.completed.children());
     }
     let slot = slot("lc-a", digest)?;
     // The analysis is already an explicit child. Supplying it as metadata too would
@@ -881,15 +1157,37 @@ fn prepare_camera(
         analysis,
         manifest,
         slot,
-        source_bytes: scan.source_bytes,
-        pixel_samples: scan.pixel_samples,
+        source_bytes: scan
+            .source_bytes
+            .checked_add(
+                detector
+                    .as_ref()
+                    .map_or(0, |value| value.completed.source_bytes),
+            )
+            .ok_or(CorroborationError::Limit)?,
+        pixel_samples: scan
+            .pixel_samples
+            .checked_add(
+                detector
+                    .as_ref()
+                    .map_or(0, |value| value.completed.pixel_samples),
+            )
+            .ok_or(CorroborationError::Limit)?,
         assignment_work: scan.assignment_work,
-        jpeg_work: scan.jpeg_work,
+        jpeg_work: scan
+            .jpeg_work
+            .checked_add(
+                detector
+                    .as_ref()
+                    .map_or(0, |value| value.completed.jpeg_work),
+            )
+            .ok_or(CorroborationError::Limit)?,
         trace_bytes: scan.trace.len(),
         unreliable: scan.unreliable,
         restarts: scan.restarts,
         masked_zones: consumer.masked.clone(),
         health: scan.health,
+        detector,
     })
 }
 
@@ -973,6 +1271,29 @@ fn camera_json(camera: &CameraScan, plan: &CorroborationPlan) -> String {
         .health
         .as_ref()
         .map_or_else(|| "null".to_owned(), LongDwellHealthSummary::to_json);
+    let detector = camera.detector.as_ref().map_or_else(String::new, |value| {
+        format!(
+            concat!(
+                ",\"detector_cascade\":{{{},\"recipe_digest\":\"{}\",",
+                "\"source_chunk_bytes_read\":{},\"jpeg_work_units\":{},",
+                "\"additional_pixel_samples_processed\":{},\"inference_pipeline_attempts\":{},",
+                "\"inferences_completed\":{},\"inference_selections_admitted_before\":{},",
+                "\"inference_selections_admitted_after\":{},\"detection_head_work_before\":{},",
+                "\"detection_head_work_after\":{}}}"
+            ),
+            cascade_outcome_json(&value.completed.outcome),
+            value.completed.recipe.digest(),
+            value.completed.source_bytes,
+            value.completed.jpeg_work,
+            value.completed.pixel_samples,
+            value.completed.inference_pipeline_attempts,
+            value.completed.outcome.inferred_segments().len(),
+            value.before.0,
+            value.after.0,
+            value.before.1,
+            value.after.1
+        )
+    });
     format!(
         concat!(
             "{{\"camera\":{},\"import_identity\":\"{}\",\"import_root\":\"{}\",",
@@ -984,7 +1305,7 @@ fn camera_json(camera: &CameraScan, plan: &CorroborationPlan) -> String {
             "\"decode_refusals\":[{}],\"masked_zones\":[{}],\"privacy_binding\":\"{}\",",
             "\"privacy_generation\":{},\"source_chunk_bytes_read\":{},\"pixel_samples_processed\":{},",
             "\"assignment_work_admitted\":{},\"jpeg_work_units\":{},\"trace_record_bytes\":{},",
-            "\"media_format\":{},\"sensor_health\":{}}}"
+            "\"media_format\":{},\"sensor_health\":{}{}}}"
         ),
         json_string(&summary.name),
         summary.import_identity,
@@ -1014,6 +1335,7 @@ fn camera_json(camera: &CameraScan, plan: &CorroborationPlan) -> String {
         camera.jpeg_work,
         camera.trace_bytes,
         json_string(&summary.media_format),
-        health
+        health,
+        detector,
     )
 }

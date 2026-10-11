@@ -159,8 +159,11 @@ const HELP: &str = "fss-event <report|prepare|publish|read|verify|watch|corrobor
     --stream-pixel-budget, --stream-assignment-work and --stream-trace-bytes ceilings each\n\
     apply separately to each complete camera scan; defaults match --stream-watch. A bounded\n\
     global association follows both scans. Supports failure domains, recovery and health\n\
-    screening; refuses detector packages, coverage retention, visibility, poses, calibration\n\
-    and scene-mesh options. Exact approvals are distinct from short corroboration.\n\
+    screening. Explicit detector-package options classify selected actual ground entries and\n\
+    following matches under one inference budget shared by both recordings. Exact approvals\n\
+    retain the model archive and recipe for cold replay; class scores remain uncalibrated and\n\
+    do not change the ground-entry policy. Refuses coverage retention, visibility, poses,\n\
+    calibration and scene-mesh options. Exact approvals are distinct from short corroboration.\n\
     Each recording is tracked over the whole frame; each confirmed track's foot point is\n\
     projected to the ground; ground-zone entries of the two sensors are associated by global\n\
     assignment. A pair is corroborated only if the distance gate holds and the WORST CASE over\n\

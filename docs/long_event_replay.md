@@ -34,11 +34,18 @@ fingerprint can substitute for it.
 
 Inspection checks the retained metadata, capsule authority and source closure without
 performing native image decoding. A stored analysis is not reported as an executed replay.
-For a detector-backed watch event, the response also includes `retained_detector`: the package,
+For a detector-backed watch or corroboration event, the response also includes `retained_detector`: the package,
 manifest, model, recipe and threshold-contract digests, kernel generation and inference
 selection bounds. The complete archived package and every class-evidence record must be in
 the analysis closure. Entry and class-frame capsule digests must match the exact retained
 coding segments, rather than merely naming some valid capsule from the same camera.
+For both profiles, an entry's retained capture interval must also equal that exact source
+capsule's interval, including native container presentation-time mapping. Consistent outer
+event bounds cannot conceal a substituted entry time.
+Corroboration inspection also checks the two ground observations, the selected pair's exact
+class-record lists, complete per-camera model closures and continuous global admission/head-work
+counters. Its policy evidence is reconstructed from ground witnesses and declared common causes;
+class annotations cannot supply extra policy votes.
 Missing custody, corrupted metadata, stale privacy or a reviewed successor revision is refused.
 This reader currently owns the original whole-recording candidate revisions; it does not
 reinterpret a later human review as that original computation.
@@ -68,12 +75,15 @@ absolute entry position. Corroboration replay runs both complete camera scans an
 their ground transforms, association gates, common-cause declarations and optional health
 screen.
 
-Detector-backed watch replay additionally loads the exact retained package archive, verifies
-its manifest, model, threshold contract and kernel generation, and runs the original bounded
+Detector-backed watch and corroboration replay additionally load the exact retained package archive, verify
+its manifest, model, threshold contract and kernel generation, and run the original bounded
 native RGB inference and class association. The original model file can be deleted after
 publication. No loose package path or model/threshold/backend substitution is accepted.
 Selected frames, refused frames, inference attempts, completed inferences and additional
 source/JPEG/pixel work are part of the reproduced analysis.
+For corroboration, the rerun shares one inference allowance and one detection-head work budget
+across both native recordings, preserving the original camera/selection/execution ordering.
+Neither the loose package nor either original input file is required after complete publication.
 
 The full analyses, candidate provenance and committed event must match. A matching event alone
 cannot hide a changed background scan or omitted frame. Divergence or a bound failure returns
@@ -100,17 +110,26 @@ against current caller ceilings and restores the original values. Model-free his
 publications keep their existing bytes and interpretation. The JSON identifies the complete
 detector recipe separately from the historical five-budget watch recipe.
 
+Detector-backed corroboration recipes retain the same complete model execution component inside
+their distinct ground-selection composition. Native limits must exactly agree with the enclosing
+per-camera recipe. The ground policy pins admission and native execution order, global inference
+and head-work scope, source associations and the class-as-annotation boundary. Historical
+model-free corroboration recipes retain their bytes and remain readable under the same profile.
+
 ## Resource and output bounds
 
 All numeric options require positive unsigned decimal values. Source, pixel, assignment,
 trace and JPEG-work execution ceilings apply separately to each camera's complete recording.
 They never refill at frame or chunk boundaries. For corroboration the complete two-camera
 reservation is therefore twice the selected per-camera reservation.
-For detector-backed watch, source, JPEG and pixel ceilings span both native passes. The
+For detector-backed watch and corroboration, source, JPEG and pixel ceilings span both native passes of each camera. The
 retained package archive is charged to the cumulative metadata-read bound. The recipe's
-inference allowance remains global to the recording; at most 64 selected frames can enter
+inference allowance remains global to the selected analysis (both cameras for corroboration); at most 64 selected frames can enter
 the native inference pipeline. Cooperative cancellation is checked at frame and inference
 boundaries; one admitted model call retains its explicit internal work limits.
+The identical trained archive is fetched and charged once during two-camera inspection, while
+membership in both exact camera closures is checked independently. Native verification then
+loads that retained package under its separate explicit model-import reservation.
 
 | Option | Default | Hard maximum |
 |---|---:|---:|

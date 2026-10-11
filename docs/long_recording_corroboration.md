@@ -36,7 +36,7 @@ camera calibration. For native H.264/H.265 and YCbCr JPEG inputs, use `--interpr
 
 The mode supports the existing foreground thresholds, tracker settings, decoder limits,
 `--tolerate-decode-refusals`, `--sensor-health conservative-v1`, failure-domain declarations,
-report export and exact event approvals. Detector-package, pose, calibration, scene-mesh,
+digest-pinned trained detector packages, report export and exact event approvals. Pose, calibration, scene-mesh,
 visibility and coverage-retention options are refused before deployment I/O. Those contracts
 remain available through ordinary corroboration; this streaming mode owns positive ground
 observations and their association.
@@ -73,6 +73,49 @@ retained, but their policy result remains witnessed activity with `Hold`. Disjoi
 domains are not a measurement of physical independence, and undeclared dependencies remain
 unknown.
 
+## Add native trained class evidence
+
+Add the ordinary detector options to the two-camera command:
+
+```sh
+--detector-package /path/to/verified-detector.fssmodel \
+--detector-digest "${PACKAGE_DIGEST:?supply the exact package digest}" \
+--detector-max-inferences 8 \
+--detector-frames-per-track 2
+```
+
+The exact archive and detection-head contract are verified before either recording is opened.
+The complete foreground/tracker scan finds the first actual confirmed match inside each ground
+zone. A second native color pass selects that entry and bounded following actual matches from
+the same camera, tracker epoch and local track. It uses the current privacy mask and supports
+MJPEG, AVC and HEVC, including entries beyond frame 128. The placeholder image rectangle used
+to configure the foreground walker has no role in selecting ground entries or model frames.
+
+**One inference allowance and one detection-head work budget cover both recordings.** Admission
+proceeds in camera order, then entry order and selected display position; repeated use of the
+same camera/coding segment does not spend another inference slot. A selected frame consumes
+its slot even if decoding, preprocessing, execution or the detection head refuses it. A first
+camera that consumes the allowance leaves explicit `budget_exhausted` records for the second.
+Inference executes in each native decoder's traversal order so inter-picture dependencies remain
+valid; detection-head work follows that execution order. Neither allowance replenishes on entry,
+frame, camera, gap or codec recovery.
+
+The report includes whole-analysis and per-camera admission counters, native pipeline attempts,
+completed model-plus-head results, consumed detection-head work and additional source/JPEG/pixel
+work. An attempted pipeline is not a claim that model arithmetic completed. Source bytes, JPEG
+work and pixel ceilings each span both passes of their camera; tracker assignment and the
+foreground trace retain their first-pass bounds.
+
+Each class annotation records the exact camera/import, epoch/local track, ground zone, entry
+display position, selected display position, coding segment and source capsule. Both complete
+camera closures retain all selected annotations, including entries that have no counterpart.
+The selected pair's exact class-record lists are bound into its association identity and retained
+provenance. They do not add policy evidence votes, calibrated probabilities, physical identities
+or additional independent domains. Ground observations and declared common causes still decide
+`Corroborated` versus `Witnessed`/`Hold`; the same model used twice is not a second independent
+verifier. Scores remain uncalibrated, event kind remains unclassified and probability remains
+`[0,1]`.
+
 ## Privacy, health and whole-scan budgets
 
 Current per-sensor privacy masks apply before perception. Masked ground zones cannot support
@@ -88,7 +131,7 @@ The four aggregate limits apply **separately to each camera's entire scan**:
 | Option | Default per camera | Scope |
 |---|---:|---|
 | `--stream-read-bytes` | 536,870,912 | Decoder source reads, including configuration and recovery probes |
-| `--stream-pixel-budget` | 1,073,741,824 | Decoded luma samples processed by foreground analysis |
+| `--stream-pixel-budget` | 1,073,741,824 | Foreground luma and, when selected, native RGB-pass pixel work |
 | `--stream-assignment-work` | 1,073,741,824 | In-camera tracker assignment work |
 | `--stream-trace-bytes` | 8,388,608 | Complete bounded scan identity and geometry trace |
 
@@ -123,6 +166,13 @@ is therefore unnecessary to recover the published computation's owner settings. 
 recipe does not authorize event publication, and an exact publication retry refuses damaged
 recipe custody even when an earlier event already exists.
 
+Detector-enabled recipes add an explicit ground-selection/global-budget policy and the complete
+model execution component. Publication retains the exact package archive, component recipe,
+both bounded outcomes and all class records beneath the camera roots. The camera analyses bind
+cumulative admission/head-work counters before and after each camera. Missing or damaged model
+custody refuses even an otherwise completed publication retry. Model-free recipes and their
+publication identities retain their original bytes.
+
 The policy can report an alert-preparation affordance for an admitted corroborated event.
 Preparing or dispatching an alert remains its own separately approved operation. An empty
 result has no absence-certification meaning, and this mode publishes no coverage witness.
@@ -131,6 +181,8 @@ Focused native regression targets:
 
 ```sh
 cargo test -p fss-cli --test corroborate_stream_cli
+cargo test -p fss-cli --test corroborate_stream_detector_cli
+cargo test -p fss-reference --test long_corroboration_contract
 ```
 
 Synthetic fixtures exercise the pipeline and evidence contracts. They do not qualify live
