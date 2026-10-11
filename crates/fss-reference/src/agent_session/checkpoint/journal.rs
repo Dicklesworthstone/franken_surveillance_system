@@ -152,6 +152,107 @@ pub struct SessionJournalInspection {
     pub incomplete_tail: Option<u64>,
 }
 
+/// Historical session state. Recorded grants and times never admit a new request.
+#[derive(Clone, Debug, PartialEq)]
+pub struct RetainedSessionState {
+    /// Exact session at the committed tip.
+    pub session: AgentSession,
+    /// Identity of the original opening, retained across refreshes.
+    pub opening_digest: ContentDigest,
+    /// Exact retained contract basis.
+    pub basis: ContractBasis,
+    /// Tokens already charged, including durable disclosure accounting.
+    pub spent_tokens: u64,
+    /// Last recorded evidence clock watermark.
+    pub last_observed_at: TimestampNs,
+    /// Retained closure or expiry tombstone.
+    pub closed: bool,
+}
+
+/// Verified historical state obtained without opening a writable journal or applying a clock.
+/// The canonical checkpoint retains alias bindings and replay protection as well as session
+/// metadata. Claims and cases are historical heads; all their predecessor records remain in
+/// the original journal bytes.
+#[derive(Clone, Debug, PartialEq)]
+pub struct SessionRecoveryState {
+    /// Exact committed journal and session checkpoint identities.
+    pub inspection: SessionJournalInspection,
+    /// Exact canonical session checkpoint, including aliases and disclosure accounting.
+    pub checkpoint_bytes: Vec<u8>,
+    /// All retained sessions, including closed and expired identities.
+    pub sessions: Vec<RetainedSessionState>,
+    /// Every immutable workspace revision in session/revision order.
+    pub workspace_revisions: Vec<crate::agent_session::workspace::WorkspaceRevision>,
+    /// Exact workspace store checkpoint when initialized.
+    pub workspace_checkpoint_digest: Option<ContentDigest>,
+    /// Recorded claim heads, never proof of a currently live lease.
+    pub claims: Vec<crate::agent_session::work_claims::WorkClaimRevision>,
+    /// Recorded investigation heads, including uncertainty and supersession.
+    pub cases: Vec<coordination::investigations::InvestigationRevision>,
+}
+
+/// Re-executes the native bounded session, disclosure, workspace, claim and case verifiers
+/// over already admitted bytes. This pure operation performs no filesystem access, pin repair,
+/// expiry, claim recovery or session admission. A torn tail is reported for the caller to refuse.
+pub fn inspect_session_bytes(
+    bytes: &[u8],
+    limits: DurableSessionLimits,
+    claim_ceilings: WorkClaimLimits,
+) -> Result<SessionRecoveryState, DurableSessionError> {
+    if bytes.len() > limits.max_journal_bytes.min(MAX_SESSION_JOURNAL_BYTES) {
+        return Err(DurableSessionError::CapacityExceeded);
+    }
+    let report = recover_bytes(bytes)?;
+    if report.records().len() > limits.max_records {
+        return Err(DurableSessionError::CapacityExceeded);
+    }
+    let restored = replay_all(&report, limits, Some(claim_ceilings))?;
+    let checkpoint = restored.memory.checkpoint(limits.max_checkpoint_bytes)?;
+    let inspection = SessionJournalInspection {
+        root: report.last_root(),
+        checkpoint_digest: checkpoint.digest(),
+        records: report.records().len(),
+        committed_bytes: report.committed_len(),
+        incomplete_tail: report.incomplete_tail(),
+    };
+    Ok(SessionRecoveryState {
+        inspection,
+        checkpoint_bytes: checkpoint.as_bytes().to_vec(),
+        sessions: restored
+            .memory
+            .sessions
+            .values()
+            .map(|entry| RetainedSessionState {
+                session: entry.session.clone(),
+                opening_digest: entry.opening_digest,
+                basis: entry.basis.clone(),
+                spent_tokens: entry.spent_tokens,
+                last_observed_at: entry.last_observed_at,
+                closed: entry.closed,
+            })
+            .collect(),
+        workspace_revisions: restored
+            .workspaces
+            .as_ref()
+            .map_or_else(Vec::new, workspace::WorkspaceState::retained_revisions),
+        workspace_checkpoint_digest: restored
+            .workspaces
+            .as_ref()
+            .map(workspace::WorkspaceState::checkpoint_digest),
+        claims: restored
+            .coordination
+            .as_ref()
+            .map(|state| state.claims.heads().cloned().collect())
+            .unwrap_or_default(),
+        cases: restored
+            .coordination
+            .as_ref()
+            .and_then(|state| state.cases.as_ref())
+            .map(|cases| cases.heads().cloned().collect())
+            .unwrap_or_default(),
+    })
+}
+
 /// Classification of an append for which no successful response was delivered.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum SessionAppendRecovery {

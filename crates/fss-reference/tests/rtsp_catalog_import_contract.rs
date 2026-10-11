@@ -76,7 +76,7 @@ impl RtspCatalogImportAuthority for Owner {
         self.0.get() && destination.site_lineage() == SITE
     }
 }
-fn slot(index: usize) -> Test<SlotName> { Ok(SlotName::parse(format!("window-{index:06}"))?) }
+fn slot(index: usize) -> Test<SlotName> { Ok(SlotName::parse(&format!("window-{index:06}"))?) }
 fn scope(summary: &RecordingSummary) -> CatalogScope {
     CatalogScope { recording: summary.scope.clone(), decode_clock: ContentDigest::sha256(b"explicit-decode-epoch"), time_scale: 90_000 }
 }
@@ -224,7 +224,7 @@ fn three_hundred_twenty_native_frames_remain_one_cold_decodable_watch_range() ->
     fs::rename(f.directory.0.join("archive"), f.directory.0.join("offline-archive"))?;
     drop(f.target.take());
     f.cx = context(&f.directory.0.join("destination"))?;
-    f.target = Some(ReferenceDeployment::open(f.directory.0.join("destination"), SITE, &f.cx)?);
+    f.target = Some(ReferenceDeployment::open(&f.directory.0.join("destination"), SITE, &f.cx)?);
     let mut decoder = RecordedH264Range::open_stream(f.target()?, RecordedH264Request {
         import_identity: result.import.import_identity, first_segment: 0, segment_count: 320,
         interpretation: ComponentInterpretation::YCbCr, read_limits: RetainedReadLimits::default(),
@@ -357,7 +357,7 @@ fn interrupted_publication_resumes_exactly_and_cold_retry_does_not_append_author
     drop(f.target.take());
     drop(f.source.take());
     f.cx = context(&f.directory.0.join("destination"))?;
-    f.target = Some(ReferenceDeployment::open(f.directory.0.join("destination"), SITE, &f.cx)?);
+    f.target = Some(ReferenceDeployment::open(&f.directory.0.join("destination"), SITE, &f.cx)?);
     f.source = Some(LocalRootPublisher::open(f.directory.0.join("archive"), archive_limits())?);
     let retried = f.run()?;
     assert!(retried.import.reused);

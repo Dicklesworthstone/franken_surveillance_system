@@ -598,3 +598,93 @@ fn tampered_originals_refuse_inspection_and_restore_before_destination_reservati
     );
     Ok(())
 }
+
+#[test]
+fn populated_agent_process_roundtrip_inspects_history_without_restoring_authority() -> TestResult {
+    use fss_core::{AgentView, PrincipalId};
+    use fss_reference::deployment_backup::AGENT_BACKUP_PROFILE;
+    use fss_reference::deployment_session::{OpenSessionRequest, open_session};
+
+    let fixture = Fixture::new("backup-cli-agent")?;
+    let mission = "Keep the unresolved case available after disk replacement";
+    let opened = open_session(
+        &fixture.root,
+        &OpenSessionRequest {
+            mission: mission.into(),
+            objective: "Preserve exact uncertainty and custody".into(),
+            principal: PrincipalId::parse("principal:agent-recovery-cli")?,
+            view: AgentView::Brief,
+            token_budget: 100_000,
+        },
+    )?;
+    let source_before = inventory(&fixture.root)?;
+    let planned_output = run(
+        &fixture.directory,
+        &arguments("plan", Some(&fixture.root), None, None),
+    )?;
+    let planned = report(&planned_output)?;
+    assert!(planned_output.status.success(), "{planned:?}");
+    assert_eq!(field(&planned, "profile")?.text(), Some(AGENT_BACKUP_PROFILE));
+    assert_eq!(field(field(&planned, "agent_state")?, "session_count")?.integer(), Some(1));
+    assert!(!std::str::from_utf8(&planned_output.stdout)?.contains(mission));
+    let source_output = run(
+        &fixture.directory,
+        &arguments("agent-inspect", Some(&fixture.root), None, None),
+    )?;
+    let source_state = report(&source_output)?;
+    assert!(source_output.status.success(), "{source_state:?}");
+    assert_eq!(field(&source_state, "status")?.text(), Some("agent-inspected"));
+    assert_eq!(field(&source_state, "historical_only")?.boolean(), Some(true));
+    assert_eq!(field(&source_state, "restore_fence_present")?.boolean(), Some(false));
+    assert_eq!(field(&source_state, "authority_granted")?.boolean(), Some(false));
+    let sessions = field(&source_state, "sessions")?.array().ok_or("sessions array")?;
+    assert_eq!(sessions.len(), 1);
+    assert_eq!(
+        field(field(&sessions[0], "session")?, "sessionId")?.text(),
+        Some(opened.session.session_id.as_str()),
+    );
+    assert!(std::str::from_utf8(&source_output.stdout)?.contains(mission));
+    let expected = pin(&planned)?;
+    let bundle = fixture.directory.join("agent-bundle");
+    let destination = fixture.directory.join("agent-restored");
+    for (action, root, expected_status) in [
+        ("create", Some(fixture.root.as_path()), "created"),
+        ("inspect", None, "verified"),
+        ("restore", Some(destination.as_path()), "restored"),
+    ] {
+        let output = run(
+            &fixture.directory,
+            &arguments(action, root, Some(&bundle), Some(&expected)),
+        )?;
+        let value = report(&output)?;
+        assert!(output.status.success(), "{value:?}");
+        assert_eq!(field(&value, "status")?.text(), Some(expected_status));
+        assert_eq!(field(&value, "profile")?.text(), Some(AGENT_BACKUP_PROFILE));
+        same_snapshot(&planned, &value)?;
+        if action == "restore" {
+            assert_eq!(
+                field(field(&value, "restoration")?, "agent_mutations_disabled")?.boolean(),
+                Some(true),
+            );
+        }
+    }
+    assert!(inventory(&fixture.root)? == source_before);
+    let before = inventory(&destination)?;
+    let output = run(
+        &fixture.directory,
+        &arguments("agent-inspect", Some(&destination), None, None),
+    )?;
+    let restored = report(&output)?;
+    assert!(output.status.success(), "{restored:?}");
+    assert_eq!(field(&restored, "restore_fence_present")?.boolean(), Some(true));
+    assert_eq!(field(&restored, "authority_granted")?.boolean(), Some(false));
+    for name in ["agent_state", "sessions", "workspace_revisions", "claims", "cases", "publications"] {
+        assert_eq!(field(&restored, name)?, field(&source_state, name)?, "historical state changed: {name}");
+    }
+    assert!(inventory(&destination)? == before);
+    let mut denied = arguments("agent-inspect", Some(&destination), None, None);
+    denied.retain(|value| value != "--allow-originals");
+    refused(&run(&fixture.directory, &denied)?, fss_cli::ERR_CLI_MALFORMED_VALUE, 2)?;
+    assert!(inventory(&destination)? == before);
+    Ok(())
+}

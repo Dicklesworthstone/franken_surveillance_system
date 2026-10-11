@@ -128,19 +128,40 @@ pub(super) fn open_file(path: &Path, cx: &ReplayCx) -> Result<File> {
     Ok(file)
 }
 
+/// Detect only presence, never create or follow an independent agent directory.
+pub(super) fn agent_present(root: &Path, gate: &dyn Fn() -> Result<()>) -> Result<bool> {
+    gate()?;
+    let path = root.join("agent");
+    match fs::symlink_metadata(&path) {
+        Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(false),
+        Err(error) => return Err(error.into()),
+        Ok(_) => {}
+    }
+    directory(&path)?;
+    let populated = fs::read_dir(path)?.next().transpose()?.is_some();
+    gate()?;
+    Ok(populated)
+}
+
 /// Existing file descriptions are locked without creating/truncating any source state.
 pub(super) fn source_locks(
     root: &Path,
     cx: &ReplayCx,
     gate: &dyn Fn() -> Result<()>,
-) -> Result<Vec<File>> {
+) -> Result<(Vec<File>, bool)> {
+    let with_agent = agent_present(root, gate)?;
     let mut locks = Vec::new();
+    let agent_locks = if with_agent { super::agent::LOCKS } else { &[] };
     for relative in [
         "objects/LOCK",
         "objects/spool/LOCK",
         "ledger/journal.fssj",
         "effects/journal.fssj",
-    ] {
+    ]
+    .into_iter()
+    .chain(agent_locks.iter().copied())
+    .chain(with_agent.then_some("agent/sessions/journal.fssj"))
+    {
         gate()?;
         let path = root.join(relative);
         let file = open_file(&path, cx)?;
@@ -157,7 +178,10 @@ pub(super) fn source_locks(
         }
         locks.push(file);
     }
-    Ok(locks)
+    if agent_present(root, gate)? != with_agent {
+        return Err(BackupError::Changed);
+    }
+    Ok((locks, with_agent))
 }
 
 pub(super) struct ReadIo<'a> {

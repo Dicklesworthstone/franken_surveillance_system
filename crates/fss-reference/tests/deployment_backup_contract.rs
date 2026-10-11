@@ -1079,3 +1079,6 @@ fn valid_spool_and_ledger_cannot_hide_an_invalid_hold_transition() -> Test {
     assert_eq!(bytes_under(&f.source)?, before);
     Ok(())
 }
+
+#[path = "deployment_backup_contract/agent.rs"]
+mod agent;

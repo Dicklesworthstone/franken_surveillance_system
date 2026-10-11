@@ -12,7 +12,8 @@ use fss_publication::WriterDetectionOptions;
 use crate::deletion::DeletionIndex;
 use crate::{DeploymentLayout, DurableEffectJournal};
 
-use super::io::{ReadIo, directory, regular};
+use super::io::{ReadIo, agent_present, directory, regular};
+use super::agent::AgentRecoveryState;
 use super::manifest::{
     BackupFile, BackupManifest, named_digest, valid_path, validate_deployment_limits,
 };
@@ -34,7 +35,7 @@ pub(super) const PAYLOAD_GUARD: &[u8] = b"fss.deployment_backup.inert_payload.v1
 
 #[derive(Clone, Copy, Eq, PartialEq)]
 pub(super) enum SnapshotKind {
-    Source,
+    Source { agent: bool },
     BundlePayload,
 }
 
@@ -45,12 +46,22 @@ pub(super) fn inventory(
     kind: SnapshotKind,
 ) -> Result<Vec<BackupFile>> {
     directory(root)?;
+    let with_agent = agent_present(root, &|| io.check())?;
+    if let SnapshotKind::Source { agent } = kind
+        && with_agent != agent
+    {
+        return Err(BackupError::Changed);
+    }
+    let agent_directories = if with_agent { super::agent::DIRECTORIES } else { &[] };
     let mut files = Vec::new();
     let mut total = 0_u64;
     let mut seen_dirs = BTreeSet::new();
     let mut seen_locks = BTreeSet::new();
     let mut guard_seen = false;
-    for relative in std::iter::once("").chain(DIRECTORIES.iter().copied()) {
+    for relative in std::iter::once("")
+        .chain(DIRECTORIES.iter().copied())
+        .chain(agent_directories.iter().copied())
+    {
         let path = root.join(relative);
         directory(&path).map_err(|_| BackupError::RecoveryRequired("missing_directory"))?;
         let mut listing = SpoolIo::read_dir(io, &path)?;
@@ -75,13 +86,15 @@ pub(super) fn inventory(
             };
             let metadata = SpoolIo::symlink_metadata(io, &entry.path())?;
             if metadata.is_dir() {
-                if DIRECTORIES.contains(&name.as_str()) {
+                if DIRECTORIES.contains(&name.as_str())
+                    || agent_directories.contains(&name.as_str())
+                {
                     seen_dirs.insert(name);
                     continue;
                 }
                 if name == "agent" {
-                    // Independent agent journals/archives have their own writers and recovery
-                    // obligations. Only an entirely unused directory can be outside this profile.
+                    // An unused placeholder remains outside the core-only profile. A directory
+                    // populated after lock selection refuses instead of becoming an unlocked copy.
                     let mut agent = SpoolIo::read_dir(io, &entry.path())?;
                     if SpoolIo::next_dir_entry(io, &mut agent).is_none() {
                         continue;
@@ -90,15 +103,17 @@ pub(super) fn inventory(
                 return Err(BackupError::Unsupported("populated_subtree"));
             }
             regular(&metadata)?;
-            if matches!(name.as_str(), "objects/LOCK" | "objects/spool/LOCK") {
-                if kind != SnapshotKind::Source || metadata.len() != 0 {
+            if matches!(name.as_str(), "objects/LOCK" | "objects/spool/LOCK")
+                || super::agent::LOCKS.contains(&name.as_str())
+            {
+                if !matches!(kind, SnapshotKind::Source { .. }) || metadata.len() != 0 {
                     return Err(BackupError::Unsupported("lock_record"));
                 }
                 seen_locks.insert(name);
                 continue;
             }
             if name == RESTORE_INCOMPLETE_FILENAME {
-                if kind == SnapshotKind::Source {
+                if matches!(kind, SnapshotKind::Source { .. }) {
                     return Err(BackupError::RecoveryRequired("incomplete_restore"));
                 }
                 if io.read_exact(&entry.path(), PAYLOAD_GUARD.len() as u64)? != PAYLOAD_GUARD {
@@ -107,7 +122,9 @@ pub(super) fn inventory(
                 guard_seen = true;
                 continue;
             }
-            if name.starts_with("objects/spool/staging/") {
+            if name.starts_with("objects/spool/staging/")
+                || name.starts_with("agent/publications/spool/staging/")
+            {
                 return Err(BackupError::RecoveryRequired("staging_not_empty"));
             }
             valid_path(&name)?;
@@ -127,7 +144,10 @@ pub(super) fn inventory(
             if bytes.len() as u64 != metadata.len() {
                 return Err(BackupError::Changed);
             }
-            if name.starts_with("objects/spool/verified/") && !bytes.is_empty() {
+            if (name.starts_with("objects/spool/verified/")
+                || name.starts_with("agent/publications/spool/verified/"))
+                && !bytes.is_empty()
+            {
                 return Err(BackupError::Corrupt("verification_marker"));
             }
             files.push(BackupFile {
@@ -137,10 +157,12 @@ pub(super) fn inventory(
             });
         }
     }
-    if seen_dirs.len() != DIRECTORIES.len() {
+    if seen_dirs.len() != DIRECTORIES.len() + agent_directories.len() {
         return Err(BackupError::RecoveryRequired("missing_directory"));
     }
-    if kind == SnapshotKind::Source && seen_locks.len() != 2 {
+    if matches!(kind, SnapshotKind::Source { .. })
+        && seen_locks.len() != 2 + if with_agent { super::agent::LOCKS.len() } else { 0 }
+    {
         return Err(BackupError::RecoveryRequired("missing_lock"));
     }
     if kind == SnapshotKind::BundlePayload && !guard_seen {
@@ -163,6 +185,16 @@ pub(super) fn snapshot(
     io: &ReadIo<'_>,
     kind: SnapshotKind,
 ) -> Result<BackupManifest> {
+    snapshot_with_agent(root, deployment_limits, limits, io, kind).map(|state| state.0)
+}
+
+pub(super) fn snapshot_with_agent(
+    root: &Path,
+    deployment_limits: DeploymentLimits,
+    limits: BackupLimits,
+    io: &ReadIo<'_>,
+    kind: SnapshotKind,
+) -> Result<(BackupManifest, Option<AgentRecoveryState>)> {
     let result = snapshot_inner(root, deployment_limits, limits, io, kind);
     io.check()?;
     result
@@ -174,7 +206,7 @@ fn snapshot_inner(
     limits: BackupLimits,
     io: &ReadIo<'_>,
     kind: SnapshotKind,
-) -> Result<BackupManifest> {
+) -> Result<(BackupManifest, Option<AgentRecoveryState>)> {
     limits.validate()?;
     validate_deployment_limits(&deployment_limits, limits)?;
     let first = inventory(root, limits, io, kind)?;
@@ -304,6 +336,20 @@ fn snapshot_inner(
         crate::deletion::holds::HoldError::Limit => BackupError::Limit("hold_history"),
         _ => BackupError::Corrupt("hold_authority"),
     })?;
+    let agent = if first.iter().any(|file| file.path.starts_with("agent/")) {
+        let fence = fss_core::ObjectId::parse(super::RESTORE_FENCE_OBJECT_ID)?;
+        Some(super::agent::inspect(
+            root,
+            &ledger.snapshot.anchor,
+            ledger.snapshot.objects.contains_key(&fence),
+            &first,
+            &deleted,
+            limits,
+            io,
+        )?)
+    } else {
+        None
+    };
     let second = inventory(root, limits, io, kind)?;
     if first != second {
         return Err(BackupError::Changed);
@@ -327,6 +373,7 @@ fn snapshot_inner(
         ledger_bytes: ledger_file.bytes,
         effects_root: effect_report.last_root(),
         effects_bytes: effect_bytes.len() as u64,
+        agent: agent.as_ref().map(|state| state.summary.clone()),
         total_bytes,
         files: first,
     };
@@ -334,5 +381,5 @@ fn snapshot_inner(
     // Shared strict decoder proves the manifest's own bounds before any destination exists.
     BackupManifest::from_bytes(&bytes, ContentDigest::sha256(&bytes), limits)?;
     io.check()?;
-    Ok(manifest)
+    Ok((manifest, agent))
 }

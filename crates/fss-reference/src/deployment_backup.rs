@@ -4,7 +4,8 @@
 //! A bundle is a private copy of a verified deployment prefix, not a live replica. The source
 //! is never opened for mutation or reconciliation. Restoration keeps that prefix, appends an
 //! irreversible effect fence, and activates LAYOUT last. No alert or adapter is invoked here.
-//! Agent journals, external archives and secret stores require separate recovery profiles.
+//! Populated native agent state uses a separate versioned profile and remains historical
+//! read-only after restore. External archives and secret stores remain unsupported.
 
 use std::path::Path;
 
@@ -12,16 +13,22 @@ use fss_core::{ContentDigest, LedgerAnchor};
 
 use crate::{DeploymentLimits, ReplayCx};
 
+mod agent;
 mod io;
 mod manifest;
 mod snapshot;
 mod transfer;
 
+pub use agent::{AgentBackupSummary, AgentPublicationState, AgentRecoveryState};
 pub use manifest::{BackupFile, BackupManifest, RestoreFence};
-pub use transfer::{create_backup, inspect_backup, prepare_backup, restore_backup};
+pub use transfer::{create_backup, inspect_agent_state, inspect_backup, prepare_backup, restore_backup};
 
 /// Exact supported semantic profile. Unknown profiles are refused, never migrated implicitly.
 pub const BACKUP_PROFILE: &str = "reference-core-local-v1";
+/// Native agent recovery profile; restored sessions and claims remain historical only.
+pub const AGENT_BACKUP_PROFILE: &str = "reference-local-with-agent-v1";
+/// Additive manifest domain for the native agent recovery profile.
+pub const AGENT_BACKUP_MANIFEST_DOMAIN: &str = "fss.deployment_backup_manifest.v2";
 /// Manifest commitment domain, independent of convenience JSON.
 pub const BACKUP_MANIFEST_DOMAIN: &str = "fss.deployment_backup_manifest.v1";
 /// The sole completion record at the root of a recovery bundle.

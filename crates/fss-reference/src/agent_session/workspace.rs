@@ -223,6 +223,11 @@ impl Default for ReferenceWorkspaceStore {
 }
 
 impl ReferenceWorkspaceStore {
+    /// Exact immutable revisions for a trusted historical recovery reader.
+    pub(crate) fn retained_revisions(&self) -> Vec<WorkspaceRevision> {
+        self.histories.values().flatten().cloned().collect()
+    }
+
     /// Creates a store with requested limits clamped to the format's hard ceilings.
     #[must_use]
     pub fn with_limits(limits: WorkspaceLimits) -> Self {

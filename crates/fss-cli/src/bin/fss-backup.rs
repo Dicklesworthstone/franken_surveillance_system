@@ -14,10 +14,13 @@ use fss_core::{
     RootAuthoritySpec,
 };
 use fss_reference::deployment_backup::{
-    BACKUP_PROFILE, BackupAccess, BackupAuthority, BackupError, BackupLimits, BackupManifest,
-    RestoreReceipt, create_backup, inspect_backup, prepare_backup, restore_backup,
+    AgentBackupSummary, BackupAccess, BackupAuthority, BackupError, BackupLimits, BackupManifest,
+    RestoreReceipt, create_backup, inspect_agent_state, inspect_backup, prepare_backup, restore_backup,
 };
 use fss_reference::{ADP_REPLAY_ROW_ID, DeploymentLimits, ReplayCx};
+
+#[path = "fss-backup/agent_report.rs"]
+mod agent_report;
 
 const FORMAT: &str = "fss.deployment_backup_report.v1";
 const MAX_ARGS: usize = 49;
@@ -25,32 +28,38 @@ const MAX_ARG_BYTES: usize = 4096;
 const MAX_REPORT_BYTES: usize = 16 * 1024;
 const RESTORE_REPORT_RESERVE: usize = 2048;
 const HELP: &str = "fss-backup plan --root DEPLOYMENT --allow-originals [LIMITS]\n\
+fss-backup agent-inspect --root DEPLOYMENT --allow-originals [LIMITS]\n\
 fss-backup create --root DEPLOYMENT --bundle NEW_BUNDLE --expect sha256:HEX --allow-originals [LIMITS]\n\
 fss-backup inspect --bundle BUNDLE --expect sha256:HEX --allow-originals [BACKUP_LIMITS]\n\
 fss-backup restore --bundle BUNDLE --root NEW_DEPLOYMENT --expect sha256:HEX --allow-originals [BACKUP_LIMITS]\n\
 \n\
-  Profile: reference-core-local-v1. Captures the exact current-format core journals,\n\
-  objects, publication records, holds and deletion state. Unsupported populated\n\
-  state, including independent agent journals, is refused, never silently omitted.\n\
+  Profiles: reference-core-local-v1 and reference-local-with-agent-v1. Capture\n\
+  exact core journals, objects, holds and deletion state, plus the native agent\n\
+  journal and publications when populated. Unknown or incomplete state refuses.\n\
   Source must be quiescent with no pending recovery. New destinations only.\n\
   Create/restore require Linux x86_64 or aarch64 with descriptor-pinned writes.\n\
-  Bundles retain unredacted original evidence: --allow-originals explicitly grants\n\
-  local original reads and the selected copy destination for this invocation.\n\
+  Bundles retain unredacted original evidence and private cognition:\n\
+  --allow-originals explicitly grants the selected local custody access.\n\
   A replay context alone never grants that access. There is no remote export.\n\
 \n\
   Plan reports an independent manifest digest without changing the deployment.\n\
   Retain and verify that digest separately before create, inspect or restore.\n\
-  Creation publishes MANIFEST last. Bundle payloads cannot be opened as live\n\
-  deployments. Restore verifies the complete bundle, preserves the source history\n\
-  prefix, and appends a permanent alert-effect fence before activating LAYOUT.\n\
-  Restored alerts cannot be prepared, dispatched or falsely cancelled. There is\n\
-  no automatic failover, schema migration, effect reconciliation or unfence here.\n\
+  Creation publishes MANIFEST last. Bundle payloads cannot become live deployments.\n\
+  Restore preserves exact history, appends a permanent alert fence and activates\n\
+  LAYOUT last. With-agent restores also fence agent mutation: copied claims, sessions\n\
+  and plans remain historical. Core-only v1 restores may create fresh sessions.\n\
+  No copied lease renewal, session resume, effect reconciliation or unfence is performed.\n\
 \n\
-  All commands emit a bounded metadata-only JSON report. Optional: --json,\n\
-  --principal PRINCIPAL (default operator:local-backup). No object bytes are printed.\n\
+  Agent-inspect reads historical sessions, all workspace revisions, claim and case\n\
+  heads, and mission/handoff/plan/episode/finding/feedback records without admission\n\
+  or clock updates. It works on restored copies and reports the canonical fence.\n\
+  All reports have a 16 KiB ceiling and refuse excess output without truncation;\n\
+  the library inspector exposes complete bounded state for larger histories.\n\
+  Other commands emit metadata only. No original media bytes are printed.\n\
+  Optional: --json, --principal PRINCIPAL (default operator:local-backup).\n\
   BACKUP_LIMITS: --max-files N --max-file-bytes N --max-total-bytes N\n\
                 --max-manifest-bytes N --max-journal-bytes N\n\
-  Additional plan/create LIMITS (must exactly match the deployment's LAYOUT):\n\
+  Additional source LIMITS (must exactly match the deployment's LAYOUT):\n\
     --spool-object-max-bytes N --spool-total-max-bytes N --manifest-children-max N\n\
     --batch-entries-max N --journal-record-max-bytes N --max-roots N\n\
     --max-tombstones N --spool-max-objects N --scan-max-objects N\n\
@@ -60,6 +69,7 @@ fss-backup restore --bundle BUNDLE --root NEW_DEPLOYMENT --expect sha256:HEX --a
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 enum Action {
     Plan,
+    AgentInspect,
     Create,
     Inspect,
     Restore,
@@ -122,10 +132,11 @@ fn parse(args: &[OsString]) -> Result<Option<Request>, Error> {
     }
     let action = match args.first().and_then(|arg| arg.to_str()) {
         Some("plan") => Action::Plan,
+        Some("agent-inspect") => Action::AgentInspect,
         Some("create") => Action::Create,
         Some("inspect") => Action::Inspect,
         Some("restore") => Action::Restore,
-        _ => return Err(Error::Usage("expected plan, create, inspect or restore")),
+        _ => return Err(Error::Usage("expected plan, agent-inspect, create, inspect or restore")),
     };
     if args.len() == 2 && matches!(args[1].to_str(), Some("--help" | "-h")) {
         return Ok(None);
@@ -191,7 +202,7 @@ fn parse(args: &[OsString]) -> Result<Option<Request>, Error> {
             | "--max-tombstones"
             | "--spool-max-objects"
             | "--scan-max-objects" => {
-                if !matches!(action, Action::Plan | Action::Create) {
+                if !matches!(action, Action::Plan | Action::AgentInspect | Action::Create) {
                     return Err(Error::Usage(
                         "inspect and restore use retained deployment limits; overrides are refused",
                     ));
@@ -236,9 +247,11 @@ fn parse(args: &[OsString]) -> Result<Option<Request>, Error> {
         ));
     }
     match action {
-        Action::Plan if root.is_none() || bundle.is_some() || expected.is_some() => {
+        Action::Plan | Action::AgentInspect
+            if root.is_none() || bundle.is_some() || expected.is_some() =>
+        {
             return Err(Error::Usage(
-                "plan requires --root and refuses --bundle or --expect",
+                "plan and agent-inspect require --root and refuse --bundle or --expect",
             ));
         }
         Action::Create | Action::Restore
@@ -278,7 +291,7 @@ impl BackupAuthority for LocalGrant<'_> {
         let r = self.0;
         match access {
             BackupAccess::ReadDeployment { source } => {
-                matches!(r.action, Action::Plan | Action::Create)
+                matches!(r.action, Action::Plan | Action::AgentInspect | Action::Create)
                     && r.root.as_deref() == Some(source)
             }
             BackupAccess::WriteBundle {
@@ -337,6 +350,23 @@ fn deployment_limits(l: &DeploymentLimits) -> String {
         ("scan_max_objects", l.scan_max_objects.to_string()),
     ])
 }
+fn agent_summary(agent: &AgentBackupSummary) -> String {
+    object(&[
+        ("journal_root", string(&agent.journal_root.to_text())),
+        ("journal_bytes", agent.journal_bytes.to_string()),
+        ("journal_records", agent.journal_records.to_string()),
+        ("session_checkpoint", string(&agent.session_checkpoint.to_text())),
+        ("workspace_checkpoint", string(&agent.workspace_checkpoint.to_text())),
+        ("session_count", agent.session_count.to_string()),
+        ("closed_session_count", agent.closed_session_count.to_string()),
+        ("workspace_revision_count", agent.workspace_revision_count.to_string()),
+        ("claim_count", agent.claim_count.to_string()),
+        ("case_count", agent.case_count.to_string()),
+        ("publication_count", agent.publication_count.to_string()),
+        ("publication_digest", string(&agent.publication_digest.to_text())),
+    ])
+}
+
 fn report(
     r: &Request,
     status: &str,
@@ -346,7 +376,7 @@ fn report(
     object(&[
         ("format", string(FORMAT)),
         ("status", string(status)),
-        ("profile", string(BACKUP_PROFILE)),
+        ("profile", string(manifest.profile())),
         ("manifest_digest", string(&manifest.digest().to_text())),
         ("site", string(manifest.site())),
         ("source_anchor", evidence_anchor(manifest.source_anchor())),
@@ -358,6 +388,7 @@ fn report(
             "source_effects_root",
             string(&manifest.effects_root().to_text()),
         ),
+        ("agent_state", manifest.agent_state().map_or_else(|| "null".to_owned(), agent_summary)),
         ("file_count", manifest.file_count().to_string()),
         ("total_bytes", manifest.total_bytes().to_string()),
         (
@@ -381,6 +412,7 @@ fn report(
                         ),
                         ("fence_digest", string(&receipt.fence_digest().to_text())),
                         ("alert_effects_disabled", "true".to_owned()),
+                        ("agent_mutations_disabled", manifest.agent_state().is_some().to_string()),
                         ("effect_reconciliation_performed", "false".to_owned()),
                     ])
                 },
@@ -413,6 +445,11 @@ fn run_with(r: &Request, cx: &ReplayCx) -> Result<String, Error> {
                 prepare_backup(path(&r.root)?, r.deployment_limits, r.limits, &grant, cx)?;
             preflight_report(r, &manifest)?;
             Ok(report(r, "planned", &manifest, None))
+        }
+        Action::AgentInspect => {
+            let state =
+                inspect_agent_state(path(&r.root)?, r.deployment_limits, r.limits, &grant, cx)?;
+            agent_report::report(&state).map_err(|_| Error::Output)
         }
         Action::Create => {
             let manifest =

@@ -8,12 +8,15 @@ use fss_core::{
 use fss_publication::SlotName;
 
 use super::{
+    AGENT_BACKUP_MANIFEST_DOMAIN, AGENT_BACKUP_PROFILE, AgentBackupSummary,
     BACKUP_MANIFEST_DOMAIN, BACKUP_PROFILE, BackupError, BackupLimits, DeploymentLimits,
     RESTORE_FENCE_DOMAIN, Result,
 };
 
 const VERSION: u32 = 1;
 const FENCE_POLICY: &str = "all-alert-preparation-and-dispatch-disabled:no-unfence:v1";
+const AGENT_FENCE_POLICY: &str =
+    "all-alert-preparation-and-dispatch-disabled:agent-state-historical-read-only:no-unfence:v1";
 
 /// One exact, whitelisted core-deployment file. Locks and transient staging files are excluded.
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -50,6 +53,12 @@ pub(super) fn named_digest(name: &str) -> Result<ContentDigest> {
 
 /// Whitelist maps untrusted names into already-owned file roles before any filesystem access.
 pub(super) fn valid_path(path: &str) -> Result<()> {
+    if let Some(relative) = path.strip_prefix("agent/publications/") {
+        return valid_path(&format!("objects/{relative}"));
+    }
+    if matches!(path, "agent/sessions/journal.fssj" | "agent/sessions/ROOT") {
+        return Ok(());
+    }
     if matches!(
         path,
         "LAYOUT" | "ledger/journal.fssj" | "effects/journal.fssj"
@@ -147,13 +156,22 @@ pub struct BackupManifest {
     pub(super) ledger_bytes: u64,
     pub(super) effects_root: ContentDigest,
     pub(super) effects_bytes: u64,
+    pub(super) agent: Option<AgentBackupSummary>,
     pub(super) total_bytes: u64,
     pub(super) files: Vec<BackupFile>,
 }
 impl BackupManifest {
     /// Exact current-format recovery profile.
     pub const fn profile(&self) -> &'static str {
-        BACKUP_PROFILE
+        if self.agent.is_some() {
+            AGENT_BACKUP_PROFILE
+        } else {
+            BACKUP_PROFILE
+        }
+    }
+    /// Exact native agent recovery metadata, absent for the unchanged core-only profile.
+    pub const fn agent_state(&self) -> Option<&AgentBackupSummary> {
+        self.agent.as_ref()
     }
     /// Original site lineage; restoration does not rename historical authority.
     pub fn site(&self) -> &str {
@@ -202,9 +220,14 @@ impl BackupManifest {
     /// Hand-audited canonical format, independent of JSON or filesystem metadata.
     pub fn to_bytes(&self) -> Vec<u8> {
         let mut e = CanonicalEncoder::new();
-        e.text(BACKUP_MANIFEST_DOMAIN);
-        e.u32(VERSION);
-        e.text(BACKUP_PROFILE);
+        if self.agent.is_some() {
+            e.text(AGENT_BACKUP_MANIFEST_DOMAIN);
+            e.u32(2);
+        } else {
+            e.text(BACKUP_MANIFEST_DOMAIN);
+            e.u32(VERSION);
+        }
+        e.text(self.profile());
         e.text(&self.site);
         encode_limits(&mut e, &self.deployment_limits);
         self.source_anchor.encode_canonical(&mut e);
@@ -212,6 +235,9 @@ impl BackupManifest {
         e.u64(self.ledger_bytes);
         e.digest(self.effects_root);
         e.u64(self.effects_bytes);
+        if let Some(agent) = &self.agent {
+            agent.encode(&mut e);
+        }
         e.u64(self.total_bytes);
         e.u64(self.files.len() as u64);
         for file in &self.files {
@@ -231,10 +257,11 @@ impl BackupManifest {
             return Err(BackupError::Changed);
         }
         let mut d = CanonicalDecoder::new(bytes);
-        if d.text()? != BACKUP_MANIFEST_DOMAIN || d.u32()? != VERSION || d.text()? != BACKUP_PROFILE
-        {
-            return Err(BackupError::Unsupported("manifest_version"));
-        }
+        let with_agent = match (d.text()?, d.u32()?, d.text()?) {
+            (BACKUP_MANIFEST_DOMAIN, VERSION, BACKUP_PROFILE) => false,
+            (AGENT_BACKUP_MANIFEST_DOMAIN, 2, AGENT_BACKUP_PROFILE) => true,
+            _ => return Err(BackupError::Unsupported("manifest_version")),
+        };
         let site = d.text()?;
         if site.len() > 256 {
             return Err(BackupError::Limit("site_bytes"));
@@ -257,6 +284,11 @@ impl BackupManifest {
         {
             return Err(BackupError::Limit("journal_bytes"));
         }
+        let agent = if with_agent {
+            Some(AgentBackupSummary::decode(&mut d, limits)?)
+        } else {
+            None
+        };
         let total_bytes = d.u64()?;
         if total_bytes > limits.max_total_bytes {
             return Err(BackupError::Limit("inventory_bytes"));
@@ -270,6 +302,9 @@ impl BackupManifest {
         for _ in 0..count {
             let path = d.text()?;
             valid_path(path)?;
+            if !with_agent && path.starts_with("agent/") {
+                return Err(BackupError::Unsupported("profile_file_role"));
+            }
             if files.last().is_some_and(|last| last.path.as_str() >= path) {
                 return Err(BackupError::Corrupt("inventory_order"));
             }
@@ -277,7 +312,10 @@ impl BackupManifest {
             if bytes > limits.max_file_bytes {
                 return Err(BackupError::Limit("file_bytes"));
             }
-            if path.starts_with("objects/spool/verified/") && bytes != 0 {
+            if (path.starts_with("objects/spool/verified/")
+                || path.starts_with("agent/publications/spool/verified/"))
+                && bytes != 0
+            {
                 return Err(BackupError::Corrupt("verification_marker"));
             }
             let digest = d.digest()?;
@@ -310,6 +348,20 @@ impl BackupManifest {
                 return Err(BackupError::Corrupt("journal_length"));
             }
         }
+        if let Some(agent) = &agent {
+            for (path, expected) in [
+                ("agent/sessions/journal.fssj", Some(agent.journal_bytes)),
+                ("agent/sessions/ROOT", None),
+            ] {
+                let file = files
+                    .iter()
+                    .find(|file| file.path == path)
+                    .ok_or(BackupError::Corrupt("agent_required_file"))?;
+                if expected.is_some_and(|bytes| file.bytes != bytes) {
+                    return Err(BackupError::Corrupt("agent_journal_length"));
+                }
+            }
+        }
         let manifest = Self {
             site,
             deployment_limits,
@@ -318,6 +370,7 @@ impl BackupManifest {
             ledger_bytes,
             effects_root,
             effects_bytes,
+            agent,
             total_bytes,
             files,
         };
@@ -331,6 +384,7 @@ impl BackupManifest {
 /// Irreversible authority record: all alert preparation and dispatch are disabled on restore.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct RestoreFence {
+    with_agent: bool,
     source_manifest: ContentDigest,
     source_anchor: LedgerAnchor,
     source_ledger_root: ContentDigest,
@@ -339,11 +393,16 @@ pub struct RestoreFence {
 impl RestoreFence {
     pub(super) fn new(manifest: &BackupManifest) -> Self {
         Self {
+            with_agent: manifest.agent.is_some(),
             source_manifest: manifest.digest(),
             source_anchor: manifest.source_anchor.clone(),
             source_ledger_root: manifest.ledger_root,
             source_effects_root: manifest.effects_root,
         }
+    }
+    /// Whether this profile copied historical agent authority that may never be resumed.
+    pub const fn agent_state_read_only(&self) -> bool {
+        self.with_agent
     }
     /// Pinned snapshot whose historical authority prefix was copied.
     pub const fn source_manifest(&self) -> ContentDigest {
@@ -365,12 +424,12 @@ impl RestoreFence {
     pub fn to_bytes(&self) -> Vec<u8> {
         let mut e = CanonicalEncoder::new();
         e.text(RESTORE_FENCE_DOMAIN);
-        e.text(BACKUP_PROFILE);
+        e.text(if self.with_agent { AGENT_BACKUP_PROFILE } else { BACKUP_PROFILE });
         e.digest(self.source_manifest);
         self.source_anchor.encode_canonical(&mut e);
         e.digest(self.source_ledger_root);
         e.digest(self.source_effects_root);
-        e.text(FENCE_POLICY);
+        e.text(if self.with_agent { AGENT_FENCE_POLICY } else { FENCE_POLICY });
         e.finish()
     }
     /// Exact content identity of the fence record.
@@ -383,16 +442,23 @@ impl RestoreFence {
             return Err(BackupError::Corrupt("restore_fence"));
         }
         let mut d = CanonicalDecoder::new(bytes);
-        if d.text()? != RESTORE_FENCE_DOMAIN || d.text()? != BACKUP_PROFILE {
+        if d.text()? != RESTORE_FENCE_DOMAIN {
             return Err(BackupError::Unsupported("restore_fence_version"));
         }
+        let with_agent = match d.text()? {
+            BACKUP_PROFILE => false,
+            AGENT_BACKUP_PROFILE => true,
+            _ => return Err(BackupError::Unsupported("restore_fence_version")),
+        };
         let value = Self {
+            with_agent,
             source_manifest: d.digest()?,
             source_anchor: LedgerAnchor::decode_canonical(&mut d)?,
             source_ledger_root: d.digest()?,
             source_effects_root: d.digest()?,
         };
-        if value.source_anchor.site_lineage.len() > 256 || d.text()? != FENCE_POLICY {
+        let policy = if with_agent { AGENT_FENCE_POLICY } else { FENCE_POLICY };
+        if value.source_anchor.site_lineage.len() > 256 || d.text()? != policy {
             return Err(BackupError::Corrupt("restore_fence_policy"));
         }
         d.ensure_finished()?;

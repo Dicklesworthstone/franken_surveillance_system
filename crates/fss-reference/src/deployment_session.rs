@@ -44,7 +44,7 @@ use std::collections::BTreeSet;
 use std::fmt;
 use std::fs::{self, File, OpenOptions, TryLockError};
 use std::io::{self, Read, Write};
-use std::path::{Path, PathBuf};
+use std::path::{Component, Path, PathBuf};
 
 use fss_core::{
     AgentSession, AgentSessionParams, AgentView, BudgetVector, CanonicalDecode, CanonicalDecoder,
@@ -753,6 +753,7 @@ impl HandoffRecord {
 /// The deployment's session journal, held exclusively for the lifetime of one command.
 #[derive(Debug)]
 struct SessionJournal {
+    root: PathBuf,
     directory: PathBuf,
     store: DurableSessionStore,
     _lock: File,
@@ -777,8 +778,155 @@ fn read_bounded(path: &Path, max: usize) -> Result<Option<Vec<u8>>, io::Error> {
     Ok(Some(bytes))
 }
 
+/// Existing writer ancestors must be ordinary directories. A live deployment cannot alias
+/// a restored copy's independent agent writer through a symlink below its own unfenced ledger.
+fn admit_agent_directory(path: &Path, allow_missing: bool) -> Result<(), DeploymentSessionError> {
+    let mut current = PathBuf::new();
+    for component in path.components() {
+        match component {
+            Component::ParentDir | Component::Prefix(_) => {
+                return Err(DeploymentSessionError::StoreInvalid(
+                    "agent writer paths require ordinary directory ancestors".into(),
+                ));
+            }
+            Component::CurDir => continue,
+            _ => current.push(component),
+        }
+        match fs::symlink_metadata(&current) {
+            Ok(metadata) if metadata.is_dir() && !metadata.file_type().is_symlink() => {}
+            Ok(_) => {
+                return Err(DeploymentSessionError::StoreInvalid(
+                    "agent writer paths cannot traverse linked or non-directory state".into(),
+                ));
+            }
+            Err(error) if allow_missing && error.kind() == io::ErrorKind::NotFound => return Ok(()),
+            Err(error) => return Err(io_failure("agent writer directory", &error)),
+        }
+    }
+    Ok(())
+}
+
+fn admit_agent_writer_paths(root: &Path) -> Result<PathBuf, DeploymentSessionError> {
+    let root = if root.is_absolute() {
+        root.to_path_buf()
+    } else {
+        std::env::current_dir()
+            .map_err(|error| io_failure("agent writer directory", &error))?
+            .join(root)
+    };
+    admit_agent_directory(&root, false)?;
+    for relative in [
+        "agent",
+        SESSIONS_RELPATH,
+        PUBLICATIONS_RELPATH,
+        "agent/publications/roots",
+        "agent/publications/tombstones",
+        "agent/publications/spool",
+        "agent/publications/spool/objects",
+        "agent/publications/spool/staging",
+        "agent/publications/spool/verified",
+    ] {
+        admit_agent_directory(&root.join(relative), true)?;
+    }
+    for relative in [
+        "agent/sessions/LOCK",
+        "agent/sessions/journal.fssj",
+        "agent/sessions/ROOT",
+        "agent/sessions/ROOT.tmp",
+        "agent/publications/LOCK",
+        "agent/publications/spool/LOCK",
+    ] {
+        let metadata = match fs::symlink_metadata(root.join(relative)) {
+            Ok(metadata) => metadata,
+            Err(error) if error.kind() == io::ErrorKind::NotFound => continue,
+            Err(error) => return Err(io_failure("agent writer file", &error)),
+        };
+        if !metadata.is_file() || metadata.file_type().is_symlink() {
+            return Err(DeploymentSessionError::StoreInvalid(
+                "agent writer files cannot alias another deployment".into(),
+            ));
+        }
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::MetadataExt;
+            if metadata.nlink() != 1 {
+                return Err(DeploymentSessionError::StoreInvalid(
+                    "agent writer files cannot share a hardlinked journal or pin".into(),
+                ));
+            }
+        }
+    }
+    Ok(root)
+}
+
+/// A copied session or cached plan must not revive authority after restoration. Consult the
+/// canonical ledger before opening either independent agent writer; do not repair any state.
+fn ensure_agent_writable(root: &Path) -> Result<PathBuf, DeploymentSessionError> {
+    let root = admit_agent_writer_paths(root)?;
+    match fs::symlink_metadata(root.join(crate::deployment_backup::RESTORE_INCOMPLETE_FILENAME)) {
+        Ok(_) => {
+            return Err(DeploymentSessionError::StoreInvalid(
+                "deployment recovery is incomplete".to_owned(),
+            ));
+        }
+        Err(error) if error.kind() == io::ErrorKind::NotFound => {}
+        Err(error) => return Err(io_failure("deployment recovery marker", &error)),
+    }
+    let layout = read_bounded(&root.join("LAYOUT"), 4096)
+        .map_err(|error| io_failure("deployment layout", &error))?
+        .ok_or_else(|| DeploymentSessionError::StoreInvalid("deployment layout is missing".into()))?;
+    let layout = crate::DeploymentLayout::parse_canonical_text(
+        std::str::from_utf8(&layout)
+            .map_err(|_| DeploymentSessionError::StoreInvalid("deployment layout encoding".into()))?,
+    )
+    .map_err(|_| DeploymentSessionError::StoreInvalid("deployment layout is invalid".into()))?;
+    let ledger = fss_ledger::inspect_durable_with_io(
+        &fss_ledger::HostJournalReadIo,
+        root.join("ledger/journal.fssj"),
+        &layout.site_lineage,
+        fss_ledger::DurableLedgerLimits {
+            max_journal_bytes: 64 * 1024 * 1024,
+        },
+    )
+    .map_err(|_| DeploymentSessionError::StoreInvalid("deployment authority is invalid".into()))?;
+    if ledger.status != fss_ledger::DurableLedgerStatus::Present || !ledger.is_clean() {
+        return Err(DeploymentSessionError::StoreInvalid(
+            "deployment authority requires recovery".into(),
+        ));
+    }
+    let fence = fss_core::ObjectId::parse(crate::deployment_backup::RESTORE_FENCE_OBJECT_ID)?;
+    if let Some(head) = ledger.snapshot.objects.get(&fence) {
+        if head.family != crate::deployment_backup::FAMILY_RESTORE_FENCE
+            || head.plane != fss_core::Plane::Authority
+        {
+            return Err(DeploymentSessionError::StoreInvalid(
+                "deployment recovery fence namespace is invalid".into(),
+            ));
+        }
+        let bytes = fss_publication::read_verified(
+            root.join("objects"),
+            head.payload_digest,
+            4096,
+        )
+        .map_err(|_| DeploymentSessionError::StoreInvalid(
+            "deployment recovery fence custody is invalid".into(),
+        ))?;
+        let fence = crate::deployment_backup::RestoreFence::from_bytes(&bytes, head.payload_digest)
+            .map_err(|_| DeploymentSessionError::StoreInvalid(
+                "deployment recovery fence policy is invalid".into(),
+            ))?;
+        if fence.agent_state_read_only() {
+            return Err(DeploymentSessionError::StoreInvalid(
+                "restored agent state is historical read-only; use fss-backup agent-inspect".into(),
+            ));
+        }
+    }
+    Ok(root)
+}
+
 impl SessionJournal {
     fn open(root: &Path) -> Result<Self, DeploymentSessionError> {
+        let root = ensure_agent_writable(root)?;
         let directory = root.join(SESSIONS_RELPATH);
         fs::create_dir_all(&directory).map_err(|error| io_failure("session directory", &error))?;
         let lock = OpenOptions::new()
@@ -793,6 +941,7 @@ impl SessionJournal {
             Err(TryLockError::WouldBlock) => return Err(DeploymentSessionError::StoreLocked),
             Err(TryLockError::Error(error)) => return Err(io_failure("session lock", &error)),
         }
+        ensure_agent_writable(&root)?;
         let journal = directory.join(SESSION_JOURNAL_FILE);
         let pin = read_bounded(&directory.join(SESSION_ROOT_PIN_FILE), MAX_PIN_BYTES)
             .map_err(|error| io_failure("session root pin", &error))?
@@ -864,6 +1013,7 @@ impl SessionJournal {
         };
         store.initialize_workspaces(WorkspaceLimits::default())?;
         let journal = Self {
+            root,
             directory,
             store,
             _lock: lock,
@@ -874,6 +1024,7 @@ impl SessionJournal {
 
     /// Atomically replaces the pinned root with the committed root when they differ.
     fn pin(&self, current: Option<ContentDigest>) -> Result<(), DeploymentSessionError> {
+        ensure_agent_writable(&self.root)?;
         let root = self.store.committed_root();
         if current == Some(root) {
             return Ok(());
@@ -922,6 +1073,65 @@ pub fn publication_limits() -> LocalPublicationLimits {
     LocalPublicationLimits::new(4_096, 64, 64, 131_072, SpoolLimits::default())
 }
 
+/// A decoded historical publication. Possessing one grants no session or effect authority.
+#[derive(Clone, Debug, PartialEq)]
+pub enum AgentRecoveryRecord {
+    /// Original mission statement and objective.
+    Mission(Box<MissionRecord>),
+    /// Sealed handoff and its exact continuation state.
+    Handoff(Box<HandoffRecord>),
+    /// Previously compiled plan; never a new approval.
+    Plan(Box<plan::PlanRecord>),
+    /// Retained terminal execution episode.
+    Episode(Box<episode::EpisodeRecord>),
+    /// Immutable finding, including disagreements and withdrawals.
+    Finding(Box<findings::FindingRecord>),
+    /// Advisory proposal, never active policy.
+    Feedback(Box<fss_core::AgentFeedbackProposal>),
+}
+
+impl AgentRecoveryRecord {
+    /// Native identity of the retained record, independent of its publication slot.
+    pub fn identity(&self) -> &str {
+        match self {
+            Self::Mission(record) => record.mission_id.as_str(),
+            Self::Handoff(record) => record.capsule.handoff_id.as_str(),
+            Self::Plan(record) => &record.plan_id,
+            Self::Episode(record) => &record.episode.episode_id,
+            Self::Finding(record) => &record.finding_id,
+            Self::Feedback(record) => &record.feedback_id,
+        }
+    }
+}
+
+/// Reuse the native record owners when admitting private recovery custody. No decoder here
+/// creates a session, grants a lease, prepares an effect or reads an ambient clock.
+pub(crate) fn decode_recovery_record(
+    kind: &str,
+    slot: &str,
+    bytes: &[u8],
+) -> Result<AgentRecoveryRecord, ContractError> {
+    let record = match kind {
+        "agent-mission" => AgentRecoveryRecord::Mission(Box::new(MissionRecord::from_bytes(bytes)?)),
+        "agent-handoff" => AgentRecoveryRecord::Handoff(Box::new(HandoffRecord::from_bytes(bytes)?)),
+        "agent-plan" => AgentRecoveryRecord::Plan(Box::new(plan::PlanRecord::from_bytes(bytes)?)),
+        "agent-episode" => AgentRecoveryRecord::Episode(Box::new(episode::EpisodeRecord::from_bytes(bytes)?)),
+        "agent-finding" => AgentRecoveryRecord::Finding(Box::new(findings::FindingRecord::from_bytes(bytes)?)),
+        "agent-feedback" => AgentRecoveryRecord::Feedback(Box::new(feedback::decode_proposal(bytes)?)),
+        _ => return Err(ContractError::DigestMismatch),
+    };
+    let identity = if matches!(&record, AgentRecoveryRecord::Mission(_)) {
+        ContentDigest::sha256(bytes)
+    } else {
+        ContentDigest::sha256(record.identity().as_bytes())
+    };
+    let prefix = kind.strip_prefix("agent-").ok_or(ContractError::DigestMismatch)?;
+    if slot != format!("{prefix}-{}", hex(identity)) {
+        return Err(ContractError::DigestMismatch);
+    }
+    Ok(record)
+}
+
 fn publish_record(
     root: &Path,
     slot: &SlotName,
@@ -930,8 +1140,10 @@ fn publish_record(
     children: &[Vec<u8>],
     crash: Option<PublishCutPoint>,
 ) -> Result<LocalPublicationReceipt, DeploymentSessionError> {
+    let root = ensure_agent_writable(root)?;
     let mut publisher =
         LocalRootPublisher::open(root.join(PUBLICATIONS_RELPATH), publication_limits())?;
+    ensure_agent_writable(&root)?;
     let metadata = publisher.stage_object(record)?;
     let mut digests = Vec::with_capacity(children.len());
     for child in children {

@@ -14,7 +14,7 @@ use fss_publication::{AuthorityPublisher, LocalRootPublisher};
 
 use super::io::{PinnedSpoolIo, ReadIo, WriteTree, directory, fresh_path, source_locks};
 use super::manifest::{BackupManifest, RestoreFence};
-use super::snapshot::{DIRECTORIES, PAYLOAD_GUARD, SnapshotKind, snapshot};
+use super::snapshot::{DIRECTORIES, PAYLOAD_GUARD, SnapshotKind, snapshot, snapshot_with_agent};
 use super::{
     BACKUP_MANIFEST_FILENAME, BACKUP_PAYLOAD_DIRECTORY, BackupAccess, BackupAuthority, BackupError,
     BackupLimits, BackupReceipt, DeploymentLimits, FAMILY_RESTORE_FENCE, RESTORE_FENCE_OBJECT_ID,
@@ -40,13 +40,54 @@ pub fn prepare_backup(
     let gate = || authorize(authority, BackupAccess::ReadDeployment { source }, cx);
     gate()?;
     let root = directory(source)?;
-    let _locks = source_locks(&root, cx, &gate)?;
+    let (_locks, with_agent) = source_locks(&root, cx, &gate)?;
     let io = ReadIo::new(cx, &gate, limits);
-    snapshot(&root, deployment_limits, limits, &io, SnapshotKind::Source)
+    snapshot(
+        &root,
+        deployment_limits,
+        limits,
+        &io,
+        SnapshotKind::Source { agent: with_agent },
+    )
 }
 
-fn create_tree(writer: &mut WriteTree, root: &Path, gate: &dyn Fn() -> Result<()>) -> Result<()> {
-    for relative in DIRECTORIES {
+/// Inspect complete private cognition through native pure replay; no mutable session opener,
+/// claim admission, pin repair or effect reconciliation runs. Original-read authority is required.
+pub fn inspect_agent_state(
+    source: &Path,
+    deployment_limits: DeploymentLimits,
+    limits: BackupLimits,
+    authority: &dyn BackupAuthority,
+    cx: &ReplayCx,
+) -> Result<super::AgentRecoveryState> {
+    limits.validate()?;
+    let gate = || authorize(authority, BackupAccess::ReadDeployment { source }, cx);
+    gate()?;
+    let root = directory(source)?;
+    let (_locks, with_agent) = source_locks(&root, cx, &gate)?;
+    let io = ReadIo::new(cx, &gate, limits);
+    let (_, agent) = snapshot_with_agent(
+        &root,
+        deployment_limits,
+        limits,
+        &io,
+        SnapshotKind::Source { agent: with_agent },
+    )?;
+    agent.ok_or(BackupError::Unsupported("agent_state_absent"))
+}
+
+fn create_tree(
+    writer: &mut WriteTree,
+    root: &Path,
+    manifest: &BackupManifest,
+    gate: &dyn Fn() -> Result<()>,
+) -> Result<()> {
+    let agent_directories = if manifest.agent_state().is_some() {
+        super::agent::DIRECTORIES
+    } else {
+        &[]
+    };
+    for relative in DIRECTORIES.iter().chain(agent_directories) {
         writer.create_directory(&root.join(relative), gate)?;
     }
     Ok(())
@@ -110,14 +151,14 @@ pub fn create_backup(
     gate()?;
     let source_root = directory(source)?;
     let bundle_root = fresh_path(bundle, &[&source_root])?;
-    let _locks = source_locks(&source_root, cx, &gate)?;
+    let (_locks, with_agent) = source_locks(&source_root, cx, &gate)?;
     let io = ReadIo::new(cx, &gate, limits);
     let manifest = snapshot(
         &source_root,
         deployment_limits,
         limits,
         &io,
-        SnapshotKind::Source,
+        SnapshotKind::Source { agent: with_agent },
     )?;
     if manifest.digest() != expected_manifest {
         return Err(BackupError::Changed);
@@ -137,7 +178,7 @@ pub fn create_backup(
         PAYLOAD_GUARD,
         &gate,
     )?;
-    create_tree(&mut writer, &payload, &gate)?;
+    create_tree(&mut writer, &payload, &manifest, &gate)?;
     copy_files(
         &source_root,
         &payload,
@@ -153,7 +194,7 @@ pub fn create_backup(
         deployment_limits,
         limits,
         &io,
-        SnapshotKind::Source,
+        SnapshotKind::Source { agent: with_agent },
     )? != manifest
         || snapshot(
             &payload,
@@ -477,7 +518,12 @@ pub fn restore_backup(
         &gate,
     )?;
     checkpoint(cx, STAGE_RESTORE_RESERVED)?;
-    create_tree(&mut writer, &destination_root, &gate)?;
+    create_tree(&mut writer, &destination_root, &manifest, &gate)?;
+    if manifest.agent_state().is_some() {
+        for lock in super::agent::LOCKS {
+            writer.write_new(&destination_root.join(lock), &[], &gate)?;
+        }
+    }
     let writer = Arc::new(writer);
     copy_files(
         &payload,

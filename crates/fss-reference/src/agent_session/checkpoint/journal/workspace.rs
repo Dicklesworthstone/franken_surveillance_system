@@ -86,6 +86,14 @@ pub(super) struct WorkspaceState {
 }
 
 impl WorkspaceState {
+    pub(super) fn retained_revisions(&self) -> Vec<WorkspaceRevision> {
+        self.store.retained_revisions()
+    }
+
+    pub(super) const fn checkpoint_digest(&self) -> ContentDigest {
+        self.digest
+    }
+
     fn new(limits: WorkspaceLimits) -> Result<Self, DurableSessionError> {
         let store = ReferenceWorkspaceStore::with_limits(limits);
         let digest = checkpoint_digest(&store)?;
