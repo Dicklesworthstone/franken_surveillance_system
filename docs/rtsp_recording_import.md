@@ -12,7 +12,9 @@ a live-camera qualification.
 
 ## Select and review the exact recording
 
-Use a durable window slot and root returned by the native RTSP recording publisher. Supply
+Use a durable window slot and root returned by the native RTSP recording publisher.
+For a new owner-approved AVC camera session, [capture it with `fss-capture-rtsp`](rtsp_capture_cli.md)
+and select a `window_durable` output row. Supply
 that recording's exact sensor, stream, generation, authority anchor and receive-clock identity.
 The importer does not search the archive or select a latest window.
 

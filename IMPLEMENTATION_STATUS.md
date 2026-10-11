@@ -10,6 +10,29 @@ Franken Surveillance System now has a coherent, dependency-light Rust reference 
 
 It is also not a complete surveillance product. Native device adapters, production media/model/graph/storage services, persistent distributed operation, every human and agent surface, complete qualification matrices, and the aggregate release root remain open. Status below distinguishes implemented reference semantics from production completion.
 
+## Native RTSP/AVC capture operator command (2026-10-11, reference)
+
+`fss-capture-rtsp` composes the native live recording and journaled archive owners into a
+bounded camera-to-retained-import path. A pure preview binds the route, source generation,
+timing assumptions, new archive and independent pin-journal destinations, all native ceilings
+and requested picture count. Approved execution sequences DESCRIBE, SETUP, PLAY and keepalive
+on one literal-IP plaintext TCP session. Authentication challenges, cadence drift, source
+changes and exhausted bounds refuse explicitly.
+
+Selected original RTP and its native remux mapping reach source-verified, root-last recording
+windows; independent pin synchronization precedes work-publication acknowledgement.
+A deliberate target stop closes the socket and drains catalog publication without fabricating
+EOF. Early EOF remains incomplete even when its complete prefix is importable. Protocol
+faults and unpublished tails retain distinct accounting and recovery references. Canonical
+parent checks reject aliased or nested archive/journal destinations before creation.
+
+Parser/approval and timing tests accompany real-process loopback capture → import → cold
+native decode contracts, including stale approval, secret-free authentication refusal,
+early EOF, malformed media, wrong cadence and symlink-parent separation. Native execution
+was blocked by the disconnected implementation workspace at initial publication. A focused
+supplementary GitHub smoke check is provided; this is not a production-camera or release
+qualification. See [the capture workflow](docs/rtsp_capture_cli.md).
+
 ## Retained historical sensor-health diagnostics (2026-10-11, reference)
 
 Whole-recording corroboration now exposes independent diagnostics for both cameras through

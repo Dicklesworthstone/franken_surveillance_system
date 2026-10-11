@@ -1,0 +1,47 @@
+# Supplementary fixture checks, not DSR or release qualification.
+# Existing policy/Rust lanes remain in ci.yml and scripts/qualify.sh.
+name: RTSP capture reference smoke
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - "crates/**"
+      - "Cargo.toml"
+      - "Cargo.lock"
+      - "rust-toolchain.toml"
+      - ".github/workflows/rtsp-capture-smoke.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: fss-rtsp-capture-smoke-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  capture:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 25
+    env:
+      CARGO_BUILD_JOBS: "2"
+      CARGO_INCREMENTAL: "0"
+      CARGO_PROFILE_DEV_DEBUG: "0"
+      CARGO_PROFILE_TEST_DEBUG: "0"
+      CARGO_NET_OFFLINE: "true"
+      RUSTUP_AUTO_INSTALL: "0"
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+      - name: Bootstrap the pinned compiler and inspection tools
+        run: rustup toolchain install nightly-2026-08-31 --profile minimal --component rustfmt,clippy,rust-src
+      - name: Check feature formatting
+        run: |
+          cargo +nightly-2026-08-31 fmt --all
+          git diff --exit-code -- crates/fss-cli/src/bin/fss-capture-rtsp.rs crates/fss-cli/src/bin/fss-capture-rtsp crates/fss-cli/tests/capture_rtsp_cli.rs
+      - name: Native capture, retained import and cold decode contracts
+        if: success() || failure()
+        run: cargo +nightly-2026-08-31 test --locked --offline -p fss-cli --bin fss-capture-rtsp --test capture_rtsp_cli
+      - name: Capture CLI Clippy
+        if: success() || failure()
+        run: cargo +nightly-2026-08-31 clippy --locked --offline -p fss-cli --bin fss-capture-rtsp -- -D warnings

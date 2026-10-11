@@ -1,0 +1,108 @@
+{
+  "schema": "fss.rtsp_capture_cli_contract.v1",
+  "status": "implemented_not_qualified",
+  "owner": "crates/fss-cli/src/bin/fss-capture-rtsp.rs",
+  "semantic_owners": [
+    "crates/fss-reference/src/rtsp/archive_pins/live.rs",
+    "crates/fss-reference/src/rtsp/live_avc/recording.rs"
+  ],
+  "command": "fss-capture-rtsp",
+  "presentation": "explicit_local_operator_not_universal_agent_protocol",
+  "report_schema": "fss.rtsp_capture_cli.v1",
+  "approval_domain": "fss.rtsp_capture_cli_plan.v1",
+  "timing_domain": "fss.rtsp_capture_fixed_clock.v1",
+  "approval_binds": [
+    "literal_peer_and_authority",
+    "presentation_and_control_scope",
+    "new_archive_and_independent_journal_paths",
+    "principal",
+    "source_and_generation",
+    "timing_and_receive_clock_evidence",
+    "journal_epoch",
+    "every_effective_native_limit",
+    "requested_picture_count",
+    "report_limit"
+  ],
+  "required_acknowledgements": [
+    "owner_authorized",
+    "plaintext",
+    "retain_originals"
+  ],
+  "capabilities": [
+    "ADP-REPLAY-001",
+    "CAP-ADAPTER-NET-001",
+    "CAP-READ-MEDIA-001",
+    "CAP-OBJECT-STAGE-001",
+    "CAP-OBJECT-PUBLISH-001",
+    "CAP-RETENTION-COMMIT-001"
+  ],
+  "timing": "operator_asserted_fixed_90000Hz_exact_RTP_cadence_relative_DTS_zero_composition_offsets_unknown_capture_time",
+  "transport": "one_literal_IP_plaintext_RTSP_AVC_interleaved_TCP_no_credentials_DNS_redirects_or_reconnect",
+  "custody": "selected_original_RTP_and_native_recording_closure_local_unencrypted",
+  "omissions": [
+    "entire_raw_TCP_wire_representation",
+    "RTSP_control_and_authentication_text",
+    "RTCP",
+    "unselected_RTP_and_unpublished_tails_with_explicit_accounting"
+  ],
+  "success_requires": [
+    "requested_collected_picture_count",
+    "all_selected_pictures_in_durable_recording_windows",
+    "all_durable_windows_catalog_indexed",
+    "socket_owner_stopped",
+    "bounded_storage_drain_finished"
+  ],
+  "success_is_not": [
+    "remote_EOF",
+    "pixel_decode",
+    "physical_camera_authentication",
+    "capture_continuity",
+    "scene_coverage",
+    "absence_certification"
+  ],
+  "publication_rule": "native_journaled_archive_candidate_pin_synced_before_work_acknowledgement_and_source_verified_root_last_publication",
+  "recovery": "independent_journal_anchor_candidate_and_confirmed_work_pins_exact_source_closed_restore_no_automatic_capture_resume",
+  "bounds": {
+    "max_arguments": 128,
+    "argument_bytes": 4096,
+    "max_source_bytes": 268435456,
+    "max_windows": 128,
+    "max_window_pictures": 256,
+    "max_steps": 1000000,
+    "max_report_bytes": 33554432,
+    "terminal_report_reserve_bytes": 16384
+  },
+  "errors": [
+    "ERR-CAPTURE-RTSP-ARGUMENT-001",
+    "ERR-CAPTURE-RTSP-APPROVAL-001",
+    "ERR-CAPTURE-RTSP-CONFIG-001",
+    "ERR-CAPTURE-RTSP-ROOT-001",
+    "ERR-CAPTURE-RTSP-STORAGE-001",
+    "ERR-CAPTURE-RTSP-CONNECT-001",
+    "ERR-CAPTURE-RTSP-AUTH-UNSUPPORTED-001",
+    "ERR-CAPTURE-RTSP-SOURCE-001",
+    "ERR-CAPTURE-RTSP-TIMING-001",
+    "ERR-CAPTURE-RTSP-DEADLINE-001",
+    "ERR-CAPTURE-RTSP-AUTHORITY-001",
+    "ERR-CAPTURE-RTSP-WORK-001",
+    "ERR-CAPTURE-RTSP-STATE-001",
+    "ERR-CAPTURE-RTSP-SHORTFALL-001",
+    "ERR-CAPTURE-RTSP-OUTPUT-001"
+  ],
+  "tests": [
+    "crates/fss-cli/src/bin/fss-capture-rtsp/plan_tests.rs",
+    "crates/fss-cli/src/bin/fss-capture-rtsp/timing.rs",
+    "crates/fss-cli/tests/capture_rtsp_cli.rs"
+  ],
+  "native_tests_executed": false,
+  "out_of_scope": [
+    "authenticated_or_TLS_transport",
+    "HEVC_capture_CLI",
+    "variable_cadence_or_presentation_reordering",
+    "automatic_reconnect",
+    "hard_realtime_syscall_preemption",
+    "archive_encryption",
+    "full_agent_protocol",
+    "release_qualification"
+  ]
+}
