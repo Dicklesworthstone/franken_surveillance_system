@@ -456,7 +456,24 @@ PY
 }
 trap finalize EXIT
 
+# Host capacity preflight (fss-x4a.26.6, FSS-186): disk pressure mid-lane
+# corrupts evidence and builds. Typed states: sufficient passes; unavailable
+# (no capacity authority on this host) passes with the unproven state recorded
+# in the step log/receipt — never silently treated as proven; insufficient
+# (pressure) or error fails the lane closed with reclaim guidance.
+capacity_preflight() {
+  local need="${FSS_CAPACITY_NEED_BYTES:-10737418240}"
+  local out rc
+  out="$(python3 "$ROOT/scripts/capacity_check.py" "$need")" && rc=0 || rc=$?
+  printf '%s\n' "$out"
+  case "$rc" in
+    0|2) return 0 ;;
+    *) printf 'capacity preflight refused: %s\n' "$out" >&2; return 1 ;;
+  esac
+}
+
 run netseal python3 "$ROOT/scripts/netseal_selftest.py"
+run capacity-preflight capacity_preflight
 
 case "$LANE" in
   policy) policy_lane ;;
