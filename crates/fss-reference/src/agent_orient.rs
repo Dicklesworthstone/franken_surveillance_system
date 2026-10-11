@@ -2519,7 +2519,7 @@ fn compile_capsule(
         aggregated_world_count,
         world_classes.len(),
         folded_worlds,
-    );
+    )?;
     source.omissions.extend(historical_health.source.omissions);
     source.handles.extend(historical_health.source.handles);
     let candidate_world_count = aggregated_world_count + 1;
@@ -2786,9 +2786,9 @@ fn source_omissions(
     aggregated_worlds: usize,
     world_classes: usize,
     folded_worlds: Option<ExpansionHandle>,
-) -> SourceOmissions {
+) -> Result<SourceOmissions, ContractError> {
     if planned.is_empty() {
-        return SourceOmissions::default();
+        return Ok(SourceOmissions::default());
     }
     let grouped = planned.len() > DIRECT_EVENT_EXPANSION_LIMIT;
     let expansion = if grouped {
@@ -2884,16 +2884,16 @@ fn source_omissions(
                 planned.len(),
                 request.principal.as_str(),
             ),
-            estimated_cost: BudgetVector {
-                tokens: u64::from(AgentView::Case.maximum_tokens()),
-                bytes: snapshot.bytes_read,
-                storage_operations: snapshot.files_read,
-                ..BudgetVector::ZERO
-            },
+            estimated_cost: BudgetVector::builder()
+                .tokens(u64::from(AgentView::Case.maximum_tokens()))
+                .bytes(snapshot.bytes_read)
+                .storage_operations(snapshot.files_read)
+                .build()
+                .map_err(|_| ContractError::BudgetExhausted)?,
         });
     }
     handles.extend(folded_worlds);
-    SourceOmissions { omissions, handles }
+    Ok(SourceOmissions { omissions, handles })
 }
 
 /// Ranked attention frontier: open obligations and indeterminate effects, the coverage gap, and

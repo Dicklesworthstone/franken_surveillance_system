@@ -205,7 +205,10 @@ fn args(directory: &Directory, peer: SocketAddr, pictures: u64) -> Vec<OsString>
         ("--ssrc", "7".to_owned()),
         ("--anchor", digest("capture CLI authority anchor")),
         ("--receive-clock", digest("capture CLI receive clock")),
-        ("--timing-evidence", digest("owner asserted fixed 25fps cadence")),
+        (
+            "--timing-evidence",
+            digest("owner asserted fixed 25fps cadence"),
+        ),
         ("--journal-id", digest("capture CLI independent pin epoch")),
         ("--frame-duration-ticks", "3600".to_owned()),
         ("--stop-after-pictures", pictures.to_string()),
@@ -226,7 +229,10 @@ fn args(directory: &Directory, peer: SocketAddr, pictures: u64) -> Vec<OsString>
 }
 
 fn replace(args: &mut [OsString], key: &str, replacement: &str) -> Test {
-    let index = args.iter().position(|arg| arg == key).ok_or("missing option")?;
+    let index = args
+        .iter()
+        .position(|arg| arg == key)
+        .ok_or("missing option")?;
     *args.get_mut(index + 1).ok_or("missing option value")? = replacement.into();
     Ok(())
 }
@@ -303,8 +309,7 @@ fn request(peer: &mut TcpStream) -> Test<Option<(String, u32)>> {
                 .split("\r\n")
                 .find_map(|line| {
                     let (name, value) = line.split_once(':')?;
-                    name.eq_ignore_ascii_case("cseq")
-                        .then_some(value.trim())
+                    name.eq_ignore_ascii_case("cseq").then_some(value.trim())
                 })
                 .ok_or("RTSP request has no CSeq")?
                 .parse()?;
@@ -327,8 +332,7 @@ fn response(peer: &mut TcpStream, cseq: u32, headers: &str, body: &str) -> Test 
 
 // Independent fixture splitter: one slice per picture in this pinned Baseline stream.
 fn nals() -> Vec<&'static [u8]> {
-    let bytes: &'static [u8] =
-        include_bytes!("../../fss-packet/tests/fixtures/avc/baseline.264");
+    let bytes: &'static [u8] = include_bytes!("../../fss-packet/tests/fixtures/avc/baseline.264");
     let mut output = Vec::new();
     let mut start = None;
     let mut at = 0;
@@ -364,19 +368,27 @@ fn nals() -> Vec<&'static [u8]> {
     output
 }
 
-fn video(pictures: usize, frame_duration: u32, payload_type: u8, two_windows: bool) -> Test<Vec<u8>> {
+fn video(
+    pictures: usize,
+    frame_duration: u32,
+    payload_type: u8,
+    two_windows: bool,
+) -> Test<Vec<u8>> {
     let mut result = Vec::new();
     let mut sequence = 1_u16;
     let mut count = 0_u32;
     let source = nals();
     let source = if two_windows {
         let mut completed = 0;
-        let end = source.iter().position(|nal| {
-            if matches!(nal[0] & 31, 1 | 5) {
-                completed += 1;
-            }
-            completed == 2
-        }).ok_or("fixture has no initial IDR/P pair")?;
+        let end = source
+            .iter()
+            .position(|nal| {
+                if matches!(nal[0] & 31, 1 | 5) {
+                    completed += 1;
+                }
+                completed == 2
+            })
+            .ok_or("fixture has no initial IDR/P pair")?;
         // Repeat a complete independently decodable pair, keeping RTP sequence and time rising.
         // The next packet-disjoint IDR lets the native collector cut a two-picture window.
         let pair = &source[..=end];
@@ -401,7 +413,9 @@ fn video(pictures: usize, frame_duration: u32, payload_type: u8, two_windows: bo
         result.extend_from_slice(&[b'$', 0]);
         result.extend_from_slice(&u16::try_from(packet.len())?.to_be_bytes());
         result.extend_from_slice(&packet);
-        sequence = sequence.checked_add(1).ok_or("fixture RTP sequence overflow")?;
+        sequence = sequence
+            .checked_add(1)
+            .ok_or("fixture RTP sequence overflow")?;
         if picture {
             count += 1;
         }
@@ -460,7 +474,12 @@ fn serve(listener: TcpListener, behavior: Behavior) -> Test<Transcript> {
     } else {
         SDP.to_owned()
     };
-    response(&mut peer, cseq, "Content-Type: application/sdp\r\n", &description)?;
+    response(
+        &mut peer,
+        cseq,
+        "Content-Type: application/sdp\r\n",
+        &description,
+    )?;
     let (method, cseq) = request(&mut peer)?.ok_or("client sent no SETUP")?;
     assert_eq!(method, "SETUP");
     transcript.methods.push(method);
@@ -479,9 +498,22 @@ fn serve(listener: TcpListener, behavior: Behavior) -> Test<Transcript> {
         Behavior::TwoWindows => 4,
         _ => 1,
     };
-    let cadence = if matches!(behavior, Behavior::WrongCadence) { 4000 } else { 3600 };
-    let payload_type = if matches!(behavior, Behavior::Payload97) { 97 } else { 96 };
-    peer.write_all(&video(transcript.pictures, cadence, payload_type, matches!(behavior, Behavior::TwoWindows))?)?;
+    let cadence = if matches!(behavior, Behavior::WrongCadence) {
+        4000
+    } else {
+        3600
+    };
+    let payload_type = if matches!(behavior, Behavior::Payload97) {
+        97
+    } else {
+        96
+    };
+    peer.write_all(&video(
+        transcript.pictures,
+        cadence,
+        payload_type,
+        matches!(behavior, Behavior::TwoWindows),
+    )?)?;
     if matches!(behavior, Behavior::MalformedAfterOne) {
         // Complete interleaved framing, deliberately truncated RTP header.
         peer.write_all(&[b'$', 0, 0, 4, 0x80, 96, 0, 9])?;
@@ -557,7 +589,9 @@ fn detail<'a>(rows: &'a [Value], kind: &str) -> Test<&'a Value> {
             .and_then(Value::text)
             == Some(kind)
     });
-    let row = matches.next().ok_or_else(|| format!("missing {kind} row"))?;
+    let row = matches
+        .next()
+        .ok_or_else(|| format!("missing {kind} row"))?;
     assert!(matches.next().is_none(), "duplicate unique {kind} row");
     value(row, "detail")
 }
@@ -572,7 +606,14 @@ fn import_selected_and_decode(
     frames: i128,
     whole_catalog: bool,
 ) -> Test {
-    let selected = detail(rows, if whole_catalog { "catalog_published" } else { "window_durable" })?;
+    let selected = detail(
+        rows,
+        if whole_catalog {
+            "catalog_published"
+        } else {
+            "window_durable"
+        },
+    )?;
     let (slot_option, root_option) = if whole_catalog {
         ("--catalog-slot", "--catalog-root")
     } else {
@@ -580,21 +621,36 @@ fn import_selected_and_decode(
     };
     let root = directory.0.join("deployment");
     let mut args: Vec<OsString> = [
-        "--archive", directory.root().to_str().ok_or("archive path")?,
-        "--root", root.to_str().ok_or("deployment path")?,
-        "--site", SITE,
-        slot_option, text(selected, "slot")?,
-        root_option, text(selected, "root")?,
-        "--codec", "avc",
-        "--sensor-id", SENSOR,
-        "--stream-id", STREAM,
-        "--generation", "1",
-        "--anchor", &digest("capture CLI authority anchor"),
-        "--receive-clock", &digest("capture CLI receive clock"),
-        "--receive-time-ns", "5000000000",
-        "--owner-authorized", "yes",
-        "--read-originals", "yes",
-        "--retain-originals", "yes",
+        "--archive",
+        directory.root().to_str().ok_or("archive path")?,
+        "--root",
+        root.to_str().ok_or("deployment path")?,
+        "--site",
+        SITE,
+        slot_option,
+        text(selected, "slot")?,
+        root_option,
+        text(selected, "root")?,
+        "--codec",
+        "avc",
+        "--sensor-id",
+        SENSOR,
+        "--stream-id",
+        STREAM,
+        "--generation",
+        "1",
+        "--anchor",
+        &digest("capture CLI authority anchor"),
+        "--receive-clock",
+        &digest("capture CLI receive clock"),
+        "--receive-time-ns",
+        "5000000000",
+        "--owner-authorized",
+        "yes",
+        "--read-originals",
+        "yes",
+        "--retain-originals",
+        "yes",
     ]
     .into_iter()
     .map(OsString::from)
@@ -609,7 +665,10 @@ fn import_selected_and_decode(
     }
     let preview = parse(&good(run("import", &args)?)?)?;
     if whole_catalog {
-        assert_eq!(text(&preview, "format")?, "fss.rtsp_catalog_import_operator.v1");
+        assert_eq!(
+            text(&preview, "format")?,
+            "fss.rtsp_catalog_import_operator.v1"
+        );
         assert_eq!(text(&preview, "selection")?, "complete_catalog_page");
     }
     assert!(!root.exists(), "import preview created destination custody");
@@ -620,10 +679,16 @@ fn import_selected_and_decode(
     let imported = parse(&good(run("import", &args)?)?)?;
     assert_eq!(integer(&imported, "frames")?, frames);
     assert_eq!(text(&imported, "capture_time_label")?, "unknown");
-    assert!(boolean(&imported, "destination_contains_original_recording")?);
+    assert!(boolean(
+        &imported,
+        "destination_contains_original_recording"
+    )?);
     if whole_catalog {
         assert!(boolean(&imported, "destination_contains_complete_catalog")?);
-        assert_eq!(integer(&imported, "windows")?, integer(selected, "windows")?);
+        assert_eq!(
+            integer(&imported, "windows")?,
+            integer(selected, "windows")?
+        );
     }
     assert!(!boolean(&imported, "reused")?);
     let identity = text(&imported, "import_identity")?.to_owned();
@@ -641,9 +706,12 @@ fn import_selected_and_decode(
     // The retained import must decode with its original capture archive unavailable.
     fs::rename(directory.root(), directory.0.join("offline-capture"))?;
     let common: Vec<OsString> = [
-        "--root", root.to_str().ok_or("root path")?,
-        "--site", SITE,
-        "--import-id", &identity,
+        "--root",
+        root.to_str().ok_or("root path")?,
+        "--site",
+        SITE,
+        "--import-id",
+        &identity,
     ]
     .into_iter()
     .map(OsString::from)
@@ -652,23 +720,36 @@ fn import_selected_and_decode(
     verify.extend(common.clone());
     let verified = good(run("file", &verify)?)?;
     assert!(verified.contains("media_format=mp4avc"), "{verified}");
-    assert!(verified.contains(&format!("segment_count={frames}")), "{verified}");
-    assert!(verified.contains("capture_time_class=unknown"), "{verified}");
+    assert!(
+        verified.contains(&format!("segment_count={frames}")),
+        "{verified}"
+    );
+    assert!(
+        verified.contains("capture_time_class=unknown"),
+        "{verified}"
+    );
     assert!(verified.contains("absence_certifiable=false"), "{verified}");
     let mut decode = vec!["decode".into()];
     decode.extend(common);
     decode.extend(
         [
-            "--segment", "0",
-            "--segment-count", &frames.to_string(),
-            "--interpretation", "ycbcr",
-            "--work-units", "1000000000",
+            "--segment",
+            "0",
+            "--segment-count",
+            &frames.to_string(),
+            "--interpretation",
+            "ycbcr",
+            "--work-units",
+            "1000000000",
         ]
         .into_iter()
         .map(OsString::from),
     );
     let decoded = good(run("file", &decode)?)?;
-    assert!(!decoded.is_empty(), "native AVC decoder returned no frame output");
+    assert!(
+        !decoded.is_empty(),
+        "native AVC decoder returned no frame output"
+    );
     assert_eq!(
         fs::read(root.join("effects/journal.fssj"))?,
         effects,
@@ -748,7 +829,10 @@ fn peer_eof_before_target_is_incomplete_but_completed_prefix_is_importable() -> 
     let listener = listener()?;
     let args = approve(&args(&directory, listener.local_addr()?, 2))?;
     let (output, transcript) = captured(listener, &args, Behavior::EofAfterOne)?;
-    assert!(!output.status.success(), "short source satisfied a two-picture target");
+    assert!(
+        !output.status.success(),
+        "short source satisfied a two-picture target"
+    );
     assert!(transcript.source_eof);
     assert_eq!(transcript.pictures, 1);
     let rows = rows(&output)?;
@@ -778,7 +862,10 @@ fn authentication_challenge_is_secret_free_and_never_retried() -> Test {
         String::from_utf8_lossy(&output.stderr)
     );
     for secret in [SECRET_REALM, SECRET_NONCE, "WWW-Authenticate"] {
-        assert!(!combined.contains(secret), "challenge material leaked into output");
+        assert!(
+            !combined.contains(secret),
+            "challenge material leaked into output"
+        );
     }
     let rows = rows(&output)?;
     let terminal = detail(&rows, "terminal")?;
@@ -806,7 +893,8 @@ fn malformed_tail_is_refused_without_publishing_an_incomplete_window() -> Test {
     assert!(integer(terminal, "unsealed_pictures")? >= 1);
     assert!(value(terminal, "error_id")?.text().is_some());
     assert!(
-        rows.iter().all(|row| text(row, "kind").ok() != Some("window_durable")),
+        rows.iter()
+            .all(|row| text(row, "kind").ok() != Some("window_durable")),
         "malformed tail acquired a durable-window claim"
     );
     Ok(())
@@ -848,8 +936,16 @@ fn approved_aliasing_parent_directories_are_refused_before_storage_or_connection
     let alias_pins = alias_parent.join("capture");
     let listener = listener()?;
     let mut args = args(&directory, listener.local_addr()?, 2);
-    replace(&mut args, "--root", actual_root.to_str().ok_or("actual root path")?)?;
-    replace(&mut args, "--pins", alias_pins.to_str().ok_or("aliased pin path")?)?;
+    replace(
+        &mut args,
+        "--root",
+        actual_root.to_str().ok_or("actual root path")?,
+    )?;
+    replace(
+        &mut args,
+        "--pins",
+        alias_pins.to_str().ok_or("aliased pin path")?,
+    )?;
     // Pure planning is intentionally lexical. Filesystem resolution is approved runtime work.
     let approved = approve(&args)?;
     assert!(!actual_root.exists());
@@ -863,7 +959,11 @@ fn approved_aliasing_parent_directories_are_refused_before_storage_or_connection
     no_connection(&listener)?;
     assert!(!actual_root.exists());
     assert!(!alias_pins.exists());
-    assert!(fs::symlink_metadata(&alias_parent)?.file_type().is_symlink());
+    assert!(
+        fs::symlink_metadata(&alias_parent)?
+            .file_type()
+            .is_symlink()
+    );
     Ok(())
 }
 
@@ -939,7 +1039,10 @@ fn native_capture_catalog_imports_both_windows_and_cold_decodes_every_picture() 
     let catalog = detail(&rows, "catalog_published")?;
     assert_eq!(integer(catalog, "windows")?, 2);
     assert_eq!(integer(catalog, "time_scale")?, 90_000);
-    assert_eq!(text(catalog, "decode_clock")?, text(&preview, "decode_clock")?);
+    assert_eq!(
+        text(catalog, "decode_clock")?,
+        text(&preview, "decode_clock")?
+    );
     assert_eq!(text(catalog, "codec")?, "avc");
     assert_eq!(text(value(catalog, "source")?, "sensor_id")?, SENSOR);
     assert_eq!(text(value(catalog, "source")?, "stream_id")?, STREAM);

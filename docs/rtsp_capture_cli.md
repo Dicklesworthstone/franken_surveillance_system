@@ -42,6 +42,8 @@ no filesystem, clock or network I/O. The plan exposes `approval`, source and clo
 identities, archive namespace, paths, endpoint and every effective native limit.
 Repeat exactly with `--approve sha256:HEX` after reviewing it. Changed bounds, route,
 identities, destinations or timing need new approval; argument order does not matter.
+Ingress accepts the full nonzero 128-bit unsigned range. Its preview field is a decimal
+string, and the approval and decode-clock identities bind all 16 bytes exactly.
 Digest inputs and an audit principal do not authenticate the camera.
 
 Execution refuses existing destinations, including earlier incomplete attempts.

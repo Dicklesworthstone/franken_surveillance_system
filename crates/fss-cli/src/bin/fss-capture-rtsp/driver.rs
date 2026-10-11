@@ -12,27 +12,20 @@ use fss_cli::agent_json::{object, string};
 use fss_core::region::{ContextAuthority, RootAuthoritySpec};
 use fss_core::{BudgetVector, ContentDigest, OperationId};
 use fss_publication::{
-    LocalPublicationState, LocalRootPublisher, PublishCancellation,
-    PublishCutPoint,
+    LocalPublicationState, LocalRootPublisher, PublishCancellation, PublishCutPoint,
 };
 use fss_reference::ReplayCx;
 use fss_reference::rtsp::archive_pins::live::{
     JournaledLiveArchiveError, JournaledLiveArchiveStep, JournaledLiveAvcArchive,
     JournaledLiveFailure,
 };
-use fss_reference::rtsp::archive_pins::{
-    ArchivePinJournal, JournaledArchiveProgress,
-};
+use fss_reference::rtsp::archive_pins::{ArchivePinJournal, JournaledArchiveProgress};
 use fss_reference::rtsp::authentication::DigestCredentials;
-use fss_reference::rtsp::avc_client::authenticated::DigestAvcPoll;
 use fss_reference::rtsp::avc_client::AvcClientPoll;
+use fss_reference::rtsp::avc_client::authenticated::DigestAvcPoll;
 use fss_reference::rtsp::client::{ClientCommand, ClientProgress, ClientState};
-use fss_reference::rtsp::live_archive::{
-    LiveArchiveCompletion, LiveArchiveError, LiveArchiveStep,
-};
-use fss_reference::rtsp::live_avc::recording::{
-    LiveRecordingError, LiveRecordingStep,
-};
+use fss_reference::rtsp::live_archive::{LiveArchiveCompletion, LiveArchiveError, LiveArchiveStep};
+use fss_reference::rtsp::live_avc::recording::{LiveRecordingError, LiveRecordingStep};
 use fss_reference::rtsp::live_avc::{LiveAvcError, LiveAvcStep, SocketReadiness};
 use fss_reference::rtsp::recording_archive::ArchiveWriteProgress;
 use fss_reference::rtsp::recording_capture::{CaptureError, CapturePoll, TimedCapture};
@@ -44,7 +37,9 @@ use super::timing::FixedTiming;
 
 #[path = "report.rs"]
 mod report;
-use report::{Statistics, Transcript, anchor_json, pin_json, receipt_json, scope_json, source_bytes, terminal};
+use report::{
+    Statistics, Transcript, anchor_json, pin_json, receipt_json, scope_json, source_bytes, terminal,
+};
 const STORAGE_CAPS: [&str; 4] = [
     "CAP-READ-MEDIA-001",
     "CAP-OBJECT-STAGE-001",
@@ -108,7 +103,11 @@ impl Failure {
 fn elapsed(start: Instant) -> Result<u64, Failure> {
     u64::try_from(start.elapsed().as_nanos()).map_err(|_| Failure::Deadline)
 }
-fn context_check(authority: &ContextAuthority, start: Instant, deadline: u64) -> Result<u64, Failure> {
+fn context_check(
+    authority: &ContextAuthority,
+    start: Instant,
+    deadline: u64,
+) -> Result<u64, Failure> {
     if authority.cancellation_reason.is_some()
         || !STORAGE_CAPS.iter().all(|cap| authority.has_capability(cap))
     {
@@ -132,14 +131,23 @@ struct Owner<'a> {
 }
 impl Owner<'_> {
     fn now(&self) -> Result<u64, Failure> {
-        self.cx.checkpoint("capture_rtsp:owner").map_err(|_| Failure::Authority)?;
-        context_check(self.authority, self.start, self.drain_deadline.get().unwrap_or(self.storage_deadline))
+        self.cx
+            .checkpoint("capture_rtsp:owner")
+            .map_err(|_| Failure::Authority)?;
+        context_check(
+            self.authority,
+            self.start,
+            self.drain_deadline.get().unwrap_or(self.storage_deadline),
+        )
     }
     fn begin_drain(&self) -> Result<(), Failure> {
         let now = self.now()?;
         if self.drain_deadline.get().is_none() {
-            let deadline = now.checked_add(self.drain_timeout).ok_or(Failure::Deadline)?;
-            self.drain_deadline.set(Some(deadline.min(self.storage_deadline)));
+            let deadline = now
+                .checked_add(self.drain_timeout)
+                .ok_or(Failure::Deadline)?;
+            self.drain_deadline
+                .set(Some(deadline.min(self.storage_deadline)));
         }
         Ok(())
     }
@@ -148,12 +156,15 @@ impl Owner<'_> {
         if now >= self.live_deadline {
             return Err(Failure::Deadline);
         }
-        let delay = wake.map_or(1_000_000, |at| at.saturating_sub(now))
+        let delay = wake
+            .map_or(1_000_000, |at| at.saturating_sub(now))
             .min(1_000_000)
             .min(self.live_deadline - now);
         if delay != 0 {
             // One explicit owner-clock wait, only following a Pending network poll.
-            self.cx.checkpoint("capture_rtsp:wait").map_err(|_| Failure::Authority)?;
+            self.cx
+                .checkpoint("capture_rtsp:wait")
+                .map_err(|_| Failure::Authority)?;
             std::thread::sleep(Duration::from_nanos(delay));
         }
         self.now()?;
@@ -168,14 +179,18 @@ impl TcpAuthority for Owner<'_> {
         now: u64,
         deadline: u64,
     ) -> Result<(), TcpDenial> {
-        self.cx.checkpoint("capture_rtsp:network").map_err(|_| TcpDenial::Cancelled)?;
+        self.cx
+            .checkpoint("capture_rtsp:network")
+            .map_err(|_| TcpDenial::Cancelled)?;
         if self.authority.cancellation_reason.is_some() {
             return Err(TcpDenial::Cancelled);
         }
         if binding != &self.binding
             || deadline != self.live_deadline
             || !self.authority.has_capability("CAP-ADAPTER-NET-001")
-            || !STORAGE_CAPS.iter().all(|cap| self.authority.has_capability(cap))
+            || !STORAGE_CAPS
+                .iter()
+                .all(|cap| self.authority.has_capability(cap))
         {
             return Err(TcpDenial::Unauthorized);
         }
@@ -200,17 +215,24 @@ fn failure(error: JournaledLiveFailure, stats: &mut Statistics) -> Failure {
     match error.reason {
         JournaledLiveArchiveError::Pins(_) => Failure::Storage,
         JournaledLiveArchiveError::Live(error) => match error {
-            LiveArchiveError::Deadline | LiveArchiveError::StoragePauseExpired
+            LiveArchiveError::Deadline
+            | LiveArchiveError::StoragePauseExpired
             | LiveArchiveError::Authority(TcpDenial::Deadline) => Failure::Deadline,
             LiveArchiveError::WorkBudget => Failure::WorkBudget,
             LiveArchiveError::Authority(_) => Failure::Authority,
             LiveArchiveError::Archive(_) => Failure::Storage,
             LiveArchiveError::Recording(error) => match *error {
                 LiveRecordingError::Network(LiveAvcError::Transport(
-                    TcpError::Deadline | TcpError::ReadDeadline | TcpError::Denied(TcpDenial::Deadline),
+                    TcpError::Deadline
+                    | TcpError::ReadDeadline
+                    | TcpError::Denied(TcpDenial::Deadline),
                 ))
-                | LiveRecordingError::Capture(CaptureError::Collection(CollectorError::Deadline)) => Failure::Deadline,
-                LiveRecordingError::Network(LiveAvcError::Transport(TcpError::Denied(_))) => Failure::Authority,
+                | LiveRecordingError::Capture(CaptureError::Collection(CollectorError::Deadline)) => {
+                    Failure::Deadline
+                }
+                LiveRecordingError::Network(LiveAvcError::Transport(TcpError::Denied(_))) => {
+                    Failure::Authority
+                }
                 LiveRecordingError::Network(LiveAvcError::WorkBudget)
                 | LiveRecordingError::Network(LiveAvcError::Transport(
                     TcpError::WorkBudget | TcpError::RequestBudget,
@@ -270,9 +292,18 @@ fn observe_network_retirement(step: &LiveAvcStep, stats: &mut Statistics) {
         match event {
             DigestAvcPoll::Fault { retirement, .. } => stats.client_retirement(&retirement.client),
             DigestAvcPoll::Client { event, .. } => match event.as_ref() {
-                AvcClientPoll::Rtp { retirement: Some(retired), .. }
-                | AvcClientPoll::Ended { retirement: Some(retired), .. }
-                | AvcClientPoll::Fault { retirement: retired, .. } => stats.client_retirement(retired),
+                AvcClientPoll::Rtp {
+                    retirement: Some(retired),
+                    ..
+                }
+                | AvcClientPoll::Ended {
+                    retirement: Some(retired),
+                    ..
+                }
+                | AvcClientPoll::Fault {
+                    retirement: retired,
+                    ..
+                } => stats.client_retirement(retired),
                 _ => {}
             },
             _ => {}
@@ -292,7 +323,9 @@ fn observe_stopped(step: &LiveRecordingStep, stats: &mut Statistics) {
             }
             match event.as_ref() {
                 CapturePoll::Stopped { retained, .. } => stats.capture_retirement(retained),
-                CapturePoll::Ended { trailing: Some(trailing) } => stats.unsealed(trailing),
+                CapturePoll::Ended {
+                    trailing: Some(trailing),
+                } => stats.unsealed(trailing),
                 CapturePoll::Window(window) => stats.prepared(window),
                 _ => {}
             }
@@ -313,7 +346,11 @@ fn network_step<W: Write>(
         LiveAvcStep::Wire(_) | LiveAvcStep::Write(_) => {}
         LiveAvcStep::InputEnded => {
             stats.input_ended = true;
-            log.emit("network_input_ended", object(&[("capture_drained", "false".into())]), false)?;
+            log.emit(
+                "network_input_ended",
+                object(&[("capture_drained", "false".into())]),
+                false,
+            )?;
         }
         LiveAvcStep::Pending(wait) => return Ok(Some(wait.wake_at_ns)),
         LiveAvcStep::Ended => return Err(Failure::Protocol),
@@ -329,12 +366,19 @@ fn network_step<W: Write>(
                         ClientState::Ready => Some(ClientCommand::Play),
                         _ => None,
                     };
-                    log.emit("protocol", object(&[("state", string(state_name(state)))]), false)?;
+                    log.emit(
+                        "protocol",
+                        object(&[("state", string(state_name(state)))]),
+                        false,
+                    )?;
                 }
                 AvcClientPoll::Control(ClientProgress::KeepAliveDue) => {
                     *next_command = Some(ClientCommand::KeepAlive);
                 }
-                AvcClientPoll::Rtp { retirement: Some(_), .. }
+                AvcClientPoll::Rtp {
+                    retirement: Some(_),
+                    ..
+                }
                 | AvcClientPoll::Fault { .. } => return Err(Failure::Protocol),
                 AvcClientPoll::Ended { .. } => stats.input_ended = true,
                 AvcClientPoll::Pending { wake_at_ns }
@@ -361,7 +405,10 @@ fn archive_progress<W: Write>(
     log: &mut Transcript<'_, W>,
 ) -> Result<(), Failure> {
     match progress {
-        ArchiveWriteProgress::Ready { durable_windows, indexed_windows } => {
+        ArchiveWriteProgress::Ready {
+            durable_windows,
+            indexed_windows,
+        } => {
             stats.durable_windows = durable_windows;
             stats.indexed_windows = indexed_windows;
             *ready = true;
@@ -382,30 +429,49 @@ fn archive_progress<W: Write>(
             stats.durable_source_object_bytes += source_bytes;
             stats.snapshot(snapshot);
             let interval = entry.decode_interval();
-            log.emit("window_durable", object(&[
-                ("ordinal", ordinal.to_string()),
-                ("slot", string(receipt.slot.as_str())),
-                ("root", string(&receipt.root.to_text())),
-                ("archive_namespace", string(&namespace.to_text())),
-                ("source", scope_json(&snapshot.namespace().scope().recording)),
-                ("pictures", entry.samples().to_string()),
-                ("decode_start", interval.start.to_string()),
-                ("decode_end", interval.end.to_string()),
-                ("decode_clock", string(&snapshot.namespace().scope().decode_clock.to_text())),
-                ("time_scale", snapshot.namespace().scope().time_scale.to_string()),
-                ("source_object_bytes", source_bytes.to_string()),
-                ("codec", string("avc")),
-                ("pixel_decode", "false".into()),
-                ("catalog_indexed", "false".into()),
-                ("record_digest", string(&receipt.record_digest.to_text())),
-            ]), false)?;
+            log.emit(
+                "window_durable",
+                object(&[
+                    ("ordinal", ordinal.to_string()),
+                    ("slot", string(receipt.slot.as_str())),
+                    ("root", string(&receipt.root.to_text())),
+                    ("archive_namespace", string(&namespace.to_text())),
+                    (
+                        "source",
+                        scope_json(&snapshot.namespace().scope().recording),
+                    ),
+                    ("pictures", entry.samples().to_string()),
+                    ("decode_start", interval.start.to_string()),
+                    ("decode_end", interval.end.to_string()),
+                    (
+                        "decode_clock",
+                        string(&snapshot.namespace().scope().decode_clock.to_text()),
+                    ),
+                    (
+                        "time_scale",
+                        snapshot.namespace().scope().time_scale.to_string(),
+                    ),
+                    ("source_object_bytes", source_bytes.to_string()),
+                    ("codec", string("avc")),
+                    ("pixel_decode", "false".into()),
+                    ("catalog_indexed", "false".into()),
+                    ("record_digest", string(&receipt.record_digest.to_text())),
+                ]),
+                false,
+            )?;
         }
-        ArchiveWriteProgress::CatalogPublished { first_ordinal, windows, receipt } => {
+        ArchiveWriteProgress::CatalogPublished {
+            first_ordinal,
+            windows,
+            receipt,
+        } => {
             if receipt.claims.local != LocalPublicationState::Durable {
                 return Err(Failure::State);
             }
             let snapshot = capture.snapshot().ok_or(Failure::State)?;
-            let page = snapshot.pages().iter()
+            let page = snapshot
+                .pages()
+                .iter()
                 .find(|page| page.first_ordinal() == first_ordinal)
                 .ok_or(Failure::State)?;
             let catalog = page.catalog();
@@ -418,20 +484,28 @@ fn archive_progress<W: Write>(
                 return Err(Failure::State);
             }
             stats.indexed_windows = first_ordinal + windows;
-            log.emit("catalog_published", object(&[
-                ("first_ordinal", first_ordinal.to_string()),
-                ("windows", windows.to_string()),
-                ("slot", string(receipt.slot.as_str())),
-                ("root", string(&receipt.root.to_text())),
-                ("archive_namespace", string(&namespace.to_text())),
-                ("source", scope_json(&scope.recording)),
-                ("decode_clock", string(&scope.decode_clock.to_text())),
-                ("time_scale", scope.time_scale.to_string()),
-                ("codec", string("avc")),
-                ("receipt", receipt_json(&receipt)),
-            ]), false)?;
+            log.emit(
+                "catalog_published",
+                object(&[
+                    ("first_ordinal", first_ordinal.to_string()),
+                    ("windows", windows.to_string()),
+                    ("slot", string(receipt.slot.as_str())),
+                    ("root", string(&receipt.root.to_text())),
+                    ("archive_namespace", string(&namespace.to_text())),
+                    ("source", scope_json(&scope.recording)),
+                    ("decode_clock", string(&scope.decode_clock.to_text())),
+                    ("time_scale", scope.time_scale.to_string()),
+                    ("codec", string("avc")),
+                    ("receipt", receipt_json(&receipt)),
+                ]),
+                false,
+            )?;
         }
-        ArchiveWriteProgress::Finished { snapshot_digest, windows, .. } => {
+        ArchiveWriteProgress::Finished {
+            snapshot_digest,
+            windows,
+            ..
+        } => {
             stats.snapshot_digest = Some(snapshot_digest);
             stats.durable_windows = windows;
         }
@@ -493,7 +567,8 @@ fn drive<W: Write>(
             if stats.durable_pictures != stats.collected_pictures {
                 return Err(Failure::State);
             }
-            let retired = capture.finish_capture(owner.now()?, owner, owner)
+            let retired = capture
+                .finish_capture(owner.now()?, owner, owner)
                 .map_err(|e| failure(e, stats))?;
             if let Some(retired) = &retired {
                 stats.recording_retirement(retired);
@@ -508,12 +583,16 @@ fn drive<W: Write>(
                 match capture.request(command, &unsigned, [0; 16], owner.now()?, owner, owner) {
                     Ok(request) => {
                         next_command = None;
-                        log.emit("request_queued", object(&[
-                            ("command", string(command_name(request.command))),
-                            ("cseq", request.cseq.to_string()),
-                            ("bytes", request.bytes.to_string()),
-                            ("authentication", string("none")),
-                        ]), false)?;
+                        log.emit(
+                            "request_queued",
+                            object(&[
+                                ("command", string(command_name(request.command))),
+                                ("cseq", request.cseq.to_string()),
+                                ("bytes", request.bytes.to_string()),
+                                ("authentication", string("none")),
+                            ]),
+                            false,
+                        )?;
                     }
                     Err(error) if backpressure(&error) => {}
                     Err(error) => return Err(failure(error, stats)),
@@ -527,26 +606,39 @@ fn drive<W: Write>(
             readable: !sealing && !draining,
             writable: !sealing && !draining,
         };
-        let step = capture.poll(readiness, owner.now()?, owner, owner)
+        let step = capture
+            .poll(readiness, owner.now()?, owner, owner)
             .map_err(|e| failure(e, stats))?;
         match step {
             JournaledLiveArchiveStep::Checkpoint(progress) => match *progress {
                 JournaledArchiveProgress::PinPersisted { receipt, .. } => {
                     stats.observe(capture);
-                    log.emit("checkpoint_candidate", object(&[
-                        ("pin", pin_json(receipt.pin())),
-                        ("journal_anchor", anchor_json(receipt.anchor())),
-                        ("work_durable", "false".into()),
-                    ]), false)?;
+                    log.emit(
+                        "checkpoint_candidate",
+                        object(&[
+                            ("pin", pin_json(receipt.pin())),
+                            ("journal_anchor", anchor_json(receipt.anchor())),
+                            ("work_durable", "false".into()),
+                        ]),
+                        false,
+                    )?;
                 }
-                JournaledArchiveProgress::WorkConfirmed { work_receipt, pin_receipt, .. } => {
+                JournaledArchiveProgress::WorkConfirmed {
+                    work_receipt,
+                    pin_receipt,
+                    ..
+                } => {
                     stats.observe(capture);
-                    log.emit("checkpoint_durable", object(&[
-                        ("pin", pin_json(pin_receipt.pin())),
-                        ("journal_anchor", anchor_json(pin_receipt.anchor())),
-                        ("work_receipt", receipt_json(&work_receipt)),
-                        ("normal_window_durable", "false".into()),
-                    ]), false)?;
+                    log.emit(
+                        "checkpoint_durable",
+                        object(&[
+                            ("pin", pin_json(pin_receipt.pin())),
+                            ("journal_anchor", anchor_json(pin_receipt.anchor())),
+                            ("work_receipt", receipt_json(&work_receipt)),
+                            ("normal_window_durable", "false".into()),
+                        ]),
+                        false,
+                    )?;
                 }
                 JournaledArchiveProgress::Archive(progress) => {
                     archive_progress(progress, capture, namespace, stats, &mut ready, log)?;
@@ -557,14 +649,19 @@ fn drive<W: Write>(
                 if pending.manifest().root() != admission.root || stats.pending_window.is_some() {
                     return Err(Failure::State);
                 }
-                stats.pending_window = Some((admission.root, pending.objects().source.len() as u64));
+                stats.pending_window =
+                    Some((admission.root, pending.objects().source.len() as u64));
                 ready = false;
-                log.emit("window_accepted", object(&[
-                    ("ordinal", admission.ordinal.to_string()),
-                    ("slot", string(admission.slot.as_str())),
-                    ("root", string(&admission.root.to_text())),
-                    ("durable", "false".into()),
-                ]), false)?;
+                log.emit(
+                    "window_accepted",
+                    object(&[
+                        ("ordinal", admission.ordinal.to_string()),
+                        ("slot", string(admission.slot.as_str())),
+                        ("root", string(&admission.root.to_text())),
+                        ("durable", "false".into()),
+                    ]),
+                    false,
+                )?;
             }
             JournaledLiveArchiveStep::Live(LiveArchiveStep::Archive(progress)) => {
                 archive_progress(progress, capture, namespace, stats, &mut ready, log)?;
@@ -598,21 +695,30 @@ fn drive<W: Write>(
                                 // Cancellation below accounts for the still-held picture once.
                                 return Err(Failure::State);
                             }
-                            let selected_timing = timing.observe(request).map_err(|_| Failure::Timing)?;
-                            let timed = capture.supply_timing(selected_timing, owner.now()?, owner, owner)
+                            let selected_timing =
+                                timing.observe(request).map_err(|_| Failure::Timing)?;
+                            let timed = capture
+                                .supply_timing(selected_timing, owner.now()?, owner, owner)
                                 .map_err(|e| failure(e, stats))?;
                             match timed {
                                 TimedCapture::Collected { unselected, .. } => {
                                     stats.unselected_rtp_bytes += source_bytes(&unselected);
                                     stats.collected_pictures += 1;
-                                    log.emit("picture_collected", object(&[
-                                        ("picture", stats.collected_pictures.to_string()),
-                                        ("rtp_timestamp", request.rtp_timestamp.to_string()),
-                                        ("decode_time", selected_timing.decode_time.to_string()),
-                                        ("duration", selected_timing.duration.to_string()),
-                                        ("composition_offset", "0".into()),
-                                        ("durable", "false".into()),
-                                    ]), false)?;
+                                    log.emit(
+                                        "picture_collected",
+                                        object(&[
+                                            ("picture", stats.collected_pictures.to_string()),
+                                            ("rtp_timestamp", request.rtp_timestamp.to_string()),
+                                            (
+                                                "decode_time",
+                                                selected_timing.decode_time.to_string(),
+                                            ),
+                                            ("duration", selected_timing.duration.to_string()),
+                                            ("composition_offset", "0".into()),
+                                            ("durable", "false".into()),
+                                        ]),
+                                        false,
+                                    )?;
                                 }
                                 TimedCapture::AwaitingIdr { unselected, .. } => {
                                     stats.unselected_rtp_bytes += source_bytes(&unselected);
@@ -684,10 +790,13 @@ fn resolve_new_parent(
     deadline: u64,
 ) -> Result<PathBuf, Failure> {
     context_check(authority, start, deadline)?;
-    let parent = std::fs::canonicalize(path.parent().ok_or(Failure::Root)?)
-        .map_err(|_| Failure::Root)?;
+    let parent =
+        std::fs::canonicalize(path.parent().ok_or(Failure::Root)?).map_err(|_| Failure::Root)?;
     context_check(authority, start, deadline)?;
-    if !std::fs::metadata(&parent).map_err(|_| Failure::Root)?.is_dir() {
+    if !std::fs::metadata(&parent)
+        .map_err(|_| Failure::Root)?
+        .is_dir()
+    {
         return Err(Failure::Root);
     }
     context_check(authority, start, deadline)?;
@@ -719,7 +828,9 @@ fn run_owned<W: Write>(
     stats: &mut Statistics,
     log: &mut Transcript<'_, W>,
 ) -> Result<(), Failure> {
-    let storage_deadline = options.timeout_ns.checked_add(options.drain_timeout_ns)
+    let storage_deadline = options
+        .timeout_ns
+        .checked_add(options.drain_timeout_ns)
         .ok_or(Failure::Configuration)?;
     context_check(authority, start, options.timeout_ns)?;
     require_new(&options.root)?;
@@ -733,8 +844,8 @@ fn run_owned<W: Write>(
     context_check(authority, start, options.timeout_ns)?;
     create_root(&root)?;
     context_check(authority, start, options.timeout_ns)?;
-    let cx = ReplayCx::from_context_authority(authority, root.clone())
-        .map_err(|_| Failure::Root)?;
+    let cx =
+        ReplayCx::from_context_authority(authority, root.clone()).map_err(|_| Failure::Root)?;
     let owner = Owner {
         cx: &cx,
         authority,
@@ -750,9 +861,9 @@ fn run_owned<W: Write>(
         let mut publisher = LocalRootPublisher::open(&root, options.publication_limits())
             .map_err(|_| Failure::Storage)?;
         owner.now()?;
-        let mut pins = ArchivePinJournal::create(
-            &pin_root, options.pin_scope(), options.pin_limits(), &owner,
-        ).map_err(|_| Failure::Storage)?;
+        let mut pins =
+            ArchivePinJournal::create(&pin_root, options.pin_scope(), options.pin_limits(), &owner)
+                .map_err(|_| Failure::Storage)?;
         stats.journal_anchor = Some(pins.anchor());
         stats.pins = pins.state().clone();
         let mut capture = JournaledLiveAvcArchive::connect(
@@ -765,7 +876,8 @@ fn run_owned<W: Write>(
             owner.now()?,
             &owner,
             &owner,
-        ).map_err(|error| {
+        )
+        .map_err(|error| {
             stats.connection_attempted = error.connection_attempted;
             match error.reason {
                 JournaledLiveArchiveError::Pins(_) => Failure::Storage,
@@ -792,7 +904,9 @@ pub(super) fn execute(options: &Options) -> Result<(), &'static str> {
         return Err(Failure::Approval.code());
     }
     let publication = options.publication_limits();
-    let byte_budget = publication.spool.max_total_bytes
+    let byte_budget = publication
+        .spool
+        .max_total_bytes
         .checked_add(options.live_config().transport.max_received_bytes)
         .ok_or(Failure::Configuration.code())?;
     let mut capabilities: Vec<String> = STORAGE_CAPS.iter().map(|cap| (*cap).into()).collect();
@@ -814,8 +928,11 @@ pub(super) fn execute(options: &Options) -> Result<(), &'static str> {
         retention_scope: "retention:explicit-original-rtsp-scope".into(),
         anchor_universe: approval,
         generation: options.recording_config().scope.generation,
-    }).map_err(|_| Failure::Configuration.code())?;
-    authority.validate().map_err(|_| Failure::Configuration.code())?;
+    })
+    .map_err(|_| Failure::Configuration.code())?;
+    authority
+        .validate()
+        .map_err(|_| Failure::Configuration.code())?;
     let stdout = io::stdout();
     let mut out = stdout.lock();
     let mut log = Transcript {
@@ -826,22 +943,47 @@ pub(super) fn execute(options: &Options) -> Result<(), &'static str> {
         io_failed: false,
     };
     // A refused output sink cannot leave an archive or start a TCP connection.
-    log.emit("started", object(&[
-        ("approval_digest", string(&approval.to_text())),
-        ("archive_namespace", string(&options.pin_scope().archive_namespace.to_text())),
-        ("journal_id", string(&options.pin_scope().journal_id.to_text())),
-        ("source", scope_json(&options.recording_config().scope)),
-        ("requested_pictures", options.stop_after_pictures.to_string()),
-        ("frame_duration_ticks", options.frame_duration.to_string()),
-        ("decode_clock", string(&options.archive_config().namespace.scope().decode_clock.to_text())),
-        ("time_scale", options.time_scale.to_string()),
-        ("codec", string("avc")),
-        ("authentication", string("unsupported")),
-        ("capture_time", string("unknown")),
-    ]), false).map_err(Failure::code)?;
+    log.emit(
+        "started",
+        object(&[
+            ("approval_digest", string(&approval.to_text())),
+            (
+                "archive_namespace",
+                string(&options.pin_scope().archive_namespace.to_text()),
+            ),
+            (
+                "journal_id",
+                string(&options.pin_scope().journal_id.to_text()),
+            ),
+            ("source", scope_json(&options.recording_config().scope)),
+            (
+                "requested_pictures",
+                options.stop_after_pictures.to_string(),
+            ),
+            ("frame_duration_ticks", options.frame_duration.to_string()),
+            (
+                "decode_clock",
+                string(
+                    &options
+                        .archive_config()
+                        .namespace
+                        .scope()
+                        .decode_clock
+                        .to_text(),
+                ),
+            ),
+            ("time_scale", options.time_scale.to_string()),
+            ("codec", string("avc")),
+            ("authentication", string("unsupported")),
+            ("capture_time", string("unknown")),
+        ]),
+        false,
+    )
+    .map_err(Failure::code)?;
     let start = Instant::now();
     let mut stats = Statistics::default();
     let result = run_owned(options, &authority, start, &mut stats, &mut log);
-    log.emit("terminal", terminal(options, &stats, &result), true).map_err(Failure::code)?;
+    log.emit("terminal", terminal(options, &stats, &result), true)
+        .map_err(Failure::code)?;
     result.map_err(Failure::code)
 }

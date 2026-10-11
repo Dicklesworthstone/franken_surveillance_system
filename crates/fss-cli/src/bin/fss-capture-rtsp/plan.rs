@@ -7,9 +7,7 @@ use std::net::{Ipv6Addr, SocketAddr};
 use std::path::{Component, PathBuf};
 
 use fss_cli::agent_json::{object, string};
-use fss_core::{
-    CanonicalEncoder, ContentDigest, DigestAlgorithm, PrincipalId, SensorId, StreamId,
-};
+use fss_core::{CanonicalEncoder, ContentDigest, DigestAlgorithm, PrincipalId, SensorId, StreamId};
 use fss_object::{MAX_MANIFEST_CHILDREN, SpoolLimits};
 use fss_packet::{StreamKey, avc::AvcReceiveLimits};
 use fss_publication::LocalPublicationLimits;
@@ -112,6 +110,13 @@ fn unsigned(text: &str) -> Result<u64, &'static str> {
     text.parse().map_err(|_| "integer overflow")
 }
 
+fn unsigned128(text: &str) -> Result<u128, &'static str> {
+    if text.is_empty() || !text.bytes().all(|byte| byte.is_ascii_digit()) {
+        return Err("unsigned decimal required");
+    }
+    text.parse().map_err(|_| "integer overflow")
+}
+
 fn absolute_path(text: &str) -> Result<PathBuf, &'static str> {
     let path = PathBuf::from(text);
     if !path.is_absolute()
@@ -156,12 +161,16 @@ fn authority(text: &str) -> Result<&str, &'static str> {
             Some(suffix.strip_prefix(':').ok_or("invalid authority port")?)
         }
     } else {
-        let (host, port) = text.split_once(':').map_or((text, None), |(h, p)| (h, Some(p)));
+        let (host, port) = text
+            .split_once(':')
+            .map_or((text, None), |(h, p)| (h, Some(p)));
         if host.len() > 253
             || host.split('.').any(|label| {
                 label.is_empty()
                     || label.len() > 63
-                    || !label.bytes().all(|b| b.is_ascii_alphanumeric() || b == b'-')
+                    || !label
+                        .bytes()
+                        .all(|b| b.is_ascii_alphanumeric() || b == b'-')
                     || !label.as_bytes()[0].is_ascii_alphanumeric()
                     || !label.as_bytes()[label.len() - 1].is_ascii_alphanumeric()
             })
@@ -187,14 +196,43 @@ impl Options {
             return Err("argument count or byte bound exceeded");
         }
         const ALLOWED: &[&str] = &[
-            "--root", "--pins", "--peer", "--authority", "--presentation", "--control-root",
-            "--sensor-id", "--stream-id", "--generation", "--ingress", "--ssrc", "--anchor",
-            "--receive-clock", "--timing-evidence", "--journal-id", "--frame-duration-ticks",
-            "--stop-after-pictures", "--owner-authorized", "--plaintext", "--retain-originals",
-            "--approve", "--principal", "--payload-type", "--media-index", "--rtp-channel",
-            "--timeout-ms", "--drain-timeout-ms", "--connect-timeout-ms", "--response-timeout-ms",
-            "--max-steps", "--max-report-bytes", "--max-source-bytes", "--max-io-calls",
-            "--read-bytes", "--max-window-pictures", "--max-windows", "--max-storage-bytes",
+            "--root",
+            "--pins",
+            "--peer",
+            "--authority",
+            "--presentation",
+            "--control-root",
+            "--sensor-id",
+            "--stream-id",
+            "--generation",
+            "--ingress",
+            "--ssrc",
+            "--anchor",
+            "--receive-clock",
+            "--timing-evidence",
+            "--journal-id",
+            "--frame-duration-ticks",
+            "--stop-after-pictures",
+            "--owner-authorized",
+            "--plaintext",
+            "--retain-originals",
+            "--approve",
+            "--principal",
+            "--payload-type",
+            "--media-index",
+            "--rtp-channel",
+            "--timeout-ms",
+            "--drain-timeout-ms",
+            "--connect-timeout-ms",
+            "--response-timeout-ms",
+            "--max-steps",
+            "--max-report-bytes",
+            "--max-source-bytes",
+            "--max-io-calls",
+            "--read-bytes",
+            "--max-window-pictures",
+            "--max-windows",
+            "--max-storage-bytes",
             "--max-storage-pause-ms",
         ];
         let mut values = BTreeMap::new();
@@ -241,22 +279,35 @@ impl Options {
             return Err("sensor or stream byte bound exceeded");
         }
         let generation = unsigned(required("--generation")?)?;
-        let ingress = unsigned(required("--ingress")?)?;
-        let ssrc = u32::try_from(unsigned(required("--ssrc")?)?)
-            .map_err(|_| "SSRC exceeds 32 bits")?;
-        let key = StreamKey { ingress, generation, ssrc };
+        let ingress = unsigned128(required("--ingress")?)?;
+        let ssrc =
+            u32::try_from(unsigned(required("--ssrc")?)?).map_err(|_| "SSRC exceeds 32 bits")?;
+        let key = StreamKey {
+            ingress,
+            generation,
+            ssrc,
+        };
         let peer: SocketAddr = required("--peer")?
             .parse()
             .map_err(|_| "literal IP:PORT required")?;
         let authority = authority(required("--authority")?)?;
         let binding = TcpBinding::new(
-            key, peer, authority, TcpSecurityPolicy::OwnerApprovedPlaintext,
+            key,
+            peer,
+            authority,
+            TcpSecurityPolicy::OwnerApprovedPlaintext,
         )
         .map_err(|_| "native RTSP route refused")?;
         let channel = number("--rtp-channel", 0, 0, 254)? as u8;
         let protocol = ClientConfig {
-            presentation_uri: format!("rtsp://{authority}{}", uri_path(required("--presentation")?)?),
-            control_root_uri: format!("rtsp://{authority}{}", uri_path(required("--control-root")?)?),
+            presentation_uri: format!(
+                "rtsp://{authority}{}",
+                uri_path(required("--presentation")?)?
+            ),
+            control_root_uri: format!(
+                "rtsp://{authority}{}",
+                uri_path(required("--control-root")?)?
+            ),
             media_index: number("--media-index", 0, 0, 63)? as usize,
             channels: (channel, channel + 1),
             response_timeout_ns: number("--response-timeout-ms", 5000, 1, 60_000)? * 1_000_000,
@@ -266,11 +317,21 @@ impl Options {
         RtspClientSession::new_with_payload_type(protocol.clone(), payload_type)
             .map_err(|_| "native RTSP protocol scope refused")?;
         let transport = TcpLimits {
-            max_received_bytes: number("--max-source-bytes", 64 * 1024 * 1024, 1, 256 * 1024 * 1024)?,
+            max_received_bytes: number(
+                "--max-source-bytes",
+                64 * 1024 * 1024,
+                1,
+                256 * 1024 * 1024,
+            )?,
             max_sent_bytes: 1024 * 1024,
             max_io_calls: number("--max-io-calls", 1_000_000, 1, 1_000_000)?,
             max_request_bytes: 32 * 1024,
-            chunk_bytes: number("--read-bytes", MAX_WIRE_CHUNK as u64, 1, MAX_WIRE_CHUNK as u64)? as usize,
+            chunk_bytes: number(
+                "--read-bytes",
+                MAX_WIRE_CHUNK as u64,
+                1,
+                MAX_WIRE_CHUNK as u64,
+            )? as usize,
             connect_timeout_ns: number("--connect-timeout-ms", 5000, 1, 60_000)? * 1_000_000,
         };
         let frame_duration = u32::try_from(unsigned(required("--frame-duration-ticks")?)?)
@@ -297,7 +358,11 @@ impl Options {
             },
         };
         RecordingCollector::new(
-            scope.clone(), key, payload_type, time_scale, recording.limits,
+            scope.clone(),
+            key,
+            payload_type,
+            time_scale,
+            recording.limits,
         )
         .map_err(|_| "native recording scope or limits refused")?;
         let mut clock = CanonicalEncoder::new();
@@ -305,12 +370,14 @@ impl Options {
         clock.text(POLICY);
         clock.digest(timing_evidence);
         clock.digest(scope.receive_clock);
-        clock.u64(ingress);
+        clock.bytes(&ingress.to_be_bytes());
         clock.u64(generation);
         clock.u32(ssrc);
         clock.u32(time_scale);
         clock.u32(frame_duration);
-        let clock_bytes = clock.finish_checked().map_err(|_| "timing encoding refused")?;
+        let clock_bytes = clock
+            .finish_checked()
+            .map_err(|_| "timing encoding refused")?;
         let namespace = ArchiveNamespace::new(CatalogScope {
             recording: scope,
             decode_clock: ContentDigest::sha256(&clock_bytes),
@@ -335,7 +402,10 @@ impl Options {
             publication_deadline_ns: timeout_ns + drain_timeout_ns,
             max_storage_pause_ns: number("--max-storage-pause-ms", 10_000, 1, 60_000)? * 1_000_000,
         };
-        archive.limits.validate().map_err(|_| "native archive limits refused")?;
+        archive
+            .limits
+            .validate()
+            .map_err(|_| "native archive limits refused")?;
         let max_objects = 16 * max_windows + 256;
         let publication = LocalPublicationLimits::new(
             max_roots,
@@ -344,7 +414,12 @@ impl Options {
             max_roots * 2,
             SpoolLimits::new(
                 max_objects,
-                number("--max-storage-bytes", 512 * 1024 * 1024, 1024 * 1024, 1024 * 1024 * 1024)?,
+                number(
+                    "--max-storage-bytes",
+                    512 * 1024 * 1024,
+                    1024 * 1024,
+                    1024 * 1024 * 1024,
+                )?,
                 MAX_RECORDING_BYTES,
                 max_objects * 2,
             ),
@@ -368,15 +443,39 @@ impl Options {
             return Err("requested picture count exceeds finite archive reservation");
         }
         let options = Self {
-            root, pins, principal, binding, protocol, transport,
+            root,
+            pins,
+            principal,
+            binding,
+            protocol,
+            transport,
             media: AvcReceiveLimits::default(),
-            recording, archive, publication, work, pin_scope,
-            pin_limits: ArchivePinLimits { max_records: 8 * max_windows + 32, max_bytes: 1024 * 1024 },
-            stop_after_pictures, frame_duration, time_scale, timeout_ns, drain_timeout_ns,
+            recording,
+            archive,
+            publication,
+            work,
+            pin_scope,
+            pin_limits: ArchivePinLimits {
+                max_records: 8 * max_windows + 32,
+                max_bytes: 1024 * 1024,
+            },
+            stop_after_pictures,
+            frame_duration,
+            time_scale,
+            timeout_ns,
+            drain_timeout_ns,
             max_steps,
-            max_report_bytes: number("--max-report-bytes", 8 * 1024 * 1024, 128 * 1024, 32 * 1024 * 1024)? as usize,
+            max_report_bytes: number(
+                "--max-report-bytes",
+                8 * 1024 * 1024,
+                128 * 1024,
+                32 * 1024 * 1024,
+            )? as usize,
             timing_evidence,
-            approve: values.get("--approve").map(|text| digest(text)).transpose()?,
+            approve: values
+                .get("--approve")
+                .map(|text| digest(text))
+                .transpose()?,
         };
         options.digest()?;
         Ok(options)
@@ -390,7 +489,10 @@ impl Options {
             media: self.media,
             // No challenge is answered by this CLI. This is an inactive, nonsecret realm.
             realm: "fss-capture-rtsp-no-authentication".to_owned(),
-            digest_policy: DigestPolicy { allow_legacy_md5: false, allow_legacy_no_qop: false },
+            digest_policy: DigestPolicy {
+                allow_legacy_md5: false,
+                allow_legacy_no_qop: false,
+            },
             deadline_ns: self.timeout_ns,
             max_steps: self.max_steps,
         }
@@ -424,20 +526,25 @@ impl Options {
         let p = self.publication;
         vec![
             ("generation", self.binding.key().generation),
-            ("ingress", self.binding.key().ingress),
             ("ssrc", u64::from(self.binding.key().ssrc)),
             ("payload_type", u64::from(self.recording.payload_type)),
             ("media_index", self.protocol.media_index as u64),
             ("rtp_channel", u64::from(self.protocol.channels.0)),
             ("rtcp_channel", u64::from(self.protocol.channels.1)),
             ("response_timeout_ns", self.protocol.response_timeout_ns),
-            ("default_session_timeout_seconds", u64::from(self.protocol.default_session_timeout_seconds)),
+            (
+                "default_session_timeout_seconds",
+                u64::from(self.protocol.default_session_timeout_seconds),
+            ),
             ("time_scale", u64::from(self.time_scale)),
             ("frame_duration_ticks", u64::from(self.frame_duration)),
             ("stop_after_pictures", self.stop_after_pictures),
             ("timeout_ns", self.timeout_ns),
             ("drain_timeout_ns", self.drain_timeout_ns),
-            ("publication_deadline_ns", self.archive.publication_deadline_ns),
+            (
+                "publication_deadline_ns",
+                self.archive.publication_deadline_ns,
+            ),
             ("max_storage_pause_ns", self.archive.max_storage_pause_ns),
             ("max_steps", self.max_steps),
             ("archive_max_steps", self.archive.max_steps),
@@ -454,22 +561,34 @@ impl Options {
             ("wire_buffer_bytes", MAX_WIRE_BUFFER as u64),
             ("wire_lifetime_ns", WIRE_LIFETIME_NS),
             ("packet_bytes", m.reorder.packet.max_packet_bytes as u64),
-            ("extension_bytes", m.reorder.packet.max_extension_bytes as u64),
+            (
+                "extension_bytes",
+                m.reorder.packet.max_extension_bytes as u64,
+            ),
             ("rtcp_packets", m.reorder.packet.max_rtcp_packets as u64),
             ("reorder_packets", m.reorder.max_packets as u64),
             ("reorder_bytes", m.reorder.max_bytes as u64),
             ("reorder_delay_ns", m.reorder.max_delay_ns),
             ("nal_bytes", m.reconstruction.max_nal_bytes as u64),
             ("packet_nals", m.reconstruction.max_packet_nals as u64),
-            ("fragment_packets", m.reconstruction.max_fragment_packets as u64),
+            (
+                "fragment_packets",
+                m.reconstruction.max_fragment_packets as u64,
+            ),
             ("fragment_age_ns", m.reconstruction.max_pending_age_ns),
             ("syntax_nal_bytes", m.syntax.max_nal_bytes as u64),
-            ("parameter_set_bytes", m.syntax.max_parameter_set_bytes as u64),
+            (
+                "parameter_set_bytes",
+                m.syntax.max_parameter_set_bytes as u64,
+            ),
             ("coded_width", u64::from(m.syntax.max_width)),
             ("coded_height", u64::from(m.syntax.max_height)),
             ("luma_samples", m.syntax.max_luma_samples),
             ("reference_frames", u64::from(m.syntax.max_reference_frames)),
-            ("slice_identity_bits", m.syntax.max_slice_identity_bits as u64),
+            (
+                "slice_identity_bits",
+                m.syntax.max_slice_identity_bits as u64,
+            ),
             ("assembly_nals", m.assembly.max_nals as u64),
             ("assembly_bytes", m.assembly.max_bytes as u64),
             ("assembly_age_ns", m.assembly.max_age_ns),
@@ -505,6 +624,7 @@ impl Options {
         let mut e = CanonicalEncoder::new();
         e.text("fss.rtsp_capture_cli_plan.v1");
         e.text(POLICY);
+        e.bytes(&self.binding.key().ingress.to_be_bytes());
         for value in [
             self.root.to_str().ok_or("UTF-8 archive path required")?,
             self.pins.to_str().ok_or("UTF-8 journal path required")?,
@@ -539,19 +659,31 @@ impl Options {
             e.text(name);
             e.u64(value);
         }
-        let bytes = e.finish_checked().map_err(|_| "capture plan encoding refused")?;
+        let bytes = e
+            .finish_checked()
+            .map_err(|_| "capture plan encoding refused")?;
         Ok(ContentDigest::sha256(&bytes))
     }
 
     pub(super) fn preview(&self) -> Result<String, &'static str> {
-        let numbers: Vec<_> = self.bound_numbers().into_iter().map(|(k, v)| (k, v.to_string())).collect();
+        let numbers: Vec<_> = self
+            .bound_numbers()
+            .into_iter()
+            .map(|(k, v)| (k, v.to_string()))
+            .collect();
         Ok(object(&[
             ("schema", string(FORMAT)),
             ("phase", string("planned")),
             ("approval", string(&self.digest()?.to_text())),
             ("policy", string(POLICY)),
-            ("root", string(self.root.to_str().ok_or("UTF-8 archive path required")?)),
-            ("pins", string(self.pins.to_str().ok_or("UTF-8 journal path required")?)),
+            (
+                "root",
+                string(self.root.to_str().ok_or("UTF-8 archive path required")?),
+            ),
+            (
+                "pins",
+                string(self.pins.to_str().ok_or("UTF-8 journal path required")?),
+            ),
             ("peer", string(&self.binding.peer().to_string())),
             ("authority", string(self.binding.authority())),
             ("presentation_uri", string(&self.protocol.presentation_uri)),
@@ -559,16 +691,32 @@ impl Options {
             ("principal", string(&self.principal)),
             ("sensor", string(self.recording.scope.sensor.as_str())),
             ("stream", string(self.recording.scope.stream.as_str())),
+            ("ingress", string(&self.binding.key().ingress.to_string())),
             ("anchor", string(&self.recording.scope.anchor.to_text())),
-            ("receive_clock", string(&self.recording.scope.receive_clock.to_text())),
+            (
+                "receive_clock",
+                string(&self.recording.scope.receive_clock.to_text()),
+            ),
             ("timing_evidence", string(&self.timing_evidence.to_text())),
-            ("decode_clock", string(&self.archive.namespace.scope().decode_clock.to_text())),
-            ("archive_namespace", string(&self.archive.namespace.digest().to_text())),
+            (
+                "decode_clock",
+                string(&self.archive.namespace.scope().decode_clock.to_text()),
+            ),
+            (
+                "archive_namespace",
+                string(&self.archive.namespace.digest().to_text()),
+            ),
             ("journal_id", string(&self.pin_scope.journal_id.to_text())),
             ("bounds", object(&numbers)),
             ("authentication", string("challenge-refused")),
-            ("timing", string("operator-asserted-fixed-cadence-relative-dts")),
-            ("source_custody", string("selected-original-rtp-local-unencrypted")),
+            (
+                "timing",
+                string("operator-asserted-fixed-cadence-relative-dts"),
+            ),
+            (
+                "source_custody",
+                string("selected-original-rtp-local-unencrypted"),
+            ),
             ("wire_custody", string("raw-control-and-rtcp-not-retained")),
             ("capture_time", string("unknown")),
             ("effects", string("none-until-exact-approval")),

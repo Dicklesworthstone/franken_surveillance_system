@@ -58,9 +58,7 @@ impl FixedTiming {
             if request.key != previous.key {
                 return Err("picture stream changed; a new capture generation is required");
             }
-            if request.rtp_timestamp
-                != previous.rtp_timestamp.wrapping_add(self.frame_duration)
-            {
+            if request.rtp_timestamp != previous.rtp_timestamp.wrapping_add(self.frame_duration) {
                 return Err(
                     "RTP timestamps do not match the declared fixed cadence; gaps and reordered pictures are unsupported",
                 );
@@ -205,7 +203,11 @@ mod tests {
                 ..original.key
             },
         ] {
-            assert!(timing.observe(PictureTimingRequest { key, ..original }).is_err());
+            assert!(
+                timing
+                    .observe(PictureTimingRequest { key, ..original })
+                    .is_err()
+            );
             assert_eq!(timing.previous, before);
         }
         assert_eq!(timing.observe(original)?.decode_time, 3_000);
@@ -254,8 +256,8 @@ mod tests {
     }
 
     #[test]
-    fn last_representable_sample_is_accepted_then_exhaustion_is_atomic()
-    -> Result<(), &'static str> {
+    fn last_representable_sample_is_accepted_then_exhaustion_is_atomic() -> Result<(), &'static str>
+    {
         let mut timing = FixedTiming::new(DURATION)?;
         timing.previous = Some(PreviousPicture {
             key: picture(0).key,

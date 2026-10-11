@@ -4,26 +4,46 @@ use super::*;
 
 fn args() -> Vec<OsString> {
     [
-        "--root", "/owner/private/archive",
-        "--pins", "/owner/private/pins",
-        "--peer", "127.0.0.1:8554",
-        "--authority", "camera.test:8554",
-        "--presentation", "/camera/main",
-        "--control-root", "/camera",
-        "--sensor-id", "sensor:camera",
-        "--stream-id", "stream:main",
-        "--generation", "1",
-        "--ingress", "1",
-        "--ssrc", "7",
-        "--anchor", "sha256:1111111111111111111111111111111111111111111111111111111111111111",
-        "--receive-clock", "sha256:2222222222222222222222222222222222222222222222222222222222222222",
-        "--timing-evidence", "sha256:3333333333333333333333333333333333333333333333333333333333333333",
-        "--journal-id", "sha256:4444444444444444444444444444444444444444444444444444444444444444",
-        "--frame-duration-ticks", "3600",
-        "--stop-after-pictures", "2",
-        "--owner-authorized", "yes",
-        "--plaintext", "yes",
-        "--retain-originals", "yes",
+        "--root",
+        "/owner/private/archive",
+        "--pins",
+        "/owner/private/pins",
+        "--peer",
+        "127.0.0.1:8554",
+        "--authority",
+        "camera.test:8554",
+        "--presentation",
+        "/camera/main",
+        "--control-root",
+        "/camera",
+        "--sensor-id",
+        "sensor:camera",
+        "--stream-id",
+        "stream:main",
+        "--generation",
+        "1",
+        "--ingress",
+        "1",
+        "--ssrc",
+        "7",
+        "--anchor",
+        "sha256:1111111111111111111111111111111111111111111111111111111111111111",
+        "--receive-clock",
+        "sha256:2222222222222222222222222222222222222222222222222222222222222222",
+        "--timing-evidence",
+        "sha256:3333333333333333333333333333333333333333333333333333333333333333",
+        "--journal-id",
+        "sha256:4444444444444444444444444444444444444444444444444444444444444444",
+        "--frame-duration-ticks",
+        "3600",
+        "--stop-after-pictures",
+        "2",
+        "--owner-authorized",
+        "yes",
+        "--plaintext",
+        "yes",
+        "--retain-originals",
+        "yes",
     ]
     .into_iter()
     .map(OsString::from)
@@ -53,13 +73,27 @@ fn exact_approval_excludes_only_approval_itself_and_argument_order() {
         .rev()
         .flat_map(|pair| pair.iter().cloned())
         .collect();
-    assert_eq!(Options::parse(&reversed).expect("reordered").digest().expect("digest"), approval);
-    assert!(options.preview().expect("preview").contains("\"effects\":\"none-until-exact-approval\""));
+    assert_eq!(
+        Options::parse(&reversed)
+            .expect("reordered")
+            .digest()
+            .expect("digest"),
+        approval
+    );
+    assert!(
+        options
+            .preview()
+            .expect("preview")
+            .contains("\"effects\":\"none-until-exact-approval\"")
+    );
 }
 
 #[test]
 fn all_operator_effect_inputs_change_approval() {
-    let baseline = Options::parse(&args()).expect("plan").digest().expect("digest");
+    let baseline = Options::parse(&args())
+        .expect("plan")
+        .digest()
+        .expect("digest");
     for (key, value) in [
         ("--root", "/owner/private/another-archive"),
         ("--pins", "/owner/private/another-journal"),
@@ -72,10 +106,22 @@ fn all_operator_effect_inputs_change_approval() {
         ("--generation", "2"),
         ("--ingress", "2"),
         ("--ssrc", "8"),
-        ("--anchor", "sha256:5555555555555555555555555555555555555555555555555555555555555555"),
-        ("--receive-clock", "sha256:5555555555555555555555555555555555555555555555555555555555555555"),
-        ("--timing-evidence", "sha256:5555555555555555555555555555555555555555555555555555555555555555"),
-        ("--journal-id", "sha256:5555555555555555555555555555555555555555555555555555555555555555"),
+        (
+            "--anchor",
+            "sha256:5555555555555555555555555555555555555555555555555555555555555555",
+        ),
+        (
+            "--receive-clock",
+            "sha256:5555555555555555555555555555555555555555555555555555555555555555",
+        ),
+        (
+            "--timing-evidence",
+            "sha256:5555555555555555555555555555555555555555555555555555555555555555",
+        ),
+        (
+            "--journal-id",
+            "sha256:5555555555555555555555555555555555555555555555555555555555555555",
+        ),
         ("--frame-duration-ticks", "3000"),
         ("--stop-after-pictures", "3"),
         ("--principal", "principal:other"),
@@ -105,7 +151,10 @@ fn all_operator_effect_inputs_change_approval() {
 
 #[test]
 fn native_default_changes_cannot_reuse_an_approval() {
-    let original = Options::parse(&args()).expect("plan").digest().expect("digest");
+    let original = Options::parse(&args())
+        .expect("plan")
+        .digest()
+        .expect("digest");
     let mut changed = Options::parse(&args()).expect("plan");
     changed.media.syntax.max_reference_frames -= 1;
     assert_ne!(changed.digest().expect("digest"), original);
@@ -182,8 +231,14 @@ fn acknowledgements_unknown_options_and_duplicates_fail_closed() {
         ("--generation", "0"),
         ("--ingress", "0"),
         ("--ssrc", "4294967296"),
-        ("--journal-id", "sha256:0000000000000000000000000000000000000000000000000000000000000000"),
-        ("--timing-evidence", "blake3:1111111111111111111111111111111111111111111111111111111111111111"),
+        (
+            "--journal-id",
+            "sha256:0000000000000000000000000000000000000000000000000000000000000000",
+        ),
+        (
+            "--timing-evidence",
+            "blake3:1111111111111111111111111111111111111111111111111111111111111111",
+        ),
         ("--stop-after-pictures", "-1"),
         ("--frame-duration-ticks", "+3600"),
     ] {
@@ -232,13 +287,23 @@ fn timing_identity_binds_source_epoch_and_declared_cadence() {
         ("--ingress", "2"),
         ("--ssrc", "8"),
         ("--frame-duration-ticks", "3000"),
-        ("--receive-clock", "sha256:5555555555555555555555555555555555555555555555555555555555555555"),
-        ("--timing-evidence", "sha256:5555555555555555555555555555555555555555555555555555555555555555"),
+        (
+            "--receive-clock",
+            "sha256:5555555555555555555555555555555555555555555555555555555555555555",
+        ),
+        (
+            "--timing-evidence",
+            "sha256:5555555555555555555555555555555555555555555555555555555555555555",
+        ),
     ] {
         let mut input = args();
         set(&mut input, key, value);
         let next = Options::parse(&input).expect("other timing");
-        assert_ne!(first.archive.namespace.digest(), next.archive.namespace.digest(), "{key}");
+        assert_ne!(
+            first.archive.namespace.digest(),
+            next.archive.namespace.digest(),
+            "{key}"
+        );
         assert_ne!(
             first.archive.namespace.scope().decode_clock,
             next.archive.namespace.scope().decode_clock,
@@ -253,6 +318,69 @@ fn explicit_ipv6_authority_and_peer_are_supported_without_dns() {
     set(&mut input, "--peer", "[::1]:8554");
     set(&mut input, "--authority", "[::1]:8554");
     let plan = Options::parse(&input).expect("IPv6 loopback");
-    assert_eq!(plan.binding.peer(), "[::1]:8554".parse::<SocketAddr>().expect("address"));
+    assert_eq!(
+        plan.binding.peer(),
+        "[::1]:8554".parse::<SocketAddr>().expect("address")
+    );
     assert_eq!(plan.binding.authority(), "[::1]:8554");
+}
+
+#[test]
+fn full_width_ingress_is_preserved_in_binding_and_json_string() {
+    for ingress in [u128::from(u64::MAX) + 1, (1_u128 << 127) | 7, u128::MAX] {
+        let decimal = ingress.to_string();
+        let mut input = args();
+        set(&mut input, "--ingress", &decimal);
+        let plan = Options::parse(&input).expect("full native ingress width");
+        assert_eq!(plan.binding.key().ingress, ingress);
+        let preview = plan.preview().expect("exact preview");
+        assert!(preview.contains(&format!("\"ingress\":\"{decimal}\"")));
+        assert_eq!(preview.matches("\"ingress\":").count(), 1);
+    }
+}
+
+#[test]
+fn ingress_high_half_changes_approval_and_decode_clock() {
+    let baseline = Options::parse(&args()).expect("baseline");
+    let approval = baseline.digest().expect("baseline approval");
+    let clock = baseline.archive.namespace.scope().decode_clock;
+    let mut previous_approval = approval;
+    let mut previous_clock = clock;
+    for ingress in [(1_u128 << 64) | 1, (1_u128 << 127) | 1] {
+        let mut input = args();
+        set(&mut input, "--ingress", &ingress.to_string());
+        set(&mut input, "--approve", &approval.to_text());
+        let plan = Options::parse(&input).expect("distinct high half");
+        let changed_approval = plan.digest().expect("full width approval");
+        let changed_clock = plan.archive.namespace.scope().decode_clock;
+        assert_ne!(Some(changed_approval), plan.approve);
+        assert_ne!(changed_approval, previous_approval);
+        assert_ne!(changed_clock, clock);
+        assert_ne!(changed_clock, previous_clock);
+        assert_ne!(
+            plan.archive.namespace.digest(),
+            baseline.archive.namespace.digest()
+        );
+        previous_approval = changed_approval;
+        previous_clock = changed_clock;
+    }
+}
+
+#[test]
+fn ingress_refuses_overflow_zero_signs_and_nondecimal_input() {
+    for value in [
+        "340282366920938463463374607431768211456",
+        "0",
+        "-1",
+        "+1",
+        " 1",
+        "1 ",
+        "1_0",
+        "0x01",
+        "١",
+    ] {
+        let mut input = args();
+        set(&mut input, "--ingress", value);
+        assert!(Options::parse(&input).is_err(), "{value}");
+    }
 }

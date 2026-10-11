@@ -794,11 +794,8 @@ fn selected_payload_reaches_live_recording_and_preserves_original_rtp() -> TestR
                 .windows(original.len())
                 .any(|bytes| bytes == original)
         );
-        let verified = verify_recording(
-            window.manifest(),
-            window.objects(),
-            &window.summary().scope,
-        )?;
+        let verified =
+            verify_recording(window.manifest(), window.objects(), &window.summary().scope)?;
         assert_eq!(&verified, window.summary());
         assert!(f.driver.cancel().is_some());
     }
