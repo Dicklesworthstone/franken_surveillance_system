@@ -1471,7 +1471,8 @@ class TestSchemaConstitutionCrossReviewRegressions(unittest.TestCase):
         # 52 = 50 + fss.semantic_handle.v1 (owner SemanticHandle) and
         # fss.evidence_delta_batch.v1 (owner EvidenceDeltaBatch): typed SCHEMA constants
         # landed 2026-10-10 (fss-x4a.30.51/30.18 realization, camera-ingest lane).
-        self.assertEqual(result["implementedCount"], 52)
+        # 53 = 52 + fss.experiment_receipt.v1 (owner ExperimentReceipt, FSS-196/fss-x4a.26.16).
+        self.assertEqual(result["implementedCount"], 53)
 
         unreg_findings = [
             f for f in validator.findings

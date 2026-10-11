@@ -90,7 +90,7 @@ fn collect_rs_sources(dir: &Path, out: &mut Vec<PathBuf>) {
 #[test]
 fn rows_are_unique_canonical_and_complete() -> Result<(), Box<dyn Error>> {
     let rows = extract_schema_rows(SCHEMAS_MD)?;
-    assert_eq!(rows.len(), 83, "registry carries the full 83-row set");
+    assert_eq!(rows.len(), 84, "registry carries the full 84-row set (83 + SCHEMA-EXPERIMENT-RECEIPT-001, fss-x4a.26.16)");
     let mut ids = BTreeSet::new();
     let mut schemas = BTreeSet::new();
     for row in &rows {

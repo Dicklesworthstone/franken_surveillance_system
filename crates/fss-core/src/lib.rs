@@ -31,6 +31,7 @@ mod delta;
 mod digest;
 pub mod durable;
 pub mod effect;
+pub mod experiment;
 pub mod event;
 pub mod event_store;
 mod evidence;

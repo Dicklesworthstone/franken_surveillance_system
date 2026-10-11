@@ -1,0 +1,34 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://franken-surveillance-system.invalid/schemas/experiment_receipt.v1.json",
+  "title": "Experiment receipt v1",
+  "$comment": "Mirrors ExperimentReceipt in crates/fss-core/src/experiment.rs (pinned by crates/fss-core/tests/experiment_contract.rs). A/A divergence is a determinism alarm; indeterminate runs never compare.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schema", "experimentId", "kind", "runs", "comparison", "receiptDigest"],
+  "properties": {
+    "schema": {"const": "fss.experiment_receipt.v1"},
+    "experimentId": {"type": "string", "minLength": 1},
+    "kind": {"enum": ["aa", "ab"]},
+    "runs": {
+      "type": "array",
+      "minItems": 2,
+      "maxItems": 2,
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["runId", "binaryIdentity", "inputsDigest"],
+        "properties": {
+          "runId": {"type": "string", "minLength": 1},
+          "variantId": {"type": "string"},
+          "binaryIdentity": {"type": "string", "pattern": "^sha256:[0-9a-f]{64}$"},
+          "inputsDigest": {"type": "string", "pattern": "^sha256:[0-9a-f]{64}$"},
+          "scheduleSeed": {"type": "integer", "minimum": 0},
+          "outcomeDigest": {"type": "string", "pattern": "^sha256:[0-9a-f]{64}$"}
+        }
+      }
+    },
+    "comparison": {"enum": ["identical", "divergent", "indeterminate"]},
+    "receiptDigest": {"type": "string", "pattern": "^sha256:[0-9a-f]{64}$"}
+  }
+}
