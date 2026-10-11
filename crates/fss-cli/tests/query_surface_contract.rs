@@ -456,7 +456,7 @@ fn large_native_catalogue_paginates_across_cli_library_and_mcp_without_mutation(
             .all(|row| row.event.evidence.is_empty())
     );
     let before = tree(&fixture.root)?;
-    let mut continuation = None;
+    let mut continuation: Option<String> = None;
     let mut seen = BTreeMap::new();
     let mut pages = 0;
     loop {
