@@ -414,20 +414,11 @@ PY
 )"
   source_commit="git:$(git rev-parse HEAD 2>/dev/null || printf unknown00000000)"
   source_tree="git-tree:$(git rev-parse HEAD^{tree} 2>/dev/null || printf unknown00000000)"
-  if [[ -n "${FSS_DSR_SIBLING_CLOSURE_DIGEST:-}" ]]; then
-    sibling_digest="$FSS_DSR_SIBLING_CLOSURE_DIGEST"
-  else
-    sibling_digest="sha256:$(python3 - <<'PY'
-import hashlib
-import pathlib
-parts=[]
-for name in ["architecture/franken_imports.json", "architecture/dependency_allowlist.toml", "rust-toolchain.toml"]:
-    path=pathlib.Path(name)
-    parts.append(name.encode()+b"\0"+path.read_bytes())
-print(hashlib.sha256(b"\0".join(parts)).hexdigest())
-PY
-)"
-  fi
+    if [[ -n "${FSS_DSR_SIBLING_CLOSURE_DIGEST:-}" ]]; then
+      sibling_digest="$FSS_DSR_SIBLING_CLOSURE_DIGEST"
+    else
+      sibling_digest="$(python3 "$ROOT/scripts/sibling_closure.py" "$ROOT")"
+    fi
   host_digest="sha256:$(python3 - <<'PY'
 import hashlib
 import os
