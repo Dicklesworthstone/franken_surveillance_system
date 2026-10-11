@@ -27,7 +27,9 @@ use crate::agent_orient::{DeploymentSnapshot, RetainedEvent};
 /// The registered capability for this metadata-only reference read (not authentication).
 pub const CAPABILITY_QUERY: &str = "CAP-AGENT-QUERY-001";
 /// Hard bound on the complete index searched by one reference query.
-pub const MAX_QUERY_EVENTS: usize = 128;
+pub const MAX_QUERY_EVENTS: usize = crate::agent_orient::MAX_DEPLOYMENT_EVENTS;
+/// Maximum individually named targets in the existing query-plan schema.
+const MAX_INDIVIDUAL_QUERY_TARGETS: usize = 128;
 /// Hard bound on one page of event records.
 pub const MAX_QUERY_ENTRIES: u32 = 32;
 /// Default page size.
@@ -486,6 +488,17 @@ pub fn query_deployment(
         None,
     )
     .map_err(ContractBasisError::Contract)?;
+    // A plan describes the target scope, not an unbounded copy of the result set.
+    // Small selections retain their existing canonical plan and cursor identities.
+    // Larger selections name one exact scope; the witness below still binds every row.
+    let resolved_targets = if selected.len() <= MAX_INDIVIDUAL_QUERY_TARGETS {
+        selected
+            .iter()
+            .map(|row| row.event.event_id.as_str().to_owned())
+            .collect()
+    } else {
+        vec![format!("event-query:{suffix}")]
+    };
     let plan = AgentQueryPlan::compile(
         format!("query-plan:{suffix}"),
         mission_id.clone(),
@@ -496,10 +509,7 @@ pub fn query_deployment(
         vec!["taint:structured-operator-input".to_owned()],
         snapshot.anchor.clone(),
         request.filter.description(),
-        selected
-            .iter()
-            .map(|row| row.event.event_id.as_str().to_owned())
-            .collect(),
+        resolved_targets,
         vec!["event_revision".to_owned()],
         vec![CAPABILITY_QUERY.to_owned()],
         vec!["metadata_only".to_owned()],

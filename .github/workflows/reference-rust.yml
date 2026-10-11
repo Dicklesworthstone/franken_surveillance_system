@@ -34,6 +34,14 @@ jobs:
       - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
       - name: Provision pinned test toolchain
         run: rustup toolchain install nightly-2026-08-31 --profile minimal --component rustfmt --component clippy
+      - name: Verify exact continuation compatibility
+        run: rustup run nightly-2026-08-31 cargo test --locked --offline -p fss-core --lib continuation::tests
+      - name: Verify bounded event queries
+        run: rustup run nightly-2026-08-31 cargo test --locked --offline -p fss-reference --lib agent_query::tests
+      - name: Verify protected deployment orientation
+        run: rustup run nightly-2026-08-31 cargo test --locked --offline -p fss-reference --lib agent_orient::tests
+      - name: Verify query CLI, library and MCP parity
+        run: rustup run nightly-2026-08-31 cargo test --locked --offline -p fss-cli --test query_surface_contract
       - name: Compile and execute native reference contracts
         run: rustup run nightly-2026-08-31 cargo test --locked --offline --workspace --all-targets
       - name: Execute repository-owned Rust qualification lane

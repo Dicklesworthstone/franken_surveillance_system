@@ -246,6 +246,12 @@ impl AgentQueryPlan {
         self.operation
     }
 
+    /// Returns the bounded target identities or collection scopes selected by the plan.
+    #[must_use]
+    pub fn resolved_targets(&self) -> &[String] {
+        &self.resolved_targets
+    }
+
     /// Returns the enumerated interpretations.
     #[must_use]
     pub fn interpretations(&self) -> &[QueryInterpretation] {

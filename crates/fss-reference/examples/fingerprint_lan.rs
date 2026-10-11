@@ -55,7 +55,8 @@ fn main() {
             .get(&h.ip.to_string())
             .map(|v| v.iter().collect())
             .unwrap_or_default();
-        let c = classify_host(h, &refs);
+        // This example did not run a TUTK listener probe.
+        let c = classify_host(h, &refs, None);
         let d = dispatch(&c);
         *counts.entry(format!("{:?}", c.brand)).or_insert(0u32) += 1;
         if c.brand != Brand::Unknown {

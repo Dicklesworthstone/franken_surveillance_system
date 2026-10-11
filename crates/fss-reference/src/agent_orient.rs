@@ -27,9 +27,11 @@
 //! carries the per-event cells of its top-ranked events (and of every contradicted or tampered
 //! event) inline and summarizes the rest in [`CLAIM_EVENTS`], and every per-event world is
 //! aggregated into one world per kind that keeps the kind's maximum severity and protection
-//! (pulse folds them further into [`WORLD_PROTECTED_SUMMARY`]). Each published event keeps one
-//! stable, priced expansion slot in the compression receipt naming every world it hydrates, and
-//! [`explain_event`] is its H1 hydration.
+//! (pulse folds them further into [`WORLD_PROTECTED_SUMMARY`]). Through 128 events, each event
+//! keeps its original stable, priced H1 expansion slot. Larger bounded catalogues retain direct
+//! slots for inline and headline events and one exact-anchor, paginated metadata-query expansion
+//! for every event identity and H0 proof root. That inventory is not source or H1 hydration;
+//! subsequent explanations must still match its basis anchor.
 //!
 //! Every output is a pure function of the committed bytes: the capsule time is the latest
 //! committed evidence time, not the wall clock, so the same root yields identical output.
@@ -144,6 +146,11 @@ pub const WORLD_PROTECTED_SUMMARY: &str = "world:site:protected-worlds";
 pub const SOURCE_CLASS_EVENT_DETAIL: &str = "event_detail";
 /// Source-omission class of per-event worlds represented by per-kind aggregates.
 pub const SOURCE_CLASS_WORLD_DETAIL: &str = "protected_world_detail";
+/// Largest complete retained-event catalogue admitted by the deployment reader and projection.
+pub const MAX_DEPLOYMENT_EVENTS: usize = 4096;
+/// Legacy per-event expansion profile. Its bytes and identities remain unchanged through 128
+/// events; larger catalogues use an exact-anchor metadata inventory.
+pub const DIRECT_EVENT_EXPANSION_LIMIT: usize = 128;
 
 /// Bounds applied while reading one deployment root.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -166,7 +173,7 @@ impl Default for OrientLimits {
             max_layout_bytes: crate::doctor::MAX_LAYOUT_BYTES,
             max_journal_bytes: 64 * 1024 * 1024,
             max_object_bytes: 16 * 1024 * 1024,
-            max_events: 128,
+            max_events: MAX_DEPLOYMENT_EVENTS,
             max_revisions_per_event: 64,
         }
     }
@@ -820,6 +827,15 @@ impl DeploymentHistory {
         }
 
         let limits = &self.limits;
+        if event_deltas.len() > limits.max_events.min(MAX_DEPLOYMENT_EVENTS) {
+            return Err(DeploymentReadError::Unreadable {
+                reason: format!(
+                    "complete event catalogue has {} events, above the read bound {}",
+                    event_deltas.len(),
+                    limits.max_events.min(MAX_DEPLOYMENT_EVENTS)
+                ),
+            });
+        }
         let objects = &self.objects;
         // Deletion records are read from the whole committed history: bytes a later deletion
         // removed are `deleted` at every position, never read back as corrupt or missing.
@@ -1930,7 +1946,13 @@ fn compile_capsule(
                     )
                 }
             ),
-            if snapshot.completed_imports.is_empty() {
+            if snapshot.completed_imports.is_empty()
+                || planned.len() > DIRECT_EVENT_EXPANSION_LIMIT
+            {
+                // The retained-import count is replay-derived metadata. The complete ledger
+                // prefix binds all imports and later deletions; listing every import payload
+                // would exceed the large-catalogue projection's fixed context budget.
+                // This does not advertise import identity or source-byte hydration.
                 vec![ledger_evidence]
             } else {
                 snapshot.completed_imports.clone()
@@ -2038,7 +2060,8 @@ fn compile_capsule(
 
     if heartbeat && !planned.is_empty() {
         // The heartbeat folds every protected world into one summary world; the per-kind worlds
-        // are inline in brief, and every per-event world hydrates through its event's handle.
+        // are inline in brief. Source omissions retain direct event handles or the exact-anchor
+        // metadata inventory with separate, basis-checked explanations.
         let severity = alternatives
             .iter()
             .chain(&residuals)
@@ -2132,10 +2155,17 @@ fn compile_capsule(
                 })
                 .map(|cell| cell.claim_id().to_owned()),
         );
-        // Every event's committed roots stay proof pointers; per-edge evidence joins only for
-        // inline events (the rest hydrates through the event's handle).
-        proof_roots.insert(event.retained.event_root);
-        proof_roots.insert(event.retained.revision_digest);
+        // Legacy projections retain every event root individually. Larger complete catalogues
+        // cite the event-bearing ledger record root (which chains all preceding revisions) and
+        // expose every individual root through an exact-anchor query. Inline and headline
+        // events retain direct proof roots; no conflict or tamper detail is grouped away.
+        if planned.len() <= DIRECT_EVENT_EXPANSION_LIMIT
+            || event.inline
+            || headline.is_some_and(|top| top.id() == event.id())
+        {
+            proof_roots.insert(event.retained.event_root);
+            proof_roots.insert(event.retained.revision_digest);
+        }
         if !event.inline {
             continue;
         }
@@ -2482,6 +2512,8 @@ fn compile_capsule(
         None
     };
     let mut source = source_omissions(
+        snapshot,
+        request,
         &planned,
         &hydration,
         aggregated_world_count,
@@ -2745,8 +2777,10 @@ fn event_hydration(
         .collect()
 }
 
-/// What this view compiled out at the source, and the priced handle of every event.
+/// What this view compiled out at the source, and its bounded, priced expansion paths.
 fn source_omissions(
+    snapshot: &DeploymentSnapshot,
+    request: &OrientRequest,
     planned: &[PlannedEvent<'_>],
     hydration: &[EventHydration],
     aggregated_worlds: usize,
@@ -2756,6 +2790,13 @@ fn source_omissions(
     if planned.is_empty() {
         return SourceOmissions::default();
     }
+    let grouped = planned.len() > DIRECT_EVENT_EXPANSION_LIMIT;
+    let expansion = if grouped {
+        "the exact-anchor paginated metadata inventory enumerates every event identity and H0 \
+         proof root; separate H1 explanations must be checked against the returned inventory anchor"
+    } else {
+        "each event's cells hydrate through its handle"
+    };
     let mut omissions = Vec::new();
     let summarized = planned.iter().filter(|event| !event.inline).count();
     if summarized > 0 {
@@ -2768,8 +2809,7 @@ fn source_omissions(
                 loss_class: CompressionLossClass::DecisionPreserving,
                 details: Some(format!(
                     "{summarized} of {} events are summarized by {CLAIM_EVENTS} and the \
-                     per-state epistemic boundaries; each event's cells hydrate through its \
-                     handle.",
+                     per-state epistemic boundaries; {expansion}.",
                     planned.len()
                 )),
             },
@@ -2784,7 +2824,19 @@ fn source_omissions(
             kind: CompressionTransformKind::Aggregate,
             scope: "per-event possible worlds".to_owned(),
             loss_class: CompressionLossClass::DecisionPreserving,
-            details: Some(if folded {
+            details: Some(if grouped && folded {
+                format!(
+                    "{aggregated_worlds} per-event worlds and {WORLD_UNOBSERVED_ACTIVITY} are \
+                     folded into {WORLD_PROTECTED_SUMMARY}, keeping the maximum severity and \
+                     protection; {expansion}."
+                )
+            } else if grouped {
+                format!(
+                    "{aggregated_worlds} per-event worlds are aggregated into {world_classes} \
+                     class worlds keeping each class's maximum severity and protection; \
+                     {expansion}."
+                )
+            } else if folded {
                 format!(
                     "{aggregated_worlds} per-event worlds and {WORLD_UNOBSERVED_ACTIVITY} are \
                      folded into {WORLD_PROTECTED_SUMMARY}, keeping the maximum severity and \
@@ -2801,7 +2853,9 @@ fn source_omissions(
     });
     let mut handles: Vec<ExpansionHandle> = hydration
         .iter()
-        .map(|slot| ExpansionHandle {
+        .enumerate()
+        .filter(|(rank, slot)| !grouped || *rank == 0 || slot.cells_inline)
+        .map(|(_, slot)| ExpansionHandle {
             handle: slot.handle.clone(),
             purpose: format!(
                 "H1 synopsis of {} (`fss explain --event-id {}`): knowledge cells and worlds {}.",
@@ -2812,6 +2866,32 @@ fn source_omissions(
             estimated_cost: slot.synopsis_cost,
         })
         .collect();
+    if grouped {
+        let anchor = crate::agent_follow::snapshot_anchor_token(snapshot);
+        let site = short_identity(ContentDigest::sha256(snapshot.site_lineage.as_bytes()));
+        // This registered resource shape labels the exact scope. The explicit CLI command is
+        // its expansion path; no URI dispatcher, source-byte read or automatic H1 is claimed.
+        handles.push(ExpansionHandle {
+            handle: format!("fss://deployment/{site}/anchor/{anchor}"),
+            purpose: format!(
+                "Exact metadata inventory of all {} events and H0 proof roots; every per-event \
+                 world belongs to an inventoried event. The estimated cost is per metadata page. \
+                 At the SAME root run `fss query --json --root ROOT \
+                 --principal {} --anchor {anchor} --max-entries 32` without filters; repeat \
+                 with returned --continuation until exhausted. This is metadata, not H1/source \
+                 hydration. For separate `fss explain --event-id ID` results, compare their \
+                 returned anchor to this inventory anchor; if changed, obtain a new inventory.",
+                planned.len(),
+                request.principal.as_str(),
+            ),
+            estimated_cost: BudgetVector {
+                tokens: u64::from(AgentView::Case.maximum_tokens()),
+                bytes: snapshot.bytes_read,
+                storage_operations: snapshot.files_read,
+                ..BudgetVector::ZERO
+            },
+        });
+    }
     handles.extend(folded_worlds);
     SourceOmissions { omissions, handles }
 }
@@ -3336,8 +3416,9 @@ fn is_budget_refusal(error: &ReferenceError) -> bool {
 /// consequence; the view carries the per-event cells of its top-ranked events (and of every event
 /// with contradicting evidence or open tamper) inline, summarizes the rest, and aggregates every
 /// per-event world into one world per kind that keeps the kind's maximum severity and protection.
-/// Each event keeps a priced hydration handle in the compression receipt. The critical context
-/// (protected worlds, epistemic boundaries, risks, obligations, next and blocked affordances) is
+/// The compression receipt keeps priced event or exact-anchor inventory expansion paths.
+/// Critical context (protected worlds, epistemic boundaries, risks, obligations, next and
+/// blocked affordances) is
 /// never truncated: if it does not fit the admitted budget the orientation is refused with
 /// [`OrientError::ContextBudgetExceeded`].
 pub fn orient_deployment(
@@ -3444,10 +3525,10 @@ pub fn orient_deployment_for(
     ) {
         return Err(OrientError::UnsupportedView(request.view));
     }
-    if snapshot.events.len() > limits.max_events {
+    if snapshot.events.len() > limits.max_events.min(MAX_DEPLOYMENT_EVENTS) {
         return Err(OrientError::TooManyEvents {
             published: snapshot.events.len(),
-            maximum: limits.max_events,
+            maximum: limits.max_events.min(MAX_DEPLOYMENT_EVENTS),
         });
     }
     let cases = session.map_or(&[][..], |binding| binding.cases.as_slice());
@@ -3537,9 +3618,15 @@ pub fn orient_deployment_for(
         .filter(|slot| !slot.cells_inline)
         .count();
     if !compiled.hydration.is_empty() {
+        let expansion = if compiled.hydration.len() > DIRECT_EVENT_EXPANSION_LIMIT {
+            "the receipted exact-anchor metadata inventory enumerates every event, and separate \
+             explanations must match that inventory anchor"
+        } else {
+            "each event hydrates through its receipted handle"
+        };
         degradation.push(format!(
             "{} per-event worlds are aggregated into class worlds and {summarized} of {} events \
-             are summarized; each event hydrates through its receipted handle.",
+             are summarized; {expansion}.",
             compiled.aggregated_world_count,
             compiled.hydration.len()
         ));

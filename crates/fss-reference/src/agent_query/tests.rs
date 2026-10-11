@@ -400,3 +400,80 @@ fn limits_are_checked_before_filtering_and_expiry_overflow_is_refused() -> TestR
     ));
     Ok(())
 }
+
+#[test]
+fn large_selection_uses_one_scope_and_delivers_every_exact_record() -> TestResult {
+    let (_directory, snapshot) = fixture("large-pages", 257)?;
+    let mut request = request(MAX_QUERY_ENTRIES)?;
+    let first = query_deployment(&snapshot, &request)?;
+    assert_eq!(first.plan.resolved_targets().len(), 1);
+    assert!(first.plan.resolved_targets()[0].starts_with("event-query:"));
+    request.expected_anchor = AnchorToken::parse(&first.anchor_token);
+    let mut seen = Vec::new();
+    let mut page = first.clone();
+    loop {
+        assert_eq!(page, query_deployment(&snapshot, &request)?);
+        assert_eq!(page.plan, first.plan);
+        assert_eq!(page.selection_witness, first.selection_witness);
+        assert_eq!(page.scanned_events, 257);
+        assert_eq!(page.matched_events, 257);
+        assert_eq!(page.cursor.position as usize, seen.len());
+        assert!(page.events.len() <= MAX_QUERY_ENTRIES as usize);
+        seen.extend(page.events.iter().map(|row| row.event.event_id.clone()));
+        assert_eq!(page.remaining_events(), 257 - seen.len());
+        match &page.page.next_cursor {
+            Some(next) => {
+                assert_eq!(next.predecessor_digest, Some(page.cursor.cursor_digest));
+                request.continuation = Some(next.token().to_owned());
+                page = query_deployment(&snapshot, &request)?;
+            }
+            None => break,
+        }
+    }
+    assert_eq!(
+        seen,
+        snapshot
+            .events
+            .iter()
+            .map(|row| row.event.event_id.clone())
+            .collect::<Vec<_>>()
+    );
+    assert_eq!(page.coverage().stop_reason, "committed_index_exhausted");
+    assert_eq!(
+        page.epistemic().propositions[1].state,
+        KnowledgeState::Unknown
+    );
+    Ok(())
+}
+
+#[test]
+fn query_target_bounds_preserve_small_plans_and_admit_the_complete_index() -> TestResult {
+    for count in [0, MAX_INDIVIDUAL_QUERY_TARGETS, 129, MAX_QUERY_EVENTS] {
+        let (_directory, snapshot) = fixture("scope-bound", count)?;
+        let query = query_deployment(&snapshot, &request(MAX_QUERY_ENTRIES)?)?;
+        assert_eq!(query.scanned_events, count);
+        assert_eq!(query.matched_events, count);
+        if count <= MAX_INDIVIDUAL_QUERY_TARGETS {
+            assert_eq!(
+                query.plan.resolved_targets(),
+                snapshot
+                    .events
+                    .iter()
+                    .map(|row| row.event.event_id.as_str().to_owned())
+                    .collect::<Vec<_>>()
+            );
+        } else {
+            assert_eq!(query.plan.resolved_targets().len(), 1);
+            let suffix = query
+                .plan
+                .query_plan_id()
+                .strip_prefix("query-plan:")
+                .ok_or("query plan identity")?;
+            assert_eq!(
+                query.plan.resolved_targets(),
+                &[format!("event-query:{suffix}")]
+            );
+        }
+    }
+    Ok(())
+}

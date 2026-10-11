@@ -489,3 +489,398 @@ fn source_domains_are_covered_stale_or_not_observable_with_exact_operator_text()
     fs::remove_dir_all(&root)?;
     Ok(())
 }
+
+/// These compiler fixtures add explicitly synthetic event rows to an empty verified
+/// deployment. They make no claim that a sensor observed or published these hypotheses.
+fn synthetic_catalogue(
+    tag: &str,
+    count: usize,
+) -> Result<(PathBuf, super::DeploymentSnapshot), Box<dyn Error>> {
+    let root = empty_deployment(tag)?;
+    let mut snapshot = read_deployment(&root, &OrientLimits::default())?;
+    snapshot.latest_evidence_time = TimestampNs(100);
+    snapshot.event_ledger_root = Some(ContentDigest::sha256(b"synthetic-event-ledger"));
+    for index in 0..count {
+        snapshot.events.push(synthetic_event(index)?);
+    }
+    Ok((root, snapshot))
+}
+
+fn synthetic_event(index: usize) -> Result<super::RetainedEvent, Box<dyn Error>> {
+    use fss_core::{DecisionPath, EventHypothesis, EventKind, EventState, ProbabilityInterval};
+
+    let event = EventHypothesis {
+        schema: EventHypothesis::SCHEMA.to_owned(),
+        event_id: EventId::parse(format!("event:orient-scale:{index:04}"))?,
+        revision: 1,
+        supersedes: None,
+        state: EventState::Hypothesized,
+        kind: EventKind::UnknownPresence,
+        interval: CaptureInterval::new(TimestampNs(10), TimestampNs(20))?,
+        uncertainty_reason: None,
+        zone_ids: vec!["door".to_owned()],
+        track_ids: Vec::new(),
+        probability: ProbabilityInterval::new(0.0, 1.0)?,
+        evidence: Vec::new(),
+        model_receipts: Vec::new(),
+        decision_path: DecisionPath {
+            policy_generation: ContentDigest::sha256(b"orient-scale-policy"),
+            fingerprint: ContentDigest::sha256(b"orient-scale-hypothesis"),
+            abstained: true,
+            abstention_reason: Some("synthetic hypothesis only".to_owned()),
+        },
+    };
+    event.verify()?;
+    Ok(super::RetainedEvent {
+        revisions: vec![event.clone()],
+        event_root: ContentDigest::sha256(format!("orient-root-{index}").as_bytes()),
+        revision_digest: event.canonical_digest(EventHypothesis::SCHEMA),
+        committed_sequence: 0,
+        tamper: fss_core::SensorTamperStatus::default(),
+        object_bytes: 100,
+        object_reads: 1,
+        event,
+    })
+}
+
+#[test]
+fn large_catalogue_preserves_all_worlds_with_bounded_projection() -> TestResult {
+    let (root, mut snapshot) = synthetic_catalogue("large", super::MAX_DEPLOYMENT_EVENTS)?;
+    // A large import catalogue must not reintroduce one proof pointer per import into
+    // the fixed-size projection; its retained count is a ledger-derived metadata fact.
+    snapshot.completed_imports = (0..super::MAX_DEPLOYMENT_EVENTS)
+        .map(|index| ContentDigest::sha256(format!("synthetic-import-{index}").as_bytes()))
+        .collect();
+    let limits = OrientLimits::default();
+    assert_eq!(limits.max_events, 4096);
+    let orient_request = request(AgentView::Brief)?;
+    let orientation = orient_deployment(&snapshot, &orient_request, &limits)?;
+    orientation.publication.verify()?;
+    orientation.capsule().validate()?;
+    assert_eq!(orientation.hydration.len(), super::MAX_DEPLOYMENT_EVENTS);
+    assert_eq!(
+        orientation.aggregated_world_count,
+        orientation
+            .hydration
+            .iter()
+            .map(|slot| slot.world_ids.len())
+            .sum::<usize>()
+    );
+    assert!(
+        orientation
+            .hydration
+            .iter()
+            .all(|slot| slot.physical_state != KnowledgeState::Known)
+    );
+    assert!(orientation.capsule().frame.evidence_handles.len() < 32);
+    let receipt = &orientation.publication.compression_receipt;
+    assert!(
+        receipt.expansion_handles.len()
+            <= fss_core::SemanticCompressionReceipt::MAX_EXPANSION_HANDLES
+    );
+    assert_eq!(
+        receipt
+            .expansion_handles
+            .iter()
+            .filter(|handle| handle.handle.starts_with("fss://event/"))
+            .count(),
+        1
+    );
+    let imports = orientation
+        .capsule()
+        .frame
+        .knowledge_cells
+        .iter()
+        .find(|cell| cell.claim_id() == super::CLAIM_IMPORTS)
+        .ok_or("imports cell missing")?;
+    assert!(imports.statement().contains("4096 completed file imports"));
+    assert_eq!(imports.evidence_digests(), vec![snapshot.anchor.state_root]);
+    assert!(orientation.capsule().obligations.is_empty());
+    assert!(
+        orientation
+            .capsule()
+            .frame
+            .knowledge_cells
+            .iter()
+            .all(|cell| !cell.is_irreversible_effect_premise(snapshot.latest_evidence_time))
+    );
+
+    // Consequence ranking, aggregate membership and publication identity do not depend
+    // on the caller's in-memory event ordering.
+    snapshot.events.reverse();
+    let replay = orient_deployment(&snapshot, &orient_request, &limits)?;
+    assert_eq!(
+        orientation.publication.publication_digest,
+        replay.publication.publication_digest
+    );
+    fs::remove_dir_all(&root)?;
+    Ok(())
+}
+
+#[test]
+fn direct_expansion_profile_is_preserved_through_128_events() -> TestResult {
+    let (root, mut snapshot) = synthetic_catalogue("boundary", 128)?;
+    let orient_request = request(AgentView::Brief)?;
+    let legacy = super::compile_capsule(&snapshot, &orient_request, &[], &[], &[], &[])?;
+    assert_eq!(legacy.source.handles.len(), 128);
+    assert!(
+        legacy
+            .source
+            .handles
+            .iter()
+            .all(|handle| handle.handle.starts_with("fss://event/"))
+    );
+    for event in &snapshot.events {
+        assert!(legacy.proof_roots.contains(&event.event_root));
+        assert!(legacy.proof_roots.contains(&event.revision_digest));
+    }
+    let detail = legacy
+        .source
+        .omissions
+        .iter()
+        .find(|omission| omission.class == super::SOURCE_CLASS_EVENT_DETAIL)
+        .and_then(|omission| omission.transform.details.as_deref())
+        .ok_or("legacy event omission missing")?;
+    assert_eq!(
+        detail,
+        "128 of 128 events are summarized by claim:deployment:events and the \
+         per-state epistemic boundaries; each event's cells hydrate through its handle."
+    );
+
+    snapshot.events.push(synthetic_event(128)?);
+    let grouped = super::compile_capsule(&snapshot, &orient_request, &[], &[], &[], &[])?;
+    assert_eq!(grouped.hydration.len(), 129);
+    assert_eq!(grouped.source.handles.len(), 2);
+    assert!(grouped.proof_roots.len() < legacy.proof_roots.len());
+    assert_eq!(
+        grouped.aggregated_world_count,
+        legacy.aggregated_world_count + grouped.hydration[128].world_ids.len()
+    );
+    fs::remove_dir_all(&root)?;
+    Ok(())
+}
+
+#[test]
+fn grouped_inventory_enumerates_every_exact_event_root_and_reaches_explanation() -> TestResult {
+    use crate::agent_follow::{AnchorToken, snapshot_anchor_token};
+    use crate::agent_query::{EventQueryFilter, EventQueryRequest, query_deployment};
+
+    let (root, snapshot) = synthetic_catalogue("inventory", 257)?;
+    let mut orient_request = request(AgentView::Brief)?;
+    // The portable stable-ID bound admits 128 characters and refuses 129.
+    orient_request.principal = PrincipalId::parse("p".repeat(128))?;
+    assert!(PrincipalId::parse("p".repeat(129)).is_err());
+    let orientation = orient_deployment(&snapshot, &orient_request, &OrientLimits::default())?;
+    let anchor = snapshot_anchor_token(&snapshot);
+    let inventory = orientation
+        .publication
+        .compression_receipt
+        .expansion_handles
+        .iter()
+        .find(|handle| handle.handle.ends_with(&format!("/anchor/{anchor}")))
+        .ok_or("exact-anchor inventory missing")?;
+    assert!(inventory.handle.len() <= 256);
+    assert!(inventory.purpose.len() <= 1024);
+    assert!(inventory.purpose.contains("--max-entries 32"));
+    assert!(inventory.purpose.contains("estimated cost is per metadata page"));
+    assert!(inventory.purpose.contains(orient_request.principal.as_str()));
+    assert!(inventory.purpose.contains("metadata, not H1/source hydration"));
+    let mut query_request = EventQueryRequest {
+        filter: EventQueryFilter::default(),
+        principal: orient_request.principal.clone(),
+        max_entries: 32,
+        expected_anchor: Some(AnchorToken::parse(&anchor).ok_or("invalid emitted anchor")?),
+        continuation: None,
+    };
+    let mut roots = BTreeMap::new();
+    loop {
+        let page = query_deployment(&snapshot, &query_request)?;
+        assert_eq!(page.anchor_token, anchor);
+        for row in &page.events {
+            assert!(
+                roots
+                    .insert(
+                        row.event.event_id.clone(),
+                        (row.event_root, row.revision_digest)
+                    )
+                    .is_none()
+            );
+        }
+        match &page.page.next_cursor {
+            Some(next) => query_request.continuation = Some(next.token().to_owned()),
+            None => break,
+        }
+    }
+    assert_eq!(roots.len(), snapshot.events.len());
+    for row in &snapshot.events {
+        assert_eq!(
+            roots.get(&row.event.event_id),
+            Some(&(row.event_root, row.revision_digest))
+        );
+    }
+    let last = snapshot.events.last().ok_or("last event missing")?;
+    let explanation = explain_event(&snapshot, &orientation, &last.event.event_id)?
+        .ok_or("inventory event cannot be explained")?;
+    assert_eq!(explanation.hydration.event_id, last.event.event_id);
+    assert_eq!(explanation.hydration.revision_digest, last.revision_digest);
+
+    let mut changed = snapshot.clone();
+    changed.effect_journal_root = ContentDigest::sha256(b"later-effect-record");
+    assert!(matches!(
+        query_deployment(&changed, &query_request),
+        Err(crate::agent_query::QueryError::AnchorChanged)
+    ));
+    fs::remove_dir_all(&root)?;
+    Ok(())
+}
+
+fn add_synthetic_edge(
+    row: &mut super::RetainedEvent,
+    relation: fss_core::EvidenceEdgeRelation,
+) -> Result<ContentDigest, Box<dyn Error>> {
+    let digest = ContentDigest::sha256(
+        format!("synthetic-{}-{}", relation.as_str(), row.event.event_id).as_bytes(),
+    );
+    row.event.evidence.push(fss_core::EventEvidence {
+        digest,
+        class: fss_core::EvidenceClass::Derived,
+        failure_domain: "sensor:scale-risk".to_owned(),
+        supports: false,
+        relation,
+        capsule_digest: None,
+        identity_digest: None,
+    });
+    row.event.verify()?;
+    row.revisions = vec![row.event.clone()];
+    row.revision_digest = row.event.canonical_digest(fss_core::EventHypothesis::SCHEMA);
+    row.tamper = fss_core::event::compute_sensor_tamper_status(row.revisions.iter(), None);
+    Ok(digest)
+}
+
+#[test]
+fn late_conflicts_and_tamper_remain_inline_and_never_disappear_into_inventory() -> TestResult {
+    use fss_core::EvidenceEdgeRelation;
+
+    let (root, mut snapshot) = synthetic_catalogue("protected", 258)?;
+    let contradiction = add_synthetic_edge(
+        &mut snapshot.events[256],
+        EvidenceEdgeRelation::Contradicts,
+    )?;
+    let tamper = add_synthetic_edge(&mut snapshot.events[257], EvidenceEdgeRelation::SensorTamper)?;
+    let compiled =
+        super::compile_capsule(&snapshot, &request(AgentView::Brief)?, &[], &[], &[], &[])?;
+    for row in &snapshot.events[256..] {
+        let slot = compiled
+            .hydration
+            .iter()
+            .find(|slot| slot.event_id == row.event.event_id)
+            .ok_or("protected hydration slot missing")?;
+        assert!(slot.cells_inline);
+        assert!(
+            compiled
+                .source
+                .handles
+                .iter()
+                .any(|handle| handle.handle == slot.handle)
+        );
+        assert!(compiled.proof_roots.contains(&row.event_root));
+        assert!(compiled.proof_roots.contains(&row.revision_digest));
+    }
+    assert!(compiled.proof_roots.contains(&contradiction));
+    assert!(compiled.proof_roots.contains(&tamper));
+    assert!(
+        compiled
+            .capsule
+            .frame
+            .knowledge_cells
+            .iter()
+            .any(|cell| cell.contradictions().contains(&contradiction))
+    );
+    assert!(
+        compiled
+            .capsule
+            .frame
+            .world_envelope
+            .adversarial_residuals
+            .iter()
+            .any(|world| world.world_id.ends_with("sensor-tamper")
+                && world.protected
+                && world.consequence_severity == 5)
+    );
+
+    for row in &mut snapshot.events {
+        if !row.tamper.has_open_tamper() {
+            add_synthetic_edge(row, EvidenceEdgeRelation::SensorTamper)?;
+        }
+    }
+    let planned = super::planned_events(&snapshot, AgentView::Brief)?;
+    assert!(planned.iter().all(|event| event.inline));
+    // The fixed token budget and 256-handle receipt bound still refuse overload.
+    assert!(
+        orient_deployment(&snapshot, &request(AgentView::Brief)?, &OrientLimits::default())
+            .is_err()
+    );
+    fs::remove_dir_all(&root)?;
+    Ok(())
+}
+
+#[test]
+fn deployment_event_bound_cannot_be_bypassed_by_custom_limits() -> TestResult {
+    let (root, snapshot) = synthetic_catalogue("over-bound", super::MAX_DEPLOYMENT_EVENTS + 1)?;
+    let limits = OrientLimits {
+        max_events: usize::MAX,
+        ..OrientLimits::default()
+    };
+    assert!(matches!(
+        orient_deployment(&snapshot, &request(AgentView::Brief)?, &limits),
+        Err(OrientError::TooManyEvents {
+            published: 4097,
+            maximum: 4096
+        })
+    ));
+    fs::remove_dir_all(&root)?;
+    Ok(())
+}
+
+#[test]
+fn reader_refuses_event_count_before_attempting_event_object_hydration() -> TestResult {
+    let root = empty_deployment("reader-bound")?;
+    let authority = ContextAuthority::new_root(RootAuthoritySpec {
+        trace_id: "trace:orient-reader-bound".to_owned(),
+        operation_id: OperationId::parse("operation:orient-reader-bound")?,
+        principal: "operator:orient-reader-bound".to_owned(),
+        capabilities: vec![ADP_REPLAY_ROW_ID.to_owned()],
+        deadline: None,
+        priority: 10,
+        budgets: BudgetVector::default(),
+        privacy_scope: "privacy:internal".to_owned(),
+        retention_scope: "retention:ephemeral".to_owned(),
+        anchor_universe: ContentDigest::sha256(b"orient-reader-bound"),
+        generation: 1,
+    })?;
+    let cx = ReplayCx::new(ReplayIoAuthority::from_context_authority(
+        &authority,
+        root.join("reader-bound-cx"),
+    )?);
+    let mut deployment = ReferenceDeployment::open(&root, "site:orient-unit", &cx)?;
+    deployment.publish_event(
+        &crate::ReferencePolicyDecision {
+            event: synthetic_event(0)?.event,
+            action: crate::ReferencePolicyAction::Hold,
+        },
+        &cx,
+    )?;
+    drop(deployment);
+    let limits = OrientLimits {
+        max_events: 0,
+        max_object_bytes: 0,
+        ..OrientLimits::default()
+    };
+    assert!(matches!(
+        read_deployment(&root, &limits),
+        Err(DeploymentReadError::Unreadable { reason })
+            if reason == "complete event catalogue has 1 events, above the read bound 0"
+    ));
+    fs::remove_dir_all(&root)?;
+    Ok(())
+}

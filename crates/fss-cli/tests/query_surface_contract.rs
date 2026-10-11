@@ -11,10 +11,16 @@ use std::path::{Path, PathBuf};
 use std::process::{Command, Output, Stdio};
 
 use fss_cli::{ExitIdentity, escape_json_str, execute_fss_with_exit, parse_fss_args};
-use fss_core::{BudgetVector, ContentDigest, ContextAuthority, OperationId, RootAuthoritySpec};
+use fss_core::{
+    BudgetVector, CaptureInterval, ContentDigest, ContextAuthority, DecisionPath, EventHypothesis,
+    EventId, EventKind, EventState, OperationId, ProbabilityInterval, RootAuthoritySpec, TimestampNs,
+};
 use fss_reference::agent_orient::{OrientLimits, read_deployment};
 use fss_reference::media_fixture::jpeg::{JpegConfig, Subsampling, encode_jpeg};
-use fss_reference::{ADP_REPLAY_ROW_ID, ReferenceDeployment, ReplayCx, ReplayIoAuthority};
+use fss_reference::{
+    ADP_REPLAY_ROW_ID, ReferenceDeployment, ReferencePolicyAction, ReferencePolicyDecision, ReplayCx,
+    ReplayIoAuthority,
+};
 
 type TestResult<T = ()> = Result<T, Box<dyn Error>>;
 const SITE: &str = "site:query-surface";
@@ -64,6 +70,63 @@ impl Fixture {
             }
         }
         Err("query fixture directory capacity".into())
+    }
+
+    // Exercise native custody and every read surface with explicitly synthetic hypotheses.
+    // No sensor observations, coverage, calibrated detections or effect authority are claimed.
+    fn publish_hypotheses(&self, count: usize) -> TestResult<Vec<String>> {
+        let authority = ContextAuthority::new_root(RootAuthoritySpec {
+            trace_id: "trace:query-catalogue".to_owned(),
+            operation_id: OperationId::parse("operation:query-catalogue")?,
+            principal: "operator:query-catalogue".to_owned(),
+            capabilities: vec![ADP_REPLAY_ROW_ID.to_owned()],
+            deadline: None,
+            priority: 10,
+            budgets: BudgetVector::default(),
+            privacy_scope: "privacy:internal".to_owned(),
+            retention_scope: "retention:ephemeral".to_owned(),
+            anchor_universe: ContentDigest::sha256(b"query-catalogue"),
+            generation: 1,
+        })?;
+        let cx = ReplayCx::new(ReplayIoAuthority::from_context_authority(
+            &authority,
+            self.directory.join("catalogue-cx"),
+        )?);
+        let mut deployment = ReferenceDeployment::open(&self.root, SITE, &cx)?;
+        let mut ids = Vec::new();
+        for index in 0..count {
+            let event = EventHypothesis {
+                schema: EventHypothesis::SCHEMA.to_owned(),
+                event_id: EventId::parse(format!("event:query-catalogue:{index:04}"))?,
+                revision: 1,
+                supersedes: None,
+                state: EventState::Hypothesized,
+                kind: EventKind::UnknownPresence,
+                interval: CaptureInterval::new(TimestampNs(10), TimestampNs(20))?,
+                uncertainty_reason: None,
+                zone_ids: vec!["door".to_owned()],
+                track_ids: Vec::new(),
+                probability: ProbabilityInterval::new(0.0, 1.0)?,
+                evidence: Vec::new(),
+                model_receipts: Vec::new(),
+                decision_path: DecisionPath {
+                    policy_generation: ContentDigest::sha256(b"query-catalogue-policy"),
+                    fingerprint: ContentDigest::sha256(b"query-catalogue-hypothesis"),
+                    abstained: true,
+                    abstention_reason: Some("synthetic hypothesis only".to_owned()),
+                },
+            };
+            event.verify()?;
+            ids.push(event.event_id.as_str().to_owned());
+            deployment.publish_event(
+                &ReferencePolicyDecision {
+                    event,
+                    action: ReferencePolicyAction::Hold,
+                },
+                &cx,
+            )?;
+        }
+        Ok(ids)
     }
 
     fn publish(&self, sensor: &str) -> TestResult<String> {
@@ -375,6 +438,61 @@ fn published_recordings_query_exactly_and_paginate_without_changing_custody() ->
     assert_eq!(empty.1, ExitIdentity::SUCCESS);
     assert!(!empty.0.contains(&format!("\"id\":{}", quote(&first_id))));
     assert!(empty.0.contains("claim:query:physical-absence"));
+    assert_eq!(tree(&fixture.root)?, before);
+    Ok(())
+}
+
+#[test]
+fn large_native_catalogue_paginates_across_cli_library_and_mcp_without_mutation() -> TestResult {
+    let fixture = Fixture::new("large-catalogue")?;
+    let ids = fixture.publish_hypotheses(257)?;
+    let snapshot = read_deployment(&fixture.root, &OrientLimits::default())?;
+    assert_eq!(snapshot.events.len(), ids.len());
+    assert!(snapshot.events.iter().all(|row| row.event.evidence.is_empty()));
+    let before = tree(&fixture.root)?;
+    let mut continuation = None;
+    let mut seen = BTreeMap::new();
+    let mut pages = 0;
+    loop {
+        let mut extra = vec!["--max-entries", "32"];
+        if let Some(token) = continuation.as_deref() {
+            extra.extend(["--continuation", token]);
+        }
+        let answer = query(&fixture.root, &extra)?;
+        assert_eq!(answer.1, ExitIdentity::SUCCESS, "{}", answer.0);
+        conforms(&fixture, &answer.0)?;
+        let arguments = match &continuation {
+            Some(token) => format!(
+                r#"{{"max_entries":32,"continuation":{}}}"#,
+                quote(token)
+            ),
+            None => r#"{"max_entries":32}"#.to_owned(),
+        };
+        mcp(&fixture.root, &arguments, &answer)?;
+        assert!(answer.0.contains("claim:query:physical-absence"));
+        let mut page_events = 0;
+        for id in &ids {
+            let marker = format!("\"id\":{}", quote(id));
+            let count = answer.0.matches(&marker).count();
+            assert!(count <= 1);
+            if count == 1 {
+                assert!(seen.insert(id.clone(), pages).is_none(), "duplicate {id}");
+                page_events += 1;
+            }
+        }
+        assert!((1..=32).contains(&page_events));
+        pages += 1;
+        if answer.0.contains("\"continuation\":null") {
+            break;
+        }
+        continuation = Some(quoted_field(&answer.0, "continuation")?);
+        assert!(pages < 9, "catalogue did not exhaust at its exact bound");
+    }
+    assert_eq!(pages, 9);
+    assert_eq!(seen.len(), ids.len());
+    for id in &ids {
+        assert!(seen.contains_key(id), "missing {id}");
+    }
     assert_eq!(tree(&fixture.root)?, before);
     Ok(())
 }
