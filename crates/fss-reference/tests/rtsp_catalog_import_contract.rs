@@ -181,6 +181,8 @@ struct Fixture {
     request: RtspCatalogImportRequest,
     originals: BTreeMap<ContentDigest, Vec<u8>>,
     original_packs: Vec<ContentDigest>,
+    original_fragments: Vec<ContentDigest>,
+    initialization_bytes: usize,
     original_bytes: u64,
     mp4: Vec<u8>,
 }
@@ -272,6 +274,13 @@ impl Fixture {
         let mut source = LocalRootPublisher::open(directory.0.join("archive"), archive_limits())?;
         let mut originals = BTreeMap::new();
         let mut original_packs = Vec::new();
+        let mut original_fragments = Vec::new();
+        let initialization_bytes = plans
+            .first()
+            .ok_or("recording window")?
+            .objects()
+            .initialization
+            .len();
         let mut original_bytes =
             (page.manifest().canonical_bytes().len() + page.index().len()) as u64;
         let mut mp4 = Vec::new();
@@ -292,11 +301,17 @@ impl Fixture {
             originals.insert(plan.manifest().root(), plan.manifest().canonical_bytes());
             originals.extend(plan.children().into_iter().map(|(_, d, b)| (d, b.to_vec())));
             original_packs.push(ContentDigest::sha256(plan.objects().source));
+            original_fragments.push(ContentDigest::sha256(plan.objects().media));
             original_bytes += plan.byte_len() as u64;
             if index == 0 {
                 mp4.extend_from_slice(plan.objects().initialization);
             }
+            let start = mp4.len();
             mp4.extend_from_slice(plan.objects().media);
+            // Independent native windows are all sequence one. Expected remux changes this
+            // container field only; assertions below compare against the original whole bytes.
+            assert_eq!(&plan.objects().media[20..24], &1_u32.to_be_bytes());
+            mp4[start + 20..start + 24].copy_from_slice(&u32::try_from(index + 1)?.to_be_bytes());
         }
         let catalog_slot = SlotName::parse("whole-catalog")?;
         page.publish(&mut source, catalog_slot.clone())?;
@@ -328,6 +343,8 @@ impl Fixture {
             request,
             originals,
             original_packs,
+            original_fragments,
+            initialization_bytes,
             original_bytes,
             mp4,
         })
@@ -361,6 +378,44 @@ impl Fixture {
             d.publisher().spool().digests().count(),
         ))
     }
+    fn verify_fragment_remux(&self, receipt: &RtspCatalogImportReceipt) -> Test {
+        let retained = self.retained(receipt)?;
+        let mut derived = Vec::new();
+        for digest in &retained.manifest().ordered_chunks {
+            derived.extend_from_slice(&self.target()?.publisher().spool().read(*digest)?);
+        }
+        assert_eq!(derived, self.mp4);
+        for (digest, bytes) in &self.originals {
+            assert_eq!(self.target()?.publisher().spool().read(*digest)?, *bytes);
+        }
+        let mut literal_concatenation = derived.clone();
+        let mut start = self.initialization_bytes;
+        for (ordinal, digest) in self.original_fragments.iter().enumerate() {
+            let original = self.originals.get(digest).ok_or("original fragment")?;
+            let remuxed = &derived[start..start + original.len()];
+            assert_eq!(&original[4..8], b"moof");
+            assert_eq!(&original[12..16], b"mfhd");
+            assert_eq!(&original[20..24], &1_u32.to_be_bytes());
+            assert_eq!(&remuxed[..20], &original[..20]);
+            assert_eq!(&remuxed[20..24], &u32::try_from(ordinal + 1)?.to_be_bytes());
+            assert_eq!(&remuxed[24..], &original[24..]);
+            literal_concatenation[start + 20..start + 24].copy_from_slice(&1_u32.to_be_bytes());
+            start += original.len();
+        }
+        assert_eq!(start, derived.len());
+        let mut check = || Ok(());
+        assert!(
+            fss_container::demux::AvcMp4::parse_recovering_tail(
+                &literal_concatenation,
+                None,
+                fss_container::demux::DemuxLimits::default(),
+                &mut check,
+            )
+            .is_err(),
+            "strict demux admitted repeated native fragment sequence numbers"
+        );
+        Ok(())
+    }
 }
 
 #[test]
@@ -370,6 +425,7 @@ fn three_hundred_twenty_native_frames_remain_one_cold_decodable_watch_range() ->
     assert_eq!(result.windows, 2);
     assert_eq!(result.import.frames, 320);
     assert_eq!(result.decode_interval, 0..320 * 3600);
+    f.verify_fragment_remux(&result)?;
     let retained = f.retained(&result)?;
     assert_eq!(retained.manifest().adapter_id, ADAPTER);
     assert_eq!(
@@ -383,9 +439,6 @@ fn three_hundred_twenty_native_frames_remain_one_cold_decodable_watch_range() ->
             .is_err()
     );
     assert!(FileIngestAdapter::fetch_segment_bytes(retained.manifest(), f.target()?, 0).is_err());
-    for (d, b) in &f.originals {
-        assert_eq!(f.target()?.publisher().spool().read(*d)?, *b);
-    }
     let mut cache = VerifiedChunkCache::default();
     for index in [0, 159, 160, 255, 256, 319] {
         let span = &retained.manifest().segment_spans[index];
@@ -483,6 +536,7 @@ fn hevc_whole_catalog_preserves_presentation_order_privacy_and_original_deletion
     let result = f.run()?;
     assert_eq!(result.import.frames, 8);
     assert_eq!(result.decode_interval, 0..144_000);
+    f.verify_fragment_remux(&result)?;
     let retained = f.retained(&result)?;
     let mut check = || Ok(());
     let mp4 = fss_container::demux::AvcMp4::parse_recovering_tail(

@@ -238,7 +238,7 @@ pub fn import_rtsp_catalog(
     table.insert_payloads(&mut payloads);
     let mut windows = Vec::with_capacity(entries.len());
     let mut initialization = None;
-    for entry in &entries {
+    for (ordinal, entry) in entries.iter().enumerate() {
         authorize(destination)?;
         work.charge(super::MAX_ORIGINAL_BYTES)
             .map_err(source_error)?;
@@ -292,7 +292,12 @@ pub fn import_rtsp_catalog(
             }
             _ => {}
         }
-        append_media(&mut media, &window.fragment, request.max_media_bytes)?;
+        append_fragment(
+            &mut media,
+            &window.fragment,
+            ordinal,
+            request.max_media_bytes,
+        )?;
         windows.push(WindowReference::new(&window));
         for (digest, bytes) in window.payloads() {
             payloads.insert(digest, bytes.to_vec());
@@ -341,6 +346,33 @@ pub fn import_rtsp_catalog(
         windows: entries.len(),
         decode_interval: interval,
     })
+}
+
+/// Append a natively verified independent recording fragment to a derived MP4.
+/// Both native recording writers start each sealed window at movie-fragment sequence one.
+/// Only that four-byte field changes in the derivative; original custody, sample data, timing,
+/// sizes and offsets remain exact. The strict MP4 demux then verifies sequences across the page.
+pub(super) fn append_fragment(
+    out: &mut Vec<u8>,
+    bytes: &[u8],
+    ordinal: usize,
+    maximum: u64,
+) -> Result<(), FileIngestError> {
+    if ordinal >= MAX_WINDOWS
+        || bytes.get(4..8) != Some(b"moof")
+        || bytes.get(8..12) != Some(&16_u32.to_be_bytes())
+        || bytes.get(12..16) != Some(b"mfhd")
+        || bytes.get(16..20) != Some(&[0; 4])
+        || bytes.get(20..24) != Some(&1_u32.to_be_bytes())
+    {
+        return Err(corrupt("native catalog fragment sequence header"));
+    }
+    let sequence =
+        u32::try_from(ordinal + 1).map_err(|_| corrupt("catalog fragment sequence bound"))?;
+    let start = out.len();
+    append_media(out, bytes, maximum)?;
+    out[start + 20..start + 24].copy_from_slice(&sequence.to_be_bytes());
+    Ok(())
 }
 
 pub(super) fn append_media(
