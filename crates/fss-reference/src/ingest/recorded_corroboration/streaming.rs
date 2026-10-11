@@ -1148,6 +1148,15 @@ fn prepare_camera(
             .map_err(|_| CorroborationError::Limit)?,
         capture_span: consumer
             .capture_span
+            // An entirely refused screened camera contributes no association samples. Its
+            // diagnostic can still retain the explicitly labeled requested capsule-hint hull;
+            // incomplete screening continues to block all corroboration event publication.
+            .or_else(|| {
+                scan.health_diagnostic.as_ref().filter(|diagnostic| {
+                    scan.decoded == 0 && diagnostic.record().summary().frames_screened() == 0
+                        && !diagnostic.record().summary().complete()
+                }).map(|diagnostic| diagnostic.record().capture_scope())
+            })
             .ok_or(RecordedDecodeError::Unavailable)?,
         homography_digest: camera.homography.digest(),
         decode_refusals: scan.refusals,
@@ -1282,6 +1291,15 @@ fn camera_json(camera: &CameraScan, plan: &CorroborationPlan) -> String {
         .health
         .as_ref()
         .map_or_else(|| "null".to_owned(), LongDwellHealthSummary::to_json);
+    let health_scope = camera
+        .health_diagnostic
+        .as_ref()
+        .map_or_else(String::new, |diagnostic| {
+            format!(
+                ",\"capture_scope_semantics\":{}",
+                json_string(diagnostic.record().capture_scope_semantics())
+            )
+        });
     let detector = camera.detector.as_ref().map_or_else(String::new, |value| {
         format!(
             concat!(
@@ -1316,7 +1334,7 @@ fn camera_json(camera: &CameraScan, plan: &CorroborationPlan) -> String {
             "\"decode_refusals\":[{}],\"masked_zones\":[{}],\"privacy_binding\":\"{}\",",
             "\"privacy_generation\":{},\"source_chunk_bytes_read\":{},\"pixel_samples_processed\":{},",
             "\"assignment_work_admitted\":{},\"jpeg_work_units\":{},\"trace_record_bytes\":{},",
-            "\"media_format\":{},\"sensor_health\":{}{}}}"
+            "\"media_format\":{},\"sensor_health\":{}{}{}}}"
         ),
         json_string(&summary.name),
         summary.import_identity,
@@ -1347,6 +1365,7 @@ fn camera_json(camera: &CameraScan, plan: &CorroborationPlan) -> String {
         camera.trace_bytes,
         json_string(&summary.media_format),
         health,
+        health_scope,
         detector,
     )
 }

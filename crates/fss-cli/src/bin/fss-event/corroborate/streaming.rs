@@ -4,14 +4,125 @@
 use std::io::Write;
 use std::path::Path;
 
+use fss_cli::agent_json::string;
+use fss_core::ContentDigest;
+use fss_reference::ingest::historical_health::{
+    HistoricalHealthDiagnostic, HistoricalHealthRetention,
+};
 use fss_reference::ingest::long_watch::LongWatchDetector;
 use fss_reference::ingest::package_detect::PackageDetectLimits;
+use fss_reference::ingest::recorded_corroboration::CorroborationError;
 pub(super) use fss_reference::ingest::recorded_corroboration::streaming::LongCorroborationLimits;
 use fss_reference::ingest::recorded_corroboration::streaming::LongCorroborationReport;
 use fss_reference::ingest::recorded_watch::WatchLimits;
 use fss_reference::{ReferenceDeployment, ReplayCx, ScalarExecCx};
 
 use super::{CorroborateAction, RunResult, export, number};
+
+const MAX_COMPLETE_REPORT_BYTES: usize = 1024 * 1024;
+
+type CameraDiagnostic<'a> = (&'a str, &'a HistoricalHealthDiagnostic);
+
+/// Match by exact import identity, not by the position of a filtered diagnostic iterator.
+/// A screened report must expose both cameras or refuse before any commitment.
+fn camera_diagnostics<'a>(
+    action: &'a CorroborateAction,
+    report: &'a LongCorroborationReport,
+) -> RunResult<Vec<CameraDiagnostic<'a>>> {
+    if action.health_screen.is_none() {
+        if report.health_diagnostics().next().is_some() {
+            return Err(CorroborationError::InvalidPlan(
+                "unscreened corroboration unexpectedly produced a health diagnostic",
+            )
+            .into());
+        }
+        return Ok(Vec::new());
+    }
+    if report.health_diagnostics().count() != action.plan.cameras.len() {
+        return Err(CorroborationError::InvalidPlan(
+            "screened corroboration requires one historical health diagnostic per camera",
+        )
+        .into());
+    }
+    action
+        .plan
+        .cameras
+        .iter()
+        .map(|camera| {
+            let mut matches = report.health_diagnostics().filter(|diagnostic| {
+                diagnostic.record().import_identity() == camera.import_identity
+            });
+            let diagnostic = matches.next().ok_or(CorroborationError::InvalidPlan(
+                "camera has no matching historical health diagnostic",
+            ))?;
+            if matches.next().is_some() {
+                return Err(CorroborationError::InvalidPlan(
+                    "camera has ambiguous historical health diagnostics",
+                )
+                .into());
+            }
+            Ok((camera.name.as_str(), diagnostic))
+        })
+        .collect()
+}
+
+fn selected_diagnostic<'a>(
+    diagnostics: &[CameraDiagnostic<'a>],
+    approval: ContentDigest,
+) -> RunResult<&'a HistoricalHealthDiagnostic> {
+    let mut matches = diagnostics
+        .iter()
+        .map(|(_, diagnostic)| *diagnostic)
+        .filter(|diagnostic| diagnostic.approval_digest() == approval);
+    let selected = matches
+        .next()
+        .ok_or(CorroborationError::StaleApproval(approval))?;
+    if matches.next().is_some() {
+        return Err(CorroborationError::InvalidPlan(
+            "health approval must select exactly one camera diagnostic",
+        )
+        .into());
+    }
+    Ok(selected)
+}
+
+fn with_diagnostics(
+    report: String,
+    diagnostics: &[CameraDiagnostic<'_>],
+    retention: Option<&HistoricalHealthRetention>,
+    rerun: &str,
+) -> RunResult<String> {
+    let report = if diagnostics.is_empty() {
+        report
+    } else {
+        let entries = diagnostics
+            .iter()
+            .map(|(camera, diagnostic)| -> RunResult<String> {
+                let selected = retention
+                    .filter(|retained| retained.record_digest == diagnostic.record_digest());
+                let diagnostic = super::super::health::diagnostic_json(diagnostic, selected, rerun);
+                let prefix = diagnostic
+                    .strip_suffix('}')
+                    .ok_or("invalid historical health diagnostic framing")?;
+                Ok(format!("{prefix},\"camera\":{}}}", string(camera)))
+            })
+            .collect::<RunResult<Vec<_>>>()?;
+        let prefix = report
+            .strip_suffix('}')
+            .ok_or("invalid whole-recording corroboration report framing")?;
+        format!("{prefix},\"historical_health\":[{}]}}", entries.join(","))
+    };
+    if report
+        .len()
+        .checked_add(1)
+        .is_none_or(|bytes| bytes > MAX_COMPLETE_REPORT_BYTES)
+    {
+        return Err(
+            "complete corroboration and historical health report exceeds byte bound".into(),
+        );
+    }
+    Ok(report)
+}
 
 pub(super) const BUDGET_OPTIONS: &[&str] = &[
     "--stream-read-bytes",
@@ -123,19 +234,61 @@ pub(super) fn run(
             )?
         }
     };
-    // Check the whole bounded projection, including exact rerun commands, before event writes.
-    report.to_json(
-        deployment.current_anchor().commit_sequence,
-        Some(&action.rerun),
-    )?;
-    if !action.approvals.is_empty() {
-        report.publish(deployment, &action.approvals, cx)?;
-    }
+    // Check every camera proposal and the complete post-retention shape before any write.
+    // A selected health receipt is independent of paired candidates or their publication gate.
+    let selection = {
+        let diagnostics = camera_diagnostics(action, &report)?;
+        let selected = action
+            .retain_health
+            .map(|approval| selected_diagnostic(&diagnostics, approval))
+            .transpose()?;
+        let maximal_retention = selected.map(|diagnostic| {
+            let mut ledger_anchor = deployment.current_anchor().clone();
+            ledger_anchor.commit_sequence = u64::MAX;
+            HistoricalHealthRetention {
+                record_digest: diagnostic.record_digest(),
+                provenance_root: diagnostic.provenance_root(),
+                ledger_anchor,
+                already_retained: true,
+            }
+        });
+        let sequence = if diagnostics.is_empty() {
+            deployment.current_anchor().commit_sequence
+        } else {
+            u64::MAX
+        };
+        with_diagnostics(
+            report.to_json(sequence, Some(&action.rerun))?,
+            &diagnostics,
+            maximal_retention.as_ref(),
+            &action.rerun,
+        )?;
+        selected.map(|diagnostic| (diagnostic.record_digest(), diagnostic.approval_digest()))
+    };
+    let retention = if let Some((record_digest, approval)) = selection {
+        let diagnostic = report
+            .health_diagnostics()
+            .find(|diagnostic| diagnostic.record_digest() == record_digest)
+            .ok_or(CorroborationError::InvalidPlan(
+                "selected historical health diagnostic disappeared",
+            ))?;
+        Some(diagnostic.retain(deployment, approval, cx)?)
+    } else {
+        if !action.approvals.is_empty() {
+            report.publish(deployment, &action.approvals, cx)?;
+        }
+        None
+    };
     let json = format!(
         "{}\n",
-        report.to_json(
-            deployment.current_anchor().commit_sequence,
-            Some(&action.rerun)
+        with_diagnostics(
+            report.to_json(
+                deployment.current_anchor().commit_sequence,
+                Some(&action.rerun),
+            )?,
+            &camera_diagnostics(action, &report)?,
+            retention.as_ref(),
+            &action.rerun,
         )?
     );
     if let Some(path) = &action.report_out {

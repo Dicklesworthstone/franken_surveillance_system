@@ -51,6 +51,9 @@
 //! `--sensor-health conservative-v1` screens each camera's masked decoded pixels separately.
 //! Suspect visual-degradation runs lose candidate and coverage support; a clear screen does not
 //! establish camera health. Screening is retained in proposal identities and approval reruns.
+//! Whole-recording screening also proposes an independent historical diagnostic per camera.
+//! `--retain-health DIGEST` retains exactly one approved receipt, including when no pair or
+//! publishable event exists; event approvals require a separate invocation.
 //! `--failure-domain KIND:ID=CAMERA[,CAMERA...]` binds owner-declared common causes to the
 //! entry evidence. Cameras connected by any declared dependency form one supporting domain:
 //! their matching entries remain witnessed activity, with no corroborated alert affordance.
@@ -114,6 +117,7 @@ const OPTIONS: &[&str] = &[
     "--max-pixels",
     "--max-segment-bytes",
     "--approve",
+    "--retain-health",
     "--retain-coverage",
     "--report-out",
     "--visibility-grid",
@@ -170,6 +174,7 @@ pub(super) struct CorroborateAction {
     health_screen: Option<RecordedHealthPolicy>,
     dependencies: CorroborationDependencies,
     approvals: BTreeSet<ContentDigest>,
+    retain_health: Option<ContentDigest>,
     retain_coverage: Option<ContentDigest>,
     report_out: Option<PathBuf>,
     cascade: Option<super::detector::DetectorOptions>,
@@ -466,7 +471,14 @@ pub(super) fn parse(args: &[OsString]) -> Result<CorroborateAction, String> {
             _ if values.iter().any(|(k, _)| k == key) => return Err(format!("duplicate {key}")),
             _ => values.push((key.to_owned(), argument.to_owned())),
         }
-        if key != "--approve" && key != "--retain-coverage" && key != "--report-out" {
+        if ![
+            "--approve",
+            "--retain-health",
+            "--retain-coverage",
+            "--report-out",
+        ]
+        .contains(&key)
+        {
             rerun.push(quote(key));
             rerun.push(quote(argument));
         }
@@ -487,6 +499,22 @@ pub(super) fn parse(args: &[OsString]) -> Result<CorroborateAction, String> {
         }
         None => None,
     };
+    let retain_health = find(&values, "--retain-health")
+        .map(|value| digest(value, "--retain-health"))
+        .transpose()?;
+    if retain_health.is_some() {
+        if !stream_corroborate || health_screen.is_none() {
+            return Err(
+                "--retain-health requires --stream-corroborate and --sensor-health conservative-v1"
+                    .to_owned(),
+            );
+        }
+        if find(&values, "--approve").is_some() {
+            return Err(
+                "retain health and publish event approvals in separate invocations".to_owned(),
+            );
+        }
+    }
     let [first, second]: [(String, ContentDigest); 2] = cameras
         .try_into()
         .map_err(|_| "exactly two --camera NAME:sha256:IMPORT recordings are required")?;
@@ -680,6 +708,7 @@ pub(super) fn parse(args: &[OsString]) -> Result<CorroborateAction, String> {
         health_screen,
         dependencies,
         approvals,
+        retain_health,
         retain_coverage: match find(&values, "--retain-coverage") {
             Some(value) => Some(digest(value, "--retain-coverage")?),
             None => None,
@@ -975,6 +1004,20 @@ fn run_with(
     scalar: &ScalarExecCx,
     out: &mut impl Write,
 ) -> RunResult<()> {
+    if action.retain_health.is_some()
+        && (action.streaming.is_none()
+            || !matches!(
+                action.health_screen,
+                Some(RecordedHealthPolicy::ConservativeV1)
+            )
+            || !action.approvals.is_empty()
+            || action.retain_coverage.is_some())
+    {
+        return Err(CorroborationError::InvalidPlan(
+            "health retention requires screened whole-recording analysis and a separate event-approval invocation",
+        )
+        .into());
+    }
     if let Some(limits) = &action.streaming {
         return streaming::run(action, deployment, root, limits, cx, scalar, out);
     }

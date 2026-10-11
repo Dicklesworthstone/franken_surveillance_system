@@ -42,6 +42,43 @@ trace is not silently repaired from the transient scan. Cancellation can leave a
 root before the final diagnostic commit; an exact retry can finish that prefix without
 inventing an event or an effect.
 
+## Retain either camera from a corroboration run
+
+Whole-recording corroboration exposes the same independent diagnostic path:
+
+```sh
+fss-event corroborate --root /srv/fss --site site:home \
+  --camera "east:$EAST_IMPORT" --camera "west:$WEST_IMPORT" \
+  --ground east:1,0,0,0,1,0,0,0,1 --ground west:1,0,0,0,1,0,0,0,1 \
+  --zone porch:32,32,640,480 --interpretation ycbcr \
+  --time-gate-ns 1000000000 --distance-gate 16 \
+  --stream-corroborate --sensor-health conservative-v1
+```
+
+Use the site's actual owner-declared homographies, ground zone and association gates; the
+identity matrices above only illustrate command syntax. The `historical_health` array has
+one entry per camera, with a camera label, receipt digest, exact approval, retention status
+and `retain_command`. Camera labels are resolved through the source import identity.
+
+Run one entry's printed command to retain exactly that camera's receipt. The other entry
+remains a separate proposal. Either receipt can be retained when there are no ground entries
+or matching pairs, and when suspected degradation blocks event publication. Retaining the
+second camera later preserves the first receipt and its findings. `--retain-health` requires
+whole-recording screening and cannot be combined with `--approve`.
+
+Each camera's diagnostic binds its raw masked scan recipe, interpretation, source and privacy
+custody, decoder/work ceilings and health policy. Ground homographies, ground-zone association,
+common-cause declarations, trained event annotations and camera display labels have their own
+corroboration owner; they do not turn the two historical health results into a corroborated
+physical diagnosis. Cold health verification reruns the selected raw camera recipe without a
+trained model file or the other camera's loose recording.
+
+With `--tolerate-decode-refusals`, a camera whose entire admitted range refuses decoding still
+produces an `incomplete` diagnostic. Both its camera summary and receipt explicitly label the
+requested-source-capsule-hint fallback. It has zero screened frames, unreliable screening time
+and no association samples; event publication remains blocked. Native verification can
+reproduce that exact incomplete result without claiming that any frame was screened.
+
 ## Inspect after restart
 
 Copy the `record_digest` from the preview or retained result:

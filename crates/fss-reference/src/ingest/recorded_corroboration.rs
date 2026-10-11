@@ -652,7 +652,9 @@ pub struct CameraSummary {
     pub frames: usize,
     /// Confirmed tracks (whole-frame).
     pub confirmed_tracks: usize,
-    /// Union of every decoded frame's conservative capture interval.
+    /// Union of decoded capsule capture hints. An entirely refused screened whole-recording
+    /// camera uses its diagnostic's explicitly labeled requested-capsule hint hull instead;
+    /// it contributes no association sample or continuous-coverage claim.
     pub capture_span: CaptureInterval,
     /// Owner homography digest.
     pub homography_digest: ContentDigest,

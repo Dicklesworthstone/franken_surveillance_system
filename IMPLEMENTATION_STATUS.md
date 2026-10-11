@@ -12,6 +12,23 @@ It is also not a complete surveillance product. Native device adapters, producti
 
 ## Retained historical sensor-health diagnostics (2026-10-11, reference)
 
+Whole-recording corroboration now exposes independent diagnostics for both cameras through
+`historical_health`. One exact `--retain-health` approval retains only its selected camera,
+even with zero ground entries/pairs or health-blocked publication. Camera labels resolve by
+source import identity. A fully refused camera can retain its zero-screened, incomplete result
+under the explicit decode-refusal option, with requested-hint scope and no association samples.
+Cold verification reproduces the selected raw masked scan independently of trained event
+annotations. Ground association, shared-cause declarations and event approvals retain their
+existing owners; a later clear camera receipt cannot replace the earlier camera's findings.
+
+The corroboration extension passed 39 focused native tests under the same pinned Linux
+profile: new per-camera process contracts (4), existing streaming corroboration CLI (8),
+trained-detector CLI (5), single-camera historical-health CLI (6), and whole-recording
+corroboration contracts (16). Coverage includes exact emitted commands, independent retries,
+stale recipe/approval refusal, zero-pair and zero-screened-frame retention, native cold replay,
+and unchanged event-publication gates. Camera summaries and nested receipts are checked
+against their exact source identities and frame counts.
+
 Screened whole-recording watch and dwell reports now offer an independent `--retain-health`
 approval. A recording can retain its diagnosis when there is no event candidate or when a
 health finding blocks event publication. The canonical receipt binds original source custody,

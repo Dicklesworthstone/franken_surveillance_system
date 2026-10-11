@@ -138,7 +138,7 @@ const HELP: &str = "fss-event <report|prepare|publish|read|verify|watch|corrobor
     independent historical_health approval. --retain-health sha256:APPROVAL retains its\n\
     source-bound receipt and exact native scan recipe even when no event exists or health\n\
     findings block event publication. Event approval uses a separate invocation.\n\
-    fss-event health read --diagnostic-digest sha256:RECORD checks retained custody; health\n\
+    fss-event health read --diagnostic-digest sha256:RECORD checks retained metadata; health\n\
     verify adds --expected-provenance-root sha256:ROOT --execute-perception yes to rerun\n\
     the retained scan. Historical findings do not certify current health, tamper or absence.\n\
     --stream-watch (bare flag): scan one whole recording for confirmed zone entries, keeping\n\
@@ -173,6 +173,12 @@ const HELP: &str = "fss-event <report|prepare|publish|read|verify|watch|corrobor
     retain the model archive and recipe for cold replay; class scores remain uncalibrated and\n\
     do not change the ground-entry policy. Refuses coverage retention, visibility, poses,\n\
     calibration and scene-mesh options. Exact approvals are distinct from short corroboration.\n\
+    With --sensor-health conservative-v1, historical_health contains one diagnostic per\n\
+    camera. --retain-health sha256:APPROVAL retains exactly one camera's approved receipt\n\
+    independently of event publication, including runs with zero pairs. Event approval uses\n\
+    a separate invocation. With tolerated decode refusals, a camera with no decoded frame\n\
+    retains an incomplete diagnosis with a labeled requested-source-hint scope, zero screened\n\
+    frames and unreliable screening time. It contributes no association or coverage evidence.\n\
     Each recording is tracked over the whole frame; each confirmed track's foot point is\n\
     projected to the ground; ground-zone entries of the two sensors are associated by global\n\
     assignment. A pair is corroborated only if the distance gate holds and the WORST CASE over\n\

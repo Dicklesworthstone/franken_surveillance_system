@@ -7,6 +7,7 @@ use std::fs;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Output};
 
+use fss_cli::json_input::{Value, parse};
 use fss_core::region::{ContextAuthority, RootAuthoritySpec};
 use fss_core::{BudgetVector, ContentDigest, OperationId, SensorId, StreamId, TimestampNs};
 use fss_reference::ingest::{CaptureHint, FileIngestAdapter, FileIngestLimits, FileIngestRequest};
@@ -478,10 +479,55 @@ fn health_findings_preserve_diagnostics_and_block_even_exact_publication() -> Te
     let mut args = f.args();
     args.extend(["--sensor-health", "conservative-v1"].map(OsString::from));
     let preview = good(run(&args)?)?;
-    assert_eq!(
-        unsigned_fields(&preview, "frames_screened")?,
-        vec![300, 300]
-    );
+    let parsed = parse(&preview)?;
+    let report = parsed.object().ok_or("corroboration report object")?;
+    let cameras = report
+        .get("cameras")
+        .and_then(Value::array)
+        .ok_or("camera summaries")?;
+    let diagnostics = report
+        .get("historical_health")
+        .and_then(Value::array)
+        .ok_or("historical diagnostic rows")?;
+    assert_eq!(cameras.len(), 2);
+    assert_eq!(diagnostics.len(), 2);
+    for (name, import) in ["east", "west"].into_iter().zip(f.imports) {
+        let camera = cameras
+            .iter()
+            .filter_map(Value::object)
+            .find(|row| row.get("camera").and_then(Value::text) == Some(name))
+            .ok_or("named camera summary")?;
+        let health = camera.get("sensor_health").ok_or("camera health summary")?;
+        let fields = health.object().ok_or("camera health object")?;
+        assert_eq!(
+            fields.get("frames_screened").and_then(Value::integer),
+            Some(300)
+        );
+        assert_eq!(fields.get("publication_blocked"), Some(&Value::Bool(true)));
+
+        // The added receipts repeat exact camera health metadata. Scope the original
+        // counters to camera summaries and verify each duplicate has the right source.
+        let diagnostic = diagnostics
+            .iter()
+            .filter_map(Value::object)
+            .find(|row| row.get("camera").and_then(Value::text) == Some(name))
+            .ok_or("named historical diagnostic")?;
+        let receipt = diagnostic
+            .get("receipt")
+            .and_then(Value::object)
+            .ok_or("historical diagnostic receipt")?;
+        assert_eq!(receipt.get("sensor_health"), Some(health));
+        assert_eq!(
+            receipt.get("import_identity").and_then(Value::text),
+            Some(import.to_text().as_str())
+        );
+        let sensor = camera
+            .get("sensor_id")
+            .and_then(Value::text)
+            .ok_or("camera sensor")?;
+        assert_eq!(receipt.get("sensor_id").and_then(Value::text), Some(sensor));
+    }
+    assert_eq!(report.get("publication_blocked"), Some(&Value::Bool(true)));
     assert_eq!(unsigned_field(&preview, "entry_count")?, 2);
     assert_eq!(unsigned_field(&preview, "candidate_count")?, 1);
     assert!(preview.contains("exact_frame_repetition"));

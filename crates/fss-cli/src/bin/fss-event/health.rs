@@ -37,6 +37,9 @@ Retain a diagnosis independently with fss-event watch --stream-watch (or --strea
   --sensor-health conservative-v1 --retain-health sha256:APPROVAL\n\
 using the exact approval and rerun command from the preview's historical_health object.\n\
 This works with no event candidates and with findings that block event publication.\n\
+For two recordings, fss-event corroborate --stream-corroborate with the same health policy\n\
+emits a historical_health array; each camera has its own exact --retain-health command.\n\
+Retain one camera per invocation, independently of paired events; event approval is separate.\n\
 Common bounds: --max-metadata-bytes N (default 64 MiB, maximum 256 MiB)\n\
   --max-report-bytes N (default 1 MiB, maximum 16 MiB) [--principal ID]\n\
 Execution ceilings (also accepted by read to bind its verification command):\n\
@@ -512,22 +515,20 @@ pub(super) fn preflight_watch_diagnostic(
     Ok(())
 }
 
-pub(super) fn with_watch_diagnostic(
-    report: String,
-    diagnostic: Option<&HistoricalHealthDiagnostic>,
+/// The shared literal receipt proposal/retention fields for whole-recording commands.
+/// Keep their order and rendering stable so watch reports retain their exact bytes.
+pub(super) fn diagnostic_json(
+    diagnostic: &HistoricalHealthDiagnostic,
     retention: Option<&HistoricalHealthRetention>,
     rerun: &str,
-) -> Run<String> {
-    let Some(diagnostic) = diagnostic else {
-        return Ok(report);
-    };
+) -> String {
     let status = match retention {
         Some(retention) if retention.already_retained => "already_retained",
         Some(_) => "retained",
         None if diagnostic.already_retained() => "already_retained",
         None => "prepared",
     };
-    let health = object(&[
+    object(&[
         (
             "record_digest",
             string(&diagnostic.record_digest().to_text()),
@@ -560,7 +561,19 @@ pub(super) fn with_watch_diagnostic(
         ("current_health_proved", "false".into()),
         ("absence_certifiable", "false".into()),
         ("effects_authorized", "false".into()),
-    ]);
+    ])
+}
+
+pub(super) fn with_watch_diagnostic(
+    report: String,
+    diagnostic: Option<&HistoricalHealthDiagnostic>,
+    retention: Option<&HistoricalHealthRetention>,
+    rerun: &str,
+) -> Run<String> {
+    let Some(diagnostic) = diagnostic else {
+        return Ok(report);
+    };
+    let health = diagnostic_json(diagnostic, retention, rerun);
     let prefix = report
         .strip_suffix('}')
         .ok_or("invalid whole-recording report framing")?;
