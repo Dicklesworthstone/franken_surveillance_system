@@ -315,5 +315,272 @@ impl<'a> CheckpointedLiveAvcArchive<'a> {
     }
 }
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum AutomaticArchiveControl {
+    Request(ClientCommand),
+    Respond,
+}
+
+/// One automatically prepared request OR one unchanged protected-archive output.
+/// Queued means local preparation, never successful dispatch, recording or durable custody.
+#[must_use]
+#[derive(Debug)]
+pub enum AutomaticLiveArchiveStep {
+    /// One existing request queued without performing a socket write in this call.
+    Queued(QueuedAvcRequest),
+    /// All source, timing, checkpoint, publication and retirement outputs remain explicit.
+    Archive(CheckpointedLiveArchiveStep),
+}
+
+/// Automatic DESCRIBE/Digest/SETUP/PLAY/keepalive over one write-ahead protected AVC archive.
+///
+/// Construction explicitly opts into this finite control sequence under the existing route,
+/// credential policy, deadlines and work budgets. Only accepted responses select subsequent
+/// commands. Recovery and every pending window/page/pin drain before another command or socket
+/// read; automation cannot bypass the write-ahead barrier. There is no reconnect, automatic
+/// teardown, guessed timing, credential storage, publication acknowledgement or second queue.
+///
+/// The owner must still retain every original output and independently save candidate recovery
+/// pins before acknowledging them. Supply picture timing explicitly and use readiness plus the
+/// returned wake deadline. A PLAY response alone remains neither media nor coverage evidence.
+#[must_use]
+pub struct AutomaticLiveAvcArchive<'a> {
+    archive: CheckpointedLiveAvcArchive<'a>,
+    next: Option<AutomaticArchiveControl>,
+}
+impl fmt::Debug for AutomaticLiveAvcArchive<'_> {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("AutomaticLiveAvcArchive")
+            .field("archive", &self.archive)
+            .field("next", &self.next)
+            .finish_non_exhaustive()
+    }
+}
+impl<'a> AutomaticLiveAvcArchive<'a> {
+    /// Recover the exact archive and connect once. No RTSP command is prepared until the
+    /// initial recovery barrier has drained; no credential is borrowed by this constructor.
+    #[allow(clippy::too_many_arguments)]
+    pub fn connect(
+        live: LiveAvcConfig,
+        recording: LiveRecordingConfig,
+        archive: LiveArchiveConfig,
+        work: ArchiveWorkLimits,
+        publisher: &'a mut LocalRootPublisher,
+        now: u64,
+        authority: &dyn TcpAuthority,
+        cancel: &dyn PublishCancellation,
+    ) -> Result<Self, LiveArchiveConnectFailure> {
+        Ok(Self {
+            archive: CheckpointedLiveAvcArchive::connect(
+                live, recording, archive, work, publisher, now, authority, cancel,
+            )?,
+            next: Some(AutomaticArchiveControl::Request(ClientCommand::Describe)),
+        })
+    }
+    /// Existing local negotiation state, not camera or source health.
+    pub fn state(&self) -> ClientState {
+        self.archive.state()
+    }
+    /// Actual transport work; final observations transfer in retirement.
+    pub fn totals(&self) -> Option<TcpTotals> {
+        self.archive.totals()
+    }
+    /// Acknowledged inventory, never the pending window or an auxiliary work root.
+    pub fn snapshot(&self) -> Option<&ArchiveSnapshot> {
+        self.archive.snapshot()
+    }
+    /// The sole pending recording, immutably borrowed from the existing writer.
+    pub fn pending(&self) -> Option<&PreparedRecording> {
+        self.archive.pending()
+    }
+    /// Exact candidate the runtime must save independently before acknowledging it.
+    pub fn pending_checkpoint(&self) -> Option<&ArchiveCheckpoint> {
+        self.archive.pending_checkpoint()
+    }
+    /// Prior acknowledged work root; retain it until the successor is demonstrably durable.
+    pub fn last_durable_checkpoint(&self) -> Option<&ArchiveCheckpoint> {
+        self.archive.last_durable_checkpoint()
+    }
+    /// True only when a command can be prepared next. A storage/pin wait does not require
+    /// credentials, and never causes credentials or nonce bytes to be retained by this owner.
+    pub fn needs_credentials(&self) -> bool {
+        self.next.is_some()
+            && self.archive.inner.ready
+            && !self.archive.inner.finished
+            && self.archive.inner.writer.is_some()
+            && self.archive.inner.recording.is_some()
+            && self.archive.inner.completion.is_none()
+    }
+    /// Automatic local preparation wakes immediately only after storage is ready. Otherwise
+    /// the exact pin/storage/live deadlines remain in force, without busy-polling a pin wait.
+    pub fn next_wake_ns(&self) -> Option<u64> {
+        if self.needs_credentials() {
+            Some(self.archive.inner.last_ns)
+        } else {
+            self.archive.next_wake_ns()
+        }
+    }
+    /// Prepare one automatic command OR advance one protected archive step, never both.
+    /// Borrowed credentials and owner entropy are used only for a Queued result. Safe refusal
+    /// retains the unsent intent; a fatal refusal retires all source and clears automation.
+    #[allow(clippy::too_many_arguments)]
+    pub fn poll(
+        &mut self,
+        readiness: SocketReadiness,
+        credentials: &DigestCredentials<'_>,
+        cnonce: [u8; 16],
+        now: u64,
+        authority: &dyn TcpAuthority,
+        cancel: &dyn PublishCancellation,
+    ) -> Result<AutomaticLiveArchiveStep, CheckpointedLiveArchiveFailure> {
+        if self.needs_credentials() {
+            // Preserve the existing non-mutating clock-refusal contract even when cancelled.
+            if now < self.archive.inner.last_ns {
+                return Err(CheckpointedLiveArchiveFailure {
+                    reason: LiveArchiveError::ClockReversed,
+                    retirement: None,
+                });
+            }
+            // Preparation is a new automatic action. It cannot bypass the cancellation gate
+            // merely because no socket operation happens until a subsequent archive poll.
+            if cancel.cancel_requested(PublishCutPoint::AfterChildrenVerified) {
+                let failure = self
+                    .archive
+                    .fatal(LiveArchiveError::Archive(ArchiveError::Cancelled));
+                return Err(self.failed(failure));
+            }
+            let result = match self.next {
+                Some(AutomaticArchiveControl::Request(command)) => {
+                    self.archive.request(command, credentials, cnonce, now, authority)
+                }
+                Some(AutomaticArchiveControl::Respond) => {
+                    self.archive.respond(credentials, cnonce, now, authority)
+                }
+                None => {
+                    let failure = self.archive.fatal(LiveArchiveError::Invariant);
+                    return Err(self.failed(failure));
+                }
+            };
+            return match result {
+                Ok(queued) => {
+                    self.next = None;
+                    Ok(AutomaticLiveArchiveStep::Queued(queued))
+                }
+                Err(failure) => Err(self.failed(failure)),
+            };
+        }
+        let step = match self.archive.poll(readiness, now, authority, cancel) {
+            Ok(step) => step,
+            Err(failure) => return Err(self.failed(failure)),
+        };
+        if self.archive.inner.recording.is_none() {
+            self.next = None;
+        } else if let CheckpointedLiveArchiveStep::Live(LiveArchiveStep::Recording(recording)) = &step
+            && let LiveRecordingStep::Network(network) = recording.as_ref()
+        {
+            self.next = automatic_archive_control(network);
+        }
+        Ok(AutomaticLiveArchiveStep::Archive(step))
+    }
+    /// Supply only explicit owner timing. Invalid timing preserves the original held picture.
+    pub fn supply_timing(
+        &mut self,
+        timing: RecordingTiming,
+        now: u64,
+        authority: &dyn TcpAuthority,
+    ) -> Result<TimedCapture, CheckpointedLiveArchiveFailure> {
+        let result = self.archive.supply_timing(timing, now, authority);
+        result.map_err(|e| self.failed(e))
+    }
+    /// Seal a real completed prefix; poll then protects it before ordinary publication.
+    pub fn seal(
+        &mut self,
+        now: u64,
+        authority: &dyn TcpAuthority,
+    ) -> Result<bool, CheckpointedLiveArchiveFailure> {
+        let result = self.archive.seal(now, authority);
+        result.map_err(|e| self.failed(e))
+    }
+    /// Flush acknowledged windows into protected discovery metadata without ending input.
+    pub fn flush(
+        &mut self,
+        now: u64,
+        authority: &dyn TcpAuthority,
+    ) -> Result<(), CheckpointedLiveArchiveFailure> {
+        let result = self.archive.flush(now, authority);
+        result.map_err(|e| self.failed(e))
+    }
+    /// Stop further automatic commands and socket input. Unsealed originals transfer immediately;
+    /// already accepted windows and final catalogs still drain through the checkpoint barrier.
+    pub fn finish_capture(
+        &mut self,
+        now: u64,
+        authority: &dyn TcpAuthority,
+    ) -> Result<Option<LiveRecordingRetirement>, CheckpointedLiveArchiveFailure> {
+        match self.archive.finish_capture(now, authority) {
+            Ok(retirement) => {
+                self.next = None;
+                Ok(retirement)
+            }
+            Err(failure) => Err(self.failed(failure)),
+        }
+    }
+    /// Exact owner acknowledgement only. Automation never manufactures independent pin custody.
+    pub fn acknowledge_checkpoint(
+        &mut self,
+        pin: &ArchiveCheckpoint,
+        now: u64,
+        authority: &dyn TcpAuthority,
+        cancel: &dyn PublishCancellation,
+    ) -> Result<(), CheckpointedLiveArchiveFailure> {
+        let result = self.archive.acknowledge_checkpoint(pin, now, authority, cancel);
+        result.map_err(|e| self.failed(e))
+    }
+    /// Stop without I/O and transfer all pending source and recovery candidates exactly once.
+    pub fn cancel(&mut self) -> Option<CheckpointedLiveArchiveRetirement> {
+        self.next = None;
+        self.archive.cancel()
+    }
+    fn failed(&mut self, failure: CheckpointedLiveArchiveFailure) -> CheckpointedLiveArchiveFailure {
+        if failure.retirement.is_some() || matches!(&failure.reason, LiveArchiveError::Closed) {
+            self.next = None;
+        }
+        failure
+    }
+}
+
+// Observe the existing protocol owner's accepted transitions, never infer a next request merely
+// from persistent session state. Interim responses, local writes and storage receipts grant none.
+fn automatic_archive_control(
+    step: &crate::rtsp::live_avc::LiveAvcStep,
+) -> Option<AutomaticArchiveControl> {
+    use crate::rtsp::avc_client::AvcClientPoll;
+    use crate::rtsp::avc_client::authenticated::DigestAvcPoll;
+    use crate::rtsp::client::ClientProgress;
+    use crate::rtsp::live_avc::LiveAvcStep;
+    match step {
+        LiveAvcStep::Protocol {
+            event: DigestAvcPoll::AuthenticationRequired { .. },
+            transport: None,
+        } => Some(AutomaticArchiveControl::Respond),
+        LiveAvcStep::Protocol {
+            event: DigestAvcPoll::Client { event, wire_retirement: None },
+            transport: None,
+        } => match event.as_ref() {
+            AvcClientPoll::Control(ClientProgress::Accepted(ClientState::Described)) => {
+                Some(AutomaticArchiveControl::Request(ClientCommand::Setup))
+            }
+            AvcClientPoll::Control(ClientProgress::Accepted(ClientState::Ready)) => {
+                Some(AutomaticArchiveControl::Request(ClientCommand::Play))
+            }
+            AvcClientPoll::Control(ClientProgress::KeepAliveDue) => {
+                Some(AutomaticArchiveControl::Request(ClientCommand::KeepAlive))
+            }
+            _ => None,
+        },
+        _ => None,
+    }
+}
+
 #[cfg(test)]
 mod tests;
