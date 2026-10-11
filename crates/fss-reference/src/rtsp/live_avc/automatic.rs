@@ -6,8 +6,14 @@
 //! retains credentials. Owners still schedule readiness/deadlines and retain every
 //! wire/media/retirement output before polling again.
 
+use super::recording::{
+    LiveAvcRecording, LiveRecordingConfig, LiveRecordingConnectFailure, LiveRecordingFailure,
+    LiveRecordingRetirement, LiveRecordingStep,
+};
 use super::*;
 use crate::rtsp::client::ClientProgress;
+use crate::rtsp::recording_capture::TimedCapture;
+use crate::rtsp::recording_collector::{RecordingCollector, RecordingTiming};
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 enum Action {
@@ -148,9 +154,9 @@ impl AutomaticAvcConnection {
     ) -> Result<AutomaticAvcStep, LiveAvcFailure> {
         if let Some(action) = self.control.next {
             let result = match action {
-                Action::Request(command) => {
-                    self.connection.request(command, credentials, cnonce, now, authority)
-                }
+                Action::Request(command) => self
+                    .connection
+                    .request(command, credentials, cnonce, now, authority),
                 Action::Respond => self.connection.respond(credentials, cnonce, now, authority),
             };
             return match result {
@@ -176,6 +182,141 @@ impl AutomaticAvcConnection {
     pub fn cancel(&mut self) -> Option<LiveAvcRetirement> {
         self.control.next = None;
         self.connection.cancel()
+    }
+}
+
+/// An automatic control receipt or the complete existing recording output.
+/// Prepared windows still require the original root-last publication procedure.
+#[must_use]
+#[derive(Debug)]
+pub enum AutomaticRecordingStep {
+    /// One command prepared under the recording owner's live authority.
+    Queued(QueuedAvcRequest),
+    /// Original network, timing, collection, backpressure or terminal ownership.
+    Recording(LiveRecordingStep),
+}
+
+/// Automatic camera control composed with the existing loss-aware recording owner.
+///
+/// Recording still drains before network reads. Picture timing, sealing, source
+/// custody and publication remain explicit: neither arrival time nor a successful
+/// PLAY response can manufacture recording timestamps or a durable recording.
+/// This wrapper stores no additional media and creates no read-ahead queue.
+#[must_use]
+#[derive(Debug)]
+pub struct AutomaticAvcRecording {
+    recording: LiveAvcRecording,
+    control: ControlDriver,
+}
+impl AutomaticAvcRecording {
+    /// Validate recording scope before opening the one authorized connection.
+    pub fn connect(
+        config: LiveAvcConfig,
+        recording: LiveRecordingConfig,
+        now: u64,
+        authority: &dyn TcpAuthority,
+    ) -> Result<Self, LiveRecordingConnectFailure> {
+        Ok(Self {
+            recording: LiveAvcRecording::connect(config, recording, now, authority)?,
+            control: ControlDriver::new(now),
+        })
+    }
+
+    /// Negotiation state only; not evidence of stored media.
+    pub fn state(&self) -> ClientState {
+        self.recording.state()
+    }
+
+    /// Read-only accounting from the original recording collector.
+    pub fn collector(&self) -> &RecordingCollector {
+        self.recording.collector()
+    }
+
+    /// Original live transport accounting; final totals transfer with retirement.
+    pub fn totals(&self) -> Option<TcpTotals> {
+        self.recording.totals()
+    }
+
+    /// Whether the next poll will prepare an automatic request or Digest answer.
+    pub fn needs_credentials(&self) -> bool {
+        self.control.next.is_some()
+    }
+
+    /// Include local control work without masking capture or network deadlines.
+    pub fn next_wake_ns(&self) -> Option<u64> {
+        self.control.wake(self.recording.next_wake_ns())
+    }
+
+    /// Prepare one request OR drive one original recording step. Every returned
+    /// source chunk, capture event and retirement remains caller-owned unchanged.
+    /// Supply a fresh owner-generated cnonce for each admitted preparation.
+    pub fn poll(
+        &mut self,
+        readiness: SocketReadiness,
+        credentials: &DigestCredentials<'_>,
+        cnonce: [u8; 16],
+        now: u64,
+        authority: &dyn TcpAuthority,
+    ) -> Result<AutomaticRecordingStep, LiveRecordingFailure> {
+        if let Some(action) = self.control.next {
+            let result = match action {
+                Action::Request(command) => self
+                    .recording
+                    .request(command, credentials, cnonce, now, authority),
+                Action::Respond => self.recording.respond(credentials, cnonce, now, authority),
+            };
+            let receipt = self.settle(result)?;
+            self.control.next = None;
+            return Ok(AutomaticRecordingStep::Queued(receipt));
+        }
+        let result = self.recording.poll(readiness, now, authority);
+        let step = self.settle(result)?;
+        if let LiveRecordingStep::Network(event) = &step {
+            self.control.observe(event, now);
+        }
+        Ok(AutomaticRecordingStep::Recording(step))
+    }
+
+    /// Supply explicit media timing to the same retained picture. Safe timing
+    /// refusals preserve the picture for correction; fatal errors retire all layers.
+    pub fn supply_timing(
+        &mut self,
+        timing: RecordingTiming,
+        now: u64,
+        authority: &dyn TcpAuthority,
+    ) -> Result<TimedCapture, LiveRecordingFailure> {
+        let result = self.recording.supply_timing(timing, now, authority);
+        self.settle(result)
+    }
+
+    /// Seal a completed prefix under live authority to relieve collector pressure.
+    /// Poll to obtain its prepared window; this method does not publish it.
+    pub fn seal(
+        &mut self,
+        now: u64,
+        authority: &dyn TcpAuthority,
+    ) -> Result<bool, LiveRecordingFailure> {
+        let result = self.recording.seal(now, authority);
+        self.settle(result)
+    }
+
+    /// Stop without network I/O and transfer prepared, unsealed, untimed and
+    /// protocol work exactly once, including after live authority revocation.
+    pub fn cancel(&mut self) -> Option<LiveRecordingRetirement> {
+        self.control.next = None;
+        self.recording.cancel()
+    }
+
+    fn settle<T>(
+        &mut self,
+        result: Result<T, LiveRecordingFailure>,
+    ) -> Result<T, LiveRecordingFailure> {
+        if let Err(failure) = &result {
+            if failure.retirement.is_some() {
+                self.control.next = None;
+            }
+        }
+        result
     }
 }
 
@@ -244,5 +385,85 @@ mod tests {
         driver.observe(&LiveAvcStep::Ended, 3);
         assert_eq!(driver.next, None);
         assert_eq!(driver.wake(None), None);
+    }
+}
+
+#[cfg(test)]
+mod recording_tests {
+    use super::*;
+    use crate::rtsp::live_avc::tests::{KEY, credentials, scope};
+    use crate::rtsp::recording::RecordingScope;
+    use crate::rtsp::recording_collector::CollectorLimits;
+    use fss_core::{ContentDigest, SensorId, StreamId};
+    use std::net::{Ipv4Addr, TcpListener};
+
+    type TestResult<T = ()> = Result<T, Box<dyn std::error::Error>>;
+
+    fn recording() -> TestResult<LiveRecordingConfig> {
+        Ok(LiveRecordingConfig {
+            scope: RecordingScope {
+                sensor: SensorId::parse("sensor:automatic-fixture")?,
+                stream: StreamId::parse("stream:automatic-fixture")?,
+                generation: KEY.generation,
+                anchor: ContentDigest::sha256(b"automatic recording anchor"),
+                receive_clock: ContentDigest::sha256(b"automatic recording clock"),
+            },
+            payload_type: 96,
+            time_scale: 90_000,
+            limits: CollectorLimits::default(),
+        })
+    }
+
+    #[test]
+    fn invalid_recording_scope_does_not_open_a_camera_connection() -> TestResult {
+        let listener = TcpListener::bind((Ipv4Addr::LOCALHOST, 0))?;
+        let (config, authority) = scope(listener.local_addr()?)?;
+        let mut recording = recording()?;
+        recording.time_scale = 0;
+        let failure = AutomaticAvcRecording::connect(config, recording, 0, &authority)
+            .err()
+            .ok_or("invalid recording unexpectedly connected")?;
+        assert!(!failure.connection_attempted);
+        Ok(())
+    }
+
+    #[test]
+    fn automatic_recording_cancel_preserves_queued_request_and_capture_ownership() -> TestResult {
+        let listener = TcpListener::bind((Ipv4Addr::LOCALHOST, 0))?;
+        let (config, authority) = scope(listener.local_addr()?)?;
+        let mut driver = AutomaticAvcRecording::connect(config, recording()?, 0, &authority)?;
+        let (_peer, _) = listener.accept()?;
+        assert_eq!(driver.next_wake_ns(), Some(0));
+        let step = driver.poll(
+            SocketReadiness::default(),
+            &credentials()?,
+            [1; 16],
+            0,
+            &authority,
+        )?;
+        let AutomaticRecordingStep::Queued(queued) = step else {
+            return Err("missing initial recording command".into());
+        };
+        assert_eq!(queued.command, ClientCommand::Describe);
+        assert_eq!(driver.totals().ok_or("missing totals")?.sent_bytes, 0);
+        let retirement = driver.cancel().ok_or("missing recording retirement")?;
+        let connection = retirement.connection.ok_or("missing connection ownership")?;
+        let request = connection.transport.request.ok_or("lost queued request")?;
+        assert_eq!(request.cseq(), queued.cseq);
+        assert_eq!(connection.transport.request_sent_bytes, 0);
+        assert!(!driver.needs_credentials());
+        assert_eq!(driver.next_wake_ns(), None);
+        assert!(driver.cancel().is_none());
+        assert!(matches!(
+            driver.poll(
+                SocketReadiness::default(),
+                &credentials()?,
+                [2; 16],
+                1,
+                &authority,
+            )?,
+            AutomaticRecordingStep::Recording(LiveRecordingStep::Ended)
+        ));
+        Ok(())
     }
 }
