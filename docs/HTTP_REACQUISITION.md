@@ -96,3 +96,53 @@ cargo clippy -p fss-reference --all-targets -- -D warnings
 These commands are not a replacement for `scripts/qualify.sh` and the repository's retained
 native qualification lanes. No requirement, bead, adapter or release qualification is promoted
 by the presence of these implementations or tests.
+
+## CLI frame-target postcondition (2026-10-11)
+
+The separate `fss-capture-reconnect` CLI accepts `--stop-after-frames N`. With that
+option, success requires the requested count across all approved generations, including
+successful optional decode/privacy processing and output of the last frame row. Without
+that option, a final complete response remains a successful completion. Reaching a count
+is not EOF, a durable completion root, capture continuity, or certified scene coverage.
+
+Previously the CLI could receive one frame for a two-frame request, reach a genuinely
+complete response, and emit `request_satisfied: true`. Completion now checks the request
+postcondition before producing the final report or exit result. A complete response below
+the requested count produces `status: refused`, `request_satisfied: false`, and the existing
+`ERR-CAPTURE-RECONNECT-LIMIT-001` identity with an explicit requested/retained-count reason.
+When a count was requested, the final report also includes `requested_frames` and
+`frames_shortfall`. The latter counts missing source-verified frames only: zero does not
+mean that decoding, output, or the overall request succeeded. Consumers must still inspect
+`request_satisfied` and the error. Existing source, authority, storage, decode and output
+failures keep their original identity rather than being replaced by a count failure.
+
+This is a fail-closed exit-behavior correction for explicit count requests. It does not
+change approval bytes, the wire/history formats, capability scope, connection policy,
+privacy policy or budgets. In particular, a shortfall does NOT permit another connection
+when `--after-complete no` stopped acquisition, refill an exhausted generation list, or
+retry a denied source. Native complete/failure observations and all retained prefix and
+history pins remain intact even when the overall request is refused. The constant-time
+postcondition and two optional counters perform no I/O and retain no additional media.
+
+Four added tests in `driver_history_tests.rs` cover the completion truth table (including
+zero, overshoot and integer boundaries), six early-EOF/exhausted-slot/truncation cases
+across ordinary and durable-history modes, exact-count stopping without a third GET, and
+HTTP denial without failure relabeling. The shortfall cases reopen and verify the exact
+saved durable history. Existing tests were not removed or weakened.
+
+Validation boundary for this change: base files were matched byte-for-byte to GitHub blob
+identities at `cf8f1751aa898ad1277c055fed36673a076a2b0c`; the patch was checked for whitespace
+errors and reviewed against those files. **Rust compilation, tests, rustfmt, Clippy and
+native qualification were not run: the editing environment has no Rust toolchain or rch.**
+Run the following on the pinned toolchain with the repository's dependency closure:
+
+```sh
+cargo test -p fss-cli --bin fss-capture-reconnect
+cargo test -p fss-reference http_reconnect
+cargo fmt --all -- --check
+cargo clippy -p fss-cli --all-targets -- -D warnings
+```
+
+This change does not close the recorded-RTP reordering work in `fss-2h5zq.30`, promote a
+bead or release gate, or supply a native proof bundle. The pending task is to execute the
+above regressions and the required qualification lanes; preserve failures as evidence.

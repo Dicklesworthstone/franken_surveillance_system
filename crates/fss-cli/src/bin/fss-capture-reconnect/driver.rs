@@ -233,6 +233,10 @@ enum Failure {
     Authority(HttpCameraDenial),
     Output,
     FrameLimit,
+    FrameShortfall {
+        requested: u64,
+        verified: u64,
+    },
     Inconsistent,
     Stopped(HttpReconnectStop),
     Decode(decode::Failure),
@@ -258,7 +262,9 @@ impl Failure {
             Self::Source(_) | Self::History(_) => "ERR-CAPTURE-RECONNECT-SOURCE-001",
             Self::Authority(_) => "ERR-CAPTURE-RECONNECT-AUTHORITY-001",
             Self::Output => "ERR-CAPTURE-RECONNECT-OUTPUT-001",
-            Self::FrameLimit | Self::Stopped(_) => "ERR-CAPTURE-RECONNECT-LIMIT-001",
+            Self::FrameLimit | Self::FrameShortfall { .. } | Self::Stopped(_) => {
+                "ERR-CAPTURE-RECONNECT-LIMIT-001"
+            }
             Self::Inconsistent => "ERR-CAPTURE-RECONNECT-STATE-001",
             Self::Decode(error) => error.code(),
         }
@@ -270,6 +276,10 @@ impl Failure {
             Self::Authority(e) => format!("owner authority refused: {e:?}"),
             Self::Output => "bounded transcript sink refused; preserve prior complete pins".into(),
             Self::FrameLimit => "per-generation frame allowance exhausted; not EOF".into(),
+            Self::FrameShortfall { requested, verified } => format!(
+                "requested {requested} verified frames but retained {verified}; \
+complete responses do not satisfy the frame target; no additional connection is authorized"
+            ),
             Self::Inconsistent => {
                 "source boundary or generation disagrees with the frozen plan".into()
             }
@@ -361,6 +371,24 @@ fn stopped(last: Option<&Boundary>) -> Result<End, Failure> {
             Ok(End::FinalResponseComplete)
         }
         (_, Some(reason)) => Err(Failure::Stopped(reason)),
+        _ => Err(Failure::Inconsistent),
+    }
+}
+
+/// Validate the caller's objective separately from the source's terminal observation.
+/// This is a postcondition, never a retry decision or permission to spend another slot.
+fn validate_completion(end: End, requested: Option<u64>, verified: u64) -> Result<End, Failure> {
+    match (end, requested) {
+        (End::FinalResponseComplete, None) => Ok(end),
+        (End::RequestedCount, Some(wanted)) if wanted > 0 && verified == wanted => Ok(end),
+        (End::FinalResponseComplete, Some(wanted)) if verified < wanted => {
+            Err(Failure::FrameShortfall {
+                requested: wanted,
+                verified,
+            })
+        }
+        // The live loop stops immediately after the requested frame's successful output.
+        // Overshoot, an unsolicited count stop, or an EOF at that same count is inconsistent.
         _ => Err(Failure::Inconsistent),
     }
 }
@@ -683,6 +711,13 @@ fn finish(
         ("event_published", "false".into()),
         ("qualification", string("implemented_not_qualified")),
     ];
+    if let Some(requested) = options.stop_after {
+        fields.push(("requested_frames", requested.to_string()));
+        fields.push((
+            "frames_shortfall",
+            requested.saturating_sub(stats.frames).to_string(),
+        ));
+    }
     if let Some(history) = history {
         fields.push((
             "durable_history",
@@ -882,7 +917,10 @@ fn capture_with<W: Write, C: CaptureClock>(
             &mut stats,
             decoder.as_mut(),
             privacy.as_ref(),
-        );
+        )
+        // Do not turn an earlier source, decode, authority, storage, or output failure into
+        // a count failure. Native completion remains intact in the retained boundary history.
+        .and_then(|end| validate_completion(end, options.stop_after, stats.frames));
         let report = finish(
             options,
             recording.as_ref(),

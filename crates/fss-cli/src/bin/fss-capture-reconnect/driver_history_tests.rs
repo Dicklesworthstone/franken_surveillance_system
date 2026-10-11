@@ -352,3 +352,205 @@ fn requested_frame_stop_keeps_current_prefix_separate_from_ended_connection_hist
     assert!(text.contains("\"capture_continuity\":false"));
     Ok(())
 }
+
+// Request postconditions share the native loopback, owner clock and cold-history helpers.
+#[test]
+fn completion_requires_the_exact_requested_count_and_the_corresponding_stop() {
+    for verified in [0, 1, 4, 5, u64::MAX] {
+        assert!(matches!(
+            validate_completion(End::FinalResponseComplete, None, verified),
+            Ok(End::FinalResponseComplete)
+        ));
+        assert!(matches!(
+            validate_completion(End::RequestedCount, None, verified),
+            Err(Failure::Inconsistent)
+        ));
+    }
+    for requested in [1, 5, u64::MAX] {
+        let verified = requested - 1;
+        let refused = validate_completion(End::FinalResponseComplete, Some(requested), verified);
+        assert!(matches!(
+            refused,
+            Err(Failure::FrameShortfall { requested: r, verified: v })
+                if r == requested && v == verified
+        ));
+        assert!(matches!(
+            validate_completion(End::RequestedCount, Some(requested), verified),
+            Err(Failure::Inconsistent)
+        ));
+        assert!(matches!(
+            validate_completion(End::RequestedCount, Some(requested), requested),
+            Ok(End::RequestedCount)
+        ));
+        assert!(matches!(
+            validate_completion(End::FinalResponseComplete, Some(requested), requested),
+            Err(Failure::Inconsistent)
+        ));
+    }
+    for end in [End::FinalResponseComplete, End::RequestedCount] {
+        assert!(matches!(
+            validate_completion(end, Some(5), 6),
+            Err(Failure::Inconsistent)
+        ));
+        assert!(matches!(
+            validate_completion(end, Some(0), 0),
+            Err(Failure::Inconsistent)
+        ));
+    }
+}
+
+#[test]
+fn early_eof_or_exhausted_slots_leave_a_frame_shortfall_and_recoverable_history() -> TestResult {
+    for history_enabled in [false, true] {
+        // A disallowed complete-response retry, all slots exhausted, and a truncation retry.
+        for (after_complete, connections, truncate, requested) in [
+            ("no", 1_usize, false, 2_u64),
+            ("yes", 2, false, 3),
+            ("no", 2, true, 2),
+        ] {
+            let directory = Directory::new("target-shortfall")?;
+            let listener = TcpListener::bind("127.0.0.1:0")?;
+            let mut options = options(
+                &directory.0.join("archive"),
+                listener.local_addr()?,
+                "10,20",
+                after_complete,
+            )?;
+            options.stop_after = Some(requested);
+            if history_enabled {
+                durable(&mut options);
+            } else {
+                options.approve = Some(options.approval());
+            }
+            // Keep another response available: the frame target must NOT authorize its GET.
+            let (server, clock) = serve(
+                listener,
+                vec![if truncate { truncated() } else { response() }, response(), response()],
+                NO_STALL,
+            );
+            let mut out = Vec::new();
+            let result = capture_with(&options, &mut out, || &clock);
+            assert_eq!(joined(server)?, connections);
+            assert_eq!(result, Ok(false));
+            let text = String::from_utf8(out)?;
+            let finish = text.lines().last().ok_or("terminal row")?;
+            assert!(finish.contains("\"kind\":\"finish\""));
+            assert!(finish.contains("\"status\":\"refused\""));
+            assert!(finish.contains("\"request_satisfied\":false"));
+            assert!(finish.contains("ERR-CAPTURE-RECONNECT-LIMIT-001"));
+            assert!(finish.contains("complete responses do not satisfy the frame target"));
+            assert!(finish.contains(&format!("\"requested_frames\":{requested}")));
+            assert!(finish.contains("\"frames_shortfall\":1"));
+            assert!(finish.contains(&format!("\"frames_taken\":{}", requested - 1)));
+            assert!(finish.contains(&format!("\"connections_started\":{connections}")));
+            assert!(finish.contains("\"outcome\":\"native_complete\""));
+            assert!(finish.contains("\"unpublished_received_bytes\":0"));
+            assert!(finish.contains("\"capture_continuity\":false"));
+            assert!(finish.contains("\"coverage_certified\":false"));
+            assert!(finish.contains("\"event_published\":false"));
+            assert_eq!(text.matches("\"kind\":\"connected\"").count(), connections);
+            if truncate {
+                assert!(finish.contains("\"outcome\":\"source_failed\""));
+            }
+            if history_enabled {
+                let saved: Vec<_> = text
+                    .lines()
+                    .filter(|row| row.contains("\"kind\":\"history_durable\""))
+                    .map(pin)
+                    .collect::<Result<_, _>>()?;
+                assert_eq!(saved.len(), connections);
+                let expected = *saved.last().ok_or("last durable history")?;
+                let publisher = LocalRootPublisher::open(&options.root, storage_limits(&options))?;
+                let history = VerifiedReconnectHistory::load(
+                    &publisher,
+                    expected,
+                    limits(&options),
+                    &NeverCancel,
+                    &mut WorkBudget::new(1_000_000_000_000),
+                )?;
+                assert_eq!(history.boundaries().len(), connections);
+                let last = history.boundaries().last().ok_or("ended connection")?;
+                assert_eq!(last.outcome(), BoundaryOutcome::NativeComplete);
+                assert!(finish.contains("\"pending_boundary\":null"));
+            }
+        }
+    }
+    Ok(())
+}
+
+#[test]
+fn exact_target_stops_without_consuming_another_generation() -> TestResult {
+    for history_enabled in [false, true] {
+        let directory = Directory::new("target-met")?;
+        let listener = TcpListener::bind("127.0.0.1:0")?;
+        let mut options = options(
+            &directory.0.join("archive"),
+            listener.local_addr()?,
+            "10,20,30",
+            "yes",
+        )?;
+        options.stop_after = Some(2);
+        if history_enabled {
+            durable(&mut options);
+        } else {
+            options.approve = Some(options.approval());
+        }
+        let (server, clock) = serve(listener, vec![response(); 3], NO_STALL);
+        let mut out = Vec::new();
+        let result = capture_with(&options, &mut out, || &clock);
+        assert_eq!(joined(server)?, 2);
+        assert_eq!(result, Ok(true));
+        let text = String::from_utf8(out)?;
+        let finish = text.lines().last().ok_or("terminal row")?;
+        assert!(finish.contains("\"status\":\"requested_count_reached\""));
+        assert!(finish.contains("\"request_satisfied\":true"));
+        assert!(finish.contains("\"requested_frames\":2"));
+        assert!(finish.contains("\"frames_shortfall\":0"));
+        assert!(finish.contains("\"frames_taken\":2"));
+        assert!(finish.contains("\"connections_started\":2"));
+        assert!(finish.contains("\"durable_completion_root\":null"));
+        assert!(finish.contains("\"error_code\":null"));
+        assert_eq!(text.matches("\"kind\":\"connected\"").count(), 2);
+        if history_enabled {
+            // Only the first connection ended; the current prefix is not a completion root.
+            assert_eq!(text.matches("\"kind\":\"history_durable\"").count(), 1);
+            assert!(finish.contains("\"current_prefix_separate\":true"));
+        }
+    }
+    Ok(())
+}
+
+#[test]
+fn unmet_target_never_replaces_a_native_refusal_or_enables_a_retry() -> TestResult {
+    for history_enabled in [false, true] {
+        let directory = Directory::new("target-denied")?;
+        let listener = TcpListener::bind("127.0.0.1:0")?;
+        let mut options = options(
+            &directory.0.join("archive"),
+            listener.local_addr()?,
+            "10,20",
+            "yes",
+        )?;
+        options.stop_after = Some(2);
+        if history_enabled {
+            durable(&mut options);
+        } else {
+            options.approve = Some(options.approval());
+        }
+        let denied = b"HTTP/1.1 503 Service Unavailable\r\nContent-Length: 0\r\n\r\n".to_vec();
+        let (server, clock) = serve(listener, vec![denied, response()], NO_STALL);
+        let mut out = Vec::new();
+        let result = capture_with(&options, &mut out, || &clock);
+        assert_eq!(joined(server)?, 1);
+        assert_eq!(result, Ok(false));
+        let text = String::from_utf8(out)?;
+        let finish = text.lines().last().ok_or("terminal row")?;
+        assert!(finish.contains("NotRetryable"));
+        assert!(finish.contains("\"request_satisfied\":false"));
+        assert!(finish.contains("\"frames_taken\":0"));
+        assert!(finish.contains("\"frames_shortfall\":2"));
+        assert!(!finish.contains("complete responses do not satisfy the frame target"));
+        assert_eq!(text.matches("\"kind\":\"connected\"").count(), 1);
+    }
+    Ok(())
+}
