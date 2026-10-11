@@ -760,8 +760,8 @@ fn import_selected_and_decode(
         decoded
             .lines()
             .filter(|line| line.starts_with("frame_luma_sha256="))
-            .count() as u64,
-        frames,
+            .count(),
+        usize::try_from(frames)?,
         "each requested picture must produce a native decoded-frame digest"
     );
     assert_eq!(

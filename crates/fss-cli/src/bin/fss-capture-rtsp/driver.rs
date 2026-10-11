@@ -587,25 +587,27 @@ fn drive<W: Write>(
             draining = true;
             ready = false;
         }
-        if !sealing && !draining && ready {
-            if let Some(command) = next_command {
-                match capture.request(command, &unsigned, [0; 16], owner.now()?, owner, owner) {
-                    Ok(request) => {
-                        next_command = None;
-                        log.emit(
-                            "request_queued",
-                            object(&[
-                                ("command", string(command_name(request.command))),
-                                ("cseq", request.cseq.to_string()),
-                                ("bytes", request.bytes.to_string()),
-                                ("authentication", string("none")),
-                            ]),
-                            false,
-                        )?;
-                    }
-                    Err(error) if backpressure(&error) => {}
-                    Err(error) => return Err(failure(error, stats)),
+        if !sealing
+            && !draining
+            && ready
+            && let Some(command) = next_command
+        {
+            match capture.request(command, &unsigned, [0; 16], owner.now()?, owner, owner) {
+                Ok(request) => {
+                    next_command = None;
+                    log.emit(
+                        "request_queued",
+                        object(&[
+                            ("command", string(command_name(request.command))),
+                            ("cseq", request.cseq.to_string()),
+                            ("bytes", request.bytes.to_string()),
+                            ("authentication", string("none")),
+                        ]),
+                        false,
+                    )?;
                 }
+                Err(error) if backpressure(&error) => {}
+                Err(error) => return Err(failure(error, stats)),
             }
         }
 
