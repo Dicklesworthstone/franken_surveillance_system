@@ -21,6 +21,8 @@ use fss_reference::ingest::http_recording::{HttpRecordingLimits, HttpRecordingRe
 use fss_reference::ingest::http_replay::check::HttpCheckSource;
 
 pub(super) const MAX_ARGUMENTS: usize = 80;
+/// Hard ceiling for the separately approved, non-renewing storage-only grace.
+pub(super) const MAX_STORAGE_DRAIN_NS: u64 = 60_000_000_000;
 
 use super::decode;
 pub(super) const RESERVE: usize = 64 * 1024;
@@ -37,7 +39,7 @@ pub(super) const HELP: &str = "fss-capture-reconnect --root ABSOLUTE_ARCHIVE_DIR
   --initial-backoff-ms 250 --maximum-backoff-ms 5000 --after-complete no|yes (default no).\n\
   Only existing native transport/truncation failures retry. Denials, malformed data, privacy,\n\
   storage and exhausted limits never trigger a fallback, reset, or an unapproved generation.\n\
-  --timeout-ms 30000 is ONE run deadline; --connect-timeout-ms 5000 caps each attempt.\n\
+  --timeout-ms 30000 is ONE network/decode deadline; --connect-timeout-ms 5000 caps each attempt.\n\
   Per-slot ceilings: --max-reads 512 --max-source-bytes 67108864 --max-frames 128\n\
                     --read-bytes 16384 --max-frame-bytes 16777216 --max-io-calls 1000000.\n\
   Whole-run ceilings: --max-steps 100000 --max-source-work 1000000000000\n\
@@ -52,6 +54,9 @@ pub(super) const HELP: &str = "fss-capture-reconnect --root ABSOLUTE_ARCHIVE_DIR
   --max-pixels 4194304 bound each frame. Current privacy masks apply before pixel digests.\n\
   --recoverable yes emits a lossless recovery key before each original-read publication.\n\
   Save it independently; fss-recover-http can reconcile already-staged bytes, not resume capture.\n\
+  --storage-drain-ms 0 (default) optionally reserves up to 60000 ms of STORAGE-ONLY grace.\n\
+  Nonzero grace requires --recoverable yes and a new exact approval. It never renews network,\n\
+  decode, work or byte allowances; owner cancellation and failed output still stop publication.\n\
   --durable-history yes also publishes every ended connection as a source-closed history root.\n\
   --max-history-work 1000000000000 is a separate WHOLE-RUN allowance (requires durable history).\n\
   Save history_prepared pins before writes; history_durable precedes a reverified reconnect.\n\
@@ -77,6 +82,8 @@ pub(super) struct Options {
     pub source_work: u64,
     pub maximum_steps: u64,
     pub timeout_ns: u64,
+    /// Explicitly approved storage grace beyond the unchanged network/decode deadline.
+    pub storage_drain_ns: u64,
     pub report_bytes: usize,
     pub stop_after: Option<u64>,
     pub approve: Option<ContentDigest>,
@@ -138,6 +145,7 @@ impl Options {
             "--maximum-backoff-ms",
             "--after-complete",
             "--recoverable",
+            "--storage-drain-ms",
             "--durable-history",
             "--max-history-work",
             "--decode",
@@ -291,6 +299,12 @@ impl Options {
             )?,
             maximum_steps: number("--max-steps", 100_000, 1, 1_000_000)?,
             timeout_ns: number("--timeout-ms", 30_000, 1, 600_000)? * 1_000_000,
+            storage_drain_ns: number(
+                "--storage-drain-ms",
+                0,
+                0,
+                MAX_STORAGE_DRAIN_NS / 1_000_000,
+            )? * 1_000_000,
             report_bytes: number(
                 "--max-report-bytes",
                 8 * 1024 * 1024,
@@ -324,6 +338,14 @@ impl Options {
         }
     }
     pub fn plan(&self) -> Result<HttpReconnectRecordingPlan, &'static str> {
+        if self.storage_drain_ns > MAX_STORAGE_DRAIN_NS
+            || self.timeout_ns.checked_add(self.storage_drain_ns).is_none()
+        {
+            return Err("storage drain deadline or bound exceeded");
+        }
+        if self.storage_drain_ns != 0 && !self.recoverable {
+            return Err("--storage-drain-ms requires --recoverable yes");
+        }
         let mut slots = Vec::with_capacity(self.generations.len());
         for generation in &self.generations {
             let request = HttpRecordingRequest::new(
@@ -359,7 +381,7 @@ impl Options {
     // silently beneath an unchanged approval. No Debug/Serde formatting defines these bytes.
     fn bound_numbers(&self) -> Vec<(&'static str, u64)> {
         let n = self.native;
-        vec![
+        let mut numbers = vec![
             ("http_header_bytes", n.http.header_bytes as u64),
             ("http_fragment_bytes", n.http.fragment_bytes as u64),
             ("http_chunk_bytes", n.http.chunk_bytes),
@@ -389,7 +411,14 @@ impl Options {
             ("timeout_ns", self.timeout_ns),
             ("report_bytes", self.report_bytes as u64),
             ("stop_after_frames_or_zero", self.stop_after.unwrap_or(0)),
-        ]
+        ];
+        // The canonical number list carries explicit names and its length. An optional,
+        // storage-only bound cannot collide with the legacy encoding, and zero grace
+        // retains that encoding byte-for-byte under every existing approval wrapper.
+        if self.storage_drain_ns != 0 {
+            numbers.push(("storage_only_grace_ns", self.storage_drain_ns));
+        }
+        numbers
     }
     pub fn approval(&self) -> ContentDigest {
         let mut e = CanonicalEncoder::new();
@@ -519,6 +548,19 @@ impl Options {
                     ("boundary_family", string("http_reconnect_boundary_v1")),
                     ("release", string("durable_root_and_source_reverified")),
                     ("resume_network", "false".into()),
+                ]),
+            ));
+        }
+        if self.storage_drain_ns != 0 {
+            fields.push((
+                "storage_drain",
+                object(&[
+                    ("maximum_extra_storage_ns", self.storage_drain_ns.to_string()),
+                    ("network_deadline_ns", self.timeout_ns.to_string()),
+                    ("network_extended", "false".into()),
+                    ("decode_extended", "false".into()),
+                    ("budgets_refilled", "false".into()),
+                    ("recovery_key_required", "true".into()),
                 ]),
             ));
         }

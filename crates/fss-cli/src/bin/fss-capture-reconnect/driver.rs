@@ -30,6 +30,8 @@ use super::{decode, privacy};
 
 #[path = "recording.rs"]
 mod recording;
+#[path = "storage_lease.rs"]
+mod storage_lease;
 use recording::{Boundary, Recording, history_pin_json};
 
 const STORAGE_CAPS: [&str; 4] = [
@@ -404,8 +406,12 @@ fn drive<W: Write>(
     mut decoder: Option<&mut decode::Decoder>,
     privacy: Option<&privacy::Context>,
 ) -> Result<End, Failure> {
+    if options.storage_drain_ns != 0 && !options.recoverable {
+        return Err(Failure::Inconsistent);
+    }
+    let storage = storage_lease::StorageLease::new(owner, options.storage_drain_ns)?;
     loop {
-        let step = match recording.poll_step(publisher, owner.access()?)? {
+        let step = match recording.poll_step(publisher, storage.access()?)? {
             DurableReconnectStep::Source(step) => step,
             DurableReconnectStep::BoundaryPrepared(pin) => {
                 let pending = recording
@@ -431,7 +437,7 @@ fn drive<W: Write>(
                 stats.boundaries.push((boundary, false));
                 // The exact expected history root leaves before any history mutation.
                 log.emit("history_prepared", detail, false)?;
-                recording.commit_history(pin, publisher, owner.access()?)?;
+                recording.commit_history(pin, publisher, storage.access()?)?;
                 continue;
             }
             DurableReconnectStep::BoundaryDurable(pin) => {
@@ -450,7 +456,7 @@ fn drive<W: Write>(
                     false,
                 )?;
                 // Output delays or damage never bypass the owner's second full verification.
-                recording.release_history(pin, publisher, owner.access()?)?;
+                recording.release_history(pin, publisher, storage.access()?)?;
                 stats.boundaries.last_mut().ok_or(Failure::Inconsistent)?.1 = true;
                 continue;
             }
@@ -472,9 +478,9 @@ fn drive<W: Write>(
                 )?;
             }
             HttpReconnectRecordingStep::Advanced => {}
-            HttpReconnectRecordingStep::Pending => owner.pause(None)?,
+            HttpReconnectRecordingStep::Pending => storage.pause(None)?,
             HttpReconnectRecordingStep::Waiting { not_before_ns } => {
-                owner.pause(Some(not_before_ns))?
+                storage.pause(Some(not_before_ns))?
             }
             HttpReconnectRecordingStep::WirePrepared(plan) => {
                 let wire = plan.wire();
@@ -499,8 +505,9 @@ fn drive<W: Write>(
                     fields.push(("recovery_key", string(&key)));
                 }
                 log.emit("wire_prepared", object(&fields), false)?;
-                // Sink delay never extends authority or acknowledges an uncommitted source read.
-                let committed = recording.commit_wire_step(plan, publisher, owner.access()?)?;
+                // A sink delay never renews either lease. Explicit storage grace may publish a
+                // retired read, but the unchanged camera authority cannot acknowledge or parse it.
+                let committed = recording.commit_wire_step(plan, publisher, storage.access()?)?;
                 stats
                     .prefixes
                     .insert(wire.basis.generation, recording.native().pin());
@@ -531,7 +538,7 @@ fn drive<W: Write>(
                 if !options.generations.contains(&generation) {
                     return Err(Failure::Inconsistent);
                 }
-                let frame = recording.take_frame_step(key, publisher, owner.access()?)?;
+                let frame = recording.take_frame_step(key, publisher, storage.access()?)?;
                 stats.frames += 1;
                 *stats.per_generation.entry(generation).or_default() += 1;
                 let decoded = match (decoder.as_deref_mut(), privacy) {
@@ -588,7 +595,7 @@ fn drive<W: Write>(
                 stats.boundaries.push((Boundary::Native(boundary), false));
                 log.emit("boundary_verified", boundary_json(boundary, false), false)?;
                 // A failed/blocked output or a vanished source prevents release AND next connect.
-                recording.release_source_boundary(boundary, publisher, owner.access()?)?;
+                recording.release_source_boundary(boundary, publisher, storage.access()?)?;
                 let last = stats.boundaries.last_mut().ok_or(Failure::Inconsistent)?;
                 last.1 = true;
             }
@@ -711,6 +718,18 @@ fn finish(
         ("event_published", "false".into()),
         ("qualification", string("implemented_not_qualified")),
     ];
+    if options.storage_drain_ns != 0 {
+        fields.push((
+            "storage_drain",
+            object(&[
+                ("maximum_extra_storage_ns", options.storage_drain_ns.to_string()),
+                ("network_deadline_ns", options.timeout_ns.to_string()),
+                ("network_extended", "false".into()),
+                ("decode_extended", "false".into()),
+                ("budgets_refilled", "false".into()),
+            ]),
+        ));
+    }
     if let Some(requested) = options.stop_after {
         fields.push(("requested_frames", requested.to_string()));
         fields.push((
@@ -949,3 +968,7 @@ mod tests;
 #[cfg(test)]
 #[path = "driver_recovery_tests.rs"]
 mod recovery_tests;
+
+#[cfg(test)]
+#[path = "driver_drain_tests.rs"]
+mod drain_tests;
