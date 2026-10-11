@@ -35,6 +35,15 @@ jobs:
         run: |
           cargo +nightly-2026-08-31 fmt --all
           git diff --exit-code -- crates/fss-cli/src/bin/fss-capture-rtsp.rs crates/fss-cli/src/bin/fss-capture-rtsp crates/fss-cli/tests/capture_rtsp_cli.rs crates/fss-reference/src/rtsp/live_avc.rs crates/fss-reference/src/rtsp/live_avc/recording.rs crates/fss-reference/src/rtsp/live_avc/recording/tests.rs
+      - name: Native HEVC socket ownership and Digest retirement
+        if: success() || failure()
+        run: cargo +nightly-2026-08-31 test --locked --offline -p fss-reference --lib rtsp::live_hevc::tests
+      - name: Automatic native HEVC recording and cold source replay
+        if: success() || failure()
+        run: cargo +nightly-2026-08-31 test --locked --offline -p fss-reference --test live_hevc_recording_contract
+      - name: Existing HEVC capture and root-last publication contracts
+        if: success() || failure()
+        run: cargo +nightly-2026-08-31 test --locked --offline -p fss-reference --test hevc_capture_contract --test hevc_recording_publication_contract
       - name: Native capture, retained import and cold decode contracts
         if: success() || failure()
         run: cargo +nightly-2026-08-31 test --locked --offline -p fss-cli --bin fss-capture-rtsp --test capture_rtsp_cli
