@@ -30,6 +30,7 @@ pub mod contract_basis;
 mod delta;
 mod digest;
 pub mod durable;
+pub mod decision_card;
 pub mod effect;
 pub mod experiment;
 pub mod event;
