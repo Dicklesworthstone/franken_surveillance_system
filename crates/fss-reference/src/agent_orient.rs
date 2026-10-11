@@ -70,6 +70,7 @@ use crate::reference_deployment::{
 use crate::{MockModelResult, ReferenceError};
 
 pub mod coverage;
+pub mod historical_health;
 use crate::situation::EffectCellKind;
 use crate::situation::{
     physical_knowledge_state, physical_statement, policy_hypothesis, reconciliation_basis_for,
@@ -85,6 +86,11 @@ use crate::situation_sections::{
 pub use coverage::{
     CoverageAssessment, MAX_COVERAGE_CAPSULE_READS, RECORDED_COVERAGE_PROVENANCE, RetainedCoverage,
     RetainedSourceCoverage, SOURCE_COVERAGE_PROVENANCE, ZoneAssessment, ZoneCoverageState,
+};
+pub use historical_health::{
+    CLAIM_HISTORICAL_HEALTH_PREFIX, HistoricalHealthDeletion, HistoricalHealthMetadata,
+    MAX_HISTORICAL_HEALTH_METADATA_BYTES, MAX_HISTORICAL_HEALTH_READS_PER_RECORD,
+    MAX_HISTORICAL_HEALTH_RECORDS, RetainedHistoricalHealth, SOURCE_CLASS_HISTORICAL_HEALTH_DETAIL,
 };
 
 /// Capability registry row that admits a situation read (AOP-003, AOP-004, AOP-009).
@@ -325,6 +331,9 @@ pub struct DeploymentSnapshot {
     pub operations: Vec<OperationReceipt>,
     /// Published events in event-identity order.
     pub events: Vec<RetainedEvent>,
+    /// Independent historical heuristic diagnostics in receipt-digest order. Reading this
+    /// metadata does not rerun perception or establish current sensor health or coverage.
+    pub historical_health: Vec<RetainedHistoricalHealth>,
     /// Retained coverage records in commit order.
     pub coverage: Vec<RetainedCoverage>,
     /// Retained source coverage records (live or virtual sources, fss-tch7u) in commit order,
@@ -1002,6 +1011,12 @@ impl DeploymentHistory {
                 }
             }
         }
+        let historical_health = historical_health::read_inventory(
+            batches,
+            &deletions,
+            limits.max_object_bytes,
+            |digest, max| reader.read_object(objects, digest, max),
+        )?;
 
         Ok(DeploymentSnapshot {
             site_lineage: self.site_lineage.clone(),
@@ -1022,6 +1037,7 @@ impl DeploymentHistory {
             obligations,
             operations,
             events,
+            historical_health,
             coverage,
             source_coverage,
             retained_absences,
@@ -1103,7 +1119,8 @@ pub const fn inline_event_budget(view: AgentView) -> usize {
 pub struct AttentionItem {
     /// Stable item identity.
     pub item_id: String,
-    /// Item kind (`event`, `coverage_gap`, `obligation`, `indeterminate_effect`).
+    /// Item kind (`event`, `coverage_gap`, `obligation`, `indeterminate_effect`,
+    /// `historical_sensor_health`).
     pub kind: &'static str,
     /// Registered priority class.
     pub priority_class: &'static str,
@@ -1947,6 +1964,12 @@ fn compile_capsule(
             }
         }
     }
+    let historical_health = historical_health::project(&snapshot.historical_health)?;
+    cells.extend(historical_health.cells);
+    proof_roots.extend(historical_health.proof_roots);
+    unknown.extend(historical_health.unknown);
+    at_risk.extend(historical_health.at_risk);
+    degradation.extend(historical_health.degradation);
     let mut nominal = BTreeSet::from([
         CLAIM_LEDGER_HEAD.to_owned(),
         CLAIM_IMPORTS.to_owned(),
@@ -2374,10 +2397,13 @@ fn compile_capsule(
         ]),
         coverage_boundary_handles: coverage_handles,
     };
-    let evidence_handles = proof_roots
+    let mut evidence_handles: BTreeSet<String> = proof_roots
         .iter()
         .map(|digest| format!("fss://proof/{digest}"))
         .collect();
+    // A deleted receipt remains addressable as an unavailable reference; only its verified
+    // deletion plan is proof material for the literal custody claim.
+    evidence_handles.extend(historical_health.reference_handles);
     let identity = digest_of("fss.reference_orient_capsule.v2", |encoder| {
         encoder.digest(basis.basis_digest());
         encoder.text(request.view.id());
@@ -2455,15 +2481,20 @@ fn compile_capsule(
     } else {
         None
     };
-    let source = source_omissions(
+    let mut source = source_omissions(
         &planned,
         &hydration,
         aggregated_world_count,
         world_classes.len(),
         folded_worlds,
     );
+    source.omissions.extend(historical_health.source.omissions);
+    source.handles.extend(historical_health.source.handles);
     let candidate_world_count = aggregated_world_count + 1;
-    let attention = attention_frontier(snapshot, &planned, &deployment_handle, coverage.as_ref());
+    let mut attention =
+        attention_frontier(snapshot, &planned, &deployment_handle, coverage.as_ref());
+    attention.extend(historical_health.attention);
+    attention.truncate(128);
     let epistemic_debt = epistemic_debt(snapshot, &planned, coverage.as_ref());
     Ok(CompiledSituation {
         capsule,

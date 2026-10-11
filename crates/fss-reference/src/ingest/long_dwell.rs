@@ -45,6 +45,7 @@ use crate::{
     ReferenceDeployment, ReferenceError, ReferencePolicyAction, ReferencePolicyDecision, ReplayCx,
 };
 
+pub(in crate::ingest) mod limits;
 pub(super) mod reader;
 use reader::ChunkCursor;
 mod health;
@@ -195,6 +196,7 @@ pub struct LongDwellReport {
     /// Exact analysis policy bytes (MJPEG or inter-coded), staged with the analysis.
     policy: &'static [u8],
     health: Option<LongDwellHealthSummary>,
+    health_diagnostic: Option<super::historical_health::HistoricalHealthDiagnostic>,
 }
 
 fn checkpoint(cx: &ReplayCx, stage: &'static str) -> Result<()> {
@@ -297,6 +299,7 @@ struct Scan<'a, 'observer> {
     temporal: TemporalAccumulator,
     observer: Option<&'observer mut dyn ScanObserver>,
     previous_capture: Option<CaptureInterval>,
+    capture_scope: Option<CaptureInterval>,
     previous_tracks: u64,
     trace: Vec<u8>,
     decoded: usize,
@@ -383,6 +386,16 @@ impl Scan<'_, '_> {
         self.privacy
             .apply_luma(&mut pixels, size)
             .map_err(RecordedDecodeError::from)?;
+        // A hull of the actual decoded capsule hints, independent of event eligibility. This
+        // never claims continuous coverage across the hull or a present sensor state.
+        self.capture_scope =
+            Some(
+                self.capture_scope
+                    .map_or(capsule.capture, |prior| CaptureInterval {
+                        earliest: prior.earliest.min(capsule.capture.earliest),
+                        latest: prior.latest.max(capsule.capture.latest),
+                    }),
+            );
         let health_observation = match &mut self.health {
             Some(screen) => Some(screen.observe(
                 HealthFrame {
@@ -1037,6 +1050,7 @@ pub(super) struct ScanData {
     pub(super) assignment_work: u64,
     pub(super) jpeg_work: u64,
     pub(super) health: Option<LongDwellHealthSummary>,
+    pub(super) health_diagnostic: Option<super::historical_health::HistoricalHealthDiagnostic>,
     pub(super) media_format: String,
 }
 
@@ -1255,6 +1269,7 @@ fn run_scan_inner(
         temporal: TemporalAccumulator::new(rule),
         observer,
         previous_capture: None,
+        capture_scope: None,
         previous_tracks: 0,
         trace: Vec::new(),
         decoded: 0,
@@ -1367,9 +1382,10 @@ fn run_scan_inner(
         pixel_samples,
         assignment_work,
         health,
+        capture_scope,
         ..
     } = scan;
-    if decoded == 0 {
+    if decoded == 0 && !screened {
         return Err(RecordedDecodeError::Unavailable.into());
     }
     let (episodes, entries) = temporal.finish()?;
@@ -1378,6 +1394,53 @@ fn run_scan_inner(
         .verify_durable_head()
         .map_err(ReferenceError::from)?;
     let health = health.map(|screen| screen.finish(plan.segment_count));
+    // An entirely refused screened request still has historical source timing assertions, but
+    // no screened-frame interval. Bind its requested capsule-hint hull explicitly; consumers
+    // must distinguish it from the hull of actual screened samples and from live coverage.
+    let capture_scope = if screened && capture_scope.is_none() {
+        let mut hull = first_capsule.capture;
+        for segment in plan.first_segment + 1..end {
+            checkpoint(cx, "historical_health:requested_capture")?;
+            let (capsule, _) = source_capsule(deployment, &retained, segment)?;
+            if capsule.sensor_id != first_capsule.sensor_id
+                || capsule.stream_id != first_capsule.stream_id
+            {
+                return Err(RecordedDecodeError::InvalidReceipt.into());
+            }
+            hull.earliest = hull.earliest.min(capsule.capture.earliest);
+            hull.latest = hull.latest.max(capsule.capture.latest);
+        }
+        Some(hull)
+    } else {
+        capture_scope
+    };
+    let health_diagnostic = health
+        .as_ref()
+        .map(|summary| {
+            super::historical_health::HistoricalHealthDiagnostic::from_scan(
+                deployment,
+                plan,
+                rule,
+                options,
+                limits,
+                &retained,
+                &first_capsule,
+                &privacy,
+                &publication_guard,
+                capture_scope.ok_or(WatchError::Conflict)?,
+                unreliable,
+                restarts,
+                source_bytes,
+                pixel_samples,
+                assignment_work,
+                jpeg_work,
+                summary,
+                &trace,
+                cx,
+            )
+            .map_err(|_| WatchError::InvalidPlan("invalid historical health diagnostic"))
+        })
+        .transpose()?;
     Ok(ScanData {
         import_root: retained.import_root(),
         manifest_digest: retained.manifest_digest(),
@@ -1398,6 +1461,7 @@ fn run_scan_inner(
         assignment_work,
         jpeg_work,
         health,
+        health_diagnostic,
         media_format: source.format.clone(),
     })
 }
@@ -1457,6 +1521,7 @@ impl LongDwellReport {
             assignment_work,
             jpeg_work,
             health,
+            health_diagnostic,
             media_format,
             publication_guard,
             ..
@@ -1573,6 +1638,7 @@ impl LongDwellReport {
             jpeg_work,
             policy,
             health,
+            health_diagnostic,
         };
         report.to_json(deployment.current_anchor().commit_sequence, None)?;
         Ok(report)
@@ -1597,6 +1663,12 @@ impl LongDwellReport {
     /// Explicit opt-in diagnostics; `None` means no screening was requested, never healthy.
     pub fn health_summary(&self) -> Option<&LongDwellHealthSummary> {
         self.health.as_ref()
+    }
+    /// Independently approvable historical diagnostic; this does not grant event authority.
+    pub fn health_diagnostic(
+        &self,
+    ) -> Option<&super::historical_health::HistoricalHealthDiagnostic> {
+        self.health_diagnostic.as_ref()
     }
     /// True when this report's health gate forbids any event publication.
     pub fn publication_blocked(&self) -> bool {

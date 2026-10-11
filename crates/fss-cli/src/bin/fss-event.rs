@@ -43,6 +43,8 @@ mod delete;
 mod detector;
 #[path = "fss-event/graph.rs"]
 mod graph;
+#[path = "fss-event/health.rs"]
+mod health;
 #[path = "fss-event/privacy_mask.rs"]
 mod privacy_mask;
 #[path = "fss-event/replay.rs"]
@@ -50,7 +52,7 @@ mod replay;
 #[path = "fss-event/watch.rs"]
 mod watch;
 
-const HELP: &str = "fss-event <report|prepare|publish|read|verify|watch|corroborate|calibrate|calibration|alert|privacy-mask|graph|delete> [options]\n\
+const HELP: &str = "fss-event <report|prepare|publish|read|verify|watch|corroborate|health|calibrate|calibration|alert|privacy-mask|graph|delete> [options]\n\
   All: --root DIR --site SITE [--principal ID]\n\
   report: --import-id sha256:HEX --runs FILE --interpretation gray|ycbcr\n\
           --model-digest sha256:HEX --output-port NAME --labels ORDERED,CLASS,NAMES\n\
@@ -112,7 +114,7 @@ const HELP: &str = "fss-event <report|prepare|publish|read|verify|watch|corrobor
     coverage pipeline generation binds the detector generation. Without it, output is unchanged.\n\
     Retained decode -> running-variance foreground -> Kalman tracker -> zone gate. Prints a\n\
     JSON report of candidates (zone, track, frame range, evidence digests, proposal digest).\n\
-    Without --approve nothing is written; each prepared candidate lists the exact rerun\n\
+    Without an event or retention approval nothing is written; each prepared candidate lists the exact rerun\n\
     command that publishes it. --approve publishes only those exact proposals as\n\
     unclassified, indeterminate, single-sensor candidates (never corroborated, no alert);\n\
     reruns never republish. Thresholds are uncalibrated; synthetic scenes prove wiring,\n\
@@ -132,6 +134,13 @@ const HELP: &str = "fss-event <report|prepare|publish|read|verify|watch|corrobor
     does not prove health, tamper absence, or physical absence. Exact approval reruns retain\n\
     the option. With --stream-dwell the existing whole-scan publication gate applies instead;\n\
     short non-stream dwell with sensor-health screening is unsupported and refused.\n\
+    Historical diagnostics: whole-recording screened watch/dwell previews also contain an\n\
+    independent historical_health approval. --retain-health sha256:APPROVAL retains its\n\
+    source-bound receipt and exact native scan recipe even when no event exists or health\n\
+    findings block event publication. Event approval uses a separate invocation.\n\
+    fss-event health read --diagnostic-digest sha256:RECORD checks retained custody; health\n\
+    verify adds --expected-provenance-root sha256:ROOT --execute-perception yes to rerun\n\
+    the retained scan. Historical findings do not certify current health, tamper or absence.\n\
     --stream-watch (bare flag): scan one whole recording for confirmed zone entries, keeping\n\
     foreground/tracker state between frames (1..65536 segments; no silent truncation).\n\
     Accepts retained MJPEG, H.264 and H.265; inter-coded frames run in display order and need\n\
@@ -1095,6 +1104,9 @@ fn print_package_event(
 
 fn main() -> ExitCode {
     let args: Vec<_> = std::env::args_os().skip(1).collect();
+    if args.first().is_some_and(|command| command == "health") {
+        return health::main(&args[1..]);
+    }
     if replay::handles(&args) {
         return replay::main(&args);
     }

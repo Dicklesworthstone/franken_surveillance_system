@@ -49,6 +49,10 @@ pub struct SemanticCompressionReceipt {
 }
 
 impl SemanticCompressionReceipt {
+    /// Combined source and selector expansion capacity from
+    /// `schemas/semantic_compression_receipt.v1.json`. Overflow must refuse, never truncate.
+    pub const MAX_EXPANSION_HANDLES: usize = 256;
+
     /// Validates the receipt independently of its selected context pack.
     pub fn validate(&self) -> Result<(), ContractError> {
         if self.receipt_id.is_empty()
@@ -58,7 +62,10 @@ impl SemanticCompressionReceipt {
         {
             return Err(ContractError::InvalidIdentifier);
         }
-        if self.actual_tokens > self.target_tokens || !self.critical_preservation.is_lossless() {
+        if self.actual_tokens > self.target_tokens
+            || !self.critical_preservation.is_lossless()
+            || self.expansion_handles.len() > Self::MAX_EXPANSION_HANDLES
+        {
             return Err(ContractError::BudgetExhausted);
         }
         if self.stop_reason == CompressionStopReason::Complete && !self.omitted_classes.is_empty() {

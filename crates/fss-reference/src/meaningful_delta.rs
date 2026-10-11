@@ -311,6 +311,17 @@ fn classify(
     if !changed_cells.is_empty() || !removed_claim_ids.is_empty() {
         classes.insert(MeaningfulDeltaClass::MaterialState);
     }
+    // These claims report immutable historical heuristic outputs or their explicit custody
+    // boundary. They do not change current coverage or assert sensor recovery: even a later
+    // no-findings receipt is a separate diagnostic, never a replacement for earlier findings.
+    if changed_cells.iter().any(|cell| {
+        crate::agent_orient::historical_health::is_historical_health_claim(cell.claim_id())
+    }) || removed_claim_ids
+        .iter()
+        .any(|claim| crate::agent_orient::historical_health::is_historical_health_claim(claim))
+    {
+        classes.insert(MeaningfulDeltaClass::SensorHealth);
+    }
     if contradiction_changed(
         &basis_frame.knowledge_cells,
         &result_frame.knowledge_cells,

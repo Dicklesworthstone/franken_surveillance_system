@@ -124,6 +124,7 @@ struct CameraScan {
     restarts: usize,
     masked_zones: BTreeSet<usize>,
     health: Option<LongDwellHealthSummary>,
+    health_diagnostic: Option<crate::ingest::historical_health::HistoricalHealthDiagnostic>,
     detector: Option<CameraDetector>,
 }
 
@@ -673,6 +674,15 @@ impl LongCorroborationReport {
     pub fn candidates(&self) -> &[CorroborationCandidate] {
         &self.candidates
     }
+    /// Independent historical diagnostics, in source camera order. Each has its own exact
+    /// retention approval; none can approve a corroboration event or clear another finding.
+    pub fn health_diagnostics(
+        &self,
+    ) -> impl Iterator<Item = &crate::ingest::historical_health::HistoricalHealthDiagnostic> {
+        self.cameras
+            .iter()
+            .filter_map(|camera| camera.health_diagnostic.as_ref())
+    }
     /// Every eligible ground observation, including unpaired, ambiguous and time-unreliable ones.
     /// Here `track_id` is a source-wide key, distinct from the epoch-local ID in [`Self::samples`].
     pub fn entries(&self) -> &[GroundEntry] {
@@ -1187,6 +1197,7 @@ fn prepare_camera(
         restarts: scan.restarts,
         masked_zones: consumer.masked.clone(),
         health: scan.health,
+        health_diagnostic: scan.health_diagnostic,
         detector,
     })
 }

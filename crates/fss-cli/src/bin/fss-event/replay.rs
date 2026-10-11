@@ -284,7 +284,7 @@ fn parse(args: &[OsString]) -> Result<Options, String> {
 
 // Refuse absent/wrong-site deployments before ReplayCx can create anything. Existing restart
 // recovery retains its owning semantics; replay never calls a publication method.
-fn preflight(root: &Path, site: &str, authority: &ContextAuthority) -> Run<PathBuf> {
+pub(super) fn preflight(root: &Path, site: &str, authority: &ContextAuthority) -> Run<PathBuf> {
     authority.validate()?;
     if !authority.has_capability("ADP-REPLAY-001")
         || authority.anchor_universe != ContentDigest::sha256(site.as_bytes())
@@ -611,7 +611,7 @@ fn finish(
 }
 
 // A bounded response must also have bounded interruption handling at its output boundary.
-fn emit(out: &mut impl Write, bytes: &[u8]) -> io::Result<()> {
+pub(super) fn emit(out: &mut impl Write, bytes: &[u8]) -> io::Result<()> {
     for chunk in bytes.chunks(64 * 1024) {
         let mut written = 0;
         let mut interruptions = 0;

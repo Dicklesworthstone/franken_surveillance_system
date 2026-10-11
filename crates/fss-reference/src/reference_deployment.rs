@@ -116,6 +116,7 @@ pub const KNOWN_LEDGER_DELTA_FAMILIES: &[&str] = &[
     FAMILY_DELETION_TOMBSTONE,
     FAMILY_DELETION_COMPLETION,
     crate::deployment_backup::FAMILY_RESTORE_FENCE,
+    crate::ingest::historical_health::FAMILY_HISTORICAL_HEALTH,
 ];
 
 /// Replay cancellation stage: open deployment.
@@ -177,6 +178,9 @@ fn reserved_family_entry_point(family: &str) -> Option<&'static str> {
         FAMILY_EVENT_REVISION | FAMILY_SENSOR_TAMPER_STATUS => Some("publish_event"),
         crate::evidence_export::FAMILY_EVIDENCE_EXPORT => Some("evidence_export::commit_export"),
         crate::deployment_backup::FAMILY_RESTORE_FENCE => Some("deployment_backup::restore_backup"),
+        crate::ingest::historical_health::FAMILY_HISTORICAL_HEALTH => {
+            Some("ingest::historical_health::HistoricalHealthDiagnostic::retain")
+        }
         ROOT_REACHABILITY_FAMILY => Some("publish_and_commit"),
         FAMILY_EVIDENCE_HOLD => Some("deletion::holds::commit_hold"),
         FAMILY_DELETION_RECORD
@@ -1515,6 +1519,17 @@ impl ReferenceDeployment {
             delta
                 .object_id
                 .as_str()
+                .starts_with(crate::ingest::historical_health::HISTORICAL_HEALTH_OBJECT_PREFIX)
+        }) {
+            return Err(ReferenceError::ReservedDeltaFamily {
+                family: crate::ingest::historical_health::FAMILY_HISTORICAL_HEALTH.to_owned(),
+                entry_point: "ingest::historical_health::HistoricalHealthDiagnostic::retain",
+            });
+        }
+        if deltas.iter().any(|delta| {
+            delta
+                .object_id
+                .as_str()
                 .starts_with(crate::deletion::holds::HOLD_OBJECT_PREFIX)
         }) {
             return Err(ReferenceError::ReservedDeltaFamily {
@@ -1531,6 +1546,41 @@ impl ReferenceDeployment {
                 family,
                 entry_point,
             });
+        }
+        self.append_checked_batch(batch_id, deltas, children)
+    }
+
+    /// Crate-internal writer for one independently approved native historical diagnostic.
+    /// Generic appends cannot manufacture the family or shadow its stable receipt namespace.
+    pub(crate) fn append_historical_health_batch(
+        &mut self,
+        batch_id: BatchId,
+        deltas: Vec<EvidenceDelta>,
+        children: Vec<ContentDigest>,
+        cx: &ReplayCx,
+    ) -> Result<LedgerAnchor, ReferenceError> {
+        if cx.is_cancelled() {
+            cx.drain_and_finalize();
+            return Err(ReferenceError::CancellationRequested {
+                stage: STAGE_APPEND_BATCH,
+            });
+        }
+        if deltas.len() != 1
+            || deltas.iter().any(|delta| {
+                delta.family != crate::ingest::historical_health::FAMILY_HISTORICAL_HEALTH
+                    || !delta.object_id.as_str().starts_with(
+                        crate::ingest::historical_health::HISTORICAL_HEALTH_OBJECT_PREFIX,
+                    )
+                    || delta.plane != Plane::Authority
+                    || delta.prior_generation.is_some()
+                    || delta.new_generation != 1
+                    || delta.witness_digest.is_none()
+                    || delta.operation_id.is_some()
+            })
+        {
+            return Err(ReferenceError::InvalidSpec(
+                "invalid historical health batch",
+            ));
         }
         self.append_checked_batch(batch_id, deltas, children)
     }

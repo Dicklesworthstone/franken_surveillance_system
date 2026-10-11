@@ -8,7 +8,7 @@ use crate::ingest::sensor_health::{
     HealthError, HealthFinding, HealthFrame, HealthObservation, HealthScreen, POLICY_NAME,
     policy_digest,
 };
-use fss_core::{CanonicalEncoder, ContentDigest};
+use fss_core::{CanonicalDecoder, CanonicalEncoder, ContentDigest, DigestAlgorithm};
 
 /// Maximum complete finding runs in one report; overflow refuses, never truncates diagnostics.
 pub const MAX_HEALTH_FINDING_RUNS: usize = 128;
@@ -91,6 +91,66 @@ impl LongDwellHealthSummary {
             e.digest(run.first_observation);
             e.digest(run.last_observation);
         }
+    }
+    /// Decode a bounded historical diagnostic. Published-event replay retains its separate
+    /// complete/no-findings gate; decoding this summary grants no event or coverage authority.
+    pub(in crate::ingest) fn decode(d: &mut CanonicalDecoder<'_>) -> Result<Self> {
+        let complete = d.bool()?;
+        let frames = usize::try_from(d.u64()?).map_err(|_| WatchError::Limit)?;
+        let samples = d.u64()?;
+        let count = usize::try_from(d.u64()?).map_err(|_| WatchError::Limit)?;
+        if frames > super::MAX_LONG_DWELL_FRAMES
+            || samples < frames as u64
+            || samples > super::MAX_LONG_DWELL_PIXELS
+            || count > MAX_HEALTH_FINDING_RUNS
+            || count > d.remaining() / 98
+            || (frames == 0 && (samples != 0 || complete || count != 0))
+        {
+            return Err(WatchError::Limit);
+        }
+        let mut findings = Vec::with_capacity(count);
+        let mut affected = [0_u64; 4];
+        for _ in 0..count {
+            let name = d.text()?;
+            let index = FINDINGS
+                .iter()
+                .position(|finding| finding.as_str() == name)
+                .ok_or(WatchError::InvalidPlan("unknown historical health finding"))?;
+            let first_segment = d.u64()?;
+            let last_segment = d.u64()?;
+            let affected_frames = d.u64()?;
+            let first_observation = d.digest()?;
+            let last_observation = d.digest()?;
+            affected[index] = affected[index]
+                .checked_add(affected_frames)
+                .ok_or(WatchError::Limit)?;
+            if last_segment
+                .checked_sub(first_segment)
+                .and_then(|n| n.checked_add(1))
+                != Some(affected_frames)
+                || affected_frames == 0
+                || affected[index] > frames as u64
+                || [first_observation, last_observation].iter().any(|digest| {
+                    digest.algorithm() != DigestAlgorithm::Sha256 || digest.bytes() == [0; 32]
+                })
+            {
+                return Err(WatchError::InvalidPlan("invalid historical health run"));
+            }
+            findings.push(HealthFindingRun {
+                finding: FINDINGS[index],
+                first_segment,
+                last_segment,
+                affected_frames,
+                first_observation,
+                last_observation,
+            });
+        }
+        Ok(Self {
+            complete,
+            frames,
+            samples,
+            findings,
+        })
     }
     pub(in crate::ingest) fn to_json(&self) -> String {
         let findings = self.findings.iter().map(|run| format!(

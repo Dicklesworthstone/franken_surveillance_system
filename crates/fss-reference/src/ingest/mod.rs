@@ -31,6 +31,8 @@ pub mod foreground;
 pub mod ground_visibility;
 /// Bounded H.265/HEVC Annex-B access-unit splitting with exact source spans.
 pub mod hevc_annexb;
+/// Independently retained historical whole-recording visual-health diagnostics.
+pub mod historical_health;
 /// Restartable exact durable HTTP history → retained imports → native streaming watch reports.
 pub mod http_history_watch;
 /// Exact frozen-model execution on retained decoded frames and durable model outputs.
@@ -70,10 +72,10 @@ pub mod recording_pipeline;
 pub mod retained;
 /// Recorded RTP continuity driven through the core acquisition session (fss-2h5zq.29).
 pub mod rtp_continuity;
-/// Source-preserving offline import of exact native AVC/HEVC recording windows.
-pub mod rtsp_import;
 /// Bounded recorded-RTP framing and source-preserving ingest.
 pub mod rtpdump;
+/// Source-preserving offline import of exact native AVC/HEVC recording windows.
+pub mod rtsp_import;
 /// Owner site calibration: atlas localization, joint refinement, digest-bound record.
 pub mod site_calibration;
 /// Retained continuity witnesses of live or virtual sources and the stored-witness absence rule.

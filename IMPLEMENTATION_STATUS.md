@@ -10,6 +10,43 @@ Franken Surveillance System now has a coherent, dependency-light Rust reference 
 
 It is also not a complete surveillance product. Native device adapters, production media/model/graph/storage services, persistent distributed operation, every human and agent surface, complete qualification matrices, and the aggregate release root remain open. Status below distinguishes implemented reference semantics from production completion.
 
+## Retained historical sensor-health diagnostics (2026-10-11, reference)
+
+Screened whole-recording watch and dwell reports now offer an independent `--retain-health`
+approval. A recording can retain its diagnosis when there is no event candidate or when a
+health finding blocks event publication. The canonical receipt binds original source custody,
+capture assumptions, the exact native scan and decoder/read limits, privacy generation,
+bounded finding runs, trace identity and actual work. Root-last retention revalidates source
+and privacy before the final diagnostic commit; exact retries preserve the original anchor.
+All-refused screened ranges remain explicit incomplete diagnostics with zero screened frames
+and a labeled source-capsule-hint fallback, never a fabricated screened interval.
+
+`fss-event health read` checks retained diagnostic metadata after restart without reading media
+or trace payloads. `health verify` separately admits native execution against exact receipt
+and provenance pins, reruns the retained masked scan and compares the complete receipt and
+trace. Current privacy changes, deleted/damaged selected custody, exhausted bounds and
+divergence refuse. The default CLI admission covers both native-library and watch-CLI producer
+profiles, while explicit smaller ceilings refuse the original recipe without rewriting it.
+
+Normal operator/agent orientation exposes literal historical results and exact proof handles;
+meaningful changes classify them as `SensorHealth`. A later `no_findings` receipt cannot clear
+an earlier suspicion. Current deletion fences bytes even in historical reads and remains a
+visible custody transition for sensor-health subscribers. Complete expansion inventories
+respect the existing 256-handle schema bound instead of truncating diagnostics or emitting
+an invalid response. Event, coverage, current tamper and alert authority are unchanged.
+
+Eighty-two focused native tests passed on Linux x86_64 with pinned `nightly-2026-08-31`,
+locked offline dependencies and debug assertions: historical retention/projection (12),
+additional meaningful-delta and expansion-bound cases (2), new real-process CLI (6),
+existing health-gated CLI (6), watch-entry CLI (8), whole-recording watch (16),
+whole-recording corroboration (16), and cold native event replay (16). These cover quiet and
+all-refused recordings, exact retries, privacy changes, damaged custody, graph-complete
+deletion, cancellation, old canonical replay identities and the unchanged Pulse budget.
+
+This is a retained reference slice of NS-3 / DOC-059. Live outage supervision, physical camera
+movement attribution, authorized restoration and measured field accuracy remain open.
+See [the operator workflow and limits](docs/historical_sensor_health.md).
+
 ## Current-format core deployment recovery (2026-10-11, reference, focused native tests passed)
 
 `fss-backup plan/create/inspect/restore` adds bounded recovery for exact local deployment

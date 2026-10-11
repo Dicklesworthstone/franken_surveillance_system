@@ -15,6 +15,96 @@ use crate::{
     classify_reference_meaningful_delta_in_lineage, project_reference_situation,
 };
 
+fn historical_health_cell(
+    label: &str,
+    outcome: &str,
+) -> Result<KnowledgeCell, fss_core::ContractError> {
+    let receipt = ContentDigest::sha256(label.as_bytes());
+    KnowledgeCell::new(KnowledgeCellParams {
+        claim_id: format!(
+            "{}{receipt}",
+            crate::agent_orient::CLAIM_HISTORICAL_HEALTH_PREFIX
+        ),
+        statement: format!(
+            "Historical heuristic receipt reports {outcome}; literal retained output only, \
+             current sensor health is unknown and no_findings clears no earlier finding."
+        ),
+        knowledge_state: KnowledgeState::Known,
+        provenance: ProvenanceClass::Derived,
+        hypothesis: None,
+        evidence: vec![receipt],
+        contradictions: Vec::new(),
+        valid_until: None,
+        state_basis: None,
+    })?
+    .validated()
+}
+
+#[test]
+fn historical_sensor_health_changes_do_not_grant_coverage_or_recovery() -> Result<(), Box<dyn Error>>
+{
+    let baseline = Variant::baseline()?;
+    let empty = publication(&baseline)?;
+    let mut prior = empty;
+    let mut state = baseline;
+    for outcome in ["suspected_degradation", "incomplete", "no_findings"] {
+        state.sequence += 1;
+        state
+            .extra_cells
+            .push(historical_health_cell(outcome, outcome)?);
+        let current = publication(&state)?;
+        let delta = classify_reference_meaningful_delta(&prior, &current)?;
+        assert!(delta.classes.contains(&MeaningfulDeltaClass::SensorHealth));
+        assert!(delta.classes.contains(&MeaningfulDeltaClass::MaterialState));
+        assert!(!delta.classes.contains(&MeaningfulDeltaClass::CoverageLoss));
+        assert!(
+            !delta
+                .classes
+                .contains(&MeaningfulDeltaClass::CoverageRecovery)
+        );
+        assert!(
+            !delta
+                .classes
+                .contains(&MeaningfulDeltaClass::TerminalTransition)
+        );
+        assert!(delta.silence_certificate.is_none());
+        assert!(delta.coverage_changes.is_empty());
+        assert!(delta.removed_claim_ids.is_empty());
+        prior = current;
+    }
+    // An unrelated successor keeps every independent receipt and changes no health semantics.
+    state.sequence += 1;
+    let successor = publication(&state)?;
+    let delta = classify_reference_meaningful_delta(&prior, &successor)?;
+    assert_eq!(
+        delta.classes,
+        BTreeSet::from([MeaningfulDeltaClass::NoMeaningfulChange])
+    );
+    assert!(delta.silence_certificate.is_some());
+    Ok(())
+}
+
+#[test]
+fn disappearing_historical_health_receipt_is_never_silence() -> Result<(), Box<dyn Error>> {
+    let mut basis = Variant::baseline()?;
+    basis.extra_cells.push(historical_health_cell(
+        "retained-suspicion",
+        "suspected_degradation",
+    )?);
+    let mut result = basis.clone();
+    result.sequence += 1;
+    result.extra_cells.clear();
+    let delta = classify_reference_meaningful_delta(&publication(&basis)?, &publication(&result)?)?;
+    assert!(delta.classes.contains(&MeaningfulDeltaClass::SensorHealth));
+    assert!(delta.classes.contains(&MeaningfulDeltaClass::MaterialState));
+    assert!(delta.silence_certificate.is_none());
+    assert_eq!(
+        delta.removed_claim_ids,
+        vec![basis.extra_cells[0].claim_id().to_owned()]
+    );
+    Ok(())
+}
+
 #[derive(Clone, Debug)]
 struct Variant {
     sequence: u64,

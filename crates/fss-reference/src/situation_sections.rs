@@ -448,6 +448,11 @@ pub fn project_reference_situation_with_source_omissions(
     let mut expansion_handles =
         expansion_handles(&context_pack.pack_id, &selection_omitted_classes)?;
     expansion_handles.extend(source.handles.iter().cloned());
+    if expansion_handles.len() > SemanticCompressionReceipt::MAX_EXPANSION_HANDLES {
+        return Err(ReferenceError::InvalidSpec(
+            "semantic_compression_expansion_handle_bound_exceeded",
+        ));
+    }
     let stop_reason = if omitted_classes.is_empty() {
         CompressionStopReason::Complete
     } else {

@@ -2,7 +2,7 @@
 //! `fss-event watch`: model-free single-camera candidates from a retained recording.
 //!
 //! Runs retained decode → foreground → Kalman tracker → zone gate through
-//! `fss_reference::ingest::recorded_watch`. Without `--approve` it writes nothing to the
+//! `fss_reference::ingest::recorded_watch`. Without an event or retention approval it writes nothing to the
 //! deployment and prints the JSON report with each candidate's exact proposal digest and the
 //! rerun command that would publish it. With `--approve DIGEST[,DIGEST...]` it publishes only
 //! those exact proposals as unclassified, indeterminate, single-sensor candidates through the
@@ -32,6 +32,8 @@
 //! rule, coverage-retention or alert authority. The same explicit detector-package options
 //! select native RGB inference at entries and following actual track matches; the complete
 //! recording shares one inference allowance and retains the verified package for cold replay.
+//! Screened whole-recording reports separately offer `--retain-health` for source-bound
+//! historical diagnostics, including runs with no candidate or a blocking health finding.
 
 use std::collections::BTreeSet;
 use std::ffi::OsString;
@@ -81,6 +83,7 @@ const OPTIONS: &[&str] = &[
     "--max-segment-bytes",
     "--approve",
     "--retain-coverage",
+    "--retain-health",
     "--report-out",
     "--dwell-for-ns",
     "--dwell-max-gap-ns",
@@ -126,6 +129,7 @@ pub(super) struct WatchAction {
     limits: WatchLimits,
     approvals: BTreeSet<ContentDigest>,
     retain_coverage: Option<ContentDigest>,
+    retain_health: Option<ContentDigest>,
     report_out: Option<PathBuf>,
     cascade: Option<super::detector::DetectorOptions>,
     options: WatchOptions,
@@ -283,7 +287,14 @@ pub(super) fn parse(args: &[OsString]) -> Result<WatchAction, String> {
         } else {
             values.push((key.to_owned(), argument.to_owned()));
         }
-        if key != "--approve" && key != "--retain-coverage" && key != "--report-out" {
+        if ![
+            "--approve",
+            "--retain-coverage",
+            "--retain-health",
+            "--report-out",
+        ]
+        .contains(&key)
+        {
             rerun.push(quote(key));
             rerun.push(quote(argument));
         }
@@ -298,6 +309,23 @@ pub(super) fn parse(args: &[OsString]) -> Result<WatchAction, String> {
         Ok(_) => true,
         Err(_) => false,
     };
+    let retain_health = match text(&values, "--retain-health") {
+        Ok(value) => Some(digest(value, "--retain-health")?),
+        Err(_) => None,
+    };
+    if retain_health.is_some() {
+        if !health_screen || !(stream_watch || stream_dwell) {
+            return Err(
+                "--retain-health requires --sensor-health conservative-v1 and --stream-watch or --stream-dwell"
+                    .to_owned(),
+            );
+        }
+        if values.iter().any(|(key, _)| key == "--approve") {
+            return Err(
+                "retain health and publish event approvals in separate invocations".to_owned(),
+            );
+        }
+    }
     if zones.is_empty() {
         return Err("at least one --zone ID:X,Y,W,H is required".to_owned());
     }
@@ -426,6 +454,7 @@ pub(super) fn parse(args: &[OsString]) -> Result<WatchAction, String> {
             Ok(value) => Some(digest(value, "--retain-coverage")?),
             Err(_) => None,
         },
+        retain_health,
         report_out: values
             .iter()
             .find(|(k, _)| k == "--report-out")
@@ -448,6 +477,16 @@ pub(super) fn run(
     cx: &ReplayCx,
     out: &mut impl Write,
 ) -> RunResult<()> {
+    if action.retain_health.is_some()
+        && (!action.health_screen
+            || (action.stream_watch.is_none() && action.stream_dwell.is_none())
+            || !action.approvals.is_empty())
+    {
+        return Err(WatchError::InvalidPlan(
+            "health retention requires screened whole-recording analysis and a separate event-approval invocation",
+        )
+        .into());
+    }
     if let Some(limits) = &action.stream_watch {
         let scalar = ScalarExecCx::new();
         let result = run_streaming_watch(action, deployment, root, limits, cx, &scalar, out);
@@ -581,19 +620,44 @@ fn run_streaming_watch(
         }
         None => LongWatchReport::analyze(deployment, &plan, action.options, limits, cx)?,
     };
-    // Complete report and exact approval hints must fit before any event commitment.
-    report.to_json(
-        deployment.current_anchor().commit_sequence,
-        Some(&action.rerun),
+    // Admit the complete post-retention shape as well as every exact approval hint before
+    // any commitment. A health receipt can be retained without publishing an event.
+    let sequence = if report.health_diagnostic().is_some() {
+        u64::MAX
+    } else {
+        deployment.current_anchor().commit_sequence
+    };
+    super::health::preflight_watch_diagnostic(
+        report.to_json(sequence, Some(&action.rerun))?,
+        report.health_diagnostic(),
+        deployment.current_anchor(),
+        &action.rerun,
     )?;
     if !action.approvals.is_empty() {
         report.publish(deployment, &action.approvals, cx)?;
     }
+    let retention = action
+        .retain_health
+        .map(|approval| -> RunResult<_> {
+            report
+                .health_diagnostic()
+                .ok_or_else(|| -> Box<dyn std::error::Error> {
+                    WatchError::InvalidPlan("no historical health diagnostic was produced").into()
+                })?
+                .retain(deployment, approval, cx)
+                .map_err(Into::into)
+        })
+        .transpose()?;
     let json = format!(
         "{}\n",
-        report.to_json(
-            deployment.current_anchor().commit_sequence,
-            Some(&action.rerun),
+        super::health::with_watch_diagnostic(
+            report.to_json(
+                deployment.current_anchor().commit_sequence,
+                Some(&action.rerun),
+            )?,
+            report.health_diagnostic(),
+            retention.as_ref(),
+            &action.rerun,
         )?
     );
     if let Some(path) = &action.report_out {
@@ -843,19 +907,42 @@ fn run_streaming(
         LongDwellReport::analyze
     };
     let mut report = analyze(deployment, &plan, rule, action.options, limits, cx)?;
-    // No partial JSON or oversized approval hints can be discovered only after an event commit.
-    report.to_json(
-        deployment.current_anchor().commit_sequence,
-        Some(&action.rerun),
+    let sequence = if report.health_diagnostic().is_some() {
+        u64::MAX
+    } else {
+        deployment.current_anchor().commit_sequence
+    };
+    super::health::preflight_watch_diagnostic(
+        report.to_json(sequence, Some(&action.rerun))?,
+        report.health_diagnostic(),
+        deployment.current_anchor(),
+        &action.rerun,
     )?;
     if !action.approvals.is_empty() {
         report.publish(deployment, &action.approvals, cx)?;
     }
+    let retention = action
+        .retain_health
+        .map(|approval| -> RunResult<_> {
+            report
+                .health_diagnostic()
+                .ok_or_else(|| -> Box<dyn std::error::Error> {
+                    WatchError::InvalidPlan("no historical health diagnostic was produced").into()
+                })?
+                .retain(deployment, approval, cx)
+                .map_err(Into::into)
+        })
+        .transpose()?;
     let json = format!(
         "{}\n",
-        report.to_json(
-            deployment.current_anchor().commit_sequence,
-            Some(&action.rerun),
+        super::health::with_watch_diagnostic(
+            report.to_json(
+                deployment.current_anchor().commit_sequence,
+                Some(&action.rerun),
+            )?,
+            report.health_diagnostic(),
+            retention.as_ref(),
+            &action.rerun,
         )?
     );
     if let Some(path) = &action.report_out {

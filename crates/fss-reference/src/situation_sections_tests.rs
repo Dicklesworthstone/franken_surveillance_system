@@ -176,6 +176,86 @@ fn spec(target_tokens: u64) -> ReferenceProjectionSpec {
 }
 
 #[test]
+fn combined_source_and_selector_expansion_handles_refuse_schema_overflow()
+-> Result<(), Box<dyn Error>> {
+    let situation = situation(true)?;
+    let spec = spec(550);
+    let selected = project_reference_situation(situation.clone(), &spec)?;
+    let selector_handles = selected.compression_receipt.expansion_handles.len();
+    assert!(selector_handles > 0 && selector_handles < 128);
+    let maximum = fss_core::SemanticCompressionReceipt::MAX_EXPANSION_HANDLES;
+    let cost = BudgetVector::builder()
+        .tokens(100)
+        .bytes(1_000)
+        .storage_operations(1)
+        .build()?;
+    let source = |count: usize| {
+        let omissions = [
+            (crate::agent_orient::SOURCE_CLASS_EVENT_DETAIL, 128),
+            (
+                crate::agent_orient::SOURCE_CLASS_HISTORICAL_HEALTH_DETAIL,
+                count - 128,
+            ),
+        ]
+        .into_iter()
+        .map(|(class, omitted_count)| SourceOmission {
+            class: class.to_owned(),
+            omitted_count: omitted_count as u64,
+            transform: fss_core::CompressionTransform {
+                kind: fss_core::CompressionTransformKind::Summarize,
+                scope: class.to_owned(),
+                loss_class: fss_core::CompressionLossClass::DecisionPreserving,
+                details: Some(
+                    "Every omitted item retains its own exact expansion handle.".to_owned(),
+                ),
+            },
+        })
+        .collect();
+        let handles = (0..count)
+            .map(|index| fss_core::ExpansionHandle {
+                handle: format!(
+                    "fss://proof/{}",
+                    ContentDigest::sha256(format!("combined-expansion-{index}").as_bytes())
+                ),
+                purpose: "Read the exact independently retained historical item.".to_owned(),
+                estimated_cost: cost,
+            })
+            .collect();
+        SourceOmissions { omissions, handles }
+    };
+    let admitted = project_reference_situation_with_source_omissions(
+        situation.clone(),
+        &spec,
+        &source(maximum - selector_handles),
+    )?;
+    assert_eq!(
+        admitted.compression_receipt.expansion_handles.len(),
+        maximum
+    );
+    admitted.verify()?;
+    let overflow = project_reference_situation_with_source_omissions(
+        situation,
+        &spec,
+        &source(maximum - selector_handles + 1),
+    );
+    assert!(matches!(
+        overflow,
+        Err(ReferenceError::InvalidSpec(
+            "semantic_compression_expansion_handle_bound_exceeded"
+        ))
+    ));
+    // The core receipt backstop rejects the same overflow even outside this producer.
+    let mut forged = admitted.compression_receipt;
+    forged.expansion_handles.push(fss_core::ExpansionHandle {
+        handle: "fss://proof/one-extra-distinct-expansion".to_owned(),
+        purpose: "This handle must not bypass the shared schema ceiling.".to_owned(),
+        estimated_cost: cost,
+    });
+    assert_eq!(forged.validate(), Err(ContractError::BudgetExhausted));
+    Ok(())
+}
+
+#[test]
 fn complete_sections_are_deterministic_and_cross_verified() -> Result<(), Box<dyn Error>> {
     let first = project_reference_situation(situation(false)?, &spec(10_000))?;
     let second = project_reference_situation(situation(false)?, &spec(10_000))?;

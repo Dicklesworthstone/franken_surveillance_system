@@ -170,6 +170,7 @@ pub struct LongWatchReport {
     jpeg_work: u64,
     media_format: String,
     health: Option<LongDwellHealthSummary>,
+    health_diagnostic: Option<super::historical_health::HistoricalHealthDiagnostic>,
     detector: Option<detector::Completed>,
 }
 
@@ -398,6 +399,7 @@ impl LongWatchReport {
                 .ok_or(WatchError::Limit)?,
             media_format: scan.media_format,
             health: scan.health,
+            health_diagnostic: scan.health_diagnostic,
             detector,
         };
         report.to_json(deployment.current_anchor().commit_sequence, None)?;
@@ -450,6 +452,12 @@ impl LongWatchReport {
     /// Requested screening diagnostics, or no screening claim when absent.
     pub fn health_summary(&self) -> Option<&LongDwellHealthSummary> {
         self.health.as_ref()
+    }
+    /// Independently approvable historical diagnostic; event and coverage gates remain separate.
+    pub fn health_diagnostic(
+        &self,
+    ) -> Option<&super::historical_health::HistoricalHealthDiagnostic> {
+        self.health_diagnostic.as_ref()
     }
     /// Whole-scan health gate; a clear screen never certifies sensor health or physical absence.
     pub fn publication_blocked(&self) -> bool {
