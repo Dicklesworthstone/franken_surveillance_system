@@ -132,6 +132,7 @@ jobs:
           crates/fss-cli/tests/mcp_control_contract.rs
           crates/fss-cli/tests/agent_effect_cli_contract.rs
           crates/fss-cli/tests/mcp_investigation_contract.rs
+          crates/fss-cli/tests/mcp_investigation_contract/wire.rs
           crates/fss-cli/tests/mcp_coordination_contract.rs
           crates/fss-cli/tests/finding_cli_contract.rs
           crates/fss-reference/src/deployment_session/findings.rs

@@ -135,6 +135,11 @@ The `investigate` tool acts within an existing session. Every call requires its
 `decisionFingerprint` is the exact revision digest required by the next change.
 The `list` transition returns the native cognitive-envelope summary.
 
+Native case inspection records a command witness in the session journal. Repeated
+inspections can therefore return the same case revision and decision fingerprint with
+successive journal-root proofs. Use the fingerprint to compare case revisions and verify
+each returned proof against its associated journal root.
+
 | Transition | Additional arguments |
 | --- | --- |
 | `open` | `draft`: the literal case object |

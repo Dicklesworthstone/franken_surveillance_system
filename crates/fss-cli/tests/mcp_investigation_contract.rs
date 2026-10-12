@@ -21,6 +21,9 @@ use fss_core::{ContentDigest, ContextAuthority, OperationId, RootAuthoritySpec};
 use fss_reference::media_fixture::jpeg::{JpegConfig, Subsampling, encode_jpeg};
 use fss_reference::{ADP_REPLAY_ROW_ID, ReferenceDeployment, ReplayCx, ReplayIoAuthority};
 
+#[path = "mcp_investigation_contract/wire.rs"]
+mod wire;
+
 type TestResult<T = ()> = Result<T, Box<dyn Error>>;
 
 const SITE: &str = "site:mcp-investigate";
@@ -339,7 +342,7 @@ fn exchange(root: &Path, principal: &str, requests: &str) -> TestResult<Vec<Valu
     assert!(output.stderr.is_empty(), "{output:?}");
     String::from_utf8(output.stdout)?
         .lines()
-        .map(|line| parse(line).map_err(Into::into))
+        .map(wire::parse_response)
         .collect()
 }
 
@@ -479,13 +482,57 @@ impl Agent {
         self.ok("inspect", &[("case", quote(CASE))])
     }
 
-    /// Compare an actual MCP read to the unchanged native CLI dispatcher, byte for byte.
-    fn assert_inspect_parity(&self, mcp: &Answer) -> TestResult {
+    /// Compare both transports from identical owned input bytes. Native inspect durably
+    /// records its command witness, so sequential calls have different journal-root proofs.
+    fn assert_inspect_parity(&self, previous: &Answer) -> TestResult {
+        use fss_reference::agent_session::checkpoint::journal::{
+            DurableSessionLimits, inspect_session_bytes,
+        };
+        use fss_reference::agent_session::work_claims::WorkClaimLimits;
+
+        let journal_path = self.root.join("agent/sessions/journal.fssj");
+        let journal_before = fs::read(&journal_path)?;
+        let before = inspect_session_bytes(
+            &journal_before,
+            DurableSessionLimits::default(),
+            WorkClaimLimits::default(),
+        )?;
+        assert_eq!(before.inspection.incomplete_tail, None);
+        assert_eq!(
+            ContentDigest::parse(
+                fs::read_to_string(self.root.join("agent/sessions/ROOT"))?.trim_end(),
+            )?,
+            before.inspection.root
+        );
+        assert!(
+            texts(&previous.envelope, &["proofPointers"])?
+                .contains(&before.inspection.root.to_text()),
+            "the preceding MCP response must prove the actual pre-call journal root"
+        );
+
+        let native_directory = OwnedDirectory::new("inspect-parity")?;
+        let native_root = native_directory.root();
+        let input = snapshot(&self.root)?;
+        for (relative, (is_directory, bytes)) in &input {
+            let destination = native_root.join(relative);
+            if *is_directory {
+                fs::create_dir_all(&destination)?;
+            } else {
+                if let Some(parent) = destination.parent() {
+                    fs::create_dir_all(parent)?;
+                }
+                fs::write(&destination, bytes)?;
+            }
+        }
+        assert_eq!(snapshot(&native_root)?, input);
+        let mcp = self.inspect()?;
+        assert_eq!(raw_payload(&mcp.semantic)?, raw_payload(&previous.semantic)?);
+        assert_eq!(mcp.fingerprint()?, previous.fingerprint()?);
         let args: Vec<OsString> = vec![
             "investigate".into(),
             "--json".into(),
             "--root".into(),
-            self.root.as_os_str().to_owned(),
+            native_root.as_os_str().to_owned(),
             "--session".into(),
             self.session.clone().into(),
             "--principal".into(),
@@ -498,6 +545,41 @@ impl Agent {
         let (native, exit) = execute_fss_with_exit(parse_fss_args(args)?);
         assert_eq!(exit, ExitIdentity::SUCCESS, "{native}");
         assert_eq!(mcp.semantic, native);
+        assert_eq!(snapshot(&self.root)?, snapshot(&native_root)?);
+
+        let journal_after = fs::read(&journal_path)?;
+        assert!(journal_after.starts_with(&journal_before));
+        let after = inspect_session_bytes(
+            &journal_after,
+            DurableSessionLimits::default(),
+            WorkClaimLimits::default(),
+        )?;
+        assert_eq!(after.inspection.incomplete_tail, None);
+        assert_eq!(after.inspection.records, before.inspection.records + 1);
+        assert_ne!(after.inspection.root, before.inspection.root);
+        assert_eq!(
+            ContentDigest::parse(
+                fs::read_to_string(self.root.join("agent/sessions/ROOT"))?.trim_end(),
+            )?,
+            after.inspection.root
+        );
+        assert!(
+            texts(&mcp.envelope, &["proofPointers"])?
+                .contains(&after.inspection.root.to_text()),
+            "both complete responses must prove the independently replayed post-call root"
+        );
+        // One command witness is appended; session authority, workspace state and every
+        // retained case/claim/follow head remain exactly the same.
+        assert_eq!(after.checkpoint_bytes, before.checkpoint_bytes);
+        assert_eq!(after.sessions, before.sessions);
+        assert_eq!(after.workspace_revisions, before.workspace_revisions);
+        assert_eq!(
+            after.workspace_checkpoint_digest,
+            before.workspace_checkpoint_digest
+        );
+        assert_eq!(after.claims, before.claims);
+        assert_eq!(after.cases, before.cases);
+        assert_eq!(after.follows, before.follows);
         Ok(())
     }
 }
