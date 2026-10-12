@@ -1318,85 +1318,239 @@ fn test_formerly_unsupported_opcodes_execute_and_unknown_gelu_mode_is_refused()
     };
 
     // The ops this test used to list as unsupported are never refused as UnsupportedOperator.
-    let formerly_unsupported = [
-        OpCode::Silu,
-        OpCode::Tanh,
-        OpCode::Transpose,
-        OpCode::Squeeze,
-        OpCode::Unsqueeze,
-        OpCode::Concat,
-        OpCode::Slice,
-        OpCode::LayerNorm,
-        OpCode::RMSNorm,
-        OpCode::Embedding,
-    ];
-    let mut executed = Vec::new();
-    for op in formerly_unsupported {
-        let (in_shape, in_dtype) = if op == OpCode::Embedding {
-            (Shape::new(vec![2, 4])?, DType::I32)
-        } else {
-            (Shape::new(vec![2, 4, 8])?, DType::F32)
-        };
-        let out_shape = Shape::new(vec![2, 4, 8])?;
+    // Every listed op gets a VALID graph: a validation failure fails the test (never silently
+    // skips), execution must succeed, and the output must equal a hand-computed golden
+    // (exact for data movement, kernel-primitive-exact for activations). [fss-aj72f]
+    #[allow(clippy::abs_diff_eq)]
+    fn ulp_diff(a: f32, b: f32) -> u32 {
+        let key = |v: u32| if v & 0x8000_0000 != 0 { !v } else { v ^ 0x8000_0000 };
+        key(a.to_bits()).abs_diff(key(b.to_bits()))
+    }
 
-        let in_port = TensorPort::new("in0", in_dtype, in_shape.clone(), g)?;
-        let out_port = TensorPort::new("out0", DType::F32, out_shape, g)?;
-
-        let mut attrs = AttributeMap::new();
-        match op {
-            OpCode::Transpose => {
-                attrs.insert("perm".to_string(), AttrValue::IntList(vec![0, 2, 1]));
-            }
-            OpCode::Squeeze | OpCode::Unsqueeze => {
-                attrs.insert("axes".to_string(), AttrValue::IntList(vec![1]));
-            }
-            OpCode::Slice => {
-                attrs.insert("starts".to_string(), AttrValue::IntList(vec![0]));
-                attrs.insert("ends".to_string(), AttrValue::IntList(vec![2]));
-            }
-            OpCode::Embedding => {
-                attrs.insert("num_embeddings".to_string(), AttrValue::Int(100));
-                attrs.insert("embedding_dim".to_string(), AttrValue::Int(8));
-            }
-            _ => {}
+    fn run_former_op(
+        g: Generation,
+        op: OpCode,
+        attrs: AttributeMap,
+        inputs: Vec<(&'static str, Tensor)>,
+        out_shape: Vec<usize>,
+        expected: &[f32],
+        max_ulps: u32,
+    ) -> Result<(), Box<dyn Error>> {
+        let mut builder = ModelIrGraph::builder("g_formerly_unsupported", g);
+        for (name, tensor) in &inputs {
+            builder = builder
+                .add_input(TensorPort::new(*name, tensor.dtype(), tensor.shape().clone(), g)?);
         }
-
         let node = GraphNode::new(
             "n_formerly_unsupported",
             op,
             "op",
-            vec!["in0".to_string()],
+            inputs.iter().map(|(name, _)| name.to_string()).collect(),
             vec!["out0".to_string()],
             attrs,
         )?;
-        if let Ok(graph) = ModelIrGraph::builder("g_test", g)
-            .add_input(in_port)
-            .add_output(out_port)
+        let graph = builder
+            .add_output(TensorPort::new("out0", DType::F32, Shape::new(out_shape)?, g)?)
             .add_node(node)
             .build_and_validate()
-        {
-            let cx = ScalarExecCx::new();
-            let dummy = if in_dtype == DType::I32 {
-                Tensor::from_values(in_shape, &[0_i32; 8], g)?
-            } else {
-                Tensor::from_values(in_shape, &[0.0_f32; 64], g)?
-            };
-            let res = ScalarExecutor::run(&graph, &[("in0", dummy)], ExecBudget::unlimited(), &cx);
-            match res {
-                Ok(out) => {
-                    assert!(out.outputs().contains_key("out0"), "{op:?} output missing");
-                    executed.push(op);
-                }
-                Err(err) => {
-                    return Err(format!("validated {op:?} graph must execute, got {err:?}").into());
-                }
+            .map_err(|e| format!("{op:?} graph must validate, got {e:?}"))?;
+        let feed: Vec<(&str, Tensor)> = inputs.into_iter().map(|(n, t)| (n, t)).collect();
+        let cx = ScalarExecCx::new();
+        let out = ScalarExecutor::run(&graph, &feed, ExecBudget::unlimited(), &cx)
+            .map_err(|e| format!("{op:?} graph must execute, got {e:?}"))?;
+        let y = out
+            .outputs()
+            .get("out0")
+            .ok_or_else(|| format!("{op:?} output out0 missing"))?;
+        let values = y.to_vec::<f32>()?;
+        assert_eq!(
+            values.len(),
+            expected.len(),
+            "{op:?} output element count"
+        );
+        for (index, (got, want)) in values.iter().zip(expected.iter()).enumerate() {
+            assert!(
+                ulp_diff(*got, *want) <= max_ulps,
+                "{op:?} output golden mismatch at element {index}: {got} vs {want}"
+            );
+        }
+        Ok(())
+    }
+
+    let ramp64: Vec<f32> = (0..64u32).map(|i| i as f32 * 0.25).collect();
+
+    // SiLU: the mathematical definition x/(1+e^-x) evaluated in f64 and narrowed,
+    // independent of the kernel's custom exp tail; transcendental, so 1-ulp tolerance.
+    let silu_expected: Vec<f32> = ramp64
+        .iter()
+        .map(|&x| (f64::from(x) / (1.0 + (-f64::from(x)).exp())) as f32)
+        .collect();
+    run_former_op(
+        g,
+        OpCode::Silu,
+        AttributeMap::new(),
+        vec![("in0", Tensor::from_values(Shape::new(vec![2, 4, 8])?, &ramp64, g)?)],
+        vec![2, 4, 8],
+        &silu_expected,
+        1,
+    )?;
+
+    // Tanh: correctly-rounded f64 tanh narrowed to f32.
+    let tanh_expected: Vec<f32> = ramp64.iter().map(|&x| f64::from(x).tanh() as f32).collect();
+    run_former_op(
+        g,
+        OpCode::Tanh,
+        AttributeMap::new(),
+        vec![("in0", Tensor::from_values(Shape::new(vec![2, 4, 8])?, &ramp64, g)?)],
+        vec![2, 4, 8],
+        &tanh_expected,
+        1,
+    )?;
+
+    // Transpose permutation [0,2,1]: out[a][c][b] = in[a][b][c].
+    let mut transpose_expected = vec![0.0_f32; 64];
+    for a in 0..2usize {
+        for b in 0..4usize {
+            for c in 0..8usize {
+                transpose_expected[a * 32 + c * 4 + b] = ramp64[a * 32 + b * 8 + c];
             }
         }
     }
-    assert!(
-        executed.contains(&OpCode::Silu) && executed.contains(&OpCode::Tanh),
-        "SiLU and Tanh graphs must validate and execute: {executed:?}"
+    let mut transpose_attrs = AttributeMap::new();
+    transpose_attrs.insert(
+        "permutation".to_string(),
+        AttrValue::IntList(vec![0, 2, 1]),
     );
+    run_former_op(
+        g,
+        OpCode::Transpose,
+        transpose_attrs,
+        vec![("in0", Tensor::from_values(Shape::new(vec![2, 4, 8])?, &ramp64, g)?)],
+        vec![2, 8, 4],
+        &transpose_expected,
+        0,
+    )?;
+
+    // Squeeze axis 1 (size 1): pure copy to the reduced shape.
+    let ramp16: Vec<f32> = (0..16u32).map(|i| i as f32 * 0.5).collect();
+    let mut squeeze_attrs = AttributeMap::new();
+    squeeze_attrs.insert("axes".to_string(), AttrValue::IntList(vec![1]));
+    run_former_op(
+        g,
+        OpCode::Squeeze,
+        squeeze_attrs,
+        vec![("in0", Tensor::from_values(Shape::new(vec![2, 1, 8])?, &ramp16, g)?)],
+        vec![2, 8],
+        &ramp16,
+        0,
+    )?;
+
+    // Unsqueeze axis 1: pure copy to the expanded shape.
+    let mut unsqueeze_attrs = AttributeMap::new();
+    unsqueeze_attrs.insert("axes".to_string(), AttrValue::IntList(vec![1]));
+    run_former_op(
+        g,
+        OpCode::Unsqueeze,
+        unsqueeze_attrs,
+        vec![("in0", Tensor::from_values(Shape::new(vec![2, 4, 8])?, &ramp64, g)?)],
+        vec![2, 1, 4, 8],
+        &ramp64,
+        0,
+    )?;
+
+    // Concat axis 0 over two inputs: rows of A then rows of B.
+    let a_vals: Vec<f32> = (0..64u32).map(|i| i as f32).collect();
+    let b_vals: Vec<f32> = (0..64u32).map(|i| (i + 64) as f32).collect();
+    let mut concat_expected = a_vals.clone();
+    concat_expected.extend_from_slice(&b_vals);
+    let mut concat_attrs = AttributeMap::new();
+    concat_attrs.insert("axis".to_string(), AttrValue::Int(0));
+    run_former_op(
+        g,
+        OpCode::Concat,
+        concat_attrs,
+        vec![
+            ("in0", Tensor::from_values(Shape::new(vec![2, 4, 8])?, &a_vals, g)?),
+            ("in1", Tensor::from_values(Shape::new(vec![2, 4, 8])?, &b_vals, g)?),
+        ],
+        vec![4, 4, 8],
+        &concat_expected,
+        0,
+    )?;
+
+    // Slice starts [1] axes [0] steps [2] on [3,4,8]: picks source row 1 only.
+    let ramp96: Vec<f32> = (0..96u32).map(|i| i as f32 * 0.125).collect();
+    let slice_expected: Vec<f32> = ramp96[32..64].to_vec();
+    let mut slice_attrs = AttributeMap::new();
+    // "ends" is required by graph validation (ONNX-style vocabulary) while the
+    // executor reads starts/axes/steps; providing it keeps the graph valid.
+    slice_attrs.insert("starts".to_string(), AttrValue::IntList(vec![1]));
+    slice_attrs.insert("ends".to_string(), AttrValue::IntList(vec![2]));
+    slice_attrs.insert("axes".to_string(), AttrValue::IntList(vec![0]));
+    slice_attrs.insert("steps".to_string(), AttrValue::IntList(vec![2]));
+    run_former_op(
+        g,
+        OpCode::Slice,
+        slice_attrs,
+        vec![("in0", Tensor::from_values(Shape::new(vec![3, 4, 8])?, &ramp96, g)?)],
+        vec![1, 4, 8],
+        &slice_expected,
+        0,
+    )?;
+
+    // LayerNorm and RMSNorm on an all-zero vector: mean 0, variance 0, so the
+    // normalized output is exactly 0 (eps guard), not a division by zero.
+    let zeros64 = vec![0.0_f32; 64];
+    run_former_op(
+        g,
+        OpCode::LayerNorm,
+        AttributeMap::new(),
+        vec![("in0", Tensor::from_values(Shape::new(vec![2, 4, 8])?, &zeros64, g)?)],
+        vec![2, 4, 8],
+        &zeros64,
+        0,
+    )?;
+    run_former_op(
+        g,
+        OpCode::RMSNorm,
+        AttributeMap::new(),
+        vec![("in0", Tensor::from_values(Shape::new(vec![2, 4, 8])?, &zeros64, g)?)],
+        vec![2, 4, 8],
+        &zeros64,
+        0,
+    )?;
+
+    // Embedding: out[i,j,:] = weights_row(indices[i,j]).
+    let indices: Vec<i32> = (0..8i32).collect();
+    let weights: Vec<f32> = (0..800u32)
+        .map(|r| (r / 8) as f32 * 0.5 + (r % 8) as f32 * 0.01)
+        .collect();
+    let mut embed_expected = Vec::with_capacity(64);
+    for &idx in &indices {
+        embed_expected.extend_from_slice(&weights[idx as usize * 8..idx as usize * 8 + 8]);
+    }
+    let mut embed_attrs = AttributeMap::new();
+    embed_attrs.insert("num_embeddings".to_string(), AttrValue::Int(100));
+    embed_attrs.insert("embedding_dim".to_string(), AttrValue::Int(8));
+    run_former_op(
+        g,
+        OpCode::Embedding,
+        embed_attrs,
+        vec![
+            ("in0", Tensor::from_values(Shape::new(vec![2, 4])?, &indices, g)?),
+            (
+                "in1",
+                Tensor::from_values(Shape::new(vec![100, 8])?, &weights, g)?,
+            ),
+        ],
+        vec![2, 4, 8],
+        &embed_expected,
+        0,
+    )?;
+
+    // All ten formerly-unsupported ops validated, executed, and matched their goldens;
+    // reaching this point is the proof (any failure above aborts the test with a typed error).
+    let formerly_unsupported_executed = 10_usize;
 
     let dur = start.elapsed().as_millis();
     Record::new("formerly_unsupported_opcodes_execute")
@@ -1407,9 +1561,9 @@ fn test_formerly_unsupported_opcodes_execute_and_unknown_gelu_mode_is_refused()
             refused_attr,
         )
         .check(
-            "silu_and_tanh_executed",
-            true,
-            executed.contains(&OpCode::Silu) && executed.contains(&OpCode::Tanh),
+            "formerly_unsupported_ops_executed_and_golden",
+            10_usize,
+            formerly_unsupported_executed,
         )
         .emit_checked(dur, true);
 
