@@ -42,6 +42,7 @@ jobs:
           crates/fss-publication/tests/lock_lifetime_contract.rs
           crates/fss-reference/src/deployment_session.rs
           crates/fss-reference/src/reference_deployment.rs
+          crates/fss-reference/tests/reference_deployment_recovery_contract.rs
           crates/fss-cli/src/fss_cmd.rs
           crates/fss-cli/src/session_cmd.rs
           crates/fss-cli/src/bin/fss-mcp.rs

@@ -784,6 +784,34 @@ fn p16_root_kinds() -> R {
         matches!(&r, Err(ReferenceError::NotADeployment { path }) if path == &f),
         "{r:?}"
     );
+    let r = ReferenceDeployment::open_for_recovery(
+        &f,
+        RecoveryAction::TruncateIncompleteLedgerTail,
+        &cx,
+    );
+    assert!(
+        matches!(&r, Err(ReferenceError::NotADeployment { path }) if path == &f),
+        "recovery must refuse a regular file: {r:?}"
+    );
+
+    let file_link = tdir("p16filelink");
+    std::os::unix::fs::symlink(&f, &file_link)?;
+    let r = ReferenceDeployment::open(&file_link, "site:p16", &cx);
+    assert!(
+        matches!(&r, Err(ReferenceError::NotADeployment { path }) if path == &file_link),
+        "a symlink to a regular file must be refused: {r:?}"
+    );
+    let r = ReferenceDeployment::open_for_recovery(
+        &file_link,
+        RecoveryAction::TruncateIncompleteLedgerTail,
+        &cx,
+    );
+    assert!(
+        matches!(&r, Err(ReferenceError::NotADeployment { path }) if path == &file_link),
+        "recovery must refuse a symlink to a regular file: {r:?}"
+    );
+    assert_eq!(fs::read(&f)?, b"i am a file");
+    let _ = fs::remove_file(&file_link);
     let _ = fs::remove_file(&f);
 
     let real = tdir("p16real");
@@ -797,18 +825,28 @@ fn p16_root_kinds() -> R {
     let _ = fs::remove_dir_all(&real);
 
     let dangling = tdir("p16dangling");
-    std::os::unix::fs::symlink(tdir("p16nowhere"), &dangling)?;
+    let missing = tdir("p16nowhere");
+    std::os::unix::fs::symlink(&missing, &dangling)?;
     let r = ReferenceDeployment::open(&dangling, "site:p16", &cx);
     assert!(
         matches!(&r, Err(ReferenceError::NotADeployment { path }) if path == &dangling),
         "dangling symlink must be refused as not a deployment: {r:?}"
     );
+    let r = ReferenceDeployment::open_for_recovery(
+        &dangling,
+        RecoveryAction::TruncateIncompleteLedgerTail,
+        &cx,
+    );
     assert!(
-        fs::symlink_metadata(tdir("p16nowhere")).is_err(),
+        matches!(&r, Err(ReferenceError::NotADeployment { path }) if path == &dangling),
+        "recovery must refuse a dangling symlink: {r:?}"
+    );
+    assert!(
+        fs::symlink_metadata(&missing).is_err(),
         "a refused dangling symlink must not create its target"
     );
     let _ = fs::remove_file(&dangling);
-    let _ = fs::remove_dir_all(tdir("p16nowhere"));
+    let _ = fs::remove_dir_all(&missing);
 
     let ro = tdir("p16ro");
     fs::create_dir_all(&ro)?;
@@ -832,6 +870,34 @@ fn p16_root_kinds() -> R {
     }
     drop(r);
     let _ = fs::remove_dir_all(&ro);
+
+    if enforced {
+        let denied = tdir("p16denied");
+        let inaccessible = denied.join("deployment");
+        fs::create_dir_all(&inaccessible)?;
+        fs::set_permissions(&denied, fs::Permissions::from_mode(0o000))?;
+        let ordinary = ReferenceDeployment::open(&inaccessible, "site:p16", &cx);
+        let recovery = ReferenceDeployment::open_for_recovery(
+            &inaccessible,
+            RecoveryAction::TruncateIncompleteLedgerTail,
+            &cx,
+        );
+        fs::set_permissions(&denied, fs::Permissions::from_mode(0o755))?;
+        for r in [ordinary.map(|_| ()), recovery.map(|_| ())] {
+            assert!(
+                matches!(
+                    &r,
+                    Err(ReferenceError::Io(e)) if e.kind() == io::ErrorKind::PermissionDenied
+                ),
+                "inaccessible root metadata must retain its I/O error: {r:?}"
+            );
+        }
+        assert!(
+            fs::read_dir(&inaccessible)?.next().is_none(),
+            "refusing inaccessible root metadata must not create deployment files"
+        );
+        fs::remove_dir_all(&denied)?;
+    }
 
     let rel = PathBuf::from(format!("refdep-recovery-rel-{}", std::process::id()));
     let r = ReferenceDeployment::open(&rel, "site:p16", &cx);

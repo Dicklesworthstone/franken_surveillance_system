@@ -13,7 +13,7 @@ use std::sync::{Arc, Mutex};
 use fss_core::ContentDigest;
 use fss_object::{
     FaultInjectingSpoolIo, HostSpoolIo, RecordingSpoolIo, SPOOL_LOCK_FILE, SpoolError,
-    SpoolFaultPlan, SpoolIo, SpoolIoCall, SpoolLimits, SpoolLock, StagingSpool,
+    SpoolFaultPlan, SpoolIo, SpoolIoCall, SpoolLimits, SpoolLock, SpoolObjectState, StagingSpool,
 };
 use fss_publication::{
     LOCAL_LOCK_FILE, LocalPublicationError, LocalPublicationLimits, LocalRootPublisher,
@@ -234,7 +234,10 @@ fn dropped_publisher_releases_nested_spool_before_its_inherited_outer_lock() -> 
         Err(LocalPublicationError::Locked { .. })
     ));
     drop(reopened);
-    drop(LocalRootPublisher::open(&directory.0, publication_limits())?);
+    drop(LocalRootPublisher::open(
+        &directory.0,
+        publication_limits(),
+    )?);
     Ok(())
 }
 
@@ -246,6 +249,7 @@ fn dropped_spool_releases_inherited_lock_and_preserves_verified_payload() -> Tes
     let bytes = b"retained custody survives writer replacement";
     let digest = ContentDigest::sha256(bytes);
     spool.stage(digest, bytes)?;
+    assert_eq!(spool.verify(digest)?, SpoolObjectState::Verified);
     assert_eq!(spool.read(digest)?, bytes);
     assert!(matches!(
         StagingSpool::open(&directory.0, spool_limits()),
@@ -254,6 +258,7 @@ fn dropped_spool_releases_inherited_lock_and_preserves_verified_payload() -> Tes
     drop(spool);
     assert_eq!(io.attempts()?, vec![directory.0.join(SPOOL_LOCK_FILE)]);
     let reopened = StagingSpool::open(&directory.0, spool_limits())?;
+    assert_eq!(reopened.state(digest), Some(SpoolObjectState::Verified));
     assert_eq!(reopened.read(digest)?, bytes);
     drop(io);
     assert!(matches!(
@@ -278,9 +283,11 @@ fn failed_opens_release_acquired_spool_and_publication_handles() -> TestResult {
         } else {
             SpoolIoCall::CreateDir
         };
-        let faults = Arc::new(FaultInjectingSpoolIo::new(
-            SpoolFaultPlan::new().fail(call, 1, io::ErrorKind::PermissionDenied),
-        ));
+        let faults = Arc::new(FaultInjectingSpoolIo::new(SpoolFaultPlan::new().fail(
+            call,
+            1,
+            io::ErrorKind::PermissionDenied,
+        )));
         let io = Arc::new(RetainingIo::new(faults.clone()));
         if publisher {
             assert!(matches!(
@@ -303,7 +310,10 @@ fn failed_opens_release_acquired_spool_and_publication_handles() -> TestResult {
         assert_eq!(io.attempts()?, paths);
         assert_eq!(faults.calls(SpoolIoCall::Unlock), paths.len() as u64);
         if publisher {
-            drop(LocalRootPublisher::open(&directory.0, publication_limits())?);
+            drop(LocalRootPublisher::open(
+                &directory.0,
+                publication_limits(),
+            )?);
         } else {
             drop(StagingSpool::open(&directory.0, spool_limits())?);
         }
@@ -327,9 +337,11 @@ fn failed_acquisition_never_unlocks_an_independent_live_owner() -> TestResult {
     let probe = HostSpoolIo.open_lock(&path)?;
     assert!(matches!(probe.try_lock(), Err(TryLockError::WouldBlock)));
 
-    let denied = Arc::new(FaultInjectingSpoolIo::new(
-        SpoolFaultPlan::new().fail(SpoolIoCall::TryLock, 1, io::ErrorKind::PermissionDenied),
-    ));
+    let denied = Arc::new(FaultInjectingSpoolIo::new(SpoolFaultPlan::new().fail(
+        SpoolIoCall::TryLock,
+        1,
+        io::ErrorKind::PermissionDenied,
+    )));
     assert!(matches!(
         SpoolLock::try_acquire(HostSpoolIo.open_lock(&path)?, denied.clone()),
         Err(TryLockError::Error(error)) if error.kind() == io::ErrorKind::PermissionDenied
@@ -373,7 +385,10 @@ fn release_failures_preserve_successor_ownership_and_accounting() -> TestResult 
             successor.try_lock()?;
             drop(inherited);
         } else {
-            assert!(matches!(successor.try_lock(), Err(TryLockError::WouldBlock)));
+            assert!(matches!(
+                successor.try_lock(),
+                Err(TryLockError::WouldBlock)
+            ));
             drop(inherited);
             successor.try_lock()?;
         }

@@ -1008,6 +1008,10 @@ impl ReferenceDeployment {
         validate_site_lineage(site_lineage)?;
 
         let root_buf = root.to_path_buf();
+        // A regular file, a symlink to one, or a dangling symlink is never a deployment root.
+        if fs::symlink_metadata(root).is_ok() && !root.is_dir() {
+            return Err(ReferenceError::NotADeployment { path: root_buf });
+        }
         // Restore writes this guard before populating a fresh directory and removes it only
         // after the copied journals, custody and durable effect fence are complete. LAYOUT
         // alone must never make an interrupted restoration available to ordinary writers.
@@ -1016,10 +1020,6 @@ impl ReferenceDeployment {
             Ok(_) => return Err(ReferenceError::NotADeployment { path: root_buf }),
             Err(error) if error.kind() == io::ErrorKind::NotFound => {}
             Err(error) => return Err(error.into()),
-        }
-        // A regular file, a symlink to one, or a dangling symlink is never a deployment root.
-        if fs::symlink_metadata(root).is_ok() && !root.is_dir() {
-            return Err(ReferenceError::NotADeployment { path: root_buf });
         }
 
         let ledger_path = root.join(RELATIVE_PATH_LEDGER);
@@ -1177,6 +1177,15 @@ impl ReferenceDeployment {
         }
 
         let root_buf = root.to_path_buf();
+        // Classify the root before probing a child path, retaining real metadata errors.
+        match fs::metadata(root) {
+            Ok(metadata) if metadata.is_dir() => {}
+            Ok(_) => return Err(ReferenceError::NotADeployment { path: root_buf }),
+            Err(error) if error.kind() == io::ErrorKind::NotFound => {
+                return Err(ReferenceError::NotADeployment { path: root_buf });
+            }
+            Err(error) => return Err(ReferenceError::Io(error)),
+        }
         // An inert backup payload or incomplete restoration is not a repairable live root.
         // Refuse before opening locks, truncating journals or clearing temporary layout files.
         match fs::symlink_metadata(root.join(crate::deployment_backup::RESTORE_INCOMPLETE_FILENAME))
@@ -1184,9 +1193,6 @@ impl ReferenceDeployment {
             Ok(_) => return Err(ReferenceError::NotADeployment { path: root_buf }),
             Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
             Err(error) => return Err(ReferenceError::Io(error)),
-        }
-        if !root.exists() || !root.is_dir() {
-            return Err(ReferenceError::NotADeployment { path: root_buf });
         }
 
         let layout_path = root.join(DEPLOYMENT_LAYOUT_FILENAME);

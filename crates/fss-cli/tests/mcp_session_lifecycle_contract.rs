@@ -17,6 +17,7 @@ use fss_core::{
     ContractError, EffectIntent, EvidenceDelta, IdempotencyKey, ObjectId, ObligationId,
     OperationId, Plane, RootAuthoritySpec, TimestampNs,
 };
+use fss_object::ObjectManifest;
 use fss_reference::agent_follow::AnchorToken;
 use fss_reference::agent_session::checkpoint::journal::{
     DurableSessionLimits, SessionRecoveryState, inspect_session_bytes,
@@ -123,7 +124,11 @@ impl Reply {
             "AOP-012" => ("agent_handoff_capsule.v1", "CAP-AGENT-HANDOFF-WRITE-001"),
             _ => return Err("unexpected lifecycle operation".into()),
         };
-        assert_eq!(body.lines().count(), 1, "one complete semantic JSON document");
+        assert_eq!(
+            body.lines().count(),
+            1,
+            "one complete semantic JSON document"
+        );
         assert!(body.trim_end().ends_with('}'));
         let value = json_input::parse(&body)?;
         assert_eq!(text(&value, "schema")?, "fss.agent_response_envelope.v1");
@@ -365,9 +370,8 @@ impl Fixture {
     }
 
     fn open(&self, mission: &str, budget: Option<u64>) -> TestResult<Reply> {
-        let budget = budget.map_or_else(String::new, |tokens| {
-            format!(",\"budget_tokens\":{tokens}")
-        });
+        let budget =
+            budget.map_or_else(String::new, |tokens| format!(",\"budget_tokens\":{tokens}"));
         self.call(
             PRINCIPAL,
             "session_open",
@@ -398,18 +402,31 @@ impl Fixture {
         reply: &Reply,
         decode: impl Fn(&[u8]) -> Result<T, ContractError>,
     ) -> TestResult<T> {
+        let directory = self.root.join("agent/publications");
+        let pointers = array(&reply.value, "proofPointers")?
+            .iter()
+            .filter_map(Value::text)
+            .filter_map(|pointer| ContentDigest::parse(pointer).ok())
+            .collect::<Vec<_>>();
+        let inspection = fss_publication::inspect(
+            &directory,
+            fss_publication::LocalPublicationLimits::default(),
+        )?;
         let mut found = None;
-        for pointer in array(&reply.value, "proofPointers")?.iter().filter_map(Value::text) {
-            let Ok(digest) = ContentDigest::parse(pointer) else {
+        for visible in inspection.visible_roots() {
+            if !pointers.contains(&visible.root) {
                 continue;
-            };
-            let Ok(bytes) = fss_publication::read_verified(
-                self.root.join("agent/publications"),
-                digest,
-                1 << 20,
-            ) else {
-                continue;
-            };
+            }
+            assert!(!inspection.is_broken_slot(&visible.slot));
+            // The response names the root-last publication manifest. Its metadata edge names
+            // the native record; the publication receipt digest is not a handoff record digest.
+            let bytes = fss_publication::read_verified(&directory, visible.root, 1 << 20)?;
+            let manifest = ObjectManifest::from_canonical_bytes(&bytes)?;
+            assert_eq!(manifest.root(), visible.root);
+            let metadata = manifest
+                .metadata_digest()
+                .ok_or("response-named publication has no native metadata record")?;
+            let bytes = fss_publication::read_verified(&directory, metadata, 1 << 20)?;
             if let Ok(record) = decode(&bytes) {
                 if let Some(prior) = &found {
                     assert_eq!(prior, &record, "proofs cannot name contradictory records");
@@ -471,7 +488,10 @@ fn mcp_open_follow_ack_handoff_and_cold_resume_preserve_durable_identity() -> Te
     let original_session = fixture.inspect()?.sessions[0].session.clone();
     let journal = fixture.journal()?;
     let duplicate = fixture.open(MISSION, Some(100_000))?;
-    assert_eq!(duplicate.body, opened.body, "same full head is an exact retry");
+    assert_eq!(
+        duplicate.body, opened.body,
+        "same full head is an exact retry"
+    );
     assert_eq!(fixture.journal()?, journal);
 
     for _ in 0..3 {
@@ -519,16 +539,28 @@ fn mcp_open_follow_ack_handoff_and_cold_resume_preserve_durable_identity() -> Te
     let handed = fixture.call(
         PRINCIPAL,
         "handoff",
-        &format!("{{\"session\":{},\"note\":{}}}", quote(&session), quote(note)),
+        &format!(
+            "{{\"session\":{},\"note\":{}}}",
+            quote(&session),
+            quote(note)
+        ),
         "AOP-012",
         false,
     )?;
     handed.success(&session, &mission)?;
     assert_eq!(text(&handed.value, "effectiveViewId")?, "AVIEW-006");
     assert_eq!(text(handed.payload()?, "objective")?, OBJECTIVE);
-    assert_eq!(handed.sequence("anchor")?, 0, "handoff keeps its session basis");
+    assert_eq!(
+        handed.sequence("anchor")?,
+        0,
+        "handoff keeps its session basis"
+    );
     let handoff_id = text(handed.payload()?, "handoffId")?.to_owned();
     let record = fixture.published(&handed, HandoffRecord::from_bytes)?;
+    assert_eq!(record.capsule.handoff_id.as_str(), handoff_id);
+    assert_eq!(record.capsule.mission_id.as_str(), mission);
+    assert_eq!(record.capsule.source_principal_id.as_str(), PRINCIPAL);
+    assert_eq!(record.anchor_token, since);
     assert_eq!(record.note.as_deref(), Some(note));
     assert_eq!(record.capsule.source_session_id.as_str(), session);
     assert_eq!(fixture.inspect()?.follows, retained_follow);
@@ -550,10 +582,22 @@ fn mcp_open_follow_ack_handoff_and_cold_resume_preserve_durable_identity() -> Te
     assert_ne!(field(resumed.payload()?, "meaningfulDelta")?, &Value::Null);
     let recovered = fixture.inspect()?;
     assert_eq!(recovered.sessions.len(), 1);
-    assert_eq!(recovered.sessions[0].session.session_id, original_session.session_id);
-    assert_eq!(recovered.sessions[0].session.token_budget, original_session.token_budget);
-    assert_eq!(recovered.sessions[0].session.expires_at_ns, original_session.expires_at_ns);
-    assert_eq!(recovered.sessions[0].session.current_anchor.commit_sequence, 3);
+    assert_eq!(
+        recovered.sessions[0].session.session_id,
+        original_session.session_id
+    );
+    assert_eq!(
+        recovered.sessions[0].session.token_budget,
+        original_session.token_budget
+    );
+    assert_eq!(
+        recovered.sessions[0].session.expires_at_ns,
+        original_session.expires_at_ns
+    );
+    assert_eq!(
+        recovered.sessions[0].session.current_anchor.commit_sequence,
+        3
+    );
     assert_eq!(recovered.follows, retained_follow);
     let resumed_journal = fixture.journal()?;
     let repeated = fixture.call(PRINCIPAL, "session_resume", &resume_args, "AOP-002", false)?;
@@ -570,7 +614,10 @@ fn mcp_open_follow_ack_handoff_and_cold_resume_preserve_durable_identity() -> Te
     )?;
     assert_eq!(text(&refused.value, "outcome")?, "partial");
     assert_eq!(text(&refused.value, "errorId")?, "ERR-AGENT-RESNAPSHOT-001");
-    assert_eq!(field(&refused.value, "resnapshotRequired")?, &Value::Bool(true));
+    assert_eq!(
+        field(&refused.value, "resnapshotRequired")?,
+        &Value::Bool(true)
+    );
     assert_eq!(refused.payload()?, &Value::Null);
     assert_eq!(fixture.inspect()?.follows, retained_follow);
     assert_eq!(authority_tree(&fixture.root)?, authority);
@@ -643,7 +690,10 @@ fn mcp_mission_is_literal_even_when_it_names_an_existing_outside_file() -> TestR
     assert_eq!(record.session_id.as_str(), session);
     assert_eq!(record.principal.as_str(), PRINCIPAL);
     assert_eq!(record.view, AgentView::Brief);
-    assert_eq!(record.token_budget, u64::from(AgentView::Brief.maximum_tokens()));
+    assert_eq!(
+        record.token_budget,
+        u64::from(AgentView::Brief.maximum_tokens())
+    );
     assert_eq!(record.opening_anchor_token, opened.opening_anchor()?);
     assert_eq!(fs::read(&outside)?, bytes);
     let journal = fixture.journal()?;
@@ -685,11 +735,23 @@ fn mcp_open_identity_binds_effect_history_and_exact_retries() -> TestResult {
     let authority = authority_tree(&fixture.root)?;
     let next = fixture.open(MISSION, Some(100_000))?;
     let current = AnchorToken::parse(&next.opening_anchor()?).ok_or("current anchor")?;
-    assert_eq!(initial.position().commit_sequence, current.position().commit_sequence);
-    assert_ne!(initial.position().effect_records, current.position().effect_records);
+    assert_eq!(
+        initial.position().commit_sequence,
+        current.position().commit_sequence
+    );
+    assert_ne!(
+        initial.position().effect_records,
+        current.position().effect_records
+    );
     assert_ne!(initial, current);
-    assert_ne!(text(&first.value, "sessionId")?, text(&next.value, "sessionId")?);
-    assert_eq!(text(&first.value, "missionId")?, text(&next.value, "missionId")?);
+    assert_ne!(
+        text(&first.value, "sessionId")?,
+        text(&next.value, "sessionId")?
+    );
+    assert_eq!(
+        text(&first.value, "missionId")?,
+        text(&next.value, "missionId")?
+    );
     assert_eq!(fixture.inspect()?.sessions.len(), 2);
     let current_journal = fixture.journal()?;
     assert_eq!(fixture.open(MISSION, Some(100_000))?.body, next.body);

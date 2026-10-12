@@ -200,7 +200,10 @@ impl Server {
             }
             "session_resume" => {
                 if !only(args, &["handoff"]) {
-                    return Err((-32602, "Unexpected session-resume argument or scope override"));
+                    return Err((
+                        -32602,
+                        "Unexpected session-resume argument or scope override",
+                    ));
                 }
                 let handoff = bounded_text(args.get("handoff"), 128)?;
                 let mut argv = self.session_args("resume");
@@ -694,7 +697,8 @@ mod tests {
             ),
             (
                 "session_open",
-                r#"{"mission":"literal","objective":"literal","principal":"principal:other"}"#.to_owned(),
+                r#"{"mission":"literal","objective":"literal","principal":"principal:other"}"#
+                    .to_owned(),
             ),
             (
                 "session_open",
@@ -702,7 +706,8 @@ mod tests {
             ),
             (
                 "session_open",
-                r#"{"mission":"literal","objective":"literal","capabilities":["effect:commit"]}"#.to_owned(),
+                r#"{"mission":"literal","objective":"literal","capabilities":["effect:commit"]}"#
+                    .to_owned(),
             ),
             (
                 "session_open",
@@ -725,7 +730,10 @@ mod tests {
                 r#"{"mission":"literal","objective":"literal","budget_tokens":"1000"}"#.to_owned(),
             ),
             ("handoff", r#"{"session":"--root=/other"}"#.to_owned()),
-            ("handoff", r#"{"session":"session:owner","note":""}"#.to_owned()),
+            (
+                "handoff",
+                r#"{"session":"session:owner","note":""}"#.to_owned(),
+            ),
             (
                 "handoff",
                 r#"{"session":"session:owner","root":"/other"}"#.to_owned(),
@@ -822,7 +830,12 @@ mod tests {
                 .get("annotations")
                 .and_then(Input::object)
                 .ok_or("tool annotations")?;
-            for field in ["readOnlyHint", "destructiveHint", "idempotentHint", "openWorldHint"] {
+            for field in [
+                "readOnlyHint",
+                "destructiveHint",
+                "idempotentHint",
+                "openWorldHint",
+            ] {
                 assert_eq!(
                     annotations.get(field).and_then(Input::boolean),
                     Some(false),

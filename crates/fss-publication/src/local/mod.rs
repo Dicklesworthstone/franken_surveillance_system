@@ -91,8 +91,8 @@ use std::sync::Arc;
 use fss_core::{CanonicalEncode, ContentDigest, TombstoneRecord};
 use fss_object::{
     DiscardReceipt, HostSpoolIo, MAX_INTERRUPTED_ATTEMPTS, MAX_MANIFEST_CHILDREN, ObjectManifest,
-    SpoolError, SpoolInspection, SpoolIo, SpoolLimits, SpoolLock, SpoolObjectState, SpoolRecoveryReport,
-    StagingSpool, VerifiedObjectCatalog,
+    SpoolError, SpoolInspection, SpoolIo, SpoolLimits, SpoolLock, SpoolObjectState,
+    SpoolRecoveryReport, StagingSpool, VerifiedObjectCatalog,
 };
 
 pub use error::{

@@ -97,6 +97,7 @@ jobs:
           crates/fss-publication/tests/lock_lifetime_contract.rs
           crates/fss-reference/src/deployment_session.rs
           crates/fss-reference/src/reference_deployment.rs
+          crates/fss-reference/tests/reference_deployment_recovery_contract.rs
           crates/fss-reference/src/agent_follow.rs
           crates/fss-reference/src/agent_follow/replay.rs
           crates/fss-reference/tests/follow_replay_contract.rs
