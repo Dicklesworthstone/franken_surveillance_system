@@ -299,6 +299,52 @@ fn wrong_approval_refuses_and_exact_publication_retry_reuses_authority() -> Test
 }
 
 #[test]
+fn repeated_identical_prepare_publish_then_read_stays_readable() -> TestResult {
+    // fss-xsz23 regression: repeated identical prepares and publication retries
+    // must leave the published event readable — read returns the published
+    // candidate with the published root. Verified on 2026-10-12 main: the
+    // original live-repro Conflict does not reproduce (prepare x2 / publish x2
+    // and prepare x1 / publish x2 both stay readable); this pins it that way.
+    let _serial = serial();
+    let f = fixture("repeated")?;
+    let first = command(&f, "prepare").output()?;
+    success(&first);
+    let second = command(&f, "prepare").output()?;
+    success(&second);
+    assert_eq!(
+        field(&first, "proposal_digest")?,
+        field(&second, "proposal_digest")?,
+        "identical prepare arguments must produce the same proposal digest"
+    );
+    let id = field(&first, "event_id")?;
+    let published = command(&f, "publish")
+        .args(["--proposal-digest", &field(&first, "proposal_digest")?])
+        .output()?;
+    success(&published);
+    let republished = command(&f, "publish")
+        .args(["--proposal-digest", &field(&second, "proposal_digest")?])
+        .output()?;
+    success(&republished);
+    // Publication retry reuses authority (same root/revision asserted below); the
+    // operation label differs between "published" and "already_published" by path, so
+    // pin identity instead of the label.
+    for key in ["event_root", "revision", "event_revision_digest"] {
+        assert_eq!(
+            field(&republished, key)?,
+            field(&published, key)?,
+            "publication retry must not change {key}"
+        );
+    }
+    let read = command(&f, "read").args(["--event-id", &id]).output()?;
+    success(&read);
+    assert_eq!(
+        field(&read, "event_root")?,
+        field(&published, "event_root")?
+    );
+    Ok(())
+}
+
+#[test]
 fn exports_never_overwrite_or_enter_the_deployment() -> TestResult {
     let _serial = serial();
     let f = fixture("export")?;
