@@ -161,6 +161,8 @@ fn drive<W: Write>(
     let mut sealing = false;
     let mut sealed = false;
     let mut draining = false;
+    let mut progress_stalled = false;
+    let mut progress = RecordingProgress::new(owner.supervision);
     loop {
         if stats.steps >= options.max_steps {
             return Err(Failure::WorkBudget);
@@ -170,6 +172,22 @@ fn drive<W: Write>(
         let now = owner.now()?;
         if !draining && now >= owner.live_deadline {
             return Err(Failure::Deadline);
+        }
+        if !sealing
+            && !draining
+            && !stats.input_ended
+            && let Some(stall) = progress
+                .observe(
+                    now,
+                    capture.state() == ClientState::Playing,
+                    ready,
+                    stats.collected_pictures,
+                )
+                .map_err(|_| Failure::State)?
+        {
+            owner.admit_stall(stall, capture.requires_authentication(), log)?;
+            progress_stalled = true;
+            sealing = true;
         }
         if stats.collected_pictures == options.stop_after_pictures && !draining {
             sealing = true;
@@ -313,6 +331,13 @@ fn drive<W: Write>(
                     log,
                 )?;
                 stats.hevc_observe(capture);
+                if progress_stalled
+                    && cause == LiveArchiveCompletion::OwnerStopped
+                    && stats.durable_pictures == stats.collected_pictures
+                    && stats.indexed_windows == stats.durable_windows
+                {
+                    return Err(Failure::ProgressStalled);
+                }
                 return if cause == LiveArchiveCompletion::OwnerStopped
                     && stats.collected_pictures == options.stop_after_pictures
                     && stats.durable_pictures == stats.collected_pictures
@@ -449,6 +474,16 @@ fn drive<W: Write>(
                 return Err(reporting::stopped_failure(&trigger));
             }
             LiveHevcArchiveStep::Ended => return Err(Failure::State),
+        }
+        if owner.supervision.is_some() && !sealing && !draining && !stats.input_ended {
+            let _ = progress
+                .observe(
+                    owner.now()?,
+                    capture.state() == ClientState::Playing,
+                    ready,
+                    stats.collected_pictures,
+                )
+                .map_err(|_| Failure::State)?;
         }
     }
 }

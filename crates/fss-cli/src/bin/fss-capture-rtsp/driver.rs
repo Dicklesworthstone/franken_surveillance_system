@@ -40,9 +40,11 @@ use super::timing::FixedTiming;
 
 #[path = "attempt.rs"]
 mod attempt;
-pub(super) use attempt::AttemptOutcome;
-#[cfg(test)]
-pub(super) use attempt::RetryReason;
+pub(super) use attempt::{AttemptOutcome, RetryReason};
+#[path = "progress.rs"]
+mod progress;
+pub(super) use progress::Supervision;
+use progress::{RecordingProgress, Stall};
 #[path = "hevc_driver.rs"]
 mod hevc;
 #[path = "report.rs"]
@@ -65,6 +67,7 @@ enum Failure {
     Storage,
     Connect,
     ConnectionUnavailable,
+    ProgressStalled,
     Authentication,
     AuthenticationRefused,
     Credentials,
@@ -93,6 +96,7 @@ impl Failure {
             Self::Protocol => "ERR-CAPTURE-RTSP-SOURCE-001",
             Self::Timing => "ERR-CAPTURE-RTSP-TIMING-001",
             Self::Deadline => "ERR-CAPTURE-RTSP-DEADLINE-001",
+            Self::ProgressStalled => "ERR-CAPTURE-RTSP-PROGRESS-001",
             Self::Authority => "ERR-CAPTURE-RTSP-AUTHORITY-001",
             Self::WorkBudget => "ERR-CAPTURE-RTSP-WORK-001",
             Self::State => "ERR-CAPTURE-RTSP-STATE-001",
@@ -110,6 +114,7 @@ impl Failure {
             Self::Deadline => "deadline",
             Self::WorkBudget => "work_budget",
             Self::Shortfall => "input_ended_before_target",
+            Self::ProgressStalled => "recording_progress_stalled",
             Self::Output => "output_failure",
             Self::Root | Self::Storage => "storage_failure",
             Self::Authority | Self::Approval => "authority_refused",
@@ -177,8 +182,29 @@ struct Owner<'a> {
     drain_timeout: u64,
     drain_deadline: Cell<Option<u64>>,
     credentials: Option<&'a CredentialLease>,
+    supervision: Option<Supervision>,
 }
 impl Owner<'_> {
+    fn admit_stall<W: Write>(
+        &self,
+        stall: Stall,
+        authentication_pending: bool,
+        log: &mut Transcript<'_, W>,
+    ) -> Result<(), Failure> {
+        // A progress timeout cannot hide a revoked credential or live network grant.
+        let now = self.now()?;
+        self.checkpoint(&self.binding, TcpOperation::Poll, now, self.live_deadline)
+            .map_err(|denial| match denial {
+                TcpDenial::Deadline => Failure::Deadline,
+                _ => Failure::Authority,
+            })?;
+        if authentication_pending {
+            return Err(Failure::AuthenticationRefused);
+        }
+        let policy = self.supervision.ok_or(Failure::State)?;
+        log.emit("recording_stalled", stall.report(policy), false)
+    }
+
     fn now(&self) -> Result<u64, Failure> {
         self.cx
             .checkpoint("capture_rtsp:owner")
@@ -662,6 +688,8 @@ fn drive<W: Write>(
     let mut sealing = false;
     let mut sealed = false;
     let mut draining = false;
+    let mut progress_stalled = false;
+    let mut progress = RecordingProgress::new(owner.supervision);
     // Before a challenge is accepted the existing native API needs only nonsecret
     // placeholders. The owner's private lease is borrowed solely for signed requests.
     let unsigned = DigestCredentials::new("unused", "").map_err(|_| Failure::Configuration)?;
@@ -675,6 +703,25 @@ fn drive<W: Write>(
         let now = owner.now()?;
         if !draining && now >= owner.live_deadline {
             return Err(Failure::Deadline);
+        }
+        if !sealing
+            && !draining
+            && !stats.input_ended
+            && let Some(stall) = progress
+                .observe(
+                    now,
+                    capture.state() == ClientState::Playing,
+                    ready,
+                    stats.collected_pictures,
+                )
+                .map_err(|_| Failure::State)?
+        {
+            owner.admit_stall(stall, challenge.is_some(), log)?;
+            // Stop socket readiness immediately. Only already-collected pictures may
+            // enter the existing explicit seal and independently journaled final drain.
+            progress_stalled = true;
+            sealing = true;
+            next_command = None;
         }
         if stats.collected_pictures == options.stop_after_pictures && !draining {
             sealing = true;
@@ -870,6 +917,13 @@ fn drive<W: Write>(
                     log,
                 )?;
                 stats.observe(capture);
+                if progress_stalled
+                    && cause == LiveArchiveCompletion::OwnerStopped
+                    && stats.durable_pictures == stats.collected_pictures
+                    && stats.indexed_windows == stats.durable_windows
+                {
+                    return Err(Failure::ProgressStalled);
+                }
                 return if cause == LiveArchiveCompletion::OwnerStopped
                     && stats.collected_pictures == options.stop_after_pictures
                     && stats.durable_pictures == stats.collected_pictures
@@ -978,6 +1032,16 @@ fn drive<W: Write>(
             }
             JournaledLiveArchiveStep::Live(LiveArchiveStep::Ended) => return Err(Failure::State),
         }
+        if owner.supervision.is_some() && !sealing && !draining && !stats.input_ended {
+            let _ = progress
+                .observe(
+                    owner.now()?,
+                    capture.state() == ClientState::Playing,
+                    ready,
+                    stats.collected_pictures,
+                )
+                .map_err(|_| Failure::State)?;
+        }
     }
 }
 
@@ -1035,6 +1099,7 @@ fn run_owned<W: Write>(
     start: Instant,
     stats: &mut Statistics,
     log: &mut Transcript<'_, W>,
+    supervision: Option<Supervision>,
 ) -> Result<(), Failure> {
     let storage_deadline = options
         .timeout_ns
@@ -1076,6 +1141,7 @@ fn run_owned<W: Write>(
         drain_timeout: options.drain_timeout_ns,
         drain_deadline: Cell::new(None),
         credentials: credentials.as_ref(),
+        supervision,
     };
     let result = (|| {
         owner.now()?;
@@ -1151,6 +1217,15 @@ pub(super) fn execute(options: &Options) -> Result<(), &'static str> {
 /// Only returns a retry observation after closing the socket, transferring retirements,
 /// finalizing the attempt context and successfully flushing the complete terminal report.
 pub(super) fn execute_attempt(options: &Options) -> Result<AttemptOutcome, &'static str> {
+    execute_supervised_attempt(options, None)
+}
+
+/// The caller binds this additional stop/retry policy in its exact outer approval.
+/// A single-attempt approval does not authorize an automatic successor attempt.
+pub(super) fn execute_supervised_attempt(
+    options: &Options,
+    supervision: Option<Supervision>,
+) -> Result<AttemptOutcome, &'static str> {
     let approval = options.digest()?;
     if options.approve != Some(approval) {
         return Err(Failure::Approval.code());
@@ -1237,9 +1312,13 @@ pub(super) fn execute_attempt(options: &Options) -> Result<AttemptOutcome, &'sta
         false,
     )
     .map_err(Failure::code)?;
+    if let Some(policy) = supervision {
+        log.emit("recording_supervision", policy.report(), false)
+            .map_err(Failure::code)?;
+    }
     let start = Instant::now();
     let mut stats = Statistics::default();
-    let result = run_owned(options, &authority, start, &mut stats, &mut log);
+    let result = run_owned(options, &authority, start, &mut stats, &mut log, supervision);
     log.emit("terminal", terminal(options, &stats, &result), true)
         .map_err(Failure::code)?;
     Ok(AttemptOutcome::new(result, &stats))

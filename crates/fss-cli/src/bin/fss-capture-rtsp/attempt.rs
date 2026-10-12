@@ -9,12 +9,14 @@ use super::{Failure, Statistics};
 pub(crate) enum RetryReason {
     ConnectionUnavailable,
     SourceEnded,
+    ProgressStalled,
 }
 impl RetryReason {
     pub(crate) fn as_str(self) -> &'static str {
         match self {
             Self::ConnectionUnavailable => "connection_unavailable",
             Self::SourceEnded => "source_ended",
+            Self::ProgressStalled => "recording_progress_stalled",
         }
     }
 }
@@ -50,6 +52,12 @@ impl AttemptOutcome {
                     Some(RetryReason::ConnectionUnavailable)
                 }
                 Err(Failure::Shortfall) if stats.input_ended => Some(RetryReason::SourceEnded),
+                Err(Failure::ProgressStalled)
+                    if stats.snapshot_digest.is_some()
+                        && stats.durable_pictures == stats.collected_pictures =>
+                {
+                    Some(RetryReason::ProgressStalled)
+                }
                 // Authentication, cancellation, authority, codec/protocol/timing, resource,
                 // output and storage failures never become transient merely because a socket
                 // closed. In particular an auth challenge at EOF is not a reconnect signal.
@@ -158,5 +166,42 @@ mod tests {
         let mut stats = ended();
         stats.snapshot_digest = None;
         assert!(AttemptOutcome::new(Err(Failure::Shortfall), &stats).recovery_required);
+    }
+
+    #[test]
+    fn progress_retry_requires_normal_drain_without_inventing_source_eof() {
+        let mut stats = ended();
+        stats.input_ended = false;
+        stats.collected_pictures = stats.durable_pictures;
+        let outcome = AttemptOutcome::new(Err(Failure::ProgressStalled), &stats);
+        assert_eq!(outcome.retry, Some(RetryReason::ProgressStalled));
+        assert!(!outcome.recovery_required);
+        assert!(!stats.input_ended);
+        stats.snapshot_digest = None;
+        assert!(AttemptOutcome::new(Err(Failure::ProgressStalled), &stats).retry.is_none());
+        stats = ended();
+        assert!(AttemptOutcome::new(Err(Failure::ProgressStalled), &stats).retry.is_none());
+        assert!(AttemptOutcome::new(Err(Failure::ProgressStalled), &Statistics::default()).retry.is_none());
+    }
+
+    #[test]
+    fn progress_expiry_does_not_relax_any_archive_recovery_barrier() {
+        for condition in 0..7 {
+            let mut stats = ended();
+            stats.input_ended = false;
+            stats.collected_pictures = stats.durable_pictures;
+            match condition {
+                0 => stats.pending_window = Some((ContentDigest::sha256(b"pending"), 1)),
+                1 => stats.unrecorded_work_receipt = Some("receipt".into()),
+                2 => stats.unpublished_prepared_pictures = 1,
+                3 => stats.unpublished_prepared_bytes = 1,
+                4 => stats.indexed_windows = 0,
+                5 => stats.pending_source_only_nals = 1,
+                _ => stats.snapshot_digest = None,
+            }
+            let outcome = AttemptOutcome::new(Err(Failure::ProgressStalled), &stats);
+            assert!(outcome.recovery_required, "condition {condition}");
+            assert!(outcome.retry.is_none());
+        }
     }
 }

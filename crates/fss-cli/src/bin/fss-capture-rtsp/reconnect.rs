@@ -14,14 +14,18 @@ use fss_core::{
 use super::driver::{self, AttemptOutcome};
 use super::plan::{self, Options};
 
-pub(super) const MAX_ARGUMENTS: usize = plan::MAX_ARGUMENTS + 6;
+pub(super) const MAX_ARGUMENTS: usize = plan::MAX_ARGUMENTS + 8;
 const FORMAT: &str = "fss.rtsp_reconnect_cli.v1";
 const MAX_CONTROL_REPORT_BYTES: usize = 262_144;
 const POLICY: &str = "bounded-owner-approved-attempts:literal-peer-only:fresh-generation-and-clocks:\
 new-independent-destinations:retry-typed-connect-io-or-drained-eof-only:\
 no-auth-protocol-budget-authority-or-storage-retry:no-automatic-recovery:v1";
+const SUPERVISED_POLICY: &str = "bounded-owner-approved-attempts:literal-peer-only:fresh-generation-and-clocks:\
+new-independent-destinations:retry-typed-connect-io-drained-eof-or-supervised-stall:\
+no-auth-protocol-budget-authority-or-storage-retry:no-automatic-recovery:v2";
 pub(super) const HELP: &str = "fss-capture-rtsp reconnect [ordinary capture options]\n\
   --max-attempts 3 --retry-delay-ms 250 --retry-max-delay-ms 5000\n\
+  [--progress-timeout-ms 5000]\n\
 \n\
 Without --approve: pure JSON preview of EVERY possible attempt and aggregate ceilings.\n\
 Approve the outer plan, not an individual attempt. The ordinary single-attempt mode is unchanged.\n\
@@ -30,7 +34,12 @@ Each starts generation + attempt_index with fresh receive/decode clocks and jour
 --root and --pins are path prefixes: actual new sibling directories are PREFIX.attempt-0001,\n\
 PREFIX.attempt-0002, etc. Their parents must exist. All prior directories are preserved.\n\
 \n\
-Only a typed transient connect failure or real EOF after settled archival work can retry.\n\
+By default only typed transient connect I/O or real source end after settled work can retry.\n\
+Opt-in progress supervision detects no collected pictures while acquisition is active.\n\
+It starts at PLAY, excludes storage pauses, and ignores keepalive/RTCP/duplicate traffic.\n\
+Expiry stops intake, attempts to seal/drain the collected prefix, then permits bounded retry\n\
+only after normal archive completion. It asserts neither camera outage nor source EOF.\n\
+Use --max-attempts 1 to supervise without reconnecting. Omit the option for legacy behavior.\n\
 Authentication, credentials, revocation, cancellation, timing/protocol faults, exhausted\n\
 budgets, output failure, and incomplete archive work STOP the run. Recovery remains explicit.\n\
 A successful attempt stops the run. --stop-after-pictures is a PER-ATTEMPT target; earlier\n\
@@ -45,6 +54,7 @@ pub(super) struct ReconnectPlan {
     attempts: Vec<Options>,
     retry_delay_ms: u64,
     retry_max_delay_ms: u64,
+    progress_timeout_ns: Option<u64>,
     approve: Option<ContentDigest>,
     maximum_source_bytes: u64,
     maximum_storage_bytes: u64,
@@ -128,6 +138,10 @@ impl ReconnectPlan {
         if retry_delay_ms > retry_max_delay_ms {
             return Err("initial retry delay exceeds its ceiling");
         }
+        let progress_timeout_ns = values
+            .remove("--progress-timeout-ms")
+            .map(|text| positive(&text, 1, 600_000).map(|ms| ms * 1_000_000))
+            .transpose()?;
         let approve = values
             .remove("--approve")
             .map(|s| ContentDigest::parse(&s).map_err(|_| "invalid reconnect approval"))
@@ -189,6 +203,7 @@ impl ReconnectPlan {
             attempts,
             retry_delay_ms,
             retry_max_delay_ms,
+            progress_timeout_ns,
             approve,
             maximum_source_bytes,
             maximum_storage_bytes,
@@ -208,10 +223,22 @@ impl ReconnectPlan {
             .min(self.retry_max_delay_ms)
     }
 
+    fn policy(&self) -> &'static str {
+        if self.progress_timeout_ns.is_some() {
+            SUPERVISED_POLICY
+        } else {
+            POLICY
+        }
+    }
+
     fn digest(&self) -> Result<ContentDigest, &'static str> {
         let mut e = CanonicalEncoder::new();
         e.text("fss.rtsp_reconnect_cli_plan.v1");
-        e.text(POLICY);
+        e.text(self.policy());
+        if let Some(timeout) = self.progress_timeout_ns {
+            e.text(driver::Supervision::POLICY);
+            e.u64(timeout);
+        }
         e.u64(MAX_CONTROL_REPORT_BYTES as u64);
         e.u64(self.retry_delay_ms);
         e.u64(self.retry_max_delay_ms);
@@ -231,11 +258,11 @@ impl ReconnectPlan {
             .iter()
             .map(Options::preview)
             .collect::<Result<Vec<_>, _>>()?;
-        Ok(object(&[
+        let mut fields = vec![
             ("schema", string(FORMAT)),
             ("phase", string("planned")),
             ("approval", string(&self.digest()?.to_text())),
-            ("policy", string(POLICY)),
+            ("policy", string(self.policy())),
             ("max_attempts", self.attempts.len().to_string()),
             ("retry_delay_ms", self.retry_delay_ms.to_string()),
             ("retry_max_delay_ms", self.retry_max_delay_ms.to_string()),
@@ -265,7 +292,12 @@ impl ReconnectPlan {
             ("automatic_recovery", "false".into()),
             ("attempts", format!("[{}]", children.join(","))),
             ("effects", string("none-until-exact-outer-approval")),
-        ]))
+        ];
+        if let Some(timeout) = self.progress_timeout_ns {
+            fields.push(("progress_timeout_ns", timeout.to_string()));
+            fields.push(("supervision_policy", string(driver::Supervision::POLICY)));
+        }
+        Ok(object(&fields))
     }
 
     pub(super) fn approved(&self) -> bool {
@@ -318,9 +350,12 @@ fn run(plan: &ReconnectPlan, effects: &mut impl Effects) -> Result<(), &'static 
         durable = durable
             .checked_add(outcome.durable_pictures)
             .ok_or("ERR-CAPTURE-RTSP-STATE-001")?;
+        let retry_admitted = outcome.retry.is_some()
+            && (!matches!(outcome.retry, Some(driver::RetryReason::ProgressStalled))
+                || plan.progress_timeout_ns.is_some());
         let retrying = outcome.result.is_err()
             && !outcome.recovery_required
-            && outcome.retry.is_some()
+            && retry_admitted
             && index + 1 < plan.attempts.len();
         effects.emit(
             "attempt_finished",
@@ -359,7 +394,7 @@ fn run(plan: &ReconnectPlan, effects: &mut impl Effects) -> Result<(), &'static 
                     (
                         "attempt_limit_reached",
                         (outcome.result.is_err()
-                            && outcome.retry.is_some()
+                            && retry_admitted
                             && index + 1 == plan.attempts.len())
                         .to_string(),
                     ),
@@ -390,6 +425,7 @@ struct NativeEffects {
     authority: ContextAuthority,
     sequence: u64,
     report_bytes: usize,
+    supervision: Option<driver::Supervision>,
 }
 impl Effects for NativeEffects {
     fn checkpoint(&mut self) -> Result<(), &'static str> {
@@ -421,7 +457,7 @@ impl Effects for NativeEffects {
     }
     fn capture(&mut self, options: &Options) -> Result<AttemptOutcome, &'static str> {
         self.checkpoint()?;
-        driver::execute_attempt(options)
+        driver::execute_supervised_attempt(options, self.supervision)
     }
     fn pause(&mut self, milliseconds: u64) -> Result<(), &'static str> {
         // At most 600 bounded waits per backoff. Every wait has an explicit owner check;
@@ -463,10 +499,15 @@ pub(super) fn execute(plan: &mut ReconnectPlan) -> Result<(), &'static str> {
         generation: first.recording_config().scope.generation,
     })
     .map_err(|_| "ERR-CAPTURE-RTSP-CONFIG-001")?;
+    let supervision = plan
+        .progress_timeout_ns
+        .map(|timeout| driver::Supervision::new(timeout, approval))
+        .transpose()?;
     let mut effects = NativeEffects {
         authority,
         sequence: 0,
         report_bytes: 0,
+        supervision,
     };
     run(plan, &mut effects)
 }
@@ -474,3 +515,7 @@ pub(super) fn execute(plan: &mut ReconnectPlan) -> Result<(), &'static str> {
 #[cfg(test)]
 #[path = "reconnect_tests.rs"]
 mod tests;
+
+#[cfg(test)]
+#[path = "reconnect_supervision_tests.rs"]
+mod supervision_tests;
