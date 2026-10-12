@@ -1327,3 +1327,40 @@ fn test_20_every_mjpeg_fixture_imports_to_manifest_spans_and_digests() -> Result
     }
     Ok(())
 }
+
+/// [fss-swmxu] The macOS admitted-open flag bits are the SDK values: opening a symlink
+/// with `O_NOFOLLOW` must fail at the kernel, not fall through to the metadata checks.
+/// If the constant were wrong (a non-flag bit), this open would succeed.
+#[cfg(target_os = "macos")]
+#[test]
+fn test_macos_onofollow_flag_refuses_symlink_at_open() -> Result<(), Box<dyn Error>> {
+    use std::os::unix::fs::OpenOptionsExt;
+
+    let root = repo_root()?;
+    let target = root.join("tests/fixtures/media/h264/clean.264");
+    let dep_dir = temp_deployment_dir("macos-nofollow")?;
+    let link_path = dep_dir.join("flag_probe_symlink.264");
+    let _ = fs::remove_file(&link_path);
+    symlink(&target, &link_path)?;
+
+    // The exact bits open_admitted_source applies on macOS (file_adapter open_flags).
+    const O_NONBLOCK: i32 = 0x0000_0004;
+    const O_NOFOLLOW: i32 = 0x0000_0100;
+    let opened = fs::OpenOptions::new()
+        .read(true)
+        .custom_flags(O_NONBLOCK | O_NOFOLLOW)
+        .open(&link_path);
+    match opened {
+        Ok(_) => Err("open() succeeded through a symlink: O_NOFOLLOW bit is wrong".into()),
+        Err(error) => {
+            assert!(
+                matches!(
+                    error.raw_os_error(),
+                    Some(62) | Some(40) // EMLINK (macOS) | ELOOP (generic)
+                ),
+                "unexpected errno for refused symlink open: {error}"
+            );
+            Ok(())
+        }
+    }
+}

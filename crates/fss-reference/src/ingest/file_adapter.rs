@@ -689,6 +689,15 @@ pub enum FileIngestError {
         /// The path of the rejected symlink.
         path: PathBuf,
     },
+    /// File-source ingest is refused on targets without an admitted-open guarantee
+    /// (no `O_NOFOLLOW`-equivalent post-admission open and no dev/ino identity check):
+    /// nothing is read [fss-swmxu].
+    UnsupportedTarget {
+        /// The path of the refused source.
+        path: PathBuf,
+        /// The compile-time target triple of this build.
+        target: &'static str,
+    },
     /// Specified path is not a regular file.
     NotRegularFile {
         /// The path of the rejected non-regular file.
@@ -878,6 +887,13 @@ impl std::fmt::Display for FileIngestError {
         match self {
             Self::SymlinkNotAllowed { path } => {
                 write!(f, "symlink not allowed: {}", path.display())
+            }
+            Self::UnsupportedTarget { path, target } => {
+                write!(
+                    f,
+                    "file-source ingest unsupported on target {target}: {}",
+                    path.display()
+                )
             }
             Self::NotRegularFile { path } => {
                 write!(f, "not a regular file: {}", path.display())
@@ -1537,6 +1553,16 @@ mod open_flags {
     pub const O_NOFOLLOW: i32 = 0o100_000;
 }
 
+/// macOS `fcntl.h` (uniform across Apple Silicon and Intel): `O_NONBLOCK 0x00000004`,
+/// `O_NOFOLLOW 0x00000100`, verified against the SDK headers on aarch64-apple-darwin
+/// [fss-swmxu]. The post-open dev/ino identity check below still applies, so a symlink
+/// swapped onto the same inode is refused by the flag rather than only by identity drift.
+#[cfg(target_os = "macos")]
+mod open_flags {
+    pub const O_NONBLOCK: i32 = 0x0000_0004;
+    pub const O_NOFOLLOW: i32 = 0x0000_0100;
+}
+
 /// Opens the operator-named source `path` for a bounded read, under the explicit I/O authority of
 /// `cx`, as the very file `admitted` (its earlier `symlink_metadata`) described.
 ///
@@ -1575,17 +1601,30 @@ pub fn open_admitted_source(
     }
     // A refusal is reported as a symlink refusal when the path now holds a symlink, whatever the
     // platform's errno for a refused `O_NOFOLLOW` open.
+    // Windows has neither `O_NOFOLLOW` nor the unix dev/ino identity check; a one-time
+    // is_file inspection of the handle is not an admitted-open guarantee. Refuse with a
+    // typed error rather than ingest without the custody invariant [fss-swmxu].
+    #[cfg(not(unix))]
+    {
+        return Err(FileIngestError::UnsupportedTarget {
+            path: path.to_path_buf(),
+            target: std::env::consts::OS,
+        });
+    }
     let now_symlink = || fs::symlink_metadata(path).is_ok_and(|m| m.file_type().is_symlink());
     let mut options = fs::OpenOptions::new();
     options.read(true);
-    #[cfg(all(
-        target_os = "linux",
-        any(target_arch = "x86_64", target_arch = "aarch64")
+    #[cfg(any(
+        all(
+            target_os = "linux",
+            any(target_arch = "x86_64", target_arch = "aarch64")
+        ),
+        target_os = "macos"
     ))]
     {
         use std::os::unix::fs::OpenOptionsExt;
-        // Per-architecture Linux UAPI bits (see `open_flags`). No foreign runtime or unsafe
-        // syscall wrapper is added.
+        // Per-platform header bits (see `open_flags`). No foreign runtime or unsafe syscall
+        // wrapper is added.
         options.custom_flags(open_flags::O_NONBLOCK | open_flags::O_NOFOLLOW);
     }
     let file = match options.open(path) {

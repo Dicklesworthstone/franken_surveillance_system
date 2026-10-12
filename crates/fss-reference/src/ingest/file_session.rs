@@ -724,6 +724,7 @@ fn cancellation_stage(error: &FileIngestError) -> Option<String> {
 fn error_code(error: &FileIngestError) -> &'static str {
     match error {
         FileIngestError::SymlinkNotAllowed { .. } => "symlink_not_allowed",
+        FileIngestError::UnsupportedTarget { .. } => "unsupported_target",
         FileIngestError::NotRegularFile { .. } => "not_regular_file",
         FileIngestError::SourceChanged { .. } => "source_changed",
         FileIngestError::EmptyFile { .. } => "empty_file",
