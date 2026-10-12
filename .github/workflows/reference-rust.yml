@@ -56,6 +56,7 @@ jobs:
         run: |
           follow_exit=0
           rustup run nightly-2026-08-31 cargo test --locked --offline -p fss-reference --lib agent_follow:: || follow_exit=1
+          rustup run nightly-2026-08-31 cargo test --locked --offline -p fss-reference --test follow_wait_partitioned_custody_contract || follow_exit=1
           rustup run nightly-2026-08-31 cargo test --locked --offline -p fss-cli --lib follow_cmd:: || follow_exit=1
           rustup run nightly-2026-08-31 cargo test --locked --offline -p fss-cli --bin fss-mcp follow || follow_exit=1
           rustup run nightly-2026-08-31 cargo test --locked --offline -p fss-cli --test follow_cli_contract || follow_exit=1
@@ -82,6 +83,7 @@ jobs:
           crates/fss-reference/src/agent_follow/wait/custody.rs
           crates/fss-reference/src/agent_follow/wait/custody/recorded.rs
           crates/fss-reference/src/agent_follow/wait/tests.rs
+          crates/fss-reference/tests/follow_wait_partitioned_custody_contract.rs
           crates/fss-cli/src/follow_cmd.rs
           crates/fss-cli/src/follow_cmd/wait.rs
           crates/fss-cli/src/follow_cmd/wait/tests.rs
