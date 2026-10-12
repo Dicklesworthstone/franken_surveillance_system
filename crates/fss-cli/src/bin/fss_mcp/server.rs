@@ -29,6 +29,7 @@ const TOOLS: &str = r#"{"tools":[
 {"name":"explain","description":"Read-only AOP-011: explain one published event, including provenance, contradictions and evidence that would change the conclusion. Returns the existing fss/1 AgentResponseEnvelope unchanged.","inputSchema":{"type":"object","properties":{"event_id":{"type":"string","minLength":1,"maxLength":128}},"required":["event_id"],"additionalProperties":false},"annotations":{"readOnlyHint":true,"destructiveHint":false,"idempotentHint":true,"openWorldHint":false}},
 {"name":"session_follow","description":"AOP-004: return one exact page of meaningful changes in the unchanged fss/1 envelope. Ordinary follow is read-only; wait_ms bounds synchronous waiting on certified quiet. With session and subscription, retain pending adjacent-history delivery in the agent journal and advance only with its exact acknowledge receipt. Unacknowledged pages survive disconnect and restart. Both journals advancing without retained interleaving requires resnapshot; no transition order is invented.","inputSchema":{"type":"object","properties":{"since":{"type":"string","minLength":1,"maxLength":256},"view":{"type":"string","enum":["pulse","brief"]},"max_entries":{"type":"integer","minimum":1,"maximum":4096},"continuation":{"type":"string","minLength":1,"maxLength":256},"wait_ms":{"type":"integer","minimum":1,"maximum":10000},"session":{"type":"string","minLength":1,"maxLength":128},"subscription":{"type":"string","minLength":1,"maxLength":128},"acknowledge":{"type":"string","minLength":71,"maxLength":71}},"required":["since"],"additionalProperties":false},"annotations":{"readOnlyHint":false,"destructiveHint":false,"idempotentHint":true,"openWorldHint":false}},
 {"name":"query","description":"Read-only AOP-005: exact conjunctive query of the latest verified committed event records. Returns the unchanged CLI AgentResponseEnvelope with protected context. Empty matches never certify physical absence. Nanosecond endpoints are canonical decimal strings to preserve signed 128-bit precision. Continuations require unchanged filters, principal, page size and authority/effect-history head.","inputSchema":{"type":"object","properties":{"event_id":{"type":"string","minLength":1,"maxLength":128},"kind":{"type":"string","enum":["perimeter_breach","covert_approach","sensor_tamper","unknown_presence","benign_routine","unclassified"]},"state":{"type":"string","enum":["hypothesized","witnessed","corroborated","adjudicated","alert_delivered","resolved","indeterminate","rejected"]},"zone":{"type":"string","minLength":1,"maxLength":64},"from_ns":{"type":"string","pattern":"^(0|-?[1-9][0-9]*)$","maxLength":40},"through_ns":{"type":"string","pattern":"^(0|-?[1-9][0-9]*)$","maxLength":40},"max_entries":{"type":"integer","minimum":1,"maximum":32},"anchor":{"type":"string","minLength":1,"maxLength":256},"continuation":{"type":"string","minLength":1,"maxLength":256}},"additionalProperties":false},"annotations":{"readOnlyHint":true,"destructiveHint":false,"idempotentHint":true,"openWorldHint":false}},
+{"name":"investigate","description":"AOP-006: maintain a durable investigation in one existing session. Supports open, inspect, list, activate, cite, assess, set-state, conclude, rebase, readmit and expand. Draft and expansion are literal objects, never files. Mutations require the exact expected case revision; native evidence, authority, deadline and rebase/readmission checks remain in force. Returns the unchanged native fss/1 envelope and records cognition only: no probe, plan or external effect is executed.","inputSchema":{"type":"object","properties":{"session":{"type":"string","minLength":1,"maxLength":128,"pattern":"^[A-Za-z0-9._:-]+$"},"transition":{"type":"string","enum":["open","inspect","list","activate","cite","assess","set-state","conclude","rebase","readmit","expand"]},"draft":{"type":"object","properties":{"caseId":{"type":"string","minLength":1,"maxLength":128,"pattern":"^[A-Za-z0-9._:-]+$"},"question":{"type":"string","minLength":1,"maxLength":8192},"decisionInformed":{"type":"string","minLength":1,"maxLength":1024},"hypotheses":{"type":"array","minItems":2,"maxItems":64,"items":{"type":"object","properties":{"hypothesisId":{"type":"string","minLength":1,"maxLength":128,"pattern":"^[A-Za-z0-9._:-]+$"},"description":{"type":"string","minLength":1,"maxLength":8192},"epistemicState":{"type":"string","enum":["known","estimated","unknown","conflicted","stale","not_observable","redacted","indeterminate","not_applicable"]},"predictions":{"type":"array","maxItems":256,"items":{"type":"string","minLength":1,"maxLength":1024}}},"required":["hypothesisId","description"],"additionalProperties":false}},"knowns":{"type":"array","maxItems":256,"items":{"type":"object","properties":{"statementId":{"type":"string","minLength":1,"maxLength":128,"pattern":"^[A-Za-z0-9._:-]+$"},"text":{"type":"string","minLength":1,"maxLength":8192},"epistemicState":{"type":"string","enum":["known","estimated","unknown","conflicted","stale","not_observable","redacted","indeterminate","not_applicable"]},"basis":{"type":"array","maxItems":256,"items":{"type":"string","minLength":1,"maxLength":1024}}},"required":["statementId","text"],"additionalProperties":false}},"unknowns":{"type":"array","maxItems":256,"items":{"type":"object","properties":{"statementId":{"type":"string","minLength":1,"maxLength":128,"pattern":"^[A-Za-z0-9._:-]+$"},"text":{"type":"string","minLength":1,"maxLength":8192},"epistemicState":{"type":"string","enum":["known","estimated","unknown","conflicted","stale","not_observable","redacted","indeterminate","not_applicable"]},"basis":{"type":"array","maxItems":256,"items":{"type":"string","minLength":1,"maxLength":1024}}},"required":["statementId","text"],"additionalProperties":false}},"discriminators":{"type":"array","maxItems":128,"items":{"type":"object","properties":{"discriminatorId":{"type":"string","minLength":1,"maxLength":128,"pattern":"^[A-Za-z0-9._:-]+$"},"description":{"type":"string","minLength":1,"maxLength":8192},"separates":{"type":"array","maxItems":64,"items":{"type":"string","minLength":1,"maxLength":128},"minItems":2},"expectedOutcomes":{"type":"array","maxItems":64,"items":{"type":"string","minLength":1,"maxLength":1024},"minItems":2}},"required":["discriminatorId","description","separates","expectedOutcomes"],"additionalProperties":false}},"probes":{"type":"array","maxItems":128,"items":{"type":"string","minLength":1,"maxLength":1024}},"stopRules":{"type":"array","maxItems":64,"items":{"type":"string","minLength":1,"maxLength":1024},"minItems":1},"decisionDeadlineNs":{"anyOf":[{"type":"integer"},{"type":"string","pattern":"^(0|-?[1-9][0-9]*)$","maxLength":40}],"description":"Exact signed 128-bit nanoseconds; decimal strings preserve full precision."},"decisionWindowNs":{"anyOf":[{"type":"integer"},{"type":"string","pattern":"^(0|-?[1-9][0-9]*)$","maxLength":40}],"description":"Exact signed 128-bit nanoseconds; decimal strings preserve full precision."}},"required":["caseId","question","decisionInformed","hypotheses","stopRules"],"additionalProperties":false,"oneOf":[{"required":["decisionDeadlineNs"],"not":{"required":["decisionWindowNs"]}},{"required":["decisionWindowNs"],"not":{"required":["decisionDeadlineNs"]}}]},"expansion":{"type":"object","properties":{"hypothesis":{"type":"object","properties":{"hypothesisId":{"type":"string","minLength":1,"maxLength":128,"pattern":"^[A-Za-z0-9._:-]+$"},"description":{"type":"string","minLength":1,"maxLength":8192},"epistemicState":{"type":"string","enum":["known","estimated","unknown","conflicted","stale","not_observable","redacted","indeterminate","not_applicable"]},"predictions":{"type":"array","maxItems":256,"items":{"type":"string","minLength":1,"maxLength":1024}}},"required":["hypothesisId","description"],"additionalProperties":false},"discriminator":{"type":"object","properties":{"discriminatorId":{"type":"string","minLength":1,"maxLength":128,"pattern":"^[A-Za-z0-9._:-]+$"},"description":{"type":"string","minLength":1,"maxLength":8192},"separates":{"type":"array","maxItems":64,"items":{"type":"string","minLength":1,"maxLength":128},"minItems":2},"expectedOutcomes":{"type":"array","maxItems":64,"items":{"type":"string","minLength":1,"maxLength":1024},"minItems":2}},"required":["discriminatorId","description","separates","expectedOutcomes"],"additionalProperties":false},"probe":{"type":"string","minLength":1,"maxLength":1024}},"required":["hypothesis","discriminator","probe"],"additionalProperties":false},"case":{"type":"string","minLength":1,"maxLength":128,"pattern":"^[A-Za-z0-9._:-]+$"},"expected":{"type":"string","pattern":"^sha256:[0-9a-fA-F]{64}$","minLength":71,"maxLength":71},"revision":{"type":"string","pattern":"^sha256:[0-9a-fA-F]{64}$","minLength":71,"maxLength":71},"hypothesis":{"type":"string","minLength":1,"maxLength":128,"pattern":"^[A-Za-z0-9._:-]+$"},"evidence":{"type":"string","pattern":"^sha256:[0-9a-fA-F]{64}$","minLength":71,"maxLength":71},"side":{"type":"string","enum":["support","contradiction"]},"disposition":{"type":"string","enum":["supported","disfavored","refuted"]},"state":{"type":"string","enum":["awaiting_evidence","awaiting_approval","blocked","indeterminate","cancelled","closed"]},"reason":{"type":"string","pattern":"^sha256:[0-9a-fA-F]{64}$","minLength":71,"maxLength":71},"conclusion":{"type":"string","enum":["resolved","refuted"]},"stop_rule":{"type":"string","minLength":1,"maxLength":1024},"assessment":{"type":"string","pattern":"^sha256:[0-9a-fA-F]{64}$","minLength":71,"maxLength":71},"residual_unknowns":{"type":"array","maxItems":256,"uniqueItems":true,"items":{"type":"string","minLength":1,"maxLength":128,"pattern":"^[A-Za-z0-9._:-]+$"}},"witness":{"type":"string","pattern":"^sha256:[0-9a-fA-F]{64}$","minLength":71,"maxLength":71}},"required":["session","transition"],"additionalProperties":false,"oneOf":[{"properties":{"transition":{"const":"open"}},"required":["draft"],"propertyNames":{"enum":["session","transition","draft"]}},{"properties":{"transition":{"const":"inspect"}},"required":["case"],"propertyNames":{"enum":["session","transition","case","revision"]}},{"properties":{"transition":{"const":"list"}},"required":[],"propertyNames":{"enum":["session","transition"]}},{"properties":{"transition":{"const":"activate"}},"required":["case","expected"],"propertyNames":{"enum":["session","transition","case","expected"]}},{"properties":{"transition":{"const":"cite"}},"required":["case","expected","hypothesis","evidence","side"],"propertyNames":{"enum":["session","transition","case","expected","hypothesis","evidence","side"]}},{"properties":{"transition":{"const":"assess"}},"required":["case","expected","hypothesis","disposition","evidence"],"propertyNames":{"enum":["session","transition","case","expected","hypothesis","disposition","evidence"]}},{"properties":{"transition":{"const":"set-state"}},"required":["case","expected","state","reason"],"propertyNames":{"enum":["session","transition","case","expected","state","reason"]}},{"properties":{"transition":{"const":"conclude"}},"required":["case","expected","conclusion","stop_rule","assessment","residual_unknowns"],"propertyNames":{"enum":["session","transition","case","expected","conclusion","stop_rule","assessment","residual_unknowns"]}},{"properties":{"transition":{"const":"rebase"}},"required":["case","expected"],"propertyNames":{"enum":["session","transition","case","expected"]}},{"properties":{"transition":{"const":"readmit"}},"required":["case","expected","hypothesis","evidence","side","witness"],"propertyNames":{"enum":["session","transition","case","expected","hypothesis","evidence","side","witness"]}},{"properties":{"transition":{"const":"expand"}},"required":["case","expected","expansion"],"propertyNames":{"enum":["session","transition","case","expected","expansion"]}}]},"annotations":{"readOnlyHint":false,"destructiveHint":false,"idempotentHint":false,"openWorldHint":false}},
 {"name":"wait","description":"Read-only AOP-009: wait, bounded to 10 s, until one effect operation leaves its current state, polling the committed effect journal without writing or locking. Returns the unchanged fss/1 AgentResponseEnvelope carrying the operation receipt; an unchanged operation at the deadline is a partial answer with ERR-OP-TIMEOUT-001 (silence is not completion). Never prepares, commits, resends or cancels anything.","inputSchema":{"type":"object","properties":{"operation_id":{"type":"string","minLength":1,"maxLength":128},"deadline_ms":{"type":"integer","minimum":1,"maximum":10000}},"required":["operation_id","deadline_ms"],"additionalProperties":false},"annotations":{"readOnlyHint":true,"destructiveHint":false,"idempotentHint":true,"openWorldHint":false}},
 {"name":"doctor","description":"Read-only AOP-014 reference diagnosis of the fixed deployment. Returns the existing fss.doctor.v1 report, not an AgentResponseEnvelope. Does not repair, create directories, acquire locks or execute affordances.","inputSchema":{"type":"object","properties":{},"additionalProperties":false},"annotations":{"readOnlyHint":true,"destructiveHint":false,"idempotentHint":true,"openWorldHint":false}}
 ]}"#;
@@ -151,7 +152,7 @@ impl Server {
         }
         self.phase = Phase::AwaitingInitialized;
         Ok(format!(
-            "{{\"protocolVersion\":\"{PROTOCOL_VERSION}\",\"capabilities\":{{\"tools\":{{\"listChanged\":false}}}},\"serverInfo\":{{\"name\":\"fss-mcp\",\"version\":\"{}\"}},\"instructions\":\"Local reference adapter, not production-qualified. The launching operator fixes the deployment root and principal audit label. Tool results retain existing FSS evidence and uncertainty semantics; they grant no effect authority. Session lifecycle tools and explicit durable follow subscriptions update agent continuity state only. No remote authentication or in-flight cancellation is implemented.\"}}",
+            "{{\"protocolVersion\":\"{PROTOCOL_VERSION}\",\"capabilities\":{{\"tools\":{{\"listChanged\":false}}}},\"serverInfo\":{{\"name\":\"fss-mcp\",\"version\":\"{}\"}},\"instructions\":\"Local reference adapter, not production-qualified. The launching operator fixes the deployment root and principal audit label. Tool results retain existing FSS evidence and uncertainty semantics; they grant no effect authority. Session lifecycle tools, investigation revisions and explicit durable follow subscriptions update agent continuity state only. No remote authentication or in-flight cancellation is implemented.\"}}",
             env!("CARGO_PKG_VERSION")
         ))
     }
@@ -174,6 +175,10 @@ impl Server {
             Some(Value::Object(args)) => args,
             _ => return Err((-32602, "Tool arguments must be an object")),
         };
+        if name == "investigate" {
+            let command = super::investigate::command(&self.root, &self.principal, args)?;
+            return execute_admitted(command, execute);
+        }
         let mut argv = match name {
             "session_open" => {
                 if !only(args, &["mission", "objective", "view", "budget_tokens"]) {
@@ -383,28 +388,7 @@ impl Server {
         }
         let command = parse_fss_args(argv)
             .map_err(|_| (-32602, "Arguments refused by the canonical CLI parser"))?;
-        // A final typed clamp remains even if command parsing gains new operations.
-        if !matches!(
-            command,
-            FssCommand::Orient(_)
-                | FssCommand::Explain(_)
-                | FssCommand::Follow(_)
-                | FssCommand::Query(_)
-                | FssCommand::Doctor(_)
-        ) && !matches!(
-            &command,
-            FssCommand::Effect(effect)
-                if matches!(effect.as_ref(), fss_cli::effect_cmd::EffectCommand::Wait(_))
-        ) && !matches!(
-            &command,
-            FssCommand::Session(
-                SessionCommand::Open(_) | SessionCommand::Handoff(_) | SessionCommand::Resume(_)
-            )
-        ) {
-            return Err((-32603, "Admitted command boundary refused dispatch"));
-        }
-        let (output, exit) = execute(command);
-        Ok(tool_result(&output, exit.code != 0))
+        execute_admitted(command, execute)
     }
 
     fn session_args(&self, subcommand: &str) -> Vec<OsString> {
@@ -421,6 +405,36 @@ impl Server {
             self.root.clone(),
         ]
     }
+}
+
+/// Every tool, including typed authored intents, passes the same closed native command clamp.
+fn execute_admitted(
+    command: FssCommand,
+    execute: &mut impl FnMut(FssCommand) -> (String, ExitIdentity),
+) -> RpcResult {
+    // A final typed clamp remains even if command parsing gains new operations.
+    if !matches!(
+        command,
+        FssCommand::Orient(_)
+            | FssCommand::Explain(_)
+            | FssCommand::Follow(_)
+            | FssCommand::Query(_)
+            | FssCommand::Investigate(_)
+            | FssCommand::Doctor(_)
+    ) && !matches!(
+        &command,
+        FssCommand::Effect(effect)
+            if matches!(effect.as_ref(), fss_cli::effect_cmd::EffectCommand::Wait(_))
+    ) && !matches!(
+        &command,
+        FssCommand::Session(
+            SessionCommand::Open(_) | SessionCommand::Handoff(_) | SessionCommand::Resume(_)
+        )
+    ) {
+        return Err((-32603, "Admitted command boundary refused dispatch"));
+    }
+    let (output, exit) = execute(command);
+    Ok(tool_result(&output, exit.code != 0))
 }
 
 type RpcResult = Result<String, (i32, &'static str)>;
@@ -567,6 +581,113 @@ mod tests {
         );
         assert_eq!(server.handle(READY), None);
         server
+    }
+
+    #[test]
+    fn investigation_dispatch_is_native_scoped_and_notification_safe() {
+        let mut server = ready();
+        let expected = r#"{"operation":"investigate","decisionFingerprint":"sha256:unchanged","payload":{"unknowns":["coverage unavailable"]}}"#;
+        let call = r#"{"jsonrpc":"2.0","id":30,"method":"tools/call","params":{"name":"investigate","arguments":{"session":"session:owner","transition":"list"}}}"#;
+        let mut calls = 0;
+        let response = server.handle_with(call, |command| {
+            calls += 1;
+            let FssCommand::Investigate(args) = command else {
+                unreachable!("investigate must use its native typed command");
+            };
+            assert_eq!(args.root, std::path::PathBuf::from("/owner/deployment"));
+            assert_eq!(args.principal.as_str(), "principal:local-operator");
+            assert_eq!(args.session.as_str(), "session:owner");
+            assert_eq!(
+                args.action,
+                fss_reference::deployment_session::investigation::CaseAction::List
+            );
+            (expected.to_owned(), ExitIdentity::AGENT_REFUSED)
+        });
+        assert!(response.is_some_and(|text| {
+            text.contains(&quote(expected)) && text.contains("\"isError\":true")
+        }));
+        assert_eq!(calls, 1);
+        for request in [
+            r#"{"jsonrpc":"2.0","method":"tools/call","params":{"name":"investigate","arguments":{"session":"session:owner","transition":"activate","case":"case:one","expected":"sha256:0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"}}}"#,
+            r#"{"jsonrpc":"2.0","method":"tools/call","params":{"name":"investigate","arguments":{"session":"session:owner","transition":"open","draft":{}}}}"#,
+        ] {
+            assert_eq!(
+                server.handle_with(request, |_| {
+                    calls += 1;
+                    (String::new(), ExitIdentity::SUCCESS)
+                }),
+                None
+            );
+        }
+        for extra in [
+            r#","root":"/outside""#,
+            r#","principal":"principal:other""#,
+            r#","case_file":"/private/intent""#,
+            r#","draft":{}"#,
+        ] {
+            let request = format!(
+                r#"{{"jsonrpc":"2.0","id":31,"method":"tools/call","params":{{"name":"investigate","arguments":{{"session":"session:owner","transition":"list"{extra}}}}}}}"#
+            );
+            assert!(
+                server
+                    .handle_with(&request, |_| {
+                        calls += 1;
+                        (String::new(), ExitIdentity::SUCCESS)
+                    })
+                    .is_some_and(|reply| reply.contains("-32602"))
+            );
+        }
+        assert_eq!(calls, 1);
+    }
+
+    #[test]
+    fn investigation_discovery_advertises_exact_actions_without_effect_authority()
+    -> Result<(), Box<dyn std::error::Error>> {
+        use fss_cli::json_input::{self as input, Value as Input};
+
+        let discovery = input::parse(TOOLS)?;
+        let tool = discovery
+            .object()
+            .and_then(|root| root.get("tools"))
+            .and_then(Input::array)
+            .ok_or("tool list")?
+            .iter()
+            .filter_map(Input::object)
+            .find(|tool| tool.get("name").and_then(Input::text) == Some("investigate"))
+            .ok_or("investigate tool")?;
+        let schema = tool
+            .get("inputSchema")
+            .and_then(Input::object)
+            .ok_or("investigate schema")?;
+        assert_eq!(
+            schema.get("additionalProperties").and_then(Input::boolean),
+            Some(false)
+        );
+        let variants = schema
+            .get("oneOf")
+            .and_then(Input::array)
+            .ok_or("action variants")?;
+        assert_eq!(variants.len(), 11);
+        let properties = schema
+            .get("properties")
+            .and_then(Input::object)
+            .ok_or("properties")?;
+        for forbidden in ["root", "principal", "case_file", "expansion_file", "grant"] {
+            assert!(!properties.contains_key(forbidden), "{forbidden}");
+        }
+        let annotations = tool
+            .get("annotations")
+            .and_then(Input::object)
+            .ok_or("annotations")?;
+        for key in [
+            "readOnlyHint",
+            "destructiveHint",
+            "idempotentHint",
+            "openWorldHint",
+        ] {
+            assert_eq!(annotations.get(key).and_then(Input::boolean), Some(false));
+        }
+        Ok(())
     }
 
     #[test]
@@ -819,7 +940,7 @@ mod tests {
             .and_then(|object| object.get("tools"))
             .and_then(Input::array)
             .ok_or("tool list")?;
-        assert_eq!(tools.len(), 9);
+        assert_eq!(tools.len(), 10);
         for name in ["session_open", "session_resume", "handoff"] {
             let tool = tools
                 .iter()
@@ -1003,6 +1124,7 @@ mod tests {
             "session_resume",
             "session_orient",
             "session_follow",
+            "investigate",
             "handoff",
             "explain",
             "doctor",

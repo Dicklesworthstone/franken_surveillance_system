@@ -1,7 +1,7 @@
 # Native MCP reference adapter
 
 `fss-mcp` connects a local MCP client to existing deployment reads and durable agent
-sessions. It is an owner-launched stdio process. Tool names come from the same
+sessions and investigations. It is an owner-launched stdio process. Tool names come from the same
 crosswalk as the CLI, and each call executes the canonical CLI library in-process.
 
 ## Run
@@ -14,8 +14,8 @@ cargo build --locked -p fss-cli --bin fss-mcp
 `--root` is required and must already exist. The root is resolved at startup;
 tool arguments cannot override it or the launcher's principal. The principal is
 the native CLI's audit label, not remote authentication. The launching OS account
-provides local access. Session lifecycle calls and explicit durable follow
-subscriptions write under the deployment's `agent/` directory; they grant no
+provides local access. Session lifecycle calls, investigation revisions and explicit
+durable follow subscriptions write under the deployment's `agent/` directory; they grant no
 authority to mutate the evidence ledger, send an alert, or control a device.
 
 Typical client configuration:
@@ -43,6 +43,7 @@ Typical client configuration:
 | `session_orient` (AOP-003) | `fss session orient` | Optional `view`: `pulse`, `brief`, `epistemic_map`; optional response `budget_tokens`: 1..4096, subject to the view limit |
 | `session_follow` (AOP-004) | `fss session follow` | Required `since`; optional `view`, `max_entries`, `continuation` or `wait_ms`; durable mode adds `session`, `subscription`, and optional exact `acknowledge` receipt |
 | `query` (AOP-005) | `fss query` | Exact event, kind, state, zone and time filters; bounded pages with optional anchor and continuation |
+| `investigate` (AOP-006) | `fss investigate` | Required `session` and one of eleven `transition` values; exact case-revision preconditions and literal draft/expansion objects |
 | `wait` (AOP-009) | `fss wait` | Required `operation_id` and `deadline_ms`: 1..10000; reads existing effect state |
 | `explain` (AOP-011) | `fss explain` | Required `event_id` |
 | `handoff` (AOP-012) | `fss handoff` | Required `session` ID; optional literal `note` |
@@ -55,7 +56,7 @@ partial results, proof handles, recovery guidance and uncertainty.
 
 Unknown fields are refused before execution. Discovery annotations describe the
 tools; enforcement comes from explicit argument allowlists, the canonical CLI
-parser and an exact typed command allowlist. Plan, commit, cancel, alert delivery,
+parser, pure native intent decoders and an exact typed command allowlist. Plan, commit, cancel, alert delivery,
 repair, device controls and other effect tools remain unavailable.
 
 ## Open, hand off and resume a mission
@@ -112,6 +113,102 @@ Lifecycle discovery therefore does not promise unconditional idempotency. Use
 native session/handoff IDs, response receipts and recovery guidance after an
 interrupted call.
 
+## Investigate with durable competing hypotheses
+
+The `investigate` tool acts within an existing session. Every call requires its
+`session` ID and a `transition`. Case changes return the unchanged native
+`fss.investigation_state.v1` payload in an `AgentResponseEnvelope`; the
+`decisionFingerprint` is the exact revision digest required by the next change.
+The `list` transition returns the native cognitive-envelope summary.
+
+| Transition | Additional arguments |
+| --- | --- |
+| `open` | `draft`: the literal case object |
+| `inspect` | `case`; optional exact historical `revision` digest |
+| `list` | None |
+| `activate` | `case`, `expected` |
+| `cite` | `case`, `expected`, `hypothesis`, `evidence`, `side`: support or contradiction |
+| `assess` | `case`, `expected`, `hypothesis`, `evidence`, `disposition`: supported, disfavored or refuted |
+| `set-state` | `case`, `expected`, `state`, `reason` digest |
+| `conclude` | `case`, `expected`, `conclusion`: resolved or refuted, `stop_rule`, `assessment` digest, `residual_unknowns`: an array of IDs |
+| `rebase` | `case`, `expected` |
+| `readmit` | `case`, `expected`, `hypothesis`, `evidence`, `side`, `witness` |
+| `expand` | `case`, `expected`, `expansion`: the literal expansion object |
+
+`expected`, `revision`, `evidence`, `reason`, `assessment` and `witness` use native
+`sha256:<64 hex>` digests. The state transition accepts `awaiting_evidence`,
+`awaiting_approval`, `blocked`, `indeterminate`, `cancelled` or `closed`;
+resolution/refutation uses `conclude` and the native stop-rule checks.
+Use an empty `residual_unknowns` array only when no unknown remains. An ID
+literally named `none` remains an ID, and duplicate residual IDs are refused.
+
+For example, after opening a session:
+
+~~~json
+{
+  "name": "investigate",
+  "arguments": {
+    "session": "session:returned-by-open",
+    "transition": "open",
+    "draft": {
+      "caseId": "case:front-entrance",
+      "question": "What explains the retained activity?",
+      "decisionInformed": "Whether another observation is needed",
+      "hypotheses": [
+        {
+          "hypothesisId": "h:person",
+          "description": "A person crossed the entrance",
+          "predictions": ["An independent view contains compatible motion"]
+        },
+        {
+          "hypothesisId": "h:animal",
+          "description": "An animal crossed the entrance"
+        }
+      ],
+      "unknowns": [
+        {
+          "statementId": "u:identity",
+          "text": "The source does not establish identity"
+        }
+      ],
+      "discriminators": [
+        {
+          "discriminatorId": "d:side-view",
+          "description": "Inspect retained independent-view evidence",
+          "separates": ["h:person", "h:animal"],
+          "expectedOutcomes": ["Human-compatible shape", "Animal-compatible shape"]
+        }
+      ],
+      "probes": ["probe:side-view"],
+      "stopRules": ["Retained evidence distinguishes the explanations"],
+      "decisionWindowNs": "60000000000"
+    }
+  }
+}
+~~~
+
+The `draft` uses the same native document grammar as CLI `--case-file`:
+`caseId`, `question`, `decisionInformed`, `hypotheses`, optional `knowns`,
+`unknowns`, `discriminators`, `probes`, `stopRules`, and exactly one of
+`decisionDeadlineNs` or `decisionWindowNs`. The latter is relative to committed
+evidence time. Decimal strings preserve full signed 128-bit nanosecond precision.
+An `expansion` contains `hypothesis`, `discriminator` and `probe` in that same
+grammar. These objects are decoded entirely from the bounded MCP frame.
+Text that names a path remains literal data; file and stdin input are unavailable.
+
+Native admission still checks the session's principal, mission, privacy domain,
+lease, contract basis, case revision and evidence applicability. A case predating
+a session rebase refuses changes until `rebase`; inherited citations need their
+native applicability witness through `readmit`. Changing hypotheses or recording
+a conclusion never executes a probe, dispatches an alert or verifies physical truth.
+
+Cases and their immutable history survive MCP process shutdown. After an
+interrupted call, inspect the case/revision and follow native retry guidance;
+the tool does not promise unconditional idempotency. Handoff and resume retain
+the native case references and expose stale applicability. Investigation history
+also invalidates the currently limited durable-follow profile: it cannot be
+silently omitted from a subscription.
+
 ## Follow delivery and acknowledgment
 
 Ordinary follow performs one bounded read. Obtain `since` from an orientation
@@ -149,7 +246,7 @@ that deadline.
 
 The negotiated version is **MCP 2025-06-18**. The server accepts `initialize`,
 then `notifications/initialized`, `ping`, `tools/list` and
-`tools/call`. The complete nine-tool list is returned in one response. Native
+`tools/call`. The complete ten-tool list is returned in one response. Native
 durable follow state is accessed by explicit calls; there is no asynchronous MCP
 subscription or task channel.
 
@@ -192,7 +289,8 @@ cargo test --locked -p fss-cli --test mcp_session_lifecycle_contract
 ```
 
 Unit contracts cover exact dispatch, literal mission text, bounded cumulative
-budgets, command and principal clamps, notification nonexecution, unchanged
+budgets, all eleven typed investigation transitions, literal nested intent data,
+command and principal clamps, notification nonexecution, unchanged
 semantic payloads, framing and output ceilings. Process contracts use real
 reference deployments to check cross-surface identity, durable follow retries
 and acknowledgments, session lifecycle, world-drift invalidation and authority

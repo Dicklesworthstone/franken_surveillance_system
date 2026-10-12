@@ -12,10 +12,10 @@ const MAX_STRING_BYTES: usize = 16 * 1024;
 #[derive(Debug, PartialEq)]
 pub(super) enum Value {
     Null,
-    Boolean,
+    Boolean(bool),
     Number(String),
     Text(String),
-    Array,
+    Array(Vec<Value>),
     Object(BTreeMap<String, Value>),
 }
 
@@ -113,12 +113,13 @@ impl Parser<'_> {
             Some(b'[') => {
                 self.at += 1;
                 self.whitespace();
+                let mut items = Vec::new();
                 if self.peek() == Some(b']') {
                     self.at += 1;
-                    return Ok(Value::Array);
+                    return Ok(Value::Array(items));
                 }
                 loop {
-                    self.value(depth + 1)?;
+                    items.push(self.value(depth + 1)?);
                     self.whitespace();
                     if self.peek() == Some(b']') {
                         self.at += 1;
@@ -126,16 +127,16 @@ impl Parser<'_> {
                     }
                     self.eat(b',')?;
                 }
-                Ok(Value::Array)
+                Ok(Value::Array(items))
             }
             Some(b'"') => self.string().map(Value::Text),
             Some(b't') => {
                 self.literal("true")?;
-                Ok(Value::Boolean)
+                Ok(Value::Boolean(true))
             }
             Some(b'f') => {
                 self.literal("false")?;
-                Ok(Value::Boolean)
+                Ok(Value::Boolean(false))
             }
             Some(b'n') => {
                 self.literal("null")?;
@@ -281,6 +282,22 @@ mod tests {
             Ok(Value::Number("-1234567890123456789".to_owned()))
         );
         assert!(parse(r#"{"a":[true,false,null,1.25e-3],"b":"\b\f\n\r\t\/\\\""}"#).is_ok());
+    }
+
+    #[test]
+    fn retains_nested_intent_arrays_and_boolean_values() {
+        assert_eq!(
+            parse(r#"[true,false,["literal",null,170141183460469231731687303715884105727]]"#),
+            Ok(Value::Array(vec![
+                Value::Boolean(true),
+                Value::Boolean(false),
+                Value::Array(vec![
+                    Value::Text("literal".to_owned()),
+                    Value::Null,
+                    Value::Number("170141183460469231731687303715884105727".to_owned()),
+                ]),
+            ]))
+        );
     }
 
     #[test]
