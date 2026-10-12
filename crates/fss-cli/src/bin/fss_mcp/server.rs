@@ -1,12 +1,16 @@
 #![forbid(unsafe_code)]
-//! Synchronous MCP reference adapter with optional durable follow delivery in agent state.
+//! Synchronous MCP reference adapter for native reads and durable agent-session continuity.
 //! No network listener or second runtime.
 
 use std::collections::BTreeMap;
 use std::ffi::OsString;
 use std::io::{self, BufRead, Write};
 
+use fss_cli::session_cmd::SessionCommand;
 use fss_cli::{ExitIdentity, FssCommand, escape_json_str, execute_fss_with_exit, parse_fss_args};
+use fss_reference::deployment_session::{
+    MAX_MISSION_BYTES, MAX_NOTE_BYTES, MAX_OBJECTIVE_BYTES, MAX_SESSION_TOKEN_BUDGET,
+};
 
 use super::json::{self, MAX_FRAME_BYTES, Value};
 
@@ -18,6 +22,9 @@ const MAX_PAGE_ENTRIES: u64 = 4096;
 const MAX_WAIT_MS: u64 = 10_000;
 
 const TOOLS: &str = r#"{"tools":[
+{"name":"session_open","description":"AOP-001: open a durable mission-scoped session and its initial workspace in the fixed deployment. Mission and objective are literal text; no mission file is read. Returns the unchanged native fss/1 envelope with session, mission and anchor identities. A retry at the same full head returns the existing session; an advanced head can create a new session. budget_tokens is a cumulative session budget, separate from response view limits.","inputSchema":{"type":"object","properties":{"mission":{"type":"string","minLength":1,"maxLength":8192,"description":"Literal mission statement; at most 8192 UTF-8 bytes, never a file path to read."},"objective":{"type":"string","minLength":1,"maxLength":4096},"view":{"type":"string","enum":["pulse","brief","epistemic_map"]},"budget_tokens":{"type":"integer","minimum":1,"maximum":1000000,"description":"Cumulative session budget; defaults to the selected view's registered maximum."}},"required":["mission","objective"],"additionalProperties":false},"annotations":{"readOnlyHint":false,"destructiveHint":false,"idempotentHint":false,"openWorldHint":false}},
+{"name":"session_resume","description":"AOP-002: verify and resume an existing handoff for the fixed principal. Returns the unchanged native fss/1 envelope and explicitly reports assumptions invalidated by world drift before rebasing the workspace. Native lease, authority, closure and budget checks remain in force. Resuming does not implicitly acknowledge or transfer a follow subscription.","inputSchema":{"type":"object","properties":{"handoff":{"type":"string","minLength":1,"maxLength":128}},"required":["handoff"],"additionalProperties":false},"annotations":{"readOnlyHint":false,"destructiveHint":false,"idempotentHint":false,"openWorldHint":false}},
+{"name":"handoff","description":"AOP-012: publish a root-last native handoff of one existing session in the fixed deployment. Preserves mission, workspace, uncertainty, obligations and native proof handles. Repeated requests at the same full head and semantic state retain their identity; changed state can produce a new handoff. Writes agent continuity state only and grants no effect authority.","inputSchema":{"type":"object","properties":{"session":{"type":"string","minLength":1,"maxLength":128},"note":{"type":"string","minLength":1,"maxLength":4096,"description":"Optional literal handoff note, at most 4096 UTF-8 bytes."}},"required":["session"],"additionalProperties":false},"annotations":{"readOnlyHint":false,"destructiveHint":false,"idempotentHint":false,"openWorldHint":false}},
 {"name":"session_orient","description":"Read-only AOP-003: inspect an existing deployment through its anchor-pinned SituationCapsule. Returns the existing fss/1 AgentResponseEnvelope unchanged, including coverage gaps, uncertainty, obligations and affordances. No affordance is executed.","inputSchema":{"type":"object","properties":{"view":{"type":"string","enum":["pulse","brief","epistemic_map"]},"budget_tokens":{"type":"integer","minimum":1,"maximum":4096}},"additionalProperties":false},"annotations":{"readOnlyHint":true,"destructiveHint":false,"idempotentHint":true,"openWorldHint":false}},
 {"name":"explain","description":"Read-only AOP-011: explain one published event, including provenance, contradictions and evidence that would change the conclusion. Returns the existing fss/1 AgentResponseEnvelope unchanged.","inputSchema":{"type":"object","properties":{"event_id":{"type":"string","minLength":1,"maxLength":128}},"required":["event_id"],"additionalProperties":false},"annotations":{"readOnlyHint":true,"destructiveHint":false,"idempotentHint":true,"openWorldHint":false}},
 {"name":"session_follow","description":"AOP-004: return one exact page of meaningful changes in the unchanged fss/1 envelope. Ordinary follow is read-only; wait_ms bounds synchronous waiting on certified quiet. With session and subscription, retain pending adjacent-history delivery in the agent journal and advance only with its exact acknowledge receipt. Unacknowledged pages survive disconnect and restart. Both journals advancing without retained interleaving requires resnapshot; no transition order is invented.","inputSchema":{"type":"object","properties":{"since":{"type":"string","minLength":1,"maxLength":256},"view":{"type":"string","enum":["pulse","brief"]},"max_entries":{"type":"integer","minimum":1,"maximum":4096},"continuation":{"type":"string","minLength":1,"maxLength":256},"wait_ms":{"type":"integer","minimum":1,"maximum":10000},"session":{"type":"string","minLength":1,"maxLength":128},"subscription":{"type":"string","minLength":1,"maxLength":128},"acknowledge":{"type":"string","minLength":71,"maxLength":71}},"required":["since"],"additionalProperties":false},"annotations":{"readOnlyHint":false,"destructiveHint":false,"idempotentHint":true,"openWorldHint":false}},
@@ -144,7 +151,7 @@ impl Server {
         }
         self.phase = Phase::AwaitingInitialized;
         Ok(format!(
-            "{{\"protocolVersion\":\"{PROTOCOL_VERSION}\",\"capabilities\":{{\"tools\":{{\"listChanged\":false}}}},\"serverInfo\":{{\"name\":\"fss-mcp\",\"version\":\"{}\"}},\"instructions\":\"Local reference adapter, not production-qualified. The launching operator fixes the deployment root and principal audit label. Tool results retain existing FSS evidence and uncertainty semantics; they grant no effect authority. Only explicit durable follow subscriptions update agent session delivery state. No remote authentication or in-flight cancellation is implemented.\"}}",
+            "{{\"protocolVersion\":\"{PROTOCOL_VERSION}\",\"capabilities\":{{\"tools\":{{\"listChanged\":false}}}},\"serverInfo\":{{\"name\":\"fss-mcp\",\"version\":\"{}\"}},\"instructions\":\"Local reference adapter, not production-qualified. The launching operator fixes the deployment root and principal audit label. Tool results retain existing FSS evidence and uncertainty semantics; they grant no effect authority. Session lifecycle tools and explicit durable follow subscriptions update agent continuity state only. No remote authentication or in-flight cancellation is implemented.\"}}",
             env!("CARGO_PKG_VERSION")
         ))
     }
@@ -168,6 +175,51 @@ impl Server {
             _ => return Err((-32602, "Tool arguments must be an object")),
         };
         let mut argv = match name {
+            "session_open" => {
+                if !only(args, &["mission", "objective", "view", "budget_tokens"]) {
+                    return Err((-32602, "Unexpected session-open argument or scope override"));
+                }
+                let mission = bounded_text(args.get("mission"), MAX_MISSION_BYTES)?;
+                let objective = bounded_text(args.get("objective"), MAX_OBJECTIVE_BYTES)?;
+                let mut argv = self.session_args("open");
+                // The literal-only canonical option never stats or reads a mission-named file.
+                argv.push(format!("--mission-text={mission}").into());
+                argv.push(format!("--objective={objective}").into());
+                if let Some(value) = args.get("view") {
+                    let view = bounded_text(Some(value), 32)?;
+                    if !matches!(view, "pulse" | "brief" | "epistemic_map") {
+                        return Err((-32602, "Unsupported session view"));
+                    }
+                    argv.push(format!("--view={view}").into());
+                }
+                if let Some(value) = args.get("budget_tokens") {
+                    let budget = positive_integer(value, MAX_SESSION_TOKEN_BUDGET)?;
+                    argv.push(format!("--budget-tokens={budget}").into());
+                }
+                argv
+            }
+            "session_resume" => {
+                if !only(args, &["handoff"]) {
+                    return Err((-32602, "Unexpected session-resume argument or scope override"));
+                }
+                let handoff = bounded_text(args.get("handoff"), 128)?;
+                let mut argv = self.session_args("resume");
+                argv.push(format!("--handoff={handoff}").into());
+                argv
+            }
+            "handoff" => {
+                if !only(args, &["session", "note"]) {
+                    return Err((-32602, "Unexpected handoff argument or scope override"));
+                }
+                let session = bounded_text(args.get("session"), 128)?;
+                let mut argv = self.base_args("handoff");
+                argv.push(format!("--session={session}").into());
+                if let Some(value) = args.get("note") {
+                    let note = bounded_text(Some(value), MAX_NOTE_BYTES)?;
+                    argv.push(format!("--note={note}").into());
+                }
+                argv
+            }
             "session_orient" => {
                 if !only(args, &["view", "budget_tokens"]) {
                     return Err((-32602, "Unexpected orientation argument"));
@@ -340,11 +392,22 @@ impl Server {
             &command,
             FssCommand::Effect(effect)
                 if matches!(effect.as_ref(), fss_cli::effect_cmd::EffectCommand::Wait(_))
+        ) && !matches!(
+            &command,
+            FssCommand::Session(
+                SessionCommand::Open(_) | SessionCommand::Handoff(_) | SessionCommand::Resume(_)
+            )
         ) {
-            return Err((-32603, "Read-only command boundary refused dispatch"));
+            return Err((-32603, "Admitted command boundary refused dispatch"));
         }
         let (output, exit) = execute(command);
         Ok(tool_result(&output, exit.code != 0))
+    }
+
+    fn session_args(&self, subcommand: &str) -> Vec<OsString> {
+        let mut argv = self.base_args("session");
+        argv.insert(1, subcommand.into());
+        argv
     }
 
     fn base_args(&self, command: &str) -> Vec<OsString> {
@@ -412,7 +475,7 @@ fn error(id: &str, code: i32, message: &str) -> String {
 fn tool_result(output: &str, failed: bool) -> String {
     let (output, failed) = if output.len() > MAX_TOOL_OUTPUT_BYTES {
         (
-            "FSS response exceeded the MCP byte ceiling. No response was truncated and no effect was started. Request a smaller view or page.",
+            "FSS response exceeded the MCP byte ceiling. No response was truncated. Agent continuity state may already be committed; use native retry or resume semantics to recover. Request a smaller view or page.",
             true,
         )
     } else {
@@ -501,6 +564,305 @@ mod tests {
         );
         assert_eq!(server.handle(READY), None);
         server
+    }
+
+    #[test]
+    fn session_open_keeps_literal_text_scope_and_cumulative_budget() {
+        let mut server = ready();
+        let mission = "/owner/private-note\n--principal=principal:other";
+        let objective = "Retain uncertainty and recover after a disconnect.";
+        let expected = r#"{"operation":"session.open","sessionId":"session:opened","payload":{"coverage":"not_observable"}}"#;
+        let mut calls = 0;
+        for (extra, view, budget) in [
+            (
+                "",
+                fss_core::AgentView::Brief,
+                u64::from(fss_core::AgentView::Brief.maximum_tokens()),
+            ),
+            (
+                r#","view":"epistemic_map","budget_tokens":1000000"#,
+                fss_core::AgentView::EpistemicMap,
+                MAX_SESSION_TOKEN_BUDGET,
+            ),
+        ] {
+            let request = format!(
+                r#"{{"jsonrpc":"2.0","id":20,"method":"tools/call","params":{{"name":"session_open","arguments":{{"mission":{},"objective":{}{extra}}}}}}}"#,
+                quote(mission),
+                quote(objective)
+            );
+            let response = server.handle_with(&request, |command| {
+                calls += 1;
+                let FssCommand::Session(SessionCommand::Open(args)) = command else {
+                    unreachable!("session open must use the native session command");
+                };
+                assert_eq!(args.root, std::path::PathBuf::from("/owner/deployment"));
+                assert_eq!(args.principal.as_str(), "principal:local-operator");
+                assert_eq!(args.mission, mission);
+                assert_eq!(args.objective, objective);
+                assert_eq!(args.view, view);
+                assert_eq!(args.budget_tokens, budget);
+                (expected.to_owned(), ExitIdentity::SUCCESS)
+            });
+            assert!(response.is_some_and(|text| {
+                text.contains(&quote(expected)) && text.contains("\"isError\":false")
+            }));
+        }
+        assert_eq!(calls, 2);
+
+        let conflict = parse_fss_args(
+            [
+                "session",
+                "open",
+                "--json",
+                "--root=/owner/deployment",
+                "--mission=/owner/private-note",
+                "--mission-text=literal",
+                "--objective=Inspect retained coverage",
+            ]
+            .map(OsString::from),
+        );
+        assert!(conflict.is_err_and(|error| {
+            error
+                .to_string()
+                .contains("choose exactly one of --mission or --mission-text")
+        }));
+    }
+
+    #[test]
+    fn session_handoff_and_resume_preserve_native_identity_and_refusals() {
+        let mut server = ready();
+        let note = "Keep \"coverage unknown\" explicit.\n--root=/other";
+        let expected = r#"{"operation":"handoff","payload":{"handoffId":"handoff:retained"},"proofPointers":["sha256:unchanged"]}"#;
+        let request = format!(
+            r#"{{"jsonrpc":"2.0","id":21,"method":"tools/call","params":{{"name":"handoff","arguments":{{"session":"session:owner","note":{}}}}}}}"#,
+            quote(note)
+        );
+        let mut calls = 0;
+        let response = server.handle_with(&request, |command| {
+            calls += 1;
+            let FssCommand::Session(SessionCommand::Handoff(args)) = command else {
+                unreachable!("handoff must use the native session command");
+            };
+            assert_eq!(args.root, std::path::PathBuf::from("/owner/deployment"));
+            assert_eq!(args.principal.as_str(), "principal:local-operator");
+            assert_eq!(args.session.as_str(), "session:owner");
+            assert_eq!(args.note.as_deref(), Some(note));
+            (expected.to_owned(), ExitIdentity::SUCCESS)
+        });
+        assert!(response.is_some_and(|text| {
+            text.contains(&quote(expected)) && text.contains("\"isError\":false")
+        }));
+
+        let expected = r#"{"operation":"session.resume","outcome":"refused","errorId":"ERR-AGENT-HANDOFF-INVALID-001","payload":null}"#;
+        let response = server.handle_with(
+            r#"{"jsonrpc":"2.0","id":22,"method":"tools/call","params":{"name":"session_resume","arguments":{"handoff":"handoff:retained"}}}"#,
+            |command| {
+                calls += 1;
+                let FssCommand::Session(SessionCommand::Resume(args)) = command else {
+                    unreachable!("resume must use the native session command");
+                };
+                assert_eq!(args.root, std::path::PathBuf::from("/owner/deployment"));
+                assert_eq!(args.principal.as_str(), "principal:local-operator");
+                assert_eq!(args.handoff.as_str(), "handoff:retained");
+                (expected.to_owned(), ExitIdentity::AGENT_REFUSED)
+            },
+        );
+        assert!(response.is_some_and(|text| {
+            text.contains(&quote(expected)) && text.contains("\"isError\":true")
+        }));
+        assert_eq!(calls, 2);
+    }
+
+    #[test]
+    fn session_lifecycle_refuses_unowned_scope_and_never_executes_notifications() {
+        let mut server = ready();
+        let mut calls = 0;
+        let mut refused = vec![
+            ("session_open", r#"{"mission":"literal"}"#.to_owned()),
+            ("session_open", r#"{"objective":"literal"}"#.to_owned()),
+            (
+                "session_open",
+                r#"{"mission":true,"objective":"literal"}"#.to_owned(),
+            ),
+            (
+                "session_open",
+                r#"{"mission":"literal","objective":""}"#.to_owned(),
+            ),
+            (
+                "session_open",
+                r#"{"mission":"literal","objective":"literal","root":"/other"}"#.to_owned(),
+            ),
+            (
+                "session_open",
+                r#"{"mission":"literal","objective":"literal","principal":"principal:other"}"#.to_owned(),
+            ),
+            (
+                "session_open",
+                r#"{"mission":"literal","objective":"literal","mission_file":"/other"}"#.to_owned(),
+            ),
+            (
+                "session_open",
+                r#"{"mission":"literal","objective":"literal","capabilities":["effect:commit"]}"#.to_owned(),
+            ),
+            (
+                "session_open",
+                r#"{"mission":"literal","objective":"literal","view":"forensic"}"#.to_owned(),
+            ),
+            (
+                "session_open",
+                r#"{"mission":"literal","objective":"literal","budget_tokens":0}"#.to_owned(),
+            ),
+            (
+                "session_open",
+                r#"{"mission":"literal","objective":"literal","budget_tokens":1000001}"#.to_owned(),
+            ),
+            (
+                "session_open",
+                r#"{"mission":"literal","objective":"literal","budget_tokens":1e3}"#.to_owned(),
+            ),
+            (
+                "session_open",
+                r#"{"mission":"literal","objective":"literal","budget_tokens":"1000"}"#.to_owned(),
+            ),
+            ("handoff", r#"{"session":"--root=/other"}"#.to_owned()),
+            ("handoff", r#"{"session":"session:owner","note":""}"#.to_owned()),
+            (
+                "handoff",
+                r#"{"session":"session:owner","root":"/other"}"#.to_owned(),
+            ),
+            (
+                "handoff",
+                r#"{"session":"session:owner","principal":"principal:other"}"#.to_owned(),
+            ),
+            ("session_resume", r#"{"handoff":""}"#.to_owned()),
+            (
+                "session_resume",
+                r#"{"handoff":"handoff:owner","root":"/other"}"#.to_owned(),
+            ),
+            (
+                "session_resume",
+                r#"{"handoff":"handoff:owner","principal":"principal:other"}"#.to_owned(),
+            ),
+        ];
+        refused.push((
+            "session_open",
+            format!(
+                r#"{{"mission":{},"objective":"literal"}}"#,
+                quote(&"x".repeat(MAX_MISSION_BYTES + 1))
+            ),
+        ));
+        refused.push((
+            "session_open",
+            format!(
+                r#"{{"mission":"literal","objective":{}}}"#,
+                quote(&"x".repeat(MAX_OBJECTIVE_BYTES + 1))
+            ),
+        ));
+        refused.push((
+            "handoff",
+            format!(
+                r#"{{"session":"session:owner","note":{}}}"#,
+                quote(&"x".repeat(MAX_NOTE_BYTES + 1))
+            ),
+        ));
+        for (name, arguments) in refused {
+            let request = format!(
+                r#"{{"jsonrpc":"2.0","id":23,"method":"tools/call","params":{{"name":{},"arguments":{arguments}}}}}"#,
+                quote(name)
+            );
+            let response = server.handle_with(&request, |_| {
+                calls += 1;
+                ("{}".to_owned(), ExitIdentity::SUCCESS)
+            });
+            assert!(
+                response.is_some_and(|text| text.contains("-32602")),
+                "{name}: {arguments}"
+            );
+        }
+        for (name, arguments) in [
+            (
+                "session_open",
+                r#"{"mission":"literal","objective":"literal","budget_tokens":100000}"#,
+            ),
+            ("handoff", r#"{"session":"session:owner","note":"literal"}"#),
+            ("session_resume", r#"{"handoff":"handoff:owner"}"#),
+        ] {
+            let request = format!(
+                r#"{{"jsonrpc":"2.0","method":"tools/call","params":{{"name":{},"arguments":{arguments}}}}}"#,
+                quote(name)
+            );
+            let response = server.handle_with(&request, |_| {
+                calls += 1;
+                ("{}".to_owned(), ExitIdentity::SUCCESS)
+            });
+            assert_eq!(response, None);
+        }
+        assert_eq!(calls, 0);
+    }
+
+    #[test]
+    fn session_lifecycle_discovery_preserves_native_bounds_and_retry_scope()
+    -> Result<(), Box<dyn std::error::Error>> {
+        use fss_cli::json_input::{self as input, Value as Input};
+
+        let discovery = input::parse(TOOLS)?;
+        let tools = discovery
+            .object()
+            .and_then(|object| object.get("tools"))
+            .and_then(Input::array)
+            .ok_or("tool list")?;
+        assert_eq!(tools.len(), 9);
+        for name in ["session_open", "session_resume", "handoff"] {
+            let tool = tools
+                .iter()
+                .filter_map(Input::object)
+                .find(|tool| tool.get("name").and_then(Input::text) == Some(name))
+                .ok_or("session lifecycle tool")?;
+            let annotations = tool
+                .get("annotations")
+                .and_then(Input::object)
+                .ok_or("tool annotations")?;
+            for field in ["readOnlyHint", "destructiveHint", "idempotentHint", "openWorldHint"] {
+                assert_eq!(
+                    annotations.get(field).and_then(Input::boolean),
+                    Some(false),
+                    "{name}: {field}"
+                );
+            }
+            let schema = tool
+                .get("inputSchema")
+                .and_then(Input::object)
+                .ok_or("tool input schema")?;
+            assert_eq!(
+                schema.get("additionalProperties").and_then(Input::boolean),
+                Some(false)
+            );
+            let properties = schema
+                .get("properties")
+                .and_then(Input::object)
+                .ok_or("tool properties")?;
+            assert!(!properties.contains_key("root"));
+            assert!(!properties.contains_key("principal"));
+            if name == "session_open" {
+                let budget = properties
+                    .get("budget_tokens")
+                    .and_then(Input::object)
+                    .ok_or("session budget")?;
+                assert_eq!(
+                    budget.get("maximum").and_then(Input::integer),
+                    Some(i128::from(MAX_SESSION_TOKEN_BUDGET))
+                );
+                let mission = properties
+                    .get("mission")
+                    .and_then(Input::object)
+                    .ok_or("literal mission")?;
+                assert_eq!(
+                    mission.get("maxLength").and_then(Input::integer),
+                    Some(MAX_MISSION_BYTES as i128)
+                );
+            }
+        }
+        Ok(())
     }
 
     #[test]
@@ -624,8 +986,11 @@ mod tests {
                 .is_some_and(|r| r.contains("Already initialized"))
         );
         for name in [
+            "session_open",
+            "session_resume",
             "session_orient",
             "session_follow",
+            "handoff",
             "explain",
             "doctor",
             "query",
@@ -674,7 +1039,7 @@ mod tests {
     }
 
     #[test]
-    fn notification_never_executes_and_mutation_tools_are_absent() {
+    fn notifications_incomplete_sessions_and_effect_tools_never_execute() {
         let mut server = ready();
         let mut calls = 0;
         for text in [

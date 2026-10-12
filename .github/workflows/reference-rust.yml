@@ -61,9 +61,10 @@ jobs:
           rustup run nightly-2026-08-31 cargo test --locked --offline -p fss-reference --test follow_session_delivery_contract || follow_exit=1
           rustup run nightly-2026-08-31 cargo test --locked --offline -p fss-reference --lib agent_session::checkpoint::journal::follow::tests || follow_exit=1
           rustup run nightly-2026-08-31 cargo test --locked --offline -p fss-cli --lib follow_cmd:: || follow_exit=1
-          rustup run nightly-2026-08-31 cargo test --locked --offline -p fss-cli --bin fss-mcp follow || follow_exit=1
+          rustup run nightly-2026-08-31 cargo test --locked --offline -p fss-cli --bin fss-mcp || follow_exit=1
           rustup run nightly-2026-08-31 cargo test --locked --offline -p fss-cli --test follow_cli_contract || follow_exit=1
           rustup run nightly-2026-08-31 cargo test --locked --offline -p fss-cli --test follow_subscription_cli_contract || follow_exit=1
+          rustup run nightly-2026-08-31 cargo test --locked --offline -p fss-cli --test mcp_cli_contract --test mcp_session_lifecycle_contract || follow_exit=1
           exit "$follow_exit"
       - name: Verify query CLI, library and MCP parity
         if: success() || failure()
@@ -100,6 +101,9 @@ jobs:
           crates/fss-cli/src/follow_cmd/wait.rs
           crates/fss-cli/src/follow_cmd/wait/tests.rs
           crates/fss-cli/src/fss_cmd.rs
+          crates/fss-cli/src/session_cmd.rs
+          crates/fss-cli/src/bin/fss-mcp.rs
+          crates/fss-cli/tests/mcp_session_lifecycle_contract.rs
           crates/fss-cli/src/orient_cmd.rs
           crates/fss-cli/src/bin/fss_mcp/server.rs
           crates/fss-cli/tests/follow_cli_contract.rs

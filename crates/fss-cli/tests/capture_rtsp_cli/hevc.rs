@@ -630,7 +630,10 @@ fn explicit_hevc_tuple_requires_its_own_approval_before_secret_or_socket_access(
     assert_ne!(selected_approval, explicit_approval);
     let configuration = value(&preview, "hevc_configuration")?;
     assert_eq!(text(configuration, "source")?, "owner-supplied-vps-sps-pps");
-    assert_eq!(text(configuration, "vps")?, ContentDigest::sha256(&nals()?[0]).to_text());
+    assert_eq!(
+        text(configuration, "vps")?,
+        ContentDigest::sha256(&nals()?[0]).to_text()
+    );
 
     for (mut changed, wrong_approval) in [
         (explicit.clone(), selected_approval),
@@ -642,7 +645,10 @@ fn explicit_hevc_tuple_requires_its_own_approval_before_secret_or_socket_access(
         assert!(output.stdout.is_empty());
     }
     let mut partial = explicit.clone();
-    let at = partial.iter().position(|arg| arg == "--hevc-sps").ok_or("SPS option")?;
+    let at = partial
+        .iter()
+        .position(|arg| arg == "--hevc-sps")
+        .ok_or("SPS option")?;
     partial.drain(at..at + 2);
     let mut wrong_codec = explicit.clone();
     replace(&mut wrong_codec, "--codec", "avc")?;
@@ -673,7 +679,11 @@ fn explicit_hevc_tuple_without_sdp_parameters_captures_and_cold_decodes() -> Tes
 }
 
 fn requested_stop(explicit: bool) -> Test {
-    let directory = Directory::new(if explicit { "hevc-target-owner-tuple" } else { "hevc-target" })?;
+    let directory = Directory::new(if explicit {
+        "hevc-target-owner-tuple"
+    } else {
+        "hevc-target"
+    })?;
     let listener = listener()?;
     let mut args = args(&directory, listener.local_addr()?, 2)?;
     let mut camera = camera(StreamCase::Target)?;

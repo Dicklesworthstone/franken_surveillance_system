@@ -88,7 +88,7 @@ pub const HANDOFF_PAYLOAD_SCHEMA: &str = "fss.agent_handoff_capsule.v1";
 pub struct SessionOpenArgs {
     /// Existing deployment root.
     pub root: PathBuf,
-    /// Mission statement (the `--mission` text, or the contents of the file it names).
+    /// Mission statement (`--mission-text` is literal; `--mission` may name a file).
     pub mission: String,
     /// Objective text.
     pub objective: String,
@@ -158,6 +158,20 @@ fn required<'a>(
     })
 }
 
+/// Validates mission text without inspecting the filesystem.
+fn literal_mission_text(value: &str, option: &str, index: usize) -> Result<String, CliError> {
+    if value.is_empty() || value.len() > MAX_MISSION_BYTES {
+        return Err(malformed(
+            "session open",
+            option,
+            value,
+            &format!("the mission statement must be 1..={MAX_MISSION_BYTES} bytes"),
+            index,
+        ));
+    }
+    Ok(value.to_owned())
+}
+
 /// Reads `--mission`: the contents of the regular file it names, or else the text itself.
 fn mission_text(value: &str, index: usize) -> Result<String, CliError> {
     let path = Path::new(value);
@@ -213,6 +227,7 @@ fn parse_open(tokens: &[ArgToken]) -> Result<SessionOpenArgs, CliError> {
         &[
             "--root",
             "--mission",
+            "--mission-text",
             "--objective",
             "--principal",
             "--view",
@@ -220,8 +235,28 @@ fn parse_open(tokens: &[ArgToken]) -> Result<SessionOpenArgs, CliError> {
         ],
     )?;
     let root = required_root(COMMAND, &values)?;
-    let (_, raw, index) = required(COMMAND, &values, "--mission", "a mission statement or file")?;
-    let mission = mission_text(raw, *index)?;
+    // Reject conflicting sources before the legacy file-aware option can perform I/O.
+    // Transports use --mission-text so arbitrary mission prose always remains literal data.
+    let mission = if let Some((_, raw, index)) = take(&values, "--mission-text") {
+        if take(&values, "--mission").is_some() {
+            return Err(malformed(
+                COMMAND,
+                "--mission-text",
+                raw,
+                "choose exactly one of --mission or --mission-text",
+                *index,
+            ));
+        }
+        literal_mission_text(raw, "--mission-text", *index)?
+    } else {
+        let (_, raw, index) = required(
+            COMMAND,
+            &values,
+            "--mission",
+            "a mission statement or file, or literal text with --mission-text",
+        )?;
+        mission_text(raw, *index)?
+    };
     let (_, objective, index) = required(COMMAND, &values, "--objective", "an objective")?;
     if objective.len() > MAX_OBJECTIVE_BYTES {
         return Err(malformed(

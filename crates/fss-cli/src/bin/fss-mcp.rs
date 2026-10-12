@@ -1,5 +1,5 @@
 #![forbid(unsafe_code)]
-//! Owner-launched, read-only MCP stdio transport for existing FSS agent reads.
+//! Owner-launched MCP stdio transport for native FSS reads and agent-session continuity.
 //! This is a bounded synchronous reference adapter, not a production network service.
 
 use std::ffi::OsString;
@@ -13,9 +13,12 @@ mod json;
 mod server;
 
 const HELP: &str = "fss-mcp --root EXISTING_DEPLOYMENT [--principal PRINCIPAL_ID]\n\
-Read-only MCP 2025-06-18 over newline-delimited JSON-RPC on stdin/stdout.\n\
+MCP 2025-06-18 over newline-delimited JSON-RPC on stdin/stdout.\n\
 The operator fixes root and principal; clients cannot override them. The principal\n\
-is an audit label, not authentication. No network listener or write tools.\n\
+is an audit label, not authentication. Session open/handoff/resume and explicit\n\
+durable follow write agent continuity state; no physical effect tools or listener.\n\
+Mission text is literal, never a file to read. Session budgets are cumulative;\n\
+same-head retry and resume behavior comes from the native session implementation.\n\
 Input frames are limited to 64 KiB; semantic responses to 4 MiB before escaping.\n\
 Diagnostics go only to stderr. EOF shuts down. Reference-only, not qualified.\n";
 
