@@ -27,6 +27,22 @@
 //!   after the capsule batch committed, when the completion outcome is not known, end
 //!   `Indeterminate` with an [`IndeterminateWitness`] naming the resume obligation; a cooperative
 //!   cancellation ends `Cancelled` with [`FileSessionEnding::OperatorCancel`].
+
+//! # Decision: the generic core stays generic [fss-mf4cd]
+//!
+//! The three model gaps this mapping exposes were reviewed and are the intended contract,
+//! not omissions:
+//! * No `FirstFrameObserved`: the core [`fss_core::FirstFrameWitness`] requires a `Verified`
+//!   decode, and a file import retains source bytes without decoding. Adding an
+//!   undecoded-observation kind to the core would weaken that witness for every adapter;
+//!   the honest cost is one `Degraded` transition naming `first_frame_decode_not_attempted`.
+//! * No `EndOfSource` terminal: the core terminal set is source-agnostic by design. A file
+//!   draining to its end is a cooperative, drained cancellation; the file-specific semantics
+//!   live in this module's typed [`FileSessionEnding::EndOfFileSource`] label, which survives
+//!   retention and replay.
+//! * Capability `NONE`: a bounded local file import requests no live or device capability,
+//!   so `NONE` is the accurate request, not a missing flag; the import identity is bound by
+//!   the credential-free [`AuthReceipt`] instead.
 //!
 //! # Retention
 //!
