@@ -773,3 +773,107 @@ fn test_interleave_split_equivalence() -> Result<(), Box<dyn Error>> {
     assert_eq!(clean_events, split_events);
     Ok(())
 }
+
+/// fss-2h5zq.33: 10,000 fixed-seed stacked mutations of the S2C stream must
+/// never panic the parser — every outcome is Ok(events), Ok(no events), or
+/// a typed RtspError. A panic here is a hostile-input defect; a mutation
+/// that changes event COUNT on a benign transcript is recorded, not failed
+/// (framing may legitimately break), but determinism per mutant holds: the
+/// same mutant twice yields identical outcomes.
+#[test]
+fn parser_ten_thousand_mutations_never_panic() -> Result<(), Box<dyn Error>> {
+    let repo_root = get_repo_root()?;
+    let rtsp_dir = repo_root.join("tests/fixtures/media/rtsp");
+
+    // Base stream: the committed S2C bytes of the first transcript found.
+    let mut s2c_stream = Vec::new();
+    for entry in fs::read_dir(&rtsp_dir)? {
+        let entry = entry?;
+        let name = entry.file_name().to_string_lossy().into_owned();
+        if name == "clean.transcript" {
+            let transcript = parse_transcript(&fs::read(entry.path())?)?;
+            for r in &transcript {
+                if r.direction == TranscriptDirection::ServerToClient {
+                    s2c_stream.extend_from_slice(&r.bytes);
+                }
+            }
+            if !s2c_stream.is_empty() {
+                break;
+            }
+        }
+    }
+    assert!(!s2c_stream.is_empty(), "no S2C bytes found in committed transcripts");
+
+    // Simple LCG — fixed seed, no external RNG.
+    let mut state: u64 = 0x5F3A_7C2D_1B9E_4086;
+    let mut next = || {
+        state = state.wrapping_mul(6_364_136_223_846_793_005).wrapping_add(1_442_695_040_888_963_407);
+        state >> 33
+    };
+
+    let mut panics: usize = 0;
+    let mut nondeterministic: usize = 0;
+    for iteration in 0..10_000u64 {
+        // 1-3 stacked mutations: single-byte flips, short insertions, truncations.
+        let mutation_count = (next() % 3) + 1;
+        let mut mutant = s2c_stream.clone();
+        for _ in 0..mutation_count {
+            let choice = next() % 3;
+            if choice == 0 && !mutant.is_empty() {
+                let idx = (next() as usize) % mutant.len();
+                mutant[idx] ^= (next() % 255) as u8 + 1;
+            } else if choice == 1 && !mutant.is_empty() {
+                let idx = (next() as usize) % mutant.len();
+                let byte = (next() % 256) as u8;
+                mutant.insert(idx, byte);
+            } else if mutant.len() > 1 {
+                let new_len = mutant.len() - (next() as usize % 32).min(mutant.len() - 1);
+                mutant.truncate(new_len);
+            }
+        }
+
+        // First pass: no panic (catch_unwind over the parser feed).
+        let first = {
+            let mut parser = RtspParser::new();
+            let stream = mutant.clone();
+            let result = std::panic::catch_unwind(move || parser.feed(&stream));
+            match result {
+                Ok(Ok(events)) => Some(events.len()),
+                Ok(Err(_)) => None,
+                Err(_) => {
+                    panics += 1;
+                    continue;
+                }
+            }
+        };
+
+        // Second pass: identical mutant must yield the identical outcome.
+        let second = {
+            let mut parser = RtspParser::new();
+            let stream = mutant;
+            let result = std::panic::catch_unwind(move || parser.feed(&stream));
+            match result {
+                Ok(Ok(events)) => Some(events.len()),
+                Ok(Err(_)) => None,
+                Err(_) => {
+                    panics += 1;
+                    continue;
+                }
+            }
+        };
+
+        if first != second {
+            nondeterministic += 1;
+            if nondeterministic <= 3 {
+                eprintln!("mutant {iteration}: outcome changed across identical runs");
+            }
+        }
+    }
+
+    assert_eq!(panics, 0, "parser panicked on {panics} of 10,000 mutants");
+    assert_eq!(
+        nondeterministic, 0,
+        "identical mutants produced different outcomes {nondeterministic} times"
+    );
+    Ok(())
+}
