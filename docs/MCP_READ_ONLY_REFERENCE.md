@@ -43,7 +43,7 @@ Typical client configuration:
 | `session_orient` (AOP-003) | `fss session orient` | Optional `view`: `pulse`, `brief`, `epistemic_map`; optional response `budget_tokens`: 1..4096, subject to the view limit |
 | `session_follow` (AOP-004) | `fss session follow` | Required `since`; optional `view`, `max_entries`, `continuation` or `wait_ms`; durable mode adds `session`, `subscription`, and optional exact `acknowledge` receipt |
 | `query` (AOP-005) | `fss query` | Exact event, kind, state, zone and time filters; bounded pages with optional anchor and continuation |
-| `investigate` (AOP-006) | `fss investigate` | Required `session` and one of eleven `transition` values; exact case-revision preconditions and literal draft/expansion objects |
+| `investigate` (AOP-006) | `fss investigate` | Required `session`; eleven case, twelve work-claim and three finding transitions; native revision, lease and publication-retry fences |
 | `wait` (AOP-009) | `fss wait` | Required `operation_id` and `deadline_ms`: 1..10000; reads existing effect state |
 | `explain` (AOP-011) | `fss explain` | Required `event_id` |
 | `handoff` (AOP-012) | `fss handoff` | Required `session` ID; optional literal `note` |
@@ -58,6 +58,12 @@ Unknown fields are refused before execution. Discovery annotations describe the
 tools; enforcement comes from explicit argument allowlists, the canonical CLI
 parser, pure native intent decoders and an exact typed command allowlist. Plan, commit, cancel, alert delivery,
 repair, device controls and other effect tools remain unavailable.
+
+Work claims and immutable findings share the existing `investigate` operation.
+See [MCP work claims and immutable findings](MCP_COORDINATION_REFERENCE.md) for
+exclusive work acquisition, dependencies, progress, lease transfer/reclaim,
+disagreement, supersession, withdrawal and verified recovery after a lost response.
+These actions write the native mission board and grant no effect authority.
 
 ## Open, hand off and resume a mission
 
@@ -286,14 +292,18 @@ cargo test --locked -p fss-cli --bin fss-mcp
 cargo test --locked -p fss-cli --test mcp_cli_contract
 cargo test --locked -p fss-cli --test follow_subscription_cli_contract
 cargo test --locked -p fss-cli --test mcp_session_lifecycle_contract
+cargo test --locked -p fss-cli --test mcp_investigation_contract
+cargo test --locked -p fss-cli --test mcp_coordination_contract
+cargo test --locked -p fss-cli --test finding_cli_contract
 ```
 
 Unit contracts cover exact dispatch, literal mission text, bounded cumulative
-budgets, all eleven typed investigation transitions, literal nested intent data,
+budgets, all twenty-six typed investigation, claim and finding transitions, literal nested intent data,
 command and principal clamps, notification nonexecution, unchanged
 semantic payloads, framing and output ceilings. Process contracts use real
 reference deployments to check cross-surface identity, durable follow retries
-and acknowledgments, session lifecycle, world-drift invalidation and authority
+and acknowledgments, session lifecycle, case history, world-drift invalidation,
+claim lease and ownership fences, immutable finding retry receipts and authority
 refusals. Included tests are not themselves test-pass or release qualification
 receipts.
 

@@ -438,14 +438,15 @@ fn stale(reason: impl Into<String>) -> DeploymentSessionError {
     DeploymentSessionError::FindingStale(reason.into())
 }
 
-/// The record a publish or withdraw request would publish, validated against the board.
+/// Builds one normalized request at the live session/case basis and checks its visible links.
+/// Active-link preconditions apply only if no verified exact publication already exists.
 fn draft_record(
     root: &Path,
     journal: &SessionJournal,
     session: &AgentSession,
     action: &FindingAction,
     now: TimestampNs,
-) -> Result<FindingRecord, DeploymentSessionError> {
+) -> Result<(FindingRecord, Vec<FindingView>), DeploymentSessionError> {
     let board = mission_findings(root, &session.mission_id, &session.principal_id)?;
     let find = |id: &str| board.iter().find(|view| view.record.finding_id == id);
     let (draft, withdrawn) = match action {
@@ -524,22 +525,12 @@ fn draft_record(
                 "finding `{other}` is about another case; disagreement is per case"
             )));
         }
-        if !view.is_active() {
-            return Err(stale(format!(
-                "finding `{other}` was superseded or withdrawn; disagree with its successor"
-            )));
-        }
     }
     if let Some(target) = &draft.supersedes {
         let view =
             find(target).ok_or_else(|| refused(format!("no finding `{target}` is visible")))?;
         if view.record.case_id != draft.case_id {
             return Err(refused(format!("finding `{target}` is about another case")));
-        }
-        if !view.is_active() {
-            return Err(stale(format!(
-                "finding `{target}` was already superseded or withdrawn (one successor each)"
-            )));
         }
     }
     let mut supporting = draft.supporting;
@@ -577,11 +568,50 @@ fn draft_record(
         return Err(refused("a finding cannot refer to itself"));
     }
     record.finding()?;
-    Ok(record)
+    Ok((record, board))
+}
+
+/// A new publication still requires active links, under the session journal's writer lock.
+/// An exact retry reads its previous receipt; it cannot create another successor.
+fn require_active_links(
+    record: &FindingRecord,
+    board: &[FindingView],
+) -> Result<(), DeploymentSessionError> {
+    let find = |id: &str| board.iter().find(|view| view.record.finding_id == id);
+    for other in &record.disagrees_with {
+        let view =
+            find(other).ok_or_else(|| refused(format!("no finding `{other}` is visible")))?;
+        if !view.is_active() {
+            return Err(stale(format!(
+                "finding `{other}` was superseded or withdrawn; disagree with its successor"
+            )));
+        }
+    }
+    if let Some(target) = &record.supersedes {
+        let view =
+            find(target).ok_or_else(|| refused(format!("no finding `{target}` is visible")))?;
+        if !view.is_active() {
+            return Err(stale(format!(
+                "finding `{target}` was already superseded or withdrawn (one successor each)"
+            )));
+        }
+    }
+    Ok(())
+}
+
+/// The shortened public identity alone is insufficient to authorize a retry. Compare every
+/// request/content field, including the author session, principal, mission, case revision and
+/// anchor. Creation time is a receipt field and must remain the original publication's time.
+fn same_content(candidate: &FindingRecord, published: &FindingRecord) -> bool {
+    let mut expected = candidate.clone();
+    expected.created_at = published.created_at;
+    expected == *published
 }
 
 /// Applies one finding action. A publish or withdrawal is validated against the case board and
-/// published root-last; an identical request is an exact retry returning the published record.
+/// published root-last; an identical request is an exact retry returning the verified published
+/// record, even after that request superseded/withdrew its predecessor. Current session authority
+/// and the full case/request basis are always checked before admitting a retry.
 /// `render` produces the `fss.agent_finding.v1` rendering published beside a new record.
 pub fn finding(
     root: &Path,
@@ -610,7 +640,7 @@ pub fn finding(
         if matches!(request.action, FindingAction::List { .. }) {
             return Ok((None, false));
         }
-        let mut record = draft_record(root, &journal, &session, &request.action, now)?;
+        let (mut record, board) = draft_record(root, &journal, &session, &request.action, now)?;
         let slot = FindingRecord::slot(&record.finding_id)?;
         if let Some(existing) = read_published(root, &slot)? {
             let existing = FindingRecord::from_bytes(&existing.record).map_err(|error| {
@@ -618,8 +648,14 @@ pub fn finding(
                     "the finding record does not verify: {error}"
                 ))
             })?;
+            if !same_content(&record, &existing) {
+                return Err(DeploymentSessionError::StoreInvalid(
+                    "the published finding does not match the full request content".to_owned(),
+                ));
+            }
             return Ok((Some(existing.finding_id), false));
         }
+        require_active_links(&record, &board)?;
         let rendering = render(&record)?;
         record.created_at = now;
         publish_record(
@@ -738,6 +774,50 @@ mod tests {
         later.created_at = TimestampNs(99);
         assert_eq!(later.identity(), record.identity());
         record.finding()?;
+        Ok(())
+    }
+
+    #[test]
+    fn retry_comparison_binds_every_content_field_and_retains_publication_time()
+    -> Result<(), ContractError> {
+        let published = record()?;
+        let mut later = published.clone();
+        later.created_at = TimestampNs(99);
+        assert!(same_content(&later, &published));
+
+        macro_rules! different {
+            ($field:ident, $value:expr) => {{
+                let mut candidate = published.clone();
+                candidate.$field = $value;
+                assert!(
+                    !same_content(&candidate, &published),
+                    "a different {} is never an exact retry",
+                    stringify!($field)
+                );
+            }};
+        }
+        different!(finding_id, "finding:another".to_owned());
+        different!(mission_id, MissionId::parse("mission:other")?);
+        different!(principal, PrincipalId::parse("principal:other")?);
+        different!(session_id, SessionId::parse("session:other")?);
+        different!(case_id, "case:other".to_owned());
+        different!(case_revision, ContentDigest::sha256(b"another revision"));
+        different!(hypothesis_id, Some("h:other".to_owned()));
+        different!(anchor, LedgerAnchor::genesis("site:other"));
+        different!(claim, "Another claim".to_owned());
+        different!(epistemic_state, KnowledgeState::Unknown);
+        different!(
+            supporting,
+            vec![ContentDigest::sha256(b"other support").to_text()]
+        );
+        different!(
+            contradicting,
+            vec![ContentDigest::sha256(b"contradiction").to_text()]
+        );
+        different!(follow_up, vec!["probe:other".to_owned()]);
+        different!(disagrees_with, vec!["finding:another".to_owned()]);
+        different!(supersedes, Some("finding:predecessor".to_owned()));
+        different!(withdrawn, true);
         Ok(())
     }
 

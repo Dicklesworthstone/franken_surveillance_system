@@ -49,6 +49,11 @@ jobs:
           crates/fss-cli/src/bin/fss_mcp/server.rs
           crates/fss-cli/src/bin/fss_mcp/json.rs
           crates/fss-cli/src/bin/fss_mcp/investigate.rs
+          crates/fss-cli/src/bin/fss_mcp/coordination.rs
+          crates/fss-cli/tests/mcp_investigation_contract.rs
+          crates/fss-cli/tests/mcp_coordination_contract.rs
+          crates/fss-cli/tests/finding_cli_contract.rs
+          crates/fss-reference/src/deployment_session/findings.rs
           crates/fss-cli/tests/mcp_session_lifecycle_contract.rs
           crates/fss-cli/tests/follow_subscription_cli_contract.rs
           crates/fss-cli/src/bin/fss-capture-rtsp.rs
@@ -139,11 +144,12 @@ jobs:
           cargo +nightly-2026-08-31 test --locked --offline -p fss-reference --test follow_replay_contract --test follow_session_delivery_contract
           cargo +nightly-2026-08-31 test --locked --offline -p fss-reference --lib agent_session::checkpoint::journal::follow::tests
           cargo +nightly-2026-08-31 test --locked --offline -p fss-cli --test follow_subscription_cli_contract
-      - name: MCP sessions and durable investigation grammar
+      - name: MCP sessions, durable investigations and coordination
         if: success() || failure()
         run: |
-          cargo +nightly-2026-08-31 test --locked --offline -p fss-cli --test session_cli_contract --test mcp_cli_contract --test mcp_session_lifecycle_contract --test investigate_cli_contract
+          cargo +nightly-2026-08-31 test --locked --offline -p fss-cli --test session_cli_contract --test mcp_cli_contract --test mcp_session_lifecycle_contract --test investigate_cli_contract --test mcp_investigation_contract --test mcp_coordination_contract --test work_claim_cli_contract --test finding_cli_contract
           cargo +nightly-2026-08-31 test --locked --offline -p fss-cli --bin fss-mcp
+          cargo +nightly-2026-08-31 test --locked --offline -p fss-reference --lib deployment_session::findings::tests
       - name: Capture and event CLI Clippy
         if: success() || failure()
         run: cargo +nightly-2026-08-31 clippy --no-deps --locked --offline -p fss-cli --bin fss-capture-rtsp --bin fss-event -- -D warnings

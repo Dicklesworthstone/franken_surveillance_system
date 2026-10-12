@@ -7,6 +7,8 @@ use std::io;
 use std::path::PathBuf;
 use std::process::ExitCode;
 
+#[path = "fss_mcp/coordination.rs"]
+mod coordination;
 #[path = "fss_mcp/investigate.rs"]
 mod investigate;
 #[path = "fss_mcp/json.rs"]

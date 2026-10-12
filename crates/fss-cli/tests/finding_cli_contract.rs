@@ -11,7 +11,9 @@
 //! 3. a finding is superseded at most once and only while active; a superseded or withdrawn
 //!    finding stays readable as `stale`;
 //! 4. handoffs carry the active findings; the authority ledger, effect journal, and spool never
-//!    change.
+//!    change;
+//! 5. lost-ACK retries read the exact verified supersession, withdrawal, or disagreement receipt
+//!    without republishing it; altered authors/content/case revisions and damaged custody refuse.
 
 use std::collections::BTreeMap;
 use std::error::Error;
@@ -523,5 +525,282 @@ fn findings_disagree_visibly_and_are_superseded_or_withdrawn_never_edited() -> T
     assert_eq!(second.handoff_findings()?, vec![corrected_id.clone()]);
 
     assert_eq!(authority_tree(&root)?, authority_before);
+    Ok(())
+}
+
+/// Byte and directory membership of this test-owned publication store.
+fn publication_snapshot(root: &Path) -> TestResult<BTreeMap<PathBuf, (bool, Vec<u8>)>> {
+    let directory = root.join("agent/publications");
+    let mut pending = vec![directory.clone()];
+    let mut out = BTreeMap::new();
+    while let Some(path) = pending.pop() {
+        let relative = path.strip_prefix(&directory)?.to_path_buf();
+        let metadata = fs::symlink_metadata(&path)?;
+        if metadata.is_dir() {
+            out.insert(relative, (true, Vec::new()));
+            for entry in fs::read_dir(&path)? {
+                pending.push(entry?.path());
+            }
+        } else if metadata.is_file() {
+            out.insert(relative, (false, fs::read(&path)?));
+        } else {
+            return Err("unexpected special file in owned publication fixture".into());
+        }
+    }
+    Ok(out)
+}
+
+fn open_case(agent: &Agent) -> TestResult<String> {
+    let file = agent.scratch.join("retry-case.json");
+    fs::write(&file, case_document())?;
+    let (code, opened) = agent.run("open", &["--case-file", &file.to_string_lossy()])?;
+    assert_eq!(code, Some(0), "{opened:?}");
+    Ok(text(&opened, &["decisionFingerprint"])?.to_owned())
+}
+
+/// A lost-ACK replay returns the original root and rendering and appends no publication.
+fn assert_exact_retry(
+    agent: &Agent,
+    transition: &str,
+    args: &[&str],
+    published: &Value,
+) -> TestResult<Value> {
+    let before = publication_snapshot(&agent.root)?;
+    let original_rendering = hydrated(agent, published)?;
+    let retry = agent.finding(transition, args)?;
+    let original = texts(published, &["proofPointers"])?;
+    let actual = texts(&retry, &["proofPointers"])?;
+    assert_eq!(&actual[..2], &original[..2]);
+    assert_eq!(hydrated(agent, &retry)?, original_rendering);
+    assert!(
+        texts(&retry, &["executionBoundary", "completed"])?
+            .iter()
+            .any(|line| line.starts_with("Read the already published finding ")),
+        "{retry:?}"
+    );
+    assert_eq!(publication_snapshot(&agent.root)?, before);
+    Ok(retry)
+}
+
+#[test]
+fn lost_ack_retries_preserve_supersessions_withdrawals_and_the_one_successor_fence() -> TestResult {
+    let directory = OwnedDirectory::new("lost-ack")?;
+    let root = empty_deployment(&directory)?;
+    let first = Agent::open(&directory, &root, "3000")?;
+    let second = Agent::open(&directory, &root, "4000")?;
+    let case_revision = open_case(&first)?;
+    let authority_before = authority_tree(&root)?;
+    let hallway = ContentDigest::sha256(b"hallway fixture").to_text();
+    let street = ContentDigest::sha256(b"street fixture").to_text();
+    let initial_args = [
+        "--case",
+        CASE,
+        "--hypothesis",
+        "h:entry",
+        "--claim",
+        "A person entered.",
+        "--state",
+        "estimated",
+        "--supporting",
+        hallway.as_str(),
+    ];
+    let initial = first.finding("finding", &initial_args)?;
+    let initial_id = standings(&initial)?[0].0.clone();
+    let disagreement_args = [
+        "--case",
+        CASE,
+        "--hypothesis",
+        "h:passerby",
+        "--claim",
+        "The person passed the door.",
+        "--state",
+        "estimated",
+        "--supporting",
+        street.as_str(),
+        "--disagrees-with",
+        initial_id.as_str(),
+    ];
+    let disagreement = second.finding("finding", &disagreement_args)?;
+    let disagreement_id = standings(&disagreement)?[0].0.clone();
+    let correction_args = [
+        "--case",
+        CASE,
+        "--hypothesis",
+        "h:passerby",
+        "--claim",
+        "The complete street sequence establishes a passerby.",
+        "--state",
+        "estimated",
+        "--supporting",
+        street.as_str(),
+        "--supersedes",
+        initial_id.as_str(),
+    ];
+    let correction = first.finding("finding", &correction_args)?;
+    let correction_id = standings(&correction)?[0].0.clone();
+    assert_exact_retry(&first, "finding", &correction_args, &correction)?;
+
+    // Exact old publications stay readable with their current standing, even when their
+    // predecessor/disagreement target is inactive. They are not published or made active again.
+    let old = assert_exact_retry(&first, "finding", &initial_args, &initial)?;
+    assert_eq!(
+        standings(&old)?,
+        vec![(initial_id.clone(), "stale".to_owned())]
+    );
+    assert_exact_retry(&second, "finding", &disagreement_args, &disagreement)?;
+
+    let before_refusals = publication_snapshot(&root)?;
+    let mut altered = correction_args.to_vec();
+    altered[5] = "A different correction cannot reuse the original receipt.";
+    first.refused("finding", &altered, "ERR-PRECONDITION-STALE-001")?;
+    // Sharing a principal and mission does not make another session the author of this receipt.
+    second.refused("finding", &correction_args, "ERR-PRECONDITION-STALE-001")?;
+    let mut foreign = correction_args.to_vec();
+    foreign.extend(["--principal", "principal:other"]);
+    let (code, refused) = first.run("finding", &foreign)?;
+    assert_eq!(code, Some(5), "{refused:?}");
+    assert_eq!(text(&refused, &["outcome"])?, "refused");
+    assert_eq!(field(&refused, &["payload"])?, &Value::Null);
+    assert_eq!(publication_snapshot(&root)?, before_refusals);
+
+    let withdrawal_args = [
+        "--finding",
+        disagreement_id.as_str(),
+        "--claim",
+        "Withdrawn in light of the corrected sequence.",
+        "--supporting",
+        street.as_str(),
+    ];
+    let withdrawal = second.finding("finding-withdraw", &withdrawal_args)?;
+    assert_exact_retry(&second, "finding-withdraw", &withdrawal_args, &withdrawal)?;
+    let mut altered_withdrawal = withdrawal_args.to_vec();
+    altered_withdrawal[3] = "A different withdrawal is not the published withdrawal.";
+    second.refused(
+        "finding-withdraw",
+        &altered_withdrawal,
+        "ERR-PRECONDITION-STALE-001",
+    )?;
+    // Even a withdrawn author's exact prior finding is an immutable stale receipt.
+    let old = assert_exact_retry(&second, "finding", &disagreement_args, &disagreement)?;
+    assert_eq!(
+        standings(&old)?,
+        vec![(disagreement_id.clone(), "stale".to_owned())]
+    );
+
+    let board = first.finding("finding-list", &[])?;
+    let states = standings(&board)?;
+    assert_eq!(states.len(), 4, "{states:?}");
+    assert!(states.contains(&(correction_id, "estimated".to_owned())));
+
+    // The case revision participates in identity. The same textual intent at a new revision
+    // cannot claim the old receipt or create a second successor.
+    let (code, active) = first.run(
+        "activate",
+        &["--case", CASE, "--expected", case_revision.as_str()],
+    )?;
+    assert_eq!(code, Some(0), "{active:?}");
+    assert_ne!(text(&active, &["decisionFingerprint"])?, case_revision);
+    let before_case_retry = publication_snapshot(&root)?;
+    first.refused("finding", &correction_args, "ERR-PRECONDITION-STALE-001")?;
+    assert_eq!(publication_snapshot(&root)?, before_case_retry);
+    assert_eq!(authority_tree(&root)?, authority_before);
+    Ok(())
+}
+
+/// Locates only a verified object inside this test's own publication spool, for fault injection.
+fn publication_object(root: &Path, digest: ContentDigest) -> TestResult<PathBuf> {
+    let mut pending = vec![root.join("agent/publications/spool/objects")];
+    while let Some(path) = pending.pop() {
+        let metadata = fs::symlink_metadata(&path)?;
+        if metadata.is_dir() {
+            for entry in fs::read_dir(&path)? {
+                pending.push(entry?.path());
+            }
+        } else if metadata.is_file() && ContentDigest::sha256(&fs::read(&path)?) == digest {
+            return Ok(path);
+        }
+    }
+    Err(format!("owned publication object {digest} missing before fault injection").into())
+}
+
+#[test]
+fn lost_ack_retry_refuses_missing_or_corrupt_publication_custody_without_repair() -> TestResult {
+    for (name, withdrawn, proof_index, missing) in [
+        ("supersede-root-missing", false, 0_usize, true),
+        ("supersede-rendering-corrupt", false, 1, false),
+        ("withdraw-root-corrupt", true, 0, false),
+        ("withdraw-rendering-missing", true, 1, true),
+    ] {
+        let directory = OwnedDirectory::new(name)?;
+        let root = empty_deployment(&directory)?;
+        let agent = Agent::open(&directory, &root, "3000")?;
+        open_case(&agent)?;
+        let evidence = ContentDigest::sha256(b"receipt custody fixture").to_text();
+        let initial = agent.finding(
+            "finding",
+            &[
+                "--case",
+                CASE,
+                "--claim",
+                "The preliminary sequence suggested entry.",
+                "--state",
+                "estimated",
+                "--supporting",
+                evidence.as_str(),
+            ],
+        )?;
+        let target = standings(&initial)?[0].0.clone();
+        let transition = if withdrawn {
+            "finding-withdraw"
+        } else {
+            "finding"
+        };
+        let args = if withdrawn {
+            vec![
+                "--finding",
+                target.as_str(),
+                "--claim",
+                "Withdraw the preliminary interpretation.",
+                "--supporting",
+                evidence.as_str(),
+            ]
+        } else {
+            vec![
+                "--case",
+                CASE,
+                "--claim",
+                "Correct the preliminary interpretation.",
+                "--state",
+                "estimated",
+                "--supporting",
+                evidence.as_str(),
+                "--supersedes",
+                target.as_str(),
+            ]
+        };
+        let published = agent.finding(transition, &args)?;
+        let proofs = texts(&published, &["proofPointers"])?;
+        let object = publication_object(&root, ContentDigest::parse(&proofs[proof_index])?)?;
+        let authority_before = authority_tree(&root)?;
+        if missing {
+            fs::remove_file(&object)?;
+        } else {
+            fs::write(&object, b"corrupt finding custody")?;
+        }
+        let damaged = publication_snapshot(&root)?;
+        let (code, refused) = agent.run(transition, &args)?;
+        assert_eq!(code, Some(5), "{name}: {refused:?}");
+        assert_eq!(text(&refused, &["outcome"])?, "refused");
+        assert_eq!(field(&refused, &["payload"])?, &Value::Null);
+        assert!(
+            matches!(
+                text(&refused, &["errorId"])?,
+                "ERR-AGENT-SESSION-STORE-INVALID-001" | "ERR-AGENT-HANDOFF-INVALID-001"
+            ),
+            "{name}: custody damage must be a verification refusal: {refused:?}"
+        );
+        assert_eq!(publication_snapshot(&root)?, damaged, "{name}");
+        assert_eq!(authority_tree(&root)?, authority_before, "{name}");
+    }
     Ok(())
 }

@@ -70,7 +70,7 @@ jobs:
           rustup run nightly-2026-08-31 cargo test --locked --offline -p fss-cli --bin fss-mcp || follow_exit=1
           rustup run nightly-2026-08-31 cargo test --locked --offline -p fss-cli --test follow_cli_contract || follow_exit=1
           rustup run nightly-2026-08-31 cargo test --locked --offline -p fss-cli --test follow_subscription_cli_contract || follow_exit=1
-          rustup run nightly-2026-08-31 cargo test --locked --offline -p fss-cli --test session_cli_contract --test mcp_cli_contract --test mcp_session_lifecycle_contract --test investigate_cli_contract || follow_exit=1
+          rustup run nightly-2026-08-31 cargo test --locked --offline -p fss-cli --test session_cli_contract --test mcp_cli_contract --test mcp_session_lifecycle_contract --test investigate_cli_contract --test mcp_investigation_contract --test mcp_coordination_contract --test work_claim_cli_contract --test finding_cli_contract || follow_exit=1
           exit "$follow_exit"
       - name: Verify query CLI, library and MCP parity
         if: success() || failure()
@@ -123,6 +123,11 @@ jobs:
           crates/fss-cli/src/bin/fss_mcp/server.rs
           crates/fss-cli/src/bin/fss_mcp/json.rs
           crates/fss-cli/src/bin/fss_mcp/investigate.rs
+          crates/fss-cli/src/bin/fss_mcp/coordination.rs
+          crates/fss-cli/tests/mcp_investigation_contract.rs
+          crates/fss-cli/tests/mcp_coordination_contract.rs
+          crates/fss-cli/tests/finding_cli_contract.rs
+          crates/fss-reference/src/deployment_session/findings.rs
           crates/fss-cli/tests/follow_cli_contract.rs
           crates/fss-core/tests/context_expansion_binding_contract.rs
       - name: Check formatting of changed reference sources
