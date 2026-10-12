@@ -34,19 +34,30 @@ fn evidence(args: &BTreeMap<String, Value>, key: &str) -> Result<Vec<ContentDige
         return Ok(Vec::new());
     };
     let Value::Array(values) = value else {
-        return Err((-32602, "Feedback evidence must be an array of digest strings"));
+        return Err((
+            -32602,
+            "Feedback evidence must be an array of digest strings",
+        ));
     };
     if values.len() > MAX_FEEDBACK_EVIDENCE {
-        return Err((-32602, "Feedback evidence exceeds the native 256-handle bound"));
+        return Err((
+            -32602,
+            "Feedback evidence exceeds the native 256-handle bound",
+        ));
     }
     values
         .iter()
         .map(|value| {
-            let raw = value
-                .text()
-                .ok_or((-32602, "Every feedback evidence item must be a digest string"))?;
-            ContentDigest::parse(raw)
-                .map_err(|_| (-32602, "Every feedback evidence item must be sha256:<64 hex>"))
+            let raw = value.text().ok_or((
+                -32602,
+                "Every feedback evidence item must be a digest string",
+            ))?;
+            ContentDigest::parse(raw).map_err(|_| {
+                (
+                    -32602,
+                    "Every feedback evidence item must be sha256:<64 hex>",
+                )
+            })
         })
         .collect()
 }
@@ -151,17 +162,15 @@ mod tests {
     }
 
     fn mapped(raw: &str) -> Result<fss_cli::feedback_cmd::FeedbackArgs, &'static str> {
-        match command(OsStr::new(ROOT), PRINCIPAL, &args(raw)?)
-            .map_err(|(_, message)| message)?
-        {
+        match command(OsStr::new(ROOT), PRINCIPAL, &args(raw)?).map_err(|(_, message)| message)? {
             FssCommand::Feedback(feedback) => Ok(*feedback),
             _ => Err("not a native feedback command"),
         }
     }
 
     #[test]
-    fn all_registered_kinds_dispositions_and_targets_use_native_parsing()
-    -> Result<(), &'static str> {
+    fn all_registered_kinds_dispositions_and_targets_use_native_parsing() -> Result<(), &'static str>
+    {
         for kind in [
             "correction",
             "adjudication",
@@ -211,7 +220,8 @@ mod tests {
     #[test]
     fn arrays_and_literal_statement_match_the_public_cli_request_exactly()
     -> Result<(), &'static str> {
-        let statement = "@/outside/proposal.json --principal=principal:other\nretain \"both\" sides";
+        let statement =
+            "@/outside/proposal.json --principal=principal:other\nretain \"both\" sides";
         let raw = format!(
             r#"{{"session":"session:one","target":"case:case:east-door","kind":"policy_candidate","statement":"{}","supporting":["{OTHER}","{DIGEST}","{OTHER}"],"contradicting":["{DIGEST}","{OTHER}"],"disposition":"create_learning_proposal"}}"#,
             fss_cli::escape_json_str(statement)
@@ -235,8 +245,7 @@ mod tests {
             format!("--contradicting={DIGEST},{OTHER}").into(),
             "--disposition=create_learning_proposal".into(),
         ];
-        let FssCommand::Feedback(native) = parse_fss_args(argv).map_err(|_| "native parse")?
-        else {
+        let FssCommand::Feedback(native) = parse_fss_args(argv).map_err(|_| "native parse")? else {
             return Err("not feedback");
         };
         assert_eq!(mapped, *native);
@@ -244,8 +253,8 @@ mod tests {
     }
 
     #[test]
-    fn no_invalid_evidence_item_or_oversized_combined_list_is_dropped()
-    -> Result<(), &'static str> {
+    fn no_invalid_evidence_item_or_oversized_combined_list_is_dropped() -> Result<(), &'static str>
+    {
         for raw in [
             "null",
             "false",
@@ -261,7 +270,10 @@ mod tests {
                 "contradicting".into(),
                 super::super::json::parse(raw).map_err(|()| "invalid test item")?,
             );
-            assert!(command(OsStr::new(ROOT), PRINCIPAL, &fields).is_err(), "{raw}");
+            assert!(
+                command(OsStr::new(ROOT), PRINCIPAL, &fields).is_err(),
+                "{raw}"
+            );
         }
         let mut fields = args(&input("helpful", "event:event:one"))?;
         fields.insert(
@@ -271,21 +283,24 @@ mod tests {
         assert!(command(OsStr::new(ROOT), PRINCIPAL, &fields).is_err());
         fields.insert(
             "supporting".into(),
-            Value::Array(vec![Value::Text(DIGEST.into()); 128]),
+            Value::Array((0..128).map(|_| Value::Text(DIGEST.into())).collect()),
         );
         fields.insert(
             "contradicting".into(),
-            Value::Array(vec![Value::Text(OTHER.into()); 128]),
+            Value::Array((0..128).map(|_| Value::Text(OTHER.into())).collect()),
         );
         let FssCommand::Feedback(native) =
             command(OsStr::new(ROOT), PRINCIPAL, &fields).map_err(|(_, message)| message)?
         else {
             return Err("not feedback");
         };
-        assert_eq!(native.request.supporting.len() + native.request.contradicting.len(), 256);
+        assert_eq!(
+            native.request.supporting.len() + native.request.contradicting.len(),
+            256
+        );
         fields.insert(
             "contradicting".into(),
-            Value::Array(vec![Value::Text(OTHER.into()); 129]),
+            Value::Array((0..129).map(|_| Value::Text(OTHER.into())).collect()),
         );
         assert!(command(OsStr::new(ROOT), PRINCIPAL, &fields).is_err());
         fields.insert("supporting".into(), Value::Array(Vec::new()));
@@ -309,7 +324,10 @@ mod tests {
         ] {
             let mut fields = args(&input("helpful", "event:event:one"))?;
             fields.insert(key.into(), Value::Text("ignored".into()));
-            assert!(command(OsStr::new(ROOT), PRINCIPAL, &fields).is_err(), "{key}");
+            assert!(
+                command(OsStr::new(ROOT), PRINCIPAL, &fields).is_err(),
+                "{key}"
+            );
         }
         for (key, invalid) in [
             ("session", ""),
@@ -323,7 +341,10 @@ mod tests {
         ] {
             let mut fields = args(&input("helpful", "event:event:one"))?;
             fields.insert(key.into(), Value::Text(invalid.into()));
-            assert!(command(OsStr::new(ROOT), PRINCIPAL, &fields).is_err(), "{key}");
+            assert!(
+                command(OsStr::new(ROOT), PRINCIPAL, &fields).is_err(),
+                "{key}"
+            );
         }
         let mut fields = args(&input("helpful", "event:event:one"))?;
         fields.insert("statement".into(), Value::Text("é".repeat(8193)));

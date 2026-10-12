@@ -1318,7 +1318,14 @@ pub(super) fn execute_supervised_attempt(
     }
     let start = Instant::now();
     let mut stats = Statistics::default();
-    let result = run_owned(options, &authority, start, &mut stats, &mut log, supervision);
+    let result = run_owned(
+        options,
+        &authority,
+        start,
+        &mut stats,
+        &mut log,
+        supervision,
+    );
     log.emit("terminal", terminal(options, &stats, &result), true)
         .map_err(Failure::code)?;
     Ok(AttemptOutcome::new(result, &stats))

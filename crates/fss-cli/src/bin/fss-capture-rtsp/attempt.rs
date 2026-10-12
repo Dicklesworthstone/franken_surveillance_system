@@ -178,10 +178,22 @@ mod tests {
         assert!(!outcome.recovery_required);
         assert!(!stats.input_ended);
         stats.snapshot_digest = None;
-        assert!(AttemptOutcome::new(Err(Failure::ProgressStalled), &stats).retry.is_none());
+        assert!(
+            AttemptOutcome::new(Err(Failure::ProgressStalled), &stats)
+                .retry
+                .is_none()
+        );
         stats = ended();
-        assert!(AttemptOutcome::new(Err(Failure::ProgressStalled), &stats).retry.is_none());
-        assert!(AttemptOutcome::new(Err(Failure::ProgressStalled), &Statistics::default()).retry.is_none());
+        assert!(
+            AttemptOutcome::new(Err(Failure::ProgressStalled), &stats)
+                .retry
+                .is_none()
+        );
+        assert!(
+            AttemptOutcome::new(Err(Failure::ProgressStalled), &Statistics::default())
+                .retry
+                .is_none()
+        );
     }
 
     #[test]

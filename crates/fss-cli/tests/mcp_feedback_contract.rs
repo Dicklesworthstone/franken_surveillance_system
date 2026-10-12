@@ -13,9 +13,9 @@ use std::process::{Command, Stdio};
 
 use fss_cli::json_input::{Value, parse};
 use fss_core::{
-    AgentFeedbackProposal, BatchId, BudgetVector, CanonicalEncode, CaptureInterval,
-    ContentDigest, ContextAuthority, EvidenceDelta, FeedbackPrivacyClass, FeedbackProposalKind,
-    ObjectId, OperationId, Plane, RootAuthoritySpec, RequestedDisposition, TimestampNs,
+    AgentFeedbackProposal, BatchId, BudgetVector, CanonicalEncode, CaptureInterval, ContentDigest,
+    ContextAuthority, EvidenceDelta, FeedbackPrivacyClass, FeedbackProposalKind, ObjectId,
+    OperationId, Plane, RequestedDisposition, RootAuthoritySpec, TimestampNs,
 };
 use fss_object::ObjectManifest;
 use fss_reference::agent_session::checkpoint::journal::{
@@ -214,7 +214,10 @@ impl ProposalInput {
     }
 
     fn canonical_handles(values: &[ContentDigest]) -> Vec<String> {
-        let mut result = values.iter().map(|value| value.to_text()).collect::<Vec<_>>();
+        let mut result = values
+            .iter()
+            .map(|value| value.to_text())
+            .collect::<Vec<_>>();
         result.sort();
         result.dedup();
         result
@@ -274,7 +277,11 @@ impl Fixture {
             &cx,
         )?;
         drop(deployment);
-        Ok(Self { directory, root, cx })
+        Ok(Self {
+            directory,
+            root,
+            cx,
+        })
     }
 
     fn authority(&self) -> TestResult<BTreeMap<PathBuf, ContentDigest>> {
@@ -319,7 +326,11 @@ impl Fixture {
             quote(tool)
         );
         let mut replies = self.frames(principal, &[request])?;
-        assert_eq!(replies.len(), 2, "initialize and one complete tool response");
+        assert_eq!(
+            replies.len(),
+            2,
+            "initialize and one complete tool response"
+        );
         let reply = replies.pop().ok_or("missing tool reply")?;
         assert_eq!(text(&reply, &["jsonrpc"])?, "2.0");
         assert_eq!(field(&reply, &["id"])?.integer(), Some(2));
@@ -417,7 +428,8 @@ impl Fixture {
         assert!(
             texts(&reply.value, &["degradation"])?
                 .iter()
-                .any(|line| line.starts_with("Advisory only:") && line.contains("recorded, not performed"))
+                .any(|line| line.starts_with("Advisory only:")
+                    && line.contains("recorded, not performed"))
         );
         Ok(reply)
     }
@@ -443,13 +455,19 @@ impl Fixture {
                 argv.push(
                     format!(
                         "--{key}={}",
-                        values.iter().map(|value| value.to_text()).collect::<Vec<_>>().join(",")
+                        values
+                            .iter()
+                            .map(|value| value.to_text())
+                            .collect::<Vec<_>>()
+                            .join(",")
                     )
                     .into(),
                 );
             }
         }
-        let output = Command::new(env!("CARGO_BIN_EXE_fss")).args(argv).output()?;
+        let output = Command::new(env!("CARGO_BIN_EXE_fss"))
+            .args(argv)
+            .output()?;
         assert!(output.status.success(), "{output:?}");
         assert!(output.stderr.is_empty(), "{output:?}");
         let body = String::from_utf8(output.stdout)?;
@@ -493,7 +511,10 @@ impl Fixture {
                 .integer()
                 .ok_or("missing native feedback time")?,
         )?;
-        assert_eq!(raw_payload(&reply.body)?, fss_cli::feedback_cmd::feedback_json(&proposal));
+        assert_eq!(
+            raw_payload(&reply.body)?,
+            fss_cli::feedback_cmd::feedback_json(&proposal)
+        );
         assert_eq!(
             text(&reply.value, &["decisionFingerprint"])?,
             proposal.proposal_digest().to_text()
@@ -504,16 +525,24 @@ impl Fixture {
         let root = ContentDigest::parse(&pointers[0])?;
         let directory = self.root.join("agent/publications");
         let manifest = ObjectManifest::from_canonical_bytes(&fss_publication::read_verified(
-            &directory, root, 1 << 20,
+            &directory,
+            root,
+            1 << 20,
         )?)?;
         assert_eq!(manifest.root(), root);
-        let metadata = manifest.metadata_digest().ok_or("missing feedback metadata")?;
+        let metadata = manifest
+            .metadata_digest()
+            .ok_or("missing feedback metadata")?;
         assert_eq!(
             fss_publication::read_verified(&directory, metadata, 1 << 20)?,
             proposal.try_canonical_bytes()?
         );
-        let children = manifest.children().iter().copied()
-            .filter(|child| *child != metadata).collect::<Vec<_>>();
+        let children = manifest
+            .children()
+            .iter()
+            .copied()
+            .filter(|child| *child != metadata)
+            .collect::<Vec<_>>();
         assert_eq!(children.len(), 1, "the complete native rendering is linked");
         let rendering = children[0];
         // This retained native projection is deliberately smaller than the full CLI payload;
@@ -522,7 +551,10 @@ impl Fixture {
             fss_publication::read_verified(&directory, rendering, 1 << 20)?,
             render_json(&proposal).as_bytes()
         );
-        for (bytes, digest) in EVIDENCE.into_iter().zip(EVIDENCE.map(ContentDigest::sha256)) {
+        for (bytes, digest) in EVIDENCE
+            .into_iter()
+            .zip(EVIDENCE.map(ContentDigest::sha256))
+        {
             assert_eq!(
                 fss_publication::read_verified(self.root.join("objects"), digest, 1 << 20)?,
                 bytes
@@ -533,13 +565,14 @@ impl Fixture {
 
     fn publication_file(&self, digest: ContentDigest) -> TestResult<PathBuf> {
         let identity = digest.to_text();
-        let hex = identity.strip_prefix("sha256:").ok_or("fixture requires SHA-256")?;
+        let hex = identity
+            .strip_prefix("sha256:")
+            .ok_or("fixture requires SHA-256")?;
         let path = self.root.join("agent/publications/spool/objects").join(hex);
         assert!(fs::symlink_metadata(&path)?.is_file());
         // Stored files contain the spool envelope. The digest names the verified payload.
-        let bytes = fss_publication::read_verified(
-            self.root.join("agent/publications"), digest, 1 << 20,
-        )?;
+        let bytes =
+            fss_publication::read_verified(self.root.join("agent/publications"), digest, 1 << 20)?;
         assert_eq!(ContentDigest::sha256(&bytes), digest);
         Ok(path)
     }
@@ -570,16 +603,9 @@ impl Fixture {
 
 fn case_document() -> String {
     format!(
-        r#"{{"caseId":"{CASE}","question":"Did a person enter through the east door?",
-"decisionInformed":"Whether another observation is needed",
-"hypotheses":[{{"hypothesisId":"h:entry","description":"A person entered","predictions":["the track continues indoors"]}},
-{{"hypothesisId":"h:passerby","description":"A person passed the door","predictions":["the track leaves eastward"]}}],
-"knowns":[],"unknowns":[{{"statementId":"u:indoor","text":"Whether the hallway camera saw the person"}}],
-"discriminators":[{{"discriminatorId":"d:hallway","description":"Hallway frames","separates":["h:entry","h:passerby"],"expectedOutcomes":["person in hallway","empty hallway"]}}],
-"probes":["probe:hallway-frames"],"stopRules":["independent observation distinguishes the hypotheses"],"decisionWindowNs":3600000000000}}"#
+        r#"{{"caseId":"{CASE}","question":"Did a person enter through the east door?","decisionInformed":"Whether another observation is needed","hypotheses":[{{"hypothesisId":"h:entry","description":"A person entered","predictions":["the track continues indoors"]}},{{"hypothesisId":"h:passerby","description":"A person passed the door","predictions":["the track leaves eastward"]}}],"knowns":[],"unknowns":[{{"statementId":"u:indoor","text":"Whether the hallway camera saw the person"}}],"discriminators":[{{"discriminatorId":"d:hallway","description":"Hallway frames","separates":["h:entry","h:passerby"],"expectedOutcomes":["person in hallway","empty hallway"]}}],"probes":["probe:hallway-frames"],"stopRules":["independent observation distinguishes the hypotheses"],"decisionWindowNs":3600000000000}}"#
     )
 }
-
 
 #[test]
 fn mcp_feedback_retains_native_provenance_and_exact_retry_after_restart() -> TestResult {
@@ -610,7 +636,10 @@ fn mcp_feedback_retains_native_provenance_and_exact_retry_after_restart() -> Tes
     // The first process has exited; a caller that lost its reply submits the exact intent.
     let restarted = fixture.feedback(&session, &input)?;
     assert_eq!(restarted.body, first.body);
-    assert_eq!(fixture.verify_publication(&session, &input, &restarted)?, custody);
+    assert_eq!(
+        fixture.verify_publication(&session, &input, &restarted)?,
+        custody
+    );
     fixture.compare_cli(&session, &input, &restarted)?;
 
     // Native semantics canonicalize each evidence set, including duplicates, without merging
@@ -628,8 +657,14 @@ fn mcp_feedback_retains_native_provenance_and_exact_retry_after_restart() -> Tes
     fixture.advance_evidence_clock()?;
     let advanced_authority = fixture.authority()?;
     let after_head_move = fixture.feedback(&session, &input)?;
-    assert_eq!(raw_payload(&after_head_move.body)?, raw_payload(&first.body)?);
-    assert_eq!(fixture.verify_publication(&session, &input, &after_head_move)?, custody);
+    assert_eq!(
+        raw_payload(&after_head_move.body)?,
+        raw_payload(&first.body)?
+    );
+    assert_eq!(
+        fixture.verify_publication(&session, &input, &after_head_move)?,
+        custody
+    );
     assert_eq!(
         field(&after_head_move.value, &["decisionFingerprint"])?,
         field(&first.value, &["decisionFingerprint"])?
@@ -638,9 +673,11 @@ fn mcp_feedback_retains_native_provenance_and_exact_retry_after_restart() -> Tes
         field(&after_head_move.value, &["inputAnchor"])?,
         field(&first.value, &["inputAnchor"])?
     );
-    assert!(texts(&after_head_move.value, &["degradation"])?.iter().any(|line| {
-        line.contains("head has moved") && line.contains("session's anchor")
-    }));
+    assert!(
+        texts(&after_head_move.value, &["degradation"])?
+            .iter()
+            .any(|line| { line.contains("head has moved") && line.contains("session's anchor") })
+    );
     fixture.compare_cli(&session, &input, &after_head_move)?;
     assert_eq!(tree(&fixture.root, &["agent/publications"])?, published);
     assert_eq!(fixture.authority()?, advanced_authority);
@@ -656,7 +693,9 @@ fn changed_feedback_intent_and_author_session_never_alias_prior_proposals() -> T
     fixture.open_case(&first_session)?;
     let input = ProposalInput::new();
     let first = fixture.feedback(&first_session, &input)?;
-    let first_root = fixture.verify_publication(&first_session, &input, &first)?.0;
+    let first_root = fixture
+        .verify_publication(&first_session, &input, &first)?
+        .0;
     let authority = fixture.authority()?;
     let mut variants = Vec::new();
     let mut changed = input.clone();
@@ -674,7 +713,9 @@ fn changed_feedback_intent_and_author_session_never_alias_prior_proposals() -> T
     let mut roots = vec![first_root];
     for variant in variants {
         let response = fixture.feedback(&first_session, &variant)?;
-        let root = fixture.verify_publication(&first_session, &variant, &response)?.0;
+        let root = fixture
+            .verify_publication(&first_session, &variant, &response)?
+            .0;
         assert!(!roots.contains(&root));
         roots.push(root);
         assert_ne!(
@@ -684,14 +725,18 @@ fn changed_feedback_intent_and_author_session_never_alias_prior_proposals() -> T
         fixture.compare_cli(&first_session, &variant, &response)?;
     }
     let other_author = fixture.feedback(&second_session, &input)?;
-    let other_root = fixture.verify_publication(&second_session, &input, &other_author)?.0;
+    let other_root = fixture
+        .verify_publication(&second_session, &input, &other_author)?
+        .0;
     assert!(!roots.contains(&other_root));
     assert_eq!(
         text(&other_author.value, &["payload", "sessionId"])?,
         second_session
     );
     assert_eq!(
-        fixture.verify_publication(&first_session, &input, &first)?.0,
+        fixture
+            .verify_publication(&first_session, &input, &first)?
+            .0,
         first_root
     );
     assert_eq!(fixture.authority()?, authority);
@@ -731,9 +776,17 @@ fn feedback_cold_retries_require_every_original_custody_object() -> TestResult {
         let corrupted = tree(&fixture.root, &["agent/publications"])?;
         let authority = fixture.authority()?;
         let refused = fixture.call(
-            PRINCIPAL, "feedback", &input.arguments(&session), "AOP-013", true,
+            PRINCIPAL,
+            "feedback",
+            &input.arguments(&session),
+            "AOP-013",
+            true,
         )?;
-        assert_eq!(text(&refused.value, &["outcome"])?, "refused", "{part} {remove}");
+        assert_eq!(
+            text(&refused.value, &["outcome"])?,
+            "refused",
+            "{part} {remove}"
+        );
         assert_eq!(
             text(&refused.value, &["errorId"])?,
             "ERR-AGENT-HANDOFF-INVALID-001",
@@ -759,7 +812,11 @@ fn feedback_notifications_malformed_targets_and_foreign_scope_do_not_publish() -
         r#"{{"jsonrpc":"2.0","method":"tools/call","params":{{"name":"feedback","arguments":{arguments}}}}}"#
     );
     let replies = fixture.frames(PRINCIPAL, &[notification])?;
-    assert_eq!(replies.len(), 1, "a notification produces only the initialization reply");
+    assert_eq!(
+        replies.len(),
+        1,
+        "a notification produces only the initialization reply"
+    );
     assert_eq!(tree(&fixture.root, &[""])?, before);
 
     for suffix in [
@@ -777,7 +834,12 @@ fn feedback_notifications_malformed_targets_and_foreign_scope_do_not_publish() -
     }
     let valid_support = format!(
         "\"supporting\":[{}]",
-        input.supporting.iter().map(|digest| quote(&digest.to_text())).collect::<Vec<_>>().join(",")
+        input
+            .supporting
+            .iter()
+            .map(|digest| quote(&digest.to_text()))
+            .collect::<Vec<_>>()
+            .join(",")
     );
     for value in [
         "null".to_owned(),
@@ -785,8 +847,17 @@ fn feedback_notifications_malformed_targets_and_foreign_scope_do_not_publish() -
         r#""sha256:literal""#.to_owned(),
         r#"["sha256:bad"]"#.to_owned(),
         format!("[{},false]", quote(&input.supporting[0].to_text())),
-        format!("[{}]", quote(&format!("{},{}", input.supporting[0], input.supporting[1]))),
-        format!("[{}]", (0..255).map(|_| quote(&input.supporting[0].to_text())).collect::<Vec<_>>().join(",")),
+        format!(
+            "[{}]",
+            quote(&format!("{},{}", input.supporting[0], input.supporting[1]))
+        ),
+        format!(
+            "[{}]",
+            (0..255)
+                .map(|_| quote(&input.supporting[0].to_text()))
+                .collect::<Vec<_>>()
+                .join(",")
+        ),
     ] {
         let invalid = arguments.replace(&valid_support, &format!("\"supporting\":{value}"));
         assert_ne!(invalid, arguments);
@@ -801,7 +872,10 @@ fn feedback_notifications_malformed_targets_and_foreign_scope_do_not_publish() -
     for (needle, replacement) in [
         (quote("policy_candidate"), quote("activate_policy")),
         (quote("create_learning_proposal"), quote("activate")),
-        (quote("case:case:east-door"), quote("file:/outside/proposal.json")),
+        (
+            quote("case:case:east-door"),
+            quote("file:/outside/proposal.json"),
+        ),
     ] {
         let invalid = arguments.replace(&needle, &replacement);
         let reply = fixture.exchange(PRINCIPAL, "feedback", &invalid)?;
@@ -819,7 +893,11 @@ fn feedback_notifications_malformed_targets_and_foreign_scope_do_not_publish() -
         let mut unknown = input.clone();
         unknown.target = target;
         let reply = fixture.call(
-            PRINCIPAL, "feedback", &unknown.arguments(&session), "AOP-013", true,
+            PRINCIPAL,
+            "feedback",
+            &unknown.arguments(&session),
+            "AOP-013",
+            true,
         )?;
         assert_eq!(text(&reply.value, &["outcome"])?, "refused");
         assert_eq!(field(&reply.value, &["payload"])?, &Value::Null);
@@ -834,7 +912,11 @@ fn feedback_notifications_malformed_targets_and_foreign_scope_do_not_publish() -
     let foreign_session = fixture.open_for(STRANGER, 30_000)?;
     let foreign_before = tree(&fixture.root, &[""])?;
     let foreign_case = fixture.call(
-        STRANGER, "feedback", &input.arguments(&foreign_session), "AOP-013", true,
+        STRANGER,
+        "feedback",
+        &input.arguments(&foreign_session),
+        "AOP-013",
+        true,
     )?;
     assert_eq!(text(&foreign_case.value, &["outcome"])?, "refused");
     assert_eq!(field(&foreign_case.value, &["payload"])?, &Value::Null);

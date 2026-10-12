@@ -520,14 +520,7 @@ fn assessment(hypothesis: &str, evidence: &str, disposition: &str) -> Vec<(&'sta
 
 fn case_document() -> String {
     format!(
-        r#"{{"caseId":"{CASE}","question":"Did a person enter through the east door?",
-"decisionInformed":"Whether to prepare an owner alert",
-"hypotheses":[{{"hypothesisId":"h:entry","description":"A person entered","predictions":["the track continues indoors"]}},
-{{"hypothesisId":"h:passerby","description":"A person passed the door without entering","epistemicState":"estimated","predictions":["the track leaves the frame eastward"]}}],
-"knowns":[{{"statementId":"k:door-camera","text":"The east camera covers the door","basis":["sensor:east"]}}],
-"unknowns":[{{"statementId":"u:indoor","text":"Whether the hallway camera saw the person"}}],
-"discriminators":[{{"discriminatorId":"d:hallway","description":"Hallway frames after the door event","separates":["h:entry","h:passerby"],"expectedOutcomes":["a person in the hallway","an empty hallway"]}}],
-"probes":["probe:hallway-frames"],"stopRules":["{STOP_RULE}"],"decisionWindowNs":3600000000000}}"#
+        r#"{{"caseId":"{CASE}","question":"Did a person enter through the east door?","decisionInformed":"Whether to prepare an owner alert","hypotheses":[{{"hypothesisId":"h:entry","description":"A person entered","predictions":["the track continues indoors"]}},{{"hypothesisId":"h:passerby","description":"A person passed the door without entering","epistemicState":"estimated","predictions":["the track leaves the frame eastward"]}}],"knowns":[{{"statementId":"k:door-camera","text":"The east camera covers the door","basis":["sensor:east"]}}],"unknowns":[{{"statementId":"u:indoor","text":"Whether the hallway camera saw the person"}}],"discriminators":[{{"discriminatorId":"d:hallway","description":"Hallway frames after the door event","separates":["h:entry","h:passerby"],"expectedOutcomes":["a person in the hallway","an empty hallway"]}}],"probes":["probe:hallway-frames"],"stopRules":["{STOP_RULE}"],"decisionWindowNs":3600000000000}}"#
     )
 }
 
@@ -893,11 +886,7 @@ fn mcp_inline_expansion_is_durable_and_notifications_cannot_write_cases() -> Tes
     assert_eq!(field(&stranger.envelope, &["payload"])?, &Value::Null);
     assert_eq!(agent.inspect()?.fingerprint()?, revision);
 
-    let expansion = r#"{
-        "hypothesis":{"hypothesisId":"h:reflection","description":"A reflection crossed the door","predictions":["No hallway track"]},
-        "discriminator":{"discriminatorId":"d:reflection","description":"Compare hallway and exterior frames","separates":["h:entry","h:reflection"],"expectedOutcomes":["An interior track","An exterior-only reflection"]},
-        "probe":"probe:reflection-frames"
-    }"#;
+    let expansion = r#"{"hypothesis":{"hypothesisId":"h:reflection","description":"A reflection crossed the door","predictions":["No hallway track"]},"discriminator":{"discriminatorId":"d:reflection","description":"Compare hallway and exterior frames","separates":["h:entry","h:reflection"],"expectedOutcomes":["An interior track","An exterior-only reflection"]},"probe":"probe:reflection-frames"}"#;
     let expanded = agent.change("expand", &revision, &[("expansion", expansion.to_owned())])?;
     assert_eq!(dispositions(&expanded.envelope)?.len(), 3);
     assert_eq!(

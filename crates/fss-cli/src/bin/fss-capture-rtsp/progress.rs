@@ -23,7 +23,10 @@ not-camera-offline:not-eof:not-coverage:v1";
         {
             return Err("ERR-CAPTURE-RTSP-CONFIG-001");
         }
-        Ok(Self { timeout_ns, approval })
+        Ok(Self {
+            timeout_ns,
+            approval,
+        })
     }
 
     pub(super) fn report(self) -> String {
@@ -62,9 +65,13 @@ impl Stall {
             ("observed_owner_ns", self.observed_ns.to_string()),
             (
                 "last_progress_owner_ns",
-                self.last_progress_ns.map_or_else(|| "null".into(), |n| n.to_string()),
+                self.last_progress_ns
+                    .map_or_else(|| "null".into(), |n| n.to_string()),
             ),
-            ("pictures_before_expiry", self.pictures_before_expiry.to_string()),
+            (
+                "pictures_before_expiry",
+                self.pictures_before_expiry.to_string(),
+            ),
             ("active_wait_ns", self.active_wait_ns.to_string()),
             ("excluded_pause_ns", self.paused_ns.to_string()),
             ("source_eof_asserted", "false".into()),
@@ -124,12 +131,16 @@ impl RecordingProgress {
         }
         // Validate arithmetic before mutating any state, including after an error retry.
         let waited = if self.active && self.expired.is_none() {
-            self.waited_ns.checked_add(elapsed).ok_or(WatchError::Arithmetic)?
+            self.waited_ns
+                .checked_add(elapsed)
+                .ok_or(WatchError::Arithmetic)?
         } else {
             self.waited_ns
         };
         let paused = if self.armed && !self.active && self.expired.is_none() {
-            self.paused_ns.checked_add(elapsed).ok_or(WatchError::Arithmetic)?
+            self.paused_ns
+                .checked_add(elapsed)
+                .ok_or(WatchError::Arithmetic)?
         } else {
             self.paused_ns
         };
@@ -175,8 +186,8 @@ mod tests {
         }
         assert!(Supervision::new(1, approval).is_ok());
         assert!(Supervision::new(600_000_000_000, approval).is_ok());
-        let zero = ContentDigest::parse(&format!("sha256:{}", "0".repeat(64)))
-            .expect("digest syntax");
+        let zero =
+            ContentDigest::parse(&format!("sha256:{}", "0".repeat(64))).expect("digest syntax");
         assert!(Supervision::new(100, zero).is_err());
     }
 
@@ -187,7 +198,10 @@ mod tests {
         assert_eq!(w.observe(10_000, false, true, 0), Ok(None));
         assert_eq!(w.observe(20_000, true, true, 0), Ok(None));
         assert_eq!(w.observe(20_099, true, true, 0), Ok(None));
-        let r = w.observe(20_100, true, true, 0).expect("clock").expect("expiry");
+        let r = w
+            .observe(20_100, true, true, 0)
+            .expect("clock")
+            .expect("expiry");
         assert_eq!(r.active_wait_ns, 100);
         assert_eq!(r.last_progress_ns, None);
         assert_eq!(r.pictures_before_expiry, 0);
@@ -201,7 +215,10 @@ mod tests {
         for now in 91..190 {
             assert_eq!(w.observe(now, true, true, 1), Ok(None));
         }
-        let r = w.observe(190, true, true, 1).expect("clock").expect("expiry");
+        let r = w
+            .observe(190, true, true, 1)
+            .expect("clock")
+            .expect("expiry");
         assert_eq!(r.last_progress_ns, Some(90));
         assert_eq!(r.pictures_before_expiry, 1);
         assert_eq!(r.active_wait_ns, 100);
@@ -215,7 +232,10 @@ mod tests {
         assert_eq!(w.observe(1000, true, false, 0), Ok(None));
         assert_eq!(w.observe(2000, true, true, 0), Ok(None));
         assert_eq!(w.observe(2059, true, true, 0), Ok(None));
-        let r = w.observe(2060, true, true, 0).expect("clock").expect("expiry");
+        let r = w
+            .observe(2060, true, true, 0)
+            .expect("clock")
+            .expect("expiry");
         assert_eq!(r.active_wait_ns, 100);
         assert_eq!(r.paused_ns, 1960);
     }
@@ -225,8 +245,10 @@ mod tests {
         for arrival in [100, 101, u64::MAX] {
             let mut w = watch();
             assert_eq!(w.observe(0, true, true, 0), Ok(None));
-            let receipt = w.observe(arrival, true, true, 1)
-                .expect("clock").expect("late progress must not erase expiry");
+            let receipt = w
+                .observe(arrival, true, true, 1)
+                .expect("clock")
+                .expect("late progress must not erase expiry");
             assert_eq!(receipt.pictures_before_expiry, 0);
             assert_eq!(receipt.last_progress_ns, None);
             assert_eq!(w.observe(arrival, true, false, 2), Ok(Some(receipt)));
@@ -253,7 +275,10 @@ mod tests {
         let mut w = watch();
         assert_eq!(w.observe(u64::MAX - 100, true, true, 0), Ok(None));
         assert_eq!(w.observe(u64::MAX - 1, true, true, 0), Ok(None));
-        let r = w.observe(u64::MAX, true, true, 0).expect("clock").expect("expiry");
+        let r = w
+            .observe(u64::MAX, true, true, 0)
+            .expect("clock")
+            .expect("expiry");
         assert_eq!(r.active_wait_ns, 100);
     }
 

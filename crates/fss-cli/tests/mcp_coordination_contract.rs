@@ -497,13 +497,7 @@ impl Fixture {
 
 fn case_document() -> String {
     format!(
-        r#"{{"caseId":"{CASE}","question":"Did a person enter through the east door?",
-"decisionInformed":"Whether another observation is needed",
-"hypotheses":[{{"hypothesisId":"h:entry","description":"A person entered","predictions":["the track continues indoors"]}},
-{{"hypothesisId":"h:passerby","description":"A person passed the door","predictions":["the track leaves eastward"]}}],
-"knowns":[],"unknowns":[{{"statementId":"u:indoor","text":"Whether the hallway camera saw the person"}}],
-"discriminators":[{{"discriminatorId":"d:hallway","description":"Hallway frames","separates":["h:entry","h:passerby"],"expectedOutcomes":["person in hallway","empty hallway"]}}],
-"probes":["probe:hallway-frames"],"stopRules":["independent observation distinguishes the hypotheses"],"decisionWindowNs":3600000000000}}"#
+        r#"{{"caseId":"{CASE}","question":"Did a person enter through the east door?","decisionInformed":"Whether another observation is needed","hypotheses":[{{"hypothesisId":"h:entry","description":"A person entered","predictions":["the track continues indoors"]}},{{"hypothesisId":"h:passerby","description":"A person passed the door","predictions":["the track leaves eastward"]}}],"knowns":[],"unknowns":[{{"statementId":"u:indoor","text":"Whether the hallway camera saw the person"}}],"discriminators":[{{"discriminatorId":"d:hallway","description":"Hallway frames","separates":["h:entry","h:passerby"],"expectedOutcomes":["person in hallway","empty hallway"]}}],"probes":["probe:hallway-frames"],"stopRules":["independent observation distinguishes the hypotheses"],"decisionWindowNs":3600000000000}}"#
     )
 }
 
