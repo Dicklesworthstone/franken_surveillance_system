@@ -618,6 +618,19 @@ impl DeploymentHistory {
         &self.limits
     }
 
+    /// Exact source namespace offered to an adjacent-replay caller's I/O authority.
+    pub(crate) fn replay_objects_root(&self) -> &Path {
+        &self.objects
+    }
+
+    /// The next retained ledger commit, without hydrating any intervening or future object.
+    pub(crate) fn next_ledger_commit(&self, after: u64, through: u64) -> Option<u64> {
+        self.batches
+            .iter()
+            .map(|batch| batch.new_anchor.commit_sequence)
+            .find(|sequence| *sequence > after && *sequence <= through)
+    }
+
     /// Exact committed head history for the optional wait's typed custody verification.
     pub(crate) fn batches_through_head(&self) -> &[EvidenceDeltaBatch] {
         &self.batches

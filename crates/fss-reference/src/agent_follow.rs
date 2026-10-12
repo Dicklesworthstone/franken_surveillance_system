@@ -55,13 +55,17 @@ use fss_core::{
 use crate::ReferenceError;
 use crate::agent_orient::{
     DeploymentHistory, DeploymentOrientation, DeploymentReadError, DeploymentSnapshot,
-    HistoryPosition, OrientError, OrientRequest, orient_deployment,
+    HistoryPosition, OrientError, OrientRequest, OrientSessionBinding, orient_deployment,
+    orient_deployment_for,
 };
 use crate::meaningful_delta::classify_reference_meaningful_delta;
 use crate::situation::EFFECT_CLAIM_PREFIX;
 
 /// Bounded synchronous waiting with explicit caller-owned time and cancellation authority.
 pub mod wait;
+
+/// Exact adjacent committed transitions within a frozen, independently verified replay horizon.
+pub mod replay;
 
 /// Prefix of every anchor token.
 pub const ANCHOR_TOKEN_PREFIX: &str = "anchor:";
@@ -151,6 +155,23 @@ pub fn snapshot_anchor_token(snapshot: &DeploymentSnapshot) -> String {
         snapshot.ledger_root,
         snapshot.effect_journal_root,
     )
+}
+
+/// Exact token of one already verified committed history position, without hydrating objects.
+/// This lets a durable follow owner freeze its horizon before admitting adjacent snapshot reads.
+#[must_use]
+pub fn history_anchor_token(
+    history: &DeploymentHistory,
+    position: HistoryPosition,
+) -> Option<AnchorToken> {
+    let (anchor, ledger_root, effect_root) = history.roots_at(position)?;
+    AnchorToken::parse(&render_token(
+        history.site_lineage(),
+        position,
+        &anchor,
+        ledger_root,
+        effect_root,
+    ))
 }
 
 /// A syntactically valid anchor token (`anchor:<site>:<commit>:<effects>:<binding>`).
@@ -514,15 +535,31 @@ fn follow_snapshots(
     result_snapshot: &DeploymentSnapshot,
     request: &FollowRequest,
 ) -> Result<DeploymentFollow, FollowError> {
+    follow_snapshots_for(history, basis_snapshot, result_snapshot, request, None)
+}
+
+// A durable replay owner binds the session before native compilation, effect-cell sealing and
+// meaningful-delta classification. Relabeling an already sealed payload is never permitted.
+fn follow_snapshots_for(
+    history: &DeploymentHistory,
+    basis_snapshot: &DeploymentSnapshot,
+    result_snapshot: &DeploymentSnapshot,
+    request: &FollowRequest,
+    session: Option<&OrientSessionBinding>,
+) -> Result<DeploymentFollow, FollowError> {
     let orient_request = OrientRequest {
         view: request.view,
         principal: request.principal.clone(),
         budget_tokens: None,
     };
-    let basis = orient_deployment(basis_snapshot, &orient_request, history.limits())
-        .map_err(FollowError::Orient)?;
-    let result = orient_deployment(result_snapshot, &orient_request, history.limits())
-        .map_err(FollowError::Orient)?;
+    let orient = |snapshot| match session {
+        None => orient_deployment(snapshot, &orient_request, history.limits()),
+        Some(binding) => {
+            orient_deployment_for(snapshot, &orient_request, history.limits(), Some(binding))
+        }
+    };
+    let basis = orient(basis_snapshot).map_err(FollowError::Orient)?;
+    let result = orient(result_snapshot).map_err(FollowError::Orient)?;
     let delta = classify_reference_meaningful_delta(&basis.publication, &result.publication)
         .map_err(FollowError::Contract)?;
 
