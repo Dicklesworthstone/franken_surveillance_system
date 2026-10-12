@@ -10,6 +10,26 @@ Franken Surveillance System now has a coherent, dependency-light Rust reference 
 
 It is also not a complete surveillance product. Native device adapters, production media/model/graph/storage services, persistent distributed operation, every human and agent surface, complete qualification matrices, and the aggregate release root remain open. Status below distinguishes implemented reference semantics from production completion.
 
+## Native selected-SDP HEVC live archiving (2026-10-12, reference)
+
+`JournaledLiveHevcArchive` connects the native TCP/Digest session, HEVC picture capture,
+bounded recording collector and independently journaled archive writer. It validates the
+exact expected H265 payload and one coherent VPS/SPS/PPS tuple from the selected SDP before
+SETUP or PLAY. Source timing remains explicit, configuration limits apply before collection,
+and real picture-boundary packets remain part of the original source closure.
+
+Storage pauses input. An explicit final stop closes TCP before the admitted window's first
+checkpoint; actual EOF starts final draining as soon as the complete prefix is sealed.
+Both paths drain already-owned media under independent publication limits after the live
+network lease expires or is revoked. Live revocation still refuses new input and preserves
+its original pending work. Actual EOF and owner stop retain different completion causes;
+markers, local stop and EOF never manufacture a complete HEVC picture.
+
+Native loopback contracts cover these ownership transitions, selected-description refusal,
+an unverified lone-IDR tail, protected work restoration and authentication challenges before
+automatic credential use. The reference path remains a bounded single plaintext session;
+reconnect, deployment-camera compatibility and field qualification remain open.
+
 ## Protected HEVC archive work and cold restoration (2026-10-12, reference)
 
 Native HEVC recordings now pass through the same bounded source-first, root-last work

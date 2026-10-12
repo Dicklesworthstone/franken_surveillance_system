@@ -151,6 +151,12 @@ impl HevcRecordingCapture {
     pub fn collector(&self) -> &HevcRecordingCollector {
         &self.collector
     }
+    /// Whether already-owned input/output must drain before another upstream event or command.
+    /// This read-only admission hint does not bypass timing, source or terminal checks.
+    pub(crate) fn busy(&self) -> bool {
+        self.event.is_some() || self.collector.has_ready()
+            || self.input_ended || self.finished || self.closed
+    }
     /// Immediate only for runnable local work. Missing timing and capacity pressure
     /// wait on fixed deadlines instead of resetting them or busy-polling.
     pub fn next_wake_ns(&self) -> Option<u64> {
@@ -584,7 +590,7 @@ pub mod live {
     }
 
     #[derive(Clone, Copy, Debug)]
-    enum Control {
+    pub(crate) enum Control {
         Request(ClientCommand),
         Respond,
     }
@@ -775,8 +781,7 @@ pub mod live {
             Some(self.retire(None, None, None))
         }
         fn capture_busy(&self) -> bool {
-            self.capture.event.is_some() || self.capture.collector.has_ready()
-                || self.capture.input_ended || self.capture.finished || self.capture.closed
+            self.capture.busy()
         }
         fn admit(&mut self, now: u64, authority: &dyn TcpAuthority)
             -> Result<(), LiveHevcRecordingFailure>
@@ -826,7 +831,7 @@ pub mod live {
     fn safe(reason: LiveHevcRecordingError) -> LiveHevcRecordingFailure {
         LiveHevcRecordingFailure { reason, retirement: None }
     }
-    fn control(event: &Event) -> Option<Control> {
+    pub(crate) fn control(event: &Event) -> Option<Control> {
         let Event::Client { event, work: None } = event else { return None; };
         match event.as_ref() {
             HevcClientPoll::AuthenticationRequired { .. } => Some(Control::Respond),

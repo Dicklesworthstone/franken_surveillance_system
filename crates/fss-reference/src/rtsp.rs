@@ -30,6 +30,8 @@ pub mod datagram_archive;
 pub mod datagram_reconstruction;
 /// Live capture backpressured by durable recording and immutable catalog publication.
 pub mod live_archive;
+/// Selected-SDP native HEVC capture with independently journaled archive protection.
+pub mod live_hevc_archive;
 /// Exclusive native TCP-to-authenticated-AVC streaming with bounded owner-driven progress.
 pub mod live_avc;
 pub mod message;
@@ -317,6 +319,11 @@ pub mod live_hevc {
         /// Local protocol state only. Playing is not proof of a complete or retained picture.
         pub fn state(&self) -> ClientState {
             self.active.as_ref().map_or(ClientState::Closed, |a| a.protocol.state())
+        }
+        /// Immutable parameters from the accepted, selected HEVC description. This is not
+        /// permission to borrow configuration from another media offer or stream generation.
+        pub fn media(&self) -> Option<&super::client::hevc::HevcClientMedia> {
+            self.active.as_ref().and_then(|a| a.protocol.media())
         }
         /// Remaining connection-wide work, independent of socket-call and byte ceilings.
         pub fn remaining_steps(&self) -> u64 {
