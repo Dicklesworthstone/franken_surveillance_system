@@ -40,7 +40,8 @@ use fss_reference::alert_reconcile::{
 };
 use fss_reference::deployment_session::episode::read_episode;
 use fss_reference::deployment_session::plan::{
-    AlertRoute, PlanRecord, PlanningContext, planning_context, publish_plan, read_plan,
+    AlertRoute, PlanRecord, PlanningContext, hold_planning_context, publish_plan, read_plan,
+    verify_plan_publication,
 };
 use fss_reference::webhook::WebhookEndpoint;
 use fss_reference::{
@@ -1144,12 +1145,14 @@ pub fn control_plan_json(plan: &ControlPlan) -> String {
 }
 
 fn plan_answer(args: &PlanArgs) -> Result<Result<String, Box<dyn std::error::Error>>, Failure> {
-    let context = planning_context(
+    // Keep the exact case and session owned through preparation and root-last publication.
+    let planning = hold_planning_context(
         &args.root,
         &args.principal,
         &args.session,
         args.case.as_deref(),
     )?;
+    let context = planning.context();
     if !context
         .session
         .capabilities
@@ -1222,17 +1225,60 @@ fn plan_answer(args: &PlanArgs) -> Result<Result<String, Box<dyn std::error::Err
             ),
         };
         let approval = plan_approval_digest(&plan, &endpoint, principal_label);
+        if let Some(given) = args.approve
+            && given != approval
+        {
+            return Err(alert_refusal(&AlertEffectError::StaleApproval(given)));
+        }
+        let anchor_token = context.orientation.anchor_token.clone();
+        let plan_id = PlanRecord::identity(&context.session.session_id, &anchor_token, approval);
+        let event_state = event.state.as_str();
+        let control = compile_alert_plan(&PlanFacts {
+            args,
+            context,
+            plan: &plan,
+            endpoint: &endpoint,
+            event_state,
+            plan_approval: approval,
+            plan_id: &plan_id,
+        })
+        .map_err(|_| Failure::Internal)?;
+        let control_json = control_plan_json(&control);
+        let record = PlanRecord {
+            plan_id: plan_id.clone(),
+            session_id: context.session.session_id.clone(),
+            mission_id: context.session.mission_id.clone(),
+            principal: args.principal.clone(),
+            anchor_token: anchor_token.clone(),
+            intent: "alert".to_owned(),
+            event_id: args.event_id.as_str().to_owned(),
+            event_revision: receipt.event_revision_digest,
+            route: AlertRoute {
+                relay: args.relay.to_string(),
+                path: args.path.clone(),
+                plaintext_approval: args.plaintext_approval,
+                deadline_ms: args.deadline_ms,
+            },
+            operation_id: ids.operation.as_str().to_owned(),
+            obligation_id: ids.obligation.as_str().to_owned(),
+            plan_approval: approval,
+            control_plan_digest: ContentDigest::sha256(control_json.as_bytes()),
+            case: context
+                .case
+                .as_ref()
+                .map(|case| (case.record().investigation_id.clone(), case.digest())),
+            // The situation time of the anchor the plan binds: stable for that anchor, so a
+            // replan of the same intent there is an exact retry even after evidence advances.
+            created_at: context.orientation.capsule().created_at,
+        };
+        // Resolve any preview conflict before touching the effect journal. The held session
+        // and deployment owners keep this exact witness stable until the final publication.
+        verify_plan_publication(&args.root, &record)?;
         let mut prepared_now = prepared_now;
         let operation = match (&existing, args.approve) {
-            (_, Some(given)) if given != approval => {
-                return Err(alert_refusal(&AlertEffectError::StaleApproval(given)));
-            }
             (None, Some(_)) => {
                 // A plan closed (withdrawn) before preparation is final: its episode exists and
                 // this deployment lock serializes the check with the withdrawal.
-                let anchor_token = &context.orientation.anchor_token;
-                let plan_id =
-                    PlanRecord::identity(&context.session.session_id, anchor_token, approval);
                 if read_episode(&args.root, &plan_id)?.is_some() {
                     return Err(Failure::Session(
                         fss_reference::deployment_session::DeploymentSessionError::PlanInvalid(
@@ -1272,47 +1318,6 @@ fn plan_answer(args: &PlanArgs) -> Result<Result<String, Box<dyn std::error::Err
             .map(|operation| {
                 dispatch_approval_digest(approval, operation, args.deadline_ms, principal_label)
             });
-        let anchor_token = context.orientation.anchor_token.clone();
-        let plan_id = PlanRecord::identity(&context.session.session_id, &anchor_token, approval);
-        let event_state = event.state.as_str();
-        let control = compile_alert_plan(&PlanFacts {
-            args,
-            context: &context,
-            plan: &plan,
-            endpoint: &endpoint,
-            event_state,
-            plan_approval: approval,
-            plan_id: &plan_id,
-        })
-        .map_err(|_| Failure::Internal)?;
-        let control_json = control_plan_json(&control);
-        let record = PlanRecord {
-            plan_id: plan_id.clone(),
-            session_id: context.session.session_id.clone(),
-            mission_id: context.session.mission_id.clone(),
-            principal: args.principal.clone(),
-            anchor_token: anchor_token.clone(),
-            intent: "alert".to_owned(),
-            event_id: args.event_id.as_str().to_owned(),
-            event_revision: receipt.event_revision_digest,
-            route: AlertRoute {
-                relay: args.relay.to_string(),
-                path: args.path.clone(),
-                plaintext_approval: args.plaintext_approval,
-                deadline_ms: args.deadline_ms,
-            },
-            operation_id: ids.operation.as_str().to_owned(),
-            obligation_id: ids.obligation.as_str().to_owned(),
-            plan_approval: approval,
-            control_plan_digest: ContentDigest::sha256(control_json.as_bytes()),
-            case: context
-                .case
-                .as_ref()
-                .map(|case| (case.record().investigation_id.clone(), case.digest())),
-            // The situation time of the anchor the plan binds: stable for that anchor, so a
-            // replan of the same intent there is an exact retry even after evidence advances.
-            created_at: context.orientation.capsule().created_at,
-        };
         let plan_root = publish_plan(&args.root, &record, control_json.as_bytes())?;
         let state = operation.as_ref().map(|operation| operation.state);
         let mut completed = vec![format!(
@@ -1495,8 +1500,10 @@ fn commit_answer(args: &CommitArgs) -> Result<Answered, Failure> {
             "Commit only plans compiled in your own session.",
         ));
     }
-    // The plan's session must still be live; its lock is released before any network I/O.
-    let context = planning_context(&args.root, &record.principal, &record.session_id, None)?;
+    // Retain session ownership through the bounded commit/dispatch operation so a concurrent
+    // case change or session rebase cannot race validation of the plan's witnesses.
+    let planning = hold_planning_context(&args.root, &record.principal, &record.session_id, None)?;
+    let context = planning.context();
     let principal_label = args.principal.as_str();
     let relay: SocketAddr = record.route.relay.parse().map_err(|_| Failure::Internal)?;
     let event_id = EventId::parse(record.event_id.clone()).map_err(|_| Failure::Internal)?;
@@ -1602,6 +1609,38 @@ fn commit_answer(args: &CommitArgs) -> Result<Answered, Failure> {
                 },
             ));
         }
+        // Reporting an existing receipt above does not reuse old authority. Only a new
+        // commitment must still satisfy every recorded agent witness and its live grant.
+        if !context
+            .session
+            .capabilities
+            .contains(CAPABILITY_PLAN_COMMIT)
+        {
+            return Err(Failure::Typed(
+                Refusal {
+                    error_id: crate::session_cmd::ERR_AUTH_DENIED,
+                    reason: format!("the session lacks {CAPABILITY_PLAN_COMMIT}"),
+                    guidance: "Use a live session with the registered plan-commit capability.",
+                    recovery_class: "operator_action_required",
+                    safe_retry: ResponseSafeRetry::No,
+                },
+                ExitIdentity::AGENT_REFUSED,
+            ));
+        }
+        planning.validate_plan(&record).map_err(|error| {
+            Failure::Typed(
+                Refusal {
+                    error_id: ERR_AGENT_AFFORDANCE_INVALIDATED,
+                    reason: error.to_string(),
+                    guidance: "Hand off and resume against current evidence, explicitly rebase \
+                               any stale case, then publish and approve a fresh plan. The old \
+                               prepared operation can be cancelled; it is not silently rebound.",
+                    recovery_class: "refresh_and_retry",
+                    safe_retry: ResponseSafeRetry::YesAfterRefresh,
+                },
+                ExitIdentity::AGENT_REFUSED,
+            )
+        })?;
         let plan = rehydrate_reference_alert_plan(
             &operation,
             ids.obligation.clone(),

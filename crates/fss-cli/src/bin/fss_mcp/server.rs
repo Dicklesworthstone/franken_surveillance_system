@@ -18,11 +18,10 @@ const PROTOCOL_VERSION: &str = "2025-06-18";
 const MAX_TOOL_OUTPUT_BYTES: usize = 4 * 1024 * 1024;
 const MAX_BUDGET_TOKENS: u64 = 4096;
 const MAX_PAGE_ENTRIES: u64 = 4096;
-/// A transport call blocks at most this long; longer waits are a CLI concern.
+/// Read-only follow/wait calls block at most this long; approved dispatch retains its native deadline.
 const MAX_WAIT_MS: u64 = 10_000;
 
-const TOOLS: &str = r#"{"tools":[
-{"name":"session_open","description":"AOP-001: open a durable mission-scoped session and its initial workspace in the fixed deployment. Mission and objective are literal text; no mission file is read. Returns the unchanged native fss/1 envelope with session, mission and anchor identities. A retry at the same full head returns the existing session; an advanced head can create a new session. budget_tokens is a cumulative session budget, separate from response view limits.","inputSchema":{"type":"object","properties":{"mission":{"type":"string","minLength":1,"maxLength":8192,"description":"Literal mission statement; at most 8192 UTF-8 bytes, never a file path to read."},"objective":{"type":"string","minLength":1,"maxLength":4096},"view":{"type":"string","enum":["pulse","brief","epistemic_map"]},"budget_tokens":{"type":"integer","minimum":1,"maximum":1000000,"description":"Cumulative session budget; defaults to the selected view's registered maximum."}},"required":["mission","objective"],"additionalProperties":false},"annotations":{"readOnlyHint":false,"destructiveHint":false,"idempotentHint":false,"openWorldHint":false}},
+const CORE_TOOLS: &str = r#"{"name":"session_open","description":"AOP-001: open a durable mission-scoped session and its initial workspace in the fixed deployment. Mission and objective are literal text; no mission file is read. Returns the unchanged native fss/1 envelope with session, mission and anchor identities. A retry at the same full head returns the existing session; an advanced head can create a new session. budget_tokens is a cumulative session budget, separate from response view limits.","inputSchema":{"type":"object","properties":{"mission":{"type":"string","minLength":1,"maxLength":8192,"description":"Literal mission statement; at most 8192 UTF-8 bytes, never a file path to read."},"objective":{"type":"string","minLength":1,"maxLength":4096},"view":{"type":"string","enum":["pulse","brief","epistemic_map"]},"budget_tokens":{"type":"integer","minimum":1,"maximum":1000000,"description":"Cumulative session budget; defaults to the selected view's registered maximum."}},"required":["mission","objective"],"additionalProperties":false},"annotations":{"readOnlyHint":false,"destructiveHint":false,"idempotentHint":false,"openWorldHint":false}},
 {"name":"session_resume","description":"AOP-002: verify and resume an existing handoff for the fixed principal. Returns the unchanged native fss/1 envelope and explicitly reports assumptions invalidated by world drift before rebasing the workspace. Native lease, authority, closure and budget checks remain in force. Resuming does not implicitly acknowledge or transfer a follow subscription.","inputSchema":{"type":"object","properties":{"handoff":{"type":"string","minLength":1,"maxLength":128}},"required":["handoff"],"additionalProperties":false},"annotations":{"readOnlyHint":false,"destructiveHint":false,"idempotentHint":false,"openWorldHint":false}},
 {"name":"handoff","description":"AOP-012: publish a root-last native handoff of one existing session in the fixed deployment. Preserves mission, workspace, uncertainty, obligations and native proof handles. Repeated requests at the same full head and semantic state retain their identity; changed state can produce a new handoff. Writes agent continuity state only and grants no effect authority.","inputSchema":{"type":"object","properties":{"session":{"type":"string","minLength":1,"maxLength":128},"note":{"type":"string","minLength":1,"maxLength":4096,"description":"Optional literal handoff note, at most 4096 UTF-8 bytes."}},"required":["session"],"additionalProperties":false},"annotations":{"readOnlyHint":false,"destructiveHint":false,"idempotentHint":false,"openWorldHint":false}},
 {"name":"session_orient","description":"Read-only AOP-003: inspect an existing deployment through its anchor-pinned SituationCapsule. Returns the existing fss/1 AgentResponseEnvelope unchanged, including coverage gaps, uncertainty, obligations and affordances. No affordance is executed.","inputSchema":{"type":"object","properties":{"view":{"type":"string","enum":["pulse","brief","epistemic_map"]},"budget_tokens":{"type":"integer","minimum":1,"maximum":4096}},"additionalProperties":false},"annotations":{"readOnlyHint":true,"destructiveHint":false,"idempotentHint":true,"openWorldHint":false}},
@@ -31,8 +30,17 @@ const TOOLS: &str = r#"{"tools":[
 {"name":"query","description":"Read-only AOP-005: exact conjunctive query of the latest verified committed event records. Returns the unchanged CLI AgentResponseEnvelope with protected context. Empty matches never certify physical absence. Nanosecond endpoints are canonical decimal strings to preserve signed 128-bit precision. Continuations require unchanged filters, principal, page size and authority/effect-history head.","inputSchema":{"type":"object","properties":{"event_id":{"type":"string","minLength":1,"maxLength":128},"kind":{"type":"string","enum":["perimeter_breach","covert_approach","sensor_tamper","unknown_presence","benign_routine","unclassified"]},"state":{"type":"string","enum":["hypothesized","witnessed","corroborated","adjudicated","alert_delivered","resolved","indeterminate","rejected"]},"zone":{"type":"string","minLength":1,"maxLength":64},"from_ns":{"type":"string","pattern":"^(0|-?[1-9][0-9]*)$","maxLength":40},"through_ns":{"type":"string","pattern":"^(0|-?[1-9][0-9]*)$","maxLength":40},"max_entries":{"type":"integer","minimum":1,"maximum":32},"anchor":{"type":"string","minLength":1,"maxLength":256},"continuation":{"type":"string","minLength":1,"maxLength":256}},"additionalProperties":false},"annotations":{"readOnlyHint":true,"destructiveHint":false,"idempotentHint":true,"openWorldHint":false}},
 {"name":"investigate","description":"AOP-006: maintain a durable investigation in one existing session. Supports open, inspect, list, activate, cite, assess, set-state, conclude, rebase, readmit and expand. Draft and expansion are literal objects, never files. Mutations require the exact expected case revision; native evidence, authority, deadline and rebase/readmission checks remain in force. Returns the unchanged native fss/1 envelope and records cognition only: no probe, plan or external effect is executed. Also coordinates native work claims and immutable findings, with exact revision/lease fences and verified retry receipts; these intents grant no effect authority.","inputSchema":{"type":"object","oneOf":[{"type":"object","properties":{"session":{"type":"string","minLength":1,"maxLength":128,"pattern":"^[A-Za-z0-9._:-]+$"},"transition":{"type":"string","enum":["open","inspect","list","activate","cite","assess","set-state","conclude","rebase","readmit","expand"]},"draft":{"type":"object","properties":{"caseId":{"type":"string","minLength":1,"maxLength":128,"pattern":"^[A-Za-z0-9._:-]+$"},"question":{"type":"string","minLength":1,"maxLength":8192},"decisionInformed":{"type":"string","minLength":1,"maxLength":1024},"hypotheses":{"type":"array","minItems":2,"maxItems":64,"items":{"type":"object","properties":{"hypothesisId":{"type":"string","minLength":1,"maxLength":128,"pattern":"^[A-Za-z0-9._:-]+$"},"description":{"type":"string","minLength":1,"maxLength":8192},"epistemicState":{"type":"string","enum":["known","estimated","unknown","conflicted","stale","not_observable","redacted","indeterminate","not_applicable"]},"predictions":{"type":"array","maxItems":256,"items":{"type":"string","minLength":1,"maxLength":1024}}},"required":["hypothesisId","description"],"additionalProperties":false}},"knowns":{"type":"array","maxItems":256,"items":{"type":"object","properties":{"statementId":{"type":"string","minLength":1,"maxLength":128,"pattern":"^[A-Za-z0-9._:-]+$"},"text":{"type":"string","minLength":1,"maxLength":8192},"epistemicState":{"type":"string","enum":["known","estimated","unknown","conflicted","stale","not_observable","redacted","indeterminate","not_applicable"]},"basis":{"type":"array","maxItems":256,"items":{"type":"string","minLength":1,"maxLength":1024}}},"required":["statementId","text"],"additionalProperties":false}},"unknowns":{"type":"array","maxItems":256,"items":{"type":"object","properties":{"statementId":{"type":"string","minLength":1,"maxLength":128,"pattern":"^[A-Za-z0-9._:-]+$"},"text":{"type":"string","minLength":1,"maxLength":8192},"epistemicState":{"type":"string","enum":["known","estimated","unknown","conflicted","stale","not_observable","redacted","indeterminate","not_applicable"]},"basis":{"type":"array","maxItems":256,"items":{"type":"string","minLength":1,"maxLength":1024}}},"required":["statementId","text"],"additionalProperties":false}},"discriminators":{"type":"array","maxItems":128,"items":{"type":"object","properties":{"discriminatorId":{"type":"string","minLength":1,"maxLength":128,"pattern":"^[A-Za-z0-9._:-]+$"},"description":{"type":"string","minLength":1,"maxLength":8192},"separates":{"type":"array","maxItems":64,"items":{"type":"string","minLength":1,"maxLength":128},"minItems":2},"expectedOutcomes":{"type":"array","maxItems":64,"items":{"type":"string","minLength":1,"maxLength":1024},"minItems":2}},"required":["discriminatorId","description","separates","expectedOutcomes"],"additionalProperties":false}},"probes":{"type":"array","maxItems":128,"items":{"type":"string","minLength":1,"maxLength":1024}},"stopRules":{"type":"array","maxItems":64,"items":{"type":"string","minLength":1,"maxLength":1024},"minItems":1},"decisionDeadlineNs":{"anyOf":[{"type":"integer"},{"type":"string","pattern":"^(0|-?[1-9][0-9]*)$","maxLength":40}],"description":"Exact signed 128-bit nanoseconds; decimal strings preserve full precision."},"decisionWindowNs":{"anyOf":[{"type":"integer"},{"type":"string","pattern":"^(0|-?[1-9][0-9]*)$","maxLength":40}],"description":"Exact signed 128-bit nanoseconds; decimal strings preserve full precision."}},"required":["caseId","question","decisionInformed","hypotheses","stopRules"],"additionalProperties":false,"oneOf":[{"required":["decisionDeadlineNs"],"not":{"required":["decisionWindowNs"]}},{"required":["decisionWindowNs"],"not":{"required":["decisionDeadlineNs"]}}]},"expansion":{"type":"object","properties":{"hypothesis":{"type":"object","properties":{"hypothesisId":{"type":"string","minLength":1,"maxLength":128,"pattern":"^[A-Za-z0-9._:-]+$"},"description":{"type":"string","minLength":1,"maxLength":8192},"epistemicState":{"type":"string","enum":["known","estimated","unknown","conflicted","stale","not_observable","redacted","indeterminate","not_applicable"]},"predictions":{"type":"array","maxItems":256,"items":{"type":"string","minLength":1,"maxLength":1024}}},"required":["hypothesisId","description"],"additionalProperties":false},"discriminator":{"type":"object","properties":{"discriminatorId":{"type":"string","minLength":1,"maxLength":128,"pattern":"^[A-Za-z0-9._:-]+$"},"description":{"type":"string","minLength":1,"maxLength":8192},"separates":{"type":"array","maxItems":64,"items":{"type":"string","minLength":1,"maxLength":128},"minItems":2},"expectedOutcomes":{"type":"array","maxItems":64,"items":{"type":"string","minLength":1,"maxLength":1024},"minItems":2}},"required":["discriminatorId","description","separates","expectedOutcomes"],"additionalProperties":false},"probe":{"type":"string","minLength":1,"maxLength":1024}},"required":["hypothesis","discriminator","probe"],"additionalProperties":false},"case":{"type":"string","minLength":1,"maxLength":128,"pattern":"^[A-Za-z0-9._:-]+$"},"expected":{"type":"string","pattern":"^sha256:[0-9a-fA-F]{64}$","minLength":71,"maxLength":71},"revision":{"type":"string","pattern":"^sha256:[0-9a-fA-F]{64}$","minLength":71,"maxLength":71},"hypothesis":{"type":"string","minLength":1,"maxLength":128,"pattern":"^[A-Za-z0-9._:-]+$"},"evidence":{"type":"string","pattern":"^sha256:[0-9a-fA-F]{64}$","minLength":71,"maxLength":71},"side":{"type":"string","enum":["support","contradiction"]},"disposition":{"type":"string","enum":["supported","disfavored","refuted"]},"state":{"type":"string","enum":["awaiting_evidence","awaiting_approval","blocked","indeterminate","cancelled","closed"]},"reason":{"type":"string","pattern":"^sha256:[0-9a-fA-F]{64}$","minLength":71,"maxLength":71},"conclusion":{"type":"string","enum":["resolved","refuted"]},"stop_rule":{"type":"string","minLength":1,"maxLength":1024},"assessment":{"type":"string","pattern":"^sha256:[0-9a-fA-F]{64}$","minLength":71,"maxLength":71},"residual_unknowns":{"type":"array","maxItems":256,"uniqueItems":true,"items":{"type":"string","minLength":1,"maxLength":128,"pattern":"^[A-Za-z0-9._:-]+$"}},"witness":{"type":"string","pattern":"^sha256:[0-9a-fA-F]{64}$","minLength":71,"maxLength":71}},"required":["session","transition"],"additionalProperties":false,"oneOf":[{"properties":{"transition":{"const":"open"}},"required":["draft"],"propertyNames":{"enum":["session","transition","draft"]}},{"properties":{"transition":{"const":"inspect"}},"required":["case"],"propertyNames":{"enum":["session","transition","case","revision"]}},{"properties":{"transition":{"const":"list"}},"required":[],"propertyNames":{"enum":["session","transition"]}},{"properties":{"transition":{"const":"activate"}},"required":["case","expected"],"propertyNames":{"enum":["session","transition","case","expected"]}},{"properties":{"transition":{"const":"cite"}},"required":["case","expected","hypothesis","evidence","side"],"propertyNames":{"enum":["session","transition","case","expected","hypothesis","evidence","side"]}},{"properties":{"transition":{"const":"assess"}},"required":["case","expected","hypothesis","disposition","evidence"],"propertyNames":{"enum":["session","transition","case","expected","hypothesis","disposition","evidence"]}},{"properties":{"transition":{"const":"set-state"}},"required":["case","expected","state","reason"],"propertyNames":{"enum":["session","transition","case","expected","state","reason"]}},{"properties":{"transition":{"const":"conclude"}},"required":["case","expected","conclusion","stop_rule","assessment","residual_unknowns"],"propertyNames":{"enum":["session","transition","case","expected","conclusion","stop_rule","assessment","residual_unknowns"]}},{"properties":{"transition":{"const":"rebase"}},"required":["case","expected"],"propertyNames":{"enum":["session","transition","case","expected"]}},{"properties":{"transition":{"const":"readmit"}},"required":["case","expected","hypothesis","evidence","side","witness"],"propertyNames":{"enum":["session","transition","case","expected","hypothesis","evidence","side","witness"]}},{"properties":{"transition":{"const":"expand"}},"required":["case","expected","expansion"],"propertyNames":{"enum":["session","transition","case","expected","expansion"]}}]},{"type":"object","oneOf":[{"type":"object","properties":{"session":{"type":"string","minLength":1,"maxLength":128,"pattern":"^[A-Za-z0-9._:-]+$"},"transition":{"const":"claim"},"case":{"type":"string","minLength":1,"maxLength":128,"pattern":"^[A-Za-z0-9._:-]+$"},"work":{"type":"string","minLength":1,"maxLength":270,"pattern":"^(case|(hypothesis|discriminator|probe):[\\s\\S]{1,256})$","description":"Exact native work spelling: case or <kind>:<literal work item>. The item is bounded to 256 UTF-8 bytes and must exist in the visible case."},"lease_ms":{"type":"integer","minimum":1,"maximum":300000,"default":60000,"description":"Evidence-clock milliseconds, bounded by the native session expiry. Supply an unsigned decimal JSON integer without fractional or exponent notation."},"depends":{"type":"array","maxItems":64,"uniqueItems":true,"items":{"type":"string","minLength":1,"maxLength":128,"pattern":"^[A-Za-z0-9._:-]+$"}}},"required":["session","transition","case","work"],"additionalProperties":false},{"type":"object","properties":{"session":{"type":"string","minLength":1,"maxLength":128,"pattern":"^[A-Za-z0-9._:-]+$"},"transition":{"const":"claim-inspect"},"claim":{"type":"string","minLength":1,"maxLength":128,"pattern":"^[A-Za-z0-9._:-]+$"}},"required":["session","transition","claim"],"additionalProperties":false},{"type":"object","properties":{"session":{"type":"string","minLength":1,"maxLength":128,"pattern":"^[A-Za-z0-9._:-]+$"},"transition":{"const":"claim-list"}},"required":["session","transition"],"additionalProperties":false},{"type":"object","properties":{"session":{"type":"string","minLength":1,"maxLength":128,"pattern":"^[A-Za-z0-9._:-]+$"},"transition":{"const":"claim-activate"},"claim":{"type":"string","minLength":1,"maxLength":128,"pattern":"^[A-Za-z0-9._:-]+$"},"expected":{"type":"string","pattern":"^sha256:[0-9a-fA-F]{64}$","minLength":71,"maxLength":71}},"required":["session","transition","claim","expected"],"additionalProperties":false},{"type":"object","properties":{"session":{"type":"string","minLength":1,"maxLength":128,"pattern":"^[A-Za-z0-9._:-]+$"},"transition":{"const":"claim-release"},"claim":{"type":"string","minLength":1,"maxLength":128,"pattern":"^[A-Za-z0-9._:-]+$"},"expected":{"type":"string","pattern":"^sha256:[0-9a-fA-F]{64}$","minLength":71,"maxLength":71}},"required":["session","transition","claim","expected"],"additionalProperties":false},{"type":"object","properties":{"session":{"type":"string","minLength":1,"maxLength":128,"pattern":"^[A-Za-z0-9._:-]+$"},"transition":{"const":"claim-expire"},"claim":{"type":"string","minLength":1,"maxLength":128,"pattern":"^[A-Za-z0-9._:-]+$"},"expected":{"type":"string","pattern":"^sha256:[0-9a-fA-F]{64}$","minLength":71,"maxLength":71}},"required":["session","transition","claim","expected"],"additionalProperties":false},{"type":"object","properties":{"session":{"type":"string","minLength":1,"maxLength":128,"pattern":"^[A-Za-z0-9._:-]+$"},"transition":{"const":"claim-progress"},"claim":{"type":"string","minLength":1,"maxLength":128,"pattern":"^[A-Za-z0-9._:-]+$"},"expected":{"type":"string","pattern":"^sha256:[0-9a-fA-F]{64}$","minLength":71,"maxLength":71},"artifact":{"type":"string","pattern":"^sha256:[0-9a-fA-F]{64}$","minLength":71,"maxLength":71}},"required":["session","transition","claim","expected","artifact"],"additionalProperties":false},{"type":"object","properties":{"session":{"type":"string","minLength":1,"maxLength":128,"pattern":"^[A-Za-z0-9._:-]+$"},"transition":{"const":"claim-block"},"claim":{"type":"string","minLength":1,"maxLength":128,"pattern":"^[A-Za-z0-9._:-]+$"},"expected":{"type":"string","pattern":"^sha256:[0-9a-fA-F]{64}$","minLength":71,"maxLength":71},"artifact":{"type":"string","pattern":"^sha256:[0-9a-fA-F]{64}$","minLength":71,"maxLength":71}},"required":["session","transition","claim","expected","artifact"],"additionalProperties":false},{"type":"object","properties":{"session":{"type":"string","minLength":1,"maxLength":128,"pattern":"^[A-Za-z0-9._:-]+$"},"transition":{"const":"claim-complete"},"claim":{"type":"string","minLength":1,"maxLength":128,"pattern":"^[A-Za-z0-9._:-]+$"},"expected":{"type":"string","pattern":"^sha256:[0-9a-fA-F]{64}$","minLength":71,"maxLength":71},"result":{"type":"string","pattern":"^sha256:[0-9a-fA-F]{64}$","minLength":71,"maxLength":71}},"required":["session","transition","claim","expected","result"],"additionalProperties":false},{"type":"object","properties":{"session":{"type":"string","minLength":1,"maxLength":128,"pattern":"^[A-Za-z0-9._:-]+$"},"transition":{"const":"claim-renew"},"claim":{"type":"string","minLength":1,"maxLength":128,"pattern":"^[A-Za-z0-9._:-]+$"},"expected":{"type":"string","pattern":"^sha256:[0-9a-fA-F]{64}$","minLength":71,"maxLength":71},"lease_ms":{"type":"integer","minimum":1,"maximum":300000,"default":60000,"description":"Evidence-clock milliseconds, bounded by the native session expiry. Supply an unsigned decimal JSON integer without fractional or exponent notation."}},"required":["session","transition","claim","expected"],"additionalProperties":false},{"type":"object","properties":{"session":{"type":"string","minLength":1,"maxLength":128,"pattern":"^[A-Za-z0-9._:-]+$"},"transition":{"const":"claim-reclaim"},"claim":{"type":"string","minLength":1,"maxLength":128,"pattern":"^[A-Za-z0-9._:-]+$"},"expected":{"type":"string","pattern":"^sha256:[0-9a-fA-F]{64}$","minLength":71,"maxLength":71},"lease_ms":{"type":"integer","minimum":1,"maximum":300000,"default":60000,"description":"Evidence-clock milliseconds, bounded by the native session expiry. Supply an unsigned decimal JSON integer without fractional or exponent notation."}},"required":["session","transition","claim","expected"],"additionalProperties":false},{"type":"object","properties":{"session":{"type":"string","minLength":1,"maxLength":128,"pattern":"^[A-Za-z0-9._:-]+$"},"transition":{"const":"claim-transfer"},"claim":{"type":"string","minLength":1,"maxLength":128,"pattern":"^[A-Za-z0-9._:-]+$"},"expected":{"type":"string","pattern":"^sha256:[0-9a-fA-F]{64}$","minLength":71,"maxLength":71},"recipient":{"type":"string","minLength":1,"maxLength":128,"pattern":"^[A-Za-z0-9._:-]+$"}},"required":["session","transition","claim","expected","recipient"],"additionalProperties":false},{"type":"object","properties":{"session":{"type":"string","minLength":1,"maxLength":128,"pattern":"^[A-Za-z0-9._:-]+$"},"transition":{"const":"finding"},"case":{"type":"string","minLength":1,"maxLength":128,"pattern":"^[A-Za-z0-9._:-]+$"},"claim":{"type":"string","minLength":1,"maxLength":8192,"description":"Literal statement, at most 8192 UTF-8 bytes; never a host-file path to read."},"state":{"type":"string","enum":["known","estimated","unknown","conflicted","stale","not_observable","redacted","indeterminate","not_applicable"]},"supporting":{"type":"array","maxItems":256,"uniqueItems":true,"items":{"type":"string","pattern":"^sha256:[0-9a-fA-F]{64}$","minLength":71,"maxLength":71},"minItems":1},"contradicting":{"type":"array","maxItems":256,"uniqueItems":true,"items":{"type":"string","pattern":"^sha256:[0-9a-fA-F]{64}$","minLength":71,"maxLength":71}},"hypothesis":{"type":"string","minLength":1,"maxLength":128,"pattern":"^[A-Za-z0-9._:-]+$"},"follow_up":{"type":"array","maxItems":64,"uniqueItems":true,"items":{"type":"string","minLength":1,"maxLength":128,"pattern":"^[A-Za-z0-9._:-]+$"}},"disagrees_with":{"type":"array","maxItems":64,"uniqueItems":true,"items":{"type":"string","minLength":1,"maxLength":128,"pattern":"^[A-Za-z0-9._:-]+$"}},"supersedes":{"type":"string","minLength":1,"maxLength":128,"pattern":"^[A-Za-z0-9._:-]+$"}},"required":["session","transition","case","claim","state","supporting"],"additionalProperties":false},{"type":"object","properties":{"session":{"type":"string","minLength":1,"maxLength":128,"pattern":"^[A-Za-z0-9._:-]+$"},"transition":{"const":"finding-withdraw"},"finding":{"type":"string","minLength":1,"maxLength":128,"pattern":"^[A-Za-z0-9._:-]+$"},"claim":{"type":"string","minLength":1,"maxLength":8192,"description":"Literal statement, at most 8192 UTF-8 bytes; never a host-file path to read."},"supporting":{"type":"array","maxItems":256,"uniqueItems":true,"items":{"type":"string","pattern":"^sha256:[0-9a-fA-F]{64}$","minLength":71,"maxLength":71},"minItems":1}},"required":["session","transition","finding","claim","supporting"],"additionalProperties":false},{"type":"object","properties":{"session":{"type":"string","minLength":1,"maxLength":128,"pattern":"^[A-Za-z0-9._:-]+$"},"transition":{"const":"finding-list"},"case":{"type":"string","minLength":1,"maxLength":128,"pattern":"^[A-Za-z0-9._:-]+$"}},"required":["session","transition"],"additionalProperties":false}]}]},"annotations":{"readOnlyHint":false,"destructiveHint":false,"idempotentHint":false,"openWorldHint":false}},
 {"name":"wait","description":"Read-only AOP-009: wait, bounded to 10 s, until one effect operation leaves its current state, polling the committed effect journal without writing or locking. Returns the unchanged fss/1 AgentResponseEnvelope carrying the operation receipt; an unchanged operation at the deadline is a partial answer with ERR-OP-TIMEOUT-001 (silence is not completion). Never prepares, commits, resends or cancels anything.","inputSchema":{"type":"object","properties":{"operation_id":{"type":"string","minLength":1,"maxLength":128},"deadline_ms":{"type":"integer","minimum":1,"maximum":10000}},"required":["operation_id","deadline_ms"],"additionalProperties":false},"annotations":{"readOnlyHint":true,"destructiveHint":false,"idempotentHint":true,"openWorldHint":false}},
-{"name":"doctor","description":"Read-only AOP-014 reference diagnosis of the fixed deployment. Returns the existing fss.doctor.v1 report, not an AgentResponseEnvelope. Does not repair, create directories, acquire locks or execute affordances.","inputSchema":{"type":"object","properties":{},"additionalProperties":false},"annotations":{"readOnlyHint":true,"destructiveHint":false,"idempotentHint":true,"openWorldHint":false}}
-]}"#;
+{"name":"doctor","description":"Read-only AOP-014 reference diagnosis of the fixed deployment. Returns the existing fss.doctor.v1 report, not an AgentResponseEnvelope. Does not repair, create directories, acquire locks or execute affordances.","inputSchema":{"type":"object","properties":{},"additionalProperties":false},"annotations":{"readOnlyHint":true,"destructiveHint":false,"idempotentHint":true,"openWorldHint":false}}"#;
+
+fn tools_list() -> String {
+    format!(
+        "{{\"tools\":[{CORE_TOOLS},{},{},{}]}}",
+        super::control::PLAN_TOOL,
+        super::control::COMMIT_TOOL,
+        super::control::CANCEL_TOOL,
+    )
+    .replace('\n', "")
+}
 
 #[derive(Clone, Copy, PartialEq)]
 enum Phase {
@@ -106,7 +114,7 @@ impl Server {
             "ping" if only(p, &["_meta"]) => Ok("{}".to_owned()),
             "ping" => Err((-32602, "Unexpected ping parameters")),
             _ if self.phase != Phase::Ready => Err((-32002, "Complete initialization first")),
-            "tools/list" if only(p, &["_meta"]) => Ok(TOOLS.replace('\n', "")),
+            "tools/list" if only(p, &["_meta"]) => Ok(tools_list()),
             "tools/list" => Err((-32602, "This complete tool list has no continuation cursor")),
             "tools/call" => self.call(p, &mut execute),
             _ => Err((-32601, "Method not found")),
@@ -152,7 +160,7 @@ impl Server {
         }
         self.phase = Phase::AwaitingInitialized;
         Ok(format!(
-            "{{\"protocolVersion\":\"{PROTOCOL_VERSION}\",\"capabilities\":{{\"tools\":{{\"listChanged\":false}}}},\"serverInfo\":{{\"name\":\"fss-mcp\",\"version\":\"{}\"}},\"instructions\":\"Local reference adapter, not production-qualified. The launching operator fixes the deployment root and principal audit label. Tool results retain existing FSS evidence and uncertainty semantics; they grant no effect authority. Session lifecycle tools, investigation revisions, work claims, findings and explicit durable follow subscriptions update agent continuity state only. No remote authentication or in-flight cancellation is implemented.\"}}",
+            "{{\"protocolVersion\":\"{PROTOCOL_VERSION}\",\"capabilities\":{{\"tools\":{{\"listChanged\":false}}}},\"serverInfo\":{{\"name\":\"fss-mcp\",\"version\":\"{}\"}},\"instructions\":\"Local reference adapter, not production-qualified. The launching operator fixes the deployment root and principal audit label. Tool results retain existing FSS evidence and uncertainty semantics. Sessions, investigations, claims, findings and explicit durable follow update agent continuity state. Alert controls require native exact approval; plans and recommendations grant no effect authority. After response loss inspect retained operations with wait and follow native reconciliation guidance before acting again. No remote authentication or in-flight cancellation is implemented.\"}}",
             env!("CARGO_PKG_VERSION")
         ))
     }
@@ -185,6 +193,10 @@ impl Server {
             } else {
                 super::investigate::command(&self.root, &self.principal, args)?
             };
+            return execute_admitted(command, execute);
+        }
+        if matches!(name, "plan" | "commit" | "cancel") {
+            let command = super::control::command(name, &self.root, &self.principal, args)?;
             return execute_admitted(command, execute);
         }
         let mut argv = match name {
@@ -434,7 +446,15 @@ fn execute_admitted(
     ) && !matches!(
         &command,
         FssCommand::Effect(effect)
-            if matches!(effect.as_ref(), fss_cli::effect_cmd::EffectCommand::Wait(_))
+            if matches!(
+                effect.as_ref(),
+                fss_cli::effect_cmd::EffectCommand::Plan(_)
+                    | fss_cli::effect_cmd::EffectCommand::Close(_)
+                    | fss_cli::effect_cmd::EffectCommand::Commit(_)
+                    | fss_cli::effect_cmd::EffectCommand::Reconcile(_)
+                    | fss_cli::effect_cmd::EffectCommand::Cancel(_)
+                    | fss_cli::effect_cmd::EffectCommand::Wait(_)
+            )
     ) && !matches!(
         &command,
         FssCommand::Session(
@@ -502,7 +522,7 @@ fn error(id: &str, code: i32, message: &str) -> String {
 fn tool_result(output: &str, failed: bool) -> String {
     let (output, failed) = if output.len() > MAX_TOOL_OUTPUT_BYTES {
         (
-            "FSS response exceeded the MCP byte ceiling. No response was truncated. Agent continuity state may already be committed; use native retry or resume semantics to recover. Request a smaller view or page.",
+            "FSS response exceeded the MCP byte ceiling. No response was truncated. Native state or an effect may already be committed. Inspect retained operations with wait and follow native reconciliation or retry guidance before further action. Request a smaller view or page.",
             true,
         )
     } else {
@@ -727,7 +747,7 @@ mod tests {
         use fss_cli::json_input::{self as input, Value as Input};
         use std::collections::BTreeSet;
 
-        let discovery = input::parse(TOOLS)?;
+        let discovery = input::parse(&tools_list())?;
         let tool = discovery
             .object()
             .and_then(|root| root.get("tools"))
@@ -1082,13 +1102,13 @@ mod tests {
     -> Result<(), Box<dyn std::error::Error>> {
         use fss_cli::json_input::{self as input, Value as Input};
 
-        let discovery = input::parse(TOOLS)?;
+        let discovery = input::parse(&tools_list())?;
         let tools = discovery
             .object()
             .and_then(|object| object.get("tools"))
             .and_then(Input::array)
             .ok_or("tool list")?;
-        assert_eq!(tools.len(), 10);
+        assert_eq!(tools.len(), 13);
         for name in ["session_open", "session_resume", "handoff"] {
             let tool = tools
                 .iter()
@@ -1273,6 +1293,9 @@ mod tests {
             "session_orient",
             "session_follow",
             "investigate",
+            "plan",
+            "commit",
+            "cancel",
             "handoff",
             "explain",
             "doctor",
@@ -1281,11 +1304,88 @@ mod tests {
         ] {
             assert!(fss_cli::lookup_by_mcp_tool_name(name).is_some());
         }
-        assert!(json::parse(TOOLS).is_ok());
+        assert!(json::parse(&tools_list()).is_ok());
     }
 
     #[test]
-    fn wait_dispatches_only_the_bounded_read_and_effect_tools_stay_absent() {
+    fn control_calls_use_native_owners_and_notifications_cannot_execute() {
+        use fss_cli::effect_cmd::EffectCommand;
+
+        let mut server = ready();
+        let expected = r#"{"operation":"commit","errorId":"ERR-EFFECT-INDETERMINATE-001","payload":{"state":"indeterminate"}}"#;
+        let digest = "sha256:1111111111111111111111111111111111111111111111111111111111111111";
+        let cases = [
+            (
+                "plan",
+                format!(
+                    r#"{{"intent":"alert","session":"session:owner","event_id":"event:one","relay":"127.0.0.1:9","path":"/alert","plaintext_approval":"{digest}","deadline_ms":5000}}"#
+                ),
+                "plan",
+            ),
+            (
+                "plan",
+                r#"{"intent":"close","session":"session:owner","plan":"plan:one"}"#.to_owned(),
+                "close",
+            ),
+            (
+                "commit",
+                format!(r#"{{"intent":"dispatch","plan":"plan:one","approve":"{digest}"}}"#),
+                "commit",
+            ),
+            (
+                "commit",
+                format!(
+                    r#"{{"intent":"reconcile","operation_id":"operation:one","outcome":"delivered","evidence":"{digest}","statement":"Literal owner attestation."}}"#
+                ),
+                "reconcile",
+            ),
+            (
+                "cancel",
+                r#"{"operation_id":"operation:one"}"#.to_owned(),
+                "cancel",
+            ),
+        ];
+        let mut calls = 0;
+        for (name, arguments, kind) in cases {
+            let request = format!(
+                r#"{{"jsonrpc":"2.0","id":40,"method":"tools/call","params":{{"name":{},"arguments":{arguments}}}}}"#,
+                quote(name)
+            );
+            let response = server.handle_with(&request, |command| {
+                calls += 1;
+                let FssCommand::Effect(effect) = command else {
+                    unreachable!("control must retain its native effect owner");
+                };
+                let (actual, root, principal) = match effect.as_ref() {
+                    EffectCommand::Plan(args) => ("plan", &args.root, &args.principal),
+                    EffectCommand::Close(args) => ("close", &args.root, &args.principal),
+                    EffectCommand::Commit(args) => ("commit", &args.root, &args.principal),
+                    EffectCommand::Reconcile(args) => ("reconcile", &args.root, &args.principal),
+                    EffectCommand::Cancel(args) => ("cancel", &args.root, &args.principal),
+                    _ => unreachable!("unrequested native operation"),
+                };
+                assert_eq!(actual, kind);
+                assert_eq!(root, std::path::Path::new("/owner/deployment"));
+                assert_eq!(principal.as_str(), "principal:local-operator");
+                (expected.to_owned(), ExitIdentity::RUNTIME_FAILURE)
+            });
+            assert!(response.is_some_and(
+                |reply| reply.contains(&quote(expected)) && reply.contains("\"isError\":true")
+            ));
+            let notification = request.replace("\"id\":40,", "");
+            assert_eq!(
+                server.handle_with(&notification, |_| {
+                    calls += 1;
+                    (String::new(), ExitIdentity::SUCCESS)
+                }),
+                None
+            );
+        }
+        assert_eq!(calls, 5);
+    }
+
+    #[test]
+    fn wait_dispatches_only_the_bounded_read_and_controls_require_complete_intents() {
         let mut server = ready();
         let mut seen = Vec::new();
         let reply = server.handle_with(
@@ -1322,7 +1422,7 @@ mod tests {
     }
 
     #[test]
-    fn notifications_incomplete_sessions_and_effect_tools_never_execute() {
+    fn notifications_incomplete_sessions_and_unapproved_controls_never_execute() {
         let mut server = ready();
         let mut calls = 0;
         for text in [
@@ -1620,7 +1720,7 @@ mod tests {
             "the transport does not replay or acknowledge on its own"
         );
 
-        let tools = fss_cli::json_input::parse(TOOLS)?;
+        let tools = fss_cli::json_input::parse(&tools_list())?;
         let follow = tools
             .object()
             .and_then(|value| value.get("tools"))

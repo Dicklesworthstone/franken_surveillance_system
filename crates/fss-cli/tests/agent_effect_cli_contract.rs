@@ -13,7 +13,11 @@
 //! 4. owner-attested reconciliation discharges a dispatched alert's obligation, and `fss plan
 //!    --close` then records the plan's immutable execution episode (refused while the effect is
 //!    open; hydrated from the publication store and validated against its schema; returned
-//!    unchanged on a second close; citing the principal's feedback as competing attribution).
+//!    unchanged on a second close; citing the principal's feedback as competing attribution);
+//! 5. changed case revisions invalidate preview approval before preparation, and changed cases
+//!    or rebased sessions invalidate prepared plans before relay I/O;
+//!    a dispatch retains its exact case/session witness through the bounded network attempt,
+//!    then releases ownership while cold receipt recovery never resends after witness changes.
 
 use std::error::Error;
 use std::ffi::OsString;
@@ -21,11 +25,11 @@ use std::fs;
 use std::io::{Read, Write};
 use std::net::{SocketAddr, TcpListener};
 use std::path::{Path, PathBuf};
-use std::process::{Command, Output};
+use std::process::{Child, Command, Output, Stdio};
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
 use std::thread::JoinHandle;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use fss_cli::json_input::{Value, parse};
 use fss_core::ContentDigest;
@@ -34,6 +38,7 @@ use fss_reference::media_fixture::jpeg::{JpegConfig, Subsampling, encode_jpeg};
 type TestResult<T = ()> = Result<T, Box<dyn Error>>;
 
 const SITE: &str = "site:agent-effect-cli";
+const CASE: &str = "case:east-door";
 const IDENTITY: &str = "1,0,0,0,1,0,0,0,1";
 const MIRROR: &str = "-1,0,96,0,1,0,0,0,1";
 
@@ -217,6 +222,7 @@ struct Relay {
     requests: Arc<Mutex<Vec<Vec<u8>>>>,
     connections: Arc<AtomicUsize>,
     stop: Arc<AtomicBool>,
+    release_reply: Arc<AtomicBool>,
     handle: Option<JoinHandle<()>>,
 }
 
@@ -233,12 +239,18 @@ fn complete(request: &[u8]) -> bool {
 
 impl Relay {
     fn spawn(reply: Option<&'static [u8]>) -> TestResult<Self> {
+        Self::spawn_with_gate(reply, false)
+    }
+
+    fn spawn_with_gate(reply: Option<&'static [u8]>, gated: bool) -> TestResult<Self> {
         let listener = TcpListener::bind("127.0.0.1:0")?;
         listener.set_nonblocking(true)?;
         let address = listener.local_addr()?;
         let requests = Arc::new(Mutex::new(Vec::new()));
         let connections = Arc::new(AtomicUsize::new(0));
         let stop = Arc::new(AtomicBool::new(false));
+        let release_reply = Arc::new(AtomicBool::new(!gated));
+        let proceed = release_reply.clone();
         let (seen, count, halt) = (requests.clone(), connections.clone(), stop.clone());
         let handle = std::thread::spawn(move || {
             while !halt.load(Ordering::SeqCst) {
@@ -265,6 +277,14 @@ impl Relay {
                 if let Ok(mut all) = seen.lock() {
                     all.push(request);
                 }
+                // Retain the complete request without acknowledging it until the test has
+                // observed competing commands. Drop always interrupts this gate on failure.
+                while !proceed.load(Ordering::SeqCst) && !halt.load(Ordering::SeqCst) {
+                    std::thread::sleep(Duration::from_millis(2));
+                }
+                if halt.load(Ordering::SeqCst) {
+                    break;
+                }
                 if let Some(reply) = reply {
                     let _ = stream.write_all(reply);
                 }
@@ -275,6 +295,7 @@ impl Relay {
             requests,
             connections,
             stop,
+            release_reply,
             handle: Some(handle),
         })
     }
@@ -287,6 +308,9 @@ impl Relay {
     }
     fn connections(&self) -> usize {
         self.connections.load(Ordering::SeqCst)
+    }
+    fn release(&self) {
+        self.release_reply.store(true, Ordering::SeqCst);
     }
 }
 impl Drop for Relay {
@@ -406,8 +430,7 @@ impl Agent {
         })
     }
 
-    /// Runs one command; validates the envelope and payload; returns (exit, envelope).
-    fn run(&self, command: &str, extra: &[&str]) -> TestResult<(Option<i32>, Value)> {
+    fn args(&self, command: &str, extra: &[&str]) -> Vec<OsString> {
         let mut args: Vec<OsString> = vec![
             command.into(),
             "--json".into(),
@@ -415,14 +438,23 @@ impl Agent {
             self.root.as_os_str().to_owned(),
         ];
         args.extend(extra.iter().map(OsString::from));
-        let (code, stdout) = run_fss(&args)?;
+        args
+    }
+
+    /// Runs one command; validates the envelope and payload; returns (exit, envelope).
+    fn run(&self, command: &str, extra: &[&str]) -> TestResult<(Option<i32>, Value)> {
+        let (code, stdout) = run_fss(&self.args(command, extra))?;
+        self.answer(code, &stdout)
+    }
+
+    fn answer(&self, code: Option<i32>, stdout: &str) -> TestResult<(Option<i32>, Value)> {
         assert_conforms(
             "agent_response_envelope.v1.json",
             stdout.trim_end(),
             &self.scratch,
         )?;
         let envelope = parse(stdout.trim_end())?;
-        let payload = raw_payload(&stdout)?;
+        let payload = raw_payload(stdout)?;
         if payload != "null" {
             let schema = text(&envelope, &["payloadSchema"])?;
             assert_conforms(
@@ -458,6 +490,16 @@ impl Agent {
         relay: SocketAddr,
         extra: &[&str],
     ) -> TestResult<(Option<i32>, Value)> {
+        self.plan_with_deadline(event_id, relay, "5000", extra)
+    }
+
+    fn plan_with_deadline(
+        &self,
+        event_id: &str,
+        relay: SocketAddr,
+        deadline_ms: &str,
+        extra: &[&str],
+    ) -> TestResult<(Option<i32>, Value)> {
         let relay = relay.to_string();
         let approval = plaintext_approval();
         let mut args = vec![
@@ -474,7 +516,7 @@ impl Agent {
             "--plaintext-approval",
             &approval,
             "--deadline-ms",
-            "5000",
+            deadline_ms,
         ];
         args.extend_from_slice(extra);
         self.run("plan", &args)
@@ -532,6 +574,175 @@ fn operation_of(plan: &Value) -> TestResult<String> {
         .find(|step| text(step, &["stepId"]).is_ok_and(|id| id == "step:prepare"))
         .ok_or("prepare step")?;
     Ok(texts(prepare, &["writeWitnesses"])?[0].clone())
+}
+
+type CapturedPipe = JoinHandle<std::io::Result<Vec<u8>>>;
+
+/// An owned real CLI child. Every assertion/error path kills and reaps only this fixture process.
+/// Both pipes are drained from spawn, independently of the bounded exit wait.
+struct RunningFss {
+    child: Child,
+    stdout: Option<CapturedPipe>,
+    stderr: Option<CapturedPipe>,
+}
+
+impl RunningFss {
+    fn capture(mut pipe: impl Read + Send + 'static) -> std::io::Result<CapturedPipe> {
+        std::thread::Builder::new().spawn(move || {
+            let mut bytes = Vec::new();
+            pipe.read_to_end(&mut bytes)?;
+            Ok(bytes)
+        })
+    }
+
+    fn spawn(args: &[OsString]) -> TestResult<Self> {
+        let mut owned = Self {
+            child: Command::new(env!("CARGO_BIN_EXE_fss"))
+                .args(args)
+                .stdin(Stdio::null())
+                .stdout(Stdio::piped())
+                .stderr(Stdio::piped())
+                .spawn()?,
+            stdout: None,
+            stderr: None,
+        };
+        // Establish ownership before any fallible reader setup, so even a reader-spawn
+        // failure cannot leave the CLI child or its other output reader behind.
+        let stdout = owned.child.stdout.take().ok_or("commit stdout missing")?;
+        owned.stdout = Some(Self::capture(stdout)?);
+        let stderr = owned.child.stderr.take().ok_or("commit stderr missing")?;
+        owned.stderr = Some(Self::capture(stderr)?);
+        Ok(owned)
+    }
+
+    fn running(&mut self) -> TestResult<bool> {
+        Ok(self.child.try_wait()?.is_none())
+    }
+
+    fn collected(reader: &mut Option<CapturedPipe>) -> TestResult<Vec<u8>> {
+        Ok(reader
+            .take()
+            .ok_or("commit output reader missing")?
+            .join()
+            .map_err(|_| "commit output reader panicked")??)
+    }
+
+    fn finish(mut self) -> TestResult<Output> {
+        let deadline = Instant::now() + Duration::from_secs(35);
+        let status = loop {
+            if let Some(status) = self.child.try_wait()? {
+                break status;
+            }
+            if Instant::now() >= deadline {
+                return Err("the owned commit process exceeded its bounded completion wait".into());
+            }
+            std::thread::sleep(Duration::from_millis(2));
+        };
+        let stdout = Self::collected(&mut self.stdout)?;
+        let stderr = Self::collected(&mut self.stderr)?;
+        Ok(Output {
+            status,
+            stdout,
+            stderr,
+        })
+    }
+}
+
+impl Drop for RunningFss {
+    fn drop(&mut self) {
+        let _ = self.child.kill();
+        let _ = self.child.wait();
+        // Reaping the owned process closes its pipe writers, so readers finish even when
+        // the test aborts while the relay acknowledgement is still gated.
+        for reader in [self.stdout.take(), self.stderr.take()]
+            .into_iter()
+            .flatten()
+        {
+            let _ = reader.join();
+        }
+    }
+}
+
+impl Agent {
+    fn open_case(&self) -> TestResult<Value> {
+        let path = self.scratch.join("alert-case.json");
+        fs::write(
+            &path,
+            r#"{"caseId":"case:east-door","question":"Did a person enter?",
+"decisionInformed":"Prepare an owner alert",
+"hypotheses":[{"hypothesisId":"h:entry","description":"Entered","predictions":["Hallway track"]},
+{"hypothesisId":"h:passerby","description":"Passed","predictions":["Exterior only"]}],
+"stopRules":["An independent observation distinguishes the alternatives"],
+"decisionWindowNs":3600000000000}"#,
+        )?;
+        let (code, opened) = self.run(
+            "investigate",
+            &[
+                "--session",
+                &self.session,
+                "--transition",
+                "open",
+                "--case-file",
+                path.to_str().ok_or("case fixture path is not UTF-8")?,
+            ],
+        )?;
+        assert_eq!(code, Some(0), "{opened:?}");
+        Ok(opened)
+    }
+
+    fn cancel_case(&self, expected: &str) -> TestResult<(Option<i32>, Value)> {
+        let reason = ContentDigest::sha256(b"owner withdrew the alert investigation").to_text();
+        self.run(
+            "investigate",
+            &[
+                "--session",
+                &self.session,
+                "--transition",
+                "set-state",
+                "--case",
+                CASE,
+                "--expected",
+                expected,
+                "--state",
+                "cancelled",
+                "--reason",
+                &reason,
+            ],
+        )
+    }
+
+    /// Advance retained evidence without revising the alert event, then explicitly resume the
+    /// same session. Both ledger and workspace anchors must move; effect history alone is not
+    /// used as a stand-in for a session rebase.
+    fn resume_after_new_evidence(&self, directory: &OwnedDirectory) -> TestResult<Value> {
+        let (code, handed) = self.run("handoff", &["--session", &self.session])?;
+        assert_eq!(code, Some(0), "{handed:?}");
+        let handoff = text(&handed, &["payload", "handoffId"])?;
+        import(
+            directory,
+            true,
+            "sensor:refresh",
+            now_ns()? - 10_000_000_000,
+        )?;
+        let (code, stdout) = run_fss(&[
+            "session".into(),
+            "resume".into(),
+            "--json".into(),
+            "--root".into(),
+            self.root.as_os_str().to_owned(),
+            "--handoff".into(),
+            handoff.into(),
+        ])?;
+        let (code, resumed) = self.answer(code, &stdout)?;
+        assert_eq!(code, Some(0), "{resumed:?}");
+        assert_eq!(text(&resumed, &["sessionId"])?, self.session);
+        assert_ne!(
+            field(&resumed, &["payload", "anchor"])?,
+            field(&resumed, &["payload", "previousAnchor"])?,
+            "the fixture must actually rebase onto newly committed evidence"
+        );
+        Ok(resumed)
+    }
 }
 
 #[test]
@@ -1015,5 +1226,267 @@ fn a_plan_withdrawn_before_preparation_closes_and_can_never_be_prepared() -> Tes
         "ERR-OP-PRECONDITION-FAILED-001"
     );
     assert_eq!(relay.connections(), 0);
+    Ok(())
+}
+
+#[test]
+fn a_changed_case_revision_refuses_exact_preview_approval_before_preparation() -> TestResult {
+    let (directory, event_id) = corroborated_event("preview-case-invalidated")?;
+    let agent = Agent::open(&directory)?;
+    let opened = agent.open_case()?;
+    let expected = text(&opened, &["decisionFingerprint"])?;
+    let relay = Relay::spawn(Some(b"HTTP/1.1 202 Accepted\r\nContent-Length: 0\r\n\r\n"))?;
+    let effects = agent.root.join("effects/journal.fssj");
+    let journal = fs::read(&effects)?;
+    let (code, planned) = agent.plan(&event_id, relay.address, &["--case", CASE])?;
+    assert_eq!(code, Some(0), "{planned:?}");
+    let (_, approval, _) = approvals(&planned)?;
+    let operation = operation_of(&planned)?;
+    assert_eq!(fs::read(&effects)?, journal);
+
+    let (code, changed) = agent.run(
+        "investigate",
+        &[
+            "--session",
+            &agent.session,
+            "--transition",
+            "activate",
+            "--case",
+            CASE,
+            "--expected",
+            expected,
+        ],
+    )?;
+    assert_eq!(code, Some(0), "{changed:?}");
+    assert_ne!(text(&changed, &["decisionFingerprint"])?, expected);
+
+    // The same event/route approval cannot publish a different case witness under the
+    // existing plan identity. Detect that conflict before preparing any durable operation.
+    let (code, refused) = agent.plan(
+        &event_id,
+        relay.address,
+        &["--case", CASE, "--approve", &approval],
+    )?;
+    assert_eq!(code, Some(5), "{refused:?}");
+    assert_eq!(
+        text(&refused, &["errorId"])?,
+        "ERR-OP-PRECONDITION-FAILED-001"
+    );
+    assert_eq!(fs::read(&effects)?, journal);
+    assert_eq!(relay.connections(), 0);
+    assert_eq!(relay.requests()?, 0);
+
+    let (code, absent) = agent.run("wait", &["--operation", &operation, "--deadline-ms", "1"])?;
+    assert_eq!(code, Some(5), "{absent:?}");
+    assert_eq!(
+        text(&absent, &["errorId"])?,
+        "ERR-OP-PRECONDITION-FAILED-001"
+    );
+    assert_eq!(field(&absent, &["payload"])?, &Value::Null);
+    assert_eq!(fs::read(&effects)?, journal);
+    Ok(())
+}
+
+#[test]
+fn a_changed_case_revision_invalidates_a_prepared_commit_before_relay_io() -> TestResult {
+    let (directory, event_id) = corroborated_event("case-invalidated")?;
+    let agent = Agent::open(&directory)?;
+    let opened = agent.open_case()?;
+    let expected = text(&opened, &["decisionFingerprint"])?;
+    let relay = Relay::spawn(Some(b"HTTP/1.1 202 Accepted\r\nContent-Length: 0\r\n\r\n"))?;
+    let (code, planned) = agent.plan(&event_id, relay.address, &["--case", CASE])?;
+    assert_eq!(code, Some(0), "{planned:?}");
+    let (plan_id, approval, _) = approvals(&planned)?;
+    let (code, prepared) = agent.plan(
+        &event_id,
+        relay.address,
+        &["--case", CASE, "--approve", &approval],
+    )?;
+    assert_eq!(code, Some(0), "{prepared:?}");
+    let (prepared_id, _, dispatch) = approvals(&prepared)?;
+    assert_eq!(prepared_id, plan_id);
+    let operation = operation_of(&prepared)?;
+    let effects = agent.root.join("effects/journal.fssj");
+    let journal = fs::read(&effects)?;
+
+    // The event, route, approval and prepared operation still match, but this exact case
+    // revision no longer supports the plan. No irreversible commitment may be recorded.
+    let (code, changed) = agent.cancel_case(expected)?;
+    assert_eq!(code, Some(0), "{changed:?}");
+    assert_ne!(text(&changed, &["decisionFingerprint"])?, expected);
+    let (code, refused) = agent.run("commit", &["--plan", &plan_id, "--approve", &dispatch])?;
+    assert_eq!(code, Some(5), "{refused:?}");
+    assert_eq!(
+        text(&refused, &["errorId"])?,
+        "ERR-AGENT-AFFORDANCE-INVALIDATED-001"
+    );
+    assert_eq!(fs::read(&effects)?, journal);
+    assert_eq!(relay.connections(), 0);
+    assert_eq!(relay.requests()?, 0);
+    let (code, waited) = agent.run("wait", &["--operation", &operation, "--deadline-ms", "1"])?;
+    assert_eq!(code, Some(0), "{waited:?}");
+    assert_eq!(text(&waited, &["payload", "state"])?, "prepared");
+    assert_eq!(fs::read(&effects)?, journal);
+    Ok(())
+}
+
+#[test]
+fn a_rebased_session_cannot_commit_a_plan_from_its_old_anchor() -> TestResult {
+    let (directory, event_id) = corroborated_event("plan-anchor-invalidated")?;
+    let agent = Agent::open(&directory)?;
+    let relay = Relay::spawn(Some(b"HTTP/1.1 202 Accepted\r\nContent-Length: 0\r\n\r\n"))?;
+    let (code, planned) = agent.plan(&event_id, relay.address, &[])?;
+    assert_eq!(code, Some(0), "{planned:?}");
+    let (plan_id, approval, _) = approvals(&planned)?;
+    let (code, prepared) = agent.plan(&event_id, relay.address, &["--approve", &approval])?;
+    assert_eq!(code, Some(0), "{prepared:?}");
+    let (_, _, dispatch) = approvals(&prepared)?;
+    let operation = operation_of(&prepared)?;
+    let effects = agent.root.join("effects/journal.fssj");
+    let journal = fs::read(&effects)?;
+
+    agent.resume_after_new_evidence(&directory)?;
+    let (code, refused) = agent.run("commit", &["--plan", &plan_id, "--approve", &dispatch])?;
+    assert_eq!(code, Some(5), "{refused:?}");
+    assert_eq!(
+        text(&refused, &["errorId"])?,
+        "ERR-AGENT-AFFORDANCE-INVALIDATED-001"
+    );
+    assert_eq!(fs::read(&effects)?, journal);
+    assert_eq!(relay.connections(), 0);
+    assert_eq!(relay.requests()?, 0);
+    let (code, waited) = agent.run("wait", &["--operation", &operation, "--deadline-ms", "1"])?;
+    assert_eq!(code, Some(0), "{waited:?}");
+    assert_eq!(text(&waited, &["payload", "state"])?, "prepared");
+    assert_eq!(fs::read(&effects)?, journal);
+    Ok(())
+}
+
+#[test]
+fn dispatch_holds_its_case_and_session_witnesses_until_the_receipt_is_durable() -> TestResult {
+    let (directory, event_id) = corroborated_event("dispatch-witness-ownership")?;
+    let agent = Agent::open(&directory)?;
+    let opened = agent.open_case()?;
+    let expected = text(&opened, &["decisionFingerprint"])?;
+    let relay = Relay::spawn_with_gate(
+        Some(b"HTTP/1.1 202 Accepted\r\nContent-Length: 0\r\n\r\n"),
+        true,
+    )?;
+    // Competing real CLI commands must have time to run while the explicit relay barrier is
+    // held. This is still a single native attempt with a fixed, approved 30-second deadline.
+    let (code, planned) =
+        agent.plan_with_deadline(&event_id, relay.address, "30000", &["--case", CASE])?;
+    assert_eq!(code, Some(0), "{planned:?}");
+    let (plan_id, approval, _) = approvals(&planned)?;
+    let (code, prepared) = agent.plan_with_deadline(
+        &event_id,
+        relay.address,
+        "30000",
+        &["--case", CASE, "--approve", &approval],
+    )?;
+    assert_eq!(code, Some(0), "{prepared:?}");
+    let (_, _, dispatch_approval) = approvals(&prepared)?;
+    let operation = operation_of(&prepared)?;
+    let mut dispatch = RunningFss::spawn(&agent.args(
+        "commit",
+        &["--plan", &plan_id, "--approve", &dispatch_approval],
+    ))?;
+    let arrival_deadline = Instant::now() + Duration::from_secs(10);
+    while relay.requests()? == 0 {
+        assert!(
+            dispatch.running()?,
+            "commit exited before the loopback request arrived"
+        );
+        assert!(
+            Instant::now() < arrival_deadline,
+            "loopback request did not arrive"
+        );
+        std::thread::sleep(Duration::from_millis(2));
+    }
+    let retained = relay
+        .requests
+        .lock()
+        .map_err(|_| "relay log poisoned")?
+        .first()
+        .cloned()
+        .ok_or("loopback request missing")?;
+    assert!(
+        complete(&retained),
+        "the barrier must retain a complete HTTP request"
+    );
+    assert!(dispatch.running()?);
+    let effects = agent.root.join("effects/journal.fssj");
+    let committed_journal = fs::read(&effects)?;
+    let sessions = agent.root.join("agent/sessions/journal.fssj");
+    let session_pin = agent.root.join("agent/sessions/ROOT");
+    let held_session = fs::read(&sessions)?;
+    let held_pin = fs::read(&session_pin)?;
+
+    // Both cognition mutation and session publication must observe the same held journal,
+    // while the relay has the request but has supplied no acknowledgement.
+    let (code, refused) = agent.cancel_case(expected)?;
+    assert_eq!(code, Some(5), "{refused:?}");
+    assert_eq!(
+        text(&refused, &["errorId"])?,
+        "ERR-AGENT-SESSION-STORE-LOCKED-001"
+    );
+    let (code, handoff) = agent.run("handoff", &["--session", &agent.session])?;
+    assert_eq!(code, Some(5), "{handoff:?}");
+    assert_eq!(
+        text(&handoff, &["errorId"])?,
+        "ERR-AGENT-SESSION-STORE-LOCKED-001"
+    );
+    assert!(
+        dispatch.running()?,
+        "dispatch must still own the retained request"
+    );
+    assert_eq!(fs::read(&sessions)?, held_session);
+    assert_eq!(fs::read(&session_pin)?, held_pin);
+    assert_eq!(fs::read(&effects)?, committed_journal);
+
+    relay.release();
+    let completed = dispatch.finish()?;
+    success(&completed);
+    let stdout = String::from_utf8(completed.stdout)?;
+    let (code, receipt) = agent.answer(completed.status.code(), &stdout)?;
+    assert_eq!(code, Some(0), "{receipt:?}");
+    assert_eq!(text(&receipt, &["payload", "state"])?, "adapter_accepted");
+    assert_eq!(text(&receipt, &["payload", "operationId"])?, operation);
+    let accepted_journal = fs::read(&effects)?;
+    assert_ne!(accepted_journal, committed_journal);
+    assert_eq!(relay.connections(), 1);
+
+    // Ownership ends only after dispatch records its outcome. The exact mutation that was
+    // blocked now succeeds; a fresh commit process reports its durable receipt unchanged.
+    let (code, changed) = agent.cancel_case(expected)?;
+    assert_eq!(code, Some(0), "{changed:?}");
+    assert_ne!(text(&changed, &["decisionFingerprint"])?, expected);
+    let (code, after_case) = agent.run(
+        "commit",
+        &["--plan", &plan_id, "--approve", &dispatch_approval],
+    )?;
+    assert_eq!(code, Some(0), "{after_case:?}");
+    assert_eq!(
+        field(&after_case, &["payload"])?,
+        field(&receipt, &["payload"])?
+    );
+    assert_eq!(fs::read(&effects)?, accepted_journal);
+    assert_eq!(relay.connections(), 1);
+
+    // Recover again after both witnesses have changed. A receipt observation cannot become
+    // permission to reuse the stale case or the old session anchor for another dispatch.
+    agent.resume_after_new_evidence(&directory)?;
+    let (code, after_resume) = agent.run(
+        "commit",
+        &["--plan", &plan_id, "--approve", &dispatch_approval],
+    )?;
+    assert_eq!(code, Some(0), "{after_resume:?}");
+    assert_eq!(
+        field(&after_resume, &["payload"])?,
+        field(&receipt, &["payload"])?
+    );
+    assert_eq!(fs::read(&effects)?, accepted_journal);
+    assert_eq!(relay.connections(), 1);
+    assert_eq!(relay.requests()?, 1);
     Ok(())
 }

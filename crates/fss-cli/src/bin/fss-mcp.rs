@@ -7,6 +7,8 @@ use std::io;
 use std::path::PathBuf;
 use std::process::ExitCode;
 
+#[path = "fss_mcp/control.rs"]
+mod control;
 #[path = "fss_mcp/coordination.rs"]
 mod coordination;
 #[path = "fss_mcp/investigate.rs"]
@@ -20,7 +22,9 @@ const HELP: &str = "fss-mcp --root EXISTING_DEPLOYMENT [--principal PRINCIPAL_ID
 MCP 2025-06-18 over newline-delimited JSON-RPC on stdin/stdout.\n\
 The operator fixes root and principal; clients cannot override them. The principal\n\
 is an audit label, not authentication. Session open/handoff/resume and explicit\n\
-durable follow and investigate write agent state; no physical effect tools or listener.\n\
+durable follow and investigate write agent state. Alert plan, commit and cancel\n\
+use native exact approvals and durable receipts; inspect with wait after response loss.\n\
+No network listener. Read waits are at most 10 seconds; approved dispatch at most 60.\n\
 Mission text is literal, never a file to read. Session budgets are cumulative;\n\
 same-head retry and resume behavior comes from the native session implementation.\n\
 Input frames are limited to 64 KiB; semantic responses to 4 MiB before escaping.\n\

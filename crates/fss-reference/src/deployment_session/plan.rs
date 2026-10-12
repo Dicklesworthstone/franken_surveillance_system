@@ -218,6 +218,79 @@ pub struct PlanningContext {
     pub journal_root: ContentDigest,
 }
 
+/// A planning context whose agent-session journal remains exclusively owned.
+///
+/// Keep this guard alive while preparing or committing an effect that relies on the session or
+/// an investigation revision. A competing session/case writer is refused until the guard drops.
+/// This owns no effect capability and does not authorize any network operation.
+pub struct PlanningContextGuard {
+    context: PlanningContext,
+    // Last field: context is retired before its session-journal ownership.
+    journal: SessionJournal,
+}
+
+impl PlanningContextGuard {
+    /// The exact session and situation admitted under the held journal.
+    #[must_use]
+    pub fn context(&self) -> &PlanningContext {
+        &self.context
+    }
+
+    /// Revalidates a published plan's mission, anchor and optional exact case witness.
+    ///
+    /// Call only for a new commitment. An already committed operation must still be reported
+    /// through its durable receipt even if its old planning witnesses have since changed.
+    pub fn validate_plan(&self, record: &PlanRecord) -> Result<(), DeploymentSessionError> {
+        let session = &self.context.session;
+        if record.principal != session.principal_id
+            || record.session_id != session.session_id
+            || record.mission_id != session.mission_id
+        {
+            return Err(DeploymentSessionError::PlanInvalid(
+                "the plan's principal, session or mission no longer matches".to_owned(),
+            ));
+        }
+        if record.anchor_token != self.context.orientation.anchor_token {
+            return Err(DeploymentSessionError::PlanInvalid(
+                "the session was rebased beyond the plan's exact situation anchor".to_owned(),
+            ));
+        }
+        if let Some((case_id, expected)) = &record.case {
+            let current = super::investigation::visible_cases(&self.journal.store, session)
+                .into_iter()
+                .find(|case| &case.record().investigation_id == case_id)
+                .ok_or_else(|| {
+                    DeploymentSessionError::PlanInvalid(
+                        "the plan's investigation witness is no longer available".to_owned(),
+                    )
+                })?;
+            if current.digest() != *expected {
+                return Err(DeploymentSessionError::PlanInvalid(format!(
+                    "case {case_id} no longer has the exact revision witnessed by plan {}",
+                    record.plan_id
+                )));
+            }
+            validate_case_basis(&current, session)?;
+        }
+        Ok(())
+    }
+}
+
+fn validate_case_basis(
+    case: &InvestigationRevision,
+    session: &AgentSession,
+) -> Result<(), DeploymentSessionError> {
+    if case.record().basis_anchor != session.current_anchor
+        || case.record().contract_basis != fss_core::reference_contract_basis()
+    {
+        return Err(DeploymentSessionError::PlanInvalid(
+            "the named investigation needs an explicit rebase before it can support a plan"
+                .to_owned(),
+        ));
+    }
+    Ok(())
+}
+
 /// Locates a live session and compiles its situation; the session lock is released on return.
 ///
 /// Fails with `SessionUnknown`/`SessionStale` for an unknown or unresolvable session and with
@@ -228,12 +301,28 @@ pub fn planning_context(
     session_id: &SessionId,
     case_id: Option<&str>,
 ) -> Result<PlanningContext, DeploymentSessionError> {
+    hold_planning_context(root, principal, session_id, case_id).map(|guard| guard.context)
+}
+
+/// Locates a live session and retains its exclusive journal ownership with the returned context.
+///
+/// A named case must be applicable at the session's exact anchor and current contract basis.
+/// The caller bounds the lifetime of this guard; it must not outlive its owned operation.
+pub fn hold_planning_context(
+    root: &Path,
+    principal: &PrincipalId,
+    session_id: &SessionId,
+    case_id: Option<&str>,
+) -> Result<PlanningContextGuard, DeploymentSessionError> {
     let limits = OrientLimits::default();
     let history = DeploymentHistory::read(root, &limits)?;
     let head = history.snapshot_at(history.head())?;
     let now = evidence_now(&head);
     let mut journal = SessionJournal::open(root)?;
-    let position = super::session_position(&mut journal, &history, principal, session_id, now)?;
+    let position = super::session_position(&mut journal, &history, principal, session_id, now);
+    // Refused admission can still advance durable session clock watermarks.
+    journal.commit_pin()?;
+    let position = position?;
     let session = position.session;
     let cases = super::investigation::visible_cases(&journal.store, &session);
     let case = match case_id {
@@ -248,6 +337,9 @@ pub fn planning_context(
                 ))?,
         ),
     };
+    if let Some(case) = &case {
+        validate_case_basis(case, &session)?;
+    }
     // A plan binds the world situation at the session's anchor, never the agent's own cognition:
     // no case or plan briefs enter the frame it binds, so recording a case or a plan cannot
     // change the identity of the plans compiled at that anchor.
@@ -261,8 +353,7 @@ pub fn planning_context(
         &limits,
         super::SessionBriefs::default(),
     )?;
-    journal.commit_pin()?;
-    Ok(PlanningContext {
+    let context = PlanningContext {
         site_lineage: position.snapshot.site_lineage.clone(),
         session,
         orientation,
@@ -270,7 +361,8 @@ pub fn planning_context(
         head_moved: position.head_moved,
         now,
         journal_root: journal.store.committed_root(),
-    })
+    };
+    Ok(PlanningContextGuard { context, journal })
 }
 
 /// Publishes `record` root-last with the rendered control plan beside it. Republishing an
@@ -286,14 +378,8 @@ pub fn publish_plan(
         ));
     }
     let slot = PlanRecord::slot(&record.plan_id)?;
-    if let Some((existing, published_root)) = read_plan_at(root, &slot)? {
-        return if existing == *record {
-            Ok(published_root)
-        } else {
-            Err(DeploymentSessionError::PlanInvalid(
-                "a different plan is already published under this identity".to_owned(),
-            ))
-        };
+    if let Some(published_root) = verify_plan_publication(root, record)? {
+        return Ok(published_root);
     }
     Ok(publish_record(
         root,
@@ -304,6 +390,27 @@ pub fn publish_plan(
         None,
     )?
     .root)
+}
+
+/// Verifies that any existing publication matches the full proposed plan record.
+///
+/// Call before preparing an effect while retaining the planning guard. A changed case witness,
+/// route, deadline or rendering cannot reuse a previous preview's identity and approval.
+/// Returns the verified existing root, or `None` if this plan has not been published.
+pub fn verify_plan_publication(
+    root: &Path,
+    record: &PlanRecord,
+) -> Result<Option<ContentDigest>, DeploymentSessionError> {
+    let slot = PlanRecord::slot(&record.plan_id)?;
+    match read_plan_at(root, &slot)? {
+        Some((existing, published_root)) if existing == *record => Ok(Some(published_root)),
+        Some(_) => Err(DeploymentSessionError::PlanInvalid(
+            "a different plan is already published under this identity; refresh the session and \
+             rebase its case before approving a new plan"
+                .to_owned(),
+        )),
+        None => Ok(None),
+    }
 }
 
 fn read_plan_at(
