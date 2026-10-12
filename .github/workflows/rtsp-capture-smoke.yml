@@ -17,9 +17,9 @@ permissions:
   contents: read
 
 jobs:
-  capture:
+  formatting:
     runs-on: ubuntu-24.04
-    timeout-minutes: 25
+    timeout-minutes: 5
     env:
       CARGO_BUILD_JOBS: "2"
       CARGO_INCREMENTAL: "0"
@@ -51,6 +51,8 @@ jobs:
           crates/fss-cli/src/bin/fss_mcp/investigate.rs
           crates/fss-cli/src/bin/fss_mcp/coordination.rs
           crates/fss-cli/src/bin/fss_mcp/control.rs
+          crates/fss-cli/src/bin/fss_mcp/feedback.rs
+          crates/fss-cli/tests/mcp_feedback_contract.rs
           crates/fss-cli/src/effect_cmd.rs
           crates/fss-reference/src/deployment_session/plan.rs
           crates/fss-cli/tests/mcp_control_contract.rs
@@ -86,14 +88,42 @@ jobs:
           crates/fss-reference/tests/rtsp_catalog_import_contract/pages.rs
           crates/fss-reference/tests/rtsp_catalog_import_contract/pages/failures.rs
           crates/fss-model-ir/tests/model_ir_contract.rs
+  agent-contracts:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    env:
+      CARGO_BUILD_JOBS: "2"
+      CARGO_INCREMENTAL: "0"
+      CARGO_PROFILE_DEV_DEBUG: "0"
+      CARGO_PROFILE_TEST_DEBUG: "0"
+      CARGO_NET_OFFLINE: "true"
+      RUSTUP_AUTO_INSTALL: "0"
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+      - name: Bootstrap the pinned compiler and inspection tools
+        run: rustup toolchain install nightly-2026-08-31 --profile minimal --component rustfmt,clippy,rust-src
       - name: MCP sessions, durable investigations, coordination and approved control
         if: success() || failure()
         run: |
           fss_mcp_status=0
           cargo +nightly-2026-08-31 test --locked --offline -p fss-cli --bin fss-mcp || fss_mcp_status=1
-          cargo +nightly-2026-08-31 test --no-fail-fast --locked --offline -p fss-cli --test session_cli_contract --test mcp_cli_contract --test mcp_session_lifecycle_contract --test investigate_cli_contract --test mcp_investigation_contract --test mcp_coordination_contract --test work_claim_cli_contract --test finding_cli_contract --test mcp_control_contract --test agent_effect_cli_contract || fss_mcp_status=1
+          cargo +nightly-2026-08-31 test --no-fail-fast --locked --offline -p fss-cli --test session_cli_contract --test mcp_cli_contract --test mcp_session_lifecycle_contract --test investigate_cli_contract --test mcp_investigation_contract --test mcp_coordination_contract --test work_claim_cli_contract --test finding_cli_contract --test mcp_control_contract --test agent_effect_cli_contract --test mcp_feedback_contract || fss_mcp_status=1
           cargo +nightly-2026-08-31 test --locked --offline -p fss-reference --lib deployment_session::findings::tests || fss_mcp_status=1
           exit "$fss_mcp_status"
+  capture:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 25
+    env:
+      CARGO_BUILD_JOBS: "2"
+      CARGO_INCREMENTAL: "0"
+      CARGO_PROFILE_DEV_DEBUG: "0"
+      CARGO_PROFILE_TEST_DEBUG: "0"
+      CARGO_NET_OFFLINE: "true"
+      RUSTUP_AUTO_INSTALL: "0"
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+      - name: Bootstrap the pinned compiler and inspection tools
+        run: rustup toolchain install nightly-2026-08-31 --profile minimal --component rustfmt,clippy,rust-src
       - name: Exclusive writer lifetime and failed-open recovery
         if: success() || failure()
         run: |

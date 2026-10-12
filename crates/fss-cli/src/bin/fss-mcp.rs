@@ -11,6 +11,8 @@ use std::process::ExitCode;
 mod control;
 #[path = "fss_mcp/coordination.rs"]
 mod coordination;
+#[path = "fss_mcp/feedback.rs"]
+mod feedback;
 #[path = "fss_mcp/investigate.rs"]
 mod investigate;
 #[path = "fss_mcp/json.rs"]
@@ -22,7 +24,7 @@ const HELP: &str = "fss-mcp --root EXISTING_DEPLOYMENT [--principal PRINCIPAL_ID
 MCP 2025-06-18 over newline-delimited JSON-RPC on stdin/stdout.\n\
 The operator fixes root and principal; clients cannot override them. The principal\n\
 is an audit label, not authentication. Session open/handoff/resume and explicit\n\
-durable follow and investigate write agent state. Alert plan, commit and cancel\n\
+durable follow, investigate and advisory feedback write agent state. Alert controls\n\
 use native exact approvals and durable receipts; inspect with wait after response loss.\n\
 No network listener. Read waits are at most 10 seconds; approved dispatch at most 60.\n\
 Mission text is literal, never a file to read. Session budgets are cumulative;\n\

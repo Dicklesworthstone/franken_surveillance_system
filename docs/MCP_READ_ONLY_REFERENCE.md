@@ -1,8 +1,9 @@
 # Native MCP reference adapter
 
 `fss-mcp` connects a local MCP client to existing deployment reads and durable agent
-sessions, investigations and approved native alert controls. It is an owner-launched stdio process. Tool names come from the same
-crosswalk as the CLI, and each call executes the canonical CLI library in-process.
+sessions, investigations, advisory feedback and approved native alert controls. It is an
+owner-launched stdio process. Tool names come from the same crosswalk as the CLI, and each
+call executes the canonical CLI library in-process.
 
 ## Run
 
@@ -15,7 +16,7 @@ cargo build --locked -p fss-cli --bin fss-mcp
 tool arguments cannot override it or the launcher's principal. The principal is
 the native CLI's audit label, not remote authentication. The launching OS account
 provides local access. Session lifecycle calls, investigation revisions, work claims,
-findings and explicit durable follow subscriptions write under `agent/`.
+findings, feedback proposals and explicit durable follow subscriptions write under `agent/`.
 Alert control calls use the existing native effect journal and require the exact
 approvals described in [Native alert control through MCP](MCP_CONTROL_REFERENCE.md).
 
@@ -51,6 +52,7 @@ Typical client configuration:
 | `wait` (AOP-009) | `fss wait` | Required `operation_id` and `deadline_ms`: 1..10000; reads existing effect state |
 | `explain` (AOP-011) | `fss explain` | Required `event_id` |
 | `handoff` (AOP-012) | `fss handoff` | Required `session` ID; optional literal `note` |
+| `feedback` (AOP-013) | `fss feedback` | Required `session`, literal native `target`, `kind`, `statement` and 1..256 supporting/contradicting evidence handles; optional advisory `disposition` |
 | `doctor` (AOP-014) | `fss doctor --root` | No arguments |
 
 All except doctor return the **unchanged serialized `AgentResponseEnvelope`** in
@@ -254,11 +256,20 @@ requires resnapshot, including a harmless advance. A deadline does not extend
 coverage or renew a lease, and an already admitted bounded read may finish after
 that deadline.
 
+## Evidence-linked advisory feedback
+
+The `feedback` tool records a native immutable correction, adjudication or learning proposal
+against an existing event, visible case, committed operation or published plan. It preserves
+both evidence sides, author/session provenance and the exact session anchor. Requested
+dispositions are recorded for review; submitting feedback does not activate a policy or effect.
+See [MCP advisory feedback](MCP_FEEDBACK_REFERENCE.md) for the complete request, native
+normalization, exact retry and publication-custody behavior.
+
 ## Wire behavior and limits
 
 The negotiated version is **MCP 2025-06-18**. The server accepts `initialize`,
 then `notifications/initialized`, `ping`, `tools/list` and
-`tools/call`. The complete thirteen-tool list is returned in one response. Native
+`tools/call`. The complete fourteen-tool list is returned in one response. Native
 durable follow state is accessed by explicit calls; there is no asynchronous MCP
 subscription or task channel.
 
@@ -304,6 +315,7 @@ cargo test --locked -p fss-cli --test mcp_coordination_contract
 cargo test --locked -p fss-cli --test finding_cli_contract
 cargo test --locked -p fss-cli --test mcp_control_contract
 cargo test --locked -p fss-cli --test agent_effect_cli_contract
+cargo test --locked -p fss-cli --test mcp_feedback_contract
 ```
 
 Unit contracts cover exact dispatch, literal mission text, bounded cumulative
@@ -314,7 +326,8 @@ reference deployments to check cross-surface identity, durable follow retries
 and acknowledgments, session lifecycle, case history, world-drift invalidation,
 claim lease and ownership fences, immutable finding retry receipts, exact native
 plan/dispatch/cancel approvals, lost MCP and relay acknowledgments, retained
-receipts without resend, and authority refusals. Native effect contracts also
+receipts without resend, native advisory feedback parity and publication custody, and authority
+refusals. Native effect contracts also
 hold a complete loopback request to prove that session and case mutation cannot
 race an admitted dispatch. Included tests are not themselves test-pass or release qualification
 receipts.

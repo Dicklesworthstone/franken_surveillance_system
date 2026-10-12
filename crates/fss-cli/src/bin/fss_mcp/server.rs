@@ -34,10 +34,11 @@ const CORE_TOOLS: &str = r#"{"name":"session_open","description":"AOP-001: open 
 
 fn tools_list() -> String {
     format!(
-        "{{\"tools\":[{CORE_TOOLS},{},{},{}]}}",
+        "{{\"tools\":[{CORE_TOOLS},{},{},{},{}]}}",
         super::control::PLAN_TOOL,
         super::control::COMMIT_TOOL,
         super::control::CANCEL_TOOL,
+        super::feedback::FEEDBACK_TOOL,
     )
     .replace('\n', "")
 }
@@ -197,6 +198,10 @@ impl Server {
         }
         if matches!(name, "plan" | "commit" | "cancel") {
             let command = super::control::command(name, &self.root, &self.principal, args)?;
+            return execute_admitted(command, execute);
+        }
+        if name == "feedback" {
+            let command = super::feedback::command(&self.root, &self.principal, args)?;
             return execute_admitted(command, execute);
         }
         let mut argv = match name {
@@ -442,6 +447,7 @@ fn execute_admitted(
             | FssCommand::Investigate(_)
             | FssCommand::Claim(_)
             | FssCommand::Finding(_)
+            | FssCommand::Feedback(_)
             | FssCommand::Doctor(_)
     ) && !matches!(
         &command,
@@ -1108,7 +1114,7 @@ mod tests {
             .and_then(|object| object.get("tools"))
             .and_then(Input::array)
             .ok_or("tool list")?;
-        assert_eq!(tools.len(), 13);
+        assert_eq!(tools.len(), 14);
         for name in ["session_open", "session_resume", "handoff"] {
             let tool = tools
                 .iter()
@@ -1297,6 +1303,7 @@ mod tests {
             "commit",
             "cancel",
             "handoff",
+            "feedback",
             "explain",
             "doctor",
             "query",
@@ -1305,6 +1312,41 @@ mod tests {
             assert!(fss_cli::lookup_by_mcp_tool_name(name).is_some());
         }
         assert!(json::parse(&tools_list()).is_ok());
+    }
+
+    #[test]
+    fn feedback_uses_the_fixed_native_owner_and_notifications_cannot_execute() {
+        let mut server = ready();
+        let digest = "sha256:1111111111111111111111111111111111111111111111111111111111111111";
+        let request = format!(
+            r#"{{"jsonrpc":"2.0","id":41,"method":"tools/call","params":{{"name":"feedback","arguments":{{"session":"session:owner","target":"case:case:east-door","kind":"correction","statement":"Preserve the counterexample.","supporting":["{digest}"]}}}}}}"#
+        );
+        let expected = r#"{"operation":"feedback","errorId":"ERR-AUTH-DENIED-001","payload":null}"#;
+        let mut calls = 0;
+        let response = server.handle_with(&request, |command| {
+            calls += 1;
+            let FssCommand::Feedback(args) = command else {
+                unreachable!("feedback must retain its native proposal owner");
+            };
+            assert_eq!(args.root, std::path::Path::new("/owner/deployment"));
+            assert_eq!(args.request.principal.as_str(), "principal:local-operator");
+            assert_eq!(args.request.session_id.as_str(), "session:owner");
+            assert_eq!(args.request.target.id(), "case:east-door");
+            assert_eq!(args.request.supporting.len(), 1);
+            assert!(args.request.contradicting.is_empty());
+            (expected.to_owned(), ExitIdentity::RUNTIME_FAILURE)
+        });
+        assert!(response.is_some_and(
+            |reply| reply.contains(&quote(expected)) && reply.contains("\"isError\":true")
+        ));
+        assert_eq!(
+            server.handle_with(&request.replace("\"id\":41,", ""), |_| {
+                calls += 1;
+                (String::new(), ExitIdentity::SUCCESS)
+            }),
+            None
+        );
+        assert_eq!(calls, 1);
     }
 
     #[test]
