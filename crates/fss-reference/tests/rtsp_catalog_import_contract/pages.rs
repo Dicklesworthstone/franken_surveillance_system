@@ -7,6 +7,7 @@ use fss_reference::ingest::rtsp_import::pages::{
     RtspCatalogPagesImportReceipt, RtspCatalogPagesImportRequest, import_rtsp_catalog_pages,
 };
 
+#[path = "pages/failures.rs"]
 mod failures;
 
 impl RtspCatalogPagesImportAuthority for Owner {

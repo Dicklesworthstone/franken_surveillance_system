@@ -1,0 +1,3 @@
+c27560d5d100a29a827ce72397578c882d7cb116e635c551525b9e875208e24d  .github/workflows/rtsp-capture-smoke.yml
+48578e0c16e2194da9882f44ed64f4e6db8879b75e39801bab948dbc6839ebd9  crates/fss-cli/tests/corroborate_stream_geometry_cli.rs
+fa1c44bed222a1526bdffdedc4199848a1ca1992192fb3ae58be2b3ffed37377  crates/fss-reference/tests/rtsp_catalog_import_contract/pages.rs

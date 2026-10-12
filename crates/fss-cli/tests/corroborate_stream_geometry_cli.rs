@@ -701,7 +701,10 @@ fn calibration_uncertainty_withdraws_support_from_identical_nominal_ground_entri
     // A shared calibration artifact supplies a common cause, even without a scene mesh.
     assert_eq!(text(candidate(&tight)?, "event_state")?, "witnessed");
     assert_eq!(text(candidate(&tight)?, "policy_action")?, "hold");
-    assert_eq!(count(&tight, "dependency_cluster_count")?, 1);
+    assert_eq!(
+        count(member(&tight, "dependencies")?, "dependency_cluster_count")?,
+        1
+    );
     assert_eq!(count(&inflated, "candidate_count")?, 0);
     assert_ne!(
         text(&tight, "analysis_digest")?,
