@@ -37,12 +37,13 @@ No packet, prediction state, timing baseline or source-continuity claim crosses
 into the next attempt. A camera changing its SSRC still needs a new owner plan;
 this command does not guess an alternative source or codec.
 
-Only typed transient AVC connection I/O failures and actual AVC/HEVC source EOF
-with settled storage admit another attempt. Connection refusal/reset/abort/timeout
+Only typed transient AVC/HEVC connection I/O failures and observed native source
+end with settled storage admit another attempt. HEVC may observe a codec EOB
+boundary separately from physical TCP EOF; neither is invented by the controller. Connection refusal/reset/abort/timeout
 must come from the native Connect operation, not a generic error string.
 Authentication, credential/entropy failure, revocation, cancellation, protocol or
 codec refusal, timing mismatch, exhausted work/deadline budgets, output failure
-and storage failures stop the entire run. HEVC constructor errors currently stop;
+and storage failures stop the entire run. Other constructor errors remain fatal;
 they are not interpreted as transient based on their broad diagnostic label.
 
 A candidate pin, unrecorded work receipt, pending window or source-only boundary
@@ -83,10 +84,14 @@ resulting generation. They never assert camera capture time.
 Focused checks:
 
 ```sh
-cargo test -p fss-cli --bin fss-capture-rtsp
+cargo test -p fss-cli --bin fss-capture-rtsp --test capture_rtsp_reconnect_cli
 ```
 
-Controller tests use deterministic effects to exercise policy transitions;
-they are not a substitute for the native loopback capture/process contracts or
-controlled-host qualification. This implementation was source-reviewed in an
+Controller tests use deterministic effects to exercise policy transitions. The
+separate `capture_rtsp_reconnect_cli` suite runs real native processes against an
+owned loopback RTSP camera: EOF then successful capture in a new generation,
+finite AVC/HEVC connection refusals, authentication-at-EOF, malformed RTP, pure
+approval and preservation of existing destinations. It checks both independent
+native terminal streams and outer retry rows, without mocking capture or storage.
+These are wiring contracts, not controlled-host qualification. This implementation was source-reviewed in an
 offline editing environment; native execution and rustfmt were not available.

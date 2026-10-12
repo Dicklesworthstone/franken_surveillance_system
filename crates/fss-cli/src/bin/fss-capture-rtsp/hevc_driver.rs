@@ -505,10 +505,7 @@ pub(super) fn run<W: Write>(
     }
     .map_err(|error| {
         stats.connection_attempted = error.connection_attempted;
-        match error.reason {
-            LiveHevcArchiveError::Pins(_) | LiveHevcArchiveError::Archive(_) => Failure::Storage,
-            _ => Failure::Connect,
-        }
+        connect_failure(&error.reason)
     })?;
     stats.connection_attempted = true;
     let result = drive(options, &mut capture, owner, entropy, stats, log);
@@ -518,4 +515,60 @@ pub(super) fn run<W: Write>(
         stats.hevc_retirement(&retired);
     }
     result
+}
+
+// Only native Connect I/O, never an archive/authentication/authority refusal, can supply
+// a transient observation. Existing single-attempt diagnostics retain their stable codes.
+fn connect_failure(error: &LiveHevcArchiveError) -> Failure {
+    match error {
+        LiveHevcArchiveError::Pins(_) | LiveHevcArchiveError::Archive(_) => Failure::Storage,
+        LiveHevcArchiveError::Network(LiveHevcError::Transport(TcpError::Io {
+            operation: TcpOperation::Connect,
+            kind: io::ErrorKind::ConnectionRefused
+                | io::ErrorKind::ConnectionReset
+                | io::ErrorKind::ConnectionAborted
+                | io::ErrorKind::TimedOut,
+        })) => Failure::ConnectionUnavailable,
+        _ => Failure::Connect,
+    }
+}
+
+#[cfg(test)]
+mod reconnect_tests {
+    use super::*;
+
+    #[test]
+    fn only_typed_transient_connect_io_can_retry() {
+        for operation in [TcpOperation::Connect, TcpOperation::Read, TcpOperation::Write] {
+            for kind in [
+                io::ErrorKind::ConnectionRefused,
+                io::ErrorKind::ConnectionReset,
+                io::ErrorKind::ConnectionAborted,
+                io::ErrorKind::TimedOut,
+                io::ErrorKind::PermissionDenied,
+                io::ErrorKind::InvalidInput,
+            ] {
+                let error = LiveHevcArchiveError::Network(LiveHevcError::Transport(
+                    TcpError::Io { operation, kind },
+                ));
+                assert_eq!(
+                    matches!(connect_failure(&error), Failure::ConnectionUnavailable),
+                    operation == TcpOperation::Connect && matches!(kind,
+                        io::ErrorKind::ConnectionRefused | io::ErrorKind::ConnectionReset
+                        | io::ErrorKind::ConnectionAborted | io::ErrorKind::TimedOut)
+                );
+            }
+        }
+        for denial in [TcpDenial::Unauthorized, TcpDenial::Revoked, TcpDenial::Cancelled,
+            TcpDenial::Deadline, TcpDenial::Budget] {
+            let error = LiveHevcArchiveError::Network(LiveHevcError::Transport(
+                TcpError::Denied(denial),
+            ));
+            assert!(matches!(connect_failure(&error), Failure::Connect));
+        }
+        for error in [LiveHevcArchiveError::Deadline, LiveHevcArchiveError::WorkBudget,
+            LiveHevcArchiveError::Selection] {
+            assert!(matches!(connect_failure(&error), Failure::Connect));
+        }
+    }
 }

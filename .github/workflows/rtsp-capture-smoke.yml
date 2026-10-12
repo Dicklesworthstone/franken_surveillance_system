@@ -54,6 +54,7 @@ jobs:
           crates/fss-cli/tests/capture_rtsp_cli.rs crates/fss-cli/tests/capture_rtsp_cli/*.rs
           crates/fss-cli/src/bin/fss-archive/work.rs crates/fss-cli/src/bin/fss-archive/pins.rs
           crates/fss-cli/tests/hevc_archive_recovery_process.rs
+          crates/fss-cli/tests/capture_rtsp_reconnect_cli.rs
           crates/fss-reference/src/rtsp/live_avc.rs
           crates/fss-reference/src/rtsp/live_avc/recording.rs
           crates/fss-reference/src/rtsp/live_avc/recording/tests.rs
@@ -112,7 +113,7 @@ jobs:
         if: success() || failure()
         run: >-
           cargo +nightly-2026-08-31 test --locked --offline -p fss-cli
-          --bin fss-capture-rtsp --test capture_rtsp_cli
+          --bin fss-capture-rtsp --test capture_rtsp_cli --test capture_rtsp_reconnect_cli
           --test corroborate_stream_geometry_cli --test corroborate_stream_cli
           --test corroborate_stream_detector_cli --test historical_health_corroboration_cli
           --test long_event_replay_cli
