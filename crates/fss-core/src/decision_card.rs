@@ -21,7 +21,7 @@
 //! candidate's observed clamp state; nothing here reads a clock, socket, or
 //! filesystem.
 
-use crate::{CanonicalEncode, CanonicalEncoder, ContentDigest};
+use crate::{CanonicalEncoder, ContentDigest};
 
 /// Registered schema identity for card evaluations.
 pub const SCHEMA_CARD_EVALUATION: &str = "fss.decision_card_evaluation.v1";

@@ -11,7 +11,7 @@
     "claim_id": {"type": "string", "minLength": 1},
     "generation": {"type": "string", "minLength": 1},
     "expression": {"type": "string", "minLength": 1},
-    "comparator": {"enum": ["<=", "<", "=", ">=", ">"]},
+    "comparator": {"enum": ["<=", ">="]},
     "derived_value": {"type": "number"},
     "units": {"type": "string", "minLength": 1},
     "assumption_ids": {"type": "array", "minItems": 1, "items": {"type": "string", "minLength": 1}},

@@ -35,11 +35,16 @@ SCHEMA = "fss.signing_authority.v1"
 def _emit(state: str, **fields) -> int:
     payload = {"schema": SCHEMA, "state": state, **fields}
     print(json.dumps(payload, sort_keys=True))
-    return {"signed": 0, "verified": 0}.get(state, 1) if state not in ("signed", "verified") else 0
+    if state in ("signed", "verified"):
+        return 0
+    return 2 if state == "usage_error" else 1
 
 
-def _manifest_digest(manifest_path: Path) -> str:
-    return "sha256:" + hashlib.sha256(manifest_path.read_bytes()).hexdigest()
+def _manifest_digest(manifest_path: Path) -> str | None:
+    try:
+        return "sha256:" + hashlib.sha256(manifest_path.read_bytes()).hexdigest()
+    except OSError:
+        return None
 
 
 def _builder_identity(manifest_path: Path) -> str | None:
@@ -91,6 +96,8 @@ def cmd_sign(args: argparse.Namespace) -> int:
         return _emit("unavailable", detail="secret key path unreadable")
     digest = _manifest_digest(args.manifest)
     builder = _builder_identity(args.manifest)
+    if digest is None:
+        return _emit("usage_error", detail="manifest unreadable")
     if builder is None:
         return _emit("usage_error", detail="manifest has no builder identity field")
     if builder == args.signer:
@@ -113,6 +120,8 @@ def cmd_verify(args: argparse.Namespace) -> int:
     if shutil.which("minisign") is None:
         return _emit("unavailable", detail="minisign not installed on this host")
     digest = _manifest_digest(args.manifest)
+    if digest is None:
+        return _emit("usage_error", detail="manifest unreadable")
     builder = _builder_identity(args.manifest) or ""
     payload = json.dumps(
         {"manifestDigest": digest, "builder": builder, "signer": args.signer},
