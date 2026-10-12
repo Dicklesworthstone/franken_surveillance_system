@@ -1,5 +1,6 @@
 #![forbid(unsafe_code)]
 //! Operator recovery from actual saved references, not another agent protocol or authority.
+use super::work::Codec;
 use std::collections::BTreeMap;
 use std::ffi::{OsStr, OsString};
 use std::fmt::{self, Write as _};
@@ -20,13 +21,15 @@ use fss_publication::{
     PublishCutPoint, PublishOutcome,
 };
 use fss_reference::rtsp::archive_pins::{
-    ArchivePinAnchor, ArchivePinError, ArchivePinJournal, ArchivePinLimits, ArchivePinScope,
+    ArchivePinAnchor, ArchivePinError, ArchivePinLimits, ArchivePinScope, CodecArchivePinJournal,
     StoredArchivePin,
 };
 use fss_reference::rtsp::recording::MAX_RECORDING_BYTES;
-use fss_reference::rtsp::recording_archive::ArchiveLimits;
 use fss_reference::rtsp::recording_archive::checkpoint::{
     ArchiveWorkLimits, MAX_ARCHIVE_WORK_BYTES,
+};
+use fss_reference::rtsp::recording_archive::{
+    ArchiveCodec, ArchiveLimits, AvcArchiveCodec, HevcArchiveCodec,
 };
 
 const MAX_REPORT_BYTES: usize = 8192;
@@ -34,6 +37,7 @@ pub(super) const HELP: &str = "fss-archive <inspect-pins|restore-pins> [options]
   Required: --pin-root EXISTING_DIR --journal-id sha256:HEX\n\
             --expected-namespace sha256:HEX\n\
   restore-pins additionally requires: --root EXISTING_ARCHIVE --commit yes\n\
+  Codec: --codec avc|hevc (default avc); never inferred from stored metadata.\n\
   Independent prefix: --minimum-sequence N --minimum-root sha256:HEX (together)\n\
   Bounds: --timeout-ms N --max-pin-records N --max-pin-bytes N\n\
   Restore bounds: --max-windows N --max-pages N --max-scan-roots N\n\
@@ -83,6 +87,7 @@ fn malformed(message: &'static str) -> Error {
     Error::Argument(ERR_CLI_MALFORMED_VALUE, message)
 }
 struct Options {
+    codec: Codec,
     pin_root: PathBuf,
     root: Option<PathBuf>,
     scope: ArchivePinScope,
@@ -98,6 +103,7 @@ fn parse(args: &[OsString]) -> Result<Options> {
     }
     let restore = args[0].as_os_str() == OsStr::new("restore-pins");
     let common = [
+        "--codec",
         "--pin-root",
         "--journal-id",
         "--expected-namespace",
@@ -182,6 +188,11 @@ fn parse(args: &[OsString]) -> Result<Options> {
         }
         Ok(value)
     };
+    let codec = if values.contains_key("--codec") {
+        Codec::parse(text("--codec")?).ok_or_else(|| malformed("codec must be avc or hevc"))?
+    } else {
+        Codec::Avc
+    };
     if restore && text("--commit")? != "yes" {
         return Err(malformed("restoration requires --commit yes"));
     }
@@ -225,6 +236,7 @@ fn parse(args: &[OsString]) -> Result<Options> {
     );
     storage.validate().map_err(Error::Storage)?;
     Ok(Options {
+        codec,
         pin_root: PathBuf::from(required("--pin-root")?),
         root: if restore {
             Some(PathBuf::from(required("--root")?))
@@ -345,6 +357,12 @@ fn receipt_json(receipt: Option<&LocalPublicationReceipt>) -> String {
     )
 }
 fn run(options: Options) -> Result<String> {
+    match options.codec {
+        Codec::Avc => run_codec::<AvcArchiveCodec>(options),
+        Codec::Hevc => run_codec::<HevcArchiveCodec>(options),
+    }
+}
+fn run_codec<C: ArchiveCodec>(options: Options) -> Result<String> {
     let clock = Clock {
         start: Instant::now(),
         duration: options.timeout,
@@ -358,7 +376,7 @@ fn run(options: Options) -> Result<String> {
         return Err(Error::Layout);
     }
     clock.now()?;
-    let mut pins = ArchivePinJournal::open_complete(
+    let mut pins = CodecArchivePinJournal::<C>::open_complete(
         &pin_root,
         options.scope,
         options.minimum,
@@ -391,6 +409,10 @@ fn run(options: Options) -> Result<String> {
         if restored.is_some() { "restore-pins" } else { "inspect-pins" }, options.scope.journal_id,
         options.scope.archive_namespace, anchor.sequence, anchor.root, options.minimum.is_some(),
         pin_json(pins.state().candidate()), pin_json(pins.state().last_confirmed())).map_err(|_| Error::Report)?;
+    // Preserve existing AVC report bytes. The new codec is explicit in every HEVC report.
+    if options.codec == Codec::Hevc {
+        report.push_str(",\"codec\":\"hevc\"");
+    }
     if let Some(result) = restored {
         write!(&mut report, ",\"work_root\":\"{}\",\"snapshot\":\"{}\",\"confirmation_recorded\":{},\"window\":{},\"catalog\":{},\"durable_windows\":{},\"indexed_windows\":{},\"pages\":{},\"indexing_remaining\":{},\"work_custody\":\"verified\",\"publication_requested\":true",
             result.pin.root(), result.snapshot_digest, result.confirmation.is_some(), receipt_json(result.window.as_ref()),

@@ -1,5 +1,5 @@
 #![forbid(unsafe_code)]
-//! Storage-only operator inspection/restoration of exact durable AVC work.
+//! Storage-only operator inspection/restoration of exact codec-pinned durable work.
 //! This deliberately does not create additional catalog pages: the original work pin
 //! remains usable after any command cut or lost stdout acknowledgement. Full indexing
 //! is a separate, explicitly planned archive operation, never implied by this command.
@@ -28,10 +28,12 @@ use fss_reference::rtsp::recording::local::{
     RecordingIoError, RecordingProgress, RecordingPublication,
 };
 use fss_reference::rtsp::recording_archive::checkpoint::{
-    ArchiveWorkLimits, MAX_ARCHIVE_WORK_BYTES, load_archive_work,
+    ArchiveWorkLimits, MAX_ARCHIVE_WORK_BYTES, hevc_archive_retirement_digest, load_archive_work,
+    load_hevc_archive_work,
 };
 use fss_reference::rtsp::recording_archive::{
-    ArchiveError, ArchiveLimits, ArchiveNamespace, ArchiveSnapshot,
+    ArchiveCodec, ArchiveError, ArchiveLimits, ArchiveRetirement, AvcArchiveCodec,
+    CodecArchiveNamespace, CodecArchiveSnapshot, HevcArchiveCodec,
 };
 
 type Result<T> = std::result::Result<T, ArchiveCommandError>;
@@ -42,7 +44,8 @@ pub(super) const HELP: &str = "fss-archive <inspect-work|restore-work> [options]
   Bounds: --timeout-ms N --max-windows N --max-pages N --max-scan-roots N\n\
           --max-page-windows N --max-pending-bytes N --max-graph-objects N\n\
           --max-new-bytes N --max-objects N --max-total-bytes N\n\
-  AVC work only; exact independent pins required. No camera, codec fallback,\n\
+  Codec: --codec avc|hevc (default avc); exact independent pins required.\n\
+  No camera, codec fallback,\n\
   guessed scope, deletion, root repair or overwrite. Open takes existing locks\n\
   and normal recovery/verification I/O; it is not a forensic read-only open.\n\
   restore-work publishes only the original prepared catalog and pending window.\n\
@@ -53,7 +56,28 @@ pub(super) fn handles(args: &[OsString]) -> bool {
         .and_then(|a| a.to_str())
         .is_some_and(|a| matches!(a, "inspect-work" | "restore-work"))
 }
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(super) enum Codec {
+    Avc,
+    Hevc,
+}
+impl Codec {
+    pub(super) fn parse(value: &str) -> Option<Self> {
+        match value {
+            "avc" => Some(Self::Avc),
+            "hevc" => Some(Self::Hevc),
+            _ => None,
+        }
+    }
+    pub(super) fn label(self) -> &'static str {
+        match self {
+            Self::Avc => "avc",
+            Self::Hevc => "hevc",
+        }
+    }
+}
 struct Options {
+    codec: Codec,
     root: PathBuf,
     slot: SlotName,
     root_digest: ContentDigest,
@@ -78,6 +102,7 @@ fn parse(args: &[OsString]) -> Result<Options> {
     }
     let restore = args[0].as_os_str() == OsStr::new("restore-work");
     let allowed = [
+        "--codec",
         "--root",
         "--work-slot",
         "--work-root",
@@ -147,6 +172,11 @@ fn parse(args: &[OsString]) -> Result<Options> {
         }
         Ok(value)
     };
+    let codec = if values.contains_key("--codec") {
+        Codec::parse(text("--codec")?).ok_or_else(|| malformed("codec must be avc or hevc"))?
+    } else {
+        Codec::Avc
+    };
     if restore && text("--commit")? != "yes" {
         return Err(malformed(
             "restoration requires explicit commit acknowledgement",
@@ -200,6 +230,7 @@ fn parse(args: &[OsString]) -> Result<Options> {
     );
     storage.validate().map_err(ArchiveCommandError::Storage)?;
     Ok(Options {
+        codec,
         root: PathBuf::from(required("--root")?),
         slot: SlotName::parse(text("--work-slot")?).map_err(|_| malformed("invalid work slot"))?,
         root_digest: digest("--work-root")?,
@@ -279,6 +310,28 @@ fn outcome(receipt: LocalPublicationReceipt) -> Result<&'static str> {
     })
 }
 fn run(options: Options) -> Result<String> {
+    match options.codec {
+        Codec::Avc => {
+            run_codec::<AvcArchiveCodec>(options, load_archive_work, archive_retirement_digest)
+        }
+        Codec::Hevc => run_codec::<HevcArchiveCodec>(
+            options,
+            load_hevc_archive_work,
+            hevc_archive_retirement_digest,
+        ),
+    }
+}
+fn run_codec<C: ArchiveCodec>(
+    options: Options,
+    load: impl FnOnce(
+        &LocalRootPublisher,
+        &SlotName,
+        ContentDigest,
+        ArchiveWorkLimits,
+        &dyn PublishCancellation,
+    ) -> std::result::Result<ArchiveRetirement<C>, ArchiveError>,
+    digest: impl FnOnce(&ArchiveRetirement<C>) -> std::result::Result<ContentDigest, ArchiveError>,
+) -> Result<String> {
     let clock = Clock {
         start: Instant::now(),
         duration: options.timeout,
@@ -288,7 +341,7 @@ fn run(options: Options) -> Result<String> {
     let mut publisher =
         LocalRootPublisher::open(root, options.storage).map_err(ArchiveCommandError::Storage)?;
     clock.now()?; // Owner open is bounded but not preemptible by this command.
-    let work = load_archive_work(
+    let work = load(
         &publisher,
         &options.slot,
         options.root_digest,
@@ -298,7 +351,7 @@ fn run(options: Options) -> Result<String> {
     if work.snapshot.namespace().digest() != options.namespace {
         return Err(ArchiveCommandError::SnapshotMismatch);
     }
-    let retirement = archive_retirement_digest(&work)?;
+    let retirement = digest(&work)?;
     let mut report = String::new();
     // Fixed fields and at most two root results fit this reservation. Do not allocate a
     // potentially large world/source dump after committing a storage operation.
@@ -317,14 +370,14 @@ fn run(options: Options) -> Result<String> {
                 .namespace()
                 .page_slot(work.snapshot.indexed_windows())?;
             let digest = publisher
-                .stage_object(page.index_bytes())
+                .stage_object(C::index(page))
                 .map_err(|e| ArchiveError::Storage(RecordingIoError::from(e)))?;
-            if Some(digest) != page.manifest().metadata_digest() {
+            if Some(digest) != C::manifest(page).metadata_digest() {
                 return Err(ArchiveError::Metadata.into());
             }
             page_result = outcome(
                 publisher
-                    .publish_cancellable(&slot, page.manifest(), &clock)
+                    .publish_cancellable(&slot, C::manifest(page), &clock)
                     .map_err(|e| ArchiveError::Storage(RecordingIoError::from(e)))?,
             )?;
         }
@@ -335,7 +388,7 @@ fn run(options: Options) -> Result<String> {
                 .namespace()
                 .window_slot(work.snapshot.windows().len())?;
             let mut job = RecordingPublication::new(
-                window,
+                C::plan(window),
                 &mut publisher,
                 slot,
                 options.limits.max_pending_bytes,
@@ -356,13 +409,14 @@ fn run(options: Options) -> Result<String> {
         }
     }
     clock.now()?;
-    let namespace = ArchiveNamespace::new(work.snapshot.namespace().scope().clone())?;
-    let current = ArchiveSnapshot::load(&publisher, namespace, work.snapshot.limits(), &clock)?;
+    let namespace = CodecArchiveNamespace::<C>::new(work.snapshot.namespace().scope().clone())?;
+    let current =
+        CodecArchiveSnapshot::<C>::load(&publisher, namespace, work.snapshot.limits(), &clock)?;
     let snapshot = current.digest()?;
     clock.now()?;
     writeln!(&mut report,
-        "{{\"schema\":\"fss.local_archive_work_operator_report.v1\",\"command\":\"{}\",\"codec\":\"avc\",\"work_root\":\"{}\",\"retirement_root\":\"{}\",\"namespace\":\"{}\",\"snapshot\":\"{}\",\"prior_acknowledged_windows\":{},\"durable_windows\":{},\"indexed_windows\":{},\"pages\":{},\"window_result\":\"{}\",\"catalog_result\":\"{}\",\"indexing_remaining\":{},\"publication_requested\":{},\"storage_only\":true,\"source_bytes_emitted\":false,\"capture_complete\":false,\"operation_complete\":true}}",
-        if options.restore { "restore-work" } else { "inspect-work" }, options.root_digest, retirement,
+        "{{\"schema\":\"fss.local_archive_work_operator_report.v1\",\"command\":\"{}\",\"codec\":\"{}\",\"work_root\":\"{}\",\"retirement_root\":\"{}\",\"namespace\":\"{}\",\"snapshot\":\"{}\",\"prior_acknowledged_windows\":{},\"durable_windows\":{},\"indexed_windows\":{},\"pages\":{},\"window_result\":\"{}\",\"catalog_result\":\"{}\",\"indexing_remaining\":{},\"publication_requested\":{},\"storage_only\":true,\"source_bytes_emitted\":false,\"capture_complete\":false,\"operation_complete\":true}}",
+        if options.restore { "restore-work" } else { "inspect-work" }, options.codec.label(), options.root_digest, retirement,
         options.namespace, snapshot, work.snapshot.windows().len(), current.windows().len(),
         current.indexed_windows(), current.pages().len(), window_result, page_result,
         !current.unindexed_windows().is_empty(), options.restore).map_err(|_| ArchiveCommandError::ReportLimit)?;

@@ -26,6 +26,13 @@ newer work cannot fall back to an older confirmation; bounds, cancellation and a
 journal tip fence progression. Picture-boundary witness packets remain source-only where
 appropriate, including when adjacent windows share a witness without sharing media samples.
 
+The operator commands `fss-archive inspect-work`, `restore-work`, `inspect-pins` and
+`restore-pins` accept an explicit `--codec hevc`. Their typed recovery path preserves the
+original pending slots and minimum journal anchor, supports exact lost-reply retries, and
+refuses damaged originals or cross-codec substitution before confirmation. Omitting the codec
+keeps the established AVC command and report behavior. Pin inspection remains metadata-only
+and can inspect independent protection while the media archive is offline.
+
 Native contracts cover both durability barriers, cold pixel decode, exact restoration retry,
 confirmation-budget exhaustion, cross-codec refusal, damaged originals and protected-tip
 fencing. This advances the reference acquisition/HEVC slices of FSS-047, FSS-048 and FSS-114;
