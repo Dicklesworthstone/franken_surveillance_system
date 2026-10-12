@@ -396,13 +396,13 @@ fn binding_set_enforces_capacity_ordering_and_duplicate_checks() -> Result<(), B
         &item_handle,
         HydrationLevel::H1,
         "Binding 1",
-    )?;
+)?;
     let duplicate_binding2 = ContextExpansionBinding::publish(
         "slot:item:evidence",
         &item_handle,
         HydrationLevel::H1,
         "Binding 2",
-    )?;
+)?;
     assert!(matches!(
         ContextExpansionBindingSet::publish(
             &pack,
@@ -443,9 +443,14 @@ fn binding_set_enforces_capacity_ordering_and_duplicate_checks() -> Result<(), B
         Err(ContextBindingError::NonCanonicalOrdering(slot)) if slot == "slot:item:evidence"
     ));
 
-    // Capacity at bound (4_096) succeeds
-    let (cap_pack, cap_receipt) = pack_and_receipt_with_handles(4_096)?;
-    let max_bindings = (0..4_096)
+    // Capacity at the REACHABLE bound succeeds. Since 2c8cf5b5 the receipt's
+    // MAX_EXPANSION_HANDLES is 256, and the one-to-one slot contract means a
+    // binding set can never exceed the receipt's handle count in practice —
+    // the structural MAX_BINDINGS (4_096) ceiling sits above it unreachable
+    // through publish (fss-0elnp: owner may lower MAX_BINDINGS for coherence).
+    let reachable = SemanticCompressionReceipt::MAX_EXPANSION_HANDLES;
+    let (cap_pack, cap_receipt) = pack_and_receipt_with_handles(reachable)?;
+    let max_bindings = (0..reachable)
         .map(|i| {
             ContextExpansionBinding::publish(
                 format!("slot:{i:04}"),
@@ -456,10 +461,11 @@ fn binding_set_enforces_capacity_ordering_and_duplicate_checks() -> Result<(), B
         })
         .collect::<Result<Vec<_>, _>>()?;
     let bound_set = ContextExpansionBindingSet::publish(&cap_pack, &cap_receipt, max_bindings)?;
-    assert_eq!(bound_set.bindings.len(), 4_096);
+    assert_eq!(bound_set.bindings.len(), reachable);
 
-    // Capacity exceeded at bound + 1 (4_097) fails
-    let excessive_bindings = (0..4_097)
+    // Exceeding the reachable bound fails: the extra binding's slot is not a
+    // receipt-declared expansion handle (UnexpectedSlot, typed).
+    let excessive_bindings = (0..=reachable)
         .map(|i| {
             ContextExpansionBinding::publish(
                 format!("slot:{i:04}"),
@@ -471,7 +477,7 @@ fn binding_set_enforces_capacity_ordering_and_duplicate_checks() -> Result<(), B
         .collect::<Result<Vec<_>, _>>()?;
     assert!(matches!(
         ContextExpansionBindingSet::publish(&cap_pack, &cap_receipt, excessive_bindings),
-        Err(ContextBindingError::CapacityExceeded)
+        Err(ContextBindingError::UnexpectedSlot(_)) | Err(ContextBindingError::CapacityExceeded)
     ));
 
     Ok(())
