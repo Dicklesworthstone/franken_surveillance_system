@@ -229,7 +229,7 @@ pub use ids::{
     PolicyGeneration, PolicyId, PrincipalId, PrivacyEpoch, PrivacyGeneration, PropertyId,
     SchemaEpoch, SchemaId, SearchGeneration, SensorId, SessionId, SourceId, StreamGeneration,
     StreamId, TombstoneId, TombstoneReason, TombstoneRecord, TombstoneRegistry, TrackId,
-    WorkspaceId,
+    WorkspaceId, validate_id,
 };
 pub use negative_evidence::*;
 

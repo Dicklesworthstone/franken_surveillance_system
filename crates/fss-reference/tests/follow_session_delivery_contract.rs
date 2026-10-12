@@ -27,7 +27,9 @@ use fss_reference::deployment_session::follow::{
     FollowSessionBinding, FollowSessionBoundary, FollowSessionControl, FollowSessionDelivery,
     FollowSessionError, FollowSessionRequest, follow_session,
 };
-use fss_reference::deployment_session::{OpenSessionRequest, OpenedSession, open_session};
+use fss_reference::deployment_session::{
+    DeploymentSessionError, OpenSessionRequest, OpenedSession, open_session,
+};
 use fss_reference::{ADP_REPLAY_ROW_ID, ReferenceDeployment, ReplayCx, ReplayIoAuthority};
 
 type TestResult<T = ()> = Result<T, Box<dyn Error>>;
@@ -595,8 +597,80 @@ fn committed_ack_without_successor_cannot_restate_a_changed_previously_acknowled
     assert!(retained[0].acknowledged_fingerprint().is_some());
     assert!(retained[0].pending().is_none());
 
-    // An explicitly torn final frame preserves all committed anchors, while native orientation
-    // now truthfully carries the doctor's changed current-file/custody degradation.
+    // Tear the effect journal, leaving canonical ledger authority writable. A torn ledger is
+    // correctly refused before the session writer opens, so it cannot exercise this later
+    // acknowledged-fingerprint guard. Both journals use the same native record header.
+    let original = fs::read(fixture.root.join("ledger/journal.fssj"))?;
+    let effects = fixture.root.join("effects/journal.fssj");
+    let mut writer = fs::OpenOptions::new().append(true).open(&effects)?;
+    writer.write_all(&original[..4])?;
+    writer.sync_all()?;
+    drop(writer);
+    let history = DeploymentHistory::read(&fixture.root, &OrientLimits::default())?;
+    assert_eq!(
+        history_anchor_token(&history, history.head()).ok_or("unchanged committed head")?,
+        first.horizon_anchor
+    );
+    let mut control = Control::new(&fixture.root, &request, &fixture.opened);
+    let failure = follow_session(
+        &fixture.root,
+        &fixture.opened.session.principal_id,
+        &request,
+        &OrientLimits::default(),
+        &mut control,
+    )
+    .err()
+    .ok_or("changed acknowledged basis must resnapshot")?;
+    assert!(
+        matches!(failure.error, FollowSessionError::ChangedDelivery),
+        "unexpected acknowledged-basis refusal: {:?}",
+        failure.error
+    );
+    assert_eq!(failure.acknowledged, Some(first.delivery_receipt));
+    assert!(failure.journal_may_have_changed);
+    assert!(
+        control
+            .boundaries
+            .contains(&FollowSessionBoundary::Acknowledge)
+    );
+    assert!(
+        !control
+            .boundaries
+            .contains(&FollowSessionBoundary::PublishDelivery)
+    );
+    assert_eq!(fixture.inspect()?.follows, retained);
+    Ok(())
+}
+
+#[test]
+fn torn_authority_ledger_refuses_before_reconfirming_an_already_committed_ack() -> TestResult {
+    let mut fixture = Fixture::new("ack-only-authority")?;
+    fixture.append()?;
+    fixture.append()?;
+    let mut request = fixture.request(64)?;
+    let first = fixture.follow(&request)?;
+    request.acknowledge = Some(first.delivery_receipt);
+    let mut control = Control::new(&fixture.root, &request, &fixture.opened);
+    control.deny = Some(FollowSessionBoundary::PublishDelivery);
+    let failure = follow_session(
+        &fixture.root,
+        &fixture.opened.session.principal_id,
+        &request,
+        &OrientLimits::default(),
+        &mut control,
+    )
+    .err()
+    .ok_or("successor publication cancellation")?;
+    assert_eq!(failure.acknowledged, Some(first.delivery_receipt));
+    let retained = fixture.inspect()?;
+    assert_eq!(
+        retained.follows[0].last_acknowledged(),
+        Some(first.delivery_receipt)
+    );
+    assert!(retained.follows[0].pending().is_none());
+    let journal = fixture.root.join("agent/sessions/journal.fssj");
+    let journal_before = fs::read(&journal)?;
+
     let ledger = fixture.root.join("ledger/journal.fssj");
     let original = fs::read(&ledger)?;
     let mut writer = fs::OpenOptions::new().append(true).open(&ledger)?;
@@ -612,10 +686,29 @@ fn committed_ack_without_successor_cannot_restate_a_changed_previously_acknowled
         &mut control,
     )
     .err()
-    .ok_or("changed acknowledged basis must resnapshot")?;
-    assert!(matches!(failure.error, FollowSessionError::ChangedDelivery));
-    assert_eq!(failure.acknowledged, Some(first.delivery_receipt));
-    assert_eq!(fixture.inspect()?.follows, retained);
+    .ok_or("canonical authority requires recovery")?;
+    assert!(
+        matches!(
+            &failure.error,
+            FollowSessionError::Session(DeploymentSessionError::StoreInvalid(reason))
+                if reason == "deployment authority requires recovery"
+        ),
+        "unexpected authority refusal: {:?}",
+        failure.error
+    );
+    // This invocation cannot attest the historical ACK: it never admitted the live session.
+    // Inspection still proves the earlier committed ACK and the absence of a successor.
+    assert!(failure.acknowledged.is_none());
+    assert!(failure.since_anchor.is_none());
+    assert_eq!(
+        control.boundaries,
+        [
+            FollowSessionBoundary::ReadHistory,
+            FollowSessionBoundary::OpenJournal,
+        ]
+    );
+    assert_eq!(fs::read(&journal)?, journal_before);
+    assert_eq!(fixture.inspect()?, retained);
     Ok(())
 }
 

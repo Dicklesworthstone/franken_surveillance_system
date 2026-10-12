@@ -933,10 +933,9 @@ mod tests {
                     assert_eq!(args.max_entries, 1);
                     assert_eq!(args.continuation, None);
                     assert_eq!(args.wait_ms, None);
-                    let scope = args
-                        .subscription
-                        .as_ref()
-                        .expect("durable subscription scope");
+                    let Some(scope) = args.subscription.as_ref() else {
+                        unreachable!("durable subscription scope");
+                    };
                     assert_eq!(scope.session_id.as_str(), "session:watch-owner");
                     assert_eq!(scope.subscription_id, "overnight:door");
                     assert_eq!(scope.acknowledge, ack);
