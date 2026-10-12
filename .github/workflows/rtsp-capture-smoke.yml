@@ -81,6 +81,9 @@ jobs:
           cargo +nightly-2026-08-31 test --locked --offline -p fss-reference
           --test hevc_archive_pin_contract --test archive_work_checkpoint
           --test archive_write_ahead --test archive_pin_pipeline
+      - name: Independently configured HEVC live archive and cold pin recovery
+        if: success() || failure()
+        run: cargo +nightly-2026-08-31 test --locked --offline -p fss-reference --test journaled_live_hevc_archive_contract
       - name: Selected HEVC live capture and protected final drain
         if: success() || failure()
         run: cargo +nightly-2026-08-31 test --locked --offline -p fss-reference --test live_hevc_archive_contract
