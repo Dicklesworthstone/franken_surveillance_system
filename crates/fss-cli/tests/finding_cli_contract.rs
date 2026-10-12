@@ -709,18 +709,19 @@ fn lost_ack_retries_preserve_supersessions_withdrawals_and_the_one_successor_fen
 
 /// Locates only a verified object inside this test's own publication spool, for fault injection.
 fn publication_object(root: &Path, digest: ContentDigest) -> TestResult<PathBuf> {
-    let mut pending = vec![root.join("agent/publications/spool/objects")];
-    while let Some(path) = pending.pop() {
-        let metadata = fs::symlink_metadata(&path)?;
-        if metadata.is_dir() {
-            for entry in fs::read_dir(&path)? {
-                pending.push(entry?.path());
-            }
-        } else if metadata.is_file() && ContentDigest::sha256(&fs::read(&path)?) == digest {
-            return Ok(path);
-        }
+    // The spool names an object by the payload's SHA-256 hex, while the file includes a
+    // storage envelope. Hashing the complete file cannot recover the payload's identity.
+    let identity = digest.to_text();
+    let hex = identity
+        .strip_prefix("sha256:")
+        .ok_or("finding publication fixture requires a SHA-256 object")?;
+    let path = root.join("agent/publications/spool/objects").join(hex);
+    if !fs::symlink_metadata(&path)?.is_file() {
+        return Err("owned publication object is not a regular file".into());
     }
-    Err(format!("owned publication object {digest} missing before fault injection").into())
+    let payload = fss_publication::read_verified(root.join("agent/publications"), digest, 1 << 20)?;
+    assert_eq!(ContentDigest::sha256(&payload), digest);
+    Ok(path)
 }
 
 #[test]

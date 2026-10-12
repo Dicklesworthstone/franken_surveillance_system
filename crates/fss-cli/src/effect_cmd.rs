@@ -1610,17 +1610,18 @@ fn commit_answer(args: &CommitArgs) -> Result<Answered, Failure> {
             ));
         }
         // Reporting an existing receipt above does not reuse old authority. Only a new
-        // commitment must still satisfy every recorded agent witness and its live grant.
+        // commitment must still satisfy every recorded agent witness and its live cognition grant.
+        // Effect authority and exact dispatch approval remain with the native owner below.
         if !context
             .session
             .capabilities
-            .contains(CAPABILITY_PLAN_COMMIT)
+            .contains(CAPABILITY_PLAN_PREPARE)
         {
             return Err(Failure::Typed(
                 Refusal {
                     error_id: crate::session_cmd::ERR_AUTH_DENIED,
-                    reason: format!("the session lacks {CAPABILITY_PLAN_COMMIT}"),
-                    guidance: "Use a live session with the registered plan-commit capability.",
+                    reason: format!("the session lacks {CAPABILITY_PLAN_PREPARE}"),
+                    guidance: "Use a live session with the registered plan-preparation capability.",
                     recovery_class: "operator_action_required",
                     safe_retry: ResponseSafeRetry::No,
                 },
