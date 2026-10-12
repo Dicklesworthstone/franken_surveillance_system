@@ -67,7 +67,8 @@ fn reconnect_main(args: &[std::ffi::OsString]) -> ExitCode {
     let result = if plan.approved() {
         reconnect::execute(&mut plan)
     } else {
-        plan.preview().and_then(|preview| write_bounded((preview + "\n").as_bytes()))
+        plan.preview()
+            .and_then(|preview| write_bounded((preview + "\n").as_bytes()))
     };
     finish(result)
 }

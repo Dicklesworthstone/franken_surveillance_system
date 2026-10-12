@@ -95,13 +95,21 @@ mod tests {
             AttemptOutcome::new(Err(Failure::ConnectionUnavailable), &stats).retry,
             Some(RetryReason::ConnectionUnavailable)
         );
-        assert!(AttemptOutcome::new(Err(Failure::Connect), &stats).retry.is_none());
+        assert!(
+            AttemptOutcome::new(Err(Failure::Connect), &stats)
+                .retry
+                .is_none()
+        );
         assert!(
             AttemptOutcome::new(Err(Failure::ConnectionUnavailable), &Statistics::default())
                 .retry
                 .is_none()
         );
-        assert!(AttemptOutcome::new(Err(Failure::Shortfall), &stats).retry.is_none());
+        assert!(
+            AttemptOutcome::new(Err(Failure::Shortfall), &stats)
+                .retry
+                .is_none()
+        );
         assert!(AttemptOutcome::new(Ok(()), &ended()).retry.is_none());
     }
 

@@ -257,7 +257,12 @@ fn dropped_spool_releases_inherited_lock_and_preserves_verified_payload() -> Tes
     ));
     drop(spool);
     assert_eq!(io.attempts()?, vec![directory.0.join(SPOOL_LOCK_FILE)]);
-    let reopened = StagingSpool::open(&directory.0, spool_limits())?;
+    let mut reopened = StagingSpool::open(&directory.0, spool_limits())?;
+    // Custody survives, but verification state belongs to each admitted spool owner.
+    assert_eq!(reopened.state(digest), Some(SpoolObjectState::Staged));
+    assert_eq!(reopened.read(digest)?, bytes);
+    assert_eq!(reopened.state(digest), Some(SpoolObjectState::Staged));
+    assert_eq!(reopened.verify(digest)?, SpoolObjectState::Verified);
     assert_eq!(reopened.state(digest), Some(SpoolObjectState::Verified));
     assert_eq!(reopened.read(digest)?, bytes);
     drop(io);

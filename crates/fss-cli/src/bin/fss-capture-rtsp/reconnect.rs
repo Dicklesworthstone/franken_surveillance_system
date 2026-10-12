@@ -7,7 +7,9 @@ use std::ffi::OsString;
 use std::time::Duration;
 
 use fss_cli::agent_json::{object, string};
-use fss_core::{BudgetVector, CanonicalEncoder, ContentDigest, ContextAuthority, OperationId, RootAuthoritySpec};
+use fss_core::{
+    BudgetVector, CanonicalEncoder, ContentDigest, ContextAuthority, OperationId, RootAuthoritySpec,
+};
 
 use super::driver::{self, AttemptOutcome};
 use super::plan::{self, Options};
@@ -61,17 +63,28 @@ fn positive(text: &str, low: u64, high: u64) -> Result<u64, &'static str> {
         .ok_or("reconnect numeric bound exceeded")
 }
 
-fn epoch_digest(domain: &str, base: ContentDigest, ordinal: u64, generation: u64) -> Result<ContentDigest, &'static str> {
+fn epoch_digest(
+    domain: &str,
+    base: ContentDigest,
+    ordinal: u64,
+    generation: u64,
+) -> Result<ContentDigest, &'static str> {
     let mut e = CanonicalEncoder::new();
     e.text(domain);
     e.digest(base);
     e.u64(ordinal);
     e.u64(generation);
-    Ok(ContentDigest::sha256(&e.finish_checked().map_err(|_| "reconnect identity refused")?))
+    Ok(ContentDigest::sha256(
+        &e.finish_checked()
+            .map_err(|_| "reconnect identity refused")?,
+    ))
 }
 
 fn arguments(values: &BTreeMap<String, String>) -> Vec<OsString> {
-    values.iter().flat_map(|(key, value)| [OsString::from(key), OsString::from(value)]).collect()
+    values
+        .iter()
+        .flat_map(|(key, value)| [OsString::from(key), OsString::from(value)])
+        .collect()
 }
 
 impl ReconnectPlan {
@@ -83,27 +96,49 @@ impl ReconnectPlan {
         for pair in args.as_chunks::<2>().0 {
             let key = pair[0].to_str().ok_or("UTF-8 option required")?;
             let value = pair[1].to_str().ok_or("UTF-8 value required")?;
-            if key.len() > 4096 || value.len() > 4096 || value.is_empty() || value.starts_with("--") {
+            if key.len() > 4096 || value.len() > 4096 || value.is_empty() || value.starts_with("--")
+            {
                 return Err("bounded nonempty value required");
             }
             if values.insert(key.to_owned(), value.to_owned()).is_some() {
                 return Err("duplicate option");
             }
         }
-        let count = positive(&values.remove("--max-attempts").unwrap_or_else(|| "3".into()), 1, 16)?;
-        let retry_delay_ms = positive(&values.remove("--retry-delay-ms").unwrap_or_else(|| "250".into()), 1, 60_000)?;
-        let retry_max_delay_ms = positive(&values.remove("--retry-max-delay-ms").unwrap_or_else(|| "5000".into()), 1, 60_000)?;
+        let count = positive(
+            &values
+                .remove("--max-attempts")
+                .unwrap_or_else(|| "3".into()),
+            1,
+            16,
+        )?;
+        let retry_delay_ms = positive(
+            &values
+                .remove("--retry-delay-ms")
+                .unwrap_or_else(|| "250".into()),
+            1,
+            60_000,
+        )?;
+        let retry_max_delay_ms = positive(
+            &values
+                .remove("--retry-max-delay-ms")
+                .unwrap_or_else(|| "5000".into()),
+            1,
+            60_000,
+        )?;
         if retry_delay_ms > retry_max_delay_ms {
             return Err("initial retry delay exceeds its ceiling");
         }
-        let approve = values.remove("--approve")
+        let approve = values
+            .remove("--approve")
             .map(|s| ContentDigest::parse(&s).map_err(|_| "invalid reconnect approval"))
             .transpose()?;
         // Reuse every native codec, route, credentials and resource check before deriving any
         // attempt. The extra mode does not maintain a second version of those contracts.
         let base = Options::parse(&arguments(&values))?;
         let first_generation = base.recording_config().scope.generation;
-        first_generation.checked_add(count - 1).ok_or("reconnect generation overflow")?;
+        first_generation
+            .checked_add(count - 1)
+            .ok_or("reconnect generation overflow")?;
         let root = base.root.to_str().ok_or("UTF-8 archive prefix required")?;
         let pins = base.pins.to_str().ok_or("UTF-8 journal prefix required")?;
         let receive_clock = base.recording_config().scope.receive_clock;
@@ -119,13 +154,35 @@ impl ReconnectPlan {
             child.insert("--root".into(), format!("{root}.attempt-{:04}", index + 1));
             child.insert("--pins".into(), format!("{pins}.attempt-{:04}", index + 1));
             child.insert("--generation".into(), generation.to_string());
-            child.insert("--receive-clock".into(), epoch_digest("fss.rtsp_reconnect_receive_clock.v1", receive_clock, index, generation)?.to_text());
-            child.insert("--journal-id".into(), epoch_digest("fss.rtsp_reconnect_journal.v1", journal, index, generation)?.to_text());
+            child.insert(
+                "--receive-clock".into(),
+                epoch_digest(
+                    "fss.rtsp_reconnect_receive_clock.v1",
+                    receive_clock,
+                    index,
+                    generation,
+                )?
+                .to_text(),
+            );
+            child.insert(
+                "--journal-id".into(),
+                epoch_digest("fss.rtsp_reconnect_journal.v1", journal, index, generation)?
+                    .to_text(),
+            );
             let attempt = Options::parse(&arguments(&child))?;
-            maximum_source_bytes = maximum_source_bytes.checked_add(attempt.max_received_bytes()).ok_or("source budget overflow")?;
-            maximum_storage_bytes = maximum_storage_bytes.checked_add(attempt.publication_limits().spool.max_total_bytes).ok_or("storage budget overflow")?;
-            maximum_report_bytes = maximum_report_bytes.checked_add(attempt.max_report_bytes as u64).ok_or("report budget overflow")?;
-            maximum_capture_ns = maximum_capture_ns.checked_add(attempt.timeout_ns).and_then(|n| n.checked_add(attempt.drain_timeout_ns)).ok_or("capture lifetime overflow")?;
+            maximum_source_bytes = maximum_source_bytes
+                .checked_add(attempt.max_received_bytes())
+                .ok_or("source budget overflow")?;
+            maximum_storage_bytes = maximum_storage_bytes
+                .checked_add(attempt.publication_limits().spool.max_total_bytes)
+                .ok_or("storage budget overflow")?;
+            maximum_report_bytes = maximum_report_bytes
+                .checked_add(attempt.max_report_bytes as u64)
+                .ok_or("report budget overflow")?;
+            maximum_capture_ns = maximum_capture_ns
+                .checked_add(attempt.timeout_ns)
+                .and_then(|n| n.checked_add(attempt.drain_timeout_ns))
+                .ok_or("capture lifetime overflow")?;
             attempts.push(attempt);
         }
         let mut out = Self {
@@ -140,12 +197,15 @@ impl ReconnectPlan {
             maximum_backoff_ms: 0,
         };
         out.maximum_backoff_ms = (0..out.attempts.len().saturating_sub(1))
-            .map(|index| out.delay_ms(index)).sum();
+            .map(|index| out.delay_ms(index))
+            .sum();
         Ok(out)
     }
 
     fn delay_ms(&self, completed_index: usize) -> u64 {
-        self.retry_delay_ms.saturating_mul(1_u64 << completed_index.min(15)).min(self.retry_max_delay_ms)
+        self.retry_delay_ms
+            .saturating_mul(1_u64 << completed_index.min(15))
+            .min(self.retry_max_delay_ms)
     }
 
     fn digest(&self) -> Result<ContentDigest, &'static str> {
@@ -159,11 +219,18 @@ impl ReconnectPlan {
         for attempt in &self.attempts {
             e.digest(attempt.digest()?);
         }
-        Ok(ContentDigest::sha256(&e.finish_checked().map_err(|_| "reconnect plan encoding refused")?))
+        Ok(ContentDigest::sha256(
+            &e.finish_checked()
+                .map_err(|_| "reconnect plan encoding refused")?,
+        ))
     }
 
     pub(super) fn preview(&self) -> Result<String, &'static str> {
-        let children = self.attempts.iter().map(Options::preview).collect::<Result<Vec<_>, _>>()?;
+        let children = self
+            .attempts
+            .iter()
+            .map(Options::preview)
+            .collect::<Result<Vec<_>, _>>()?;
         Ok(object(&[
             ("schema", string(FORMAT)),
             ("phase", string("planned")),
@@ -172,12 +239,27 @@ impl ReconnectPlan {
             ("max_attempts", self.attempts.len().to_string()),
             ("retry_delay_ms", self.retry_delay_ms.to_string()),
             ("retry_max_delay_ms", self.retry_max_delay_ms.to_string()),
-            ("maximum_capture_and_drain_ns", self.maximum_capture_ns.to_string()),
+            (
+                "maximum_capture_and_drain_ns",
+                self.maximum_capture_ns.to_string(),
+            ),
             ("maximum_backoff_ms", self.maximum_backoff_ms.to_string()),
-            ("maximum_source_bytes", self.maximum_source_bytes.to_string()),
-            ("maximum_archive_spool_bytes", self.maximum_storage_bytes.to_string()),
-            ("maximum_native_report_bytes", self.maximum_report_bytes.to_string()),
-            ("maximum_control_report_bytes", MAX_CONTROL_REPORT_BYTES.to_string()),
+            (
+                "maximum_source_bytes",
+                self.maximum_source_bytes.to_string(),
+            ),
+            (
+                "maximum_archive_spool_bytes",
+                self.maximum_storage_bytes.to_string(),
+            ),
+            (
+                "maximum_native_report_bytes",
+                self.maximum_report_bytes.to_string(),
+            ),
+            (
+                "maximum_control_report_bytes",
+                MAX_CONTROL_REPORT_BYTES.to_string(),
+            ),
             ("target_scope", string("per_attempt_until_one_succeeds")),
             ("continuity_across_attempts", "false".into()),
             ("automatic_recovery", "false".into()),
@@ -210,50 +292,93 @@ fn run(plan: &ReconnectPlan, effects: &mut impl Effects) -> Result<(), &'static 
     for (index, options) in plan.attempts.iter().enumerate() {
         effects.checkpoint()?;
         let child_approval = options.digest()?;
-        effects.emit("attempt_started", object(&[
-            ("approval", string(&approval.to_text())),
-            ("attempt", (index + 1).to_string()),
-            ("attempt_approval", string(&child_approval.to_text())),
-            ("generation", options.recording_config().scope.generation.to_string()),
-            ("root", string(options.root.to_str().ok_or("UTF-8 archive path required")?)),
-            ("pins", string(options.pins.to_str().ok_or("UTF-8 journal path required")?)),
-            ("continuity_from_previous_attempt", "false".into()),
-        ]))?;
+        effects.emit(
+            "attempt_started",
+            object(&[
+                ("approval", string(&approval.to_text())),
+                ("attempt", (index + 1).to_string()),
+                ("attempt_approval", string(&child_approval.to_text())),
+                (
+                    "generation",
+                    options.recording_config().scope.generation.to_string(),
+                ),
+                (
+                    "root",
+                    string(options.root.to_str().ok_or("UTF-8 archive path required")?),
+                ),
+                (
+                    "pins",
+                    string(options.pins.to_str().ok_or("UTF-8 journal path required")?),
+                ),
+                ("continuity_from_previous_attempt", "false".into()),
+            ]),
+        )?;
         effects.checkpoint()?;
         let outcome = effects.capture(options)?;
-        durable = durable.checked_add(outcome.durable_pictures).ok_or("ERR-CAPTURE-RTSP-STATE-001")?;
-        let retrying = outcome.result.is_err() && !outcome.recovery_required && outcome.retry.is_some() && index + 1 < plan.attempts.len();
-        effects.emit("attempt_finished", object(&[
-            ("approval", string(&approval.to_text())),
-            ("attempt", (index + 1).to_string()),
-            ("attempt_approval", string(&child_approval.to_text())),
-            ("complete", outcome.result.is_ok().to_string()),
-            ("error_id", outcome.result.err().map_or_else(|| "null".into(), string)),
-            ("retry_reason", outcome.retry.map_or_else(|| "null".into(), |r| string(r.as_str()))),
-            ("retrying", retrying.to_string()),
-            ("recovery_required", outcome.recovery_required.to_string()),
-            ("durable_pictures_this_attempt", outcome.durable_pictures.to_string()),
-            ("durable_pictures_all_attempts", durable.to_string()),
-            ("continuity_across_attempts", "false".into()),
-        ]))?;
-        if !retrying {
-            effects.emit("reconnect_terminal", object(&[
+        durable = durable
+            .checked_add(outcome.durable_pictures)
+            .ok_or("ERR-CAPTURE-RTSP-STATE-001")?;
+        let retrying = outcome.result.is_err()
+            && !outcome.recovery_required
+            && outcome.retry.is_some()
+            && index + 1 < plan.attempts.len();
+        effects.emit(
+            "attempt_finished",
+            object(&[
                 ("approval", string(&approval.to_text())),
-                ("attempts_used", (index + 1).to_string()),
+                ("attempt", (index + 1).to_string()),
+                ("attempt_approval", string(&child_approval.to_text())),
                 ("complete", outcome.result.is_ok().to_string()),
-                ("attempt_limit_reached", (outcome.result.is_err() && outcome.retry.is_some() && index + 1 == plan.attempts.len()).to_string()),
+                (
+                    "error_id",
+                    outcome.result.err().map_or_else(|| "null".into(), string),
+                ),
+                (
+                    "retry_reason",
+                    outcome
+                        .retry
+                        .map_or_else(|| "null".into(), |r| string(r.as_str())),
+                ),
+                ("retrying", retrying.to_string()),
                 ("recovery_required", outcome.recovery_required.to_string()),
+                (
+                    "durable_pictures_this_attempt",
+                    outcome.durable_pictures.to_string(),
+                ),
                 ("durable_pictures_all_attempts", durable.to_string()),
                 ("continuity_across_attempts", "false".into()),
-                ("absence_certifiable", "false".into()),
-            ]))?;
+            ]),
+        )?;
+        if !retrying {
+            effects.emit(
+                "reconnect_terminal",
+                object(&[
+                    ("approval", string(&approval.to_text())),
+                    ("attempts_used", (index + 1).to_string()),
+                    ("complete", outcome.result.is_ok().to_string()),
+                    (
+                        "attempt_limit_reached",
+                        (outcome.result.is_err()
+                            && outcome.retry.is_some()
+                            && index + 1 == plan.attempts.len())
+                        .to_string(),
+                    ),
+                    ("recovery_required", outcome.recovery_required.to_string()),
+                    ("durable_pictures_all_attempts", durable.to_string()),
+                    ("continuity_across_attempts", "false".into()),
+                    ("absence_certifiable", "false".into()),
+                ]),
+            )?;
             return outcome.result;
         }
         let delay = plan.delay_ms(index);
-        effects.emit("backoff", object(&[
-            ("next_attempt", (index + 2).to_string()),
-            ("delay_ms", delay.to_string()),
-        ]))?;
+        effects.emit(
+            "backoff",
+            object(&[
+                ("next_attempt", (index + 2).to_string()),
+                ("delay_ms", delay.to_string()),
+            ]),
+        )?;
         effects.checkpoint()?;
         effects.pause(delay)?;
         effects.checkpoint()?;
@@ -268,8 +393,12 @@ struct NativeEffects {
 }
 impl Effects for NativeEffects {
     fn checkpoint(&mut self) -> Result<(), &'static str> {
-        self.authority.validate().map_err(|_| "ERR-CAPTURE-RTSP-AUTHORITY-001")?;
-        if self.authority.cancellation_reason.is_some() || !self.authority.has_capability("CAP-ADAPTER-NET-001") {
+        self.authority
+            .validate()
+            .map_err(|_| "ERR-CAPTURE-RTSP-AUTHORITY-001")?;
+        if self.authority.cancellation_reason.is_some()
+            || !self.authority.has_capability("CAP-ADAPTER-NET-001")
+        {
             return Err("ERR-CAPTURE-RTSP-AUTHORITY-001");
         }
         Ok(())
@@ -321,7 +450,8 @@ pub(super) fn execute(plan: &mut ReconnectPlan) -> Result<(), &'static str> {
     let first = plan.attempts.first().ok_or("ERR-CAPTURE-RTSP-CONFIG-001")?;
     let authority = ContextAuthority::new_root(RootAuthoritySpec {
         trace_id: "trace:rtsp-reconnect".into(),
-        operation_id: OperationId::parse("operation:rtsp-reconnect").map_err(|_| "ERR-CAPTURE-RTSP-CONFIG-001")?,
+        operation_id: OperationId::parse("operation:rtsp-reconnect")
+            .map_err(|_| "ERR-CAPTURE-RTSP-CONFIG-001")?,
         principal: first.principal.clone(),
         capabilities: vec!["CAP-ADAPTER-NET-001".into()],
         deadline: None,
@@ -331,8 +461,13 @@ pub(super) fn execute(plan: &mut ReconnectPlan) -> Result<(), &'static str> {
         retention_scope: "retention:explicit-original-rtsp-scope".into(),
         anchor_universe: approval,
         generation: first.recording_config().scope.generation,
-    }).map_err(|_| "ERR-CAPTURE-RTSP-CONFIG-001")?;
-    let mut effects = NativeEffects { authority, sequence: 0, report_bytes: 0 };
+    })
+    .map_err(|_| "ERR-CAPTURE-RTSP-CONFIG-001")?;
+    let mut effects = NativeEffects {
+        authority,
+        sequence: 0,
+        report_bytes: 0,
+    };
     run(plan, &mut effects)
 }
 

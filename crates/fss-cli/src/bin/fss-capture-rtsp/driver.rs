@@ -1123,7 +1123,10 @@ fn run_owned<W: Write>(
                                 | io::ErrorKind::ConnectionAborted
                                 | io::ErrorKind::TimedOut,
                         }))
-                    ) => Failure::ConnectionUnavailable,
+                    ) =>
+                {
+                    Failure::ConnectionUnavailable
+                }
                 _ => Failure::Connect,
             }
         })?;

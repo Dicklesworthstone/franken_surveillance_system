@@ -23,7 +23,8 @@ impl Directory {
     fn new(label: &str) -> Test<Self> {
         for index in 0..100 {
             let path = std::env::temp_dir().join(format!(
-                "fss-rtsp-reconnect-{}-{label}-{index}", std::process::id()
+                "fss-rtsp-reconnect-{}-{label}-{index}",
+                std::process::id()
             ));
             match fs::create_dir(&path) {
                 Ok(()) => return Ok(Self(path)),
@@ -38,7 +39,9 @@ impl Directory {
     }
 }
 impl Drop for Directory {
-    fn drop(&mut self) { let _ = fs::remove_dir_all(&self.0); }
+    fn drop(&mut self) {
+        let _ = fs::remove_dir_all(&self.0);
+    }
 }
 
 fn read_output(reader: impl Read, exceeded: &AtomicBool) -> io::Result<Vec<u8>> {
@@ -54,8 +57,12 @@ fn run(args: &[OsString]) -> Test<Output> {
     let binary = std::env::var_os("FSS_CAPTURE_RTSP_BIN")
         .or_else(|| option_env!("CARGO_BIN_EXE_fss-capture-rtsp").map(OsString::from))
         .ok_or("missing native capture binary; set FSS_CAPTURE_RTSP_BIN")?;
-    let mut child = Command::new(binary).args(args).stdin(Stdio::null())
-        .stdout(Stdio::piped()).stderr(Stdio::piped()).spawn()?;
+    let mut child = Command::new(binary)
+        .args(args)
+        .stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()?;
     let stdout = child.stdout.take().ok_or("stdout")?;
     let stderr = child.stderr.take().ok_or("stderr")?;
     let exceeded = AtomicBool::new(false);
@@ -67,7 +74,9 @@ fn run(args: &[OsString]) -> Test<Output> {
             if exceeded.load(Ordering::Acquire) || Instant::now() >= deadline {
                 let _ = child.kill();
                 let _ = child.wait();
-                break Err(io::Error::other("native reconnect process exceeded its test bound"));
+                break Err(io::Error::other(
+                    "native reconnect process exceeded its test bound",
+                ));
             }
             match child.try_wait() {
                 Ok(Some(status)) => break Ok(status),
@@ -81,20 +90,33 @@ fn run(args: &[OsString]) -> Test<Output> {
         };
         let stdout = out.join().map_err(|_| "stdout reader panicked")??;
         let stderr = err.join().map_err(|_| "stderr reader panicked")??;
-        Ok(Output { status: status?, stdout, stderr })
+        Ok(Output {
+            status: status?,
+            stdout,
+            stderr,
+        })
     })
 }
 fn field<'a>(value: &'a Value, key: &str) -> Test<&'a Value> {
-    value.object().and_then(|fields| fields.get(key)).ok_or_else(|| format!("missing {key}").into())
+    value
+        .object()
+        .and_then(|fields| fields.get(key))
+        .ok_or_else(|| format!("missing {key}").into())
 }
 fn text<'a>(value: &'a Value, key: &str) -> Test<&'a str> {
-    field(value, key)?.text().ok_or_else(|| format!("nontext {key}").into())
+    field(value, key)?
+        .text()
+        .ok_or_else(|| format!("nontext {key}").into())
 }
 fn number(value: &Value, key: &str) -> Test<i128> {
-    field(value, key)?.integer().ok_or_else(|| format!("noninteger {key}").into())
+    field(value, key)?
+        .integer()
+        .ok_or_else(|| format!("noninteger {key}").into())
 }
 fn flag(value: &Value, key: &str) -> Test<bool> {
-    field(value, key)?.boolean().ok_or_else(|| format!("nonboolean {key}").into())
+    field(value, key)?
+        .boolean()
+        .ok_or_else(|| format!("nonboolean {key}").into())
 }
 fn args(directory: &Directory, peer: SocketAddr, codec: &str) -> Vec<OsString> {
     let digest = |label: &str| ContentDigest::sha256(label.as_bytes()).to_text();
@@ -102,19 +124,33 @@ fn args(directory: &Directory, peer: SocketAddr, codec: &str) -> Vec<OsString> {
     for (key, value) in [
         ("--root", directory.0.join("capture").display().to_string()),
         ("--pins", directory.0.join("pins").display().to_string()),
-        ("--peer", peer.to_string()), ("--authority", peer.to_string()),
-        ("--presentation", "/live/".into()), ("--control-root", "/live".into()),
-        ("--sensor-id", "sensor:reconnect".into()), ("--stream-id", "stream:reconnect".into()),
-        ("--generation", "7".into()), ("--ingress", "71".into()), ("--ssrc", "7".into()),
-        ("--anchor", digest("owner anchor")), ("--receive-clock", digest("owner receive")),
-        ("--timing-evidence", digest("25fps cadence")), ("--journal-id", digest("pin epoch")),
-        ("--frame-duration-ticks", "3600".into()), ("--stop-after-pictures", "2".into()),
-        ("--owner-authorized", "yes".into()), ("--plaintext", "yes".into()),
-        ("--retain-originals", "yes".into()), ("--codec", codec.into()),
-        ("--timeout-ms", "5000".into()), ("--drain-timeout-ms", "5000".into()),
-        ("--connect-timeout-ms", "1000".into()), ("--response-timeout-ms", "1000".into()),
-        ("--max-report-bytes", "131072".into()), ("--max-attempts", "3".into()),
-        ("--retry-delay-ms", "5".into()), ("--retry-max-delay-ms", "10".into()),
+        ("--peer", peer.to_string()),
+        ("--authority", peer.to_string()),
+        ("--presentation", "/live/".into()),
+        ("--control-root", "/live".into()),
+        ("--sensor-id", "sensor:reconnect".into()),
+        ("--stream-id", "stream:reconnect".into()),
+        ("--generation", "7".into()),
+        ("--ingress", "71".into()),
+        ("--ssrc", "7".into()),
+        ("--anchor", digest("owner anchor")),
+        ("--receive-clock", digest("owner receive")),
+        ("--timing-evidence", digest("25fps cadence")),
+        ("--journal-id", digest("pin epoch")),
+        ("--frame-duration-ticks", "3600".into()),
+        ("--stop-after-pictures", "2".into()),
+        ("--owner-authorized", "yes".into()),
+        ("--plaintext", "yes".into()),
+        ("--retain-originals", "yes".into()),
+        ("--codec", codec.into()),
+        ("--timeout-ms", "5000".into()),
+        ("--drain-timeout-ms", "5000".into()),
+        ("--connect-timeout-ms", "1000".into()),
+        ("--response-timeout-ms", "1000".into()),
+        ("--max-report-bytes", "131072".into()),
+        ("--max-attempts", "3".into()),
+        ("--retry-delay-ms", "5".into()),
+        ("--retry-max-delay-ms", "10".into()),
     ] {
         args.extend([key.into(), value.into()]);
     }
@@ -122,7 +158,11 @@ fn args(directory: &Directory, peer: SocketAddr, codec: &str) -> Vec<OsString> {
 }
 fn preview(args: &[OsString]) -> Test<Value> {
     let out = run(args)?;
-    assert!(out.status.success(), "{}", String::from_utf8_lossy(&out.stderr));
+    assert!(
+        out.status.success(),
+        "{}",
+        String::from_utf8_lossy(&out.stderr)
+    );
     let preview = parse(std::str::from_utf8(&out.stdout)?)?;
     assert_eq!(text(&preview, "schema")?, CONTROL);
     Ok(preview)
@@ -152,8 +192,12 @@ fn rows(output: &Output) -> Test<Vec<Value>> {
             CONTROL => {
                 assert_eq!(sequence, outer);
                 outer += 1;
-                if kind == "attempt_started" { assert!(!native_open); }
-                if kind == "attempt_finished" { assert!(!native_open); }
+                if kind == "attempt_started" {
+                    assert!(!native_open);
+                }
+                if kind == "attempt_finished" {
+                    assert!(!native_open);
+                }
             }
             NATIVE => {
                 if kind == "started" {
@@ -164,7 +208,9 @@ fn rows(output: &Output) -> Test<Vec<Value>> {
                 assert!(native_open);
                 assert_eq!(sequence, native);
                 native += 1;
-                if kind == "terminal" { native_open = false; }
+                if kind == "terminal" {
+                    native_open = false;
+                }
             }
             _ => return Err("unexpected capture output schema".into()),
         }
@@ -184,7 +230,12 @@ fn details<'a>(rows: &'a [Value], schema: &str, kind: &str) -> Test<Vec<&'a Valu
 }
 
 #[derive(Clone, Copy)]
-enum Behavior { Eof, Target, Authentication, Malformed }
+enum Behavior {
+    Eof,
+    Target,
+    Authentication,
+    Malformed,
+}
 fn request(peer: &mut TcpStream) -> Test<Option<(String, u32)>> {
     let mut bytes = Vec::new();
     while bytes.len() < 8192 {
@@ -197,18 +248,32 @@ fn request(peer: &mut TcpStream) -> Test<Option<(String, u32)>> {
         if bytes.ends_with(b"\r\n\r\n") {
             let wire = String::from_utf8(bytes)?;
             assert!(!wire.to_ascii_lowercase().contains("authorization:"));
-            let method = wire.split_ascii_whitespace().next().ok_or("method")?.to_owned();
-            let cseq = wire.split("\r\n").find_map(|line| {
-                let (key, value) = line.split_once(':')?;
-                key.eq_ignore_ascii_case("cseq").then_some(value.trim())
-            }).ok_or("CSeq")?.parse()?;
+            let method = wire
+                .split_ascii_whitespace()
+                .next()
+                .ok_or("method")?
+                .to_owned();
+            let cseq = wire
+                .split("\r\n")
+                .find_map(|line| {
+                    let (key, value) = line.split_once(':')?;
+                    key.eq_ignore_ascii_case("cseq").then_some(value.trim())
+                })
+                .ok_or("CSeq")?
+                .parse()?;
             return Ok(Some((method, cseq)));
         }
     }
     Err("request budget exhausted".into())
 }
 fn response(peer: &mut TcpStream, cseq: u32, headers: &str, body: &str) -> Test {
-    peer.write_all(format!("RTSP/1.0 200 OK\r\nCSeq: {cseq}\r\nContent-Length: {}\r\n{headers}\r\n{body}", body.len()).as_bytes())?;
+    peer.write_all(
+        format!(
+            "RTSP/1.0 200 OK\r\nCSeq: {cseq}\r\nContent-Length: {}\r\n{headers}\r\n{body}",
+            body.len()
+        )
+        .as_bytes(),
+    )?;
     Ok(())
 }
 fn video(pictures: usize) -> Test<Vec<u8>> {
@@ -216,20 +281,36 @@ fn video(pictures: usize) -> Test<Vec<u8>> {
     let mut starts = Vec::new();
     let mut at = 0;
     while at + 3 <= bytes.len() {
-        let prefix = if bytes.get(at..at + 4) == Some(&[0, 0, 0, 1]) { 4 }
-            else if bytes[at..at + 3] == [0, 0, 1] { 3 } else { 0 };
-        if prefix == 0 { at += 1; } else { starts.push((at, at + prefix)); at += prefix; }
+        let prefix = if bytes.get(at..at + 4) == Some(&[0, 0, 0, 1]) {
+            4
+        } else if bytes[at..at + 3] == [0, 0, 1] {
+            3
+        } else {
+            0
+        };
+        if prefix == 0 {
+            at += 1;
+        } else {
+            starts.push((at, at + prefix));
+            at += prefix;
+        }
     }
     let mut out = Vec::new();
     let mut sequence = 1_u16;
     let mut count = 0;
     for (index, (_, start)) in starts.iter().enumerate() {
-        if count == pictures { break; }
+        if count == pictures {
+            break;
+        }
         let mut end = starts.get(index + 1).map_or(bytes.len(), |next| next.0);
-        while end > *start && bytes[end - 1] == 0 { end -= 1; }
+        while end > *start && bytes[end - 1] == 0 {
+            end -= 1;
+        }
         let nal = &bytes[*start..end];
         let kind = nal.first().ok_or("empty fixture NAL")? & 31;
-        if !matches!(kind, 1 | 5 | 6 | 7 | 8) { continue; }
+        if !matches!(kind, 1 | 5 | 6 | 7 | 8) {
+            continue;
+        }
         let picture = matches!(kind, 1 | 5);
         let mut packet = vec![0x80, 96 | if picture { 128 } else { 0 }];
         packet.extend_from_slice(&sequence.to_be_bytes());
@@ -250,7 +331,9 @@ fn serve_one(listener: &TcpListener, behavior: Behavior) -> Test<Vec<String>> {
     let mut peer = loop {
         match listener.accept() {
             Ok((peer, _)) => break peer,
-            Err(e) if e.kind() == io::ErrorKind::WouldBlock && Instant::now() < deadline => thread::sleep(Duration::from_millis(2)),
+            Err(e) if e.kind() == io::ErrorKind::WouldBlock && Instant::now() < deadline => {
+                thread::sleep(Duration::from_millis(2))
+            }
             Err(e) => return Err(e.into()),
         }
     };
@@ -259,7 +342,8 @@ fn serve_one(listener: &TcpListener, behavior: Behavior) -> Test<Vec<String>> {
     peer.set_nodelay(true)?;
     let mut methods = Vec::new();
     let (method, cseq) = request(&mut peer)?.ok_or("missing DESCRIBE")?;
-    assert_eq!(method, "DESCRIBE"); methods.push(method);
+    assert_eq!(method, "DESCRIBE");
+    methods.push(method);
     if matches!(behavior, Behavior::Authentication) {
         peer.write_all(format!("RTSP/1.0 401 Unauthorized\r\nCSeq: {cseq}\r\nWWW-Authenticate: Digest realm=\"RECONNECT_SECRET_REALM\", nonce=\"RECONNECT_SECRET_NONCE\", qop=\"auth\"\r\nContent-Length: 0\r\n\r\n").as_bytes())?;
         peer.shutdown(Shutdown::Write)?;
@@ -268,30 +352,64 @@ fn serve_one(listener: &TcpListener, behavior: Behavior) -> Test<Vec<String>> {
     }
     response(&mut peer, cseq, "Content-Type: application/sdp\r\n", SDP)?;
     let (method, cseq) = request(&mut peer)?.ok_or("missing SETUP")?;
-    assert_eq!(method, "SETUP"); methods.push(method);
-    response(&mut peer, cseq, "Session: fixture;timeout=60\r\nTransport: RTP/AVP/TCP;unicast;interleaved=0-1;ssrc=7\r\n", "")?;
+    assert_eq!(method, "SETUP");
+    methods.push(method);
+    response(
+        &mut peer,
+        cseq,
+        "Session: fixture;timeout=60\r\nTransport: RTP/AVP/TCP;unicast;interleaved=0-1;ssrc=7\r\n",
+        "",
+    )?;
     let (method, cseq) = request(&mut peer)?.ok_or("missing PLAY")?;
-    assert_eq!(method, "PLAY"); methods.push(method);
+    assert_eq!(method, "PLAY");
+    methods.push(method);
     response(&mut peer, cseq, "Session: fixture\r\n", "")?;
-    peer.write_all(&video(if matches!(behavior, Behavior::Target) { 2 } else { 1 })?)?;
-    if matches!(behavior, Behavior::Eof) { peer.shutdown(Shutdown::Write)?; }
-    if matches!(behavior, Behavior::Malformed) { peer.write_all(&[b'$', 0, 0, 4, 0x80, 96, 0, 9])?; }
+    peer.write_all(&video(if matches!(behavior, Behavior::Target) {
+        2
+    } else {
+        1
+    })?)?;
+    if matches!(behavior, Behavior::Eof) {
+        peer.shutdown(Shutdown::Write)?;
+    }
+    if matches!(behavior, Behavior::Malformed) {
+        peer.write_all(&[b'$', 0, 0, 4, 0x80, 96, 0, 9])?;
+    }
     for _ in 0..16 {
-        let Some((method, cseq)) = request(&mut peer)? else { return Ok(methods); };
-        assert!(matches!(method.as_str(), "OPTIONS" | "GET_PARAMETER" | "TEARDOWN"));
+        let Some((method, cseq)) = request(&mut peer)? else {
+            return Ok(methods);
+        };
+        assert!(matches!(
+            method.as_str(),
+            "OPTIONS" | "GET_PARAMETER" | "TEARDOWN"
+        ));
         methods.push(method);
         response(&mut peer, cseq, "Session: fixture\r\n", "")?;
     }
     Err("server request budget exhausted".into())
 }
-fn captured(listener: TcpListener, args: &[OsString], behaviors: &[Behavior]) -> Test<(Output, Vec<Vec<String>>)> {
+fn captured(
+    listener: TcpListener,
+    args: &[OsString],
+    behaviors: &[Behavior],
+) -> Test<(Output, Vec<Vec<String>>)> {
     thread::scope(|scope| {
-        let server = scope.spawn(move || behaviors.iter().map(|behavior| serve_one(&listener, *behavior)).collect::<Test<Vec<_>>>());
+        let server = scope.spawn(move || {
+            behaviors
+                .iter()
+                .map(|behavior| serve_one(&listener, *behavior))
+                .collect::<Test<Vec<_>>>()
+        });
         let output = run(args);
         let transcript = server.join().map_err(|_| "camera thread panicked")?;
         match (output, transcript) {
             (Ok(output), Ok(transcript)) => Ok((output, transcript)),
-            (Ok(output), Err(error)) => Err(format!("{error}; stdout={} stderr={}", String::from_utf8_lossy(&output.stdout), String::from_utf8_lossy(&output.stderr)).into()),
+            (Ok(output), Err(error)) => Err(format!(
+                "{error}; stdout={} stderr={}",
+                String::from_utf8_lossy(&output.stdout),
+                String::from_utf8_lossy(&output.stderr)
+            )
+            .into()),
             (Err(error), _) => Err(error),
         }
     })
@@ -306,8 +424,14 @@ fn reconnect_preview_is_pure_and_child_approval_does_not_authorize_effects() -> 
         let plan = preview(&args)?;
         let children = field(&plan, "attempts")?.array().ok_or("attempt array")?;
         assert_eq!(children.len(), 3);
-        assert_ne!(text(&children[0], "receive_clock")?, text(&children[1], "receive_clock")?);
-        assert_ne!(text(&children[0], "archive_namespace")?, text(&children[1], "archive_namespace")?);
+        assert_ne!(
+            text(&children[0], "receive_clock")?,
+            text(&children[1], "receive_clock")?
+        );
+        assert_ne!(
+            text(&children[0], "archive_namespace")?,
+            text(&children[1], "archive_namespace")?
+        );
         assert!(fs::read_dir(&directory.0)?.next().is_none());
         let mut wrong = args.clone();
         wrong.extend(["--approve".into(), text(&children[0], "approval")?.into()]);
@@ -326,9 +450,16 @@ fn real_eof_reconnects_with_new_generation_and_preserves_both_durable_archives()
     let listener = listener()?;
     let args = approved(&args(&directory, listener.local_addr()?, "avc"))?;
     let (output, transcript) = captured(listener, &args, &[Behavior::Eof, Behavior::Target])?;
-    assert!(output.status.success(), "{}\n{}", String::from_utf8_lossy(&output.stdout), String::from_utf8_lossy(&output.stderr));
+    assert!(
+        output.status.success(),
+        "{}\n{}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    );
     assert_eq!(transcript.len(), 2);
-    for methods in transcript { assert_eq!(&methods[..3], &["DESCRIBE", "SETUP", "PLAY"]); }
+    for methods in transcript {
+        assert_eq!(&methods[..3], &["DESCRIBE", "SETUP", "PLAY"]);
+    }
     let rows = rows(&output)?;
     let attempts = details(&rows, CONTROL, "attempt_started")?;
     assert_eq!(attempts.len(), 2);
@@ -340,7 +471,10 @@ fn real_eof_reconnects_with_new_generation_and_preserves_both_durable_archives()
     assert!(!flag(ended[0], "recovery_required")?);
     let windows = details(&rows, NATIVE, "window_durable")?;
     assert_eq!(windows.len(), 2);
-    assert_ne!(text(windows[0], "archive_namespace")?, text(windows[1], "archive_namespace")?);
+    assert_ne!(
+        text(windows[0], "archive_namespace")?,
+        text(windows[1], "archive_namespace")?
+    );
     assert_eq!(number(windows[0], "pictures")?, 1);
     assert_eq!(number(windows[1], "pictures")?, 2);
     let terminal = details(&rows, CONTROL, "reconnect_terminal")?;
@@ -350,7 +484,12 @@ fn real_eof_reconnects_with_new_generation_and_preserves_both_durable_archives()
     assert!(!flag(terminal[0], "continuity_across_attempts")?);
     for index in 1..=2 {
         assert!(directory.attempt("capture", index).is_dir());
-        assert!(directory.attempt("pins", index).join("pins.journal").is_file());
+        assert!(
+            directory
+                .attempt("pins", index)
+                .join("pins.journal")
+                .is_file()
+        );
     }
     assert!(!directory.attempt("capture", 3).exists());
     Ok(())
@@ -367,7 +506,11 @@ fn unavailable_avc_and_hevc_peers_exhaust_exactly_the_approved_attempts() -> Tes
         let output = run(&args)?;
         assert!(!output.status.success());
         let rows = rows(&output)?;
-        assert_eq!(details(&rows, CONTROL, "attempt_started")?.len(), 3, "{codec}");
+        assert_eq!(
+            details(&rows, CONTROL, "attempt_started")?.len(),
+            3,
+            "{codec}"
+        );
         assert_eq!(details(&rows, CONTROL, "backoff")?.len(), 2);
         let terminal = details(&rows, CONTROL, "reconnect_terminal")?;
         assert!(flag(terminal[0], "attempt_limit_reached")?);
@@ -380,7 +523,8 @@ fn unavailable_avc_and_hevc_peers_exhaust_exactly_the_approved_attempts() -> Tes
 #[test]
 fn authentication_at_eof_and_malformed_rtp_never_trigger_reconnection() -> Test {
     for (codec, behavior) in [
-        ("avc", Behavior::Authentication), ("hevc", Behavior::Authentication),
+        ("avc", Behavior::Authentication),
+        ("hevc", Behavior::Authentication),
         ("avc", Behavior::Malformed),
     ] {
         let directory = Directory::new("fatal")?;
@@ -388,7 +532,11 @@ fn authentication_at_eof_and_malformed_rtp_never_trigger_reconnection() -> Test 
         let args = approved(&args(&directory, listener.local_addr()?, codec))?;
         let (output, _) = captured(listener, &args, &[behavior])?;
         assert!(!output.status.success());
-        let report = format!("{}{}", String::from_utf8_lossy(&output.stdout), String::from_utf8_lossy(&output.stderr));
+        let report = format!(
+            "{}{}",
+            String::from_utf8_lossy(&output.stdout),
+            String::from_utf8_lossy(&output.stderr)
+        );
         assert!(!report.contains("RECONNECT_SECRET_REALM"));
         assert!(!report.contains("RECONNECT_SECRET_NONCE"));
         let rows = rows(&output)?;
@@ -409,7 +557,10 @@ fn existing_attempt_custody_is_not_overwritten_or_skipped_to_another_attempt() -
     fs::write(existing.join("preserved"), b"prior owner custody")?;
     let output = run(&args)?;
     assert!(!output.status.success());
-    assert_eq!(fs::read(existing.join("preserved"))?, b"prior owner custody");
+    assert_eq!(
+        fs::read(existing.join("preserved"))?,
+        b"prior owner custody"
+    );
     assert!(!directory.attempt("capture", 2).exists());
     assert!(matches!(listener.accept(), Err(e) if e.kind() == io::ErrorKind::WouldBlock));
     Ok(())

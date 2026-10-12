@@ -524,7 +524,8 @@ fn connect_failure(error: &LiveHevcArchiveError) -> Failure {
         LiveHevcArchiveError::Pins(_) | LiveHevcArchiveError::Archive(_) => Failure::Storage,
         LiveHevcArchiveError::Network(LiveHevcError::Transport(TcpError::Io {
             operation: TcpOperation::Connect,
-            kind: io::ErrorKind::ConnectionRefused
+            kind:
+                io::ErrorKind::ConnectionRefused
                 | io::ErrorKind::ConnectionReset
                 | io::ErrorKind::ConnectionAborted
                 | io::ErrorKind::TimedOut,
@@ -539,7 +540,11 @@ mod reconnect_tests {
 
     #[test]
     fn only_typed_transient_connect_io_can_retry() {
-        for operation in [TcpOperation::Connect, TcpOperation::Read, TcpOperation::Write] {
+        for operation in [
+            TcpOperation::Connect,
+            TcpOperation::Read,
+            TcpOperation::Write,
+        ] {
             for kind in [
                 io::ErrorKind::ConnectionRefused,
                 io::ErrorKind::ConnectionReset,
@@ -548,26 +553,39 @@ mod reconnect_tests {
                 io::ErrorKind::PermissionDenied,
                 io::ErrorKind::InvalidInput,
             ] {
-                let error = LiveHevcArchiveError::Network(LiveHevcError::Transport(
-                    TcpError::Io { operation, kind },
-                ));
+                let error = LiveHevcArchiveError::Network(LiveHevcError::Transport(TcpError::Io {
+                    operation,
+                    kind,
+                }));
                 assert_eq!(
                     matches!(connect_failure(&error), Failure::ConnectionUnavailable),
-                    operation == TcpOperation::Connect && matches!(kind,
-                        io::ErrorKind::ConnectionRefused | io::ErrorKind::ConnectionReset
-                        | io::ErrorKind::ConnectionAborted | io::ErrorKind::TimedOut)
+                    operation == TcpOperation::Connect
+                        && matches!(
+                            kind,
+                            io::ErrorKind::ConnectionRefused
+                                | io::ErrorKind::ConnectionReset
+                                | io::ErrorKind::ConnectionAborted
+                                | io::ErrorKind::TimedOut
+                        )
                 );
             }
         }
-        for denial in [TcpDenial::Unauthorized, TcpDenial::Revoked, TcpDenial::Cancelled,
-            TcpDenial::Deadline, TcpDenial::Budget] {
-            let error = LiveHevcArchiveError::Network(LiveHevcError::Transport(
-                TcpError::Denied(denial),
-            ));
+        for denial in [
+            TcpDenial::Unauthorized,
+            TcpDenial::Revoked,
+            TcpDenial::Cancelled,
+            TcpDenial::Deadline,
+            TcpDenial::Budget,
+        ] {
+            let error =
+                LiveHevcArchiveError::Network(LiveHevcError::Transport(TcpError::Denied(denial)));
             assert!(matches!(connect_failure(&error), Failure::Connect));
         }
-        for error in [LiveHevcArchiveError::Deadline, LiveHevcArchiveError::WorkBudget,
-            LiveHevcArchiveError::Selection] {
+        for error in [
+            LiveHevcArchiveError::Deadline,
+            LiveHevcArchiveError::WorkBudget,
+            LiveHevcArchiveError::Selection,
+        ] {
             assert!(matches!(connect_failure(&error), Failure::Connect));
         }
     }

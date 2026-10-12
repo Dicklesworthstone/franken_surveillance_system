@@ -23,7 +23,7 @@ use fss_reference::agent_session::checkpoint::journal::{
     DurableSessionLimits, SessionRecoveryState, inspect_session_bytes,
 };
 use fss_reference::agent_session::work_claims::WorkClaimLimits;
-use fss_reference::deployment_session::{HandoffRecord, MissionRecord};
+use fss_reference::deployment_session::{HandoffRecord, MissionRecord, publication_limits};
 use fss_reference::{ADP_REPLAY_ROW_ID, ReferenceDeployment, ReplayCx, ReplayIoAuthority};
 
 type TestResult<T = ()> = Result<T, Box<dyn Error>>;
@@ -408,10 +408,7 @@ impl Fixture {
             .filter_map(Value::text)
             .filter_map(|pointer| ContentDigest::parse(pointer).ok())
             .collect::<Vec<_>>();
-        let inspection = fss_publication::inspect(
-            &directory,
-            fss_publication::LocalPublicationLimits::default(),
-        )?;
+        let inspection = fss_publication::inspect(&directory, publication_limits())?;
         let mut found = None;
         for visible in inspection.visible_roots() {
             if !pointers.contains(&visible.root) {
