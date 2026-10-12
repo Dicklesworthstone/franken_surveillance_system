@@ -13,7 +13,7 @@ use fss_packet::{StreamKey, avc::AvcReceiveLimits};
 use fss_publication::LocalPublicationLimits;
 use fss_reference::rtsp::archive_pins::{ArchivePinLimits, ArchivePinScope};
 use fss_reference::rtsp::authentication::DigestPolicy;
-use fss_reference::rtsp::client::{ClientConfig, RtspClientSession};
+use fss_reference::rtsp::client::{ClientCodec, ClientConfig, RtspClientSession};
 use fss_reference::rtsp::framed::{
     MAX_WIRE_BODY, MAX_WIRE_BUFFER, MAX_WIRE_CHUNK, MAX_WIRE_HEADERS, WIRE_LIFETIME_NS,
 };
@@ -30,11 +30,19 @@ use fss_reference::rtsp::tcp::{TcpBinding, TcpLimits, TcpSecurityPolicy};
 
 use super::authentication::{AuthPlan, MAX_CREDENTIAL_BYTES, MAX_SECRET_IO_CALLS};
 
+#[path = "hevc_plan.rs"]
+mod hevc;
+use hevc::HevcPlan;
+
 pub(super) const MAX_ARGUMENTS: usize = 128;
 pub(super) const FORMAT: &str = "fss.rtsp_capture_cli.v1";
 const POLICY: &str = "one-literal-ip:owner-approved-plaintext:opt-in-scoped-digest:no-reconnect:\
 journal-before-publication:original-rtp:fixed-90000hz:exact-cadence:relative-dts:\
 zero-composition-offset:idr-led-windows:requested-stop-is-not-eof:v2";
+const HEVC_POLICY: &str = "one-literal-ip:owner-approved-plaintext:opt-in-scoped-digest:no-reconnect:\
+journal-before-publication:original-rtp:fixed-90000hz:exact-cadence:relative-dts:\
+zero-composition-offset:idr-led-windows:requested-stop-is-not-eof:\
+hevc-single-exact-offer:selected-sdp-vps-sps-pps:real-boundary-source-witness:v1";
 pub(super) const HELP: &str = "fss-capture-rtsp --root NEW_ABSOLUTE_ARCHIVE --pins NEW_ABSOLUTE_PIN_JOURNAL\n\
   --peer IP:PORT --authority HOST[:PORT] --presentation /PATH --control-root /PATH\n\
   --sensor-id ID --stream-id ID --generation N --ingress N --ssrc N\n\
@@ -43,7 +51,7 @@ pub(super) const HELP: &str = "fss-capture-rtsp --root NEW_ABSOLUTE_ARCHIVE --pi
   --owner-authorized yes --plaintext yes --retain-originals yes [--approve sha256:HEX]\n\
 \n\
 Without --approve: pure JSON plan; NO filesystem, clock or network I/O.\n\
-Repeat exactly with the returned approval to capture one bounded RTSP/AVC TCP session.\n\
+Repeat exactly with the returned approval to capture one bounded RTSP TCP session.\n\
 Both destination directories must be new, separate and outside one another; their parents\n\
 must already exist. The journal must be protected independently from footage storage.\n\
 Only a literal IP peer is contacted. No DNS, redirects, TLS or reconnect.\n\
@@ -65,7 +73,11 @@ Original RTP and derived recording children are published through the native jou
 archive. Raw RTSP/control/RTCP wire and unselected tails are not retained; output accounts\n\
 for omissions. Local custody is UNENCRYPTED. Apply deployment privacy before pixel output.\n\
 \n\
-Exact AVC offer: --payload-type 96; track/channel: --media-index 0 --rtp-channel 0\n\
+Codec: --codec avc (default) or --codec hevc; exact offer: --payload-type 96\n\
+HEVC requires one matching H265/90000 offer and one compatible VPS/SPS/PPS tuple in SDP.\n\
+There is no codec fallback. HEVC retains real picture-boundary lookahead as source-only\n\
+evidence; neither an RTP marker nor EOF can certify the last picture complete.\n\
+Track/channel: --media-index 0 --rtp-channel 0\n\
 Audit label: --principal principal:local-operator (not authentication)\n\
 Run limits: --timeout-ms 30000 --drain-timeout-ms 10000 --max-steps 100000\n\
             --max-report-bytes 8388608 --max-source-bytes 67108864 --max-io-calls 1000000\n\
@@ -96,6 +108,7 @@ pub(super) struct Options {
     protocol: ClientConfig,
     transport: TcpLimits,
     media: AvcReceiveLimits,
+    hevc: Option<HevcPlan>,
     recording: LiveRecordingConfig,
     archive: LiveArchiveConfig,
     publication: LocalPublicationLimits,
@@ -230,6 +243,7 @@ impl Options {
             "--approve",
             "--principal",
             "--payload-type",
+            "--codec",
             "--media-index",
             "--rtp-channel",
             "--timeout-ms",
@@ -337,9 +351,18 @@ impl Options {
             response_timeout_ns: number("--response-timeout-ms", 5000, 1, 60_000)? * 1_000_000,
             default_session_timeout_seconds: 60,
         };
+        let is_hevc = match values.get("--codec").copied().unwrap_or("avc") {
+            "avc" => false,
+            "hevc" => true,
+            _ => return Err("codec must be avc or hevc"),
+        };
         let payload_type = number("--payload-type", 96, 0, 127)? as u8;
-        RtspClientSession::new_with_payload_type(protocol.clone(), payload_type)
-            .map_err(|_| "native RTSP protocol scope refused")?;
+        if is_hevc {
+            RtspClientSession::with_codec(protocol.clone(), ClientCodec::H265)
+        } else {
+            RtspClientSession::new_with_payload_type(protocol.clone(), payload_type)
+        }
+        .map_err(|_| "native RTSP protocol scope refused")?;
         let transport = TcpLimits {
             max_received_bytes: number(
                 "--max-source-bytes",
@@ -391,7 +414,7 @@ impl Options {
         .map_err(|_| "native recording scope or limits refused")?;
         let mut clock = CanonicalEncoder::new();
         clock.text("fss.rtsp_capture_fixed_clock.v1");
-        clock.text(POLICY);
+        clock.text(if is_hevc { HEVC_POLICY } else { POLICY });
         clock.digest(timing_evidence);
         clock.digest(scope.receive_clock);
         clock.bytes(&ingress.to_be_bytes());
@@ -408,6 +431,9 @@ impl Options {
             time_scale,
         })
         .map_err(|_| "native archive scope refused")?;
+        let hevc = is_hevc
+            .then(|| HevcPlan::new(namespace.scope().clone()))
+            .transpose()?;
         let timeout_ns = number("--timeout-ms", 30_000, 1, 600_000)? * 1_000_000;
         let drain_timeout_ns = number("--drain-timeout-ms", 10_000, 1, 60_000)? * 1_000_000;
         let max_steps = number("--max-steps", 100_000, 1, 1_000_000)?;
@@ -458,7 +484,10 @@ impl Options {
         };
         let pin_scope = ArchivePinScope {
             journal_id: digest(required("--journal-id")?)?,
-            archive_namespace: archive.namespace.digest(),
+            archive_namespace: hevc.as_ref().map_or_else(
+                || archive.namespace.digest(),
+                |plan| plan.namespace.digest(),
+            ),
         };
         let stop_after_pictures = unsigned(required("--stop-after-pictures")?)?;
         if stop_after_pictures == 0
@@ -474,6 +503,7 @@ impl Options {
             protocol,
             transport,
             media: AvcReceiveLimits::default(),
+            hevc,
             recording,
             archive,
             publication,
@@ -544,6 +574,29 @@ impl Options {
         self.pin_limits
     }
 
+    pub(super) fn codec(&self) -> &'static str {
+        if self.hevc.is_some() { "hevc" } else { "avc" }
+    }
+    fn policy(&self) -> &'static str {
+        if self.hevc.is_some() {
+            HEVC_POLICY
+        } else {
+            POLICY
+        }
+    }
+    pub(super) fn catalog_scope(&self) -> &CatalogScope {
+        self.hevc.as_ref().map_or_else(
+            || self.archive.namespace.scope(),
+            |plan| plan.namespace.scope(),
+        )
+    }
+    pub(super) fn binding(&self) -> TcpBinding {
+        self.binding.clone()
+    }
+    pub(super) fn max_received_bytes(&self) -> u64 {
+        self.transport.max_received_bytes
+    }
+
     // Actual effective values, not just CLI inputs: changing a dependency default changes approval.
     fn bound_numbers(&self) -> Vec<(&'static str, u64)> {
         let t = self.transport;
@@ -551,7 +604,7 @@ impl Options {
         let c = self.recording.limits;
         let a = self.archive.limits;
         let p = self.publication;
-        vec![
+        let mut numbers = vec![
             ("generation", self.binding.key().generation),
             ("ssrc", u64::from(self.binding.key().ssrc)),
             ("payload_type", u64::from(self.recording.payload_type)),
@@ -647,13 +700,17 @@ impl Options {
             ("credential_file_bytes", MAX_CREDENTIAL_BYTES as u64),
             ("secret_io_calls_per_read", MAX_SECRET_IO_CALLS as u64),
             ("cnonce_bytes_per_request", 16),
-        ]
+        ];
+        if let Some(hevc) = &self.hevc {
+            hevc.replace_media_bounds(&mut numbers);
+        }
+        numbers
     }
 
     pub(super) fn digest(&self) -> Result<ContentDigest, &'static str> {
         let mut e = CanonicalEncoder::new();
         e.text("fss.rtsp_capture_cli_plan.v1");
-        e.text(POLICY);
+        e.text(self.policy());
         e.bytes(&self.binding.key().ingress.to_be_bytes());
         for value in [
             self.root.to_str().ok_or("UTF-8 archive path required")?,
@@ -672,8 +729,8 @@ impl Options {
             self.recording.scope.anchor,
             self.recording.scope.receive_clock,
             self.timing_evidence,
-            self.archive.namespace.scope().decode_clock,
-            self.archive.namespace.digest(),
+            self.catalog_scope().decode_clock,
+            self.pin_scope.archive_namespace,
             self.pin_scope.journal_id,
             self.pin_scope.archive_namespace,
         ] {
@@ -714,7 +771,8 @@ impl Options {
             ("schema", string(FORMAT)),
             ("phase", string("planned")),
             ("approval", string(&self.digest()?.to_text())),
-            ("policy", string(POLICY)),
+            ("policy", string(self.policy())),
+            ("codec", string(self.codec())),
             (
                 "root",
                 string(self.root.to_str().ok_or("UTF-8 archive path required")?),
@@ -739,11 +797,11 @@ impl Options {
             ("timing_evidence", string(&self.timing_evidence.to_text())),
             (
                 "decode_clock",
-                string(&self.archive.namespace.scope().decode_clock.to_text()),
+                string(&self.catalog_scope().decode_clock.to_text()),
             ),
             (
                 "archive_namespace",
-                string(&self.archive.namespace.digest().to_text()),
+                string(&self.pin_scope.archive_namespace.to_text()),
             ),
             ("journal_id", string(&self.pin_scope.journal_id.to_text())),
             ("bounds", object(&numbers)),

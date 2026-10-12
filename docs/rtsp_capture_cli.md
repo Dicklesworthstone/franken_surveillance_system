@@ -1,13 +1,14 @@
-# Capture native RTSP/AVC into a recoverable recording archive
+# Capture native RTSP/AVC or HEVC into a recoverable recording archive
 
-`fss-capture-rtsp` connects one approved camera route to the existing native AVC
-recording archive. Each published window retains original RTP, packet-to-NAL-to-MP4
+`fss-capture-rtsp` connects one approved camera route to a native AVC or HEVC
+recording archive. Choose `--codec avc` (the default) or `--codec hevc` before reviewing
+the plan. Each published window retains original RTP, packet-to-NAL-to-MP4
 mapping, initialization segment and media fragment. A separate pin journal synchronizes
 recovery references before publication barriers. Only a `window_durable` slot/root
 names a recording usable by `fss-import-rtsp`.
 
 This bounded reference command supports one owner-approved plaintext RTSP-over-TCP
-session, one AVC track and an explicitly declared fixed cadence. Authentication
+session, one selected video track and an explicitly declared fixed cadence. Authentication
 challenges are refused by default. Linux operators can explicitly authorize scoped
 Digest authentication using the private credential-file contract below. It does not
 discover devices, reconnect, decode pixels or certify scene coverage.
@@ -51,6 +52,41 @@ Execution refuses existing destinations, including earlier incomplete attempts.
 It resolves both parents and checks separation before creating either owner. The new
 archive uses mode 0700 on Unix; parent permissions remain the operator's responsibility.
 Original media is retained unencrypted.
+
+## Select HEVC explicitly
+
+Use `--codec hevc` for a camera whose selected SDP media section advertises exactly
+one `H265/90000` payload. `--payload-type` must match that offer. The selected description
+must contain exactly one VPS, SPS and PPS in `sprop-vps`, `sprop-sps` and `sprop-pps`.
+The native configuration reader checks their IDs, profile/temporal agreement and bounded
+dimensions before SETUP or PLAY. Missing, ambiguous, mismatched or unsupported parameters
+stop the attempt; another media offer or an AVC configuration is never substituted.
+The current HEVC profile admits no DON interleaving and uses bounded Main/Main10,
+single-layer 4:2:0 configuration-prefix checks. This does not certify a camera's full
+bitstream or successful pixel decoding.
+
+For example, for a camera configured to send HEVC payload 98 at 25 pictures per second:
+
+```sh
+fss-capture-rtsp --codec hevc --payload-type 98 \
+  --root /owner/private/porch-hevc-archive \
+  --pins /owner/recovery/porch-hevc-pins \
+  --peer 192.168.1.40:554 --authority 192.168.1.40:554 \
+  --presentation /stream/main --control-root /stream \
+  --sensor-id sensor:porch --stream-id stream:porch \
+  --generation 1 --ingress 1 --ssrc 7 \
+  --anchor "$SOURCE_ANCHOR" --receive-clock "$RECEIVE_CLOCK" \
+  --timing-evidence "$TIMING_EVIDENCE" --journal-id "$JOURNAL_ID" \
+  --frame-duration-ticks 3600 --stop-after-pictures 50 \
+  --owner-authorized yes --plaintext yes --retain-originals yes
+```
+
+Substitute the actual camera mapping and owner identities. Review this command's own
+plan and repeat it with its exact `--approve` value. HEVC selects its own archive,
+work-root and pin-journal family and binds its native reconstruction, assembly,
+configuration and boundary-lookahead ceilings. Changing codecs changes the approval
+and decode-clock identity. Existing default/explicit AVC requests keep their AVC
+identities. Both codecs use the same optional Digest credential-file lease described below.
 
 ## Authenticate an owner-authorized camera
 
@@ -112,6 +148,14 @@ are outside this timing model. Capture time remains unknown. Startup pictures be
 the first IDR consume timing but are counted separately as skipped. The target counts
 pictures admitted by the recording collector, not successfully decoded pixels.
 
+HEVC collection requires a real observed picture boundary: a following picture prefix,
+AUD or explicit EOS/EOB from the source. An RTP marker, an explicit capture stop or socket
+EOF cannot complete a HEVC picture. Reaching the target can therefore require reading
+the next boundary-bearing packet. The whole original packet stays in the selected window;
+trailing NALs that witness the boundary are counted as `source_only_nals` and do not become
+extra media samples. Adjacent windows can share such original packets without sharing
+selected pictures. A lone IDR followed only by a marker and EOF remains an unverified tail.
+
 At the requested count, further socket reads/writes are disabled and the selected prefix
 is explicitly sealed. Earlier windows cut at an IDR still drain normally. Once the final
 sealed window reaches `window_accepted`, the socket closes with cause `owner_stopped`
@@ -160,6 +204,13 @@ offline. Downstream motion, watch and corroboration preserve their own timing, p
 calibration and effect gates. Current destination masks apply before decoded pixels
 reach consumers.
 
+For the HEVC capture example, use `--archive /owner/private/porch-hevc-archive` and
+`--codec hevc` with the exact HEVC `window_durable` slot/root. Keep its source scope and
+clock declarations. The importer uses the native HEVC source verifier; it does not
+transcode to AVC or infer the codec from untrusted metadata. After the import completes,
+`fss-file verify` and `fss-file decode` use destination custody with the capture archive
+offline. See the retained importer guide for the returned import identity and range flags.
+
 ## Import a complete catalog page
 
 Each `catalog_published.detail` also exposes the exact `slot`, `root`, `decode_clock`,
@@ -189,10 +240,19 @@ windows, each of which originally starts at one. Original bytes and manifests st
 sample payloads, timing, box sizes and fragment-relative offsets are unchanged. Import and
 cold verification apply the same deterministic composition rule.
 
+HEVC catalog pages use the same invocation with `--codec hevc`, their own archive path
+and exact reported catalog pins and decode clock. Source-only boundary NALs remain in
+the original window closure while the joined MP4 contains only the selected pictures.
+Several exact published pages can also be supplied through the catalog importer's
+ordered `--catalog-pages` contract; page order and all common codec/clock scope remain explicit.
+
 ## Partial capture, omissions and recovery
 
 Early EOF before the target returns a failing exit even when its completed prefix was
-archived. Protocol/timing faults may leave unsealed originals that were never published.
+archived. Once all observed HEVC source input has drained, its final seal starts the
+storage-drain allowance before the final window's checkpoint. Source termination by EOB
+uses the same completed-prefix path; `peer_eof` separately reports actual TCP EOF.
+Protocol/timing faults may leave unsealed originals that were never published.
 Terminal output distinguishes durable/indexed pictures, the last normal window,
 candidate/confirmed work references, journal anchor, network totals and unsettled session
 state. An independently retained pin does not prove its media remains retrievable.
@@ -202,10 +262,39 @@ work root and source closure through the native archive-pin recovery owner. The 
 independently retained anchor bounds acceptable recovery. Rerunning capture does not
 resume or repair an existing attempt.
 
+The recovery operator also selects its codec explicitly. For HEVC, inspect the retained
+journal prefix and an exact candidate or confirmed work reference before restoring:
+
+```sh
+fss-archive inspect-pins --codec hevc \
+  --pin-root /owner/recovery/porch-hevc-pins \
+  --journal-id "$JOURNAL_ID" --expected-namespace "$ARCHIVE_NAMESPACE" \
+  --minimum-sequence "$JOURNAL_SEQUENCE" --minimum-root "$JOURNAL_ROOT"
+
+fss-archive inspect-work --codec hevc \
+  --root /owner/private/porch-hevc-archive \
+  --work-slot "$WORK_SLOT" --work-root "$WORK_ROOT" \
+  --expected-namespace "$ARCHIVE_NAMESPACE"
+```
+
+Use the independently retained `journal_anchor` and `candidate_pin`/`confirmed_pin`
+fields from the terminal report; a newer candidate must be reconciled before its
+predecessor. Journal inspection alone reports `work_custody=not_checked`. Work inspection
+reopens the exact protected source without publishing normal archive slots. Explicit
+`restore-work --commit yes` or `restore-pins --commit yes` then restores verified pending
+work; pin restoration additionally takes the existing archive `--root`. Both retain
+`--codec hevc` and their other inspection identity arguments. Missing or corrupt candidate
+work refuses restoration instead of falling back to an older confirmed root. Recovery
+does not reopen the camera or invent a completed target count.
+
 Selected original RTP datagrams are retained inside verified windows. The raw TCP
 representation, RTSP headers/authentication challenges and RTCP are omitted. Unselected
 RTP and unsealed/prepared tails have separate accounting. These overlapping representations
 are not an additive byte-conservation equation. No raw payload or challenge text is logged.
+For HEVC, `window_durable.detail.source_only_nals` and terminal
+`durable_source_only_nals` describe retained boundary lookahead. Terminal
+`released_active_rtp_bytes` describes buffers released from active collection, which can
+overlap already durable source; it is not a count of deleted or omitted evidence.
 
 Output and synchronous storage have bounded bytes and checked admission deadlines;
 a single blocking host syscall is not forcibly preempted. Failed or partial output rows
@@ -221,18 +310,20 @@ pictures arrive or fit the store. Defaults include a 30-second capture deadline,
 switches. Native packet, NAL, picture, source-byte and residence limits remain independent;
 no bound evicts prior state to make room.
 
-Payload type defaults to 96, media index to 0 and RTP/RTCP channels to 0/1.
-`--payload-type` selects that exact AVC mapping during DESCRIBE, even when the chosen
+Payload type defaults to 96 for either codec, media index to 0 and RTP/RTCP channels to 0/1.
+For AVC, `--payload-type` selects that exact mapping during DESCRIBE, even when the chosen
 media section advertises several H.264 alternatives. Missing, unsupported or malformed
 selected offers refuse without borrowing another offer's parameters. The same payload
 type binds native reconstruction and retained original packets. Its negotiated clock
 must be 90,000 Hz. Final draining has its own allowance, capped by capture deadline plus
-drain timeout.
+drain timeout. HEVC uses the single-offer and exact selected configuration rules above;
+it does not inherit AVC's multiple-offer selector.
 
 ```sh
 cargo test --locked --offline -p fss-cli \
   --bin fss-capture-rtsp --test capture_rtsp_cli
 cargo clippy --locked --offline -p fss-cli --bin fss-capture-rtsp -- -D warnings
+cargo test --locked --offline -p fss-reference --test live_hevc_archive_contract
 ```
 
 Tests cover pure approval/path/limit validation, fixed-cadence timing, loopback capture
@@ -246,7 +337,14 @@ unread secrets during preview. Reports, archive objects and pin files are scanne
 credential and Authorization-header disclosure. They use real CLI processes and repository
 fixtures; they do not qualify actual cameras.
 
-On pinned `nightly-2026-08-31`, the focused capture suite passed 30 unit cases and
-14 real-process cases with locked offline dependencies and debug assertions.
+The HEVC contract suites additionally exercise selected-SDP refusals, authenticated
+capture, real source-only boundary witnesses, unverified EOF tails, window/catalog
+import and cold native decode. Native loopback cases exercise explicit input stop before
+the first checkpoint, protected draining beyond the retired network lease, revocation
+while input is still live, and cold recovery from confirmed capture-generated work.
+
+Before the HEVC operator addition, the AVC/Digest baseline on pinned
+`nightly-2026-08-31` passed 30 unit cases and 14 real-process cases with locked offline
+dependencies and debug assertions. That historical result does not qualify the new HEVC path.
 The supplementary GitHub smoke workflow runs these reference checks. Repository-owned
 qualification lanes and native DSR receipts remain release authority.

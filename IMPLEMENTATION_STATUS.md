@@ -10,6 +10,30 @@ Franken Surveillance System now has a coherent, dependency-light Rust reference 
 
 It is also not a complete surveillance product. Native device adapters, production media/model/graph/storage services, persistent distributed operation, every human and agent surface, complete qualification matrices, and the aggregate release root remain open. Status below distinguishes implemented reference semantics from production completion.
 
+## Native HEVC capture operator workflow (2026-10-12, reference)
+
+`fss-capture-rtsp --codec hevc` now carries one owner-approved camera session through
+selected-SDP configuration, native HEVC collection, protected archive publication and
+immutable catalog reporting. Codec-specific configuration, reconstruction, assembly and
+source-witness limits participate in the pure approval. Default or explicit AVC retains
+its established plan and decode-clock identity; switching to HEVC requires its own approval
+and selects only native HEVC recording, archive and recovery verifiers.
+
+The operator driver supports the existing scoped Digest credential/entropy lease, validates
+fixed 90 kHz cadence, and starts final storage draining before the final window's checkpoint.
+It distinguishes source-only boundary witnesses, released active buffers, unpublished tails,
+confirmed recovery work and normal durable samples. Early source termination remains a
+failing shortfall even when its source-closed prefix is importable. Physical TCP EOF remains
+a separate observation from HEVC end-of-bitstream or explicit owner stop.
+
+Real-process contracts cover exact codec approvals, selected-SDP refusal before SETUP,
+authenticated capture without retained secrets, one- and two-window source custody,
+unverified tails, cadence refusal, catalog import and cold native pixel decode with the
+original capture archive offline. Five independent recovery-command contracts cover the
+operator's cold work/pin path. See [the complete capture workflow](docs/rtsp_capture_cli.md)
+and [retained HEVC import](docs/rtsp_recording_import.md). This closes a reference workflow
+gap; reconnect, arbitrary HEVC profiles/timing and camera/field qualification remain open.
+
 ## Native selected-SDP HEVC live archiving (2026-10-12, reference)
 
 `JournaledLiveHevcArchive` connects the native TCP/Digest session, HEVC picture capture,

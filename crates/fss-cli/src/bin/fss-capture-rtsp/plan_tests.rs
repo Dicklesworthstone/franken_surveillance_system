@@ -442,3 +442,64 @@ fn incomplete_or_unsafe_digest_configuration_is_refused_without_effects() {
         assert!(Options::parse(&input).is_err(), "{key}");
     }
 }
+
+#[test]
+fn codec_selection_preserves_avc_approval_and_separates_hevc_custody() -> Result<(), &'static str> {
+    let mut input = args();
+    let original = Options::parse(&input)?;
+    let approval = original.digest()?;
+    set(&mut input, "--codec", "avc");
+    assert_eq!(Options::parse(&input)?.digest()?, approval);
+    set(&mut input, "--codec", "hevc");
+    let selected = Options::parse(&input)?;
+    assert_ne!(selected.digest()?, approval);
+    assert_ne!(
+        selected.catalog_scope().decode_clock,
+        original.catalog_scope().decode_clock
+    );
+    assert_ne!(
+        selected.pin_scope().archive_namespace,
+        original.pin_scope().archive_namespace
+    );
+    assert_eq!(
+        selected.pin_scope().archive_namespace,
+        selected.hevc_archive_config()?.namespace.digest()
+    );
+    assert_eq!(selected.hevc_recording_config()?.payload_type, 96);
+    assert!(selected.preview()?.contains("\"codec\":\"hevc\""));
+    assert!(original.hevc_live_config().is_err());
+    for codec in ["auto", "h265", "HEVC", "jpeg"] {
+        set(&mut input, "--codec", codec);
+        assert!(Options::parse(&input).is_err());
+    }
+    Ok(())
+}
+
+#[test]
+fn hevc_effective_native_limits_and_source_witness_policy_bind_approval() -> Result<(), &'static str>
+{
+    let mut input = args();
+    set(&mut input, "--codec", "hevc");
+    let baseline = Options::parse(&input)?.digest()?;
+    let mutations: [fn(&mut HevcPlan); 5] = [
+        |p| p.reorder.max_bytes -= 1,
+        |p| p.reconstruction.max_fragment_packets -= 1,
+        |p| p.assembly.max_source_spans -= 1,
+        |p| p.configuration.max_parameter_bytes -= 1,
+        |p| p.configuration.max_luma_samples -= 1,
+    ];
+    for mutate in mutations {
+        let mut selected = Options::parse(&input)?;
+        mutate(selected.hevc.as_mut().expect("explicit HEVC"));
+        assert_ne!(selected.digest()?, baseline);
+    }
+    let selected = Options::parse(&input)?;
+    let numbers = selected.bound_numbers();
+    let unique: std::collections::BTreeSet<_> = numbers.iter().map(|(key, _)| *key).collect();
+    assert_eq!(unique.len(), numbers.len());
+    assert!(!unique.contains("reference_frames"));
+    assert!(unique.contains("assembly_source_spans"));
+    assert!(unique.contains("source_only_lookahead_nals"));
+    assert!(selected.preview()?.contains("real-boundary-source-witness"));
+    Ok(())
+}

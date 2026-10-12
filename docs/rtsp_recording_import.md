@@ -13,8 +13,9 @@ a live-camera qualification.
 ## Select and review the exact recording
 
 Use a durable window slot and root returned by the native RTSP recording publisher.
-For a new owner-approved AVC camera session, [capture it with `fss-capture-rtsp`](rtsp_capture_cli.md)
-and select a `window_durable` output row. Supply
+For a new owner-approved AVC or HEVC camera session,
+[capture it with `fss-capture-rtsp`](rtsp_capture_cli.md), selecting `--codec hevc` explicitly
+for HEVC, and use a `window_durable` output row. Supply
 that recording's exact sensor, stream, generation, authority anchor and receive-clock identity.
 The importer does not search the archive or select a latest window.
 
@@ -32,7 +33,11 @@ fss-import-rtsp \
   --owner-authorized yes --read-originals yes --retain-originals yes
 ```
 
-Choose `--codec hevc` for a native H.265 recording. There is no codec fallback. An incorrect
+Choose `--codec hevc` for a native H.265 recording, matching the capture row's `codec`.
+HEVC boundary lookahead remains in the retained original RTP closure; source-only NALs
+do not become extra decoded samples. Use the [catalog importer](RTSP_CATALOG_IMPORT.md)
+with exact `catalog_published` pins to join a complete page or an explicit ordered page list.
+There is no codec fallback. An incorrect
 root, slot, scope, codec, deleted child, damaged packet or inconsistent remux mapping refuses
 the import.
 

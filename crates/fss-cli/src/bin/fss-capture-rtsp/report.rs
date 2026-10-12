@@ -11,7 +11,7 @@ use fss_reference::rtsp::live_archive::LiveArchiveRetirement;
 use fss_reference::rtsp::live_avc::LiveAvcRetirement;
 use fss_reference::rtsp::live_avc::recording::LiveRecordingRetirement;
 use fss_reference::rtsp::recording::{PreparedRecording, RecordingScope};
-use fss_reference::rtsp::recording_archive::ArchiveSnapshot;
+use fss_reference::rtsp::recording_archive::{ArchiveCodec, CodecArchiveSnapshot};
 use fss_reference::rtsp::recording_capture::CaptureRetirement;
 use fss_reference::rtsp::recording_collector::{CollectedSource, UnsealedRecording};
 use fss_reference::rtsp::tcp::TcpTotals;
@@ -95,6 +95,9 @@ pub(super) struct Statistics {
     pub(super) durable_pictures: u64,
     pub(super) indexed_windows: usize,
     pub(super) durable_source_object_bytes: u64,
+    pub(super) durable_source_only_nals: u64,
+    pub(super) pending_source_only_nals: u64,
+    pub(super) released_rtp_bytes: u64,
     pub(super) unselected_rtp_bytes: u64,
     pub(super) unsealed_rtp_bytes: u64,
     pub(super) unsealed_pictures: u64,
@@ -115,7 +118,7 @@ pub(super) struct Statistics {
     pub(super) unrecorded_work_receipt: Option<String>,
 }
 impl Statistics {
-    pub(super) fn snapshot(&mut self, snapshot: &ArchiveSnapshot) {
+    pub(super) fn snapshot<C: ArchiveCodec>(&mut self, snapshot: &CodecArchiveSnapshot<C>) {
         self.durable_windows = snapshot.windows().len();
         self.durable_pictures = snapshot.windows().iter().map(|e| e.samples() as u64).sum();
         self.indexed_windows = snapshot.indexed_windows();
@@ -273,6 +276,7 @@ pub(super) fn terminal(
         ("durable_windows", stats.durable_windows.to_string()),
         ("indexed_windows", stats.indexed_windows.to_string()),
         ("source", scope_json(&options.recording_config().scope)),
+        ("codec", string(options.codec())),
         (
             "archive_namespace",
             string(&options.pin_scope().archive_namespace.to_text()),
@@ -330,6 +334,16 @@ pub(super) fn terminal(
         (
             "durable_source_object_bytes",
             stats.durable_source_object_bytes.to_string(),
+        ),
+        (
+            "durable_source_only_nals",
+            stats.durable_source_only_nals.to_string(),
+        ),
+        // HEVC boundary witnesses may be shared by adjacent selected windows. Released
+        // active buffers are not disjoint omissions and are not permission to delete custody.
+        (
+            "released_active_rtp_bytes",
+            stats.released_rtp_bytes.to_string(),
         ),
         // These are different representations, not additive disjoint byte totals. Original
         // RTP retained inside verified windows does not imply custody of the full TCP stream.

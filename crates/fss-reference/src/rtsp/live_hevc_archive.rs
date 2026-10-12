@@ -200,7 +200,7 @@ pub enum LiveHevcArchiveStep {
     Finished {
         /// Exact existing writer completion, including snapshot and inventory counts.
         archive: ArchiveWriteProgress,
-        /// Actual input EOF and explicit owner stop remain distinguishable.
+        /// Observed source termination (EOF/EOB) and explicit owner stop remain distinguishable.
         cause: LiveArchiveCompletion,
     },
     /// Input invalidation stopped progress without sealing unsafe work or fabricating EOF.
@@ -719,7 +719,8 @@ impl<'a, 'p> JournaledLiveHevcArchive<'a, 'p> {
                 }
             }
             HevcCapturePoll::Sealed(seal) => {
-                // Only collector.finish emits this event: all actual EOF input has drained.
+                // Only collector.finish emits this event: admitted source input has drained
+                // after an observed EOF or EOB. This does not assert physical TCP EOF.
                 // Retire the live grant before the final window crosses its checkpoint barrier,
                 // but keep capture ownership until Window and Ended transfer its exact source.
                 self.completion = Some(LiveArchiveCompletion::InputEnded);

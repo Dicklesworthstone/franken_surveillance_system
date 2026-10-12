@@ -1,5 +1,5 @@
 #![forbid(unsafe_code)]
-//! One approved native AVC attempt, with durable original-window custody and independent pins.
+//! One approved native capture attempt, with original-window custody and independent pins.
 //! Selected original RTP datagrams are archived. Raw TCP/control/RTCP, startup pictures,
 //! and unsealed terminal work are explicitly accounted for, never called durable recordings.
 
@@ -27,7 +27,9 @@ use fss_reference::rtsp::client::{ClientCommand, ClientProgress, ClientState};
 use fss_reference::rtsp::live_archive::{LiveArchiveCompletion, LiveArchiveError, LiveArchiveStep};
 use fss_reference::rtsp::live_avc::recording::{LiveRecordingError, LiveRecordingStep};
 use fss_reference::rtsp::live_avc::{LiveAvcError, LiveAvcStep, SocketReadiness};
-use fss_reference::rtsp::recording_archive::ArchiveWriteProgress;
+use fss_reference::rtsp::recording_archive::{
+    ArchiveCodec, ArchiveWriteProgress, CodecArchiveSnapshot,
+};
 use fss_reference::rtsp::recording_capture::{CaptureError, CapturePoll, TimedCapture};
 use fss_reference::rtsp::recording_collector::CollectorError;
 use fss_reference::rtsp::tcp::{TcpAuthority, TcpBinding, TcpDenial, TcpError, TcpOperation};
@@ -36,6 +38,8 @@ use super::authentication::{CredentialLease, Entropy, MAX_CREDENTIAL_BYTES, Secr
 use super::plan::Options;
 use super::timing::FixedTiming;
 
+#[path = "hevc_driver.rs"]
+mod hevc;
 #[path = "report.rs"]
 mod report;
 use report::{
@@ -497,10 +501,11 @@ fn network_step<W: Write>(
     Ok(None)
 }
 
-fn archive_progress<W: Write>(
+fn archive_progress<C: ArchiveCodec, W: Write>(
     progress: ArchiveWriteProgress,
-    capture: &JournaledLiveAvcArchive<'_, '_>,
+    snapshot: Option<&CodecArchiveSnapshot<C>>,
     namespace: ContentDigest,
+    codec: &str,
     stats: &mut Statistics,
     ready: &mut bool,
     log: &mut Transcript<'_, W>,
@@ -518,7 +523,7 @@ fn archive_progress<W: Write>(
             if receipt.claims.local != LocalPublicationState::Durable {
                 return Err(Failure::State);
             }
-            let snapshot = capture.snapshot().ok_or(Failure::State)?;
+            let snapshot = snapshot.ok_or(Failure::State)?;
             let entry = snapshot.windows().get(ordinal).ok_or(Failure::State)?;
             if entry.slot() != &receipt.slot || entry.root() != receipt.root {
                 return Err(Failure::State);
@@ -528,6 +533,8 @@ fn archive_progress<W: Write>(
                 return Err(Failure::State);
             }
             stats.durable_source_object_bytes += source_bytes;
+            let source_only_nals = std::mem::take(&mut stats.pending_source_only_nals);
+            stats.durable_source_only_nals += source_only_nals;
             stats.snapshot(snapshot);
             let interval = entry.decode_interval();
             log.emit(
@@ -553,7 +560,8 @@ fn archive_progress<W: Write>(
                         snapshot.namespace().scope().time_scale.to_string(),
                     ),
                     ("source_object_bytes", source_bytes.to_string()),
-                    ("codec", string("avc")),
+                    ("source_only_nals", source_only_nals.to_string()),
+                    ("codec", string(codec)),
                     ("pixel_decode", "false".into()),
                     ("catalog_indexed", "false".into()),
                     ("record_digest", string(&receipt.record_digest.to_text())),
@@ -569,7 +577,7 @@ fn archive_progress<W: Write>(
             if receipt.claims.local != LocalPublicationState::Durable {
                 return Err(Failure::State);
             }
-            let snapshot = capture.snapshot().ok_or(Failure::State)?;
+            let snapshot = snapshot.ok_or(Failure::State)?;
             let page = snapshot
                 .pages()
                 .iter()
@@ -578,9 +586,9 @@ fn archive_progress<W: Write>(
             let catalog = page.catalog();
             let scope = snapshot.namespace().scope();
             if page.slot() != &receipt.slot
-                || catalog.manifest().root() != receipt.root
-                || catalog.entries().len() != windows
-                || catalog.scope() != scope
+                || C::manifest(catalog).root() != receipt.root
+                || C::entries(catalog).len() != windows
+                || C::scope(catalog) != scope
             {
                 return Err(Failure::State);
             }
@@ -596,7 +604,7 @@ fn archive_progress<W: Write>(
                     ("source", scope_json(&scope.recording)),
                     ("decode_clock", string(&scope.decode_clock.to_text())),
                     ("time_scale", scope.time_scale.to_string()),
-                    ("codec", string("avc")),
+                    ("codec", string(codec)),
                     ("receipt", receipt_json(&receipt)),
                 ]),
                 false,
@@ -797,7 +805,15 @@ fn drive<W: Write>(
                     )?;
                 }
                 JournaledArchiveProgress::Archive(progress) => {
-                    archive_progress(progress, capture, namespace, stats, &mut ready, log)?;
+                    archive_progress(
+                        progress,
+                        capture.snapshot(),
+                        namespace,
+                        "avc",
+                        stats,
+                        &mut ready,
+                        log,
+                    )?;
                 }
             },
             JournaledLiveArchiveStep::Live(LiveArchiveStep::WindowAccepted(admission)) => {
@@ -827,10 +843,26 @@ fn drive<W: Write>(
                 )?;
             }
             JournaledLiveArchiveStep::Live(LiveArchiveStep::Archive(progress)) => {
-                archive_progress(progress, capture, namespace, stats, &mut ready, log)?;
+                archive_progress(
+                    progress,
+                    capture.snapshot(),
+                    namespace,
+                    "avc",
+                    stats,
+                    &mut ready,
+                    log,
+                )?;
             }
             JournaledLiveArchiveStep::Live(LiveArchiveStep::Finished { archive, cause }) => {
-                archive_progress(archive, capture, namespace, stats, &mut ready, log)?;
+                archive_progress(
+                    archive,
+                    capture.snapshot(),
+                    namespace,
+                    "avc",
+                    stats,
+                    &mut ready,
+                    log,
+                )?;
                 stats.observe(capture);
                 return if cause == LiveArchiveCompletion::OwnerStopped
                     && stats.collected_pictures == options.stop_after_pictures
@@ -1031,7 +1063,7 @@ fn run_owned<W: Write>(
     let owner = Owner {
         cx: &cx,
         authority,
-        binding: options.live_config().binding,
+        binding: options.binding(),
         start,
         live_deadline: options.timeout_ns,
         storage_deadline,
@@ -1044,6 +1076,17 @@ fn run_owned<W: Write>(
         let mut publisher = LocalRootPublisher::open(&root, options.publication_limits())
             .map_err(|_| Failure::Storage)?;
         owner.now()?;
+        if options.codec() == "hevc" {
+            return hevc::run(
+                options,
+                &pin_root,
+                &mut publisher,
+                &owner,
+                entropy.as_mut(),
+                stats,
+                log,
+            );
+        }
         let mut pins =
             ArchivePinJournal::create(&pin_root, options.pin_scope(), options.pin_limits(), &owner)
                 .map_err(|_| Failure::Storage)?;
@@ -1090,7 +1133,7 @@ pub(super) fn execute(options: &Options) -> Result<(), &'static str> {
     let byte_budget = publication
         .spool
         .max_total_bytes
-        .checked_add(options.live_config().transport.max_received_bytes)
+        .checked_add(options.max_received_bytes())
         .and_then(|budget| {
             budget.checked_add(if options.authentication.is_some() {
                 MAX_CREDENTIAL_BYTES as u64 + 1 + 16 * options.max_steps
@@ -1156,17 +1199,10 @@ pub(super) fn execute(options: &Options) -> Result<(), &'static str> {
             ("frame_duration_ticks", options.frame_duration.to_string()),
             (
                 "decode_clock",
-                string(
-                    &options
-                        .archive_config()
-                        .namespace
-                        .scope()
-                        .decode_clock
-                        .to_text(),
-                ),
+                string(&options.catalog_scope().decode_clock.to_text()),
             ),
             ("time_scale", options.time_scale.to_string()),
-            ("codec", string("avc")),
+            ("codec", string(options.codec())),
             ("authentication", string(options.authentication_mode())),
             ("server_identity_verified", "false".into()),
             ("transport_encrypted", "false".into()),

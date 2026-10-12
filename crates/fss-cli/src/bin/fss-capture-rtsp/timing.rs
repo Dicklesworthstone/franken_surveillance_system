@@ -6,6 +6,8 @@
 //! they never establish a wall clock, capture interval, or decoder reorder model.
 
 use fss_packet::StreamKey;
+use fss_reference::rtsp::hevc_recording_capture::HevcPictureTimingRequest;
+use fss_reference::rtsp::recording::hevc::HevcRecordingTiming;
 use fss_reference::rtsp::recording_capture::PictureTimingRequest;
 use fss_reference::rtsp::recording_collector::RecordingTiming;
 
@@ -51,14 +53,34 @@ impl FixedTiming {
         &mut self,
         request: PictureTimingRequest,
     ) -> Result<RecordingTiming, &'static str> {
-        if request.key.ingress == 0 || request.key.generation == 0 {
+        self.observe_source(request.key, request.rtp_timestamp)
+    }
+
+    pub(super) fn observe_hevc(
+        &mut self,
+        request: HevcPictureTimingRequest,
+    ) -> Result<HevcRecordingTiming, &'static str> {
+        let timing = self.observe_source(request.key, request.rtp_timestamp)?;
+        Ok(HevcRecordingTiming {
+            decode_time: timing.decode_time,
+            duration: timing.duration,
+            composition_offset: timing.composition_offset,
+        })
+    }
+
+    fn observe_source(
+        &mut self,
+        key: StreamKey,
+        rtp_timestamp: u32,
+    ) -> Result<RecordingTiming, &'static str> {
+        if key.ingress == 0 || key.generation == 0 {
             return Err("picture has an invalid stream identity");
         }
         let decode_time = if let Some(previous) = self.previous {
-            if request.key != previous.key {
+            if key != previous.key {
                 return Err("picture stream changed; a new capture generation is required");
             }
-            if request.rtp_timestamp != previous.rtp_timestamp.wrapping_add(self.frame_duration) {
+            if rtp_timestamp != previous.rtp_timestamp.wrapping_add(self.frame_duration) {
                 return Err(
                     "RTP timestamps do not match the declared fixed cadence; gaps and reordered pictures are unsupported",
                 );
@@ -77,8 +99,8 @@ impl FixedTiming {
             composition_offset: 0,
         };
         self.previous = Some(PreviousPicture {
-            key: request.key,
-            rtp_timestamp: request.rtp_timestamp,
+            key,
+            rtp_timestamp,
             next_decode_time,
         });
         Ok(timing)
