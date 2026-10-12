@@ -30,7 +30,7 @@ jobs:
     steps:
       - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
       - name: Bootstrap the pinned compiler and inspection tools
-        run: rustup toolchain install nightly-2026-08-31 --profile minimal --component rustfmt,clippy,rust-src
+        run: bash scripts/bootstrap_toolchain.sh
       - name: Check feature formatting without rewriting compiler inputs
         run: >-
           rustfmt +nightly-2026-08-31 --check --edition 2024 --config skip_children=true
@@ -103,7 +103,7 @@ jobs:
     steps:
       - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
       - name: Bootstrap the pinned compiler and inspection tools
-        run: rustup toolchain install nightly-2026-08-31 --profile minimal --component rustfmt,clippy,rust-src
+        run: bash scripts/bootstrap_toolchain.sh
       - name: MCP sessions, durable investigations, coordination and approved control
         if: success() || failure()
         run: |
@@ -125,7 +125,7 @@ jobs:
     steps:
       - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
       - name: Bootstrap the pinned compiler and inspection tools
-        run: rustup toolchain install nightly-2026-08-31 --profile minimal --component rustfmt,clippy,rust-src
+        run: bash scripts/bootstrap_toolchain.sh
       - name: Exclusive writer lifetime and failed-open recovery
         if: success() || failure()
         run: |

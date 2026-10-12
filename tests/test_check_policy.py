@@ -612,10 +612,60 @@ class CheckPolicyDigestDomainRegistrationTests(CheckPolicyFixtureCase):
     def test_live_tree_passes_with_the_committed_allowlist(self) -> None:
         self.assertEqual(check_policy.digest_domain_registration_policy(ROOT), [])
 
+    def test_planted_inline_encoder_tag_fails(self) -> None:
+        self._registries()
+        self._rust(
+            "crates/fss-x/src/codec.rs",
+            'fn encode(e: &mut CanonicalEncoder) {\n'
+            '    e.text("fss.planted_inline.v1");\n'
+            '}\n',
+        )
+        problems = check_policy.digest_domain_registration_policy(self.root, allowlist=frozenset())
+        self.assertEqual(len(problems), 1, problems)
+        self.assertTrue(problems[0].startswith("DIGEST-DOMAIN-UNREGISTERED: crates/fss-x/src/codec.rs:2:"), problems)
+        self.assertIn("inline encoder tag 'fss.planted_inline.v1'", problems[0])
+
+    def test_registered_inline_encoder_tag_passes(self) -> None:
+        self._registries(digest_rows="| `SCHEMA-DOMAIN-INLINE-001` | `fss.registered_inline.v1` | Core | authority | rule |\n")
+        self._rust(
+            "crates/fss-x/src/codec.rs",
+            'fn encode(e: &mut CanonicalEncoder) {\n    e.text("fss.registered_inline.v1");\n}\n',
+        )
+        self.assertEqual(check_policy.digest_domain_registration_policy(self.root, allowlist=frozenset()), [])
+
+    def test_inline_tag_comment_lines_do_not_fire(self) -> None:
+        self._registries()
+        self._rust(
+            "crates/fss-x/src/codec.rs",
+            '// e.text("fss.doc_comment_example.v1"); classic doc example\n'
+            'fn encode(e: &mut CanonicalEncoder) {}\n',
+        )
+        self.assertEqual(check_policy.digest_domain_registration_policy(self.root, allowlist=frozenset()), [])
+
+    def test_inline_tag_test_code_is_out_of_scope(self) -> None:
+        self._registries()
+        self._rust(
+            "crates/fss-x/src/lib.rs",
+            '#[cfg(test)]\nmod tests {\n    fn t(e: &mut CanonicalEncoder) { e.text("fss.inline_test_tag.v1"); }\n}\n',
+        )
+        self.assertEqual(check_policy.digest_domain_registration_policy(self.root, allowlist=frozenset()), [])
+
     def test_baseline_allowlist_reached_its_deletion_condition(self) -> None:
-        # All 63 baseline domains are registered; the allowlist stays empty and is never refilled.
+        # All 63 const baseline domains are registered; that allowlist stays empty forever.
         self.assertEqual(check_policy.DIGEST_DOMAIN_BASELINE_ALLOWLIST, frozenset())
-        self.assertEqual(check_policy.digest_domain_registration_policy(ROOT, allowlist=frozenset()), [])
+
+    def test_inline_baseline_allowlist_is_exactly_the_live_unregistered_set(self) -> None:
+        # Ratchet start (fss-bja6m, 2026-10-12): the inline baseline must exactly equal the
+        # domains currently emitted unregistered in non-test code. Any drift — registered (retire
+        # the entry), removed (retire it), or newly planted (fails the live-tree check) — shows up
+        # here first. It may only shrink.
+        registered = check_policy.registered_digest_domain_names(ROOT)
+        live = {domain for domain, _, _ in check_policy.inline_encoder_digest_domains(ROOT)}
+        self.assertEqual(
+            check_policy.DIGEST_DOMAIN_INLINE_BASELINE_ALLOWLIST,
+            frozenset(live - registered),
+            "inline baseline drifted: registered/removed entries must be retired from the allowlist",
+        )
 
 
 if __name__ == "__main__":

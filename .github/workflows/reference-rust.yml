@@ -33,56 +33,56 @@ jobs:
     steps:
       - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
       - name: Provision pinned test toolchain
-        run: rustup toolchain install nightly-2026-08-31 --profile minimal --component rustfmt --component clippy
+        run: bash scripts/bootstrap_toolchain.sh
       - name: Verify deployment status inventory and bounded admission
         run: |
-          rustup run nightly-2026-08-31 cargo test --locked --offline -p fss-reference --lib deployment_status::tests
-          rustup run nightly-2026-08-31 cargo test --locked --offline -p fss-cli --test status_real_root
+          cargo +nightly-2026-08-31 test --locked --offline -p fss-reference --lib deployment_status::tests
+          cargo +nightly-2026-08-31 test --locked --offline -p fss-cli --test status_real_root
       - name: Verify exact continuation compatibility
-        run: rustup run nightly-2026-08-31 cargo test --locked --offline -p fss-core --lib continuation::tests
+        run: cargo +nightly-2026-08-31 test --locked --offline -p fss-core --lib continuation::tests
       - name: Verify bounded context expansion bindings
-        run: rustup run nightly-2026-08-31 cargo test --locked --offline -p fss-core --test context_expansion_binding_contract
+        run: cargo +nightly-2026-08-31 test --locked --offline -p fss-core --test context_expansion_binding_contract
       - name: Verify native deployment and agent backup recovery
-        run: rustup run nightly-2026-08-31 cargo test --locked --offline -p fss-reference --test deployment_backup_contract
+        run: cargo +nightly-2026-08-31 test --locked --offline -p fss-reference --test deployment_backup_contract
       - name: Verify backup operator commands and historical inspection
-        run: rustup run nightly-2026-08-31 cargo test --locked --offline -p fss-cli --test deployment_backup_cli
+        run: cargo +nightly-2026-08-31 test --locked --offline -p fss-cli --test deployment_backup_cli
       - name: Verify existing session and restored-effect boundaries
-        run: 'rustup run nightly-2026-08-31 cargo test --locked --offline -p fss-reference --lib deployment_session::'
+        run: 'cargo +nightly-2026-08-31 test --locked --offline -p fss-reference --lib deployment_session::'
       - name: Verify exclusive writer lifetimes and recovery
         if: success() || failure()
         run: |
-          rustup run nightly-2026-08-31 cargo test --locked --offline -p fss-object --test staging_spool_contract --test staging_spool_io_faults
-          rustup run nightly-2026-08-31 cargo test --locked --offline -p fss-publication --test lock_lifetime_contract --test root_last_publication_contract --test local_publication_io_faults
-          rustup run nightly-2026-08-31 cargo test --locked --offline -p fss-reference --test reference_deployment_recovery_contract
+          cargo +nightly-2026-08-31 test --locked --offline -p fss-object --test staging_spool_contract --test staging_spool_io_faults
+          cargo +nightly-2026-08-31 test --locked --offline -p fss-publication --test lock_lifetime_contract --test root_last_publication_contract --test local_publication_io_faults
+          cargo +nightly-2026-08-31 test --locked --offline -p fss-reference --test reference_deployment_recovery_contract
       - name: Verify bounded event queries
-        run: rustup run nightly-2026-08-31 cargo test --locked --offline -p fss-reference --lib agent_query::tests
+        run: cargo +nightly-2026-08-31 test --locked --offline -p fss-reference --lib agent_query::tests
       - name: Verify protected deployment orientation
-        run: rustup run nightly-2026-08-31 cargo test --locked --offline -p fss-reference --lib agent_orient::tests
+        run: cargo +nightly-2026-08-31 test --locked --offline -p fss-reference --lib agent_orient::tests
       - name: Verify bounded follow waits and exact CLI/MCP deltas
         run: |
           follow_exit=0
-          rustup run nightly-2026-08-31 cargo test --locked --offline -p fss-reference --lib agent_follow:: || follow_exit=1
-          rustup run nightly-2026-08-31 cargo test --locked --offline -p fss-reference --test follow_wait_partitioned_custody_contract || follow_exit=1
-          rustup run nightly-2026-08-31 cargo test --locked --offline -p fss-reference --test follow_replay_contract || follow_exit=1
-          rustup run nightly-2026-08-31 cargo test --locked --offline -p fss-reference --test follow_session_delivery_contract || follow_exit=1
-          rustup run nightly-2026-08-31 cargo test --locked --offline -p fss-reference --lib agent_session::checkpoint::journal::follow::tests || follow_exit=1
-          rustup run nightly-2026-08-31 cargo test --locked --offline -p fss-cli --lib follow_cmd:: || follow_exit=1
-          rustup run nightly-2026-08-31 cargo test --locked --offline -p fss-cli --bin fss-mcp || follow_exit=1
-          rustup run nightly-2026-08-31 cargo test --locked --offline -p fss-cli --test follow_cli_contract || follow_exit=1
-          rustup run nightly-2026-08-31 cargo test --locked --offline -p fss-cli --test follow_subscription_cli_contract || follow_exit=1
-          rustup run nightly-2026-08-31 cargo test --no-fail-fast --locked --offline -p fss-cli --test session_cli_contract --test mcp_cli_contract --test mcp_session_lifecycle_contract --test investigate_cli_contract --test mcp_investigation_contract --test mcp_coordination_contract --test work_claim_cli_contract --test finding_cli_contract --test mcp_control_contract --test agent_effect_cli_contract --test mcp_feedback_contract || follow_exit=1
+          cargo +nightly-2026-08-31 test --locked --offline -p fss-reference --lib agent_follow:: || follow_exit=1
+          cargo +nightly-2026-08-31 test --locked --offline -p fss-reference --test follow_wait_partitioned_custody_contract || follow_exit=1
+          cargo +nightly-2026-08-31 test --locked --offline -p fss-reference --test follow_replay_contract || follow_exit=1
+          cargo +nightly-2026-08-31 test --locked --offline -p fss-reference --test follow_session_delivery_contract || follow_exit=1
+          cargo +nightly-2026-08-31 test --locked --offline -p fss-reference --lib agent_session::checkpoint::journal::follow::tests || follow_exit=1
+          cargo +nightly-2026-08-31 test --locked --offline -p fss-cli --lib follow_cmd:: || follow_exit=1
+          cargo +nightly-2026-08-31 test --locked --offline -p fss-cli --bin fss-mcp || follow_exit=1
+          cargo +nightly-2026-08-31 test --locked --offline -p fss-cli --test follow_cli_contract || follow_exit=1
+          cargo +nightly-2026-08-31 test --locked --offline -p fss-cli --test follow_subscription_cli_contract || follow_exit=1
+          cargo +nightly-2026-08-31 test --no-fail-fast --locked --offline -p fss-cli --test session_cli_contract --test mcp_cli_contract --test mcp_session_lifecycle_contract --test investigate_cli_contract --test mcp_investigation_contract --test mcp_coordination_contract --test work_claim_cli_contract --test finding_cli_contract --test mcp_control_contract --test agent_effect_cli_contract --test mcp_feedback_contract || follow_exit=1
           exit "$follow_exit"
       - name: Verify query CLI, library and MCP parity
         if: success() || failure()
-        run: rustup run nightly-2026-08-31 cargo test --locked --offline -p fss-cli --test query_surface_contract
+        run: cargo +nightly-2026-08-31 test --locked --offline -p fss-cli --test query_surface_contract
       - name: Verify complete RTSP catalog custody and legacy window imports
         if: success() || failure()
-        run: rustup run nightly-2026-08-31 cargo test --locked --offline -p fss-reference --test rtsp_catalog_import_contract --test rtsp_import_contract
+        run: cargo +nightly-2026-08-31 test --locked --offline -p fss-reference --test rtsp_catalog_import_contract --test rtsp_import_contract
       - name: Verify RTSP catalog and window operator commands
         if: success() || failure()
-        run: rustup run nightly-2026-08-31 cargo test --locked --offline -p fss-cli --test rtsp_catalog_import_cli --test rtsp_import_cli --bin fss-import-rtsp
+        run: cargo +nightly-2026-08-31 test --locked --offline -p fss-cli --test rtsp_catalog_import_cli --test rtsp_import_cli --bin fss-import-rtsp
       - name: Compile and execute native reference contracts
-        run: rustup run nightly-2026-08-31 cargo test --locked --offline --workspace --all-targets
+        run: cargo +nightly-2026-08-31 test --locked --offline --workspace --all-targets
       - name: Execute repository-owned Rust qualification lane
         run: bash scripts/qualify.sh --lane rust
       - name: Check bounded follow source formatting

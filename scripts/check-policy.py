@@ -418,6 +418,100 @@ DIGEST_DOMAIN_REGISTRIES = ("registries/DIGEST_DOMAINS.md", "registries/SCHEMAS.
 # may only shrink: an entry that is registered or no longer defined in code is itself a failure.
 # Every baseline domain is now registered, so it is empty; keep the mechanism and never refill it.
 DIGEST_DOMAIN_BASELINE_ALLOWLIST: frozenset[str] = frozenset()
+# Inline `.text("fss.*.vN")` encoder tags are in scope too (fss-bja6m): they are digest domains
+# exactly like named constants, but were invisible to the const-only scan. Baseline of the 86
+# unregistered inline tags at landing (2026-10-12). It may only shrink: an entry that is registered
+# or no longer emitted in code is itself a failure. Retire entries by registering durable domains
+# in registries/DIGEST_DOMAINS.md / SCHEMAS.md and removing them here.
+DIGEST_DOMAIN_INLINE_BASELINE_ALLOWLIST: frozenset[str] = frozenset({
+    "fss.agent_follow_anchor_token.v1",
+    "fss.agent_follow_item.v1",
+    "fss.agent_query.decision.v1",
+    "fss.agent_query.request.v1",
+    "fss.agent_query.scope.v1",
+    "fss.agent_query.selection.v1",
+    "fss.agent_query.sensor_integrity.v1",
+    "fss.datagram_recording_interpretation.v1",
+    "fss.detector_cascade_process_cache.v1",
+    "fss.evidence_export.failure_domain.v1",
+    "fss.export_package_file_approval.v1",
+    "fss.framed_screened_jpeg.reference.v1",
+    "fss.hevc.collection.picture.v1",
+    "fss.http-webhook-observation.v1",
+    "fss.http_check_frames.v1",
+    "fss.http_recoverable_capture_plan.v1",
+    "fss.http_wire_namespace.v1",
+    "fss.http_wire_scope.v1",
+    "fss.injected_gap_witness.v1",
+    "fss.lab.replay.transcript.v1",
+    "fss.lab.self_test.matrix.v1",
+    "fss.local_box_tracks.v1",
+    "fss.local_track_seed.v1",
+    "fss.mock_model_output.v1",
+    "fss.mock_model_spec.v1",
+    "fss.object_manifest.v1",
+    "fss.packet_fault_journal.v1",
+    "fss.recorded_activity_decision.v1",
+    "fss.recorded_activity_plan.v1",
+    "fss.recorded_decode_refusal_key.v1",
+    "fss.recorded_detection_contract.v1",
+    "fss.recorded_detections.v1",
+    "fss.recorded_event_proposal.v1",
+    "fss.recorded_executor_source_profile.v1",
+    "fss.recorded_luma_key.v2",
+    "fss.recorded_model_importer.v1",
+    "fss.recorded_model_run_key.v1",
+    "fss.recording_reconstruction_result.v1",
+    "fss.reference.activity_basis.v1",
+    "fss.reference.activity_pixels.v1",
+    "fss.reference.activity_receipt.v1",
+    "fss.reference.pixel_content.v1",
+    "fss.reference.planned_scalar_profile.v1",
+    "fss.reference.scalar_memory_receipt.v1",
+    "fss.reference_affordance_frontier.v2",
+    "fss.reference_alert_outcome.v1",
+    "fss.reference_anchor_position_cell_semantics.v1",
+    "fss.reference_bound_context_hydration.v1",
+    "fss.reference_bound_situation_publication.v1",
+    "fss.reference_context_frontier.v1",
+    "fss.reference_coordination_outcome.v1",
+    "fss.reference_investigation_validity.v1",
+    "fss.reference_local_retention_deletion.v1",
+    "fss.reference_meaningful_delta_identity.v1",
+    "fss.reference_projection_identity.source_omissions.v1",
+    "fss.reference_projection_identity.v1",
+    "fss.reference_publication_lineage_proof.v1",
+    "fss.reference_publication_lineage_subject.v1",
+    "fss.reference_retention_plan.v1",
+    "fss.reference_retention_state.v1",
+    "fss.reference_situation_compilation.v1",
+    "fss.reference_unknown_presence_policy.v2",
+    "fss.reference_world_compilation.v1",
+    "fss.reference_world_semantics.v1",
+    "fss.retention_capsule_timing.v1",
+    "fss.rgb-detection-result.reference.v1",
+    "fss.rgb-inference-model.reference.v1",
+    "fss.rgb-inference.reference.v1",
+    "fss.rgb-tensor-result.reference.v1",
+    "fss.rgb-tracking-input.reference.v1",
+    "fss.rgb-tracking-proposal.reference.v1",
+    "fss.rgb-weight-import.reference.v1",
+    "fss.rtsp_datagram_avc_interpretation.v1",
+    "fss.rtsp_datagram_namespace.v1",
+    "fss.rtsp_datagram_scope.v1",
+    "fss.rtsp_reconnect_cli_plan.v1",
+    "fss.screened_jpeg.reference.v1",
+    "fss.screening_policy.reference.v1",
+    "fss.screening_report.reference.v1",
+    "fss.sensor_health.observation.v1",
+    "fss.sensor_health.report.v1",
+    "fss.sensor_health.source.v1",
+    "fss.tutk_ingest.limits.v1",
+    "fss.virtual_delivery_trace.v1",
+    "fss.virtual_mjpeg.rectangle.v1",
+    "fss.virtual_source_trace.v1",
+})
+DIGEST_DOMAIN_ENCODER_RE = re.compile(r'\.text\(\s*"(fss\.[A-Za-z0-9_.\-]*?\.v[0-9]+)"')
 DIGEST_DOMAIN_CONST_RE = re.compile(
     r'^[ \t]*(?:pub(?:\([^)]*\))?[ \t]+)?const[ \t]+([A-Z0-9_]*DOMAIN[A-Z0-9_]*)[ \t]*:[^=;]*=\s*b?"'
     r'(fss\.[A-Za-z0-9_.\-]*?\.v[0-9]+)(?![A-Za-z0-9_.\-])',
@@ -492,11 +586,47 @@ def digest_domain_constants(root: Path = ROOT) -> list[tuple[str, str, int, str]
     return found
 
 
+def inline_encoder_digest_domains(root: Path = ROOT) -> list[tuple[str, str, int]]:
+    """(domain, path, line) of the first inline `.text("fss.*.vN")` encoder tag per file.
+
+    Non-test crate code only (cfg(test) module bodies blanked; tests/ and *_tests.rs skipped).
+    Comment lines whose prefix before `.text(` contains `//` are skipped so documented examples
+    do not fire. One finding per (domain, file): registration is per domain, not per use.
+    """
+    found: list[tuple[str, str, int]] = []
+    crates = root / "crates"
+    if not crates.is_dir():
+        return found
+    for path in sorted(crates.rglob("*.rs")):
+        relative = path.relative_to(root)
+        if "target" in relative.parts or is_test_rust_path(relative):
+            continue
+        text = _without_cfg_test_modules(path.read_text(encoding="utf-8"))
+        seen_domains: set[str] = set()
+        lines = text.splitlines()
+        for match in DIGEST_DOMAIN_ENCODER_RE.finditer(text):
+            domain = match.group(1)
+            if domain in seen_domains:
+                continue
+            line_no = text.count("\n", 0, match.start()) + 1
+            line = lines[line_no - 1] if 0 < line_no <= len(lines) else ""
+            prefix = line[: max(line.find(".text"), 0)]
+            if "//" in prefix:
+                continue
+            seen_domains.add(domain)
+            found.append((domain, relative.as_posix(), line_no))
+    return found
+
+
 def digest_domain_registration_policy(
     root: Path = ROOT, allowlist: frozenset[str] | None = None
 ) -> list[str]:
-    """Problems: unregistered domain constants outside the allowlist, and stale allowlist rows."""
-    allowed = DIGEST_DOMAIN_BASELINE_ALLOWLIST if allowlist is None else allowlist
+    """Problems: unregistered domains (constants or inline encoder tags) outside the allowlist,
+    and stale allowlist rows. The default allowlist is the union of the const baseline (empty) and
+    the inline-tag baseline; each may only shrink."""
+    if allowlist is None:
+        allowlist = DIGEST_DOMAIN_BASELINE_ALLOWLIST | DIGEST_DOMAIN_INLINE_BASELINE_ALLOWLIST
+    allowed = allowlist
     registered = registered_digest_domain_names(root)
     problems: list[str] = []
     unregistered_in_code: set[str] = set()
@@ -510,10 +640,20 @@ def digest_domain_registration_policy(
                 "registries/DIGEST_DOMAINS.md or registries/SCHEMAS.md; register it with an accurate "
                 "description and bump the digest-domain count pins"
             )
+    for domain, relative, line in inline_encoder_digest_domains(root):
+        if domain in registered:
+            continue
+        unregistered_in_code.add(domain)
+        if domain not in allowed:
+            problems.append(
+                f"DIGEST-DOMAIN-UNREGISTERED: {relative}:{line}: inline encoder tag {domain!r} has "
+                "no row in registries/DIGEST_DOMAINS.md or registries/SCHEMAS.md; register it with "
+                "an accurate description and bump the digest-domain count pins"
+            )
     for domain in sorted(allowed - unregistered_in_code):
         problems.append(
             f"DIGEST-DOMAIN-ALLOWLIST-STALE: {domain!r} is registered or no longer defined in code; "
-            "remove it from DIGEST_DOMAIN_BASELINE_ALLOWLIST in scripts/check-policy.py"
+            "remove it from the digest-domain baseline allowlists in scripts/check-policy.py"
         )
     return problems
 
