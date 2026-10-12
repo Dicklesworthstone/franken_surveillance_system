@@ -2,7 +2,6 @@
 //! Small canonical pin records inside the existing crash-classifying Journal framing.
 use super::*;
 use fss_core::{CanonicalDecoder, CanonicalEncoder};
-const DOMAIN: &str = "fss.archive_pin_journal.v1";
 
 fn digest_ok(digest: ContentDigest) -> bool {
     digest.algorithm() == DigestAlgorithm::Sha256 && digest.bytes() != [0; 32]
@@ -13,7 +12,7 @@ pub(super) fn validate_scope(scope: ArchivePinScope) -> PinResult<()> {
     }
     Ok(())
 }
-pub(super) fn validate_pin(pin: &StoredArchivePin) -> PinResult<()> {
+pub(super) fn validate_pin_for<C: ArchiveCodec>(pin: &StoredArchivePin) -> PinResult<()> {
     if !digest_ok(pin.root)
         || !digest_ok(pin.retirement)
         || pin.new_payload_bytes == 0
@@ -25,12 +24,12 @@ pub(super) fn validate_pin(pin: &StoredArchivePin) -> PinResult<()> {
     let hex = retirement
         .strip_prefix("sha256:")
         .ok_or(ArchivePinError::History)?;
-    if pin.slot.as_str() != format!("fssaw1-{hex}-r") {
+    if pin.slot.as_str() != format!("{}-{hex}-r", C::WORK_SLOT_PREFIX) {
         return Err(ArchivePinError::History);
     }
     Ok(())
 }
-pub(super) fn encode(
+pub(super) fn encode_for<C: ArchiveCodec>(
     scope: ArchivePinScope,
     tag: u8,
     pin: Option<&StoredArchivePin>,
@@ -40,12 +39,12 @@ pub(super) fn encode(
         return Err(ArchivePinError::History);
     }
     let mut e = CanonicalEncoder::new();
-    e.text(DOMAIN);
+    e.text(C::PIN_JOURNAL_DOMAIN);
     e.digest(scope.journal_id);
     e.digest(scope.archive_namespace);
     e.tag(tag);
     if let Some(pin) = pin {
-        validate_pin(pin)?;
+        validate_pin_for::<C>(pin)?;
         e.text(pin.slot.as_str());
         e.digest(pin.root);
         e.digest(pin.retirement);
@@ -57,10 +56,13 @@ pub(super) fn encode(
     }
     Ok(bytes)
 }
-fn decode(bytes: &[u8], expected: ArchivePinScope) -> PinResult<(u8, Option<StoredArchivePin>)> {
+fn decode<C: ArchiveCodec>(
+    bytes: &[u8],
+    expected: ArchivePinScope,
+) -> PinResult<(u8, Option<StoredArchivePin>)> {
     let decode = || -> Result<_, fss_core::ContractError> {
         let mut d = CanonicalDecoder::new(bytes);
-        if d.text()? != DOMAIN {
+        if d.text()? != C::PIN_JOURNAL_DOMAIN {
             return Err(fss_core::ContractError::InvalidIdentifier);
         }
         let scope = ArchivePinScope {
@@ -93,13 +95,17 @@ fn decode(bytes: &[u8], expected: ArchivePinScope) -> PinResult<(u8, Option<Stor
             })
         })
         .transpose()?;
-    if encode(scope, tag, pin.as_ref())? != bytes {
+    if encode_for::<C>(scope, tag, pin.as_ref())? != bytes {
         return Err(ArchivePinError::History);
     }
     Ok((tag, pin))
 }
-pub(super) fn apply(state: &mut ReplayState, tag: u8, pin: StoredArchivePin) -> PinResult<()> {
-    validate_pin(&pin)?;
+pub(super) fn apply_for<C: ArchiveCodec>(
+    state: &mut ReplayState,
+    tag: u8,
+    pin: StoredArchivePin,
+) -> PinResult<()> {
+    validate_pin_for::<C>(&pin)?;
     match tag {
         1 => {
             if state.pins.candidate.is_some()
@@ -125,7 +131,7 @@ pub(super) fn apply(state: &mut ReplayState, tag: u8, pin: StoredArchivePin) -> 
     }
     Ok(())
 }
-pub(super) fn replay(
+pub(super) fn replay_for<C: ArchiveCodec>(
     report: &RecoveryReport,
     scope: ArchivePinScope,
     limits: ArchivePinLimits,
@@ -138,14 +144,28 @@ pub(super) fn replay(
         if record.kind() != RECORD_KIND || record.sequence() != i as u64 + 1 {
             return Err(ArchivePinError::History);
         }
-        let (tag, pin) = decode(record.payload(), scope)?;
+        let (tag, pin) = decode::<C>(record.payload(), scope)?;
         if i == 0 {
             if tag != 0 || pin.is_some() {
                 return Err(ArchivePinError::History);
             }
         } else {
-            apply(&mut state, tag, pin.ok_or(ArchivePinError::History)?)?;
+            apply_for::<C>(&mut state, tag, pin.ok_or(ArchivePinError::History)?)?;
         }
     }
     Ok(state)
+}
+
+// Keep the existing AVC framing fault tests tied to their original concrete codec.
+#[cfg(test)]
+pub(super) fn encode(
+    scope: ArchivePinScope,
+    tag: u8,
+    pin: Option<&StoredArchivePin>,
+) -> PinResult<Vec<u8>> {
+    encode_for::<AvcArchiveCodec>(scope, tag, pin)
+}
+#[cfg(test)]
+pub(super) fn apply(state: &mut ReplayState, tag: u8, pin: StoredArchivePin) -> PinResult<()> {
+    apply_for::<AvcArchiveCodec>(state, tag, pin)
 }

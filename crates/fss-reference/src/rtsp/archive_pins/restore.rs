@@ -6,7 +6,7 @@
 
 use super::*;
 use crate::rtsp::recording::local::{RecordingIoError, RecordingProgress, RecordingPublication};
-use crate::rtsp::recording_archive::{ArchiveNamespace, ArchiveSnapshot};
+use crate::rtsp::recording_archive::{CodecArchiveNamespace, CodecArchiveSnapshot};
 
 /// Completed restoration of the selected original work, not complete camera capture or indexing.
 #[must_use]
@@ -32,7 +32,7 @@ pub struct ArchivePinRestoration {
     pub pages: usize,
 }
 
-impl ArchivePinJournal {
+impl<C: ArchiveCodec> CodecArchivePinJournal<C> {
     /// Open an existing journal without any incomplete-tail repair. This is the ordinary
     /// operator recovery entrypoint; accepted scope, independent minimum and limits are
     /// identical to open_existing. Missing storage is never initialized or adopted.
@@ -102,16 +102,16 @@ impl ArchivePinJournal {
                     .namespace()
                     .page_slot(work.snapshot.indexed_windows())?;
                 let digest = publisher
-                    .stage_object(page.index_bytes())
+                    .stage_object(C::index(page))
                     .map_err(publication_error)?;
-                if Some(digest) != page.manifest().metadata_digest() {
+                if Some(digest) != C::manifest(page).metadata_digest() {
                     return Err(ArchiveError::Metadata.into());
                 }
                 Some(require_durable(
                     publisher
-                        .publish_cancellable(&slot, page.manifest(), cancel)
+                        .publish_cancellable(&slot, C::manifest(page), cancel)
                         .map_err(publication_error)?,
-                    page.manifest().root(),
+                    C::manifest(page).root(),
                 )?)
             }
         };
@@ -124,7 +124,7 @@ impl ArchivePinJournal {
                     .namespace()
                     .window_slot(work.snapshot.windows().len())?;
                 let mut job = RecordingPublication::new(
-                    window,
+                    C::plan(window),
                     publisher,
                     slot,
                     bounds.max_pending_bytes,
@@ -136,7 +136,7 @@ impl ArchivePinJournal {
                     if let RecordingProgress::Published(value) =
                         job.step(now, cancel).map_err(ArchiveError::from)?
                     {
-                        receipt = Some(require_durable(value, window.manifest().root())?);
+                        receipt = Some(require_durable(value, C::plan(window).manifest().root())?);
                         break;
                     }
                 }
@@ -145,8 +145,9 @@ impl ArchivePinJournal {
         };
         check(cancel)?;
         self.require_settled(publisher, bounds, cancel)?;
-        let namespace = ArchiveNamespace::new(work.snapshot.namespace().scope().clone())?;
-        let snapshot = ArchiveSnapshot::load(publisher, namespace, work.snapshot.limits(), cancel)?;
+        let namespace = CodecArchiveNamespace::<C>::new(work.snapshot.namespace().scope().clone())?;
+        let snapshot =
+            CodecArchiveSnapshot::<C>::load(publisher, namespace, work.snapshot.limits(), cancel)?;
         let snapshot_digest = snapshot.digest()?;
         self.verify(cancel)?;
         Ok(ArchivePinRestoration {

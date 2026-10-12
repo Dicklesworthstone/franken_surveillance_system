@@ -10,6 +10,27 @@ Franken Surveillance System now has a coherent, dependency-light Rust reference 
 
 It is also not a complete surveillance product. Native device adapters, production media/model/graph/storage services, persistent distributed operation, every human and agent surface, complete qualification matrices, and the aggregate release root remain open. Status below distinguishes implemented reference semantics from production completion.
 
+## Protected HEVC archive work and cold restoration (2026-10-12, reference)
+
+Native HEVC recordings now pass through the same bounded source-first, root-last work
+protection and independently synchronized pin journal as AVC. Concrete HEVC writer and
+journal types select sealed HEVC recording/catalog verifiers and distinct work, retirement
+and journal domains; existing AVC bytes and routes remain unchanged. Candidate metadata
+commits before pending footage, confirmation commits before a normal window or catalog,
+and every failure returns the original pending media and exact recovery references.
+
+Storage-only restoration reopens the independently retained candidate, replays original RTP
+through native HEVC verification, and restores only the original pending window/page slots.
+Lost work or restoration acknowledgements keep their original identities. Missing or damaged
+newer work cannot fall back to an older confirmation; bounds, cancellation and a changed
+journal tip fence progression. Picture-boundary witness packets remain source-only where
+appropriate, including when adjacent windows share a witness without sharing media samples.
+
+Native contracts cover both durability barriers, cold pixel decode, exact restoration retry,
+confirmation-budget exhaustion, cross-codec refusal, damaged originals and protected-tip
+fencing. This advances the reference acquisition/HEVC slices of FSS-047, FSS-048 and FSS-114;
+camera compatibility, reconnect, field continuity and full media qualification remain open.
+
 ## Geometry support for whole-recording corroboration (2026-10-12, reference)
 
 `fss-event corroborate --stream-corroborate` accepts explicit poses, exact site calibration,

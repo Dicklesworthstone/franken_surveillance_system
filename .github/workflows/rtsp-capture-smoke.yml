@@ -71,6 +71,12 @@ jobs:
       - name: Existing HEVC capture and root-last publication contracts
         if: success() || failure()
         run: cargo +nightly-2026-08-31 test --locked --offline -p fss-reference --test hevc_capture_contract --test hevc_recording_publication_contract
+      - name: Protected HEVC work and existing AVC recovery barriers
+        if: success() || failure()
+        run: >-
+          cargo +nightly-2026-08-31 test --locked --offline -p fss-reference
+          --test hevc_archive_pin_contract --test archive_work_checkpoint
+          --test archive_write_ahead --test archive_pin_pipeline
       - name: Native capture, whole-recording geometry and cold evidence contracts
         if: success() || failure()
         run: >-

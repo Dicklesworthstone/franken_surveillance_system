@@ -1,13 +1,12 @@
 #![forbid(unsafe_code)]
 //! Automatic pin persistence around the unchanged checkpointed archive owner.
 use super::*;
-use crate::rtsp::recording::PreparedRecording;
 use crate::rtsp::recording_archive::checkpoint::write_ahead::{
-    CheckpointedArchiveProgress, CheckpointedArchiveRetirement, CheckpointedArchiveWriter,
+    CheckpointedArchiveProgress, CodecCheckpointedArchiveRetirement, CodecCheckpointedArchiveWriter,
 };
 use crate::rtsp::recording_archive::{
-    ArchiveAdmission, ArchiveLimits, ArchiveNamespace, ArchiveSnapshot, ArchiveWriteProgress,
-    ArchiveWriteRefusal,
+    ArchiveAdmission, ArchiveLimits, ArchiveWriteProgress, ArchiveWriteRefusal,
+    CodecArchiveNamespace, CodecArchiveSnapshot,
 };
 
 /// Source work committed, but recording its confirmation may have failed. Preserve this
@@ -43,12 +42,18 @@ pub enum JournaledArchiveProgress {
     /// Existing recording durability, catalog publication or completion result.
     Archive(ArchiveWriteProgress),
 }
+/// Existing AVC retirement, with exact original source ownership and journal receipts.
+pub type JournaledArchiveRetirement = CodecJournaledArchiveRetirement<AvcArchiveCodec>;
+/// HEVC retirement retaining native media, both pin phases and any unrecorded work receipt.
+pub type JournaledHevcArchiveRetirement = CodecJournaledArchiveRetirement<HevcArchiveCodec>;
+
 /// Exact writer ownership plus any confirmation not acknowledged by the metadata journal.
+#[doc(hidden)]
 #[must_use]
 #[derive(Debug)]
-pub struct JournaledArchiveRetirement {
+pub struct CodecJournaledArchiveRetirement<C: ArchiveCodec> {
     /// All original pending source and prepared catalog ownership.
-    pub writer: CheckpointedArchiveRetirement,
+    pub writer: CodecCheckpointedArchiveRetirement<C>,
     /// Work already committed when independent confirmation failed.
     pub unrecorded_confirmation: Option<UnrecordedWorkConfirmation>,
     /// Last acknowledged metadata prefix; an uncertain append may be a descendant.
@@ -56,32 +61,38 @@ pub struct JournaledArchiveRetirement {
     /// Candidate/predecessor state at that acknowledged prefix.
     pub pins: ArchivePinState,
 }
+/// Existing independently journaled AVC writer, preserving its publication protocol.
+pub type JournaledArchiveWriter<'a, 'p> = CodecJournaledArchiveWriter<'a, 'p, AvcArchiveCodec>;
+/// Independently journaled HEVC writer, bound to native HEVC source verification at compile time.
+pub type JournaledHevcArchiveWriter<'a, 'p> = CodecJournaledArchiveWriter<'a, 'p, HevcArchiveCodec>;
+
 /// Exclusive standalone writer with actual independent pin storage. No mutable inner escape
 /// and no caller acknowledgement API. Source data stays in the existing writer exactly once.
+#[doc(hidden)]
 #[must_use]
-pub struct JournaledArchiveWriter<'a, 'p> {
-    inner: CheckpointedArchiveWriter<'a>,
-    pins: &'p mut ArchivePinJournal,
+pub struct CodecJournaledArchiveWriter<'a, 'p, C: ArchiveCodec> {
+    inner: CodecCheckpointedArchiveWriter<'a, C>,
+    pins: &'p mut CodecArchivePinJournal<C>,
     unrecorded: Option<UnrecordedWorkConfirmation>,
     blocked: bool,
     last_ns: u64,
     finished: bool,
 }
-impl fmt::Debug for JournaledArchiveWriter<'_, '_> {
+impl<C: ArchiveCodec> fmt::Debug for CodecJournaledArchiveWriter<'_, '_, C> {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.debug_struct("JournaledArchiveWriter")
             .field("blocked", &self.blocked)
             .finish_non_exhaustive()
     }
 }
-impl<'a, 'p> JournaledArchiveWriter<'a, 'p> {
+impl<'a, 'p, C: ArchiveCodec> CodecJournaledArchiveWriter<'a, 'p, C> {
     /// Confirm the prior pinned work settled before opening a new ordinary writer. Scope and
     /// journal admission precede archive mutation. Both stores remain explicitly owned.
     #[allow(clippy::too_many_arguments)]
     pub fn open(
         publisher: &'a mut LocalRootPublisher,
-        pins: &'p mut ArchivePinJournal,
-        namespace: ArchiveNamespace,
+        pins: &'p mut CodecArchivePinJournal<C>,
+        namespace: CodecArchiveNamespace<C>,
         archive: ArchiveLimits,
         work: ArchiveWorkLimits,
         max_steps: u64,
@@ -93,7 +104,7 @@ impl<'a, 'p> JournaledArchiveWriter<'a, 'p> {
             return Err(ArchivePinError::Scope);
         }
         pins.require_settled(publisher, work, cancel)?;
-        let inner = CheckpointedArchiveWriter::open(
+        let inner = CodecCheckpointedArchiveWriter::<C>::open(
             publisher, namespace, archive, work, max_steps, now, deadline, cancel,
         )?;
         Ok(Self {
@@ -106,11 +117,11 @@ impl<'a, 'p> JournaledArchiveWriter<'a, 'p> {
         })
     }
     /// Only acknowledged normal archive roots, not candidate or auxiliary work roots.
-    pub fn snapshot(&self) -> &ArchiveSnapshot {
+    pub fn snapshot(&self) -> &CodecArchiveSnapshot<C> {
         self.inner.snapshot()
     }
     /// Original pending recording, without duplicating a payload buffer.
-    pub fn pending(&self) -> Option<&PreparedRecording> {
+    pub fn pending(&self) -> Option<&C::Recording> {
         self.inner.pending()
     }
     /// Read-only independent journal prefix.
@@ -121,13 +132,26 @@ impl<'a, 'p> JournaledArchiveWriter<'a, 'p> {
     pub fn pin_state(&self) -> &ArchivePinState {
         self.pins.state()
     }
+    /// Reverify the independent journal tip before an outer live owner admits camera input.
+    /// No record or source byte is written. A changed, damaged or missing tip fences this
+    /// writer, so retaining its ordinary archive handle cannot bypass a lost recovery owner.
+    pub fn verify_pins(&mut self, cancel: &dyn PublishCancellation) -> PinResult<()> {
+        if self.blocked {
+            return Err(ArchivePinError::Fenced);
+        }
+        let result = self.pins.verify_tip(cancel);
+        if result.is_err() {
+            self.blocked = true;
+        }
+        result
+    }
     /// In-memory admission only. Every refusal returns the same owned recording.
     pub fn offer(
         &mut self,
-        recording: PreparedRecording,
+        recording: C::Recording,
         bytes: usize,
         now: u64,
-    ) -> Result<ArchiveAdmission, ArchiveWriteRefusal> {
+    ) -> Result<ArchiveAdmission, ArchiveWriteRefusal<C>> {
         if self.blocked {
             return Err(ArchiveWriteRefusal {
                 reason: Box::new(ArchiveError::Blocked),
@@ -237,8 +261,8 @@ impl<'a, 'p> JournaledArchiveWriter<'a, 'p> {
         }
     }
     /// Transfer every unacknowledged recording and work receipt. No cleanup writes or retries.
-    pub fn retire(self) -> JournaledArchiveRetirement {
-        JournaledArchiveRetirement {
+    pub fn retire(self) -> CodecJournaledArchiveRetirement<C> {
+        CodecJournaledArchiveRetirement {
             writer: self.inner.retire(),
             unrecorded_confirmation: self.unrecorded,
             journal_anchor: self.pins.anchor(),

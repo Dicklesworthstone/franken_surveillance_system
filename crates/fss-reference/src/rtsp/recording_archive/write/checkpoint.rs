@@ -1,5 +1,5 @@
 #![forbid(unsafe_code)]
-//! Durable AVC archive work using the existing content-addressed publication owner.
+//! Codec-pinned durable archive work using the existing content-addressed publication owner.
 //!
 //! The bundle roots the exact old inventory and every pending byte. It is not an archive
 //! completion, retention grant, mutable job queue, or new evidence ledger. No source is copied
@@ -7,14 +7,15 @@
 //! then be resolved by opening that exact root after the storage owner has been reconciled.
 
 use super::*;
-use crate::rtsp::recording::{RECORDING_KIND, RecordingScope};
+use crate::rtsp::recording::RecordingScope;
 use crate::rtsp::recording_catalog::MAX_CATALOG_BYTES;
 use fss_core::{CanonicalDecoder, CanonicalEncode, SensorId, StreamId};
 use fss_object::{MAX_MANIFEST_CHILDREN, ObjectManifest};
 
 /// Private work-bundle family. It cannot be substituted for a recording or catalog root.
-pub const ARCHIVE_WORK_KIND: &str = "avc_archive_work_v1";
-const DOMAIN: &str = "fss.avc_archive_work.v1";
+pub const ARCHIVE_WORK_KIND: &str = AvcArchiveCodec::WORK_KIND;
+/// HEVC pending-work family, disjoint from AVC and from normal recording/catalog roots.
+pub const HEVC_ARCHIVE_WORK_KIND: &str = HevcArchiveCodec::WORK_KIND;
 const MAX_METADATA: usize = 4096;
 const MAX_MANIFEST: usize = MAX_MANIFEST_CHILDREN * 33 + 1024;
 /// New work payload ceiling, excluding already durable historical media (which is referenced).
@@ -68,21 +69,26 @@ pub mod write_ahead;
 
 // A private borrowing view: retired and still-live work use the identical v1 graph/encoding.
 // This is not another owning media buffer or a public way to forge archive history.
-#[derive(Clone, Copy)]
-struct WorkView<'a> {
-    snapshot: &'a ArchiveSnapshot,
-    pending: Option<&'a PreparedRecording>,
-    prepared_page: Option<&'a RecordingCatalog>,
+struct WorkView<'a, C: ArchiveCodec> {
+    snapshot: &'a CodecArchiveSnapshot<C>,
+    pending: Option<&'a C::Recording>,
+    prepared_page: Option<&'a C::Catalog>,
 }
-impl<'a> WorkView<'a> {
-    fn retired(work: &'a ArchiveRetirement) -> Self {
+impl<C: ArchiveCodec> Copy for WorkView<'_, C> {}
+impl<C: ArchiveCodec> Clone for WorkView<'_, C> {
+    fn clone(&self) -> Self {
+        *self
+    }
+}
+impl<'a, C: ArchiveCodec> WorkView<'a, C> {
+    fn retired(work: &'a ArchiveRetirement<C>) -> Self {
         Self {
             snapshot: &work.snapshot,
             pending: work.pending.as_ref(),
             prepared_page: work.prepared_page.as_ref(),
         }
     }
-    fn writer(writer: &'a RecordingArchiveWriter<'_>) -> Self {
+    fn writer(writer: &'a CodecRecordingArchiveWriter<'_, C>) -> Self {
         Self {
             snapshot: &writer.snapshot,
             pending: writer.pending.as_ref().map(|p| &p.recording),
@@ -93,7 +99,7 @@ impl<'a> WorkView<'a> {
     // compare retired/live v1 commitments and reconstructed work, including real media bytes.
     fn retirement_digest(self) -> ArchiveResult<ContentDigest> {
         let mut e = CanonicalEncoder::new();
-        e.text("fss.reference_archive_retirement.v1");
+        e.text(C::RETIREMENT_DOMAIN);
         e.digest(self.snapshot.digest()?);
         let limits = self.snapshot.limits();
         for value in [
@@ -106,22 +112,35 @@ impl<'a> WorkView<'a> {
         }
         e.bool(self.pending.is_some());
         if let Some(pending) = self.pending {
-            e.digest(pending.manifest().root());
+            e.digest(C::plan(pending).manifest().root());
         }
         e.bool(self.prepared_page.is_some());
         if let Some(page) = self.prepared_page {
-            e.digest(page.manifest().root());
+            e.digest(C::manifest(page).root());
         }
         ContentDigest::try_sha256(&e.finish_checked().map_err(|_| ArchiveError::Limit)?)
             .map_err(|_| ArchiveError::Limit)
     }
 }
 
+/// Existing AVC prepared-work entrypoint; its canonical bytes and routes stay unchanged.
+pub type PreparedArchiveWork<'a> = CodecPreparedArchiveWork<'a, AvcArchiveCodec>;
+/// HEVC prepared work whose source graph is checked only by the native HEVC verifier.
+pub type PreparedHevcArchiveWork<'a> = CodecPreparedArchiveWork<'a, HevcArchiveCodec>;
+
+/// Commitment to the exact HEVC inventory and pending native media, without publication.
+pub fn hevc_archive_retirement_digest(
+    work: &ArchiveRetirement<HevcArchiveCodec>,
+) -> ArchiveResult<ContentDigest> {
+    WorkView::retired(work).retirement_digest()
+}
+
 /// Immutable, read-prepared work graph. The original pending objects stay caller-owned.
 /// Its three content-derived slots are outside the archive's window/catalog namespace.
+#[doc(hidden)]
 #[must_use]
-pub struct PreparedArchiveWork<'a> {
-    work: WorkView<'a>,
+pub struct CodecPreparedArchiveWork<'a, C: ArchiveCodec> {
+    work: WorkView<'a, C>,
     stamp: Stamp,
     metadata: Vec<u8>,
     manifest: ObjectManifest,
@@ -131,7 +150,7 @@ pub struct PreparedArchiveWork<'a> {
     bytes: usize,
     limits: ArchiveWorkLimits,
 }
-impl std::fmt::Debug for PreparedArchiveWork<'_> {
+impl<C: ArchiveCodec> std::fmt::Debug for CodecPreparedArchiveWork<'_, C> {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("PreparedArchiveWork")
             .field("root", &self.root())
@@ -139,12 +158,12 @@ impl std::fmt::Debug for PreparedArchiveWork<'_> {
             .finish_non_exhaustive()
     }
 }
-impl<'a> PreparedArchiveWork<'a> {
+impl<'a, C: ArchiveCodec> CodecPreparedArchiveWork<'a, C> {
     /// Read and bind the exact historical root closure. No object or root is written here.
     /// This is a trusted storage-owner API: the supplied publisher/cancellation capability
     /// must authorize retention and reads of all referenced source, not just its metadata.
     pub fn prepare(
-        work: &'a ArchiveRetirement,
+        work: &'a ArchiveRetirement<C>,
         publisher: &LocalRootPublisher,
         limits: ArchiveWorkLimits,
         cancel: &dyn PublishCancellation,
@@ -155,7 +174,7 @@ impl<'a> PreparedArchiveWork<'a> {
     // Borrow only immutable work fields, never the publisher. This lets a live writer protect
     // its own pending bytes without cloning media, moving out its state, or retiring itself.
     fn prepare_view(
-        work: WorkView<'a>,
+        work: WorkView<'a, C>,
         publisher: &LocalRootPublisher,
         limits: ArchiveWorkLimits,
         cancel: &dyn PublishCancellation,
@@ -164,16 +183,16 @@ impl<'a> PreparedArchiveWork<'a> {
         owner_ready(publisher)?;
         validate_pending(work, limits)?;
         let stamp = Stamp::from_work(work)?;
-        let metadata = stamp.encode()?;
-        let slot = work_slot(stamp.retirement, 'r')?;
-        let window_slot = work_slot(stamp.retirement, 'w')?;
-        let page_slot = work_slot(stamp.retirement, 'c')?;
+        let metadata = stamp.encode::<C>()?;
+        let slot = work_slot::<C>(stamp.retirement, 'r')?;
+        let window_slot = work_slot::<C>(stamp.retirement, 'w')?;
+        let page_slot = work_slot::<C>(stamp.retirement, 'c')?;
         let manifest = graph(work, &metadata, publisher, limits, cancel)?;
         let bytes = metadata
             .len()
             .checked_add(manifest.canonical_bytes().len())
             .and_then(|n| n.checked_add(stamp.pending.map_or(0, |(_, bytes)| bytes)))
-            .and_then(|n| n.checked_add(work.prepared_page.map_or(0, RecordingCatalog::byte_len)))
+            .and_then(|n| n.checked_add(work.prepared_page.map_or(0, C::catalog_bytes)))
             .ok_or(ArchiveError::Limit)?;
         if bytes > limits.max_new_bytes
             || manifest.children().len() > publisher.limits().max_children
@@ -182,10 +201,10 @@ impl<'a> PreparedArchiveWork<'a> {
         }
         check_slot(publisher, &slot, manifest.root())?;
         if let Some(window) = work.pending {
-            check_slot(publisher, &window_slot, window.manifest().root())?;
+            check_slot(publisher, &window_slot, C::plan(window).manifest().root())?;
         }
         if let Some(page) = work.prepared_page {
-            check_slot(publisher, &page_slot, page.manifest().root())?;
+            check_slot(publisher, &page_slot, C::manifest(page).root())?;
         }
         probe(cancel)?;
         Ok(Self {
@@ -249,10 +268,10 @@ impl<'a> PreparedArchiveWork<'a> {
         }
         if let Some(window) = self.work.pending {
             let mut job = RecordingPublication::new(
-                window,
+                C::plan(window),
                 publisher,
                 self.window_slot.clone(),
-                window.byte_len(),
+                C::plan(window).byte_len(),
                 deadline,
             )?;
             let mut published = false;
@@ -269,16 +288,16 @@ impl<'a> PreparedArchiveWork<'a> {
         }
         if let Some(page) = self.work.prepared_page {
             probe(cancel)?;
-            check_slot(publisher, &self.page_slot, page.manifest().root())?;
+            check_slot(publisher, &self.page_slot, C::manifest(page).root())?;
             let digest = publisher
-                .stage_object(page.index_bytes())
+                .stage_object(C::index(page))
                 .map_err(RecordingIoError::from)?;
-            if Some(digest) != page.manifest().metadata_digest() {
+            if Some(digest) != C::manifest(page).metadata_digest() {
                 return Err(ArchiveError::Metadata);
             }
             durable(
                 publisher
-                    .publish_cancellable(&self.page_slot, page.manifest(), cancel)
+                    .publish_cancellable(&self.page_slot, C::manifest(page), cancel)
                     .map_err(RecordingIoError::from)?,
             )?;
         }
@@ -297,10 +316,7 @@ impl<'a> PreparedArchiveWork<'a> {
     }
 }
 
-/// Recover ordinary ArchiveRetirement after losing every in-memory pending object. Requires
-/// an independently trusted bundle root, current matching custody, and external ceilings.
-/// No archive publication, source substitution, head rollback, or camera operation occurs.
-/// Feed the result to RecordingArchiveResume with its normal independently scoped authority.
+/// Recover exact AVC pending work using the unchanged AVC root kind and canonical domain.
 pub fn load_archive_work(
     publisher: &LocalRootPublisher,
     slot: &SlotName,
@@ -308,27 +324,52 @@ pub fn load_archive_work(
     limits: ArchiveWorkLimits,
     cancel: &dyn PublishCancellation,
 ) -> ArchiveResult<ArchiveRetirement> {
+    load_codec_archive_work::<AvcArchiveCodec>(publisher, slot, expected_root, limits, cancel)
+}
+
+/// Recover exact HEVC work after losing all process state. Source replay uses only the native
+/// HEVC recording and catalog loaders; AVC bytes, roots, and work metadata cannot select it.
+pub fn load_hevc_archive_work(
+    publisher: &LocalRootPublisher,
+    slot: &SlotName,
+    expected_root: ContentDigest,
+    limits: ArchiveWorkLimits,
+    cancel: &dyn PublishCancellation,
+) -> ArchiveResult<ArchiveRetirement<HevcArchiveCodec>> {
+    load_codec_archive_work::<HevcArchiveCodec>(publisher, slot, expected_root, limits, cancel)
+}
+
+/// Recover ordinary ArchiveRetirement after losing every in-memory pending object. Requires
+/// an independently trusted bundle root, current matching custody, and external ceilings.
+/// No archive publication, source substitution, head rollback, or camera operation occurs.
+/// Feed the result to RecordingArchiveResume with its normal independently scoped authority.
+pub(crate) fn load_codec_archive_work<C: ArchiveCodec>(
+    publisher: &LocalRootPublisher,
+    slot: &SlotName,
+    expected_root: ContentDigest,
+    limits: ArchiveWorkLimits,
+    cancel: &dyn PublishCancellation,
+) -> ArchiveResult<ArchiveRetirement<C>> {
     limits.validate(limits.archive)?;
     owner_ready(publisher)?;
     require_slot(publisher, slot, expected_root)?;
     let manifest = read_manifest(publisher, expected_root, MAX_MANIFEST, cancel)?;
-    if manifest.kind() != ARCHIVE_WORK_KIND || manifest.children().len() > limits.max_graph_objects
-    {
+    if manifest.kind() != C::WORK_KIND || manifest.children().len() > limits.max_graph_objects {
         return Err(ArchiveError::Metadata);
     }
     let meta = manifest.metadata_digest().ok_or(ArchiveError::Metadata)?;
     let bytes = read(publisher, meta, MAX_METADATA, cancel)?;
-    let stamp = Stamp::decode(&bytes)?;
+    let stamp = Stamp::decode::<C>(&bytes)?;
     limits.validate(stamp.limits)?;
-    if slot != &work_slot(stamp.retirement, 'r')?
+    if slot != &work_slot::<C>(stamp.retirement, 'r')?
         || stamp
             .pending
             .is_some_and(|(_, bytes)| bytes > limits.max_pending_bytes)
     {
         return Err(ArchiveError::Limit);
     }
-    let namespace = ArchiveNamespace::new(stamp.scope.clone())?;
-    let mut snapshot = ArchiveSnapshot::load(publisher, namespace, stamp.limits, cancel)?;
+    let namespace = CodecArchiveNamespace::<C>::new(stamp.scope.clone())?;
+    let mut snapshot = CodecArchiveSnapshot::<C>::load(publisher, namespace, stamp.limits, cancel)?;
     // An exact old prefix is not permission to silently follow additional unaccounted work.
     if snapshot.windows.len() < stamp.windows
         || snapshot.windows.len() > stamp.windows + usize::from(stamp.pending.is_some())
@@ -345,7 +386,7 @@ pub fn load_archive_work(
     }
     if snapshot.pages.len() > stamp.pages {
         let page = &snapshot.pages[stamp.pages];
-        if Some(page.catalog.manifest().root()) != stamp.page || page.first != stamp.indexed {
+        if Some(C::manifest(&page.catalog).root()) != stamp.page || page.first != stamp.indexed {
             return Err(ArchiveError::Metadata);
         }
     }
@@ -356,7 +397,7 @@ pub fn load_archive_work(
     let indexed: usize = snapshot
         .pages
         .iter()
-        .map(|p| p.catalog.entries().len())
+        .map(|p| C::entries(&p.catalog).len())
         .sum();
     if indexed != stamp.indexed || indexed > snapshot.windows.len() {
         return Err(ArchiveError::Metadata);
@@ -368,14 +409,14 @@ pub fn load_archive_work(
     let pending = match stamp.pending {
         None => None,
         Some((root, bytes)) => {
-            let window = load_recording(
+            let window = C::load_recording(
                 publisher,
-                &work_slot(stamp.retirement, 'w')?,
+                &work_slot::<C>(stamp.retirement, 'w')?,
                 root,
                 &stamp.scope.recording,
                 cancel,
             )?;
-            if window.byte_len() != bytes {
+            if C::plan(&window).byte_len() != bytes {
                 return Err(ArchiveError::Metadata);
             }
             Some(window)
@@ -383,9 +424,9 @@ pub fn load_archive_work(
     };
     let prepared_page = match stamp.page {
         None => None,
-        Some(root) => Some(load_catalog(
+        Some(root) => Some(C::load_catalog(
             publisher,
-            &work_slot(stamp.retirement, 'c')?,
+            &work_slot::<C>(stamp.retirement, 'c')?,
             root,
             &stamp.scope,
             cancel,
@@ -399,7 +440,7 @@ pub fn load_archive_work(
     // Reconstruct every canonical byte and the complete flat graph, not just checksums on a
     // plausible metadata body. No unregistered child, missing derivative, or re-tagged root.
     {
-        let prepared = PreparedArchiveWork::prepare(&work, publisher, limits, cancel)?;
+        let prepared = CodecPreparedArchiveWork::<C>::prepare(&work, publisher, limits, cancel)?;
         if prepared.root() != expected_root
             || prepared.metadata != bytes
             || prepared.retirement_digest() != stamp.retirement
@@ -417,16 +458,19 @@ pub fn load_archive_work(
     Ok(work)
 }
 
-fn validate_pending(work: WorkView<'_>, limits: ArchiveWorkLimits) -> ArchiveResult<()> {
+fn validate_pending<C: ArchiveCodec>(
+    work: WorkView<'_, C>,
+    limits: ArchiveWorkLimits,
+) -> ArchiveResult<()> {
     let old = &work.snapshot;
     if let Some(window) = &work.pending {
-        if window.byte_len() > limits.max_pending_bytes
+        if C::plan(window).byte_len() > limits.max_pending_bytes
             || old.windows.len() >= old.limits.max_windows
         {
             return Err(ArchiveError::Limit);
         }
         let slot = old.namespace.window_slot(old.windows.len())?;
-        let entry = descriptor_for::<AvcArchiveCodec>(old.namespace.scope(), &slot, window)?;
+        let entry = descriptor_for::<C>(old.namespace.scope(), &slot, window)?;
         if old
             .windows
             .last()
@@ -437,9 +481,9 @@ fn validate_pending(work: WorkView<'_>, limits: ArchiveWorkLimits) -> ArchiveRes
         }
     }
     if let Some(page) = &work.prepared_page
-        && (page.scope() != old.namespace.scope()
-            || page.entries() != old.unindexed_windows()
-            || page.entries().is_empty()
+        && (C::scope(page) != old.namespace.scope()
+            || C::entries(page) != old.unindexed_windows()
+            || C::entries(page).is_empty()
             || old.pages.len() >= old.limits.max_pages)
     {
         return Err(ArchiveError::Metadata);
@@ -447,8 +491,8 @@ fn validate_pending(work: WorkView<'_>, limits: ArchiveWorkLimits) -> ArchiveRes
     Ok(())
 }
 
-fn graph(
-    work: WorkView<'_>,
+fn graph<C: ArchiveCodec>(
+    work: WorkView<'_, C>,
     metadata: &[u8],
     p: &LocalRootPublisher,
     limits: ArchiveWorkLimits,
@@ -466,7 +510,7 @@ fn graph(
             n.checked_add(
                 work.prepared_page
                     .as_ref()
-                    .map_or(0, |page| page.manifest().children().len() + 1),
+                    .map_or(0, |page| C::manifest(page).children().len() + 1),
             )
         })
         .and_then(|n| n.checked_add(1))
@@ -481,47 +525,48 @@ fn graph(
     for entry in work.snapshot.windows() {
         require_slot(p, entry.slot(), entry.root())?;
         let manifest = read_manifest(p, entry.root(), 1024, cancel)?;
-        if manifest.kind() != RECORDING_KIND || manifest.children().len() != 4 {
+        if manifest.kind() != C::RECORDING_KIND || manifest.children().len() != 4 {
             return Err(ArchiveError::Metadata);
         }
         children.push(entry.root());
         children.extend_from_slice(manifest.children());
     }
     for page in work.snapshot.pages() {
-        require_slot(p, page.slot(), page.catalog().manifest().root())?;
+        require_slot(p, page.slot(), C::manifest(page.catalog()).root())?;
         let manifest = read_manifest(
             p,
-            page.catalog().manifest().root(),
+            C::manifest(page.catalog()).root(),
             MAX_CATALOG_BYTES,
             cancel,
         )?;
-        if &manifest != page.catalog().manifest() {
+        if &manifest != C::manifest(page.catalog()) {
             return Err(ArchiveError::Metadata);
         }
         children.push(manifest.root());
         children.push(manifest.metadata_digest().ok_or(ArchiveError::Metadata)?);
     }
     if let Some(window) = &work.pending {
-        children.push(window.manifest().root());
-        children.extend_from_slice(window.manifest().children());
+        children.push(C::plan(window).manifest().root());
+        children.extend_from_slice(C::plan(window).manifest().children());
     }
     if let Some(page) = &work.prepared_page {
-        children.push(page.manifest().root());
-        children.extend_from_slice(page.manifest().children());
+        children.push(C::manifest(page).root());
+        children.extend_from_slice(C::manifest(page).children());
     }
     children.sort_unstable();
     children.dedup();
     ObjectManifest::new(
-        ARCHIVE_WORK_KIND,
+        C::WORK_KIND,
         children,
         Some(ContentDigest::sha256(metadata)),
     )
     .map_err(|_| ArchiveError::Metadata)
 }
-fn work_slot(digest: ContentDigest, role: char) -> ArchiveResult<SlotName> {
+fn work_slot<C: ArchiveCodec>(digest: ContentDigest, role: char) -> ArchiveResult<SlotName> {
     let text = digest.to_text();
     let hex = text.strip_prefix("sha256:").ok_or(ArchiveError::Metadata)?;
-    SlotName::parse(&format!("fssaw1-{hex}-{role}")).map_err(|_| ArchiveError::Metadata)
+    SlotName::parse(&format!("{}-{hex}-{role}", C::WORK_SLOT_PREFIX))
+        .map_err(|_| ArchiveError::Metadata)
 }
 fn check_slot(p: &LocalRootPublisher, slot: &SlotName, root: ContentDigest) -> ArchiveResult<()> {
     if p.root(slot).is_some_and(|r| r.root != root) {
@@ -594,7 +639,7 @@ struct Stamp {
     page: Option<ContentDigest>,
 }
 impl Stamp {
-    fn from_work(work: WorkView<'_>) -> ArchiveResult<Self> {
+    fn from_work<C: ArchiveCodec>(work: WorkView<'_, C>) -> ArchiveResult<Self> {
         Ok(Self {
             scope: work.snapshot.namespace().scope().clone(),
             limits: work.snapshot.limits(),
@@ -606,13 +651,13 @@ impl Stamp {
             pending: work
                 .pending
                 .as_ref()
-                .map(|w| (w.manifest().root(), w.byte_len())),
-            page: work.prepared_page.as_ref().map(|p| p.manifest().root()),
+                .map(|w| (C::plan(w).manifest().root(), C::plan(w).byte_len())),
+            page: work.prepared_page.as_ref().map(|p| C::manifest(p).root()),
         })
     }
-    fn encode(&self) -> ArchiveResult<Vec<u8>> {
+    fn encode<C: ArchiveCodec>(&self) -> ArchiveResult<Vec<u8>> {
         let mut e = CanonicalEncoder::new();
-        e.text(DOMAIN);
+        e.text(C::WORK_DOMAIN);
         let s = &self.scope.recording;
         e.text(s.sensor.as_str());
         e.text(s.stream.as_str());
@@ -649,10 +694,10 @@ impl Stamp {
         }
         Ok(bytes)
     }
-    fn decode(bytes: &[u8]) -> ArchiveResult<Self> {
+    fn decode<C: ArchiveCodec>(bytes: &[u8]) -> ArchiveResult<Self> {
         let decode = || -> Result<Self, fss_core::ContractError> {
             let mut d = CanonicalDecoder::new(bytes);
-            if d.text()? != DOMAIN {
+            if d.text()? != C::WORK_DOMAIN {
                 return Err(fss_core::ContractError::InvalidIdentifier);
             }
             let scope = CatalogScope {
@@ -708,7 +753,7 @@ impl Stamp {
             || value
                 .pending
                 .is_some_and(|(_, n)| n == 0 || n > MAX_RECORDING_BYTES)
-            || value.encode()? != bytes
+            || value.encode::<C>()? != bytes
         {
             return Err(ArchiveError::Metadata);
         }

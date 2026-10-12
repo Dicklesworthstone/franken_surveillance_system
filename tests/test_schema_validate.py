@@ -901,7 +901,8 @@ class TestSchemaConstitution(unittest.TestCase):
         # + retained agent backup history and report identities = 331.
         # + complete RTSP page-list request, identity, origin and CLI approval = 335.
         # + SCHEMA-DOMAIN-DECISION-CARD-EVAL-001 = 336.
-        self.assertEqual(result["digestDomainCount"], 336)
+        # + HEVC protected work, retirement and pin journal; existing AVC retirement registration = 340.
+        self.assertEqual(result["digestDomainCount"], 340)
 
         # Continuation cursor is verified implemented
         implemented_names = {s["name"] for s in result["schemas"] if s["status"] == "implemented"}
@@ -1449,7 +1450,8 @@ class TestSchemaConstitutionCrossReviewRegressions(unittest.TestCase):
         # + retained agent backup history and report identities = 331.
         # + complete RTSP page-list request, identity, origin and CLI approval = 335.
         # + SCHEMA-DOMAIN-DECISION-CARD-EVAL-001 = 336.
-        self.assertEqual(result["digestDomainCount"], 336)
+        # + HEVC protected work, retirement and pin journal; existing AVC retirement registration = 340.
+        self.assertEqual(result["digestDomainCount"], 340)
         # 36 = 28 + fss.sensor_tamper_status.v1 (owner SensorTamperStatus, fss-2uftm)
         # + fss.agent_operations.v1 / fss.agent_views.v1 / fss.agent_request_envelope.v1
         #   (owners AgentOperation / AgentView / AgentRequestEnvelope, fss-x4a.30.83.17-40)

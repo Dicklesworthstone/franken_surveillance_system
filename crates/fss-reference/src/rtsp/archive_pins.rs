@@ -10,12 +10,13 @@ use std::fs::{self, File, OpenOptions};
 use std::io::{Read, Seek, SeekFrom};
 use std::path::{Path, PathBuf};
 
-use super::archive_recovery::archive_retirement_digest;
 use super::recording_archive::checkpoint::write_ahead::ArchiveCheckpoint;
 use super::recording_archive::checkpoint::{
-    ArchiveWorkLimits, MAX_ARCHIVE_WORK_BYTES, PreparedArchiveWork, load_archive_work,
+    ArchiveWorkLimits, CodecPreparedArchiveWork, MAX_ARCHIVE_WORK_BYTES, load_codec_archive_work,
 };
-use super::recording_archive::{ArchiveError, ArchiveRetirement};
+use super::recording_archive::{
+    ArchiveCodec, ArchiveError, ArchiveRetirement, AvcArchiveCodec, HevcArchiveCodec,
+};
 use fss_core::{ContentDigest, DigestAlgorithm};
 use fss_ledger::{IncompleteTailPolicy, Journal, JournalError, RecoveryReport, recover_bytes};
 use fss_publication::{
@@ -229,6 +230,11 @@ impl From<ArchiveError> for ArchivePinError {
 /// Result retaining typed errors without leaking private filesystem diagnostics.
 pub type PinResult<T> = Result<T, ArchivePinError>;
 
+/// Existing AVC pin owner; canonical payloads and protected-work routes are unchanged.
+pub type ArchivePinJournal = CodecArchivePinJournal<AvcArchiveCodec>;
+/// HEVC pin owner with a distinct canonical domain and HEVC-only cold work verification.
+pub type HevcArchivePinJournal = CodecArchivePinJournal<HevcArchiveCodec>;
+
 #[derive(Clone, Default, Eq, PartialEq)]
 struct ReplayState {
     pins: ArchivePinState,
@@ -241,7 +247,8 @@ struct ReplayState {
 /// mutable head file, filesystem repair, retention policy, or network authority is stored.
 /// Paths and their ancestors must be trusted: this is not a hostile-directory sandbox.
 #[must_use]
-pub struct ArchivePinJournal {
+#[doc(hidden)]
+pub struct CodecArchivePinJournal<C: ArchiveCodec> {
     journal: Journal,
     // Separate lock file: locking the journal itself would conflict with its second I/O handle
     // on platforms with mandatory file locks. Keep this handle alive until after Journal drops.
@@ -251,8 +258,9 @@ pub struct ArchivePinJournal {
     replay: ReplayState,
     records: usize,
     fenced: bool,
+    codec: std::marker::PhantomData<C>,
 }
-impl fmt::Debug for ArchivePinJournal {
+impl<C: ArchiveCodec> fmt::Debug for CodecArchivePinJournal<C> {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.debug_struct("ArchivePinJournal")
             .field("records", &self.records)
@@ -260,7 +268,7 @@ impl fmt::Debug for ArchivePinJournal {
             .finish_non_exhaustive()
     }
 }
-impl ArchivePinJournal {
+impl<C: ArchiveCodec> CodecArchivePinJournal<C> {
     /// Create a NEW directory and genesis only. Existing directories are never adopted or
     /// erased. Failure may leave an incomplete directory for explicit inspection, not reuse.
     pub fn create(
@@ -272,7 +280,7 @@ impl ArchivePinJournal {
         limits.validate()?;
         codec::validate_scope(scope)?;
         check(cancel)?;
-        let payload = codec::encode(scope, 0, None)?;
+        let payload = codec::encode_for::<C>(scope, 0, None)?;
         capacity(0, 0, payload.len(), limits)?;
         let mut builder = fs::DirBuilder::new();
         #[cfg(unix)]
@@ -310,6 +318,7 @@ impl ArchivePinJournal {
             replay: ReplayState::default(),
             records: 1,
             fenced: false,
+            codec: std::marker::PhantomData,
         })
     }
     /// Open only an existing protected directory. Validate scope, transitions, ceilings and
@@ -330,7 +339,7 @@ impl ArchivePinJournal {
         let (dir, lock) = existing(directory.as_ref())?;
         let path = dir.join(JOURNAL_FILE);
         let report = read_report(&path, limits, cancel)?;
-        let replay = codec::replay(&report, scope, limits)?;
+        let replay = codec::replay_for::<C>(&report, scope, limits)?;
         if let Some(minimum) = minimum
             && (minimum.sequence == 0
                 || !report
@@ -358,6 +367,7 @@ impl ArchivePinJournal {
             replay,
             records: report.records().len(),
             fenced: false,
+            codec: std::marker::PhantomData,
         })
     }
     /// Accepted independent scope; it grants no source access or camera permission.
@@ -391,7 +401,7 @@ impl ArchivePinJournal {
                 || report.last_root() != self.journal.last_root()
                 || report.committed_len() != self.journal.committed_len()
                 || report.records().len() != self.records
-                || codec::replay(&report, self.scope, self.limits)? != self.replay
+                || codec::replay_for::<C>(&report, self.scope, self.limits)? != self.replay
             {
                 return Err(ArchivePinError::RootMismatch);
             }
@@ -460,18 +470,18 @@ impl ArchivePinJournal {
         publisher: &LocalRootPublisher,
         bounds: ArchiveWorkLimits,
         cancel: &dyn PublishCancellation,
-    ) -> PinResult<ArchiveRetirement> {
+    ) -> PinResult<ArchiveRetirement<C>> {
         self.verify(cancel)?;
         let selected = match which {
             ArchivePinPhase::Candidate => self.replay.pins.candidate.as_ref(),
             ArchivePinPhase::Confirmed => self.replay.pins.confirmed.as_ref(),
         };
         let pin = selected.ok_or(ArchivePinError::History)?;
-        let work = load_archive_work(publisher, &pin.slot, pin.root, bounds, cancel)?;
+        let work = load_codec_archive_work::<C>(publisher, &pin.slot, pin.root, bounds, cancel)?;
+        let prepared = CodecPreparedArchiveWork::<C>::prepare(&work, publisher, bounds, cancel)?;
         if work.snapshot.namespace().digest() != self.scope.archive_namespace
-            || archive_retirement_digest(&work)? != pin.retirement
-            || PreparedArchiveWork::prepare(&work, publisher, bounds, cancel)?.new_payload_bytes()
-                != pin.new_payload_bytes
+            || prepared.retirement_digest() != pin.retirement
+            || prepared.new_payload_bytes() != pin.new_payload_bytes
         {
             return Err(ArchivePinError::Scope);
         }
@@ -500,7 +510,8 @@ impl ArchivePinJournal {
                 .namespace()
                 .window_slot(work.snapshot.windows().len())?;
             if publisher.root(&slot).is_none_or(|r| {
-                r.root != window.manifest().root() || r.state != LocalPublicationState::Durable
+                r.root != C::plan(window).manifest().root()
+                    || r.state != LocalPublicationState::Durable
             }) {
                 return Err(ArchivePinError::Unsettled);
             }
@@ -511,7 +522,7 @@ impl ArchivePinJournal {
                 .namespace()
                 .page_slot(work.snapshot.indexed_windows())?;
             if publisher.root(&slot).is_none_or(|r| {
-                r.root != page.manifest().root() || r.state != LocalPublicationState::Durable
+                r.root != C::manifest(page).root() || r.state != LocalPublicationState::Durable
             }) {
                 return Err(ArchivePinError::Unsettled);
             }
@@ -542,7 +553,7 @@ impl ArchivePinJournal {
         cancel: &dyn PublishCancellation,
     ) -> PinResult<ArchivePinReceipt> {
         self.verify(cancel)?;
-        codec::validate_pin(&pin)?;
+        codec::validate_pin_for::<C>(&pin)?;
         let current = if phase == ArchivePinPhase::Candidate {
             self.replay.pins.candidate.as_ref()
         } else {
@@ -564,9 +575,9 @@ impl ArchivePinJournal {
         } else {
             2
         };
-        let payload = codec::encode(self.scope, tag, Some(&pin))?;
+        let payload = codec::encode_for::<C>(self.scope, tag, Some(&pin))?;
         let mut next = self.replay.clone();
-        codec::apply(&mut next, tag, pin.clone())?;
+        codec::apply_for::<C>(&mut next, tag, pin.clone())?;
         capacity(
             self.records,
             self.journal.committed_len(),

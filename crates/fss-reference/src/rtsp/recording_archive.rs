@@ -65,6 +65,18 @@ mod codec {
         const SNAPSHOT_DOMAIN: &'static str;
         /// Disjoint codec routing prefix, without the full scope hash.
         const SLOT_PREFIX: &'static str;
+        /// Native recording root kind accepted by this closed codec family.
+        const RECORDING_KIND: &'static str;
+        /// Root kind for independently pinned pending work, never a normal recording.
+        const WORK_KIND: &'static str;
+        /// Canonical pending-work metadata domain.
+        const WORK_DOMAIN: &'static str;
+        /// Canonical commitment to the exact retained inventory and pending work.
+        const RETIREMENT_DOMAIN: &'static str;
+        /// Disjoint routing prefix for auxiliary work, window and catalog roots.
+        const WORK_SLOT_PREFIX: &'static str;
+        /// Independent pin-journal payload domain; never selected from stored metadata.
+        const PIN_JOURNAL_DOMAIN: &'static str;
 
         /// Borrow the unchanged root-last publication plan.
         fn plan(recording: &Self::Recording) -> &PreparedRecording;
@@ -90,6 +102,10 @@ mod codec {
         fn index(catalog: &Self::Catalog) -> &[u8];
         /// Borrow chronologically ordered descriptors.
         fn entries(catalog: &Self::Catalog) -> &[CatalogEntry];
+        /// Borrow the already validated recording and decode-clock scope.
+        fn scope(catalog: &Self::Catalog) -> &CatalogScope;
+        /// Exact newly retained catalog bytes, excluding referenced recording payloads.
+        fn catalog_bytes(catalog: &Self::Catalog) -> usize;
         /// Bind a metadata builder to the supplied scope and codec.
         fn builder(scope: CatalogScope) -> ArchiveResult<Self::Builder>;
         /// Transactionally append a typed recording to that builder.
@@ -114,6 +130,12 @@ mod codec {
         const NAMESPACE_DOMAIN: &'static str = "fss.local_recording_archive_namespace.v1";
         const SNAPSHOT_DOMAIN: &'static str = "fss.local_recording_archive_snapshot.v1";
         const SLOT_PREFIX: &'static str = "fssa1";
+        const RECORDING_KIND: &'static str = crate::rtsp::recording::RECORDING_KIND;
+        const WORK_KIND: &'static str = "avc_archive_work_v1";
+        const WORK_DOMAIN: &'static str = "fss.avc_archive_work.v1";
+        const RETIREMENT_DOMAIN: &'static str = "fss.reference_archive_retirement.v1";
+        const WORK_SLOT_PREFIX: &'static str = "fssaw1";
+        const PIN_JOURNAL_DOMAIN: &'static str = "fss.archive_pin_journal.v1";
         fn plan(recording: &Self::Recording) -> &PreparedRecording {
             recording
         }
@@ -144,6 +166,12 @@ mod codec {
         fn entries(catalog: &Self::Catalog) -> &[CatalogEntry] {
             catalog.entries()
         }
+        fn scope(catalog: &Self::Catalog) -> &CatalogScope {
+            catalog.scope()
+        }
+        fn catalog_bytes(catalog: &Self::Catalog) -> usize {
+            catalog.byte_len()
+        }
         fn builder(scope: CatalogScope) -> ArchiveResult<Self::Builder> {
             Ok(CatalogBuilder::new(scope)?)
         }
@@ -171,6 +199,12 @@ mod codec {
         const NAMESPACE_DOMAIN: &'static str = "fss.local_hevc_recording_archive_namespace.v1";
         const SNAPSHOT_DOMAIN: &'static str = "fss.local_hevc_recording_archive_snapshot.v1";
         const SLOT_PREFIX: &'static str = "fssh1";
+        const RECORDING_KIND: &'static str = crate::rtsp::recording::hevc::HEVC_RECORDING_KIND;
+        const WORK_KIND: &'static str = "hevc_archive_work_v1";
+        const WORK_DOMAIN: &'static str = "fss.hevc_archive_work.v1";
+        const RETIREMENT_DOMAIN: &'static str = "fss.reference_hevc_archive_retirement.v1";
+        const WORK_SLOT_PREFIX: &'static str = "fsshaw1";
+        const PIN_JOURNAL_DOMAIN: &'static str = "fss.hevc_archive_pin_journal.v1";
         fn plan(recording: &Self::Recording) -> &PreparedRecording {
             recording.publication_plan()
         }
@@ -200,6 +234,12 @@ mod codec {
         }
         fn entries(catalog: &Self::Catalog) -> &[CatalogEntry] {
             catalog.entries()
+        }
+        fn scope(catalog: &Self::Catalog) -> &CatalogScope {
+            catalog.scope()
+        }
+        fn catalog_bytes(catalog: &Self::Catalog) -> usize {
+            catalog.byte_len()
         }
         fn builder(scope: CatalogScope) -> ArchiveResult<Self::Builder> {
             Ok(HevcCatalogBuilder::new(scope)?)
