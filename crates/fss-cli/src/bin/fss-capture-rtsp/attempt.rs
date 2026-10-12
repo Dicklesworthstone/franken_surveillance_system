@@ -240,5 +240,4 @@ mod tests {
             assert_eq!(outcome.durable_pictures, stats.durable_pictures);
         }
     }
-
 }

@@ -25,9 +25,19 @@ fn args() -> Vec<OsString> {
     .into_iter()
     .map(|(key, value)| (key.to_owned(), value.to_owned()))
     .chain(
-        ["--anchor", "--receive-clock", "--timing-evidence", "--journal-id"]
-            .into_iter()
-            .map(|key| (key.to_owned(), ContentDigest::sha256(key.as_bytes()).to_text())),
+        [
+            "--anchor",
+            "--receive-clock",
+            "--timing-evidence",
+            "--journal-id",
+        ]
+        .into_iter()
+        .map(|key| {
+            (
+                key.to_owned(),
+                ContentDigest::sha256(key.as_bytes()).to_text(),
+            )
+        }),
     )
     .flat_map(|(key, value)| [key.into(), value.into()])
     .collect()
@@ -80,7 +90,11 @@ fn child_approval_cannot_authorize_supervision_or_be_mutated_by_refusal() {
     assert!(plan.admit().expect("admit").is_some());
     assert_eq!(plan.capture.approve, Some(native));
     let mut legacy = args();
-    set(&mut legacy, "--approve", &plan.approval.expect("outer").to_text());
+    set(
+        &mut legacy,
+        "--approve",
+        &plan.approval.expect("outer").to_text(),
+    );
     assert!(SinglePlan::parse(&legacy).expect("parse").admit().is_err());
 }
 
@@ -133,7 +147,14 @@ fn supervision_is_one_exact_native_capture_without_destination_rewriting() {
 #[test]
 fn invalid_timeout_duplicates_and_unknown_options_are_refused() {
     for value in [
-        "", "0", "600001", "-1", "1.0", "+1", "1e3", "18446744073709551616",
+        "",
+        "0",
+        "600001",
+        "-1",
+        "1.0",
+        "+1",
+        "1e3",
+        "18446744073709551616",
     ] {
         let mut input = supervised();
         set(&mut input, "--progress-timeout-ms", value);
@@ -166,7 +187,9 @@ fn timeout_bounds_and_argument_order_use_one_shared_policy() {
         assert_eq!(changed.digest().expect("digest"), approval);
         assert_eq!(
             changed.admit(),
-            Ok(Some(Supervision::new(nanoseconds, approval).expect("policy")))
+            Ok(Some(
+                Supervision::new(nanoseconds, approval).expect("policy")
+            ))
         );
     }
 }

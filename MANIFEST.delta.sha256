@@ -1,0 +1,4 @@
+3067671b42fd52fba3cb35580e809f680d58729849d656718d2a7b7f33b6d399  .github/workflows/rtsp-capture-smoke.yml
+7222286bc5c5f46a19791ad0114d4b6581661761e99e7b2fd2e35c9a81586007  crates/fss-cli/src/bin/fss-capture-rtsp/attempt.rs
+738fdf527cc0eb27ede7f08140e596206e1b74548dc7f9d01f858eea41e1e072  crates/fss-cli/src/bin/fss-capture-rtsp/single_tests.rs
+6e97f90c9eecf50105582c4c76a277903859b25f5b50ec5a102d2cd39d67165d  crates/fss-cli/tests/capture_rtsp_progress_cli.rs
