@@ -267,8 +267,15 @@ impl<'a> RecordedAvcReplay<'a> {
         // this still-borrowed source record is admitted. Do not consume it twice.
         if let Some(record) = &self.next {
             let target = self.now_ns.max(u64::from(record.offset_ms()) * 1_000_000);
-            if target > self.now_ns {
-                self.now_ns = target;
+            while target > self.now_ns {
+                // Visit each deadline in order. Jumping straight to the next arrival
+                // would release a reordered FU start at that later time and give it
+                // a new lifetime, letting a genuinely expired tail complete a NAL.
+                self.now_ns = self
+                    .receiver
+                    .next_wake_ns()
+                    .filter(|wake| *wake > self.now_ns)
+                    .map_or(target, |wake| wake.min(target));
                 if let Some(event) = self.progress() {
                     return event;
                 }
