@@ -467,23 +467,42 @@ pub(super) fn run<W: Write>(
             .map_err(|_| Failure::Storage)?;
     stats.journal_anchor = Some(pins.anchor());
     stats.pins = pins.state().clone();
-    let mut capture = JournaledLiveHevcArchive::connect(
-        options
-            .hevc_live_config()
-            .map_err(|_| Failure::Configuration)?,
-        options
-            .hevc_recording_config()
-            .map_err(|_| Failure::Configuration)?,
-        options
-            .hevc_archive_config()
-            .map_err(|_| Failure::Configuration)?,
-        options.work_limits(),
-        publisher,
-        &mut pins,
-        owner.now()?,
-        owner,
-        owner,
-    )
+    let live = options
+        .hevc_live_config()
+        .map_err(|_| Failure::Configuration)?;
+    let archive = options
+        .hevc_archive_config()
+        .map_err(|_| Failure::Configuration)?;
+    let supplied = options
+        .hevc_supplied_recording_config()
+        .map_err(|_| Failure::Configuration)?;
+    let mut capture = if let Some(recording) = supplied {
+        JournaledLiveHevcArchive::connect_with_configuration(
+            live,
+            recording,
+            archive,
+            options.work_limits(),
+            publisher,
+            &mut pins,
+            owner.now()?,
+            owner,
+            owner,
+        )
+    } else {
+        JournaledLiveHevcArchive::connect(
+            live,
+            options
+                .hevc_recording_config()
+                .map_err(|_| Failure::Configuration)?,
+            archive,
+            options.work_limits(),
+            publisher,
+            &mut pins,
+            owner.now()?,
+            owner,
+            owner,
+        )
+    }
     .map_err(|error| {
         stats.connection_attempted = error.connection_attempted;
         match error.reason {

@@ -56,7 +56,7 @@ Original media is retained unencrypted.
 ## Select HEVC explicitly
 
 Use `--codec hevc` for a camera whose selected SDP media section advertises exactly
-one `H265/90000` payload. `--payload-type` must match that offer. The selected description
+one `H265/90000` payload. `--payload-type` must match that offer. By default the selected description
 must contain exactly one VPS, SPS and PPS in `sprop-vps`, `sprop-sps` and `sprop-pps`.
 The native configuration reader checks their IDs, profile/temporal agreement and bounded
 dimensions before SETUP or PLAY. Missing, ambiguous, mismatched or unsupported parameters
@@ -87,6 +87,38 @@ work-root and pin-journal family and binds its native reconstruction, assembly,
 configuration and boundary-lookahead ceilings. Changing codecs changes the approval
 and decode-clock identity. Existing default/explicit AVC requests keep their AVC
 identities. Both codecs use the same optional Digest credential-file lease described below.
+
+### Supply a known HEVC configuration when SDP omits it
+
+A camera can advertise the exact HEVC payload without including its parameter sets
+in SDP. If the operator already has the camera's exact VPS, SPS and PPS, add all three
+options before reviewing the capture plan:
+
+```sh
+  --hevc-vps "$VPS_NAL_HEX" \
+  --hevc-sps "$SPS_NAL_HEX" \
+  --hevc-pps "$PPS_NAL_HEX"
+```
+
+Each value is one complete original NAL, including its two-byte HEVC header, encoded
+as hexadecimal without spaces or an Annex-B start code. The command accepts 3–2,048
+bytes per NAL. All three options require `--codec hevc` and must be supplied together.
+The pure plan checks the tuple's native parameter types, IDs, profile/temporal agreement
+and geometry bounds before credential reads, directory creation or a socket attempt.
+These are configuration-prefix checks; they do not certify full bitstream conformance.
+
+The preview includes a `hevc_configuration` object containing each NAL's SHA-256
+identity and byte length. Every original byte, including an uninterpreted suffix,
+is bound into the approval and decode-clock identity. Adding or changing the tuple
+requires its own approval and changes the HEVC archive namespace. Uppercase and
+lowercase hexadecimal represent the same original bytes.
+
+This mode still requires the exact selected `H265/90000` payload before SETUP.
+The supplied tuple is immutable; SDP parameters cannot fill in or replace it, and
+the normal recording checks reject incompatible source configuration. Timing,
+original-source retention, independent recovery pins and the final storage drain
+use the same native owner. Omitting all three options retains the default selected-SDP
+configuration path and its existing approval identities.
 
 ## Authenticate an owner-authorized camera
 

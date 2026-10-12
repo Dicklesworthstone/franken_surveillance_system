@@ -43,6 +43,10 @@ const HEVC_POLICY: &str = "one-literal-ip:owner-approved-plaintext:opt-in-scoped
 journal-before-publication:original-rtp:fixed-90000hz:exact-cadence:relative-dts:\
 zero-composition-offset:idr-led-windows:requested-stop-is-not-eof:\
 hevc-single-exact-offer:selected-sdp-vps-sps-pps:real-boundary-source-witness:v1";
+const HEVC_SUPPLIED_POLICY: &str = "one-literal-ip:owner-approved-plaintext:opt-in-scoped-digest:no-reconnect:\
+journal-before-publication:original-rtp:fixed-90000hz:exact-cadence:relative-dts:\
+zero-composition-offset:idr-led-windows:requested-stop-is-not-eof:\
+hevc-single-exact-offer:owner-vps-sps-pps:real-boundary-source-witness:v1";
 pub(super) const HELP: &str = "fss-capture-rtsp --root NEW_ABSOLUTE_ARCHIVE --pins NEW_ABSOLUTE_PIN_JOURNAL\n\
   --peer IP:PORT --authority HOST[:PORT] --presentation /PATH --control-root /PATH\n\
   --sensor-id ID --stream-id ID --generation N --ingress N --ssrc N\n\
@@ -74,7 +78,9 @@ archive. Raw RTSP/control/RTCP wire and unselected tails are not retained; outpu
 for omissions. Local custody is UNENCRYPTED. Apply deployment privacy before pixel output.\n\
 \n\
 Codec: --codec avc (default) or --codec hevc; exact offer: --payload-type 96\n\
-HEVC requires one matching H265/90000 offer and one compatible VPS/SPS/PPS tuple in SDP.\n\
+HEVC requires one matching H265/90000 offer; its VPS/SPS/PPS tuple defaults to SDP.\n\
+Optional owner tuple: --hevc-vps HEX --hevc-sps HEX --hevc-pps HEX, all three together.\n\
+Each is 3..=2048 exact NAL bytes without Annex-B prefixes; plan validation is pure.\n\
 There is no codec fallback. HEVC retains real picture-boundary lookahead as source-only\n\
 evidence; neither an RTP marker nor EOF can certify the last picture complete.\n\
 Track/channel: --media-index 0 --rtp-channel 0\n\
@@ -244,6 +250,9 @@ impl Options {
             "--principal",
             "--payload-type",
             "--codec",
+            "--hevc-vps",
+            "--hevc-sps",
+            "--hevc-pps",
             "--media-index",
             "--rtp-channel",
             "--timeout-ms",
@@ -356,6 +365,18 @@ impl Options {
             "hevc" => true,
             _ => return Err("codec must be avc or hevc"),
         };
+        if !is_hevc
+            && ["--hevc-vps", "--hevc-sps", "--hevc-pps"]
+                .iter()
+                .any(|key| values.contains_key(key))
+        {
+            return Err("owner HEVC parameters require --codec hevc");
+        }
+        let supplied = hevc::HevcParameters::parse(
+            values.get("--hevc-vps").copied(),
+            values.get("--hevc-sps").copied(),
+            values.get("--hevc-pps").copied(),
+        )?;
         let payload_type = number("--payload-type", 96, 0, 127)? as u8;
         if is_hevc {
             RtspClientSession::with_codec(protocol.clone(), ClientCodec::H265)
@@ -414,7 +435,13 @@ impl Options {
         .map_err(|_| "native recording scope or limits refused")?;
         let mut clock = CanonicalEncoder::new();
         clock.text("fss.rtsp_capture_fixed_clock.v1");
-        clock.text(if is_hevc { HEVC_POLICY } else { POLICY });
+        clock.text(if supplied.is_some() {
+            HEVC_SUPPLIED_POLICY
+        } else if is_hevc {
+            HEVC_POLICY
+        } else {
+            POLICY
+        });
         clock.digest(timing_evidence);
         clock.digest(scope.receive_clock);
         clock.bytes(&ingress.to_be_bytes());
@@ -422,6 +449,9 @@ impl Options {
         clock.u32(ssrc);
         clock.u32(time_scale);
         clock.u32(frame_duration);
+        if let Some(parameters) = &supplied {
+            parameters.encode(&mut clock);
+        }
         let clock_bytes = clock
             .finish_checked()
             .map_err(|_| "timing encoding refused")?;
@@ -432,7 +462,7 @@ impl Options {
         })
         .map_err(|_| "native archive scope refused")?;
         let hevc = is_hevc
-            .then(|| HevcPlan::new(namespace.scope().clone()))
+            .then(|| HevcPlan::new(namespace.scope().clone(), supplied))
             .transpose()?;
         let timeout_ns = number("--timeout-ms", 30_000, 1, 600_000)? * 1_000_000;
         let drain_timeout_ns = number("--drain-timeout-ms", 10_000, 1, 60_000)? * 1_000_000;
@@ -578,10 +608,10 @@ impl Options {
         if self.hevc.is_some() { "hevc" } else { "avc" }
     }
     fn policy(&self) -> &'static str {
-        if self.hevc.is_some() {
-            HEVC_POLICY
-        } else {
-            POLICY
+        match self.hevc.as_ref() {
+            Some(plan) if plan.supplied.is_some() => HEVC_SUPPLIED_POLICY,
+            Some(_) => HEVC_POLICY,
+            None => POLICY,
         }
     }
     pub(super) fn catalog_scope(&self) -> &CatalogScope {
@@ -749,6 +779,9 @@ impl Options {
         e.text(&live.realm);
         e.bool(live.digest_policy.allow_legacy_md5);
         e.bool(live.digest_policy.allow_legacy_no_qop);
+        if let Some(parameters) = self.hevc.as_ref().and_then(|plan| plan.supplied.as_ref()) {
+            parameters.encode(&mut e);
+        }
         let numbers = self.bound_numbers();
         e.u64(numbers.len() as u64);
         for (name, value) in numbers {
@@ -767,7 +800,7 @@ impl Options {
             .into_iter()
             .map(|(k, v)| (k, v.to_string()))
             .collect();
-        Ok(object(&[
+        let mut fields = vec![
             ("schema", string(FORMAT)),
             ("phase", string("planned")),
             ("approval", string(&self.digest()?.to_text())),
@@ -823,7 +856,11 @@ impl Options {
             ("wire_custody", string("raw-control-and-rtcp-not-retained")),
             ("capture_time", string("unknown")),
             ("effects", string("none-until-exact-approval")),
-        ]))
+        ];
+        if let Some(parameters) = self.hevc.as_ref().and_then(|plan| plan.supplied.as_ref()) {
+            fields.push(("hevc_configuration", parameters.preview()));
+        }
+        Ok(object(&fields))
     }
 
     pub(super) fn authentication_mode(&self) -> &'static str {

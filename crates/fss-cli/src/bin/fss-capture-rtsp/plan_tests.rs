@@ -503,3 +503,80 @@ fn hevc_effective_native_limits_and_source_witness_policy_bind_approval() -> Res
     assert!(selected.preview()?.contains("real-boundary-source-witness"));
     Ok(())
 }
+
+fn parameter_hex() -> Result<[&'static str; 3], &'static str> {
+    let mut lines = include_str!("../../../../../tests/fixtures/media/hevc/remux_main8.nals.hex")
+        .lines()
+        .filter(|line| !line.is_empty());
+    Ok([
+        lines.next().ok_or("fixture VPS")?,
+        lines.next().ok_or("fixture SPS")?,
+        lines.next().ok_or("fixture PPS")?,
+    ])
+}
+
+#[test]
+fn owner_hevc_tuple_binds_exact_bytes_and_preserves_selected_sdp_default() -> Result<(), &'static str> {
+    let mut input = args();
+    set(&mut input, "--codec", "hevc");
+    let selected = Options::parse(&input)?;
+    assert!(selected.hevc_supplied_recording_config()?.is_none());
+    assert!(!selected.preview()?.contains("hevc_configuration"));
+    let parameters = parameter_hex()?;
+    for (key, bytes) in ["--hevc-vps", "--hevc-sps", "--hevc-pps"].into_iter().zip(parameters) {
+        set(&mut input, key, bytes);
+    }
+    let supplied = Options::parse(&input)?;
+    let approval = supplied.digest()?;
+    assert_ne!(approval, selected.digest()?);
+    assert_ne!(supplied.catalog_scope().decode_clock, selected.catalog_scope().decode_clock);
+    assert_ne!(supplied.pin_scope().archive_namespace, selected.pin_scope().archive_namespace);
+    assert!(supplied.hevc_supplied_recording_config()?.is_some());
+    let preview = supplied.preview()?;
+    assert!(preview.contains("owner-supplied-vps-sps-pps"));
+    assert!(!preview.contains(parameters[1]));
+    // All uninterpreted source suffixes are still approval-bound, not only parsed prefix fields.
+    for (key, bytes) in ["--hevc-vps", "--hevc-sps", "--hevc-pps"].into_iter().zip(parameters) {
+        let mut changed = input.clone();
+        set(&mut changed, key, &format!("{bytes}80"));
+        let changed = Options::parse(&changed)?;
+        assert_ne!(changed.digest()?, approval);
+        assert_ne!(changed.catalog_scope().decode_clock, supplied.catalog_scope().decode_clock);
+        let mut uppercase = input.clone();
+        set(&mut uppercase, key, &bytes.to_ascii_uppercase());
+        assert_eq!(Options::parse(&uppercase)?.digest()?, approval);
+    }
+    Ok(())
+}
+
+#[test]
+fn owner_hevc_tuple_refuses_partial_wrong_codec_and_unbounded_nals() -> Result<(), &'static str> {
+    let mut input = args();
+    set(&mut input, "--codec", "hevc");
+    let parameters = parameter_hex()?;
+    for (key, bytes) in ["--hevc-vps", "--hevc-sps", "--hevc-pps"].into_iter().zip(parameters) {
+        set(&mut input, key, bytes);
+    }
+    for key in ["--hevc-vps", "--hevc-sps", "--hevc-pps"] {
+        let mut missing = input.clone();
+        let at = missing.iter().position(|arg| arg == key).ok_or("parameter option")?;
+        missing.drain(at..at + 2);
+        assert!(Options::parse(&missing).is_err());
+    }
+    let mut wrong_codec = input.clone();
+    set(&mut wrong_codec, "--codec", "avc");
+    assert!(Options::parse(&wrong_codec).is_err());
+    for malformed in [
+        "zz".to_owned(),
+        "40010".to_owned(),
+        "4001".to_owned(),
+        format!("00000001{}", parameters[0]),
+        "40".repeat(2049),
+        parameters[1].to_owned(),
+    ] {
+        let mut changed = input.clone();
+        set(&mut changed, "--hevc-vps", &malformed);
+        assert!(Options::parse(&changed).is_err());
+    }
+    Ok(())
+}

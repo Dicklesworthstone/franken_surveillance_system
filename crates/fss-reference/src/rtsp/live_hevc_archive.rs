@@ -19,7 +19,9 @@ use super::authentication::DigestCredentials;
 use super::client::{ClientCommand, ClientState};
 use super::hevc_client::HevcClientError;
 use super::hevc_client::pictures::{HevcPictureClientError, HevcPictureClientPoll as Event};
-use super::hevc_recording_capture::live::{AutomaticHevcRecordingStep, Control, control};
+use super::hevc_recording_capture::live::{
+    AutomaticHevcRecordingStep, Control, LiveHevcRecordingConfig, control,
+};
 use super::hevc_recording_capture::{
     CaptureError, HevcCapturePoll, HevcCaptureRetirement, HevcRecordingCapture, TimedHevcCapture,
 };
@@ -224,6 +226,7 @@ pub struct JournaledLiveHevcArchive<'a, 'p> {
     connection: Option<LiveHevcConnection>,
     capture: Option<HevcRecordingCapture>,
     selected: Option<SelectedHevcRecordingConfig>,
+    supplied_collector: Option<HevcRecordingCollector>,
     writer: Option<JournaledHevcArchiveWriter<'a, 'p>>,
     binding: TcpBinding,
     live_deadline_ns: u64,
@@ -319,6 +322,7 @@ impl<'a, 'p> JournaledLiveHevcArchive<'a, 'p> {
             connection: Some(connection),
             capture: None,
             selected: Some(recording),
+            supplied_collector: None,
             writer: Some(writer),
             binding,
             live_deadline_ns,
@@ -337,6 +341,49 @@ impl<'a, 'p> JournaledLiveHevcArchive<'a, 'p> {
             last_anchor,
             last_pins,
         })
+    }
+    /// Use an independently supplied immutable VPS/SPS/PPS tuple, including when SDP omits it.
+    /// The tuple and collector are validated before storage or a connection attempt. DESCRIBE
+    /// must still select the exact expected HEVC payload before SETUP; it cannot replace this
+    /// configuration. Source parameter changes remain subject to the normal collector checks.
+    #[allow(clippy::too_many_arguments)]
+    pub fn connect_with_configuration(
+        live: LiveHevcConfig,
+        recording: LiveHevcRecordingConfig,
+        archive: LiveHevcArchiveConfig,
+        work: ArchiveWorkLimits,
+        publisher: &'a mut LocalRootPublisher,
+        pins: &'p mut HevcArchivePinJournal,
+        now: u64,
+        authority: &dyn TcpAuthority,
+        cancel: &dyn PublishCancellation,
+    ) -> Result<Self, LiveHevcArchiveConnectFailure> {
+        let selected = SelectedHevcRecordingConfig {
+            scope: recording.scope.clone(),
+            payload_type: recording.payload_type,
+            time_scale: recording.time_scale,
+            limits: recording.limits,
+            configuration_limits: HevcConfigurationLimits::default(),
+        };
+        let collector = HevcRecordingCollector::new(
+            recording.scope,
+            live.binding.key(),
+            recording.payload_type,
+            recording.configuration,
+            recording.time_scale,
+            recording.limits,
+        )
+        .map_err(|error| LiveHevcArchiveConnectFailure {
+            reason: LiveHevcArchiveError::Capture(CaptureError::Collection(error)),
+            connection_attempted: false,
+        })?;
+        let mut owner = Self::connect(
+            live, selected, archive, work, publisher, pins, now, authority, cancel,
+        )?;
+        // This collector has accepted no network event or original source yet. Installing it
+        // only after the exact selected offer keeps pre-DESCRIBE auth/control ownership intact.
+        owner.supplied_collector = Some(collector);
+        Ok(owner)
     }
     /// Acknowledged native HEVC inventory only, absent after terminal ownership transfers.
     pub fn snapshot(&self) -> Option<&HevcArchiveSnapshot> {
@@ -860,11 +907,15 @@ impl<'a, 'p> JournaledLiveHevcArchive<'a, 'p> {
             .as_ref()
             .and_then(|c| c.media())
             .ok_or(LiveHevcArchiveError::Selection)?;
-        if media.payload_type() != selected.payload_type
-            || media.vps().len() != 1
-            || media.sps().len() != 1
-            || media.pps().len() != 1
-        {
+        if media.payload_type() != selected.payload_type {
+            return Err(LiveHevcArchiveError::Selection);
+        }
+        if let Some(collector) = self.supplied_collector.take() {
+            self.selected = None;
+            self.capture = Some(HevcRecordingCapture::new(collector));
+            return Ok(());
+        }
+        if media.vps().len() != 1 || media.sps().len() != 1 || media.pps().len() != 1 {
             return Err(LiveHevcArchiveError::Selection);
         }
         let configuration = HevcConfiguration::parse(
@@ -909,6 +960,7 @@ impl<'a, 'p> JournaledLiveHevcArchive<'a, 'p> {
         let owned_connection = self.connection.take().and_then(|mut c| c.cancel());
         let capture = self.capture.take().map(|mut c| c.cancel());
         self.selected = None;
+        self.supplied_collector = None;
         self.next = None;
         self.network_ended = true;
         let connection = connection.or(owned_connection);

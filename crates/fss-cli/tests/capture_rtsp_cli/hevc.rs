@@ -18,6 +18,7 @@ use fss_reference::rtsp::recording::RecordingScope;
 use fss_reference::rtsp::recording::hevc::PreparedHevcRecording;
 use fss_reference::rtsp::recording::hevc::local::load_hevc_recording;
 use std::ffi::OsString;
+use std::fmt::Write as _;
 use std::fs;
 use std::io::{self, Write};
 use std::net::{Shutdown, SocketAddr, TcpListener, TcpStream};
@@ -45,6 +46,27 @@ fn args(directory: &Directory, peer: SocketAddr, pictures: u64) -> Test<Vec<OsSt
         PT.to_string().into(),
     ]);
     Ok(args)
+}
+
+fn supply_parameters(args: &mut Vec<OsString>) -> Test {
+    for (key, nal) in ["--hevc-vps", "--hevc-sps", "--hevc-pps"]
+        .into_iter()
+        .zip(nals()?.into_iter().take(3))
+    {
+        let mut hex = String::with_capacity(nal.len() * 2);
+        for byte in nal {
+            write!(&mut hex, "{byte:02x}")?;
+        }
+        args.extend([key.into(), hex.into()]);
+    }
+    Ok(())
+}
+
+fn description_without_parameters(description: &str) -> String {
+    description
+        .split_inclusive("\r\n")
+        .filter(|line| !line.starts_with("a=fmtp:"))
+        .collect()
 }
 
 fn description(payloads: &[u8]) -> String {
@@ -589,11 +611,79 @@ fn codec_selection_is_pure_and_bound_to_the_exact_capture_approval() -> Test {
 }
 
 #[test]
-fn requested_stop_retains_the_real_hevc_boundary_and_cold_decodes_both_pictures() -> Test {
-    let directory = Directory::new("hevc-target")?;
+fn explicit_hevc_tuple_requires_its_own_approval_before_secret_or_socket_access() -> Test {
+    let directory = Directory::new("hevc-owner-tuple-plan")?;
     let listener = listener()?;
-    let args = approve(&args(&directory, listener.local_addr()?, 2)?)?;
-    let (output, transcript) = captured(listener, &args, camera(StreamCase::Target)?)?;
+    let mut selected = args(&directory, listener.local_addr()?, 2)?;
+    let absent_secret = directory.0.join("absent-owner-credential");
+    selected.extend([
+        "--credential-file".into(),
+        absent_secret.as_os_str().to_owned(),
+        "--auth-realm".into(),
+        "owner-realm".into(),
+    ]);
+    // Both previews are pure even with a credential file that does not exist.
+    let (_, selected_approval) = plan(&selected)?;
+    let mut explicit = selected.clone();
+    supply_parameters(&mut explicit)?;
+    let (preview, explicit_approval) = plan(&explicit)?;
+    assert_ne!(selected_approval, explicit_approval);
+    let configuration = value(&preview, "hevc_configuration")?;
+    assert_eq!(text(configuration, "source")?, "owner-supplied-vps-sps-pps");
+    assert_eq!(text(configuration, "vps")?, ContentDigest::sha256(&nals()?[0]).to_text());
+
+    for (mut changed, wrong_approval) in [
+        (explicit.clone(), selected_approval),
+        (selected, explicit_approval.clone()),
+    ] {
+        changed.extend(["--approve".into(), wrong_approval.into()]);
+        let output = run("capture", &changed)?;
+        assert!(!output.status.success());
+        assert!(output.stdout.is_empty());
+    }
+    let mut partial = explicit.clone();
+    let at = partial.iter().position(|arg| arg == "--hevc-sps").ok_or("SPS option")?;
+    partial.drain(at..at + 2);
+    let mut wrong_codec = explicit.clone();
+    replace(&mut wrong_codec, "--codec", "avc")?;
+    let mut malformed = explicit;
+    replace(&mut malformed, "--hevc-vps", "00000001400180")?;
+    for mut changed in [partial, wrong_codec, malformed] {
+        changed.extend(["--approve".into(), explicit_approval.clone().into()]);
+        let output = run("capture", &changed)?;
+        assert!(!output.status.success());
+        assert!(output.stdout.is_empty());
+        assert!(String::from_utf8_lossy(&output.stderr).contains("HEVC"));
+    }
+    no_connection(&listener)?;
+    assert!(!directory.root().exists());
+    assert!(!directory.pins().exists());
+    assert!(!absent_secret.exists());
+    Ok(())
+}
+
+#[test]
+fn requested_stop_retains_the_real_hevc_boundary_and_cold_decodes_both_pictures() -> Test {
+    requested_stop(false)
+}
+
+#[test]
+fn explicit_hevc_tuple_without_sdp_parameters_captures_and_cold_decodes() -> Test {
+    requested_stop(true)
+}
+
+fn requested_stop(explicit: bool) -> Test {
+    let directory = Directory::new(if explicit { "hevc-target-owner-tuple" } else { "hevc-target" })?;
+    let listener = listener()?;
+    let mut args = args(&directory, listener.local_addr()?, 2)?;
+    let mut camera = camera(StreamCase::Target)?;
+    if explicit {
+        supply_parameters(&mut args)?;
+        camera.description = description_without_parameters(&camera.description);
+        assert!(!camera.description.contains("sprop-"));
+    }
+    let args = approve(&args)?;
+    let (output, transcript) = captured(listener, &args, camera)?;
     assert!(
         output.status.success(),
         "stdout={} stderr={}",

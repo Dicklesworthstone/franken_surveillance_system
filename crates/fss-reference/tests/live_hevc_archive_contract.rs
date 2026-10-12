@@ -13,7 +13,9 @@ use std::time::Duration;
 
 use fss_core::ContentDigest;
 use fss_object::SpoolLimits;
-use fss_packet::hevc::{HevcAssemblyLimits, HevcBoundary, HevcConfigurationLimits};
+use fss_packet::hevc::{
+    HevcAssemblyLimits, HevcBoundary, HevcConfiguration, HevcConfigurationLimits,
+};
 use fss_packet::{H265Limits, ReorderLimits, StreamKey};
 use fss_publication::{LocalPublicationLimits, LocalRootPublisher, NeverCancel};
 use fss_reference::rtsp::archive_pins::{
@@ -22,7 +24,9 @@ use fss_reference::rtsp::archive_pins::{
 use fss_reference::rtsp::authentication::{DigestCredentials, DigestPolicy};
 use fss_reference::rtsp::client::{ClientCommand, ClientConfig, ClientProgress, ClientState};
 use fss_reference::rtsp::hevc_client::{HevcClientPoll, pictures::HevcPictureClientPoll as Event};
-use fss_reference::rtsp::hevc_recording_capture::live::AutomaticHevcRecordingStep as RecordingStep;
+use fss_reference::rtsp::hevc_recording_capture::live::{
+    AutomaticHevcRecordingStep as RecordingStep, LiveHevcRecordingConfig,
+};
 use fss_reference::rtsp::hevc_recording_capture::{
     HevcCapturePoll, HevcPictureTimingRequest, TimedHevcCapture,
 };
@@ -234,6 +238,13 @@ struct Fixture<'a> {
 }
 impl<'a> Fixture<'a> {
     fn new(stores: &'a mut Stores, recording: SelectedHevcRecordingConfig) -> Test<Fixture<'a>> {
+        Self::configured(stores, recording, None)
+    }
+    fn configured(
+        stores: &'a mut Stores,
+        recording: SelectedHevcRecordingConfig,
+        configuration: Option<HevcConfiguration>,
+    ) -> Test<Fixture<'a>> {
         let listener = TcpListener::bind((Ipv4Addr::LOCALHOST, 0))?;
         let binding = TcpBinding::new(
             KEY,
@@ -273,17 +284,37 @@ impl<'a> Fixture<'a> {
             publication_deadline_ns: LEASE + 10_000_000_000,
             max_storage_pause_ns: 5_000_000_000,
         };
-        let driver = JournaledLiveHevcArchive::connect(
-            live,
-            recording,
-            archive,
-            ArchiveWorkLimits::default(),
-            &mut stores.publisher,
-            &mut stores.pins,
-            START,
-            &authority,
-            &NeverCancel,
-        )?;
+        let driver = if let Some(configuration) = configuration {
+            JournaledLiveHevcArchive::connect_with_configuration(
+                live,
+                LiveHevcRecordingConfig {
+                    scope: recording.scope,
+                    payload_type: recording.payload_type,
+                    configuration,
+                    time_scale: recording.time_scale,
+                    limits: recording.limits,
+                },
+                archive,
+                ArchiveWorkLimits::default(),
+                &mut stores.publisher,
+                &mut stores.pins,
+                START,
+                &authority,
+                &NeverCancel,
+            )?
+        } else {
+            JournaledLiveHevcArchive::connect(
+                live,
+                recording,
+                archive,
+                ArchiveWorkLimits::default(),
+                &mut stores.publisher,
+                &mut stores.pins,
+                START,
+                &authority,
+                &NeverCancel,
+            )?
+        };
         let (peer, _) = listener.accept()?;
         peer.set_read_timeout(Some(Duration::from_secs(2)))?;
         peer.set_write_timeout(Some(Duration::from_secs(2)))?;
@@ -392,11 +423,18 @@ impl<'a> Fixture<'a> {
         Err("control response bound".into())
     }
     fn play(&mut self) -> Test {
+        self.play_description(&sdp()?)
+    }
+    fn play_description(&mut self, description: &str) -> Test {
         let (describe, wire) = self.command()?;
         assert_eq!(describe.command, ClientCommand::Describe);
         assert!(!std::str::from_utf8(&wire)?.contains("Authorization:"));
         self.reply(
-            &response(describe.cseq, "Content-Type: application/sdp\r\n", &sdp()?),
+            &response(
+                describe.cseq,
+                "Content-Type: application/sdp\r\n",
+                description,
+            ),
             ClientState::Described,
         )?;
         let (setup, _) = self.command()?;
@@ -584,11 +622,33 @@ fn owner_stop_at_final_admission_closes_tcp_before_checkpoint_and_drains_past_li
 
 #[test]
 fn eof_seal_retires_live_grant_before_final_admission_and_preserves_protected_source() -> Test {
+    eof_after_final_seal(false)
+}
+
+#[test]
+fn explicit_tuple_without_sdp_parameters_preserves_eof_drain_and_exact_source() -> Test {
+    eof_after_final_seal(true)
+}
+
+fn eof_after_final_seal(explicit: bool) -> Test {
     let mut stores = Stores::new()?;
     let root = stores.root.clone();
     let namespace = stores.namespace.clone();
-    let mut f = Fixture::new(&mut stores, selected()?)?;
-    f.play()?;
+    let mut f = Fixture::configured(
+        &mut stores,
+        selected()?,
+        explicit.then(configuration).transpose()?,
+    )?;
+    if explicit {
+        let description = sdp()?
+            .split_inclusive("\r\n")
+            .filter(|line| !line.starts_with("a=fmtp:"))
+            .collect::<String>();
+        assert!(!description.contains("sprop-"));
+        f.play_description(&description)?;
+    } else {
+        f.play()?;
+    }
     // The following P slice really closes the IDR, but its own marker/EOF cannot close it.
     f.peer.write_all(&input(5)?)?;
     f.peer.shutdown(Shutdown::Write)?;
@@ -776,7 +836,7 @@ fn eof_seal_retires_live_grant_before_final_admission_and_preserves_protected_so
 
 #[test]
 fn missing_ambiguous_wrong_payload_or_over_limit_sdp_refuses_before_setup() -> Test {
-    for case in 0..4 {
+    for case in 0..5 {
         let mut stores = Stores::new()?;
         let mut selection = selected()?;
         let mut description = sdp()?;
@@ -797,9 +857,14 @@ fn missing_ambiguous_wrong_payload_or_over_limit_sdp_refuses_before_setup() -> T
                 );
             }
             2 => selection.payload_type = 97,
-            _ => selection.configuration_limits.max_width = 1,
+            3 => selection.configuration_limits.max_width = 1,
+            _ => selection.payload_type = 97,
         }
-        let mut f = Fixture::new(&mut stores, selection)?;
+        let mut f = Fixture::configured(
+            &mut stores,
+            selection,
+            (case == 4).then(configuration).transpose()?,
+        )?;
         let (describe, _) = f.command()?;
         let sent = f.driver.totals().ok_or("totals")?.sent_bytes;
         f.peer.write_all(&response(
