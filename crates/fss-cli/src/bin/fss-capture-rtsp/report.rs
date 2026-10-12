@@ -85,6 +85,9 @@ impl<W: Write> Transcript<'_, W> {
 #[derive(Default)]
 pub(super) struct Statistics {
     pub(super) steps: u64,
+    pub(super) authentication_challenges: u64,
+    pub(super) authentication_responses: u64,
+    pub(super) digest_requests: u64,
     pub(super) connection_attempted: bool,
     pub(super) collected_pictures: u64,
     pub(super) skipped_pictures: u64,
@@ -378,6 +381,18 @@ pub(super) fn terminal(
         ("read_calls", stats.totals.read_calls.to_string()),
         ("write_calls", stats.totals.write_calls.to_string()),
         ("steps", stats.steps.to_string()),
+        ("authentication", string(options.authentication_mode())),
+        (
+            "authentication_challenges",
+            stats.authentication_challenges.to_string(),
+        ),
+        (
+            "authentication_responses_queued",
+            stats.authentication_responses.to_string(),
+        ),
+        ("digest_requests_queued", stats.digest_requests.to_string()),
+        ("server_identity_verified", "false".into()),
+        ("transport_encrypted", "false".into()),
         (
             "remote_session_may_exist",
             stats.remote_session_may_exist.to_string(),

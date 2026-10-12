@@ -285,7 +285,9 @@ The checked-in workspace is intentionally smaller. Empty crate theater is not im
 For an owner-approved AVC camera, [`fss-capture-rtsp`](docs/rtsp_capture_cli.md) provides
 an exact no-I/O approval plan, one bounded literal-IP TCP session, fixed declared media
 cadence, journaled original-RTP recording windows, deliberate picture-count stop and
-explicit partial-capture accounting. Its durable window pins feed the
+explicit partial-capture accounting. On Linux, optional realm-bound Digest authentication
+uses an explicitly approved private credential file, fresh cnonces and continuous lease
+revalidation; authentication is disabled by default. Its durable window pins feed the
 [retained RTSP importer](docs/rtsp_recording_import.md) and existing native decode/analysis.
 
 FSS separates source evidence, live delivery, and analysis:

@@ -20,6 +20,10 @@ use std::time::{Duration, Instant};
 use fss_cli::json_input::{Value, parse};
 use fss_core::ContentDigest;
 
+#[cfg(target_os = "linux")]
+#[path = "capture_rtsp_cli/auth.rs"]
+mod authentication;
+
 type Test<T = ()> = Result<T, Box<dyn std::error::Error + Send + Sync>>;
 
 const SENSOR: &str = "sensor:rtsp-capture-cli";

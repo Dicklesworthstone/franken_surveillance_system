@@ -384,3 +384,61 @@ fn ingress_refuses_overflow_zero_signs_and_nondecimal_input() {
         assert!(Options::parse(&input).is_err(), "{value}");
     }
 }
+
+#[test]
+fn digest_scope_and_legacy_policy_require_exact_new_approval() -> Result<(), &'static str> {
+    let mut input = args();
+    let unsigned = Options::parse(&input)?.digest()?;
+    set(&mut input, "--credential-file", "/owner/secrets/camera");
+    set(&mut input, "--auth-realm", "private camera realm");
+    let options = Options::parse(&input)?;
+    let expected = options.digest()?;
+    assert_ne!(expected, unsigned);
+    let preview = options.preview()?;
+    assert!(!preview.contains("private camera realm"));
+    assert!(preview.contains("\"authentication\":\"digest\""));
+    assert!(preview.contains("\"credentials_read\":false"));
+    assert!(!options.live_config().digest_policy.allow_legacy_md5);
+    for (key, value) in [
+        ("--credential-file", "/owner/secrets/other-camera"),
+        ("--auth-realm", "other realm"),
+        ("--legacy-md5", "yes"),
+    ] {
+        let mut changed = input.clone();
+        set(&mut changed, key, value);
+        assert_ne!(Options::parse(&changed)?.digest()?, expected);
+    }
+    set(&mut input, "--legacy-md5", "yes");
+    let qop = Options::parse(&input)?.digest()?;
+    set(&mut input, "--legacy-no-qop", "yes");
+    assert_ne!(Options::parse(&input)?.digest()?, qop);
+    Ok(())
+}
+
+#[test]
+fn incomplete_or_unsafe_digest_configuration_is_refused_without_effects() {
+    for (key, value) in [
+        ("--auth-realm", "camera"),
+        ("--credential-file", "/owner/secrets/camera"),
+        ("--legacy-md5", "yes"),
+        ("--legacy-no-qop", "yes"),
+    ] {
+        let mut input = args();
+        set(&mut input, key, value);
+        assert!(Options::parse(&input).is_err());
+    }
+    for (key, value) in [
+        ("--credential-file", "relative"),
+        ("--credential-file", "/owner/private/archive/camera"),
+        ("--credential-file", "/owner/private/pins/camera"),
+        ("--auth-realm", "camera\r\nInjected: value"),
+        ("--legacy-md5", "true"),
+        ("--legacy-no-qop", "yes"),
+    ] {
+        let mut input = args();
+        set(&mut input, "--credential-file", "/owner/secrets/camera");
+        set(&mut input, "--auth-realm", "camera");
+        set(&mut input, key, value);
+        assert!(Options::parse(&input).is_err(), "{key}");
+    }
+}

@@ -22,7 +22,7 @@ use fss_reference::rtsp::archive_pins::live::{
 use fss_reference::rtsp::archive_pins::{ArchivePinJournal, JournaledArchiveProgress};
 use fss_reference::rtsp::authentication::DigestCredentials;
 use fss_reference::rtsp::avc_client::AvcClientPoll;
-use fss_reference::rtsp::avc_client::authenticated::DigestAvcPoll;
+use fss_reference::rtsp::avc_client::authenticated::{DigestAvcError, DigestAvcPoll};
 use fss_reference::rtsp::client::{ClientCommand, ClientProgress, ClientState};
 use fss_reference::rtsp::live_archive::{LiveArchiveCompletion, LiveArchiveError, LiveArchiveStep};
 use fss_reference::rtsp::live_avc::recording::{LiveRecordingError, LiveRecordingStep};
@@ -32,6 +32,7 @@ use fss_reference::rtsp::recording_capture::{CaptureError, CapturePoll, TimedCap
 use fss_reference::rtsp::recording_collector::CollectorError;
 use fss_reference::rtsp::tcp::{TcpAuthority, TcpBinding, TcpDenial, TcpError, TcpOperation};
 
+use super::authentication::{CredentialLease, Entropy, MAX_CREDENTIAL_BYTES, SecretError};
 use super::plan::Options;
 use super::timing::FixedTiming;
 
@@ -55,6 +56,9 @@ enum Failure {
     Storage,
     Connect,
     Authentication,
+    AuthenticationRefused,
+    Credentials,
+    Entropy,
     Protocol,
     Timing,
     Deadline,
@@ -73,6 +77,9 @@ impl Failure {
             Self::Storage => "ERR-CAPTURE-RTSP-STORAGE-001",
             Self::Connect => "ERR-CAPTURE-RTSP-CONNECT-001",
             Self::Authentication => "ERR-CAPTURE-RTSP-AUTH-UNSUPPORTED-001",
+            Self::AuthenticationRefused => "ERR-CAPTURE-RTSP-AUTH-REFUSED-001",
+            Self::Credentials => "ERR-CAPTURE-RTSP-CREDENTIAL-001",
+            Self::Entropy => "ERR-CAPTURE-RTSP-ENTROPY-001",
             Self::Protocol => "ERR-CAPTURE-RTSP-SOURCE-001",
             Self::Timing => "ERR-CAPTURE-RTSP-TIMING-001",
             Self::Deadline => "ERR-CAPTURE-RTSP-DEADLINE-001",
@@ -86,6 +93,9 @@ impl Failure {
     fn cause(self) -> &'static str {
         match self {
             Self::Authentication => "authentication_required",
+            Self::AuthenticationRefused => "authentication_refused",
+            Self::Credentials => "credential_refused",
+            Self::Entropy => "entropy_unavailable",
             Self::Timing => "timing_refused",
             Self::Deadline => "deadline",
             Self::WorkBudget => "work_budget",
@@ -98,6 +108,34 @@ impl Failure {
             Self::Protocol => "protocol_failure",
         }
     }
+}
+
+fn secret_failure(error: SecretError) -> Failure {
+    match error {
+        SecretError::Credentials => Failure::Credentials,
+        SecretError::Revoked | SecretError::Authority => Failure::Authority,
+        SecretError::Entropy => Failure::Entropy,
+        SecretError::Deadline => Failure::Deadline,
+    }
+}
+
+fn secret_check(
+    authority: &ContextAuthority,
+    start: Instant,
+    deadline: u64,
+) -> Result<(), SecretError> {
+    if !authority.has_capability("CAP-ADAPTER-AUTH-001") {
+        return Err(SecretError::Authority);
+    }
+    context_check(authority, start, deadline)
+        .map(|_| ())
+        .map_err(|error| {
+            if matches!(error, Failure::Deadline) {
+                SecretError::Deadline
+            } else {
+                SecretError::Authority
+            }
+        })
 }
 
 fn elapsed(start: Instant) -> Result<u64, Failure> {
@@ -128,6 +166,7 @@ struct Owner<'a> {
     storage_deadline: u64,
     drain_timeout: u64,
     drain_deadline: Cell<Option<u64>>,
+    credentials: Option<&'a CredentialLease>,
 }
 impl Owner<'_> {
     fn now(&self) -> Result<u64, Failure> {
@@ -170,6 +209,18 @@ impl Owner<'_> {
         self.now()?;
         Ok(())
     }
+
+    fn authentication(
+        &self,
+        entropy: &mut Entropy,
+    ) -> Result<(DigestCredentials<'_>, [u8; 16]), Failure> {
+        let check = || secret_check(self.authority, self.start, self.live_deadline);
+        let lease = self.credentials.ok_or(Failure::Authentication)?;
+        lease.revalidate(&check).map_err(secret_failure)?;
+        let nonce = entropy.next(&check).map_err(secret_failure)?;
+        let credentials = lease.credentials().map_err(secret_failure)?;
+        Ok((credentials, nonce))
+    }
 }
 impl TcpAuthority for Owner<'_> {
     fn checkpoint(
@@ -193,6 +244,14 @@ impl TcpAuthority for Owner<'_> {
                 .all(|cap| self.authority.has_capability(cap))
         {
             return Err(TcpDenial::Unauthorized);
+        }
+        if let Some(lease) = self.credentials {
+            let check = || secret_check(self.authority, self.start, self.live_deadline);
+            lease.revalidate(&check).map_err(|error| match error {
+                SecretError::Deadline => TcpDenial::Deadline,
+                SecretError::Revoked | SecretError::Credentials => TcpDenial::Revoked,
+                _ => TcpDenial::Unauthorized,
+            })?;
         }
         // Re-read the actual clock at every native pre/post-syscall probe. A caller's
         // old admission timestamp cannot extend network authority during storage/output.
@@ -237,6 +296,9 @@ fn failure(error: JournaledLiveFailure, stats: &mut Statistics) -> Failure {
                 | LiveRecordingError::Network(LiveAvcError::Transport(
                     TcpError::WorkBudget | TcpError::RequestBudget,
                 )) => Failure::WorkBudget,
+                LiveRecordingError::Network(LiveAvcError::Protocol(
+                    DigestAvcError::Authentication(_) | DigestAvcError::AuthenticationAtEof,
+                )) => Failure::AuthenticationRefused,
                 _ => Failure::Protocol,
             },
             _ => Failure::State,
@@ -334,11 +396,35 @@ fn observe_stopped(step: &LiveRecordingStep, stats: &mut Statistics) {
     }
 }
 
+fn network_stop_failure(step: &LiveAvcStep) -> Failure {
+    match step {
+        LiveAvcStep::Protocol {
+            event:
+                DigestAvcPoll::Fault {
+                    reason: DigestAvcError::Authentication(_) | DigestAvcError::AuthenticationAtEof,
+                    ..
+                },
+            ..
+        } => Failure::AuthenticationRefused,
+        _ => Failure::Protocol,
+    }
+}
+
+fn recording_stop_failure(step: &LiveRecordingStep) -> Failure {
+    match step {
+        LiveRecordingStep::Network(step) => network_stop_failure(step),
+        LiveRecordingStep::Stopped { trigger, .. } => network_stop_failure(trigger),
+        _ => Failure::Protocol,
+    }
+}
+
 /// Some(wake) is a real Pending output; None means more bounded local work can run.
 fn network_step<W: Write>(
     step: LiveAvcStep,
     stats: &mut Statistics,
     next_command: &mut Option<ClientCommand>,
+    challenge: &mut Option<u32>,
+    authentication_allowed: bool,
     log: &mut Transcript<'_, W>,
 ) -> Result<Option<Option<u64>>, Failure> {
     observe_network_retirement(&step, stats);
@@ -355,10 +441,25 @@ fn network_step<W: Write>(
         LiveAvcStep::Pending(wait) => return Ok(Some(wait.wake_at_ns)),
         LiveAvcStep::Ended => return Err(Failure::Protocol),
         LiveAvcStep::Protocol { event, .. } => match event {
-            // This is a deliberate terminal refusal. There is no respond(), credential
-            // lookup, Authorization construction, or authenticated request retry here.
-            DigestAvcPoll::AuthenticationRequired { .. } => return Err(Failure::Authentication),
-            DigestAvcPoll::Fault { .. } => return Err(Failure::Protocol),
+            DigestAvcPoll::AuthenticationRequired { cseq, .. } => {
+                if !authentication_allowed {
+                    return Err(Failure::Authentication);
+                }
+                if challenge.is_some_and(|pending| pending != cseq) {
+                    return Err(Failure::State);
+                }
+                if challenge.replace(cseq).is_none() {
+                    stats.authentication_challenges += 1;
+                }
+            }
+            DigestAvcPoll::Fault { reason, .. } => {
+                return Err(match reason {
+                    DigestAvcError::Authentication(_) | DigestAvcError::AuthenticationAtEof => {
+                        Failure::AuthenticationRefused
+                    }
+                    _ => Failure::Protocol,
+                });
+            }
             DigestAvcPoll::Client { event, .. } => match *event {
                 AvcClientPoll::Control(ClientProgress::Accepted(state)) => {
                     *next_command = match state {
@@ -535,19 +636,20 @@ fn drive<W: Write>(
     options: &Options,
     capture: &mut JournaledLiveAvcArchive<'_, '_>,
     owner: &Owner<'_>,
+    mut entropy: Option<&mut Entropy>,
     stats: &mut Statistics,
     log: &mut Transcript<'_, W>,
 ) -> Result<(), Failure> {
     let namespace = options.pin_scope().archive_namespace;
     let mut timing = FixedTiming::new(options.frame_duration).map_err(|_| Failure::Timing)?;
     let mut next_command = Some(ClientCommand::Describe);
+    let mut challenge = None;
     let mut ready = false;
     let mut sealing = false;
     let mut sealed = false;
     let mut draining = false;
-    // The native API borrows these arguments even before a challenge has been accepted.
-    // They are nonsecret placeholders and are NEVER used to authenticate: only respond()
-    // installs a challenge in DigestState, and that method is absent from this driver.
+    // Before a challenge is accepted the existing native API needs only nonsecret
+    // placeholders. The owner's private lease is borrowed solely for signed requests.
     let unsigned = DigestCredentials::new("unused", "").map_err(|_| Failure::Configuration)?;
 
     loop {
@@ -587,21 +689,64 @@ fn drive<W: Write>(
             draining = true;
             ready = false;
         }
-        if !sealing
-            && !draining
-            && ready
-            && let Some(command) = next_command
-        {
-            match capture.request(command, &unsigned, [0; 16], owner.now()?, owner, owner) {
+        if !sealing && !draining && ready && challenge.is_some() {
+            let (credentials, nonce) =
+                owner.authentication(entropy.as_deref_mut().ok_or(Failure::Authentication)?)?;
+            match capture.respond(&credentials, nonce, owner.now()?, owner, owner) {
                 Ok(request) => {
-                    next_command = None;
+                    challenge = None;
+                    stats.authentication_responses += 1;
+                    stats.digest_requests += 1;
                     log.emit(
                         "request_queued",
                         object(&[
                             ("command", string(command_name(request.command))),
                             ("cseq", request.cseq.to_string()),
                             ("bytes", request.bytes.to_string()),
-                            ("authentication", string("none")),
+                            ("authentication", string("digest")),
+                            ("challenge_response", "true".into()),
+                        ]),
+                        false,
+                    )?;
+                }
+                Err(error) if backpressure(&error) => {}
+                Err(error) => return Err(failure(error, stats)),
+            }
+        } else if !sealing
+            && !draining
+            && ready
+            && let Some(command) = next_command
+        {
+            let authenticated = if stats.authentication_responses != 0 {
+                Some(owner.authentication(entropy.as_deref_mut().ok_or(Failure::Authentication)?)?)
+            } else {
+                None
+            };
+            let (credentials, nonce) = authenticated
+                .as_ref()
+                .map_or((&unsigned, [0; 16]), |(credentials, nonce)| {
+                    (credentials, *nonce)
+                });
+            match capture.request(command, credentials, nonce, owner.now()?, owner, owner) {
+                Ok(request) => {
+                    next_command = None;
+                    if authenticated.is_some() {
+                        stats.digest_requests += 1;
+                    }
+                    log.emit(
+                        "request_queued",
+                        object(&[
+                            ("command", string(command_name(request.command))),
+                            ("cseq", request.cseq.to_string()),
+                            ("bytes", request.bytes.to_string()),
+                            (
+                                "authentication",
+                                string(if authenticated.is_some() {
+                                    "digest"
+                                } else {
+                                    "none"
+                                }),
+                            ),
                         ]),
                         false,
                     )?;
@@ -699,7 +844,14 @@ fn drive<W: Write>(
             }
             JournaledLiveArchiveStep::Live(LiveArchiveStep::Recording(step)) => match *step {
                 LiveRecordingStep::Network(step) => {
-                    if let Some(wake) = network_step(step, stats, &mut next_command, log)? {
+                    if let Some(wake) = network_step(
+                        step,
+                        stats,
+                        &mut next_command,
+                        &mut challenge,
+                        options.authentication.is_some(),
+                        log,
+                    )? {
                         owner.pause(wake)?;
                     }
                 }
@@ -771,7 +923,7 @@ fn drive<W: Write>(
                 LiveRecordingStep::Stopped { trigger, retained } => {
                     observe_network_retirement(&trigger, stats);
                     stats.capture_retirement(&retained);
-                    return Err(Failure::Protocol);
+                    return Err(network_stop_failure(&trigger));
                 }
                 LiveRecordingStep::Ended => return Err(Failure::Protocol),
                 LiveRecordingStep::MediaQueued => {}
@@ -779,12 +931,12 @@ fn drive<W: Write>(
             JournaledLiveArchiveStep::Stopped { trigger, retained } => {
                 observe_stopped(&trigger, stats);
                 stats.retirement(&retained);
-                return Err(Failure::Protocol);
+                return Err(recording_stop_failure(&trigger));
             }
             JournaledLiveArchiveStep::Live(LiveArchiveStep::Stopped { trigger, retained }) => {
                 observe_stopped(&trigger, stats);
                 stats.archive_retirement(&retained);
-                return Err(Failure::Protocol);
+                return Err(recording_stop_failure(&trigger));
             }
             JournaledLiveArchiveStep::Live(LiveArchiveStep::Ended) => return Err(Failure::State),
         }
@@ -850,6 +1002,18 @@ fn run_owned<W: Write>(
         .timeout_ns
         .checked_add(options.drain_timeout_ns)
         .ok_or(Failure::Configuration)?;
+    let check_secret = || secret_check(authority, start, options.timeout_ns);
+    let credentials = options
+        .authentication
+        .as_ref()
+        .map(|auth| CredentialLease::load(&auth.credential_file, &check_secret))
+        .transpose()
+        .map_err(secret_failure)?;
+    let mut entropy = if credentials.is_some() {
+        Some(Entropy::open(&check_secret).map_err(secret_failure)?)
+    } else {
+        None
+    };
     context_check(authority, start, options.timeout_ns)?;
     require_new(&options.root)?;
     context_check(authority, start, options.timeout_ns)?;
@@ -873,6 +1037,7 @@ fn run_owned<W: Write>(
         storage_deadline,
         drain_timeout: options.drain_timeout_ns,
         drain_deadline: Cell::new(None),
+        credentials: credentials.as_ref(),
     };
     let result = (|| {
         owner.now()?;
@@ -903,7 +1068,7 @@ fn run_owned<W: Write>(
             }
         })?;
         stats.connection_attempted = true;
-        let result = drive(options, &mut capture, &owner, stats, log);
+        let result = drive(options, &mut capture, &owner, entropy.as_mut(), stats, log);
         stats.observe(&capture);
         // Close the socket and transfer all remaining ownership BEFORE terminal sink output.
         // No retry, deletion, publication, or synthetic EOF occurs in cancellation.
@@ -926,9 +1091,19 @@ pub(super) fn execute(options: &Options) -> Result<(), &'static str> {
         .spool
         .max_total_bytes
         .checked_add(options.live_config().transport.max_received_bytes)
+        .and_then(|budget| {
+            budget.checked_add(if options.authentication.is_some() {
+                MAX_CREDENTIAL_BYTES as u64 + 1 + 16 * options.max_steps
+            } else {
+                0
+            })
+        })
         .ok_or(Failure::Configuration.code())?;
     let mut capabilities: Vec<String> = STORAGE_CAPS.iter().map(|cap| (*cap).into()).collect();
     capabilities.extend(["ADP-REPLAY-001".into(), "CAP-ADAPTER-NET-001".into()]);
+    if options.authentication.is_some() {
+        capabilities.push("CAP-ADAPTER-AUTH-001".into());
+    }
     let authority = ContextAuthority::new_root(RootAuthoritySpec {
         trace_id: "trace:rtsp-capture".into(),
         operation_id: OperationId::parse("operation:rtsp-capture")
@@ -992,7 +1167,9 @@ pub(super) fn execute(options: &Options) -> Result<(), &'static str> {
             ),
             ("time_scale", options.time_scale.to_string()),
             ("codec", string("avc")),
-            ("authentication", string("unsupported")),
+            ("authentication", string(options.authentication_mode())),
+            ("server_identity_verified", "false".into()),
+            ("transport_encrypted", "false".into()),
             ("capture_time", string("unknown")),
         ]),
         false,

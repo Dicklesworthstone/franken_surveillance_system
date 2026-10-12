@@ -28,11 +28,13 @@ use fss_reference::rtsp::recording_catalog::CatalogScope;
 use fss_reference::rtsp::recording_collector::{CollectorLimits, RecordingCollector};
 use fss_reference::rtsp::tcp::{TcpBinding, TcpLimits, TcpSecurityPolicy};
 
+use super::authentication::{AuthPlan, MAX_CREDENTIAL_BYTES, MAX_SECRET_IO_CALLS};
+
 pub(super) const MAX_ARGUMENTS: usize = 128;
 pub(super) const FORMAT: &str = "fss.rtsp_capture_cli.v1";
-const POLICY: &str = "one-literal-ip:owner-approved-plaintext:no-authentication:no-reconnect:\
+const POLICY: &str = "one-literal-ip:owner-approved-plaintext:opt-in-scoped-digest:no-reconnect:\
 journal-before-publication:original-rtp:fixed-90000hz:exact-cadence:relative-dts:\
-zero-composition-offset:idr-led-windows:requested-stop-is-not-eof:v1";
+zero-composition-offset:idr-led-windows:requested-stop-is-not-eof:v2";
 pub(super) const HELP: &str = "fss-capture-rtsp --root NEW_ABSOLUTE_ARCHIVE --pins NEW_ABSOLUTE_PIN_JOURNAL\n\
   --peer IP:PORT --authority HOST[:PORT] --presentation /PATH --control-root /PATH\n\
   --sensor-id ID --stream-id ID --generation N --ingress N --ssrc N\n\
@@ -44,8 +46,16 @@ Without --approve: pure JSON plan; NO filesystem, clock or network I/O.\n\
 Repeat exactly with the returned approval to capture one bounded RTSP/AVC TCP session.\n\
 Both destination directories must be new, separate and outside one another; their parents\n\
 must already exist. The journal must be protected independently from footage storage.\n\
-Only a literal IP peer is contacted. No credentials, DNS, redirects, TLS or reconnect.\n\
-An authentication challenge stops capture without sending an Authorization header.\n\
+Only a literal IP peer is contacted. No DNS, redirects, TLS or reconnect.\n\
+By default an authentication challenge stops capture without sending Authorization.\n\
+Linux Digest opt-in: --credential-file /PRIVATE_FILE --auth-realm EXACT_REALM\n\
+The private regular file contains exactly username LF password LF (bounded printable ASCII).\n\
+It must have one hard link and no group/other permissions; symlinks are refused. Secret bytes\n\
+are read only after exact approval, never from argv, environment, stdin or camera metadata.\n\
+Replacement, modification, removal or permission drift revokes the live credential lease.\n\
+SHA-256/qop=auth is the default. Explicit legacy interoperability: --legacy-md5 yes\n\
+and, only with it, --legacy-no-qop yes. No Basic auth or automatic downgrade.\n\
+Digest does not encrypt media or authenticate the server. Linux /dev/urandom supplies cnonces.\n\
 \n\
 The operator supplies a fixed 90000 Hz cadence (for example 3600 ticks for 25 pictures/s)\n\
 and evidence identifying that timing policy. Every RTP timestamp must follow it exactly.\n\
@@ -93,6 +103,7 @@ pub(super) struct Options {
     pin_scope: ArchivePinScope,
     pin_limits: ArchivePinLimits,
     timing_evidence: ContentDigest,
+    pub(super) authentication: Option<AuthPlan>,
 }
 
 fn digest(text: &str) -> Result<ContentDigest, &'static str> {
@@ -234,6 +245,10 @@ impl Options {
             "--max-windows",
             "--max-storage-bytes",
             "--max-storage-pause-ms",
+            "--credential-file",
+            "--auth-realm",
+            "--legacy-md5",
+            "--legacy-no-qop",
         ];
         let mut values = BTreeMap::new();
         for pair in args.as_chunks::<2>().0 {
@@ -263,6 +278,15 @@ impl Options {
         let pins = absolute_path(required("--pins")?)?;
         if root.starts_with(&pins) || pins.starts_with(&root) {
             return Err("archive and pin journal must be separate, nonnested directories");
+        }
+        let authentication = AuthPlan::parse(&values, absolute_path)?;
+        if let Some(auth) = &authentication
+            && [&root, &pins].iter().any(|output| {
+                auth.credential_file.starts_with(output)
+                    || output.starts_with(&auth.credential_file)
+            })
+        {
+            return Err("credential file must be outside both output directories");
         }
         let principal = values
             .get("--principal")
@@ -472,6 +496,7 @@ impl Options {
                 32 * 1024 * 1024,
             )? as usize,
             timing_evidence,
+            authentication,
             approve: values
                 .get("--approve")
                 .map(|text| digest(text))
@@ -487,12 +512,14 @@ impl Options {
             binding: self.binding.clone(),
             transport: self.transport,
             media: self.media,
-            // No challenge is answered by this CLI. This is an inactive, nonsecret realm.
-            realm: "fss-capture-rtsp-no-authentication".to_owned(),
-            digest_policy: DigestPolicy {
-                allow_legacy_md5: false,
-                allow_legacy_no_qop: false,
-            },
+            realm: self.authentication.as_ref().map_or_else(
+                || "fss-capture-rtsp-no-authentication".to_owned(),
+                |auth| auth.realm.clone(),
+            ),
+            digest_policy: self
+                .authentication
+                .as_ref()
+                .map_or_else(DigestPolicy::default, |auth| auth.policy),
             deadline_ns: self.timeout_ns,
             max_steps: self.max_steps,
         }
@@ -617,6 +644,9 @@ impl Options {
             ("spool_scan_entries", p.spool.max_scan_entries as u64),
             ("pin_records", self.pin_limits.max_records as u64),
             ("pin_bytes", self.pin_limits.max_bytes as u64),
+            ("credential_file_bytes", MAX_CREDENTIAL_BYTES as u64),
+            ("secret_io_calls_per_read", MAX_SECRET_IO_CALLS as u64),
+            ("cnonce_bytes_per_request", 16),
         ]
     }
 
@@ -650,6 +680,15 @@ impl Options {
             e.digest(value);
         }
         let live = self.live_config();
+        e.bool(self.authentication.is_some());
+        if let Some(auth) = &self.authentication {
+            e.text(
+                auth.credential_file
+                    .to_str()
+                    .ok_or("UTF-8 credential path required")?,
+            );
+            e.text("linux-private-regular-file:identity-revalidated:urandom:v1");
+        }
         e.text(&live.realm);
         e.bool(live.digest_policy.allow_legacy_md5);
         e.bool(live.digest_policy.allow_legacy_no_qop);
@@ -708,7 +747,13 @@ impl Options {
             ),
             ("journal_id", string(&self.pin_scope.journal_id.to_text())),
             ("bounds", object(&numbers)),
-            ("authentication", string("challenge-refused")),
+            ("authentication", string(self.authentication_mode())),
+            (
+                "authentication_scope",
+                self.authentication
+                    .as_ref()
+                    .map_or_else(|| "null".into(), AuthPlan::preview),
+            ),
             (
                 "timing",
                 string("operator-asserted-fixed-cadence-relative-dts"),
@@ -721,6 +766,14 @@ impl Options {
             ("capture_time", string("unknown")),
             ("effects", string("none-until-exact-approval")),
         ]))
+    }
+
+    pub(super) fn authentication_mode(&self) -> &'static str {
+        if self.authentication.is_some() {
+            "digest"
+        } else {
+            "challenge-refused"
+        }
     }
 }
 

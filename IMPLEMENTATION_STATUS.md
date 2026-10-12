@@ -10,14 +10,42 @@ Franken Surveillance System now has a coherent, dependency-light Rust reference 
 
 It is also not a complete surveillance product. Native device adapters, production media/model/graph/storage services, persistent distributed operation, every human and agent surface, complete qualification matrices, and the aggregate release root remain open. Status below distinguishes implemented reference semantics from production completion.
 
+## Scoped Digest authentication for native RTSP capture (2026-10-12, reference)
+
+`fss-capture-rtsp` can now capture from an owner-authorized Digest camera using an
+explicit private credential-file reference and exact realm. The pure plan binds the
+credential path, authentication policy, Linux secret/entropy backends and their bounds;
+preview never opens the file. Approved execution validates the bounded two-record file
+before creating either archive destination or connecting. Its identity, permissions,
+size and change timestamps remain a live lease at every TCP authorization checkpoint.
+Replacing, editing, removing or exposing the file stops subsequent network progress.
+
+The existing native authentication state machine now owns challenge responses and all
+subsequent signed requests, including keepalive. SHA-256/SHA-256-sess with `qop=auth`
+are the default; MD5 and no-qop require separate explicit legacy opt-ins. Linux's verified
+random device supplies fresh 128-bit cnonces. Wrong realms, replay, downgrade and
+exhausted retries refuse. Structured reports retain counts and refusal categories,
+without credentials, Authorization headers or challenge text in reports or recordings.
+
+This is an operator-facing reference slice of FSS-047. It preserves original-RTP custody,
+independent pin barriers, import and cold native decode. The optional secret/entropy
+backend is Linux-only. Plaintext transport, unauthenticated server identity, bounded
+single-session operation and the current approved blocking-I/O reference boundary remain
+explicit; camera qualification, reconnect/fallback and the broad adapter bead remain open.
+Validation passed 30 capture unit cases and 14 real-process cases on pinned
+`nightly-2026-08-31`, locked offline dependencies and debug assertions. The process
+fixtures independently verify SHA-256/SHA-256-sess responses and exercise fresh/stale
+nonces, revocation, replay/downgrade/retry refusal, secret-free retained custody and
+capture → import → cold native decode. See [capture authentication and its limits](docs/rtsp_capture_cli.md).
+
 ## Native RTSP/AVC capture operator command (2026-10-11, reference)
 
 `fss-capture-rtsp` composes the native live recording and journaled archive owners into a
 bounded camera-to-retained-import path. A pure preview binds the route, source generation,
 timing assumptions, new archive and independent pin-journal destinations, all native ceilings
 and requested picture count. Approved execution sequences DESCRIBE, SETUP, PLAY and keepalive
-on one literal-IP plaintext TCP session. Authentication challenges, cadence drift, source
-changes and exhausted bounds refuse explicitly. The owner-selected payload is carried
+on one literal-IP plaintext TCP session. Authentication challenges without explicit Digest
+authority, cadence drift, source changes and exhausted bounds refuse explicitly. The owner-selected payload is carried
 into live DESCRIBE selection and packet collection; multiple AVC offers do not pick an
 implicit alternative. Each durable catalog row exposes its exact source, slot/root and
 decode clock for complete-page retained import and whole-recording analysis.

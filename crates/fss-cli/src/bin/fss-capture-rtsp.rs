@@ -6,6 +6,8 @@ use std::process::ExitCode;
 
 use fss_cli::ExitIdentity;
 
+#[path = "fss-capture-rtsp/authentication.rs"]
+mod authentication;
 #[path = "fss-capture-rtsp/driver.rs"]
 mod driver;
 #[path = "fss-capture-rtsp/plan.rs"]

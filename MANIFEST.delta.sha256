@@ -1,0 +1,12 @@
+cd3ee393ef4736bbf03bcc3640886f6561bcb234d616847e0af5bf0a17c13f3b  IMPLEMENTATION_STATUS.md
+a210a3700cdae64137b39eb3c61710d7f01de44423ee07ca6cbc3dc1b7772ad6  README.md
+fa01e241be9cecb4488e60986a1773d86e519bc9182107ad08d16cb4d5d5e865  crates/fss-cli/src/bin/fss-capture-rtsp.rs
+bafadf20e12b18594bd2591a9ee070cb54a63241404d876274ead1d4c685bb04  crates/fss-cli/src/bin/fss-capture-rtsp/authentication.rs
+a7e626730332e30fc2f8e070aa2ac609c32340f28d09e3ad6032185c7b8a95a8  crates/fss-cli/src/bin/fss-capture-rtsp/authentication_tests.rs
+33d58b9732e2d88443c7571d3eb5c9ccd8f8f6e108ac18b106134b9a374a4e85  crates/fss-cli/src/bin/fss-capture-rtsp/driver.rs
+992eab77e45658daf58890e28f7be56d97d7698b3e157aa90083f349d359c3e1  crates/fss-cli/src/bin/fss-capture-rtsp/plan.rs
+9f7763f279b296d78b53199eff92fc72c4ca7abc605b2cd7573ce3f5a779f966  crates/fss-cli/src/bin/fss-capture-rtsp/plan_tests.rs
+54b3da68dde14db9cabda75cd42dbf1b8b2745ed0fe6af94104c1a9c217db5dd  crates/fss-cli/src/bin/fss-capture-rtsp/report.rs
+d6430eef697acdfb1528a8ebbb63051c88a2b5ffa26d67690e934b5193f637e0  crates/fss-cli/tests/capture_rtsp_cli.rs
+32d81e9384b77f28a65d9df80934befeaf0b0911c70611a12d33d4213b85c3eb  crates/fss-cli/tests/capture_rtsp_cli/auth.rs
+a16fe1d0931e36a5c6201bf330bc778be2560e0b48d030441314793e7b0e2b11  docs/rtsp_capture_cli.md
