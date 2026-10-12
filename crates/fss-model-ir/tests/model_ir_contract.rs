@@ -394,8 +394,16 @@ fn test_canonical_digest_determinism_and_sensitivity() -> Result<(), Box<dyn Err
 }
 
 #[test]
-fn test_schema_domain_and_pinned_counts() -> Result<(), Box<dyn Error>> {
+fn test_owned_digest_domains_match_frozen_identities() -> Result<(), Box<dyn Error>> {
     assert_eq!(MODEL_IR_DIGEST_DOMAIN, b"fss.model_ir.v1\0");
+    assert_eq!(
+        OPERATOR_TABLE_DIGEST_DOMAIN,
+        b"fss.model_ir.operator_table.v1\0"
+    );
+    assert_eq!(
+        fss_model_ir::memory::MEMORY_PLAN_DOMAIN,
+        "fss.model_ir.materialized_liveness.v1"
+    );
 
     let domains_path = Path::new(env!("CARGO_MANIFEST_DIR"))
         .ancestors()
@@ -403,141 +411,49 @@ fn test_schema_domain_and_pinned_counts() -> Result<(), Box<dyn Error>> {
         .ok_or("missing root ancestor")?
         .join("registries/DIGEST_DOMAINS.md");
     let content = fs::read_to_string(domains_path)?;
-    assert!(
-        content.contains("`SCHEMA-DOMAIN-MODEL-IR-001`"),
-        "DIGEST_DOMAINS.md must register stable ID 'SCHEMA-DOMAIN-MODEL-IR-001'"
-    );
-    assert!(
-        content.contains("fss.model_ir.v1"),
-        "DIGEST_DOMAINS.md must register domain 'fss.model_ir.v1'"
-    );
-
-    let domain_count = content
+    // The Model IR freeze owns these exact identities, not the global registry's size.
+    // Select by ID, domain or authority so a renamed row, duplicate or foreign alias cannot
+    // evade this contract. Global inventory and unregistered-domain checks belong to the
+    // schema validator and policy checker; unrelated additive domains do not change Model IR.
+    let mut owned = Vec::new();
+    for line in content
         .lines()
         .filter(|line| line.starts_with("| `SCHEMA-DOMAIN-"))
-        .count();
-    // 53 = 50 + SCHEMA-DOMAIN-REFERENCE-ALERT-REQUEST-001 and
-    // SCHEMA-DOMAIN-REFERENCE-ALERT-PRECONDITION-001 (tombstoned) / -002 (fss-wjisz).
-    // 54 = 53 + SCHEMA-DOMAIN-REFERENCE-MEANINGFUL-DELTA-SELECTION-001 (fss-2uftm).
-    // 53 = 50 + SCHEMA-DOMAIN-REFERENCE-ALERT-REQUEST-001 and
-    // SCHEMA-DOMAIN-REFERENCE-ALERT-PRECONDITION-001 (tombstoned) / -002 (fss-wjisz).
-    // 54 = 53 + SCHEMA-DOMAIN-REFERENCE-MEANINGFUL-DELTA-SELECTION-001 (fss-2uftm).
-    // 55 = 54 + SCHEMA-DOMAIN-OPERATION-RECEIPT-002 (fss-deir9; v1 stays SCHEMA-OPERATION-RECEIPT-001).
-    // 57 = 55 + SCHEMA-DOMAIN-REFERENCE-DEPLOYMENT-LAYOUT-001 and
-    // SCHEMA-DOMAIN-REFERENCE-DEPLOYMENT-LIMITS-001 (fss-2h5zq.9).
-    // 59 = 57 + SCHEMA-DOMAIN-REFERENCE-SITUATION-PUBLICATION-001 (v5) and
-    // SCHEMA-DOMAIN-REFERENCE-EFFECT-BINDING-SEAL-001 (v6) (fss-x4a.30.83.10).
-    // 60 = 59 + SCHEMA-DOMAIN-FILE-IMPORT-MANIFEST-001 (fss-2h5zq.23).
-    // 62 = 60 + SCHEMA-DOMAIN-FILE-INGEST-LIMITS-001 and
-    // SCHEMA-DOMAIN-FILE-IMPORT-IDENTITY-001 (fss-2h5zq.23, review-2036 decision (d)).
-    // 77 = 73 + SCHEMA-DOMAIN-AGENT-KNOWLEDGE-CELL-V2-001 (fss-gefi6),
-    // SCHEMA-DOMAIN-EFFECT-PROOF-CANCELLATION-001 (fss-thzlz),
-    // SCHEMA-DOMAIN-MEDIA-FIXTURE-MANIFEST-001 (fss-2h5zq.3) and
-    // SCHEMA-DOMAIN-MODEL-EXECUTION-RECEIPT-001 (model_receipt.rs); pin repair by fss-pod9x.
-    // 78 = 77 + SCHEMA-DOMAIN-EVALUATION-REPORT-001 (fss-zta8j).
-    // 86 = 78 + SCHEMA-DOMAIN-RECORDED-CORROBORATION-{PLAN,OBSERVATION,ASSOCIATION,PROPOSAL}-001,
-    // SCHEMA-DOMAIN-REFERENCE-ZONE-ENTRY-POLICY-001 and
-    // SCHEMA-DOMAIN-CLI-ALERT-{OPERATION,PLAN-APPROVAL,DISPATCH-APPROVAL}-001 (fss-2h5zq.61).
-    // 90 = 86 + SCHEMA-DOMAIN-RECORDED-WATCH-{COVERAGE,PIPELINE-GENERATION,COVERAGE-IDENTITY,
-    // COVERAGE-APPROVAL}-001 (fss-fnrgr).
-    // 90 = 86 + SCHEMA-DOMAIN-RGB-DETECTOR-PACKAGE-SPEC-001, SCHEMA-DOMAIN-YOLOX-IMPORTER-001,
-    // SCHEMA-DOMAIN-RGB-LUMA-REPLICATION-001 and SCHEMA-DOMAIN-PACKAGE-DETECTION-REPORT-001 (fss-q4ngj).
-    // 94 = both sets above (fss-fnrgr and fss-q4ngj landed together).
-    // 103 = 94 + SCHEMA-DOMAIN-VIDEO-RGB-RECEIPT-001, SCHEMA-DOMAIN-DETECTOR-CASCADE-001,
-    // SCHEMA-DOMAIN-DETECTOR-CLASS-EVIDENCE-001, SCHEMA-DOMAIN-PACKAGE-DETECTION-RECORD-001,
-    // SCHEMA-DOMAIN-PACKAGE-ANALYSIS-REPORT-001 and
-    // SCHEMA-DOMAIN-PACKAGE-EVENT-{TRACK,OBSERVATION,PROVENANCE,PROPOSAL}-001 (fss-704tz).
-    // 96 = 94 + SCHEMA-DOMAIN-OPTIMIZED-EXECUTOR-001 and
-    // SCHEMA-DOMAIN-RGB-MODEL-EXECUTION-001 (fss-bd99t).
-    // 105 = 103 + the two fss-bd99t domains (fss-704tz and fss-bd99t landed together).
-    // 109 = 105 + SCHEMA-DOMAIN-PRIVACY-MASK-{POLICY,BINDING,APPROVAL,LINEAGE}-001 (fss-bgqkd).
-    // 114 = 109 + SCHEMA-DOMAIN-GRAPH-{ALGORITHM-WITNESS,PROJECTION,BRIDGE-OUTPUT,
-    // BRIDGE-DECISION-PATH}-001 and SCHEMA-DOMAIN-COVERAGE-SINGLE-POINTS-001 (fss-w96u7).
-    // 115 = 114 + the masked RGB evidence recipe (fss-g9gml).
-    // 118 = 115 + the new deletion-closure digest domains (fss-x4a.9.7).
-    // 120 = 118 + SCHEMA-DOMAIN-DURABLE-STORE-PIN-001 and
-    // SCHEMA-DOMAIN-REFERENCE-LINEAGE-WRITE-SEAL-001 (fss-1s6ac).
-    // 122 = 120 + SCHEMA-DOMAIN-DELETION-PLAN-002 and SCHEMA-DOMAIN-DELETION-COMPLETION-002
-    // (sensor/event-scoped deletion, fss-x4a.30.86.20).
-    // 125 = 122 + SCHEMA-DOMAIN-EVIDENCE-HOLD-{001,002} and
-    // SCHEMA-DOMAIN-EVIDENCE-HOLD-APPROVAL-001 (owner evidence holds, previously unregistered).
-    // 126 = 125 + SCHEMA-DOMAIN-SITE-CALIBRATION-001 (fss-event calibrate, fss-x8j0v follow-up).
-    // 127 = 126 + SCHEMA-DOMAIN-SITE-CALIBRATION-002 (calibrate frame input, fss-x8j0v pixels in).
-    // 128 = 127 + SCHEMA-DOMAIN-COVERAGE-POSE-PROVENANCE-001 (coverage pose provenance, fss-x8j0v).
-    // 130 = 128 + SCHEMA-DOMAIN-TWIN-LOCALIZATION-RECEIPT-001 + SCHEMA-DOMAIN-CALIBRATION-ADOPTION-APPROVAL-001
-    //       (retained calibration adoption, fss-x8j0v).
-    // 131 = 130 + SCHEMA-DOMAIN-COVERAGE-POSE-UNCERTAINTY-001 (pose covariance propagation to
-    //       coverage, fss-x8j0v).
-    // 138 = 131 + SCHEMA-DOMAIN-GRAPH-{SET-COVER-{INPUT,OUTPUT,DECISION},
-    // RESILIENT-SET-COVER-INPUT,BUDGETED-COVERAGE-{INPUT,OUTPUT,DECISION}}-001 (owner FSS-160
-    // graph selection domains, previously unregistered).
-    // 142 = 138 + SCHEMA-DOMAIN-EXECUTOR-MODEL-RESULT-001,
-    // SCHEMA-DOMAIN-EXECUTOR-ACTIVITY-THRESHOLD-POLICY-001, SCHEMA-DOMAIN-EXECUTOR-ACTIVITY-MODEL-001
-    // and SCHEMA-DOMAIN-RGB-DECODE-RECEIPT-001 (executor-backed lab observations, fss-2h5zq.51).
-    // 144 = 142 + SCHEMA-DOMAIN-REFERENCE-ALERT-CANCEL-PROOF-001 (fss-thzlz, previously
-    // unregistered) and SCHEMA-DOMAIN-REFERENCE-ALERT-COOPERATIVE-CANCEL-PROOF-001 (fss-51xqy).
-    // 145 = 144 + SCHEMA-DOMAIN-LAB-GEOMETRIC-COVERAGE-001 (fss-2h5zq.55).
-    // 146 = 145 + SCHEMA-DOMAIN-LAB-SIMULATED-PROVIDER-001 (fss-2h5zq.15).
-    // 209 = 146 + 63 previously unregistered digest-domain constants (fss-rir2v baseline: the
-    // bead's 57 plus SCHEMA-DOMAIN-ALERT-OPERATOR-CANCEL-{EVIDENCE,APPROVAL}-001,
-    // SCHEMA-DOMAIN-DELETION-{PLAN,COMPLETION}-003, SCHEMA-DOMAIN-RETENTION-SELECTION-001 and
-    // SCHEMA-DOMAIN-MODEL-IR-OPERATOR-TABLE-001); scripts/check-policy.py now refuses new ones.
-    // Count: 209 + SCHEMA-DOMAIN-SOURCE-COVERAGE-{RECORD,APPROVAL}-001 (fss-tch7u)
-    // + SCHEMA-DOMAIN-RECORDED-DWELL-{RULE,ANALYSIS,OBSERVATION,CANDIDATE,APPROVAL}-001 (FSS-083)
-    // + SCHEMA-DOMAIN-RTPDUMP-IMPORT-{IDENTITY,REPORT}-001 (fss-2h5zq.27)
-    // + SCHEMA-DOMAIN-LONG-DWELL-{ANALYSIS,FRAME,EPISODE,APPROVAL}-001
-    // + SCHEMA-DOMAIN-RTPDUMP-IMPORT-{IDENTITY,REPORT}-002 (fss-2h5zq.27 access units)
-    // + SCHEMA-DOMAIN-MOCK-MODEL-RESULT-001 (fss-f8jls) = 225
-    // + SCHEMA-DOMAIN-REFERENCE-AGENT-PLAN-001 and -PLAN-IDENTITY-001 (AOP-007) = 227
-    // + SCHEMA-DOMAIN-REFERENCE-AGENT-FEEDBACK-IDENTITY-001 (AOP-013) = 228
-    // + SCHEMA-DOMAIN-ALERT-OPERATOR-RECONCILIATION-{EVIDENCE,APPROVAL}-001 = 230
-    // + SCHEMA-DOMAIN-REFERENCE-AGENT-EPISODE-{,IDENTITY-,REQUEST-}001 (FSS-230) = 233
-    // + SCHEMA-DOMAIN-RECORDED-DECODE-REFUSAL-001 (fss-2h5zq.41) = 234
-    // + SCHEMA-DOMAIN-REFERENCE-AGENT-{WORK-SCOPE,CLAIM-REQUEST}-001 (FSS-226) = 236
-    // + SCHEMA-DOMAIN-REFERENCE-AGENT-FINDING-{,IDENTITY-,REQUEST-}001 (FSS-227) = 239
-    // (registered with the tests/test_schema_validate.py pins; this pin was left at 234).
-    // + SCHEMA-DOMAIN-GRAPH-{WEIGHTED-PROJECTION,QUERY-INPUT}-001 and
-    //   {SCC,TOPO,DOM,SP,MSD,FLOW}-{OUTPUT,DECISION-PATH}-001 (WP-170) = 253
-    // + SCHEMA-DOMAIN-GRAPH-{MST,GH,MCF,MATCH,MULTIMATCH}-{OUTPUT,DECISION-PATH}-001 and -ASSIGNMENT-PROJECTION-001 (WP-170) = 264
-    // + SCHEMA-DOMAIN-GRAPH-{KSP,TREACH,DYNCONN}-{OUTPUT,DECISION-PATH}-001 and -TEMPORAL-PROJECTION-001 (WP-170) = 271
-    // + SCHEMA-DOMAIN-FUSION-{QUERY,DECISION}-001 (fss-x4a.16.9) = 273
-    // + SCHEMA-DOMAIN-FUSION-SCORE-CALIBRATION-001 (fss-x4a.16.9) = 274
-    // + SCHEMA-DOMAIN-GRAPH-RELIABILITY-{MODEL,OUTPUT,DECISION-PATH}-001 and -INTERDICT-{OUTPUT,DECISION-PATH}-001 (WP-170) = 279
-    // + SCHEMA-DOMAIN-COVERAGE-RELIABILITY-001 (fss-event graph reliability) = 280
-    // + SCHEMA-DOMAIN-COVERAGE-BLIND-PATHS-001 (fss-event graph blind-paths) = 281
-    // + SCHEMA-DOMAIN-RECORDED-SENSOR-HEALTH-{PLAN,,COVERAGE,COVERAGE-ANALYSIS,COVERAGE-PIPELINE,COVERAGE-ZONE}-001 (7c932d6) and fusion calibrated-input/decision domains (25c396d, aec31c3), registered without a pin bump = 288.
-    // + SCHEMA-DOMAIN-EXECUTOR-ACTIVITY-PACKAGE-SPEC-001 (fss-2h5zq.49) = 289
-    // + recorded corroboration dependencies, assessment, cluster, edge and health-decision = 294.
-    // + SCHEMA-DOMAIN-ACQUISITION-WINDOWED-DEGRADATION-001 = 295.
-    // + existing retained HTTP history and whole-recording domains = 313.
-    // + RTSP recording import request, identity, origin proof and CLI plan = 317.
-    // + whole-recording detector recipe/outcome and deployment backup/restore fence + historical health record/approval = 323.
+    {
+        let fields: Vec<_> = line.split('|').skip(1).take(4).map(str::trim).collect();
+        assert_eq!(fields.len(), 4, "incomplete digest-domain registry row");
+        let row = [fields[0], fields[1], fields[2], fields[3]];
+        if row[0].starts_with("`SCHEMA-DOMAIN-MODEL-IR-")
+            || row[1].starts_with("`fss.model_ir.")
+            || row[3] == "authority/model-ir"
+        {
+            owned.push(row);
+        }
+    }
+    owned.sort_unstable();
     assert_eq!(
-        domain_count, 323,
-        "registries/DIGEST_DOMAINS.md count must remain pinned at 323"
-    );
-
-    let schemas_path = Path::new(env!("CARGO_MANIFEST_DIR"))
-        .ancestors()
-        .nth(2)
-        .ok_or("missing root ancestor")?
-        .join("registries/SCHEMAS.md");
-    let schemas_content = fs::read_to_string(schemas_path)?;
-    let schema_count = schemas_content
-        .lines()
-        .filter(|line| line.starts_with("| `SCHEMA-"))
-        .count();
-    // 73 = 72 + SCHEMA-ROBOT-DOCS-001 (schemas/robot_docs.v1.json).
-    // 74 = 73 + SCHEMA-SENSOR-TAMPER-STATUS-001 (schemas/sensor_tamper_status.v1.json, fss-2uftm).
-    // 77 = 76 + SCHEMA-MJPEG-FIXTURE-MANIFEST-001 (schemas/mjpeg_fixture_manifest.v1.json, fss-2h5zq.5).
-    // 79 = 77 + SCHEMA-AGENT-OPERATIONS-001 (deeae5a, fss-x4a.30.83.17) and
-    // SCHEMA-AGENT-VIEWS-001 (8da2c7d, fss-x4a.30.83.31); pin repair by fss-2h5zq.23 round-3.
-    // 82 = 79 + SCHEMA-CALIBRATION-COVERAGE-GUARD-001, SCHEMA-COVERAGE-SET-SELECTION-001 and
-    // SCHEMA-COVERAGE-RESILIENT-SELECTION-001 (owner schema files, registered by fss-x4a.1.9).
-    // 83 = 82 + SCHEMA-CALIBRATION-COVERAGE-PROPOSAL-001 (owner 3b45140, fss-x8j0v).
-    assert_eq!(
-        schema_count, 83,
-        "registries/SCHEMAS.md count must remain pinned at 83"
+        owned.as_slice(),
+        [
+            [
+                "`SCHEMA-DOMAIN-MODEL-IR-001`",
+                "`fss.model_ir.v1`",
+                "Pure-Rust model operator IR",
+                "authority/model-ir",
+            ],
+            [
+                "`SCHEMA-DOMAIN-MODEL-IR-MATERIALIZED-LIVENESS-001`",
+                "`fss.model_ir.materialized_liveness.v1`",
+                "Pure-Rust model operator IR",
+                "authority/model-ir",
+            ],
+            [
+                "`SCHEMA-DOMAIN-MODEL-IR-OPERATOR-TABLE-001`",
+                "`fss.model_ir.operator_table.v1`",
+                "Pure-Rust model operator IR",
+                "authority/model-ir",
+            ],
+        ],
+        "each Model IR ID must retain its unique exact domain, scope and authority"
     );
     Ok(())
 }

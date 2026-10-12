@@ -53,6 +53,12 @@ jobs:
           crates/fss-reference/src/ingest/long_event_replay/corroboration/detector.rs
           crates/fss-reference/tests/rtsp_catalog_import_contract/pages.rs
           crates/fss-reference/tests/rtsp_catalog_import_contract/pages/failures.rs
+          crates/fss-model-ir/tests/model_ir_contract.rs
+      - name: Preserve frozen model identities with registered RTSP profiles
+        if: success() || failure()
+        run: |
+          cargo +nightly-2026-08-31 test --locked --offline -p fss-model-ir --test model_ir_contract
+          python3 -B tests/test_schema_validate.py TestSchemaConstitution.test_authoritative_constitution TestSchemaConstitutionCrossReviewRegressions.test_unregistered_implemented_schemas_drift_detection
       - name: Complete catalog custody and cold AVC/HEVC composition
         if: success() || failure()
         run: cargo +nightly-2026-08-31 test --locked --offline -p fss-reference --test rtsp_catalog_import_contract
