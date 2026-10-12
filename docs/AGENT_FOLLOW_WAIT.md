@@ -44,6 +44,15 @@ its silence certificate permits a park. Every quiet repeat rereads verified
 history and rehydrates retained sources. Deletion or tampering cannot be hidden
 behind a cached certificate.
 
+Before a quiet comparison parks, every exact source object supporting its selected
+coverage witnesses is rehashed. Live/virtual source capsules must reproduce their
+retained frame records. Recorded imports bind their completed authority, current
+publication records, and all source payloads; typed independent parts are resolved
+through their declared roots and the existing native publication plan. Opaque
+payloads are never recursively interpreted as manifests. Committed deletions and
+local tombstone/indeterminate state refuse reuse, even when the payload still exists.
+These are bounded sequential observations, not an atomic filesystem snapshot.
+
 The anchor compares the full authority binding and both committed journal
 prefixes, including effect-journal presence and record count. An effect-only
 advance therefore wakes the call even when the ledger commit sequence stays the
@@ -66,8 +75,22 @@ admitting another read. Native layout, journal, object, event and revision limit
 remain in force. The read ceiling counts attempted reads, including a failing
 read and a history-only check that observes an anchor advance.
 
+Source custody has a separate **whole-invocation limit of 4096 read admissions
+and 64 MiB of charged envelopes**, including exact publication metadata. An object
+is additionally bounded by the invocation's native per-object limit. Each read
+reserves its maximum envelope, including the spool header and bounded probe,
+before I/O. Verified success releases only unused allowance; a failed read keeps
+its full reservation. The net charged total never refills between comparisons.
+Repeated references share one comparison's bounded cache; every later poll
+rehashes the selected closure again. Source-budget exhaustion returns a null
+payload and `ERR-BUDGET-EXHAUSTED-001`, with no further park.
+
 Every completed comparison adds both native orientations' requested and consumed
-vectors with checked arithmetic. `consumed.latencyMs` reports the last measured
+vectors with checked arithmetic. Known source payload/publication bytes and source
+read admissions add to those counters. Source accounting separately reports the
+gross requested reservations and the net charged envelopes; the latter include
+failed-read uncertainty and are not labelled exact consumed bytes.
+`consumed.latencyMs` reports the last measured
 monotonic elapsed time for the enclosing wait. Snapshot-stage CPU/latency, doctor
 inspection, history-only verification, and failed reads' unreturned work are not
 fully metered; the response says so and does not report them as zero-cost work.
@@ -78,11 +101,15 @@ the observed elapsed time when available.
 The library entrypoint is
 `fss_reference::agent_follow::wait::follow_deployment_wait`. Its immutable
 `FollowWaitBinding` names the root, principal, original anchor, view, page size,
-read limits, deadline and read ceiling. A caller-owned `FollowWaitControl` must
-admit read, hydration, time and park boundaries under that exact binding and
+read limits, deadline, read ceiling and whole-call source ceilings. The explicit
+wait request identity includes those fixed source ceilings too; no-wait request
+bytes are unchanged. A caller-owned `FollowWaitControl` must
+admit read, hydration, each source read (including cache hits), time and park boundaries under that exact binding and
 live cancellation state. There is no default permissive control. Its synchronous
 return drains the call; no worker, lock over sleep, or detached task remains.
-Callers may reduce the native read ceiling and individual read bounds.
+Callers may reduce the native read ceiling, individual read bounds, and source
+allowances with `FollowWaitBinding::with_source_limits`; they cannot enlarge them
+or reduce the evidence scope to fit an exhausted allowance.
 
 `fss_cli::follow_cmd::execute_follow_with_control` exposes the same renderer to
 in-process callers with their own control. It requires an explicit wait option

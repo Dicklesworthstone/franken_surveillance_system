@@ -618,6 +618,97 @@ impl DeploymentHistory {
         &self.limits
     }
 
+    /// Exact committed head history for the optional wait's typed custody verification.
+    pub(crate) fn batches_through_head(&self) -> &[EvidenceDeltaBatch] {
+        &self.batches
+    }
+
+    /// One bounded source object for the separately admitted wait custody read. The caller
+    /// checks live authority/deadline, committed deletions, and local tombstones at its boundary.
+    pub(crate) fn wait_read_object(
+        &self,
+        digest: ContentDigest,
+        maximum: usize,
+    ) -> Result<Vec<u8>, fss_publication::LocalPublicationError> {
+        // Preserve the owner's typed over-limit distinction for the wait budget response.
+        fss_publication::read_verified(
+            &self.objects,
+            digest,
+            maximum.min(self.limits.max_object_bytes),
+        )
+    }
+
+    /// Targeted availability check: no catalogue scan, lock, hold, or repair. Even malformed
+    /// local tombstone markers deny this exact object; they never authorize raw payload reuse.
+    pub(crate) fn wait_check_tombstone(
+        &self,
+        digest: ContentDigest,
+    ) -> Result<(), DeploymentReadError> {
+        let directory = self.objects.join(fss_publication::LOCAL_TOMBSTONES_DIR);
+        match fs::symlink_metadata(&directory) {
+            Ok(meta) if meta.file_type().is_dir() => {}
+            _ => {
+                return Err(corrupt(
+                    "source custody tombstone directory is unverifiable",
+                ));
+            }
+        }
+        let stem = digest.to_text().replacen(':', "-", 1);
+        for suffix in ["", fss_publication::ROOT_INDETERMINATE_SUFFIX] {
+            let path = directory.join(format!(
+                "{stem}{}{suffix}",
+                fss_publication::TOMBSTONE_RECORD_SUFFIX
+            ));
+            match fs::symlink_metadata(path) {
+                Err(error) if error.kind() == io::ErrorKind::NotFound => {}
+                _ => {
+                    return Err(corrupt(format!(
+                        "source custody object {digest} is tombstoned or its tombstone state is unverifiable"
+                    )));
+                }
+            }
+        }
+        Ok(())
+    }
+
+    /// One exact publication record under the wait caller's read admission. Pending or
+    /// indeterminate replacement of the selected slot cannot be treated as durable custody.
+    pub(crate) fn wait_read_publication(
+        &self,
+        slot: &fss_publication::SlotName,
+        maximum: usize,
+    ) -> Result<Vec<u8>, DeploymentReadError> {
+        let directory = self.objects.join(fss_publication::LOCAL_ROOTS_DIR);
+        if !fs::symlink_metadata(&directory)
+            .map_err(|_| corrupt("source custody root directory is unavailable"))?
+            .file_type()
+            .is_dir()
+        {
+            return Err(corrupt("source custody root directory is not a directory"));
+        }
+        let name = format!("{slot}{}", fss_publication::ROOT_RECORD_SUFFIX);
+        for suffix in [
+            fss_publication::ROOT_TEMP_SUFFIX,
+            fss_publication::ROOT_INDETERMINATE_SUFFIX,
+        ] {
+            match fs::symlink_metadata(directory.join(format!("{name}{suffix}"))) {
+                Err(error) if error.kind() == io::ErrorKind::NotFound => {}
+                _ => {
+                    return Err(corrupt(format!(
+                        "source custody publication {slot} is in flight or unverifiable"
+                    )));
+                }
+            }
+        }
+        Reader {
+            files_read: 0,
+            bytes_read: 0,
+        }
+        .read_file(&directory.join(name), maximum)
+        .map_err(|_| corrupt(format!("source custody publication {slot} cannot be read")))?
+        .ok_or_else(|| corrupt(format!("source custody publication {slot} is missing")))
+    }
+
     /// The committed head: the last ledger batch and every committed effect record.
     #[must_use]
     pub fn head(&self) -> HistoryPosition {

@@ -20,12 +20,18 @@ use fss_core::{AgentView, BudgetVector, LedgerAnchor, MeaningfulDeltaClass, Prin
 use super::{AnchorToken, DeploymentFollow, FollowError, FollowRequest, MAX_FOLLOW_ENTRIES};
 use crate::agent_orient::{DeploymentHistory, OrientLimits};
 
+mod custody;
+
 /// Largest wall wait admitted by this reference implementation.
 pub const MAX_FOLLOW_WAIT_MS: u64 = 10_000;
 /// Minimum spacing between new follow read admissions after a quiet comparison.
 pub const FOLLOW_WAIT_POLL_MS: u64 = 250;
 /// Fixed upper bound on all attempted deployment reads, including the initial read and failures.
 pub const MAX_FOLLOW_WAIT_READS: u32 = 41;
+/// Whole-invocation ceiling for source custody reads, including exact publication metadata.
+pub const MAX_FOLLOW_WAIT_SOURCE_READS: u32 = 4096;
+/// Whole-invocation envelope-byte allowance, including a failed read's reserved maximum.
+pub const MAX_FOLLOW_WAIT_SOURCE_ENVELOPE_BYTES: u64 = 64 * 1024 * 1024;
 
 /// The complete immutable scope offered to the caller's authority at every boundary.
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -36,6 +42,8 @@ pub struct FollowWaitBinding {
     read_limits: OrientLimits,
     wait_ms: u64,
     max_reads: u32,
+    max_source_reads: u32,
+    max_source_envelope_bytes: u64,
 }
 
 impl FollowWaitBinding {
@@ -83,7 +91,26 @@ impl FollowWaitBinding {
             read_limits,
             wait_ms,
             max_reads,
+            max_source_reads: MAX_FOLLOW_WAIT_SOURCE_READS,
+            max_source_envelope_bytes: MAX_FOLLOW_WAIT_SOURCE_ENVELOPE_BYTES,
         })
+    }
+
+    /// Narrows the immutable whole-call source-custody allowance before admission. Every
+    /// selected source must still verify; a smaller allowance never shrinks the evidence scope.
+    pub fn with_source_limits(
+        mut self,
+        max_reads: u32,
+        max_envelope_bytes: u64,
+    ) -> Result<Self, FollowWaitError> {
+        if !(1..=MAX_FOLLOW_WAIT_SOURCE_READS).contains(&max_reads)
+            || !(1..=MAX_FOLLOW_WAIT_SOURCE_ENVELOPE_BYTES).contains(&max_envelope_bytes)
+        {
+            return Err(FollowWaitError::InvalidBounds);
+        }
+        self.max_source_reads = max_reads;
+        self.max_source_envelope_bytes = max_envelope_bytes;
+        Ok(self)
     }
 
     /// Exact operator-supplied root; the wait never selects another root.
@@ -114,6 +141,15 @@ impl FollowWaitBinding {
     pub const fn max_reads(&self) -> u32 {
         self.max_reads
     }
+    /// Whole-call source-object/publication-metadata read admission limit.
+    pub const fn max_source_reads(&self) -> u32 {
+        self.max_source_reads
+    }
+    /// Nonrefillable whole-call source envelope allowance. Successful short reads release only
+    /// their unused reservation; the actual envelope remains charged across all comparisons.
+    pub const fn max_source_envelope_bytes(&self) -> u64 {
+        self.max_source_envelope_bytes
+    }
 }
 
 /// A boundary the owner must admit under the same fixed scope and live cancellation authority.
@@ -123,6 +159,8 @@ pub enum FollowWaitBoundary {
     Read,
     /// Before the native as-of/head spool hydration and orientation comparison.
     Hydrate,
+    /// Before a selected source object or its exact custody metadata is inspected/read.
+    Source,
     /// Before a caller-owned synchronous park.
     Park,
     /// After an admitted read or park, before returning data or admitting further work.
@@ -177,11 +215,26 @@ pub struct FollowWaitProgress {
     pub completed_comparisons: u32,
     /// Caller-owned parks that returned successfully.
     pub completed_parks: u32,
+    /// Attempted source object or exact publication-record reads, including the failing attempt.
+    pub source_read_attempts: u32,
+    /// Source object/publication-record reads whose bytes and expected identities verified.
+    pub verified_source_reads: u32,
+    /// Verified spool payload bytes; envelope/header reservations are reported separately.
+    pub source_payload_bytes: u64,
+    /// Verified exact local publication-record bytes, separate from spool payload bytes.
+    pub source_metadata_bytes: u64,
+    /// Sum of every attempted source read's maximum reservation before successful unused
+    /// allowance is released. Unlike net charged envelopes, this is not the 64 MiB ceiling.
+    pub source_requested_bytes: u64,
+    /// Charged source envelope bytes: successful verified envelopes and the full maximum
+    /// reserved for a failed/incomplete read. This is an allowance charge, not measured CPU/RAM.
+    pub source_reserved_bytes: u64,
     /// Latest observed monotonic elapsed milliseconds, not evidence time.
     pub elapsed_ms: u64,
-    /// Sum of the two orientations' requested vectors for every completed comparison.
+    /// The two orientations' requested vectors plus admitted source-custody reservations.
     pub requested: BudgetVector,
-    /// Sum of the two orientations' consumed vectors for every completed comparison.
+    /// The two orientations' consumed vectors plus successful custody bytes and custody read
+    /// attempts. A failed read's unknown byte count is held in `source_reserved_bytes`.
     ///
     /// These are native admitted snapshot/projection counters. Doctor inspection, history-only
     /// wake checks, and a failed read's unreturned costs are not measured and are not zero claims.
@@ -242,6 +295,10 @@ pub enum FollowWaitError {
     InvalidClock,
     /// A deadline elapsed before any complete native comparison could be observed.
     DeadlineBeforeObservation,
+    /// The fixed admission deadline expired during the additional source-custody audit.
+    SourceDeadlineReached,
+    /// The immutable whole-call source read or envelope-byte allowance was exhausted.
+    SourceBudgetExhausted,
     /// Checked cumulative counters could not represent the next completed cost.
     AccountingOverflow,
     /// The native follow verifier/reader refused the root or exact basis.
@@ -257,6 +314,12 @@ impl std::fmt::Display for FollowWaitError {
             Self::InvalidClock => f.write_str("follow wait clock did not advance monotonically"),
             Self::DeadlineBeforeObservation => {
                 f.write_str("follow wait deadline reached before an observation")
+            }
+            Self::SourceDeadlineReached => {
+                f.write_str("follow wait deadline reached during source-custody verification")
+            }
+            Self::SourceBudgetExhausted => {
+                f.write_str("follow wait source-custody budget is exhausted")
             }
             Self::AccountingOverflow => f.write_str("follow wait cumulative accounting overflow"),
             Self::Follow(error) => write!(f, "{error}"),
@@ -368,7 +431,7 @@ pub fn follow_deployment_wait(
                     anchor,
                     token: token.clone(),
                 });
-                super::resolve_anchor(&history, &binding.since)
+                let basis_position = super::resolve_anchor(&history, &binding.since)
                     .map_err(|error| FollowWaitError::Follow(FollowError::Anchor(error)))?;
                 if last_follow.is_some() && token != binding.since {
                     // Journal roots alone prove that exact continuity must be reconsidered. Do not
@@ -384,13 +447,27 @@ pub fn follow_deployment_wait(
                         Err(FollowWaitError::DeadlineBeforeObservation)
                     };
                 }
-                let follow = super::follow_deployment(&history, &binding.since, &binding.request)
-                    .map_err(FollowWaitError::Follow)?;
+                let basis_snapshot = history
+                    .snapshot_at(basis_position)
+                    .map_err(custody::read_error)?;
+                let result_snapshot = history.snapshot_at(position).map_err(custody::read_error)?;
+                let follow = super::follow_snapshots(
+                    &history,
+                    &basis_snapshot,
+                    &result_snapshot,
+                    &binding.request,
+                )
+                .map_err(FollowWaitError::Follow)?;
                 account(&mut progress, &follow)?;
                 let quiet = certified_quiet(&follow);
+                let witnesses = follow
+                    .result
+                    .coverage
+                    .as_ref()
+                    .map(|coverage| coverage.witness_digests().into_iter().collect())
+                    .unwrap_or_default();
                 last_follow = Some(follow);
-                // Drop native history ownership before any park; all read file handles are closed.
-                drop(history);
+                drop(basis_snapshot);
                 checkpoint(binding, control, FollowWaitBoundary::Observe, &mut progress)?;
                 if !quiet {
                     return Ok(FollowWaitWake::Ready);
@@ -404,6 +481,18 @@ pub fn follow_deployment_wait(
                 if progress.admitted_reads >= binding.max_reads {
                     return Ok(FollowWaitWake::ReadLimitReached);
                 }
+                custody::verify(
+                    &history,
+                    &result_snapshot,
+                    &witnesses,
+                    binding,
+                    control,
+                    &mut progress,
+                )?;
+                // Drop native history and the bounded per-comparison source cache before any
+                // park. Neither metadata custody nor a former source read survives as a lease.
+                drop(result_snapshot);
+                drop(history);
                 checkpoint(binding, control, FollowWaitBoundary::Park, &mut progress)?;
                 if progress.elapsed_ms >= binding.wait_ms {
                     return Ok(FollowWaitWake::DeadlineReached);

@@ -1519,6 +1519,7 @@ struct FollowClock {
     elapsed_ms: u64,
     cancel_after_park: bool,
     cancelled: bool,
+    damage_after_park: Option<(PathBuf, bool)>,
 }
 
 impl fss_reference::agent_follow::wait::FollowWaitControl for FollowClock {
@@ -1551,6 +1552,16 @@ impl fss_reference::agent_follow::wait::FollowWaitControl for FollowClock {
             .elapsed_ms
             .checked_add(delay_ms)
             .ok_or(fss_reference::agent_follow::wait::FollowWaitDenial::ClockUnavailable)?;
+        if let Some((path, remove)) = self.damage_after_park.take() {
+            let mutation = if remove {
+                fs::remove_file(path)
+            } else {
+                fs::write(path, b"explicit damaged retained recording chunk")
+            };
+            mutation.map_err(|_| {
+                fss_reference::agent_follow::wait::FollowWaitDenial::ClockUnavailable
+            })?;
+        }
         self.cancelled = self.cancel_after_park;
         Ok(())
     }
@@ -1579,6 +1590,7 @@ fn bounded_wait_library_deadline_and_cancellation_return_null_payload_and_cumula
         elapsed_ms: 0,
         cancel_after_park: false,
         cancelled: false,
+        damage_after_park: None,
     };
     let (body, exit) = fss_cli::follow_cmd::execute_follow_with_control(&args, &mut clock);
     assert_eq!(exit, fss_cli::ExitIdentity::AGENT_REFUSED, "{body}");
@@ -1618,6 +1630,7 @@ fn bounded_wait_library_deadline_and_cancellation_return_null_payload_and_cumula
         elapsed_ms: 0,
         cancel_after_park: true,
         cancelled: false,
+        damage_after_park: None,
     };
     let (body, exit) = fss_cli::follow_cmd::execute_follow_with_control(&args, &mut clock);
     assert_eq!(exit, fss_cli::ExitIdentity::AGENT_REFUSED);
@@ -1661,5 +1674,125 @@ fn wait_and_cursor_are_refused_before_the_root_is_opened() -> TestResult {
     assert!(stdout.is_empty());
     assert!(stderr.contains("ERR-CLI-MALFORMED-VALUE-001"));
     assert!(!missing.exists());
+    Ok(())
+}
+
+fn retained_wait_source_chunk(root: &Path) -> TestResult<PathBuf> {
+    let snapshot = fss_reference::agent_orient::read_deployment(
+        root,
+        &fss_reference::agent_orient::OrientLimits::default(),
+    )?;
+    let manifest_digest = *snapshot
+        .completed_imports
+        .first()
+        .ok_or("completed import")?;
+    let layout = fss_reference::DeploymentLayout::parse_canonical_text(&fs::read_to_string(
+        root.join("LAYOUT"),
+    )?)?;
+    let objects = root.join(&layout.objects_relpath);
+    let bytes = fss_publication::read_verified(&objects, manifest_digest, 16 * 1024 * 1024)?;
+    let manifest = fss_reference::ingest::FileImportManifest::from_retained_bytes(
+        &bytes,
+        manifest_digest,
+        fss_reference::ingest::retained::RetainedReadLimits::default(),
+    )?;
+    let digest = manifest
+        .ordered_chunks
+        .first()
+        .ok_or("original source chunk")?;
+    let hex: String = digest
+        .bytes()
+        .iter()
+        .map(|byte| format!("{byte:02x}"))
+        .collect();
+    Ok(objects
+        .join(fss_publication::LOCAL_SPOOL_DIR)
+        .join(fss_object::SPOOL_OBJECTS_DIR)
+        .join(hex))
+}
+
+#[test]
+fn waited_recording_sources_are_reverified_after_a_quiet_park_and_source_budget_is_enforced()
+-> TestResult {
+    let _serial = serial();
+    for (tag, remove) in [("wait-chunk-missing", true), ("wait-chunk-tampered", false)] {
+        let directory = OwnedDirectory::new(tag)?;
+        let root = directory.root();
+        let (_, since) = quiet_wait_fixture(&directory)?;
+        let chunk = retained_wait_source_chunk(&root)?;
+        let fss_cli::FssCommand::Follow(args) = fss_cli::parse_fss_args(follow_args(
+            &root,
+            &since,
+            &["--view", "brief", "--wait-ms", "1000"],
+        ))?
+        else {
+            return Err("follow command".into());
+        };
+        let mut clock = FollowClock {
+            root: root.clone(),
+            since: since.clone(),
+            elapsed_ms: 0,
+            cancel_after_park: false,
+            cancelled: false,
+            damage_after_park: Some((chunk, remove)),
+        };
+        let (body, exit) = fss_cli::follow_cmd::execute_follow_with_control(&args, &mut clock);
+        assert_eq!(exit, fss_cli::ExitIdentity::AGENT_REFUSED, "{body}");
+        let envelope = Json::parse(&body)?;
+        assert_eq!(envelope.get("outcome")?.text()?, "refused", "{body}");
+        assert_eq!(envelope.get("payload")?, &Json::Null);
+        assert_eq!(envelope.get("continuation")?, &Json::Null);
+        assert!(
+            clock.damage_after_park.is_none(),
+            "the first verified quiet park occurred"
+        );
+        assert_eq!(clock.elapsed_ms, 250, "failed custody never parks again");
+        let notes = envelope.get("degradation")?.texts()?.join(" ");
+        assert!(
+            notes.contains("source custody") || notes.contains("spool object"),
+            "{body}"
+        );
+        assert!(notes.contains("2 complete comparisons"), "{body}");
+        assert!(notes.contains("1 completed caller-owned parks"), "{body}");
+        assert_answer_conforms(&body, "agent_meaningful_delta.v1.json", &directory.0, tag)?;
+    }
+
+    let directory = OwnedDirectory::new("wait-recording-source-budget")?;
+    let root = directory.root();
+    let (_, since) = quiet_wait_fixture(&directory)?;
+    let token = fss_reference::agent_follow::AnchorToken::parse(&since).ok_or("anchor token")?;
+    let binding = fss_reference::agent_follow::wait::FollowWaitBinding::new(
+        &root,
+        token,
+        fss_reference::agent_follow::FollowRequest {
+            view: fss_core::AgentView::Brief,
+            principal: fss_core::PrincipalId::parse("principal:local-operator")?,
+            max_entries: 64,
+            continuation: None,
+        },
+        fss_reference::agent_orient::OrientLimits::default(),
+        1_000,
+        41,
+    )?
+    .with_source_limits(1, 64 * 1024 * 1024)?;
+    let before = tree_digest(&root)?;
+    let mut clock = FollowClock {
+        root: root.clone(),
+        since,
+        elapsed_ms: 0,
+        cancel_after_park: false,
+        cancelled: false,
+        damage_after_park: None,
+    };
+    let failure = fss_reference::agent_follow::wait::follow_deployment_wait(&binding, &mut clock)
+        .err()
+        .ok_or("whole-call source budget must refuse the complete recording closure")?;
+    assert!(matches!(
+        failure.error,
+        fss_reference::agent_follow::wait::FollowWaitError::SourceBudgetExhausted
+    ));
+    assert_eq!(failure.progress.source_read_attempts, 1);
+    assert_eq!(failure.progress.completed_parks, 0);
+    assert_eq!(tree_digest(&root)?, before, "budget refusal is read-only");
     Ok(())
 }

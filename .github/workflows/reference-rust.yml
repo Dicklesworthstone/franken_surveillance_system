@@ -54,15 +54,20 @@ jobs:
         run: rustup run nightly-2026-08-31 cargo test --locked --offline -p fss-reference --lib agent_orient::tests
       - name: Verify bounded follow waits and exact CLI/MCP deltas
         run: |
-          rustup run nightly-2026-08-31 cargo test --locked --offline -p fss-reference --lib agent_follow::
-          rustup run nightly-2026-08-31 cargo test --locked --offline -p fss-cli --lib follow_cmd::
-          rustup run nightly-2026-08-31 cargo test --locked --offline -p fss-cli --bin fss-mcp follow
-          rustup run nightly-2026-08-31 cargo test --locked --offline -p fss-cli --test follow_cli_contract
+          follow_exit=0
+          rustup run nightly-2026-08-31 cargo test --locked --offline -p fss-reference --lib agent_follow:: || follow_exit=1
+          rustup run nightly-2026-08-31 cargo test --locked --offline -p fss-cli --lib follow_cmd:: || follow_exit=1
+          rustup run nightly-2026-08-31 cargo test --locked --offline -p fss-cli --bin fss-mcp follow || follow_exit=1
+          rustup run nightly-2026-08-31 cargo test --locked --offline -p fss-cli --test follow_cli_contract || follow_exit=1
+          exit "$follow_exit"
       - name: Verify query CLI, library and MCP parity
+        if: success() || failure()
         run: rustup run nightly-2026-08-31 cargo test --locked --offline -p fss-cli --test query_surface_contract
       - name: Verify complete RTSP catalog custody and legacy window imports
+        if: success() || failure()
         run: rustup run nightly-2026-08-31 cargo test --locked --offline -p fss-reference --test rtsp_catalog_import_contract --test rtsp_import_contract
       - name: Verify RTSP catalog and window operator commands
+        if: success() || failure()
         run: rustup run nightly-2026-08-31 cargo test --locked --offline -p fss-cli --test rtsp_catalog_import_cli --test rtsp_import_cli --bin fss-import-rtsp
       - name: Compile and execute native reference contracts
         run: rustup run nightly-2026-08-31 cargo test --locked --offline --workspace --all-targets
@@ -74,6 +79,8 @@ jobs:
           rustup run nightly-2026-08-31 rustfmt --check --edition 2024 --config skip_children=true
           crates/fss-reference/src/agent_follow.rs
           crates/fss-reference/src/agent_follow/wait.rs
+          crates/fss-reference/src/agent_follow/wait/custody.rs
+          crates/fss-reference/src/agent_follow/wait/custody/recorded.rs
           crates/fss-reference/src/agent_follow/wait/tests.rs
           crates/fss-cli/src/follow_cmd.rs
           crates/fss-cli/src/follow_cmd/wait.rs

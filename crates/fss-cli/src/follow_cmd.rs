@@ -229,6 +229,10 @@ fn request_digest(args: &FollowArgs, head: &LedgerAnchor) -> ContentDigest {
             encoder.u64(u64::from(
                 fss_reference::agent_follow::wait::MAX_FOLLOW_WAIT_READS,
             ));
+            encoder.u64(u64::from(
+                fss_reference::agent_follow::wait::MAX_FOLLOW_WAIT_SOURCE_READS,
+            ));
+            encoder.u64(fss_reference::agent_follow::wait::MAX_FOLLOW_WAIT_SOURCE_ENVELOPE_BYTES);
         }
     })
 }

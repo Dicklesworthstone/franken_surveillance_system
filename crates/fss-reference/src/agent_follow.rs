@@ -503,14 +503,25 @@ pub fn follow_deployment(
     let result_snapshot = history
         .snapshot_at(history.head())
         .map_err(FollowError::Read)?;
+    follow_snapshots(history, &basis_snapshot, &result_snapshot, request)
+}
+
+// Keep the ordinary projection and pagination byte-identical while the optional wait owner
+// retains the exact snapshots for its additional, separately budgeted source-custody check.
+fn follow_snapshots(
+    history: &DeploymentHistory,
+    basis_snapshot: &DeploymentSnapshot,
+    result_snapshot: &DeploymentSnapshot,
+    request: &FollowRequest,
+) -> Result<DeploymentFollow, FollowError> {
     let orient_request = OrientRequest {
         view: request.view,
         principal: request.principal.clone(),
         budget_tokens: None,
     };
-    let basis = orient_deployment(&basis_snapshot, &orient_request, history.limits())
+    let basis = orient_deployment(basis_snapshot, &orient_request, history.limits())
         .map_err(FollowError::Orient)?;
-    let result = orient_deployment(&result_snapshot, &orient_request, history.limits())
+    let result = orient_deployment(result_snapshot, &orient_request, history.limits())
         .map_err(FollowError::Orient)?;
     let delta = classify_reference_meaningful_delta(&basis.publication, &result.publication)
         .map_err(FollowError::Contract)?;

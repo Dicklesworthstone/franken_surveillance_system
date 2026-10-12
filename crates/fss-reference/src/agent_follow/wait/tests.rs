@@ -62,6 +62,29 @@ impl Fixture {
         let mut children = Vec::new();
         let mut source_path = None;
         if covered {
+            // This explicit native test import predates the delivery interval. A nonempty
+            // import claim cites its immutable payload, whereas an empty inventory cites the
+            // moving ledger prefix and therefore is itself a material provenance change.
+            // The payload is fixture metadata, not a claim that a media decoder ran.
+            let prior_import =
+                deployment.stage_payload(b"explicit metadata-only virtual import fixture")?;
+            deployment.append_batch(
+                BatchId::parse("batch:wait:prior-import")?,
+                vec![EvidenceDelta {
+                    delta_id: "delta:wait:prior-import".to_owned(),
+                    family: "file_import_manifest".to_owned(),
+                    object_id: ObjectId::parse("object:wait:prior-import")?,
+                    prior_generation: None,
+                    new_generation: 1,
+                    validity: CaptureInterval::new(TimestampNs(-2), TimestampNs(-1))?,
+                    plane: Plane::Authority,
+                    payload_digest: prior_import,
+                    witness_digest: None,
+                    operation_id: None,
+                }],
+                vec![prior_import],
+                &cx,
+            )?;
             let source = b"explicit virtual quiet source for follow-wait tests";
             let capsule = SensorCapsule::from_source_bytes(SensorSourceBytesSpec {
                 capsule_id: CapsuleId::parse("capsule:follow-wait:0")?,
@@ -207,6 +230,7 @@ struct VirtualControl<'a> {
     cancel_after_park: bool,
     short_park: bool,
     action_error: Option<String>,
+    expire_before_source: bool,
 }
 
 impl<'a> VirtualControl<'a> {
@@ -221,6 +245,7 @@ impl<'a> VirtualControl<'a> {
             cancel_after_park: false,
             short_park: false,
             action_error: None,
+            expire_before_source: false,
         }
     }
 }
@@ -240,6 +265,9 @@ impl FollowWaitControl for VirtualControl<'_> {
         }
         if boundary == FollowWaitBoundary::Read {
             self.reads += 1;
+        }
+        if boundary == FollowWaitBoundary::Source && self.expire_before_source {
+            self.now = binding.wait_ms();
         }
         Ok(self.now)
     }
@@ -316,7 +344,22 @@ fn quiet_deadline_keeps_native_certificate_window_and_counts_all_comparisons() -
     for _ in 0..4 {
         total = total.checked_add(&one)?;
     }
+    total.bytes = total
+        .bytes
+        .checked_add(waited.progress.source_payload_bytes)
+        .and_then(|bytes| bytes.checked_add(waited.progress.source_metadata_bytes))
+        .ok_or("source byte accounting")?;
+    total.storage_operations = total
+        .storage_operations
+        .checked_add(u64::from(waited.progress.source_read_attempts))
+        .ok_or("source read accounting")?;
     assert_eq!(waited.progress.consumed, total);
+    assert!(waited.progress.source_payload_bytes > 0);
+    assert_eq!(
+        waited.progress.source_read_attempts,
+        waited.progress.verified_source_reads
+    );
+    assert!(waited.progress.source_reserved_bytes <= binding.max_source_envelope_bytes());
     assert_eq!(tree(&fixture.root)?, before);
     Ok(())
 }
@@ -428,7 +471,14 @@ fn tamper_or_missing_source_is_never_replaced_by_cached_silence() -> TestResult 
             "{error:?}"
         );
         assert_eq!(error.progress.admitted_reads, 2);
-        assert_eq!(error.progress.completed_comparisons, 1);
+        assert_eq!(
+            error.progress.completed_comparisons, 2,
+            "the second completed metadata comparison is accounted before its source audit fails"
+        );
+        assert_eq!(error.progress.completed_parks, 1);
+        assert!(control.action_error.is_none(), "{:?}", control.action_error);
+        assert!(error.progress.source_read_attempts > error.progress.verified_source_reads);
+        assert!(error.progress.source_reserved_bytes <= binding.max_source_envelope_bytes());
         assert!(error.last_follow.as_ref().is_some_and(certified_quiet));
     }
     Ok(())
@@ -504,5 +554,62 @@ fn invalid_clock_and_wait_with_continuation_are_explicit_refusals() -> TestResul
             Err(FollowWaitError::InvalidBounds)
         ));
     }
+    Ok(())
+}
+
+#[test]
+fn source_custody_limits_are_immutable_cumulative_and_stop_before_parking() -> TestResult {
+    let fixture = Fixture::new("source-budget", true)?;
+    for (reads, bytes) in [
+        (1, MAX_FOLLOW_WAIT_SOURCE_ENVELOPE_BYTES),
+        (
+            MAX_FOLLOW_WAIT_SOURCE_READS,
+            fss_object::SPOOL_OBJECT_HEADER_LEN as u64,
+        ),
+    ] {
+        let binding = fixture
+            .binding(1_000, MAX_FOLLOW_WAIT_READS)?
+            .with_source_limits(reads, bytes)?;
+        let mut control = VirtualControl::new(&binding);
+        let failure = follow_deployment_wait(&binding, &mut control)
+            .err()
+            .ok_or("source allowance must refuse the complete unchanged scope")?;
+        assert!(matches!(
+            failure.error,
+            FollowWaitError::SourceBudgetExhausted
+        ));
+        assert_eq!(failure.progress.admitted_reads, 1);
+        assert_eq!(failure.progress.completed_comparisons, 1);
+        assert!(failure.progress.source_read_attempts <= reads);
+        assert!(failure.progress.source_reserved_bytes <= bytes);
+        assert!(control.parks.is_empty());
+    }
+    let first = fixture.binding(1_000, MAX_FOLLOW_WAIT_READS)?;
+    assert_ne!(first, first.clone().with_source_limits(1, 1_024)?);
+    assert!(
+        first
+            .clone()
+            .with_source_limits(MAX_FOLLOW_WAIT_SOURCE_READS + 1, 1_024)
+            .is_err()
+    );
+    assert!(
+        first
+            .with_source_limits(1, MAX_FOLLOW_WAIT_SOURCE_ENVELOPE_BYTES + 1)
+            .is_err()
+    );
+    let binding = fixture.binding(1_000, MAX_FOLLOW_WAIT_READS)?;
+    let mut control = VirtualControl::new(&binding);
+    control.expire_before_source = true;
+    let failure = follow_deployment_wait(&binding, &mut control)
+        .err()
+        .ok_or("expired authority cannot admit source I/O")?;
+    assert!(matches!(
+        failure.error,
+        FollowWaitError::SourceDeadlineReached
+    ));
+    assert_eq!(failure.progress.completed_comparisons, 1);
+    assert_eq!(failure.progress.source_read_attempts, 0);
+    assert_eq!(failure.progress.source_reserved_bytes, 0);
+    assert!(control.parks.is_empty());
     Ok(())
 }

@@ -741,6 +741,8 @@
       "nativeMcpArgument": "wait_ms",
       "maximumWaitMilliseconds": 10000,
       "maximumAdmittedReads": 41,
+      "maximumSourceCustodyReadAdmissions": 4096,
+      "maximumSourceCustodyEnvelopeBytes": 67108864,
       "pollMilliseconds": 250,
       "continuationCompatible": false,
       "rule": "The optional native reference wait parks only on a validated certified-quiet exact head. Initial material or protected context returns immediately. Initial harmless anchor mismatch and every complete authority/effect anchor advance after a park return a null-payload partial AgentResponseEnvelope with ERR-AGENT-RESNAPSHOT-001, resnapshotRequired true and both exact anchor proofs; intermediate protected transitions are not claimed complete. Deadline/read-budget stops return typed partial uncertainty. Caller-owned authority, monotonic time and cancellation guard reads, hydration and parks; returned costs sum with checked arithmetic and unmetered work stays explicit. Evidence time and existing cursor/session leases are never renewed. Ordinary no-wait pages and frozen operation/schema/basis identities remain unchanged; this is not a durable subscription.",

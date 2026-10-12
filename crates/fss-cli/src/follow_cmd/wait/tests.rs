@@ -62,6 +62,25 @@ fn absent_wait_retains_exact_legacy_request_bytes_and_present_bounds_are_bound()
     waited.wait_ms = Some(1_000);
     let one = request_digest(&waited, &head);
     assert_ne!(one, legacy);
+    let bound = request_identity("fss.cli.follow.request.v1", |encoder| {
+        encoder.text(args.since.as_str());
+        encoder.text(args.view.id());
+        args.principal.encode_canonical(encoder);
+        encoder.u64(2);
+        encoder.bool(false);
+        head.encode_canonical(encoder);
+        encoder.text("bounded_wait_ms");
+        encoder.u64(1_000);
+        encoder.u64(u64::from(MAX_FOLLOW_WAIT_READS));
+        encoder.u64(u64::from(
+            fss_reference::agent_follow::wait::MAX_FOLLOW_WAIT_SOURCE_READS,
+        ));
+        encoder.u64(fss_reference::agent_follow::wait::MAX_FOLLOW_WAIT_SOURCE_ENVELOPE_BYTES);
+    });
+    assert_eq!(
+        one, bound,
+        "the admitted source limits are part of the wait identity"
+    );
     waited.wait_ms = Some(2_000);
     assert_ne!(request_digest(&waited, &head), one);
     Ok(())

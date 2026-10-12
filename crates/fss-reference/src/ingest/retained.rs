@@ -100,7 +100,7 @@ impl FileImportManifest {
         Ok(manifest)
     }
 
-    fn decode_metadata(
+    pub(crate) fn decode_metadata(
         bytes: &[u8],
         expected: ContentDigest,
         limits: RetainedReadLimits,

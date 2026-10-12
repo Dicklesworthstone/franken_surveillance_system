@@ -53,7 +53,7 @@ impl FollowWaitControl for LocalControl {
     }
 }
 
-fn binding(args: &FollowArgs) -> Result<FollowWaitBinding, FollowWaitError> {
+fn binding(args: &FollowArgs) -> Result<FollowWaitBinding, ()> {
     FollowWaitBinding::new(
         &args.root,
         args.since.clone(),
@@ -64,9 +64,10 @@ fn binding(args: &FollowArgs) -> Result<FollowWaitBinding, FollowWaitError> {
             continuation: args.continuation.clone(),
         },
         OrientLimits::default(),
-        args.wait_ms.ok_or(FollowWaitError::InvalidBounds)?,
+        args.wait_ms.ok_or(())?,
         MAX_FOLLOW_WAIT_READS,
     )
+    .map_err(|_| ())
 }
 
 pub(super) fn execute(args: &FollowArgs) -> (String, ExitIdentity) {
@@ -109,13 +110,15 @@ pub(super) fn execute_with_control(
                             FollowWaitError::Follow(FollowError::Anchor(reason)) => {
                                 anchor_refusal(*reason, &args.since).error_id
                             }
-                            FollowWaitError::DeadlineBeforeObservation => ERR_TIMEOUT,
+                            FollowWaitError::DeadlineBeforeObservation
+                            | FollowWaitError::SourceDeadlineReached => ERR_TIMEOUT,
                             FollowWaitError::Denied(FollowWaitDenial::Unauthorized) => ERR_AUTH,
                             FollowWaitError::Follow(FollowError::Orient(
                                 OrientError::ContextBudgetExceeded { .. }
                                 | OrientError::TooManyEvents { .. },
                             )) => ERR_AGENT_CONTEXT_INCOMPLETE,
-                            FollowWaitError::AccountingOverflow => ERR_BUDGET,
+                            FollowWaitError::AccountingOverflow
+                            | FollowWaitError::SourceBudgetExhausted => ERR_BUDGET,
                             _ => crate::ERR_CLI_RUNTIME_FAILURE,
                         };
                         (
@@ -154,6 +157,12 @@ fn accounting(args: &FollowArgs, progress: &FollowWaitProgress) -> Vec<String> {
             args.wait_ms.unwrap_or(0), progress.elapsed_ms, progress.admitted_reads,
             MAX_FOLLOW_WAIT_READS, progress.completed_comparisons, progress.completed_parks),
         "Budgets accumulate every completed native comparison's two snapshot/projection counters. Doctor inspection, history-only wake verification and failed reads' unreturned work are not measured here and are not claimed to cost zero. A read admitted before the deadline can finish later.".to_owned(),
+        format!("Fresh source custody: {} of {} whole-call read admissions; {} verified reads; {} verified spool payload bytes; {} verified publication metadata bytes; {} gross requested envelope bytes; {} of {} net charged envelope bytes. Each read reserves its bounded envelope before I/O; unused allowance is released only after verified success, and a failed read retains its full reservation. Selected objects are deduplicated only within one comparison and reverified after every park.",
+            progress.source_read_attempts, fss_reference::agent_follow::wait::MAX_FOLLOW_WAIT_SOURCE_READS,
+            progress.verified_source_reads, progress.source_payload_bytes, progress.source_metadata_bytes,
+            progress.source_requested_bytes, progress.source_reserved_bytes,
+            fss_reference::agent_follow::wait::MAX_FOLLOW_WAIT_SOURCE_ENVELOPE_BYTES),
+        "Consumed bytes include successfully verified custody payload/metadata bytes; storage operations include custody read admissions. Charged source envelopes separately bound header/probe overhead and failed-read uncertainty; they are not claimed as exact consumed bytes or an atomic filesystem snapshot.".to_owned(),
         "Wall waiting neither extends a retained coverage interval nor advances evidence time, renews a cursor/session lease, or proves that intermediate protected transitions were absent. This call owns no subscription or detached work.".to_owned(),
     ]
 }
@@ -237,7 +246,7 @@ fn failure_response(
             ResponseSafeRetry::No,
             false,
         ),
-        FollowWaitError::DeadlineBeforeObservation => (
+        FollowWaitError::DeadlineBeforeObservation | FollowWaitError::SourceDeadlineReached => (
             ResponseOutcome::Partial,
             Some(ERR_TIMEOUT),
             "safe_read_retry",
@@ -263,7 +272,7 @@ fn failure_response(
             ResponseSafeRetry::No,
             false,
         ),
-        FollowWaitError::AccountingOverflow => (
+        FollowWaitError::AccountingOverflow | FollowWaitError::SourceBudgetExhausted => (
             ResponseOutcome::Refused,
             Some(ERR_BUDGET),
             "operator_action_required",
