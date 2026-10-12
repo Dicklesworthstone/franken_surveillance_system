@@ -32,7 +32,7 @@ pub(super) fn extensions(
     owner: &LongCorroborationRecipe,
     limits: &LongEventReplayLimits,
     cx: &ReplayCx,
-) -> Result<(bool, Option<RetainedDetector>)> {
+) -> Result<(bool, Option<RetainedDetector>, Option<Vec<u8>>)> {
     trace(d, segments, owner.limits().maximum_trace_bytes, cx)?;
     let mut tag = if d.remaining() == 0 {
         None
@@ -49,7 +49,7 @@ pub(super) fn extensions(
         };
     }
     let retained = match (tag, owner.detector_recipe()) {
-        (None, None) => None,
+        (None | Some("geometry_support"), None) => None,
         (Some("detector_cascade"), Some(expected)) => {
             let recipe = LongWatchDetectorRecipe::from_bytes(d.bytes()?)?;
             if recipe.to_bytes() != expected.to_bytes() {
@@ -93,6 +93,11 @@ pub(super) fn extensions(
             {
                 return Err(Error::InvalidRecord);
             }
+            tag = if d.remaining() == 0 {
+                None
+            } else {
+                Some(d.text()?)
+            };
             Some(RetainedDetector {
                 recipe,
                 inventory,
@@ -105,8 +110,19 @@ pub(super) fn extensions(
         }
         _ => return Err(Error::UnsupportedProfile),
     };
+    let geometry = match (tag, owner.geometry_recipe()) {
+        (None, None) => None,
+        (Some("geometry_support"), Some(_)) => {
+            let bytes = d.bytes()?;
+            if bytes.len() > crate::ingest::recorded_corroboration::streaming::geometry::MAX_GEOMETRY_RECEIPT_BYTES {
+                return Err(Error::Limit);
+            }
+            Some(bytes.to_vec())
+        }
+        _ => return Err(Error::UnsupportedProfile),
+    };
     d.ensure_finished()?;
-    Ok((screened, retained))
+    Ok((screened, retained, geometry))
 }
 
 /// Validate source associations and the accounting claims exposed by each canonical class

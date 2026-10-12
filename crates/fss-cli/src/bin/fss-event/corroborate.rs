@@ -179,6 +179,7 @@ pub(super) struct CorroborateAction {
     report_out: Option<PathBuf>,
     cascade: Option<super::detector::DetectorOptions>,
     policy: VisibilityPolicy,
+    geometry_requested: bool,
     poses: [Option<CameraPose>; 2],
     mesh: Option<SceneMeshOption>,
     calibration: Option<CalibrationOption>,
@@ -484,12 +485,13 @@ pub(super) fn parse(args: &[OsString]) -> Result<CorroborateAction, String> {
         }
         index += 2;
     }
-    if stream_corroborate && (!poses.is_empty() || !generations.is_empty()) {
-        return Err(
-            "--stream-corroborate supports owner homographies; pose and calibration generation options are unsupported"
-                .to_owned(),
-        );
-    }
+    let geometry_requested = !poses.is_empty()
+        || !generations.is_empty()
+        || values.iter().any(|(key, _)| {
+            key.starts_with("--visibility-")
+                || key.starts_with("--scene-")
+                || key.starts_with("--calibration")
+        });
     let health_screen = match find(&values, "--sensor-health") {
         Some(HEALTH_POLICY_NAME) => Some(RecordedHealthPolicy::ConservativeV1),
         Some(_) => {
@@ -716,6 +718,7 @@ pub(super) fn parse(args: &[OsString]) -> Result<CorroborateAction, String> {
         report_out: find(&values, "--report-out").map(PathBuf::from),
         cascade: super::detector::parse(&values)?,
         policy,
+        geometry_requested,
         poses: camera_poses,
         mesh,
         calibration,

@@ -5,8 +5,8 @@ use fss_core::{CanonicalDecoder, CanonicalEncoder, ContentDigest, ContractError}
 
 use super::{
     CorroborationDependencies, CorroborationError, CorroborationOptions, CorroborationPlan,
-    LongCorroborationLimits, LongCorroborationReport, PLAN_DOMAIN, POLICY, Result,
-    health_policy_bytes,
+    LongCorroborationGeometry, LongCorroborationGeometryRecipe, LongCorroborationLimits,
+    LongCorroborationReport, PLAN_DOMAIN, POLICY, Result, health_policy_bytes,
 };
 use crate::ingest::RetainedReadLimits;
 use crate::ingest::long_watch::LongWatchDetector;
@@ -46,6 +46,7 @@ pub struct LongCorroborationRecipe {
     dependencies: CorroborationDependencies,
     screened: bool,
     detector: Option<LongWatchDetectorRecipe>,
+    geometry: Option<LongCorroborationGeometryRecipe>,
 }
 impl LongCorroborationRecipe {
     /// Validate an exact owner configuration without opening source custody or running a decoder.
@@ -67,6 +68,7 @@ impl LongCorroborationRecipe {
             dependencies: dependencies.clone(),
             screened,
             detector: None,
+            geometry: None,
         };
         if value.to_bytes().len() > MAX_LONG_CORROBORATION_RECIPE_BYTES {
             return Err(CorroborationError::Limit);
@@ -106,6 +108,22 @@ impl LongCorroborationRecipe {
     /// Exact model and execution component. Its allowance is global to this two-camera recipe.
     pub fn detector_recipe(&self) -> Option<&LongWatchDetectorRecipe> {
         self.detector.as_ref()
+    }
+    /// Bind optional geometry and contract shared calibration/mesh inputs into common causes.
+    /// Existing no-geometry recipes retain their exact bytes.
+    pub fn with_geometry(mut self, geometry: &LongCorroborationGeometryRecipe) -> Result<Self> {
+        let geometry =
+            LongCorroborationGeometryRecipe::from_bytes(&geometry.to_bytes(), &self.plan)?;
+        self.dependencies = geometry.dependencies(&self.plan, &self.dependencies)?;
+        self.geometry = Some(geometry);
+        if self.to_bytes().len() > MAX_LONG_CORROBORATION_RECIPE_BYTES {
+            return Err(CorroborationError::Limit);
+        }
+        Ok(self)
+    }
+    /// Exact optional geometry component; its archive objects are separate custody children.
+    pub fn geometry_recipe(&self) -> Option<&LongCorroborationGeometryRecipe> {
+        self.geometry.as_ref()
     }
     /// Both import identities, matrices, ground rectangles, gates and perception settings.
     pub fn plan(&self) -> &CorroborationPlan {
@@ -181,6 +199,10 @@ impl LongCorroborationRecipe {
             encoder.text("ground_detector_cascade");
             encoder.bytes(DETECTOR_POLICY);
             encoder.bytes(&detector.to_bytes());
+        }
+        if let Some(geometry) = &self.geometry {
+            encoder.text("ground_geometry_support");
+            encoder.bytes(&geometry.to_bytes());
         }
         // The immutable constructor bounds the whole record below the fixed canonical ceiling.
         encoder.finish()
@@ -268,15 +290,35 @@ impl LongCorroborationRecipe {
         let screened = decoder.bool()?;
         let dependencies = CorroborationDependencies::from_bytes(decoder.bytes()?)?;
         let limits = decode_limits(&mut decoder)?;
-        let retained_detector = if decoder.remaining() == 0 {
+        let mut tag = if decoder.remaining() == 0 {
             None
         } else {
-            if decoder.text()? != "ground_detector_cascade" || decoder.bytes()? != DETECTOR_POLICY {
+            Some(decoder.text()?)
+        };
+        let retained_detector = if tag == Some("ground_detector_cascade") {
+            if decoder.bytes()? != DETECTOR_POLICY {
                 return Err(CorroborationError::InvalidPlan(
                     "unknown ground detector semantics",
                 ));
             }
-            Some(LongWatchDetectorRecipe::from_bytes(decoder.bytes()?)?)
+            let detector = LongWatchDetectorRecipe::from_bytes(decoder.bytes()?)?;
+            tag = if decoder.remaining() == 0 {
+                None
+            } else {
+                Some(decoder.text()?)
+            };
+            Some(detector)
+        } else {
+            None
+        };
+        let geometry_bytes = match tag {
+            None => None,
+            Some("ground_geometry_support") => Some(decoder.bytes()?),
+            _ => {
+                return Err(CorroborationError::InvalidPlan(
+                    "unknown streaming recipe extension",
+                ));
+            }
         };
         decoder.ensure_finished()?;
         let plan = CorroborationPlan {
@@ -290,7 +332,7 @@ impl LongCorroborationRecipe {
         if plan.digest() != declared_plan {
             return Err(ContractError::DigestMismatch.into());
         }
-        let value = match retained_detector {
+        let mut value = match retained_detector {
             Some(detector) => Self::new_with_detector(
                 &plan,
                 options,
@@ -301,6 +343,10 @@ impl LongCorroborationRecipe {
             )?,
             None => Self::new(&plan, options, &limits, &dependencies, screened)?,
         };
+        if let Some(bytes) = geometry_bytes {
+            value =
+                value.with_geometry(&LongCorroborationGeometryRecipe::from_bytes(bytes, &plan)?)?;
+        }
         if value.to_bytes() != bytes {
             return Err(ContractError::NonCanonicalOrdering.into());
         }
@@ -314,6 +360,13 @@ impl LongCorroborationRecipe {
         deployment: &ReferenceDeployment,
         cx: &ReplayCx,
     ) -> Result<LongCorroborationReport> {
+        let geometry = self
+            .geometry
+            .as_ref()
+            .map(|recipe| {
+                LongCorroborationGeometry::load_retained(deployment, &self.plan, recipe, cx)
+            })
+            .transpose()?;
         if let Some(recipe) = &self.detector {
             if cx.root_dir() != deployment.root() {
                 return Err(CorroborationError::Conflict);
@@ -346,33 +399,32 @@ impl LongCorroborationRecipe {
                     *recipe.package_limits(),
                     &scalar,
                 )?;
-                LongCorroborationReport::analyze_with_detector(
+                LongCorroborationReport::analyze_inner(
                     deployment,
                     &self.plan,
                     self.options,
                     &self.limits,
                     &self.dependencies,
-                    self.screened,
-                    &detector,
                     cx,
+                    self.screened,
+                    Some(&detector),
+                    geometry.as_ref(),
                 )
             })();
             scalar.drain_and_finalize();
             super::checkpoint(cx, "long_corroboration:retained_model_complete")?;
             return result;
         }
-        let analyze = if self.screened {
-            LongCorroborationReport::analyze_screened
-        } else {
-            LongCorroborationReport::analyze
-        };
-        analyze(
+        LongCorroborationReport::analyze_inner(
             deployment,
             &self.plan,
             self.options,
             &self.limits,
             &self.dependencies,
             cx,
+            self.screened,
+            None,
+            geometry.as_ref(),
         )
     }
 }

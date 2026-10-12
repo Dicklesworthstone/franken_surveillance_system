@@ -116,6 +116,22 @@ per-camera recipe. The ground policy pins admission and native execution order, 
 and head-work scope, source associations and the class-as-annotation boundary. Historical
 model-free corroboration recipes retain their bytes and remain readable under the same profile.
 
+Geometry-enabled corroboration recipes also retain exact camera poses/provenance, visibility
+semantics, calibration/scene archive identities and per-camera support receipts. Inspection
+verifies those archives in each complete camera closure and recomputes support under current
+privacy and calibration-adoption authority. A selected pair whose zone lacks support is refused.
+Native verification additionally reruns original pixels and compares complete camera/event
+identities; inspection alone does not claim pixel replay. Homographies remain the observation
+projection, shared geometry remains a common cause, and geometry establishes neither physical
+camera currency nor absence nor an event probability.
+
+Loose calibration/scene files are unnecessary after publication. Missing or damaged retained
+archives refuse, including on completed publication retries. Adoption changes require a fresh
+analysis instead of silently reinterpreting the previous recipe. Calibration archives are
+bounded to 4 MiB and scene archives to 64 MiB. Archive reads consume the inspection's cumulative
+metadata allowance, so large scenes may require a larger explicit `--max-metadata-bytes` within
+the existing hard bound. Homography-only recipes retain their historical bytes and replay.
+
 ## Resource and output bounds
 
 All numeric options require positive unsigned decimal values. Source, pixel, assignment,

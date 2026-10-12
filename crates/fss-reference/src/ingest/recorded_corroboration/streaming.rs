@@ -67,6 +67,8 @@ pub const HEALTH_PUBLICATION_BLOCKED: &str =
 
 mod recipe;
 pub use recipe::{LongCorroborationRecipe, MAX_LONG_CORROBORATION_RECIPE_BYTES};
+pub mod geometry;
+pub use geometry::{LongCorroborationGeometry, LongCorroborationGeometryRecipe};
 
 const MAX_REPORT_BYTES: usize = 1024 * 1024;
 const PLAN_DOMAIN: &str = "fss.long_corroboration_plan.v1";
@@ -126,6 +128,7 @@ struct CameraScan {
     health: Option<LongDwellHealthSummary>,
     health_diagnostic: Option<crate::ingest::historical_health::HistoricalHealthDiagnostic>,
     detector: Option<CameraDetector>,
+    geometry: Option<geometry::GeometryAssessment>,
 }
 
 #[derive(Debug)]
@@ -154,6 +157,7 @@ pub struct LongCorroborationReport {
     samples: Vec<LongGroundSample>,
     candidates: Vec<CorroborationCandidate>,
     dependencies: CorroborationDependencyReport,
+    geometry: Option<LongCorroborationGeometry>,
 }
 
 #[derive(Debug)]
@@ -184,12 +188,17 @@ struct GroundConsumer<'a> {
     restart_segments: Vec<usize>,
     error: Option<CorroborationError>,
     detector: Option<detector::Select>,
+    geometry: Option<&'a LongCorroborationGeometry>,
+    geometry_assessment: Option<geometry::GeometryAssessment>,
+    cx: &'a ReplayCx,
 }
 impl<'a> GroundConsumer<'a> {
     fn new(
         plan: &'a CorroborationPlan,
         camera: usize,
         detector: Option<&LongWatchDetector<'_>>,
+        geometry: Option<&'a LongCorroborationGeometry>,
+        cx: &'a ReplayCx,
     ) -> Self {
         Self {
             plan,
@@ -206,6 +215,9 @@ impl<'a> GroundConsumer<'a> {
             restart_segments: Vec::new(),
             error: None,
             detector: detector.map(|value| detector::Select::new(value.config)),
+            geometry,
+            geometry_assessment: None,
+            cx,
         }
     }
 
@@ -214,6 +226,19 @@ impl<'a> GroundConsumer<'a> {
         if !self.initialized {
             self.initialized = true;
             self.dimensions = frame.dimensions;
+            self.geometry_assessment = self
+                .geometry
+                .map(|geometry| {
+                    geometry.assess(
+                        self.plan,
+                        self.camera,
+                        frame.dimensions,
+                        &frame.capsule.sensor_id,
+                        frame.privacy,
+                        self.cx,
+                    )
+                })
+                .transpose()?;
             if let Some(policy) = frame.privacy.policy() {
                 self.masked = self
                     .plan
@@ -347,6 +372,7 @@ impl LongCorroborationReport {
             cx,
             false,
             None,
+            None,
         )
     }
 
@@ -367,6 +393,7 @@ impl LongCorroborationReport {
             dependencies,
             cx,
             true,
+            None,
             None,
         )
     }
@@ -395,6 +422,35 @@ impl LongCorroborationReport {
             cx,
             screened,
             Some(detector),
+            None,
+        )
+    }
+
+    /// Apply exact optional geometry to whole-recording positive support. Actual observations
+    /// remain in the inventory; unsupported zones cannot enter association. Trained annotations
+    /// and health screening compose without granting extra authority to geometry.
+    #[allow(clippy::too_many_arguments)]
+    pub fn analyze_with_geometry(
+        deployment: &ReferenceDeployment,
+        plan: &CorroborationPlan,
+        options: CorroborationOptions,
+        limits: &LongCorroborationLimits,
+        dependencies: &CorroborationDependencies,
+        screened: bool,
+        detector: Option<&LongWatchDetector<'_>>,
+        geometry: &LongCorroborationGeometry,
+        cx: &ReplayCx,
+    ) -> Result<Self> {
+        Self::analyze_inner(
+            deployment,
+            plan,
+            options,
+            limits,
+            dependencies,
+            cx,
+            screened,
+            detector,
+            Some(geometry),
         )
     }
 
@@ -408,10 +464,15 @@ impl LongCorroborationReport {
         cx: &ReplayCx,
         screened: bool,
         detector: Option<&LongWatchDetector<'_>>,
+        geometry: Option<&LongCorroborationGeometry>,
     ) -> Result<Self> {
         checkpoint(cx, "long_corroboration:analyze")?;
         plan.validate()?;
         declarations.validate_for(plan)?;
+        let geometric_declarations = geometry
+            .map(|geometry| geometry.recipe().dependencies(plan, declarations))
+            .transpose()?;
+        let declarations = geometric_declarations.as_ref().unwrap_or(declarations);
         limits.validate()?;
         let detector_recipe = detector
             .map(|value| {
@@ -450,7 +511,11 @@ impl LongCorroborationReport {
         if sensors[0] == sensors[1] {
             return Err(CorroborationError::SameSensor);
         }
-        let recipe = match &detector_recipe {
+        let sensors = [sensors[0].clone(), sensors[1].clone()];
+        if let Some(geometry) = geometry {
+            geometry.check_current(deployment, plan, &sensors, cx)?;
+        }
+        let mut recipe = match &detector_recipe {
             Some(component) => LongCorroborationRecipe::new_with_detector(
                 plan,
                 options,
@@ -460,8 +525,11 @@ impl LongCorroborationReport {
                 component,
             )?,
             None => LongCorroborationRecipe::new(plan, options, limits, declarations, screened)?,
+        };
+        if let Some(geometry) = geometry {
+            recipe = recipe.with_geometry(geometry.recipe())?;
         }
-        .to_bytes();
+        let recipe = recipe.to_bytes();
         let plan_digest = ContentDigest::sha256(&recipe);
         let mut allowance = detector.map(AnalysisBudget::new);
         let mut cameras = Vec::with_capacity(2);
@@ -487,7 +555,7 @@ impl LongCorroborationReport {
                 detector: plan.detector,
                 tracker: plan.tracker,
             };
-            let mut consumer = GroundConsumer::new(plan, index, detector);
+            let mut consumer = GroundConsumer::new(plan, index, detector, geometry, cx);
             let scan = run_observed_scan(
                 deployment,
                 &watch,
@@ -540,8 +608,17 @@ impl LongCorroborationReport {
                 detector,
             )?;
             for (entry_index, raw) in consumer.entries.into_iter().enumerate() {
+                let geometry_blocked = camera_scan
+                    .geometry
+                    .as_ref()
+                    .is_some_and(|assessment| assessment.blocked.contains(&raw.zone));
                 let (mut entry, sample) =
                     prepare_entry(plan, index, camera_scan.manifest.root(), raw)?;
+                if geometry_blocked
+                    && entry.disposition != EntryDisposition::CaptureTimeUnreliableAfterGap
+                {
+                    entry.disposition = EntryDisposition::GeometrySupportUnavailable;
+                }
                 if let Some(detector) = &camera_scan.detector {
                     let selected = detector
                         .completed
@@ -665,6 +742,7 @@ impl LongCorroborationReport {
             samples,
             candidates,
             dependencies,
+            geometry: geometry.cloned(),
         };
         report.to_json(deployment.current_anchor().commit_sequence, None)?;
         Ok(report)
@@ -768,6 +846,21 @@ impl LongCorroborationReport {
         })
     }
 
+    fn check_geometry_current(
+        &self,
+        deployment: &ReferenceDeployment,
+        cx: &ReplayCx,
+    ) -> Result<()> {
+        if let Some(geometry) = &self.geometry {
+            let sensors = [
+                fss_core::SensorId::parse(&self.cameras[0].summary.sensor_id)?,
+                fss_core::SensorId::parse(&self.cameras[1].summary.sensor_id)?,
+            ];
+            geometry.check_current(deployment, &self.plan, &sensors, cx)?;
+        }
+        Ok(())
+    }
+
     /// Publish only exact proposals after both original sources, all analyzed capsules and current
     /// masks have been revalidated. Provenance is retained root-last; an exact retry adds no event.
     pub fn publish(
@@ -799,6 +892,7 @@ impl LongCorroborationReport {
         for camera in &self.cameras {
             camera.publication_guard.revalidate(deployment, cx)?;
         }
+        self.check_geometry_current(deployment, cx)?;
         for candidate in &mut self.candidates {
             if approvals.contains(&candidate.proposal_digest()) {
                 candidate.status = current_status(deployment, candidate.event())?;
@@ -818,6 +912,26 @@ impl LongCorroborationReport {
         {
             let retained_recipe = deployment.publisher().spool().read(self.plan_digest)?;
             LongCorroborationRecipe::from_retained_bytes(&retained_recipe, self.plan_digest)?;
+        }
+        if let Some(geometry) = &self.geometry {
+            if recipe_required
+                || self
+                    .cameras
+                    .iter()
+                    .any(|camera| deployment.publisher().root(&camera.slot).is_some())
+            {
+                for (digest, bytes) in geometry.archives() {
+                    checkpoint(cx, "long_corroboration:retained_geometry_archive")?;
+                    if deployment
+                        .publisher()
+                        .spool()
+                        .read_bounded(digest, bytes.len())?
+                        != bytes
+                    {
+                        return Err(CorroborationError::Conflict);
+                    }
+                }
+            }
         }
         // A completed retry cannot reconstruct lost model evidence from the caller's loose
         // package. Published camera roots must still own their exact detector closure.
@@ -860,6 +974,16 @@ impl LongCorroborationReport {
             return Err(fss_core::ContractError::DigestMismatch.into());
         }
         deployment.publisher_mut().verify_object(recipe_digest)?;
+        if let Some(geometry) = &self.geometry {
+            for (expected, bytes) in geometry.archives() {
+                checkpoint(cx, "long_corroboration:stage_geometry")?;
+                let actual = deployment.publisher_mut().stage_object(bytes)?;
+                if actual != expected {
+                    return Err(fss_core::ContractError::DigestMismatch.into());
+                }
+                deployment.publisher_mut().verify_object(actual)?;
+            }
+        }
         for camera in &self.cameras {
             checkpoint(cx, "long_corroboration:stage_camera")?;
             for bytes in [
@@ -901,6 +1025,7 @@ impl LongCorroborationReport {
                 cx,
             )?;
         }
+        self.check_geometry_current(deployment, cx)?;
         publish_candidates(
             deployment,
             &mut self.candidates,
@@ -1112,6 +1237,10 @@ fn prepare_camera(
         encoder.u64(detector.before.1);
         encoder.u64(detector.after.1);
     }
+    if let Some(geometry) = &consumer.geometry_assessment {
+        encoder.text("geometry_support");
+        encoder.bytes(&geometry.receipt);
+    }
     let analysis = encoder.finish_checked()?;
     let digest = ContentDigest::sha256(&analysis);
     let sensor_digest = ContentDigest::sha256(scan.sensor.as_str().as_bytes());
@@ -1130,6 +1259,15 @@ fn prepare_camera(
     }
     if let Some(detector) = &detector {
         children.extend(detector.completed.children());
+    }
+    if let Some(geometry) = consumer.geometry {
+        children.extend(
+            geometry
+                .recipe()
+                .archive_objects()
+                .into_iter()
+                .map(|(digest, _)| digest),
+        );
     }
     let slot = slot("lc-a", digest)?;
     // The analysis is already an explicit child. Supplying it as metadata too would
@@ -1171,6 +1309,7 @@ fn prepare_camera(
         privacy: scan.privacy,
     };
     Ok(CameraScan {
+        geometry: consumer.geometry_assessment.clone(),
         summary,
         publication_guard: scan.publication_guard,
         analysis,
@@ -1323,6 +1462,9 @@ fn camera_json(camera: &CameraScan, plan: &CorroborationPlan) -> String {
             value.after.1
         )
     });
+    let geometry = camera.geometry.as_ref().map_or_else(String::new, |value| {
+        format!(",\"geometry_support\":{}", value.json)
+    });
     format!(
         concat!(
             "{{\"camera\":{},\"import_identity\":\"{}\",\"import_root\":\"{}\",",
@@ -1334,7 +1476,7 @@ fn camera_json(camera: &CameraScan, plan: &CorroborationPlan) -> String {
             "\"decode_refusals\":[{}],\"masked_zones\":[{}],\"privacy_binding\":\"{}\",",
             "\"privacy_generation\":{},\"source_chunk_bytes_read\":{},\"pixel_samples_processed\":{},",
             "\"assignment_work_admitted\":{},\"jpeg_work_units\":{},\"trace_record_bytes\":{},",
-            "\"media_format\":{},\"sensor_health\":{}{}{}}}"
+            "\"media_format\":{},\"sensor_health\":{}{}{}{}}}"
         ),
         json_string(&summary.name),
         summary.import_identity,
@@ -1367,5 +1509,6 @@ fn camera_json(camera: &CameraScan, plan: &CorroborationPlan) -> String {
         health,
         health_scope,
         detector,
+        geometry,
     )
 }

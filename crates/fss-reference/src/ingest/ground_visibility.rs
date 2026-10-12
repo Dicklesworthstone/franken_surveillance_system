@@ -717,7 +717,7 @@ pub fn assess_ground_zone_masked(
 
 /// [`assess_ground_zone_masked`] over precomputed `samples`, charging `budget` (one unit per
 /// sample, plus the mesh's per-triangle charges).
-fn assess_samples(
+pub(crate) fn assess_samples(
     camera: VisibilityCamera<'_>,
     dimensions: [u32; 2],
     samples: &[(f64, f64)],

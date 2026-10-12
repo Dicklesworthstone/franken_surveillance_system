@@ -36,10 +36,11 @@ camera calibration. For native H.264/H.265 and YCbCr JPEG inputs, use `--interpr
 
 The mode supports the existing foreground thresholds, tracker settings, decoder limits,
 `--tolerate-decode-refusals`, `--sensor-health conservative-v1`, failure-domain declarations,
-digest-pinned trained detector packages, report export and exact event approvals. Pose, calibration, scene-mesh,
-visibility and coverage-retention options are refused before deployment I/O. Those contracts
-remain available through ordinary corroboration; this streaming mode owns positive ground
-observations and their association.
+digest-pinned trained detector packages, report export and exact event approvals. Optional
+poses, exact site calibration, scene meshes and visibility settings add the conservative
+geometry screen described below. `--retain-coverage` remains refused before deployment I/O:
+this mode owns positive ground observations and their association, and produces no coverage
+or absence witness.
 
 ## What supports an entry and an association
 
@@ -72,6 +73,78 @@ Connected cameras count as one effective supporting domain. Both positive observ
 retained, but their policy result remains witnessed activity with `Hold`. Disjoint declared
 domains are not a measurement of physical independence, and undeclared dependencies remain
 unknown.
+
+## Check geometric support over the complete recordings
+
+The owner-supplied `--ground` homographies remain required and still project the actual
+observed foot points. Optional geometry checks support for every selected ground zone. It can
+exclude a zone from association when the supplied camera/scene geometry cannot support it.
+It never manufactures an observation or establishes physical camera position or currency.
+
+To use an exact site calibration, add:
+
+```sh
+--calibration /path/to/site.fsscal \
+--calibration-digest "${CALIBRATION_DIGEST:?supply the exact calibration digest}" \
+--camera-generation east:1:1 \
+--camera-generation west:1:1 \
+--visibility-grid 8 \
+--visibility-threshold-ppm 900000
+```
+
+Generation arguments are `CAMERA:INTRINSICS:EXTRINSICS`; substitute the exact generations.
+The calibration must contain the selected named cameras, complete covariance partitions and
+supported native pinhole models. Decoded image dimensions, exact camera parameter bits and
+declared homographies must agree. Retained adoption records apply with exact camera-to-sensor
+binding. Where no adoption exists, owner assertions remain labelled as such. A changed or newly
+introduced adoption invalidates the previous analysis basis and requires fresh analysis/approval.
+
+Alternatively, the ordinary `--pose` syntax supplies explicit per-camera poses labelled as
+owner arguments, without a site-calibration covariance claim. Visibility options alone screen
+the supplied homographies. With no geometry options, historical homography-only recipes,
+reports and event identities retain their existing behavior.
+
+An optional neutral scene package supplies occlusion geometry:
+
+```sh
+--scene-mesh /path/to/site.fsstwin \
+--scene-mesh-digest "${SCENE_PACKAGE_DIGEST:?supply the exact scene package digest}" \
+--scene-source-digest "${SOURCE_SCENE_DIGEST:?supply its source-scene digest}"
+```
+
+Both scene identities are checked. A supplied calibration must name the same scene coordinate
+provenance. A mesh cannot establish visibility from an unknown camera origin; supply the
+corresponding pose or calibration. Native screening checks frustum support, current privacy
+masks and available mesh visibility. Calibrated cameras also run pose covariance perturbations
+and the full camera covariance guard. Boundary ambiguity or excessive uncertainty withdraws
+support instead of relying on the nominal pose alone.
+
+Each camera reports `geometry_support`: exact geometry recipe and receipt digests,
+pose/generation/adoption provenance, scene identities, per-zone support decisions, work and
+full-camera guard counts. Actual entries remain in the observation inventory. Excluded entries
+have disposition `geometry_support_unavailable` and cannot enter cross-camera association;
+already unreliable capture-time dispositions remain explicit. Zero supported pairs does not
+establish that the zone was empty.
+
+A shared calibration or scene mesh automatically contributes a common cause to the existing
+dependency model. An admitted pair using shared geometric authority follows the existing
+witnessed-activity/`Hold` policy for shared domains. Geometry composes with trained class
+evidence and conservative sensor-health screening without adding independent votes or
+converting class scores into calibrated event probabilities.
+
+The exact calibration archive is limited to 4 MiB and scene archive to 64 MiB. Visibility uses
+2–32 samples per grid side and a threshold of 1–1,000,000 ppm. One 200-million-unit nominal/pose
+work allowance covers all zones of each camera; a separate full-camera guard has a
+64-million-unit allowance across all zones. Fixed native ceilings are bound into the immutable
+recipe. Exhaustion refuses analysis instead of replenishing the budget for each zone.
+
+Publication retains both exact archives beneath each camera root with the canonical geometry
+configuration and computed receipts. Current adoption is checked before analysis, publication
+and event commitment. Completed retries require the original retained archives and cannot
+repair missing custody from loose files. Cold `read` restores retained geometry and recomputes
+receipts under current privacy/adoption authority; explicit `verify` also reruns both original
+media scans. Loose geometry files are unnecessary for retained-event operations. Large archives
+may require larger explicit [cold metadata-read limits](long_event_replay.md).
 
 ## Add native trained class evidence
 
@@ -181,6 +254,7 @@ Focused native regression targets:
 
 ```sh
 cargo test -p fss-cli --test corroborate_stream_cli
+cargo test -p fss-cli --test corroborate_stream_geometry_cli
 cargo test -p fss-cli --test corroborate_stream_detector_cli
 cargo test -p fss-reference --test long_corroboration_contract
 ```

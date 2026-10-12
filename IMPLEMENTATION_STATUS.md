@@ -10,6 +10,36 @@ Franken Surveillance System now has a coherent, dependency-light Rust reference 
 
 It is also not a complete surveillance product. Native device adapters, production media/model/graph/storage services, persistent distributed operation, every human and agent surface, complete qualification matrices, and the aggregate release root remain open. Status below distinguishes implemented reference semantics from production completion.
 
+## Geometry support for whole-recording corroboration (2026-10-12, reference)
+
+`fss-event corroborate --stream-corroborate` accepts explicit poses, exact site calibration,
+scene meshes and visibility settings across both complete native recordings. Owner homographies
+remain the actual observation projection. The optional geometry owner checks decoded dimensions,
+native pose/homography consistency, current privacy, frustum/mesh visibility, calibrated pose
+perturbations and the full camera covariance guard. Unsupported observations stay in the
+inventory with explicit dispositions but cannot support cross-camera association. Work ceilings
+span all zones of each camera rather than replenishing per zone.
+
+Shared calibration and scene packages become declared common causes under the existing
+witnessed-activity/`Hold` policy. Exact camera parameter bits, generations and adoption receipts
+are bound into a canonical recipe. Adoption changes, including newly adopting an owner-asserted
+camera or moving a sensor to another camera, invalidate the old analysis/approval basis.
+Calibration/scene archives and native geometry receipts become camera-root custody children;
+publication checks current adoption and cannot repair a completed event's missing custody from
+loose files. Cold inspection restores archives and recomputes support under current authority;
+explicit verification additionally reruns both original pixel scans.
+
+The extension composes with whole-recording trained annotations and historical health screening.
+With no geometry options, prior recipe/report/event identities remain unchanged. Sampling and
+covariance guards are conditional support checks, not physical calibration currency, calibrated
+threat probabilities, detection recall or absence evidence. Broad site/field calibration and
+fusion qualification remain open. See [the geometry workflow](docs/long_recording_corroboration.md)
+and [cold retained-event verification](docs/long_event_replay.md).
+
+The focused process/regression targets are included in the existing supplementary native smoke
+check. Local compilation in this session exhausted shared host memory before executing the
+geometry suite; this source checkpoint does not claim a completed native or release qualification.
+
 ## Scoped Digest authentication for native RTSP capture (2026-10-12, reference)
 
 `fss-capture-rtsp` can now capture from an owner-authorized Digest camera using an
@@ -36,7 +66,10 @@ Validation passed 30 capture unit cases and 14 real-process cases on pinned
 `nightly-2026-08-31`, locked offline dependencies and debug assertions. The process
 fixtures independently verify SHA-256/SHA-256-sess responses and exercise fresh/stale
 nonces, revocation, replay/downgrade/retry refusal, secret-free retained custody and
-capture → import → cold native decode. See [capture authentication and its limits](docs/rtsp_capture_cli.md).
+capture → import → cold native decode. The exact published increment also passed the
+supplementary [RTSP smoke run](https://github.com/Dicklesworthstone/franken_surveillance_system/actions/runs/38187584523):
+109 native tests across capture, AVC/HEVC recording, payload selection and catalog custody,
+plus feature formatting and capture CLI Clippy. See [capture authentication and its limits](docs/rtsp_capture_cli.md).
 
 ## Native RTSP/AVC capture operator command (2026-10-11, reference)
 

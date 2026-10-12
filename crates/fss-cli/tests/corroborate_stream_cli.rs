@@ -392,11 +392,7 @@ fn unsupported_options_and_orphan_budgets_refuse_before_deployment_io() -> Test 
         ),
         (
             vec!["--stream-corroborate", "--retain-coverage", digest],
-            "does not admit coverage",
-        ),
-        (
-            vec!["--stream-corroborate", "--visibility-grid", "4"],
-            "does not admit coverage",
+            "does not produce coverage or absence witnesses",
         ),
         (
             vec![
@@ -405,28 +401,6 @@ fn unsupported_options_and_orphan_budgets_refuse_before_deployment_io() -> Test 
                 "/unused/model",
             ],
             "--detector-digest sha256:HEX is required",
-        ),
-        (
-            vec![
-                "--stream-corroborate",
-                "--pose",
-                "east:48,32,24,24,24,16,1,0,0,0,1,0,0,0,1,0,0,10",
-            ],
-            "pose and calibration generation options are unsupported",
-        ),
-        (
-            vec!["--stream-corroborate", "--camera-generation", "east:1:1"],
-            "pose and calibration generation options are unsupported",
-        ),
-        (
-            vec![
-                "--stream-corroborate",
-                "--calibration",
-                "/unused/calibration",
-                "--calibration-digest",
-                digest,
-            ],
-            "does not admit coverage",
         ),
         (
             vec!["--stream-corroborate", "--stream-trace-bytes", "0"],

@@ -10,7 +10,8 @@ use super::{
 use crate::ingest::RetainedFileImport;
 use crate::ingest::recorded_corroboration::CorroborationDependencyReport;
 use crate::ingest::recorded_corroboration::streaming::{
-    CAMERA_DOMAIN, LongCorroborationRecipe, MAX_LONG_CORROBORATION_RECIPE_BYTES, POLICY,
+    CAMERA_DOMAIN, LongCorroborationGeometry, LongCorroborationRecipe,
+    MAX_LONG_CORROBORATION_RECIPE_BYTES, POLICY,
 };
 use crate::ingest::recorded_watch::{WatchPlan, WatchZone};
 use crate::ingest::rgb_package::MAX_RGB_PACKAGE_BYTES;
@@ -149,8 +150,10 @@ struct CameraBinding {
     source: SourceBinding,
     detector: Option<RetainedDetector>,
     masked: BTreeSet<String>,
+    geometry_blocked: BTreeSet<String>,
 }
 
+#[allow(clippy::too_many_arguments)]
 fn camera(
     deployment: &ReferenceDeployment,
     index: usize,
@@ -160,12 +163,13 @@ fn camera(
     limits: &LongEventReplayLimits,
     reader: &mut MetadataReader,
     cx: &ReplayCx,
+    geometry: Option<&LongCorroborationGeometry>,
 ) -> Result<CameraBinding> {
     let root_bytes = objects.get(&root).ok_or(Error::InvalidRecord)?;
     let shared = manifest(
         root_bytes,
         "recorded-long-corroboration-camera-v1",
-        7 + 3 + 64 * 8,
+        7 + 3 + 2 + 64 * 8,
         false,
     )?;
     let mut selected = None;
@@ -254,7 +258,8 @@ fn camera(
     if watch_plan_digest != watch_plan.digest() {
         return Err(Error::InvalidRecord);
     }
-    let (screened, detector) = detector::extensions(&mut d, index, segments, recipe, limits, cx)?;
+    let (screened, detector, geometry_receipt) =
+        detector::extensions(&mut d, index, segments, recipe, limits, cx)?;
     if screened != recipe.health_screened() {
         return Err(Error::InvalidRecord);
     }
@@ -263,6 +268,19 @@ fn camera(
     if privacy.digest() != privacy_digest || privacy.generation() != privacy_generation {
         return Err(Error::PrivacyChanged);
     }
+    let geometry_blocked = match (geometry, geometry_receipt) {
+        (Some(geometry), Some(bytes)) => {
+            let assessment =
+                geometry.verify_assessment(recipe.plan(), index, &sensor, &privacy, &bytes, cx)?;
+            assessment
+                .blocked
+                .into_iter()
+                .map(|index| recipe.plan().zones[index].zone_id.clone())
+                .collect()
+        }
+        (None, None) => BTreeSet::new(),
+        _ => return Err(Error::InvalidRecord),
+    };
     let sensor_digest = ContentDigest::sha256(sensor.as_str().as_bytes());
     if objects.get(&sensor_digest).map(Vec::as_slice) != Some(sensor.as_str().as_bytes())
         || objects
@@ -280,6 +298,14 @@ fn camera(
         sensor_digest,
         ContentDigest::sha256(POLICY),
     ]);
+    if let Some(geometry) = recipe.geometry_recipe() {
+        expected.extend(
+            geometry
+                .archive_objects()
+                .into_iter()
+                .map(|(digest, _)| digest),
+        );
+    }
     if let Some(policy) = privacy.policy() {
         if objects.get(&policy.digest()).map(Vec::as_slice) != Some(policy.to_bytes().as_slice()) {
             return Err(Error::InvalidRecord);
@@ -330,6 +356,7 @@ fn camera(
         source,
         detector,
         masked,
+        geometry_blocked,
     })
 }
 
@@ -358,6 +385,7 @@ fn entry(
         || digest(&mut d)? != recipe.plan().cameras[index].homography.digest()
         || d.text()? != zone
         || camera.masked.contains(zone)
+        || camera.geometry_blocked.contains(zone)
     {
         return Err(Error::InvalidRecord);
     }
@@ -545,6 +573,20 @@ pub(super) fn load(
     let recipe = LongCorroborationRecipe::from_retained_bytes(&recipe_bytes, recipe_digest)?;
     admit(&recipe, limits)?;
     let association = association(association_bytes, &recipe, event)?;
+    let geometry = if let Some(geometry) = recipe.geometry_recipe() {
+        for (digest, maximum) in geometry.archive_objects() {
+            if let std::collections::btree_map::Entry::Vacant(entry) = objects.entry(digest) {
+                entry.insert(reader.read(deployment, digest, maximum, cx)?);
+            }
+        }
+        Some(LongCorroborationGeometry::from_retained_objects(
+            recipe.plan(),
+            geometry,
+            &objects,
+        )?)
+    } else {
+        None
+    };
     let mut cameras = Vec::with_capacity(2);
     for (index, root) in association.roots.iter().enumerate() {
         cameras.push(camera(
@@ -556,10 +598,22 @@ pub(super) fn load(
             limits,
             reader,
             cx,
+            geometry.as_ref(),
         )?);
     }
     if cameras[0].source.sensor == cameras[1].source.sensor {
         return Err(Error::InvalidRecord);
+    }
+    if let Some(geometry) = &geometry {
+        geometry.check_current(
+            deployment,
+            recipe.plan(),
+            &[
+                cameras[0].source.sensor.clone(),
+                cameras[1].source.sensor.clone(),
+            ],
+            cx,
+        )?;
     }
     let mut evidence = vec![EventEvidence {
         digest: identity,

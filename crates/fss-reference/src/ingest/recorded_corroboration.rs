@@ -691,6 +691,9 @@ pub enum EntryDisposition {
     /// A source gap precedes this entry, invalidating the import's frame-index capture hint.
     /// Kept as an observation but excluded from association, never promoted to corroboration.
     CaptureTimeUnreliableAfterGap,
+    /// Retained optional geometry cannot support this zone under the exact current inputs.
+    /// The actual observation is preserved, but cannot enter cross-camera association.
+    GeometrySupportUnavailable,
 }
 impl EntryDisposition {
     /// Stable spelling.
@@ -704,6 +707,7 @@ impl EntryDisposition {
             Self::Ambiguous => "ambiguous",
             Self::TimeGateUncertain => "time_gate_uncertain",
             Self::CaptureTimeUnreliableAfterGap => "capture_time_unreliable_after_gap",
+            Self::GeometrySupportUnavailable => "geometry_support_unavailable",
         }
     }
 }
@@ -1112,6 +1116,7 @@ fn associate_entries(
                     e.camera == camera
                         && e.zone_id == zone.zone_id
                         && e.disposition != EntryDisposition::CaptureTimeUnreliableAfterGap
+                        && e.disposition != EntryDisposition::GeometrySupportUnavailable
                 })
                 .map(|(index, e)| {
                     Ok((

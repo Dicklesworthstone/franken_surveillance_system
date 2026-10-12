@@ -44,9 +44,19 @@ jobs:
       - name: Existing HEVC capture and root-last publication contracts
         if: success() || failure()
         run: cargo +nightly-2026-08-31 test --locked --offline -p fss-reference --test hevc_capture_contract --test hevc_recording_publication_contract
-      - name: Native capture, retained import and cold decode contracts
+      - name: Native capture, whole-recording geometry and cold evidence contracts
         if: success() || failure()
-        run: cargo +nightly-2026-08-31 test --locked --offline -p fss-cli --bin fss-capture-rtsp --test capture_rtsp_cli
+        run: >-
+          cargo +nightly-2026-08-31 test --locked --offline -p fss-cli
+          --bin fss-capture-rtsp --test capture_rtsp_cli
+          --test corroborate_stream_geometry_cli --test corroborate_stream_cli
+          --test corroborate_stream_detector_cli --test historical_health_corroboration_cli
+          --test long_event_replay_cli
+      - name: Whole-recording association, legacy identities and native cold replay
+        if: success() || failure()
+        run: |
+          cargo +nightly-2026-08-31 test --locked --offline -p fss-reference --test long_corroboration_contract --test long_watch_contract
+          cargo +nightly-2026-08-31 test --locked --offline -p fss-reference --lib ingest::long_event_replay
       - name: Native live recording payload selection
         if: success() || failure()
         run: cargo +nightly-2026-08-31 test --locked --offline -p fss-reference --lib rtsp::live_avc::recording::tests
@@ -56,6 +66,6 @@ jobs:
       - name: Complete catalog custody and cold AVC/HEVC composition
         if: success() || failure()
         run: cargo +nightly-2026-08-31 test --locked --offline -p fss-reference --test rtsp_catalog_import_contract
-      - name: Capture CLI Clippy
+      - name: Capture and event CLI Clippy
         if: success() || failure()
-        run: cargo +nightly-2026-08-31 clippy --no-deps --locked --offline -p fss-cli --bin fss-capture-rtsp -- -D warnings
+        run: cargo +nightly-2026-08-31 clippy --no-deps --locked --offline -p fss-cli --bin fss-capture-rtsp --bin fss-event -- -D warnings

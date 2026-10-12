@@ -13,7 +13,9 @@ use fss_reference::ingest::long_watch::LongWatchDetector;
 use fss_reference::ingest::package_detect::PackageDetectLimits;
 use fss_reference::ingest::recorded_corroboration::CorroborationError;
 pub(super) use fss_reference::ingest::recorded_corroboration::streaming::LongCorroborationLimits;
-use fss_reference::ingest::recorded_corroboration::streaming::LongCorroborationReport;
+use fss_reference::ingest::recorded_corroboration::streaming::{
+    LongCorroborationGeometry, LongCorroborationReport,
+};
 use fss_reference::ingest::recorded_watch::WatchLimits;
 use fss_reference::{ReferenceDeployment, ReplayCx, ScalarExecCx};
 
@@ -145,15 +147,9 @@ pub(super) fn limits(
         }
         return Ok(None);
     }
-    if values.iter().any(|(key, _)| {
-        key == "--retain-coverage"
-            || key.starts_with("--visibility-")
-            || key.starts_with("--scene-")
-            || key.starts_with("--calibration")
-    }) {
+    if values.iter().any(|(key, _)| key == "--retain-coverage") {
         return Err(
-            "--stream-corroborate does not admit coverage, visibility, scene or calibration options"
-                .to_owned(),
+            "--stream-corroborate does not produce coverage or absence witnesses".to_owned(),
         );
     }
     let defaults = LongCorroborationLimits::default();
@@ -189,6 +185,42 @@ pub(super) fn run(
     scalar: &ScalarExecCx,
     out: &mut impl Write,
 ) -> RunResult<()> {
+    let geometry = if action.geometry_requested {
+        let (poses, mut sources, calibration, _, record) = super::resolve_poses(action)?;
+        if let Some(calibration) = calibration {
+            super::apply_adoptions(action, deployment, calibration, &mut sources, cx)?;
+        }
+        let archive = match (calibration, record) {
+            (Some(digest), Some(record)) => Some((digest, record.encode()?)),
+            (None, None) => None,
+            _ => {
+                return Err(
+                    CorroborationError::InvalidPlan("resolved calibration is incomplete").into(),
+                );
+            }
+        };
+        let scene = action
+            .mesh
+            .as_ref()
+            .map(|mesh| -> RunResult<_> {
+                Ok((
+                    mesh.package,
+                    mesh.source_scene,
+                    super::read_scene_mesh(&mesh.path)?,
+                ))
+            })
+            .transpose()?;
+        Some(LongCorroborationGeometry::new(
+            &action.plan,
+            action.policy,
+            poses,
+            super::retained_provenance(&sources, calibration),
+            archive,
+            scene,
+        )?)
+    } else {
+        None
+    };
     // The exact archive is verified once, before opening either recording. It survives only
     // this owned invocation unless an exact approved candidate retains it for cold replay.
     let package = match &action.cascade {
@@ -207,31 +239,45 @@ pub(super) fn run(
         )?),
         _ => None,
     };
-    let mut report = match &detector {
-        Some(detector) => LongCorroborationReport::analyze_with_detector(
+    let mut report = if let Some(geometry) = &geometry {
+        LongCorroborationReport::analyze_with_geometry(
             deployment,
             &action.plan,
             action.recovery,
             limits,
             &action.dependencies,
             action.health_screen.is_some(),
-            detector,
+            detector.as_ref(),
+            geometry,
             cx,
-        )?,
-        None => {
-            let analyze = if action.health_screen.is_some() {
-                LongCorroborationReport::analyze_screened
-            } else {
-                LongCorroborationReport::analyze
-            };
-            analyze(
+        )?
+    } else {
+        match &detector {
+            Some(detector) => LongCorroborationReport::analyze_with_detector(
                 deployment,
                 &action.plan,
                 action.recovery,
                 limits,
                 &action.dependencies,
+                action.health_screen.is_some(),
+                detector,
                 cx,
-            )?
+            )?,
+            None => {
+                let analyze = if action.health_screen.is_some() {
+                    LongCorroborationReport::analyze_screened
+                } else {
+                    LongCorroborationReport::analyze
+                };
+                analyze(
+                    deployment,
+                    &action.plan,
+                    action.recovery,
+                    limits,
+                    &action.dependencies,
+                    cx,
+                )?
+            }
         }
     };
     // Check every camera proposal and the complete post-retention shape before any write.
