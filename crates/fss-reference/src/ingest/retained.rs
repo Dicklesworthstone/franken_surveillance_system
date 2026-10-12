@@ -198,6 +198,7 @@ impl FileImportManifest {
         }
         if self.adapter_id == super::rtsp_import::ADAPTER
             || self.adapter_id == super::rtsp_import::catalog::ADAPTER
+            || self.adapter_id == super::rtsp_import::pages::ADAPTER
         {
             return Err(invalid(
                 "RTSP recording needs explicit original-packet resolution",
@@ -270,6 +271,17 @@ impl FileImportManifest {
                 && self
                     .adapter_generation
                     .strip_prefix(super::rtsp_import::catalog::GENERATION)
+                    .is_some_and(|hex| {
+                        hex.len() == 64
+                            && hex
+                                .bytes()
+                                .all(|b| b.is_ascii_digit() || (b'a'..=b'f').contains(&b))
+                    })
+        } else if self.adapter_id == super::rtsp_import::pages::ADAPTER {
+            matches!(self.format.as_str(), "mp4avc" | "mp4hevc")
+                && self
+                    .adapter_generation
+                    .strip_prefix(super::rtsp_import::pages::GENERATION)
                     .is_some_and(|hex| {
                         hex.len() == 64
                             && hex
@@ -801,7 +813,9 @@ impl VerifiedChunkCache {
         cx: &ReplayCx,
     ) -> Result<(), FileIngestError> {
         let budget = self.source_budget.clone();
-        if manifest.adapter_id == super::rtsp_import::catalog::ADAPTER {
+        if manifest.adapter_id == super::rtsp_import::catalog::ADAPTER
+            || manifest.adapter_id == super::rtsp_import::pages::ADAPTER
+        {
             self.rtsp_origin = None;
         } else {
             self.rtsp_catalog_origin = None;

@@ -3,6 +3,7 @@
 
 use super::super::file_adapter::{FileOmissionSpan, SegmentSpan};
 use super::catalog::{self, RtspCatalogImportRequest};
+use super::pages::{self, CatalogRequest, RtspCatalogPage};
 use super::provenance::Window;
 use super::*;
 use crate::rtsp::recording::{
@@ -141,6 +142,98 @@ impl CatalogTable {
         Ok(())
     }
 }
+
+/// Bounded metadata preflight over the exact ordered selection. Partial calls allow the importer
+/// to refuse cumulative ceilings after each page, before reading any original recording window.
+pub(super) fn selection_entries(
+    request: &CatalogRequest,
+    tables: &[CatalogTable],
+    complete: bool,
+) -> Result<Vec<CatalogEntry>, FileIngestError> {
+    request.validate().map_err(|_| corrupt("catalog request"))?;
+    if tables.is_empty()
+        || tables.len() > request.page_count()
+        || (complete && tables.len() != request.page_count())
+    {
+        return Err(corrupt("complete catalog page count"));
+    }
+    let mut entries = Vec::new();
+    let mut roots = BTreeSet::new();
+    let mut slots = BTreeSet::new();
+    let mut originals = 0_u64;
+    let mut frames = 0_usize;
+    let mut table_bytes = 0_usize;
+    let mut end = None;
+    for (index, table) in tables.iter().enumerate() {
+        let metadata = table
+            .root
+            .len()
+            .checked_add(table.index.len())
+            .ok_or_else(|| corrupt("catalog metadata overflow"))?;
+        table_bytes = table_bytes
+            .checked_add(metadata + 16)
+            .ok_or_else(|| corrupt("catalog proof table overflow"))?;
+        originals = originals
+            .checked_add(metadata as u64)
+            .ok_or_else(|| corrupt("catalog original byte overflow"))?;
+        for entry in table.entries(&request.page_request(index)?)? {
+            if end.is_some_and(|previous| previous != entry.decode_interval().start)
+                || !roots.insert(entry.root())
+                || !slots.insert(entry.slot().clone())
+            {
+                return Err(corrupt(
+                    "catalog pages repeat, overlap or have a decode gap",
+                ));
+            }
+            end = Some(entry.decode_interval().end);
+            frames = frames
+                .checked_add(entry.samples())
+                .ok_or_else(|| corrupt("catalog sample overflow"))?;
+            originals = originals
+                .checked_add(entry.byte_len() as u64)
+                .ok_or_else(|| corrupt("catalog original byte overflow"))?;
+            if entries.len() >= request.max_windows
+                || frames > request.max_frames
+                || originals > request.max_original_bytes
+            {
+                return Err(corrupt(
+                    "complete catalog selection exceeds cumulative bounds",
+                ));
+            }
+            entries.push(entry);
+        }
+        if originals > request.max_original_bytes {
+            return Err(corrupt(
+                "complete catalog metadata exceeds original byte bound",
+            ));
+        }
+    }
+    // Reserve the largest admitted window references and omission map, plus the exact request
+    // and every table's length framing. This runs before native reads and proof allocation.
+    let mut prefix = CanonicalEncoder::new();
+    prefix.text(match request {
+        CatalogRequest::Single(_) => DOMAIN,
+        CatalogRequest::Pages { .. } => pages::PROOF_DOMAIN,
+    });
+    request.encode(&mut prefix);
+    if matches!(request, CatalogRequest::Pages { .. }) {
+        prefix.u64(tables.len() as u64);
+    }
+    let maximum = prefix
+        .finish_checked()?
+        .len()
+        .checked_add(table_bytes)
+        .and_then(|n| n.checked_add(8 + entries.len() * (8 + 4096 + 4 * 41)))
+        .and_then(|n| n.checked_add(33 + 8 + 8 + frames * 81))
+        .and_then(|n| n.checked_add(8 + MAX_OMISSIONS * (8 + 8 + 8 + 256)))
+        .ok_or_else(|| corrupt("catalog proof size overflow"))?;
+    if maximum > MAX_PROOF_BYTES {
+        return Err(corrupt(
+            "complete catalog proof envelope exceeds byte ceiling",
+        ));
+    }
+    Ok(entries)
+}
 #[derive(Clone, Debug, Eq, PartialEq)]
 struct ObjectRef {
     digest: ContentDigest,
@@ -206,8 +299,8 @@ struct FrameOrigin {
     capture: CaptureInterval,
 }
 pub(super) struct CatalogProof {
-    request: RtspCatalogImportRequest,
-    table: CatalogTable,
+    request: CatalogRequest,
+    tables: Vec<CatalogTable>,
     windows: Vec<WindowReference>,
     media_digest: ContentDigest,
     media_bytes: u64,
@@ -216,15 +309,15 @@ pub(super) struct CatalogProof {
 }
 impl CatalogProof {
     pub(super) fn new(
-        request: RtspCatalogImportRequest,
-        table: CatalogTable,
+        request: CatalogRequest,
+        tables: Vec<CatalogTable>,
         windows: Vec<WindowReference>,
         media: &[u8],
         scan: &ScannedSegments,
     ) -> Result<Self, FileIngestError> {
         let value = Self {
             request,
-            table,
+            tables,
             windows,
             media_digest: ContentDigest::sha256(media),
             media_bytes: media.len() as u64,
@@ -247,10 +340,18 @@ impl CatalogProof {
     pub(super) fn encode(&self) -> Result<Vec<u8>, FileIngestError> {
         self.validate()?;
         let mut e = CanonicalEncoder::new();
-        e.text(DOMAIN);
+        e.text(match &self.request {
+            CatalogRequest::Single(_) => DOMAIN,
+            CatalogRequest::Pages { .. } => pages::PROOF_DOMAIN,
+        });
         self.request.encode(&mut e);
-        e.bytes(&self.table.root);
-        e.bytes(&self.table.index);
+        if matches!(&self.request, CatalogRequest::Pages { .. }) {
+            e.u64(self.tables.len() as u64);
+        }
+        for table in &self.tables {
+            e.bytes(&table.root);
+            e.bytes(&table.index);
+        }
         e.u64(self.windows.len() as u64);
         for window in &self.windows {
             e.bytes(&window.root);
@@ -286,7 +387,14 @@ impl CatalogProof {
             return Err(corrupt("catalog proof byte ceiling"));
         }
         let mut d = CanonicalDecoder::new(bytes);
-        if d.text()? != DOMAIN || d.text()? != "fss.rtsp_catalog_import_request.v1" {
+        let multiple = match d.text()? {
+            DOMAIN => false,
+            pages::PROOF_DOMAIN => true,
+            _ => return Err(corrupt("unknown catalog proof")),
+        };
+        if (multiple && d.text()? != pages::REQUEST_DOMAIN)
+            || d.text()? != "fss.rtsp_catalog_import_request.v1"
+        {
             return Err(corrupt("unknown catalog proof or request"));
         }
         let codec = match d.text()? {
@@ -329,11 +437,40 @@ impl CatalogProof {
             max_original_bytes: d.u64()?,
             max_media_bytes: d.u64()?,
         };
-        request.validate().map_err(|_| corrupt("catalog request"))?;
-        let table = CatalogTable {
-            root: blob(&mut d, MAX_CATALOG_BYTES)?,
-            index: blob(&mut d, MAX_CATALOG_BYTES)?,
+        let request = if multiple {
+            let max_pages = usize::try_from(d.u64()?).map_err(|_| corrupt("page ceiling"))?;
+            let n = count(&mut d, pages::MAX_PAGES - 1, 42)?;
+            let mut following = Vec::with_capacity(n);
+            for _ in 0..n {
+                following.push(RtspCatalogPage {
+                    slot: SlotName::parse(d.text()?).map_err(|_| corrupt("catalog page slot"))?,
+                    root: digest(&mut d)?,
+                });
+            }
+            CatalogRequest::Pages {
+                first: request,
+                following,
+                max_pages,
+            }
+        } else {
+            CatalogRequest::Single(request)
         };
+        request.validate().map_err(|_| corrupt("catalog request"))?;
+        let table_count = if multiple {
+            count(&mut d, pages::MAX_PAGES, 16)?
+        } else {
+            1
+        };
+        if table_count != request.page_count() {
+            return Err(corrupt("catalog proof page count differs from request"));
+        }
+        let mut tables = Vec::with_capacity(table_count);
+        for _ in 0..table_count {
+            tables.push(CatalogTable {
+                root: blob(&mut d, MAX_CATALOG_BYTES)?,
+                index: blob(&mut d, MAX_CATALOG_BYTES)?,
+            });
+        }
         let n = count(&mut d, catalog::MAX_WINDOWS, 172)?;
         let mut windows = Vec::with_capacity(n);
         for _ in 0..n {
@@ -379,7 +516,7 @@ impl CatalogProof {
         d.ensure_finished()?;
         let value = Self {
             request,
-            table,
+            tables,
             windows,
             media_digest,
             media_bytes,
@@ -395,7 +532,7 @@ impl CatalogProof {
         self.request
             .validate()
             .map_err(|_| corrupt("catalog request"))?;
-        let entries = self.table.entries(&self.request)?;
+        let entries = selection_entries(&self.request, &self.tables, true)?;
         if self.windows.len() != entries.len()
             || self.frames.len() != entries.iter().map(|e| e.samples()).sum::<usize>()
             || self.frames.is_empty()
@@ -473,11 +610,11 @@ impl CatalogProof {
         Ok(())
     }
     fn held(&self, proof_digest: ContentDigest) -> BTreeSet<ContentDigest> {
-        let mut held = BTreeSet::from([
-            proof_digest,
-            self.request.root,
-            ContentDigest::sha256(&self.table.index),
-        ]);
+        let mut held = BTreeSet::from([proof_digest]);
+        for table in &self.tables {
+            held.insert(ContentDigest::sha256(&table.root));
+            held.insert(ContentDigest::sha256(&table.index));
+        }
         for w in &self.windows {
             held.insert(ContentDigest::sha256(&w.root));
             held.extend(w.objects.iter().map(|o| o.digest));
@@ -490,17 +627,19 @@ impl CatalogProof {
         cx: &ReplayCx,
         reserve: &mut dyn FnMut(u64) -> Result<(), FileIngestError>,
     ) -> Result<Vec<u8>, FileIngestError> {
-        let entries = self.table.entries(&self.request)?;
-        for expected in [&self.table.root, &self.table.index] {
-            if read_original(
-                deployment,
-                ContentDigest::sha256(expected),
-                expected.len() as u64,
-                cx,
-                reserve,
-            )? != *expected
-            {
-                return Err(corrupt("retained native catalog differs"));
+        let entries = selection_entries(&self.request, &self.tables, true)?;
+        for table in &self.tables {
+            for expected in [&table.root, &table.index] {
+                if read_original(
+                    deployment,
+                    ContentDigest::sha256(expected),
+                    expected.len() as u64,
+                    cx,
+                    reserve,
+                )? != *expected
+                {
+                    return Err(corrupt("retained native catalog differs"));
+                }
             }
         }
         let mut media = Vec::new();
@@ -573,7 +712,7 @@ impl CatalogProof {
         }
         let rebuilt = Self::new(
             self.request.clone(),
-            self.table.clone(),
+            self.tables.clone(),
             self.windows.clone(),
             &media,
             &scan,
@@ -614,12 +753,14 @@ fn blob(d: &mut CanonicalDecoder<'_>, maximum: usize) -> Result<Vec<u8>, FileIng
 fn selected_digest(
     manifest: &FileImportManifest,
 ) -> Result<Option<ContentDigest>, FileIngestError> {
-    if manifest.adapter_id != catalog::ADAPTER {
-        return Ok(None);
-    }
+    let prefix = match manifest.adapter_id.as_str() {
+        catalog::ADAPTER => catalog::GENERATION,
+        pages::ADAPTER => pages::GENERATION,
+        _ => return Ok(None),
+    };
     let hex = manifest
         .adapter_generation
-        .strip_prefix(catalog::GENERATION)
+        .strip_prefix(prefix)
         .filter(|h| h.len() == 64)
         .ok_or_else(|| corrupt("catalog adapter generation"))?;
     Ok(Some(ContentDigest::parse(&format!("sha256:{hex}"))?))
@@ -757,6 +898,8 @@ pub(crate) fn verify_membership(
     };
     let proof = proof(deployment, digest, cx, &mut |_| Ok(()))?;
     if !proof.held(digest).is_subset(held)
+        || manifest.adapter_id != proof.request.adapter()
+        || manifest.adapter_generation != format!("{}{}", proof.request.generation(), hex(digest))
         || hex(proof
             .request
             .identity()
@@ -772,7 +915,7 @@ pub(crate) fn verify_membership(
         || manifest.chunk_bytes != CHUNK_BYTES as u64
         || manifest.format != proof.request.codec.format().as_str()
         || manifest.capture_time_label != proof.request.time_label()
-        || manifest.detector_evidence != catalog::EVIDENCE
+        || manifest.detector_evidence != proof.request.evidence()
         || manifest.segment_spans.len() != proof.frames.len()
         || manifest.omission_spans != proof.omissions
     {

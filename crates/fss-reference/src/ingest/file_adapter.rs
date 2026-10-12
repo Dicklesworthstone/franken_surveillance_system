@@ -3100,6 +3100,7 @@ impl FileIngestAdapter {
     ) -> Result<Vec<u8>, FileIngestError> {
         if manifest.adapter_id == super::rtsp_import::ADAPTER
             || manifest.adapter_id == super::rtsp_import::catalog::ADAPTER
+            || manifest.adapter_id == super::rtsp_import::pages::ADAPTER
         {
             return Err(FileIngestError::CorruptSegment {
                 detail: "RTSP originals require context-bound RetainedFileImport::read_segment"

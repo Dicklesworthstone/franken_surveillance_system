@@ -8,6 +8,7 @@
 
 pub mod catalog;
 mod catalog_provenance;
+pub mod pages;
 mod provenance;
 mod publication;
 

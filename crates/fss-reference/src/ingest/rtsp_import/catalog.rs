@@ -5,7 +5,8 @@
 //! retained MP4 preserves all samples across archive windows, so whole-recording perception need not
 //! reset its tracker every 256 frames. This proves neither physical coverage nor a capture clock.
 
-use super::catalog_provenance::{CatalogProof, CatalogTable, WindowReference};
+use super::catalog_provenance::{CatalogProof, CatalogTable, WindowReference, selection_entries};
+use super::pages::CatalogRequest;
 use super::publication::{PublicationInput, publish_import};
 use super::*;
 use crate::rtsp::recording_catalog::{CatalogScope, MAX_CATALOG_WINDOWS};
@@ -172,14 +173,13 @@ pub struct RtspCatalogImportReceipt {
 }
 
 struct CatalogAccess<'a> {
-    request: &'a RtspCatalogImportRequest,
     destination: &'a ReferenceDeployment,
-    authority: &'a dyn RtspCatalogImportAuthority,
+    permit: &'a dyn Fn(&ReferenceDeployment) -> bool,
     cx: &'a ReplayCx,
 }
 impl PublishCancellation for CatalogAccess<'_> {
     fn cancel_requested(&self, _: PublishCutPoint) -> bool {
-        checkpoint(self.cx).is_err() || !self.authority.permit(self.request, self.destination)
+        checkpoint(self.cx).is_err() || !(self.permit)(self.destination)
     }
 }
 
@@ -195,6 +195,26 @@ pub fn import_rtsp_catalog(
     cx: &ReplayCx,
     work: &mut WorkBudget<'_>,
 ) -> Result<RtspCatalogImportReceipt, RtspImportError> {
+    import_selection(
+        publisher,
+        destination,
+        &CatalogRequest::Single(request.clone()),
+        &|current| authority.permit(request, current),
+        cx,
+        work,
+    )
+}
+
+/// Common complete-selection pipeline. The versioned request owns every identity-sensitive
+/// operation; native verification and the root-last publisher are shared without weaker gates.
+pub(super) fn import_selection(
+    publisher: &LocalRootPublisher,
+    destination: &mut ReferenceDeployment,
+    request: &CatalogRequest,
+    permit: &dyn Fn(&ReferenceDeployment) -> bool,
+    cx: &ReplayCx,
+    work: &mut WorkBudget<'_>,
+) -> Result<RtspCatalogImportReceipt, RtspImportError> {
     request.validate()?;
     if cx.root_dir() != destination.root()
         || publisher.root_dir().starts_with(destination.root())
@@ -206,22 +226,31 @@ pub fn import_rtsp_catalog(
     }
     let authorize = |current: &ReferenceDeployment| {
         checkpoint(cx)?;
-        if !authority.permit(request, current) {
+        if !permit(current) {
             return Err(RtspImportError::Denied);
         }
         Ok(())
     };
     authorize(destination)?;
-    work.charge(super::MAX_ORIGINAL_BYTES)
-        .map_err(source_error)?;
+    work.charge(request.catalog_work()?).map_err(source_error)?;
     let access = CatalogAccess {
-        request,
         destination,
-        authority,
+        permit,
         cx,
     };
-    let table = CatalogTable::load(publisher, request, &access)?;
-    let entries = table.entries(request)?;
+    let mut tables = Vec::with_capacity(request.page_count());
+    for index in 0..request.page_count() {
+        authorize(destination)?;
+        tables.push(CatalogTable::load(
+            publisher,
+            &request.page_request(index)?,
+            &access,
+        )?);
+        // Check the cumulative proof/source/count envelope after each bounded metadata read.
+        // No native window or destination staging can begin on an oversized partial selection.
+        selection_entries(request, &tables, false)?;
+    }
+    let entries = selection_entries(request, &tables, true)?;
     let frames: usize = entries.iter().map(|e| e.samples()).sum();
     let interval = entries
         .first()
@@ -235,13 +264,15 @@ pub fn import_rtsp_catalog(
             .end;
     let mut media = Vec::new();
     let mut payloads = BTreeMap::new();
-    table.insert_payloads(&mut payloads);
+    for table in &tables {
+        table.insert_payloads(&mut payloads);
+    }
     let mut windows = Vec::with_capacity(entries.len());
     let mut initialization = None;
+    work.charge(request.window_work(entries.len())?)
+        .map_err(source_error)?;
     for (ordinal, entry) in entries.iter().enumerate() {
         authorize(destination)?;
-        work.charge(super::MAX_ORIGINAL_BYTES)
-            .map_err(source_error)?;
         let single = RtspImportRequest {
             codec: request.codec,
             slot: entry.slot().clone(),
@@ -320,7 +351,7 @@ pub fn import_rtsp_catalog(
             "complete continuous catalog sample map",
         ));
     }
-    let proof = CatalogProof::new(request.clone(), table, windows, &media, &scan)?;
+    let proof = CatalogProof::new(request.clone(), tables, windows, &media, &scan)?;
     let imported = publish_import(
         destination,
         cx,
@@ -329,9 +360,9 @@ pub fn import_rtsp_catalog(
             identity: request.identity()?,
             limits_digest: request.digest()?,
             codec: request.codec,
-            adapter: ADAPTER,
-            generation: GENERATION,
-            detector_evidence: EVIDENCE,
+            adapter: request.adapter(),
+            generation: request.generation(),
+            detector_evidence: request.evidence(),
             capture_time_label: request.time_label(),
             frames,
             proof: proof.encode()?,

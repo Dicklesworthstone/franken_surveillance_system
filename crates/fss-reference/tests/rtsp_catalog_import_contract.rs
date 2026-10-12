@@ -3,6 +3,8 @@
 //! These synthetic packets qualify source closure and continuity, not camera or detector accuracy.
 
 mod hevc_recording_support;
+#[path = "rtsp_catalog_import_contract/pages.rs"]
+mod pages;
 mod recording_support;
 
 use fss_core::region::{ContextAuthority, RootAuthoritySpec};
@@ -86,6 +88,7 @@ fn context(root: &Path) -> Test<ReplayCx> {
             "CAP-OBJECT-PUBLISH-001".into(),
             "CAP-RETENTION-COMMIT-001".into(),
             "CAP-DELETE-PREPARE-001".into(),
+            "CAP-DELETE-COMMIT-001".into(),
         ],
         deadline: None,
         priority: 10,
@@ -270,6 +273,20 @@ impl Fixture {
         plans: &[&PreparedRecording],
         page: Page,
     ) -> Test<Self> {
+        Ok(Self::from_catalogs(label, codec, plans, vec![page])?.0)
+    }
+    fn from_catalogs(
+        label: &str,
+        codec: RtspImportCodec,
+        plans: &[&PreparedRecording],
+        pages: Vec<Page>,
+    ) -> Test<(
+        Self,
+        Vec<fss_reference::ingest::rtsp_import::pages::RtspCatalogPage>,
+    )> {
+        let first = pages.first().ok_or("catalog page")?;
+        let first_root = first.manifest().root();
+        let scope = first.scope().clone();
         let directory = Directory::new(label)?;
         let mut source = LocalRootPublisher::open(directory.0.join("archive"), archive_limits())?;
         let mut originals = BTreeMap::new();
@@ -281,8 +298,10 @@ impl Fixture {
             .objects()
             .initialization
             .len();
-        let mut original_bytes =
-            (page.manifest().canonical_bytes().len() + page.index().len()) as u64;
+        let mut original_bytes = pages
+            .iter()
+            .map(|page| (page.manifest().canonical_bytes().len() + page.index().len()) as u64)
+            .sum();
         let mut mp4 = Vec::new();
         for (index, plan) in plans.iter().enumerate() {
             let mut job =
@@ -314,17 +333,29 @@ impl Fixture {
             mp4[start + 20..start + 24].copy_from_slice(&u32::try_from(index + 1)?.to_be_bytes());
         }
         let catalog_slot = SlotName::parse("whole-catalog")?;
-        page.publish(&mut source, catalog_slot.clone())?;
-        originals.insert(page.manifest().root(), page.manifest().canonical_bytes());
-        originals.insert(ContentDigest::sha256(page.index()), page.index().to_vec());
+        let mut pins = Vec::with_capacity(pages.len());
+        for (index, page) in pages.into_iter().enumerate() {
+            let slot = if index == 0 {
+                catalog_slot.clone()
+            } else {
+                SlotName::parse(&format!("whole-catalog-{index}"))?
+            };
+            page.publish(&mut source, slot.clone())?;
+            pins.push(fss_reference::ingest::rtsp_import::pages::RtspCatalogPage {
+                slot,
+                root: page.manifest().root(),
+            });
+            originals.insert(page.manifest().root(), page.manifest().canonical_bytes());
+            originals.insert(ContentDigest::sha256(page.index()), page.index().to_vec());
+        }
         let root = directory.0.join("destination");
         let cx = context(&root)?;
         let target = ReferenceDeployment::open(&root, SITE, &cx)?;
         let request = RtspCatalogImportRequest {
             codec,
             slot: catalog_slot,
-            root: page.manifest().root(),
-            scope: page.scope().clone(),
+            root: first_root,
+            scope,
             receive_time: TimestampNs(1_000_000_000_000),
             capture_origin: Some(RtspCaptureOrigin {
                 start_ns: TimestampNs(1_000_000_000),
@@ -335,19 +366,22 @@ impl Fixture {
             max_original_bytes: MAX_ORIGINAL_BYTES,
             max_media_bytes: MAX_MEDIA_BYTES,
         };
-        Ok(Self {
-            directory,
-            source: Some(source),
-            target: Some(target),
-            cx,
-            request,
-            originals,
-            original_packs,
-            original_fragments,
-            initialization_bytes,
-            original_bytes,
-            mp4,
-        })
+        Ok((
+            Self {
+                directory,
+                source: Some(source),
+                target: Some(target),
+                cx,
+                request,
+                originals,
+                original_packs,
+                original_fragments,
+                initialization_bytes,
+                original_bytes,
+                mp4,
+            },
+            pins,
+        ))
     }
     fn target(&self) -> Test<&ReferenceDeployment> {
         self.target.as_ref().ok_or_else(|| "target closed".into())
@@ -425,9 +459,13 @@ fn three_hundred_twenty_native_frames_remain_one_cold_decodable_watch_range() ->
     assert_eq!(result.windows, 2);
     assert_eq!(result.import.frames, 320);
     assert_eq!(result.decode_interval, 0..320 * 3600);
+    assert_long_cold_watch(f, result, ADAPTER)
+}
+
+fn assert_long_cold_watch(mut f: Fixture, result: RtspCatalogImportReceipt, adapter: &str) -> Test {
     f.verify_fragment_remux(&result)?;
     let retained = f.retained(&result)?;
-    assert_eq!(retained.manifest().adapter_id, ADAPTER);
+    assert_eq!(retained.manifest().adapter_id, adapter);
     assert_eq!(
         retained.manifest().input_sha256,
         ContentDigest::sha256(&f.mp4)
