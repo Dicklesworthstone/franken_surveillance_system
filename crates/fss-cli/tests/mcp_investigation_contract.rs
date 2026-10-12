@@ -526,7 +526,10 @@ impl Agent {
         }
         assert_eq!(snapshot(&native_root)?, input);
         let mcp = self.inspect()?;
-        assert_eq!(raw_payload(&mcp.semantic)?, raw_payload(&previous.semantic)?);
+        assert_eq!(
+            raw_payload(&mcp.semantic)?,
+            raw_payload(&previous.semantic)?
+        );
         assert_eq!(mcp.fingerprint()?, previous.fingerprint()?);
         let args: Vec<OsString> = vec![
             "investigate".into(),
@@ -564,8 +567,7 @@ impl Agent {
             after.inspection.root
         );
         assert!(
-            texts(&mcp.envelope, &["proofPointers"])?
-                .contains(&after.inspection.root.to_text()),
+            texts(&mcp.envelope, &["proofPointers"])?.contains(&after.inspection.root.to_text()),
             "both complete responses must prove the independently replayed post-call root"
         );
         // One command witness is appended; session authority, workspace state and every

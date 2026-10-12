@@ -43,7 +43,12 @@ fn quoted_end(bytes: &[u8], start: usize) -> Result<usize> {
 fn next_piece(text: &str, at: usize) -> Result<usize> {
     let bytes = text.as_bytes();
     if bytes[at] != b'\\' {
-        return Ok(at + text[at..].chars().next().ok_or("missing scalar")?.len_utf8());
+        return Ok(at
+            + text[at..]
+                .chars()
+                .next()
+                .ok_or("missing scalar")?
+                .len_utf8());
     }
     match bytes.get(at + 1) {
         Some(b'u') => {
@@ -167,7 +172,10 @@ pub(super) fn parse_response(line: &str) -> Result<Value> {
     {
         return Err("unexpected MCP text item".into());
     }
-    item.insert("text".to_owned(), Value::Text(decode_text(&line[start..end])?));
+    item.insert(
+        "text".to_owned(),
+        Value::Text(decode_text(&line[start..end])?),
+    );
     Ok(response)
 }
 
@@ -260,7 +268,10 @@ mod tests {
             format!("{valid} trailing"),
             valid.replace(r#""id":2"#, r#""id":2,"id":3"#),
             valid.replace(r#""type":"text""#, r#""type":"image""#),
-            valid.replace(r#""text":"unchanged""#, r#""text":"unchanged","text":"other""#),
+            valid.replace(
+                r#""text":"unchanged""#,
+                r#""text":"unchanged","text":"other""#,
+            ),
             valid.replace(r#""isError":false"#, r#""isError":false,"extra":null"#),
             valid.replace(r#""id":2"#, r#""id":{"text":"outside-content"}"#),
         ] {
@@ -277,7 +288,11 @@ mod tests {
         );
         assert!(parse_response(&wrapper("2", &format!("\"{maximum}x\""))).is_err());
         assert!(
-            parse_response(&wrapper(&format!("\"{}\"", "i".repeat(65_537)), r#""small""#)).is_err()
+            parse_response(&wrapper(
+                &format!("\"{}\"", "i".repeat(65_537)),
+                r#""small""#
+            ))
+            .is_err()
         );
         let initialization =
             r#"{"jsonrpc":"2.0","id":1,"result":{"protocolVersion":"2025-06-18"}}"#;
