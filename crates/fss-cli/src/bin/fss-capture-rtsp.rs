@@ -14,6 +14,8 @@ mod driver;
 mod plan;
 #[path = "fss-capture-rtsp/reconnect.rs"]
 mod reconnect;
+#[path = "fss-capture-rtsp/single.rs"]
+mod single;
 #[path = "fss-capture-rtsp/timing.rs"]
 mod timing;
 
@@ -27,24 +29,23 @@ fn main() -> ExitCode {
     }
     if args.len() == 1 && matches!(args[0].to_str(), Some("help" | "--help" | "-h")) {
         return match write_bounded(plan::HELP.as_bytes()).and_then(|()| {
-            write_bounded(b"\nBounded reconnects: fss-capture-rtsp reconnect --help\n")
+            write_bounded(single::HELP.as_bytes()).and_then(|()| {
+                write_bounded(b"\nBounded reconnects: fss-capture-rtsp reconnect --help\n")
+            })
         }) {
             Ok(()) => ExitCode::SUCCESS,
             Err(_) => ExitCode::from(ExitIdentity::RUNTIME_FAILURE.code),
         };
     }
-    let options = match plan::Options::parse(&args) {
+    let mut options = match single::SinglePlan::parse(&args) {
         Ok(options) => options,
         Err(reason) => {
             eprintln!("ERR-CAPTURE-RTSP-ARGUMENT-001: {reason}; use --help");
             return ExitCode::from(ExitIdentity::MALFORMED_VALUE.code);
         }
     };
-    let result = if let Some(approval) = options.approve {
-        match options.digest() {
-            Ok(expected) if approval == expected => driver::execute(&options),
-            _ => Err("ERR-CAPTURE-RTSP-APPROVAL-001"),
-        }
+    let result = if options.approved() {
+        options.execute()
     } else {
         options
             .preview()

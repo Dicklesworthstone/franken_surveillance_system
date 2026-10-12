@@ -44,7 +44,10 @@ impl AttemptOutcome {
             || stats.pending_source_only_nals != 0
             || stats.indexed_windows != stats.durable_windows
             || (stats.snapshot_digest.is_none() && !work_never_started);
-        let retry = if recovery_required {
+        // Socket retirement can transfer a queued or partly dispatched control request.
+        // A normal archive drain settles media custody, not that remote request.
+        // Preserve the native result and reporting; do not authorize a successor.
+        let retry = if recovery_required || stats.pending_request {
             None
         } else {
             match result {
@@ -216,4 +219,26 @@ mod tests {
             assert!(outcome.retry.is_none());
         }
     }
+
+    #[test]
+    fn pending_control_blocks_each_retry_reason_without_claiming_storage_damage() {
+        for failure in [
+            Failure::ConnectionUnavailable,
+            Failure::Shortfall,
+            Failure::ProgressStalled,
+        ] {
+            let mut stats = ended();
+            stats.collected_pictures = stats.durable_pictures;
+            stats.connection_attempted = true;
+            stats.remote_session_may_exist = true;
+            assert!(AttemptOutcome::new(Err(failure), &stats).retry.is_some());
+            stats.pending_request = true;
+            let outcome = AttemptOutcome::new(Err(failure), &stats);
+            assert!(outcome.retry.is_none(), "{failure:?}");
+            assert!(!outcome.recovery_required);
+            assert_eq!(outcome.result, Err(failure.code()));
+            assert_eq!(outcome.durable_pictures, stats.durable_pictures);
+        }
+    }
+
 }

@@ -11,8 +11,28 @@ fss-capture-rtsp reconnect [ordinary capture options] \
 Run without `--approve` first, inspect the complete preview, and repeat with its
 **outer** approval. Use `--max-attempts 1` to supervise without reconnecting.
 `--progress-timeout-ms` is optional and accepts 1 through 600000 milliseconds.
-Omitting it preserves the existing reconnect approval bytes and behavior. Ordinary
-single-attempt capture is unchanged and does not accept this new option.
+Omitting it preserves the existing reconnect approval bytes and behavior.
+
+Ordinary single-attempt capture also accepts the same optional limit:
+
+```text
+fss-capture-rtsp [ordinary capture options] --progress-timeout-ms 5000
+```
+
+This uses the same native AVC/HEVC observer and seal/drain path but never retries.
+The exact `--root` and `--pins` paths and source identities are preserved; there are
+no attempt suffixes or generated epochs. Without the option, the ordinary preview,
+approval and execution are byte-for-byte unchanged.
+
+With the option, the pure preview uses `fss.rtsp_supervised_capture_cli.v1`. Its
+`capture` child is the complete unchanged native capture plan. Inspect both levels
+and approve only the outer `approval`. The outer identity uses the existing
+`fss.rtsp_capture_cli_plan.v1` domain with the distinct
+`single-capture:owner-progress-supervision:no-reconnect:v1` policy tag, then the
+shared observer policy, timeout and complete child approval. An unsupervised child
+approval cannot authorize supervision; a supervised approval cannot authorize a
+legacy or reconnect plan. Execution emits the usual native `started` and
+`recording_supervision` rows binding the child and outer approvals respectively.
 
 ## What is measured
 
@@ -59,7 +79,11 @@ attempt limit, capped backoff, fresh destinations and recovery vetoes still appl
 An unsupervised controller refuses this new retry reason.
 
 Pending candidate pins, uncertain acknowledgements, pending windows, unindexed
-windows or unpublished prepared work block another connection. A failure while
+windows or unpublished prepared work block another connection. Any outstanding
+control request reported by native socket/session retirement also blocks retry,
+even after a normal archive drain. That is control uncertainty, not a claim of
+storage damage; inspect the native terminal report. A remote session that may still
+exist without a pending request does not by itself block a safe retry. A failure while
 sealing, authenticating, publishing, draining or flushing output overrides the
 stall result and remains a failure. In particular, buffered/unoffered native work
 that prevents a safe seal can terminate with its original refusal and explicit
