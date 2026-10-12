@@ -46,6 +46,10 @@ use crate::reference_deployment::{
     FAMILY_SENSOR_CAPSULE,
 };
 
+/// Maximum event inventory admitted by the status profile. Its read budget is independent of
+/// the larger catalogue supported by orientation and paged query operations.
+pub const MAX_STATUS_EVENTS: usize = 128;
+
 /// Limits on additional inventory work, independent of orientation's own bounded reads.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct StatusLimits {
@@ -64,7 +68,10 @@ pub struct StatusLimits {
 impl Default for StatusLimits {
     fn default() -> Self {
         Self {
-            snapshot: OrientLimits::default(),
+            snapshot: OrientLimits {
+                max_events: MAX_STATUS_EVENTS,
+                ..OrientLimits::default()
+            },
             max_objects: 65_536,
             max_capsules: 16_384,
             max_streams: 1024,
@@ -622,7 +629,7 @@ fn validate_limits(limits: &StatusLimits) -> Result<(), StatusError> {
         || limits.snapshot.max_object_bytes == 0
         || limits.snapshot.max_object_bytes > 16 * 1024 * 1024
         || limits.snapshot.max_events == 0
-        || limits.snapshot.max_events > 128
+        || limits.snapshot.max_events > MAX_STATUS_EVENTS
         || limits.snapshot.max_revisions_per_event == 0
         || limits.snapshot.max_revisions_per_event > 64
     {
@@ -886,6 +893,48 @@ mod tests {
     };
 
     type TestResult = Result<(), Box<dyn std::error::Error>>;
+
+    #[test]
+    fn default_status_profile_reaches_cancellation_without_widening_its_event_budget() {
+        // The larger orientation default must not make an ordinary status request invalid
+        // before the first read. Cancellation here also proves that no host I/O is needed.
+        let limits = StatusLimits::default();
+        assert_eq!(limits.snapshot.max_events, 128);
+        let mut checkpoints = 0;
+        let result = inspect_deployment_status_with(
+            &HostStatusReadIo,
+            Path::new("status-profile-must-not-be-read"),
+            &limits,
+            &mut || {
+                checkpoints += 1;
+                Err(StatusError::Cancelled)
+            },
+        );
+        assert!(matches!(result, Err(StatusError::Cancelled)));
+        assert_eq!(checkpoints, 1);
+
+        // An explicitly enlarged status request still refuses before the checkpoint and I/O.
+        for max_events in [129, usize::MAX] {
+            let oversized = StatusLimits {
+                snapshot: OrientLimits {
+                    max_events,
+                    ..limits.snapshot
+                },
+                ..limits
+            };
+            let result = inspect_deployment_status_with(
+                &HostStatusReadIo,
+                Path::new("status-profile-must-not-be-read"),
+                &oversized,
+                &mut || {
+                    checkpoints += 1;
+                    Err(StatusError::Cancelled)
+                },
+            );
+            assert!(matches!(result, Err(StatusError::OverBudget)));
+            assert_eq!(checkpoints, 1);
+        }
+    }
 
     fn capsule(
         name: &str,
