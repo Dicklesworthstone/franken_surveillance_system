@@ -48,6 +48,39 @@ fn records(bytes: &[u8]) -> (Vec<Vec<u8>>, bool) {
     (out, false)
 }
 
+/// Independent Annex-B start-code split (canonical trailing-zero padding trim),
+/// mirroring media_fixture_h264_contract::split_annexb_start_codes.
+fn split_annexb_start_codes(bytes: &[u8]) -> Vec<Vec<u8>> {
+    let mut codes: Vec<(usize, usize)> = Vec::new();
+    let mut i = 0;
+    while i < bytes.len() {
+        if bytes[i..].len() >= 4 && bytes[i..].starts_with(&[0, 0, 0, 1]) {
+            codes.push((i, 4));
+            i += 4;
+        } else if bytes[i..].len() >= 3 && bytes[i..].starts_with(&[0, 0, 1]) {
+            codes.push((i, 3));
+            i += 3;
+        } else {
+            i += 1;
+        }
+    }
+    codes
+        .iter()
+        .enumerate()
+        .map(|(index, &(begin, len))| {
+            let start = begin + len;
+            let end = codes
+                .get(index + 1)
+                .map_or(bytes.len(), |&(next_begin, _)| next_begin);
+            let mut nal_end = end;
+            while nal_end > start && bytes[nal_end - 1] == 0 {
+                nal_end -= 1;
+            }
+            bytes[start..nal_end].to_vec()
+        })
+        .collect()
+}
+
 #[test]
 fn test_media_fixture_xcheck_with_fss_packet() -> Result<(), Box<dyn Error>> {
     let repo_root = root()?;
@@ -242,11 +275,15 @@ fn test_non_default_params_gop_smaller_than_frame_count_nal_equivalence()
             }
         }
 
-        let annex: Vec<Vec<u8>> = annexb.nals.iter().map(|n| n.wire_bytes.clone()).collect();
+        // Independent ground truth: split the annexb bytes ourselves.
+        let annex: Vec<Vec<u8>> = split_annexb_start_codes(&annexb.bytes);
         assert_eq!(
             delivered, annex,
             "exact NAL equivalence failed for non-default params frame_count={frame_count}, gop_size={gop_size}"
         );
     }
+    println!(
+        r#"CAPLOG {{"step": "media_fixture_xcheck_nal_equivalence", "verdict": "pass", "configs": 3}}"#
+    );
     Ok(())
 }

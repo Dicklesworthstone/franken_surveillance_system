@@ -1195,7 +1195,9 @@ const GOLDEN_TENSOR_DIGESTS: &[(&str, &str)] = &[
     ),
     (
         "brown_luma_q100.jpg",
-        "sha256:a32e3dc74c6ecf9d33129f4fd40fbf1fc3725ec0fcd01e0ccf1109fbdb26f725",
+        // [fss-l0azz regen 2026-10-12] the regenerated fixture (generator unchanged
+        // here; see the jpeg pin note) decodes to this tensor digest.
+        "sha256:a90b339449686d4b20d73e3221e3b375bd312d8359108636e193e0ecce7a291f",
     ),
     (
         "brown_luma_qfix.jpg",

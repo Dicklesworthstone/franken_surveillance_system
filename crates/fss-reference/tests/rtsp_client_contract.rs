@@ -576,18 +576,25 @@ fn signaled_profile_must_match_exact_sps_profile_constraints_and_level() -> Test
 }
 
 #[test]
-fn probe_each_sdp_mutation_tmp() -> TestResult {
+fn each_sdp_mutation_has_an_exact_verdict() -> TestResult {
+    // [fss-l0azz] Pinned verdicts (previously a print-only probe): every mutation
+    // is a typed Description refusal, except an additional unused payload type on
+    // the m= line, which leaves payload 96 the sole negotiated H264 PT and is
+    // accepted. Any verdict change here is a semantic regression.
     let original = sdp();
     let mutations = [
-        ("m=audio", original.replace("m=video", "m=audio")),
-        ("clock 8000", original.replace("90000", "8000")),
+        ("m=audio", original.replace("m=video", "m=audio"), false),
+        ("clock 8000", original.replace("90000", "8000"), false),
         (
             "mode=2",
             original.replace("packetization-mode=1", "packetization-mode=2"),
+            false,
         ),
+        // An extra unused payload type leaves 96 the sole negotiated H264 PT.
         (
             "two payloads",
             original.replace("RTP/AVP 96", "RTP/AVP 96 97"),
+            true,
         ),
         (
             "dup control",
@@ -595,6 +602,7 @@ fn probe_each_sdp_mutation_tmp() -> TestResult {
                 "a=control:trackID=0",
                 "a=control:trackID=0\r\na=control:trackID=1",
             ),
+            false,
         ),
         (
             "dup mode",
@@ -602,6 +610,7 @@ fn probe_each_sdp_mutation_tmp() -> TestResult {
                 "packetization-mode=1",
                 "packetization-mode=1;packetization-mode=0",
             ),
+            false,
         ),
         (
             "dup rtpmap",
@@ -609,9 +618,10 @@ fn probe_each_sdp_mutation_tmp() -> TestResult {
                 "a=rtpmap:96 H264/90000",
                 "a=rtpmap:96 H264/90000\r\na=rtpmap:96 H264/90000",
             ),
+            false,
         ),
     ];
-    for (label, body) in mutations {
+    for (label, body, expect_ok) in mutations {
         let mut c = RtspClientSession::new(config())?;
         c.request(C::Describe, 0)?;
         let verdict = c.accept(
@@ -623,7 +633,11 @@ fn probe_each_sdp_mutation_tmp() -> TestResult {
             ),
             1,
         );
-        println!("mutation {label}: {verdict:?}");
+        let accepted = matches!(verdict, Ok(P::Accepted(S::Described)));
+        assert_eq!(
+            accepted, expect_ok,
+            "mutation {label}: verdict drifted to {verdict:?}"
+        );
     }
     Ok(())
 }

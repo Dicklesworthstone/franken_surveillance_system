@@ -826,7 +826,10 @@ fn test_pinned_fixture_sha256_literals() -> Result<(), Box<dyn Error>> {
         ),
         (
             "brown_luma_q100.jpg",
-            "5ebad3f16a863de160d58cf2d6164707f367abd6a217580f2637e7320bef56cb",
+            // [fss-l0azz regen 2026-10-12] the committed generator emits 166478bb...;
+            // the old pin predates a generator change whose fixtures were never
+            // regenerated on main (jpeg suite was red there: 2 failures).
+            "166478bb3ad4f1aa373b244194bafed96ccd68984dd046c371924c2563a5125a",
         ),
         (
             "brown_luma_qfix.jpg",

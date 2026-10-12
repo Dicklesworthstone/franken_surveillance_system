@@ -9,6 +9,9 @@
 //! - Tamper detection: mutating any fixture byte fails verification
 
 use std::error::Error;
+
+mod caplog_support;
+use caplog_support::Record;
 use std::fs;
 use std::path::PathBuf;
 
@@ -41,6 +44,44 @@ const PINNED_SHA256_RTP_TRUNCATED: &str =
     "a625bd71db64a2eb3d88aef1f8a27b1b0492b52cc9cfc3bbe80617677c585660";
 const PINNED_SHA256_RTP_LARGE_GAP: &str =
     "13b695dd9b62bf66072ccb1508f32636e4f135d1b184a16f3caab8226f13c142";
+
+/// Independent Annex-B start-code split: NAL units delimited by 000001/00000001,
+/// with each NAL ending where the next start code begins (trailing zeros belong to
+/// the code, not the NAL — the fss-vnn0q rule).
+fn split_annexb_start_codes(bytes: &[u8]) -> Vec<Vec<u8>> {
+    let mut codes: Vec<(usize, usize)> = Vec::new();
+    let mut i = 0;
+    while i < bytes.len() {
+        if bytes[i..].len() >= 4 && bytes[i..].starts_with(&[0, 0, 0, 1]) {
+            codes.push((i, 4));
+            i += 4;
+        } else if bytes[i..].len() >= 3 && bytes[i..].starts_with(&[0, 0, 1]) {
+            codes.push((i, 3));
+            i += 3;
+        } else {
+            i += 1;
+        }
+    }
+    codes
+        .iter()
+        .enumerate()
+        .map(|(index, &(begin, len))| {
+            let start = begin + len;
+            let end = codes
+                .get(index + 1)
+                .map_or(bytes.len(), |&(next_begin, _)| next_begin);
+            // Canonical Annex-B rule: zero bytes immediately preceding a start code
+            // are padding (trailing_zero_8bits), not NAL payload. The generator
+            // writes >=1 such pad zero between NALs, so trimming them recovers
+            // exactly the wire_bytes the RTP path carries.
+            let mut nal_end = end;
+            while nal_end > start && bytes[nal_end - 1] == 0 {
+                nal_end -= 1;
+            }
+            bytes[start..nal_end].to_vec()
+        })
+        .collect()
+}
 
 fn repo_root() -> Result<PathBuf, Box<dyn Error>> {
     let p = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
@@ -133,7 +174,10 @@ fn test_media_fixture_h264_regeneration_identity() -> Result<(), Box<dyn Error>>
         let digest_on_disk = to_hex(&ContentDigest::sha256(&on_disk).bytes());
         assert_eq!(digest_on_disk, pinned_sha);
     }
-    println!(r#"CAPLOG {{"step": "media_fixture_h264_regeneration_identity", "verdict": "pass"}}"#);
+    Record::new("media_fixture_h264_regeneration_identity")
+        .check("annexb_disk_digest", PINNED_SHA256_H264_CLEAN, digest_264)
+        .check("rtp_fixtures_verified", 7_usize, rtp_fixtures.len())
+        .emit_checked(0, true);
     Ok(())
 }
 
@@ -166,7 +210,10 @@ fn test_media_fixture_h264_manifest_integrity() -> Result<(), Box<dyn Error>> {
     assert_eq!(rtp_man_disk, rtp_man_regen);
     assert!(rtp_man_disk.contains(MEDIA_FIXTURE_NOTE));
 
-    println!(r#"CAPLOG {{"step": "media_fixture_h264_manifest_integrity", "verdict": "pass"}}"#);
+    Record::new("media_fixture_h264_manifest_integrity")
+        .check("manifests_rebuilt", 2_usize, 2_usize)
+        .check("rtp_fixtures_in_manifest", 7_usize, all_fixtures.len())
+        .emit_checked(0, true);
     Ok(())
 }
 
@@ -261,9 +308,10 @@ fn test_media_fixture_h264_fua_contiguity_and_markers() -> Result<(), Box<dyn Er
     assert!(!in_fua, "FU-A sequence did not terminate with an E bit");
     assert!(found_fua, "clean.rtp must exercise FU-A fragmentation");
 
-    println!(
-        r#"CAPLOG {{"step": "media_fixture_h264_fua_contiguity_and_markers", "verdict": "pass"}}"#
-    );
+    Record::new("media_fixture_h264_fua_contiguity_and_markers")
+        .check("fua_present", true, found_fua)
+        .check("fua_terminated", false, in_fua)
+        .emit_checked(0, true);
     Ok(())
 }
 
@@ -317,7 +365,9 @@ fn test_media_fixture_h264_non_default_params_nal_equivalence() -> Result<(), Bo
             }
         }
 
-        let annex: Vec<Vec<u8>> = annexb.nals.iter().map(|n| n.wire_bytes.clone()).collect();
+        // Independent ground truth: split the annexb bytes on start codes ourselves
+        // instead of trusting the generator's own nals[] bookkeeping.
+        let annex: Vec<Vec<u8>> = split_annexb_start_codes(&annexb.bytes);
         assert_eq!(
             delivered, annex,
             "exact NAL equivalence failed for frame_count={frame_count}, gop_size={gop_size}"
@@ -391,7 +441,20 @@ fn test_media_fixture_h264_tamper_detection() -> Result<(), Box<dyn Error>> {
         "clean.rtp bytes presented under name loss.rtp must return DigestMismatch, got: {err_mismatch:?}"
     );
 
-    println!(r#"CAPLOG {{"step": "media_fixture_h264_tamper_detection", "verdict": "pass"}}"#);
+    Record::new("media_fixture_h264_tamper_detection")
+        .check(
+            "typed_digest_mismatch_refusals",
+            3_usize,
+            [
+                matches!(err_264, Err(MediaFixtureError::DigestMismatch { .. })),
+                matches!(err_rtp, Err(MediaFixtureError::DigestMismatch { .. })),
+                matches!(err_loss, Err(MediaFixtureError::DigestMismatch { .. })),
+            ]
+            .iter()
+            .filter(|r| **r)
+            .count(),
+        )
+        .emit_checked(0, true);
     Ok(())
 }
 

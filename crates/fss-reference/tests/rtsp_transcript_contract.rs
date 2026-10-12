@@ -29,8 +29,10 @@ use fss_reference::media_fixture::{
 use fss_reference::rtsp::{AuthScheme, RtspError, RtspEvent, RtspParser, parse_sdp};
 
 /// Pinned SHA-256 literal for clean.transcript.
+// [fss-l0azz, 2026-10-12] Setup responses now bind ssrc=<media SSRC> so the
+// shipped RtspAvcClient can replay these transcripts; digests moved accordingly.
 pub const PINNED_SHA256_CLEAN: &str =
-    "a265c7464216eb8f9998817b0a8afd1220fcf36c7e1a1a6f9de7e47a5146e494";
+    "76466b3c4a20de1026920697eff2c240a0c25d82056e8d85ef9edde905389b07";
 
 /// Pinned SHA-256 literal for auth_required.transcript.
 pub const PINNED_SHA256_AUTH_REQUIRED: &str =
@@ -38,7 +40,7 @@ pub const PINNED_SHA256_AUTH_REQUIRED: &str =
 
 /// Pinned SHA-256 literal for interleave_split.transcript.
 pub const PINNED_SHA256_INTERLEAVE_SPLIT: &str =
-    "ae13c17254847e55544d93b9e946e1fbb00042b3ca12e79935d01d17ef54b6e2";
+    "3dd594eba7ed5b98cc62ed8b33997dd4cc932be3e698d849cae364b6c683bbf5";
 
 /// Pinned SHA-256 literal for bad_content_length.transcript.
 pub const PINNED_SHA256_BAD_CONTENT_LENGTH: &str =
@@ -46,19 +48,19 @@ pub const PINNED_SHA256_BAD_CONTENT_LENGTH: &str =
 
 /// Pinned SHA-256 literal for session_timeout_header.transcript.
 pub const PINNED_SHA256_SESSION_TIMEOUT: &str =
-    "191ecaccf1c96839ef267f3a6b31d6b7d6b33e56df252dad8a809bdf5d9ef83a";
+    "481aa6ed4c62e7a56cdcff42cb179907c7647bfe6e4118066393e6b2d1b78f1a";
 
 /// Pinned SHA-256 literal for rtcp_rsize.transcript.
 pub const PINNED_SHA256_RTCP_RSIZE: &str =
-    "d6591ba199ea6c2c00deeb0105516b6097ee3048d412b1770397632b6a850609";
+    "8f268b4232377deaf4f0a84b93200d62d5a67b0bb3076dacad2b2bdef8e0bc11";
 
 /// Pinned SHA-256 literal for sr_absent.transcript.
 pub const PINNED_SHA256_SR_ABSENT: &str =
-    "c3b8e0539f636a59ed38748cace11281ace7b4a91f7a2e228d73b800980adde8";
+    "8cb42ac5fa03fe84945e5a9fed073400c0b17003cf200cf6396e75a60ef52242";
 
 /// Pinned SHA-256 literal for get_parameter_keepalive.transcript.
 pub const PINNED_SHA256_GET_PARAMETER: &str =
-    "3b227c656c2dd75b2f750aceef0319c4e3d97585ceae66be836a558c8f8fed3a";
+    "dc8440930c7c94b044c850144743e51a50db95cb87d2b12c00fb9adb6d30b759";
 
 fn get_repo_root() -> Result<PathBuf, &'static str> {
     PathBuf::from(env!("CARGO_MANIFEST_DIR"))
@@ -802,12 +804,17 @@ fn parser_ten_thousand_mutations_never_panic() -> Result<(), Box<dyn Error>> {
             }
         }
     }
-    assert!(!s2c_stream.is_empty(), "no S2C bytes found in committed transcripts");
+    assert!(
+        !s2c_stream.is_empty(),
+        "no S2C bytes found in committed transcripts"
+    );
 
     // Simple LCG — fixed seed, no external RNG.
     let mut state: u64 = 0x5F3A_7C2D_1B9E_4086;
     let mut next = || {
-        state = state.wrapping_mul(6_364_136_223_846_793_005).wrapping_add(1_442_695_040_888_963_407);
+        state = state
+            .wrapping_mul(6_364_136_223_846_793_005)
+            .wrapping_add(1_442_695_040_888_963_407);
         state >> 33
     };
 
@@ -875,5 +882,421 @@ fn parser_ten_thousand_mutations_never_panic() -> Result<(), Box<dyn Error>> {
         nondeterministic, 0,
         "identical mutants produced different outcomes {nondeterministic} times"
     );
+    Ok(())
+}
+
+/// [fss-l0azz] First-party base64 decode for the sprop equality proof (no external crate).
+fn decode_base64(input: &str) -> Result<Vec<u8>, Box<dyn Error>> {
+    const TABLE: &[u8; 64] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+    let mut out = Vec::with_capacity(input.len() * 3 / 4);
+    let mut buffer = 0_u32;
+    let mut bits = 0_u32;
+    for ch in input.bytes() {
+        if ch == b'=' {
+            break;
+        }
+        let value = TABLE
+            .iter()
+            .position(|&t| t == ch)
+            .ok_or_else(|| format!("invalid base64 character {ch:?}"))? as u32;
+        buffer = (buffer << 6) | value;
+        bits += 6;
+        if bits >= 8 {
+            bits -= 8;
+            out.push(((buffer >> bits) & 0xff) as u8);
+        }
+    }
+    Ok(out)
+}
+
+/// [fss-l0azz] The SDP sprop-parameter-sets in the transcript must be byte-equal to the
+/// SPS/PPS NAL units of the FIXH264 annexb fixture the transcript carries — independently
+/// re-extracted here from the committed .264 by start-code scanning (not via the generator).
+#[test]
+fn sdp_sprop_parameter_sets_equal_fixh264_nal_bytes() -> Result<(), Box<dyn Error>> {
+    let repo_root = get_repo_root()?;
+
+    // Independent extraction: scan the committed annexb stream for NAL types 7 (SPS) and 8 (PPS).
+    let annexb = fs::read(repo_root.join("tests/fixtures/media/h264/clean.264"))?;
+    let mut sps: Option<Vec<u8>> = None;
+    let mut pps: Option<Vec<u8>> = None;
+    // Exact start-code scan: collect (begin, len) for every 000001/00000001 code,
+    // then each NAL spans (begin+len, next_begin) so trailing start codes are trimmed.
+    let mut codes: Vec<(usize, usize)> = Vec::new();
+    let mut i = 0;
+    while i < annexb.len() {
+        if annexb[i..].len() >= 4 && annexb[i..].starts_with(&[0, 0, 0, 1]) {
+            codes.push((i, 4));
+            i += 4;
+        } else if annexb[i..].len() >= 3 && annexb[i..].starts_with(&[0, 0, 1]) {
+            codes.push((i, 3));
+            i += 3;
+        } else {
+            i += 1;
+        }
+    }
+    assert!(!codes.is_empty(), "no annexb start codes found");
+    for (index, &(begin, len)) in codes.iter().enumerate() {
+        let start = begin + len;
+        let end = codes
+            .get(index + 1)
+            .map_or(annexb.len(), |&(next_begin, _)| next_begin);
+        let nal = &annexb[start..end];
+        match nal[0] & 0x1f {
+            7 if sps.is_none() => sps = Some(nal.to_vec()),
+            8 if pps.is_none() => pps = Some(nal.to_vec()),
+            _ => {}
+        }
+    }
+    let sps = sps.ok_or("no SPS NAL found in clean.264")?;
+    let pps = pps.ok_or("no PPS NAL found in clean.264")?;
+
+    // Pull the sprop pair out of the transcript's DESCRIBE SDP.
+    let transcript = parse_transcript(&fs::read(
+        repo_root.join("tests/fixtures/media/rtsp/clean.transcript"),
+    )?)?;
+    let mut s2c = Vec::new();
+    for r in &transcript {
+        if r.direction == TranscriptDirection::ServerToClient {
+            s2c.extend_from_slice(&r.bytes);
+        }
+    }
+    let s2c_str = String::from_utf8_lossy(&s2c);
+    let fmtp = s2c_str
+        .lines()
+        .find(|l| l.starts_with("a=fmtp:") && l.contains("sprop-parameter-sets="))
+        .ok_or("no sprop-parameter-sets in transcript SDP")?;
+    let value = fmtp
+        .split("sprop-parameter-sets=")
+        .nth(1)
+        .ok_or("malformed sprop line")?
+        .trim();
+    let (sps_b64, pps_b64) = value
+        .split_once(',')
+        .ok_or("sprop-parameter-sets must carry SPS,PPS")?;
+
+    assert_eq!(
+        decode_base64(sps_b64)?,
+        sps,
+        "SDP SPS must be byte-equal to the FIXH264 SPS NAL"
+    );
+    assert_eq!(
+        decode_base64(pps_b64)?,
+        pps,
+        "SDP PPS must be byte-equal to the FIXH264 PPS NAL"
+    );
+    Ok(())
+}
+
+/// [fss-l0azz] SR mutation findings: wrong SSRC, zero NTP and a missing CNAME are each
+/// typed refusals at the layer that owns the check — SenderReportClock binding for SSRC/NTP,
+/// compound-mode RTCP parsing for the CNAME.
+#[test]
+fn sender_report_mutations_are_typed_refusals() -> Result<(), Box<dyn Error>> {
+    use fss_packet::ContinuityError;
+
+    let repo_root = get_repo_root()?;
+    let transcript = parse_transcript(&fs::read(
+        repo_root.join("tests/fixtures/media/rtsp/clean.transcript"),
+    )?)?;
+    let mut parser = RtspParser::new();
+    let mut rtcp_frames = Vec::new();
+    for r in &transcript {
+        if r.direction == TranscriptDirection::ServerToClient {
+            for event in parser.feed(&r.bytes)? {
+                if let RtspEvent::Interleaved { channel: 1, span } = event {
+                    rtcp_frames.push(span);
+                }
+            }
+        }
+    }
+    let frame = rtcp_frames
+        .first()
+        .ok_or("no RTCP frame in clean.transcript")?;
+    let compound = RtcpCompound::parse(frame, PacketLimits::default(), RtcpMode::Compound)?;
+    let sr = compound
+        .packets()
+        .next()
+        .and_then(|p| p.sender_report())
+        .ok_or("first packet must be SenderReport")?;
+
+    let valid_key = StreamKey {
+        ingress: 1,
+        generation: 1,
+        ssrc: sr.ssrc,
+    };
+    let bind = |report: fss_packet::SenderReport, key: StreamKey| {
+        SenderReportClock::new(key, 90_000, report, 1_000_000_000, 10_000_000, 90_000 * 10)
+    };
+    assert!(bind(sr, valid_key).is_ok(), "unmutated SR must bind");
+
+    // Wrong SSRC: a key from another owner epoch is a typed StreamMismatch.
+    let wrong_key = StreamKey {
+        ingress: 1,
+        generation: 1,
+        ssrc: sr.ssrc ^ 0xffff,
+    };
+    match bind(sr, wrong_key) {
+        Err(ContinuityError::StreamMismatch) => {}
+        other => return Err(format!("wrong SSRC must be StreamMismatch, got {other:?}").into()),
+    }
+
+    // Zero NTP (seconds AND fraction): a typed NoSenderReport, never a zero clock.
+    let mut zero_ntp = sr;
+    zero_ntp.ntp.seconds = 0;
+    zero_ntp.ntp.fraction = 0;
+    match bind(zero_ntp, valid_key) {
+        Err(ContinuityError::NoSenderReport) => {}
+        other => return Err(format!("zero NTP must be NoSenderReport, got {other:?}").into()),
+    }
+
+    // Missing CNAME: the SR without its SDES tail is refused in Compound mode and
+    // accepted in ReducedSize mode (which is exactly the negotiated distinction).
+    let sr_alone = &frame[..28.min(frame.len())];
+    assert!(
+        RtcpCompound::parse(sr_alone, PacketLimits::default(), RtcpMode::Compound).is_err(),
+        "compound mode must refuse an SR with no SDES CNAME"
+    );
+    assert!(
+        RtcpCompound::parse(sr_alone, PacketLimits::default(), RtcpMode::ReducedSize).is_ok(),
+        "reduced-size mode accepts a bare SR by design"
+    );
+    Ok(())
+}
+
+/// [fss-l0azz] RTP NAL equivalence: every channel-0 interleaved RTP datagram in
+/// clean.transcript must be byte-identical to the corresponding RTP datagram in
+/// the committed clean.rtp rtpdump fixture — the RTSP interleaved path and the
+/// rtpdump import path carry the same wire packets, independently decoded here.
+#[test]
+fn transcript_interleaved_rtp_equals_rtpdump_datagrams() -> Result<(), Box<dyn Error>> {
+    let repo_root = get_repo_root()?;
+
+    // Channel-0 RTP payloads from the transcript.
+    let transcript = parse_transcript(&fs::read(
+        repo_root.join("tests/fixtures/media/rtsp/clean.transcript"),
+    )?)?;
+    let mut parser = RtspParser::new();
+    let mut rtp_wire: Vec<Vec<u8>> = Vec::new();
+    for r in &transcript {
+        if r.direction == TranscriptDirection::ServerToClient {
+            for event in parser.feed(&r.bytes)? {
+                if let RtspEvent::Interleaved { channel: 0, span } = event {
+                    rtp_wire.push(span.to_vec());
+                }
+            }
+        }
+    }
+    assert!(!rtp_wire.is_empty(), "no channel-0 RTP in clean.transcript");
+
+    // RTP datagrams from the committed rtpdump file: 10-byte header ("#!/rtpdump1.0\n"
+    // core), then per-packet 8-byte record headers (offset_usec u16 BE, len u16 BE,
+    // payload_len u32 BE) followed by the RTP datagram.
+    let rtpdump = fs::read(repo_root.join("tests/fixtures/media/rtp/clean.rtp"))?;
+    let magic = b"#!rtpplay1.0 0.0.0.0/0\n";
+    assert!(rtpdump.starts_with(magic), "rtpdump magic");
+    let mut dump_wire: Vec<Vec<u8>> = Vec::new();
+    // Skip the header line plus the 16-byteAddress/Port records: the generator layout is
+    // magic + (u16 len)(u16 len)(u32 sec)(u32 usec) address/port block, then packets.
+    // Robust approach: walk length-prefixed packet records scanning from after magic+16.
+    let mut pos = magic.len();
+    // Header remainder: address family + port records per the generator (16 bytes).
+    pos += 16;
+    // RD_packet_t: u16 record_length (8 + rtp_len), u16 plen (rtp_len), u16 offset,
+    // u16 padding — then the RTP datagram itself.
+    while pos + 8 <= rtpdump.len() {
+        let plen = u16::from_be_bytes([rtpdump[pos + 2], rtpdump[pos + 3]]) as usize;
+        pos += 8;
+        if pos + plen > rtpdump.len() {
+            break;
+        }
+        dump_wire.push(rtpdump[pos..pos + plen].to_vec());
+        pos += plen;
+    }
+    assert_eq!(
+        rtp_wire, dump_wire,
+        "transcript interleaved RTP must equal the rtpdump import datagrams"
+    );
+    Ok(())
+}
+
+/// [fss-l0azz] Replay the clean transcript through the SHIPPED client: the client
+/// issues Describe/Setup/Play itself, the transcript's server stream (responses in
+/// order, then interleaved media) is fed through `ingest`, and the exact
+/// control/event sequence is asserted. The Setup response now binds the media SSRC
+/// (`ssrc=287454020` = 0x11223344), which is what makes the shipped owner-binding
+/// client able to consume the finished fixture.
+#[test]
+fn clean_transcript_replays_through_the_shipped_client() -> Result<(), Box<dyn Error>> {
+    use fss_packet::avc::AvcReceiveLimits;
+    use fss_reference::rtsp::avc_client::{AvcClientPoll as P, RtspAvcClient};
+    use fss_reference::rtsp::client::{
+        ClientCommand as C, ClientConfig, ClientProgress, ClientState as S,
+    };
+
+    let repo_root = get_repo_root()?;
+    let transcript = parse_transcript(&fs::read(
+        repo_root.join("tests/fixtures/media/rtsp/clean.transcript"),
+    )?)?;
+    let mut server_stream = Vec::new();
+    for r in &transcript {
+        if r.direction == TranscriptDirection::ServerToClient {
+            server_stream.extend_from_slice(&r.bytes);
+        }
+    }
+
+    let config = ClientConfig {
+        presentation_uri: "rtsp://fixture.invalid/stream".into(),
+        control_root_uri: "rtsp://fixture.invalid/stream".into(),
+        media_index: 0,
+        channels: (0, 1),
+        response_timeout_ns: 10_000_000_000,
+        default_session_timeout_seconds: 60,
+    };
+    let key = StreamKey {
+        ingress: 1,
+        generation: 1,
+        ssrc: 0x1122_3344,
+    };
+    let mut client = RtspAvcClient::new(config, key, AvcReceiveLimits::default())?;
+
+    // Full verbatim exchange: OPTIONS -> DESCRIBE -> SETUP -> PLAY, then media, then
+    // TEARDOWN. The transcript's server bytes arrive in order, fed in MAX_CHUNK-sized
+    // slices (the client's real transport contract — bounded segments, never a whole
+    // capture at once).
+    let mut fed = 0usize;
+    let mut now = 1u64;
+    fn feed_upto(
+        client: &mut RtspAvcClient,
+        stream: &[u8],
+        fed: &mut usize,
+        upto: usize,
+        now: u64,
+    ) -> Result<(), Box<dyn Error>> {
+        while *fed < upto {
+            let end = (*fed + 4_096).min(upto);
+            client.ingest(&stream[*fed..end], now)?;
+            *fed = end;
+        }
+        Ok(())
+    }
+    // Byte offsets where each of the first four responses (OPTIONS/DESCRIBE/SETUP/PLAY)
+    // ends, honoring Content-Length bodies: headers end at CRLFCRLF, then the body adds
+    // its declared length. Interleaved media and the TEARDOWN response follow.
+    fn response_end(stream: &[u8], from: usize) -> Option<usize> {
+        let header_end = from + stream[from..].windows(4).position(|w| w == b"\r\n\r\n")? + 4;
+        let headers = std::str::from_utf8(&stream[from..header_end]).ok()?;
+        let content_length: usize = headers
+            .lines()
+            .find_map(|l| l.strip_prefix("Content-Length:"))
+            .and_then(|v| v.trim().parse().ok())
+            .unwrap_or(0);
+        Some(header_end + content_length)
+    }
+    let mut response_ends = Vec::new();
+    let mut cursor = 0usize;
+    for _ in 0..4 {
+        let end = response_end(&server_stream, cursor)
+            .ok_or("response boundary not found in transcript")?;
+        response_ends.push(end);
+        cursor = end;
+    }
+    assert_eq!(
+        response_ends.len(),
+        4,
+        "expected OPTIONS/DESCRIBE/SETUP/PLAY responses"
+    );
+
+    client.request(C::Options, now)?;
+    now += 1;
+    feed_upto(&mut client, &server_stream, &mut fed, response_ends[0], now)?;
+    assert!(matches!(
+        client.poll(now)?,
+        P::Control(ClientProgress::Accepted(_))
+    ));
+    now += 1;
+
+    client.request(C::Describe, now)?;
+    now += 1;
+    feed_upto(&mut client, &server_stream, &mut fed, response_ends[1], now)?;
+    assert!(matches!(
+        client.poll(now)?,
+        P::Control(ClientProgress::Accepted(S::Described))
+    ));
+    now += 1;
+
+    client.request(C::Setup, now)?;
+    now += 1;
+    feed_upto(&mut client, &server_stream, &mut fed, response_ends[2], now)?;
+    assert!(matches!(
+        client.poll(now)?,
+        P::Control(ClientProgress::Accepted(S::Ready))
+    ));
+    now += 1;
+
+    client.request(C::Play, now)?;
+    now += 1;
+    feed_upto(&mut client, &server_stream, &mut fed, response_ends[3], now)?;
+    assert!(matches!(
+        client.poll(now)?,
+        P::Control(ClientProgress::Accepted(S::Playing))
+    ));
+    now += 1;
+
+    // The remainder is interleaved media, then the TEARDOWN response. Media streams
+    // first (draining between chunks — the client's ingest refuses while events pend);
+    // the teardown response is fed only after the client itself requests Teardown.
+    let teardown_offset = server_stream
+        .windows(24)
+        .position(|w| w.starts_with(b"RTSP/1.0 200 OK\r\nCSeq: 5"))
+        .ok_or("teardown response not found in transcript")?;
+    let mut rtp_frames = 0usize;
+    let mut rtcp_frames = 0usize;
+    while fed < teardown_offset {
+        let end = (fed + 4_096).min(teardown_offset);
+        client.ingest(&server_stream[fed..end], now)?;
+        fed = end;
+        for _ in 0..2_048 {
+            match client.poll(now)? {
+                P::Pending { wake_at_ns } if wake_at_ns.is_none_or(|at| at > now) => break,
+                P::Backpressure { .. } | P::Ended { .. } => break,
+                P::Rtp { .. } => rtp_frames += 1,
+                P::Rtcp { .. } => rtcp_frames += 1,
+                P::Control(_) | P::Media(_) => {}
+                P::Pending { .. } => break,
+                P::Fault { reason, .. } => {
+                    return Err(format!(
+                        "transcript replay faulted at fed={fed} now={now} teardown_at={teardown_offset} total={}: {reason:?}", server_stream.len()
+                    )
+                    .into());
+                }
+            }
+        }
+    }
+    // Close the session from the client side, then feed the teardown response.
+    client.request(C::Teardown, now)?;
+    now += 1;
+    while fed < server_stream.len() {
+        let end = (fed + 4_096).min(server_stream.len());
+        client.ingest(&server_stream[fed..end], now)?;
+        fed = end;
+        for _ in 0..2_048 {
+            match client.poll(now)? {
+                P::Pending { wake_at_ns } if wake_at_ns.is_none_or(|at| at > now) => break,
+                P::Backpressure { .. } | P::Ended { .. } | P::Pending { .. } => break,
+                P::Rtp { .. } => rtp_frames += 1,
+                P::Rtcp { .. } => rtcp_frames += 1,
+                P::Control(_) | P::Media(_) => {}
+                P::Fault { reason, .. } => {
+                    return Err(format!("teardown replay faulted: {reason:?}").into());
+                }
+            }
+        }
+    }
+    assert!(matches!(client.state(), S::Closed));
+    // The clean transcript carries 15 RTP datagrams on channel 0 (the full clean.rtp
+    // set — pinned by the rtpdump-equivalence test) and 3 RTCP compounds on channel 1.
+    assert_eq!(rtp_frames, 15, "RTP frames delivered to the client");
+    assert_eq!(rtcp_frames, 3, "RTCP frames delivered to the client");
     Ok(())
 }
