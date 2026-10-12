@@ -38,6 +38,11 @@ use super::authentication::{CredentialLease, Entropy, MAX_CREDENTIAL_BYTES, Secr
 use super::plan::Options;
 use super::timing::FixedTiming;
 
+#[path = "attempt.rs"]
+mod attempt;
+pub(super) use attempt::AttemptOutcome;
+#[cfg(test)]
+pub(super) use attempt::RetryReason;
 #[path = "hevc_driver.rs"]
 mod hevc;
 #[path = "report.rs"]
@@ -59,6 +64,7 @@ enum Failure {
     Root,
     Storage,
     Connect,
+    ConnectionUnavailable,
     Authentication,
     AuthenticationRefused,
     Credentials,
@@ -79,7 +85,7 @@ impl Failure {
             Self::Approval => "ERR-CAPTURE-RTSP-APPROVAL-001",
             Self::Root => "ERR-CAPTURE-RTSP-ROOT-001",
             Self::Storage => "ERR-CAPTURE-RTSP-STORAGE-001",
-            Self::Connect => "ERR-CAPTURE-RTSP-CONNECT-001",
+            Self::Connect | Self::ConnectionUnavailable => "ERR-CAPTURE-RTSP-CONNECT-001",
             Self::Authentication => "ERR-CAPTURE-RTSP-AUTH-UNSUPPORTED-001",
             Self::AuthenticationRefused => "ERR-CAPTURE-RTSP-AUTH-REFUSED-001",
             Self::Credentials => "ERR-CAPTURE-RTSP-CREDENTIAL-001",
@@ -107,7 +113,7 @@ impl Failure {
             Self::Output => "output_failure",
             Self::Root | Self::Storage => "storage_failure",
             Self::Authority | Self::Approval => "authority_refused",
-            Self::Connect => "connection_failure",
+            Self::Connect | Self::ConnectionUnavailable => "connection_failure",
             Self::Configuration | Self::State => "configuration_or_state_refused",
             Self::Protocol => "protocol_failure",
         }
@@ -1107,6 +1113,17 @@ fn run_owned<W: Write>(
             stats.connection_attempted = error.connection_attempted;
             match error.reason {
                 JournaledLiveArchiveError::Pins(_) => Failure::Storage,
+                JournaledLiveArchiveError::Live(LiveArchiveError::Recording(error))
+                    if matches!(
+                        error.as_ref(),
+                        LiveRecordingError::Network(LiveAvcError::Transport(TcpError::Io {
+                            operation: TcpOperation::Connect,
+                            kind: io::ErrorKind::ConnectionRefused
+                                | io::ErrorKind::ConnectionReset
+                                | io::ErrorKind::ConnectionAborted
+                                | io::ErrorKind::TimedOut,
+                        }))
+                    ) => Failure::ConnectionUnavailable,
                 _ => Failure::Connect,
             }
         })?;
@@ -1125,6 +1142,12 @@ fn run_owned<W: Write>(
 }
 
 pub(super) fn execute(options: &Options) -> Result<(), &'static str> {
+    execute_attempt(options)?.result
+}
+
+/// Only returns a retry observation after closing the socket, transferring retirements,
+/// finalizing the attempt context and successfully flushing the complete terminal report.
+pub(super) fn execute_attempt(options: &Options) -> Result<AttemptOutcome, &'static str> {
     let approval = options.digest()?;
     if options.approve != Some(approval) {
         return Err(Failure::Approval.code());
@@ -1216,5 +1239,5 @@ pub(super) fn execute(options: &Options) -> Result<(), &'static str> {
     let result = run_owned(options, &authority, start, &mut stats, &mut log);
     log.emit("terminal", terminal(options, &stats, &result), true)
         .map_err(Failure::code)?;
-    result.map_err(Failure::code)
+    Ok(AttemptOutcome::new(result, &stats))
 }

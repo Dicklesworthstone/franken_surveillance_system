@@ -4,12 +4,16 @@ ae4300d6a620dfb1d51468715059a781d6d34d3db97398718fe784724364e7fc  IMPLEMENTATION
 4f4dcc47302b39562ac4279f6bbec8fc16d958de829e1517121013d707fc2f9c  README.md
 2c65140a8d2b959cf73d4eeda6ea9851c547de64fc780356f62de02a6a82121d  crates/fss-cli/src/bin/fss-archive/pins.rs
 20a29ce8c44e1a218373a72c9d3716ea45cf83260e822275178a6360416aa7a2  crates/fss-cli/src/bin/fss-archive/work.rs
-8c6ded13b4aa30f54f5af423a86007b1e1a1024d991fa91ad2f157a984e1947a  crates/fss-cli/src/bin/fss-capture-rtsp/driver.rs
+4c45a391ec00038ccf68b9891d3a81f3036fb92a3245b6c83e7cc4e2c871f2dd  crates/fss-cli/src/bin/fss-capture-rtsp.rs
+86d4f11a264e281bf1dce8e1c0df431368eea0e9447f2a69e95b9a5f4a3f68dd  crates/fss-cli/src/bin/fss-capture-rtsp/attempt.rs
+907aaaa8423c8f50f69962f18acfa235278ee3e19df2304042518b88e52cdae3  crates/fss-cli/src/bin/fss-capture-rtsp/driver.rs
 7cfffb29d55fe61b61cccfd92b911929a877fb62bf28d23c54135a9900d93193  crates/fss-cli/src/bin/fss-capture-rtsp/hevc_driver.rs
 aebdbb8a1dc002179c4faa4ab8b28ec19b7e126c31fe057b3eaff14395c4c804  crates/fss-cli/src/bin/fss-capture-rtsp/hevc_plan.rs
 86e66bd9b1a67d389d066ce036cab3b12bdb2b17dea75e06c6a8fdcd5e2cda17  crates/fss-cli/src/bin/fss-capture-rtsp/hevc_report.rs
 7a21c92124d160a59cfa1770d95a12b9e1aef0530c8c13de5f6af58ef4655968  crates/fss-cli/src/bin/fss-capture-rtsp/plan.rs
 613c6a3e6cc78ae534a486724031f87292bf860065e4d1fb5d6391cb1106d823  crates/fss-cli/src/bin/fss-capture-rtsp/plan_tests.rs
+7f686a6abcad0617932a8a89b687f46f2ed4512f63ff18d59678a8a6fc72af8b  crates/fss-cli/src/bin/fss-capture-rtsp/reconnect.rs
+3b9b33db8b1ae6d3b081c165f7d92ba47c2a14c3d24831f10bc7ccc429fb5371  crates/fss-cli/src/bin/fss-capture-rtsp/reconnect_tests.rs
 a1f4dbf6b7358b8b16045c4e89f175c8782707e5cdc58dda846bb2bf4a7d727d  crates/fss-cli/src/bin/fss-capture-rtsp/report.rs
 051d7e9efa0f514eed82892eaf1c62da7b30b26c0902dcde29e47ae58d3b33dd  crates/fss-cli/src/bin/fss-capture-rtsp/timing.rs
 0a62a9c1061cb0b05413f1dcacb6dfd766604f880ee2f99fbff4008333354212  crates/fss-cli/src/bin/fss-mcp.rs
@@ -66,6 +70,7 @@ bb290afa1ce1772a8334dc13a00f91a43a73338eb6be9dbe0f3254315962a2a7  crates/fss-ref
 6cdc682df7e76fdfe12def77f1ef0fab4017bc2e13d97cb55d24ee086ec366f5  docs/recorded_hevc_replay.md
 33c19e5fe1f02ac0f376b9e7b1a10cac42166ae132062aabd824a472c08cdb74  docs/reference_session_persistence.md
 9492144d3699e8433125b175e29ba067f9014c529c2b1bd086c68a4cde01da30  docs/rtsp_capture_cli.md
+08fe931a53e7cba1fa7ce757bc77f51671176f655851aca1baccc9e8ac06fd55  docs/rtsp_reconnect_cli.md
 c92a1e5c5d1964abb3b1b25cb8468c952c8785348490d6c50ff4caa190d784d5  docs/rtsp_recording_import.md
 45cd03fe8fb69815e90de19043b740ea7ab6abd1424fd611de25a529097ffc0a  registries/DIGEST_DOMAINS.md
 3ca952f7baec835e8650b89b0b6bb66b051be8c0465e60c19490e6ed3e4d1e77  tests/test_schema_validate.py
