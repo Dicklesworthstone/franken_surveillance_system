@@ -37,6 +37,8 @@ use crate::orient_cmd::{
 };
 use crate::token::ArgToken;
 
+mod wait;
+
 /// Registered error identity: the `--since` anchor names another deployment.
 pub const ERR_AGENT_FOLLOW_ANCHOR_FOREIGN: &str = "ERR-AGENT-FOLLOW-ANCHOR-FOREIGN-001";
 /// Registered error identity: the `--since` anchor lies past the committed head.
@@ -65,6 +67,8 @@ pub struct FollowArgs {
     pub max_entries: u32,
     /// Exact continuation token of the page to deliver.
     pub continuation: Option<String>,
+    /// Optional bounded wall wait on a certified quiet exact head; never a subscription.
+    pub wait_ms: Option<u64>,
 }
 
 fn malformed(option: &str, value: &str, reason: &str, index: usize) -> CliError {
@@ -91,7 +95,7 @@ fn continuation_spelling(value: &str) -> bool {
 }
 
 /// Parses `follow --json --root <dir> --since <anchor> [--view pulse|brief] [--principal <id>]
-/// [--max-entries <n>] [--continuation <token>]`.
+/// [--max-entries <n>] [--continuation <token> | --wait-ms <1..10000>]`.
 pub fn parse_follow_args(tokens: &[ArgToken]) -> Result<FollowArgs, CliError> {
     let values = collect_options(
         "follow",
@@ -103,6 +107,7 @@ pub fn parse_follow_args(tokens: &[ArgToken]) -> Result<FollowArgs, CliError> {
             "--principal",
             "--max-entries",
             "--continuation",
+            "--wait-ms",
         ],
     )?;
     let root = required_root("follow", &values)?;
@@ -164,6 +169,33 @@ pub fn parse_follow_args(tokens: &[ArgToken]) -> Result<FollowArgs, CliError> {
             Some(value.clone())
         }
     };
+    let wait_ms = match take(&values, "--wait-ms") {
+        None => None,
+        Some((_, value, index)) => {
+            let maximum = fss_reference::agent_follow::wait::MAX_FOLLOW_WAIT_MS;
+            let milliseconds = value
+                .parse::<u64>()
+                .ok()
+                .filter(|n| (1..=maximum).contains(n))
+                .ok_or_else(|| {
+                    malformed(
+                        "--wait-ms",
+                        value,
+                        &format!("wait must be an integer in 1..={maximum} milliseconds"),
+                        *index,
+                    )
+                })?;
+            if continuation.is_some() {
+                return Err(malformed(
+                    "--wait-ms",
+                    value,
+                    "drain exact --continuation pages before requesting a new bounded wait",
+                    *index,
+                ));
+            }
+            Some(milliseconds)
+        }
+    };
     Ok(FollowArgs {
         root,
         since,
@@ -171,6 +203,7 @@ pub fn parse_follow_args(tokens: &[ArgToken]) -> Result<FollowArgs, CliError> {
         principal: principal("follow", &values)?,
         max_entries,
         continuation,
+        wait_ms,
     })
 }
 
@@ -188,6 +221,15 @@ fn request_digest(args: &FollowArgs, head: &LedgerAnchor) -> ContentDigest {
             None => encoder.bool(false),
         }
         head.encode_canonical(encoder);
+        // Absence preserves every pre-wait request byte. The explicit wait binds both its
+        // wall deadline and fixed admission ceiling without changing the legacy domain.
+        if let Some(wait_ms) = args.wait_ms {
+            encoder.text("bounded_wait_ms");
+            encoder.u64(wait_ms);
+            encoder.u64(u64::from(
+                fss_reference::agent_follow::wait::MAX_FOLLOW_WAIT_READS,
+            ));
+        }
     })
 }
 
@@ -325,6 +367,13 @@ fn follow_response(
     follow: &DeploymentFollow,
     request_digest: ContentDigest,
 ) -> Result<String, Box<dyn std::error::Error>> {
+    build_response(follow_response_parts(follow, request_digest)?)
+}
+
+fn follow_response_parts(
+    follow: &DeploymentFollow,
+    request_digest: ContentDigest,
+) -> Result<ResponseParts, Box<dyn std::error::Error>> {
     let result = &follow.result;
     let capsule = result.capsule();
     let delta = &follow.delta;
@@ -413,7 +462,7 @@ fn follow_response(
         .next_cursor
         .as_ref()
         .map(|cursor| cursor.token().to_owned());
-    build_response(ResponseParts {
+    Ok(ResponseParts {
         operation: "session.follow",
         request_digest,
         principal: capsule.principal_id.clone(),
@@ -560,6 +609,9 @@ fn anchor_refusal(refusal: AnchorRefusal, since: &AnchorToken) -> Refusal {
 /// Executes `follow`, returning the rendered response and its exit identity.
 #[must_use]
 pub fn execute_follow(args: &FollowArgs) -> (String, ExitIdentity) {
+    if args.wait_ms.is_some() {
+        return wait::execute(args);
+    }
     let limits = OrientLimits::default();
     let history = match DeploymentHistory::read(&args.root, &limits) {
         Ok(history) => history,
@@ -626,4 +678,27 @@ pub fn execute_follow(args: &FollowArgs) -> (String, ExitIdentity) {
         "follow",
         &args.root,
     )
+}
+
+/// Executes an explicitly bounded follow wait with the caller's own read/time/cancellation Cx.
+/// An explicit `wait_ms` is required; its absence is refused before I/O. The supplied authority
+/// is never bypassed by falling through to the ordinary immediate entrypoint. A refusal before
+/// any complete comparison uses the ordinary CLI diagnostic, because no evidence timestamp can
+/// be invented.
+pub fn execute_follow_with_control(
+    args: &FollowArgs,
+    control: &mut dyn fss_reference::agent_follow::wait::FollowWaitControl,
+) -> (String, ExitIdentity) {
+    if args.wait_ms.is_none() {
+        return (
+            crate::orient_cmd::execution_diagnostic(
+                "follow",
+                &args.root,
+                crate::ERR_CLI_MALFORMED_VALUE,
+                ExitIdentity::AGENT_REFUSED,
+            ),
+            ExitIdentity::AGENT_REFUSED,
+        );
+    }
+    wait::execute_with_control(args, control)
 }

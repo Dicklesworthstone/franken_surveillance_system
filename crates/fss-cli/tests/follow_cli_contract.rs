@@ -22,9 +22,10 @@ use std::collections::BTreeMap;
 use std::error::Error;
 use std::ffi::OsString;
 use std::fs;
+use std::io::Write;
 use std::os::unix::fs::MetadataExt;
 use std::path::{Path, PathBuf};
-use std::process::{Command, Output};
+use std::process::{Command, Output, Stdio};
 
 use fss_core::{ContentDigest, ContextAuthority, OperationId, RootAuthoritySpec};
 use fss_reference::media_fixture::jpeg::{JpegConfig, Subsampling, encode_jpeg};
@@ -311,6 +312,8 @@ fn empty_deployment(directory: &OwnedDirectory, site: &str) -> TestResult<PathBu
 
 #[derive(Clone, Copy)]
 enum Motion {
+    /// Static generated frames for a declared recorded-coverage window.
+    Quiet,
     /// A bright 16x16 square enters at the left edge from frame 3 and moves 8 px right per frame.
     Right,
     /// The mirror image: it enters at the right edge and moves left.
@@ -327,10 +330,11 @@ fn scene(motion: Motion) -> TestResult<Vec<u8>> {
     let mut stream = Vec::new();
     for index in 0..FRAMES {
         let mut pixels = vec![40_u8; (WIDTH * HEIGHT) as usize];
-        if index >= 3 {
+        if index >= 3 && !matches!(motion, Motion::Quiet) {
             let left = match motion {
                 Motion::Right => (index - 3) * 8,
                 Motion::Left => 80 - (index - 3) * 8,
+                Motion::Quiet => unreachable!("quiet frames have no foreground square"),
             };
             for y in 8..24 {
                 for x in left..left + 16 {
@@ -1324,5 +1328,338 @@ fn unknown_foreign_ahead_and_malformed_anchors_are_typed_refusals() -> TestResul
     assert!(stdout.contains("\"error_id\":\"ERR-DOCTOR-NOT-A-DEPLOYMENT-001\""));
     assert!(!missing.exists(), "a refused read creates nothing");
     assert_eq!(tree_digest(&root)?, before, "refusals write nothing");
+    Ok(())
+}
+
+// Bounded follow waits: process adapters use the same real retained coverage and exact native
+// delta compiler. Virtual time is used only for timing/cancellation, never for sensor evidence.
+
+fn quiet_wait_fixture(directory: &OwnedDirectory) -> TestResult<(String, String)> {
+    let root = directory.root();
+    let import_id = import(directory, Motion::Quiet, "sensor:follow-wait-cli", true)?;
+    let mut args = vec![
+        "--import-id",
+        &import_id,
+        "--interpretation",
+        "gray",
+        "--zone",
+        "door:64,0,32,32",
+    ];
+    let preview = event(&root, "watch", &args)?;
+    success(&preview);
+    let preview = Json::parse(String::from_utf8(preview.stdout)?.trim_end())?;
+    assert_eq!(preview.get("candidate_count")?.number()?, 0);
+    let approval = preview
+        .path(&["coverage", "approval_digest"])?
+        .text()?
+        .to_owned();
+    args.extend(["--retain-coverage", &approval]);
+    success(&event(&root, "watch", &args)?);
+    let (orientation, token) = orient(&root, "brief")?;
+    assert_eq!(orientation.get("completeness")?.text()?, "complete");
+    Ok((import_id, token))
+}
+
+fn mcp_follow(root: &Path, since: &str, wait_ms: u64) -> TestResult<(String, Json)> {
+    let quote = |value: &str| format!("\"{}\"", fss_cli::escape_json_str(value));
+    let init = r#"{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2025-06-18","capabilities":{},"clientInfo":{"name":"follow-wait-contract","version":"1"}}}"#;
+    let ready = r#"{"jsonrpc":"2.0","method":"notifications/initialized"}"#;
+    let request = format!(
+        r#"{{"jsonrpc":"2.0","id":2,"method":"tools/call","params":{{"name":"session_follow","arguments":{{"since":{},"view":"brief","wait_ms":{wait_ms}}}}}}}"#,
+        quote(since)
+    );
+    let mut process = Command::new(env!("CARGO_BIN_EXE_fss-mcp"))
+        .arg("--root")
+        .arg(root)
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()?;
+    let mut input = process.stdin.take().ok_or("MCP stdin")?;
+    writeln!(input, "{init}\n{ready}\n{request}")?;
+    drop(input);
+    let output = process.wait_with_output()?;
+    success(&output);
+    assert!(output.stderr.is_empty());
+    let text = String::from_utf8(output.stdout)?;
+    let lines: Vec<_> = text.lines().collect();
+    assert_eq!(lines.len(), 2);
+    let wire = Json::parse(lines[1])?;
+    let body = wire
+        .path(&["result", "content"])?
+        .items()?
+        .first()
+        .ok_or("MCP content")?
+        .get("text")?
+        .text()?
+        .to_owned();
+    Ok((body, wire))
+}
+
+#[test]
+fn bounded_wait_cli_and_mcp_wake_immediately_for_protected_gaps_and_require_resnapshot_for_harmless_advance()
+-> TestResult {
+    let _serial = serial();
+    let gap = OwnedDirectory::new("wait-gap")?;
+    let root = empty_deployment(&gap, SITE)?;
+    let (_, token) = orient(&root, "brief")?;
+    let before = tree_digest(&root)?;
+    let (stdout, envelope) = follow_ok(
+        &root,
+        &token,
+        &["--view", "brief", "--wait-ms", "10000"],
+        "AVIEW-002",
+    )?;
+    assert_eq!(
+        envelope.path(&["payload", "classes"])?.texts()?,
+        vec!["coverage_loss"]
+    );
+    assert!(
+        envelope
+            .get("degradation")?
+            .texts()?
+            .iter()
+            .any(|value| value.contains("0 completed caller-owned parks"))
+    );
+    assert_answer_conforms(
+        &stdout,
+        "agent_meaningful_delta.v1.json",
+        &gap.0,
+        "wait protected gap",
+    )?;
+    let (mcp_body, wire) = mcp_follow(&root, &token, 10_000)?;
+    let mcp_envelope = Json::parse(&mcp_body)?;
+    assert_eq!(mcp_envelope.get("payload")?, envelope.get("payload")?);
+    assert_eq!(wire.path(&["result", "isError"])?, &Json::Bool(false));
+    assert_answer_conforms(
+        &mcp_body,
+        "agent_meaningful_delta.v1.json",
+        &gap.0,
+        "MCP wait protected gap",
+    )?;
+    assert_eq!(tree_digest(&root)?, before);
+
+    let quiet = OwnedDirectory::new("wait-resnapshot")?;
+    let root = quiet.root();
+    let (import_id, since) = quiet_wait_fixture(&quiet)?;
+    let (legacy, _) = follow_ok(&root, &since, &["--view", "brief"], "AVIEW-002")?;
+    let decoded = Command::new(env!("CARGO_BIN_EXE_fss-file"))
+        .arg("decode")
+        .arg("--root")
+        .arg(&root)
+        .args([
+            "--site",
+            SITE,
+            "--import-id",
+            &import_id,
+            "--segment",
+            "5",
+            "--interpretation",
+            "gray",
+        ])
+        .output()?;
+    success(&decoded);
+    let (_, head) = orient(&root, "brief")?;
+    assert_ne!(head, since);
+    let (_, harmless) = follow_ok(&root, &since, &["--view", "brief"], "AVIEW-002")?;
+    assert_eq!(
+        harmless.path(&["payload", "classes"])?.texts()?,
+        vec!["no_meaningful_change"]
+    );
+    let before = tree_digest(&root)?;
+    let (code, stdout, stderr) = run_fss(&follow_args(
+        &root,
+        &since,
+        &["--view", "brief", "--wait-ms", "10000"],
+    ))?;
+    assert_eq!(code, Some(5), "{stdout} {stderr}");
+    let envelope = assert_follow_envelope(&stdout, "AVIEW-002")?;
+    assert_eq!(envelope.get("outcome")?.text()?, "partial");
+    assert_eq!(envelope.get("errorId")?.text()?, "ERR-AGENT-RESNAPSHOT-001");
+    assert_eq!(envelope.get("payload")?, &Json::Null);
+    assert_eq!(envelope.get("resnapshotRequired")?, &Json::Bool(true));
+    assert_eq!(envelope.get("continuation")?, &Json::Null);
+    let pointers = envelope.get("proofPointers")?.texts()?;
+    assert!(pointers.contains(&since.as_str()) && pointers.contains(&head.as_str()));
+    assert_answer_conforms(
+        &stdout,
+        "agent_meaningful_delta.v1.json",
+        &quiet.0,
+        "wait harmless resnapshot",
+    )?;
+    let (mcp_body, wire) = mcp_follow(&root, &since, 10_000)?;
+    let mcp_envelope = Json::parse(&mcp_body)?;
+    for field in [
+        "outcome",
+        "errorId",
+        "payload",
+        "resnapshotRequired",
+        "proofPointers",
+        "requestId",
+    ] {
+        assert_eq!(mcp_envelope.get(field)?, envelope.get(field)?, "{field}");
+    }
+    assert_eq!(wire.path(&["result", "isError"])?, &Json::Bool(true));
+    assert_answer_conforms(
+        &mcp_body,
+        "agent_meaningful_delta.v1.json",
+        &quiet.0,
+        "MCP wait resnapshot",
+    )?;
+    assert_eq!(tree_digest(&root)?, before);
+    assert!(
+        Json::parse(legacy.trim_end())?.path(&["payload", "silenceCertificate"])? != &Json::Null
+    );
+    Ok(())
+}
+
+struct FollowClock {
+    root: PathBuf,
+    since: String,
+    elapsed_ms: u64,
+    cancel_after_park: bool,
+    cancelled: bool,
+}
+
+impl fss_reference::agent_follow::wait::FollowWaitControl for FollowClock {
+    fn checkpoint(
+        &mut self,
+        binding: &fss_reference::agent_follow::wait::FollowWaitBinding,
+        _: fss_reference::agent_follow::wait::FollowWaitBoundary,
+    ) -> Result<u64, fss_reference::agent_follow::wait::FollowWaitDenial> {
+        assert_eq!(binding.root(), self.root.as_path());
+        assert_eq!(binding.since().as_str(), self.since);
+        assert_eq!(binding.principal().as_str(), "principal:local-operator");
+        assert_eq!(binding.wait_ms(), 1_000);
+        assert_eq!(binding.max_reads(), 41);
+        if self.cancelled {
+            Err(fss_reference::agent_follow::wait::FollowWaitDenial::Cancelled)
+        } else {
+            Ok(self.elapsed_ms)
+        }
+    }
+    fn park(
+        &mut self,
+        binding: &fss_reference::agent_follow::wait::FollowWaitBinding,
+        delay_ms: u64,
+    ) -> Result<(), fss_reference::agent_follow::wait::FollowWaitDenial> {
+        self.checkpoint(
+            binding,
+            fss_reference::agent_follow::wait::FollowWaitBoundary::Park,
+        )?;
+        self.elapsed_ms = self
+            .elapsed_ms
+            .checked_add(delay_ms)
+            .ok_or(fss_reference::agent_follow::wait::FollowWaitDenial::ClockUnavailable)?;
+        self.cancelled = self.cancel_after_park;
+        Ok(())
+    }
+}
+
+#[test]
+fn bounded_wait_library_deadline_and_cancellation_return_null_payload_and_cumulative_costs()
+-> TestResult {
+    let _serial = serial();
+    let directory = OwnedDirectory::new("wait-deadline")?;
+    let root = directory.root();
+    let (_, since) = quiet_wait_fixture(&directory)?;
+    let (legacy, _) = follow_ok(&root, &since, &["--view", "brief"], "AVIEW-002")?;
+    let before = tree_digest(&root)?;
+    let command = fss_cli::parse_fss_args(follow_args(
+        &root,
+        &since,
+        &["--view", "brief", "--wait-ms", "1000"],
+    ))?;
+    let fss_cli::FssCommand::Follow(args) = command else {
+        return Err("follow command".into());
+    };
+    let mut clock = FollowClock {
+        root: root.clone(),
+        since: since.clone(),
+        elapsed_ms: 0,
+        cancel_after_park: false,
+        cancelled: false,
+    };
+    let (body, exit) = fss_cli::follow_cmd::execute_follow_with_control(&args, &mut clock);
+    assert_eq!(exit, fss_cli::ExitIdentity::AGENT_REFUSED, "{body}");
+    let timeout = Json::parse(&body)?;
+    assert_eq!(timeout.get("outcome")?.text()?, "partial");
+    assert_eq!(timeout.get("errorId")?.text()?, "ERR-OP-TIMEOUT-001");
+    assert_eq!(timeout.get("payload")?, &Json::Null);
+    assert_eq!(timeout.get("resnapshotRequired")?, &Json::Bool(false));
+    assert_eq!(
+        timeout
+            .path(&["budgets", "consumed", "latencyMs"])?
+            .number()?,
+        1_000
+    );
+    assert!(
+        timeout
+            .path(&["budgets", "consumed", "storageOperations"])?
+            .number()?
+            > 0
+    );
+    assert!(
+        timeout
+            .get("degradation")?
+            .texts()?
+            .iter()
+            .any(|value| value.contains("4 of 41 native deployment reads admitted"))
+    );
+    assert_answer_conforms(
+        &body,
+        "agent_meaningful_delta.v1.json",
+        &directory.0,
+        "virtual wait deadline",
+    )?;
+    let mut clock = FollowClock {
+        root: root.clone(),
+        since: since.clone(),
+        elapsed_ms: 0,
+        cancel_after_park: true,
+        cancelled: false,
+    };
+    let (body, exit) = fss_cli::follow_cmd::execute_follow_with_control(&args, &mut clock);
+    assert_eq!(exit, fss_cli::ExitIdentity::AGENT_REFUSED);
+    let cancelled = Json::parse(&body)?;
+    assert_eq!(cancelled.get("outcome")?.text()?, "cancelled");
+    assert_eq!(cancelled.get("payload")?, &Json::Null);
+    assert!(
+        cancelled
+            .path(&["budgets", "consumed", "bytes"])?
+            .number()?
+            > 0
+    );
+    assert_answer_conforms(
+        &body,
+        "agent_meaningful_delta.v1.json",
+        &directory.0,
+        "virtual wait cancellation",
+    )?;
+    let (again, _) = follow_ok(&root, &since, &["--view", "brief"], "AVIEW-002")?;
+    assert_eq!(
+        again, legacy,
+        "a wall wait never republishes or renews the original cursor/evidence"
+    );
+    assert_eq!(tree_digest(&root)?, before);
+    Ok(())
+}
+
+#[test]
+fn wait_and_cursor_are_refused_before_the_root_is_opened() -> TestResult {
+    let _serial = serial();
+    let directory = OwnedDirectory::new("wait-parse")?;
+    let root = empty_deployment(&directory, SITE)?;
+    let (_, token) = orient(&root, "brief")?;
+    let missing = directory.0.join("must-stay-missing");
+    let (code, stdout, stderr) = run_fss(&follow_args(
+        &missing,
+        &token,
+        &["--wait-ms", "1000", "--continuation", "continuation:exact"],
+    ))?;
+    assert_eq!(code, Some(2));
+    assert!(stdout.is_empty());
+    assert!(stderr.contains("ERR-CLI-MALFORMED-VALUE-001"));
+    assert!(!missing.exists());
     Ok(())
 }

@@ -158,6 +158,28 @@ fn pack_and_receipt() -> Result<(SemanticContextPack, SemanticCompressionReceipt
 fn pack_and_receipt_with_handles(
     count: usize,
 ) -> Result<(SemanticContextPack, SemanticCompressionReceipt), Box<dyn Error>> {
+    // Binding capacity is the union of selected-item and receipt-level slots. Keep this fixture
+    // valid under both schemas so the test reaches the binding owner's larger capacity limit.
+    const MAX_ITEM_EXPANSION_HANDLES: usize = 64;
+    let receipt_handle_count = count.min(SemanticCompressionReceipt::MAX_EXPANSION_HANDLES);
+    let item_handle_count = count - receipt_handle_count;
+    let item_count = item_handle_count
+        .div_ceil(MAX_ITEM_EXPANSION_HANDLES)
+        .max(1);
+    let items = (0..item_count)
+        .map(|index| {
+            let start = index * MAX_ITEM_EXPANSION_HANDLES;
+            let end = (start + MAX_ITEM_EXPANSION_HANDLES).min(item_handle_count);
+            ContextItem {
+                item_id: format!("context:knowledge:selected:{index:04}"),
+                kind: "knowledge".to_owned(),
+                epistemic_state: KnowledgeState::Known,
+                content: "A bounded selected context item.".to_owned(),
+                basis: BTreeSet::from(["claim:selected".to_owned()]),
+                expansion_handles: (start..end).map(|i| format!("slot:{i:04}")).collect(),
+            }
+        })
+        .collect();
     let pack = SemanticContextPack::publish(SemanticContextPackPublishParams {
         pack_id: "context-pack:capacity".to_owned(),
         contract_basis: basis(),
@@ -166,19 +188,17 @@ fn pack_and_receipt_with_handles(
         view_id: "AVIEW-001".to_owned(),
         anchor: anchor(0),
         situation_fingerprint: ContentDigest::sha256(b"situation-frame"),
-        items: vec![ContextItem {
-            item_id: "context:knowledge:selected".to_owned(),
-            kind: "knowledge".to_owned(),
-            epistemic_state: KnowledgeState::Known,
-            content: "A bounded selected context item.".to_owned(),
-            basis: BTreeSet::from(["claim:selected".to_owned()]),
-            expansion_handles: BTreeSet::new(),
-        }],
+        items,
         compression_receipt_id: "compression:context-binding".to_owned(),
         continuation: Some("continuation:context-binding".to_owned()),
         created_at: TimestampNs(2),
     })?;
-    let expansion_handles = (0..count)
+    assert!(
+        pack.items
+            .iter()
+            .all(|item| item.expansion_handles.len() <= MAX_ITEM_EXPANSION_HANDLES)
+    );
+    let expansion_handles = (item_handle_count..count)
         .map(|i| {
             Ok(ExpansionHandle {
                 handle: format!("slot:{i:04}"),
@@ -219,6 +239,11 @@ fn pack_and_receipt_with_handles(
         output_digest: pack.pack_digest,
     };
     receipt.validate_for(&pack)?;
+    assert!(receipt.expansion_handles.len() <= SemanticCompressionReceipt::MAX_EXPANSION_HANDLES);
+    assert_eq!(
+        ContextExpansionBindingSet::required_slots(&pack, &receipt).len(),
+        count
+    );
     Ok((pack, receipt))
 }
 
@@ -396,13 +421,13 @@ fn binding_set_enforces_capacity_ordering_and_duplicate_checks() -> Result<(), B
         &item_handle,
         HydrationLevel::H1,
         "Binding 1",
-)?;
+    )?;
     let duplicate_binding2 = ContextExpansionBinding::publish(
         "slot:item:evidence",
         &item_handle,
         HydrationLevel::H1,
         "Binding 2",
-)?;
+    )?;
     assert!(matches!(
         ContextExpansionBindingSet::publish(
             &pack,
@@ -443,14 +468,17 @@ fn binding_set_enforces_capacity_ordering_and_duplicate_checks() -> Result<(), B
         Err(ContextBindingError::NonCanonicalOrdering(slot)) if slot == "slot:item:evidence"
     ));
 
-    // Capacity at the REACHABLE bound succeeds. Since 2c8cf5b5 the receipt's
-    // MAX_EXPANSION_HANDLES is 256, and the one-to-one slot contract means a
-    // binding set can never exceed the receipt's handle count in practice —
-    // the structural MAX_BINDINGS (4_096) ceiling sits above it unreachable
-    // through publish (fss-0elnp: owner may lower MAX_BINDINGS for coherence).
-    let reachable = SemanticCompressionReceipt::MAX_EXPANSION_HANDLES;
-    let (cap_pack, cap_receipt) = pack_and_receipt_with_handles(reachable)?;
-    let max_bindings = (0..reachable)
+    // A receipt-only selection reaches its own handle ceiling without using item-level slots.
+    let receipt_bound = SemanticCompressionReceipt::MAX_EXPANSION_HANDLES;
+    let (cap_pack, cap_receipt) = pack_and_receipt_with_handles(receipt_bound)?;
+    assert_eq!(cap_receipt.expansion_handles.len(), receipt_bound);
+    assert!(
+        cap_pack
+            .items
+            .iter()
+            .all(|item| item.expansion_handles.is_empty())
+    );
+    let max_bindings = (0..receipt_bound)
         .map(|i| {
             ContextExpansionBinding::publish(
                 format!("slot:{i:04}"),
@@ -461,11 +489,10 @@ fn binding_set_enforces_capacity_ordering_and_duplicate_checks() -> Result<(), B
         })
         .collect::<Result<Vec<_>, _>>()?;
     let bound_set = ContextExpansionBindingSet::publish(&cap_pack, &cap_receipt, max_bindings)?;
-    assert_eq!(bound_set.bindings.len(), reachable);
+    assert_eq!(bound_set.bindings.len(), receipt_bound);
 
-    // Exceeding the reachable bound fails: the extra binding's slot is not a
-    // receipt-declared expansion handle (UnexpectedSlot, typed).
-    let excessive_bindings = (0..=reachable)
+    // An extra binding here names an undeclared slot, not an exhausted binding-set capacity.
+    let excessive_bindings = (0..=receipt_bound)
         .map(|i| {
             ContextExpansionBinding::publish(
                 format!("slot:{i:04}"),
@@ -477,7 +504,41 @@ fn binding_set_enforces_capacity_ordering_and_duplicate_checks() -> Result<(), B
         .collect::<Result<Vec<_>, _>>()?;
     assert!(matches!(
         ContextExpansionBindingSet::publish(&cap_pack, &cap_receipt, excessive_bindings),
-        Err(ContextBindingError::UnexpectedSlot(_)) | Err(ContextBindingError::CapacityExceeded)
+        Err(ContextBindingError::UnexpectedSlot(slot)) if slot == format!("slot:{receipt_bound:04}")
+    ));
+
+    // The binding owner's private structural ceiling is 4_096. Item and receipt slots are
+    // unioned, so sixty schema-valid items with 64 slots plus 256 receipt handles reach it exactly.
+    const BINDING_CAPACITY: usize = 4_096;
+    let (capacity_pack, capacity_receipt) = pack_and_receipt_with_handles(BINDING_CAPACITY)?;
+    let max_bindings = (0..BINDING_CAPACITY)
+        .map(|i| {
+            ContextExpansionBinding::publish(
+                format!("slot:{i:04}"),
+                &item_handle,
+                HydrationLevel::H1,
+                "Bound binding",
+            )
+        })
+        .collect::<Result<Vec<_>, _>>()?;
+    let bound_set =
+        ContextExpansionBindingSet::publish(&capacity_pack, &capacity_receipt, max_bindings)?;
+    assert_eq!(bound_set.bindings.len(), BINDING_CAPACITY);
+
+    // At 4_097 the structural owner must refuse capacity before considering an unexpected slot.
+    let excessive_bindings = (0..=BINDING_CAPACITY)
+        .map(|i| {
+            ContextExpansionBinding::publish(
+                format!("slot:{i:04}"),
+                &item_handle,
+                HydrationLevel::H1,
+                "Excessive binding",
+            )
+        })
+        .collect::<Result<Vec<_>, _>>()?;
+    assert!(matches!(
+        ContextExpansionBindingSet::publish(&capacity_pack, &capacity_receipt, excessive_bindings),
+        Err(ContextBindingError::CapacityExceeded)
     ));
 
     Ok(())

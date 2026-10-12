@@ -60,6 +60,9 @@ use crate::agent_orient::{
 use crate::meaningful_delta::classify_reference_meaningful_delta;
 use crate::situation::EFFECT_CLAIM_PREFIX;
 
+/// Bounded synchronous waiting with explicit caller-owned time and cancellation authority.
+pub mod wait;
+
 /// Prefix of every anchor token.
 pub const ANCHOR_TOKEN_PREFIX: &str = "anchor:";
 /// Default number of delta items delivered per follow page.

@@ -238,6 +238,18 @@ complete delta header and class set and only that page's items; pagination is de
 `coalescedCount` and `omittedCount` stay the engine's own counts and every item is delivered
 exactly once through the exact continuation.
 
+The native optional reference wait (`followPageProjection.referenceBoundedWait`) leaves the
+ordinary page projection unchanged. `--wait-ms` / native MCP `wait_ms` admits 1..10000 ms and at
+most 41 attempted reads, with 250 ms parks shortened only toward the fixed deadline. It excludes
+continuations and parks only on the native validated certified-quiet exact head. Initial material
+or protected context returns immediately; an initial harmless anchor mismatch or any complete
+authority/effect anchor advance after a park returns a null-payload partial envelope with
+`ERR-AGENT-RESNAPSHOT-001` and `resnapshotRequired: true`. A deadline/read-budget stop returns
+typed partial uncertainty, never a certified wall interval. Caller-owned authority, monotonic
+time and cancellation guard every admission, and cumulative returned costs use checked sums;
+unmetered work is explicit. No frozen operation row, schema, reference basis, durable follow
+lease or complete-subscription guarantee is changed by this optional reference behavior.
+
 ## Registry drifts
 
 Mirrors the provenance entries of `drifts` in `architecture/agent_contracts.json`.

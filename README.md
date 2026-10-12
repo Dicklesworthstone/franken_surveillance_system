@@ -587,8 +587,9 @@ Partial:
 
 - the agent operating layer: `fss session orient`, `fss explain`, and `fss session follow`
   (meaningful deltas since an orient anchor token, paged through exact continuations, with
-  certified silence across harmless successor commits; one bounded read per call, no
-  subscription; `fss orient` and `fss follow` are aliases) are read-only CLI surfaces;
+  certified silence across harmless successor commits; an optional
+  [bounded wait](docs/AGENT_FOLLOW_WAIT.md) on a certified quiet head, with exact-anchor
+  resnapshot on advance; `fss orient` and `fss follow` are aliases) are read-only CLI surfaces;
   `fss session open`, `fss handoff` (alias `fss session handoff`), and
   `fss session resume` (session.open, handoff, session.resume) persist mission-scoped sessions,
   immutable workspace revisions, and root-last handoffs under the deployment's `agent/` directory

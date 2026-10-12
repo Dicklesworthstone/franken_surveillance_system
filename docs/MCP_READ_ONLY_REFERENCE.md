@@ -37,7 +37,7 @@ Typical client configuration, with paths replaced for the deployment:
 | Registered tool | Existing semantic implementation | Arguments |
 | --- | --- | --- |
 | `session_orient` (AOP-003) | `fss session orient` / `execute_orient` | Optional `view`: `pulse`, `brief`, `epistemic_map`; optional `budget_tokens`: 1..4096, additionally subject to the view's own limit |
-| `session_follow` (AOP-004) | `fss session follow` / `execute_follow` | Required `since` anchor token; optional `view`: `pulse`, `brief`; `max_entries`: 1..4096; exact `continuation` token |
+| `session_follow` (AOP-004) | `fss session follow` / `execute_follow` | Required `since` anchor token; optional `view`: `pulse`, `brief`; `max_entries`: 1..4096; exact `continuation` token or `wait_ms`: 1..10000 |
 | `explain` (AOP-011) | `fss explain` / `execute_explain` | Required `event_id` |
 | `doctor` (AOP-014) | `fss doctor --root` | No arguments; fixed deployment only |
 
@@ -48,12 +48,22 @@ is shortened, reclassified, or synthesized by the transport. A nonzero CLI exit
 sets MCP `isError: true` while preserving the original response and its error ID,
 partial results, recovery guidance and uncertainty.
 
-Follow is one bounded read. Obtain `since` from an orientation. To continue a page,
+Follow defaults to one bounded read. Obtain `since` from an orientation. To continue a page,
 keep `since`, principal, view and page size unchanged and pass the exact continuation
 returned by the previous page. The existing engine checks lineage, anchor binding,
 head freshness, stream identity and cursor validity. The adapter never treats a
 missing or stale anchor as "latest", never auto-rebases a rejected continuation,
 and never converts an unwitnessed coverage gap into a silence certificate.
+
+Optional `wait_ms` enables a [bounded synchronous wait](AGENT_FOLLOW_WAIT.md) only
+after a validated certified-quiet exact head. It cannot be combined with a page
+continuation. Protected context returns immediately; an authority/effect anchor
+advance requires resnapshot with a null delta payload, including a harmless
+advance. Deadline and cancellation do not extend retained coverage or renew
+leases. The call admits at most 41 native reads and no new work after its
+monotonic deadline, although an already admitted bounded read may finish later.
+The adapter does not process an in-flight cancellation notification during this
+synchronous call; process termination owns shutdown.
 
 No mutation tool is advertised or accepted: session open/resume/handoff, commit,
 alerts, repair, retention changes and other effects remain unavailable. The

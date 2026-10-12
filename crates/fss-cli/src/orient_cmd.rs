@@ -302,7 +302,7 @@ pub fn parse_explain_args(tokens: &[ArgToken]) -> Result<ExplainArgs, CliError> 
 }
 
 /// Execution-phase refusal rendered as `fss.cli_diagnostic.v1` (no anchor exists to answer at).
-fn execution_diagnostic(
+pub(crate) fn execution_diagnostic(
     command: &str,
     root: &std::path::Path,
     error_id: &str,
@@ -436,7 +436,7 @@ pub(crate) fn build_response(parts: ResponseParts) -> Result<String, Box<dyn std
     build_response_with_resnapshot(parts, false)
 }
 
-fn build_response_with_resnapshot(
+pub(crate) fn build_response_with_resnapshot(
     parts: ResponseParts,
     resnapshot_required: bool,
 ) -> Result<String, Box<dyn std::error::Error>> {

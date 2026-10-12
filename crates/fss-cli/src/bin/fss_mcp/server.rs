@@ -19,7 +19,7 @@ const MAX_WAIT_MS: u64 = 10_000;
 const TOOLS: &str = r#"{"tools":[
 {"name":"session_orient","description":"Read-only AOP-003: inspect an existing deployment through its anchor-pinned SituationCapsule. Returns the existing fss/1 AgentResponseEnvelope unchanged, including coverage gaps, uncertainty, obligations and affordances. No affordance is executed.","inputSchema":{"type":"object","properties":{"view":{"type":"string","enum":["pulse","brief","epistemic_map"]},"budget_tokens":{"type":"integer","minimum":1,"maximum":4096}},"additionalProperties":false},"annotations":{"readOnlyHint":true,"destructiveHint":false,"idempotentHint":true,"openWorldHint":false}},
 {"name":"explain","description":"Read-only AOP-011: explain one published event, including provenance, contradictions and evidence that would change the conclusion. Returns the existing fss/1 AgentResponseEnvelope unchanged.","inputSchema":{"type":"object","properties":{"event_id":{"type":"string","minLength":1,"maxLength":128}},"required":["event_id"],"additionalProperties":false},"annotations":{"readOnlyHint":true,"destructiveHint":false,"idempotentHint":true,"openWorldHint":false}},
-{"name":"session_follow","description":"Read-only AOP-004: return one exact page of meaningful changes since an orientation anchor. Protected coverage, obligation and effect-uncertainty classes and exact continuations remain in the unchanged fss/1 envelope. A bounded read, not a live subscription.","inputSchema":{"type":"object","properties":{"since":{"type":"string","minLength":1,"maxLength":256},"view":{"type":"string","enum":["pulse","brief"]},"max_entries":{"type":"integer","minimum":1,"maximum":4096},"continuation":{"type":"string","minLength":1,"maxLength":256}},"required":["since"],"additionalProperties":false},"annotations":{"readOnlyHint":true,"destructiveHint":false,"idempotentHint":true,"openWorldHint":false}},
+{"name":"session_follow","description":"Read-only AOP-004: return one exact page of meaningful changes since an orientation anchor. Protected coverage, obligation and effect-uncertainty classes and exact continuations remain in the unchanged fss/1 envelope. Optional wait_ms bounds synchronous waiting on certified quiet; any authority advance requires resnapshot. This is not a live subscription.","inputSchema":{"type":"object","properties":{"since":{"type":"string","minLength":1,"maxLength":256},"view":{"type":"string","enum":["pulse","brief"]},"max_entries":{"type":"integer","minimum":1,"maximum":4096},"continuation":{"type":"string","minLength":1,"maxLength":256},"wait_ms":{"type":"integer","minimum":1,"maximum":10000}},"required":["since"],"additionalProperties":false},"annotations":{"readOnlyHint":true,"destructiveHint":false,"idempotentHint":true,"openWorldHint":false}},
 {"name":"query","description":"Read-only AOP-005: exact conjunctive query of the latest verified committed event records. Returns the unchanged CLI AgentResponseEnvelope with protected context. Empty matches never certify physical absence. Nanosecond endpoints are canonical decimal strings to preserve signed 128-bit precision. Continuations require unchanged filters, principal, page size and authority/effect-history head.","inputSchema":{"type":"object","properties":{"event_id":{"type":"string","minLength":1,"maxLength":128},"kind":{"type":"string","enum":["perimeter_breach","covert_approach","sensor_tamper","unknown_presence","benign_routine","unclassified"]},"state":{"type":"string","enum":["hypothesized","witnessed","corroborated","adjudicated","alert_delivered","resolved","indeterminate","rejected"]},"zone":{"type":"string","minLength":1,"maxLength":64},"from_ns":{"type":"string","pattern":"^(0|-?[1-9][0-9]*)$","maxLength":40},"through_ns":{"type":"string","pattern":"^(0|-?[1-9][0-9]*)$","maxLength":40},"max_entries":{"type":"integer","minimum":1,"maximum":32},"anchor":{"type":"string","minLength":1,"maxLength":256},"continuation":{"type":"string","minLength":1,"maxLength":256}},"additionalProperties":false},"annotations":{"readOnlyHint":true,"destructiveHint":false,"idempotentHint":true,"openWorldHint":false}},
 {"name":"wait","description":"Read-only AOP-009: wait, bounded to 10 s, until one effect operation leaves its current state, polling the committed effect journal without writing or locking. Returns the unchanged fss/1 AgentResponseEnvelope carrying the operation receipt; an unchanged operation at the deadline is a partial answer with ERR-OP-TIMEOUT-001 (silence is not completion). Never prepares, commits, resends or cancels anything.","inputSchema":{"type":"object","properties":{"operation_id":{"type":"string","minLength":1,"maxLength":128},"deadline_ms":{"type":"integer","minimum":1,"maximum":10000}},"required":["operation_id","deadline_ms"],"additionalProperties":false},"annotations":{"readOnlyHint":true,"destructiveHint":false,"idempotentHint":true,"openWorldHint":false}},
 {"name":"doctor","description":"Read-only AOP-014 reference diagnosis of the fixed deployment. Returns the existing fss.doctor.v1 report, not an AgentResponseEnvelope. Does not repair, create directories, acquire locks or execute affordances.","inputSchema":{"type":"object","properties":{},"additionalProperties":false},"annotations":{"readOnlyHint":true,"destructiveHint":false,"idempotentHint":true,"openWorldHint":false}}
@@ -200,7 +200,10 @@ impl Server {
                 argv
             }
             "session_follow" => {
-                if !only(args, &["since", "view", "max_entries", "continuation"]) {
+                if !only(
+                    args,
+                    &["since", "view", "max_entries", "continuation", "wait_ms"],
+                ) {
                     return Err((-32602, "Unexpected follow argument"));
                 }
                 let since = bounded_text(args.get("since"), 256)?;
@@ -221,8 +224,16 @@ impl Server {
                     let token = bounded_text(Some(value), 256)?;
                     argv.push(format!("--continuation={token}").into());
                 }
+                if let Some(value) = args.get("wait_ms") {
+                    let n = positive_integer(
+                        value,
+                        fss_reference::agent_follow::wait::MAX_FOLLOW_WAIT_MS,
+                    )?;
+                    argv.push(format!("--wait-ms={n}").into());
+                }
                 // The canonical parser and follow engine validate spelling, lineage, binding,
-                // freshness and stream identity. The transport never manufactures an anchor.
+                // freshness, stream identity and the wait/continuation exclusion. The transport
+                // never manufactures an anchor or renews a lease.
                 argv
             }
             "query" => {
@@ -813,6 +824,14 @@ mod tests {
             ),
             format!(r#"{{"since":{},"max_entries":4097}}"#, quote(&anchor)),
             format!(r#"{{"since":{},"view":"epistemic_map"}}"#, quote(&anchor)),
+            format!(r#"{{"since":{},"wait_ms":0}}"#, quote(&anchor)),
+            format!(r#"{{"since":{},"wait_ms":10001}}"#, quote(&anchor)),
+            format!(r#"{{"since":{},"wait_ms":1.5}}"#, quote(&anchor)),
+            format!(r#"{{"since":{},"wait_ms":"100"}}"#, quote(&anchor)),
+            format!(
+                r#"{{"since":{},"wait_ms":100,"continuation":"continuation:exact"}}"#,
+                quote(&anchor)
+            ),
         ] {
             let request = format!(
                 r#"{{"jsonrpc":"2.0","id":5,"method":"tools/call","params":{{"name":"session_follow","arguments":{arguments}}}}}"#
@@ -824,6 +843,34 @@ mod tests {
             assert!(response.is_some_and(|r| r.contains("-32602")));
         }
         assert_eq!(calls, 0);
+    }
+
+    #[test]
+    fn follow_wait_keeps_fixed_scope_and_typed_resnapshot_envelope() {
+        let mut server = ready();
+        let anchor = format!("anchor:{}:0:none:{}", "a".repeat(16), "b".repeat(64));
+        let request = format!(
+            r#"{{"jsonrpc":"2.0","id":5,"method":"tools/call","params":{{"name":"session_follow","arguments":{{"since":{},"wait_ms":10000,"view":"brief"}}}}}}"#,
+            quote(&anchor)
+        );
+        let envelope = r#"{"outcome":"partial","errorId":"ERR-AGENT-RESNAPSHOT-001","payload":null,"resnapshotRequired":true}"#;
+        let mut called = false;
+        let response = server.handle_with(&request, |command| {
+            called = true;
+            let FssCommand::Follow(args) = command else {
+                unreachable!("follow command");
+            };
+            assert_eq!(args.root, std::path::PathBuf::from("/owner/deployment"));
+            assert_eq!(args.since.as_str(), anchor);
+            assert_eq!(args.wait_ms, Some(10_000));
+            assert_eq!(args.continuation, None);
+            (envelope.to_owned(), ExitIdentity::AGENT_REFUSED)
+        });
+        assert!(called);
+        assert!(
+            response.is_some_and(|response| response.contains(&quote(envelope))
+                && response.contains("\"isError\":true"))
+        );
     }
 
     #[test]

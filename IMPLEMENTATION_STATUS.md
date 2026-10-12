@@ -667,7 +667,7 @@ one-time vendor-app provisioning (NEG-006) with the yi-hack owner-flash path doc
   acceptance only. Sensor independence rests on operator-declared sensor identities.
 - **Operations:** `fss doctor --json --root <dir>` inspects a deployment read-only; `fss-lab` runs
   its six scenarios on `ReferenceDeployment` (mock model and simulated alert provider).
-- **Agent reads (fss/1, CLI only):** `fss session orient` (AOP-003, alias `fss orient`),
+- **Agent reads (fss/1, reference CLI and local read-only MCP):** `fss session orient` (AOP-003, alias `fss orient`),
   `fss explain` (AOP-011), and `fss session follow` (AOP-004, alias `fss follow`) answer read-only in the registered `AgentResponseEnvelope`. Every
   orientation emits a content-bound anchor token (site, commit, effect-journal records, and a
   binding over the anchor, ledger root, and effect-journal root); `fss follow --since <token>`
@@ -680,10 +680,18 @@ one-time vendor-app provisioning (NEG-006) with the yi-hack owner-flash path doc
   every objective zone as `covered`, `not_observable` or `stale` from retained coverage records
   and is `complete` only when every zone is covered over its declared window; then a follow whose
   basis and head are the same committed position returns the engine's silence certificate bound
-  to the witnesses. Across a ledger advance no silence is certified yet (the frame binds
-  commit-specific statements; drift entry in `architecture/agent_contracts.json`), and without
-  coverage the persisting gap stays protected `coverage_loss`. There is no long-lived
-  subscription, wake, or MCP transport; follow is one bounded read per call.
+  to the witnesses. The registered semantic comparison also permits certified silence across
+  harmless successor commits; without coverage the persisting gap stays protected
+  `coverage_loss`. Optional `--wait-ms 1..10000` (native MCP `wait_ms`) parks only on a
+  validated certified-quiet exact head, within 41 attempted native reads. Initial protected or
+  material context returns immediately. A harmless initial anchor mismatch or any complete
+  authority/effect anchor advance after a park returns `ERR-AGENT-RESNAPSHOT-001`, both exact
+  anchor proofs, and a null payload; intervening protected transitions are not silently
+  coalesced. Deadline/cancellation/source failures also return no interval silence claim, with
+  checked cumulative known costs and explicit unmetered-work disclosure. Caller-owned control
+  checkpoints guard reads, hydration, time and sleep; evidence time and cursor/session leases
+  never renew. No durable subscription, universal request-envelope ingress, in-flight MCP
+  cancellation or follow-latency SLO is claimed. See [bounded follow waiting](docs/AGENT_FOLLOW_WAIT.md).
 - **Agent sessions (fss/1, CLI only):** `fss session open` (AOP-001) opens a durable
   mission-scoped session and its revision-zero workspace at the current orient anchor through the
   existing `DurableSessionStore` (a session journal under `<root>/agent/sessions/` with an
