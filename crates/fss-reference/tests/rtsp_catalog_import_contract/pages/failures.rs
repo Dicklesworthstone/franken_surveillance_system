@@ -3,7 +3,8 @@
 
 use super::*;
 use fss_object::{HostSpoolIo, RecordingSpoolIo, SpoolIoCall};
-use fss_reference::deletion::{CommitOutcome, commit_deletion, plan_deletion};
+use fss_reference::deletion::{CommitOutcome, DeletionIndex, commit_deletion, plan_deletion};
+use fss_reference::ingest::FileIngestError;
 use fss_reference::reference_deployment::DeploymentLimits;
 use fss_reference::rtsp::recording::MAX_RECORDING_BYTES;
 use fss_reference::rtsp::recording_catalog::MAX_CATALOG_BYTES;
@@ -283,40 +284,73 @@ fn current_deletion_reaches_later_pages_and_fences_an_already_warm_sample_cache(
         &fixture.inner.cx,
     )?;
     assert_eq!(deletion.outcome, CommitOutcome::Completed);
-    for digest in later {
-        assert!(
-            fixture
-                .inner
-                .target()?
-                .publisher()
-                .tombstones()
-                .any(|current| *current == digest)
+    let expected_import = receipt.catalog.import.import_identity;
+    let expected_plan = plan.digest()?;
+    assert_eq!(deletion.plan_digest, expected_plan);
+    for cold_reopen in [false, true] {
+        if cold_reopen {
+            let root = fixture.inner.target()?.root().to_path_buf();
+            drop(fixture.inner.target.take());
+            fixture.inner.cx = context(&root)?;
+            fixture.inner.target = Some(ReferenceDeployment::open(&root, SITE, &fixture.inner.cx)?);
+        }
+        // Deployment deletion is established by its durable ledger-backed plan, not the
+        // separate optional local-publication tombstone catalogue. Reopening must recover
+        // the same complete authority for the import and every later-page original.
+        let target = fixture.inner.target()?;
+        let index = DeletionIndex::read(target)?;
+        let committed = index
+            .plan(expected_plan)
+            .ok_or("missing committed deletion")?;
+        assert_eq!(&committed.plan, &plan);
+        assert_eq!(
+            committed.completion_digest,
+            Some(deletion.completion_digest)
         );
-        assert!(
-            !fixture
-                .inner
-                .target()?
-                .publisher()
-                .object_name_present(digest)
-        );
-    }
-    let before = target_bytes(&fixture)?;
-    assert!(
-        retained
-            .read_segment_cached(
-                fixture.inner.target()?,
+        assert!(committed.is_complete());
+        assert_eq!(index.import(expected_import), Some(committed));
+        assert_eq!(index.deleted_objects(), plan.deleted_set());
+        for digest in later {
+            assert_eq!(index.object(digest), Some(committed));
+            assert!(!target.publisher().object_name_present(digest));
+            assert!(target.publisher().spool().state(digest).is_none());
+        }
+        let before = target_bytes(&fixture)?;
+        let cached_bytes = cache.chunk_bytes_read();
+        assert!(matches!(
+            retained.read_segment_cached(
+                target,
                 0,
                 RetainedReadLimits::default(),
                 &fixture.inner.cx,
                 &mut cache,
-            )
-            .is_err()
-    );
-    assert!(
-        fixture.run().is_err(),
-        "an available archive cannot resurrect deleted page custody"
-    );
-    assert_eq!(target_bytes(&fixture)?, before);
+            ),
+            Err(FileIngestError::EvidenceDeleted { import_identity, plan_digest })
+                if import_identity == expected_import && plan_digest == expected_plan
+        ));
+        assert_eq!(cache.chunk_bytes_read(), cached_bytes);
+        assert!(matches!(
+            RetainedFileImport::open(
+                target,
+                expected_import,
+                RetainedReadLimits::default(),
+                &fixture.inner.cx,
+            ),
+            Err(FileIngestError::EvidenceDeleted { import_identity, plan_digest })
+                if import_identity == expected_import && plan_digest == expected_plan
+        ));
+        assert!(
+            matches!(
+                attempt(&mut fixture, &mut work()),
+                Err(RtspImportError::Import(error))
+                    if matches!(error.as_ref(),
+                        FileIngestError::EvidenceDeleted { import_identity, plan_digest }
+                            if *import_identity == expected_import && *plan_digest == expected_plan)
+            ),
+            "an available archive cannot resurrect deleted page custody"
+        );
+        assert_eq!(target_bytes(&fixture)?, before);
+    }
     Ok(())
 }
 

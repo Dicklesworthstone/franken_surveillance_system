@@ -36,9 +36,14 @@ threat probabilities, detection recall or absence evidence. Broad site/field cal
 fusion qualification remain open. See [the geometry workflow](docs/long_recording_corroboration.md)
 and [cold retained-event verification](docs/long_event_replay.md).
 
-The focused process/regression targets are included in the existing supplementary native smoke
-check. Local compilation in this session exhausted shared host memory before executing the
-geometry suite; this source checkpoint does not claim a completed native or release qualification.
+The [pinned native feature run](https://github.com/Dicklesworthstone/franken_surveillance_system/actions/runs/38189039297)
+passed all eight geometry process contracts, including covariance-based support withdrawal and
+combined trained-detector/health/geometry publication followed by cold replay. Existing stream
+corroboration (8), trained-detector (5), historical-health corroboration (4), cold-event CLI (6),
+and native long-corroboration/watch/replay (48) checks also passed, along with capture/event CLI
+Clippy. That run separately exposed a catalog deletion test's incorrect local-tombstone assertion;
+its follow-up checks the authoritative deletion index and retained-read refusal. These are
+supplementary native fixture results, not a camera, site-calibration or release qualification.
 
 ## Scoped Digest authentication for native RTSP capture (2026-10-12, reference)
 
