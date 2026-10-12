@@ -270,3 +270,6 @@ impl<'a, 'p, C: ArchiveCodec> CodecJournaledArchiveWriter<'a, 'p, C> {
         }
     }
 }
+
+/// Native automatic HEVC acquisition backpressured by independently journaled publication.
+pub mod hevc_live;
