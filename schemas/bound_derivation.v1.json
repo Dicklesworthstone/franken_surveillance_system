@@ -1,0 +1,46 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://franken-surveillance-system.invalid/schemas/bound_derivation.v1.json",
+  "title": "Analytic bound derivation v1",
+  "$comment": "Mirrors the 'bounded_model' claim-class derivation validation in scripts/claim_proof_bundle_checker.py: units, assumptions, ordered derivation steps, sensitivity, invalidators, and typed inputs are all mandatory — a bound without its falsifiers is not registrable evidence.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schema", "claim_id", "generation", "expression", "comparator", "derived_value", "units", "assumption_ids", "steps", "sensitivity", "invalidators", "inputs"],
+  "properties": {
+    "schema": {"const": "fss.bound_derivation.v1"},
+    "claim_id": {"type": "string", "minLength": 1},
+    "generation": {"type": "string", "minLength": 1},
+    "expression": {"type": "string", "minLength": 1},
+    "comparator": {"enum": ["<=", "<", "=", ">=", ">"]},
+    "derived_value": {"type": "number"},
+    "units": {"type": "string", "minLength": 1},
+    "assumption_ids": {"type": "array", "minItems": 1, "items": {"type": "string", "minLength": 1}},
+    "steps": {"type": "array", "minItems": 1, "items": {"type": "string", "minLength": 1}},
+    "sensitivity": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["parameter", "partial"],
+        "properties": {
+          "parameter": {"type": "string", "minLength": 1},
+          "partial": {"type": "string", "minLength": 1}
+        }
+      }
+    },
+    "invalidators": {"type": "array", "minItems": 1, "items": {"type": "string", "minLength": 1}},
+    "inputs": {
+      "type": "object",
+      "minProperties": 1,
+      "additionalProperties": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["value", "units"],
+        "properties": {
+          "value": {"type": ["number", "integer"]},
+          "units": {"type": "string", "minLength": 1}
+        }
+      }
+    }
+  }
+}

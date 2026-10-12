@@ -85,6 +85,9 @@
 | `SCHEMA-CALIBRATION-COVERAGE-GUARD-001` | `fss.calibration_coverage_guard.v1` | `schemas/calibration_coverage_guard.v1.json` | derived/coverage | conditional full-camera coverage screen and explicit proposal refusal; additions require a new version |
 | `SCHEMA-COVERAGE-SET-SELECTION-001` | `fss.coverage_set_selection.v1` | `schemas/coverage_set_selection.v1.json` | derived/query | read-only retained evidence set selection; selection never grants authority |
 | `SCHEMA-COVERAGE-RESILIENT-SELECTION-001` | `fss.coverage_resilient_selection.v1` | `schemas/coverage_resilient_selection.v1.json` | derived/query | read-only selection across explicit failure scenarios; operator hints are not calibration |
+| `SCHEMA-FORMAL-MODEL-001` | `fss.formal_model.v1` | `schemas/formal_model.v1.json` | authority/claim | digest-bound manifest naming the exact formal model source; generation immutable |
+| `SCHEMA-PROOF-CHECK-RECEIPT-001` | `fss.proof_check_receipt.v1` | `schemas/proof_check_receipt.v1.json` | authority/claim | checker resolves in the formal-toolchains registry; concrete version only; status passed binds the artifact digest |
+| `SCHEMA-BOUND-DERIVATION-001` | `fss.bound_derivation.v1` | `schemas/bound_derivation.v1.json` | authority/claim | units, assumptions, steps, sensitivity, invalidators, and typed inputs all mandatory |
 | `SCHEMA-EXPERIMENT-RECEIPT-001` | `fss.experiment_receipt.v1` | `schemas/experiment_receipt.v1.json` | derived/evidence | immutable revisions; A/A divergence is a determinism alarm; indeterminate runs never compare |
 
 Binary media, ledger, search-segment, graph-run, and release formats additionally require magic, version, bounded lengths, canonical encoding, migration fixtures, corruption tests, and a named format owner before implementation.

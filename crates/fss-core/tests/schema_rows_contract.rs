@@ -22,7 +22,7 @@ const SCHEMAS_MD: &str = include_str!("../../../registries/SCHEMAS.md");
 /// allowlist is a RATCHET: it names the exact current gap set with owners,
 /// fails if the set grows, and shrinks only by landing the typed identity.
 /// Each entry names its owning lane.
-const KNOWN_UNTYPED: [(&str, &str); 15] = [
+const KNOWN_UNTYPED: [(&str, &str); 18] = [
     ("SCHEMA-CALIBRATION-CERT-001", "calibration qualification lane"),
     ("SCHEMA-TRANSFER-MANIFEST-001", "FSS-116/ATP transfer lane"),
     ("SCHEMA-DECISION-CARD-001", "30.108 decision-card implementation program"),
@@ -38,6 +38,9 @@ const KNOWN_UNTYPED: [(&str, &str); 15] = [
     ("SCHEMA-QUALIFICATION-ROOT-002", "qualification root v2 lane"),
     ("SCHEMA-ROBOT-DOCS-001", "robot documentation lane"),
     ("SCHEMA-CALIBRATION-COVERAGE-GUARD-001", "calibration coverage guard lane"),
+    ("SCHEMA-FORMAL-MODEL-001", "claim-evidence lane (checker-enforced; typed Rust const pending FSS-195)"),
+    ("SCHEMA-PROOF-CHECK-RECEIPT-001", "claim-evidence lane (checker-enforced; typed Rust const pending FSS-195)"),
+    ("SCHEMA-BOUND-DERIVATION-001", "claim-evidence lane (checker-enforced; typed Rust const pending FSS-195)"),
 ];
 
 /// One parsed registry row.
@@ -90,7 +93,7 @@ fn collect_rs_sources(dir: &Path, out: &mut Vec<PathBuf>) {
 #[test]
 fn rows_are_unique_canonical_and_complete() -> Result<(), Box<dyn Error>> {
     let rows = extract_schema_rows(SCHEMAS_MD)?;
-    assert_eq!(rows.len(), 84, "registry carries the full 84-row set (83 + SCHEMA-EXPERIMENT-RECEIPT-001, fss-x4a.26.16)");
+    assert_eq!(rows.len(), 87, "registry carries the full 87-row set (84 + the fss-spiyn stage-2 formal-evidence schemas: FORMAL-MODEL, PROOF-CHECK-RECEIPT, BOUND-DERIVATION)");
     let mut ids = BTreeSet::new();
     let mut schemas = BTreeSet::new();
     for row in &rows {
