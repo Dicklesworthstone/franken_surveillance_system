@@ -4,7 +4,9 @@
 //! answered as the registered `AgentResponseEnvelope` carrying one exact page of an
 //! `fss.agent_meaningful_delta.v1`.
 //!
-//! The command opens no file for writing. [`fss_reference::agent_follow`] resolves the `--since`
+//! The ordinary command opens no file for writing. An explicit durable subscription writes only
+//! its session-owned delivery and acknowledgement records under `agent/`.
+//! [`fss_reference::agent_follow`] resolves the `--since`
 //! anchor token against the root's committed history, compiles the situation as of that anchor
 //! from the committed prefix alone and the situation at the head, classifies them with the
 //! reference meaningful-delta engine, and pages the delta through an exact continuation stream;
@@ -37,7 +39,10 @@ use crate::orient_cmd::{
 };
 use crate::token::ArgToken;
 
+mod subscription;
 mod wait;
+
+pub use subscription::FollowSubscriptionArgs;
 
 /// Registered error identity: the `--since` anchor names another deployment.
 pub const ERR_AGENT_FOLLOW_ANCHOR_FOREIGN: &str = "ERR-AGENT-FOLLOW-ANCHOR-FOREIGN-001";
@@ -55,7 +60,7 @@ pub const FOLLOW_VIEWS: [&str; 2] = ["pulse", "brief"];
 /// Options for the `follow` command.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct FollowArgs {
-    /// Existing deployment root, read-only.
+    /// Existing deployment root; only an explicit subscription may update agent-plane state.
     pub root: PathBuf,
     /// Anchor token an earlier orientation (or follow) emitted.
     pub since: AnchorToken,
@@ -69,6 +74,8 @@ pub struct FollowArgs {
     pub continuation: Option<String>,
     /// Optional bounded wall wait on a certified quiet exact head; never a subscription.
     pub wait_ms: Option<u64>,
+    /// Optional durable delivery/acknowledgement scope in an existing session.
+    pub subscription: Option<FollowSubscriptionArgs>,
 }
 
 fn malformed(option: &str, value: &str, reason: &str, index: usize) -> CliError {
@@ -95,7 +102,8 @@ fn continuation_spelling(value: &str) -> bool {
 }
 
 /// Parses `follow --json --root <dir> --since <anchor> [--view pulse|brief] [--principal <id>]
-/// [--max-entries <n>] [--continuation <token> | --wait-ms <1..10000>]`.
+/// [--max-entries <n>] [--continuation <token> | --wait-ms <1..10000>]`, or an explicit
+/// `--session <id> --subscription <id> [--acknowledge <sha256>]` scope.
 pub fn parse_follow_args(tokens: &[ArgToken]) -> Result<FollowArgs, CliError> {
     let values = collect_options(
         "follow",
@@ -108,6 +116,9 @@ pub fn parse_follow_args(tokens: &[ArgToken]) -> Result<FollowArgs, CliError> {
             "--max-entries",
             "--continuation",
             "--wait-ms",
+            "--session",
+            "--subscription",
+            "--acknowledge",
         ],
     )?;
     let root = required_root("follow", &values)?;
@@ -196,6 +207,7 @@ pub fn parse_follow_args(tokens: &[ArgToken]) -> Result<FollowArgs, CliError> {
             Some(milliseconds)
         }
     };
+    let subscription = subscription::parse(&values, continuation.is_some(), wait_ms.is_some())?;
     Ok(FollowArgs {
         root,
         since,
@@ -204,6 +216,7 @@ pub fn parse_follow_args(tokens: &[ArgToken]) -> Result<FollowArgs, CliError> {
         max_entries,
         continuation,
         wait_ms,
+        subscription,
     })
 }
 
@@ -233,6 +246,18 @@ fn request_digest(args: &FollowArgs, head: &LedgerAnchor) -> ContentDigest {
                 fss_reference::agent_follow::wait::MAX_FOLLOW_WAIT_SOURCE_READS,
             ));
             encoder.u64(fss_reference::agent_follow::wait::MAX_FOLLOW_WAIT_SOURCE_ENVELOPE_BYTES);
+        }
+        if let Some(subscription) = &args.subscription {
+            encoder.text("durable_subscription_v1");
+            subscription.session_id.encode_canonical(encoder);
+            encoder.text(&subscription.subscription_id);
+            match subscription.acknowledge {
+                Some(receipt) => {
+                    encoder.bool(true);
+                    encoder.digest(receipt);
+                }
+                None => encoder.bool(false),
+            }
         }
     })
 }
@@ -613,6 +638,9 @@ fn anchor_refusal(refusal: AnchorRefusal, since: &AnchorToken) -> Refusal {
 /// Executes `follow`, returning the rendered response and its exit identity.
 #[must_use]
 pub fn execute_follow(args: &FollowArgs) -> (String, ExitIdentity) {
+    if args.subscription.is_some() {
+        return subscription::execute(args);
+    }
     if args.wait_ms.is_some() {
         return wait::execute(args);
     }

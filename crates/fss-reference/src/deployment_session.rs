@@ -107,6 +107,9 @@ pub mod findings;
 /// Immutable execution episodes that close terminal plans (AGT-LAYER-009; AOP-007 `close`).
 pub mod episode;
 
+/// Session-owned, restart-safe adjacent follow delivery with explicit acknowledgement.
+pub mod follow;
+
 /// Agent-plane directory under a deployment root; nothing outside it is ever written.
 pub const AGENT_DIR: &str = "agent";
 /// Session journal directory, relative to the deployment root.

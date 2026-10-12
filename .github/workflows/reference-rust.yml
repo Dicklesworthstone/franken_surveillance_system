@@ -58,9 +58,12 @@ jobs:
           rustup run nightly-2026-08-31 cargo test --locked --offline -p fss-reference --lib agent_follow:: || follow_exit=1
           rustup run nightly-2026-08-31 cargo test --locked --offline -p fss-reference --test follow_wait_partitioned_custody_contract || follow_exit=1
           rustup run nightly-2026-08-31 cargo test --locked --offline -p fss-reference --test follow_replay_contract || follow_exit=1
+          rustup run nightly-2026-08-31 cargo test --locked --offline -p fss-reference --test follow_session_delivery_contract || follow_exit=1
+          rustup run nightly-2026-08-31 cargo test --locked --offline -p fss-reference --lib agent_session::checkpoint::journal::follow::tests || follow_exit=1
           rustup run nightly-2026-08-31 cargo test --locked --offline -p fss-cli --lib follow_cmd:: || follow_exit=1
           rustup run nightly-2026-08-31 cargo test --locked --offline -p fss-cli --bin fss-mcp follow || follow_exit=1
           rustup run nightly-2026-08-31 cargo test --locked --offline -p fss-cli --test follow_cli_contract || follow_exit=1
+          rustup run nightly-2026-08-31 cargo test --locked --offline -p fss-cli --test follow_subscription_cli_contract || follow_exit=1
           exit "$follow_exit"
       - name: Verify query CLI, library and MCP parity
         if: success() || failure()
@@ -82,6 +85,12 @@ jobs:
           crates/fss-reference/src/agent_follow.rs
           crates/fss-reference/src/agent_follow/replay.rs
           crates/fss-reference/tests/follow_replay_contract.rs
+          crates/fss-reference/src/deployment_session/follow.rs
+          crates/fss-reference/src/agent_session/checkpoint/journal/follow.rs
+          crates/fss-reference/src/agent_session/checkpoint/journal/follow/tests.rs
+          crates/fss-reference/tests/follow_session_delivery_contract.rs
+          crates/fss-cli/src/follow_cmd/subscription.rs
+          crates/fss-cli/tests/follow_subscription_cli_contract.rs
           crates/fss-reference/src/agent_follow/wait.rs
           crates/fss-reference/src/agent_follow/wait/custody.rs
           crates/fss-reference/src/agent_follow/wait/custody/recorded.rs

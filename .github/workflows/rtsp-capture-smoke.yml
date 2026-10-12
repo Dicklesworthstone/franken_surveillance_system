@@ -106,6 +106,13 @@ jobs:
       - name: Existing plain and Digest payload selection contracts
         if: success() || failure()
         run: cargo +nightly-2026-08-31 test --locked --offline -p fss-reference --test rtsp_payload_selection_streaming
+      - name: Exact follow replay and durable delivery continuity
+        if: success() || failure()
+        run: |
+          cargo +nightly-2026-08-31 test --locked --offline -p fss-reference --test follow_replay_contract --test follow_session_delivery_contract
+          cargo +nightly-2026-08-31 test --locked --offline -p fss-reference --lib agent_session::checkpoint::journal::follow::tests
+          cargo +nightly-2026-08-31 test --locked --offline -p fss-cli --test follow_subscription_cli_contract
+          cargo +nightly-2026-08-31 test --locked --offline -p fss-cli --bin fss-mcp durable_follow_
       - name: Capture and event CLI Clippy
         if: success() || failure()
         run: cargo +nightly-2026-08-31 clippy --no-deps --locked --offline -p fss-cli --bin fss-capture-rtsp --bin fss-event -- -D warnings

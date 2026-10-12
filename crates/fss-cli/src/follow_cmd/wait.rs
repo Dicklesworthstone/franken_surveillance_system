@@ -54,6 +54,9 @@ impl FollowWaitControl for LocalControl {
 }
 
 fn binding(args: &FollowArgs) -> Result<FollowWaitBinding, ()> {
+    if args.subscription.is_some() {
+        return Err(());
+    }
     FollowWaitBinding::new(
         &args.root,
         args.since.clone(),

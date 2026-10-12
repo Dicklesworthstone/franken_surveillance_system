@@ -1,5 +1,6 @@
 #![forbid(unsafe_code)]
-//! Synchronous, read-only MCP reference adapter. No network listener or second runtime.
+//! Synchronous MCP reference adapter with optional durable follow delivery in agent state.
+//! No network listener or second runtime.
 
 use std::collections::BTreeMap;
 use std::ffi::OsString;
@@ -19,7 +20,7 @@ const MAX_WAIT_MS: u64 = 10_000;
 const TOOLS: &str = r#"{"tools":[
 {"name":"session_orient","description":"Read-only AOP-003: inspect an existing deployment through its anchor-pinned SituationCapsule. Returns the existing fss/1 AgentResponseEnvelope unchanged, including coverage gaps, uncertainty, obligations and affordances. No affordance is executed.","inputSchema":{"type":"object","properties":{"view":{"type":"string","enum":["pulse","brief","epistemic_map"]},"budget_tokens":{"type":"integer","minimum":1,"maximum":4096}},"additionalProperties":false},"annotations":{"readOnlyHint":true,"destructiveHint":false,"idempotentHint":true,"openWorldHint":false}},
 {"name":"explain","description":"Read-only AOP-011: explain one published event, including provenance, contradictions and evidence that would change the conclusion. Returns the existing fss/1 AgentResponseEnvelope unchanged.","inputSchema":{"type":"object","properties":{"event_id":{"type":"string","minLength":1,"maxLength":128}},"required":["event_id"],"additionalProperties":false},"annotations":{"readOnlyHint":true,"destructiveHint":false,"idempotentHint":true,"openWorldHint":false}},
-{"name":"session_follow","description":"Read-only AOP-004: return one exact page of meaningful changes since an orientation anchor. Protected coverage, obligation and effect-uncertainty classes and exact continuations remain in the unchanged fss/1 envelope. Optional wait_ms bounds synchronous waiting on certified quiet; any authority advance requires resnapshot. This is not a live subscription.","inputSchema":{"type":"object","properties":{"since":{"type":"string","minLength":1,"maxLength":256},"view":{"type":"string","enum":["pulse","brief"]},"max_entries":{"type":"integer","minimum":1,"maximum":4096},"continuation":{"type":"string","minLength":1,"maxLength":256},"wait_ms":{"type":"integer","minimum":1,"maximum":10000}},"required":["since"],"additionalProperties":false},"annotations":{"readOnlyHint":true,"destructiveHint":false,"idempotentHint":true,"openWorldHint":false}},
+{"name":"session_follow","description":"AOP-004: return one exact page of meaningful changes in the unchanged fss/1 envelope. Ordinary follow is read-only; wait_ms bounds synchronous waiting on certified quiet. With session and subscription, retain pending adjacent-history delivery in the agent journal and advance only with its exact acknowledge receipt. Unacknowledged pages survive disconnect and restart. Both journals advancing without retained interleaving requires resnapshot; no transition order is invented.","inputSchema":{"type":"object","properties":{"since":{"type":"string","minLength":1,"maxLength":256},"view":{"type":"string","enum":["pulse","brief"]},"max_entries":{"type":"integer","minimum":1,"maximum":4096},"continuation":{"type":"string","minLength":1,"maxLength":256},"wait_ms":{"type":"integer","minimum":1,"maximum":10000},"session":{"type":"string","minLength":1,"maxLength":128},"subscription":{"type":"string","minLength":1,"maxLength":128},"acknowledge":{"type":"string","minLength":71,"maxLength":71}},"required":["since"],"additionalProperties":false},"annotations":{"readOnlyHint":false,"destructiveHint":false,"idempotentHint":true,"openWorldHint":false}},
 {"name":"query","description":"Read-only AOP-005: exact conjunctive query of the latest verified committed event records. Returns the unchanged CLI AgentResponseEnvelope with protected context. Empty matches never certify physical absence. Nanosecond endpoints are canonical decimal strings to preserve signed 128-bit precision. Continuations require unchanged filters, principal, page size and authority/effect-history head.","inputSchema":{"type":"object","properties":{"event_id":{"type":"string","minLength":1,"maxLength":128},"kind":{"type":"string","enum":["perimeter_breach","covert_approach","sensor_tamper","unknown_presence","benign_routine","unclassified"]},"state":{"type":"string","enum":["hypothesized","witnessed","corroborated","adjudicated","alert_delivered","resolved","indeterminate","rejected"]},"zone":{"type":"string","minLength":1,"maxLength":64},"from_ns":{"type":"string","pattern":"^(0|-?[1-9][0-9]*)$","maxLength":40},"through_ns":{"type":"string","pattern":"^(0|-?[1-9][0-9]*)$","maxLength":40},"max_entries":{"type":"integer","minimum":1,"maximum":32},"anchor":{"type":"string","minLength":1,"maxLength":256},"continuation":{"type":"string","minLength":1,"maxLength":256}},"additionalProperties":false},"annotations":{"readOnlyHint":true,"destructiveHint":false,"idempotentHint":true,"openWorldHint":false}},
 {"name":"wait","description":"Read-only AOP-009: wait, bounded to 10 s, until one effect operation leaves its current state, polling the committed effect journal without writing or locking. Returns the unchanged fss/1 AgentResponseEnvelope carrying the operation receipt; an unchanged operation at the deadline is a partial answer with ERR-OP-TIMEOUT-001 (silence is not completion). Never prepares, commits, resends or cancels anything.","inputSchema":{"type":"object","properties":{"operation_id":{"type":"string","minLength":1,"maxLength":128},"deadline_ms":{"type":"integer","minimum":1,"maximum":10000}},"required":["operation_id","deadline_ms"],"additionalProperties":false},"annotations":{"readOnlyHint":true,"destructiveHint":false,"idempotentHint":true,"openWorldHint":false}},
 {"name":"doctor","description":"Read-only AOP-014 reference diagnosis of the fixed deployment. Returns the existing fss.doctor.v1 report, not an AgentResponseEnvelope. Does not repair, create directories, acquire locks or execute affordances.","inputSchema":{"type":"object","properties":{},"additionalProperties":false},"annotations":{"readOnlyHint":true,"destructiveHint":false,"idempotentHint":true,"openWorldHint":false}}
@@ -143,7 +144,7 @@ impl Server {
         }
         self.phase = Phase::AwaitingInitialized;
         Ok(format!(
-            "{{\"protocolVersion\":\"{PROTOCOL_VERSION}\",\"capabilities\":{{\"tools\":{{\"listChanged\":false}}}},\"serverInfo\":{{\"name\":\"fss-mcp\",\"version\":\"{}\"}},\"instructions\":\"Local read-only reference adapter, not production-qualified. The launching operator fixes the deployment root and principal audit label. Tool results retain existing FSS evidence and uncertainty semantics; they grant no effect authority. No mutation, subscriptions, remote authentication or in-flight cancellation is implemented.\"}}",
+            "{{\"protocolVersion\":\"{PROTOCOL_VERSION}\",\"capabilities\":{{\"tools\":{{\"listChanged\":false}}}},\"serverInfo\":{{\"name\":\"fss-mcp\",\"version\":\"{}\"}},\"instructions\":\"Local reference adapter, not production-qualified. The launching operator fixes the deployment root and principal audit label. Tool results retain existing FSS evidence and uncertainty semantics; they grant no effect authority. Only explicit durable follow subscriptions update agent session delivery state. No remote authentication or in-flight cancellation is implemented.\"}}",
             env!("CARGO_PKG_VERSION")
         ))
     }
@@ -202,7 +203,16 @@ impl Server {
             "session_follow" => {
                 if !only(
                     args,
-                    &["since", "view", "max_entries", "continuation", "wait_ms"],
+                    &[
+                        "since",
+                        "view",
+                        "max_entries",
+                        "continuation",
+                        "wait_ms",
+                        "session",
+                        "subscription",
+                        "acknowledge",
+                    ],
                 ) {
                     return Err((-32602, "Unexpected follow argument"));
                 }
@@ -230,6 +240,16 @@ impl Server {
                         fss_reference::agent_follow::wait::MAX_FOLLOW_WAIT_MS,
                     )?;
                     argv.push(format!("--wait-ms={n}").into());
+                }
+                for (field, option, maximum) in [
+                    ("session", "--session", 128),
+                    ("subscription", "--subscription", 128),
+                    ("acknowledge", "--acknowledge", 71),
+                ] {
+                    if let Some(value) = args.get(field) {
+                        let text = bounded_text(Some(value), maximum)?;
+                        argv.push(format!("{option}={text}").into());
+                    }
                 }
                 // The canonical parser and follow engine validate spelling, lineage, binding,
                 // freshness, stream identity and the wait/continuation exclusion. The transport
@@ -870,6 +890,169 @@ mod tests {
         assert!(
             response.is_some_and(|response| response.contains(&quote(envelope))
                 && response.contains("\"isError\":true"))
+        );
+    }
+
+    #[test]
+    fn durable_follow_preserves_owned_ack_scope_and_native_delivery_or_refusal()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let mut server = ready();
+        let anchor = format!("anchor:{}:0:none:{}", "a".repeat(16), "b".repeat(64));
+        let receipt = fss_core::ContentDigest::sha256(b"exact pending follow delivery");
+        let envelope = format!(
+            r#"{{"schema":"fss.agent_response_envelope.v1","sessionId":"session:watch-owner","classes":["coverage_loss","effect_uncertainty"],"continuation":"continuation:follow-ack:{}","proofPointers":["follow-delivery:{}"]}}"#,
+            receipt.to_text(),
+            receipt.to_text(),
+        );
+        let refused = format!(
+            r#"{{"outcome":"partial","errorId":"ERR-AGENT-RESNAPSHOT-001","payload":null,"resnapshotRequired":true,"proofPointers":["follow-acknowledged:{}"]}}"#,
+            receipt.to_text(),
+        );
+        let mut calls = 0;
+        for (ack, expected, exit) in [
+            (None, envelope.as_str(), ExitIdentity::SUCCESS),
+            (Some(receipt), refused.as_str(), ExitIdentity::AGENT_REFUSED),
+        ] {
+            let acknowledgement = ack.map_or_else(String::new, |value| {
+                format!(",\"acknowledge\":{}", quote(&value.to_text()))
+            });
+            let request = format!(
+                r#"{{"jsonrpc":"2.0","id":12,"method":"tools/call","params":{{"name":"session_follow","arguments":{{"since":{},"session":"session:watch-owner","subscription":"overnight:door","view":"brief","max_entries":1{acknowledgement}}}}}}}"#,
+                quote(&anchor),
+            );
+            let response = server
+                .handle_with(&request, |command| {
+                    calls += 1;
+                    let FssCommand::Follow(args) = command else {
+                        unreachable!("durable follow uses the canonical command");
+                    };
+                    assert_eq!(args.root, std::path::PathBuf::from("/owner/deployment"));
+                    assert_eq!(args.principal.as_str(), "principal:local-operator");
+                    assert_eq!(args.since.as_str(), anchor);
+                    assert_eq!(args.view, fss_core::AgentView::Brief);
+                    assert_eq!(args.max_entries, 1);
+                    assert_eq!(args.continuation, None);
+                    assert_eq!(args.wait_ms, None);
+                    let scope = args
+                        .subscription
+                        .as_ref()
+                        .expect("durable subscription scope");
+                    assert_eq!(scope.session_id.as_str(), "session:watch-owner");
+                    assert_eq!(scope.subscription_id, "overnight:door");
+                    assert_eq!(scope.acknowledge, ack);
+                    (expected.to_owned(), exit)
+                })
+                .ok_or("missing tool response")?;
+            let wire = fss_cli::json_input::parse(&response)?;
+            let result = wire
+                .object()
+                .and_then(|value| value.get("result"))
+                .and_then(fss_cli::json_input::Value::object)
+                .ok_or("tool result")?;
+            assert_eq!(
+                result
+                    .get("isError")
+                    .and_then(fss_cli::json_input::Value::boolean),
+                Some(ack.is_some())
+            );
+            let content = result
+                .get("content")
+                .and_then(fss_cli::json_input::Value::array)
+                .ok_or("content")?;
+            assert_eq!(content.len(), 1);
+            assert_eq!(
+                content[0]
+                    .object()
+                    .and_then(|value| value.get("text"))
+                    .and_then(fss_cli::json_input::Value::text),
+                Some(expected)
+            );
+        }
+        assert_eq!(
+            calls, 2,
+            "the transport does not replay or acknowledge on its own"
+        );
+
+        let tools = fss_cli::json_input::parse(TOOLS)?;
+        let follow = tools
+            .object()
+            .and_then(|value| value.get("tools"))
+            .and_then(fss_cli::json_input::Value::array)
+            .ok_or("tool list")?
+            .iter()
+            .filter_map(fss_cli::json_input::Value::object)
+            .find(|tool| {
+                tool.get("name").and_then(fss_cli::json_input::Value::text)
+                    == Some("session_follow")
+            })
+            .ok_or("follow tool")?;
+        let annotations = follow
+            .get("annotations")
+            .and_then(fss_cli::json_input::Value::object)
+            .ok_or("annotations")?;
+        assert_eq!(
+            annotations
+                .get("readOnlyHint")
+                .and_then(fss_cli::json_input::Value::boolean),
+            Some(false)
+        );
+        let properties = follow
+            .get("inputSchema")
+            .and_then(fss_cli::json_input::Value::object)
+            .and_then(|schema| schema.get("properties"))
+            .and_then(fss_cli::json_input::Value::object)
+            .ok_or("follow properties")?;
+        for required in ["session", "subscription", "acknowledge"] {
+            assert!(
+                properties.contains_key(required),
+                "discoverable durable field {required}"
+            );
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn durable_follow_never_acknowledges_notifications_or_unowned_scope() {
+        let mut server = ready();
+        let anchor = format!("anchor:{}:0:none:{}", "a".repeat(16), "b".repeat(64));
+        let receipt = fss_core::ContentDigest::sha256(b"explicit pending delivery").to_text();
+        let mut calls = 0;
+        for extra in [
+            r#", "session":"session:owner""#.to_owned(),
+            r#", "subscription":"watch""#.to_owned(),
+            format!(r#", "acknowledge":{}"#, quote(&receipt)),
+            r#", "session":"session:owner", "subscription":"watch", "continuation":"continuation:unowned""#.to_owned(),
+            r#", "session":"session:owner", "subscription":"watch", "wait_ms":1"#.to_owned(),
+            r#", "session":"session:owner", "subscription":"watch", "acknowledge":"sha256:invalid""#.to_owned(),
+            r#", "session":"--root=/other", "subscription":"watch""#.to_owned(),
+            r#", "session":"session:owner", "subscription":"watch", "principal":"principal:other""#.to_owned(),
+            r#", "session":"session:owner", "subscription":"watch", "root":"/other""#.to_owned(),
+        ] {
+            let request = format!(
+                r#"{{"jsonrpc":"2.0","id":13,"method":"tools/call","params":{{"name":"session_follow","arguments":{{"since":{}{extra}}}}}}}"#,
+                quote(&anchor),
+            );
+            let response = server.handle_with(&request, |_| {
+                calls += 1;
+                ("{}".to_owned(), ExitIdentity::SUCCESS)
+            });
+            assert!(response.is_some_and(|reply| reply.contains("-32602")), "{extra}");
+        }
+        let notification = format!(
+            r#"{{"jsonrpc":"2.0","method":"tools/call","params":{{"name":"session_follow","arguments":{{"since":{},"session":"session:owner","subscription":"watch","acknowledge":{}}}}}}}"#,
+            quote(&anchor),
+            quote(&receipt),
+        );
+        assert_eq!(
+            server.handle_with(&notification, |_| {
+                calls += 1;
+                ("{}".to_owned(), ExitIdentity::SUCCESS)
+            }),
+            None
+        );
+        assert_eq!(
+            calls, 0,
+            "invalid scope and no-response notifications never reach durable ACK state"
         );
     }
 
