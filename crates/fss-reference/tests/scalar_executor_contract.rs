@@ -1323,7 +1323,13 @@ fn test_formerly_unsupported_opcodes_execute_and_unknown_gelu_mode_is_refused()
     // (exact for data movement, kernel-primitive-exact for activations). [fss-aj72f]
     #[allow(clippy::abs_diff_eq)]
     fn ulp_diff(a: f32, b: f32) -> u32 {
-        let key = |v: u32| if v & 0x8000_0000 != 0 { !v } else { v ^ 0x8000_0000 };
+        let key = |v: u32| {
+            if v & 0x8000_0000 != 0 {
+                !v
+            } else {
+                v ^ 0x8000_0000
+            }
+        };
         key(a.to_bits()).abs_diff(key(b.to_bits()))
     }
 
@@ -1338,8 +1344,12 @@ fn test_formerly_unsupported_opcodes_execute_and_unknown_gelu_mode_is_refused()
     ) -> Result<(), Box<dyn Error>> {
         let mut builder = ModelIrGraph::builder("g_formerly_unsupported", g);
         for (name, tensor) in &inputs {
-            builder = builder
-                .add_input(TensorPort::new(*name, tensor.dtype(), tensor.shape().clone(), g)?);
+            builder = builder.add_input(TensorPort::new(
+                *name,
+                tensor.dtype(),
+                tensor.shape().clone(),
+                g,
+            )?);
         }
         let node = GraphNode::new(
             "n_formerly_unsupported",
@@ -1350,7 +1360,12 @@ fn test_formerly_unsupported_opcodes_execute_and_unknown_gelu_mode_is_refused()
             attrs,
         )?;
         let graph = builder
-            .add_output(TensorPort::new("out0", DType::F32, Shape::new(out_shape)?, g)?)
+            .add_output(TensorPort::new(
+                "out0",
+                DType::F32,
+                Shape::new(out_shape)?,
+                g,
+            )?)
             .add_node(node)
             .build_and_validate()
             .map_err(|e| format!("{op:?} graph must validate, got {e:?}"))?;
@@ -1363,11 +1378,7 @@ fn test_formerly_unsupported_opcodes_execute_and_unknown_gelu_mode_is_refused()
             .get("out0")
             .ok_or_else(|| format!("{op:?} output out0 missing"))?;
         let values = y.to_vec::<f32>()?;
-        assert_eq!(
-            values.len(),
-            expected.len(),
-            "{op:?} output element count"
-        );
+        assert_eq!(values.len(), expected.len(), "{op:?} output element count");
         for (index, (got, want)) in values.iter().zip(expected.iter()).enumerate() {
             assert!(
                 ulp_diff(*got, *want) <= max_ulps,
@@ -1389,7 +1400,10 @@ fn test_formerly_unsupported_opcodes_execute_and_unknown_gelu_mode_is_refused()
         g,
         OpCode::Silu,
         AttributeMap::new(),
-        vec![("in0", Tensor::from_values(Shape::new(vec![2, 4, 8])?, &ramp64, g)?)],
+        vec![(
+            "in0",
+            Tensor::from_values(Shape::new(vec![2, 4, 8])?, &ramp64, g)?,
+        )],
         vec![2, 4, 8],
         &silu_expected,
         1,
@@ -1401,7 +1415,10 @@ fn test_formerly_unsupported_opcodes_execute_and_unknown_gelu_mode_is_refused()
         g,
         OpCode::Tanh,
         AttributeMap::new(),
-        vec![("in0", Tensor::from_values(Shape::new(vec![2, 4, 8])?, &ramp64, g)?)],
+        vec![(
+            "in0",
+            Tensor::from_values(Shape::new(vec![2, 4, 8])?, &ramp64, g)?,
+        )],
         vec![2, 4, 8],
         &tanh_expected,
         1,
@@ -1417,15 +1434,15 @@ fn test_formerly_unsupported_opcodes_execute_and_unknown_gelu_mode_is_refused()
         }
     }
     let mut transpose_attrs = AttributeMap::new();
-    transpose_attrs.insert(
-        "permutation".to_string(),
-        AttrValue::IntList(vec![0, 2, 1]),
-    );
+    transpose_attrs.insert("permutation".to_string(), AttrValue::IntList(vec![0, 2, 1]));
     run_former_op(
         g,
         OpCode::Transpose,
         transpose_attrs,
-        vec![("in0", Tensor::from_values(Shape::new(vec![2, 4, 8])?, &ramp64, g)?)],
+        vec![(
+            "in0",
+            Tensor::from_values(Shape::new(vec![2, 4, 8])?, &ramp64, g)?,
+        )],
         vec![2, 8, 4],
         &transpose_expected,
         0,
@@ -1439,7 +1456,10 @@ fn test_formerly_unsupported_opcodes_execute_and_unknown_gelu_mode_is_refused()
         g,
         OpCode::Squeeze,
         squeeze_attrs,
-        vec![("in0", Tensor::from_values(Shape::new(vec![2, 1, 8])?, &ramp16, g)?)],
+        vec![(
+            "in0",
+            Tensor::from_values(Shape::new(vec![2, 1, 8])?, &ramp16, g)?,
+        )],
         vec![2, 8],
         &ramp16,
         0,
@@ -1452,7 +1472,10 @@ fn test_formerly_unsupported_opcodes_execute_and_unknown_gelu_mode_is_refused()
         g,
         OpCode::Unsqueeze,
         unsqueeze_attrs,
-        vec![("in0", Tensor::from_values(Shape::new(vec![2, 4, 8])?, &ramp64, g)?)],
+        vec![(
+            "in0",
+            Tensor::from_values(Shape::new(vec![2, 4, 8])?, &ramp64, g)?,
+        )],
         vec![2, 1, 4, 8],
         &ramp64,
         0,
@@ -1470,8 +1493,14 @@ fn test_formerly_unsupported_opcodes_execute_and_unknown_gelu_mode_is_refused()
         OpCode::Concat,
         concat_attrs,
         vec![
-            ("in0", Tensor::from_values(Shape::new(vec![2, 4, 8])?, &a_vals, g)?),
-            ("in1", Tensor::from_values(Shape::new(vec![2, 4, 8])?, &b_vals, g)?),
+            (
+                "in0",
+                Tensor::from_values(Shape::new(vec![2, 4, 8])?, &a_vals, g)?,
+            ),
+            (
+                "in1",
+                Tensor::from_values(Shape::new(vec![2, 4, 8])?, &b_vals, g)?,
+            ),
         ],
         vec![4, 4, 8],
         &concat_expected,
@@ -1492,7 +1521,10 @@ fn test_formerly_unsupported_opcodes_execute_and_unknown_gelu_mode_is_refused()
         g,
         OpCode::Slice,
         slice_attrs,
-        vec![("in0", Tensor::from_values(Shape::new(vec![3, 4, 8])?, &ramp96, g)?)],
+        vec![(
+            "in0",
+            Tensor::from_values(Shape::new(vec![3, 4, 8])?, &ramp96, g)?,
+        )],
         vec![1, 4, 8],
         &slice_expected,
         0,
@@ -1505,7 +1537,10 @@ fn test_formerly_unsupported_opcodes_execute_and_unknown_gelu_mode_is_refused()
         g,
         OpCode::LayerNorm,
         AttributeMap::new(),
-        vec![("in0", Tensor::from_values(Shape::new(vec![2, 4, 8])?, &zeros64, g)?)],
+        vec![(
+            "in0",
+            Tensor::from_values(Shape::new(vec![2, 4, 8])?, &zeros64, g)?,
+        )],
         vec![2, 4, 8],
         &zeros64,
         0,
@@ -1514,7 +1549,10 @@ fn test_formerly_unsupported_opcodes_execute_and_unknown_gelu_mode_is_refused()
         g,
         OpCode::RMSNorm,
         AttributeMap::new(),
-        vec![("in0", Tensor::from_values(Shape::new(vec![2, 4, 8])?, &zeros64, g)?)],
+        vec![(
+            "in0",
+            Tensor::from_values(Shape::new(vec![2, 4, 8])?, &zeros64, g)?,
+        )],
         vec![2, 4, 8],
         &zeros64,
         0,
@@ -1537,7 +1575,10 @@ fn test_formerly_unsupported_opcodes_execute_and_unknown_gelu_mode_is_refused()
         OpCode::Embedding,
         embed_attrs,
         vec![
-            ("in0", Tensor::from_values(Shape::new(vec![2, 4])?, &indices, g)?),
+            (
+                "in0",
+                Tensor::from_values(Shape::new(vec![2, 4])?, &indices, g)?,
+            ),
             (
                 "in1",
                 Tensor::from_values(Shape::new(vec![100, 8])?, &weights, g)?,
