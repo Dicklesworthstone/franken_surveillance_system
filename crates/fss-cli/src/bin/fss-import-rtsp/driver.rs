@@ -14,12 +14,15 @@ use fss_publication::{LocalPublicationLimits, LocalRootPublisher};
 use fss_reference::ingest::rtsp_import::catalog::{
     RtspCatalogImportAuthority, RtspCatalogImportRequest, import_rtsp_catalog,
 };
+use fss_reference::ingest::rtsp_import::pages::{
+    RtspCatalogPagesImportAuthority, RtspCatalogPagesImportRequest, import_rtsp_catalog_pages,
+};
 use fss_reference::ingest::rtsp_import::{
     MAX_ORIGINAL_BYTES, RtspImportAuthority, RtspImportRequest, import_rtsp,
 };
 use fss_reference::{ReferenceDeployment, ReplayCx};
 
-use super::plan::{CAPS, CATALOG_FORMAT, FORMAT, Options};
+use super::plan::{CAPS, CATALOG_FORMAT, FORMAT, Options, PAGES_FORMAT, page_selection_json};
 
 struct Owner<'a> {
     options: &'a Options,
@@ -30,6 +33,7 @@ struct Owner<'a> {
 impl RtspImportAuthority for Owner<'_> {
     fn permit(&self, request: &RtspImportRequest, destination: &ReferenceDeployment) -> bool {
         self.options.catalog.is_none()
+            && self.options.pages.is_none()
             && request
                 .digest()
                 .is_ok_and(|digest| self.options.request.digest().ok() == Some(digest))
@@ -51,6 +55,27 @@ impl RtspCatalogImportAuthority for Owner<'_> {
     ) -> bool {
         self.options
             .catalog
+            .as_ref()
+            .is_some_and(|expected| request.digest().ok() == expected.digest().ok())
+            && request.digest().is_ok()
+            && destination.root() == self.options.root
+            && destination.site_lineage() == self.options.site
+            && self.authority.cancellation_reason.is_none()
+            && CAPS
+                .iter()
+                .all(|capability| self.authority.has_capability(capability))
+            && boundary(self.options, self.cx, self.start).is_ok()
+    }
+}
+
+impl RtspCatalogPagesImportAuthority for Owner<'_> {
+    fn permit(
+        &self,
+        request: &RtspCatalogPagesImportRequest,
+        destination: &ReferenceDeployment,
+    ) -> bool {
+        self.options
+            .pages
             .as_ref()
             .is_some_and(|expected| request.digest().ok() == expected.digest().ok())
             && request.digest().is_ok()
@@ -170,7 +195,15 @@ fn execute_authorized(
         start,
     };
     let mut work = WorkBudget::new(options.work);
-    let (receipt, catalog_result) = if let Some(request) = &options.catalog {
+    let (receipt, catalog_result) = if let Some(request) = &options.pages {
+        let result =
+            import_rtsp_catalog_pages(&source, &mut destination, request, &owner, cx, &mut work)
+                .map_err(|error| error.stable_id())?;
+        (
+            result.catalog.import,
+            Some((result.catalog.windows, result.catalog.decode_interval)),
+        )
+    } else if let Some(request) = &options.catalog {
         let result = import_rtsp_catalog(&source, &mut destination, request, &owner, cx, &mut work)
             .map_err(|error| error.stable_id())?;
         (
@@ -193,7 +226,9 @@ fn execute_authorized(
     let mut fields = vec![
         (
             "format",
-            string(if options.catalog.is_some() {
+            string(if options.pages.is_some() {
+                PAGES_FORMAT
+            } else if options.catalog.is_some() {
                 CATALOG_FORMAT
             } else {
                 FORMAT
@@ -212,7 +247,9 @@ fn execute_authorized(
         ),
         ("origin_proof", string(&receipt.proof.to_text())),
         (
-            if options.catalog.is_some() {
+            if options.pages.is_some() {
+                "first_catalog_slot"
+            } else if options.catalog.is_some() {
                 "catalog_slot"
             } else {
                 "window_slot"
@@ -220,7 +257,9 @@ fn execute_authorized(
             string(options.request.slot.as_str()),
         ),
         (
-            if options.catalog.is_some() {
+            if options.pages.is_some() {
+                "first_catalog_root"
+            } else if options.catalog.is_some() {
                 "catalog_root"
             } else {
                 "window_root"
@@ -240,17 +279,26 @@ fn execute_authorized(
         ("network", string("none")),
         ("work_used", work.used().to_string()),
     ];
-    if let (Some(request), Some((windows, interval))) = (&options.catalog, catalog_result) {
+    let scope = options
+        .catalog
+        .as_ref()
+        .map(|r| &r.scope)
+        .or_else(|| options.pages.as_ref().map(|r| &r.scope));
+    if let (Some(scope), Some((windows, interval))) = (scope, catalog_result) {
         fields.extend([
             ("windows", windows.to_string()),
-            (
-                "decode_clock",
-                string(&request.scope.decode_clock.to_text()),
-            ),
-            ("time_scale", request.scope.time_scale.to_string()),
+            ("decode_clock", string(&scope.decode_clock.to_text())),
+            ("time_scale", scope.time_scale.to_string()),
             ("decode_start", string(&interval.start.to_string())),
             ("decode_end", string(&interval.end.to_string())),
             ("destination_contains_complete_catalog", "true".into()),
+        ]);
+    }
+    if let Some(request) = &options.pages {
+        fields.extend([
+            ("pages", request.pages.len().to_string()),
+            ("catalog_pages", page_selection_json(request)),
+            ("destination_contains_complete_catalog_pages", "true".into()),
         ]);
     }
     Ok(object(&fields))

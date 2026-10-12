@@ -17,7 +17,8 @@ const HELP: &str = "fss-import-rtsp --archive EXISTING_ABSOLUTE_ARCHIVE --root A
   --codec avc|hevc\n\
   Select a window: --window-slot SLOT --window-root sha256:HEX\n\
   Or a whole catalog: --catalog-slot SLOT --catalog-root sha256:HEX\n\
-                     --decode-clock sha256:HEX --time-scale N [--max-windows 64]\n\
+  Or exact whole pages: --catalog-pages SLOT@sha256:HEX,SLOT@sha256:HEX [--max-pages 64]\n\
+  Both catalog selections: --decode-clock sha256:HEX --time-scale N [--max-windows 64]\n\
   --sensor-id ID --stream-id ID --generation N --anchor sha256:HEX --receive-clock sha256:HEX\n\
   --receive-time-ns N --owner-authorized yes --read-originals yes --retain-originals yes\n\
   [--approve sha256:PLAN] [--principal ID]\n\
@@ -26,8 +27,9 @@ const HELP: &str = "fss-import-rtsp --archive EXISTING_ABSOLUTE_ARCHIVE --root A
   RTP ticks and receive clocks do not establish a capture origin.\n\
   Bounds: --max-frames 256 --max-original-bytes 33554432 --max-media-bytes 33554432\n\
           --max-work 1000000000000 --timeout-ms 30000.\n\
-  Whole-catalog bounds default to 64 windows, 16384 frames, 134217728 original bytes\n\
-  and 67108864 reconstructed media bytes. Oversized, gapped or reconfigured pages refuse.\n\
+  Catalog bounds cover the entire selection: 64 windows, 16384 frames, 134217728 original\n\
+  bytes and 67108864 reconstructed media bytes. Page lists admit at most 64 complete pages\n\
+  in exact decode order. Duplicate, oversized, gapped or reconfigured selections refuse.\n\
   Without --approve: exact plan preview without filesystem, clock or network I/O.\n\
   Approved execution verifies the original RTP-to-NAL-to-MP4 mapping and retains the\n\
   original recording root, RTP source pack, index, initialization and media fragment.\n\
@@ -42,7 +44,8 @@ const HELP: &str = "fss-import-rtsp --archive EXISTING_ABSOLUTE_ARCHIVE --root A
   The timeout is cooperative at custody boundaries; one bounded native verifier is not preempted.\n";
 
 fn emit(text: &str) -> io::Result<()> {
-    if text.len() > 16 * 1024 {
+    // A full 64-page plan includes every exact slot/root plus bounded paths and JSON escaping.
+    if text.len() > 64 * 1024 {
         return Err(io::ErrorKind::InvalidData.into());
     }
     let mut out = io::stdout().lock();

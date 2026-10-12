@@ -66,7 +66,7 @@ fn field<'a>(text: &'a str, key: &str) -> Test<&'a str> {
     Ok(value.split_once('"').ok_or("unterminated fixture field")?.0)
 }
 
-fn publish(directory: &Directory) -> Test<HevcRecordingCatalog> {
+fn publish(directory: &Directory, separate_pages: bool) -> Test<Vec<HevcRecordingCatalog>> {
     let first = hevc_recording_support::fixture()?;
     let mut packets = hevc_recording_support::packets()?;
     for p in &mut packets {
@@ -112,40 +112,61 @@ fn publish(directory: &Directory) -> Test<HevcRecordingCatalog> {
             RecordingProgress::Published(_)
         ));
     }
-    let catalog = prepare_hevc_catalog(
-        CatalogScope {
-            recording: first.summary().scope.clone(),
-            decode_clock: ContentDigest::sha256(b"cli-explicit-decode-epoch"),
-            time_scale: 90_000,
-        },
-        &[
-            HevcCatalogWindow {
-                slot: &a,
-                recording: &first,
-            },
-            HevcCatalogWindow {
-                slot: &b,
-                recording: &second,
-            },
-        ],
-    )?;
-    let mut job = HevcCatalogPublication::new(
-        &catalog,
-        &mut source,
-        SlotName::parse("whole-catalog")?,
-        catalog.byte_len(),
-        100,
-    )?;
-    for now in 0..3 {
-        let _ = job.step(now, &NeverCancel)?;
+    let scope = CatalogScope {
+        recording: first.summary().scope.clone(),
+        decode_clock: ContentDigest::sha256(b"cli-explicit-decode-epoch"),
+        time_scale: 90_000,
+    };
+    let catalogs = if separate_pages {
+        vec![
+            prepare_hevc_catalog(
+                scope.clone(),
+                &[HevcCatalogWindow {
+                    slot: &a,
+                    recording: &first,
+                }],
+            )?,
+            prepare_hevc_catalog(
+                scope,
+                &[HevcCatalogWindow {
+                    slot: &b,
+                    recording: &second,
+                }],
+            )?,
+        ]
+    } else {
+        vec![prepare_hevc_catalog(
+            scope,
+            &[
+                HevcCatalogWindow {
+                    slot: &a,
+                    recording: &first,
+                },
+                HevcCatalogWindow {
+                    slot: &b,
+                    recording: &second,
+                },
+            ],
+        )?]
+    };
+    for (index, catalog) in catalogs.iter().enumerate() {
+        let slot = if index == 0 {
+            SlotName::parse("whole-catalog")?
+        } else {
+            SlotName::parse(&format!("whole-catalog-{index}"))?
+        };
+        let mut job =
+            HevcCatalogPublication::new(catalog, &mut source, slot, catalog.byte_len(), 100)?;
+        for now in 0..catalog.entries().len() as u64 + 1 {
+            let _ = job.step(now, &NeverCancel)?;
+        }
+        assert!(matches!(
+            job.step(catalog.entries().len() as u64 + 1, &NeverCancel)?,
+            CatalogProgress::Published(_)
+        ));
     }
-    assert!(matches!(
-        job.step(3, &NeverCancel)?,
-        CatalogProgress::Published(_)
-    ));
-    drop(job);
     drop(source);
-    Ok(catalog)
+    Ok(catalogs)
 }
 fn arguments(directory: &Directory, catalog: &HevcRecordingCatalog) -> Test<Vec<OsString>> {
     let scope = catalog.scope();
@@ -202,17 +223,102 @@ fn arguments(directory: &Directory, catalog: &HevcRecordingCatalog) -> Test<Vec<
 
 #[test]
 fn complete_catalog_import_retries_and_cold_decodes_after_source_archive_goes_offline() -> Test {
+    assert_import_workflow(false)
+}
+
+#[test]
+fn complete_page_list_import_retries_and_cold_decodes_both_catalogs_without_the_archive() -> Test {
+    assert_import_workflow(true)
+}
+
+#[test]
+fn maximum_page_list_preview_emits_every_pin_without_creating_either_store() -> Test {
     let directory = Directory::new()?;
-    let catalog = publish(&directory)?;
+    let recording = hevc_recording_support::fixture()?;
+    let catalog = prepare_hevc_catalog(
+        CatalogScope {
+            recording: recording.summary().scope.clone(),
+            decode_clock: ContentDigest::sha256(b"preview-decode-clock"),
+            time_scale: 90_000,
+        },
+        &[HevcCatalogWindow {
+            slot: &SlotName::parse("preview-window")?,
+            recording: &recording,
+        }],
+    )?;
+    let mut args = arguments(&directory, &catalog)?;
+    for key in ["--catalog-slot", "--catalog-root"] {
+        let position = args
+            .iter()
+            .position(|arg| arg == key)
+            .ok_or("catalog selector")?;
+        args.drain(position..position + 2);
+    }
+    let entries: Vec<_> = (0..64_u32)
+        .map(|index| {
+            format!(
+                "{index:03}{}@{}",
+                "a".repeat(fss_publication::MAX_SLOT_NAME_BYTES - 3),
+                ContentDigest::sha256(&index.to_be_bytes()).to_text(),
+            )
+        })
+        .collect();
+    let pages = entries.join(",");
+    assert_eq!(pages.len(), 12_863);
+    args.extend(["--catalog-pages".into(), pages.into()]);
+    // Pure preview accepts bounded path strings without requiring those owners to exist.
+    let archive = directory.0.join("\"".repeat(1800));
+    let position = args
+        .iter()
+        .position(|arg| arg == "--archive")
+        .ok_or("archive option")?;
+    args[position + 1] = archive.as_os_str().to_owned();
+    let preview = good(run(&args)?)?;
+    assert!(preview.len() > 16 * 1024);
+    assert!(preview.len() < 64 * 1024);
+    assert_eq!(preview.matches("\"slot\":").count(), 64);
+    assert!(preview.contains("\"pages\":64"));
+    assert!(preview.contains("\"writes\":\"none\""));
+    assert!(!archive.exists());
+    assert!(!directory.0.join("destination").exists());
+    Ok(())
+}
+
+fn assert_import_workflow(separate_pages: bool) -> Test {
+    let directory = Directory::new()?;
+    let catalogs = publish(&directory, separate_pages)?;
+    let catalog = catalogs.first().ok_or("catalog")?;
     let root = directory.0.join("destination");
     let archive = directory.0.join("source archive");
-    let mut args = arguments(&directory, &catalog)?;
+    let mut args = arguments(&directory, catalog)?;
+    if separate_pages {
+        for key in ["--catalog-slot", "--catalog-root"] {
+            let position = args
+                .iter()
+                .position(|arg| arg == key)
+                .ok_or("catalog selector")?;
+            args.drain(position..position + 2);
+        }
+        let pages = format!(
+            "whole-catalog@{},whole-catalog-1@{}",
+            catalogs[0].manifest().root().to_text(),
+            catalogs[1].manifest().root().to_text()
+        );
+        args.extend(["--catalog-pages".into(), pages.into()]);
+    }
     let preview = good(run(&args)?)?;
     assert!(!root.exists());
-    assert!(preview.contains("\"format\":\"fss.rtsp_catalog_import_operator.v1\""));
+    if separate_pages {
+        assert!(preview.contains("\"format\":\"fss.rtsp_catalog_pages_import_operator.v1\""));
+        assert!(preview.contains("\"selection\":\"complete_ordered_catalog_pages\""));
+        assert!(preview.contains("\"pages\":2"));
+        assert_eq!(preview.matches("\"slot\":").count(), 2);
+    } else {
+        assert!(preview.contains("\"format\":\"fss.rtsp_catalog_import_operator.v1\""));
+        assert!(preview.contains("\"selection\":\"complete_catalog_page\""));
+    }
     assert!(preview.contains("\"maximum_frames\":16384"));
     assert!(preview.contains("\"maximum_windows\":64"));
-    assert!(preview.contains("\"selection\":\"complete_catalog_page\""));
     assert!(!preview.contains("\"window_root\""));
     let approval = field(&preview, "approval_digest")?.to_owned();
     let mut wrong = args.clone();
@@ -226,6 +332,11 @@ fn complete_catalog_import_retries_and_cold_decodes_after_source_archive_goes_of
     assert!(!root.exists());
     args.extend(["--approve".into(), approval.into()]);
     let imported = good(run(&args)?)?;
+    if separate_pages {
+        assert!(imported.contains("\"pages\":2"));
+        assert!(imported.contains("\"destination_contains_complete_catalog_pages\":true"));
+        assert_eq!(imported.matches("\"slot\":").count(), 2);
+    }
     assert!(imported.contains("\"windows\":2"));
     assert!(imported.contains("\"frames\":8"));
     assert!(imported.contains("\"destination_contains_complete_catalog\":true"));

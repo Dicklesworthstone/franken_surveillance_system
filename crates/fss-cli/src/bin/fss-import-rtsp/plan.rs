@@ -5,12 +5,15 @@ use std::collections::BTreeMap;
 use std::ffi::OsString;
 use std::path::PathBuf;
 
-use fss_cli::agent_json::{object, string};
+use fss_cli::agent_json::{array, object, string};
 use fss_core::{
     CanonicalEncoder, ContentDigest, DigestAlgorithm, PrincipalId, SensorId, StreamId, TimestampNs,
 };
-use fss_publication::SlotName;
+use fss_publication::{MAX_SLOT_NAME_BYTES, SlotName};
 use fss_reference::ingest::rtsp_import::catalog::{self, RtspCatalogImportRequest};
+use fss_reference::ingest::rtsp_import::pages::{
+    self, RtspCatalogPage, RtspCatalogPagesImportRequest,
+};
 use fss_reference::ingest::rtsp_import::{
     MAX_FRAMES, MAX_MEDIA_BYTES, MAX_ORIGINAL_BYTES, RtspCaptureOrigin, RtspImportCodec,
     RtspImportRequest,
@@ -20,7 +23,12 @@ use fss_reference::rtsp::recording_catalog::CatalogScope;
 
 pub(super) const FORMAT: &str = "fss.rtsp_recording_import_operator.v1";
 pub(super) const CATALOG_FORMAT: &str = "fss.rtsp_catalog_import_operator.v1";
+pub(super) const PAGES_FORMAT: &str = "fss.rtsp_catalog_pages_import_operator.v1";
 pub(super) const MAX_ARGUMENTS: usize = 64;
+// SlotName excludes '@' and ','. Every admitted list fits one bounded argv value, including
+// 64 maximum-length slots, full SHA-256 roots and separators (12,863 ASCII bytes).
+pub(super) const MAX_PAGE_ARGUMENT_BYTES: usize =
+    pages::MAX_PAGES * (MAX_SLOT_NAME_BYTES + 1 + 71 + 1) - 1;
 pub(super) const CAPS: [&str; 4] = [
     "CAP-READ-MEDIA-001",
     "CAP-OBJECT-STAGE-001",
@@ -35,6 +43,7 @@ pub(super) struct Options {
     pub principal: String,
     pub request: RtspImportRequest,
     pub catalog: Option<RtspCatalogImportRequest>,
+    pub pages: Option<RtspCatalogPagesImportRequest>,
     pub work: u64,
     pub timeout_ms: u64,
     pub approve: Option<ContentDigest>,
@@ -67,13 +76,27 @@ fn timestamp(text: &str) -> Result<TimestampNs, &'static str> {
     Ok(TimestampNs(text.parse().map_err(|_| "timestamp overflow")?))
 }
 
+fn catalog_pages(value: &str) -> Result<Vec<RtspCatalogPage>, &'static str> {
+    if value.len() > MAX_PAGE_ARGUMENT_BYTES || value.split(',').count() > pages::MAX_PAGES {
+        return Err("catalog page list bound exceeded");
+    }
+    value
+        .split(',')
+        .map(|entry| {
+            let (slot, root) = entry
+                .split_once('@')
+                .ok_or("catalog page must be SLOT@sha256:HEX")?;
+            Ok(RtspCatalogPage {
+                slot: SlotName::parse(slot).map_err(|_| "invalid catalog page slot")?,
+                root: digest(root)?,
+            })
+        })
+        .collect()
+}
+
 impl Options {
     pub fn parse(args: &[OsString]) -> Result<Self, &'static str> {
-        if args.is_empty()
-            || args.len() > MAX_ARGUMENTS
-            || !args.len().is_multiple_of(2)
-            || args.iter().any(|arg| arg.as_encoded_bytes().len() > 4096)
-        {
+        if args.is_empty() || args.len() > MAX_ARGUMENTS || !args.len().is_multiple_of(2) {
             return Err("argument count or byte bound exceeded");
         }
         let allowed = [
@@ -85,9 +108,11 @@ impl Options {
             "--window-root",
             "--catalog-slot",
             "--catalog-root",
+            "--catalog-pages",
             "--decode-clock",
             "--time-scale",
             "--max-windows",
+            "--max-pages",
             "--codec",
             "--sensor-id",
             "--stream-id",
@@ -111,6 +136,14 @@ impl Options {
         for pair in args.as_chunks::<2>().0 {
             let key = pair[0].to_str().ok_or("UTF-8 option required")?;
             let value = pair[1].to_str().ok_or("UTF-8 value required")?;
+            let maximum = if key == "--catalog-pages" {
+                MAX_PAGE_ARGUMENT_BYTES
+            } else {
+                4096
+            };
+            if key.len() > 4096 || value.len() > maximum {
+                return Err("argument byte bound exceeded");
+            }
             if !allowed.contains(&key) || value.is_empty() || value.starts_with("--") {
                 return Err("unknown option or missing value");
             }
@@ -161,9 +194,22 @@ impl Options {
             None
         };
         let _ = required("--generation")?;
+        let page_list = values
+            .get("--catalog-pages")
+            .map(|value| catalog_pages(value))
+            .transpose()?;
+        if (page_list.is_some()
+            && ["--catalog-slot", "--catalog-root"]
+                .iter()
+                .any(|key| values.contains_key(key)))
+            || (page_list.is_none() && values.contains_key("--max-pages"))
+        {
+            return Err("page lists require their own exact selector and page bound");
+        }
         let catalog_selected = [
             "--catalog-slot",
             "--catalog-root",
+            "--catalog-pages",
             "--decode-clock",
             "--time-scale",
             "--max-windows",
@@ -175,7 +221,7 @@ impl Options {
                 .iter()
                 .any(|key| values.contains_key(key))
         {
-            return Err("select one window or one complete catalog, never both");
+            return Err("select one window, one catalog or one exact page list");
         }
         let (slot_key, root_key, frame_max, original_max, media_max) = if catalog_selected {
             (
@@ -194,14 +240,24 @@ impl Options {
                 MAX_MEDIA_BYTES,
             )
         };
+        let (slot, root) = match &page_list {
+            Some(pages) => {
+                let first = pages.first().ok_or("empty catalog page list")?;
+                (first.slot.clone(), first.root)
+            }
+            None => (
+                SlotName::parse(required(slot_key)?).map_err(|_| "invalid source slot")?,
+                digest(required(root_key)?)?,
+            ),
+        };
         let request = RtspImportRequest {
             codec: match required("--codec")? {
                 "avc" => RtspImportCodec::Avc,
                 "hevc" => RtspImportCodec::Hevc,
                 _ => return Err("codec must be avc or hevc"),
             },
-            slot: SlotName::parse(required(slot_key)?).map_err(|_| "invalid source slot")?,
-            root: digest(required(root_key)?)?,
+            slot,
+            root,
             source: RecordingScope {
                 sensor: SensorId::parse(required("--sensor-id")?).map_err(|_| "invalid sensor")?,
                 stream: StreamId::parse(required("--stream-id")?).map_err(|_| "invalid stream")?,
@@ -215,7 +271,7 @@ impl Options {
             max_original_bytes: number("--max-original-bytes", original_max, original_max)?,
             max_media_bytes: number("--max-media-bytes", media_max, media_max)?,
         };
-        let catalog = if catalog_selected {
+        let mut catalog = if catalog_selected {
             let _ = required("--time-scale")?;
             let selected = RtspCatalogImportRequest {
                 codec: request.codec,
@@ -241,6 +297,31 @@ impl Options {
             Some(selected)
         } else {
             request.digest().map_err(|_| "invalid recording request")?;
+            None
+        };
+        let pages = if let Some(pages) = page_list {
+            let common = catalog.take().ok_or("catalog page scope required")?;
+            let selected = RtspCatalogPagesImportRequest {
+                codec: common.codec,
+                pages,
+                scope: common.scope,
+                receive_time: common.receive_time,
+                capture_origin: common.capture_origin,
+                max_pages: number(
+                    "--max-pages",
+                    pages::MAX_PAGES as u64,
+                    pages::MAX_PAGES as u64,
+                )? as usize,
+                max_windows: common.max_windows,
+                max_frames: common.max_frames,
+                max_original_bytes: common.max_original_bytes,
+                max_media_bytes: common.max_media_bytes,
+            };
+            selected
+                .digest()
+                .map_err(|_| "invalid catalog page selection")?;
+            Some(selected)
+        } else {
             None
         };
         let archive = path(required("--archive")?)?;
@@ -270,6 +351,7 @@ impl Options {
             principal,
             request,
             catalog,
+            pages,
             work: number("--max-work", 1_000_000_000_000, 1_000_000_000_000_000)?,
             timeout_ms: number("--timeout-ms", 30_000, 600_000)?,
             approve: values
@@ -280,6 +362,11 @@ impl Options {
     }
 
     pub fn request_digest(&self) -> Result<ContentDigest, &'static str> {
+        if let Some(request) = &self.pages {
+            return request
+                .digest()
+                .map_err(|_| "invalid catalog page selection");
+        }
         match &self.catalog {
             Some(request) => request.digest().map_err(|_| "invalid catalog request"),
             None => self
@@ -291,7 +378,9 @@ impl Options {
 
     pub fn approval(&self) -> Result<ContentDigest, &'static str> {
         let mut encoded = CanonicalEncoder::new();
-        encoded.text(if self.catalog.is_some() {
+        encoded.text(if self.pages.is_some() {
+            "fss.rtsp_catalog_pages_import_cli_plan.v1"
+        } else if self.catalog.is_some() {
             "fss.rtsp_catalog_import_cli_plan.v1"
         } else {
             "fss.rtsp_recording_import_cli_plan.v1"
@@ -312,7 +401,9 @@ impl Options {
         let mut fields = vec![
             (
                 "format",
-                string(if self.catalog.is_some() {
+                string(if self.pages.is_some() {
+                    PAGES_FORMAT
+                } else if self.catalog.is_some() {
                     CATALOG_FORMAT
                 } else {
                     FORMAT
@@ -333,7 +424,9 @@ impl Options {
             ("request_digest", string(&self.request_digest()?.to_text())),
             ("codec", string(request.codec.as_str())),
             (
-                if self.catalog.is_some() {
+                if self.pages.is_some() {
+                    "first_catalog_slot"
+                } else if self.catalog.is_some() {
                     "catalog_slot"
                 } else {
                     "window_slot"
@@ -341,7 +434,9 @@ impl Options {
                 string(request.slot.as_str()),
             ),
             (
-                if self.catalog.is_some() {
+                if self.pages.is_some() {
+                    "first_catalog_root"
+                } else if self.catalog.is_some() {
                     "catalog_root"
                 } else {
                     "window_root"
@@ -396,7 +491,9 @@ impl Options {
             ("network", string("none")),
             (
                 "retention",
-                string(if self.catalog.is_some() {
+                string(if self.pages.is_some() {
+                    "every_selected_catalog_and_every_original_window_rtp_index_initialization_and_fragment_in_destination"
+                } else if self.catalog.is_some() {
                     "complete_catalog_and_every_original_window_rtp_index_initialization_and_fragment_in_destination"
                 } else {
                     "original_recording_root_rtp_index_initialization_and_fragment_in_destination"
@@ -418,6 +515,36 @@ impl Options {
                 ),
             ]);
         }
+        if let Some(pages) = &self.pages {
+            fields.extend([
+                ("catalog_pages", page_selection_json(pages)),
+                ("pages", pages.pages.len().to_string()),
+                ("maximum_pages", pages.max_pages.to_string()),
+                ("decode_clock", string(&pages.scope.decode_clock.to_text())),
+                ("time_scale", pages.scope.time_scale.to_string()),
+                ("maximum_windows", pages.max_windows.to_string()),
+                ("selection", string("complete_ordered_catalog_pages")),
+                (
+                    "composition",
+                    string("adjacent_decode_intervals_identical_initialization"),
+                ),
+            ]);
+        }
         Ok(object(&fields))
     }
+}
+
+pub(super) fn page_selection_json(request: &RtspCatalogPagesImportRequest) -> String {
+    array(
+        &request
+            .pages
+            .iter()
+            .map(|page| {
+                object(&[
+                    ("slot", string(page.slot.as_str())),
+                    ("root", string(&page.root.to_text())),
+                ])
+            })
+            .collect::<Vec<_>>(),
+    )
 }

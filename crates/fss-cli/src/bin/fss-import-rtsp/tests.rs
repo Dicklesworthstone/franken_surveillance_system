@@ -290,3 +290,159 @@ fn incomplete_mixed_or_oversized_catalog_selection_refuses_before_io() {
     );
     assert!(Options::parse(&window).is_err());
 }
+
+fn page_args() -> Vec<OsString> {
+    let mut input = catalog_args();
+    for key in ["--catalog-slot", "--catalog-root"] {
+        let index = input
+            .iter()
+            .position(|argument| argument == key)
+            .expect("catalog fixture");
+        input.drain(index..index + 2);
+    }
+    let first = ContentDigest::sha256(b"first exact page").to_text();
+    let second = ContentDigest::sha256(b"second exact page").to_text();
+    set(
+        &mut input,
+        "--catalog-pages",
+        &format!("first-page@{first},second-page@{second}"),
+    );
+    input
+}
+
+#[test]
+fn complete_page_list_preview_binds_every_pin_order_and_cumulative_page_bound()
+-> Result<(), &'static str> {
+    let original = Options::parse(&page_args())?;
+    let approval = original.approval()?;
+    assert!(original.catalog.is_none());
+    assert_eq!(original.pages.as_ref().ok_or("pages")?.pages.len(), 2);
+    let preview = original.preview()?;
+    for expected in [
+        "\"format\":\"fss.rtsp_catalog_pages_import_operator.v1\"",
+        "\"selection\":\"complete_ordered_catalog_pages\"",
+        "\"pages\":2",
+        "\"maximum_pages\":64",
+        "\"maximum_windows\":64",
+        "\"maximum_frames\":16384",
+        "\"slot\":\"first-page\"",
+        "\"slot\":\"second-page\"",
+        "\"writes\":\"none\"",
+    ] {
+        assert!(preview.contains(expected), "{expected}");
+    }
+    let first = ContentDigest::sha256(b"first exact page").to_text();
+    let second = ContentDigest::sha256(b"second exact page").to_text();
+    let other = ContentDigest::sha256(b"other exact page").to_text();
+    for (key, value) in [
+        (
+            "--catalog-pages",
+            format!("second-page@{second},first-page@{first}"),
+        ),
+        (
+            "--catalog-pages",
+            format!("first-page@{first},second-page@{other}"),
+        ),
+        (
+            "--catalog-pages",
+            format!("first-page@{first},other-slot@{second}"),
+        ),
+        ("--max-pages", "2".into()),
+        ("--decode-clock", other),
+        ("--max-windows", "2".into()),
+        ("--max-frames", "8".into()),
+        ("--max-original-bytes", "1048576".into()),
+        ("--max-media-bytes", "1048576".into()),
+    ] {
+        let mut input = page_args();
+        set(&mut input, key, &value);
+        let mut changed = Options::parse(&input)?;
+        assert_ne!(changed.approval()?, approval, "{key}");
+        changed.approve = Some(approval);
+        assert_eq!(
+            driver::execute(&changed).err(),
+            Some("ERR-RTSP-IMPORT-APPROVAL-001")
+        );
+    }
+    Ok(())
+}
+
+#[test]
+fn all_sixty_four_maximum_length_page_pins_fit_the_bounded_cli_and_preview()
+-> Result<(), &'static str> {
+    use super::plan::MAX_PAGE_ARGUMENT_BYTES;
+    use fss_publication::MAX_SLOT_NAME_BYTES;
+    let entries: Vec<_> = (0..64_u32)
+        .map(|index| {
+            let slot = format!("{index:03}{}", "a".repeat(MAX_SLOT_NAME_BYTES - 3));
+            format!(
+                "{slot}@{}",
+                ContentDigest::sha256(&index.to_be_bytes()).to_text()
+            )
+        })
+        .collect();
+    let all = entries.join(",");
+    assert_eq!(all.len(), MAX_PAGE_ARGUMENT_BYTES);
+    assert!(all.len() > 4096);
+    let mut input = page_args();
+    set(&mut input, "--catalog-pages", &all);
+    // Accepted path strings can contain JSON-escaped quotes, so preview has an independent64KiB
+    // output envelope; a complete maximum page list must never be silently omitted to fit it.
+    set(&mut input, "--archive", &format!("/{}", "\"".repeat(4095)));
+    set(&mut input, "--root", &format!("/{}", "b".repeat(4095)));
+    let options = Options::parse(&input)?;
+    assert_eq!(options.pages.as_ref().ok_or("pages")?.pages.len(), 64);
+    let preview = options.preview()?;
+    assert!(preview.len() > 16 * 1024);
+    assert!(preview.len() < 64 * 1024);
+    assert_eq!(preview.matches("\"slot\":").count(), 64);
+    set(
+        &mut input,
+        "--catalog-pages",
+        &format!("{all},{}", entries[0]),
+    );
+    assert!(Options::parse(&input).is_err());
+    set(&mut input, "--catalog-pages", &all);
+    set(&mut input, "--archive", &format!("/{}", "a".repeat(4096)));
+    assert!(Options::parse(&input).is_err());
+    Ok(())
+}
+
+#[test]
+fn malformed_duplicate_or_mixed_page_lists_refuse_before_io() {
+    let first = ContentDigest::sha256(b"first exact page").to_text();
+    let second = ContentDigest::sha256(b"second exact page").to_text();
+    for value in [
+        format!("a@{first},a@{second}"),
+        format!("a@{first},b@{first}"),
+        format!("a@{first},"),
+        format!(",a@{first}"),
+        format!("a@{first},,{second}"),
+        format!("../page@{first}"),
+        format!("a@@{first}"),
+        format!("a@{first}@extra"),
+        format!("a@sha256:{}", "0".repeat(64)),
+    ] {
+        let mut input = page_args();
+        set(&mut input, "--catalog-pages", &value);
+        assert!(Options::parse(&input).is_err(), "{value}");
+    }
+    for (key, value) in [
+        ("--window-slot", "window"),
+        ("--window-root", first.as_str()),
+        ("--catalog-slot", "catalog"),
+        ("--catalog-root", first.as_str()),
+        ("--max-pages", "0"),
+        ("--max-pages", "1"),
+        ("--max-pages", "65"),
+        ("--max-windows", "1"),
+    ] {
+        let mut input = page_args();
+        set(&mut input, key, value);
+        assert!(Options::parse(&input).is_err(), "{key}={value}");
+    }
+    for mut input in [args(), catalog_args()] {
+        set(&mut input, "--max-pages", "64");
+        assert!(Options::parse(&input).is_err());
+    }
+}
