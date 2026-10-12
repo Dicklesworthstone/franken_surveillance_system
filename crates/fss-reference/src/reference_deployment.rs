@@ -8,6 +8,7 @@
 use std::fs::{self, OpenOptions, TryLockError};
 use std::io::{self, Write};
 use std::path::{Path, PathBuf};
+use std::sync::Arc;
 
 use fss_core::{
     BatchId, CanonicalDecode, CanonicalEncode, CanonicalEncoder, CaptureInterval, ContentDigest,
@@ -19,7 +20,7 @@ use fss_ledger::{
     AppendPhase, DurableLedgerError, DurableReferenceLedger, IncompleteTailPolicy, JournalError,
     RepairReceipt, doctor,
 };
-use fss_object::{ObjectManifest, SpoolLimits};
+use fss_object::{HostSpoolIo, ObjectManifest, SpoolLimits, SpoolLock};
 use fss_publication::{
     AuthorityPublisher, LedgerCutPoint, LedgeredRootPublisher, LocalPublicationError,
     LocalPublicationLimits, LocalRecoveryReport, LocalRootPublisher, PublishCancellation,
@@ -1213,13 +1214,13 @@ impl ReferenceDeployment {
             .create(true)
             .truncate(false)
             .open(&lock_path)?;
-        match lock_file.try_lock() {
-            Ok(()) => {}
+        let _lock = match SpoolLock::try_acquire(lock_file, Arc::new(HostSpoolIo)) {
+            Ok(lock) => lock,
             Err(TryLockError::WouldBlock) => {
                 return Err(ReferenceError::DeploymentLocked { path: lock_path });
             }
             Err(TryLockError::Error(e)) => return Err(ReferenceError::Io(e)),
-        }
+        };
 
         // Recheck the activation boundary under the same exclusive deployment lock.
         match fs::symlink_metadata(root.join(crate::deployment_backup::RESTORE_INCOMPLETE_FILENAME))

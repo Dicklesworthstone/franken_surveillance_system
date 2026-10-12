@@ -862,12 +862,18 @@ fn every_single_open_fault_fails_closed_without_changing_recovery() -> TestResul
             spool.recovery_report().orphaned_staging[0].claimed_digest,
             other
         );
-        (spool.recovery_report().clone(), spool.occupied_bytes()?)
+        // Capture opening calls before the owner drops: explicit unlock belongs to release,
+        // whose failed and applied-but-reported-failed paths have separate lifetime contracts.
+        (
+            spool.recovery_report().clone(),
+            spool.occupied_bytes()?,
+            SpoolIoCall::ALL.map(|call| counter.calls(call)),
+        )
     };
 
     for mode in [Mode::Fail, Mode::FailAfterApplying] {
-        for call in SpoolIoCall::ALL {
-            for step in 1..=counter.calls(call) {
+        for (call, calls) in SpoolIoCall::ALL.into_iter().zip(baseline.2) {
+            for step in 1..=calls {
                 let case = format!("{mode:?}_{call}_{step}");
                 let io = Arc::new(FaultInjectingSpoolIo::new(mode.plan(call, step)));
                 match StagingSpool::open_with_io(&root, roomy(), io.clone()) {

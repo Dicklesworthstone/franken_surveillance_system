@@ -91,7 +91,7 @@ use std::sync::Arc;
 use fss_core::{CanonicalEncode, ContentDigest, TombstoneRecord};
 use fss_object::{
     DiscardReceipt, HostSpoolIo, MAX_INTERRUPTED_ATTEMPTS, MAX_MANIFEST_CHILDREN, ObjectManifest,
-    SpoolError, SpoolInspection, SpoolIo, SpoolLimits, SpoolObjectState, SpoolRecoveryReport,
+    SpoolError, SpoolInspection, SpoolIo, SpoolLimits, SpoolLock, SpoolObjectState, SpoolRecoveryReport,
     StagingSpool, VerifiedObjectCatalog,
 };
 
@@ -632,7 +632,6 @@ pub struct LocalRootPublisher {
     root: PathBuf,
     roots_dir: PathBuf,
     tombstones_dir: PathBuf,
-    _lock: File,
     limits: LocalPublicationLimits,
     spool: StagingSpool,
     visible: BTreeMap<SlotName, RootEntry>,
@@ -644,6 +643,8 @@ pub struct LocalRootPublisher {
     injected_crash: Option<PublishCutPoint>,
     injected_io_fault: Option<InjectedIoFault>,
     poisoned: bool,
+    // The nested spool must release before another publisher can acquire the outer lock.
+    _lock: SpoolLock,
 }
 
 impl LocalRootPublisher {
@@ -690,7 +691,7 @@ impl LocalRootPublisher {
         if !metadata.file_type().is_dir() {
             return Err(LocalPublicationError::InvalidLayout { path: root });
         }
-        let lock = acquire_lock(io.as_ref(), &root)?;
+        let lock = acquire_lock(&io, &root)?;
         let roots_dir = root.join(LOCAL_ROOTS_DIR);
         let tombstones_dir = root.join(LOCAL_TOMBSTONES_DIR);
         ensure_subdirectory(io.as_ref(), &roots_dir)?;
@@ -706,7 +707,6 @@ impl LocalRootPublisher {
             root,
             roots_dir,
             tombstones_dir,
-            _lock: lock,
             limits,
             spool,
             visible: BTreeMap::new(),
@@ -718,6 +718,7 @@ impl LocalRootPublisher {
             injected_crash: None,
             injected_io_fault: None,
             poisoned: false,
+            _lock: lock,
         };
         publisher.recover()?;
         Ok(publisher)
@@ -2737,7 +2738,7 @@ fn io_error(operation: LocalIoOperation, path: &Path, error: &io::Error) -> Loca
     }
 }
 
-fn acquire_lock(io: &dyn SpoolIo, root: &Path) -> Result<File, LocalPublicationError> {
+fn acquire_lock(io: &Arc<dyn SpoolIo>, root: &Path) -> Result<SpoolLock, LocalPublicationError> {
     let path = root.join(LOCAL_LOCK_FILE);
     match io.symlink_metadata(&path) {
         Ok(metadata) if !metadata.file_type().is_file() => {
@@ -2750,8 +2751,8 @@ fn acquire_lock(io: &dyn SpoolIo, root: &Path) -> Result<File, LocalPublicationE
     let file = io
         .open_lock(&path)
         .map_err(|error| io_error(LocalIoOperation::OpenLock, &path, &error))?;
-    match io.try_lock(&file) {
-        Ok(()) => Ok(file),
+    match SpoolLock::try_acquire(file, Arc::clone(io)) {
+        Ok(lock) => Ok(lock),
         Err(TryLockError::WouldBlock) => Err(LocalPublicationError::Locked { path }),
         Err(TryLockError::Error(error)) => Err(io_error(LocalIoOperation::Lock, &path, &error)),
     }

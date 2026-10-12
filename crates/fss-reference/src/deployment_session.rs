@@ -45,6 +45,7 @@ use std::fmt;
 use std::fs::{self, File, OpenOptions, TryLockError};
 use std::io::{self, Read, Write};
 use std::path::{Component, Path, PathBuf};
+use std::sync::Arc;
 
 use fss_core::{
     AgentSession, AgentSessionParams, AgentView, BudgetVector, CanonicalDecode, CanonicalDecoder,
@@ -52,7 +53,7 @@ use fss_core::{
     HandoffCapsule, HandoffId, LedgerAnchor, MeaningfulDelta, MissionId, ObligationState,
     PrincipalId, SessionCapsule, SessionCapsuleParams, SessionId, TimestampNs,
 };
-use fss_object::{ObjectManifest, SpoolLimits};
+use fss_object::{HostSpoolIo, ObjectManifest, SpoolLimits, SpoolLock};
 use fss_publication::{
     LocalPublicationError, LocalPublicationLimits, LocalPublicationReceipt, LocalRootPublisher,
     PublishCutPoint, SlotName,
@@ -759,7 +760,7 @@ struct SessionJournal {
     root: PathBuf,
     directory: PathBuf,
     store: DurableSessionStore,
-    _lock: File,
+    _lock: SpoolLock,
 }
 
 fn read_bounded(path: &Path, max: usize) -> Result<Option<Vec<u8>>, io::Error> {
@@ -941,11 +942,11 @@ impl SessionJournal {
             .truncate(false)
             .open(directory.join(SESSION_LOCK_FILE))
             .map_err(|error| io_failure("session lock", &error))?;
-        match lock.try_lock() {
-            Ok(()) => {}
+        let lock = match SpoolLock::try_acquire(lock, Arc::new(HostSpoolIo)) {
+            Ok(lock) => lock,
             Err(TryLockError::WouldBlock) => return Err(DeploymentSessionError::StoreLocked),
             Err(TryLockError::Error(error)) => return Err(io_failure("session lock", &error)),
-        }
+        };
         ensure_agent_writable(&root)?;
         let journal = directory.join(SESSION_JOURNAL_FILE);
         let pin = read_bounded(&directory.join(SESSION_ROOT_PIN_FILE), MAX_PIN_BYTES)

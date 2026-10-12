@@ -131,8 +131,12 @@ Durable mode excludes manual continuations and bounded waits. It preserves a
 frozen replay horizon and refuses a missing total order when both native journals
 advanced. It also refuses changed authority, custody or pinned session semantics.
 Handoff publication or workspace rebasing can invalidate an older subscription;
-resume does not implicitly acknowledge or migrate its pending delivery. Honor the
-native resnapshot response before establishing a new observation basis.
+resume does not implicitly acknowledge or migrate its pending delivery. This
+reference durable-follow profile supports only initial workspaces without retained
+case/claim history. A rebased workspace is refused even with a new subscription
+label. Ordinary orientation and follow remain available to establish a fresh
+observation basis; durable replay of richer or rebased workspace semantics is
+still unimplemented.
 
 Optional ordinary `wait_ms`: 1..10000 enables the
 [bounded synchronous wait](AGENT_FOLLOW_WAIT.md) on a validated certified-quiet

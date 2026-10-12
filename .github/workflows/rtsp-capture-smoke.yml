@@ -34,6 +34,14 @@ jobs:
       - name: Check feature formatting without rewriting compiler inputs
         run: >-
           rustfmt +nightly-2026-08-31 --check --edition 2024 --config skip_children=true
+          crates/fss-object/src/lib.rs
+          crates/fss-object/src/spool/capability.rs
+          crates/fss-object/src/spool/mod.rs
+          crates/fss-object/tests/staging_spool_io_faults.rs
+          crates/fss-publication/src/local/mod.rs
+          crates/fss-publication/tests/lock_lifetime_contract.rs
+          crates/fss-reference/src/deployment_session.rs
+          crates/fss-reference/src/reference_deployment.rs
           crates/fss-cli/src/fss_cmd.rs
           crates/fss-cli/src/session_cmd.rs
           crates/fss-cli/src/bin/fss-mcp.rs
@@ -64,6 +72,12 @@ jobs:
           crates/fss-reference/tests/rtsp_catalog_import_contract/pages.rs
           crates/fss-reference/tests/rtsp_catalog_import_contract/pages/failures.rs
           crates/fss-model-ir/tests/model_ir_contract.rs
+      - name: Exclusive writer lifetime and failed-open recovery
+        if: success() || failure()
+        run: |
+          cargo +nightly-2026-08-31 test --locked --offline -p fss-object --test staging_spool_contract --test staging_spool_io_faults
+          cargo +nightly-2026-08-31 test --locked --offline -p fss-publication --test lock_lifetime_contract --test root_last_publication_contract --test local_publication_io_faults
+          cargo +nightly-2026-08-31 test --locked --offline -p fss-reference --test reference_deployment_recovery_contract
       - name: Preserve frozen model identities with registered RTSP profiles
         if: success() || failure()
         run: |
@@ -124,7 +138,7 @@ jobs:
       - name: MCP session open, handoff and cold resume
         if: success() || failure()
         run: |
-          cargo +nightly-2026-08-31 test --locked --offline -p fss-cli --test mcp_cli_contract --test mcp_session_lifecycle_contract
+          cargo +nightly-2026-08-31 test --locked --offline -p fss-cli --test session_cli_contract --test mcp_cli_contract --test mcp_session_lifecycle_contract
           cargo +nightly-2026-08-31 test --locked --offline -p fss-cli --bin fss-mcp
       - name: Capture and event CLI Clippy
         if: success() || failure()

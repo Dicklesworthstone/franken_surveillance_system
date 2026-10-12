@@ -48,6 +48,12 @@ jobs:
         run: rustup run nightly-2026-08-31 cargo test --locked --offline -p fss-cli --test deployment_backup_cli
       - name: Verify existing session and restored-effect boundaries
         run: 'rustup run nightly-2026-08-31 cargo test --locked --offline -p fss-reference --lib deployment_session::'
+      - name: Verify exclusive writer lifetimes and recovery
+        if: success() || failure()
+        run: |
+          rustup run nightly-2026-08-31 cargo test --locked --offline -p fss-object --test staging_spool_contract --test staging_spool_io_faults
+          rustup run nightly-2026-08-31 cargo test --locked --offline -p fss-publication --test lock_lifetime_contract --test root_last_publication_contract --test local_publication_io_faults
+          rustup run nightly-2026-08-31 cargo test --locked --offline -p fss-reference --test reference_deployment_recovery_contract
       - name: Verify bounded event queries
         run: rustup run nightly-2026-08-31 cargo test --locked --offline -p fss-reference --lib agent_query::tests
       - name: Verify protected deployment orientation
@@ -64,7 +70,7 @@ jobs:
           rustup run nightly-2026-08-31 cargo test --locked --offline -p fss-cli --bin fss-mcp || follow_exit=1
           rustup run nightly-2026-08-31 cargo test --locked --offline -p fss-cli --test follow_cli_contract || follow_exit=1
           rustup run nightly-2026-08-31 cargo test --locked --offline -p fss-cli --test follow_subscription_cli_contract || follow_exit=1
-          rustup run nightly-2026-08-31 cargo test --locked --offline -p fss-cli --test mcp_cli_contract --test mcp_session_lifecycle_contract || follow_exit=1
+          rustup run nightly-2026-08-31 cargo test --locked --offline -p fss-cli --test session_cli_contract --test mcp_cli_contract --test mcp_session_lifecycle_contract || follow_exit=1
           exit "$follow_exit"
       - name: Verify query CLI, library and MCP parity
         if: success() || failure()
@@ -83,6 +89,14 @@ jobs:
         if: always()
         run: >-
           rustup run nightly-2026-08-31 rustfmt --check --edition 2024 --config skip_children=true
+          crates/fss-object/src/lib.rs
+          crates/fss-object/src/spool/capability.rs
+          crates/fss-object/src/spool/mod.rs
+          crates/fss-object/tests/staging_spool_io_faults.rs
+          crates/fss-publication/src/local/mod.rs
+          crates/fss-publication/tests/lock_lifetime_contract.rs
+          crates/fss-reference/src/deployment_session.rs
+          crates/fss-reference/src/reference_deployment.rs
           crates/fss-reference/src/agent_follow.rs
           crates/fss-reference/src/agent_follow/replay.rs
           crates/fss-reference/tests/follow_replay_contract.rs

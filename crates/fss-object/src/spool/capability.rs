@@ -54,11 +54,13 @@ pub enum SpoolIoCall {
     HardLink,
     /// Taking a shared, non-blocking lock on an opened lock file.
     TryLockShared,
+    /// Releasing an advisory lock already acquired by this owner.
+    Unlock,
 }
 
 impl SpoolIoCall {
     /// Every call kind, in declaration order.
-    pub const ALL: [Self; 19] = [
+    pub const ALL: [Self; 20] = [
         Self::CreateDirAll,
         Self::Metadata,
         Self::SymlinkMetadata,
@@ -78,6 +80,7 @@ impl SpoolIoCall {
         Self::SyncDirectory,
         Self::HardLink,
         Self::TryLockShared,
+        Self::Unlock,
     ];
 
     const fn index(self) -> usize {
@@ -92,6 +95,7 @@ impl SpoolIoCall {
             | Self::OpenLock
             | Self::TryLock
             | Self::TryLockShared
+            | Self::Unlock
             | Self::CreateDir
             | Self::CreateNew
             | Self::Write
@@ -133,6 +137,7 @@ impl fmt::Display for SpoolIoCall {
             Self::SyncDirectory => "sync_directory",
             Self::HardLink => "hard_link",
             Self::TryLockShared => "try_lock_shared",
+            Self::Unlock => "unlock",
         })
     }
 }
@@ -155,6 +160,14 @@ pub trait SpoolIo: fmt::Debug + Send + Sync {
     /// Takes a shared, non-blocking lock on an opened lock file.
     fn try_lock_shared(&self, file: &File) -> Result<(), TryLockError> {
         file.try_lock_shared()
+    }
+    /// Releases a lock whose acquisition this capability already admitted.
+    ///
+    /// This only discharges existing ownership; it grants no new filesystem or effect authority.
+    /// The default preserves compatibility with capabilities that implement exclusive acquisition.
+    /// Wrappers that record or inject I/O must forward this call through the same inner capability.
+    fn unlock(&self, file: &File) -> io::Result<()> {
+        file.unlock()
     }
     /// Creates one directory whose parent exists.
     fn create_dir(&self, path: &Path) -> io::Result<()>;
@@ -183,6 +196,37 @@ pub trait SpoolIo: fmt::Debug + Send + Sync {
     /// Creates a hard link `to` pointing to `from`. Fails with `AlreadyExists` if `to` exists.
     fn hard_link(&self, from: &Path, to: &Path) -> io::Result<()> {
         fs::hard_link(from, to)
+    }
+}
+
+/// An exclusive advisory lock whose lifetime belongs to this guard.
+///
+/// Closing one file descriptor does not release a lock while a duplicated or inherited descriptor
+/// still names the same open file description. This guard explicitly unlocks when its owner ends,
+/// including an error after acquisition but before the enclosing spool or publisher is constructed.
+/// It never exposes the file or transfers ownership to a duplicate.
+#[derive(Debug)]
+pub struct SpoolLock {
+    file: File,
+    io: Arc<dyn SpoolIo>,
+}
+
+impl SpoolLock {
+    /// Acquires one exclusive, non-blocking lock through `io`.
+    ///
+    /// `file` must be a fresh, independently opened lock handle, not a duplicate of an existing
+    /// owner's handle. No guard is constructed and no unlock is attempted if acquisition fails.
+    pub fn try_acquire(file: File, io: Arc<dyn SpoolIo>) -> Result<Self, TryLockError> {
+        io.try_lock(&file)?;
+        Ok(Self { file, io })
+    }
+}
+
+impl Drop for SpoolLock {
+    fn drop(&mut self) {
+        // Drop cannot report release errors. Closing our handle remains the fallback, as it was
+        // before explicit release; no successful-release claim or retry is manufactured.
+        let _ = self.io.unlock(&self.file);
     }
 }
 
@@ -218,6 +262,10 @@ impl SpoolIo for HostSpoolIo {
 
     fn try_lock_shared(&self, file: &File) -> Result<(), TryLockError> {
         file.try_lock_shared()
+    }
+
+    fn unlock(&self, file: &File) -> io::Result<()> {
+        file.unlock()
     }
 
     fn create_dir(&self, path: &Path) -> io::Result<()> {
@@ -498,6 +546,10 @@ impl SpoolIo for FaultInjectingSpoolIo {
         }
     }
 
+    fn unlock(&self, file: &File) -> io::Result<()> {
+        self.intercept(SpoolIoCall::Unlock, |host| host.unlock(file))
+    }
+
     fn create_dir(&self, path: &Path) -> io::Result<()> {
         self.intercept(SpoolIoCall::CreateDir, |host| host.create_dir(path))
     }
@@ -662,6 +714,11 @@ impl SpoolIo for RecordingSpoolIo {
     fn try_lock_shared(&self, file: &File) -> Result<(), TryLockError> {
         self.record(SpoolIoCall::TryLockShared);
         self.inner.try_lock_shared(file)
+    }
+
+    fn unlock(&self, file: &File) -> io::Result<()> {
+        self.record(SpoolIoCall::Unlock);
+        self.inner.unlock(file)
     }
 
     fn create_dir(&self, path: &Path) -> io::Result<()> {

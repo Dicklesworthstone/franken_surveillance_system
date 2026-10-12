@@ -67,6 +67,7 @@ use crate::{ObjectError, VerifiedObjectCatalog};
 
 pub use capability::{
     FaultInjectingSpoolIo, HostSpoolIo, RecordingSpoolIo, SpoolFaultPlan, SpoolIo, SpoolIoCall,
+    SpoolLock,
 };
 pub use error::{CorruptionKind, SpoolError, SpoolIoOperation, SpoolLimitViolation, StagePhase};
 pub use format::{
@@ -373,7 +374,6 @@ pub struct StagingSpool {
     objects_dir: PathBuf,
     staging_dir: PathBuf,
     holds_dir: PathBuf,
-    _lock: File,
     limits: SpoolLimits,
     index: BTreeMap<ContentDigest, IndexedObject>,
     orphans: BTreeMap<OsString, OrphanedStaging>,
@@ -382,6 +382,8 @@ pub struct StagingSpool {
     recovery: SpoolRecoveryReport,
     injected_crash: Option<StagePhase>,
     poisoned: bool,
+    // Keep ownership until every other spool field has been dropped.
+    _lock: SpoolLock,
 }
 
 impl StagingSpool {
@@ -412,7 +414,7 @@ impl StagingSpool {
         if !root_metadata.is_dir() {
             return Err(SpoolError::InvalidLayout { path: root });
         }
-        let lock = acquire_lock(io.as_ref(), &root)?;
+        let lock = acquire_lock(&io, &root)?;
         let objects_dir = root.join(SPOOL_OBJECTS_DIR);
         let staging_dir = root.join(SPOOL_STAGING_DIR);
         let holds_dir = root.join(SPOOL_HOLDS_DIR);
@@ -465,7 +467,6 @@ impl StagingSpool {
             objects_dir,
             staging_dir,
             holds_dir,
-            _lock: lock,
             limits,
             index: classification.index,
             orphans: classification.orphans,
@@ -474,6 +475,7 @@ impl StagingSpool {
             recovery: classification.report,
             injected_crash: None,
             poisoned: false,
+            _lock: lock,
         };
         spool.check_recovered_capacity()?;
         Ok(spool)
@@ -1694,7 +1696,7 @@ fn io_error(operation: SpoolIoOperation, path: &Path, error: &io::Error) -> Spoo
     }
 }
 
-fn acquire_lock(io: &dyn SpoolIo, root: &Path) -> Result<File, SpoolError> {
+fn acquire_lock(io: &Arc<dyn SpoolIo>, root: &Path) -> Result<SpoolLock, SpoolError> {
     let path = root.join(SPOOL_LOCK_FILE);
     match io.symlink_metadata(&path) {
         Ok(metadata) if !metadata.file_type().is_file() => {
@@ -1707,8 +1709,8 @@ fn acquire_lock(io: &dyn SpoolIo, root: &Path) -> Result<File, SpoolError> {
     let file = io
         .open_lock(&path)
         .map_err(|error| io_error(SpoolIoOperation::OpenLock, &path, &error))?;
-    match io.try_lock(&file) {
-        Ok(()) => Ok(file),
+    match SpoolLock::try_acquire(file, Arc::clone(io)) {
+        Ok(lock) => Ok(lock),
         Err(TryLockError::WouldBlock) => Err(SpoolError::Locked { path }),
         Err(TryLockError::Error(error)) => Err(io_error(SpoolIoOperation::Lock, &path, &error)),
     }

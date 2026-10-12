@@ -32,7 +32,7 @@ pub use spool::{
     OrphanedStaging, RecordingSpoolIo, SPOOL_HOLDS_DIR, SPOOL_HOLDS_MIGRATION_DIR, SPOOL_LOCK_FILE,
     SPOOL_OBJECT_FORMAT_VERSION, SPOOL_OBJECT_HEADER_LEN, SPOOL_OBJECT_MAGIC, SPOOL_OBJECTS_DIR,
     SPOOL_STAGING_DIR, SpoolError, SpoolFaultPlan, SpoolInspection, SpoolIo, SpoolIoCall,
-    SpoolIoOperation, SpoolLimitViolation, SpoolLimits, SpoolObjectState, SpoolRecoveryReport,
+    SpoolIoOperation, SpoolLimitViolation, SpoolLimits, SpoolLock, SpoolObjectState, SpoolRecoveryReport,
     StageOutcome, StagePhase, StageReceipt, StagingSpool, encode_spool_object, inspect,
     inspect_with_io, read_verified_payload,
 };
