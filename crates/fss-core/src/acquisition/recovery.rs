@@ -3,6 +3,8 @@
 
 use super::*;
 
+mod checkpoint;
+
 /// Additive canonical schema; the embedded degradation keeps its original v1 encoding.
 pub const SCHEMA_WINDOWED_DEGRADATION: &str = "fss.acquisition.windowed_degradation.v1";
 
