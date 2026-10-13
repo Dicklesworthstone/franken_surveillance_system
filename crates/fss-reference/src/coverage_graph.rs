@@ -27,7 +27,9 @@ use std::fmt;
 use std::path::Path;
 
 use fss_core::{CaptureInterval, ContractError, GraphAlgorithmWitness, LedgerAnchor};
-use fss_graph_algorithms::coverage::PROJECTION_KIND;
+use fss_graph_algorithms::coverage::{
+    CoverageBuildLimits, CoverageProjectionBuilder, PROJECTION_KIND,
+};
 use fss_graph_algorithms::{
     CoverageObservation, CoverageSinglePoints, GraphBudget, GraphError, SensorCoverageProjection,
 };
@@ -122,7 +124,7 @@ pub fn coverage_observations(snapshot: &DeploymentSnapshot) -> Vec<CoverageObser
 }
 
 /// Compiles the projection of `snapshot` and runs the certified analysis under its registered
-/// budget.
+/// budget. Projection input is admitted incrementally without an intermediate fact vector.
 ///
 /// # Errors
 ///
@@ -131,16 +133,67 @@ pub fn coverage_observations(snapshot: &DeploymentSnapshot) -> Vec<CoverageObser
 pub fn coverage_single_points(
     snapshot: &DeploymentSnapshot,
 ) -> Result<CoverageGraphReport, CoverageGraphError> {
-    analyze_observations(snapshot, coverage_observations(snapshot), None)
+    coverage_single_points_with_limits(snapshot, None, CoverageBuildLimits::default())
 }
 
-fn analyze_observations(
+/// Analyze historical or whole-window coverage under explicit cumulative projection limits.
+///
+/// `None` selects historical witnesses; `Some` selects whole certain witnesses for that
+/// inclusive window. Successful report and witness identities are unchanged by the limits.
+/// This avoids an extra observation vector, not the retained deployment snapshot itself.
+/// Authority, source reads and bridge traversal keep their existing independent bounds.
+///
+/// # Errors
+/// Invalid window, exhausted input/shape admission, or any [`coverage_single_points`] failure.
+/// No report is returned from a partially admitted set of facts.
+pub fn coverage_single_points_with_limits(
     snapshot: &DeploymentSnapshot,
-    observations: Vec<CoverageObservation>,
+    window: Option<CaptureInterval>,
+    limits: CoverageBuildLimits,
+) -> Result<CoverageGraphReport, CoverageGraphError> {
+    let window = window.map(validate_window).transpose()?;
+    let projection = project_records(
+        &snapshot.site_lineage,
+        snapshot.coverage.iter().map(|retained| &retained.record),
+        window,
+        limits,
+    )
+    .map_err(CoverageGraphError::Graph)?;
+    analyze_projection(snapshot, projection, window)
+}
+
+fn project_records<'a>(
+    site: &str,
+    records: impl Iterator<Item = &'a CoverageRecord>,
+    window: Option<CaptureInterval>,
+    limits: CoverageBuildLimits,
+) -> Result<SensorCoverageProjection, GraphError> {
+    let mut builder = CoverageProjectionBuilder::new(site, limits)?;
+    for record in records {
+        for zone in &record.zones {
+            let witnesses = match window {
+                None => zone.witnesses.len(),
+                Some(window) => zone
+                    .witnesses
+                    .iter()
+                    .filter(|witness| contains_window(witness.covered, window))
+                    .count(),
+            };
+            builder.push(&CoverageObservation {
+                sensor_id: record.sensor_id.clone(),
+                zone_scope: zone.scope.clone(),
+                witnesses: witnesses as u64,
+            })?;
+        }
+    }
+    builder.finish()
+}
+
+fn analyze_projection(
+    snapshot: &DeploymentSnapshot,
+    projection: SensorCoverageProjection,
     window: Option<CaptureInterval>,
 ) -> Result<CoverageGraphReport, CoverageGraphError> {
-    let projection = SensorCoverageProjection::build(&snapshot.site_lineage, &observations)
-        .map_err(CoverageGraphError::Graph)?;
     let answer = projection
         .single_points(GraphBudget::registered(&projection.graph))
         .map_err(CoverageGraphError::Graph)?;
@@ -258,8 +311,7 @@ pub fn coverage_single_points_during(
     snapshot: &DeploymentSnapshot,
     window: CaptureInterval,
 ) -> Result<CoverageGraphReport, CoverageGraphError> {
-    let observations = coverage_observations_during(snapshot, window)?;
-    analyze_observations(snapshot, observations, Some(window))
+    coverage_single_points_with_limits(snapshot, Some(window), CoverageBuildLimits::default())
 }
 
 /// Reads the committed deployment without writes and restricts analysis to a capture window.
@@ -345,8 +397,12 @@ mod window_tests {
         records: &[CoverageRecord],
         window: CaptureInterval,
     ) -> TestResult<CoverageSinglePoints> {
-        let observations = observations_in_window(records.iter(), window);
-        let projection = SensorCoverageProjection::build("site:window-tests", &observations)?;
+        let projection = project_records(
+            "site:window-tests",
+            records.iter(),
+            Some(window),
+            CoverageBuildLimits::default(),
+        )?;
         Ok(projection.single_points(GraphBudget::registered(&projection.graph))?)
     }
 
@@ -472,5 +528,72 @@ mod window_tests {
         };
         assert!(contains_window(full, point));
         assert!(!contains_window(point, full));
+    }
+
+    #[test]
+    fn streamed_projection_matches_collected_historical_and_windowed_facts() -> TestResult {
+        let records = [
+            record("sensor:east", 0, None)?,
+            record("sensor:west", 20, Some(10))?,
+        ];
+        for window in [None, Some(interval(60, 120)?), Some(interval(500, 600)?)] {
+            let facts = match window {
+                Some(window) => observations_in_window(records.iter(), window),
+                None => records
+                    .iter()
+                    .flat_map(|record| {
+                        record.zones.iter().map(move |zone| CoverageObservation {
+                            sensor_id: record.sensor_id.clone(),
+                            zone_scope: zone.scope.clone(),
+                            witnesses: zone.witnesses.len() as u64,
+                        })
+                    })
+                    .collect(),
+            };
+            let expected = SensorCoverageProjection::build("site:window-tests", &facts)?;
+            let streamed = project_records(
+                "site:window-tests",
+                records.iter(),
+                window,
+                CoverageBuildLimits::default(),
+            )?;
+            assert_eq!(streamed, expected);
+            let anchor = LedgerAnchor::genesis("site:window-tests");
+            let id = projection_identity(&anchor, window);
+            let a = streamed.single_points(GraphBudget::registered(&streamed.graph))?;
+            let b = expected.single_points(GraphBudget::registered(&expected.graph))?;
+            assert_eq!(
+                a.analysis.witness(&id, anchor.clone())?,
+                b.analysis.witness(&id, anchor)?
+            );
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn input_exhaustion_stops_without_consuming_remaining_records() -> TestResult {
+        let record = record("sensor:east", 0, None)?;
+        let reads = std::cell::Cell::new(0);
+        let records = [&record, &record, &record].into_iter().inspect(|_| {
+            reads.set(reads.get() + 1);
+        });
+        let result = project_records(
+            "site:window-tests",
+            records,
+            None,
+            CoverageBuildLimits {
+                max_observations: 1,
+                ..CoverageBuildLimits::default()
+            },
+        );
+        assert!(matches!(
+            result,
+            Err(GraphError::BudgetExhausted {
+                dimension: "coverage_observations",
+                limit: 1,
+            })
+        ));
+        assert_eq!(reads.get(), 2);
+        Ok(())
     }
 }
