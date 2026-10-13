@@ -6,6 +6,9 @@
 //! retains credentials. Owners still schedule readiness/deadlines and retain every
 //! wire/media/retirement output before polling again.
 
+/// Separately granted, finite reconnection using fresh native owners and generations.
+pub mod reconnect;
+
 use super::recording::{
     LiveAvcRecording, LiveRecordingConfig, LiveRecordingConnectFailure, LiveRecordingFailure,
     LiveRecordingRetirement, LiveRecordingStep,
@@ -464,6 +467,89 @@ mod recording_tests {
             )?,
             AutomaticRecordingStep::Recording(LiveRecordingStep::Ended)
         ));
+        Ok(())
+    }
+}
+
+#[cfg(test)]
+mod reconnect_boundary_tests {
+    use super::reconnect::{
+        ReconnectPolicy, ReconnectRefusal, ReconnectStatus, ReconnectStop,
+        SupervisedAvcConnection, SupervisedAvcError, SupervisedAvcStep,
+    };
+    use super::*;
+    use crate::rtsp::live_avc::tests::{credentials, scope};
+    use crate::rtsp::tcp::TcpDenial;
+    use std::io::ErrorKind;
+    use std::net::{Ipv4Addr, TcpListener};
+
+    type TestResult = Result<(), Box<dyn std::error::Error>>;
+
+    fn policy(deadline_ns: u64) -> ReconnectPolicy {
+        ReconnectPolicy {
+            max_attempts: 3,
+            initial_backoff_ns: 10,
+            max_backoff_ns: 100,
+            deadline_ns,
+            max_steps: 10_000,
+        }
+    }
+
+    #[test]
+    fn reconnect_cannot_extend_the_owner_lease_or_consume_an_attempt_by_scope_error() -> TestResult {
+        let listener = TcpListener::bind((Ipv4Addr::LOCALHOST, 0))?;
+        listener.set_nonblocking(true)?;
+        let (mut config, authority) = scope(listener.local_addr()?)?;
+        let mut owner = SupervisedAvcConnection::new(
+            config.binding.clone(),
+            policy(config.deadline_ns),
+            0,
+        )?;
+        config.deadline_ns += 1;
+        let failure = owner.connect(config, 0, &authority).err().ok_or("extended lease connected")?;
+        assert!(matches!(failure.reason, SupervisedAvcError::Supervisor(ReconnectRefusal::Scope)));
+        assert!(failure.retirement.is_none());
+        assert_eq!(listener.accept().err().ok_or("scope error opened a socket")?.kind(), ErrorKind::WouldBlock);
+        let (config, authority) = scope(listener.local_addr()?)?;
+        assert_eq!(owner.connect(config, 0, &authority)?.ordinal, 1);
+        let (_peer, _) = listener.accept()?;
+        assert!(owner.cancel().is_some());
+        Ok(())
+    }
+
+    #[test]
+    fn revoked_supervisor_returns_queued_native_work_once_without_sending_or_retrying() -> TestResult {
+        let listener = TcpListener::bind((Ipv4Addr::LOCALHOST, 0))?;
+        let (config, authority) = scope(listener.local_addr()?)?;
+        let mut owner = SupervisedAvcConnection::new(
+            config.binding.clone(),
+            policy(config.deadline_ns),
+            0,
+        )?;
+        let attempt = owner.connect(config, 0, &authority)?;
+        let (_peer, _) = listener.accept()?;
+        assert!(matches!(
+            owner.poll(SocketReadiness::default(), &credentials()?, [1; 16], 0, &authority)?,
+            SupervisedAvcStep::Connection { output: AutomaticAvcStep::Queued(_), .. }
+        ));
+        authority.revoked.set(true);
+        let failure = owner.poll(
+            SocketReadiness { readable: true, writable: true },
+            &credentials()?, [2; 16], 1, &authority,
+        ).err().ok_or("revoked owner made progress")?;
+        assert_eq!(failure.key, attempt.key);
+        let retirement = failure.retirement.ok_or("lost queued native ownership")?;
+        assert!(retirement.transport.request.is_some());
+        assert_eq!(retirement.transport.request_sent_bytes, 0);
+        assert_eq!(retirement.transport.totals.sent_bytes, 0);
+        assert_eq!(owner.status(), ReconnectStatus::Stopped(ReconnectStop::Denied(TcpDenial::Revoked)));
+        authority.revoked.set(false);
+        let failure = owner.poll(
+            SocketReadiness::default(), &credentials()?, [3; 16], 2, &authority,
+        ).err().ok_or("revived a terminal supervisor")?;
+        assert!(failure.retirement.is_none());
+        assert!(owner.cancel().is_none());
+        assert_eq!(owner.next_wake_ns(), None);
         Ok(())
     }
 }
