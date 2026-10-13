@@ -1,0 +1,38 @@
+# Supplementary native regression feedback, not a replacement for DSR qualification.
+name: supplementary recorded RTP decode
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'crates/fss-reference/src/ingest/rtpdump*'
+      - 'crates/fss-reference/src/ingest/rtpdump/**'
+      - 'crates/fss-reference/tests/rtpdump*'
+      - 'crates/fss-reference/tests/rtpdump_support/**'
+      - 'crates/fss-packet/**'
+      - 'crates/fss-codec-h264/**'
+      - '.github/workflows/rtp-decode.yml'
+  workflow_dispatch:
+permissions:
+  contents: read
+concurrency:
+  group: fss-rtp-native-decode-${{ github.ref }}
+  cancel-in-progress: false
+jobs:
+  recorded-rtp:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    env:
+      CARGO_PROFILE_DEV_DEBUG: '0'
+      CARGO_PROFILE_TEST_DEBUG: '0'
+      CARGO_INCREMENTAL: '0'
+      CARGO_BUILD_JOBS: '2'
+      CARGO_NET_OFFLINE: 'true'
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
+      - name: Provision pinned toolchain
+        run: bash scripts/bootstrap_toolchain.sh
+      - name: Native recorded RTP decode and receiver contracts
+        run: cargo +nightly-2026-08-31 test --locked --offline -p fss-reference --test rtpdump_decode_contract --test rtpdump_avc_contract
+      - name: Check recorded decoder formatting
+        if: always()
+        run: rustup run nightly-2026-08-31 rustfmt --check --edition 2024 --config skip_children=true crates/fss-reference/src/ingest/rtpdump/decode.rs crates/fss-reference/tests/rtpdump_decode_contract.rs
