@@ -18,10 +18,14 @@
 //! an image zone is identified by its operator-assigned scope on every sensor that names it, and a
 //! zone with no witness is `not_observable`, never evidence of absence.
 
+/// Incremental admission with cumulative input and canonical-shape limits.
+pub mod build;
+pub use build::{CoverageBuildLimits, CoverageBuildUsage, CoverageProjectionBuilder};
+
 use std::collections::{BTreeMap, BTreeSet};
 
 use crate::bridges::{BridgeAnalysis, GraphBudget, analyse_bridges};
-use crate::graph::{MAX_GRAPH_EDGES, MAX_NODE_ID_LEN, GraphBuilder, GraphError, UndirectedGraph};
+use crate::graph::{MAX_GRAPH_EDGES, MAX_NODE_ID_LEN, GraphError, UndirectedGraph};
 
 /// Registered projection kind.
 pub const PROJECTION_KIND: &str = "SensorCoverageGraph";
@@ -55,56 +59,43 @@ pub struct SensorCoverageProjection {
 }
 
 impl SensorCoverageProjection {
-    /// Builds the projection of `site` from `observations` (any order; duplicates are summed).
+    /// Builds a bounded projection (any input order; duplicate witness counts are summed).
+    ///
+    /// Uses [`CoverageBuildLimits::default`]. For tighter admission use [`Self::build_with_limits`];
+    /// to avoid a collected observation vector use [`CoverageProjectionBuilder`] directly.
+    /// Successful graph identities and algorithm answers do not depend on the admission limits.
     ///
     /// # Errors
-    ///
-    /// [`GraphError::InvalidNodeId`] for an empty or oversized site, sensor or zone identity, and
-    /// [`GraphError::TooLarge`] beyond the graph limits, or
-    /// [`GraphError::ArithmeticOverflow`] when witness counts cannot be represented exactly.
+    /// Invalid identities, exhausted input/shape limits, or inexact witness counts. No partial
+    /// graph is returned. Graph traversal has its own separate [`GraphBudget`].
     pub fn build(site: &str, observations: &[CoverageObservation]) -> Result<Self, GraphError> {
-        validate_identity(PLANE_PREFIX, site)?;
-        let mut witnesses: BTreeMap<(String, String), u64> = BTreeMap::new();
-        let mut sensors = BTreeSet::new();
-        let mut zones = BTreeSet::new();
+        Self::build_with_limits(site, observations, CoverageBuildLimits::default())
+    }
+
+    /// Compile all observations under one cumulative admission allowance.
+    ///
+    /// The row count is checked before inspecting any observation. Further admission checks
+    /// run before each mutation; an input failure never becomes a successful prefix result.
+    ///
+    /// # Errors
+    /// Every [`CoverageProjectionBuilder::new`], [`CoverageProjectionBuilder::push`] or
+    /// [`CoverageProjectionBuilder::finish`] refusal, including a caller limit above a hard cap.
+    pub fn build_with_limits(
+        site: &str,
+        observations: &[CoverageObservation],
+        limits: CoverageBuildLimits,
+    ) -> Result<Self, GraphError> {
+        let mut builder = CoverageProjectionBuilder::new(site, limits)?;
+        if observations.len() > limits.max_observations {
+            return Err(GraphError::BudgetExhausted {
+                dimension: "coverage_observations",
+                limit: limits.max_observations as u64,
+            });
+        }
         for observation in observations {
-            validate_identity(SENSOR_PREFIX, &observation.sensor_id)?;
-            validate_identity(ZONE_PREFIX, &observation.zone_scope)?;
-            sensors.insert(observation.sensor_id.clone());
-            zones.insert(observation.zone_scope.clone());
-            let count = witnesses
-                .entry((
-                    observation.sensor_id.clone(),
-                    observation.zone_scope.clone(),
-                ))
-                .or_insert(0);
-            *count = count
-                .checked_add(observation.witnesses)
-                .ok_or(GraphError::ArithmeticOverflow("sensor-zone witness count"))?;
+            builder.push(observation)?;
         }
-        let plane = format!("{PLANE_PREFIX}{site}");
-        let mut builder = GraphBuilder::new();
-        builder.add_node(plane.clone());
-        for sensor in &sensors {
-            builder.add_node(format!("{SENSOR_PREFIX}{sensor}"));
-            builder.add_edge(plane.clone(), format!("{SENSOR_PREFIX}{sensor}"));
-        }
-        for zone in &zones {
-            builder.add_node(format!("{ZONE_PREFIX}{zone}"));
-        }
-        for ((sensor, zone), count) in &witnesses {
-            if *count > 0 {
-                builder.add_edge(
-                    format!("{SENSOR_PREFIX}{sensor}"),
-                    format!("{ZONE_PREFIX}{zone}"),
-                );
-            }
-        }
-        Ok(Self {
-            plane,
-            graph: builder.build()?,
-            witnesses,
-        })
+        builder.finish()
     }
 
     /// Revalidate the graph against every public witness fact, including zero-count facts.
@@ -366,6 +357,7 @@ pub struct CoverageSinglePoints {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::GraphBuilder;
 
     fn observation(sensor: &str, zone: &str, witnesses: u64) -> CoverageObservation {
         CoverageObservation {
