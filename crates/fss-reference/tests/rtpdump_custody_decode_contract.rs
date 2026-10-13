@@ -31,7 +31,10 @@ fn directory(label: &str) -> Result<std::path::PathBuf, Error> {
     let base = std::path::Path::new(env!("CARGO_TARGET_TMPDIR"));
     std::fs::create_dir_all(base)?;
     for index in 0..1000 {
-        let path = base.join(format!("rtp-custody-decode-{label}-{}-{index}", std::process::id()));
+        let path = base.join(format!(
+            "rtp-custody-decode-{label}-{}-{index}",
+            std::process::id()
+        ));
         match std::fs::create_dir(&path) {
             Ok(()) => return Ok(path),
             Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => {}
@@ -128,8 +131,12 @@ fn cold_root_decode_matches_native_pixels_without_original_file_or_new_authority
     let dep = ReferenceDeployment::reopen(&dir, "site:retained-rtp", &cx)?;
     let before = dep.current_anchor().clone();
     let recovered = inspect_rtp_import(root, 901, RtpRecoveryPolicy::default(), &cx, &dep)?;
-    let mut reader =
-        recovered.decode_h264_checked(selection()?, RtpCustodyDecodeLimits::default(), &dep, &cx)?;
+    let mut reader = recovered.decode_h264_checked(
+        selection()?,
+        RtpCustodyDecodeLimits::default(),
+        &dep,
+        &cx,
+    )?;
     let mut found = Vec::new();
     for _ in 0..10_000 {
         match reader.step(&dep, &cx)? {
@@ -170,8 +177,12 @@ fn retained_mask_is_applied_to_luma_and_both_chroma_planes_before_digesting() ->
     let root = publish(&real_dump(true), &mut dep, &cx)?;
     let policy = mask(&mut dep, dimensions()?, &cx)?;
     let recovered = inspect_rtp_import(root, 902, RtpRecoveryPolicy::default(), &cx, &dep)?;
-    let mut reader =
-        recovered.decode_h264_checked(selection()?, RtpCustodyDecodeLimits::default(), &dep, &cx)?;
+    let mut reader = recovered.decode_h264_checked(
+        selection()?,
+        RtpCustodyDecodeLimits::default(),
+        &dep,
+        &cx,
+    )?;
     let mut count = 0;
     for _ in 0..10_000 {
         match reader.step(&dep, &cx)? {
@@ -202,8 +213,12 @@ fn policy_change_fences_already_queued_raw_pixels_and_requires_reinspection() ->
     let mut dep = ReferenceDeployment::open(&dir, "site:retained-policy-change", &cx)?;
     let root = publish(&real_dump(false), &mut dep, &cx)?;
     let recovered = inspect_rtp_import(root, 903, RtpRecoveryPolicy::default(), &cx, &dep)?;
-    let mut reader =
-        recovered.decode_h264_checked(selection()?, RtpCustodyDecodeLimits::default(), &dep, &cx)?;
+    let mut reader = recovered.decode_h264_checked(
+        selection()?,
+        RtpCustodyDecodeLimits::default(),
+        &dep,
+        &cx,
+    )?;
     until_queued(&mut reader, &dep, &cx)?;
     assert_eq!(reader.stats().frames, 0);
     mask(&mut dep, dimensions()?, &cx)?;
@@ -224,8 +239,12 @@ fn policy_change_fences_already_queued_raw_pixels_and_requires_reinspection() ->
     ));
     // Recovery is an explicit new admission under the new policy, never an in-place rebase.
     let refreshed = inspect_rtp_import(root, 913, RtpRecoveryPolicy::default(), &cx, &dep)?;
-    let mut next =
-        refreshed.decode_h264_checked(selection()?, RtpCustodyDecodeLimits::default(), &dep, &cx)?;
+    let mut next = refreshed.decode_h264_checked(
+        selection()?,
+        RtpCustodyDecodeLimits::default(),
+        &dep,
+        &cx,
+    )?;
     until_queued(&mut next, &dep, &cx)?;
     let RetainedRtpDecodeStep::Frame(frame) = next.step(&dep, &cx)? else {
         return Err("newly admitted masked frame missing".into());
@@ -245,8 +264,12 @@ fn missing_original_chunk_cannot_be_hidden_by_cached_source_or_queued_pixels() -
     let mut dep = ReferenceDeployment::open(&dir, "site:retained-missing", &cx)?;
     let root = publish(&real_dump(false), &mut dep, &cx)?;
     let recovered = inspect_rtp_import(root, 904, RtpRecoveryPolicy::default(), &cx, &dep)?;
-    let mut reader =
-        recovered.decode_h264_checked(selection()?, RtpCustodyDecodeLimits::default(), &dep, &cx)?;
+    let mut reader = recovered.decode_h264_checked(
+        selection()?,
+        RtpCustodyDecodeLimits::default(),
+        &dep,
+        &cx,
+    )?;
     until_queued(&mut reader, &dep, &cx)?;
     let digest = *recovered.report().chunk_digests().first().ok_or("chunk")?;
     std::fs::remove_file(dep.publisher().spool().object_path(digest))?;
@@ -267,8 +290,12 @@ fn cancelled_delivery_discards_queued_pixels_without_serving_a_frame() -> TestRe
     let mut dep = ReferenceDeployment::open(&dir, "site:retained-cancelled", &cx)?;
     let root = publish(&real_dump(false), &mut dep, &cx)?;
     let recovered = inspect_rtp_import(root, 905, RtpRecoveryPolicy::default(), &cx, &dep)?;
-    let mut reader =
-        recovered.decode_h264_checked(selection()?, RtpCustodyDecodeLimits::default(), &dep, &cx)?;
+    let mut reader = recovered.decode_h264_checked(
+        selection()?,
+        RtpCustodyDecodeLimits::default(),
+        &dep,
+        &cx,
+    )?;
     until_queued(&mut reader, &dep, &cx)?;
     cx.request_cancellation();
     assert!(matches!(
@@ -295,7 +322,10 @@ fn exact_parameter_types_and_independent_source_read_and_step_limits_are_enforce
     let selected = selection()?;
     for invalid in [
         RetainedRtpDecodeRequest::new([selected.parameters[1], selected.parameters[0]]),
-        RetainedRtpDecodeRequest::new([ContentDigest::sha256(b"absent SPS"), selected.parameters[1]]),
+        RetainedRtpDecodeRequest::new([
+            ContentDigest::sha256(b"absent SPS"),
+            selected.parameters[1],
+        ]),
     ] {
         assert!(matches!(
             recovered.decode_h264_checked(invalid, RtpCustodyDecodeLimits::default(), &dep, &cx),
@@ -350,8 +380,12 @@ fn wrong_mask_resolution_refuses_instead_of_returning_unmasked_native_pixels() -
     assert_ne!(dimensions()?, [1, 1]);
     mask(&mut dep, [1, 1], &cx)?;
     let recovered = inspect_rtp_import(root, 907, RtpRecoveryPolicy::default(), &cx, &dep)?;
-    let mut reader =
-        recovered.decode_h264_checked(selection()?, RtpCustodyDecodeLimits::default(), &dep, &cx)?;
+    let mut reader = recovered.decode_h264_checked(
+        selection()?,
+        RtpCustodyDecodeLimits::default(),
+        &dep,
+        &cx,
+    )?;
     until_queued(&mut reader, &dep, &cx)?;
     assert!(matches!(
         reader.step(&dep, &cx),
@@ -388,7 +422,11 @@ fn root_only_publication_cannot_be_used_as_a_completed_decode_import() -> TestRe
     }
     dep.stage_payload(plan.report_bytes())?;
     let root = plan.manifest().root();
-    let hex: String = root.bytes().iter().map(|byte| format!("{byte:02x}")).collect();
+    let hex: String = root
+        .bytes()
+        .iter()
+        .map(|byte| format!("{byte:02x}"))
+        .collect();
     let slot = SlotName::parse(&format!("rtp-{hex}"))?;
     dep.publisher_mut().stage_manifest(&slot, plan.manifest())?;
     dep.publish_and_commit(
@@ -421,8 +459,12 @@ fn recovered_decode_retains_refusal_and_skip_history_after_a_successful_flush() 
     packets.remove(missing);
     let root = publish(&dump_planned(&packets), &mut dep, &cx)?;
     let recovered = inspect_rtp_import(root, 909, RtpRecoveryPolicy::default(), &cx, &dep)?;
-    let mut reader =
-        recovered.decode_h264_checked(selection()?, RtpCustodyDecodeLimits::default(), &dep, &cx)?;
+    let mut reader = recovered.decode_h264_checked(
+        selection()?,
+        RtpCustodyDecodeLimits::default(),
+        &dep,
+        &cx,
+    )?;
     for _ in 0..10_000 {
         if matches!(reader.step(&dep, &cx)?, RetainedRtpDecodeStep::Ended(_)) {
             break;
@@ -445,8 +487,12 @@ fn malformed_source_tail_never_becomes_clean_decode_completion() -> TestResult {
     bytes.extend_from_slice(&[0, 10, 0]);
     let root = publish(&bytes, &mut dep, &cx)?;
     let recovered = inspect_rtp_import(root, 910, RtpRecoveryPolicy::default(), &cx, &dep)?;
-    let mut reader =
-        recovered.decode_h264_checked(selection()?, RtpCustodyDecodeLimits::default(), &dep, &cx)?;
+    let mut reader = recovered.decode_h264_checked(
+        selection()?,
+        RtpCustodyDecodeLimits::default(),
+        &dep,
+        &cx,
+    )?;
     for _ in 0..10_000 {
         if matches!(reader.step(&dep, &cx)?, RetainedRtpDecodeStep::Ended(_)) {
             break;
@@ -461,32 +507,39 @@ fn malformed_source_tail_never_becomes_clean_decode_completion() -> TestResult {
 
 #[test]
 fn unreadable_deletion_authority_fails_closed_even_with_all_media_bytes_present() -> TestResult {
-    use fss_core::{BatchId, EvidenceDelta, ObjectId, Plane};
+    use fss_reference::deletion::{commit_deletion, plan_deletion};
+    use fss_reference::{FileIngestAdapter, FileIngestRequest};
     let dir = directory("deletion-authority")?;
     let cx = cx()?;
     let mut dep = ReferenceDeployment::open(&dir, "site:retained-deletion", &cx)?;
-    let root = publish(&real_dump(false), &mut dep, &cx)?;
-    // Exercise the shared deletion verifier, not a parallel ad-hoc deletion parser.
-    // The underlying ledger can retain a malformed family payload; a reader may not
-    // interpret failure to reconstruct its denial index as an empty denial index.
-    let payload = dep.stage_payload(b"not-a-canonical-deletion-plan")?;
-    dep.append_batch(
-        BatchId::parse("batch:retained-decode:bad-deletion")?,
-        vec![EvidenceDelta {
-            delta_id: "delta:retained-decode:bad-deletion".into(),
-            family: "deletion_record".into(),
-            object_id: ObjectId::parse("object:retained-decode:bad-deletion")?,
-            prior_generation: None,
-            new_generation: 1,
-            validity: CaptureInterval::new(TimestampNs(0), TimestampNs(1_000_000_000))?,
-            plane: Plane::Authority,
-            payload_digest: payload,
-            witness_digest: None,
-            operation_id: None,
-        }],
-        vec![payload],
+    // Create genuine deletion authority through its sole permitted owner. Corrupt its
+    // retained plan afterwards, without manufacturing a reserved-family ledger row.
+    let jpeg = include_bytes!("../../../tests/fixtures/media/jpeg/gray_16x16_flat.jpg");
+    let source = dir.join("delete-source.mjpeg");
+    std::fs::write(&source, jpeg.repeat(2))?;
+    let imported = FileIngestAdapter::ingest(
+        FileIngestRequest::new(
+            source,
+            SensorId::parse("sensor:delete-fixture")?,
+            StreamId::parse("stream:delete-fixture")?,
+        )
+        .with_receive_time(TimestampNs(1_000_000_000)),
+        &cx,
+        &mut dep,
+    )?;
+    let plan = plan_deletion(&dep, imported.import_identity, &cx)?;
+    assert!(plan.blockers.is_empty(), "{:?}", plan.blockers);
+    let plan_digest = plan.digest()?;
+    let principal = "operator:rtp-deletion-fixture";
+    commit_deletion(
+        &mut dep,
+        plan_digest,
+        plan.approval_digest(principal)?,
+        principal,
         &cx,
     )?;
+    let root = publish(&real_dump(false), &mut dep, &cx)?;
+    std::fs::remove_file(dep.publisher().spool().object_path(plan_digest))?;
     let recovered = inspect_rtp_import(root, 911, RtpRecoveryPolicy::default(), &cx, &dep)?;
     assert!(matches!(
         recovered.decode_h264_checked(selection()?, RtpCustodyDecodeLimits::default(), &dep, &cx),
@@ -515,8 +568,12 @@ fn a_missing_noncurrent_chunk_invalidates_the_complete_recording_dependency_clos
     let root = publish_rtp_import(plan, &cx, &mut dep)?.root();
     let recovered = inspect_rtp_import(root, 912, RtpRecoveryPolicy::default(), &cx, &dep)?;
     assert!(recovered.report().chunk_digests().len() > 1);
-    let mut reader =
-        recovered.decode_h264_checked(selection()?, RtpCustodyDecodeLimits::default(), &dep, &cx)?;
+    let mut reader = recovered.decode_h264_checked(
+        selection()?,
+        RtpCustodyDecodeLimits::default(),
+        &dep,
+        &cx,
+    )?;
     until_queued(&mut reader, &dep, &cx)?;
     let last = *recovered
         .report()
@@ -533,7 +590,6 @@ fn a_missing_noncurrent_chunk_invalidates_the_complete_recording_dependency_clos
     Ok(())
 }
 
-
 #[test]
 fn custody_read_allowance_is_cumulative_across_delivered_frames() -> TestResult {
     let dir = directory("cumulative-reads")?;
@@ -541,8 +597,12 @@ fn custody_read_allowance_is_cumulative_across_delivered_frames() -> TestResult 
     let mut dep = ReferenceDeployment::open(&dir, "site:retained-cumulative-reads", &cx)?;
     let root = publish(&real_dump(false), &mut dep, &cx)?;
     let recovered = inspect_rtp_import(root, 914, RtpRecoveryPolicy::default(), &cx, &dep)?;
-    let mut baseline =
-        recovered.decode_h264_checked(selection()?, RtpCustodyDecodeLimits::default(), &dep, &cx)?;
+    let mut baseline = recovered.decode_h264_checked(
+        selection()?,
+        RtpCustodyDecodeLimits::default(),
+        &dep,
+        &cx,
+    )?;
     until_queued(&mut baseline, &dep, &cx)?;
     assert!(matches!(
         baseline.step(&dep, &cx)?,

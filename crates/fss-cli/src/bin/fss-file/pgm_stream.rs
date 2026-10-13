@@ -1,13 +1,16 @@
 #![forbid(unsafe_code)]
 //! Request-owned PGM output. No range-sized pixel buffer, overwrite, or implicit publication.
 
-use std::ffi::OsString;
-use std::fs::{self, File, OpenOptions};
+use std::fs::File;
 use std::io::{self, Write};
-use std::path::{Path, PathBuf};
+use std::path::Path;
 
 use fss_core::{ContentDigest, DigestAlgorithm, Sha256Hasher};
 use fss_reference::ReplayCx;
+
+#[path = "private_output.rs"]
+pub(super) mod private_output;
+use private_output::PrivateOutputPath;
 
 pub(super) const DEFAULT_OUTPUT_BYTES: u64 = 64 * 1024 * 1024;
 pub(super) const MAX_OUTPUT_BYTES: u64 = 256 * 1024 * 1024;
@@ -43,13 +46,18 @@ struct Encoder<W> {
 fn quote(dimensions: [u32; 2], pixels: &[u8]) -> io::Result<(String, u64)> {
     let [width, height] = dimensions;
     let count = u64::from(width) * u64::from(height);
-    if width == 0 || height == 0 || width > 4096 || height > 4096
-        || count > 4_194_304 || count != pixels.len() as u64
+    if width == 0
+        || height == 0
+        || width > 4096
+        || height > 4096
+        || count > 4_194_304
+        || count != pixels.len() as u64
     {
         return Err(refused("invalid bounded video luma plane"));
     }
     let header = format!("P5\n{width} {height}\n255\n");
-    let bytes = count.checked_add(header.len() as u64)
+    let bytes = count
+        .checked_add(header.len() as u64)
         .ok_or_else(|| refused("PGM byte count overflow"))?;
     Ok((header, bytes))
 }
@@ -57,8 +65,13 @@ fn quote(dimensions: [u32; 2], pixels: &[u8]) -> io::Result<(String, u64)> {
 impl<W: Write> Encoder<W> {
     fn new(writer: W, maximum: u64, maximum_frames: usize) -> Self {
         Self {
-            writer, hash: Sha256Hasher::new(), maximum, maximum_frames,
-            bytes: 0, frames: 0, failed: false,
+            writer,
+            hash: Sha256Hasher::new(),
+            maximum,
+            maximum_frames,
+            bytes: 0,
+            frames: 0,
+            failed: false,
         }
     }
 
@@ -76,8 +89,7 @@ impl<W: Write> Encoder<W> {
             let (header, bytes) = quote(dimensions, pixels)?;
             // Reserve a WHOLE frame before its header is written. Byte-limit failures therefore
             // leave complete earlier frames, while genuine I/O failures may leave a partial frame.
-            if self.frames >= self.maximum_frames
-                || bytes > self.maximum.saturating_sub(self.bytes)
+            if self.frames >= self.maximum_frames || bytes > self.maximum.saturating_sub(self.bytes)
             {
                 return Err(refused("video export byte or frame allowance exceeded"));
             }
@@ -92,7 +104,11 @@ impl<W: Write> Encoder<W> {
         result
     }
 
-    fn write(&mut self, bytes: &[u8], check: &mut impl FnMut() -> io::Result<()>) -> io::Result<()> {
+    fn write(
+        &mut self,
+        bytes: &[u8],
+        check: &mut impl FnMut() -> io::Result<()>,
+    ) -> io::Result<()> {
         let mut offset = 0;
         let mut interruptions = 0;
         while offset < bytes.len() {
@@ -116,17 +132,27 @@ impl<W: Write> Encoder<W> {
         Ok(())
     }
 
-    fn finish(mut self, check: &mut impl FnMut() -> io::Result<()>) -> io::Result<(W, ExportReceipt)> {
+    fn finish(
+        mut self,
+        check: &mut impl FnMut() -> io::Result<()>,
+    ) -> io::Result<(W, ExportReceipt)> {
         if self.failed || self.frames == 0 {
             return Err(refused("incomplete video export"));
         }
         check()?;
         self.writer.flush()?;
-        let hash = self.hash.finalize().map_err(|_| refused("PGM hash length exceeded"))?;
-        Ok((self.writer, ExportReceipt {
-            bytes: self.bytes, frames: self.frames,
-            digest: ContentDigest::new(DigestAlgorithm::Sha256, hash),
-        }))
+        let hash = self
+            .hash
+            .finalize()
+            .map_err(|_| refused("PGM hash length exceeded"))?;
+        Ok((
+            self.writer,
+            ExportReceipt {
+                bytes: self.bytes,
+                frames: self.frames,
+                digest: ContentDigest::new(DigestAlgorithm::Sha256, hash),
+            },
+        ))
     }
 }
 
@@ -134,13 +160,7 @@ impl<W: Write> Encoder<W> {
 /// Linux pins the parent directory for creation. Other targets retain the existing protected
 /// directory trust boundary and recheck the canonical parent before/after opening and writing.
 pub(super) struct PgmExport {
-    parent_path: PathBuf,
-    root: PathBuf,
-    name: OsString,
-    #[cfg(unix)]
-    parent: File,
-    #[cfg(unix)]
-    identity: (u64, u64),
+    path: PrivateOutputPath,
     encoder: Option<Encoder<File>>,
     maximum: u64,
     maximum_frames: usize,
@@ -149,111 +169,73 @@ pub(super) struct PgmExport {
 
 impl PgmExport {
     pub(super) fn prepare(
-        path: &Path, root: &Path, maximum: u64, maximum_frames: usize, cx: &ReplayCx,
+        path: &Path,
+        root: &Path,
+        maximum: u64,
+        maximum_frames: usize,
+        cx: &ReplayCx,
     ) -> io::Result<Self> {
         checkpoint(cx)?;
         if maximum == 0 || maximum > MAX_OUTPUT_BYTES || !(1..=1024).contains(&maximum_frames) {
             return Err(refused("invalid video export allowance"));
         }
-        let root = fs::canonicalize(root)?;
-        let parent_path = fs::canonicalize(path.parent()
-            .filter(|p| !p.as_os_str().is_empty()).unwrap_or(Path::new(".")))?;
-        let name = path.file_name().ok_or_else(|| refused("output filename required"))?.to_owned();
-        let destination = parent_path.join(&name);
-        if parent_path.starts_with(&root) || root.starts_with(&destination) {
-            return Err(refused("exports must be outside the deployment"));
-        }
-        match fs::symlink_metadata(&destination) {
-            Err(error) if error.kind() == io::ErrorKind::NotFound => {}
-            _ => return Err(refused("video export destination must be absent")),
-        }
-        #[cfg(unix)]
-        let parent = File::open(&parent_path)?;
-        #[cfg(unix)]
-        let identity = {
-            use std::os::unix::fs::MetadataExt;
-            let metadata = parent.metadata()?;
-            if !metadata.is_dir() { return Err(refused("output parent must be a directory")); }
-            (metadata.dev(), metadata.ino())
-        };
-        let export = Self {
-            parent_path, root, name,
-            #[cfg(unix)] parent,
-            #[cfg(unix)] identity,
-            encoder: None, maximum, maximum_frames, failed: false,
-        };
-        export.check()?;
-        Ok(export)
+        Ok(Self {
+            path: PrivateOutputPath::prepare(path, root, cx)?,
+            encoder: None,
+            maximum,
+            maximum_frames,
+            failed: false,
+        })
     }
 
-    fn check(&self) -> io::Result<()> {
-        let metadata = fs::symlink_metadata(&self.parent_path)?;
-        if !metadata.is_dir() || fs::canonicalize(&self.parent_path)? != self.parent_path
-            || self.parent_path.starts_with(&self.root)
-        {
-            return Err(refused("video export parent changed"));
+    pub(super) fn frame(
+        &mut self,
+        dimensions: [u32; 2],
+        pixels: &[u8],
+        cx: &ReplayCx,
+    ) -> io::Result<()> {
+        if self.failed {
+            return Err(refused("video export is fenced"));
         }
-        #[cfg(unix)]
-        {
-            use std::os::unix::fs::MetadataExt;
-            if (metadata.dev(), metadata.ino()) != self.identity {
-                return Err(refused("video export parent identity changed"));
-            }
-        }
-        Ok(())
-    }
-
-    fn create(&self, cx: &ReplayCx) -> io::Result<File> {
-        checkpoint(cx)?;
-        self.check()?;
-        #[cfg(target_os = "linux")]
-        let destination = {
-            use std::os::fd::AsRawFd;
-            PathBuf::from(format!("/proc/self/fd/{}", self.parent.as_raw_fd())).join(&self.name)
-        };
-        #[cfg(not(target_os = "linux"))]
-        let destination = self.parent_path.join(&self.name);
-        let mut options = OpenOptions::new();
-        options.write(true).create_new(true);
-        #[cfg(unix)]
-        {
-            use std::os::unix::fs::OpenOptionsExt;
-            options.mode(0o600);
-        }
-        let file = options.open(destination)?;
-        self.check()?;
-        Ok(file)
-    }
-
-    pub(super) fn frame(&mut self, dimensions: [u32; 2], pixels: &[u8], cx: &ReplayCx) -> io::Result<()> {
-        if self.failed { return Err(refused("video export is fenced")); }
         let result = (|| {
             checkpoint(cx)?;
-            self.check()?;
+            self.path.check(cx)?;
             if self.encoder.is_none() {
                 let (_, bytes) = quote(dimensions, pixels)?;
-                if bytes > self.maximum { return Err(refused("video export byte allowance exceeded")); }
-                self.encoder = Some(Encoder::new(self.create(cx)?, self.maximum, self.maximum_frames));
+                if bytes > self.maximum {
+                    return Err(refused("video export byte allowance exceeded"));
+                }
+                self.encoder = Some(Encoder::new(
+                    self.path.create(cx)?,
+                    self.maximum,
+                    self.maximum_frames,
+                ));
             }
-            self.encoder.as_mut().ok_or_else(|| refused("missing video export writer"))?
+            self.encoder
+                .as_mut()
+                .ok_or_else(|| refused("missing video export writer"))?
                 .frame(dimensions, pixels, &mut || checkpoint(cx))?;
-            self.check()
+            self.path.check(cx)
         })();
-        if result.is_err() { self.failed = true; }
+        if result.is_err() {
+            self.failed = true;
+        }
         result
     }
 
     pub(super) fn finish(mut self, cx: &ReplayCx) -> io::Result<ExportReceipt> {
         checkpoint(cx)?;
-        if self.failed { return Err(refused("video export is fenced")); }
-        self.check()?;
-        let encoder = self.encoder.take().ok_or_else(|| refused("no complete video output"))?;
+        if self.failed {
+            return Err(refused("video export is fenced"));
+        }
+        self.path.check(cx)?;
+        let encoder = self
+            .encoder
+            .take()
+            .ok_or_else(|| refused("no complete video output"))?;
         let (file, receipt) = encoder.finish(&mut || checkpoint(cx))?;
         checkpoint(cx)?;
-        file.sync_all()?;
-        #[cfg(unix)]
-        self.parent.sync_all()?;
-        self.check()?;
+        self.path.sync(&file, cx)?;
         checkpoint(cx)?;
         Ok(receipt)
     }
@@ -264,7 +246,12 @@ mod tests {
     use super::*;
 
     #[derive(Default)]
-    struct ShortWriter { bytes: Vec<u8>, calls: usize, largest: usize, limit: Option<usize> }
+    struct ShortWriter {
+        bytes: Vec<u8>,
+        calls: usize,
+        largest: usize,
+        limit: Option<usize>,
+    }
     impl Write for ShortWriter {
         fn write(&mut self, bytes: &[u8]) -> io::Result<usize> {
             self.calls += 1;
@@ -272,11 +259,16 @@ mod tests {
             if self.limit.is_some_and(|limit| self.bytes.len() >= limit) {
                 return Err(refused("injected write failure"));
             }
-            let count = bytes.len().min(29).min(self.limit.map_or(usize::MAX, |n| n - self.bytes.len()));
+            let count = bytes
+                .len()
+                .min(29)
+                .min(self.limit.map_or(usize::MAX, |n| n - self.bytes.len()));
             self.bytes.extend_from_slice(&bytes[..count]);
             Ok(count)
         }
-        fn flush(&mut self) -> io::Result<()> { Ok(()) }
+        fn flush(&mut self) -> io::Result<()> {
+            Ok(())
+        }
     }
 
     #[test]
@@ -286,7 +278,13 @@ mod tests {
         encoder.frame([128, 128], &pixels, &mut || Ok(()))?;
         encoder.frame([3, 1], &[1, 2, 3], &mut || Ok(()))?;
         let (writer, receipt) = encoder.finish(&mut || Ok(()))?;
-        let expected = [b"P5\n128 128\n255\n".as_slice(), &pixels, b"P5\n3 1\n255\n", &[1, 2, 3]].concat();
+        let expected = [
+            b"P5\n128 128\n255\n".as_slice(),
+            &pixels,
+            b"P5\n3 1\n255\n",
+            &[1, 2, 3],
+        ]
+        .concat();
         assert_eq!(writer.bytes, expected);
         assert_eq!(receipt.bytes, expected.len() as u64);
         assert_eq!(receipt.digest, ContentDigest::sha256(&expected));
@@ -310,7 +308,14 @@ mod tests {
 
     #[test]
     fn partial_io_failure_never_becomes_a_complete_prefix() {
-        let mut encoder = Encoder::new(ShortWriter { limit: Some(20), ..ShortWriter::default() }, 100, 2);
+        let mut encoder = Encoder::new(
+            ShortWriter {
+                limit: Some(20),
+                ..ShortWriter::default()
+            },
+            100,
+            2,
+        );
         assert!(encoder.frame([8, 8], &[19; 64], &mut || Ok(())).is_err());
         assert_eq!(encoder.writer.bytes.len(), 20);
         assert_eq!(encoder.frames, 0);
@@ -321,10 +326,18 @@ mod tests {
     fn cancellation_is_checked_between_bounded_writes() {
         let mut checks = 0;
         let mut encoder = Encoder::new(ShortWriter::default(), 100_000, 1);
-        assert!(encoder.frame([128, 128], &[5; 16384], &mut || {
-            checks += 1;
-            if checks == 4 { Err(refused("cancelled")) } else { Ok(()) }
-        }).is_err());
+        assert!(
+            encoder
+                .frame([128, 128], &[5; 16384], &mut || {
+                    checks += 1;
+                    if checks == 4 {
+                        Err(refused("cancelled"))
+                    } else {
+                        Ok(())
+                    }
+                })
+                .is_err()
+        );
         assert_eq!(checks, 4);
         assert!(encoder.writer.bytes.len() < 16384);
         assert!(encoder.finish(&mut || Ok(())).is_err());
@@ -346,16 +359,32 @@ mod tests {
 
     #[test]
     fn zero_progress_and_repeated_interruptions_are_bounded() {
-        struct Broken { calls: usize, interrupted: bool }
+        struct Broken {
+            calls: usize,
+            interrupted: bool,
+        }
         impl Write for Broken {
             fn write(&mut self, _: &[u8]) -> io::Result<usize> {
                 self.calls += 1;
-                if self.interrupted { Err(io::ErrorKind::Interrupted.into()) } else { Ok(0) }
+                if self.interrupted {
+                    Err(io::ErrorKind::Interrupted.into())
+                } else {
+                    Ok(0)
+                }
             }
-            fn flush(&mut self) -> io::Result<()> { Ok(()) }
+            fn flush(&mut self) -> io::Result<()> {
+                Ok(())
+            }
         }
         for interrupted in [false, true] {
-            let mut encoder = Encoder::new(Broken { calls: 0, interrupted }, 100, 1);
+            let mut encoder = Encoder::new(
+                Broken {
+                    calls: 0,
+                    interrupted,
+                },
+                100,
+                1,
+            );
             assert!(encoder.frame([1, 1], &[1], &mut || Ok(())).is_err());
             assert_eq!(encoder.writer.calls, if interrupted { 8 } else { 1 });
             assert!(encoder.finish(&mut || Ok(())).is_err());

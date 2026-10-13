@@ -3,7 +3,8 @@
 `recovery::checked_decode::receipt` adds optional source-to-pixels receipts to the existing
 current-custody decoder. Frames and receipts are delivered together, only after current
 custody, privacy, receipt-budget and cancellation checks. The default snapshot decoder,
-checked decoder, canonical import reports and CLI behavior are unchanged.
+checked decoder and canonical import reports are unchanged. The additive `receipts` and
+`verify-receipts` operator commands are documented in `rtp_receipt_streams.md`.
 
 ## API
 
@@ -15,8 +16,8 @@ result. `ReceiptedRtpDecodeStep::Frame` carries the existing masked frame and a 
 
 The receipt exposes canonical `bytes`, their SHA-256 `digest`, the interpretation `recipe`
 digest, and served Y/Cb/Cr/concatenated-I420 digests. Retaining those bytes is an explicit caller
-operation. No ledger rows or files are written implicitly and the CLI does not yet export
-these receipt bytes.
+operation. No ledger rows or files are written implicitly. The receipt-stream API and CLI
+can export a bounded, complete collection and verify it against fresh native reproduction.
 
 ## Reproduction, not deserialized authority
 
@@ -79,6 +80,9 @@ with the existing native receiver, decoder, custody and CLI contracts. The forma
 the new sources. An independent byte-layout size check matched the encoded-size calculation
 for six optional-mask/span layouts; that is not a substitute for native Rust execution.
 
-At implementation time no local Rust toolchain was available and the supplementary native
-runner was queued. Compilation, native test passes and rustfmt compliance are not claimed
-without their actual execution results. No broader bead or release gate is closed here.
+Those eight frame-receipt tests subsequently passed in the pinned native workflow for
+90c303c (run 38470832776); that run still failed one separate deletion fixture and formatting.
+The receipt-stream increment fixes that fixture through the real deletion owner rather than
+lowering its reserved-family guard. See `rtp_receipt_streams.md` for the additional executed
+stream and CLI checks and the exact local-source qualification boundary. No broader bead or
+release gate is closed here.
