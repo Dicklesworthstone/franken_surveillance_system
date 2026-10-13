@@ -1,5 +1,7 @@
 //! Bounded deterministic in-memory object-custody oracle.
 
+mod belief_verification;
+
 use std::collections::{BTreeMap, BTreeSet};
 
 use fss_core::{CanonicalEncode, ContentDigest, TombstoneRecord};
@@ -81,7 +83,7 @@ impl InMemoryObjectStore {
         self.objects.len()
     }
 
-    /// Aggregate bytes across unique staged objects.
+    /// Aggregate bytes across staged objects.
     #[must_use]
     pub const fn total_bytes(&self) -> u64 {
         self.total_bytes
