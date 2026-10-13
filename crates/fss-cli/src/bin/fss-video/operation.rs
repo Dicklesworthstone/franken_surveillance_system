@@ -4,31 +4,28 @@
 use std::fs;
 #[cfg(target_os = "linux")]
 use std::fs::{File, OpenOptions};
-use std::io::Write;
 #[cfg(target_os = "linux")]
 use std::io;
+use std::io::Write;
 use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
 
 use fss_cli::agent_json::{object, string};
 use fss_core::region::{ContextAuthority, RootAuthoritySpec};
 use fss_core::{BudgetVector, ContentDigest, OperationId};
-use fss_reference::ingest::recorded_decode::h264::{
-    RecordedH264Frame, RecordedH264Range, RecordedH264Request,
-};
-use fss_reference::ingest::recorded_decode::h265::{
-    RecordedH265Frame, RecordedH265Range, RecordedH265Request,
-};
+use fss_reference::ingest::RetainedFileImport;
+use fss_reference::ingest::recorded_decode::h264::{RecordedH264Frame, RecordedH264Range, RecordedH264Request};
+use fss_reference::ingest::recorded_decode::h265::{RecordedH265Frame, RecordedH265Range, RecordedH265Request};
 use fss_reference::ingest::recorded_decode::video_budget::RecordedVideoDecodeBudget;
 use fss_reference::ingest::recorded_decode::{ComponentInterpretation, RecordedDecodeError};
-use fss_reference::ingest::video_publication::{
-    NativeVideoFrame, PublishedVideoCodec, PublishedVideoFrame, VideoPublicationLimits,
-};
-use fss_reference::ingest::RetainedFileImport;
+use fss_reference::ingest::video_publication::{NativeVideoFrame, PublishedVideoCodec, PublishedVideoFrame, VideoPublicationLimits};
 use fss_reference::{ReferenceDeployment, ReplayCx};
 
-use crate::plan::{Codec, Command, Plan, REPORT_LIMIT, SCHEMA, MANIFEST_RESERVE, STORAGE_OPERATIONS};
+use crate::plan::{Codec, Command, MANIFEST_RESERVE, Plan, REPORT_LIMIT, SCHEMA, STORAGE_OPERATIONS};
 use crate::{Result, fail, write_bounded};
+
+#[path = "selected.rs"]
+mod selected;
 
 struct Gate<'a> { cx: &'a ReplayCx, start: Instant, timeout: Duration }
 impl Gate<'_> {
@@ -249,17 +246,23 @@ pub(crate) fn run(plan: &Plan, out: &mut impl Write) -> Result<()> {
                 };
                 if !admitted { return Err(fail("retained media does not match approved codec")); }
                 let mut range = Range::open(plan, plan.first, plan.count, &deployment, &mut budget, &cx)?;
-                loop {
-                    gate.check()?;
-                    let Some(frame) = range.next(&deployment, &mut budget, &cx)? else { break; };
-                    gate.check()?;
-                    let next = derived.checked_add(frame.quote()?).filter(|n| *n <= plan.derived)
-                        .ok_or_else(|| fail("cumulative derived byte allowance exceeded"))?;
-                    if REPORT_LIMIT.saturating_sub(reports.bytes) < 4096 { return Err(fail("frame report reserve exhausted")); }
-                    let published = PublishedVideoFrame::publish(&mut deployment, frame.native(), publication_limits(plan), &cx)?;
-                    derived = next; decoded += 1;
-                    scope(plan, &published)?;
-                    reports.row("frame", frame_json(&published))?;
+                if plan.output_index.is_some() {
+                    (decoded, derived) = selected::publish(
+                        plan, &mut range, &mut deployment, &mut budget, &gate, &mut reports,
+                    )?;
+                } else {
+                    loop {
+                        gate.check()?;
+                        let Some(frame) = range.next(&deployment, &mut budget, &cx)? else { break; };
+                        gate.check()?;
+                        let next = derived.checked_add(frame.quote()?).filter(|n| *n <= plan.derived)
+                            .ok_or_else(|| fail("cumulative derived byte allowance exceeded"))?;
+                        if REPORT_LIMIT.saturating_sub(reports.bytes) < 4096 { return Err(fail("frame report reserve exhausted")); }
+                        let published = PublishedVideoFrame::publish(&mut deployment, frame.native(), publication_limits(plan), &cx)?;
+                        derived = next; decoded += 1;
+                        scope(plan, &published)?;
+                        reports.row("frame", frame_json(&published))?;
+                    }
                 }
                 skipped = range.skipped().to_vec();
             }
@@ -306,6 +309,14 @@ pub(crate) fn run(plan: &Plan, out: &mut impl Write) -> Result<()> {
             }
         }
         gate.check()?;
+        if let Some(index) = plan.output_index {
+            reports.row("selection", object(&[
+                ("output_index", index.to_string()),
+                ("display_frames_inspected", decoded.to_string()),
+                ("frames_retained", "1".into()),
+                ("range_publication_complete", "false".into()),
+            ]))?;
+        }
         reports.row("terminal", object(&[
             ("command", string(plan.command.text())), ("complete", "true".into()),
             ("frames_decoded", decoded.to_string()), ("decode_work_units", budget.used().to_string()),

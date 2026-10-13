@@ -11,7 +11,9 @@ use fss_reference::ingest::RetainedReadLimits;
 
 use crate::{Result, fail};
 
-pub(crate) const MAX_ARGUMENTS: usize = 65;
+pub(crate) const MAX_ARGUMENTS: usize = 67;
+pub(crate) const SELECTED_REPORT_RESERVE: usize = 8192;
+const SELECTED_POLICY: &str = "one-display-output:complete-native-range-before-publication:unchanged-frame-root:charge-selected-derived-only:v1";
 pub(crate) const REPORT_LIMIT: usize = 4 * 1024 * 1024;
 pub(crate) const MANIFEST_RESERVE: usize = 4096;
 pub(crate) const STORAGE_OPERATIONS: u64 = 65_536;
@@ -20,7 +22,7 @@ const POLICY: &str = "explicit-codec-import-and-privacy:sealed-native-frames:bou
 pub(crate) const HELP: &str = "fss-video <publish|read|verify> [options]\n\
   --root EXISTING_ABSOLUTE_DEPLOYMENT --site SITE --import-id sha256:HEX\n\
   --codec avc|hevc --privacy-policy none|sha256:HEX --read-originals yes\n\
-  publish: --first-segment N --segment-count N --retain-derived yes\n\
+  publish: --first-segment N --segment-count N --retain-derived yes [--output-index N]\n\
   read/verify: --frame-root sha256:HEX\n\
   read export (Linux): --output NEW_ABSOLUTE_FILE --pixel-format pgm|i420|rgb\n\
   [--approve sha256:HEX] [--principal principal:local-operator]\n\
@@ -33,6 +35,9 @@ Publish decodes an IDR/IRAP-led range in display order and retains masked I420 p
 native receipts. Each frame commits separately; failures preserve the completed prefix.\n\
 The derived allowance charges pixels, receipt and a conservative 4096-byte manifest reserve\n\
 for EVERY admitted frame, including exact retries. Decoder work never refills within a call.\n\
+With --output-index, retain one zero-based DISPLAY output only after the complete range\n\
+finishes successfully. Other frames are discarded, not published. Decoder work covers the\n\
+whole range; only the selected frame consumes derived allowance, including on exact retry.\n\
 Read verifies completed frame, whole source custody and the exact current privacy policy\n\
 without decoding. Verify additionally replays the ENTIRE original range, never stopping\n\
 after the selected frame. It compares receipt, source/output positions and all three planes.\n\
@@ -67,6 +72,7 @@ pub(crate) struct Plan {
     pub privacy: Option<ContentDigest>,
     pub first: usize,
     pub count: usize,
+    pub output_index: Option<u64>,
     pub frame: Option<ContentDigest>,
     pub source: RetainedReadLimits,
     pub pixels: usize,
@@ -117,7 +123,7 @@ impl Plan {
                 | "--max-source-bytes" | "--chunk-bytes" | "--max-segment-bytes"
                 | "--max-pixels" | "--max-dimension" | "--timeout-ms")
                 || (command != Command::Read && matches!(key, "--work-units" | "--max-slices" | "--max-segments"))
-                || (command == Command::Publish && matches!(key, "--first-segment" | "--segment-count" | "--retain-derived" | "--max-derived-bytes"))
+                || (command == Command::Publish && matches!(key, "--first-segment" | "--segment-count" | "--retain-derived" | "--max-derived-bytes" | "--output-index"))
                 || (command != Command::Publish && key == "--frame-root")
                 || (command == Command::Read && matches!(key, "--output" | "--pixel-format"));
             if !allowed || value.is_empty() || value.starts_with("--") || values.insert(key, value).is_some() {
@@ -165,9 +171,13 @@ impl Plan {
         if first.checked_add(count).is_none_or(|end| end > 65_536) {
             return Err(fail("native source range exceeded"));
         }
+        let output_index = if values.contains_key("--output-index") {
+            let last = count.checked_sub(1).ok_or_else(|| fail("selected range must be nonempty"))?;
+            Some(number("--output-index", 0, 0, last as u64)?)
+        } else { None };
         let defaults = RetainedReadLimits::default();
         Ok(Self {
-            command, root, site, principal, codec, privacy, first, count,
+            command, root, site, principal, codec, privacy, first, count, output_index,
             identity: digest(get("--import-id")?)?,
             frame: if command == Command::Publish { None } else { Some(digest(get("--frame-root")?)?) },
             source: RetainedReadLimits {
@@ -206,9 +216,8 @@ impl Plan {
     }
     fn native_bounds(&self) -> Result<String> {
         let count = if self.command == Command::Publish { self.count } else { self.segments };
-        // Deliberately bind every native field, including defaults not exposed as CLI options.
-        // This derived Debug spelling is an approval input, not a durable codec wire format:
-        // any changed field/default/spelling requires a new approval without changing frames.
+        // Bind every native field, including defaults not exposed as CLI options. A changed
+        // field/default/spelling requires a new approval without changing frame identities.
         Ok(match self.codec {
             Codec::Avc => format!("{:?}", self.avc_limits(count)?),
             Codec::Hevc => format!("{:?}", self.hevc_limits(count)),
@@ -238,10 +247,18 @@ impl Plan {
             e.text(self.pixel_format.as_deref().ok_or_else(|| fail("missing pixel format"))?);
             e.text("linux-pinned-parent:create-new:bounded-write:retain-partial-on-failure:v1");
         }
+        // No selection means no new bytes: preserve the current all-frame approval exactly.
+        if let Some(index) = self.output_index {
+            if self.command != Command::Publish || index >= self.count as u64 {
+                return Err(fail("display selection requires a contained publication range"));
+            }
+            e.text("fss.native_video_single_output.v1"); e.text(SELECTED_POLICY);
+            e.u64(index); e.u64(SELECTED_REPORT_RESERVE as u64);
+        }
         Ok(ContentDigest::sha256(&e.finish_checked()?))
     }
     pub(crate) fn preview(&self) -> Result<String> {
-        Ok(object(&[
+        let mut fields = vec![
             ("schema", string(SCHEMA)), ("phase", string("planned")),
             ("command", string(self.command.text())), ("approval", string(&self.digest()?.to_text())),
             ("policy", string(POLICY)), ("root", string(self.root.to_str().ok_or_else(|| fail("root"))?)),
@@ -269,7 +286,17 @@ impl Plan {
             ("pixel_format", self.pixel_format.as_deref().map_or_else(|| "null".into(), string)),
             ("effects", string("none-until-exact-approval")), ("network_requested", "false".into()),
             ("atomic_range_publication", "false".into()), ("absence_certifiable", "false".into()),
-        ]))
+        ];
+        if let Some(index) = self.output_index {
+            fields.extend([
+                ("selection_policy", string(SELECTED_POLICY)),
+                ("output_index", index.to_string()),
+                ("maximum_frames_retained", "1".into()),
+                ("complete_range_required_before_publication", "true".into()),
+                ("frame_report_reserve_bytes", SELECTED_REPORT_RESERVE.to_string()),
+            ]);
+        }
+        Ok(object(&fields))
     }
 }
 
