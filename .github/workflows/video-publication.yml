@@ -1,0 +1,57 @@
+name: Native video publication
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'crates/fss-cli/src/bin/fss-video*'
+      - 'crates/fss-cli/src/bin/fss-video/**'
+      - 'crates/fss-cli/tests/video_publication_cli.rs'
+      - 'crates/fss-reference/src/ingest/**'
+      - 'crates/fss-reference/tests/video_publication*'
+      - '.github/workflows/video-publication.yml'
+  workflow_dispatch:
+permissions:
+  contents: read
+concurrency:
+  group: native-video-publication-${{ github.ref }}
+  cancel-in-progress: false
+jobs:
+  native:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    env:
+      CARGO_BUILD_JOBS: 2
+      CARGO_INCREMENTAL: 0
+      CARGO_PROFILE_DEV_DEBUG: 0
+      CARGO_PROFILE_TEST_DEBUG: 0
+      CARGO_NET_OFFLINE: true
+      RUSTUP_AUTO_INSTALL: 0
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
+      - run: bash scripts/bootstrap_toolchain.sh
+      - name: Native source custody and CLI plan contracts
+        run: |
+          mkdir -p "$RUNNER_TEMP/video-evidence"
+          set -o pipefail
+          status=0
+          cargo +nightly-2026-08-31 test --locked --offline -p fss-reference --test video_publication_contract 2>&1 | tee "$RUNNER_TEMP/video-evidence/library.log" || status=1
+          cargo +nightly-2026-08-31 test --locked --offline -p fss-cli --bin fss-video 2>&1 | tee "$RUNNER_TEMP/video-evidence/cli.log" || status=1
+          exit "$status"
+      - name: Check authored source without altering compiler inputs
+        if: ${{ !cancelled() }}
+        run: |
+          mkdir -p "$RUNNER_TEMP/video-evidence/formatted"
+          for p in crates/fss-cli/src/bin/fss-video.rs crates/fss-cli/src/bin/fss-video/*.rs; do
+            cp "$p" "$RUNNER_TEMP/video-evidence/formatted/$(basename "$p")"
+            rustfmt +nightly-2026-08-31 --edition 2024 --config skip_children=true "$RUNNER_TEMP/video-evidence/formatted/$(basename "$p")"
+          done
+          git rev-parse HEAD > "$RUNNER_TEMP/video-evidence/commit.txt"
+          rustfmt +nightly-2026-08-31 --check --edition 2024 --config skip_children=true crates/fss-cli/src/bin/fss-video.rs crates/fss-cli/src/bin/fss-video/*.rs
+      - name: Keep exact native results
+        if: ${{ !cancelled() }}
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: native-video-${{ github.sha }}
+          path: ${{ runner.temp }}/video-evidence
+          retention-days: 7
+          if-no-files-found: error
