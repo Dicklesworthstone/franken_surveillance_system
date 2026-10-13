@@ -10,6 +10,8 @@ on:
       - 'crates/fss-object/src/belief_verification*'
       - 'crates/fss-object/src/memory/belief_verification*'
       - 'crates/fss-object/src/memory/belief_verification/**'
+      - 'crates/fss-publication/src/custody_audit.rs'
+      - 'crates/fss-publication/src/custody_audit/**'
       - 'scripts/test_belief_provenance.sh'
       - '.github/workflows/belief-provenance.yml'
   workflow_dispatch:

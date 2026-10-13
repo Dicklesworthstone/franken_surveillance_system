@@ -28,6 +28,9 @@ use crate::{
 mod io;
 use io::AuditIo;
 
+/// Bounded native disk-custody capture for independently rederived beliefs.
+pub mod belief_snapshot;
+
 /// Maximum selected root digests.
 pub const MAX_AUDIT_ROOTS: usize = 128;
 /// Maximum entries per publication metadata directory, including foreign/pending entries.
