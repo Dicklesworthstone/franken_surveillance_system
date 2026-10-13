@@ -172,3 +172,65 @@ fn all_stores_stay_locked_and_cancellation_before_publication_preserves_both_jou
     assert_eq!(old, [journal(&plan.attempts[0])?, journal(&plan.attempts[1])?]);
     for attempt in &plan.attempts { assert_eq!(snapshot(attempt)?.pages().len(), 0); }
     Ok(())
+}
+#[test]
+fn damaged_later_source_refuses_before_any_index_confirmation_or_output() -> Test {
+    let directory = Directory::new()?;
+    let mut plan = plan(&directory)?;
+    for attempt in &plan.attempts { fixture(attempt, true)?; }
+    approve(&mut plan)?;
+    let old = [journal(&plan.attempts[0])?, journal(&plan.attempts[1])?];
+    let attempt = &plan.attempts[1];
+    let summary = snapshot(attempt)?;
+    let publisher = LocalRootPublisher::open(&attempt.root, attempt.publication_limits())?;
+    let recording = HevcArchiveCodec::load_recording(&publisher, summary.windows()[0].slot(), summary.windows()[0].root(), &attempt.catalog_scope().recording, &NeverCancel)?;
+    let digest = ContentDigest::sha256(HevcArchiveCodec::plan(&recording).objects().source).to_text();
+    drop(publisher);
+    let path = attempt.root.join("spool/objects").join(digest.strip_prefix("sha256:").ok_or("digest")?);
+    let mut bytes = fs::read(&path)?;
+    *bytes.last_mut().ok_or("source envelope")? ^= 1;
+    fs::write(&path, &bytes)?;
+    let mut emitted = false;
+    assert_eq!(execute_codec::<HevcArchiveCodec>(&plan, TIMEOUT, |_| { emitted = true; Ok(()) }, &NeverCancel), Err(STORAGE));
+    assert!(!emitted);
+    assert_eq!(old, [journal(&plan.attempts[0])?, journal(&plan.attempts[1])?]);
+    assert_eq!(snapshot(&plan.attempts[0])?.pages().len(), 0);
+    assert_eq!(fs::read(path)?, bytes);
+    Ok(())
+}
+#[test]
+fn native_command_budget_is_quoted_before_publication_and_not_replenished() -> Test {
+    let directory = Directory::new()?;
+    let mut plan = plan(&directory)?;
+    fixture(&plan.attempts[0], true)?;
+    let old = journal(&plan.attempts[0])?;
+    plan.attempts[0].max_steps = 9;
+    assert_eq!(plan.preview(), Err(WORK));
+    assert_eq!(old, journal(&plan.attempts[0])?);
+    plan.attempts[0].max_steps = 10;
+    approve(&mut plan)?;
+    assert!(run(&plan)?.contains("\"catalogs_published\":1"));
+    assert_eq!(snapshot(&plan.attempts[0])?.indexed_windows(), 1);
+    Ok(())
+}
+#[test]
+fn lost_complete_attempt_output_never_indexes_the_next_attempt_and_retry_is_exact() -> Test {
+    let directory = Directory::new()?;
+    let mut plan = plan(&directory)?;
+    for attempt in &plan.attempts { fixture(attempt, true)?; }
+    approve(&mut plan)?;
+    let second = journal(&plan.attempts[1])?;
+    assert_eq!(execute_codec::<HevcArchiveCodec>(&plan, TIMEOUT, |row| {
+        if std::str::from_utf8(row).map_err(|_| OUTPUT)?.contains("\"kind\":\"attempt_index\"") { Err(OUTPUT) } else { Ok(()) }
+    }, &NeverCancel), Err(OUTPUT));
+    let first = snapshot(&plan.attempts[0])?;
+    let root = HevcArchiveCodec::manifest(first.pages()[0].catalog()).root();
+    assert_eq!(snapshot(&plan.attempts[1])?.pages().len(), 0);
+    assert_eq!(journal(&plan.attempts[1])?, second);
+    approve(&mut plan)?;
+    assert!(run(&plan)?.contains("\"catalogs_published\":1"));
+    let first = snapshot(&plan.attempts[0])?;
+    assert_eq!(first.pages().len(), 1);
+    assert_eq!(HevcArchiveCodec::manifest(first.pages()[0].catalog()).root(), root);
+    Ok(())
+}

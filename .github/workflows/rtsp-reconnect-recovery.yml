@@ -57,12 +57,15 @@ jobs:
         if: ${{ !cancelled() }}
         run: |
           mkdir -p "$RUNNER_TEMP/recovery-evidence/formatted"
-          for name in recovery.rs recovery_tests.rs reconnect.rs; do
-            cp "crates/fss-cli/src/bin/fss-capture-rtsp/$name" "$RUNNER_TEMP/recovery-evidence/formatted/$name"
+          sources=()
+          for name in recovery.rs recovery_tests.rs reconnect.rs indexing.rs indexing_tests.rs; do
+            source="crates/fss-cli/src/bin/fss-capture-rtsp/$name"
+            sources+=("$source")
+            cp "$source" "$RUNNER_TEMP/recovery-evidence/formatted/$name"
             rustfmt +nightly-2026-08-31 --edition 2024 --config skip_children=true "$RUNNER_TEMP/recovery-evidence/formatted/$name"
           done
           git rev-parse HEAD > "$RUNNER_TEMP/recovery-evidence/commit.txt"
-          rustfmt +nightly-2026-08-31 --check --edition 2024 --config skip_children=true crates/fss-cli/src/bin/fss-capture-rtsp/recovery.rs crates/fss-cli/src/bin/fss-capture-rtsp/recovery_tests.rs crates/fss-cli/src/bin/fss-capture-rtsp/reconnect.rs
+          rustfmt +nightly-2026-08-31 --check --edition 2024 --config skip_children=true "${sources[@]}"
       - name: Preserve exact failure logs and formatter suggestions
         if: ${{ !cancelled() }}
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
