@@ -6,6 +6,9 @@
 //! denial before delivery. It does not reinterpret media or change the snapshot API.
 //! Callers must authorize deployment access before entering this reference boundary.
 
+/// Optional portable receipts jointly delivered with custody-checked frames.
+pub mod receipt;
+
 use super::decode::{
     RetainedRtpDecodeError, RetainedRtpDecodeRequest, RetainedRtpDecodeStats,
     RetainedRtpDecodeStep, RetainedRtpH264Decoder,
