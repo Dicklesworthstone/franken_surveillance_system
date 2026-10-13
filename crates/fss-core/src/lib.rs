@@ -20,6 +20,7 @@ pub mod agent_response;
 pub mod agent_view;
 pub mod agent_workspace;
 pub mod belief;
+pub mod belief_verification;
 mod canonical;
 mod compression;
 mod context_binding;
