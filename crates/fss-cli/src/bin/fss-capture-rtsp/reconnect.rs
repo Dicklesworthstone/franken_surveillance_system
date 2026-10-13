@@ -66,7 +66,15 @@ Recovery creates no directories, new epochs, extra catalog pages, camera traffic
 Native per-attempt ceilings are preserved; all journals and selected archives stay locked.\n\
 Restoration is incremental. On failure or lost output, keep every store, preview again,\n\
 and approve the current state: original slots retry idempotently, without duplicate ordinals.\n\
-Recovered work does NOT establish capture completion, cross-attempt continuity or absence.\n";
+Recovered work does NOT establish capture completion, cross-attempt continuity or absence.\n\
+\n\
+Complete discovery after restoration: --recover index requests a SEPARATE source-reading preview.\n\
+It verifies every observed archive and prices the exact next catalog before any publication.\n\
+Approve that index preview (not a capture or recovery approval) to publish the recovered tail\n\
+through independent journal/work barriers. Unsettled work must first use --recover yes.\n\
+Original windows never change; all catalog slots/roots are reported again on no-op retries.\n\
+A failed index may leave work to restore. Preserve both stores and preview again; no automatic\n\
+repair, new camera input, archive deletion or cross-epoch merge occurs.\n";
 
 pub(super) struct ReconnectPlan {
     attempts: Vec<Options>,
@@ -74,6 +82,7 @@ pub(super) struct ReconnectPlan {
     retry_max_delay_ms: u64,
     progress_timeout_ns: Option<u64>,
     recovery_timeout_ns: Option<u64>,
+    index_catalogs: bool,
     approve: Option<ContentDigest>,
     maximum_source_bytes: u64,
     maximum_storage_bytes: u64,
@@ -133,14 +142,15 @@ impl ReconnectPlan {
                 return Err("duplicate option");
             }
         }
-        let recover = match values.remove("--recover").as_deref() {
-            None => false,
-            Some("yes") => true,
-            Some(_) => return Err("offline recovery requires --recover yes"),
+        let (recover, index_catalogs) = match values.remove("--recover").as_deref() {
+            None => (false, false),
+            Some("yes") => (true, false),
+            Some("index") => (true, true),
+            Some(_) => return Err("offline recovery requires --recover yes or --recover index"),
         };
         let recovery_timeout = values.remove("--recovery-timeout-ms");
         if !recover && recovery_timeout.is_some() {
-            return Err("recovery timeout requires --recover yes");
+            return Err("recovery timeout requires --recover yes or --recover index");
         }
         let recovery_timeout_ns = if recover {
             Some(
@@ -240,6 +250,7 @@ impl ReconnectPlan {
             retry_max_delay_ms,
             progress_timeout_ns,
             recovery_timeout_ns,
+            index_catalogs,
             approve,
             maximum_source_bytes,
             maximum_storage_bytes,

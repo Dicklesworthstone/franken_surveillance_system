@@ -26,6 +26,9 @@ use fss_reference::rtsp::recording_archive::{ArchiveCodec, AvcArchiveCodec, Hevc
 
 use super::ReconnectPlan;
 
+#[path = "indexing.rs"]
+mod indexing;
+
 const FORMAT: &str = "fss.rtsp_reconnect_recovery_cli.v1";
 const POLICY: &str = "storage-only:exact-observed-tips:all-selected-source-preflight:original-work-only:no-camera:no-secret:no-tail-repair:no-new-pages:no-cross-epoch-continuity:v1";
 const ROOT: &str = "ERR-CAPTURE-RTSP-ROOT-001";
@@ -453,6 +456,9 @@ fn preview_codec<C: ArchiveCodec>(plan: &ReconnectPlan, timeout: u64) -> Result<
 }
 
 pub(super) fn preview(plan: &ReconnectPlan, timeout: u64) -> Result<String> {
+    if plan.index_catalogs {
+        return indexing::preview_index(plan, timeout);
+    }
     match plan.attempts.first().ok_or(STATE)?.codec() {
         "avc" => preview_codec::<AvcArchiveCodec>(plan, timeout),
         "hevc" => preview_codec::<HevcArchiveCodec>(plan, timeout),
@@ -467,8 +473,11 @@ struct Reports<F> {
 }
 impl<F: FnMut(&[u8]) -> Result<()>> Reports<F> {
     fn row(&mut self, kind: &str, detail: String) -> Result<()> {
+        self.row_with_schema(FORMAT, kind, detail)
+    }
+    fn row_with_schema(&mut self, schema: &str, kind: &str, detail: String) -> Result<()> {
         let row = object(&[
-            ("schema", string(FORMAT)),
+            ("schema", string(schema)),
             ("sequence", self.sequence.to_string()),
             ("kind", string(kind)),
             ("detail", detail),
@@ -721,6 +730,9 @@ fn execute_codec<C: ArchiveCodec>(
 }
 
 pub(super) fn execute(plan: &ReconnectPlan, timeout: u64) -> Result<()> {
+    if plan.index_catalogs {
+        return indexing::execute_index(plan, timeout);
+    }
     match plan.attempts.first().ok_or(STATE)?.codec() {
         "avc" => {
             execute_codec::<AvcArchiveCodec>(plan, timeout, crate::write_bounded, &NeverCancel)
