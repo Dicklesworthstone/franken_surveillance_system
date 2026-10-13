@@ -14,7 +14,10 @@ use fss_core::{
 use super::driver::{self, AttemptOutcome};
 use super::plan::{self, Options};
 
-pub(super) const MAX_ARGUMENTS: usize = plan::MAX_ARGUMENTS + 8;
+#[path = "recovery.rs"]
+mod recovery;
+
+pub(super) const MAX_ARGUMENTS: usize = plan::MAX_ARGUMENTS + 12;
 const FORMAT: &str = "fss.rtsp_reconnect_cli.v1";
 const MAX_CONTROL_REPORT_BYTES: usize = 262_144;
 const POLICY: &str = "bounded-owner-approved-attempts:literal-peer-only:fresh-generation-and-clocks:\
@@ -48,13 +51,29 @@ Between attempts, exponential backoff is capped by --retry-max-delay-ms. At most
 Per-attempt resource ceilings are not silently widened; the outer preview prices their sum.\n\
 Credentials, when explicitly configured, are loaded into a fresh private lease per attempt.\n\
 Preserve all native terminal JSONL rows: they retain omissions, pins and recovery witnesses.\n\
-Reconnect is not crash resume, loss concealment, scene coverage or an absence certificate.\n";
+Reconnect is not crash resume, loss concealment, scene coverage or an absence certificate.\n\
+\n\
+Explicit offline recovery: repeat the ORIGINAL reconnect options with --recover yes.\n\
+Remove the capture --approve value. The returned recovery preview reads protected journal\n\
+metadata, but NOT original media or credential files, and opens NO camera connection.\n\
+Repeat with its separate --approve digest to verify all selected work before restoring\n\
+any original pending window/catalog. --recovery-timeout-ms 30000 bounds the ENTIRE operation.\n\
+The recovery approval binds all observed journal tips, directory identities, scopes and limits.\n\
+A changed tip, a capture approval, a replaced directory, a partial layout or corrupt candidate\n\
+refuses; a bad candidate never falls back to older work. Both missing stores remain UNKNOWN,\n\
+not evidence that an attempt never ran. With no work pin, archive custody remains unchecked.\n\
+Recovery creates no directories, new epochs, extra catalog pages, camera traffic or secret leases.\n\
+Native per-attempt ceilings are preserved; all journals and selected archives stay locked.\n\
+Restoration is incremental. On failure or lost output, keep every store, preview again,\n\
+and approve the current state: original slots retry idempotently, without duplicate ordinals.\n\
+Recovered work does NOT establish capture completion, cross-attempt continuity or absence.\n";
 
 pub(super) struct ReconnectPlan {
     attempts: Vec<Options>,
     retry_delay_ms: u64,
     retry_max_delay_ms: u64,
     progress_timeout_ns: Option<u64>,
+    recovery_timeout_ns: Option<u64>,
     approve: Option<ContentDigest>,
     maximum_source_bytes: u64,
     maximum_storage_bytes: u64,
@@ -114,6 +133,20 @@ impl ReconnectPlan {
                 return Err("duplicate option");
             }
         }
+        let recover = match values.remove("--recover").as_deref() {
+            None => false,
+            Some("yes") => true,
+            Some(_) => return Err("offline recovery requires --recover yes"),
+        };
+        let recovery_timeout = values.remove("--recovery-timeout-ms");
+        if !recover && recovery_timeout.is_some() {
+            return Err("recovery timeout requires --recover yes");
+        }
+        let recovery_timeout_ns = if recover {
+            Some(positive(recovery_timeout.as_deref().unwrap_or("30000"), 1, 3_600_000)? * 1_000_000)
+        } else {
+            None
+        };
         let count = positive(
             &values
                 .remove("--max-attempts")
@@ -204,6 +237,7 @@ impl ReconnectPlan {
             retry_delay_ms,
             retry_max_delay_ms,
             progress_timeout_ns,
+            recovery_timeout_ns,
             approve,
             maximum_source_bytes,
             maximum_storage_bytes,
@@ -231,6 +265,8 @@ impl ReconnectPlan {
         }
     }
 
+    // Original capture identity. Recovery binds this under its own domain plus observed stores;
+    // this digest alone can never authorize a recovery operation or vice versa.
     fn digest(&self) -> Result<ContentDigest, &'static str> {
         let mut e = CanonicalEncoder::new();
         e.text("fss.rtsp_reconnect_cli_plan.v1");
@@ -253,6 +289,9 @@ impl ReconnectPlan {
     }
 
     pub(super) fn preview(&self) -> Result<String, &'static str> {
+        if let Some(timeout) = self.recovery_timeout_ns {
+            return recovery::preview(self, timeout);
+        }
         let children = self
             .attempts
             .iter()
@@ -315,6 +354,9 @@ trait Effects {
 }
 
 fn run(plan: &ReconnectPlan, effects: &mut impl Effects) -> Result<(), &'static str> {
+    if plan.recovery_timeout_ns.is_some() {
+        return Err("ERR-CAPTURE-RTSP-STATE-001");
+    }
     let approval = plan.digest()?;
     if plan.approve != Some(approval) {
         return Err("ERR-CAPTURE-RTSP-APPROVAL-001");
@@ -474,6 +516,9 @@ impl Effects for NativeEffects {
 }
 
 pub(super) fn execute(plan: &mut ReconnectPlan) -> Result<(), &'static str> {
+    if let Some(timeout) = plan.recovery_timeout_ns {
+        return recovery::execute(plan, timeout);
+    }
     let approval = plan.digest()?;
     if plan.approve != Some(approval) {
         return Err("ERR-CAPTURE-RTSP-APPROVAL-001");
