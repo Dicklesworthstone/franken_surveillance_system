@@ -192,3 +192,6 @@ pub mod http_reconnect;
 
 /// Durable-before-parse native HTTP reacquisition with exact per-generation custody pins.
 pub mod http_reconnect_recording;
+
+/// Explicit source-verified publication and cold reads of native H.264/H.265 frames.
+pub mod video_publication;
