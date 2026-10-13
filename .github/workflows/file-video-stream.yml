@@ -1,0 +1,41 @@
+name: Bounded file video decoding
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'crates/fss-cli/src/bin/fss-file.rs'
+      - 'crates/fss-cli/src/bin/fss-file/**'
+      - 'crates/fss-cli/tests/file_video_stream*'
+      - 'crates/fss-reference/src/ingest/**'
+      - 'scripts/test_file_video_stream.sh'
+      - '.github/workflows/file-video-stream.yml'
+  workflow_dispatch:
+permissions:
+  contents: read
+concurrency:
+  group: file-video-stream-${{ github.ref }}
+  cancel-in-progress: false
+jobs:
+  native:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    env:
+      CARGO_BUILD_JOBS: 2
+      CARGO_INCREMENTAL: 0
+      CARGO_PROFILE_DEV_DEBUG: 0
+      CARGO_PROFILE_TEST_DEBUG: 0
+      CARGO_NET_OFFLINE: true
+      RUSTUP_AUTO_INSTALL: 0
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
+      - run: bash scripts/bootstrap_toolchain.sh
+      - name: Bounded native exporter contracts
+        run: bash scripts/test_file_video_stream.sh "$RUNNER_TEMP/file-video-evidence"
+      - name: Retain exact source and native results
+        if: ${{ !cancelled() }}
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: file-video-${{ github.sha }}
+          path: ${{ runner.temp }}/file-video-evidence
+          retention-days: 7
+          if-no-files-found: error
