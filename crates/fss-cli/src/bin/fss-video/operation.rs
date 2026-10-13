@@ -14,10 +14,10 @@ use fss_cli::agent_json::{object, string};
 use fss_core::region::{ContextAuthority, RootAuthoritySpec};
 use fss_core::{BudgetVector, ContentDigest, OperationId};
 use fss_reference::ingest::recorded_decode::h264::{
-    DecoderLimits as AvcLimits, RecordedH264Frame, RecordedH264Range, RecordedH264Request,
+    RecordedH264Frame, RecordedH264Range, RecordedH264Request,
 };
 use fss_reference::ingest::recorded_decode::h265::{
-    DecoderLimits as HevcLimits, RecordedH265Frame, RecordedH265Range, RecordedH265Request,
+    RecordedH265Frame, RecordedH265Range, RecordedH265Request,
 };
 use fss_reference::ingest::recorded_decode::video_budget::RecordedVideoDecodeBudget;
 use fss_reference::ingest::recorded_decode::{ComponentInterpretation, RecordedDecodeError};
@@ -27,7 +27,7 @@ use fss_reference::ingest::video_publication::{
 use fss_reference::ingest::RetainedFileImport;
 use fss_reference::{ReferenceDeployment, ReplayCx};
 
-use crate::plan::{Codec, Command, Plan, REPORT_LIMIT, SCHEMA};
+use crate::plan::{Codec, Command, Plan, REPORT_LIMIT, SCHEMA, MANIFEST_RESERVE, STORAGE_OPERATIONS};
 use crate::{Result, fail, write_bounded};
 
 struct Gate<'a> { cx: &'a ReplayCx, start: Instant, timeout: Duration }
@@ -124,22 +124,12 @@ impl Range {
             Codec::Avc => Self::Avc(Box::new(RecordedH264Range::open_with_budget(deployment, RecordedH264Request {
                 import_identity: plan.identity, first_segment: first, segment_count: count,
                 interpretation: ComponentInterpretation::YCbCr, read_limits: plan.source,
-                decoder_limits: AvcLimits {
-                    max_width: plan.dimension, max_height: plan.dimension,
-                    max_macroblocks: u32::try_from(plan.pixels / 256)?, max_pictures: count as u64,
-                    max_nal_bytes: (plan.source.max_segment_bytes as usize).min(16 * 1024 * 1024),
-                    max_slices_per_picture: plan.slices, ..AvcLimits::default()
-                },
+                decoder_limits: plan.avc_limits(count)?,
             }, budget, cx)?)),
             Codec::Hevc => Self::Hevc(Box::new(RecordedH265Range::open_with_budget(deployment, RecordedH265Request {
                 import_identity: plan.identity, first_segment: first, segment_count: count,
                 interpretation: ComponentInterpretation::YCbCr, read_limits: plan.source,
-                decoder_limits: HevcLimits {
-                    max_width: plan.dimension, max_height: plan.dimension,
-                    max_luma_samples: plan.pixels as u64, max_pictures: count as u64,
-                    max_nal_bytes: (plan.source.max_segment_bytes as usize).min(16 * 1024 * 1024),
-                    max_slices_per_picture: plan.slices, ..HevcLimits::default()
-                },
+                decoder_limits: plan.hevc_limits(count),
             }, budget, cx)?)),
         };
         let policy = match &range {
@@ -173,7 +163,7 @@ impl Frame {
         match self { Self::Avc(f) => f.receipt().encoded(), Self::Hevc(f) => f.receipt().encoded() }
     }
     fn quote(&self) -> Result<usize> {
-        self.planes().iter().try_fold(self.receipt().len() + 4096, |n, p|
+        self.planes().iter().try_fold(self.receipt().len() + MANIFEST_RESERVE, |n, p|
             n.checked_add(p.len()).ok_or_else(|| fail("derived byte quote overflow")))
     }
     fn equals(&self, saved: &PublishedVideoFrame) -> bool {
@@ -232,7 +222,7 @@ pub(crate) fn run(plan: &Plan, out: &mut impl Write) -> Result<()> {
         principal: plan.principal.clone(), capabilities: vec!["ADP-REPLAY-001".into()],
         deadline: None, priority: 10,
         budgets: BudgetVector::builder().bytes(plan.source.max_source_bytes)
-            .storage_operations(65_536).build()?,
+            .storage_operations(STORAGE_OPERATIONS).build()?,
         privacy_scope: "privacy:exact-owner-video-policy".into(),
         retention_scope: "retention:explicit-native-derived-frames".into(),
         anchor_universe: ContentDigest::sha256(plan.site.as_bytes()), generation: 1,

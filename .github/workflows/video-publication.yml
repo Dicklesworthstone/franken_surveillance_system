@@ -37,16 +37,22 @@ jobs:
           cargo +nightly-2026-08-31 test --locked --offline -p fss-reference --test video_publication_contract 2>&1 | tee "$RUNNER_TEMP/video-evidence/library.log" || status=1
           cargo +nightly-2026-08-31 test --locked --offline -p fss-cli --bin fss-video 2>&1 | tee "$RUNNER_TEMP/video-evidence/cli.log" || status=1
           exit "$status"
+      - name: Native process publication, cold replay and privacy contracts
+        if: ${{ !cancelled() }}
+        run: |
+          mkdir -p "$RUNNER_TEMP/video-evidence"
+          set -o pipefail
+          cargo +nightly-2026-08-31 test --locked --offline -p fss-cli --test video_publication_cli 2>&1 | tee "$RUNNER_TEMP/video-evidence/process.log"
       - name: Check authored source without altering compiler inputs
         if: ${{ !cancelled() }}
         run: |
           mkdir -p "$RUNNER_TEMP/video-evidence/formatted"
-          for p in crates/fss-cli/src/bin/fss-video.rs crates/fss-cli/src/bin/fss-video/*.rs; do
+          for p in crates/fss-cli/src/bin/fss-video.rs crates/fss-cli/src/bin/fss-video/*.rs crates/fss-cli/tests/video_publication_cli.rs; do
             cp "$p" "$RUNNER_TEMP/video-evidence/formatted/$(basename "$p")"
             rustfmt +nightly-2026-08-31 --edition 2024 --config skip_children=true "$RUNNER_TEMP/video-evidence/formatted/$(basename "$p")"
           done
           git rev-parse HEAD > "$RUNNER_TEMP/video-evidence/commit.txt"
-          rustfmt +nightly-2026-08-31 --check --edition 2024 --config skip_children=true crates/fss-cli/src/bin/fss-video.rs crates/fss-cli/src/bin/fss-video/*.rs
+          rustfmt +nightly-2026-08-31 --check --edition 2024 --config skip_children=true crates/fss-cli/src/bin/fss-video.rs crates/fss-cli/src/bin/fss-video/*.rs crates/fss-cli/tests/video_publication_cli.rs
       - name: Keep exact native results
         if: ${{ !cancelled() }}
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02

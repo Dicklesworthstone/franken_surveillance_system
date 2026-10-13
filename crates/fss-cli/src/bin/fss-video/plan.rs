@@ -13,6 +13,8 @@ use crate::{Result, fail};
 
 pub(crate) const MAX_ARGUMENTS: usize = 65;
 pub(crate) const REPORT_LIMIT: usize = 4 * 1024 * 1024;
+pub(crate) const MANIFEST_RESERVE: usize = 4096;
+pub(crate) const STORAGE_OPERATIONS: u64 = 65_536;
 pub(crate) const SCHEMA: &str = "fss.native_video_cli.v1";
 const POLICY: &str = "explicit-codec-import-and-privacy:sealed-native-frames:bounded-display-order:source-verified-cold-read:whole-range-replay:no-camera:no-effects:incremental-publication:v1";
 pub(crate) const HELP: &str = "fss-video <publish|read|verify> [options]\n\
@@ -184,9 +186,44 @@ impl Plan {
             approval: values.get("--approve").map(|s| digest(s)).transpose()?,
         })
     }
+    pub(crate) fn avc_limits(&self, count: usize) -> Result<fss_reference::ingest::recorded_decode::h264::DecoderLimits> {
+        use fss_reference::ingest::recorded_decode::h264::DecoderLimits;
+        Ok(DecoderLimits {
+            max_width: self.dimension, max_height: self.dimension,
+            max_macroblocks: u32::try_from(self.pixels / 256)?, max_pictures: count as u64,
+            max_nal_bytes: (self.source.max_segment_bytes as usize).min(16 * 1024 * 1024),
+            max_slices_per_picture: self.slices, ..DecoderLimits::default()
+        })
+    }
+    pub(crate) fn hevc_limits(&self, count: usize) -> fss_reference::ingest::recorded_decode::h265::DecoderLimits {
+        use fss_reference::ingest::recorded_decode::h265::DecoderLimits;
+        DecoderLimits {
+            max_width: self.dimension, max_height: self.dimension,
+            max_luma_samples: self.pixels as u64, max_pictures: count as u64,
+            max_nal_bytes: (self.source.max_segment_bytes as usize).min(16 * 1024 * 1024),
+            max_slices_per_picture: self.slices, ..DecoderLimits::default()
+        }
+    }
+    fn native_bounds(&self) -> Result<String> {
+        let count = if self.command == Command::Publish { self.count } else { self.segments };
+        // Deliberately bind every native field, including defaults not exposed as CLI options.
+        // This derived Debug spelling is an approval input, not a durable codec wire format:
+        // any changed field/default/spelling requires a new approval without changing frames.
+        Ok(match self.codec {
+            Codec::Avc => format!("{:?}", self.avc_limits(count)?),
+            Codec::Hevc => format!("{:?}", self.hevc_limits(count)),
+        })
+    }
     pub(crate) fn digest(&self) -> Result<ContentDigest> {
         let mut e = CanonicalEncoder::new();
         e.text("fss.native_video_cli_plan.v1"); e.text(POLICY);
+        e.text(&self.native_bounds()?);
+        e.text(fss_reference::ingest::recorded_decode::video_budget::VIDEO_DECODE_WORK_MODEL);
+        e.digest(match self.codec {
+            Codec::Avc => fss_reference::ingest::recorded_decode::h264::h264_decoder_identity(),
+            Codec::Hevc => fss_reference::ingest::recorded_decode::h265::h265_decoder_identity(),
+        });
+        e.u64(MANIFEST_RESERVE as u64); e.u64(STORAGE_OPERATIONS);
         for s in [self.command.text(), self.root.to_str().ok_or_else(|| fail("UTF-8 root required"))?,
                   &self.site, &self.principal, self.codec.text()] { e.text(s); }
         e.digest(self.identity);
@@ -222,6 +259,10 @@ impl Plan {
             ("decode_work_model", string(fss_reference::ingest::recorded_decode::video_budget::VIDEO_DECODE_WORK_MODEL)),
             ("maximum_derived_bytes", self.derived.to_string()), ("timeout_ms", self.timeout_ms.to_string()),
             ("maximum_report_bytes", REPORT_LIMIT.to_string()),
+            ("native_decoder_limits", string(&self.native_bounds()?)),
+            ("maximum_context_bytes", self.source.max_source_bytes.to_string()),
+            ("maximum_storage_operations", STORAGE_OPERATIONS.to_string()),
+            ("manifest_reservation_per_frame", MANIFEST_RESERVE.to_string()),
             ("output", match &self.output {
                 Some(p) => string(p.to_str().ok_or_else(|| fail("UTF-8 output required"))?), None => "null".into(),
             }),
