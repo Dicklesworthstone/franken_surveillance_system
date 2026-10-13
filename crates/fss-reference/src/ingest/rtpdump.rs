@@ -10,6 +10,8 @@ pub mod decode;
 pub mod hevc;
 /// Source-first publication, capsule linkage and verified readback.
 pub mod import;
+/// Complete portable receipt streams with fresh native verification.
+pub mod receipt_stream;
 /// Root-based read-only verification and explicitly committed crash recovery.
 pub mod recovery;
 /// Recorded packets through the real sequence and H.264 kernels.
