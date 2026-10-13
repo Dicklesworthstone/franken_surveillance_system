@@ -26,6 +26,9 @@ use fss_reference::{ReferenceDeployment, ReplayCx};
 use std::io::Write;
 use std::path::{Path, PathBuf};
 
+#[path = "pgm_stream.rs"]
+mod pgm_stream;
+
 const MAX_SCAN_FRAMES: usize = 128;
 
 #[derive(Clone, Copy, Debug)]
@@ -44,6 +47,7 @@ pub(super) struct FrameAction {
     work_units: u64,
     output: Option<PathBuf>,
     receipt_output: Option<PathBuf>,
+    maximum_output_bytes: Option<u64>,
 }
 
 #[derive(Debug)]
@@ -96,7 +100,7 @@ pub(super) fn accepts_option(command: &str, option: &str) -> bool {
         "--interpretation" | "--max-pixels" | "--max-dimension" | "--max-markers"
     ) || (command != "read-decoded" && option == "--work-units")
         || (command != "motion" && matches!(option, "--segment" | "--output" | "--receipt-out"))
-        || (command == "decode" && option == "--segment-count")
+        || (command == "decode" && matches!(option, "--segment-count" | "--max-output-bytes"))
         || (command == "motion"
             && matches!(
                 option,
@@ -202,6 +206,15 @@ pub(super) fn parse(
                 "segment count must be 1..1024 and its source range must not overflow",
             ));
         }
+        let maximum_output_bytes = if values.contains_key("--max-output-bytes") {
+            let maximum: u64 = number(values, "--max-output-bytes", None)?;
+            if !values.contains_key("--output") || maximum == 0 || maximum > pgm_stream::MAX_OUTPUT_BYTES {
+                return Err(malformed("--max-output-bytes requires --output and a value in 1..268435456"));
+            }
+            Some(maximum)
+        } else {
+            None
+        };
         Ok(Action::Frame(FrameAction {
             mode,
             request,
@@ -209,6 +222,7 @@ pub(super) fn parse(
             work_units,
             output: values.get("--output").map(PathBuf::from),
             receipt_output: values.get("--receipt-out").map(PathBuf::from),
+            maximum_output_bytes,
         }))
     }
 }
@@ -228,7 +242,7 @@ pub(super) fn run(
                 "annexb" | "mp4avc" | "mkvavc"
             ) =>
         {
-            run_h264(action, deployment, root, cx, out)
+            run_video_decode(action, false, deployment, root, cx, out)
         }
         Action::Frame(action)
             if matches!(
@@ -236,7 +250,7 @@ pub(super) fn run(
                 "hevc" | "mp4hevc" | "mkvhevc"
             ) =>
         {
-            run_h265(action, deployment, root, cx, out)
+            run_video_decode(action, true, deployment, root, cx, out)
         }
         Action::Frame(action) => run_frame(action, deployment, root, cx, out),
         Action::Motion(action) => run_motion(action, retained, deployment, root, cx, out),
@@ -250,6 +264,9 @@ fn run_frame(
     cx: &ReplayCx,
     out: &mut impl Write,
 ) -> RunResult<()> {
+    if action.maximum_output_bytes.is_some() {
+        return Err(std::io::Error::other("--max-output-bytes applies only to native video decoding").into());
+    }
     if action.segment_count != 1 {
         return Err(std::io::Error::other("--segment-count applies only to H.264 and H.265 imports; JPEG frames decode one segment").into());
     }
@@ -324,6 +341,54 @@ fn run_frame(
     Ok(())
 }
 
+/// One cumulative allowance for range creation, parameter sets, decode-ahead and all outputs.
+/// Failure retains consumed work and an explicit incomplete marker; no native frame is published.
+fn run_video_decode(
+    action: &FrameAction,
+    hevc: bool,
+    deployment: &mut ReferenceDeployment,
+    root: &Path,
+    cx: &ReplayCx,
+    out: &mut impl Write,
+) -> RunResult<()> {
+    if !matches!(action.mode, FrameMode::Decode) {
+        return Err(RecordedDecodeError::UnsupportedMedia.into());
+    }
+    if action.receipt_output.is_some() {
+        return Err(std::io::Error::other("--receipt-out applies to published JPEG decode receipts only").into());
+    }
+    let mut budget = RecordedVideoDecodeBudget::new(action.work_units);
+    let result = if hevc {
+        run_h265(action, deployment, root, cx, out, &mut budget)
+    } else {
+        run_h264(action, deployment, root, cx, out, &mut budget)
+    };
+    writeln!(out, "decode_work_units={}", budget.used())?;
+    writeln!(out, "decode_work_unit_model={VIDEO_DECODE_WORK_MODEL}")?;
+    writeln!(out, "maximum_decode_work_units={}", action.work_units)?;
+    writeln!(out, "remaining_decode_work_units={}", budget.remaining())?;
+    writeln!(out, "decode_complete={}", result.is_ok())?;
+    result
+}
+
+fn prepare_video_export(action: &FrameAction, root: &Path, cx: &ReplayCx) -> RunResult<Option<pgm_stream::PgmExport>> {
+    // With no export requested there is no output buffer, destination, or output hash.
+    Ok(action.output.as_deref().map(|path| {
+        pgm_stream::PgmExport::prepare(path, root,
+            action.maximum_output_bytes.unwrap_or(pgm_stream::DEFAULT_OUTPUT_BYTES),
+            action.segment_count, cx)
+    }).transpose()?)
+}
+
+fn finish_video_export(export: Option<pgm_stream::PgmExport>, cx: &ReplayCx, out: &mut impl Write) -> RunResult<()> {
+    if let Some(export) = export {
+        let receipt = export.finish(cx)?;
+        writeln!(out, "pgm_sha256={}", receipt.digest)?;
+        writeln!(out, "pgm_bytes={}\npgm_frames={}", receipt.bytes, receipt.frames)?;
+    }
+    Ok(())
+}
+
 /// H.264 pictures predict from earlier pictures: decode the IDR-led range and export every
 /// requested frame. The result is a deterministic derivation of retained custody; unlike JPEG
 /// decode it is not published, so read-decoded/verify-decoded refuse Annex-B imports.
@@ -333,27 +398,20 @@ fn run_h264(
     root: &Path,
     cx: &ReplayCx,
     out: &mut impl Write,
+    budget: &mut RecordedVideoDecodeBudget,
 ) -> RunResult<()> {
-    if !matches!(action.mode, FrameMode::Decode) {
-        return Err(
-            fss_reference::ingest::recorded_decode::RecordedDecodeError::UnsupportedMedia.into(),
-        );
-    }
-    if action.receipt_output.is_some() {
-        return Err(std::io::Error::other(
-            "--receipt-out applies to published JPEG decode receipts only",
-        )
-        .into());
-    }
+    let mut export = prepare_video_export(action, root, cx)?;
     let limits = action.request.decode_limits;
-    let dimension = limits.maximum_dimension.max(16);
     let decoder_limits = DecoderLimits {
-        max_width: dimension,
-        max_height: dimension,
-        max_macroblocks: u32::try_from(limits.maximum_pixels.div_ceil(256))
+        max_width: limits.maximum_dimension,
+        max_height: limits.maximum_dimension,
+        max_macroblocks: u32::try_from(limits.maximum_pixels / 256)
             .map_err(|_| std::io::Error::other("pixel ceiling"))?,
         max_pictures: action.segment_count as u64,
-        max_nal_bytes: limits.maximum_bytes.clamp(2, 16 * 1024 * 1024),
+        max_nal_bytes: limits.maximum_bytes.min(16 * 1024 * 1024),
+        max_slices_per_picture: u32::try_from(limits.maximum_markers)
+            .map_err(|_| RecordedDecodeError::Limit)?
+            .min(DecoderLimits::default().max_slices_per_picture),
         ..DecoderLimits::default()
     };
     let request = RecordedH264Request {
@@ -364,16 +422,19 @@ fn run_h264(
         read_limits: action.request.read_limits,
         decoder_limits,
     };
-    let mut range = RecordedH264Range::open(deployment, request, cx)?;
+    let mut range = RecordedH264Range::open_with_budget(deployment, request, budget, cx)?;
     privacy_lines(out, range.mask().policy_digest(), range.mask().digest())?;
-    let mut pgm = Vec::new();
     writeln!(
         out,
         "h264_range_first_segment={}\nh264_range_segment_count={}",
         action.request.segment_index, action.segment_count
     )?;
-    while let Some(frame) = range.next_frame(deployment, cx)? {
+    while let Some(frame) = range.next_frame_with_budget(deployment, budget, cx)? {
+        if let Some(export) = &mut export {
+            export.frame(frame.dimensions(), frame.pixels(), cx)?;
+        }
         let receipt = frame.receipt();
+        writeln!(out, "frame_output_index={}", frame.output_index())?;
         let [width, height] = receipt.dimensions();
         writeln!(
             out,
@@ -394,13 +455,8 @@ fn run_h264(
             receipt.capsule().capture.earliest.0,
             receipt.capsule().capture.latest.0
         )?;
-        pgm.extend_from_slice(&frame.pgm_bytes());
     }
-    if let Some(path) = &action.output {
-        // Multi-image binary PGM: one complete P5 image per decoded frame, in decode order.
-        write_new(path, &pgm, root, cx)?;
-        writeln!(out, "pgm_sha256={}", ContentDigest::sha256(&pgm))?;
-    }
+    finish_video_export(export, cx, out)?;
     writeln!(
         out,
         "pixel_format=h264_yuv420p_luma\ndecoder_identity={}",
@@ -408,7 +464,7 @@ fn run_h264(
     )?;
     writeln!(
         out,
-        "h264_frames_decoded={}\ndecode_published=false\ndecode_complete=true",
+        "h264_frames_decoded={}\ndecode_published=false",
         range.decoded()
     )?;
     Ok(())
@@ -423,26 +479,19 @@ fn run_h265(
     root: &Path,
     cx: &ReplayCx,
     out: &mut impl Write,
+    budget: &mut RecordedVideoDecodeBudget,
 ) -> RunResult<()> {
-    if !matches!(action.mode, FrameMode::Decode) {
-        return Err(
-            fss_reference::ingest::recorded_decode::RecordedDecodeError::UnsupportedMedia.into(),
-        );
-    }
-    if action.receipt_output.is_some() {
-        return Err(std::io::Error::other(
-            "--receipt-out applies to published JPEG decode receipts only",
-        )
-        .into());
-    }
+    let mut export = prepare_video_export(action, root, cx)?;
     let limits = action.request.decode_limits;
-    let dimension = limits.maximum_dimension.max(16);
     let decoder_limits = H265DecoderLimits {
-        max_width: dimension,
-        max_height: dimension,
-        max_luma_samples: (limits.maximum_pixels as u64).max(64),
+        max_width: limits.maximum_dimension,
+        max_height: limits.maximum_dimension,
+        max_luma_samples: limits.maximum_pixels as u64,
         max_pictures: action.segment_count as u64,
-        max_nal_bytes: limits.maximum_bytes.clamp(3, 16 * 1024 * 1024),
+        max_nal_bytes: limits.maximum_bytes.min(16 * 1024 * 1024),
+        max_slices_per_picture: u32::try_from(limits.maximum_markers)
+            .map_err(|_| RecordedDecodeError::Limit)?
+            .min(H265DecoderLimits::default().max_slices_per_picture),
         ..H265DecoderLimits::default()
     };
     let request = RecordedH265Request {
@@ -453,16 +502,19 @@ fn run_h265(
         read_limits: action.request.read_limits,
         decoder_limits,
     };
-    let mut range = RecordedH265Range::open(deployment, request, cx)?;
+    let mut range = RecordedH265Range::open_with_budget(deployment, request, budget, cx)?;
     privacy_lines(out, range.mask().policy_digest(), range.mask().digest())?;
-    let mut pgm = Vec::new();
     writeln!(
         out,
         "h265_range_first_segment={}\nh265_range_segment_count={}",
         action.request.segment_index, action.segment_count
     )?;
-    while let Some(frame) = range.next_frame(deployment, cx)? {
+    while let Some(frame) = range.next_frame_with_budget(deployment, budget, cx)? {
+        if let Some(export) = &mut export {
+            export.frame(frame.dimensions(), frame.pixels(), cx)?;
+        }
         let receipt = frame.receipt();
+        writeln!(out, "frame_output_index={}", frame.output_index())?;
         let [width, height] = receipt.dimensions();
         writeln!(
             out,
@@ -485,16 +537,11 @@ fn run_h265(
             receipt.capsule().capture.earliest.0,
             receipt.capsule().capture.latest.0
         )?;
-        pgm.extend_from_slice(&frame.pgm_bytes());
     }
     for segment in range.skipped_rasl_segments() {
         writeln!(out, "skipped_rasl_segment={segment}")?;
     }
-    if let Some(path) = &action.output {
-        // Multi-image binary PGM: one complete P5 image per decoded frame, in display order.
-        write_new(path, &pgm, root, cx)?;
-        writeln!(out, "pgm_sha256={}", ContentDigest::sha256(&pgm))?;
-    }
+    finish_video_export(export, cx, out)?;
     writeln!(
         out,
         "pixel_format=h265_yuv420p_luma\ndecoder_identity={}",
@@ -502,7 +549,7 @@ fn run_h265(
     )?;
     writeln!(
         out,
-        "h265_frames_decoded={}\nh265_rasl_skipped={}\ndecode_published=false\ndecode_complete=true",
+        "h265_frames_decoded={}\nh265_rasl_skipped={}\ndecode_published=false",
         range.decoded(),
         range.skipped_rasl_segments().len()
     )?;
