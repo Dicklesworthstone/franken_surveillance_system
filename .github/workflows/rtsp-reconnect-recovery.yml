@@ -1,0 +1,65 @@
+name: RTSP reconnect recovery
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'crates/fss-cli/src/bin/fss-capture-rtsp/**'
+      - 'crates/fss-cli/src/bin/fss-capture-rtsp.rs'
+      - 'crates/fss-cli/tests/capture_rtsp_reconnect_cli*'
+      - 'crates/fss-reference/src/rtsp/**'
+      - 'crates/fss-publication/**'
+      - 'crates/fss-object/**'
+      - '.github/workflows/rtsp-reconnect-recovery.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: rtsp-reconnect-recovery-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  recovery:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    env:
+      CARGO_BUILD_JOBS: 2
+      CARGO_INCREMENTAL: 0
+      CARGO_PROFILE_DEV_DEBUG: 0
+      CARGO_PROFILE_TEST_DEBUG: 0
+      CARGO_NET_OFFLINE: true
+      RUSTUP_AUTO_INSTALL: 0
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
+      - name: Bootstrap the repository-pinned compiler
+        run: bash scripts/bootstrap_toolchain.sh
+      - name: Native recovery and original reconnect contracts
+        run: |
+          mkdir -p "$RUNNER_TEMP/recovery-evidence"
+          set -o pipefail
+          cargo +nightly-2026-08-31 test --locked --offline -p fss-cli --bin fss-capture-rtsp reconnect:: -- --nocapture 2>&1 | tee "$RUNNER_TEMP/recovery-evidence/tests.log"
+      - name: Native process reconnect compatibility
+        if: ${{ !cancelled() }}
+        run: |
+          set -o pipefail
+          cargo +nightly-2026-08-31 test --locked --offline -p fss-cli --test capture_rtsp_reconnect_cli 2>&1 | tee "$RUNNER_TEMP/recovery-evidence/process.log"
+      - name: Check changed-source formatting without modifying compiler inputs
+        if: ${{ !cancelled() }}
+        run: |
+          mkdir -p "$RUNNER_TEMP/recovery-evidence/formatted"
+          for name in recovery.rs recovery_tests.rs reconnect.rs; do
+            cp "crates/fss-cli/src/bin/fss-capture-rtsp/$name" "$RUNNER_TEMP/recovery-evidence/formatted/$name"
+            rustfmt +nightly-2026-08-31 --edition 2024 --config skip_children=true "$RUNNER_TEMP/recovery-evidence/formatted/$name"
+          done
+          git rev-parse HEAD > "$RUNNER_TEMP/recovery-evidence/commit.txt"
+          rustfmt +nightly-2026-08-31 --check --edition 2024 --config skip_children=true crates/fss-cli/src/bin/fss-capture-rtsp/recovery.rs crates/fss-cli/src/bin/fss-capture-rtsp/recovery_tests.rs crates/fss-cli/src/bin/fss-capture-rtsp/reconnect.rs
+      - name: Preserve exact failure logs and formatter suggestions
+        if: ${{ !cancelled() }}
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: rtsp-recovery-${{ github.sha }}
+          path: ${{ runner.temp }}/recovery-evidence
+          retention-days: 7
+          if-no-files-found: error
