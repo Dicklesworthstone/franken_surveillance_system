@@ -34,7 +34,7 @@ pub trait RetainedBeliefGraph: RetainedBeliefEvidence {
 /// Bounded request-owned traversal, with no recursive walk or implicit whole-store expansion.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct BeliefGraphLimits {
-    /// Existing snapshot, offered-root, per-object and aggregate byte limits. Bytes include parents
+    /// Existing selected-snapshot, offered-root, per-object and aggregate byte limits. Bytes include parents
     /// and unused siblings, not just the roots supplied to the derivation engine.
     pub verification: BeliefVerificationLimits,
     /// Maximum independently selected authority objects.
@@ -81,7 +81,7 @@ pub struct BeliefGraphRequest<'a> {
 /// hashing-CPU, or registered engine execution-cost measurements.
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
 pub struct BeliefGraphUsage {
-    /// Snapshot objects inspected for direct bindings.
+    /// Selected snapshot-object lookups (including a missing or refused selected object).
     pub snapshot_objects: usize,
     /// Selected authority closures started.
     pub authority_objects: usize,
@@ -325,23 +325,29 @@ impl<R: RetainedBeliefGraph + ?Sized> Scan<'_, '_, R> {
         if offered.supporting_evidence().len() + offered.contradictions().len() > limits.verification.max_roots {
             return Err(BeliefVerificationError::RootLimit.into());
         }
-        if snapshot.objects.len() > limits.verification.max_snapshot_objects { return Err(BeliefVerificationError::SnapshotLimit.into()); }
         let selected = self.request.authority_objects;
         if selected.is_empty() || !selected.windows(2).all(|pair| pair[0] < pair[1]) { return Err(BeliefGraphError::InvalidSelection); }
         if selected.len() > limits.max_authority_objects { return Err(BeliefGraphError::Limit("authority objects")); }
+        // Scope before inspecting metadata: unselected rows neither consume this allowance nor
+        // leak their cardinality through usage or a snapshot-budget refusal.
+        if selected.len() > limits.verification.max_snapshot_objects { return Err(BeliefVerificationError::SnapshotLimit.into()); }
         // Validate the ENTIRE selection before the first custody read.
         for id in selected {
             self.checkpoint()?;
+            self.usage.snapshot_objects += 1;
             if snapshot.objects.get(id).is_none_or(|revision| revision.plane != Plane::Authority) {
                 return Err(BeliefGraphError::InvalidAuthorityObject(id.clone()));
             }
         }
         let wanted: BTreeSet<_> = offered.supporting_evidence().iter().chain(offered.contradictions()).copied().collect();
         let mut bindings: BTreeMap<_, Vec<_>> = BTreeMap::new();
-        for (id, revision) in &snapshot.objects {
+        // A digest shared with an unselected authority object grants no visibility into that
+        // object's ID, family, generation or validity. Only selected direct bindings reach the
+        // engine, just as only selected ancestors reach it through the ancestry witnesses.
+        for id in selected {
             self.checkpoint()?;
-            self.usage.snapshot_objects += 1;
-            if revision.plane == Plane::Authority && wanted.contains(&revision.payload_digest) {
+            let revision = snapshot.objects.get(id).ok_or_else(|| BeliefGraphError::InvalidAuthorityObject(id.clone()))?;
+            if wanted.contains(&revision.payload_digest) {
                 bindings.entry(revision.payload_digest).or_default().push((id.clone(), revision.clone()));
             }
         }
@@ -384,7 +390,8 @@ impl<R: RetainedBeliefGraph + ?Sized> Scan<'_, '_, R> {
 
 /// Verifies the COMPLETE union of selected closures, then independently re-derives the belief.
 ///
-/// All bindings name the exact current snapshot. Traversal is deterministic breadth-first with
+/// All bindings name selected objects in the exact current snapshot. Unselected rows are never
+/// enumerated or projected into evidence bindings or usage. Traversal is deterministic breadth-first with
 /// canonical child order; shared payloads are read once but visits/edges remain cumulatively priced.
 /// Cycles, missing siblings, invalidated graph owners, stale anchors, cancellation and exhausted
 /// bounds refuse. The original direct verifier and durable belief encodings are unchanged.

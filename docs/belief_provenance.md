@@ -35,7 +35,11 @@ walks are separately accounted. Missing/corrupt siblings, inconsistent publicati
 cycles, missing supporting or contradicting roots, stale/forked anchors, cancellation and exhausted
 limits refuse before a proof is returned. A cancellation after engine execution also returns no proof.
 
-`VerifiedBeliefEvidence::bindings()` contains only actual direct authority payload bindings.
+`VerifiedBeliefEvidence::bindings()` contains only actual direct payload bindings among the
+explicitly selected authority objects. Equal payload digests in unselected objects do not disclose
+those objects' identities, families or validity. Snapshot usage and its admission budget count only
+selected lookups; unrelated table cardinality does not leak through those counters or refusals.
+The direct (non-graph) API still uses its independently supplied full-snapshot profile.
 `ancestry()` separately carries each selected authority object's exact revision and one deterministic
 shortest path through published edges. It does not relabel a leaf with an ancestor's semantic family.
 Engines must validate the appropriate family, generation, scope and meaning. Shortest-path witnesses
@@ -72,6 +76,9 @@ bash scripts/test_belief_provenance.sh /tmp/fss-belief-provenance
 The script uses pinned `nightly-2026-08-31`, locked offline resolution and retained logs. It executes
 direct core tests, graph traversal contracts, and object-store direct/graph intake contracts.
 Commit `b188e37f7def871c8d38d9d95d0d7621eedf9eca` passed the initial 29 tests (9 direct core,
-10 graph, 10 direct object) in supplementary native run `38444948879`. The next object-manifest
-increment adds 12 further cases; its execution result must be checked separately. The focused
+10 graph, 10 direct object) in supplementary native run `38444948879`. Commit
+`dc0695655f1ea7276b7fa21bf2b7c28fbd4fe13a` passed all 41 cases, including the 12 published-manifest
+contracts, in native run `38446306780`. The scope-isolation follow-up adds three independent cases
+for shared-digest metadata disclosure, scope-bound admission and exact selected alias preservation;
+its execution result must be checked separately. The focused
 workflow does not replace `scripts/qualify.sh`, the full target matrix or local DSR release authority.

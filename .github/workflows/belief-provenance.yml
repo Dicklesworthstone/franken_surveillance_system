@@ -6,8 +6,10 @@ on:
       - 'crates/fss-core/src/belief_verification*'
       - 'crates/fss-core/src/belief_verification/**'
       - 'crates/fss-core/tests/belief_graph_contract.rs'
+      - 'crates/fss-core/tests/belief_graph_scope_contract.rs'
       - 'crates/fss-object/src/belief_verification*'
       - 'crates/fss-object/src/memory/belief_verification*'
+      - 'crates/fss-object/src/memory/belief_verification/**'
       - 'scripts/test_belief_provenance.sh'
       - '.github/workflows/belief-provenance.yml'
   workflow_dispatch:
