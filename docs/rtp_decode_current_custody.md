@@ -5,6 +5,25 @@ point-in-time custody verification. It preserves frozen-snapshot decoding, sourc
 parameter selection, native IDR recovery, capture uncertainty and privacy transforms. No
 canonical import bytes, active policies or authority rows are changed by decoding.
 
+## Operator use
+
+The existing command keeps its default snapshot behavior. Select per-frame readback explicitly:
+
+```sh
+fss-decode-rtp decode --root DEPLOYMENT --site SITE --source-root sha256:ROOT \
+  --custody current --max-custody-read-bytes 536870912 --output FRAMES.pgm
+```
+
+Supply `--sps` and `--pps` when the existing parameter inventory is ambiguous. The new read
+allowance belongs to checked delivery, independently of `--max-read-bytes` for initial
+recovery. Source, record and step ceilings also reach the checked owner. A custody allowance
+without `--custody current`, an unknown mode, or excessive bounds refuses before opening the
+deployment. There is no fallback to snapshot mode after a failed read.
+
+Current mode reports `custody_mode`, `custody_read_limit_bytes`, `custody_read_bytes` and
+`custody_steps`. Existing frame digests, privacy markers, partial-output handling, completion
+checks and PGM export semantics are unchanged. Default snapshot output gains no extra rows.
+
 ## Library use
 
 After an independently authorized `inspect_rtp_import`, call
@@ -49,7 +68,9 @@ availability, physical durability, live coverage or evidence of absence.
 Thirteen integration tests cover cold pixel equivalence, all-plane masks, policy drift,
 reinspection, queued source loss, cancellation, exact parameters, independent limits,
 wrong mask dimensions, incomplete imports, recovered histories, malformed tails, unreadable
-deletion authority, noncurrent dependency loss and cumulative delivery reads.
+deletion authority, noncurrent dependency loss and cumulative delivery reads. Four CLI parsing
+tests and two real-process tests cover option admission, cold PGM equivalence, unchanged
+authority and cost reporting. The repository-owned supplementary lane includes all of them:
 
 ```sh
 bash scripts/check_rtp_decode.sh tests

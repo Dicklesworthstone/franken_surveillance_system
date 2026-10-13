@@ -19,7 +19,10 @@ use fss_reference::ingest::ADP_FILE_ROW_ID;
 use fss_reference::ingest::rtpdump::decode::{RtpDecodeEffect, RtpDecodeRecovery};
 use fss_reference::ingest::rtpdump::import::ImportEnd;
 use fss_reference::ingest::rtpdump::recovery::decode::{
-    RetainedRtpDecodeRequest, RetainedRtpDecodeStats, RetainedRtpDecodeStep,
+    RetainedRtpDecodeRequest, RetainedRtpDecodeStats, RetainedRtpDecodeStep, RetainedRtpH264Decoder,
+};
+use fss_reference::ingest::rtpdump::recovery::checked_decode::{
+    CheckedRetainedRtpH264Decoder, RtpCustodyDecodeLimits,
 };
 use fss_reference::ingest::rtpdump::recovery::{RtpRecoveryPolicy, RtpRecoveryState, inspect_rtp_import};
 use fss_reference::{ADP_REPLAY_ROW_ID, ReferenceDeployment, ReplayCx};
@@ -34,6 +37,9 @@ const HELP: &str = "fss-decode-rtp <inspect|decode> --root DIR --site SITE --sou
     [--output FRAMES.pgm] [--recovery stop|next-idr] [--max-frames N]\n\
     [--max-output-bytes N] [--max-decode-bytes N] [--max-decode-calls N]\n\
     [--max-dimension N] [--max-pixels N] [--max-spans N] [--max-steps N]\n\
+    [--custody snapshot|current] [--max-custody-read-bytes N]\n\
+    Current mode rechecks the complete graph before each frame; its read budget is separate\n\
+    from the initial recovery budget. Default snapshot behavior remains unchanged.\n\
   Common bounds: [--max-source-bytes N] [--max-read-bytes N] [--max-records N]\n\
   Outputs are new private files outside the deployment, one binary PGM per served frame.\n\
   Decode/refusal progress is bounded key=value output; partial output is never marked complete.\n\
@@ -60,6 +66,7 @@ struct Options {
     output: Option<PathBuf>,
     output_bytes: u64,
     steps: usize,
+    custody_read_bytes: Option<u64>,
 }
 fn required<'a>(values: &'a Values, key: &str) -> ParseResult<&'a OsString> {
     values.get(key).ok_or((ERR_CLI_MISSING_VALUE, "required option absent"))
@@ -85,7 +92,7 @@ fn parse(args: &[OsString]) -> ParseResult<Option<Options>> {
     };
     let common = ["--root", "--site", "--source-root", "--max-source-bytes", "--max-read-bytes", "--max-records"];
     let decoding = ["--sps", "--pps", "--output", "--recovery", "--max-frames", "--max-output-bytes",
-        "--max-decode-bytes", "--max-decode-calls", "--max-dimension", "--max-pixels", "--max-spans", "--max-steps"];
+        "--max-decode-bytes", "--max-decode-calls", "--max-dimension", "--max-pixels", "--max-spans", "--max-steps", "--custody", "--max-custody-read-bytes"];
     let mut values = Values::new();
     let mut at = 1;
     while at < args.len() {
@@ -148,8 +155,30 @@ fn parse(args: &[OsString]) -> ParseResult<Option<Options>> {
             _ => return Err((ERR_CLI_MALFORMED_VALUE, "recovery must be stop or next-idr")),
         };
     }
+    let custody_read_bytes = match values.get("--custody") {
+        None => None,
+        Some(_) => match text(&values, "--custody")? {
+            "snapshot" => None,
+            "current" => Some(number(
+                &values,
+                "--max-custody-read-bytes",
+                RtpCustodyDecodeLimits::default().max_read_bytes,
+            )?),
+            _ => return Err((ERR_CLI_MALFORMED_VALUE, "custody must be snapshot or current")),
+        },
+    };
+    if (values.contains_key("--max-custody-read-bytes") && custody_read_bytes.is_none())
+        || custody_read_bytes.is_some_and(|bytes| {
+            bytes < policy.max_object_bytes as u64 || bytes > 2 * 1024 * 1024 * 1024
+        })
+    {
+        return Err((
+            ERR_CLI_MALFORMED_VALUE,
+            "a bounded custody read allowance requires --custody current",
+        ));
+    }
     Ok(Some(Options { mode, root, site, source_root, parameters, policy, decode,
-        output: values.get("--output").map(PathBuf::from), output_bytes, steps }))
+        output: values.get("--output").map(PathBuf::from), output_bytes, steps, custody_read_bytes }))
 }
 fn failure(reason: &'static str) -> Error { io::Error::other(reason).into() }
 fn run(options: Options, out: &mut impl Write) -> Result<()> {
@@ -179,6 +208,24 @@ fn statistics(stats: RetainedRtpDecodeStats, out: &mut impl Write) -> io::Result
     writeln!(out, "input_ended={}\nnative_flushed={}\ndecode_ended={}\ndecode_complete={}",
         stats.input_ended, stats.native_finished, stats.ended, stats.complete())
 }
+enum DecodeOwner<'a> {
+    Snapshot(RetainedRtpH264Decoder<'a>),
+    Current(CheckedRetainedRtpH264Decoder<'a>),
+}
+impl DecodeOwner<'_> {
+    fn step(&mut self, deployment: &ReferenceDeployment, cx: &ReplayCx) -> Result<RetainedRtpDecodeStep> {
+        match self {
+            Self::Snapshot(decoder) => Ok(decoder.step(deployment, cx)?),
+            Self::Current(decoder) => Ok(decoder.step(deployment, cx)?),
+        }
+    }
+    fn stats(&self) -> RetainedRtpDecodeStats {
+        match self {
+            Self::Snapshot(decoder) => decoder.stats(),
+            Self::Current(decoder) => decoder.stats(),
+        }
+    }
+}
 fn execute(options: &Options, root: &std::path::Path, cx: &ReplayCx, out: &mut impl Write) -> Result<()> {
     let deployment = ReferenceDeployment::reopen(root, &options.site, cx)?;
     let retained = inspect_rtp_import(options.source_root, 1, options.policy, cx, &deployment)?;
@@ -196,7 +243,26 @@ fn execute(options: &Options, root: &std::path::Path, cx: &ReplayCx, out: &mut i
     let parameters = options.parameters.or_else(|| candidates.unique_pair())
         .ok_or_else(|| failure("select an exact in-source SPS/PPS pair; no unambiguous pair exists"))?;
     let request = RetainedRtpDecodeRequest { parameters, ..options.decode };
-    let mut decoder = retained.decode_h264(request, &deployment, cx)?;
+    let mut decoder = match options.custody_read_bytes {
+        Some(max_read_bytes) => {
+            let decoder = retained.decode_h264_checked(
+                request,
+                RtpCustodyDecodeLimits {
+                    max_source_bytes: options.policy.max_source_bytes,
+                    max_records: options.policy.max_records,
+                    max_object_bytes: options.policy.max_object_bytes,
+                    max_read_bytes,
+                    max_steps: options.steps,
+                    ..RtpCustodyDecodeLimits::default()
+                },
+                &deployment,
+                cx,
+            )?;
+            writeln!(out, "custody_mode=current\ncustody_read_limit_bytes={max_read_bytes}")?;
+            DecodeOwner::Current(decoder)
+        }
+        None => DecodeOwner::Snapshot(retained.decode_h264(request, &deployment, cx)?),
+    };
     let mut export = options.output.as_ref().map(|path| {
         pgm_stream::PgmExport::prepare(path, root, options.output_bytes, request.decode.max_groups, cx)
     }).transpose()?;
@@ -229,6 +295,9 @@ fn execute(options: &Options, root: &std::path::Path, cx: &ReplayCx, out: &mut i
         Ok(())
     })();
     statistics(decoder.stats(), out)?;
+    if let DecodeOwner::Current(decoder) = &decoder {
+        writeln!(out, "custody_read_bytes={}\ncustody_steps={}", decoder.read_bytes(), decoder.steps())?;
+    }
     if let Err(error) = decode_result {
         writeln!(out, "export_complete=false")?;
         return Err(error);
@@ -254,5 +323,71 @@ fn main() -> ExitCode {
             Err(error) => { eprintln!("{ERR_CLI_RUNTIME_FAILURE}: {error}"); ExitCode::from(ExitIdentity::RUNTIME_FAILURE.code) }
         },
         Err((id, message)) => { eprintln!("{id}: {message}"); ExitCode::from(2) }
+    }
+}
+
+
+#[cfg(test)]
+mod custody_tests {
+    use super::*;
+
+    fn args(extra: &[&str]) -> Vec<OsString> {
+        let mut args: Vec<OsString> = [
+            "decode", "--root", "unused-root", "--site", "site:test", "--source-root",
+        ]
+        .into_iter()
+        .map(OsString::from)
+        .collect();
+        args.push(ContentDigest::sha256(b"root").to_string().into());
+        args.extend(extra.iter().map(|value| OsString::from(*value)));
+        args
+    }
+
+    #[test]
+    fn default_and_explicit_snapshot_keep_existing_admission() -> Result<()> {
+        for extra in [&[][..], &["--custody", "snapshot"][..]] {
+            let Ok(Some(options)) = parse(&args(extra)) else {
+                return Err(failure("snapshot parsing failed"));
+            };
+            assert_eq!(options.custody_read_bytes, None);
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn current_mode_has_a_separate_explicit_read_allowance() -> Result<()> {
+        let Ok(Some(default)) = parse(&args(&["--custody", "current"])) else {
+            return Err(failure("current mode parsing failed"));
+        };
+        assert_eq!(default.custody_read_bytes, Some(512 * 1024 * 1024));
+        let Ok(Some(explicit)) = parse(&args(&[
+            "--custody", "current", "--max-custody-read-bytes", "134217728",
+            "--max-read-bytes", "268435456",
+        ])) else {
+            return Err(failure("explicit current mode parsing failed"));
+        };
+        assert_eq!(explicit.custody_read_bytes, Some(128 * 1024 * 1024));
+        assert_eq!(explicit.policy.max_read_bytes, 256 * 1024 * 1024);
+        Ok(())
+    }
+
+    #[test]
+    fn invalid_or_unselected_custody_allowances_refuse() {
+        for extra in [
+            vec!["--max-custody-read-bytes", "134217728"],
+            vec!["--custody", "snapshot", "--max-custody-read-bytes", "134217728"],
+            vec!["--custody", "latest"],
+            vec!["--custody", "current", "--max-custody-read-bytes", "1"],
+            vec!["--custody", "current", "--max-custody-read-bytes", "2147483649"],
+        ] {
+            assert!(matches!(parse(&args(&extra)), Err((ERR_CLI_MALFORMED_VALUE, _))));
+        }
+    }
+
+    #[test]
+    fn custody_is_not_silently_accepted_by_inspection() {
+        let mut args = args(&["--custody", "current"]);
+        args[0] = "inspect".into();
+        assert!(matches!(parse(&args), Err((ERR_CLI_UNKNOWN_OPTION, _))));
     }
 }
