@@ -131,7 +131,8 @@ fn clean(bytes: &[u8]) -> Result<Vec<ContentDigest>, Error> {
 }
 
 #[test]
-fn single_nal_and_fragmented_recordings_decode_native_pixels_with_exact_source_spans() -> TestResult {
+fn single_nal_and_fragmented_recordings_decode_native_pixels_with_exact_source_spans() -> TestResult
+{
     let expected = expected()?;
     for fragmented in [false, true] {
         assert_eq!(clean(&real_dump(fragmented))?, expected);
@@ -270,7 +271,10 @@ fn malformed_tail_is_not_clean_decode_completion() -> TestResult {
 #[test]
 fn missing_reference_chain_resumes_only_at_a_fresh_idr_with_exact_native_pixels() -> TestResult {
     let mut planned = packetize(2, 100, 65534, 7, 90000, 0);
-    let missing = planned.iter().position(|p| p.vcl).ok_or("first IDR packet")?;
+    let missing = planned
+        .iter()
+        .position(|p| p.vcl)
+        .ok_or("first IDR packet")?;
     planned.remove(missing);
     let bytes = dump_planned(&planned);
     let cx = cx()?;
@@ -280,6 +284,15 @@ fn missing_reference_chain_resumes_only_at_a_fresh_idr_with_exact_native_pixels(
     let mut waiting = 0;
     let mut frames = Vec::new();
     let mut exhausted = false;
+    // The retained fixture is IDR/P/P/IDR (keyint=3). Its final IDR is already a
+    // valid recovery point, before the second copy of the four-picture fixture.
+    // Pin exact source timestamps and all five surviving native pictures.
+    let original_pixels = expected()?;
+    let recovered_pixels: Vec<_> = original_pixels[3..]
+        .iter()
+        .chain(&original_pixels)
+        .copied()
+        .collect();
     for _ in 0..10_000 {
         match replay.step(&cx) {
             RtpDecodeStep::Replay { event, effect } => {
@@ -298,7 +311,10 @@ fn missing_reference_chain_resumes_only_at_a_fresh_idr_with_exact_native_pixels(
             RtpDecodeStep::Picture(frame) => {
                 assert_eq!(frame.source().key, settings().key);
                 assert_eq!(frame.source().decoder_epoch, 1);
-                assert!(frame.source().timestamp >= 90000 + 4 * 3600);
+                assert_eq!(
+                    frame.source().timestamp,
+                    90000 + (3 + frames.len() as u32) * 3600
+                );
                 if frames.is_empty() {
                     assert!(frame.picture().is_idr());
                 }
@@ -313,7 +329,7 @@ fn missing_reference_chain_resumes_only_at_a_fresh_idr_with_exact_native_pixels(
     assert!(exhausted);
     assert!(gaps > 0 && waiting > 0);
     assert_eq!(originals, planned.len());
-    assert_eq!(frames, expected()?);
+    assert_eq!(frames, recovered_pixels);
     Ok(())
 }
 

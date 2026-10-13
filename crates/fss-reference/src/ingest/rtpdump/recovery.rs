@@ -19,6 +19,9 @@ use fss_object::ObjectManifest;
 use fss_packet::{H264Limits, H264Mode, PacketLimits, RtcpMode, StreamKey};
 use fss_publication::{LocalPublicationState, SlotName};
 
+/// Native, privacy-projected pixel decoding from an inspected retained root.
+pub mod decode;
+
 type Result<T> = std::result::Result<T, RtpImportError>;
 
 /// Independent caller ceilings. Stored limits never grant permission to spend

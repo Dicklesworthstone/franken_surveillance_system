@@ -10,8 +10,14 @@ on:
       - 'crates/fss-reference/tests/rtpdump_support/**'
       - 'crates/fss-packet/**'
       - 'crates/fss-codec-h264/**'
+      - 'scripts/check_rtp_decode.sh'
       - '.github/workflows/rtp-decode.yml'
   workflow_dispatch:
+    inputs:
+      offline_bundle:
+        description: Retain exact tracked source and pinned compiler for offline reproduction
+        type: boolean
+        default: false
 permissions:
   contents: read
 concurrency:
@@ -31,8 +37,29 @@ jobs:
       - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
       - name: Provision pinned toolchain
         run: bash scripts/bootstrap_toolchain.sh
-      - name: Native recorded RTP decode and receiver contracts
-        run: cargo +nightly-2026-08-31 test --locked --offline -p fss-reference --test rtpdump_decode_contract --test rtpdump_avc_contract
+      - name: Native recorded and retained RTP contracts
+        run: bash scripts/check_rtp_decode.sh tests
       - name: Check recorded decoder formatting
         if: always()
-        run: rustup run nightly-2026-08-31 rustfmt --check --edition 2024 --config skip_children=true crates/fss-reference/src/ingest/rtpdump/decode.rs crates/fss-reference/tests/rtpdump_decode_contract.rs
+        run: bash scripts/check_rtp_decode.sh format
+      - name: Retain explicit offline reproduction inputs
+        if: ${{ always() && inputs.offline_bundle }}
+        run: |
+          set -euo pipefail
+          out="$RUNNER_TEMP/rtp-offline"
+          mkdir -p "$out"
+          git rev-parse HEAD > "$out/source.commit"
+          git archive HEAD | xz -T2 -1 > "$out/source.tar.xz"
+          sysroot="$(rustup run nightly-2026-08-31 rustc --print sysroot)"
+          rustup run nightly-2026-08-31 rustc -vV > "$out/compiler.txt"
+          XZ_OPT='-T2 -1' tar -C "$sysroot" -cJf "$out/toolchain.tar.xz" bin lib
+          (cd "$out" && sha256sum source.tar.xz toolchain.tar.xz > SHA256SUMS)
+      - name: Upload offline reproduction inputs
+        if: ${{ always() && inputs.offline_bundle }}
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: fss-rtp-offline-${{ github.sha }}
+          path: ${{ runner.temp }}/rtp-offline/
+          compression-level: 0
+          retention-days: 1
+          if-no-files-found: error
