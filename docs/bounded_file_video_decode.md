@@ -32,7 +32,7 @@ Machine-readable fields retain the existing native receipt/pixel identities. `fr
 
 ## Failure, retry and filesystem scope
 
-An absent, out-of-scope or already existing destination refuses. The file is created only after a complete first frame passes admission. Unix output permissions are owner-read/write only. Linux pins the parent directory descriptor for file creation; other platforms retain the protected-directory trust boundary and canonical-parent checks. The exporter rechecks parent identity on Unix and never follows or overwrites an existing final symlink.
+A missing parent, an out-of-scope destination or an already existing output file refuses. The file is created only after a complete first frame passes admission. Unix output permissions are owner-read/write only. Linux pins the parent directory descriptor for file creation; other platforms retain the protected-directory trust boundary and canonical-parent checks. The exporter rechecks parent identity on Unix and never follows or overwrites an existing final symlink.
 
 Unlike the former range-sized in-memory export, a later decode/work failure can leave an already written file prefix. A byte-limit refusal leaves complete earlier PGM frames; an actual I/O failure can leave a partial frame. Neither is certified as a complete range. A failed writer is terminal, including cancellation, zero progress and exhausted bounded interruption retries. Ignoring a refusal cannot turn an earlier prefix into a successful export.
 

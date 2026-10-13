@@ -306,10 +306,9 @@ fn coded_pixel_and_source_limits_are_never_rounded_up_or_ignored() -> Test {
     Ok(())
 }
 
-fn mask(directory: &Directory) -> Test<ContentDigest> {
-    use fss_core::{BudgetVector, ContextAuthority, OperationId, RootAuthoritySpec, SensorId};
-    use fss_reference::ingest::privacy_mask::{PrivacyMaskPolicy, declare_mask, preview_mask};
-    use fss_reference::{ReferenceDeployment, ReplayCx};
+fn context(directory: &Directory) -> Test<fss_reference::ReplayCx> {
+    use fss_core::{BudgetVector, ContextAuthority, OperationId, RootAuthoritySpec};
+    use fss_reference::ReplayCx;
     let authority = ContextAuthority::new_root(RootAuthoritySpec {
         trace_id: "trace:stream-mask".into(), operation_id: OperationId::parse("operation:stream-mask")?,
         principal: "principal:test".into(), capabilities: vec!["ADP-REPLAY-001".into()],
@@ -319,6 +318,14 @@ fn mask(directory: &Directory) -> Test<ContentDigest> {
         anchor_universe: ContentDigest::sha256(SITE.as_bytes()), generation: 1,
     })?;
     let cx = ReplayCx::from_context_authority(&authority, directory.root())?;
+    Ok(cx)
+}
+
+fn mask(directory: &Directory) -> Test<ContentDigest> {
+    use fss_core::SensorId;
+    use fss_reference::ingest::privacy_mask::{PrivacyMaskPolicy, declare_mask, preview_mask};
+    use fss_reference::ReferenceDeployment;
+    let cx = context(directory)?;
     let mut deployment = ReferenceDeployment::open(&directory.root(), SITE, &cx)?;
     let policy = PrivacyMaskPolicy::new(SensorId::parse("sensor:camera")?, [176, 144], &[[0, 0, 176, 144]])?;
     let approval = preview_mask(&deployment, &policy)?.approval;
@@ -351,15 +358,22 @@ fn only_current_masked_luma_reaches_the_streaming_export() -> Test {
 fn damaged_originals_cannot_be_exported_or_silently_repaired() -> Test {
     for codec in ["avc", "hevc"] {
         let (directory, identity, count) = setup(codec)?;
-        let source = if codec == "avc" { AVC } else { HEVC };
-        let mut matches = Vec::new();
-        for item in fs::read_dir(directory.root().join("objects/spool/objects"))? {
-            let path = item?.path();
-            if fs::read(&path)? == source { matches.push(path); }
-        }
-        assert_eq!(matches.len(), 1);
-        let original = &matches[0];
+        // Resolve the first actual chunk from committed import metadata. The CLI's chunk
+        // policy need not retain the complete fixture as a single object.
+        let cx = context(&directory)?;
+        let deployment = fss_reference::ReferenceDeployment::open(&directory.root(), SITE, &cx)?;
+        let retained = fss_reference::ingest::RetainedFileImport::open(
+            &deployment, ContentDigest::parse(&identity)?,
+            fss_reference::ingest::RetainedReadLimits::default(), &cx)?;
+        let digest = *retained.manifest().ordered_chunks.first().ok_or("missing source chunk")?;
+        let original_path = directory.root().join("objects/spool/objects").join(
+            digest.bytes().iter().map(|b| format!("{b:02x}")).collect::<String>());
+        drop(retained);
+        drop(deployment);
+        cx.drain_and_finalize();
+        let original = &original_path;
         let mut bad = fs::read(original)?;
+        assert_eq!(ContentDigest::sha256(&bad), digest);
         *bad.last_mut().ok_or("empty original")? ^= 1;
         fs::write(original, &bad)?;
         let path = directory.0.join("corrupt.pgm");
