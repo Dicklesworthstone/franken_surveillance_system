@@ -7,6 +7,7 @@ on:
       - 'crates/fss-cli/src/bin/fss-capture-rtsp/**'
       - 'crates/fss-cli/src/bin/fss-capture-rtsp.rs'
       - 'crates/fss-cli/tests/capture_rtsp_reconnect_cli*'
+      - 'crates/fss-cli/tests/capture_rtsp_index_cli.rs'
       - 'tests/test_rtsp_reconnect_recovery.py'
       - 'crates/fss-reference/src/rtsp/**'
       - 'crates/fss-publication/**'
@@ -46,6 +47,11 @@ jobs:
         run: |
           set -o pipefail
           cargo +nightly-2026-08-31 test --locked --offline -p fss-cli --test capture_rtsp_reconnect_cli 2>&1 | tee "$RUNNER_TEMP/recovery-evidence/process.log"
+      - name: Recovered catalog indexing through import and cold native decode
+        if: ${{ !cancelled() }}
+        run: |
+          set -o pipefail
+          cargo +nightly-2026-08-31 test --locked --offline -p fss-cli --test capture_rtsp_index_cli -- --nocapture 2>&1 | tee "$RUNNER_TEMP/recovery-evidence/index-process.log"
       - name: Cold AVC reconnect recovery and source corruption
         if: ${{ !cancelled() }}
         run: |
@@ -64,6 +70,10 @@ jobs:
             cp "$source" "$RUNNER_TEMP/recovery-evidence/formatted/$name"
             rustfmt +nightly-2026-08-31 --edition 2024 --config skip_children=true "$RUNNER_TEMP/recovery-evidence/formatted/$name"
           done
+          source=crates/fss-cli/tests/capture_rtsp_index_cli.rs
+          sources+=("$source")
+          cp "$source" "$RUNNER_TEMP/recovery-evidence/formatted/capture_rtsp_index_cli.rs"
+          rustfmt +nightly-2026-08-31 --edition 2024 --config skip_children=true "$RUNNER_TEMP/recovery-evidence/formatted/capture_rtsp_index_cli.rs"
           git rev-parse HEAD > "$RUNNER_TEMP/recovery-evidence/commit.txt"
           rustfmt +nightly-2026-08-31 --check --edition 2024 --config skip_children=true "${sources[@]}"
       - name: Preserve exact failure logs and formatter suggestions
