@@ -20,6 +20,10 @@ name = "fss-file"
 path = "src/bin/fss-file.rs"
 
 [[bin]]
+name = "fss-decode-rtp"
+path = "src/bin/fss-decode-rtp.rs"
+
+[[bin]]
 name = "fss-video"
 path = "src/bin/fss-video.rs"
 

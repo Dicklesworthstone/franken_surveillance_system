@@ -8,6 +8,10 @@ on:
       - 'crates/fss-reference/src/ingest/rtpdump/**'
       - 'crates/fss-reference/tests/rtpdump*'
       - 'crates/fss-reference/tests/rtpdump_support/**'
+      - 'crates/fss-cli/src/bin/fss-decode-rtp.rs'
+      - 'crates/fss-cli/src/bin/fss-file/pgm_stream.rs'
+      - 'crates/fss-cli/tests/retained_rtp_decode_cli.rs'
+      - 'crates/fss-cli/Cargo.toml'
       - 'crates/fss-packet/**'
       - 'crates/fss-codec-h264/**'
       - 'scripts/check_rtp_decode.sh'
@@ -42,8 +46,8 @@ jobs:
       - name: Check recorded decoder formatting
         if: always()
         run: bash scripts/check_rtp_decode.sh format
-      - name: Retain explicit offline reproduction inputs
-        if: ${{ always() && inputs.offline_bundle }}
+      - name: Retain offline reproduction inputs after failure or explicit request
+        if: ${{ failure() || inputs.offline_bundle }}
         run: |
           set -euo pipefail
           out="$RUNNER_TEMP/rtp-offline"
@@ -55,7 +59,7 @@ jobs:
           XZ_OPT='-T2 -1' tar -C "$sysroot" -cJf "$out/toolchain.tar.xz" bin lib
           (cd "$out" && sha256sum source.tar.xz toolchain.tar.xz > SHA256SUMS)
       - name: Upload offline reproduction inputs
-        if: ${{ always() && inputs.offline_bundle }}
+        if: ${{ failure() || inputs.offline_bundle }}
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
         with:
           name: fss-rtp-offline-${{ github.sha }}
