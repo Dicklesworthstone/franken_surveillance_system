@@ -20,7 +20,10 @@ use super::{
     MAX_AUDIT_ROOTS,
 };
 use super::io::AuditIo;
-use crate::read_verified_with_io;
+use crate::{SlotName, read_verified_with_io};
+
+/// Durable-journal binding and independently rederived beliefs over ledgered local slots.
+pub mod durable;
 
 /// A complete captured byte set was not established. Partial payloads never leave this boundary.
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -60,6 +63,9 @@ pub struct CapturedBeliefCustody {
     audit: LocalCustodyAudit,
     payloads: BTreeMap<ContentDigest, Vec<u8>>,
     retained_bytes: u64,
+    // Kept private: the durable adapter compares ONLY its selected slot records. Equal roots
+    // published under another slot cannot silently substitute for a selected slot's identity.
+    records: BTreeMap<SlotName, (ContentDigest, u64, ContentDigest)>,
 }
 impl fmt::Debug for CapturedBeliefCustody {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
@@ -166,7 +172,7 @@ pub fn capture_belief_custody(
         audit.charged_read_bytes = metered.bytes();
         audit.peak_reserved_read_bytes = metered.peak();
         audit.io_calls = metered.calls();
-        Ok(CapturedBeliefCustody { audit, payloads, retained_bytes })
+        Ok(CapturedBeliefCustody { audit, payloads, retained_bytes, records: before.records })
     })();
     // An outer budget/cancellation failure must not be flattened by an inner reader's error map.
     metered.check()?;
