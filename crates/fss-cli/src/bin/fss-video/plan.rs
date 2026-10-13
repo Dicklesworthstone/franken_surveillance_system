@@ -48,17 +48,31 @@ PGM is luma, I420 is packed Y/Cb/Cr, RGB is packed native RGB with mask fill pre
 Timeout checks are cooperative between bounded operations, not syscall/codec preemption.\n";
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub(crate) enum Command { Publish, Read, Verify }
+pub(crate) enum Command {
+    Publish,
+    Read,
+    Verify,
+}
 impl Command {
     pub(crate) fn text(self) -> &'static str {
-        match self { Self::Publish => "publish", Self::Read => "read", Self::Verify => "verify" }
+        match self {
+            Self::Publish => "publish",
+            Self::Read => "read",
+            Self::Verify => "verify",
+        }
     }
 }
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub(crate) enum Codec { Avc, Hevc }
+pub(crate) enum Codec {
+    Avc,
+    Hevc,
+}
 impl Codec {
     pub(crate) fn text(self) -> &'static str {
-        match self { Self::Avc => "avc", Self::Hevc => "hevc" }
+        match self {
+            Self::Avc => "avc",
+            Self::Hevc => "hevc",
+        }
     }
 }
 #[derive(Debug)]
@@ -96,126 +110,256 @@ fn digest(raw: &str) -> Result<ContentDigest> {
 }
 fn path(raw: &str) -> Result<PathBuf> {
     let p = PathBuf::from(raw);
-    if !p.is_absolute() || p.parent().is_none() || p.file_name().is_none()
+    if !p.is_absolute()
+        || p.parent().is_none()
+        || p.file_name().is_none()
         || raw.chars().any(char::is_control)
         || raw.split('/').any(|s| matches!(s, "." | ".."))
-        || p.components().any(|c| matches!(c, Component::CurDir | Component::ParentDir)) {
-        return Err(fail("absolute non-root path without dot components required"));
+        || p.components()
+            .any(|c| matches!(c, Component::CurDir | Component::ParentDir))
+    {
+        return Err(fail(
+            "absolute non-root path without dot components required",
+        ));
     }
     Ok(p)
 }
 impl Plan {
     pub(crate) fn parse(args: &[OsString]) -> Result<Self> {
-        if args.is_empty() || args.len() > MAX_ARGUMENTS || args.len().is_multiple_of(2)
-            || args.iter().any(|s| s.as_encoded_bytes().len() > 4096) {
+        if args.is_empty()
+            || args.len() > MAX_ARGUMENTS
+            || args.len().is_multiple_of(2)
+            || args.iter().any(|s| s.as_encoded_bytes().len() > 4096)
+        {
             return Err(fail("bounded command and option pairs required"));
         }
         let command = match args[0].to_str() {
-            Some("publish") => Command::Publish, Some("read") => Command::Read,
-            Some("verify") => Command::Verify, _ => return Err(fail("unknown video command")),
+            Some("publish") => Command::Publish,
+            Some("read") => Command::Read,
+            Some("verify") => Command::Verify,
+            _ => return Err(fail("unknown video command")),
         };
         let mut values = BTreeMap::new();
         for pair in args[1..].as_chunks::<2>().0 {
-            let key = pair[0].to_str().ok_or_else(|| fail("UTF-8 option required"))?;
-            let value = pair[1].to_str().ok_or_else(|| fail("UTF-8 value required"))?;
-            let allowed = matches!(key, "--root" | "--site" | "--principal" | "--import-id"
-                | "--codec" | "--privacy-policy" | "--read-originals" | "--approve"
-                | "--max-source-bytes" | "--chunk-bytes" | "--max-segment-bytes"
-                | "--max-pixels" | "--max-dimension" | "--timeout-ms")
-                || (command != Command::Read && matches!(key, "--work-units" | "--max-slices" | "--max-segments"))
-                || (command == Command::Publish && matches!(key, "--first-segment" | "--segment-count" | "--retain-derived" | "--max-derived-bytes" | "--output-index"))
+            let key = pair[0]
+                .to_str()
+                .ok_or_else(|| fail("UTF-8 option required"))?;
+            let value = pair[1]
+                .to_str()
+                .ok_or_else(|| fail("UTF-8 value required"))?;
+            let allowed = matches!(
+                key,
+                "--root"
+                    | "--site"
+                    | "--principal"
+                    | "--import-id"
+                    | "--codec"
+                    | "--privacy-policy"
+                    | "--read-originals"
+                    | "--approve"
+                    | "--max-source-bytes"
+                    | "--chunk-bytes"
+                    | "--max-segment-bytes"
+                    | "--max-pixels"
+                    | "--max-dimension"
+                    | "--timeout-ms"
+            ) || (command != Command::Read
+                && matches!(key, "--work-units" | "--max-slices" | "--max-segments"))
+                || (command == Command::Publish
+                    && matches!(
+                        key,
+                        "--first-segment"
+                            | "--segment-count"
+                            | "--retain-derived"
+                            | "--max-derived-bytes"
+                            | "--output-index"
+                    ))
                 || (command != Command::Publish && key == "--frame-root")
                 || (command == Command::Read && matches!(key, "--output" | "--pixel-format"));
-            if !allowed || value.is_empty() || value.starts_with("--") || values.insert(key, value).is_some() {
-                return Err(fail("duplicate, unknown or inapplicable option, or missing value"));
+            if !allowed
+                || value.is_empty()
+                || value.starts_with("--")
+                || values.insert(key, value).is_some()
+            {
+                return Err(fail(
+                    "duplicate, unknown or inapplicable option, or missing value",
+                ));
             }
         }
-        let get = |key| values.get(key).copied().ok_or_else(|| fail("required option missing"));
+        let get = |key| {
+            values
+                .get(key)
+                .copied()
+                .ok_or_else(|| fail("required option missing"))
+        };
         let number = |key, default: u64, low: u64, high: u64| -> Result<u64> {
             let n = match values.get(key) {
                 Some(raw) if raw.bytes().all(|b| b.is_ascii_digit()) => raw.parse::<u64>()?,
-                Some(_) => return Err(fail("unsigned decimal required")), None => default,
+                Some(_) => return Err(fail("unsigned decimal required")),
+                None => default,
             };
-            if n < low || n > high { return Err(fail("numeric admission bound exceeded")); }
+            if n < low || n > high {
+                return Err(fail("numeric admission bound exceeded"));
+            }
             Ok(n)
         };
         if get("--read-originals")? != "yes"
-            || (command == Command::Publish && get("--retain-derived")? != "yes") {
-            return Err(fail("explicit original-read and requested derivative-retention consent required"));
+            || (command == Command::Publish && get("--retain-derived")? != "yes")
+        {
+            return Err(fail(
+                "explicit original-read and requested derivative-retention consent required",
+            ));
         }
         let codec = match get("--codec")? {
-            "avc" => Codec::Avc, "hevc" => Codec::Hevc, _ => return Err(fail("explicit avc or hevc required")),
+            "avc" => Codec::Avc,
+            "hevc" => Codec::Hevc,
+            _ => return Err(fail("explicit avc or hevc required")),
         };
-        let privacy = match get("--privacy-policy")? { "none" => None, value => Some(digest(value)?) };
+        let privacy = match get("--privacy-policy")? {
+            "none" => None,
+            value => Some(digest(value)?),
+        };
         let site = get("--site")?.to_owned();
         fss_reference::reference_deployment::validate_site_lineage(&site)?;
-        let principal = values.get("--principal").copied().unwrap_or("principal:local-operator").to_owned();
-        if principal.len() > 256 { return Err(fail("principal length exceeded")); }
+        let principal = values
+            .get("--principal")
+            .copied()
+            .unwrap_or("principal:local-operator")
+            .to_owned();
+        if principal.len() > 256 {
+            return Err(fail("principal length exceeded"));
+        }
         PrincipalId::parse(&principal)?;
         let root = path(get("--root")?)?;
         let output = values.get("--output").map(|s| path(s)).transpose()?;
-        if output.as_ref().is_some_and(|p| p.starts_with(&root) || root.starts_with(p)) {
+        if output
+            .as_ref()
+            .is_some_and(|p| p.starts_with(&root) || root.starts_with(p))
+        {
             return Err(fail("export must be outside deployment custody"));
         }
         let pixel_format = values.get("--pixel-format").map(|s| s.to_string());
         if output.is_some() != pixel_format.is_some()
-            || pixel_format.as_deref().is_some_and(|s| !matches!(s, "pgm" | "i420" | "rgb")) {
-            return Err(fail("output and explicit pgm, i420 or rgb format are required together"));
+            || pixel_format
+                .as_deref()
+                .is_some_and(|s| !matches!(s, "pgm" | "i420" | "rgb"))
+        {
+            return Err(fail(
+                "output and explicit pgm, i420 or rgb format are required together",
+            ));
         }
         let segments = number("--max-segments", 1024, 1, 1024)? as usize;
         let (first, count) = if command == Command::Publish {
-            get("--first-segment")?; get("--segment-count")?;
-            (number("--first-segment", 0, 0, 65_535)? as usize,
-             number("--segment-count", 1, 1, segments as u64)? as usize)
-        } else { (0, 0) };
+            get("--first-segment")?;
+            get("--segment-count")?;
+            (
+                number("--first-segment", 0, 0, 65_535)? as usize,
+                number("--segment-count", 1, 1, segments as u64)? as usize,
+            )
+        } else {
+            (0, 0)
+        };
         if first.checked_add(count).is_none_or(|end| end > 65_536) {
             return Err(fail("native source range exceeded"));
         }
         let output_index = if values.contains_key("--output-index") {
-            let last = count.checked_sub(1).ok_or_else(|| fail("selected range must be nonempty"))?;
+            let last = count
+                .checked_sub(1)
+                .ok_or_else(|| fail("selected range must be nonempty"))?;
             Some(number("--output-index", 0, 0, last as u64)?)
-        } else { None };
+        } else {
+            None
+        };
         let defaults = RetainedReadLimits::default();
         Ok(Self {
-            command, root, site, principal, codec, privacy, first, count, output_index,
+            command,
+            root,
+            site,
+            principal,
+            codec,
+            privacy,
+            first,
+            count,
+            output_index,
             identity: digest(get("--import-id")?)?,
-            frame: if command == Command::Publish { None } else { Some(digest(get("--frame-root")?)?) },
+            frame: if command == Command::Publish {
+                None
+            } else {
+                Some(digest(get("--frame-root")?)?)
+            },
             source: RetainedReadLimits {
-                max_source_bytes: number("--max-source-bytes", defaults.max_source_bytes, 1, 1024 * 1024 * 1024)?,
-                max_chunk_bytes: number("--chunk-bytes", defaults.max_chunk_bytes, 1, 64 * 1024 * 1024)?,
-                max_segment_bytes: number("--max-segment-bytes", defaults.max_segment_bytes, 1, 64 * 1024 * 1024)?,
+                max_source_bytes: number(
+                    "--max-source-bytes",
+                    defaults.max_source_bytes,
+                    1,
+                    1024 * 1024 * 1024,
+                )?,
+                max_chunk_bytes: number(
+                    "--chunk-bytes",
+                    defaults.max_chunk_bytes,
+                    1,
+                    64 * 1024 * 1024,
+                )?,
+                max_segment_bytes: number(
+                    "--max-segment-bytes",
+                    defaults.max_segment_bytes,
+                    1,
+                    64 * 1024 * 1024,
+                )?,
             },
             pixels: number("--max-pixels", 4_194_304, 1, 4_194_304)? as usize,
             dimension: number("--max-dimension", 4096, 1, 4096)? as u32,
             slices: number("--max-slices", 4096, 1, 4096)? as u32,
             segments,
             work: number("--work-units", 8_000_000_000, 0, 1_000_000_000_000)?,
-            derived: number("--max-derived-bytes", 64 * 1024 * 1024, 1, 256 * 1024 * 1024)? as usize,
+            derived: number(
+                "--max-derived-bytes",
+                64 * 1024 * 1024,
+                1,
+                256 * 1024 * 1024,
+            )? as usize,
             timeout_ms: number("--timeout-ms", 30_000, 1, 600_000)?,
-            output, pixel_format,
+            output,
+            pixel_format,
             approval: values.get("--approve").map(|s| digest(s)).transpose()?,
         })
     }
-    pub(crate) fn avc_limits(&self, count: usize) -> Result<fss_reference::ingest::recorded_decode::h264::DecoderLimits> {
+    pub(crate) fn avc_limits(
+        &self,
+        count: usize,
+    ) -> Result<fss_reference::ingest::recorded_decode::h264::DecoderLimits> {
         use fss_reference::ingest::recorded_decode::h264::DecoderLimits;
         Ok(DecoderLimits {
-            max_width: self.dimension, max_height: self.dimension,
-            max_macroblocks: u32::try_from(self.pixels / 256)?, max_pictures: count as u64,
+            max_width: self.dimension,
+            max_height: self.dimension,
+            max_macroblocks: u32::try_from(self.pixels / 256)?,
+            max_pictures: count as u64,
             max_nal_bytes: (self.source.max_segment_bytes as usize).min(16 * 1024 * 1024),
-            max_slices_per_picture: self.slices, ..DecoderLimits::default()
+            max_slices_per_picture: self.slices,
+            ..DecoderLimits::default()
         })
     }
-    pub(crate) fn hevc_limits(&self, count: usize) -> fss_reference::ingest::recorded_decode::h265::DecoderLimits {
+    pub(crate) fn hevc_limits(
+        &self,
+        count: usize,
+    ) -> fss_reference::ingest::recorded_decode::h265::DecoderLimits {
         use fss_reference::ingest::recorded_decode::h265::DecoderLimits;
         DecoderLimits {
-            max_width: self.dimension, max_height: self.dimension,
-            max_luma_samples: self.pixels as u64, max_pictures: count as u64,
+            max_width: self.dimension,
+            max_height: self.dimension,
+            max_luma_samples: self.pixels as u64,
+            max_pictures: count as u64,
             max_nal_bytes: (self.source.max_segment_bytes as usize).min(16 * 1024 * 1024),
-            max_slices_per_picture: self.slices, ..DecoderLimits::default()
+            max_slices_per_picture: self.slices,
+            ..DecoderLimits::default()
         }
     }
     fn native_bounds(&self) -> Result<String> {
-        let count = if self.command == Command::Publish { self.count } else { self.segments };
+        let count = if self.command == Command::Publish {
+            self.count
+        } else {
+            self.segments
+        };
         // Bind every native field, including defaults not exposed as CLI options. A changed
         // field/default/spelling requires a new approval without changing frame identities.
         Ok(match self.codec {
@@ -225,67 +369,159 @@ impl Plan {
     }
     pub(crate) fn digest(&self) -> Result<ContentDigest> {
         let mut e = CanonicalEncoder::new();
-        e.text("fss.native_video_cli_plan.v1"); e.text(POLICY);
+        e.text("fss.native_video_cli_plan.v1");
+        e.text(POLICY);
         e.text(&self.native_bounds()?);
         e.text(fss_reference::ingest::recorded_decode::video_budget::VIDEO_DECODE_WORK_MODEL);
         e.digest(match self.codec {
             Codec::Avc => fss_reference::ingest::recorded_decode::h264::h264_decoder_identity(),
             Codec::Hevc => fss_reference::ingest::recorded_decode::h265::h265_decoder_identity(),
         });
-        e.u64(MANIFEST_RESERVE as u64); e.u64(STORAGE_OPERATIONS);
-        for s in [self.command.text(), self.root.to_str().ok_or_else(|| fail("UTF-8 root required"))?,
-                  &self.site, &self.principal, self.codec.text()] { e.text(s); }
+        e.u64(MANIFEST_RESERVE as u64);
+        e.u64(STORAGE_OPERATIONS);
+        for s in [
+            self.command.text(),
+            self.root
+                .to_str()
+                .ok_or_else(|| fail("UTF-8 root required"))?,
+            &self.site,
+            &self.principal,
+            self.codec.text(),
+        ] {
+            e.text(s);
+        }
         e.digest(self.identity);
-        for pin in [self.privacy, self.frame] { e.bool(pin.is_some()); if let Some(pin) = pin { e.digest(pin); } }
-        for n in [self.first as u64, self.count as u64, self.source.max_source_bytes,
-                  self.source.max_chunk_bytes, self.source.max_segment_bytes, self.pixels as u64,
-                  self.dimension as u64, self.slices as u64, self.segments as u64, self.work,
-                  self.derived as u64, self.timeout_ms, REPORT_LIMIT as u64] { e.u64(n); }
+        for pin in [self.privacy, self.frame] {
+            e.bool(pin.is_some());
+            if let Some(pin) = pin {
+                e.digest(pin);
+            }
+        }
+        for n in [
+            self.first as u64,
+            self.count as u64,
+            self.source.max_source_bytes,
+            self.source.max_chunk_bytes,
+            self.source.max_segment_bytes,
+            self.pixels as u64,
+            self.dimension as u64,
+            self.slices as u64,
+            self.segments as u64,
+            self.work,
+            self.derived as u64,
+            self.timeout_ms,
+            REPORT_LIMIT as u64,
+        ] {
+            e.u64(n);
+        }
         e.bool(self.output.is_some());
         if let Some(output) = &self.output {
-            e.text(output.to_str().ok_or_else(|| fail("UTF-8 output required"))?);
-            e.text(self.pixel_format.as_deref().ok_or_else(|| fail("missing pixel format"))?);
+            e.text(
+                output
+                    .to_str()
+                    .ok_or_else(|| fail("UTF-8 output required"))?,
+            );
+            e.text(
+                self.pixel_format
+                    .as_deref()
+                    .ok_or_else(|| fail("missing pixel format"))?,
+            );
             e.text("linux-pinned-parent:create-new:bounded-write:retain-partial-on-failure:v1");
         }
         // No selection means no new bytes: preserve the current all-frame approval exactly.
         if let Some(index) = self.output_index {
             if self.command != Command::Publish || index >= self.count as u64 {
-                return Err(fail("display selection requires a contained publication range"));
+                return Err(fail(
+                    "display selection requires a contained publication range",
+                ));
             }
-            e.text("fss.native_video_single_output.v1"); e.text(SELECTED_POLICY);
-            e.u64(index); e.u64(SELECTED_REPORT_RESERVE as u64);
+            e.text("fss.native_video_single_output.v1");
+            e.text(SELECTED_POLICY);
+            e.u64(index);
+            e.u64(SELECTED_REPORT_RESERVE as u64);
         }
         Ok(ContentDigest::sha256(&e.finish_checked()?))
     }
     pub(crate) fn preview(&self) -> Result<String> {
         let mut fields = vec![
-            ("schema", string(SCHEMA)), ("phase", string("planned")),
-            ("command", string(self.command.text())), ("approval", string(&self.digest()?.to_text())),
-            ("policy", string(POLICY)), ("root", string(self.root.to_str().ok_or_else(|| fail("root"))?)),
-            ("site", string(&self.site)), ("principal", string(&self.principal)),
-            ("import_identity", string(&self.identity.to_text())), ("codec", string(self.codec.text())),
-            ("privacy_policy", self.privacy.map_or_else(|| "null".into(), |d| string(&d.to_text()))),
-            ("frame_root", self.frame.map_or_else(|| "null".into(), |d| string(&d.to_text()))),
-            ("first_segment", self.first.to_string()), ("segment_count", self.count.to_string()),
-            ("maximum_segments", self.segments.to_string()), ("maximum_pixels", self.pixels.to_string()),
-            ("maximum_dimension", self.dimension.to_string()), ("maximum_slices", self.slices.to_string()),
-            ("maximum_source_bytes_per_pass", self.source.max_source_bytes.to_string()),
-            ("maximum_chunk_bytes", self.source.max_chunk_bytes.to_string()),
-            ("maximum_segment_bytes", self.source.max_segment_bytes.to_string()),
+            ("schema", string(SCHEMA)),
+            ("phase", string("planned")),
+            ("command", string(self.command.text())),
+            ("approval", string(&self.digest()?.to_text())),
+            ("policy", string(POLICY)),
+            (
+                "root",
+                string(self.root.to_str().ok_or_else(|| fail("root"))?),
+            ),
+            ("site", string(&self.site)),
+            ("principal", string(&self.principal)),
+            ("import_identity", string(&self.identity.to_text())),
+            ("codec", string(self.codec.text())),
+            (
+                "privacy_policy",
+                self.privacy
+                    .map_or_else(|| "null".into(), |d| string(&d.to_text())),
+            ),
+            (
+                "frame_root",
+                self.frame
+                    .map_or_else(|| "null".into(), |d| string(&d.to_text())),
+            ),
+            ("first_segment", self.first.to_string()),
+            ("segment_count", self.count.to_string()),
+            ("maximum_segments", self.segments.to_string()),
+            ("maximum_pixels", self.pixels.to_string()),
+            ("maximum_dimension", self.dimension.to_string()),
+            ("maximum_slices", self.slices.to_string()),
+            (
+                "maximum_source_bytes_per_pass",
+                self.source.max_source_bytes.to_string(),
+            ),
+            (
+                "maximum_chunk_bytes",
+                self.source.max_chunk_bytes.to_string(),
+            ),
+            (
+                "maximum_segment_bytes",
+                self.source.max_segment_bytes.to_string(),
+            ),
             ("maximum_decode_work_units", self.work.to_string()),
-            ("decode_work_model", string(fss_reference::ingest::recorded_decode::video_budget::VIDEO_DECODE_WORK_MODEL)),
-            ("maximum_derived_bytes", self.derived.to_string()), ("timeout_ms", self.timeout_ms.to_string()),
+            (
+                "decode_work_model",
+                string(
+                    fss_reference::ingest::recorded_decode::video_budget::VIDEO_DECODE_WORK_MODEL,
+                ),
+            ),
+            ("maximum_derived_bytes", self.derived.to_string()),
+            ("timeout_ms", self.timeout_ms.to_string()),
             ("maximum_report_bytes", REPORT_LIMIT.to_string()),
             ("native_decoder_limits", string(&self.native_bounds()?)),
-            ("maximum_context_bytes", self.source.max_source_bytes.to_string()),
+            (
+                "maximum_context_bytes",
+                self.source.max_source_bytes.to_string(),
+            ),
             ("maximum_storage_operations", STORAGE_OPERATIONS.to_string()),
-            ("manifest_reservation_per_frame", MANIFEST_RESERVE.to_string()),
-            ("output", match &self.output {
-                Some(p) => string(p.to_str().ok_or_else(|| fail("UTF-8 output required"))?), None => "null".into(),
-            }),
-            ("pixel_format", self.pixel_format.as_deref().map_or_else(|| "null".into(), string)),
-            ("effects", string("none-until-exact-approval")), ("network_requested", "false".into()),
-            ("atomic_range_publication", "false".into()), ("absence_certifiable", "false".into()),
+            (
+                "manifest_reservation_per_frame",
+                MANIFEST_RESERVE.to_string(),
+            ),
+            (
+                "output",
+                match &self.output {
+                    Some(p) => string(p.to_str().ok_or_else(|| fail("UTF-8 output required"))?),
+                    None => "null".into(),
+                },
+            ),
+            (
+                "pixel_format",
+                self.pixel_format
+                    .as_deref()
+                    .map_or_else(|| "null".into(), string),
+            ),
+            ("effects", string("none-until-exact-approval")),
+            ("network_requested", "false".into()),
+            ("atomic_range_publication", "false".into()),
+            ("absence_certifiable", "false".into()),
         ];
         if let Some(index) = self.output_index {
             fields.extend([
@@ -293,7 +529,10 @@ impl Plan {
                 ("output_index", index.to_string()),
                 ("maximum_frames_retained", "1".into()),
                 ("complete_range_required_before_publication", "true".into()),
-                ("frame_report_reserve_bytes", SELECTED_REPORT_RESERVE.to_string()),
+                (
+                    "frame_report_reserve_bytes",
+                    SELECTED_REPORT_RESERVE.to_string(),
+                ),
             ]);
         }
         Ok(object(&fields))
@@ -304,37 +543,80 @@ impl Plan {
 mod tests {
     use super::*;
     fn args() -> Vec<OsString> {
-        ["publish", "--root", "/not-opened/deployment", "--site", "site:video", "--import-id",
-         "sha256:1111111111111111111111111111111111111111111111111111111111111111",
-         "--codec", "avc", "--privacy-policy", "none", "--read-originals", "yes",
-         "--retain-derived", "yes", "--first-segment", "0", "--segment-count", "3"]
-            .into_iter().map(OsString::from).collect()
+        [
+            "publish",
+            "--root",
+            "/not-opened/deployment",
+            "--site",
+            "site:video",
+            "--import-id",
+            "sha256:1111111111111111111111111111111111111111111111111111111111111111",
+            "--codec",
+            "avc",
+            "--privacy-policy",
+            "none",
+            "--read-originals",
+            "yes",
+            "--retain-derived",
+            "yes",
+            "--first-segment",
+            "0",
+            "--segment-count",
+            "3",
+        ]
+        .into_iter()
+        .map(OsString::from)
+        .collect()
     }
     #[test]
     fn pure_preview_binds_each_effective_limit_and_approval_does_not_change_intent() -> Result<()> {
         let base = Plan::parse(&args())?;
         let digest = base.digest()?;
         assert!(base.preview()?.contains("none-until-exact-approval"));
-        for (key, value) in [("--max-pixels", "1024"), ("--max-dimension", "32"),
-            ("--max-slices", "7"), ("--max-segments", "3"), ("--work-units", "0"),
-            ("--max-derived-bytes", "1"), ("--timeout-ms", "1"),
-            ("--max-source-bytes", "1000"), ("--chunk-bytes", "100"), ("--max-segment-bytes", "100")] {
-            let mut input = args(); input.extend([key.into(), value.into()]);
+        for (key, value) in [
+            ("--max-pixels", "1024"),
+            ("--max-dimension", "32"),
+            ("--max-slices", "7"),
+            ("--max-segments", "3"),
+            ("--work-units", "0"),
+            ("--max-derived-bytes", "1"),
+            ("--timeout-ms", "1"),
+            ("--max-source-bytes", "1000"),
+            ("--chunk-bytes", "100"),
+            ("--max-segment-bytes", "100"),
+        ] {
+            let mut input = args();
+            input.extend([key.into(), value.into()]);
             assert_ne!(Plan::parse(&input)?.digest()?, digest, "{key}");
         }
-        let mut input = args(); input.extend(["--approve".into(), digest.to_text().into()]);
+        let mut input = args();
+        input.extend(["--approve".into(), digest.to_text().into()]);
         assert_eq!(Plan::parse(&input)?.digest()?, digest);
         Ok(())
     }
     #[test]
     fn command_grammar_refuses_ambiguous_or_widened_intents() {
-        for (key, value) in [("--codec", "hevc"), ("--frame-root", "bogus"),
-            ("--work-units", "-1"), ("--max-segments", "1025"), ("--max-pixels", "4194305"),
-            ("--max-derived-bytes", "268435457"), ("--output", "/export"), ("--unknown", "yes")] {
-            let mut input = args(); input.extend([key.into(), value.into()]);
+        for (key, value) in [
+            ("--codec", "hevc"),
+            ("--frame-root", "bogus"),
+            ("--work-units", "-1"),
+            ("--max-segments", "1025"),
+            ("--max-pixels", "4194305"),
+            ("--max-derived-bytes", "268435457"),
+            ("--output", "/export"),
+            ("--unknown", "yes"),
+        ] {
+            let mut input = args();
+            input.extend([key.into(), value.into()]);
             assert!(Plan::parse(&input).is_err(), "{key}");
         }
-        for p in ["relative", "/", "/tmp/../file", "/tmp/./file", "/tmp/\nfile"] {
+        for p in [
+            "relative",
+            "/",
+            "/tmp/../file",
+            "/tmp/./file",
+            "/tmp/\nfile",
+        ] {
             assert!(path(p).is_err());
         }
     }

@@ -3,8 +3,8 @@
 //! No alternative receipt, codec, export authority or publication protocol is introduced.
 
 use super::{
-    Frame, Gate, Plan, Range, RecordedVideoDecodeBudget, ReferenceDeployment, Reports,
-    frame_json, publication_limits, scope,
+    Frame, Gate, Plan, Range, RecordedVideoDecodeBudget, ReferenceDeployment, Reports, frame_json,
+    publication_limits, scope,
 };
 use crate::{Result, fail};
 use fss_reference::ingest::recorded_decode::RecordedDecodeError;
@@ -34,7 +34,10 @@ fn drain<T>(
     for position in 0..=count {
         let Some(frame) = next()? else {
             return selected
-                .map(|frame| Selected { frame, outputs: position })
+                .map(|frame| Selected {
+                    frame,
+                    outputs: position,
+                })
                 .ok_or_else(|| RecordedDecodeError::Unavailable.into());
         };
         if position == count {
@@ -65,7 +68,9 @@ pub(super) fn publish<W: Write>(
     gate: &Gate<'_>,
     reports: &mut Reports<'_, W>,
 ) -> Result<(usize, usize)> {
-    let wanted = plan.output_index.ok_or_else(|| fail("display selection required"))?;
+    let wanted = plan
+        .output_index
+        .ok_or_else(|| fail("display selection required"))?;
     let selected = drain(
         plan.count,
         wanted,
@@ -92,7 +97,9 @@ pub(super) fn publish<W: Write>(
     if quote > plan.derived {
         return Err(fail("selected frame exceeds derived byte allowance"));
     }
-    if crate::plan::REPORT_LIMIT.saturating_sub(reports.bytes) < crate::plan::SELECTED_REPORT_RESERVE {
+    if crate::plan::REPORT_LIMIT.saturating_sub(reports.bytes)
+        < crate::plan::SELECTED_REPORT_RESERVE
+    {
         return Err(fail("selected frame report reserve exhausted"));
     }
     let frame = PublishedVideoFrame::publish(
