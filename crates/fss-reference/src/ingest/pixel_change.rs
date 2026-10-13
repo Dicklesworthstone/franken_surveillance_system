@@ -6,6 +6,9 @@
 //! Missing coverage, recording changes and decoder/geometry changes reset the baseline instead
 //! of manufacturing zero motion. Every measurement names its exact decoded evidence roots.
 
+/// Receipt-linked motion over current-custody recorded RTP, using the same scalar kernel.
+pub mod rtp;
+
 use super::recorded_decode::h264::{RecordedH264Frame, h264_decoder_identity};
 use super::recorded_decode::h265::{RecordedH265Frame, h265_decoder_identity};
 use super::recorded_decode::{ComponentInterpretation, RecordedFrame};
