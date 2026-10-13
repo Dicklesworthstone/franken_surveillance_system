@@ -3262,17 +3262,50 @@ impl AcquisitionSession {
         Ok(())
     }
 
-    /// Reconnects the session with a new acquisition request.
+    /// Reconnects the same source and device with a new acquisition request.
     ///
     /// Strict invariant: `new_request.source_identity.stream_generation` MUST be strictly
     /// monotonically greater than the current stream generation. Attempting to reuse or decrement
     /// generation fails closed with [`AcquisitionError::GenerationConflict`].
+    /// An indeterminate predecessor must be explicitly reconciled first: a new generation is
+    /// not evidence that its outstanding obligations have been discharged. Stable source and
+    /// device identities cannot change, and admission time cannot precede retained history.
+    /// All validation precedes mutation; a refusal leaves state, history and gap accounting intact.
     pub fn reconnect(
         &mut self,
         new_request: AcquisitionRequest,
         now_ns: TimestampNs,
     ) -> Result<(), AcquisitionError> {
-        let current_gen = &self.request().source_identity.stream_generation;
+        if self.state_kind() == AcquisitionStateKind::Indeterminate {
+            return Err(AcquisitionError::IndeterminateStateUnresolved {
+                detail: "reconnect requires explicit reconciliation of the prior acquisition outcome"
+                    .to_owned(),
+            });
+        }
+        let current = self.request();
+        if new_request.source_identity.source_id != current.source_identity.source_id
+            || new_request.source_identity.device_id != current.source_identity.device_id
+            || new_request.device_identity.device_id != current.device_identity.device_id
+        {
+            return Err(AcquisitionError::WitnessMismatch {
+                detail: "reconnect must preserve the stable source and device identities".to_owned(),
+            });
+        }
+        if now_ns.0 < 0
+            || new_request.requested_at_ns.0 < 0
+            || new_request.requested_at_ns < current.requested_at_ns
+            || new_request.requested_at_ns > now_ns
+            || self
+                .history
+                .last()
+                .is_some_and(|record| record.timestamp_ns > now_ns)
+        {
+            return Err(AcquisitionError::InvalidTimestamp {
+                detail: "reconnect request and admission must not reverse acquisition history or name a future request"
+                    .to_owned(),
+            });
+        }
+        let current_gen = &current.source_identity.stream_generation;
         let attempted_gen = &new_request.source_identity.stream_generation;
 
         if attempted_gen <= current_gen {
