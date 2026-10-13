@@ -3570,6 +3570,13 @@
       "schema": "fss.agent_world_envelope.v1"
     },
     {
+      "authority": "authority/claim",
+      "compatibilityRule": "units, assumptions, steps, sensitivity, invalidators, and typed inputs all mandatory",
+      "file": "schemas/bound_derivation.v1.json",
+      "id": "SCHEMA-BOUND-DERIVATION-001",
+      "schema": "fss.bound_derivation.v1"
+    },
+    {
       "authority": "authority",
       "compatibilityRule": "generation immutable; invalidation creates new state",
       "file": "schemas/calibration_certificate.v1.json",
@@ -3725,6 +3732,20 @@
     },
     {
       "authority": "derived/evidence",
+      "compatibilityRule": "immutable revisions; A/A divergence is a determinism alarm; indeterminate runs never compare",
+      "file": "schemas/experiment_receipt.v1.json",
+      "id": "SCHEMA-EXPERIMENT-RECEIPT-001",
+      "schema": "fss.experiment_receipt.v1"
+    },
+    {
+      "authority": "authority/claim",
+      "compatibilityRule": "digest-bound manifest naming the exact formal model source; generation immutable",
+      "file": "schemas/formal_model.v1.json",
+      "id": "SCHEMA-FORMAL-MODEL-001",
+      "schema": "fss.formal_model.v1"
+    },
+    {
+      "authority": "derived/evidence",
       "compatibilityRule": "algorithm/projection/policy identity and output digest preserved",
       "file": "schemas/graph_algorithm_witness.v1.json",
       "id": "SCHEMA-GRAPH-WITNESS-001",
@@ -3799,6 +3820,13 @@
       "file": "schemas/prepared_effect.v1.json",
       "id": "SCHEMA-PREPARED-EFFECT-001",
       "schema": "fss.prepared_effect.v1"
+    },
+    {
+      "authority": "authority/claim",
+      "compatibilityRule": "checker resolves in the formal-toolchains registry; concrete version only; status passed binds the artifact digest",
+      "file": "schemas/proof_check_receipt.v1.json",
+      "id": "SCHEMA-PROOF-CHECK-RECEIPT-001",
+      "schema": "fss.proof_check_receipt.v1"
     },
     {
       "authority": "provider authority",
