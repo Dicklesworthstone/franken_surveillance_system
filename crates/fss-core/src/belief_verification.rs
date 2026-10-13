@@ -6,6 +6,9 @@
 //! The legacy `DerivedBelief::rebuild` and `to_knowledge_cell` remain structural operations and do
 //! not return the private-field [`VerifiedDerivedBelief`] proof type.
 
+/// Bounded transitive membership through a verifier-selected retained-object graph.
+pub mod graph;
+
 use std::collections::{BTreeMap, BTreeSet};
 use std::fmt;
 
@@ -91,6 +94,7 @@ pub struct VerifiedBeliefEvidence {
     digest: ContentDigest,
     bytes: Vec<u8>,
     bindings: Vec<(ObjectId, ObjectRevision)>,
+    ancestry: Vec<graph::BeliefEvidenceAncestry>,
 }
 
 impl VerifiedBeliefEvidence {
@@ -112,6 +116,16 @@ impl VerifiedBeliefEvidence {
     #[must_use]
     pub fn bindings(&self) -> &[(ObjectId, ObjectRevision)] {
         &self.bindings
+    }
+
+    /// Explicit transitive paths from selected authority objects, never direct payload bindings.
+    ///
+    /// Empty for the direct verifier. Graph verification retains one deterministic shortest path
+    /// per selected authority object. Engines must validate each ancestor's family and scope;
+    /// an ancestor's family does not become the leaf payload's semantic type.
+    #[must_use]
+    pub fn ancestry(&self) -> &[graph::BeliefEvidenceAncestry] {
+        &self.ancestry
     }
 }
 
@@ -313,6 +327,7 @@ pub fn verify_derived_belief<'a>(
                 digest: *root,
                 bytes,
                 bindings: root_bindings,
+                ancestry: Vec::new(),
             });
         }
         Ok::<_, BeliefVerificationError>(verified)

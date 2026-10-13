@@ -1,0 +1,42 @@
+name: Retained belief provenance
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'crates/fss-core/src/belief_verification*'
+      - 'crates/fss-core/src/belief_verification/**'
+      - 'crates/fss-core/tests/belief_graph_contract.rs'
+      - 'crates/fss-object/src/belief_verification*'
+      - 'crates/fss-object/src/memory/belief_verification*'
+      - 'scripts/test_belief_provenance.sh'
+      - '.github/workflows/belief-provenance.yml'
+  workflow_dispatch:
+permissions:
+  contents: read
+concurrency:
+  group: belief-provenance-${{ github.ref }}
+  cancel-in-progress: false
+jobs:
+  native:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    env:
+      CARGO_BUILD_JOBS: 2
+      CARGO_INCREMENTAL: 0
+      CARGO_PROFILE_DEV_DEBUG: 0
+      CARGO_PROFILE_TEST_DEBUG: 0
+      CARGO_NET_OFFLINE: true
+      RUSTUP_AUTO_INSTALL: 0
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
+      - run: bash scripts/bootstrap_toolchain.sh
+      - name: Native direct and graph provenance contracts
+        run: bash scripts/test_belief_provenance.sh "$RUNNER_TEMP/belief-provenance"
+      - name: Retain exact native results
+        if: ${{ !cancelled() }}
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: belief-provenance-${{ github.sha }}
+          path: ${{ runner.temp }}/belief-provenance
+          retention-days: 7
+          if-no-files-found: error
