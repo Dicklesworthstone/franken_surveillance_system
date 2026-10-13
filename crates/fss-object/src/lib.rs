@@ -6,6 +6,7 @@
 //! [`StagingSpool`] is its one local-filesystem backend: a crash-safe content-addressed staging
 //! spool that holds staged and verified bytes and never claims visibility or durability.
 
+pub mod belief_verification;
 mod error;
 mod manifest;
 mod memory;
