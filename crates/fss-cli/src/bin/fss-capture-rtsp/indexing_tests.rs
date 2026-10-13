@@ -449,3 +449,81 @@ fn lost_complete_attempt_output_never_indexes_the_next_attempt_and_retry_is_exac
     );
     Ok(())
 }
+
+#[test]
+fn changed_window_inventory_invalidates_approval_even_with_an_unchanged_journal() -> Test {
+    use fss_reference::rtsp::recording::local::{RecordingProgress, RecordingPublication};
+
+    fn publish(options: &crate::plan::Options, second: bool) -> Test<ContentDigest> {
+        let packets = source::packets()?;
+        let timings = source::timings(4);
+        let (packets, timings) = if second {
+            (&packets[5..], &timings[2..])
+        } else {
+            (&packets[..6], &timings[..2])
+        };
+        let recording = prepare_hevc_recording(
+            options.recording_config().scope,
+            &source::configuration()?,
+            90_000,
+            timings,
+            &source::borrowed(packets),
+        )?;
+        let root = recording.manifest().root();
+        let namespace =
+            CodecArchiveNamespace::<HevcArchiveCodec>::new(options.catalog_scope().clone())?;
+        let mut publisher = LocalRootPublisher::open(&options.root, options.publication_limits())?;
+        let mut job = RecordingPublication::new(
+            recording.publication_plan(),
+            &mut publisher,
+            namespace.window_slot(usize::from(second))?,
+            recording.byte_len(),
+            1000,
+        )?;
+        for now in 0..5 {
+            if let RecordingProgress::Published(receipt) = job.step(now, &NeverCancel)? {
+                assert_eq!(receipt.root, root);
+                return Ok(root);
+            }
+        }
+        Err("fixture window failed to publish".into())
+    }
+
+    let directory = Directory::new()?;
+    let mut plan = plan(&directory)?;
+    let first = publish(&plan.attempts[0], false)?;
+    drop(HevcArchivePinJournal::create(
+        &plan.attempts[0].pins,
+        plan.attempts[0].pin_scope(),
+        plan.attempts[0].pin_limits(),
+        &NeverCancel,
+    )?);
+    let old = approve(&mut plan)?;
+    let pins = journal(&plan.attempts[0])?;
+    let second = publish(&plan.attempts[0], true)?;
+    assert_eq!(journal(&plan.attempts[0])?, pins);
+    let mut emitted = false;
+    assert_eq!(
+        execute_codec::<HevcArchiveCodec>(
+            &plan,
+            TIMEOUT,
+            |_| {
+                emitted = true;
+                Ok(())
+            },
+            &NeverCancel
+        ),
+        Err(APPROVAL)
+    );
+    assert!(!emitted);
+    assert_eq!(journal(&plan.attempts[0])?, pins);
+    assert!(snapshot(&plan.attempts[0])?.pages().is_empty());
+    assert_ne!(approve(&mut plan)?, old);
+    assert!(run(&plan)?.contains("\"catalogs_published\":1"));
+    let indexed = snapshot(&plan.attempts[0])?;
+    assert_eq!(indexed.indexed_windows(), 2);
+    assert_eq!(indexed.pages().len(), 1);
+    assert_eq!(indexed.windows()[0].root(), first);
+    assert_eq!(indexed.windows()[1].root(), second);
+    Ok(())
+}
