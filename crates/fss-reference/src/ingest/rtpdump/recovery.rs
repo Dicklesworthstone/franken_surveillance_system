@@ -19,6 +19,9 @@ use fss_object::ObjectManifest;
 use fss_packet::{H264Limits, H264Mode, PacketLimits, RtcpMode, StreamKey};
 use fss_publication::{LocalPublicationState, SlotName};
 
+/// Optional bounded current-custody verification before each decoded frame.
+pub mod checked_decode;
+
 /// Native, privacy-projected pixel decoding from an inspected retained root.
 pub mod decode;
 
