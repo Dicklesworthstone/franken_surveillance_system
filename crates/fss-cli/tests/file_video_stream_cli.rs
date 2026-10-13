@@ -366,6 +366,10 @@ fn damaged_originals_cannot_be_exported_or_silently_repaired() -> Test {
             &deployment, ContentDigest::parse(&identity)?,
             fss_reference::ingest::RetainedReadLimits::default(), &cx)?;
         let digest = *retained.manifest().ordered_chunks.first().ok_or("missing source chunk")?;
+        let payload = deployment.publisher().spool().read_bounded(digest, fss_object::MAX_OBJECT_BYTES)?;
+        assert!(!payload.is_empty());
+        assert_eq!(ContentDigest::sha256(&payload), digest);
+        let envelope = fss_object::encode_spool_object(digest, &payload)?;
         let original_path = directory.root().join("objects/spool/objects").join(
             digest.bytes().iter().map(|b| format!("{b:02x}")).collect::<String>());
         drop(retained);
@@ -373,7 +377,8 @@ fn damaged_originals_cannot_be_exported_or_silently_repaired() -> Test {
         cx.drain_and_finalize();
         let original = &original_path;
         let mut bad = fs::read(original)?;
-        assert_eq!(ContentDigest::sha256(&bad), digest);
+        // Disk objects have a header; their identity hashes the payload, not that header.
+        assert_eq!(bad, envelope);
         *bad.last_mut().ok_or("empty original")? ^= 1;
         fs::write(original, &bad)?;
         let path = directory.0.join("corrupt.pgm");
