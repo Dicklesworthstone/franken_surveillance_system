@@ -219,3 +219,25 @@ fn malformed_deletion_markers_cannot_use_the_owner_adapter_as_a_bypass() -> Test
     ));
     Ok(())
 }
+
+#[test]
+fn explicit_denials_cannot_disagree_with_committed_deletion_proof_identity() -> TestResult {
+    let h = harness("belief-deletion-denial-conflict")?;
+    let offered = make_belief(h.deployment.current_anchor(), h.leaf)?;
+    let target = *h.deleted.first().ok_or("expected deleted object")?;
+    let conflicting = BTreeMap::from([(
+        target,
+        ContentDigest::sha256(b"not-the-committed-deletion-plan"),
+    )]);
+    assert!(matches!(
+        verify_durable_belief_with_committed_deletions(
+            &offered.canonical_bytes(),
+            &h.deployment,
+            &HostSpoolIo,
+            &ByteEngine,
+            request_for(&h.selected, &conflicting),
+        ),
+        Err(DurableBeliefError::DeletionAuthorityInvalid)
+    ));
+    Ok(())
+}

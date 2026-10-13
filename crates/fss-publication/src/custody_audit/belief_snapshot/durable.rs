@@ -369,7 +369,7 @@ fn verify_durable_belief_inner<'a, C: Fn() -> bool + Sync>(
             }
         }
     }
-    let mut denied = request.denied.clone();
+    let mut denied = (*request.denied).clone();
     if deletion_history {
         let authority = deletion_authority.ok_or(DurableBeliefError::DeletionAdapterRequired)?;
         checkpoint(request.cancelled)?;
