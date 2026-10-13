@@ -97,7 +97,9 @@ fn disjoint(locations: &[Location]) -> Result<()> {
         for other in &locations[..index] {
             if current.canonical.starts_with(&other.canonical)
                 || other.canonical.starts_with(&current.canonical)
-                || current.directory.is_some_and(|id| Some(id) == other.directory)
+                || current
+                    .directory
+                    .is_some_and(|id| Some(id) == other.directory)
             {
                 return Err(ROOT);
             }
@@ -359,10 +361,7 @@ fn pin_json(selected: Option<&(ArchivePinPhase, StoredArchivePin)>) -> String {
     )
 }
 
-fn receipt_json(
-    receipt: Option<&LocalPublicationReceipt>,
-    slot: Option<&str>,
-) -> Result<String> {
+fn receipt_json(receipt: Option<&LocalPublicationReceipt>, slot: Option<&str>) -> Result<String> {
     match (receipt, slot) {
         (None, None) => Ok("null".into()),
         (Some(receipt), Some(slot)) => Ok(object(&[
@@ -578,12 +577,18 @@ fn restore<C: ArchiveCodec>(
                 ("stream", string(scope.recording.stream.as_str())),
                 ("generation", scope.recording.generation.to_string()),
                 ("anchor", string(&scope.recording.anchor.to_text())),
-                ("receive_clock", string(&scope.recording.receive_clock.to_text())),
+                (
+                    "receive_clock",
+                    string(&scope.recording.receive_clock.to_text()),
+                ),
                 ("decode_clock", string(&scope.decode_clock.to_text())),
                 ("time_scale", scope.time_scale.to_string()),
                 ("work_root", string(&result.pin.root().to_text())),
                 ("journal", anchor_json(Some(result.journal_anchor))),
-                ("confirmation_recorded", result.confirmation.is_some().to_string()),
+                (
+                    "confirmation_recorded",
+                    result.confirmation.is_some().to_string(),
+                ),
                 (
                     "window",
                     receipt_json(result.window.as_ref(), entry.window_slot.as_deref())?,
@@ -623,11 +628,19 @@ fn restore<C: ArchiveCodec>(
             ("indexed_windows_in_checked_archives", indexed.to_string()),
             (
                 "unobserved_attempts",
-                entries.iter().filter(|entry| entry.journal.is_none()).count().to_string(),
+                entries
+                    .iter()
+                    .filter(|entry| entry.journal.is_none())
+                    .count()
+                    .to_string(),
             ),
             (
                 "archives_without_work_pin",
-                entries.iter().filter(|entry| entry.journal.is_some() && entry.selected.is_none()).count().to_string(),
+                entries
+                    .iter()
+                    .filter(|entry| entry.journal.is_some() && entry.selected.is_none())
+                    .count()
+                    .to_string(),
             ),
             ("operation_complete", "true".into()),
             ("capture_complete", "false".into()),
@@ -695,7 +708,11 @@ fn execute_codec<C: ArchiveCodec>(
         object(&[
             (
                 "selected_attempts",
-                entries.iter().filter(|entry| entry.selected.is_some()).count().to_string(),
+                entries
+                    .iter()
+                    .filter(|entry| entry.selected.is_some())
+                    .count()
+                    .to_string(),
             ),
             ("publication_started", "false".into()),
         ]),
@@ -705,8 +722,12 @@ fn execute_codec<C: ArchiveCodec>(
 
 pub(super) fn execute(plan: &ReconnectPlan, timeout: u64) -> Result<()> {
     match plan.attempts.first().ok_or(STATE)?.codec() {
-        "avc" => execute_codec::<AvcArchiveCodec>(plan, timeout, crate::write_bounded, &NeverCancel),
-        "hevc" => execute_codec::<HevcArchiveCodec>(plan, timeout, crate::write_bounded, &NeverCancel),
+        "avc" => {
+            execute_codec::<AvcArchiveCodec>(plan, timeout, crate::write_bounded, &NeverCancel)
+        }
+        "hevc" => {
+            execute_codec::<HevcArchiveCodec>(plan, timeout, crate::write_bounded, &NeverCancel)
+        }
         _ => Err(STATE),
     }
 }

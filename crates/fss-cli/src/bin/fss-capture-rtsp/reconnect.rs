@@ -143,7 +143,9 @@ impl ReconnectPlan {
             return Err("recovery timeout requires --recover yes");
         }
         let recovery_timeout_ns = if recover {
-            Some(positive(recovery_timeout.as_deref().unwrap_or("30000"), 1, 3_600_000)? * 1_000_000)
+            Some(
+                positive(recovery_timeout.as_deref().unwrap_or("30000"), 1, 3_600_000)? * 1_000_000,
+            )
         } else {
             None
         };
