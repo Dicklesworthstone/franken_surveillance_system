@@ -38,6 +38,8 @@
 //!   union deletion, never a chain of stale per-import approvals, and never releases holds.
 
 mod commit;
+/// Deletion-owner adapter for durable belief verification.
+pub mod belief;
 /// Approval-gated preservation of retained imports and their shared derivative closures.
 pub mod holds;
 mod index;

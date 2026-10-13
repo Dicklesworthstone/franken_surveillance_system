@@ -29,11 +29,15 @@ Knowledge-cell projection checks the durable head again and remains cognition-on
 
 ## Explicitly unsupported rather than fail-open
 
-This first profile refuses any history containing `batch:deletion:` identities, `deletion_` families
-or root retractions. Even an explicit empty extra deny-set cannot override this refusal. Supporting
-deleted or partially deleted deployments requires the higher-level deletion owner to validate its
-complete deny-set. Local tombstones and caller-provided extra denials independently restrict the
-native capture. Event manifests without local slots are not admitted through this profile.
+The default entry point still refuses any history containing `batch:deletion:` identities,
+`deletion_` families or root retractions. `fss_reference::deletion::belief` now supplies the trusted
+reference deletion-owner bridge: it replays the complete canonical deletion proof from committed
+batches plus retained plan/completion objects and converts every deleted spool object into a denial.
+The deletion-aware durable entry point merges that deny-set with caller denials before custody reads.
+Malformed, orphaned, reordered, missing, or conflicting deletion authority fails closed; a caller
+cannot make a deletion disappear with an empty map. Unrelated intact slots can therefore remain
+verifiable after another closure is deleted, while deleted objects remain unreadable. Local
+tombstones independently restrict capture. Event manifests without local slots remain unsupported.
 
 The API does not authenticate a principal, apply deployment privacy policy on the caller's behalf,
 register or activate production engines, authorize effects, or certify absence. It must be called
@@ -64,3 +68,18 @@ compiled and passed 44 existing provenance tests plus 222 publication tests in n
 uploads were blocked by the editing tool. These existing tests are compatibility coverage, not
 new regression coverage for the capture or this durable composition. Native compilation and the
 existing suites must be checked on this increment separately. This is not release qualification.
+
+
+## Deletion-aware durable profile
+
+The deletion-aware profile is deliberately opt-in. `CommittedDeletionBeliefAuthority` implements the
+publication-layer `DurableBeliefDeletionAuthority` trust boundary using `DeletionIndex::from_batches`.
+The publication crate therefore does not learn the deletion-plan schema or depend back on the
+reference crate. Applications that do not explicitly select a trusted deletion owner retain the old
+blanket refusal. The authority receives the exact opened durable ledger and publisher, validates the
+whole deletion history, and may only add denials; it has no write or repair surface.
+
+The focused regression creates a real retained file import, commits its graph-complete deletion, and
+proves an unrelated ledgered belief source remains independently verifiable. It also confirms the
+same history is refused by the default API and that a forged orphan `batch:deletion:*` marker is
+rejected by the deletion owner rather than acting as a bypass.

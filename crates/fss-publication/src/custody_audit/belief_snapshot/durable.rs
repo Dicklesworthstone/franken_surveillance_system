@@ -1,9 +1,10 @@
 #![forbid(unsafe_code)]
 //! Durable local-root belief verification using native capture and the existing core deriver.
 //!
-//! This narrow profile admits current ledgered local-root slots. Deletion-bearing histories require
-//! the higher-level deletion owner and are refused. It is not a production engine registry or a
-//! permission grant. The complete native read and reference replay are independently bounded.
+//! This narrow profile admits current ledgered local-root slots. The default entry point refuses
+//! deletion-bearing histories; a second entry point accepts only a verifier-owned deletion authority
+//! that validates the complete committed deletion history and returns its deny set. It is not a
+//! production engine registry or a permission grant. Native read and replay are independently bounded.
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::fmt;
@@ -76,6 +77,23 @@ pub struct DurableBeliefRequest<'a, C: Fn() -> bool + Sync> {
     pub cancelled: &'a C,
 }
 
+/// Trusted deletion owner used only by the deletion-aware durable entry point.
+///
+/// The implementation must validate the complete committed deletion transition history represented
+/// by the supplied ledger, using exact retained plan/completion bytes owned by the publisher, and
+/// return every locally denied object as object-digest to deletion-plan-digest. Returning an
+/// incomplete set is a verifier bug: this trait is selected by the application, exactly like the
+/// registered derivation engine, and is never supplied by the offered belief. It must not repair,
+/// undelete, publish, or widen access.
+pub trait DurableBeliefDeletionAuthority {
+    /// Validate the complete deletion history and return its exact deny map.
+    fn verified_denials(
+        &self,
+        ledger: &DurableReferenceLedger,
+        publisher: &LocalRootPublisher,
+    ) -> Result<BTreeMap<ContentDigest, ContentDigest>, DurableBeliefError>;
+}
+
 /// Logical replay reservations, distinct from native I/O and derivation-engine CPU cost.
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
 pub struct DurableBeliefReplayUsage {
@@ -108,6 +126,8 @@ pub enum DurableBeliefError {
     AuthorityChanged,
     /// Deletion authority requires the higher-level deletion-owner adapter.
     DeletionAdapterRequired,
+    /// The selected deletion owner could not validate a complete canonical deletion history.
+    DeletionAuthorityInvalid,
     /// A named intake/replay resource allowance was exhausted.
     Limit(&'static str),
     /// Cooperative cancellation; no partial proof.
@@ -124,6 +144,7 @@ impl fmt::Display for DurableBeliefError {
             Self::StoreIdentity => f.write_str("belief authority store identity cannot be established"),
             Self::AuthorityChanged => f.write_str("belief authority changed during the observation"),
             Self::DeletionAdapterRequired => f.write_str("deletion-bearing history requires the deletion-owner belief adapter"),
+            Self::DeletionAuthorityInvalid => f.write_str("deletion-owner belief authority could not validate complete deletion history"),
             Self::Limit(dimension) => write!(f, "durable belief {dimension} budget exhausted"),
             Self::Cancelled => f.write_str("durable belief verification cancelled"),
         }
@@ -251,6 +272,38 @@ pub fn verify_durable_belief<'a, C: Fn() -> bool + Sync>(
     engine: &(impl RegisteredBeliefDeriver + ?Sized),
     request: DurableBeliefRequest<'_, C>,
 ) -> Result<VerifiedDurableBelief<'a>, DurableBeliefError> {
+    verify_durable_belief_inner(encoded, ledger, publisher, io, engine, None, request)
+}
+
+/// Verify a saved belief while admitting a deletion-bearing deployment only through a trusted
+/// deletion owner that validates the complete committed deletion history.
+///
+/// The deletion authority can only add denials. Its map is merged with the explicit request deny
+/// set, validated, and passed to native custody before any selected payload is copied. The ordinary
+/// `verify_durable_belief` remains fail-closed for every deletion marker.
+pub fn verify_durable_belief_with_deletion_authority<'a, C: Fn() -> bool + Sync>(
+    encoded: &[u8],
+    ledger: &'a DurableReferenceLedger,
+    publisher: &'a LocalRootPublisher,
+    io: &dyn SpoolIo,
+    engine: &(impl RegisteredBeliefDeriver + ?Sized),
+    deletion_authority: &dyn DurableBeliefDeletionAuthority,
+    request: DurableBeliefRequest<'_, C>,
+) -> Result<VerifiedDurableBelief<'a>, DurableBeliefError> {
+    verify_durable_belief_inner(
+        encoded, ledger, publisher, io, engine, Some(deletion_authority), request,
+    )
+}
+
+fn verify_durable_belief_inner<'a, C: Fn() -> bool + Sync>(
+    encoded: &[u8],
+    ledger: &'a DurableReferenceLedger,
+    publisher: &'a LocalRootPublisher,
+    io: &dyn SpoolIo,
+    engine: &(impl RegisteredBeliefDeriver + ?Sized),
+    deletion_authority: Option<&dyn DurableBeliefDeletionAuthority>,
+    request: DurableBeliefRequest<'_, C>,
+) -> Result<VerifiedDurableBelief<'a>, DurableBeliefError> {
     checkpoint(request.cancelled)?;
     let limits = request.limits;
     // Count ceilings precede scans of caller-owned collections or any native I/O.
@@ -289,11 +342,12 @@ pub fn verify_durable_belief<'a, C: Fn() -> bool + Sync>(
     check_head(ledger, publisher, pin, head, anchor, request.cancelled)?;
     if ledger.batches().len() > limits.max_batches { return Err(DurableBeliefError::Limit("replay batches")); }
     let mut replay_usage = DurableBeliefReplayUsage::default();
+    let mut deletion_history = false;
     // Complete deletion/history preflight before reading any selected custody payload.
     for batch in ledger.batches() {
         checkpoint(request.cancelled)?;
         if batch.batch_id.as_str().starts_with("batch:deletion:") {
-            return Err(DurableBeliefError::DeletionAdapterRequired);
+            deletion_history = true;
         }
         charge(&mut replay_usage.history_entries, batch.children.len(), limits.max_history_entries, "history entries")?;
         charge(&mut replay_usage.history_entries, batch.deltas.len(), limits.max_history_entries, "history entries")?;
@@ -305,7 +359,7 @@ pub fn verify_durable_belief<'a, C: Fn() -> bool + Sync>(
         for delta in &batch.deltas {
             checkpoint(request.cancelled)?;
             if delta.family.starts_with("deletion_") || delta.family == ROOT_RETRACTION_FAMILY {
-                return Err(DurableBeliefError::DeletionAdapterRequired);
+                deletion_history = true;
             }
             for text in [delta.delta_id.as_str(), delta.family.as_str(), delta.object_id.as_str()] {
                 charge(&mut replay_usage.text_bytes, text.len(), limits.max_replay_text_bytes, "replay text")?;
@@ -314,6 +368,28 @@ pub fn verify_durable_belief<'a, C: Fn() -> bool + Sync>(
                 charge(&mut replay_usage.text_bytes, id.as_str().len(), limits.max_replay_text_bytes, "replay text")?;
             }
         }
+    }
+    let mut denied = request.denied.clone();
+    if deletion_history {
+        let authority = deletion_authority.ok_or(DurableBeliefError::DeletionAdapterRequired)?;
+        checkpoint(request.cancelled)?;
+        let verified = authority.verified_denials(ledger, publisher)?;
+        checkpoint(request.cancelled)?;
+        if verified.len() > MAX_AUDIT_OBJECTS
+            || denied.len().checked_add(verified.len()).is_none_or(|n| n > MAX_AUDIT_OBJECTS)
+            || verified.iter().any(|(root, proof)| !sha(*root) || !sha(*proof))
+        {
+            return Err(DurableBeliefError::DeletionAuthorityInvalid);
+        }
+        for (root, proof) in verified {
+            if let Some(existing) = denied.get(&root)
+                && *existing != proof
+            {
+                return Err(DurableBeliefError::DeletionAuthorityInvalid);
+            }
+            denied.insert(root, proof);
+        }
+        check_head(ledger, publisher, pin, head, anchor, request.cancelled)?;
     }
     let mut selected = Vec::with_capacity(request.slots.len());
     let mut roots = BTreeSet::new();
@@ -354,7 +430,7 @@ pub fn verify_durable_belief<'a, C: Fn() -> bool + Sync>(
     }
     if replay.current() != ledger.current() { return Err(DurableBeliefError::AuthorityChanged); }
     let roots: Vec<_> = roots.into_iter().collect();
-    let custody = capture_belief_custody(io, publisher.root_dir(), &roots, request.denied,
+    let custody = capture_belief_custody(io, publisher.root_dir(), &roots, &denied,
         limits.custody, request.cancelled, CustodyRootBasis::LocalPublicationRecords, limits.max_retained_bytes)?;
     // Another slot publishing an equal digest cannot substitute for the exact selected record.
     for slot in request.slots {
