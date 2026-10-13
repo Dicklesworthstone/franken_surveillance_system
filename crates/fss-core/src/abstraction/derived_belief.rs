@@ -83,6 +83,9 @@ pub struct DerivedBelief {
     anchor: LedgerAnchor,
     /// Generation identifier for the derivation model/engine.
     generation: Generation,
+    /// Registered derivation algorithm identity (PROV-002: "under a registered algorithm
+    /// and generation"). Format `alg:<name>:v<N>`; bound into the derivation receipt.
+    algorithm_id: String,
     /// Compact human-readable statement.
     statement: String,
     /// Epistemic state: never `Known`, and never a state whose registry meaning requires a typed
@@ -109,6 +112,9 @@ pub struct DerivedBeliefParams {
     pub anchor: LedgerAnchor,
     /// Generation identifier for the derivation model/engine.
     pub generation: Generation,
+    /// Registered derivation algorithm identity (PROV-002). Format `alg:<name>:v<N>`;
+    /// must equal the receipt's bound algorithm.
+    pub algorithm_id: String,
     /// Compact human-readable statement.
     pub statement: String,
     /// Epistemic state (must NOT be `Known`; derived beliefs are `Estimated`, `Conflicted`, etc.).
@@ -133,6 +139,7 @@ impl DerivedBeliefParams {
             belief_id: &self.belief_id,
             anchor: &self.anchor,
             generation: self.generation,
+            algorithm_id: &self.algorithm_id,
             statement: &self.statement,
             knowledge_state: self.knowledge_state,
             provenance: self.provenance,
@@ -165,6 +172,8 @@ pub struct DerivationInputs<'a> {
     pub anchor: &'a LedgerAnchor,
     /// Generation identifier for the derivation model/engine.
     pub generation: Generation,
+    /// Registered derivation algorithm identity bound into the receipt.
+    pub algorithm_id: &'a str,
     /// Compact human-readable statement.
     pub statement: &'a str,
     /// Epistemic state.
@@ -182,6 +191,25 @@ pub struct DerivationInputs<'a> {
 /// Returns whether every byte of `digest` is zero.
 fn is_all_zero(digest: ContentDigest) -> bool {
     digest.bytes().iter().all(|&byte| byte == 0)
+}
+
+/// Returns whether `id` is a well-formed registered algorithm identity: `alg:<name>:v<N>`
+/// with a 1..=32 byte lowercase name of `[a-z0-9-]` and a 1..=8 digit version.
+fn algorithm_id_is_well_formed(id: &str) -> bool {
+    let Some(rest) = id.strip_prefix("alg:") else {
+        return false;
+    };
+    let Some((name, version)) = rest.rsplit_once(":v") else {
+        return false;
+    };
+    !name.is_empty()
+        && name.len() <= 32
+        && name
+            .bytes()
+            .all(|b| b.is_ascii_lowercase() || b.is_ascii_digit() || b == b'-')
+        && !version.is_empty()
+        && version.len() <= 8
+        && version.bytes().all(|b| b.is_ascii_digit())
 }
 
 /// Returns whether `anchor` names canonical evidence: a site lineage and a non-zero state root.
@@ -214,6 +242,7 @@ impl DerivedBelief {
             belief_id: params.belief_id,
             anchor: params.anchor,
             generation: params.generation,
+            algorithm_id: params.algorithm_id,
             statement: params.statement,
             knowledge_state: params.knowledge_state,
             provenance: params.provenance,
@@ -229,7 +258,8 @@ impl DerivedBelief {
     /// Validates all constitutional and semantic invariants for this derived belief (INV-069).
     ///
     /// Checks run in a fixed order, so each defect reports one exact error:
-    /// identity, statement, anchor (lineage and non-zero state root), generation, provenance,
+    /// identity, statement, anchor (lineage and non-zero state root), generation, algorithm
+    /// identity (PROV-002 `alg:<name>:v<N>`, bound into the receipt), provenance,
     /// `known` refusal, evidence presence and bounds, strictly ascending evidence and
     /// contradiction sets, disjoint support and contradictions, uncertainty bounds, non-zero
     /// receipt, and finally the receipt matching its recomputation from the inputs.
@@ -245,6 +275,9 @@ impl DerivedBelief {
         }
         if self.generation.0 == 0 {
             return Err(ContractError::GenerationConflict);
+        }
+        if !algorithm_id_is_well_formed(&self.algorithm_id) {
+            return Err(ContractError::InvalidIdentifier);
         }
         if self.provenance != ProvenanceClass::Derived {
             return Err(ContractError::KnowledgeStateBasisMismatch);
@@ -368,6 +401,7 @@ impl DerivedBelief {
             belief_id: &self.belief_id,
             anchor: &self.anchor,
             generation: self.generation,
+            algorithm_id: &self.algorithm_id,
             statement: &self.statement,
             knowledge_state: self.knowledge_state,
             provenance: self.provenance,
@@ -457,6 +491,7 @@ impl DerivedBelief {
             belief_id: self.belief_id.clone(),
             anchor: self.anchor.clone(),
             generation: self.generation,
+            algorithm_id: self.algorithm_id.clone(),
             statement: self.statement.clone(),
             knowledge_state: self.knowledge_state,
             provenance: self.provenance,
@@ -495,6 +530,7 @@ impl DerivedBelief {
         encoder.text(inputs.belief_id);
         inputs.anchor.encode_canonical(&mut encoder);
         encoder.u64(inputs.generation.0);
+        encoder.text(inputs.algorithm_id);
         encoder.text(inputs.statement);
         inputs.knowledge_state.encode_canonical(&mut encoder);
         inputs.provenance.encode_canonical(&mut encoder);
@@ -593,6 +629,7 @@ impl CanonicalEncode for DerivedBelief {
         encoder.text(&self.belief_id);
         self.anchor.encode_canonical(encoder);
         encoder.u64(self.generation.0);
+        encoder.text(&self.algorithm_id);
         encoder.text(&self.statement);
         self.knowledge_state.encode_canonical(encoder);
         self.provenance.encode_canonical(encoder);
@@ -614,6 +651,7 @@ impl CanonicalDecode for DerivedBelief {
         let belief_id = decoder.text()?.to_owned();
         let anchor = LedgerAnchor::decode_canonical(decoder)?;
         let generation = Generation(decoder.u64()?);
+        let algorithm_id = decoder.text()?.to_owned();
         let statement = decoder.text()?.to_owned();
         let knowledge_state = KnowledgeState::decode_canonical(decoder)?;
         let provenance = ProvenanceClass::decode_canonical(decoder)?;
@@ -649,6 +687,7 @@ impl CanonicalDecode for DerivedBelief {
             belief_id,
             anchor,
             generation,
+            algorithm_id,
             statement,
             knowledge_state,
             provenance,
@@ -677,6 +716,7 @@ mod tests {
             belief_id: "belief:unit:001".to_owned(),
             anchor: LedgerAnchor::genesis("site:unit"),
             generation: Generation(3),
+            algorithm_id: "alg:fixture-deriver:v1".to_owned(),
             statement: "Unit-test derived proposition".to_owned(),
             knowledge_state: KnowledgeState::Estimated,
             provenance: ProvenanceClass::Derived,
@@ -723,6 +763,7 @@ mod tests {
             belief_id: params.belief_id,
             anchor: params.anchor,
             generation: Generation(0),
+            algorithm_id: params.algorithm_id,
             statement: params.statement,
             knowledge_state: KnowledgeState::Known,
             provenance: ProvenanceClass::Derived,

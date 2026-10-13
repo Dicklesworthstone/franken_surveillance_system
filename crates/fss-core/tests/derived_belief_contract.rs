@@ -100,6 +100,7 @@ fn test_derived_belief_construction_and_validation() -> Result<(), Box<dyn Error
             belief_id: "belief:track:person:001".into(),
             anchor: anchor.clone(),
             generation: Generation(1),
+            algorithm_id: "alg:fixture-deriver:v1".to_owned(),
             statement: "Track 001 classified as person in restricted perimeter".into(),
             knowledge_state: KnowledgeState::Estimated,
             provenance: ProvenanceClass::Derived,
@@ -146,6 +147,7 @@ fn test_derived_belief_to_knowledge_cell_hard_gate() -> Result<(), Box<dyn Error
             belief_id: "belief:track:vehicle:002".into(),
             anchor,
             generation: Generation(1),
+            algorithm_id: "alg:fixture-deriver:v1".to_owned(),
             statement: "Vehicle track 002 speed estimated at 35km/h".into(),
             knowledge_state: KnowledgeState::Estimated,
             provenance: ProvenanceClass::Derived,
@@ -186,6 +188,7 @@ fn test_planted_negative_derived_belief_known_forbidden() -> Result<(), Box<dyn 
         belief_id: "belief:illegal:known".into(),
         anchor,
         generation: Generation(1),
+        algorithm_id: "alg:fixture-deriver:v1".to_owned(),
         statement: "Illegally upgrading derived belief to known state".into(),
         knowledge_state: KnowledgeState::Known,
         provenance: ProvenanceClass::Derived,
@@ -216,6 +219,7 @@ fn test_planted_negative_derived_belief_non_derived_provenance_forbidden()
         belief_id: "belief:illegal:observed".into(),
         anchor,
         generation: Generation(1),
+        algorithm_id: "alg:fixture-deriver:v1".to_owned(),
         statement: "Spoofing observed provenance on derived belief".into(),
         knowledge_state: KnowledgeState::Estimated,
         provenance: ProvenanceClass::Observed,
@@ -244,6 +248,7 @@ fn test_planted_negative_derived_belief_empty_evidence_forbidden() -> Result<(),
         belief_id: "belief:illegal:no_evidence".into(),
         anchor,
         generation: Generation(1),
+        algorithm_id: "alg:fixture-deriver:v1".to_owned(),
         statement: "Unfounded derived belief with no evidence roots".into(),
         knowledge_state: KnowledgeState::Estimated,
         provenance: ProvenanceClass::Derived,
@@ -273,6 +278,7 @@ fn test_planted_negative_derived_belief_missing_anchor_forbidden() -> Result<(),
         belief_id: "belief:illegal:no_anchor".into(),
         anchor: bad_anchor,
         generation: Generation(1),
+        algorithm_id: "alg:fixture-deriver:v1".to_owned(),
         statement: "Floating derived belief with empty anchor lineage".into(),
         knowledge_state: KnowledgeState::Estimated,
         provenance: ProvenanceClass::Derived,
@@ -301,6 +307,7 @@ fn test_planted_negative_derived_belief_zero_generation_forbidden() -> Result<()
         belief_id: "belief:track:zero_gen".into(),
         anchor,
         generation: Generation(0), // ILLEGAL: generation must be > 0
+        algorithm_id: "alg:fixture-deriver:v1".to_owned(),
         statement: "Track with zero generation".into(),
         knowledge_state: KnowledgeState::Estimated,
         provenance: ProvenanceClass::Derived,
@@ -330,6 +337,7 @@ fn test_planted_negative_derived_belief_zero_receipt_forbidden() -> Result<(), B
         belief_id: "belief:track:zero_receipt".into(),
         anchor,
         generation: Generation(1),
+        algorithm_id: "alg:fixture-deriver:v1".to_owned(),
         statement: "Track with all-zero derivation receipt".into(),
         knowledge_state: KnowledgeState::Estimated,
         provenance: ProvenanceClass::Derived,
@@ -383,6 +391,7 @@ fn test_planted_negative_derived_belief_stale_anchor_fails() -> Result<(), Box<d
             belief_id: "belief:track:stale_check".into(),
             anchor,
             generation: Generation(1),
+            algorithm_id: "alg:fixture-deriver:v1".to_owned(),
             statement: "Track with stale check".into(),
             knowledge_state: KnowledgeState::Estimated,
             provenance: ProvenanceClass::Derived,
@@ -414,6 +423,7 @@ fn test_derived_belief_rebuild_and_receipt_determinism() -> Result<(), Box<dyn E
         belief_id: "belief:track:rebuildable:001",
         anchor: &anchor,
         generation: Generation(5),
+        algorithm_id: "alg:graph-projection:v2",
         statement: "Rebuildable derived proposition",
         knowledge_state: KnowledgeState::Estimated,
         provenance: ProvenanceClass::Derived,
@@ -426,6 +436,7 @@ fn test_derived_belief_rebuild_and_receipt_determinism() -> Result<(), Box<dyn E
         belief_id: "belief:track:rebuildable:001".into(),
         anchor: anchor.clone(),
         generation: Generation(5),
+        algorithm_id: "alg:graph-projection:v2".to_owned(),
         statement: "Rebuildable derived proposition".into(),
         knowledge_state: KnowledgeState::Estimated,
         provenance: ProvenanceClass::Derived,
@@ -472,6 +483,7 @@ fn test_security_derived_belief_decode_large_length_rejected_without_oom()
     encoder.text("belief:attack:oom");
     sample_anchor().encode_canonical(&mut encoder);
     encoder.u64(1); // generation
+    encoder.text("alg:fixture-deriver:v1");
     encoder.text("Statement");
     KnowledgeState::Estimated.encode_canonical(&mut encoder);
     ProvenanceClass::Derived.encode_canonical(&mut encoder);
@@ -491,6 +503,7 @@ fn test_security_derived_belief_decode_large_length_rejected_without_oom()
     encoder2.text("belief:attack:remaining");
     sample_anchor().encode_canonical(&mut encoder2);
     encoder2.u64(1);
+    encoder2.text("alg:fixture-deriver:v1");
     encoder2.text("Statement");
     KnowledgeState::Estimated.encode_canonical(&mut encoder2);
     ProvenanceClass::Derived.encode_canonical(&mut encoder2);
@@ -515,6 +528,7 @@ fn test_decode_canonical_validates_and_kills_mutant_r22() -> Result<(), Box<dyn 
     encoder.text("belief:mutant:r22");
     sample_anchor().encode_canonical(&mut encoder);
     encoder.u64(0); // ILLEGAL Generation(0)
+    encoder.text("alg:fixture-deriver:v1");
     encoder.text("Statement with generation 0");
     KnowledgeState::Estimated.encode_canonical(&mut encoder);
     ProvenanceClass::Derived.encode_canonical(&mut encoder);
@@ -553,6 +567,7 @@ fn test_derived_belief_max_evidence_and_contradiction_bounds() -> Result<(), Box
         belief_id: "belief:excess:evidence".into(),
         anchor: anchor.clone(),
         generation: Generation(1),
+        algorithm_id: "alg:fixture-deriver:v1".to_owned(),
         statement: "Excess evidence test".into(),
         knowledge_state: KnowledgeState::Estimated,
         provenance: ProvenanceClass::Derived,
@@ -576,6 +591,7 @@ fn test_derived_belief_max_evidence_and_contradiction_bounds() -> Result<(), Box
         belief_id: "belief:excess:contra".into(),
         anchor,
         generation: Generation(1),
+        algorithm_id: "alg:fixture-deriver:v1".to_owned(),
         statement: "Excess contra test".into(),
         knowledge_state: KnowledgeState::Estimated,
         provenance: ProvenanceClass::Derived,
@@ -605,6 +621,7 @@ fn test_derived_belief_canonical_roundtrip() -> Result<(), Box<dyn Error>> {
             belief_id: "belief:track:person:001".into(),
             anchor,
             generation: Generation(2),
+            algorithm_id: "alg:fixture-deriver:v1".to_owned(),
             statement: "Track 001 classified as person in restricted perimeter".into(),
             knowledge_state: KnowledgeState::Estimated,
             provenance: ProvenanceClass::Derived,
@@ -645,6 +662,7 @@ fn test_derivation_receipt_encoding_order_is_pinned() -> Result<(), Box<dyn Erro
         belief_id: "belief:pin:001",
         anchor: &anchor,
         generation: Generation(7),
+        algorithm_id: "alg:graph-projection:v2",
         statement: "Pinned receipt layout",
         knowledge_state: KnowledgeState::Conflicted,
         provenance: ProvenanceClass::Derived,
@@ -658,6 +676,7 @@ fn test_derivation_receipt_encoding_order_is_pinned() -> Result<(), Box<dyn Erro
     encoder.text("belief:pin:001");
     anchor.encode_canonical(&mut encoder);
     encoder.u64(7);
+    encoder.text("alg:graph-projection:v2");
     encoder.text("Pinned receipt layout");
     KnowledgeState::Conflicted.encode_canonical(&mut encoder);
     ProvenanceClass::Derived.encode_canonical(&mut encoder);
@@ -690,6 +709,7 @@ fn sealed_params(belief_id: &str) -> Result<DerivedBeliefParams, Box<dyn Error>>
         belief_id: belief_id.into(),
         anchor: sample_anchor(),
         generation: Generation(1),
+        algorithm_id: "alg:fixture-deriver:v1".to_owned(),
         statement: "Sealed derived proposition".into(),
         knowledge_state: KnowledgeState::Estimated,
         provenance: ProvenanceClass::Derived,
@@ -707,6 +727,7 @@ fn encode_params(params: &DerivedBeliefParams) -> Result<Vec<u8>, Box<dyn Error>
     encoder.text(&params.belief_id);
     params.anchor.encode_canonical(&mut encoder);
     encoder.u64(params.generation.0);
+    encoder.text(&params.algorithm_id);
     encoder.text(&params.statement);
     params.knowledge_state.encode_canonical(&mut encoder);
     params.provenance.encode_canonical(&mut encoder);
@@ -759,6 +780,7 @@ fn encode_header(encoder: &mut CanonicalEncoder, belief_id: &str) -> Result<(), 
     encoder.text(belief_id);
     sample_anchor().encode_canonical(encoder);
     encoder.u64(1);
+    encoder.text("alg:fixture-deriver:v1");
     encoder.text("Statement");
     KnowledgeState::Estimated.encode_canonical(encoder);
     ProvenanceClass::Derived.encode_canonical(encoder);
@@ -1267,6 +1289,7 @@ fn test_new5_golden_receipt_and_canonical_digest() -> Result<(), Box<dyn Error>>
             belief_id: "belief:golden:001".into(),
             anchor,
             generation: Generation(9),
+            algorithm_id: "alg:fixture-deriver:v1".to_owned(),
             statement: "Golden derived proposition".into(),
             knowledge_state: KnowledgeState::Estimated,
             provenance: ProvenanceClass::Derived,
@@ -1283,16 +1306,18 @@ fn test_new5_golden_receipt_and_canonical_digest() -> Result<(), Box<dyn Error>>
         "fss.derived_belief.receipt.v1"
     );
     assert_eq!(fss_core::DERIVED_BELIEF_DOMAIN, "fss.derived_belief.v1");
+    // [fss-s1gcl] goldens moved: the canonical layout gained the bound algorithm id
+    // (text after generation); recomputed and repinned.
     assert_eq!(
         belief.derivation_receipt(),
         ContentDigest::parse(
-            "sha256:ce57b1d9ba082a5c762877f37f0d001760386f2af92674af51080c86ba2d8f69"
+            "sha256:db57bb9c014dab93c151fbacf70421afa10447547442ef3b74de8aa7f3c0caab"
         )?
     );
     assert_eq!(
         belief.canonical_digest()?,
         ContentDigest::parse(
-            "sha256:122d2bfae0ed8de39aace974568f851f440da8eeef0b12a9e20bdf856021fdcd"
+            "sha256:333e174f228de1b3b6685edf0baa99041eb9f421d4d38f5a084f0fcb8454e598"
         )?
     );
     Ok(())
@@ -1447,5 +1472,82 @@ fn test_derived_belief_to_knowledge_cell_anchor_drift_and_refusal_matrix()
     });
     assert_eq!(invalid_basis_cell, Err(ContractError::StaleBasisNotOlder));
 
+    Ok(())
+}
+
+/// [fss-s1gcl] PROV-002 binding: the registered algorithm identity is part of the
+/// derivation receipt. Swapping it on an otherwise-honest belief must break the
+/// receipt exactly (DigestMismatch), and a malformed identity is refused with
+/// InvalidIdentifier — a forged belief can never carry an unbound algorithm.
+#[test]
+fn test_planted_algorithm_id_swap_breaks_receipt_exactly() -> Result<(), Box<dyn Error>> {
+    let anchor = sample_anchor();
+    let uncertainty = sample_uncertainty()?;
+    let evidence_root = ContentDigest::sha256(b"evidence_packet_alg_binding");
+
+    let honest = DerivedBeliefParams {
+        belief_id: "belief:alg:binding:001".into(),
+        anchor: anchor.clone(),
+        generation: Generation(7),
+        algorithm_id: "alg:tracker-projection:v3".to_owned(),
+        statement: "Honest derivation under a named algorithm".into(),
+        knowledge_state: KnowledgeState::Estimated,
+        provenance: ProvenanceClass::Derived,
+        uncertainty,
+        supporting_evidence: vec![evidence_root],
+        contradictions: vec![],
+        derivation_receipt: ContentDigest::sha256(b"placeholder"),
+    }
+    .with_computed_receipt()?;
+    let honest_receipt = honest.derivation_receipt;
+    let belief = DerivedBelief::new(honest)?;
+    assert_eq!(belief.derivation_receipt(), honest_receipt);
+
+    // Same inputs, different algorithm identity: the receipt MUST differ, and a
+    // belief that keeps the honest receipt while swapping the algorithm is refused.
+    let swapped = DerivedBeliefParams {
+        belief_id: "belief:alg:binding:001".into(),
+        anchor,
+        generation: Generation(7),
+        algorithm_id: "alg:tracker-projection:v4".to_owned(),
+        statement: "Honest derivation under a named algorithm".into(),
+        knowledge_state: KnowledgeState::Estimated,
+        provenance: ProvenanceClass::Derived,
+        uncertainty: sample_uncertainty()?,
+        supporting_evidence: vec![evidence_root],
+        contradictions: vec![],
+        derivation_receipt: honest_receipt,
+    };
+    let Err(err) = DerivedBelief::new(swapped) else {
+        return Err("swapped algorithm id must break the receipt".into());
+    };
+    assert_eq!(err, ContractError::DigestMismatch);
+
+    // Malformed identities are refused before any receipt consideration.
+    for malformed in [
+        "",
+        "tracker-projection:v1",
+        "alg:Tracker:v1",
+        "alg:t:v",
+        "alg:x:v999999999",
+    ] {
+        let res = DerivedBelief::new(DerivedBeliefParams {
+            belief_id: "belief:alg:malformed".into(),
+            anchor: sample_anchor(),
+            generation: Generation(1),
+            algorithm_id: malformed.to_owned(),
+            statement: "Malformed algorithm identity".into(),
+            knowledge_state: KnowledgeState::Estimated,
+            provenance: ProvenanceClass::Derived,
+            uncertainty: sample_uncertainty()?,
+            supporting_evidence: vec![evidence_root],
+            contradictions: vec![],
+            derivation_receipt: ContentDigest::sha256(b"placeholder"),
+        });
+        let Err(err) = res else {
+            return Err(format!("malformed algorithm id {malformed:?} must be refused").into());
+        };
+        assert_eq!(err, ContractError::InvalidIdentifier, "{malformed:?}");
+    }
     Ok(())
 }

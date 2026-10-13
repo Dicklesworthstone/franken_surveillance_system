@@ -121,6 +121,7 @@ fn derived_belief_bytes(state: KnowledgeState, statement: &str) -> Result<Vec<u8
         belief_id: "belief:decode-refusal:001".into(),
         anchor: derived_anchor(),
         generation: Generation(1),
+        algorithm_id: "alg:fixture-deriver:v1".to_owned(),
         statement: statement.into(),
         knowledge_state: KnowledgeState::Estimated,
         provenance: ProvenanceClass::Derived,
@@ -134,6 +135,7 @@ fn derived_belief_bytes(state: KnowledgeState, statement: &str) -> Result<Vec<u8
     encoder.text(&params.belief_id);
     params.anchor.encode_canonical(&mut encoder);
     encoder.u64(params.generation.0);
+    encoder.text(&params.algorithm_id);
     encoder.text(&params.statement);
     state.encode_canonical(&mut encoder);
     params.provenance.encode_canonical(&mut encoder);
