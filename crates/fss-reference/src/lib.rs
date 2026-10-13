@@ -7,6 +7,8 @@
 //! canonical authority delta through `fss-publication`.
 
 pub mod activity;
+/// Independent original-frame replay of retained native activity computations; cognition only.
+pub mod activity_replay;
 mod adapter_aosu;
 mod adapter_dji_flip;
 mod adapter_insta_link;

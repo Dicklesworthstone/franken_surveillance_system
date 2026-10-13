@@ -10,8 +10,12 @@ on:
       - 'crates/fss-object/src/belief_verification*'
       - 'crates/fss-object/src/memory/belief_verification*'
       - 'crates/fss-object/src/memory/belief_verification/**'
-      - 'crates/fss-publication/src/custody_audit.rs'
+      - 'crates/fss-publication/src/custody_audit*'
       - 'crates/fss-publication/src/custody_audit/**'
+      - 'crates/fss-reference/src/activity_replay*'
+      - 'crates/fss-reference/src/activity_replay/**'
+      - 'crates/fss-reference/src/executor_activity*.rs'
+      - 'crates/fss-reference/tests/activity_*'
       - 'scripts/test_belief_provenance.sh'
       - '.github/workflows/belief-provenance.yml'
   workflow_dispatch:
