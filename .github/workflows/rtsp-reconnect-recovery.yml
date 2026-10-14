@@ -37,7 +37,13 @@ jobs:
       - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
       - name: Bootstrap the repository-pinned compiler
         run: bash scripts/bootstrap_toolchain.sh
+      - name: Native automatic control and supervised live and recording generations
+        run: |
+          mkdir -p "$RUNNER_TEMP/recovery-evidence"
+          set -o pipefail
+          cargo +nightly-2026-08-31 test --locked --offline -p fss-reference --lib rtsp::live_avc::automatic -- --nocapture 2>&1 | tee "$RUNNER_TEMP/recovery-evidence/supervised-native.log"
       - name: Native capture and recovery contracts
+        if: ${{ !cancelled() }}
         run: |
           mkdir -p "$RUNNER_TEMP/recovery-evidence"
           set -o pipefail
@@ -67,6 +73,15 @@ jobs:
           for name in recovery.rs recovery_tests.rs reconnect.rs indexing.rs indexing_tests.rs; do
             source="crates/fss-cli/src/bin/fss-capture-rtsp/$name"
             sources+=("$source")
+            cp "$source" "$RUNNER_TEMP/recovery-evidence/formatted/$name"
+            rustfmt +nightly-2026-08-31 --edition 2024 --config skip_children=true "$RUNNER_TEMP/recovery-evidence/formatted/$name"
+          done
+          for source in \
+            crates/fss-reference/src/rtsp/live_avc/automatic.rs \
+            crates/fss-reference/src/rtsp/live_avc/automatic/reconnect.rs \
+            crates/fss-reference/src/rtsp/live_avc/automatic/reconnect/recording.rs; do
+            sources+=("$source")
+            name="native-$(basename "$source")"
             cp "$source" "$RUNNER_TEMP/recovery-evidence/formatted/$name"
             rustfmt +nightly-2026-08-31 --edition 2024 --config skip_children=true "$RUNNER_TEMP/recovery-evidence/formatted/$name"
           done
