@@ -180,7 +180,10 @@ impl DigestAvcClient {
             self.intake.next_wake_ns()
         };
         earlier(
-            earlier(self.inner.next_wake_ns(), wire_wake),
+            earlier(
+                self.inner.next_wake_with_keepalive(self.buffered_wire_bytes() == 0),
+                wire_wake,
+            ),
             self.challenge_deadline_ns,
         )
     }
@@ -374,7 +377,11 @@ impl DigestAvcClient {
                 Err(error) => Ok(self.fault(DigestAvcError::Client(error))),
             };
         }
-        if keepalive_due {
+        // A partial exact frame blocks request admission. Reporting an advisory
+        // keepalive here would stop the native owner from reading the remaining
+        // bytes and strand both operations until expiry. Preserve every hard
+        // deadline, but only expose the command once the wire owner is quiescent.
+        if keepalive_due && self.buffered_wire_bytes() == 0 {
             return Ok(self.client_event(event));
         }
         Ok(self.client_event(AvcClientPoll::Pending {

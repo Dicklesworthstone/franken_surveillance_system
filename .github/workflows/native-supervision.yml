@@ -6,6 +6,7 @@ on:
     paths:
       - 'crates/fss-reference/src/rtsp/**'
       - 'crates/fss-reference/tests/supervised_hevc_recording_contract.rs'
+      - 'crates/fss-reference/tests/automatic_avc_keepalive_contract.rs'
       - 'crates/fss-reference/tests/live_hevc_recording_contract.rs'
       - 'crates/fss-reference/tests/hevc_recording_support/**'
       - 'crates/fss-packet/**'

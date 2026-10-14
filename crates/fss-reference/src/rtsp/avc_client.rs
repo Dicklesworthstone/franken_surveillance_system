@@ -331,6 +331,12 @@ impl RtspAvcClient {
     }
     /// Earliest session/media/framing wake; queued parsed input requests immediate polling.
     pub fn next_wake_ns(&self) -> Option<u64> {
+        self.next_wake_with_keepalive(true)
+    }
+    // The exact-wire owner cannot issue a command while a previous frame is
+    // partial. Keepalive is advisory; hard expiry and all media/framing wakes
+    // must still run while that owner finishes its already-admitted source.
+    fn next_wake_with_keepalive(&self, allow_keepalive: bool) -> Option<u64> {
         if self.closed {
             return None;
         }
@@ -339,7 +345,11 @@ impl RtspAvcClient {
         {
             return Some(self.last_ns);
         }
-        let mut wake = self.session.next_wake_ns();
+        let mut wake = if allow_keepalive {
+            self.session.next_wake_ns()
+        } else {
+            self.session.next_expiry_ns()
+        };
         for at in [
             self.partial_deadline_ns,
             self.video.as_ref().and_then(AvcReceiver::next_wake_ns),
