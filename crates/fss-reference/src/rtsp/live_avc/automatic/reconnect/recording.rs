@@ -1,13 +1,15 @@
 #![forbid(unsafe_code)]
 //! Reconnection of the existing native recording owner without bypassing capture
 //! draining, explicit timing, source custody or root-last publication. This uses
-//! the same finite scheduler and transport classification as live supervision.
+//! the same finite scheduler, resource reservations and transport classification
+//! as live supervision. A recording retirement never refunds native capacity.
 
 use std::fmt;
 
 use super::{
-    Profile, ReconnectAttempt, ReconnectPolicy, ReconnectRefusal, ReconnectStatus,
-    ReconnectStop, Schedule, retryable, terminal_retryable,
+    Profile, ReconnectAttempt, ReconnectBudget, ReconnectBudgetState, ReconnectPolicy,
+    ReconnectRefusal, ReconnectStatus, ReconnectStop, ReservationLedger, Schedule, retryable,
+    terminal_retryable,
 };
 use crate::rtsp::authentication::DigestCredentials;
 use crate::rtsp::live_avc::automatic::{AutomaticAvcRecording, AutomaticRecordingStep};
@@ -94,12 +96,14 @@ impl fmt::Debug for SupervisedAvcRecording {
             .field("status", &self.schedule.status)
             .field("attempts", &self.schedule.attempts)
             .field("draining_eof", &self.draining_eof)
+            .field("resources", &self.schedule.resources.state())
             .finish_non_exhaustive()
     }
 }
 impl SupervisedAvcRecording {
     /// Validate the finite grant without opening a socket or borrowing credentials.
-    /// The existing recording owner validates all codec/collection limits before I/O.
+    /// The first admitted native profile establishes a checked maximum aggregate
+    /// over max_attempts. The recording owner still validates collection before I/O.
     pub fn new(
         binding: TcpBinding,
         template: LiveRecordingConfig,
@@ -116,6 +120,29 @@ impl SupervisedAvcRecording {
             active: None,
             draining_eof: false,
         })
+    }
+
+    /// Bind one explicit whole-run native resource budget before any connection.
+    /// Reserving a new generation never refunds the previous generation's maxima,
+    /// even after its recording and source ownership have completely drained.
+    /// Storage/publication allowances remain with their separate existing owners.
+    pub fn new_with_budget(
+        binding: TcpBinding,
+        template: LiveRecordingConfig,
+        policy: ReconnectPolicy,
+        budget: ReconnectBudget,
+        now: u64,
+    ) -> Result<Self, ReconnectRefusal> {
+        let mut owner = Self::new(binding, template, policy, now)?;
+        owner.schedule.resources =
+            ReservationLedger::bounded(budget).map_err(ReconnectRefusal::Resources)?;
+        Ok(owner)
+    }
+
+    /// Fixed native ceiling and irreversibly admitted maxima across generations.
+    /// This is not measured traffic, stored media size or a publication receipt.
+    pub fn resource_budget(&self) -> ReconnectBudgetState {
+        self.schedule.resources.state()
     }
 
     /// Scheduling state, not evidence of recorded footage or camera health.
@@ -157,7 +184,8 @@ impl SupervisedAvcRecording {
     }
 
     /// Open one exact new-generation recording attempt, retaining the fixed template
-    /// ceilings. A changed camera identity or stale scope is refused before any I/O.
+    /// and complete native media profile. Scope and whole-run budget refusals happen
+    /// before any socket opens; resource refusals do not consume an attempt ordinal.
     pub fn connect(
         &mut self,
         config: LiveAvcConfig,
@@ -175,7 +203,10 @@ impl SupervisedAvcRecording {
         {
             return Err(self.refusal(ReconnectRefusal::Scope));
         }
-        let attempt = self.schedule.begin(now).map_err(|e| self.refusal(e))?;
+        let attempt = self
+            .schedule
+            .begin_connection(&config, now)
+            .map_err(|e| self.refusal(e))?;
         if self.profile.is_none() {
             self.profile = Some(Profile::new(&config));
         }
@@ -281,8 +312,8 @@ impl SupervisedAvcRecording {
     }
 
     /// Owner assertion that original terminal work was retained or explicitly
-    /// accounted for, not proof of durable publication. Only this fresh clock
-    /// observation starts backoff, after the entire recording owner has retired.
+    /// accounted for, not proof of durable publication or unused native capacity.
+    /// Only this fresh clock observation starts backoff, after recording retirement.
     pub fn acknowledge_retirement(
         &mut self,
         now: u64,
@@ -298,6 +329,7 @@ impl SupervisedAvcRecording {
 
     /// Cancel even after revocation or during EOF draining. Return all prepared,
     /// unsealed and untimed work exactly once; never send a teardown or publish.
+    /// The complete admitted resource maxima remain reserved after cancellation.
     pub fn cancel(&mut self) -> Option<(StreamKey, LiveRecordingRetirement)> {
         self.schedule.stop(ReconnectStop::Cancelled);
         let key = self.schedule.binding.key();
@@ -319,7 +351,8 @@ impl SupervisedAvcRecording {
         if let Err(reason) = self.schedule.admit(now, authority) {
             let mut failure = self.refusal(reason);
             if matches!(self.schedule.status, ReconnectStatus::Stopped(_)) {
-                failure.retirement = self.active
+                failure.retirement = self
+                    .active
                     .take()
                     .and_then(|mut recording| recording.cancel())
                     .map(Box::new);
@@ -373,6 +406,9 @@ fn step_retryable(step: &LiveAvcStep) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::rtsp::live_avc::automatic::reconnect::{
+        ReconnectBudgetDimension, ReconnectBudgetRefusal,
+    };
     use crate::rtsp::live_avc::tests::{KEY, credentials, scope};
     use crate::rtsp::recording_collector::CollectorLimits;
     use fss_core::{ContentDigest, SensorId, StreamId};
@@ -417,11 +453,13 @@ mod tests {
         let mut owner = SupervisedAvcRecording::new(
             config.binding.clone(), template, policy(config.deadline_ns), 0,
         )?;
+        let before = owner.resource_budget();
         let failure = owner.connect(config, stale, 0, &authority)
             .err().ok_or("stale recording scope connected")?;
         assert!(matches!(failure.reason,
             SupervisedRecordingError::Supervisor(ReconnectRefusal::Scope)));
         assert!(failure.retirement.is_none());
+        assert_eq!(owner.resource_budget(), before);
         assert_eq!(listener.accept().err().ok_or("stale scope opened a socket")?.kind(), ErrorKind::WouldBlock);
         Ok(())
     }
@@ -432,11 +470,14 @@ mod tests {
         let (config, authority) = scope(listener.local_addr()?)?;
         let template = template()?;
         let recording_scope = template.scope.clone();
-        let mut owner = SupervisedAvcRecording::new(
-            config.binding.clone(), template, policy(config.deadline_ns), 0,
+        let budget = ReconnectBudget::for_attempts(config.transport, config.max_steps, 1)?;
+        let mut owner = SupervisedAvcRecording::new_with_budget(
+            config.binding.clone(), template, policy(config.deadline_ns), budget, 0,
         )?;
         let attempt = owner.connect(config, recording_scope, 0, &authority)?;
         let (_peer, _) = listener.accept()?;
+        assert_eq!(owner.resource_budget().reserved(), budget);
+        assert_eq!(owner.resource_budget().admitted_attempts(), 1);
         let failure = owner.seal(StreamKey { generation: attempt.key.generation + 1, ..attempt.key }, 0, &authority)
             .err().ok_or("wrong generation sealed recording")?;
         assert!(failure.retirement.is_none());
@@ -444,6 +485,7 @@ mod tests {
         assert!(matches!(owner.poll(SocketReadiness::default(), &credentials()?, [1; 16], 0, &authority)?,
             SupervisedRecordingStep::Recording { output: AutomaticRecordingStep::Queued(_), .. }));
         let (key, retirement) = owner.cancel().ok_or("missing capture retirement")?;
+        assert_eq!(owner.resource_budget().reserved(), budget);
         assert_eq!(key, attempt.key);
         let connection = retirement.connection.ok_or("missing native retirement")?;
         assert!(connection.transport.request.is_some());
@@ -451,6 +493,64 @@ mod tests {
         assert!(owner.cancel().is_none());
         assert!(owner.collector().is_none());
         assert_eq!(owner.next_wake_ns(), None);
+        Ok(())
+    }
+
+    #[test]
+    fn recording_cannot_bypass_whole_run_budget_and_a_smaller_native_profile_can_be_admitted()
+    -> TestResult {
+        let listener = TcpListener::bind((Ipv4Addr::LOCALHOST, 0))?;
+        listener.set_nonblocking(true)?;
+        let address = listener.local_addr()?;
+        let (config, authority) = scope(address)?;
+        let template = template()?;
+        let recording_scope = template.scope.clone();
+        let mut budget = ReconnectBudget::for_attempts(config.transport, config.max_steps, 1)?;
+        budget.connection_steps -= 1;
+        let mut owner = SupervisedAvcRecording::new_with_budget(
+            config.binding.clone(), template, policy(config.deadline_ns), budget, 0,
+        )?;
+        let before = owner.resource_budget();
+        let failure = owner.connect(config, recording_scope.clone(), 0, &authority)
+            .err().ok_or("recording bypassed native resource grant")?;
+        assert!(matches!(failure.reason, SupervisedRecordingError::Supervisor(
+            ReconnectRefusal::Resources(ReconnectBudgetRefusal::Exhausted(
+                ReconnectBudgetDimension::ConnectionSteps
+            ))
+        )));
+        assert!(failure.retirement.is_none());
+        assert_eq!(owner.resource_budget(), before);
+        assert_eq!(listener.accept().err().ok_or("budget refusal opened camera")?.kind(), ErrorKind::WouldBlock);
+        let (mut corrected, _) = scope(address)?;
+        corrected.max_steps = budget.connection_steps;
+        assert_eq!(owner.connect(corrected, recording_scope, 0, &authority)?.ordinal, 1);
+        let (_peer, _) = listener.accept()?;
+        assert_eq!(owner.resource_budget().reserved(), budget);
+        assert!(owner.cancel().is_some());
+        assert_eq!(owner.resource_budget().reserved(), budget);
+        Ok(())
+    }
+
+    #[test]
+    fn revocation_retires_recording_once_without_refunding_the_native_grant() -> TestResult {
+        let listener = TcpListener::bind((Ipv4Addr::LOCALHOST, 0))?;
+        let (config, authority) = scope(listener.local_addr()?)?;
+        let template = template()?;
+        let recording_scope = template.scope.clone();
+        let mut owner = SupervisedAvcRecording::new(
+            config.binding.clone(), template, policy(config.deadline_ns), 0,
+        )?;
+        owner.connect(config, recording_scope, 0, &authority)?;
+        let (_peer, _) = listener.accept()?;
+        owner.poll(SocketReadiness::default(), &credentials()?, [1; 16], 0, &authority)?;
+        let reserved = owner.resource_budget();
+        authority.revoked.set(true);
+        let failure = owner.poll(SocketReadiness::default(), &credentials()?, [2; 16], 1, &authority)
+            .err().ok_or("revoked recording continued")?;
+        assert!(failure.retirement.is_some());
+        assert_eq!(owner.resource_budget(), reserved);
+        assert!(owner.cancel().is_none());
+        assert_eq!(owner.resource_budget(), reserved);
         Ok(())
     }
 }
