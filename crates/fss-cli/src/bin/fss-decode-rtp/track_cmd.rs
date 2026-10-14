@@ -31,6 +31,9 @@ use super::{
 const REPORT_DOMAIN: &str = "fss.retained_rtp_tracking_report.v1";
 const MAX_REPORT_BYTES: u64 = 128 * 1024 * 1024;
 
+#[path = "trajectory_cmd.rs"]
+mod trajectory_cmd;
+
 #[derive(Debug)]
 struct TrackOptions {
     base: Options,
@@ -44,11 +47,14 @@ struct TrackSettings {
     minimum_score_ppm: Option<u32>,
     tracker: TrackerConfig,
     max_track_frames: usize,
-    report: PathBuf,
+    report: Option<PathBuf>,
     max_report_bytes: u64,
 }
 
 pub(super) fn dispatch(args: &[OsString]) -> Option<ExitCode> {
+    if let Some(exit) = trajectory_cmd::dispatch(args) {
+        return Some(exit);
+    }
     if args.first().and_then(|v| v.to_str()) != Some("track") {
         return None;
     }
@@ -75,6 +81,14 @@ pub(super) fn dispatch(args: &[OsString]) -> Option<ExitCode> {
 }
 
 fn parse(args: &[OsString]) -> ParseResult<TrackOptions> {
+    let parsed = parse_native(args)?;
+    if parsed.settings.report.is_none() {
+        return Err((ERR_CLI_MISSING_VALUE, "required option absent"));
+    }
+    Ok(parsed)
+}
+
+fn parse_native(args: &[OsString]) -> ParseResult<TrackOptions> {
     let mut native = vec![OsString::from("decode")];
     let mut values = BTreeMap::new();
     let mut at = 1;
@@ -165,7 +179,7 @@ fn parse(args: &[OsString]) -> ParseResult<TrackOptions> {
             minimum_score_ppm,
             tracker,
             max_track_frames,
-            report: PathBuf::from(super::required(&values, "--report-out")?),
+            report: values.get("--report-out").map(PathBuf::from),
             max_report_bytes,
         },
     })
@@ -178,7 +192,8 @@ fn execute(
     cx: &ReplayCx,
     out: &mut impl Write,
 ) -> Result<()> {
-    let destination = PrivateOutputPath::prepare(&settings.report, root, cx)?;
+    let report = settings.report.as_deref().ok_or_else(|| failure("report output required"))?;
+    let destination = PrivateOutputPath::prepare(report, root, cx)?;
     let scalar = ScalarExecCx::new();
     let result = execute_inner(base, settings, root, cx, &scalar, &destination, out);
     scalar.drain_and_finalize();
@@ -213,29 +228,7 @@ fn execute_inner(
         .parameters
         .or(retained.h264_parameters(cx)?.unique_pair())
         .ok_or_else(|| failure("select an exact in-source SPS/PPS pair"))?;
-    let mut detection = RtpDetectionRequest::new(RetainedRtpDecodeRequest {
-        parameters,
-        ..base.decode
-    });
-    detection.custody = RtpCustodyDecodeLimits {
-        max_source_bytes: base.policy.max_source_bytes,
-        max_records: base.policy.max_records,
-        max_object_bytes: base.policy.max_object_bytes,
-        max_read_bytes: base
-            .custody_read_bytes
-            .ok_or_else(|| failure("current custody required"))?,
-        max_steps: base.steps,
-        ..RtpCustodyDecodeLimits::default()
-    };
-    detection.minimum_score_ppm = settings.minimum_score_ppm;
-    let mut limits = RtpTrackingLimits::default();
-    limits.max_frames = settings.max_track_frames;
-    let request = RtpTrackingRequest {
-        detection,
-        class_index: settings.class_index,
-        tracker: settings.tracker.clone(),
-        limits,
-    };
+    let request = tracking_request(base, settings, parameters)?;
     let mut owner = RtpPackageTracker::new(&retained, &package, request, &deployment, cx, scalar)?;
     let recipe = owner.recipe();
     let header = format!(
@@ -330,6 +323,38 @@ fn execute_inner(
         "tracking_complete=true\ntracking_report_complete=true\ntracking_report_bytes={bytes}\ntracking_report_sha256={digest}\ntracking_recipe={recipe}"
     )?;
     Ok(())
+}
+
+// Presentation-independent native request. JSON reports and portable transcripts must not
+// evolve different source, privacy, numerical or lifetime tracking admissions.
+fn tracking_request(
+    base: &Options,
+    settings: &TrackSettings,
+    parameters: [ContentDigest; 2],
+) -> Result<RtpTrackingRequest> {
+    let mut detection = RtpDetectionRequest::new(RetainedRtpDecodeRequest {
+        parameters,
+        ..base.decode
+    });
+    detection.custody = RtpCustodyDecodeLimits {
+        max_source_bytes: base.policy.max_source_bytes,
+        max_records: base.policy.max_records,
+        max_object_bytes: base.policy.max_object_bytes,
+        max_read_bytes: base
+            .custody_read_bytes
+            .ok_or_else(|| failure("current custody required"))?,
+        max_steps: base.steps,
+        ..RtpCustodyDecodeLimits::default()
+    };
+    detection.minimum_score_ppm = settings.minimum_score_ppm;
+    let mut limits = RtpTrackingLimits::default();
+    limits.max_frames = settings.max_track_frames;
+    Ok(RtpTrackingRequest {
+        detection,
+        class_index: settings.class_index,
+        tracker: settings.tracker.clone(),
+        limits,
+    })
 }
 
 fn read_package(path: &Path) -> Result<Vec<u8>> {

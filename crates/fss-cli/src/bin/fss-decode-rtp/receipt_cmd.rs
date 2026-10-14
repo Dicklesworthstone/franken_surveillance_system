@@ -338,7 +338,8 @@ fn report(summary: &RtpReceiptStreamSummary, out: &mut impl Write) -> io::Result
         summary.custody_read_bytes
     )
 }
-struct ReceiptWriter<'a> {
+// Shared binary-internal private output owner; no new source or file authority.
+pub(super) struct ReceiptWriter<'a> {
     path: PrivateOutputPath,
     file: Option<File>,
     cx: &'a ReplayCx,
@@ -365,8 +366,11 @@ impl Write for ReceiptWriter<'_> {
             .flush()
     }
 }
-impl ReceiptWriter<'_> {
-    fn finish(self) -> io::Result<()> {
+impl<'a> ReceiptWriter<'a> {
+    pub(super) fn new(path: PrivateOutputPath, cx: &'a ReplayCx) -> Self {
+        Self { path, file: None, cx }
+    }
+    pub(super) fn finish(self) -> io::Result<()> {
         let file = self
             .file
             .ok_or_else(|| io::Error::other("no complete receipt output"))?;
@@ -381,7 +385,7 @@ const OPEN_INPUT_FLAGS: i32 = 0o4_000 | 0o400_000;
 #[cfg(all(target_os = "linux", target_arch = "aarch64"))]
 const OPEN_INPUT_FLAGS: i32 = 0o4_000 | 0o100_000;
 
-fn open_saved(path: &Path, maximum: u64, cx: &ReplayCx) -> io::Result<File> {
+pub(super) fn open_saved(path: &Path, maximum: u64, cx: &ReplayCx) -> io::Result<File> {
     cx.checkpoint("rtpdump:receipt_file:open")
         .map_err(|_| io::Error::other("receipt input cancelled"))?;
     let before = fs::symlink_metadata(path)?;
