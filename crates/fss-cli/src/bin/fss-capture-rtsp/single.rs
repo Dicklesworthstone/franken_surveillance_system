@@ -31,13 +31,20 @@ Repeat with the recovery preview's separate --approve digest to restore original
 --recovery-timeout-ms 1..3600000 (default 30000) bounds the entire recovery operation.\n\
 No camera connection, credential lease, new directory, generation or implicit recapture occurs.\n\
 Preserve both stores on failure; re-preview current pins before retrying original slots.\n\
-Work restoration is not capture completion, loss concealment or an absence certificate.\n";
+Work restoration is not capture completion, loss concealment or an absence certificate.\n\
+\n\
+After work settles, --recover index previews source-verified catalog completion.\n\
+It needs its OWN new approval, not the capture approval or the --recover yes approval.\n\
+Index preview reads original media but publishes nothing. Approved execution uses the\n\
+same journal/work/confirmation/catalog barriers as reconnect recovery. It never records\n\
+new pictures or invents a complete capture. No-op retries report the original catalog pins.\n";
 
 pub(super) struct SinglePlan {
     capture: Options,
     timeout_ns: Option<u64>,
     approval: Option<ContentDigest>,
     recovery_timeout_ns: Option<u64>,
+    index_catalogs: bool,
 }
 
 impl SinglePlan {
@@ -51,12 +58,18 @@ impl SinglePlan {
         let mut native = Vec::with_capacity(args.len());
         let mut timeout_ns = None;
         let mut recover = false;
+        let mut index_catalogs = false;
         let mut recovery_timeout_ns = None;
         for pair in args.chunks_exact(2) {
             if pair[0] == "--recover" {
-                if recover || pair[1] != "yes" {
-                    return Err("offline recovery requires one --recover yes");
+                if recover {
+                    return Err("duplicate recovery mode");
                 }
+                index_catalogs = match pair[1].to_str() {
+                    Some("yes") => false,
+                    Some("index") => true,
+                    _ => return Err("offline recovery requires --recover yes or --recover index"),
+                };
                 recover = true;
                 continue;
             }
@@ -95,7 +108,7 @@ impl SinglePlan {
             timeout_ns = Some(milliseconds * 1_000_000);
         }
         if !recover && recovery_timeout_ns.is_some() {
-            return Err("recovery timeout requires --recover yes");
+            return Err("recovery timeout requires --recover yes or --recover index");
         }
         let recovery_timeout_ns = recover.then_some(recovery_timeout_ns.unwrap_or(30_000_000_000));
         let capture = Options::parse(&native)?;
@@ -105,6 +118,7 @@ impl SinglePlan {
             timeout_ns,
             approval,
             recovery_timeout_ns,
+            index_catalogs,
         })
     }
 
@@ -198,7 +212,7 @@ impl RecoveryPlan for SinglePlan {
         self.approval
     }
     fn index_catalogs(&self) -> bool {
-        false
+        self.index_catalogs
     }
     fn maximum_storage_bytes(&self) -> u64 {
         self.capture.publication_limits().spool.max_total_bytes
