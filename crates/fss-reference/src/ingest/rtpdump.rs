@@ -18,3 +18,5 @@ pub mod receipt_stream;
 pub mod recovery;
 /// Recorded packets through the real sequence and H.264 kernels.
 pub mod replay;
+/// Source-witnessed anonymous tracking of one explicitly selected neural class.
+pub mod track;
