@@ -21,3 +21,5 @@ pub mod recovery;
 pub mod replay;
 /// Source-witnessed anonymous tracking of one explicitly selected neural class.
 pub mod track;
+/// Canonical trajectory transcripts with full native replay verification.
+pub mod track_stream;
