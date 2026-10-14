@@ -156,7 +156,9 @@ fn drive<W: Write>(
 ) -> Result<(), Failure> {
     let namespace = options.pin_scope().archive_namespace;
     let unsigned = DigestCredentials::new("unused", "").map_err(|_| Failure::Configuration)?;
-    let mut timing = FixedTiming::new(options.frame_duration).map_err(|_| Failure::Timing)?;
+    let mut timing =
+        FixedTiming::with_reorder(options.frame_duration, options.max_reorder_pictures)
+            .map_err(|_| Failure::Timing)?;
     let mut ready = false;
     let mut sealing = false;
     let mut sealed = false;
@@ -185,11 +187,17 @@ fn drive<W: Write>(
                 )
                 .map_err(|_| Failure::State)?
         {
+            if stats.collected_pictures != 0 {
+                timing.finish().map_err(|_| Failure::Timing)?;
+            }
             owner.admit_stall(stall, capture.requires_authentication(), log)?;
             progress_stalled = true;
             sealing = true;
         }
         if stats.collected_pictures == options.stop_after_pictures && !draining {
+            // Do not label a prefix complete while future display positions remain unresolved.
+            // The approved picture ceiling never grows implicitly to close a reorder group.
+            timing.finish().map_err(|_| Failure::Timing)?;
             sealing = true;
         }
         if sealing && ready && !sealed {
@@ -331,6 +339,9 @@ fn drive<W: Write>(
                     log,
                 )?;
                 stats.hevc_observe(capture);
+                if stats.collected_pictures != 0 {
+                    timing.finish().map_err(|_| Failure::Timing)?;
+                }
                 if progress_stalled
                     && cause == LiveArchiveCompletion::OwnerStopped
                     && stats.durable_pictures == stats.collected_pictures
@@ -423,7 +434,10 @@ fn drive<W: Write>(
                                             ("rtp_timestamp", request.rtp_timestamp.to_string()),
                                             ("decode_time", selected.decode_time.to_string()),
                                             ("duration", selected.duration.to_string()),
-                                            ("composition_offset", "0".into()),
+                                            (
+                                                "composition_offset",
+                                                selected.composition_offset.to_string(),
+                                            ),
                                             ("durable", "false".into()),
                                         ]),
                                         false,

@@ -5,7 +5,7 @@
 //! evidence into its recording plan. RTP timestamps only check that declaration;
 //! they never establish a wall clock, capture interval, or decoder reorder model.
 
-use fss_packet::StreamKey;
+use fss_packet::{StreamKey, cadence::ReorderedRtpClock};
 use fss_reference::rtsp::hevc_recording_capture::HevcPictureTimingRequest;
 use fss_reference::rtsp::recording::hevc::HevcRecordingTiming;
 use fss_reference::rtsp::recording_capture::PictureTimingRequest;
@@ -18,17 +18,18 @@ struct PreviousPicture {
     next_decode_time: u64,
 }
 
-/// A relative, fixed-duration timeline for a single non-reordered stream epoch.
+/// A relative fixed-duration timeline; reordering requires explicit plan admission.
 ///
 /// Every completed picture consumes one declared duration, including pictures
 /// skipped while awaiting the first IDR. The first observed picture starts at
 /// zero; an arbitrary source RTP origin never becomes a physical capture time.
-/// Source gaps and reordering are refusals, not instructions to invent missing
-/// samples, adjust cadence, or infer signed composition offsets.
+/// Legacy mode refuses presentation reordering. Opt-in mode uses the shared bounded
+/// presentation-position checker without sorting source pictures or inventing samples.
 #[derive(Debug)]
 pub(super) struct FixedTiming {
     frame_duration: u32,
     previous: Option<PreviousPicture>,
+    reordered: Option<ReorderedRtpClock>,
 }
 
 impl FixedTiming {
@@ -40,7 +41,50 @@ impl FixedTiming {
         Ok(Self {
             frame_duration,
             previous: None,
+            reordered: None,
         })
+    }
+
+    /// Only a separately approved nonzero bound enables reordered presentation.
+    pub(super) fn with_reorder(frame_duration: u32, depth: u8) -> Result<Self, &'static str> {
+        let mut timing = Self::new(frame_duration)?;
+        if depth != 0 {
+            timing.reordered = Some(
+                ReorderedRtpClock::new(frame_duration, depth)
+                    .map_err(|_| "invalid declared picture reordering policy")?,
+            );
+        }
+        Ok(timing)
+    }
+
+    /// Normal completion cannot discard an unresolved display position as an observed picture.
+    /// Legacy mode adds no new completion restriction or changes to existing approvals.
+    pub(super) fn finish(&self) -> Result<(), &'static str> {
+        if let Some(clock) = &self.reordered {
+            clock
+                .finish()
+                .map_err(|_| "declared presentation prefix is incomplete")?;
+        }
+        Ok(())
+    }
+
+    fn observe_picture(
+        &mut self,
+        key: StreamKey,
+        rtp_timestamp: u32,
+        idr: bool,
+    ) -> Result<RecordingTiming, &'static str> {
+        if let Some(clock) = &mut self.reordered {
+            let t = clock
+                .observe(key, rtp_timestamp, idr)
+                .map_err(|_| "RTP picture violates the declared bounded presentation cadence")?;
+            return Ok(RecordingTiming {
+                decode_time: t.decode_time,
+                duration: t.duration,
+                composition_offset: t.composition_offset,
+            });
+        }
+        self.observe_source(key, rtp_timestamp)
     }
 
     /// Validate and time one newly consumed request, without changing state on refusal.
@@ -53,14 +97,14 @@ impl FixedTiming {
         &mut self,
         request: PictureTimingRequest,
     ) -> Result<RecordingTiming, &'static str> {
-        self.observe_source(request.key, request.rtp_timestamp)
+        self.observe_picture(request.key, request.rtp_timestamp, request.idr)
     }
 
     pub(super) fn observe_hevc(
         &mut self,
         request: HevcPictureTimingRequest,
     ) -> Result<HevcRecordingTiming, &'static str> {
-        let timing = self.observe_source(request.key, request.rtp_timestamp)?;
+        let timing = self.observe_picture(request.key, request.rtp_timestamp, request.idr)?;
         Ok(HevcRecordingTiming {
             decode_time: timing.decode_time,
             duration: timing.duration,
@@ -294,5 +338,71 @@ mod tests {
         assert!(timing.observe(picture(DURATION * 2)).is_err());
         assert_eq!(timing.previous, before);
         Ok(())
+    }
+
+    #[test]
+    fn zero_reorder_preserves_legacy_timing_and_finish_behavior() -> Result<(), &'static str> {
+        let mut legacy = FixedTiming::new(DURATION)?;
+        let mut explicit = FixedTiming::with_reorder(DURATION, 0)?;
+        explicit.finish()?;
+        for n in 0..8 {
+            let p = picture(9_000 + n * DURATION);
+            assert_eq!(legacy.observe(p)?, explicit.observe(p)?);
+        }
+        explicit.finish()
+    }
+
+    #[test]
+    fn both_native_request_types_use_identical_signed_presentation_mapping()
+    -> Result<(), &'static str> {
+        let mut avc = FixedTiming::with_reorder(DURATION, 2)?;
+        let mut hevc = FixedTiming::with_reorder(DURATION, 2)?;
+        for (n, position) in [0, 3, 1, 2].into_iter().enumerate() {
+            let mut p = picture(9_000 + position * DURATION);
+            p.idr = n == 0;
+            let a = avc.observe(p)?;
+            let h = hevc.observe_hevc(HevcPictureTimingRequest {
+                key: p.key,
+                rtp_timestamp: p.rtp_timestamp,
+                idr: p.idr,
+                boundary: fss_packet::hevc::HevcBoundary::NextFirstSlice,
+                bytes: 1,
+            })?;
+            assert_eq!(a.decode_time, h.decode_time);
+            assert_eq!(a.composition_offset, h.composition_offset);
+            assert_eq!(
+                a.composition_offset,
+                (position as i32 - n as i32) * DURATION as i32
+            );
+            if n == 1 || n == 2 {
+                assert!(avc.finish().is_err());
+                assert!(hevc.finish().is_err());
+            }
+        }
+        avc.finish()?;
+        hevc.finish()
+    }
+
+    #[test]
+    fn pre_idr_reordering_never_pins_an_origin_and_refusal_keeps_the_next_slot()
+    -> Result<(), &'static str> {
+        let mut clock = FixedTiming::with_reorder(DURATION, 2)?;
+        let mut p = picture(99_000);
+        p.idr = false;
+        clock.observe(p)?;
+        p.rtp_timestamp = 1;
+        clock.observe(p)?;
+        assert!(clock.finish().is_err());
+        p.idr = true;
+        p.rtp_timestamp = u32::MAX - 2;
+        assert_eq!(clock.observe(p)?.decode_time, 2 * u64::from(DURATION));
+        p.idr = false;
+        p.rtp_timestamp = p.rtp_timestamp.wrapping_add(DURATION + 1);
+        let before = clock.reordered;
+        assert!(clock.observe(p).is_err());
+        assert_eq!(clock.reordered, before);
+        p.rtp_timestamp = p.rtp_timestamp.wrapping_sub(1);
+        assert_eq!(clock.observe(p)?.decode_time, 3 * u64::from(DURATION));
+        clock.finish()
     }
 }

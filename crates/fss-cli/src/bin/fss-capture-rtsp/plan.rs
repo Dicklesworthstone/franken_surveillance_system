@@ -70,8 +70,12 @@ and, only with it, --legacy-no-qop yes. No Basic auth or automatic downgrade.\n\
 Digest does not encrypt media or authenticate the server. Linux /dev/urandom supplies cnonces.\n\
 \n\
 The operator supplies a fixed 90000 Hz cadence (for example 3600 ticks for 25 pictures/s)\n\
-and evidence identifying that timing policy. Every RTP timestamp must follow it exactly.\n\
-No B-picture reordering, drift correction, guessed capture time or loss concealment.\n\
+and evidence identifying that timing policy. Default mode requires monotonic RTP cadence.\n\
+Opt in with --max-reorder-pictures 1..16 for fixed-cadence closed-GOP B-picture presentation.\n\
+This binds a new approval and decode clock, retains decoding order and signed PTS-DTS offsets.\n\
+The requested stop must close every presentation position; an unresolved prefix fails instead\n\
+of exceeding the picture target or filling a gap. Variable cadence, open GOPs, duplicates,\n\
+drift correction, guessed capture time and loss concealment remain unsupported.\n\
 Pictures are source-linked assembled pictures, not a claim of successful pixel decode.\n\
 Original RTP and derived recording children are published through the native journaled\n\
 archive. Raw RTSP/control/RTCP wire and unselected tails are not retained; output accounts\n\
@@ -105,6 +109,7 @@ pub(super) struct Options {
     pub(super) approve: Option<ContentDigest>,
     pub(super) stop_after_pictures: u64,
     pub(super) frame_duration: u32,
+    pub(super) max_reorder_pictures: u8,
     pub(super) time_scale: u32,
     pub(super) timeout_ns: u64,
     pub(super) drain_timeout_ns: u64,
@@ -123,6 +128,16 @@ pub(super) struct Options {
     pin_limits: ArchivePinLimits,
     timing_evidence: ContentDigest,
     pub(super) authentication: Option<AuthPlan>,
+}
+
+// Keep every byte of the legacy policy/clock/approval when the option is absent or zero.
+fn timing_policy(base: &str, depth: u8) -> String {
+    if depth == 0 {
+        base.to_owned()
+    } else {
+        base.replace("exact-cadence:relative-dts:zero-composition-offset",
+            "declared-fixed-cadence:relative-dts:signed-composition-offset:bounded-reorder:closed-presentation-prefix:v1")
+    }
 }
 
 fn digest(text: &str) -> Result<ContentDigest, &'static str> {
@@ -242,6 +257,7 @@ impl Options {
             "--timing-evidence",
             "--journal-id",
             "--frame-duration-ticks",
+            "--max-reorder-pictures",
             "--stop-after-pictures",
             "--owner-authorized",
             "--plaintext",
@@ -407,6 +423,12 @@ impl Options {
         if !(1..=90_000).contains(&frame_duration) {
             return Err("frame duration must be in 1..=90000 ticks");
         }
+        let max_reorder_pictures = number(
+            "--max-reorder-pictures",
+            0,
+            0,
+            u64::from(fss_packet::cadence::MAX_CADENCE_REORDER),
+        )? as u8;
         let time_scale = 90_000;
         let timing_evidence = digest(required("--timing-evidence")?)?;
         let scope = RecordingScope {
@@ -435,13 +457,16 @@ impl Options {
         .map_err(|_| "native recording scope or limits refused")?;
         let mut clock = CanonicalEncoder::new();
         clock.text("fss.rtsp_capture_fixed_clock.v1");
-        clock.text(if supplied.is_some() {
-            HEVC_SUPPLIED_POLICY
-        } else if is_hevc {
-            HEVC_POLICY
-        } else {
-            POLICY
-        });
+        clock.text(&timing_policy(
+            if supplied.is_some() {
+                HEVC_SUPPLIED_POLICY
+            } else if is_hevc {
+                HEVC_POLICY
+            } else {
+                POLICY
+            },
+            max_reorder_pictures,
+        ));
         clock.digest(timing_evidence);
         clock.digest(scope.receive_clock);
         clock.bytes(&ingress.to_be_bytes());
@@ -449,6 +474,9 @@ impl Options {
         clock.u32(ssrc);
         clock.u32(time_scale);
         clock.u32(frame_duration);
+        if max_reorder_pictures != 0 {
+            clock.u32(u32::from(max_reorder_pictures));
+        }
         if let Some(parameters) = &supplied {
             parameters.encode(&mut clock);
         }
@@ -545,6 +573,7 @@ impl Options {
             },
             stop_after_pictures,
             frame_duration,
+            max_reorder_pictures,
             time_scale,
             timeout_ns,
             drain_timeout_ns,
@@ -607,12 +636,15 @@ impl Options {
     pub(super) fn codec(&self) -> &'static str {
         if self.hevc.is_some() { "hevc" } else { "avc" }
     }
-    fn policy(&self) -> &'static str {
-        match self.hevc.as_ref() {
-            Some(plan) if plan.supplied.is_some() => HEVC_SUPPLIED_POLICY,
-            Some(_) => HEVC_POLICY,
-            None => POLICY,
-        }
+    fn policy(&self) -> String {
+        timing_policy(
+            match self.hevc.as_ref() {
+                Some(plan) if plan.supplied.is_some() => HEVC_SUPPLIED_POLICY,
+                Some(_) => HEVC_POLICY,
+                None => POLICY,
+            },
+            self.max_reorder_pictures,
+        )
     }
     pub(super) fn catalog_scope(&self) -> &CatalogScope {
         self.hevc.as_ref().map_or_else(
@@ -734,13 +766,16 @@ impl Options {
         if let Some(hevc) = &self.hevc {
             hevc.replace_media_bounds(&mut numbers);
         }
+        if self.max_reorder_pictures != 0 {
+            numbers.push(("max_reorder_pictures", u64::from(self.max_reorder_pictures)));
+        }
         numbers
     }
 
     pub(super) fn digest(&self) -> Result<ContentDigest, &'static str> {
         let mut e = CanonicalEncoder::new();
         e.text("fss.rtsp_capture_cli_plan.v1");
-        e.text(self.policy());
+        e.text(&self.policy());
         e.bytes(&self.binding.key().ingress.to_be_bytes());
         for value in [
             self.root.to_str().ok_or("UTF-8 archive path required")?,
@@ -804,7 +839,7 @@ impl Options {
             ("schema", string(FORMAT)),
             ("phase", string("planned")),
             ("approval", string(&self.digest()?.to_text())),
-            ("policy", string(self.policy())),
+            ("policy", string(&self.policy())),
             ("codec", string(self.codec())),
             (
                 "root",
@@ -847,7 +882,11 @@ impl Options {
             ),
             (
                 "timing",
-                string("operator-asserted-fixed-cadence-relative-dts"),
+                string(if self.max_reorder_pictures == 0 {
+                    "operator-asserted-fixed-cadence-relative-dts"
+                } else {
+                    "operator-asserted-fixed-cadence-bounded-reorder-signed-offsets"
+                }),
             ),
             (
                 "source_custody",
