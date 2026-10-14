@@ -48,8 +48,11 @@ pub struct SensorCalibration {
 /// Explicit immutable analysis request. No value is inferred from wall time or detector scores.
 #[derive(Clone, Debug)]
 pub struct ClassFusionSpec {
-    /// Exact final native analysis-plan identity, including source and privacy interpretation.
+    /// Exact final native analysis-plan identity; coverage pins separately bind its context.
     pub plan_digest: ContentDigest,
+    /// Exact native coverage records, binding source interpretation, privacy and authority.
+    /// These identify scope only; they do not certify detector-class absence.
+    pub coverage_digests: BTreeSet<ContentDigest>,
     /// Exact native cascade, binding package, transforms, thresholds and frame selection.
     pub cascade_digest: ContentDigest,
     /// Vocabulary index in the verified native package. The hypothesis is only this class.
@@ -118,6 +121,9 @@ impl EventFusionProfile {
         {
             return Err(EventFusionError::Profile);
         }
+        if spec.coverage_digests.is_empty() || spec.coverage_digests.len() > 8 {
+            return Err(EventFusionError::Profile);
+        }
         // Validate through the owner of the policy semantics, even for zero-candidate runs.
         let template = query(&spec, "profile", Vec::new());
         fuse(&template).map_err(|_| EventFusionError::Profile)?;
@@ -128,6 +134,10 @@ impl EventFusionProfile {
         e.text(RECIPE);
         e.digest(spec.plan_digest);
         e.digest(spec.cascade_digest);
+        e.u64(spec.coverage_digests.len() as u64);
+        for digest in &spec.coverage_digests {
+            e.digest(*digest);
+        }
         e.u64(spec.class_index as u64);
         e.digest(template.digest());
         e.u64(spec.calibrations.len() as u64);
@@ -332,6 +342,10 @@ impl EventFusionReport {
         let basis = deployment.current_anchor().clone();
         if coverage.is_empty() || coverage.iter().any(|c| c.basis != basis) {
             return Err(EventFusionError::StaleBasis);
+        }
+        let actual: BTreeSet<_> = coverage.iter().map(|c| c.digest()).collect();
+        if actual.len() != coverage.len() || actual != profile.spec.coverage_digests {
+            return Err(EventFusionError::Scope);
         }
         let sensors: BTreeSet<_> = coverage.iter().map(|c| c.sensor_id.as_str()).collect();
         if profile

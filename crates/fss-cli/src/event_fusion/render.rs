@@ -255,6 +255,22 @@ pub(super) fn report(r: &EventFusionReport) -> String {
         ("schema", text("fss.event_class_fusion_report.v1")),
         ("recipe", text(RECIPE)),
         ("profile_digest", text(&r.profile.digest.to_text())),
+        (
+            "coverage_digests",
+            array(
+                r.profile
+                    .spec
+                    .coverage_digests
+                    .iter()
+                    .map(|d| text(&d.to_text())),
+            ),
+        ),
+        // Always preserve the complete policy/prior/time, including zero-candidate reports.
+        // This is an empty-input template, NOT an evaluated or observed hypothesis.
+        (
+            "profile_query_template",
+            query(&super::query(&r.profile.spec, "profile", Vec::new())),
+        ),
         ("plan_digest", text(&r.profile.spec.plan_digest.to_text())),
         (
             "cascade_digest",

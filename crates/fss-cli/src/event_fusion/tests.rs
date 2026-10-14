@@ -17,6 +17,7 @@ fn spec() -> Test<ClassFusionSpec> {
     Ok(ClassFusionSpec {
         plan_digest: d("plan"),
         cascade_digest: d("cascade"),
+        coverage_digests: BTreeSet::from([d("coverage")]),
         class_index: 0,
         prior: LlrInterval::point(-500)?,
         policy: FusionPolicy {
@@ -183,7 +184,7 @@ fn rebuilt_calibration_rejects_tampered_likelihoods_even_with_unchanged_digest()
 #[test]
 fn profile_binds_every_numeric_policy_and_the_exact_native_scope() -> Test {
     let base = EventFusionProfile::new(spec()?)?.digest();
-    for which in 0..6 {
+    for which in 0..7 {
         let mut p = spec()?;
         match which {
             0 => p.plan_digest = d("other"),
@@ -191,6 +192,9 @@ fn profile_binds_every_numeric_policy_and_the_exact_native_scope() -> Test {
             2 => p.looks += 1,
             3 => p.now_ns += 1,
             4 => p.policy.alert_threshold += 1,
+            5 => {
+                p.coverage_digests = BTreeSet::from([d("other coverage")]);
+            }
             _ => p.prior = LlrInterval::point(1)?,
         };
         assert_ne!(base, EventFusionProfile::new(p)?.digest());
@@ -271,7 +275,7 @@ fn optional_stopping_changes_the_engine_threshold_and_complete_binding() -> Test
 fn profile_json() -> Test<String> {
     Ok(format!(
         r#"{{"schema":"fss.event_class_fusion_profile.v1",
-        "plan_digest":"{}","cascade_digest":"{}","class_index":0,"prior":[-500,-500],
+        "plan_digest":"{}","cascade_digest":"{}","coverage_digests":["{}"],"class_index":0,"prior":[-500,-500],
         "looks":1,"now_ns":"18446744073709551615",
         "policy":{{"generation":"policy:test","alert_threshold":1000,"retain_threshold":-500,
         "reject_threshold":-1500,"min_independent_support":2,"urgent_single_domain_threshold":null,
@@ -280,6 +284,7 @@ fn profile_json() -> Test<String> {
         "calibrations":[{{"sensor":"sensor:a","failure_domains":["network:shared"],"calibration":{}}}]}}"#,
         d("plan"),
         d("cascade"),
+        d("coverage"),
         render::count_calibration(&calibration()?)
     ))
 }
@@ -372,5 +377,30 @@ fn recomputed_file_digest_cannot_bless_changed_calibration_claims() -> Test {
             "accepted changed calibration"
         );
     }
+    Ok(())
+}
+
+#[test]
+fn exact_coverage_pins_are_required_unique_and_bounded() -> Test {
+    let text = profile_json()?;
+    let pins = format!("\"coverage_digests\":[\"{}\"]", d("coverage"));
+    for changed in [
+        text.replace(&pins, "\"coverage_digests\":[]"),
+        text.replace(
+            &pins,
+            &format!(
+                "\"coverage_digests\":[\"{}\",\"{}\"]",
+                d("coverage"),
+                d("coverage")
+            ),
+        ),
+        text.replace(&format!("{pins},"), ""),
+    ] {
+        assert_ne!(changed, text);
+        assert!(parse_profile(&changed).is_err());
+    }
+    let mut p = spec()?;
+    p.coverage_digests = (0..9).map(|n| d(&n.to_string())).collect();
+    assert!(EventFusionProfile::new(p).is_err());
     Ok(())
 }

@@ -30,6 +30,7 @@ impl EventFusionProfile {
                 "schema",
                 "plan_digest",
                 "cascade_digest",
+                "coverage_digests",
                 "class_index",
                 "prior",
                 "policy",
@@ -82,9 +83,16 @@ impl EventFusionProfile {
                 failure_domains,
             });
         }
+        let mut coverage_digests = BTreeSet::new();
+        for value in array(field(root, "coverage_digests")?, 8)? {
+            if !coverage_digests.insert(sha(value)?) {
+                return Err(EventFusionError::Profile);
+            }
+        }
         Self::new(ClassFusionSpec {
             plan_digest: sha(field(root, "plan_digest")?)?,
             cascade_digest: sha(field(root, "cascade_digest")?)?,
+            coverage_digests,
             class_index: number(field(root, "class_index")?)?,
             prior: interval(field(root, "prior")?)?,
             policy: FusionPolicy {
