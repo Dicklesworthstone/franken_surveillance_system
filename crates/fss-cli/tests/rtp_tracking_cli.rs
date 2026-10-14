@@ -182,6 +182,7 @@ fn malformed_source_and_malformed_options_are_not_completed_quiet_tracks() -> Te
     assert!(!stdout.contains("tracking_report_sha256="));
     if report.exists() {
         let text = std::fs::read_to_string(&report)?;
+        assert!(text.contains("\"type\":\"source_progress\""));
         assert!(!text.lines().any(|line| {
             line.contains("\"type\":\"summary\"") && line.contains("\"complete\":true")
         }));
