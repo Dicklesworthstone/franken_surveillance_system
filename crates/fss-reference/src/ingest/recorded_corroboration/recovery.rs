@@ -4,6 +4,15 @@
 use crate::ingest::recorded_watch::decode_refusals_json;
 use crate::ingest::tolerant_decode::DecodeRefusal;
 
+// Read-only report context for downstream advice; source ownership and policy stay native.
+impl super::CorroborationReport {
+    /// Exact detector package, transforms, thresholds and selection policy used by this report.
+    #[must_use]
+    pub fn cascade_digest(&self) -> Option<fss_core::ContentDigest> {
+        self.cascade.as_ref().map(|cascade| cascade.digest)
+    }
+}
+
 /// Explicit opt-in recovery for both recordings. Default options preserve strict analysis.
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
 pub struct CorroborationOptions {
