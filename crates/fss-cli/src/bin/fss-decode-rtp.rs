@@ -41,7 +41,7 @@ mod receipt_cmd;
 #[path = "fss-decode-rtp/track_cmd.rs"]
 mod track_cmd;
 
-const HELP: &str = "fss-decode-rtp <inspect|decode|receipts|verify-receipts|motion|detect|track> --root DIR --site SITE --source-root sha256:HEX\n\
+const HELP: &str = "fss-decode-rtp <inspect|decode|receipts|verify-receipts|motion|detect|cascade|track> --root DIR --site SITE --source-root sha256:HEX\n\
   inspect: verifies one retained original RTP graph and lists in-source SPS/PPS candidates.\n\
   decode: native ordered AVC decoding from completed retained custody, with current privacy.\n\
     [--sps sha256:HEX --pps sha256:HEX] (omit only for one unambiguous pair)\n\
@@ -61,6 +61,13 @@ const HELP: &str = "fss-decode-rtp <inspect|decode|receipts|verify-receipts|moti
   detect: --custody current --package FILE --package-sha256 sha256:HEX --report-out FILE\n\
     [--minimum-score-ppm N] [--max-report-bytes N]\n\
     Runs the verified neural package over every custody-checked native frame; no pixel output.\n\
+  cascade: same required package/custody/report options as detect, plus\n\
+    --pixel-delta N --minimum-changed-pixels N --sentinel-stride 1..256\n\
+    [--minimum-changed-ppm N] [--post-activity-frames 0..256]\n\
+    [--max-comparisons N] [--max-baseline-bytes N] [--max-sampling-bytes N]\n\
+    [--max-inference-frames N] [--required-frames INDEX=sha256:HEX,...]\n\
+    Explicitly skips neural work, never source checks. Every skip has a native receipt.\n\
+    Unmeasured comparisons require inference; sampling completion is not exhaustive detection.\n\
   track: --custody current --package FILE --package-sha256 sha256:HEX --class-index N\n\
     --report-out FILE [--minimum-score-ppm N] [--track-min-hits N] [--track-max-misses N]\n\
     [--track-iou-ppm N] [--max-track-frames N] [--max-report-bytes N]\n\

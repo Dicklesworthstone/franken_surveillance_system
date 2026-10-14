@@ -3,6 +3,9 @@
 #[path = "../../fss-reference/tests/rtpdump_support/mod.rs"]
 mod rtpdump_support;
 
+#[path = "rtp_detection_cli/cascade.rs"]
+mod cascade;
+
 use std::path::{Path, PathBuf};
 use std::process::{Command, Output};
 
@@ -150,7 +153,8 @@ fn package_tamper_unsafe_path_and_incomplete_source_never_certify_detection() ->
     assert!(!inside.exists());
 
     let mut tampered = PACKAGE.to_vec();
-    tampered[tampered.len() / 2] ^= 1;
+    let middle = tampered.len() / 2;
+    tampered[middle] ^= 1;
     let bad_package = dir.join("tampered.fmpk");
     std::fs::write(&bad_package, tampered)?;
     let bad_report = dir.join("tampered.jsonl");

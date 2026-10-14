@@ -28,6 +28,9 @@ use super::{
 const REPORT_DOMAIN: &str = "fss.retained_rtp_detection_report.v1";
 const MAX_REPORT_BYTES: u64 = 128 * 1024 * 1024;
 
+#[path = "cascade_cmd.rs"]
+mod cascade_cmd;
+
 #[derive(Debug)]
 struct DetectOptions {
     base: Options,
@@ -43,6 +46,9 @@ struct DetectSettings {
 }
 
 pub(super) fn dispatch(args: &[OsString]) -> Option<ExitCode> {
+    if let Some(exit) = cascade_cmd::dispatch(args) {
+        return Some(exit);
+    }
     if args.first().and_then(|value| value.to_str()) != Some("detect") {
         return None;
     }
@@ -205,34 +211,7 @@ fn execute_inner(
         loop {
             match owner.step(&deployment, cx, scalar)? {
                 RtpDetectionStep::Frame(frame) => {
-                    report.record(frame_json(&frame).as_bytes(), &mut check)?;
-                    for (index, detection) in frame.detections().detections().iter().enumerate() {
-                        let label = package
-                            .spec()
-                            .labels
-                            .get(detection.class_index())
-                            .ok_or_else(|| failure("detector class is outside verified vocabulary"))?;
-                        let [x1, y1, x2, y2] = detection.bounds();
-                        let row = format!(
-                            concat!(
-                                "{{\"type\":\"proposal\",\"frame_sha256\":\"{}\",\"index\":{},",
-                                "\"row\":{},\"class_index\":{},\"label\":\"{}\",\"score_bits\":{},",
-                                "\"bounds_q256\":[{},{},{},{}],\"clipped\":{}}}\n"
-                            ),
-                            frame.digest(),
-                            index,
-                            detection.row(),
-                            detection.class_index(),
-                            fss_cli::escape_json_str(label),
-                            detection.score().to_bits(),
-                            x1,
-                            y1,
-                            x2,
-                            y2,
-                            detection.clipped(),
-                        );
-                        report.record(row.as_bytes(), &mut check)?;
-                    }
+                    write_frame(&frame, &package, &mut report, &mut check)?;
                 }
                 RtpDetectionStep::Progress { event, effect } => {
                     let event = fss_cli::escape_json_str(&format!("{event:?}"));
@@ -286,6 +265,43 @@ fn read_package(path: &Path) -> Result<Vec<u8>> {
         return Err(failure("detection package exceeds the package ceiling"));
     }
     Ok(bytes)
+}
+
+fn write_frame<W: Write>(
+    frame: &RtpDetectedFrame,
+    package: &RgbDetectorPackage,
+    report: &mut ReportWriter<W>,
+    check: &mut impl FnMut() -> io::Result<()>,
+) -> Result<()> {
+    report.record(frame_json(frame).as_bytes(), check)?;
+    for (index, detection) in frame.detections().detections().iter().enumerate() {
+        let label = package
+            .spec()
+            .labels
+            .get(detection.class_index())
+            .ok_or_else(|| failure("detector class is outside verified vocabulary"))?;
+        let [x1, y1, x2, y2] = detection.bounds();
+        let row = format!(
+            concat!(
+                "{{\"type\":\"proposal\",\"frame_sha256\":\"{}\",\"index\":{},",
+                "\"row\":{},\"class_index\":{},\"label\":\"{}\",\"score_bits\":{},",
+                "\"bounds_q256\":[{},{},{},{}],\"clipped\":{}}}\n"
+            ),
+            frame.digest(),
+            index,
+            detection.row(),
+            detection.class_index(),
+            fss_cli::escape_json_str(label),
+            detection.score().to_bits(),
+            x1,
+            y1,
+            x2,
+            y2,
+            detection.clipped(),
+        );
+        report.record(row.as_bytes(), check)?;
+    }
+    Ok(())
 }
 
 fn frame_json(frame: &RtpDetectedFrame) -> String {
