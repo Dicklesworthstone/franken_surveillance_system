@@ -8,7 +8,13 @@
 
 /// The same reconnect grant composed with loss-aware recording and explicit timing.
 pub mod recording;
+/// Atomic whole-run reservations; connection retirement never replenishes capacity.
+pub mod resources;
 
+pub use resources::{
+    ReconnectBudget, ReconnectBudgetDimension, ReconnectBudgetRefusal, ReconnectBudgetState,
+};
+use resources::ReservationLedger;
 use std::fmt;
 use std::io::ErrorKind;
 
@@ -22,8 +28,9 @@ use crate::rtsp::tcp::{TcpAuthority, TcpBinding, TcpDenial, TcpError, TcpOperati
 use fss_packet::StreamKey;
 
 /// Explicit finite supervision grant, independent of each connection's limits.
-/// The authority must also enforce aggregate resource and actual elapsed-time
-/// limits: an admission timestamp is not a post-syscall clock observation.
+/// Native byte/call/work maxima are reserved across attempts. The authority must
+/// still enforce live permission and actual elapsed time: an admission timestamp
+/// is not a post-syscall clock observation.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct ReconnectPolicy {
     /// Includes the first connection attempt; accepted range is 1..=1024.
@@ -89,8 +96,11 @@ pub enum ReconnectRefusal {
     AwaitingRetirement,
     /// There is no terminal generation to acknowledge.
     NoRetirement,
-    /// Changed route, generation, presentation, realm, policy or increased ceilings.
+    /// Changed route, generation, presentation, realm, media profile or widened ceilings.
     Scope,
+    /// The proposed complete connection allowance could not be reserved.
+    /// No socket or attempt was admitted and previous reservations are unchanged.
+    Resources(ReconnectBudgetRefusal),
     /// This supervisor may no longer admit effects.
     Stopped(ReconnectStop),
 }
@@ -125,6 +135,7 @@ struct Schedule {
     remaining_steps: u64,
     last_ns: u64,
     previous: Option<(StreamKey, u64)>,
+    resources: ReservationLedger,
 }
 impl Schedule {
     fn new(binding: TcpBinding, policy: ReconnectPolicy, now: u64) -> Result<Self, ReconnectRefusal> {
@@ -153,6 +164,7 @@ impl Schedule {
             remaining_steps: policy.max_steps,
             last_ns: now,
             previous: None,
+            resources: ReservationLedger::automatic(),
         })
     }
 
@@ -187,16 +199,20 @@ impl Schedule {
         Ok(())
     }
 
-    fn begin(&mut self, now: u64) -> Result<ReconnectAttempt, ReconnectRefusal> {
+    fn ready(&self, now: u64) -> Result<(), ReconnectRefusal> {
         match self.status {
             ReconnectStatus::Waiting { retry_at_ns, .. } if now < retry_at_ns => {
-                return Err(ReconnectRefusal::NotReady);
+                Err(ReconnectRefusal::NotReady)
             }
-            ReconnectStatus::Waiting { .. } => {}
-            ReconnectStatus::Active(_) => return Err(ReconnectRefusal::Active),
-            ReconnectStatus::Retired(_) => return Err(ReconnectRefusal::AwaitingRetirement),
-            ReconnectStatus::Stopped(reason) => return Err(ReconnectRefusal::Stopped(reason)),
+            ReconnectStatus::Waiting { .. } => Ok(()),
+            ReconnectStatus::Active(_) => Err(ReconnectRefusal::Active),
+            ReconnectStatus::Retired(_) => Err(ReconnectRefusal::AwaitingRetirement),
+            ReconnectStatus::Stopped(reason) => Err(ReconnectRefusal::Stopped(reason)),
         }
+    }
+
+    fn begin(&mut self, now: u64) -> Result<ReconnectAttempt, ReconnectRefusal> {
+        self.ready(now)?;
         self.attempts += 1;
         self.status = ReconnectStatus::Active(self.binding.key());
         Ok(ReconnectAttempt {
@@ -205,6 +221,22 @@ impl Schedule {
             admitted_ns: now,
             previous: self.previous,
         })
+    }
+
+    fn begin_connection(
+        &mut self,
+        config: &LiveAvcConfig,
+        now: u64,
+    ) -> Result<ReconnectAttempt, ReconnectRefusal> {
+        // Ordering matters: an early reconnect or a still-owned retirement must
+        // not reserve resources or pin the first profile. No I/O occurs here.
+        self.ready(now)?;
+        let cost = ReconnectBudget::connection(config.transport, config.max_steps)
+            .map_err(ReconnectRefusal::Resources)?;
+        self.resources
+            .reserve(cost, self.policy.max_attempts)
+            .map_err(ReconnectRefusal::Resources)?;
+        self.begin(now)
     }
 
     fn ended(&mut self, retry: bool) {
@@ -262,6 +294,7 @@ struct Profile {
     realm: String,
     digest: crate::rtsp::authentication::DigestPolicy,
     limits: crate::rtsp::tcp::TcpLimits,
+    media: fss_packet::avc::AvcReceiveLimits,
     steps: u64,
 }
 impl Profile {
@@ -271,6 +304,7 @@ impl Profile {
             realm: config.realm.clone(),
             digest: config.digest_policy,
             limits: config.transport,
+            media: config.media,
             steps: config.max_steps,
         }
     }
@@ -280,6 +314,7 @@ impl Profile {
         self.protocol == config.protocol
             && self.realm == config.realm
             && self.digest == config.digest_policy
+            && self.media == config.media
             && config.max_steps <= self.steps
             && limits.max_received_bytes <= self.limits.max_received_bytes
             && limits.max_sent_bytes <= self.limits.max_sent_bytes
@@ -363,11 +398,14 @@ impl fmt::Debug for SupervisedAvcConnection {
             .field("status", &self.schedule.status)
             .field("attempts", &self.schedule.attempts)
             .field("remaining_steps", &self.schedule.remaining_steps)
+            .field("resources", &self.schedule.resources.state())
             .finish_non_exhaustive()
     }
 }
 impl SupervisedAvcConnection {
     /// Validate a finite grant without creating any socket or borrowing credentials.
+    /// The first admitted native profile prices a checked aggregate of its maxima
+    /// times max_attempts. Use new_with_budget for a separately constrained total.
     pub fn new(
         binding: TcpBinding,
         policy: ReconnectPolicy,
@@ -378,6 +416,27 @@ impl SupervisedAvcConnection {
             profile: None,
             active: None,
         })
+    }
+
+    /// Constrain all attempts with one explicit non-replenishing resource grant.
+    /// Complete native maxima reserve before connect, even if that attempt later
+    /// fails. A rejected reservation opens no socket and consumes no attempt.
+    pub fn new_with_budget(
+        binding: TcpBinding,
+        policy: ReconnectPolicy,
+        budget: ReconnectBudget,
+        now: u64,
+    ) -> Result<Self, ReconnectRefusal> {
+        let mut owner = Self::new(binding, policy, now)?;
+        owner.schedule.resources =
+            ReservationLedger::bounded(budget).map_err(ReconnectRefusal::Resources)?;
+        Ok(owner)
+    }
+
+    /// Fixed ceiling, admitted maxima and remaining assignable capacity.
+    /// These are reservations, not actual traffic or source-custody observations.
+    pub fn resource_budget(&self) -> ReconnectBudgetState {
+        self.schedule.resources.state()
     }
 
     /// Scheduling only, not camera/recording health.
@@ -414,7 +473,8 @@ impl SupervisedAvcConnection {
     }
 
     /// Connect exactly once, never during backoff or while an old owner is active.
-    /// All attempts share the original deadline and cannot widen pinned scope/limits.
+    /// All attempts share the original deadline and cannot change pinned media.
+    /// Complete declared native allowances reserve before any connection effect.
     pub fn connect(
         &mut self,
         config: LiveAvcConfig,
@@ -428,7 +488,10 @@ impl SupervisedAvcConnection {
         {
             return Err(self.refusal(ReconnectRefusal::Scope));
         }
-        let attempt = self.schedule.begin(now).map_err(|e| self.refusal(e))?;
+        let attempt = self
+            .schedule
+            .begin_connection(&config, now)
+            .map_err(|e| self.refusal(e))?;
         if self.profile.is_none() {
             self.profile = Some(Profile::new(&config));
         }
@@ -496,10 +559,10 @@ impl SupervisedAvcConnection {
     }
 
     /// Acknowledge retention/explicit omission of the original terminal output.
-    /// This is an owner assertion, NOT a durable-publication receipt. Supply a
-    /// fresh observation after the failed syscall/drain; it starts the backoff.
-    /// The old generation must still be granted here; the new one is independently
-    /// checked when connected. This operation performs no network I/O.
+    /// This is an owner assertion, NOT a durable-publication receipt or resource
+    /// refund. Supply a fresh observation after the failed syscall/drain; it
+    /// starts the backoff. The old generation must still be granted here; the new
+    /// one is independently checked when connected. This performs no network I/O.
     pub fn acknowledge_retirement(
         &mut self,
         now: u64,
@@ -515,6 +578,7 @@ impl SupervisedAvcConnection {
 
     /// Irreversible local stop, even during backoff or after permission revocation.
     /// Sends nothing. Original retirement is returned once with its generation.
+    /// Previously reserved capacity is never refunded by cancellation.
     pub fn cancel(&mut self) -> Option<(StreamKey, LiveAvcRetirement)> {
         self.schedule.stop(ReconnectStop::Cancelled);
         let key = self.schedule.binding.key();
@@ -536,7 +600,8 @@ impl SupervisedAvcConnection {
         if let Err(reason) = self.schedule.admit(now, authority) {
             let mut failure = self.refusal(reason);
             if matches!(self.schedule.status, ReconnectStatus::Stopped(_)) {
-                failure.retirement = self.active
+                failure.retirement = self
+                    .active
                     .take()
                     .and_then(|mut connection| connection.cancel())
                     .map(Box::new);
@@ -740,7 +805,9 @@ mod tests {
         let (_peer, _) = listener.accept()?;
         assert!(matches!(owner.poll(SocketReadiness::default(), &credentials()?, [1; 16], 0, &auth)?,
             SupervisedAvcStep::Connection { output: AutomaticAvcStep::Queued(_), .. }));
+        let reserved = owner.resource_budget();
         let (key, retirement) = owner.cancel().ok_or("missing retirement")?;
+        assert_eq!(owner.resource_budget(), reserved);
         assert_eq!(key.generation, 1);
         assert!(retirement.transport.request.is_some());
         assert_eq!(retirement.transport.request_sent_bytes, 0);
@@ -763,11 +830,14 @@ mod tests {
         let listener = TcpListener::bind((Ipv4Addr::LOCALHOST, 0))?;
         let address = listener.local_addr()?;
         let (config, first_authority) = scope(address)?;
+        let one = ReconnectBudget::for_attempts(config.transport, config.max_steps, 1)?;
+        let two = ReconnectBudget::for_attempts(config.transport, config.max_steps, 2)?;
         let mut p = policy();
         p.deadline_ns = config.deadline_ns;
         p.max_steps = 100_000;
         let mut owner = SupervisedAvcConnection::new(config.binding.clone(), p, 0)?;
         let first = owner.connect(config, 0, &first_authority)?;
+        assert_eq!(owner.resource_budget().reserved(), one);
         let (mut peer, _) = listener.accept()?;
         peer.set_read_timeout(Some(Duration::from_secs(2)))?;
         let queued = match owner.poll(SocketReadiness::default(), &credentials()?, [1; 16], 0, &first_authority)? {
@@ -811,10 +881,12 @@ mod tests {
         assert!(saw_input_end);
         assert!(terminal.is_some(), "EOF retirement was not transferred");
         assert_eq!(owner.status(), ReconnectStatus::Retired(first.key));
+        assert_eq!(owner.resource_budget().reserved(), one);
         let (config, _) = scope(address)?;
         let refusal = owner.connect(config, 2, &first_authority).err().ok_or("retry preceded acknowledgement")?;
         assert!(matches!(refusal.reason, SupervisedAvcError::Supervisor(ReconnectRefusal::AwaitingRetirement)));
         owner.acknowledge_retirement(100, &first_authority)?;
+        assert_eq!(owner.resource_budget().reserved(), one);
         let next = owner.expected_binding().clone();
         assert_eq!(next.key().generation, first.key.generation + 1);
         assert_eq!(owner.next_wake_ns(), Some(110));
@@ -825,12 +897,20 @@ mod tests {
         assert!(matches!(refusal.reason, SupervisedAvcError::Supervisor(ReconnectRefusal::NotReady)));
         listener.set_nonblocking(true)?;
         assert_eq!(listener.accept().err().ok_or("early retry opened a socket")?.kind(), ErrorKind::WouldBlock);
+        let (mut changed, _) = scope(address)?;
+        changed.binding = next.clone();
+        changed.media.syntax.max_width += 1;
+        let refused = owner.connect(changed, 110, &next_authority).err().ok_or("media profile changed")?;
+        assert!(matches!(refused.reason, SupervisedAvcError::Supervisor(ReconnectRefusal::Scope)));
+        assert_eq!(owner.resource_budget().reserved(), one);
+        assert_eq!(listener.accept().err().ok_or("media drift opened a socket")?.kind(), ErrorKind::WouldBlock);
         let (mut config, _) = scope(address)?;
         config.binding = next;
         let second = owner.connect(config, 110, &next_authority)?;
         let (_second_peer, _) = listener.accept()?;
         assert_eq!(second.ordinal, 2);
         assert_eq!(second.previous, Some((first.key, 100)));
+        assert_eq!(owner.resource_budget().reserved(), two);
         match owner.poll(SocketReadiness::default(), &credentials()?, [4; 16], 110, &next_authority)? {
             SupervisedAvcStep::Connection { key, output: AutomaticAvcStep::Queued(queued) } => {
                 assert_eq!(key, second.key);
@@ -840,9 +920,64 @@ mod tests {
             _ => return Err("new generation did not start fresh negotiation".into()),
         }
         assert!(owner.cancel().is_some());
-        // Keep the old terminal ownership alive through the new connection; it is
-        // never moved into that connection or promoted to a continuity certificate.
+        assert_eq!(owner.resource_budget().reserved(), two);
+        // Old terminal ownership is never adopted as new-generation continuity.
         drop(terminal);
+        Ok(())
+    }
+
+    #[test]
+    fn insufficient_whole_run_budget_refuses_before_native_connect_and_allows_correction()
+    -> TestResult {
+        use crate::rtsp::live_avc::tests::scope;
+        let listener = TcpListener::bind((Ipv4Addr::LOCALHOST, 0))?;
+        listener.set_nonblocking(true)?;
+        let address = listener.local_addr()?;
+        let (config, auth) = scope(address)?;
+        let mut budget = ReconnectBudget::for_attempts(config.transport, config.max_steps, 1)?;
+        budget.sent_bytes -= 1;
+        let mut p = policy();
+        p.deadline_ns = config.deadline_ns;
+        let mut owner = SupervisedAvcConnection::new_with_budget(config.binding.clone(), p, budget, 0)?;
+        let before = owner.resource_budget();
+        let failure = owner.connect(config, 0, &auth).err().ok_or("excess reservation connected")?;
+        assert!(matches!(failure.reason, SupervisedAvcError::Supervisor(
+            ReconnectRefusal::Resources(ReconnectBudgetRefusal::Exhausted(ReconnectBudgetDimension::SentBytes))
+        )));
+        assert!(failure.retirement.is_none());
+        assert_eq!(owner.resource_budget(), before);
+        assert_eq!(listener.accept().err().ok_or("refused reservation opened a socket")?.kind(), ErrorKind::WouldBlock);
+        let (mut corrected, _) = scope(address)?;
+        corrected.transport.max_sent_bytes = budget.sent_bytes;
+        assert_eq!(owner.connect(corrected, 0, &auth)?.ordinal, 1);
+        let (_peer, _) = listener.accept()?;
+        assert_eq!(owner.resource_budget().reserved(), budget);
+        assert_eq!(owner.resource_budget().admitted_attempts(), 1);
+        assert!(owner.cancel().is_some());
+        assert_eq!(owner.resource_budget().reserved(), budget);
+        Ok(())
+    }
+
+    #[test]
+    fn retired_attempt_does_not_replenish_shared_connection_reservations() -> TestResult {
+        use crate::rtsp::live_avc::tests::scope;
+        let listener = TcpListener::bind((Ipv4Addr::LOCALHOST, 0))?;
+        let (config, _) = scope(listener.local_addr()?)?;
+        let budget = ReconnectBudget::for_attempts(config.transport, config.max_steps, 1)?;
+        let mut schedule = Schedule::new(config.binding.clone(), policy(), 0)?;
+        schedule.resources = ReservationLedger::bounded(budget)?;
+        let first = schedule.begin_connection(&config, 0)?;
+        schedule.ended(true);
+        schedule.finish(true, 0);
+        let before = schedule.resources.state();
+        let waiting = schedule.status;
+        assert!(matches!(
+            schedule.begin_connection(&config, 10),
+            Err(ReconnectRefusal::Resources(ReconnectBudgetRefusal::Exhausted(_)))
+        ));
+        assert_eq!(schedule.resources.state(), before);
+        assert_eq!(schedule.status, waiting);
+        assert_eq!(schedule.attempts, first.ordinal);
         Ok(())
     }
 }
