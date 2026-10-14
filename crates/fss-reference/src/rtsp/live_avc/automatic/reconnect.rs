@@ -6,15 +6,17 @@
 //! Waiting is a timer/readiness contract, not a sleeping thread. A successful
 //! connect/PLAY is not a freshness, continuity, capture-time or custody receipt.
 
+/// Native HEVC recording supervision with distinct source-end and EOF semantics.
+pub mod hevc;
 /// The same reconnect grant composed with loss-aware recording and explicit timing.
 pub mod recording;
 /// Atomic whole-run reservations; connection retirement never replenishes capacity.
 pub mod resources;
 
+use resources::ReservationLedger;
 pub use resources::{
     ReconnectBudget, ReconnectBudgetDimension, ReconnectBudgetRefusal, ReconnectBudgetState,
 };
-use resources::ReservationLedger;
 use std::fmt;
 use std::io::ErrorKind;
 
@@ -60,6 +62,8 @@ pub enum ReconnectStop {
     Denied(TcpDenial),
     /// Non-transient protocol, authentication, configuration or transport fault.
     PermanentFailure,
+    /// Native bitstream end after capture draining; not an outage or permission to retry.
+    SourceEnded,
 }
 
 /// Scheduling state only. Active never asserts that a camera is delivering frames.
@@ -138,7 +142,11 @@ struct Schedule {
     resources: ReservationLedger,
 }
 impl Schedule {
-    fn new(binding: TcpBinding, policy: ReconnectPolicy, now: u64) -> Result<Self, ReconnectRefusal> {
+    fn new(
+        binding: TcpBinding,
+        policy: ReconnectPolicy,
+        now: u64,
+    ) -> Result<Self, ReconnectRefusal> {
         if !(1..=1024).contains(&policy.max_attempts)
             || policy.initial_backoff_ns == 0
             || policy.initial_backoff_ns > policy.max_backoff_ns
@@ -228,10 +236,19 @@ impl Schedule {
         config: &LiveAvcConfig,
         now: u64,
     ) -> Result<ReconnectAttempt, ReconnectRefusal> {
+        self.begin_native_connection(config.transport, config.max_steps, now)
+    }
+
+    fn begin_native_connection(
+        &mut self,
+        transport: crate::rtsp::tcp::TcpLimits,
+        connection_steps: u64,
+        now: u64,
+    ) -> Result<ReconnectAttempt, ReconnectRefusal> {
         // Ordering matters: an early reconnect or a still-owned retirement must
         // not reserve resources or pin the first profile. No I/O occurs here.
         self.ready(now)?;
-        let cost = ReconnectBudget::connection(config.transport, config.max_steps)
+        let cost = ReconnectBudget::connection(transport, connection_steps)
             .map_err(ReconnectRefusal::Resources)?;
         self.resources
             .reserve(cost, self.policy.max_attempts)
@@ -280,7 +297,10 @@ impl Schedule {
         };
         self.previous = Some((old, now));
         self.binding = binding;
-        self.delay_ns = self.delay_ns.saturating_mul(2).min(self.policy.max_backoff_ns);
+        self.delay_ns = self
+            .delay_ns
+            .saturating_mul(2)
+            .min(self.policy.max_backoff_ns);
         self.status = ReconnectStatus::Waiting {
             key,
             retry_at_ns: at,
@@ -596,7 +616,11 @@ impl SupervisedAvcConnection {
         }
     }
 
-    fn admit(&mut self, now: u64, authority: &dyn TcpAuthority) -> Result<(), SupervisedAvcFailure> {
+    fn admit(
+        &mut self,
+        now: u64,
+        authority: &dyn TcpAuthority,
+    ) -> Result<(), SupervisedAvcFailure> {
         if let Err(reason) = self.schedule.admit(now, authority) {
             let mut failure = self.refusal(reason);
             if matches!(self.schedule.status, ReconnectStatus::Stopped(_)) {
@@ -613,20 +637,23 @@ impl SupervisedAvcConnection {
 }
 
 fn retryable(reason: &LiveAvcError) -> bool {
+    matches!(reason, LiveAvcError::Transport(error) if retryable_transport(error))
+}
+
+// Shared wire-failure classification, without an AVC/HEVC error conversion or fallback.
+fn retryable_transport(error: &TcpError) -> bool {
     matches!(
-        reason,
-        LiveAvcError::Transport(
-            TcpError::Io {
-                operation: TcpOperation::Connect | TcpOperation::Read | TcpOperation::Write,
-                kind: ErrorKind::ConnectionRefused
-                    | ErrorKind::ConnectionReset
-                    | ErrorKind::ConnectionAborted
-                    | ErrorKind::NotConnected
-                    | ErrorKind::BrokenPipe
-                    | ErrorKind::TimedOut
-                    | ErrorKind::UnexpectedEof,
-            } | TcpError::WriteZero
-        )
+        error,
+        TcpError::Io {
+            operation: TcpOperation::Connect | TcpOperation::Read | TcpOperation::Write,
+            kind: ErrorKind::ConnectionRefused
+                | ErrorKind::ConnectionReset
+                | ErrorKind::ConnectionAborted
+                | ErrorKind::NotConnected
+                | ErrorKind::BrokenPipe
+                | ErrorKind::TimedOut
+                | ErrorKind::UnexpectedEof,
+        } | TcpError::WriteZero
     )
 }
 
@@ -634,9 +661,18 @@ fn terminal_retryable(event: &DigestAvcPoll, eof: bool) -> bool {
     use crate::rtsp::avc_client::AvcClientPoll;
     match event {
         DigestAvcPoll::Client { event, .. } => match event.as_ref() {
-            AvcClientPoll::Ended { retirement: Some(_), .. } => eof,
-            AvcClientPoll::Fault { reason: AvcClientError::Truncated, .. } => eof,
-            AvcClientPoll::Rtp { retirement: Some(_), .. } => true,
+            AvcClientPoll::Ended {
+                retirement: Some(_),
+                ..
+            } => eof,
+            AvcClientPoll::Fault {
+                reason: AvcClientError::Truncated,
+                ..
+            } => eof,
+            AvcClientPoll::Rtp {
+                retirement: Some(_),
+                ..
+            } => true,
             _ => false,
         },
         _ => false,
@@ -679,7 +715,11 @@ mod tests {
 
     fn binding(generation: u64) -> Result<TcpBinding, TcpError> {
         TcpBinding::new(
-            StreamKey { ingress: 71, generation, ssrc: 7 },
+            StreamKey {
+                ingress: 71,
+                generation,
+                ssrc: 7,
+            },
             SocketAddr::from((Ipv4Addr::LOCALHOST, 8554)),
             "camera.local",
             TcpSecurityPolicy::OwnerApprovedPlaintext,
@@ -697,7 +737,10 @@ mod tests {
     }
 
     fn authority(binding: TcpBinding) -> Authority {
-        Authority { binding, denial: Cell::new(None) }
+        Authority {
+            binding,
+            denial: Cell::new(None),
+        }
     }
 
     #[test]
@@ -708,12 +751,21 @@ mod tests {
             schedule.admit(now, &auth)?;
             let old = schedule.begin(now)?;
             schedule.ended(true);
-            assert_eq!(schedule.begin(now), Err(ReconnectRefusal::AwaitingRetirement));
+            assert_eq!(
+                schedule.begin(now),
+                Err(ReconnectRefusal::AwaitingRetirement)
+            );
             schedule.finish(true, now);
-            assert_eq!(schedule.status, ReconnectStatus::Waiting {
-                key: StreamKey { generation: old.key.generation + 1, ..old.key },
-                retry_at_ns: next,
-            });
+            assert_eq!(
+                schedule.status,
+                ReconnectStatus::Waiting {
+                    key: StreamKey {
+                        generation: old.key.generation + 1,
+                        ..old.key
+                    },
+                    retry_at_ns: next,
+                }
+            );
             assert_eq!(schedule.previous, Some((old.key, now)));
             assert_eq!(schedule.begin(next - 1), Err(ReconnectRefusal::NotReady));
         }
@@ -722,7 +774,10 @@ mod tests {
         assert_eq!(schedule.begin(55)?.ordinal, 4);
         schedule.ended(true);
         schedule.finish(true, 55);
-        assert_eq!(schedule.status, ReconnectStatus::Stopped(ReconnectStop::Attempts));
+        assert_eq!(
+            schedule.status,
+            ReconnectStatus::Stopped(ReconnectStop::Attempts)
+        );
         Ok(())
     }
 
@@ -747,15 +802,24 @@ mod tests {
         p.max_steps = 1;
         let mut schedule = Schedule::new(binding(1)?, p, 10)?;
         let auth = authority(schedule.binding.clone());
-        assert_eq!(schedule.admit(9, &auth), Err(ReconnectRefusal::ClockReversed));
+        assert_eq!(
+            schedule.admit(9, &auth),
+            Err(ReconnectRefusal::ClockReversed)
+        );
         assert_eq!(schedule.remaining_steps, 1);
         schedule.admit(10, &auth)?;
-        assert_eq!(schedule.admit(11, &auth), Err(ReconnectRefusal::Stopped(ReconnectStop::WorkBudget)));
+        assert_eq!(
+            schedule.admit(11, &auth),
+            Err(ReconnectRefusal::Stopped(ReconnectStop::WorkBudget))
+        );
         let mut schedule = Schedule::new(binding(1)?, policy(), 0)?;
         schedule.begin(995)?;
         schedule.ended(true);
         schedule.finish(true, 995);
-        assert_eq!(schedule.status, ReconnectStatus::Stopped(ReconnectStop::Deadline));
+        assert_eq!(
+            schedule.status,
+            ReconnectStatus::Stopped(ReconnectStop::Deadline)
+        );
         Ok(())
     }
 
@@ -767,7 +831,12 @@ mod tests {
         schedule.finish(true, 0);
         let auth = authority(schedule.binding.clone());
         auth.denial.set(Some(TcpDenial::Revoked));
-        assert_eq!(schedule.admit(1, &auth), Err(ReconnectRefusal::Stopped(ReconnectStop::Denied(TcpDenial::Revoked))));
+        assert_eq!(
+            schedule.admit(1, &auth),
+            Err(ReconnectRefusal::Stopped(ReconnectStop::Denied(
+                TcpDenial::Revoked
+            )))
+        );
         auth.denial.set(None);
         assert!(schedule.admit(10, &auth).is_err());
         Ok(())
@@ -803,18 +872,42 @@ mod tests {
         let mut owner = SupervisedAvcConnection::new(config.binding.clone(), p, 0)?;
         assert_eq!(owner.connect(config, 0, &auth)?.ordinal, 1);
         let (_peer, _) = listener.accept()?;
-        assert!(matches!(owner.poll(SocketReadiness::default(), &credentials()?, [1; 16], 0, &auth)?,
-            SupervisedAvcStep::Connection { output: AutomaticAvcStep::Queued(_), .. }));
+        assert!(matches!(
+            owner.poll(
+                SocketReadiness::default(),
+                &credentials()?,
+                [1; 16],
+                0,
+                &auth
+            )?,
+            SupervisedAvcStep::Connection {
+                output: AutomaticAvcStep::Queued(_),
+                ..
+            }
+        ));
         let reserved = owner.resource_budget();
         let (key, retirement) = owner.cancel().ok_or("missing retirement")?;
         assert_eq!(owner.resource_budget(), reserved);
         assert_eq!(key.generation, 1);
         assert!(retirement.transport.request.is_some());
         assert_eq!(retirement.transport.request_sent_bytes, 0);
-        assert_eq!(owner.status(), ReconnectStatus::Stopped(ReconnectStop::Cancelled));
+        assert_eq!(
+            owner.status(),
+            ReconnectStatus::Stopped(ReconnectStop::Cancelled)
+        );
         assert!(owner.cancel().is_none());
         assert_eq!(owner.next_wake_ns(), None);
-        assert!(owner.poll(SocketReadiness::default(), &credentials()?, [2; 16], 1, &auth).is_err());
+        assert!(
+            owner
+                .poll(
+                    SocketReadiness::default(),
+                    &credentials()?,
+                    [2; 16],
+                    1,
+                    &auth
+                )
+                .is_err()
+        );
         Ok(())
     }
 
@@ -840,17 +933,37 @@ mod tests {
         assert_eq!(owner.resource_budget().reserved(), one);
         let (mut peer, _) = listener.accept()?;
         peer.set_read_timeout(Some(Duration::from_secs(2)))?;
-        let queued = match owner.poll(SocketReadiness::default(), &credentials()?, [1; 16], 0, &first_authority)? {
-            SupervisedAvcStep::Connection { output: AutomaticAvcStep::Queued(queued), .. } => queued,
+        let queued = match owner.poll(
+            SocketReadiness::default(),
+            &credentials()?,
+            [1; 16],
+            0,
+            &first_authority,
+        )? {
+            SupervisedAvcStep::Connection {
+                output: AutomaticAvcStep::Queued(queued),
+                ..
+            } => queued,
             _ => return Err("missing initial DESCRIBE".into()),
         };
         let mut sent = false;
         for _ in 0..32_768 {
-            if matches!(owner.poll(SocketReadiness { readable: false, writable: true },
-                &credentials()?, [2; 16], 0, &first_authority)?,
-                SupervisedAvcStep::Connection { output: AutomaticAvcStep::Live(
-                    LiveAvcStep::Write(TcpWriteStep::Sent { .. })), .. })
-            {
+            if matches!(
+                owner.poll(
+                    SocketReadiness {
+                        readable: false,
+                        writable: true
+                    },
+                    &credentials()?,
+                    [2; 16],
+                    0,
+                    &first_authority
+                )?,
+                SupervisedAvcStep::Connection {
+                    output: AutomaticAvcStep::Live(LiveAvcStep::Write(TcpWriteStep::Sent { .. })),
+                    ..
+                }
+            ) {
                 sent = true;
                 break;
             }
@@ -863,15 +976,32 @@ mod tests {
         let mut saw_input_end = false;
         let mut terminal = None;
         for _ in 0..32_768 {
-            match owner.poll(SocketReadiness { readable: true, writable: false },
-                &credentials()?, [3; 16], 1, &first_authority)?
-            {
-                SupervisedAvcStep::Connection { output: AutomaticAvcStep::Live(LiveAvcStep::InputEnded), .. } => {
+            match owner.poll(
+                SocketReadiness {
+                    readable: true,
+                    writable: false,
+                },
+                &credentials()?,
+                [3; 16],
+                1,
+                &first_authority,
+            )? {
+                SupervisedAvcStep::Connection {
+                    output: AutomaticAvcStep::Live(LiveAvcStep::InputEnded),
+                    ..
+                } => {
                     saw_input_end = true;
                     assert_eq!(owner.status(), ReconnectStatus::Active(first.key));
                 }
-                SupervisedAvcStep::Connection { output: AutomaticAvcStep::Live(
-                    step @ LiveAvcStep::Protocol { transport: Some(_), .. }), .. } => {
+                SupervisedAvcStep::Connection {
+                    output:
+                        AutomaticAvcStep::Live(
+                            step @ LiveAvcStep::Protocol {
+                                transport: Some(_), ..
+                            },
+                        ),
+                    ..
+                } => {
                     terminal = Some(step);
                     break;
                 }
@@ -883,8 +1013,14 @@ mod tests {
         assert_eq!(owner.status(), ReconnectStatus::Retired(first.key));
         assert_eq!(owner.resource_budget().reserved(), one);
         let (config, _) = scope(address)?;
-        let refusal = owner.connect(config, 2, &first_authority).err().ok_or("retry preceded acknowledgement")?;
-        assert!(matches!(refusal.reason, SupervisedAvcError::Supervisor(ReconnectRefusal::AwaitingRetirement)));
+        let refusal = owner
+            .connect(config, 2, &first_authority)
+            .err()
+            .ok_or("retry preceded acknowledgement")?;
+        assert!(matches!(
+            refusal.reason,
+            SupervisedAvcError::Supervisor(ReconnectRefusal::AwaitingRetirement)
+        ));
         owner.acknowledge_retirement(100, &first_authority)?;
         assert_eq!(owner.resource_budget().reserved(), one);
         let next = owner.expected_binding().clone();
@@ -893,17 +1029,43 @@ mod tests {
         let next_authority = authority(next.clone());
         let (mut config, _) = scope(address)?;
         config.binding = next.clone();
-        let refusal = owner.connect(config, 109, &next_authority).err().ok_or("backoff was bypassed")?;
-        assert!(matches!(refusal.reason, SupervisedAvcError::Supervisor(ReconnectRefusal::NotReady)));
+        let refusal = owner
+            .connect(config, 109, &next_authority)
+            .err()
+            .ok_or("backoff was bypassed")?;
+        assert!(matches!(
+            refusal.reason,
+            SupervisedAvcError::Supervisor(ReconnectRefusal::NotReady)
+        ));
         listener.set_nonblocking(true)?;
-        assert_eq!(listener.accept().err().ok_or("early retry opened a socket")?.kind(), ErrorKind::WouldBlock);
+        assert_eq!(
+            listener
+                .accept()
+                .err()
+                .ok_or("early retry opened a socket")?
+                .kind(),
+            ErrorKind::WouldBlock
+        );
         let (mut changed, _) = scope(address)?;
         changed.binding = next.clone();
         changed.media.syntax.max_width += 1;
-        let refused = owner.connect(changed, 110, &next_authority).err().ok_or("media profile changed")?;
-        assert!(matches!(refused.reason, SupervisedAvcError::Supervisor(ReconnectRefusal::Scope)));
+        let refused = owner
+            .connect(changed, 110, &next_authority)
+            .err()
+            .ok_or("media profile changed")?;
+        assert!(matches!(
+            refused.reason,
+            SupervisedAvcError::Supervisor(ReconnectRefusal::Scope)
+        ));
         assert_eq!(owner.resource_budget().reserved(), one);
-        assert_eq!(listener.accept().err().ok_or("media drift opened a socket")?.kind(), ErrorKind::WouldBlock);
+        assert_eq!(
+            listener
+                .accept()
+                .err()
+                .ok_or("media drift opened a socket")?
+                .kind(),
+            ErrorKind::WouldBlock
+        );
         let (mut config, _) = scope(address)?;
         config.binding = next;
         let second = owner.connect(config, 110, &next_authority)?;
@@ -911,8 +1073,17 @@ mod tests {
         assert_eq!(second.ordinal, 2);
         assert_eq!(second.previous, Some((first.key, 100)));
         assert_eq!(owner.resource_budget().reserved(), two);
-        match owner.poll(SocketReadiness::default(), &credentials()?, [4; 16], 110, &next_authority)? {
-            SupervisedAvcStep::Connection { key, output: AutomaticAvcStep::Queued(queued) } => {
+        match owner.poll(
+            SocketReadiness::default(),
+            &credentials()?,
+            [4; 16],
+            110,
+            &next_authority,
+        )? {
+            SupervisedAvcStep::Connection {
+                key,
+                output: AutomaticAvcStep::Queued(queued),
+            } => {
                 assert_eq!(key, second.key);
                 assert_eq!(queued.command, ClientCommand::Describe);
                 assert_eq!(queued.cseq, 1);
@@ -938,15 +1109,29 @@ mod tests {
         budget.sent_bytes -= 1;
         let mut p = policy();
         p.deadline_ns = config.deadline_ns;
-        let mut owner = SupervisedAvcConnection::new_with_budget(config.binding.clone(), p, budget, 0)?;
+        let mut owner =
+            SupervisedAvcConnection::new_with_budget(config.binding.clone(), p, budget, 0)?;
         let before = owner.resource_budget();
-        let failure = owner.connect(config, 0, &auth).err().ok_or("excess reservation connected")?;
-        assert!(matches!(failure.reason, SupervisedAvcError::Supervisor(
-            ReconnectRefusal::Resources(ReconnectBudgetRefusal::Exhausted(ReconnectBudgetDimension::SentBytes))
-        )));
+        let failure = owner
+            .connect(config, 0, &auth)
+            .err()
+            .ok_or("excess reservation connected")?;
+        assert!(matches!(
+            failure.reason,
+            SupervisedAvcError::Supervisor(ReconnectRefusal::Resources(
+                ReconnectBudgetRefusal::Exhausted(ReconnectBudgetDimension::SentBytes)
+            ))
+        ));
         assert!(failure.retirement.is_none());
         assert_eq!(owner.resource_budget(), before);
-        assert_eq!(listener.accept().err().ok_or("refused reservation opened a socket")?.kind(), ErrorKind::WouldBlock);
+        assert_eq!(
+            listener
+                .accept()
+                .err()
+                .ok_or("refused reservation opened a socket")?
+                .kind(),
+            ErrorKind::WouldBlock
+        );
         let (mut corrected, _) = scope(address)?;
         corrected.transport.max_sent_bytes = budget.sent_bytes;
         assert_eq!(owner.connect(corrected, 0, &auth)?.ordinal, 1);
@@ -973,7 +1158,9 @@ mod tests {
         let waiting = schedule.status;
         assert!(matches!(
             schedule.begin_connection(&config, 10),
-            Err(ReconnectRefusal::Resources(ReconnectBudgetRefusal::Exhausted(_)))
+            Err(ReconnectRefusal::Resources(
+                ReconnectBudgetRefusal::Exhausted(_)
+            ))
         ));
         assert_eq!(schedule.resources.state(), before);
         assert_eq!(schedule.status, waiting);
