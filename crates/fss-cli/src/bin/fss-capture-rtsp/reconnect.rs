@@ -17,7 +17,7 @@ use super::plan::{self, Options};
 #[path = "recovery.rs"]
 pub(super) mod recovery;
 
-pub(super) const MAX_ARGUMENTS: usize = plan::MAX_ARGUMENTS + 12;
+pub(super) const MAX_ARGUMENTS: usize = plan::MAX_ARGUMENTS + 14;
 const FORMAT: &str = "fss.rtsp_reconnect_cli.v1";
 const MAX_CONTROL_REPORT_BYTES: usize = 262_144;
 const POLICY: &str = "bounded-owner-approved-attempts:literal-peer-only:fresh-generation-and-clocks:\
@@ -74,7 +74,14 @@ Approve that index preview (not a capture or recovery approval) to publish the r
 through independent journal/work barriers. Unsettled work must first use --recover yes.\n\
 Original windows never change; all catalog slots/roots are reported again on no-op retries.\n\
 A failed index may leave work to restore. Preserve both stores and preview again; no automatic\n\
-repair, new camera input, archive deletion or cross-epoch merge occurs.\n";
+repair, new camera input, archive deletion or cross-epoch merge occurs.\n\
+\n\
+Optional independent rollback fences for either recovery mode:\n\
+  --minimum-pin-anchors 1:SEQUENCE:sha256:HEX,2:SEQUENCE:sha256:HEX\n\
+Supply journal anchors saved independently for the ORIGINAL one-based attempt ordinals.\n\
+Each listed prefix must occur in its current journal before any source read/publication.\n\
+Missing listed stores refuse; unlisted attempts do not acquire an independent guarantee.\n\
+The bounded map changes recovery approval only, never original capture epochs or paths.\n";
 
 pub(super) struct ReconnectPlan {
     attempts: Vec<Options>,
@@ -83,6 +90,7 @@ pub(super) struct ReconnectPlan {
     progress_timeout_ns: Option<u64>,
     recovery_timeout_ns: Option<u64>,
     index_catalogs: bool,
+    minimum_pins: Option<recovery::MinimumPins>,
     approve: Option<ContentDigest>,
     maximum_source_bytes: u64,
     maximum_storage_bytes: u64,
@@ -148,6 +156,13 @@ impl ReconnectPlan {
             Some("index") => (true, true),
             Some(_) => return Err("offline recovery requires --recover yes or --recover index"),
         };
+        let minimum_pins = values
+            .remove("--minimum-pin-anchors")
+            .map(|text| recovery::MinimumPins::parse(&text))
+            .transpose()?;
+        if !recover && minimum_pins.is_some() {
+            return Err("minimum pin anchors require --recover yes or --recover index");
+        }
         let recovery_timeout = values.remove("--recovery-timeout-ms");
         if !recover && recovery_timeout.is_some() {
             return Err("recovery timeout requires --recover yes or --recover index");
@@ -244,6 +259,9 @@ impl ReconnectPlan {
                 .ok_or("capture lifetime overflow")?;
             attempts.push(attempt);
         }
+        if let Some(minimum) = &minimum_pins {
+            minimum.validate(&attempts)?;
+        }
         let mut out = Self {
             attempts,
             retry_delay_ms,
@@ -251,6 +269,7 @@ impl ReconnectPlan {
             progress_timeout_ns,
             recovery_timeout_ns,
             index_catalogs,
+            minimum_pins,
             approve,
             maximum_source_bytes,
             maximum_storage_bytes,

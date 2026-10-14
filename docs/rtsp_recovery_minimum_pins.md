@@ -1,6 +1,6 @@
 # Recover against an independently retained journal prefix
 
-Ordinary and progress-supervised single captures accept an optional rollback fence
+Ordinary, progress-supervised and reconnect captures accept an optional rollback fence
 with either `--recover yes` or `--recover index`:
 
 ```sh
@@ -14,6 +14,22 @@ one-based record sequence, saved independently from an earlier native capture or
 recovery report. These are the `journal.sequence` and `journal.root` coordinates,
 not the work root, recording window root, or capture approval. The first number is
 the one-based attempt ordinal: single capture permits only `1`.
+
+For a reconnect capture, retain the original `reconnect` subcommand and all original
+attempt/backoff/supervision options, and supply each independently known attempt:
+
+```sh
+fss-capture-rtsp reconnect [ORIGINAL RECONNECT OPTIONS] \
+  --recover yes \
+  --minimum-pin-anchors "1:${FIRST_SEQUENCE}:${FIRST_ROOT},2:${SECOND_SEQUENCE}:${SECOND_ROOT}"
+```
+
+Do not renumber attempts or copy one attempt's prefix to another. The journal scope
+binds each original generation, namespace and clock. All listed prefixes must pass
+before any attempt's original work is read or restored. Unlisted attempts keep their
+existing semantics and gain no independent rollback guarantee; in particular, two
+missing stores for an unlisted attempt remain unknown. A missing listed attempt is
+a refusal. The same map works with the separately approved `--recover index` mode.
 
 Remove the old `--approve` argument, review the new preview, and repeat with that
 preview's exact approval. After pending work settles, repeat the original capture

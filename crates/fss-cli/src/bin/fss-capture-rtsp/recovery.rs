@@ -64,6 +64,9 @@ impl RecoveryPlan for ReconnectPlan {
     fn maximum_storage_bytes(&self) -> u64 {
         self.maximum_storage_bytes
     }
+    fn minimum_pins(&self) -> Option<&MinimumPins> {
+        self.minimum_pins.as_ref()
+    }
 }
 
 #[path = "indexing.rs"]

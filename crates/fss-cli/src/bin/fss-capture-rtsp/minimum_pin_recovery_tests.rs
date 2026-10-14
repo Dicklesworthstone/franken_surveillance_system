@@ -176,3 +176,6 @@ fn independently_known_missing_stores_never_become_an_unobserved_success() -> Te
     }
     Ok(())
 }
+
+#[path = "minimum_pin_media_tests.rs"]
+mod media;
