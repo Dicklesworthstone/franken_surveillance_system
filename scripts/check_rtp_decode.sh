@@ -13,7 +13,7 @@ case "${1:-tests}" in
       --test rtpdump_avc_contract --test rtpdump_recovery_contract || status=1
     cargo +nightly-2026-08-31 test --locked --offline --no-fail-fast -p fss-cli \
       --bin fss-decode-rtp --bin fss-file --test retained_rtp_decode_cli \
-      --test rtp_current_custody_cli --test rtp_receipts_cli || status=1
+      --test rtp_current_custody_cli --test rtp_receipts_cli --test rtp_motion_cli || status=1
     exit "$status"
     ;;
   format)
@@ -33,6 +33,8 @@ case "${1:-tests}" in
       crates/fss-reference/tests/rtpdump_receipt_stream_contract.rs \
       crates/fss-cli/src/bin/fss-decode-rtp.rs \
       crates/fss-cli/src/bin/fss-decode-rtp/receipt_cmd.rs \
+      crates/fss-cli/src/bin/fss-decode-rtp/motion_cmd.rs \
+      crates/fss-cli/tests/rtp_motion_cli.rs \
       crates/fss-cli/src/bin/fss-file/pgm_stream.rs \
       crates/fss-cli/src/bin/fss-file/private_output.rs \
       crates/fss-cli/tests/retained_rtp_decode_cli.rs \

@@ -32,10 +32,12 @@ use fss_reference::{ADP_REPLAY_ROW_ID, ReferenceDeployment, ReplayCx};
 #[path = "fss-file/pgm_stream.rs"]
 mod pgm_stream;
 
+#[path = "fss-decode-rtp/motion_cmd.rs"]
+mod motion_cmd;
 #[path = "fss-decode-rtp/receipt_cmd.rs"]
 mod receipt_cmd;
 
-const HELP: &str = "fss-decode-rtp <inspect|decode|receipts|verify-receipts> --root DIR --site SITE --source-root sha256:HEX\n\
+const HELP: &str = "fss-decode-rtp <inspect|decode|receipts|verify-receipts|motion> --root DIR --site SITE --source-root sha256:HEX\n\
   inspect: verifies one retained original RTP graph and lists in-source SPS/PPS candidates.\n\
   decode: native ordered AVC decoding from completed retained custody, with current privacy.\n\
     [--sps sha256:HEX --pps sha256:HEX] (omit only for one unambiguous pair)\n\
@@ -49,6 +51,9 @@ const HELP: &str = "fss-decode-rtp <inspect|decode|receipts|verify-receipts> --r
   verify-receipts: --receipts-in FILE --receipts-sha256 sha256:HEX (no outputs)\n\
     Both require --custody current and the same decode options for reproduction.\n\
     [--max-receipt-bytes N] [--max-receipts-bytes N] bound the portable receipt stream.\n\
+  motion: --custody current --pixel-delta N --minimum-changed-pixels N --report-out FILE\n\
+    [--minimum-changed-ppm N] [--max-comparisons N] [--max-report-bytes N]\n\
+    Measures masked frame changes, not people or physical absence; accepts no --output.\n\
   Common bounds: [--max-source-bytes N] [--max-read-bytes N] [--max-records N]\n\
   Outputs are new private files outside the deployment, one binary PGM per served frame.\n\
   Decode/refusal progress is bounded key=value output; partial output is never marked complete.\n\
@@ -529,6 +534,9 @@ fn execute(
 }
 fn main() -> ExitCode {
     let args: Vec<_> = std::env::args_os().skip(1).collect();
+    if let Some(exit) = motion_cmd::dispatch(&args) {
+        return exit;
+    }
     if let Some(exit) = receipt_cmd::dispatch(&args) {
         return exit;
     }

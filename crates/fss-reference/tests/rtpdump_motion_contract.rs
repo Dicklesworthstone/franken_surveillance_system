@@ -109,7 +109,7 @@ fn assert_native(
     observations: &[RtpPixelChangeObservation],
     frames: &[Picture],
     r: RtpMotionRequest,
-) {
+) -> TestResult {
     assert_eq!(observations.len(), frames.len());
     assert!(observations[0].statistics.is_none());
     assert!(
@@ -119,7 +119,7 @@ fn assert_native(
     );
     assert_eq!(observations[0].predecessor_receipt, None);
     for (index, (o, pair)) in observations[1..].iter().zip(frames.windows(2)).enumerate() {
-        let s = o.statistics.as_ref().expect("comparable pair");
+        let s = o.statistics.as_ref().ok_or("comparable pair")?;
         let diff: Vec<_> = pair[0]
             .luma()
             .iter()
@@ -137,7 +137,7 @@ fn assert_native(
             s.absolute_difference_sum,
             diff.iter().map(|d| u64::from(*d)).sum::<u64>()
         );
-        assert_eq!(s.maximum_difference, *diff.iter().max().expect("pixels"));
+        assert_eq!(s.maximum_difference, *diff.iter().max().ok_or("pixels")?);
         assert_eq!(
             s.candidate,
             changed >= r.thresholds.minimum_changed_pixels
@@ -151,6 +151,7 @@ fn assert_native(
         assert_eq!(o.output_index, index as u64 + 1);
         assert!(o.reset_reasons.is_empty());
     }
+    Ok(())
 }
 
 #[test]
@@ -163,7 +164,7 @@ fn single_and_fragmented_sources_measure_exact_native_pixels_without_writes() ->
         let r = request(&nals())?;
         let mut a = RtpMotionAnalyzer::open(&retained, r, &dep, &cx)?;
         let out = collect(&mut a, &dep, &cx)?;
-        assert_native(&out, &native(&nals())?, r);
+        assert_native(&out, &native(&nals())?, r)?;
         assert_eq!(a.stats().observations, 4);
         assert_eq!(a.stats().measured_pairs, 3);
         assert_eq!(a.stats().resets, 1);
@@ -477,6 +478,58 @@ fn b_picture_display_reordering_is_comparable_without_fabricated_source_gaps() -
         out.windows(2)
             .any(|pair| pair[1].source_group < pair[0].source_group)
     );
-    assert_native(&out, &frames, r);
+    assert_native(&out, &frames, r)?;
+    Ok(())
+}
+
+#[test]
+fn idr_recovery_cannot_replenish_the_comparison_allowance() -> TestResult {
+    let cx = cx()?;
+    let mut planned = packetize(3, 10000, 100, 7, 0, 0);
+    let remove = planned
+        .iter()
+        .enumerate()
+        .filter(|(_, p)| p.vcl)
+        .nth(5)
+        .ok_or("VCL")?
+        .0;
+    planned.remove(remove);
+    let (dep, root, _) = setup("recovery-budget", &dump_planned(&planned), &cx)?;
+    let retained = inspect_rtp_import(root, 1, RtpRecoveryPolicy::default(), &cx, &dep)?;
+    let mut r = request(&nals())?;
+    let mut baseline = RtpMotionAnalyzer::open(&retained, r, &dep, &cx)?;
+    let all = collect(&mut baseline, &dep, &cx)?;
+    r.max_comparisons = all
+        .iter()
+        .filter(|o| o.decoder_epoch == 0)
+        .filter_map(|o| o.statistics.as_ref())
+        .map(|s| s.compared_pixels)
+        .sum();
+    assert!(r.max_comparisons > 0);
+    assert!(
+        all.iter()
+            .any(|o| o.decoder_epoch > 0 && o.statistics.is_some())
+    );
+    let mut bounded = RtpMotionAnalyzer::open(&retained, r, &dep, &cx)?;
+    let mut recovered = false;
+    let mut refused = false;
+    for _ in 0..20_000 {
+        match bounded.step(&dep, &cx) {
+            Ok(RtpMotionStep::Observation(o)) if o.decoder_epoch > 0 => {
+                assert!(o.statistics.is_none());
+                recovered = true;
+            }
+            Err(RtpMotionError::Pixel(PixelChangeError::BudgetExceeded)) => {
+                refused = true;
+                break;
+            }
+            Err(e) => return Err(e.into()),
+            _ => {}
+        }
+    }
+    assert!(recovered && refused);
+    assert_eq!(bounded.stats().comparisons, r.max_comparisons);
+    assert!(bounded.stats().decode.refusals > 0);
+    assert!(!bounded.stats().complete());
     Ok(())
 }

@@ -4,6 +4,8 @@ on:
   push:
     branches: [main]
     paths:
+      - 'crates/fss-reference/src/ingest/pixel_change*'
+      - 'crates/fss-reference/src/ingest/pixel_change/**'
       - 'crates/fss-reference/src/ingest/rtpdump*'
       - 'crates/fss-reference/src/ingest/rtpdump/**'
       - 'crates/fss-reference/tests/rtpdump*'
@@ -15,6 +17,7 @@ on:
       - 'crates/fss-cli/tests/retained_rtp_decode_cli.rs'
       - 'crates/fss-cli/tests/rtp_current_custody_cli.rs'
       - 'crates/fss-cli/tests/rtp_receipts_cli.rs'
+      - 'crates/fss-cli/tests/rtp_motion_cli.rs'
       - 'crates/fss-cli/Cargo.toml'
       - 'crates/fss-packet/**'
       - 'crates/fss-codec-h264/**'
