@@ -6,6 +6,8 @@
 //! The owning adapter retains the original datagram and its stream generation.
 
 pub mod avc;
+/// Explicit fixed-cadence presentation reordering, independent of capture-time truth.
+pub mod cadence;
 pub mod hevc;
 
 mod continuity;
