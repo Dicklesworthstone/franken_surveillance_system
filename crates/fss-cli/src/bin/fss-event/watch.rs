@@ -40,6 +40,7 @@ use std::ffi::OsString;
 use std::io::Write;
 use std::path::{Path, PathBuf};
 
+use fss_cli::event_fusion::{EventFusionError, EventFusionReport};
 use fss_core::{ContentDigest, DigestAlgorithm, PrincipalId};
 use fss_reference::ingest::RetainedFileImport;
 use fss_reference::ingest::detector_cascade::DetectorCascade;
@@ -280,7 +281,10 @@ pub(super) fn parse(args: &[OsString]) -> Result<WatchAction, String> {
                 return Err("at most sixteen zones".to_owned());
             }
             zones.push(zone(argument)?);
-        } else if !OPTIONS.contains(&key) && !super::detector::OPTIONS.contains(&key) {
+        } else if !OPTIONS.contains(&key)
+            && !super::detector::OPTIONS.contains(&key)
+            && !super::detector::FUSION_OPTIONS.contains(&key)
+        {
             return Err("unknown or inapplicable option".to_owned());
         } else if values.iter().any(|(k, _)| k == key) {
             return Err(format!("duplicate {key}"));
@@ -292,6 +296,8 @@ pub(super) fn parse(args: &[OsString]) -> Result<WatchAction, String> {
             "--retain-coverage",
             "--retain-health",
             "--report-out",
+            "--fusion-profile",
+            "--fusion-digest",
         ]
         .contains(&key)
         {
@@ -300,6 +306,16 @@ pub(super) fn parse(args: &[OsString]) -> Result<WatchAction, String> {
         }
         index += 2;
     }
+    let cascade = super::detector::parse(&values)?;
+    super::detector::check_fusion_mode(
+        cascade.as_ref(),
+        !stream_watch
+            && !stream_dwell
+            && !values.iter().any(|(key, _)| key.starts_with("--dwell-")),
+        values.iter().any(|(key, _)| {
+            ["--approve", "--retain-coverage", "--retain-health"].contains(&key.as_str())
+        }),
+    )?;
     let health_screen = match text(&values, "--sensor-health") {
         Ok(value) if value != HEALTH_POLICY_NAME => {
             return Err(format!(
@@ -459,7 +475,7 @@ pub(super) fn parse(args: &[OsString]) -> Result<WatchAction, String> {
             .iter()
             .find(|(k, _)| k == "--report-out")
             .map(|(_, v)| PathBuf::from(v)),
-        cascade: super::detector::parse(&values)?,
+        cascade,
         options,
         dwell,
         stream_dwell,
@@ -477,6 +493,13 @@ pub(super) fn run(
     cx: &ReplayCx,
     out: &mut impl Write,
 ) -> RunResult<()> {
+    super::detector::check_fusion_mode(
+        action.cascade.as_ref(),
+        action.dwell.is_none() && action.stream_watch.is_none() && action.stream_dwell.is_none(),
+        !action.approvals.is_empty()
+            || action.retain_coverage.is_some()
+            || action.retain_health.is_some(),
+    )?;
     if action.retain_health.is_some()
         && (!action.health_screen
             || (action.stream_watch.is_none() && action.stream_dwell.is_none())
@@ -675,6 +698,8 @@ fn run_with(
     scalar: &ScalarExecCx,
     out: &mut impl Write,
 ) -> RunResult<()> {
+    // Calibration bytes and package bytes are pinned before any retained source is read.
+    let fusion_profile = super::detector::load_fusion(action.cascade.as_ref(), cx)?;
     // The package is verified (digest before parsing) before any source is read.
     let package = match &action.cascade {
         Some(options) => Some(super::detector::load(options, cx, scalar)?),
@@ -764,6 +789,13 @@ fn run_with(
             .then_some(RecordedHealthPolicy::ConservativeV1),
         cx,
     )?;
+    let fusion = match (&fusion_profile, cascade.as_ref()) {
+        (Some(profile), Some(cascade)) => Some(EventFusionReport::watch(
+            &report, cascade, profile, deployment, cx,
+        )?),
+        (None, _) => None,
+        _ => return Err(EventFusionError::Scope.into()),
+    };
     // Both approvals are checked against the fresh analysis before anything is written.
     if let Some(approval) = action.retain_coverage {
         report.check_coverage_approval(deployment, approval)?;
@@ -806,6 +838,11 @@ fn run_with(
         Some(&action.rerun),
         Some(&coverage),
     );
+    let json = super::detector::with_fusion(json, fusion.as_ref())?;
+    if fusion.is_some() {
+        report.revalidate_derived_source(deployment, cx)?;
+        cx.checkpoint("event_fusion:watch_delivery")?;
+    }
     let json = format!("{json}\n");
     if let Some(path) = &action.report_out {
         export(path, json.as_bytes(), root, cx)?;
