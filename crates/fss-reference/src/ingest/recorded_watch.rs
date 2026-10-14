@@ -1409,6 +1409,19 @@ impl WatchReport {
         &self.privacy
     }
 
+    /// Revalidate the exact retained source, bound capsules, principal, privacy generation,
+    /// durable ledger head, and deletion/custody state before downstream derived analysis.
+    ///
+    /// This performs no publication and grants no effect authority. A failure means the
+    /// previously computed report must not be used to derive a fresh decision-bearing result.
+    pub fn revalidate_derived_source(
+        &self,
+        deployment: &ReferenceDeployment,
+        cx: &ReplayCx,
+    ) -> Result<()> {
+        self.publication_guard.revalidate(deployment, cx)
+    }
+
     pub(crate) fn publication_guard(&self) -> &SourcePublicationGuard {
         &self.publication_guard
     }

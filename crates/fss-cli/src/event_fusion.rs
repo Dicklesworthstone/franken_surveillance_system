@@ -251,6 +251,9 @@ impl EventFusionReport {
         if native.cascade_digest() != Some(cascade.digest()) {
             return Err(EventFusionError::Scope);
         }
+        native
+            .revalidate_derived_source(deployment, cx)
+            .map_err(|_| EventFusionError::Evidence)?;
         let coverage = native.coverage();
         let inputs: Vec<_> = native
             .candidates()
@@ -266,7 +269,7 @@ impl EventFusionReport {
                 }],
             })
             .collect();
-        Self::analyze(
+        let result = Self::analyze(
             native.plan_digest(),
             &[coverage],
             cascade,
@@ -274,7 +277,12 @@ impl EventFusionReport {
             inputs,
             deployment,
             cx,
-        )
+        )?;
+        native
+            .revalidate_derived_source(deployment, cx)
+            .map_err(|_| EventFusionError::Evidence)?;
+        checkpoint(cx)?;
+        Ok(result)
     }
 
     /// Fuse only actually associated native camera entries, preserving their dependency domains.
@@ -289,6 +297,9 @@ impl EventFusionReport {
         if native.cascade_digest() != Some(cascade.digest()) {
             return Err(EventFusionError::Scope);
         }
+        native
+            .revalidate_derived_sources(deployment, cx)
+            .map_err(|_| EventFusionError::Evidence)?;
         let mut inputs = Vec::new();
         for candidate in native.candidates() {
             let mut sources = Vec::new();
@@ -315,7 +326,7 @@ impl EventFusionReport {
             });
         }
         let coverage: Vec<_> = native.coverage().iter().collect();
-        Self::analyze(
+        let result = Self::analyze(
             native.plan_digest(),
             &coverage,
             cascade,
@@ -323,7 +334,12 @@ impl EventFusionReport {
             inputs,
             deployment,
             cx,
-        )
+        )?;
+        native
+            .revalidate_derived_sources(deployment, cx)
+            .map_err(|_| EventFusionError::Evidence)?;
+        checkpoint(cx)?;
+        Ok(result)
     }
 
     fn analyze(

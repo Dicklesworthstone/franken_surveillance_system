@@ -1545,6 +1545,20 @@ impl CorroborationReport {
         })
     }
 
+    /// Revalidate both retained camera sources, bound capsules, principals, privacy
+    /// generations, durable ledger heads, and deletion/custody state before downstream
+    /// derived analysis. This performs no publication and grants no effect authority.
+    pub fn revalidate_derived_sources(
+        &self,
+        deployment: &ReferenceDeployment,
+        cx: &ReplayCx,
+    ) -> Result<()> {
+        for guard in &self.publication_guards {
+            guard.revalidate(deployment, cx)?;
+        }
+        Ok(())
+    }
+
     /// Source-bound declaration generation and complete transitive common-cause decomposition.
     #[must_use]
     pub fn dependencies(&self) -> &CorroborationDependencyReport {
