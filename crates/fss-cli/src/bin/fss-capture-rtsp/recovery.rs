@@ -26,6 +26,10 @@ use fss_reference::rtsp::recording_archive::{ArchiveCodec, AvcArchiveCodec, Hevc
 
 use super::{Options, ReconnectPlan};
 
+#[path = "minimum_pins.rs"]
+mod minimum_pins;
+pub(crate) use minimum_pins::MinimumPins;
+
 /// Immutable capture scope consumed by the one storage-only recovery owner.
 ///
 /// This is a binary-internal projection of an already parsed native capture plan, not
@@ -39,6 +43,9 @@ pub(crate) trait RecoveryPlan {
     fn recovery_approval(&self) -> Option<ContentDigest>;
     fn index_catalogs(&self) -> bool;
     fn maximum_storage_bytes(&self) -> u64;
+    fn minimum_pins(&self) -> Option<&MinimumPins> {
+        None
+    }
 }
 
 impl RecoveryPlan for ReconnectPlan {
@@ -223,6 +230,9 @@ fn load<C: ArchiveCodec>(plan: &impl RecoveryPlan, clock: &Clock<'_>) -> Result<
     if plan.attempts().is_empty() || plan.attempts().len() > 16 {
         return Err(STATE);
     }
+    if let Some(minimum) = plan.minimum_pins() {
+        minimum.validate(plan.attempts())?;
+    }
     let mut locations = Vec::new();
     for attempt in plan.attempts() {
         clock.now()?;
@@ -241,14 +251,25 @@ fn load<C: ArchiveCodec>(plan: &impl RecoveryPlan, clock: &Clock<'_>) -> Result<
         }
     }
     let mut entries = Vec::new();
-    for (attempt, pair) in plan.attempts().iter().zip(locations.as_chunks::<2>().0) {
+    for (index, (attempt, pair)) in plan
+        .attempts()
+        .iter()
+        .zip(locations.as_chunks::<2>().0)
+        .enumerate()
+    {
         clock.now()?;
+        let minimum = plan.minimum_pins().and_then(|pins| pins.get(index));
+        // A saved prefix proves that this journal existed. Losing both stores cannot
+        // downgrade that requirement to the ordinary unobserved-attempt outcome.
+        if minimum.is_some() && pair[1].directory.is_none() {
+            return Err(STORAGE);
+        }
         let journal = if pair[1].directory.is_some() {
             Some(
                 CodecArchivePinJournal::<C>::open_complete(
                     &pair[1].canonical,
                     attempt.pin_scope(),
-                    None,
+                    minimum,
                     attempt.pin_limits(),
                     clock,
                 )
@@ -357,6 +378,12 @@ fn digest<C: ArchiveCodec>(
             e.digest(pin.retirement_digest());
             e.u64(pin.new_payload_bytes() as u64);
         }
+    }
+    // Omission preserves all existing approvals byte-for-byte. A supplied independent
+    // prefix binds even when it names the currently observed tip or a valid ancestor.
+    // Catalog approval already includes this exact recovery digest.
+    if let Some(minimum) = plan.minimum_pins() {
+        minimum.encode(&mut e);
     }
     Ok(ContentDigest::sha256(
         &e.finish_checked().map_err(|_| STATE)?,
@@ -471,7 +498,11 @@ fn preview_codec<C: ArchiveCodec>(plan: &impl RecoveryPlan, timeout: u64) -> Res
         ("attempts", format!("[{}]", rows.join(","))),
         (
             "trust",
-            string("explicit-scope-and-protected-directories:not-an-independent-rollback-proof"),
+            string(if plan.minimum_pins().is_some() {
+                "explicit-scope-and-protected-directories:independent-minimum-for-listed-attempts"
+            } else {
+                "explicit-scope-and-protected-directories:not-an-independent-rollback-proof"
+            }),
         ),
         (
             "effects",
@@ -489,14 +520,23 @@ fn preview_codec<C: ArchiveCodec>(plan: &impl RecoveryPlan, timeout: u64) -> Res
 }
 
 pub(crate) fn preview(plan: &impl RecoveryPlan, timeout: u64) -> Result<String> {
-    if plan.index_catalogs() {
-        return indexing::preview_index(plan, timeout);
+    let report = if plan.index_catalogs() {
+        indexing::preview_index(plan, timeout)?
+    } else {
+        match plan.attempts().first().ok_or(STATE)?.codec() {
+            "avc" => preview_codec::<AvcArchiveCodec>(plan, timeout)?,
+            "hevc" => preview_codec::<HevcArchiveCodec>(plan, timeout)?,
+            _ => return Err(STATE),
+        }
+    };
+    let report = match plan.minimum_pins() {
+        Some(minimum) => minimum.annotate(report)?,
+        None => report,
+    };
+    if report.len() > REPORT_LIMIT {
+        return Err(OUTPUT);
     }
-    match plan.attempts().first().ok_or(STATE)?.codec() {
-        "avc" => preview_codec::<AvcArchiveCodec>(plan, timeout),
-        "hevc" => preview_codec::<HevcArchiveCodec>(plan, timeout),
-        _ => Err(STATE),
-    }
+    Ok(report)
 }
 
 struct Reports<F> {
@@ -742,6 +782,9 @@ fn execute_codec<C: ArchiveCodec>(
             ("publication_started", "false".into()),
         ]),
     )?;
+    if let Some(minimum) = plan.minimum_pins() {
+        reports.row("minimum_prefixes_verified", minimum.json())?;
+    }
     // Keep ALL journal locks and every selected archive owner until restoration has stopped.
     // A cooperative writer cannot change an earlier preflighted store while a later one runs.
     preflight(plan, &mut entries, &clock)?;
@@ -780,3 +823,7 @@ pub(crate) fn execute(plan: &impl RecoveryPlan, timeout: u64) -> Result<()> {
 #[cfg(all(test, unix))]
 #[path = "recovery_tests.rs"]
 mod tests;
+
+#[cfg(all(test, unix))]
+#[path = "minimum_pin_recovery_tests.rs"]
+mod minimum_tests;

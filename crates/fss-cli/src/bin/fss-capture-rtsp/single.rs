@@ -13,7 +13,7 @@ use fss_core::{CanonicalEncoder, ContentDigest};
 
 use super::driver::{self, Supervision};
 use super::plan::{self, Options};
-use super::reconnect::recovery::{self, RecoveryPlan};
+use super::reconnect::recovery::{self, MinimumPins, RecoveryPlan};
 
 const POLICY: &str = "single-capture:owner-progress-supervision:no-reconnect:v1";
 pub(super) const HELP: &str = "\nOptional recording watchdog: --progress-timeout-ms 1..600000\n\
@@ -37,7 +37,13 @@ After work settles, --recover index previews source-verified catalog completion.
 It needs its OWN new approval, not the capture approval or the --recover yes approval.\n\
 Index preview reads original media but publishes nothing. Approved execution uses the\n\
 same journal/work/confirmation/catalog barriers as reconnect recovery. It never records\n\
-new pictures or invents a complete capture. No-op retries report the original catalog pins.\n";
+new pictures or invents a complete capture. No-op retries report the original catalog pins.\n\
+\n\
+Optional rollback fence for either recovery mode: --minimum-pin-anchors 1:SEQUENCE:sha256:HEX\n\
+Use the journal sequence/root saved independently from the original capture or recovery.\n\
+It must occur in the current journal; shorter, different or missing history refuses before\n\
+source reads or publication. Descendants are accepted, but current tips still need approval.\n\
+The anchor changes only recovery approval, never the original paths, generations or clocks.\n";
 
 pub(super) struct SinglePlan {
     capture: Options,
@@ -45,22 +51,33 @@ pub(super) struct SinglePlan {
     approval: Option<ContentDigest>,
     recovery_timeout_ns: Option<u64>,
     index_catalogs: bool,
+    minimum_pins: Option<MinimumPins>,
 }
 
 impl SinglePlan {
     pub(super) fn parse(args: &[OsString]) -> Result<Self, &'static str> {
-        if args.len() > plan::MAX_ARGUMENTS + 6
+        if args.len() > plan::MAX_ARGUMENTS + 8
             || !args.len().is_multiple_of(2)
             || args.iter().any(|arg| arg.as_encoded_bytes().len() > 4096)
         {
             return Err("single-capture argument bound exceeded");
         }
         let mut native = Vec::with_capacity(args.len());
+        let mut minimum_pins = None;
         let mut timeout_ns = None;
         let mut recover = false;
         let mut index_catalogs = false;
         let mut recovery_timeout_ns = None;
         for pair in args.chunks_exact(2) {
+            if pair[0] == "--minimum-pin-anchors" {
+                if minimum_pins.is_some() {
+                    return Err("duplicate minimum pin anchors");
+                }
+                minimum_pins = Some(MinimumPins::parse(
+                    pair[1].to_str().ok_or("UTF-8 minimum pin anchors required")?,
+                )?);
+                continue;
+            }
             if pair[0] == "--recover" {
                 if recover {
                     return Err("duplicate recovery mode");
@@ -107,11 +124,17 @@ impl SinglePlan {
                 .ok_or("progress timeout must be in 1..=600000 milliseconds")?;
             timeout_ns = Some(milliseconds * 1_000_000);
         }
+        if !recover && minimum_pins.is_some() {
+            return Err("minimum pin anchors require --recover yes or --recover index");
+        }
         if !recover && recovery_timeout_ns.is_some() {
             return Err("recovery timeout requires --recover yes or --recover index");
         }
         let recovery_timeout_ns = recover.then_some(recovery_timeout_ns.unwrap_or(30_000_000_000));
         let capture = Options::parse(&native)?;
+        if let Some(minimum) = &minimum_pins {
+            minimum.validate(std::slice::from_ref(&capture))?;
+        }
         let approval = capture.approve;
         Ok(Self {
             capture,
@@ -119,6 +142,7 @@ impl SinglePlan {
             approval,
             recovery_timeout_ns,
             index_catalogs,
+            minimum_pins,
         })
     }
 
@@ -213,6 +237,9 @@ impl RecoveryPlan for SinglePlan {
     }
     fn index_catalogs(&self) -> bool {
         self.index_catalogs
+    }
+    fn minimum_pins(&self) -> Option<&MinimumPins> {
+        self.minimum_pins.as_ref()
     }
     fn maximum_storage_bytes(&self) -> u64 {
         self.capture.publication_limits().spool.max_total_bytes
