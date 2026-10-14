@@ -32,6 +32,8 @@ use fss_reference::{ADP_REPLAY_ROW_ID, ReferenceDeployment, ReplayCx};
 #[path = "fss-file/pgm_stream.rs"]
 mod pgm_stream;
 
+#[path = "fss-decode-rtp/detect_cmd.rs"]
+mod detect_cmd;
 #[path = "fss-decode-rtp/motion_cmd.rs"]
 mod motion_cmd;
 #[path = "fss-decode-rtp/receipt_cmd.rs"]
@@ -39,7 +41,7 @@ mod receipt_cmd;
 #[path = "fss-decode-rtp/track_cmd.rs"]
 mod track_cmd;
 
-const HELP: &str = "fss-decode-rtp <inspect|decode|receipts|verify-receipts|motion|track> --root DIR --site SITE --source-root sha256:HEX\n\
+const HELP: &str = "fss-decode-rtp <inspect|decode|receipts|verify-receipts|motion|detect|track> --root DIR --site SITE --source-root sha256:HEX\n\
   inspect: verifies one retained original RTP graph and lists in-source SPS/PPS candidates.\n\
   decode: native ordered AVC decoding from completed retained custody, with current privacy.\n\
     [--sps sha256:HEX --pps sha256:HEX] (omit only for one unambiguous pair)\n\
@@ -56,6 +58,9 @@ const HELP: &str = "fss-decode-rtp <inspect|decode|receipts|verify-receipts|moti
   motion: --custody current --pixel-delta N --minimum-changed-pixels N --report-out FILE\n\
     [--minimum-changed-ppm N] [--max-comparisons N] [--max-report-bytes N]\n\
     Measures masked frame changes, not people or physical absence; accepts no --output.\n\
+  detect: --custody current --package FILE --package-sha256 sha256:HEX --report-out FILE\n\
+    [--minimum-score-ppm N] [--max-report-bytes N]\n\
+    Runs the verified neural package over every custody-checked native frame; no pixel output.\n\
   track: --custody current --package FILE --package-sha256 sha256:HEX --class-index N\n\
     --report-out FILE [--minimum-score-ppm N] [--track-min-hits N] [--track-max-misses N]\n\
     [--track-iou-ppm N] [--max-track-frames N] [--max-report-bytes N]\n\
@@ -540,6 +545,9 @@ fn execute(
 }
 fn main() -> ExitCode {
     let args: Vec<_> = std::env::args_os().skip(1).collect();
+    if let Some(exit) = detect_cmd::dispatch(&args) {
+        return exit;
+    }
     if let Some(exit) = track_cmd::dispatch(&args) {
         return exit;
     }
