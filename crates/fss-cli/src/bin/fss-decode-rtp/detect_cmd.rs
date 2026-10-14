@@ -234,7 +234,14 @@ fn execute_inner(
                         report.record(row.as_bytes(), &mut check)?;
                     }
                 }
-                RtpDetectionStep::Progress { .. } => {}
+                RtpDetectionStep::Progress { event, effect } => {
+                    let event = fss_cli::escape_json_str(&format!("{event:?}"));
+                    let effect = fss_cli::escape_json_str(&format!("{effect:?}"));
+                    let row = format!(
+                        "{{\"type\":\"source_progress\",\"event\":\"{event}\",\"effect\":\"{effect}\"}}\n"
+                    );
+                    report.record(row.as_bytes(), &mut check)?;
+                }
                 RtpDetectionStep::Ended(stats) => {
                     if !stats.complete() {
                         return Err(failure("RTP detection ended with incomplete source or analysis"));
