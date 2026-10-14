@@ -171,6 +171,7 @@ fn package_tamper_unsafe_path_and_incomplete_source_never_certify_detection() ->
     assert!(!stdout.contains("detection_report_sha256="));
     if tail_report.exists() {
         let report = std::fs::read_to_string(tail_report)?;
+        assert!(report.contains("\"type\":\"source_progress\""));
         assert!(!report.lines().any(|line| {
             line.contains("\"type\":\"summary\"") && line.contains("\"complete\":true")
         }));
