@@ -228,6 +228,7 @@ impl TrackCore {
             || detections.len() > self.limits.step.max_detections
         { return Err(RtpTrackingError::Limit); }
         let reset = match self.last {
+            None if self.gap || order.decoder_epoch > 0 => Some(RtpTrackReset::SourceGap),
             None => Some(RtpTrackReset::Baseline),
             Some(last) => {
                 if order.index <= last.index || order.decoder_epoch < last.decoder_epoch {
@@ -563,4 +564,20 @@ mod tests {
             assert!(matches!(TrackCore::new(config(), limits), Err(RtpTrackingError::InvalidRequest)));
         }
     }
+    #[test]
+    fn first_usable_frame_after_damage_is_not_a_clean_baseline() -> TestResult {
+        for signalled_gap in [false, true] {
+            let mut core = TrackCore::new(config(), RtpTrackingLimits::default())?;
+            core.gap = signalled_gap;
+            let mut first = order(0);
+            first.decoder_epoch = usize::from(!signalled_gap);
+            let (output, reset) = core.advance(first, &[detection(0.0)])?;
+            assert_eq!(reset, Some(RtpTrackReset::SourceGap));
+            assert_eq!(core.epoch, 0);
+            assert_eq!(output.output.tracks[0].hits, 1);
+            assert_eq!(core.frames, 1);
+        }
+        Ok(())
+    }
+
 }

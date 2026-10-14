@@ -12,7 +12,7 @@ on:
 permissions:
   contents: read
 concurrency:
-  group: rtp-tracking-${{ github.ref }}
+  group: rtp-tracking-${{ github.sha }}
   cancel-in-progress: true
 jobs:
   native-tracking:

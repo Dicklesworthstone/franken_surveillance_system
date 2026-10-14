@@ -124,7 +124,7 @@ fn cold_native_tracking_is_history_linked_reproducible_and_read_only() -> TestRe
         let all = frame.detected().detections().detections();
         let selected: BTreeSet<_> = all.iter().enumerate()
             .filter_map(|(i, d)| (d.class_index() == 0).then_some(i)).collect();
-        assert_eq!(selected, frame.observations().iter().map(|o| o.detection_index).collect());
+        assert_eq!(selected, frame.observations().iter().map(|o| o.detection_index).collect::<BTreeSet<_>>());
         assert!(frame.observations().iter().all(|o| o.status != TrackStatus::Lost));
         previous = Some(frame.digest());
     }
@@ -230,6 +230,7 @@ fn real_recovery_preserves_source_gaps_and_independent_tracking_allowance() -> T
     let frames = collect(&mut owner, &f)?;
     assert!(!frames.is_empty());
     assert!(frames.iter().all(|v| v.detected().source().decoder_epoch > 0));
+    assert_eq!(frames.first().ok_or("recovered frame")?.reset(), Some(RtpTrackReset::SourceGap));
     assert!(owner.stats().detection.native.refusals > 0);
     assert!(!owner.stats().complete());
     let mut req = req; req.limits.max_frames = 1;
