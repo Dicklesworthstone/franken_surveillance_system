@@ -404,6 +404,9 @@ fn step_retryable(step: &LiveAvcStep) -> bool {
 }
 
 #[cfg(test)]
+mod transport_tests;
+
+#[cfg(test)]
 mod tests {
     use super::*;
     use crate::rtsp::live_avc::automatic::reconnect::{
@@ -542,7 +545,10 @@ mod tests {
         )?;
         owner.connect(config, recording_scope, 0, &authority)?;
         let (_peer, _) = listener.accept()?;
-        owner.poll(SocketReadiness::default(), &credentials()?, [1; 16], 0, &authority)?;
+        assert!(matches!(
+            owner.poll(SocketReadiness::default(), &credentials()?, [1; 16], 0, &authority)?,
+            SupervisedRecordingStep::Recording { output: AutomaticRecordingStep::Queued(_), .. }
+        ));
         let reserved = owner.resource_budget();
         authority.revoked.set(true);
         let failure = owner.poll(SocketReadiness::default(), &credentials()?, [2; 16], 1, &authority)
