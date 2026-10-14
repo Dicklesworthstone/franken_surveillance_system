@@ -4,6 +4,9 @@ on:
     branches: [main]
     paths:
       - 'crates/fss-reference/**'
+      - 'crates/fss-cli/src/bin/fss-decode-rtp.rs'
+      - 'crates/fss-cli/src/bin/fss-decode-rtp/track_cmd.rs'
+      - 'crates/fss-cli/tests/rtp_tracking_cli.rs'
       - 'crates/fss-core/**'
       - 'crates/fss-codec-h264/**'
       - 'scripts/check_rtp_tracking.sh'
