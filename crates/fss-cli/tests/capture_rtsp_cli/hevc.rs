@@ -283,7 +283,10 @@ fn captured(
     })
 }
 
-fn load_windows(directory: &Directory, rows: &[Value]) -> Test<Vec<PreparedHevcRecording>> {
+pub(super) fn load_windows(
+    directory: &Directory,
+    rows: &[Value],
+) -> Test<Vec<PreparedHevcRecording>> {
     let publisher = LocalRootPublisher::open(
         directory.root(),
         LocalPublicationLimits::new(
@@ -411,7 +414,7 @@ fn stopped(rows: &[Value], pictures: i128, windows: i128) -> Test {
     Ok(())
 }
 
-fn import_and_cold_decode(
+pub(super) fn import_and_cold_decode(
     directory: &Directory,
     rows: &[Value],
     frames: i128,

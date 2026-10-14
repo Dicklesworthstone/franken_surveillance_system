@@ -27,6 +27,9 @@ mod authentication;
 #[path = "capture_rtsp_cli/hevc.rs"]
 mod hevc;
 
+#[path = "capture_rtsp_cli/reordered.rs"]
+mod reordered;
+
 type Test<T = ()> = Result<T, Box<dyn std::error::Error + Send + Sync>>;
 
 const SENSOR: &str = "sensor:rtsp-capture-cli";
