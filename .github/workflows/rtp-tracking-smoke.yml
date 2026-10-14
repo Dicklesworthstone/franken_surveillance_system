@@ -1,0 +1,38 @@
+name: Native RTP tracking reference smoke
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'crates/fss-reference/**'
+      - 'crates/fss-cli/src/bin/fss-decode-rtp.rs'
+      - 'crates/fss-cli/src/bin/fss-decode-rtp/track_cmd.rs'
+      - 'crates/fss-cli/src/bin/fss-decode-rtp/detect_cmd.rs'
+      - 'crates/fss-cli/tests/rtp_tracking_cli.rs'
+      - 'crates/fss-cli/tests/rtp_detection_cli.rs'
+      - 'crates/fss-core/**'
+      - 'crates/fss-codec-h264/**'
+      - 'scripts/check_rtp_tracking.sh'
+      - '.github/workflows/rtp-tracking-smoke.yml'
+  workflow_dispatch:
+permissions:
+  contents: read
+concurrency:
+  group: rtp-tracking-${{ github.sha }}
+  cancel-in-progress: true
+jobs:
+  native-tracking:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    env:
+      CARGO_BUILD_JOBS: 2
+      CARGO_INCREMENTAL: 0
+      CARGO_PROFILE_DEV_DEBUG: 0
+      CARGO_PROFILE_TEST_DEBUG: 0
+      CARGO_NET_OFFLINE: 'true'
+      RUSTUP_AUTO_INSTALL: 0
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
+      - name: Bootstrap pinned compiler
+        run: bash scripts/bootstrap_toolchain.sh
+      - name: Native source to anonymous tracking contracts
+        run: bash scripts/check_rtp_tracking.sh

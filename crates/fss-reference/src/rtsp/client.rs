@@ -7,8 +7,8 @@ pub mod authenticated;
 /// Bounded RFC 7798 negotiation without a decoder or codec fallback.
 pub mod hevc;
 
-use super::selection::select_h264_description;
-use super::{AuthScheme, RtspHeaders, RtspResponse, parse_sdp_bytes};
+use super::selection::{select_h264_description, select_h265_description};
+use super::{AuthScheme, RtspHeaders, RtspResponse};
 use std::fmt;
 
 const SECOND: u64 = 1_000_000_000;
@@ -329,6 +329,22 @@ impl RtspClientSession {
             return Err(ClientError::Configuration);
         }
         let mut session = Self::new(config)?;
+        session.selected_payload_type = Some(payload_type);
+        Ok(session)
+    }
+    /// Pin both codec and payload before any request or authentication challenge.
+    /// No other offered payload can substitute for an absent or invalid selection.
+    /// This also permits explicit selection between multiple HEVC mappings while
+    /// retaining the existing HEVC format, URI, session and transport validators.
+    pub fn with_codec_and_payload_type(
+        config: ClientConfig,
+        codec: ClientCodec,
+        payload_type: u8,
+    ) -> Result<Self, ClientError> {
+        if payload_type > 127 {
+            return Err(ClientError::Configuration);
+        }
+        let mut session = Self::with_codec(config, codec)?;
         session.selected_payload_type = Some(payload_type);
         Ok(session)
     }
@@ -773,57 +789,19 @@ fn description(
     {
         return Err(ClientError::Description);
     }
-    let text = std::str::from_utf8(&r.body).map_err(|_| ClientError::Description)?;
-    // AVC can select an exact offered payload while HEVC retains its separately
-    // implemented single-payload admission contract. Neither path switches codecs.
-    let sdp = match codec {
-        ClientCodec::H264 => select_h264_description(&r.body, config.media_index, payload_type)
-            .map_err(|_| ClientError::Description)?,
+    // Both codec owners consume one bounded exact payload projection. HEVC must
+    // receive that projection's matching text because the observational parser
+    // does not retain every RFC 7798 field. Original response custody is unchanged.
+    let (sdp, hevc_text) = match codec {
+        ClientCodec::H264 => (
+            select_h264_description(&r.body, config.media_index, payload_type)
+                .map_err(|_| ClientError::Description)?,
+            None,
+        ),
         ClientCodec::H265 => {
-            // Existing SDP parser intentionally keeps a broad observational subset. At a client
-            // decision boundary, reject ambiguous last-wins attributes and multi-format m-lines.
-            let (mut section, mut controls, mut maps, mut formats) = (None, 0, 0, 0);
-            for line in text.lines().map(str::trim) {
-                if line.starts_with("m=") {
-                    section = Some(section.map_or(0, |n: usize| n + 1));
-                    controls = 0;
-                    maps = 0;
-                    formats = 0;
-                    if section == Some(config.media_index) && line.split_whitespace().count() != 4 {
-                        return Err(ClientError::Description);
-                    }
-                } else if line.starts_with("a=control:") {
-                    controls += 1;
-                    if controls > 1 {
-                        return Err(ClientError::Description);
-                    }
-                } else if section == Some(config.media_index) && line.starts_with("a=rtpmap:") {
-                    maps += 1;
-                    if maps > 1 {
-                        return Err(ClientError::Description);
-                    }
-                } else if section == Some(config.media_index) && line.starts_with("a=fmtp:") {
-                    formats += 1;
-                    if formats > 1 {
-                        return Err(ClientError::Description);
-                    }
-                    let mut seen = std::collections::BTreeSet::new();
-                    let attrs = line.split_once(' ').ok_or(ClientError::Description)?.1;
-                    for attr in attrs.split(';') {
-                        let key = attr
-                            .trim()
-                            .split('=')
-                            .next()
-                            .ok_or(ClientError::Description)?
-                            .trim()
-                            .to_ascii_lowercase();
-                        if key.is_empty() || !seen.insert(key) {
-                            return Err(ClientError::Description);
-                        }
-                    }
-                }
-            }
-            parse_sdp_bytes(&r.body).map_err(|_| ClientError::Description)?
+            let (sdp, text) = select_h265_description(&r.body, config.media_index, payload_type)
+                .map_err(|_| ClientError::Description)?;
+            (sdp, Some(text))
         }
     };
     let m = sdp
@@ -832,7 +810,11 @@ fn description(
         .ok_or(ClientError::Description)?;
     let media = match codec {
         ClientCodec::H264 => NegotiatedMedia::H264(h264_media(m)?),
-        ClientCodec::H265 => NegotiatedMedia::H265(hevc::negotiate(text, config.media_index, m)?),
+        ClientCodec::H265 => NegotiatedMedia::H265(hevc::negotiate(
+            hevc_text.as_deref().ok_or(ClientError::Description)?,
+            config.media_index,
+            m,
+        )?),
     };
     let content_base = singleton(&r.headers, "Content-Base")?;
     let location = singleton(&r.headers, "Content-Location")?;
@@ -985,3 +967,127 @@ fn resolve(config: &ClientConfig, base: &str, control: &str) -> Result<String, C
 #[cfg(test)]
 #[path = "client/selection_tests.rs"]
 mod selection_tests;
+
+#[cfg(test)]
+mod hevc_selection_tests {
+    use super::*;
+    use crate::rtsp::{RtspEvent, RtspLimits, RtspParser};
+
+    const PREFIX: &str = "v=0\r\no=- 1 1 IN IP4 127.0.0.1\r\ns=fixture\r\nt=0 0\r\na=control:*\r\n";
+    const MIXED: &str = "m=video 0 RTP/AVP 96 98\r\na=control:video\r\na=rtpmap:96 H264/90000\r\na=fmtp:96 packetization-mode=1;sprop-parameter-sets=Z0IAHw==,aAA=\r\na=rtpmap:98 H265/90000\r\na=fmtp:98 sprop-max-don-diff=0;sprop-vps=QAEM;sprop-sps=QgEM;sprop-pps=RAHA\r\na=rtcp-rsize\r\n";
+
+    fn config() -> ClientConfig {
+        ClientConfig {
+            presentation_uri: "rtsp://camera/live/".into(),
+            control_root_uri: "rtsp://camera/live".into(),
+            media_index: 0,
+            channels: (0, 1),
+            response_timeout_ns: SECOND,
+            default_session_timeout_seconds: 60,
+        }
+    }
+
+    fn describe(session: &mut RtspClientSession, body: &str) -> Result<ClientProgress, ClientError> {
+        let request = session.request(ClientCommand::Describe, 0)?;
+        let wire = format!(
+            "RTSP/1.0 200 OK\r\nCSeq: {}\r\nContent-Type: application/sdp\r\nContent-Length: {}\r\n\r\n{body}",
+            request.cseq(), body.len(),
+        );
+        let mut parser = RtspParser::with_limits(RtspLimits {
+            max_line_bytes: 2_048,
+            max_headers: 32,
+            max_body_bytes: 65_536,
+            max_interleaved_bytes: 65_535,
+        });
+        for event in parser.feed(wire.as_bytes()).map_err(|_| ClientError::Response)? {
+            if let RtspEvent::Response(response) = event {
+                return session.accept(&response, 1);
+            }
+        }
+        Err(ClientError::Response)
+    }
+
+    #[test]
+    fn mixed_offer_selects_hevc_and_reaches_scoped_setup() -> Result<(), ClientError> {
+        let mut session = RtspClientSession::with_codec(config(), ClientCodec::H265)?;
+        assert_eq!(describe(&mut session, &format!("{PREFIX}{MIXED}"))?,
+            ClientProgress::Accepted(ClientState::Described));
+        assert!(session.media().is_none());
+        let media = session.hevc_media().ok_or(ClientError::Description)?;
+        assert_eq!(media.payload_type(), 98);
+        assert_eq!(media.vps(), &[vec![0x40, 1, 0x0c]]);
+        assert_eq!(media.sps(), &[vec![0x42, 1, 0x0c]]);
+        assert_eq!(media.pps(), &[vec![0x44, 1, 0xc0]]);
+        assert!(media.reduced_rtcp());
+        let setup = session.request(ClientCommand::Setup, 2)?;
+        assert_eq!(setup.cseq(), 2);
+        assert!(setup.bytes().starts_with(b"SETUP rtsp://camera/live/video RTSP/1.0\r\n"));
+        Ok(())
+    }
+
+    #[test]
+    fn ambiguous_hevc_requires_exact_selection_and_never_borrows_sets() -> Result<(), ClientError> {
+        let body = format!("{PREFIX}{MIXED}")
+            .replace("96 98", "96 98 99")
+            + "a=rtpmap:99 H265/90000\r\n";
+        let mut ambiguous = RtspClientSession::with_codec(config(), ClientCodec::H265)?;
+        assert_eq!(describe(&mut ambiguous, &body), Err(ClientError::Description));
+        assert_eq!(ambiguous.state(), ClientState::Failed);
+        assert!(ambiguous.hevc_media().is_none());
+        let mut exact = RtspClientSession::with_codec_and_payload_type(config(), ClientCodec::H265, 99)?;
+        describe(&mut exact, &body)?;
+        let media = exact.hevc_media().ok_or(ClientError::Description)?;
+        assert_eq!(media.payload_type(), 99);
+        assert!(media.vps().is_empty());
+        assert!(media.sps().is_empty());
+        assert!(media.pps().is_empty());
+        Ok(())
+    }
+
+    #[test]
+    fn exact_hevc_refuses_missing_and_wrong_codec_mapping() -> Result<(), ClientError> {
+        for payload in [96, 97] {
+            let mut session = RtspClientSession::with_codec_and_payload_type(config(), ClientCodec::H265, payload)?;
+            assert_eq!(describe(&mut session, &format!("{PREFIX}{MIXED}")), Err(ClientError::Description));
+            assert!(session.hevc_media().is_none());
+            assert!(session.request(ClientCommand::Setup, 2).is_err());
+        }
+        assert!(matches!(RtspClientSession::with_codec_and_payload_type(config(), ClientCodec::H265, 128), Err(ClientError::Configuration)));
+        Ok(())
+    }
+
+    #[test]
+    fn selected_hevc_preserves_don_multilayer_and_unknown_format_clamps() -> Result<(), ClientError> {
+        let body = format!("{PREFIX}{MIXED}");
+        for malformed in [
+            body.replace("sprop-max-don-diff=0", "sprop-max-don-diff=1"),
+            body.replace("sprop-max-don-diff=0", "tx-mode=MRST"),
+            body.replace("sprop-max-don-diff=0", "unsupported-required-field=1"),
+            body.replace("sprop-max-don-diff=0", "profile-id=1;PROFILE-ID=2"),
+            format!("{body}a=rtcp-mux\r\n"),
+            body.replace("m=video", "a=group:LS video\r\nm=video"),
+            body.replace("H265/90000", "H265/8000"),
+        ] {
+            let mut session = RtspClientSession::with_codec(config(), ClientCodec::H265)?;
+            assert_eq!(describe(&mut session, &malformed), Err(ClientError::Description));
+            assert!(session.hevc_media().is_none());
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn selected_hevc_keeps_media_ordinal_and_control_scope() -> Result<(), ClientError> {
+        let body = format!("{PREFIX}m=audio 0 RTP/AVP 0\r\na=control:audio\r\n{MIXED}");
+        let mut owner = config();
+        owner.media_index = 1;
+        let mut session = RtspClientSession::with_codec(owner, ClientCodec::H265)?;
+        describe(&mut session, &body)?;
+        assert_eq!(session.hevc_media().ok_or(ClientError::Description)?.payload_type(), 98);
+        for control in ["rtsp://other/live/video", "rtsp://camera/outside/video"] {
+            let mut session = RtspClientSession::with_codec(config(), ClientCodec::H265)?;
+            assert_eq!(describe(&mut session, &format!("{PREFIX}{MIXED}").replace("a=control:video", &format!("a=control:{control}"))), Err(ClientError::UriScope));
+            assert!(session.hevc_media().is_none());
+        }
+        Ok(())
+    }
+}

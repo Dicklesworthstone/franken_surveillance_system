@@ -112,6 +112,8 @@ fn unit_kind(id: &str) -> &'static str {
     const KINDS: &[(&str, &str)] = &[
         ("batch:file-import:", "import_custody"),
         ("slot:fi-", "import_custody"),
+        ("batch:rtp:", "import_custody"),
+        ("slot:rtp-", "import_custody"),
         ("batch:recorded-decode:", "decoded_frames"),
         ("slot:fd-", "decoded_frames"),
         ("batch:coverage:", "coverage_record"),
@@ -201,6 +203,8 @@ pub(super) struct Universe {
     broken_slots: Vec<String>,
     /// Completed imports (manifest batch present) and their seed units.
     imports: BTreeMap<ContentDigest, Vec<usize>>,
+    /// RTP membership comes from full source/recipe/terminal verification, not a name prefix.
+    rtp_imports: BTreeMap<ContentDigest, super::rtp::RtpImport>,
     /// Ledger object id -> who wrote it.
     writers: BTreeMap<String, Vec<Writer>>,
     /// Committed deletions whose completion record is not durable yet.
@@ -401,6 +405,25 @@ impl Universe {
             }
         }
 
+        // RTP imports use their exact published root as the lifecycle identity. A terminal
+        // looking name is only a discovery hint: replay verifies the report, source capsules,
+        // and completion batch before any seed or sensor membership is admitted.
+        let mut rtp_imports = BTreeMap::new();
+        for unit in &units {
+            let Some(identity) = unit.id.strip_prefix("batch:rtp:").and_then(parse_hex) else {
+                continue;
+            };
+            if imports.contains_key(&identity) {
+                return Err(DeletionError::RecordMismatch);
+            }
+            let admitted = super::rtp::inspect(deployment, identity, cx)?;
+            let seeds = units.iter().enumerate()
+                .filter_map(|(at, unit)| admitted.owns(&unit.id).then_some(at))
+                .collect();
+            imports.insert(identity, seeds);
+            rtp_imports.insert(identity, admitted);
+        }
+
         // Candidate universe of embedded references.
         let spool_digests: Vec<ContentDigest> = spool.digests().collect();
         let mut universe: HashSet<[u8; 32]> = HashSet::new();
@@ -526,6 +549,7 @@ impl Universe {
             staging,
             broken_slots,
             imports,
+            rtp_imports,
             writers,
             incomplete_deletions: index
                 .entries()
@@ -573,7 +597,10 @@ impl Universe {
             let mut sensors: BTreeMap<SensorId, BTreeSet<ContentDigest>> = BTreeMap::new();
             let mut unresolved = Vec::new();
             for import in self.imports.keys() {
-                match import_sensors(deployment, *import) {
+                let named = self.rtp_imports.get(import).map(|rtp| {
+                    BTreeSet::from([rtp.sensor.clone()])
+                }).or_else(|| import_sensors(deployment, *import));
+                match named {
                     Some(named) => {
                         for sensor in named {
                             sensors.entry(sensor).or_default().insert(*import);
@@ -884,7 +911,10 @@ impl Universe {
 
         let mut hull: Option<CaptureInterval> = None;
         for import in &imports {
-            let import_object = format!("object:file-import:{}", hex(*import));
+            let import_object = self.rtp_imports.get(import).map_or_else(
+                || format!("object:file-import:{}", hex(*import)),
+                |rtp| rtp.object_id.clone(),
+            );
             let own = self
                 .current
                 .get(&import_object)

@@ -10,9 +10,11 @@ case "${1:-tests}" in
       --test rtpdump_custody_decode_contract --test rtpdump_frame_receipt_contract \
       --test rtpdump_motion_contract --test rtpdump_detection_contract \
       --test rtpdump_receipt_stream_contract \
+      --test rtpdump_deletion_contract --test rtpdump_hold_contract \
       --test rtpdump_avc_contract --test rtpdump_recovery_contract || status=1
     cargo +nightly-2026-08-31 test --locked --offline --no-fail-fast -p fss-cli \
       --bin fss-decode-rtp --bin fss-file --test retained_rtp_decode_cli \
+      --test rtp_lifecycle_cli \
       --test rtp_current_custody_cli --test rtp_receipts_cli --test rtp_motion_cli || status=1
     exit "$status"
     ;;
@@ -24,6 +26,11 @@ case "${1:-tests}" in
       crates/fss-reference/tests/rtpdump_motion_contract.rs \
       crates/fss-reference/src/ingest/rtpdump/decode.rs \
       crates/fss-reference/src/ingest/rtpdump/recovery.rs \
+      crates/fss-reference/src/ingest/rtpdump/lifecycle.rs \
+      crates/fss-reference/src/deletion/rtp.rs \
+      crates/fss-reference/tests/rtpdump_deletion_contract.rs \
+      crates/fss-reference/tests/rtpdump_hold_contract.rs \
+      crates/fss-cli/tests/rtp_lifecycle_cli.rs \
       crates/fss-reference/src/ingest/rtpdump/recovery/decode.rs \
       crates/fss-reference/src/ingest/rtpdump/recovery/checked_decode.rs \
       crates/fss-reference/src/ingest/rtpdump/recovery/checked_decode/receipt.rs \

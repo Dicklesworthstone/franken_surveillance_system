@@ -1,6 +1,7 @@
 #![forbid(unsafe_code)]
 //! Source-preserving recorded RTP ingestion. No sockets or credential handling.
 mod framing;
+mod lifecycle;
 pub use framing::*;
 /// Ordered recorded-RTP picture grouping through the existing AVC receiver.
 pub mod avc;
@@ -18,3 +19,5 @@ pub mod receipt_stream;
 pub mod recovery;
 /// Recorded packets through the real sequence and H.264 kernels.
 pub mod replay;
+/// Source-witnessed anonymous tracking of one explicitly selected neural class.
+pub mod track;

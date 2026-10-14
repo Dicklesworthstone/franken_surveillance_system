@@ -44,6 +44,7 @@ pub mod belief;
 pub mod holds;
 mod index;
 mod plan;
+mod rtp;
 /// Conservative age selection and exact, crash-resumable cleanup of completed recordings.
 pub mod retention;
 pub mod scope;

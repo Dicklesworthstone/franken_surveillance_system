@@ -1,5 +1,5 @@
 #![forbid(unsafe_code)]
-//! Bounded, payload-exact H.264 selection from an SDP media offer.
+//! Bounded, payload-exact AVC and HEVC selection from an SDP media offer.
 //!
 //! This is a derived description, not replacement source evidence. The caller retains
 //! the original DESCRIBE response. Selection does not authorize a different media
@@ -25,9 +25,9 @@ pub enum SelectionError {
     Media,
     /// The exact requested payload was not offered in this media section.
     Payload,
-    /// No selected mapping is exactly H.264 with its 90 kHz video clock.
+    /// No selected mapping is exactly the requested codec with its 90 kHz video clock.
     Unsupported,
-    /// More than one H.264 mapping exists and no exact payload was selected.
+    /// More than one requested-codec mapping exists and no exact payload was selected.
     Ambiguous,
     /// A payload, mapping, format description, control, or format key is duplicated.
     Duplicate,
@@ -57,6 +57,38 @@ pub fn select_h264_description(
     media_index: usize,
     payload_type: Option<u8>,
 ) -> Result<SdpSession, SelectionError> {
+    let derived = select_video_text(body, media_index, payload_type, "H264/90000")?;
+    parse_sdp_bytes(derived.as_bytes()).map_err(|_| SelectionError::Description)
+}
+
+/// Select one exact H.265 mapping and return its parsed SDP and derived description.
+///
+/// The second tuple member must accompany the parsed media into the HEVC semantic
+/// validator: the observational SDP representation does not retain every RFC 7798
+/// attribute. Validating the original multi-payload text against the projected media
+/// would mix two different descriptions. Neither returned value replaces original
+/// DESCRIBE custody. This projection alone does not admit DON, multilayer signaling,
+/// parameter-set syntax, URI scope, transport or a network effect.
+///
+/// Without an explicit payload, exactly one H265/90000 mapping must exist in the
+/// selected section. An explicitly requested missing or unsupported mapping refuses
+/// even if another valid HEVC offer exists. Parameters are never borrowed from it.
+pub fn select_h265_description(
+    body: &[u8],
+    media_index: usize,
+    payload_type: Option<u8>,
+) -> Result<(SdpSession, String), SelectionError> {
+    let derived = select_video_text(body, media_index, payload_type, "H265/90000")?;
+    let parsed = parse_sdp_bytes(derived.as_bytes()).map_err(|_| SelectionError::Description)?;
+    Ok((parsed, derived))
+}
+
+fn select_video_text(
+    body: &[u8],
+    media_index: usize,
+    payload_type: Option<u8>,
+    encoding: &str,
+) -> Result<String, SelectionError> {
     if body.len() > MAX_SELECTION_BYTES || media_index >= MAX_SELECTION_MEDIA {
         return Err(SelectionError::Limit);
     }
@@ -154,14 +186,14 @@ pub fn select_h264_description(
         if !offered[usize::from(pt)] {
             return Err(SelectionError::Payload);
         }
-        if !maps[usize::from(pt)].is_some_and(h264_mapping) {
+        if !maps[usize::from(pt)].is_some_and(|value| value.eq_ignore_ascii_case(encoding)) {
             return Err(SelectionError::Unsupported);
         }
         pt
     } else {
         let mut selected = None;
         for pt in 0_u8..=127 {
-            if maps[usize::from(pt)].is_some_and(h264_mapping) {
+            if maps[usize::from(pt)].is_some_and(|value| value.eq_ignore_ascii_case(encoding)) {
                 if selected.is_some() {
                     return Err(SelectionError::Ambiguous);
                 }
@@ -202,7 +234,7 @@ pub fn select_h264_description(
                     use std::fmt::Write as _;
                     // Encoding names are case-insensitive. Normalize only this
                     // verified exact mapping for the existing codec consumer.
-                    writeln!(&mut derived, "a=rtpmap:{selected} H264/90000")
+                    writeln!(&mut derived, "a=rtpmap:{selected} {encoding}")
                         .map_err(|_| SelectionError::Allocation)?;
                 }
                 continue;
@@ -216,7 +248,7 @@ pub fn select_h264_description(
         derived.push_str(line);
         derived.push('\n');
     }
-    parse_sdp_bytes(derived.as_bytes()).map_err(|_| SelectionError::Description)
+    Ok(derived)
 }
 
 fn decimal(value: &str) -> Result<(), SelectionError> {
@@ -244,10 +276,6 @@ fn payload_attribute(value: &str) -> Result<(u8, &str), SelectionError> {
         return Err(SelectionError::Malformed);
     }
     Ok((parse_payload(token)?, value))
-}
-
-fn h264_mapping(value: &str) -> bool {
-    value.eq_ignore_ascii_case("H264/90000")
 }
 
 fn validate_format(value: &str) -> Result<(), SelectionError> {
@@ -475,5 +503,86 @@ mod tests {
         );
         let many_lines = format!("{OFFER}{}", "\n".repeat(MAX_SDP_LINES));
         assert_eq!(select(&many_lines, None), Err(SelectionError::Limit));
+    }
+
+    #[test]
+    fn hevc_selection_preserves_only_its_own_format_and_controls() -> Result<(), SelectionError> {
+        let body = format!("{PREFIX}{OFFER}");
+        let (sdp, derived) = select_h265_description(body.as_bytes(), 0, None)?;
+        assert_eq!(sdp.media[0].payload_type, 98);
+        assert_eq!(sdp.media[0].encoding_name.as_deref(), Some("H265"));
+        assert_eq!(sdp.media[0].control.as_deref(), Some("trackID=1"));
+        assert_eq!(sdp.session_control.as_deref(), Some("*"));
+        assert!(sdp.media[0].rtcp_reduced_size);
+        assert!(sdp.media[0].sprop_parameter_sets.is_empty());
+        assert!(derived.contains("a=fmtp:98 arbitrary=other-codec\n"));
+        assert!(!derived.contains("a=rtpmap:96"));
+        assert!(!derived.contains("a=fmtp:96"));
+        assert_eq!(sdp, parse_sdp_bytes(derived.as_bytes()).map_err(|_| SelectionError::Description)?);
+        // The original mixed offer is neither modified nor returned as the projection.
+        assert!(body.contains("a=fmtp:96"));
+        Ok(())
+    }
+
+    #[test]
+    fn hevc_alternatives_require_exact_selection_without_parameter_borrowing() -> Result<(), SelectionError> {
+        let offer = "m=video 0 RTP/AVP 98 99\na=control:video\na=rtpmap:98 H265/90000\na=fmtp:98 sprop-max-don-diff=0;profile-id=1\na=rtpmap:99 H265/90000\n";
+        let body = format!("{PREFIX}{offer}");
+        assert_eq!(select_h265_description(body.as_bytes(), 0, None), Err(SelectionError::Ambiguous));
+        let (sdp, derived) = select_h265_description(body.as_bytes(), 0, Some(99))?;
+        assert_eq!(sdp.media[0].payload_type, 99);
+        assert!(!derived.contains("fmtp:"));
+        assert!(!derived.contains("profile-id"));
+        let (_, selected) = select_h265_description(body.as_bytes(), 0, Some(98))?;
+        assert!(selected.contains("profile-id=1"));
+        Ok(())
+    }
+
+    #[test]
+    fn hevc_selection_is_codec_exact_and_does_not_fallback() {
+        let body = format!("{PREFIX}{OFFER}");
+        for (pt, error) in [(96, SelectionError::Unsupported), (97, SelectionError::Payload), (255, SelectionError::Payload)] {
+            assert_eq!(select_h265_description(body.as_bytes(), 0, Some(pt)), Err(error));
+        }
+        for mapping in ["H265/8000", "HEVC/90000", "H265/90000/2", "H265/90000 junk"] {
+            assert_eq!(select_h265_description(body.replace("H265/90000", mapping).as_bytes(), 0, None), Err(SelectionError::Unsupported));
+        }
+    }
+
+    #[test]
+    fn hevc_selection_normalizes_mapping_but_preserves_section_ordinals() -> Result<(), SelectionError> {
+        let offer = OFFER.replace("H265/90000", "h265/90000");
+        let body = format!("{PREFIX}m=audio 0 RTP/AVP 0\na=control:audio\n{offer}");
+        let (sdp, derived) = select_h265_description(body.as_bytes(), 1, Some(98))?;
+        assert_eq!(sdp.media.len(), 2);
+        assert_eq!(sdp.media[0].media_type, "audio");
+        assert_eq!(sdp.media[1].payload_type, 98);
+        assert!(derived.contains("a=rtpmap:98 H265/90000\n"));
+        assert_eq!(select_h265_description(body.as_bytes(), 0, None), Err(SelectionError::Media));
+        let mut lines: Vec<_> = OFFER.lines().collect();
+        lines[1..].reverse();
+        let reordered = format!("{PREFIX}{}", lines.join("\n"));
+        assert_eq!(select_h265_description(reordered.as_bytes(), 0, None)?.0,
+            select_h265_description(format!("{PREFIX}{OFFER}").as_bytes(), 0, None)?.0);
+        Ok(())
+    }
+
+    #[test]
+    fn hevc_duplicate_bindings_and_selected_format_keys_refuse() {
+        let base = format!("{PREFIX}{OFFER}");
+        for extra in ["a=rtpmap:98 H265/90000\n", "a=fmtp:98 profile-id=1\n", "a=control:other\n"] {
+            assert_eq!(select_h265_description(format!("{base}{extra}").as_bytes(), 0, None), Err(SelectionError::Duplicate));
+        }
+        assert_eq!(select_h265_description(base.replace("arbitrary=other-codec", "profile-id=1;PROFILE-ID=2").as_bytes(), 0, None), Err(SelectionError::Duplicate));
+        assert_eq!(select_h265_description(base.replace("98 96", "98 096 96").as_bytes(), 0, None), Err(SelectionError::Duplicate));
+    }
+
+    #[test]
+    fn hevc_bounds_apply_to_original_input_before_projection() {
+        assert_eq!(select_h265_description(&vec![b'x'; MAX_SELECTION_BYTES + 1], 0, None), Err(SelectionError::Limit));
+        let body = format!("{PREFIX}{OFFER}a=x:{}\n", "x".repeat(MAX_SDP_LINE_BYTES));
+        assert_eq!(select_h265_description(body.as_bytes(), 0, None), Err(SelectionError::Limit));
+        let body = format!("{PREFIX}{OFFER}a=x:hidden\0value\n");
+        assert_eq!(select_h265_description(body.as_bytes(), 0, None), Err(SelectionError::Malformed));
     }
 }
