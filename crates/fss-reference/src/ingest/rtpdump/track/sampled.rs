@@ -307,14 +307,36 @@ mod tests {
     }
     #[test]
     fn executed_empty_frames_are_misses_but_unexecuted_frames_are_not() -> Test {
+        // Tentative proposals are deleted on their first actual miss; only a
+        // previously confirmed track may coast as Lost. Do not relax that policy.
+        let mut tentative = core(RtpTrackingLimits::default())?;
+        tentative.advance(order(0), &boxes())?;
+        let (deleted, _) = tentative.advance(order(1), &[])?;
+        assert!(deleted.output.tracks.is_empty());
+        assert!(deleted.assignments.is_empty());
+        assert_eq!(deleted.output.deleted_tracks, 1);
+        assert_eq!(tentative.frames, 2);
+        assert_eq!(retire_on_skip(&mut tentative)?, 0);
+        assert_eq!(tentative.frames, 2);
+
         let mut c = core(RtpTrackingLimits::default())?;
         c.advance(order(0), &boxes())?;
-        let (missed, _) = c.advance(order(1), &[])?;
-        assert_eq!(missed.output.tracks[0].status, TrackStatus::Lost);
+        let (confirmed, _) = c.advance(order(1), &boxes())?;
+        let confirmed = confirmed.output.tracks.first().ok_or("confirmed track missing")?;
+        assert_eq!(confirmed.status, TrackStatus::Confirmed);
+        assert_eq!((confirmed.hits, confirmed.misses), (2, 0));
+        let (missed, _) = c.advance(order(2), &[])?;
+        let lost = missed.output.tracks.first().ok_or("confirmed track unexpectedly retired")?;
+        assert_eq!(lost.id, confirmed.id);
+        assert_eq!(lost.status, TrackStatus::Lost);
+        assert_eq!((lost.hits, lost.misses), (2, 1));
         assert!(missed.assignments.is_empty());
-        assert_eq!(c.frames, 2);
+        assert_eq!(missed.output.deleted_tracks, 0);
+        assert_eq!(c.frames, 3);
+        let accounting = (c.frames, c.assignments, c.work, c.epoch);
         assert_eq!(retire_on_skip(&mut c)?, 1);
-        assert_eq!(c.frames, 2);
+        assert_eq!(retire_on_skip(&mut c)?, 0);
+        assert_eq!((c.frames, c.assignments, c.work, c.epoch), accounting);
         assert_eq!(c.active, 0);
         Ok(())
     }

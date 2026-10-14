@@ -235,13 +235,52 @@ fn fresh_privacy_cannot_reproduce_an_old_unmasked_transcript() -> TestResult {
     let req = f.request(&r)?;
     let mut saved = Vec::new();
     let summary = f.write(&r, req.clone(), &mut saved)?;
-    let mask = PrivacyMaskPolicy::new(SensorId::parse(SENSOR)?, [1, 1], &[[0, 0, 1, 1]])?;
+    // Exercise a valid changed privacy projection, not a geometry admission failure.
+    // Derive the actual grid from native source decoding; do not bake fixture dimensions in.
+    let dimensions = {
+        let mut decoder = r.decode_h264(req.tracking.detection.decode, &f.dep, &f.cx)?;
+        let mut dimensions = None;
+        for _ in 0..20_000 {
+            match decoder.step(&f.dep, &f.cx)? {
+                fss_reference::ingest::rtpdump::recovery::decode::RetainedRtpDecodeStep::Frame(frame) => {
+                    dimensions = Some(frame.dimensions());
+                    break;
+                }
+                fss_reference::ingest::rtpdump::recovery::decode::RetainedRtpDecodeStep::Ended(_) => break,
+                _ => {}
+            }
+        }
+        dimensions.ok_or("native privacy-test dimensions missing")?
+    };
+    let mask = PrivacyMaskPolicy::new(
+        SensorId::parse(SENSOR)?, dimensions, &[[0, 0, dimensions[0], dimensions[1]]],
+    )?;
     let approval = preview_mask(&f.dep, &mask)?.approval;
     declare_mask(&mut f.dep, &mask, approval, &f.cx)?;
     assert!(f.verify(&r, req.clone(), &mut Cursor::new(&saved), summary.digest).is_err());
     let current = f.retained(2)?;
     assert!(matches!(f.verify(&current, req, &mut Cursor::new(&saved), summary.digest),
         Err(RtpTrackStreamError::Mismatch)));
+    Ok(())
+}
+
+#[test]
+fn incompatible_privacy_grid_remains_a_native_refusal_not_a_replay_match() -> TestResult {
+    let mut f = Fixture::new("privacy-grid", &real_dump(false))?;
+    let retained = f.retained(1)?;
+    let request = f.request(&retained)?;
+    let mut saved = Vec::new();
+    let summary = f.write(&retained, request.clone(), &mut saved)?;
+    let mask = PrivacyMaskPolicy::new(SensorId::parse(SENSOR)?, [1, 1], &[[0, 0, 1, 1]])?;
+    let approval = preview_mask(&f.dep, &mask)?.approval;
+    declare_mask(&mut f.dep, &mask, approval, &f.cx)?;
+    let current = f.retained(2)?;
+    // A policy that cannot project onto the source grid is not a valid alternative replay.
+    // Keep that failure typed; never coerce it to Mismatch merely to satisfy the old test.
+    assert!(matches!(
+        f.verify(&current, request, &mut Cursor::new(&saved), summary.digest),
+        Err(RtpTrackStreamError::Tracking(_))
+    ));
     Ok(())
 }
 

@@ -3,6 +3,9 @@
 #[path = "../../fss-reference/tests/rtpdump_support/mod.rs"]
 mod rtpdump_support;
 
+#[path = "rtp_tracking_cli/trajectory.rs"]
+mod trajectory;
+
 use std::path::{Path, PathBuf};
 use std::process::{Command, Output};
 
