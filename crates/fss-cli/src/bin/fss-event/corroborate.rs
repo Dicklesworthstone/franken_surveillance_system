@@ -70,6 +70,7 @@ use std::fs;
 use std::io::{self, Read, Write};
 use std::path::{Path, PathBuf};
 
+use fss_cli::event_fusion::{EventFusionError, EventFusionReport};
 use fss_core::{ContentDigest, DigestAlgorithm, PrincipalId};
 use fss_reference::ingest::calibration_adoption::{
     CameraGeneration, adopted_currency, recording_sensor, retained_adoptions,
@@ -465,6 +466,7 @@ pub(super) fn parse(args: &[OsString]) -> Result<CorroborateAction, String> {
             }
             _ if !OPTIONS.contains(&key)
                 && !super::detector::OPTIONS.contains(&key)
+                && !super::detector::FUSION_OPTIONS.contains(&key)
                 && !streaming::BUDGET_OPTIONS.contains(&key) =>
             {
                 return Err("unknown or inapplicable option".to_owned());
@@ -477,6 +479,8 @@ pub(super) fn parse(args: &[OsString]) -> Result<CorroborateAction, String> {
             "--retain-health",
             "--retain-coverage",
             "--report-out",
+            "--fusion-profile",
+            "--fusion-digest",
         ]
         .contains(&key)
         {
@@ -484,6 +488,25 @@ pub(super) fn parse(args: &[OsString]) -> Result<CorroborateAction, String> {
             rerun.push(quote(argument));
         }
         index += 2;
+    }
+    let cascade = super::detector::parse(&values)?;
+    super::detector::check_fusion_mode(
+        cascade.as_ref(),
+        !stream_corroborate,
+        values.iter().any(|(key, _)| {
+            ["--approve", "--retain-coverage", "--retain-health"].contains(&key.as_str())
+        }),
+    )?;
+    // The full-camera screen replaces nominal coverage with separately guarded records.
+    // The current bridge binds native records; never label that earlier context as final.
+    if find(&values, "--fusion-profile").is_some()
+        && (find(&values, "--calibration").is_some()
+            || find(&values, "--calibration-digest").is_some())
+    {
+        return Err(
+            "calibrated fusion does not yet bind full-camera calibration coverage; use separate invocations"
+                .to_owned(),
+        );
     }
     let geometry_requested = !poses.is_empty()
         || !generations.is_empty()
@@ -716,7 +739,7 @@ pub(super) fn parse(args: &[OsString]) -> Result<CorroborateAction, String> {
             None => None,
         },
         report_out: find(&values, "--report-out").map(PathBuf::from),
-        cascade: super::detector::parse(&values)?,
+        cascade,
         policy,
         geometry_requested,
         poses: camera_poses,
@@ -1007,6 +1030,13 @@ fn run_with(
     scalar: &ScalarExecCx,
     out: &mut impl Write,
 ) -> RunResult<()> {
+    super::detector::check_fusion_mode(
+        action.cascade.as_ref(),
+        action.streaming.is_none(),
+        !action.approvals.is_empty()
+            || action.retain_coverage.is_some()
+            || action.retain_health.is_some(),
+    )?;
     if action.retain_health.is_some()
         && (action.streaming.is_none()
             || !matches!(
@@ -1023,6 +1053,10 @@ fn run_with(
     }
     if let Some(limits) = &action.streaming {
         return streaming::run(action, deployment, root, limits, cx, scalar, out);
+    }
+    let fusion_profile = super::detector::load_fusion(action.cascade.as_ref(), cx)?;
+    if fusion_profile.is_some() && action.calibration.is_some() {
+        return Err(EventFusionError::Scope.into());
     }
     // The calibration is verified against its pinned digest before any source is read.
     let (poses, mut sources, calibration, covariances, calibration_record) = resolve_poses(action)?;
@@ -1094,6 +1128,15 @@ fn run_with(
         cx,
         &mut guard_budget,
     )?;
+    let fusion = match (&fusion_profile, cascade.as_ref()) {
+        (Some(profile), Some(cascade)) if coverage_guard.is_none() => {
+            Some(EventFusionReport::corroborate(
+                &report, cascade, profile, deployment, cx,
+            )?)
+        }
+        (None, _) => None,
+        _ => return Err(EventFusionError::Scope.into()),
+    };
     // Validate the GUARDED approval before either write. A nominal approval cannot retain
     // screened records or partially publish the event side of a mixed request.
     if let Some(approval) = action.retain_coverage {
@@ -1198,6 +1241,11 @@ fn run_with(
         }
         None => json,
     };
+    let json = super::detector::with_fusion(json, fusion.as_ref())?;
+    if fusion.is_some() {
+        report.revalidate_derived_sources(deployment, cx)?;
+        cx.checkpoint("event_fusion:corroborate_delivery")?;
+    }
     let json = format!("{json}\n");
     if let Some(path) = &action.report_out {
         export(path, json.as_bytes(), root, cx)?;
@@ -1363,5 +1411,72 @@ mod recovery_tests {
             parse(&args),
             Err(message) if message == "unknown or inapplicable option"
         ));
+    }
+
+    fn fusion_arguments() -> Vec<OsString> {
+        let mut args = arguments();
+        let pin = ContentDigest::sha256(b"explicit profile pin").to_text();
+        args.extend([
+            "--detector-package".into(),
+            "model.fss".into(),
+            "--detector-digest".into(),
+            pin.clone().into(),
+            "--detector-max-inferences".into(),
+            "2".into(),
+            "--fusion-profile".into(),
+            "fusion.json".into(),
+            "--fusion-digest".into(),
+            pin.into(),
+        ]);
+        args
+    }
+
+    #[test]
+    fn fusion_keeps_the_native_plan_and_separate_approval_rerun() -> Result<(), String> {
+        let args = fusion_arguments();
+        let mut plain = args.clone();
+        plain.truncate(plain.len() - 4);
+        let native = parse(&plain)?;
+        let advised = parse(&args)?;
+        assert_eq!(native.plan.digest(), advised.plan.digest());
+        assert_eq!(native.rerun, advised.rerun);
+        assert!(advised.approvals.is_empty());
+        assert!(advised.retain_coverage.is_none());
+        assert!(advised.retain_health.is_none());
+        assert!(!advised.rerun.contains("--fusion-"));
+        Ok(())
+    }
+
+    #[test]
+    fn fusion_cannot_be_combined_with_authority_writes() {
+        for flag in ["--approve", "--retain-coverage", "--retain-health"] {
+            let mut args = fusion_arguments();
+            args.extend([flag.into(), ContentDigest::sha256(b"approval").to_text().into()]);
+            assert!(matches!(parse(&args), Err(message) if message.contains("read-only")));
+        }
+    }
+
+    #[test]
+    fn fusion_refuses_streaming_and_different_final_coverage_contexts() {
+        let mut args = fusion_arguments();
+        args.push("--stream-corroborate".into());
+        assert!(matches!(parse(&args), Err(message) if message.contains("not dwell or streaming")));
+        args.pop();
+        args.extend([
+            "--calibration".into(),
+            "camera-calibration.json".into(),
+            "--calibration-digest".into(),
+            ContentDigest::sha256(b"calibration").to_text().into(),
+        ]);
+        assert!(matches!(parse(&args), Err(message) if message.contains("full-camera calibration coverage")));
+    }
+
+    #[test]
+    fn fusion_options_are_not_silently_dropped_or_duplicated() {
+        let mut args = fusion_arguments();
+        args.extend(["--fusion-profile".into(), "other.json".into()]);
+        assert!(matches!(parse(&args), Err(message) if message == "duplicate --fusion-profile"));
+        args.truncate(args.len() - 4);
+        assert!(matches!(parse(&args), Err(message) if message.contains("required together")));
     }
 }
