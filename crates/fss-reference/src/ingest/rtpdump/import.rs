@@ -87,6 +87,15 @@ pub enum RtpImportError {
     Binding,
     /// Actual stored bytes disagree with their pinned identity or replay result.
     Digest,
+    /// A committed deletion denies this import or one of its required objects, even before unlink.
+    EvidenceDeleted {
+        /// Exact requested recording root.
+        root: ContentDigest,
+        /// Canonical deletion plan that denies access.
+        plan: ContentDigest,
+    },
+    /// Deletion authority cannot be verified; it is never interpreted as no deletion.
+    DeletionAuthority,
     /// Owner cancelled; prior staged/published source is retained for reconciliation.
     Cancelled,
     /// The request names no owner receive time. None is invented: the receive time bounds the
@@ -111,6 +120,9 @@ impl std::fmt::Debug for RtpImportError {
             Self::Limit => f.write_str("Limit"),
             Self::Binding => f.write_str("Binding"),
             Self::Digest => f.write_str("Digest"),
+            Self::EvidenceDeleted { root, plan } => f.debug_struct("EvidenceDeleted")
+                .field("root", root).field("plan", plan).finish(),
+            Self::DeletionAuthority => f.write_str("DeletionAuthority"),
             Self::Cancelled => f.write_str("Cancelled"),
             Self::MissingReceiveTime => f.write_str("MissingReceiveTime"),
             Self::Io(e) => f.debug_tuple("Io").field(e).finish(),
@@ -124,7 +136,13 @@ impl std::fmt::Debug for RtpImportError {
 }
 impl std::fmt::Display for RtpImportError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(f, "recorded RTP import refusal: {self:?}")
+        match self {
+            Self::EvidenceDeleted { root, plan } => write!(f,
+                "ERR-EVIDENCE-DELETED-001: recorded RTP root {root} is deleted under plan {plan}"),
+            Self::DeletionAuthority => f.write_str(
+                "ERR-DELETION-STORAGE-001: recorded RTP deletion authority is unreadable"),
+            _ => write!(f, "recorded RTP import refusal: {self:?}"),
+        }
     }
 }
 impl std::error::Error for RtpImportError {}
@@ -806,6 +824,8 @@ pub fn publish_rtp_import(
 ) -> Result<RtpFileImportReceipt> {
     checkpoint(cx, "rtpdump:preflight")?;
     let root = plan.manifest.root();
+    let deletions = super::lifecycle::read_index(deployment, cx)?;
+    super::lifecycle::refuse_deleted(&deletions, root, root)?;
     let hex = root
         .bytes()
         .iter()
@@ -852,6 +872,7 @@ pub fn publish_rtp_import(
     let mut new_bytes = 0_u64;
     let mut new_count = 0;
     for (d, b) in &objects {
+        super::lifecycle::refuse_deleted(&deletions, root, *d)?;
         if seen.insert(*d) && deployment.publisher().spool().state(*d).is_none() {
             new_count += 1;
             new_bytes = new_bytes
@@ -988,6 +1009,8 @@ pub fn load_rtp_import(
     deployment: &ReferenceDeployment,
 ) -> Result<VerifiedRtpImport> {
     checkpoint(cx, "rtpdump:readback")?;
+    let deletions = super::lifecycle::read_index(deployment, cx)?;
+    super::lifecycle::refuse_deleted(&deletions, receipt.root, receipt.root)?;
     let hex = receipt
         .root
         .bytes()
@@ -1017,6 +1040,7 @@ pub fn load_rtp_import(
     }
     let read = |digest| -> Result<Vec<u8>> {
         checkpoint(cx, "rtpdump:read_object")?;
+        super::lifecycle::refuse_deleted(&deletions, receipt.root, digest)?;
         if p.tombstones().any(|d| *d == digest) {
             return Err(RtpImportError::Binding);
         }

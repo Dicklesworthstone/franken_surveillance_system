@@ -539,8 +539,10 @@ fn unreadable_deletion_authority_fails_closed_even_with_all_media_bytes_present(
         &cx,
     )?;
     let root = publish(&real_dump(false), &mut dep, &cx)?;
-    std::fs::remove_file(dep.publisher().spool().object_path(plan_digest))?;
     let recovered = inspect_rtp_import(root, 911, RtpRecoveryPolicy::default(), &cx, &dep)?;
+    std::fs::remove_file(dep.publisher().spool().object_path(plan_digest))?;
+    // New source admissions now verify canonical denial before disclosing original bytes.
+    assert!(inspect_rtp_import(root, 912, RtpRecoveryPolicy::default(), &cx, &dep).is_err());
     assert!(matches!(
         recovered.decode_h264_checked(selection()?, RtpCustodyDecodeLimits::default(), &dep, &cx),
         Err(CheckedRtpDecodeError::Custody),

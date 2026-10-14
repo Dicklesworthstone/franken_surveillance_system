@@ -107,6 +107,11 @@ pub struct RecoveredRtpImport {
     basis: LedgerAnchor,
 }
 impl RecoveredRtpImport {
+    /// Owner binding recovered from the fully reverified canonical recipe.
+    pub(crate) fn scope(&self) -> &RtpImportScope {
+        &self.recipe.scope
+    }
+
     /// Exact expected publication root supplied by the caller.
     pub fn root(&self) -> ContentDigest {
         self.root
@@ -132,6 +137,8 @@ impl RecoveredRtpImport {
         deployment: &mut ReferenceDeployment,
     ) -> Result<RtpFileImportReceipt> {
         checkpoint(cx)?;
+        let deletions = super::lifecycle::read_index(deployment, cx)?;
+        super::lifecycle::refuse_deleted(&deletions, self.root, self.root)?;
         if deployment.current_anchor() != &self.basis {
             return Err(RtpImportError::Binding);
         }
@@ -186,13 +193,6 @@ pub fn inspect_rtp_import(
     if p.is_poisoned() {
         return Err(RtpImportError::Binding);
     }
-    let slot = root_slot(root)?;
-    if !p
-        .root(&slot)
-        .is_some_and(|r| r.root == root && r.state == LocalPublicationState::Durable)
-    {
-        return Err(RtpImportError::Binding);
-    }
     let reservation = p.spool().limits().max_object_bytes;
     if reservation > policy.max_object_bytes {
         return Err(RtpImportError::Limit);
@@ -212,14 +212,27 @@ pub fn inspect_rtp_import(
             .ok_or(RtpImportError::Limit)?;
         Ok(bytes)
     };
-    let manifest_bytes = read(root)?;
+    let deletions = super::lifecycle::read_index_with(deployment, &mut read)?;
+    super::lifecycle::refuse_deleted(&deletions, root, root)?;
+    let slot = root_slot(root)?;
+    if !p
+        .root(&slot)
+        .is_some_and(|r| r.root == root && r.state == LocalPublicationState::Durable)
+    {
+        return Err(RtpImportError::Binding);
+    }
+    let mut checked_read = |digest| {
+        super::lifecycle::refuse_deleted(&deletions, root, digest)?;
+        read(digest)
+    };
+    let manifest_bytes = checked_read(root)?;
     let manifest = ObjectManifest::from_canonical_bytes(&manifest_bytes)
         .map_err(|_| RtpImportError::Digest)?;
     if manifest.root() != root || manifest.kind() != MANIFEST_KIND {
         return Err(RtpImportError::Binding);
     }
     let metadata = manifest.metadata_digest().ok_or(RtpImportError::Binding)?;
-    let report_bytes = read(metadata)?;
+    let report_bytes = checked_read(metadata)?;
     let recipe = decode_recipe(&report_bytes, ingress, policy)?;
     let mut source = Vec::new();
     source
@@ -229,7 +242,7 @@ pub fn inspect_rtp_import(
         if manifest.children().binary_search(digest).is_err() {
             return Err(RtpImportError::Digest);
         }
-        let bytes = read(*digest)?;
+        let bytes = checked_read(*digest)?;
         let expected = recipe
             .limits
             .chunk_bytes
@@ -256,14 +269,14 @@ pub fn inspect_rtp_import(
             return Err(RtpImportError::Digest);
         }
         for nal in plan.report().nals() {
-            let bytes = read(nal.digest)?;
+            let bytes = checked_read(nal.digest)?;
             if ContentDigest::try_sha256(&bytes)? != nal.digest {
                 return Err(RtpImportError::Digest);
             }
         }
         for unit in plan.report().access_units() {
-            if read(unit.capsule.source_digest)?.as_slice() != &source[unit.source.clone()]
-                || read(unit.capsule_object)? != unit.capsule.try_canonical_bytes()?
+            if checked_read(unit.capsule.source_digest)?.as_slice() != &source[unit.source.clone()]
+                || checked_read(unit.capsule_object)? != unit.capsule.try_canonical_bytes()?
             {
                 return Err(RtpImportError::Digest);
             }
