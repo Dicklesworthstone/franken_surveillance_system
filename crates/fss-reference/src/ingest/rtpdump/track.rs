@@ -285,7 +285,7 @@ impl<'a> RtpPackageTracker<'a> {
         request: RtpTrackingRequest, deployment: &ReferenceDeployment,
         cx: &ReplayCx, scalar: &ScalarExecCx) -> Result<Self>
     {
-        if request.class_index >= package.spec().head.labels.len() {
+        if request.class_index >= package.spec().labels.len() {
             return Err(RtpTrackingError::InvalidRequest);
         }
         let core = TrackCore::new(request.tracker, request.limits)?;
@@ -338,7 +338,7 @@ impl<'a> RtpPackageTracker<'a> {
     fn advance(&mut self, deployment: &ReferenceDeployment, cx: &ReplayCx,
         scalar: &ScalarExecCx) -> Result<RtpTrackingStep>
     {
-        checkpoint(cx, scalar)?;
+        checkpoint(cx, scalar, "rtp_track:step")?;
         if deployment.current_anchor() != &self.basis { return Err(RtpTrackingError::StaleBasis); }
         let detector = self.detector.as_mut().ok_or(RtpTrackingError::Encoding)?;
         let result = detector.step(deployment, cx, scalar);
@@ -414,7 +414,7 @@ impl<'a> RtpPackageTracker<'a> {
                     e.u32(o.hits);
                 }
                 let digest = digest(e)?;
-                checkpoint(cx, scalar)?;
+                checkpoint(cx, scalar, "rtp_track:deliver")?;
                 if deployment.current_anchor() != &self.basis { return Err(RtpTrackingError::StaleBasis); }
                 let frame = RtpTrackedFrame { detected, observations, recipe: self.recipe, digest,
                     predecessor: self.previous, epoch: self.core.epoch, reset,
@@ -429,8 +429,8 @@ impl<'a> RtpPackageTracker<'a> {
 fn digest(e: CanonicalEncoder) -> Result<ContentDigest> {
     Ok(ContentDigest::sha256(&e.finish_checked().map_err(|_| RtpTrackingError::Encoding)?))
 }
-fn checkpoint(cx: &ReplayCx, scalar: &ScalarExecCx) -> Result<()> {
-    if cx.checkpoint("rtp_track:step").is_err() || scalar.checkpoint("rtp_track:step").is_err() {
+fn checkpoint(cx: &ReplayCx, scalar: &ScalarExecCx, stage: &'static str) -> Result<()> {
+    if cx.checkpoint(stage).is_err() || scalar.checkpoint(stage).is_err() {
         cx.drain_and_finalize();
         scalar.request_cancellation();
         scalar.drain_and_finalize();
