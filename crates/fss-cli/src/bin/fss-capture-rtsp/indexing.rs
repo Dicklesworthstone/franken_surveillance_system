@@ -27,7 +27,7 @@ struct Quote {
 }
 
 fn inventory<C: ArchiveCodec>(
-    plan: &ReconnectPlan,
+    plan: &impl RecoveryPlan,
     entries: &mut [Entry<C>],
     clock: &Clock<'_>,
 ) -> Result<Vec<Option<Quote>>> {
@@ -35,7 +35,7 @@ fn inventory<C: ArchiveCodec>(
     for index in 0..entries.len() {
         locations_unchanged(plan, entries, clock)?;
         let entry = &mut entries[index];
-        let attempt = &plan.attempts[index];
+        let attempt = &plan.attempts()[index];
         let Some(journal) = &mut entry.journal else {
             quotes.push(None);
             continue;
@@ -107,7 +107,7 @@ fn inventory<C: ArchiveCodec>(
 }
 
 fn index_digest<C: ArchiveCodec>(
-    plan: &ReconnectPlan,
+    plan: &impl RecoveryPlan,
     entries: &[Entry<C>],
     quotes: &[Option<Quote>],
     timeout: u64,
@@ -160,7 +160,7 @@ fn quote_json(quote: Option<&Quote>) -> String {
     )
 }
 
-fn preview_codec<C: ArchiveCodec>(plan: &ReconnectPlan, timeout: u64) -> Result<String> {
+fn preview_codec<C: ArchiveCodec>(plan: &impl RecoveryPlan, timeout: u64) -> Result<String> {
     let clock = Clock {
         start: Instant::now(),
         timeout,
@@ -196,7 +196,7 @@ fn preview_codec<C: ArchiveCodec>(plan: &ReconnectPlan, timeout: u64) -> Result<
         ("phase", string("planned")),
         ("policy", string(INDEX_POLICY)),
         ("approval", string(&approval.to_text())),
-        ("capture_plan", string(&plan.digest()?.to_text())),
+        ("capture_plan", string(&plan.capture_digest()?.to_text())),
         ("recovery_timeout_ns", timeout.to_string()),
         ("maximum_report_bytes", REPORT_LIMIT.to_string()),
         ("attempts", format!("[{}]", rows.join(","))),
@@ -216,8 +216,8 @@ fn preview_codec<C: ArchiveCodec>(plan: &ReconnectPlan, timeout: u64) -> Result<
     Ok(report)
 }
 
-pub(super) fn preview_index(plan: &ReconnectPlan, timeout: u64) -> Result<String> {
-    match plan.attempts.first().ok_or(STATE)?.codec() {
+pub(super) fn preview_index(plan: &impl RecoveryPlan, timeout: u64) -> Result<String> {
+    match plan.attempts().first().ok_or(STATE)?.codec() {
         "avc" => preview_codec::<AvcArchiveCodec>(plan, timeout),
         "hevc" => preview_codec::<HevcArchiveCodec>(plan, timeout),
         _ => Err(STATE),
@@ -244,7 +244,7 @@ fn pages_json<C: ArchiveCodec>(snapshot: &CodecArchiveSnapshot<C>) -> String {
 }
 
 fn execute_codec<C: ArchiveCodec>(
-    plan: &ReconnectPlan,
+    plan: &impl RecoveryPlan,
     timeout: u64,
     emit: impl FnMut(&[u8]) -> Result<()>,
     cancellation: &dyn PublishCancellation,
@@ -260,10 +260,10 @@ fn execute_codec<C: ArchiveCodec>(
     // and settled pins are verified before accepting any publication approval.
     let quotes = inventory(plan, &mut entries, &clock)?;
     let approval = index_digest(plan, &entries, &quotes, timeout)?;
-    if plan.approve != Some(approval) {
+    if plan.recovery_approval() != Some(approval) {
         return Err(APPROVAL);
     }
-    let first = plan.attempts.first().ok_or(STATE)?;
+    let first = plan.attempts().first().ok_or(STATE)?;
     clock.authority = Some(
         ContextAuthority::new_root(RootAuthoritySpec {
             trace_id: "trace:rtsp-reconnect-index".into(),
@@ -302,7 +302,7 @@ fn execute_codec<C: ArchiveCodec>(
     for index in 0..entries.len() {
         locations_unchanged(plan, &entries, &clock)?;
         let entry = &mut entries[index];
-        let attempt = &plan.attempts[index];
+        let attempt = &plan.attempts()[index];
         let Some(quote) = &quotes[index] else {
             reports.row_with_schema(
                 INDEX_FORMAT,
@@ -477,8 +477,8 @@ fn execute_codec<C: ArchiveCodec>(
     )
 }
 
-pub(super) fn execute_index(plan: &ReconnectPlan, timeout: u64) -> Result<()> {
-    match plan.attempts.first().ok_or(STATE)?.codec() {
+pub(super) fn execute_index(plan: &impl RecoveryPlan, timeout: u64) -> Result<()> {
+    match plan.attempts().first().ok_or(STATE)?.codec() {
         "avc" => {
             execute_codec::<AvcArchiveCodec>(plan, timeout, crate::write_bounded, &NeverCancel)
         }

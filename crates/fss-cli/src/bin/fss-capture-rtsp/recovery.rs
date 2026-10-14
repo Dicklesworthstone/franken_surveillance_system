@@ -1,5 +1,5 @@
 #![forbid(unsafe_code)]
-//! Storage-only recovery of the exact epochs enumerated by a reconnect plan.
+//! Storage-only recovery of exact single-capture or reconnect epochs.
 //!
 //! Planning checks protected journal metadata, not source custody. A separate approval binds
 //! every observed tip, selected work pin, directory identity, original limit and recovery deadline.
@@ -24,7 +24,40 @@ use fss_reference::rtsp::archive_pins::{
 };
 use fss_reference::rtsp::recording_archive::{ArchiveCodec, AvcArchiveCodec, HevcArchiveCodec};
 
-use super::ReconnectPlan;
+use super::{Options, ReconnectPlan};
+
+/// Immutable capture scope consumed by the one storage-only recovery owner.
+///
+/// This is a binary-internal projection of an already parsed native capture plan, not
+/// authority. Implementations must preserve original paths, source generations, clocks
+/// and limits. Observed stores and a separate recovery approval still gate all writes.
+/// In particular, a single capture must not synthesize a one-attempt reconnect plan:
+/// doing so would rewrite its paths, generation and receive-clock identity.
+pub(crate) trait RecoveryPlan {
+    fn attempts(&self) -> &[Options];
+    fn capture_digest(&self) -> Result<ContentDigest>;
+    fn recovery_approval(&self) -> Option<ContentDigest>;
+    fn index_catalogs(&self) -> bool;
+    fn maximum_storage_bytes(&self) -> u64;
+}
+
+impl RecoveryPlan for ReconnectPlan {
+    fn attempts(&self) -> &[Options] {
+        &self.attempts
+    }
+    fn capture_digest(&self) -> Result<ContentDigest> {
+        self.digest()
+    }
+    fn recovery_approval(&self) -> Option<ContentDigest> {
+        self.approve
+    }
+    fn index_catalogs(&self) -> bool {
+        self.index_catalogs
+    }
+    fn maximum_storage_bytes(&self) -> u64 {
+        self.maximum_storage_bytes
+    }
+}
 
 #[path = "indexing.rs"]
 mod indexing;
@@ -186,12 +219,12 @@ struct Entry<C: ArchiveCodec> {
     catalog_slot: Option<String>,
 }
 
-fn load<C: ArchiveCodec>(plan: &ReconnectPlan, clock: &Clock<'_>) -> Result<Vec<Entry<C>>> {
-    if plan.attempts.is_empty() || plan.attempts.len() > 16 {
+fn load<C: ArchiveCodec>(plan: &impl RecoveryPlan, clock: &Clock<'_>) -> Result<Vec<Entry<C>>> {
+    if plan.attempts().is_empty() || plan.attempts().len() > 16 {
         return Err(STATE);
     }
     let mut locations = Vec::new();
-    for attempt in &plan.attempts {
+    for attempt in plan.attempts() {
         clock.now()?;
         locations.push(locate(&attempt.root)?);
         locations.push(locate(&attempt.pins)?);
@@ -208,7 +241,7 @@ fn load<C: ArchiveCodec>(plan: &ReconnectPlan, clock: &Clock<'_>) -> Result<Vec<
         }
     }
     let mut entries = Vec::new();
-    for (attempt, pair) in plan.attempts.iter().zip(locations.as_chunks::<2>().0) {
+    for (attempt, pair) in plan.attempts().iter().zip(locations.as_chunks::<2>().0) {
         clock.now()?;
         let journal = if pair[1].directory.is_some() {
             Some(
@@ -253,11 +286,11 @@ fn load<C: ArchiveCodec>(plan: &ReconnectPlan, clock: &Clock<'_>) -> Result<Vec<
 }
 
 fn locations_unchanged<C: ArchiveCodec>(
-    plan: &ReconnectPlan,
+    plan: &impl RecoveryPlan,
     entries: &[Entry<C>],
     clock: &Clock<'_>,
 ) -> Result<()> {
-    for (attempt, entry) in plan.attempts.iter().zip(entries) {
+    for (attempt, entry) in plan.attempts().iter().zip(entries) {
         clock.now()?;
         if locate(&attempt.root)? != entry.root || locate(&attempt.pins)? != entry.pins {
             return Err(ROOT);
@@ -267,7 +300,7 @@ fn locations_unchanged<C: ArchiveCodec>(
 }
 
 fn recheck<C: ArchiveCodec>(
-    plan: &ReconnectPlan,
+    plan: &impl RecoveryPlan,
     entries: &mut [Entry<C>],
     clock: &Clock<'_>,
 ) -> Result<()> {
@@ -297,14 +330,14 @@ fn encode_location(e: &mut CanonicalEncoder, location: &Location) -> Result<()> 
 }
 
 fn digest<C: ArchiveCodec>(
-    plan: &ReconnectPlan,
+    plan: &impl RecoveryPlan,
     entries: &[Entry<C>],
     timeout: u64,
 ) -> Result<ContentDigest> {
     let mut e = CanonicalEncoder::new();
     e.text("fss.rtsp_reconnect_recovery_plan.v1");
     e.text(POLICY);
-    e.digest(plan.digest()?);
+    e.digest(plan.capture_digest()?);
     e.u64(timeout);
     e.u64(REPORT_LIMIT as u64);
     e.u64(entries.len() as u64);
@@ -393,7 +426,7 @@ fn observation<C: ArchiveCodec>(entry: &Entry<C>) -> &'static str {
     }
 }
 
-fn preview_codec<C: ArchiveCodec>(plan: &ReconnectPlan, timeout: u64) -> Result<String> {
+fn preview_codec<C: ArchiveCodec>(plan: &impl RecoveryPlan, timeout: u64) -> Result<String> {
     let clock = Clock {
         start: Instant::now(),
         timeout,
@@ -404,7 +437,7 @@ fn preview_codec<C: ArchiveCodec>(plan: &ReconnectPlan, timeout: u64) -> Result<
     let approval = digest(plan, &entries, timeout)?;
     let mut rows = Vec::new();
     let mut maximum_pin_bytes = 0_u64;
-    for (index, (attempt, entry)) in plan.attempts.iter().zip(&entries).enumerate() {
+    for (index, (attempt, entry)) in plan.attempts().iter().zip(&entries).enumerate() {
         maximum_pin_bytes = maximum_pin_bytes
             .checked_add(attempt.pin_limits().max_bytes as u64)
             .ok_or(STATE)?;
@@ -427,12 +460,12 @@ fn preview_codec<C: ArchiveCodec>(plan: &ReconnectPlan, timeout: u64) -> Result<
         ("phase", string("planned")),
         ("policy", string(POLICY)),
         ("approval", string(&approval.to_text())),
-        ("capture_plan", string(&plan.digest()?.to_text())),
+        ("capture_plan", string(&plan.capture_digest()?.to_text())),
         ("recovery_timeout_ns", timeout.to_string()),
         ("maximum_pin_bytes", maximum_pin_bytes.to_string()),
         (
             "maximum_archive_spool_bytes",
-            plan.maximum_storage_bytes.to_string(),
+            plan.maximum_storage_bytes().to_string(),
         ),
         ("maximum_report_bytes", REPORT_LIMIT.to_string()),
         ("attempts", format!("[{}]", rows.join(","))),
@@ -455,11 +488,11 @@ fn preview_codec<C: ArchiveCodec>(plan: &ReconnectPlan, timeout: u64) -> Result<
     Ok(report)
 }
 
-pub(super) fn preview(plan: &ReconnectPlan, timeout: u64) -> Result<String> {
-    if plan.index_catalogs {
+pub(crate) fn preview(plan: &impl RecoveryPlan, timeout: u64) -> Result<String> {
+    if plan.index_catalogs() {
         return indexing::preview_index(plan, timeout);
     }
-    match plan.attempts.first().ok_or(STATE)?.codec() {
+    match plan.attempts().first().ok_or(STATE)?.codec() {
         "avc" => preview_codec::<AvcArchiveCodec>(plan, timeout),
         "hevc" => preview_codec::<HevcArchiveCodec>(plan, timeout),
         _ => Err(STATE),
@@ -493,7 +526,7 @@ impl<F: FnMut(&[u8]) -> Result<()>> Reports<F> {
 }
 
 fn preflight<C: ArchiveCodec>(
-    plan: &ReconnectPlan,
+    plan: &impl RecoveryPlan,
     entries: &mut [Entry<C>],
     clock: &Clock<'_>,
 ) -> Result<()> {
@@ -501,7 +534,7 @@ fn preflight<C: ArchiveCodec>(
         locations_unchanged(plan, entries, clock)?;
         let entry = &mut entries[index];
         if let Some((phase, _)) = &entry.selected {
-            let attempt = &plan.attempts[index];
+            let attempt = &plan.attempts()[index];
             let publisher =
                 LocalRootPublisher::open(&entry.root.canonical, attempt.publication_limits())
                     .map_err(|_| STORAGE)?;
@@ -543,7 +576,7 @@ fn preflight<C: ArchiveCodec>(
 }
 
 fn restore<C: ArchiveCodec>(
-    plan: &ReconnectPlan,
+    plan: &impl RecoveryPlan,
     entries: &mut [Entry<C>],
     clock: &Clock<'_>,
     reports: &mut Reports<impl FnMut(&[u8]) -> Result<()>>,
@@ -554,7 +587,7 @@ fn restore<C: ArchiveCodec>(
     for index in 0..entries.len() {
         locations_unchanged(plan, entries, clock)?;
         let entry = &mut entries[index];
-        let attempt = &plan.attempts[index];
+        let attempt = &plan.attempts()[index];
         let detail = if let Some((_, expected)) = &entry.selected {
             let journal = entry.journal.as_mut().ok_or(STATE)?;
             journal.verify(clock).map_err(|_| STORAGE)?;
@@ -662,7 +695,7 @@ fn restore<C: ArchiveCodec>(
 }
 
 fn execute_codec<C: ArchiveCodec>(
-    plan: &ReconnectPlan,
+    plan: &impl RecoveryPlan,
     timeout: u64,
     emit: impl FnMut(&[u8]) -> Result<()>,
     cancellation: &dyn PublishCancellation,
@@ -675,10 +708,10 @@ fn execute_codec<C: ArchiveCodec>(
     };
     let mut entries = load::<C>(plan, &clock)?;
     let approval = digest(plan, &entries, timeout)?;
-    if plan.approve != Some(approval) {
+    if plan.recovery_approval() != Some(approval) {
         return Err(APPROVAL);
     }
-    let first = plan.attempts.first().ok_or(STATE)?;
+    let first = plan.attempts().first().ok_or(STATE)?;
     clock.authority = Some(
         ContextAuthority::new_root(RootAuthoritySpec {
             trace_id: "trace:rtsp-reconnect-recovery".into(),
@@ -729,11 +762,11 @@ fn execute_codec<C: ArchiveCodec>(
     restore(plan, &mut entries, &clock, &mut reports)
 }
 
-pub(super) fn execute(plan: &ReconnectPlan, timeout: u64) -> Result<()> {
-    if plan.index_catalogs {
+pub(crate) fn execute(plan: &impl RecoveryPlan, timeout: u64) -> Result<()> {
+    if plan.index_catalogs() {
         return indexing::execute_index(plan, timeout);
     }
-    match plan.attempts.first().ok_or(STATE)?.codec() {
+    match plan.attempts().first().ok_or(STATE)?.codec() {
         "avc" => {
             execute_codec::<AvcArchiveCodec>(plan, timeout, crate::write_bounded, &NeverCancel)
         }

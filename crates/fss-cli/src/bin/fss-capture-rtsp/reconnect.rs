@@ -15,7 +15,7 @@ use super::driver::{self, AttemptOutcome};
 use super::plan::{self, Options};
 
 #[path = "recovery.rs"]
-mod recovery;
+pub(super) mod recovery;
 
 pub(super) const MAX_ARGUMENTS: usize = plan::MAX_ARGUMENTS + 12;
 const FORMAT: &str = "fss.rtsp_reconnect_cli.v1";
