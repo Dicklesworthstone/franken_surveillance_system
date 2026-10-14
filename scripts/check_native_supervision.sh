@@ -16,13 +16,16 @@ git rev-parse HEAD > "$evidence/commit.txt" || exit 1
 rustc +"$channel" --version --verbose > "$evidence/compiler.txt" || exit 1
 run automatic cargo +"$channel" test --locked --offline -p fss-reference --lib rtsp::live_avc -- --nocapture
 run avc-keepalive cargo +"$channel" test --locked --offline -p fss-reference --test automatic_avc_keepalive_contract --test rtsp_payload_selection_streaming -- --nocapture
-run hevc cargo +"$channel" test --locked --offline -p fss-reference --test supervised_hevc_recording_contract --test live_hevc_recording_contract --test hevc_capture_contract --test hevc_recording_publication_contract -- --nocapture
+run hevc cargo +"$channel" test --locked --offline -p fss-reference --test supervised_hevc_recording_contract --test live_hevc_recording_contract --test hevc_capture_contract --test hevc_recording_publication_contract --test hevc_recording_selection_contract -- --nocapture
 sources=(
   crates/fss-reference/src/rtsp/avc_client.rs
   crates/fss-reference/src/rtsp/avc_client/authenticated.rs
   crates/fss-reference/tests/automatic_avc_keepalive_contract.rs
   crates/fss-reference/src/rtsp/live_avc/automatic/reconnect.rs
   crates/fss-reference/src/rtsp/live_avc/automatic/reconnect/hevc.rs
+  crates/fss-reference/src/rtsp/live_avc/automatic/reconnect/hevc/timing.rs
+  crates/fss-reference/src/rtsp/hevc_recording_capture.rs
+  crates/fss-reference/tests/hevc_recording_selection_contract.rs
   crates/fss-reference/tests/supervised_hevc_recording_contract.rs
 )
 run formatting rustfmt +"$channel" --check --edition 2024 --config skip_children=true "${sources[@]}"

@@ -6,23 +6,24 @@
 //! durable publication remain different observations. No socket, picture, timing,
 //! credential or prepared recording is carried into a replacement connection.
 
+mod timing;
+
 use std::fmt;
+use timing::TimingTickets;
+pub use timing::{HevcTimingRefusal, HevcTimingTicket};
 
 use fss_core::ContentDigest;
 use fss_packet::hevc::{HevcAssemblyLimits, HevcConfiguration};
 use fss_packet::{H265Limits, ReorderLimits, StreamKey};
 
 use super::{
-    ReconnectAttempt, ReconnectBudget, ReconnectBudgetState, ReconnectPolicy,
-    ReconnectRefusal, ReconnectStatus, ReconnectStop, ReservationLedger, Schedule,
-    retryable_transport,
+    ReconnectAttempt, ReconnectBudget, ReconnectBudgetState, ReconnectPolicy, ReconnectRefusal,
+    ReconnectStatus, ReconnectStop, ReservationLedger, Schedule, retryable_transport,
 };
 use crate::rtsp::authentication::{DigestCredentials, DigestPolicy};
 use crate::rtsp::client::{ClientConfig, ClientState};
 use crate::rtsp::hevc_client::HevcClientPoll;
-use crate::rtsp::hevc_client::pictures::{
-    HevcPictureClientPoll, HevcPictureWorkReason,
-};
+use crate::rtsp::hevc_client::pictures::{HevcPictureClientPoll, HevcPictureWorkReason};
 use crate::rtsp::hevc_recording_capture::live::{
     AutomaticHevcRecordingStep, AutomaticLiveHevcRecording, LiveHevcRecordingConfig,
     LiveHevcRecordingConnectFailure, LiveHevcRecordingError, LiveHevcRecordingFailure,
@@ -104,7 +105,9 @@ impl Profile {
     }
 }
 
-fn parameter_pins(configuration: &HevcConfiguration) -> Result<[ContentDigest; 3], ReconnectRefusal> {
+fn parameter_pins(
+    configuration: &HevcConfiguration,
+) -> Result<[ContentDigest; 3], ReconnectRefusal> {
     let pin = |bytes: &[u8]| {
         ContentDigest::try_sha256(bytes).map_err(|_| ReconnectRefusal::Configuration)
     };
@@ -124,6 +127,8 @@ pub enum SupervisedHevcRecordingError {
     Connect(LiveHevcRecordingConnectFailure),
     /// Original native network, timing or collection refusal.
     Recording(LiveHevcRecordingError),
+    /// A stale picture ticket or an impossible native timing-request transition.
+    Timing(HevcTimingRefusal),
 }
 
 /// Exact terminal ownership on a failed operation. Safe corrections have no retirement.
@@ -178,14 +183,23 @@ struct SourceEnd {
 impl SourceEnd {
     fn observe(&mut self, event: &HevcPictureClientPoll) {
         match event {
-            HevcPictureClientPoll::Ended { client: Some(client), .. }
-                if matches!(client.as_ref(), HevcClientPoll::Ended { retirement: Some(_), .. }) =>
+            HevcPictureClientPoll::Ended {
+                client: Some(client),
+                ..
+            } if matches!(
+                client.as_ref(),
+                HevcClientPoll::Ended {
+                    retirement: Some(_),
+                    ..
+                }
+            ) =>
             {
                 self.receiver_ended = true;
             }
-            HevcPictureClientPoll::Assembly { retirement: Some(retirement), .. }
-                if retirement.work.reason == HevcPictureWorkReason::EndOfBitstream =>
-            {
+            HevcPictureClientPoll::Assembly {
+                retirement: Some(retirement),
+                ..
+            } if retirement.work.reason == HevcPictureWorkReason::EndOfBitstream => {
                 self.bitstream_ended = true;
             }
             _ => {}
@@ -224,6 +238,7 @@ pub struct SupervisedHevcRecording {
     profile: Option<Profile>,
     active: Option<AutomaticLiveHevcRecording>,
     end: SourceEnd,
+    tickets: TimingTickets,
 }
 impl fmt::Debug for SupervisedHevcRecording {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
@@ -247,6 +262,7 @@ impl SupervisedHevcRecording {
             profile: None,
             active: None,
             end: SourceEnd::default(),
+            tickets: TimingTickets::default(),
         })
     }
 
@@ -285,17 +301,31 @@ impl SupervisedHevcRecording {
 
     /// Read-only current-generation recording accounting, never a mutation bypass.
     pub fn collector(&self) -> Option<&HevcRecordingCollector> {
-        self.active.as_ref().map(AutomaticLiveHevcRecording::collector)
+        self.active
+            .as_ref()
+            .map(AutomaticLiveHevcRecording::collector)
     }
 
     /// Current native observations; terminal totals transfer with original retirement.
     pub fn totals(&self) -> Option<TcpTotals> {
-        self.active.as_ref().and_then(AutomaticLiveHevcRecording::totals)
+        self.active
+            .as_ref()
+            .and_then(AutomaticLiveHevcRecording::totals)
+    }
+
+    /// Correlate an independent timing computation with the exact held native picture.
+    /// Copies remain valid across repeated timing polls and safe value corrections,
+    /// but not after success, retirement, reconnect, or transfer to another supervisor.
+    /// This is an in-memory request identity, not timing evidence or a capability.
+    pub fn timing_ticket(&self) -> Option<HevcTimingTicket> {
+        self.tickets.current()
     }
 
     /// Whether the native owner needs a fresh, short-lived credential/entropy borrow.
     pub fn needs_credentials(&self) -> bool {
-        self.active.as_ref().is_some_and(AutomaticLiveHevcRecording::needs_credentials)
+        self.active
+            .as_ref()
+            .is_some_and(AutomaticLiveHevcRecording::needs_credentials)
     }
 
     /// Include native capture deadlines and backoff; no wait extends the original lease.
@@ -303,7 +333,8 @@ impl SupervisedHevcRecording {
         match self.schedule.status {
             ReconnectStatus::Waiting { retry_at_ns, .. } => Some(retry_at_ns),
             ReconnectStatus::Active(_) => Some(
-                self.active.as_ref()
+                self.active
+                    .as_ref()
                     .and_then(AutomaticLiveHevcRecording::next_wake_ns)
                     .unwrap_or(self.schedule.policy.deadline_ns)
                     .min(self.schedule.policy.deadline_ns),
@@ -332,14 +363,18 @@ impl SupervisedHevcRecording {
         }
         self.schedule.ready(now).map_err(|e| self.refusal(e))?;
         let candidate = if let Some(profile) = &self.profile {
-            if !profile.permits(&live, &recording).map_err(|e| self.refusal(e))? {
+            if !profile
+                .permits(&live, &recording)
+                .map_err(|e| self.refusal(e))?
+            {
                 return Err(self.refusal(ReconnectRefusal::Scope));
             }
             None
         } else {
             Some(Profile::new(&live, &recording).map_err(|e| self.refusal(e))?)
         };
-        let attempt = self.schedule
+        let attempt = self
+            .schedule
             .begin_native_connection(live.transport, live.max_steps, now)
             .map_err(|e| self.refusal(e))?;
         if let Some(profile) = candidate {
@@ -388,13 +423,21 @@ impl SupervisedHevcRecording {
         let result = recording.poll(readiness, credentials, cnonce, now, authority);
         let output = self.settle(result)?;
         match &output {
-            AutomaticHevcRecordingStep::ProtocolQueued { transport: Some(transport) } => {
+            AutomaticHevcRecordingStep::ProtocolQueued {
+                transport: Some(transport),
+            } => {
                 self.end.network_retired = true;
                 self.end.peer_eof = transport.totals.peer_eof;
             }
             AutomaticHevcRecordingStep::Capture { event, .. } => match event.as_ref() {
                 HevcCapturePoll::Receiver(event) => self.end.observe(event),
+                HevcCapturePoll::TimingRequired(request) => {
+                    if let Err(reason) = self.tickets.observe(key, *request) {
+                        return Err(self.timing_failure(reason, true));
+                    }
+                }
                 HevcCapturePoll::Ended { .. } => {
+                    self.tickets.clear();
                     self.active = None;
                     if let Some(stop) = self.end.completion() {
                         self.schedule.stop(stop);
@@ -403,12 +446,14 @@ impl SupervisedHevcRecording {
                     }
                 }
                 HevcCapturePoll::Stopped { .. } => {
+                    self.tickets.clear();
                     self.active = None;
                     self.schedule.ended(false);
                 }
                 _ => {}
             },
             AutomaticHevcRecordingStep::Ended => {
+                self.tickets.clear();
                 self.active = None;
                 self.schedule.ended(false);
             }
@@ -417,9 +462,11 @@ impl SupervisedHevcRecording {
         Ok(SupervisedHevcRecordingStep::Recording { key, output })
     }
 
-    /// Apply owner-supplied timing only to the exact currently active generation.
-    /// EOB may carry a final picture: its original end receipt is observed only
-    /// after successful timing admission, and still does not bypass capture draining.
+    /// Compatibility timing admission for a synchronously handled current picture.
+    /// This original signature fences generation only; it cannot identify a delayed
+    /// reply from an earlier picture within that generation. Use `supply_timing_for`
+    /// with `timing_ticket()` when timing can complete asynchronously or be retried.
+    /// Success consumes any current ticket; safe value refusals preserve it.
     pub fn supply_timing(
         &mut self,
         key: StreamKey,
@@ -428,11 +475,46 @@ impl SupervisedHevcRecording {
         authority: &dyn TcpAuthority,
     ) -> Result<TimedHevcCapture, SupervisedHevcRecordingFailure> {
         self.admit_generation(key, now, authority)?;
+        self.supply_held_timing(timing, now, authority)
+    }
+
+    /// Apply independently supplied timing only to this ticket's exact held picture.
+    /// A generation alone cannot fence a delayed reply from an earlier picture in
+    /// the same session. Stale/cross-owner tickets leave native work unchanged.
+    /// Safe timing-value refusals retain the ticket and original residence deadline.
+    /// EOB may carry the final picture; success still does not bypass capture draining.
+    pub fn supply_timing_for(
+        &mut self,
+        ticket: &HevcTimingTicket,
+        timing: HevcRecordingTiming,
+        now: u64,
+        authority: &dyn TcpAuthority,
+    ) -> Result<TimedHevcCapture, SupervisedHevcRecordingFailure> {
+        // Check live revocation and deadlines before considering even a stale reply.
+        self.admit(now, authority)?;
+        if self.schedule.status != ReconnectStatus::Active(ticket.key()) {
+            return Err(self.timing_failure(HevcTimingRefusal::StaleTicket, false));
+        }
+        if let Err(reason) = self.tickets.admit(ticket) {
+            return Err(self.timing_failure(reason, false));
+        }
+        self.supply_held_timing(timing, now, authority)
+    }
+
+    // Both public paths have admitted the live supervisor exactly once. Only this
+    // native call can consume a held picture or its timing ticket.
+    fn supply_held_timing(
+        &mut self,
+        timing: HevcRecordingTiming,
+        now: u64,
+        authority: &dyn TcpAuthority,
+    ) -> Result<TimedHevcCapture, SupervisedHevcRecordingFailure> {
         let Some(recording) = self.active.as_mut() else {
             return Err(self.refusal(ReconnectRefusal::Active));
         };
         let result = recording.supply_timing(timing, now, authority);
         let timed = self.settle(result)?;
+        self.tickets.clear();
         self.end.observe(&timed.event);
         Ok(timed)
     }
@@ -473,13 +555,37 @@ impl SupervisedHevcRecording {
     /// retained layer once, without network/storage I/O or refunding reservations.
     /// Cleanup preserves an earlier terminal cause rather than rewriting it Cancelled.
     pub fn cancel(&mut self) -> Option<(StreamKey, LiveHevcRecordingRetirement)> {
+        self.tickets.clear();
         if !matches!(self.schedule.status, ReconnectStatus::Stopped(_)) {
             self.schedule.stop(ReconnectStop::Cancelled);
         }
         let key = self.schedule.binding.key();
-        self.active.take()
+        self.active
+            .take()
             .and_then(|mut recording| recording.cancel())
             .map(|retirement| (key, retirement))
+    }
+
+    fn timing_failure(
+        &mut self,
+        reason: HevcTimingRefusal,
+        terminal: bool,
+    ) -> SupervisedHevcRecordingFailure {
+        let retirement = if terminal {
+            self.tickets.clear();
+            self.schedule.stop(ReconnectStop::PermanentFailure);
+            self.active
+                .take()
+                .and_then(|mut recording| recording.cancel())
+                .map(Box::new)
+        } else {
+            None
+        };
+        SupervisedHevcRecordingFailure {
+            key: self.schedule.binding.key(),
+            reason: SupervisedHevcRecordingError::Timing(reason),
+            retirement,
+        }
     }
 
     fn refusal(&self, reason: ReconnectRefusal) -> SupervisedHevcRecordingFailure {
@@ -498,7 +604,10 @@ impl SupervisedHevcRecording {
         if let Err(reason) = self.schedule.admit(now, authority) {
             let mut failure = self.refusal(reason);
             if matches!(self.schedule.status, ReconnectStatus::Stopped(_)) {
-                failure.retirement = self.active.take()
+                self.tickets.clear();
+                failure.retirement = self
+                    .active
+                    .take()
                     .and_then(|mut recording| recording.cancel())
                     .map(Box::new);
             }
@@ -526,6 +635,7 @@ impl SupervisedHevcRecording {
     ) -> Result<T, SupervisedHevcRecordingFailure> {
         result.map_err(|failure| {
             if failure.retirement.is_some() {
+                self.tickets.clear();
                 self.active = None;
                 self.schedule.ended(retryable(&failure.reason));
             }
@@ -588,11 +698,16 @@ mod tests {
             TcpError::Denied(TcpDenial::Budget),
             TcpError::Deadline,
             TcpError::WorkBudget,
-            TcpError::Io { operation: TcpOperation::Configure, kind: ErrorKind::TimedOut },
+            TcpError::Io {
+                operation: TcpOperation::Configure,
+                kind: ErrorKind::TimedOut,
+            },
         ] {
             assert!(!retryable(&transport(error)));
         }
-        assert!(!retryable(&LiveHevcRecordingError::Network(LiveHevcError::Configuration)));
+        assert!(!retryable(&LiveHevcRecordingError::Network(
+            LiveHevcError::Configuration
+        )));
         assert!(!retryable(&LiveHevcRecordingError::Capture(
             crate::rtsp::hevc_recording_capture::CaptureError::Closed,
         )));

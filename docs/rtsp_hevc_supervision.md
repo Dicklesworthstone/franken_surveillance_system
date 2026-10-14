@@ -26,9 +26,58 @@ live authority and time. The original recorder validates native configuration.
 `poll` returns the existing native recording output tagged with its generation.
 Every wire chunk, consumed authentication challenge, original receiver event,
 source-only picture-boundary witness, prepared window and retirement remains
-caller-owned. `supply_timing` and `seal` require the exact active generation. A
-stale timing response cannot alter a replacement recorder, and neither RTP time
-nor arrival time is silently used as decode time.
+caller-owned. `seal` requires the exact active generation. `supply_timing_for` requires
+an exact picture ticket, not just a generation. Neither RTP time nor arrival time
+is silently used as decode time.
+
+## Match the selected description before SETUP
+
+The original `AutomaticLiveHevcRecording` now checks the recorder's expected
+payload against the actual selected HEVC description before capture can schedule
+SETUP. A matching offer in another media section cannot repair a mismatch. A
+refusal uses the existing `Capture(Collection(StreamMismatch))` category and
+transfers the exact original SDP/control event in `unoffered_event`, alongside
+native/capture retirement and any already-read TCP suffix. It sends no SETUP,
+creates no false media samples and is not eligible for automatic reconnect.
+Plain and Digest negotiation use the same gate; informational responses do not
+trigger it. Independently supplied VPS/SPS/PPS and source bytes retain their
+existing validation owners and are not replaced by signaling.
+
+## Picture-specific timing replies
+
+After `poll` returns the native `TimingRequired` event, obtain its
+`HevcTimingTicket` from `timing_ticket()`. The ticket contains the original bounded
+picture metadata and a supervisor-local ordinal. A private in-memory owner
+identity distinguishes supervisors even when source keys, timestamps and ordinals
+are identical. Copies refer to the same request, not additional admissions.
+
+```rust
+// `supervisor` already owns the authorized native recording and has returned
+// TimingRequired. `timing` comes from the independent owner-approved clock basis.
+let ticket = supervisor.timing_ticket().ok_or("no held picture")?;
+let request = ticket.request();
+// An asynchronous timing worker may hold a ticket clone with this exact request.
+let timed = supervisor.supply_timing_for(&ticket, timing, now, authority)?;
+```
+
+A successful timing admission consumes the ticket. Repeated polls and safe
+invalid-value refusals preserve it and the original residence deadline. A stale
+same-generation reply, a ticket from another supervisor, or an old-generation
+reply returns `Timing(StaleTicket)` without timing a picture or performing native
+I/O. Live authority, cancellation, absolute lifetime and scheduler work are still
+checked first: a stale ticket cannot hide revocation. Native fatal refusal and
+all terminal/cancel paths invalidate pending tickets while returning original
+work. Ordinals never reset across reconnects; exhaustion fails closed instead of
+wrapping.
+
+Tickets are process-local correlation objects, not durable source identities,
+trusted timestamps or capabilities. They cannot be serialized and restored as
+permission to time a picture. The new `supply_timing_for` method is additive. The original
+`supply_timing(key, ...)` remains available for synchronous current-picture callers;
+it still fences only generation and cannot detect same-generation delayed replies.
+Both paths consume the pending ticket on successful native timing admission. Use
+only the ticketed method for asynchronous/retryable timing. Existing HEVC, native
+and AVC timing method signatures are unchanged.
 
 ## Reconnect is not source continuity
 
@@ -55,26 +104,42 @@ established terminal reason. It sends no TEARDOWN and grants no publication effe
 
 ## Validation and remaining boundary
 
-This increment supplies native loopback and pure classification tests. Run the
-following on the repository-pinned compiler; do not treat the presence of tests
-as evidence they passed:
+The capture-selection and picture-ticket increments were executed locally with
+nightly-2026-08-31 (rustc 1.100.0-nightly, 908501772). The complete source snapshot
+070282d7e71a0b22513f53d901809cd98ee4505d and installed compiler came from the
+checksum-verified native-supervision reproduction artifact. Both increments were
+applied to that source without changing dependencies or compiler inputs. Run:
 
 ```sh
 cargo +nightly-2026-08-31 test --locked --offline \
   -p fss-reference --lib rtsp::live_avc::automatic
 cargo +nightly-2026-08-31 test --locked --offline \
   -p fss-reference --test supervised_hevc_recording_contract \
-  --test live_hevc_recording_contract
+  --test live_hevc_recording_contract --test hevc_recording_selection_contract \
+  --test hevc_capture_contract --test hevc_recording_publication_contract
 ```
 
 The supplied tests cover plain/Digest short I/O, actual picture/EOF draining,
 fresh generation/authentication, source EOB with final timing, unverified tails,
 pre-connect resource/scope refusal, immutable profiles, stale timing, revocation,
 packet gaps, prepared-window cancellation and root-last publication/cold reopen
-of source windows after reconnect capacity runs out.
-
-Compilation, formatting and Rust test execution have not been verified for this
-patch. It is not a DSR, platform, camera, field-continuity or release qualification.
+of source windows after reconnect capacity runs out. Additional contracts cover
+selected-description refusal before SETUP, exact metadata plus read-ahead
+retirement, selected-track isolation, interim responses and revocation precedence.
+Timing contracts cover stable repeated polls, single-use replies, identical
+metadata across owners, safe value correction, counter exhaustion and old-ticket
+refusal across picture/generation transitions. All 101 tests in the above
+selection passed: 44 automatic/supervision unit tests and 57 HEVC integration
+tests, including all seventeen newly added tests. The first selection-only
+increment separately passed all 30 selected integration tests. Changed Rust
+files pass the pinned formatter. These results describe the exact source
+snapshot plus these increments, not unrelated concurrent changes subsequently
+combined on main. A broader `--lib rtsp::` run also passed all 190 unit tests
+(including the 44 above), for 247 distinct passed tests including integration.
+Clippy was executed and failed on six denied `expect()` calls in untouched
+`ingest/tutk.rs`, `discovery/tuya_beacon.rs` and `discovery/census.rs`; existing
+size/style warnings remain in the capture types. This is not a clean Clippy,
+native-platform, DSR, release or field-continuity qualification.
 Cold supervisor resume, production asynchronous orchestration, fleet scheduling,
 TLS, independent whole-run storage budgets and measured resource refunds are not
 implemented by this API. Source custody and publication still have their own

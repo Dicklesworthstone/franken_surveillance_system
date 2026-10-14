@@ -23,12 +23,12 @@ use fss_reference::rtsp::hevc_recording_capture::{
     HevcCapturePoll, HevcPictureTimingRequest, TimedHevcCapture,
 };
 use fss_reference::rtsp::hevc_recording_collector::HevcCollectionSeal;
+use fss_reference::rtsp::live_avc::automatic::reconnect::hevc::{
+    HevcTimingRefusal, SupervisedHevcRecording, SupervisedHevcRecordingError,
+    SupervisedHevcRecordingStep as Supervised,
+};
 use fss_reference::rtsp::live_avc::automatic::reconnect::{
     ReconnectBudget, ReconnectPolicy, ReconnectRefusal, ReconnectStatus, ReconnectStop,
-};
-use fss_reference::rtsp::live_avc::automatic::reconnect::hevc::{
-    SupervisedHevcRecording, SupervisedHevcRecordingError,
-    SupervisedHevcRecordingStep as Supervised,
 };
 use fss_reference::rtsp::live_hevc::{
     LiveHevcConfig, LiveHevcRetirement, LiveHevcStep, QueuedHevcRequest, SocketReadiness,
@@ -36,10 +36,12 @@ use fss_reference::rtsp::live_hevc::{
 use fss_reference::rtsp::recording::RecordingScope;
 use fss_reference::rtsp::recording::hevc::{PreparedHevcRecording, verify_hevc_recording};
 use fss_reference::rtsp::tcp::{
-    TcpAuthority, TcpBinding, TcpDenial, TcpLimits, TcpOperation, TcpRetirement,
-    TcpSecurityPolicy, TcpWriteStep,
+    TcpAuthority, TcpBinding, TcpDenial, TcpLimits, TcpOperation, TcpRetirement, TcpSecurityPolicy,
+    TcpWriteStep,
 };
-use hevc_recording_support::{configuration, nals, packet, packets, scope, timings, Error, PT, SSRC};
+use hevc_recording_support::{
+    Error, PT, SSRC, configuration, nals, packet, packets, scope, timings,
+};
 
 type Test<T = ()> = Result<T, Error>;
 const LEASE: u64 = 100_000_000_000;
@@ -94,9 +96,21 @@ fn configs(
     chunk: usize,
     generation: u64,
 ) -> Test<(LiveHevcConfig, LiveHevcRecordingConfig, Authority)> {
-    let key = StreamKey { ingress: 1, generation, ssrc: SSRC };
-    let binding = TcpBinding::new(key, peer, "fixture.local", TcpSecurityPolicy::OwnerApprovedPlaintext)?;
-    let authority = Authority { binding: binding.clone(), denied: Cell::new(None) };
+    let key = StreamKey {
+        ingress: 1,
+        generation,
+        ssrc: SSRC,
+    };
+    let binding = TcpBinding::new(
+        key,
+        peer,
+        "fixture.local",
+        TcpSecurityPolicy::OwnerApprovedPlaintext,
+    )?;
+    let authority = Authority {
+        binding: binding.clone(),
+        denied: Cell::new(None),
+    };
     let live = LiveHevcConfig {
         protocol: ClientConfig {
             presentation_uri: "rtsp://fixture.local/live/".into(),
@@ -107,7 +121,10 @@ fn configs(
             default_session_timeout_seconds: 60,
         },
         binding,
-        transport: TcpLimits { chunk_bytes: chunk, ..TcpLimits::default() },
+        transport: TcpLimits {
+            chunk_bytes: chunk,
+            ..TcpLimits::default()
+        },
         reorder: ReorderLimits::default(),
         reconstruction: H265Limits::default(),
         assembly: HevcAssemblyLimits::default(),
@@ -130,13 +147,20 @@ fn credentials() -> Test<DigestCredentials<'static>> {
     Ok(DigestCredentials::new("test-user", "test-password")?)
 }
 fn ready() -> SocketReadiness {
-    SocketReadiness { readable: true, writable: true }
+    SocketReadiness {
+        readable: true,
+        writable: true,
+    }
 }
 fn sdp() -> &'static str {
     "v=0\r\no=- 1 1 IN IP4 127.0.0.1\r\ns=fixture\r\nt=0 0\r\na=control:*\r\nm=video 0 RTP/AVP 98\r\na=rtpmap:98 H265/90000\r\na=control:track\r\n"
 }
 fn response(cseq: u32, headers: &str, body: &str) -> Vec<u8> {
-    format!("RTSP/1.0 200 OK\r\nCSeq: {cseq}\r\nContent-Length: {}\r\n{headers}\r\n{body}", body.len()).into_bytes()
+    format!(
+        "RTSP/1.0 200 OK\r\nCSeq: {cseq}\r\nContent-Length: {}\r\n{headers}\r\n{body}",
+        body.len()
+    )
+    .into_bytes()
 }
 fn challenge(cseq: u32, realm: &str) -> Vec<u8> {
     format!("RTSP/1.0 401 Unauthorized\r\nCSeq: {cseq}\r\nWWW-Authenticate: Digest realm=\"{realm}\", nonce=\"test-nonce\", algorithm=SHA-256, qop=\"auth\"\r\nContent-Length: 0\r\n\r\n").into_bytes()
@@ -157,9 +181,17 @@ fn input() -> Test<Vec<hevc_recording_support::Packet>> {
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
-enum Stop { Pending, Timing(HevcPictureTimingRequest), Stopped, Ended }
+enum Stop {
+    Pending,
+    Timing(HevcPictureTimingRequest),
+    Stopped,
+    Ended,
+}
 #[derive(Clone, Copy)]
-enum Expected { State(ClientState), Challenge }
+enum Expected {
+    State(ClientState),
+    Challenge,
+}
 
 struct Fixture {
     driver: SupervisedHevcRecording,
@@ -182,16 +214,29 @@ impl Fixture {
         let listener = TcpListener::bind((Ipv4Addr::LOCALHOST, 0))?;
         listener.set_nonblocking(true)?;
         let (live, recording, authority) = configs(listener.local_addr()?, chunk, 1)?;
-        let budget = ReconnectBudget::for_attempts(live.transport, live.max_steps, budget_attempts)?;
-        let mut driver = SupervisedHevcRecording::new_with_budget(live.binding.clone(), policy(), budget, 0)?;
+        let budget =
+            ReconnectBudget::for_attempts(live.transport, live.max_steps, budget_attempts)?;
+        let mut driver =
+            SupervisedHevcRecording::new_with_budget(live.binding.clone(), policy(), budget, 0)?;
         let attempt = driver.connect(live, recording, 0, &authority)?;
         assert_eq!(attempt.ordinal, 1);
         let (peer, _) = listener.accept()?;
         setup_peer(&peer)?;
         Ok(Self {
-            driver, listener, peer, authority, chunk, nonce: 0,
-            raw: Vec::new(), events: Vec::new(), windows: Vec::new(), timed: Vec::new(),
-            seals: Vec::new(), transports: Vec::new(), connections: Vec::new(), terminal: None,
+            driver,
+            listener,
+            peer,
+            authority,
+            chunk,
+            nonce: 0,
+            raw: Vec::new(),
+            events: Vec::new(),
+            windows: Vec::new(),
+            timed: Vec::new(),
+            seals: Vec::new(),
+            transports: Vec::new(),
+            connections: Vec::new(),
+            terminal: None,
         })
     }
 
@@ -199,8 +244,13 @@ impl Fixture {
         let nonce = if self.driver.needs_credentials() {
             self.nonce = self.nonce.checked_add(1).ok_or("nonce bound")?;
             self.nonce.to_be_bytes()
-        } else { [0; 16] };
-        match self.driver.poll(readiness, &credentials()?, nonce, now, &self.authority)? {
+        } else {
+            [0; 16]
+        };
+        match self
+            .driver
+            .poll(readiness, &credentials()?, nonce, now, &self.authority)?
+        {
             Supervised::Recording { key, output } => {
                 assert_eq!(key, self.authority.binding.key());
                 Ok(output)
@@ -214,14 +264,22 @@ impl Fixture {
             return Err("missing automatic request".into());
         };
         for _ in 0..LOOP_BOUND {
-            match self.poll(SocketReadiness { readable: false, writable: true }, now)? {
+            match self.poll(
+                SocketReadiness {
+                    readable: false,
+                    writable: true,
+                },
+                now,
+            )? {
                 Step::Network(LiveHevcStep::Write(TcpWriteStep::Sent { cseq, bytes })) => {
                     assert_eq!((cseq, bytes), (queued.cseq, queued.bytes));
                     let mut wire = vec![0; bytes];
                     self.peer.read_exact(&mut wire)?;
                     return Ok((queued, wire));
                 }
-                Step::Network(LiveHevcStep::Write(TcpWriteStep::Advanced { .. }) | LiveHevcStep::Pending(_)) => {}
+                Step::Network(
+                    LiveHevcStep::Write(TcpWriteStep::Advanced { .. }) | LiveHevcStep::Pending(_),
+                ) => {}
                 _ => return Err("unexpected request dispatch output".into()),
             }
         }
@@ -232,11 +290,22 @@ impl Fixture {
         self.peer.write_all(bytes)?;
         let before = self.raw.len();
         for _ in 0..LOOP_BOUND {
-            match self.poll(SocketReadiness { readable: true, writable: false }, now)? {
-                Step::Network(LiveHevcStep::Wire(chunk)) => self.raw.extend_from_slice(chunk.expose()),
+            match self.poll(
+                SocketReadiness {
+                    readable: true,
+                    writable: false,
+                },
+                now,
+            )? {
+                Step::Network(LiveHevcStep::Wire(chunk)) => {
+                    self.raw.extend_from_slice(chunk.expose())
+                }
                 Step::Network(LiveHevcStep::Pending(_)) => std::thread::yield_now(),
                 Step::ProtocolQueued { transport: None } => {}
-                Step::Capture { event, connection: None } => {
+                Step::Capture {
+                    event,
+                    connection: None,
+                } => {
                     let HevcCapturePoll::Receiver(event) = *event else {
                         return Err("control response became a recording result".into());
                     };
@@ -247,7 +316,10 @@ impl Fixture {
                             } if *actual == state)
                         }
                         (Expected::Challenge, Event::Client { event, work: None }) => {
-                            matches!(event.as_ref(), HevcClientPoll::AuthenticationRequired { .. })
+                            matches!(
+                                event.as_ref(),
+                                HevcClientPoll::AuthenticationRequired { .. }
+                            )
                         }
                         _ => false,
                     };
@@ -274,13 +346,25 @@ impl Fixture {
             let (answer, wire) = self.command(start + 2)?;
             assert_eq!(answer.command, ClientCommand::Describe);
             assert!(answer.cseq > describe.cseq);
-            assert_eq!(answer.challenge.as_ref().ok_or("challenge ownership")?.expose_wire(), raw);
+            assert_eq!(
+                answer
+                    .challenge
+                    .as_ref()
+                    .ok_or("challenge ownership")?
+                    .expose_wire(),
+                raw
+            );
             assert!(std::str::from_utf8(&wire)?.contains("Authorization: Digest "));
             assert!(!std::str::from_utf8(&wire)?.contains("test-password"));
             answer.cseq
-        } else { describe.cseq };
-        self.reply(&response(cseq, "Content-Type: application/sdp\r\n", sdp()), start + 3,
-            Expected::State(ClientState::Described))?;
+        } else {
+            describe.cseq
+        };
+        self.reply(
+            &response(cseq, "Content-Type: application/sdp\r\n", sdp()),
+            start + 3,
+            Expected::State(ClientState::Described),
+        )?;
         let (setup, _) = self.command(start + 4)?;
         assert_eq!(setup.command, ClientCommand::Setup);
         self.reply(&response(setup.cseq,
@@ -288,8 +372,11 @@ impl Fixture {
             start + 5, Expected::State(ClientState::Ready))?;
         let (play, _) = self.command(start + 6)?;
         assert_eq!(play.command, ClientCommand::Play);
-        self.reply(&response(play.cseq, "Session: test-session\r\n", ""), start + 7,
-            Expected::State(ClientState::Playing))?;
+        self.reply(
+            &response(play.cseq, "Session: test-session\r\n", ""),
+            start + 7,
+            Expected::State(ClientState::Playing),
+        )?;
         assert_eq!(self.driver.state(), Some(ClientState::Playing));
         assert!(!self.driver.needs_credentials());
         Ok(())
@@ -303,16 +390,31 @@ impl Fixture {
         Ok(f)
     }
 
-    fn drain(&mut self, now: u64, auto_timing: bool, wire_target: usize, want_end: bool) -> Test<Stop> {
+    fn drain(
+        &mut self,
+        now: u64,
+        auto_timing: bool,
+        wire_target: usize,
+        want_end: bool,
+    ) -> Test<Stop> {
         for _ in 0..LOOP_BOUND {
             match self.poll(ready(), now)? {
-                Step::Network(LiveHevcStep::Wire(chunk)) => self.raw.extend_from_slice(chunk.expose()),
+                Step::Network(LiveHevcStep::Wire(chunk)) => {
+                    self.raw.extend_from_slice(chunk.expose())
+                }
                 Step::Network(LiveHevcStep::InputEnded) => {
                     assert!(matches!(self.driver.status(), ReconnectStatus::Active(_)));
-                    assert!(self.driver.acknowledge_retirement(now, &self.authority).is_err());
+                    assert!(
+                        self.driver
+                            .acknowledge_retirement(now, &self.authority)
+                            .is_err()
+                    );
                 }
                 Step::Network(LiveHevcStep::Pending(wait)) => {
-                    if !want_end && self.raw.len() >= wire_target && wait.wake_at_ns.is_none_or(|at| at > now) {
+                    if !want_end
+                        && self.raw.len() >= wire_target
+                        && wait.wake_at_ns.is_none_or(|at| at > now)
+                    {
                         return Ok(Stop::Pending);
                     }
                     std::thread::yield_now();
@@ -320,18 +422,36 @@ impl Fixture {
                 Step::ProtocolQueued { transport } => {
                     if let Some(transport) = transport {
                         assert!(matches!(self.driver.status(), ReconnectStatus::Active(_)));
-                        assert!(self.driver.acknowledge_retirement(now, &self.authority).is_err());
+                        assert!(
+                            self.driver
+                                .acknowledge_retirement(now, &self.authority)
+                                .is_err()
+                        );
                         self.transports.push(*transport);
                     }
                 }
                 Step::Capture { event, connection } => {
-                    if let Some(connection) = connection { self.connections.push(*connection); }
+                    if let Some(connection) = connection {
+                        self.connections.push(*connection);
+                    }
                     match *event {
                         HevcCapturePoll::Receiver(event) => self.events.push(*event),
                         HevcCapturePoll::TimingRequired(request) => {
-                            if !auto_timing { return Ok(Stop::Timing(request)); }
+                            if !auto_timing {
+                                return Ok(Stop::Timing(request));
+                            }
                             let timing = timings(self.timed.len() + 1)[self.timed.len()];
-                            self.timed.push(self.driver.supply_timing(request.key, timing, now, &self.authority)?);
+                            let ticket = self
+                                .driver
+                                .timing_ticket()
+                                .ok_or("missing exact picture ticket")?;
+                            assert_eq!(ticket.request(), request);
+                            self.timed.push(self.driver.supply_timing_for(
+                                &ticket,
+                                timing,
+                                now,
+                                &self.authority,
+                            )?);
                         }
                         HevcCapturePoll::Window(window) => {
                             // Even the last window cannot independently release the capture owner.
@@ -366,7 +486,10 @@ impl Fixture {
     }
 
     fn probation(&mut self) -> Test {
-        assert_eq!(self.feed(&packet(0, 0, false, &nals()?[0]).bytes, 10, true)?, Stop::Pending);
+        assert_eq!(
+            self.feed(&packet(0, 0, false, &nals()?[0]).bytes, 10, true)?,
+            Stop::Pending
+        );
         Ok(())
     }
 
@@ -385,7 +508,10 @@ impl Fixture {
     fn record_and_eof(&mut self) -> Test {
         self.probation()?;
         for (i, packet) in input()?.iter().enumerate() {
-            assert_eq!(self.feed(&packet.bytes, 20 + u64::try_from(i)?, true)?, Stop::Pending);
+            assert_eq!(
+                self.feed(&packet.bytes, 20 + u64::try_from(i)?, true)?,
+                Stop::Pending
+            );
         }
         self.peer.shutdown(Shutdown::Write)?;
         assert_eq!(self.drain(40, true, self.raw.len(), true)?, Stop::Ended);
@@ -394,17 +520,31 @@ impl Fixture {
         assert_eq!(self.transports.len(), 1);
         assert!(self.transports[0].totals.peer_eof);
         assert!(self.connections.is_empty());
-        assert!(matches!(self.terminal, Some(HevcCapturePoll::Ended { retained: Some(_) })));
+        assert!(matches!(
+            self.terminal,
+            Some(HevcCapturePoll::Ended { retained: Some(_) })
+        ));
         let key = self.authority.binding.key();
         assert_eq!(self.driver.status(), ReconnectStatus::Retired(key));
         for window in &self.windows {
-            verify_hevc_recording(window.manifest(), window.objects(), &recording_scope(key.generation)?)?;
+            verify_hevc_recording(
+                window.manifest(),
+                window.objects(),
+                &recording_scope(key.generation)?,
+            )?;
         }
         Ok(())
     }
 
     fn no_connection(&self) -> Test {
-        assert_eq!(self.listener.accept().err().ok_or("unapproved second socket")?.kind(), ErrorKind::WouldBlock);
+        assert_eq!(
+            self.listener
+                .accept()
+                .err()
+                .ok_or("unapproved second socket")?
+                .kind(),
+            ErrorKind::WouldBlock
+        );
         Ok(())
     }
 }
@@ -426,16 +566,30 @@ fn real_hevc_eof_drains_then_reconnects_with_fresh_generation_and_authentication
             let before = f.driver.resource_budget();
             let roots: Vec<_> = f.windows.iter().map(|w| w.manifest().root()).collect();
             let (live, recording, _) = configs(f.listener.local_addr()?, chunk, 1)?;
-            let failure = f.driver.connect(live, recording, 41, &f.authority).err().ok_or("unacknowledged retry")?;
-            assert!(matches!(failure.reason, SupervisedHevcRecordingError::Supervisor(ReconnectRefusal::AwaitingRetirement)));
+            let failure = f
+                .driver
+                .connect(live, recording, 41, &f.authority)
+                .err()
+                .ok_or("unacknowledged retry")?;
+            assert!(matches!(
+                failure.reason,
+                SupervisedHevcRecordingError::Supervisor(ReconnectRefusal::AwaitingRetirement)
+            ));
             assert_eq!(f.driver.resource_budget(), before);
             f.no_connection()?;
             f.driver.acknowledge_retirement(100, &f.authority)?;
             assert_eq!(f.driver.resource_budget(), before);
             assert_eq!(f.driver.next_wake_ns(), Some(110));
             let (live, recording, authority) = configs(f.listener.local_addr()?, chunk, 2)?;
-            let error = f.driver.connect(live, recording, 109, &authority).err().ok_or("early retry")?;
-            assert!(matches!(error.reason, SupervisedHevcRecordingError::Supervisor(ReconnectRefusal::NotReady)));
+            let error = f
+                .driver
+                .connect(live, recording, 109, &authority)
+                .err()
+                .ok_or("early retry")?;
+            assert!(matches!(
+                error.reason,
+                SupervisedHevcRecordingError::Supervisor(ReconnectRefusal::NotReady)
+            ));
             assert_eq!(f.driver.resource_budget(), before);
             f.no_connection()?;
             let (live, recording, authority) = configs(f.listener.local_addr()?, chunk, 2)?;
@@ -449,11 +603,24 @@ fn real_hevc_eof_drains_then_reconnects_with_fresh_generation_and_authentication
             f.authority = authority;
             f.negotiate(digest, 110)?;
             assert_eq!(f.driver.resource_budget().admitted_attempts(), 2);
-            assert_eq!(roots, f.windows.iter().map(|w| w.manifest().root()).collect::<Vec<_>>());
+            assert_eq!(
+                roots,
+                f.windows
+                    .iter()
+                    .map(|w| w.manifest().root())
+                    .collect::<Vec<_>>()
+            );
             // Old footage retains its old source basis through an actual new connection.
             for window in &f.windows {
                 verify_hevc_recording(window.manifest(), window.objects(), &recording_scope(1)?)?;
-                assert!(verify_hevc_recording(window.manifest(), window.objects(), &recording_scope(2)?).is_err());
+                assert!(
+                    verify_hevc_recording(
+                        window.manifest(),
+                        window.objects(),
+                        &recording_scope(2)?
+                    )
+                    .is_err()
+                );
             }
             let _retirement = f.driver.cancel().ok_or("second generation retirement")?;
         }
@@ -468,8 +635,15 @@ fn spent_whole_run_budget_refuses_second_socket_without_losing_source_windows() 
     let before = f.driver.resource_budget();
     f.driver.acknowledge_retirement(100, &f.authority)?;
     let (live, recording, authority) = configs(f.listener.local_addr()?, f.chunk, 2)?;
-    let failure = f.driver.connect(live, recording, 110, &authority).err().ok_or("budget refilled")?;
-    assert!(matches!(failure.reason, SupervisedHevcRecordingError::Supervisor(ReconnectRefusal::Resources(_))));
+    let failure = f
+        .driver
+        .connect(live, recording, 110, &authority)
+        .err()
+        .ok_or("budget refilled")?;
+    assert!(matches!(
+        failure.reason,
+        SupervisedHevcRecordingError::Supervisor(ReconnectRefusal::Resources(_))
+    ));
     assert!(failure.retirement.is_none());
     assert_eq!(f.driver.resource_budget(), before);
     f.no_connection()?;
@@ -488,14 +662,28 @@ fn first_resource_refusal_can_be_corrected_without_pinning_a_rejected_profile() 
     listener.set_nonblocking(true)?;
     let (mut live, recording, authority) = configs(listener.local_addr()?, 7, 1)?;
     let budget = ReconnectBudget::for_attempts(live.transport, live.max_steps, 1)?;
-    let mut driver = SupervisedHevcRecording::new_with_budget(live.binding.clone(), policy(), budget, 0)?;
+    let mut driver =
+        SupervisedHevcRecording::new_with_budget(live.binding.clone(), policy(), budget, 0)?;
     let before = driver.resource_budget();
     live.max_steps += 1;
     live.realm = "rejected-profile-realm".into();
-    let failure = driver.connect(live, recording, 0, &authority).err().ok_or("excess work admitted")?;
-    assert!(matches!(failure.reason, SupervisedHevcRecordingError::Supervisor(ReconnectRefusal::Resources(_))));
+    let failure = driver
+        .connect(live, recording, 0, &authority)
+        .err()
+        .ok_or("excess work admitted")?;
+    assert!(matches!(
+        failure.reason,
+        SupervisedHevcRecordingError::Supervisor(ReconnectRefusal::Resources(_))
+    ));
     assert_eq!(driver.resource_budget(), before);
-    assert_eq!(listener.accept().err().ok_or("refusal opened socket")?.kind(), ErrorKind::WouldBlock);
+    assert_eq!(
+        listener
+            .accept()
+            .err()
+            .ok_or("refusal opened socket")?
+            .kind(),
+        ErrorKind::WouldBlock
+    );
     let (live, recording, authority) = configs(listener.local_addr()?, 7, 1)?;
     assert_eq!(driver.connect(live, recording, 1, &authority)?.ordinal, 1);
     let (_peer, _) = listener.accept()?;
@@ -517,10 +705,23 @@ fn scope_and_lease_errors_never_reserve_or_connect() -> Test {
             1 => recording.scope.generation += 1,
             _ => live.binding = configs(listener.local_addr()?, 7, 2)?.0.binding,
         }
-        let error = driver.connect(live, recording, 0, &authority).err().ok_or("invalid scope admitted")?;
-        assert!(matches!(error.reason, SupervisedHevcRecordingError::Supervisor(ReconnectRefusal::Scope)));
+        let error = driver
+            .connect(live, recording, 0, &authority)
+            .err()
+            .ok_or("invalid scope admitted")?;
+        assert!(matches!(
+            error.reason,
+            SupervisedHevcRecordingError::Supervisor(ReconnectRefusal::Scope)
+        ));
         assert_eq!(driver.resource_budget(), before);
-        assert_eq!(listener.accept().err().ok_or("invalid scope opened socket")?.kind(), ErrorKind::WouldBlock);
+        assert_eq!(
+            listener
+                .accept()
+                .err()
+                .ok_or("invalid scope opened socket")?
+                .kind(),
+            ErrorKind::WouldBlock
+        );
     }
     Ok(())
 }
@@ -546,12 +747,23 @@ fn retries_pin_media_auth_and_exact_parameter_bytes_including_uninterpreted_suff
                 let original = configuration()?;
                 let mut pps = original.pps().to_vec();
                 pps.push(0x80);
-                recording.configuration = HevcConfiguration::parse(original.vps(), original.sps(), &pps,
-                    HevcConfigurationLimits::default())?;
+                recording.configuration = HevcConfiguration::parse(
+                    original.vps(),
+                    original.sps(),
+                    &pps,
+                    HevcConfigurationLimits::default(),
+                )?;
             }
         }
-        let failure = f.driver.connect(live, recording, 110, &authority).err().ok_or("profile drift admitted")?;
-        assert!(matches!(failure.reason, SupervisedHevcRecordingError::Supervisor(ReconnectRefusal::Scope)));
+        let failure = f
+            .driver
+            .connect(live, recording, 110, &authority)
+            .err()
+            .ok_or("profile drift admitted")?;
+        assert!(matches!(
+            failure.reason,
+            SupervisedHevcRecordingError::Supervisor(ReconnectRefusal::Scope)
+        ));
         assert_eq!(f.driver.resource_budget(), before);
         f.no_connection()?;
     }
@@ -564,7 +776,10 @@ fn source_eob_drains_its_final_picture_then_stops_without_a_reconnect() -> Test 
     f.probation()?;
     let data = input()?;
     for (i, packet) in data[..data.len() - 1].iter().enumerate() {
-        assert_eq!(f.feed(&packet.bytes, 20 + u64::try_from(i)?, true)?, Stop::Pending);
+        assert_eq!(
+            f.feed(&packet.bytes, 20 + u64::try_from(i)?, true)?,
+            Stop::Pending
+        );
     }
     assert_eq!(f.timed.len(), 3);
     let original = data.last().ok_or("missing fixture EOS")?;
@@ -574,11 +789,17 @@ fn source_eob_drains_its_final_picture_then_stops_without_a_reconnect() -> Test 
     assert_eq!(f.windows.len(), 2);
     assert_eq!(f.transports.len(), 1);
     assert!(!f.transports[0].totals.peer_eof);
-    assert_eq!(f.driver.status(), ReconnectStatus::Stopped(ReconnectStop::SourceEnded));
+    assert_eq!(
+        f.driver.status(),
+        ReconnectStatus::Stopped(ReconnectStop::SourceEnded)
+    );
     let budget = f.driver.resource_budget();
     assert!(f.driver.acknowledge_retirement(36, &f.authority).is_err());
     assert!(f.driver.cancel().is_none());
-    assert_eq!(f.driver.status(), ReconnectStatus::Stopped(ReconnectStop::SourceEnded));
+    assert_eq!(
+        f.driver.status(),
+        ReconnectStatus::Stopped(ReconnectStop::SourceEnded)
+    );
     assert_eq!(f.driver.resource_budget(), budget);
     assert_eq!(f.driver.next_wake_ns(), None);
     f.no_connection()?;
@@ -594,41 +815,87 @@ fn marker_and_tcp_eof_preserve_an_unverified_tail_without_a_fabricated_picture()
     f.probation()?;
     // Parameter sets plus one IDR; no following picture prefix/AUD/EOS/EOB.
     for (i, packet) in input()?[..4].iter().enumerate() {
-        assert_eq!(f.feed(&packet.bytes, 20 + u64::try_from(i)?, true)?, Stop::Pending);
+        assert_eq!(
+            f.feed(&packet.bytes, 20 + u64::try_from(i)?, true)?,
+            Stop::Pending
+        );
     }
     f.peer.shutdown(Shutdown::Write)?;
     assert_eq!(f.drain(40, true, f.raw.len(), true)?, Stop::Ended);
     assert!(f.windows.is_empty());
     assert!(f.timed.is_empty());
-    assert!(f.events.iter().any(|event| matches!(event, Event::Ended { tail: Some(_), .. })));
-    assert_eq!(f.driver.status(), ReconnectStatus::Retired(f.authority.binding.key()));
-    assert!(matches!(f.terminal, Some(HevcCapturePoll::Ended { retained: Some(_) })));
+    assert!(
+        f.events
+            .iter()
+            .any(|event| matches!(event, Event::Ended { tail: Some(_), .. }))
+    );
+    assert_eq!(
+        f.driver.status(),
+        ReconnectStatus::Retired(f.authority.binding.key())
+    );
+    assert!(matches!(
+        f.terminal,
+        Some(HevcCapturePoll::Ended { retained: Some(_) })
+    ));
     Ok(())
 }
 
 #[test]
-fn stale_timing_and_clock_reversal_preserve_the_real_held_picture_and_deadline() -> Test {
+fn wrong_generation_seal_and_bad_timing_preserve_the_real_held_picture_and_deadline() -> Test {
     let mut f = Fixture::playing(7, false, 2)?;
     let request = f.timing_wait()?;
+    let ticket = f.driver.timing_ticket().ok_or("missing picture ticket")?;
+    assert_eq!(ticket.request(), request);
     let wake = f.driver.next_wake_ns();
     let totals = f.driver.totals();
     let budget = f.driver.resource_budget();
-    let wrong_key = StreamKey { generation: request.key.generation + 1, ..request.key };
-    let failure = f.driver.supply_timing(wrong_key, timings(1)[0], 25, &f.authority).err().ok_or("stale timing applied")?;
+    let wrong_key = StreamKey {
+        generation: request.key.generation + 1,
+        ..request.key
+    };
+    let failure = f
+        .driver
+        .seal(wrong_key, 25, &f.authority)
+        .err()
+        .ok_or("stale timing applied")?;
     assert!(failure.retirement.is_none());
-    assert!(matches!(failure.reason, SupervisedHevcRecordingError::Supervisor(ReconnectRefusal::Scope)));
-    let failure = f.driver.seal(request.key, 24, &f.authority).err().ok_or("reversed clock admitted")?;
-    assert!(matches!(failure.reason, SupervisedHevcRecordingError::Supervisor(ReconnectRefusal::ClockReversed)));
+    assert!(matches!(
+        failure.reason,
+        SupervisedHevcRecordingError::Supervisor(ReconnectRefusal::Scope)
+    ));
+    let failure = f
+        .driver
+        .seal(request.key, 24, &f.authority)
+        .err()
+        .ok_or("reversed clock admitted")?;
+    assert!(matches!(
+        failure.reason,
+        SupervisedHevcRecordingError::Supervisor(ReconnectRefusal::ClockReversed)
+    ));
     assert!(failure.retirement.is_none());
     let mut invalid = timings(1)[0];
     invalid.duration = 0;
-    assert!(f.driver.supply_timing(request.key, invalid, 26, &f.authority).err().ok_or("invalid timing")?.retirement.is_none());
+    assert!(
+        f.driver
+            .supply_timing_for(&ticket, invalid, 26, &f.authority)
+            .err()
+            .ok_or("invalid timing")?
+            .retirement
+            .is_none()
+    );
     assert_eq!(f.driver.next_wake_ns(), wake);
     f.peer.write_all(b"private-unread-test-sentinel")?;
-    assert_eq!(f.drain(27, false, f.raw.len(), false)?, Stop::Timing(request));
+    assert_eq!(
+        f.drain(27, false, f.raw.len(), false)?,
+        Stop::Timing(request)
+    );
     assert_eq!(f.driver.totals(), totals);
     assert_eq!(f.driver.resource_budget(), budget);
-    let timed = f.driver.supply_timing(request.key, timings(1)[0], 28, &f.authority)?;
+    assert_eq!(f.driver.timing_ticket().as_ref(), Some(&ticket));
+    let timed = f
+        .driver
+        .supply_timing_for(&ticket, timings(1)[0], 28, &f.authority)?;
+    assert!(f.driver.timing_ticket().is_none());
     assert!(matches!(timed.event.as_ref(), Event::Assembly { .. }));
     let _retired = f.driver.cancel().ok_or("held source lost")?;
     Ok(())
@@ -638,19 +905,41 @@ fn stale_timing_and_clock_reversal_preserve_the_real_held_picture_and_deadline()
 fn revocation_while_timing_is_pending_returns_all_original_work_exactly_once() -> Test {
     let mut f = Fixture::playing(7, true, 2)?;
     let request = f.timing_wait()?;
+    let ticket = f.driver.timing_ticket().ok_or("missing picture ticket")?;
+    assert_eq!(ticket.request(), request);
     let budget = f.driver.resource_budget();
     let totals = f.driver.totals().ok_or("totals")?;
     f.authority.denied.set(Some(TcpDenial::Revoked));
-    let failure = f.driver.supply_timing(request.key, timings(1)[0], 25, &f.authority).err().ok_or("revocation ignored")?;
+    let failure = f
+        .driver
+        .supply_timing_for(&ticket, timings(1)[0], 25, &f.authority)
+        .err()
+        .ok_or("revocation ignored")?;
     let retired = failure.retirement.ok_or("source lost on revocation")?;
-    assert_eq!(retired.connection.ok_or("native ownership")?.transport.totals, totals);
+    assert_eq!(
+        retired
+            .connection
+            .ok_or("native ownership")?
+            .transport
+            .totals,
+        totals
+    );
     assert_eq!(retired.capture.collection.sources.len(), 5);
-    assert!(matches!(retired.capture.event.as_deref(), Some(Event::Assembly { .. })));
+    assert!(matches!(
+        retired.capture.event.as_deref(),
+        Some(Event::Assembly { .. })
+    ));
     assert_eq!(f.driver.resource_budget(), budget);
-    assert_eq!(f.driver.status(), ReconnectStatus::Stopped(ReconnectStop::Denied(TcpDenial::Revoked)));
+    assert_eq!(
+        f.driver.status(),
+        ReconnectStatus::Stopped(ReconnectStop::Denied(TcpDenial::Revoked))
+    );
     f.authority.denied.set(None);
     assert!(f.driver.cancel().is_none());
-    assert_eq!(f.driver.status(), ReconnectStatus::Stopped(ReconnectStop::Denied(TcpDenial::Revoked)));
+    assert_eq!(
+        f.driver.status(),
+        ReconnectStatus::Stopped(ReconnectStop::Denied(TcpDenial::Revoked))
+    );
     assert_eq!(f.driver.next_wake_ns(), None);
     Ok(())
 }
@@ -666,7 +955,10 @@ fn a_source_gap_is_a_permanent_refusal_not_a_transient_socket_retry() -> Test {
     f.feed(&data[6].bytes, 30, true)?;
     let now = 30 + ReorderLimits::default().max_delay_ns;
     assert_eq!(f.drain(now, true, f.raw.len(), false)?, Stop::Stopped);
-    assert_eq!(f.driver.status(), ReconnectStatus::Stopped(ReconnectStop::PermanentFailure));
+    assert_eq!(
+        f.driver.status(),
+        ReconnectStatus::Stopped(ReconnectStop::PermanentFailure)
+    );
     let Some(HevcCapturePoll::Stopped { retained, .. }) = &f.terminal else {
         return Err("missing source invalidation".into());
     };
@@ -682,15 +974,31 @@ fn a_source_gap_is_a_permanent_refusal_not_a_transient_socket_retry() -> Test {
 fn cancel_preserves_a_sealed_but_unreturned_recording_without_publishing_or_refunding() -> Test {
     let mut f = Fixture::playing(7, false, 2)?;
     let request = f.timing_wait()?;
-    let _timed = f.driver.supply_timing(request.key, timings(1)[0], 25, &f.authority)?;
+    let ticket = f.driver.timing_ticket().ok_or("missing picture ticket")?;
+    assert_eq!(ticket.request(), request);
+    let _timed = f
+        .driver
+        .supply_timing_for(&ticket, timings(1)[0], 25, &f.authority)?;
     let seal = f.driver.seal(request.key, 26, &f.authority)?;
     assert!(seal.window_ready);
     let before = f.driver.resource_budget();
     let (key, retired) = f.driver.cancel().ok_or("ready window lost")?;
     assert_eq!(key, request.key);
-    let window = retired.capture.collection.ready.ok_or("ready window lost")?;
+    let window = retired
+        .capture
+        .collection
+        .ready
+        .ok_or("ready window lost")?;
     verify_hevc_recording(window.manifest(), window.objects(), &recording_scope(1)?)?;
-    assert!(retired.connection.ok_or("connection")?.protocol.client.session.remote_session_may_exist);
+    assert!(
+        retired
+            .connection
+            .ok_or("connection")?
+            .protocol
+            .client
+            .session
+            .remote_session_may_exist
+    );
     assert!(f.windows.is_empty());
     assert!(f.driver.cancel().is_none());
     assert_eq!(f.driver.resource_budget(), before);
@@ -706,13 +1014,20 @@ fn revoked_backoff_cannot_be_revived_or_open_a_new_generation() -> Test {
     let (live, recording, authority) = configs(f.listener.local_addr()?, 4096, 2)?;
     authority.denied.set(Some(TcpDenial::Revoked));
     let before = f.driver.resource_budget();
-    let failure = f.driver.connect(live, recording, 110, &authority).err().ok_or("revoked next generation")?;
+    let failure = f
+        .driver
+        .connect(live, recording, 110, &authority)
+        .err()
+        .ok_or("revoked next generation")?;
     assert!(failure.retirement.is_none());
     assert_eq!(f.driver.resource_budget(), before);
     authority.denied.set(None);
     let (live, recording, _) = configs(f.listener.local_addr()?, 4096, 2)?;
     assert!(f.driver.connect(live, recording, 111, &authority).is_err());
-    assert_eq!(f.driver.status(), ReconnectStatus::Stopped(ReconnectStop::Denied(TcpDenial::Revoked)));
+    assert_eq!(
+        f.driver.status(),
+        ReconnectStatus::Stopped(ReconnectStop::Denied(TcpDenial::Revoked))
+    );
     f.no_connection()?;
     Ok(())
 }
@@ -730,7 +1045,10 @@ fn retained_windows_publish_and_reopen_after_reconnect_capacity_is_exhausted() -
             let parent = std::path::PathBuf::from(env!("CARGO_TARGET_TMPDIR"));
             std::fs::create_dir_all(&parent)?;
             for index in 0..256 {
-                let path = parent.join(format!("supervised-hevc-custody-{}-{index}", std::process::id()));
+                let path = parent.join(format!(
+                    "supervised-hevc-custody-{}-{index}",
+                    std::process::id()
+                ));
                 match std::fs::create_dir(&path) {
                     Ok(()) => return Ok(Self(path)),
                     Err(error) if error.kind() == ErrorKind::AlreadyExists => {}
@@ -751,15 +1069,25 @@ fn retained_windows_publish_and_reopen_after_reconnect_capacity_is_exhausted() -
     f.record_and_eof()?;
     f.driver.acknowledge_retirement(100, &f.authority)?;
     let (live, recording, authority) = configs(f.listener.local_addr()?, 7, 2)?;
-    let failure = f.driver.connect(live, recording, 110, &authority).err().ok_or("budget refilled")?;
-    assert!(matches!(failure.reason, SupervisedHevcRecordingError::Supervisor(ReconnectRefusal::Resources(_))));
+    let failure = f
+        .driver
+        .connect(live, recording, 110, &authority)
+        .err()
+        .ok_or("budget refilled")?;
+    assert!(matches!(
+        failure.reason,
+        SupervisedHevcRecordingError::Supervisor(ReconnectRefusal::Resources(_))
+    ));
     f.no_connection()?;
     assert!(f.driver.cancel().is_none());
     drop(f.driver); // publication does not depend on a live acquisition owner
 
     let directory = OwnedDirectory::create()?;
     let limits = LocalPublicationLimits::new(
-        32, 64, 32, 128,
+        32,
+        64,
+        32,
+        128,
         SpoolLimits::new(128, 16 * 1024 * 1024, 2 * 1024 * 1024, 128),
     );
     {
@@ -768,7 +1096,11 @@ fn retained_windows_publish_and_reopen_after_reconnect_capacity_is_exhausted() -
             let slot = SlotName::parse(&format!("supervised-hevc-{i}"))?;
             assert!(publisher.root(&slot).is_none());
             let mut job = RecordingPublication::new(
-                window.publication_plan(), &mut publisher, slot, window.byte_len(), 100,
+                window.publication_plan(),
+                &mut publisher,
+                slot,
+                window.byte_len(),
+                100,
             )?;
             let mut published = false;
             for now in 0..5 {
@@ -793,9 +1125,336 @@ fn retained_windows_publish_and_reopen_after_reconnect_capacity_is_exhausted() -
         assert_eq!(loaded.samples(), window.samples());
         assert_eq!(loaded.mappings(), window.mappings());
         assert_eq!(loaded.objects().source, window.objects().source);
-        assert_eq!(loaded.objects().initialization, window.objects().initialization);
+        assert_eq!(
+            loaded.objects().initialization,
+            window.objects().initialization
+        );
         assert_eq!(loaded.objects().media, window.objects().media);
         assert_eq!(loaded.objects().index, window.objects().index);
     }
+    Ok(())
+}
+
+#[test]
+fn a_delayed_same_generation_timing_reply_cannot_time_the_next_picture() -> Test {
+    let mut f = Fixture::playing(7, true, 2)?;
+    let first_request = f.timing_wait()?;
+    let first = f.driver.timing_ticket().ok_or("missing first ticket")?;
+    assert_eq!(first.request(), first_request);
+    assert_eq!(
+        f.drain(25, false, f.raw.len(), false)?,
+        Stop::Timing(first_request)
+    );
+    assert_eq!(f.driver.timing_ticket().as_ref(), Some(&first));
+    let timed = f
+        .driver
+        .supply_timing_for(&first, timings(1)[0], 26, &f.authority)?;
+    f.timed.push(timed);
+    assert!(f.driver.timing_ticket().is_none());
+
+    let mut next_request = None;
+    for (index, packet) in input()?[5..].iter().enumerate() {
+        match f.feed(&packet.bytes, 30 + u64::try_from(index)?, false)? {
+            Stop::Timing(request) => {
+                next_request = Some(request);
+                break;
+            }
+            Stop::Pending => {}
+            _ => return Err("missing second source picture".into()),
+        }
+    }
+    let next_request = next_request.ok_or("second timing request did not arrive")?;
+    let second = f.driver.timing_ticket().ok_or("missing second ticket")?;
+    assert_eq!(first.key(), second.key()); // The stream-generation fence alone is insufficient.
+    assert_eq!(second.request(), next_request);
+    assert_eq!(second.ordinal(), first.ordinal() + 1);
+    let totals = f.driver.totals();
+    let budget = f.driver.resource_budget();
+    let wake = f.driver.next_wake_ns();
+    // The proposed timing is valid for the second picture, so only correlation can refuse it.
+    let failure = f
+        .driver
+        .supply_timing_for(&first, timings(2)[1], 50, &f.authority)
+        .err()
+        .ok_or("old picture ticket timed a different current picture")?;
+    assert!(matches!(
+        failure.reason,
+        SupervisedHevcRecordingError::Timing(HevcTimingRefusal::StaleTicket)
+    ));
+    assert!(failure.retirement.is_none());
+    assert_eq!(f.driver.timing_ticket().as_ref(), Some(&second));
+    assert_eq!(f.driver.totals(), totals);
+    assert_eq!(f.driver.resource_budget(), budget);
+    assert_eq!(f.driver.next_wake_ns(), wake);
+    f.timed.push(
+        f.driver
+            .supply_timing_for(&second, timings(2)[1], 51, &f.authority)?,
+    );
+    assert!(f.driver.timing_ticket().is_none());
+    let repeat = f
+        .driver
+        .supply_timing_for(&second, timings(2)[1], 52, &f.authority)
+        .err()
+        .ok_or("successful ticket was reusable")?;
+    assert!(matches!(
+        repeat.reason,
+        SupervisedHevcRecordingError::Timing(HevcTimingRefusal::StaleTicket)
+    ));
+    assert!(repeat.retirement.is_none());
+    let _retired = f.driver.cancel().ok_or("missing exact remaining source")?;
+    Ok(())
+}
+
+#[test]
+fn identical_picture_metadata_from_another_owner_is_not_a_timing_ticket() -> Test {
+    let mut left = Fixture::playing(7, false, 2)?;
+    let mut right = Fixture::playing(7, false, 2)?;
+    assert_eq!(left.timing_wait()?, right.timing_wait()?);
+    let left_ticket = left.driver.timing_ticket().ok_or("missing left ticket")?;
+    let right_ticket = right.driver.timing_ticket().ok_or("missing right ticket")?;
+    assert_eq!(left_ticket.ordinal(), right_ticket.ordinal());
+    assert_eq!(left_ticket.request(), right_ticket.request());
+    assert_ne!(left_ticket, right_ticket);
+    let totals = right.driver.totals();
+    let wake = right.driver.next_wake_ns();
+    let failure = right
+        .driver
+        .supply_timing_for(&left_ticket, timings(1)[0], 25, &right.authority)
+        .err()
+        .ok_or("another owner's ticket was admitted")?;
+    assert!(matches!(
+        failure.reason,
+        SupervisedHevcRecordingError::Timing(HevcTimingRefusal::StaleTicket)
+    ));
+    assert!(failure.retirement.is_none());
+    assert_eq!(right.driver.totals(), totals);
+    assert_eq!(right.driver.next_wake_ns(), wake);
+    assert_eq!(right.driver.timing_ticket().as_ref(), Some(&right_ticket));
+    // A wrong ticket must not hide live revocation or prevent original-work retirement.
+    right.authority.denied.set(Some(TcpDenial::Revoked));
+    let failure = right
+        .driver
+        .supply_timing_for(&left_ticket, timings(1)[0], 26, &right.authority)
+        .err()
+        .ok_or("wrong ticket hid revoked authority")?;
+    assert!(matches!(
+        failure.reason,
+        SupervisedHevcRecordingError::Supervisor(ReconnectRefusal::Stopped(ReconnectStop::Denied(
+            TcpDenial::Revoked
+        )))
+    ));
+    let retired = failure.retirement.ok_or("revocation lost held picture")?;
+    assert!(matches!(
+        retired.capture.event.as_deref(),
+        Some(Event::Assembly { .. })
+    ));
+    assert!(right.driver.timing_ticket().is_none());
+    assert!(right.driver.cancel().is_none());
+    let _left = left
+        .driver
+        .cancel()
+        .ok_or("missing left owner retirement")?;
+    Ok(())
+}
+
+#[test]
+fn reconnect_never_reuses_a_previous_picture_ticket_or_ordinal() -> Test {
+    let mut f = Fixture::playing(7, false, 2)?;
+    f.timing_wait()?;
+    let old = f.driver.timing_ticket().ok_or("missing original ticket")?;
+    f.timed.push(
+        f.driver
+            .supply_timing_for(&old, timings(1)[0], 25, &f.authority)?,
+    );
+    for (index, packet) in input()?[5..].iter().enumerate() {
+        assert_eq!(
+            f.feed(&packet.bytes, 30 + u64::try_from(index)?, true)?,
+            Stop::Pending
+        );
+    }
+    f.peer.shutdown(Shutdown::Write)?;
+    assert_eq!(f.drain(50, true, f.raw.len(), true)?, Stop::Ended);
+    assert!(f.driver.timing_ticket().is_none());
+    f.driver.acknowledge_retirement(100, &f.authority)?;
+    let (live, recording, authority) = configs(f.listener.local_addr()?, 7, 2)?;
+    f.driver.connect(live, recording, 110, &authority)?;
+    let (peer, _) = f.listener.accept()?;
+    setup_peer(&peer)?;
+    f.peer = peer;
+    f.authority = authority;
+    f.negotiate(false, 110)?;
+    assert_eq!(
+        f.feed(&packet(0, 0, false, &nals()?[0]).bytes, 120, false)?,
+        Stop::Pending
+    );
+    let mut request = Stop::Pending;
+    for (index, packet) in input()?[..5].iter().enumerate() {
+        request = f.feed(&packet.bytes, 130 + u64::try_from(index)?, false)?;
+    }
+    assert!(matches!(request, Stop::Timing(_)));
+    let new = f
+        .driver
+        .timing_ticket()
+        .ok_or("missing new generation ticket")?;
+    assert_eq!(new.key().generation, 2);
+    assert!(new.ordinal() > old.ordinal());
+    let budget = f.driver.resource_budget();
+    let totals = f.driver.totals();
+    let failure = f
+        .driver
+        .supply_timing_for(&old, timings(1)[0], 140, &f.authority)
+        .err()
+        .ok_or("old generation's timing ticket was reused")?;
+    assert!(matches!(
+        failure.reason,
+        SupervisedHevcRecordingError::Timing(HevcTimingRefusal::StaleTicket)
+    ));
+    assert!(failure.retirement.is_none());
+    assert_eq!(f.driver.timing_ticket().as_ref(), Some(&new));
+    assert_eq!(f.driver.resource_budget(), budget);
+    assert_eq!(f.driver.totals(), totals);
+    let _timed = f
+        .driver
+        .supply_timing_for(&new, timings(1)[0], 141, &f.authority)?;
+    let _retired = f.driver.cancel().ok_or("missing new generation source")?;
+    assert!(f.driver.timing_ticket().is_none());
+    Ok(())
+}
+
+#[test]
+fn changed_sdp_payload_after_reconnect_preserves_originals_and_never_retries() -> Test {
+    use fss_reference::rtsp::hevc_recording_capture::CaptureError;
+    use fss_reference::rtsp::hevc_recording_capture::live::LiveHevcRecordingError;
+    use fss_reference::rtsp::recording_collector::CollectorError;
+
+    let mut f = Fixture::playing(7, false, 3)?;
+    f.record_and_eof()?;
+    let roots: Vec<_> = f.windows.iter().map(|w| w.manifest().root()).collect();
+    f.driver.acknowledge_retirement(100, &f.authority)?;
+    let (live, recording, authority) = configs(f.listener.local_addr()?, 7, 2)?;
+    f.driver.connect(live, recording, 110, &authority)?;
+    let (peer, _) = f.listener.accept()?;
+    setup_peer(&peer)?;
+    f.peer = peer;
+    f.authority = authority;
+    let (describe, _) = f.command(110)?;
+    let sent = f
+        .driver
+        .totals()
+        .ok_or("missing second transport")?
+        .sent_bytes;
+    let original = response(
+        describe.cseq,
+        "Content-Type: application/sdp\r\n",
+        &sdp().replace("98", "99"),
+    );
+    f.peer.write_all(&original)?;
+    let mut refusal = None;
+    for _ in 0..LOOP_BOUND {
+        match f
+            .driver
+            .poll(ready(), &credentials()?, [0; 16], 111, &f.authority)
+        {
+            Err(failure) => {
+                refusal = Some(failure);
+                break;
+            }
+            Ok(Supervised::Recording {
+                output: Step::Network(LiveHevcStep::Wire(chunk)),
+                ..
+            }) => {
+                f.raw.extend_from_slice(chunk.expose());
+            }
+            Ok(Supervised::Recording {
+                output: Step::Network(LiveHevcStep::Pending(_)),
+                ..
+            }) => {
+                std::thread::yield_now();
+            }
+            _ => return Err("wrong selection was delivered or scheduled SETUP".into()),
+        }
+    }
+    let failure = refusal.ok_or("changed payload was not refused")?;
+    assert!(matches!(
+        failure.reason,
+        SupervisedHevcRecordingError::Recording(LiveHevcRecordingError::Capture(
+            CaptureError::Collection(CollectorError::StreamMismatch)
+        ))
+    ));
+    let retired = failure
+        .retirement
+        .ok_or("source-bearing failure lost retirement")?;
+    let Event::Client { event, work: None } =
+        *retired.unoffered_event.ok_or("missing original SDP")?
+    else {
+        return Err("wrong source type".into());
+    };
+    let HevcClientPoll::Control { source, .. } = *event else {
+        return Err("SDP response not retained".into());
+    };
+    assert_eq!(source.expose_wire(), original);
+    assert_eq!(
+        retired
+            .connection
+            .ok_or("missing native retirement")?
+            .transport
+            .totals
+            .sent_bytes,
+        sent
+    );
+    assert_eq!(
+        f.driver.status(),
+        ReconnectStatus::Stopped(ReconnectStop::PermanentFailure)
+    );
+    assert_eq!(f.driver.resource_budget().admitted_attempts(), 2);
+    assert!(f.driver.acknowledge_retirement(112, &f.authority).is_err());
+    assert_eq!(
+        f.windows
+            .iter()
+            .map(|w| w.manifest().root())
+            .collect::<Vec<_>>(),
+        roots
+    );
+    for window in &f.windows {
+        verify_hevc_recording(window.manifest(), window.objects(), &recording_scope(1)?)?;
+    }
+    f.no_connection()?;
+    Ok(())
+}
+
+#[test]
+fn legacy_synchronous_timing_keeps_its_signature_and_consumes_the_current_ticket() -> Test {
+    let mut f = Fixture::playing(7, false, 2)?;
+    let request = f.timing_wait()?;
+    let ticket = f.driver.timing_ticket().ok_or("missing timing ticket")?;
+    let mut invalid = timings(1)[0];
+    invalid.duration = 0;
+    let failure = f
+        .driver
+        .supply_timing(request.key, invalid, 25, &f.authority)
+        .err()
+        .ok_or("invalid legacy timing accepted")?;
+    assert!(failure.retirement.is_none());
+    assert_eq!(f.driver.timing_ticket().as_ref(), Some(&ticket));
+    let timed = f
+        .driver
+        .supply_timing(request.key, timings(1)[0], 26, &f.authority)?;
+    f.timed.push(timed);
+    assert!(f.driver.timing_ticket().is_none());
+    let totals = f.driver.totals();
+    let failure = f
+        .driver
+        .supply_timing_for(&ticket, timings(1)[0], 27, &f.authority)
+        .err()
+        .ok_or("consumed compatibility ticket replayed")?;
+    assert!(matches!(
+        failure.reason,
+        SupervisedHevcRecordingError::Timing(HevcTimingRefusal::StaleTicket)
+    ));
+    assert!(failure.retirement.is_none());
+    assert_eq!(f.driver.totals(), totals);
+    let (_, retired) = f.driver.cancel().ok_or("missing native ownership")?;
+    assert_eq!(retired.capture.collection.pictures.len(), 1);
+    assert!(retired.connection.is_some());
     Ok(())
 }
