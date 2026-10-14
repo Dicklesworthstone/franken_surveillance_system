@@ -32,13 +32,15 @@ jobs:
       CARGO_PROFILE_TEST_DEBUG: '0'
       CARGO_NET_OFFLINE: 'true'
       RUSTUP_AUTO_INSTALL: '0'
-      FSS_SUPERVISION_EVIDENCE_DIR: ${{ runner.temp }}/native-supervision
-      FSS_SUPERVISION_OFFLINE_BUNDLE: ${{ github.event_name == 'workflow_dispatch' && inputs.offline_bundle && '1' || '0' }}
+      # A main-branch commit can explicitly request the same offline bundle as dispatch.
+      FSS_SUPERVISION_OFFLINE_BUNDLE: ${{ ((github.event_name == 'workflow_dispatch' && inputs.offline_bundle) || (github.event_name == 'push' && contains(github.event.head_commit.message, '[offline-supervision]'))) && '1' || '0' }}
     steps:
       - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
       - name: Bootstrap the pinned compiler
         run: bash scripts/bootstrap_toolchain.sh
       - name: Native ownership, recovery and source-custody contracts
+        env:
+          FSS_SUPERVISION_EVIDENCE_DIR: ${{ runner.temp }}/native-supervision
         run: bash scripts/check_native_supervision.sh
       - name: Retain exact logs and separate formatter suggestions
         if: ${{ !cancelled() }}
