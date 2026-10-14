@@ -6,6 +6,8 @@ pub use framing::*;
 pub mod avc;
 /// Source-linked native H.264 pixels from bounded ordered recorded RTP.
 pub mod decode;
+/// Verified neural packages over current-custody native color frames.
+pub mod detect;
 /// Ordered recorded-RTP NAL reconstruction through the existing HEVC receiver.
 pub mod hevc;
 /// Source-first publication, capsule linkage and verified readback.
