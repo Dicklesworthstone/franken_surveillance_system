@@ -217,14 +217,14 @@ impl fmt::Display for ActivityError {
 impl std::error::Error for ActivityError {}
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
-enum Signal {
+pub(crate) enum Signal {
     Quiet,
     Motion,
     Reset,
     Unavailable,
 }
 
-fn schedule(
+pub(crate) fn schedule(
     policy: ActivityPolicy,
     ordinal: u64,
     hold: u32,

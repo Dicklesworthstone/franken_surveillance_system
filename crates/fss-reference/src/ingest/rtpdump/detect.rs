@@ -2,9 +2,13 @@
 //! Retained RTP -> checked native color frames -> verified neural package -> proposals.
 //!
 //! Owns the receipted decoder, never accepts caller-assembled pixels/receipts, and uses the
-//! existing RGB transform, inference and detector-head projection. Every decoded frame is
-//! considered independently: motion cannot filter it, and recovery cannot refill allowances.
+//! existing RGB transform, inference and detector-head projection. The default detector considers
+//! every decoded frame independently. The explicit `cascade` preserves source receipts and reasons
+//! when skipping inference; recovery never refills either owner's allowances.
 //! Results are uncalibrated cognition, not tracking, physical absence, or effect authority.
+
+/// Explicit opt-in activity/sentinel admission over this same native detector owner.
+pub mod cascade;
 
 use super::decode::RtpDecodeEffect;
 use super::recovery::RecoveredRtpImport;
@@ -340,7 +344,16 @@ impl<'a> RtpPackageDetector<'a> {
         if self.decoder.is_none() {
             return Ok(RtpDetectionStep::Ended(self.stats));
         }
-        let mut result = self.advance(deployment, cx, scalar);
+        let result = self.advance(deployment, cx, scalar);
+        self.finish_step(result, cx, scalar)
+    }
+    // Both exhaustive and explicitly sampled inference use this one failure/cancellation owner.
+    fn finish_step<T>(
+        &mut self,
+        mut result: Result<T>,
+        cx: &ReplayCx,
+        scalar: &ScalarExecCx,
+    ) -> Result<T> {
         self.stats.detection_work = self.budget.used();
         if result.is_err() {
             if cx.is_cancelled() || scalar.is_cancelled() {
@@ -355,12 +368,13 @@ impl<'a> RtpPackageDetector<'a> {
         }
         result
     }
-    fn advance(
+    // The same current-custody decoder supplies every sampling position, including skips.
+    fn next_native(
         &mut self,
         deployment: &ReferenceDeployment,
         cx: &ReplayCx,
         scalar: &ScalarExecCx,
-    ) -> Result<RtpDetectionStep> {
+    ) -> Result<ReceiptedRtpDecodeStep> {
         checkpoint(cx, scalar, "rtp_detect:step")?;
         if deployment.current_anchor() != &self.basis {
             return Err(RtpDetectionError::StaleBasis);
@@ -370,7 +384,15 @@ impl<'a> RtpPackageDetector<'a> {
         self.stats.native = decoder.stats();
         self.stats.custody_read_bytes = decoder.read_bytes();
         self.stats.receipt_bytes = decoder.receipt_bytes();
-        match result.map_err(RtpDetectionError::Source)? {
+        result.map_err(RtpDetectionError::Source)
+    }
+    fn advance(
+        &mut self,
+        deployment: &ReferenceDeployment,
+        cx: &ReplayCx,
+        scalar: &ScalarExecCx,
+    ) -> Result<RtpDetectionStep> {
+        match self.next_native(deployment, cx, scalar)? {
             ReceiptedRtpDecodeStep::Progress { event, effect } => {
                 Ok(RtpDetectionStep::Progress { event, effect })
             }
@@ -522,7 +544,12 @@ impl<'a> RtpPackageDetector<'a> {
             stream: frame.stream().clone(),
             capture,
             dimensions,
-            output_index: self.stats.frames,
+            output_index: self
+                .stats
+                .native
+                .frames
+                .checked_sub(1)
+                .ok_or(RtpDetectionError::Encoding)?,
             group: frame.source().group,
             decoder_epoch: frame.source().decoder_epoch,
             rtp_timestamp: frame.source().timestamp,

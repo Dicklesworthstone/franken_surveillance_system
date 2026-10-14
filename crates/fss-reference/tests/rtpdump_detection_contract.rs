@@ -2,6 +2,9 @@
 //! Actual retained RTP decoding and the committed neural package, not caller-supplied boxes.
 mod rtpdump_support;
 
+#[path = "rtpdump_detection_contract/cascade.rs"]
+mod cascade;
+
 use fss_core::{ContentDigest, SensorId, StreamId, TimestampNs};
 use fss_reference::ingest::privacy_mask::{
     MASK_FILL_RGB, PrivacyMaskPolicy, declare_mask, preview_mask,

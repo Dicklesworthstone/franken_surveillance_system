@@ -525,7 +525,7 @@ impl PixelChangeDetector {
     }
 }
 
-fn compare_pixels(
+pub(crate) fn compare_pixels(
     previous: &[u8],
     current: &[u8],
     dimensions: [u32; 2],
