@@ -7,6 +7,9 @@
 //! hypotheses, not identities, visibility, physical absence, or effect authority. Only actual
 //! assignments are exposed as observations; coasting predictions never acquire source evidence.
 
+/// Activity-gated neural tracking with explicit unobserved intervals.
+pub mod sampled;
+
 use super::decode::RtpDecodeEffect;
 use super::detect::{
     RtpDetectedFrame, RtpDetectionError, RtpDetectionRequest, RtpDetectionStats,
@@ -292,26 +295,7 @@ impl<'a> RtpPackageTracker<'a> {
         let core = TrackCore::new(request.tracker, request.limits)?;
         let detector = RtpPackageDetector::new(retained, package, request.detection,
             deployment, cx, scalar).map_err(RtpTrackingError::Detection)?;
-        let mut e = CanonicalEncoder::new();
-        e.text(RTP_TRACKING_DOMAIN);
-        e.text(TRACKER_ALGORITHM);
-        e.text(TRACK_ASSIGNMENT_POLICY);
-        e.digest(ContentDigest::sha256(include_bytes!("track.rs")));
-        e.digest(ContentDigest::sha256(include_bytes!("../tracker.rs")));
-        e.digest(ContentDigest::sha256(include_bytes!("../tracker/assignment.rs")));
-        e.digest(ContentDigest::sha256(include_bytes!("../tracker/checked.rs")));
-        e.digest(ContentDigest::sha256(include_bytes!("../tracker/observation.rs")));
-        e.digest(detector.recipe());
-        e.u64(request.class_index as u64);
-        e.u32(core.config.min_hits);
-        e.u32(core.config.max_misses);
-        for n in [core.config.iou_threshold, core.config.process_noise, core.config.measurement_noise] {
-            e.u64(n.to_bits());
-        }
-        for n in [request.limits.step.max_tracks as u64, request.limits.step.max_detections as u64,
-            request.limits.step.max_assignment_work, request.limits.max_frames as u64,
-            request.limits.max_assignments, request.limits.max_assignment_work] { e.u64(n); }
-        let recipe = digest(e)?;
+        let recipe = tracking_recipe(detector.recipe(), request.class_index, &core)?;
         let stats = RtpTrackingStats { detection: detector.stats(), ..Default::default() };
         Ok(Self { detector: Some(detector), core, class_index: request.class_index,
             recipe, basis: deployment.current_anchor().clone(), previous: None, stats })
@@ -357,40 +341,8 @@ impl<'a> RtpPackageTracker<'a> {
                 Ok(RtpTrackingStep::Ended(self.stats))
             }
             RtpDetectionStep::Frame(detected) => {
-                let all = detected.detections().detections();
-                let indices: Vec<_> = all.iter().enumerate()
-                    .filter_map(|(i, d)| (d.class_index() == self.class_index).then_some(i)).collect();
-                if indices.len() > self.core.limits.step.max_detections { return Err(RtpTrackingError::Limit); }
-                let selected: Vec<_> = indices.iter().map(|&i| {
-                    let [x1, y1, x2, y2] = all[i].bounds();
-                    let unit = f64::from(BOX_SUBPIXELS);
-                    Detection { box_x: f64::from(x1) / unit, box_y: f64::from(y1) / unit,
-                        box_w: (f64::from(x2) - f64::from(x1)) / unit,
-                        box_h: (f64::from(y2) - f64::from(y1)) / unit }
-                }).collect();
-                let source = detected.source();
-                let order = FrameOrder { index: source.output_index, decoder_epoch: source.decoder_epoch,
-                    dimensions: source.dimensions, policy: source.policy };
-                let (assigned, reset) = self.core.advance(order, &selected)?;
-                let mut observations = Vec::with_capacity(assigned.assignments.len());
-                // Track output may be swap-removed; sort once and merge by stable identity.
-                let mut tracks: Vec<_> = assigned.output.tracks.iter().collect();
-                tracks.sort_unstable_by_key(|track| track.id);
-                let mut position = 0;
-                for assignment in &assigned.assignments {
-                    while position < tracks.len() && tracks[position].id < assignment.track_id { position += 1; }
-                    let track = tracks.get(position).filter(|t| t.id == assignment.track_id)
-                        .ok_or(RtpTrackingError::Encoding)?;
-                    let detection_index = *indices.get(assignment.detection_index).ok_or(RtpTrackingError::Encoding)?;
-                    let mut e = CanonicalEncoder::new();
-                    e.text("fss.rtp_track_identity.v1");
-                    e.digest(self.recipe);
-                    e.digest(source.root);
-                    e.u64(self.core.epoch);
-                    e.u64(track.id);
-                    observations.push(RtpTrackObservation { identity: digest(e)?, local_id: track.id,
-                        detection_index, status: track.status, hits: track.hits });
-                }
+                let (assigned, reset, observations) =
+                    associate(&mut self.core, &detected, self.class_index, self.recipe)?;
                 let mut e = CanonicalEncoder::new();
                 e.text("fss.rtp_tracked_frame.v1");
                 e.digest(self.recipe);
@@ -405,15 +357,7 @@ impl<'a> RtpPackageTracker<'a> {
                 e.u64(assigned.output.deleted_tracks as u64);
                 e.u64(self.core.work);
                 e.u64(self.core.assignments);
-                e.u64(observations.len() as u64);
-                for o in &observations {
-                    e.digest(o.identity);
-                    e.u64(o.local_id);
-                    e.u64(o.detection_index as u64);
-                    e.u8(match o.status { TrackStatus::Tentative => 0, TrackStatus::Confirmed => 1,
-                        TrackStatus::Lost => return Err(RtpTrackingError::Encoding) });
-                    e.u32(o.hits);
-                }
+                encode_observations(&mut e, &observations)?;
                 let digest = digest(e)?;
                 checkpoint(cx, scalar, "rtp_track:deliver")?;
                 if deployment.current_anchor() != &self.basis { return Err(RtpTrackingError::StaleBasis); }
@@ -427,6 +371,89 @@ impl<'a> RtpPackageTracker<'a> {
         }
     }
 }
+// Shared by the exhaustive owner and the explicitly sampled owner. Neither accepts
+// arbitrary caller boxes: input is the privately constructed native detector result.
+fn associate(
+    core: &mut TrackCore,
+    detected: &RtpDetectedFrame,
+    class_index: usize,
+    recipe: ContentDigest,
+) -> Result<(AssignedTrackerOutput, Option<RtpTrackReset>, Vec<RtpTrackObservation>)> {
+    let all = detected.detections().detections();
+    let indices: Vec<_> = all.iter().enumerate()
+        .filter_map(|(i, d)| (d.class_index() == class_index).then_some(i)).collect();
+    if indices.len() > core.limits.step.max_detections { return Err(RtpTrackingError::Limit); }
+    let selected: Vec<_> = indices.iter().map(|&i| {
+        let [x1, y1, x2, y2] = all[i].bounds();
+        let unit = f64::from(BOX_SUBPIXELS);
+        Detection { box_x: f64::from(x1) / unit, box_y: f64::from(y1) / unit,
+            box_w: (f64::from(x2) - f64::from(x1)) / unit,
+            box_h: (f64::from(y2) - f64::from(y1)) / unit }
+    }).collect();
+    let source = detected.source();
+    let order = FrameOrder { index: source.output_index, decoder_epoch: source.decoder_epoch,
+        dimensions: source.dimensions, policy: source.policy };
+    let (assigned, reset) = core.advance(order, &selected)?;
+    let mut observations = Vec::with_capacity(assigned.assignments.len());
+    // Track output may be swap-removed; sort once and merge by stable identity.
+    let mut tracks: Vec<_> = assigned.output.tracks.iter().collect();
+    tracks.sort_unstable_by_key(|track| track.id);
+    let mut position = 0;
+    for assignment in &assigned.assignments {
+        while position < tracks.len() && tracks[position].id < assignment.track_id { position += 1; }
+        let track = tracks.get(position).filter(|t| t.id == assignment.track_id)
+            .ok_or(RtpTrackingError::Encoding)?;
+        let detection_index = *indices.get(assignment.detection_index).ok_or(RtpTrackingError::Encoding)?;
+        let mut e = CanonicalEncoder::new();
+        e.text("fss.rtp_track_identity.v1");
+        e.digest(recipe);
+        e.digest(source.root);
+        e.u64(core.epoch);
+        e.u64(track.id);
+        observations.push(RtpTrackObservation { identity: digest(e)?, local_id: track.id,
+            detection_index, status: track.status, hits: track.hits });
+    }
+    Ok((assigned, reset, observations))
+}
+
+fn tracking_recipe(detector_recipe: ContentDigest, class_index: usize, core: &TrackCore)
+    -> Result<ContentDigest>
+{
+    let mut e = CanonicalEncoder::new();
+    e.text(RTP_TRACKING_DOMAIN);
+    e.text(TRACKER_ALGORITHM);
+    e.text(TRACK_ASSIGNMENT_POLICY);
+    e.digest(ContentDigest::sha256(include_bytes!("track.rs")));
+    e.digest(ContentDigest::sha256(include_bytes!("../tracker.rs")));
+    e.digest(ContentDigest::sha256(include_bytes!("../tracker/assignment.rs")));
+    e.digest(ContentDigest::sha256(include_bytes!("../tracker/checked.rs")));
+    e.digest(ContentDigest::sha256(include_bytes!("../tracker/observation.rs")));
+    e.digest(detector_recipe);
+    e.u64(class_index as u64);
+    e.u32(core.config.min_hits);
+    e.u32(core.config.max_misses);
+    for n in [core.config.iou_threshold, core.config.process_noise, core.config.measurement_noise] {
+        e.u64(n.to_bits());
+    }
+    for n in [core.limits.step.max_tracks as u64, core.limits.step.max_detections as u64,
+        core.limits.step.max_assignment_work, core.limits.max_frames as u64,
+        core.limits.max_assignments, core.limits.max_assignment_work] { e.u64(n); }
+    digest(e)
+}
+
+fn encode_observations(e: &mut CanonicalEncoder, observations: &[RtpTrackObservation]) -> Result<()> {
+    e.u64(observations.len() as u64);
+    for o in observations {
+        e.digest(o.identity);
+        e.u64(o.local_id);
+        e.u64(o.detection_index as u64);
+        e.u8(match o.status { TrackStatus::Tentative => 0, TrackStatus::Confirmed => 1,
+            TrackStatus::Lost => return Err(RtpTrackingError::Encoding) });
+        e.u32(o.hits);
+    }
+    Ok(())
+}
+
 fn digest(e: CanonicalEncoder) -> Result<ContentDigest> {
     Ok(ContentDigest::sha256(&e.finish_checked().map_err(|_| RtpTrackingError::Encoding)?))
 }
