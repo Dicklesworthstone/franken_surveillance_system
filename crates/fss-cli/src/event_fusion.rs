@@ -20,6 +20,7 @@ use fss_reference::ingest::recorded_corroboration::CorroborationReport;
 use fss_reference::ingest::recorded_watch::WatchReport;
 use fss_reference::{ReferenceDeployment, ReplayCx};
 
+mod guarded;
 mod input;
 mod render;
 pub use input::MAX_PROFILE_BYTES;
@@ -286,6 +287,7 @@ impl EventFusionReport {
     }
 
     /// Fuse only actually associated native camera entries, preserving their dependency domains.
+    /// Site-calibrated cameras require `corroborate_guarded` and their final screened records.
     pub fn corroborate(
         native: &CorroborationReport,
         cascade: &DetectorCascade<'_>,
@@ -293,53 +295,7 @@ impl EventFusionReport {
         deployment: &ReferenceDeployment,
         cx: &ReplayCx,
     ) -> Result<Self> {
-        checkpoint(cx)?;
-        if native.cascade_digest() != Some(cascade.digest()) {
-            return Err(EventFusionError::Scope);
-        }
-        native
-            .revalidate_derived_sources(deployment, cx)
-            .map_err(|_| EventFusionError::Evidence)?;
-        let mut inputs = Vec::new();
-        for candidate in native.candidates() {
-            let mut sources = Vec::new();
-            for &index in &candidate.entries {
-                let entry = native
-                    .entries()
-                    .get(index)
-                    .ok_or(EventFusionError::Evidence)?;
-                let camera = native
-                    .cameras()
-                    .get(entry.camera)
-                    .ok_or(EventFusionError::Evidence)?;
-                sources.push(Source {
-                    sensor: &camera.sensor_id,
-                    dependency: Some(&camera.failure_domain),
-                    evidence: &entry.class_evidence,
-                });
-            }
-            inputs.push(Input {
-                candidate: candidate.identity(),
-                proposal: candidate.proposal_digest(),
-                provenance: candidate.provenance_root(),
-                sources,
-            });
-        }
-        let coverage: Vec<_> = native.coverage().iter().collect();
-        let result = Self::analyze(
-            native.plan_digest(),
-            &coverage,
-            cascade,
-            profile,
-            inputs,
-            deployment,
-            cx,
-        )?;
-        native
-            .revalidate_derived_sources(deployment, cx)
-            .map_err(|_| EventFusionError::Evidence)?;
-        checkpoint(cx)?;
-        Ok(result)
+        Self::corroborate_with_coverage(native, cascade, profile, None, deployment, cx)
     }
 
     fn analyze(

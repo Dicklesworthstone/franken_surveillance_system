@@ -40,6 +40,8 @@ pub struct CoverageProjectionInput<'a> {
 #[derive(Clone, Debug)]
 pub struct GuardedCoverageSet {
     records: Vec<CoverageRecord>,
+    /// Exact ordered inputs, including any uncalibrated companion. Not caller-settable.
+    nominal_digests: Vec<ContentDigest>,
     privacy: Vec<(ContentDigest, u64)>,
 }
 
@@ -171,6 +173,7 @@ impl GuardedCoverageSet {
         }
         let mut records = Vec::with_capacity(inputs.len());
         let mut privacy = Vec::with_capacity(inputs.len());
+        let mut nominal_digests = Vec::with_capacity(inputs.len());
         for input in inputs {
             let record = match input.assessment {
                 Some(assessment) => apply_calibration_coverage(input.record, assessment, budget)?,
@@ -194,17 +197,36 @@ impl GuardedCoverageSet {
             if record.to_bytes().len() > MAX_COVERAGE_RECORD_BYTES {
                 return Err(CorroborationError::Limit);
             }
+            // Bind the complete original record, not just its camera or base analysis.
+            // Otherwise a screen from another time range could be reused as this run's
+            // final context. Price this extra canonical encoding in the shared budget.
+            charge(budget, check_copy_bound(input.record)?)?;
+            nominal_digests.push(input.record.digest());
             records.push(record);
             privacy.push(binding);
         }
         charge(budget, 0)?;
-        Ok(Self { records, privacy })
+        Ok(Self {
+            records,
+            nominal_digests,
+            privacy,
+        })
     }
 
     /// Exact projected records in the original camera order; never the nominal fallback.
     #[must_use]
     pub fn records(&self) -> &[CoverageRecord] {
         &self.records
+    }
+
+    /// Exact original coverage identities in camera order, before any screening.
+    ///
+    /// Read-only consumers must match these to their native analysis before using
+    /// `records()` as its final context, then revalidate source, privacy and adoption.
+    /// This lineage is not an approval and does not replace `revalidate`.
+    #[must_use]
+    pub fn nominal_digests(&self) -> &[ContentDigest] {
+        &self.nominal_digests
     }
 
     /// The ordinary coverage approval, recomputed over the guarded records and their anchors.
@@ -237,3 +259,6 @@ pub use retention::GuardedCoverageRetentionError;
 
 #[cfg(test)]
 mod tests;
+
+#[cfg(test)]
+mod binding_tests;
