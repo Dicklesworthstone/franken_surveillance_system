@@ -15,6 +15,8 @@ use fss_core::{CaptureInterval, ContentDigest, TimestampNs};
 
 use crate::ReferenceError;
 
+mod projection;
+
 /// A single clock synchronization observation sample.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct TimeSyncSample {
@@ -110,132 +112,6 @@ pub struct ClockSyncEstimate {
 }
 
 impl ClockSyncEstimate {
-    /// Predicts the sensor capture interval for a given reference timestamp.
-    ///
-    /// Evaluates validity and expands the interval conservatively with fit residuals.
-    pub fn predict_sensor_interval(
-        &self,
-        ref_time: TimestampNs,
-    ) -> Result<CaptureInterval, ReferenceError> {
-        if self.sample_evidence.is_empty() {
-            return Err(ReferenceError::InsufficientSyncSamples {
-                count: 0,
-                minimum_required: 1,
-            });
-        }
-        if ref_time.0 < self.validity.earliest.0 || ref_time.0 > self.validity.latest.0 {
-            return Err(ReferenceError::StaleEstimatePastValidity {
-                requested: ref_time,
-                valid_until: self.validity.latest,
-            });
-        }
-
-        let delta_t = ref_time
-            .0
-            .checked_sub(self.reference_anchor.0)
-            .ok_or(ReferenceError::ArithmeticOverflow)?;
-
-        let skew_offset = delta_t
-            .checked_mul(i128::from(self.skew_ppm))
-            .ok_or(ReferenceError::ArithmeticOverflow)?
-            / 1_000_000;
-
-        let nominal_sensor_time = ref_time
-            .0
-            .checked_add(i128::from(self.offset_ns))
-            .ok_or(ReferenceError::ArithmeticOverflow)?
-            .checked_add(skew_offset)
-            .ok_or(ReferenceError::ArithmeticOverflow)?;
-
-        // Conservative uncertainty: maximum sample uncertainty + fit max residual (with minimum 1 ns floor)
-        let max_sample_uncert = self
-            .sample_evidence
-            .iter()
-            .map(|s| s.uncertainty_ns)
-            .max()
-            .unwrap_or(0);
-        let total_uncertainty = max_sample_uncert
-            .saturating_add(self.residual.max_residual_ns)
-            .max(1);
-
-        let earliest = nominal_sensor_time
-            .checked_sub(i128::from(total_uncertainty))
-            .ok_or(ReferenceError::ArithmeticOverflow)?;
-        let latest = nominal_sensor_time
-            .checked_add(i128::from(total_uncertainty))
-            .ok_or(ReferenceError::ArithmeticOverflow)?;
-
-        CaptureInterval::new(TimestampNs(earliest), TimestampNs(latest))
-            .map_err(ReferenceError::Contract)
-    }
-
-    /// Predicts the reference capture interval for a given sensor timestamp.
-    pub fn predict_reference_interval(
-        &self,
-        sensor_time: TimestampNs,
-    ) -> Result<CaptureInterval, ReferenceError> {
-        if self.sample_evidence.is_empty() {
-            return Err(ReferenceError::InsufficientSyncSamples {
-                count: 0,
-                minimum_required: 1,
-            });
-        }
-        // Approximate inverted time: ref ~= (sensor - offset) / (1 + skew/1e6)
-        // Since |skew| <= 500_000 ppm, 1 + skew_ppm/1e6 = (1_000_000 + skew_ppm) / 1_000_000
-        let effective_rate = 1_000_000_i128
-            .checked_add(i128::from(self.skew_ppm))
-            .ok_or(ReferenceError::ArithmeticOverflow)?;
-        if effective_rate <= 0 {
-            return Err(ReferenceError::ArithmeticOverflow);
-        }
-
-        let delta_sensor = sensor_time
-            .0
-            .checked_sub(self.reference_anchor.0)
-            .ok_or(ReferenceError::ArithmeticOverflow)?
-            .checked_sub(i128::from(self.offset_ns))
-            .ok_or(ReferenceError::ArithmeticOverflow)?;
-
-        let delta_ref = delta_sensor
-            .checked_mul(1_000_000)
-            .ok_or(ReferenceError::ArithmeticOverflow)?
-            / effective_rate;
-
-        let nominal_ref_time = self
-            .reference_anchor
-            .0
-            .checked_add(delta_ref)
-            .ok_or(ReferenceError::ArithmeticOverflow)?;
-
-        let ref_ts = TimestampNs(nominal_ref_time);
-        if ref_ts.0 < self.validity.earliest.0 || ref_ts.0 > self.validity.latest.0 {
-            return Err(ReferenceError::StaleEstimatePastValidity {
-                requested: ref_ts,
-                valid_until: self.validity.latest,
-            });
-        }
-
-        let max_sample_uncert = self
-            .sample_evidence
-            .iter()
-            .map(|s| s.uncertainty_ns)
-            .max()
-            .unwrap_or(0);
-        let total_uncertainty = max_sample_uncert
-            .saturating_add(self.residual.max_residual_ns)
-            .max(1);
-
-        let earliest = nominal_ref_time
-            .checked_sub(i128::from(total_uncertainty))
-            .ok_or(ReferenceError::ArithmeticOverflow)?;
-        let latest = nominal_ref_time
-            .checked_add(i128::from(total_uncertainty))
-            .ok_or(ReferenceError::ArithmeticOverflow)?;
-
-        CaptureInterval::new(TimestampNs(earliest), TimestampNs(latest))
-            .map_err(ReferenceError::Contract)
-    }
-
     /// Verifies whether a new synchronization sample is consistent with this estimate.
     ///
     /// Rejects with [`ReferenceError::ContradictedEstimate`] if the sample's measured offset
