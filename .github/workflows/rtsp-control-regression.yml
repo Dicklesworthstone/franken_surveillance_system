@@ -8,6 +8,7 @@ on:
       - 'crates/fss-reference/src/rtsp/**'
       - 'crates/fss-reference/src/rtsp.rs'
       - 'crates/fss-reference/tests/automatic_control_backpressure.rs'
+      - 'crates/fss-reference/tests/automatic_archive_control_backpressure.rs'
       - 'crates/fss-reference/tests/automatic_live_archive_contract.rs'
       - 'Cargo.toml'
       - 'Cargo.lock'
@@ -37,9 +38,11 @@ jobs:
       - name: Automatic sequencing, native negotiation and reconnect boundaries
         if: success() || failure()
         run: cargo +nightly-2026-08-31 test --locked --offline -p fss-reference --lib rtsp::live_avc::automatic
-      - name: Real loopback coalescing, partial input, revocation and finite work
+      - name: Real loopback coalescing, partial input, revocation and protected archives
         if: success() || failure()
-        run: cargo +nightly-2026-08-31 test --locked --offline -p fss-reference --test automatic_control_backpressure
+        run: >-
+          cargo +nightly-2026-08-31 test --no-fail-fast --locked --offline -p fss-reference
+          --test automatic_control_backpressure --test automatic_archive_control_backpressure
       - name: Existing protected archives and exact payload selection
         if: success() || failure()
         run: cargo +nightly-2026-08-31 test --no-fail-fast --locked --offline -p fss-reference --test automatic_live_archive_contract --test rtsp_payload_selection_streaming
