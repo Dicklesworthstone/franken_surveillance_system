@@ -104,6 +104,12 @@ pub enum ReferenceError {
         /// Absolute deviation in nanoseconds.
         deviation_ns: u64,
     },
+    /// An invalidated sampling epoch cannot accept samples or issue another fit.
+    /// Historical rollback does not clear this fence; explicitly start fresh sampling.
+    ClockRecalibrationRequired {
+        /// Earliest retained reference-time invalidation boundary.
+        invalidated_at: TimestampNs,
+    },
     /// Clock offset/skew estimator configuration violates a documented bound.
     InvalidEstimatorConfig {
         /// Offending `EstimatorConfig` field name.
@@ -339,6 +345,10 @@ impl fmt::Display for ReferenceError {
                     "clock sync estimate contradicted by new sample: expected offset {expected_offset_ns} ns, observed {observed_offset_ns} ns, deviation {deviation_ns} ns"
                 )
             }
+            Self::ClockRecalibrationRequired { invalidated_at } => write!(
+                formatter,
+                "clock calibration invalidated at {invalidated_at}; explicit fresh-sample recalibration is required"
+            ),
             Self::InvalidEstimatorConfig {
                 parameter,
                 value,
@@ -522,6 +532,7 @@ impl ReferenceError {
     pub const fn is_recover_corrupt_history(&self) -> bool {
         matches!(self, Self::RecoverCorruptHistory { .. })
     }
+
 }
 
 impl Error for ReferenceError {
@@ -552,6 +563,7 @@ impl Error for ReferenceError {
             | Self::OutlierDominatedFit { .. }
             | Self::StaleEstimatePastValidity { .. }
             | Self::ContradictedEstimate { .. }
+            | Self::ClockRecalibrationRequired { .. }
             | Self::InvalidEstimatorConfig { .. }
             | Self::StaleEventAuthority
             | Self::RestoredDeploymentEffectsFenced { .. }

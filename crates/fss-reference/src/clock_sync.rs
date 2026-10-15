@@ -16,6 +16,7 @@ use fss_core::{CaptureInterval, ContentDigest, TimestampNs};
 use crate::ReferenceError;
 
 mod projection;
+mod recalibration;
 
 /// A single clock synchronization observation sample.
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -246,6 +247,7 @@ pub struct ClockOffsetSkewEstimator {
     prior_estimates: Vec<ClockSyncEstimate>,
     state: EstimatorState,
     generation_counter: u64,
+    invalidation: Option<recalibration::ClockInvalidation>,
 }
 
 impl ClockOffsetSkewEstimator {
@@ -264,6 +266,7 @@ impl ClockOffsetSkewEstimator {
             prior_estimates: Vec::new(),
             state: EstimatorState::Uncalibrated,
             generation_counter: 0,
+            invalidation: None,
         })
     }
 
@@ -287,26 +290,18 @@ impl ClockOffsetSkewEstimator {
 
     /// Appends a new synchronization sample into the estimator.
     ///
-    /// Strictly verifies monotonicity:
-    /// - `reference_time` must be strictly greater than the previous sample's `reference_time`.
-    /// - `sensor_time` must be strictly greater than the previous sample's `sensor_time`.
-    /// - `sequence` must be strictly greater than the previous sample's `sequence`.
-    ///
-    /// If an active estimate is present, tests for contradictions:
-    /// - If contradicted, automatically transitions to [`EstimatorState::Invalidated`] and
-    ///   returns [`ReferenceError::ContradictedEstimate`].
+    /// Reference time and sequence must strictly increase. A stale or repeated observation
+    /// is refused without invalidating the calibration. A fresh observation whose sensor
+    /// clock does not advance invalidates an active estimate, as does a model contradiction.
+    /// Rejected samples never enter the fit. Once invalidated, this instance accepts no more
+    /// samples or fits; use [`Self::recalibrate_from`] for an explicit fresh sampling epoch.
     pub fn add_sample(&mut self, sample: TimeSyncSample) -> Result<(), ReferenceError> {
+        self.ensure_calibration_current()?;
         if let Some(prev) = self.samples.last() {
             if sample.reference_time.0 <= prev.reference_time.0 {
                 return Err(ReferenceError::NonMonotonicSyncSamples {
                     previous: prev.reference_time,
                     current: sample.reference_time,
-                });
-            }
-            if sample.sensor_time.0 <= prev.sensor_time.0 {
-                return Err(ReferenceError::NonMonotonicSyncSamples {
-                    previous: prev.sensor_time,
-                    current: sample.sensor_time,
                 });
             }
             if sample.sequence <= prev.sequence {
@@ -315,29 +310,22 @@ impl ClockOffsetSkewEstimator {
                     current: sample.sequence,
                 });
             }
+            if sample.sensor_time.0 <= prev.sensor_time.0 {
+                let error = ReferenceError::NonMonotonicSyncSamples {
+                    previous: prev.sensor_time,
+                    current: sample.sensor_time,
+                };
+                self.invalidate(sample, format!("{error}"));
+                return Err(error);
+            }
         }
 
-        // Check contradiction against current active or prior estimate
-        let candidate_estimate = match &self.state {
-            EstimatorState::Synchronized(est) => Some(est),
-            EstimatorState::Invalidated { prior_estimate, .. } => Some(prior_estimate),
-            EstimatorState::Uncalibrated => None,
-        };
-        if let Some(estimate) = candidate_estimate
-            && let Err(err) =
+        if let Some(estimate) = self.active_estimate.as_ref()
+            && let Err(error) =
                 estimate.validate_sample(&sample, self.config.contradiction_tolerance_ns)
         {
-            if self.active_estimate.is_some() {
-                let prior = estimate.clone();
-                let reason = format!("{err}");
-                self.state = EstimatorState::Invalidated {
-                    prior_estimate: prior,
-                    contradicting_sample: sample.clone(),
-                    reason,
-                };
-                self.active_estimate = None;
-            }
-            return Err(err);
+            self.invalidate(sample, format!("{error}"));
+            return Err(error);
         }
 
         self.samples.push(sample);
@@ -434,7 +422,9 @@ impl ClockOffsetSkewEstimator {
     /// Emits typed errors on failure:
     /// - [`ReferenceError::InsufficientSyncSamples`] if fewer than `min_samples` exist.
     /// - [`ReferenceError::OutlierDominatedFit`] if outlier ratio exceeds threshold.
+    /// - [`ReferenceError::ClockRecalibrationRequired`] after invalidation, even after rollback.
     pub fn fit(&mut self) -> Result<ClockSyncEstimate, ReferenceError> {
+        self.ensure_calibration_current()?;
         let n = self.samples.len();
         if n < self.config.min_samples {
             return Err(ReferenceError::InsufficientSyncSamples {
@@ -577,55 +567,6 @@ impl ClockOffsetSkewEstimator {
         self.active_estimate = Some(estimate.clone());
         self.state = EstimatorState::Synchronized(estimate.clone());
         Ok(estimate)
-    }
-
-    /// Rollback the current estimate, restoring the immediately prior valid estimate.
-    ///
-    /// If a prior estimate exists, its validity horizon is clamped to before the contradicting event,
-    /// and it becomes active again.
-    /// If no prior estimate exists, transitions to [`EstimatorState::Uncalibrated`].
-    pub fn rollback(&mut self) -> Result<Option<ClockSyncEstimate>, ReferenceError> {
-        let candidate = match &self.state {
-            EstimatorState::Invalidated {
-                prior_estimate,
-                contradicting_sample,
-                ..
-            } => {
-                let mut prior = prior_estimate.clone();
-                let clamped_latest = TimestampNs(
-                    contradicting_sample
-                        .reference_time
-                        .0
-                        .saturating_sub(1)
-                        .max(prior.validity.earliest.0),
-                );
-                prior.validity = CaptureInterval::new(prior.validity.earliest, clamped_latest)
-                    .map_err(ReferenceError::Contract)?;
-                Some(prior)
-            }
-            _ => self.prior_estimates.pop(),
-        };
-
-        if let Some(prior) = candidate {
-            self.active_estimate = Some(prior.clone());
-            self.state = EstimatorState::Synchronized(prior.clone());
-            Ok(Some(prior))
-        } else {
-            self.active_estimate = None;
-            self.state = EstimatorState::Uncalibrated;
-            Ok(None)
-        }
-    }
-
-    /// Explicitly invalidates the active estimate.
-    pub fn invalidate(&mut self, sample: TimeSyncSample, reason: impl Into<String>) {
-        if let Some(active) = self.active_estimate.take() {
-            self.state = EstimatorState::Invalidated {
-                prior_estimate: active,
-                contradicting_sample: sample,
-                reason: reason.into(),
-            };
-        }
     }
 }
 
