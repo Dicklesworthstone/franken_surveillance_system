@@ -204,6 +204,13 @@ impl Fixture {
             fss_reference::rtsp::avc_client::authenticated::DigestAvcError::Backpressure))));
         assert!(!failure.retired());
         assert!(!self.driver.needs_credentials());
+        if suffix == b"RTSP/1." {
+            // First probe the queued partial frame. Before this native turn, its wake
+            // denotes runnable parser work, not yet the fixed missing-input deadline.
+            assert!(matches!(self.poll(SocketReadiness::default(), 2)?,
+                Step::Live(LiveAvcStep::Pending(_))));
+            assert!(!self.driver.needs_credentials());
+        }
         Ok(())
     }
     fn drain_fault(&mut self, now: u64) -> Test {
@@ -305,6 +312,20 @@ fn reversed_clock_during_drain_preserves_input_and_scheduling() -> Test {
         assert_eq!(f.driver.next_wake_ns(), wake);
         assert!(!f.driver.needs_credentials());
         assert!(f.driver.cancel());
+    }
+    Ok(())
+}
+#[test]
+fn partial_wire_expiry_terminates_without_rearming_setup_or_renewing_time() -> Test {
+    for recording in [false, true] {
+        let mut f = Fixture::new(recording, 10_000)?;
+        f.blocked(b"RTSP/1.")?;
+        let deadline = f.driver.next_wake_ns().ok_or("fixed wire deadline missing")?;
+        let step = f.poll(SocketReadiness::default(), deadline)?;
+        assert!(step.terminal());
+        assert!(!f.driver.needs_credentials());
+        assert_eq!(f.driver.next_wake_ns(), None);
+        assert!(!f.driver.cancel());
     }
     Ok(())
 }
