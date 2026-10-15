@@ -373,6 +373,7 @@ fn drive<W: Write>(
                         "request_queued",
                         object(&[
                             ("command", string(command_name(request.command))),
+                            ("method", string(request.command.wire_method())),
                             ("cseq", request.cseq.to_string()),
                             ("bytes", request.bytes.to_string()),
                             (
@@ -557,7 +558,12 @@ pub(super) fn run<W: Write>(
         connect_failure(&error.reason)
     })?;
     stats.connection_attempted = true;
-    let result = drive(options, &mut capture, owner, entropy, stats, log);
+    // Pin the already-approved liveness method before the first automatic request.
+    // Always run the normal retirement path, even if this pure selection is refused.
+    let result = match capture.select_keepalive(options.keepalive) {
+        Ok(()) => drive(options, &mut capture, owner, entropy, stats, log),
+        Err(error) => Err(failure(error, stats)),
+    };
     stats.hevc_observe(&capture);
     // Transfer all remaining ownership before any terminal sink operation.
     if let Some(retired) = capture.cancel() {

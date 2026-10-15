@@ -64,7 +64,7 @@ impl DigestState {
         if session.pending.is_some() {
             return Err(ClientError::State.into());
         }
-        let (method, uri) = target(session, command);
+        let (method, uri) = session.request_target(command);
         // An unnegotiated target (e.g. premature SETUP) must not receive credentials.
         scoped(&session.config, uri)?;
         let counter = self
@@ -147,7 +147,7 @@ impl DigestState {
         self.used_nonces
             .try_reserve_exact(1)
             .map_err(|_| AuthenticationError::Capacity)?;
-        let (method, uri) = target(session, pending.command);
+        let (method, uri) = session.request_target(pending.command);
         scoped(&session.config, uri)?;
         let authorization = challenge.authorize(method, uri, credentials, cnonce, 1)?;
         let new_cseq = session.next_cseq;
@@ -259,16 +259,6 @@ impl RtspClientSession {
     }
 }
 
-fn target(session: &RtspClientSession, command: ClientCommand) -> (&'static str, &str) {
-    match command {
-        ClientCommand::Options => ("OPTIONS", &session.config.presentation_uri),
-        ClientCommand::Describe => ("DESCRIBE", &session.config.presentation_uri),
-        ClientCommand::Setup => ("SETUP", &session.track_uri),
-        ClientCommand::Play => ("PLAY", &session.aggregate_uri),
-        ClientCommand::KeepAlive => ("OPTIONS", &session.aggregate_uri),
-        ClientCommand::Teardown => ("TEARDOWN", &session.aggregate_uri),
-    }
-}
 fn challenge_response(wire: &[u8]) -> Result<(RtspResponse, &str)> {
     // Bounded complete response only. Parser owns framing and body length; this
     // adapter reads just the original header that the public parser redacts.

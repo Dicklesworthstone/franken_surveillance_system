@@ -13,7 +13,7 @@ use fss_packet::{StreamKey, avc::AvcReceiveLimits};
 use fss_publication::LocalPublicationLimits;
 use fss_reference::rtsp::archive_pins::{ArchivePinLimits, ArchivePinScope};
 use fss_reference::rtsp::authentication::DigestPolicy;
-use fss_reference::rtsp::client::{ClientCodec, ClientConfig, RtspClientSession};
+use fss_reference::rtsp::client::{ClientCodec, ClientCommand, ClientConfig, RtspClientSession};
 use fss_reference::rtsp::framed::{
     MAX_WIRE_BODY, MAX_WIRE_BUFFER, MAX_WIRE_CHUNK, MAX_WIRE_HEADERS, WIRE_LIFETIME_NS,
 };
@@ -47,6 +47,7 @@ const HEVC_SUPPLIED_POLICY: &str = "one-literal-ip:owner-approved-plaintext:opt-
 journal-before-publication:original-rtp:fixed-90000hz:exact-cadence:relative-dts:\
 zero-composition-offset:idr-led-windows:requested-stop-is-not-eof:\
 hevc-single-exact-offer:owner-vps-sps-pps:real-boundary-source-witness:v1";
+const GET_PARAMETER_POLICY: &str = "fss.rtsp_keepalive.v1:empty-get-parameter:no-method-fallback";
 pub(super) const HELP: &str = "fss-capture-rtsp --root NEW_ABSOLUTE_ARCHIVE --pins NEW_ABSOLUTE_PIN_JOURNAL\n\
   --peer IP:PORT --authority HOST[:PORT] --presentation /PATH --control-root /PATH\n\
   --sensor-id ID --stream-id ID --generation N --ingress N --ssrc N\n\
@@ -68,6 +69,11 @@ Replacement, modification, removal or permission drift revokes the live credenti
 SHA-256/qop=auth is the default. Explicit legacy interoperability: --legacy-md5 yes\n\
 and, only with it, --legacy-no-qop yes. No Basic auth or automatic downgrade.\n\
 Digest does not encrypt media or authenticate the server. Linux /dev/urandom supplies cnonces.\n\
+Keepalive: --keepalive-method options (default) or get-parameter. The latter sends only\n\
+an empty GET_PARAMETER to the negotiated session URI, never parameter queries or changes.\n\
+The selection is approval-bound for AVC and HEVC and preserved across reconnect attempts.\n\
+No rejection, missing reply or advertised server method enables automatic fallback.\n\
+Omitting the option or selecting options preserves existing approval and recording identities.\n\
 \n\
 The operator supplies a fixed 90000 Hz cadence (for example 3600 ticks for 25 pictures/s)\n\
 and evidence identifying that timing policy. Default mode requires monotonic RTP cadence.\n\
@@ -110,6 +116,7 @@ pub(super) struct Options {
     pub(super) stop_after_pictures: u64,
     pub(super) frame_duration: u32,
     pub(super) max_reorder_pictures: u8,
+    pub(super) keepalive: ClientCommand,
     pub(super) time_scale: u32,
     pub(super) timeout_ns: u64,
     pub(super) drain_timeout_ns: u64,
@@ -258,6 +265,7 @@ impl Options {
             "--journal-id",
             "--frame-duration-ticks",
             "--max-reorder-pictures",
+            "--keepalive-method",
             "--stop-after-pictures",
             "--owner-authorized",
             "--plaintext",
@@ -313,6 +321,11 @@ impl Options {
                 return Err("explicit owner, plaintext and original-retention approval required");
             }
         }
+        let keepalive = match values.get("--keepalive-method").copied().unwrap_or("options") {
+            "options" => ClientCommand::KeepAlive,
+            "get-parameter" => ClientCommand::KeepAliveGetParameter,
+            _ => return Err("keepalive method must be options or get-parameter"),
+        };
         let root = absolute_path(required("--root")?)?;
         let pins = absolute_path(required("--pins")?)?;
         if root.starts_with(&pins) || pins.starts_with(&root) {
@@ -574,6 +587,7 @@ impl Options {
             stop_after_pictures,
             frame_duration,
             max_reorder_pictures,
+            keepalive,
             time_scale,
             timeout_ns,
             drain_timeout_ns,
@@ -773,6 +787,9 @@ impl Options {
     }
 
     pub(super) fn digest(&self) -> Result<ContentDigest, &'static str> {
+        if !self.keepalive.is_keepalive() {
+            return Err("invalid keepalive policy");
+        }
         let mut e = CanonicalEncoder::new();
         e.text("fss.rtsp_capture_cli_plan.v1");
         e.text(&self.policy());
@@ -823,6 +840,11 @@ impl Options {
             e.text(name);
             e.u64(value);
         }
+        // The default emits exactly the legacy canonical bytes. A non-default network
+        // method needs new approval, but cannot change recording clocks or source identities.
+        if self.keepalive == ClientCommand::KeepAliveGetParameter {
+            e.text(GET_PARAMETER_POLICY);
+        }
         let bytes = e
             .finish_checked()
             .map_err(|_| "capture plan encoding refused")?;
@@ -841,6 +863,8 @@ impl Options {
             ("approval", string(&self.digest()?.to_text())),
             ("policy", string(&self.policy())),
             ("codec", string(self.codec())),
+            ("keepalive_method", string(self.keepalive.wire_method())),
+            ("keepalive_fallback", "false".into()),
             (
                 "root",
                 string(self.root.to_str().ok_or("UTF-8 archive path required")?),

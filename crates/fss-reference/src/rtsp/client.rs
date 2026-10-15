@@ -70,10 +70,31 @@ pub enum ClientCommand {
     Setup,
     /// Start the negotiated session.
     Play,
-    /// Refresh a session using OPTIONS (universally defined), without a method fallback.
+    /// Refresh a session using OPTIONS, preserving the original default wire contract.
     KeepAlive,
+    /// Explicit empty-body GET_PARAMETER liveness request (RFC 2326 section 10.8).
+    /// This does not read or change camera parameters and never enables method fallback.
+    KeepAliveGetParameter,
     /// Stop the session; completion requires its matching response.
     Teardown,
+}
+impl ClientCommand {
+    /// Exact method used by BOTH wire preparation and Digest A2 computation.
+    /// This contains no target, credential, session identity or source payload.
+    pub const fn wire_method(self) -> &'static str {
+        match self {
+            Self::Options | Self::KeepAlive => "OPTIONS",
+            Self::Describe => "DESCRIBE",
+            Self::Setup => "SETUP",
+            Self::Play => "PLAY",
+            Self::KeepAliveGetParameter => "GET_PARAMETER",
+            Self::Teardown => "TEARDOWN",
+        }
+    }
+    /// Whether this command only requests session liveness, not a media transition.
+    pub const fn is_keepalive(self) -> bool {
+        matches!(self, Self::KeepAlive | Self::KeepAliveGetParameter)
+    }
 }
 
 /// Payload-free refusal categories; no server text, session token, or URL is echoed.
@@ -206,7 +227,7 @@ pub enum ClientProgress {
     Interim,
     /// An exact final response advanced local state.
     Accepted(ClientState),
-    /// Owner should issue KeepAlive or close; no request was automatically sent.
+    /// Owner should issue an explicitly selected keepalive or close; nothing was sent.
     KeepAliveDue,
     /// No action due yet.
     Pending,
@@ -445,6 +466,18 @@ impl RtspClientSession {
         }
         self.unsigned_request(command, now_ns)
     }
+    // One method/URI owner prevents Digest from signing a method different from the wire.
+    fn request_target(&self, command: ClientCommand) -> (&'static str, &str) {
+        let uri = match command {
+            ClientCommand::Options | ClientCommand::Describe => &self.config.presentation_uri,
+            ClientCommand::Setup => &self.track_uri,
+            ClientCommand::Play
+            | ClientCommand::KeepAlive
+            | ClientCommand::KeepAliveGetParameter
+            | ClientCommand::Teardown => &self.aggregate_uri,
+        };
+        (command.wire_method(), uri)
+    }
     fn unsigned_request(
         &mut self,
         command: ClientCommand,
@@ -458,7 +491,9 @@ impl RtspClientSession {
             ClientCommand::Options | ClientCommand::Describe => self.state == ClientState::Idle,
             ClientCommand::Setup => self.state == ClientState::Described,
             ClientCommand::Play => self.state == ClientState::Ready,
-            ClientCommand::KeepAlive | ClientCommand::Teardown => {
+            ClientCommand::KeepAlive
+            | ClientCommand::KeepAliveGetParameter
+            | ClientCommand::Teardown => {
                 matches!(self.state, ClientState::Ready | ClientState::Playing)
             }
         };
@@ -470,14 +505,7 @@ impl RtspClientSession {
         let deadline = now_ns
             .checked_add(self.config.response_timeout_ns)
             .ok_or(ClientError::Exhausted)?;
-        let (method, uri) = match command {
-            ClientCommand::Options => ("OPTIONS", self.config.presentation_uri.as_str()),
-            ClientCommand::Describe => ("DESCRIBE", self.config.presentation_uri.as_str()),
-            ClientCommand::Setup => ("SETUP", self.track_uri.as_str()),
-            ClientCommand::Play => ("PLAY", self.aggregate_uri.as_str()),
-            ClientCommand::KeepAlive => ("OPTIONS", self.aggregate_uri.as_str()),
-            ClientCommand::Teardown => ("TEARDOWN", self.aggregate_uri.as_str()),
-        };
+        let (method, uri) = self.request_target(command);
         // Upper bounds include URI, session token, and every fixed header and number.
         let mut bytes = String::new();
         bytes
@@ -499,6 +527,11 @@ impl RtspClientSession {
                 self.config.channels.0, self.config.channels.1
             )
             .map_err(|_| ClientError::Exhausted)?;
+        }
+        if command == ClientCommand::KeepAliveGetParameter {
+            // No parameter names or arbitrary body can cross this liveness-only API.
+            // Leave every legacy OPTIONS byte unchanged.
+            bytes.push_str("Content-Length: 0\r\n");
         }
         bytes.push_str("\r\n");
         self.pending = Some(Pending {
@@ -592,12 +625,11 @@ impl RtspClientSession {
             self.session_id = Some(id.to_string());
             self.ssrc = ssrc;
             self.state = ClientState::Ready;
-        } else if matches!(
-            p.command,
-            ClientCommand::Play | ClientCommand::KeepAlive | ClientCommand::Teardown
-        ) {
+        } else if p.command.is_keepalive()
+            || matches!(p.command, ClientCommand::Play | ClientCommand::Teardown)
+        {
             let value = singleton(&response.headers, "Session")?;
-            if value.is_none() && p.command != ClientCommand::KeepAlive {
+            if value.is_none() && !p.command.is_keepalive() {
                 return Err(ClientError::Session);
             }
             let timeout = if let Some(value) = value {

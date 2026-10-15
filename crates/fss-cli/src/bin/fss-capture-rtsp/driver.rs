@@ -21,7 +21,7 @@ use fss_reference::rtsp::archive_pins::live::{
 };
 use fss_reference::rtsp::archive_pins::{ArchivePinJournal, JournaledArchiveProgress};
 use fss_reference::rtsp::authentication::DigestCredentials;
-use fss_reference::rtsp::avc_client::AvcClientPoll;
+use fss_reference::rtsp::avc_client::{AvcClientError, AvcClientPoll};
 use fss_reference::rtsp::avc_client::authenticated::{DigestAvcError, DigestAvcPoll};
 use fss_reference::rtsp::client::{ClientCommand, ClientProgress, ClientState};
 use fss_reference::rtsp::live_archive::{LiveArchiveCompletion, LiveArchiveError, LiveArchiveStep};
@@ -354,6 +354,10 @@ fn backpressure(error: &JournaledLiveFailure) -> bool {
         if matches!(
             error.as_ref(),
             LiveRecordingError::Network(LiveAvcError::Backpressure)
+            | LiveRecordingError::Network(LiveAvcError::Protocol(DigestAvcError::Backpressure))
+            | LiveRecordingError::Network(LiveAvcError::Protocol(DigestAvcError::Client(
+                AvcClientError::Backpressure
+            )))
             | LiveRecordingError::Capture(CaptureError::Backpressure)
             | LiveRecordingError::Capture(CaptureError::Collection(CollectorError::Backpressure))
         )
@@ -361,13 +365,10 @@ fn backpressure(error: &JournaledLiveFailure) -> bool {
 }
 
 fn command_name(command: ClientCommand) -> &'static str {
-    match command {
-        ClientCommand::Options => "OPTIONS",
-        ClientCommand::Describe => "DESCRIBE",
-        ClientCommand::Setup => "SETUP",
-        ClientCommand::Play => "PLAY",
-        ClientCommand::KeepAlive => "KEEPALIVE",
-        ClientCommand::Teardown => "TEARDOWN",
+    if command.is_keepalive() {
+        "KEEPALIVE"
+    } else {
+        command.wire_method()
     }
 }
 fn state_name(state: ClientState) -> &'static str {
@@ -770,6 +771,7 @@ fn drive<W: Write>(
                         "request_queued",
                         object(&[
                             ("command", string(command_name(request.command))),
+                            ("method", string(request.command.wire_method())),
                             ("cseq", request.cseq.to_string()),
                             ("bytes", request.bytes.to_string()),
                             ("authentication", string("digest")),
@@ -786,6 +788,13 @@ fn drive<W: Write>(
             && ready
             && let Some(command) = next_command
         {
+            // Only an UNSENT keepalive intent is selected here. A held challenge's
+            // response keeps the original chosen method, URI, CSeq and deadline owner.
+            let command = if command == ClientCommand::KeepAlive {
+                options.keepalive
+            } else {
+                command
+            };
             let authenticated = if stats.authentication_responses != 0 {
                 Some(owner.authentication(entropy.as_deref_mut().ok_or(Failure::Authentication)?)?)
             } else {
@@ -806,6 +815,7 @@ fn drive<W: Write>(
                         "request_queued",
                         object(&[
                             ("command", string(command_name(request.command))),
+                            ("method", string(request.command.wire_method())),
                             ("cseq", request.cseq.to_string()),
                             ("bytes", request.bytes.to_string()),
                             (
@@ -1318,6 +1328,8 @@ pub(super) fn execute_supervised_attempt(
             ),
             ("time_scale", options.time_scale.to_string()),
             ("codec", string(options.codec())),
+            ("keepalive_method", string(options.keepalive.wire_method())),
+            ("keepalive_fallback", "false".into()),
             ("authentication", string(options.authentication_mode())),
             ("server_identity_verified", "false".into()),
             ("transport_encrypted", "false".into()),

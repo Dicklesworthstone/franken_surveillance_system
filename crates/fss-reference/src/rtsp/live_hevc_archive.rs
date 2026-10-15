@@ -238,6 +238,7 @@ pub struct JournaledLiveHevcArchive<'a, 'p> {
     last_ns: u64,
     ready: bool,
     next: Option<Control>,
+    keepalive: ClientCommand,
     control_blocked: bool,
     network_ended: bool,
     completion: Option<LiveArchiveCompletion>,
@@ -251,6 +252,7 @@ impl fmt::Debug for JournaledLiveHevcArchive<'_, '_> {
             .field("state", &self.state())
             .field("configured", &self.capture.is_some())
             .field("ready", &self.ready)
+            .field("keepalive", &self.keepalive)
             .field("completion", &self.completion)
             .field("remaining_steps", &self.remaining_steps)
             .finish_non_exhaustive()
@@ -334,6 +336,7 @@ impl<'a, 'p> JournaledLiveHevcArchive<'a, 'p> {
             last_ns: now,
             ready: false,
             next: Some(Control::Request(ClientCommand::Describe)),
+            keepalive: ClientCommand::KeepAlive,
             control_blocked: false,
             network_ended: false,
             completion: None,
@@ -341,6 +344,30 @@ impl<'a, 'p> JournaledLiveHevcArchive<'a, 'p> {
             last_anchor,
             last_pins,
         })
+    }
+    /// Select OPTIONS or empty GET_PARAMETER before the first RTSP request is prepared.
+    /// This pure configuration call performs no I/O and grants no network or secret authority.
+    /// No active or challenged request can have its method changed, and no refusal enables
+    /// automatic fallback. Invalid/late selection leaves all original ownership intact.
+    pub fn select_keepalive(&mut self, command: ClientCommand) -> Result<(), LiveHevcArchiveFailure> {
+        if !command.is_keepalive()
+            || self.finished
+            || self.completion.is_some()
+            || self.network_ended
+            || self.state() != ClientState::Idle
+            || !matches!(self.next, Some(Control::Request(ClientCommand::Describe)))
+            || !self.totals().is_some_and(|totals| {
+                totals.read_calls == 0 && totals.write_calls == 0 && totals.sent_bytes == 0
+            })
+        {
+            return Err(safe(LiveHevcArchiveError::Configuration));
+        }
+        self.keepalive = command;
+        Ok(())
+    }
+    /// Exact locally pinned liveness intent; it is not camera health or remote acceptance.
+    pub fn keepalive_command(&self) -> ClientCommand {
+        self.keepalive
     }
     /// Use an independently supplied immutable VPS/SPS/PPS tuple, including when SDP omits it.
     /// The tuple and collector are validated before storage or a connection attempt. DESCRIBE
@@ -580,6 +607,11 @@ impl<'a, 'p> JournaledLiveHevcArchive<'a, 'p> {
                 .ok_or_else(|| safe(LiveHevcArchiveError::Closed))?;
             let result = match action {
                 Control::Request(command) => {
+                    let command = if command == ClientCommand::KeepAlive {
+                        self.keepalive
+                    } else {
+                        command
+                    };
                     connection.request(command, credentials, cnonce, now, authority)
                 }
                 Control::Respond => connection.respond(credentials, cnonce, now, authority),
