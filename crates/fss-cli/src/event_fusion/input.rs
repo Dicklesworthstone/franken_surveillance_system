@@ -5,6 +5,8 @@ use super::*;
 use crate::json_input::{Value, parse};
 use fss_core::DigestAlgorithm;
 
+mod authoring;
+
 /// Maximum complete profile bytes, including all sensor calibration tables.
 pub const MAX_PROFILE_BYTES: usize = 256 * 1024;
 const SCHEMA: &str = "fss.event_class_fusion_profile.v1";
