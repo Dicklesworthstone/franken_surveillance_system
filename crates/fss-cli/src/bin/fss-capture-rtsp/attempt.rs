@@ -10,6 +10,9 @@ pub(crate) enum RetryReason {
     ConnectionUnavailable,
     SourceEnded,
     ProgressStalled,
+    /// The native owner observed a fully drained successful archive and no pending control.
+    /// This is successor admission, NOT a retryable error. Legacy failure reports omit it.
+    SettledSuccess,
 }
 impl RetryReason {
     pub(crate) fn as_str(self) -> &'static str {
@@ -17,6 +20,7 @@ impl RetryReason {
             Self::ConnectionUnavailable => "connection_unavailable",
             Self::SourceEnded => "source_ended",
             Self::ProgressStalled => "recording_progress_stalled",
+            Self::SettledSuccess => "settled_success",
         }
     }
 }
@@ -24,6 +28,8 @@ impl RetryReason {
 #[derive(Debug)]
 pub(crate) struct AttemptOutcome {
     pub(crate) result: Result<(), &'static str>,
+    // The historical field name is retained for existing native/controller callers. The
+    // success marker is separate from all three failure observations and must not be retried.
     pub(crate) retry: Option<RetryReason>,
     pub(crate) recovery_required: bool,
     pub(crate) durable_pictures: u64,
@@ -51,6 +57,13 @@ impl AttemptOutcome {
             None
         } else {
             match result {
+                Ok(())
+                    if stats.snapshot_digest.is_some()
+                        && stats.durable_pictures != 0
+                        && stats.durable_pictures == stats.collected_pictures =>
+                {
+                    Some(RetryReason::SettledSuccess)
+                }
                 Err(Failure::ConnectionUnavailable) if stats.connection_attempted => {
                     Some(RetryReason::ConnectionUnavailable)
                 }
@@ -239,5 +252,69 @@ mod tests {
             assert_eq!(outcome.result, Err(failure.code()));
             assert_eq!(outcome.durable_pictures, stats.durable_pictures);
         }
+    }
+
+    #[test]
+    fn settled_success_is_not_a_failure_retry_or_a_source_eof_claim() {
+        let mut stats = ended();
+        stats.input_ended = false;
+        stats.collected_pictures = stats.durable_pictures;
+        let outcome = AttemptOutcome::new(Ok(()), &stats);
+        assert_eq!(outcome.result, Ok(()));
+        assert_eq!(outcome.retry, Some(RetryReason::SettledSuccess));
+        assert!(!outcome.recovery_required);
+        assert!(!stats.input_ended);
+    }
+
+    #[test]
+    fn completed_archive_with_pending_control_cannot_admit_a_successor() {
+        let mut stats = ended();
+        stats.collected_pictures = stats.durable_pictures;
+        stats.pending_request = true;
+        let outcome = AttemptOutcome::new(Ok(()), &stats);
+        assert_eq!(outcome.result, Ok(())); // Media completion remains the native observation.
+        assert!(outcome.retry.is_none());
+        assert!(!outcome.recovery_required); // Remote control is not damaged archive custody.
+        assert_eq!(outcome.durable_pictures, stats.durable_pictures);
+    }
+
+    #[test]
+    fn successful_session_requires_all_existing_storage_barriers_before_continuation() {
+        for condition in 0..8 {
+            let mut stats = ended();
+            stats.collected_pictures = stats.durable_pictures;
+            match condition {
+                0 => stats.pending_window = Some((ContentDigest::sha256(b"pending"), 1)),
+                1 => stats.unrecorded_work_receipt = Some("receipt".into()),
+                2 => stats.unpublished_prepared_pictures = 1,
+                3 => stats.unpublished_prepared_bytes = 1,
+                4 => stats.indexed_windows = 0,
+                5 => stats.pending_source_only_nals = 1,
+                6 => stats.snapshot_digest = None,
+                _ => stats.collected_pictures += 1,
+            }
+            let outcome = AttemptOutcome::new(Ok(()), &stats);
+            assert_eq!(outcome.result, Ok(()));
+            assert!(outcome.retry.is_none(), "unsettled condition {condition}");
+        }
+    }
+
+    #[test]
+    fn nominal_success_without_an_observed_archive_finish_cannot_admit_a_successor() {
+        let outcome = AttemptOutcome::new(Ok(()), &Statistics::default());
+        assert_eq!(outcome.result, Ok(()));
+        assert!(outcome.retry.is_none());
+    }
+
+    #[test]
+    fn empty_finished_archive_is_not_a_successful_capture_session() {
+        let stats = Statistics {
+            snapshot_digest: Some(ContentDigest::sha256(b"empty finished archive")),
+            ..Statistics::default()
+        };
+        let outcome = AttemptOutcome::new(Ok(()), &stats);
+        assert_eq!(outcome.result, Ok(()));
+        assert!(!outcome.recovery_required);
+        assert!(outcome.retry.is_none());
     }
 }

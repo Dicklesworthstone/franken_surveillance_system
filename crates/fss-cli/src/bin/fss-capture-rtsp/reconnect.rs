@@ -17,7 +17,7 @@ use super::plan::{self, Options};
 #[path = "recovery.rs"]
 pub(super) mod recovery;
 
-pub(super) const MAX_ARGUMENTS: usize = plan::MAX_ARGUMENTS + 14;
+pub(super) const MAX_ARGUMENTS: usize = plan::MAX_ARGUMENTS + 16;
 const FORMAT: &str = "fss.rtsp_reconnect_cli.v1";
 const MAX_CONTROL_REPORT_BYTES: usize = 262_144;
 const POLICY: &str = "bounded-owner-approved-attempts:literal-peer-only:fresh-generation-and-clocks:\
@@ -26,9 +26,13 @@ no-auth-protocol-budget-authority-or-storage-retry:no-automatic-recovery:v1";
 const SUPERVISED_POLICY: &str = "bounded-owner-approved-attempts:literal-peer-only:fresh-generation-and-clocks:\
 new-independent-destinations:retry-typed-connect-io-drained-eof-or-supervised-stall:\
 no-auth-protocol-budget-authority-or-storage-retry:no-automatic-recovery:v2";
+// This opt-in adds possible successful sessions, not authority to widen any child plan.
+// The conditional encoding below leaves all pre-existing reconnect approvals unchanged.
+const CAMPAIGN_POLICY: &str = "fss.rtsp_capture_campaign.v1:continue-after-settled-success:\
+every-approved-attempt-is-independent:all-attempts-must-settle-for-completion";
 pub(super) const HELP: &str = "fss-capture-rtsp reconnect [ordinary capture options]\n\
   --max-attempts 3 --retry-delay-ms 250 --retry-max-delay-ms 5000\n\
-  [--progress-timeout-ms 5000]\n\
+  [--progress-timeout-ms 5000] [--continue-after-success yes]\n\
 \n\
 Without --approve: pure JSON preview of EVERY possible attempt and aggregate ceilings.\n\
 Approve the outer plan, not an individual attempt. The ordinary single-attempt mode is unchanged.\n\
@@ -45,8 +49,15 @@ only after normal archive completion. It asserts neither camera outage nor sourc
 Use --max-attempts 1 to supervise without reconnecting. Omit the option for legacy behavior.\n\
 Authentication, credentials, revocation, cancellation, timing/protocol faults, exhausted\n\
 budgets, output failure, and incomplete archive work STOP the run. Recovery remains explicit.\n\
-A successful attempt stops the run. --stop-after-pictures is a PER-ATTEMPT target; earlier\n\
+By default a successful attempt stops the run. --stop-after-pictures is a PER-ATTEMPT target;\n\
 partial captures are reported separately, never joined into a continuous recording.\n\
+--continue-after-success yes explicitly approves a finite campaign through every planned attempt.\n\
+Each settled success permits another independent session, still subject to the attempt limit,\n\
+backoff, owner checkpoints and all original child ceilings. Failure retry rules do not change.\n\
+A campaign is complete only when EVERY planned attempt settles successfully. A later success\n\
+cannot erase an earlier shortfall: partial campaigns return an original failure and retain per-attempt reports.\n\
+This is bounded repeated capture, NOT gap-free recording or an always-on daemon.\n\
+Repeat this option unchanged when previewing offline recovery of a campaign.\n\
 Between attempts, exponential backoff is capped by --retry-max-delay-ms. At most 16 attempts.\n\
 Per-attempt resource ceilings are not silently widened; the outer preview prices their sum.\n\
 Credentials, when explicitly configured, are loaded into a fresh private lease per attempt.\n\
@@ -88,6 +99,7 @@ pub(super) struct ReconnectPlan {
     retry_delay_ms: u64,
     retry_max_delay_ms: u64,
     progress_timeout_ns: Option<u64>,
+    continue_after_success: bool,
     recovery_timeout_ns: Option<u64>,
     index_catalogs: bool,
     minimum_pins: Option<recovery::MinimumPins>,
@@ -155,6 +167,11 @@ impl ReconnectPlan {
             Some("yes") => (true, false),
             Some("index") => (true, true),
             Some(_) => return Err("offline recovery requires --recover yes or --recover index"),
+        };
+        let continue_after_success = match values.remove("--continue-after-success").as_deref() {
+            None => false,
+            Some("yes") => true,
+            Some(_) => return Err("continuing after success requires --continue-after-success yes"),
         };
         let minimum_pins = values
             .remove("--minimum-pin-anchors")
@@ -267,6 +284,7 @@ impl ReconnectPlan {
             retry_delay_ms,
             retry_max_delay_ms,
             progress_timeout_ns,
+            continue_after_success,
             recovery_timeout_ns,
             index_catalogs,
             minimum_pins,
@@ -303,6 +321,9 @@ impl ReconnectPlan {
         let mut e = CanonicalEncoder::new();
         e.text("fss.rtsp_reconnect_cli_plan.v1");
         e.text(self.policy());
+        if self.continue_after_success {
+            e.text(CAMPAIGN_POLICY);
+        }
         if let Some(timeout) = self.progress_timeout_ns {
             e.text(driver::Supervision::POLICY);
             e.u64(timeout);
@@ -358,7 +379,14 @@ impl ReconnectPlan {
                 "maximum_control_report_bytes",
                 MAX_CONTROL_REPORT_BYTES.to_string(),
             ),
-            ("target_scope", string("per_attempt_until_one_succeeds")),
+            (
+                "target_scope",
+                string(if self.continue_after_success {
+                    "every_approved_attempt_independent"
+                } else {
+                    "per_attempt_until_one_succeeds"
+                }),
+            ),
             ("continuity_across_attempts", "false".into()),
             ("automatic_recovery", "false".into()),
             ("attempts", format!("[{}]", children.join(","))),
@@ -367,6 +395,14 @@ impl ReconnectPlan {
         if let Some(timeout) = self.progress_timeout_ns {
             fields.push(("progress_timeout_ns", timeout.to_string()));
             fields.push(("supervision_policy", string(driver::Supervision::POLICY)));
+        }
+        if self.continue_after_success {
+            fields.push(("continue_after_success", "true".into()));
+            fields.push(("campaign_policy", string(CAMPAIGN_POLICY)));
+            fields.push((
+                "completion_scope",
+                string("all_planned_attempts_settled_successfully"),
+            ));
         }
         Ok(object(&fields))
     }
@@ -395,6 +431,8 @@ fn run(plan: &ReconnectPlan, effects: &mut impl Effects) -> Result<(), &'static 
     }
     effects.checkpoint()?;
     let mut durable = 0_u64;
+    let mut successful_attempts = 0_usize;
+    let mut first_failure: Option<(usize, &'static str)> = None;
     for (index, options) in plan.attempts.iter().enumerate() {
         effects.checkpoint()?;
         let child_approval = options.digest()?;
@@ -421,73 +459,152 @@ fn run(plan: &ReconnectPlan, effects: &mut impl Effects) -> Result<(), &'static 
         )?;
         effects.checkpoint()?;
         let outcome = effects.capture(options)?;
+        // Success alone is not successor authority: the native owner also checks pending
+        // RTSP control and every archive barrier before emitting its settled-success marker.
+        // Bind that observation to this exact child's approved target too. A nominal success
+        // cannot hide a short capture or widen the authorized picture count.
+        let settled_success = outcome.result.is_ok()
+            && !outcome.recovery_required
+            && outcome.retry == Some(driver::RetryReason::SettledSuccess)
+            && outcome.durable_pictures == options.stop_after_pictures;
+        let continuation_blocked = plan.continue_after_success
+            && outcome.result.is_ok()
+            && !settled_success;
+        let attempt_result = if continuation_blocked {
+            Err("ERR-CAPTURE-RTSP-STATE-001")
+        } else {
+            outcome.result
+        };
+        match attempt_result {
+            Ok(()) => successful_attempts += 1,
+            Err(error) => {
+                first_failure.get_or_insert((index + 1, error));
+            }
+        }
         durable = durable
             .checked_add(outcome.durable_pictures)
             .ok_or("ERR-CAPTURE-RTSP-STATE-001")?;
-        let retry_admitted = outcome.retry.is_some()
-            && (!matches!(outcome.retry, Some(driver::RetryReason::ProgressStalled))
-                || plan.progress_timeout_ns.is_some());
+        let retry_admitted = matches!(
+            outcome.retry,
+            Some(driver::RetryReason::ConnectionUnavailable | driver::RetryReason::SourceEnded)
+        ) || (outcome.retry == Some(driver::RetryReason::ProgressStalled)
+            && plan.progress_timeout_ns.is_some());
         let retrying = outcome.result.is_err()
             && !outcome.recovery_required
             && retry_admitted
             && index + 1 < plan.attempts.len();
-        effects.emit(
-            "attempt_finished",
-            object(&[
+        let continuing_after_success = plan.continue_after_success
+            && settled_success
+            && index + 1 < plan.attempts.len();
+        let mut finished_fields = vec![
+            ("approval", string(&approval.to_text())),
+            ("attempt", (index + 1).to_string()),
+            ("attempt_approval", string(&child_approval.to_text())),
+            ("complete", outcome.result.is_ok().to_string()),
+            (
+                "error_id",
+                outcome.result.err().map_or_else(|| "null".into(), string),
+            ),
+            (
+                "retry_reason",
+                outcome
+                    .retry
+                    .filter(|reason| *reason != driver::RetryReason::SettledSuccess)
+                    .map_or_else(|| "null".into(), |r| string(r.as_str())),
+            ),
+            ("retrying", retrying.to_string()),
+            ("recovery_required", outcome.recovery_required.to_string()),
+            (
+                "durable_pictures_this_attempt",
+                outcome.durable_pictures.to_string(),
+            ),
+            ("durable_pictures_all_attempts", durable.to_string()),
+            ("continuity_across_attempts", "false".into()),
+        ];
+        if plan.continue_after_success {
+            finished_fields.push(("settled_success", settled_success.to_string()));
+            finished_fields.push(("continuation_blocked", continuation_blocked.to_string()));
+            finished_fields.push((
+                "continuing_after_success",
+                continuing_after_success.to_string(),
+            ));
+            finished_fields.push((
+                "next_attempt_planned",
+                (retrying || continuing_after_success).to_string(),
+            ));
+        }
+        effects.emit("attempt_finished", object(&finished_fields))?;
+        if !retrying && !continuing_after_success {
+            // Legacy reconnect succeeds as soon as a later attempt succeeds. A campaign has
+            // the stronger, explicitly approved contract: every planned session must succeed.
+            // Prefer a current terminal failure; otherwise retain the first earlier shortfall.
+            let terminal_result = if plan.continue_after_success {
+                attempt_result.and(first_failure.map_or(Ok(()), |(_, error)| Err(error)))
+            } else {
+                outcome.result
+            };
+            let mut terminal_fields = vec![
                 ("approval", string(&approval.to_text())),
-                ("attempt", (index + 1).to_string()),
-                ("attempt_approval", string(&child_approval.to_text())),
-                ("complete", outcome.result.is_ok().to_string()),
+                ("attempts_used", (index + 1).to_string()),
+                ("complete", terminal_result.is_ok().to_string()),
                 (
-                    "error_id",
-                    outcome.result.err().map_or_else(|| "null".into(), string),
+                    "attempt_limit_reached",
+                    (index + 1 == plan.attempts.len()
+                        && (plan.continue_after_success
+                            || (outcome.result.is_err() && retry_admitted)))
+                    .to_string(),
                 ),
-                (
-                    "retry_reason",
-                    outcome
-                        .retry
-                        .map_or_else(|| "null".into(), |r| string(r.as_str())),
-                ),
-                ("retrying", retrying.to_string()),
                 ("recovery_required", outcome.recovery_required.to_string()),
-                (
-                    "durable_pictures_this_attempt",
-                    outcome.durable_pictures.to_string(),
-                ),
                 ("durable_pictures_all_attempts", durable.to_string()),
                 ("continuity_across_attempts", "false".into()),
-            ]),
-        )?;
-        if !retrying {
-            effects.emit(
-                "reconnect_terminal",
-                object(&[
-                    ("approval", string(&approval.to_text())),
-                    ("attempts_used", (index + 1).to_string()),
-                    ("complete", outcome.result.is_ok().to_string()),
+                ("absence_certifiable", "false".into()),
+            ];
+            if plan.continue_after_success {
+                terminal_fields.extend([
                     (
-                        "attempt_limit_reached",
-                        (outcome.result.is_err()
-                            && retry_admitted
-                            && index + 1 == plan.attempts.len())
-                        .to_string(),
+                        "completion_scope",
+                        string("all_planned_attempts_settled_successfully"),
                     ),
-                    ("recovery_required", outcome.recovery_required.to_string()),
-                    ("durable_pictures_all_attempts", durable.to_string()),
-                    ("continuity_across_attempts", "false".into()),
-                    ("absence_certifiable", "false".into()),
-                ]),
-            )?;
-            return outcome.result;
+                    ("planned_attempts", plan.attempts.len().to_string()),
+                    ("successful_attempts", successful_attempts.to_string()),
+                    (
+                        "unsuccessful_attempts",
+                        (index + 1 - successful_attempts).to_string(),
+                    ),
+                    (
+                        "first_failed_attempt",
+                        first_failure
+                            .map_or_else(|| "null".into(), |(ordinal, _)| ordinal.to_string()),
+                    ),
+                    (
+                        "first_error_id",
+                        first_failure.map_or_else(|| "null".into(), |(_, error)| string(error)),
+                    ),
+                    (
+                        "error_id",
+                        terminal_result.err().map_or_else(|| "null".into(), string),
+                    ),
+                ]);
+            }
+            effects.emit("reconnect_terminal", object(&terminal_fields))?;
+            return terminal_result;
         }
         let delay = plan.delay_ms(index);
-        effects.emit(
-            "backoff",
-            object(&[
-                ("next_attempt", (index + 2).to_string()),
-                ("delay_ms", delay.to_string()),
-            ]),
-        )?;
+        let mut backoff_fields = vec![
+            ("next_attempt", (index + 2).to_string()),
+            ("delay_ms", delay.to_string()),
+        ];
+        if plan.continue_after_success {
+            backoff_fields.push((
+                "reason",
+                string(if continuing_after_success {
+                    "next_independent_session"
+                } else {
+                    "retry_after_failure"
+                }),
+            ));
+        }
+        effects.emit("backoff", object(&backoff_fields))?;
         effects.checkpoint()?;
         effects.pause(delay)?;
         effects.checkpoint()?;
@@ -596,3 +713,7 @@ mod tests;
 #[cfg(test)]
 #[path = "reconnect_supervision_tests.rs"]
 mod supervision_tests;
+
+#[cfg(test)]
+#[path = "reconnect_campaign_tests.rs"]
+mod campaign_tests;
