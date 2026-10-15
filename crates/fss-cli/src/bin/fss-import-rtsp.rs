@@ -6,6 +6,8 @@ use std::process::ExitCode;
 
 use fss_cli::ExitIdentity;
 
+#[path = "fss-import-rtsp/batch.rs"]
+mod batch;
 #[path = "fss-import-rtsp/driver.rs"]
 mod driver;
 #[path = "fss-import-rtsp/plan.rs"]
@@ -41,7 +43,8 @@ const HELP: &str = "fss-import-rtsp --archive EXISTING_ABSOLUTE_ARCHIVE --root A
   Current destination sensor privacy masks apply when decoding. Originals remain local unencrypted.\n\
   Source and destination must be distinct, non-nested stores. No network connection is opened.\n\
   Opening the archive uses its exclusive publisher lock and can complete publication recovery.\n\
-  The timeout is cooperative at custody boundaries; one bounded native verifier is not preempted.\n";
+  The timeout is cooperative at custody boundaries; one bounded native verifier is not preempted.\n\
+  Import independent epochs together: fss-import-rtsp batch --help.\n";
 
 fn emit(text: &str) -> io::Result<()> {
     // A full 64-page plan includes every exact slot/root plus bounded paths and JSON escaping.
@@ -75,6 +78,9 @@ fn main() -> ExitCode {
         .skip(1)
         .take(MAX_ARGUMENTS + 1)
         .collect();
+    if args.first().and_then(|arg| arg.to_str()) == Some("batch") {
+        return batch::main(&args[1..]);
+    }
     if args.len() == 1 && matches!(args[0].to_str(), Some("help" | "--help")) {
         return ExitCode::from(if emit(HELP).is_ok() {
             ExitIdentity::SUCCESS.code
