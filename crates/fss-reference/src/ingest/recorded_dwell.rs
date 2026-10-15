@@ -124,6 +124,15 @@ pub struct DwellCandidate {
     status: WatchStatus,
 }
 impl DwellCandidate {
+    /// Immutable episode identity, distinct from the underlying zone-entry candidate.
+    pub const fn identity(&self) -> ContentDigest {
+        self.identity
+    }
+    /// Source-linked detector records selected only from this episode's actual observations.
+    /// Missing or refused inference is not a negative class observation.
+    pub fn class_evidence(&self) -> &[ClassEvidence] {
+        &self.classes
+    }
     /// Immutable hypothesis, always unclassified, indeterminate and single-sensor.
     pub fn event(&self) -> &EventHypothesis {
         &self.event
@@ -404,6 +413,25 @@ impl DwellReport {
         };
         report.to_json(deployment.current_anchor().commit_sequence, None)?;
         Ok(report)
+    }
+
+    /// Exact cascade used by the underlying native scan, including its selection policy.
+    pub fn cascade_digest(&self) -> Option<ContentDigest> {
+        self.watch.cascade_digest()
+    }
+    /// Immutable scan context for exact source/privacy/authority pinning only.
+    /// Entry coverage is not evidence of dwell absence or continuous occupancy.
+    pub fn coverage(&self) -> &super::recorded_coverage::CoverageRecord {
+        self.watch.coverage()
+    }
+    /// Revalidate retained source custody, current privacy and the native analysis basis.
+    /// This read-only check neither retains coverage nor publishes a dwell or entry event.
+    pub fn revalidate_derived_source(
+        &self,
+        deployment: &ReferenceDeployment,
+        cx: &ReplayCx,
+    ) -> Result<()> {
+        self.watch.revalidate_derived_source(deployment, cx)
     }
 
     /// Complete candidate list, ordered by trigger position, track, zone and episode start.

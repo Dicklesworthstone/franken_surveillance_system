@@ -11,6 +11,58 @@ use fss_reference::ingest::recorded_coverage::{CoverageRecord, PoseProvenance};
 use super::*;
 
 impl EventFusionReport {
+    /// Fuse source-linked class evidence from each actual sampled-dwell episode.
+    ///
+    /// `plan_digest` must pin `DwellReport::analysis_digest`, not the underlying entry
+    /// plan: the dwell rule, sample exclusions and complete selection trace are part of
+    /// this hypothesis. Coverage pins name the native scan context only and never certify
+    /// dwell absence. Entry-only scores and scores from another episode are not borrowed.
+    /// The existing engine owns calibration, dependency hulls and optional-stopping rules.
+    /// Native proposal/provenance identities and publication authority remain unchanged.
+    pub fn dwell(
+        native: &fss_reference::ingest::recorded_dwell::DwellReport,
+        cascade: &DetectorCascade<'_>,
+        profile: &EventFusionProfile,
+        deployment: &ReferenceDeployment,
+        cx: &ReplayCx,
+    ) -> Result<Self> {
+        checkpoint(cx)?;
+        if native.cascade_digest() != Some(cascade.digest()) {
+            return Err(EventFusionError::Scope);
+        }
+        let checked = native.revalidate_derived_source(deployment, cx);
+        checkpoint(cx)?;
+        checked.map_err(|_| EventFusionError::Evidence)?;
+        let coverage = native.coverage();
+        let inputs = native
+            .candidates()
+            .iter()
+            .map(|candidate| Input {
+                candidate: candidate.identity(),
+                proposal: candidate.proposal_digest(),
+                provenance: candidate.provenance_root(),
+                sources: vec![Source {
+                    sensor: &coverage.sensor_id,
+                    dependency: None,
+                    evidence: candidate.class_evidence(),
+                }],
+            })
+            .collect();
+        let result = Self::analyze(
+            native.analysis_digest(),
+            &[coverage],
+            cascade,
+            profile,
+            inputs,
+            deployment,
+            cx,
+        )?;
+        let checked = native.revalidate_derived_source(deployment, cx);
+        checkpoint(cx)?;
+        checked.map_err(|_| EventFusionError::Evidence)?;
+        Ok(result)
+    }
+
     /// Fuse associated native entries using the complete full-camera screened coverage set.
     ///
     /// The profile must pin the final guarded record digests, not the nominal ones. The
