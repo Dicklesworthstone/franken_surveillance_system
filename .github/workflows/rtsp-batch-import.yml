@@ -1,0 +1,35 @@
+# Supplementary native reference checks; all commands remain runnable locally.
+name: RTSP campaign and batch import
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - "crates/**"
+      - "Cargo.toml"
+      - "Cargo.lock"
+      - "rust-toolchain.toml"
+      - "scripts/check_rtsp_batch_import.sh"
+      - ".github/workflows/rtsp-batch-import.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  native:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    env:
+      CARGO_BUILD_JOBS: "2"
+      CARGO_INCREMENTAL: "0"
+      CARGO_PROFILE_DEV_DEBUG: "0"
+      CARGO_PROFILE_TEST_DEBUG: "0"
+      CARGO_NET_OFFLINE: "true"
+      RUSTUP_AUTO_INSTALL: "0"
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+      - name: Bootstrap pinned native compiler
+        run: bash scripts/bootstrap_toolchain.sh
+      - name: Native capture, independent import, failure and cold replay contracts
+        run: bash scripts/check_rtsp_batch_import.sh

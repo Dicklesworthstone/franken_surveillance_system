@@ -4,6 +4,9 @@
 
 use super::*;
 
+#[path = "batch_import.rs"]
+mod batch_import;
+
 const CONTROL: &str = "fss.rtsp_reconnect_cli.v1";
 const NATIVE: &str = "fss.rtsp_capture_cli.v1";
 
