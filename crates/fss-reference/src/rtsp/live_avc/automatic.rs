@@ -8,75 +8,18 @@
 
 /// Separately granted, finite reconnection using fresh native owners and generations.
 pub mod reconnect;
+mod control;
 
+use control::{Action, ControlDriver};
 use super::recording::{
-    LiveAvcRecording, LiveRecordingConfig, LiveRecordingConnectFailure, LiveRecordingFailure,
-    LiveRecordingRetirement, LiveRecordingStep,
+    LiveAvcRecording, LiveRecordingConfig, LiveRecordingConnectFailure, LiveRecordingError,
+    LiveRecordingFailure, LiveRecordingRetirement, LiveRecordingStep,
 };
 use super::*;
+#[cfg(test)]
 use crate::rtsp::client::ClientProgress;
-use crate::rtsp::recording_capture::TimedCapture;
+use crate::rtsp::recording_capture::{CapturePoll, TimedCapture};
 use crate::rtsp::recording_collector::{RecordingCollector, RecordingTiming};
-
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-enum Action {
-    Request(ClientCommand),
-    Respond,
-}
-
-/// Shared sequencing only; protocol validation and effect authority remain with
-/// the existing live owner. State names alone never authorize another request.
-#[derive(Debug)]
-struct ControlDriver {
-    next: Option<Action>,
-    ready_at_ns: u64,
-}
-impl ControlDriver {
-    fn new(now: u64) -> Self {
-        Self {
-            next: Some(Action::Request(ClientCommand::Describe)),
-            ready_at_ns: now,
-        }
-    }
-
-    fn wake(&self, underlying: Option<u64>) -> Option<u64> {
-        if self.next.is_some() {
-            earlier(Some(self.ready_at_ns), underlying)
-        } else {
-            underlying
-        }
-    }
-
-    fn observe(&mut self, step: &LiveAvcStep, now: u64) {
-        self.next = match step {
-            LiveAvcStep::Protocol {
-                event: DigestAvcPoll::AuthenticationRequired { .. },
-                transport: None,
-            } => Some(Action::Respond),
-            LiveAvcStep::Protocol {
-                event:
-                    DigestAvcPoll::Client {
-                        event,
-                        wire_retirement: None,
-                    },
-                transport: None,
-            } => match event.as_ref() {
-                AvcClientPoll::Control(ClientProgress::Accepted(ClientState::Described)) => {
-                    Some(Action::Request(ClientCommand::Setup))
-                }
-                AvcClientPoll::Control(ClientProgress::Accepted(ClientState::Ready)) => {
-                    Some(Action::Request(ClientCommand::Play))
-                }
-                AvcClientPoll::Control(ClientProgress::KeepAliveDue) => {
-                    Some(Action::Request(ClientCommand::KeepAlive))
-                }
-                _ => None,
-            },
-            _ => None,
-        };
-        self.ready_at_ns = now;
-    }
-}
 
 /// An automatically prepared request or the complete original live output.
 /// A queue receipt is not proof of socket delivery or camera acknowledgement.
@@ -115,38 +58,32 @@ impl AutomaticAvcConnection {
             control: ControlDriver::new(now),
         })
     }
-
     /// Negotiation state only, never a frame, continuity or publication receipt.
     pub fn state(&self) -> ClientState {
         self.connection.state()
     }
-
     /// Whether the next poll will attempt a credential-borrowing preparation.
-    /// Credentials are never retained by this owner, even while a write is pending.
+    /// A deferred command drains native input before borrowing credentials again.
     pub fn needs_credentials(&self) -> bool {
-        self.control.next.is_some()
+        self.control.action().is_some()
     }
-
     /// Immediate local control work or the original earliest hard/useful deadline.
     /// Honor this timer even without socket readiness, including during keepalives.
     pub fn next_wake_ns(&self) -> Option<u64> {
         self.control.wake(self.connection.next_wake_ns())
     }
-
     /// Original live transport accounting, absent after terminal transfer.
     pub fn totals(&self) -> Option<TcpTotals> {
         self.connection.totals()
     }
-
     /// Remaining connection-wide work admissions; automatic control adds no budget.
     pub fn remaining_steps(&self) -> u64 {
         self.connection.remaining_steps()
     }
-
     /// Perform one request preparation OR one existing live step, never both.
-    /// Supply a fresh owner-generated cnonce for each admitted preparation. On
-    /// other calls it is unused. A safe refusal leaves the scheduled action intact;
-    /// a fatal refusal transfers the original retirement and stops sequencing.
+    /// Safe backpressure preserves the unsent intent and makes the next call drain
+    /// native input. It never retries a prepared or partially dispatched request.
+    /// Supply a fresh owner-generated cnonce for each admitted preparation.
     pub fn poll(
         &mut self,
         readiness: SocketReadiness,
@@ -155,35 +92,40 @@ impl AutomaticAvcConnection {
         now: u64,
         authority: &dyn TcpAuthority,
     ) -> Result<AutomaticAvcStep, LiveAvcFailure> {
-        if let Some(action) = self.control.next {
+        if let Some(action) = self.control.action() {
             let result = match action {
-                Action::Request(command) => self
-                    .connection
-                    .request(command, credentials, cnonce, now, authority),
+                Action::Request(command) => self.connection.request(command, credentials, cnonce, now, authority),
                 Action::Respond => self.connection.respond(credentials, cnonce, now, authority),
             };
             return match result {
                 Ok(receipt) => {
-                    self.control.next = None;
+                    self.control.clear();
                     Ok(AutomaticAvcStep::Queued(receipt))
                 }
                 Err(failure) => {
-                    if failure.retirement.is_some() {
-                        self.control.next = None;
-                    }
+                    self.control.refused(&failure.reason, failure.retirement.is_some());
                     Err(failure)
                 }
             };
         }
-        let step = self.connection.poll(readiness, now, authority)?;
-        self.control.observe(&step, now);
+        let step = self.connection.poll(readiness, now, authority).map_err(|failure| {
+            self.control.refused(&failure.reason, failure.retirement.is_some());
+            failure
+        })?;
+        // A native wait can still contain a partial exact frame. Do not busy-retry
+        // preparation until that same input has drained, or a semantic event arrives.
+        let control_ready = self.connection.active.as_ref().is_some_and(|active| {
+            active.protocol.buffered_wire_bytes() == 0 && !active.transport.has_pending_request()
+        });
+        if !matches!(&step, LiveAvcStep::Pending(_)) || control_ready {
+            self.control.observe(&step, now);
+        }
         Ok(AutomaticAvcStep::Live(step))
     }
-
     /// Cancel without sending TEARDOWN, even after permission was revoked.
     /// Return every retained layer exactly once; no remote completion is asserted.
     pub fn cancel(&mut self) -> Option<LiveAvcRetirement> {
-        self.control.next = None;
+        self.control.clear();
         self.connection.cancel()
     }
 }
@@ -224,35 +166,29 @@ impl AutomaticAvcRecording {
             control: ControlDriver::new(now),
         })
     }
-
     /// Negotiation state only; not evidence of stored media.
     pub fn state(&self) -> ClientState {
         self.recording.state()
     }
-
     /// Read-only accounting from the original recording collector.
     pub fn collector(&self) -> &RecordingCollector {
         self.recording.collector()
     }
-
     /// Original live transport accounting; final totals transfer with retirement.
     pub fn totals(&self) -> Option<TcpTotals> {
         self.recording.totals()
     }
-
     /// Whether the next poll will prepare an automatic request or Digest answer.
     pub fn needs_credentials(&self) -> bool {
-        self.control.next.is_some()
+        self.control.action().is_some()
     }
-
     /// Include local control work without masking capture or network deadlines.
     pub fn next_wake_ns(&self) -> Option<u64> {
         self.control.wake(self.recording.next_wake_ns())
     }
-
     /// Prepare one request OR drive one original recording step. Every returned
     /// source chunk, capture event and retirement remains caller-owned unchanged.
-    /// Supply a fresh owner-generated cnonce for each admitted preparation.
+    /// Safe command backpressure selects native drainage on the following call.
     pub fn poll(
         &mut self,
         readiness: SocketReadiness,
@@ -261,25 +197,26 @@ impl AutomaticAvcRecording {
         now: u64,
         authority: &dyn TcpAuthority,
     ) -> Result<AutomaticRecordingStep, LiveRecordingFailure> {
-        if let Some(action) = self.control.next {
+        if let Some(action) = self.control.action() {
             let result = match action {
-                Action::Request(command) => self
-                    .recording
-                    .request(command, credentials, cnonce, now, authority),
+                Action::Request(command) => self.recording.request(command, credentials, cnonce, now, authority),
                 Action::Respond => self.recording.respond(credentials, cnonce, now, authority),
             };
             let receipt = self.settle(result)?;
-            self.control.next = None;
+            self.control.clear();
             return Ok(AutomaticRecordingStep::Queued(receipt));
         }
         let result = self.recording.poll(readiness, now, authority);
         let step = self.settle(result)?;
         if let LiveRecordingStep::Network(event) = &step {
             self.control.observe(event, now);
+        } else if matches!(&step, LiveRecordingStep::Stopped { .. } | LiveRecordingStep::Ended)
+            || matches!(step.capture_event(), Some(CapturePoll::Stopped { .. } | CapturePoll::Ended { .. }))
+        {
+            self.control.clear();
         }
         Ok(AutomaticRecordingStep::Recording(step))
     }
-
     /// Supply explicit media timing to the same retained picture. Safe timing
     /// refusals preserve the picture for correction; fatal errors retire all layers.
     pub fn supply_timing(
@@ -291,7 +228,6 @@ impl AutomaticAvcRecording {
         let result = self.recording.supply_timing(timing, now, authority);
         self.settle(result)
     }
-
     /// Seal a completed prefix under live authority to relieve collector pressure.
     /// Poll to obtain its prepared window; this method does not publish it.
     pub fn seal(
@@ -302,21 +238,21 @@ impl AutomaticAvcRecording {
         let result = self.recording.seal(now, authority);
         self.settle(result)
     }
-
     /// Stop without network I/O and transfer prepared, unsealed, untimed and
     /// protocol work exactly once, including after live authority revocation.
     pub fn cancel(&mut self) -> Option<LiveRecordingRetirement> {
-        self.control.next = None;
+        self.control.clear();
         self.recording.cancel()
     }
-
     fn settle<T>(
         &mut self,
         result: Result<T, LiveRecordingFailure>,
     ) -> Result<T, LiveRecordingFailure> {
         if let Err(failure) = &result {
-            if failure.retirement.is_some() {
-                self.control.next = None;
+            if let LiveRecordingError::Network(reason) = &failure.reason {
+                self.control.refused(reason, failure.retirement.is_some());
+            } else if failure.retirement.is_some() {
+                self.control.clear();
             }
         }
         result
@@ -438,11 +374,7 @@ mod recording_tests {
         let (_peer, _) = listener.accept()?;
         assert_eq!(driver.next_wake_ns(), Some(0));
         let step = driver.poll(
-            SocketReadiness::default(),
-            &credentials()?,
-            [1; 16],
-            0,
-            &authority,
+            SocketReadiness::default(), &credentials()?, [1; 16], 0, &authority,
         )?;
         let AutomaticRecordingStep::Queued(queued) = step else {
             return Err("missing initial recording command".into());
@@ -458,13 +390,7 @@ mod recording_tests {
         assert_eq!(driver.next_wake_ns(), None);
         assert!(driver.cancel().is_none());
         assert!(matches!(
-            driver.poll(
-                SocketReadiness::default(),
-                &credentials()?,
-                [2; 16],
-                1,
-                &authority,
-            )?,
+            driver.poll(SocketReadiness::default(), &credentials()?, [2; 16], 1, &authority)?,
             AutomaticRecordingStep::Recording(LiveRecordingStep::Ended)
         ));
         Ok(())
@@ -487,11 +413,8 @@ mod reconnect_boundary_tests {
 
     fn policy(deadline_ns: u64) -> ReconnectPolicy {
         ReconnectPolicy {
-            max_attempts: 3,
-            initial_backoff_ns: 10,
-            max_backoff_ns: 100,
-            deadline_ns,
-            max_steps: 10_000,
+            max_attempts: 3, initial_backoff_ns: 10, max_backoff_ns: 100,
+            deadline_ns, max_steps: 10_000,
         }
     }
 
@@ -501,9 +424,7 @@ mod reconnect_boundary_tests {
         listener.set_nonblocking(true)?;
         let (mut config, authority) = scope(listener.local_addr()?)?;
         let mut owner = SupervisedAvcConnection::new(
-            config.binding.clone(),
-            policy(config.deadline_ns),
-            0,
+            config.binding.clone(), policy(config.deadline_ns), 0,
         )?;
         config.deadline_ns += 1;
         let failure = owner.connect(config, 0, &authority).err().ok_or("extended lease connected")?;
@@ -522,9 +443,7 @@ mod reconnect_boundary_tests {
         let listener = TcpListener::bind((Ipv4Addr::LOCALHOST, 0))?;
         let (config, authority) = scope(listener.local_addr()?)?;
         let mut owner = SupervisedAvcConnection::new(
-            config.binding.clone(),
-            policy(config.deadline_ns),
-            0,
+            config.binding.clone(), policy(config.deadline_ns), 0,
         )?;
         let attempt = owner.connect(config, 0, &authority)?;
         let (_peer, _) = listener.accept()?;
@@ -534,8 +453,7 @@ mod reconnect_boundary_tests {
         ));
         authority.revoked.set(true);
         let failure = owner.poll(
-            SocketReadiness { readable: true, writable: true },
-            &credentials()?, [2; 16], 1, &authority,
+            SocketReadiness { readable: true, writable: true }, &credentials()?, [2; 16], 1, &authority,
         ).err().ok_or("revoked owner made progress")?;
         assert_eq!(failure.key, attempt.key);
         let retirement = failure.retirement.ok_or("lost queued native ownership")?;
