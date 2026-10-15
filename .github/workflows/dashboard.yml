@@ -6,7 +6,10 @@ on:
       - 'crates/fss-cli/**'
       - 'crates/fss-reference/**'
       - 'crates/fss-core/**'
+      - 'crates/fss-twin/**'
+      - 'crates/fss-geometry/**'
       - 'tests/test_dashboard*'
+      - 'tests/test_spatial*'
       - 'scripts/check_dashboard.sh'
       - '.github/workflows/dashboard.yml'
   workflow_dispatch:

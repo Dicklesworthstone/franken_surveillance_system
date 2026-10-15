@@ -35,7 +35,8 @@ export class PropertyView {
     this.canvas.addEventListener('wheel',e=>{e.preventDefault();this.activeCamera=null;this.zoom=Math.max(.18,Math.min(4,this.zoom*Math.exp(e.deltaY*.001)));this.invalidate();},{passive:false});
     this.canvas.addEventListener('keydown',e=>{if(!['ArrowLeft','ArrowRight','ArrowUp','ArrowDown','+','=','-','0'].includes(e.key))return;e.preventDefault();this.activeCamera=null;if(e.key==='ArrowLeft')this.angle-=.12;if(e.key==='ArrowRight')this.angle+=.12;if(e.key==='ArrowUp')this.elevation=Math.min(1.56,this.elevation+.1);if(e.key==='ArrowDown')this.elevation=Math.max(.08,this.elevation-.1);if(['+','='].includes(e.key))this.zoom=Math.max(.18,this.zoom*.85);if(e.key==='-')this.zoom=Math.min(4,this.zoom/ .85);if(e.key==='0')this.reset();this.invalidate();});
   }
-  setScene(scene,threats=[]){const same=this.scene?.frame===scene.frame;this.scene=scene;this.threats=threats;this.bounds=sceneBounds(scene);if(!same||!this.target)this.target=[...this.bounds.center];this.invalidate();}
+  setScene(scene,threats=[]){const same=this.scene?.frame===scene.frame, cameraId=this.activeCamera?.id;this.scene=scene;this.threats=threats;this.bounds=sceneBounds(scene);if(!same||!this.target)this.target=[...this.bounds.center];this.activeCamera=same&&cameraId?scene.sensors.find(s=>s.id===cameraId&&s.pose&&s.knowledge!=='redacted')??null:null;this.invalidate();}
+  clear(){cancelAnimationFrame(this.frame);this.frame=0;this.scene=null;this.threats=[];this.activeCamera=null;this.target=null;this.selected=null;this.hit=[];this.canvas.width=this.canvas.width;this.overlay.replaceChildren();}
   reset(mode='orbit'){if(!this.scene)return;this.activeCamera=null;this.target=[...this.bounds.center];this.zoom=1;this.angle=-.95;this.elevation=mode==='top'?1.56:.73;this.invalidate();}
   fromCamera(sensor){this.activeCamera=sensor;this.invalidate();}
   setLayer(key,value){this.layers[key]=value;this.invalidate();}

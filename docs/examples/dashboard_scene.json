@@ -1,0 +1,17 @@
+{
+  "format": "fss.operator_scene.v1",
+  "site": "site:your-site",
+  "frame": "frame:your-property:z-up",
+  "scale": {"kind": "relative", "metresPerUnit": null, "error": null},
+  "ledgerRoot": null,
+  "mesh": {"vertices": [], "triangles": [], "materials": []},
+  "sensors": [
+    {
+      "id": "sensor:your-camera", "label": "Unregistered camera", "kind": "camera",
+      "status": "unknown", "knowledge": "unknown",
+      "basis": "Empty template; replace with actual registered inputs, never guessed coordinates",
+      "position": null, "pose": null, "intrinsics": null, "frame": null, "reading": null
+    }
+  ],
+  "placements": []
+}

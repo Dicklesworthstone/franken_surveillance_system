@@ -37,7 +37,7 @@ export function cameraMatrix(pose,k,near=.05,far=2000) {
 const assert=(v,m)=>{if(!v)throw Error(m);};
 const finite=n=>typeof n==='number'&&Number.isFinite(n)&&Math.abs(n)<=1e6;
 const vector=p=>Array.isArray(p)&&p.length===3&&p.every(finite);
-const text=(s,n=256)=>typeof s==='string'&&s.length>0&&s.length<=n;
+const text=(s,n=512)=>typeof s==='string'&&s.length>0&&s.length<=n;
 const digest=s=>typeof s==='string'&&/^sha256:[a-f0-9]{64}$/.test(s);
 export function validatePose(pose) {
   assert(pose&&Array.isArray(pose.rotation)&&pose.rotation.length===3&&pose.rotation.every(vector)&&vector(pose.translation),'Invalid world-to-camera transform');
@@ -69,6 +69,7 @@ export function validateScene(scene) {
       assert(k&&['fx','fy','cx','cy','width','height'].every(n=>finite(k[n]))&&k.fx>0&&k.fy>0&&k.width>0&&k.height>0&&k.width<=8192&&k.height<=8192&&k.imageDomain==='undistorted_pinhole','Invalid camera intrinsics/image domain');
       assert(sensor.position===null||norm(sub(center(sensor.pose),sensor.position))<1e-6,'Camera origin does not equal -Rᵀt');
     }
+    assert(!['unknown','not_observable','redacted'].includes(sensor.knowledge)||(sensor.position===null&&sensor.pose===null),'Unknown sensor location must not expose coordinates');
     assert(sensor.frame===null||(digest(sensor.frame.digest)&&text(sensor.frame.capturedAtUnixMs)&&text(sensor.frame.privacy)&&digest(sensor.frame.sourceDigest)),'Invalid frame declaration');
     if(sensor.reading!==null) assert(finite(sensor.reading.value)&&text(sensor.reading.unit,32)&&text(sensor.reading.observedAtUnixMs),'Invalid sensor reading');
   }
@@ -82,6 +83,7 @@ export function validateScene(scene) {
     for(const h of p.hypotheses) assert(vector(h.position)&&vector(h.radii)&&h.radii.every(n=>n>=0&&n<=1000),'Invalid spatial uncertainty envelope');
     assert(!['unknown','not_observable','redacted'].includes(p.knowledge)||p.hypotheses.length===0,'Unknown/redacted location must not expose coordinates');
   }
+  assert(scene.placements.length===0||digest(scene.ledgerRoot),'Localizations require an exact authority root');
   return scene;
 }
 export function freshness(timestamp,validFor,now=Date.now()) {

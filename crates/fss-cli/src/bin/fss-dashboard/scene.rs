@@ -225,3 +225,7 @@ fn image_kind(b: &[u8]) -> io::Result<&'static str> {
     if b.len()>4&&b[..2]==[0xff,0xd8]{let mut i=2;while i+4<=b.len(){if b[i]!=0xff{return Err(bad());}let marker=b[i+1];if marker==0xff{i+=1;continue;}if marker==0xda||marker==0xd9{return Err(bad());}let size=u16::from_be_bytes([b[i+2],b[i+3]])as usize;if size<2||i+2+size>b.len(){return Err(bad());}if matches!(marker,0xc0|0xc1|0xc2){if size<8||b[i+4]!=8{return Err(bad());}dimensions(u16::from_be_bytes([b[i+7],b[i+8]]).into(),u16::from_be_bytes([b[i+5],b[i+6]]).into())?;return Ok("image/jpeg");}i+=2+size;}}
     Err(bad())
 }
+
+#[cfg(test)]
+#[path = "scene_tests.rs"]
+mod tests;

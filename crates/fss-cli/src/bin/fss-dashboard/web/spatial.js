@@ -9,11 +9,11 @@ const tag=(text,cls='')=>el('span',`tag ${cls}`,human(text));
 const GLYPHS={person:'♙',animal:'◇',vehicle:'▱',unknown:'◈'};
 const SENSOR_ICONS={camera:'▣',motion:'⌁',contact:'◫',temperature:'♧',smoke:'♨',audio:'≋',other:'◌'};
 let state=null,scene=null,threats=[],selected=null,wallFilter='all',page=location.pathname==='/sensors'?'sensors':'property';
-let request=null,timer=null,version=0,images=[],previewViews=[],imageRequests=[],busy=false;
+let request=null,timer=null,version=0,previewVersion=0,images=[],previewViews=[],imageRequests=[],busy=false;
 const world=new PropertyView($('world'),{onSelect:select});
 function notify(message){$('toast').textContent=message;$('toast').hidden=false;setTimeout(()=>$('toast').hidden=true,3500);}
 function setPage(next){page=next;$('property-page').hidden=page!=='property';$('sensors-page').hidden=page!=='sensors';$('nav-property').classList.toggle('active',page==='property');$('nav-sensors').classList.toggle('active',page==='sensors');for(const id of['nav-property','nav-sensors']){const active=id===`nav-${page}`;if(active)$(id).setAttribute('aria-current','page');else $(id).removeAttribute('aria-current');}$('heading').textContent=page==='property'?'The whole picture.':'Every perspective. In view.';$('subtitle').textContent=page==='property'?'Property, perspectives, and uncertainty. In one place.':'Declared cameras and sensors, with freshness and availability kept visible.';if(state){renderCameras();world.invalidate();}}
-function viewCamera(s){if(!s.pose){notify('No registered camera pose is supplied.');return;}setPage('property');world.fromCamera(s);$('camera-perspective').hidden=false;$('perspective-name').textContent=`${s.label} · geometric viewpoint, not a live image`;select('sensor',s.id);}
+function viewCamera(s){if(!s.pose){notify('No camera pose is supplied.');return;}setPage('property');world.fromCamera(s);$('camera-perspective').hidden=false;$('perspective-name').textContent=`${s.label} · geometric viewpoint, not a live image`;select('sensor',s.id);}
 function orbit(mode='orbit'){world.reset(mode);$('camera-perspective').hidden=true;$('orbit').classList.toggle('selected',mode==='orbit');$('top').classList.toggle('selected',mode==='top');}
 function select(kind,id){selected={kind,id};world.select(kind,id);renderThreats();renderSelection();}
 function renderSummary(){const sensors=scene?.sensors??[],localized=threats.filter(t=>t.hypotheses.length).length;const items=[['',sensors.filter(s=>s.kind==='camera').length,'declared cameras'],['',sensors.filter(s=>s.kind!=='camera').length,'other sensors'],['alert',localized,'positioned candidates'],['unknown',threats.length-localized,'unplaced candidates']];$('summary').replaceChildren(...items.map(([cls,n,label])=>{const d=el('div',`summary-item ${cls}`);d.append(el('span','marker'),el('b','',String(n)),el('span','',label));return d;}));}
@@ -43,15 +43,15 @@ function renderSelection(){
  }
 }
 function now(){return state?.metadata.demo?1789398500000:Date.now();}
-function clearPreviews(){for(const c of imageRequests)c.abort();imageRequests=[];for(const bitmap of images)bitmap.close();images=[];for(const view of previewViews)view.dispose();previewViews=[];}
+function clearPreviews(){previewVersion++;for(const c of imageRequests)c.abort();imageRequests=[];for(const bitmap of images)bitmap.close();images=[];for(const view of previewViews)view.dispose();previewViews=[];}
 function cameraTile(sensor,index,compact=false){
  const tile=el('article','camera-tile'),preview=el('div','camera-preview');const stamp=el('span','preview-stamp');
  const rendered=el('div','rendered-camera');preview.append(rendered);
  if(state.metadata.demo&&sensor.pose){const view=new PropertyView(rendered,{interactive:false,overlay:false});view.layers.frusta=false;view.setScene(scene,threats);view.fromCamera(sensor);previewViews.push(view);stamp.textContent='SYNTHETIC VIEW · NOT A CAMERA FEED';stamp.classList.add('synthetic');}
  else{const empty=el('div','preview-empty');empty.append(el('span','',sensor.status==='redacted'?'◫':'▣'),el('p','',sensor.status==='redacted'?'Preview redacted':sensor.status==='offline'?'Sensor declared offline':sensor.frame&&state.framesAuthorized?'Reading approved preview…':'No authorized image preview'),el('small','','No image is replaced by a model rendering.'));rendered.append(empty);stamp.textContent=sensor.frame?'RETAINED STILL · NOT LIVE':'IMAGE UNAVAILABLE';}
- preview.append(stamp);const meta=el('div','camera-meta'),row=el('div','row');row.append(el('h3','',sensor.label),tag(sensor.status));meta.append(row,el('p','',sensor.pose?'Registered geometric viewpoint supplied':'No registered optical pose'));
+ preview.append(stamp);const meta=el('div','camera-meta'),row=el('div','row');row.append(el('h3','',sensor.label),tag(sensor.status));meta.append(row,el('p','',sensor.pose?'Declared geometric viewpoint supplied':'No supplied optical pose'));
  const actions=el('div','camera-actions');const look=button('3D viewpoint ↗',()=>viewCamera(sensor));look.disabled=!sensor.pose;actions.append(look,button('Details',()=>{setPage('property');select('sensor',sensor.id);}));meta.append(actions);tile.append(preview,meta);
- if(!state.metadata.demo&&sensor.frame&&state.framesAuthorized&&sensor.status==='available')return{tile,load:()=>loadFrame(sensor,index,rendered,stamp,version)};
+ if(!state.metadata.demo&&sensor.frame&&state.framesAuthorized&&sensor.status==='available')return{tile,load:()=>loadFrame(sensor,index,rendered,stamp,version,previewVersion)};
  return{tile,load:null};
 }
 async function bytesBounded(response,limit){
@@ -59,17 +59,17 @@ async function bytesBounded(response,limit){
  const reader=response.body.getReader(),chunks=[];let total=0;try{while(true){const{value,done}=await reader.read();if(done)break;total+=value.length;if(total>limit)throw Error('Response exceeds its byte limit');chunks.push(value);}}catch(e){await reader.cancel();throw e;}finally{reader.releaseLock();}
  const joined=new Uint8Array(total);let at=0;for(const chunk of chunks){joined.set(chunk,at);at+=chunk.length;}return joined;
 }
-async function loadFrame(sensor,index,host,stamp,token){
- if(token!==version||document.hidden)return;
+async function loadFrame(sensor,index,host,stamp,token,previewToken){
+ if(token!==version||previewToken!==previewVersion||document.hidden)return;
  const controller=new AbortController();imageRequests.push(controller);const timeout=setTimeout(()=>controller.abort(),8000);
  try{
   const hex=state.sceneDigest.replace(/^sha256:/,'');const response=await fetch(`/api/frame/${index}/${hex}`,{headers:{'X-FSS-Read':'1'},credentials:'omit',cache:'no-store',signal:controller.signal});
   if(!response.ok)throw Error('Preview is unavailable or no longer authorized');const mime=response.headers.get('content-type');if(!['image/png','image/jpeg'].includes(mime))throw Error('Unsupported preview image');
-  const bytes=await bytesBounded(response,4*1024*1024);if(token!==version||document.hidden)return;
-  const bitmap=await createImageBitmap(new Blob([bytes],{type:mime}));if(token!==version||document.hidden){bitmap.close();return;}if(bitmap.width*bitmap.height>4194304||bitmap.width>4096||bitmap.height>4096){bitmap.close();throw Error('Decoded preview exceeds its pixel limit');}
-  images.push(bitmap);const canvas=el('canvas');canvas.width=bitmap.width;canvas.height=bitmap.height;canvas.setAttribute('aria-label',`${sensor.label}, explicitly selected retained image preview`);canvas.getContext('2d').drawImage(bitmap,0,0);host.replaceChildren(canvas);
+  const bytes=await bytesBounded(response,4*1024*1024);if(token!==version||previewToken!==previewVersion||document.hidden)return;
+  const bitmap=await createImageBitmap(new Blob([bytes],{type:mime}));if(token!==version||previewToken!==previewVersion||document.hidden){bitmap.close();return;}if(bitmap.width*bitmap.height>4194304||bitmap.width>4096||bitmap.height>4096){bitmap.close();throw Error('Decoded preview exceeds its pixel limit');}
+  const canvas=el('canvas'),scale=Math.min(1,640/bitmap.width,360/bitmap.height);canvas.width=Math.max(1,Math.round(bitmap.width*scale));canvas.height=Math.max(1,Math.round(bitmap.height*scale));canvas.setAttribute('aria-label',`${sensor.label}, explicitly selected retained image preview`);try{canvas.getContext('2d').drawImage(bitmap,0,0,canvas.width,canvas.height);}finally{bitmap.close();}host.replaceChildren(canvas);
   const age=freshness(sensor.frame.capturedAtUnixMs,30000,now());stamp.textContent=`RETAINED STILL · ${age.toUpperCase()} · ${sensor.frame.capturedAtUnixMs} ms`;stamp.classList.toggle('ready',age==='recent');
- }catch(e){if(token!==version)return;const error=el('div','preview-empty');error.append(el('span','','◌'),el('p','','Preview unavailable'),el('small','',e.name==='AbortError'?'Preview read timed out or was cancelled.':e.message));host.replaceChildren(error);stamp.textContent='IMAGE UNAVAILABLE';}
+ }catch(e){if(token!==version||previewToken!==previewVersion)return;const error=el('div','preview-empty');error.append(el('span','','◌'),el('p','','Preview unavailable'),el('small','',e.name==='AbortError'?'Preview read timed out or was cancelled.':e.message));host.replaceChildren(error);stamp.textContent='IMAGE UNAVAILABLE';}
  finally{clearTimeout(timeout);imageRequests=imageRequests.filter(c=>c!==controller);}
 }
 function renderCameras(){
@@ -87,18 +87,19 @@ function renderCameras(){
   const available=s.status==='available'&&s.knowledge!=='redacted'&&s.reading;const value=el('div','reading-value',available?String(s.reading.value):'—');if(available)value.append(el('small','',s.reading.unit));
   const bottom=el('div','reading-bottom');bottom.append(tag(available?freshness(s.reading.observedAtUnixMs,30000,now()):s.status),button('Locate ↗',()=>{setPage('property');select('sensor',s.id);if(s.position)world.focus(s.position);}));card.append(top,value,el('p','',available?`Recorded ${s.reading.observedAtUnixMs} ms`:'No readable current value'),bottom);$('sensor-readings').append(card);
  }
- const token=version;const loadNext=async()=>{for(const load of loads){if(token!==version||document.hidden)break;await load();}};loadNext();
+ const token=version,previewToken=previewVersion;const loadNext=async()=>{for(const load of loads){if(token!==version||previewToken!==previewVersion||document.hidden)break;await load();}};loadNext();
 }
 function render(){
  $('site').textContent=state.metadata.site;$('demo-banner').hidden=!state.metadata.demo;$('mode-label').textContent=state.metadata.demo?'Frozen synthetic demonstration':'Retained snapshot · not live';$('basis-label').textContent=`Authority ${shortDigest(state.metadata.ledgerRoot)} · sequence ${state.metadata.sequence}`;
  $('world-name').textContent=scene?.frame||'Geometry not supplied';$('units').textContent=scene?scene.scale.kind==='relative'?'Z-up · relative source units':`Z-up · ${scene.scale.metresPerUnit} m / unit · declared ${scene.scale.kind} scale`:'No coordinate frame';
  $('no-geometry').hidden=!!scene?.mesh.vertices.length;
- if(scene)world.setScene(scene,threats);else { world.scene=null; world.canvas.width=world.canvas.width; world.overlay.replaceChildren(); }
+ if(scene)world.setScene(scene,threats);else { world.clear(); }
+ $('camera-perspective').hidden=!world.activeCamera;if(world.activeCamera)$('perspective-name').textContent=`${world.activeCamera.label} · geometric viewpoint, not a live image`;
  if(selected?.kind==='threat'&&!threats.some(t=>t.id===selected.id))selected=null;if(selected?.kind==='sensor'&&!scene?.sensors.some(s=>s.id===selected.id))selected=null;
  if(!selected&&threats.length)selected={kind:'threat',id:threats[0].id};
  renderSummary();renderThreats();renderSelection();$('loading').hidden=true;$('failure').hidden=true;$('data-workspace').hidden=false;setPage(page);
 }
-function clear(){version++;clearPreviews();state=null;scene=null;threats=[];selected=null;world.scene=null;world.canvas.width=world.canvas.width;world.overlay.replaceChildren();$('data-workspace').hidden=true;for(const id of['summary','threat-list','selection','camera-dock','camera-wall','sensor-readings'])$(id).replaceChildren();$('site').textContent='Snapshot unavailable';$('basis-label').textContent='';}
+function clear(){version++;clearPreviews();state=null;scene=null;threats=[];selected=null;world.clear();$('camera-perspective').hidden=true;$('perspective-name').textContent='';$('data-workspace').hidden=true;for(const id of['summary','threat-list','selection','camera-dock','camera-wall','sensor-readings'])$(id).replaceChildren();$('site').textContent='Snapshot unavailable';$('basis-label').textContent='';}
 async function refresh(){
  if(busy||document.hidden)return;clearTimeout(timer);busy=true;$('refresh').disabled=true;$('retry').disabled=true;$('connection').textContent='Reading…';request=new AbortController();const timeout=setTimeout(()=>request?.abort(),12000);let success=false;
  try{
