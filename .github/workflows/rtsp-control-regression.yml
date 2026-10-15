@@ -1,0 +1,45 @@
+# Supplementary native regressions; scripts/qualify.sh and retained DSR receipts remain release authority.
+name: Automatic RTSP control regressions
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'crates/fss-reference/src/rtsp/**'
+      - 'crates/fss-reference/src/rtsp.rs'
+      - 'crates/fss-reference/tests/automatic_control_backpressure.rs'
+      - 'crates/fss-reference/tests/automatic_live_archive_contract.rs'
+      - 'Cargo.toml'
+      - 'Cargo.lock'
+      - 'rust-toolchain.toml'
+      - 'scripts/bootstrap_toolchain.sh'
+      - '.github/workflows/rtsp-control-regression.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  native-control:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    env:
+      CARGO_BUILD_JOBS: '2'
+      CARGO_INCREMENTAL: '0'
+      CARGO_PROFILE_DEV_DEBUG: '0'
+      CARGO_PROFILE_TEST_DEBUG: '0'
+      CARGO_NET_OFFLINE: 'true'
+      RUSTUP_AUTO_INSTALL: '0'
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+      - name: Bootstrap the repository-pinned native toolchain
+        run: bash scripts/bootstrap_toolchain.sh
+      - name: Automatic sequencing, native negotiation and reconnect boundaries
+        if: success() || failure()
+        run: cargo +nightly-2026-08-31 test --locked --offline -p fss-reference --lib rtsp::live_avc::automatic
+      - name: Real loopback coalescing, partial input, revocation and finite work
+        if: success() || failure()
+        run: cargo +nightly-2026-08-31 test --locked --offline -p fss-reference --test automatic_control_backpressure
+      - name: Existing protected archives and exact payload selection
+        if: success() || failure()
+        run: cargo +nightly-2026-08-31 test --no-fail-fast --locked --offline -p fss-reference --test automatic_live_archive_contract --test rtsp_payload_selection_streaming
