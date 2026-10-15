@@ -57,6 +57,10 @@
 //! `--failure-domain KIND:ID=CAMERA[,CAMERA...]` binds owner-declared common causes to the
 //! entry evidence. Cameras connected by any declared dependency form one supporting domain:
 //! their matching entries remain witnessed activity, with no corroborated alert affordance.
+//! Optional calibrated class advice binds the final screened coverage, including unchanged
+//! companion cameras. It requires exact final coverage pins and current source/privacy/adoption
+//! checks; a failed geometric screen cannot be replaced by nominal coverage. Advice changes
+//! neither positive event proposals nor their separate approval commands.
 
 // Full calibration covariance is an additional coverage-denial gate, not an event classifier.
 #[path = "corroborate/calibration_coverage.rs"]
@@ -497,17 +501,6 @@ pub(super) fn parse(args: &[OsString]) -> Result<CorroborateAction, String> {
             ["--approve", "--retain-coverage", "--retain-health"].contains(&key.as_str())
         }),
     )?;
-    // The full-camera screen replaces nominal coverage with separately guarded records.
-    // The current bridge binds native records; never label that earlier context as final.
-    if find(&values, "--fusion-profile").is_some()
-        && (find(&values, "--calibration").is_some()
-            || find(&values, "--calibration-digest").is_some())
-    {
-        return Err(
-            "calibrated fusion does not yet bind full-camera calibration coverage; use separate invocations"
-                .to_owned(),
-        );
-    }
     let geometry_requested = !poses.is_empty()
         || !generations.is_empty()
         || values.iter().any(|(key, _)| {
@@ -1055,9 +1048,6 @@ fn run_with(
         return streaming::run(action, deployment, root, limits, cx, scalar, out);
     }
     let fusion_profile = super::detector::load_fusion(action.cascade.as_ref(), cx)?;
-    if fusion_profile.is_some() && action.calibration.is_some() {
-        return Err(EventFusionError::Scope.into());
-    }
     // The calibration is verified against its pinned digest before any source is read.
     let (poses, mut sources, calibration, covariances, calibration_record) = resolve_poses(action)?;
     // Retained adoptions decide currency (or refuse a superseded calibration) before any frame is
@@ -1129,11 +1119,10 @@ fn run_with(
         &mut guard_budget,
     )?;
     let fusion = match (&fusion_profile, cascade.as_ref()) {
-        (Some(profile), Some(cascade)) if coverage_guard.is_none() => {
-            Some(EventFusionReport::corroborate(
-                &report, cascade, profile, deployment, cx,
-            )?)
-        }
+        (Some(profile), Some(cascade)) => Some(match &coverage_guard {
+            Some(guard) => guard.fuse(&report, cascade, profile, deployment, cx)?,
+            None => EventFusionReport::corroborate(&report, cascade, profile, deployment, cx)?,
+        }),
         (None, _) => None,
         _ => return Err(EventFusionError::Scope.into()),
     };
@@ -1244,6 +1233,11 @@ fn run_with(
     let json = super::detector::with_fusion(json, fusion.as_ref())?;
     if fusion.is_some() {
         report.revalidate_derived_sources(deployment, cx)?;
+        // Advice and rendered coverage must still share the same current screened context.
+        // No nominal fallback is allowed after a privacy or calibration-adoption change.
+        if let Some(guard) = selected_guard {
+            guard.revalidate(deployment, cx)?;
+        }
         cx.checkpoint("event_fusion:corroborate_delivery")?;
     }
     let json = format!("{json}\n");
@@ -1457,18 +1451,50 @@ mod recovery_tests {
     }
 
     #[test]
-    fn fusion_refuses_streaming_and_different_final_coverage_contexts() {
+    fn fusion_still_refuses_streaming() {
         let mut args = fusion_arguments();
         args.push("--stream-corroborate".into());
         assert!(matches!(parse(&args), Err(message) if message.contains("not dwell or streaming")));
-        args.pop();
+    }
+
+    fn with_calibration(mut args: Vec<OsString>) -> Vec<OsString> {
         args.extend([
             "--calibration".into(),
             "camera-calibration.json".into(),
             "--calibration-digest".into(),
             ContentDigest::sha256(b"calibration").to_text().into(),
         ]);
-        assert!(matches!(parse(&args), Err(message) if message.contains("full-camera calibration coverage")));
+        args
+    }
+
+    #[test]
+    fn fusion_accepts_pinned_calibration_and_preserves_the_native_approval_rerun() -> Result<(), String> {
+        let args = fusion_arguments();
+        let mut plain = args.clone();
+        plain.truncate(plain.len() - 4);
+        let native = parse(&with_calibration(plain))?;
+        let advised = parse(&with_calibration(args))?;
+        assert!(advised.calibration.is_some());
+        assert_eq!(native.plan.digest(), advised.plan.digest());
+        assert_eq!(native.rerun, advised.rerun);
+        assert!(advised.rerun.contains("--calibration-digest"));
+        assert!(!advised.rerun.contains("--fusion-"));
+        assert!(advised.approvals.is_empty());
+        assert!(advised.retain_coverage.is_none());
+        assert!(advised.retain_health.is_none());
+        Ok(())
+    }
+
+    #[test]
+    fn fusion_does_not_relax_calibration_pins_or_authority_separation() {
+        let mut incomplete = fusion_arguments();
+        incomplete.extend(["--calibration".into(), "camera-calibration.json".into()]);
+        assert!(matches!(parse(&incomplete), Err(message) if message.contains("go together")));
+        for flag in ["--approve", "--retain-coverage", "--retain-health"] {
+            let mut args = with_calibration(fusion_arguments());
+            args.extend([flag.into(), ContentDigest::sha256(b"approval").to_text().into()]);
+            assert!(matches!(parse(&args), Err(message) if message.contains("read-only")));
+        }
     }
 
     #[test]

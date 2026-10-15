@@ -7,6 +7,7 @@
 //! and record transformations share the caller's budget, including post-publication reanalysis.
 
 use fss_cli::agent_json::{array, object, string};
+use fss_cli::event_fusion::{EventFusionProfile, EventFusionReport};
 use fss_core::{ContentDigest, SensorId};
 use fss_geometry::WorkBudget;
 use fss_reference::calibrated_coverage::{CoverageProjectionInput, GuardedCoverageSet};
@@ -15,6 +16,7 @@ use fss_reference::ingest::calibration_coverage::{
     CalibrationCoverageAssessment, CalibrationCoverageInput, assess_calibration_coverage,
     calibrated_camera_model,
 };
+use fss_reference::ingest::detector_cascade::DetectorCascade;
 use fss_reference::ingest::privacy_mask::current_mask;
 use fss_reference::ingest::recorded_corroboration::{CorroborationError, CorroborationReport};
 use fss_reference::ingest::recorded_coverage::{CoverageStatus, PoseProvenance};
@@ -61,6 +63,37 @@ impl CoverageGuard {
         self.status = self
             .guarded
             .retain(deployment, approval, self.read_limits, cx)?;
+        Ok(())
+    }
+
+    /// Bind class advice to the same immutable records the coverage renderer will expose.
+    /// The fusion bridge checks exact native lineage and revalidates current dependencies.
+    pub(super) fn fuse(
+        &self,
+        report: &CorroborationReport,
+        cascade: &DetectorCascade<'_>,
+        profile: &EventFusionProfile,
+        deployment: &ReferenceDeployment,
+        cx: &ReplayCx,
+    ) -> RunResult<EventFusionReport> {
+        Ok(EventFusionReport::corroborate_guarded(
+            report,
+            cascade,
+            profile,
+            &self.guarded,
+            self.read_limits,
+            deployment,
+            cx,
+        )?)
+    }
+
+    /// Recheck the final context at delivery without publishing or retaining coverage.
+    pub(super) fn revalidate(
+        &self,
+        deployment: &ReferenceDeployment,
+        cx: &ReplayCx,
+    ) -> RunResult<()> {
+        self.guarded.revalidate(deployment, self.read_limits, cx)?;
         Ok(())
     }
 

@@ -199,15 +199,37 @@ fn streaming_and_dwell_cannot_silently_drop_requested_fusion() {
 }
 
 #[test]
-fn full_camera_calibration_cannot_substitute_an_unbound_coverage_context() {
-    let mut invocation = Invocation::new("corroborate");
-    invocation.detector();
-    invocation.fusion();
-    invocation.add(&[
-        "--calibration",
-        "deliberately-unread-calibration.json",
-        "--calibration-digest",
-        OTHER_PIN,
-    ]);
-    invocation.refused("does not yet bind full-camera calibration coverage");
+fn full_camera_fusion_still_requires_complete_valid_calibration_pins() {
+    for (flags, reason) in [
+        (vec!["--calibration", "calibration.json"], "go together"),
+        (vec!["--calibration-digest", OTHER_PIN], "go together"),
+        (
+            vec!["--calibration", "calibration.json", "--calibration-digest", "invalid"],
+            "invalid digest for --calibration-digest",
+        ),
+    ] {
+        let mut invocation = Invocation::new("corroborate");
+        invocation.detector();
+        invocation.fusion();
+        invocation.add(&flags);
+        invocation.refused(reason);
+    }
+}
+
+#[test]
+fn full_camera_fusion_cannot_mix_advice_with_publication_or_retention() {
+    for flag in ["--approve", "--retain-coverage", "--retain-health"] {
+        let mut invocation = Invocation::new("corroborate");
+        invocation.detector();
+        invocation.fusion();
+        invocation.add(&[
+            "--calibration",
+            "deliberately-unread-calibration.json",
+            "--calibration-digest",
+            OTHER_PIN,
+            flag,
+            PIN,
+        ]);
+        invocation.refused("calibrated fusion is read-only");
+    }
 }

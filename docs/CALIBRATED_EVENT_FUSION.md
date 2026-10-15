@@ -108,30 +108,52 @@ hint in a **separate** invocation. Those hints deliberately omit the two fusion
 options while keeping the source, detector, and other native analysis options.
 They do not approve the advisory fusion result or confer new alert authority.
 
+## Full-camera calibration and final guarded coverage
+
+Short-window `corroborate` accepts both the pinned site-calibration options and the
+pinned fusion profile. First run the normal read-only calibrated detector command
+without fusion to obtain the final screened coverage identities. Pin those exact
+record digests in `coverage_digests`, together with the native plan and cascade
+identities. Reuse the same camera, calibration, detector, zone and analysis options
+when adding the fusion profile. Nominal pre-screen coverage pins are not accepted
+as a substitute for the final records.
+
+The native guard preserves an exact, immutable, ordered lineage from the complete
+original camera records to the screened set. The bridge verifies this lineage,
+including an uncalibrated companion camera, before composing any advice. It then
+revalidates retained source custody, privacy bindings and calibration adoption on
+both sides of fusion; the command repeats these checks before report delivery.
+Changed or unavailable dependencies cause refusal, never a nominal fallback.
+
+The combined output contains both `calibration_uncertainty_guard` and
+`calibrated_class_advice`. Rejected geometric samples still withhold coverage;
+calibrated class advice cannot restore the removed witnesses or certify absence.
+Positive event proposals and native approval hints are unchanged. A calibration
+pin or an owner adoption remains a conditional input, not proof of physical
+calibration accuracy. Coverage wire formats and exact retention approvals are
+unchanged by this integration.
+
+Library callers use `EventFusionReport::corroborate_guarded` with the native
+`CorroborationReport`, its detector cascade, a `GuardedCoverageSet`, and explicit
+retained-read limits. The nominal-only `corroborate` API rejects site-calibrated
+coverage, preventing callers from bypassing the full-camera context selection.
+
 ## Explicit limits of this increment
 
 Fusion is currently admitted only for short-window entry analysis. Dwell,
 `--stream-watch`, `--stream-dwell`, and `--stream-corroborate` refuse a requested
-fusion profile instead of silently ignoring it.
-
-`corroborate --calibration` also cannot be combined with fusion yet. Full-camera
-calibration screening replaces nominal coverage with separately guarded coverage
-records. The current bridge binds the native coverage set, so attaching it to that
-rewritten context would be misleading. Use separate invocations until the bridge
-can bind the final guarded coverage identities. Existing non-fusion calibration,
-coverage retention, and streaming behavior is unchanged.
-
-The Bead therefore remains open: this command wiring does not claim complete
-streaming/dwell integration, full-camera guarded-context integration, or physical
-calibration qualification.
+fusion profile instead of silently ignoring it. The Bead remains open for those
+integrations and native qualification; guarded-context wiring is not a claim of
+physical calibration qualification.
 
 ## Regression checks
 
 The command modules contain parser, mode/authority, output-composition, and exact
 report-size tests. `crates/fss-cli/tests/event_fusion_cli.rs` additionally launches
 the real binary for rejected requests: missing or malformed pins, duplicate flags,
-authority writes, unsupported streaming/dwell, and full-camera calibration. These
-cases require the specific admission error, no stdout report, no deployment-root
+authority writes, unsupported streaming/dwell, and invalid or incomplete site-
+calibration pins. Full-camera fusion admission still refuses every authority-write
+combination. These cases require the specific admission error, no stdout report, no deployment-root
 creation, and no report export. They do not execute model inference.
 
 Run with the repository's pinned Rust toolchain:
@@ -140,6 +162,7 @@ Run with the repository's pinned Rust toolchain:
 cargo test -p fss-cli --test event_fusion_cli
 cargo test -p fss-cli --bin fss-event fusion
 cargo test -p fss-cli --lib event_fusion
+cargo test -p fss-reference --lib calibrated_coverage
 cargo fmt --all --check
 ```
 
