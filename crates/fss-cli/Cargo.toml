@@ -142,8 +142,6 @@ fss-packet = { path = "../fss-packet" }
 fss-publication = { path = "../fss-publication" }
 fss-reference = { path = "../fss-reference" }
 fss-tutk = { path = "../fss-tutk" }
-
-[dev-dependencies]
 fss-twin = { path = "../fss-twin" }
 
 [lints]
