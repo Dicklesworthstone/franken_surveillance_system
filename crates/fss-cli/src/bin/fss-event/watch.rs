@@ -19,6 +19,10 @@
 //! `--dwell-for-ns N --dwell-max-gap-ns N [--dwell-min-observations N]` instead evaluates
 //! sustained actual zone observations. It uses the same pipeline once, emits separately approved
 //! dwell hypotheses, and refuses coverage retention: entry coverage is not dwell-absence proof.
+//! Optional `--fusion-profile PATH --fusion-digest sha256:HEX` adds read-only calibrated
+//! class advice to short sampled-dwell episodes. The profile pins the dwell analysis digest,
+//! not the entry plan, and only scores observed in that episode may contribute. Neither an
+//! entry coverage record nor class advice certifies continuous occupancy or dwell absence.
 //! Add `--stream-dwell` for one whole MJPEG, H.264 or H.265 (Annex-B or MP4) range (up to 65536
 //! segments; inter-coded frames in display order), with persistent
 //! foreground/tracker state and aggregate source-byte, pixel, assignment and trace ceilings.
@@ -307,11 +311,9 @@ pub(super) fn parse(args: &[OsString]) -> Result<WatchAction, String> {
         index += 2;
     }
     let cascade = super::detector::parse(&values)?;
-    super::detector::check_fusion_mode(
+    super::detector::check_watch_fusion_mode(
         cascade.as_ref(),
-        !stream_watch
-            && !stream_dwell
-            && !values.iter().any(|(key, _)| key.starts_with("--dwell-")),
+        !stream_watch && !stream_dwell,
         values.iter().any(|(key, _)| {
             ["--approve", "--retain-coverage", "--retain-health"].contains(&key.as_str())
         }),
@@ -493,9 +495,9 @@ pub(super) fn run(
     cx: &ReplayCx,
     out: &mut impl Write,
 ) -> RunResult<()> {
-    super::detector::check_fusion_mode(
+    super::detector::check_watch_fusion_mode(
         action.cascade.as_ref(),
-        action.dwell.is_none() && action.stream_watch.is_none() && action.stream_dwell.is_none(),
+        action.stream_watch.is_none() && action.stream_dwell.is_none(),
         !action.approvals.is_empty()
             || action.retain_coverage.is_some()
             || action.retain_health.is_some(),
@@ -757,21 +759,37 @@ fn run_with(
             action.options,
             cx,
         )?;
-        // Bound the actual rerun hint and complete report before any event publication.
-        report.to_json(
-            deployment.current_anchor().commit_sequence,
-            Some(&action.rerun),
+        let fusion = match (&fusion_profile, cascade.as_ref()) {
+            (Some(profile), Some(cascade)) => Some(EventFusionReport::dwell(
+                &report, cascade, profile, deployment, cx,
+            )?),
+            (None, _) => None,
+            _ => return Err(EventFusionError::Scope.into()),
+        };
+        // Admit the entire native report plus advice before any publication or export.
+        // Fusion admission forbids authority writes; ordinary dwell publication is unchanged.
+        super::detector::with_fusion(
+            report.to_json(
+                deployment.current_anchor().commit_sequence,
+                Some(&action.rerun),
+            )?,
+            fusion.as_ref(),
         )?;
         if !action.approvals.is_empty() {
             report.publish(deployment, &action.approvals, cx)?;
         }
-        let json = format!(
-            "{}\n",
+        let json = super::detector::with_fusion(
             report.to_json(
                 deployment.current_anchor().commit_sequence,
                 Some(&action.rerun),
-            )?
-        );
+            )?,
+            fusion.as_ref(),
+        )?;
+        if fusion.is_some() {
+            report.revalidate_derived_source(deployment, cx)?;
+            cx.checkpoint("event_fusion:dwell_delivery")?;
+        }
+        let json = format!("{json}\n");
         if let Some(path) = &action.report_out {
             export(path, json.as_bytes(), root, cx)?;
         }
@@ -988,3 +1006,7 @@ fn run_streaming(
     out.write_all(json.as_bytes())?;
     Ok(())
 }
+
+#[cfg(test)]
+#[path = "watch_fusion_tests.rs"]
+mod fusion_tests;

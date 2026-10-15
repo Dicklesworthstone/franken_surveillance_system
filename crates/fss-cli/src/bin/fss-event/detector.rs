@@ -203,6 +203,23 @@ pub(super) fn check_fusion_mode(
     Ok(())
 }
 
+/// Watch has both short entry and short sampled-dwell owners. Streaming has neither
+/// the same temporal evidence contract nor a fusion adapter and remains explicitly refused.
+/// Reuse the shared read-only authority gate without broadening corroborate's admission.
+pub(super) fn check_watch_fusion_mode(
+    options: Option<&DetectorOptions>,
+    short_window: bool,
+    authority_write: bool,
+) -> Result<(), String> {
+    if !short_window && options.is_some_and(|options| options.fusion.is_some()) {
+        return Err(
+            "calibrated watch fusion supports short entry or sampled-dwell analysis, not streaming"
+                .to_owned(),
+        );
+    }
+    check_fusion_mode(options, true, authority_write)
+}
+
 /// Read one bounded regular profile under the caller's authority, then verify its exact digest
 /// before JSON parsing. No profile means no additional I/O or change to the old command path.
 pub(super) fn load_fusion(

@@ -171,13 +171,9 @@ fn neither_command_can_publish_or_retain_authority_with_fusion() {
 }
 
 #[test]
-fn streaming_and_dwell_cannot_silently_drop_requested_fusion() {
+fn streaming_cannot_silently_drop_requested_fusion() {
     for (command, flags) in [
         ("watch", vec!["--stream-watch"]),
-        (
-            "watch",
-            vec!["--dwell-for-ns", "1000000000", "--dwell-max-gap-ns", "250000000"],
-        ),
         (
             "watch",
             vec![
@@ -194,7 +190,11 @@ fn streaming_and_dwell_cannot_silently_drop_requested_fusion() {
         invocation.detector();
         invocation.fusion();
         invocation.add(&flags);
-        invocation.refused("not dwell or streaming");
+        invocation.refused(if command == "watch" {
+            "not streaming"
+        } else {
+            "not dwell or streaming"
+        });
     }
 }
 
@@ -232,4 +232,31 @@ fn full_camera_fusion_cannot_mix_advice_with_publication_or_retention() {
         ]);
         invocation.refused("calibrated fusion is read-only");
     }
+}
+
+#[test]
+fn short_dwell_fusion_preserves_authority_and_temporal_refusals_before_io() {
+    for flag in ["--approve", "--retain-coverage", "--retain-health"] {
+        let mut invocation = Invocation::new("watch");
+        invocation.detector();
+        invocation.fusion();
+        invocation.add(&[
+            "--dwell-for-ns", "200000000", "--dwell-max-gap-ns", "100000000", flag, PIN,
+        ]);
+        invocation.refused("calibrated fusion is read-only");
+    }
+    let mut incomplete = Invocation::new("watch");
+    incomplete.detector();
+    incomplete.fusion();
+    incomplete.add(&["--dwell-for-ns", "200000000"]);
+    incomplete.refused("dwell requires both");
+
+    let mut unsupported_health = Invocation::new("watch");
+    unsupported_health.detector();
+    unsupported_health.fusion();
+    unsupported_health.add(&[
+        "--dwell-for-ns", "200000000", "--dwell-max-gap-ns", "100000000",
+        "--sensor-health", "conservative-v1",
+    ]);
+    unsupported_health.refused("short dwell screening is unsupported");
 }
