@@ -45,7 +45,7 @@ fn asset(path: &str) -> Option<(&'static str, &'static str)> {
 fn send(stream: &mut TcpStream, code: u16, mime: &str, body: &str, lease: &Lease) -> io::Result<()> {
     let reason = match code { 200 => "OK", 400 => "Bad Request", 403 => "Forbidden", 404 => "Not Found", 405 => "Method Not Allowed", _ => "Service Unavailable" };
     let header = format!("HTTP/1.1 {code} {reason}\r\nContent-Type: {mime}\r\nContent-Length: {}\r\nConnection: close\r\nCache-Control: no-store\r\nContent-Security-Policy: {CSP}\r\nX-Content-Type-Options: nosniff\r\nReferrer-Policy: no-referrer\r\nCross-Origin-Resource-Policy: same-origin\r\nX-Frame-Options: DENY\r\nPermissions-Policy: camera=(), microphone=(), geolocation=()\r\n\r\n", body.len());
-    let deadline = Instant::now() + Duration::from_secs(2);
+    let deadline = (Instant::now() + Duration::from_secs(2)).min(lease.deadline);
     for mut bytes in [header.as_bytes(), body.as_bytes()] {
         let mut interrupted = 0;
         while !bytes.is_empty() {
@@ -65,7 +65,7 @@ fn send(stream: &mut TcpStream, code: u16, mime: &str, body: &str, lease: &Lease
 
 fn handle(stream: &mut TcpStream, host: &str, options: &Options, lease: &Lease) -> io::Result<()> {
     stream.set_nonblocking(false)?;
-    let deadline = Instant::now() + Duration::from_secs(2);
+    let deadline = (Instant::now() + Duration::from_secs(2)).min(lease.deadline);
     let mut buf = Vec::new();
     loop {
         lease.check()?;
@@ -108,7 +108,10 @@ pub(super) fn run(options: &Options, lease: &Lease) -> io::Result<()> {
         match listener.accept() {
             Ok((mut stream, peer)) if peer.ip().is_loopback() => { let _ = handle(&mut stream, &host, options, lease); }
             Ok(_) => {}
-            Err(e) if e.kind() == io::ErrorKind::WouldBlock => { lease.check()?; std::thread::sleep(Duration::from_millis(20)); }
+            Err(e) if e.kind() == io::ErrorKind::WouldBlock => {
+                if lease.check().is_err() { break; }
+                std::thread::sleep(Duration::from_millis(20));
+            }
             Err(e) if e.kind() == io::ErrorKind::Interrupted => {}
             Err(e) => return Err(e),
         }
