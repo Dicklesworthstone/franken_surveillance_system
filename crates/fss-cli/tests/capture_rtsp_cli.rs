@@ -24,6 +24,9 @@ use fss_core::ContentDigest;
 #[path = "capture_rtsp_cli/auth.rs"]
 mod authentication;
 
+#[path = "capture_rtsp_cli/campaign.rs"]
+mod campaign;
+
 #[path = "capture_rtsp_cli/hevc.rs"]
 mod hevc;
 
