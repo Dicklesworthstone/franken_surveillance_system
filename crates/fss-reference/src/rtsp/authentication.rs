@@ -254,6 +254,7 @@ impl DigestChallenge {
 
     /// Calculate one wire value. The URI MUST be the exact request-target, not
     /// a normalized path. This pure calculation grants no network authority.
+    /// Uppercase method tokens may include '_' as in RTSP GET_PARAMETER.
     /// The RTSP session adapter additionally binds method/target, CSeq and deadline.
     /// Supply fresh unpredictable 128-bit cnonce bytes from the owner; no clock,
     /// process ID, deterministic RNG or ambient entropy source is substituted here.
@@ -280,7 +281,7 @@ impl DigestChallenge {
         }
         if method.is_empty()
             || method.len() > 32
-            || !method.bytes().all(|b| b.is_ascii_uppercase())
+            || !method.bytes().all(|b| b.is_ascii_uppercase() || b == b'_')
             || uri.is_empty()
             || uri.len() > 2_048
             || !uri.bytes().all(|b| (33..127).contains(&b))
@@ -546,6 +547,82 @@ mod tests {
             c.response("GET", "/dir/index.html", &credentials, "0a4f113b", 1)?,
             "6629fae49393a05397450978507c4ef1"
         );
+        Ok(())
+    }
+
+    #[test]
+    fn get_parameter_digest_matches_independent_method_specific_vectors()
+    -> Result<(), AuthenticationError> {
+        // Fixture-only vectors independently computed with Python hashlib. No oracle
+        // or dependency is used by the native implementation or by these tests.
+        let cases = [
+            ("SHA-256", true, "51996cbe55d14cf512ee565900e0c7c27fd1c9c626e1fef8c2a7a33476613e19"),
+            ("SHA-256-sess", true, "0e59fca8659f8bd3efe89b70f5beb11cf3637166d9c7ee496413df0899704b00"),
+            ("MD5", true, "7479cc5456da6ec486c1adcb727a9c85"),
+            ("MD5-sess", true, "1a78b66a03c4358689413e1763535071"),
+            ("MD5", false, "969bf9ca3560d6eb89eb686986762335"),
+            ("MD5-sess", false, "0b7fdaa66195a816aa5b587e68113680"),
+        ];
+        let credentials = DigestCredentials::new("fixture-user", "fixture-password")?;
+        for (algorithm, qop, expected) in cases {
+            let value = format!(
+                "Digest realm=\"camera-realm\", nonce=\"camera-nonce\", algorithm={algorithm}{}",
+                if qop { ", qop=\"auth\"" } else { "" },
+            );
+            let challenge = DigestChallenge::parse(
+                &value,
+                "camera-realm",
+                DigestPolicy { allow_legacy_md5: true, allow_legacy_no_qop: true },
+            )?;
+            let signed = challenge.authorize(
+                "GET_PARAMETER", "rtsp://camera/live/", &credentials, [0x11; 16], 1,
+            )?;
+            assert!(signed.expose().contains(&format!("response=\"{expected}\"")));
+            assert!(signed.expose().contains("uri=\"rtsp://camera/live/\""));
+            let options = challenge.authorize(
+                "OPTIONS", "rtsp://camera/live/", &credentials, [0x11; 16], 1,
+            )?;
+            assert!(!options.expose().contains(expected));
+            assert_eq!(format!("{signed:?}"), "DigestAuthorization([REDACTED])");
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn method_extension_keeps_header_injection_bounds_and_counter_refusal()
+    -> Result<(), AuthenticationError> {
+        let challenge = DigestChallenge::parse(
+            "Digest realm=\"camera-realm\", nonce=\"camera-nonce\", algorithm=SHA-256, qop=\"auth\"",
+            "camera-realm", DigestPolicy::default(),
+        )?;
+        let credentials = DigestCredentials::new("fixture-user", "fixture-password")?;
+        for method in ["", "get_parameter", "GET PARAMETER", "GET_PARAMETER\r\nX: Y",
+            "GET_PARAMETER\0", "GET_PARAMETER\t", "GET/PARAMETER", "GET_PARAMETERé"]
+        {
+            assert!(matches!(challenge.authorize(
+                method, "rtsp://camera/live/", &credentials, [1; 16], 1,
+            ), Err(AuthenticationError::Malformed)));
+        }
+        assert!(matches!(challenge.authorize(
+            &"A".repeat(33), "rtsp://camera/live/", &credentials, [1; 16], 1,
+        ), Err(AuthenticationError::Malformed)));
+        assert!(matches!(challenge.authorize(
+            "GET_PARAMETER", "rtsp://camera/live/", &credentials, [1; 16], 0,
+        ), Err(AuthenticationError::Replay)));
+        Ok(())
+    }
+
+    #[test]
+    fn keepalive_method_does_not_enable_a_digest_downgrade()
+    -> Result<(), AuthenticationError> {
+        for fields in ["algorithm=MD5, qop=\"auth\"", "algorithm=MD5-sess, qop=\"auth\"",
+            "algorithm=SHA-256", "algorithm=SHA-256-sess", "algorithm=MD5"]
+        {
+            assert!(matches!(DigestChallenge::parse(
+                &format!("Digest realm=\"camera-realm\", nonce=\"camera-nonce\", {fields}"),
+                "camera-realm", DigestPolicy::default(),
+            ), Err(AuthenticationError::Unsupported)));
+        }
         Ok(())
     }
 }
