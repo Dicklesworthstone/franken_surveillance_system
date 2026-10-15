@@ -1,0 +1,56 @@
+<!doctype html>
+<html lang="en" data-theme="dark">
+<head>
+  <meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+  <meta name="color-scheme" content="dark light"><meta name="referrer" content="no-referrer">
+  <title>FSS Observatory · Local evidence workspace</title>
+  <link rel="icon" href="/favicon.svg" type="image/svg+xml"><link rel="stylesheet" href="/style.css">
+  <script type="module" src="/app.js"></script>
+</head>
+<body>
+<a class="skip-link" href="#main">Skip to workspace</a>
+<div class="app-shell">
+  <aside class="sidebar" aria-label="Workspace navigation">
+    <a class="brand" href="/" aria-label="FSS Observatory home"><span class="brand-mark">◉</span><span><b>FSS</b><span class="brand-sub">OBSERVATORY</span></span></a>
+    <div class="workspace-label">LOCAL WORKSPACE</div>
+    <div class="site-card"><span class="site-symbol">⌂</span><div><strong id="site-name">Your deployment</strong><small id="site-description">Read-only evidence workspace</small></div></div>
+    <nav class="nav">
+      <button class="nav-link active" data-view="overview" aria-current="page"><span class="nav-symbol">▦</span>Overview<kbd>1</kbd></button>
+      <button class="nav-link" data-view="events"><span class="nav-symbol">≋</span>Event explorer<span id="event-count" class="nav-count">—</span></button>
+      <button class="nav-link" data-view="graph"><span class="nav-symbol">⌘</span>Evidence graph<kbd>3</kbd></button>
+      <button class="nav-link" data-view="operations"><span class="nav-symbol">◫</span>Operations<kbd>4</kbd></button>
+    </nav>
+    <div class="sidebar-note"><span class="tiny-label">THE EVIDENCE STANDARD</span><p>Observation is not certainty.<br>Silence is not absence.</p><span class="note-rule"></span><small>Every conclusion has a source.<br>Every unknown keeps its place.</small></div>
+    <div class="sidebar-bottom"><div class="local-label"><span class="status-dot"></span>Local by design</div><p>No cloud. No write actions.</p><button id="theme-toggle" class="theme-button">◐ <span>Switch to light</span></button></div>
+  </aside>
+  <main id="main" tabindex="-1">
+    <header class="topbar"><div class="breadcrumb"><span>Workspace</span><span class="separator">/</span><b id="current-view">Overview</b></div><div class="top-actions"><button id="command-open" class="search-trigger" aria-label="Open command palette">⌕ <span>Jump to…</span><kbd>⌘ K</kbd></button><span class="read-only">READ ONLY</span></div></header>
+    <div class="content">
+      <div id="demo-banner" class="demo-banner" hidden><b>SYNTHETIC DEMONSTRATION</b><span>Illustrative data only. No cameras or deployment connected.</span></div>
+      <div id="paused-banner" class="notice-banner" hidden>Updates paused. Displayed metadata may no longer reflect current custody or privacy.</div>
+      <section class="page-heading"><div><div class="eyebrow"><span></span> EVIDENCE, IN FOCUS</div><h1 id="page-title">Clarity starts with evidence.</h1><p id="page-subtitle">Your retained world, without the assumptions.</p></div><div class="connection-block"><div id="connection-state" class="connection"><span class="status-dot"></span><span>Connecting</span></div><div class="refresh-actions"><button id="pause-toggle" class="text-button" aria-pressed="false">Pause updates</button><button id="refresh" class="icon-button" aria-label="Refresh snapshot" title="Refresh snapshot">↻</button></div></div></section>
+      <section id="loading" class="loading-state" aria-label="Reading retained deployment"><div class="skeleton"></div><div class="skeleton"></div><div class="skeleton"></div><p>Reading the committed deployment. No source media is being loaded.</p></section>
+      <section id="error-panel" class="error-panel" role="alert" hidden><span class="error-glyph">!</span><h2>We can’t confirm this snapshot.</h2><p id="error-message"></p><p>Previous data has been cleared. No demo or optimistic replacement was substituted.</p><button id="retry" class="primary-button">Try reading again</button></section>
+      <div id="workspace" hidden>
+        <section id="metrics" class="metrics" aria-label="Retained snapshot summary"></section>
+        <div class="workspace-grid">
+          <div class="primary-column">
+            <section id="overview-view" class="view">
+              <article class="panel timeline-panel"><div class="panel-heading"><div><h2>Evidence timeline</h2><p>Event intervals in retained capture coordinates</p></div><span class="quiet-badge">LATEST REVISIONS</span></div><div id="timeline" class="timeline" aria-label="Interactive evidence timeline"></div><div class="timeline-footer"><span><i class="legend-line sage"></i>Retained interval</span><span><i class="legend-line amber"></i>Uncertainty / tamper</span><span class="timeline-disclaimer">Not a coverage map</span></div></article>
+              <article class="panel"><div class="panel-heading"><div><h2>Recent activity</h2><p>Inspect the record behind each event</p></div><button class="text-button accent" data-view="events">View all <span aria-hidden="true">↗</span></button></div><div id="recent-events" class="event-list"></div></article>
+              <div class="coverage-note"><span class="coverage-icon">◌</span><div><strong>Keep the unknowns visible.</strong><p id="coverage-description"></p></div></div>
+            </section>
+            <section id="events-view" class="view" hidden><article class="panel"><div class="panel-heading"><div><h2>Event explorer</h2><p>Search, filter, and inspect every admitted latest revision</p></div></div><div class="filters"><label class="search-field"><span aria-hidden="true">⌕</span><input id="event-search" type="search" placeholder="Search events, zones, or domains…" aria-label="Search events"></label><label class="filter-select"><span class="sr-only">Lifecycle state</span><select id="state-filter"><option value="all">All states</option></select></label><label class="filter-select"><span class="sr-only">Zone</span><select id="zone-filter"><option value="all">All zones</option></select></label><button id="clear-filters" class="text-button">Reset</button></div><div id="all-events" class="event-list"></div><div class="pagination"><span id="event-range"></span><div><button id="events-prev" class="small-button">← Previous</button><button id="events-next" class="small-button">Next →</button></div></div></article></section>
+            <section id="graph-view" class="view" hidden><article class="panel graph-panel"><div class="panel-heading"><div><h2>Declared evidence graph</h2><p>Relationships, not conclusions. Referenced objects are not hydrated.</p></div><div class="graph-controls"><button id="zoom-out" class="icon-button" aria-label="Zoom graph out">−</button><button id="zoom-in" class="icon-button" aria-label="Zoom graph in">+</button><button id="zoom-fit" class="small-button">Fit</button></div></div><div class="graph-filters"><label>Event<select id="graph-event" aria-label="Graph event"></select></label><label>Relationship<select id="relation-filter" aria-label="Graph relationship"><option value="all">All relationships</option></select></label></div><div id="graph" class="graph-canvas"></div><div class="pagination"><span id="graph-range"></span><div><button id="graph-prev" class="small-button">← Previous</button><button id="graph-next" class="small-button">Next →</button></div></div><div class="graph-note">Select a node to inspect its exact reference. Shared digests are shared objects, not independent corroboration. Drag the background to pan.</div></article></section>
+            <section id="operations-view" class="view" hidden><div id="operations"></div></section>
+          </div>
+          <aside id="inspector" class="inspector panel" aria-label="Selected event inspector"><div class="panel-heading"><span class="tiny-label">EVIDENCE INSPECTOR</span><span class="inspector-symbol">↗</span></div><div id="inspector-content"></div></aside>
+        </div>
+        <footer class="workspace-footer"><span><span class="status-dot"></span> FSS Observatory <span class="footer-dot">·</span> Operator-local metadata</span><button id="copy-anchor" class="text-button mono" title="Copy exact ledger root">Anchor <span id="anchor-short">—</span> ↗</button></footer>
+      </div>
+    </div>
+  </main>
+</div>
+<dialog id="command-dialog" aria-labelledby="command-title"><div class="command-heading"><h2 id="command-title">Jump to your next question.</h2><button id="command-close" class="icon-button" aria-label="Close command palette">×</button></div><input id="command-search" type="search" placeholder="Type a view or an event…" aria-label="Search commands and events"><div id="command-results"></div><p class="command-hint">↑ ↓ to choose · Enter to open · Esc to close</p></dialog>
+<div id="toast" class="toast" role="status" aria-live="polite" hidden></div>
+</body></html>
