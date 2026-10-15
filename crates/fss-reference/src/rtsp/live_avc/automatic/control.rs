@@ -6,7 +6,7 @@ use crate::rtsp::avc_client::{AvcClientError, AvcClientPoll};
 use crate::rtsp::avc_client::authenticated::{DigestAvcError, DigestAvcPoll};
 use crate::rtsp::client::{ClientCommand, ClientProgress, ClientState};
 use crate::rtsp::live_avc::{LiveAvcError, LiveAvcStep};
-use crate::rtsp::tcp::TcpError;
+use crate::rtsp::tcp::{TcpError, TcpWriteStep};
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(super) enum Action {
@@ -24,13 +24,15 @@ pub(super) struct ControlDriver {
 }
 impl ControlDriver {
     pub(super) fn new(now: u64) -> Self {
-        Self { next: Some(Action::Request(ClientCommand::Describe)), ready_at_ns: now, draining: false }
+        Self {
+            next: Some(Action::Request(ClientCommand::Describe)),
+            ready_at_ns: now,
+            draining: false,
+        }
     }
-
     pub(super) fn action(&self) -> Option<Action> {
         self.next.filter(|_| !self.draining)
     }
-
     pub(super) fn wake(&self, underlying: Option<u64>) -> Option<u64> {
         match (self.action(), underlying) {
             (Some(_), Some(at)) => Some(at.min(self.ready_at_ns)),
@@ -38,23 +40,19 @@ impl ControlDriver {
             (None, at) => at,
         }
     }
-
     pub(super) fn clear(&mut self) {
         self.next = None;
         self.draining = false;
     }
-
     pub(super) fn refused(&mut self, reason: &LiveAvcError, retired: bool) {
         if retired || matches!(reason, LiveAvcError::Closed) {
             self.clear();
         } else if self.next.is_some() && backpressured(reason) {
             // Repeating request() cannot drain the input which made request() refuse.
-            // The next call must enter the original native poll, not borrow credentials again.
             self.draining = true;
         }
         // Clock and other safe correction refusals change neither intent nor drain state.
     }
-
     pub(super) fn observe(&mut self, step: &LiveAvcStep, now: u64) {
         if terminal(step) {
             self.clear();
@@ -62,10 +60,12 @@ impl ControlDriver {
         }
         let action = match step {
             LiveAvcStep::Protocol {
-                event: DigestAvcPoll::AuthenticationRequired { .. }, transport: None,
+                event: DigestAvcPoll::AuthenticationRequired { .. },
+                transport: None,
             } => Some(Action::Respond),
             LiveAvcStep::Protocol {
-                event: DigestAvcPoll::Client { event, wire_retirement: None }, transport: None,
+                event: DigestAvcPoll::Client { event, wire_retirement: None },
+                transport: None,
             } => match event.as_ref() {
                 AvcClientPoll::Control(ClientProgress::Accepted(ClientState::Described)) =>
                     Some(Action::Request(ClientCommand::Setup)),
@@ -81,14 +81,16 @@ impl ControlDriver {
             self.next = Some(action);
             self.draining = false;
             self.ready_at_ns = now;
-        } else if matches!(step, LiveAvcStep::Pending(_)) && self.draining {
-            // The original native owner reached a wait. A partial frame may still refuse
-            // preparation; another bounded drain turn then resumes its exact suffix.
+        } else if self.draining && advanced(step) {
+            // A source/control event consumed native input, or the exact queued write
+            // completed. Retry the UNSENT intent once, with the same original deadlines.
             self.draining = false;
             self.ready_at_ns = now;
         }
-        // Original wire, RTP/RTCP, interim replies and parser/media work never erase an
-        // outstanding unsent intent. No source output is swallowed to advance control.
+        // Pending is not quiescence: an incomplete frame also returns Pending. Re-arming
+        // on that wait would alternate request/backpressure forever on a silent socket.
+        // Wire alone is likewise insufficient: the newly admitted chunk must be parsed first.
+        // All original source and refusal events still transfer to the caller unchanged.
     }
 }
 
@@ -98,6 +100,18 @@ fn backpressured(reason: &LiveAvcError) -> bool {
         | LiveAvcError::Transport(TcpError::Backpressure)
         | LiveAvcError::Protocol(DigestAvcError::Backpressure)
         | LiveAvcError::Protocol(DigestAvcError::Client(AvcClientError::Backpressure)))
+}
+fn advanced(step: &LiveAvcStep) -> bool {
+    match step {
+        LiveAvcStep::Write(TcpWriteStep::Sent { .. }) => true,
+        LiveAvcStep::Protocol {
+            event: DigestAvcPoll::Client { event, wire_retirement: None },
+            transport: None,
+        } => matches!(event.as_ref(),
+            AvcClientPoll::Control(ClientProgress::Interim | ClientProgress::Accepted(_))
+            | AvcClientPoll::Rtp { .. } | AvcClientPoll::Rtcp { .. } | AvcClientPoll::Media(_)),
+        _ => false,
+    }
 }
 fn terminal(step: &LiveAvcStep) -> bool {
     match step {
@@ -122,15 +136,17 @@ mod tests {
     fn progress(progress: ClientProgress) -> LiveAvcStep {
         LiveAvcStep::Protocol {
             event: DigestAvcPoll::Client {
-                event: Box::new(AvcClientPoll::Control(progress)), wire_retirement: None,
+                event: Box::new(AvcClientPoll::Control(progress)),
+                wire_retirement: None,
             },
             transport: None,
         }
     }
     fn pending(at: u64) -> LiveAvcStep {
-        LiveAvcStep::Pending(LiveAvcWait { readable: true, writable: false, wake_at_ns: Some(at) })
+        LiveAvcStep::Pending(LiveAvcWait {
+            readable: true, writable: false, wake_at_ns: Some(at),
+        })
     }
-
     #[test]
     fn safe_backpressure_drains_instead_of_repeating_preparation() {
         let mut c = ControlDriver::new(0);
@@ -140,14 +156,12 @@ mod tests {
         assert_eq!(c.next, Some(Action::Request(ClientCommand::Setup)));
         assert_eq!(c.action(), None);
         assert_eq!(c.wake(Some(50)), Some(50));
-        c.observe(&progress(ClientProgress::Interim), 2);
-        assert_eq!(c.next, Some(Action::Request(ClientCommand::Setup)));
+        c.observe(&pending(50), 2);
         assert_eq!(c.action(), None);
-        c.observe(&pending(50), 3);
+        c.observe(&progress(ClientProgress::Interim), 3);
         assert_eq!(c.action(), Some(Action::Request(ClientCommand::Setup)));
         assert_eq!(c.wake(Some(50)), Some(3));
     }
-
     #[test]
     fn clock_refusal_does_not_rearm_a_blocked_preparation() {
         let mut c = ControlDriver::new(10);
@@ -156,9 +170,9 @@ mod tests {
         assert_eq!(c.action(), None);
         assert_eq!(c.wake(Some(90)), Some(90));
         c.observe(&pending(90), 11);
-        assert_eq!(c.wake(Some(90)), Some(11));
+        assert_eq!(c.action(), None);
+        assert_eq!(c.wake(Some(90)), Some(90));
     }
-
     #[test]
     fn held_challenge_is_answerable_without_another_drain_loop() {
         let mut c = ControlDriver::new(0);
@@ -170,7 +184,6 @@ mod tests {
         assert_eq!(c.action(), Some(Action::Respond));
         assert_eq!(c.wake(Some(40)), Some(2));
     }
-
     #[test]
     fn terminal_or_fatal_progress_never_rearms_a_deferred_command() {
         for terminal in [LiveAvcStep::InputEnded, LiveAvcStep::Ended,
@@ -185,22 +198,32 @@ mod tests {
         }
         let mut c = ControlDriver::new(0);
         c.refused(&LiveAvcError::Backpressure, true);
-        assert_eq!(c.next, None);
         c.observe(&pending(20), 1);
+        assert_eq!(c.next, None);
+    }
+    #[test]
+    fn repeated_partial_waits_never_borrow_credentials_or_erase_unsent_intent() {
+        let mut c = ControlDriver::new(0);
+        c.refused(&LiveAvcError::Protocol(DigestAvcError::Backpressure), false);
+        for now in 1..32 {
+            c.observe(&pending(100), now);
+            assert_eq!(c.action(), None);
+            assert_eq!(c.wake(Some(100)), Some(100));
+            assert_eq!(c.next, Some(Action::Request(ClientCommand::Describe)));
+        }
+        c.observe(&progress(ClientProgress::Interim), 32);
+        assert_eq!(c.action(), Some(Action::Request(ClientCommand::Describe)));
+        c.clear();
+        c.observe(&pending(100), 33);
         assert_eq!(c.action(), None);
     }
-
     #[test]
-    fn repeated_partial_input_refusals_preserve_the_same_unsent_command() {
+    fn completed_write_rearms_but_a_short_write_does_not() {
         let mut c = ControlDriver::new(0);
-        for now in 1..32 {
-            c.refused(&LiveAvcError::Protocol(DigestAvcError::Backpressure), false);
-            assert_eq!(c.action(), None);
-            c.observe(&pending(100), now);
-            assert_eq!(c.action(), Some(Action::Request(ClientCommand::Describe)));
-        }
-        c.clear(); // exact successful queue admission, not remote acknowledgement
-        c.observe(&pending(100), 32);
+        c.refused(&LiveAvcError::Backpressure, false);
+        c.observe(&LiveAvcStep::Write(TcpWriteStep::Sent { cseq: 7, bytes: 100 }), 1);
+        assert_eq!(c.action(), Some(Action::Request(ClientCommand::Describe)));
+        c.clear();
         assert_eq!(c.action(), None);
     }
 }
