@@ -1,5 +1,5 @@
 import {normalizeSnapshot,human,shortDigest,timeBounds,position,relativeTime} from './model.js';
-import {validateScene,bindThreats,center,freshness,MAX_SCENE_BYTES,evidenceSummary,frontierItems,sensorPage} from './spatial-model.js';
+import {validateScene,bindThreats,center,freshness,MAX_SCENE_BYTES,evidenceSummary,evidenceConstellation,frontierItems,sensorPage} from './spatial-model.js';
 import {PropertyView} from './view3d.js';
 import {makeDemoScene} from './demo-scene.js';
 
@@ -129,10 +129,27 @@ function renderSelection(){
  if(summary.namedDomains===1&&summary.references>1){const note=el('div','selection-warning');note.append(el('strong','','Shared failure domain'),el('span', '',`${summary.references} references name one domain. They must not be counted as independent corroboration.`));host.append(note);}
  const actions=el('div','selection-actions');actions.append(button('Trace the evidence',()=>{selectionTab='evidence';renderSelection();},'primary-button','branch'),button('',()=>showRecord(t),'','external'));host.append(actions);
 }
+function renderConstellation(t,host){
+ const c=evidenceConstellation(t),height=Math.max(184,126+c.domains.length*10),chart=svg('svg',{viewBox:`0 0 296 ${height}`,class:'evidence-constellation',role:'img','aria-label':`Failure-domain constellation for ${t.id}. ${c.domains.length} declared domains and ${c.references} references. Domain separation is not an independence certificate.`});
+ const cx=148,cy=58,count=Math.max(1,c.domains.length),radius=Math.min(92,58+count*5);
+ chart.append(svg('circle',{cx,cy,r:29,class:'constellation-core'}),svg('text',{x:cx,y:cy-3,'text-anchor':'middle',class:'constellation-core-title'},'EVENT'),svg('text',{x:cx,y:cy+11,'text-anchor':'middle',class:'constellation-core-sub'},`${c.references} refs`));
+ c.domains.forEach((domain,i)=>{
+  const angle=-Math.PI/2+i*Math.PI*2/count,x=cx+Math.cos(angle)*radius,y=cy+72+Math.sin(angle)*Math.min(radius*.7,62);
+  const cls=domain.contradictions&&domain.supports?'mixed':domain.contradictions?'counter':domain.supports?'support':'neutral';
+  chart.append(svg('path',{d:`M ${cx} ${cy+27} Q ${cx+(x-cx)*.42} ${cy+48} ${x} ${y-18}`,class:`constellation-link ${cls}`}));
+  const g=svg('g',{class:'constellation-domain'}),label=domain.name.length>24?domain.name.slice(0,22)+'…':domain.name;
+  g.append(svg('rect',{x:x-54,y:y-17,width:108,height:34,rx:7,class:`constellation-domain-box ${cls}`}),svg('text',{x,y:y-3,'text-anchor':'middle',class:'constellation-domain-title'},label),svg('text',{x,y:y+10,'text-anchor':'middle',class:'constellation-domain-sub'},`+${domain.supports}  −${domain.contradictions}  ·${domain.neutral}`));
+  g.append(svg('title',{},`${domain.name}\n${domain.references} declared references · ${domain.uniqueObjects} unique objects · ${domain.repeatedReferences} repeated references\n+${domain.supports} supporting · −${domain.contradictions} contradicting · ${domain.neutral} neutral\nFailure-domain grouping is correlation structure, not proof of independence.`));
+  chart.append(g);
+ });
+ host.append(el('div','constellation-heading','Failure-domain constellation'),chart);
+ const note=el('p','constellation-note');note.textContent=c.domains.length?`${c.domains.length} declared failure-domain group${c.domains.length===1?'':'s'}. Separate groups remain correlation structure; this view does not certify independent witnesses.`:'No named failure-domain structure is available.';host.append(note);
+}
 function renderEvidence(t,host){
  const summary=evidenceSummary(t),totals=el('div','evidence-totals');
  for(const[value,label,cls]of[[summary.supports,'supporting',''],[summary.contradictions,'contradicting','counter'],[summary.namedDomains,'named domains','']]){const row=el('div',cls);row.append(el('strong','',String(value)),el('span','',label));totals.append(row);}host.append(totals);
  host.append(el('p','basis','Declared relationships only. Objects have not been hydrated. Counts are not independent observations.'));
+ renderConstellation(t,host);
  const size=4,edges=t.edges??[],pages=Math.max(1,Math.ceil(edges.length/size));referencePage=Math.max(0,Math.min(referencePage,pages-1));const visible=edges.slice(referencePage*size,(referencePage+1)*size);
  const height=70+visible.length*56,s=svg('svg',{viewBox:`0 0 296 ${height}`,class:'evidence-network',role:'group','aria-label':'Exact declared event evidence references'});
  s.append(svg('rect',{x:55,y:8,width:186,height:39,rx:7,fill:'#2a4039',stroke:'#507365'}),svg('text',{x:148,y:24,'text-anchor':'middle',fill:'#d6e9e2','font-size':10},human(t.kind)),svg('text',{x:148,y:37,'text-anchor':'middle',fill:'#a7bfbd','font-size':8},`revision ${t.record.revision} · ${shortDigest(t.revisionDigest)}`));
