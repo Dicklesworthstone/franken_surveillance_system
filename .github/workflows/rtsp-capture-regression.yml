@@ -1,0 +1,54 @@
+# Supplementary regression feedback; repository-owned qualification remains authoritative.
+name: native RTSP capture regression checks
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'crates/**'
+      - 'Cargo.toml'
+      - 'Cargo.lock'
+      - 'rust-toolchain.toml'
+      - 'scripts/bootstrap_toolchain.sh'
+      - '.github/workflows/rtsp-capture-regression.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: fss-rtsp-capture-regressions-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  capture:
+    name: pinned native capture and RTSP tests
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    env:
+      CARGO_PROFILE_DEV_DEBUG: '0'
+      CARGO_PROFILE_TEST_DEBUG: '0'
+      CARGO_INCREMENTAL: '0'
+      CARGO_BUILD_JOBS: '2'
+      CARGO_NET_OFFLINE: 'true'
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+      - name: Provision existing pinned toolchain
+        run: bash scripts/bootstrap_toolchain.sh
+      - name: Run native capture, timers, custody, approval and campaign unit tests
+        run: cargo +nightly-2026-08-31 test --locked --offline -p fss-cli --bin fss-capture-rtsp
+      - name: Run RTSP operator integration regressions
+        if: success() || failure()
+        shell: bash
+        run: |
+          set -euo pipefail
+          shopt -s nullglob
+          targets=()
+          for source in crates/fss-cli/tests/*rtsp*.rs; do
+            targets+=(--test "$(basename "$source" .rs)")
+          done
+          if (( ${#targets[@]} == 0 )); then
+            echo 'No RTSP integration targets found' >&2
+            exit 1
+          fi
+          cargo +nightly-2026-08-31 test --locked --offline --no-fail-fast -p fss-cli "${targets[@]}"
