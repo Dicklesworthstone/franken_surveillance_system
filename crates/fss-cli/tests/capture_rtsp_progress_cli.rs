@@ -310,7 +310,7 @@ fn response(peer: &mut TcpStream, cseq: u32, headers: &str, body: &str) -> Test 
     Ok(())
 }
 #[derive(Clone, Copy)]
-enum Camera { Silent, Prefix, Duplicate, Target, EofPrefix, Unclosed, Authentication, HeldControl }
+enum Camera { Silent, Prefix, Duplicate, Target, EofPrefix, Unclosed, Authentication, HeldControl, ExpiredControl }
 fn serve(listener: &TcpListener, codec: Codec, camera: Camera) -> Test {
     let deadline = Instant::now() + Duration::from_secs(30);
     let mut peer = loop {
@@ -335,13 +335,20 @@ fn serve(listener: &TcpListener, codec: Codec, camera: Camera) -> Test {
     response(&mut peer, cseq, "Content-Type: application/sdp\r\n", &codec.description())?;
     let (method, cseq) = request(&mut peer)?.ok_or("missing SETUP")?;
     assert_eq!(method, "SETUP");
-    let timeout = if matches!(camera, Camera::HeldControl) { 2 } else { 60 };
+    // The held-control case must reach the progress boundary BEFORE lease expiry:
+    // keepalive at two seconds < stall at three seconds < session expiry at four.
+    // ExpiredControl deliberately reverses that ordering to exercise native refusal.
+    let timeout = match camera {
+        Camera::HeldControl => 4,
+        Camera::ExpiredControl => 2,
+        _ => 60,
+    };
     response(&mut peer, cseq, &format!("Session: fixture;timeout={timeout}\r\nTransport: RTP/AVP/TCP;unicast;interleaved=0-1;ssrc=7\r\n"), "")?;
     let (method, cseq) = request(&mut peer)?.ok_or("missing PLAY")?;
     assert_eq!(method, "PLAY");
     response(&mut peer, cseq, "Session: fixture\r\n", "")?;
-    if matches!(camera, Camera::HeldControl) {
-        let (method, _) = request(&mut peer)?.ok_or("expected a keepalive before the stall")?;
+    if matches!(camera, Camera::HeldControl | Camera::ExpiredControl) {
+        let (method, _) = request(&mut peer)?.ok_or("expected a keepalive before retirement")?;
         assert!(matches!(method.as_str(), "GET_PARAMETER" | "OPTIONS"));
         // Deliberately withhold its acknowledgement. Only socket retirement can report it.
         assert!(request(&mut peer)?.is_none());
@@ -421,7 +428,8 @@ fn details<'a>(rows: &'a [Value], kind: &str) -> Test<Vec<&'a Value>> {
 }
 fn unique<'a>(rows: &'a [Value], kind: &str) -> Test<&'a Value> {
     let matches = details(rows, kind)?;
-    assert_eq!(matches.len(), 1, "expected one {kind}");
+    assert_eq!(matches.len(), 1, "expected one {kind}; observed events: {:?}",
+        rows.iter().filter_map(|row| text(row, "kind").ok()).collect::<Vec<_>>());
     Ok(matches[0])
 }
 fn assert_stall(rows: &[Value], pictures: i128) -> Test {
@@ -501,151 +509,213 @@ fn a_silent_avc_or_hevc_socket_cannot_stand_in_for_collected_pictures() -> Test 
 }
 
 #[test]
-fn duplicate_rtp_cannot_renew_progress_and_the_stalled_prefix_cold_decodes() -> Test {
-    let directory = Directory::new("duplicates")?;
+fn a_stalled_avc_prefix_is_published_and_decodes_after_the_camera_and_archive_are_gone() -> Test {
+    let directory = Directory::new("avc-prefix")?;
     let listener = listener()?;
-    let input = approve(&directory, &args(&directory, listener.local_addr()?, Codec::Avc))?;
-    let output = capture(&directory, &input, &listener, Codec::Avc, &[Camera::Duplicate])?;
-    let report = rows(&output)?;
-    assert_stall(&report, 1)?;
-    cold_decode_avc(&directory, &report)
+    let mut input = args(&directory, listener.local_addr()?, Codec::Avc);
+    set(&mut input, "--progress-timeout-ms", "700");
+    let input = approve(&directory, &input)?;
+    let output = capture(&directory, &input, &listener, Codec::Avc, &[Camera::Prefix])?;
+    assert!(!output.status.success());
+    let rows = rows(&output)?;
+    assert_stall(&rows, 1)?;
+    assert_eq!(details(&rows, "catalog_published")?.len(), 1);
+    let window = unique(&rows, "window_durable")?;
+    assert_eq!(text(window, "codec")?, "avc");
+    cold_decode_avc(&directory, &rows)?;
+    no_connection(&listener)?;
+    Ok(())
 }
 
 #[test]
-fn hevc_stall_retains_only_source_closed_pictures_not_marker_claims() -> Test {
-    for (camera, pictures) in [(Camera::Prefix, 1), (Camera::Unclosed, 0)] {
-        let directory = Directory::new("hevc-boundary")?;
+fn hevc_preserves_its_unclosed_final_picture_and_publishes_only_a_proven_prefix() -> Test {
+    for camera in [Camera::Prefix, Camera::Unclosed] {
+        let directory = Directory::new("hevc-prefix")?;
         let listener = listener()?;
         let input = approve(&directory, &args(&directory, listener.local_addr()?, Codec::Hevc))?;
         let output = capture(&directory, &input, &listener, Codec::Hevc, &[camera])?;
-        let report = rows(&output)?;
-        assert_stall(&report, pictures)?;
-        if pictures == 1 {
-            assert!(number(unique(&report, "window_durable")?, "source_only_nals")? > 0);
-        } else {
-            assert!(details(&report, "window_durable")?.is_empty());
-        }
+        assert!(!output.status.success());
+        let rows = rows(&output)?;
+        let expected = if matches!(camera, Camera::Prefix) { 1 } else { 0 };
+        assert_stall(&rows, expected)?;
+        let terminal = unique(&rows, "terminal")?;
+        let omissions = field(terminal, "omissions")?;
+        assert!(flag(omissions, "unpublished_receiver_state")?);
+        assert_eq!(details(&rows, "window_durable")?.len(), usize::try_from(expected)?);
+        no_connection(&listener)?;
     }
     Ok(())
 }
 
 #[test]
-fn timely_targets_and_real_eof_keep_their_original_native_completion() -> Test {
+fn duplicate_rtp_does_not_renew_collected_picture_progress() -> Test {
     for codec in [Codec::Avc, Codec::Hevc] {
-        for camera in [Camera::Target, Camera::EofPrefix] {
-            let directory = Directory::new("completion")?;
-            let listener = listener()?;
-            let mut input = args(&directory, listener.local_addr()?, codec);
-            set(&mut input, "--progress-timeout-ms", "5000");
-            let input = approve(&directory, &input)?;
-            let output = capture(&directory, &input, &listener, codec, &[camera])?;
-            let report = rows(&output)?;
-            assert!(details(&report, "recording_stalled")?.is_empty());
-            let terminal = unique(&report, "terminal")?;
-            if matches!(camera, Camera::Target) {
-                assert!(output.status.success());
-                assert!(flag(terminal, "complete")?);
-                assert_eq!(number(terminal, "durable_pictures")?, 2);
-                assert!(!flag(terminal, "peer_eof")?);
-            } else {
-                assert!(!output.status.success());
-                assert_eq!(text(terminal, "error_id")?, "ERR-CAPTURE-RTSP-SHORTFALL-001");
-                assert_eq!(number(terminal, "durable_pictures")?, 1);
-                assert!(flag(terminal, "peer_eof")?);
-            }
-        }
+        let directory = Directory::new("duplicates")?;
+        let listener = listener()?;
+        let mut input = args(&directory, listener.local_addr()?, codec);
+        set(&mut input, "--progress-timeout-ms", "700");
+        let input = approve(&directory, &input)?;
+        let output = capture(&directory, &input, &listener, codec, &[Camera::Duplicate])?;
+        assert!(!output.status.success());
+        assert_stall(&rows(&output)?, 1)?;
+        no_connection(&listener)?;
     }
     Ok(())
 }
 
-fn reconnect(mut input: Vec<OsString>) -> Vec<OsString> {
-    input.insert(0, "reconnect".into());
-    set(&mut input, "--max-attempts", "2");
-    set(&mut input, "--retry-delay-ms", "1");
-    input
-}
-
 #[test]
-fn a_drained_stall_reconnects_with_separate_epochs_and_both_archives_retained() -> Test {
-    let directory = Directory::new("reconnect")?;
-    let listener = listener()?;
-    let input = approve(&directory, &reconnect(args(&directory, listener.local_addr()?, Codec::Avc)))?;
-    let output = capture(&directory, &input, &listener, Codec::Avc, &[Camera::Prefix, Camera::Target])?;
-    assert!(output.status.success(), "{}", String::from_utf8_lossy(&output.stderr));
-    let report = rows(&output)?;
-    let terminals = details(&report, "terminal")?;
-    assert_eq!(terminals.len(), 2);
-    assert_eq!(text(terminals[0], "error_id")?, "ERR-CAPTURE-RTSP-PROGRESS-001");
-    assert_eq!(number(terminals[0], "durable_pictures")?, 1);
-    assert!(flag(terminals[1], "complete")?);
-    assert_eq!(number(field(terminals[0], "source")?, "generation")?, 1);
-    assert_eq!(number(field(terminals[1], "source")?, "generation")?, 2);
-    assert_ne!(text(field(terminals[0], "source")?, "receive_clock")?, text(field(terminals[1], "source")?, "receive_clock")?);
-    let attempts = details(&report, "attempt_finished")?;
-    assert_eq!(attempts.len(), 2);
-    assert_eq!(text(attempts[0], "retry_reason")?, "recording_progress_stalled");
-    assert!(flag(attempts[0], "retrying")?);
-    assert!(!flag(attempts[0], "recovery_required")?);
-    assert_eq!(number(attempts[1], "durable_pictures_all_attempts")?, 3);
-    assert!(!flag(attempts[1], "continuity_across_attempts")?);
-    for path in ["capture.attempt-0001", "capture.attempt-0002", "pins.attempt-0001", "pins.attempt-0002"] {
-        assert!(directory.0.join(path).is_dir());
+fn bounded_reconnect_and_campaigns_preserve_each_stalled_attempt() -> Test {
+    for (codec, campaign, attempts) in [(Codec::Avc, false, 2), (Codec::Hevc, false, 2), (Codec::Avc, true, 3)] {
+        let directory = Directory::new("epochs")?;
+        let listener = listener()?;
+        let mut input = args(&directory, listener.local_addr()?, codec);
+        input.insert(0, "reconnect".into());
+        set(&mut input, "--max-attempts", &attempts.to_string());
+        set(&mut input, "--retry-delay-ms", "1");
+        set(&mut input, "--retry-max-delay-ms", "1");
+        if campaign { set(&mut input, "--continue-after-success", "yes"); }
+        let input = approve(&directory, &input)?;
+        let cameras = if campaign { vec![Camera::Silent, Camera::Target, Camera::Target] }
+            else { vec![Camera::Prefix, Camera::Target] };
+        let output = capture(&directory, &input, &listener, codec, &cameras)?;
+        assert_eq!(output.status.success(), !campaign, "{}", String::from_utf8_lossy(&output.stderr));
+        let rows = rows(&output)?;
+        let attempts_started = details(&rows, "attempt_started")?;
+        assert_eq!(attempts_started.len(), attempts);
+        for (index, row) in attempts_started.iter().enumerate() {
+            assert_eq!(number(row, "generation")?, i128::try_from(index + 1)?);
+            assert!(!flag(row, "continuity_from_previous_attempt")?);
+        }
+        let finished = details(&rows, "attempt_finished")?;
+        assert_eq!(text(finished[0], "retry_reason")?, "recording_progress_stalled");
+        assert!(flag(finished[0], "retrying")?);
+        assert!(!flag(finished[0], "recovery_required")?);
+        let terminal = unique(&rows, "reconnect_terminal")?;
+        assert_eq!(flag(terminal, "complete")?, !campaign);
+        assert!(!flag(terminal, "continuity_across_attempts")?);
+        if campaign {
+            assert_eq!(number(terminal, "successful_attempts")?, 2);
+            assert_eq!(text(terminal, "first_error_id")?, "ERR-CAPTURE-RTSP-PROGRESS-001");
+        }
+        for index in 1..=attempts {
+            assert!(directory.0.join(format!("capture.attempt-{index:04}")).is_dir());
+            assert!(directory.0.join(format!("pins.attempt-{index:04}")).is_dir());
+        }
+        no_connection(&listener)?;
     }
     Ok(())
 }
 
 #[test]
 fn an_unacknowledged_keepalive_vetoes_reconnect_after_a_clean_empty_drain() -> Test {
-    let directory = Directory::new("control")?;
-    let listener = listener()?;
-    let mut input = reconnect(args(&directory, listener.local_addr()?, Codec::Avc));
-    set(&mut input, "--progress-timeout-ms", "5000");
-    let input = approve(&directory, &input)?;
-    let output = capture(&directory, &input, &listener, Codec::Avc, &[Camera::HeldControl])?;
-    assert!(!output.status.success());
-    let report = rows(&output)?;
-    assert_stall(&report, 0)?;
-    let attempt = unique(&report, "attempt_finished")?;
-    assert!(!flag(attempt, "retrying")?);
-    assert!(!flag(attempt, "recovery_required")?);
-    assert!(!directory.0.join("capture.attempt-0002").exists());
-    no_connection(&listener)
+    for codec in [Codec::Avc, Codec::Hevc] {
+        let directory = Directory::new("held-control")?;
+        let listener = listener()?;
+        let mut input = args(&directory, listener.local_addr()?, codec);
+        input.insert(0, "reconnect".into());
+        set(&mut input, "--progress-timeout-ms", "3000");
+        set(&mut input, "--max-attempts", "3");
+        let input = approve(&directory, &input)?;
+        let output = capture(&directory, &input, &listener, codec, &[Camera::HeldControl])?;
+        assert!(!output.status.success());
+        let rows = rows(&output)?;
+        assert_stall(&rows, 0)?;
+        let terminal = unique(&rows, "terminal")?;
+        assert!(flag(terminal, "pending_request")?);
+        let finished = unique(&rows, "attempt_finished")?;
+        assert_eq!(field(finished, "retry_reason")?, &Value::Null);
+        assert!(!flag(finished, "retrying")?);
+        assert!(!flag(finished, "recovery_required")?);
+        assert!(!directory.0.join("capture.attempt-0002").exists());
+        no_connection(&listener)?;
+    }
+    Ok(())
 }
 
 #[test]
-fn authentication_refusal_never_becomes_a_retryable_recording_stall() -> Test {
-    let directory = Directory::new("auth")?;
-    let listener = listener()?;
-    let input = approve(&directory, &reconnect(args(&directory, listener.local_addr()?, Codec::Avc)))?;
-    let output = capture(&directory, &input, &listener, Codec::Avc, &[Camera::Authentication])?;
-    assert!(!output.status.success());
-    let report = rows(&output)?;
-    assert!(details(&report, "recording_stalled")?.is_empty());
-    assert!(!flag(unique(&report, "attempt_finished")?, "retrying")?);
-    assert!(!String::from_utf8_lossy(&output.stdout).contains("PROGRESS_SECRET"));
-    assert!(!String::from_utf8_lossy(&output.stderr).contains("PROGRESS_SECRET"));
-    assert!(!directory.0.join("capture.attempt-0002").exists());
-    no_connection(&listener)
+fn authentication_and_source_eof_are_not_reclassified_as_progress_stalls() -> Test {
+    for codec in [Codec::Avc, Codec::Hevc] {
+        for camera in [Camera::Authentication, Camera::EofPrefix] {
+            let directory = Directory::new("native-precedence")?;
+            let listener = listener()?;
+            let input = approve(&directory, &args(&directory, listener.local_addr()?, codec))?;
+            let output = capture(&directory, &input, &listener, codec, &[camera])?;
+            assert!(!output.status.success());
+            let rows = rows(&output)?;
+            assert!(details(&rows, "recording_stalled")?.is_empty());
+            let terminal = unique(&rows, "terminal")?;
+            if matches!(camera, Camera::Authentication) {
+                assert_eq!(text(terminal, "error_id")?, "ERR-CAPTURE-RTSP-AUTH-UNSUPPORTED-001");
+                let combined = format!("{}{}", String::from_utf8_lossy(&output.stdout), String::from_utf8_lossy(&output.stderr));
+                assert!(!combined.contains("PROGRESS_SECRET_REALM"));
+                assert!(!combined.contains("PROGRESS_SECRET_NONCE"));
+            } else {
+                assert!(flag(terminal, "peer_eof")?);
+                assert!(flag(terminal, "input_end_observed")?);
+            }
+            no_connection(&listener)?;
+        }
+    }
+    Ok(())
 }
 
 #[test]
-fn nested_approval_is_not_authority_and_preview_has_no_effects() -> Test {
+fn malformed_or_stale_single_supervision_approval_has_no_capture_effects() -> Test {
     let directory = Directory::new("approval")?;
     let listener = listener()?;
-    let mut input = args(&directory, listener.local_addr()?, Codec::Avc);
-    let preview = parse(&good(run(&directory, "capture", &input)?)?)?;
-    assert_eq!(text(&preview, "schema")?, "fss.rtsp_supervised_capture_cli.v1");
-    let child = field(&preview, "capture")?;
-    assert_eq!(Path::new(text(child, "root")?), directory.0.join("capture"));
+    let input = args(&directory, listener.local_addr()?, Codec::Avc);
+    for value in ["0", "-1", "500.0", "600001", "18446744073709551615"] {
+        let mut bad = input.clone();
+        set(&mut bad, "--progress-timeout-ms", value);
+        let output = run(&directory, "capture", &bad)?;
+        assert!(!output.status.success());
+        assert!(output.stdout.is_empty());
+    }
+    let mut approved = approve(&directory, &input)?;
+    set(&mut approved, "--progress-timeout-ms", "501");
+    let output = run(&directory, "capture", &approved)?;
+    assert!(!output.status.success());
+    assert!(output.stdout.is_empty());
+    assert!(String::from_utf8_lossy(&output.stderr).contains("ERR-CAPTURE-RTSP-APPROVAL-001"));
     assert!(!directory.0.join("capture").exists());
     assert!(!directory.0.join("pins").exists());
     no_connection(&listener)?;
-    set(&mut input, "--approve", text(child, "approval")?);
-    assert!(!run(&directory, "capture", &input)?.status.success());
-    assert!(!directory.0.join("capture").exists());
-    set(&mut input, "--approve", text(&preview, "approval")?);
-    set(&mut input, "--progress-timeout-ms", "501");
-    assert!(!run(&directory, "capture", &input)?.status.success());
-    assert!(!directory.0.join("pins").exists());
-    no_connection(&listener)
+    Ok(())
+}
+
+#[test]
+fn expired_remote_session_cannot_become_a_later_stall_or_timed_success() -> Test {
+    for codec in [Codec::Avc, Codec::Hevc] {
+        let directory = Directory::new("expired-control")?;
+        let listener = listener()?;
+        let mut input = args(&directory, listener.local_addr()?, codec);
+        input.insert(0, "reconnect".into());
+        // Keepalive becomes pending at one second; the unrenewed lease expires at two.
+        // Neither the later four-second duration nor the five-second progress timeout
+        // may erase that native protocol refusal or authorize another connection.
+        set(&mut input, "--capture-duration-ms", "4000");
+        set(&mut input, "--progress-timeout-ms", "5000");
+        set(&mut input, "--max-attempts", "3");
+        let input = approve(&directory, &input)?;
+        let output = capture(&directory, &input, &listener, codec, &[Camera::ExpiredControl])?;
+        assert!(!output.status.success());
+        let rows = rows(&output)?;
+        assert!(details(&rows, "recording_stalled")?.is_empty());
+        assert!(details(&rows, "capture_duration_elapsed")?.is_empty());
+        assert!(details(&rows, "capture_duration_complete")?.is_empty());
+        let terminal = unique(&rows, "terminal")?;
+        assert_eq!(text(terminal, "error_id")?, "ERR-CAPTURE-RTSP-SOURCE-001");
+        assert!(!flag(terminal, "complete")?);
+        assert!(!flag(terminal, "peer_eof")?);
+        assert!(!flag(terminal, "input_end_observed")?);
+        assert!(flag(terminal, "pending_request")?);
+        let finished = unique(&rows, "attempt_finished")?;
+        assert_eq!(field(finished, "retry_reason")?, &Value::Null);
+        assert!(!flag(finished, "retrying")?);
+        assert_eq!(number(unique(&rows, "reconnect_terminal")?, "attempts_used")?, 1);
+        assert!(!directory.0.join("capture.attempt-0002").exists());
+        assert!(!directory.0.join("pins.attempt-0002").exists());
+        no_connection(&listener)?;
+    }
+    Ok(())
 }
