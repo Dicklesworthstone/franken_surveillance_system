@@ -10,6 +10,7 @@ mod authoring;
 /// Maximum complete profile bytes, including all sensor calibration tables.
 pub const MAX_PROFILE_BYTES: usize = 256 * 1024;
 const SCHEMA: &str = "fss.event_class_fusion_profile.v1";
+const LONG_WATCH_SCHEMA: &str = "fss.event_class_fusion_profile.v2";
 type Object = BTreeMap<String, Value>;
 
 impl EventFusionProfile {
@@ -40,11 +41,14 @@ impl EventFusionProfile {
                 "looks",
                 "now_ns",
                 "calibrations",
+                "long_watch_analysis_root",
             ],
         )?;
-        if text_field(root, "schema")? != SCHEMA {
-            return Err(EventFusionError::Profile);
-        }
+        let long_watch_root = match text_field(root, "schema")? {
+            SCHEMA if !root.contains_key("long_watch_analysis_root") => None,
+            LONG_WATCH_SCHEMA => Some(sha(field(root, "long_watch_analysis_root")?)?),
+            _ => return Err(EventFusionError::Profile),
+        };
         let p = object(
             field(root, "policy")?,
             &[
@@ -91,7 +95,7 @@ impl EventFusionProfile {
                 return Err(EventFusionError::Profile);
             }
         }
-        Self::new(ClassFusionSpec {
+        let spec = ClassFusionSpec {
             plan_digest: sha(field(root, "plan_digest")?)?,
             cascade_digest: sha(field(root, "cascade_digest")?)?,
             coverage_digests,
@@ -123,7 +127,11 @@ impl EventFusionProfile {
             looks: number(field(root, "looks")?)?,
             now_ns: number(field(root, "now_ns")?)?,
             calibrations,
-        })
+        };
+        match long_watch_root {
+            Some(root) => Self::for_long_watch(spec, root),
+            None => Self::new(spec),
+        }
     }
 }
 fn object<'a>(value: &'a Value, keys: &[&str]) -> Result<&'a Object> {
