@@ -7,3 +7,17 @@
 @media(prefers-reduced-motion:reduce){*,*::before,*::after{animation:none!important;transition:none!important;scroll-behavior:auto!important}}
 
 @media(min-width:981px){.spatial-grid{align-items:stretch}.world-panel{display:flex;flex-direction:column}.scene-stage{flex:1;min-height:590px}.world-panel .scene-topline,.world-panel .scene-tools,.world-panel .scene-legend{flex-shrink:0}}
+
+.evidence-constellation{display:block;width:100%;height:auto;margin:11px 0 4px;border:1px solid var(--line);border-radius:10px;background:radial-gradient(circle at 50% 30%,rgba(78,121,108,.18),transparent 46%),linear-gradient(180deg,rgba(12,25,31,.62),rgba(13,23,29,.26));box-shadow:inset 0 1px rgba(255,255,255,.025)}
+.constellation-heading{margin-top:15px;font-size:9px;font-weight:700;letter-spacing:.14em;text-transform:uppercase;color:var(--muted)}
+.constellation-note{font-size:9px;line-height:1.65;color:var(--muted);margin:5px 0 12px}
+.constellation-core{fill:#263e38;stroke:#78a18f;stroke-width:1.15}
+.constellation-core-title{fill:#d8ebe4;font-size:9px;font-weight:700;letter-spacing:.12em}
+.constellation-core-sub{fill:#9fb9b1;font-size:8px}
+.constellation-link{fill:none;stroke-width:1.15;stroke-opacity:.56}
+.constellation-link.support{stroke:#7db6a2}.constellation-link.counter{stroke:#d3a16d;stroke-dasharray:4 3}.constellation-link.mixed{stroke:#b59bc9;stroke-dasharray:2 3}.constellation-link.neutral{stroke:#73858d;stroke-dasharray:2 4}
+.constellation-domain-box{fill:#18272e;stroke:#40545d;stroke-width:1}
+.constellation-domain-box.support{stroke:#527e70}.constellation-domain-box.counter{stroke:#80654a}.constellation-domain-box.mixed{stroke:#705e82}.constellation-domain-box.neutral{stroke:#475861}
+.constellation-domain-title{fill:#d4e0df;font-size:8px;font-weight:600}
+.constellation-domain-sub{fill:#91a5aa;font-size:7px;font-family:ui-monospace,SFMono-Regular,Consolas,monospace}
+@media(max-width:520px){.evidence-constellation{margin-top:8px}.constellation-heading{font-size:8px}.constellation-note{font-size:8px}}
