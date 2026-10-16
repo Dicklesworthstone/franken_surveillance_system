@@ -269,7 +269,7 @@ fn drive<W: Write>(
                         "checkpoint_candidate",
                         object(&[
                             ("pin", pin_json(receipt.pin())),
-                            ("journal_anchor", anchor_json(pin_receipt.anchor())),
+                            ("journal_anchor", anchor_json(receipt.anchor())),
                             ("work_durable", "false".into()),
                         ]),
                         false,
@@ -585,6 +585,35 @@ fn connect_failure(error: &LiveHevcArchiveError) -> Failure {
 #[cfg(test)]
 mod reconnect_tests {
     use super::*;
+
+    #[test]
+    fn timed_hevc_completion_requires_all_source_only_work_to_be_published() {
+        let mut stats = Statistics {
+            collected_pictures: 2,
+            durable_pictures: 2,
+            durable_windows: 1,
+            indexed_windows: 1,
+            snapshot_digest: Some(ContentDigest::sha256(b"finished HEVC archive")),
+            ..Statistics::default()
+        };
+        assert!(finished_result(
+            LiveArchiveCompletion::OwnerStopped,
+            Some(StopCause::CaptureDuration),
+            &stats,
+            10,
+        )
+        .is_ok());
+        stats.pending_source_only_nals = 1;
+        assert!(matches!(
+            finished_result(
+                LiveArchiveCompletion::OwnerStopped,
+                Some(StopCause::CaptureDuration),
+                &stats,
+                10,
+            ),
+            Err(Failure::Storage)
+        ));
+    }
 
     #[test]
     fn only_typed_transient_connect_io_can_retry() {
