@@ -41,6 +41,7 @@ use crate::{ReferenceDeployment, ReferencePolicyAction, ReferencePolicyDecision,
 
 /// Optional native trained detector and its source-closed whole-recording recipe.
 pub mod detector;
+mod fusion;
 pub use detector::LongWatchDetector;
 
 /// Same source-byte, pixel, assignment and trace ceilings as the shared whole-recording walker.
