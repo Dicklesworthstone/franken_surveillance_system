@@ -58,7 +58,7 @@ mod capability;
 mod error;
 mod format;
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::ffi::{OsStr, OsString};
 use std::fs::{self, File, TryLockError};
 use std::io;
@@ -512,6 +512,24 @@ impl StagingSpool {
             }
         }
         Ok(spool)
+    }
+
+    /// Restricts session-local verification eligibility to the supplied object set.
+    ///
+    /// This only demotes `Verified` entries outside `retained` to `Staged`. It never
+    /// promotes an object, clears corruption, removes a durable hold, changes quota,
+    /// revives a poisoned owner or performs I/O. A demoted held object remains protected
+    /// from staged discard and needs an ordinary fresh `verify` before publication.
+    ///
+    /// An opening owner can use this after consuming fresh recovery checks to ensure
+    /// unrelated, unpublished objects do not acquire verification eligibility merely
+    /// because the spool scanned them. Work is bounded by the spool's indexed objects.
+    pub fn retain_verification(&mut self, retained: &BTreeSet<ContentDigest>) {
+        for (digest, entry) in &mut self.index {
+            if entry.state == SpoolObjectState::Verified && !retained.contains(digest) {
+                entry.state = SpoolObjectState::Staged;
+            }
+        }
     }
 
     /// Spool root directory.

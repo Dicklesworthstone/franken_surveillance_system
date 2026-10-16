@@ -49,6 +49,10 @@
 //!
 //! [`LocalRootPublisher::open`] re-verifies every root record, its manifest body, and every child
 //! before admitting it, fsyncs the roots directory, and only then reports roots as `Durable`.
+//! Already-held children reuse the spool's fresh digest scan from this same open; the same
+//! media object is not rehashed for every root or fixed-point pass. Unheld references still
+//! require explicit verification and a durable hold. This is a startup snapshot, not a cache
+//! for later reads or publication: those continue to rehash every required object.
 //! Records that fail are reported as [`BrokenRoot`] and never admitted. A slot with an
 //! indeterminate marker is reported as [`BrokenRootReason::VisibilityIndeterminate`], and its
 //! record, if any, is never admitted. Objects not reachable from
@@ -696,9 +700,12 @@ impl LocalRootPublisher {
         let tombstones_dir = root.join(LOCAL_TOMBSTONES_DIR);
         ensure_subdirectory(io.as_ref(), &roots_dir)?;
         ensure_subdirectory(io.as_ref(), &tombstones_dir)?;
-        let spool =
-            StagingSpool::open_with_io(root.join(LOCAL_SPOOL_DIR), limits.spool, Arc::clone(&io))
-                .map_err(LocalPublicationError::Spool)?;
+        let spool = StagingSpool::open_with_verified_recovery(
+            root.join(LOCAL_SPOOL_DIR),
+            limits.spool,
+            Arc::clone(&io),
+        )
+        .map_err(LocalPublicationError::Spool)?;
         io.sync_directory(&root)
             .map_err(|error| io_error(LocalIoOperation::SyncDirectory, &root, &error))?;
 
@@ -1911,7 +1918,22 @@ impl LocalRootPublisher {
             roots: true,
             tombstones: true,
         };
-        let classified = classify_local(io.as_ref(), &root, &limits, layout, spool, self)?;
+        let classified = {
+            // The fast reference checker cannot escape this opening operation. Only the
+            // references actually consumed by classification retain Verified eligibility;
+            // unrelated staged work still requires explicit verification before publishing.
+            let mut references = RecoveryReferences {
+                publisher: self,
+                verified: BTreeSet::new(),
+            };
+            let classified =
+                classify_local(io.as_ref(), &root, &limits, layout, spool, &mut references)?;
+            references
+                .publisher
+                .spool
+                .retain_verification(&references.verified);
+            classified
+        };
         let mut report = classified.report;
         self.visible = classified.visible;
         self.broken_slots = classified.broken_slots;
@@ -1937,32 +1959,50 @@ impl LocalRootPublisher {
     }
 }
 
-impl ReferenceCheck for LocalRootPublisher {
-    /// Verifies through the owned spool, placing its durable hold: a corrupt or missing object
-    /// classifies the reference, any other spool failure fails the open.
+/// Fresh verification reuse is scoped to the immediate root-opening classifier.
+struct RecoveryReferences<'a> {
+    publisher: &'a mut LocalRootPublisher,
+    verified: BTreeSet<ContentDigest>,
+}
+
+impl ReferenceCheck for RecoveryReferences<'_> {
+    /// Used only by immediate open-time recovery. Reuses the owned spool's fresh verification
+    /// for held objects; an unheld object still needs the normal verification/hold barrier.
+    /// Corrupt or missing objects block a reference; every other spool failure fails the open.
     fn check_reference(
         &mut self,
         object: ContentDigest,
     ) -> Result<Result<(), BlockReason>, LocalPublicationError> {
-        match self.spool.verify(object) {
-            Ok(SpoolObjectState::Verified) => Ok(Ok(())),
+        // Do not move this fast path into require_verified, read, or publish. Those operations
+        // must observe current bytes, not the earlier startup snapshot. A successful fallback
+        // also settles an unheld reference once, even when many roots share it.
+        let verified = match self.publisher.spool.state(object) {
+            Some(SpoolObjectState::Verified) => Ok(SpoolObjectState::Verified),
+            _ => self.publisher.spool.verify(object),
+        };
+        match verified {
+            Ok(SpoolObjectState::Verified) => {
+                self.verified.insert(object);
+                Ok(Ok(()))
+            }
             Ok(SpoolObjectState::Staged) => Ok(Err(BlockReason::NotVerified)),
             Ok(SpoolObjectState::Corrupt(_)) | Err(SpoolError::Corrupt { .. }) => {
                 Ok(Err(BlockReason::Corrupt))
             }
             Err(SpoolError::Missing(_)) => Ok(Err(BlockReason::Missing)),
-            Err(error) => Err(self.spool_error(error)),
+            Err(error) => Err(self.publisher.spool_error(error)),
         }
     }
 
     fn manifest_body(&mut self, root: ContentDigest) -> Result<Vec<u8>, LocalPublicationError> {
-        self.spool
+        self.publisher
+            .spool
             .read(root)
-            .map_err(|error| self.spool_error(error))
+            .map_err(|error| self.publisher.spool_error(error))
     }
 
     fn redundant_temp(&mut self, path: &Path) -> RedundantTemp {
-        match self.io.remove_file(path) {
+        match self.publisher.io.remove_file(path) {
             Ok(()) => RedundantTemp::Removed,
             Err(error) if error.kind() == io::ErrorKind::NotFound => RedundantTemp::Removed,
             Err(_) => RedundantTemp::Kept,
@@ -2014,8 +2054,8 @@ enum RedundantTemp {
 
 /// What the shared classifier asks of its caller.
 ///
-/// [`LocalRootPublisher`] verifies through, and holds in, its owned spool and removes redundant
-/// temps; [`ObservedReferences`] answers from the spool classification without writing.
+/// [`RecoveryReferences`] consumes fresh spool checks, holds unheld references and removes
+/// redundant temps; [`ObservedReferences`] answers from the spool classification without writing.
 trait ReferenceCheck {
     /// Classifies one reference that no tombstone names: `Ok(Err(_))` blocks it, `Err(_)` fails
     /// the caller.
@@ -2056,8 +2096,8 @@ struct LocalClassification {
 ///
 /// It lists, stats, and reads, and asks `references` to check every reference, read every
 /// manifest body, and settle every redundant temp; those three are the only points where the
-/// open and inspection differ. For the open it makes exactly the calls, in exactly the order, the
-/// open made before inspection existed.
+/// open and inspection differ. Immediate open-time recovery reuses its fresh spool scan for
+/// already-held references; subsequent reads and publication still verify current bytes.
 fn classify_local(
     io: &dyn SpoolIo,
     root: &Path,

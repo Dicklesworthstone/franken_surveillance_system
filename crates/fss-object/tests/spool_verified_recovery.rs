@@ -73,8 +73,7 @@ fn only_freshly_rehashed_held_objects_are_promoted() -> TestResult {
     drop(ordinary);
 
     let io = Arc::new(FaultInjectingSpoolIo::new(SpoolFaultPlan::new()));
-    let recovered =
-        StagingSpool::open_with_verified_recovery(&directory.0, limits(), io.clone())?;
+    let recovered = StagingSpool::open_with_verified_recovery(&directory.0, limits(), io.clone())?;
     assert_eq!(io.calls(SpoolIoCall::Read), 2, "one fresh read per object");
     assert_eq!(recovered.recovery_report(), &report);
     assert_eq!(recovered.state(held), Some(SpoolObjectState::Verified));
@@ -106,9 +105,21 @@ fn a_persistent_hold_never_hides_same_length_corruption_on_reopen() -> TestResul
     let io = Arc::new(FaultInjectingSpoolIo::new(SpoolFaultPlan::new()));
     let spool = StagingSpool::open_with_verified_recovery(&directory.0, limits(), io.clone())?;
     assert_eq!(io.calls(SpoolIoCall::Read), 1);
-    assert!(matches!(spool.state(digest), Some(SpoolObjectState::Corrupt(_))));
-    assert!(spool.recovery_report().corrupt.iter().any(|entry| entry.digest == digest));
-    assert_eq!(spool.require_verified(digest), Err(ObjectError::Corrupt(digest)));
+    assert!(matches!(
+        spool.state(digest),
+        Some(SpoolObjectState::Corrupt(_))
+    ));
+    assert!(
+        spool
+            .recovery_report()
+            .corrupt
+            .iter()
+            .any(|entry| entry.digest == digest)
+    );
+    assert_eq!(
+        spool.require_verified(digest),
+        Err(ObjectError::Corrupt(digest))
+    );
     assert!(matches!(
         spool.read(digest),
         Err(SpoolError::Corrupt { digest: actual, .. }) if actual == digest
@@ -132,7 +143,10 @@ fn a_hold_for_a_vanished_object_remains_corrupt() -> TestResult {
         spool.state(digest),
         Some(SpoolObjectState::Corrupt(CorruptionKind::Vanished)),
     );
-    assert_eq!(spool.require_verified(digest), Err(ObjectError::Corrupt(digest)));
+    assert_eq!(
+        spool.require_verified(digest),
+        Err(ObjectError::Corrupt(digest))
+    );
     Ok(())
 }
 
@@ -148,7 +162,10 @@ fn mutations_after_recovery_are_rejected_by_reads_and_authority_checks() -> Test
     let mut spool = StagingSpool::open_with_verified_recovery(&directory.0, limits(), io)?;
     assert_eq!(spool.state(digest), Some(SpoolObjectState::Verified));
     corrupt_payload(&spool.object_path(digest))?;
-    assert_eq!(spool.require_verified(digest), Err(ObjectError::Corrupt(digest)));
+    assert_eq!(
+        spool.require_verified(digest),
+        Err(ObjectError::Corrupt(digest))
+    );
     assert!(matches!(
         spool.read(digest),
         Err(SpoolError::Corrupt { digest: actual, .. }) if actual == digest
@@ -157,7 +174,10 @@ fn mutations_after_recovery_are_rejected_by_reads_and_authority_checks() -> Test
         spool.verify(digest),
         Err(SpoolError::Corrupt { digest: actual, .. }) if actual == digest
     ));
-    assert!(matches!(spool.state(digest), Some(SpoolObjectState::Corrupt(_))));
+    assert!(matches!(
+        spool.state(digest),
+        Some(SpoolObjectState::Corrupt(_))
+    ));
     Ok(())
 }
 
@@ -176,11 +196,61 @@ fn recovery_io_failure_never_promotes_objects_and_releases_the_lock() -> TestRes
     )));
     assert!(matches!(
         StagingSpool::open_with_verified_recovery(&directory.0, limits(), io.clone()),
-        Err(SpoolError::Io { kind: io::ErrorKind::PermissionDenied, .. }),
+        Err(SpoolError::Io {
+            kind: io::ErrorKind::PermissionDenied,
+            ..
+        }),
     ));
     assert!(io.all_fired());
     // A failed constructor must release its exclusive lock before returning.
     let reopened = StagingSpool::open(&directory.0, limits())?;
     assert_eq!(reopened.state(digest), Some(SpoolObjectState::Staged));
+    Ok(())
+}
+
+#[test]
+fn restricting_recovery_eligibility_never_grants_verification_or_releases_holds() -> TestResult {
+    use std::collections::BTreeSet;
+
+    let directory = TempDirectory::new()?;
+    let mut spool = StagingSpool::open(&directory.0, limits())?;
+    let kept = spool.stage_bytes(b"reachable held media")?.digest;
+    let forgotten = spool.stage_bytes(b"unpublished held media")?.digest;
+    let corrupt = spool.stage_bytes(b"damaged held media")?.digest;
+    for digest in [kept, forgotten, corrupt] {
+        spool.verify(digest)?;
+    }
+    let unheld = spool.stage_bytes(b"unverified work")?.digest;
+    let corrupt_path = spool.object_path(corrupt);
+    drop(spool);
+    corrupt_payload(&corrupt_path)?;
+    let io = Arc::new(FaultInjectingSpoolIo::new(SpoolFaultPlan::new()));
+    let mut spool = StagingSpool::open_with_verified_recovery(&directory.0, limits(), io.clone())?;
+    let reads = io.calls(SpoolIoCall::Read);
+    let charged = spool.occupied_bytes()?;
+    let report = spool.recovery_report().clone();
+    let corruption = spool.state(corrupt);
+    spool.retain_verification(&BTreeSet::from([kept, unheld, corrupt]));
+    assert_eq!(spool.state(kept), Some(SpoolObjectState::Verified));
+    assert_eq!(spool.state(forgotten), Some(SpoolObjectState::Staged));
+    assert_eq!(spool.state(unheld), Some(SpoolObjectState::Staged));
+    assert_eq!(spool.state(corrupt), corruption);
+    assert_eq!(io.calls(SpoolIoCall::Read), reads);
+    assert_eq!(spool.occupied_bytes()?, charged);
+    assert_eq!(spool.recovery_report(), &report);
+    assert_eq!(
+        spool.discard_staged(forgotten),
+        Err(SpoolError::VerificationHeld { digest: forgotten }),
+    );
+    assert_eq!(
+        spool.require_verified(forgotten),
+        Err(ObjectError::NotVerified(forgotten))
+    );
+    spool.verify(forgotten)?;
+    assert_eq!(io.calls(SpoolIoCall::Read), reads + 1);
+    assert_eq!(spool.state(forgotten), Some(SpoolObjectState::Verified));
+    spool.retain_verification(&BTreeSet::new());
+    assert_eq!(spool.state(corrupt), corruption);
+    assert_eq!(spool.state(kept), Some(SpoolObjectState::Staged));
     Ok(())
 }

@@ -4,8 +4,9 @@
 //!
 //! Every expectation here is hand-derived from the fixture (payload digests, manifest roots, the
 //! record bytes on disk) and the open's documented rules; none of it is computed by the shared
-//! classifier. The file uses only API that existed before inspection, so it runs unchanged
-//! against the pre-inspection open (main f2f6288) as the independent differential.
+//! classifier. The fixtures retain the pre-inspection open's (main f2f6288) report/state
+//! expectations. The late-corruption fixture explicitly removes a hold so recovery still
+//! needs the second verification; already-held references now reuse the fresh opening scan.
 
 use std::collections::BTreeSet;
 use std::error::Error;
@@ -46,7 +47,7 @@ fn limits() -> LocalPublicationLimits {
 }
 
 fn slot(name: &str) -> Result<SlotName, Box<dyn Error>> {
-    Ok(SlotName::parse(name)?)
+    Ok(SlotName::parse(name)? )
 }
 
 fn roots_entry(root: &Path, name: &str) -> PathBuf {
@@ -366,8 +367,8 @@ impl SpoolIo for CorruptOnSecondRead {
     }
 }
 
-/// (c) A reference that fails verification after the spool classified it intact breaks its root;
-/// it never fails the whole open.
+/// (c) An unheld reference must still cross a fresh verification/hold barrier after the spool
+/// classified it intact. Failure there breaks its root rather than failing the whole open.
 #[test]
 fn verify_failure_after_classification_breaks_the_root_not_the_open() -> TestResult {
     let root = fresh_root("corrupt_after_classification")?;
@@ -377,6 +378,13 @@ fn verify_failure_after_classification_breaks_the_root_not_the_open() -> TestRes
     publisher.publish(&slot("victim")?, &victim)?;
     let target = publisher.spool().object_path(c);
     drop(publisher);
+    // Exercise the still-required verification, not a removed redundant read of a held
+    // object. The initial scan alone cannot authorize a reference without a durable hold.
+    fs::remove_file(
+        root.join(LOCAL_SPOOL_DIR)
+            .join(fss_object::SPOOL_HOLDS_DIR)
+            .join(hex(c)),
+    )?;
 
     let io = Arc::new(CorruptOnSecondRead {
         target,
@@ -409,5 +417,36 @@ fn verify_failure_after_classification_breaks_the_root_not_the_open() -> TestRes
             }
         ))
     );
+    Ok(())
+}
+
+/// Reusing a held object's initial scan must not cache byte validity for later publication.
+#[test]
+fn held_reference_changed_after_recovery_is_rechecked_before_publication() -> TestResult {
+    let root = fresh_root("held_corrupt_after_recovery")?;
+    let mut publisher = LocalRootPublisher::open(&root, limits())?;
+    let child = publisher.stage_object(b"clip-late")?;
+    let manifest = ObjectManifest::new("event_archive", [child], None)?;
+    let name = slot("held")?;
+    publisher.publish(&name, &manifest)?;
+    let target = publisher.spool().object_path(child);
+    drop(publisher);
+    let io = Arc::new(CorruptOnSecondRead {
+        target,
+        reads: AtomicU64::new(0),
+    });
+    let mut publisher = LocalRootPublisher::open_with_io(&root, limits(), io.clone())?;
+    assert_eq!(io.reads.load(Ordering::SeqCst), 1);
+    assert_eq!(publisher.recovery_report().roots.len(), 1);
+    // The fixture mutates bytes only on the next real read, after recovery has returned.
+    assert!(matches!(
+        publisher.publish(&name, &manifest),
+        Err(fss_publication::LocalPublicationError::ReferenceBlocked {
+            object,
+            role: ReferenceRole::Child,
+            reason: BlockReason::Corrupt,
+        }) if object == child
+    ));
+    assert_eq!(io.reads.load(Ordering::SeqCst), 2);
     Ok(())
 }
