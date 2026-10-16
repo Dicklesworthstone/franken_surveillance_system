@@ -23,9 +23,12 @@ use fss_reference::{ReferenceDeployment, ReplayCx};
 mod guarded;
 mod input;
 mod render;
+mod streaming;
 pub use input::MAX_PROFILE_BYTES;
+pub use streaming::MAX_LONG_CANDIDATES;
 
-/// Maximum advice records; a larger analysis is refused, not reported as a successful prefix.
+/// Maximum short-window advice records. Whole-recording watch uses MAX_LONG_CANDIDATES;
+/// either adapter refuses excess work instead of returning a successful prefix.
 pub const MAX_CANDIDATES: usize = 32;
 /// One shared evidence-processing allowance across every candidate, including omissions.
 pub const MAX_TOTAL_EVIDENCE: usize = 256;
@@ -49,12 +52,15 @@ pub struct SensorCalibration {
 /// Explicit immutable analysis request. No value is inferred from wall time or detector scores.
 #[derive(Clone, Debug)]
 pub struct ClassFusionSpec {
-    /// Exact final native analysis-plan identity; coverage pins separately bind its context.
+    /// Exact final native analysis identity. Whole-recording watch pins its analysis digest,
+    /// not the smaller input plan; this includes the complete scan and trained-stage outcome.
     pub plan_digest: ContentDigest,
-    /// Exact native coverage records, binding source interpretation, privacy and authority.
-    /// These identify scope only; they do not certify detector-class absence.
+    /// Exact native coverage records for short-window analysis. Whole-recording profiles must
+    /// leave this empty and bind their analysis root through `for_long_watch` instead.
+    /// Neither form certifies detector-class absence.
     pub coverage_digests: BTreeSet<ContentDigest>,
-    /// Exact native cascade, binding package, transforms, thresholds and frame selection.
+    /// Exact native cascade. Whole-recording watch uses its complete retained detector-recipe
+    /// digest, including package, execution, selection and whole-recording resource ceilings.
     pub cascade_digest: ContentDigest,
     /// Vocabulary index in the verified native package. The hypothesis is only this class.
     pub class_index: usize,
@@ -114,16 +120,37 @@ type Result<T> = std::result::Result<T, EventFusionError>;
 pub struct EventFusionProfile {
     spec: ClassFusionSpec,
     digest: ContentDigest,
+    // A source-closed analysis root is NOT a coverage witness. The discriminator is private
+    // and included in the semantic digest; short-window entry points refuse this profile.
+    long_watch_analysis_root: Option<ContentDigest>,
 }
 impl EventFusionProfile {
     /// Validate everything, including all reconstructed calibration fields, before native work.
-    pub fn new(mut spec: ClassFusionSpec) -> Result<Self> {
+    pub fn new(spec: ClassFusionSpec) -> Result<Self> {
+        Self::new_scoped(spec, None)
+    }
+
+    fn new_scoped(
+        mut spec: ClassFusionSpec,
+        long_watch_analysis_root: Option<ContentDigest>,
+    ) -> Result<Self> {
         if spec.calibrations.is_empty() || spec.calibrations.len() > 8 || spec.class_index > 65_535
         {
             return Err(EventFusionError::Profile);
         }
-        if spec.coverage_digests.is_empty() || spec.coverage_digests.len() > 8 {
-            return Err(EventFusionError::Profile);
+        match long_watch_analysis_root {
+            Some(root) => {
+                if !spec.coverage_digests.is_empty()
+                    || root.algorithm() != fss_core::DigestAlgorithm::Sha256
+                    || root.bytes() == [0; 32]
+                {
+                    return Err(EventFusionError::Profile);
+                }
+            }
+            None if spec.coverage_digests.is_empty() || spec.coverage_digests.len() > 8 => {
+                return Err(EventFusionError::Profile);
+            }
+            None => {}
         }
         // Validate through the owner of the policy semantics, even for zero-candidate runs.
         let template = query(&spec, "profile", Vec::new());
@@ -177,9 +204,16 @@ impl EventFusionProfile {
                 e.text(domain);
             }
         }
+        if let Some(root) = long_watch_analysis_root {
+            e.text(streaming::SCOPE);
+            e.digest(root);
+            e.u64(streaming::MAX_LONG_CANDIDATES as u64);
+            e.u64(MAX_TOTAL_EVIDENCE as u64);
+        }
         Ok(Self {
             spec,
             digest: digest(e)?,
+            long_watch_analysis_root,
         })
     }
     /// Canonical identity, independent of profile JSON formatting and binding order.
@@ -308,7 +342,10 @@ impl EventFusionReport {
         cx: &ReplayCx,
     ) -> Result<Self> {
         checkpoint(cx)?;
-        if plan != profile.spec.plan_digest || cascade.digest() != profile.spec.cascade_digest {
+        if profile.long_watch_analysis_root.is_some()
+            || plan != profile.spec.plan_digest
+            || cascade.digest() != profile.spec.cascade_digest
+        {
             return Err(EventFusionError::Scope);
         }
         let basis = deployment.current_anchor().clone();
