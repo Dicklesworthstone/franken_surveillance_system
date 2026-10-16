@@ -1,6 +1,7 @@
 #![forbid(unsafe_code)]
-//! Owner-clock recording progress, not transport keepalive or physical sensor health.
-//! Storage backpressure pauses this allowance, never the independent native deadlines.
+//! Owner-clock recording progress and elapsed-duration boundaries, not sensor health.
+//! Storage backpressure pauses the progress allowance, but NOT a capture-duration limit
+//! or the independent native deadlines. A stop observation is never an archive receipt.
 
 use fss_cli::agent_json::{object, string};
 use fss_core::{ContentDigest, DigestAlgorithm};
@@ -8,16 +9,33 @@ use fss_core::{ContentDigest, DigestAlgorithm};
 /// Extra policy is delegated only by the exact approved reconnect plan.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(crate) struct Supervision {
-    timeout_ns: u64,
+    timeout_ns: Option<u64>,
+    duration_ns: Option<u64>,
     approval: ContentDigest,
 }
 impl Supervision {
     pub(crate) const POLICY: &str = "recording-progress:arm-on-playing:renew-on-collected-picture:\
 exclude-storage-pause:expiry-before-late-progress:seal-and-drain-before-retry:\
 not-camera-offline:not-eof:not-coverage:v1";
+    pub(crate) const TIMED_POLICY: &str = "recording-stop:arm-on-playing:\
+duration-includes-storage-pause:progress-excludes-storage-pause:\
+earliest-boundary-wins:progress-wins-ties:expiry-before-late-progress:\
+seal-and-drain-before-completion:not-camera-time:not-eof:not-coverage:v1";
 
     pub(crate) fn new(timeout_ns: u64, approval: ContentDigest) -> Result<Self, &'static str> {
-        if !(1..=600_000_000_000).contains(&timeout_ns)
+        Self::with_limits(Some(timeout_ns), None, approval)
+    }
+
+    pub(crate) fn with_limits(
+        timeout_ns: Option<u64>,
+        duration_ns: Option<u64>,
+        approval: ContentDigest,
+    ) -> Result<Self, &'static str> {
+        if (timeout_ns.is_none() && duration_ns.is_none())
+            || [timeout_ns, duration_ns]
+                .into_iter()
+                .flatten()
+                .any(|limit| !(1..=600_000_000_000).contains(&limit))
             || approval.algorithm() != DigestAlgorithm::Sha256
             || approval.bytes() == [0; 32]
         {
@@ -25,18 +43,37 @@ not-camera-offline:not-eof:not-coverage:v1";
         }
         Ok(Self {
             timeout_ns,
+            duration_ns,
             approval,
         })
     }
 
+    fn policy(self) -> &'static str {
+        if self.duration_ns.is_some() {
+            Self::TIMED_POLICY
+        } else {
+            Self::POLICY
+        }
+    }
+
     pub(super) fn report(self) -> String {
-        object(&[
+        let mut fields = vec![
             ("approval", string(&self.approval.to_text())),
-            ("policy", string(Self::POLICY)),
-            ("progress_timeout_ns", self.timeout_ns.to_string()),
+            ("policy", string(self.policy())),
+            (
+                "progress_timeout_ns",
+                self.timeout_ns
+                    .map_or_else(|| "null".into(), |n| n.to_string()),
+            ),
             ("camera_offline_asserted", "false".into()),
             ("pixel_decode_asserted", "false".into()),
-        ])
+        ];
+        if let Some(duration) = self.duration_ns {
+            fields.push(("capture_duration_ns", duration.to_string()));
+            fields.push(("duration_includes_storage_pause", "true".into()));
+            fields.push(("camera_time_asserted", "false".into()));
+        }
+        object(&fields)
     }
 }
 
@@ -47,21 +84,36 @@ pub(super) enum WatchError {
     Arithmetic,
 }
 
+/// A planned duration boundary is distinct from an absence of collected pictures.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(super) enum StopCause {
+    ProgressStalled,
+    CaptureDuration,
+}
+
 /// Latched before accepting a late counter advance. Repeated polls cannot erase it.
+/// The historical type name is retained for existing single-timeout callers.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(super) struct Stall {
+    pub(super) cause: StopCause,
     observed_ns: u64,
     last_progress_ns: Option<u64>,
     pictures_before_expiry: u64,
     active_wait_ns: u64,
     paused_ns: u64,
+    capture_elapsed_ns: u64,
 }
 impl Stall {
     pub(super) fn report(self, policy: Supervision) -> String {
-        object(&[
+        let mut fields = vec![
             ("approval", string(&policy.approval.to_text())),
-            ("policy", string(Supervision::POLICY)),
-            ("progress_timeout_ns", policy.timeout_ns.to_string()),
+            ("policy", string(policy.policy())),
+            (
+                "progress_timeout_ns",
+                policy
+                    .timeout_ns
+                    .map_or_else(|| "null".into(), |n| n.to_string()),
+            ),
             ("observed_owner_ns", self.observed_ns.to_string()),
             (
                 "last_progress_owner_ns",
@@ -78,13 +130,28 @@ impl Stall {
             ("camera_offline_asserted", "false".into()),
             ("absence_certifiable", "false".into()),
             ("archive_drained", "false".into()),
-        ])
+        ];
+        if let Some(duration) = policy.duration_ns {
+            fields.push(("capture_duration_ns", duration.to_string()));
+            fields.push(("capture_elapsed_ns", self.capture_elapsed_ns.to_string()));
+            fields.push((
+                "stop_cause",
+                string(match self.cause {
+                    StopCause::ProgressStalled => "recording_progress_stalled",
+                    StopCause::CaptureDuration => "capture_duration_elapsed",
+                }),
+            ));
+            fields.push(("duration_includes_storage_pause", "true".into()));
+            fields.push(("camera_time_asserted", "false".into()));
+        }
+        object(&fields)
     }
 }
 
 /// Constant-space observer of one attempt. The driver samples before each capture
 /// step and after its output, so a storage transition preserves elapsed active time.
-/// Only the native collector's increasing picture count renews the allowance.
+/// Only the native collector's increasing picture count renews the progress allowance;
+/// neither picture traffic nor storage pauses renew the elapsed-duration allowance.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub(super) struct RecordingProgress {
     policy: Option<Supervision>,
@@ -95,6 +162,7 @@ pub(super) struct RecordingProgress {
     active: bool,
     waited_ns: u64,
     paused_ns: u64,
+    capture_elapsed_ns: u64,
     expired: Option<Stall>,
 }
 impl RecordingProgress {
@@ -108,6 +176,7 @@ impl RecordingProgress {
             active: false,
             waited_ns: 0,
             paused_ns: 0,
+            capture_elapsed_ns: 0,
             expired: None,
         }
     }
@@ -144,17 +213,50 @@ impl RecordingProgress {
         } else {
             self.paused_ns
         };
+        let capture_elapsed = if self.armed && self.expired.is_none() {
+            self.capture_elapsed_ns
+                .checked_add(elapsed)
+                .ok_or(WatchError::Arithmetic)?
+        } else {
+            self.capture_elapsed_ns
+        };
+        // Compare the remaining allowances BEFORE applying this sample. When a delayed
+        // observation crosses both boundaries, a later planned stop must not disguise an
+        // earlier progress failure as success. Progress also wins an exact tie.
+        let progress_due = policy
+            .timeout_ns
+            .filter(|_| self.active)
+            .map(|limit| limit.saturating_sub(self.waited_ns))
+            .filter(|remaining| *remaining <= elapsed);
+        let duration_due = policy
+            .duration_ns
+            .filter(|_| self.armed)
+            .map(|limit| limit.saturating_sub(self.capture_elapsed_ns))
+            .filter(|remaining| *remaining <= elapsed);
+        let cause = match (progress_due, duration_due) {
+            (Some(progress), Some(duration)) if duration < progress => {
+                Some(StopCause::CaptureDuration)
+            }
+            (Some(_), _) => Some(StopCause::ProgressStalled),
+            (None, Some(_)) => Some(StopCause::CaptureDuration),
+            (None, None) => None,
+        };
         self.last_ns = Some(now);
         self.waited_ns = waited;
         self.paused_ns = paused;
+        self.capture_elapsed_ns = capture_elapsed;
         self.armed |= playing;
-        if self.armed && self.waited_ns >= policy.timeout_ns && self.expired.is_none() {
+        if self.expired.is_none()
+            && let Some(cause) = cause
+        {
             self.expired = Some(Stall {
+                cause,
                 observed_ns: now,
                 last_progress_ns: self.last_progress_ns,
                 pictures_before_expiry: self.pictures,
                 active_wait_ns: self.waited_ns,
                 paused_ns: self.paused_ns,
+                capture_elapsed_ns: self.capture_elapsed_ns,
             });
         }
         if pictures > self.pictures && self.expired.is_none() {
@@ -178,17 +280,34 @@ mod tests {
         ))
     }
 
+    fn timed(progress: Option<u64>, duration: u64) -> RecordingProgress {
+        RecordingProgress::new(Some(
+            Supervision::with_limits(
+                progress,
+                Some(duration),
+                ContentDigest::sha256(b"approved timed capture"),
+            )
+            .expect("valid timed policy"),
+        ))
+    }
+
     #[test]
     fn invalid_policy_is_refused_before_any_owner_effect() {
         let approval = ContentDigest::sha256(b"approval");
         for limit in [0, 600_000_000_001, u64::MAX] {
             assert!(Supervision::new(limit, approval).is_err());
+            assert!(Supervision::with_limits(None, Some(limit), approval).is_err());
+            assert!(Supervision::with_limits(Some(100), Some(limit), approval).is_err());
         }
+        assert!(Supervision::with_limits(None, None, approval).is_err());
+        assert!(Supervision::with_limits(None, Some(1), approval).is_ok());
+        assert!(Supervision::with_limits(None, Some(600_000_000_000), approval).is_ok());
         assert!(Supervision::new(1, approval).is_ok());
         assert!(Supervision::new(600_000_000_000, approval).is_ok());
         let zero =
             ContentDigest::parse(&format!("sha256:{}", "0".repeat(64))).expect("digest syntax");
         assert!(Supervision::new(100, zero).is_err());
+        assert!(Supervision::with_limits(None, Some(100), zero).is_err());
     }
 
     #[test]
@@ -202,6 +321,7 @@ mod tests {
             .observe(20_100, true, true, 0)
             .expect("clock")
             .expect("expiry");
+        assert_eq!(r.cause, StopCause::ProgressStalled);
         assert_eq!(r.active_wait_ns, 100);
         assert_eq!(r.last_progress_ns, None);
         assert_eq!(r.pictures_before_expiry, 0);
@@ -301,5 +421,119 @@ mod tests {
         assert_eq!(w.observe(u64::MAX, true, true, u64::MAX), Ok(None));
         assert_eq!(w.observe(0, true, true, 0), Ok(None));
         assert_eq!(w, before);
+    }
+
+    #[test]
+    fn duration_arms_at_play_and_is_not_renewed_by_collected_pictures() {
+        let mut w = timed(None, 100);
+        assert_eq!(w.observe(0, false, true, 0), Ok(None));
+        assert_eq!(w.observe(10_000, false, true, 0), Ok(None));
+        assert_eq!(w.observe(20_000, true, true, 0), Ok(None));
+        for i in 1..100 {
+            assert_eq!(w.observe(20_000 + i, true, true, i), Ok(None));
+        }
+        let r = w.observe(20_100, true, true, 100).unwrap().unwrap();
+        assert_eq!(r.cause, StopCause::CaptureDuration);
+        assert_eq!(r.capture_elapsed_ns, 100);
+        assert_eq!(r.pictures_before_expiry, 99);
+        assert_eq!(r.last_progress_ns, Some(20_099));
+        assert_eq!(w.observe(30_000, true, false, 101), Ok(Some(r)));
+    }
+
+    #[test]
+    fn duration_includes_storage_pause_without_spending_progress_allowance() {
+        let mut w = timed(Some(100), 200);
+        assert_eq!(w.observe(0, true, true, 0), Ok(None));
+        assert_eq!(w.observe(40, true, false, 1), Ok(None));
+        assert_eq!(w.observe(199, true, false, 1), Ok(None));
+        let r = w.observe(200, true, false, 1).unwrap().unwrap();
+        assert_eq!(r.cause, StopCause::CaptureDuration);
+        assert_eq!(r.capture_elapsed_ns, 200);
+        assert_eq!(r.active_wait_ns, 0);
+        assert_eq!(r.paused_ns, 160);
+    }
+
+    #[test]
+    fn late_observation_chooses_the_first_boundary_and_progress_wins_ties() {
+        for (progress, duration, cause) in [
+            (50, 100, StopCause::ProgressStalled),
+            (100, 50, StopCause::CaptureDuration),
+            (100, 100, StopCause::ProgressStalled),
+        ] {
+            let mut w = timed(Some(progress), duration);
+            assert_eq!(w.observe(0, true, true, 1), Ok(None));
+            let r = w.observe(200, true, true, 2).unwrap().unwrap();
+            assert_eq!(r.cause, cause);
+            assert_eq!(r.pictures_before_expiry, 1);
+        }
+    }
+
+    #[test]
+    fn picture_renewal_changes_progress_deadline_but_not_capture_boundary() {
+        let mut w = timed(Some(100), 150);
+        assert_eq!(w.observe(0, true, true, 0), Ok(None));
+        assert_eq!(w.observe(90, true, true, 1), Ok(None));
+        let r = w.observe(200, true, true, 2).unwrap().unwrap();
+        assert_eq!(r.cause, StopCause::CaptureDuration);
+        assert_eq!(r.last_progress_ns, Some(90));
+    }
+
+    #[test]
+    fn paused_progress_is_not_misclassified_as_an_earlier_failure() {
+        let mut w = timed(Some(50), 100);
+        assert_eq!(w.observe(0, true, true, 0), Ok(None));
+        assert_eq!(w.observe(40, true, false, 0), Ok(None));
+        let r = w.observe(200, true, true, 0).unwrap().unwrap();
+        assert_eq!(r.cause, StopCause::CaptureDuration);
+        assert_eq!(r.active_wait_ns, 40);
+    }
+
+    #[test]
+    fn timed_refusals_are_transactional_and_new_attempts_start_fresh() {
+        let mut w = timed(None, 100);
+        assert_eq!(w.observe(10, true, true, 1), Ok(None));
+        assert_eq!(w.observe(50, true, false, 1), Ok(None));
+        let before = w.clone();
+        assert_eq!(w.observe(49, true, true, 2), Err(WatchError::ClockReversed));
+        assert_eq!(w, before);
+        assert_eq!(w.observe(60, true, true, 0), Err(WatchError::CountReversed));
+        assert_eq!(w, before);
+        assert_eq!(w.observe(109, true, false, 1), Ok(None));
+        assert!(w.observe(110, true, false, 1).unwrap().is_some());
+        let mut fresh = timed(None, 100);
+        assert_eq!(fresh.observe(110, true, true, 0), Ok(None));
+        assert_eq!(fresh.observe(209, true, true, 0), Ok(None));
+        assert!(fresh.observe(210, true, true, 0).unwrap().is_some());
+    }
+
+    #[test]
+    fn duration_expiry_at_maximum_timestamp_does_not_wrap() {
+        let mut w = timed(None, 100);
+        assert_eq!(w.observe(u64::MAX - 100, true, true, 0), Ok(None));
+        assert_eq!(w.observe(u64::MAX - 1, true, true, 0), Ok(None));
+        let r = w.observe(u64::MAX, true, true, 1).unwrap().unwrap();
+        assert_eq!(r.cause, StopCause::CaptureDuration);
+        assert_eq!(r.capture_elapsed_ns, 100);
+        assert_eq!(r.pictures_before_expiry, 0);
+    }
+
+    #[test]
+    fn timed_reports_do_not_turn_a_timer_observation_into_source_or_archive_proof() {
+        let mut w = timed(None, 100);
+        w.observe(0, true, true, 1).unwrap();
+        let stop = w.observe(100, true, true, 1).unwrap().unwrap();
+        let report = stop.report(w.policy.unwrap());
+        for expected in [
+            "\"stop_cause\":\"capture_duration_elapsed\"",
+            "\"progress_timeout_ns\":null",
+            "\"capture_duration_ns\":100",
+            "\"duration_includes_storage_pause\":true",
+            "\"source_eof_asserted\":false",
+            "\"camera_time_asserted\":false",
+            "\"absence_certifiable\":false",
+            "\"archive_drained\":false",
+        ] {
+            assert!(report.contains(expected), "missing {expected}: {report}");
+        }
     }
 }
