@@ -1,6 +1,9 @@
 #![forbid(unsafe_code)]
 //! Bounded IDR-led recording collection. Neither admission nor sealing is publication.
 
+pub(crate) mod recovery;
+pub use recovery::{PrefixRecoveryRefusal, RecoveredRecordingPrefix};
+
 use fss_container::TimedAvcPicture;
 use fss_core::ContentDigest;
 use fss_packet::avc::{AvcBoundary, AvcPictureGroup};
