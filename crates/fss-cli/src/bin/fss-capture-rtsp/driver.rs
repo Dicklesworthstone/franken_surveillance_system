@@ -696,6 +696,12 @@ fn finished_result(
     {
         return Err(Failure::Shortfall);
     }
+    // Reuse the native custody classification rather than maintaining a second, weaker
+    // list of pending-window, work-pin and unconfirmed-publication barriers here.
+    // Pending remote control is deliberately separate from archive completion.
+    if AttemptOutcome::new(Ok(()), stats).recovery_required {
+        return Err(Failure::Storage);
+    }
     match stop {
         Some(StopCause::ProgressStalled) => Err(Failure::ProgressStalled),
         Some(StopCause::CaptureDuration) if stats.durable_pictures == 0 => {
@@ -880,7 +886,7 @@ fn drive<W: Write>(
                         "request_queued",
                         object(&[
                             ("command", string(command_name(request.command))),
-                            ("method", string(command.command.wire_method())),
+                            ("method", string(request.command.wire_method())),
                             ("cseq", request.cseq.to_string()),
                             ("bytes", request.bytes.to_string()),
                             (
@@ -1478,6 +1484,29 @@ mod completion_tests {
                 10,
             )
             .is_err());
+        }
+    }
+
+    #[test]
+    fn pending_custody_cannot_be_hidden_by_equal_picture_and_index_totals() {
+        for condition in 0..5 {
+            let mut stats = settled();
+            match condition {
+                0 => stats.pending_window = Some((ContentDigest::sha256(b"pending"), 1)),
+                1 => stats.unrecorded_work_receipt = Some("unconfirmed receipt".into()),
+                2 => stats.unpublished_prepared_pictures = 1,
+                3 => stats.unpublished_prepared_bytes = 1,
+                _ => stats.pending_source_only_nals = 1,
+            }
+            assert!(matches!(
+                finished_result(
+                    LiveArchiveCompletion::OwnerStopped,
+                    Some(StopCause::CaptureDuration),
+                    &stats,
+                    10,
+                ),
+                Err(Failure::Storage)
+            ));
         }
     }
 
