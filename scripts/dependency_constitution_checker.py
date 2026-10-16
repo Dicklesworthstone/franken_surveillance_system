@@ -1123,6 +1123,37 @@ def scan_unstable_features(root: Path, result: ValidationResult) -> int:
     def emit(rel: str, target: str, message: str) -> None:
         result.add_error(ERR_DEP_UNSTABLE_FEATURE, rel, target, f"{message}; no registered unstable-feature allowlist exists (DEPENDENCY_CONSTITUTION 2.1 requires enabled unstable features to be recorded)")
 
+    # DEPENDENCY_CONSTITUTION 2.1: a feature recorded in
+    # architecture/unstable_features.toml for the exact file it appears in is
+    # permitted (recorded, justified, scoped); every other enablement is
+    # refused.
+    def allowed_unstable_features() -> dict[str, set[str]]:
+        allow: dict[str, set[str]] = {}
+        data, _raw, problems = authority.load_toml_document(
+            root / "architecture/unstable_features.toml",
+            "architecture/unstable_features.toml",
+            root,
+        )
+        if data is None:
+            result.extend(problems)
+            return allow
+        for row in data.get("rows") or []:
+            feature = str(row.get("feature", ""))
+            for file in row.get("files") or []:
+                allow.setdefault(str(file), set()).add(feature)
+        return allow
+
+    allowed_by_file = allowed_unstable_features()
+
+    def feature_is_recorded(rel: str, content: str) -> bool:
+        features = allowed_by_file.get(rel)
+        if not features:
+            return False
+        for feature in features:
+            if re.search(rf"feature\s*\(\s*[^)]*\b{re.escape(feature)}\b", content):
+                return True
+        return False
+
     def read_text(path: Path) -> str | None:
         rel = path.relative_to(root).as_posix()
         data, problems = authority.read_input_bytes(path, rel, root)
@@ -1139,7 +1170,7 @@ def scan_unstable_features(root: Path, result: ValidationResult) -> int:
         rel = path.relative_to(root).as_posix()
         masked, literals = dependency_audit.mask_rust_source(text)
         for offset, content in inner_attributes(masked):
-            if attribute_enables_feature(content):
+            if attribute_enables_feature(content) and not feature_is_recorded(rel, content):
                 line = masked.count("\n", 0, offset) + 1
                 emit(rel, f"line/{line}", f"{rel}:{line}: an inner attribute enables an unstable feature")
         for block in doctest_blocks(text):

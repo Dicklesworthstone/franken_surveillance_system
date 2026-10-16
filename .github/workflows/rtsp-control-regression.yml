@@ -1,3 +1,4 @@
+# Local DSR/direct receipts are authoritative. GitHub-hosted execution is supplementary only.
 # Supplementary native regressions; scripts/qualify.sh and retained DSR receipts remain release authority.
 name: Automatic RTSP control regressions
 

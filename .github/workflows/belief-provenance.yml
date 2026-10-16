@@ -1,3 +1,4 @@
+# Local DSR/direct receipts are authoritative. GitHub-hosted execution is supplementary only.
 name: Retained belief provenance
 on:
   push:
@@ -38,7 +39,9 @@ jobs:
       CARGO_NET_OFFLINE: true
       RUSTUP_AUTO_INSTALL: 0
     steps:
-      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+      - name: Execute repository-owned Rust lane
+        run: bash scripts/qualify.sh --lane rust --receipt-dir "${{ runner.temp }}/qualification-receipt"
       - run: bash scripts/bootstrap_toolchain.sh
       - name: Native direct and graph provenance contracts
         run: bash scripts/test_belief_provenance.sh "$RUNNER_TEMP/belief-provenance"

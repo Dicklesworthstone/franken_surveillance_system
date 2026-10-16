@@ -670,6 +670,9 @@ def workflow_policy() -> None:
     unpinned_action_pattern = re.compile(r"^\s*-\s*uses:\s*([^@\s]+)@(\S+)")
     allowed_actions = {
         "actions/checkout": {"11bd71901bbe5b1630ceea73d27597364c9af683"},
+        # Reviewed 2026-10-16: actions/upload-artifact v4, pinned full-length
+        # provenance SHA already in use across the workflow set.
+        "actions/upload-artifact": {"ea165f8d65b6e75b540449e92b4886f43607fa02"},
     }
     for path in workflows:
         text = path.read_text(encoding="utf-8")

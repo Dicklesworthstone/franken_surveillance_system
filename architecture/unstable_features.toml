@@ -1,0 +1,16 @@
+schema = "fss.unstable_features.v1"
+as_of = "2026-10-16"
+
+# DEPENDENCY_CONSTITUTION 2.1: every enabled unstable feature is recorded
+# here, scoped to the exact files that enable it, with justification and
+# review date. Anything not listed is refused by
+# dependency_constitution_checker.py (ERR-DEP-UNSTABLE-FEATURE-001).
+
+[[rows]]
+feature = "tcp_linger"
+files = [
+  "crates/fss-cli/tests/capture_rtsp_reset_cli.rs",
+  "crates/fss-reference/tests/rtsp_read_reset_contract.rs",
+]
+justification = "Loopback RST-on-close (set_linger(Duration::ZERO)) is the deterministic, wall-clock-free mechanism the reconnect-after-RST contract tests use to produce real TCP resets; no stable API produces RST on demand. Test-target only; no production source enables this feature."
+reviewed = "2026-10-16"

@@ -308,6 +308,7 @@ All authoritative schemas cataloged from `registries/SCHEMAS.md`:
 
 | ID | Schema Identifier | File Path | Authority | Compatibility Rule |
 |---|---|---|---|---|
+| `SCHEMA-ACQ-SESSION-CHECKPOINT-001` | `fss.acquisition.session_checkpoint.v1` | `schemas/acquisition_session_checkpoint.v1.json` | `authority` | `bounded externally anchored checkpoints; restoration requires trusted checkpoint + request digests; unknown/damaged input never falls back to a fresh session; failed/cancelled states terminal` |
 | `SCHEMA-ADAPTER-CERT-001` | `fss.adapter_compatibility_certificate.v1` | `schemas/adapter_compatibility_certificate.v1.json` | `compatibility` | `exact tuple only; invalidator transitions revoke/degrade` |
 | `SCHEMA-ADAPTER-IDENTITY-001` | `fss.adapter_identity.v1` | `schemas/adapter_identity.v1.json` | `adapter authority` | `adapter identity binds protocol profile, isolation mode, credentials, and capabilities` |
 | `SCHEMA-AGENT-AFFORDANCE-001` | `fss.agent_affordance.v1` | `schemas/agent_affordance.v1.json` | `decision support` | `value, cost, risk, authority, reversibility, invalidators, alternatives, and expected proof remain decomposed` |

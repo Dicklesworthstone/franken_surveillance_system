@@ -1,3 +1,4 @@
+# Local DSR/direct receipts are authoritative. GitHub-hosted execution is supplementary only.
 name: RTSP reconnect recovery
 
 on:
@@ -10,22 +11,17 @@ on:
       - 'crates/fss-cli/tests/capture_rtsp_index_cli.rs'
       - 'tests/test_rtsp_reconnect_recovery.py'
       - 'crates/fss-reference/src/rtsp/**'
-      - 'crates/fss-publication/**'
-      - 'crates/fss-object/**'
       - '.github/workflows/rtsp-reconnect-recovery.yml'
   workflow_dispatch:
-
 permissions:
   contents: read
-
 concurrency:
   group: rtsp-reconnect-recovery-${{ github.ref }}
   cancel-in-progress: false
-
 jobs:
-  recovery:
+  native:
     runs-on: ubuntu-latest
-    timeout-minutes: 15
+    timeout-minutes: 30
     env:
       CARGO_BUILD_JOBS: 2
       CARGO_INCREMENTAL: 0
@@ -34,30 +30,22 @@ jobs:
       CARGO_NET_OFFLINE: true
       RUSTUP_AUTO_INSTALL: 0
     steps:
-      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
       - name: Bootstrap the repository-pinned compiler
         run: bash scripts/bootstrap_toolchain.sh
-      - name: Native automatic control and supervised live and recording generations
+      # All unit/integration/format/policy qualification lives in the
+      # repository qualifier's workspace lanes; this workflow delegates rather
+      # than duplicating lane logic.
+      - name: Execute repository-owned Rust lane
         run: |
           mkdir -p "$RUNNER_TEMP/recovery-evidence"
-          set -o pipefail
-          cargo +nightly-2026-08-31 test --locked --offline -p fss-reference --lib rtsp::live_avc::automatic -- --nocapture 2>&1 | tee "$RUNNER_TEMP/recovery-evidence/supervised-native.log"
-      - name: Native capture and recovery contracts
-        if: ${{ !cancelled() }}
-        run: |
-          mkdir -p "$RUNNER_TEMP/recovery-evidence"
-          set -o pipefail
-          cargo +nightly-2026-08-31 test --locked --offline -p fss-cli --bin fss-capture-rtsp -- --nocapture 2>&1 | tee "$RUNNER_TEMP/recovery-evidence/tests.log"
-      - name: Native process reconnect compatibility
-        if: ${{ !cancelled() }}
-        run: |
-          set -o pipefail
-          cargo +nightly-2026-08-31 test --locked --offline -p fss-cli --test capture_rtsp_reconnect_cli 2>&1 | tee "$RUNNER_TEMP/recovery-evidence/process.log"
-      - name: Recovered catalog indexing through import and cold native decode
-        if: ${{ !cancelled() }}
-        run: |
-          set -o pipefail
-          cargo +nightly-2026-08-31 test --locked --offline -p fss-cli --test capture_rtsp_index_cli -- --nocapture 2>&1 | tee "$RUNNER_TEMP/recovery-evidence/index-process.log"
+          bash scripts/qualify.sh --lane rust --receipt-dir "$RUNNER_TEMP/recovery-evidence/qualification"
+      # Cold-process end-to-end harness: drives the BUILT fss-capture-rtsp
+      # binary against a mock RTSP camera over a real socket (cold AVC
+      # reconnect recovery + source corruption). Not yet a qualify.sh lane
+      # (claim-specific adapter lanes fail closed until dedicated harnesses
+      # exist under scripts/lanes/), so it stays here as supplementary
+      # evidence until the adapter lane owns it.
       - name: Cold AVC reconnect recovery and source corruption
         if: ${{ !cancelled() }}
         run: |
@@ -65,33 +53,7 @@ jobs:
           cargo +nightly-2026-08-31 build --locked --offline -p fss-cli --bin fss-capture-rtsp --message-format=json > "$RUNNER_TEMP/recovery-evidence/build.jsonl"
           binary=$(python3 -c 'import json,sys; rows=[json.loads(s) for s in open(sys.argv[1])]; paths=[r["executable"] for r in rows if r.get("reason")=="compiler-artifact" and r.get("target",{}).get("name")=="fss-capture-rtsp" and r.get("executable")]; assert paths; print(paths[-1])' "$RUNNER_TEMP/recovery-evidence/build.jsonl")
           python3 -B tests/test_rtsp_reconnect_recovery.py "$binary" 2>&1 | tee "$RUNNER_TEMP/recovery-evidence/cold-process.log"
-      - name: Check changed-source formatting without modifying compiler inputs
-        if: ${{ !cancelled() }}
-        run: |
-          mkdir -p "$RUNNER_TEMP/recovery-evidence/formatted"
-          sources=()
-          for name in recovery.rs recovery_tests.rs reconnect.rs indexing.rs indexing_tests.rs; do
-            source="crates/fss-cli/src/bin/fss-capture-rtsp/$name"
-            sources+=("$source")
-            cp "$source" "$RUNNER_TEMP/recovery-evidence/formatted/$name"
-            rustfmt +nightly-2026-08-31 --edition 2024 --config skip_children=true "$RUNNER_TEMP/recovery-evidence/formatted/$name"
-          done
-          for source in \
-            crates/fss-reference/src/rtsp/live_avc/automatic.rs \
-            crates/fss-reference/src/rtsp/live_avc/automatic/reconnect.rs \
-            crates/fss-reference/src/rtsp/live_avc/automatic/reconnect/recording.rs; do
-            sources+=("$source")
-            name="native-$(basename "$source")"
-            cp "$source" "$RUNNER_TEMP/recovery-evidence/formatted/$name"
-            rustfmt +nightly-2026-08-31 --edition 2024 --config skip_children=true "$RUNNER_TEMP/recovery-evidence/formatted/$name"
-          done
-          source=crates/fss-cli/tests/capture_rtsp_index_cli.rs
-          sources+=("$source")
-          cp "$source" "$RUNNER_TEMP/recovery-evidence/formatted/capture_rtsp_index_cli.rs"
-          rustfmt +nightly-2026-08-31 --edition 2024 --config skip_children=true "$RUNNER_TEMP/recovery-evidence/formatted/capture_rtsp_index_cli.rs"
-          git rev-parse HEAD > "$RUNNER_TEMP/recovery-evidence/commit.txt"
-          rustfmt +nightly-2026-08-31 --check --edition 2024 --config skip_children=true "${sources[@]}"
-      - name: Preserve exact failure logs and formatter suggestions
+      - name: Preserve exact failure logs
         if: ${{ !cancelled() }}
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
         with:

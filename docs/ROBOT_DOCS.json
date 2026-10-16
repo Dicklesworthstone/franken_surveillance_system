@@ -3374,6 +3374,13 @@
   "schema": "fss.robot_docs.v1",
   "schemas": [
     {
+      "authority": "authority",
+      "compatibilityRule": "bounded externally anchored checkpoints; restoration requires trusted checkpoint + request digests; unknown/damaged input never falls back to a fresh session; failed/cancelled states terminal",
+      "file": "schemas/acquisition_session_checkpoint.v1.json",
+      "id": "SCHEMA-ACQ-SESSION-CHECKPOINT-001",
+      "schema": "fss.acquisition.session_checkpoint.v1"
+    },
+    {
       "authority": "compatibility",
       "compatibilityRule": "exact tuple only; invalidator transitions revoke/degrade",
       "file": "schemas/adapter_compatibility_certificate.v1.json",

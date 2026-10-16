@@ -1,3 +1,4 @@
+# Local DSR/direct receipts are authoritative. GitHub-hosted execution is supplementary only.
 # Supplementary native fixture feedback, never a substitute for DSR qualification.
 name: Acquisition recovery reference
 
@@ -28,6 +29,8 @@ jobs:
       CARGO_NET_OFFLINE: 'true'
     steps:
       - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+      - name: Execute repository-owned Rust lane
+        run: bash scripts/qualify.sh --lane rust --receipt-dir "${{ runner.temp }}/qualification-receipt"
       - name: Provision the pinned compiler
         run: bash scripts/bootstrap_toolchain.sh
       - name: Exercise acquisition and cold recovery contracts

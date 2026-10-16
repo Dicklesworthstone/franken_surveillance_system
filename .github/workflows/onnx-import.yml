@@ -1,3 +1,4 @@
+# Local DSR/direct receipts are authoritative. GitHub-hosted execution is supplementary only.
 # Supplementary native feedback only; local DSR receipts remain release authority.
 name: Native ONNX import regressions
 
@@ -29,7 +30,9 @@ jobs:
       CARGO_PROFILE_TEST_DEBUG: '0'
       CARGO_NET_OFFLINE: 'true'
     steps:
-      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+      - name: Execute repository-owned Rust lane
+        run: bash scripts/qualify.sh --lane rust --receipt-dir "${{ runner.temp }}/qualification-receipt"
         with:
           persist-credentials: false
       - name: Provision pinned native toolchain
@@ -46,7 +49,7 @@ jobs:
           git archive HEAD | gzip -1 > "$RUNNER_TEMP/onnx-source/source.tar.gz"
           git rev-parse HEAD > "$RUNNER_TEMP/onnx-source/commit.txt"
           (cd "$RUNNER_TEMP/onnx-source" && sha256sum source.tar.gz > SHA256SUMS)
-      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         if: always()
         with:
           name: onnx-native-source
