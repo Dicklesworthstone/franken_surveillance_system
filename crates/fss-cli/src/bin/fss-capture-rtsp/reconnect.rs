@@ -1,5 +1,5 @@
 #![forbid(unsafe_code)]
-//! Finite, explicitly approved reconnects through the unchanged native capture owners.
+//! Finite, explicitly approved reconnects through the native capture owners.
 //! No archive is overwritten or automatically recovered; every retry starts a new epoch.
 
 use std::collections::BTreeMap;
@@ -17,7 +17,7 @@ use super::plan::{self, Options};
 #[path = "recovery.rs"]
 pub(super) mod recovery;
 
-pub(super) const MAX_ARGUMENTS: usize = plan::MAX_ARGUMENTS + 16;
+pub(super) const MAX_ARGUMENTS: usize = plan::MAX_ARGUMENTS + 18;
 const FORMAT: &str = "fss.rtsp_reconnect_cli.v1";
 const MAX_CONTROL_REPORT_BYTES: usize = 262_144;
 const POLICY: &str = "bounded-owner-approved-attempts:literal-peer-only:fresh-generation-and-clocks:\
@@ -32,7 +32,8 @@ const CAMPAIGN_POLICY: &str = "fss.rtsp_capture_campaign.v1:continue-after-settl
 every-approved-attempt-is-independent:all-attempts-must-settle-for-completion";
 pub(super) const HELP: &str = "fss-capture-rtsp reconnect [ordinary capture options]\n\
   --max-attempts 3 --retry-delay-ms 250 --retry-max-delay-ms 5000\n\
-  [--progress-timeout-ms 5000] [--continue-after-success yes]\n\
+  [--progress-timeout-ms 5000] [--capture-duration-ms 10000]\n\
+  [--continue-after-success yes]\n\
 \n\
 Without --approve: pure JSON preview of EVERY possible attempt and aggregate ceilings.\n\
 Approve the outer plan, not an individual attempt. The ordinary single-attempt mode is unchanged.\n\
@@ -49,8 +50,22 @@ only after normal archive completion. It asserts neither camera outage nor sourc
 Use --max-attempts 1 to supervise without reconnecting. Omit the option for legacy behavior.\n\
 Authentication, credentials, revocation, cancellation, timing/protocol faults, exhausted\n\
 budgets, output failure, and incomplete archive work STOP the run. Recovery remains explicit.\n\
-By default a successful attempt stops the run. --stop-after-pictures is a PER-ATTEMPT target;\n\
-partial captures are reported separately, never joined into a continuous recording.\n\
+\n\
+--capture-duration-ms optionally stops each attempt after owner-clock elapsed time from PLAY.\n\
+It includes storage pauses and is NOT renewed by pictures. --stop-after-pictures becomes an\n\
+alternate successful stop and a hard picture ceiling. Whichever approved boundary occurs first\n\
+stops intake, seals only the already-collected prefix, and drains the archive normally.\n\
+Success requires nonempty durable pictures, a complete catalog and settled publication work.\n\
+A duration with no collected pictures fails; it is not EOF, absence or permission to retry.\n\
+An earlier progress timeout (including a tie) remains a failure, never timed success.\n\
+Duration is bounded to 1..600000 ms and must be LESS than --timeout-ms. Leave room for\n\
+negotiation and sealing: the original hard network deadline and drain allowance still apply.\n\
+This is not an exact camera-time slice or a guarantee of continuous scene coverage.\n\
+Use --max-attempts 1 for one timed session, or --continue-after-success yes for a finite campaign.\n\
+Repeat the duration option unchanged when previewing offline recovery of its stores.\n\
+\n\
+By default a successful attempt stops the run. Without a duration, --stop-after-pictures is a\n\
+PER-ATTEMPT target; partial captures are reported separately, never joined into a continuous recording.\n\
 --continue-after-success yes explicitly approves a finite campaign through every planned attempt.\n\
 Each settled success permits another independent session, still subject to the attempt limit,\n\
 backoff, owner checkpoints and all original child ceilings. Failure retry rules do not change.\n\
@@ -99,6 +114,7 @@ pub(super) struct ReconnectPlan {
     retry_delay_ms: u64,
     retry_max_delay_ms: u64,
     progress_timeout_ns: Option<u64>,
+    capture_duration_ns: Option<u64>,
     continue_after_success: bool,
     recovery_timeout_ns: Option<u64>,
     index_catalogs: bool,
@@ -219,6 +235,10 @@ impl ReconnectPlan {
             .remove("--progress-timeout-ms")
             .map(|text| positive(&text, 1, 600_000).map(|ms| ms * 1_000_000))
             .transpose()?;
+        let capture_duration_ns = values
+            .remove("--capture-duration-ms")
+            .map(|text| positive(&text, 1, 600_000).map(|ms| ms * 1_000_000))
+            .transpose()?;
         let approve = values
             .remove("--approve")
             .map(|s| ContentDigest::parse(&s).map_err(|_| "invalid reconnect approval"))
@@ -226,6 +246,9 @@ impl ReconnectPlan {
         // Reuse every native codec, route, credentials and resource check before deriving any
         // attempt. The extra mode does not maintain a second version of those contracts.
         let base = Options::parse(&arguments(&values))?;
+        if capture_duration_ns.is_some_and(|duration| duration >= base.timeout_ns) {
+            return Err("capture duration must be less than the native attempt timeout");
+        }
         let first_generation = base.recording_config().scope.generation;
         first_generation
             .checked_add(count - 1)
@@ -284,6 +307,7 @@ impl ReconnectPlan {
             retry_delay_ms,
             retry_max_delay_ms,
             progress_timeout_ns,
+            capture_duration_ns,
             continue_after_success,
             recovery_timeout_ns,
             index_catalogs,
@@ -315,6 +339,27 @@ impl ReconnectPlan {
         }
     }
 
+    fn supervision(
+        &self,
+        approval: ContentDigest,
+    ) -> Result<Option<driver::Supervision>, &'static str> {
+        match (self.progress_timeout_ns, self.capture_duration_ns) {
+            (None, None) => Ok(None),
+            (Some(timeout), None) => driver::Supervision::new(timeout, approval).map(Some),
+            (timeout, Some(duration)) => {
+                driver::Supervision::with_limits(timeout, Some(duration), approval).map(Some)
+            }
+        }
+    }
+
+    fn valid_picture_total(&self, options: &Options, pictures: u64) -> bool {
+        if self.capture_duration_ns.is_some() {
+            pictures != 0 && pictures <= options.stop_after_pictures
+        } else {
+            pictures == options.stop_after_pictures
+        }
+    }
+
     // Original capture identity. Recovery binds this under its own domain plus observed stores;
     // this digest alone can never authorize a recovery operation or vice versa.
     fn digest(&self) -> Result<ContentDigest, &'static str> {
@@ -327,6 +372,12 @@ impl ReconnectPlan {
         if let Some(timeout) = self.progress_timeout_ns {
             e.text(driver::Supervision::POLICY);
             e.u64(timeout);
+        }
+        // Omission preserves the historical byte encoding, not just its policy label.
+        // A duration changes only the outer delegation; it never widens a child budget.
+        if let Some(duration) = self.capture_duration_ns {
+            e.text(driver::Supervision::TIMED_POLICY);
+            e.u64(duration);
         }
         e.u64(MAX_CONTROL_REPORT_BYTES as u64);
         e.u64(self.retry_delay_ms);
@@ -394,7 +445,24 @@ impl ReconnectPlan {
         ];
         if let Some(timeout) = self.progress_timeout_ns {
             fields.push(("progress_timeout_ns", timeout.to_string()));
-            fields.push(("supervision_policy", string(driver::Supervision::POLICY)));
+        }
+        if self.progress_timeout_ns.is_some() || self.capture_duration_ns.is_some() {
+            fields.push((
+                "supervision_policy",
+                string(if self.capture_duration_ns.is_some() {
+                    driver::Supervision::TIMED_POLICY
+                } else {
+                    driver::Supervision::POLICY
+                }),
+            ));
+        }
+        if let Some(duration) = self.capture_duration_ns {
+            fields.push(("capture_duration_ns", duration.to_string()));
+            fields.push(("duration_starts_at", string("accepted_play_owner_clock")));
+            fields.push(("duration_includes_storage_pause", "true".into()));
+            fields.push(("picture_target_is_ceiling", "true".into()));
+            fields.push(("nonempty_durable_prefix_required", "true".into()));
+            fields.push(("camera_time_asserted", "false".into()));
         }
         if self.continue_after_success {
             fields.push(("continue_after_success", "true".into()));
@@ -459,30 +527,26 @@ fn run(plan: &ReconnectPlan, effects: &mut impl Effects) -> Result<(), &'static 
         )?;
         effects.checkpoint()?;
         let outcome = effects.capture(options)?;
-        // Success alone is not successor authority: the native owner also checks pending
-        // RTSP control and every archive barrier before emitting its settled-success marker.
-        // Bind that observation to this exact child's approved target too. A nominal success
-        // cannot hide a short capture or widen the authorized picture count.
+        // The native owner proves the actual stop and publication barriers. The controller
+        // independently checks the approved picture rule: exact count in legacy mode,
+        // or a nonempty prefix no larger than the ceiling under explicit duration approval.
+        let picture_total_valid = plan.valid_picture_total(options, outcome.durable_pictures);
         let settled_success = outcome.result.is_ok()
             && !outcome.recovery_required
             && outcome.retry == Some(driver::RetryReason::SettledSuccess)
-            && outcome.durable_pictures == options.stop_after_pictures;
+            && picture_total_valid;
         let continuation_blocked = plan.continue_after_success
             && outcome.result.is_ok()
             && !settled_success;
-        // Even a legacy run that will not open another session must not report completion
-        // with unresolved archive custody or a different target. Keep the native observation
-        // separately when rejecting it; this controller does not rewrite capture evidence.
+        // Pending remote control can block a successor independently of media completion.
+        // Neither mode may hide unresolved archive work or an invalid picture total.
         let completion_invalid = outcome.result.is_ok()
-            && (outcome.recovery_required
-                || outcome.durable_pictures != options.stop_after_pictures);
+            && (outcome.recovery_required || !picture_total_valid);
         let capture_result = if completion_invalid {
             Err("ERR-CAPTURE-RTSP-STATE-001")
         } else {
             outcome.result
         };
-        // Pending remote control can block a campaign without damaging completed media.
-        // Per-attempt capture completion is distinct from campaign continuation authority.
         let attempt_result = if continuation_blocked {
             Err("ERR-CAPTURE-RTSP-STATE-001")
         } else {
@@ -534,6 +598,15 @@ fn run(plan: &ReconnectPlan, effects: &mut impl Effects) -> Result<(), &'static 
             ("durable_pictures_all_attempts", durable.to_string()),
             ("continuity_across_attempts", "false".into()),
         ];
+        if let Some(duration) = plan.capture_duration_ns {
+            finished_fields.push(("capture_duration_ns", duration.to_string()));
+            finished_fields.push(("picture_ceiling", options.stop_after_pictures.to_string()));
+            finished_fields.push((
+                "picture_ceiling_reached",
+                (outcome.durable_pictures == options.stop_after_pictures).to_string(),
+            ));
+            finished_fields.push(("camera_time_asserted", "false".into()));
+        }
         if capture_result != outcome.result {
             finished_fields.push(("native_complete", outcome.result.is_ok().to_string()));
             finished_fields.push((
@@ -713,10 +786,7 @@ pub(super) fn execute(plan: &mut ReconnectPlan) -> Result<(), &'static str> {
         generation: first.recording_config().scope.generation,
     })
     .map_err(|_| "ERR-CAPTURE-RTSP-CONFIG-001")?;
-    let supervision = plan
-        .progress_timeout_ns
-        .map(|timeout| driver::Supervision::new(timeout, approval))
-        .transpose()?;
+    let supervision = plan.supervision(approval)?;
     let mut effects = NativeEffects {
         authority,
         sequence: 0,
@@ -742,7 +812,7 @@ mod campaign_tests;
 mod custody_tests {
     use super::*;
 
-    fn approved_plan(campaign: bool) -> ReconnectPlan {
+    fn plan_arguments(campaign: bool) -> Vec<OsString> {
         let mut args: Vec<OsString> = [
             ("--root", "/owner/private/archive"),
             ("--pins", "/owner/private/pins"),
@@ -782,7 +852,12 @@ mod custody_tests {
                 OsString::from("yes"),
             ]);
         }
-        let mut plan = ReconnectPlan::parse(&args).expect("valid pure reconnect plan");
+        args
+    }
+
+    fn approved_plan(campaign: bool) -> ReconnectPlan {
+        let mut plan = ReconnectPlan::parse(&plan_arguments(campaign))
+            .expect("valid pure reconnect plan");
         plan.approve = Some(plan.digest().expect("outer approval"));
         for attempt in &mut plan.attempts {
             attempt.approve = Some(attempt.digest().expect("child approval"));
@@ -923,6 +998,129 @@ mod custody_tests {
                 assert!(terminal.contains("\"error_id\":\"ERR-CAPTURE-RTSP-STATE-001\""));
             } else {
                 assert!(terminal.contains("\"error_id\":null"));
+            }
+        }
+    }
+
+    #[test]
+    fn duration_is_bound_to_outer_approval_without_widening_native_attempts() {
+        let args = plan_arguments(false);
+        let legacy = ReconnectPlan::parse(&args).unwrap();
+        let mut timed_args = args.clone();
+        timed_args.extend([OsString::from("--capture-duration-ms"), OsString::from("1000")]);
+        let timed = ReconnectPlan::parse(&timed_args).unwrap();
+        assert_eq!(timed.capture_duration_ns, Some(1_000_000_000));
+        assert_ne!(legacy.digest().unwrap(), timed.digest().unwrap());
+        assert!(legacy.supervision(legacy.digest().unwrap()).unwrap().is_none());
+        assert!(timed.supervision(timed.digest().unwrap()).unwrap().is_some());
+        assert_eq!(legacy.maximum_capture_ns, timed.maximum_capture_ns);
+        assert_eq!(legacy.maximum_source_bytes, timed.maximum_source_bytes);
+        assert_eq!(legacy.maximum_storage_bytes, timed.maximum_storage_bytes);
+        for (before, after) in legacy.attempts.iter().zip(&timed.attempts) {
+            assert_eq!(before.digest().unwrap(), after.digest().unwrap());
+        }
+        let preview = timed.preview().unwrap();
+        for expected in [
+            "\"capture_duration_ns\":1000000000",
+            "\"duration_includes_storage_pause\":true",
+            "\"picture_target_is_ceiling\":true",
+            "\"nonempty_durable_prefix_required\":true",
+            "\"camera_time_asserted\":false",
+        ] {
+            assert!(preview.contains(expected), "missing {expected}");
+        }
+        *timed_args.last_mut().unwrap() = OsString::from("1001");
+        assert_ne!(timed.digest().unwrap(), ReconnectPlan::parse(&timed_args).unwrap().digest().unwrap());
+        timed_args.extend([OsString::from("--progress-timeout-ms"), OsString::from("100")]);
+        let combined = ReconnectPlan::parse(&timed_args).unwrap();
+        assert!(combined.supervision(combined.digest().unwrap()).unwrap().is_some());
+        assert!(combined.preview().unwrap().contains(driver::Supervision::TIMED_POLICY));
+    }
+
+    #[test]
+    fn invalid_or_unreachable_duration_is_refused_before_effects() {
+        for value in ["0", "-1", "1.5", "600001", "18446744073709551615", "bad"] {
+            let mut args = plan_arguments(false);
+            args.extend([OsString::from("--capture-duration-ms"), OsString::from(value)]);
+            assert!(ReconnectPlan::parse(&args).is_err(), "accepted {value}");
+        }
+        for duration in ["1000", "1001"] {
+            let mut args = plan_arguments(false);
+            args.extend([
+                OsString::from("--timeout-ms"), OsString::from("1000"),
+                OsString::from("--capture-duration-ms"), OsString::from(duration),
+            ]);
+            assert!(ReconnectPlan::parse(&args).is_err());
+        }
+        let mut duplicate = plan_arguments(false);
+        duplicate.extend([
+            OsString::from("--capture-duration-ms"), OsString::from("1"),
+            OsString::from("--capture-duration-ms"), OsString::from("2"),
+        ]);
+        assert!(ReconnectPlan::parse(&duplicate).is_err());
+    }
+
+    #[test]
+    fn a_legacy_approval_cannot_authorize_an_early_duration_success() {
+        let mut plan = approved_plan(false);
+        plan.capture_duration_ns = Some(1_000_000_000);
+        let mut effects = SingleOutcome::new(AttemptOutcome {
+            result: Ok(()),
+            retry: Some(driver::RetryReason::SettledSuccess),
+            recovery_required: false,
+            durable_pictures: 1,
+        });
+        assert_eq!(run(&plan, &mut effects), Err("ERR-CAPTURE-RTSP-APPROVAL-001"));
+        assert_eq!(effects.captures, 0);
+        assert!(effects.rows.is_empty());
+        plan.approve = Some(plan.digest().unwrap());
+        assert_eq!(run(&plan, &mut effects), Ok(()));
+        assert_eq!(effects.captures, 1);
+        assert!(effects.row("attempt_finished").contains("\"picture_ceiling_reached\":false"));
+    }
+
+    #[test]
+    fn timed_controller_refuses_empty_oversized_and_unsettled_successes() {
+        for campaign in [false, true] {
+            let mut plan = approved_plan(campaign);
+            plan.capture_duration_ns = Some(1_000_000_000);
+            plan.approve = Some(plan.digest().unwrap());
+            for (pictures, recovery_required) in [(0, false), (3, false), (1, true)] {
+                let mut effects = SingleOutcome::new(AttemptOutcome {
+                    result: Ok(()),
+                    retry: Some(driver::RetryReason::SettledSuccess),
+                    recovery_required,
+                    durable_pictures: pictures,
+                });
+                assert_eq!(run(&plan, &mut effects), Err("ERR-CAPTURE-RTSP-STATE-001"));
+                assert_eq!(effects.captures, 1);
+            }
+            let mut empty = SingleOutcome::new(AttemptOutcome {
+                result: Err("ERR-CAPTURE-RTSP-EMPTY-DURATION-001"),
+                retry: None,
+                recovery_required: false,
+                durable_pictures: 0,
+            });
+            assert_eq!(run(&plan, &mut empty), Err("ERR-CAPTURE-RTSP-EMPTY-DURATION-001"));
+            assert_eq!(empty.captures, 1);
+        }
+    }
+
+    #[test]
+    fn offline_recovery_retains_original_timed_capture_identity() {
+        let mut args = plan_arguments(true);
+        args.extend([OsString::from("--capture-duration-ms"), OsString::from("1000")]);
+        let original = ReconnectPlan::parse(&args).unwrap();
+        for mode in ["yes", "index"] {
+            let mut recovery_args = args.clone();
+            recovery_args.extend([OsString::from("--recover"), OsString::from(mode)]);
+            let recovery = ReconnectPlan::parse(&recovery_args).unwrap();
+            assert_eq!(original.digest().unwrap(), recovery.digest().unwrap());
+            assert_eq!(recovery.capture_duration_ns, original.capture_duration_ns);
+            for (before, after) in original.attempts.iter().zip(&recovery.attempts) {
+                assert_eq!(before.root, after.root);
+                assert_eq!(before.pins, after.pins);
+                assert_eq!(before.digest().unwrap(), after.digest().unwrap());
             }
         }
     }
