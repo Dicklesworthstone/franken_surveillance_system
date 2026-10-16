@@ -5,6 +5,10 @@
 //! backpressures the entire live path: no socket or media poll occurs until the writer is ready.
 //! Live authority is still checked, and an explicit finite storage-pause deadline is enforced.
 //! Original wire, skipped pictures, and terminal capture ownership are never called archived.
+//! A typed abrupt read failure may preserve an already-verified prefix through the SAME
+//! writer and original storage allowance; the original acquisition failure still terminates it.
+
+mod interruption;
 
 use std::fmt;
 
@@ -114,6 +118,10 @@ pub struct LiveArchiveRetirement {
     pub archive: Option<ArchiveRetirement>,
     /// A window rejected before the writer took ownership; not an admission or durability claim.
     pub unoffered_window: Option<PreparedRecording>,
+    /// Original acquisition failure when a verified prefix entered final preservation.
+    /// Preserved even when storage cancellation, expiry or publication failure supersedes it.
+    /// This never asserts source EOF, capture success, or permission to reconnect.
+    pub interruption: Option<LiveRecordingError>,
 }
 impl fmt::Debug for LiveArchiveRetirement {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
@@ -121,6 +129,7 @@ impl fmt::Debug for LiveArchiveRetirement {
             .field("recording", &self.recording.is_some())
             .field("archive", &self.archive.is_some())
             .field("unoffered_window", &self.unoffered_window.is_some())
+            .field("interruption", &self.interruption)
             .finish()
     }
 }
@@ -209,6 +218,9 @@ pub struct LiveAvcArchive<'a> {
     last_ns: u64,
     ready: bool,
     completion: Option<LiveArchiveCompletion>,
+    // An acquisition failure is not an archive-completion cause. Keep its exact
+    // terminal ownership until preservation finishes or storage itself fails.
+    interrupted: Option<interruption::InterruptedCapture>,
     finished: bool,
 }
 impl fmt::Debug for LiveAvcArchive<'_> {
@@ -216,6 +228,7 @@ impl fmt::Debug for LiveAvcArchive<'_> {
         f.debug_struct("LiveAvcArchive")
             .field("ready", &self.ready)
             .field("completion", &self.completion)
+            .field("interrupted", &self.interrupted.is_some())
             .field("finished", &self.finished)
             .field("remaining_steps", &self.remaining_steps)
             .finish_non_exhaustive()
@@ -283,6 +296,7 @@ impl<'a> LiveAvcArchive<'a> {
             last_ns: now,
             ready: false,
             completion: None,
+            interrupted: None,
             finished: false,
         })
     }
@@ -413,7 +427,7 @@ impl<'a> LiveAvcArchive<'a> {
         authority: &dyn TcpAuthority,
     ) -> Result<Option<LiveRecordingRetirement>, LiveArchiveFailure> {
         self.admit(now, authority)?;
-        if self.completion.is_some() {
+        if self.completion.is_some() || self.interrupted.is_some() {
             return Err(safe(LiveArchiveError::Closed));
         }
         let retired = self.recording.take().and_then(|mut r| r.cancel());
@@ -446,6 +460,9 @@ impl<'a> LiveAvcArchive<'a> {
                 None,
             ));
         }
+        if let Some(failure) = self.finish_interruption() {
+            return Err(failure);
+        }
         if !self.ready {
             let progress = match self
                 .writer
@@ -461,14 +478,7 @@ impl<'a> LiveAvcArchive<'a> {
                 self.storage_since_ns = None;
             }
             if matches!(&progress, ArchiveWriteProgress::Finished { .. }) {
-                let Some(cause) = self.completion else {
-                    return Err(self.fatal(LiveArchiveError::Invariant, None, None));
-                };
-                self.finished = true;
-                return Ok(LiveArchiveStep::Finished {
-                    archive: progress,
-                    cause,
-                });
+                return self.finish_archive(progress);
             }
             return Ok(LiveArchiveStep::Archive(progress));
         }
@@ -479,7 +489,7 @@ impl<'a> LiveAvcArchive<'a> {
             .poll(readiness, now, authority)
         {
             Ok(step) => step,
-            Err(error) => return Err(self.capture_failure(error)),
+            Err(error) => return self.preserve_read_failure(error, now),
         };
         match step {
             LiveRecordingStep::Capture {
@@ -535,13 +545,13 @@ impl<'a> LiveAvcArchive<'a> {
 
     /// Explicitly transfer pending work and close the socket. Never writes, repairs, or deletes.
     pub fn cancel(&mut self) -> Option<LiveArchiveRetirement> {
-        if self.writer.is_none() && self.recording.is_none() {
+        if self.writer.is_none() && self.recording.is_none() && self.interrupted.is_none() {
             return None;
         }
         Some(self.retire(None, None))
     }
     fn require_input(&self) -> Result<(), LiveArchiveFailure> {
-        if self.completion.is_some() {
+        if self.completion.is_some() || self.interrupted.is_some() {
             return Err(safe(LiveArchiveError::Closed));
         }
         if !self.ready {
@@ -576,7 +586,7 @@ impl<'a> LiveAvcArchive<'a> {
         }
         // Input retirement ends network obligations, NOT storage authority. Final publication is
         // independently admitted by PublishCancellation and the absolute publication deadline.
-        if self.completion.is_none() {
+        if self.completion.is_none() && self.interrupted.is_none() {
             let allowed = if now >= self.live_deadline_ns {
                 Err(TcpDenial::Deadline)
             } else {
@@ -620,11 +630,15 @@ impl<'a> LiveAvcArchive<'a> {
         window: Option<PreparedRecording>,
     ) -> LiveArchiveRetirement {
         let owned = self.recording.take().and_then(|mut r| r.cancel());
+        let interrupted = self.interrupted.take();
+        let interruption = interrupted.as_ref().map(|state| state.failure.reason.clone());
+        let interrupted_recording = interrupted.and_then(|state| state.failure.retirement.map(|r| *r));
         self.finished = true;
         LiveArchiveRetirement {
-            recording: recording.or(owned),
+            recording: recording.or(interrupted_recording).or(owned),
             archive: self.writer.take().map(|w| w.retire()),
             unoffered_window: window,
+            interruption,
         }
     }
 }

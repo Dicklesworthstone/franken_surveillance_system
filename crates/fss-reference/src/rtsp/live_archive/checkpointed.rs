@@ -117,6 +117,11 @@ impl<'a> CheckpointedLiveAvcArchive<'a> {
     pub fn state(&self) -> ClientState {
         self.inner.state()
     }
+    /// Original acquisition failure while its verified prefix crosses the same work barrier.
+    /// This never establishes EOF, capture success, or authority for a successor connection.
+    pub fn interruption(&self) -> Option<&LiveRecordingError> {
+        self.inner.interruption()
+    }
     /// Actual transport observations, never remote acknowledgement or durable source proof.
     pub fn totals(&self) -> Option<TcpTotals> {
         self.inner.totals()
@@ -140,7 +145,7 @@ impl<'a> CheckpointedLiveAvcArchive<'a> {
             if let Some(since) = self.inner.storage_since_ns {
                 at = at.min(since.saturating_add(self.inner.max_storage_pause_ns));
             }
-            if self.inner.completion.is_none() {
+            if self.inner.completion.is_none() && self.inner.interrupted.is_none() {
                 at = at.min(self.inner.live_deadline_ns);
             }
             return Some(at);
@@ -265,6 +270,9 @@ impl<'a> CheckpointedLiveAvcArchive<'a> {
         self.inner
             .admit(now, authority)
             .map_err(|e| self.failure(e))?;
+        if let Some(failure) = self.inner.finish_interruption() {
+            return Err(self.failure(failure));
+        }
         let Some(writer) = self.inner.writer.as_mut() else {
             return Err(self.fatal(LiveArchiveError::Invariant));
         };
@@ -281,16 +289,8 @@ impl<'a> CheckpointedLiveAvcArchive<'a> {
             self.inner.storage_since_ns = None;
         }
         if matches!(&progress, ArchiveWriteProgress::Finished { .. }) {
-            let Some(cause) = self.inner.completion else {
-                return Err(self.fatal(LiveArchiveError::Invariant));
-            };
-            self.inner.finished = true;
-            return Ok(CheckpointedLiveArchiveStep::Live(
-                LiveArchiveStep::Finished {
-                    archive: progress,
-                    cause,
-                },
-            ));
+            let step = self.inner.finish_archive(progress).map_err(|e| self.failure(e))?;
+            return Ok(CheckpointedLiveArchiveStep::Live(step));
         }
         Ok(CheckpointedLiveArchiveStep::Live(LiveArchiveStep::Archive(
             progress,
