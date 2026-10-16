@@ -112,3 +112,24 @@ test('uncertainty lens changes presentation without deleting model surfaces or c
  const a=PropertyView.prototype.geometry.call({...base,lens:'context'}),b=PropertyView.prototype.geometry.call({...base,lens:'uncertainty'});
  assert.equal(a.opaque.length,b.opaque.length);assert.equal(a.lines.length,b.lines.length);assert.equal(ts.length,7);
 });
+
+test('evidence constellation preserves correlation structure without inventing independence',()=>{
+ const first=m.evidenceConstellation(metadata.events[0]);
+ assert.equal(first.domains.length,1);
+ assert.equal(first.domains[0].references,3);
+ assert.equal(first.domains[0].supports,2);
+ assert.equal(first.domains[0].contradictions,1);
+ assert.equal(first.domains[0].uniqueObjects,3);
+ assert.equal(Object.hasOwn(first,'independentObservations'),false);
+ const synthetic={edges:[
+  {relation:'supports',digest:'a',failureDomain:'domain:b'},
+  {relation:'supports',digest:'a',failureDomain:'domain:b'},
+  {relation:'contradicts',digest:'c',failureDomain:'domain:a'},
+  {relation:'derived_from',digest:'d',failureDomain:''},
+ ]};
+ const c=m.evidenceConstellation(synthetic);
+ assert.deepEqual(c.domains.map(d=>d.name),['domain:b','Failure domain not recorded','domain:a']);
+ assert.equal(c.domains[0].repeatedReferences,1);
+ assert.equal(c.domains[1].neutral,1);
+ assert.equal(c.domains[2].contradictions,1);
+});
