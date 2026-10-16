@@ -44,7 +44,7 @@ pub(super) use attempt::{AttemptOutcome, RetryReason};
 #[path = "progress.rs"]
 mod progress;
 pub(super) use progress::Supervision;
-use progress::{RecordingProgress, Stall};
+use progress::{RecordingProgress, Stall, StopCause};
 #[path = "hevc_driver.rs"]
 mod hevc;
 #[path = "report.rs"]
@@ -68,6 +68,7 @@ enum Failure {
     Connect,
     ConnectionUnavailable,
     ProgressStalled,
+    EmptyCapture,
     Authentication,
     AuthenticationRefused,
     Credentials,
@@ -97,6 +98,7 @@ impl Failure {
             Self::Timing => "ERR-CAPTURE-RTSP-TIMING-001",
             Self::Deadline => "ERR-CAPTURE-RTSP-DEADLINE-001",
             Self::ProgressStalled => "ERR-CAPTURE-RTSP-PROGRESS-001",
+            Self::EmptyCapture => "ERR-CAPTURE-RTSP-EMPTY-DURATION-001",
             Self::Authority => "ERR-CAPTURE-RTSP-AUTHORITY-001",
             Self::WorkBudget => "ERR-CAPTURE-RTSP-WORK-001",
             Self::State => "ERR-CAPTURE-RTSP-STATE-001",
@@ -115,6 +117,7 @@ impl Failure {
             Self::WorkBudget => "work_budget",
             Self::Shortfall => "input_ended_before_target",
             Self::ProgressStalled => "recording_progress_stalled",
+            Self::EmptyCapture => "capture_duration_without_pictures",
             Self::Output => "output_failure",
             Self::Root | Self::Storage => "storage_failure",
             Self::Authority | Self::Approval => "authority_refused",
@@ -191,7 +194,8 @@ impl Owner<'_> {
         authentication_pending: bool,
         log: &mut Transcript<'_, W>,
     ) -> Result<(), Failure> {
-        // A progress timeout cannot hide a revoked credential or live network grant.
+        // Neither a progress timeout nor a planned stop can hide a revoked credential
+        // or live network grant, or turn an unresolved authentication request into success.
         let now = self.now()?;
         self.checkpoint(&self.binding, TcpOperation::Poll, now, self.live_deadline)
             .map_err(|denial| match denial {
@@ -202,7 +206,11 @@ impl Owner<'_> {
             return Err(Failure::AuthenticationRefused);
         }
         let policy = self.supervision.ok_or(Failure::State)?;
-        log.emit("recording_stalled", stall.report(policy), false)
+        let kind = match stall.cause {
+            StopCause::ProgressStalled => "recording_stalled",
+            StopCause::CaptureDuration => "capture_duration_elapsed",
+        };
+        log.emit(kind, stall.report(policy), false)
     }
 
     fn now(&self) -> Result<u64, Failure> {
@@ -673,6 +681,63 @@ fn begin_archive_drain(
     owner.begin_drain()
 }
 
+/// Completion is evaluated only after the native archive emits Finished. A duration
+/// observation does not bypass picture, index, or observed-final-snapshot barriers.
+fn finished_result(
+    cause: LiveArchiveCompletion,
+    stop: Option<StopCause>,
+    stats: &Statistics,
+    target: u64,
+) -> Result<(), Failure> {
+    if cause != LiveArchiveCompletion::OwnerStopped
+        || stats.durable_pictures != stats.collected_pictures
+        || stats.indexed_windows != stats.durable_windows
+        || stats.snapshot_digest.is_none()
+    {
+        return Err(Failure::Shortfall);
+    }
+    match stop {
+        Some(StopCause::ProgressStalled) => Err(Failure::ProgressStalled),
+        Some(StopCause::CaptureDuration) if stats.durable_pictures == 0 => {
+            Err(Failure::EmptyCapture)
+        }
+        Some(StopCause::CaptureDuration) if stats.collected_pictures <= target => Ok(()),
+        None if stats.collected_pictures == target => Ok(()),
+        _ => Err(Failure::Shortfall),
+    }
+}
+
+fn finish_attempt<W: Write>(
+    cause: LiveArchiveCompletion,
+    stop: Option<StopCause>,
+    stats: &Statistics,
+    target: u64,
+    log: &mut Transcript<'_, W>,
+) -> Result<(), Failure> {
+    finished_result(cause, stop, stats, target)?;
+    if stop == Some(StopCause::CaptureDuration) {
+        // This receipt follows publication, unlike the earlier timer observation. It
+        // asserts only an owner-timed, nonempty durable prefix, never scene coverage.
+        log.emit(
+            "capture_duration_complete",
+            object(&[
+                ("durable_pictures", stats.durable_pictures.to_string()),
+                ("picture_ceiling", target.to_string()),
+                (
+                    "picture_ceiling_reached",
+                    (stats.durable_pictures == target).to_string(),
+                ),
+                ("archive_drained", "true".into()),
+                ("source_eof_asserted", "false".into()),
+                ("camera_time_asserted", "false".into()),
+                ("absence_certifiable", "false".into()),
+            ]),
+            false,
+        )?;
+    }
+    Ok(())
+}
+
 fn drive<W: Write>(
     options: &Options,
     capture: &mut JournaledLiveAvcArchive<'_, '_>,
@@ -691,7 +756,7 @@ fn drive<W: Write>(
     let mut sealing = false;
     let mut sealed = false;
     let mut draining = false;
-    let mut progress_stalled = false;
+    let mut stop_cause = None;
     let mut progress = RecordingProgress::new(owner.supervision);
     // Before a challenge is accepted the existing native API needs only nonsecret
     // placeholders. The owner's private lease is borrowed solely for signed requests.
@@ -725,7 +790,7 @@ fn drive<W: Write>(
             owner.admit_stall(stall, challenge.is_some(), log)?;
             // Stop socket readiness immediately. Only already-collected pictures may
             // enter the existing explicit seal and independently journaled final drain.
-            progress_stalled = true;
+            stop_cause = Some(stall.cause);
             sealing = true;
             next_command = None;
         }
@@ -815,7 +880,7 @@ fn drive<W: Write>(
                         "request_queued",
                         object(&[
                             ("command", string(command_name(request.command))),
-                            ("method", string(request.command.wire_method())),
+                            ("method", string(command.command.wire_method())),
                             ("cseq", request.cseq.to_string()),
                             ("bytes", request.bytes.to_string()),
                             (
@@ -835,8 +900,8 @@ fn drive<W: Write>(
             }
         }
 
-        // Once the requested count is consumed, no additional socket operation is enabled.
-        // Buffered native work may drain only far enough to publish the sealed prefix.
+        // Once either approved stop condition is observed, no additional socket operation
+        // is enabled. Buffered work may drain only to publish the already-collected prefix.
         let readiness = SocketReadiness {
             readable: !sealing && !draining,
             writable: !sealing && !draining,
@@ -938,22 +1003,13 @@ fn drive<W: Write>(
                 if stats.collected_pictures != 0 {
                     timing.finish().map_err(|_| Failure::Timing)?;
                 }
-                if progress_stalled
-                    && cause == LiveArchiveCompletion::OwnerStopped
-                    && stats.durable_pictures == stats.collected_pictures
-                    && stats.indexed_windows == stats.durable_windows
-                {
-                    return Err(Failure::ProgressStalled);
-                }
-                return if cause == LiveArchiveCompletion::OwnerStopped
-                    && stats.collected_pictures == options.stop_after_pictures
-                    && stats.durable_pictures == stats.collected_pictures
-                    && stats.indexed_windows == stats.durable_windows
-                {
-                    Ok(())
-                } else {
-                    Err(Failure::Shortfall)
-                };
+                return finish_attempt(
+                    cause,
+                    stop_cause,
+                    stats,
+                    options.stop_after_pictures,
+                    log,
+                );
             }
             JournaledLiveArchiveStep::Live(LiveArchiveStep::Recording(step)) => match *step {
                 LiveRecordingStep::Network(step) => {
@@ -1355,4 +1411,155 @@ pub(super) fn execute_supervised_attempt(
     log.emit("terminal", terminal(options, &stats, &result), true)
         .map_err(Failure::code)?;
     Ok(AttemptOutcome::new(result, &stats))
+}
+
+#[cfg(test)]
+mod completion_tests {
+    use super::*;
+
+    fn settled() -> Statistics {
+        Statistics {
+            collected_pictures: 3,
+            durable_pictures: 3,
+            durable_windows: 1,
+            indexed_windows: 1,
+            snapshot_digest: Some(ContentDigest::sha256(b"finished archive")),
+            ..Statistics::default()
+        }
+    }
+
+    #[test]
+    fn timed_nonempty_prefix_can_finish_before_the_approved_picture_ceiling() {
+        let stats = settled();
+        assert!(finished_result(
+            LiveArchiveCompletion::OwnerStopped,
+            Some(StopCause::CaptureDuration),
+            &stats,
+            10,
+        )
+        .is_ok());
+        assert!(finished_result(LiveArchiveCompletion::OwnerStopped, None, &stats, 10).is_err());
+        assert!(finished_result(LiveArchiveCompletion::OwnerStopped, None, &stats, 3).is_ok());
+        assert!(finished_result(
+            LiveArchiveCompletion::OwnerStopped,
+            Some(StopCause::CaptureDuration),
+            &stats,
+            2,
+        )
+        .is_err());
+    }
+
+    #[test]
+    fn a_progress_failure_is_not_promoted_to_timed_capture_success() {
+        assert!(matches!(
+            finished_result(
+                LiveArchiveCompletion::OwnerStopped,
+                Some(StopCause::ProgressStalled),
+                &settled(),
+                3,
+            ),
+            Err(Failure::ProgressStalled)
+        ));
+    }
+
+    #[test]
+    fn duration_cannot_skip_picture_index_or_final_snapshot_barriers() {
+        for condition in 0..3 {
+            let mut stats = settled();
+            match condition {
+                0 => stats.collected_pictures += 1,
+                1 => stats.indexed_windows = 0,
+                _ => stats.snapshot_digest = None,
+            }
+            assert!(finished_result(
+                LiveArchiveCompletion::OwnerStopped,
+                Some(StopCause::CaptureDuration),
+                &stats,
+                10,
+            )
+            .is_err());
+        }
+    }
+
+    #[test]
+    fn empty_duration_is_neither_success_nor_source_eof_nor_retry_permission() {
+        let stats = Statistics {
+            snapshot_digest: Some(ContentDigest::sha256(b"empty finished archive")),
+            ..Statistics::default()
+        };
+        let result = finished_result(
+            LiveArchiveCompletion::OwnerStopped,
+            Some(StopCause::CaptureDuration),
+            &stats,
+            10,
+        );
+        assert!(matches!(result, Err(Failure::EmptyCapture)));
+        assert!(!stats.input_ended);
+        let outcome = AttemptOutcome::new(result, &stats);
+        assert!(outcome.result.is_err());
+        assert!(outcome.retry.is_none());
+        assert!(!outcome.recovery_required);
+    }
+
+    #[test]
+    fn publication_receipt_distinguishes_timed_success_from_reaching_picture_target() {
+        let mut bytes = Vec::new();
+        let mut log = Transcript {
+            out: &mut bytes,
+            used: 0,
+            maximum: 65_536,
+            sequence: 0,
+            io_failed: false,
+        };
+        finish_attempt(
+            LiveArchiveCompletion::OwnerStopped,
+            Some(StopCause::CaptureDuration),
+            &settled(),
+            10,
+            &mut log,
+        )
+        .unwrap();
+        let text = String::from_utf8(bytes).unwrap();
+        for expected in [
+            "\"kind\":\"capture_duration_complete\"",
+            "\"picture_ceiling_reached\":false",
+            "\"archive_drained\":true",
+            "\"source_eof_asserted\":false",
+            "\"camera_time_asserted\":false",
+            "\"absence_certifiable\":false",
+        ] {
+            assert!(text.contains(expected), "missing {expected}: {text}");
+        }
+    }
+
+    #[test]
+    fn failed_output_cannot_report_a_successful_timed_attempt() {
+        struct Refused;
+        impl Write for Refused {
+            fn write(&mut self, _: &[u8]) -> io::Result<usize> {
+                Err(io::ErrorKind::BrokenPipe.into())
+            }
+            fn flush(&mut self) -> io::Result<()> {
+                Ok(())
+            }
+        }
+        let mut sink = Refused;
+        let mut log = Transcript {
+            out: &mut sink,
+            used: 0,
+            maximum: 65_536,
+            sequence: 0,
+            io_failed: false,
+        };
+        assert!(matches!(
+            finish_attempt(
+                LiveArchiveCompletion::OwnerStopped,
+                Some(StopCause::CaptureDuration),
+                &settled(),
+                10,
+                &mut log,
+            ),
+            Err(Failure::Output)
+        ));
+    }
 }
