@@ -171,9 +171,8 @@ fn neither_command_can_publish_or_retain_authority_with_fusion() {
 }
 
 #[test]
-fn streaming_cannot_silently_drop_requested_fusion() {
+fn unsupported_streaming_modes_cannot_silently_drop_requested_fusion() {
     for (command, flags) in [
-        ("watch", vec!["--stream-watch"]),
         (
             "watch",
             vec![
