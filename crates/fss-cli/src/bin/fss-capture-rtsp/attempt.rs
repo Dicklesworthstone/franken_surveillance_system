@@ -39,7 +39,11 @@ impl AttemptOutcome {
         // An observed normal archive finish proves the native drain completed. Otherwise
         // only an attempt that never started archive work may be abandoned automatically.
         // Confirmed work pins are recovery inputs, NOT permission to start a new capture.
+        // Matching positive picture counts are still observed work, even when teardown
+        // leaves no window or pin hint. They require the normal archive snapshot too.
         let work_never_started = stats.pins.last_confirmed().is_none()
+            && stats.collected_pictures == 0
+            && stats.durable_pictures == 0
             && stats.durable_windows == 0
             && stats.unpublished_prepared_bytes == 0;
         let recovery_required = stats.pins.candidate().is_some()
@@ -233,6 +237,31 @@ mod tests {
             assert!(outcome.recovery_required);
             assert!(outcome.retry.is_none());
             assert_eq!(outcome.result, Err(failure.code()));
+        }
+    }
+
+    #[test]
+    fn balanced_positive_picture_counts_still_require_an_archive_snapshot() {
+        for pictures in [1, 4, u64::MAX] {
+            for result in [
+                Err(Failure::Shortfall),
+                Err(Failure::ConnectionUnavailable),
+                Err(Failure::ProgressStalled),
+                Ok(()),
+            ] {
+                let stats = Statistics {
+                    input_ended: true,
+                    connection_attempted: true,
+                    collected_pictures: pictures,
+                    durable_pictures: pictures,
+                    ..Statistics::default()
+                };
+                let outcome = AttemptOutcome::new(result, &stats);
+                assert!(outcome.recovery_required, "{result:?}: {pictures} pictures");
+                assert!(outcome.retry.is_none());
+                assert_eq!(outcome.result, result.map_err(Failure::code));
+                assert_eq!(outcome.durable_pictures, pictures);
+            }
         }
     }
 
