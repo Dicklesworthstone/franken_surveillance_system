@@ -470,7 +470,13 @@ fn run(plan: &ReconnectPlan, effects: &mut impl Effects) -> Result<(), &'static 
         let continuation_blocked = plan.continue_after_success
             && outcome.result.is_ok()
             && !settled_success;
-        let attempt_result = if continuation_blocked {
+        // Even a legacy run that will not open another session must not report completion
+        // with unresolved archive custody or a different target. Keep the native observation
+        // separately when rejecting it; this controller does not rewrite capture evidence.
+        let completion_invalid = outcome.result.is_ok()
+            && (outcome.recovery_required
+                || outcome.durable_pictures != options.stop_after_pictures);
+        let attempt_result = if completion_invalid || continuation_blocked {
             Err("ERR-CAPTURE-RTSP-STATE-001")
         } else {
             outcome.result
@@ -500,10 +506,10 @@ fn run(plan: &ReconnectPlan, effects: &mut impl Effects) -> Result<(), &'static 
             ("approval", string(&approval.to_text())),
             ("attempt", (index + 1).to_string()),
             ("attempt_approval", string(&child_approval.to_text())),
-            ("complete", outcome.result.is_ok().to_string()),
+            ("complete", attempt_result.is_ok().to_string()),
             (
                 "error_id",
-                outcome.result.err().map_or_else(|| "null".into(), string),
+                attempt_result.err().map_or_else(|| "null".into(), string),
             ),
             (
                 "retry_reason",
@@ -521,6 +527,13 @@ fn run(plan: &ReconnectPlan, effects: &mut impl Effects) -> Result<(), &'static 
             ("durable_pictures_all_attempts", durable.to_string()),
             ("continuity_across_attempts", "false".into()),
         ];
+        if attempt_result != outcome.result {
+            finished_fields.push(("native_complete", outcome.result.is_ok().to_string()));
+            finished_fields.push((
+                "native_error_id",
+                outcome.result.err().map_or_else(|| "null".into(), string),
+            ));
+        }
         if plan.continue_after_success {
             finished_fields.push(("settled_success", settled_success.to_string()));
             finished_fields.push(("continuation_blocked", continuation_blocked.to_string()));
@@ -541,7 +554,7 @@ fn run(plan: &ReconnectPlan, effects: &mut impl Effects) -> Result<(), &'static 
             let terminal_result = if plan.continue_after_success {
                 attempt_result.and(first_failure.map_or(Ok(()), |(_, error)| Err(error)))
             } else {
-                outcome.result
+                attempt_result
             };
             let mut terminal_fields = vec![
                 ("approval", string(&approval.to_text())),
@@ -580,12 +593,12 @@ fn run(plan: &ReconnectPlan, effects: &mut impl Effects) -> Result<(), &'static 
                         "first_error_id",
                         first_failure.map_or_else(|| "null".into(), |(_, error)| string(error)),
                     ),
-                    (
-                        "error_id",
-                        terminal_result.err().map_or_else(|| "null".into(), string),
-                    ),
                 ]);
             }
+            terminal_fields.push((
+                "error_id",
+                terminal_result.err().map_or_else(|| "null".into(), string),
+            ));
             effects.emit("reconnect_terminal", object(&terminal_fields))?;
             return terminal_result;
         }
@@ -717,3 +730,177 @@ mod supervision_tests;
 #[cfg(test)]
 #[path = "reconnect_campaign_tests.rs"]
 mod campaign_tests;
+
+#[cfg(test)]
+mod custody_tests {
+    use super::*;
+
+    fn approved_plan(campaign: bool) -> ReconnectPlan {
+        let mut args: Vec<OsString> = [
+            ("--root", "/owner/private/archive"),
+            ("--pins", "/owner/private/pins"),
+            ("--peer", "127.0.0.1:8554"),
+            ("--authority", "camera.test:8554"),
+            ("--presentation", "/camera/main"),
+            ("--control-root", "/camera"),
+            ("--sensor-id", "sensor:camera"),
+            ("--stream-id", "stream:main"),
+            ("--generation", "1"),
+            ("--ingress", "1"),
+            ("--ssrc", "7"),
+            ("--frame-duration-ticks", "3600"),
+            ("--stop-after-pictures", "2"),
+            ("--max-attempts", "2"),
+            ("--owner-authorized", "yes"),
+            ("--plaintext", "yes"),
+            ("--retain-originals", "yes"),
+        ]
+        .into_iter()
+        .flat_map(|(key, value)| [OsString::from(key), OsString::from(value)])
+        .collect();
+        for (key, digit) in [
+            ("--anchor", "1"),
+            ("--receive-clock", "2"),
+            ("--timing-evidence", "3"),
+            ("--journal-id", "4"),
+        ] {
+            args.extend([
+                OsString::from(key),
+                OsString::from(format!("sha256:{}", digit.repeat(64))),
+            ]);
+        }
+        if campaign {
+            args.extend([
+                OsString::from("--continue-after-success"),
+                OsString::from("yes"),
+            ]);
+        }
+        let mut plan = ReconnectPlan::parse(&args).expect("valid pure reconnect plan");
+        plan.approve = Some(plan.digest().expect("outer approval"));
+        for attempt in &mut plan.attempts {
+            attempt.approve = Some(attempt.digest().expect("child approval"));
+        }
+        plan
+    }
+
+    struct SingleOutcome {
+        outcome: Option<AttemptOutcome>,
+        captures: usize,
+        rows: Vec<(String, String)>,
+    }
+
+    impl SingleOutcome {
+        fn new(outcome: AttemptOutcome) -> Self {
+            Self {
+                outcome: Some(outcome),
+                captures: 0,
+                rows: Vec::new(),
+            }
+        }
+
+        fn row(&self, kind: &str) -> &str {
+            let mut rows = self.rows.iter().filter(|(actual, _)| actual == kind);
+            let (_, detail) = rows.next().expect("required control report");
+            assert!(rows.next().is_none(), "duplicate {kind}");
+            detail
+        }
+    }
+
+    impl Effects for SingleOutcome {
+        fn checkpoint(&mut self) -> Result<(), &'static str> {
+            Ok(())
+        }
+
+        fn emit(&mut self, kind: &str, detail: String) -> Result<(), &'static str> {
+            self.rows.push((kind.into(), detail));
+            Ok(())
+        }
+
+        fn capture(&mut self, options: &Options) -> Result<AttemptOutcome, &'static str> {
+            assert_eq!(options.approve, Some(options.digest().expect("child approval")));
+            self.captures += 1;
+            Ok(self.outcome.take().expect("no successor capture may run"))
+        }
+
+        fn pause(&mut self, _milliseconds: u64) -> Result<(), &'static str> {
+            panic!("unsettled custody must not enter backoff")
+        }
+    }
+
+    #[test]
+    fn reconnect_rejects_invalid_native_success_in_both_modes() {
+        for campaign in [false, true] {
+            let plan = approved_plan(campaign);
+            for (recovery_required, durable_pictures) in [
+                (true, 2),
+                (false, 0),
+                (false, 1),
+                (false, 3),
+                (false, u64::MAX),
+            ] {
+                let mut effects = SingleOutcome::new(AttemptOutcome {
+                    result: Ok(()),
+                    retry: Some(driver::RetryReason::SettledSuccess),
+                    recovery_required,
+                    durable_pictures,
+                });
+                assert_eq!(run(&plan, &mut effects), Err("ERR-CAPTURE-RTSP-STATE-001"));
+                assert_eq!(effects.captures, 1);
+                let finished = effects.row("attempt_finished");
+                assert!(finished.contains("\"complete\":false"));
+                assert!(finished.contains("\"native_complete\":true"));
+                assert!(finished.contains("\"native_error_id\":null"));
+                assert!(finished.contains("\"retrying\":false"));
+                assert!(finished.contains("\"error_id\":\"ERR-CAPTURE-RTSP-STATE-001\""));
+                let terminal = effects.row("reconnect_terminal");
+                assert!(terminal.contains("\"complete\":false"));
+                assert!(terminal.contains("\"error_id\":\"ERR-CAPTURE-RTSP-STATE-001\""));
+                assert!(terminal.contains(&format!(
+                    "\"recovery_required\":{recovery_required}"
+                )));
+                if campaign {
+                    assert!(terminal.contains("\"successful_attempts\":0"));
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn native_storage_failure_is_not_replaced_by_a_controller_error() {
+        for campaign in [false, true] {
+            let plan = approved_plan(campaign);
+            let mut effects = SingleOutcome::new(AttemptOutcome {
+                result: Err("ERR-CAPTURE-RTSP-STORAGE-001"),
+                retry: Some(driver::RetryReason::SourceEnded),
+                recovery_required: true,
+                durable_pictures: 1,
+            });
+            assert_eq!(
+                run(&plan, &mut effects),
+                Err("ERR-CAPTURE-RTSP-STORAGE-001")
+            );
+            assert_eq!(effects.captures, 1);
+            assert!(effects.row("attempt_finished").contains(
+                "\"error_id\":\"ERR-CAPTURE-RTSP-STORAGE-001\""
+            ));
+            assert!(effects.row("reconnect_terminal").contains(
+                "\"error_id\":\"ERR-CAPTURE-RTSP-STORAGE-001\""
+            ));
+        }
+    }
+
+    #[test]
+    fn legacy_media_completion_does_not_require_successor_authority() {
+        let plan = approved_plan(false);
+        let mut effects = SingleOutcome::new(AttemptOutcome {
+            result: Ok(()),
+            retry: None,
+            recovery_required: false,
+            durable_pictures: 2,
+        });
+        assert_eq!(run(&plan, &mut effects), Ok(()));
+        assert_eq!(effects.captures, 1);
+        assert!(effects.row("reconnect_terminal").contains("\"complete\":true"));
+        assert!(effects.row("reconnect_terminal").contains("\"error_id\":null"));
+    }
+}
