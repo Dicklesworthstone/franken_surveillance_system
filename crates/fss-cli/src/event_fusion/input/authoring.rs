@@ -26,6 +26,32 @@ impl EventFusionProfile {
         cascade: ContentDigest,
         coverage: &BTreeSet<ContentDigest>,
     ) -> Result<Self> {
+        Self::from_counts_scoped(bytes, expected, plan, cascade, coverage, None)
+    }
+
+    /// Author a version-two, analysis-root-bound whole-recording watch profile. The supplied
+    /// identities must be taken from the complete native report, never invented coverage.
+    /// Counts remain an explicit owner applicability assertion, not active calibration policy.
+    pub fn from_long_watch_counts_json(
+        bytes: &[u8],
+        expected: ContentDigest,
+        analysis: ContentDigest,
+        detector_recipe: ContentDigest,
+        analysis_root: ContentDigest,
+    ) -> Result<Self> {
+        Self::from_counts_scoped(
+            bytes, expected, analysis, detector_recipe, &BTreeSet::new(), Some(analysis_root),
+        )
+    }
+
+    fn from_counts_scoped(
+        bytes: &[u8],
+        expected: ContentDigest,
+        plan: ContentDigest,
+        cascade: ContentDigest,
+        coverage: &BTreeSet<ContentDigest>,
+        long_watch_root: Option<ContentDigest>,
+    ) -> Result<Self> {
         if bytes.is_empty() || bytes.len() > MAX_PROFILE_BYTES {
             return Err(EventFusionError::Limit);
         }
@@ -34,7 +60,9 @@ impl EventFusionProfile {
         {
             return Err(EventFusionError::Profile);
         }
-        if coverage.is_empty() || coverage.len() > 8 {
+        if (long_watch_root.is_none() && (coverage.is_empty() || coverage.len() > 8))
+            || (long_watch_root.is_some() && !coverage.is_empty())
+        {
             return Err(EventFusionError::Profile);
         }
         let text = std::str::from_utf8(bytes).map_err(|_| EventFusionError::Profile)?;
@@ -67,6 +95,10 @@ impl EventFusionProfile {
             Value::Array(coverage.iter().map(text_value).collect()),
         );
         profile.insert("calibrations".to_owned(), Value::Array(tables));
+        if let Some(root) = long_watch_root {
+            profile.insert("schema".to_owned(), text_value(LONG_WATCH_SCHEMA));
+            profile.insert("long_watch_analysis_root".to_owned(), text_value(root));
+        }
         let json = encode(&Value::Object(profile))?;
         Self::from_json(json.as_bytes(), ContentDigest::sha256(json.as_bytes()))
     }
@@ -89,7 +121,7 @@ impl EventFusionProfile {
                 ("calibration", calibration_value(&binding.calibration)?),
             ]));
         }
-        encode(&fields([
+        let mut document = fields([
             ("schema", text_value(SCHEMA)),
             ("plan_digest", text_value(spec.plan_digest)),
             ("cascade_digest", text_value(spec.cascade_digest)),
@@ -131,7 +163,15 @@ impl EventFusionProfile {
                 ]),
             ),
             ("calibrations", Value::Array(calibrations)),
-        ]))
+        ]);
+        if let Some(root) = self.long_watch_analysis_root() {
+            let Value::Object(fields) = &mut document else {
+                return Err(EventFusionError::Profile);
+            };
+            fields.insert("schema".to_owned(), text_value(LONG_WATCH_SCHEMA));
+            fields.insert("long_watch_analysis_root".to_owned(), text_value(root));
+        }
+        encode(&document)
     }
 }
 
