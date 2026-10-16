@@ -163,7 +163,7 @@ fn drive<W: Write>(
     let mut sealing = false;
     let mut sealed = false;
     let mut draining = false;
-    let mut progress_stalled = false;
+    let mut stop_cause = None;
     let mut progress = RecordingProgress::new(owner.supervision);
     loop {
         if stats.steps >= options.max_steps {
@@ -191,7 +191,9 @@ fn drive<W: Write>(
                 timing.finish().map_err(|_| Failure::Timing)?;
             }
             owner.admit_stall(stall, capture.requires_authentication(), log)?;
-            progress_stalled = true;
+            // A planned duration is not a progress failure. Both use the same explicit
+            // seal, original-source accounting, independent pins and final catalog drain.
+            stop_cause = Some(stall.cause);
             sealing = true;
         }
         if stats.collected_pictures == options.stop_after_pictures && !draining {
@@ -267,7 +269,7 @@ fn drive<W: Write>(
                         "checkpoint_candidate",
                         object(&[
                             ("pin", pin_json(receipt.pin())),
-                            ("journal_anchor", anchor_json(receipt.anchor())),
+                            ("journal_anchor", anchor_json(pin_receipt.anchor())),
                             ("work_durable", "false".into()),
                         ]),
                         false,
@@ -342,22 +344,13 @@ fn drive<W: Write>(
                 if stats.collected_pictures != 0 {
                     timing.finish().map_err(|_| Failure::Timing)?;
                 }
-                if progress_stalled
-                    && cause == LiveArchiveCompletion::OwnerStopped
-                    && stats.durable_pictures == stats.collected_pictures
-                    && stats.indexed_windows == stats.durable_windows
-                {
-                    return Err(Failure::ProgressStalled);
-                }
-                return if cause == LiveArchiveCompletion::OwnerStopped
-                    && stats.collected_pictures == options.stop_after_pictures
-                    && stats.durable_pictures == stats.collected_pictures
-                    && stats.indexed_windows == stats.durable_windows
-                {
-                    Ok(())
-                } else {
-                    Err(Failure::Shortfall)
-                };
+                return finish_attempt(
+                    cause,
+                    stop_cause,
+                    stats,
+                    options.stop_after_pictures,
+                    log,
+                );
             }
             LiveHevcArchiveStep::Recording(step) => match *step {
                 AutomaticHevcRecordingStep::Queued(request) => {
