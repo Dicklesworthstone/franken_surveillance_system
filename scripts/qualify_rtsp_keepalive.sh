@@ -16,5 +16,5 @@ cargo +nightly-2026-08-31 test --no-fail-fast --locked --offline -p fss-referenc
   --test rtsp_read_reset_contract || status=1
 cargo +nightly-2026-08-31 test --no-fail-fast --locked --offline -p fss-cli \
   --bin fss-capture-rtsp --test capture_rtsp_keepalive_cli \
-  --test capture_rtsp_reconnect_cli || status=1
+  --test capture_rtsp_reconnect_cli --test capture_rtsp_reset_cli || status=1
 exit "$status"

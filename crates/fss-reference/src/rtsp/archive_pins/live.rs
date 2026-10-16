@@ -168,6 +168,11 @@ impl<'a, 'p> JournaledLiveAvcArchive<'a, 'p> {
     pub fn totals(&self) -> Option<TcpTotals> {
         self.inner.as_ref().and_then(|i| i.totals())
     }
+    /// Original acquisition failure while final preservation is still being driven.
+    /// Metadata and source publication retain their independent journal barriers.
+    pub fn interruption(&self) -> Option<&crate::rtsp::live_avc::recording::LiveRecordingError> {
+        self.inner.as_ref().and_then(|i| i.interruption())
+    }
     /// Existing fixed deadlines; internal pin acknowledgement cannot extend a lease or pause.
     pub fn next_wake_ns(&self) -> Option<u64> {
         if self.finished {

@@ -775,6 +775,29 @@ fn drive<W: Write>(
         stats.steps += 1;
         stats.observe(capture);
         let now = owner.now()?;
+        if !draining && capture.interruption().is_some() {
+            // The native owner has already retired the socket and admitted only
+            // an original-source-verified prefix. Do not prepare another command,
+            // borrow credentials, synthesize an owner stop, or reset its resource
+            // ceilings. The original source failure remains terminal after drain.
+            next_command = None;
+            sealing = false;
+            ready = false;
+            draining = true;
+            owner.begin_drain()?;
+            log.emit(
+                "source_interrupted",
+                object(&[
+                    ("error_id", string(Failure::Protocol.code())),
+                    ("verified_prefix_admitted", "true".into()),
+                    ("archive_drained", "false".into()),
+                    ("source_eof_asserted", "false".into()),
+                    ("capture_complete", "false".into()),
+                    ("reconnect_admitted", "false".into()),
+                ]),
+                false,
+            )?;
+        }
         if !draining && now >= owner.live_deadline {
             return Err(Failure::Deadline);
         }
