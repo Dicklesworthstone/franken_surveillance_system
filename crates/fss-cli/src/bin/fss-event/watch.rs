@@ -313,7 +313,7 @@ pub(super) fn parse(args: &[OsString]) -> Result<WatchAction, String> {
     let cascade = super::detector::parse(&values)?;
     super::detector::check_watch_fusion_mode(
         cascade.as_ref(),
-        !stream_watch && !stream_dwell,
+        !stream_dwell,
         values.iter().any(|(key, _)| {
             ["--approve", "--retain-coverage", "--retain-health"].contains(&key.as_str())
         }),
@@ -497,7 +497,7 @@ pub(super) fn run(
 ) -> RunResult<()> {
     super::detector::check_watch_fusion_mode(
         action.cascade.as_ref(),
-        action.stream_watch.is_none() && action.stream_dwell.is_none(),
+        action.stream_dwell.is_none(),
         !action.approvals.is_empty()
             || action.retain_coverage.is_some()
             || action.retain_health.is_some(),
@@ -587,6 +587,17 @@ fn run_streaming_watch(
             WatchError::InvalidPlan("streaming watch has no dwell or coverage owner").into(),
         );
     }
+    // The parser is not an authority boundary: repeat read-only admission before profile,
+    // package or source I/O, including for internal callers of this adapter.
+    super::detector::check_watch_fusion_mode(
+        action.cascade.as_ref(),
+        true,
+        !action.approvals.is_empty() || action.retain_health.is_some(),
+    )?;
+    let fusion_profile = super::detector::load_fusion(action.cascade.as_ref(), cx)?;
+    if fusion_profile.as_ref().is_some_and(|p| p.long_watch_analysis_root().is_none()) {
+        return Err(EventFusionError::Scope.into());
+    }
     // Verify the requested package before reading any source. The same archive is retained
     // with an approved event so a cold replay needs neither this path nor a model download.
     let package = action
@@ -645,6 +656,24 @@ fn run_streaming_watch(
         }
         None => LongWatchReport::analyze(deployment, &plan, action.options, limits, cx)?,
     };
+    let fusion = match (&fusion_profile, &package) {
+        (Some(profile), Some((package, _))) => Some(EventFusionReport::long_watch(
+            &report, package, profile, deployment, cx,
+        )?),
+        (None, _) => None,
+        _ => return Err(EventFusionError::Scope.into()),
+    };
+    // Admit the complete native-plus-advice shape before output or a publication path.
+    // Fusion admission forbids publication/retention; no advice changes a native approval.
+    if fusion.is_some() {
+        super::detector::with_fusion(
+            super::health::with_watch_diagnostic(
+                report.to_json(deployment.current_anchor().commit_sequence, Some(&action.rerun))?,
+                report.health_diagnostic(), None, &action.rerun,
+            )?,
+            fusion.as_ref(),
+        )?;
+    }
     // Admit the complete post-retention shape as well as every exact approval hint before
     // any commitment. A health receipt can be retained without publishing an event.
     let sequence = if report.health_diagnostic().is_some() {
@@ -673,20 +702,24 @@ fn run_streaming_watch(
                 .map_err(Into::into)
         })
         .transpose()?;
-    let json = format!(
-        "{}\n",
-        super::health::with_watch_diagnostic(
-            report.to_json(
-                deployment.current_anchor().commit_sequence,
-                Some(&action.rerun),
-            )?,
-            report.health_diagnostic(),
-            retention.as_ref(),
-            &action.rerun,
-        )?
-    );
+    let native = super::health::with_watch_diagnostic(
+        report.to_json(
+            deployment.current_anchor().commit_sequence,
+            Some(&action.rerun),
+        )?,
+        report.health_diagnostic(), retention.as_ref(), &action.rerun,
+    )?;
+    let json = format!("{}\n", super::detector::with_fusion(native, fusion.as_ref())?);
+    if fusion.is_some() {
+        report.revalidate_derived_source(deployment, cx)?;
+        cx.checkpoint("long_watch_fusion:output")?;
+    }
     if let Some(path) = &action.report_out {
         export(path, json.as_bytes(), root, cx)?;
+    }
+    if fusion.is_some() {
+        report.revalidate_derived_source(deployment, cx)?;
+        cx.checkpoint("long_watch_fusion:stdout")?;
     }
     out.write_all(json.as_bytes())?;
     Ok(())
@@ -702,6 +735,9 @@ fn run_with(
 ) -> RunResult<()> {
     // Calibration bytes and package bytes are pinned before any retained source is read.
     let fusion_profile = super::detector::load_fusion(action.cascade.as_ref(), cx)?;
+    if fusion_profile.as_ref().is_some_and(|p| p.long_watch_analysis_root().is_some()) {
+        return Err(EventFusionError::Scope.into());
+    }
     // The package is verified (digest before parsing) before any source is read.
     let package = match &action.cascade {
         Some(options) => Some(super::detector::load(options, cx, scalar)?),
