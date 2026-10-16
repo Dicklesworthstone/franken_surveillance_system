@@ -154,6 +154,12 @@ const HELP: &str = "fss-event <report|prepare|publish|read|verify|watch|corrobor
     or refused frames stay explicit. Refuses --stream-dwell, dwell options and --retain-coverage.\n\
     Each candidate has its own exact approval; events remain unclassified, indeterminate,\n\
     single-sensor and Hold. Empty results never certify absence; no alert is prepared or sent.\n\
+    Optional whole-watch class advice: --fusion-profile FILE --fusion-digest sha256:HEX\n\
+    Requires detector options and a fss.event_class_fusion_profile.v2 bound to the complete\n\
+    analysis_digest, analysis_root and detector_cascade.recipe_digest; coverage_digests is [].\n\
+    Adds read-only calibrated_class_advice without another inference pass. No publication or\n\
+    coverage/health retention in the same invocation; no class-absence or effect authority.\n\
+    Whole-recording dwell/corroboration remain unsupported for this advice mode.\n\
   corroborate (two recordings, two sensors): --camera NAME:sha256:IMPORT (exactly twice)\n\
           --ground NAME:h11,h12,h13,h21,h22,h23,h31,h32,h33 (one per camera; image pixels ->\n\
           ground units; an owner assertion like a zone, NOT a calibration certificate)\n\
