@@ -476,10 +476,17 @@ fn run(plan: &ReconnectPlan, effects: &mut impl Effects) -> Result<(), &'static 
         let completion_invalid = outcome.result.is_ok()
             && (outcome.recovery_required
                 || outcome.durable_pictures != options.stop_after_pictures);
-        let attempt_result = if completion_invalid || continuation_blocked {
+        let capture_result = if completion_invalid {
             Err("ERR-CAPTURE-RTSP-STATE-001")
         } else {
             outcome.result
+        };
+        // Pending remote control can block a campaign without damaging completed media.
+        // Per-attempt capture completion is distinct from campaign continuation authority.
+        let attempt_result = if continuation_blocked {
+            Err("ERR-CAPTURE-RTSP-STATE-001")
+        } else {
+            capture_result
         };
         match attempt_result {
             Ok(()) => successful_attempts += 1,
@@ -506,10 +513,10 @@ fn run(plan: &ReconnectPlan, effects: &mut impl Effects) -> Result<(), &'static 
             ("approval", string(&approval.to_text())),
             ("attempt", (index + 1).to_string()),
             ("attempt_approval", string(&child_approval.to_text())),
-            ("complete", attempt_result.is_ok().to_string()),
+            ("complete", capture_result.is_ok().to_string()),
             (
                 "error_id",
-                attempt_result.err().map_or_else(|| "null".into(), string),
+                capture_result.err().map_or_else(|| "null".into(), string),
             ),
             (
                 "retry_reason",
@@ -527,7 +534,7 @@ fn run(plan: &ReconnectPlan, effects: &mut impl Effects) -> Result<(), &'static 
             ("durable_pictures_all_attempts", durable.to_string()),
             ("continuity_across_attempts", "false".into()),
         ];
-        if attempt_result != outcome.result {
+        if capture_result != outcome.result {
             finished_fields.push(("native_complete", outcome.result.is_ok().to_string()));
             finished_fields.push((
                 "native_error_id",
@@ -890,17 +897,33 @@ mod custody_tests {
     }
 
     #[test]
-    fn legacy_media_completion_does_not_require_successor_authority() {
-        let plan = approved_plan(false);
-        let mut effects = SingleOutcome::new(AttemptOutcome {
-            result: Ok(()),
-            retry: None,
-            recovery_required: false,
-            durable_pictures: 2,
-        });
-        assert_eq!(run(&plan, &mut effects), Ok(()));
-        assert_eq!(effects.captures, 1);
-        assert!(effects.row("reconnect_terminal").contains("\"complete\":true"));
-        assert!(effects.row("reconnect_terminal").contains("\"error_id\":null"));
+    fn media_completion_does_not_imply_campaign_continuation_authority() {
+        for campaign in [false, true] {
+            let plan = approved_plan(campaign);
+            let mut effects = SingleOutcome::new(AttemptOutcome {
+                result: Ok(()),
+                retry: None,
+                recovery_required: false,
+                durable_pictures: 2,
+            });
+            let expected = if campaign {
+                Err("ERR-CAPTURE-RTSP-STATE-001")
+            } else {
+                Ok(())
+            };
+            assert_eq!(run(&plan, &mut effects), expected);
+            assert_eq!(effects.captures, 1);
+            let finished = effects.row("attempt_finished");
+            assert!(finished.contains("\"complete\":true"));
+            assert!(finished.contains("\"error_id\":null"));
+            let terminal = effects.row("reconnect_terminal");
+            assert!(terminal.contains(&format!("\"complete\":{}", !campaign)));
+            if campaign {
+                assert!(finished.contains("\"continuation_blocked\":true"));
+                assert!(terminal.contains("\"error_id\":\"ERR-CAPTURE-RTSP-STATE-001\""));
+            } else {
+                assert!(terminal.contains("\"error_id\":null"));
+            }
+        }
     }
 }
