@@ -613,7 +613,7 @@ fn an_unacknowledged_keepalive_vetoes_reconnect_after_a_clean_empty_drain() -> T
     assert!(!output.status.success());
     let report = rows(&output)?;
     assert_stall(&report, 0)?;
-    assert!(flag(unique(&report, "terminal")?, "pending_request")?);
+    assert!(flag(unique(&report, "terminal")?, "unsettled_request")?);
     let attempt = unique(&report, "attempt_finished")?;
     assert!(!flag(attempt, "retrying")?);
     assert!(!flag(attempt, "recovery_required")?);
@@ -684,7 +684,7 @@ fn expired_remote_session_cannot_become_a_later_stall_or_timed_success() -> Test
         assert!(!flag(terminal, "complete")?);
         assert!(!flag(terminal, "peer_eof")?);
         assert!(!flag(terminal, "input_end_observed")?);
-        assert!(flag(terminal, "pending_request")?);
+        assert!(flag(terminal, "unsettled_request")?);
         let finished = unique(&rows, "attempt_finished")?;
         assert_eq!(field(finished, "retry_reason")?, &Value::Null);
         assert!(!flag(finished, "retrying")?);

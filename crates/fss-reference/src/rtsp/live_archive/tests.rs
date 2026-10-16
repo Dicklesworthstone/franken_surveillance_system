@@ -1,5 +1,6 @@
 #![forbid(unsafe_code)]
 //! Real loopback capture and actual root-last storage; no remote camera or background task.
+mod interruptions;
 use super::*;
 use crate::rtsp::authentication::DigestPolicy;
 use crate::rtsp::client::ClientConfig;
