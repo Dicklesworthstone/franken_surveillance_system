@@ -1,0 +1,55 @@
+# Supplementary native feedback only; local DSR receipts remain release authority.
+name: Native ONNX import regressions
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'crates/fss-model-ir/**'
+      - 'crates/fss-tensor/**'
+      - 'crates/fss-reference/src/scalar_executor.rs'
+      - 'crates/fss-reference/tests/onnx_import_execution.rs'
+      - 'Cargo.toml'
+      - 'Cargo.lock'
+      - 'rust-toolchain.toml'
+      - '.github/workflows/onnx-import.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  native-import:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    env:
+      CARGO_BUILD_JOBS: '2'
+      CARGO_INCREMENTAL: '0'
+      CARGO_PROFILE_DEV_DEBUG: '0'
+      CARGO_PROFILE_TEST_DEBUG: '0'
+      CARGO_NET_OFFLINE: 'true'
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
+        with:
+          persist-credentials: false
+      - name: Provision pinned native toolchain
+        run: bash scripts/bootstrap_toolchain.sh
+      - name: Run complete Model IR contracts including ONNX parser refusals
+        run: cargo +nightly-2026-08-31 test --locked --offline -p fss-model-ir
+      - name: Execute converted graphs through the unchanged native kernels
+        if: success() || failure()
+        run: cargo +nightly-2026-08-31 test --locked --offline -p fss-reference --test onnx_import_execution
+      - name: Preserve exact tracked source for reproducible offline debugging
+        if: always()
+        run: |
+          mkdir -p "$RUNNER_TEMP/onnx-source"
+          git archive HEAD | gzip -1 > "$RUNNER_TEMP/onnx-source/source.tar.gz"
+          git rev-parse HEAD > "$RUNNER_TEMP/onnx-source/commit.txt"
+          (cd "$RUNNER_TEMP/onnx-source" && sha256sum source.tar.gz > SHA256SUMS)
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        if: always()
+        with:
+          name: onnx-native-source
+          path: ${{ runner.temp }}/onnx-source/
+          retention-days: 1
+          if-no-files-found: error
