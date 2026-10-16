@@ -10,10 +10,15 @@ on:
       - 'crates/fss-reference/tests/automatic_control_backpressure.rs'
       - 'crates/fss-reference/tests/automatic_archive_control_backpressure.rs'
       - 'crates/fss-reference/tests/automatic_live_archive_contract.rs'
+      - 'crates/fss-reference/tests/rtsp_keepalive_contract.rs'
+      - 'crates/fss-cli/src/bin/fss-capture-rtsp/**'
+      - 'crates/fss-cli/src/bin/fss-capture-rtsp.rs'
+      - 'crates/fss-cli/tests/capture_rtsp_keepalive_cli.rs'
       - 'Cargo.toml'
       - 'Cargo.lock'
       - 'rust-toolchain.toml'
       - 'scripts/bootstrap_toolchain.sh'
+      - 'scripts/qualify_rtsp_keepalive.sh'
       - '.github/workflows/rtsp-control-regression.yml'
   workflow_dispatch:
 
@@ -35,6 +40,9 @@ jobs:
       - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
       - name: Bootstrap the repository-pinned native toolchain
         run: bash scripts/bootstrap_toolchain.sh
+      - name: Explicit keepalive signatures, approval boundaries and native AVC/HEVC capture
+        if: success() || failure()
+        run: bash scripts/qualify_rtsp_keepalive.sh
       - name: Automatic sequencing, native negotiation and reconnect boundaries
         if: success() || failure()
         run: cargo +nightly-2026-08-31 test --locked --offline -p fss-reference --lib rtsp::live_avc::automatic
