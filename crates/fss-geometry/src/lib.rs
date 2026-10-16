@@ -22,6 +22,9 @@ mod refine;
 mod registration;
 mod uncertainty;
 
+/// Bounded common-point depth recovery from calibrated camera observations.
+pub mod triangulation;
+
 use std::sync::atomic::{AtomicBool, Ordering};
 
 pub use bundle::{
