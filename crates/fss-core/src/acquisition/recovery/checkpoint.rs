@@ -2,7 +2,6 @@
 
 use super::*;
 
-const CHECKPOINT_SCHEMA: &str = "fss.acquisition.session_checkpoint.v1";
 const MAX_STATE_DEPTH: usize = 8;
 
 fn malformed(detail: &str) -> AcquisitionError {
@@ -18,6 +17,9 @@ fn decode_error(error: ContractError) -> AcquisitionError {
 }
 
 impl AcquisitionSession {
+    /// Schema identity constant (`fss.acquisition.session_checkpoint.v1`).
+    pub const CHECKPOINT_SCHEMA: &'static str = "fss.acquisition.session_checkpoint.v1";
+
     /// Maximum encoded lifecycle checkpoint size, including the bounded audit tail (4 MiB).
     pub const MAX_CHECKPOINT_BYTES: usize = 4 * 1024 * 1024;
 
@@ -31,7 +33,7 @@ impl AcquisitionSession {
         verify_state(&self.state, self.request(), self.has_windowed_gap, 0)?;
         verify_history(self)?;
         let mut encoder = CanonicalEncoder::new();
-        encoder.text(CHECKPOINT_SCHEMA);
+        encoder.text(Self::CHECKPOINT_SCHEMA);
         self.request().encode_canonical(&mut encoder);
         encoder.bool(self.has_windowed_gap);
         encode_state(&self.state, &mut encoder);
@@ -473,7 +475,7 @@ fn decode_state(
 
 fn decode_session(bytes: &[u8]) -> Result<AcquisitionSession, ContractError> {
     let mut decoder = CanonicalDecoder::new(bytes);
-    if decoder.text()? != CHECKPOINT_SCHEMA {
+    if decoder.text()? != AcquisitionSession::CHECKPOINT_SCHEMA {
         return Err(ContractError::InvalidIdentifier);
     }
     let request = AcquisitionRequest::decode_canonical(&mut decoder)?;

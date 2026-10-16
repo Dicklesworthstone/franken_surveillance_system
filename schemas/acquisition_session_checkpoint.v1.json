@@ -1,0 +1,32 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "schemas/acquisition_session_checkpoint.v1.json",
+  "title": "fss.acquisition.session_checkpoint.v1",
+  "description": "Bounded, externally anchored acquisition lifecycle checkpoint. Carries the exact request, retained lifecycle state, sticky gap flag, and bounded audit tail; no device handles or media bytes. The SHA-256 of the encoded bytes must be committed separately to trusted durable custody; restoration requires both the trusted checkpoint digest and the exact request digest, and unknown or damaged input never falls back to a fresh session.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schema", "request", "has_windowed_gap", "state", "history"],
+  "properties": {
+    "schema": {
+      "const": "fss.acquisition.session_checkpoint.v1",
+      "description": "Stable schema identity; the checkpoint is refused on any other value."
+    },
+    "request": {
+      "type": "object",
+      "description": "The exact AcquisitionRequest (source/device/adapter identities, capabilities, timing) the checkpoint is bound to; restored only against its independent trusted digest."
+    },
+    "has_windowed_gap": {
+      "type": "boolean",
+      "description": "Sticky continuity-gap flag: once set, interval-free absence claims are impossible even after reconciliation."
+    },
+    "state": {
+      "type": "object",
+      "description": "The acquisition lifecycle state at checkpoint time, bounded to depth 8; failed/cancelled states remain terminal, authenticated-only sessions must reauthenticate in a new generation, and active states gain an explicit restart-uncertainty receipt."
+    },
+    "history": {
+      "type": "array",
+      "description": "Bounded audit tail of lifecycle records in canonical order.",
+      "items": { "type": "object" }
+    }
+  }
+}

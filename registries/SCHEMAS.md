@@ -3,6 +3,7 @@
 | ID | Schema | File | Authority | Compatibility rule |
 |---|---|---|---|---|
 | `SCHEMA-SENSOR-CAPSULE-001` | `fss.sensor_capsule.v1` | `schemas/sensor_capsule.v1.json` | authority | append/supersede; no silent timestamp/source reinterpretation |
+| `SCHEMA-ACQ-SESSION-CHECKPOINT-001` | `fss.acquisition.session_checkpoint.v1` | `schemas/acquisition_session_checkpoint.v1.json` | authority | bounded externally anchored checkpoints; restoration requires trusted checkpoint + request digests; unknown/damaged input never falls back to a fresh session; failed/cancelled states terminal |
 | `SCHEMA-EVENT-HYPOTHESIS-001` | `fss.event_hypothesis.v1` | `schemas/event_hypothesis.v1.json` | authority | immutable revisions; evidence required after hypothesis; enum widening for relation additions (sensor_tamper, sensor_integrity_restoration) |
 | `SCHEMA-EVIDENCE-GRAPH-001` | `fss.evidence_graph.v1` | `schemas/evidence_graph.v1.json` | derived/evidence | causal evidence graph over capsules, identities, model receipts, and revisions; enum widening for relation additions (sensor_tamper, sensor_integrity_restoration) |
 | `SCHEMA-EVIDENCE-BUNDLE-001` | `fss.evidence_bundle.v1` | `schemas/evidence_bundle.v1.json` | authority/export | old proof bundles remain replayable or explicitly unsupported |

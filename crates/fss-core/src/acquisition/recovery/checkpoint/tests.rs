@@ -390,7 +390,7 @@ fn size_history_and_nesting_are_bounded_before_untrusted_allocation() -> TestRes
         Err(AcquisitionError::BoundsViolation { .. })
     ));
     let mut encoder = CanonicalEncoder::new();
-    encoder.text(CHECKPOINT_SCHEMA);
+    encoder.text(AcquisitionSession::CHECKPOINT_SCHEMA);
     req.encode_canonical(&mut encoder);
     encoder.bool(false);
     AcquisitionStateKind::Requested.encode_canonical(&mut encoder);
@@ -406,7 +406,7 @@ fn size_history_and_nesting_are_bounded_before_untrusted_allocation() -> TestRes
         unresolved_obligations: vec![],
     };
     let mut encoder = CanonicalEncoder::new();
-    encoder.text(CHECKPOINT_SCHEMA);
+    encoder.text(AcquisitionSession::CHECKPOINT_SCHEMA);
     req.encode_canonical(&mut encoder);
     encoder.bool(false);
     for _ in 0..=MAX_STATE_DEPTH {
@@ -441,8 +441,11 @@ fn encoder_rejects_cleared_gap_flag_substituted_witnesses_and_broken_audit() -> 
 fn rolling_audit_tail_does_not_drop_sticky_gap_memory() -> TestResult {
     let mut session = gapped()?;
     for step in 0..MAX_HISTORY_LEN + 2 {
-        let seq = 40 + step as u64;
-        session.verify_continuity(continuity(session.request(), seq, seq), NOW)?;
+        // The continuity contract requires multi-frame windows
+        // (frames_observed >= 2); each iteration advances by two so windows
+        // stay disjoint.
+        let seq = 40 + (step as u64) * 2;
+        session.verify_continuity(continuity(session.request(), seq, seq + 1), NOW)?;
     }
     assert_eq!(session.history.len(), MAX_HISTORY_LEN);
     let restored = restore(&session)?;
