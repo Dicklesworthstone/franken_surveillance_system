@@ -139,3 +139,20 @@ export function sensorPage(sensors,query='',filter='all',page=0,limit=6) {
   const pages=Math.max(1,Math.ceil(cameras.length/limit)),current=Math.max(0,Math.min(page,pages-1));
   return {matching,cameras:cameras.slice(current*limit,(current+1)*limit),readings,page:current,pages,totalCameras:cameras.length};
 }
+
+export function evidenceConstellation(event) {
+  const summary=evidenceSummary(event);
+  const domains=summary.groups.map(group=>{
+    const supports=group.items.filter(edge=>edge.relation==='supports').length;
+    const contradictions=group.items.filter(edge=>edge.relation==='contradicts').length;
+    const neutral=group.items.length-supports-contradictions;
+    const uniqueObjects=new Set(group.items.map(edge=>edge.digest)).size;
+    return {
+      name:group.name||'Failure domain not recorded',
+      supports,contradictions,neutral,references:group.items.length,uniqueObjects,
+      repeatedReferences:group.items.length-uniqueObjects,
+    };
+  });
+  domains.sort((a,b)=>b.references-a.references||b.contradictions-a.contradictions||a.name.localeCompare(b.name));
+  return {domains,references:summary.references,uniqueObjects:summary.uniqueObjects,duplicateReferences:summary.duplicateReferences,supports:summary.supports,contradictions:summary.contradictions,neutral:summary.neutral};
+}
