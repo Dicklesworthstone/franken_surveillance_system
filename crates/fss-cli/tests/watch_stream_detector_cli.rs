@@ -2,6 +2,9 @@
 //! Whole-recording detector selection, publication and retained-package replay through real
 //! processes. The synthetic square is a plumbing fixture, not detector-quality evidence.
 
+#[path = "watch_stream_detector_cli/fusion.rs"]
+mod fusion;
+
 use std::ffi::OsString;
 use std::fs;
 use std::path::{Path, PathBuf};
