@@ -56,10 +56,10 @@ recorded probability interval, freshness and exact revision separate. Inferred
 positions are not turned into observations by a rendering. Unknown or redacted
 positions are not placed at an arbitrary origin.
 
-Evidence trail exposes the event's declared supporting and contradictory edges.
+Evidence trail exposes the event's declared supporting and contradictory edges. The **Failure-domain constellation** groups those exact references around the selected event so shared dependency structure is visible at a glance: support, contradiction, neutral relationships, repeated object references, and unnamed domains remain distinct.
 Other relations remain neutral in the accounting. It also exposes named failure
 domains, unassigned domains, repeated object references and exact object digests.
-Several rows naming one sensor/domain are not several independent observations.
+Several rows naming one sensor/domain are not several independent observations. Separate domain nodes are correlation groups only; the interface deliberately does not label them independent witnesses or turn their count into confidence.
 Neither distinct names nor a reference count is an independence certificate.
 
 The inline evidence graph is bounded to four references per page, with every
