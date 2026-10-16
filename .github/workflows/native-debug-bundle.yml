@@ -1,0 +1,37 @@
+# Temporary reproducible debugging bundle: no credentials, environment, Git config or media stores.
+name: offline native debugging bundle
+on:
+  push:
+    branches: [main]
+    paths: ['.github/workflows/native-debug-bundle.yml']
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  bundle:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
+        with:
+          persist-credentials: false
+      - name: Provision pinned compiler
+        run: bash scripts/bootstrap_toolchain.sh
+      - name: Package tracked source and pinned compiler only
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p "$RUNNER_TEMP/fss-debug"
+          git archive HEAD | gzip -1 > "$RUNNER_TEMP/fss-debug/source.tar.gz"
+          compiler="$(rustup which --toolchain nightly-2026-08-31 rustc)"
+          toolchain="$(dirname "$(dirname "$compiler")")"
+          tar -C "$toolchain" -czf "$RUNNER_TEMP/fss-debug/toolchain.tar.gz" bin lib
+          git rev-parse HEAD > "$RUNNER_TEMP/fss-debug/commit.txt"
+          (cd "$RUNNER_TEMP/fss-debug" && sha256sum source.tar.gz toolchain.tar.gz > SHA256SUMS)
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: offline-native-debug
+          path: ${{ runner.temp }}/fss-debug/
+          retention-days: 1
+          compression-level: 0
+          if-no-files-found: error
