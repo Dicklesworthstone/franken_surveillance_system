@@ -256,3 +256,6 @@ pub mod hog_scan;
 
 /// Explicitly selected, immutable pretrained HOG candidates for replay and shadow use.
 pub mod pretrained_hog;
+
+/// Source-linked multi-camera depth, temporal compensation and mesh visibility diagnostics.
+pub mod multiview;
