@@ -143,7 +143,11 @@ mod tests {
                 .retry
                 .is_none()
         );
-        assert!(AttemptOutcome::new(Ok(()), &Statistics::default()).retry.is_none());
+        assert!(
+            AttemptOutcome::new(Ok(()), &Statistics::default())
+                .retry
+                .is_none()
+        );
     }
 
     #[test]
@@ -214,7 +218,10 @@ mod tests {
                 stats.collected_pictures = collected;
                 stats.durable_pictures = durable;
                 let outcome = AttemptOutcome::new(result, &stats);
-                assert!(outcome.recovery_required, "{result:?}: {collected}/{durable}");
+                assert!(
+                    outcome.recovery_required,
+                    "{result:?}: {collected}/{durable}"
+                );
                 assert!(outcome.retry.is_none(), "{result:?}: {collected}/{durable}");
                 assert_eq!(outcome.result, result.map_err(Failure::code));
                 assert_eq!(outcome.durable_pictures, durable);
@@ -257,7 +264,10 @@ mod tests {
                     ..Statistics::default()
                 };
                 let outcome = AttemptOutcome::new(result, &stats);
-                assert!(outcome.recovery_required, "{result:?}: {pictures} pictures");
+                assert!(
+                    outcome.recovery_required,
+                    "{result:?}: {pictures} pictures"
+                );
                 assert!(outcome.retry.is_none());
                 assert_eq!(outcome.result, result.map_err(Failure::code));
                 assert_eq!(outcome.durable_pictures, pictures);
