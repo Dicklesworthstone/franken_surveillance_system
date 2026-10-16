@@ -13,8 +13,11 @@
 //!
 //! [`StagingSpool::verify`] places a durable, empty hold file named by the object digest before it
 //! reports [`SpoolObjectState::Verified`], and nothing removes it. `Verified` itself stays a
-//! per-session state (a reopen admits every object as `Staged` again), but a held object may back
-//! a publication decision, so [`StagingSpool::discard_staged`] refuses it in every later session.
+//! per-session state. Ordinary opens admit every object as `Staged` again; the explicit
+//! [`StagingSpool::open_with_verified_recovery`] constructor instead retains this open's fresh
+//! digest checks for objects whose durable holds have been confirmed. A hold alone is never proof of
+//! intact bytes. A held object may back a publication decision, so
+//! [`StagingSpool::discard_staged`] refuses it in every later session.
 //! A hold whose object is gone is indexed as [`CorruptionKind::Vanished`]. A spool written before
 //! holds existed has no `verified/` directory: nothing on disk says which of its objects were
 //! verified, so the first open records a hold for every admitted object (building the directory
@@ -25,10 +28,11 @@
 //! The spool owns only the first rungs of the staged → verified → visible → durable → replicated
 //! → protected → retrievable lattice. [`SpoolObjectState::Staged`] means the exact bytes were
 //! digest-checked on ingest, read back, renamed into place, and their directories fsynced.
-//! [`SpoolObjectState::Verified`] means a later explicit re-read rehashed them. Neither state is
-//! visible or durable in the publication sense: no root names the object, and nothing here emits
-//! a [`crate::PublicationReceipt`]. Root-last publication (FSS-018) consumes the spool only through
-//! [`VerifiedObjectCatalog`], which refuses anything not verified.
+//! [`SpoolObjectState::Verified`] additionally requires a fresh session-local rehash and durable
+//! verification hold. Neither state is visible or durable in the publication sense: no root names
+//! the object, and nothing here emits a [`crate::PublicationReceipt`]. Root-last publication
+//! (FSS-018) consumes the spool only through [`VerifiedObjectCatalog`], which refuses anything not
+//! verified and rechecks its current bytes.
 //!
 //! # Crash semantics
 //!
@@ -36,8 +40,8 @@
 //! rename leaves only a staging file. On reopen every staging file is classified as
 //! [`OrphanedStaging`] and never admitted, even if its bytes happen to be a complete, valid
 //! envelope. A crash after the rename leaves a complete object that reopen re-verifies and admits
-//! as `Staged`. Every object file is rehashed on open; corrupt ones are indexed as
-//! [`SpoolObjectState::Corrupt`] and refuse every read. Unrecognized entries are reported as
+//! as `Staged` by ordinary opens. Every object file is rehashed on open; corrupt ones are indexed
+//! as [`SpoolObjectState::Corrupt`] and refuse every read. Unrecognized entries are reported as
 //! [`ForeignEntry`] and never read, admitted, or deleted.
 //!
 //! # I/O authority
@@ -176,8 +180,9 @@ impl Default for SpoolLimits {
 pub enum SpoolObjectState {
     /// Bytes were digest-checked on ingest (or rehashed on reopen) and are in place on disk.
     Staged,
-    /// A later explicit re-read rehashed the exact bytes in this spool session, and the object's
-    /// durable verification hold is in place.
+    /// Exact bytes were rehashed in this spool session and the durable verification hold is
+    /// in place. Ordinary opens require an explicit `verify`; `open_with_verified_recovery`
+    /// may reuse its own fresh recovery scan, never a previous session's byte verdict.
     Verified,
     /// The bytes under this name cannot be trusted; every read fails closed.
     Corrupt(CorruptionKind),
@@ -248,7 +253,8 @@ pub struct CorruptObject {
 /// Deterministic classification of every spool entry observed on open, sorted by name.
 #[derive(Clone, Debug, Default, Eq, PartialEq)]
 pub struct SpoolRecoveryReport {
-    /// Objects rehashed successfully and admitted as `Staged`.
+    /// Objects rehashed successfully by the recovery scan. The current state is available
+    /// through [`StagingSpool::state`]; verified recovery can promote already-held objects.
     pub admitted: Vec<ContentDigest>,
     /// Objects whose bytes failed verification.
     pub corrupt: Vec<CorruptObject>,
@@ -478,6 +484,33 @@ impl StagingSpool {
             _lock: lock,
         };
         spool.check_recovered_capacity()?;
+        Ok(spool)
+    }
+
+    /// Opens with fresh recovery checks retained for already-held objects.
+    ///
+    /// Every object is still read and rehashed by [`Self::open_with_io`], under the same
+    /// exclusive lock, I/O capability and resource bounds. Only an intact object with a
+    /// confirmed durable hold (including a completed legacy migration) is promoted to
+    /// `Verified`. Unheld objects remain `Staged`; corrupt or vanished objects remain
+    /// `Corrupt`. No old on-disk byte verdict is trusted.
+    ///
+    /// This constructor lets immediate root recovery consume the scan once rather than
+    /// rehashing a shared media object for every referencing root. Later byte checks never
+    /// trust this earlier verdict: [`Self::read`], [`Self::verify`] and
+    /// [`VerifiedObjectCatalog::require_verified`] continue to re-read and rehash bytes.
+    /// Ordinary [`Self::open`] and [`Self::open_with_io`] retain their original semantics.
+    pub fn open_with_verified_recovery(
+        root: impl AsRef<Path>,
+        limits: SpoolLimits,
+        io: Arc<dyn SpoolIo>,
+    ) -> Result<Self, SpoolError> {
+        let mut spool = Self::open_with_io(root, limits, io)?;
+        for entry in spool.index.values_mut() {
+            if entry.state == SpoolObjectState::Staged && entry.hold == Hold::Durable {
+                entry.state = SpoolObjectState::Verified;
+            }
+        }
         Ok(spool)
     }
 
