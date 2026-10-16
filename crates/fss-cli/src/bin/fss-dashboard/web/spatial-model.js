@@ -107,3 +107,35 @@ export function sceneBounds(scene) {
   for(const p of points)for(let i=0;i<3;i++){low[i]=Math.min(low[i],p[i]);high[i]=Math.max(high[i],p[i]);}
   return{center:mul(add(low,high),.5),radius:Math.max(2,norm(sub(high,low))*.55)};
 }
+
+// Presentation-only evidence accounting. Multiple references to one object or failure domain
+// are never independent observations. Neutral relations are not contradictions.
+export function evidenceSummary(event) {
+  const edges=event.edges??event.record?.evidence??[],domains=new Map(),objects=new Set();
+  let supports=0,contradictions=0;
+  edges.forEach((edge,index)=>{
+    objects.add(edge.digest);
+    supports+=Number(edge.relation==='supports');contradictions+=Number(edge.relation==='contradicts');
+    const name=edge.failureDomain||'';
+    if(!domains.has(name))domains.set(name,[]);
+    domains.get(name).push({edge,index});
+  });
+  return {supports,contradictions,neutral:edges.length-supports-contradictions,references:edges.length,
+    uniqueObjects:objects.size,duplicateReferences:edges.length-objects.size,
+    namedDomains:[...domains.keys()].filter(Boolean).length,
+    unassigned:domains.get('')?.length??0,
+    groups:[...domains].map(([name,items])=>({name,items}))};
+}
+export function frontierItems(threats,filter='all') {
+  if(filter==='unplaced')return threats.filter(t=>!t.hypotheses.length);
+  if(filter==='uncertain')return threats.filter(t=>t.knowledge!=='observed'||t.state==='indeterminate');
+  return [...threats];
+}
+export function sensorPage(sensors,query='',filter='all',page=0,limit=6) {
+  const q=query.trim().toLocaleLowerCase();
+  const matching=sensors.filter(s=>`${s.label} ${s.id} ${s.kind}`.toLocaleLowerCase().includes(q)&&
+    (filter==='all'||(filter==='cameras'?s.kind==='camera':s.kind!=='camera')));
+  const cameras=matching.filter(s=>s.kind==='camera'),readings=matching.filter(s=>s.kind!=='camera');
+  const pages=Math.max(1,Math.ceil(cameras.length/limit)),current=Math.max(0,Math.min(page,pages-1));
+  return {matching,cameras:cameras.slice(current*limit,(current+1)*limit),readings,page:current,pages,totalCameras:cameras.length};
+}
