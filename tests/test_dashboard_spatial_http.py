@@ -18,7 +18,13 @@ SITE='site:spatial-http'
 HEADERS={'X-FSS-Read':'1','Sec-Fetch-Site':'same-origin'}
 
 def digest(b): return 'sha256:'+hashlib.sha256(b).hexdigest()
-def run_ok(args): return subprocess.run([str(a) for a in args],capture_output=True,timeout=15,check=True).stdout
+def run_ok(args):
+    result = subprocess.run([str(a) for a in args],capture_output=True,timeout=15)
+    if result.returncode:
+        # Preserve bounded native diagnostics so a fixture failure is diagnosable.
+        raise AssertionError(f'native fixture command failed ({result.returncode}): '
+                             + result.stderr[:4096].decode('utf8',errors='replace'))
+    return result.stdout
 
 @contextlib.contextmanager
 def serving(binary,common,scene,frames):
@@ -74,10 +80,20 @@ def run(binary,importer):
             preview.write_bytes(original)
             assert request(port,frame_path(),headers=HEADERS)[0]==200
             assert before=={p.relative_to(root):p.read_bytes() for p in root.rglob('*') if p.is_file()}
-            # Advance genuine native authority. The old scene does not silently rebase its preview grant.
-            changed=import_args.copy();changed[-1]='2000000';run_ok(changed)
+            # Advance authority with a genuinely different recording/stream. Re-importing the
+            # same source under a different receive time conflicts with immutable source facts;
+            # the test must not depend on weakening that native protection.
+            successor=base/'successor.mjpeg'
+            successor.write_bytes(source.read_bytes()*2)
+            changed=import_args.copy()
+            changed[changed.index('--input')+1]=successor
+            changed[changed.index('--stream')+1]='stream:front:successor'
+            changed[-1]='2000000'
+            run_ok(changed)
             assert request(port,frame_path(),headers=HEADERS)[0]==503
-            advanced=json.loads(run_ok([binary,*common,'--snapshot']));assert advanced['ledgerRoot']!=meta['ledgerRoot']
+            advanced=json.loads(run_ok([binary,*common,'--snapshot']))
+            assert advanced['ledgerRoot']!=meta['ledgerRoot']
+            assert len(advanced['imports'])==2 and meta['imports'][0] in advanced['imports']
             scene['ledgerRoot']=advanced['ledgerRoot'];write_scene()
             assert request(port,frame_path(),headers=HEADERS)[0]==200
             scene['sensors'][0]['status']='redacted';write_scene()
