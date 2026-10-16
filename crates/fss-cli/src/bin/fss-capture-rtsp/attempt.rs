@@ -49,6 +49,10 @@ impl AttemptOutcome {
             || stats.unpublished_prepared_bytes != 0
             || stats.pending_source_only_nals != 0
             || stats.indexed_windows != stats.durable_windows
+            // Pending-work hints may already have been cleared by teardown. Picture
+            // accounting must independently agree before ANY source failure can retire
+            // this generation, including EOF and connection-unavailable observations.
+            || stats.collected_pictures != stats.durable_pictures
             || (stats.snapshot_digest.is_none() && !work_never_started);
         // Socket retirement can transfer a queued or partly dispatched control request.
         // A normal archive drain settles media custody, not that remote request.
@@ -100,6 +104,7 @@ mod tests {
             snapshot_digest: Some(ContentDigest::sha256(b"finished native archive")),
             durable_windows: 1,
             indexed_windows: 1,
+            collected_pictures: 4,
             durable_pictures: 4,
             ..Statistics::default()
         }
@@ -134,7 +139,7 @@ mod tests {
                 .retry
                 .is_none()
         );
-        assert!(AttemptOutcome::new(Ok(()), &ended()).retry.is_none());
+        assert!(AttemptOutcome::new(Ok(()), &Statistics::default()).retry.is_none());
     }
 
     #[test]
@@ -185,6 +190,74 @@ mod tests {
     }
 
     #[test]
+    fn picture_accounting_mismatch_blocks_every_successor_path() {
+        for (collected, durable) in [
+            (5, 4),
+            (3, 4),
+            (1, 0),
+            (0, 1),
+            (u64::MAX, u64::MAX - 1),
+            (u64::MAX - 1, u64::MAX),
+        ] {
+            for result in [
+                Err(Failure::Shortfall),
+                Err(Failure::ConnectionUnavailable),
+                Err(Failure::ProgressStalled),
+                Ok(()),
+            ] {
+                let mut stats = ended();
+                stats.connection_attempted = true;
+                stats.collected_pictures = collected;
+                stats.durable_pictures = durable;
+                let outcome = AttemptOutcome::new(result, &stats);
+                assert!(outcome.recovery_required, "{result:?}: {collected}/{durable}");
+                assert!(outcome.retry.is_none(), "{result:?}: {collected}/{durable}");
+                assert_eq!(outcome.result, result.map_err(Failure::code));
+                assert_eq!(outcome.durable_pictures, durable);
+            }
+        }
+    }
+
+    #[test]
+    fn accepted_pictures_without_a_snapshot_cannot_disappear_at_source_retirement() {
+        for failure in [Failure::Shortfall, Failure::ConnectionUnavailable] {
+            let stats = Statistics {
+                input_ended: true,
+                connection_attempted: true,
+                collected_pictures: 1,
+                ..Statistics::default()
+            };
+            // No pending window, work pin or unpublished-byte hint survives. The
+            // accepted picture count is still enough to require explicit recovery.
+            let outcome = AttemptOutcome::new(Err(failure), &stats);
+            assert!(outcome.recovery_required);
+            assert!(outcome.retry.is_none());
+            assert_eq!(outcome.result, Err(failure.code()));
+        }
+    }
+
+    #[test]
+    fn empty_source_attempts_remain_retryable_without_claiming_recovery() {
+        let stats = Statistics {
+            input_ended: true,
+            connection_attempted: true,
+            ..Statistics::default()
+        };
+        for (failure, reason) in [
+            (Failure::Shortfall, RetryReason::SourceEnded),
+            (
+                Failure::ConnectionUnavailable,
+                RetryReason::ConnectionUnavailable,
+            ),
+        ] {
+            let outcome = AttemptOutcome::new(Err(failure), &stats);
+            assert_eq!(outcome.retry, Some(reason));
+            assert!(!outcome.recovery_required);
+            assert_eq!(outcome.result, Err(failure.code()));
+        }
+    }
+
+    #[test]
     fn progress_retry_requires_normal_drain_without_inventing_source_eof() {
         let mut stats = ended();
         stats.input_ended = false;
@@ -200,11 +273,10 @@ mod tests {
                 .is_none()
         );
         stats = ended();
-        assert!(
-            AttemptOutcome::new(Err(Failure::ProgressStalled), &stats)
-                .retry
-                .is_none()
-        );
+        stats.collected_pictures = 3;
+        let outcome = AttemptOutcome::new(Err(Failure::ProgressStalled), &stats);
+        assert!(outcome.retry.is_none());
+        assert!(outcome.recovery_required);
         assert!(
             AttemptOutcome::new(Err(Failure::ProgressStalled), &Statistics::default())
                 .retry
@@ -296,6 +368,7 @@ mod tests {
             let outcome = AttemptOutcome::new(Ok(()), &stats);
             assert_eq!(outcome.result, Ok(()));
             assert!(outcome.retry.is_none(), "unsettled condition {condition}");
+            assert!(outcome.recovery_required, "unsettled condition {condition}");
         }
     }
 
