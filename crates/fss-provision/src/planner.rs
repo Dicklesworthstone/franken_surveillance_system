@@ -276,6 +276,7 @@ impl OnboardingPlan {
         )
     }
 
+    #[allow(clippy::too_many_arguments)]
     fn digest_of(
         family: CameraFamily,
         friction_class: FrictionClass,

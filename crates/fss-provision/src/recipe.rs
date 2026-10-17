@@ -325,6 +325,7 @@ pub struct OnboardingRecipe {
 }
 
 impl OnboardingRecipe {
+    #[allow(clippy::too_many_arguments)]
     const fn new(
         family: CameraFamily,
         friction_class: FrictionClass,
@@ -597,7 +598,6 @@ impl RecipeRegistry {
     }
 
     /// Iterates over every recipe in stable family order.
-    #[must_use]
     pub fn iter(&self) -> impl Iterator<Item = &OnboardingRecipe> {
         self.recipes.iter()
     }
@@ -606,6 +606,12 @@ impl RecipeRegistry {
     #[must_use]
     pub const fn len(&self) -> usize {
         self.recipes.len()
+    }
+
+    /// Whether the registry holds no recipes.
+    #[must_use]
+    pub const fn is_empty(&self) -> bool {
+        self.recipes.is_empty()
     }
 
     /// Verifies the registry is total and internally consistent.
