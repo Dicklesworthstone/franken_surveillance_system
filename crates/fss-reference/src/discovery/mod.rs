@@ -7,6 +7,7 @@ pub mod tuya_beacon;
 pub use tuya_beacon::{TuyaBeaconObs, TUYA_BEACON_PORT, decode_beacon, listen};
 
 pub mod census;
+pub mod watchdog;
 pub mod dispatch;
 pub mod fingerprint;
 pub mod service;
