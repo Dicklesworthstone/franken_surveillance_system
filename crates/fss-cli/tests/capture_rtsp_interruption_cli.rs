@@ -329,14 +329,18 @@ fn cold_decode(directory: &Directory, rows: &[Value], archive: &Path, pictures: 
     assert_eq!(number(&imported, "frames")?, pictures);
     let effects = fs::read(deployment.join("effects/journal.fssj"))?;
     fs::rename(archive, directory.0.join("offline-capture"))?;
+    // Retained HEVC segments are individual access units, not archive windows.
+    // Select the entire imported prefix so a two-picture archive must cold-decode
+    // both pictures rather than merely prove its leading IDR is readable.
+    let segment_count = pictures.to_string();
     let decode: Vec<OsString> = [
         "decode", "--root", deployment.to_str().ok_or("deployment path")?, "--site", SITE,
-        "--import-id", text(&imported, "import_identity")?, "--segment", "0", "--segment-count", "1",
+        "--import-id", text(&imported, "import_identity")?, "--segment", "0", "--segment-count", &segment_count,
         "--interpretation", "ycbcr", "--work-units", "1000000000",
     ].into_iter().map(OsString::from).collect();
     let decoded = good(run(directory, "file", &decode)?)?;
     assert!(decoded.lines().any(|line| line == "decode_complete=true"), "{decoded}");
-    assert_eq!(decoded.lines().filter(|line| line.starts_with("frame_luma_sha256=")).count(), usize::try_from(pictures)?);
+    assert_eq!(decoded.lines().filter(|line| line.starts_with("frame_luma_sha256=")).count(), usize::try_from(pictures)?, "{decoded}");
     assert_eq!(fs::read(deployment.join("effects/journal.fssj"))?, effects);
     Ok(())
 }

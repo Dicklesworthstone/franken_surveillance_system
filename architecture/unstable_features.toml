@@ -9,6 +9,7 @@ as_of = "2026-10-16"
 [[rows]]
 feature = "tcp_linger"
 files = [
+  "crates/fss-cli/tests/capture_rtsp_interruption_cli.rs",
   "crates/fss-cli/tests/capture_rtsp_reset_cli.rs",
   "crates/fss-reference/tests/rtsp_read_reset_contract.rs",
 ]
