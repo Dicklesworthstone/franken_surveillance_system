@@ -162,11 +162,14 @@ pub fn triangulate(
     }
     budget.charge(256 * views.len() as u64)?;
     let mut ordered = Vec::new();
-    ordered.try_reserve_exact(views.len()).map_err(|_| GeometryError::LimitExceeded)?;
+    ordered
+        .try_reserve_exact(views.len())
+        .map_err(|_| GeometryError::LimitExceeded)?;
     ordered.extend_from_slice(views);
     ordered.sort_by_key(|view| view.camera);
     let mut rays = Vec::new();
-    rays.try_reserve_exact(views.len()).map_err(|_| GeometryError::LimitExceeded)?;
+    rays.try_reserve_exact(views.len())
+        .map_err(|_| GeometryError::LimitExceeded)?;
     for (i, view) in ordered.iter().enumerate() {
         if view.camera == 0
             || !view.sigma_pixels.is_finite()
@@ -206,7 +209,9 @@ pub fn triangulate(
                     best = Some((mask, point, cost));
                     ambiguous = false;
                 }
-                Some((previous, _, previous_cost)) if mask.count_ones() == previous.count_ones() => {
+                Some((previous, _, previous_cost))
+                    if mask.count_ones() == previous.count_ones() =>
+                {
                     if mask != previous {
                         ambiguous = true;
                     } else if cost < previous_cost {
@@ -257,7 +262,9 @@ pub fn triangulate(
         return Err(TriangulationError::WeakGeometry);
     }
     let mut residuals = Vec::new();
-    residuals.try_reserve_exact(ordered.len()).map_err(|_| GeometryError::LimitExceeded)?;
+    residuals
+        .try_reserve_exact(ordered.len())
+        .map_err(|_| GeometryError::LimitExceeded)?;
     let mut squared = 0.0;
     for (i, view) in ordered.iter().enumerate() {
         budget.charge(128)?;
@@ -267,7 +274,11 @@ pub fn triangulate(
             let value = pixels.ok_or(TriangulationError::NoConsensus)?;
             squared += value * value;
         }
-        residuals.push(TriangulationResidual { camera: view.camera, inlier, pixels });
+        residuals.push(TriangulationResidual {
+            camera: view.camera,
+            inlier,
+            pixels,
+        });
     }
     budget.charge(0)?;
     Ok(TriangulatedPoint {
@@ -317,7 +328,11 @@ fn pair_seed(a: Ray, b: Ray, far: f64) -> Option<V3> {
         return None;
     }
     // Average in the first camera's local frame to preserve small baselines.
-    checked(add(a.origin(), scale(add(scale(u, ta), sub(scale(v, tb), w)), 0.5))).ok()
+    checked(add(
+        a.origin(),
+        scale(add(scale(u, ta), sub(scale(v, tb), w)), 0.5),
+    ))
+    .ok()
 }
 
 fn residual(view: CalibratedView, point: V3, far: f64) -> Result<Option<f64>, TriangulationError> {
@@ -325,7 +340,9 @@ fn residual(view: CalibratedView, point: V3, far: f64) -> Result<Option<f64>, Tr
         return Ok(None);
     }
     match view.pose.project(view.intrinsics, point) {
-        Ok(pixel) => Ok(Some((pixel[0] - view.pixel[0]).hypot(pixel[1] - view.pixel[1]))),
+        Ok(pixel) => Ok(Some(
+            (pixel[0] - view.pixel[0]).hypot(pixel[1] - view.pixel[1]),
+        )),
         Err(GeometryError::BehindCamera) => Ok(None),
         Err(error) => Err(error.into()),
     }
@@ -341,11 +358,11 @@ fn classify(
     let mut cost = 0.0;
     for (i, view) in views.iter().enumerate() {
         budget.charge(128)?;
-        if let Some(error) = residual(*view, point, options.max_distance)? {
-            if error <= options.max_reprojection_pixels {
-                mask |= 1 << i;
-                cost += (error / view.sigma_pixels).powi(2);
-            }
+        if let Some(error) = residual(*view, point, options.max_distance)?
+            && error <= options.max_reprojection_pixels
+        {
+            mask |= 1 << i;
+            cost += (error / view.sigma_pixels).powi(2);
         }
     }
     Ok((mask, cost))
@@ -449,7 +466,10 @@ fn invert_information(
     budget: &mut WorkBudget<'_>,
 ) -> Result<(M3, f64), TriangulationError> {
     budget.charge(4096)?;
-    let magnitude = information.iter().flatten().fold(0.0_f64, |m, x| m.max(x.abs()));
+    let magnitude = information
+        .iter()
+        .flatten()
+        .fold(0.0_f64, |m, x| m.max(x.abs()));
     if !magnitude.is_finite() || magnitude <= 0.0 {
         return Err(TriangulationError::WeakGeometry);
     }
@@ -462,7 +482,11 @@ fn invert_information(
                 continue;
             }
             let tau = (a[q][q] - a[p][p]) / (2.0 * off);
-            let tangent = if tau == 0.0 { 1.0 } else { tau.signum() / (tau.abs() + tau.hypot(1.0)) };
+            let tangent = if tau == 0.0 {
+                1.0
+            } else {
+                tau.signum() / (tau.abs() + tau.hypot(1.0))
+            };
             let cosine = 1.0 / tangent.hypot(1.0);
             let sine = tangent * cosine;
             a[p][p] -= tangent * off;
@@ -510,121 +534,218 @@ mod tests {
     use super::*;
     use std::sync::atomic::AtomicBool;
 
-    fn view(camera: u64, center: V3, point: V3) -> CalibratedView {
-        let intrinsics = PinholeIntrinsics::new(1280, 720, 800.0, 800.0, 640.0, 360.0).unwrap();
-        let pose = RigidPose::from_center(crate::math::IDENTITY, center).unwrap();
-        CalibratedView {
-            camera, pose, intrinsics,
-            pixel: pose.project(intrinsics, point).unwrap(),
+    fn view(camera: u64, center: V3, point: V3) -> Result<CalibratedView, TriangulationError> {
+        let intrinsics = PinholeIntrinsics::new(1280, 720, 800.0, 800.0, 640.0, 360.0)?;
+        let pose = RigidPose::from_center(crate::math::IDENTITY, center)?;
+        Ok(CalibratedView {
+            camera,
+            pose,
+            intrinsics,
+            pixel: pose.project(intrinsics, point)?,
             sigma_pixels: 1.0,
-        }
+        })
     }
-    fn rig(point: V3) -> Vec<CalibratedView> {
-        vec![view(1, [-2.0, 0.0, 0.0], point), view(2, [2.0, 0.0, 0.0], point), view(3, [0.0, 2.0, 0.0], point)]
+    fn rig(point: V3) -> Result<Vec<CalibratedView>, TriangulationError> {
+        Ok(vec![
+            view(1, [-2.0, 0.0, 0.0], point)?,
+            view(2, [2.0, 0.0, 0.0], point)?,
+            view(3, [0.0, 2.0, 0.0], point)?,
+        ])
     }
-    fn solve(views: &[CalibratedView]) -> TriangulatedPoint {
-        triangulate(views, TriangulationOptions::default(), &mut WorkBudget::new(1_000_000)).unwrap()
+    fn solve(views: &[CalibratedView]) -> Result<TriangulatedPoint, TriangulationError> {
+        triangulate(
+            views,
+            TriangulationOptions::default(),
+            &mut WorkBudget::new(1_000_000),
+        )
     }
 
     #[test]
-    fn recovers_elevated_point_without_ground_assumption() {
+    fn recovers_elevated_point_without_ground_assumption() -> Result<(), TriangulationError> {
         let point = [0.3, -0.2, 8.0];
-        let result = solve(&rig(point));
+        let result = solve(&rig(point)?)?;
         assert!(norm(sub(point, result.position)) < 1e-8);
         assert!(result.rms_reprojection_pixels < 1e-8);
         assert!(result.residuals.iter().all(|row| row.inlier));
         assert!((0..3).all(|i| result.pixel_noise_covariance[i][i] > 0.0));
+        Ok(())
     }
 
     #[test]
-    fn input_permutation_is_exactly_deterministic() {
-        let mut views = rig([0.3, -0.2, 8.0]);
+    fn input_permutation_is_exactly_deterministic() -> Result<(), TriangulationError> {
+        let mut views = rig([0.3, -0.2, 8.0])?;
         views[0].pixel[0] += 0.3;
         views[2].pixel[1] -= 0.2;
-        let result = solve(&views);
+        let result = solve(&views)?;
         views.reverse();
-        assert_eq!(result, solve(&views));
+        assert_eq!(result, solve(&views)?);
+        Ok(())
     }
 
     #[test]
-    fn rejects_bad_view_but_retains_its_residual() {
+    fn rejects_bad_view_but_retains_its_residual() -> Result<(), TriangulationError> {
         let point = [0.3, -0.2, 8.0];
-        let mut views = rig(point);
-        let mut outlier = view(4, [0.0, -2.0, 0.0], point);
+        let mut views = rig(point)?;
+        let mut outlier = view(4, [0.0, -2.0, 0.0], point)?;
         outlier.pixel[1] += 100.0;
         views.push(outlier);
-        let options = TriangulationOptions { min_views: 3, max_outliers: 1, ..Default::default() };
-        let result = triangulate(&views, options, &mut WorkBudget::new(1_000_000)).unwrap();
+        let options = TriangulationOptions {
+            min_views: 3,
+            max_outliers: 1,
+            ..Default::default()
+        };
+        let result = triangulate(&views, options, &mut WorkBudget::new(1_000_000))?;
         assert!(norm(sub(point, result.position)) < 1e-8);
         assert!(!result.residuals[3].inlier);
-        assert!(result.residuals[3].pixels.unwrap() > 90.0);
-        assert!(triangulate(&views, TriangulationOptions::default(), &mut WorkBudget::new(1_000_000)).is_err());
+        assert!(
+            result.residuals[3]
+                .pixels
+                .is_some_and(|pixels| pixels > 90.0)
+        );
+        assert!(
+            triangulate(
+                &views,
+                TriangulationOptions::default(),
+                &mut WorkBudget::new(1_000_000)
+            )
+            .is_err()
+        );
+        Ok(())
     }
 
     #[test]
-    fn competing_subsets_are_not_broken_by_residual_or_camera_id() {
+    fn competing_subsets_are_not_broken_by_residual_or_camera_id() -> Result<(), TriangulationError>
+    {
         let views = vec![
-            view(1, [-2.0, 0.0, 0.0], [0.0, 0.0, 8.0]),
-            view(2, [2.0, 0.0, 0.0], [0.0, 0.0, 8.0]),
-            view(3, [0.0, -2.0, 0.0], [0.0, 1.0, 8.0]),
-            view(4, [0.0, 2.0, 0.0], [0.0, 1.0, 8.0]),
+            view(1, [-2.0, 0.0, 0.0], [0.0, 0.0, 8.0])?,
+            view(2, [2.0, 0.0, 0.0], [0.0, 0.0, 8.0])?,
+            view(3, [0.0, -2.0, 0.0], [0.0, 1.0, 8.0])?,
+            view(4, [0.0, 2.0, 0.0], [0.0, 1.0, 8.0])?,
         ];
-        let options = TriangulationOptions { max_outliers: 2, ..Default::default() };
-        assert_eq!(triangulate(&views, options, &mut WorkBudget::new(1_000_000)), Err(TriangulationError::AmbiguousConsensus));
+        let options = TriangulationOptions {
+            max_outliers: 2,
+            ..Default::default()
+        };
+        assert_eq!(
+            triangulate(&views, options, &mut WorkBudget::new(1_000_000)),
+            Err(TriangulationError::AmbiguousConsensus)
+        );
+        Ok(())
     }
 
     #[test]
-    fn parallel_and_coincident_cameras_do_not_invent_depth() {
-        let mut views = rig([0.0, 0.0, 8.0]);
+    fn parallel_and_coincident_cameras_do_not_invent_depth() -> Result<(), TriangulationError> {
+        let mut views = rig([0.0, 0.0, 8.0])?;
         views.truncate(2);
         views[1].pixel = views[0].pixel;
-        assert_eq!(triangulate(&views, TriangulationOptions::default(), &mut WorkBudget::new(1_000_000)), Err(TriangulationError::WeakGeometry));
-        views[1] = CalibratedView { camera: 2, ..views[0] };
-        assert_eq!(triangulate(&views, TriangulationOptions::default(), &mut WorkBudget::new(1_000_000)), Err(TriangulationError::WeakGeometry));
+        assert_eq!(
+            triangulate(
+                &views,
+                TriangulationOptions::default(),
+                &mut WorkBudget::new(1_000_000)
+            ),
+            Err(TriangulationError::WeakGeometry)
+        );
+        views[1] = CalibratedView {
+            camera: 2,
+            ..views[0]
+        };
+        assert_eq!(
+            triangulate(
+                &views,
+                TriangulationOptions::default(),
+                &mut WorkBudget::new(1_000_000)
+            ),
+            Err(TriangulationError::WeakGeometry)
+        );
+        Ok(())
     }
 
     #[test]
-    fn invalid_and_duplicate_views_fail_closed() {
-        let mut views = rig([0.0, 0.0, 8.0]);
+    fn invalid_and_duplicate_views_fail_closed() -> Result<(), TriangulationError> {
+        let mut views = rig([0.0, 0.0, 8.0])?;
         views[1].camera = views[0].camera;
-        assert_eq!(triangulate(&views, TriangulationOptions::default(), &mut WorkBudget::new(1_000_000)), Err(TriangulationError::DuplicateCamera));
+        assert_eq!(
+            triangulate(
+                &views,
+                TriangulationOptions::default(),
+                &mut WorkBudget::new(1_000_000)
+            ),
+            Err(TriangulationError::DuplicateCamera)
+        );
         views[1].camera = 2;
         views[1].sigma_pixels = f64::NAN;
-        assert_eq!(triangulate(&views, TriangulationOptions::default(), &mut WorkBudget::new(1_000_000)), Err(TriangulationError::InvalidView));
+        assert_eq!(
+            triangulate(
+                &views,
+                TriangulationOptions::default(),
+                &mut WorkBudget::new(1_000_000)
+            ),
+            Err(TriangulationError::InvalidView)
+        );
+        Ok(())
     }
 
     #[test]
-    fn covariance_does_not_shrink_when_pixel_noise_widens() {
-        let mut views = rig([0.3, -0.2, 8.0]);
-        let first = solve(&views);
-        for view in &mut views { view.sigma_pixels *= 2.0; }
-        let second = solve(&views);
+    fn covariance_does_not_shrink_when_pixel_noise_widens() -> Result<(), TriangulationError> {
+        let mut views = rig([0.3, -0.2, 8.0])?;
+        let first = solve(&views)?;
+        for view in &mut views {
+            view.sigma_pixels *= 2.0;
+        }
+        let second = solve(&views)?;
         assert!(norm(sub(first.position, second.position)) < 1e-8);
         for i in 0..3 {
-            assert!((second.pixel_noise_covariance[i][i] / first.pixel_noise_covariance[i][i] - 4.0).abs() < 1e-8);
+            assert!(
+                (second.pixel_noise_covariance[i][i] / first.pixel_noise_covariance[i][i] - 4.0)
+                    .abs()
+                    < 1e-8
+            );
         }
+        Ok(())
     }
 
     #[test]
-    fn work_exhaustion_and_cancellation_publish_no_point() {
-        let views = rig([0.0, 0.0, 8.0]);
-        assert_eq!(triangulate(&views, TriangulationOptions::default(), &mut WorkBudget::new(0)), Err(TriangulationError::Geometry(GeometryError::BudgetExhausted)));
+    fn work_exhaustion_and_cancellation_publish_no_point() -> Result<(), TriangulationError> {
+        let views = rig([0.0, 0.0, 8.0])?;
+        assert_eq!(
+            triangulate(
+                &views,
+                TriangulationOptions::default(),
+                &mut WorkBudget::new(0)
+            ),
+            Err(TriangulationError::Geometry(GeometryError::BudgetExhausted))
+        );
         let cancelled = AtomicBool::new(true);
-        assert_eq!(triangulate(&views, TriangulationOptions::default(), &mut WorkBudget::cancellable(1_000_000, &cancelled)), Err(TriangulationError::Geometry(GeometryError::Cancelled)));
+        assert_eq!(
+            triangulate(
+                &views,
+                TriangulationOptions::default(),
+                &mut WorkBudget::cancellable(1_000_000, &cancelled)
+            ),
+            Err(TriangulationError::Geometry(GeometryError::Cancelled))
+        );
+        Ok(())
     }
 
     #[test]
-    fn common_world_translation_preserves_geometry() {
+    fn common_world_translation_preserves_geometry() -> Result<(), TriangulationError> {
         let point = [0.3, -0.2, 8.0];
-        let views = rig(point);
-        let first = solve(&views);
+        let views = rig(point)?;
+        let first = solve(&views)?;
         let offset = [1000.0, -800.0, 90.0];
-        let shifted: Vec<_> = views.iter().map(|v| CalibratedView {
-            pose: RigidPose::from_center(v.pose.rotation(), add(v.pose.center(), offset)).unwrap(),
-            ..*v
-        }).collect();
-        let second = solve(&shifted);
+        let shifted: Vec<_> = views
+            .iter()
+            .map(|v| {
+                Ok::<_, TriangulationError>(CalibratedView {
+                    pose: RigidPose::from_center(v.pose.rotation(), add(v.pose.center(), offset))?,
+                    ..*v
+                })
+            })
+            .collect::<Result<Vec<_>, _>>()?;
+        let second = solve(&shifted)?;
         assert!(norm(sub(add(first.position, offset), second.position)) < 1e-7);
         assert!((first.condition_number / second.condition_number - 1.0).abs() < 1e-8);
+        Ok(())
     }
 }

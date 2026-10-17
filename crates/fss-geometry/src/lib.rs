@@ -25,6 +25,9 @@ mod uncertainty;
 /// Bounded common-point depth recovery from calibrated camera observations.
 pub mod triangulation;
 
+/// Bounded position/velocity fitting from staggered calibrated camera observations.
+pub mod temporal_triangulation;
+
 use std::sync::atomic::{AtomicBool, Ordering};
 
 pub use bundle::{
