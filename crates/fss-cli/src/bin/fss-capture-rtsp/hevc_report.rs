@@ -162,6 +162,12 @@ impl Statistics {
         }
     }
     pub(super) fn hevc_retirement(&mut self, retired: &LiveHevcArchiveRetirement) {
+        if let Some(interruption) = &retired.interruption {
+            // These originals left active collection during the verified seal,
+            // but remained owned by the native interruption until this transfer.
+            // They are not a second window or evidence of additional pictures.
+            self.released_rtp_bytes += released_bytes(&interruption.seal.released);
+        }
         if let Some(recording) = &retired.recording {
             self.hevc_recording_retirement(recording);
         }

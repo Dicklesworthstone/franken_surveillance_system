@@ -172,6 +172,30 @@ fn drive<W: Write>(
         stats.steps += 1;
         stats.hevc_observe(capture);
         let now = owner.now()?;
+        if !draining && let Some(interruption) = capture.interruption() {
+            // The native owner has already retired the socket and replay-verified
+            // the collected prefix. Do not synthesize finish_capture, another
+            // request, a fresh credential lease, or successful duration completion.
+            // Unresolved display timing must still refuse before publication.
+            timing.finish().map_err(|_| Failure::Timing)?;
+            owner.begin_drain()?;
+            draining = true;
+            sealing = false;
+            ready = false;
+            log.emit(
+                "recording_interrupted",
+                object(&[
+                    ("codec", string("hevc")),
+                    ("operation", string("read")),
+                    ("error_kind", string(&format!("{:?}", interruption.kind))),
+                    ("collected_pictures", stats.collected_pictures.to_string()),
+                    ("source_eof_asserted", "false".into()),
+                    ("capture_complete", "false".into()),
+                    ("absence_certifiable", "false".into()),
+                ]),
+                false,
+            )?;
+        }
         if !draining && now >= owner.live_deadline {
             return Err(Failure::Deadline);
         }
