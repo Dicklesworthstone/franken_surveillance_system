@@ -1,0 +1,14 @@
+[package]
+name = "fss-provision"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license-file.workspace = true
+repository.workspace = true
+description = "Deterministic, sans-IO substrate for the universal factory-state camera onboarding: typed per-family onboarding recipes, the immutable on-camera FSS agent/firmware bundle, a deterministic FAT32 SD-image builder, the factory-state plan state machine with typed blocked reasons, and the on-camera agent self-description + liveness contract"
+
+[dependencies]
+fss-core = { path = "../fss-core" }
+
+[lints]
+workspace = true
