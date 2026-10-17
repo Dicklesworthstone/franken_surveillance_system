@@ -16,10 +16,10 @@ use std::sync::atomic::AtomicBool;
 
 use fss_cli::ExitIdentity;
 use fss_reference::discovery::{
-    discover, DiscoverConfig, Readiness,
+    DiscoverConfig, DiscoverReport, Readiness, discover,
 };
 
-const HELP: &str = "fss-discover --subnet CIDR [--subnet CIDR ...] [--iface IP] [--beacon-seconds N]\n\
+const HELP: &str = "fss-discover --subnet CIDR [--subnet CIDR ...] [--iface IP] [--beacon-seconds N] [--watch N]\n\
                     \x20 [--standards-seconds N] --owner-authorized --json\n\
                     \n\
                     Owner-network camera discovery: passive-first (beacons + mDNS/SSDP/\n\
@@ -36,6 +36,9 @@ struct Options {
     iface: Ipv4Addr,
     beacon_seconds: u64,
     standards_seconds: u64,
+    /// `--watch N`: sweep every N seconds, emitting one report per sweep
+    /// plus typed device_state_change records from the liveness watchdog.
+    watch_seconds: Option<u64>,
 }
 
 fn parse(args: &[std::ffi::OsString]) -> Result<Options, &'static str> {
@@ -46,6 +49,7 @@ fn parse(args: &[std::ffi::OsString]) -> Result<Options, &'static str> {
     let mut iface = Ipv4Addr::new(192, 168, 4, 165);
     let mut beacon_seconds = 10u64;
     let mut standards_seconds = 5u64;
+    let mut watch_seconds: Option<u64> = None;
     let mut i = 0;
     while i < args.len() {
         let Some(flag) = args[i].to_str() else {
@@ -91,6 +95,18 @@ fn parse(args: &[std::ffi::OsString]) -> Result<Options, &'static str> {
                 }
                 i += 2;
             }
+            "--watch" => {
+                let v = args
+                    .get(i + 1)
+                    .and_then(|s| s.to_str())
+                    .and_then(|s| s.parse().ok())
+                    .ok_or("invalid --watch seconds")?;
+                if v == 0 || v > 3600 {
+                    return Err("--watch seconds out of bounds (1..=3600)");
+                }
+                watch_seconds = Some(v);
+                i += 2;
+            }
             _ => return Err("unknown flag; use fss-discover --help"),
         }
     }
@@ -105,6 +121,7 @@ fn parse(args: &[std::ffi::OsString]) -> Result<Options, &'static str> {
         iface,
         beacon_seconds,
         standards_seconds,
+        watch_seconds,
     })
 }
 
@@ -123,7 +140,7 @@ fn json_escape(s: &str) -> String {
     out
 }
 
-fn run(o: &Options) -> Result<String, &'static str> {
+fn run_typed(o: &Options) -> Result<(DiscoverReport, DiscoverConfig), &'static str> {
     let cfg = DiscoverConfig::for_subnets(o.subnets.clone(), o.iface);
     let cfg = DiscoverConfig {
         beacon_seconds: o.beacon_seconds,
@@ -133,6 +150,15 @@ fn run(o: &Options) -> Result<String, &'static str> {
     let cancel = AtomicBool::new(false);
     let report =
         discover(&cfg, &cancel).map_err(|_| "ERR-DISCOVER-CENSUS-001: census failed")?;
+    Ok((report, cfg))
+}
+
+fn run(o: &Options) -> Result<String, &'static str> {
+    let (report, cfg) = run_typed(o)?;
+    Ok(format_report(&report, &cfg))
+}
+
+fn format_report(report: &DiscoverReport, cfg: &DiscoverConfig) -> String {
     let mut rows = Vec::new();
     for c in &report.candidates {
         let signals: Vec<String> = c
@@ -179,7 +205,7 @@ fn run(o: &Options) -> Result<String, &'static str> {
                 .unwrap_or_else(|| "null".into()),
         ));
     }
-    Ok(format!(
+    format!(
         "{{\"schema\":\"fss.discover_cli.v1\",\"subnets\":{:?},\"ping_targets\":{},\"beacons\":{},\"ssdp\":{},\"mdns\":{},\"wsd\":{},\"hosts\":[{}]}}",
         cfg.census.subnets,
         report.ping_targets,
@@ -188,7 +214,67 @@ fn run(o: &Options) -> Result<String, &'static str> {
         report.mdns_answers,
         report.wsd_matches,
         rows.join(","),
-    ))
+    )
+}
+
+
+/// `--watch` loop: one discovery sweep per period; each sweep prints the
+/// standard report object (unchanged `fss.discover_cli.v1` shape) as one
+/// JSONL line, then feeds the device-liveness watchdog from the typed
+/// candidate set and prints any resulting `device_state_change` records as
+/// self-describing JSONL lines. Consumers discriminate on the record shape
+/// (transitions carry `"type":"device_state_change"`).
+///
+/// Runs until terminated (Ctrl-C/SIGTERM); a camera going dark between
+/// sweeps surfaces as a typed transition, never as silence.
+fn watch_loop(o: &Options, period_secs: u64) -> ExitCode {
+    use fss_reference::discovery::Brand;
+    use fss_reference::discovery::watchdog::{DeviceClass, DeviceWatchdog};
+
+    let mut watchdog = DeviceWatchdog::new();
+    let period = std::time::Duration::from_secs(period_secs);
+    loop {
+        let sweep_start = std::time::Instant::now();
+        match run_typed(o) {
+            Ok((report, cfg)) => {
+                println!("{}", format_report(&report, &cfg));
+                let now_ns = monotonic_ns();
+                for c in &report.candidates {
+                    let id = c.host.ip.to_string();
+                    let class = match c.brand.brand {
+                        Brand::Tutk => DeviceClass::Tutk,
+                        Brand::Tuya => DeviceClass::Tuya,
+                        Brand::Standards => DeviceClass::Onvif,
+                        _ => DeviceClass::Unknown,
+                    };
+                    watchdog.register(&id, class, None);
+                    watchdog.observe(&id, now_ns);
+                }
+                watchdog.evaluate(now_ns);
+                for change in watchdog.drain_changes() {
+                    println!("{}", change.to_record());
+                }
+            }
+            Err(e) => {
+                eprintln!("{e}");
+                return ExitCode::from(ExitIdentity::RUNTIME_FAILURE.code);
+            }
+        }
+        let elapsed = sweep_start.elapsed();
+        if elapsed < period {
+            std::thread::sleep(period - elapsed);
+        }
+    }
+}
+
+/// Nanosecond stamp for watchdog bookkeeping (sweep wall time; only deltas
+/// matter for threshold arithmetic).
+fn monotonic_ns() -> u64 {
+    use std::time::{SystemTime, UNIX_EPOCH};
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|d| d.as_nanos() as u64)
+        .unwrap_or(0)
 }
 
 fn main() -> ExitCode {
@@ -202,7 +288,9 @@ fn main() -> ExitCode {
         return ExitCode::from(ExitIdentity::MALFORMED_VALUE.code);
     }
     match parse(&args) {
-        Ok(o) => match run(&o) {
+        Ok(o) => match o.watch_seconds {
+            Some(period) => watch_loop(&o, period),
+            None => match run(&o) {
             Ok(report) => {
                 println!("{report}");
                 ExitCode::SUCCESS
@@ -211,6 +299,7 @@ fn main() -> ExitCode {
                 eprintln!("{e}");
                 ExitCode::from(ExitIdentity::RUNTIME_FAILURE.code)
             }
+            },
         },
         Err(e) => {
             eprintln!("ERR-DISCOVER-ARGUMENT-001: {e}; use fss-discover --help");
