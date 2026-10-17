@@ -49,11 +49,31 @@ recovery does not authorize a live connection or new recording epoch.
 
 ## Validation boundary
 
-The implementation adds 16 capture-binary regression tests covering typed fault
-classification, settlement, approvals, bounded successors, output loss,
-cancellation, recovery separation and campaign failure retention. All 187
-capture-binary tests passed with pinned `nightly-2026-08-31`, locked offline
-resolution and debug assertions. That initial run used the verified `8918b658`
-source/compiler artifact with the exact current RTSP capture and interruption
-modules applied; it is not qualification of the complete current dependency
-snapshot, physical cameras, continuous recording or crash-resume behavior.
+The implementation adds 16 capture-binary regression tests and five Linux
+real-socket tests. Every new process test exercises both AVC and HEVC. An owned
+loopback camera waits for the native collected-picture report before inducing an
+abortive TCP close; no guessed reset delay or fabricated native outcome is used.
+The tests cover reset then success, omitted opt-in, unresolved keepalive control,
+campaign failure retention and repeated resets exhausting exactly two attempts.
+After the process exits, every published original window is reopened and verified
+from its separate archive, including picture count and retained source bytes.
+
+Validation against the complete source tree of `52fa3d2c` passed all 218 selected
+tests: 187 capture-binary unit tests and 31 duration, interruption, reconnect,
+progress and reset process tests. The verified source archive plus the committed
+feature reproduced Git tree `8dedc56f9bd799bce98b35d54d34230fd8b3298c` exactly
+before adding the new process tests. This supersedes the initial test run using
+an older dependency snapshot. The compiler was pinned `nightly-2026-08-31`;
+Cargo resolution was locked and offline, with debug assertions enabled.
+
+```sh
+cargo test --locked --offline -p fss-cli --bin fss-capture-rtsp \
+  --test capture_rtsp_interruption_reconnect_cli \
+  --test capture_rtsp_reconnect_cli --test capture_rtsp_reset_cli \
+  --test capture_rtsp_interruption_cli --test capture_rtsp_progress_cli \
+  --test capture_rtsp_duration_cli -- --test-threads=1
+```
+
+These are native software contracts, not physical-camera, continuous-recording,
+crash-resume or release qualification. The repository qualifier remains the
+qualification entrypoint; passing selected tests does not waive any of its gates.
