@@ -291,10 +291,10 @@ fn verify_state(
                     if clean.window_end_seq >= window.window_start_seq {
                         return Err(malformed("checkpoint gap overlaps retained clean continuity"));
                     }
-                } else if let Some(first) = first_frame {
-                    if window.window_start_seq < first.sequence_number {
-                        return Err(malformed("checkpoint gap precedes the first frame"));
-                    }
+                } else if let Some(first) = first_frame
+                    && window.window_start_seq < first.sequence_number
+                {
+                    return Err(malformed("checkpoint gap precedes the first frame"));
                 }
             }
             (first_frame.as_ref(), last_continuity.as_ref())
