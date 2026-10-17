@@ -40,7 +40,7 @@ pub const ADP_S3_PROMOTION_GATE: &str = "GATE-040";
 pub const ADP_S3_GENERATION: &str = "gen:fss1:adapters-v1";
 
 /// Protocol profile (specification/gate-cited per NEG-002 rule 2).
-pub const ADP_S3_PROTOCOL_PROFILE: &str = "s3:object-import;gate-040";
+pub const ADP_S3_PROTOCOL_PROFILE: &str = "s3:object-import;gate-040;scope:account";
 
 /// Lab bandwidth ceiling.
 pub const ADP_S3_MAX_BANDWIDTH_BYTES_PER_SEC: u64 = 64 * 1024 * 1024;

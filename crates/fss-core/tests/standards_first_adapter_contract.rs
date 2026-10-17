@@ -108,7 +108,7 @@ fn test_proprietary_in_sealed_laboratory_passes() -> Result<(), Box<dyn std::err
         adapter_id: AdapterId::parse("adapter:wyze-v4-lab-001")?,
         generation: AdapterGeneration::parse("gen:adapter:wyze-v1")?,
         adapter_kind: AdapterKind::VirtualSimulated,
-        protocol_profile: "authorized-lab:wyze-v4-fw-1.2.3".to_string(),
+        protocol_profile: "authorized-lab:wyze-v4-fw-1.2.3;scope:device".to_string(),
         isolation_mode: IsolationMode::SealedLaboratoryProcess,
         credential_method: CredentialMethod::Token,
         capabilities: AdapterCapabilities::STREAMING,

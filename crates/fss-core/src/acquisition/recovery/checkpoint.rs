@@ -264,8 +264,20 @@ fn verify_state(
     };
     // Validate the historical receipt at issuance, not as a grant of current authorization.
     auth.verify(adapter, device, request.requested_capabilities, auth.authorized_at_ns)?;
+    // The receipt must name the SAME credential method the request's adapter
+    // identity configures — otherwise a receipt from a weaker method would
+    // satisfy a stronger requirement.
+    if auth.method != request.adapter_identity.credential_method {
+        return Err(malformed("checkpoint auth receipt credential method differs from the request"));
+    }
     if let Some(ack) = ack {
         ack.verify(&request.request_digest(), adapter)?;
+        // The adapter's buffer allocation must fit the identity's declared
+        // ceiling — an over-limit allocation is a contract violation, not a
+        // detail to inherit silently.
+        if ack.allocated_buffer_frames > request.adapter_identity.max_buffer_frames {
+            return Err(malformed("checkpoint adapter ack exceeds the configured buffer-frame ceiling"));
+        }
     }
     let (first, clean) = match state {
         AcquisitionState::FirstFrameObserved { first_frame, .. } => (Some(first_frame), None),

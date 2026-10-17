@@ -454,3 +454,61 @@ fn rolling_audit_tail_does_not_drop_sticky_gap_memory() -> TestResult {
     assert!(restored.check_absence_claim_allowed().is_err());
     Ok(())
 }
+
+#[test]
+fn checkpoint_refuses_credential_method_mismatch() -> TestResult {
+    // The receipt's credential method must equal the request's configured
+    // method; the check lives in checkpoint verification (encode + restore
+    // share it), because authenticate() alone does not compare methods.
+    let req = request()?;
+    let mut session = AcquisitionSession::new(req.clone())?;
+    session.authenticate(
+        AuthReceipt {
+            adapter_id: req.adapter_identity.adapter_id.clone(),
+            device_id: req.device_identity.device_id.clone(),
+            // Fixture request configures CredentialMethod::None; this receipt
+            // claims DigestAuth — mismatched at the checkpoint boundary.
+            method: CredentialMethod::DigestAuth,
+            principal_digest: ContentDigest::sha256(b"fixture:authorized-reader"),
+            authorized_capabilities: req.requested_capabilities,
+            authorized_at_ns: req.requested_at_ns,
+            expires_at_ns: TimestampNs(3_000_000_000),
+        },
+        NOW,
+    )?;
+    let r = session.checkpoint_bytes();
+    assert!(r.is_err(), "method-mismatched checkpoint must refuse to encode");
+    Ok(())
+}
+
+#[test]
+fn checkpoint_refuses_over_ceiling_buffer_allocation() -> TestResult {
+    // An adapter ack allocating more frames than the identity's ceiling is
+    // a contract violation at the checkpoint boundary.
+    let req = request()?;
+    let mut session = AcquisitionSession::new(req.clone())?;
+    session.authenticate(
+        AuthReceipt {
+            adapter_id: req.adapter_identity.adapter_id.clone(),
+            device_id: req.device_identity.device_id.clone(),
+            method: CredentialMethod::None,
+            principal_digest: ContentDigest::sha256(b"fixture:authorized-reader"),
+            authorized_capabilities: req.requested_capabilities,
+            authorized_at_ns: req.requested_at_ns,
+            expires_at_ns: TimestampNs(3_000_000_000),
+        },
+        NOW,
+    )?;
+    let over = req.adapter_identity.max_buffer_frames + 1;
+    let ack = AdapterAck {
+        adapter_id: req.adapter_identity.adapter_id.clone(),
+        request_digest: req.request_digest(),
+        ack_timestamp_ns: NOW,
+        session_handle: "fixture:session".to_string(),
+        allocated_buffer_frames: over,
+    };
+    session.accept(ack, NOW)?;
+    let r = session.checkpoint_bytes();
+    assert!(r.is_err(), "over-ceiling allocation must refuse to checkpoint");
+    Ok(())
+}

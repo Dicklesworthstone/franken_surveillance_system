@@ -53,6 +53,18 @@ fn extract_effect_rows(md: &str) -> Result<Vec<EffectRow>, Box<dyn Error>> {
     Ok(rows)
 }
 
+
+/// Full canonical row-ID shape: `PREFIX-MIDDLE-NNN` — uppercase segments,
+/// exactly three trailing digits (rejects `COST-1` class of near-misses).
+fn canonical_row_id(id: &str, prefix: &str) -> bool {
+    let Some(rest) = id.strip_prefix(prefix) else { return false };
+    let Some((mid, num)) = rest.rsplit_once('-') else { return false };
+    !mid.is_empty()
+        && mid.bytes().all(|b| b.is_ascii_uppercase() || b.is_ascii_digit() || b == b'-')
+        && num.len() == 3
+        && num.bytes().all(|b| b.is_ascii_digit())
+}
+
 const EFFECTS_MD: &str = include_str!("../../../registries/EFFECTS.md");
 
 /// The registry's enumerated v1-disposition classes (from the table itself).
@@ -74,7 +86,7 @@ fn rows_are_unique_canonical_and_complete() -> Result<(), Box<dyn Error>> {
     for row in &rows {
         assert!(ids.insert(row.id.clone()), "duplicate effect id {}", row.id);
         assert!(
-            row.id.starts_with("EFFECT-") && row.id.ends_with(char::is_numeric),
+            canonical_row_id(&row.id, "EFFECT-"),
             "row id {} violates canonical EFFECT-*-NNN shape",
             row.id
         );

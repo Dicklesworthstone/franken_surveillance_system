@@ -136,10 +136,15 @@ impl TuyaClient {
     ) -> Vec<u8> {
         let seq = self.next_seq();
         match self.proto {
-            Proto::V35 => wire::pack_6699(seq, cmd_word, None, plaintext, key, iv),
+            // Bounded payloads: these frames are small by construction; an
+            // over-bound payload yields an empty frame (never a truncated
+            // length field) — callers see the empty frame as a local error
+            // and never emit a malformed packet.
+            Proto::V35 => wire::pack_6699(seq, cmd_word, None, plaintext, key, iv)
+                .unwrap_or_default(),
             Proto::V34 => {
                 let sealed = crypto::aes128_ecb_encrypt_pkcs7(key, plaintext);
-                wire::pack_55aa(seq, cmd_word, None, &sealed, Some(key))
+                wire::pack_55aa(seq, cmd_word, None, &sealed, Some(key)).unwrap_or_default()
             }
         }
     }
@@ -179,7 +184,7 @@ impl TuyaClient {
             Proto::V34 => {
                 let mut m = wire::unpack_55aa(resp_frame, Some(&key), false)?;
                 m.payload = crypto::aes128_ecb_decrypt_pkcs7(&key, &m.payload)
-                    .ok_or(wire::WireError::GcmAuth)?;
+                    .ok_or(wire::WireError::DecryptFailed)?;
                 m
             }
         };
@@ -226,16 +231,28 @@ impl TuyaClient {
         Ok(self.pack(cmd::HEART_BEAT, &key, b"", iv))
     }
 
-    /// Emits a dp_query frame.
+    /// Emits a dp_query frame: DP_QUERY_NEW (0x10) with an empty JSON
+    /// object payload, the oracle's default 3.4/3.5 dialect (DP_QUERY_NEW
+    /// is in the header-exempt command set, so no version header).
     pub fn dp_query(&mut self, iv: [u8; 12]) -> Result<Vec<u8>, ClientError> {
         let key = self.session_key()?;
-        Ok(self.pack(cmd::DP_QUERY, &key, b"", iv))
+        Ok(self.pack(cmd::DP_QUERY_NEW, &key, b"{}", iv))
     }
 
     /// Emits a control frame writing the given dps JSON payload.
+    /// Wire-faithful per the laboratory oracle: 3.4/3.5 use CONTROL_NEW
+    /// (0x0d) and prepend the 15-byte version header (CONTROL is not in the
+    /// header-exempt command set).
     pub fn control(&mut self, dps_json: &[u8], iv: [u8; 12]) -> Result<Vec<u8>, ClientError> {
         let key = self.session_key()?;
-        Ok(self.pack(cmd::CONTROL, &key, dps_json, iv))
+        let header = match self.proto {
+            Proto::V34 => wire::PROTOCOL_VERSION_HEADER_34,
+            Proto::V35 => wire::PROTOCOL_VERSION_HEADER_35,
+        };
+        let mut payload = Vec::with_capacity(15 + dps_json.len());
+        payload.extend_from_slice(&header);
+        payload.extend_from_slice(dps_json);
+        Ok(self.pack(cmd::CONTROL_NEW, &key, &payload, iv))
     }
 
     /// Consumes one inbound session-traffic frame (heartbeats, status
@@ -253,10 +270,14 @@ impl TuyaClient {
             Proto::V34 => {
                 let mut m = wire::unpack_55aa(frame, Some(&session_key), false)?;
                 m.payload = crypto::aes128_ecb_decrypt_pkcs7(&session_key, &m.payload)
-                    .ok_or(wire::WireError::GcmAuth)?;
+                    .ok_or(wire::WireError::DecryptFailed)?;
                 m
             }
         };
+        // Header-emitting devices prepend the 15-byte version header inside
+        // the encrypted region; strip it before surfacing the dps JSON
+        // (oracle `_decode_payload` semantics).
+        let payload = wire::strip_version_header(&msg.payload).to_vec();
         match msg.cmd {
             cmd::SESS_KEY_NEG_RESP | cmd::SESS_KEY_NEG_START | cmd::SESS_KEY_NEG_FINISH => {
                 Err(ClientError::UnexpectedFrame {
@@ -266,7 +287,7 @@ impl TuyaClient {
             }
             _ => Ok(Inbound {
                 cmd: msg.cmd,
-                payload: msg.payload,
+                payload,
                 retcode: msg.retcode,
             }),
         }

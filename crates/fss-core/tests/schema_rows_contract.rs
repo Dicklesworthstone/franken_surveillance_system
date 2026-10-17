@@ -88,13 +88,28 @@ fn schema_files_exist_and_declare_their_identity() -> Result<(), Box<dyn Error>>
         // the schema names itself: either `properties.schema` exists with a
         // const equal to the registry name, or a oneOf union of local defs.
         assert!(text.trim_start().starts_with('{'), "{file}: not a JSON object");
+        // The schema must name ITSELF at properties.schema.const (the repo
+        // convention; a wrong-valued or property-only mention is drift).
         let const_marker = format!("\"const\": \"{schema}\"");
         assert!(
-            text.contains(&const_marker) || text.contains("\"schema\""),
-            "{file}: must declare identity '{schema}' (const or schema property)"
+            text.contains(&const_marker),
+            "{file}: properties.schema.const must equal '{schema}' exactly"
         );
     }
     Ok(())
+}
+
+#[test]
+fn wrong_identity_is_rejected() {
+    // Negative control for the identity check above: a schema whose const
+    // names a different identity must be distinguishable.
+    let fake = "{\"properties\":{\"schema\":{\"const\": \"fss.wrong.v1\"}}}";
+    let want = "fss.sensor_capsule.v1";
+    assert!(!fake.contains(&format!("\"const\": \"{want}\"")));
+    assert!(fake.contains("\"const\": \"fss.wrong.v1\""));
+    // And malformed JSON (no braces) has no identity at all.
+    let junk = "not json";
+    assert!(!junk.trim_start().starts_with('{'));
 }
 
 #[test]

@@ -261,7 +261,7 @@ impl HomebaseSim {
             &wire::UDP_BROADCAST_KEY,
             self.announcement_json().as_bytes(),
         );
-        wire::pack_55aa(seq, cmd::UDP_NEW, Some(0), &payload, None)
+        wire::pack_55aa(seq, cmd::UDP_NEW, Some(0), &payload, None).unwrap_or_default()
     }
 
     /// cmd 0x23 LPv3.4+ broadcast beacon (AES-128-ECB under the device key).
@@ -271,24 +271,17 @@ impl HomebaseSim {
             &self.config.local_key,
             self.announcement_json().as_bytes(),
         );
-        wire::pack_55aa(seq, cmd::BOARDCAST_LPV34, Some(0), &payload, None)
+        wire::pack_55aa(seq, cmd::BOARDCAST_LPV34, Some(0), &payload, None).unwrap_or_default()
     }
 
     /// An unsolicited event report frame (battery/event-driven semantics),
     /// sealed under the established session key; `None` without a session.
+    /// Carries the 15-byte version header like any non-exempt response
+    /// (STATUS is not in the header-exempt set).
     pub fn event_motion_status(&mut self) -> Option<Vec<u8>> {
         let key = self.session_key()?;
-        let seq = self.next_seq();
         let json = self.config.model.event_json();
-        let frame = match self.config.proto {
-            Proto::V35 => {
-                wire::pack_6699(seq, cmd::STATUS, Some(0), json.as_bytes(), &key, self.next_iv())
-            }
-            Proto::V34 => {
-                let payload = crypto::aes128_ecb_encrypt_pkcs7(&key, json.as_bytes());
-                wire::pack_55aa(seq, cmd::STATUS, Some(0), &payload, Some(&key))
-            }
-        };
+        let frame = self.respond(cmd::STATUS, &key, json.as_bytes());
         self.events.push(SimEvent::EventReported);
         Some(frame)
     }
@@ -324,13 +317,39 @@ impl HomebaseSim {
 
     fn respond(&mut self, cmd_word: u32, key: &[u8; 16], plaintext: &[u8]) -> Vec<u8> {
         let seq = self.next_seq();
+        // Device-faithful per the oracle: 3.4/3.5 responses to non-exempt
+        // commands carry the 15-byte version header inside the payload.
+        let version_header = match self.config.proto {
+            Proto::V34 => wire::PROTOCOL_VERSION_HEADER_34,
+            Proto::V35 => wire::PROTOCOL_VERSION_HEADER_35,
+        };
+        let exempt = matches!(
+            cmd_word,
+            cmd::DP_QUERY
+                | cmd::DP_QUERY_NEW
+                | cmd::UPDATEDPS
+                | cmd::HEART_BEAT
+                | cmd::SESS_KEY_NEG_START
+                | cmd::SESS_KEY_NEG_RESP
+                | cmd::SESS_KEY_NEG_FINISH
+                | cmd::LAN_EXT_STREAM
+        );
+        let mut owned;
+        let plaintext = if exempt {
+            plaintext
+        } else {
+            owned = Vec::with_capacity(15 + plaintext.len());
+            owned.extend_from_slice(&version_header);
+            owned.extend_from_slice(plaintext);
+            &owned
+        };
         let frame = match self.config.proto {
             Proto::V35 => {
-                wire::pack_6699(seq, cmd_word, Some(0), plaintext, key, self.next_iv())
+                wire::pack_6699(seq, cmd_word, Some(0), plaintext, key, self.next_iv()).unwrap_or_default()
             }
             Proto::V34 => {
                 let sealed = crypto::aes128_ecb_encrypt_pkcs7(key, plaintext);
-                wire::pack_55aa(seq, cmd_word, Some(0), &sealed, Some(key))
+                wire::pack_55aa(seq, cmd_word, Some(0), &sealed, Some(key)).unwrap_or_default()
             }
         };
         self.maybe_corrupt(frame)
@@ -354,8 +373,10 @@ impl HomebaseSim {
         // mode is chosen from direction semantics: client→device negotiation
         // frames (cmd 3/5) carry none; everything else uses the oracle
         // heuristic.
+        let mut msg_cmd_is_negotiation = false;
         let inbound_mode = match wire::parse_header(frame) {
             Ok(h) if h.cmd == cmd::SESS_KEY_NEG_START || h.cmd == cmd::SESS_KEY_NEG_FINISH => {
+                msg_cmd_is_negotiation = true;
                 wire::RetcodeMode::Absent
             }
             Ok(_) => wire::RetcodeMode::Auto,
@@ -392,8 +413,11 @@ impl HomebaseSim {
                 }
             },
             Proto::V34 => {
-                let key = match self.session {
-                    Session::Established { key, .. } => key,
+                // Negotiation frames (cmd 3/5) are always keyed with the
+                // static local key — even mid-session, a fresh negotiation
+                // must be answerable (renegotiation after expiry/restart).
+                let key = match (&self.session, msg_cmd_is_negotiation) {
+                    (Session::Established { key, .. }, false) => *key,
                     _ => self.config.local_key,
                 };
                 // Client→device frames never carry a retcode (retcodes are
@@ -406,13 +430,29 @@ impl HomebaseSim {
                                 m
                             }
                             None => {
+                                // Right shape, fails decryption/padding:
+                                // indistinguishable from a wrong key.
                                 self.events.push(SimEvent::WrongKeyRejected);
                                 return Vec::new();
                             }
                         }
                     }
-                    Err(_) => {
-                        self.events.push(SimEvent::MalformedInput);
+                    Err(e) => {
+                        match e {
+                            // Structural failures are malformed input…
+                            wire::WireError::ShortHeader
+                            | wire::WireError::BadPrefix(_)
+                            | wire::WireError::LengthOverBound(_)
+                            | wire::WireError::Truncated { .. }
+                            | wire::WireError::ShortBody => {
+                                self.events.push(SimEvent::MalformedInput);
+                            }
+                            // …integrity/HMAC failure with plausible framing
+                            // is the wrong-key observable (V35 symmetry).
+                            _ => {
+                                self.events.push(SimEvent::WrongKeyRejected);
+                            }
+                        }
                         return Vec::new();
                     }
                 }
@@ -428,7 +468,9 @@ impl HomebaseSim {
                 self.on_established(&msg, SimEvent::DpsQuery, cmd::STATUS, &json)
             }
             c if c == cmd::CONTROL || c == cmd::CONTROL_NEW => {
-                let echo = msg.payload.clone();
+                // Clients prepend the version header; strip it before echo
+                // (the response re-adds it via respond()).
+                let echo = wire::strip_version_header(&msg.payload).to_vec();
                 self.on_established(&msg, SimEvent::ControlAcked, c, &echo)
             }
             _ => {

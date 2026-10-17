@@ -54,6 +54,13 @@ fn all_nine_classes_exist_once_with_evidence_requirements() -> Result<(), Box<dy
             .ok_or(format!("claim class {id} missing"))?;
         let span = &CLAIMS_JSON[start..CLAIMS_JSON.len().min(start + 900)];
         assert!(ids.insert(id), "duplicate claim class {id}");
+        // bound the field reads to this row (the 900-byte window could
+        // otherwise absorb a following row's field)
+        let row_end = CLAIMS_JSON[start..]
+            .find("\n    }")
+            .map(|i| start + i)
+            .unwrap_or(CLAIMS_JSON.len());
+        let span = &CLAIMS_JSON[start..row_end];
         let meaning = json_string_field(span, "meaning")?;
         assert!(!meaning.is_empty(), "{id}: empty meaning");
         let min_evidence = json_string_field(span, "minimum_evidence")?;
@@ -105,4 +112,11 @@ fn tampering_is_detectable() {
     let mut tampered = ids.clone();
     assert!(!tampered.insert("invariant"), "duplicate injection detectable");
     assert_eq!(ids, tampered);
+    // Count actual registry occurrences of each id (parsed content, not
+    // constants): a duplicated row in claims.json is visible.
+    for id in ids {
+        let marker = format!("\"id\": \"{id}\"");
+        let count = CLAIMS_JSON.matches(&marker).count();
+        assert_eq!(count, 1, "{id} appears {count} times in claims.json");
+    }
 }

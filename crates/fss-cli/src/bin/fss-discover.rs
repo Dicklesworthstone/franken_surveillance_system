@@ -28,7 +28,7 @@ const HELP: &str = "fss-discover --subnet CIDR [--subnet CIDR ...] [--iface IP] 
                     the exact missing owner-auth ingredient per candidate. Owner-network\n\
                     scope only. Report: fss.discover_cli.v1 JSON on stdout.";
 
-const MAX_ARGS: usize = 16;
+const MAX_ARGS: usize = 24; // 8 subnets (16) + --json + --owner-authorized + --beacon/--standards/--watch pairs
 
 #[derive(Debug)]
 struct Options {
@@ -116,6 +116,9 @@ fn parse(args: &[std::ffi::OsString]) -> Result<Options, &'static str> {
     if subnets.len() > 8 {
         return Err("at most 8 subnets");
     }
+    if !args.iter().any(|a| a == "--owner-authorized") {
+        return Err("--owner-authorized is required (network discovery touches the LAN; the flag attests owner authorization)");
+    }
     Ok(Options {
         subnets,
         iface,
@@ -167,7 +170,7 @@ fn format_report(report: &DiscoverReport, cfg: &DiscoverConfig) -> String {
             .iter()
             .map(|s| match s {
                 fss_reference::discovery::Signal::OuiVendor(v) => {
-                    format!("\"oui:{v}\"")
+                    json_escape(&format!("oui:{v}"))
                 }
                 fss_reference::discovery::Signal::PortSignature(p) => {
                     format!("\"ports:{}\"", p.iter().map(|x| x.to_string()).collect::<Vec<_>>().join("+"))
@@ -337,24 +340,49 @@ mod tests {
 
     #[test]
     fn parses_minimal() {
-        let o = parse(&args(&["--subnet", "192.168.4.0/22", "--json"])).unwrap();
+        let o = parse(&args(&["--subnet", "192.168.4.0/22", "--json", "--owner-authorized"])).unwrap();
         assert_eq!(o.subnets, vec!["192.168.4.0/22"]);
     }
 
     #[test]
     fn refuses_no_subnet() {
-        assert!(parse(&args(&["--json"])).is_err());
+        assert!(parse(&args(&["--json", "--owner-authorized"])).is_err());
+    }
+
+    #[test]
+    fn refuses_without_owner_authorization() {
+        assert!(parse(&args(&["--subnet", "192.168.4.0/22", "--json"])).is_err());
+    }
+
+    #[test]
+    fn eight_subnets_fit_the_argument_bound() {
+        let o = parse(&args(&[
+            "--json", "--owner-authorized",
+            "--subnet", "10.0.0.0/24", "--subnet", "10.0.1.0/24",
+            "--subnet", "10.0.2.0/24", "--subnet", "10.0.3.0/24",
+            "--subnet", "10.0.4.0/24", "--subnet", "10.0.5.0/24",
+            "--subnet", "10.0.6.0/24", "--subnet", "10.0.7.0/24",
+        ]));
+        assert!(o.is_ok(), "8 subnets + required flags must fit: {o:?}");
+        assert_eq!(o.unwrap().subnets.len(), 8);
+        // Nine subnets refuse at the subnet check.
+        let mut v = vec!["--json", "--owner-authorized"];
+        for _ in 0..9 {
+            v.push("--subnet");
+            v.push("10.0.0.0/24");
+        }
+        assert!(parse(&args(&v)).is_err());
     }
 
     #[test]
     fn refuses_bad_seconds() {
-        assert!(parse(&args(&["--subnet", "10.0.0.0/24", "--beacon-seconds", "0", "--json"])).is_err());
-        assert!(parse(&args(&["--subnet", "10.0.0.0/24", "--standards-seconds", "999", "--json"])).is_err());
+        assert!(parse(&args(&["--subnet", "10.0.0.0/24", "--beacon-seconds", "0", "--json", "--owner-authorized"])).is_err());
+        assert!(parse(&args(&["--subnet", "10.0.0.0/24", "--standards-seconds", "999", "--json", "--owner-authorized"])).is_err());
     }
 
     #[test]
     fn refuses_unknown_flag() {
-        assert!(parse(&args(&["--scan", "--json"])).is_err());
+        assert!(parse(&args(&["--scan", "--json", "--owner-authorized"])).is_err());
     }
 
     #[test]

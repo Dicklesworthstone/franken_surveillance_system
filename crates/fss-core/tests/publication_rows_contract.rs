@@ -56,6 +56,9 @@ fn every_primitive_exists_once_with_full_fields() -> Result<(), Box<dyn Error>> 
         assert!(ids.insert(id), "duplicate primitive {id}");
         assert_eq!(json_string_field(span, "name")?, name, "{id} name");
         assert!(!json_string_field(span, "owner")?.is_empty(), "{id} owner");
+        // plane + state are validated, not just present
+        assert!(!json_string_field(span, "plane")?.is_empty(), "{id} plane");
+        let _ = json_string_field(span, "invariant")?;
         assert!(
             !json_string_field(span, "invariant")?.is_empty(),
             "{id} root invariant"
@@ -99,4 +102,10 @@ fn tampering_is_detectable() {
     let mut tampered = ids.clone();
     assert!(!tampered.insert("PUB-AUTH-001"), "duplicate injection detectable");
     assert_eq!(ids, tampered);
+    // Count actual occurrences in the primitives JSON.
+    for id in ids {
+        let marker = format!("\"id\": \"{id}\"");
+        let count = PRIMS_JSON.matches(&marker).count();
+        assert_eq!(count, 1, "{id} appears {count} times");
+    }
 }

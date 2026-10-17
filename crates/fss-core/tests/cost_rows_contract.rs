@@ -98,6 +98,18 @@ fn extract_cost_rows(toml: &str) -> Result<Vec<CostRow>, Box<dyn Error>> {
     Ok(rows)
 }
 
+
+/// Full canonical row-ID shape: `PREFIX-MIDDLE-NNN` — uppercase segments,
+/// exactly three trailing digits (rejects `COST-1` class of near-misses).
+fn canonical_row_id(id: &str, prefix: &str) -> bool {
+    let Some(rest) = id.strip_prefix(prefix) else { return false };
+    let Some((mid, num)) = rest.rsplit_once('-') else { return false };
+    !mid.is_empty()
+        && mid.bytes().all(|b| b.is_ascii_uppercase() || b.is_ascii_digit() || b == b'-')
+        && num.len() == 3
+        && num.bytes().all(|b| b.is_ascii_digit())
+}
+
 const COST_TOML: &str = include_str!("../../../architecture/operation_cost_registry.toml");
 const COST_MIRROR: &str = include_str!("../../../registries/OPERATION_COSTS.md");
 const SLO_MIRROR: &str = include_str!("../../../registries/SLOS.md");
@@ -129,17 +141,18 @@ fn rows_are_unique_canonical_and_complete() -> Result<(), Box<dyn Error>> {
     for row in &rows {
         assert!(ids.insert(row.id.clone()), "duplicate cost id {}", row.id);
         // DRIFT-NNN rows are a separately tracked class (slo_validate
-        // CANONICAL_DRIFT_IDS); COST-* rows follow COST-*-NNN shape.
+        // CANONICAL_DRIFT_IDS); COST-* rows follow the full COST-*-NNN
+        // grammar (uppercase segments + exactly three trailing digits).
         if row.id.starts_with("COST-") {
             assert!(
-                row.id.ends_with(char::is_numeric),
+                canonical_row_id(&row.id, "COST-"),
                 "row id {} violates canonical COST-*-NNN shape",
                 row.id
             );
         } else {
             assert!(
-                row.id.starts_with("DRIFT-"),
-                "row id {} is neither COST-*-NNN nor tracked DRIFT-NNN",
+                canonical_row_id(&row.id, "DRIFT-"),
+                "row id {} is neither COST-*-NNN nor DRIFT-NNN",
                 row.id
             );
         }
@@ -272,4 +285,14 @@ fn tampering_is_detectable() -> Result<(), Box<dyn Error>> {
     mutated.unit = "mutated_unit".to_string();
     assert_ne!(*first, mutated);
     Ok(())
+}
+
+#[test]
+fn mutating_registry_text_is_caught_by_field_validation() {
+    // Corrupt the RTSP row's unit in the source text; extraction + the
+    // normative field check must see the drift.
+    let corrupted = COST_TOML.replacen("stream_second", "stream_minute", 1);
+    let rows = extract_cost_rows(&corrupted).expect("corrupted text parses");
+    let row = rows.iter().find(|r| r.id == "COST-RTSP-001").expect("row present");
+    assert_ne!(row.unit, "stream_second", "mutation is visible post-parse");
 }

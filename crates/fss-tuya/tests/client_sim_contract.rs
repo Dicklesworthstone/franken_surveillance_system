@@ -9,7 +9,7 @@
 
 use fss_tuya::client::{ClientError, Proto, TuyaClient};
 use fss_tuya::sim::{HomebaseSim, ModelFixture, SimConfig, SimEvent};
-use fss_tuya::wire::{WireError, cmd};
+use fss_tuya::wire::{self, WireError, cmd};
 
 
 
@@ -66,7 +66,9 @@ fn full_session_client_against_simulator() {
     let resp = sim.handle(&ctl);
     assert_eq!(resp.len(), 1);
     let inbound = client.handle(&resp[0]).expect("control inbound: {e}");
-    assert_eq!(inbound.cmd, cmd::CONTROL);
+    // 3.5 dialect: CONTROL_NEW on the wire; the sim's ACK echoes under the
+    // same command, with the 15-byte version header stripped on receipt.
+    assert_eq!(inbound.cmd, cmd::CONTROL_NEW);
     assert_eq!(inbound.payload, b"{\"dps\":{\"101\":\"disarmed\"}}");
 
     // Unsolicited event from the device decodes on the client.
@@ -146,21 +148,6 @@ fn session_commands_require_session() {
     assert_eq!(r, Err(ClientError::NoPendingNegotiation));
 }
 
-#[test]
-fn negotiation_response_in_handle_is_unexpected() {
-    let mut client = TuyaClient::new(KEY, Proto::V35);
-    let mut sim = HomebaseSim::new(SimConfig::v35_homebase());
-    negotiate(&mut client, &mut sim, KEY);
-    // Re-feeding a negotiation-shaped frame inside the session is an error,
-    // not silent acceptance.
-    let mut sim2 = HomebaseSim::new(SimConfig::v35_homebase());
-    let f3 = client.start_session(NONCE, iv(9)); // restarts client state
-    let resp = sim2.handle(&f3);
-    assert_eq!(resp.len(), 1);
-    // The client is now AwaitingNegResp; handle() requires Established.
-    let r = client.handle(&resp[0]);
-    assert_eq!(r, Err(ClientError::NoSession));
-}
 
 #[test]
 fn proto_34_full_session() {
@@ -197,4 +184,45 @@ fn session_expiry_surfaces_as_typed_error_on_client() {
     let f3 = client.start_session(*b"6543210fedcba987", iv(5));
     let resp = sim.handle(&f3);
     assert_eq!(resp.len(), 1, "post-expiry renegotiation answers");
+}
+
+#[test]
+fn inbound_payloads_have_the_version_header_stripped() {
+    // Header-emitting devices prepend "3.5" + 12 NULs inside the sealed
+    // payload; the client surfaces pure dps JSON (oracle _decode_payload
+    // semantics).
+    let mut client = TuyaClient::new(KEY, Proto::V35);
+    let mut sim = HomebaseSim::new(SimConfig::v35_homebase());
+    negotiate(&mut client, &mut sim, KEY);
+    let sess = sim.session_key().expect("session key");
+    let mut raw = wire::PROTOCOL_VERSION_HEADER_35.to_vec();
+    raw.extend_from_slice(b"{\"dps\":{\"1\":true}}");
+    let frame = wire::pack_6699(9, cmd::STATUS, Some(0), &raw, &sess, iv(9))
+        .expect("pack");
+    let inbound = client.handle(&frame).expect("inbound");
+    assert_eq!(inbound.cmd, cmd::STATUS);
+    assert_eq!(inbound.payload, b"{\"dps\":{\"1\":true}}", "header stripped");
+}
+
+#[test]
+fn negotiation_response_in_handle_is_unexpected_when_established() {
+    // (Reviewer fix: the earlier version never reached the named branch —
+    // it called start_session first, leaving the client unestablished.)
+    let mut client = TuyaClient::new(KEY, Proto::V35);
+    let mut sim = HomebaseSim::new(SimConfig::v35_homebase());
+    negotiate(&mut client, &mut sim, KEY);
+    assert!(client.is_established());
+    // A negotiation-shaped frame sealed under the SESSION key inside an
+    // established session must be UnexpectedFrame, not silent acceptance.
+    let sess = sim.session_key().expect("session key");
+    let bogus = wire::pack_6699(9, cmd::SESS_KEY_NEG_RESP, Some(0), &[0u8; 48], &sess, iv(9))
+        .expect("pack");
+    let r = client.handle(&bogus);
+    assert_eq!(
+        r,
+        Err(ClientError::UnexpectedFrame {
+            state: "established",
+            cmd: cmd::SESS_KEY_NEG_RESP
+        })
+    );
 }

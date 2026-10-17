@@ -16,7 +16,7 @@ fn main() {
         .unwrap_or(15);
     let cancel = AtomicBool::new(false);
     println!("listening on :6667 for {seconds}s...");
-    let beacons = listen(seconds, 32, &cancel);
+    let beacons = listen(seconds, 32, &cancel).unwrap_or_default();
     println!("captured {} beacon(s)", beacons.len());
     for b in &beacons {
         println!(

@@ -1,3 +1,4 @@
+#![forbid(unsafe_code)]
 //! Contract tests for the device-liveness watchdog (DISC-5, fss-niak9):
 //! the dark-camera honesty rules — silence is a typed state, never "clear";
 //! battery cams sleep without going "offline"; recovery transitions are
@@ -43,7 +44,7 @@ fn sighting_makes_observable_and_records_the_transition() {
     // Canonical record text is deterministic.
     assert_eq!(
         changes[0].to_record(),
-        "{\"type\":\"device_state_change\",\"device\":\"cam-1\",\"class\":\"tutk\",\"from\":\"not_observable\",\"to\":\"observable\",\"at_ns\":1000}"
+        "{\"type\":\"device_state_change\",\"device\":\"cam-1\",\"class\":\"tutk\",\"from\":\"not_observable\",\"reason\":\"never_observed\",\"to\":\"observable\",\"at_ns\":1000}"
     );
     assert_eq!(changes[0].to_record(), changes[0].to_record());
 }
@@ -206,4 +207,40 @@ fn record_text_escapes_device_identity() {
     w.observe("weird\"id", 1_000);
     let rec = w.changes().last().expect("change").to_record();
     assert!(rec.contains("\"weird\\\"id\""), "escaped: {rec}");
+}
+
+#[test]
+fn older_sighting_never_regresses_and_backward_eval_holds_state() {
+    let mut w = DeviceWatchdog::new();
+    w.register("cam-1", DeviceClass::Tutk, None);
+    w.observe("cam-1", 20 * MIN);
+    // A LATE-Arriving older sighting must not move the clock backward.
+    w.observe("cam-1", 5 * MIN);
+    w.evaluate(21 * MIN);
+    // silent_for = 21-20 = 1 min → still Observable (not 21-5=16 min offline)
+    assert_eq!(w.state_of("cam-1"), Some(&WatchState::Observable));
+    // Backward evaluation (before the last sighting): state holds, no record.
+    w.evaluate(10 * MIN);
+    assert_eq!(w.state_of("cam-1"), Some(&WatchState::Observable));
+    assert_eq!(w.changes().len(), 1, "no phantom records from time travel");
+}
+
+#[test]
+fn records_carry_reason_and_duration() {
+    let mut w = DeviceWatchdog::new();
+    w.register("cam-1", DeviceClass::Tutk, None);
+    w.observe("cam-1", 1_000);
+    w.evaluate(1_000 + 3 * MIN);
+    let silent_rec = w.changes().last().expect("silent transition").to_record();
+    assert!(silent_rec.contains("\"silent_for_ns\":"), "{silent_rec}");
+    w.evaluate(1_000 + 11 * MIN);
+    let offline_rec = w.changes().last().expect("offline transition").to_record();
+    assert!(
+        offline_rec.contains("\"reason\":\"silent_beyond_threshold\""),
+        "{offline_rec}"
+    );
+    // The never-observed → observable record names WHAT it recovered from
+    // (from-side reason), which is exactly what a consumer needs.
+    let first = &w.changes()[0].to_record();
+    assert!(first.contains("\"reason\":\"never_observed\""), "{first}");
 }

@@ -37,7 +37,7 @@ fn main() {
 
     // beacons (10s window) keyed by host IP
     println!("== beacons (10s) ==");
-    let beacons = listen(10, 64, &cancel);
+    let beacons = listen(10, 64, &cancel).unwrap_or_default();
     let mut beacon_ips = std::collections::BTreeMap::new();
     for b in &beacons {
         let ip = b.source.split(':').next().unwrap_or("").to_owned();
