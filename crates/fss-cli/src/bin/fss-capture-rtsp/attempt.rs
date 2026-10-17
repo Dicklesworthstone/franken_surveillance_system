@@ -10,6 +10,9 @@ pub(crate) enum RetryReason {
     ConnectionUnavailable,
     SourceEnded,
     ProgressStalled,
+    /// A typed read interruption with a nonempty, fully settled native prefix.
+    /// This never claims source EOF, complete capture, or continuity to a successor.
+    ReadInterrupted,
     /// The native owner observed a fully drained successful archive and no pending control.
     /// This is successor admission, NOT a retryable error. Legacy failure reports omit it.
     SettledSuccess,
@@ -20,6 +23,7 @@ impl RetryReason {
             Self::ConnectionUnavailable => "connection_unavailable",
             Self::SourceEnded => "source_ended",
             Self::ProgressStalled => "recording_progress_stalled",
+            Self::ReadInterrupted => "read_interrupted_after_verified_drain",
             Self::SettledSuccess => "settled_success",
         }
     }
@@ -29,7 +33,7 @@ impl RetryReason {
 pub(crate) struct AttemptOutcome {
     pub(crate) result: Result<(), &'static str>,
     // The historical field name is retained for existing native/controller callers. The
-    // success marker is separate from all three failure observations and must not be retried.
+    // success marker is separate from the failure observations and must not be retried.
     pub(crate) retry: Option<RetryReason>,
     pub(crate) recovery_required: bool,
     pub(crate) durable_pictures: u64,
@@ -76,6 +80,21 @@ impl AttemptOutcome {
                     Some(RetryReason::ConnectionUnavailable)
                 }
                 Err(Failure::Shortfall) if stats.input_ended => Some(RetryReason::SourceEnded),
+                Err(Failure::ReadInterrupted)
+                    if stats.connection_attempted
+                        && stats.snapshot_digest.is_some()
+                        && stats.durable_pictures != 0
+                        && stats.durable_windows != 0
+                        && stats.unsealed_pictures == 0
+                        && stats.untimed_picture_bytes == 0
+                        && !stats.input_ended =>
+                {
+                    // The checks above independently require equal picture/window
+                    // accounting, no outstanding custody work, and no pending remote
+                    // request. Only a real native Finished snapshot may settle this
+                    // prefix; a transport error by itself never grants a retry.
+                    Some(RetryReason::ReadInterrupted)
+                }
                 Err(Failure::ProgressStalled)
                     if stats.snapshot_digest.is_some()
                         && stats.durable_pictures == stats.collected_pictures =>

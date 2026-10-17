@@ -17,7 +17,7 @@ use super::plan::{self, Options};
 #[path = "recovery.rs"]
 pub(super) mod recovery;
 
-pub(super) const MAX_ARGUMENTS: usize = plan::MAX_ARGUMENTS + 18;
+pub(super) const MAX_ARGUMENTS: usize = plan::MAX_ARGUMENTS + 20;
 const FORMAT: &str = "fss.rtsp_reconnect_cli.v1";
 const MAX_CONTROL_REPORT_BYTES: usize = 262_144;
 const POLICY: &str = "bounded-owner-approved-attempts:literal-peer-only:fresh-generation-and-clocks:\
@@ -26,6 +26,11 @@ no-auth-protocol-budget-authority-or-storage-retry:no-automatic-recovery:v1";
 const SUPERVISED_POLICY: &str = "bounded-owner-approved-attempts:literal-peer-only:fresh-generation-and-clocks:\
 new-independent-destinations:retry-typed-connect-io-drained-eof-or-supervised-stall:\
 no-auth-protocol-budget-authority-or-storage-retry:no-automatic-recovery:v2";
+// A new outer grant, never an enlargement of any child capture's authority.
+const INTERRUPTION_POLICY: &str = "fss.rtsp_interrupted_prefix_retry.v1:\
+read-reset-aborted-broken-pipe-unexpected-eof-not-connected-only:\
+nonempty-source-verified-prefix:closed-presentation-timing:normal-archive-finish:\
+no-pending-custody-or-control:original-failure-retained:no-continuity-claim";
 // This opt-in adds possible successful sessions, not authority to widen any child plan.
 // The conditional encoding below leaves all pre-existing reconnect approvals unchanged.
 const CAMPAIGN_POLICY: &str = "fss.rtsp_capture_campaign.v1:continue-after-settled-success:\
@@ -33,7 +38,7 @@ every-approved-attempt-is-independent:all-attempts-must-settle-for-completion";
 pub(super) const HELP: &str = "fss-capture-rtsp reconnect [ordinary capture options]\n\
   --max-attempts 3 --retry-delay-ms 250 --retry-max-delay-ms 5000\n\
   [--progress-timeout-ms 5000] [--capture-duration-ms 10000]\n\
-  [--continue-after-success yes]\n\
+  [--continue-after-success yes] [--retry-interrupted yes]\n\
 \n\
 Without --approve: pure JSON preview of EVERY possible attempt and aggregate ceilings.\n\
 Approve the outer plan, not an individual attempt. The ordinary single-attempt mode is unchanged.\n\
@@ -50,6 +55,17 @@ only after normal archive completion. It asserts neither camera outage nor sourc
 Use --max-attempts 1 to supervise without reconnecting. Omit the option for legacy behavior.\n\
 Authentication, credentials, revocation, cancellation, timing/protocol faults, exhausted\n\
 budgets, output failure, and incomplete archive work STOP the run. Recovery remains explicit.\n\
+\n\
+--retry-interrupted yes separately authorizes a successor after a typed abrupt READ failure\n\
+(reset, aborted connection, broken pipe, not connected, or unexpected EOF) ONLY after the\n\
+native owner verifies, seals and fully publishes a nonempty collected prefix and its catalog.\n\
+Pending custody, untimed/unsealed pictures, unresolved display timing, pending control,\n\
+authentication, authority, deadlines, output failure and write/protocol failures still STOP.\n\
+The interrupted attempt stays a failure, not a successful duration or a source EOF. Original\n\
+receiver/wire remainders stay explicit; they are not reconstructed or claimed as durable media.\n\
+The next attempt has independent clocks, generation and stores. No continuity is asserted.\n\
+This does not add attempts or replenish any child budget. A legacy approval cannot enable it.\n\
+Repeat the option unchanged when previewing offline recovery. Omit it for legacy retry rules.\n\
 \n\
 --capture-duration-ms optionally stops each attempt after owner-clock elapsed time from PLAY.\n\
 It includes storage pauses and is NOT renewed by pictures. --stop-after-pictures becomes an\n\
@@ -116,6 +132,7 @@ pub(super) struct ReconnectPlan {
     progress_timeout_ns: Option<u64>,
     capture_duration_ns: Option<u64>,
     continue_after_success: bool,
+    retry_interrupted: bool,
     recovery_timeout_ns: Option<u64>,
     index_catalogs: bool,
     minimum_pins: Option<recovery::MinimumPins>,
@@ -188,6 +205,11 @@ impl ReconnectPlan {
             None => false,
             Some("yes") => true,
             Some(_) => return Err("continuing after success requires --continue-after-success yes"),
+        };
+        let retry_interrupted = match values.remove("--retry-interrupted").as_deref() {
+            None => false,
+            Some("yes") => true,
+            Some(_) => return Err("interruption retries require --retry-interrupted yes"),
         };
         let minimum_pins = values
             .remove("--minimum-pin-anchors")
@@ -309,6 +331,7 @@ impl ReconnectPlan {
             progress_timeout_ns,
             capture_duration_ns,
             continue_after_success,
+            retry_interrupted,
             recovery_timeout_ns,
             index_catalogs,
             minimum_pins,
@@ -378,6 +401,11 @@ impl ReconnectPlan {
         if let Some(duration) = self.capture_duration_ns {
             e.text(driver::Supervision::TIMED_POLICY);
             e.u64(duration);
+        }
+        // No bytes are added for the legacy policy. Old approvals cannot authorize
+        // interruption retries, and changing this policy invalidates its own approvals.
+        if self.retry_interrupted {
+            e.text(INTERRUPTION_POLICY);
         }
         e.u64(MAX_CONTROL_REPORT_BYTES as u64);
         e.u64(self.retry_delay_ms);
@@ -463,6 +491,11 @@ impl ReconnectPlan {
             fields.push(("picture_target_is_ceiling", "true".into()));
             fields.push(("nonempty_durable_prefix_required", "true".into()));
             fields.push(("camera_time_asserted", "false".into()));
+        }
+        if self.retry_interrupted {
+            fields.push(("retry_interrupted", "true".into()));
+            fields.push(("interruption_retry_policy", string(INTERRUPTION_POLICY)));
+            fields.push(("interrupted_attempt_is_success", "false".into()));
         }
         if self.continue_after_success {
             fields.push(("continue_after_success", "true".into()));
@@ -565,7 +598,12 @@ fn run(plan: &ReconnectPlan, effects: &mut impl Effects) -> Result<(), &'static 
             outcome.retry,
             Some(driver::RetryReason::ConnectionUnavailable | driver::RetryReason::SourceEnded)
         ) || (outcome.retry == Some(driver::RetryReason::ProgressStalled)
-            && plan.progress_timeout_ns.is_some());
+            && plan.progress_timeout_ns.is_some())
+            || (plan.retry_interrupted
+                && outcome.retry == Some(driver::RetryReason::ReadInterrupted)
+                && outcome.result == Err("ERR-CAPTURE-RTSP-SOURCE-001")
+                && outcome.durable_pictures != 0
+                && outcome.durable_pictures <= options.stop_after_pictures);
         let retrying = outcome.result.is_err()
             && !outcome.recovery_required
             && retry_admitted
@@ -586,7 +624,11 @@ fn run(plan: &ReconnectPlan, effects: &mut impl Effects) -> Result<(), &'static 
                 "retry_reason",
                 outcome
                     .retry
-                    .filter(|reason| *reason != driver::RetryReason::SettledSuccess)
+                    .filter(|reason| {
+                        *reason != driver::RetryReason::SettledSuccess
+                            && (*reason != driver::RetryReason::ReadInterrupted
+                                || plan.retry_interrupted)
+                    })
                     .map_or_else(|| "null".into(), |r| string(r.as_str())),
             ),
             ("retrying", retrying.to_string()),
@@ -803,6 +845,10 @@ mod tests;
 #[cfg(test)]
 #[path = "reconnect_supervision_tests.rs"]
 mod supervision_tests;
+
+#[cfg(test)]
+#[path = "reconnect_interruption_tests.rs"]
+mod interruption_tests;
 
 #[cfg(test)]
 #[path = "reconnect_campaign_tests.rs"]

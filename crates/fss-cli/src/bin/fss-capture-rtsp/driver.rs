@@ -40,6 +40,9 @@ use super::timing::FixedTiming;
 
 #[path = "attempt.rs"]
 mod attempt;
+#[cfg(test)]
+#[path = "read_interruption_tests.rs"]
+mod read_interruption_tests;
 pub(super) use attempt::{AttemptOutcome, RetryReason};
 #[path = "progress.rs"]
 mod progress;
@@ -67,6 +70,7 @@ enum Failure {
     Storage,
     Connect,
     ConnectionUnavailable,
+    ReadInterrupted,
     ProgressStalled,
     EmptyCapture,
     Authentication,
@@ -94,7 +98,9 @@ impl Failure {
             Self::AuthenticationRefused => "ERR-CAPTURE-RTSP-AUTH-REFUSED-001",
             Self::Credentials => "ERR-CAPTURE-RTSP-CREDENTIAL-001",
             Self::Entropy => "ERR-CAPTURE-RTSP-ENTROPY-001",
-            Self::Protocol => "ERR-CAPTURE-RTSP-SOURCE-001",
+            // Keep the original source failure visible even when a separately
+            // approved controller may start a new, independent recording.
+            Self::Protocol | Self::ReadInterrupted => "ERR-CAPTURE-RTSP-SOURCE-001",
             Self::Timing => "ERR-CAPTURE-RTSP-TIMING-001",
             Self::Deadline => "ERR-CAPTURE-RTSP-DEADLINE-001",
             Self::ProgressStalled => "ERR-CAPTURE-RTSP-PROGRESS-001",
@@ -123,7 +129,7 @@ impl Failure {
             Self::Authority | Self::Approval => "authority_refused",
             Self::Connect | Self::ConnectionUnavailable => "connection_failure",
             Self::Configuration | Self::State => "configuration_or_state_refused",
-            Self::Protocol => "protocol_failure",
+            Self::Protocol | Self::ReadInterrupted => "protocol_failure",
         }
     }
 }
@@ -343,12 +349,31 @@ fn failure(error: JournaledLiveFailure, stats: &mut Statistics) -> Failure {
                 LiveRecordingError::Network(LiveAvcError::Protocol(
                     DigestAvcError::Authentication(_) | DigestAvcError::AuthenticationAtEof,
                 )) => Failure::AuthenticationRefused,
+                LiveRecordingError::Network(LiveAvcError::Transport(error))
+                    if abrupt_read_failure(&error) => Failure::ReadInterrupted,
                 _ => Failure::Protocol,
             },
             _ => Failure::State,
         },
     }
 }
+// Keep this classification as narrow as the native prefix-preservation owners.
+// Poll/write/connect errors and temporary read conditions cannot authorize a new
+// recording. A positive classification is still subject to final custody checks.
+fn abrupt_read_failure(error: &TcpError) -> bool {
+    matches!(
+        error,
+        TcpError::Io {
+            operation: TcpOperation::Read,
+            kind: io::ErrorKind::ConnectionReset
+                | io::ErrorKind::ConnectionAborted
+                | io::ErrorKind::BrokenPipe
+                | io::ErrorKind::UnexpectedEof
+                | io::ErrorKind::NotConnected,
+        }
+    )
+}
+
 fn backpressure(error: &JournaledLiveFailure) -> bool {
     if error.retirement.is_some() {
         return false;
@@ -776,6 +801,9 @@ fn drive<W: Write>(
         stats.observe(capture);
         let now = owner.now()?;
         if !draining && capture.interruption().is_some() {
+            // A source-verified archive prefix is not proof of a closed display
+            // group. Preserve unresolved presentation timing as a fatal failure.
+            timing.finish().map_err(|_| Failure::Timing)?;
             // The native owner has already retired the socket and admitted only
             // an original-source-verified prefix. Do not prepare another command,
             // borrow credentials, synthesize an owner stop, or reset its resource

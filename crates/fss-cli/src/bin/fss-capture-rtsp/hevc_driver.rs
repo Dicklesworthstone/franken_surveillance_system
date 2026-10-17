@@ -39,6 +39,9 @@ fn reason(error: &LiveHevcArchiveError) -> Failure {
             LiveHevcError::Protocol(HevcPictureClientError::Client(
                 HevcClientError::Authentication(_) | HevcClientError::AuthenticationAtEof,
             )) => Failure::AuthenticationRefused,
+            LiveHevcError::Transport(error) if abrupt_read_failure(error) => {
+                Failure::ReadInterrupted
+            }
             _ => Failure::Protocol,
         },
         LiveHevcArchiveError::Capture(CaptureError::Collection(CollectorError::Deadline)) => {
@@ -49,6 +52,29 @@ fn reason(error: &LiveHevcArchiveError) -> Failure {
         }
         LiveHevcArchiveError::Capture(_) => Failure::Protocol,
         _ => Failure::State,
+    }
+}
+
+#[cfg(test)]
+#[test]
+fn interruption_retry_hevc_mapping_preserves_source_failure_without_broad_io_retry() {
+    for kind in [
+        io::ErrorKind::ConnectionReset,
+        io::ErrorKind::ConnectionAborted,
+        io::ErrorKind::BrokenPipe,
+        io::ErrorKind::UnexpectedEof,
+        io::ErrorKind::NotConnected,
+        io::ErrorKind::TimedOut,
+        io::ErrorKind::WouldBlock,
+    ] {
+        for operation in [TcpOperation::Read, TcpOperation::Write, TcpOperation::Connect] {
+            let transport = TcpError::Io { operation, kind };
+            let expected = abrupt_read_failure(&transport);
+            let error = LiveHevcArchiveError::Network(LiveHevcError::Transport(transport));
+            let classified = reason(&error);
+            assert_eq!(matches!(classified, Failure::ReadInterrupted), expected);
+            assert_eq!(classified.code(), Failure::Protocol.code());
+        }
     }
 }
 
