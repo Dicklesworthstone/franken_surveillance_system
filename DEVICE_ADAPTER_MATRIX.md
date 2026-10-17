@@ -95,6 +95,18 @@ includes products such as Mini 3/Mini 3 Pro and enterprise aircraft, but not Fli
 - initial value comes from manual flight, app-authorized capture, recorded file import, or a
   narrowly qualified owner-side display/capture bridge.
 
+## 3a. Custom-firmware and on-device-software reality (2026-10-16)
+
+Owner goal: custom software on owned cameras (Rust/asupersync userspace, Tailscale-native access,
+no vendor cloud). Per-device legitimate paths — no exploit development anywhere (owner charter):
+
+| Device | Firmware replacement | Own Rust software on device | Tailscale-native | Bottom line |
+|---|---|---|---|---|
+| Yi IPC (`YiHC_Y_2_0`, Zowee ODM) | **YES** — yi-hack via the camera's own SD-card updater (variant by SN prefix + fw version; community model-ID needs the physical label) | **YES** — yi-hack gives root SSH + dropbear + a documented build-your-own-firmware SDK; the SoC is ARM Linux, Rust cross-compiles (armv7/armv5te), asupersync runs as a userspace library | **YES (userspace)** — `tailscaled --tun=userspace-networking` needs no kernel TUN/WireGuard module (Tailscale documents this for locked/container kernels); camera RAM is tight (yi-hack recommends SD swap — same fix applies) | **The full goal is achievable today, exploit-free.** Remaining input: the camera's SN prefix + firmware version (label/app) to select the exact yi-hack release |
+| Wyze Cam v4 | No public custom firmware exists | No legitimate on-device path — and none needed for the goal: the TUTK lane streams video+events off the stock device (live-proven) | Not on-device; the FSS host bridges to the tailnet instead | Goal met without firmware work |
+| AOSU P1 Max fleet | None (locked Glazero/Tuya homebase + deeply embedded battery cams) | No on-device path; data path covered by the fss-tuya lane once the owner local_key exists (NEG-003) | Not on-device | Goal met via protocol lane, pending key |
+| Canary | Device not on LAN (2026-10-09 census) | TBD | TBD | Blocked on device presence (fss-tp7iu) |
+
 ## 4. Readiness dimensions per adapter
 
 Every adapter row expands into this matrix:
