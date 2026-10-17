@@ -20,10 +20,12 @@ use fss_reference::ingest::recorded_corroboration::CorroborationReport;
 use fss_reference::ingest::recorded_watch::WatchReport;
 use fss_reference::{ReferenceDeployment, ReplayCx};
 
+mod corroboration;
 mod guarded;
 mod input;
 mod render;
 mod streaming;
+pub use corroboration::MAX_LONG_CORROBORATION_CANDIDATES;
 pub use input::MAX_PROFILE_BYTES;
 pub use streaming::MAX_LONG_CANDIDATES;
 
@@ -52,14 +54,14 @@ pub struct SensorCalibration {
 /// Explicit immutable analysis request. No value is inferred from wall time or detector scores.
 #[derive(Clone, Debug)]
 pub struct ClassFusionSpec {
-    /// Exact final native analysis identity. Whole-recording watch pins its analysis digest,
+    /// Exact final native analysis identity. Whole-recording modes pin their analysis digest,
     /// not the smaller input plan; this includes the complete scan and trained-stage outcome.
     pub plan_digest: ContentDigest,
     /// Exact native coverage records for short-window analysis. Whole-recording profiles must
-    /// leave this empty and bind their analysis root through `for_long_watch` instead.
+    /// leave this empty and bind their roots through the matching whole-recording constructor.
     /// Neither form certifies detector-class absence.
     pub coverage_digests: BTreeSet<ContentDigest>,
-    /// Exact native cascade. Whole-recording watch uses its complete retained detector-recipe
+    /// Exact native cascade. Whole-recording modes use their complete retained detector-recipe
     /// digest, including package, execution, selection and whole-recording resource ceilings.
     pub cascade_digest: ContentDigest,
     /// Vocabulary index in the verified native package. The hypothesis is only this class.
@@ -115,6 +117,21 @@ impl fmt::Display for EventFusionError {
 impl std::error::Error for EventFusionError {}
 type Result<T> = std::result::Result<T, EventFusionError>;
 
+/// Source context for a complete recording analysis, never a coverage witness.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum WholeRecordingScope {
+    Watch(ContentDigest),
+    Corroboration([ContentDigest; 2]),
+}
+impl WholeRecordingScope {
+    fn roots(&self) -> &[ContentDigest] {
+        match self {
+            Self::Watch(root) => std::slice::from_ref(root),
+            Self::Corroboration(roots) => roots,
+        }
+    }
+}
+
 /// Validated, privately held request. Mutable public calibration structs cannot alter it.
 #[derive(Clone, Debug)]
 pub struct EventFusionProfile {
@@ -122,7 +139,7 @@ pub struct EventFusionProfile {
     digest: ContentDigest,
     // A source-closed analysis root is NOT a coverage witness. The discriminator is private
     // and included in the semantic digest; short-window entry points refuse this profile.
-    long_watch_analysis_root: Option<ContentDigest>,
+    whole_recording: Option<WholeRecordingScope>,
 }
 impl EventFusionProfile {
     /// Validate everything, including all reconstructed calibration fields, before native work.
@@ -132,17 +149,19 @@ impl EventFusionProfile {
 
     fn new_scoped(
         mut spec: ClassFusionSpec,
-        long_watch_analysis_root: Option<ContentDigest>,
+        whole_recording: Option<WholeRecordingScope>,
     ) -> Result<Self> {
         if spec.calibrations.is_empty() || spec.calibrations.len() > 8 || spec.class_index > 65_535
         {
             return Err(EventFusionError::Profile);
         }
-        match long_watch_analysis_root {
-            Some(root) => {
+        match whole_recording {
+            Some(scope) => {
                 if !spec.coverage_digests.is_empty()
-                    || root.algorithm() != fss_core::DigestAlgorithm::Sha256
-                    || root.bytes() == [0; 32]
+                    || scope.roots().iter().any(|root| {
+                        root.algorithm() != fss_core::DigestAlgorithm::Sha256
+                            || root.bytes() == [0; 32]
+                    })
                 {
                     return Err(EventFusionError::Profile);
                 }
@@ -204,16 +223,28 @@ impl EventFusionProfile {
                 e.text(domain);
             }
         }
-        if let Some(root) = long_watch_analysis_root {
-            e.text(streaming::SCOPE);
-            e.digest(root);
-            e.u64(streaming::MAX_LONG_CANDIDATES as u64);
-            e.u64(MAX_TOTAL_EVIDENCE as u64);
+        match whole_recording {
+            Some(WholeRecordingScope::Watch(root)) => {
+                // Preserve the complete established version-two identity sequence.
+                e.text(streaming::SCOPE);
+                e.digest(root);
+                e.u64(streaming::MAX_LONG_CANDIDATES as u64);
+                e.u64(MAX_TOTAL_EVIDENCE as u64);
+            }
+            Some(WholeRecordingScope::Corroboration(roots)) => {
+                e.text(corroboration::SCOPE);
+                for root in roots {
+                    e.digest(root);
+                }
+                e.u64(MAX_LONG_CORROBORATION_CANDIDATES as u64);
+                e.u64(MAX_TOTAL_EVIDENCE as u64);
+            }
+            None => {}
         }
         Ok(Self {
             spec,
             digest: digest(e)?,
-            long_watch_analysis_root,
+            whole_recording,
         })
     }
     /// Canonical identity, independent of profile JSON formatting and binding order.
@@ -342,7 +373,7 @@ impl EventFusionReport {
         cx: &ReplayCx,
     ) -> Result<Self> {
         checkpoint(cx)?;
-        if profile.long_watch_analysis_root.is_some()
+        if profile.whole_recording.is_some()
             || plan != profile.spec.plan_digest
             || cascade.digest() != profile.spec.cascade_digest
         {

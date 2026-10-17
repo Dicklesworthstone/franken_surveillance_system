@@ -40,7 +40,22 @@ impl EventFusionProfile {
         analysis_root: ContentDigest,
     ) -> Result<Self> {
         Self::from_counts_scoped(
-            bytes, expected, analysis, detector_recipe, &BTreeSet::new(), Some(analysis_root),
+            bytes, expected, analysis, detector_recipe, &BTreeSet::new(), Some(WholeRecordingScope::Watch(analysis_root)),
+        )
+    }
+
+    /// Author a version-three profile pinned to both complete camera analyses in native order.
+    /// Supplied scope comes from the actual paired report, never from fields in the count request.
+    pub fn from_long_corroboration_counts_json(
+        bytes: &[u8],
+        expected: ContentDigest,
+        analysis: ContentDigest,
+        detector_recipe: ContentDigest,
+        analysis_roots: [ContentDigest; 2],
+    ) -> Result<Self> {
+        Self::from_counts_scoped(
+            bytes, expected, analysis, detector_recipe, &BTreeSet::new(),
+            Some(WholeRecordingScope::Corroboration(analysis_roots)),
         )
     }
 
@@ -50,7 +65,7 @@ impl EventFusionProfile {
         plan: ContentDigest,
         cascade: ContentDigest,
         coverage: &BTreeSet<ContentDigest>,
-        long_watch_root: Option<ContentDigest>,
+        whole_recording: Option<WholeRecordingScope>,
     ) -> Result<Self> {
         if bytes.is_empty() || bytes.len() > MAX_PROFILE_BYTES {
             return Err(EventFusionError::Limit);
@@ -60,8 +75,8 @@ impl EventFusionProfile {
         {
             return Err(EventFusionError::Profile);
         }
-        if (long_watch_root.is_none() && (coverage.is_empty() || coverage.len() > 8))
-            || (long_watch_root.is_some() && !coverage.is_empty())
+        if (whole_recording.is_none() && (coverage.is_empty() || coverage.len() > 8))
+            || (whole_recording.is_some() && !coverage.is_empty())
         {
             return Err(EventFusionError::Profile);
         }
@@ -95,10 +110,7 @@ impl EventFusionProfile {
             Value::Array(coverage.iter().map(text_value).collect()),
         );
         profile.insert("calibrations".to_owned(), Value::Array(tables));
-        if let Some(root) = long_watch_root {
-            profile.insert("schema".to_owned(), text_value(LONG_WATCH_SCHEMA));
-            profile.insert("long_watch_analysis_root".to_owned(), text_value(root));
-        }
+        encode_scope(&mut profile, whole_recording);
         let json = encode(&Value::Object(profile))?;
         Self::from_json(json.as_bytes(), ContentDigest::sha256(json.as_bytes()))
     }
@@ -164,14 +176,26 @@ impl EventFusionProfile {
             ),
             ("calibrations", Value::Array(calibrations)),
         ]);
-        if let Some(root) = self.long_watch_analysis_root() {
-            let Value::Object(fields) = &mut document else {
-                return Err(EventFusionError::Profile);
-            };
+        let Value::Object(fields) = &mut document else {
+            return Err(EventFusionError::Profile);
+        };
+        encode_scope(fields, self.whole_recording);
+        encode(&document)
+    }
+}
+
+fn encode_scope(fields: &mut Object, scope: Option<WholeRecordingScope>) {
+    match scope {
+        Some(WholeRecordingScope::Watch(root)) => {
             fields.insert("schema".to_owned(), text_value(LONG_WATCH_SCHEMA));
             fields.insert("long_watch_analysis_root".to_owned(), text_value(root));
         }
-        encode(&document)
+        Some(WholeRecordingScope::Corroboration(roots)) => {
+            fields.insert("schema".to_owned(), text_value(LONG_CORROBORATION_SCHEMA));
+            fields.insert("long_corroboration_analysis_roots".to_owned(),
+                Value::Array(roots.iter().map(text_value).collect()));
+        }
+        None => {}
     }
 }
 

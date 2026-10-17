@@ -11,6 +11,7 @@ mod authoring;
 pub const MAX_PROFILE_BYTES: usize = 256 * 1024;
 const SCHEMA: &str = "fss.event_class_fusion_profile.v1";
 const LONG_WATCH_SCHEMA: &str = "fss.event_class_fusion_profile.v2";
+const LONG_CORROBORATION_SCHEMA: &str = "fss.event_class_fusion_profile.v3";
 type Object = BTreeMap<String, Value>;
 
 impl EventFusionProfile {
@@ -42,11 +43,20 @@ impl EventFusionProfile {
                 "now_ns",
                 "calibrations",
                 "long_watch_analysis_root",
+                "long_corroboration_analysis_roots",
             ],
         )?;
-        let long_watch_root = match text_field(root, "schema")? {
-            SCHEMA if !root.contains_key("long_watch_analysis_root") => None,
-            LONG_WATCH_SCHEMA => Some(sha(field(root, "long_watch_analysis_root")?)?),
+        let whole_recording = match text_field(root, "schema")? {
+            SCHEMA if !root.contains_key("long_watch_analysis_root")
+                && !root.contains_key("long_corroboration_analysis_roots") => None,
+            LONG_WATCH_SCHEMA if !root.contains_key("long_corroboration_analysis_roots") => {
+                Some(WholeRecordingScope::Watch(sha(field(root, "long_watch_analysis_root")?)?))
+            }
+            LONG_CORROBORATION_SCHEMA if !root.contains_key("long_watch_analysis_root") => {
+                let roots = array(field(root, "long_corroboration_analysis_roots")?, 2)?;
+                let [first, second] = roots else { return Err(EventFusionError::Profile); };
+                Some(WholeRecordingScope::Corroboration([sha(first)?, sha(second)?]))
+            }
             _ => return Err(EventFusionError::Profile),
         };
         let p = object(
@@ -128,8 +138,9 @@ impl EventFusionProfile {
             now_ns: number(field(root, "now_ns")?)?,
             calibrations,
         };
-        match long_watch_root {
-            Some(root) => Self::for_long_watch(spec, root),
+        match whole_recording {
+            Some(WholeRecordingScope::Watch(root)) => Self::for_long_watch(spec, root),
+            Some(WholeRecordingScope::Corroboration(roots)) => Self::for_long_corroboration(spec, roots),
             None => Self::new(spec),
         }
     }

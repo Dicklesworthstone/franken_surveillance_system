@@ -65,6 +65,7 @@ pub const STAGE_LONG_CORROBORATION_COMMIT: &str = "long_corroboration:commit";
 pub const HEALTH_PUBLICATION_BLOCKED: &str =
     "sensor-health findings or incomplete screening block long-corroboration publication";
 
+mod fusion;
 mod recipe;
 pub use recipe::{LongCorroborationRecipe, MAX_LONG_CORROBORATION_RECIPE_BYTES};
 pub mod geometry;

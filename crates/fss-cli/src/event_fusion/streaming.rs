@@ -27,12 +27,15 @@ impl EventFusionProfile {
                 return Err(EventFusionError::Profile);
             }
         }
-        Self::new_scoped(spec, Some(analysis_root))
+        Self::new_scoped(spec, Some(WholeRecordingScope::Watch(analysis_root)))
     }
 
     /// Exact source-closed analysis root for this scope, never a coverage or custody receipt.
     pub fn long_watch_analysis_root(&self) -> Option<ContentDigest> {
-        self.long_watch_analysis_root
+        match self.whole_recording {
+            Some(WholeRecordingScope::Watch(root)) => Some(root),
+            _ => None,
+        }
     }
 }
 
@@ -53,7 +56,7 @@ impl EventFusionReport {
         let analysis = native.analysis_digest();
         let analysis_root = native.analysis_root();
         let recipe_digest = recipe.digest();
-        if profile.long_watch_analysis_root != Some(analysis_root)
+        if profile.long_watch_analysis_root() != Some(analysis_root)
             || !profile.spec.coverage_digests.is_empty()
             || profile.spec.plan_digest != analysis
             || profile.spec.cascade_digest != recipe_digest
