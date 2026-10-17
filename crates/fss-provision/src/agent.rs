@@ -434,11 +434,13 @@ impl CanonicalDecode for CameraAgentReport {
             let row = decoder.bytes()?;
             let mut row_decoder = CanonicalDecoder::new(row);
             let protocol_text = row_decoder.text()?;
-            let protocol = parse_endpoint(protocol_text).map_err(|_| ContractError::InvalidIdentifier)?;
+            let protocol =
+                parse_endpoint(protocol_text).map_err(|_| ContractError::InvalidIdentifier)?;
             let uri = row_decoder.text()?.to_owned();
             row_decoder.ensure_finished()?;
             endpoints.push(
-                StandardsEndpoint::new(protocol, uri).map_err(|_| ContractError::InvalidIdentifier)?,
+                StandardsEndpoint::new(protocol, uri)
+                    .map_err(|_| ContractError::InvalidIdentifier)?,
             );
         }
         let coverage = AgentCoverageState::decode_canonical(decoder)?;
@@ -473,11 +475,7 @@ impl AgentHeartbeat {
     /// Builds a heartbeat, computing its digest from the report digest,
     /// sequence, and coverage.
     #[must_use]
-    pub fn new(
-        report_digest: ContentDigest,
-        sequence: u64,
-        coverage: AgentCoverageState,
-    ) -> Self {
+    pub fn new(report_digest: ContentDigest, sequence: u64, coverage: AgentCoverageState) -> Self {
         let mut encoder = CanonicalEncoder::new();
         encoder.digest(report_digest);
         encoder.u64(sequence);
@@ -804,7 +802,8 @@ mod tests {
         let mut tracker = HeartbeatTracker::new(1);
         let _ = tracker.note_interval_elapsed();
         assert_eq!(tracker.liveness(), Liveness::Dark);
-        let restored = tracker.note_beat(&AgentHeartbeat::new(digest, 1, AgentCoverageState::Silent));
+        let restored =
+            tracker.note_beat(&AgentHeartbeat::new(digest, 1, AgentCoverageState::Silent));
         assert_eq!(restored, LivenessTransition::Restored);
         assert_eq!(tracker.liveness(), Liveness::Live);
         assert_eq!(tracker.missed(), 0);
@@ -815,8 +814,12 @@ mod tests {
         let digest = ContentDigest::sha256(b"report");
         let mut tracker = HeartbeatTracker::new(5);
         let _ = tracker.note_beat(&AgentHeartbeat::new(digest, 1, AgentCoverageState::Silent));
-        let duplicate = tracker.note_beat(&AgentHeartbeat::new(digest, 1, AgentCoverageState::Silent));
-        assert_eq!(duplicate, LivenessTransition::DuplicateSequence { sequence: 1 });
+        let duplicate =
+            tracker.note_beat(&AgentHeartbeat::new(digest, 1, AgentCoverageState::Silent));
+        assert_eq!(
+            duplicate,
+            LivenessTransition::DuplicateSequence { sequence: 1 }
+        );
         let reset = tracker.note_beat(&AgentHeartbeat::new(digest, 0, AgentCoverageState::Silent));
         assert_eq!(reset, LivenessTransition::SequenceReset { from: 1, to: 0 });
     }

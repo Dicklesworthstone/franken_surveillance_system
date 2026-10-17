@@ -440,8 +440,9 @@ impl OnboardingPlanner {
             let bundle = AgentBundle::reference(family);
             let sd_builder =
                 SdImageBuilder::new(self.card_capacity_bytes).map_err(ProvisionError::SdImage)?;
-            let image_plan =
-                sd_builder.build(family, release, &bundle).map_err(ProvisionError::SdImage)?;
+            let image_plan = sd_builder
+                .build(family, release, &bundle)
+                .map_err(ProvisionError::SdImage)?;
             image = Some(image_plan);
         }
 
@@ -495,7 +496,11 @@ mod tests {
         assert_eq!(plan.transport(), Transport::SdImage);
         assert!(!plan.software_wireless());
         assert!(plan.image().is_some_and(|i| i.verify()));
-        assert!(plan.steps().iter().any(|s| s.kind() == crate::recipe::StepKind::InsertSdCard));
+        assert!(
+            plan.steps()
+                .iter()
+                .any(|s| s.kind() == crate::recipe::StepKind::InsertSdCard)
+        );
         assert_eq!(plan.data_lane(), DataLane::OnvifT);
         assert!(plan.verify());
     }
@@ -504,7 +509,10 @@ mod tests {
     fn yi_without_sn_prefix_is_blocked_typed() {
         let obs = CameraObservation::for_family(CameraFamily::Yi).with_firmware_version("2.1.0");
         let result = planner().plan(&obs);
-        assert_eq!(result, Err(ProvisionError::MissingPrerequisite(Prerequisite::SnPrefix)));
+        assert_eq!(
+            result,
+            Err(ProvisionError::MissingPrerequisite(Prerequisite::SnPrefix))
+        );
     }
 
     #[test]
@@ -536,7 +544,8 @@ mod tests {
             planner().plan(&without),
             Err(ProvisionError::MissingPrerequisite(Prerequisite::LocalKey))
         );
-        let with = CameraObservation::for_family(CameraFamily::AosUP1Max).with_local_key_available();
+        let with =
+            CameraObservation::for_family(CameraFamily::AosUP1Max).with_local_key_available();
         let plan = planner().plan(&with);
         let plan = match plan {
             Ok(p) => p,
@@ -551,10 +560,12 @@ mod tests {
         let without = CameraObservation::for_family(CameraFamily::OpenIPCClassA);
         assert_eq!(
             planner().plan(&without),
-            Err(ProvisionError::MissingPrerequisite(Prerequisite::WebUpdateEndpoint))
+            Err(ProvisionError::MissingPrerequisite(
+                Prerequisite::WebUpdateEndpoint
+            ))
         );
-        let with = CameraObservation::for_family(CameraFamily::OpenIPCClassA)
-            .with_web_update_reachable();
+        let with =
+            CameraObservation::for_family(CameraFamily::OpenIPCClassA).with_web_update_reachable();
         let plan = planner().plan(&with);
         let plan = match plan {
             Ok(p) => p,

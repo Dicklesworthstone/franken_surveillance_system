@@ -119,6 +119,16 @@ update, or standards-native), and zero-touch wireless onboarding is real. Every 
 needs one bounded physical ritual per unit or fleet; class F is excluded until a legitimate path
 appears.
 
+These classes are the machine-readable basis of the first-party `fss-provision`
+crate (LAB-PROVISION-001): `CameraFamily` × `FrictionClass` × `Transport`
+(the software path) plus `DataLane` (the data path), with per-family
+`Prerequisite`, ordered `OnboardingStep`, brick-recovery, and digest-pinned
+`SdImagePlan` layouts. The `fss-provision` CLI emits the family catalog and a
+typed onboarding plan (or a typed blocked reason) — sans-IO and deterministic.
+Wyze/AOSU are `f_locked` / `Transport::None` (no legitimate firmware-replacement
+path) yet still carry live data lanes (`DataLane::TutkNew` / `DataLane::Tuya35`);
+the software vs. data split is preserved in the model, not flattened away.
+
 ## 3a. Custom-firmware and on-device-software reality (2026-10-16)
 
 Owner goal: custom software on owned cameras (Rust/asupersync userspace, Tailscale-native access,
@@ -130,6 +140,15 @@ no vendor cloud). Per-device legitimate paths — no exploit development anywher
 | Wyze Cam v4 | No public custom firmware exists | No legitimate on-device path — and none needed for the goal: the TUTK lane streams video+events off the stock device (live-proven) | Not on-device; the FSS host bridges to the tailnet instead | Goal met without firmware work |
 | AOSU P1 Max fleet | None (locked Glazero/Tuya homebase + deeply embedded battery cams) | No on-device path; data path covered by the fss-tuya lane once the owner local_key exists (NEG-003) | Not on-device | Goal met via protocol lane, pending key |
 | Canary | Device not on LAN (2026-10-09 census) | TBD | TBD | Blocked on device presence (fss-tp7iu) |
+
+The rows above are the per-device basis for the `fss-provision` crate
+(LAB-PROVISION-001). Each row's firmware-replacement path maps to a `Transport`
+(SD-updater → `SdImage`, vendor web-UI update → `NetworkUpdate`, none →
+`Transport::None`), and the "own Rust software" + "tailscale-native" columns are
+what the on-camera FSS software bundle (base firmware + Rust agent + userspace
+`tailscaled` + swap) delivers. `fss-provision` encodes this as typed,
+digest-pinned plans, honestly marking the locked rows (Wyze/AOSU) as
+`f_locked` / `Transport::None` yet still usable for data.
 
 ## 4. Readiness dimensions per adapter
 

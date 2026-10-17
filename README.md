@@ -587,6 +587,12 @@ Implemented (reference, unqualified):
 - the agent semantic contracts (`SituationCapsule`, `WorldEnvelope`, affordances, meaningful deltas,
   hydration, handoff) as typed, tested Rust;
 - the plan, registries, schemas, policy checkers and local qualification wrapper.
+- the factory-state camera onboarding substrate (`fss-provision`, LAB-PROVISION-001): a sans-IO,
+  deterministic reference for turning a factory-state camera (Yi/Wyze/AOSU/OpenIPC-class-A/
+  generic-standards) into a tailnet-native FSS node — per-family friction class, software transport,
+  prerequisites, ordered steps, digest-pinned SD-image layout and on-camera software bundle, a typed
+  onboarding plan (or a typed blocked reason), and a heartbeat liveness tracker; the software vs.
+  data split is preserved (Wyze/AOSU are locked for software yet usable for data);
 
 Partial:
 

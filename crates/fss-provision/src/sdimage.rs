@@ -187,7 +187,10 @@ impl fmt::Display for SdImageError {
             Self::ImageTooLarge {
                 total_bytes,
                 capacity_bytes,
-            } => write!(f, "image {total_bytes}B does not fit a {capacity_bytes}B card"),
+            } => write!(
+                f,
+                "image {total_bytes}B does not fit a {capacity_bytes}B card"
+            ),
         }
     }
 }
@@ -242,19 +245,23 @@ impl SdImageBuilder {
         let mut entries: Vec<ImageEntry> = Vec::with_capacity(bundle.components().len());
         let mut total_bytes: u64 = 0;
         for component in bundle.components() {
-            let path = format!("/{}/{}", directory_for_kind(component.kind()), component.name());
+            let path = format!(
+                "/{}/{}",
+                directory_for_kind(component.kind()),
+                component.name()
+            );
             if path.len() > MAX_PATH_BYTES {
                 return Err(SdImageError::PathTooLong(path));
             }
             if entries.iter().any(|e| e.path() == path) {
                 return Err(SdImageError::DuplicatePath(path));
             }
-            total_bytes = total_bytes
-                .checked_add(component.size_bytes())
-                .ok_or(SdImageError::ImageTooLarge {
+            total_bytes = total_bytes.checked_add(component.size_bytes()).ok_or(
+                SdImageError::ImageTooLarge {
                     total_bytes: u64::MAX,
                     capacity_bytes: self.capacity_bytes,
-                })?;
+                },
+            )?;
             entries.push(ImageEntry::new(
                 path,
                 component.size_bytes(),

@@ -154,7 +154,11 @@ fn count_authoring_uses_the_native_calibration_owner_and_exact_external_scope() 
     let direct = EventFusionProfile::for_long_watch(spec(), pin("graph")).unwrap();
     assert_eq!(from_counts.digest(), direct.digest());
     assert_eq!(from_counts.to_json().unwrap(), direct.to_json().unwrap());
-    let spoof = COUNTS.replacen(""class_index":0", ""class_index":0,"long_watch_analysis_root":"spoof"", 1);
+    let spoof = COUNTS.replacen(
+        "\"class_index\":0",
+        "\"class_index\":0,\"long_watch_analysis_root\":\"spoof\"",
+        1,
+    );
     assert!(EventFusionProfile::from_long_watch_counts_json(
         spoof.as_bytes(), pin(&spoof), spec().plan_digest, spec().cascade_digest, pin("graph"),
     ).is_err());

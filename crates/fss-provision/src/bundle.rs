@@ -450,12 +450,8 @@ mod tests {
 
     fn fixture_bundle() -> Result<AgentBundle, BundleError> {
         AgentBundleBuilder::new("fss-agent/1")
-            .and_then(|b| {
-                b.add_component(ComponentKind::BaseFirmware, "fw-a", b"firmware-bytes-A")
-            })
-            .and_then(|b| {
-                b.add_component(ComponentKind::RustAgent, "agent", b"agent-bytes")
-            })
+            .and_then(|b| b.add_component(ComponentKind::BaseFirmware, "fw-a", b"firmware-bytes-A"))
+            .and_then(|b| b.add_component(ComponentKind::RustAgent, "agent", b"agent-bytes"))
             .and_then(|b| {
                 b.add_component_digest(
                     ComponentKind::Tailscaled,

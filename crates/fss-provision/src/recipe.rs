@@ -431,7 +431,10 @@ impl fmt::Display for RecipeError {
                 write!(f, "family {fam}: path requires prerequisite {pre}")
             }
             Self::InconsistentWireless(fam) => {
-                write!(f, "family {fam}: software_wireless disagrees with friction class")
+                write!(
+                    f,
+                    "family {fam}: software_wireless disagrees with friction class"
+                )
             }
         }
     }
@@ -464,7 +467,10 @@ const YI_STEPS: &[OnboardingStep] = &[
         StepKind::PowerOnForFlash,
         "power the camera on so the vendor SD updater flashes it",
     ),
-    OnboardingStep::new(StepKind::VerifyRootSsh, "verify root SSH/dropbear after the flash"),
+    OnboardingStep::new(
+        StepKind::VerifyRootSsh,
+        "verify root SSH/dropbear after the flash",
+    ),
     OnboardingStep::new(
         StepKind::InstallTailscaleUserspace,
         "install tailscaled --tun=userspace-networking (SD swap enabled)",
@@ -489,7 +495,10 @@ const OPENIPC_STEPS: &[OnboardingStep] = &[
         StepKind::NetworkFlashOpenipc,
         "flash the image over the stock web-UI update endpoint, over the network",
     ),
-    OnboardingStep::new(StepKind::VerifyRootSsh, "verify root SSH/dropbear after the flash"),
+    OnboardingStep::new(
+        StepKind::VerifyRootSsh,
+        "verify root SSH/dropbear after the flash",
+    ),
     OnboardingStep::new(
         StepKind::InstallTailscaleUserspace,
         "install tailscaled --tun=userspace-networking (SD swap enabled)",
@@ -645,7 +654,9 @@ impl RecipeRegistry {
                 }
             }
             if recipe.transport() == Transport::NetworkUpdate
-                && !recipe.prerequisites().contains(&Prerequisite::WebUpdateEndpoint)
+                && !recipe
+                    .prerequisites()
+                    .contains(&Prerequisite::WebUpdateEndpoint)
             {
                 return Err(RecipeError::MissingPrerequisite(
                     family,
@@ -655,7 +666,10 @@ impl RecipeRegistry {
             if recipe.data_lane() == DataLane::Tuya35
                 && !recipe.prerequisites().contains(&Prerequisite::LocalKey)
             {
-                return Err(RecipeError::MissingPrerequisite(family, Prerequisite::LocalKey));
+                return Err(RecipeError::MissingPrerequisite(
+                    family,
+                    Prerequisite::LocalKey,
+                ));
             }
             if recipe.software_wireless() != recipe.friction_class().wireless_capable() {
                 return Err(RecipeError::InconsistentWireless(family));
@@ -694,8 +708,16 @@ mod tests {
         assert_eq!(yi.friction_class(), FrictionClass::DSdCardOnce);
         assert_eq!(yi.transport(), Transport::SdImage);
         assert!(!yi.software_wireless());
-        assert!(yi.steps().iter().any(|s| s.kind() == StepKind::InsertSdCard));
-        assert!(yi.steps().iter().any(|s| s.kind() == StepKind::InstallTailscaleUserspace));
+        assert!(
+            yi.steps()
+                .iter()
+                .any(|s| s.kind() == StepKind::InsertSdCard)
+        );
+        assert!(
+            yi.steps()
+                .iter()
+                .any(|s| s.kind() == StepKind::InstallTailscaleUserspace)
+        );
         assert!(yi.data_lane() == DataLane::OnvifT);
         assert!(yi.brick_recovery().is_some());
     }
@@ -709,7 +731,12 @@ mod tests {
         assert_eq!(openipc.friction_class(), FrictionClass::AOpenByDesign);
         assert_eq!(openipc.transport(), Transport::NetworkUpdate);
         assert!(openipc.software_wireless());
-        assert!(openipc.steps().iter().any(|s| s.kind() == StepKind::NetworkFlashOpenipc));
+        assert!(
+            openipc
+                .steps()
+                .iter()
+                .any(|s| s.kind() == StepKind::NetworkFlashOpenipc)
+        );
         assert!(!openipc.steps().iter().any(|s| s.is_physical()));
     }
 

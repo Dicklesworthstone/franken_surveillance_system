@@ -61,9 +61,7 @@ pub use agent::{
     AgentCoverageState, AgentError, AgentHealth, AgentHeartbeat, CameraAgentReport,
     HeartbeatTracker, Liveness, LivenessTransition, StandardsEndpoint, TailnetStatus,
 };
-pub use bundle::{
-    AgentBundle, AgentBundleBuilder, BundleComponent, BundleError, ComponentKind,
-};
+pub use bundle::{AgentBundle, AgentBundleBuilder, BundleComponent, BundleError, ComponentKind};
 pub use family::{CameraFamily, FrictionClass};
 pub use planner::{
     CameraObservation, ControlMode, OnboardingPlan, OnboardingPlanner, ProvisionError,

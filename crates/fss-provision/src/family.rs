@@ -219,8 +219,14 @@ mod tests {
 
     #[test]
     fn family_parse_fails_closed_on_unknown() {
-        assert_eq!(Err(ContractError::InvalidIdentifier), CameraFamily::parse("sonos"));
-        assert_eq!(Err(ContractError::InvalidIdentifier), CameraFamily::parse(""));
+        assert_eq!(
+            Err(ContractError::InvalidIdentifier),
+            CameraFamily::parse("sonos")
+        );
+        assert_eq!(
+            Err(ContractError::InvalidIdentifier),
+            CameraFamily::parse("")
+        );
         assert_eq!(Ok(CameraFamily::Yi), CameraFamily::parse("yi"));
     }
 
