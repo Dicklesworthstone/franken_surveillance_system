@@ -95,6 +95,30 @@ includes products such as Mini 3/Mini 3 Pro and enterprise aircraft, but not Fli
 - initial value comes from manual flight, app-authorized capture, recorded file import, or a
   narrowly qualified owner-side display/capture bridge.
 
+## 3b. Onboarding friction classes — the honest shape of "factory camera → our software" (2026-10-16)
+
+The universal dream — "any factory-state camera, wirelessly, zero-touch, replace the software" —
+cannot legitimately exist for arbitrary manufacturers: the lockdown *is* the security boundary. A
+camera that accepted unauthenticated wireless firmware replacement from factory state would be
+botnet bait (Mirai proved it). Devices that permit it are either open-by-design or exploitable, and
+this project does not build exploits (owner charter).
+
+What DOES exist, per friction class:
+
+| Class | Examples | Path | Physical touch? |
+|---|---|---|---|
+| **A — open-by-design (the procurement answer)** | OpenIPC-supported cameras whose stock firmware has a web-UI update (XiongMai/generic-IPC class) | Coupler-built OpenIPC image flashed via the vendor's own update endpoint, **over the network** — no SD/UART/app. Caveat: Coupler is WIP; brick risk exists (recovery = TFTP+UART) | **None** |
+| **B — one-time owner pairing, then standards forever** | Yi IPC (ONVIF gated pre-provisioning) | One same-room phone-app pairing (QR-to-lens, ~3 min, no tools/SD) → ONVIF/RTSP opens permanently → FSS standards lane | One QR moment |
+| **C — owner cloud account, no MITM** | Tuya fleets (AOSU) | Pair devices under the owner's own Smart Life/Tuya account (if OEM allows) → owner's own Tuya IoT developer console returns `local_key` via official API → fss-tuya lane (built, oracle-verified) takes over | App-level, wireless |
+| **D — one SD card, once** | Yi custom software (yi-hack) | FAT32 card, release at root, insert, reboot — vendor's own update mechanism; then root SSH + build SDK (Rust cross-compiles; tailscaled userspace mode) | 30 seconds, once |
+| **E — network-native, zero touch** | Wyze Cam v4 | TUTK lane live-proven; streaming+events without any firmware change | None |
+| **F — locked, no legitimate path today** | (Canary until present; others as found) | — | — |
+
+Procurement rule for the larger system: **buy class-A/E devices** (OpenIPC-supported with web-UI
+update, or standards-native), and zero-touch wireless onboarding is real. Every class-B/C/D device
+needs one bounded physical ritual per unit or fleet; class F is excluded until a legitimate path
+appears.
+
 ## 3a. Custom-firmware and on-device-software reality (2026-10-16)
 
 Owner goal: custom software on owned cameras (Rust/asupersync userspace, Tailscale-native access,
