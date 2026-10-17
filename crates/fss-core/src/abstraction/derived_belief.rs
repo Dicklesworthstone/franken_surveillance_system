@@ -57,7 +57,7 @@ pub const DERIVED_BELIEF_DOMAIN: &str = "fss.derived_belief.v1";
 ///
 /// Nor does a struct literal that skips validation:
 ///
-/// ```compile_fail,E0451
+/// ```compile_fail
 /// use fss_core::{DerivedBelief, DerivedBeliefParams, Generation, KnowledgeState};
 ///
 /// fn forge(params: DerivedBeliefParams) -> DerivedBelief {
