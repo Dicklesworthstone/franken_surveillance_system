@@ -29,9 +29,9 @@ jobs:
       CARGO_NET_OFFLINE: 'true'
     steps:
       - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
-      - name: Execute repository-owned Rust lane
-        run: bash scripts/qualify.sh --lane rust --receipt-dir "${{ runner.temp }}/qualification-receipt"
       - name: Provision the pinned compiler
         run: bash scripts/bootstrap_toolchain.sh
+      - name: Execute repository-owned Rust lane
+        run: bash scripts/qualify.sh --lane rust --receipt-dir "${{ runner.temp }}/qualification-receipt"
       - name: Exercise acquisition and cold recovery contracts
         run: bash scripts/e2e/acquisition_recovery.sh

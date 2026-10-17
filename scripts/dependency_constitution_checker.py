@@ -24,7 +24,7 @@ lives in this checker). On top of that this checker verifies:
    resolve graph (normal and build edges), member edition
    derived from the constitution language, native links, custom-build, proc-macro and dynamic/C-ABI crate
    types, and the shared classifier for every non-member package (pending owner decisions stay neutral);
-4. unstable features anywhere in the repository: no unstable-feature registry exists, so ``#![feature]``
+4. unstable features anywhere in the repository, except those recorded per-file in ``architecture/unstable_features.toml`` (DEPENDENCY_CONSTITUTION 2.1): unrecorded ``#![feature]``
    (also inside ``cfg_attr``), ``-Z`` rustflags in ``.cargo/config*`` or RUSTFLAGS-style variables of
    checked-in env/shell files, cargo ``[unstable]`` tables, ``cargo-features`` and ``-Z`` literals in build
    scripts are findings. ``Cargo.lock`` is read through the bounded, symlink-refusing reader before cargo
@@ -1102,7 +1102,12 @@ def _override_toolchain_problem(line: str, channel: str | None) -> str | None:
 
 
 def scan_unstable_features(root: Path, result: ValidationResult) -> int:
-    """Refuses every way of enabling nightly unstable features: no unstable-feature registry exists.
+    """Refuses every unrecorded way of enabling nightly unstable features.
+
+    ``#![feature]`` enablements recorded per-file in
+    ``architecture/unstable_features.toml`` (feature name + exact file +
+    justification) are permitted per DEPENDENCY_CONSTITUTION 2.1; all other
+    unstable enablement paths below are refused unconditionally.
 
     Scanned: ``#![feature(...)]`` and ``#![cfg_attr(<pred>, feature(...))]`` inner attributes in every
     Rust file of the repository (build scripts included; only the workspace's own target/ and tool
@@ -1121,7 +1126,7 @@ def scan_unstable_features(root: Path, result: ValidationResult) -> int:
     channel = accepted_channel(root)
 
     def emit(rel: str, target: str, message: str) -> None:
-        result.add_error(ERR_DEP_UNSTABLE_FEATURE, rel, target, f"{message}; no registered unstable-feature allowlist exists (DEPENDENCY_CONSTITUTION 2.1 requires enabled unstable features to be recorded)")
+        result.add_error(ERR_DEP_UNSTABLE_FEATURE, rel, target, f"{message}; the feature is not recorded for this file in architecture/unstable_features.toml (DEPENDENCY_CONSTITUTION 2.1 requires enabled unstable features to be recorded)")
 
     # DEPENDENCY_CONSTITUTION 2.1: a feature recorded in
     # architecture/unstable_features.toml for the exact file it appears in is

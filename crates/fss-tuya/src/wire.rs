@@ -381,7 +381,12 @@ pub fn unpack_6699_mode(
         m => m,
     };
     let (retcode, payload) = match mode {
-        RetcodeMode::Present if raw.len() >= 4 => {
+        RetcodeMode::Present => {
+            if raw.len() < 4 {
+                // Device responses always carry the 4-byte retcode; shorter
+                // is malformed, not "absent".
+                return Err(WireError::ShortBody);
+            }
             let rc = u32::from_be_bytes([raw[0], raw[1], raw[2], raw[3]]);
             (Some(rc), raw[4..].to_vec())
         }

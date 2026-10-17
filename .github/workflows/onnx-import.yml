@@ -31,12 +31,12 @@ jobs:
       CARGO_NET_OFFLINE: 'true'
     steps:
       - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
-      - name: Execute repository-owned Rust lane
-        run: bash scripts/qualify.sh --lane rust --receipt-dir "${{ runner.temp }}/qualification-receipt"
         with:
           persist-credentials: false
       - name: Provision pinned native toolchain
         run: bash scripts/bootstrap_toolchain.sh
+      - name: Execute repository-owned Rust lane
+        run: bash scripts/qualify.sh --lane rust --receipt-dir "${{ runner.temp }}/qualification-receipt"
       - name: Run complete Model IR contracts including ONNX parser refusals
         run: cargo +nightly-2026-08-31 test --locked --offline -p fss-model-ir
       - name: Execute converted graphs through the unchanged native kernels

@@ -23,6 +23,8 @@ on:
       - 'Cargo.lock'
       - 'rust-toolchain.toml'
       - 'scripts/bootstrap_toolchain.sh'
+    - name: Execute repository-owned Rust lane
+      run: bash scripts/qualify.sh --lane rust --receipt-dir "${{ runner.temp }}/qualification-receipt"
       - 'scripts/qualify_rtsp_keepalive.sh'
       - '.github/workflows/rtsp-control-regression.yml'
   workflow_dispatch:

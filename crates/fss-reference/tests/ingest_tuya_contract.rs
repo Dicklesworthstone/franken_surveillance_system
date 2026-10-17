@@ -254,7 +254,7 @@ fn unknown_cam_is_a_typed_error_not_a_silent_drop() {
 }
 
 #[test]
-fn flat_dps_parser_handles_scalars_and_rejects_nesting() {
+fn flat_dps_parser_handles_scalars_and_preserves_nested_raw() {
     // via the public mapping paths: strings, numbers, bools all preserved
     let mut m = mapper();
     let digests = m
@@ -266,20 +266,28 @@ fn flat_dps_parser_handles_scalars_and_rejects_nesting() {
         )
         .expect("scalars incl. comma in string");
     assert_eq!(digests.len(), 3);
+    // Nested values are preserved raw (the flat splitter is depth-aware).
+    // Two deterministic arms: a REGISTERED dp (104 → motion in the lab
+    // fixture registry) still gets its recognized kind with the nested
+    // token verbatim; an UNREGISTERED dp (209) stays UnknownDp with the
+    // nested token verbatim. Neither is rejected; neither is reinterpreted.
     let r = m.map_event_report(
         "solarium",
         "fsssimhomebase00",
-        "{\"dps\":{\"104\":{\"nested\":true}}}",
+        "{\"dps\":{\"104\":{\"nested\":true},\"209\":{\"also\":1}}}",
         interval(9_000),
     );
-    // Nested values pass through the flat splitter but the pair survives —
-    // what matters is it is NEVER interpreted as a known event kind.
-    match r {
-        Ok(ds) => {
-            let text = String::from_utf8_lossy(m.custody(&ds[0]).expect("custody"));
-            assert!(text.contains("\"event_kind\":\"104\"") || text.contains("\"event_kind\":\"motion\""));
-        }
-        Err(_) => { /* structural rejection is also honest */ }
-    }
+    let ds = r.expect("nested values are preserved raw, not rejected");
+    assert_eq!(ds.len(), 2);
+    let texts: Vec<String> = ds
+        .iter()
+        .map(|d| String::from_utf8_lossy(m.custody(d).expect("custody")).into_owned())
+        .collect();
+    let registered = texts.iter().find(|t| t.contains("\"dp_id\":\"104\"")).expect("dp 104 candidate");
+    assert!(registered.contains("\"event_kind\":\"motion\""), "{registered}");
+    assert!(registered.contains("\"raw\":{\"nested\":true}"), "{registered}");
+    let unregistered = texts.iter().find(|t| t.contains("\"dp_id\":\"209\"")).expect("dp 209 candidate");
+    assert!(unregistered.contains("\"event_kind\":\"209\""), "{unregistered}");
+    assert!(unregistered.contains("\"raw\":{\"also\":1}"), "{unregistered}");
     let _ = EventKind::Motion; // kind surface stays exercised
 }

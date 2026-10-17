@@ -89,6 +89,23 @@ fn full_session_client_against_simulator() {
 }
 
 #[test]
+fn heartbeat_ack_payload_is_empty_with_retcode_zero() {
+    // Regression: device 6699 responses always embed a 4-byte retcode; the
+    // client must strip it. A retcode-only ACK (4 raw bytes) must surface as
+    // empty payload + Some(0), never as a 4-byte pseudo-payload.
+    let mut client = TuyaClient::new(KEY, Proto::V35);
+    let mut sim = HomebaseSim::new(SimConfig::v35_homebase());
+    negotiate(&mut client, &mut sim, KEY);
+    let hb = client.heartbeat(iv(3)).expect("heartbeat");
+    let resp = sim.handle(&hb);
+    assert_eq!(resp.len(), 1);
+    let inbound = client.handle(&resp[0]).expect("inbound");
+    assert_eq!(inbound.cmd, cmd::HEART_BEAT);
+    assert_eq!(inbound.retcode, Some(0));
+    assert!(inbound.payload.is_empty(), "retcode stripped: {:?}", inbound.payload);
+}
+
+#[test]
 fn wrong_key_client_gets_silence_and_stays_unestablished() {
     let mut client = TuyaClient::new(WRONG, Proto::V35);
     let mut sim = HomebaseSim::new(SimConfig::v35_homebase());

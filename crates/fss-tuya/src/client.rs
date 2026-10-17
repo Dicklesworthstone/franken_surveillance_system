@@ -245,7 +245,11 @@ impl TuyaClient {
     pub fn handle(&mut self, frame: &[u8]) -> Result<Inbound, ClientError> {
         let session_key = self.session_key()?;
         let msg = match self.proto {
-            Proto::V35 => wire::unpack_6699(frame, &session_key)?,
+            // Device→client 6699 responses always embed a leading retcode
+            // (the oracle's default strips it unconditionally); using the
+            // content heuristic here would misread a retcode-only heartbeat
+            // ACK (4 raw bytes) as payload.
+            Proto::V35 => wire::unpack_6699_mode(frame, &session_key, wire::RetcodeMode::Present)?,
             Proto::V34 => {
                 let mut m = wire::unpack_55aa(frame, Some(&session_key), false)?;
                 m.payload = crypto::aes128_ecb_decrypt_pkcs7(&session_key, &m.payload)

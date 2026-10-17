@@ -150,7 +150,8 @@ feature may become an undocumented semantic dependency. The qualification receip
 - `rustc -Vv`;
 - Cargo version;
 - target and host triples;
-- enabled unstable features;
+- enabled unstable features (recorded per-file in `architecture/unstable_features.toml`; the
+  constitution checker refuses any enablement absent from that registry);
 - codegen/LTO/panic settings;
 - standard-library source identity when reproducibility requires it.
 
