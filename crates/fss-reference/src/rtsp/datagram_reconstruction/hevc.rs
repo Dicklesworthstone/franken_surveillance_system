@@ -1,0 +1,459 @@
+#![forbid(unsafe_code)]
+//! Cold source-verified HEVC RTP-to-NAL reconstruction, without a camera or invented EOF.
+//! This layer does not assemble pictures, infer VPS/SPS/PPS, or select media timing.
+//!
+//! This is a new deterministic interpretation of retained observations, not restoration of
+//! the original live poll schedule. Equal-time arrivals precede future timer wakes; immediate
+//! receiver output is drained between observations. Storage time never becomes media time.
+
+use crate::rtsp::datagram_archive::{
+    DatagramArchive, DatagramArchiveError, DatagramPin, RetainedDatagram,
+};
+use fss_core::{CanonicalEncoder, ContentDigest, DigestAlgorithm};
+use fss_geometry::WorkBudget;
+use fss_packet::{
+    H265Limits, H265ReceiveAdmission, H265ReceiveCancellation, H265ReceiveError, H265ReceivePoll,
+    H265Receiver, PacketError, ReorderDisposition, ReorderLimits, RtcpCompound, RtcpMode,
+};
+use fss_publication::{LocalRootPublisher, PublishCancellation, PublishCutPoint};
+
+mod profile;
+
+/// Explicit transport interpretation; no parameter sets, pixels or pictures are inferred.
+/// The original negotiated stream mapping and no-DON policy must come from the owner.
+#[derive(Clone, Copy, Debug)]
+pub struct HevcReplaySpec {
+    /// Exact negotiated RTP payload number, never sniffed from original bytes.
+    pub payload_type: u8,
+    /// Negotiated DON bound. The native receiver refuses nonzero values before source I/O.
+    pub sprop_max_don_diff: u16,
+    /// Original-packet, sequence queue and reordering ceilings.
+    pub reorder: ReorderLimits,
+    /// Complete-NAL, aggregate, fragment-count and fragment-age ceilings.
+    pub reconstruction: H265Limits,
+    /// Whether reduced-size RTCP was explicitly negotiated.
+    pub reduced_rtcp: bool,
+    /// Independently accepted transport-configuration evidence; not read authority.
+    pub configuration_evidence: ContentDigest,
+}
+
+/// Independent current-operation bounds, never decoded from retained source metadata.
+#[derive(Clone, Copy, Debug)]
+pub struct HevcReplayBounds {
+    /// Complete input payload allowance; zero permits an empty source prefix only.
+    pub max_source_bytes: u64,
+    /// Finite progress/command calls, including clock advances and downstream timing commands.
+    pub max_steps: u64,
+    /// Absolute current storage-owner deadline, unrelated to historical receive timestamps.
+    pub deadline_ns: u64,
+}
+
+/// Reconstruction errors preserve existing typed source and codec refusals.
+#[derive(Debug)]
+pub enum HevcReplayError {
+    /// Invalid scope, parameters, lease, budget or configuration evidence.
+    Configuration,
+    /// Exact source read, budget, cancellation or custody failed.
+    Source(DatagramArchiveError),
+    /// Existing receiver refused the operation.
+    Receiver(H265ReceiveError),
+    /// The supplied current storage clock regressed; no progress was made.
+    ClockReversed,
+    /// This attempt has transferred its terminal ownership.
+    Closed,
+    /// Unexpected scheduler or prefix state; no successful completion is fabricated.
+    Invariant,
+}
+impl std::fmt::Display for HevcReplayError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "HEVC source reconstruction refused: {self:?}")
+    }
+}
+impl std::error::Error for HevcReplayError {}
+impl From<DatagramArchiveError> for HevcReplayError {
+    fn from(e: DatagramArchiveError) -> Self {
+        Self::Source(e)
+    }
+}
+type Result<T> = std::result::Result<T, HevcReplayError>;
+
+/// One complete, bounded output. Original observations are never collapsed into RTP dedup state.
+#[derive(Debug)]
+#[must_use]
+pub enum HevcReplayStep {
+    /// Original RTP and its actual receiver admission, including probation/duplicates.
+    Rtp {
+        /// Reverified durable original observation, still caller-owned after admission.
+        source: RetainedDatagram,
+        /// Existing typed admission, not a decoded-picture or coverage claim.
+        admission: H265ReceiveAdmission,
+        /// A confirmed source restart terminates this old-epoch reconstruction.
+        retired: Option<H265ReceiveCancellation>,
+    },
+    /// RTCP remains original evidence. Invalid RTCP does not invent a video gap or wall clock.
+    Rtcp {
+        /// Exact retained control datagram (never an RTSP challenge or credential).
+        source: RetainedDatagram,
+        /// Whole compound validation, with no inferred sender-clock calibration.
+        validation: std::result::Result<usize, PacketError>,
+    },
+    /// A malformed/refused RTP observation stopped reconstruction, preserving its exact bytes.
+    InputRefused {
+        /// Reverified original that could not enter the receiver.
+        source: RetainedDatagram,
+        /// Existing packet/epoch refusal.
+        error: H265ReceiveError,
+        /// All remaining receiver accounting; source custody is not deleted.
+        retired: H265ReceiveCancellation,
+    },
+    /// Existing ordered-source, complete-NAL, gap or fragment-retirement output.
+    Media {
+        /// Historical virtual replay time, not the current storage clock or DTS.
+        replay_ns: u64,
+        /// The original receiver event, unchanged.
+        event: H265ReceivePoll,
+    },
+    /// A recorded future arrival bounds a real receiver timer wake; no source read happened.
+    ClockAdvanced {
+        /// Exact virtual wake chosen before the next retained arrival.
+        replay_ns: u64,
+    },
+    /// Native receiver termination is not transport EOF or proof that all source was consumed.
+    /// A source restart can end the receiver; this is not a clean-end claim.
+    CodecEnded {
+        /// Time used by the existing receiver.
+        replay_ns: u64,
+        /// Existing transport/codec terminal event, with incomplete-FU accounting.
+        event: H265ReceivePoll,
+        /// Number of retained observations not consumed by this interpretation.
+        remaining_datagrams: u64,
+        /// Receiver retirement, without deleting original source.
+        retired: H265ReceiveCancellation,
+    },
+    /// The exact retained prefix was drained at its final arrival time. No finish() was called.
+    PrefixExhausted {
+        /// Complete selected source prefix, not a stream-completeness claim.
+        source: DatagramPin,
+        /// No future timer was invented beyond this time.
+        replay_ns: u64,
+        /// Incomplete fragment and queued-original accounting remains explicit.
+        retired: H265ReceiveCancellation,
+    },
+    /// Terminal output was already transferred once.
+    Ended,
+}
+
+/// Remaining ownership after cancellation/failure, including any output withheld after revocation.
+#[derive(Debug)]
+#[must_use]
+pub struct HevcReplayRetirement {
+    /// Exact independently selected source prefix.
+    pub source: DatagramPin,
+    /// Digest over source, exact configuration and deterministic scheduling policy.
+    pub interpretation: ContentDigest,
+    /// Number of original observations actually read in this attempt.
+    pub observations_read: u64,
+    /// Last virtual time reached, never inferred camera time.
+    pub replay_ns: u64,
+    /// Remaining receiver state; None when a terminal output already owns it.
+    pub receiver: Option<H265ReceiveCancellation>,
+    /// Output withheld after computation because current authority/budget was withdrawn.
+    pub withheld: Option<Box<HevcReplayStep>>,
+}
+
+/// Safe clock refusals have no retirement. Every other runtime failure stops this attempt.
+#[derive(Debug)]
+pub struct HevcReplayFailure {
+    /// Typed source/codec/operation error.
+    pub reason: HevcReplayError,
+    /// Complete remaining ownership when this operation fenced the replayer.
+    pub retirement: Option<Box<HevcReplayRetirement>>,
+}
+impl std::fmt::Display for HevcReplayFailure {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        std::fmt::Display::fmt(&self.reason, f)
+    }
+}
+impl std::error::Error for HevcReplayFailure {}
+
+/// Reconstruct the same immutable source prefix with an explicit, frozen interpretation.
+/// No socket, mutation, latest-revision lookup, decoder process or payload cache is introduced.
+/// A publisher is supplied per step so output windows may use that same owner between reads.
+#[must_use]
+#[derive(Debug)]
+pub struct DatagramHevcReplay<'a> {
+    archive: &'a DatagramArchive,
+    receiver: Option<H265Receiver>,
+    interpretation: ContentDigest,
+    packet_limits: fss_packet::PacketLimits,
+    reduced_rtcp: bool,
+    next: usize,
+    replay_ns: u64,
+    storage_ns: u64,
+    bounds: HevcReplayBounds,
+    steps: u64,
+    poll_cost: u64,
+    closed: bool,
+}
+impl<'a> DatagramHevcReplay<'a> {
+    /// Validate the exact transport interpretation before reading source. The archive must be a recovered,
+    /// owner-accepted inventory. Every later observation is reverified against current custody.
+    pub fn new(
+        archive: &'a DatagramArchive,
+        spec: HevcReplaySpec,
+        bounds: HevcReplayBounds,
+        now_ns: u64,
+    ) -> Result<Self> {
+        if bounds.max_steps == 0
+            || now_ns >= bounds.deadline_ns
+            || archive.pin().payload_bytes > bounds.max_source_bytes
+            || spec.configuration_evidence.algorithm() != DigestAlgorithm::Sha256
+            || spec.configuration_evidence.bytes() == [0; 32]
+            || spec.payload_type > 127
+        {
+            return Err(HevcReplayError::Configuration);
+        }
+        let receiver = H265Receiver::new(
+            archive.scope().binding.key(),
+            spec.payload_type,
+            spec.sprop_max_don_diff,
+            spec.reorder,
+            spec.reconstruction,
+        )
+        .map_err(HevcReplayError::Receiver)?;
+        let interpretation = profile::digest(archive.pin(), spec)?;
+        // Conservative traversal/copy reservation, not a calibrated performance receipt.
+        let poll_cost = [spec.reorder.max_bytes, spec.reconstruction.max_nal_bytes]
+            .into_iter()
+            .try_fold(1024_u64, |sum, n| {
+                sum.checked_add(u64::try_from(n).map_err(|_| HevcReplayError::Configuration)?)
+                    .ok_or(HevcReplayError::Configuration)
+            })?;
+        Ok(Self {
+            archive,
+            receiver: Some(receiver),
+            interpretation,
+            packet_limits: spec.reorder.packet,
+            reduced_rtcp: spec.reduced_rtcp,
+            next: 0,
+            replay_ns: 0,
+            storage_ns: now_ns,
+            bounds,
+            steps: 0,
+            poll_cost,
+            closed: false,
+        })
+    }
+    /// Full source/configuration/scheduler commitment, not proof of the original live schedule.
+    pub fn interpretation(&self) -> ContentDigest {
+        self.interpretation
+    }
+    /// Complete pinned input. Later source publications are not silently included.
+    pub fn source(&self) -> DatagramPin {
+        self.archive.pin()
+    }
+    /// Current virtual receive-clock time, independent of real-time storage admission.
+    pub fn replay_ns(&self) -> u64 {
+        self.replay_ns
+    }
+    /// Original observations read, including invalid and duplicate datagrams.
+    pub fn observations_read(&self) -> u64 {
+        self.next as u64
+    }
+
+    /// Drain one receiver event, read/admit one original, or advance one timer. Never loop on
+    /// Pending. Storage and work refusal stop the attempt without losing a produced output.
+    pub fn step(
+        &mut self,
+        publisher: &LocalRootPublisher,
+        now_ns: u64,
+        cancel: &dyn PublishCancellation,
+        budget: &mut WorkBudget<'_>,
+    ) -> std::result::Result<HevcReplayStep, HevcReplayFailure> {
+        if self.closed {
+            return Ok(HevcReplayStep::Ended);
+        }
+        self.guard(now_ns, cancel, budget)?;
+        let step = self
+            .advance(publisher, cancel, budget)
+            .map_err(|e| self.fail(e, None))?;
+        if let Err(error) = current(cancel, budget) {
+            return Err(self.fail(error, Some(step)));
+        }
+        Ok(step)
+    }
+    fn advance(
+        &mut self,
+        publisher: &LocalRootPublisher,
+        cancel: &dyn PublishCancellation,
+        budget: &mut WorkBudget<'_>,
+    ) -> Result<HevcReplayStep> {
+        budget
+            .charge(self.poll_cost)
+            .map_err(DatagramArchiveError::Work)?;
+        let event = self
+            .receiver
+            .as_mut()
+            .ok_or(HevcReplayError::Invariant)?
+            .poll(self.replay_ns)
+            .map_err(HevcReplayError::Receiver)?;
+        let wake = match event {
+            H265ReceivePoll::Pending { wake_at_ns } => wake_at_ns,
+            event @ H265ReceivePoll::Ended { .. } => {
+                self.closed = true;
+                let retired = self.take_receiver().ok_or(HevcReplayError::Invariant)?;
+                return Ok(HevcReplayStep::CodecEnded {
+                    replay_ns: self.replay_ns,
+                    event,
+                    remaining_datagrams: self.source().datagrams - self.next as u64,
+                    retired,
+                });
+            }
+            event => {
+                return Ok(HevcReplayStep::Media {
+                    replay_ns: self.replay_ns,
+                    event,
+                });
+            }
+        };
+        let Some(next) = self.archive.records().get(self.next) else {
+            self.closed = true;
+            let retired = self.take_receiver().ok_or(HevcReplayError::Invariant)?;
+            return Ok(HevcReplayStep::PrefixExhausted {
+                source: self.source(),
+                replay_ns: self.replay_ns,
+                retired,
+            });
+        };
+        if next.received_ns < self.replay_ns {
+            return Err(HevcReplayError::Invariant);
+        }
+        if let Some(at) = wake
+            && at < next.received_ns
+        {
+            if at <= self.replay_ns {
+                return Err(HevcReplayError::Invariant);
+            }
+            self.replay_ns = at;
+            return Ok(HevcReplayStep::ClockAdvanced { replay_ns: at });
+        }
+        let source = self
+            .archive
+            .read(self.next as u64 + 1, publisher, cancel, budget)?;
+        self.replay_ns = source.record().received_ns;
+        self.next += 1;
+        if source.record().channel == self.archive.scope().channels.1 {
+            let mode = if self.reduced_rtcp {
+                RtcpMode::ReducedSize
+            } else {
+                RtcpMode::Compound
+            };
+            let validation = RtcpCompound::parse(source.payload(), self.packet_limits, mode)
+                .map(|v| v.packet_count());
+            return Ok(HevcReplayStep::Rtcp { source, validation });
+        }
+        let result = self
+            .receiver
+            .as_mut()
+            .ok_or(HevcReplayError::Invariant)?
+            .ingest(
+                self.archive.scope().binding.key(),
+                source.payload(),
+                self.replay_ns,
+            );
+        match result {
+            Ok(admission) => {
+                let restart =
+                    admission.transport.disposition == ReorderDisposition::RestartRequired;
+                let retired = if restart {
+                    self.closed = true;
+                    self.take_receiver()
+                } else {
+                    None
+                };
+                Ok(HevcReplayStep::Rtp {
+                    source,
+                    admission,
+                    retired,
+                })
+            }
+            Err(error) => {
+                self.closed = true;
+                let retired = self.take_receiver().ok_or(HevcReplayError::Invariant)?;
+                Ok(HevcReplayStep::InputRefused {
+                    source,
+                    error,
+                    retired,
+                })
+            }
+        }
+    }
+    /// Stop without finishing the receiver, reading more source or deleting any stored object.
+    pub fn cancel(&mut self) -> Option<HevcReplayRetirement> {
+        if self.closed && self.receiver.is_none() {
+            return None;
+        }
+        Some(self.retire(None))
+    }
+    fn take_receiver(&mut self) -> Option<H265ReceiveCancellation> {
+        self.receiver.take().map(|mut receiver| receiver.cancel())
+    }
+    fn retire(&mut self, withheld: Option<HevcReplayStep>) -> HevcReplayRetirement {
+        self.closed = true;
+        HevcReplayRetirement {
+            source: self.source(),
+            interpretation: self.interpretation,
+            observations_read: self.next as u64,
+            replay_ns: self.replay_ns,
+            receiver: self.take_receiver(),
+            withheld: withheld.map(Box::new),
+        }
+    }
+    fn fail(
+        &mut self,
+        reason: HevcReplayError,
+        withheld: Option<HevcReplayStep>,
+    ) -> HevcReplayFailure {
+        HevcReplayFailure {
+            reason,
+            retirement: Some(Box::new(self.retire(withheld))),
+        }
+    }
+    fn guard(
+        &mut self,
+        now_ns: u64,
+        cancel: &dyn PublishCancellation,
+        budget: &mut WorkBudget<'_>,
+    ) -> std::result::Result<(), HevcReplayFailure> {
+        if self.closed {
+            return Err(HevcReplayFailure {
+                reason: HevcReplayError::Closed,
+                retirement: None,
+            });
+        }
+        if now_ns < self.storage_ns {
+            return Err(HevcReplayFailure {
+                reason: HevcReplayError::ClockReversed,
+                retirement: None,
+            });
+        }
+        let result = if now_ns >= self.bounds.deadline_ns {
+            Err(DatagramArchiveError::Deadline.into())
+        } else if self.steps >= self.bounds.max_steps {
+            Err(DatagramArchiveError::Limit.into())
+        } else {
+            current(cancel, budget)
+        };
+        result.map_err(|e| self.fail(e, None))?;
+        self.storage_ns = now_ns;
+        self.steps += 1;
+        Ok(())
+    }
+}
+fn current(cancel: &dyn PublishCancellation, budget: &mut WorkBudget<'_>) -> Result<()> {
+    if cancel.cancel_requested(PublishCutPoint::AfterChildrenVerified) {
+        return Err(DatagramArchiveError::Cancelled.into());
+    }
+    budget.charge(1).map_err(DatagramArchiveError::Work)?;
+    Ok(())
+}
