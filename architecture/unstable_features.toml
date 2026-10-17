@@ -12,6 +12,7 @@ files = [
   "crates/fss-cli/tests/capture_rtsp_interruption_cli.rs",
   "crates/fss-cli/tests/capture_rtsp_reset_cli.rs",
   "crates/fss-reference/tests/rtsp_read_reset_contract.rs",
+  "crates/fss-reference/tests/hevc_interruption_custody_contract.rs",
 ]
 justification = "Loopback RST-on-close (set_linger(Duration::ZERO)) is the deterministic, wall-clock-free mechanism the reconnect-after-RST contract tests use to produce real TCP resets; no stable API produces RST on demand. Test-target only; no production source enables this feature."
 reviewed = "2026-10-16"
