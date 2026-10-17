@@ -5,6 +5,12 @@
 //! their real prefix/AUD/end witnesses; markers and socket EOF never fabricate a boundary.
 //! Storage pauses the whole live path. Explicit input retirement can precede checkpoint I/O,
 //! after which only already-admitted windows drain under the separate publication deadline.
+//! A typed abrupt read failure can seal its replay-verified prefix through the same protected
+//! writer, retaining all unfinished input and the original failure rather than inventing EOF.
+
+mod interruption;
+pub use interruption::HevcReadInterruption;
+use interruption::InterruptedCapture;
 
 use std::fmt;
 
@@ -170,6 +176,9 @@ pub struct LiveHevcArchiveRetirement {
     pub archive: Option<JournaledHevcArchiveRetirement>,
     /// An exact window refused before the writer took ownership; never a durability claim.
     pub unoffered_window: Option<PreparedHevcRecording>,
+    /// Original read cause and seal releases retained through final prefix preservation,
+    /// including when a later storage failure supersedes the acquisition failure.
+    pub interruption: Option<HevcReadInterruption>,
 }
 
 /// Safe timing corrections preserve the owner; fatal failures transfer all remaining work once.
@@ -242,6 +251,7 @@ pub struct JournaledLiveHevcArchive<'a, 'p> {
     control_blocked: bool,
     network_ended: bool,
     completion: Option<LiveArchiveCompletion>,
+    interrupted: Option<InterruptedCapture>,
     finished: bool,
     last_anchor: ArchivePinAnchor,
     last_pins: ArchivePinState,
@@ -340,6 +350,7 @@ impl<'a, 'p> JournaledLiveHevcArchive<'a, 'p> {
             control_blocked: false,
             network_ended: false,
             completion: None,
+            interrupted: None,
             finished: false,
             last_anchor,
             last_pins,
@@ -476,7 +487,7 @@ impl<'a, 'p> JournaledLiveHevcArchive<'a, 'p> {
         if let Some(wake) = self.capture.as_ref().and_then(|c| c.next_wake_ns()) {
             at = at.min(wake);
         }
-        if self.completion.is_none() {
+        if self.completion.is_none() && self.interrupted.is_none() {
             at = at.min(self.live_deadline_ns);
             if self.needs_credentials() {
                 at = at.min(self.last_ns);
@@ -552,7 +563,7 @@ impl<'a, 'p> JournaledLiveHevcArchive<'a, 'p> {
         cancel: &dyn PublishCancellation,
     ) -> Result<Option<SelectedHevcRecordingRetirement>, LiveHevcArchiveFailure> {
         self.admit(now, authority, cancel)?;
-        if self.completion.is_some() {
+        if self.completion.is_some() || self.interrupted.is_some() {
             return Err(safe(LiveHevcArchiveError::Closed));
         }
         let recording = self.retire_input(None, None, None);
@@ -585,6 +596,9 @@ impl<'a, 'p> JournaledLiveHevcArchive<'a, 'p> {
             return Ok(LiveHevcArchiveStep::Ended);
         }
         self.admit(now, authority, cancel)?;
+        if let Some(failure) = self.finish_interruption() {
+            return Err(failure);
+        }
         if !self.ready {
             return self.storage_step(now, cancel);
         }
@@ -647,7 +661,7 @@ impl<'a, 'p> JournaledLiveHevcArchive<'a, 'p> {
             .poll(readiness, now, authority);
         let step = match result {
             Ok(step) => step,
-            Err(failure) => return Err(self.network_failure(failure)),
+            Err(failure) => return self.preserve_read_failure(failure, now),
         };
         match step {
             LiveHevcStep::Protocol { event, transport } => {
@@ -677,7 +691,7 @@ impl<'a, 'p> JournaledLiveHevcArchive<'a, 'p> {
         self.capture.as_ref().is_some_and(|c| c.busy())
     }
     fn require_input(&self) -> Result<(), LiveHevcArchiveFailure> {
-        if self.completion.is_some() {
+        if self.completion.is_some() || self.interrupted.is_some() {
             return Err(safe(LiveHevcArchiveError::Closed));
         }
         if !self.ready {
@@ -716,7 +730,7 @@ impl<'a, 'p> JournaledLiveHevcArchive<'a, 'p> {
             return Err(self.fatal(LiveHevcArchiveError::StoragePauseExpired, None, None));
         }
         // Once input ownership transfers, only publication authority/deadlines remain relevant.
-        if self.completion.is_none() {
+        if self.completion.is_none() && self.interrupted.is_none() {
             let result = if now >= self.live_deadline_ns {
                 Err(TcpDenial::Deadline)
             } else {
@@ -764,11 +778,7 @@ impl<'a, 'p> JournaledLiveHevcArchive<'a, 'p> {
         }
         match progress {
             JournaledArchiveProgress::Archive(archive @ ArchiveWriteProgress::Finished { .. }) => {
-                let Some(cause) = self.completion else {
-                    return Err(self.fatal(LiveHevcArchiveError::Invariant, None, None));
-                };
-                self.finished = true;
-                Ok(LiveHevcArchiveStep::Finished { archive, cause })
+                self.finish_archive(archive)
             }
             progress => Ok(LiveHevcArchiveStep::Archive(Box::new(progress))),
         }
@@ -1029,10 +1039,15 @@ impl<'a, 'p> JournaledLiveHevcArchive<'a, 'p> {
             self.last_anchor = archive.journal_anchor;
             self.last_pins = archive.pins.clone();
         }
+        let (interrupted_recording, interruption) = self.interrupted.take().map_or(
+            (None, None),
+            |state| (state.recording, Some(state.receipt)),
+        );
         LiveHevcArchiveRetirement {
-            recording: recording.or(owned),
+            recording: recording.or(interrupted_recording).or(owned),
             archive,
             unoffered_window: window,
+            interruption,
         }
     }
 }
