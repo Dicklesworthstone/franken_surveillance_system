@@ -28,6 +28,9 @@ pub mod triangulation;
 /// Bounded position/velocity fitting from staggered calibrated camera observations.
 pub mod temporal_triangulation;
 
+/// Held-out trajectory validation over complete capture-time intervals.
+pub mod temporal_validation;
+
 use std::sync::atomic::{AtomicBool, Ordering};
 
 pub use bundle::{
