@@ -136,11 +136,13 @@ pub struct DeviceStateChange {
 
 impl DeviceStateChange {
     /// Canonical record text (deterministic, digestible downstream).
+    /// The device identity is JSON-escaped: callers' ids are IPs/MACs today,
+    /// but the library never trusts the alphabet.
     #[must_use]
     pub fn to_record(&self) -> String {
         format!(
             "{{\"type\":\"device_state_change\",\"device\":\"{}\",\"class\":\"{}\",\"from\":\"{}\",\"to\":\"{}\",\"at_ns\":{}}}",
-            self.device_id,
+            json_escape(&self.device_id),
             self.class.as_str(),
             self.from.as_str(),
             self.to.as_str(),
@@ -155,6 +157,30 @@ struct Tracked {
     last_seen_ns: Option<u64>,
     state: WatchState,
     thresholds: (u64, u64),
+    /// Thresholds came from the caller, not the class defaults — a class
+    /// upgrade must not clobber them.
+    thresholds_overridden: bool,
+}
+
+/// True when two states are the same VARIANT (the counter payloads of
+/// `Silent`/`Asleep` move every evaluation; a transition is a record only
+/// when the variant changes).
+fn same_state_variant(a: &WatchState, b: &WatchState) -> bool {
+    std::mem::discriminant(a) == std::mem::discriminant(b)
+}
+
+/// Escapes a string for embedding in a JSON string value.
+fn json_escape(s: &str) -> String {
+    let mut out = String::with_capacity(s.len());
+    for c in s.chars() {
+        match c {
+            '"' => out.push_str("\\\""),
+            '\\' => out.push_str("\\\\"),
+            c if (c as u32) < 0x20 => out.push_str(&format!("\\u{:04x}", c as u32)),
+            c => out.push(c),
+        }
+    }
+    out
 }
 
 /// The sans-IO device-liveness watchdog.
@@ -175,20 +201,44 @@ impl DeviceWatchdog {
 
     /// Registers a device (idempotent). `thresholds` overrides the class
     /// defaults: `(grace_ns, hard_silence_ns)`.
+    ///
+    /// Reclassification: a device first seen as `Unknown` upgrades to a
+    /// concrete class (and that class's default thresholds) when discovery
+    /// later identifies it. A device already at a concrete class keeps it —
+    /// classification flip-flops are not honored silently. Caller-supplied
+    /// threshold overrides always survive.
     pub fn register(
         &mut self,
         device_id: &str,
         class: DeviceClass,
         thresholds: Option<(u64, u64)>,
     ) {
-        self.devices.entry(device_id.to_string()).or_insert_with(|| Tracked {
-            class,
-            last_seen_ns: None,
-            state: WatchState::NotObservable {
-                reason: WatchOfflineReason::NeverObserved,
-            },
-            thresholds: thresholds.unwrap_or_else(|| class.default_thresholds_ns()),
-        });
+        match self.devices.entry(device_id.to_string()) {
+            std::collections::btree_map::Entry::Vacant(v) => {
+                v.insert(Tracked {
+                    class,
+                    last_seen_ns: None,
+                    state: WatchState::NotObservable {
+                        reason: WatchOfflineReason::NeverObserved,
+                    },
+                    thresholds: thresholds.unwrap_or_else(|| class.default_thresholds_ns()),
+                    thresholds_overridden: thresholds.is_some(),
+                });
+            }
+            std::collections::btree_map::Entry::Occupied(mut o) => {
+                let entry = o.get_mut();
+                if entry.class == DeviceClass::Unknown && class != DeviceClass::Unknown {
+                    entry.class = class;
+                    if !entry.thresholds_overridden {
+                        entry.thresholds = class.default_thresholds_ns();
+                    }
+                }
+                if let Some(t) = thresholds {
+                    entry.thresholds = t;
+                    entry.thresholds_overridden = true;
+                }
+            }
+        }
     }
 
     /// Records a sighting of a device at `now_ns`. A registered device
@@ -206,6 +256,7 @@ impl DeviceWatchdog {
                     reason: WatchOfflineReason::NeverObserved,
                 },
                 thresholds: DeviceClass::Unknown.default_thresholds_ns(),
+                thresholds_overridden: false,
             });
         entry.last_seen_ns = Some(now_ns);
         let new_state = WatchState::Observable;
@@ -222,12 +273,17 @@ impl DeviceWatchdog {
         }
     }
 
-    /// Evaluates all tracked devices against `now_ns`, emitting transitions
-    /// for any state changes. Pure: no I/O, no clock of its own.
+    /// Evaluates all tracked devices against `now_ns`, emitting a
+    /// [`DeviceStateChange`] only when a device's state VARIANT changes.
+    /// (The `Silent`/`Asleep` counter payloads refresh in place every
+    /// evaluation; recording those as transitions would churn the evidence
+    /// stream with non-events.) Pure: no I/O, no clock of its own.
     pub fn evaluate(&mut self, now_ns: u64) {
-        let ids: Vec<String> = self.devices.keys().cloned().collect();
-        for id in ids {
-            let entry = self.devices.get(&id).expect("present").clone();
+        // Single pass: refresh the stored state for every tracked device
+        // (counter payloads move with time), collecting records only where
+        // the state VARIANT changed.
+        let mut new_records: Vec<DeviceStateChange> = Vec::new();
+        for (id, entry) in self.devices.iter_mut() {
             let Some(last) = entry.last_seen_ns else {
                 continue; // NeverObserved stays as-is; nothing to age.
             };
@@ -245,20 +301,20 @@ impl DeviceWatchdog {
                     reason: WatchOfflineReason::SilentBeyondThreshold,
                 }
             };
-            if new_state != entry.state {
-                let change = DeviceStateChange {
+            let variant_changed = !same_state_variant(&new_state, &entry.state);
+            if variant_changed {
+                new_records.push(DeviceStateChange {
                     device_id: id.clone(),
                     class: entry.class,
                     from: entry.state.clone(),
                     to: new_state.clone(),
                     at_ns: now_ns,
-                };
-                if let Some(slot) = self.devices.get_mut(&id) {
-                    slot.state = new_state;
-                }
-                self.changes.push(change);
+                });
             }
+            // Always refresh: the latest silent_for_ns is the current state.
+            entry.state = new_state;
         }
+        self.changes.append(&mut new_records);
     }
 
     /// Current state of one device (`None` if never registered or seen).

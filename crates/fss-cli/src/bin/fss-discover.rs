@@ -233,12 +233,17 @@ fn watch_loop(o: &Options, period_secs: u64) -> ExitCode {
 
     let mut watchdog = DeviceWatchdog::new();
     let period = std::time::Duration::from_secs(period_secs);
+    // Wall-clock-free sweep clock: NTP adjustments must never shift the
+    // watchdog's silence arithmetic (a backward jump would fake fresh
+    // sightings; a forward jump would fake mass offline). Anchor once,
+    // advance by monotonic Instant deltas only.
+    let mut clock = SweepClock::new();
     loop {
         let sweep_start = std::time::Instant::now();
         match run_typed(o) {
             Ok((report, cfg)) => {
                 println!("{}", format_report(&report, &cfg));
-                let now_ns = monotonic_ns();
+                let now_ns = clock.next_ns();
                 for c in &report.candidates {
                     let id = c.host.ip.to_string();
                     let class = match c.brand.brand {
@@ -267,14 +272,28 @@ fn watch_loop(o: &Options, period_secs: u64) -> ExitCode {
     }
 }
 
-/// Nanosecond stamp for watchdog bookkeeping (sweep wall time; only deltas
-/// matter for threshold arithmetic).
-fn monotonic_ns() -> u64 {
-    use std::time::{SystemTime, UNIX_EPOCH};
-    SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .map(|d| d.as_nanos() as u64)
-        .unwrap_or(0)
+/// A sweep clock whose values move only with monotonic elapsed time.
+/// The epoch base is cosmetic (records embed it); deltas are Instant-true.
+struct SweepClock {
+    base_ns: u64,
+    base_instant: std::time::Instant,
+}
+
+impl SweepClock {
+    fn new() -> Self {
+        use std::time::{SystemTime, UNIX_EPOCH};
+        Self {
+            base_ns: SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .map(|d| d.as_nanos() as u64)
+                .unwrap_or(0),
+            base_instant: std::time::Instant::now(),
+        }
+    }
+
+    fn next_ns(&mut self) -> u64 {
+        self.base_ns + self.base_instant.elapsed().as_nanos() as u64
+    }
 }
 
 fn main() -> ExitCode {

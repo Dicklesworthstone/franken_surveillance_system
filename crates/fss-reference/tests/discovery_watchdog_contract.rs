@@ -142,3 +142,68 @@ fn silence_of_one_cam_says_nothing_about_others() {
         })
     );
 }
+
+#[test]
+fn silent_state_does_not_churn_but_counter_moves() {
+    let mut w = DeviceWatchdog::new();
+    w.register("cam-1", DeviceClass::Tutk, None);
+    w.observe("cam-1", 1_000);
+    w.evaluate(1_000 + 3 * MIN); // into Silent
+    let after_first = w.changes().len();
+    // Repeated evaluations while still silent: no new records.
+    w.evaluate(1_000 + 4 * MIN);
+    w.evaluate(1_000 + 5 * MIN);
+    assert_eq!(w.changes().len(), after_first, "silent state must not churn");
+    // But the stored counter reflects the latest evaluation.
+    match w.state_of("cam-1") {
+        Some(WatchState::Silent { silent_for_ns }) => {
+            assert_eq!(*silent_for_ns, 5 * MIN);
+        }
+        other => assert!(false, "expected Silent, got {other:?}"),
+    }
+}
+
+#[test]
+fn reclassification_upgrades_unknown_and_holds_concrete() {
+    let mut w = DeviceWatchdog::new();
+    // Sighting before classification: Unknown class (60-min hard silence).
+    w.observe("mystery", 1_000);
+    assert_eq!(
+        w.state_of("mystery"),
+        Some(&WatchState::Observable),
+    );
+    // Discovery identifies it as TUTK: class upgrades, thresholds follow.
+    w.register("mystery", DeviceClass::Tutk, None);
+    w.evaluate(1_000 + 11 * MIN); // past TUTK hard (10 min), under Unknown's 60
+    assert_eq!(
+        w.state_of("mystery"),
+        Some(&WatchState::NotObservable {
+            reason: WatchOfflineReason::SilentBeyondThreshold
+        }),
+        "upgraded class thresholds apply"
+    );
+    // A conflicting concrete reclassification is NOT honored (flip-flop
+    // protection). Discriminated by thresholds: re-register as Onvif
+    // (30-min hard) — if the class stayed TUTK (10-min hard), 11 minutes
+    // of silence after the next sighting is offline; had it flip-flopped
+    // to Onvif it would only be Silent.
+    w.register("mystery", DeviceClass::Onvif, None);
+    w.observe("mystery", 1_000 + 12 * MIN);
+    w.evaluate(1_000 + 23 * MIN);
+    assert_eq!(
+        w.state_of("mystery"),
+        Some(&WatchState::NotObservable {
+            reason: WatchOfflineReason::SilentBeyondThreshold
+        }),
+        "concrete class is stable (TUTK thresholds, not Onvif flip-flop)"
+    );
+}
+
+#[test]
+fn record_text_escapes_device_identity() {
+    let mut w = DeviceWatchdog::new();
+    w.register("weird\"id", DeviceClass::Unknown, None);
+    w.observe("weird\"id", 1_000);
+    let rec = w.changes().last().expect("change").to_record();
+    assert!(rec.contains("\"weird\\\"id\""), "escaped: {rec}");
+}
