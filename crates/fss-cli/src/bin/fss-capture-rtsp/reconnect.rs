@@ -13,11 +13,15 @@ use fss_core::{
 
 use super::driver::{self, AttemptOutcome};
 use super::plan::{self, Options};
+use super::source_mode::SourceConfig;
+
+#[path = "reconnect_source.rs"]
+mod retained;
 
 #[path = "recovery.rs"]
 pub(super) mod recovery;
 
-pub(super) const MAX_ARGUMENTS: usize = plan::MAX_ARGUMENTS + 20;
+pub(super) const MAX_ARGUMENTS: usize = plan::MAX_ARGUMENTS + 30;
 const FORMAT: &str = "fss.rtsp_reconnect_cli.v1";
 const MAX_CONTROL_REPORT_BYTES: usize = 262_144;
 const POLICY: &str = "bounded-owner-approved-attempts:literal-peer-only:fresh-generation-and-clocks:\
@@ -39,6 +43,8 @@ pub(super) const HELP: &str = "fss-capture-rtsp reconnect [ordinary capture opti
   --max-attempts 3 --retry-delay-ms 250 --retry-max-delay-ms 5000\n\
   [--progress-timeout-ms 5000] [--capture-duration-ms 10000]\n\
   [--continue-after-success yes] [--retry-interrupted yes]\n\
+  [--source-root NEW_PREFIX --source-retention-evidence sha256:HEX]\n\
+  [--max-datagrams 8192 --source-storage-bytes 268435456 --source-work 1000000000]\n\
 \n\
 Without --approve: pure JSON preview of EVERY possible attempt and aggregate ceilings.\n\
 Approve the outer plan, not an individual attempt. The ordinary single-attempt mode is unchanged.\n\
@@ -123,10 +129,23 @@ Optional independent rollback fences for either recovery mode:\n\
 Supply journal anchors saved independently for the ORIGINAL one-based attempt ordinals.\n\
 Each listed prefix must occur in its current journal before any source read/publication.\n\
 Missing listed stores refuse; unlisted attempts do not acquire an independent guarantee.\n\
-The bounded map changes recovery approval only, never original capture epochs or paths.\n";
+The bounded map changes recovery approval only, never original capture epochs or paths.\n\
+\n\
+Optional source-first custody: --source-root PREFIX and --source-retention-evidence sha256:HEX.\n\
+These explicitly grant UNENCRYPTED complete RTP/RTCP retention, including malformed input,\n\
+before subsequent media progress. Each attempt uses NEW PREFIX.attempt-NNNN alongside its\n\
+separate recording archive and journal. Sources, generations and clocks are never reused.\n\
+Datagram/spool/work ceilings are PER ATTEMPT; the outer preview prices their sums.\n\
+Every child source grant is bound to the outer approval; old or child approvals refuse.\n\
+Source storage/work/output failure or uncertainty STOPS, without retry or replenishment.\n\
+Progress/duration/retry/campaign rules still apply; all native deadlines remain unchanged.\n\
+This adds neither retention by default, new retry causes, automatic source recovery nor\n\
+continuous coverage. Preserve the preview, every datagram_durable receipt and all stores.\n\
+--recover is refused for source-retained plans: existing recovery does not verify source stores.\n";
 
 pub(super) struct ReconnectPlan {
     attempts: Vec<Options>,
+    sources: Option<retained::SourcePlans>,
     retry_delay_ms: u64,
     retry_max_delay_ms: u64,
     progress_timeout_ns: Option<u64>,
@@ -267,7 +286,16 @@ impl ReconnectPlan {
             .transpose()?;
         // Reuse every native codec, route, credentials and resource check before deriving any
         // attempt. The extra mode does not maintain a second version of those contracts.
+        let source_arguments = retained::SourceArguments::take(&mut values);
+        if recover && source_arguments.is_some() {
+            // Existing recovery restores recording windows, not source-datagram
+            // stores. Never silently ignore the third store or claim it recovered.
+            return Err("source-retained reconnect recovery is unsupported; preserve all three stores");
+        }
         let base = Options::parse(&arguments(&values))?;
+        if let Some(source) = &source_arguments {
+            source.validate(&values)?;
+        }
         if capture_duration_ns.is_some_and(|duration| duration >= base.timeout_ns) {
             return Err("capture duration must be less than the native attempt timeout");
         }
@@ -280,6 +308,7 @@ impl ReconnectPlan {
         let receive_clock = base.recording_config().scope.receive_clock;
         let journal = base.pin_scope().journal_id;
         let mut attempts = Vec::new();
+        let mut sources = source_arguments.as_ref().map(|_| retained::SourcePlans::new());
         let mut maximum_source_bytes = 0_u64;
         let mut maximum_storage_bytes = 0_u64;
         let mut maximum_report_bytes = 0_u64;
@@ -305,7 +334,13 @@ impl ReconnectPlan {
                 epoch_digest("fss.rtsp_reconnect_journal.v1", journal, index, generation)?
                     .to_text(),
             );
-            let attempt = Options::parse(&arguments(&child))?;
+            let attempt = if let Some(source) = &source_arguments {
+                let retained = source.attempt(&child, index as usize)?;
+                sources.as_mut().ok_or("source plan state")?.push(retained.source)?;
+                retained.capture
+            } else {
+                Options::parse(&arguments(&child))?
+            };
             maximum_source_bytes = maximum_source_bytes
                 .checked_add(attempt.max_received_bytes())
                 .ok_or("source budget overflow")?;
@@ -326,6 +361,7 @@ impl ReconnectPlan {
         }
         let mut out = Self {
             attempts,
+            sources,
             retry_delay_ms,
             retry_max_delay_ms,
             progress_timeout_ns,
@@ -346,6 +382,14 @@ impl ReconnectPlan {
             .map(|index| out.delay_ms(index))
             .sum();
         Ok(out)
+    }
+
+    fn child_approval(&self, index: usize) -> Result<ContentDigest, &'static str> {
+        let attempt = self.attempts.get(index).ok_or("ERR-CAPTURE-RTSP-STATE-001")?;
+        match &self.sources {
+            Some(sources) => sources.get(index)?.digest(attempt),
+            None => attempt.digest(),
+        }
     }
 
     fn delay_ms(&self, completed_index: usize) -> u64 {
@@ -406,6 +450,9 @@ impl ReconnectPlan {
         // interruption retries, and changing this policy invalidates its own approvals.
         if self.retry_interrupted {
             e.text(INTERRUPTION_POLICY);
+        }
+        if let Some(sources) = &self.sources {
+            sources.encode(&self.attempts, &mut e)?;
         }
         e.u64(MAX_CONTROL_REPORT_BYTES as u64);
         e.u64(self.retry_delay_ms);
@@ -471,6 +518,9 @@ impl ReconnectPlan {
             ("attempts", format!("[{}]", children.join(","))),
             ("effects", string("none-until-exact-outer-approval")),
         ];
+        if let Some(sources) = &self.sources {
+            fields.push(("datagram_source_custody", sources.report(&self.attempts)?));
+        }
         if let Some(timeout) = self.progress_timeout_ns {
             fields.push(("progress_timeout_ns", timeout.to_string()));
         }
@@ -519,6 +569,15 @@ trait Effects {
     fn checkpoint(&mut self) -> Result<(), &'static str>;
     fn emit(&mut self, kind: &str, detail: String) -> Result<(), &'static str>;
     fn capture(&mut self, options: &Options) -> Result<AttemptOutcome, &'static str>;
+    // An implementation that cannot honor source custody must refuse; it must
+    // never fall through to ordinary capture and silently omit approved evidence.
+    fn capture_retained(
+        &mut self,
+        _options: &Options,
+        _source: &SourceConfig,
+    ) -> Result<AttemptOutcome, &'static str> {
+        Err("ERR-CAPTURE-RTSP-STATE-001")
+    }
     fn pause(&mut self, milliseconds: u64) -> Result<(), &'static str>;
 }
 
@@ -536,7 +595,7 @@ fn run(plan: &ReconnectPlan, effects: &mut impl Effects) -> Result<(), &'static 
     let mut first_failure: Option<(usize, &'static str)> = None;
     for (index, options) in plan.attempts.iter().enumerate() {
         effects.checkpoint()?;
-        let child_approval = options.digest()?;
+        let child_approval = plan.child_approval(index)?;
         effects.emit(
             "attempt_started",
             object(&[
@@ -559,7 +618,10 @@ fn run(plan: &ReconnectPlan, effects: &mut impl Effects) -> Result<(), &'static 
             ]),
         )?;
         effects.checkpoint()?;
-        let outcome = effects.capture(options)?;
+        let outcome = match &plan.sources {
+            Some(sources) => effects.capture_retained(options, sources.get(index)?),
+            None => effects.capture(options),
+        }?;
         // The native owner proves the actual stop and publication barriers. The controller
         // independently checks the approved picture rule: exact count in legacy mode,
         // or a nonempty prefix no larger than the ceiling under explicit duration approval.
@@ -785,6 +847,14 @@ impl Effects for NativeEffects {
         self.checkpoint()?;
         driver::execute_supervised_attempt(options, self.supervision)
     }
+    fn capture_retained(
+        &mut self,
+        options: &Options,
+        source: &SourceConfig,
+    ) -> Result<AttemptOutcome, &'static str> {
+        self.checkpoint()?;
+        source.execute_supervised_capture(options, self.supervision)
+    }
     fn pause(&mut self, milliseconds: u64) -> Result<(), &'static str> {
         // At most 600 bounded waits per backoff. Every wait has an explicit owner check;
         // it does not create a worker or let a camera operation run during backoff.
@@ -809,8 +879,9 @@ pub(super) fn execute(plan: &mut ReconnectPlan) -> Result<(), &'static str> {
     }
     // These are exactly the child plans enumerated by the approved outer digest. Setting
     // their approval only after verifying that digest delegates no unplanned route or budget.
-    for attempt in &mut plan.attempts {
-        attempt.approve = Some(attempt.digest()?);
+    for index in 0..plan.attempts.len() {
+        let child_approval = plan.child_approval(index)?;
+        plan.attempts[index].approve = Some(child_approval);
     }
     let first = plan.attempts.first().ok_or("ERR-CAPTURE-RTSP-CONFIG-001")?;
     let authority = ContextAuthority::new_root(RootAuthoritySpec {
@@ -1171,3 +1242,7 @@ mod custody_tests {
         }
     }
 }
+
+#[cfg(test)]
+#[path = "reconnect_source_tests.rs"]
+mod retained_tests;

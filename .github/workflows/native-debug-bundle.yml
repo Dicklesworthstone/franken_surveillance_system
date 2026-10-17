@@ -4,7 +4,10 @@ name: offline native debugging bundle
 on:
   push:
     branches: [main]
-    paths: ['.github/workflows/native-debug-bundle.yml']
+    paths:
+      - '.github/workflows/native-debug-bundle.yml'
+      - 'crates/fss-cli/src/bin/fss-capture-rtsp/reconnect_source.rs'
+      - 'crates/fss-cli/tests/capture_rtsp_source_reconnect_cli.rs'
   workflow_dispatch:
 permissions:
   contents: read
