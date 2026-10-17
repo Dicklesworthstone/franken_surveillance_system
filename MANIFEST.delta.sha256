@@ -6,8 +6,8 @@ a25ae0bbd799f25c1b520f0390e2e26cb13713f8ed6368e5d7947041db86702b  crates/fss-ref
 be068cf4da94ea71245e37646404c28200cf42cc9f702cf05b663b8f4402722c  crates/fss-reference/src/rtsp/datagram_archive/live/capture.rs
 fdfb35937160403f4288c373cd6bd9e5dd1f2acfe55fcb052dfb0376d51ac343  crates/fss-reference/src/rtsp/datagram_archive/live/framed.rs
 6f11638a65d71be5ed29d48e1f861996a32e6e981da16261e9c0619707bf125f  crates/fss-cli/src/bin/fss-capture-rtsp/attempt.rs
-c9cf4d8eb1948e0c584cb4ab01b758b51f22702732baaf247c4e263881869df3  crates/fss-cli/src/bin/fss-capture-rtsp/driver.rs
-5a0d99a8e55444a4bffa978b73014b29710e2718be2d775df2675fc19658c107  crates/fss-cli/src/bin/fss-capture-rtsp/hevc_driver.rs
+843a3c61ce2d6b9a6ef3b7b05ece7db1737ea82ce7dc9a4ed3fc156b4290c69b  crates/fss-cli/src/bin/fss-capture-rtsp/driver.rs
+d50d3f19f50a18518dc0ddd0059d9a83382a89a693a9cc3e7efdc409eda96221  crates/fss-cli/src/bin/fss-capture-rtsp/hevc_driver.rs
 f13c2088d94ea690a0529b6969c1f20dc00a78211e9f639c6954755b957888c8  crates/fss-cli/src/bin/fss-capture-rtsp/reconnect.rs
 91d2deca2aaf23260f664ad6cb18532ed4fee2feba33091c11bf1c376c8412d0  crates/fss-cli/src/bin/fss-capture-rtsp/read_interruption_tests.rs
 eaf84ff745cf1b7bce57f4aeb3c92ae242d848977fa607e9c1f7fb3304c15b42  crates/fss-cli/src/bin/fss-capture-rtsp/reconnect_interruption_tests.rs
@@ -18,3 +18,9 @@ ca6071198e4bcd1b5e062c1b6e9b77d25cffc8f647a247aaafa15cf47776f967  crates/fss-geo
 037cea89afa52b7777e3643032569aedb60bab992b0a92f17fa4a503e50a863b  crates/fss-geometry/src/triangulation.rs
 99ecdf808596b3832af3d9bf8263751c8e1d6f2a38436794da112ebfa91f052f  crates/fss-geometry/tests/temporal_triangulation_contract.rs
 5e3f4517aa1d6bba84974c471b22ce561995b3b85198d0b01d8944bbd4afb592  docs/temporal_triangulation_reference.md
+c476f0d4c88c8ff0b5171f93075d1f4270ca7b004c6f6078b484e128bc526e1a  crates/fss-cli/src/bin/fss-capture-rtsp.rs
+f1887616c62d833ed38b596611841d6268c0b027089607f6cfa61314bdfc1106  crates/fss-cli/src/bin/fss-capture-rtsp/report.rs
+8d2ba95f311c9b6591aa75e4dd54c1199746f7ababdcccd4113fe62186772c14  crates/fss-cli/src/bin/fss-capture-rtsp/source_mode.rs
+4da45d6007e4ea7f67c5c5f1ac2fabf1e16d7ce1cf4ba5f18326a1a1b38abf63  crates/fss-cli/src/bin/fss-capture-rtsp/source_retention.rs
+8bf52e775989fbde4c77b054459044ebe1e68836ba9b95bf8071fb8b84f53492  crates/fss-cli/tests/capture_rtsp_source_cli.rs
+ad5649ba580781fc9575f8045c75bbd1dba8116af7517c6fa8fcf54442c99880  docs/rtsp_source_capture.md

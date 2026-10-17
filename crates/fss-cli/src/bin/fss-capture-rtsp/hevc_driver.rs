@@ -174,6 +174,7 @@ fn begin_drain(
 
 fn drive<W: Write>(
     options: &Options,
+    source: &mut Option<SourceCustody>,
     capture: &mut JournaledLiveHevcArchive<'_, '_>,
     owner: &Owner<'_>,
     mut entropy: Option<&mut Entropy>,
@@ -311,6 +312,19 @@ fn drive<W: Write>(
             Err(error) if backpressure(&error) => continue,
             Err(error) => return Err(failure(error, stats)),
         };
+        if let Err(error) = source_retention::observe_hevc(source, &step, owner, stats, log) {
+            // The yielded native event may already own terminal state. Source
+            // publication failure must not erase those obligations before cancel.
+            match &step {
+                LiveHevcArchiveStep::Recording(recording) => stats.hevc_stopped(recording),
+                LiveHevcArchiveStep::Stopped { trigger, retained } => {
+                    stats.hevc_stopped(trigger);
+                    stats.hevc_retirement(retained);
+                }
+                _ => {}
+            }
+            return Err(error);
+        }
         match step {
             LiveHevcArchiveStep::Archive(progress) => match *progress {
                 JournaledArchiveProgress::PinPersisted { receipt, .. } => {
@@ -394,13 +408,7 @@ fn drive<W: Write>(
                 if stats.collected_pictures != 0 {
                     timing.finish().map_err(|_| Failure::Timing)?;
                 }
-                return finish_attempt(
-                    cause,
-                    stop_cause,
-                    stats,
-                    options.stop_after_pictures,
-                    log,
-                );
+                return finish_attempt(cause, stop_cause, stats, options.stop_after_pictures, log);
             }
             LiveHevcArchiveStep::Recording(step) => match *step {
                 AutomaticHevcRecordingStep::Queued(request) => {
@@ -554,6 +562,7 @@ pub(super) fn run<W: Write>(
     entropy: Option<&mut Entropy>,
     stats: &mut Statistics,
     log: &mut Transcript<'_, W>,
+    source: &mut Option<SourceCustody>,
 ) -> Result<(), Failure> {
     let mut pins =
         HevcArchivePinJournal::create(pin_root, options.pin_scope(), options.pin_limits(), owner)
@@ -604,7 +613,7 @@ pub(super) fn run<W: Write>(
     // Pin the already-approved liveness method before the first automatic request.
     // Always run the normal retirement path, even if this pure selection is refused.
     let result = match capture.select_keepalive(options.keepalive) {
-        Ok(()) => drive(options, &mut capture, owner, entropy, stats, log),
+        Ok(()) => drive(options, source, &mut capture, owner, entropy, stats, log),
         Err(error) => Err(failure(error, stats)),
     };
     stats.hevc_observe(&capture);
@@ -646,13 +655,15 @@ mod reconnect_tests {
             snapshot_digest: Some(ContentDigest::sha256(b"finished HEVC archive")),
             ..Statistics::default()
         };
-        assert!(finished_result(
-            LiveArchiveCompletion::OwnerStopped,
-            Some(StopCause::CaptureDuration),
-            &stats,
-            10,
-        )
-        .is_ok());
+        assert!(
+            finished_result(
+                LiveArchiveCompletion::OwnerStopped,
+                Some(StopCause::CaptureDuration),
+                &stats,
+                10,
+            )
+            .is_ok()
+        );
         stats.pending_source_only_nals = 1;
         assert!(matches!(
             finished_result(

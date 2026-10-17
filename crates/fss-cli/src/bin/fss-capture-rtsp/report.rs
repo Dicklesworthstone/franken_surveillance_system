@@ -84,6 +84,7 @@ impl<W: Write> Transcript<'_, W> {
 
 #[derive(Default)]
 pub(super) struct Statistics {
+    pub(super) source_custody: Option<String>,
     pub(super) steps: u64,
     pub(super) authentication_challenges: u64,
     pub(super) authentication_responses: u64,
@@ -248,7 +249,7 @@ pub(super) fn terminal(
     stats: &Statistics,
     result: &Result<(), Failure>,
 ) -> String {
-    object(&[
+    let mut fields = vec![
         ("complete", result.is_ok().to_string()),
         (
             "stop_cause",
@@ -421,5 +422,16 @@ pub(super) fn terminal(
         ("capture_continuity", "false".into()),
         ("coverage_certified", "false".into()),
         ("qualification", string("implemented_not_qualified")),
-    ])
+    ];
+    if let Some(source) = &stats.source_custody {
+        for (key, value) in &mut fields {
+            if *key == "control_and_rtcp_retention" {
+                *value = string("control_omitted_rtcp_in_separate_source_prefix");
+            } else if *key == "rtp_retention" {
+                *value = string("selected_windows_and_separate_source_prefix");
+            }
+        }
+        fields.push(("datagram_source", source.clone()));
+    }
+    object(&fields)
 }

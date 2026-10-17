@@ -21,8 +21,8 @@ use fss_reference::rtsp::archive_pins::live::{
 };
 use fss_reference::rtsp::archive_pins::{ArchivePinJournal, JournaledArchiveProgress};
 use fss_reference::rtsp::authentication::DigestCredentials;
-use fss_reference::rtsp::avc_client::{AvcClientError, AvcClientPoll};
 use fss_reference::rtsp::avc_client::authenticated::{DigestAvcError, DigestAvcPoll};
+use fss_reference::rtsp::avc_client::{AvcClientError, AvcClientPoll};
 use fss_reference::rtsp::client::{ClientCommand, ClientProgress, ClientState};
 use fss_reference::rtsp::live_archive::{LiveArchiveCompletion, LiveArchiveError, LiveArchiveStep};
 use fss_reference::rtsp::live_avc::recording::{LiveRecordingError, LiveRecordingStep};
@@ -55,6 +55,11 @@ mod report;
 use report::{
     Statistics, Transcript, anchor_json, pin_json, receipt_json, scope_json, source_bytes, terminal,
 };
+#[path = "source_retention.rs"]
+mod source_retention;
+use super::source_mode::SourceConfig;
+use source_retention::SourceCustody;
+
 const STORAGE_CAPS: [&str; 4] = [
     "CAP-READ-MEDIA-001",
     "CAP-OBJECT-STAGE-001",
@@ -771,6 +776,7 @@ fn finish_attempt<W: Write>(
 
 fn drive<W: Write>(
     options: &Options,
+    source: &mut Option<SourceCustody>,
     capture: &mut JournaledLiveAvcArchive<'_, '_>,
     owner: &Owner<'_>,
     mut entropy: Option<&mut Entropy>,
@@ -966,6 +972,7 @@ fn drive<W: Write>(
         let step = capture
             .poll(readiness, owner.now()?, owner, owner)
             .map_err(|e| failure(e, stats))?;
+        source_retention::observe_avc(source, &step, owner, stats, log)?;
         match step {
             JournaledLiveArchiveStep::Checkpoint(progress) => match *progress {
                 JournaledArchiveProgress::PinPersisted { receipt, .. } => {
@@ -1060,13 +1067,7 @@ fn drive<W: Write>(
                 if stats.collected_pictures != 0 {
                     timing.finish().map_err(|_| Failure::Timing)?;
                 }
-                return finish_attempt(
-                    cause,
-                    stop_cause,
-                    stats,
-                    options.stop_after_pictures,
-                    log,
-                );
+                return finish_attempt(cause, stop_cause, stats, options.stop_after_pictures, log);
             }
             JournaledLiveArchiveStep::Live(LiveArchiveStep::Recording(step)) => match *step {
                 LiveRecordingStep::Network(step) => {
@@ -1232,6 +1233,7 @@ fn create_root(path: &Path) -> Result<(), Failure> {
 
 fn run_owned<W: Write>(
     options: &Options,
+    source_config: Option<&SourceConfig>,
     authority: &ContextAuthority,
     start: Instant,
     stats: &mut Statistics,
@@ -1263,6 +1265,20 @@ fn run_owned<W: Write>(
     if root.starts_with(&pin_root) || pin_root.starts_with(&root) {
         return Err(Failure::Root);
     }
+    let source_root = source_config
+        .map(|config| {
+            context_check(authority, start, options.timeout_ns)?;
+            require_new(&config.root)?;
+            let path = resolve_new_parent(&config.root, authority, start, options.timeout_ns)?;
+            if [&root, &pin_root]
+                .iter()
+                .any(|other| path.starts_with(other) || other.starts_with(&path))
+            {
+                return Err(Failure::Root);
+            }
+            Ok(path)
+        })
+        .transpose()?;
     context_check(authority, start, options.timeout_ns)?;
     create_root(&root)?;
     context_check(authority, start, options.timeout_ns)?;
@@ -1285,63 +1301,89 @@ fn run_owned<W: Write>(
         let mut publisher = LocalRootPublisher::open(&root, options.publication_limits())
             .map_err(|_| Failure::Storage)?;
         owner.now()?;
-        if options.codec() == "hevc" {
-            return hevc::run(
-                options,
+        let mut source = source_config
+            .zip(source_root.as_ref())
+            .map(|(config, path)| SourceCustody::open(config, path, &owner))
+            .transpose()?;
+        if let Some(custody) = &source {
+            stats.source_custody = Some(custody.summary());
+        }
+        let capture_result = (|| {
+            if options.codec() == "hevc" {
+                return hevc::run(
+                    options,
+                    &pin_root,
+                    &mut publisher,
+                    &owner,
+                    entropy.as_mut(),
+                    stats,
+                    log,
+                    &mut source,
+                );
+            }
+            let mut pins = ArchivePinJournal::create(
                 &pin_root,
+                options.pin_scope(),
+                options.pin_limits(),
+                &owner,
+            )
+            .map_err(|_| Failure::Storage)?;
+            stats.journal_anchor = Some(pins.anchor());
+            stats.pins = pins.state().clone();
+            let mut capture = JournaledLiveAvcArchive::connect(
+                options.live_config(),
+                options.recording_config(),
+                options.archive_config(),
+                options.work_limits(),
                 &mut publisher,
+                &mut pins,
+                owner.now()?,
+                &owner,
+                &owner,
+            )
+            .map_err(|error| {
+                stats.connection_attempted = error.connection_attempted;
+                match error.reason {
+                    JournaledLiveArchiveError::Pins(_) => Failure::Storage,
+                    JournaledLiveArchiveError::Live(LiveArchiveError::Recording(error))
+                        if matches!(
+                            error.as_ref(),
+                            LiveRecordingError::Network(LiveAvcError::Transport(TcpError::Io {
+                                operation: TcpOperation::Connect,
+                                kind: io::ErrorKind::ConnectionRefused
+                                    | io::ErrorKind::ConnectionReset
+                                    | io::ErrorKind::ConnectionAborted
+                                    | io::ErrorKind::TimedOut,
+                            }))
+                        ) =>
+                    {
+                        Failure::ConnectionUnavailable
+                    }
+                    _ => Failure::Connect,
+                }
+            })?;
+            stats.connection_attempted = true;
+            let result = drive(
+                options,
+                &mut source,
+                &mut capture,
                 &owner,
                 entropy.as_mut(),
                 stats,
                 log,
             );
-        }
-        let mut pins =
-            ArchivePinJournal::create(&pin_root, options.pin_scope(), options.pin_limits(), &owner)
-                .map_err(|_| Failure::Storage)?;
-        stats.journal_anchor = Some(pins.anchor());
-        stats.pins = pins.state().clone();
-        let mut capture = JournaledLiveAvcArchive::connect(
-            options.live_config(),
-            options.recording_config(),
-            options.archive_config(),
-            options.work_limits(),
-            &mut publisher,
-            &mut pins,
-            owner.now()?,
-            &owner,
-            &owner,
-        )
-        .map_err(|error| {
-            stats.connection_attempted = error.connection_attempted;
-            match error.reason {
-                JournaledLiveArchiveError::Pins(_) => Failure::Storage,
-                JournaledLiveArchiveError::Live(LiveArchiveError::Recording(error))
-                    if matches!(
-                        error.as_ref(),
-                        LiveRecordingError::Network(LiveAvcError::Transport(TcpError::Io {
-                            operation: TcpOperation::Connect,
-                            kind: io::ErrorKind::ConnectionRefused
-                                | io::ErrorKind::ConnectionReset
-                                | io::ErrorKind::ConnectionAborted
-                                | io::ErrorKind::TimedOut,
-                        }))
-                    ) =>
-                {
-                    Failure::ConnectionUnavailable
-                }
-                _ => Failure::Connect,
+            stats.observe(&capture);
+            // Close the socket and transfer all remaining ownership BEFORE terminal sink output.
+            // No retry, deletion, publication, or synthetic EOF occurs in cancellation.
+            if let Some(retired) = capture.cancel() {
+                stats.retirement(&retired);
             }
-        })?;
-        stats.connection_attempted = true;
-        let result = drive(options, &mut capture, &owner, entropy.as_mut(), stats, log);
-        stats.observe(&capture);
-        // Close the socket and transfer all remaining ownership BEFORE terminal sink output.
-        // No retry, deletion, publication, or synthetic EOF occurs in cancellation.
-        if let Some(retired) = capture.cancel() {
-            stats.retirement(&retired);
+            result
+        })();
+        if let Some(custody) = &source {
+            stats.source_custody = Some(custody.summary());
         }
-        result
+        capture_result
     })();
     cx.drain_and_finalize();
     result
@@ -1363,7 +1405,25 @@ pub(super) fn execute_supervised_attempt(
     options: &Options,
     supervision: Option<Supervision>,
 ) -> Result<AttemptOutcome, &'static str> {
-    let approval = options.digest()?;
+    execute_owned_attempt(options, supervision, None)
+}
+
+pub(super) fn execute_retained(
+    options: &Options,
+    source: &SourceConfig,
+) -> Result<(), &'static str> {
+    execute_owned_attempt(options, None, Some(source))?.result
+}
+
+fn execute_owned_attempt(
+    options: &Options,
+    supervision: Option<Supervision>,
+    source: Option<&SourceConfig>,
+) -> Result<AttemptOutcome, &'static str> {
+    let approval = match source {
+        Some(source) => source.digest(options)?,
+        None => options.digest()?,
+    };
     if options.approve != Some(approval) {
         return Err(Failure::Approval.code());
     }
@@ -1372,6 +1432,9 @@ pub(super) fn execute_supervised_attempt(
         .spool
         .max_total_bytes
         .checked_add(options.max_received_bytes())
+        .and_then(|budget| {
+            budget.checked_add(source.map_or(0, |s| s.storage.spool.max_total_bytes))
+        })
         .and_then(|budget| {
             budget.checked_add(if options.authentication.is_some() {
                 MAX_CREDENTIAL_BYTES as u64 + 1 + 16 * options.max_steps
@@ -1395,7 +1458,12 @@ pub(super) fn execute_supervised_attempt(
         priority: 10,
         budgets: BudgetVector::builder()
             .bytes(byte_budget)
-            .storage_operations(options.max_steps.saturating_mul(64))
+            .storage_operations(
+                options
+                    .max_steps
+                    .saturating_mul(64)
+                    .saturating_add(source.map_or(0, |s| s.limits.max_datagrams as u64 * 64)),
+            )
             .build()
             .map_err(|_| Failure::Configuration.code())?,
         privacy_scope: "privacy:owner-original-rtsp-custody".into(),
@@ -1451,6 +1519,10 @@ pub(super) fn execute_supervised_attempt(
         false,
     )
     .map_err(Failure::code)?;
+    if let Some(source) = source {
+        log.emit("source_custody_started", source.report(), false)
+            .map_err(Failure::code)?;
+    }
     if let Some(policy) = supervision {
         log.emit("recording_supervision", policy.report(), false)
             .map_err(Failure::code)?;
@@ -1459,6 +1531,7 @@ pub(super) fn execute_supervised_attempt(
     let mut stats = Statistics::default();
     let result = run_owned(
         options,
+        source,
         &authority,
         start,
         &mut stats,
@@ -1488,22 +1561,26 @@ mod completion_tests {
     #[test]
     fn timed_nonempty_prefix_can_finish_before_the_approved_picture_ceiling() {
         let stats = settled();
-        assert!(finished_result(
-            LiveArchiveCompletion::OwnerStopped,
-            Some(StopCause::CaptureDuration),
-            &stats,
-            10,
-        )
-        .is_ok());
+        assert!(
+            finished_result(
+                LiveArchiveCompletion::OwnerStopped,
+                Some(StopCause::CaptureDuration),
+                &stats,
+                10,
+            )
+            .is_ok()
+        );
         assert!(finished_result(LiveArchiveCompletion::OwnerStopped, None, &stats, 10).is_err());
         assert!(finished_result(LiveArchiveCompletion::OwnerStopped, None, &stats, 3).is_ok());
-        assert!(finished_result(
-            LiveArchiveCompletion::OwnerStopped,
-            Some(StopCause::CaptureDuration),
-            &stats,
-            2,
-        )
-        .is_err());
+        assert!(
+            finished_result(
+                LiveArchiveCompletion::OwnerStopped,
+                Some(StopCause::CaptureDuration),
+                &stats,
+                2,
+            )
+            .is_err()
+        );
     }
 
     #[test]
@@ -1528,13 +1605,15 @@ mod completion_tests {
                 1 => stats.indexed_windows = 0,
                 _ => stats.snapshot_digest = None,
             }
-            assert!(finished_result(
-                LiveArchiveCompletion::OwnerStopped,
-                Some(StopCause::CaptureDuration),
-                &stats,
-                10,
-            )
-            .is_err());
+            assert!(
+                finished_result(
+                    LiveArchiveCompletion::OwnerStopped,
+                    Some(StopCause::CaptureDuration),
+                    &stats,
+                    10,
+                )
+                .is_err()
+            );
         }
     }
 
