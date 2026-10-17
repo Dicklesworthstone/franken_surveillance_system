@@ -199,6 +199,11 @@
      "status": "implemented"
     },
     {
+     "name": "fss-provision",
+     "unsafe": "forbid",
+     "status": "implemented"
+    },
+    {
      "name": "fss-drone-capture",
      "unsafe": "forbid",
      "status": "planned"

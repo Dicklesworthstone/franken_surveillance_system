@@ -13,6 +13,7 @@ dependencies = [
  "fss-graph-algorithms",
  "fss-object",
  "fss-packet",
+ "fss-provision",
  "fss-publication",
  "fss-reference",
  "fss-tutk",
@@ -94,6 +95,13 @@ dependencies = [
 
 [[package]]
 name = "fss-packet"
+version = "0.0.1"
+dependencies = [
+ "fss-core",
+]
+
+[[package]]
+name = "fss-provision"
 version = "0.0.1"
 dependencies = [
  "fss-core",

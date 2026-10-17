@@ -139,6 +139,7 @@ fss-geometry = { path = "../fss-geometry" }
 fss-graph-algorithms = { path = "../fss-graph-algorithms" }
 fss-object = { path = "../fss-object" }
 fss-packet = { path = "../fss-packet" }
+fss-provision = { path = "../fss-provision" }
 fss-publication = { path = "../fss-publication" }
 fss-reference = { path = "../fss-reference" }
 fss-tutk = { path = "../fss-tutk" }
