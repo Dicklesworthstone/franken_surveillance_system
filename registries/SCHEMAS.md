@@ -92,3 +92,15 @@
 | `SCHEMA-EXPERIMENT-RECEIPT-001` | `fss.experiment_receipt.v1` | `schemas/experiment_receipt.v1.json` | derived/evidence | immutable revisions; A/A divergence is a determinism alarm; indeterminate runs never compare |
 
 Binary media, ledger, search-segment, graph-run, and release formats additionally require magic, version, bounded lengths, canonical encoding, migration fixtures, corruption tests, and a named format owner before implementation.
+
+
+## Process-local canonical interpretation domains
+
+These canonical encodings identify derived replay interpretations, not JSON documents,
+source custody, camera state, or publication receipts. Their current-operation budget
+and deadline are admission controls and are deliberately excluded from semantic identity.
+
+| Format ID | Domain | Authority | Encoding and compatibility |
+|---|---|---|---|
+| `FMT-HEVC-DATAGRAM-REPLAY-001` | `fss.rtsp_datagram_hevc_interpretation.v1` | derived/reconstruction | CanonicalEncoder text domain and scheduler policy, source scope/head/count/payload bytes, configuration-evidence digest, payload tag, DON bound u32, reduced-RTCP flag, then every packet/reorder/reconstruction ceiling in the explicit order in datagram_reconstruction/hevc/profile.rs. All dimensions and limits are u64 except the DON bound; changed input or interpretation yields a new identity. No receiver finish or invented EOF at prefix exhaustion. |
+| `FMT-HEVC-DATAGRAM-RECORDING-001` | `fss.datagram_hevc_recording_interpretation.v1` | derived/reconstruction | CanonicalEncoder text domain and grouping/seal policy; transport interpretation and timing-evidence digests; sensor/stream text, generation u64, anchor and receive-clock digests, time scale u32; exact VPS/SPS/PPS bytes; every assembly and collector ceiling in the explicit order in datagram_reconstruction/hevc/recording_profile.rs. Native bounds and sizes are u64. Actual per-picture timings and seal choices additionally bind the resulting immutable recording root; no new durable recording dialect or implicit EOF. |

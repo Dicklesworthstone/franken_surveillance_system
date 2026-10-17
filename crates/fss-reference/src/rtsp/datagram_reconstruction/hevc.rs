@@ -18,6 +18,8 @@ use fss_packet::{
 use fss_publication::{LocalRootPublisher, PublishCancellation, PublishCutPoint};
 
 mod profile;
+/// Cold original-source recording reconstruction with explicit parameters and media timing.
+pub mod recording;
 
 /// Explicit transport interpretation; no parameter sets, pixels or pictures are inferred.
 /// The original negotiated stream mapping and no-DON policy must come from the owner.
