@@ -31,11 +31,15 @@ pub struct AuthorityCx {
     region: RegionId,
     kind: RegionKind,
     budget: BudgetLedger,
+    grants: crate::grant::GrantSet,
 }
 
 /// Typed authority errors.
 #[derive(Debug)]
 pub enum AuthorityError {
+    /// Capability grant failure (missing grant, unregistered capability
+    /// string, or widening on scope-down).
+    Grant(crate::grant::GrantError),
     /// The requested scope violates the parent region's rules or budget.
     IllegalScope {
         /// What was attempted (typed detail).
@@ -48,6 +52,7 @@ pub enum AuthorityError {
 impl core::fmt::Display for AuthorityError {
     fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
         match self {
+            Self::Grant(e) => write!(f, "grant error: {e}"),
             Self::IllegalScope { detail } => write!(f, "illegal scope: {detail}"),
             Self::Region(e) => write!(f, "region error: {e}"),
         }
@@ -74,6 +79,8 @@ impl AuthorityCx {
         now: TimestampNs,
     ) -> Result<(Self, RegionTree), AuthorityError> {
         let authority = ContextAuthority::new_root(spec)?;
+        let grants = crate::grant::GrantSet::from_authority(&authority)
+            .map_err(AuthorityError::Grant)?;
         let tree = RegionTree::new(process_region.clone(), authority, now)?;
         Ok((
             Self {
@@ -81,6 +88,7 @@ impl AuthorityCx {
                 region: process_region,
                 kind: process_kind,
                 budget: BudgetLedger::new(budget),
+                grants,
             },
             tree,
         ))
@@ -123,6 +131,13 @@ impl AuthorityCx {
             }
         })?;
         let child_authority = ContextAuthority::new_root(child_authority_spec)?;
+        let child_grants = crate::grant::GrantSet::from_authority(&child_authority)
+            .map_err(AuthorityError::Grant)?;
+        // Capability narrowing: the child's grant set must be a subset of
+        // this authority's (resource scopes may narrow, never widen).
+        self.grants
+            .verify_narrowed_by(&child_grants)
+            .map_err(AuthorityError::Grant)?;
         tree.attach_child(
             &self.region,
             child_id.clone(),
@@ -137,6 +152,7 @@ impl AuthorityCx {
             region: child_id,
             kind: child_kind,
             budget: BudgetLedger::new(child_budget),
+            grants: child_grants,
         })
     }
 
@@ -172,6 +188,30 @@ impl AuthorityCx {
     /// This authority's budget ledger (mutable).
     pub fn budget_mut(&mut self) -> &mut BudgetLedger {
         &mut self.budget
+    }
+
+    /// Requires a capability grant; fails closed naming the missing grant.
+    pub fn require_grant(
+        &self,
+        grant: fss_core::RuntimeGrant,
+    ) -> Result<(), crate::grant::GrantError> {
+        self.grants.require_grant(grant)
+    }
+
+    /// Requires a grant for a specific resource; scoped grants refuse
+    /// resources outside their scope.
+    pub fn require_grant_for(
+        &self,
+        grant: fss_core::RuntimeGrant,
+        resource: &str,
+    ) -> Result<(), crate::grant::GrantError> {
+        self.grants.require_grant_for(grant, resource)
+    }
+
+    /// This authority's typed grant set (read-only).
+    #[must_use]
+    pub fn grants(&self) -> &crate::grant::GrantSet {
+        &self.grants
     }
 
     /// The budget ledger (read).

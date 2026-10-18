@@ -430,7 +430,7 @@ fn tree_wide_leak_oracle_reports_counts_and_inv006_coverage() {
         anchor_universe: ContentDigest::sha256(b"oracle-universe"),
         generation: 1,
     };
-    let (mut root, mut tree) = AuthorityCx::root(
+    let (root, mut tree) = AuthorityCx::root(
         spec,
         RegionId::new("region:process").expect("region"),
         RegionKind::Process,
@@ -486,4 +486,140 @@ fn tree_wide_leak_oracle_reports_counts_and_inv006_coverage() {
     assert_eq!(root_report.leaked[0].id, "obl:leak");
     assert_eq!(root_report.indeterminate_with_note, vec!["obl:unknown".to_string()]);
     assert!(root_report.indeterminate_without_note.is_empty());
+}
+
+// ---------- capability grants and resource scopes (FSS-025) ----------
+
+fn test_spec(trace: &str, op: &str, caps: Vec<String>) -> fss_core::RootAuthoritySpec {
+    fss_core::RootAuthoritySpec {
+        trace_id: trace.to_string(),
+        operation_id: fss_core::OperationId::parse(op).expect("op"),
+        principal: "principal:test".to_string(),
+        capabilities: caps,
+        deadline: None,
+        priority: 10,
+        budgets: fss_core::BudgetVector::builder().bytes(1024).build().expect("bv"),
+        privacy_scope: "privacy:test".to_string(),
+        retention_scope: "retention:test".to_string(),
+        anchor_universe: fss_core::ContentDigest::sha256(b"grant-universe"),
+        generation: 1,
+    }
+}
+
+#[test]
+fn grant_enforcement_and_resource_scopes() {
+    use fss_core::RuntimeGrant;
+    use fss_runtime::grant::{GrantError, GrantSet};
+
+    // Unregistered capability strings are refused at construction.
+    let bad = test_spec("trace:g", "op:g", vec!["NOT-A-REAL-CAP".to_string()]);
+    let refused = fss_runtime::authority::AuthorityCx::root(
+        bad,
+        fss_core::RegionId::new("region:p").expect("r"),
+        fss_core::RegionKind::Process,
+        fss_core::BudgetVector::ZERO,
+        fss_core::TimestampNs(1),
+    );
+    assert!(matches!(
+        refused.err(),
+        Some(fss_runtime::authority::AuthorityError::Grant(
+            GrantError::UnregisteredCapability { .. }
+        ))
+    ));
+
+    // A held grant passes; a missing grant fails closed and names itself.
+    let (auth, _t) = fss_runtime::authority::AuthorityCx::root(
+        test_spec("trace:g2", "op:g2", vec!["CAP-ALERT-COMMIT-001".to_string()]),
+        fss_core::RegionId::new("region:p2").expect("r"),
+        fss_core::RegionKind::Process,
+        fss_core::BudgetVector::ZERO,
+        fss_core::TimestampNs(1),
+    )
+    .expect("root");
+    auth.require_grant(RuntimeGrant::AlertCommit).expect("held");
+    let missing = auth.require_grant(RuntimeGrant::PtzCommit).expect_err("missing");
+    assert_eq!(missing, GrantError::MissingGrant { grant: RuntimeGrant::PtzCommit });
+
+    // Resource scopes: scoped grant admits in-scope resources only.
+    let grants = GrantSet::empty().with_scope(
+        RuntimeGrant::AdapterNet,
+        ["cam:porch".to_string()].into_iter().collect(),
+    );
+    grants
+        .require_grant_for(RuntimeGrant::AdapterNet, "cam:porch")
+        .expect("in scope");
+    let outside = grants
+        .require_grant_for(RuntimeGrant::AdapterNet, "cam:garage")
+        .expect_err("outside scope");
+    assert_eq!(
+        outside,
+        GrantError::OutsideScope {
+            grant: RuntimeGrant::AdapterNet,
+            resource: "cam:garage".to_string(),
+        }
+    );
+}
+
+#[test]
+fn scope_down_never_widens_grants_or_scopes() {
+    use fss_core::RuntimeGrant;
+    use fss_runtime::grant::{GrantError, GrantSet};
+
+    let parent = GrantSet::empty().with_scope(
+        RuntimeGrant::AdapterNet,
+        ["cam:a".to_string(), "cam:b".to_string()].into_iter().collect(),
+    );
+
+    // Child holding a grant the parent lacks: refuse. (Built through the
+    // real authority-string path — no test-only mutation hooks.)
+    let child_extra = GrantSet::from_authority(
+        &fss_core::ContextAuthority::new_root(test_spec(
+            "trace:c",
+            "op:c",
+            vec![
+                "CAP-ADAPTER-NET-001".to_string(),
+                "CAP-PTZ-COMMIT-001".to_string(),
+            ],
+        ))
+        .expect("child authority"),
+    )
+    .expect("child grants");
+    assert!(matches!(
+        parent.verify_narrowed_by(&child_extra),
+        Err(GrantError::Widening { .. })
+    ));
+
+    // Child narrowing scope to a subset: legal.
+    let child_narrower = GrantSet::empty().with_scope(
+        RuntimeGrant::AdapterNet,
+        ["cam:a".to_string()].into_iter().collect(),
+    );
+    parent.verify_narrowed_by(&child_narrower).expect("narrower scope is legal");
+
+    // Child unscoped where parent is scoped: refuse (widening).
+    let child_unscoped = GrantSet::from_authority(
+        &fss_core::ContextAuthority::new_root(test_spec(
+            "trace:c2",
+            "op:c2",
+            vec!["CAP-ADAPTER-NET-001".to_string()],
+        ))
+        .expect("child authority"),
+    )
+    .expect("unscoped child grants");
+    assert!(matches!(
+        parent.verify_narrowed_by(&child_unscoped),
+        Err(GrantError::Widening { .. })
+    ));
+
+    // Child superset scope: refuse.
+    let child_super = GrantSet::empty().with_scope(
+        RuntimeGrant::AdapterNet,
+        ["cam:a".to_string(), "cam:b".to_string(), "cam:c".to_string()]
+            .into_iter()
+            .collect(),
+    );
+    assert!(matches!(
+        parent.verify_narrowed_by(&child_super),
+        Err(GrantError::Widening { .. })
+    ));
 }
