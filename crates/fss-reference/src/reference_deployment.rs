@@ -1370,6 +1370,8 @@ impl ReferenceDeployment {
     /// in the local publisher, but no root record is written and the ledger is untouched. The
     /// returned [`StagedManifestHandle`] becomes visible only through [`Self::publish_and_commit`],
     /// which publishes root-last and commits reachability to the canonical ledger.
+    /// Repeated payloads share one content-addressed child; role-specific references remain in
+    /// their owning records. The input-count limit applies before this deduplication.
     pub fn stage_and_publish(
         &mut self,
         slot: &SlotName,
@@ -1418,6 +1420,12 @@ impl ReferenceDeployment {
             });
         }
 
+        // A publication's closure names stored objects, not every semantic role using them.
+        // Quiet frames can share source bytes and decode receipts with the reference frame.
+        // Preserve every role in its record while presenting unique children to the strict
+        // canonical manifest constructor; its duplicate-input validation remains unchanged.
+        child_digests.sort_unstable();
+        child_digests.dedup();
         let manifest = ObjectManifest::new(slot.as_str(), child_digests, None)?;
         let manifest_root = self.publisher.stage_manifest(slot, &manifest)?;
 

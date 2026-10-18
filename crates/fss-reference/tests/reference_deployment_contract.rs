@@ -13,7 +13,7 @@ use fss_core::{
 };
 use fss_ledger::{DurableLedgerError, DurableReferenceLedger, IncompleteTailPolicy, doctor_path};
 use fss_object::{InMemoryObjectStore, ObjectLimits, ObjectManifest};
-use fss_publication::SlotName;
+use fss_publication::{RootLedgerOutcome, SlotName};
 use fss_reference::reference_deployment::KNOWN_LEDGER_DELTA_FAMILIES;
 use fss_reference::{
     DEPLOYMENT_CANCEL_STAGES, DEPLOYMENT_LAYOUT_FILENAME, DeliveryPlan, DeploymentLayout,
@@ -99,6 +99,83 @@ fn open_and_reopen_empty_and_existing_root() -> Result<(), Box<dyn Error>> {
     assert_eq!(dep2.layout_report(), &expected_layout);
 
     let _ = fs::remove_dir_all(&dir);
+    Ok(())
+}
+
+#[test]
+fn repeated_payload_roles_share_a_canonical_child_and_retry_after_cold_reopen()
+-> Result<(), Box<dyn Error>> {
+    let dir = temp_deployment_dir("equal-payload-roles")?;
+    let cx = test_cx("equal-payload-roles")?;
+    let slot = SlotName::parse("slot-equal-payload-roles")?;
+    let first = b"one source used by multiple semantic roles".as_slice();
+    let second = b"one decode receipt used by multiple semantic roles".as_slice();
+    let expected = ObjectManifest::new(
+        slot.as_str(),
+        [ContentDigest::sha256(first), ContentDigest::sha256(second)],
+        None,
+    )?;
+    let mut dep = ReferenceDeployment::open(&dir, "site:equal-payload-roles", &cx)?;
+    let staged = dep.stage_and_publish(&slot, &[second, first, second, first], &cx)?;
+    assert_eq!(staged.manifest, expected);
+    assert_eq!(staged.root, expected.root());
+    assert!(dep.publisher().root(&slot).is_none());
+    assert!(dep.ledger().batches().is_empty());
+    assert_eq!(dep.publisher().spool().object_count(), 3);
+    let committed = dep.publish_and_commit(&slot, &staged.manifest, sample_interval(1, 2)?, &cx)?;
+    assert_eq!(committed.outcome, RootLedgerOutcome::Committed);
+    assert_eq!(committed.closure_object_count, 3);
+    let anchor = dep.current_anchor().clone();
+    drop(dep);
+    let mut dep = ReferenceDeployment::reopen(&dir, "site:equal-payload-roles", &cx)?;
+    for payload in [first, second] {
+        assert_eq!(
+            dep.publisher().spool().read(ContentDigest::sha256(payload))?,
+            payload
+        );
+    }
+    // Dropping repeated roles or changing their order does not rename a stored object graph.
+    let staged = dep.stage_and_publish(&slot, &[first, second], &cx)?;
+    assert_eq!(staged.manifest, expected);
+    let retry = dep.publish_and_commit(&slot, &staged.manifest, sample_interval(1, 2)?, &cx)?;
+    assert_eq!(retry.outcome, RootLedgerOutcome::AlreadyLedgered);
+    assert_eq!(retry.root, committed.root);
+    assert_eq!(retry.batch_id, committed.batch_id);
+    assert_eq!(dep.current_anchor(), &anchor);
+    assert_eq!(dep.ledger().batches().len(), 1);
+    assert_eq!(dep.publisher().spool().object_count(), 3);
+    drop(dep);
+    fs::remove_dir_all(dir)?;
+    Ok(())
+}
+
+#[test]
+fn repeated_payload_roles_cannot_evade_pre_deduplication_input_limit() -> Result<(), Box<dyn Error>> {
+    let dir = temp_deployment_dir("equal-payload-input-limit")?;
+    let cx = test_cx("equal-payload-input-limit")?;
+    let slot = SlotName::parse("slot-equal-payload-input-limit")?;
+    let limits = DeploymentLimits {
+        manifest_children_max: 2,
+        ..DeploymentLimits::standard()
+    };
+    let mut dep =
+        ReferenceDeployment::open_with_limits(&dir, "site:equal-payload-input-limit", limits, &cx)?;
+    let anchor = dep.current_anchor().clone();
+    let payload = b"identical payload".as_slice();
+    assert!(matches!(
+        dep.stage_and_publish(&slot, &[payload, payload, payload], &cx),
+        Err(ReferenceError::CapacityExceeded {
+            limit: "manifest_children_max",
+            maximum: 2,
+            actual: 3,
+        })
+    ));
+    assert_eq!(dep.publisher().spool().object_count(), 0);
+    assert!(dep.publisher().root(&slot).is_none());
+    assert_eq!(dep.current_anchor(), &anchor);
+    assert!(dep.ledger().batches().is_empty());
+    drop(dep);
+    fs::remove_dir_all(dir)?;
     Ok(())
 }
 
@@ -788,7 +865,12 @@ fn exported_constants_and_tables_integrity() -> Result<(), Box<dyn Error>> {
     // 15 = 12 + FAMILY_DELETION_{RECORD,TOMBSTONE,COMPLETION} (fss-x4a.9.7).
     // 16 = 15 + FAMILY_EVIDENCE_HOLD (owner evidence holds, 83f58e5).
     // 17 = 16 + the irreversible current-format deployment restore fence.
-    assert_eq!(KNOWN_LEDGER_DELTA_FAMILIES.len(), 17);
+    // 18 = 17 + retained historical sensor-health diagnostics.
+    assert_eq!(KNOWN_LEDGER_DELTA_FAMILIES.len(), 18);
+    assert!(
+        KNOWN_LEDGER_DELTA_FAMILIES
+            .contains(&fss_reference::ingest::historical_health::FAMILY_HISTORICAL_HEALTH)
+    );
     assert!(KNOWN_LEDGER_DELTA_FAMILIES.contains(&fss_reference::deployment_backup::FAMILY_RESTORE_FENCE));
     for family in KNOWN_LEDGER_DELTA_FAMILIES {
         assert!(!family.is_empty());
