@@ -202,7 +202,9 @@ bounded by 1e12 source units. No URI or executable expression exists in the form
 Header: ASCII `FSSTWIN1` (8 bytes), payload byte length (u64).
 Payload in this order:
 
-1. SHA-256 of exact saved source `.blend` (32 nonzero bytes).
+1. SHA-256 of the exact saved authoring source, such as `.blend`, `.gltf` or `.glb`
+   (32 nonzero bytes). The [glTF/GLB bridge](GLTF_SCENE_IMPORT.md) uses the same
+   native format and camera-rig reader.
 2. Scope text (at most 2048 bytes), epoch text (at most 128 bytes).
 3. Scale tag u8: 0 relative, 1 estimated, 2 producer-declared measured anchor;
    metres/unit f64; absolute error f64 (-1 unknown). Relative uses 0 and -1.
