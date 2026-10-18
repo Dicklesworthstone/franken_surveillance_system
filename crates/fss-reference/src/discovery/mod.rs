@@ -4,21 +4,22 @@
 //! and brand-confidence fingerprinting.
 pub mod tuya_beacon;
 
-pub use tuya_beacon::{TuyaBeaconObs, TUYA_BEACON_PORT, decode_beacon, listen};
+pub use tuya_beacon::{TUYA_BEACON_PORT, TuyaBeaconObs, decode_beacon, listen};
 
 pub mod census;
-pub mod watchdog;
 pub mod dispatch;
 pub mod fingerprint;
+pub mod liveness;
 pub mod service;
 pub mod standards;
+pub mod watchdog;
 
 pub use service::{DeviceCandidate, DiscoverConfig, DiscoverReport, discover};
 
 pub use standards::{
-    MDNS_CAMERA_TYPES, MdnsAnswer, SsdpResponse, WsdMatch, build_mdns_query,
-    build_msearch, build_wsdiscovery_probe, mdns_probe, parse_mdns_response,
-    parse_ssdp_response, parse_wsd_match, ssdp_probe, wsdiscovery_probe,
+    MDNS_CAMERA_TYPES, MdnsAnswer, SsdpResponse, WsdMatch, build_mdns_query, build_msearch,
+    build_wsdiscovery_probe, mdns_probe, parse_mdns_response, parse_ssdp_response, parse_wsd_match,
+    ssdp_probe, wsdiscovery_probe,
 };
 
 pub use dispatch::{AdapterDispatch, AdapterPath, AuthIngredient, Readiness, dispatch};
@@ -29,3 +30,5 @@ pub use census::{
     CensusConfig, CensusError, CensusPlan, CensusReport, HostObs, OUI_SNAPSHOT,
     OUI_SNAPSHOT_SHA256, OuiTable, REGISTERED_PORTS, run_census,
 };
+
+pub use liveness::{note_agent_beat, note_agent_silence};

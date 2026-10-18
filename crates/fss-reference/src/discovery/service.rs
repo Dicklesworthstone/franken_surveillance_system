@@ -16,11 +16,11 @@
 
 use std::sync::atomic::AtomicBool;
 
-use crate::discovery::census::{run_census, CensusConfig, CensusReport, OuiTable, OUI_SNAPSHOT};
-use crate::discovery::dispatch::{dispatch, AdapterDispatch};
-use crate::discovery::fingerprint::{classify_host, Brand, BrandConfidence, Confidence, Signal};
-use crate::discovery::standards::{mdns_probe, ssdp_probe, wsdiscovery_probe, SsdpResponse};
-use crate::discovery::tuya_beacon::{listen, TuyaBeaconObs};
+use crate::discovery::census::{CensusConfig, CensusReport, OUI_SNAPSHOT, OuiTable, run_census};
+use crate::discovery::dispatch::{AdapterDispatch, dispatch};
+use crate::discovery::fingerprint::{Brand, BrandConfidence, Confidence, Signal, classify_host};
+use crate::discovery::standards::{SsdpResponse, mdns_probe, ssdp_probe, wsdiscovery_probe};
+use crate::discovery::tuya_beacon::{TuyaBeaconObs, listen};
 
 /// Service configuration: subnets plus timing budgets.
 #[derive(Clone, Debug)]
@@ -84,7 +84,10 @@ pub struct DiscoverReport {
 }
 
 /// Runs the full discovery sweep (owner-network scope only).
-pub fn discover(cfg: &DiscoverConfig, cancel: &AtomicBool) -> Result<DiscoverReport, crate::discovery::census::CensusError> {
+pub fn discover(
+    cfg: &DiscoverConfig,
+    cancel: &AtomicBool,
+) -> Result<DiscoverReport, crate::discovery::census::CensusError> {
     // Stage 1: passive-first listening + standards probes.
     let beacons = listen(cfg.beacon_seconds, 256, cancel);
     let beacon_index: std::collections::BTreeMap<String, Vec<&TuyaBeaconObs>> = {
@@ -133,10 +136,7 @@ pub fn discover(cfg: &DiscoverConfig, cancel: &AtomicBool) -> Result<DiscoverRep
     Ok(DiscoverReport {
         candidates,
         ping_targets,
-        beacons: beacons
-            .iter()
-            .map(|b| (b.source.clone(), b.cmd))
-            .collect(),
+        beacons: beacons.iter().map(|b| (b.source.clone(), b.cmd)).collect(),
         ssdp_responders: ssdp.len(),
         mdns_answers: mdns.len(),
         wsd_matches: wsd.len(),
@@ -149,10 +149,7 @@ impl DiscoverReport {
     pub fn onboarding_candidates(&self) -> Vec<&DeviceCandidate> {
         self.candidates
             .iter()
-            .filter(|c| {
-                c.dispatch.readiness
-                    != crate::discovery::dispatch::Readiness::Unavailable
-            })
+            .filter(|c| c.dispatch.readiness != crate::discovery::dispatch::Readiness::Unavailable)
             .collect()
     }
 
@@ -161,12 +158,7 @@ impl DiscoverReport {
     pub fn camera_candidates(&self) -> Vec<&DeviceCandidate> {
         self.candidates
             .iter()
-            .filter(|c| {
-                !matches!(
-                    c.brand.brand,
-                    Brand::Unknown | Brand::Infrastructure
-                )
-            })
+            .filter(|c| !matches!(c.brand.brand, Brand::Unknown | Brand::Infrastructure))
             .collect()
     }
 

@@ -44,10 +44,13 @@
 //! repository: [`fss_reference::discovery::dispatch`] is the *access-lane*
 //! dispatcher (how we reach a camera that is already reachable); this crate
 //! is the *factory-state → software* substrate (how we make a camera
-//! reachable in the first place). The [`HeartbeatTracker`] here is the
-//! *producer* side of the DISC-5 dark-camera watchdog (bead `fss-niak9`),
-//! which *consumes* the resulting [`Liveness`]. The data lanes are carried by
-//! the first-party `fss-tutk` and `fss-tuya` crates.
+//! reachable in the first place). [`HeartbeatTracker`] records sequence
+//! anomalies and missed-interval counts. The DISC-5 dark-camera watchdog
+//! (bead `fss-niak9`) keeps its own time-based clock; `fss-reference`'s
+//! `discovery::liveness` is the link that turns each received
+//! [`AgentHeartbeat`] into a sighting and each missed interval into a
+//! watchdog evaluation. This crate does not depend on that watchdog. The
+//! data lanes are carried by the first-party `fss-tutk` and `fss-tuya` crates.
 #![forbid(unsafe_code)]
 
 pub mod agent;

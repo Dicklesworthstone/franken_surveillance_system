@@ -11,9 +11,11 @@
 //!   coverage).
 //! * [`HeartbeatTracker`] — the consumer-side state machine that turns a
 //!   stream of beats into a [`Liveness`] and, crucially, turns *silence into
-//!   a typed transition* (Silent → Dark) rather than a silent absence. This is
-//!   the producer side of the DISC-5 dark-camera watchdog (bead fss-niak9),
-//!   which consumes the resulting liveness.
+//!   a typed transition* (Silent → Dark) rather than a silent absence.
+//!   Sequence anomalies stay here. The DISC-5 dark-camera watchdog does not
+//!   read this type directly: `fss_reference::discovery::liveness` feeds each
+//!   received beat in as a sighting and each missed interval into the
+//!   watchdog's own clock.
 //!
 //! A transition is evidence: `WentSilent`, `WentDark`, `Restored`,
 //! `DuplicateSequence`, and `SequenceReset` are all distinct, observable
@@ -541,8 +543,10 @@ pub enum LivenessTransition {
 
 /// Consumer-side liveness state machine over a heartbeat stream.
 ///
-/// This is the producer side of the DISC-5 dark-camera watchdog: it turns the
-/// *absence* of a beat into a typed transition rather than a silent gap.
+/// It turns the absence of a beat into a typed transition rather than a
+/// silent gap. It does not own the DISC-5 dark-camera clock. Callers that
+/// also track discovery sightings pass each beat and each missed interval
+/// through `fss_reference::discovery::liveness`.
 #[derive(Clone, Debug)]
 pub struct HeartbeatTracker {
     grace: u64,

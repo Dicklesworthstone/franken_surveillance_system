@@ -131,6 +131,7 @@ dependencies = [
  "fss-model-ir",
  "fss-object",
  "fss-packet",
+ "fss-provision",
  "fss-publication",
  "fss-tensor",
  "fss-tutk",

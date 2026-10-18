@@ -136,7 +136,11 @@ pub fn classify_host(
     let mut port_brand: Option<Brand> = None;
     if open.contains(&6668) && open.contains(&8888) {
         port_brand = Some(Brand::Tuya);
-    } else if open.contains(&80) && open.contains(&443) && open.is_empty() == false && open.len() <= 3 {
+    } else if open.contains(&80)
+        && open.contains(&443)
+        && open.is_empty() == false
+        && open.len() <= 3
+    {
         // small HTTP(S) surface with matching OUI handled below; alone it is weak
         port_brand = None;
     }
@@ -160,9 +164,7 @@ pub fn classify_host(
         (None, None) => None,
     }
     .unwrap_or(Brand::Unknown);
-    let has_listener = signals
-        .iter()
-        .any(|s| matches!(s, Signal::TutkListener(_)));
+    let has_listener = signals.iter().any(|s| matches!(s, Signal::TutkListener(_)));
     let independent = signals
         .iter()
         .filter(|s| !matches!(s, Signal::LocallyAdministeredMac))
@@ -198,7 +200,12 @@ mod tests {
     #[test]
     fn wyze_oui_alone_is_possible_not_likely() {
         // Wyze also makes plugs/sensors: a bare OUI match never reaches Likely.
-        let h = host("192.168.4.23", "80:48:2c:52:59:05", Some("Wyze Labs Inc"), &[]);
+        let h = host(
+            "192.168.4.23",
+            "80:48:2c:52:59:05",
+            Some("Wyze Labs Inc"),
+            &[],
+        );
         let c = classify_host(&h, &[], None);
         assert_eq!(c.brand, Brand::Tutk);
         assert_eq!(c.confidence, Confidence::Possible);
@@ -209,14 +216,20 @@ mod tests {
     fn wyze_oui_plus_listener_is_confirmed() {
         // Vendor (OUI) + live protocol proof (listener) = Confirmed: TUTK is
         // the camera transport; a Wyze TUTK speaker is a camera.
-        let h = host("192.168.4.23", "80:48:2c:52:59:05", Some("Wyze Labs Inc"), &[]);
+        let h = host(
+            "192.168.4.23",
+            "80:48:2c:52:59:05",
+            Some("Wyze Labs Inc"),
+            &[],
+        );
         let c = classify_host(&h, &[], Some(44650));
         assert_eq!(c.brand, Brand::Tutk);
         assert_eq!(c.confidence, Confidence::Confirmed);
-        assert!(c
-            .signals
-            .iter()
-            .any(|s| matches!(s, Signal::TutkListener(44650))));
+        assert!(
+            c.signals
+                .iter()
+                .any(|s| matches!(s, Signal::TutkListener(44650)))
+        );
     }
 
     #[test]
@@ -247,7 +260,10 @@ mod tests {
         let c = classify_host(&h, &refs, None);
         assert_eq!(c.brand, Brand::Tuya);
         assert_eq!(c.confidence, Confidence::Confirmed);
-        assert!(matches!(c.signals[0], Signal::TuyaBeacon("BOARDCAST_LPV34")));
+        assert!(matches!(
+            c.signals[0],
+            Signal::TuyaBeacon("BOARDCAST_LPV34")
+        ));
     }
 
     #[test]

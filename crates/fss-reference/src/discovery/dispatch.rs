@@ -187,9 +187,7 @@ mod tests {
         assert_eq!(d.adapter, AdapterPath::ImportOnly);
         assert_eq!(d.readiness, Readiness::Unavailable);
         assert_eq!(d.missing, Some(AuthIngredient::WyzeUidEnr));
-        assert!(d
-            .blocked_reason
-            .is_some_and(|r| r.contains("corroborate")));
+        assert!(d.blocked_reason.is_some_and(|r| r.contains("corroborate")));
     }
 
     #[test]

@@ -3,6 +3,11 @@
 //! battery cams sleep without going "offline"; recovery transitions are
 //! recorded; never-observed devices never churn duplicate records.
 
+use fss_core::ContentDigest;
+use fss_provision::{
+    AgentCoverageState, AgentHeartbeat, HeartbeatTracker, Liveness, LivenessTransition,
+};
+use fss_reference::discovery::liveness::{note_agent_beat, note_agent_silence};
 use fss_reference::discovery::watchdog::{
     DeviceClass, DeviceWatchdog, WatchOfflineReason, WatchState,
 };
@@ -113,10 +118,7 @@ fn recovery_is_recorded_and_unregistered_sightings_are_tracked() {
 
     // A sighting of something never registered is tracked, not dropped.
     w.observe("mystery-device", 1_000 + 33 * MIN);
-    assert_eq!(
-        w.state_of("mystery-device"),
-        Some(&WatchState::Observable)
-    );
+    assert_eq!(w.state_of("mystery-device"), Some(&WatchState::Observable));
     assert_eq!(
         w.changes().last().expect("changes").class,
         DeviceClass::Unknown
@@ -153,7 +155,11 @@ fn silent_state_does_not_churn_but_counter_moves() {
     // Repeated evaluations while still silent: no new records.
     w.evaluate(1_000 + 4 * MIN);
     w.evaluate(1_000 + 5 * MIN);
-    assert_eq!(w.changes().len(), after_first, "silent state must not churn");
+    assert_eq!(
+        w.changes().len(),
+        after_first,
+        "silent state must not churn"
+    );
     // But the stored counter reflects the latest evaluation.
     match w.state_of("cam-1") {
         Some(WatchState::Silent { silent_for_ns }) => {
@@ -168,10 +174,7 @@ fn reclassification_upgrades_unknown_and_holds_concrete() {
     let mut w = DeviceWatchdog::new();
     // Sighting before classification: Unknown class (60-min hard silence).
     w.observe("mystery", 1_000);
-    assert_eq!(
-        w.state_of("mystery"),
-        Some(&WatchState::Observable),
-    );
+    assert_eq!(w.state_of("mystery"), Some(&WatchState::Observable),);
     // Discovery identifies it as TUTK: class upgrades, thresholds follow.
     w.register("mystery", DeviceClass::Tutk, None);
     w.evaluate(1_000 + 11 * MIN); // past TUTK hard (10 min), under Unknown's 60
@@ -196,6 +199,85 @@ fn reclassification_upgrades_unknown_and_holds_concrete() {
             reason: WatchOfflineReason::SilentBeyondThreshold
         }),
         "concrete class is stable (TUTK thresholds, not Onvif flip-flop)"
+    );
+}
+
+#[test]
+fn agent_beats_drive_the_watchdog_and_silence_does_not_invent_a_sighting() {
+    const INTERVAL: u64 = 1_000_000_000;
+    let thresholds = Some((INTERVAL, 2 * INTERVAL));
+    let mut watchdog = DeviceWatchdog::new();
+    let mut tracker = HeartbeatTracker::new(2);
+    let digest = ContentDigest::sha256(b"report");
+
+    let first = note_agent_beat(
+        &mut watchdog,
+        &mut tracker,
+        "cam-agent",
+        DeviceClass::Onvif,
+        0,
+        &AgentHeartbeat::new(digest, 1, AgentCoverageState::Observable),
+        thresholds,
+    );
+    assert_eq!(first, LivenessTransition::Steady);
+    assert_eq!(tracker.liveness(), Liveness::Live);
+    assert_eq!(
+        watchdog.state_of("cam-agent"),
+        Some(&WatchState::Observable)
+    );
+
+    let silent = note_agent_silence(&mut watchdog, &mut tracker, INTERVAL);
+    assert_eq!(silent, LivenessTransition::WentSilent);
+    assert_eq!(tracker.liveness(), Liveness::Silent);
+    assert!(matches!(
+        watchdog.state_of("cam-agent"),
+        Some(WatchState::Silent { .. })
+    ));
+
+    let dark = note_agent_silence(&mut watchdog, &mut tracker, 2 * INTERVAL);
+    assert_eq!(dark, LivenessTransition::WentDark);
+    assert_eq!(tracker.liveness(), Liveness::Dark);
+    assert_eq!(
+        watchdog.state_of("cam-agent"),
+        Some(&WatchState::NotObservable {
+            reason: WatchOfflineReason::SilentBeyondThreshold
+        })
+    );
+
+    let restored = note_agent_beat(
+        &mut watchdog,
+        &mut tracker,
+        "cam-agent",
+        DeviceClass::Onvif,
+        2 * INTERVAL + 1,
+        &AgentHeartbeat::new(digest, 2, AgentCoverageState::Observable),
+        thresholds,
+    );
+    assert_eq!(restored, LivenessTransition::Restored);
+    assert_eq!(tracker.liveness(), Liveness::Live);
+    assert_eq!(
+        watchdog.state_of("cam-agent"),
+        Some(&WatchState::Observable)
+    );
+
+    // A duplicated sequence is still a sighting: the camera spoke.
+    let duplicate = note_agent_beat(
+        &mut watchdog,
+        &mut tracker,
+        "cam-agent",
+        DeviceClass::Onvif,
+        3 * INTERVAL,
+        &AgentHeartbeat::new(digest, 2, AgentCoverageState::Observable),
+        thresholds,
+    );
+    assert_eq!(
+        duplicate,
+        LivenessTransition::DuplicateSequence { sequence: 2 }
+    );
+    note_agent_silence(&mut watchdog, &mut tracker, 3 * INTERVAL + INTERVAL / 2);
+    assert_eq!(
+        watchdog.state_of("cam-agent"),
+        Some(&WatchState::Observable)
     );
 }
 

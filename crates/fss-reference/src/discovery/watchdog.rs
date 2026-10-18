@@ -293,8 +293,12 @@ impl DeviceWatchdog {
                 WatchState::Observable
             } else if silent_for < hard {
                 match entry.class {
-                    DeviceClass::BatteryEventDriven => WatchState::Asleep { silent_for_ns: silent_for },
-                    _ => WatchState::Silent { silent_for_ns: silent_for },
+                    DeviceClass::BatteryEventDriven => WatchState::Asleep {
+                        silent_for_ns: silent_for,
+                    },
+                    _ => WatchState::Silent {
+                        silent_for_ns: silent_for,
+                    },
                 }
             } else {
                 WatchState::NotObservable {

@@ -112,9 +112,9 @@ impl OuiTable {
         if cleaned.len() < 6 {
             return None;
         }
-        hex_prefix(&cleaned[..6]).ok().and_then(|p| {
-            self.map.get(&p).map(String::as_str)
-        })
+        hex_prefix(&cleaned[..6])
+            .ok()
+            .and_then(|p| self.map.get(&p).map(String::as_str))
     }
 
     /// Number of vendored prefixes.
@@ -137,8 +137,8 @@ fn hex_prefix(s: &str) -> Result<[u8; 3], ()> {
     }
     let mut out = [0u8; 3];
     for (i, pair) in b.chunks(2).enumerate() {
-        out[i] = u8::from_str_radix(std::str::from_utf8(pair).map_err(|_| ())?, 16)
-            .map_err(|_| ())?;
+        out[i] =
+            u8::from_str_radix(std::str::from_utf8(pair).map_err(|_| ())?, 16).map_err(|_| ())?;
     }
     Ok(out)
 }
@@ -159,10 +159,14 @@ pub fn parse_arp_a(output: &str) -> Vec<ArpRow> {
             Ok(ip) => ip,
             Err(_) => continue,
         };
-        let Some(at) = line.find(" at ") else { continue };
+        let Some(at) = line.find(" at ") else {
+            continue;
+        };
         let rest = &line[at + 4..];
         let mac_raw = rest.split_whitespace().next().unwrap_or("");
-        let Some(on) = rest.find(" on ") else { continue };
+        let Some(on) = rest.find(" on ") else {
+            continue;
+        };
         let iface = rest[on + 4..]
             .split_whitespace()
             .next()
@@ -260,7 +264,9 @@ impl core::fmt::Display for CensusError {
         match self {
             CensusError::InvalidWorkers(n) => write!(f, "worker count {n} outside 1..=256"),
             CensusError::InvalidTimeout => write!(f, "tcp timeout outside 50ms..=5s"),
-            CensusError::SubnetTooLarge(s) => write!(f, "subnet {s} invalid or above the host bound"),
+            CensusError::SubnetTooLarge(s) => {
+                write!(f, "subnet {s} invalid or above the host bound")
+            }
         }
     }
 }
@@ -306,7 +312,13 @@ pub fn run_census(
     let arp_output = arp_a();
     let rows = parse_arp_a(&arp_output);
     let targets: Vec<Ipv4Addr> = rows.iter().map(|r| r.ip).collect();
-    let open = tcp_connect_scan(&targets, &REGISTERED_PORTS, cfg.workers, cfg.tcp_timeout, cancel);
+    let open = tcp_connect_scan(
+        &targets,
+        &REGISTERED_PORTS,
+        cfg.workers,
+        cfg.tcp_timeout,
+        cancel,
+    );
     let hosts = rows
         .into_iter()
         .map(|r| HostObs {
@@ -399,7 +411,9 @@ fn tcp_connect_scan(
             let result_tx = &result_tx;
             let cancel = cancel;
             s.spawn(move || {
-                while let Ok((ip, port)) = rx.lock().map(|r| r.recv()).unwrap_or(Err(mpsc::RecvError)) {
+                while let Ok((ip, port)) =
+                    rx.lock().map(|r| r.recv()).unwrap_or(Err(mpsc::RecvError))
+                {
                     if cancel.load(Ordering::Relaxed) {
                         continue;
                     }
@@ -444,7 +458,10 @@ mod tests {
             Some("Shenzhen Glazero Technology Co., Ltd.")
         );
         assert_eq!(t.lookup("48:a2:e6:00:00:02"), Some("Resideo"));
-        assert_eq!(t.lookup("d4:ad:fc:00:00:03"), Some("Shenzhen Intellirocks Tech. Co. Ltd."));
+        assert_eq!(
+            t.lookup("d4:ad:fc:00:00:03"),
+            Some("Shenzhen Intellirocks Tech. Co. Ltd.")
+        );
         assert_eq!(t.lookup("0c:29:8f:00:00:04"), Some("Tesla,Inc."));
         // locally administered (LAA) MACs resolve only if the prefix was vendored
         assert_eq!(t.lookup("00:00:00:00:00:00"), None);
@@ -467,7 +484,10 @@ mod tests {
 
     #[test]
     fn normalize_mac_shapes() {
-        assert_eq!(normalize_mac("80:48:2C:a:b:cc"), Some("80:48:2c:0a:0b:cc".to_owned()));
+        assert_eq!(
+            normalize_mac("80:48:2C:a:b:cc"),
+            Some("80:48:2c:0a:0b:cc".to_owned())
+        );
         assert_eq!(normalize_mac("(incomplete)"), None);
         assert_eq!(normalize_mac("80-48-2c-aa-bb-cc"), None);
     }
@@ -481,7 +501,10 @@ mod tests {
         }
         .plan()
         .unwrap();
-        assert_eq!(plan.ping_targets, vec![Ipv4Addr::new(192, 168, 4, 1), Ipv4Addr::new(192, 168, 4, 2)]);
+        assert_eq!(
+            plan.ping_targets,
+            vec![Ipv4Addr::new(192, 168, 4, 1), Ipv4Addr::new(192, 168, 4, 2)]
+        );
     }
 
     #[test]
@@ -499,10 +522,7 @@ mod tests {
             base(8, Duration::from_millis(10)).plan(),
             Err(CensusError::InvalidTimeout)
         ));
-        assert!(matches!(
-            base(8, Duration::from_millis(200)).plan(),
-            Ok(_)
-        ));
+        assert!(matches!(base(8, Duration::from_millis(200)).plan(), Ok(_)));
     }
 
     /// Golden replay: the 2026-10-07 owner-LAN census (lab notes). The pure
@@ -520,16 +540,16 @@ mod tests {
                    ? (192.168.5.242) at 80:48:2c:12:34:56 on en0 ifscope [ethernet]\n\
                    ? (192.168.5.206) at da:91:aa:bb:cc:dd on en0 ifscope [ethernet]\n";
         let rows = parse_arp_a(arp);
-        assert!(!rows.is_empty(), "golden arp fixture produced no rows: {arp}");
+        assert!(
+            !rows.is_empty(),
+            "golden arp fixture produced no rows: {arp}"
+        );
         let vendors: Vec<(String, Option<&str>)> = rows
             .iter()
             .map(|r| (r.ip.to_string(), oui.lookup(&r.mac)))
             .collect();
         let vendor_of = |ip: &str| -> Option<&str> {
-            vendors
-                .iter()
-                .find(|(i, _)| i == ip)
-                .and_then(|(_, v)| *v)
+            vendors.iter().find(|(i, _)| i == ip).and_then(|(_, v)| *v)
         };
         assert_eq!(vendor_of("192.168.4.23"), Some("Wyze Labs Inc"));
         assert_eq!(

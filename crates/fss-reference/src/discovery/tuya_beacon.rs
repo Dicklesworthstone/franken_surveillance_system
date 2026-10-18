@@ -122,7 +122,11 @@ pub fn decode_beacon(source: &str, data: &[u8]) -> Result<TuyaBeaconObs, tuya_wi
     let (payload_json, encrypted) = if is_55aa && h.cmd == tcmd::UDP_NEW {
         match tuya_crypto::aes128_ecb_decrypt_raw(&tuya_wire::UDP_BROADCAST_KEY, payload) {
             Some(plain) => (
-                Some(String::from_utf8_lossy(&plain).trim_end_matches('\0').to_owned()),
+                Some(
+                    String::from_utf8_lossy(&plain)
+                        .trim_end_matches('\0')
+                        .to_owned(),
+                ),
                 None,
             ),
             None => (None, Some("udpkey decrypt failed")),
@@ -169,11 +173,7 @@ fn version_hint_6699() -> &'static str {
 
 /// Listens on :6667 for `seconds`, decoding up to `max_beacons` beacons.
 /// Cancellation-checked per receive; socket drops closed.
-pub fn listen(
-    seconds: u64,
-    max_beacons: usize,
-    cancel: &AtomicBool,
-) -> Vec<TuyaBeaconObs> {
+pub fn listen(seconds: u64, max_beacons: usize, cancel: &AtomicBool) -> Vec<TuyaBeaconObs> {
     let sock = UdpSocket::bind(("0.0.0.0", TUYA_BEACON_PORT)).expect("bind :6667");
     sock.set_read_timeout(Some(Duration::from_millis(200)))
         .expect("socket options");

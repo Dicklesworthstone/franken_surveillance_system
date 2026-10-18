@@ -382,7 +382,9 @@ impl WsdMatch {
     /// is gated (advertisement alone proves an ONVIF camera stack).
     #[must_use]
     pub fn is_onvif_camera(&self) -> bool {
-        self.types.iter().any(|t| t.contains("NetworkVideoTransmitter"))
+        self.types
+            .iter()
+            .any(|t| t.contains("NetworkVideoTransmitter"))
             || self.scopes.iter().any(|s| s.contains("Profile/Streaming"))
     }
 }
