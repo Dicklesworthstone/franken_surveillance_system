@@ -1,144 +1,261 @@
-//! Typed budget accounting: budgets only ever decrement to a typed
-//! exhaustion state. There is no ambient top-up and no silent overdraw.
+//! Typed budget ledger over the canonical `BudgetVector` (FSS-022).
 //!
-//! Deterministic: the ledger is a pure value; the caller supplies costs and
-//! pressure signals. (FSS-021 slice 1 / FSS-022 groundwork.)
+//! The ledger is the only mutable budget state in the runtime core: it tracks
+//! consumption against an immutable per-authority limit, refuses overdrafts
+//! with the exact dimension named, and derives the registered
+//! `ResourcePressure` ladder from utilization so degradation is an observable
+//! typed signal, never a silent drop.
+//!
+//! ## Pressure derivation policy (reference mapping)
+//!
+//! Utilization per metered dimension is `consumed / limit`. Dimensions with a
+//! zero limit are unmetered and excluded (an unmetered dimension can never
+//! carry consumption: any spend would have been refused as an overdraft).
+//! The effective pressure is the maximum utilization mapped onto the ladder:
+//!
+//! | utilization `u`   | pressure      |
+//! |-------------------|---------------|
+//! | `u < 0.50`        | `Nominal`     |
+//! | `0.50 ≤ u < 0.80` | `Elevated`    |
+//! | `0.80 ≤ u < 0.95` | `Constrained` |
+//! | `u ≥ 0.95`        | `Critical`    |
+//!
+//! The privacy-exposure and operator-attention dimensions are validated
+//! quantities owned by `fss-core`'s contract machinery; this ledger meters the
+//! nine numeric dimensions and leaves those two to their owning contracts.
 
-/// A budget covering the dimensions FSS acquisition paths spend.
-#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
-pub struct Budget {
-    /// Bounded work units (frames, packets, steps).
-    pub work_units: u64,
-    /// Bounded bytes (payload + retained custody).
-    pub bytes: u64,
-    /// Bounded wall-clock nanoseconds for an operation.
-    pub wall_ns: u64,
-}
+use fss_core::{BudgetDimension, BudgetVector, ResourcePressure};
 
-impl Budget {
-    /// A budget of the given shape.
-    #[must_use]
-    pub const fn new(work_units: u64, bytes: u64, wall_ns: u64) -> Self {
-        Self {
-            work_units,
-            bytes,
-            wall_ns,
-        }
-    }
+/// Utilization at or above which pressure becomes `Elevated`.
+pub const ELEVATED_AT: f64 = 0.50;
+/// Utilization at or above which pressure becomes `Constrained`.
+pub const CONSTRAINED_AT: f64 = 0.80;
+/// Utilization at or above which pressure becomes `Critical`.
+pub const CRITICAL_AT: f64 = 0.95;
 
-    /// Zero in every dimension (spending anything exhausts it).
-    #[must_use]
-    pub const fn zero() -> Self {
-        Self {
-            work_units: 0,
-            bytes: 0,
-            wall_ns: 0,
-        }
-    }
-
-    /// Whether every dimension is exhausted.
-    #[must_use]
-    pub fn is_exhausted(&self) -> bool {
-        self.work_units == 0 && self.bytes == 0 && self.wall_ns == 0
-    }
-}
-
-/// A decremented-only ledger over one budget.
+/// Typed ledger refusal. Overdrafts name the exact dimension, the requested
+/// quantity, and what remained — never a clamp, never a silent truncation.
 #[derive(Clone, Debug, Eq, PartialEq)]
-pub struct BudgetLedger {
-    remaining: Budget,
-}
-
-/// Typed exhaustion with the exact dimension that stopped the spend.
-#[derive(Clone, Debug, Eq, PartialEq)]
-pub enum BudgetExhausted {
-    /// Work-unit bound hit.
-    WorkUnits {
-        /// Remaining at refusal.
-        remaining: u64,
-        /// Requested spend.
+pub enum LedgerError {
+    /// The spend would exceed the remaining budget in one dimension.
+    Overdraft {
+        /// The dimension whose limit would be exceeded.
+        dimension: BudgetDimension,
+        /// The requested quantity.
         requested: u64,
-    },
-    /// Byte bound hit.
-    Bytes {
-        /// Remaining at refusal.
+        /// The remaining quantity at the time of refusal.
         remaining: u64,
-        /// Requested spend.
-        requested: u64,
-    },
-    /// Wall-time bound hit.
-    WallNs {
-        /// Remaining at refusal.
-        remaining: u64,
-        /// Requested spend.
-        requested: u64,
     },
 }
 
-impl core::fmt::Display for BudgetExhausted {
-    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+impl std::fmt::Display for LedgerError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
-            Self::WorkUnits { remaining, requested } => {
-                write!(f, "work-unit budget exhausted ({remaining} left, {requested} requested)")
-            }
-            Self::Bytes { remaining, requested } => {
-                write!(f, "byte budget exhausted ({remaining} left, {requested} requested)")
-            }
-            Self::WallNs { remaining, requested } => {
-                write!(f, "wall-time budget exhausted ({remaining} left, {requested} requested)")
-            }
+            Self::Overdraft {
+                dimension,
+                requested,
+                remaining,
+            } => write!(
+                f,
+                "budget overdraft in {}: requested {requested}, remaining {remaining}",
+                dimension.as_str()
+            ),
         }
     }
 }
 
-impl std::error::Error for BudgetExhausted {}
+impl std::error::Error for LedgerError {}
+
+/// The nine numeric dimensions metered by this ledger (privacy-exposure and
+/// operator-attention are validated quantities owned by contract machinery).
+pub const METERED: [BudgetDimension; 9] = [
+    BudgetDimension::LatencyMs,
+    BudgetDimension::Tokens,
+    BudgetDimension::Bytes,
+    BudgetDimension::ModelCalls,
+    BudgetDimension::CpuMillis,
+    BudgetDimension::AcceleratorMillis,
+    BudgetDimension::EnergyMillijoules,
+    BudgetDimension::NetworkBytes,
+    BudgetDimension::StorageOperations,
+];
+
+/// Reads one dimension's quantity from a vector (0 for the two
+/// validated contract-owned dimensions).
+#[must_use]
+pub fn read_dim(vector: &BudgetVector, dimension: BudgetDimension) -> u64 {
+    match dimension {
+        BudgetDimension::LatencyMs => vector.latency_ms,
+        BudgetDimension::Tokens => vector.tokens,
+        BudgetDimension::Bytes => vector.bytes,
+        BudgetDimension::ModelCalls => u64::from(vector.model_calls),
+        BudgetDimension::CpuMillis => vector.cpu_millis,
+        BudgetDimension::AcceleratorMillis => vector.accelerator_millis,
+        BudgetDimension::EnergyMillijoules => vector.energy_millijoules,
+        BudgetDimension::NetworkBytes => vector.network_bytes,
+        BudgetDimension::StorageOperations => vector.storage_operations,
+        // Validated quantities owned by contract machinery; unmetered here.
+        BudgetDimension::PrivacyExposure | BudgetDimension::OperatorAttentionSeconds => 0,
+    }
+}
+
+fn add(vector: &mut BudgetVector, dimension: BudgetDimension, qty: u64) {
+    match dimension {
+        BudgetDimension::LatencyMs => vector.latency_ms += qty,
+        BudgetDimension::Tokens => vector.tokens += qty,
+        BudgetDimension::Bytes => vector.bytes += qty,
+        BudgetDimension::ModelCalls => {
+            vector.model_calls = vector.model_calls.saturating_add(qty.min(u64::from(u32::MAX)) as u32);
+        }
+        BudgetDimension::CpuMillis => vector.cpu_millis += qty,
+        BudgetDimension::AcceleratorMillis => vector.accelerator_millis += qty,
+        BudgetDimension::EnergyMillijoules => vector.energy_millijoules += qty,
+        BudgetDimension::NetworkBytes => vector.network_bytes += qty,
+        BudgetDimension::StorageOperations => vector.storage_operations += qty,
+        BudgetDimension::PrivacyExposure | BudgetDimension::OperatorAttentionSeconds => {}
+    }
+}
+
+fn sub(vector: &mut BudgetVector, dimension: BudgetDimension, qty: u64) {
+    match dimension {
+        BudgetDimension::LatencyMs => vector.latency_ms = vector.latency_ms.saturating_sub(qty),
+        BudgetDimension::Tokens => vector.tokens = vector.tokens.saturating_sub(qty),
+        BudgetDimension::Bytes => vector.bytes = vector.bytes.saturating_sub(qty),
+        BudgetDimension::ModelCalls => {
+            vector.model_calls = vector.model_calls.saturating_sub(qty.min(u64::from(u32::MAX)) as u32);
+        }
+        BudgetDimension::CpuMillis => vector.cpu_millis = vector.cpu_millis.saturating_sub(qty),
+        BudgetDimension::AcceleratorMillis => {
+            vector.accelerator_millis = vector.accelerator_millis.saturating_sub(qty);
+        }
+        BudgetDimension::EnergyMillijoules => {
+            vector.energy_millijoules = vector.energy_millijoules.saturating_sub(qty);
+        }
+        BudgetDimension::NetworkBytes => {
+            vector.network_bytes = vector.network_bytes.saturating_sub(qty);
+        }
+        BudgetDimension::StorageOperations => {
+            vector.storage_operations = vector.storage_operations.saturating_sub(qty);
+        }
+        BudgetDimension::PrivacyExposure | BudgetDimension::OperatorAttentionSeconds => {}
+    }
+}
+
+/// Stateful ledger tracking consumption against one authority's immutable
+/// `BudgetVector` limit. All arithmetic is checked; the consumed vector never
+/// exceeds the limit in any metered dimension.
+#[derive(Clone, Debug)]
+pub struct BudgetLedger {
+    limit: BudgetVector,
+    consumed: BudgetVector,
+}
 
 impl BudgetLedger {
-    /// Open a ledger over `initial`.
+    /// Opens a ledger against an immutable limit. Consumption starts at zero.
     #[must_use]
-    pub const fn new(initial: Budget) -> Self {
-        Self { remaining: initial }
+    pub fn new(limit: BudgetVector) -> Self {
+        Self {
+            limit,
+            consumed: BudgetVector::ZERO,
+        }
     }
 
-    /// Current remaining budget.
+    /// The immutable limit this ledger meters against.
     #[must_use]
-    pub const fn remaining(&self) -> Budget {
-        self.remaining
+    pub fn limit(&self) -> &BudgetVector {
+        &self.limit
     }
 
-    /// Spend work units; overdraft is a typed refusal, not a clamp.
-    pub fn spend_work(&mut self, units: u64) -> Result<(), BudgetExhausted> {
-        if units > self.remaining.work_units {
-            return Err(BudgetExhausted::WorkUnits {
-                remaining: self.remaining.work_units,
-                requested: units,
+    /// The consumed vector so far.
+    #[must_use]
+    pub fn consumed(&self) -> &BudgetVector {
+        &self.consumed
+    }
+
+    /// The remaining vector (limit minus consumed). Invariant: never negative
+    /// in any metered dimension because overdrafts are refused before commit.
+    #[must_use]
+    pub fn remaining(&self) -> BudgetVector {
+        self.limit
+            .checked_sub(&self.consumed)
+            .unwrap_or(BudgetVector::ZERO)
+    }
+
+    /// Spends `qty` in one dimension. Refuses with the exact remaining
+    /// quantity when the spend would overdraw; the ledger is unchanged on
+    /// refusal.
+    pub fn spend(&mut self, dimension: BudgetDimension, qty: u64) -> Result<(), LedgerError> {
+        let remaining = read_dim(&self.limit, dimension).saturating_sub(read_dim(&self.consumed, dimension));
+        if qty > remaining {
+            return Err(LedgerError::Overdraft {
+                dimension,
+                requested: qty,
+                remaining,
             });
         }
-        self.remaining.work_units -= units;
+        add(&mut self.consumed, dimension, qty);
         Ok(())
     }
 
-    /// Spend bytes; overdraft is a typed refusal, not a clamp.
-    pub fn spend_bytes(&mut self, bytes: u64) -> Result<(), BudgetExhausted> {
-        if bytes > self.remaining.bytes {
-            return Err(BudgetExhausted::Bytes {
-                remaining: self.remaining.bytes,
-                requested: bytes,
-            });
+    /// Spends a whole vector atomically: the first dimension that would
+    /// overdraw refuses and no dimension is committed.
+    pub fn spend_vector(&mut self, delta: &BudgetVector) -> Result<(), LedgerError> {
+        for dimension in METERED {
+            let qty = read_dim(delta, dimension);
+            let remaining =
+                read_dim(&self.limit, dimension).saturating_sub(read_dim(&self.consumed, dimension));
+            if qty > remaining {
+                return Err(LedgerError::Overdraft {
+                    dimension,
+                    requested: qty,
+                    remaining,
+                });
+            }
         }
-        self.remaining.bytes -= bytes;
+        for dimension in METERED {
+            add(&mut self.consumed, dimension, read_dim(delta, dimension));
+        }
         Ok(())
     }
 
-    /// Spend wall time; overdraft is a typed refusal, not a clamp.
-    pub fn spend_wall(&mut self, ns: u64) -> Result<(), BudgetExhausted> {
-        if ns > self.remaining.wall_ns {
-            return Err(BudgetExhausted::WallNs {
-                remaining: self.remaining.wall_ns,
-                requested: ns,
-            });
+    /// Refunds `qty` in one dimension (e.g. a reservation released unused).
+    /// Saturates at zero consumption; refunding more than consumed is a
+    /// caller accounting error but never makes the ledger negative.
+    pub fn refund(&mut self, dimension: BudgetDimension, qty: u64) {
+        sub(&mut self.consumed, dimension, qty);
+    }
+
+    /// Utilization of one metered dimension: `consumed / limit`, or `None`
+    /// when the dimension is unmetered (zero limit).
+    #[must_use]
+    pub fn utilization(&self, dimension: BudgetDimension) -> Option<f64> {
+        let limit = read_dim(&self.limit, dimension);
+        if limit == 0 {
+            return None;
         }
-        self.remaining.wall_ns -= ns;
-        Ok(())
+        Some(read_dim(&self.consumed, dimension) as f64 / limit as f64)
+    }
+
+    /// The derived pressure: maximum utilization across metered dimensions
+    /// mapped onto the registered ladder (see module docs for the policy).
+    #[must_use]
+    pub fn pressure(&self) -> ResourcePressure {
+        let mut max_u = 0.0_f64;
+        for dimension in METERED {
+            if let Some(u) = self.utilization(dimension) {
+                if u > max_u {
+                    max_u = u;
+                }
+            }
+        }
+        if max_u >= CRITICAL_AT {
+            ResourcePressure::Critical
+        } else if max_u >= CONSTRAINED_AT {
+            ResourcePressure::Constrained
+        } else if max_u >= ELEVATED_AT {
+            ResourcePressure::Elevated
+        } else {
+            ResourcePressure::Nominal
+        }
     }
 }

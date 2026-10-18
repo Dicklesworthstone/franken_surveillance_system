@@ -13,7 +13,7 @@ use fss_core::{
     RootAuthoritySpec, TimestampNs,
 };
 use fss_runtime::authority::AuthorityCx;
-use fss_runtime::budget::Budget;
+use fss_core::BudgetDimension;
 use fss_runtime::obligation::{new_obligation, ObligationTerminal};
 
 fn step(seq: u32, transition: &str, detail: &str) {
@@ -48,7 +48,12 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         spec("trace:authority-lifecycle", "operation:root"),
         RegionId::new("region:process").expect("region id"),
         RegionKind::Process,
-        Budget::new(100, 1_000, 10_000),
+        BudgetVector::builder()
+            .tokens(100)
+            .bytes(1_000)
+            .cpu_millis(10_000)
+            .build()
+            .expect("budget"),
         TimestampNs(1_000),
     )
     .expect("root authority");
@@ -61,7 +66,12 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             &mut tree,
             RegionId::new("region:property").expect("child id"),
             RegionKind::Property,
-            Budget::new(50, 500, 5_000),
+            BudgetVector::builder()
+                .tokens(50)
+                .bytes(500)
+                .cpu_millis(5_000)
+                .build()
+                .expect("budget"),
             spec("trace:authority-lifecycle", "operation:property"),
             TimestampNs(2_000),
         )
@@ -91,8 +101,11 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     step(3, "obligation-resolved", "terminal=Verified proof=present");
 
     // Budget: spend inside bounds; typed refusal on overdraft.
-    child.budget_mut().spend_work(50).expect("spend");
-    let refused = child.budget_mut().spend_bytes(501).is_err();
+    child
+        .budget_mut()
+        .spend(BudgetDimension::Tokens, 50)
+        .expect("spend");
+    let refused = child.budget_mut().spend(BudgetDimension::Bytes, 501).is_err();
     step(4, "budget-exercised", &format!("overdraft_refused={refused}"));
 
     // Cancellation cascades through the chain; drain requested on the subtree.

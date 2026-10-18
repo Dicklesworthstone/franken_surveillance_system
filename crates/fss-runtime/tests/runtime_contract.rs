@@ -3,7 +3,6 @@
 //! work), budget ledgers, obligation leak oracle, and authority scoping
 //! rules (kind legality + no silent budget widening).
 
-use fss_runtime::budget::{Budget, BudgetExhausted, BudgetLedger};
 use fss_runtime::cancellation::{CancelOutcome, CancellationLifecycle, DrainStep};
 
 // ---------- cancellation ----------
@@ -84,35 +83,95 @@ fn request_is_idempotent_and_never_rewinds() {
 
 #[test]
 fn budget_spends_and_refuses_typed_overdraft() {
-    let mut ledger = BudgetLedger::new(Budget::new(10, 100, 1_000));
-    ledger.spend_work(4).expect("spend work");
-    ledger.spend_bytes(50).expect("spend bytes");
-    ledger.spend_wall(500).expect("spend wall");
-    assert_eq!(ledger.remaining(), Budget::new(6, 50, 500));
-    assert!(matches!(
-        ledger.spend_work(7),
-        Err(BudgetExhausted::WorkUnits {
-            remaining: 6,
-            requested: 7
-        })
-    ));
-    assert!(matches!(
-        ledger.spend_bytes(51),
-        Err(BudgetExhausted::Bytes { .. })
-    ));
-    assert!(matches!(
-        ledger.spend_wall(501),
-        Err(BudgetExhausted::WallNs { .. })
-    ));
-    // A refused spend never decrements.
-    assert_eq!(ledger.remaining(), Budget::new(6, 50, 500));
+    use fss_core::BudgetDimension;
+    use fss_runtime::budget::BudgetLedger;
+
+    let limit = fss_core::BudgetVector::builder()
+        .bytes(1_000)
+        .tokens(100)
+        .cpu_millis(10_000)
+        .build()
+        .expect("limit");
+    let mut ledger = BudgetLedger::new(limit);
+    ledger.spend(BudgetDimension::Bytes, 400).expect("spend");
+    ledger.spend(BudgetDimension::Tokens, 100).expect("spend all");
+    let err = ledger.spend(BudgetDimension::Tokens, 1).expect_err("overdraft");
+    assert_eq!(
+        err,
+        fss_runtime::budget::LedgerError::Overdraft {
+            dimension: BudgetDimension::Tokens,
+            requested: 1,
+            remaining: 0,
+        }
+    );
+    // Refund restores headroom; pressure reflects utilization.
+    ledger.refund(BudgetDimension::Tokens, 50);
+    ledger.spend(BudgetDimension::Tokens, 50).expect("re-spend");
+    assert_eq!(ledger.utilization(BudgetDimension::Tokens), Some(1.0));
+    assert_eq!(ledger.pressure(), fss_core::ResourcePressure::Critical);
+    assert_eq!(ledger.utilization(BudgetDimension::Bytes), Some(0.4));
+}
+
+#[test]
+fn pressure_ladder_tracks_max_utilization() {
+    use fss_core::BudgetDimension;
+    use fss_runtime::budget::BudgetLedger;
+
+    let limit = fss_core::BudgetVector::builder()
+        .bytes(100)
+        .tokens(100)
+        .build()
+        .expect("limit");
+    let mut ledger = BudgetLedger::new(limit);
+    assert_eq!(ledger.pressure(), fss_core::ResourcePressure::Nominal);
+    ledger.spend(BudgetDimension::Bytes, 49).expect("spend");
+    assert_eq!(ledger.pressure(), fss_core::ResourcePressure::Nominal);
+    ledger.spend(BudgetDimension::Bytes, 1).expect("spend");
+    assert_eq!(ledger.pressure(), fss_core::ResourcePressure::Elevated);
+    ledger.spend(BudgetDimension::Tokens, 85).expect("spend");
+    assert_eq!(ledger.pressure(), fss_core::ResourcePressure::Constrained);
+    ledger.spend(BudgetDimension::Tokens, 14).expect("spend");
+    assert_eq!(ledger.pressure(), fss_core::ResourcePressure::Critical);
+}
+
+#[test]
+fn vector_spend_is_atomic_across_dimensions() {
+    use fss_runtime::budget::BudgetLedger;
+
+    let limit = fss_core::BudgetVector::builder()
+        .bytes(10)
+        .tokens(10)
+        .build()
+        .expect("limit");
+    let mut ledger = BudgetLedger::new(limit);
+    let delta = fss_core::BudgetVector::builder()
+        .bytes(5)
+        .tokens(50) // overdraft in tokens
+        .build()
+        .expect("delta");
+    assert!(ledger.spend_vector(&delta).is_err());
+    // Nothing committed: bytes must not have been debited.
+    assert_eq!(ledger.utilization(fss_core::BudgetDimension::Bytes), Some(0.0));
 }
 
 #[test]
 fn zero_budget_refuses_any_spend() {
-    let mut ledger = BudgetLedger::new(Budget::zero());
-    assert!(ledger.spend_work(1).is_err());
-    assert!(ledger.remaining().is_exhausted());
+    use fss_core::BudgetDimension;
+    use fss_runtime::budget::BudgetLedger;
+
+    let mut ledger = BudgetLedger::new(fss_core::BudgetVector::ZERO);
+    let err = ledger.spend(BudgetDimension::Bytes, 1).expect_err("zero limit");
+    assert_eq!(
+        err,
+        fss_runtime::budget::LedgerError::Overdraft {
+            dimension: BudgetDimension::Bytes,
+            requested: 1,
+            remaining: 0,
+        }
+    );
+    // Unmetered dimension reports no utilization and never drives pressure.
+    assert_eq!(ledger.utilization(BudgetDimension::Bytes), None);
+    assert_eq!(ledger.pressure(), fss_core::ResourcePressure::Nominal);
 }
 
 // ---------- obligations (facade over fss-core's tree-owned machinery) ----------
@@ -154,7 +213,6 @@ fn obligation_construction_and_terminal_mapping() {
 fn authority_lifecycle_end_to_end() {
     use fss_core::{ContentDigest, ObligationId, OperationId, RegionId, RegionKind, RootAuthoritySpec, TimestampNs};
     use fss_runtime::authority::AuthorityCx;
-    use fss_runtime::budget::Budget;
     use fss_runtime::obligation::{new_obligation, ObligationTerminal};
 
     let spec = RootAuthoritySpec {
@@ -174,11 +232,16 @@ fn authority_lifecycle_end_to_end() {
         anchor_universe: ContentDigest::sha256(b"test-universe"),
         generation: 1,
     };
-    let (root, mut tree) = AuthorityCx::root(
+    let (mut root, mut tree) = AuthorityCx::root(
         spec,
         RegionId::new("region:process").expect("region"),
         RegionKind::Process,
-        Budget::new(100, 1_000, 10_000),
+        fss_core::BudgetVector::builder()
+            .tokens(100)
+            .bytes(1_000)
+            .cpu_millis(10_000)
+            .build()
+            .expect("budget"),
         TimestampNs(1_000),
     )
     .expect("root");
@@ -186,9 +249,14 @@ fn authority_lifecycle_end_to_end() {
     // Scope down legally: child kind legal + budget within parent.
     let child = root.scope_down(
         &mut tree,
-        RegionId::new("region:capture").expect("child region"),
+        RegionId::new("region:property").expect("child region"),
         RegionKind::Property, // process → property is the legal narrowing
-        Budget::new(50, 500, 5_000),
+        fss_core::BudgetVector::builder()
+            .tokens(50)
+            .bytes(500)
+            .cpu_millis(5_000)
+            .build()
+            .expect("budget"),
         RootAuthoritySpec {
             trace_id: "trace:test".to_string(), // narrowing: trace_id is inherited
             operation_id: OperationId::parse("op:child").expect("op"),
@@ -209,8 +277,10 @@ fn authority_lifecycle_end_to_end() {
         TimestampNs(2_000),
     );
     let mut child = child.expect("scope down");
-    assert_eq!(child.region().as_str(), "region:capture");
-    assert_eq!(child.budget().remaining(), Budget::new(50, 500, 5_000));
+    assert_eq!(child.region().as_str(), "region:property");
+    assert_eq!(child.budget().remaining().bytes, 500);
+    // Reservation debited the parent: 100 - 50 tokens remain.
+    assert_eq!(root.budget().remaining().tokens, 50);
 
     // Obligation lifecycle through the tree: register → leak visible → resolve.
     let ob = new_obligation(
@@ -230,8 +300,9 @@ fn authority_lifecycle_end_to_end() {
     assert!(child.finalize_report(&tree).is_empty());
 
     // Budget: spend within bounds, overdraft refused.
-    child.budget_mut().spend_work(50).expect("spend");
-    assert!(child.budget_mut().spend_bytes(501).is_err());
+    use fss_core::BudgetDimension;
+    child.budget_mut().spend(BudgetDimension::Tokens, 50).expect("spend");
+    assert!(child.budget_mut().spend(BudgetDimension::Bytes, 501).is_err());
 
     // Cancellation cascades: request on root, child chain sees it.
     root.request_cancellation();
@@ -243,7 +314,6 @@ fn authority_lifecycle_end_to_end() {
 fn scope_down_refuses_illegal_kind_and_budget_widening() {
     use fss_core::{ContentDigest, OperationId, RegionId, RegionKind, RootAuthoritySpec, TimestampNs};
     use fss_runtime::authority::AuthorityCx;
-    use fss_runtime::budget::Budget;
 
     let spec = RootAuthoritySpec {
         trace_id: "trace:test".to_string(),
@@ -262,11 +332,16 @@ fn scope_down_refuses_illegal_kind_and_budget_widening() {
         anchor_universe: ContentDigest::sha256(b"test-universe"),
         generation: 1,
     };
-    let (root, mut tree) = AuthorityCx::root(
+    let (mut root, mut tree) = AuthorityCx::root(
         spec,
         RegionId::new("region:process").expect("region"),
         RegionKind::Process,
-        Budget::new(10, 100, 1_000),
+        fss_core::BudgetVector::builder()
+            .tokens(10)
+            .bytes(100)
+            .cpu_millis(1_000)
+            .build()
+            .expect("budget"),
         TimestampNs(1_000),
     )
     .expect("root");
@@ -276,7 +351,12 @@ fn scope_down_refuses_illegal_kind_and_budget_widening() {
         &mut tree,
         RegionId::new("region:bad").expect("child"),
         RegionKind::AdapterSession, // not a legal Process child
-        Budget::new(1, 1, 1),
+        fss_core::BudgetVector::builder()
+            .tokens(1)
+            .bytes(1)
+            .cpu_millis(1)
+            .build()
+            .expect("budget"),
         RootAuthoritySpec {
             trace_id: "trace:bad".to_string(),
             operation_id: OperationId::parse("op:bad").expect("op"),
@@ -303,7 +383,12 @@ fn scope_down_refuses_illegal_kind_and_budget_widening() {
         &mut tree,
         RegionId::new("region:greedy").expect("child"),
         RegionKind::Property,
-        Budget::new(11, 100, 1_000), // work_units 11 > parent 10
+        fss_core::BudgetVector::builder()
+            .tokens(11) // exceeds the parent's 10
+            .bytes(100)
+            .cpu_millis(1_000)
+            .build()
+            .expect("budget"),
         RootAuthoritySpec {
             trace_id: "trace:greedy".to_string(),
             operation_id: OperationId::parse("op:greedy").expect("op"),

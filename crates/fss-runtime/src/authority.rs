@@ -19,7 +19,8 @@ use fss_core::{
     RootAuthoritySpec, TimestampNs,
 };
 
-use crate::budget::{Budget, BudgetLedger};
+use crate::budget::BudgetLedger;
+use fss_core::BudgetVector;
 use fss_core::effect::Obligation;
 
 /// One explicit authority context: the cancellation substrate, the region it
@@ -69,7 +70,7 @@ impl AuthorityCx {
         spec: RootAuthoritySpec,
         process_region: RegionId,
         process_kind: RegionKind,
-        budget: Budget,
+        budget: BudgetVector,
         now: TimestampNs,
     ) -> Result<(Self, RegionTree), AuthorityError> {
         let authority = ContextAuthority::new_root(spec)?;
@@ -90,11 +91,11 @@ impl AuthorityCx {
     /// must not exceed the parent's remaining in any dimension (no silent
     /// widening), and it shares the parent's cancellation state.
     pub fn scope_down(
-        &self,
+        &mut self,
         tree: &mut RegionTree,
         child_id: RegionId,
         child_kind: RegionKind,
-        child_budget: Budget,
+        child_budget: BudgetVector,
         child_authority_spec: RootAuthoritySpec,
         now: TimestampNs,
     ) -> Result<AuthorityCx, AuthorityError> {
@@ -103,20 +104,24 @@ impl AuthorityCx {
             .map_err(|e| AuthorityError::IllegalScope {
                 detail: format!("{e}"),
             })?;
+        // Budget widening is refused against the canonical vector: the child
+        // must fit within the parent's remaining in every dimension.
         let remaining = self.budget.remaining();
-        for (allowed, requested, name) in [
-            (remaining.work_units, child_budget.work_units, "work_units"),
-            (remaining.bytes, child_budget.bytes, "bytes"),
-            (remaining.wall_ns, child_budget.wall_ns, "wall_ns"),
-        ] {
-            if requested > allowed {
-                return Err(AuthorityError::IllegalScope {
-                    detail: format!(
-                        "child {name} budget ({requested}) exceeds parent remaining ({allowed})"
-                    ),
-                });
-            }
+        if !child_budget.fits_within(remaining) {
+            return Err(AuthorityError::IllegalScope {
+                detail: "child budget exceeds parent remaining in at least one dimension"
+                    .to_string(),
+            });
         }
+        // Reservation: the grant debits the parent's ledger immediately so
+        // sibling scopes cannot jointly overdraw it, and the parent's derived
+        // pressure reflects outstanding child allocations. The reservation is
+        // released with `release_scope_reservation` when the child closes.
+        self.budget.spend_vector(&child_budget).map_err(|e| {
+            AuthorityError::IllegalScope {
+                detail: format!("reservation failed: {e}"),
+            }
+        })?;
         let child_authority = ContextAuthority::new_root(child_authority_spec)?;
         tree.attach_child(
             &self.region,
@@ -135,6 +140,23 @@ impl AuthorityCx {
         })
     }
 
+    /// The pressure derived from this authority's own ledger. Because child
+    /// scopes debit the parent at grant time, a parent's pressure reflects
+    /// outstanding descendant allocations — degradation propagates up the
+    /// scope chain as a typed signal, never a silent drop.
+    #[must_use]
+    pub fn pressure(&self) -> fss_core::ResourcePressure {
+        self.budget.pressure()
+    }
+
+    /// Releases a closed child scope's reservation back into this ledger.
+    /// Saturating: double-release never invents budget.
+    pub fn release_scope_reservation(&mut self, child_budget: &BudgetVector) {
+        for dimension in crate::budget::METERED {
+            self.budget.refund(dimension, crate::budget::read_dim(child_budget, dimension));
+        }
+    }
+
     /// The region this authority belongs to.
     #[must_use]
     pub fn region(&self) -> &RegionId {
@@ -147,8 +169,7 @@ impl AuthorityCx {
         self.kind
     }
 
-    /// The budget ledger (mutable only by the owner of the Cx).
-    #[must_use]
+    /// This authority's budget ledger (mutable).
     pub fn budget_mut(&mut self) -> &mut BudgetLedger {
         &mut self.budget
     }
