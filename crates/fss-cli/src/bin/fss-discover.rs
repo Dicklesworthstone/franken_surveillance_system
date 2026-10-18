@@ -15,9 +15,7 @@ use std::process::ExitCode;
 use std::sync::atomic::AtomicBool;
 
 use fss_cli::ExitIdentity;
-use fss_reference::discovery::{
-    DiscoverConfig, DiscoverReport, Readiness, discover,
-};
+use fss_reference::discovery::{DiscoverConfig, DiscoverReport, Readiness, discover};
 
 const HELP: &str = "fss-discover --subnet CIDR [--subnet CIDR ...] [--iface IP] [--beacon-seconds N] [--watch N]\n\
                     \x20 [--standards-seconds N] --owner-authorized --json\n\
@@ -117,7 +115,9 @@ fn parse(args: &[std::ffi::OsString]) -> Result<Options, &'static str> {
         return Err("at most 8 subnets");
     }
     if !args.iter().any(|a| a == "--owner-authorized") {
-        return Err("--owner-authorized is required (network discovery touches the LAN; the flag attests owner authorization)");
+        return Err(
+            "--owner-authorized is required (network discovery touches the LAN; the flag attests owner authorization)",
+        );
     }
     Ok(Options {
         subnets,
@@ -151,8 +151,7 @@ fn run_typed(o: &Options) -> Result<(DiscoverReport, DiscoverConfig), &'static s
         ..cfg
     };
     let cancel = AtomicBool::new(false);
-    let report =
-        discover(&cfg, &cancel).map_err(|_| "ERR-DISCOVER-CENSUS-001: census failed")?;
+    let report = discover(&cfg, &cancel).map_err(|_| "ERR-DISCOVER-CENSUS-001: census failed")?;
     Ok((report, cfg))
 }
 
@@ -169,11 +168,15 @@ fn format_report(report: &DiscoverReport, cfg: &DiscoverConfig) -> String {
             .signals
             .iter()
             .map(|s| match s {
-                fss_reference::discovery::Signal::OuiVendor(v) => {
-                    json_escape(&format!("oui:{v}"))
-                }
+                fss_reference::discovery::Signal::OuiVendor(v) => json_escape(&format!("oui:{v}")),
                 fss_reference::discovery::Signal::PortSignature(p) => {
-                    format!("\"ports:{}\"", p.iter().map(|x| x.to_string()).collect::<Vec<_>>().join("+"))
+                    format!(
+                        "\"ports:{}\"",
+                        p.iter()
+                            .map(|x| x.to_string())
+                            .collect::<Vec<_>>()
+                            .join("+")
+                    )
                 }
                 fss_reference::discovery::Signal::TuyaBeacon(cmd) => {
                     format!("\"beacon:{cmd}\"")
@@ -220,7 +223,6 @@ fn format_report(report: &DiscoverReport, cfg: &DiscoverConfig) -> String {
     )
 }
 
-
 /// `--watch` loop: one discovery sweep per period; each sweep prints the
 /// standard report object (unchanged `fss.discover_cli.v1` shape) as one
 /// JSONL line, then feeds the device-liveness watchdog from the typed
@@ -231,8 +233,7 @@ fn format_report(report: &DiscoverReport, cfg: &DiscoverConfig) -> String {
 /// Runs until terminated (Ctrl-C/SIGTERM); a camera going dark between
 /// sweeps surfaces as a typed transition, never as silence.
 fn watch_loop(o: &Options, period_secs: u64) -> ExitCode {
-    use fss_reference::discovery::Brand;
-    use fss_reference::discovery::watchdog::{DeviceClass, DeviceWatchdog};
+    use fss_reference::discovery::watchdog::DeviceWatchdog;
 
     let mut watchdog = DeviceWatchdog::new();
     let period = std::time::Duration::from_secs(period_secs);
@@ -247,18 +248,7 @@ fn watch_loop(o: &Options, period_secs: u64) -> ExitCode {
             Ok((report, cfg)) => {
                 println!("{}", format_report(&report, &cfg));
                 let now_ns = clock.next_ns();
-                for c in &report.candidates {
-                    let id = c.host.ip.to_string();
-                    let class = match c.brand.brand {
-                        Brand::Tutk => DeviceClass::Tutk,
-                        Brand::Tuya => DeviceClass::Tuya,
-                        Brand::Standards => DeviceClass::Onvif,
-                        _ => DeviceClass::Unknown,
-                    };
-                    watchdog.register(&id, class, None);
-                    watchdog.observe(&id, now_ns);
-                }
-                watchdog.evaluate(now_ns);
+                update_watchdog(&mut watchdog, &report, now_ns);
                 for change in watchdog.drain_changes() {
                     println!("{}", change.to_record());
                 }
@@ -273,6 +263,32 @@ fn watch_loop(o: &Options, period_secs: u64) -> ExitCode {
             std::thread::sleep(period - elapsed);
         }
     }
+}
+
+/// Register identity hints without treating cached metadata as a fresh response.
+fn update_watchdog(
+    watchdog: &mut fss_reference::discovery::watchdog::DeviceWatchdog,
+    report: &DiscoverReport,
+    now_ns: u64,
+) {
+    use fss_reference::discovery::Brand;
+    use fss_reference::discovery::watchdog::DeviceClass;
+
+    let fresh = report.fresh_candidate_ips();
+    for candidate in &report.candidates {
+        let id = candidate.host.ip.to_string();
+        let class = match candidate.brand.brand {
+            Brand::Tutk => DeviceClass::Tutk,
+            Brand::Tuya => DeviceClass::Tuya,
+            Brand::Standards => DeviceClass::Onvif,
+            _ => DeviceClass::Unknown,
+        };
+        watchdog.register(&id, class, None);
+        if fresh.contains(&candidate.host.ip) {
+            watchdog.observe(&id, now_ns);
+        }
+    }
+    watchdog.evaluate(now_ns);
 }
 
 /// A sweep clock whose values move only with monotonic elapsed time.
@@ -313,14 +329,14 @@ fn main() -> ExitCode {
         Ok(o) => match o.watch_seconds {
             Some(period) => watch_loop(&o, period),
             None => match run(&o) {
-            Ok(report) => {
-                println!("{report}");
-                ExitCode::SUCCESS
-            }
-            Err(e) => {
-                eprintln!("{e}");
-                ExitCode::from(ExitIdentity::RUNTIME_FAILURE.code)
-            }
+                Ok(report) => {
+                    println!("{report}");
+                    ExitCode::SUCCESS
+                }
+                Err(e) => {
+                    eprintln!("{e}");
+                    ExitCode::from(ExitIdentity::RUNTIME_FAILURE.code)
+                }
             },
         },
         Err(e) => {
@@ -340,7 +356,13 @@ mod tests {
 
     #[test]
     fn parses_minimal() {
-        let o = parse(&args(&["--subnet", "192.168.4.0/22", "--json", "--owner-authorized"])).unwrap();
+        let o = parse(&args(&[
+            "--subnet",
+            "192.168.4.0/22",
+            "--json",
+            "--owner-authorized",
+        ]))
+        .unwrap();
         assert_eq!(o.subnets, vec!["192.168.4.0/22"]);
     }
 
@@ -357,11 +379,24 @@ mod tests {
     #[test]
     fn eight_subnets_fit_the_argument_bound() {
         let o = parse(&args(&[
-            "--json", "--owner-authorized",
-            "--subnet", "10.0.0.0/24", "--subnet", "10.0.1.0/24",
-            "--subnet", "10.0.2.0/24", "--subnet", "10.0.3.0/24",
-            "--subnet", "10.0.4.0/24", "--subnet", "10.0.5.0/24",
-            "--subnet", "10.0.6.0/24", "--subnet", "10.0.7.0/24",
+            "--json",
+            "--owner-authorized",
+            "--subnet",
+            "10.0.0.0/24",
+            "--subnet",
+            "10.0.1.0/24",
+            "--subnet",
+            "10.0.2.0/24",
+            "--subnet",
+            "10.0.3.0/24",
+            "--subnet",
+            "10.0.4.0/24",
+            "--subnet",
+            "10.0.5.0/24",
+            "--subnet",
+            "10.0.6.0/24",
+            "--subnet",
+            "10.0.7.0/24",
         ]));
         assert!(o.is_ok(), "8 subnets + required flags must fit: {o:?}");
         assert_eq!(o.unwrap().subnets.len(), 8);
@@ -376,8 +411,28 @@ mod tests {
 
     #[test]
     fn refuses_bad_seconds() {
-        assert!(parse(&args(&["--subnet", "10.0.0.0/24", "--beacon-seconds", "0", "--json", "--owner-authorized"])).is_err());
-        assert!(parse(&args(&["--subnet", "10.0.0.0/24", "--standards-seconds", "999", "--json", "--owner-authorized"])).is_err());
+        assert!(
+            parse(&args(&[
+                "--subnet",
+                "10.0.0.0/24",
+                "--beacon-seconds",
+                "0",
+                "--json",
+                "--owner-authorized"
+            ]))
+            .is_err()
+        );
+        assert!(
+            parse(&args(&[
+                "--subnet",
+                "10.0.0.0/24",
+                "--standards-seconds",
+                "999",
+                "--json",
+                "--owner-authorized"
+            ]))
+            .is_err()
+        );
     }
 
     #[test]
@@ -388,5 +443,109 @@ mod tests {
     #[test]
     fn json_escape_shapes() {
         assert_eq!(json_escape("a\"b"), "\"a\\\"b\"");
+    }
+
+    fn watchdog_report(port: Option<u16>) -> DiscoverReport {
+        use fss_reference::discovery::{DeviceCandidate, HostObs, classify_host, dispatch};
+        let host = HostObs {
+            ip: Ipv4Addr::new(192, 168, 4, 10),
+            mac: "00:11:22:33:44:55".to_owned(),
+            oui_vendor: Some("cached vendor".to_owned()),
+            open_ports: port.into_iter().collect(),
+            rtt_ms: None,
+        };
+        let brand = classify_host(&host, &[], None);
+        let dispatch = dispatch(&brand);
+        DiscoverReport {
+            candidates: vec![DeviceCandidate {
+                host,
+                brand,
+                dispatch,
+            }],
+            ..DiscoverReport::default()
+        }
+    }
+
+    #[test]
+    fn repeated_arp_cache_entries_do_not_hide_a_camera_outage() {
+        use fss_reference::discovery::watchdog::{
+            DeviceClass, DeviceWatchdog, WatchOfflineReason, WatchState,
+        };
+        let id = "192.168.4.10";
+        let mut watchdog = DeviceWatchdog::new();
+        watchdog.register(id, DeviceClass::Unknown, Some((10, 20)));
+        update_watchdog(&mut watchdog, &watchdog_report(Some(554)), 100);
+        assert_eq!(watchdog.state_of(id), Some(&WatchState::Observable));
+        watchdog.drain_changes();
+
+        let mut cached = watchdog_report(None);
+        // Classification metadata and unattributed probe totals must not refresh
+        // the last accepted endpoint response at 100.
+        cached.ssdp_responders = 1;
+        cached.mdns_answers = 1;
+        cached.wsd_matches = 1;
+        update_watchdog(&mut watchdog, &cached, 109);
+        assert!(watchdog.changes().is_empty());
+        update_watchdog(&mut watchdog, &cached, 110);
+        assert_eq!(
+            watchdog.state_of(id),
+            Some(&WatchState::Silent { silent_for_ns: 10 })
+        );
+        update_watchdog(&mut watchdog, &cached, 120);
+        assert_eq!(
+            watchdog.state_of(id),
+            Some(&WatchState::NotObservable {
+                reason: WatchOfflineReason::SilentBeyondThreshold,
+            })
+        );
+        assert_eq!(watchdog.changes().len(), 2);
+
+        // A new registered-port accept really does restore network liveness.
+        update_watchdog(&mut watchdog, &watchdog_report(Some(554)), 121);
+        assert_eq!(watchdog.state_of(id), Some(&WatchState::Observable));
+        update_watchdog(&mut watchdog, &cached, 131);
+        assert_eq!(
+            watchdog.state_of(id),
+            Some(&WatchState::Silent { silent_for_ns: 10 })
+        );
+    }
+
+    #[test]
+    fn only_fresh_responses_from_the_candidate_endpoint_refresh_watchdog() {
+        use fss_reference::discovery::watchdog::{
+            DeviceClass, DeviceWatchdog, WatchOfflineReason, WatchState,
+        };
+        let id = "192.168.4.10";
+        let mut watchdog = DeviceWatchdog::new();
+        watchdog.register(id, DeviceClass::Unknown, Some((10, 20)));
+        let mut report = watchdog_report(Some(22)); // not a registered camera-port accept
+        report.beacons = vec![
+            ("192.168.4.11:6667".to_owned(), 7),
+            ("not-an-endpoint".to_owned(), 7),
+            ("[::1]:6667".to_owned(), 7),
+        ];
+        update_watchdog(&mut watchdog, &report, 100);
+        assert_eq!(
+            watchdog.state_of(id),
+            Some(&WatchState::NotObservable {
+                reason: WatchOfflineReason::NeverObserved,
+            })
+        );
+        assert!(watchdog.changes().is_empty());
+        assert!(report.fresh_candidate_ips().is_empty());
+
+        report.beacons.push(("192.168.4.10:6667".to_owned(), 7));
+        update_watchdog(&mut watchdog, &report, 101);
+        assert_eq!(watchdog.state_of(id), Some(&WatchState::Observable));
+        assert_eq!(
+            report.fresh_candidate_ips(),
+            std::collections::BTreeSet::from([Ipv4Addr::new(192, 168, 4, 10)])
+        );
+        report.beacons.clear();
+        update_watchdog(&mut watchdog, &report, 111);
+        assert_eq!(
+            watchdog.state_of(id),
+            Some(&WatchState::Silent { silent_for_ns: 10 })
+        );
     }
 }

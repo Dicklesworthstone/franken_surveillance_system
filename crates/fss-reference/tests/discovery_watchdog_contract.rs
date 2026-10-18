@@ -326,3 +326,30 @@ fn records_carry_reason_and_duration() {
     let first = &w.changes()[0].to_record();
     assert!(first.contains("\"reason\":\"never_observed\""), "{first}");
 }
+
+#[test]
+fn older_heartbeat_cannot_resurrect_an_already_dark_camera() {
+    let mut watchdog = DeviceWatchdog::new();
+    watchdog.register("cam-1", DeviceClass::Tutk, None);
+    watchdog.observe("cam-1", 20 * MIN);
+    watchdog.evaluate(31 * MIN);
+    let dark = WatchState::NotObservable {
+        reason: WatchOfflineReason::SilentBeyondThreshold,
+    };
+    assert_eq!(watchdog.state_of("cam-1"), Some(&dark));
+    watchdog.drain_changes();
+
+    for duplicate_or_older in [5 * MIN, 20 * MIN] {
+        watchdog.observe("cam-1", duplicate_or_older);
+        assert_eq!(watchdog.state_of("cam-1"), Some(&dark));
+        assert!(watchdog.changes().is_empty());
+    }
+    watchdog.evaluate(32 * MIN);
+    assert_eq!(watchdog.state_of("cam-1"), Some(&dark));
+    assert!(watchdog.changes().is_empty());
+
+    watchdog.observe("cam-1", 33 * MIN);
+    assert_eq!(watchdog.state_of("cam-1"), Some(&WatchState::Observable));
+    assert_eq!(watchdog.changes().len(), 1);
+    assert_eq!(watchdog.changes()[0].at_ns, 33 * MIN);
+}

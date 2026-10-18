@@ -279,9 +279,11 @@ impl DeviceWatchdog {
                 thresholds: DeviceClass::Unknown.default_thresholds_ns(),
                 thresholds_overridden: false,
             });
-        // Out-of-order/late sightings never regress the clock: the newest
-        // sighting wins. (Callers should feed monotonic time; the watchdog
-        // tolerates reordering without moving backward.)
+        // A late response cannot resurrect a device which has since gone dark.
+        // Keep both the newest sighting and its already-evaluated state.
+        if entry.last_seen_ns.is_some_and(|last| now_ns <= last) {
+            return;
+        }
         entry.last_seen_ns = Some(entry.last_seen_ns.map_or(now_ns, |prev| prev.max(now_ns)));
         let new_state = WatchState::Observable;
         if entry.state != new_state {

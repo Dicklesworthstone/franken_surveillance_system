@@ -13,7 +13,7 @@ use fss_core::{
 };
 use fss_ledger::{DurableLedgerError, DurableReferenceLedger, IncompleteTailPolicy, doctor_path};
 use fss_object::{InMemoryObjectStore, ObjectLimits, ObjectManifest};
-use fss_publication::{RootLedgerOutcome, SlotName};
+use fss_publication::{LocalPublicationState, RootLedgerOutcome, SlotName};
 use fss_reference::reference_deployment::KNOWN_LEDGER_DELTA_FAMILIES;
 use fss_reference::{
     DEPLOYMENT_CANCEL_STAGES, DEPLOYMENT_LAYOUT_FILENAME, DeliveryPlan, DeploymentLayout,
@@ -116,21 +116,39 @@ fn repeated_payload_roles_share_a_canonical_child_and_retry_after_cold_reopen()
         None,
     )?;
     let mut dep = ReferenceDeployment::open(&dir, "site:equal-payload-roles", &cx)?;
+    let initial_anchor = dep.current_anchor().clone();
     let staged = dep.stage_and_publish(&slot, &[second, first, second, first], &cx)?;
     assert_eq!(staged.manifest, expected);
     assert_eq!(staged.root, expected.root());
-    assert!(dep.publisher().root(&slot).is_none());
+    // root() also exposes staged metadata; visibility requires the explicit state/list.
+    assert_eq!(
+        dep.publisher().root(&slot).map(|root| root.state),
+        Some(LocalPublicationState::Staged)
+    );
+    assert_eq!(dep.publisher().visible_roots().count(), 0);
+    let root_record = dep
+        .publisher()
+        .root_dir()
+        .join(fss_publication::LOCAL_ROOTS_DIR)
+        .join(format!("{slot}{}", fss_publication::ROOT_RECORD_SUFFIX));
+    assert!(!root_record.exists());
     assert!(dep.ledger().batches().is_empty());
+    assert_eq!(dep.current_anchor(), &initial_anchor);
     assert_eq!(dep.publisher().spool().object_count(), 3);
+
     let committed = dep.publish_and_commit(&slot, &staged.manifest, sample_interval(1, 2)?, &cx)?;
     assert_eq!(committed.outcome, RootLedgerOutcome::Committed);
     assert_eq!(committed.closure_object_count, 3);
+    assert!(root_record.is_file());
     let anchor = dep.current_anchor().clone();
     drop(dep);
+
     let mut dep = ReferenceDeployment::reopen(&dir, "site:equal-payload-roles", &cx)?;
     for payload in [first, second] {
         assert_eq!(
-            dep.publisher().spool().read(ContentDigest::sha256(payload))?,
+            dep.publisher()
+                .spool()
+                .read(ContentDigest::sha256(payload))?,
             payload
         );
     }
@@ -141,6 +159,14 @@ fn repeated_payload_roles_share_a_canonical_child_and_retry_after_cold_reopen()
     assert_eq!(retry.outcome, RootLedgerOutcome::AlreadyLedgered);
     assert_eq!(retry.root, committed.root);
     assert_eq!(retry.batch_id, committed.batch_id);
+    assert_eq!(retry.anchor, committed.anchor);
+    assert_eq!(retry.closure_object_count, 3);
+    assert_eq!(
+        dep.publisher()
+            .root_closure(&slot)
+            .map(|objects| objects.len()),
+        Some(3)
+    );
     assert_eq!(dep.current_anchor(), &anchor);
     assert_eq!(dep.ledger().batches().len(), 1);
     assert_eq!(dep.publisher().spool().object_count(), 3);
@@ -150,7 +176,8 @@ fn repeated_payload_roles_share_a_canonical_child_and_retry_after_cold_reopen()
 }
 
 #[test]
-fn repeated_payload_roles_cannot_evade_pre_deduplication_input_limit() -> Result<(), Box<dyn Error>> {
+fn repeated_payload_roles_cannot_evade_pre_deduplication_input_limit() -> Result<(), Box<dyn Error>>
+{
     let dir = temp_deployment_dir("equal-payload-input-limit")?;
     let cx = test_cx("equal-payload-input-limit")?;
     let slot = SlotName::parse("slot-equal-payload-input-limit")?;
@@ -871,7 +898,10 @@ fn exported_constants_and_tables_integrity() -> Result<(), Box<dyn Error>> {
         KNOWN_LEDGER_DELTA_FAMILIES
             .contains(&fss_reference::ingest::historical_health::FAMILY_HISTORICAL_HEALTH)
     );
-    assert!(KNOWN_LEDGER_DELTA_FAMILIES.contains(&fss_reference::deployment_backup::FAMILY_RESTORE_FENCE));
+    assert!(
+        KNOWN_LEDGER_DELTA_FAMILIES
+            .contains(&fss_reference::deployment_backup::FAMILY_RESTORE_FENCE)
+    );
     for family in KNOWN_LEDGER_DELTA_FAMILIES {
         assert!(!family.is_empty());
     }

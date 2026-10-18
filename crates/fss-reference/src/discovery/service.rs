@@ -144,6 +144,42 @@ pub fn discover(
 }
 
 impl DiscoverReport {
+    /// Candidate endpoints that actually responded during this sweep.
+    ///
+    /// The host table also contains ARP-cache entries; MAC/OUI classification and
+    /// aggregate standards counts are not heartbeats. Only a registered TCP port
+    /// accepting a connection or a received beacon from the same candidate IP
+    /// refreshes liveness. Beacon-only addresses outside the census candidate set
+    /// are excluded, preserving the configured subnet boundary.
+    #[must_use]
+    pub fn fresh_candidate_ips(&self) -> std::collections::BTreeSet<std::net::Ipv4Addr> {
+        let candidates: std::collections::BTreeSet<_> = self
+            .candidates
+            .iter()
+            .map(|candidate| candidate.host.ip)
+            .collect();
+        let mut fresh: std::collections::BTreeSet<_> = self
+            .candidates
+            .iter()
+            .filter(|candidate| {
+                candidate
+                    .host
+                    .open_ports
+                    .iter()
+                    .any(|port| crate::discovery::census::REGISTERED_PORTS.contains(port))
+            })
+            .map(|candidate| candidate.host.ip)
+            .collect();
+        for (source, _) in &self.beacons {
+            if let Ok(std::net::SocketAddr::V4(source)) = source.parse::<std::net::SocketAddr>()
+                && candidates.contains(source.ip())
+            {
+                fresh.insert(*source.ip());
+            }
+        }
+        fresh
+    }
+
     /// Candidates that are live onboarding paths (non-ImportOnly).
     #[must_use]
     pub fn onboarding_candidates(&self) -> Vec<&DeviceCandidate> {
