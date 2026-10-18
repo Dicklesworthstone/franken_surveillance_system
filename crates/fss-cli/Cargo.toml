@@ -135,6 +135,10 @@ path = "src/bin/fss-backup.rs"
 name = "fss-provision"
 path = "src/bin/fss-provision.rs"
 
+[[bin]]
+name = "fss-fusion-profile"
+path = "src/bin/fss-fusion-profile.rs"
+
 [dependencies]
 fss-codec-mjpeg = { path = "../fss-codec-mjpeg" }
 fss-core = { path = "../fss-core" }
