@@ -27,6 +27,9 @@ pub enum DeviceClass {
     BatteryEventDriven,
     /// Unclassified device.
     Unknown,
+    /// A camera running the FSS provision agent stack — mains-like chatty
+    /// heartbeats by design (fss-provision, LAB-PROVISION-001).
+    ProvisionedAgent,
 }
 
 impl DeviceClass {
@@ -39,6 +42,7 @@ impl DeviceClass {
             Self::Onvif => "onvif",
             Self::BatteryEventDriven => "battery_event_driven",
             Self::Unknown => "unknown",
+            Self::ProvisionedAgent => "provisioned_agent",
         }
     }
 
@@ -58,6 +62,8 @@ impl DeviceClass {
             // Event-driven: a full day of quiet is normal.
             Self::BatteryEventDriven => (6 * HOUR, 48 * HOUR),
             Self::Unknown => (10 * MINUTE, 60 * MINUTE),
+            // Our own agent beats on a short cadence; silence is suspicious fast.
+            Self::ProvisionedAgent => (2 * MINUTE, 10 * MINUTE),
         }
     }
 }
