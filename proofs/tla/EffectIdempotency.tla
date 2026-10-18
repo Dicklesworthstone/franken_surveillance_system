@@ -32,12 +32,9 @@ VARIABLES
     \* dispatch count per operation (E1)
     dispatches,
     \* obligation resolution count per operation (E3)
-    resolutions,
-    \* request queue: multiset of in-flight requests (duplicates possible)
-    \* modeled as a bounded set of (op, kind) with multiplicity via counts
-    inFlight
+    resolutions
 
-vars == <<state, dispatches, resolutions, inFlight>>
+vars == <<state, dispatches, resolutions>>
 
 RequestKinds == {"prepare", "commit", "accept", "observe", "verify", "cancel", "fail"}
 
@@ -45,90 +42,69 @@ TypeOK ==
     /\ state \in [Operations -> States]
     /\ dispatches \in [Operations -> 0..1]
     /\ resolutions \in [Operations -> 0..1]
-    /\ inFlight \in [Operations -> [RequestKinds -> 0..2]]  \* duplicates bounded at 2
 
 Init ==
     /\ state = [op \in Operations |-> "Prepared"]
     /\ dispatches = [op \in Operations |-> 0]
     /\ resolutions = [op \in Operations |-> 0]
-    /\ inFlight = [op \in Operations |->
-            [k \in RequestKinds |-> 0]]
 
-\* A request is injected (possibly duplicating an in-flight one).
-Inject(op, kind) ==
-    /\ inFlight[op][kind] < 2
-    /\ inFlight' = [inFlight EXCEPT ![op][kind] = @ + 1]
-    /\ UNCHANGED <<state, dispatches, resolutions>>
-
-Consume(op, kind) ==
-    /\ inFlight[op][kind] > 0
-    /\ inFlight' = [inFlight EXCEPT ![op][kind] = @ - 1]
-
-\* COMMIT: the only transition that dispatches. Idempotent: a duplicate
-\* commit against an already-Committed (or later) state is consumed but
-\* does NOT dispatch again.
+\* The wire is nondeterministic: any request kind may be attempted at any
+\* time, any number of times (duplicates) and in any order (reordering).
+\* Idempotency is exactly that re-attempts are absorbed by the guards.
 Commit(op) ==
-    /\ Consume(op, "commit")
-    /\ IF state[op] = "Prepared" /\ dispatches[op] = 0
-       THEN /\ state' = [state EXCEPT ![op] = "Committed"]
-            /\ dispatches' = [dispatches EXCEPT ![op] = 1]
-       ELSE UNCHANGED <<state, dispatches>>  \* duplicate commit: no-op
     /\ UNCHANGED <<resolutions>>
+    /\ IF state[op] = "Prepared" /\ dispatches[op] = 0
+        THEN /\ state' = [state EXCEPT ![op] = "Committed"]
+             /\ dispatches' = [dispatches EXCEPT ![op] = 1]
+        ELSE UNCHANGED <<state, dispatches>>  \* duplicate commit: absorbed
 
 Accept(op) ==
-    /\ Consume(op, "accept")
-    /\ IF state[op] = "Committed"
-       THEN state' = [state EXCEPT ![op] = "AdapterAccepted"]
-       ELSE UNCHANGED <<state>>
     /\ UNCHANGED <<dispatches, resolutions>>
+    /\ IF state[op] = "Committed"
+        THEN state' = [state EXCEPT ![op] = "AdapterAccepted"]
+        ELSE UNCHANGED <<state>>
 
 Observe(op) ==
-    /\ Consume(op, "observe")
-    /\ IF state[op] \in {"AdapterAccepted", "Indeterminate"}
-       THEN state' = [state EXCEPT ![op] = "Observed"]
-       ELSE UNCHANGED <<state>>
     /\ UNCHANGED <<dispatches, resolutions>>
+    /\ IF state[op] \in {"AdapterAccepted", "Indeterminate"}
+        THEN state' = [state EXCEPT ![op] = "Observed"]
+        ELSE UNCHANGED <<state>>
 
 \* VERIFY: terminal. Resolves the obligation exactly once (E3).
 Verify(op) ==
-    /\ Consume(op, "verify")
-    /\ IF state[op] = "Observed" /\ resolutions[op] = 0
-       THEN /\ state' = [state EXCEPT ![op] = "Verified"]
-            /\ resolutions' = [resolutions EXCEPT ![op] = 1]
-       ELSE UNCHANGED <<state, resolutions>>
     /\ UNCHANGED <<dispatches>>
+    /\ IF state[op] = "Observed" /\ resolutions[op] = 0
+        THEN /\ state' = [state EXCEPT ![op] = "Verified"]
+             /\ resolutions' = [resolutions EXCEPT ![op] = 1]
+        ELSE UNCHANGED <<state, resolutions>>
 
-\* FAIL: terminal from any non-terminal non-Prepared state. Idempotent.
+\* FAIL: terminal from any post-commit non-terminal state. Idempotent.
 Fail(op) ==
-    /\ Consume(op, "fail")
     /\ IF state[op] \in {"Committed", "AdapterAccepted", "Observed", "Indeterminate"}
-            /\ resolutions[op] = 0
-       THEN /\ state' = [state EXCEPT ![op] = "Failed"]
-            /\ resolutions' = [resolutions EXCEPT ![op] = 1]
-       ELSE UNCHANGED <<state, resolutions>>
+             /\ resolutions[op] = 0
+        THEN /\ state' = [state EXCEPT ![op] = "Failed"]
+             /\ resolutions' = [resolutions EXCEPT ![op] = 1]
+        ELSE UNCHANGED <<state, resolutions>>
     /\ UNCHANGED <<dispatches>>
 
 \* CANCEL: lands ONLY at Prepared (E4). A cancel racing a committed effect
-\* is consumed and ignored — the effect runs to terminal.
+\* is absorbed — the effect runs to terminal.
 Cancel(op) ==
-    /\ Consume(op, "cancel")
-    /\ IF state[op] = "Prepared" /\ resolutions[op] = 0
-       THEN /\ state' = [state EXCEPT ![op] = "Cancelled"]
-            /\ resolutions' = [resolutions EXCEPT ![op] = 1]
-       ELSE UNCHANGED <<state, resolutions>>
     /\ UNCHANGED <<dispatches>>
+    /\ IF state[op] = "Prepared" /\ resolutions[op] = 0
+        THEN /\ state' = [state EXCEPT ![op] = "Cancelled"]
+             /\ resolutions' = [resolutions EXCEPT ![op] = 1]
+        ELSE UNCHANGED <<state, resolutions>>
 
-\* INDETERMINATE: the world went dark after commit. Resolution is deferred
-\* (reconciliation), so obligations are NOT resolved here.
+\* INDETERMINATE: the world went dark after commit. Obligation resolution
+\* is deferred to reconciliation, so NOT resolved here.
 GoIndeterminate(op) ==
     /\ state[op] \in {"Committed", "AdapterAccepted", "Observed"}
     /\ state' = [state EXCEPT ![op] = "Indeterminate"]
-    /\ UNCHANGED <<dispatches, resolutions, inFlight>>
+    /\ UNCHANGED <<dispatches, resolutions>>
 
 Next ==
     \E op \in Operations :
-        \E kind \in RequestKinds :
-            \/ Inject(op, kind)
         \/ Commit(op) \/ Accept(op) \/ Observe(op)
         \/ Verify(op) \/ Fail(op) \/ Cancel(op) \/ GoIndeterminate(op)
 
