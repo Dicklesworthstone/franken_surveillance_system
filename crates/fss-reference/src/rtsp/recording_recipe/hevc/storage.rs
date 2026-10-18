@@ -293,3 +293,6 @@ fn object(
     probe(cancel, budget)?;
     Ok(bytes)
 }
+
+/// Complete current-authorized reconstruction and root-last operator publication.
+pub mod operation;

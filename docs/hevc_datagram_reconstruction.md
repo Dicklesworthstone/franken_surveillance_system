@@ -95,7 +95,10 @@ post-EOB queued NALs, historical expiry, loss, empty/incomplete prefixes and cur
 operation bounds. A cold publication test takes the original datagram store offline
 before reopening and decoding the reconstructed recording with the native decoder.
 
-These are bounded library APIs. There is no new CLI reconstruction command, saved
-HEVC timing recipe, implicit configuration recovery, encryption, continuous-NVR
-throughput qualification or physical-camera certification. Incomplete source stays
-incomplete. Existing recording formats, archive barriers and AVC behavior are unchanged.
+These remain bounded native library APIs. [Portable HEVC recipes and the operator
+workflow](hevc_recording_recipes.md) now layer exact retained timing decisions,
+source-closed recipe custody, and `fss-archive check-recipe` / `reconstruct-recipe
+--codec hevc` on this same owner. No implicit configuration recovery, encryption,
+continuous-NVR throughput qualification or physical-camera certification is implied.
+Incomplete source stays incomplete. Existing recording formats, archive barriers
+and AVC behavior are unchanged.

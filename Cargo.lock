@@ -6,7 +6,9 @@ version = 4
 name = "fss-cli"
 version = "0.0.1"
 dependencies = [
+ "fss-codec-h265",
  "fss-codec-mjpeg",
+ "fss-container",
  "fss-core",
  "fss-fusion",
  "fss-geometry",
@@ -131,6 +133,7 @@ dependencies = [
  "fss-model-ir",
  "fss-object",
  "fss-packet",
+ "fss-provision",
  "fss-publication",
  "fss-tensor",
  "fss-tutk",

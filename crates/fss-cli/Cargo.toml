@@ -151,3 +151,7 @@ fss-twin = { path = "../fss-twin" }
 
 [lints]
 workspace = true
+
+[dev-dependencies]
+fss-codec-h265 = { path = "../fss-codec-h265" }
+fss-container = { path = "../fss-container" }

@@ -30,6 +30,7 @@ pub(super) const HELP: &str = "fss-archive <check-recipe|reconstruct-recipe> [op
             --ingress U128 --generation N --ssrc N --peer IP:PORT --authority HOST[:PORT]\n\
             --rtp-channel N --rtcp-channel N --receive-clock sha256:HEX\n\
             --retention-evidence sha256:HEX\n\
+  Codec: --codec avc|hevc (default avc; never inferred from stored bytes)\n\
   reconstruct-recipe additionally requires: --commit yes\n\
   Bounds: --timeout-ms --max-steps --max-work --max-datagrams --max-source-bytes\n\
           --max-recipe-bytes --max-timings --max-windows --max-output-bytes\n\
@@ -71,7 +72,17 @@ fn runtime(message: &'static str) -> Error {
         usage: false,
     }
 }
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum RecipeCodec {
+    Avc,
+    Hevc,
+}
+
+#[path = "recipes/hevc.rs"]
+mod hevc;
+
 struct Options {
+    codec: RecipeCodec,
     root: PathBuf,
     selected: RecipeSelection,
     load: RecipeLoadLimits,
@@ -91,6 +102,7 @@ fn parse(args: &[OsString]) -> Result<Options> {
     }
     let publish = args[0].as_os_str() == OsStr::new("reconstruct-recipe");
     let allowed = [
+        "--codec",
         "--root",
         "--recipe-id",
         "--recipe-root",
@@ -276,7 +288,17 @@ fn parse(args: &[OsString]) -> Result<Options> {
             max_spool_object_bytes: object_bytes,
         },
     };
+    let codec = if values.contains_key("--codec") {
+        match text("--codec")? {
+            "avc" => RecipeCodec::Avc,
+            "hevc" => RecipeCodec::Hevc,
+            _ => return Err(malformed("unsupported recipe codec")),
+        }
+    } else {
+        RecipeCodec::Avc
+    };
     Ok(Options {
+        codec,
         root: PathBuf::from(required("--root")?),
         selected: RecipeSelection {
             recipe: digest("--recipe-id")?,
@@ -343,6 +365,9 @@ fn existing(path: &Path) -> Result<PathBuf> {
     Ok(root)
 }
 fn run(options: Options) -> Result<String> {
+    if options.codec == RecipeCodec::Hevc {
+        return hevc::run(options);
+    }
     let clock = Clock {
         start: Instant::now(),
         deadline: u64::try_from(options.timeout.as_nanos())
