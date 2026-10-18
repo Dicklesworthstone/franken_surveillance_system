@@ -96,3 +96,65 @@ pub fn leaked_in(
         })
         .collect()
 }
+
+/// Per-region obligation accounting for the tree-wide leak oracle.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct RegionObligationReport {
+    /// Region identity (string form).
+    pub region: String,
+    /// Count by terminal-proof state: (pending, verified, failed,
+    /// indeterminate, cancelled).
+    pub counts: [usize; 5],
+    /// Pending obligations (the leaks), in canonical id order.
+    pub leaked: Vec<LeakedObligation>,
+    /// Indeterminate obligations carrying a durable reconciliation note.
+    pub indeterminate_with_note: Vec<String>,
+    /// Indeterminate obligations WITHOUT a reconciliation note — an INV-006
+    /// hazard the tree's finalize path refuses, surfaced here so operators
+    /// see it before finalize is attempted.
+    pub indeterminate_without_note: Vec<String>,
+}
+
+/// The tree-wide leak oracle: scans every region in canonical order and
+/// reports obligation state counts, leaks, and INV-006 reconciliation
+/// coverage. Read-only; never mutates the tree.
+#[must_use]
+pub fn tree_report(tree: &fss_core::RegionTree) -> Vec<RegionObligationReport> {
+    tree.iter()
+        .map(|node| {
+            let mut counts = [0usize; 5];
+            for o in node.obligations.values() {
+                let slot = match o.state {
+                    ObligationState::Pending => 0,
+                    ObligationState::Verified => 1,
+                    ObligationState::Failed => 2,
+                    ObligationState::Indeterminate => 3,
+                    ObligationState::Cancelled => 4,
+                };
+                counts[slot] += 1;
+            }
+            let leaked = leaked_in(node.obligations.values().cloned());
+            let mut with_note = Vec::new();
+            let mut without_note = Vec::new();
+            for o in node.obligations.values() {
+                if o.state == ObligationState::Indeterminate {
+                    let id = o.obligation_id.as_str().to_string();
+                    if node.reconciliation_obligations.contains_key(&o.obligation_id) {
+                        with_note.push(id);
+                    } else {
+                        without_note.push(id);
+                    }
+                }
+            }
+            with_note.sort();
+            without_note.sort();
+            RegionObligationReport {
+                region: node.id.as_str().to_string(),
+                counts,
+                leaked,
+                indeterminate_with_note: with_note,
+                indeterminate_without_note: without_note,
+            }
+        })
+        .collect()
+}

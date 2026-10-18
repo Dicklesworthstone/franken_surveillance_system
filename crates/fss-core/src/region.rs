@@ -1148,6 +1148,13 @@ impl RegionTree {
         self.nodes.len()
     }
 
+    /// Iterates over every region node in canonical id order (BTreeMap key
+    /// order). Read-only: callers get shared references only, so reporting
+    /// layers can never mutate tree state through the oracle path.
+    pub fn iter(&self) -> impl Iterator<Item = &RegionNode> {
+        self.nodes.values()
+    }
+
     /// Returns an immutable reference to a region node.
     pub fn get(&self, id: &RegionId) -> Result<&RegionNode, RegionError> {
         self.nodes

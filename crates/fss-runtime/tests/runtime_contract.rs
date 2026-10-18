@@ -410,3 +410,80 @@ fn scope_down_refuses_illegal_kind_and_budget_widening() {
     );
     assert!(r.is_err(), "budget widening must refuse");
 }
+
+#[test]
+fn tree_wide_leak_oracle_reports_counts_and_inv006_coverage() {
+    use fss_core::{BudgetVector, ContentDigest, ObligationId, OperationId, RegionId, RegionKind, RootAuthoritySpec, TimestampNs};
+    use fss_runtime::authority::AuthorityCx;
+    use fss_runtime::obligation::{new_obligation, tree_report, ObligationState, ObligationTerminal};
+
+    let spec = RootAuthoritySpec {
+        trace_id: "trace:oracle".to_string(),
+        operation_id: OperationId::parse("op:root").expect("op"),
+        principal: "principal:test".to_string(),
+        capabilities: Vec::new(),
+        deadline: None,
+        priority: 10,
+        budgets: BudgetVector::builder().bytes(1024).build().expect("bv"),
+        privacy_scope: "privacy:test".to_string(),
+        retention_scope: "retention:test".to_string(),
+        anchor_universe: ContentDigest::sha256(b"oracle-universe"),
+        generation: 1,
+    };
+    let (mut root, mut tree) = AuthorityCx::root(
+        spec,
+        RegionId::new("region:process").expect("region"),
+        RegionKind::Process,
+        BudgetVector::builder().tokens(100).bytes(1_000).build().expect("budget"),
+        TimestampNs(1_000),
+    )
+    .expect("root");
+
+    // Register three obligations on the root region: resolve one Verified,
+    // leave one Pending (a leak), resolve one Indeterminate WITHOUT a note
+    // (INV-006 hazard — the oracle must surface it).
+    let mk = |id: &str| {
+        new_obligation(id, OperationId::parse("op:root").expect("op"), "predicate")
+            .expect("obligation")
+    };
+    root.register_obligation(&mut tree, mk("obl:done")).expect("r1");
+    root.register_obligation(&mut tree, mk("obl:leak")).expect("r2");
+    root.register_obligation(&mut tree, mk("obl:unknown")).expect("r3");
+    root.resolve_obligation(
+        &mut tree,
+        &ObligationId::parse("obl:done").expect("id"),
+        ObligationTerminal::Completed,
+        Some(ContentDigest::sha256(b"proof")),
+        None,
+    )
+    .expect("resolve done");
+    // Indeterminate resolution through the tree requires a reconciliation
+    // note (INV-006). Verify the tree enforces it...
+    let refused = tree.resolve_obligation(
+        &RegionId::new("region:process").expect("region"),
+        &ObligationId::parse("obl:unknown").expect("id"),
+        ObligationState::Indeterminate,
+        None,
+        None,
+    );
+    assert!(refused.is_err(), "Indeterminate without a note must refuse");
+    // ...and with a note it lands.
+    tree.resolve_obligation(
+        &RegionId::new("region:process").expect("region"),
+        &ObligationId::parse("obl:unknown").expect("id"),
+        ObligationState::Indeterminate,
+        None,
+        Some("network partition before ack; reconcile on reconnect"),
+    )
+    .expect("resolve with note");
+
+    let report = tree_report(&tree);
+    assert_eq!(report.len(), 1);
+    let root_report = &report[0];
+    assert_eq!(root_report.region, "region:process");
+    assert_eq!(root_report.counts, [1, 1, 0, 1, 0]); // pending, verified, failed, indeterminate, cancelled
+    assert_eq!(root_report.leaked.len(), 1);
+    assert_eq!(root_report.leaked[0].id, "obl:leak");
+    assert_eq!(root_report.indeterminate_with_note, vec!["obl:unknown".to_string()]);
+    assert!(root_report.indeterminate_without_note.is_empty());
+}
