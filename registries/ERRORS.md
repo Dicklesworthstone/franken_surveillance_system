@@ -603,3 +603,9 @@ Canonical machine error codes returned by `ContractError::code()` (AGT-LAYER-002
 | `ERR-BACKUP-IO-001` | local I/O failed before a recovery completion could be established | inspect retained partial work and the activation marker before choosing a fresh destination |
 | `ERR-BACKUP-INDETERMINATE-001` | final activation may be visible but directory durability could not be established; reported status is indeterminate | inspect the exact destination, manifest and fence before retrying; never overwrite, resend or claim definite refusal |
 | `ERR-RESTORE-EFFECT-FENCED-001` | a restored deployment has immutable provenance whose copied Prepared state cannot prove whether the source dispatched later; all supported alert preparation, dispatch and cancellation paths refuse | retain unresolved operations and obligations; this profile has no unfence or automatic failover/reconciliation operation |
+
+## Retained native frame localization
+
+| ID | Meaning | Retry policy |
+|---|---|---|
+| `ERR-RECORDED-LOCALIZATION-REFUSED-001` | The exact retained query, explicit image/lens interpretation, twin/atlas binding, bounded geometry work or cancellation boundary refused a complete pose proposal | Correct the explicit source/model/grid binding or supply reviewed supported work limits; current privacy and original custody must still verify. An abstention or failed decode never activates calibration. Existing nested decode and privacy errors retain their own identities. |

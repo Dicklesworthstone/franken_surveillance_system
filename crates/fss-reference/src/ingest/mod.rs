@@ -88,6 +88,8 @@ pub mod tolerant_decode;
 pub mod tracker;
 /// Bounded, history-linked, single-camera association of detector proposals.
 pub mod tracking;
+/// Exact retained native luma and current privacy through atlas matching into pose proposals.
+pub mod twin_localization;
 /// Owner-authorized TUTK/IOTC NEW-protocol (0xCC51) live adapter: acquisition
 /// lifecycle, frame custody capsules, and ledger batches over fss-tutk.
 pub mod tutk;

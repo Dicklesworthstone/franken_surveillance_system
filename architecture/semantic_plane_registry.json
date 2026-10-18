@@ -489,6 +489,8 @@
   "crates/fss-reference/src/ingest/tracking.rs": "support",
   "crates/fss-reference/src/ingest/tutk.rs": "authority",
   "crates/fss-reference/src/ingest/tuya.rs": "authority",
+  "crates/fss-reference/src/ingest/twin_localization.rs": "cognition",
+  "crates/fss-reference/src/ingest/twin_localization/receipt.rs": "cognition",
   "crates/fss-reference/src/ingest/virtual_mjpeg.rs": "support",
   "crates/fss-reference/src/ingest/virtual_mjpeg/scene.rs": "support",
   "crates/fss-reference/src/ingest/virtual_mjpeg/tests.rs": "support",

@@ -61,6 +61,13 @@ jobs:
           cargo +nightly-2026-08-31 test --locked --offline -p fss-reference --test discovery_watchdog_contract || discovery_exit=1
           cargo +nightly-2026-08-31 test --locked --offline -p fss-cli --bin fss-discover || discovery_exit=1
           exit "$discovery_exit"
+      - name: Verify retained native frame localization and owner command
+        if: success() || failure()
+        run: |
+          localization_exit=0
+          cargo +nightly-2026-08-31 test --locked --offline -p fss-reference --test recorded_twin_localization_contract || localization_exit=1
+          cargo +nightly-2026-08-31 test --locked --offline -p fss-cli --bin fss-file || localization_exit=1
+          exit "$localization_exit"
       - name: Verify bounded event queries
         run: cargo +nightly-2026-08-31 test --locked --offline -p fss-reference --lib agent_query::tests
       - name: Verify protected deployment orientation
@@ -148,3 +155,14 @@ jobs:
       - name: Check formatting of changed reference sources
         if: always()
         run: rustup run nightly-2026-08-31 rustfmt --check --edition 2024 --config skip_children=true crates/fss-cli/src/bin/fss-backup.rs crates/fss-cli/src/bin/fss-backup/agent_report.rs crates/fss-cli/src/bin/fss-import-rtsp.rs crates/fss-cli/src/bin/fss-import-rtsp/driver.rs crates/fss-cli/src/bin/fss-import-rtsp/plan.rs crates/fss-cli/src/bin/fss-import-rtsp/tests.rs crates/fss-cli/tests/deployment_backup_cli.rs crates/fss-cli/tests/query_surface_contract.rs crates/fss-cli/tests/rtsp_catalog_import_cli.rs crates/fss-core/src/agent_query_plan.rs crates/fss-core/src/continuation.rs crates/fss-reference/examples/fingerprint_lan.rs crates/fss-reference/src/agent_orient.rs crates/fss-reference/src/agent_orient/tests.rs crates/fss-reference/src/agent_query.rs crates/fss-reference/src/agent_query/tests.rs crates/fss-reference/src/agent_session/checkpoint/journal.rs crates/fss-reference/src/agent_session/checkpoint/journal/workspace.rs crates/fss-reference/src/agent_session/workspace.rs crates/fss-reference/src/deployment_backup.rs crates/fss-reference/src/deployment_backup/agent.rs crates/fss-reference/src/deployment_backup/io.rs crates/fss-reference/src/deployment_backup/manifest.rs crates/fss-reference/src/deployment_backup/snapshot.rs crates/fss-reference/src/deployment_backup/transfer.rs crates/fss-reference/src/deployment_session.rs crates/fss-reference/src/ingest/file_adapter.rs crates/fss-reference/src/ingest/retained.rs crates/fss-reference/src/ingest/retained/root_binding.rs crates/fss-reference/src/ingest/rtsp_import.rs crates/fss-reference/src/ingest/rtsp_import/catalog.rs crates/fss-reference/src/ingest/rtsp_import/catalog_provenance.rs crates/fss-reference/src/ingest/rtsp_import/provenance.rs crates/fss-reference/src/ingest/rtsp_import/publication.rs crates/fss-reference/src/rtsp/recording_catalog.rs crates/fss-reference/tests/deployment_backup_contract.rs crates/fss-reference/tests/deployment_backup_contract/agent.rs crates/fss-reference/tests/recording_support/mod.rs crates/fss-reference/tests/rtsp_catalog_import_contract.rs
+      - name: Check retained localization source formatting
+        if: always()
+        run: >-
+          rustup run nightly-2026-08-31 rustfmt --check --edition 2024 --config skip_children=true
+          crates/fss-reference/src/ingest/twin_localization.rs
+          crates/fss-reference/src/ingest/twin_localization/receipt.rs
+          crates/fss-reference/src/ingest/mod.rs
+          crates/fss-reference/tests/recorded_twin_localization_contract.rs
+          crates/fss-cli/src/bin/fss-file.rs
+          crates/fss-cli/src/bin/fss-file/localize.rs
+          crates/fss-reference/tests/reference_deployment_contract.rs

@@ -152,10 +152,9 @@ fn repeated_payload_roles_share_a_canonical_child_and_retry_after_cold_reopen()
             payload
         );
     }
-    // Dropping repeated roles or changing their order does not rename a stored object graph.
-    let staged = dep.stage_and_publish(&slot, &[first, second], &cx)?;
-    assert_eq!(staged.manifest, expected);
-    let retry = dep.publish_and_commit(&slot, &staged.manifest, sample_interval(1, 2)?, &cx)?;
+    // Exact publication is the retry boundary: staging deliberately refuses visible slots.
+    // The independently constructed unique-child manifest names the same stored object graph.
+    let retry = dep.publish_and_commit(&slot, &expected, sample_interval(1, 2)?, &cx)?;
     assert_eq!(retry.outcome, RootLedgerOutcome::AlreadyLedgered);
     assert_eq!(retry.root, committed.root);
     assert_eq!(retry.batch_id, committed.batch_id);

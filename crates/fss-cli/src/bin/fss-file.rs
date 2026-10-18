@@ -30,8 +30,10 @@ use fss_reference::{ReferenceDeployment, ReplayCx};
 
 #[path = "fss-file/media.rs"]
 mod media;
+#[path = "fss-file/localize.rs"]
+mod localize;
 
-const HELP: &str = "fss-file <import|inspect|verify|extract|decode|read-decoded|verify-decoded|motion> [options]\n\
+const HELP: &str = "fss-file <import|inspect|verify|extract|decode|read-decoded|verify-decoded|motion|localize> [options]\n\
   All commands: --root DIR --site SITE [--principal ID] [--manifest-out FILE]\n\
   import: --input FILE --sensor ID --stream ID --receive-time-ns N\n\
           [--media-format auto|mjpeg|annexb|hevc|mp4avc|mp4hevc|mkvavc|mkvhevc|rtpplay]\n\
@@ -59,6 +61,19 @@ const HELP: &str = "fss-file <import|inspect|verify|extract|decode|read-decoded|
   Codec bounds: --max-pixels N --max-dimension N --max-markers N\n\
           --work-units N (decode, verify-decoded, motion; cumulative over a motion scan)\n\
   Source bounds: --max-source-bytes N --chunk-bytes N --max-segment-bytes N\n\
+  localize: --import-id sha256:HEX --segment N --interpretation gray|ycbcr\n\
+          --twin FILE --twin-sha256 sha256:HEX --scene-sha256 sha256:HEX\n\
+          --property N --revision N --atlas FILE --atlas-sha256 sha256:HEX\n\
+          --atlas-provenance-sha256 sha256:HEX --image-mode pinhole|raw\n\
+          --camera WIDTH,HEIGHT,FX,FY,CX,CY --image-domain sha256:HEX\n\
+          --report-out FILE.json [--receipt-out FILE] [--geometry-work-units N]\n\
+          Video additionally requires --range-start N --range-count N (IDR/IRAP start,\n\
+          count 1..1024); selection is by original coding segment, not display order.\n\
+          raw additionally requires --source-camera WIDTH,HEIGHT,FX,FY,CX,CY\n\
+          --distortion pinhole|brown,k1,k2,k3,p1,p2|fisheye,k1,k2,k3,k4\n\
+          --maximum-radius N --calibration-sha256 sha256:HEX --luma-range full|video\n\
+          [--feature-threshold N --maximum-features N --ransac-trials N].\n\
+          Produces current-privacy-screened pose proposals; never activates calibration.\n\
   Options use separate values. Paths accept native OS strings. Outputs must be new files\n\
   outside the deployment. Import requires explicit receive time; no host clock is inferred.\n\
   decode uses the canonical JPEG codec, retains source-linked luma and publishes a receipt.\n\
@@ -86,6 +101,7 @@ enum Action {
         output: PathBuf,
     },
     Media(media::Action),
+    Localize(Box<localize::Action>),
 }
 
 #[derive(Debug)]
@@ -141,7 +157,7 @@ fn parse(args: &[OsString]) -> ParseResult<Option<Options>> {
         return Ok(None);
     }
     if !matches!(command, "import" | "inspect" | "verify" | "extract")
-        && !media::is_command(command)
+        && !media::is_command(command) && command != "localize"
     {
         return Err((
             ERR_CLI_UNKNOWN_COMMAND,
@@ -184,7 +200,8 @@ fn parse(args: &[OsString]) -> ParseResult<Option<Options>> {
             || (command == "import" && import.contains(&key))
             || (command != "import" && key == "--import-id")
             || (command == "extract" && matches!(key, "--segment" | "--output"))
-            || media::accepts_option(command, key);
+            || media::accepts_option(command, key)
+            || localize::accepts_option(command, key);
         if !allowed {
             return Err((
                 ERR_CLI_UNKNOWN_OPTION,
@@ -363,6 +380,7 @@ fn parse(args: &[OsString]) -> ParseResult<Option<Options>> {
                 segment: number(&values, "--segment", None)?,
                 output: PathBuf::from(value(&values, "--output")?),
             },
+            "localize" => Action::Localize(Box::new(localize::parse(identity, limits, &values)?)),
             _ => Action::Media(media::parse(command, identity, limits, &values)?),
         }
     };
@@ -459,6 +477,7 @@ fn run(options: Options, out: &mut impl Write) -> RunResult<()> {
             Action::Verify(id) => (*id, "verify"),
             Action::Extract { identity, .. } => (*identity, "extract"),
             Action::Media(action) => (action.identity(), action.name()),
+            Action::Localize(action) => (action.identity(), "localize"),
         };
         let retained = RetainedFileImport::open(&deployment, identity, options.limits, &cx)?;
         let manifest = retained.manifest();
@@ -536,6 +555,9 @@ fn run(options: Options, out: &mut impl Write) -> RunResult<()> {
             }
             Action::Media(action) => {
                 media::run(action, &retained, &mut deployment, &options.root, &cx, out)?
+            }
+            Action::Localize(action) => {
+                localize::run(action, &retained, &mut deployment, &options.root, &cx, out)?
             }
             Action::Inspect(_) => {}
         }
@@ -630,6 +652,9 @@ fn main() -> ExitCode {
                 Ok(()) => ExitCode::from(ExitIdentity::SUCCESS.code),
                 Err(error) => {
                     eprintln!("{ERR_CLI_RUNTIME_FAILURE}: {error}");
+                    if let Some(refusal) = error.downcast_ref::<fss_reference::ingest::twin_localization::RecordedLocalizationError>() {
+                        eprintln!("refusal_id={}", refusal.stable_id());
+                    }
                     if let Some(refusal) = error.downcast_ref::<fss_reference::ingest::recorded_decode::RecordedDecodeError>() {
                     eprintln!("refusal_id={}", refusal.stable_id());
                 }
