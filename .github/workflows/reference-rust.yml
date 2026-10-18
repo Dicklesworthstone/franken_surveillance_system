@@ -53,7 +53,7 @@ jobs:
         run: |
           cargo +nightly-2026-08-31 test --locked --offline -p fss-object --test staging_spool_contract --test staging_spool_io_faults
           cargo +nightly-2026-08-31 test --locked --offline -p fss-publication --test lock_lifetime_contract --test root_last_publication_contract --test local_publication_io_faults
-          cargo +nightly-2026-08-31 test --locked --offline -p fss-reference --test reference_deployment_recovery_contract
+          cargo +nightly-2026-08-31 test --locked --offline -p fss-reference --test reference_deployment_recovery_contract --test reference_deployment_contract --test activity_belief_contract
       - name: Verify bounded event queries
         run: cargo +nightly-2026-08-31 test --locked --offline -p fss-reference --lib agent_query::tests
       - name: Verify protected deployment orientation
