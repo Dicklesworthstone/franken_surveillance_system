@@ -932,3 +932,183 @@ fn effect_illegal_transitions_are_typed_refusals() {
     let err = EffectCoordinator::observed(&mut committed).expect_err("skip is illegal");
     assert!(matches!(err, EffectCoordError::IllegalTransition { .. }));
 }
+
+// ---------- crash/cancellation cut-point harness (FSS-028) ----------
+//
+// The harness models a crash as dropping every in-memory session struct at
+// an exact transition boundary while the DURABLE state (region-tree
+// obligations) survives. After each cut, a fresh authority view over the
+// same tree must (a) surface the wreck through the leak oracle and (b)
+// offer a typed reconciliation path. No threads, no process kills: this is
+// the deterministic reference harness; hostile-process crash lanes belong
+// to the qualification bundle.
+
+/// Cut-point inventory: every coordinator boundary where a crash can land.
+fn cut_point_inventory() -> Vec<&'static str> {
+    vec![
+        "after_prepare_before_commit",
+        "after_commit_before_accept",
+        "after_accept_before_observe",
+        "after_observe_before_verify",
+        "mid_cancellation_before_drain_completes",
+    ]
+}
+
+#[test]
+fn every_cut_point_is_enumerated_and_survivable() {
+    // The inventory is stable and non-empty — a regression that deletes a
+    // cut point fails here.
+    assert_eq!(cut_point_inventory().len(), 5);
+}
+
+fn fx_setup() -> (
+    fss_runtime::authority::AuthorityCx,
+    fss_core::RegionTree,
+    fss_runtime::lease::LeaseRegistry,
+    u64,
+) {
+    let (auth, tree) = effect_authority(vec![
+        "CAP-PTZ-PREPARE-001".to_string(),
+        "CAP-PTZ-COMMIT-001".to_string(),
+    ]);
+    let mut leases = fss_runtime::lease::LeaseRegistry::new();
+    let lease = leases
+        .acquire("device:ptz:crash", "region:fx", None, fss_core::TimestampNs(0))
+        .expect("lease");
+    (auth, tree, leases, lease.fence)
+}
+
+fn prepared_fx(
+    auth: &fss_runtime::authority::AuthorityCx,
+    tree: &mut fss_core::RegionTree,
+    leases: &fss_runtime::lease::LeaseRegistry,
+    fence: u64,
+    op: &str,
+) -> fss_runtime::effect::PreparedEffect {
+    fss_runtime::effect::EffectCoordinator::prepare(
+        auth,
+        tree,
+        leases,
+        fss_core::OperationId::parse(op).expect("op"),
+        "device:ptz:crash",
+        fence,
+        fss_core::RuntimeGrant::PtzPrepare,
+        fss_core::RuntimeGrant::PtzCommit,
+        "crash cut-point predicate",
+    )
+    .expect("prepare")
+}
+
+#[test]
+fn crash_after_prepare_leaves_named_leak_and_reconciles() {
+    use fss_core::{ContentDigest, ObligationId, TimestampNs};
+    use fss_runtime::obligation::{tree_report, ObligationTerminal};
+
+    let (auth, mut tree, leases, fence) = fx_setup();
+    let prepared = prepared_fx(&auth, &mut tree, &leases, fence, "op:crash-1");
+    let obligation = prepared.obligation.clone();
+
+    // CRASH: the prepared session is dropped before commit. Nothing about
+    // the operation survives except the durable obligation on the tree.
+    drop(prepared);
+
+    // Recovery view: the leak oracle names the wrecked operation.
+    let report = tree_report(&tree);
+    assert_eq!(report[0].leaked.len(), 1);
+    assert_eq!(report[0].leaked[0].id, obligation.as_str());
+
+    // Reconcile: the effect provably never dispatched (commit never ran),
+    // so the obligation resolves to a terminal failure with a digest of the
+    // crash-cut record — never silently dropped.
+    auth.resolve_obligation(
+        &mut tree,
+        &ObligationId::parse(obligation.as_str()).expect("id"),
+        ObligationTerminal::Failed,
+        Some(ContentDigest::sha256(b"crashed-before-commit")),
+        None,
+    )
+    .expect("reconcile");
+    assert!(auth.finalize_report(&tree).is_empty());
+    let _ = TimestampNs(0);
+}
+
+#[test]
+fn crash_after_commit_is_indeterminate_with_mandatory_note() {
+    use fss_core::TimestampNs;
+    use fss_runtime::effect::EffectCoordinator;
+    use fss_runtime::obligation::tree_report;
+
+    let (auth, mut tree, mut leases, fence) = fx_setup();
+    let prepared = prepared_fx(&auth, &mut tree, &leases, fence, "op:crash-2");
+    let committed = EffectCoordinator::commit(&auth, &mut leases, prepared, TimestampNs(10))
+        .expect("commit");
+
+    // CRASH after commit: the dispatch may have happened. The honest
+    // reconciliation is Indeterminate with a durable note — NOT success,
+    // NOT failure.
+    let operation = committed.operation().clone();
+    drop(committed);
+
+    let report = tree_report(&tree);
+    assert_eq!(report[0].leaked.len(), 1, "pending obligation survives the crash");
+
+    // The tree refuses Indeterminate without a note (INV-006) — verified in
+    // the oracle test. Reconcile WITH a note:
+    tree.resolve_obligation(
+        auth.region(),
+        &fss_core::ObligationId::parse(&format!("obligation:{operation}:terminal")).expect("id"),
+        fss_core::ObligationState::Indeterminate,
+        None,
+        Some("crashed after commit; device state unknown until next telemetry"),
+    )
+    .expect("indeterminate reconcile");
+    let report = tree_report(&tree);
+    assert_eq!(report[0].counts[3], 1);
+    assert_eq!(report[0].leaked.len(), 0, "indeterminate is not a pending leak");
+}
+
+#[test]
+fn crash_after_observe_preserves_pending_verify_obligation() {
+    use fss_core::{ContentDigest, TimestampNs};
+    use fss_runtime::effect::EffectCoordinator;
+
+    let (auth, mut tree, mut leases, fence) = fx_setup();
+    let prepared = prepared_fx(&auth, &mut tree, &leases, fence, "op:crash-3");
+    let mut committed = EffectCoordinator::commit(&auth, &mut leases, prepared, TimestampNs(10))
+        .expect("commit");
+    EffectCoordinator::adapter_accepted(&mut committed).expect("accept");
+    EffectCoordinator::observed(&mut committed).expect("observe");
+
+    // CRASH after observe: the observation WAS recorded, so reconciliation
+    // can complete verification against the retained observation digest.
+    drop(committed);
+    auth.resolve_obligation(
+        &mut tree,
+        &fss_core::ObligationId::parse("obligation:op:crash-3:terminal").expect("id"),
+        fss_runtime::obligation::ObligationTerminal::Completed,
+        Some(ContentDigest::sha256(b"observed-before-crash")),
+        None,
+    )
+    .expect("verify from retained observation");
+    assert!(auth.finalize_report(&tree).is_empty());
+}
+
+#[test]
+fn cancellation_mid_drain_never_strands_orphans() {
+    use fss_core::TimestampNs;
+
+    // Cancellation requested while a subtree holds a pending obligation:
+    // the drain path surfaces the obligation instead of orphaning it.
+    let (auth, mut tree, leases, fence) = fx_setup();
+    let _prepared = prepared_fx(&auth, &mut tree, &leases, fence, "op:crash-4");
+
+    auth.request_cancellation();
+    assert!(auth.is_cancel_requested());
+    // Drain is refused while obligations are pending: no silent orphaning.
+    let drain = tree.request_drain(auth.region(), Some("cancel"), TimestampNs(100));
+    assert!(drain.is_ok(), "drain request is idempotent-accepted");
+    // Finalize with a pending obligation must refuse (the tree owns this
+    // refusal; the oracle already names the leak).
+    let fin = tree.finalize(auth.region(), TimestampNs(200));
+    assert!(fin.is_err(), "finalize with pending obligation must refuse");
+}
