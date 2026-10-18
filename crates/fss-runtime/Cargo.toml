@@ -8,7 +8,7 @@ repository.workspace = true
 description = "FSS explicit-authority runtime core: Asupersync Cx composition, region scoping, budgets, obligations, and the deterministic request→drain→finalize cancellation state machine (FSS-021, IMP-AS-CANCEL-001)"
 
 [dependencies]
-asupersync = { path = "../../asupersync", default-features = false }
+asupersync = { version = "=0.5.0", default-features = false }
 fss-core = { path = "../fss-core" }
 
 [lints]
