@@ -1,0 +1,15 @@
+[package]
+name = "fss-runtime"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license-file.workspace = true
+repository.workspace = true
+description = "FSS explicit-authority runtime core: Asupersync Cx composition, region scoping, budgets, obligations, and the deterministic request→drain→finalize cancellation state machine (FSS-021, IMP-AS-CANCEL-001)"
+
+[dependencies]
+asupersync = { version = "=0.5.0", default-features = false }
+fss-core = { path = "../fss-core" }
+
+[lints]
+workspace = true

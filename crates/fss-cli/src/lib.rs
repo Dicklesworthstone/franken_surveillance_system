@@ -43,6 +43,8 @@ pub mod orient_cmd;
 /// Read-only AOP-005 projection of the verified event-record query engine.
 pub mod query_cmd;
 pub mod redact;
+/// Import explicitly bound camera poses from an authored property scene.
+pub mod scene_rig;
 /// Durable agent sessions: `session open` (AOP-001), `session handoff` (AOP-012), and
 /// `session resume` (AOP-002); agent-plane writes only.
 pub mod session_cmd;

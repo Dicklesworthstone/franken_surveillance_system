@@ -104,4 +104,10 @@ fn tampering_is_detectable() {
     let mut tampered = ids.clone();
     assert!(!tampered.insert("DEP-CLASS-F0"), "duplicate injection detectable");
     assert_eq!(ids, tampered);
+    // Count actual occurrences in the machine constitution JSON.
+    for id in ids {
+        let marker = format!("\"id\": \"{id}\"");
+        let count = CONSTITUTION_JSON.matches(&marker).count();
+        assert_eq!(count, 1, "{id} appears {count} times in dependency_constitution.json");
+    }
 }

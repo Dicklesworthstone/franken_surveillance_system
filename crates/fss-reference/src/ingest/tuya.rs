@@ -154,15 +154,45 @@ pub enum RegistryProvenance {
     OwnerMitmQualified,
 }
 
+/// When a dp value qualifies as the event (value-blind recognition turns
+/// `"104":"idle"` into a motion claim — that must never happen).
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub enum DpValueRule {
+    /// Every value qualifies (use ONLY for pure event signals).
+    AnyValue,
+    /// Only these exact scalar tokens qualify (e.g. `"motion"`, `1`).
+    ActiveTokens(&'static [&'static str]),
+    /// Integer values strictly below this bound qualify (battery-low).
+    NumericBelow(u64),
+}
+
 /// One `(model, dp)` → meaning registry entry.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct DpMeaning {
     /// The event semantics, if this dp carries one.
     pub event: Option<EventKind>,
+    /// Which values qualify as the event.
+    pub rule: DpValueRule,
     /// Human-readable stable name (e.g. "arm_state").
     pub name: &'static str,
     /// Where this knowledge came from.
     pub provenance: RegistryProvenance,
+}
+
+impl DpMeaning {
+    /// Whether this raw token qualifies as the event under the rule.
+    #[must_use]
+    pub fn qualifies(&self, token: &str) -> bool {
+        match &self.rule {
+            DpValueRule::AnyValue => true,
+            DpValueRule::ActiveTokens(tokens) => tokens.contains(&token),
+            DpValueRule::NumericBelow(bound) => token
+                .trim()
+                .parse::<u64>()
+                .map(|v| v < *bound)
+                .unwrap_or(false),
+        }
+    }
 }
 
 /// The dps-schema registry. Starts with laboratory fixture entries only —
@@ -185,6 +215,7 @@ impl DpsRegistry {
             (model.clone(), "104".to_string()),
             DpMeaning {
                 event: Some(EventKind::Motion),
+                rule: DpValueRule::ActiveTokens(&["\"motion\""]),
                 name: "motion_state",
                 provenance: lab,
             },
@@ -193,6 +224,7 @@ impl DpsRegistry {
             (model.clone(), "115".to_string()),
             DpMeaning {
                 event: Some(EventKind::Pir),
+                rule: DpValueRule::ActiveTokens(&["1", "true"]),
                 name: "pir_flag",
                 provenance: lab,
             },
@@ -201,6 +233,7 @@ impl DpsRegistry {
             (model, "102".to_string()),
             DpMeaning {
                 event: Some(EventKind::BatteryLow),
+                rule: DpValueRule::NumericBelow(20),
                 name: "battery_pct",
                 provenance: lab,
             },
@@ -317,6 +350,82 @@ fn parse_flat_dps(json: &str) -> Result<Vec<(String, String)>, TuyaMapError> {
     Ok(out)
 }
 
+/// Escapes a string for embedding in a JSON string value.
+fn json_string(s: &str) -> String {
+    let mut out = String::with_capacity(s.len() + 2);
+    out.push('"');
+    for c in s.chars() {
+        match c {
+            '"' => out.push_str("\\\""),
+            '\\' => out.push_str("\\\\"),
+            c if (c as u32) < 0x20 => out.push_str(&format!("\\u{:04x}", c as u32)),
+            c => out.push(c),
+        }
+    }
+    out.push('"');
+    out
+}
+
+/// Whether a raw dps token is valid standalone JSON (scalar or balanced
+/// object/array with string-aware depth tracking). Garbage is never embedded
+/// verbatim into custody JSON.
+fn token_is_valid_json(token: &str) -> bool {
+    let t = token.trim();
+    if t.is_empty() {
+        return false;
+    }
+    // scalars
+    if t == "true" || t == "false" || t == "null" {
+        return true;
+    }
+    if t.starts_with('"') {
+        // string: must end with an unescaped closing quote
+        return t.len() >= 2 && t.ends_with('"');
+    }
+    if t.parse::<f64>().is_ok() || (t.starts_with('-') && t[1..].parse::<f64>().is_ok()) {
+        return true;
+    }
+    // compound: balanced braces/brackets with string awareness
+    if t.starts_with('{') || t.starts_with('[') {
+        let mut depth = 0i32;
+        let mut in_str = false;
+        let mut escape = false;
+        for c in t.chars() {
+            if in_str {
+                if escape {
+                    escape = false;
+                } else if c == '\\' {
+                    escape = true;
+                } else if c == '"' {
+                    in_str = false;
+                }
+                continue;
+            }
+            match c {
+                '"' => in_str = true,
+                '{' | '[' => depth += 1,
+                '}' | ']' => depth -= 1,
+                _ => {}
+            }
+            if depth < 0 {
+                return false;
+            }
+        }
+        return depth == 0 && !in_str && (t.ends_with('}') || t.ends_with(']'));
+    }
+    false
+}
+
+/// The custody-safe form of a raw dps token: verbatim when it is valid JSON,
+/// an escaped JSON string otherwise (preserved, valid, never interpreted).
+fn json_token_or_string(token: &str) -> String {
+    if token_is_valid_json(token) {
+        token.trim().to_string()
+    } else {
+        json_string(token)
+    }
+}
+
 /// Splits a flat JSON object body on top-level commas (strings may contain
 /// commas; dps values are flat scalars so depth tracking + string awareness
 /// suffices).
@@ -424,9 +533,11 @@ impl TuyaEventMapper {
 
     /// Stages one delta with ledger-correct per-object generations:
     /// new objects start at generation 1; existing objects advance by one.
-    /// The ledger admits at most one delta per object per batch, which the
-    /// object-id scheme guarantees (one id per homebase / cam / dp /
-    /// segment).
+    /// Two-stage transaction: generations are provisional (computed from the
+    /// committed ledger plus pending rows for the same object) and only
+    /// become durable at a successful commit. A second staging for the same
+    /// object before commit COALESCES — the pending row is replaced (the
+    /// ledger admits at most one delta per object per batch).
     fn stage_delta(
         &mut self,
         family: &str,
@@ -435,8 +546,14 @@ impl TuyaEventMapper {
         payload: Vec<u8>,
     ) -> ContentDigest {
         let digest = ContentDigest::sha256(&payload);
-        let current = self.generations.get(&object_id).copied();
-        let (prior_generation, new_generation) = match current {
+        // Coalesce FIRST: the ledger admits one delta per object per batch,
+        // so a restaged object replaces its pending row — after removal the
+        // pending count for this object is zero by construction.
+        self.pending.retain(|(d, _)| d.object_id != object_id);
+        // Generations are provisional until commit: committed ledger
+        // generation + 1 (pending rows never persist a generation).
+        let committed = self.generations.get(&object_id).copied();
+        let (prior_generation, new_generation) = match committed {
             Some(g) => (Some(g), g + 1),
             None => (None, 1),
         };
@@ -452,7 +569,10 @@ impl TuyaEventMapper {
             witness_digest: None,
             operation_id: None,
         };
-        self.generations.insert(object_id, new_generation);
+        // NOTE: generations/custody/pending are NOT mutated into durable
+        // state here; the provisional generation map is updated eagerly but
+        // commit_pending rebuilds deltas from pending rows only on success,
+        // and on failure the caller can discard the mapper — see commit.
         self.custody.insert(digest, payload);
         self.pending.push((delta, digest));
         digest
@@ -469,12 +589,16 @@ impl TuyaEventMapper {
             self.cfg.homebase_id, self.batch_seq
         ))
         .map_err(|_| TuyaMapError::Malformed("batch id"))?;
-        let staged: Vec<(EvidenceDelta, ContentDigest)> = self.pending.drain(..).collect();
-        let children: Vec<ContentDigest> = staged.iter().map(|(_, d)| *d).collect();
-        let deltas: Vec<EvidenceDelta> = staged.into_iter().map(|(d, _)| d).collect();
+        // Transactional: nothing leaves pending until append succeeds, and
+        // the durable generation map advances only for committed objects.
+        let children: Vec<ContentDigest> = self.pending.iter().map(|(_, d)| *d).collect();
+        let deltas: Vec<EvidenceDelta> = self.pending.iter().map(|(d, _)| d.clone()).collect();
         let batch = self.ledger.prepare_batch(batch_id, deltas, children)?;
         let id = batch.batch_id.clone();
         self.ledger.append(batch)?;
+        for (d, _) in self.pending.drain(..) {
+            self.generations.insert(d.object_id, d.new_generation);
+        }
         Ok(Some(id))
     }
 
@@ -528,16 +652,25 @@ impl TuyaEventMapper {
         let pairs = parse_flat_dps(dps_json)?;
         let mut digests = Vec::new();
         for (dp, token) in &pairs {
+            // Value-aware recognition: a registered dp only yields an event
+            // candidate when the value qualifies under its rule — "idle"
+            // never becomes a motion claim. Non-qualifying values are plain
+            // state (carried by device-state reports), not events.
             let kind = match self.cfg.registry.lookup(model, dp) {
                 Some(meaning) => match &meaning.event {
-                    Some(e) => e.clone(),
+                    Some(e) if meaning.qualifies(token) => e.clone(),
+                    Some(_) => continue,
                     None => EventKind::UnknownDp(dp.clone()),
                 },
                 None => EventKind::UnknownDp(dp.clone()),
             };
+            let safe_token = json_token_or_string(token);
             let payload = format!(
-                "{{\"type\":\"aosu_event_candidate\",\"version\":1,\"cam_id\":\"{cam_id}\",\"event_kind\":\"{}\",\"dp_id\":\"{dp}\",\"raw\":{token},\"observed\":{{\"earliest\":{},\"latest\":{}}},\"provenance\":\"{}\",\"ground_truth\":false}}",
+                "{{\"type\":\"aosu_event_candidate\",\"version\":1,\"cam_id\":{},\"event_kind\":\"{}\",\"dp_id\":{},\"raw\":{},\"observed\":{{\"earliest\":{},\"latest\":{}}},\"provenance\":\"{}\",\"ground_truth\":false}}",
+                json_string(cam_id),
                 kind.as_str(),
+                json_string(dp),
+                safe_token,
                 observed.earliest.0,
                 observed.latest.0,
                 VendorProvenance::VendorDerived.as_str()
@@ -551,9 +684,14 @@ impl TuyaEventMapper {
                 payload.into_bytes(),
             ));
         }
-        if let Some(tracker) = self.trackers.get_mut(cam_id) {
-            tracker.events_seen += 1;
-            tracker.observability = CamObservability::Observable;
+        // Observability/event evidence only moves when something was
+        // actually staged — an empty report is a sighting at most, never
+        // event evidence and never coverage.
+        if !digests.is_empty() {
+            if let Some(tracker) = self.trackers.get_mut(cam_id) {
+                tracker.events_seen += 1;
+                tracker.observability = CamObservability::Observable;
+            }
         }
         Ok(digests)
     }
@@ -590,15 +728,36 @@ impl TuyaEventMapper {
     /// Marks a cam offline/asleep (no traffic within the window). The state
     /// change is itself recorded as device-state evidence when it CHANGES —
     /// silently dropping offline is how "clear" lies are born.
-    pub fn mark_not_observable(&mut self, cam_id: &str, reason: OfflineReason) {
-        if let Some(tracker) = self.trackers.get_mut(cam_id) {
-            let next = CamObservability::NotObservable {
-                reason: reason.clone(),
-            };
-            if tracker.observability != next {
-                tracker.observability = next;
-            }
+    pub fn mark_not_observable(
+        &mut self,
+        cam_id: &str,
+        reason: OfflineReason,
+        observed: CaptureInterval,
+    ) -> Result<Option<ContentDigest>, TuyaMapError> {
+        let Some(tracker) = self.trackers.get_mut(cam_id) else {
+            return Err(TuyaMapError::UnknownCam(cam_id.to_string()));
+        };
+        let next = CamObservability::NotObservable {
+            reason: reason.clone(),
+        };
+        if tracker.observability == next {
+            return Ok(None);
         }
+        tracker.observability = next;
+        // Persist the transition as device-state evidence: the payload names
+        // the cam, the reason, and the exact observation window.
+        let payload = format!(
+            "{{\"type\":\"aosu_device_state\",\"version\":1,\"homebase\":\"{}\",\"cam_id\":{},\"transition\":\"not_observable\",\"reason\":\"{}\",\"observed\":{{\"earliest\":{},\"latest\":{}}},\"provenance\":\"{}\",\"ground_truth\":false}}",
+            self.cfg.homebase_id,
+            json_string(cam_id),
+            reason.as_str(),
+            observed.earliest.0,
+            observed.latest.0,
+            VendorProvenance::DeviceStateReport.as_str()
+        );
+        let object_id = ObjectId::parse(format!("object:aosu-device-state:{}", self.cfg.homebase_id))
+            .map_err(|_| TuyaMapError::Malformed("object id"))?;
+        Ok(Some(self.stage_delta("aosu_device_state", object_id, observed, payload.into_bytes())))
     }
 
     /// Constructs the coverage witness for a negative-read over one cam's
@@ -625,7 +784,11 @@ impl TuyaEventMapper {
         let mut excluded = BTreeSet::new();
         let (continuity, completeness, observed_generation) = match &tracker.observability {
             CamObservability::NotObservable { reason } => {
-                observed.retain(|d| !d.contains(cam_id));
+                // Exact cam-domain matching: "rear" must never evict
+                // "rear-door:events". A domain names the cam exactly or as
+                // "{cam}:<aspect>".
+                let cam_prefix = format!("{cam_id}:");
+                observed.retain(|d| d != cam_id && !d.starts_with(&cam_prefix));
                 excluded.insert(format!("{cam_id}:{}", reason.as_str()));
                 (
                     CoverageContinuity::Unknown,

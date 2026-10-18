@@ -112,4 +112,11 @@ fn tampering_is_detectable() {
         "duplicate layer id injection must be detectable"
     );
     assert_eq!(ids, tampered);
+    // And over the ACTUAL registry content: count each layer id's
+    // occurrences in the stack JSON — a duplicated JSON row is visible.
+    for layer in AgentAbstractionLayer::ALL {
+        let marker = format!("\"id\": \"{}\"", layer.id());
+        let count = STACK_JSON.matches(&marker).count();
+        assert_eq!(count, 1, "{} appears {count} times in the stack JSON", layer.id());
+    }
 }

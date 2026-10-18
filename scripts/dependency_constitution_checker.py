@@ -1139,25 +1139,73 @@ def scan_unstable_features(root: Path, result: ValidationResult) -> int:
             "architecture/unstable_features.toml",
             root,
         )
-        if data is None:
-            result.extend(problems)
+        rows = data.get("rows")
+        if rows is None:
             return allow
-        for row in data.get("rows") or []:
-            feature = str(row.get("feature", ""))
-            for file in row.get("files") or []:
+        if not isinstance(rows, list):
+            result.add_error(
+                ERR_DEP_UNSTABLE_FEATURE,
+                "architecture/unstable_features.toml",
+                "#/rows",
+                "unstable-feature registry rows must be a table array; refusing to treat malformed registry as authority",
+            )
+            return allow
+        for idx, row in enumerate(rows):
+            if not isinstance(row, dict):
+                result.add_error(
+                    ERR_DEP_UNSTABLE_FEATURE,
+                    "architecture/unstable_features.toml",
+                    f"#/rows/{idx}",
+                    "unstable-feature row is not a table; malformed registry entries fail closed",
+                )
+                continue
+            feature = row.get("feature")
+            files = row.get("files")
+            justification = row.get("justification")
+            reviewed = row.get("reviewed")
+            if (
+                not isinstance(feature, str)
+                or not feature
+                or not isinstance(files, list)
+                or not files
+                or not all(isinstance(f, str) and f for f in files)
+                or not isinstance(justification, str)
+                or not justification
+                or not isinstance(reviewed, str)
+                or not reviewed
+            ):
+                result.add_error(
+                    ERR_DEP_UNSTABLE_FEATURE,
+                    "architecture/unstable_features.toml",
+                    f"#/rows/{idx}",
+                    "unstable-feature row missing/invalid feature/files/justification/reviewed; malformed rows fail closed (never wildcard)",
+                )
+                continue
+            for file in files:
                 allow.setdefault(str(file), set()).add(feature)
         return allow
 
     allowed_by_file = allowed_unstable_features()
 
+    def features_in_attribute(content: str) -> set[str]:
+        # Extract EVERY feature identifier from a feature(...) list (an
+        # attribute may enable several; recording one must not launder the
+        # rest).
+        found: set[str] = set()
+        for m in re.finditer(r"feature\s*\(([^)]*)\)", content):
+            for name in m.group(1).split(","):
+                name = name.strip()
+                if name:
+                    found.add(name)
+        return found
+
     def feature_is_recorded(rel: str, content: str) -> bool:
-        features = allowed_by_file.get(rel)
-        if not features:
+        recorded = allowed_by_file.get(rel)
+        if not recorded:
             return False
-        for feature in features:
-            if re.search(rf"feature\s*\(\s*[^)]*\b{re.escape(feature)}\b", content):
-                return True
-        return False
+        enabled = features_in_attribute(content)
+        # Every enabled feature must be individually recorded for this file.
+        return bool(enabled) and enabled.issubset(recorded)
 
     def read_text(path: Path) -> str | None:
         rel = path.relative_to(root).as_posix()

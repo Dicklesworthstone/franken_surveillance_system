@@ -27,6 +27,9 @@ pub enum DeviceClass {
     BatteryEventDriven,
     /// Unclassified device.
     Unknown,
+    /// A camera running the FSS provision agent stack — mains-like chatty
+    /// heartbeats by design (fss-provision, LAB-PROVISION-001).
+    ProvisionedAgent,
 }
 
 impl DeviceClass {
@@ -39,6 +42,7 @@ impl DeviceClass {
             Self::Onvif => "onvif",
             Self::BatteryEventDriven => "battery_event_driven",
             Self::Unknown => "unknown",
+            Self::ProvisionedAgent => "provisioned_agent",
         }
     }
 
@@ -58,6 +62,8 @@ impl DeviceClass {
             // Event-driven: a full day of quiet is normal.
             Self::BatteryEventDriven => (6 * HOUR, 48 * HOUR),
             Self::Unknown => (10 * MINUTE, 60 * MINUTE),
+            // Our own agent beats on a short cadence; silence is suspicious fast.
+            Self::ProvisionedAgent => (2 * MINUTE, 10 * MINUTE),
         }
     }
 }
@@ -137,15 +143,30 @@ pub struct DeviceStateChange {
 impl DeviceStateChange {
     /// Canonical record text (deterministic, digestible downstream).
     /// The device identity is JSON-escaped: callers' ids are IPs/MACs today,
-    /// but the library never trusts the alphabet.
+    /// but the library never trusts the alphabet. `not_observable` records
+    /// carry the offline reason; `silent`/`asleep` records carry the
+    /// duration — a consumer never has to guess which offline it was.
     #[must_use]
     pub fn to_record(&self) -> String {
+        fn state_detail(st: &WatchState) -> String {
+            match st {
+                WatchState::NotObservable { reason } => {
+                    format!(",\"reason\":\"{}\"", reason.as_str())
+                }
+                WatchState::Silent { silent_for_ns } | WatchState::Asleep { silent_for_ns } => {
+                    format!(",\"silent_for_ns\":{silent_for_ns}")
+                }
+                WatchState::Observable => String::new(),
+            }
+        }
         format!(
-            "{{\"type\":\"device_state_change\",\"device\":\"{}\",\"class\":\"{}\",\"from\":\"{}\",\"to\":\"{}\",\"at_ns\":{}}}",
+            "{{\"type\":\"device_state_change\",\"device\":\"{}\",\"class\":\"{}\",\"from\":\"{}\"{},\"to\":\"{}\"{},\"at_ns\":{}}}",
             json_escape(&self.device_id),
             self.class.as_str(),
             self.from.as_str(),
+            state_detail(&self.from),
             self.to.as_str(),
+            state_detail(&self.to),
             self.at_ns
         )
     }
@@ -258,7 +279,10 @@ impl DeviceWatchdog {
                 thresholds: DeviceClass::Unknown.default_thresholds_ns(),
                 thresholds_overridden: false,
             });
-        entry.last_seen_ns = Some(now_ns);
+        // Out-of-order/late sightings never regress the clock: the newest
+        // sighting wins. (Callers should feed monotonic time; the watchdog
+        // tolerates reordering without moving backward.)
+        entry.last_seen_ns = Some(entry.last_seen_ns.map_or(now_ns, |prev| prev.max(now_ns)));
         let new_state = WatchState::Observable;
         if entry.state != new_state {
             let change = DeviceStateChange {
@@ -287,7 +311,13 @@ impl DeviceWatchdog {
             let Some(last) = entry.last_seen_ns else {
                 continue; // NeverObserved stays as-is; nothing to age.
             };
-            let silent_for = now_ns.saturating_sub(last);
+            // Backward evaluation (now before the last sighting) is a caller
+            // clock violation; saturating_sub would make the device look
+            // freshly seen. Hold the state and skip instead.
+            if now_ns < last {
+                continue;
+            }
+            let silent_for = now_ns - last;
             let (grace, hard) = entry.thresholds;
             let new_state = if silent_for < grace {
                 WatchState::Observable

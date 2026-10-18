@@ -2,6 +2,9 @@
 //! Trained whole-recording corroboration through real native CLI processes. Synthetic mirrored
 //! views exercise computation, bounded work and retained custody, not detector accuracy.
 
+#[path = "corroborate_stream_detector_cli/fusion.rs"]
+mod fusion;
+
 use std::ffi::OsString;
 use std::fs;
 use std::path::{Path, PathBuf};

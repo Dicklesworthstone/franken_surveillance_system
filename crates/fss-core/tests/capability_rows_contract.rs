@@ -49,7 +49,13 @@ fn extract_rows(json: &str) -> Result<Vec<CapabilityRow>, Box<dyn Error>> {
             break;
         };
         let abs = cursor + id_start;
-        let after = &json[abs..];
+        // Bound field extraction to THIS row's closing brace — a missing
+        // field must never be read from the next row.
+        let row_end = json[abs..]
+            .find("\n    }")
+            .map(|i| abs + i)
+            .unwrap_or(json.len());
+        let after = &json[abs..row_end];
         let mut row = CapabilityRow {
             id: String::new(),
             capability: String::new(),
@@ -250,4 +256,24 @@ fn tampered_registry_content_is_detectable() -> Result<(), Box<dyn Error>> {
     mutated.scope = "mutated scope".to_string();
     assert_ne!(*first, mutated);
     Ok(())
+}
+
+#[test]
+fn mutating_registry_text_is_caught_by_field_validation() {
+    // The strongest honest tamper test: corrupt the source text and prove
+    // the extractor + field checks refuse it (not just PartialEq).
+    let corrupted = REGISTRY_JSON.replacen(
+        "resolve one adapter secret handle",
+        "resolve ALL adapter secret handles",
+        1,
+    );
+    let rows = extract_rows(&corrupted).expect("corrupted text still parses");
+    let row = rows
+        .iter()
+        .find(|r| r.id == "CAP-ADAPTER-AUTH-001")
+        .expect("row present");
+    assert_ne!(row.capability, "resolve one adapter secret handle");
+    // And the field-level check flags the drift against the normative text.
+    let (_id, capability, _scope, _plane, _role) = NORMATIVE_ADAPTER_ROWS[0];
+    assert_ne!(row.capability, capability, "mutation must mismatch normative");
 }

@@ -112,5 +112,5 @@ patterns = [
 # dependency mechanism reports it as pending until the owner records the decision.
 [pending_owner_decisions.fss-ndxis]
 registry_row = "DEP-FUND-001"
-crates = ["serde", "serde_json"]
-question = "serde and serde_json: the FSS-110 blanket ban versus DEP-FUND-001 control-plane admission is undecided"
+crates = ["serde", "serde_json", "zmij"]
+question = "serde and serde_json: the FSS-110 blanket ban versus DEP-FUND-001 control-plane admission is undecided. NOTE 2026-10-18: 'zmij' is serde_json 1.0.154's new transitive crate, pulled into the closure by asupersync's mandatory serde_json dependency (FSS-021/fss-runtime); it rides the SAME pending decision as serde_json, not a new violation — the owner decision covers the serde_json closure as one unit"

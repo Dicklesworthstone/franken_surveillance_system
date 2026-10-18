@@ -89,7 +89,7 @@ pub fn discover(
     cancel: &AtomicBool,
 ) -> Result<DiscoverReport, crate::discovery::census::CensusError> {
     // Stage 1: passive-first listening + standards probes.
-    let beacons = listen(cfg.beacon_seconds, 256, cancel);
+    let beacons = listen(cfg.beacon_seconds, 256, cancel).unwrap_or_default();
     let beacon_index: std::collections::BTreeMap<String, Vec<&TuyaBeaconObs>> = {
         let mut m: std::collections::BTreeMap<String, Vec<&TuyaBeaconObs>> =
             std::collections::BTreeMap::new();

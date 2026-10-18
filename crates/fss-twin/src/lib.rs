@@ -259,3 +259,6 @@ pub mod pretrained_hog;
 
 /// Source-linked multi-camera depth, temporal compensation and mesh visibility diagnostics.
 pub mod multiview;
+
+/// Source-linked position and velocity reconstruction from staggered camera feeds.
+pub mod multiview_motion;

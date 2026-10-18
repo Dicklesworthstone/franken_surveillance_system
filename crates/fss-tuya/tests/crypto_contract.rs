@@ -176,3 +176,24 @@ fn hmac_sha256_rfc4231_long_key() {
         "60e431591ee0b67f0d8a26aacbf5b77f8e0bc6213728c5140546040f0ee37f54"
     );
 }
+
+#[test]
+fn pkcs7_negative_vectors() {
+    use fss_tuya::crypto::{pkcs7_pad, pkcs7_unpad};
+    // Valid final length byte but mismatched interior padding byte.
+    let mut bad = pkcs7_pad(b"abc");
+    let n = bad.len();
+    bad[n - 2] ^= 0x01; // interior pad byte no longer equals padlen
+    assert_eq!(pkcs7_unpad(&bad), None);
+    // Zero padding byte.
+    assert_eq!(pkcs7_unpad(b"abc\x00"), None);
+    // Oversized padding (> 16).
+    let mut over = b"abc".to_vec();
+    over.push(0x11);
+    assert_eq!(pkcs7_unpad(&over), None);
+    // Padding longer than the input.
+    assert_eq!(pkcs7_unpad(&[0x02]), None);
+    // Valid minimal paddings still pass.
+    assert_eq!(pkcs7_unpad(&pkcs7_pad(b"abc")).map(<[u8]>::len), Some(3));
+    assert_eq!(pkcs7_unpad(&pkcs7_pad(b"")).map(<[u8]>::len), Some(0));
+}

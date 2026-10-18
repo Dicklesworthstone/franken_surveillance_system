@@ -85,6 +85,7 @@ impl<W: Write> Transcript<'_, W> {
 #[derive(Default)]
 pub(super) struct Statistics {
     pub(super) source_custody: Option<String>,
+    pub(super) source_custody_unsettled: bool,
     pub(super) steps: u64,
     pub(super) authentication_challenges: u64,
     pub(super) authentication_responses: u64,

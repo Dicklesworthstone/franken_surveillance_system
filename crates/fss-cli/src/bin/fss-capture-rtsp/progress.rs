@@ -181,6 +181,27 @@ impl RecordingProgress {
         }
     }
 
+    /// Account for a measured synchronous storage interval between driver polls.
+    /// Earlier progress expiry stays latched; duration still advances while paused.
+    /// Reject invalid clock/counter input without partially changing the observer.
+    pub(super) fn exclude_storage_interval(
+        &mut self,
+        start: u64,
+        end: u64,
+        playing: bool,
+        enabled: bool,
+        pictures: u64,
+    ) -> Result<(), WatchError> {
+        if end < start {
+            return Err(WatchError::ClockReversed);
+        }
+        let mut next = self.clone();
+        next.observe(start, playing, false, pictures)?;
+        next.observe(end, playing, enabled, pictures)?;
+        *self = next;
+        Ok(())
+    }
+
     pub(super) fn observe(
         &mut self,
         now: u64,
@@ -535,5 +556,86 @@ mod tests {
         ] {
             assert!(report.contains(expected), "missing {expected}: {report}");
         }
+    }
+}
+
+#[cfg(test)]
+mod source_storage_tests {
+    use super::*;
+    fn observer(duration: u64, progress: u64) -> Result<RecordingProgress, &'static str> {
+        let policy = Supervision::with_limits(
+            Some(progress),
+            Some(duration),
+            ContentDigest::sha256(b"source policy"),
+        )?;
+        let mut observer = RecordingProgress::new(Some(policy));
+        observer
+            .observe(0, true, true, 0)
+            .map_err(|_| "initial observation")?;
+        Ok(observer)
+    }
+    #[test]
+    fn source_publication_pauses_only_the_progress_clock() -> Result<(), &'static str> {
+        let mut watch = observer(200, 20)?;
+        watch
+            .exclude_storage_interval(10, 100, true, true, 0)
+            .map_err(|_| "source interval")?;
+        assert_eq!(watch.waited_ns, 10);
+        assert_eq!(watch.paused_ns, 90);
+        assert_eq!(watch.capture_elapsed_ns, 100);
+        assert_eq!(
+            watch
+                .observe(109, true, true, 0)
+                .map_err(|_| "observation")?,
+            None
+        );
+        let stop = watch
+            .observe(110, true, true, 0)
+            .map_err(|_| "observation")?
+            .ok_or("missing stop")?;
+        assert_eq!(stop.cause, StopCause::ProgressStalled);
+        assert_eq!(stop.active_wait_ns, 20);
+        assert_eq!(stop.paused_ns, 90);
+        Ok(())
+    }
+    #[test]
+    fn duration_expiring_during_source_publication_is_not_extended() -> Result<(), &'static str> {
+        let mut watch = observer(50, 20)?;
+        watch
+            .exclude_storage_interval(10, 100, true, true, 0)
+            .map_err(|_| "source interval")?;
+        let stop = watch.expired.ok_or("missing duration")?;
+        assert_eq!(stop.cause, StopCause::CaptureDuration);
+        assert_eq!(stop.capture_elapsed_ns, 100);
+        assert_eq!(stop.active_wait_ns, 10);
+        Ok(())
+    }
+    #[test]
+    fn earlier_progress_failure_cannot_hide_behind_source_storage_or_late_picture()
+    -> Result<(), &'static str> {
+        let mut watch = observer(50, 8)?;
+        watch
+            .exclude_storage_interval(10, 100, true, true, 1)
+            .map_err(|_| "source interval")?;
+        let stop = watch.expired.ok_or("missing progress stop")?;
+        assert_eq!(stop.cause, StopCause::ProgressStalled);
+        assert_eq!(stop.pictures_before_expiry, 0);
+        assert_eq!(stop.observed_ns, 10);
+        Ok(())
+    }
+    #[test]
+    fn invalid_source_interval_is_transactionally_refused() -> Result<(), &'static str> {
+        let mut watch = observer(50, 20)?;
+        watch.observe(5, true, true, 1).map_err(|_| "observation")?;
+        let before = watch.clone();
+        for (start, end, pictures) in [(4, 10, 1), (10, 9, 1), (10, 20, 0)] {
+            assert!(
+                watch
+                    .exclude_storage_interval(start, end, true, true, pictures)
+                    .is_err()
+            );
+            assert_eq!(watch, before);
+        }
+        Ok(())
     }
 }

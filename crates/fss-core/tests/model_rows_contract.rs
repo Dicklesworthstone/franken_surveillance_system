@@ -13,6 +13,18 @@
 use std::collections::BTreeSet;
 use std::error::Error;
 
+
+/// Full canonical row-ID shape: `PREFIX-MIDDLE-NNN` — uppercase segments,
+/// exactly three trailing digits (rejects `COST-1` class of near-misses).
+fn canonical_row_id(id: &str, prefix: &str) -> bool {
+    let Some(rest) = id.strip_prefix(prefix) else { return false };
+    let Some((mid, num)) = rest.rsplit_once('-') else { return false };
+    !mid.is_empty()
+        && mid.bytes().all(|b| b.is_ascii_uppercase() || b.is_ascii_digit() || b == b'-')
+        && num.len() == 3
+        && num.bytes().all(|b| b.is_ascii_digit())
+}
+
 const MODELS_MD: &str = include_str!("../../../registries/MODELS.md");
 
 /// One parsed registry row.
@@ -69,7 +81,7 @@ fn rows_are_unique_canonical_and_complete() -> Result<(), Box<dyn Error>> {
     for row in &rows {
         assert!(ids.insert(row.id.clone()), "duplicate model id {}", row.id);
         assert!(
-            row.id.starts_with("MOD-") && row.id.ends_with(char::is_numeric),
+            canonical_row_id(&row.id, "MOD-"),
             "row id {} violates canonical MOD-*-NNN shape",
             row.id
         );

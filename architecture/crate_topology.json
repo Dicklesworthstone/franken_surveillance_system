@@ -64,7 +64,7 @@
     {
      "name": "fss-runtime",
      "unsafe": "forbid",
-     "status": "planned"
+     "status": "implemented"
     },
     {
      "name": "fss-capability",

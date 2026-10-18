@@ -325,6 +325,13 @@ fn drive<W: Write>(
             }
             return Err(error);
         }
+        source_retention::account_pause(
+            source,
+            &mut progress,
+            capture.state() == ClientState::Playing,
+            ready,
+            stats.collected_pictures,
+        )?;
         match step {
             LiveHevcArchiveStep::Archive(progress) => match *progress {
                 JournaledArchiveProgress::PinPersisted { receipt, .. } => {

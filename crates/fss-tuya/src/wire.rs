@@ -55,6 +55,36 @@ pub mod cmd {
     pub const LAN_EXT_STREAM: u32 = 0x40;
 }
 
+/// The 15-byte protocol version header prepended to 3.4/3.5 payloads for
+/// non-exempt commands (CONTROL/CONTROL_NEW and device STATUS/CONTROL
+/// responses): the ASCII version plus 12 zero bytes. Exempt per the
+/// laboratory oracle: DP_QUERY, DP_QUERY_NEW, UPDATEDPS, HEART_BEAT,
+/// SESS_KEY_NEG_*, LAN_EXT_STREAM.
+pub const PROTOCOL_VERSION_HEADER_34: [u8; 15] = [0x33, 0x2E, 0x34, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0];
+/// The 3.5 variant of the protocol version header.
+pub const PROTOCOL_VERSION_HEADER_35: [u8; 15] = [0x33, 0x2E, 0x35, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0];
+
+/// The three ASCII version bytes at the front of a version header
+/// (`b"3.4"` / `b"3.5"`), for prefix detection on inbound payloads.
+#[must_use]
+pub fn version_prefix(payload: &[u8]) -> Option<usize> {
+    if payload.starts_with(b"3.4") || payload.starts_with(b"3.5") {
+        Some(15)
+    } else {
+        None
+    }
+}
+
+/// Strips an exact 15-byte version header when the payload starts with the
+/// 3-byte version marker; otherwise returns the payload unchanged.
+#[must_use]
+pub fn strip_version_header(payload: &[u8]) -> &[u8] {
+    match version_prefix(payload) {
+        Some(15) if payload.len() >= 15 => &payload[15..],
+        _ => payload,
+    }
+}
+
 /// IEEE CRC32 (the 55AA trailer check), table-free (bitwise, reflected).
 #[must_use]
 pub fn crc32_ieee(data: &[u8]) -> u32 {
@@ -91,6 +121,8 @@ pub enum WireError {
     Integrity,
     /// GCM tag mismatch (wrong key, tampered, or expired session).
     GcmAuth,
+    /// ECB/PKCS7 payload decryption or padding validation failed (3.4 lane).
+    DecryptFailed,
     /// 6699 frame presented without the required key.
     KeyRequired,
 }
@@ -107,6 +139,7 @@ impl core::fmt::Display for WireError {
             WireError::ShortBody => write!(f, "frame body too short"),
             WireError::Integrity => write!(f, "crc/hmac or suffix mismatch"),
             WireError::GcmAuth => write!(f, "gcm tag mismatch"),
+            WireError::DecryptFailed => write!(f, "payload decryption/padding failed"),
             WireError::KeyRequired => write!(f, "6699 frame requires a key"),
         }
     }
@@ -218,14 +251,18 @@ pub fn pack_55aa(
     retcode: Option<u32>,
     payload: &[u8],
     hmac_key: Option<&[u8; 16]>,
-) -> Vec<u8> {
+) -> Result<Vec<u8>, WireError> {
     let tail_len = if hmac_key.is_some() { 36 } else { 8 };
     let body_len = retcode.map_or(0, |_| 4) + payload.len() + tail_len;
+    if body_len > MAX_PAYLOAD_LENGTH {
+        return Err(WireError::LengthOverBound(body_len));
+    }
+    let body_len_u32 = u32::try_from(body_len).map_err(|_| WireError::LengthOverBound(body_len))?;
     let mut out = Vec::with_capacity(16 + body_len);
     out.extend_from_slice(&PREFIX_55AA.to_be_bytes());
     out.extend_from_slice(&seqno.to_be_bytes());
     out.extend_from_slice(&cmd.to_be_bytes());
-    out.extend_from_slice(&(body_len as u32).to_be_bytes());
+    out.extend_from_slice(&body_len_u32.to_be_bytes());
     if let Some(rc) = retcode {
         out.extend_from_slice(&rc.to_be_bytes());
     }
@@ -241,7 +278,7 @@ pub fn pack_55aa(
         }
     }
     out.extend_from_slice(&SUFFIX_55AA);
-    out
+    Ok(out)
 }
 
 /// Unpacks a 55AA frame, verifying CRC32/HMAC and the suffix.
@@ -294,9 +331,10 @@ pub fn unpack_55aa(
 
 /// Packs a 6699 frame (3.5): GCM-seals `[retcode?] | plaintext` under `key`
 /// with AAD = header bytes `[4..20]`; the wire body is
-/// `iv(12) | ciphertext | tag(16)`. When `iv` is `None` a deterministic
-/// zero nonce is used — callers driving real devices MUST supply a unique
-/// nonce per message (the simulator uses deterministic fixture nonces).
+/// `iv(12) | ciphertext | tag(16)`. The caller ALWAYS supplies the nonce;
+/// GCM nonce reuse under one key is catastrophic, so production callers MUST
+/// generate a fresh 12-byte IV per message. The simulator uses deterministic
+/// counter-derived fixture IVs (documented, lab-only).
 #[must_use]
 pub fn pack_6699(
     seqno: u32,
@@ -305,7 +343,7 @@ pub fn pack_6699(
     plaintext: &[u8],
     key: &[u8; 16],
     iv: [u8; 12],
-) -> Vec<u8> {
+) -> Result<Vec<u8>, WireError> {
     let raw_len = retcode.map_or(0, |_| 4) + plaintext.len();
     let mut raw = Vec::with_capacity(raw_len);
     if let Some(rc) = retcode {
@@ -314,18 +352,22 @@ pub fn pack_6699(
     raw.extend_from_slice(plaintext);
     // length covers iv + ciphertext + tag (not the suffix).
     let length = 12 + raw.len() + 16;
+    if length > MAX_PAYLOAD_LENGTH {
+        return Err(WireError::LengthOverBound(length));
+    }
+    let length_u32 = u32::try_from(length).map_err(|_| WireError::LengthOverBound(length))?;
     let mut out = Vec::with_capacity(20 + length + 4);
     out.extend_from_slice(&PREFIX_6699.to_be_bytes());
     out.extend_from_slice(&0u32.to_be_bytes());
     out.extend_from_slice(&seqno.to_be_bytes());
     out.extend_from_slice(&cmd.to_be_bytes());
-    out.extend_from_slice(&(length as u32).to_be_bytes());
+    out.extend_from_slice(&length_u32.to_be_bytes());
     let aad_start = out.len() - 16;
     let sealed = crypto::aes128_gcm_encrypt(key, &iv, &out[aad_start..], &raw);
     out.extend_from_slice(&iv);
     out.extend_from_slice(&sealed);
     out.extend_from_slice(&SUFFIX_6699);
-    out
+    Ok(out)
 }
 
 /// Whether a 6699 payload carries a leading return code. Device→client

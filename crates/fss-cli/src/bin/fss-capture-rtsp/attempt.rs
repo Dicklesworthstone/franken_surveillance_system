@@ -50,7 +50,8 @@ impl AttemptOutcome {
             && stats.durable_pictures == 0
             && stats.durable_windows == 0
             && stats.unpublished_prepared_bytes == 0;
-        let recovery_required = stats.pins.candidate().is_some()
+        let recovery_required = stats.source_custody_unsettled
+            || stats.pins.candidate().is_some()
             || stats.unrecorded_work_receipt.is_some()
             || stats.pending_window.is_some()
             || stats.unpublished_prepared_pictures != 0
@@ -447,5 +448,30 @@ mod tests {
         assert_eq!(outcome.result, Ok(()));
         assert!(!outcome.recovery_required);
         assert!(outcome.retry.is_none());
+    }
+}
+
+#[cfg(test)]
+#[test]
+fn unsettled_source_custody_blocks_every_successor_without_replacing_failure() {
+    for result in [
+        Ok(()), Err(Failure::ConnectionUnavailable), Err(Failure::Shortfall),
+        Err(Failure::ProgressStalled), Err(Failure::ReadInterrupted),
+    ] {
+        let stats = Statistics {
+            source_custody_unsettled: true,
+            connection_attempted: true,
+            input_ended: true,
+            collected_pictures: 2,
+            durable_pictures: 2,
+            durable_windows: 1,
+            indexed_windows: 1,
+            snapshot_digest: Some(fss_core::ContentDigest::sha256(b"finished recording")),
+            ..Statistics::default()
+        };
+        let outcome = AttemptOutcome::new(result, &stats);
+        assert!(outcome.recovery_required);
+        assert!(outcome.retry.is_none());
+        assert_eq!(outcome.result, result.map_err(Failure::code));
     }
 }

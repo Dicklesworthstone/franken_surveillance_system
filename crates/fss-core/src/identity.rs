@@ -1067,6 +1067,8 @@ impl AdapterIdentity {
         // Rule 2 (Defect 1 & 8): Qualifying evidence/spec reference requirement for standards claims
         match self.adapter_kind {
             AdapterKind::OnvifProfileT => {
+                // Concrete evidence only: a bare "proof"/"conformance" word
+                // is marketing, not a specification or gate reference.
                 let has_spec = [
                     "profile t",
                     "profile-t",
@@ -1074,9 +1076,6 @@ impl AdapterIdentity {
                     "onvif profile t",
                     "gate 030",
                     "gate-030",
-                    "test onvif",
-                    "conformance",
-                    "proof",
                 ]
                 .iter()
                 .any(|&s| profile_raw_lower.contains(s) || profile_normalized.contains(s));
@@ -1099,8 +1098,6 @@ impl AdapterIdentity {
                     "rfc 3550",
                     "gate 030",
                     "gate-030",
-                    "test rtsp",
-                    "proof",
                 ]
                 .iter()
                 .any(|&s| profile_raw_lower.contains(s) || profile_normalized.contains(s));
@@ -1114,13 +1111,26 @@ impl AdapterIdentity {
                 }
             }
             AdapterKind::Uvc => {
-                let has_spec = ["uvc", "uac", "gate 020", "gate-020", "test uvc", "proof"]
+                let has_spec = ["uvc", "uac", "gate 020", "gate-020"]
                     .iter()
                     .any(|&s| profile_raw_lower.contains(s) || profile_normalized.contains(s));
                 if !has_spec {
                     return Err(StandardsComplianceError::UnverifiedStandardsClaim {
                         detail: format!(
                             "adapter '{}' claims Uvc without qualifying specification or gate reference in '{}'",
+                            self.adapter_id, self.protocol_profile
+                        ),
+                    });
+                }
+            }
+            AdapterKind::OnvifProfileM => {
+                let has_spec = ["profile m", "profile-m", "profile_m", "onvif profile m", "gate 030", "gate-030"]
+                    .iter()
+                    .any(|&s| profile_raw_lower.contains(s) || profile_normalized.contains(s));
+                if !has_spec {
+                    return Err(StandardsComplianceError::UnverifiedStandardsClaim {
+                        detail: format!(
+                            "adapter '{}' claims OnvifProfileM without qualifying profile/gate reference in '{}'",
                             self.adapter_id, self.protocol_profile
                         ),
                     });
@@ -1167,7 +1177,14 @@ impl AdapterIdentity {
                 || profile_normalized.contains(p)
         });
 
-        if is_proprietary && self.isolation_mode == IsolationMode::NativePureRust {
+        // Kind-based enforcement is text-independent: the owner-authorized
+        // vendor LAN kinds are proprietary BY KIND, so a neutral profile
+        // string cannot launder them into native promotion.
+        let is_vendor_lab_kind = matches!(
+            self.adapter_kind,
+            AdapterKind::TuyaLan | AdapterKind::TutkIotc
+        );
+        if (is_proprietary || is_vendor_lab_kind) && self.isolation_mode == IsolationMode::NativePureRust {
             return Err(StandardsComplianceError::ProprietaryNativePromotion {
                 detail: format!(
                     "adapter '{}' is proprietary/vendor path but specifies NativePureRust; NEG-002 requires SealedLaboratoryProcess isolation",
@@ -1183,6 +1200,21 @@ impl AdapterIdentity {
                     detail: format!(
                         "adapter '{}' uses vendor token authentication without process boundary isolation",
                         self.adapter_id
+                    ),
+                });
+            }
+
+            // Positive scope requirement (not mere absence of suspicious
+            // words): a vendor token identity must declare its single-scope
+            // binding explicitly in the profile.
+            let has_positive_scope = ["scope:device", "scope:account", "scope:single"]
+                .iter()
+                .any(|&m| profile_raw_lower.contains(m) || profile_normalized.contains(m));
+            if !has_positive_scope {
+                return Err(StandardsComplianceError::UnscopedVendorToken {
+                    detail: format!(
+                        "adapter '{}' uses a vendor token without an explicit single-device/account scope marker in profile '{}'",
+                        self.adapter_id, self.protocol_profile
                     ),
                 });
             }

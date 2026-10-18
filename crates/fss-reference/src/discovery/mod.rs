@@ -13,6 +13,7 @@ pub mod liveness;
 pub mod service;
 pub mod standards;
 pub mod watchdog;
+pub mod watchdog_provision;
 
 pub use service::{DeviceCandidate, DiscoverConfig, DiscoverReport, discover};
 

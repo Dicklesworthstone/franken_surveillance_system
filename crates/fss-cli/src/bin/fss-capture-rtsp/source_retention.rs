@@ -22,6 +22,7 @@ pub(super) struct SourceCustody {
     work: WorkBudget<'static>,
     candidate: Option<DatagramPin>,
     failed: bool,
+    pause: Option<(u64, u64)>,
 }
 impl SourceCustody {
     pub(super) fn open(
@@ -59,6 +60,7 @@ impl SourceCustody {
             work,
             candidate: None,
             failed: false,
+            pause: None,
         })
     }
 
@@ -70,9 +72,10 @@ impl SourceCustody {
         log: &mut Transcript<'_, W>,
     ) -> Result<(), Failure> {
         let result = (|| {
-            if self.failed {
+            if self.failed || self.pause.is_some() {
                 return Err(Failure::Storage);
             }
+            let started = owner.now()?;
             let guard = Guard(owner);
             guard.check()?;
             let plan = match input {
@@ -103,11 +106,20 @@ impl SourceCustody {
                     ("source_eof_asserted", "false".into()),
                 ]),
                 false,
-            )
+            )?;
+            self.pause = Some((started, owner.now()?));
+            Ok(())
         })();
         self.failed |= result.is_err();
-        stats.source_custody = Some(self.summary());
+        self.observe(stats);
         result
+    }
+
+    pub(super) fn observe(&self, stats: &mut Statistics) {
+        // A failed or unacknowledged source operation must never be hidden by a
+        // fully drained recording window, an EOF, or a later transient read fault.
+        stats.source_custody_unsettled |= self.failed || self.candidate.is_some();
+        stats.source_custody = Some(self.summary());
     }
 
     pub(super) fn summary(&self) -> String {
@@ -128,6 +140,22 @@ impl SourceCustody {
         ])
     }
 }
+// Charge the measured synchronous source-publication/output interval as a
+// storage pause. Keep the real clock for duration and native deadline checks.
+pub(super) fn account_pause(
+    source: &mut Option<SourceCustody>,
+    progress: &mut RecordingProgress,
+    playing: bool,
+    enabled: bool,
+    pictures: u64,
+) -> Result<(), Failure> {
+    if let Some((start, end)) = source.as_mut().and_then(|source| source.pause.take()) {
+        progress.exclude_storage_interval(start, end, playing, enabled, pictures)
+            .map_err(|_| Failure::State)?;
+    }
+    Ok(())
+}
+
 fn prefix(pin: DatagramPin) -> String {
     object(&[
         ("scope", string(&pin.scope.to_text())),
@@ -278,5 +306,17 @@ impl Guard<'_, '_> {
 impl PublishCancellation for Guard<'_, '_> {
     fn cancel_requested(&self, cut: PublishCutPoint) -> bool {
         self.0.cancel_requested(cut) || self.check().is_err()
+    }
+}
+
+// Keep effectful execution in the native owner, not in the pure source parser.
+// The enclosing reconnect approval delegates this exact single-session grant.
+impl SourceConfig {
+    pub(crate) fn execute_supervised_capture(
+        &self,
+        options: &Options,
+        supervision: Option<Supervision>,
+    ) -> Result<AttemptOutcome, &'static str> {
+        execute_owned_attempt(options, supervision, Some(self))
     }
 }

@@ -191,7 +191,7 @@ fn battery_cam_coverage_never_continuous_and_offline_never_clear() {
     assert!(!w.certifies_absence(), "battery cam can never certify absence");
 
     // Marked offline: excluded from observed domain, reason carried.
-    m.mark_not_observable("rear-door", OfflineReason::Offline);
+    m.mark_not_observable("rear-door", OfflineReason::Offline, interval(4_500)).expect("mark");
     let w = m
         .coverage_witness(
             "rear-door",
@@ -257,6 +257,10 @@ fn unknown_cam_is_a_typed_error_not_a_silent_drop() {
 fn flat_dps_parser_handles_scalars_and_preserves_nested_raw() {
     // via the public mapping paths: strings, numbers, bools all preserved
     let mut m = mapper();
+    // Value-aware: "104":"armed,away" is not a qualifying motion token and
+    // 102:85 is not below the battery-low bound — only unmapped 103 yields
+    // a (raw, uninterpreted) candidate. The splitters comma-in-string
+    // handling is still exercised by the preserved value.
     let digests = m
         .map_event_report(
             "solarium",
@@ -265,29 +269,80 @@ fn flat_dps_parser_handles_scalars_and_preserves_nested_raw() {
             interval(8_000),
         )
         .expect("scalars incl. comma in string");
-    assert_eq!(digests.len(), 3);
-    // Nested values are preserved raw (the flat splitter is depth-aware).
-    // Two deterministic arms: a REGISTERED dp (104 → motion in the lab
-    // fixture registry) still gets its recognized kind with the nested
-    // token verbatim; an UNREGISTERED dp (209) stays UnknownDp with the
-    // nested token verbatim. Neither is rejected; neither is reinterpreted.
+    assert_eq!(digests.len(), 1, "only unmapped 103 yields a candidate");
+    // Value-aware recognition: a registered dp yields an event candidate
+    // ONLY for qualifying values — "104":"idle" is state, not motion. An
+    // unregistered dp stays UnknownDp with its token preserved verbatim.
     let r = m.map_event_report(
         "solarium",
         "fsssimhomebase00",
-        "{\"dps\":{\"104\":{\"nested\":true},\"209\":{\"also\":1}}}",
+        "{\"dps\":{\"104\":\"idle\",\"209\":{\"also\":1}}}",
         interval(9_000),
     );
-    let ds = r.expect("nested values are preserved raw, not rejected");
-    assert_eq!(ds.len(), 2);
-    let texts: Vec<String> = ds
-        .iter()
-        .map(|d| String::from_utf8_lossy(m.custody(d).expect("custody")).into_owned())
-        .collect();
-    let registered = texts.iter().find(|t| t.contains("\"dp_id\":\"104\"")).expect("dp 104 candidate");
-    assert!(registered.contains("\"event_kind\":\"motion\""), "{registered}");
-    assert!(registered.contains("\"raw\":{\"nested\":true}"), "{registered}");
-    let unregistered = texts.iter().find(|t| t.contains("\"dp_id\":\"209\"")).expect("dp 209 candidate");
-    assert!(unregistered.contains("\"event_kind\":\"209\""), "{unregistered}");
-    assert!(unregistered.contains("\"raw\":{\"also\":1}"), "{unregistered}");
+    let ds = r.expect("report maps");
+    assert_eq!(ds.len(), 1, "non-qualifying 104 value produces NO candidate");
+    let text = String::from_utf8_lossy(m.custody(&ds[0]).expect("custody")).into_owned();
+    assert!(text.contains("\"dp_id\":\"209\""), "{text}");
+    assert!(text.contains("\"event_kind\":\"209\""), "{text}");
+    assert!(text.contains("\"raw\":{\"also\":1}"), "{text}");
+    // Qualifying value: "104":"motion" → the motion candidate.
+    let r2 = m.map_event_report(
+        "solarium",
+        "fsssimhomebase00",
+        "{\"dps\":{\"104\":\"motion\"}}",
+        interval(9_100),
+    );
+    let ds2 = r2.expect("qualifying report");
+    assert_eq!(ds2.len(), 1);
+    let text2 = String::from_utf8_lossy(m.custody(&ds2[0]).expect("custody")).into_owned();
+    assert!(text2.contains("\"event_kind\":\"motion\""), "{text2}");
+    // Invalid-JSON tokens are preserved as escaped strings, never embedded
+    // raw into custody JSON.
+    let r3 = m.map_event_report(
+        "solarium",
+        "fsssimhomebase00",
+        "{\"dps\":{\"209\":garbage}}",
+        interval(9_200),
+    );
+    let ds3 = r3.expect("garbage token maps");
+    let text3 = String::from_utf8_lossy(m.custody(&ds3[0]).expect("custody")).into_owned();
+    assert!(text3.contains("\"raw\":\"garbage\""), "escaped: {text3}");
     let _ = EventKind::Motion; // kind surface stays exercised
+}
+
+#[test]
+fn empty_report_is_no_event_and_no_observability_claim() {
+    // Regression (reviewer-found): {"dps":{}} staged zero candidates but
+    // used to bump events_seen and mark the cam observable — letting a
+    // mains-cam-shaped claim reach Continuous coverage with no event.
+    let mut m = mapper();
+    let ds = m
+        .map_event_report("rear-door", "fsssimhomebase00", "{\"dps\":{}}", interval(10_000))
+        .expect("empty report");
+    assert!(ds.is_empty());
+    assert_eq!(
+        m.observability("rear-door"),
+        Some(&CamObservability::NotObservable {
+            reason: OfflineReason::NeverObserved
+        }),
+        "empty report must not flip observability"
+    );
+}
+
+#[test]
+fn restaged_object_coalesces_and_commit_succeeds() {
+    // Regression (reviewer-found): two reports for the same (cam, dp) before
+    // one commit must NOT stage two generations of one object — the ledger
+    // admits one delta per object per batch. The later report supersedes.
+    let mut m = mapper();
+    m.map_event_report("rear-door", "fsssimhomebase00", "{\"dps\":{\"104\":\"motion\"}}", interval(11_000))
+        .expect("first report");
+    m.map_event_report("rear-door", "fsssimhomebase00", "{\"dps\":{\"104\":\"motion\"}}", interval(11_500))
+        .expect("restaged report");
+    let batch = m.commit_pending().expect("commit").expect("non-empty");
+    let b = m.ledger().batches().iter().find(|b| b.batch_id == batch).expect("batch");
+    let ids: Vec<&str> = b.deltas.iter().map(|d| d.object_id.as_str()).collect();
+    let unique: std::collections::BTreeSet<_> = ids.iter().collect();
+    assert_eq!(unique.len(), ids.len(), "one delta per object per batch");
+    assert_eq!(m.ledger().current().anchor.commit_sequence, 1);
 }

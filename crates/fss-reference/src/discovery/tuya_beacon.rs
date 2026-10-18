@@ -60,11 +60,18 @@ pub struct TuyaBeaconObs {
 /// Stable command name.
 #[must_use]
 pub fn cmd_name(cmd: u32) -> &'static str {
+    // Shared command numbering (fss-tuya wire::cmd; tinytuya command_types):
+    // 0x09 is HEART_BEAT and 0x0A is DP_QUERY — the earlier STATUS/LAN_CTRL
+    // names were wrong.
     match cmd {
         tcmd::UDP_NEW => "UDP_NEW",
         tcmd::BOARDCAST_LPV34 => "BOARDCAST_LPV34",
-        0x09 => "STATUS",
-        0x0A => "LAN_CTRL",
+        tcmd::HEART_BEAT => "HEART_BEAT",
+        tcmd::DP_QUERY => "DP_QUERY",
+        tcmd::DP_QUERY_NEW => "DP_QUERY_NEW",
+        tcmd::STATUS => "STATUS",
+        tcmd::CONTROL => "CONTROL",
+        tcmd::CONTROL_NEW => "CONTROL_NEW",
         _ => "UNKNOWN",
     }
 }
@@ -115,29 +122,54 @@ pub fn decode_beacon(source: &str, data: &[u8]) -> Result<TuyaBeaconObs, tuya_wi
             });
         }
     } else {
-        payload = &data[h.header_len..h.total - 16];
+        // 6699 body layout: header20 | iv(12) | ciphertext | gcm tag(16) |
+        // suffix 0x00009966. The full sealed body is [20 .. total-4); the
+        // previous total-16 boundary truncated the tag.
+        payload = &data[h.header_len..h.total - 4];
         version_hint_6699();
     }
     // encrypted payload: decrypt only the well-known-udpkey path
     let (payload_json, encrypted) = if is_55aa && h.cmd == tcmd::UDP_NEW {
         match tuya_crypto::aes128_ecb_decrypt_raw(&tuya_wire::UDP_BROADCAST_KEY, payload) {
-            Some(plain) => (
-                Some(
-                    String::from_utf8_lossy(&plain)
-                        .trim_end_matches('\0')
-                        .to_owned(),
-                ),
-                None,
-            ),
+            Some(plain) => {
+                // Sim-produced beacons carry PKCS7 padding; real captures
+                // may carry trailing noise after the JSON terminator.
+                let unpadded = tuya_crypto::pkcs7_unpad(&plain).unwrap_or(&plain);
+                (
+                    Some(String::from_utf8_lossy(unpadded).trim_end_matches('\0').to_owned()),
+                    None,
+                )
+            }
             None => (None, Some("udpkey decrypt failed")),
         }
-    } else if is_55aa {
-        (None, Some("device local_key required"))
+    } else if !is_55aa {
+        // 3.5 LAN discovery: 6699 frames on UDP with the SAME well-known
+        // udpkey (GCM). Try it; a device-keyed 6699 frame stays labeled.
+        match tuya_wire::unpack_6699_mode(data, &tuya_wire::UDP_BROADCAST_KEY, tuya_wire::RetcodeMode::Auto) {
+            Ok(m) => (
+                Some(String::from_utf8_lossy(&m.payload).trim_end_matches('\0').to_owned()),
+                None,
+            ),
+            Err(_) => (None, Some("3.5 GCM requires device local_key")),
+        }
     } else {
-        (None, Some("3.5 GCM requires device local_key"))
+        // 55AA, not UDP_NEW: the payload needs the device local_key.
+        (None, Some("device local_key required"))
     };
+    // The version hint must come from DECRYPTED content when we have it —
+    // deriving it from ciphertext mislabels 3.4/3.5 announcements as
+    // "pre-3.3" (ciphertext never starts with a readable version string).
     let vh = if is_55aa {
-        version_hint(h.cmd, payload)
+        match &payload_json {
+            Some(json) if json.contains("\"version\":\"3.4\"")
+                || json.contains("\"version\":\"3.5\"") =>
+            {
+                "3.4/3.5 UDP announcement (udpkey payload)"
+            }
+            _ => version_hint(h.cmd, payload),
+        }
+    } else if payload_json.is_some() {
+        "3.5 UDP announcement (6699, udpkey payload)"
     } else {
         version_hint_6699()
     };
@@ -172,11 +204,15 @@ fn version_hint_6699() -> &'static str {
 }
 
 /// Listens on :6667 for `seconds`, decoding up to `max_beacons` beacons.
-/// Cancellation-checked per receive; socket drops closed.
-pub fn listen(seconds: u64, max_beacons: usize, cancel: &AtomicBool) -> Vec<TuyaBeaconObs> {
-    let sock = UdpSocket::bind(("0.0.0.0", TUYA_BEACON_PORT)).expect("bind :6667");
-    sock.set_read_timeout(Some(Duration::from_millis(200)))
-        .expect("socket options");
+/// Cancellation-checked per receive; socket drops closed. Bind/option
+/// failures are typed errors, never thread panics.
+pub fn listen(
+    seconds: u64,
+    max_beacons: usize,
+    cancel: &AtomicBool,
+) -> std::io::Result<Vec<TuyaBeaconObs>> {
+    let sock = UdpSocket::bind(("0.0.0.0", TUYA_BEACON_PORT))?;
+    sock.set_read_timeout(Some(Duration::from_millis(200)))?;
     let deadline = std::time::Instant::now() + Duration::from_secs(seconds);
     let mut out = Vec::new();
     let mut buf = [0u8; MAX_DATAGRAM];
@@ -193,7 +229,7 @@ pub fn listen(seconds: u64, max_beacons: usize, cancel: &AtomicBool) -> Vec<Tuya
             Err(_) => continue,
         }
     }
-    out
+    Ok(out)
 }
 
 /// The real captured AOSU homebase beacon (lab scans/tuya_beacon.hex),
@@ -285,5 +321,34 @@ mod tests {
         data[last] ^= 0xFF;
         let obs = decode_beacon("x", &data).unwrap();
         assert!(!obs.crc_good);
+    }
+
+    #[test]
+    fn beacon_6699_udp_new_decrypts_with_udpkey_gcm() {
+        // 3.5 LAN discovery: 6699-framed UDP announcement sealed with the
+        // well-known udpkey (AES-128-GCM) — decrypts WITHOUT the device key.
+        let payload = b"{\"ip\":\"192.0.2.90\",\"gwId\":\"sim6699\",\"version\":\"3.5\"}";
+        let frame = fss_tuya::wire::pack_6699(
+            1,
+            tcmd::UDP_NEW,
+            None,
+            payload,
+            &tuya_wire::UDP_BROADCAST_KEY,
+            *b"0123456789ab",
+        )
+        .expect("pack");
+        let obs = decode_beacon("192.0.2.90:6667", &frame).expect("decode 6699");
+        assert_eq!(obs.frame, "6699");
+        let json = obs.payload_json.as_deref().expect("udpkey GCM decrypts");
+        assert!(json.contains("\"gwId\":\"sim6699\""), "{json}");
+        assert_eq!(obs.version_hint, "3.5 UDP announcement (6699, udpkey payload)");
+    }
+
+    #[test]
+    fn cmd_names_follow_the_shared_numbering() {
+        assert_eq!(cmd_name(tcmd::HEART_BEAT), "HEART_BEAT");
+        assert_eq!(cmd_name(tcmd::DP_QUERY), "DP_QUERY");
+        assert_eq!(cmd_name(tcmd::UDP_NEW), "UDP_NEW");
+        assert_eq!(cmd_name(tcmd::BOARDCAST_LPV34), "BOARDCAST_LPV34");
     }
 }

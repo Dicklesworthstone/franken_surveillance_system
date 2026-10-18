@@ -973,6 +973,13 @@ fn drive<W: Write>(
             .poll(readiness, owner.now()?, owner, owner)
             .map_err(|e| failure(e, stats))?;
         source_retention::observe_avc(source, &step, owner, stats, log)?;
+        source_retention::account_pause(
+            source,
+            &mut progress,
+            capture.state() == ClientState::Playing,
+            ready,
+            stats.collected_pictures,
+        )?;
         match step {
             JournaledLiveArchiveStep::Checkpoint(progress) => match *progress {
                 JournaledArchiveProgress::PinPersisted { receipt, .. } => {

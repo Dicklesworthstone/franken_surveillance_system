@@ -1,14 +1,12 @@
 #![forbid(unsafe_code)]
 //! Wire-framing contract tests: CRC32 known vector, 55AA round-trips
 //! (CRC + HMAC trailers), the oracle-verified 6699 golden frame, retcode
-//! heuristics, and both session-key derivations.
+//! heuristics, boundary/oversize refusal, and both session-key derivations.
 
 use fss_tuya::wire::{
     self, RetcodeMode, WireError, cmd, crc32_ieee, derive_session_key_34, derive_session_key_35,
     pack_55aa, pack_6699, parse_header, unpack_55aa, unpack_6699, unpack_6699_mode,
 };
-
-
 
 fn unhex(s: &str) -> Vec<u8> {
     (0..s.len())
@@ -30,15 +28,13 @@ fn crc32_known_vector() {
 #[test]
 fn frame_55aa_crc_roundtrip() {
     let payload = b"{\"dps\":{\"1\":true}}";
-    let frame = pack_55aa(42, cmd::DP_QUERY, Some(0), payload, None);
-    let h = parse_header(&frame);
-    let h = h.expect("header: {e}");
+    let frame = pack_55aa(42, cmd::DP_QUERY, Some(0), payload, None).expect("pack");
+    let h = parse_header(&frame).expect("header");
     assert_eq!(h.prefix, wire::PREFIX_55AA);
     assert_eq!(h.seqno, 42);
     assert_eq!(h.cmd, cmd::DP_QUERY);
     assert_eq!(h.total, frame.len());
-    let msg = unpack_55aa(&frame, None, false);
-    let msg = msg.expect("unpack: {e}");
+    let msg = unpack_55aa(&frame, None, false).expect("unpack");
     assert_eq!(msg.payload, payload);
     assert_eq!(msg.retcode, Some(0));
 }
@@ -54,9 +50,10 @@ fn frame_55aa_hmac_golden() {
         "0000aa55"
     ));
     let key = *b"0123456789abcdef";
-    let ours = pack_55aa(9, cmd::STATUS, Some(0), b"{\"dps\":{\"20\":false}}", Some(&key));
+    let ours = pack_55aa(9, cmd::STATUS, Some(0), b"{\"dps\":{\"20\":false}}", Some(&key))
+        .expect("pack");
     assert_eq!(hex(&ours), hex(&golden), "byte-exact vs oracle");
-    let msg = unpack_55aa(&golden, Some(&key), false).expect("unpack golden: {e}");
+    let msg = unpack_55aa(&golden, Some(&key), false).expect("unpack golden");
     assert_eq!(msg.payload, b"{\"dps\":{\"20\":false}}");
     // Wrong HMAC key must fail integrity.
     let bad = unpack_55aa(&golden, Some(b"9999999999999999"), false);
@@ -75,9 +72,10 @@ fn frame_6699_golden() {
     let iv: [u8; 12] = unhex("000102030405060708090a0b")
         .try_into()
         .unwrap_or([0; 12]);
-    let ours = pack_6699(7, cmd::DP_QUERY, Some(0), b"{\"dps\":{\"1\":true}}", &key, iv);
+    let ours = pack_6699(7, cmd::DP_QUERY, Some(0), b"{\"dps\":{\"1\":true}}", &key, iv)
+        .expect("pack");
     assert_eq!(hex(&ours), hex(&golden), "byte-exact vs oracle");
-    let msg = unpack_6699(&golden, &key).expect("unpack golden: {e}");
+    let msg = unpack_6699(&golden, &key).expect("unpack golden");
     assert_eq!(msg.payload, b"{\"dps\":{\"1\":true}}");
     assert_eq!(msg.retcode, Some(0));
     assert_eq!(msg.iv, Some(iv));
@@ -89,13 +87,13 @@ fn frame_6699_no_retcode_roundtrip() {
     let key = *b"0123456789abcdef";
     let nonce = *b"fedcba9876543210";
     let iv: [u8; 12] = *b"0123456789ab";
-    let frame = pack_6699(1, cmd::SESS_KEY_NEG_START, None, &nonce, &key, iv);
-    let msg = unpack_6699_mode(&frame, &key, RetcodeMode::Absent).expect("unpack: {e}");
+    let frame = pack_6699(1, cmd::SESS_KEY_NEG_START, None, &nonce, &key, iv).expect("pack");
+    let msg = unpack_6699_mode(&frame, &key, RetcodeMode::Absent).expect("unpack");
     assert_eq!(msg.payload, nonce);
     assert_eq!(msg.retcode, None);
     // Auto heuristic on binary payloads keeps the payload whole when
     // byte 4 is not '{' (mirrors the laboratory oracle).
-    let auto = unpack_6699(&frame, &key).expect("unpack auto: {e}");
+    let auto = unpack_6699(&frame, &key).expect("unpack auto");
     assert_eq!(auto.payload, nonce);
 }
 
@@ -107,19 +105,19 @@ fn frame_bad_inputs_are_typed_errors() {
         parse_header(&bad_prefix),
         Err(WireError::BadPrefix(0x1234))
     );
-    let mut frame = pack_55aa(1, cmd::HEART_BEAT, Some(0), b"", None);
+    let mut frame = pack_55aa(1, cmd::HEART_BEAT, Some(0), b"", None).expect("pack");
     frame.truncate(frame.len() - 2);
     let e = parse_header(&frame);
     assert!(matches!(e, Err(WireError::Truncated { .. })), "{e:?}");
     // Corrupt CRC → Integrity, never silent.
-    let mut frame = pack_55aa(1, cmd::HEART_BEAT, Some(0), b"", None);
+    let mut frame = pack_55aa(1, cmd::HEART_BEAT, Some(0), b"", None).expect("pack");
     let idx = frame.len() - 5;
     if let Some(b) = frame.get_mut(idx) {
         *b ^= 0x01;
     }
     assert_eq!(unpack_55aa(&frame, None, false), Err(WireError::Integrity));
     // Corrupt suffix → Integrity.
-    let mut frame = pack_55aa(1, cmd::HEART_BEAT, Some(0), b"", None);
+    let mut frame = pack_55aa(1, cmd::HEART_BEAT, Some(0), b"", None).expect("pack");
     let idx = frame.len() - 1;
     if let Some(b) = frame.get_mut(idx) {
         *b ^= 0xFF;
@@ -127,11 +125,47 @@ fn frame_bad_inputs_are_typed_errors() {
     assert_eq!(unpack_55aa(&frame, None, false), Err(WireError::Integrity));
     // 6699 with wrong key → GcmAuth.
     let key = *b"0123456789abcdef";
-    let f = pack_6699(1, cmd::STATUS, Some(0), b"{}", &key, [0u8; 12]);
+    let f = pack_6699(1, cmd::STATUS, Some(0), b"{}", &key, [0u8; 12]).expect("pack");
     assert_eq!(
         unpack_6699(&f, b"9999999999999999"),
         Err(WireError::GcmAuth)
     );
+}
+
+#[test]
+fn oversize_payloads_fail_explicitly_and_boundary_roundtrips() {
+    // Over the protocol sanity bound: refused at pack time, never emitted.
+    let over = vec![0xAB; wire::MAX_PAYLOAD_LENGTH];
+    assert_eq!(
+        pack_55aa(1, cmd::STATUS, Some(0), &over, None),
+        Err(WireError::LengthOverBound(4 + wire::MAX_PAYLOAD_LENGTH + 8))
+    );
+    let over6699 = vec![0xAB; wire::MAX_PAYLOAD_LENGTH];
+    assert!(matches!(
+        pack_6699(1, cmd::STATUS, Some(0), &over6699, b"0123456789abcdef", [0u8; 12]),
+        Err(WireError::LengthOverBound(_))
+    ));
+    // At the boundary (frame exactly at the declared maximum): packs and
+    // decodes identically.
+    let at_bound_payload = vec![0xCD; wire::MAX_PAYLOAD_LENGTH - 4 - 8];
+    let frame = pack_55aa(1, cmd::STATUS, Some(0), &at_bound_payload, None).expect("at bound");
+    let h = parse_header(&frame).expect("header at bound");
+    assert_eq!(h.length, wire::MAX_PAYLOAD_LENGTH);
+    let msg = unpack_55aa(&frame, None, false).expect("unpack at bound");
+    assert_eq!(msg.payload.len(), at_bound_payload.len());
+    // One byte past the bound: pack refuses.
+    let past = vec![0xCD; wire::MAX_PAYLOAD_LENGTH - 4 - 8 + 1];
+    assert!(matches!(
+        pack_55aa(1, cmd::STATUS, Some(0), &past, None),
+        Err(WireError::LengthOverBound(_))
+    ));
+    // Declared length over the bound on the wire: refused at parse.
+    let mut declared = pack_55aa(1, cmd::STATUS, Some(0), b"{}", None).expect("pack");
+    declared[12..16].copy_from_slice(&(wire::MAX_PAYLOAD_LENGTH as u32 + 1).to_be_bytes());
+    assert!(matches!(
+        parse_header(&declared),
+        Err(WireError::LengthOverBound(_))
+    ));
 }
 
 #[test]

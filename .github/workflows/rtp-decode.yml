@@ -47,10 +47,10 @@ jobs:
       CARGO_NET_OFFLINE: 'true'
     steps:
       - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
-      - name: Execute repository-owned Rust lane
-        run: bash scripts/qualify.sh --lane rust --receipt-dir "${{ runner.temp }}/qualification-receipt"
       - name: Provision pinned toolchain
         run: bash scripts/bootstrap_toolchain.sh
+      - name: Execute repository-owned Rust lane
+        run: bash scripts/qualify.sh --lane rust --receipt-dir "${{ runner.temp }}/qualification-receipt"
       - name: Native recorded and retained RTP contracts
         run: bash scripts/check_rtp_decode.sh tests
       - name: Check recorded decoder formatting

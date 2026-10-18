@@ -234,12 +234,18 @@ pub fn pkcs7_pad(data: &[u8]) -> Vec<u8> {
     out
 }
 
-/// PKCS7 unpad; `None` when the padding is structurally invalid.
+/// PKCS7 unpad per RFC 5652 §6.3: the final byte gives the padding length
+/// and every padding byte must equal it. `None` on any violation — a
+/// trailing garbage block can never masquerade as padding.
 #[must_use]
 pub fn pkcs7_unpad(data: &[u8]) -> Option<&[u8]> {
     let &last = data.last()?;
     let padlen = usize::from(last);
     if !(1..=16).contains(&padlen) || padlen > data.len() {
+        return None;
+    }
+    let padding = &data[data.len() - padlen..];
+    if padding.iter().any(|&b| usize::from(b) != padlen) {
         return None;
     }
     Some(&data[..data.len() - padlen])

@@ -25,7 +25,7 @@ fn sim_35() -> HomebaseSim {
 /// Client-side negotiation step 1: send cmd 3, expect cmd 4, verify the
 /// device HMAC proof, return (device_nonce, client_proof_to_send).
 fn client_negotiate(sim: &mut HomebaseSim, key: &[u8; 16]) -> Option<([u8; 16], Vec<u8>)> {
-    let start = pack_6699(1, cmd::SESS_KEY_NEG_START, None, CLIENT_NONCE, key, CLIENT_IV);
+    let start = pack_6699(1, cmd::SESS_KEY_NEG_START, None, CLIENT_NONCE, key, CLIENT_IV).expect("pack");
     let resp = sim.handle(&start);
     if resp.len() != 1 {
         return None;
@@ -51,7 +51,7 @@ fn negotiation_success_then_session_traffic() {
     assert!(sim.events().contains(&SimEvent::NegotiationStarted));
 
     // Step 3: client proof. The device does not ACK; the session goes live.
-    let fin = pack_6699(2, cmd::SESS_KEY_NEG_FINISH, None, &finish, CLIENT_KEY, CLIENT_IV);
+    let fin = pack_6699(2, cmd::SESS_KEY_NEG_FINISH, None, &finish, CLIENT_KEY, CLIENT_IV).expect("pack");
     let ack = sim.handle(&fin);
     assert!(ack.is_empty(), "no finish ACK on the wire");
     assert!(sim.is_established());
@@ -64,47 +64,53 @@ fn negotiation_success_then_session_traffic() {
 
     // Heartbeat under the session key.
     let sess = sim.session_key().expect("no session key");
-    let hb = pack_6699(3, cmd::HEART_BEAT, None, b"", &sess, CLIENT_IV);
+    let hb = pack_6699(3, cmd::HEART_BEAT, None, b"", &sess, CLIENT_IV).expect("pack");
     let resp = sim.handle(&hb);
     assert_eq!(resp.len(), 1);
-    let msg = unpack_6699(&resp[0], &sess).expect("heartbeat resp: {e}");
+    let msg = unpack_6699_mode(&resp[0], &sess, RetcodeMode::Present).expect("heartbeat resp");
     assert_eq!(msg.cmd, cmd::HEART_BEAT);
     assert!(sim.events().contains(&SimEvent::Heartbeat));
 
     // dp_query returns the model fixture dps.
-    let q = pack_6699(4, cmd::DP_QUERY, None, b"", &sess, CLIENT_IV);
+    let q = pack_6699(4, cmd::DP_QUERY, None, b"", &sess, CLIENT_IV).expect("pack");
     let resp = sim.handle(&q);
     assert_eq!(resp.len(), 1);
-    let msg = unpack_6699(&resp[0], &sess).expect("dp_query resp: {e}");
+    let msg = unpack_6699_mode(&resp[0], &sess, RetcodeMode::Present).expect("dp_query resp");
     assert_eq!(msg.cmd, cmd::STATUS);
+    // Device-faithful: STATUS responses carry the 15-byte version header
+    // inside the sealed payload; strip it (client handle() does the same).
     assert_eq!(
-        msg.payload,
+        wire::strip_version_header(&msg.payload),
         ModelFixture::AosuHomebase.dps_json().as_bytes()
     );
     assert!(sim.events().contains(&SimEvent::DpsQuery));
 
     // Control ACK echoes the write payload.
     let ctl_payload = b"{\"dps\":{\"101\":\"disarmed\"}}";
-    let ctl = pack_6699(5, cmd::CONTROL, None, ctl_payload, &sess, CLIENT_IV);
+    let ctl = pack_6699(5, cmd::CONTROL, None, ctl_payload, &sess, CLIENT_IV).expect("pack");
     let resp = sim.handle(&ctl);
     assert_eq!(resp.len(), 1);
-    let msg = unpack_6699(&resp[0], &sess).expect("control resp: {e}");
+    let msg = unpack_6699_mode(&resp[0], &sess, RetcodeMode::Present).expect("control resp");
     assert_eq!(msg.cmd, cmd::CONTROL);
-    assert_eq!(msg.payload, ctl_payload);
+    assert_eq!(wire::strip_version_header(&msg.payload), ctl_payload);
     assert!(sim.events().contains(&SimEvent::ControlAcked));
 
     // Unsolicited event frame decodes under the session key.
     let ev = sim.event_motion_status().expect("event frame required with live session");
-    let msg = unpack_6699(&ev, &sess).expect("event frame: {e}");
+    let msg = unpack_6699_mode(&ev, &sess, RetcodeMode::Present).expect("event frame");
     assert_eq!(msg.cmd, cmd::STATUS);
-    assert_eq!(msg.payload, ModelFixture::AosuHomebase.event_json().as_bytes());
+    // Event frames carry the version header like any STATUS response.
+    assert_eq!(
+        wire::strip_version_header(&msg.payload),
+        ModelFixture::AosuHomebase.event_json().as_bytes()
+    );
 }
 
 #[test]
 fn wrong_key_is_rejected_silently() {
     let mut sim = sim_35();
     // Client used the wrong key: the GCM tag fails on the device.
-    let start = pack_6699(1, cmd::SESS_KEY_NEG_START, None, CLIENT_NONCE, WRONG_KEY, CLIENT_IV);
+    let start = pack_6699(1, cmd::SESS_KEY_NEG_START, None, CLIENT_NONCE, WRONG_KEY, CLIENT_IV).expect("pack");
     let resp = sim.handle(&start);
     assert!(resp.is_empty(), "wrong-key frames get silence, not errors");
     assert!(sim.events().contains(&SimEvent::WrongKeyRejected));
@@ -116,7 +122,7 @@ fn wrong_proof_finish_is_rejected() {
     let mut sim = sim_35();
     let (_dn, _finish)= client_negotiate(&mut sim, CLIENT_KEY).expect("negotiation steps 1-2 failed");
     let bad_proof = [0xEEu8; 32];
-    let fin = pack_6699(2, cmd::SESS_KEY_NEG_FINISH, None, &bad_proof, CLIENT_KEY, CLIENT_IV);
+    let fin = pack_6699(2, cmd::SESS_KEY_NEG_FINISH, None, &bad_proof, CLIENT_KEY, CLIENT_IV).expect("pack");
     let resp = sim.handle(&fin);
     assert!(resp.is_empty());
     assert!(!sim.is_established());
@@ -129,19 +135,19 @@ fn session_expiry_after_budget() {
     cfg.session_ttl_msgs = 1;
     let mut sim = HomebaseSim::new(cfg);
     let (_dn, finish) = client_negotiate(&mut sim, CLIENT_KEY).expect("negotiation failed");
-    let fin = pack_6699(2, cmd::SESS_KEY_NEG_FINISH, None, &finish, CLIENT_KEY, CLIENT_IV);
+    let fin = pack_6699(2, cmd::SESS_KEY_NEG_FINISH, None, &finish, CLIENT_KEY, CLIENT_IV).expect("pack");
     sim.handle(&fin);
     let sess = sim.session_key().expect("no session key");
     // First heartbeat OK (seen=1 <= ttl).
-    let hb = pack_6699(3, cmd::HEART_BEAT, None, b"", &sess, CLIENT_IV);
+    let hb = pack_6699(3, cmd::HEART_BEAT, None, b"", &sess, CLIENT_IV).expect("pack");
     assert_eq!(sim.handle(&hb).len(), 1);
     // Second exceeds the budget: session dropped, silence.
-    let hb2 = pack_6699(4, cmd::HEART_BEAT, None, b"", &sess, CLIENT_IV);
+    let hb2 = pack_6699(4, cmd::HEART_BEAT, None, b"", &sess, CLIENT_IV).expect("pack");
     assert!(sim.handle(&hb2).is_empty());
     assert!(sim.events().contains(&SimEvent::SessionExpired));
     assert!(!sim.is_established());
     // A third frame under the now-dead session key is also rejected.
-    let hb3 = pack_6699(5, cmd::HEART_BEAT, None, b"", &sess, CLIENT_IV);
+    let hb3 = pack_6699(5, cmd::HEART_BEAT, None, b"", &sess, CLIENT_IV).expect("pack");
     assert!(sim.handle(&hb3).is_empty());
 }
 
@@ -150,7 +156,7 @@ fn offline_then_reboot_recovers() {
     let mut cfg = SimConfig::v35_homebase();
     cfg.offline_for_msgs = 2;
     let mut sim = HomebaseSim::new(cfg);
-    let start = pack_6699(1, cmd::SESS_KEY_NEG_START, None, CLIENT_NONCE, CLIENT_KEY, CLIENT_IV);
+    let start = pack_6699(1, cmd::SESS_KEY_NEG_START, None, CLIENT_NONCE, CLIENT_KEY, CLIENT_IV).expect("pack");
     assert!(sim.handle(&start).is_empty());
     assert!(sim.handle(&start).is_empty());
     assert_eq!(
@@ -173,7 +179,7 @@ fn malformed_input_is_dropped_not_fatal() {
     assert!(resp.is_empty());
     assert!(sim.events().contains(&SimEvent::MalformedInput));
     // Garbage with a valid prefix but corrupt GCM.
-    let mut junk = pack_6699(1, cmd::SESS_KEY_NEG_START, None, CLIENT_NONCE, CLIENT_KEY, CLIENT_IV);
+    let mut junk = pack_6699(1, cmd::SESS_KEY_NEG_START, None, CLIENT_NONCE, CLIENT_KEY, CLIENT_IV).expect("pack");
     let idx = junk.len() - 6;
     if let Some(b) = junk.get_mut(idx) {
         *b ^= 0x40;
@@ -186,7 +192,7 @@ fn malformed_response_injection_is_detectable() {
     let mut cfg = SimConfig::v35_homebase();
     cfg.malformed = MalformedMode::BadSuffix;
     let mut sim = HomebaseSim::new(cfg);
-    let start = pack_6699(1, cmd::SESS_KEY_NEG_START, None, CLIENT_NONCE, CLIENT_KEY, CLIENT_IV);
+    let start = pack_6699(1, cmd::SESS_KEY_NEG_START, None, CLIENT_NONCE, CLIENT_KEY, CLIENT_IV).expect("pack");
     let resp = sim.handle(&start);
     assert_eq!(resp.len(), 1);
     let unpacked = unpack_6699(&resp[0], CLIENT_KEY);
@@ -229,19 +235,96 @@ fn proto_34_session_roundtrip() {
 
     let start_pt = CLIENT_NONCE.to_vec();
     let start_sealed = fss_tuya::crypto::aes128_ecb_encrypt_pkcs7(CLIENT_KEY, &start_pt);
-    let start = wire::pack_55aa(1, cmd::SESS_KEY_NEG_START, None, &start_sealed, Some(CLIENT_KEY));
+    let start = wire::pack_55aa(1, cmd::SESS_KEY_NEG_START, None, &start_sealed, Some(CLIENT_KEY)).expect("pack");
     let resp = sim.handle(&start);
     assert_eq!(resp.len(), 1, "cmd3 gets a cmd4 response");
-    let m = wire::unpack_55aa(&resp[0], Some(CLIENT_KEY), false).expect("cmd4 unpack: {e}");
+    let m = wire::unpack_55aa(&resp[0], Some(CLIENT_KEY), false).expect("cmd4 unpack");
     assert_eq!(m.cmd, cmd::SESS_KEY_NEG_RESP);
     let pt = fss_tuya::crypto::aes128_ecb_decrypt_pkcs7(CLIENT_KEY, &m.payload).expect("cmd4 decrypt");
     assert_eq!(pt.len(), 48);
     let device_nonce: [u8; 16] = pt[..16].try_into().expect("nonce slice");
     let finish = hmac_sha256(CLIENT_KEY, &device_nonce);
     let fin_sealed = fss_tuya::crypto::aes128_ecb_encrypt_pkcs7(CLIENT_KEY, &finish);
-    let fin = wire::pack_55aa(2, cmd::SESS_KEY_NEG_FINISH, None, &fin_sealed, Some(CLIENT_KEY));
+    let fin = wire::pack_55aa(2, cmd::SESS_KEY_NEG_FINISH, None, &fin_sealed, Some(CLIENT_KEY)).expect("pack");
     sim.handle(&fin);
     assert!(sim.is_established());
     let expect = wire::derive_session_key_34(CLIENT_KEY, CLIENT_NONCE, &device_nonce).expect("derive 3.4");
     assert_eq!(sim.session_key(), Some(expect));
+}
+
+#[test]
+fn proto_34_renegotiation_on_live_session_is_answerable() {
+    // Regression (reviewer-found): with an established 3.4 session, a fresh
+    // cmd-3 keyed with the LOCAL key must still be answered — devices allow
+    // renegotiation; previously the sim verified everything under the
+    // session key and silently dropped it.
+    let mut cfg = SimConfig::v35_homebase();
+    cfg.proto = Proto::V34;
+    let mut sim = HomebaseSim::new(cfg);
+    // First negotiation.
+    let start_sealed = fss_tuya::crypto::aes128_ecb_encrypt_pkcs7(CLIENT_KEY, CLIENT_NONCE);
+    let start = wire::pack_55aa(1, cmd::SESS_KEY_NEG_START, None, &start_sealed, Some(CLIENT_KEY))
+        .expect("pack");
+    let resp = sim.handle(&start);
+    assert_eq!(resp.len(), 1);
+    let m = wire::unpack_55aa(&resp[0], Some(CLIENT_KEY), false).expect("cmd4");
+    let pt = fss_tuya::crypto::aes128_ecb_decrypt_pkcs7(CLIENT_KEY, &m.payload).expect("decrypt");
+    let dn: [u8; 16] = pt[..16].try_into().expect("nonce");
+    let finish = hmac_sha256(CLIENT_KEY, &dn);
+    let fin_sealed = fss_tuya::crypto::aes128_ecb_encrypt_pkcs7(CLIENT_KEY, &finish);
+    let fin = wire::pack_55aa(2, cmd::SESS_KEY_NEG_FINISH, None, &fin_sealed, Some(CLIENT_KEY))
+        .expect("pack");
+    sim.handle(&fin);
+    assert!(sim.is_established());
+    // Second negotiation mid-session: answered, not dropped.
+    let start2_sealed = fss_tuya::crypto::aes128_ecb_encrypt_pkcs7(CLIENT_KEY, b"ABCDEFGHIJKLMNOP");
+    let start2 = wire::pack_55aa(3, cmd::SESS_KEY_NEG_START, None, &start2_sealed, Some(CLIENT_KEY))
+        .expect("pack");
+    let resp2 = sim.handle(&start2);
+    assert_eq!(resp2.len(), 1, "renegotiation answered on a live session");
+    let m2 = wire::unpack_55aa(&resp2[0], Some(CLIENT_KEY), false).expect("cmd4 #2");
+    assert_eq!(m2.cmd, cmd::SESS_KEY_NEG_RESP);
+}
+
+#[test]
+fn proto_34_wrong_key_yields_wrong_key_event_not_malformed() {
+    let mut cfg = SimConfig::v35_homebase();
+    cfg.proto = Proto::V34;
+    let mut sim = HomebaseSim::new(cfg);
+    let sealed_wrong = fss_tuya::crypto::aes128_ecb_encrypt_pkcs7(WRONG_KEY, CLIENT_NONCE);
+    let frame = wire::pack_55aa(1, cmd::SESS_KEY_NEG_START, None, &sealed_wrong, Some(WRONG_KEY))
+        .expect("pack");
+    let resp = sim.handle(&frame);
+    assert!(resp.is_empty());
+    assert!(
+        sim.events().contains(&SimEvent::WrongKeyRejected),
+        "wrong key is WrongKeyRejected (V35 symmetry), not MalformedInput: {:?}",
+        sim.events()
+    );
+}
+
+#[test]
+fn responses_to_non_exempt_commands_carry_the_version_header() {
+    // Device-faithful: STATUS responses on 3.5 embed the 15-byte version
+    // header inside the sealed payload (the oracle strips it client-side).
+    let mut sim = sim_35();
+    let (device_nonce, finish) = client_negotiate(&mut sim, CLIENT_KEY).expect("negotiate");
+    let fin = pack_6699(2, cmd::SESS_KEY_NEG_FINISH, None, &finish, CLIENT_KEY, CLIENT_IV)
+        .expect("pack");
+    sim.handle(&fin);
+    let sess = sim.session_key().expect("session key");
+    let _ = device_nonce;
+    let q = pack_6699(3, cmd::DP_QUERY, None, b"", &sess, CLIENT_IV).expect("pack");
+    let resp = sim.handle(&q);
+    assert_eq!(resp.len(), 1);
+    let msg = wire::unpack_6699_mode(&resp[0], &sess, wire::RetcodeMode::Present).expect("unpack");
+    assert!(
+        msg.payload.starts_with(b"3.5"),
+        "response payload carries the version header: {:?}",
+        &msg.payload[..4.min(msg.payload.len())]
+    );
+    assert_eq!(
+        wire::strip_version_header(&msg.payload),
+        ModelFixture::AosuHomebase.dps_json().as_bytes()
+    );
 }
