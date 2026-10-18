@@ -26,7 +26,7 @@ use crate::obligation::ObligationRegistry;
 /// belongs to, its budget ledger, and its obligation registry. There is no
 /// ambient accessor by design.
 pub struct AuthorityCx {
-    cx: asupersync::Cx,
+    cx: asupersync::cx::Cx<asupersync::cx::cap::None>,
     region: RegionId,
     kind: RegionKind,
     budget: BudgetLedger,

@@ -29,7 +29,11 @@ impl Budget {
     /// Zero in every dimension (spending anything exhausts it).
     #[must_use]
     pub const fn zero() -> Self {
-        Self::default()
+        Self {
+            work_units: 0,
+            bytes: 0,
+            wall_ns: 0,
+        }
     }
 
     /// Whether every dimension is exhausted.
