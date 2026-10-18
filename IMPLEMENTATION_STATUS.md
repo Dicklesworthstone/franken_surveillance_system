@@ -10,6 +10,30 @@ Franken Surveillance System now has a coherent, dependency-light Rust reference 
 
 It is also not a complete surveillance product. Native device adapters, production media/model/graph/storage services, persistent distributed operation, every human and agent surface, complete qualification matrices, and the aggregate release root remain open. Status below distinguishes implemented reference semantics from production completion.
 
+## Runtime authority core (2026-10-18, reference)
+
+`fss-runtime` is enrolled as the program's runtime/authority core: `AuthorityCx`
+composes asupersync's detached `Cx<cap::None>` with `fss-core`'s `RegionTree`
+with explicit construction everywhere and no ambient access. Scope-down enforces
+kind legality (`Process → Property → …`) and narrowing-only authority (child
+`trace_id` is inherited; budget widening is a typed refusal). Cancellation is the
+four-valued import vocabulary (Completed / Drained / Failed / Indeterminate),
+idempotent, never rewinds, and cascades through the scope chain. Obligations are
+owned by the region tree (`register_obligation`/`resolve_obligation` per region,
+with Indeterminate resolutions requiring durable reconciliation notes); the
+runtime crate supplies only the constructor and the leak-oracle facade mapping
+`ObligationTerminal` onto `ObligationState`. The typed `Budget` ledger refuses
+overdrafts and never clamps silently.
+
+Verified by a 10-test contract suite (`crates/fss-runtime/tests/runtime_contract.rs`)
+and a deterministic end-to-end script (`examples/authority_lifecycle.rs`,
+`RCH_SHIM_LOCAL_IDE=1 cargo run -p fss-runtime --example authority_lifecycle`)
+emitting one bounded structured JSONL transition per step, terminating in
+`Completed` with zero leaked obligations. Capability grants, leases/epochs,
+two-phase effects, laboratory schedule control, and the INT-AS-001 /
+TEST-SCHEDULE-001 / GATE-020 qualification bundle remain open under the runtime
+epic's sibling beads.
+
 ## Native HEVC capture operator workflow (2026-10-12, reference)
 
 `fss-capture-rtsp --codec hevc` now carries one owner-approved camera session through
