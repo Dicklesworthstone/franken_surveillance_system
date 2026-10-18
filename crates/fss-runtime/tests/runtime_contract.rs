@@ -708,3 +708,227 @@ fn release_and_revoke_are_terminal_for_fence_use() {
         Err(LeaseError::NoFence { .. })
     ));
 }
+
+// ---------- two-phase effect coordinator (FSS-027) ----------
+
+fn effect_authority(caps: Vec<String>) -> (fss_runtime::authority::AuthorityCx, fss_core::RegionTree) {
+    fss_runtime::authority::AuthorityCx::root(
+        test_spec("trace:fx", "op:fx", caps),
+        fss_core::RegionId::new("region:fx").expect("r"),
+        fss_core::RegionKind::Process,
+        fss_core::BudgetVector::builder().tokens(64).bytes(4096).build().expect("bv"),
+        fss_core::TimestampNs(1),
+    )
+    .expect("root")
+}
+
+#[test]
+fn effect_happy_path_prepare_commit_observe_verify() {
+    use fss_core::{ContentDigest, OperationId, RuntimeGrant, TimestampNs};
+    use fss_runtime::effect::EffectCoordinator;
+    use fss_runtime::lease::LeaseRegistry;
+
+    let (auth, mut tree) = effect_authority(vec![
+        "CAP-PTZ-PREPARE-001".to_string(),
+        "CAP-PTZ-COMMIT-001".to_string(),
+    ]);
+    let mut leases = LeaseRegistry::new();
+    let lease = leases
+        .acquire("device:ptz:porch", "region:fx", Some(10_000), TimestampNs(100))
+        .expect("lease");
+
+    let prepared = EffectCoordinator::prepare(
+        &auth,
+        &mut tree,
+        &leases,
+        OperationId::parse("op:ptz-1").expect("op"),
+        "device:ptz:porch",
+        lease.fence,
+        RuntimeGrant::PtzPrepare,
+        RuntimeGrant::PtzCommit,
+        "camera panned to preset 3",
+    )
+    .expect("prepare");
+    assert_eq!(prepared.state(), fss_core::EffectState::Prepared);
+    // Obligation registered and pending: the leak oracle sees it.
+    assert_eq!(auth.leaked_obligations(&tree).len(), 1);
+
+    let mut committed = EffectCoordinator::commit(&auth, &mut leases, prepared, TimestampNs(200))
+        .expect("commit");
+    assert_eq!(committed.state(), fss_core::EffectState::Committed);
+
+    EffectCoordinator::adapter_accepted(&mut committed).expect("accepted");
+    EffectCoordinator::observed(&mut committed).expect("observed");
+    EffectCoordinator::verified(&mut tree, &auth, committed, ContentDigest::sha256(b"preset-3-proof"))
+        .expect("verified");
+    // Obligation terminal: no leaks remain.
+    assert!(auth.finalize_report(&tree).is_empty());
+}
+
+#[test]
+fn effect_commit_refused_on_stale_fence_and_missing_grant() {
+    use fss_core::{OperationId, RuntimeGrant, TimestampNs};
+    use fss_runtime::effect::{EffectCoordError, EffectCoordinator};
+    use fss_runtime::lease::LeaseRegistry;
+
+    let (auth, mut tree) = effect_authority(vec![
+        "CAP-PTZ-PREPARE-001".to_string(),
+        "CAP-PTZ-COMMIT-001".to_string(),
+    ]);
+    let mut leases = LeaseRegistry::new();
+    let lease = leases
+        .acquire("device:ptz:porch", "region:fx", None, TimestampNs(100))
+        .expect("lease");
+    let prepared = EffectCoordinator::prepare(
+        &auth,
+        &mut tree,
+        &leases,
+        OperationId::parse("op:ptz-2").expect("op"),
+        "device:ptz:porch",
+        lease.fence,
+        RuntimeGrant::PtzPrepare,
+        RuntimeGrant::PtzCommit,
+        "predicate",
+    )
+    .expect("prepare");
+
+    // Zombie: lease revoked between prepare and commit.
+    leases.revoke(&lease.id).expect("revoke");
+    let err = EffectCoordinator::commit(&auth, &mut leases, prepared, TimestampNs(200))
+        .expect_err("stale fence must refuse commit");
+    assert!(matches!(err, EffectCoordError::Fence { .. }));
+
+    // Missing commit grant: prepare-only authority.
+    let (auth2, mut tree2) = effect_authority(vec!["CAP-PTZ-PREPARE-001".to_string()]);
+    let lease2 = leases
+        .acquire("device:ptz:porch", "region:fx2", None, TimestampNs(300))
+        .expect("lease2");
+    let prepared2 = EffectCoordinator::prepare(
+        &auth2,
+        &mut tree2,
+        &leases,
+        OperationId::parse("op:ptz-3").expect("op"),
+        "device:ptz:porch",
+        lease2.fence,
+        RuntimeGrant::PtzPrepare,
+        RuntimeGrant::PtzCommit,
+        "predicate",
+    )
+    .expect("prepare2");
+    let err = EffectCoordinator::commit(&auth2, &mut leases, prepared2, TimestampNs(400))
+        .expect_err("commit grant missing");
+    assert!(matches!(err, EffectCoordError::Grant { .. }));
+}
+
+#[test]
+fn effect_cancel_and_indeterminate_semantics() {
+    use fss_core::{OperationId, RuntimeGrant, TimestampNs};
+    use fss_runtime::effect::{EffectCoordError, EffectCoordinator};
+    use fss_runtime::lease::LeaseRegistry;
+
+    let (auth, mut tree) = effect_authority(vec![
+        "CAP-ALERT-PREPARE-001".to_string(),
+        "CAP-ALERT-COMMIT-001".to_string(),
+    ]);
+    let mut leases = LeaseRegistry::new();
+    let lease = leases
+        .acquire("webhook:ops", "region:fx", None, TimestampNs(0))
+        .expect("lease");
+
+    // Cancel before commit: obligation drains, no leak.
+    let prepared = EffectCoordinator::prepare(
+        &auth,
+        &mut tree,
+        &leases,
+        OperationId::parse("op:alert-1").expect("op"),
+        "webhook:ops",
+        lease.fence,
+        RuntimeGrant::AlertPrepare,
+        RuntimeGrant::AlertCommit,
+        "alert delivered",
+    )
+    .expect("prepare");
+    EffectCoordinator::cancel_prepared(&mut tree, &auth, prepared).expect("cancel");
+    assert!(auth.finalize_report(&tree).is_empty());
+
+    // Indeterminate requires a reconciliation note (INV-006).
+    let prepared2 = EffectCoordinator::prepare(
+        &auth,
+        &mut tree,
+        &leases,
+        OperationId::parse("op:alert-2").expect("op"),
+        "webhook:ops",
+        lease.fence,
+        RuntimeGrant::AlertPrepare,
+        RuntimeGrant::AlertCommit,
+        "alert delivered",
+    )
+    .expect("prepare2");
+    let committed2 = EffectCoordinator::commit(&auth, &mut leases, prepared2, TimestampNs(10))
+        .expect("commit2");
+    let err = EffectCoordinator::indeterminate(&mut tree, &auth, committed2, None)
+        .expect_err("note required");
+    assert!(matches!(err, EffectCoordError::IndeterminateWithoutNote { .. }));
+
+    // With a note it lands; the tree-wide oracle reports note coverage.
+    let prepared3 = EffectCoordinator::prepare(
+        &auth,
+        &mut tree,
+        &leases,
+        OperationId::parse("op:alert-3").expect("op"),
+        "webhook:ops",
+        lease.fence,
+        RuntimeGrant::AlertPrepare,
+        RuntimeGrant::AlertCommit,
+        "alert delivered",
+    )
+    .expect("prepare3");
+    let committed3 = EffectCoordinator::commit(&auth, &mut leases, prepared3, TimestampNs(20))
+        .expect("commit3");
+    EffectCoordinator::indeterminate(
+        &mut tree,
+        &auth,
+        committed3,
+        Some("webhook ack lost in partition; reconcile on reconnect"),
+    )
+    .expect("indeterminate with note");
+    let report = fss_runtime::obligation::tree_report(&tree);
+    let root = &report[0];
+    assert_eq!(root.counts[3], 1, "one indeterminate obligation");
+    assert_eq!(root.indeterminate_with_note, vec!["obligation:op:alert-3:terminal".to_string()]);
+    assert!(root.indeterminate_without_note.is_empty());
+}
+
+#[test]
+fn effect_illegal_transitions_are_typed_refusals() {
+    use fss_core::{OperationId, RuntimeGrant, TimestampNs};
+    use fss_runtime::effect::{EffectCoordError, EffectCoordinator};
+    use fss_runtime::lease::LeaseRegistry;
+
+    let (auth, mut tree) = effect_authority(vec![
+        "CAP-PTZ-PREPARE-001".to_string(),
+        "CAP-PTZ-COMMIT-001".to_string(),
+    ]);
+    let mut leases = LeaseRegistry::new();
+    let lease = leases
+        .acquire("device:ptz:x", "region:fx", None, TimestampNs(0))
+        .expect("lease");
+    let prepared = EffectCoordinator::prepare(
+        &auth,
+        &mut tree,
+        &leases,
+        OperationId::parse("op:ptz-9").expect("op"),
+        "device:ptz:x",
+        lease.fence,
+        RuntimeGrant::PtzPrepare,
+        RuntimeGrant::PtzCommit,
+        "predicate",
+    )
+    .expect("prepare");
+    let mut committed = EffectCoordinator::commit(&auth, &mut leases, prepared, TimestampNs(5))
+        .expect("commit");
+    // Committed → Verified directly is illegal (must pass through
+    // AdapterAccepted → Observed).
+    let err = EffectCoordinator::observed(&mut committed).expect_err("skip is illegal");
+    assert!(matches!(err, EffectCoordError::IllegalTransition { .. }));
+}
