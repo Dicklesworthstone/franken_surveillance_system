@@ -1,22 +1,30 @@
-//! The explicit authority context: Asupersync `Cx` underneath, the fss-core
-//! region hierarchy above, and the FSS charter's rule between them — every
-//! authority is constructed explicitly and passed by value. There is no
-//! ambient lookup in this module by design.
+//! The explicit authority context: Asupersync `Cx` cancellation substrate
+//! underneath, the fss-core region hierarchy above, and the FSS charter's
+//! rule between them — every authority is constructed explicitly, passed by
+//! value, and never looked up ambiently.
 //!
-//! Scoping follows `fss-core`'s region-kind legality (`validate_child_kind`)
-//! and multiplicity caps: a child scope that violates the parent's rules is
-//! a typed refusal, never a silent widening.
+//! Composition notes:
+//! * the Asupersync side uses `detached_cancel_context()` — cancellation and
+//!   budget primitives without runtime effect capabilities (spawn/timer/I/O),
+//!   exactly the reference-core boundary this crate owns;
+//! * scope-down shares the parent's cancellation state (asupersync `Cx` is
+//!   shared-state across clones — cancellation signals cascade);
+//! * region structure and obligation lifecycle live in `fss-core`'s
+//!   `RegionTree` (it owns request→drain→finalize and obligation resolution);
+//!   this module binds it to the budget ledger and the four-valued
+//!   cancellation outcomes of [`crate::cancellation`].
 
-use fss_core::{RegionError, RegionId, RegionKind, RegionState, RegionTree, TaskId};
+use fss_core::{
+    ContextAuthority, OperationId, RegionError, RegionId, RegionKind, RegionTree,
+    RootAuthoritySpec, TimestampNs,
+};
 
 use crate::budget::{Budget, BudgetLedger};
 use crate::obligation::ObligationRegistry;
 
-/// One explicit authority context. Holds:
-/// * the Asupersync cancellation substrate for this scope (`cx`),
-/// * the region it belongs to in the fss-core region tree,
-/// * its budget ledger and obligation registry (value types; moved/borrowed
-///   explicitly, never ambient).
+/// One explicit authority context: the cancellation substrate, the region it
+/// belongs to, its budget ledger, and its obligation registry. There is no
+/// ambient accessor by design.
 pub struct AuthorityCx {
     cx: asupersync::Cx,
     region: RegionId,
@@ -28,12 +36,12 @@ pub struct AuthorityCx {
 /// Typed authority errors.
 #[derive(Debug)]
 pub enum AuthorityError {
-    /// The requested scope violates the parent region's rules.
+    /// The requested scope violates the parent region's rules or budget.
     IllegalScope {
         /// What was attempted (typed detail).
         detail: String,
     },
-    /// The region tree rejected the scope.
+    /// The region tree rejected the operation.
     Region(RegionError),
 }
 
@@ -55,46 +63,48 @@ impl From<RegionError> for AuthorityError {
 }
 
 impl AuthorityCx {
-    /// Construct the root authority for a fresh region tree: a named root
-    /// region of the given kind, with an initial budget.
+    /// Construct the root authority for a fresh region tree. `now` is caller
+    /// time (no ambient clock). The authority carries a detached cancellation
+    /// context (cancellation primitives, no runtime effects).
     pub fn root(
-        tree: &mut RegionTree,
-        region_id: RegionId,
-        kind: RegionKind,
+        spec: RootAuthoritySpec,
+        process_region: RegionId,
+        process_kind: RegionKind,
         budget: Budget,
-    ) -> Result<Self, AuthorityError> {
-        let mut node = tree
-            .add_region(region_id.clone(), None, kind, RegionState::Active)
-            .map_err(AuthorityError::Region)?;
-        node.register_task(TaskId::new("root"))?;
-        Ok(Self {
-            cx: asupersync::Cx::new(),
-            region: region_id,
-            kind,
-            budget: BudgetLedger::new(budget),
-            obligations: ObligationRegistry::new(),
-        })
+        now: TimestampNs,
+    ) -> Result<(Self, RegionTree), AuthorityError> {
+        let authority = ContextAuthority::new_root(spec)?;
+        let tree = RegionTree::new(process_region.clone(), authority, now)?;
+        Ok((
+            Self {
+                cx: asupersync::Cx::detached_cancel_context(),
+                region: process_region,
+                kind: process_kind,
+                budget: BudgetLedger::new(budget),
+                obligations: ObligationRegistry::new(),
+            },
+            tree,
+        ))
     }
 
-    /// Scope DOWN into a child region of this authority. The child's kind
-    /// must be legal under the parent's kind (region-tree rule), the child
-    /// budget must not exceed the parent's remaining budget in any dimension
-    /// (no silent widening), and the child shares the parent's cancellation
-    /// substrate (cancellation cascades through the scope chain).
+    /// Scope DOWN into a child region of this authority: the child's kind
+    /// must be legal under the parent's kind (region-tree rule), its budget
+    /// must not exceed the parent's remaining in any dimension (no silent
+    /// widening), and it shares the parent's cancellation state.
     pub fn scope_down(
         &self,
         tree: &mut RegionTree,
         child_id: RegionId,
         child_kind: RegionKind,
         child_budget: Budget,
+        child_authority_spec: RootAuthoritySpec,
+        now: TimestampNs,
     ) -> Result<AuthorityCx, AuthorityError> {
-        // Kind legality per the region hierarchy.
         self.kind
             .validate_child_kind(child_kind)
             .map_err(|e| AuthorityError::IllegalScope {
                 detail: format!("{e}"),
             })?;
-        // Budget must not exceed the parent's remaining (any dimension).
         let remaining = self.budget.remaining();
         for (allowed, requested, name) in [
             (remaining.work_units, child_budget.work_units, "work_units"),
@@ -109,11 +119,18 @@ impl AuthorityCx {
                 });
             }
         }
-        tree.add_region(child_id.clone(), Some(self.region.clone()), child_kind, RegionState::Active)?;
+        let child_authority = ContextAuthority::new_root(child_authority_spec)?;
+        tree.attach_child(
+            &self.region,
+            child_id.clone(),
+            child_kind,
+            child_authority,
+            now,
+        )?;
         Ok(AuthorityCx {
-            // asupersync Cx derives: child contexts inherit the parent's
-            // cancellation chain.
-            cx: self.cx.derive(),
+            // Cloned Cx shares underlying cancellation/budget state — a
+            // parent cancellation is visible to every derived scope.
+            cx: self.cx.clone(),
             region: child_id,
             kind: child_kind,
             budget: BudgetLedger::new(child_budget),
@@ -125,6 +142,12 @@ impl AuthorityCx {
     #[must_use]
     pub fn region(&self) -> &RegionId {
         &self.region
+    }
+
+    /// The region kind.
+    #[must_use]
+    pub const fn kind(&self) -> RegionKind {
+        self.kind
     }
 
     /// The budget ledger (mutable only by the owner of the Cx).
@@ -151,13 +174,13 @@ impl AuthorityCx {
         &self.obligations
     }
 
-    /// Request cancellation of this scope (cascades through derived
-    /// contexts, per asupersync's cancellation chain).
+    /// Request cancellation of this scope and every derived scope (the
+    /// shared-state chain carries it).
     pub fn request_cancellation(&self) {
-        self.cx.cancel();
+        self.cx.cancel_fast(asupersync::types::CancelKind::User);
     }
 
-    /// Whether cancellation has been requested on this scope.
+    /// Whether cancellation has been requested on this scope's chain.
     #[must_use]
     pub fn is_cancel_requested(&self) -> bool {
         self.cx.is_cancelled()
