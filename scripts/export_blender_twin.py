@@ -14,6 +14,7 @@ import sys
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 from twin_interchange import encode_twin, publish_new, require
+from scene_camera_rig import BINDING_FIELDS, blender_intrinsics, camera_row, encode_rig, validate_binding
 
 
 def sha(path):
@@ -32,9 +33,12 @@ def load_policy(path):
             out[key] = value
         return out
     policy = json.loads(raw, object_pairs_hook=pairs)
-    require(set(policy) == {"schema", "source_sha256", "scene", "view_layer", "frame",
-                            "epoch", "scale", "geometry_error", "objects"}, "policy fields")
-    require(policy["schema"] == "fss.blender-export-policy/1", "policy schema")
+    fields = {"schema", "source_sha256", "scene", "view_layer", "frame",
+              "epoch", "scale", "geometry_error", "objects"}
+    require(policy.get("schema") in ("fss.blender-export-policy/1", "fss.blender-export-policy/2"), "policy schema")
+    if policy["schema"] == "fss.blender-export-policy/2":
+        fields |= {"geometry_basis", "cameras"}
+    require(set(policy) == fields, "policy fields")
     require(type(policy["frame"]) is int, "frame must be integer")
     require(isinstance(policy["objects"], dict) and len(policy["objects"]) <= 65536, "object policy")
     for key, row in policy["objects"].items():
@@ -45,7 +49,26 @@ def load_policy(path):
         else:
             require(set(row) == {"role", "feature", "surface", "support", "opaque"}
                     and row["role"] == "physical", "physical policy fields")
+    if "cameras" in policy:
+        require(isinstance(policy["cameras"], dict) and 1 <= len(policy["cameras"]) <= 64,
+                "one to 64 explicit camera bindings required")
+        for key, row in policy["cameras"].items():
+            require(isinstance(key, str) and key and not key.startswith("name:"), "stable source camera ID required")
+            require(isinstance(row, dict) and set(row) == BINDING_FIELDS | {"image_size", "pixel_aspect", "image_model"},
+                    "camera policy fields")
+            validate_binding({k: row[k] for k in BINDING_FIELDS})
+            require(row["image_model"] == "undistorted_pinhole", "only full undistorted pinhole image domains are supported")
+            require(isinstance(row["image_size"], list) and len(row["image_size"]) == 2,
+                    "explicit camera image size required")
+            require(isinstance(row["pixel_aspect"], list) and len(row["pixel_aspect"]) == 2,
+                    "explicit camera pixel aspect required")
     return policy, hashlib.sha256(raw).hexdigest()
+
+
+def evaluation_scope(policy, policy_digest):
+    return json.dumps({"scene": policy["scene"], "layer": policy["view_layer"], "frame": policy["frame"],
+                       "policy_sha256": policy_digest, "axes": "RH_Z_UP", "evaluation": "VIEW_LAYER"},
+                      ensure_ascii=False, sort_keys=True, separators=(",", ":"))
 
 
 def export_scene(bpy, policy, policy_digest):
@@ -114,13 +137,55 @@ def export_scene(bpy, policy, policy_digest):
     require(all(key in used_policy for key, row in policy["objects"].items()
                 if row["role"] == "physical"), "a requested physical object is absent from this evaluation")
     require(sha(source) == policy["source_sha256"], "source changed during export")
-    scope = json.dumps({"scene": scene.name, "layer": layer.name, "frame": policy["frame"],
-                        "policy_sha256": policy_digest, "axes": "RH_Z_UP", "evaluation": "VIEW_LAYER"},
-                       ensure_ascii=False, sort_keys=True, separators=(",", ":"))
+    scope = evaluation_scope(policy, policy_digest)
     return encode_twin(source_sha256=policy["source_sha256"], scope=scope, epoch=policy["epoch"],
                        scale=policy["scale"], geometry_error=policy["geometry_error"],
                        features=[dict(id=k, surface=v) for k, v in features.items()],
                        objects=objects, vertices=vertices, triangles=triangles)
+
+
+def export_camera_rig(bpy, policy, policy_digest, twin_bytes):
+    """Read evaluated cameras after export_scene has frozen the scene/layer/frame.
+
+    Bind cameras by stable object ID, never object order or mutable name. A camera
+    instanced more than once is ambiguous for a single sensor binding and refused.
+    Render cameras not explicitly bound are ignored; no source-camera identity is
+    inferred from a virtual authoring camera's presence.
+    """
+    require("cameras" in policy, "camera export needs a v2 policy")
+    scene = bpy.context.window.scene
+    require(scene.name == policy["scene"] and bpy.context.window.view_layer.name == policy["view_layer"]
+            and scene.frame_current == policy["frame"],
+            "camera export evaluation differs from twin")
+    require(not scene.render.use_border and not scene.render.use_crop_to_border,
+            "render borders/crops need a separately declared image transform and are unsupported")
+    graph = bpy.context.evaluated_depsgraph_get()
+    rows, seen = [], set()
+    for instance in graph.object_instances:
+        obj = instance.object
+        if obj.type != "CAMERA":
+            continue
+        original = obj.original
+        stable = original.get("hhm_object_id")
+        if stable not in policy["cameras"]:
+            continue
+        require(stable not in seen, "sensor camera has multiple evaluated instances")
+        seen.add(stable)
+        row = policy["cameras"][stable]
+        camera = obj.data
+        require(camera.type == "PERSP", "orthographic, panoramic and custom camera models are unsupported")
+        width, height = row["image_size"]
+        intrinsics = blender_intrinsics(width=width, height=height, lens_mm=camera.lens,
+                                       sensor_width_mm=camera.sensor_width, sensor_height_mm=camera.sensor_height,
+                                       sensor_fit=camera.sensor_fit, pixel_aspect=row["pixel_aspect"],
+                                       shift=(camera.shift_x, camera.shift_y))
+        rows.append(camera_row(binding={k: row[k] for k in BINDING_FIELDS}, source_object_id=stable,
+                               matrix_world=[list(r) for r in instance.matrix_world], intrinsics=intrinsics))
+    require(seen == set(policy["cameras"]), "a bound camera is absent from this evaluated view layer")
+    require(sha(bpy.data.filepath) == policy["source_sha256"], "source changed during camera export")
+    return encode_rig(source_sha256=policy["source_sha256"], twin_sha256=hashlib.sha256(twin_bytes).hexdigest(),
+                      geometry_basis=policy["geometry_basis"], evaluation_scope=evaluation_scope(policy, policy_digest),
+                      cameras=rows)
 
 
 def main():
@@ -128,12 +193,25 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--policy", required=True, type=Path)
     parser.add_argument("--output", required=True, type=Path)
+    parser.add_argument("--rig-output", type=Path, help="create-only camera rig sidecar; required with a v2 policy")
     args = parser.parse_args(sys.argv[sys.argv.index("--")+1:])
     policy, policy_digest = load_policy(args.policy)
+    require((args.rig_output is not None) == ("cameras" in policy), "v2 camera policy and --rig-output must be supplied together")
+    if args.rig_output is not None:
+        require(args.rig_output.resolve() != args.output.resolve(), "twin and camera rig need different destinations")
+        require(not args.rig_output.exists() and not args.rig_output.is_symlink(), "camera rig output already exists")
+    require(not args.output.exists() and not args.output.is_symlink(), "twin output already exists")
     data = export_scene(bpy, policy, policy_digest)
+    rig = export_camera_rig(bpy, policy, policy_digest, data) if args.rig_output is not None else None
+    # The rig root is published last; it cannot reference a partially written twin.
     publish_new(args.output, data)
-    print(json.dumps({"status": "EXPORTED_NOT_QUALIFIED", "bytes": len(data),
-                      "sha256": hashlib.sha256(data).hexdigest(), "source_modified": False}))
+    report = {"status": "EXPORTED_NOT_QUALIFIED", "bytes": len(data),
+              "sha256": hashlib.sha256(data).hexdigest(), "source_modified": False}
+    if rig is not None:
+        publish_new(args.rig_output, rig)
+        report["rig_sha256"] = hashlib.sha256(rig).hexdigest()
+        report["camera_count"] = len(policy["cameras"])
+    print(json.dumps(report))
 
 
 if __name__ == "__main__":
