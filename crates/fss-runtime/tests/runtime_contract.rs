@@ -623,3 +623,88 @@ fn scope_down_never_widens_grants_or_scopes() {
         Err(GrantError::Widening { .. })
     ));
 }
+
+// ---------- leases, epochs, fencing (FSS-026) ----------
+
+#[test]
+fn lease_exclusivity_takeover_and_renewal() {
+    use fss_core::TimestampNs;
+    use fss_runtime::lease::{LeaseError, LeaseRegistry, LeaseState};
+
+    let mut reg = LeaseRegistry::new();
+    let a = reg
+        .acquire("stream:porch", "region:adapter-a", Some(1_000), TimestampNs(100))
+        .expect("first acquire");
+    assert_eq!(a.fence, 1);
+    assert_eq!(a.state, LeaseState::Active);
+
+    // Second holder refused with the holder named.
+    let err = reg
+        .acquire("stream:porch", "region:adapter-b", Some(1_000), TimestampNs(200))
+        .expect_err("held");
+    assert!(matches!(err, LeaseError::Held { holder, .. } if holder == "region:adapter-a"));
+
+    // Renewal extends the same lease without changing the fence.
+    reg.renew(&a.id, 5_000, TimestampNs(300)).expect("renew");
+    assert_eq!(reg.current_fence("stream:porch"), Some(1));
+
+    // Fence check passes while active.
+    reg.check_fence("stream:porch", 1, TimestampNs(400)).expect("fence ok");
+
+    // After expiry, the old holder's fence fails and a takeover succeeds with
+    // a fresh token.
+    let err = reg
+        .check_fence("stream:porch", 1, TimestampNs(10_000))
+        .expect_err("expired");
+    assert!(matches!(err, LeaseError::LeaseExpired { .. }));
+    let b = reg
+        .acquire("stream:porch", "region:adapter-b", Some(1_000), TimestampNs(10_100))
+        .expect("takeover after expiry");
+    assert_eq!(b.fence, 2);
+    // The zombie's token is permanently stale.
+    let err = reg
+        .check_fence("stream:porch", 1, TimestampNs(10_200))
+        .expect_err("stale");
+    assert_eq!(
+        err,
+        LeaseError::StaleFence {
+            resource: "stream:porch".to_string(),
+            presented: 1,
+            current: 2,
+        }
+    );
+}
+
+#[test]
+fn release_and_revoke_are_terminal_for_fence_use() {
+    use fss_core::TimestampNs;
+    use fss_runtime::lease::{LeaseError, LeaseRegistry, LeaseState};
+
+    let mut reg = LeaseRegistry::new();
+    let a = reg
+        .acquire("device:ptz", "region:r1", None, TimestampNs(0))
+        .expect("acquire");
+    reg.release(&a.id).expect("release");
+    let err = reg.check_fence("device:ptz", a.fence, TimestampNs(1)).expect_err("released");
+    assert!(matches!(err, LeaseError::NotActive { state: LeaseState::Released, .. }));
+
+    // Revocation advances the fence: the revoked token reports StaleFence.
+    let b = reg.acquire("device:ptz", "region:r2", None, TimestampNs(2)).expect("re-acquire");
+    reg.revoke(&b.id).expect("revoke");
+    let err = reg.check_fence("device:ptz", b.fence, TimestampNs(3)).expect_err("revoked");
+    assert!(matches!(err, LeaseError::StaleFence { presented, .. } if presented == b.fence));
+
+    // Double-release and unknown leases are typed refusals.
+    assert!(matches!(
+        reg.release(&a.id),
+        Err(LeaseError::NotActive { state: LeaseState::Released, .. })
+    ));
+    assert!(matches!(
+        reg.renew("lease:nope:99", 1, TimestampNs(4)),
+        Err(LeaseError::UnknownLease { .. })
+    ));
+    assert!(matches!(
+        reg.check_fence("resource:never", 7, TimestampNs(5)),
+        Err(LeaseError::NoFence { .. })
+    ));
+}

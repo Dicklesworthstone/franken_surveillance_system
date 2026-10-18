@@ -29,4 +29,5 @@ pub mod authority;
 pub mod budget;
 pub mod cancellation;
 pub mod grant;
+pub mod lease;
 pub mod obligation;
