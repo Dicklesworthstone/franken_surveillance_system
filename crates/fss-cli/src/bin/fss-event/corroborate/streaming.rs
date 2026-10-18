@@ -5,6 +5,7 @@ use std::io::Write;
 use std::path::Path;
 
 use fss_cli::agent_json::string;
+use fss_cli::event_fusion::{EventFusionError, EventFusionReport};
 use fss_core::ContentDigest;
 use fss_reference::ingest::historical_health::{
     HistoricalHealthDiagnostic, HistoricalHealthRetention,
@@ -185,6 +186,9 @@ pub(super) fn run(
     scalar: &ScalarExecCx,
     out: &mut impl Write,
 ) -> RunResult<()> {
+    // Hash and parse the exact profile before geometry, source or model work. Absence of
+    // a profile leaves the original path untouched; every authority write was refused above.
+    let fusion_profile = super::super::detector::load_fusion(action.cascade.as_ref(), cx)?;
     let geometry = if action.geometry_requested {
         let (poses, mut sources, calibration, _, record) = super::resolve_poses(action)?;
         if let Some(calibration) = calibration {
@@ -280,6 +284,13 @@ pub(super) fn run(
             }
         }
     };
+    let fusion = match (&fusion_profile, &package) {
+        (Some(profile), Some((package, _))) => Some(EventFusionReport::long_corroborate(
+            &report, package, profile, deployment, cx,
+        )?),
+        (None, _) => None,
+        _ => return Err(EventFusionError::Scope.into()),
+    };
     // Check every camera proposal and the complete post-retention shape before any write.
     // A selected health receipt is independent of paired candidates or their publication gate.
     let selection = {
@@ -303,12 +314,13 @@ pub(super) fn run(
         } else {
             u64::MAX
         };
-        with_diagnostics(
+        let preview = with_diagnostics(
             report.to_json(sequence, Some(&action.rerun))?,
             &diagnostics,
             maximal_retention.as_ref(),
             &action.rerun,
         )?;
+        super::super::detector::with_fusion(preview, fusion.as_ref())?;
         selected.map(|diagnostic| (diagnostic.record_digest(), diagnostic.approval_digest()))
     };
     let retention = if let Some((record_digest, approval)) = selection {
@@ -325,18 +337,25 @@ pub(super) fn run(
         }
         None
     };
-    let json = format!(
-        "{}\n",
-        with_diagnostics(
-            report.to_json(
-                deployment.current_anchor().commit_sequence,
-                Some(&action.rerun),
-            )?,
-            &camera_diagnostics(action, &report)?,
-            retention.as_ref(),
-            &action.rerun,
-        )?
-    );
+    let native_json = with_diagnostics(
+        report.to_json(
+            deployment.current_anchor().commit_sequence,
+            Some(&action.rerun),
+        )?,
+        &camera_diagnostics(action, &report)?,
+        retention.as_ref(),
+        &action.rerun,
+    )?;
+    let complete = super::super::detector::with_fusion(native_json, fusion.as_ref())?;
+    if fusion.is_some() {
+        let checked = report.revalidate_derived_sources(deployment, cx);
+        cx.checkpoint("event_fusion:long_corroboration_delivery")?;
+        checked.map_err(|error| match error {
+            CorroborationError::Conflict => EventFusionError::StaleBasis,
+            _ => EventFusionError::Evidence,
+        })?;
+    }
+    let json = format!("{complete}\n");
     if let Some(path) = &action.report_out {
         export(path, json.as_bytes(), root, cx)?;
     }

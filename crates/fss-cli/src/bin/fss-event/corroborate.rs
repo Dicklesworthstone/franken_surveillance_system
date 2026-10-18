@@ -496,7 +496,7 @@ pub(super) fn parse(args: &[OsString]) -> Result<CorroborateAction, String> {
     let cascade = super::detector::parse(&values)?;
     super::detector::check_fusion_mode(
         cascade.as_ref(),
-        !stream_corroborate,
+        true, // Both short and complete two-camera scans have explicit fusion adapters.
         values.iter().any(|(key, _)| {
             ["--approve", "--retain-coverage", "--retain-health"].contains(&key.as_str())
         }),
@@ -1025,7 +1025,7 @@ fn run_with(
 ) -> RunResult<()> {
     super::detector::check_fusion_mode(
         action.cascade.as_ref(),
-        action.streaming.is_none(),
+        true, // Runtime admission repeats the parser's read-only gate for both scopes.
         !action.approvals.is_empty()
             || action.retain_coverage.is_some()
             || action.retain_health.is_some(),
@@ -1451,10 +1451,24 @@ mod recovery_tests {
     }
 
     #[test]
-    fn fusion_still_refuses_streaming() {
+    fn fusion_accepts_streaming_without_changing_the_native_approval() -> Result<(), String> {
         let mut args = fusion_arguments();
+        let mut plain = args.clone();
+        plain.truncate(plain.len() - 4);
+        plain.push("--stream-corroborate".into());
         args.push("--stream-corroborate".into());
-        assert!(matches!(parse(&args), Err(message) if message.contains("not dwell or streaming")));
+        let native = parse(&plain)?;
+        let advised = parse(&args)?;
+        assert!(advised.streaming.is_some());
+        assert_eq!(native.plan.digest(), advised.plan.digest());
+        assert_eq!(native.rerun, advised.rerun);
+        assert!(!advised.rerun.contains("--fusion-"));
+        for flag in ["--approve", "--retain-coverage", "--retain-health"] {
+            let mut forbidden = args.clone();
+            forbidden.extend([flag.into(), ContentDigest::sha256(b"approval").to_text().into()]);
+            assert!(matches!(parse(&forbidden), Err(message) if message.contains("read-only")));
+        }
+        Ok(())
     }
 
     fn with_calibration(mut args: Vec<OsString>) -> Vec<OsString> {

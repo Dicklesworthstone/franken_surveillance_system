@@ -171,30 +171,18 @@ fn neither_command_can_publish_or_retain_authority_with_fusion() {
 }
 
 #[test]
-fn unsupported_streaming_modes_cannot_silently_drop_requested_fusion() {
-    for (command, flags) in [
-        (
-            "watch",
-            vec![
-                "--stream-dwell",
-                "--dwell-for-ns",
-                "1000000000",
-                "--dwell-max-gap-ns",
-                "250000000",
-            ],
-        ),
-        ("corroborate", vec!["--stream-corroborate"]),
-    ] {
-        let mut invocation = Invocation::new(command);
-        invocation.detector();
-        invocation.fusion();
-        invocation.add(&flags);
-        invocation.refused(if command == "watch" {
-            "not streaming"
-        } else {
-            "not dwell or streaming"
-        });
-    }
+fn unsupported_streaming_dwell_cannot_silently_drop_requested_fusion() {
+    let mut invocation = Invocation::new("watch");
+    invocation.detector();
+    invocation.fusion();
+    invocation.add(&[
+        "--stream-dwell",
+        "--dwell-for-ns",
+        "1000000000",
+        "--dwell-max-gap-ns",
+        "250000000",
+    ]);
+    invocation.refused("not streaming");
 }
 
 #[test]

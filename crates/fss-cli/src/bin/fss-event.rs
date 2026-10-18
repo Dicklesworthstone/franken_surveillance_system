@@ -159,7 +159,7 @@ const HELP: &str = "fss-event <report|prepare|publish|read|verify|watch|corrobor
     analysis_digest, analysis_root and detector_cascade.recipe_digest; coverage_digests is [].\n\
     Adds read-only calibrated_class_advice without another inference pass. No publication or\n\
     coverage/health retention in the same invocation; no class-absence or effect authority.\n\
-    Whole-recording dwell/corroboration remain unsupported for this advice mode.\n\
+    Whole-recording dwell remains unsupported; two-camera scans use version-three profiles below.\n\
   corroborate (two recordings, two sensors): --camera NAME:sha256:IMPORT (exactly twice)\n\
           --ground NAME:h11,h12,h13,h21,h22,h23,h31,h32,h33 (one per camera; image pixels ->\n\
           ground units; an owner assertion like a zone, NOT a calibration certificate)\n\
@@ -179,6 +179,12 @@ const HELP: &str = "fss-event <report|prepare|publish|read|verify|watch|corrobor
     retain the model archive and recipe for cold replay; class scores remain uncalibrated and\n\
     do not change the ground-entry policy. Refuses coverage retention, visibility, poses,\n\
     calibration and scene-mesh options. Exact approvals are distinct from short corroboration.\n\
+    Optional whole-corroboration class advice: --fusion-profile FILE --fusion-digest sha256:HEX\n\
+    Requires detector options and a fss.event_class_fusion_profile.v3 bound to analysis_digest,\n\
+    detector_cascade.recipe_digest and both cameras' analysis_root values in camera order.\n\
+    coverage_digests must be []. Adds complete read-only calibrated_class_advice without\n\
+    extra inference. Shared models remain common causes; no class absence is certified.\n\
+    Event publication and coverage/health retention require a separate invocation.\n\
     With --sensor-health conservative-v1, historical_health contains one diagnostic per\n\
     camera. --retain-health sha256:APPROVAL retains exactly one camera's approved receipt\n\
     independently of event publication, including runs with zero pairs. Event approval uses\n\
