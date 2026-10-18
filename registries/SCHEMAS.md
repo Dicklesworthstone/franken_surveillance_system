@@ -91,6 +91,9 @@
 | `SCHEMA-BOUND-DERIVATION-001` | `fss.bound_derivation.v1` | `schemas/bound_derivation.v1.json` | authority/claim | units, assumptions, steps, sensitivity, invalidators, and typed inputs all mandatory |
 | `SCHEMA-EXPERIMENT-RECEIPT-001` | `fss.experiment_receipt.v1` | `schemas/experiment_receipt.v1.json` | derived/evidence | immutable revisions; A/A divergence is a determinism alarm; indeterminate runs never compare |
 
+| `SCHEMA-HEVC-RECIPE-DRAFT-001` | `fss.hevc_recipe_draft.v1` | `schemas/hevc_recipe_draft.v1.json` | operator input | exact external file digest; original source prefix and parameter tuple; complete explicit timing schedule; unknown fields/versions and resource widening refuse; existing canonical HEVC recipe format unchanged |
+| `SCHEMA-HEVC-RECIPE-AUTHORING-001` | `fss.hevc_recipe_authoring.v1` | `schemas/hevc_recipe_authoring.v1.json` | derived/operator report | preview versus approved recipe publication remains explicit; selected/observed source and incomplete input preserved; never capture completion or recording publication; incompatible meaning requires new version |
+
 Binary media, ledger, search-segment, graph-run, and release formats additionally require magic, version, bounded lengths, canonical encoding, migration fixtures, corruption tests, and a named format owner before implementation.
 
 

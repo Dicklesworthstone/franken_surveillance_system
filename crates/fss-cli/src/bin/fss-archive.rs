@@ -5,6 +5,8 @@ use fss_cli::archive_cmd::{ArchiveCommandError, HELP, execute_archive, parse_arc
 use std::io::{self, Write};
 use std::process::ExitCode;
 
+#[path = "fss-archive/hevc_author.rs"]
+mod hevc_author;
 #[path = "fss-archive/http.rs"]
 mod http;
 #[path = "fss-archive/pins.rs"]
@@ -16,6 +18,9 @@ mod work;
 
 fn main() -> ExitCode {
     let args: Vec<_> = std::env::args_os().skip(1).take(66).collect();
+    if hevc_author::handles(&args) {
+        return hevc_author::dispatch(&args);
+    }
     if http::handles(&args) {
         return http::dispatch(&args);
     }
@@ -30,11 +35,12 @@ fn main() -> ExitCode {
     } else {
         match parse_archive_args(&args) {
             Ok(None) => Ok(format!(
-                "{HELP}\n{}\n{}\n{}\n{}",
+                "{HELP}\n{}\n{}\n{}\n{}\n{}",
                 work::HELP,
                 pins::HELP,
                 recipes::HELP,
-                http::HELP
+                http::HELP,
+                hevc_author::HELP
             )),
             Ok(Some(options)) => execute_archive(&options),
             Err(error) => Err(error),

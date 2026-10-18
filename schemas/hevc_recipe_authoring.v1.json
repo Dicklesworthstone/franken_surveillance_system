@@ -1,0 +1,123 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "schemas/hevc_recipe_authoring.v1.json",
+  "title": "fss.hevc_recipe_authoring.v1",
+  "description": "Complete operator report. Recipe/source pin and native preview are distinct from publication. No source bytes, paths, credentials, or guessed picture timing are emitted. Preview windows are disposable derivatives; their independently pinned originals remain stored. Pending fragments, queued input, EOB and unread suffix remain explicit. Successful recipe authoring/publication never means complete capture or recording publication.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema",
+    "command",
+    "codec",
+    "draft",
+    "recipe",
+    "recipe_root",
+    "interpretation",
+    "source_scope",
+    "source_head",
+    "observed_source_head_at_load",
+    "recipe_slot",
+    "source_datagrams",
+    "source_bytes",
+    "observed_source_datagrams_at_load",
+    "timings_applied",
+    "preview_windows",
+    "preview_pictures",
+    "preview_output_bytes",
+    "observations_read",
+    "remaining_datagrams",
+    "queued_packets",
+    "fragment_bytes",
+    "queued_nals",
+    "unsealed_packets",
+    "work_used",
+    "work_remaining",
+    "incomplete_picture",
+    "end_of_bitstream",
+    "publication_requested",
+    "capture_complete",
+    "recording_published",
+    "source_bytes_emitted",
+    "authoring_complete",
+    "recipe_status"
+  ],
+  "properties": {
+    "schema": {"const": "fss.hevc_recipe_authoring.v1"},
+    "command": {"const": "author-hevc-recipe"},
+    "codec": {"const": "hevc"},
+    "draft": {
+      "type": "string",
+      "pattern": "^sha256:(?!0{64}$)[0-9a-f]{64}$"
+    },
+    "recipe": {
+      "type": "string",
+      "pattern": "^sha256:(?!0{64}$)[0-9a-f]{64}$"
+    },
+    "recipe_root": {
+      "type": "string",
+      "pattern": "^sha256:(?!0{64}$)[0-9a-f]{64}$"
+    },
+    "interpretation": {
+      "type": "string",
+      "pattern": "^sha256:(?!0{64}$)[0-9a-f]{64}$"
+    },
+    "source_scope": {
+      "type": "string",
+      "pattern": "^sha256:(?!0{64}$)[0-9a-f]{64}$"
+    },
+    "source_head": {
+      "type": "string",
+      "pattern": "^sha256:(?!0{64}$)[0-9a-f]{64}$"
+    },
+    "observed_source_head_at_load": {
+      "type": "string",
+      "pattern": "^sha256:(?!0{64}$)[0-9a-f]{64}$"
+    },
+    "recipe_slot": {
+      "type": "string",
+      "pattern": "^fsshr1-[0-9a-f]{64}$"
+    },
+    "source_datagrams": {"type": "integer", "minimum": 0, "maximum": 18446744073709551615},
+    "source_bytes": {"type": "integer", "minimum": 0, "maximum": 18446744073709551615},
+    "observed_source_datagrams_at_load": {"type": "integer", "minimum": 0, "maximum": 18446744073709551615},
+    "timings_applied": {"type": "integer", "minimum": 0, "maximum": 18446744073709551615},
+    "preview_windows": {"type": "integer", "minimum": 0, "maximum": 18446744073709551615},
+    "preview_pictures": {"type": "integer", "minimum": 0, "maximum": 18446744073709551615},
+    "preview_output_bytes": {"type": "integer", "minimum": 0, "maximum": 18446744073709551615},
+    "observations_read": {"type": "integer", "minimum": 0, "maximum": 18446744073709551615},
+    "remaining_datagrams": {"type": "integer", "minimum": 0, "maximum": 18446744073709551615},
+    "queued_packets": {"type": "integer", "minimum": 0, "maximum": 18446744073709551615},
+    "fragment_bytes": {"type": "integer", "minimum": 0, "maximum": 18446744073709551615},
+    "queued_nals": {"type": "integer", "minimum": 0, "maximum": 18446744073709551615},
+    "unsealed_packets": {"type": "integer", "minimum": 0, "maximum": 18446744073709551615},
+    "work_used": {"type": "integer", "minimum": 0, "maximum": 18446744073709551615},
+    "work_remaining": {"type": "integer", "minimum": 0, "maximum": 18446744073709551615},
+    "incomplete_picture": {"type": "boolean"},
+    "end_of_bitstream": {"type": "boolean"},
+    "publication_requested": {"type": "boolean"},
+    "capture_complete": {"const": false},
+    "recording_published": {"const": false},
+    "source_bytes_emitted": {"const": false},
+    "authoring_complete": {"const": true},
+    "recipe_status": {"enum": [ "not_requested", "published", "already_durable" ]}
+  },
+  "allOf": [
+    {
+      "if": {
+        "properties": {
+          "publication_requested": {"const": false}
+        }
+      },
+      "then": {
+        "properties": {
+          "recipe_status": {"const": "not_requested"}
+        }
+      },
+      "else": {
+        "properties": {
+          "recipe_status": {"enum": [ "published", "already_durable" ]}
+        }
+      }
+    }
+  ]
+}

@@ -311,9 +311,16 @@ impl<'a> RecordingRecipeAuthor<'a> {
                     ));
                 }
             };
-            if cancel.cancel_requested(PublishCutPoint::AfterChildrenVerified) {
+            let checked = if cancel.cancel_requested(PublishCutPoint::AfterChildrenVerified) {
+                Err(DatagramArchiveError::Cancelled)
+            } else {
+                // A work owner can revoke independently during canonical encoding. Probe it
+                // again before releasing the finished recipe, without renewing its allowance.
+                budget.charge(0).map_err(DatagramArchiveError::Work)
+            };
+            if let Err(error) = checked {
                 let mut failure = self.fail(
-                    RecordingRecipeError::Source(DatagramArchiveError::Cancelled),
+                    RecordingRecipeError::Source(error),
                     Some(HevcRecordingReplayStep::FinishedPrefix { retained }),
                 );
                 if let Some(state) = &mut failure.retirement {

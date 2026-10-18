@@ -437,3 +437,6 @@ fn post_encoding_revocation_returns_withheld_recipe_and_terminal_originals() -> 
     assert!(failed);
     Ok(())
 }
+
+#[path = "hevc_recipe_authoring_contract/additional.rs"]
+mod additional;

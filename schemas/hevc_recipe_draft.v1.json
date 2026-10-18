@@ -1,0 +1,137 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "schemas/hevc_recipe_draft.v1.json",
+  "title": "fss.hevc_recipe_draft.v1",
+  "description": "Operator input, not retained authority or a second recipe format. The exact UTF-8 file digest is selected independently. Every field is required. Code additionally rejects non-integer lexical number forms, overflowing ingress and timing arithmetic, invalid source/parameter identities, and any timing schedule that does not match complete native replay. Parsing is bounded to one MiB and existing JSON depth/node/string ceilings. Native replay policies use defaults explicitly bound by the generated canonical recipe; no live poll schedule, capture time, duration or EOF is inferred.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema",
+    "source",
+    "recording",
+    "timings"
+  ],
+  "properties": {
+    "schema": {"const": "fss.hevc_recipe_draft.v1"},
+    "source": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "ingress",
+        "generation",
+        "ssrc",
+        "peer",
+        "authority",
+        "rtp_channel",
+        "rtcp_channel",
+        "receive_clock",
+        "retention_evidence",
+        "head",
+        "datagrams",
+        "payload_bytes"
+      ],
+      "properties": {
+        "ingress": {
+          "type": "string",
+          "pattern": "^[1-9][0-9]{0,38}$"
+        },
+        "generation": {"type": "integer", "minimum": 1, "maximum": 18446744073709551615},
+        "ssrc": {"type": "integer", "minimum": 0, "maximum": 4294967295},
+        "peer": {"type": "string", "minLength": 1, "maxLength": 512},
+        "authority": {"type": "string", "minLength": 1, "maxLength": 512},
+        "rtp_channel": {"type": "integer", "minimum": 0, "maximum": 255},
+        "rtcp_channel": {"type": "integer", "minimum": 0, "maximum": 255},
+        "receive_clock": {
+          "type": "string",
+          "pattern": "^sha256:(?!0{64}$)[0-9a-f]{64}$"
+        },
+        "retention_evidence": {
+          "type": "string",
+          "pattern": "^sha256:(?!0{64}$)[0-9a-f]{64}$"
+        },
+        "head": {
+          "type": "string",
+          "pattern": "^sha256:(?!0{64}$)[0-9a-f]{64}$"
+        },
+        "datagrams": {"type": "integer", "minimum": 0, "maximum": 65536},
+        "payload_bytes": {"type": "integer", "minimum": 0, "maximum": 1073741824}
+      }
+    },
+    "recording": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "sensor",
+        "stream",
+        "anchor",
+        "time_scale",
+        "timing_evidence",
+        "configuration_evidence",
+        "payload_type",
+        "reduced_rtcp",
+        "sprop_max_don_diff",
+        "vps_hex",
+        "sps_hex",
+        "pps_hex"
+      ],
+      "properties": {
+        "sensor": {"type": "string", "minLength": 1, "maxLength": 512},
+        "stream": {"type": "string", "minLength": 1, "maxLength": 512},
+        "anchor": {
+          "type": "string",
+          "pattern": "^sha256:(?!0{64}$)[0-9a-f]{64}$"
+        },
+        "time_scale": {"type": "integer", "minimum": 1, "maximum": 4294967295},
+        "timing_evidence": {
+          "type": "string",
+          "pattern": "^sha256:(?!0{64}$)[0-9a-f]{64}$"
+        },
+        "configuration_evidence": {
+          "type": "string",
+          "pattern": "^sha256:(?!0{64}$)[0-9a-f]{64}$"
+        },
+        "payload_type": {"type": "integer", "minimum": 0, "maximum": 127},
+        "reduced_rtcp": {"type": "boolean"},
+        "sprop_max_don_diff": {"const": 0},
+        "vps_hex": {
+          "type": "string",
+          "minLength": 2,
+          "maxLength": 65536,
+          "pattern": "^(?:[0-9a-f]{2})+$"
+        },
+        "sps_hex": {
+          "type": "string",
+          "minLength": 2,
+          "maxLength": 65536,
+          "pattern": "^(?:[0-9a-f]{2})+$"
+        },
+        "pps_hex": {
+          "type": "string",
+          "minLength": 2,
+          "maxLength": 65536,
+          "pattern": "^(?:[0-9a-f]{2})+$"
+        }
+      }
+    },
+    "timings": {
+      "type": "array",
+      "maxItems": 4096,
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "rtp_timestamp",
+          "decode_time",
+          "duration",
+          "composition_offset"
+        ],
+        "properties": {
+          "rtp_timestamp": {"type": "integer", "minimum": 0, "maximum": 4294967295},
+          "decode_time": {"type": "integer", "minimum": 0, "maximum": 18446744073709551615},
+          "duration": {"type": "integer", "minimum": 1, "maximum": 4294967295},
+          "composition_offset": {"type": "integer", "minimum": -2147483648, "maximum": 2147483647}
+        }
+      }
+    }
+  }
+}
