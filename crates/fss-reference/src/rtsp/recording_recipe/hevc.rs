@@ -282,3 +282,6 @@ fn copy_spec(
         timing_evidence: spec.timing_evidence,
     })
 }
+
+/// Bounded native authoring from explicit timing rows, without guessing picture requests.
+pub mod authoring;
