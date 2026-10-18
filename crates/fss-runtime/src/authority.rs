@@ -15,12 +15,12 @@
 //!   cancellation outcomes of [`crate::cancellation`].
 
 use fss_core::{
-    ContextAuthority, OperationId, RegionError, RegionId, RegionKind, RegionTree,
+    ContextAuthority, RegionError, RegionId, RegionKind, RegionTree,
     RootAuthoritySpec, TimestampNs,
 };
 
 use crate::budget::{Budget, BudgetLedger};
-use crate::obligation::ObligationRegistry;
+use fss_core::effect::Obligation;
 
 /// One explicit authority context: the cancellation substrate, the region it
 /// belongs to, its budget ledger, and its obligation registry. There is no
@@ -30,7 +30,6 @@ pub struct AuthorityCx {
     region: RegionId,
     kind: RegionKind,
     budget: BudgetLedger,
-    obligations: ObligationRegistry,
 }
 
 /// Typed authority errors.
@@ -81,7 +80,6 @@ impl AuthorityCx {
                 region: process_region,
                 kind: process_kind,
                 budget: BudgetLedger::new(budget),
-                obligations: ObligationRegistry::new(),
             },
             tree,
         ))
@@ -134,7 +132,6 @@ impl AuthorityCx {
             region: child_id,
             kind: child_kind,
             budget: BudgetLedger::new(child_budget),
-            obligations: ObligationRegistry::new(),
         })
     }
 
@@ -162,16 +159,50 @@ impl AuthorityCx {
         &self.budget
     }
 
-    /// The obligation registry.
-    #[must_use]
-    pub fn obligations_mut(&mut self) -> &mut ObligationRegistry {
-        &mut self.obligations
+    /// Register an obligation on this authority's region — delegated to the
+    /// region tree (the tree owns obligation lifecycle; no parallel
+    /// registry). Refuses on closed/inactive regions and duplicates.
+    pub fn register_obligation(
+        &self,
+        tree: &mut RegionTree,
+        obligation: Obligation,
+    ) -> Result<(), AuthorityError> {
+        tree.register_obligation(&self.region, obligation)
+            .map_err(AuthorityError::Region)
     }
 
-    /// The obligation registry (read).
+    /// Resolve one of this authority's obligations through the tree
+    /// (Indeterminate resolutions carry the durable reconciliation note the
+    /// tree enforces).
+    pub fn resolve_obligation(
+        &self,
+        tree: &mut RegionTree,
+        obligation_id: &fss_core::ObligationId,
+        terminal: crate::obligation::ObligationTerminal,
+        proof_digest: Option<fss_core::ContentDigest>,
+        reconciliation_note: Option<&str>,
+    ) -> Result<(), AuthorityError> {
+        tree.resolve_obligation(
+            &self.region,
+            obligation_id,
+            terminal.to_state(),
+            proof_digest,
+            reconciliation_note,
+        )
+        .map_err(AuthorityError::Region)
+    }
+
+    /// The leak oracle for this authority's region: pending obligations by
+    /// name — read from the tree, never a parallel registry.
     #[must_use]
-    pub const fn obligations(&self) -> &ObligationRegistry {
-        &self.obligations
+    pub fn leaked_obligations(
+        &self,
+        tree: &RegionTree,
+    ) -> Vec<crate::obligation::LeakedObligation> {
+        match tree.get(&self.region) {
+            Ok(node) => crate::obligation::leaked_in(node.obligations.values().cloned()),
+            Err(_) => Vec::new(),
+        }
     }
 
     /// Request cancellation of this scope and every derived scope (the
@@ -186,10 +217,11 @@ impl AuthorityCx {
         self.cx.is_cancelled()
     }
 
-    /// Finalize this scope: the leak oracle result. A scope with leaked
-    /// obligations is NOT clean; the names come out, never silence.
+    /// Finalize this scope: the leak oracle over the tree's state for this
+    /// region. A scope with pending obligations is NOT clean; the names come
+    /// out, never silence.
     #[must_use]
-    pub fn finalize_report(&self) -> Vec<crate::obligation::LeakedObligation> {
-        self.obligations.leaked()
+    pub fn finalize_report(&self, tree: &RegionTree) -> Vec<crate::obligation::LeakedObligation> {
+        self.leaked_obligations(tree)
     }
 }
