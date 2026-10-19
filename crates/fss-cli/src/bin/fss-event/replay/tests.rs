@@ -29,25 +29,41 @@ fn verify() -> Vec<OsString> {
 
 #[test]
 fn only_whole_recording_reads_and_explicit_verify_take_this_dispatch() {
-    assert!(handles(&args("read")));
-    assert!(handles(&verify()));
-    let mut ordinary = args("read");
-    ordinary[6] = format!("event:recorded:{}", "1".repeat(64)).into();
-    assert!(!handles(&ordinary));
-    ordinary[6] = format!("event:package:{}", "1".repeat(64)).into();
-    assert!(!handles(&ordinary));
-    ordinary[6] = format!("event:long-dwell:{}", "1".repeat(64)).into();
-    assert!(!handles(&ordinary));
-    ordinary[6] = format!("event:long-corroborated:{}", "1".repeat(64)).into();
-    assert!(handles(&ordinary));
-    assert!(!handles(&args("publish")));
+    for profile in ["long-watch", "long-dwell", "long-corroborated"] {
+        let mut read = args("read");
+        read[6] = format!("event:{profile}:{}", "1".repeat(64)).into();
+        assert!(handles(&read), "{profile} read");
+        assert!(parse(&read).is_ok(), "{profile} read");
+
+        let mut request = verify();
+        request[6] = read[6].clone();
+        assert!(handles(&request), "{profile} verify");
+        assert!(parse(&request).is_ok(), "{profile} verify");
+
+        read[0] = "publish".into();
+        assert!(!handles(&read), "{profile} publish");
+    }
+    for profile in ["recorded", "package"] {
+        let mut read = args("read");
+        read[6] = format!("event:{profile}:{}", "1".repeat(64)).into();
+        assert!(!handles(&read), "{profile} read");
+
+        let mut request = verify();
+        request[6] = read[6].clone();
+        assert!(handles(&request), "explicit verify reaches admission");
+        assert!(parse(&request).is_err(), "{profile} verify");
+    }
 }
 
 #[test]
 fn verify_needs_both_nonzero_pins_and_explicit_execution() {
     assert!(parse(&verify()).is_ok());
     assert!(parse(&args("verify")).is_err());
-    for remove in ["--expected-event-revision", "--expected-provenance-root", "--execute-perception"] {
+    for remove in [
+        "--expected-event-revision",
+        "--expected-provenance-root",
+        "--execute-perception",
+    ] {
         let mut request = verify();
         let index = request.iter().position(|value| value == remove).unwrap();
         request.drain(index..index + 2);
@@ -57,7 +73,10 @@ fn verify_needs_both_nonzero_pins_and_explicit_execution() {
     *request.last_mut().unwrap() = "no".into();
     assert!(parse(&request).is_err());
     let mut request = verify();
-    let index = request.iter().position(|value| value == "--expected-event-revision").unwrap();
+    let index = request
+        .iter()
+        .position(|value| value == "--expected-event-revision")
+        .unwrap();
     request[index + 1] = format!("sha256:{}", "0".repeat(64)).into();
     assert!(parse(&request).is_err());
     let mut request = verify();
@@ -71,9 +90,19 @@ fn read_rejects_execution_and_both_modes_reject_interpretation_or_publication_ov
     request.extend(["--execute-perception".into(), "yes".into()]);
     assert!(parse(&request).is_err());
     for flag in [
-        "--approve", "--proposal-digest", "--report", "--report-digest", "--import-id",
-        "--interpretation", "--zone", "--camera", "--ground", "--sensor-health",
-        "--detector-package", "--pixel-threshold", "--expected-analysis-root",
+        "--approve",
+        "--proposal-digest",
+        "--report",
+        "--report-digest",
+        "--import-id",
+        "--interpretation",
+        "--zone",
+        "--camera",
+        "--ground",
+        "--sensor-health",
+        "--detector-package",
+        "--pixel-threshold",
+        "--expected-analysis-root",
     ] {
         let mut request = verify();
         request.extend([flag.into(), "untrusted".into()]);
@@ -100,9 +129,16 @@ fn duplicate_options_and_partial_pairs_are_rejected() {
 #[test]
 fn every_exposed_budget_is_positive_bounded_unsigned_decimal() {
     for flag in [
-        "--max-metadata-bytes", "--max-report-bytes", "--source-read-bytes", "--pixel-budget",
-        "--assignment-work", "--trace-bytes", "--decode-work", "--max-dimension",
-        "--max-pixels", "--max-segment-bytes",
+        "--max-metadata-bytes",
+        "--max-report-bytes",
+        "--source-read-bytes",
+        "--pixel-budget",
+        "--assignment-work",
+        "--trace-bytes",
+        "--decode-work",
+        "--max-dimension",
+        "--max-pixels",
+        "--max-segment-bytes",
     ] {
         for value in ["0", "-1", "+1", "18446744073709551616", "1.5"] {
             let mut request = args("read");
@@ -157,11 +193,20 @@ fn output_interruptions_have_a_finite_retry_budget() {
             Ok(())
         }
     }
-    let mut recoverable = InterruptedOutput { remaining: 8, bytes: Vec::new() };
+    let mut recoverable = InterruptedOutput {
+        remaining: 8,
+        bytes: Vec::new(),
+    };
     emit(&mut recoverable, b"complete output").unwrap();
     assert_eq!(recoverable.bytes, b"complete output");
-    let mut repeated = InterruptedOutput { remaining: 9, bytes: Vec::new() };
-    assert_eq!(emit(&mut repeated, b"no output").unwrap_err().kind(), io::ErrorKind::Interrupted);
+    let mut repeated = InterruptedOutput {
+        remaining: 9,
+        bytes: Vec::new(),
+    };
+    assert_eq!(
+        emit(&mut repeated, b"no output").unwrap_err().kind(),
+        io::ErrorKind::Interrupted
+    );
     assert!(repeated.bytes.is_empty());
 }
 

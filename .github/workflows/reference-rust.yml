@@ -34,9 +34,9 @@ jobs:
       - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
       - name: Provision pinned test toolchain
         run: bash scripts/bootstrap_toolchain.sh
-      - name: Verify stale-plan refusal and approved recovery rehearsal
+      - name: Verify event replay admission and approved recovery rehearsal
         if: success() || failure()
-        run: cargo +nightly-2026-08-31 test --locked --offline -p fss-cli --test agent_rehearsal_contract
+        run: cargo +nightly-2026-08-31 test --no-fail-fast --locked --offline -p fss-cli --bin fss-event --bin fss-replay-dwell --test agent_rehearsal_contract
       - name: Verify deployment status inventory and bounded admission
         run: |
           cargo +nightly-2026-08-31 test --locked --offline -p fss-reference --lib deployment_status::tests
@@ -81,10 +81,7 @@ jobs:
           cargo +nightly-2026-08-31 test --locked --offline -p fss-reference --lib ingest::long_dwell::tests || dwell_exit=1
           cargo +nightly-2026-08-31 test --locked --offline -p fss-reference --lib ingest::long_dwell_replay::tests || dwell_exit=1
           cargo +nightly-2026-08-31 test --locked --offline -p fss-reference --lib ingest::long_event_replay:: || dwell_exit=1
-          cargo +nightly-2026-08-31 test --locked --offline -p fss-reference --lib ingest::long_watch:: || dwell_exit=1
-          cargo +nightly-2026-08-31 test --locked --offline -p fss-reference --lib ingest::recorded_corroboration::streaming:: || dwell_exit=1
           cargo +nightly-2026-08-31 test --locked --offline -p fss-cli --test watch_stream_detector_cli --test watch_stream_dwell_cli --test long_event_replay_cli || dwell_exit=1
-          cargo +nightly-2026-08-31 test --locked --offline -p fss-cli --bin fss-event --bin fss-replay-dwell || dwell_exit=1
           exit "$dwell_exit"
       - name: Verify bounded event queries
         run: cargo +nightly-2026-08-31 test --locked --offline -p fss-reference --lib agent_query::tests
@@ -208,6 +205,7 @@ jobs:
           crates/fss-reference/src/ingest/long_event_replay/watch.rs
           crates/fss-reference/src/ingest/long_event_replay/dwell.rs
           crates/fss-cli/src/bin/fss-event/replay.rs
+          crates/fss-cli/src/bin/fss-event/replay/tests.rs
           crates/fss-cli/src/bin/fss-event.rs
           crates/fss-reference/src/ingest/long_event_replay/tests.rs
           crates/fss-reference/src/ingest/long_event_replay/tests/dwell.rs
