@@ -26,13 +26,19 @@ impl RetainedBeliefGraph for InMemoryObjectStore {
         if self.invalidated_manifests.contains_key(&digest) {
             return Err(BeliefEvidenceReadError::NotVerified);
         }
-        let object = self.objects.get(&digest).ok_or(BeliefEvidenceReadError::Missing)?;
+        let object = self
+            .objects
+            .get(&digest)
+            .ok_or(BeliefEvidenceReadError::Missing)?;
         match object.state {
             ObjectState::Tombstoned => return Err(BeliefEvidenceReadError::Missing),
             ObjectState::Staged => return Err(BeliefEvidenceReadError::NotVerified),
             ObjectState::Verified => {}
         }
-        let retained = object.bytes.as_deref().ok_or(BeliefEvidenceReadError::Corrupt)?;
+        let retained = object
+            .bytes
+            .as_deref()
+            .ok_or(BeliefEvidenceReadError::Corrupt)?;
         if retained != verified_bytes || ContentDigest::sha256(verified_bytes) != digest {
             return Err(BeliefEvidenceReadError::Corrupt);
         }
@@ -49,11 +55,15 @@ impl RetainedBeliefGraph for InMemoryObjectStore {
         // Also preflight the count in the actual bytes; a damaged publication cache with a
         // smaller edge list must not let the decoder allocate beyond the request's allowance.
         let mut prefix = CanonicalDecoder::new(verified_bytes);
-        prefix.text().map_err(|_| BeliefEvidenceReadError::Corrupt)?;
-        prefix.text().map_err(|_| BeliefEvidenceReadError::Corrupt)?;
-        let encoded_children = usize::try_from(
-            prefix.u64().map_err(|_| BeliefEvidenceReadError::Corrupt)?,
-        ).map_err(|_| BeliefEvidenceReadError::LimitExceeded)?;
+        prefix
+            .text()
+            .map_err(|_| BeliefEvidenceReadError::Corrupt)?;
+        prefix
+            .text()
+            .map_err(|_| BeliefEvidenceReadError::Corrupt)?;
+        let encoded_children =
+            usize::try_from(prefix.u64().map_err(|_| BeliefEvidenceReadError::Corrupt)?)
+                .map_err(|_| BeliefEvidenceReadError::LimitExceeded)?;
         if encoded_children > max_children {
             return Err(BeliefEvidenceReadError::LimitExceeded);
         }
@@ -91,7 +101,10 @@ impl InMemoryObjectStore {
         request: BeliefGraphRequest<'_>,
         max_encoded_bytes: usize,
     ) -> Result<VerifiedBeliefGraph<'a>, BeliefGraphFailure> {
-        let refuse = |reason| BeliefGraphFailure { reason, usage: BeliefGraphUsage::default() };
+        let refuse = |reason| BeliefGraphFailure {
+            reason,
+            usage: BeliefGraphUsage::default(),
+        };
         if (request.cancelled)() {
             return Err(refuse(BeliefGraphError::Cancelled));
         }

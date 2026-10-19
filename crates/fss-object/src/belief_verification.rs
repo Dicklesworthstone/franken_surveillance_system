@@ -23,7 +23,9 @@ impl RetainedBeliefEvidence for InMemoryObjectStore {
     ) -> Result<Vec<u8>, BeliefEvidenceReadError> {
         // Use the existing custody gate: reading must never promote a staged object to verified.
         let bytes = self.read_verified(digest).map_err(|error| match error {
-            ObjectError::Missing(_) | ObjectError::Tombstoned(_) => BeliefEvidenceReadError::Missing,
+            ObjectError::Missing(_) | ObjectError::Tombstoned(_) => {
+                BeliefEvidenceReadError::Missing
+            }
             ObjectError::NotVerified(_) => BeliefEvidenceReadError::NotVerified,
             ObjectError::Corrupt(_) => BeliefEvidenceReadError::Corrupt,
             _ => BeliefEvidenceReadError::Unavailable,
@@ -75,7 +77,10 @@ impl fmt::Display for RetainedBeliefIntakeError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             Self::EncodedLimit { length, maximum } => {
-                write!(f, "encoded belief length {length} exceeds allowance {maximum}")
+                write!(
+                    f,
+                    "encoded belief length {length} exceeds allowance {maximum}"
+                )
             }
             Self::Decode(error) => write!(f, "belief decode: {error}"),
             Self::Verification(error) => write!(f, "belief verification: {error}"),
@@ -116,8 +121,8 @@ pub fn decode_and_verify_retained_belief<'a>(
             maximum: limits.max_encoded_bytes,
         });
     }
-    let offered = DerivedBelief::from_canonical_bytes(encoded)
-        .map_err(RetainedBeliefIntakeError::Decode)?;
+    let offered =
+        DerivedBelief::from_canonical_bytes(encoded).map_err(RetainedBeliefIntakeError::Decode)?;
     verify_derived_belief(&offered, ledger, store, engine, limits.verification)
         .map_err(RetainedBeliefIntakeError::Verification)
 }
@@ -176,7 +181,12 @@ mod tests {
             {
                 return Err(ContractError::EvidenceRequired);
             }
-            belief(inputs.anchor, evidence.digest(), "retained byte is 42", 800_000)
+            belief(
+                inputs.anchor,
+                evidence.digest(),
+                "retained byte is 42",
+                800_000,
+            )
         }
     }
 
@@ -186,26 +196,27 @@ mod tests {
         statement: &str,
         upper: u64,
     ) -> Result<DerivedBelief, ContractError> {
-        DerivedBelief::new(DerivedBeliefParams {
-            belief_id: "belief:retained-byte".to_owned(),
-            anchor: anchor.clone(),
-            generation: Generation(1),
-            algorithm_id: "alg:fixture-byte:v1".to_owned(),
-            statement: statement.to_owned(),
-            knowledge_state: KnowledgeState::Estimated,
-            provenance: ProvenanceClass::Derived,
-            uncertainty: BeliefInterval::new(200_000, upper)?,
-            supporting_evidence: vec![root],
-            contradictions: vec![],
-            derivation_receipt: ContentDigest::sha256(b"unsealed"),
-        }
-        .with_computed_receipt()?)
+        DerivedBelief::new(
+            DerivedBeliefParams {
+                belief_id: "belief:retained-byte".to_owned(),
+                anchor: anchor.clone(),
+                generation: Generation(1),
+                algorithm_id: "alg:fixture-byte:v1".to_owned(),
+                statement: statement.to_owned(),
+                knowledge_state: KnowledgeState::Estimated,
+                provenance: ProvenanceClass::Derived,
+                uncertainty: BeliefInterval::new(200_000, upper)?,
+                supporting_evidence: vec![root],
+                contradictions: vec![],
+                derivation_receipt: ContentDigest::sha256(b"unsealed"),
+            }
+            .with_computed_receipt()?,
+        )
     }
 
-    fn fixture() -> Result<
-        (ReferenceLedger, InMemoryObjectStore, DerivedBelief),
-        Box<dyn std::error::Error>,
-    > {
+    fn fixture()
+    -> Result<(ReferenceLedger, InMemoryObjectStore, DerivedBelief), Box<dyn std::error::Error>>
+    {
         let mut store = InMemoryObjectStore::new(ObjectLimits::default());
         let root = store.put_verified(&[42])?;
         let mut ledger = ReferenceLedger::new("site:retained-byte");
@@ -226,7 +237,12 @@ mod tests {
             [root],
         )?;
         let _ = ledger.append(batch)?;
-        let offered = belief(&ledger.current().anchor, root, "retained byte is 42", 800_000)?;
+        let offered = belief(
+            &ledger.current().anchor,
+            root,
+            "retained byte is 42",
+            800_000,
+        )?;
         Ok((ledger, store, offered))
     }
 
@@ -265,7 +281,11 @@ mod tests {
         );
         assert_eq!(
             before,
-            (store.object_count(), store.total_bytes(), ledger.batches().len())
+            (
+                store.object_count(),
+                store.total_bytes(),
+                ledger.batches().len()
+            )
         );
         assert_eq!(
             store.state(offered.supporting_evidence()[0]),
@@ -343,7 +363,9 @@ mod tests {
         );
         assert_eq!(engine.calls.get(), 0);
         limits.max_encoded_bytes = bytes.len();
-        assert!(decode_and_verify_retained_belief(&bytes, &ledger, &store, &engine, limits).is_ok());
+        assert!(
+            decode_and_verify_retained_belief(&bytes, &ledger, &store, &engine, limits).is_ok()
+        );
         assert_eq!(engine.calls.get(), 1);
         Ok(())
     }
@@ -423,7 +445,8 @@ mod tests {
     }
 
     #[test]
-    fn cold_replay_requires_retained_bytes_and_rederives_instead_of_trusting_the_saved_receipt() -> TestResult {
+    fn cold_replay_requires_retained_bytes_and_rederives_instead_of_trusting_the_saved_receipt()
+    -> TestResult {
         let (ledger, store, offered) = fixture()?;
         let root = offered.supporting_evidence()[0];
         let bytes = offered.try_canonical_bytes()?;
@@ -466,7 +489,8 @@ mod tests {
     }
 
     #[test]
-    fn custody_adapter_honors_exact_copy_budget_and_never_allocates_an_over_budget_copy() -> TestResult {
+    fn custody_adapter_honors_exact_copy_budget_and_never_allocates_an_over_budget_copy()
+    -> TestResult {
         let (_, store, offered) = fixture()?;
         let root = offered.supporting_evidence()[0];
         assert_eq!(
