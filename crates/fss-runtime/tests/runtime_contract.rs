@@ -10,7 +10,7 @@ use fss_runtime::cancellation::{CancelOutcome, CancellationLifecycle, DrainStep}
 // ---------- cancellation ----------
 
 #[test]
-fn cooperative_drain_ends_cancelled() {
+fn cooperative_drain_ends_cancelled() -> Result<(), Box<dyn std::error::Error>> {
     let mut lc = CancellationLifecycle::new(["w2".to_string(), "w1".to_string()], 1_000);
     assert!(!lc.is_requested());
     lc.request(10);
@@ -19,16 +19,18 @@ fn cooperative_drain_ends_cancelled() {
     // Deterministic sorted pending list.
     match lc.drive(30) {
         DrainStep::Pending(ids) => assert_eq!(ids, vec!["w1", "w2"]),
-        other => panic!("expected pending, got {other:?}"),
+        other => return Err(format!("expected pending, got {other:?}").into()),
     }
-    lc.worker_done("w1").expect("w1 done");
-    lc.worker_done("w2").expect("w2 done");
+    lc.worker_done("w1")?;
+    lc.worker_done("w2")?;
     assert_eq!(lc.outcome(), Some(&CancelOutcome::Cancelled));
     assert!(CancelOutcome::Cancelled.is_terminal_clean());
+    Ok(())
 }
 
 #[test]
-fn non_cooperative_work_ends_indeterminate_with_stranded_names() {
+fn non_cooperative_work_ends_indeterminate_with_stranded_names()
+-> Result<(), Box<dyn std::error::Error>> {
     let mut lc = CancellationLifecycle::new(["stuck".to_string(), "also-stuck".to_string()], 500);
     lc.request(10);
     lc.begin_drain(100);
@@ -38,24 +40,34 @@ fn non_cooperative_work_ends_indeterminate_with_stranded_names() {
             assert!(reason.contains("stuck"), "{reason}");
             assert!(reason.contains("also-stuck"), "{reason}");
         }
-        other => panic!("expected Indeterminate, got {other:?}"),
+        other => return Err(format!("expected Indeterminate, got {other:?}").into()),
     }
     // Never silently cancelled, never faked complete.
-    assert!(!lc.outcome().expect("final").is_terminal_clean());
+    let Some(outcome) = lc.outcome() else {
+        return Err("cancellation ledger lost its outcome".into());
+    };
+    assert!(!outcome.is_terminal_clean());
+    Ok(())
 }
 
 #[test]
-fn duplicate_or_unknown_worker_reports_are_typed_errors() {
+fn duplicate_or_unknown_worker_reports_are_typed_errors() -> Result<(), Box<dyn std::error::Error>>
+{
     let mut lc = CancellationLifecycle::new(["w1".to_string()], 1_000);
     lc.request(1);
     lc.begin_drain(2);
     assert!(lc.worker_done("ghost").is_err(), "unknown id must refuse");
-    lc.worker_done("w1").expect("w1 done");
-    assert!(lc.worker_done("w1").is_err(), "duplicate report must refuse");
+    lc.worker_done("w1")?;
+    assert!(
+        lc.worker_done("w1").is_err(),
+        "duplicate report must refuse"
+    );
+    Ok(())
 }
 
 #[test]
-fn natural_completion_and_failure_are_distinct_outcomes() {
+fn natural_completion_and_failure_are_distinct_outcomes() -> Result<(), Box<dyn std::error::Error>>
+{
     let mut a = CancellationLifecycle::new(["w".to_string()], 1_000);
     a.work_completed();
     assert_eq!(a.outcome(), Some(&CancelOutcome::Completed));
@@ -69,22 +81,24 @@ fn natural_completion_and_failure_are_distinct_outcomes() {
             reason: "sensor fault".to_string()
         })
     );
+    Ok(())
 }
 
 #[test]
-fn request_is_idempotent_and_never_rewinds() {
+fn request_is_idempotent_and_never_rewinds() -> Result<(), Box<dyn std::error::Error>> {
     let mut lc = CancellationLifecycle::new(["w".to_string()], 1_000);
     lc.request(10);
     lc.begin_drain(20);
     lc.request(30); // absorbed: the window must not rewind
-    lc.worker_done("w").expect("done");
+    lc.worker_done("w")?;
     assert_eq!(lc.outcome(), Some(&CancelOutcome::Cancelled));
+    Ok(())
 }
 
 // ---------- budget ----------
 
 #[test]
-fn budget_spends_and_refuses_typed_overdraft() {
+fn budget_spends_and_refuses_typed_overdraft() -> Result<(), Box<dyn std::error::Error>> {
     use fss_core::BudgetDimension;
     use fss_runtime::budget::BudgetLedger;
 
@@ -92,12 +106,14 @@ fn budget_spends_and_refuses_typed_overdraft() {
         .bytes(1_000)
         .tokens(100)
         .cpu_millis(10_000)
-        .build()
-        .expect("limit");
+        .build()?;
     let mut ledger = BudgetLedger::new(limit);
-    ledger.spend(BudgetDimension::Bytes, 400).expect("spend");
-    ledger.spend(BudgetDimension::Tokens, 100).expect("spend all");
-    let err = ledger.spend(BudgetDimension::Tokens, 1).expect_err("overdraft");
+    ledger.spend(BudgetDimension::Bytes, 400)?;
+    ledger.spend(BudgetDimension::Tokens, 100)?;
+    let err = ledger
+        .spend(BudgetDimension::Tokens, 1)
+        .err()
+        .ok_or("overdraft")?;
     assert_eq!(
         err,
         fss_runtime::budget::LedgerError::Overdraft {
@@ -108,61 +124,68 @@ fn budget_spends_and_refuses_typed_overdraft() {
     );
     // Refund restores headroom; pressure reflects utilization.
     ledger.refund(BudgetDimension::Tokens, 50);
-    ledger.spend(BudgetDimension::Tokens, 50).expect("re-spend");
+    ledger.spend(BudgetDimension::Tokens, 50)?;
     assert_eq!(ledger.utilization(BudgetDimension::Tokens), Some(1.0));
     assert_eq!(ledger.pressure(), fss_core::ResourcePressure::Critical);
     assert_eq!(ledger.utilization(BudgetDimension::Bytes), Some(0.4));
+    Ok(())
 }
 
 #[test]
-fn pressure_ladder_tracks_max_utilization() {
+fn pressure_ladder_tracks_max_utilization() -> Result<(), Box<dyn std::error::Error>> {
     use fss_core::BudgetDimension;
     use fss_runtime::budget::BudgetLedger;
 
     let limit = fss_core::BudgetVector::builder()
         .bytes(100)
         .tokens(100)
-        .build()
-        .expect("limit");
+        .build()?;
     let mut ledger = BudgetLedger::new(limit);
     assert_eq!(ledger.pressure(), fss_core::ResourcePressure::Nominal);
-    ledger.spend(BudgetDimension::Bytes, 49).expect("spend");
+    ledger.spend(BudgetDimension::Bytes, 49)?;
     assert_eq!(ledger.pressure(), fss_core::ResourcePressure::Nominal);
-    ledger.spend(BudgetDimension::Bytes, 1).expect("spend");
+    ledger.spend(BudgetDimension::Bytes, 1)?;
     assert_eq!(ledger.pressure(), fss_core::ResourcePressure::Elevated);
-    ledger.spend(BudgetDimension::Tokens, 85).expect("spend");
+    ledger.spend(BudgetDimension::Tokens, 85)?;
     assert_eq!(ledger.pressure(), fss_core::ResourcePressure::Constrained);
-    ledger.spend(BudgetDimension::Tokens, 14).expect("spend");
+    ledger.spend(BudgetDimension::Tokens, 14)?;
     assert_eq!(ledger.pressure(), fss_core::ResourcePressure::Critical);
+    Ok(())
 }
 
 #[test]
-fn vector_spend_is_atomic_across_dimensions() {
+fn vector_spend_is_atomic_across_dimensions() -> Result<(), Box<dyn std::error::Error>> {
     use fss_runtime::budget::BudgetLedger;
 
     let limit = fss_core::BudgetVector::builder()
         .bytes(10)
         .tokens(10)
-        .build()
-        .expect("limit");
+        .build()?;
     let mut ledger = BudgetLedger::new(limit);
     let delta = fss_core::BudgetVector::builder()
         .bytes(5)
         .tokens(50) // overdraft in tokens
         .build()
-        .expect("delta");
+        ?;
     assert!(ledger.spend_vector(&delta).is_err());
     // Nothing committed: bytes must not have been debited.
-    assert_eq!(ledger.utilization(fss_core::BudgetDimension::Bytes), Some(0.0));
+    assert_eq!(
+        ledger.utilization(fss_core::BudgetDimension::Bytes),
+        Some(0.0)
+    );
+    Ok(())
 }
 
 #[test]
-fn zero_budget_refuses_any_spend() {
+fn zero_budget_refuses_any_spend() -> Result<(), Box<dyn std::error::Error>> {
     use fss_core::BudgetDimension;
     use fss_runtime::budget::BudgetLedger;
 
     let mut ledger = BudgetLedger::new(fss_core::BudgetVector::ZERO);
-    let err = ledger.spend(BudgetDimension::Bytes, 1).expect_err("zero limit");
+    let err = ledger
+        .spend(BudgetDimension::Bytes, 1)
+        .err()
+        .ok_or("zero limit")?;
     assert_eq!(
         err,
         fss_runtime::budget::LedgerError::Overdraft {
@@ -174,20 +197,21 @@ fn zero_budget_refuses_any_spend() {
     // Unmetered dimension reports no utilization and never drives pressure.
     assert_eq!(ledger.utilization(BudgetDimension::Bytes), None);
     assert_eq!(ledger.pressure(), fss_core::ResourcePressure::Nominal);
+    Ok(())
 }
 
 // ---------- obligations (facade over fss-core's tree-owned machinery) ----------
 
 #[test]
-fn obligation_construction_and_terminal_mapping() {
+fn obligation_construction_and_terminal_mapping() -> Result<(), Box<dyn std::error::Error>> {
     use fss_core::{ObligationId, OperationId};
-    use fss_runtime::obligation::{new_obligation, ObligationState, ObligationTerminal, leaked_in};
+    use fss_runtime::obligation::{ObligationState, ObligationTerminal, leaked_in, new_obligation};
 
-    let op = OperationId::parse("op:test").expect("op id");
-    let o1 = new_obligation("obl:one", op.clone(), "all staged bytes published").expect("build");
-    let o2 = new_obligation("obl:two", op, "all child roots visible").expect("build");
+    let op = OperationId::parse("op:test")?;
+    let o1 = new_obligation("obl:one", op.clone(), "all staged bytes published")?;
+    let o2 = new_obligation("obl:two", op, "all child roots visible")?;
     assert_eq!(o1.state, ObligationState::Pending);
-    assert_eq!(o1.obligation_id, ObligationId::parse("obl:one").expect("id"));
+    assert_eq!(o1.obligation_id, ObligationId::parse("obl:one")?);
 
     // The leak oracle reads pending state only.
     let leaks = leaked_in([o1.clone(), o2.clone()]);
@@ -196,10 +220,22 @@ fn obligation_construction_and_terminal_mapping() {
 
     // Terminal mapping: the four-valued vocabulary maps onto the tree's
     // canonical states.
-    assert_eq!(ObligationTerminal::Completed.to_state(), ObligationState::Verified);
-    assert_eq!(ObligationTerminal::Drained.to_state(), ObligationState::Cancelled);
-    assert_eq!(ObligationTerminal::Failed.to_state(), ObligationState::Failed);
-    assert_eq!(ObligationTerminal::Indeterminate.to_state(), ObligationState::Indeterminate);
+    assert_eq!(
+        ObligationTerminal::Completed.to_state(),
+        ObligationState::Verified
+    );
+    assert_eq!(
+        ObligationTerminal::Drained.to_state(),
+        ObligationState::Cancelled
+    );
+    assert_eq!(
+        ObligationTerminal::Failed.to_state(),
+        ObligationState::Failed
+    );
+    assert_eq!(
+        ObligationTerminal::Indeterminate.to_state(),
+        ObligationState::Indeterminate
+    );
 
     // Terminated obligations drop out of the leak set.
     let mut done = o1.clone();
@@ -207,19 +243,23 @@ fn obligation_construction_and_terminal_mapping() {
     let leaks = leaked_in([done, o2]);
     assert_eq!(leaks.len(), 1);
     assert_eq!(leaks[0].id, "obl:two");
+    Ok(())
 }
 
 // ---------- authority lifecycle (FSS-021 public surface) ----------
 
 #[test]
-fn authority_lifecycle_end_to_end() {
-    use fss_core::{ContentDigest, ObligationId, OperationId, RegionId, RegionKind, RootAuthoritySpec, TimestampNs};
+fn authority_lifecycle_end_to_end() -> Result<(), Box<dyn std::error::Error>> {
+    use fss_core::{
+        ContentDigest, ObligationId, OperationId, RegionId, RegionKind, RootAuthoritySpec,
+        TimestampNs,
+    };
     use fss_runtime::authority::AuthorityCx;
-    use fss_runtime::obligation::{new_obligation, ObligationTerminal};
+    use fss_runtime::obligation::{ObligationTerminal, new_obligation};
 
     let spec = RootAuthoritySpec {
         trace_id: "trace:test".to_string(),
-        operation_id: OperationId::parse("op:test").expect("op"),
+        operation_id: OperationId::parse("op:test")?,
         principal: "principal:test".to_string(),
         capabilities: Vec::new(),
         deadline: None,
@@ -227,8 +267,7 @@ fn authority_lifecycle_end_to_end() {
         budgets: fss_core::BudgetVector::builder()
             .bytes(1024)
             .storage_operations(64)
-            .build()
-            .expect("budget vector"),
+            .build()?,
         privacy_scope: "privacy:test".to_string(),
         retention_scope: "retention:test".to_string(),
         anchor_universe: ContentDigest::sha256(b"test-universe"),
@@ -236,32 +275,29 @@ fn authority_lifecycle_end_to_end() {
     };
     let (mut root, mut tree) = AuthorityCx::root(
         spec,
-        RegionId::new("region:process").expect("region"),
+        RegionId::new("region:process")?,
         RegionKind::Process,
         fss_core::BudgetVector::builder()
             .tokens(100)
             .bytes(1_000)
             .cpu_millis(10_000)
-            .build()
-            .expect("budget"),
+            .build()?,
         TimestampNs(1_000),
-    )
-    .expect("root");
+    )?;
 
     // Scope down legally: child kind legal + budget within parent.
     let child = root.scope_down(
         &mut tree,
-        RegionId::new("region:property").expect("child region"),
+        RegionId::new("region:property")?,
         RegionKind::Property, // process → property is the legal narrowing
         fss_core::BudgetVector::builder()
             .tokens(50)
             .bytes(500)
             .cpu_millis(5_000)
-            .build()
-            .expect("budget"),
+            .build()?,
         RootAuthoritySpec {
             trace_id: "trace:test".to_string(), // narrowing: trace_id is inherited
-            operation_id: OperationId::parse("op:child").expect("op"),
+            operation_id: OperationId::parse("op:child")?,
             principal: "principal:test".to_string(),
             capabilities: Vec::new(),
             deadline: None,
@@ -269,8 +305,7 @@ fn authority_lifecycle_end_to_end() {
             budgets: fss_core::BudgetVector::builder()
                 .bytes(512)
                 .storage_operations(32)
-                .build()
-                .expect("budget vector"),
+                .build()?,
             privacy_scope: "privacy:test".to_string(),
             retention_scope: "retention:test".to_string(),
             anchor_universe: ContentDigest::sha256(b"test-universe"),
@@ -278,7 +313,7 @@ fn authority_lifecycle_end_to_end() {
         },
         TimestampNs(2_000),
     );
-    let mut child = child.expect("scope down");
+    let mut child = child?;
     assert_eq!(child.region().as_str(), "region:property");
     assert_eq!(child.budget().remaining().bytes, 500);
     // Reservation debited the parent: 100 - 50 tokens remain.
@@ -287,39 +322,50 @@ fn authority_lifecycle_end_to_end() {
     // Obligation lifecycle through the tree: register → leak visible → resolve.
     let ob = new_obligation(
         "obl:capture-drain",
-        OperationId::parse("op:child").expect("op"),
+        OperationId::parse("op:child")?,
         "capture ring drained",
-    ).expect("obligation");
-    child.register_obligation(&mut tree, ob).expect("register");
+    )?;
+    child.register_obligation(&mut tree, ob)?;
     assert_eq!(child.leaked_obligations(&tree).len(), 1);
     child.resolve_obligation(
         &mut tree,
-        &ObligationId::parse("obl:capture-drain").expect("id"),
+        &ObligationId::parse("obl:capture-drain")?,
         ObligationTerminal::Completed,
         Some(ContentDigest::sha256(b"proof")),
         None,
-    ).expect("resolve");
+    )?;
     assert!(child.finalize_report(&tree).is_empty());
 
     // Budget: spend within bounds, overdraft refused.
     use fss_core::BudgetDimension;
-    child.budget_mut().spend(BudgetDimension::Tokens, 50).expect("spend");
-    assert!(child.budget_mut().spend(BudgetDimension::Bytes, 501).is_err());
+    child.budget_mut().spend(BudgetDimension::Tokens, 50)?;
+    assert!(
+        child
+            .budget_mut()
+            .spend(BudgetDimension::Bytes, 501)
+            .is_err()
+    );
 
     // Cancellation cascades: request on root, child chain sees it.
     root.request_cancellation();
     assert!(root.is_cancel_requested());
-    assert!(child.is_cancel_requested(), "cancellation must cascade through the chain");
+    assert!(
+        child.is_cancel_requested(),
+        "cancellation must cascade through the chain"
+    );
+    Ok(())
 }
 
 #[test]
-fn scope_down_refuses_illegal_kind_and_budget_widening() {
-    use fss_core::{ContentDigest, OperationId, RegionId, RegionKind, RootAuthoritySpec, TimestampNs};
+fn scope_down_refuses_illegal_kind_and_budget_widening() -> Result<(), Box<dyn std::error::Error>> {
+    use fss_core::{
+        ContentDigest, OperationId, RegionId, RegionKind, RootAuthoritySpec, TimestampNs,
+    };
     use fss_runtime::authority::AuthorityCx;
 
     let spec = RootAuthoritySpec {
         trace_id: "trace:test".to_string(),
-        operation_id: OperationId::parse("op:test").expect("op"),
+        operation_id: OperationId::parse("op:test")?,
         principal: "principal:test".to_string(),
         capabilities: Vec::new(),
         deadline: None,
@@ -327,8 +373,7 @@ fn scope_down_refuses_illegal_kind_and_budget_widening() {
         budgets: fss_core::BudgetVector::builder()
             .bytes(1024)
             .storage_operations(64)
-            .build()
-            .expect("budget vector"),
+            .build()?,
         privacy_scope: "privacy:test".to_string(),
         retention_scope: "retention:test".to_string(),
         anchor_universe: ContentDigest::sha256(b"test-universe"),
@@ -336,32 +381,29 @@ fn scope_down_refuses_illegal_kind_and_budget_widening() {
     };
     let (mut root, mut tree) = AuthorityCx::root(
         spec,
-        RegionId::new("region:process").expect("region"),
+        RegionId::new("region:process")?,
         RegionKind::Process,
         fss_core::BudgetVector::builder()
             .tokens(10)
             .bytes(100)
             .cpu_millis(1_000)
-            .build()
-            .expect("budget"),
+            .build()?,
         TimestampNs(1_000),
-    )
-    .expect("root");
+    )?;
 
     // Kind legality: Process admits only Property children.
     let bad_kind = root.scope_down(
         &mut tree,
-        RegionId::new("region:bad").expect("child"),
+        RegionId::new("region:bad")?,
         RegionKind::AdapterSession, // not a legal Process child
         fss_core::BudgetVector::builder()
             .tokens(1)
             .bytes(1)
             .cpu_millis(1)
-            .build()
-            .expect("budget"),
+            .build()?,
         RootAuthoritySpec {
             trace_id: "trace:bad".to_string(),
-            operation_id: OperationId::parse("op:bad").expect("op"),
+            operation_id: OperationId::parse("op:bad")?,
             principal: "principal:test".to_string(),
             capabilities: Vec::new(),
             deadline: None,
@@ -369,8 +411,7 @@ fn scope_down_refuses_illegal_kind_and_budget_widening() {
             budgets: fss_core::BudgetVector::builder()
                 .bytes(64)
                 .storage_operations(8)
-                .build()
-                .expect("budget vector"),
+                .build()?,
             privacy_scope: "privacy:test".to_string(),
             retention_scope: "retention:test".to_string(),
             anchor_universe: ContentDigest::sha256(b"test-universe"),
@@ -383,17 +424,17 @@ fn scope_down_refuses_illegal_kind_and_budget_widening() {
     // Budget widening: child asks more than the parent has left.
     let r = root.scope_down(
         &mut tree,
-        RegionId::new("region:greedy").expect("child"),
+        RegionId::new("region:greedy")?,
         RegionKind::Property,
         fss_core::BudgetVector::builder()
             .tokens(11) // exceeds the parent's 10
             .bytes(100)
             .cpu_millis(1_000)
             .build()
-            .expect("budget"),
+            ?,
         RootAuthoritySpec {
             trace_id: "trace:greedy".to_string(),
-            operation_id: OperationId::parse("op:greedy").expect("op"),
+            operation_id: OperationId::parse("op:greedy")?,
             principal: "principal:test".to_string(),
             capabilities: Vec::new(),
             deadline: None,
@@ -401,8 +442,7 @@ fn scope_down_refuses_illegal_kind_and_budget_widening() {
             budgets: fss_core::BudgetVector::builder()
                 .bytes(512)
                 .storage_operations(32)
-                .build()
-                .expect("budget vector"),
+                .build()?,
             privacy_scope: "privacy:test".to_string(),
             retention_scope: "retention:test".to_string(),
             anchor_universe: ContentDigest::sha256(b"test-universe"),
@@ -411,22 +451,29 @@ fn scope_down_refuses_illegal_kind_and_budget_widening() {
         TimestampNs(2_000),
     );
     assert!(r.is_err(), "budget widening must refuse");
+    Ok(())
 }
 
 #[test]
-fn tree_wide_leak_oracle_reports_counts_and_inv006_coverage() {
-    use fss_core::{BudgetVector, ContentDigest, ObligationId, OperationId, RegionId, RegionKind, RootAuthoritySpec, TimestampNs};
+fn tree_wide_leak_oracle_reports_counts_and_inv006_coverage()
+-> Result<(), Box<dyn std::error::Error>> {
+    use fss_core::{
+        BudgetVector, ContentDigest, ObligationId, OperationId, RegionId, RegionKind,
+        RootAuthoritySpec, TimestampNs,
+    };
     use fss_runtime::authority::AuthorityCx;
-    use fss_runtime::obligation::{new_obligation, tree_report, ObligationState, ObligationTerminal};
+    use fss_runtime::obligation::{
+        ObligationState, ObligationTerminal, new_obligation, tree_report,
+    };
 
     let spec = RootAuthoritySpec {
         trace_id: "trace:oracle".to_string(),
-        operation_id: OperationId::parse("op:root").expect("op"),
+        operation_id: OperationId::parse("op:root")?,
         principal: "principal:test".to_string(),
         capabilities: Vec::new(),
         deadline: None,
         priority: 10,
-        budgets: BudgetVector::builder().bytes(1024).build().expect("bv"),
+        budgets: BudgetVector::builder().bytes(1024).build()?,
         privacy_scope: "privacy:test".to_string(),
         retention_scope: "retention:test".to_string(),
         anchor_universe: ContentDigest::sha256(b"oracle-universe"),
@@ -434,36 +481,32 @@ fn tree_wide_leak_oracle_reports_counts_and_inv006_coverage() {
     };
     let (root, mut tree) = AuthorityCx::root(
         spec,
-        RegionId::new("region:process").expect("region"),
+        RegionId::new("region:process")?,
         RegionKind::Process,
-        BudgetVector::builder().tokens(100).bytes(1_000).build().expect("budget"),
+        BudgetVector::builder().tokens(100).bytes(1_000).build()?,
         TimestampNs(1_000),
-    )
-    .expect("root");
+    )?;
 
     // Register three obligations on the root region: resolve one Verified,
     // leave one Pending (a leak), resolve one Indeterminate WITHOUT a note
     // (INV-006 hazard — the oracle must surface it).
-    let mk = |id: &str| {
-        new_obligation(id, OperationId::parse("op:root").expect("op"), "predicate")
-            .expect("obligation")
-    };
-    root.register_obligation(&mut tree, mk("obl:done")).expect("r1");
-    root.register_obligation(&mut tree, mk("obl:leak")).expect("r2");
-    root.register_obligation(&mut tree, mk("obl:unknown")).expect("r3");
+    let op_root = OperationId::parse("op:root")?;
+    let mk = |id: &str| new_obligation(id, op_root.clone(), "predicate");
+    root.register_obligation(&mut tree, mk("obl:done")?)?;
+    root.register_obligation(&mut tree, mk("obl:leak")?)?;
+    root.register_obligation(&mut tree, mk("obl:unknown")?)?;
     root.resolve_obligation(
         &mut tree,
-        &ObligationId::parse("obl:done").expect("id"),
+        &ObligationId::parse("obl:done")?,
         ObligationTerminal::Completed,
         Some(ContentDigest::sha256(b"proof")),
         None,
-    )
-    .expect("resolve done");
+    )?;
     // Indeterminate resolution through the tree requires a reconciliation
     // note (INV-006). Verify the tree enforces it...
     let refused = tree.resolve_obligation(
-        &RegionId::new("region:process").expect("region"),
-        &ObligationId::parse("obl:unknown").expect("id"),
+        &RegionId::new("region:process")?,
+        &ObligationId::parse("obl:unknown")?,
         ObligationState::Indeterminate,
         None,
         None,
@@ -471,13 +514,12 @@ fn tree_wide_leak_oracle_reports_counts_and_inv006_coverage() {
     assert!(refused.is_err(), "Indeterminate without a note must refuse");
     // ...and with a note it lands.
     tree.resolve_obligation(
-        &RegionId::new("region:process").expect("region"),
-        &ObligationId::parse("obl:unknown").expect("id"),
+        &RegionId::new("region:process")?,
+        &ObligationId::parse("obl:unknown")?,
         ObligationState::Indeterminate,
         None,
         Some("network partition before ack; reconcile on reconnect"),
-    )
-    .expect("resolve with note");
+    )?;
 
     let report = tree_report(&tree);
     assert_eq!(report.len(), 1);
@@ -486,38 +528,47 @@ fn tree_wide_leak_oracle_reports_counts_and_inv006_coverage() {
     assert_eq!(root_report.counts, [1, 1, 0, 1, 0]); // pending, verified, failed, indeterminate, cancelled
     assert_eq!(root_report.leaked.len(), 1);
     assert_eq!(root_report.leaked[0].id, "obl:leak");
-    assert_eq!(root_report.indeterminate_with_note, vec!["obl:unknown".to_string()]);
+    assert_eq!(
+        root_report.indeterminate_with_note,
+        vec!["obl:unknown".to_string()]
+    );
     assert!(root_report.indeterminate_without_note.is_empty());
+    Ok(())
 }
 
 // ---------- capability grants and resource scopes (FSS-025) ----------
 
-fn test_spec(trace: &str, op: &str, caps: Vec<String>) -> fss_core::RootAuthoritySpec {
-    fss_core::RootAuthoritySpec {
+fn test_spec(
+    trace: &str,
+    op: &str,
+    caps: Vec<String>,
+) -> Result<fss_core::RootAuthoritySpec, Box<dyn std::error::Error>> {
+    let spec = fss_core::RootAuthoritySpec {
         trace_id: trace.to_string(),
-        operation_id: fss_core::OperationId::parse(op).expect("op"),
+        operation_id: fss_core::OperationId::parse(op)?,
         principal: "principal:test".to_string(),
         capabilities: caps,
         deadline: None,
         priority: 10,
-        budgets: fss_core::BudgetVector::builder().bytes(1024).build().expect("bv"),
+        budgets: fss_core::BudgetVector::builder().bytes(1024).build()?,
         privacy_scope: "privacy:test".to_string(),
         retention_scope: "retention:test".to_string(),
         anchor_universe: fss_core::ContentDigest::sha256(b"grant-universe"),
         generation: 1,
-    }
+    };
+    Ok(spec)
 }
 
 #[test]
-fn grant_enforcement_and_resource_scopes() {
+fn grant_enforcement_and_resource_scopes() -> Result<(), Box<dyn std::error::Error>> {
     use fss_core::RuntimeGrant;
     use fss_runtime::grant::{GrantError, GrantSet};
 
     // Unregistered capability strings are refused at construction.
-    let bad = test_spec("trace:g", "op:g", vec!["NOT-A-REAL-CAP".to_string()]);
+    let bad = test_spec("trace:g", "op:g", vec!["NOT-A-REAL-CAP".to_string()])?;
     let refused = fss_runtime::authority::AuthorityCx::root(
         bad,
-        fss_core::RegionId::new("region:p").expect("r"),
+        fss_core::RegionId::new("region:p")?,
         fss_core::RegionKind::Process,
         fss_core::BudgetVector::ZERO,
         fss_core::TimestampNs(1),
@@ -531,28 +582,38 @@ fn grant_enforcement_and_resource_scopes() {
 
     // A held grant passes; a missing grant fails closed and names itself.
     let (auth, _t) = fss_runtime::authority::AuthorityCx::root(
-        test_spec("trace:g2", "op:g2", vec!["CAP-ALERT-COMMIT-001".to_string()]),
-        fss_core::RegionId::new("region:p2").expect("r"),
+        test_spec(
+            "trace:g2",
+            "op:g2",
+            vec!["CAP-ALERT-COMMIT-001".to_string()],
+        )?,
+        fss_core::RegionId::new("region:p2")?,
         fss_core::RegionKind::Process,
         fss_core::BudgetVector::ZERO,
         fss_core::TimestampNs(1),
-    )
-    .expect("root");
-    auth.require_grant(RuntimeGrant::AlertCommit).expect("held");
-    let missing = auth.require_grant(RuntimeGrant::PtzCommit).expect_err("missing");
-    assert_eq!(missing, GrantError::MissingGrant { grant: RuntimeGrant::PtzCommit });
+    )?;
+    auth.require_grant(RuntimeGrant::AlertCommit)?;
+    let missing = auth
+        .require_grant(RuntimeGrant::PtzCommit)
+        .err()
+        .ok_or("missing")?;
+    assert_eq!(
+        missing,
+        GrantError::MissingGrant {
+            grant: RuntimeGrant::PtzCommit
+        }
+    );
 
     // Resource scopes: scoped grant admits in-scope resources only.
     let grants = GrantSet::empty().with_scope(
         RuntimeGrant::AdapterNet,
         ["cam:porch".to_string()].into_iter().collect(),
     );
-    grants
-        .require_grant_for(RuntimeGrant::AdapterNet, "cam:porch")
-        .expect("in scope");
+    grants.require_grant_for(RuntimeGrant::AdapterNet, "cam:porch")?;
     let outside = grants
         .require_grant_for(RuntimeGrant::AdapterNet, "cam:garage")
-        .expect_err("outside scope");
+        .err()
+        .ok_or("outside scope")?;
     assert_eq!(
         outside,
         GrantError::OutsideScope {
@@ -560,32 +621,31 @@ fn grant_enforcement_and_resource_scopes() {
             resource: "cam:garage".to_string(),
         }
     );
+    Ok(())
 }
 
 #[test]
-fn scope_down_never_widens_grants_or_scopes() {
+fn scope_down_never_widens_grants_or_scopes() -> Result<(), Box<dyn std::error::Error>> {
     use fss_core::RuntimeGrant;
     use fss_runtime::grant::{GrantError, GrantSet};
 
     let parent = GrantSet::empty().with_scope(
         RuntimeGrant::AdapterNet,
-        ["cam:a".to_string(), "cam:b".to_string()].into_iter().collect(),
+        ["cam:a".to_string(), "cam:b".to_string()]
+            .into_iter()
+            .collect(),
     );
 
     // Child holding a grant the parent lacks: refuse. (Built through the
     // real authority-string path — no test-only mutation hooks.)
-    let child_extra = GrantSet::from_authority(
-        &fss_core::ContextAuthority::new_root(test_spec(
-            "trace:c",
-            "op:c",
-            vec![
-                "CAP-ADAPTER-NET-001".to_string(),
-                "CAP-PTZ-COMMIT-001".to_string(),
-            ],
-        ))
-        .expect("child authority"),
-    )
-    .expect("child grants");
+    let child_extra = GrantSet::from_authority(&fss_core::ContextAuthority::new_root(test_spec(
+        "trace:c",
+        "op:c",
+        vec![
+            "CAP-ADAPTER-NET-001".to_string(),
+            "CAP-PTZ-COMMIT-001".to_string(),
+        ],
+    )?)?)?;
     assert!(matches!(
         parent.verify_narrowed_by(&child_extra),
         Err(GrantError::Widening { .. })
@@ -596,18 +656,12 @@ fn scope_down_never_widens_grants_or_scopes() {
         RuntimeGrant::AdapterNet,
         ["cam:a".to_string()].into_iter().collect(),
     );
-    parent.verify_narrowed_by(&child_narrower).expect("narrower scope is legal");
+    parent.verify_narrowed_by(&child_narrower)?;
 
     // Child unscoped where parent is scoped: refuse (widening).
-    let child_unscoped = GrantSet::from_authority(
-        &fss_core::ContextAuthority::new_root(test_spec(
-            "trace:c2",
-            "op:c2",
-            vec!["CAP-ADAPTER-NET-001".to_string()],
-        ))
-        .expect("child authority"),
-    )
-    .expect("unscoped child grants");
+    let child_unscoped = GrantSet::from_authority(&fss_core::ContextAuthority::new_root(
+        test_spec("trace:c2", "op:c2", vec!["CAP-ADAPTER-NET-001".to_string()])?,
+    )?)?;
     assert!(matches!(
         parent.verify_narrowed_by(&child_unscoped),
         Err(GrantError::Widening { .. })
@@ -616,20 +670,26 @@ fn scope_down_never_widens_grants_or_scopes() {
     // Child superset scope: refuse.
     let child_super = GrantSet::empty().with_scope(
         RuntimeGrant::AdapterNet,
-        ["cam:a".to_string(), "cam:b".to_string(), "cam:c".to_string()]
-            .into_iter()
-            .collect(),
+        [
+            "cam:a".to_string(),
+            "cam:b".to_string(),
+            "cam:c".to_string(),
+        ]
+        .into_iter()
+        .collect(),
     );
     assert!(matches!(
         parent.verify_narrowed_by(&child_super),
         Err(GrantError::Widening { .. })
     ));
+    Ok(())
 }
 
 // ---------- leases, epochs, fencing (FSS-026) ----------
 
 #[test]
-fn lease_default_matches_new_and_never_accepts_zero() -> Result<(), fss_runtime::lease::LeaseError> {
+fn lease_default_matches_new_and_never_accepts_zero() -> Result<(), fss_runtime::lease::LeaseError>
+{
     use fss_core::TimestampNs;
     use fss_runtime::lease::{LeaseError, LeaseRegistry};
 
@@ -665,44 +725,58 @@ fn lease_default_matches_new_and_never_accepts_zero() -> Result<(), fss_runtime:
 }
 
 #[test]
-fn lease_exclusivity_takeover_and_renewal() {
+fn lease_exclusivity_takeover_and_renewal() -> Result<(), Box<dyn std::error::Error>> {
     use fss_core::TimestampNs;
     use fss_runtime::lease::{LeaseError, LeaseRegistry, LeaseState};
 
     let mut reg = LeaseRegistry::new();
-    let a = reg
-        .acquire("stream:porch", "region:adapter-a", Some(1_000), TimestampNs(100))
-        .expect("first acquire");
+    let a = reg.acquire(
+        "stream:porch",
+        "region:adapter-a",
+        Some(1_000),
+        TimestampNs(100),
+    )?;
     assert_eq!(a.fence, 1);
     assert_eq!(a.state, LeaseState::Active);
 
     // Second holder refused with the holder named.
     let err = reg
-        .acquire("stream:porch", "region:adapter-b", Some(1_000), TimestampNs(200))
-        .expect_err("held");
+        .acquire(
+            "stream:porch",
+            "region:adapter-b",
+            Some(1_000),
+            TimestampNs(200),
+        )
+        .err()
+        .ok_or("held")?;
     assert!(matches!(err, LeaseError::Held { holder, .. } if holder == "region:adapter-a"));
 
     // Renewal extends the same lease without changing the fence.
-    reg.renew(&a.id, 5_000, TimestampNs(300)).expect("renew");
+    reg.renew(&a.id, 5_000, TimestampNs(300))?;
     assert_eq!(reg.current_fence("stream:porch"), Some(1));
 
     // Fence check passes while active.
-    reg.check_fence("stream:porch", 1, TimestampNs(400)).expect("fence ok");
+    reg.check_fence("stream:porch", 1, TimestampNs(400))?;
 
     // After expiry, the old holder's fence fails and a takeover succeeds with
     // a fresh token.
     let err = reg
         .check_fence("stream:porch", 1, TimestampNs(10_000))
-        .expect_err("expired");
+        .err()
+        .ok_or("expired")?;
     assert!(matches!(err, LeaseError::LeaseExpired { .. }));
-    let b = reg
-        .acquire("stream:porch", "region:adapter-b", Some(1_000), TimestampNs(10_100))
-        .expect("takeover after expiry");
+    let b = reg.acquire(
+        "stream:porch",
+        "region:adapter-b",
+        Some(1_000),
+        TimestampNs(10_100),
+    )?;
     assert_eq!(b.fence, 2);
     // The zombie's token is permanently stale.
     let err = reg
         .check_fence("stream:porch", 1, TimestampNs(10_200))
-        .expect_err("stale");
+        .err()
+        .ok_or("stale")?;
     assert_eq!(
         err,
         LeaseError::StaleFence {
@@ -711,31 +785,45 @@ fn lease_exclusivity_takeover_and_renewal() {
             current: 2,
         }
     );
+    Ok(())
 }
 
 #[test]
-fn release_and_revoke_are_terminal_for_fence_use() {
+fn release_and_revoke_are_terminal_for_fence_use() -> Result<(), Box<dyn std::error::Error>> {
     use fss_core::TimestampNs;
     use fss_runtime::lease::{LeaseError, LeaseRegistry, LeaseState};
 
     let mut reg = LeaseRegistry::new();
-    let a = reg
-        .acquire("device:ptz", "region:r1", None, TimestampNs(0))
-        .expect("acquire");
-    reg.release(&a.id).expect("release");
-    let err = reg.check_fence("device:ptz", a.fence, TimestampNs(1)).expect_err("released");
-    assert!(matches!(err, LeaseError::NotActive { state: LeaseState::Released, .. }));
+    let a = reg.acquire("device:ptz", "region:r1", None, TimestampNs(0))?;
+    reg.release(&a.id)?;
+    let err = reg
+        .check_fence("device:ptz", a.fence, TimestampNs(1))
+        .err()
+        .ok_or("released")?;
+    assert!(matches!(
+        err,
+        LeaseError::NotActive {
+            state: LeaseState::Released,
+            ..
+        }
+    ));
 
     // Revocation advances the fence: the revoked token reports StaleFence.
-    let b = reg.acquire("device:ptz", "region:r2", None, TimestampNs(2)).expect("re-acquire");
-    reg.revoke(&b.id).expect("revoke");
-    let err = reg.check_fence("device:ptz", b.fence, TimestampNs(3)).expect_err("revoked");
+    let b = reg.acquire("device:ptz", "region:r2", None, TimestampNs(2))?;
+    reg.revoke(&b.id)?;
+    let err = reg
+        .check_fence("device:ptz", b.fence, TimestampNs(3))
+        .err()
+        .ok_or("revoked")?;
     assert!(matches!(err, LeaseError::StaleFence { presented, .. } if presented == b.fence));
 
     // Double-release and unknown leases are typed refusals.
     assert!(matches!(
         reg.release(&a.id),
-        Err(LeaseError::NotActive { state: LeaseState::Released, .. })
+        Err(LeaseError::NotActive {
+            state: LeaseState::Released,
+            ..
+        })
     ));
     assert!(matches!(
         reg.renew("lease:nope:99", 1, TimestampNs(4)),
@@ -745,23 +833,29 @@ fn release_and_revoke_are_terminal_for_fence_use() {
         reg.check_fence("resource:never", 7, TimestampNs(5)),
         Err(LeaseError::NoFence { .. })
     ));
+    Ok(())
 }
 
 // ---------- two-phase effect coordinator (FSS-027) ----------
 
-fn effect_authority(caps: Vec<String>) -> (fss_runtime::authority::AuthorityCx, fss_core::RegionTree) {
-    fss_runtime::authority::AuthorityCx::root(
-        test_spec("trace:fx", "op:fx", caps),
-        fss_core::RegionId::new("region:fx").expect("r"),
+fn effect_authority(
+    caps: Vec<String>,
+) -> Result<(fss_runtime::authority::AuthorityCx, fss_core::RegionTree), Box<dyn std::error::Error>>
+{
+    Ok(fss_runtime::authority::AuthorityCx::root(
+        test_spec("trace:fx", "op:fx", caps)?,
+        fss_core::RegionId::new("region:fx")?,
         fss_core::RegionKind::Process,
-        fss_core::BudgetVector::builder().tokens(64).bytes(4096).build().expect("bv"),
+        fss_core::BudgetVector::builder()
+            .tokens(64)
+            .bytes(4096)
+            .build()?,
         fss_core::TimestampNs(1),
-    )
-    .expect("root")
+    )?)
 }
 
 #[test]
-fn effect_happy_path_prepare_commit_observe_verify() {
+fn effect_happy_path_prepare_commit_observe_verify() -> Result<(), Box<dyn std::error::Error>> {
     use fss_core::{ContentDigest, OperationId, RuntimeGrant, TimestampNs};
     use fss_runtime::effect::EffectCoordinator;
     use fss_runtime::lease::LeaseRegistry;
@@ -769,42 +863,51 @@ fn effect_happy_path_prepare_commit_observe_verify() {
     let (auth, mut tree) = effect_authority(vec![
         "CAP-PTZ-PREPARE-001".to_string(),
         "CAP-PTZ-COMMIT-001".to_string(),
-    ]);
+    ])?;
     let mut leases = LeaseRegistry::new();
-    let lease = leases
-        .acquire("device:ptz:porch", "region:fx", Some(10_000), TimestampNs(100))
-        .expect("lease");
+    let lease = leases.acquire(
+        "device:ptz:porch",
+        "region:fx",
+        Some(10_000),
+        TimestampNs(100),
+    )?;
 
     let prepared = EffectCoordinator::prepare(
         &auth,
         &mut tree,
         &leases,
-        OperationId::parse("op:ptz-1").expect("op"),
-        "device:ptz:porch",
-        lease.fence,
-        RuntimeGrant::PtzPrepare,
-        RuntimeGrant::PtzCommit,
-        "camera panned to preset 3",
-    )
-    .expect("prepare");
+        fss_runtime::effect::PrepareSpec {
+            operation: &OperationId::parse("op:ptz-1")?,
+            resource: "device:ptz:porch",
+            fence: lease.fence,
+            prepare_grant: RuntimeGrant::PtzPrepare,
+            commit_grant: RuntimeGrant::PtzCommit,
+            terminal_predicate: "camera panned to preset 3",
+        },
+    )?;
     assert_eq!(prepared.state(), fss_core::EffectState::Prepared);
     // Obligation registered and pending: the leak oracle sees it.
     assert_eq!(auth.leaked_obligations(&tree).len(), 1);
 
-    let mut committed = EffectCoordinator::commit(&auth, &mut leases, prepared, TimestampNs(200))
-        .expect("commit");
+    let mut committed = EffectCoordinator::commit(&auth, &mut leases, prepared, TimestampNs(200))?;
     assert_eq!(committed.state(), fss_core::EffectState::Committed);
 
-    EffectCoordinator::adapter_accepted(&mut committed).expect("accepted");
-    EffectCoordinator::observed(&mut committed).expect("observed");
-    EffectCoordinator::verified(&mut tree, &auth, committed, ContentDigest::sha256(b"preset-3-proof"))
-        .expect("verified");
+    EffectCoordinator::adapter_accepted(&mut committed)?;
+    EffectCoordinator::observed(&mut committed)?;
+    EffectCoordinator::verified(
+        &mut tree,
+        &auth,
+        committed,
+        ContentDigest::sha256(b"preset-3-proof"),
+    )?;
     // Obligation terminal: no leaks remain.
     assert!(auth.finalize_report(&tree).is_empty());
+    Ok(())
 }
 
 #[test]
-fn effect_commit_refused_on_stale_fence_and_missing_grant() {
+fn effect_commit_refused_on_stale_fence_and_missing_grant() -> Result<(), Box<dyn std::error::Error>>
+{
     use fss_core::{OperationId, RuntimeGrant, TimestampNs};
     use fss_runtime::effect::{EffectCoordError, EffectCoordinator};
     use fss_runtime::lease::LeaseRegistry;
@@ -812,54 +915,55 @@ fn effect_commit_refused_on_stale_fence_and_missing_grant() {
     let (auth, mut tree) = effect_authority(vec![
         "CAP-PTZ-PREPARE-001".to_string(),
         "CAP-PTZ-COMMIT-001".to_string(),
-    ]);
+    ])?;
     let mut leases = LeaseRegistry::new();
-    let lease = leases
-        .acquire("device:ptz:porch", "region:fx", None, TimestampNs(100))
-        .expect("lease");
+    let lease = leases.acquire("device:ptz:porch", "region:fx", None, TimestampNs(100))?;
     let prepared = EffectCoordinator::prepare(
         &auth,
         &mut tree,
         &leases,
-        OperationId::parse("op:ptz-2").expect("op"),
-        "device:ptz:porch",
-        lease.fence,
-        RuntimeGrant::PtzPrepare,
-        RuntimeGrant::PtzCommit,
-        "predicate",
-    )
-    .expect("prepare");
+        fss_runtime::effect::PrepareSpec {
+            operation: &OperationId::parse("op:ptz-2")?,
+            resource: "device:ptz:porch",
+            fence: lease.fence,
+            prepare_grant: RuntimeGrant::PtzPrepare,
+            commit_grant: RuntimeGrant::PtzCommit,
+            terminal_predicate: "predicate",
+        },
+    )?;
 
     // Zombie: lease revoked between prepare and commit.
-    leases.revoke(&lease.id).expect("revoke");
+    leases.revoke(&lease.id)?;
     let err = EffectCoordinator::commit(&auth, &mut leases, prepared, TimestampNs(200))
-        .expect_err("stale fence must refuse commit");
+        .err()
+        .ok_or("stale fence must refuse commit")?;
     assert!(matches!(err, EffectCoordError::Fence { .. }));
 
     // Missing commit grant: prepare-only authority.
-    let (auth2, mut tree2) = effect_authority(vec!["CAP-PTZ-PREPARE-001".to_string()]);
-    let lease2 = leases
-        .acquire("device:ptz:porch", "region:fx2", None, TimestampNs(300))
-        .expect("lease2");
+    let (auth2, mut tree2) = effect_authority(vec!["CAP-PTZ-PREPARE-001".to_string()])?;
+    let lease2 = leases.acquire("device:ptz:porch", "region:fx2", None, TimestampNs(300))?;
     let prepared2 = EffectCoordinator::prepare(
         &auth2,
         &mut tree2,
         &leases,
-        OperationId::parse("op:ptz-3").expect("op"),
-        "device:ptz:porch",
-        lease2.fence,
-        RuntimeGrant::PtzPrepare,
-        RuntimeGrant::PtzCommit,
-        "predicate",
-    )
-    .expect("prepare2");
+        fss_runtime::effect::PrepareSpec {
+            operation: &OperationId::parse("op:ptz-3")?,
+            resource: "device:ptz:porch",
+            fence: lease2.fence,
+            prepare_grant: RuntimeGrant::PtzPrepare,
+            commit_grant: RuntimeGrant::PtzCommit,
+            terminal_predicate: "predicate",
+        },
+    )?;
     let err = EffectCoordinator::commit(&auth2, &mut leases, prepared2, TimestampNs(400))
-        .expect_err("commit grant missing");
+        .err()
+        .ok_or("commit grant missing")?;
     assert!(matches!(err, EffectCoordError::Grant { .. }));
+    Ok(())
 }
 
 #[test]
-fn effect_cancel_and_indeterminate_semantics() {
+fn effect_cancel_and_indeterminate_semantics() -> Result<(), Box<dyn std::error::Error>> {
     use fss_core::{OperationId, RuntimeGrant, TimestampNs};
     use fss_runtime::effect::{EffectCoordError, EffectCoordinator};
     use fss_runtime::lease::LeaseRegistry;
@@ -867,26 +971,25 @@ fn effect_cancel_and_indeterminate_semantics() {
     let (auth, mut tree) = effect_authority(vec![
         "CAP-ALERT-PREPARE-001".to_string(),
         "CAP-ALERT-COMMIT-001".to_string(),
-    ]);
+    ])?;
     let mut leases = LeaseRegistry::new();
-    let lease = leases
-        .acquire("webhook:ops", "region:fx", None, TimestampNs(0))
-        .expect("lease");
+    let lease = leases.acquire("webhook:ops", "region:fx", None, TimestampNs(0))?;
 
     // Cancel before commit: obligation drains, no leak.
     let prepared = EffectCoordinator::prepare(
         &auth,
         &mut tree,
         &leases,
-        OperationId::parse("op:alert-1").expect("op"),
-        "webhook:ops",
-        lease.fence,
-        RuntimeGrant::AlertPrepare,
-        RuntimeGrant::AlertCommit,
-        "alert delivered",
-    )
-    .expect("prepare");
-    EffectCoordinator::cancel_prepared(&mut tree, &auth, prepared).expect("cancel");
+        fss_runtime::effect::PrepareSpec {
+            operation: &OperationId::parse("op:alert-1")?,
+            resource: "webhook:ops",
+            fence: lease.fence,
+            prepare_grant: RuntimeGrant::AlertPrepare,
+            commit_grant: RuntimeGrant::AlertCommit,
+            terminal_predicate: "alert delivered",
+        },
+    )?;
+    EffectCoordinator::cancel_prepared(&mut tree, &auth, prepared)?;
     assert!(auth.finalize_report(&tree).is_empty());
 
     // Indeterminate requires a reconciliation note (INV-006).
@@ -894,51 +997,58 @@ fn effect_cancel_and_indeterminate_semantics() {
         &auth,
         &mut tree,
         &leases,
-        OperationId::parse("op:alert-2").expect("op"),
-        "webhook:ops",
-        lease.fence,
-        RuntimeGrant::AlertPrepare,
-        RuntimeGrant::AlertCommit,
-        "alert delivered",
-    )
-    .expect("prepare2");
-    let committed2 = EffectCoordinator::commit(&auth, &mut leases, prepared2, TimestampNs(10))
-        .expect("commit2");
+        fss_runtime::effect::PrepareSpec {
+            operation: &OperationId::parse("op:alert-2")?,
+            resource: "webhook:ops",
+            fence: lease.fence,
+            prepare_grant: RuntimeGrant::AlertPrepare,
+            commit_grant: RuntimeGrant::AlertCommit,
+            terminal_predicate: "alert delivered",
+        },
+    )?;
+    let committed2 = EffectCoordinator::commit(&auth, &mut leases, prepared2, TimestampNs(10))?;
     let err = EffectCoordinator::indeterminate(&mut tree, &auth, committed2, None)
-        .expect_err("note required");
-    assert!(matches!(err, EffectCoordError::IndeterminateWithoutNote { .. }));
+        .err()
+        .ok_or("note required")?;
+    assert!(matches!(
+        err,
+        EffectCoordError::IndeterminateWithoutNote { .. }
+    ));
 
     // With a note it lands; the tree-wide oracle reports note coverage.
     let prepared3 = EffectCoordinator::prepare(
         &auth,
         &mut tree,
         &leases,
-        OperationId::parse("op:alert-3").expect("op"),
-        "webhook:ops",
-        lease.fence,
-        RuntimeGrant::AlertPrepare,
-        RuntimeGrant::AlertCommit,
-        "alert delivered",
-    )
-    .expect("prepare3");
-    let committed3 = EffectCoordinator::commit(&auth, &mut leases, prepared3, TimestampNs(20))
-        .expect("commit3");
+        fss_runtime::effect::PrepareSpec {
+            operation: &OperationId::parse("op:alert-3")?,
+            resource: "webhook:ops",
+            fence: lease.fence,
+            prepare_grant: RuntimeGrant::AlertPrepare,
+            commit_grant: RuntimeGrant::AlertCommit,
+            terminal_predicate: "alert delivered",
+        },
+    )?;
+    let committed3 = EffectCoordinator::commit(&auth, &mut leases, prepared3, TimestampNs(20))?;
     EffectCoordinator::indeterminate(
         &mut tree,
         &auth,
         committed3,
         Some("webhook ack lost in partition; reconcile on reconnect"),
-    )
-    .expect("indeterminate with note");
+    )?;
     let report = fss_runtime::obligation::tree_report(&tree);
     let root = &report[0];
     assert_eq!(root.counts[3], 1, "one indeterminate obligation");
-    assert_eq!(root.indeterminate_with_note, vec!["obligation:op:alert-3:terminal".to_string()]);
+    assert_eq!(
+        root.indeterminate_with_note,
+        vec!["obligation:op:alert-3:terminal".to_string()]
+    );
     assert!(root.indeterminate_without_note.is_empty());
+    Ok(())
 }
 
 #[test]
-fn effect_illegal_transitions_are_typed_refusals() {
+fn effect_illegal_transitions_are_typed_refusals() -> Result<(), Box<dyn std::error::Error>> {
     use fss_core::{OperationId, RuntimeGrant, TimestampNs};
     use fss_runtime::effect::{EffectCoordError, EffectCoordinator};
     use fss_runtime::lease::LeaseRegistry;
@@ -946,29 +1056,30 @@ fn effect_illegal_transitions_are_typed_refusals() {
     let (auth, mut tree) = effect_authority(vec![
         "CAP-PTZ-PREPARE-001".to_string(),
         "CAP-PTZ-COMMIT-001".to_string(),
-    ]);
+    ])?;
     let mut leases = LeaseRegistry::new();
-    let lease = leases
-        .acquire("device:ptz:x", "region:fx", None, TimestampNs(0))
-        .expect("lease");
+    let lease = leases.acquire("device:ptz:x", "region:fx", None, TimestampNs(0))?;
     let prepared = EffectCoordinator::prepare(
         &auth,
         &mut tree,
         &leases,
-        OperationId::parse("op:ptz-9").expect("op"),
-        "device:ptz:x",
-        lease.fence,
-        RuntimeGrant::PtzPrepare,
-        RuntimeGrant::PtzCommit,
-        "predicate",
-    )
-    .expect("prepare");
-    let mut committed = EffectCoordinator::commit(&auth, &mut leases, prepared, TimestampNs(5))
-        .expect("commit");
+        fss_runtime::effect::PrepareSpec {
+            operation: &OperationId::parse("op:ptz-9")?,
+            resource: "device:ptz:x",
+            fence: lease.fence,
+            prepare_grant: RuntimeGrant::PtzPrepare,
+            commit_grant: RuntimeGrant::PtzCommit,
+            terminal_predicate: "predicate",
+        },
+    )?;
+    let mut committed = EffectCoordinator::commit(&auth, &mut leases, prepared, TimestampNs(5))?;
     // Committed → Verified directly is illegal (must pass through
     // AdapterAccepted → Observed).
-    let err = EffectCoordinator::observed(&mut committed).expect_err("skip is illegal");
+    let err = EffectCoordinator::observed(&mut committed)
+        .err()
+        .ok_or("skip is illegal")?;
     assert!(matches!(err, EffectCoordError::IllegalTransition { .. }));
+    Ok(())
 }
 
 // ---------- crash/cancellation cut-point harness (FSS-028) ----------
@@ -993,27 +1104,34 @@ fn cut_point_inventory() -> Vec<&'static str> {
 }
 
 #[test]
-fn every_cut_point_is_enumerated_and_survivable() {
+fn every_cut_point_is_enumerated_and_survivable() -> Result<(), Box<dyn std::error::Error>> {
     // The inventory is stable and non-empty — a regression that deletes a
     // cut point fails here.
     assert_eq!(cut_point_inventory().len(), 5);
+    Ok(())
 }
 
-fn fx_setup() -> (
-    fss_runtime::authority::AuthorityCx,
-    fss_core::RegionTree,
-    fss_runtime::lease::LeaseRegistry,
-    u64,
-) {
+fn fx_setup() -> Result<
+    (
+        fss_runtime::authority::AuthorityCx,
+        fss_core::RegionTree,
+        fss_runtime::lease::LeaseRegistry,
+        u64,
+    ),
+    Box<dyn std::error::Error>,
+> {
     let (auth, tree) = effect_authority(vec![
         "CAP-PTZ-PREPARE-001".to_string(),
         "CAP-PTZ-COMMIT-001".to_string(),
-    ]);
+    ])?;
     let mut leases = fss_runtime::lease::LeaseRegistry::new();
-    let lease = leases
-        .acquire("device:ptz:crash", "region:fx", None, fss_core::TimestampNs(0))
-        .expect("lease");
-    (auth, tree, leases, lease.fence)
+    let lease = leases.acquire(
+        "device:ptz:crash",
+        "region:fx",
+        None,
+        fss_core::TimestampNs(0),
+    )?;
+    Ok((auth, tree, leases, lease.fence))
 }
 
 fn prepared_fx(
@@ -1022,28 +1140,32 @@ fn prepared_fx(
     leases: &fss_runtime::lease::LeaseRegistry,
     fence: u64,
     op: &str,
-) -> fss_runtime::effect::PreparedEffect {
-    fss_runtime::effect::EffectCoordinator::prepare(
+) -> Result<fss_runtime::effect::PreparedEffect, Box<dyn std::error::Error>> {
+    let operation = fss_core::OperationId::parse(op)?;
+    let prepared = fss_runtime::effect::EffectCoordinator::prepare(
         auth,
         tree,
         leases,
-        fss_core::OperationId::parse(op).expect("op"),
-        "device:ptz:crash",
-        fence,
-        fss_core::RuntimeGrant::PtzPrepare,
-        fss_core::RuntimeGrant::PtzCommit,
-        "crash cut-point predicate",
-    )
-    .expect("prepare")
+        fss_runtime::effect::PrepareSpec {
+            operation: &operation,
+            resource: "device:ptz:crash",
+            fence,
+            prepare_grant: fss_core::RuntimeGrant::PtzPrepare,
+            commit_grant: fss_core::RuntimeGrant::PtzCommit,
+            terminal_predicate: "crash cut-point predicate",
+        },
+    )?;
+    Ok(prepared)
 }
 
 #[test]
-fn crash_after_prepare_leaves_named_leak_and_reconciles() {
+fn crash_after_prepare_leaves_named_leak_and_reconciles() -> Result<(), Box<dyn std::error::Error>>
+{
     use fss_core::{ContentDigest, ObligationId, TimestampNs};
-    use fss_runtime::obligation::{tree_report, ObligationTerminal};
+    use fss_runtime::obligation::{ObligationTerminal, tree_report};
 
-    let (auth, mut tree, leases, fence) = fx_setup();
-    let prepared = prepared_fx(&auth, &mut tree, &leases, fence, "op:crash-1");
+    let (auth, mut tree, leases, fence) = fx_setup()?;
+    let prepared = prepared_fx(&auth, &mut tree, &leases, fence, "op:crash-1")?;
     let obligation = prepared.obligation.clone();
 
     // CRASH: the prepared session is dropped before commit. Nothing about
@@ -1060,26 +1182,26 @@ fn crash_after_prepare_leaves_named_leak_and_reconciles() {
     // crash-cut record — never silently dropped.
     auth.resolve_obligation(
         &mut tree,
-        &ObligationId::parse(obligation.as_str()).expect("id"),
+        &ObligationId::parse(obligation.as_str())?,
         ObligationTerminal::Failed,
         Some(ContentDigest::sha256(b"crashed-before-commit")),
         None,
-    )
-    .expect("reconcile");
+    )?;
     assert!(auth.finalize_report(&tree).is_empty());
     let _ = TimestampNs(0);
+    Ok(())
 }
 
 #[test]
-fn crash_after_commit_is_indeterminate_with_mandatory_note() {
+fn crash_after_commit_is_indeterminate_with_mandatory_note()
+-> Result<(), Box<dyn std::error::Error>> {
     use fss_core::TimestampNs;
     use fss_runtime::effect::EffectCoordinator;
     use fss_runtime::obligation::tree_report;
 
-    let (auth, mut tree, mut leases, fence) = fx_setup();
-    let prepared = prepared_fx(&auth, &mut tree, &leases, fence, "op:crash-2");
-    let committed = EffectCoordinator::commit(&auth, &mut leases, prepared, TimestampNs(10))
-        .expect("commit");
+    let (auth, mut tree, mut leases, fence) = fx_setup()?;
+    let prepared = prepared_fx(&auth, &mut tree, &leases, fence, "op:crash-2")?;
+    let committed = EffectCoordinator::commit(&auth, &mut leases, prepared, TimestampNs(10))?;
 
     // CRASH after commit: the dispatch may have happened. The honest
     // reconciliation is Indeterminate with a durable note — NOT success,
@@ -1088,57 +1210,65 @@ fn crash_after_commit_is_indeterminate_with_mandatory_note() {
     drop(committed);
 
     let report = tree_report(&tree);
-    assert_eq!(report[0].leaked.len(), 1, "pending obligation survives the crash");
+    assert_eq!(
+        report[0].leaked.len(),
+        1,
+        "pending obligation survives the crash"
+    );
 
     // The tree refuses Indeterminate without a note (INV-006) — verified in
     // the oracle test. Reconcile WITH a note:
     tree.resolve_obligation(
         auth.region(),
-        &fss_core::ObligationId::parse(&format!("obligation:{operation}:terminal")).expect("id"),
+        &fss_core::ObligationId::parse(format!("obligation:{operation}:terminal"))?,
         fss_core::ObligationState::Indeterminate,
         None,
         Some("crashed after commit; device state unknown until next telemetry"),
-    )
-    .expect("indeterminate reconcile");
+    )?;
     let report = tree_report(&tree);
     assert_eq!(report[0].counts[3], 1);
-    assert_eq!(report[0].leaked.len(), 0, "indeterminate is not a pending leak");
+    assert_eq!(
+        report[0].leaked.len(),
+        0,
+        "indeterminate is not a pending leak"
+    );
+    Ok(())
 }
 
 #[test]
-fn crash_after_observe_preserves_pending_verify_obligation() {
+fn crash_after_observe_preserves_pending_verify_obligation()
+-> Result<(), Box<dyn std::error::Error>> {
     use fss_core::{ContentDigest, TimestampNs};
     use fss_runtime::effect::EffectCoordinator;
 
-    let (auth, mut tree, mut leases, fence) = fx_setup();
-    let prepared = prepared_fx(&auth, &mut tree, &leases, fence, "op:crash-3");
-    let mut committed = EffectCoordinator::commit(&auth, &mut leases, prepared, TimestampNs(10))
-        .expect("commit");
-    EffectCoordinator::adapter_accepted(&mut committed).expect("accept");
-    EffectCoordinator::observed(&mut committed).expect("observe");
+    let (auth, mut tree, mut leases, fence) = fx_setup()?;
+    let prepared = prepared_fx(&auth, &mut tree, &leases, fence, "op:crash-3")?;
+    let mut committed = EffectCoordinator::commit(&auth, &mut leases, prepared, TimestampNs(10))?;
+    EffectCoordinator::adapter_accepted(&mut committed)?;
+    EffectCoordinator::observed(&mut committed)?;
 
     // CRASH after observe: the observation WAS recorded, so reconciliation
     // can complete verification against the retained observation digest.
     drop(committed);
     auth.resolve_obligation(
         &mut tree,
-        &fss_core::ObligationId::parse("obligation:op:crash-3:terminal").expect("id"),
+        &fss_core::ObligationId::parse("obligation:op:crash-3:terminal")?,
         fss_runtime::obligation::ObligationTerminal::Completed,
         Some(ContentDigest::sha256(b"observed-before-crash")),
         None,
-    )
-    .expect("verify from retained observation");
+    )?;
     assert!(auth.finalize_report(&tree).is_empty());
+    Ok(())
 }
 
 #[test]
-fn cancellation_mid_drain_never_strands_orphans() {
+fn cancellation_mid_drain_never_strands_orphans() -> Result<(), Box<dyn std::error::Error>> {
     use fss_core::TimestampNs;
 
     // Cancellation requested while a subtree holds a pending obligation:
     // the drain path surfaces the obligation instead of orphaning it.
-    let (auth, mut tree, leases, fence) = fx_setup();
-    let _prepared = prepared_fx(&auth, &mut tree, &leases, fence, "op:crash-4");
+    let (auth, mut tree, leases, fence) = fx_setup()?;
+    let _prepared = prepared_fx(&auth, &mut tree, &leases, fence, "op:crash-4")?;
 
     auth.request_cancellation();
     assert!(auth.is_cancel_requested());
@@ -1149,4 +1279,51 @@ fn cancellation_mid_drain_never_strands_orphans() {
     // refusal; the oracle already names the leak).
     let fin = tree.finalize(auth.region(), TimestampNs(200));
     assert!(fin.is_err(), "finalize with pending obligation must refuse");
+    Ok(())
+}
+
+#[test]
+fn failed_scope_down_never_strands_a_reservation() -> Result<(), Box<dyn std::error::Error>> {
+    use fss_core::{BudgetVector, RegionId, RegionKind, TimestampNs};
+
+    // A scope-down refused at ANY late stage (here: grant widening) must
+    // leave the parent's ledger untouched — no stranded reservation.
+    let (mut root, mut tree) = fss_runtime::authority::AuthorityCx::root(
+        test_spec(
+            "trace:rv",
+            "op:rv",
+            vec!["CAP-ALERT-COMMIT-001".to_string()],
+        )?,
+        RegionId::new("region:process")?,
+        RegionKind::Process,
+        BudgetVector::builder().tokens(100).bytes(1_000).build()?,
+        TimestampNs(1),
+    )?;
+    let before = root.budget().remaining();
+
+    // Child asks for a grant the parent does not hold: refused AFTER budget
+    // validation but BEFORE the (now post-attach) debit.
+    let refused = root.scope_down(
+        &mut tree,
+        RegionId::new("region:child")?,
+        RegionKind::Property,
+        BudgetVector::builder().tokens(10).bytes(100).build()?,
+        test_spec(
+            "trace:rv",
+            "op:rv-child",
+            vec![
+                "CAP-ALERT-COMMIT-001".to_string(),
+                "CAP-PTZ-COMMIT-001".to_string(), // widening: parent lacks this
+            ],
+        )?,
+        TimestampNs(2),
+    );
+    assert!(refused.is_err());
+    let after = root.budget().remaining();
+    assert_eq!(
+        (before.tokens, before.bytes),
+        (after.tokens, after.bytes),
+        "a refused scope-down must not debit the parent"
+    );
+    Ok(())
 }

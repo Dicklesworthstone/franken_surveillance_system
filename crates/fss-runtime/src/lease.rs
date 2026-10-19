@@ -117,6 +117,9 @@ pub enum LeaseError {
         /// The resource.
         resource: String,
     },
+    /// The monotone fence source is exhausted (u64::MAX leases issued);
+    /// no token may ever be reused, so acquisition is refused permanently.
+    FenceSourceExhausted,
 }
 
 impl std::fmt::Display for LeaseError {
@@ -126,7 +129,10 @@ impl std::fmt::Display for LeaseError {
                 resource,
                 holder,
                 fence,
-            } => write!(f, "resource '{resource}' held by '{holder}' (fence {fence})"),
+            } => write!(
+                f,
+                "resource '{resource}' held by '{holder}' (fence {fence})"
+            ),
             Self::StaleFence {
                 resource,
                 presented,
@@ -145,6 +151,9 @@ impl std::fmt::Display for LeaseError {
             } => write!(f, "lease '{lease}' expired at {expired_at:?} (now {now:?})"),
             Self::UnknownLease { lease } => write!(f, "unknown lease '{lease}'"),
             Self::NoFence { resource } => write!(f, "no fence issued for '{resource}'"),
+            Self::FenceSourceExhausted => {
+                write!(f, "fence source exhausted: no further leases can be issued")
+            }
         }
     }
 }
@@ -216,10 +225,10 @@ impl LeaseRegistry {
             && let Some(lease) = &mut fence_state.lease
         {
             Self::evaluate_expiry(lease, now);
-            if lease.state == LeaseState::Expired {
-                if let Some(stored) = self.leases.get_mut(&lease.id) {
-                    stored.state = LeaseState::Expired;
-                }
+            if lease.state == LeaseState::Expired
+                && let Some(stored) = self.leases.get_mut(&lease.id)
+            {
+                stored.state = LeaseState::Expired;
             }
             if let Some(lease) = &fence_state.lease
                 && lease.state == LeaseState::Active
@@ -233,10 +242,14 @@ impl LeaseRegistry {
         }
 
         let fence = self.next_fence;
-        self.next_fence = self
-            .next_fence
-            .checked_add(1)
-            .expect("fence counter exhausted: u64::MAX leases in one registry");
+        self.next_fence = match self.next_fence.checked_add(1) {
+            Some(next) => next,
+            // The monotone fence source is exhausted: no token may ever be
+            // reused, so the registry refuses further leases permanently.
+            None => {
+                return Err(LeaseError::FenceSourceExhausted);
+            }
+        };
         let lease = Lease {
             id: format!("lease:{resource}:{fence}"),
             resource: resource_key.clone(),
@@ -246,13 +259,10 @@ impl LeaseRegistry {
             state: LeaseState::Active,
         };
         self.leases.insert(lease.id.clone(), lease.clone());
-        let fence_state = self
-            .resources
-            .entry(resource_key)
-            .or_insert(ResourceFence {
-                current_fence: 0,
-                lease: None,
-            });
+        let fence_state = self.resources.entry(resource_key).or_insert(ResourceFence {
+            current_fence: 0,
+            lease: None,
+        });
         // New lease supersedes: fence advances (staling the old token).
         fence_state.current_fence = fence;
         fence_state.lease = Some(lease.clone());
@@ -336,10 +346,11 @@ impl LeaseRegistry {
         lease.state = LeaseState::Revoked;
         let resource = lease.resource.clone();
         let fence = lease.fence;
-        let fence_state = self
-            .resources
-            .get_mut(&resource)
-            .expect("resource state exists for a held lease");
+        let Some(fence_state) = self.resources.get_mut(&resource) else {
+            return Err(LeaseError::NoFence {
+                resource: resource.clone(),
+            });
+        };
         if let Some(current) = &mut fence_state.lease
             && current.id == lease_id
         {
@@ -381,11 +392,19 @@ impl LeaseRegistry {
         Self::evaluate_expiry(lease, now);
         match lease.state {
             LeaseState::Active => Ok(()),
-            LeaseState::Expired => Err(LeaseError::LeaseExpired {
-                lease: lease.id.clone(),
-                expired_at: lease.expires_at.expect("expired lease has an expiry"),
-                now,
-            }),
+            LeaseState::Expired => match lease.expires_at {
+                // An Expired state is only reachable through evaluate_expiry,
+                // which requires an expiry; the fallback stays typed.
+                Some(expired_at) => Err(LeaseError::LeaseExpired {
+                    lease: lease.id.clone(),
+                    expired_at,
+                    now,
+                }),
+                None => Err(LeaseError::NotActive {
+                    lease: lease.id.clone(),
+                    state: LeaseState::Expired,
+                }),
+            },
             state => Err(LeaseError::NotActive {
                 lease: lease.id.clone(),
                 state,

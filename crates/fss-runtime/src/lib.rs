@@ -28,7 +28,13 @@
 pub mod authority;
 pub mod budget;
 pub mod cancellation;
+pub mod effect;
 pub mod grant;
 pub mod lease;
-pub mod effect;
+
+/// Sealed laboratory-oracle surface: excluded from production builds
+/// (feature `lab-oracle` is never default; tests compile it for the
+/// deterministic reference suites).
+#[cfg(any(feature = "lab-oracle", test))]
+pub mod lab;
 pub mod obligation;

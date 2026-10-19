@@ -30,3 +30,6 @@ __pycache__/
 .agent_mail.db
 .ruff_cache/
 .beads/recovery_*/
+
+# TLC scratch state directories (regenerated per run)
+proofs/tla/states/

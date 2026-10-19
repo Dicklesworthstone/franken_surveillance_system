@@ -55,7 +55,6 @@ impl ObligationTerminal {
 
 /// Builds one fss-core obligation record bound to an operation, with the
 /// terminal predicate spelled out (a vague predicate is a leak amplifier).
-#[must_use]
 pub fn new_obligation(
     id: impl Into<String>,
     operation: OperationId,
@@ -84,9 +83,7 @@ pub struct LeakedObligation {
 /// Verified/Failed/Cancelled/Indeterminate-with-proof-or-note — Pending is
 /// never terminal.
 #[must_use]
-pub fn leaked_in(
-    obligations: impl IntoIterator<Item = Obligation>,
-) -> Vec<LeakedObligation> {
+pub fn leaked_in(obligations: impl IntoIterator<Item = Obligation>) -> Vec<LeakedObligation> {
     obligations
         .into_iter()
         .filter(|o| matches!(o.state, ObligationState::Pending))
@@ -139,7 +136,10 @@ pub fn tree_report(tree: &fss_core::RegionTree) -> Vec<RegionObligationReport> {
             for o in node.obligations.values() {
                 if o.state == ObligationState::Indeterminate {
                     let id = o.obligation_id.as_str().to_string();
-                    if node.reconciliation_obligations.contains_key(&o.obligation_id) {
+                    if node
+                        .reconciliation_obligations
+                        .contains_key(&o.obligation_id)
+                    {
                         with_note.push(id);
                     } else {
                         without_note.push(id);

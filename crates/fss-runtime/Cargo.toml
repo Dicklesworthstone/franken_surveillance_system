@@ -7,6 +7,11 @@ license-file.workspace = true
 repository.workspace = true
 description = "FSS explicit-authority runtime core: Asupersync Cx composition, region scoping, budgets, obligations, and the deterministic request→drain→finalize cancellation state machine (FSS-021, IMP-AS-CANCEL-001)"
 
+[features]
+# Laboratory-oracle surface (FSS-024): NEVER enabled by default or by any
+# production target. scripts/lab_oracle_absence.py proves absence.
+lab-oracle = []
+
 [dependencies]
 asupersync = { version = "=0.5.0", default-features = false }
 fss-core = { path = "../fss-core" }

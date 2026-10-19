@@ -105,7 +105,9 @@ fn add(vector: &mut BudgetVector, dimension: BudgetDimension, qty: u64) {
         BudgetDimension::Tokens => vector.tokens += qty,
         BudgetDimension::Bytes => vector.bytes += qty,
         BudgetDimension::ModelCalls => {
-            vector.model_calls = vector.model_calls.saturating_add(qty.min(u64::from(u32::MAX)) as u32);
+            vector.model_calls = vector
+                .model_calls
+                .saturating_add(qty.min(u64::from(u32::MAX)) as u32);
         }
         BudgetDimension::CpuMillis => vector.cpu_millis += qty,
         BudgetDimension::AcceleratorMillis => vector.accelerator_millis += qty,
@@ -122,7 +124,9 @@ fn sub(vector: &mut BudgetVector, dimension: BudgetDimension, qty: u64) {
         BudgetDimension::Tokens => vector.tokens = vector.tokens.saturating_sub(qty),
         BudgetDimension::Bytes => vector.bytes = vector.bytes.saturating_sub(qty),
         BudgetDimension::ModelCalls => {
-            vector.model_calls = vector.model_calls.saturating_sub(qty.min(u64::from(u32::MAX)) as u32);
+            vector.model_calls = vector
+                .model_calls
+                .saturating_sub(qty.min(u64::from(u32::MAX)) as u32);
         }
         BudgetDimension::CpuMillis => vector.cpu_millis = vector.cpu_millis.saturating_sub(qty),
         BudgetDimension::AcceleratorMillis => {
@@ -185,7 +189,8 @@ impl BudgetLedger {
     /// quantity when the spend would overdraw; the ledger is unchanged on
     /// refusal.
     pub fn spend(&mut self, dimension: BudgetDimension, qty: u64) -> Result<(), LedgerError> {
-        let remaining = read_dim(&self.limit, dimension).saturating_sub(read_dim(&self.consumed, dimension));
+        let remaining =
+            read_dim(&self.limit, dimension).saturating_sub(read_dim(&self.consumed, dimension));
         if qty > remaining {
             return Err(LedgerError::Overdraft {
                 dimension,
@@ -202,8 +207,8 @@ impl BudgetLedger {
     pub fn spend_vector(&mut self, delta: &BudgetVector) -> Result<(), LedgerError> {
         for dimension in METERED {
             let qty = read_dim(delta, dimension);
-            let remaining =
-                read_dim(&self.limit, dimension).saturating_sub(read_dim(&self.consumed, dimension));
+            let remaining = read_dim(&self.limit, dimension)
+                .saturating_sub(read_dim(&self.consumed, dimension));
             if qty > remaining {
                 return Err(LedgerError::Overdraft {
                     dimension,
@@ -242,10 +247,10 @@ impl BudgetLedger {
     pub fn pressure(&self) -> ResourcePressure {
         let mut max_u = 0.0_f64;
         for dimension in METERED {
-            if let Some(u) = self.utilization(dimension) {
-                if u > max_u {
-                    max_u = u;
-                }
+            if let Some(u) = self.utilization(dimension)
+                && u > max_u
+            {
+                max_u = u;
             }
         }
         if max_u >= CRITICAL_AT {

@@ -96,11 +96,10 @@ impl GrantSet {
     pub fn from_authority(authority: &ContextAuthority) -> Result<Self, GrantError> {
         let mut grants = BTreeMap::new();
         for cap in authority.capabilities() {
-            let grant = RuntimeGrant::from_id(cap).map_err(|_| {
-                GrantError::UnregisteredCapability {
+            let grant =
+                RuntimeGrant::from_id(cap).map_err(|_| GrantError::UnregisteredCapability {
                     capability: cap.clone(),
-                }
-            })?;
+                })?;
             grants.insert(grant, None);
         }
         Ok(Self { grants })
@@ -109,7 +108,10 @@ impl GrantSet {
     /// Inserts or narrows a grant's scope. Scoping an existing unscoped
     /// grant narrows it; scoping a scoped grant intersects the scopes.
     pub fn with_scope(mut self, grant: RuntimeGrant, resources: BTreeSet<String>) -> Self {
-        let entry = self.grants.entry(grant).or_insert_with(|| Some(resources.clone()));
+        let entry = self
+            .grants
+            .entry(grant)
+            .or_insert_with(|| Some(resources.clone()));
         *entry = match (entry.take(), resources) {
             (Some(existing), new) => Some(existing.intersection(&new).cloned().collect()),
             (None, new) => Some(new),
@@ -134,19 +136,15 @@ impl GrantSet {
 
     /// Requires the grant for a specific resource: the grant must be held,
     /// and if it is scoped the resource must be inside the scope.
-    pub fn require_grant_for(
-        &self,
-        grant: RuntimeGrant,
-        resource: &str,
-    ) -> Result<(), GrantError> {
+    pub fn require_grant_for(&self, grant: RuntimeGrant, resource: &str) -> Result<(), GrantError> {
         self.require_grant(grant)?;
-        if let Some(scope) = &self.grants[&grant] {
-            if !scope.contains(resource) {
-                return Err(GrantError::OutsideScope {
-                    grant,
-                    resource: resource.to_string(),
-                });
-            }
+        if let Some(scope) = &self.grants[&grant]
+            && !scope.contains(resource)
+        {
+            return Err(GrantError::OutsideScope {
+                grant,
+                resource: resource.to_string(),
+            });
         }
         Ok(())
     }

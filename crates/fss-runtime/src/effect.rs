@@ -17,11 +17,27 @@
 //!   `Failed`→Failed, `Indeterminate` requires a reconciliation note);
 //! - authority: every transition is scoped to the preparing region.
 
-use fss_core::{
-    ContentDigest, ObligationId, ObligationState, OperationId, RegionTree, RuntimeGrant, TimestampNs,
-};
+use fss_core::{ContentDigest, ObligationId, OperationId, RegionTree, RuntimeGrant, TimestampNs};
 
 use crate::authority::AuthorityCx;
+
+/// Inputs to [`EffectCoordinator::prepare`], grouped to keep the surface
+/// explicit without a nine-argument call.
+#[derive(Clone, Copy, Debug)]
+pub struct PrepareSpec<'a> {
+    /// Operation identity.
+    pub operation: &'a OperationId,
+    /// The resource under lease (fence revalidated at commit).
+    pub resource: &'a str,
+    /// The fence token captured from the lease.
+    pub fence: u64,
+    /// Capability required at prepare time (`*Prepare` grant).
+    pub prepare_grant: RuntimeGrant,
+    /// Capability required at commit time (`*Commit` grant).
+    pub commit_grant: RuntimeGrant,
+    /// Terminal predicate recorded on the obligation.
+    pub terminal_predicate: &'a str,
+}
 use crate::grant::GrantError;
 use crate::lease::{LeaseError, LeaseRegistry};
 
@@ -89,7 +105,10 @@ impl std::fmt::Display for EffectCoordError {
                 write!(f, "effect {operation}: region tree refusal: {detail}")
             }
             Self::IndeterminateWithoutNote { operation } => {
-                write!(f, "effect {operation}: indeterminate without reconciliation note")
+                write!(
+                    f,
+                    "effect {operation}: indeterminate without reconciliation note"
+                )
             }
         }
     }
@@ -164,13 +183,16 @@ impl EffectCoordinator {
         authority: &AuthorityCx,
         tree: &mut RegionTree,
         leases: &LeaseRegistry,
-        operation: OperationId,
-        resource: &str,
-        fence: u64,
-        prepare_grant: RuntimeGrant,
-        commit_grant: RuntimeGrant,
-        terminal_predicate: &str,
+        spec: PrepareSpec<'_>,
     ) -> Result<PreparedEffect, EffectCoordError> {
+        let PrepareSpec {
+            operation,
+            resource,
+            fence,
+            prepare_grant,
+            commit_grant,
+            terminal_predicate,
+        } = spec;
         let op_str = operation.to_string();
         authority
             .require_grant(prepare_grant)
@@ -191,7 +213,7 @@ impl EffectCoordinator {
             });
         }
         let obligation = crate::obligation::new_obligation(
-            &format!("obligation:{op_str}:terminal"),
+            format!("obligation:{op_str}:terminal"),
             operation.clone(),
             terminal_predicate,
         )
@@ -207,7 +229,7 @@ impl EffectCoordinator {
                 detail: format!("{e}"),
             })?;
         Ok(PreparedEffect {
-            operation,
+            operation: operation.clone(),
             obligation: obligation_id,
             resource: resource.to_string(),
             fence,
@@ -239,7 +261,11 @@ impl EffectCoordinator {
                 error,
             })?;
         let mut prepared = prepared;
-        transition_checked(&mut prepared.state, fss_core::EffectState::Committed, &op_str)?;
+        transition_checked(
+            &mut prepared.state,
+            fss_core::EffectState::Committed,
+            &op_str,
+        )?;
         Ok(CommittedEffect { inner: prepared })
     }
 
@@ -252,7 +278,11 @@ impl EffectCoordinator {
         mut prepared: PreparedEffect,
     ) -> Result<(), EffectCoordError> {
         let op_str = prepared.operation.to_string();
-        transition_checked(&mut prepared.state, fss_core::EffectState::Cancelled, &op_str)?;
+        transition_checked(
+            &mut prepared.state,
+            fss_core::EffectState::Cancelled,
+            &op_str,
+        )?;
         authority
             .resolve_obligation(
                 tree,
@@ -347,25 +377,24 @@ impl EffectCoordinator {
     ) -> Result<(), EffectCoordError> {
         let mut effect = effect;
         let op_str = effect.inner.operation.to_string();
-        let note = reconciliation_note.ok_or_else(|| {
-            EffectCoordError::IndeterminateWithoutNote {
+        let note =
+            reconciliation_note.ok_or_else(|| EffectCoordError::IndeterminateWithoutNote {
                 operation: op_str.clone(),
-            }
-        })?;
+            })?;
         Self::transition_committed(&mut effect, fss_core::EffectState::Indeterminate)?;
-        tree.resolve_obligation(
-            authority.region(),
-            &effect.inner.obligation,
-            ObligationState::Indeterminate,
-            None,
-            Some(note),
-        )
-        .map_err(|e| EffectCoordError::Region {
-            operation: op_str,
-            detail: format!("{e}"),
-        })
+        authority
+            .resolve_obligation(
+                tree,
+                &effect.inner.obligation,
+                crate::obligation::ObligationTerminal::Indeterminate,
+                None,
+                Some(note),
+            )
+            .map_err(|e| EffectCoordError::Region {
+                operation: op_str,
+                detail: format!("{e}"),
+            })
     }
-
 }
 
 /// State-machine guard: refuses any transition fss-core's canonical machine

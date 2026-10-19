@@ -15,8 +15,7 @@
 //!   cancellation outcomes of [`crate::cancellation`].
 
 use fss_core::{
-    ContextAuthority, RegionError, RegionId, RegionKind, RegionTree,
-    RootAuthoritySpec, TimestampNs,
+    ContextAuthority, RegionError, RegionId, RegionKind, RegionTree, RootAuthoritySpec, TimestampNs,
 };
 
 use crate::budget::BudgetLedger;
@@ -79,8 +78,8 @@ impl AuthorityCx {
         now: TimestampNs,
     ) -> Result<(Self, RegionTree), AuthorityError> {
         let authority = ContextAuthority::new_root(spec)?;
-        let grants = crate::grant::GrantSet::from_authority(&authority)
-            .map_err(AuthorityError::Grant)?;
+        let grants =
+            crate::grant::GrantSet::from_authority(&authority).map_err(AuthorityError::Grant)?;
         let tree = RegionTree::new(process_region.clone(), authority, now)?;
         Ok((
             Self {
@@ -121,15 +120,10 @@ impl AuthorityCx {
                     .to_string(),
             });
         }
-        // Reservation: the grant debits the parent's ledger immediately so
-        // sibling scopes cannot jointly overdraw it, and the parent's derived
-        // pressure reflects outstanding child allocations. The reservation is
-        // released with `release_scope_reservation` when the child closes.
-        self.budget.spend_vector(&child_budget).map_err(|e| {
-            AuthorityError::IllegalScope {
-                detail: format!("reservation failed: {e}"),
-            }
-        })?;
+        // All fallible validation happens BEFORE the reservation debit, so
+        // a refused scope-down never strands budget in the parent's ledger:
+        // authority construction, grant resolution, narrowing checks, and
+        // the tree attach must all succeed first.
         let child_authority = ContextAuthority::new_root(child_authority_spec)?;
         let child_grants = crate::grant::GrantSet::from_authority(&child_authority)
             .map_err(AuthorityError::Grant)?;
@@ -145,6 +139,17 @@ impl AuthorityCx {
             child_authority,
             now,
         )?;
+        // Reservation: the grant debits the parent's ledger only once the
+        // child region exists, so sibling scopes cannot jointly overdraw it,
+        // the parent's derived pressure reflects outstanding child
+        // allocations, and a failed scope-down debits nothing. The
+        // reservation is released with `release_scope_reservation` when the
+        // child closes.
+        self.budget
+            .spend_vector(&child_budget)
+            .map_err(|e| AuthorityError::IllegalScope {
+                detail: format!("reservation failed: {e}"),
+            })?;
         Ok(AuthorityCx {
             // Cloned Cx shares underlying cancellation/budget state — a
             // parent cancellation is visible to every derived scope.
@@ -169,7 +174,8 @@ impl AuthorityCx {
     /// Saturating: double-release never invents budget.
     pub fn release_scope_reservation(&mut self, child_budget: &BudgetVector) {
         for dimension in crate::budget::METERED {
-            self.budget.refund(dimension, crate::budget::read_dim(child_budget, dimension));
+            self.budget
+                .refund(dimension, crate::budget::read_dim(child_budget, dimension));
         }
     }
 

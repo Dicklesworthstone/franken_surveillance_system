@@ -25,14 +25,18 @@ runtime crate supplies only the constructor and the leak-oracle facade mapping
 `ObligationTerminal` onto `ObligationState`. The typed `Budget` ledger refuses
 overdrafts and never clamps silently.
 
-Verified by a 10-test contract suite (`crates/fss-runtime/tests/runtime_contract.rs`)
+Verified by a 27-test contract suite (`crates/fss-runtime/tests/runtime_contract.rs`)
 and a deterministic end-to-end script (`examples/authority_lifecycle.rs`,
 `RCH_SHIM_LOCAL_IDE=1 cargo run -p fss-runtime --example authority_lifecycle`)
 emitting one bounded structured JSONL transition per step, terminating in
-`Completed` with zero leaked obligations. Capability grants, leases/epochs,
-two-phase effects, laboratory schedule control, and the INT-AS-001 /
-TEST-SCHEDULE-001 / GATE-020 qualification bundle remain open under the runtime
-epic's sibling beads.
+`Completed` with zero leaked obligations. Capability grants and resource scopes (FSS-025),
+leases/epochs/fencing (FSS-026), the two-phase effect coordinator (FSS-027),
+the deterministic crash/cancellation cut-point harness (FSS-030), and TLA+
+models for root-last publication (FSS-029) and effect idempotency (FSS-028,
+`proofs/tla/`, TLC-checked with negative controls) have since landed.
+Laboratory schedule control (FSS-024) and the INT-AS-001 / TEST-SCHEDULE-001 /
+GATE-020 qualification bundle remain open under the runtime epic's sibling
+beads.
 
 ## Native HEVC capture operator workflow (2026-10-12, reference)
 
