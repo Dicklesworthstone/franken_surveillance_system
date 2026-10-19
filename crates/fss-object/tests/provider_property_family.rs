@@ -70,8 +70,13 @@ fn p1_lattice_is_strictly_monotone() -> Result<(), Box<dyn std::error::Error>> {
             if from == to {
                 assert!(!legal);
             }
-            if from != PublicationState::Retired && to != PublicationState::Retired {
+            if to == PublicationState::Retired {
+                // Retirement is authority-gated, never positional.
+                assert!(!legal, "no ladder move may reach Retired");
+            } else if from != PublicationState::Retired {
                 assert_eq!(legal, to.rank() == from.rank() + 1);
+            } else {
+                assert!(!legal, "terminal states have no ladder moves");
             }
             cases += 1;
         }
@@ -165,13 +170,14 @@ fn p4_retrievability_is_witnessed() -> Result<(), Box<dyn std::error::Error>> {
     let mut cases = 0u64;
     let mut p = provider();
     let d = p.stage(b"witnessed-bytes")?;
-    // Staged bytes are readable exactly once (single copy) — but custody
-    // read_verified requires the Verified custody state; staging alone may
-    // refuse. Climb to Durable first, then probe.
-    climb_to(&mut p, d, PublicationState::Durable)?;
+    // Staged bytes have not been re-hashed yet: the probe refuses honestly.
+    assert!(p.verify_retrievable(d, TimestampNs(1)).is_err());
+    // Admission to Visible verifies the bytes, so the probe succeeds from
+    // the first readable rung.
+    climb_to(&mut p, d, PublicationState::Visible)?;
     let w = p.verify_retrievable(d, TimestampNs(42))?;
     assert_eq!(w.digest, d);
-    assert_eq!(w.state, PublicationState::Durable);
+    assert_eq!(w.state, PublicationState::Visible);
     assert!(w.readable_copies >= 1);
     assert_eq!(w.probed_at, TimestampNs(42));
     cases += 1;

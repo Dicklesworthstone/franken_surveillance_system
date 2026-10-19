@@ -74,8 +74,10 @@ impl PublicationState {
         matches!(self, Self::Retired)
     }
 
-    /// Legal forward moves on the lattice (never backwards, never skipping
-    /// INTO `Protected` from below `Replicated`).
+    /// Legal forward moves on the LADDER (never backwards, never skipping).
+    /// `Retired` is deliberately absent: retirement is an authority-bearing
+    /// act reachable only through [`ObjectStoreProvider::retire`], never
+    /// through a positional advance.
     #[must_use]
     pub const fn can_advance_to(self, next: Self) -> bool {
         matches!(
@@ -84,11 +86,6 @@ impl PublicationState {
                 | (Self::Visible, Self::Durable)
                 | (Self::Durable, Self::Replicated)
                 | (Self::Replicated, Self::Protected)
-                | (Self::Staged, Self::Retired)
-                | (Self::Visible, Self::Retired)
-                | (Self::Durable, Self::Retired)
-                | (Self::Replicated, Self::Retired)
-                | (Self::Protected, Self::Retired)
         )
     }
 }
@@ -225,8 +222,10 @@ pub trait ObjectStoreProvider {
     /// staging already-staged bytes is a no-op returning the same handle.
     fn stage(&mut self, bytes: &[u8]) -> Result<ContentDigest, ProviderError>;
 
-    /// Advances one object one lattice step (e.g. `Visible -> Durable`).
-    /// Refuses backwards moves, skips, and unknown objects.
+    /// Advances one object one ladder step (e.g. `Visible -> Durable`).
+    /// Refuses backwards moves, skips, unknown objects, and any target of
+    /// `Retired` (use `retire`). Admission to `Visible` re-hashes the bytes
+    /// against their identity: visibility means verified-and-readable.
     fn advance(
         &mut self,
         digest: ContentDigest,

@@ -137,8 +137,10 @@ impl ObjectStoreProvider for InMemoryObjectStoreProvider {
         if to == PublicationState::Retired {
             return Err(ProviderError::IllegalTransition { digest, from, to });
         }
-        // Durable admission re-verifies bytes against their identity.
-        if to == PublicationState::Durable {
+        // Visibility and durability both re-verify bytes against their
+        // identity (idempotent re-hash): a readable object is a verified
+        // object at every ladder position from Visible up.
+        if to == PublicationState::Visible || to == PublicationState::Durable {
             self.custody
                 .verify(digest)
                 .map_err(|e| ProviderError::Custody(format!("{e}")))?;
