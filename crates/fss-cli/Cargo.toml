@@ -154,6 +154,7 @@ fss-packet = { path = "../fss-packet" }
 fss-provision = { path = "../fss-provision" }
 fss-publication = { path = "../fss-publication" }
 fss-reference = { path = "../fss-reference" }
+fss-runtime = { path = "../fss-runtime" }
 fss-tutk = { path = "../fss-tutk" }
 fss-tuya = { path = "../fss-tuya" }
 fss-twin = { path = "../fss-twin" }

@@ -28,14 +28,14 @@ impl SourceCustody {
     pub(super) fn open(
         config: &SourceConfig,
         path: &Path,
-        owner: &Owner<'_>,
+        owner: &Owner<'_, '_>,
     ) -> Result<Self, Failure> {
         if config.scope.binding != owner.binding {
             return Err(Failure::Configuration);
         }
         let guard = Guard(owner);
         guard.check()?;
-        create_root(path)?;
+        create_root(path, owner)?;
         guard.check()?;
         let publisher =
             LocalRootPublisher::open(path, config.storage).map_err(|_| Failure::Storage)?;
@@ -67,7 +67,7 @@ impl SourceCustody {
     fn record<W: Write>(
         &mut self,
         input: Input<'_>,
-        owner: &Owner<'_>,
+        owner: &Owner<'_, '_>,
         stats: &mut Statistics,
         log: &mut Transcript<'_, W>,
     ) -> Result<(), Failure> {
@@ -150,7 +150,8 @@ pub(super) fn account_pause(
     pictures: u64,
 ) -> Result<(), Failure> {
     if let Some((start, end)) = source.as_mut().and_then(|source| source.pause.take()) {
-        progress.exclude_storage_interval(start, end, playing, enabled, pictures)
+        progress
+            .exclude_storage_interval(start, end, playing, enabled, pictures)
             .map_err(|_| Failure::State)?;
     }
     Ok(())
@@ -173,7 +174,7 @@ enum Input<'a> {
 pub(super) fn observe_avc<W: Write>(
     custody: &mut Option<SourceCustody>,
     step: &JournaledLiveArchiveStep,
-    owner: &Owner<'_>,
+    owner: &Owner<'_, '_>,
     stats: &mut Statistics,
     log: &mut Transcript<'_, W>,
 ) -> Result<(), Failure> {
@@ -228,7 +229,7 @@ pub(super) fn observe_avc<W: Write>(
 pub(super) fn observe_hevc<W: Write>(
     custody: &mut Option<SourceCustody>,
     step: &LiveHevcArchiveStep,
-    owner: &Owner<'_>,
+    owner: &Owner<'_, '_>,
     stats: &mut Statistics,
     log: &mut Transcript<'_, W>,
 ) -> Result<(), Failure> {
@@ -283,10 +284,15 @@ pub(super) fn observe_hevc<W: Write>(
     Ok(())
 }
 
-struct Guard<'a, 'b>(&'a Owner<'b>);
-impl Guard<'_, '_> {
+struct Guard<'a, 'b, 'task>(&'a Owner<'b, 'task>);
+impl Guard<'_, '_, '_> {
     fn check(&self) -> Result<(), Failure> {
-        let now = self.0.now()?;
+        let now = self.0.storage_check()?;
+        if self.0.drain_deadline.get().is_some() {
+            // This source event was already transferred from the closed native
+            // receiver. Its bounded publication is cleanup, not new network work.
+            return Ok(());
+        }
         self.0
             .checkpoint(
                 &self.0.binding,
@@ -303,7 +309,7 @@ impl Guard<'_, '_> {
             })
     }
 }
-impl PublishCancellation for Guard<'_, '_> {
+impl PublishCancellation for Guard<'_, '_, '_> {
     fn cancel_requested(&self, cut: PublishCutPoint) -> bool {
         self.0.cancel_requested(cut) || self.check().is_err()
     }

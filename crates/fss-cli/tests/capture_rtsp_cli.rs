@@ -7,6 +7,9 @@
 //! explicitly unpublished malformed tail. These tests establish wiring and custody, not camera,
 //! detector, authentication, calibration or deployment qualification.
 
+#[path = "capture_rtsp_cli/runtime.rs"]
+mod runtime;
+
 use std::ffi::OsString;
 use std::fs;
 use std::io::{self, Read, Write};

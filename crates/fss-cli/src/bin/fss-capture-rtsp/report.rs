@@ -84,6 +84,7 @@ impl<W: Write> Transcript<'_, W> {
 
 #[derive(Default)]
 pub(super) struct Statistics {
+    pub(super) runtime: Option<String>,
     pub(super) source_custody: Option<String>,
     pub(super) source_custody_unsettled: bool,
     pub(super) steps: u64,
@@ -251,6 +252,10 @@ pub(super) fn terminal(
     result: &Result<(), Failure>,
 ) -> String {
     let mut fields = vec![
+        (
+            "runtime",
+            stats.runtime.clone().unwrap_or_else(|| "null".into()),
+        ),
         ("complete", result.is_ok().to_string()),
         (
             "stop_cause",

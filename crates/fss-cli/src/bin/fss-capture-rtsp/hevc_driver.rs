@@ -67,7 +67,11 @@ fn interruption_retry_hevc_mapping_preserves_source_failure_without_broad_io_ret
         io::ErrorKind::TimedOut,
         io::ErrorKind::WouldBlock,
     ] {
-        for operation in [TcpOperation::Read, TcpOperation::Write, TcpOperation::Connect] {
+        for operation in [
+            TcpOperation::Read,
+            TcpOperation::Write,
+            TcpOperation::Connect,
+        ] {
             let transport = TcpError::Io { operation, kind };
             let expected = abrupt_read_failure(&transport);
             let error = LiveHevcArchiveError::Network(LiveHevcError::Transport(transport));
@@ -160,7 +164,7 @@ fn receiver<W: Write>(
 
 fn begin_drain(
     capture: &mut JournaledLiveHevcArchive<'_, '_>,
-    owner: &Owner<'_>,
+    owner: &Owner<'_, '_>,
     stats: &mut Statistics,
 ) -> Result<(), Failure> {
     let retired = capture
@@ -176,7 +180,7 @@ fn drive<W: Write>(
     options: &Options,
     source: &mut Option<SourceCustody>,
     capture: &mut JournaledLiveHevcArchive<'_, '_>,
-    owner: &Owner<'_>,
+    owner: &Owner<'_, '_>,
     mut entropy: Option<&mut Entropy>,
     stats: &mut Statistics,
     log: &mut Transcript<'_, W>,
@@ -565,7 +569,7 @@ pub(super) fn run<W: Write>(
     options: &Options,
     pin_root: &Path,
     publisher: &mut LocalRootPublisher,
-    owner: &Owner<'_>,
+    owner: &Owner<'_, '_>,
     entropy: Option<&mut Entropy>,
     stats: &mut Statistics,
     log: &mut Transcript<'_, W>,
