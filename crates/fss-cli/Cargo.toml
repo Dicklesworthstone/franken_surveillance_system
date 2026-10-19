@@ -72,6 +72,10 @@ name = "fss-capture-tutk"
 path = "src/bin/fss-capture-tutk.rs"
 
 [[bin]]
+name = "fss-capture-tuya"
+path = "src/bin/fss-capture-tuya.rs"
+
+[[bin]]
 name = "fss-discover"
 path = "src/bin/fss-discover.rs"
 
@@ -151,6 +155,7 @@ fss-provision = { path = "../fss-provision" }
 fss-publication = { path = "../fss-publication" }
 fss-reference = { path = "../fss-reference" }
 fss-tutk = { path = "../fss-tutk" }
+fss-tuya = { path = "../fss-tuya" }
 fss-twin = { path = "../fss-twin" }
 
 [lints]

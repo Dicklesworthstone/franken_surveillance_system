@@ -523,6 +523,7 @@ dependencies = [
  "fss-publication",
  "fss-reference",
  "fss-tutk",
+ "fss-tuya",
  "fss-twin",
 ]
 
