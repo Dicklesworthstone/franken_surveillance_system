@@ -161,7 +161,7 @@ struct ResourceFence {
 
 /// The lease registry: one monotone fence source, per-resource lease state.
 /// Deterministic; expiry evaluated against caller time only.
-#[derive(Debug, Default)]
+#[derive(Debug)]
 pub struct LeaseRegistry {
     /// Global monotone fence source. Never reused, never rewinds.
     next_fence: u64,
@@ -169,6 +169,12 @@ pub struct LeaseRegistry {
     leases: BTreeMap<String, Lease>,
     /// Per-resource fence state.
     resources: BTreeMap<String, ResourceFence>,
+}
+
+impl Default for LeaseRegistry {
+    fn default() -> Self {
+        Self::new()
+    }
 }
 
 impl LeaseRegistry {

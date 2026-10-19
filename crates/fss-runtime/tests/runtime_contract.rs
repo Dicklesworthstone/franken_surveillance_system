@@ -1,3 +1,5 @@
+#![forbid(unsafe_code)]
+
 //! Contract tests for the FSS-021 slice-1 runtime core: cancellation
 //! lifecycle (four-valued outcomes incl. Indeterminate on non-cooperative
 //! work), budget ledgers, obligation leak oracle, and authority scoping
@@ -625,6 +627,42 @@ fn scope_down_never_widens_grants_or_scopes() {
 }
 
 // ---------- leases, epochs, fencing (FSS-026) ----------
+
+#[test]
+fn lease_default_matches_new_and_never_accepts_zero() -> Result<(), fss_runtime::lease::LeaseError> {
+    use fss_core::TimestampNs;
+    use fss_runtime::lease::{LeaseError, LeaseRegistry};
+
+    for mut reg in [LeaseRegistry::default(), LeaseRegistry::new()] {
+        let first = reg.acquire("device:ptz", "region:r1", None, TimestampNs(0))?;
+        assert_eq!(first.fence, 1);
+        assert_eq!(reg.current_fence("device:ptz"), Some(1));
+        assert_eq!(
+            reg.check_fence("device:ptz", 0, TimestampNs(1)),
+            Err(LeaseError::StaleFence {
+                resource: "device:ptz".to_string(),
+                presented: 0,
+                current: 1,
+            })
+        );
+        reg.check_fence("device:ptz", first.fence, TimestampNs(1))?;
+
+        reg.release(&first.id)?;
+        let second = reg.acquire("device:ptz", "region:r2", None, TimestampNs(2))?;
+        assert_eq!(second.fence, 2);
+        assert_eq!(
+            reg.check_fence("device:ptz", first.fence, TimestampNs(3)),
+            Err(LeaseError::StaleFence {
+                resource: "device:ptz".to_string(),
+                presented: 1,
+                current: 2,
+            })
+        );
+        reg.check_fence("device:ptz", second.fence, TimestampNs(3))?;
+    }
+
+    Ok(())
+}
 
 #[test]
 fn lease_exclusivity_takeover_and_renewal() {
