@@ -63,6 +63,7 @@
 
 use core::fmt;
 use std::collections::{BTreeMap, VecDeque};
+use std::sync::Arc;
 
 use crate::canonical::{CanonicalDecode, CanonicalDecoder, CanonicalEncode, CanonicalEncoder};
 use crate::contract::{BudgetVector, ContractError, RecoveryClass};
@@ -1106,12 +1107,55 @@ impl RegionNode {
 // Region Tree
 // ---------------------------------------------------------------------------
 
+/// Opaque, in-process identity of one live [`RegionTree`].
+///
+/// Runtime authority retains this identity to reject another tree even when its
+/// region identifiers and logical state are identical. Cloning the identity
+/// preserves that binding; cloning the tree creates a new binding. It is not a
+/// durable identifier and never enters canonical records or proof digests.
+#[derive(Clone)]
+pub struct RegionTreeIdentity(Arc<()>);
+
+impl RegionTreeIdentity {
+    fn fresh() -> Self {
+        Self(Arc::new(()))
+    }
+}
+
+impl PartialEq for RegionTreeIdentity {
+    fn eq(&self, other: &Self) -> bool {
+        Arc::ptr_eq(&self.0, &other.0)
+    }
+}
+
+impl Eq for RegionTreeIdentity {}
+
+impl fmt::Debug for RegionTreeIdentity {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str("RegionTreeIdentity(..)")
+    }
+}
+
 /// Executable ownership tree of runtime regions enforcing single-ownership,
 /// strict closure protocol, and orphan work detection.
-#[derive(Clone, Debug)]
+///
+/// Cloning copies the logical snapshot into a distinct live owner. Authority
+/// bound to this tree must not accept its clone as the current ownership tree.
+#[derive(Debug)]
 pub struct RegionTree {
+    owner_identity: RegionTreeIdentity,
     root_id: RegionId,
     nodes: BTreeMap<RegionId, RegionNode>,
+}
+
+impl Clone for RegionTree {
+    fn clone(&self) -> Self {
+        Self {
+            owner_identity: RegionTreeIdentity::fresh(),
+            root_id: self.root_id.clone(),
+            nodes: self.nodes.clone(),
+        }
+    }
 }
 
 impl RegionTree {
@@ -1131,9 +1175,19 @@ impl RegionTree {
         );
         nodes.insert(process_id.clone(), root_node);
         Ok(Self {
+            owner_identity: RegionTreeIdentity::fresh(),
             root_id: process_id,
             nodes,
         })
+    }
+
+    /// Returns the identity of this live owner, preserved when the tree moves.
+    ///
+    /// A separately constructed or cloned tree has a different identity even
+    /// when all its canonical region data is equal.
+    #[must_use]
+    pub fn owner_identity(&self) -> &RegionTreeIdentity {
+        &self.owner_identity
     }
 
     /// Returns the root region ID.
@@ -1361,10 +1415,17 @@ impl RegionTree {
         Ok(())
     }
 
-    /// Resolves an obligation in the specified region.
+    /// Resolves an obligation in the specified region without reopening it.
     ///
-    /// If resolved to [`ObligationState::Indeterminate`], a durable reconciliation note
-    /// must be provided to satisfy INV-006.
+    /// Pending obligations may reach any resolved state. Indeterminate outcomes
+    /// may reconcile to Verified or Failed with a proof digest. Verified, Failed,
+    /// and Cancelled outcomes are immutable; only an exact retry succeeds.
+    ///
+    /// An Indeterminate outcome requires a durable reconciliation note (INV-006).
+    /// An exact retry preserves it; a previously missing note may be attached
+    /// without changing the outcome or proof. Reconciliation to a known terminal
+    /// outcome retires the active note. Invalid transitions and conflicting
+    /// retries leave both the obligation and its note unchanged.
     pub fn resolve_obligation(
         &mut self,
         region_id: &RegionId,
@@ -1386,19 +1447,65 @@ impl RegionTree {
 
         let obligation = node
             .obligations
-            .get_mut(obligation_id)
+            .get(obligation_id)
             .ok_or_else(|| RegionError::ObligationNotFound(obligation_id.clone()))?;
 
-        if state == ObligationState::Indeterminate {
+        let current = obligation.state;
+        let invalid_transition = || RegionError::InvalidObligationTransition {
+            obligation_id: obligation_id.clone(),
+            current,
+            attempted: state,
+        };
+        let conflict = || RegionError::ObligationResolutionConflict(obligation_id.clone());
+        match (current, state) {
+            (_, ObligationState::Pending) => return Err(invalid_transition()),
+            (ObligationState::Pending, _) => {}
+            (
+                ObligationState::Indeterminate,
+                ObligationState::Verified | ObligationState::Failed,
+            ) => {
+                if proof_digest.is_none() {
+                    return Err(ContractError::EvidenceRequired.into());
+                }
+            }
+            (old, new) if old == new => {
+                if obligation.proof_digest != proof_digest {
+                    return Err(conflict());
+                }
+            }
+            _ => return Err(invalid_transition()),
+        }
+
+        let note = if state == ObligationState::Indeterminate {
             let note = reconciliation_note
                 .filter(|n| !n.trim().is_empty())
                 .ok_or_else(|| {
                     RegionError::MissingReconciliationObligation(obligation_id.clone())
                 })?;
+            if let Some(existing) = node.reconciliation_obligations.get(obligation_id)
+                && existing != note
+            {
+                return Err(conflict());
+            }
+            Some(note)
+        } else {
+            if reconciliation_note.is_some() {
+                return Err(conflict());
+            }
+            None
+        };
+
+        let obligation = node
+            .obligations
+            .get_mut(obligation_id)
+            .ok_or_else(|| RegionError::ObligationNotFound(obligation_id.clone()))?;
+        // All lifecycle and retry checks precede mutation of either record.
+        if let Some(note) = note {
             node.reconciliation_obligations
                 .insert(obligation_id.clone(), note.to_string());
+        } else {
+            node.reconciliation_obligations.remove(obligation_id);
         }
-
         obligation.state = state;
         obligation.proof_digest = proof_digest;
         Ok(())
@@ -2109,6 +2216,17 @@ pub enum RegionError {
     ObligationNotFound(ObligationId),
     /// Duplicate obligation identity.
     DuplicateObligation(ObligationId),
+    /// An obligation cannot reopen or contradict its recorded terminal outcome.
+    InvalidObligationTransition {
+        /// Obligation whose lifecycle would be violated.
+        obligation_id: ObligationId,
+        /// Recorded state.
+        current: ObligationState,
+        /// Requested state.
+        attempted: ObligationState,
+    },
+    /// A repeated resolution supplied a different proof or reconciliation note.
+    ObligationResolutionConflict(ObligationId),
     /// Indeterminate obligation missing durable reconciliation note (INV-006).
     MissingReconciliationObligation(ObligationId),
     /// Invalid budget representation.
@@ -2300,6 +2418,18 @@ impl fmt::Display for RegionError {
             Self::DuplicateTask(id) => write!(f, "duplicate task: {}", id.as_str()),
             Self::ObligationNotFound(id) => write!(f, "obligation not found: {}", id.as_str()),
             Self::DuplicateObligation(id) => write!(f, "duplicate obligation: {}", id.as_str()),
+            Self::InvalidObligationTransition {
+                obligation_id,
+                current,
+                attempted,
+            } => write!(
+                f,
+                "invalid obligation transition for {}: {current:?} to {attempted:?}",
+                obligation_id.as_str()
+            ),
+            Self::ObligationResolutionConflict(id) => {
+                write!(f, "conflicting resolution for obligation {}", id.as_str())
+            }
             Self::MissingReconciliationObligation(id) => write!(
                 f,
                 "INV-006 violation: indeterminate obligation {} requires durable reconciliation note",

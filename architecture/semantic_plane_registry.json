@@ -893,6 +893,11 @@
    "plane": "authority",
    "description": "Authoritative hierarchy of execution regions"
   },
+  "RegionTreeIdentity": {
+   "file": "crates/fss-core/src/region.rs",
+   "plane": "authority",
+   "description": "Opaque in-process owner binding distinguishing a live region tree from independent snapshots"
+  },
   "RootAuthoritySpec": {
    "file": "crates/fss-core/src/region.rs",
    "plane": "authority",

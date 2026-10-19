@@ -8,9 +8,9 @@ use std::error::Error;
 
 use fss_core::region::*;
 use fss_core::{
-    BudgetQuantitiesSpec, BudgetQuantity, BudgetVector, ContentDigest, ContractError,
-    ERR_AUTH_DENIED_001, IdempotencyKey, Obligation, ObligationId, ObligationState, OperationId,
-    TimestampNs,
+    BudgetQuantitiesSpec, BudgetQuantity, BudgetVector, CanonicalEncode, ContentDigest,
+    ContractError, ERR_AUTH_DENIED_001, IdempotencyKey, Obligation, ObligationId, ObligationState,
+    OperationId, TimestampNs,
 };
 
 // Helper: build a baseline root context authority
@@ -96,6 +96,305 @@ fn test_obligation(id_str: &str, state: ObligationState) -> Result<Obligation, B
 // ===========================================================================
 // 1. Hierarchy and Multiplicity Tests
 // ===========================================================================
+
+#[test]
+fn live_tree_identity_distinguishes_equal_constructions_and_snapshots() -> Result<(), Box<dyn Error>>
+{
+    let auth = test_root_authority()?;
+    let (tree, _, _) = tree_with_property(&auth)?;
+    let (independent, _, _) = tree_with_property(&auth)?;
+    let snapshot = tree.clone();
+    let second_snapshot = tree.clone();
+    let fixture = tree.to_topology_fixture("same-topology");
+    let restored = fixture.instantiate(auth, TimestampNs(100))?;
+
+    for other in [&independent, &snapshot, &second_snapshot, &restored] {
+        assert_eq!(other.to_topology_fixture("same-topology"), fixture);
+        assert_ne!(tree.owner_identity(), other.owner_identity());
+    }
+    assert_ne!(snapshot.owner_identity(), second_snapshot.owner_identity());
+    assert_eq!(tree.owner_identity(), &tree.owner_identity().clone());
+
+    // Clone::clone_from must not keep either an old destination binding or
+    // the source binding when it replaces the destination's logical state.
+    let mut replacement = independent;
+    let previous_owner = replacement.owner_identity().clone();
+    replacement.clone_from(&tree);
+    assert_ne!(replacement.owner_identity(), &previous_owner);
+    assert_ne!(replacement.owner_identity(), tree.owner_identity());
+    assert_eq!(replacement.to_topology_fixture("same-topology"), fixture);
+    Ok(())
+}
+
+#[test]
+fn live_tree_identity_survives_moves_and_mutations() -> Result<(), Box<dyn Error>> {
+    let auth = test_root_authority()?;
+    let (tree, root, property) = tree_with_property(&auth)?;
+    // The crate-root export is the type retained by runtime authority.
+    let owner: fss_core::RegionTreeIdentity = tree.owner_identity().clone();
+    let boxed = Box::new(tree);
+    assert_eq!(boxed.owner_identity(), &owner);
+    let mut moved = *boxed;
+    moved.request_drain(&root, Some("shutdown"), TimestampNs(200))?;
+    drain_and_finalize(&mut moved, &property, TimestampNs(210))?;
+    drain_and_finalize(&mut moved, &root, TimestampNs(220))?;
+    assert_eq!(moved.owner_identity(), &owner);
+    Ok(())
+}
+
+#[test]
+fn tree_snapshot_preserves_logical_records_and_canonical_proofs() -> Result<(), Box<dyn Error>> {
+    let auth = test_root_authority()?;
+    let (mut tree, root, property) = tree_with_property(&auth)?;
+    let task = TaskId::new("completed-capture")?;
+    tree.register_task(&property, task.clone(), TimestampNs(110))?;
+    tree.complete_task(&property, &task, TaskOutcome::Success, TimestampNs(120))?;
+    let obligation = test_obligation("delivery-uncertain", ObligationState::Pending)?;
+    let obligation_id = obligation.obligation_id.clone();
+    tree.register_obligation(&property, obligation)?;
+    tree.resolve_obligation(
+        &property,
+        &obligation_id,
+        ObligationState::Indeterminate,
+        Some(ContentDigest::sha256(b"delivery-attempt")),
+        Some("reconcile retained delivery attempt"),
+    )?;
+    tree.request_drain(&property, Some("camera-stop"), TimestampNs(130))?;
+    let proof = drain_and_finalize(&mut tree, &property, TimestampNs(140))?;
+    tree.register_task(&root, TaskId::new("live-owner-task")?, TimestampNs(150))?;
+    tree.register_obligation(
+        &root,
+        test_obligation("pending-owner-obligation", ObligationState::Pending)?,
+    )?;
+
+    let snapshot = tree.clone();
+    assert_ne!(tree.owner_identity(), snapshot.owner_identity());
+    assert_eq!(tree.region_count(), snapshot.region_count());
+    assert_eq!(tree.root_id(), snapshot.root_id());
+    for (original, copied) in tree.iter().zip(snapshot.iter()) {
+        assert_eq!(original.id, copied.id);
+        assert_eq!(original.kind, copied.kind);
+        assert_eq!(original.parent_id, copied.parent_id);
+        assert_eq!(original.children, copied.children);
+        assert_eq!(original.state, copied.state);
+        assert_eq!(original.authority, copied.authority);
+        assert_eq!(
+            original.authority.try_canonical_bytes()?,
+            copied.authority.try_canonical_bytes()?
+        );
+        assert_eq!(original.created_at, copied.created_at);
+        assert_eq!(original.drain_requested_at, copied.drain_requested_at);
+        assert_eq!(original.closed_at, copied.closed_at);
+        assert_eq!(original.active_tasks, copied.active_tasks);
+        assert_eq!(original.completed_tasks, copied.completed_tasks);
+        assert_eq!(original.obligations, copied.obligations);
+        assert_eq!(
+            original.reconciliation_obligations,
+            copied.reconciliation_obligations
+        );
+        assert_eq!(original.quiescence_proof, copied.quiescence_proof);
+    }
+    let copied_proof = snapshot
+        .get(&property)?
+        .quiescence_proof
+        .as_ref()
+        .ok_or("snapshot lost the closed region's proof")?;
+    assert_eq!(
+        proof.try_canonical_bytes()?,
+        copied_proof.try_canonical_bytes()?
+    );
+    assert_eq!(proof.proof_digest, copied_proof.proof_digest);
+    Ok(())
+}
+
+#[test]
+fn closed_snapshot_has_no_live_owner_identity() -> Result<(), Box<dyn Error>> {
+    let auth = test_root_authority()?;
+    let (mut tree, root, property) = tree_with_property(&auth)?;
+    let owner = tree.owner_identity().clone();
+    let mut stale = tree.clone();
+    tree.register_task(
+        &property,
+        TaskId::new("camera-still-running")?,
+        TimestampNs(110),
+    )?;
+    tree.request_drain(&root, Some("shutdown"), TimestampNs(120))?;
+
+    // The old snapshot can close because it never owned the later live task.
+    // Its fresh identity lets runtime authority reject it as closure evidence.
+    stale.request_drain(&root, Some("shutdown"), TimestampNs(120))?;
+    drain_and_finalize(&mut stale, &property, TimestampNs(130))?;
+    drain_and_finalize(&mut stale, &root, TimestampNs(140))?;
+    assert_ne!(stale.owner_identity(), &owner);
+    assert_eq!(tree.owner_identity(), &owner);
+    assert_eq!(tree.get(&property)?.state, RegionState::DrainRequested);
+    assert_eq!(tree.get(&property)?.active_tasks.len(), 1);
+    assert!(tree.get(&property)?.quiescence_proof.is_none());
+    Ok(())
+}
+
+#[test]
+fn obligation_resolution_matrix_never_reopens_terminal_work() -> Result<(), Box<dyn Error>> {
+    let states = [
+        ObligationState::Pending,
+        ObligationState::Verified,
+        ObligationState::Failed,
+        ObligationState::Indeterminate,
+        ObligationState::Cancelled,
+    ];
+    let proof = Some(ContentDigest::sha256(b"terminal-evidence"));
+    for current in states {
+        for attempted in states {
+            let (mut tree, root, _) = tree_with_property(&test_root_authority()?)?;
+            let obligation = test_obligation("effect-obligation", ObligationState::Pending)?;
+            let id = obligation.obligation_id.clone();
+            tree.register_obligation(&root, obligation)?;
+            if current != ObligationState::Pending {
+                tree.resolve_obligation(
+                    &root,
+                    &id,
+                    current,
+                    proof,
+                    (current == ObligationState::Indeterminate).then_some("reconcile delivery"),
+                )?;
+            }
+            let before = tree.get(&root)?.obligations[&id].clone();
+            let notes_before = tree.get(&root)?.reconciliation_obligations.clone();
+            let result = tree.resolve_obligation(
+                &root,
+                &id,
+                attempted,
+                if attempted == ObligationState::Pending {
+                    None
+                } else {
+                    proof
+                },
+                (attempted == ObligationState::Indeterminate).then_some("reconcile delivery"),
+            );
+            let permitted = attempted != ObligationState::Pending
+                && (current == ObligationState::Pending
+                    || current == attempted
+                    || (current == ObligationState::Indeterminate
+                        && matches!(
+                            attempted,
+                            ObligationState::Verified | ObligationState::Failed
+                        )));
+            if permitted {
+                result?;
+                assert_eq!(tree.get(&root)?.obligations[&id].state, attempted);
+                assert_eq!(
+                    tree.get(&root)?
+                        .reconciliation_obligations
+                        .contains_key(&id),
+                    attempted == ObligationState::Indeterminate
+                );
+            } else {
+                assert_eq!(
+                    result,
+                    Err(RegionError::InvalidObligationTransition {
+                        obligation_id: id.clone(),
+                        current,
+                        attempted,
+                    })
+                );
+                assert_eq!(tree.get(&root)?.obligations[&id], before);
+                assert_eq!(tree.get(&root)?.reconciliation_obligations, notes_before);
+            }
+        }
+    }
+    Ok(())
+}
+
+#[test]
+fn obligation_resolution_retries_preserve_the_exact_proof_and_note() -> Result<(), Box<dyn Error>> {
+    let proof = Some(ContentDigest::sha256(b"first-resolution"));
+    let other_proof = Some(ContentDigest::sha256(b"conflicting-resolution"));
+    for state in [
+        ObligationState::Verified,
+        ObligationState::Failed,
+        ObligationState::Cancelled,
+        ObligationState::Indeterminate,
+    ] {
+        let (mut tree, root, _) = tree_with_property(&test_root_authority()?)?;
+        let obligation = test_obligation("fixed-resolution", ObligationState::Pending)?;
+        let id = obligation.obligation_id.clone();
+        let note =
+            (state == ObligationState::Indeterminate).then_some("reconcile original attempt");
+        tree.register_obligation(&root, obligation)?;
+        tree.resolve_obligation(&root, &id, state, proof, note)?;
+        let before = tree.get(&root)?.obligations[&id].try_canonical_bytes()?;
+        let notes_before = tree.get(&root)?.reconciliation_obligations.clone();
+        for _ in 0..2 {
+            tree.resolve_obligation(&root, &id, state, proof, note)?;
+            assert_eq!(
+                tree.get(&root)?.obligations[&id].try_canonical_bytes()?,
+                before
+            );
+            assert_eq!(tree.get(&root)?.reconciliation_obligations, notes_before);
+        }
+        for conflicting_proof in [None, other_proof] {
+            assert_eq!(
+                tree.resolve_obligation(&root, &id, state, conflicting_proof, note),
+                Err(RegionError::ObligationResolutionConflict(id.clone()))
+            );
+            assert_eq!(
+                tree.get(&root)?.obligations[&id].try_canonical_bytes()?,
+                before
+            );
+            assert_eq!(tree.get(&root)?.reconciliation_obligations, notes_before);
+        }
+        assert_eq!(
+            tree.resolve_obligation(&root, &id, state, proof, Some("replace the original note")),
+            Err(RegionError::ObligationResolutionConflict(id.clone()))
+        );
+        assert_eq!(
+            tree.get(&root)?.obligations[&id].try_canonical_bytes()?,
+            before
+        );
+        assert_eq!(tree.get(&root)?.reconciliation_obligations, notes_before);
+    }
+    Ok(())
+}
+
+#[test]
+fn indeterminate_obligation_requires_proof_before_retiring_reconciliation()
+-> Result<(), Box<dyn Error>> {
+    for terminal in [ObligationState::Verified, ObligationState::Failed] {
+        let (mut tree, root, property) = tree_with_property(&test_root_authority()?)?;
+        let obligation = test_obligation("unknown-delivery", ObligationState::Pending)?;
+        let id = obligation.obligation_id.clone();
+        tree.register_obligation(&property, obligation)?;
+        tree.resolve_obligation(
+            &property,
+            &id,
+            ObligationState::Indeterminate,
+            None,
+            Some("check retained provider acknowledgement"),
+        )?;
+        let before = tree.get(&property)?.obligations[&id].clone();
+        let notes_before = tree.get(&property)?.reconciliation_obligations.clone();
+        assert_eq!(
+            tree.resolve_obligation(&property, &id, terminal, None, None),
+            Err(RegionError::Contract(ContractError::EvidenceRequired))
+        );
+        assert_eq!(tree.get(&property)?.obligations[&id], before);
+        assert_eq!(
+            tree.get(&property)?.reconciliation_obligations,
+            notes_before
+        );
+
+        let proof = Some(ContentDigest::sha256(b"reconciled-provider-evidence"));
+        tree.resolve_obligation(&property, &id, terminal, proof, None)?;
+        assert_eq!(tree.get(&property)?.obligations[&id].state, terminal);
+        assert_eq!(tree.get(&property)?.obligations[&id].proof_digest, proof);
+        assert!(tree.get(&property)?.reconciliation_obligations.is_empty());
+        tree.request_drain(&root, Some("shutdown"), TimestampNs(200))?;
+        let closed = drain_and_finalize(&mut tree, &property, TimestampNs(210))?;
+        assert_eq!(closed.total_obligations, 1);
+        assert_eq!(closed.indeterminate_obligations, 0);
+    }
+    Ok(())
+}
 
 #[test]
 fn test_normative_tree_topology_and_instantiation() -> Result<(), Box<dyn Error>> {
