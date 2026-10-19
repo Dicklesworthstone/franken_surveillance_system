@@ -328,7 +328,7 @@ pub fn execute_with_admission(
     for input in &prepared.spec.inputs {
         values.insert(input.name.clone(), input.digest);
         declared_total = match (declared_total, input.declared_bytes) {
-            (Some(acc), Some(bytes)) => Some(acc.checked_add(bytes).unwrap_or(u64::MAX)),
+            (Some(acc), Some(bytes)) => Some(acc.saturating_add(bytes)),
             _ => None,
         };
     }
