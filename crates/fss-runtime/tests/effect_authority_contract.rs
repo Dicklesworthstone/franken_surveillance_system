@@ -199,7 +199,8 @@ fn preparation_cannot_be_reissued_before_or_after_settlement() -> Test {
             &mut f.leases,
             prepared,
             TimestampNs(4)
-        ),
+        )
+        .map_err(|refusal| refusal.into_parts().0),
         Err(EffectCoordError::Region { .. })
     ));
     assert_eq!(f.obligation_state(&obligation)?, ObligationState::Cancelled);
@@ -233,7 +234,8 @@ fn commit_refuses_a_child_scope_and_an_identically_named_independent_authority()
     let prepared = f.prepare("wrong-region")?;
     let obligation = prepared.obligation().clone();
     assert!(matches!(
-        EffectCoordinator::commit(&child, &f.tree, &mut f.leases, prepared, TimestampNs(4)),
+        EffectCoordinator::commit(&child, &f.tree, &mut f.leases, prepared, TimestampNs(4))
+            .map_err(|refusal| refusal.into_parts().0),
         Err(EffectCoordError::WrongAuthority { .. })
     ));
     assert_eq!(f.obligation_state(&obligation)?, ObligationState::Pending);
@@ -250,7 +252,8 @@ fn commit_refuses_a_child_scope_and_an_identically_named_independent_authority()
             &mut original.leases,
             prepared,
             TimestampNs(4),
-        ),
+        )
+        .map_err(|refusal| refusal.into_parts().0),
         Err(EffectCoordError::WrongAuthority { .. })
     ));
     Ok(())
@@ -265,6 +268,7 @@ fn every_terminal_resolution_refuses_a_different_preparing_scope() -> Test {
         let obligation = prepared.obligation().clone();
         let result = if transition == "cancel" {
             EffectCoordinator::cancel_prepared(&mut f.tree, &other, prepared)
+                .map_err(|refusal| refusal.into_parts().0)
         } else {
             let mut committed = EffectCoordinator::commit(
                 &f.authority,
@@ -283,14 +287,17 @@ fn every_terminal_resolution_refuses_a_different_preparing_scope() -> Test {
                         committed,
                         ContentDigest::sha256(b"observation"),
                     )
+                    .map_err(|refusal| refusal.into_parts().0)
                 }
-                "fail" => EffectCoordinator::failed(&mut f.tree, &other, committed, None),
+                "fail" => EffectCoordinator::failed(&mut f.tree, &other, committed, None)
+                    .map_err(|refusal| refusal.into_parts().0),
                 _ => EffectCoordinator::indeterminate(
                     &mut f.tree,
                     &other,
                     committed,
                     Some("reconcile uncertain adapter outcome"),
                 )
+                .map_err(|refusal| refusal.into_parts().0)
                 .map(|_| ()),
             }
         };
@@ -309,9 +316,7 @@ fn cancellation_and_canonical_drain_both_refuse_new_commit_authority() -> Test {
     for request_through_authority in [false, true] {
         let mut f = Fixture::new()?;
         let prepared = f.prepare("cancel-before-commit")?;
-        let cleanup = f.prepare("cancel-cleanup")?;
         let obligation = prepared.obligation().clone();
-        let cleanup_obligation = cleanup.obligation().clone();
         if request_through_authority {
             f.authority
                 .request_cancellation(&mut f.tree, TimestampNs(4))?;
@@ -319,22 +324,30 @@ fn cancellation_and_canonical_drain_both_refuse_new_commit_authority() -> Test {
             f.tree
                 .request_drain(f.authority.region(), None, TimestampNs(4))?;
         }
-        assert!(matches!(
-            EffectCoordinator::commit(
-                &f.authority,
-                &f.tree,
-                &mut f.leases,
-                prepared,
-                TimestampNs(5)
-            ),
-            Err(EffectCoordError::Region { .. })
-        ));
+        let refusal = EffectCoordinator::commit(
+            &f.authority,
+            &f.tree,
+            &mut f.leases,
+            prepared,
+            TimestampNs(5),
+        )
+        .expect_err("cancelled owner cannot commit");
+        assert!(matches!(refusal.error(), EffectCoordError::Region { .. }));
+        assert_eq!(refusal.token().state(), EffectState::Prepared);
+        assert_eq!(refusal.token().obligation(), &obligation);
         assert_eq!(f.obligation_state(&obligation)?, ObligationState::Pending);
         assert!(f.prepare("after-cancel").is_err());
-        EffectCoordinator::cancel_prepared(&mut f.tree, &f.authority, cleanup)?;
+
+        // The refused commit must leave this exact preparation available for drain.
+        EffectCoordinator::cancel_prepared(&mut f.tree, &f.authority, refusal.into_token())?;
+        assert_eq!(f.obligation_state(&obligation)?, ObligationState::Cancelled);
+        assert!(f.authority.leaked_obligations(&f.tree)?.is_empty());
+        f.authority.begin_drain(&mut f.tree, TimestampNs(6))?;
         assert_eq!(
-            f.obligation_state(&cleanup_obligation)?,
-            ObligationState::Cancelled
+            f.authority
+                .finalize(&mut f.tree, TimestampNs(7))?
+                .total_obligations,
+            1,
         );
     }
     Ok(())
@@ -346,15 +359,20 @@ fn authority_deadline_refuses_commit_at_the_exact_boundary() -> Test {
     for now in [TimestampNs(99), deadline, TimestampNs(101)] {
         let mut f = Fixture::with_grants(&PTZ, Some(deadline))?;
         let prepared = f.prepare("deadline")?;
+        let obligation = prepared.obligation().clone();
         let result = EffectCoordinator::commit(&f.authority, &f.tree, &mut f.leases, prepared, now);
         if now < deadline {
             assert_eq!(result?.state(), EffectState::Committed);
         } else {
+            let refusal = result.expect_err("the exact deadline must refuse");
             assert!(matches!(
-                result,
-                Err(EffectCoordError::Deadline { deadline: found, now: attempted, .. })
-                    if found == deadline && attempted == now
+                refusal.error(),
+                EffectCoordError::Deadline { deadline: found, now: attempted, .. }
+                    if *found == deadline && *attempted == now
             ));
+            assert_eq!(refusal.token().state(), EffectState::Prepared);
+            EffectCoordinator::cancel_prepared(&mut f.tree, &f.authority, refusal.into_token())?;
+            assert_eq!(f.obligation_state(&obligation)?, ObligationState::Cancelled);
         }
     }
     Ok(())
@@ -396,7 +414,8 @@ fn effect_preparation_and_commit_enforce_resource_scopes() -> Test {
             &mut f.leases,
             prepared,
             TimestampNs(4)
-        ),
+        )
+        .map_err(|refusal| refusal.into_parts().0),
         Err(EffectCoordError::Grant {
             error: GrantError::OutsideScope { .. },
             ..
@@ -516,7 +535,8 @@ fn preparation_and_commit_refuse_another_regions_current_lease() -> Test {
             &mut foreign,
             prepared,
             TimestampNs(4)
-        ),
+        )
+        .map_err(|refusal| refusal.into_parts().0),
         Err(EffectCoordError::WrongLeaseRegistry { .. })
     ));
     Ok(())
@@ -552,7 +572,8 @@ fn replacement_registry_cannot_redeem_the_same_holder_and_numeric_fence() -> Tes
                     &mut replacement,
                     prepared,
                     TimestampNs(4),
-                ),
+                )
+                .map_err(|refusal| refusal.into_parts().0),
                 Err(EffectCoordError::WrongLeaseRegistry { .. })
             ));
             assert_eq!(f.obligation_state(&obligation)?, ObligationState::Pending);
@@ -610,7 +631,8 @@ fn a_stale_tree_snapshot_cannot_hide_drain_from_preparation_or_commit() -> Test 
             &mut f.leases,
             prepared,
             TimestampNs(4)
-        ),
+        )
+        .map_err(|refusal| refusal.into_parts().0),
         Err(EffectCoordError::Region { .. })
     ));
     assert_eq!(f.obligation_state(&obligation)?, ObligationState::Pending);
@@ -626,6 +648,7 @@ fn terminal_effect_transitions_cannot_settle_a_cloned_tree_snapshot() -> Test {
         let mut stale = f.tree.clone();
         let result = if transition == "cancel" {
             EffectCoordinator::cancel_prepared(&mut stale, &f.authority, prepared)
+                .map_err(|refusal| refusal.into_parts().0)
         } else {
             let mut committed = EffectCoordinator::commit(
                 &f.authority,
@@ -644,14 +667,17 @@ fn terminal_effect_transitions_cannot_settle_a_cloned_tree_snapshot() -> Test {
                         committed,
                         ContentDigest::sha256(b"observation"),
                     )
+                    .map_err(|refusal| refusal.into_parts().0)
                 }
-                "fail" => EffectCoordinator::failed(&mut stale, &f.authority, committed, None),
+                "fail" => EffectCoordinator::failed(&mut stale, &f.authority, committed, None)
+                    .map_err(|refusal| refusal.into_parts().0),
                 _ => EffectCoordinator::indeterminate(
                     &mut stale,
                     &f.authority,
                     committed,
                     Some("reconcile uncertain adapter outcome"),
                 )
+                .map_err(|refusal| refusal.into_parts().0)
                 .map(|_| ()),
             }
         };
@@ -694,7 +720,8 @@ fn commit_revalidates_revocation_release_and_exact_lease_expiry() -> Test {
                     &mut f.leases,
                     prepared,
                     TimestampNs(10)
-                ),
+                )
+                .map_err(|refusal| refusal.into_parts().0),
                 Err(EffectCoordError::Fence { .. })
             ),
             "{change}"
@@ -802,45 +829,46 @@ fn indeterminate_reconciliation_retains_the_unique_token_for_a_late_observation(
 
 #[test]
 fn late_failure_reconciliation_requires_evidence_and_clears_the_active_note() -> Test {
-    for failure_proof in [
-        None,
-        Some(ContentDigest::sha256(b"adapter proved pose change failed")),
-    ] {
-        let mut f = Fixture::new()?;
-        let prepared = f.prepare("late-failure")?;
-        let obligation = prepared.obligation().clone();
-        let committed = EffectCoordinator::commit(
-            &f.authority,
-            &f.tree,
-            &mut f.leases,
-            prepared,
-            TimestampNs(4),
-        )?;
-        let note = "query the adapter for evidence resolving the uncertain pose change";
-        let committed =
-            EffectCoordinator::indeterminate(&mut f.tree, &f.authority, committed, Some(note))?;
-        f.authority
-            .request_cancellation(&mut f.tree, TimestampNs(5))?;
-        let result = EffectCoordinator::failed(&mut f.tree, &f.authority, committed, failure_proof);
-        let node = f.tree.get(f.authority.region())?;
-        match failure_proof {
-            Some(proof) => {
-                result?;
-                assert_eq!(node.obligations[&obligation].state, ObligationState::Failed);
-                assert_eq!(node.obligations[&obligation].proof_digest, Some(proof));
-                assert!(node.reconciliation_obligations.is_empty());
-            }
-            None => {
-                assert!(matches!(result, Err(EffectCoordError::Region { .. })));
-                assert_eq!(
-                    node.obligations[&obligation].state,
-                    ObligationState::Indeterminate
-                );
-                assert_eq!(node.obligations[&obligation].proof_digest, None);
-                assert_eq!(node.reconciliation_obligations[&obligation], note);
-            }
-        }
-    }
+    let mut f = Fixture::new()?;
+    let prepared = f.prepare("late-failure")?;
+    let obligation = prepared.obligation().clone();
+    let committed = EffectCoordinator::commit(
+        &f.authority,
+        &f.tree,
+        &mut f.leases,
+        prepared,
+        TimestampNs(4),
+    )?;
+    let note = "query the adapter for evidence resolving the uncertain pose change";
+    let committed =
+        EffectCoordinator::indeterminate(&mut f.tree, &f.authority, committed, Some(note))?;
+    f.authority
+        .request_cancellation(&mut f.tree, TimestampNs(5))?;
+
+    let refusal = EffectCoordinator::failed(&mut f.tree, &f.authority, committed, None)
+        .expect_err("uncertainty cannot become failure without evidence");
+    assert!(matches!(refusal.error(), EffectCoordError::Region { .. }));
+    assert_eq!(refusal.token().state(), EffectState::Indeterminate);
+    let node = f.tree.get(f.authority.region())?;
+    assert_eq!(
+        node.obligations[&obligation].state,
+        ObligationState::Indeterminate
+    );
+    assert_eq!(node.obligations[&obligation].proof_digest, None);
+    assert_eq!(node.reconciliation_obligations[&obligation], note);
+
+    // Evidence arrives later; recover this same effect instead of preparing a new one.
+    let proof = ContentDigest::sha256(b"adapter proved pose change failed");
+    EffectCoordinator::failed(&mut f.tree, &f.authority, refusal.into_token(), Some(proof))?;
+    let node = f.tree.get(f.authority.region())?;
+    assert_eq!(node.obligations.len(), 1);
+    assert_eq!(node.obligations[&obligation].state, ObligationState::Failed);
+    assert_eq!(node.obligations[&obligation].proof_digest, Some(proof));
+    assert!(node.reconciliation_obligations.is_empty());
+    f.authority.begin_drain(&mut f.tree, TimestampNs(6))?;
+    let proof = f.authority.finalize(&mut f.tree, TimestampNs(7))?;
+    assert_eq!(proof.indeterminate_obligations, 0);
+    assert_eq!(proof.total_obligations, 1);
     Ok(())
 }
 
@@ -857,10 +885,13 @@ fn absent_or_blank_reconciliation_notes_never_settle_an_uncertain_effect() -> Te
             prepared,
             TimestampNs(4),
         )?;
+        let refusal = EffectCoordinator::indeterminate(&mut f.tree, &f.authority, committed, note)
+            .expect_err("a reconciliation note is required");
         assert!(matches!(
-            EffectCoordinator::indeterminate(&mut f.tree, &f.authority, committed, note),
-            Err(EffectCoordError::IndeterminateWithoutNote { .. })
+            refusal.error(),
+            EffectCoordError::IndeterminateWithoutNote { .. }
         ));
+        assert_eq!(refusal.token().state(), EffectState::Committed);
         assert_eq!(f.obligation_state(&obligation)?, ObligationState::Pending);
         assert!(
             f.tree
@@ -868,6 +899,294 @@ fn absent_or_blank_reconciliation_notes_never_settle_an_uncertain_effect() -> Te
                 .reconciliation_obligations
                 .is_empty()
         );
+
+        let mut recovered = EffectCoordinator::indeterminate(
+            &mut f.tree,
+            &f.authority,
+            refusal.into_token(),
+            Some("query the adapter for the original operation"),
+        )?;
+        assert_eq!(recovered.state(), EffectState::Indeterminate);
+        EffectCoordinator::observed(&mut recovered)?;
+        EffectCoordinator::verified(
+            &mut f.tree,
+            &f.authority,
+            recovered,
+            ContentDigest::sha256(b"late adapter observation"),
+        )?;
+        assert_eq!(f.obligation_state(&obligation)?, ObligationState::Verified);
     }
+    Ok(())
+}
+
+#[test]
+fn refused_commit_recovers_the_same_preparation_across_owner_tree_and_registry_errors() -> Test {
+    let mut f = Fixture::new()?;
+    let other = Fixture::new()?;
+    let prepared = f.prepare("recover-commit")?;
+    let operation = prepared.operation().clone();
+    let obligation = prepared.obligation().clone();
+    let before = f.tree.get(f.authority.region())?.obligations.clone();
+
+    let refusal = EffectCoordinator::commit(
+        &other.authority,
+        &f.tree,
+        &mut f.leases,
+        prepared,
+        TimestampNs(4),
+    )
+    .expect_err("a matching region label does not grant authority");
+    assert!(matches!(
+        refusal.error(),
+        EffectCoordError::WrongAuthority { .. }
+    ));
+    assert_eq!(refusal.token().operation(), &operation);
+    assert_eq!(refusal.token().state(), EffectState::Prepared);
+    assert_eq!(refusal.to_string(), refusal.error().to_string());
+    assert!(refusal.source().is_some());
+    let (_, prepared) = refusal.into_parts();
+
+    let snapshot = f.tree.clone();
+    let refusal = EffectCoordinator::commit(
+        &f.authority,
+        &snapshot,
+        &mut f.leases,
+        prepared,
+        TimestampNs(4),
+    )
+    .expect_err("a cloned tree cannot authorize commit");
+    assert!(matches!(refusal.error(), EffectCoordError::Region { .. }));
+    assert_eq!(refusal.token().obligation(), &obligation);
+    let prepared = refusal.into_token();
+
+    let mut replacement = LeaseRegistry::new();
+    let replacement_lease = replacement.acquire(
+        RESOURCE,
+        f.authority.region().as_str(),
+        None,
+        TimestampNs(2),
+    )?;
+    assert_eq!(replacement_lease.fence, f.fence);
+    let refusal = EffectCoordinator::commit(
+        &f.authority,
+        &f.tree,
+        &mut replacement,
+        prepared,
+        TimestampNs(4),
+    )
+    .expect_err("the original issuing registry is required");
+    assert!(matches!(
+        refusal.error(),
+        EffectCoordError::WrongLeaseRegistry { .. }
+    ));
+    assert_eq!(refusal.token().resource(), RESOURCE);
+    assert_eq!(refusal.token().fence(), f.fence);
+    assert_eq!(refusal.token().terminal_predicate(), PREDICATE);
+    assert_eq!(refusal.token().state(), EffectState::Prepared);
+    assert_eq!(f.tree.get(f.authority.region())?.obligations, before);
+
+    let mut committed = EffectCoordinator::commit(
+        &f.authority,
+        &f.tree,
+        &mut f.leases,
+        refusal.into_token(),
+        TimestampNs(4),
+    )?;
+    assert_eq!(committed.operation(), &operation);
+    EffectCoordinator::adapter_accepted(&mut committed)?;
+    EffectCoordinator::observed(&mut committed)?;
+    EffectCoordinator::verified(
+        &mut f.tree,
+        &f.authority,
+        committed,
+        ContentDigest::sha256(b"original operation's observed pose"),
+    )?;
+    assert_eq!(f.obligation_state(&obligation)?, ObligationState::Verified);
+    assert_eq!(f.tree.get(f.authority.region())?.obligations.len(), 1);
+    Ok(())
+}
+
+#[test]
+fn refused_cancel_returns_the_original_preparation_for_its_owner_to_drain() -> Test {
+    let mut f = Fixture::new()?;
+    let other = Fixture::new()?;
+    let prepared = f.prepare("recover-cancel")?;
+    let obligation = prepared.obligation().clone();
+    let refusal = EffectCoordinator::cancel_prepared(&mut f.tree, &other.authority, prepared)
+        .expect_err("another owner cannot cancel the preparation");
+    assert!(matches!(
+        refusal.error(),
+        EffectCoordError::WrongAuthority { .. }
+    ));
+    assert_eq!(refusal.token().state(), EffectState::Prepared);
+
+    let mut snapshot = f.tree.clone();
+    let refusal =
+        EffectCoordinator::cancel_prepared(&mut snapshot, &f.authority, refusal.into_token())
+            .expect_err("a snapshot cannot settle the obligation");
+    assert!(matches!(refusal.error(), EffectCoordError::Region { .. }));
+    assert_eq!(refusal.token().state(), EffectState::Prepared);
+    assert_eq!(f.obligation_state(&obligation)?, ObligationState::Pending);
+    assert_eq!(
+        snapshot.get(f.authority.region())?.obligations[&obligation].state,
+        ObligationState::Pending,
+    );
+
+    f.authority
+        .request_cancellation(&mut f.tree, TimestampNs(5))?;
+    EffectCoordinator::cancel_prepared(&mut f.tree, &f.authority, refusal.into_token())?;
+    assert_eq!(f.obligation_state(&obligation)?, ObligationState::Cancelled);
+    f.authority.begin_drain(&mut f.tree, TimestampNs(6))?;
+    assert_eq!(
+        f.authority
+            .finalize(&mut f.tree, TimestampNs(7))?
+            .total_obligations,
+        1,
+    );
+    Ok(())
+}
+
+#[test]
+fn refused_verification_preserves_progress_until_observed_under_the_right_owner() -> Test {
+    let mut f = Fixture::new()?;
+    let other = Fixture::new()?;
+    let prepared = f.prepare("recover-verify")?;
+    let obligation = prepared.obligation().clone();
+    let committed = EffectCoordinator::commit(
+        &f.authority,
+        &f.tree,
+        &mut f.leases,
+        prepared,
+        TimestampNs(4),
+    )?;
+    let proof = ContentDigest::sha256(b"verified after adapter observation");
+    let refusal = EffectCoordinator::verified(&mut f.tree, &f.authority, committed, proof)
+        .expect_err("commit alone is not observation");
+    assert!(matches!(
+        refusal.error(),
+        EffectCoordError::IllegalTransition {
+            from: EffectState::Committed,
+            to: EffectState::Verified,
+            ..
+        },
+    ));
+    assert_eq!(refusal.token().state(), EffectState::Committed);
+    let mut committed = refusal.into_token();
+    EffectCoordinator::adapter_accepted(&mut committed)?;
+    EffectCoordinator::observed(&mut committed)?;
+
+    let refusal = EffectCoordinator::verified(&mut f.tree, &other.authority, committed, proof)
+        .expect_err("a different owner cannot resolve the original obligation");
+    assert!(matches!(
+        refusal.error(),
+        EffectCoordError::WrongAuthority { .. }
+    ));
+    assert_eq!(refusal.token().state(), EffectState::Observed);
+    let mut snapshot = f.tree.clone();
+    let refusal =
+        EffectCoordinator::verified(&mut snapshot, &f.authority, refusal.into_token(), proof)
+            .expect_err("a snapshot cannot accept the proof");
+    assert!(matches!(refusal.error(), EffectCoordError::Region { .. }));
+    assert_eq!(refusal.token().state(), EffectState::Observed);
+    assert_eq!(f.obligation_state(&obligation)?, ObligationState::Pending);
+
+    EffectCoordinator::verified(&mut f.tree, &f.authority, refusal.into_token(), proof)?;
+    assert_eq!(f.obligation_state(&obligation)?, ObligationState::Verified);
+    assert_eq!(
+        f.tree.get(f.authority.region())?.obligations[&obligation].proof_digest,
+        Some(proof),
+    );
+    Ok(())
+}
+
+#[test]
+fn refused_failure_preserves_an_observed_effect_for_verification() -> Test {
+    let mut f = Fixture::new()?;
+    let prepared = f.prepare("recover-failure")?;
+    let obligation = prepared.obligation().clone();
+    let mut committed = EffectCoordinator::commit(
+        &f.authority,
+        &f.tree,
+        &mut f.leases,
+        prepared,
+        TimestampNs(4),
+    )?;
+    EffectCoordinator::adapter_accepted(&mut committed)?;
+    EffectCoordinator::observed(&mut committed)?;
+    let refusal = EffectCoordinator::failed(&mut f.tree, &f.authority, committed, None)
+        .expect_err("an observation cannot be silently relabeled failure");
+    assert!(matches!(
+        refusal.error(),
+        EffectCoordError::IllegalTransition {
+            from: EffectState::Observed,
+            to: EffectState::Failed,
+            ..
+        },
+    ));
+    assert_eq!(refusal.token().state(), EffectState::Observed);
+    assert_eq!(f.obligation_state(&obligation)?, ObligationState::Pending);
+    EffectCoordinator::verified(
+        &mut f.tree,
+        &f.authority,
+        refusal.into_token(),
+        ContentDigest::sha256(b"unchanged observation proved success"),
+    )?;
+    assert_eq!(f.obligation_state(&obligation)?, ObligationState::Verified);
+    Ok(())
+}
+
+#[test]
+fn conflicting_reconciliation_note_returns_the_unchanged_observed_token() -> Test {
+    let mut f = Fixture::new()?;
+    let prepared = f.prepare("recover-reconciliation-note")?;
+    let obligation = prepared.obligation().clone();
+    let committed = EffectCoordinator::commit(
+        &f.authority,
+        &f.tree,
+        &mut f.leases,
+        prepared,
+        TimestampNs(4),
+    )?;
+    let note = "query the original adapter receipt";
+    let mut committed =
+        EffectCoordinator::indeterminate(&mut f.tree, &f.authority, committed, Some(note))?;
+    EffectCoordinator::observed(&mut committed)?;
+    let before = f.tree.get(f.authority.region())?.obligations.clone();
+
+    let refusal = EffectCoordinator::indeterminate(
+        &mut f.tree,
+        &f.authority,
+        committed,
+        Some("replace the original reconciliation record"),
+    )
+    .expect_err("a conflicting note must preserve the existing record");
+    assert!(matches!(refusal.error(), EffectCoordError::Region { .. }));
+    assert_eq!(refusal.token().state(), EffectState::Observed);
+    assert_eq!(f.tree.get(f.authority.region())?.obligations, before);
+    assert_eq!(
+        f.tree.get(f.authority.region())?.reconciliation_obligations[&obligation],
+        note,
+    );
+
+    let committed = EffectCoordinator::indeterminate(
+        &mut f.tree,
+        &f.authority,
+        refusal.into_token(),
+        Some(note),
+    )?;
+    assert_eq!(committed.state(), EffectState::Indeterminate);
+    EffectCoordinator::failed(
+        &mut f.tree,
+        &f.authority,
+        committed,
+        Some(ContentDigest::sha256(b"adapter confirmed terminal failure")),
+    )?;
+    assert_eq!(f.obligation_state(&obligation)?, ObligationState::Failed);
+    assert!(
+        f.tree
+            .get(f.authority.region())?
+            .reconciliation_obligations
+            .is_empty()
+    );
     Ok(())
 }

@@ -70,11 +70,16 @@ fn natural_completion_and_failure_are_distinct_outcomes() -> Result<(), Box<dyn 
 {
     let mut a = CancellationLifecycle::new(["w".to_string()], 1_000);
     a.work_completed();
+    assert!(a.outcome().is_none());
+    a.begin_drain(1);
+    a.worker_done("w")?;
     assert_eq!(a.outcome(), Some(&CancelOutcome::Completed));
     let mut b = CancellationLifecycle::new(["w".to_string()], 1_000);
     b.request(1);
     b.begin_drain(2);
     b.work_failed("sensor fault");
+    assert!(b.outcome().is_none());
+    b.worker_done("w")?;
     assert_eq!(
         b.outcome(),
         Some(&CancelOutcome::Failed {
@@ -965,7 +970,7 @@ fn effect_commit_refused_on_stale_fence_and_missing_grant() -> Result<(), Box<dy
     let err = EffectCoordinator::commit(&auth, &tree, &mut leases, prepared, TimestampNs(200))
         .err()
         .ok_or("stale fence must refuse commit")?;
-    assert!(matches!(err, EffectCoordError::Fence { .. }));
+    assert!(matches!(err.error(), EffectCoordError::Fence { .. }));
 
     // Missing commit grant: prepare-only authority.
     let (auth2, mut tree2) = effect_authority(vec!["CAP-PTZ-PREPARE-001".to_string()])?;
@@ -991,7 +996,7 @@ fn effect_commit_refused_on_stale_fence_and_missing_grant() -> Result<(), Box<dy
     let err = EffectCoordinator::commit(&auth2, &tree2, &mut leases, prepared2, TimestampNs(400))
         .err()
         .ok_or("commit grant missing")?;
-    assert!(matches!(err, EffectCoordError::Grant { .. }));
+    assert!(matches!(err.error(), EffectCoordError::Grant { .. }));
     Ok(())
 }
 
@@ -1045,7 +1050,7 @@ fn effect_cancel_and_indeterminate_semantics() -> Result<(), Box<dyn std::error:
         .err()
         .ok_or("note required")?;
     assert!(matches!(
-        err,
+        err.error(),
         EffectCoordError::IndeterminateWithoutNote { .. }
     ));
 

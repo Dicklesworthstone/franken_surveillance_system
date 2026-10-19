@@ -34,6 +34,8 @@ jobs:
       - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
       - name: Provision pinned test toolchain
         run: bash scripts/bootstrap_toolchain.sh
+      - name: Verify owned runtime and recoverable effect transitions
+        run: cargo +nightly-2026-08-31 test --no-fail-fast --locked --offline -p fss-runtime --all-targets --all-features
       - name: Verify event replay admission and approved recovery rehearsal
         if: success() || failure()
         run: cargo +nightly-2026-08-31 test --no-fail-fast --locked --offline -p fss-cli --bin fss-event --bin fss-replay-dwell --test agent_rehearsal_contract

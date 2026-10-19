@@ -17,7 +17,9 @@
 //!   `Failed`→Failed, `Indeterminate` requires a reconciliation note);
 //! - authority: every transition is scoped to the preparing region.
 //!
-//! Prepared and committed tokens have one owner and immutable intent. They authorize
+//! Prepared and committed tokens have one owner and immutable intent. Refused
+//! consuming transitions return that owner so retry and cleanup remain possible.
+//! They authorize
 //! reference transitions within the caller's owned region tree; durable effect journals
 //! and adapter idempotency remain the responsibility of their existing owners.
 
@@ -216,6 +218,59 @@ impl std::fmt::Display for EffectCoordError {
 }
 
 impl std::error::Error for EffectCoordError {}
+
+/// A refused transition together with the original, unmodified effect token.
+///
+/// Refusal does not abandon the pending or indeterminate obligation. Inspect
+/// [`Self::error`] and recover the token with [`Self::into_token`] or
+/// [`Self::into_parts`] to retry, cancel a preparation, or reconcile an effect.
+/// Recovery preserves its existing authority. Every retry validates the live
+/// owner; commit also revalidates its issuing registry and current lease.
+///
+/// Only refusals allocate storage for the retained token.
+#[derive(Debug)]
+pub struct EffectTransitionError<T> {
+    error: EffectCoordError,
+    token: Box<T>,
+}
+
+impl<T> EffectTransitionError<T> {
+    /// The typed reason the transition was refused.
+    #[must_use]
+    pub fn error(&self) -> &EffectCoordError {
+        &self.error
+    }
+
+    /// Inspect the retained token without creating another owner.
+    #[must_use]
+    pub fn token(&self) -> &T {
+        &self.token
+    }
+
+    /// Recover the original token to retry or perform its remaining cleanup.
+    #[must_use]
+    pub fn into_token(self) -> T {
+        *self.token
+    }
+
+    /// Recover the refusal reason and original token, in that order.
+    #[must_use]
+    pub fn into_parts(self) -> (EffectCoordError, T) {
+        (self.error, *self.token)
+    }
+}
+
+impl<T> std::fmt::Display for EffectTransitionError<T> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        std::fmt::Display::fmt(&self.error, f)
+    }
+}
+
+impl<T: std::fmt::Debug> std::error::Error for EffectTransitionError<T> {
+    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+        Some(&self.error)
+    }
+}
 
 /// A prepared effect: immutable intent plus the bookkeeping needed to
 /// commit or cancel it. Construct only through `EffectCoordinator::prepare`.
@@ -440,95 +495,94 @@ impl EffectCoordinator {
     }
 
     /// Commit phase: require the commit grant, revalidate the fence against
-    /// caller time, transition Prepared → Committed.
+    /// caller time, transition Prepared → Committed. Refusal returns the
+    /// unchanged preparation for retry or cancellation.
     pub fn commit(
         authority: &AuthorityCx,
         tree: &RegionTree,
         leases: &mut LeaseRegistry,
         prepared: PreparedEffect,
         now: TimestampNs,
-    ) -> Result<CommittedEffect, EffectCoordError> {
-        let op_str = prepared.operation.to_string();
-        prepared.require_scope(authority, tree, true)?;
-        authority
-            .require_active(tree)
-            .map_err(|error| EffectCoordError::Region {
-                operation: op_str.clone(),
-                detail: error.to_string(),
-            })?;
-        let node = tree
-            .get(authority.region())
-            .map_err(|error| EffectCoordError::Region {
-                operation: op_str.clone(),
-                detail: error.to_string(),
-            })?;
-        if let Some(deadline) = node.authority.deadline
-            && now >= deadline
-        {
-            return Err(EffectCoordError::Deadline {
-                operation: op_str,
-                deadline,
-                now,
-            });
-        }
-        authority
-            .require_grant_for(prepared.commit_grant, &prepared.resource)
-            .map_err(|error| EffectCoordError::Grant {
-                operation: op_str.clone(),
-                error,
-            })?;
-        if leases.binding() != &prepared.lease_registry {
-            return Err(EffectCoordError::WrongLeaseRegistry { operation: op_str });
-        }
-        require_current_lease(
-            authority,
-            leases,
-            &op_str,
-            &prepared.resource,
-            prepared.fence,
-        )?;
-        leases
-            .check_fence(&prepared.resource, prepared.fence, now)
-            .map_err(|error| EffectCoordError::Fence {
-                operation: op_str.clone(),
-                error,
-            })?;
-        let mut prepared = prepared;
-        transition_checked(
-            &mut prepared.state,
-            fss_core::EffectState::Committed,
-            &op_str,
-        )?;
+    ) -> Result<CommittedEffect, EffectTransitionError<PreparedEffect>> {
+        let mut prepared = keep_token_on_error(prepared, |prepared| {
+            let op_str = prepared.operation.to_string();
+            prepared.require_scope(authority, tree, true)?;
+            authority
+                .require_active(tree)
+                .map_err(|error| EffectCoordError::Region {
+                    operation: op_str.clone(),
+                    detail: error.to_string(),
+                })?;
+            let node = tree
+                .get(authority.region())
+                .map_err(|error| EffectCoordError::Region {
+                    operation: op_str.clone(),
+                    detail: error.to_string(),
+                })?;
+            if let Some(deadline) = node.authority.deadline
+                && now >= deadline
+            {
+                return Err(EffectCoordError::Deadline {
+                    operation: op_str,
+                    deadline,
+                    now,
+                });
+            }
+            authority
+                .require_grant_for(prepared.commit_grant, &prepared.resource)
+                .map_err(|error| EffectCoordError::Grant {
+                    operation: op_str.clone(),
+                    error,
+                })?;
+            if leases.binding() != &prepared.lease_registry {
+                return Err(EffectCoordError::WrongLeaseRegistry { operation: op_str });
+            }
+            require_current_lease(
+                authority,
+                leases,
+                &op_str,
+                &prepared.resource,
+                prepared.fence,
+            )?;
+            require_transition(prepared.state, fss_core::EffectState::Committed, &op_str)?;
+            leases
+                .check_fence(&prepared.resource, prepared.fence, now)
+                .map_err(|error| EffectCoordError::Fence {
+                    operation: op_str,
+                    error,
+                })
+        })?;
+        prepared.state = fss_core::EffectState::Committed;
         Ok(CommittedEffect { inner: prepared })
     }
 
     /// Cancellation before commit: Prepared → Cancelled, obligation
     /// resolved Cancelled. A committed effect is NOT cancellable through
-    /// this path — it must run to a terminal observation.
+    /// this path — it must run to a terminal observation. Refusal returns
+    /// the unchanged preparation so its original owner can still drain it.
     pub fn cancel_prepared(
         tree: &mut RegionTree,
         authority: &AuthorityCx,
-        mut prepared: PreparedEffect,
-    ) -> Result<(), EffectCoordError> {
-        let op_str = prepared.operation.to_string();
-        prepared.require_scope(authority, tree, true)?;
-        transition_checked(
-            &mut prepared.state,
-            fss_core::EffectState::Cancelled,
-            &op_str,
-        )?;
-        authority
-            .resolve_obligation(
-                tree,
-                &prepared.obligation,
-                crate::obligation::ObligationTerminal::Drained,
-                None,
-                None,
-            )
-            .map_err(|e| EffectCoordError::Region {
-                operation: op_str,
-                detail: format!("{e}"),
-            })
+        prepared: PreparedEffect,
+    ) -> Result<(), EffectTransitionError<PreparedEffect>> {
+        keep_token_on_error(prepared, |prepared| {
+            let op_str = prepared.operation.to_string();
+            prepared.require_scope(authority, tree, true)?;
+            require_transition(prepared.state, fss_core::EffectState::Cancelled, &op_str)?;
+            authority
+                .resolve_obligation(
+                    tree,
+                    &prepared.obligation,
+                    crate::obligation::ObligationTerminal::Drained,
+                    None,
+                    None,
+                )
+                .map_err(|error| EffectCoordError::Region {
+                    operation: op_str,
+                    detail: error.to_string(),
+                })
+        })
+        .map(|_| ())
     }
 
     fn transition_committed(
@@ -536,7 +590,9 @@ impl EffectCoordinator {
         target: fss_core::EffectState,
     ) -> Result<(), EffectCoordError> {
         let op_str = effect.inner.operation.to_string();
-        transition_checked(&mut effect.inner.state, target, &op_str)
+        require_transition(effect.inner.state, target, &op_str)?;
+        effect.inner.state = target;
+        Ok(())
     }
 
     /// Records adapter acceptance: Committed → AdapterAccepted.
@@ -551,90 +607,102 @@ impl EffectCoordinator {
     }
 
     /// Terminal success: Observed → Verified, obligation resolved Verified
-    /// with the proof digest.
+    /// with the proof digest. Refusal preserves the token and its previous
+    /// state so missing observations or an incorrect owner can be corrected.
     pub fn verified(
         tree: &mut RegionTree,
         authority: &AuthorityCx,
         effect: CommittedEffect,
         proof: ContentDigest,
-    ) -> Result<(), EffectCoordError> {
-        let mut effect = effect;
-        let op_str = effect.inner.operation.to_string();
-        effect.inner.require_scope(authority, tree, false)?;
-        Self::transition_committed(&mut effect, fss_core::EffectState::Verified)?;
-        authority
-            .resolve_obligation(
-                tree,
-                &effect.inner.obligation,
-                crate::obligation::ObligationTerminal::Completed,
-                Some(proof),
-                None,
-            )
-            .map_err(|e| EffectCoordError::Region {
-                operation: op_str,
-                detail: format!("{e}"),
-            })
+    ) -> Result<(), EffectTransitionError<CommittedEffect>> {
+        keep_token_on_error(effect, |effect| {
+            let op_str = effect.inner.operation.to_string();
+            effect.inner.require_scope(authority, tree, false)?;
+            require_transition(effect.inner.state, fss_core::EffectState::Verified, &op_str)?;
+            authority
+                .resolve_obligation(
+                    tree,
+                    &effect.inner.obligation,
+                    crate::obligation::ObligationTerminal::Completed,
+                    Some(proof),
+                    None,
+                )
+                .map_err(|error| EffectCoordError::Region {
+                    operation: op_str,
+                    detail: error.to_string(),
+                })
+        })
+        .map(|_| ())
     }
 
     /// Terminal failure: any non-Prepared state → Failed (where legal),
     /// obligation resolved Failed with the failure digest when available.
     /// Reconciliation from Indeterminate requires a failure digest; missing
-    /// evidence leaves the canonical obligation and reconciliation note unchanged.
+    /// evidence returns the unchanged token and leaves the canonical obligation
+    /// and reconciliation note unchanged.
     pub fn failed(
         tree: &mut RegionTree,
         authority: &AuthorityCx,
         effect: CommittedEffect,
         failure_digest: Option<ContentDigest>,
-    ) -> Result<(), EffectCoordError> {
-        let mut effect = effect;
-        let op_str = effect.inner.operation.to_string();
-        effect.inner.require_scope(authority, tree, false)?;
-        Self::transition_committed(&mut effect, fss_core::EffectState::Failed)?;
-        authority
-            .resolve_obligation(
-                tree,
-                &effect.inner.obligation,
-                crate::obligation::ObligationTerminal::Failed,
-                failure_digest,
-                None,
-            )
-            .map_err(|e| EffectCoordError::Region {
-                operation: op_str,
-                detail: format!("{e}"),
-            })
+    ) -> Result<(), EffectTransitionError<CommittedEffect>> {
+        keep_token_on_error(effect, |effect| {
+            let op_str = effect.inner.operation.to_string();
+            effect.inner.require_scope(authority, tree, false)?;
+            require_transition(effect.inner.state, fss_core::EffectState::Failed, &op_str)?;
+            authority
+                .resolve_obligation(
+                    tree,
+                    &effect.inner.obligation,
+                    crate::obligation::ObligationTerminal::Failed,
+                    failure_digest,
+                    None,
+                )
+                .map_err(|error| EffectCoordError::Region {
+                    operation: op_str,
+                    detail: error.to_string(),
+                })
+        })
+        .map(|_| ())
     }
 
     /// The effect may have happened but cannot be established: →
     /// Indeterminate. INV-006: a durable reconciliation note is REQUIRED.
-    /// The unique token is returned for a later observation or failure; the tree
-    /// retains the Indeterminate obligation and its reconciliation note.
+    /// Success returns the unique token for later reconciliation. Refusal
+    /// returns that token in its original state, without changing the obligation.
     pub fn indeterminate(
         tree: &mut RegionTree,
         authority: &AuthorityCx,
         effect: CommittedEffect,
         reconciliation_note: Option<&str>,
-    ) -> Result<CommittedEffect, EffectCoordError> {
-        let mut effect = effect;
-        let op_str = effect.inner.operation.to_string();
-        effect.inner.require_scope(authority, tree, false)?;
-        let note = reconciliation_note
-            .filter(|note| !note.trim().is_empty())
-            .ok_or_else(|| EffectCoordError::IndeterminateWithoutNote {
-                operation: op_str.clone(),
-            })?;
-        Self::transition_committed(&mut effect, fss_core::EffectState::Indeterminate)?;
-        authority
-            .resolve_obligation(
-                tree,
-                &effect.inner.obligation,
-                crate::obligation::ObligationTerminal::Indeterminate,
-                None,
-                Some(note),
-            )
-            .map_err(|e| EffectCoordError::Region {
-                operation: op_str,
-                detail: format!("{e}"),
-            })?;
+    ) -> Result<CommittedEffect, EffectTransitionError<CommittedEffect>> {
+        let mut effect = keep_token_on_error(effect, |effect| {
+            let op_str = effect.inner.operation.to_string();
+            effect.inner.require_scope(authority, tree, false)?;
+            let note = reconciliation_note
+                .filter(|note| !note.trim().is_empty())
+                .ok_or_else(|| EffectCoordError::IndeterminateWithoutNote {
+                    operation: op_str.clone(),
+                })?;
+            require_transition(
+                effect.inner.state,
+                fss_core::EffectState::Indeterminate,
+                &op_str,
+            )?;
+            authority
+                .resolve_obligation(
+                    tree,
+                    &effect.inner.obligation,
+                    crate::obligation::ObligationTerminal::Indeterminate,
+                    None,
+                    Some(note),
+                )
+                .map_err(|error| EffectCoordError::Region {
+                    operation: op_str,
+                    detail: error.to_string(),
+                })
+        })?;
+        effect.inner.state = fss_core::EffectState::Indeterminate;
         Ok(effect)
     }
 }
@@ -698,20 +766,35 @@ fn require_current_lease(
     Ok(())
 }
 
+/// Run validation and canonical settlement without allowing token mutation.
+/// On refusal the caller receives the same token; on success its caller may
+/// advance the state or consume the terminal handle.
+fn keep_token_on_error<T>(
+    token: T,
+    operation: impl FnOnce(&T) -> Result<(), EffectCoordError>,
+) -> Result<T, EffectTransitionError<T>> {
+    match operation(&token) {
+        Ok(()) => Ok(token),
+        Err(error) => Err(EffectTransitionError {
+            error,
+            token: Box::new(token),
+        }),
+    }
+}
+
 /// State-machine guard: refuses any transition fss-core's canonical machine
-/// declares illegal, naming both ends.
-fn transition_checked(
-    state: &mut fss_core::EffectState,
+/// declares illegal, naming both ends without changing the token.
+fn require_transition(
+    state: fss_core::EffectState,
     target: fss_core::EffectState,
     operation: &str,
 ) -> Result<(), EffectCoordError> {
     if state.can_transition_to(target) {
-        *state = target;
         Ok(())
     } else {
         Err(EffectCoordError::IllegalTransition {
             operation: operation.to_string(),
-            from: *state,
+            from: state,
             to: target,
         })
     }
