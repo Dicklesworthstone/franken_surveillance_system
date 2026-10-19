@@ -303,6 +303,16 @@ pub fn decode_replay(raw: &[u8]) -> Result<PacketReplay, ReplayFormatError> {
                 losses += 1;
                 let from_seq = r.u16()?;
                 let to_seq = r.u16()?;
+                // Canonical-form enforcement on read: a hand-crafted payload
+                // (writer bypass) must not smuggle an empty or implausible
+                // interval past the reader.
+                if to_seq.wrapping_sub(from_seq) == 0
+                    || to_seq.wrapping_sub(from_seq) > u16::MAX / 2
+                {
+                    return Err(ReplayFormatError::Malformed(
+                        "empty or implausible loss interval",
+                    ));
+                }
                 ReplayRecord::Loss { from_seq, to_seq }
             }
             3 => {

@@ -486,8 +486,14 @@ mod tests {
             "lab:shared-name",
             OperationId::parse("op:shared-operation")?,
         )?;
-        let first_before = first_tree.to_topology_fixture("before-first");
-        let second_before = second_tree.to_topology_fixture("before-second");
+        let first_before = (
+            first_tree.to_topology_fixture("before-first"),
+            crate::obligation::tree_report(&first_tree),
+        );
+        let second_before = (
+            second_tree.to_topology_fixture("before-second"),
+            crate::obligation::tree_report(&second_tree),
+        );
 
         assert!(matches!(
             first_session.consult(&second, &second_tree, b"frame"),
@@ -502,9 +508,18 @@ mod tests {
             0,
             "a different owner must never run the oracle"
         );
-        assert_eq!(first_tree.to_topology_fixture("before-first"), first_before);
         assert_eq!(
-            second_tree.to_topology_fixture("before-second"),
+            (
+                first_tree.to_topology_fixture("before-first"),
+                crate::obligation::tree_report(&first_tree),
+            ),
+            first_before
+        );
+        assert_eq!(
+            (
+                second_tree.to_topology_fixture("before-second"),
+                crate::obligation::tree_report(&second_tree),
+            ),
             second_before
         );
         assert_eq!(first.finalize_report(&first_tree)?.len(), 1);
@@ -528,8 +543,14 @@ mod tests {
         )?;
         let mut snapshot = tree.clone();
         auth.request_cancellation(&mut tree, TimestampNs(2))?;
-        let original_before = tree.to_topology_fixture("before-tree");
-        let snapshot_before = snapshot.to_topology_fixture("before-snapshot");
+        let original_before = (
+            tree.to_topology_fixture("before-tree"),
+            crate::obligation::tree_report(&tree),
+        );
+        let snapshot_before = (
+            snapshot.to_topology_fixture("before-snapshot"),
+            crate::obligation::tree_report(&snapshot),
+        );
 
         assert!(matches!(
             session.consult(&auth, &snapshot, b"frame"),
@@ -540,9 +561,18 @@ mod tests {
             Err(LabError::Region { .. })
         ));
         assert_eq!(calls.get(), 0, "a stale active snapshot must not run work");
-        assert_eq!(tree.to_topology_fixture("before-tree"), original_before);
         assert_eq!(
-            snapshot.to_topology_fixture("before-snapshot"),
+            (
+                tree.to_topology_fixture("before-tree"),
+                crate::obligation::tree_report(&tree),
+            ),
+            original_before
+        );
+        assert_eq!(
+            (
+                snapshot.to_topology_fixture("before-snapshot"),
+                crate::obligation::tree_report(&snapshot),
+            ),
             snapshot_before
         );
         assert_eq!(auth.finalize_report(&tree)?.len(), 1);
@@ -639,7 +669,10 @@ mod tests {
             let note = (terminal == ObligationTerminal::Indeterminate)
                 .then_some("reconcile the independently reported oracle exit");
             auth.resolve_obligation(&mut tree, session.obligation(), terminal, None, note)?;
-            let settled = tree.clone();
+            let settled = (
+                tree.to_topology_fixture("settled"),
+                crate::obligation::tree_report(&tree),
+            );
 
             assert!(matches!(
                 session.consult(&auth, &tree, b"frame"),
@@ -651,8 +684,11 @@ mod tests {
             ));
             assert_eq!(calls.get(), 0, "a settled obligation cannot admit work");
             assert_eq!(
-                tree.to_topology_fixture("settled"),
-                settled.to_topology_fixture("settled"),
+                (
+                    tree.to_topology_fixture("settled"),
+                    crate::obligation::tree_report(&tree),
+                ),
+                settled,
                 "existing evidence and reconciliation survive"
             );
         }
