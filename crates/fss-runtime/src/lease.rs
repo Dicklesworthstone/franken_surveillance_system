@@ -22,6 +22,7 @@
 //! All arithmetic is checked; tokens are never reissued within a registry.
 
 use std::collections::BTreeMap;
+use std::sync::Arc;
 
 use fss_core::TimestampNs;
 
@@ -168,10 +169,26 @@ struct ResourceFence {
     lease: Option<Lease>,
 }
 
+/// In-process ownership of one live registry. A numeric fence is meaningful only
+/// within its issuing registry; a freshly opened registry may start at the same
+/// number but cannot inherit an earlier registry's effect preparations.
+#[derive(Clone, Debug)]
+pub(crate) struct LeaseRegistryBinding(Arc<()>);
+
+impl PartialEq for LeaseRegistryBinding {
+    fn eq(&self, other: &Self) -> bool {
+        Arc::ptr_eq(&self.0, &other.0)
+    }
+}
+
+impl Eq for LeaseRegistryBinding {}
+
 /// The lease registry: one monotone fence source, per-resource lease state.
-/// Deterministic; expiry evaluated against caller time only.
+/// Deterministic records; expiry evaluated against caller time only. The opaque
+/// live-owner binding is not part of any persisted lease identity or record.
 #[derive(Debug)]
 pub struct LeaseRegistry {
+    binding: LeaseRegistryBinding,
     /// Global monotone fence source. Never reused, never rewinds.
     next_fence: u64,
     /// Leases by stable identity.
@@ -192,10 +209,15 @@ impl LeaseRegistry {
     #[must_use]
     pub fn new() -> Self {
         Self {
+            binding: LeaseRegistryBinding(Arc::new(())),
             next_fence: 1,
             leases: BTreeMap::new(),
             resources: BTreeMap::new(),
         }
+    }
+
+    pub(crate) fn binding(&self) -> &LeaseRegistryBinding {
+        &self.binding
     }
 
     fn evaluate_expiry(lease: &mut Lease, now: TimestampNs) {
@@ -285,6 +307,14 @@ impl LeaseRegistry {
             })?;
         Self::evaluate_expiry(lease, now);
         if lease.state != LeaseState::Active {
+            // Expiry is irreversible once observed. Keep the effect gate's copy
+            // consistent even if this renewal is refused or caller time moves back.
+            if let Some(fence_state) = self.resources.get_mut(&lease.resource)
+                && let Some(current) = &mut fence_state.lease
+                && current.id == lease.id
+            {
+                current.state = lease.state;
+            }
             return Err(LeaseError::NotActive {
                 lease: lease_id.to_string(),
                 state: lease.state,
@@ -390,6 +420,11 @@ impl LeaseRegistry {
                 resource: resource.to_string(),
             })?;
         Self::evaluate_expiry(lease, now);
+        // Readers and renewal use the identity index; they must see an expiry
+        // established by this effect gate as well as by acquire or renew.
+        if let Some(stored) = self.leases.get_mut(&lease.id) {
+            stored.state = lease.state;
+        }
         match lease.state {
             LeaseState::Active => Ok(()),
             LeaseState::Expired => match lease.expires_at {

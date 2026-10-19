@@ -105,6 +105,23 @@ impl GrantSet {
         Ok(Self { grants })
     }
 
+    /// Selects a child's declared capabilities while preserving every inherited
+    /// resource restriction. Canonical capability strings do not encode resource
+    /// scopes, so resolving them as unscoped would discard the parent's limits.
+    /// Missing and unregistered capabilities refuse without modifying either set.
+    pub fn scope_for_child(&self, authority: &ContextAuthority) -> Result<Self, GrantError> {
+        let requested = Self::from_authority(authority)?;
+        let mut grants = BTreeMap::new();
+        for grant in requested.grants.keys() {
+            let scope = self.grants.get(grant).ok_or_else(|| GrantError::Widening {
+                grant: *grant,
+                detail: "parent does not hold the grant".to_string(),
+            })?;
+            grants.insert(*grant, scope.clone());
+        }
+        Ok(Self { grants })
+    }
+
     /// Inserts or narrows a grant's scope. Scoping an existing unscoped
     /// grant narrows it; scoping a scoped grant intersects the scopes.
     pub fn with_scope(mut self, grant: RuntimeGrant, resources: BTreeSet<String>) -> Self {
