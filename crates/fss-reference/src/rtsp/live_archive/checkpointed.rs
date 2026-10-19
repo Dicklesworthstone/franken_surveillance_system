@@ -289,7 +289,10 @@ impl<'a> CheckpointedLiveAvcArchive<'a> {
             self.inner.storage_since_ns = None;
         }
         if matches!(&progress, ArchiveWriteProgress::Finished { .. }) {
-            let step = self.inner.finish_archive(progress).map_err(|e| self.failure(e))?;
+            let step = self
+                .inner
+                .finish_archive(progress)
+                .map_err(|e| self.failure(e))?;
             return Ok(CheckpointedLiveArchiveStep::Live(step));
         }
         Ok(CheckpointedLiveArchiveStep::Live(LiveArchiveStep::Archive(
@@ -448,11 +451,10 @@ impl<'a> AutomaticLiveAvcArchive<'a> {
             }
             let result = match self.control.action() {
                 Some(Action::Request(command)) => {
-                    self.archive.request(command, credentials, cnonce, now, authority)
+                    self.archive
+                        .request(command, credentials, cnonce, now, authority)
                 }
-                Some(Action::Respond) => {
-                    self.archive.respond(credentials, cnonce, now, authority)
-                }
+                Some(Action::Respond) => self.archive.respond(credentials, cnonce, now, authority),
                 None => {
                     let failure = self.archive.fatal(LiveArchiveError::Invariant);
                     return Err(self.failed(failure));
@@ -472,7 +474,8 @@ impl<'a> AutomaticLiveAvcArchive<'a> {
         };
         if self.archive.inner.recording.is_none() {
             self.control.clear();
-        } else if let CheckpointedLiveArchiveStep::Live(LiveArchiveStep::Recording(recording)) = &step
+        } else if let CheckpointedLiveArchiveStep::Live(LiveArchiveStep::Recording(recording)) =
+            &step
             && let LiveRecordingStep::Network(network) = recording.as_ref()
         {
             self.control.observe(network, now);
@@ -532,7 +535,9 @@ impl<'a> AutomaticLiveAvcArchive<'a> {
         authority: &dyn TcpAuthority,
         cancel: &dyn PublishCancellation,
     ) -> Result<(), CheckpointedLiveArchiveFailure> {
-        let result = self.archive.acknowledge_checkpoint(pin, now, authority, cancel);
+        let result = self
+            .archive
+            .acknowledge_checkpoint(pin, now, authority, cancel);
         result.map_err(|e| self.failed(e))
     }
     /// Stop without I/O and transfer all pending source and recovery candidates exactly once.
@@ -540,7 +545,10 @@ impl<'a> AutomaticLiveAvcArchive<'a> {
         self.control.clear();
         self.archive.cancel()
     }
-    fn failed(&mut self, failure: CheckpointedLiveArchiveFailure) -> CheckpointedLiveArchiveFailure {
+    fn failed(
+        &mut self,
+        failure: CheckpointedLiveArchiveFailure,
+    ) -> CheckpointedLiveArchiveFailure {
         if failure.retirement.is_some() || matches!(&failure.reason, LiveArchiveError::Closed) {
             self.control.clear();
         } else if let LiveArchiveError::Recording(error) = &failure.reason

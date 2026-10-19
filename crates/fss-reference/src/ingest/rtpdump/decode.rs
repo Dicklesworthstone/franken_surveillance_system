@@ -553,7 +553,11 @@ impl<'a> RecordedRtpH264Decoder<'a> {
     }
 
     fn retire(&mut self, error: RtpDecodeError, recoverable: bool) -> RtpDecodeEffect {
-        let retired_groups = self.sources.iter().filter(|source| source.is_some()).count()
+        let retired_groups = self
+            .sources
+            .iter()
+            .filter(|source| source.is_some())
+            .count()
             + self.ready.len();
         self.sources.clear();
         self.ready.clear();
@@ -587,7 +591,8 @@ fn terminal(event: &AvcDumpStep<'_>) -> bool {
             admission: AvcDumpAdmission::Rtp(receipt),
             ..
         } => {
-            receipt.transport.transport.disposition == fss_packet::ReorderDisposition::RestartRequired
+            receipt.transport.transport.disposition
+                == fss_packet::ReorderDisposition::RestartRequired
         }
         AvcDumpStep::Record {
             admission:

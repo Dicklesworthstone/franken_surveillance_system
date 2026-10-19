@@ -77,8 +77,8 @@ pub const ADP_AOSU_REQUEST_TIMEOUT_NS: u64 = 5_000_000_000;
 
 /// The declared capability set: discovery + telemetry, deliberately without
 /// `STREAMING` (battery/event-driven honesty).
-pub const ADP_AOSU_CAPABILITIES: AdapterCapabilities = AdapterCapabilities::DEVICE_DISCOVERY
-    .union(AdapterCapabilities::TELEMETRY);
+pub const ADP_AOSU_CAPABILITIES: AdapterCapabilities =
+    AdapterCapabilities::DEVICE_DISCOVERY.union(AdapterCapabilities::TELEMETRY);
 
 /// Constructs the typed identity for the row, fully verified: structural
 /// invariants (`verify`) and NEG-002 standards compliance

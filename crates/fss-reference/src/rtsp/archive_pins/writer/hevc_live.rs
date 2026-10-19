@@ -290,7 +290,9 @@ impl<'a, 'p> JournaledLiveHevcArchive<'a, 'p> {
 
     /// Existing protocol state, not recording, camera health or remote teardown proof.
     pub fn state(&self) -> ClientState {
-        self.recording.as_ref().map_or(ClientState::Closed, |r| r.state())
+        self.recording
+            .as_ref()
+            .map_or(ClientState::Closed, |r| r.state())
     }
     /// Actual transport accounting; final totals transfer in the original terminal outputs.
     pub fn totals(&self) -> Option<TcpTotals> {
@@ -318,8 +320,13 @@ impl<'a, 'p> JournaledLiveHevcArchive<'a, 'p> {
     }
     /// True only when storage permits the original automatic control to borrow credentials.
     pub fn needs_credentials(&self) -> bool {
-        self.ready && !self.finished && self.completion.is_none()
-            && self.recording.as_ref().is_some_and(|r| r.needs_credentials())
+        self.ready
+            && !self.finished
+            && self.completion.is_none()
+            && self
+                .recording
+                .as_ref()
+                .is_some_and(|r| r.needs_credentials())
     }
     /// Storage is immediately runnable; otherwise retain the original capture/protocol wake.
     pub fn next_wake_ns(&self) -> Option<u64> {
@@ -329,8 +336,14 @@ impl<'a, 'p> JournaledLiveHevcArchive<'a, 'p> {
         if !self.ready {
             return Some(self.last_ns);
         }
-        Some(self.recording.as_ref().and_then(|r| r.next_wake_ns())
-            .map_or(self.publication_deadline_ns, |at| at.min(self.publication_deadline_ns)))
+        Some(
+            self.recording
+                .as_ref()
+                .and_then(|r| r.next_wake_ns())
+                .map_or(self.publication_deadline_ns, |at| {
+                    at.min(self.publication_deadline_ns)
+                }),
+        )
     }
 
     /// One original recording step OR one independently journaled publication step.
@@ -350,51 +363,77 @@ impl<'a, 'p> JournaledLiveHevcArchive<'a, 'p> {
         }
         self.admit(now, authority, cancel)?;
         if !self.ready {
-            let progress = match self.writer.as_mut().ok_or_else(|| safe(LiveHevcArchiveError::Closed))?
+            let progress = match self
+                .writer
+                .as_mut()
+                .ok_or_else(|| safe(LiveHevcArchiveError::Closed))?
                 .step(now, cancel)
             {
                 Ok(progress) => progress,
-                Err(error) => return Err(self.fatal(LiveHevcArchiveError::Storage(error), None, None)),
+                Err(error) => {
+                    return Err(self.fatal(LiveHevcArchiveError::Storage(error), None, None));
+                }
             };
-            if matches!(&progress, JournaledArchiveProgress::Archive(ArchiveWriteProgress::Ready { .. })) {
+            if matches!(
+                &progress,
+                JournaledArchiveProgress::Archive(ArchiveWriteProgress::Ready { .. })
+            ) {
                 if self.completion.is_some() {
                     return Err(self.fatal(LiveHevcArchiveError::Invariant, None, None));
                 }
                 self.ready = true;
                 self.storage_since_ns = None;
             }
-            if let JournaledArchiveProgress::Archive(archive @ ArchiveWriteProgress::Finished { .. }) = progress {
+            if let JournaledArchiveProgress::Archive(
+                archive @ ArchiveWriteProgress::Finished { .. },
+            ) = progress
+            {
                 let Some(cause) = self.completion else {
                     return Err(self.fatal(LiveHevcArchiveError::Invariant, None, None));
                 };
                 self.finished = true;
                 return Ok(JournaledLiveHevcArchiveStep::Finished { archive, cause });
             }
-            if matches!(&progress, JournaledArchiveProgress::Archive(ArchiveWriteProgress::Exhausted)) {
+            if matches!(
+                &progress,
+                JournaledArchiveProgress::Archive(ArchiveWriteProgress::Exhausted)
+            ) {
                 return Err(self.fatal(LiveHevcArchiveError::Invariant, None, None));
             }
             return Ok(JournaledLiveHevcArchiveStep::Storage(progress));
         }
-        let step = match self.recording.as_mut().ok_or_else(|| safe(LiveHevcArchiveError::Closed))?
+        let step = match self
+            .recording
+            .as_mut()
+            .ok_or_else(|| safe(LiveHevcArchiveError::Closed))?
             .poll(readiness, credentials, cnonce, now, authority)
         {
             Ok(step) => step,
             Err(error) => return Err(self.capture_failure(error)),
         };
         match step {
-            AutomaticHevcRecordingStep::Capture { event, connection: None }
-                if matches!(event.as_ref(), HevcCapturePoll::Window(_)) =>
-            {
+            AutomaticHevcRecordingStep::Capture {
+                event,
+                connection: None,
+            } if matches!(event.as_ref(), HevcCapturePoll::Window(_)) => {
                 let window = match *event {
                     HevcCapturePoll::Window(window) => window,
                     other => {
                         let original = AutomaticHevcRecordingStep::Capture {
-                            event: Box::new(other), connection: None,
+                            event: Box::new(other),
+                            connection: None,
                         };
-                        return Err(self.fatal(LiveHevcArchiveError::Invariant, None, Some(Box::new(original))));
+                        return Err(self.fatal(
+                            LiveHevcArchiveError::Invariant,
+                            None,
+                            Some(Box::new(original)),
+                        ));
                     }
                 };
-                let result = self.writer.as_mut().ok_or_else(|| safe(LiveHevcArchiveError::Closed))?
+                let result = self
+                    .writer
+                    .as_mut()
+                    .ok_or_else(|| safe(LiveHevcArchiveError::Closed))?
                     .offer(*window, self.max_window_bytes, now);
                 match result {
                     Ok(admission) => {
@@ -406,17 +445,33 @@ impl<'a, 'p> JournaledLiveHevcArchive<'a, 'p> {
                             event: Box::new(HevcCapturePoll::Window(refusal.recording)),
                             connection: None,
                         };
-                        Err(self.fatal(LiveHevcArchiveError::Storage(ArchivePinError::Archive(*refusal.reason)),
-                            None, Some(Box::new(original))))
+                        Err(self.fatal(
+                            LiveHevcArchiveError::Storage(ArchivePinError::Archive(
+                                *refusal.reason,
+                            )),
+                            None,
+                            Some(Box::new(original)),
+                        ))
                     }
                 }
             }
             original @ AutomaticHevcRecordingStep::Capture { .. }
-                if matches!(capture_event(&original), Some(HevcCapturePoll::Ended { .. })) =>
+                if matches!(
+                    capture_event(&original),
+                    Some(HevcCapturePoll::Ended { .. })
+                ) =>
             {
-                let result = self.writer.as_mut().ok_or_else(|| safe(LiveHevcArchiveError::Closed))?.finish(now);
+                let result = self
+                    .writer
+                    .as_mut()
+                    .ok_or_else(|| safe(LiveHevcArchiveError::Closed))?
+                    .finish(now);
                 if let Err(error) = result {
-                    return Err(self.fatal(LiveHevcArchiveError::Storage(error), None, Some(Box::new(original))));
+                    return Err(self.fatal(
+                        LiveHevcArchiveError::Storage(error),
+                        None,
+                        Some(Box::new(original)),
+                    ));
                 }
                 self.recording = None; // The original terminal output owns all capture retirement.
                 self.completion = Some(LiveHevcArchiveCompletion::RecordingEnded);
@@ -424,19 +479,29 @@ impl<'a, 'p> JournaledLiveHevcArchive<'a, 'p> {
                 Ok(JournaledLiveHevcArchiveStep::Recording(Box::new(original)))
             }
             original @ AutomaticHevcRecordingStep::Capture { .. }
-                if matches!(capture_event(&original), Some(HevcCapturePoll::Stopped { .. })) =>
+                if matches!(
+                    capture_event(&original),
+                    Some(HevcCapturePoll::Stopped { .. })
+                ) =>
             {
                 let retained = self.retire(None, None);
                 Ok(JournaledLiveHevcArchiveStep::Stopped {
-                    trigger: Box::new(original), retained: Box::new(retained),
+                    trigger: Box::new(original),
+                    retained: Box::new(retained),
                 })
             }
-            original @ AutomaticHevcRecordingStep::Ended => {
-                Err(self.fatal(LiveHevcArchiveError::Invariant, None, Some(Box::new(original))))
-            }
+            original @ AutomaticHevcRecordingStep::Ended => Err(self.fatal(
+                LiveHevcArchiveError::Invariant,
+                None,
+                Some(Box::new(original)),
+            )),
             original if matches!(capture_event(&original), Some(HevcCapturePoll::Window(_))) => {
                 // A window with terminal connection ownership cannot silently lose that owner.
-                Err(self.fatal(LiveHevcArchiveError::Invariant, None, Some(Box::new(original))))
+                Err(self.fatal(
+                    LiveHevcArchiveError::Invariant,
+                    None,
+                    Some(Box::new(original)),
+                ))
             }
             original => Ok(JournaledLiveHevcArchiveStep::Recording(Box::new(original))),
         }
@@ -444,33 +509,52 @@ impl<'a, 'p> JournaledLiveHevcArchive<'a, 'p> {
 
     /// Supply explicit timing only to the existing held picture. No RTP/arrival-time guessing.
     pub fn supply_timing(
-        &mut self, timing: HevcRecordingTiming, now: u64,
-        authority: &dyn TcpAuthority, cancel: &dyn PublishCancellation,
+        &mut self,
+        timing: HevcRecordingTiming,
+        now: u64,
+        authority: &dyn TcpAuthority,
+        cancel: &dyn PublishCancellation,
     ) -> Result<TimedHevcCapture, LiveHevcArchiveFailure> {
         self.admit(now, authority, cancel)?;
         self.require_input()?;
-        let result = self.recording.as_mut().ok_or_else(|| safe(LiveHevcArchiveError::Closed))?
+        let result = self
+            .recording
+            .as_mut()
+            .ok_or_else(|| safe(LiveHevcArchiveError::Closed))?
             .supply_timing(timing, now, authority);
         result.map_err(|e| self.capture_failure(e))
     }
     /// Seal an actually completed prefix. Released source still requires caller custody;
     /// the prepared window reaches pin protection only on a subsequent poll.
     pub fn seal(
-        &mut self, now: u64, authority: &dyn TcpAuthority, cancel: &dyn PublishCancellation,
+        &mut self,
+        now: u64,
+        authority: &dyn TcpAuthority,
+        cancel: &dyn PublishCancellation,
     ) -> Result<HevcCollectionSeal, LiveHevcArchiveFailure> {
         self.admit(now, authority, cancel)?;
         self.require_input()?;
-        let result = self.recording.as_mut().ok_or_else(|| safe(LiveHevcArchiveError::Closed))?
+        let result = self
+            .recording
+            .as_mut()
+            .ok_or_else(|| safe(LiveHevcArchiveError::Closed))?
             .seal(now, authority);
         result.map_err(|e| self.capture_failure(e))
     }
     /// Flush an acknowledged tail through its own pin/work barrier without ending input.
     pub fn flush(
-        &mut self, now: u64, authority: &dyn TcpAuthority, cancel: &dyn PublishCancellation,
+        &mut self,
+        now: u64,
+        authority: &dyn TcpAuthority,
+        cancel: &dyn PublishCancellation,
     ) -> Result<(), LiveHevcArchiveFailure> {
         self.admit(now, authority, cancel)?;
         self.require_input()?;
-        let result = self.writer.as_mut().ok_or_else(|| safe(LiveHevcArchiveError::Closed))?.flush(now);
+        let result = self
+            .writer
+            .as_mut()
+            .ok_or_else(|| safe(LiveHevcArchiveError::Closed))?
+            .flush(now);
         if let Err(error) = result {
             return Err(self.fatal(LiveHevcArchiveError::Storage(error), None, None));
         }
@@ -480,14 +564,21 @@ impl<'a, 'p> JournaledLiveHevcArchive<'a, 'p> {
     /// Deliberately stop the socket and transfer all unsealed/unadmitted work immediately.
     /// Poll drains ONLY previously admitted windows/catalogs; no automatic seal or fake EOF.
     pub fn finish_capture(
-        &mut self, now: u64, authority: &dyn TcpAuthority, cancel: &dyn PublishCancellation,
+        &mut self,
+        now: u64,
+        authority: &dyn TcpAuthority,
+        cancel: &dyn PublishCancellation,
     ) -> Result<Option<LiveHevcRecordingRetirement>, LiveHevcArchiveFailure> {
         self.admit(now, authority, cancel)?;
         if self.completion.is_some() {
             return Err(safe(LiveHevcArchiveError::Closed));
         }
         // Finish can refuse on a writer budget. Keep capture ownership until it succeeds.
-        let result = self.writer.as_mut().ok_or_else(|| safe(LiveHevcArchiveError::Closed))?.finish(now);
+        let result = self
+            .writer
+            .as_mut()
+            .ok_or_else(|| safe(LiveHevcArchiveError::Closed))?
+            .finish(now);
         if let Err(error) = result {
             return Err(self.fatal(LiveHevcArchiveError::Storage(error), None, None));
         }
@@ -518,7 +609,10 @@ impl<'a, 'p> JournaledLiveHevcArchive<'a, 'p> {
         self.storage_since_ns = self.storage_since_ns.or(Some(now));
     }
     fn admit(
-        &mut self, now: u64, authority: &dyn TcpAuthority, cancel: &dyn PublishCancellation,
+        &mut self,
+        now: u64,
+        authority: &dyn TcpAuthority,
+        cancel: &dyn PublishCancellation,
     ) -> Result<(), LiveHevcArchiveFailure> {
         if self.finished || self.writer.is_none() {
             return Err(safe(LiveHevcArchiveError::Closed));
@@ -534,12 +628,22 @@ impl<'a, 'p> JournaledLiveHevcArchive<'a, 'p> {
         if now >= self.publication_deadline_ns {
             return Err(self.fatal(LiveHevcArchiveError::Deadline, None, None));
         }
-        if self.storage_since_ns.is_some_and(|since| now - since >= self.max_storage_pause_ns) {
+        if self
+            .storage_since_ns
+            .is_some_and(|since| now - since >= self.max_storage_pause_ns)
+        {
             return Err(self.fatal(LiveHevcArchiveError::StoragePauseExpired, None, None));
         }
         if self.completion.is_none() {
-            let allowed = if now >= self.live_deadline_ns { Err(TcpDenial::Deadline) } else {
-                authority.checkpoint(&self.binding, TcpOperation::Poll, now, self.live_deadline_ns)
+            let allowed = if now >= self.live_deadline_ns {
+                Err(TcpDenial::Deadline)
+            } else {
+                authority.checkpoint(
+                    &self.binding,
+                    TcpOperation::Poll,
+                    now,
+                    self.live_deadline_ns,
+                )
             };
             if let Err(error) = allowed {
                 return Err(self.fatal(LiveHevcArchiveError::Authority(error), None, None));
@@ -547,26 +651,43 @@ impl<'a, 'p> JournaledLiveHevcArchive<'a, 'p> {
         }
         // Storage authority continues after input retirement. Network permission never grants it.
         if cancel.cancel_requested(PublishCutPoint::AfterChildrenVerified) {
-            return Err(self.fatal(LiveHevcArchiveError::Storage(ArchivePinError::Cancelled), None, None));
+            return Err(self.fatal(
+                LiveHevcArchiveError::Storage(ArchivePinError::Cancelled),
+                None,
+                None,
+            ));
         }
-        let result = self.writer.as_mut().ok_or_else(|| safe(LiveHevcArchiveError::Closed))?
+        let result = self
+            .writer
+            .as_mut()
+            .ok_or_else(|| safe(LiveHevcArchiveError::Closed))?
             .verify_pins(cancel);
         result.map_err(|e| self.fatal(LiveHevcArchiveError::Storage(e), None, None))
     }
     fn capture_failure(&mut self, error: LiveHevcRecordingFailure) -> LiveHevcArchiveFailure {
         match error.retirement {
-            Some(retired) => self.fatal(LiveHevcArchiveError::Recording(Box::new(error.reason)), Some(*retired), None),
+            Some(retired) => self.fatal(
+                LiveHevcArchiveError::Recording(Box::new(error.reason)),
+                Some(*retired),
+                None,
+            ),
             None => safe(LiveHevcArchiveError::Recording(Box::new(error.reason))),
         }
     }
     fn fatal(
-        &mut self, reason: LiveHevcArchiveError, recording: Option<LiveHevcRecordingRetirement>,
+        &mut self,
+        reason: LiveHevcArchiveError,
+        recording: Option<LiveHevcRecordingRetirement>,
         unreturned_step: Option<Box<AutomaticHevcRecordingStep>>,
     ) -> LiveHevcArchiveFailure {
-        LiveHevcArchiveFailure { reason, retirement: Some(Box::new(self.retire(recording, unreturned_step))) }
+        LiveHevcArchiveFailure {
+            reason,
+            retirement: Some(Box::new(self.retire(recording, unreturned_step))),
+        }
     }
     fn retire(
-        &mut self, recording: Option<LiveHevcRecordingRetirement>,
+        &mut self,
+        recording: Option<LiveHevcRecordingRetirement>,
         unreturned_step: Option<Box<AutomaticHevcRecordingStep>>,
     ) -> LiveHevcArchiveRetirement {
         let owned = self.recording.take().and_then(|mut r| r.cancel());
@@ -579,8 +700,14 @@ impl<'a, 'p> JournaledLiveHevcArchive<'a, 'p> {
     }
 }
 fn capture_event(step: &AutomaticHevcRecordingStep) -> Option<&HevcCapturePoll> {
-    match step { AutomaticHevcRecordingStep::Capture { event, .. } => Some(event), _ => None }
+    match step {
+        AutomaticHevcRecordingStep::Capture { event, .. } => Some(event),
+        _ => None,
+    }
 }
 fn safe(reason: LiveHevcArchiveError) -> LiveHevcArchiveFailure {
-    LiveHevcArchiveFailure { reason, retirement: None }
+    LiveHevcArchiveFailure {
+        reason,
+        retirement: None,
+    }
 }

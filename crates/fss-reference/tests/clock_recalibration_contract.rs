@@ -15,7 +15,9 @@ fn sample(sequence: u64, reference: i128, sensor: i128) -> Result<TimeSyncSample
     TimeSyncSample::new(sequence, TimestampNs(reference), TimestampNs(sensor), 5)
 }
 
-fn calibrated(horizon: u64) -> Result<(ClockOffsetSkewEstimator, ClockSyncEstimate), ReferenceError> {
+fn calibrated(
+    horizon: u64,
+) -> Result<(ClockOffsetSkewEstimator, ClockSyncEstimate), ReferenceError> {
     let mut estimator = ClockOffsetSkewEstimator::new(EstimatorConfig {
         min_samples: 3,
         max_residual_tolerance_ns: 10,
@@ -65,7 +67,9 @@ fn contradicted_epoch_cannot_refit_old_samples_or_admit_more() -> TestResult {
 fn rollback_never_extends_an_already_expired_horizon() -> TestResult {
     let (mut estimator, original) = calibrated(5)?;
     estimator.invalidate(sample(4, 40_000, 90_000)?, "owner observed clock reset");
-    let restored = estimator.rollback()?.ok_or("expected historical interval")?;
+    let restored = estimator
+        .rollback()?
+        .ok_or("expected historical interval")?;
     assert_eq!(restored.validity, original.validity);
     assert_eq!(restored.evidence_root, original.evidence_root);
     assert_eq!(restored.generation, original.generation);
@@ -74,7 +78,10 @@ fn rollback_never_extends_an_already_expired_horizon() -> TestResult {
         restored.predict_sensor_interval(TimestampNs(30_006)),
         Err(ReferenceError::StaleEstimatePastValidity { .. })
     ));
-    assert!(matches!(estimator.fit(), Err(ReferenceError::ClockRecalibrationRequired { .. })));
+    assert!(matches!(
+        estimator.fit(),
+        Err(ReferenceError::ClockRecalibrationRequired { .. })
+    ));
     Ok(())
 }
 
@@ -89,7 +96,10 @@ fn invalidation_before_all_valid_history_never_manufactures_a_singleton() -> Tes
         assert_eq!(estimator.state(), &EstimatorState::Uncalibrated);
         assert!(estimator.active_estimate().is_none());
         assert_eq!(estimator.invalidation_sample(), Some(&witness));
-        assert!(matches!(estimator.fit(), Err(ReferenceError::ClockRecalibrationRequired { .. })));
+        assert!(matches!(
+            estimator.fit(),
+            Err(ReferenceError::ClockRecalibrationRequired { .. })
+        ));
     }
     Ok(())
 }
@@ -113,10 +123,16 @@ fn every_historical_generation_remains_clamped_through_repeated_rollback() -> Te
         assert_eq!(restored.validity.latest, TimestampNs(59_999));
         assert!(estimator.requires_recalibration());
         assert_eq!(estimator.invalidation_sample(), Some(&witness));
-        assert!(matches!(estimator.fit(), Err(ReferenceError::ClockRecalibrationRequired { .. })));
+        assert!(matches!(
+            estimator.fit(),
+            Err(ReferenceError::ClockRecalibrationRequired { .. })
+        ));
     }
     assert!(estimator.rollback()?.is_none());
-    assert!(matches!(estimator.fit(), Err(ReferenceError::ClockRecalibrationRequired { .. })));
+    assert!(matches!(
+        estimator.fit(),
+        Err(ReferenceError::ClockRecalibrationRequired { .. })
+    ));
     Ok(())
 }
 
@@ -138,13 +154,19 @@ fn fresh_sensor_reset_requires_new_samples_and_preserves_the_old_epoch() -> Test
     assert_eq!(fresh.samples(), &[first]);
     assert!(matches!(
         fresh.fit(),
-        Err(ReferenceError::InsufficientSyncSamples { count: 1, minimum_required: 3 })
+        Err(ReferenceError::InsufficientSyncSamples {
+            count: 1,
+            minimum_required: 3
+        })
     ));
     assert!(fresh.rollback()?.is_none()); // no old rollback history crosses into recovery
     fresh.add_sample(sample(6, 60_000, 10_100)?)?;
     assert!(matches!(
         fresh.fit(),
-        Err(ReferenceError::InsufficientSyncSamples { count: 2, minimum_required: 3 })
+        Err(ReferenceError::InsufficientSyncSamples {
+            count: 2,
+            minimum_required: 3
+        })
     ));
     fresh.add_sample(sample(7, 70_000, 20_100)?)?;
     let recovered = fresh.fit()?;
@@ -169,17 +191,28 @@ fn repeated_invalidations_keep_earliest_history_and_latest_admission_boundaries(
     let (mut estimator, _) = calibrated(100_000)?;
     estimator.invalidate(sample(100, 80_000, 0)?, "later reset");
     let earliest = sample(200, 35_000, 0)?;
-    estimator.invalidate(earliest.clone(), "earlier fault found with a newer observation sequence");
+    estimator.invalidate(
+        earliest.clone(),
+        "earlier fault found with a newer observation sequence",
+    );
     assert_eq!(estimator.invalidation_sample(), Some(&earliest));
-    let restored = estimator.rollback()?.ok_or("expected historical interval")?;
+    let restored = estimator
+        .rollback()?
+        .ok_or("expected historical interval")?;
     assert_eq!(restored.validity.latest, TimestampNs(34_999));
     assert!(matches!(
         estimator.recalibrate_from(sample(200, 90_000, 1)?),
-        Err(ReferenceError::NonMonotonicSyncSequence { previous: 200, current: 200 })
+        Err(ReferenceError::NonMonotonicSyncSequence {
+            previous: 200,
+            current: 200
+        })
     ));
     assert!(matches!(
         estimator.recalibrate_from(sample(201, 80_000, 1)?),
-        Err(ReferenceError::NonMonotonicSyncSamples { previous: TimestampNs(80_000), .. })
+        Err(ReferenceError::NonMonotonicSyncSamples {
+            previous: TimestampNs(80_000),
+            ..
+        })
     ));
     let next = estimator.recalibrate_from(sample(201, 90_000, 1)?)?;
     assert_eq!(next.samples().len(), 1);
@@ -194,7 +227,11 @@ fn fresh_sampling_rejects_stale_sequence_or_reference_without_mutation() -> Test
     estimator.invalidate(sample(4, 40_000, 90_000)?, "reset");
     let before = format!("{estimator:?}");
     for (sequence, reference) in [(0, 50_000), (4, 50_000), (5, 40_000), (5, 30_000)] {
-        assert!(estimator.recalibrate_from(sample(sequence, reference, 0)?).is_err());
+        assert!(
+            estimator
+                .recalibrate_from(sample(sequence, reference, 0)?)
+                .is_err()
+        );
         assert_eq!(format!("{estimator:?}"), before);
     }
     // Accepted pre-fault samples also bound admission after an earlier discovered fault.
@@ -226,7 +263,10 @@ fn fresh_nonadvancing_sensor_clock_invalidates_but_stale_observations_do_not() -
         assert!(estimator.active_estimate().is_none());
         assert_eq!(estimator.invalidation_sample(), Some(&witness));
         assert_eq!(estimator.samples(), original.sample_evidence.as_slice());
-        assert!(matches!(estimator.fit(), Err(ReferenceError::ClockRecalibrationRequired { .. })));
+        assert!(matches!(
+            estimator.fit(),
+            Err(ReferenceError::ClockRecalibrationRequired { .. })
+        ));
     }
     Ok(())
 }
@@ -262,7 +302,10 @@ fn healthy_rollback_does_not_require_recalibration_and_cold_invalidation_is_a_no
     assert!(cold.invalidation_sample().is_none());
     assert!(matches!(
         cold.recalibrate_from(sample(0, 0, 0)?),
-        Err(ReferenceError::NonMonotonicSyncSequence { previous: 0, current: 0 })
+        Err(ReferenceError::NonMonotonicSyncSequence {
+            previous: 0,
+            current: 0
+        })
     ));
     Ok(())
 }

@@ -136,7 +136,11 @@ pub fn decode_beacon(source: &str, data: &[u8]) -> Result<TuyaBeaconObs, tuya_wi
                 // may carry trailing noise after the JSON terminator.
                 let unpadded = tuya_crypto::pkcs7_unpad(&plain).unwrap_or(&plain);
                 (
-                    Some(String::from_utf8_lossy(unpadded).trim_end_matches('\0').to_owned()),
+                    Some(
+                        String::from_utf8_lossy(unpadded)
+                            .trim_end_matches('\0')
+                            .to_owned(),
+                    ),
                     None,
                 )
             }
@@ -145,9 +149,17 @@ pub fn decode_beacon(source: &str, data: &[u8]) -> Result<TuyaBeaconObs, tuya_wi
     } else if !is_55aa {
         // 3.5 LAN discovery: 6699 frames on UDP with the SAME well-known
         // udpkey (GCM). Try it; a device-keyed 6699 frame stays labeled.
-        match tuya_wire::unpack_6699_mode(data, &tuya_wire::UDP_BROADCAST_KEY, tuya_wire::RetcodeMode::Auto) {
+        match tuya_wire::unpack_6699_mode(
+            data,
+            &tuya_wire::UDP_BROADCAST_KEY,
+            tuya_wire::RetcodeMode::Auto,
+        ) {
             Ok(m) => (
-                Some(String::from_utf8_lossy(&m.payload).trim_end_matches('\0').to_owned()),
+                Some(
+                    String::from_utf8_lossy(&m.payload)
+                        .trim_end_matches('\0')
+                        .to_owned(),
+                ),
                 None,
             ),
             Err(_) => (None, Some("3.5 GCM requires device local_key")),
@@ -161,8 +173,8 @@ pub fn decode_beacon(source: &str, data: &[u8]) -> Result<TuyaBeaconObs, tuya_wi
     // "pre-3.3" (ciphertext never starts with a readable version string).
     let vh = if is_55aa {
         match &payload_json {
-            Some(json) if json.contains("\"version\":\"3.4\"")
-                || json.contains("\"version\":\"3.5\"") =>
+            Some(json)
+                if json.contains("\"version\":\"3.4\"") || json.contains("\"version\":\"3.5\"") =>
             {
                 "3.4/3.5 UDP announcement (udpkey payload)"
             }
@@ -341,7 +353,10 @@ mod tests {
         assert_eq!(obs.frame, "6699");
         let json = obs.payload_json.as_deref().expect("udpkey GCM decrypts");
         assert!(json.contains("\"gwId\":\"sim6699\""), "{json}");
-        assert_eq!(obs.version_hint, "3.5 UDP announcement (6699, udpkey payload)");
+        assert_eq!(
+            obs.version_hint,
+            "3.5 UDP announcement (6699, udpkey payload)"
+        );
     }
 
     #[test]

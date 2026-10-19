@@ -116,7 +116,9 @@ impl std::fmt::Display for RtpTrackStreamError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.write_str(match self {
             Self::Tracking(_) => "native trajectory reproduction refused",
-            Self::Incomplete(_) => "trajectory transcript is not complete under the selected policy",
+            Self::Incomplete(_) => {
+                "trajectory transcript is not complete under the selected policy"
+            }
             Self::Limit => "trajectory transcript allowance exhausted",
             Self::Mismatch => "saved trajectory transcript does not match native reproduction",
             Self::Io(_) => "trajectory transcript I/O refused",
@@ -127,10 +129,14 @@ impl std::fmt::Display for RtpTrackStreamError {
 }
 impl std::error::Error for RtpTrackStreamError {}
 impl From<RtpTrackingError> for RtpTrackStreamError {
-    fn from(error: RtpTrackingError) -> Self { Self::Tracking(error) }
+    fn from(error: RtpTrackingError) -> Self {
+        Self::Tracking(error)
+    }
 }
 impl From<io::Error> for RtpTrackStreamError {
-    fn from(error: io::Error) -> Self { Self::Io(error.kind()) }
+    fn from(error: io::Error) -> Self {
+        Self::Io(error.kind())
+    }
 }
 type Result<T> = std::result::Result<T, RtpTrackStreamError>;
 
@@ -149,7 +155,12 @@ pub fn write_tracking_stream(
     checkpoint(cx, scalar)?;
     request.validate()?;
     let mut owner = RtpPackageTracker::new(
-        retained, package, request.tracking.clone(), deployment, cx, scalar,
+        retained,
+        package,
+        request.tracking.clone(),
+        deployment,
+        cx,
+        scalar,
     )?;
     let recipe = owner.recipe();
     let mut output = Output::new(writer, request.max_stream_bytes, request.max_records);
@@ -168,7 +179,8 @@ pub fn write_tracking_stream(
             }
             RtpTrackingStep::Frame(frame) => {
                 let native = frame.detected().receipt().recipe();
-                if frame.recipe() != recipe || frame.predecessor() != previous
+                if frame.recipe() != recipe
+                    || frame.predecessor() != previous
                     || native_recipe.is_some_and(|expected| expected != native)
                     || frame.detected().source().output_index != frames
                 {
@@ -177,7 +189,8 @@ pub fn write_tracking_stream(
                 let bytes = encode_frame(&frame, request.max_frame_bytes, cx, scalar)?;
                 output.record(&bytes, cx, scalar)?;
                 frames += 1;
-                observations = observations.checked_add(frame.observations().len() as u64)
+                observations = observations
+                    .checked_add(frame.observations().len() as u64)
                     .ok_or(RtpTrackStreamError::Limit)?;
                 previous = Some(frame.digest());
                 native_recipe = Some(native);
@@ -202,10 +215,20 @@ pub fn write_tracking_stream(
                 output.writer.flush()?;
                 checkpoint(cx, scalar)?;
                 return Ok(RtpTrackStreamSummary {
-                    digest: ContentDigest::new(DigestAlgorithm::Sha256,
-                        output.hash.finalize().map_err(|_| RtpTrackStreamError::Encoding)?),
-                    bytes: output.used, records: output.records, recipe, native_recipe,
-                    observations, last_frame, stats,
+                    digest: ContentDigest::new(
+                        DigestAlgorithm::Sha256,
+                        output
+                            .hash
+                            .finalize()
+                            .map_err(|_| RtpTrackStreamError::Encoding)?,
+                    ),
+                    bytes: output.used,
+                    records: output.records,
+                    recipe,
+                    native_recipe,
+                    observations,
+                    last_frame,
+                    stats,
                 });
             }
         }
@@ -231,10 +254,25 @@ pub fn verify_tracking_stream(
     if expected.algorithm() != DigestAlgorithm::Sha256 {
         return Err(RtpTrackStreamError::Mismatch);
     }
-    let mut compare = Compare { reader: saved, cx, scalar, mismatch: false };
-    let result = write_tracking_stream(retained, package, request, &mut compare, deployment, cx, scalar);
+    let mut compare = Compare {
+        reader: saved,
+        cx,
+        scalar,
+        mismatch: false,
+    };
+    let result = write_tracking_stream(
+        retained,
+        package,
+        request,
+        &mut compare,
+        deployment,
+        cx,
+        scalar,
+    );
     checkpoint(cx, scalar)?;
-    if compare.mismatch { return Err(RtpTrackStreamError::Mismatch); }
+    if compare.mismatch {
+        return Err(RtpTrackStreamError::Mismatch);
+    }
     let summary = result?;
     if summary.digest != expected || read_once(compare.reader, &mut [0_u8; 1], cx, scalar)? != 0 {
         return Err(RtpTrackStreamError::Mismatch);
@@ -244,14 +282,22 @@ pub fn verify_tracking_stream(
 }
 
 fn terminal_allowed(stats: RtpTrackingStats, completion: RtpTrackStreamCompletion) -> bool {
-    stats.frames > 0 && stats.ended && stats.failures == 0 && stats.detection.ended
-        && stats.detection.failures == 0 && stats.detection.native.ended
-        && stats.frames == stats.detection.frames && stats.frames == stats.detection.native.frames
+    stats.frames > 0
+        && stats.ended
+        && stats.failures == 0
+        && stats.detection.ended
+        && stats.detection.failures == 0
+        && stats.detection.native.ended
+        && stats.frames == stats.detection.frames
+        && stats.frames == stats.detection.native.frames
         && (stats.complete() || completion == RtpTrackStreamCompletion::SourceDiagnostics)
 }
-fn header(retained: &RecoveredRtpImport, package: &RgbDetectorPackage,
-    request: &RtpTrackStreamRequest, recipe: ContentDigest) -> Result<Vec<u8>>
-{
+fn header(
+    retained: &RecoveredRtpImport,
+    package: &RgbDetectorPackage,
+    request: &RtpTrackStreamRequest,
+    recipe: ContentDigest,
+) -> Result<Vec<u8>> {
     let mut e = CanonicalEncoder::new();
     e.u8(0);
     e.text(RTP_TRACK_STREAM_DOMAIN);
@@ -268,17 +314,32 @@ fn header(retained: &RecoveredRtpImport, package: &RgbDetectorPackage,
         RtpTrackStreamCompletion::SourceDiagnostics => 1,
     });
     let detection = &request.tracking.detection;
-    for parameter in detection.decode.parameters { e.digest(parameter); }
+    for parameter in detection.decode.parameters {
+        e.digest(parameter);
+    }
     // Native receiver/codec bounds are bound by every complete frame receipt. Bind the
     // independent outer admissions too; changing a successful ceiling is not a silent rebase.
     let c = detection.custody;
     let a = detection.analysis;
-    for n in [c.max_source_bytes as u64, c.max_records as u64, c.max_object_bytes as u64,
-        c.max_read_bytes, c.max_steps as u64, c.max_graph_objects as u64,
-        detection.receipts.max_receipt_bytes as u64, detection.receipts.max_total_bytes,
-        a.max_frames as u64, a.max_color_pixels, a.max_preprocess_work, a.max_execution_macs,
-        a.max_tensor_bytes, a.detection_work, a.detection_scratch_bytes as u64]
-    { e.u64(n); }
+    for n in [
+        c.max_source_bytes as u64,
+        c.max_records as u64,
+        c.max_object_bytes as u64,
+        c.max_read_bytes,
+        c.max_steps as u64,
+        c.max_graph_objects as u64,
+        detection.receipts.max_receipt_bytes as u64,
+        detection.receipts.max_total_bytes,
+        a.max_frames as u64,
+        a.max_color_pixels,
+        a.max_preprocess_work,
+        a.max_execution_macs,
+        a.max_tensor_bytes,
+        a.detection_work,
+        a.detection_scratch_bytes as u64,
+    ] {
+        e.u64(n);
+    }
     e.u64(request.tracking.class_index as u64);
     e.text("observed-frame-step:not-seconds");
     e.text("full-head-dispositions-and-observations:inference-tensors-digest-only");
@@ -292,10 +353,18 @@ fn progress(event: RetainedRtpEvent, effect: &RtpDecodeEffect) -> Result<Vec<u8>
     let mut e = CanonicalEncoder::new();
     e.u8(1);
     match event {
-        RetainedRtpEvent::Record { index, offset_reversed } => {
-            e.u8(0); e.u64(index as u64); e.bool(offset_reversed);
+        RetainedRtpEvent::Record {
+            index,
+            offset_reversed,
+        } => {
+            e.u8(0);
+            e.u64(index as u64);
+            e.bool(offset_reversed);
         }
-        RetainedRtpEvent::RecordRefused { index } => { e.u8(1); e.u64(index as u64); }
+        RetainedRtpEvent::RecordRefused { index } => {
+            e.u8(1);
+            e.u64(index as u64);
+        }
         RetainedRtpEvent::Progress => e.u8(2),
         RetainedRtpEvent::InputEnded => e.u8(3),
         RetainedRtpEvent::FramingRefused => e.u8(4),
@@ -304,29 +373,48 @@ fn progress(event: RetainedRtpEvent, effect: &RtpDecodeEffect) -> Result<Vec<u8>
     }
     match effect {
         RtpDecodeEffect::None => e.u8(0),
-        RtpDecodeEffect::Admitted { group } => { e.u8(1); e.u64(*group as u64); }
-        RtpDecodeEffect::WaitingForIdr { group } => { e.u8(2); e.u64(*group as u64); }
+        RtpDecodeEffect::Admitted { group } => {
+            e.u8(1);
+            e.u64(*group as u64);
+        }
+        RtpDecodeEffect::WaitingForIdr { group } => {
+            e.u8(2);
+            e.u64(*group as u64);
+        }
         RtpDecodeEffect::Fenced => e.u8(3),
-        RtpDecodeEffect::Refused { error, retired_groups, awaiting_idr, resumed_group } => {
+        RtpDecodeEffect::Refused {
+            error,
+            retired_groups,
+            awaiting_idr,
+            resumed_group,
+        } => {
             e.u8(4);
             e.u8(match error {
-                RtpDecodeError::Limit => 0, RtpDecodeError::Allocation => 1,
-                RtpDecodeError::Replay(_) => 2, RtpDecodeError::Codec(_) => 3,
-                RtpDecodeError::PictureMapping => 4, RtpDecodeError::Discontinuity => 5,
+                RtpDecodeError::Limit => 0,
+                RtpDecodeError::Allocation => 1,
+                RtpDecodeError::Replay(_) => 2,
+                RtpDecodeError::Codec(_) => 3,
+                RtpDecodeError::PictureMapping => 4,
+                RtpDecodeError::Discontinuity => 5,
                 RtpDecodeError::Cancelled => 6,
             });
             e.u64(*retired_groups as u64);
             e.bool(*awaiting_idr);
             e.bool(resumed_group.is_some());
-            if let Some(group) = resumed_group { e.u64(*group as u64); }
+            if let Some(group) = resumed_group {
+                e.u64(*group as u64);
+            }
         }
         RtpDecodeEffect::Finished => e.u8(5),
     }
     encoded(e)
 }
-fn encode_frame(frame: &RtpTrackedFrame, maximum: usize, cx: &ReplayCx,
-    scalar: &ScalarExecCx) -> Result<Vec<u8>>
-{
+fn encode_frame(
+    frame: &RtpTrackedFrame,
+    maximum: usize,
+    cx: &ReplayCx,
+    scalar: &ScalarExecCx,
+) -> Result<Vec<u8>> {
     let detected = frame.detected();
     let report = detected.detections();
     // Generous checked upper quote for the fixed fields and bounded variable arrays. No
@@ -337,34 +425,58 @@ fn encode_frame(frame: &RtpTrackedFrame, maximum: usize, cx: &ReplayCx,
         .and_then(|n| n.checked_add(source.stream.as_str().len()))
         .and_then(|n| n.checked_add(detected.receipt().bytes().len()))
         .ok_or(RtpTrackStreamError::Limit)?;
-    for (count, size) in [(report.rows().len(), 32), (report.candidates().len(), 96),
-        (report.detections().len(), 64), (frame.observations().len(), 128)]
-    {
-        quote = quote.checked_add(count.checked_mul(size).ok_or(RtpTrackStreamError::Limit)?)
+    for (count, size) in [
+        (report.rows().len(), 32),
+        (report.candidates().len(), 96),
+        (report.detections().len(), 64),
+        (frame.observations().len(), 128),
+    ] {
+        quote = quote
+            .checked_add(count.checked_mul(size).ok_or(RtpTrackStreamError::Limit)?)
             .ok_or(RtpTrackStreamError::Limit)?;
     }
-    if quote > maximum { return Err(RtpTrackStreamError::Limit); }
+    if quote > maximum {
+        return Err(RtpTrackStreamError::Limit);
+    }
     checkpoint(cx, scalar)?;
     let mut e = CanonicalEncoder::new();
     e.u8(2);
-    for d in [frame.recipe(), frame.digest(), detected.recipe(), detected.digest(),
-        detected.inference().identity(), report.digest(), report.contract_digest()]
-    { e.digest(d); }
+    for d in [
+        frame.recipe(),
+        frame.digest(),
+        detected.recipe(),
+        detected.digest(),
+        detected.inference().identity(),
+        report.digest(),
+        report.contract_digest(),
+    ] {
+        e.digest(d);
+    }
     optional_digest(&mut e, frame.predecessor());
     e.u64(frame.epoch());
     e.u8(match frame.reset() {
-        None => 0, Some(RtpTrackReset::Baseline) => 1, Some(RtpTrackReset::SourceGap) => 2,
-        Some(RtpTrackReset::DisplayGap) => 3, Some(RtpTrackReset::ProjectionChanged) => 4,
+        None => 0,
+        Some(RtpTrackReset::Baseline) => 1,
+        Some(RtpTrackReset::SourceGap) => 2,
+        Some(RtpTrackReset::DisplayGap) => 3,
+        Some(RtpTrackReset::ProjectionChanged) => 4,
     });
     e.u64(frame.active_tracks() as u64);
     e.u64(frame.deleted_tracks() as u64);
     let s = detected.source();
-    e.digest(s.root); e.text(s.sensor.as_str()); e.text(s.stream.as_str());
+    e.digest(s.root);
+    e.text(s.sensor.as_str());
+    e.text(s.stream.as_str());
     e.u64(u64::try_from(s.capture.earliest.0).map_err(|_| RtpTrackStreamError::Encoding)?);
     e.u64(u64::try_from(s.capture.latest.0).map_err(|_| RtpTrackStreamError::Encoding)?);
-    e.u32(s.dimensions[0]); e.u32(s.dimensions[1]);
-    e.u64(s.output_index as u64); e.u64(s.group as u64); e.u64(s.decoder_epoch as u64);
-    e.u32(s.rtp_timestamp); e.digest(s.privacy); optional_digest(&mut e, s.policy);
+    e.u32(s.dimensions[0]);
+    e.u32(s.dimensions[1]);
+    e.u64(s.output_index as u64);
+    e.u64(s.group as u64);
+    e.u64(s.decoder_epoch as u64);
+    e.u32(s.rtp_timestamp);
+    e.digest(s.privacy);
+    optional_digest(&mut e, s.policy);
     e.digest(detected.receipt().digest());
     e.digest(detected.receipt().recipe());
     e.bytes(detected.receipt().bytes());
@@ -376,7 +488,10 @@ fn encode_frame(frame: &RtpTrackedFrame, maximum: usize, cx: &ReplayCx,
             HeadRowDisposition::BelowThreshold => e.u8(0),
             HeadRowDisposition::OutsideImage => e.u8(1),
             HeadRowDisposition::PrivateFootprint => e.u8(2),
-            HeadRowDisposition::Candidates(n) => { e.u8(3); e.u64(n as u64); }
+            HeadRowDisposition::Candidates(n) => {
+                e.u8(3);
+                e.u64(n as u64);
+            }
         }
     }
     e.u64(report.candidates().len() as u64);
@@ -384,7 +499,9 @@ fn encode_frame(frame: &RtpTrackedFrame, maximum: usize, cx: &ReplayCx,
         checkpoint(cx, scalar)?;
         encode_detection(&mut e, &candidate.detection);
         e.bool(candidate.suppressed_by.is_some());
-        if let Some(index) = candidate.suppressed_by { e.u64(index as u64); }
+        if let Some(index) = candidate.suppressed_by {
+            e.u64(index as u64);
+        }
     }
     e.u64(report.detections().len() as u64);
     for detection in report.detections() {
@@ -397,40 +514,78 @@ fn encode_frame(frame: &RtpTrackedFrame, maximum: usize, cx: &ReplayCx,
         if observation.detection_index >= report.detections().len() {
             return Err(RtpTrackStreamError::Encoding);
         }
-        e.digest(observation.identity); e.u64(observation.local_id);
-        e.u64(observation.detection_index as u64); e.u32(observation.hits);
+        e.digest(observation.identity);
+        e.u64(observation.local_id);
+        e.u64(observation.detection_index as u64);
+        e.u32(observation.hits);
         e.u8(match observation.status {
-            TrackStatus::Tentative => 0, TrackStatus::Confirmed => 1,
+            TrackStatus::Tentative => 0,
+            TrackStatus::Confirmed => 1,
             TrackStatus::Lost => return Err(RtpTrackStreamError::Encoding),
         });
     }
     let bytes = encoded(e)?;
-    if bytes.len() > quote { return Err(RtpTrackStreamError::Encoding); }
+    if bytes.len() > quote {
+        return Err(RtpTrackStreamError::Encoding);
+    }
     Ok(bytes)
 }
 fn encode_detection(e: &mut CanonicalEncoder, d: &RgbDetection) {
-    e.u64(d.row() as u64); e.u64(d.class_index() as u64); e.u32(d.score().to_bits());
-    for n in d.bounds() { e.u32(n); }
+    e.u64(d.row() as u64);
+    e.u64(d.class_index() as u64);
+    e.u32(d.score().to_bits());
+    for n in d.bounds() {
+        e.u32(n);
+    }
     e.bool(d.clipped());
 }
 fn encode_stats(e: &mut CanonicalEncoder, s: RtpTrackingStats) {
     let d = s.detection;
     let n = d.native;
-    for count in [s.frames as u64, s.assignments_reserved, s.assignment_work_reserved,
-        s.resets, s.failures as u64, d.attempts as u64, d.frames as u64, d.proposals as u64,
-        d.failures as u64, d.color_pixels, d.preprocess_work, d.execution_macs, d.tensor_bytes,
-        d.detection_work, d.custody_read_bytes, d.receipt_bytes, n.records as u64,
-        n.frames as u64, n.refusals as u64, n.skipped_groups as u64]
-    { e.u64(count); }
-    for flag in [s.ended, d.ended, n.input_ended, n.native_finished, n.ended, s.complete()]
-    { e.bool(flag); }
+    for count in [
+        s.frames as u64,
+        s.assignments_reserved,
+        s.assignment_work_reserved,
+        s.resets,
+        s.failures as u64,
+        d.attempts as u64,
+        d.frames as u64,
+        d.proposals as u64,
+        d.failures as u64,
+        d.color_pixels,
+        d.preprocess_work,
+        d.execution_macs,
+        d.tensor_bytes,
+        d.detection_work,
+        d.custody_read_bytes,
+        d.receipt_bytes,
+        n.records as u64,
+        n.frames as u64,
+        n.refusals as u64,
+        n.skipped_groups as u64,
+    ] {
+        e.u64(count);
+    }
+    for flag in [
+        s.ended,
+        d.ended,
+        n.input_ended,
+        n.native_finished,
+        n.ended,
+        s.complete(),
+    ] {
+        e.bool(flag);
+    }
 }
 fn optional_digest(e: &mut CanonicalEncoder, d: Option<ContentDigest>) {
     e.bool(d.is_some());
-    if let Some(d) = d { e.digest(d); }
+    if let Some(d) = d {
+        e.digest(d);
+    }
 }
 fn encoded(e: CanonicalEncoder) -> Result<Vec<u8>> {
-    e.finish_checked().map_err(|_| RtpTrackStreamError::Encoding)
+    e.finish_checked()
+        .map_err(|_| RtpTrackStreamError::Encoding)
 }
 fn checkpoint(cx: &ReplayCx, scalar: &ScalarExecCx) -> Result<()> {
     if cx.checkpoint("rtp_track_stream:checkpoint").is_err()
@@ -454,7 +609,14 @@ struct Output<'a, W> {
 }
 impl<'a, W: Write> Output<'a, W> {
     fn new(writer: &'a mut W, maximum: u64, max_records: u64) -> Self {
-        Self { writer, hash: Sha256Hasher::new(), used: 0, records: 0, maximum, max_records }
+        Self {
+            writer,
+            hash: Sha256Hasher::new(),
+            used: 0,
+            records: 0,
+            maximum,
+            max_records,
+        }
     }
     fn admit_record(&self) -> Result<()> {
         if self.records >= self.max_records || self.used >= self.maximum {
@@ -468,7 +630,8 @@ impl<'a, W: Write> Output<'a, W> {
         prefix.u64(self.records);
         prefix.u64(bytes.len() as u64);
         let prefix = encoded(prefix)?;
-        let size = (prefix.len() as u64).checked_add(bytes.len() as u64)
+        let size = (prefix.len() as u64)
+            .checked_add(bytes.len() as u64)
             .ok_or(RtpTrackStreamError::Limit)?;
         if size > self.maximum.saturating_sub(self.used) {
             return Err(RtpTrackStreamError::Limit);
@@ -486,8 +649,10 @@ impl<'a, W: Write> Output<'a, W> {
             match self.writer.write(chunk) {
                 Ok(0) => return Err(RtpTrackStreamError::Io(io::ErrorKind::WriteZero)),
                 Ok(n) if n <= chunk.len() => {
-                    self.hash.update(&chunk[..n]); self.used += n as u64;
-                    bytes = &bytes[n..]; interruptions = 0;
+                    self.hash.update(&chunk[..n]);
+                    self.used += n as u64;
+                    bytes = &bytes[n..];
+                    interruptions = 0;
                 }
                 Ok(_) => return Err(RtpTrackStreamError::Io(io::ErrorKind::InvalidData)),
                 Err(e) if e.kind() == io::ErrorKind::Interrupted && interruptions < 7 => {
@@ -507,7 +672,9 @@ struct Compare<'a, R> {
 }
 impl<R: Read> Write for Compare<'_, R> {
     fn write(&mut self, expected: &[u8]) -> io::Result<usize> {
-        if self.mismatch { return Err(io::ErrorKind::InvalidData.into()); }
+        if self.mismatch {
+            return Err(io::ErrorKind::InvalidData.into());
+        }
         let mut buffer = [0_u8; IO_CHUNK];
         let length = expected.len().min(buffer.len());
         let n = read_once(self.reader, &mut buffer[..length], self.cx, self.scalar)?;
@@ -517,13 +684,19 @@ impl<R: Read> Write for Compare<'_, R> {
         }
         Ok(n)
     }
-    fn flush(&mut self) -> io::Result<()> { Ok(()) }
+    fn flush(&mut self) -> io::Result<()> {
+        Ok(())
+    }
 }
-fn read_once(reader: &mut impl Read, buffer: &mut [u8], cx: &ReplayCx,
-    scalar: &ScalarExecCx) -> io::Result<usize>
-{
+fn read_once(
+    reader: &mut impl Read,
+    buffer: &mut [u8],
+    cx: &ReplayCx,
+    scalar: &ScalarExecCx,
+) -> io::Result<usize> {
     for attempt in 0..8 {
-        checkpoint(cx, scalar).map_err(|_| io::Error::other("trajectory verification cancelled"))?;
+        checkpoint(cx, scalar)
+            .map_err(|_| io::Error::other("trajectory verification cancelled"))?;
         match reader.read(buffer) {
             Ok(n) if n <= buffer.len() => return Ok(n),
             Ok(_) => return Err(io::ErrorKind::InvalidData.into()),

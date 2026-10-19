@@ -14,8 +14,8 @@ use super::{
 use crate::rtsp::authentication::DigestCredentials;
 use crate::rtsp::live_avc::automatic::{AutomaticAvcRecording, AutomaticRecordingStep};
 use crate::rtsp::live_avc::recording::{
-    LiveRecordingConfig, LiveRecordingConnectFailure, LiveRecordingError,
-    LiveRecordingFailure, LiveRecordingRetirement, LiveRecordingStep,
+    LiveRecordingConfig, LiveRecordingConnectFailure, LiveRecordingError, LiveRecordingFailure,
+    LiveRecordingRetirement, LiveRecordingStep,
 };
 use crate::rtsp::live_avc::{LiveAvcConfig, LiveAvcStep, SocketReadiness};
 use crate::rtsp::recording::RecordingScope;
@@ -255,7 +255,11 @@ impl SupervisedAvcRecording {
         let output = self.settle(result)?;
         if let AutomaticRecordingStep::Recording(step) = &output {
             let terminal = match step {
-                LiveRecordingStep::Network(step @ LiveAvcStep::Protocol { transport: Some(_), .. }) => {
+                LiveRecordingStep::Network(
+                    step @ LiveAvcStep::Protocol {
+                        transport: Some(_), ..
+                    },
+                ) => {
                     // The existing owner moved real receiver EOF into capture before
                     // emitting this event. Keep the owner alive until capture drains.
                     self.draining_eof = step_retryable(step);
@@ -347,7 +351,11 @@ impl SupervisedAvcRecording {
         }
     }
 
-    fn admit(&mut self, now: u64, authority: &dyn TcpAuthority) -> Result<(), SupervisedRecordingFailure> {
+    fn admit(
+        &mut self,
+        now: u64,
+        authority: &dyn TcpAuthority,
+    ) -> Result<(), SupervisedRecordingFailure> {
         if let Err(reason) = self.schedule.admit(now, authority) {
             let mut failure = self.refusal(reason);
             if matches!(self.schedule.status, ReconnectStatus::Stopped(_)) {
@@ -363,7 +371,10 @@ impl SupervisedAvcRecording {
     }
 
     fn admit_generation(
-        &mut self, key: StreamKey, now: u64, authority: &dyn TcpAuthority,
+        &mut self,
+        key: StreamKey,
+        now: u64,
+        authority: &dyn TcpAuthority,
     ) -> Result<(), SupervisedRecordingFailure> {
         self.admit(now, authority)?;
         if self.schedule.status != ReconnectStatus::Active(key) {
@@ -373,7 +384,8 @@ impl SupervisedAvcRecording {
     }
 
     fn settle<T>(
-        &mut self, result: Result<T, LiveRecordingFailure>,
+        &mut self,
+        result: Result<T, LiveRecordingFailure>,
     ) -> Result<T, SupervisedRecordingFailure> {
         result.map_err(|failure| {
             let key = self.schedule.binding.key();
@@ -396,9 +408,10 @@ fn recording_retryable(reason: &LiveRecordingError) -> bool {
 
 fn step_retryable(step: &LiveAvcStep) -> bool {
     match step {
-        LiveAvcStep::Protocol { event, transport: Some(transport) } => {
-            terminal_retryable(event, transport.totals.peer_eof)
-        }
+        LiveAvcStep::Protocol {
+            event,
+            transport: Some(transport),
+        } => terminal_retryable(event, transport.totals.peer_eof),
         _ => false,
     }
 }
@@ -454,39 +467,78 @@ mod tests {
         let mut stale = template.scope.clone();
         stale.generation += 1;
         let mut owner = SupervisedAvcRecording::new(
-            config.binding.clone(), template, policy(config.deadline_ns), 0,
+            config.binding.clone(),
+            template,
+            policy(config.deadline_ns),
+            0,
         )?;
         let before = owner.resource_budget();
-        let failure = owner.connect(config, stale, 0, &authority)
-            .err().ok_or("stale recording scope connected")?;
-        assert!(matches!(failure.reason,
-            SupervisedRecordingError::Supervisor(ReconnectRefusal::Scope)));
+        let failure = owner
+            .connect(config, stale, 0, &authority)
+            .err()
+            .ok_or("stale recording scope connected")?;
+        assert!(matches!(
+            failure.reason,
+            SupervisedRecordingError::Supervisor(ReconnectRefusal::Scope)
+        ));
         assert!(failure.retirement.is_none());
         assert_eq!(owner.resource_budget(), before);
-        assert_eq!(listener.accept().err().ok_or("stale scope opened a socket")?.kind(), ErrorKind::WouldBlock);
+        assert_eq!(
+            listener
+                .accept()
+                .err()
+                .ok_or("stale scope opened a socket")?
+                .kind(),
+            ErrorKind::WouldBlock
+        );
         Ok(())
     }
 
     #[test]
-    fn late_generation_commands_cannot_seal_new_recording_and_cancel_preserves_all_layers() -> TestResult {
+    fn late_generation_commands_cannot_seal_new_recording_and_cancel_preserves_all_layers()
+    -> TestResult {
         let listener = TcpListener::bind((Ipv4Addr::LOCALHOST, 0))?;
         let (config, authority) = scope(listener.local_addr()?)?;
         let template = template()?;
         let recording_scope = template.scope.clone();
         let budget = ReconnectBudget::for_attempts(config.transport, config.max_steps, 1)?;
         let mut owner = SupervisedAvcRecording::new_with_budget(
-            config.binding.clone(), template, policy(config.deadline_ns), budget, 0,
+            config.binding.clone(),
+            template,
+            policy(config.deadline_ns),
+            budget,
+            0,
         )?;
         let attempt = owner.connect(config, recording_scope, 0, &authority)?;
         let (_peer, _) = listener.accept()?;
         assert_eq!(owner.resource_budget().reserved(), budget);
         assert_eq!(owner.resource_budget().admitted_attempts(), 1);
-        let failure = owner.seal(StreamKey { generation: attempt.key.generation + 1, ..attempt.key }, 0, &authority)
-            .err().ok_or("wrong generation sealed recording")?;
+        let failure = owner
+            .seal(
+                StreamKey {
+                    generation: attempt.key.generation + 1,
+                    ..attempt.key
+                },
+                0,
+                &authority,
+            )
+            .err()
+            .ok_or("wrong generation sealed recording")?;
         assert!(failure.retirement.is_none());
         assert_eq!(owner.status(), ReconnectStatus::Active(attempt.key));
-        assert!(matches!(owner.poll(SocketReadiness::default(), &credentials()?, [1; 16], 0, &authority)?,
-            SupervisedRecordingStep::Recording { output: AutomaticRecordingStep::Queued(_), .. }));
+        assert!(matches!(
+            owner.poll(
+                SocketReadiness::default(),
+                &credentials()?,
+                [1; 16],
+                0,
+                &authority
+            )?,
+            SupervisedRecordingStep::Recording {
+                output: AutomaticRecordingStep::Queued(_),
+                ..
+            }
+        ));
         let (key, retirement) = owner.cancel().ok_or("missing capture retirement")?;
         assert_eq!(owner.resource_budget().reserved(), budget);
         assert_eq!(key, attempt.key);
@@ -511,22 +563,41 @@ mod tests {
         let mut budget = ReconnectBudget::for_attempts(config.transport, config.max_steps, 1)?;
         budget.connection_steps -= 1;
         let mut owner = SupervisedAvcRecording::new_with_budget(
-            config.binding.clone(), template, policy(config.deadline_ns), budget, 0,
+            config.binding.clone(),
+            template,
+            policy(config.deadline_ns),
+            budget,
+            0,
         )?;
         let before = owner.resource_budget();
-        let failure = owner.connect(config, recording_scope.clone(), 0, &authority)
-            .err().ok_or("recording bypassed native resource grant")?;
-        assert!(matches!(failure.reason, SupervisedRecordingError::Supervisor(
-            ReconnectRefusal::Resources(ReconnectBudgetRefusal::Exhausted(
-                ReconnectBudgetDimension::ConnectionSteps
+        let failure = owner
+            .connect(config, recording_scope.clone(), 0, &authority)
+            .err()
+            .ok_or("recording bypassed native resource grant")?;
+        assert!(matches!(
+            failure.reason,
+            SupervisedRecordingError::Supervisor(ReconnectRefusal::Resources(
+                ReconnectBudgetRefusal::Exhausted(ReconnectBudgetDimension::ConnectionSteps)
             ))
-        )));
+        ));
         assert!(failure.retirement.is_none());
         assert_eq!(owner.resource_budget(), before);
-        assert_eq!(listener.accept().err().ok_or("budget refusal opened camera")?.kind(), ErrorKind::WouldBlock);
+        assert_eq!(
+            listener
+                .accept()
+                .err()
+                .ok_or("budget refusal opened camera")?
+                .kind(),
+            ErrorKind::WouldBlock
+        );
         let (mut corrected, _) = scope(address)?;
         corrected.max_steps = budget.connection_steps;
-        assert_eq!(owner.connect(corrected, recording_scope, 0, &authority)?.ordinal, 1);
+        assert_eq!(
+            owner
+                .connect(corrected, recording_scope, 0, &authority)?
+                .ordinal,
+            1
+        );
         let (_peer, _) = listener.accept()?;
         assert_eq!(owner.resource_budget().reserved(), budget);
         assert!(owner.cancel().is_some());
@@ -541,18 +612,38 @@ mod tests {
         let template = template()?;
         let recording_scope = template.scope.clone();
         let mut owner = SupervisedAvcRecording::new(
-            config.binding.clone(), template, policy(config.deadline_ns), 0,
+            config.binding.clone(),
+            template,
+            policy(config.deadline_ns),
+            0,
         )?;
         owner.connect(config, recording_scope, 0, &authority)?;
         let (_peer, _) = listener.accept()?;
         assert!(matches!(
-            owner.poll(SocketReadiness::default(), &credentials()?, [1; 16], 0, &authority)?,
-            SupervisedRecordingStep::Recording { output: AutomaticRecordingStep::Queued(_), .. }
+            owner.poll(
+                SocketReadiness::default(),
+                &credentials()?,
+                [1; 16],
+                0,
+                &authority
+            )?,
+            SupervisedRecordingStep::Recording {
+                output: AutomaticRecordingStep::Queued(_),
+                ..
+            }
         ));
         let reserved = owner.resource_budget();
         authority.revoked.set(true);
-        let failure = owner.poll(SocketReadiness::default(), &credentials()?, [2; 16], 1, &authority)
-            .err().ok_or("revoked recording continued")?;
+        let failure = owner
+            .poll(
+                SocketReadiness::default(),
+                &credentials()?,
+                [2; 16],
+                1,
+                &authority,
+            )
+            .err()
+            .ok_or("revoked recording continued")?;
         assert!(failure.retirement.is_some());
         assert_eq!(owner.resource_budget(), reserved);
         assert!(owner.cancel().is_none());

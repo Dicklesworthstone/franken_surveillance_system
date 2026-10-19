@@ -1019,11 +1019,15 @@ mod hevc_selection_tests {
         }
     }
 
-    fn describe(session: &mut RtspClientSession, body: &str) -> Result<ClientProgress, ClientError> {
+    fn describe(
+        session: &mut RtspClientSession,
+        body: &str,
+    ) -> Result<ClientProgress, ClientError> {
         let request = session.request(ClientCommand::Describe, 0)?;
         let wire = format!(
             "RTSP/1.0 200 OK\r\nCSeq: {}\r\nContent-Type: application/sdp\r\nContent-Length: {}\r\n\r\n{body}",
-            request.cseq(), body.len(),
+            request.cseq(),
+            body.len(),
         );
         let mut parser = RtspParser::with_limits(RtspLimits {
             max_line_bytes: 2_048,
@@ -1031,7 +1035,10 @@ mod hevc_selection_tests {
             max_body_bytes: 65_536,
             max_interleaved_bytes: 65_535,
         });
-        for event in parser.feed(wire.as_bytes()).map_err(|_| ClientError::Response)? {
+        for event in parser
+            .feed(wire.as_bytes())
+            .map_err(|_| ClientError::Response)?
+        {
             if let RtspEvent::Response(response) = event {
                 return session.accept(&response, 1);
             }
@@ -1042,8 +1049,10 @@ mod hevc_selection_tests {
     #[test]
     fn mixed_offer_selects_hevc_and_reaches_scoped_setup() -> Result<(), ClientError> {
         let mut session = RtspClientSession::with_codec(config(), ClientCodec::H265)?;
-        assert_eq!(describe(&mut session, &format!("{PREFIX}{MIXED}"))?,
-            ClientProgress::Accepted(ClientState::Described));
+        assert_eq!(
+            describe(&mut session, &format!("{PREFIX}{MIXED}"))?,
+            ClientProgress::Accepted(ClientState::Described)
+        );
         assert!(session.media().is_none());
         let media = session.hevc_media().ok_or(ClientError::Description)?;
         assert_eq!(media.payload_type(), 98);
@@ -1053,20 +1062,27 @@ mod hevc_selection_tests {
         assert!(media.reduced_rtcp());
         let setup = session.request(ClientCommand::Setup, 2)?;
         assert_eq!(setup.cseq(), 2);
-        assert!(setup.bytes().starts_with(b"SETUP rtsp://camera/live/video RTSP/1.0\r\n"));
+        assert!(
+            setup
+                .bytes()
+                .starts_with(b"SETUP rtsp://camera/live/video RTSP/1.0\r\n")
+        );
         Ok(())
     }
 
     #[test]
     fn ambiguous_hevc_requires_exact_selection_and_never_borrows_sets() -> Result<(), ClientError> {
-        let body = format!("{PREFIX}{MIXED}")
-            .replace("96 98", "96 98 99")
-            + "a=rtpmap:99 H265/90000\r\n";
+        let body =
+            format!("{PREFIX}{MIXED}").replace("96 98", "96 98 99") + "a=rtpmap:99 H265/90000\r\n";
         let mut ambiguous = RtspClientSession::with_codec(config(), ClientCodec::H265)?;
-        assert_eq!(describe(&mut ambiguous, &body), Err(ClientError::Description));
+        assert_eq!(
+            describe(&mut ambiguous, &body),
+            Err(ClientError::Description)
+        );
         assert_eq!(ambiguous.state(), ClientState::Failed);
         assert!(ambiguous.hevc_media().is_none());
-        let mut exact = RtspClientSession::with_codec_and_payload_type(config(), ClientCodec::H265, 99)?;
+        let mut exact =
+            RtspClientSession::with_codec_and_payload_type(config(), ClientCodec::H265, 99)?;
         describe(&mut exact, &body)?;
         let media = exact.hevc_media().ok_or(ClientError::Description)?;
         assert_eq!(media.payload_type(), 99);
@@ -1079,17 +1095,28 @@ mod hevc_selection_tests {
     #[test]
     fn exact_hevc_refuses_missing_and_wrong_codec_mapping() -> Result<(), ClientError> {
         for payload in [96, 97] {
-            let mut session = RtspClientSession::with_codec_and_payload_type(config(), ClientCodec::H265, payload)?;
-            assert_eq!(describe(&mut session, &format!("{PREFIX}{MIXED}")), Err(ClientError::Description));
+            let mut session = RtspClientSession::with_codec_and_payload_type(
+                config(),
+                ClientCodec::H265,
+                payload,
+            )?;
+            assert_eq!(
+                describe(&mut session, &format!("{PREFIX}{MIXED}")),
+                Err(ClientError::Description)
+            );
             assert!(session.hevc_media().is_none());
             assert!(session.request(ClientCommand::Setup, 2).is_err());
         }
-        assert!(matches!(RtspClientSession::with_codec_and_payload_type(config(), ClientCodec::H265, 128), Err(ClientError::Configuration)));
+        assert!(matches!(
+            RtspClientSession::with_codec_and_payload_type(config(), ClientCodec::H265, 128),
+            Err(ClientError::Configuration)
+        ));
         Ok(())
     }
 
     #[test]
-    fn selected_hevc_preserves_don_multilayer_and_unknown_format_clamps() -> Result<(), ClientError> {
+    fn selected_hevc_preserves_don_multilayer_and_unknown_format_clamps() -> Result<(), ClientError>
+    {
         let body = format!("{PREFIX}{MIXED}");
         for malformed in [
             body.replace("sprop-max-don-diff=0", "sprop-max-don-diff=1"),
@@ -1101,7 +1128,10 @@ mod hevc_selection_tests {
             body.replace("H265/90000", "H265/8000"),
         ] {
             let mut session = RtspClientSession::with_codec(config(), ClientCodec::H265)?;
-            assert_eq!(describe(&mut session, &malformed), Err(ClientError::Description));
+            assert_eq!(
+                describe(&mut session, &malformed),
+                Err(ClientError::Description)
+            );
             assert!(session.hevc_media().is_none());
         }
         Ok(())
@@ -1114,10 +1144,23 @@ mod hevc_selection_tests {
         owner.media_index = 1;
         let mut session = RtspClientSession::with_codec(owner, ClientCodec::H265)?;
         describe(&mut session, &body)?;
-        assert_eq!(session.hevc_media().ok_or(ClientError::Description)?.payload_type(), 98);
+        assert_eq!(
+            session
+                .hevc_media()
+                .ok_or(ClientError::Description)?
+                .payload_type(),
+            98
+        );
         for control in ["rtsp://other/live/video", "rtsp://camera/outside/video"] {
             let mut session = RtspClientSession::with_codec(config(), ClientCodec::H265)?;
-            assert_eq!(describe(&mut session, &format!("{PREFIX}{MIXED}").replace("a=control:video", &format!("a=control:{control}"))), Err(ClientError::UriScope));
+            assert_eq!(
+                describe(
+                    &mut session,
+                    &format!("{PREFIX}{MIXED}")
+                        .replace("a=control:video", &format!("a=control:{control}"))
+                ),
+                Err(ClientError::UriScope)
+            );
             assert!(session.hevc_media().is_none());
         }
         Ok(())

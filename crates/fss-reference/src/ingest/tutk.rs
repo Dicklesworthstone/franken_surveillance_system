@@ -89,7 +89,6 @@ pub enum AcquisitionState {
     Indeterminate { reason: String },
 }
 
-
 /// Adapter errors (typed, non-secret-bearing).
 #[derive(Debug)]
 pub enum TutkIngestError {
@@ -205,7 +204,8 @@ impl TutkIngest {
     pub fn new(mut cfg: TutkIngestConfig) -> Result<Self, TutkIngestError> {
         cfg.session.audio = matches!(cfg.audio, AudioPolicy::Enabled);
         cfg.session.known_tuples = cfg.known_tuples.clone();
-        let session = TutkSession::new(cfg.session.clone()).ok_or(TutkIngestError::SessionConfig)?;
+        let session =
+            TutkSession::new(cfg.session.clone()).ok_or(TutkIngestError::SessionConfig)?;
         let sid = session.session_id();
         let mut id_material = b"tutk-acquisition".to_vec();
         id_material.extend_from_slice(cfg.session.uid.as_bytes());
@@ -390,8 +390,11 @@ impl TutkIngest {
             offset += au.len;
         }
 
-        let capsule_ids: Vec<CapsuleId> =
-            self.au_records.iter().map(|au| au.capsule_id.clone()).collect();
+        let capsule_ids: Vec<CapsuleId> = self
+            .au_records
+            .iter()
+            .map(|au| au.capsule_id.clone())
+            .collect();
         let limits_digest = self.limits_digest();
         let mut import_manifest = FileImportManifest {
             input_sha256,
@@ -530,8 +533,11 @@ impl TutkIngest {
             .map_err(TutkIngestError::Contract)?;
         deployment
             .append_batch(
-                BatchId::parse(format!("batch:file-import:{hex}:c{}", self.ledger.batches().len()))
-                    .map_err(TutkIngestError::Contract)?,
+                BatchId::parse(format!(
+                    "batch:file-import:{hex}:c{}",
+                    self.ledger.batches().len()
+                ))
+                .map_err(TutkIngestError::Contract)?,
                 vec![EvidenceDelta {
                     delta_id: format!("delta:file-import:{hex}:init"),
                     family: "file_import".to_string(),
@@ -693,10 +699,8 @@ impl TutkIngest {
 
     fn record_frame(&mut self, frame: AssembledFrame, _now_ns: u64) -> Result<(), TutkIngestError> {
         let seq = self.capsule_seq;
-        let capsule_id = CapsuleId::parse(format!(
-            "capsule:tutk:{}:{:06}",
-            self.acquisition_hex, seq
-        ))?;
+        let capsule_id =
+            CapsuleId::parse(format!("capsule:tutk:{}:{:06}", self.acquisition_hex, seq))?;
         let capture = CaptureInterval {
             earliest: TimestampNs(frame.first_recv_ns as i128),
             latest: TimestampNs(frame.last_recv_ns as i128),
@@ -731,7 +735,9 @@ impl TutkIngest {
 
         // Custody: AU source bytes + canonical capsule encoding, digest-pinned.
         let au_digest = capsule.source_digest;
-        self.custody.entry(au_digest).or_insert_with(|| frame.au.clone());
+        self.custody
+            .entry(au_digest)
+            .or_insert_with(|| frame.au.clone());
         let mut encoder = CanonicalEncoder::new();
         capsule.encode_canonical(&mut encoder);
         let encoding = encoder.finish();
@@ -741,10 +747,7 @@ impl TutkIngest {
         let delta = EvidenceDelta {
             delta_id: format!("delta:capsule:{}", capsule.capsule_id.as_str()),
             family: "sensor_capsule".to_string(),
-            object_id: ObjectId::parse(format!(
-                "object:capsule:{}",
-                capsule.capsule_id.as_str()
-            ))?,
+            object_id: ObjectId::parse(format!("object:capsule:{}", capsule.capsule_id.as_str()))?,
             prior_generation: None,
             new_generation: 1,
             validity: capsule.capture,
@@ -878,7 +881,6 @@ mod tests {
         assert_eq!(ing.stats().capsules_committed, 0);
     }
 
-
     #[test]
     fn constructs_and_queues_discovery() {
         let mut ing = TutkIngest::new(cfg(AudioPolicy::Disabled)).unwrap();
@@ -923,9 +925,17 @@ mod tests {
             1_100,
         );
         for i in 0..frames {
-            let au: Vec<u8> = (0..32 + i as usize).map(|b| (b * 7 + i as usize) as u8).collect();
+            let au: Vec<u8> = (0..32 + i as usize)
+                .map(|b| (b * 7 + i as usize) as u8)
+                .collect();
             ing.handle_event(
-                SessionEvent::Frame(frame(i, &au, 2_000 + i as u64 * 33, 2_010 + i as u64 * 33, false)),
+                SessionEvent::Frame(frame(
+                    i,
+                    &au,
+                    2_000 + i as u64 * 33,
+                    2_010 + i as u64 * 33,
+                    false,
+                )),
                 2_010 + i as u64 * 33,
             );
         }
@@ -933,8 +943,8 @@ mod tests {
     }
 
     fn test_cx(root: &std::path::Path) -> ReplayCx {
-        let authority = fss_core::region::ContextAuthority::new_root(
-            fss_core::region::RootAuthoritySpec {
+        let authority =
+            fss_core::region::ContextAuthority::new_root(fss_core::region::RootAuthoritySpec {
                 trace_id: "trace:tutk-seal-test".to_owned(),
                 operation_id: fss_core::OperationId::parse("operation:tutk-seal-test").unwrap(),
                 principal: "principal:tutk-seal-test".to_owned(),
@@ -950,9 +960,8 @@ mod tests {
                 retention_scope: "retention:test".to_owned(),
                 anchor_universe: ContentDigest::sha256(b"site:tutk-seal-test"),
                 generation: 1,
-            },
-        )
-        .unwrap();
+            })
+            .unwrap();
         ReplayCx::from_context_authority(&authority, root).unwrap()
     }
 
@@ -962,8 +971,7 @@ mod tests {
         let root = dir.join("deployment");
         std::fs::create_dir_all(&root).unwrap();
         let cx = test_cx(&root);
-        let mut deployment =
-            ReferenceDeployment::open(&root, "site:tutk-seal-test", &cx).unwrap();
+        let mut deployment = ReferenceDeployment::open(&root, "site:tutk-seal-test", &cx).unwrap();
         let mut ing = sealed_ingest(6);
         let seal = ing
             .seal_acquisition(&mut deployment, "SIM-CAM/9.99.0.SIM", &cx)
@@ -978,7 +986,11 @@ mod tests {
             crate::ingest::retained::RetainedReadLimits::default(),
             &cx,
         );
-        assert!(retained.is_ok(), "retained open failed: {:?}", retained.err());
+        assert!(
+            retained.is_ok(),
+            "retained open failed: {:?}",
+            retained.err()
+        );
 
         // Segment spans cover every input byte exactly once.
         let manifest = retained.unwrap().manifest().clone();
@@ -1006,8 +1018,7 @@ mod tests {
         let root = dir.join("deployment");
         std::fs::create_dir_all(&root).unwrap();
         let cx = test_cx(&root);
-        let mut deployment =
-            ReferenceDeployment::open(&root, "site:tutk-seal-test", &cx).unwrap();
+        let mut deployment = ReferenceDeployment::open(&root, "site:tutk-seal-test", &cx).unwrap();
         let mut ing = TutkIngest::new(cfg(AudioPolicy::Disabled)).unwrap();
         let e = ing
             .seal_acquisition(&mut deployment, "SIM-CAM/9.99.0.SIM", &cx)
@@ -1041,12 +1052,21 @@ mod tests {
         ));
         for i in 0..8u32 {
             ing.handle_event(
-                SessionEvent::Frame(frame(i, &[0xAA; 64], 2_000 + i as u64 * 33, 2_010 + i as u64 * 33, false)),
+                SessionEvent::Frame(frame(
+                    i,
+                    &[0xAA; 64],
+                    2_000 + i as u64 * 33,
+                    2_010 + i as u64 * 33,
+                    false,
+                )),
                 2_010 + i as u64 * 33,
             );
         }
         assert!(
-            matches!(ing.state(), AcquisitionState::ContinuityVerified { window_frames: 8 }),
+            matches!(
+                ing.state(),
+                AcquisitionState::ContinuityVerified { window_frames: 8 }
+            ),
             "state: {:?}",
             ing.state()
         );
@@ -1054,10 +1074,12 @@ mod tests {
         let batches = ing.ledger().batches();
         assert_eq!(batches.len(), 1);
         assert_eq!(batches[0].deltas.len(), 8);
-        assert!(batches[0]
-            .deltas
-            .iter()
-            .all(|d| d.family == "sensor_capsule" && d.plane == Plane::Authority));
+        assert!(
+            batches[0]
+                .deltas
+                .iter()
+                .all(|d| d.family == "sensor_capsule" && d.plane == Plane::Authority)
+        );
         assert!(batches[0].is_canonically_ordered());
         let first_delta = &batches[0].deltas[0];
         let au_digest = first_delta.witness_digest.expect("au witness digest");
@@ -1071,17 +1093,26 @@ mod tests {
         let mut ing = TutkIngest::new(cfg(AudioPolicy::Disabled)).unwrap();
         for i in 0..3u32 {
             ing.handle_event(
-                SessionEvent::Frame(frame(i, &[1; 16], 100 * i as u64, 105 * i as u64 + 1, false)),
+                SessionEvent::Frame(frame(
+                    i,
+                    &[1; 16],
+                    100 * i as u64,
+                    105 * i as u64 + 1,
+                    false,
+                )),
                 100,
             );
         }
-        ing.handle_event(
-            SessionEvent::Frame(frame(3, &[2; 16], 400, 405, true)),
-            405,
-        );
+        ing.handle_event(SessionEvent::Frame(frame(3, &[2; 16], 400, 405, true)), 405);
         for i in 4..7u32 {
             ing.handle_event(
-                SessionEvent::Frame(frame(i, &[3; 16], 100 * i as u64, 100 * i as u64 + 5, false)),
+                SessionEvent::Frame(frame(
+                    i,
+                    &[3; 16],
+                    100 * i as u64,
+                    100 * i as u64 + 5,
+                    false,
+                )),
                 100 * i as u64,
             );
         }
@@ -1102,7 +1133,13 @@ mod tests {
         let mut ing = TutkIngest::new(c).unwrap();
         for i in 0..3u32 {
             ing.handle_event(
-                SessionEvent::Frame(frame(i, &[i as u8; 8], 10 * i as u64, 10 * i as u64 + 1, false)),
+                SessionEvent::Frame(frame(
+                    i,
+                    &[i as u8; 8],
+                    10 * i as u64,
+                    10 * i as u64 + 1,
+                    false,
+                )),
                 10,
             );
         }
@@ -1121,10 +1158,7 @@ mod tests {
     #[test]
     fn session_failure_is_terminal_and_flushes() {
         let mut ing = TutkIngest::new(cfg(AudioPolicy::Disabled)).unwrap();
-        ing.handle_event(
-            SessionEvent::Frame(frame(0, &[9; 8], 10, 11, false)),
-            11,
-        );
+        ing.handle_event(SessionEvent::Frame(frame(0, &[9; 8], 10, 11, false)), 11);
         ing.handle_event(
             SessionEvent::Failed {
                 stage: "dtls",
@@ -1133,7 +1167,11 @@ mod tests {
             12,
         );
         assert!(matches!(ing.state(), AcquisitionState::Failed { .. }));
-        assert_eq!(ing.ledger().batches().len(), 1, "pending flushed on failure");
+        assert_eq!(
+            ing.ledger().batches().len(),
+            1,
+            "pending flushed on failure"
+        );
     }
 
     #[test]
@@ -1146,13 +1184,21 @@ mod tests {
             },
             12,
         );
-        assert!(matches!(ing.state(), AcquisitionState::Indeterminate { .. }));
+        assert!(matches!(
+            ing.state(),
+            AcquisitionState::Indeterminate { .. }
+        ));
     }
 
     #[test]
     fn login_rejection_is_failure_with_type() {
         let mut ing = TutkIngest::new(cfg(AudioPolicy::Disabled)).unwrap();
-        ing.handle_event(SessionEvent::LoginRejected { response_type: 0x20 }, 10);
+        ing.handle_event(
+            SessionEvent::LoginRejected {
+                response_type: 0x20,
+            },
+            10,
+        );
         match ing.state() {
             AcquisitionState::Failed { reason } => assert!(reason.contains("0x20")),
             s => panic!("expected Failed, got {s:?}"),

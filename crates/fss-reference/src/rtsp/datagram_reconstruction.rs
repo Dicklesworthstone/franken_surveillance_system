@@ -17,9 +17,9 @@ use fss_packet::avc::{
 use fss_packet::{H264Mode, PacketError, ReorderDisposition, RtcpCompound, RtcpMode};
 use fss_publication::{LocalRootPublisher, PublishCancellation, PublishCutPoint};
 
-mod profile;
 /// Cold source-verified HEVC transport reconstruction without invented picture or EOF claims.
 pub mod hevc;
+mod profile;
 /// Source-verified recording reconstruction with explicit per-picture media timing.
 pub mod recording;
 

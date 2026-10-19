@@ -7,10 +7,10 @@ use super::{CheckedRetainedRtpH264Decoder, CheckedRtpDecodeError, RtpCustodyDeco
 use crate::ingest::recorded_decode::h264::h264_decoder_identity;
 use crate::ingest::rtpdump::avc::AvcDumpConfig;
 use crate::ingest::rtpdump::decode::RtpDecodeRecovery;
+use crate::ingest::rtpdump::recovery::RecoveredRtpImport;
 use crate::ingest::rtpdump::recovery::decode::{
     RetainedRtpDecodeRequest, RetainedRtpDecodeStats, RetainedRtpDecodeStep, RetainedRtpH264Frame,
 };
-use crate::ingest::rtpdump::recovery::RecoveredRtpImport;
 use crate::{ReferenceDeployment, ReplayCx};
 use fss_core::{CanonicalEncoder, ContentDigest, DigestAlgorithm, Sha256Hasher};
 use fss_packet::avc::AvcBoundary;
@@ -235,7 +235,10 @@ impl ReceiptedRetainedRtpH264Decoder<'_> {
         match result? {
             RetainedRtpDecodeStep::Frame(frame) => {
                 let size = encoded_size(&frame)?;
-                let used = self.used.checked_add(size as u64).ok_or(RtpFrameReceiptError::Limit)?;
+                let used = self
+                    .used
+                    .checked_add(size as u64)
+                    .ok_or(RtpFrameReceiptError::Limit)?;
                 if size > self.limits.max_receipt_bytes || used > self.limits.max_total_bytes {
                     return Err(RtpFrameReceiptError::Limit);
                 }
@@ -257,7 +260,10 @@ impl ReceiptedRetainedRtpH264Decoder<'_> {
     }
 }
 
-fn recipe_digest(config: AvcDumpConfig, request: RetainedRtpDecodeRequest) -> Result<ContentDigest> {
+fn recipe_digest(
+    config: AvcDumpConfig,
+    request: RetainedRtpDecodeRequest,
+) -> Result<ContentDigest> {
     let mut e = CanonicalEncoder::new();
     e.text(RTP_FRAME_RECIPE_DOMAIN);
     e.digest(h264_decoder_identity());
@@ -268,56 +274,127 @@ fn recipe_digest(config: AvcDumpConfig, request: RetainedRtpDecodeRequest) -> Re
     e.u64(config.key.generation);
     e.u32(config.key.ssrc);
     e.u8(config.payload_type);
-    e.u8(match config.mode { H264Mode::SingleNal => 0, H264Mode::NonInterleaved => 1 });
-    e.u8(match config.rtcp { RtcpMode::Compound => 0, RtcpMode::ReducedSize => 1 });
+    e.u8(match config.mode {
+        H264Mode::SingleNal => 0,
+        H264Mode::NonInterleaved => 1,
+    });
+    e.u8(match config.rtcp {
+        RtcpMode::Compound => 0,
+        RtcpMode::ReducedSize => 1,
+    });
     let r = config.receiver;
     let d = request.decode;
     for n in [
-        config.dump.max_input_bytes, config.dump.max_records, config.dump.max_packet_bytes,
-        r.reorder.packet.max_packet_bytes, r.reorder.packet.max_extension_bytes,
-        r.reorder.packet.max_rtcp_packets, r.reorder.max_packets, r.reorder.max_bytes,
-        r.reconstruction.max_nal_bytes, r.reconstruction.max_packet_nals,
-        r.reconstruction.max_fragment_packets, r.syntax.max_nal_bytes,
-        r.syntax.max_parameter_set_bytes, r.syntax.max_slice_identity_bits,
-        r.assembly.max_nals, r.assembly.max_bytes, d.codec.max_nal_bytes,
-        d.max_groups, d.max_source_spans, d.max_decode_calls, d.max_decode_bytes,
+        config.dump.max_input_bytes,
+        config.dump.max_records,
+        config.dump.max_packet_bytes,
+        r.reorder.packet.max_packet_bytes,
+        r.reorder.packet.max_extension_bytes,
+        r.reorder.packet.max_rtcp_packets,
+        r.reorder.max_packets,
+        r.reorder.max_bytes,
+        r.reconstruction.max_nal_bytes,
+        r.reconstruction.max_packet_nals,
+        r.reconstruction.max_fragment_packets,
+        r.syntax.max_nal_bytes,
+        r.syntax.max_parameter_set_bytes,
+        r.syntax.max_slice_identity_bits,
+        r.assembly.max_nals,
+        r.assembly.max_bytes,
+        d.codec.max_nal_bytes,
+        d.max_groups,
+        d.max_source_spans,
+        d.max_decode_calls,
+        d.max_decode_bytes,
         d.max_output_bytes,
     ] {
         e.u64(n as u64);
     }
     for n in [
-        r.reorder.max_delay_ns, r.reconstruction.max_pending_age_ns,
-        r.syntax.max_luma_samples, r.assembly.max_age_ns, d.codec.max_pictures,
+        r.reorder.max_delay_ns,
+        r.reconstruction.max_pending_age_ns,
+        r.syntax.max_luma_samples,
+        r.assembly.max_age_ns,
+        d.codec.max_pictures,
     ] {
         e.u64(n);
     }
     for n in [
-        r.syntax.max_width, r.syntax.max_height, r.syntax.max_reference_frames,
-        d.codec.max_width, d.codec.max_height, d.codec.max_macroblocks,
-        d.codec.max_slices_per_picture, d.codec.max_reference_frames,
+        r.syntax.max_width,
+        r.syntax.max_height,
+        r.syntax.max_reference_frames,
+        d.codec.max_width,
+        d.codec.max_height,
+        d.codec.max_macroblocks,
+        d.codec.max_slices_per_picture,
+        d.codec.max_reference_frames,
     ] {
         e.u32(n);
     }
-    e.u8(match d.recovery { RtpDecodeRecovery::Stop => 0, RtpDecodeRecovery::NextIdr => 1 });
-    let bytes = e.finish_checked().map_err(|_| RtpFrameReceiptError::Encoding)?;
+    e.u8(match d.recovery {
+        RtpDecodeRecovery::Stop => 0,
+        RtpDecodeRecovery::NextIdr => 1,
+    });
+    let bytes = e
+        .finish_checked()
+        .map_err(|_| RtpFrameReceiptError::Encoding)?;
     Ok(ContentDigest::sha256(&bytes))
 }
 
 fn encoded_size(frame: &RetainedRtpH264Frame) -> Result<usize> {
     // Fixed-width canonical fields, plus the three length-prefixed text values.
-    let mut size = 8 + RTP_FRAME_RECEIPT_DOMAIN.len() + 4 + 3 * 33 + 8
-        + 8 + frame.sensor().as_str().len() + 8 + frame.stream().as_str().len()
-        + 8 + 4 + 2 * 33 + 8 + 8 + 4 + 1 + 2 * 16 + 2 * 4 + 33 + 1 + 1 + 4 * 33 + 8;
-    if frame.mask().policy_digest().is_some() { size += 33; }
-    if frame.mask().generation().is_some() { size += 8; }
+    let mut size = 8
+        + RTP_FRAME_RECEIPT_DOMAIN.len()
+        + 4
+        + 3 * 33
+        + 8
+        + 8
+        + frame.sensor().as_str().len()
+        + 8
+        + frame.stream().as_str().len()
+        + 8
+        + 4
+        + 2 * 33
+        + 8
+        + 8
+        + 4
+        + 1
+        + 2 * 16
+        + 2 * 4
+        + 33
+        + 1
+        + 1
+        + 4 * 33
+        + 8;
+    if frame.mask().policy_digest().is_some() {
+        size += 33;
+    }
+    if frame.mask().generation().is_some() {
+        size += 8;
+    }
     let mut spans = 0_usize;
-    if frame.source().nals.len() > 4096 { return Err(RtpFrameReceiptError::Limit); }
+    if frame.source().nals.len() > 4096 {
+        return Err(RtpFrameReceiptError::Limit);
+    }
     for nal in &frame.source().nals {
-        size = size.checked_add(33 + 8).ok_or(RtpFrameReceiptError::Limit)?;
-        spans = spans.checked_add(nal.spans.len()).ok_or(RtpFrameReceiptError::Limit)?;
-        if spans > 65_536 { return Err(RtpFrameReceiptError::Limit); }
+        size = size
+            .checked_add(33 + 8)
+            .ok_or(RtpFrameReceiptError::Limit)?;
+        spans = spans
+            .checked_add(nal.spans.len())
+            .ok_or(RtpFrameReceiptError::Limit)?;
+        if spans > 65_536 {
+            return Err(RtpFrameReceiptError::Limit);
+        }
         for span in &nal.spans {
-            size = size.checked_add(41 + if span.fragment_header.is_some() { 16 } else { 0 })
+            size = size
+                .checked_add(
+                    41 + if span.fragment_header.is_some() {
+                        16
+                    } else {
+                        0
+                    },
+                )
                 .ok_or(RtpFrameReceiptError::Limit)?;
         }
     }
@@ -333,14 +410,18 @@ fn seal(
 ) -> Result<RetainedRtpFrameReceipt> {
     let mut i420 = Sha256Hasher::new();
     let mut planes = [ContentDigest::sha256(&[]); 4];
-    for (index, plane) in [frame.pixels(), frame.cb(), frame.cr()].into_iter().enumerate() {
+    for (index, plane) in [frame.pixels(), frame.cb(), frame.cr()]
+        .into_iter()
+        .enumerate()
+    {
         checkpoint(cx)?;
         planes[index] = ContentDigest::sha256(plane);
         i420.update(plane);
     }
     planes[3] = ContentDigest::new(
         DigestAlgorithm::Sha256,
-        i420.finalize().map_err(|_| RtpFrameReceiptError::Encoding)?,
+        i420.finalize()
+            .map_err(|_| RtpFrameReceiptError::Encoding)?,
     );
     let mut e = CanonicalEncoder::new();
     e.text(RTP_FRAME_RECEIPT_DOMAIN);
@@ -354,7 +435,9 @@ fn seal(
     let source = frame.source();
     e.u64(source.key.generation);
     e.u32(source.key.ssrc);
-    for parameter in source.parameters { e.digest(parameter); }
+    for parameter in source.parameters {
+        e.digest(parameter);
+    }
     e.u64(source.group as u64);
     e.u64(source.decoder_epoch as u64);
     e.u32(source.timestamp);
@@ -373,10 +456,16 @@ fn seal(
     e.u32(height);
     e.digest(frame.mask().digest());
     e.bool(frame.mask().policy_digest().is_some());
-    if let Some(policy) = frame.mask().policy_digest() { e.digest(policy); }
+    if let Some(policy) = frame.mask().policy_digest() {
+        e.digest(policy);
+    }
     e.bool(frame.mask().generation().is_some());
-    if let Some(generation) = frame.mask().generation() { e.u64(generation); }
-    for plane in planes { e.digest(plane); }
+    if let Some(generation) = frame.mask().generation() {
+        e.u64(generation);
+    }
+    for plane in planes {
+        e.digest(plane);
+    }
     e.u64(source.nals.len() as u64);
     for nal in &source.nals {
         checkpoint(cx)?;
@@ -396,10 +485,19 @@ fn seal(
             }
         }
     }
-    let bytes = e.finish_checked().map_err(|_| RtpFrameReceiptError::Encoding)?;
-    if bytes.len() != expected_size { return Err(RtpFrameReceiptError::Encoding); }
+    let bytes = e
+        .finish_checked()
+        .map_err(|_| RtpFrameReceiptError::Encoding)?;
+    if bytes.len() != expected_size {
+        return Err(RtpFrameReceiptError::Encoding);
+    }
     let digest = ContentDigest::sha256(&bytes);
-    Ok(RetainedRtpFrameReceipt { bytes, digest, recipe, planes })
+    Ok(RetainedRtpFrameReceipt {
+        bytes,
+        digest,
+        recipe,
+        planes,
+    })
 }
 fn checkpoint(cx: &ReplayCx) -> Result<()> {
     cx.checkpoint("rtpdump:frame_receipt")

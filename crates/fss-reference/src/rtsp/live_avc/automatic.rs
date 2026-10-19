@@ -6,11 +6,10 @@
 //! retains credentials. Owners still schedule readiness/deadlines and retain every
 //! wire/media/retirement output before polling again.
 
+mod control;
 /// Separately granted, finite reconnection using fresh native owners and generations.
 pub mod reconnect;
-mod control;
 
-use control::{Action, ControlDriver};
 use super::recording::{
     LiveAvcRecording, LiveRecordingConfig, LiveRecordingConnectFailure, LiveRecordingError,
     LiveRecordingFailure, LiveRecordingRetirement, LiveRecordingStep,
@@ -20,6 +19,7 @@ use super::*;
 use crate::rtsp::client::ClientProgress;
 use crate::rtsp::recording_capture::{CapturePoll, TimedCapture};
 use crate::rtsp::recording_collector::{RecordingCollector, RecordingTiming};
+use control::{Action, ControlDriver};
 
 /// An automatically prepared request or the complete original live output.
 /// A queue receipt is not proof of socket delivery or camera acknowledgement.
@@ -94,7 +94,10 @@ impl AutomaticAvcConnection {
     ) -> Result<AutomaticAvcStep, LiveAvcFailure> {
         if let Some(action) = self.control.action() {
             let result = match action {
-                Action::Request(command) => self.connection.request(command, credentials, cnonce, now, authority),
+                Action::Request(command) => {
+                    self.connection
+                        .request(command, credentials, cnonce, now, authority)
+                }
                 Action::Respond => self.connection.respond(credentials, cnonce, now, authority),
             };
             return match result {
@@ -103,15 +106,20 @@ impl AutomaticAvcConnection {
                     Ok(AutomaticAvcStep::Queued(receipt))
                 }
                 Err(failure) => {
-                    self.control.refused(&failure.reason, failure.retirement.is_some());
+                    self.control
+                        .refused(&failure.reason, failure.retirement.is_some());
                     Err(failure)
                 }
             };
         }
-        let step = self.connection.poll(readiness, now, authority).map_err(|failure| {
-            self.control.refused(&failure.reason, failure.retirement.is_some());
-            failure
-        })?;
+        let step = self
+            .connection
+            .poll(readiness, now, authority)
+            .map_err(|failure| {
+                self.control
+                    .refused(&failure.reason, failure.retirement.is_some());
+                failure
+            })?;
         // A native wait can still contain a partial exact frame. Do not busy-retry
         // preparation until that same input has drained, or a semantic event arrives.
         let control_ready = self.connection.active.as_ref().is_some_and(|active| {
@@ -199,7 +207,10 @@ impl AutomaticAvcRecording {
     ) -> Result<AutomaticRecordingStep, LiveRecordingFailure> {
         if let Some(action) = self.control.action() {
             let result = match action {
-                Action::Request(command) => self.recording.request(command, credentials, cnonce, now, authority),
+                Action::Request(command) => {
+                    self.recording
+                        .request(command, credentials, cnonce, now, authority)
+                }
                 Action::Respond => self.recording.respond(credentials, cnonce, now, authority),
             };
             let receipt = self.settle(result)?;
@@ -210,9 +221,13 @@ impl AutomaticAvcRecording {
         let step = self.settle(result)?;
         if let LiveRecordingStep::Network(event) = &step {
             self.control.observe(event, now);
-        } else if matches!(&step, LiveRecordingStep::Stopped { .. } | LiveRecordingStep::Ended)
-            || matches!(step.capture_event(), Some(CapturePoll::Stopped { .. } | CapturePoll::Ended { .. }))
-        {
+        } else if matches!(
+            &step,
+            LiveRecordingStep::Stopped { .. } | LiveRecordingStep::Ended
+        ) || matches!(
+            step.capture_event(),
+            Some(CapturePoll::Stopped { .. } | CapturePoll::Ended { .. })
+        ) {
             self.control.clear();
         }
         Ok(AutomaticRecordingStep::Recording(step))
@@ -290,7 +305,10 @@ mod tests {
         driver.next = None;
         driver.observe(&progress(ClientProgress::Interim), 1);
         assert_eq!(driver.next, None);
-        driver.observe(&progress(ClientProgress::Accepted(ClientState::Described)), 2);
+        driver.observe(
+            &progress(ClientProgress::Accepted(ClientState::Described)),
+            2,
+        );
         assert_eq!(driver.next, Some(Action::Request(ClientCommand::Setup)));
         assert_eq!(driver.wake(Some(100)), Some(2));
         driver.next = None;
@@ -310,7 +328,10 @@ mod tests {
         driver.observe(&progress(ClientProgress::KeepAliveDue), 11);
         assert_eq!(driver.next, Some(Action::Request(ClientCommand::KeepAlive)));
         driver.next = None;
-        driver.observe(&progress(ClientProgress::Accepted(ClientState::Playing)), 12);
+        driver.observe(
+            &progress(ClientProgress::Accepted(ClientState::Playing)),
+            12,
+        );
         assert_eq!(driver.next, None);
     }
 
@@ -374,7 +395,11 @@ mod recording_tests {
         let (_peer, _) = listener.accept()?;
         assert_eq!(driver.next_wake_ns(), Some(0));
         let step = driver.poll(
-            SocketReadiness::default(), &credentials()?, [1; 16], 0, &authority,
+            SocketReadiness::default(),
+            &credentials()?,
+            [1; 16],
+            0,
+            &authority,
         )?;
         let AutomaticRecordingStep::Queued(queued) = step else {
             return Err("missing initial recording command".into());
@@ -382,7 +407,9 @@ mod recording_tests {
         assert_eq!(queued.command, ClientCommand::Describe);
         assert_eq!(driver.totals().ok_or("missing totals")?.sent_bytes, 0);
         let retirement = driver.cancel().ok_or("missing recording retirement")?;
-        let connection = retirement.connection.ok_or("missing connection ownership")?;
+        let connection = retirement
+            .connection
+            .ok_or("missing connection ownership")?;
         let request = connection.transport.request.ok_or("lost queued request")?;
         assert_eq!(request.cseq(), queued.cseq);
         assert_eq!(connection.transport.request_sent_bytes, 0);
@@ -390,7 +417,13 @@ mod recording_tests {
         assert_eq!(driver.next_wake_ns(), None);
         assert!(driver.cancel().is_none());
         assert!(matches!(
-            driver.poll(SocketReadiness::default(), &credentials()?, [2; 16], 1, &authority)?,
+            driver.poll(
+                SocketReadiness::default(),
+                &credentials()?,
+                [2; 16],
+                1,
+                &authority
+            )?,
             AutomaticRecordingStep::Recording(LiveRecordingStep::Ended)
         ));
         Ok(())
@@ -400,8 +433,8 @@ mod recording_tests {
 #[cfg(test)]
 mod reconnect_boundary_tests {
     use super::reconnect::{
-        ReconnectPolicy, ReconnectRefusal, ReconnectStatus, ReconnectStop,
-        SupervisedAvcConnection, SupervisedAvcError, SupervisedAvcStep,
+        ReconnectPolicy, ReconnectRefusal, ReconnectStatus, ReconnectStop, SupervisedAvcConnection,
+        SupervisedAvcError, SupervisedAvcStep,
     };
     use super::*;
     use crate::rtsp::live_avc::tests::{credentials, scope};
@@ -413,24 +446,40 @@ mod reconnect_boundary_tests {
 
     fn policy(deadline_ns: u64) -> ReconnectPolicy {
         ReconnectPolicy {
-            max_attempts: 3, initial_backoff_ns: 10, max_backoff_ns: 100,
-            deadline_ns, max_steps: 10_000,
+            max_attempts: 3,
+            initial_backoff_ns: 10,
+            max_backoff_ns: 100,
+            deadline_ns,
+            max_steps: 10_000,
         }
     }
 
     #[test]
-    fn reconnect_cannot_extend_the_owner_lease_or_consume_an_attempt_by_scope_error() -> TestResult {
+    fn reconnect_cannot_extend_the_owner_lease_or_consume_an_attempt_by_scope_error() -> TestResult
+    {
         let listener = TcpListener::bind((Ipv4Addr::LOCALHOST, 0))?;
         listener.set_nonblocking(true)?;
         let (mut config, authority) = scope(listener.local_addr()?)?;
-        let mut owner = SupervisedAvcConnection::new(
-            config.binding.clone(), policy(config.deadline_ns), 0,
-        )?;
+        let mut owner =
+            SupervisedAvcConnection::new(config.binding.clone(), policy(config.deadline_ns), 0)?;
         config.deadline_ns += 1;
-        let failure = owner.connect(config, 0, &authority).err().ok_or("extended lease connected")?;
-        assert!(matches!(failure.reason, SupervisedAvcError::Supervisor(ReconnectRefusal::Scope)));
+        let failure = owner
+            .connect(config, 0, &authority)
+            .err()
+            .ok_or("extended lease connected")?;
+        assert!(matches!(
+            failure.reason,
+            SupervisedAvcError::Supervisor(ReconnectRefusal::Scope)
+        ));
         assert!(failure.retirement.is_none());
-        assert_eq!(listener.accept().err().ok_or("scope error opened a socket")?.kind(), ErrorKind::WouldBlock);
+        assert_eq!(
+            listener
+                .accept()
+                .err()
+                .ok_or("scope error opened a socket")?
+                .kind(),
+            ErrorKind::WouldBlock
+        );
         let (config, authority) = scope(listener.local_addr()?)?;
         assert_eq!(owner.connect(config, 0, &authority)?.ordinal, 1);
         let (_peer, _) = listener.accept()?;
@@ -439,32 +488,61 @@ mod reconnect_boundary_tests {
     }
 
     #[test]
-    fn revoked_supervisor_returns_queued_native_work_once_without_sending_or_retrying() -> TestResult {
+    fn revoked_supervisor_returns_queued_native_work_once_without_sending_or_retrying() -> TestResult
+    {
         let listener = TcpListener::bind((Ipv4Addr::LOCALHOST, 0))?;
         let (config, authority) = scope(listener.local_addr()?)?;
-        let mut owner = SupervisedAvcConnection::new(
-            config.binding.clone(), policy(config.deadline_ns), 0,
-        )?;
+        let mut owner =
+            SupervisedAvcConnection::new(config.binding.clone(), policy(config.deadline_ns), 0)?;
         let attempt = owner.connect(config, 0, &authority)?;
         let (_peer, _) = listener.accept()?;
         assert!(matches!(
-            owner.poll(SocketReadiness::default(), &credentials()?, [1; 16], 0, &authority)?,
-            SupervisedAvcStep::Connection { output: AutomaticAvcStep::Queued(_), .. }
+            owner.poll(
+                SocketReadiness::default(),
+                &credentials()?,
+                [1; 16],
+                0,
+                &authority
+            )?,
+            SupervisedAvcStep::Connection {
+                output: AutomaticAvcStep::Queued(_),
+                ..
+            }
         ));
         authority.revoked.set(true);
-        let failure = owner.poll(
-            SocketReadiness { readable: true, writable: true }, &credentials()?, [2; 16], 1, &authority,
-        ).err().ok_or("revoked owner made progress")?;
+        let failure = owner
+            .poll(
+                SocketReadiness {
+                    readable: true,
+                    writable: true,
+                },
+                &credentials()?,
+                [2; 16],
+                1,
+                &authority,
+            )
+            .err()
+            .ok_or("revoked owner made progress")?;
         assert_eq!(failure.key, attempt.key);
         let retirement = failure.retirement.ok_or("lost queued native ownership")?;
         assert!(retirement.transport.request.is_some());
         assert_eq!(retirement.transport.request_sent_bytes, 0);
         assert_eq!(retirement.transport.totals.sent_bytes, 0);
-        assert_eq!(owner.status(), ReconnectStatus::Stopped(ReconnectStop::Denied(TcpDenial::Revoked)));
+        assert_eq!(
+            owner.status(),
+            ReconnectStatus::Stopped(ReconnectStop::Denied(TcpDenial::Revoked))
+        );
         authority.revoked.set(false);
-        let failure = owner.poll(
-            SocketReadiness::default(), &credentials()?, [3; 16], 2, &authority,
-        ).err().ok_or("revived a terminal supervisor")?;
+        let failure = owner
+            .poll(
+                SocketReadiness::default(),
+                &credentials()?,
+                [3; 16],
+                2,
+                &authority,
+            )
+            .err()
+            .ok_or("revived a terminal supervisor")?;
         assert!(failure.retirement.is_none());
         assert!(owner.cancel().is_none());
         assert_eq!(owner.next_wake_ns(), None);

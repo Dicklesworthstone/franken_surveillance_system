@@ -360,7 +360,10 @@ impl<'a, 'p> JournaledLiveHevcArchive<'a, 'p> {
     /// This pure configuration call performs no I/O and grants no network or secret authority.
     /// No active or challenged request can have its method changed, and no refusal enables
     /// automatic fallback. Invalid/late selection leaves all original ownership intact.
-    pub fn select_keepalive(&mut self, command: ClientCommand) -> Result<(), LiveHevcArchiveFailure> {
+    pub fn select_keepalive(
+        &mut self,
+        command: ClientCommand,
+    ) -> Result<(), LiveHevcArchiveFailure> {
         if !command.is_keepalive()
             || self.finished
             || self.completion.is_some()
@@ -1039,10 +1042,10 @@ impl<'a, 'p> JournaledLiveHevcArchive<'a, 'p> {
             self.last_anchor = archive.journal_anchor;
             self.last_pins = archive.pins.clone();
         }
-        let (interrupted_recording, interruption) = self.interrupted.take().map_or(
-            (None, None),
-            |state| (state.recording, Some(state.receipt)),
-        );
+        let (interrupted_recording, interruption) = self
+            .interrupted
+            .take()
+            .map_or((None, None), |state| (state.recording, Some(state.receipt)));
         LiveHevcArchiveRetirement {
             recording: recording.or(interrupted_recording).or(owned),
             archive,

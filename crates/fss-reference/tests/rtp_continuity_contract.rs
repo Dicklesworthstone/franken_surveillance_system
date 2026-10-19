@@ -1012,7 +1012,9 @@ fn consecutive_degraded_windows_replay_and_recover_in_the_same_generation() -> T
                 );
             }
             other => {
-                return Err(format!("both retained gaps must win after recovery: {other:?}").into());
+                return Err(
+                    format!("both retained gaps must win after recovery: {other:?}").into(),
+                );
             }
         }
         replay_recorded_windows(report)?;

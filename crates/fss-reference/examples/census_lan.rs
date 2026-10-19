@@ -7,7 +7,7 @@
 use std::sync::atomic::AtomicBool;
 use std::time::Duration;
 
-use fss_reference::discovery::{run_census, CensusConfig, OuiTable, OUI_SNAPSHOT};
+use fss_reference::discovery::{CensusConfig, OUI_SNAPSHOT, OuiTable, run_census};
 
 fn main() {
     let subnets: Vec<String> = std::env::args()

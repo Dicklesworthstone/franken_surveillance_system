@@ -41,7 +41,11 @@ fn registration_is_idempotent_and_class_stable() {
     observe_agent_heartbeat(&mut w, "yi-cam-1", &heartbeat(2), 2_000);
     observe_agent_heartbeat(&mut w, "yi-cam-1", &heartbeat(3), 3_000);
     assert_eq!(w.state_of("yi-cam-1"), Some(&WatchState::Observable));
-    assert_eq!(w.changes().len(), 1, "one never-observed→observable transition");
+    assert_eq!(
+        w.changes().len(),
+        1,
+        "one never-observed→observable transition"
+    );
     // The class is discoverable via threshold behavior (provisioned agents
     // go offline at 10 min like mains devices, not 48h like battery cams).
     w.evaluate(1_000 + 11 * MIN);

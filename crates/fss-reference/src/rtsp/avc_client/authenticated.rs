@@ -181,7 +181,8 @@ impl DigestAvcClient {
         };
         earlier(
             earlier(
-                self.inner.next_wake_with_keepalive(self.buffered_wire_bytes() == 0),
+                self.inner
+                    .next_wake_with_keepalive(self.buffered_wire_bytes() == 0),
                 wire_wake,
             ),
             self.challenge_deadline_ns,

@@ -631,8 +631,11 @@ impl<'a> LiveAvcArchive<'a> {
     ) -> LiveArchiveRetirement {
         let owned = self.recording.take().and_then(|mut r| r.cancel());
         let interrupted = self.interrupted.take();
-        let interruption = interrupted.as_ref().map(|state| state.failure.reason.clone());
-        let interrupted_recording = interrupted.and_then(|state| state.failure.retirement.map(|r| *r));
+        let interruption = interrupted
+            .as_ref()
+            .map(|state| state.failure.reason.clone());
+        let interrupted_recording =
+            interrupted.and_then(|state| state.failure.retirement.map(|r| *r));
         self.finished = true;
         LiveArchiveRetirement {
             recording: recording.or(interrupted_recording).or(owned),

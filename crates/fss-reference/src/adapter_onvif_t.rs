@@ -52,7 +52,8 @@ pub const ADP_ONVIF_T_MAX_BUFFER_FRAMES: u32 = 256;
 pub const ADP_ONVIF_T_REQUEST_TIMEOUT_NS: u64 = 10_000_000_000;
 
 /// The declared capability set. Profile T advanced video streaming plus WS-Discovery (the Yi IPC row's standards path).
-pub const ADP_ONVIF_T_CAPABILITIES: AdapterCapabilities = AdapterCapabilities::STREAMING.union(AdapterCapabilities::DEVICE_DISCOVERY);
+pub const ADP_ONVIF_T_CAPABILITIES: AdapterCapabilities =
+    AdapterCapabilities::STREAMING.union(AdapterCapabilities::DEVICE_DISCOVERY);
 
 /// Constructs the typed identity for the row, fully verified: structural
 /// invariants (`verify`) and NEG-002 standards compliance must both pass.

@@ -7,10 +7,10 @@
 
 use std::collections::BTreeSet;
 
+use fss_core::CaptureInterval;
 use fss_core::{
     CoverageContinuity, CoverageStopReason, LedgerAnchor, Plane, ReferenceLedger, TimestampNs,
 };
-use fss_core::CaptureInterval;
 use fss_reference::ingest::tuya::{
     CamInventoryEntry, CamObservability, DpsRegistry, EventKind, OfflineReason, TuyaEventMapper,
     TuyaMapperConfig, WakeTrigger,
@@ -81,13 +81,20 @@ fn device_state_maps_to_authority_delta_with_raw_dps() {
     let text = String::from_utf8_lossy(payload);
     assert!(text.contains("\"type\":\"aosu_device_state\""), "{text}");
     assert!(text.contains("\"102\":85"), "raw dp preserved: {text}");
-    assert!(text.contains("\"provenance\":\"device_state_report\""), "{text}");
+    assert!(
+        text.contains("\"provenance\":\"device_state_report\""),
+        "{text}"
+    );
     assert!(text.contains("\"ground_truth\":false"), "{text}");
     // The batch committed to the ledger on the Authority plane.
     let batch = &m.ledger().batches()[0];
     assert!(batch.deltas.iter().all(|d| d.plane == Plane::Authority));
     assert!(batch.deltas.iter().any(|d| d.family == "aosu_device_state"));
-    assert_eq!(batch.computed_digest(), batch.batch_digest, "digest self-consistent");
+    assert_eq!(
+        batch.computed_digest(),
+        batch.batch_digest,
+        "digest self-consistent"
+    );
 }
 
 #[test]
@@ -142,7 +149,10 @@ fn video_segment_carries_wake_trigger_provenance() {
     let text = String::from_utf8_lossy(m.custody(&d).expect("custody"));
     assert!(text.contains("\"trigger\":\"pir\""), "{text}");
     assert!(text.contains("\"latency_ms\":1400"), "{text}");
-    assert!(text.contains("\"provenance\":\"wake_trigger_report\""), "{text}");
+    assert!(
+        text.contains("\"provenance\":\"wake_trigger_report\""),
+        "{text}"
+    );
 }
 
 #[test]
@@ -164,9 +174,16 @@ fn battery_cam_coverage_never_continuous_and_offline_never_clear() {
         )
         .expect("witness");
     assert_eq!(w.continuity, CoverageContinuity::Unknown);
-    assert!(!w.certifies_absence(), "never-observed cannot certify absence");
+    assert!(
+        !w.certifies_absence(),
+        "never-observed cannot certify absence"
+    );
     assert_eq!(w.completeness, fss_core::Completeness::NotObservable);
-    assert!(w.excluded_domain.iter().any(|d| d.contains("never_observed")));
+    assert!(
+        w.excluded_domain
+            .iter()
+            .any(|d| d.contains("never_observed"))
+    );
 
     // After one event (observable + battery): Gapped at best, STILL cannot
     // certify absence — blind intervals are structural.
@@ -188,10 +205,14 @@ fn battery_cam_coverage_never_continuous_and_offline_never_clear() {
         )
         .expect("witness");
     assert_eq!(w.continuity, CoverageContinuity::Gapped);
-    assert!(!w.certifies_absence(), "battery cam can never certify absence");
+    assert!(
+        !w.certifies_absence(),
+        "battery cam can never certify absence"
+    );
 
     // Marked offline: excluded from observed domain, reason carried.
-    m.mark_not_observable("rear-door", OfflineReason::Offline, interval(4_500)).expect("mark");
+    m.mark_not_observable("rear-door", OfflineReason::Offline, interval(4_500))
+        .expect("mark");
     let w = m
         .coverage_witness(
             "rear-door",
@@ -203,7 +224,11 @@ fn battery_cam_coverage_never_continuous_and_offline_never_clear() {
         )
         .expect("witness");
     assert!(w.observed_domain.is_empty());
-    assert!(w.excluded_domain.iter().any(|d| d.contains("rear-door:offline")));
+    assert!(
+        w.excluded_domain
+            .iter()
+            .any(|d| d.contains("rear-door:offline"))
+    );
     assert_eq!(w.observed_generation, 0);
     assert!(!w.certifies_absence());
 }
@@ -235,7 +260,10 @@ fn sim_driven_end_to_end_session_frames_map_to_evidence() {
     // Commit: two families in one canonically ordered batch; replay agrees.
     let batch_id = m.commit_pending().expect("commit").expect("non-empty");
     let batches = m.ledger().batches();
-    let batch = batches.iter().find(|b| b.batch_id == batch_id).expect("batch");
+    let batch = batches
+        .iter()
+        .find(|b| b.batch_id == batch_id)
+        .expect("batch");
     assert!(batch.is_canonically_ordered());
     let replayed = ReferenceLedger::replay("site:test", batches.to_vec()).expect("replay");
     assert_eq!(replayed.current().anchor, m.ledger().current().anchor);
@@ -280,7 +308,11 @@ fn flat_dps_parser_handles_scalars_and_preserves_nested_raw() {
         interval(9_000),
     );
     let ds = r.expect("report maps");
-    assert_eq!(ds.len(), 1, "non-qualifying 104 value produces NO candidate");
+    assert_eq!(
+        ds.len(),
+        1,
+        "non-qualifying 104 value produces NO candidate"
+    );
     let text = String::from_utf8_lossy(m.custody(&ds[0]).expect("custody")).into_owned();
     assert!(text.contains("\"dp_id\":\"209\""), "{text}");
     assert!(text.contains("\"event_kind\":\"209\""), "{text}");
@@ -317,7 +349,12 @@ fn empty_report_is_no_event_and_no_observability_claim() {
     // mains-cam-shaped claim reach Continuous coverage with no event.
     let mut m = mapper();
     let ds = m
-        .map_event_report("rear-door", "fsssimhomebase00", "{\"dps\":{}}", interval(10_000))
+        .map_event_report(
+            "rear-door",
+            "fsssimhomebase00",
+            "{\"dps\":{}}",
+            interval(10_000),
+        )
         .expect("empty report");
     assert!(ds.is_empty());
     assert_eq!(
@@ -335,12 +372,27 @@ fn restaged_object_coalesces_and_commit_succeeds() {
     // one commit must NOT stage two generations of one object — the ledger
     // admits one delta per object per batch. The later report supersedes.
     let mut m = mapper();
-    m.map_event_report("rear-door", "fsssimhomebase00", "{\"dps\":{\"104\":\"motion\"}}", interval(11_000))
-        .expect("first report");
-    m.map_event_report("rear-door", "fsssimhomebase00", "{\"dps\":{\"104\":\"motion\"}}", interval(11_500))
-        .expect("restaged report");
+    m.map_event_report(
+        "rear-door",
+        "fsssimhomebase00",
+        "{\"dps\":{\"104\":\"motion\"}}",
+        interval(11_000),
+    )
+    .expect("first report");
+    m.map_event_report(
+        "rear-door",
+        "fsssimhomebase00",
+        "{\"dps\":{\"104\":\"motion\"}}",
+        interval(11_500),
+    )
+    .expect("restaged report");
     let batch = m.commit_pending().expect("commit").expect("non-empty");
-    let b = m.ledger().batches().iter().find(|b| b.batch_id == batch).expect("batch");
+    let b = m
+        .ledger()
+        .batches()
+        .iter()
+        .find(|b| b.batch_id == batch)
+        .expect("batch");
     let ids: Vec<&str> = b.deltas.iter().map(|d| d.object_id.as_str()).collect();
     let unique: std::collections::BTreeSet<_> = ids.iter().collect();
     assert_eq!(unique.len(), ids.len(), "one delta per object per batch");

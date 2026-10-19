@@ -13,9 +13,9 @@ use fss_codec_mjpeg::{ComponentInterpretation, DecodeBudget, DecodeError};
 use fss_core::{CanonicalDecode, ContentDigest, ContractError, SensorCapsule, SensorId, StreamId};
 
 use crate::executor_activity::{
-    ACTIVITY_MODEL_GENERATION, ActivityExecutorModel, ActivityFrameBinding, ActivityThresholdPolicy,
-    ExecutorActivityError, ExecutorModelOutcome, ExecutorModelResult, MAX_ACTIVITY_MODEL_PIXELS,
-    rgb_decode_receipt_bytes,
+    ACTIVITY_MODEL_GENERATION, ActivityExecutorModel, ActivityFrameBinding,
+    ActivityThresholdPolicy, ExecutorActivityError, ExecutorModelOutcome, ExecutorModelResult,
+    MAX_ACTIVITY_MODEL_PIXELS, rgb_decode_receipt_bytes,
 };
 use crate::model_receipt::{ModelInvocationReceipt, ReceiptOutcome};
 use crate::{ExecBudget, ScalarExecCx};
@@ -129,10 +129,14 @@ impl fmt::Display for ActivityReplayError {
 }
 impl std::error::Error for ActivityReplayError {}
 impl From<ContractError> for ActivityReplayError {
-    fn from(error: ContractError) -> Self { Self::Contract(error) }
+    fn from(error: ContractError) -> Self {
+        Self::Contract(error)
+    }
 }
 impl From<ExecutorActivityError> for ActivityReplayError {
-    fn from(error: ExecutorActivityError) -> Self { Self::Activity(error) }
+    fn from(error: ExecutorActivityError) -> Self {
+        Self::Activity(error)
+    }
 }
 
 /// A successfully re-executed computation. Private construction; not canonically decodable.
@@ -150,25 +154,39 @@ pub struct ReplayedActivityResult {
 impl ReplayedActivityResult {
     /// Independently recomputed result, byte-identical to the offered result.
     #[must_use]
-    pub const fn result(&self) -> &ExecutorModelResult { &self.result }
+    pub const fn result(&self) -> &ExecutorModelResult {
+        &self.result
+    }
     /// Complete reproduced invocation, including operator trace, budgets and output identities.
     #[must_use]
-    pub const fn invocation(&self) -> &ModelInvocationReceipt { &self.invocation }
+    pub const fn invocation(&self) -> &ModelInvocationReceipt {
+        &self.invocation
+    }
     /// Native JPEG reference work charged by this call; not wall time or scalar work.
     #[must_use]
-    pub const fn decode_units(&self) -> u64 { self.decode_units }
+    pub const fn decode_units(&self) -> u64 {
+        self.decode_units
+    }
     /// Combined packed RGB bytes held while executing the model.
     #[must_use]
-    pub const fn decoded_bytes(&self) -> usize { self.decoded_bytes }
+    pub const fn decoded_bytes(&self) -> usize {
+        self.decoded_bytes
+    }
 }
 
 fn check(cx: &ScalarExecCx) -> Result<(), ActivityReplayError> {
-    cx.checkpoint("activity_replay").map_err(|_| ActivityReplayError::Cancelled)
+    cx.checkpoint("activity_replay")
+        .map_err(|_| ActivityReplayError::Cancelled)
 }
 
 fn scored(result: &ExecutorModelResult) -> bool {
-    matches!(result.outcome, ExecutorModelOutcome::Activity { .. } | ExecutorModelOutcome::NoActivity { .. })
-        && result.outcome.score().is_some_and(|score| score.is_finite() && score >= 0.0)
+    matches!(
+        result.outcome,
+        ExecutorModelOutcome::Activity { .. } | ExecutorModelOutcome::NoActivity { .. }
+    ) && result
+        .outcome
+        .score()
+        .is_some_and(|score| score.is_finite() && score >= 0.0)
 }
 
 /// Reproduces two native decodes and one scalar invocation under independent configuration.
@@ -192,7 +210,8 @@ pub fn replay_activity_result(
     cx: &ScalarExecCx,
 ) -> Result<ReplayedActivityResult, ActivityReplayError> {
     check(cx)?;
-    if plan.job_id.is_empty() || plan.job_id.len() > 128
+    if plan.job_id.is_empty()
+        || plan.job_id.len() > 128
         || !plan.job_id.bytes().all(|byte| byte.is_ascii_graphic())
     {
         return Err(ActivityReplayError::InvalidPlan("job identity"));
@@ -200,22 +219,34 @@ pub fn replay_activity_result(
     if limits.decode.frame.maximum_pixels > MAX_ACTIVITY_MODEL_PIXELS {
         return Err(ActivityReplayError::InvalidPlan("activity pixel ceiling"));
     }
-    let metadata = [inputs.result, inputs.invocation, inputs.frame_capsule,
-        inputs.reference_capsule, inputs.frame_decode, inputs.reference_decode];
+    let metadata = [
+        inputs.result,
+        inputs.invocation,
+        inputs.frame_capsule,
+        inputs.reference_capsule,
+        inputs.frame_decode,
+        inputs.reference_decode,
+    ];
     let mut total = 0_usize;
     for bytes in metadata {
         if bytes.len() > limits.max_metadata_bytes {
             return Err(ActivityReplayError::Limit("metadata"));
         }
-        total = total.checked_add(bytes.len()).ok_or(ActivityReplayError::Limit("inputs"))?;
+        total = total
+            .checked_add(bytes.len())
+            .ok_or(ActivityReplayError::Limit("inputs"))?;
     }
     for bytes in [inputs.frame_source, inputs.reference_source] {
         if bytes.len() > limits.decode.frame.maximum_bytes {
             return Err(ActivityReplayError::Limit("source"));
         }
-        total = total.checked_add(bytes.len()).ok_or(ActivityReplayError::Limit("inputs"))?;
+        total = total
+            .checked_add(bytes.len())
+            .ok_or(ActivityReplayError::Limit("inputs"))?;
     }
-    if total > limits.max_input_bytes { return Err(ActivityReplayError::Limit("inputs")); }
+    if total > limits.max_input_bytes {
+        return Err(ActivityReplayError::Limit("inputs"));
+    }
     let offered = ExecutorModelResult::decode_canonical(inputs.result)?;
     if offered.model_generation != ACTIVITY_MODEL_GENERATION
         || offered.model_digest != model.digest()
@@ -224,25 +255,63 @@ pub fn replay_activity_result(
     {
         return Err(ActivityReplayError::RegistrationMismatch);
     }
-    if !scored(&offered) { return Err(ActivityReplayError::Unscored); }
+    if !scored(&offered) {
+        return Err(ActivityReplayError::Unscored);
+    }
     for (bytes, expected, role) in [
-        (inputs.frame_source, offered.input_capture_root, "evaluated source"),
-        (inputs.reference_source, offered.reference_capture_root, "reference source"),
-        (inputs.frame_capsule, offered.capsule_digest, "evaluated capsule"),
-        (inputs.frame_decode, offered.decode_receipt_digest, "evaluated decode"),
-        (inputs.reference_decode, offered.reference_decode_receipt_digest, "reference decode"),
-        (inputs.invocation, offered.invocation_receipt_object, "invocation object"),
+        (
+            inputs.frame_source,
+            offered.input_capture_root,
+            "evaluated source",
+        ),
+        (
+            inputs.reference_source,
+            offered.reference_capture_root,
+            "reference source",
+        ),
+        (
+            inputs.frame_capsule,
+            offered.capsule_digest,
+            "evaluated capsule",
+        ),
+        (
+            inputs.frame_decode,
+            offered.decode_receipt_digest,
+            "evaluated decode",
+        ),
+        (
+            inputs.reference_decode,
+            offered.reference_decode_receipt_digest,
+            "reference decode",
+        ),
+        (
+            inputs.invocation,
+            offered.invocation_receipt_object,
+            "invocation object",
+        ),
     ] {
-        if ContentDigest::sha256(bytes) != expected { return Err(ActivityReplayError::Binding(role)); }
+        if ContentDigest::sha256(bytes) != expected {
+            return Err(ActivityReplayError::Binding(role));
+        }
     }
     let frame_capsule = SensorCapsule::from_canonical_bytes(inputs.frame_capsule)?;
     let reference_capsule = SensorCapsule::from_canonical_bytes(inputs.reference_capsule)?;
     for (capsule, bytes, root) in [
-        (&frame_capsule, inputs.frame_source, offered.input_capture_root),
-        (&reference_capsule, inputs.reference_source, offered.reference_capture_root),
+        (
+            &frame_capsule,
+            inputs.frame_source,
+            offered.input_capture_root,
+        ),
+        (
+            &reference_capsule,
+            inputs.reference_source,
+            offered.reference_capture_root,
+        ),
     ] {
-        if capsule.sensor_id != plan.sensor_id || capsule.stream_id != plan.stream_id
-            || capsule.source_digest != root || capsule.source_bytes != bytes.len() as u64
+        if capsule.sensor_id != plan.sensor_id
+            || capsule.stream_id != plan.stream_id
+            || capsule.source_digest != root
+            || capsule.source_bytes != bytes.len() as u64
             || capsule.frame_count != 1
         {
             return Err(ActivityReplayError::Binding("source capsule"));
@@ -254,20 +323,37 @@ pub fn replay_activity_result(
     check(cx)?;
     let before = decode_budget.used();
     let mut frame_limits = limits.decode;
-    frame_limits.maximum_output_bytes = frame_limits.maximum_output_bytes.min(limits.max_decoded_bytes);
+    frame_limits.maximum_output_bytes = frame_limits
+        .maximum_output_bytes
+        .min(limits.max_decoded_bytes);
     let native = |error| {
         if error == DecodeError::Cancelled {
             cx.drain_and_finalize();
             ActivityReplayError::Cancelled
-        } else { ActivityReplayError::Decode(error) }
+        } else {
+            ActivityReplayError::Decode(error)
+        }
     };
-    let frame = decode_rgb(inputs.frame_source, offered.input_capture_root.bytes(),
-        plan.interpretation, frame_limits, decode_budget).map_err(native)?;
+    let frame = decode_rgb(
+        inputs.frame_source,
+        offered.input_capture_root.bytes(),
+        plan.interpretation,
+        frame_limits,
+        decode_budget,
+    )
+    .map_err(native)?;
     check(cx)?;
-    frame_limits.maximum_output_bytes = frame_limits.maximum_output_bytes
+    frame_limits.maximum_output_bytes = frame_limits
+        .maximum_output_bytes
         .min(limits.max_decoded_bytes - frame.pixels().len());
-    let reference = decode_rgb(inputs.reference_source, offered.reference_capture_root.bytes(),
-        plan.interpretation, frame_limits, decode_budget).map_err(native)?;
+    let reference = decode_rgb(
+        inputs.reference_source,
+        offered.reference_capture_root.bytes(),
+        plan.interpretation,
+        frame_limits,
+        decode_budget,
+    )
+    .map_err(native)?;
     if rgb_decode_receipt_bytes(&frame.receipt()) != inputs.frame_decode
         || rgb_decode_receipt_bytes(&reference.receipt()) != inputs.reference_decode
     {
@@ -276,11 +362,22 @@ pub fn replay_activity_result(
     check(cx)?;
     let (result, invocation) = model.invoke(
         &plan.sensor_id,
-        ActivityFrameBinding { pixels: frame.pixels(), receipt: frame.receipt(),
-            source_digest: offered.input_capture_root, capsule: &frame_capsule },
-        ActivityFrameBinding { pixels: reference.pixels(), receipt: reference.receipt(),
-            source_digest: offered.reference_capture_root, capsule: &reference_capsule },
-        &plan.policy, plan.execution, &plan.job_id, cx,
+        ActivityFrameBinding {
+            pixels: frame.pixels(),
+            receipt: frame.receipt(),
+            source_digest: offered.input_capture_root,
+            capsule: &frame_capsule,
+        },
+        ActivityFrameBinding {
+            pixels: reference.pixels(),
+            receipt: reference.receipt(),
+            source_digest: offered.reference_capture_root,
+            capsule: &reference_capsule,
+        },
+        &plan.policy,
+        plan.execution,
+        &plan.job_id,
+        cx,
     )?;
     check(cx)?;
     if invocation.outcome != ReceiptOutcome::Ok || !scored(&result) {
@@ -289,8 +386,13 @@ pub fn replay_activity_result(
     if invocation.to_json_canonical().as_bytes() != inputs.invocation {
         return Err(ActivityReplayError::ReplayMismatch("complete invocation"));
     }
-    if result != offered { return Err(ActivityReplayError::ReplayMismatch("complete result")); }
-    Ok(ReplayedActivityResult { result, invocation,
+    if result != offered {
+        return Err(ActivityReplayError::ReplayMismatch("complete result"));
+    }
+    Ok(ReplayedActivityResult {
+        result,
+        invocation,
         decode_units: decode_budget.used() - before,
-        decoded_bytes: frame.pixels().len() + reference.pixels().len() })
+        decoded_bytes: frame.pixels().len() + reference.pixels().len(),
+    })
 }

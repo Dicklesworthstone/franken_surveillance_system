@@ -7,15 +7,15 @@
 
 use std::collections::BTreeMap;
 
-use fss_core::belief_verification::RegisteredBeliefDeriver;
 use fss_core::ContentDigest;
+use fss_core::belief_verification::RegisteredBeliefDeriver;
+use fss_ledger::DurableReferenceLedger;
 use fss_object::SpoolIo;
+use fss_publication::LocalRootPublisher;
 use fss_publication::custody_audit::belief_snapshot::durable::{
     DurableBeliefDeletionAuthority, DurableBeliefError, DurableBeliefRequest,
     VerifiedDurableBelief, verify_durable_belief_with_deletion_authority,
 };
-use fss_publication::LocalRootPublisher;
-use fss_ledger::DurableReferenceLedger;
 
 use super::{DeletionError, DeletionIndex, has_records};
 use crate::ReferenceDeployment;
@@ -37,16 +37,13 @@ impl DurableBeliefDeletionAuthority for CommittedDeletionBeliefAuthority {
         if !has_records(ledger.batches()) {
             return Ok(BTreeMap::new());
         }
-        let index: DeletionIndex = DeletionIndex::from_batches(
-            ledger.batches(),
-            |digest| {
-                publisher
-                    .spool()
-                    .read(digest)
-                    .map(|bytes| bytes.to_vec())
-                    .map_err(DeletionError::from)
-            },
-        )
+        let index: DeletionIndex = DeletionIndex::from_batches(ledger.batches(), |digest| {
+            publisher
+                .spool()
+                .read(digest)
+                .map(|bytes| bytes.to_vec())
+                .map_err(DeletionError::from)
+        })
         .map_err(|_: DeletionError| DurableBeliefError::DeletionAuthorityInvalid)?;
 
         let mut denied = BTreeMap::new();

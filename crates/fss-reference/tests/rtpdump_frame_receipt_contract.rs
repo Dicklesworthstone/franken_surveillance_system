@@ -18,7 +18,11 @@ use fss_reference::ingest::rtpdump::recovery::{RtpRecoveryPolicy, inspect_rtp_im
 use fss_reference::{ReferenceDeployment, ReplayCx};
 use rtpdump_support::*;
 
-fn setup(label: &str, bytes: &[u8], cx: &ReplayCx) -> Result<(ReferenceDeployment, ContentDigest), Error> {
+fn setup(
+    label: &str,
+    bytes: &[u8],
+    cx: &ReplayCx,
+) -> Result<(ReferenceDeployment, ContentDigest), Error> {
     let base = std::path::Path::new(env!("CARGO_TARGET_TMPDIR"));
     std::fs::create_dir_all(base)?;
     for i in 0..1000 {
@@ -51,7 +55,8 @@ fn request() -> Result<RetainedRtpDecodeRequest, Error> {
     let sps = all.iter().find(|n| n[0] & 31 == 7).ok_or("SPS")?;
     let pps = all.iter().find(|n| n[0] & 31 == 8).ok_or("PPS")?;
     Ok(RetainedRtpDecodeRequest::new([
-        ContentDigest::sha256(sps), ContentDigest::sha256(pps),
+        ContentDigest::sha256(sps),
+        ContentDigest::sha256(pps),
     ]))
 }
 fn receipts(
@@ -63,7 +68,11 @@ fn receipts(
 ) -> Result<Vec<RetainedRtpFrameReceipt>, Error> {
     let retained = inspect_rtp_import(root, ingress, RtpRecoveryPolicy::default(), cx, dep)?;
     let mut decoder = retained.decode_h264_receipted(
-        request, RtpCustodyDecodeLimits::default(), RtpFrameReceiptLimits::default(), dep, cx,
+        request,
+        RtpCustodyDecodeLimits::default(),
+        RtpFrameReceiptLimits::default(),
+        dep,
+        cx,
     )?;
     let mut out = Vec::new();
     for _ in 0..10_000 {
@@ -71,18 +80,24 @@ fn receipts(
             ReceiptedRtpDecodeStep::Frame { frame, receipt } => {
                 assert_eq!(frame.source().key.ingress, ingress);
                 assert_eq!(receipt.digest(), ContentDigest::sha256(receipt.bytes()));
-                assert_eq!(receipt.plane_digests(), [
-                    ContentDigest::sha256(frame.pixels()),
-                    ContentDigest::sha256(frame.cb()),
-                    ContentDigest::sha256(frame.cr()),
-                    ContentDigest::sha256(&[frame.pixels(), frame.cb(), frame.cr()].concat()),
-                ]);
+                assert_eq!(
+                    receipt.plane_digests(),
+                    [
+                        ContentDigest::sha256(frame.pixels()),
+                        ContentDigest::sha256(frame.cb()),
+                        ContentDigest::sha256(frame.cr()),
+                        ContentDigest::sha256(&[frame.pixels(), frame.cb(), frame.cr()].concat()),
+                    ]
+                );
                 out.push(receipt);
             }
             ReceiptedRtpDecodeStep::Progress { .. } => {}
             ReceiptedRtpDecodeStep::Ended(stats) => {
                 assert!(stats.complete());
-                assert_eq!(decoder.receipt_bytes(), out.iter().map(|r| r.bytes().len() as u64).sum::<u64>());
+                assert_eq!(
+                    decoder.receipt_bytes(),
+                    out.iter().map(|r| r.bytes().len() as u64).sum::<u64>()
+                );
                 assert_eq!(out.len(), 4);
                 return Ok(out);
             }
@@ -92,7 +107,8 @@ fn receipts(
 }
 
 #[test]
-fn canonical_receipts_reproduce_across_fresh_ingress_handles_with_exact_masked_pixels() -> TestResult {
+fn canonical_receipts_reproduce_across_fresh_ingress_handles_with_exact_masked_pixels() -> TestResult
+{
     let cx = cx()?;
     let (dep, root) = setup("reproduce", &real_dump(true), &cx)?;
     let before = dep.current_anchor().clone();
@@ -134,8 +150,16 @@ fn tampered_rehashed_truncated_or_substituted_saved_receipts_fail_reproduction()
     let mut tampered = first.bytes().to_vec();
     tampered[0] ^= 1;
     assert!(first.verify_saved(&tampered, first.digest()).is_err());
-    assert!(first.verify_saved(&tampered, ContentDigest::sha256(&tampered)).is_err());
-    assert!(first.verify_saved(&first.bytes()[..first.bytes().len() - 1], first.digest()).is_err());
+    assert!(
+        first
+            .verify_saved(&tampered, ContentDigest::sha256(&tampered))
+            .is_err()
+    );
+    assert!(
+        first
+            .verify_saved(&first.bytes()[..first.bytes().len() - 1], first.digest())
+            .is_err()
+    );
     assert!(first.verify_saved(first.bytes(), all[1].digest()).is_err());
     assert!(first.verify_saved(all[1].bytes(), all[1].digest()).is_err());
     Ok(())
@@ -148,7 +172,11 @@ fn privacy_changes_produce_new_receipts_over_only_masked_y_cb_cr_planes() -> Tes
     let before = receipts(&dep, root, 1, request()?, &cx)?;
     let retained = inspect_rtp_import(root, 1, RtpRecoveryPolicy::default(), &cx, &dep)?;
     let mut decoder = retained.decode_h264_receipted(
-        request()?, RtpCustodyDecodeLimits::default(), RtpFrameReceiptLimits::default(), &dep, &cx,
+        request()?,
+        RtpCustodyDecodeLimits::default(),
+        RtpFrameReceiptLimits::default(),
+        &dep,
+        &cx,
     )?;
     let mut dimensions = None;
     for _ in 0..10_000 {
@@ -160,14 +188,19 @@ fn privacy_changes_produce_new_receipts_over_only_masked_y_cb_cr_planes() -> Tes
     let dimensions = dimensions.ok_or("frame dimensions")?;
     drop(decoder);
     let policy = PrivacyMaskPolicy::new(
-        SensorId::parse("sensor:rtp-receipts")?, dimensions, &[[0, 0, dimensions[0], dimensions[1]]],
+        SensorId::parse("sensor:rtp-receipts")?,
+        dimensions,
+        &[[0, 0, dimensions[0], dimensions[1]]],
     )?;
     let approval = preview_mask(&dep, &policy)?.approval;
     declare_mask(&mut dep, &policy, approval, &cx)?;
     let after = receipts(&dep, root, 2, request()?, &cx)?;
     let [w, h] = dimensions;
     let masked_y = ContentDigest::sha256(&vec![MASK_FILL_LUMA; (w * h) as usize]);
-    let masked_c = ContentDigest::sha256(&vec![MASK_FILL_CHROMA; (w.div_ceil(2) * h.div_ceil(2)) as usize]);
+    let masked_c = ContentDigest::sha256(&vec![
+        MASK_FILL_CHROMA;
+        (w.div_ceil(2) * h.div_ceil(2)) as usize
+    ]);
     for (old, new) in before.iter().zip(after) {
         assert_eq!(old.recipe(), new.recipe());
         assert_ne!(old.digest(), new.digest());
@@ -186,16 +219,24 @@ fn receipt_budget_is_cumulative_and_failed_pair_delivery_is_not_a_served_frame()
     let allowance = all[0].bytes().len() as u64;
     let retained = inspect_rtp_import(root, 1, RtpRecoveryPolicy::default(), &cx, &dep)?;
     let mut decoder = retained.decode_h264_receipted(
-        request()?, RtpCustodyDecodeLimits::default(),
-        RtpFrameReceiptLimits { max_total_bytes: allowance, ..RtpFrameReceiptLimits::default() },
-        &dep, &cx,
+        request()?,
+        RtpCustodyDecodeLimits::default(),
+        RtpFrameReceiptLimits {
+            max_total_bytes: allowance,
+            ..RtpFrameReceiptLimits::default()
+        },
+        &dep,
+        &cx,
     )?;
     let mut served = 0;
     let mut refused = false;
     for _ in 0..10_000 {
         match decoder.step(&dep, &cx) {
             Ok(ReceiptedRtpDecodeStep::Frame { .. }) => served += 1,
-            Err(RtpFrameReceiptError::Limit) => { refused = true; break; }
+            Err(RtpFrameReceiptError::Limit) => {
+                refused = true;
+                break;
+            }
             Err(e) => return Err(e.into()),
             Ok(ReceiptedRtpDecodeStep::Ended(_)) => break,
             _ => {}
@@ -206,7 +247,10 @@ fn receipt_budget_is_cumulative_and_failed_pair_delivery_is_not_a_served_frame()
     assert_eq!(decoder.stats().frames, 1);
     assert!(decoder.stats().ended && !decoder.stats().complete());
     assert_eq!(decoder.receipt_bytes(), allowance);
-    assert!(matches!(decoder.step(&dep, &cx)?, ReceiptedRtpDecodeStep::Ended(_)));
+    assert!(matches!(
+        decoder.step(&dep, &cx)?,
+        ReceiptedRtpDecodeStep::Ended(_)
+    ));
     Ok(())
 }
 
@@ -216,16 +260,26 @@ fn per_receipt_limit_refuses_before_pixel_digesting_or_joint_delivery() -> TestR
     let (dep, root) = setup("single-bound", &real_dump(false), &cx)?;
     let retained = inspect_rtp_import(root, 1, RtpRecoveryPolicy::default(), &cx, &dep)?;
     let mut decoder = retained.decode_h264_receipted(
-        request()?, RtpCustodyDecodeLimits::default(),
-        RtpFrameReceiptLimits { max_receipt_bytes: 1, ..RtpFrameReceiptLimits::default() },
-        &dep, &cx,
+        request()?,
+        RtpCustodyDecodeLimits::default(),
+        RtpFrameReceiptLimits {
+            max_receipt_bytes: 1,
+            ..RtpFrameReceiptLimits::default()
+        },
+        &dep,
+        &cx,
     )?;
     let mut refused = false;
     for _ in 0..10_000 {
         match decoder.step(&dep, &cx) {
-            Err(RtpFrameReceiptError::Limit) => { refused = true; break; }
+            Err(RtpFrameReceiptError::Limit) => {
+                refused = true;
+                break;
+            }
             Err(e) => return Err(e.into()),
-            Ok(ReceiptedRtpDecodeStep::Frame { .. }) => return Err("unreceipted frame escaped".into()),
+            Ok(ReceiptedRtpDecodeStep::Frame { .. }) => {
+                return Err("unreceipted frame escaped".into());
+            }
             _ => {}
         }
     }
@@ -241,13 +295,23 @@ fn cancellation_before_receipt_delivery_is_terminal_and_has_no_frame_output() ->
     let (dep, root) = setup("cancel", &real_dump(false), &cx)?;
     let retained = inspect_rtp_import(root, 1, RtpRecoveryPolicy::default(), &cx, &dep)?;
     let mut decoder = retained.decode_h264_receipted(
-        request()?, RtpCustodyDecodeLimits::default(), RtpFrameReceiptLimits::default(), &dep, &cx,
+        request()?,
+        RtpCustodyDecodeLimits::default(),
+        RtpFrameReceiptLimits::default(),
+        &dep,
+        &cx,
     )?;
     cx.request_cancellation();
-    assert!(matches!(decoder.step(&dep, &cx), Err(RtpFrameReceiptError::Cancelled)));
+    assert!(matches!(
+        decoder.step(&dep, &cx),
+        Err(RtpFrameReceiptError::Cancelled)
+    ));
     assert_eq!(decoder.stats().frames, 0);
     assert_eq!(decoder.receipt_bytes(), 0);
-    assert!(matches!(decoder.step(&dep, &cx)?, ReceiptedRtpDecodeStep::Ended(_)));
+    assert!(matches!(
+        decoder.step(&dep, &cx)?,
+        ReceiptedRtpDecodeStep::Ended(_)
+    ));
     Ok(())
 }
 
@@ -260,7 +324,11 @@ fn successful_idr_recovery_receipts_do_not_erase_the_incomplete_decode_history()
     let (dep, root) = setup("recovery", &dump_planned(&planned), &cx)?;
     let retained = inspect_rtp_import(root, 1, RtpRecoveryPolicy::default(), &cx, &dep)?;
     let mut decoder = retained.decode_h264_receipted(
-        request()?, RtpCustodyDecodeLimits::default(), RtpFrameReceiptLimits::default(), &dep, &cx,
+        request()?,
+        RtpCustodyDecodeLimits::default(),
+        RtpFrameReceiptLimits::default(),
+        &dep,
+        &cx,
     )?;
     let mut recovered = false;
     for _ in 0..10_000 {

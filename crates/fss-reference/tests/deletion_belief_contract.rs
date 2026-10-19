@@ -6,20 +6,18 @@ mod file_import_fault_support;
 use std::collections::BTreeMap;
 use std::fs;
 
-use file_import_fault_support::{cx, fixture, fresh_dir, open, request, standard, TestResult};
-use fss_core::belief_verification::{
-    BeliefRebuildInputs, RegisteredBeliefDeriver,
-};
+use file_import_fault_support::{TestResult, cx, fixture, fresh_dir, open, request, standard};
+use fss_core::belief_verification::{BeliefRebuildInputs, RegisteredBeliefDeriver};
 use fss_core::{
-    BatchId, BeliefInterval, CanonicalEncode, CaptureInterval, ContentDigest, ContractError, DerivedBelief,
-    DerivedBeliefParams, Generation, KnowledgeState, ProvenanceClass, TimestampNs,
+    BatchId, BeliefInterval, CanonicalEncode, CaptureInterval, ContentDigest, ContractError,
+    DerivedBelief, DerivedBeliefParams, Generation, KnowledgeState, ProvenanceClass, TimestampNs,
 };
 use fss_object::HostSpoolIo;
+use fss_publication::SlotName;
 use fss_publication::custody_audit::belief_snapshot::durable::{
     DurableBeliefDeletionAuthority, DurableBeliefError, DurableBeliefLimits, DurableBeliefRequest,
     verify_durable_belief,
 };
-use fss_publication::SlotName;
 use fss_reference::deletion::belief::{
     CommittedDeletionBeliefAuthority, verify_durable_belief_with_committed_deletions,
 };
@@ -31,8 +29,12 @@ const ALGORITHM: &str = "alg:deletion-survivor:v1";
 
 struct ByteEngine;
 impl RegisteredBeliefDeriver for ByteEngine {
-    fn algorithm_id(&self) -> &str { ALGORITHM }
-    fn generation(&self) -> Generation { Generation(1) }
+    fn algorithm_id(&self) -> &str {
+        ALGORITHM
+    }
+    fn generation(&self) -> Generation {
+        Generation(1)
+    }
 
     fn derive(&self, input: &BeliefRebuildInputs<'_>) -> Result<DerivedBelief, ContractError> {
         let [evidence] = input.supporting else {
@@ -112,13 +114,7 @@ fn harness(label: &str) -> Result<Harness, Box<dyn std::error::Error>> {
     let plan_digest = plan.digest()?;
     let deleted: Vec<_> = plan.deletable.iter().map(|object| object.digest).collect();
     let approval = plan.approval_digest(PRINCIPAL)?;
-    let _ = commit_deletion(
-        &mut deployment,
-        plan_digest,
-        approval,
-        PRINCIPAL,
-        &context,
-    )?;
+    let _ = commit_deletion(&mut deployment, plan_digest, approval, PRINCIPAL, &context)?;
 
     Ok(Harness {
         deployment,
@@ -130,7 +126,9 @@ fn harness(label: &str) -> Result<Harness, Box<dyn std::error::Error>> {
     })
 }
 
-fn never_cancel() -> bool { false }
+fn never_cancel() -> bool {
+    false
+}
 static NEVER_CANCEL: fn() -> bool = never_cancel;
 
 fn request_for<'a>(
@@ -173,9 +171,11 @@ fn unrelated_committed_deletion_no_longer_disables_intact_durable_beliefs() -> T
     )?;
     assert_eq!(verified.belief(), &offered);
     assert!(verified.custody_audit().all_verified());
-    assert!(!verified
-        .to_knowledge_cell(&|| false)?
-        .is_irreversible_effect_premise(TimestampNs(2)));
+    assert!(
+        !verified
+            .to_knowledge_cell(&|| false)?
+            .is_irreversible_effect_premise(TimestampNs(2))
+    );
 
     // The deletion owner returns every deleted spool object and does not deny unrelated custody.
     let map = DurableBeliefDeletionAuthority::verified_denials(

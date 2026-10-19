@@ -12,17 +12,17 @@ pub mod sampled;
 
 use super::decode::RtpDecodeEffect;
 use super::detect::{
-    RtpDetectedFrame, RtpDetectionError, RtpDetectionRequest, RtpDetectionStats,
-    RtpDetectionStep, RtpPackageDetector,
+    RtpDetectedFrame, RtpDetectionError, RtpDetectionRequest, RtpDetectionStats, RtpDetectionStep,
+    RtpPackageDetector,
 };
 use super::recovery::RecoveredRtpImport;
 use super::recovery::decode::RetainedRtpEvent;
 use crate::ingest::detections::BOX_SUBPIXELS;
 use crate::ingest::rgb_package::RgbDetectorPackage;
 use crate::ingest::tracker::{
-    AssignedTrackerOutput, Detection, MAX_ASSIGNMENT_WORK, MAX_CHECKED_TRACKS,
-    MultiObjectTracker, TRACK_ASSIGNMENT_POLICY, TRACKER_ALGORITHM, TrackStatus,
-    TrackerConfig, TrackerLimits, TrackerStepError,
+    AssignedTrackerOutput, Detection, MAX_ASSIGNMENT_WORK, MAX_CHECKED_TRACKS, MultiObjectTracker,
+    TRACK_ASSIGNMENT_POLICY, TRACKER_ALGORITHM, TrackStatus, TrackerConfig, TrackerLimits,
+    TrackerStepError,
 };
 use crate::{ReferenceDeployment, ReplayCx, ScalarExecCx};
 use fss_core::{CanonicalEncoder, ContentDigest, LedgerAnchor};
@@ -137,23 +137,41 @@ pub struct RtpTrackedFrame {
 }
 impl RtpTrackedFrame {
     /// Full native receipt, inference and detector report, including nonselected classes.
-    pub fn detected(&self) -> &RtpDetectedFrame { &self.detected }
+    pub fn detected(&self) -> &RtpDetectedFrame {
+        &self.detected
+    }
     /// Only actual observations, ordered by local track ID. Lost predictions are absent.
-    pub fn observations(&self) -> &[RtpTrackObservation] { &self.observations }
+    pub fn observations(&self) -> &[RtpTrackObservation] {
+        &self.observations
+    }
     /// Exact detector, class, numerical, time-unit, source-code and admission contract.
-    pub fn recipe(&self) -> ContentDigest { self.recipe }
+    pub fn recipe(&self) -> ContentDigest {
+        self.recipe
+    }
     /// History-linked result identity; not a durable custody publication.
-    pub fn digest(&self) -> ContentDigest { self.digest }
+    pub fn digest(&self) -> ContentDigest {
+        self.digest
+    }
     /// Previous complete result, retained even across an association reset.
-    pub fn predecessor(&self) -> Option<ContentDigest> { self.predecessor }
+    pub fn predecessor(&self) -> Option<ContentDigest> {
+        self.predecessor
+    }
     /// Disjoint anonymous-ID namespace; zero for the initial baseline.
-    pub fn epoch(&self) -> u64 { self.epoch }
+    pub fn epoch(&self) -> u64 {
+        self.epoch
+    }
     /// Explicit break in association history, without hiding source progress events.
-    pub fn reset(&self) -> Option<RtpTrackReset> { self.reset }
+    pub fn reset(&self) -> Option<RtpTrackReset> {
+        self.reset
+    }
     /// Includes coasting tracks but exposes no unobserved location as evidence.
-    pub fn active_tracks(&self) -> usize { self.active_tracks }
+    pub fn active_tracks(&self) -> usize {
+        self.active_tracks
+    }
     /// Tracks deleted by this frame's normal lifecycle, excluding reset retirement.
-    pub fn deleted_tracks(&self) -> usize { self.deleted_tracks }
+    pub fn deleted_tracks(&self) -> usize {
+        self.deleted_tracks
+    }
 }
 
 /// Separate original detector accounting and lifetime tracking reservations.
@@ -177,7 +195,9 @@ pub struct RtpTrackingStats {
 impl RtpTrackingStats {
     /// All detector results were tracked; NOT a coverage or absence certificate.
     pub fn complete(&self) -> bool {
-        self.ended && self.failures == 0 && self.detection.complete()
+        self.ended
+            && self.failures == 0
+            && self.detection.complete()
             && self.frames == self.detection.frames
     }
 }
@@ -186,7 +206,10 @@ impl RtpTrackingStats {
 #[derive(Debug)]
 pub enum RtpTrackingStep {
     /// Original payload-free event and exact decoder consequence.
-    Progress { event: RetainedRtpEvent, effect: RtpDecodeEffect },
+    Progress {
+        event: RetainedRtpEvent,
+        effect: RtpDecodeEffect,
+    },
     /// Full original detector result plus its actual anonymous track observations.
     Frame(RtpTrackedFrame),
     /// Repeated terminal queries return unchanged accounting, not a restart.
@@ -218,18 +241,34 @@ impl TrackCore {
             || !(1..=MAX_CHECKED_TRACKS).contains(&limits.step.max_tracks)
             || !(1..=MAX_CHECKED_TRACKS).contains(&limits.step.max_detections)
             || limits.step.max_assignment_work > MAX_ASSIGNMENT_WORK
-        { return Err(RtpTrackingError::InvalidRequest); }
+        {
+            return Err(RtpTrackingError::InvalidRequest);
+        }
         let tracker = MultiObjectTracker::new(config.clone())
             .map_err(|_| RtpTrackingError::InvalidRequest)?;
-        Ok(Self { config, limits, tracker, last: None, active: 0, epoch: 0,
-            frames: 0, assignments: 0, work: 0, gap: false })
+        Ok(Self {
+            config,
+            limits,
+            tracker,
+            last: None,
+            active: 0,
+            epoch: 0,
+            frames: 0,
+            assignments: 0,
+            work: 0,
+            gap: false,
+        })
     }
-    fn advance(&mut self, order: FrameOrder, detections: &[Detection])
-        -> Result<(AssignedTrackerOutput, Option<RtpTrackReset>)>
-    {
+    fn advance(
+        &mut self,
+        order: FrameOrder,
+        detections: &[Detection],
+    ) -> Result<(AssignedTrackerOutput, Option<RtpTrackReset>)> {
         if self.frames >= self.limits.max_frames
             || detections.len() > self.limits.step.max_detections
-        { return Err(RtpTrackingError::Limit); }
+        {
+            return Err(RtpTrackingError::Limit);
+        }
         let reset = match self.last {
             None if self.gap || order.decoder_epoch > 0 => Some(RtpTrackReset::SourceGap),
             None => Some(RtpTrackReset::Baseline),
@@ -243,27 +282,46 @@ impl TrackCore {
                     Some(RtpTrackReset::DisplayGap)
                 } else if order.dimensions != last.dimensions || order.policy != last.policy {
                     Some(RtpTrackReset::ProjectionChanged)
-                } else { None }
+                } else {
+                    None
+                }
             }
         };
-        let rows = if reset.is_some() { 0 } else { self.active as u64 };
-        let work = if detections.is_empty() { 0 }
-            else { rows * rows * (rows + detections.len() as u64) };
+        let rows = if reset.is_some() {
+            0
+        } else {
+            self.active as u64
+        };
+        let work = if detections.is_empty() {
+            0
+        } else {
+            rows * rows * (rows + detections.len() as u64)
+        };
         let reserved = self.work.checked_add(work).ok_or(RtpTrackingError::Limit)?;
-        let assignments = self.assignments.checked_add(detections.len() as u64)
+        let assignments = self
+            .assignments
+            .checked_add(detections.len() as u64)
             .ok_or(RtpTrackingError::Limit)?;
         if work > self.limits.step.max_assignment_work
             || reserved > self.limits.max_assignment_work
             || assignments > self.limits.max_assignments
-        { return Err(RtpTrackingError::Limit); }
+        {
+            return Err(RtpTrackingError::Limit);
+        }
         self.work = reserved;
         self.assignments = assignments;
         let mut candidate = if reset.is_some() {
-            MultiObjectTracker::new(self.config.clone()).map_err(|_| RtpTrackingError::InvalidRequest)?
-        } else { self.tracker.clone() };
-        let output = candidate.try_step_assigned(detections, self.limits.step)
+            MultiObjectTracker::new(self.config.clone())
+                .map_err(|_| RtpTrackingError::InvalidRequest)?
+        } else {
+            self.tracker.clone()
+        };
+        let output = candidate
+            .try_step_assigned(detections, self.limits.step)
             .map_err(RtpTrackingError::Tracker)?;
-        if reset.is_some() && self.last.is_some() { self.epoch += 1; }
+        if reset.is_some() && self.last.is_some() {
+            self.epoch += 1;
+        }
         self.tracker = candidate;
         self.active = output.output.tracks.len();
         self.frames += 1;
@@ -285,30 +343,54 @@ pub struct RtpPackageTracker<'a> {
 }
 impl<'a> RtpPackageTracker<'a> {
     /// Validate all tracking admission before opening the current-custody detector.
-    pub fn new(retained: &'a RecoveredRtpImport, package: &'a RgbDetectorPackage,
-        request: RtpTrackingRequest, deployment: &ReferenceDeployment,
-        cx: &ReplayCx, scalar: &ScalarExecCx) -> Result<Self>
-    {
+    pub fn new(
+        retained: &'a RecoveredRtpImport,
+        package: &'a RgbDetectorPackage,
+        request: RtpTrackingRequest,
+        deployment: &ReferenceDeployment,
+        cx: &ReplayCx,
+        scalar: &ScalarExecCx,
+    ) -> Result<Self> {
         if request.class_index >= package.spec().labels.len() {
             return Err(RtpTrackingError::InvalidRequest);
         }
         let core = TrackCore::new(request.tracker, request.limits)?;
-        let detector = RtpPackageDetector::new(retained, package, request.detection,
-            deployment, cx, scalar).map_err(RtpTrackingError::Detection)?;
+        let detector =
+            RtpPackageDetector::new(retained, package, request.detection, deployment, cx, scalar)
+                .map_err(RtpTrackingError::Detection)?;
         let recipe = tracking_recipe(detector.recipe(), request.class_index, &core)?;
-        let stats = RtpTrackingStats { detection: detector.stats(), ..Default::default() };
-        Ok(Self { detector: Some(detector), core, class_index: request.class_index,
-            recipe, basis: deployment.current_anchor().clone(), previous: None, stats })
+        let stats = RtpTrackingStats {
+            detection: detector.stats(),
+            ..Default::default()
+        };
+        Ok(Self {
+            detector: Some(detector),
+            core,
+            class_index: request.class_index,
+            recipe,
+            basis: deployment.current_anchor().clone(),
+            previous: None,
+            stats,
+        })
     }
     /// Exact tracking interpretation and complete owner-selected admissions.
-    pub fn recipe(&self) -> ContentDigest { self.recipe }
+    pub fn recipe(&self) -> ContentDigest {
+        self.recipe
+    }
     /// Independent lifetime accounting; resets do not zero counters.
-    pub fn stats(&self) -> RtpTrackingStats { self.stats }
+    pub fn stats(&self) -> RtpTrackingStats {
+        self.stats
+    }
     /// A refusal is terminal, drops queued numerical results and exposes no partial frame.
-    pub fn step(&mut self, deployment: &ReferenceDeployment, cx: &ReplayCx,
-        scalar: &ScalarExecCx) -> Result<RtpTrackingStep>
-    {
-        if self.detector.is_none() { return Ok(RtpTrackingStep::Ended(self.stats)); }
+    pub fn step(
+        &mut self,
+        deployment: &ReferenceDeployment,
+        cx: &ReplayCx,
+        scalar: &ScalarExecCx,
+    ) -> Result<RtpTrackingStep> {
+        if self.detector.is_none() {
+            return Ok(RtpTrackingStep::Ended(self.stats));
+        }
         let result = self.advance(deployment, cx, scalar);
         self.stats.assignments_reserved = self.core.assignments;
         self.stats.assignment_work_reserved = self.core.work;
@@ -320,19 +402,29 @@ impl<'a> RtpPackageTracker<'a> {
         }
         result
     }
-    fn advance(&mut self, deployment: &ReferenceDeployment, cx: &ReplayCx,
-        scalar: &ScalarExecCx) -> Result<RtpTrackingStep>
-    {
+    fn advance(
+        &mut self,
+        deployment: &ReferenceDeployment,
+        cx: &ReplayCx,
+        scalar: &ScalarExecCx,
+    ) -> Result<RtpTrackingStep> {
         checkpoint(cx, scalar, "rtp_track:step")?;
-        if deployment.current_anchor() != &self.basis { return Err(RtpTrackingError::StaleBasis); }
+        if deployment.current_anchor() != &self.basis {
+            return Err(RtpTrackingError::StaleBasis);
+        }
         let detector = self.detector.as_mut().ok_or(RtpTrackingError::Encoding)?;
         let result = detector.step(deployment, cx, scalar);
         self.stats.detection = detector.stats();
         match result.map_err(RtpTrackingError::Detection)? {
             RtpDetectionStep::Progress { event, effect } => {
-                if matches!(&effect, RtpDecodeEffect::Refused { .. }
-                    | RtpDecodeEffect::WaitingForIdr { .. } | RtpDecodeEffect::Fenced)
-                { self.core.gap = true; }
+                if matches!(
+                    &effect,
+                    RtpDecodeEffect::Refused { .. }
+                        | RtpDecodeEffect::WaitingForIdr { .. }
+                        | RtpDecodeEffect::Fenced
+                ) {
+                    self.core.gap = true;
+                }
                 Ok(RtpTrackingStep::Progress { event, effect })
             }
             RtpDetectionStep::Ended(_) => {
@@ -348,11 +440,17 @@ impl<'a> RtpPackageTracker<'a> {
                 e.digest(self.recipe);
                 e.digest(detected.digest());
                 e.bool(self.previous.is_some());
-                if let Some(previous) = self.previous { e.digest(previous); }
+                if let Some(previous) = self.previous {
+                    e.digest(previous);
+                }
                 e.u64(self.core.epoch);
-                e.u8(match reset { None => 0, Some(RtpTrackReset::Baseline) => 1,
-                    Some(RtpTrackReset::SourceGap) => 2, Some(RtpTrackReset::DisplayGap) => 3,
-                    Some(RtpTrackReset::ProjectionChanged) => 4 });
+                e.u8(match reset {
+                    None => 0,
+                    Some(RtpTrackReset::Baseline) => 1,
+                    Some(RtpTrackReset::SourceGap) => 2,
+                    Some(RtpTrackReset::DisplayGap) => 3,
+                    Some(RtpTrackReset::ProjectionChanged) => 4,
+                });
                 e.u64(assigned.output.tracks.len() as u64);
                 e.u64(assigned.output.deleted_tracks as u64);
                 e.u64(self.core.work);
@@ -360,10 +458,20 @@ impl<'a> RtpPackageTracker<'a> {
                 encode_observations(&mut e, &observations)?;
                 let digest = digest(e)?;
                 checkpoint(cx, scalar, "rtp_track:deliver")?;
-                if deployment.current_anchor() != &self.basis { return Err(RtpTrackingError::StaleBasis); }
-                let frame = RtpTrackedFrame { detected, observations, recipe: self.recipe, digest,
-                    predecessor: self.previous, epoch: self.core.epoch, reset,
-                    active_tracks: assigned.output.tracks.len(), deleted_tracks: assigned.output.deleted_tracks };
+                if deployment.current_anchor() != &self.basis {
+                    return Err(RtpTrackingError::StaleBasis);
+                }
+                let frame = RtpTrackedFrame {
+                    detected,
+                    observations,
+                    recipe: self.recipe,
+                    digest,
+                    predecessor: self.previous,
+                    epoch: self.core.epoch,
+                    reset,
+                    active_tracks: assigned.output.tracks.len(),
+                    deleted_tracks: assigned.output.deleted_tracks,
+                };
                 self.previous = Some(digest);
                 self.stats.frames += 1;
                 Ok(RtpTrackingStep::Frame(frame))
@@ -378,21 +486,40 @@ fn associate(
     detected: &RtpDetectedFrame,
     class_index: usize,
     recipe: ContentDigest,
-) -> Result<(AssignedTrackerOutput, Option<RtpTrackReset>, Vec<RtpTrackObservation>)> {
+) -> Result<(
+    AssignedTrackerOutput,
+    Option<RtpTrackReset>,
+    Vec<RtpTrackObservation>,
+)> {
     let all = detected.detections().detections();
-    let indices: Vec<_> = all.iter().enumerate()
-        .filter_map(|(i, d)| (d.class_index() == class_index).then_some(i)).collect();
-    if indices.len() > core.limits.step.max_detections { return Err(RtpTrackingError::Limit); }
-    let selected: Vec<_> = indices.iter().map(|&i| {
-        let [x1, y1, x2, y2] = all[i].bounds();
-        let unit = f64::from(BOX_SUBPIXELS);
-        Detection { box_x: f64::from(x1) / unit, box_y: f64::from(y1) / unit,
-            box_w: (f64::from(x2) - f64::from(x1)) / unit,
-            box_h: (f64::from(y2) - f64::from(y1)) / unit }
-    }).collect();
+    let indices: Vec<_> = all
+        .iter()
+        .enumerate()
+        .filter_map(|(i, d)| (d.class_index() == class_index).then_some(i))
+        .collect();
+    if indices.len() > core.limits.step.max_detections {
+        return Err(RtpTrackingError::Limit);
+    }
+    let selected: Vec<_> = indices
+        .iter()
+        .map(|&i| {
+            let [x1, y1, x2, y2] = all[i].bounds();
+            let unit = f64::from(BOX_SUBPIXELS);
+            Detection {
+                box_x: f64::from(x1) / unit,
+                box_y: f64::from(y1) / unit,
+                box_w: (f64::from(x2) - f64::from(x1)) / unit,
+                box_h: (f64::from(y2) - f64::from(y1)) / unit,
+            }
+        })
+        .collect();
     let source = detected.source();
-    let order = FrameOrder { index: source.output_index, decoder_epoch: source.decoder_epoch,
-        dimensions: source.dimensions, policy: source.policy };
+    let order = FrameOrder {
+        index: source.output_index,
+        decoder_epoch: source.decoder_epoch,
+        dimensions: source.dimensions,
+        policy: source.policy,
+    };
     let (assigned, reset) = core.advance(order, &selected)?;
     let mut observations = Vec::with_capacity(assigned.assignments.len());
     // Track output may be swap-removed; sort once and merge by stable identity.
@@ -400,62 +527,100 @@ fn associate(
     tracks.sort_unstable_by_key(|track| track.id);
     let mut position = 0;
     for assignment in &assigned.assignments {
-        while position < tracks.len() && tracks[position].id < assignment.track_id { position += 1; }
-        let track = tracks.get(position).filter(|t| t.id == assignment.track_id)
+        while position < tracks.len() && tracks[position].id < assignment.track_id {
+            position += 1;
+        }
+        let track = tracks
+            .get(position)
+            .filter(|t| t.id == assignment.track_id)
             .ok_or(RtpTrackingError::Encoding)?;
-        let detection_index = *indices.get(assignment.detection_index).ok_or(RtpTrackingError::Encoding)?;
+        let detection_index = *indices
+            .get(assignment.detection_index)
+            .ok_or(RtpTrackingError::Encoding)?;
         let mut e = CanonicalEncoder::new();
         e.text("fss.rtp_track_identity.v1");
         e.digest(recipe);
         e.digest(source.root);
         e.u64(core.epoch);
         e.u64(track.id);
-        observations.push(RtpTrackObservation { identity: digest(e)?, local_id: track.id,
-            detection_index, status: track.status, hits: track.hits });
+        observations.push(RtpTrackObservation {
+            identity: digest(e)?,
+            local_id: track.id,
+            detection_index,
+            status: track.status,
+            hits: track.hits,
+        });
     }
     Ok((assigned, reset, observations))
 }
 
-fn tracking_recipe(detector_recipe: ContentDigest, class_index: usize, core: &TrackCore)
-    -> Result<ContentDigest>
-{
+fn tracking_recipe(
+    detector_recipe: ContentDigest,
+    class_index: usize,
+    core: &TrackCore,
+) -> Result<ContentDigest> {
     let mut e = CanonicalEncoder::new();
     e.text(RTP_TRACKING_DOMAIN);
     e.text(TRACKER_ALGORITHM);
     e.text(TRACK_ASSIGNMENT_POLICY);
     e.digest(ContentDigest::sha256(include_bytes!("track.rs")));
     e.digest(ContentDigest::sha256(include_bytes!("../tracker.rs")));
-    e.digest(ContentDigest::sha256(include_bytes!("../tracker/assignment.rs")));
-    e.digest(ContentDigest::sha256(include_bytes!("../tracker/checked.rs")));
-    e.digest(ContentDigest::sha256(include_bytes!("../tracker/observation.rs")));
+    e.digest(ContentDigest::sha256(include_bytes!(
+        "../tracker/assignment.rs"
+    )));
+    e.digest(ContentDigest::sha256(include_bytes!(
+        "../tracker/checked.rs"
+    )));
+    e.digest(ContentDigest::sha256(include_bytes!(
+        "../tracker/observation.rs"
+    )));
     e.digest(detector_recipe);
     e.u64(class_index as u64);
     e.u32(core.config.min_hits);
     e.u32(core.config.max_misses);
-    for n in [core.config.iou_threshold, core.config.process_noise, core.config.measurement_noise] {
+    for n in [
+        core.config.iou_threshold,
+        core.config.process_noise,
+        core.config.measurement_noise,
+    ] {
         e.u64(n.to_bits());
     }
-    for n in [core.limits.step.max_tracks as u64, core.limits.step.max_detections as u64,
-        core.limits.step.max_assignment_work, core.limits.max_frames as u64,
-        core.limits.max_assignments, core.limits.max_assignment_work] { e.u64(n); }
+    for n in [
+        core.limits.step.max_tracks as u64,
+        core.limits.step.max_detections as u64,
+        core.limits.step.max_assignment_work,
+        core.limits.max_frames as u64,
+        core.limits.max_assignments,
+        core.limits.max_assignment_work,
+    ] {
+        e.u64(n);
+    }
     digest(e)
 }
 
-fn encode_observations(e: &mut CanonicalEncoder, observations: &[RtpTrackObservation]) -> Result<()> {
+fn encode_observations(
+    e: &mut CanonicalEncoder,
+    observations: &[RtpTrackObservation],
+) -> Result<()> {
     e.u64(observations.len() as u64);
     for o in observations {
         e.digest(o.identity);
         e.u64(o.local_id);
         e.u64(o.detection_index as u64);
-        e.u8(match o.status { TrackStatus::Tentative => 0, TrackStatus::Confirmed => 1,
-            TrackStatus::Lost => return Err(RtpTrackingError::Encoding) });
+        e.u8(match o.status {
+            TrackStatus::Tentative => 0,
+            TrackStatus::Confirmed => 1,
+            TrackStatus::Lost => return Err(RtpTrackingError::Encoding),
+        });
         e.u32(o.hits);
     }
     Ok(())
 }
 
 fn digest(e: CanonicalEncoder) -> Result<ContentDigest> {
-    Ok(ContentDigest::sha256(&e.finish_checked().map_err(|_| RtpTrackingError::Encoding)?))
+    Ok(ContentDigest::sha256(
+        &e.finish_checked().map_err(|_| RtpTrackingError::Encoding)?,
+    ))
 }
 fn checkpoint(cx: &ReplayCx, scalar: &ScalarExecCx, stage: &'static str) -> Result<()> {
     if cx.checkpoint(stage).is_err() || scalar.checkpoint(stage).is_err() {
@@ -472,14 +637,29 @@ mod tests {
     use super::*;
     type TestResult = std::result::Result<(), Box<dyn std::error::Error>>;
     fn config() -> TrackerConfig {
-        TrackerConfig { min_hits: 2, max_misses: 2, iou_threshold: 0.1,
-            process_noise: 1.0, measurement_noise: 1.0 }
+        TrackerConfig {
+            min_hits: 2,
+            max_misses: 2,
+            iou_threshold: 0.1,
+            process_noise: 1.0,
+            measurement_noise: 1.0,
+        }
     }
     fn order(index: usize) -> FrameOrder {
-        FrameOrder { index, decoder_epoch: 0, dimensions: [640, 480], policy: None }
+        FrameOrder {
+            index,
+            decoder_epoch: 0,
+            dimensions: [640, 480],
+            policy: None,
+        }
     }
     fn detection(x: f64) -> Detection {
-        Detection { box_x: x, box_y: 0.0, box_w: 20.0, box_h: 20.0 }
+        Detection {
+            box_x: x,
+            box_y: 0.0,
+            box_w: 20.0,
+            box_h: 20.0,
+        }
     }
     #[test]
     fn assignment_and_confirmation_come_from_the_existing_solver() -> TestResult {
@@ -490,12 +670,19 @@ mod tests {
         let (second, reset) = core.advance(order(1), &[detection(0.0), detection(100.0)])?;
         assert_eq!(reset, None);
         assert_eq!(second.observed_detection(1), Some(0));
-        assert!(second.output.tracks.iter().all(|t| t.status == TrackStatus::Confirmed));
+        assert!(
+            second
+                .output
+                .tracks
+                .iter()
+                .all(|t| t.status == TrackStatus::Confirmed)
+        );
         Ok(())
     }
     #[test]
     fn lost_predictions_are_not_observations() -> TestResult {
-        let mut cfg = config(); cfg.min_hits = 1;
+        let mut cfg = config();
+        cfg.min_hits = 1;
         let mut core = TrackCore::new(cfg, RtpTrackingLimits::default())?;
         core.advance(order(0), &[detection(0.0)])?;
         let (lost, _) = core.advance(order(1), &[])?;
@@ -506,18 +693,26 @@ mod tests {
     }
     #[test]
     fn recovery_retires_old_identity_and_does_not_refill_lifetime_admission() -> TestResult {
-        let limits = RtpTrackingLimits { max_assignments: 2, ..Default::default() };
+        let limits = RtpTrackingLimits {
+            max_assignments: 2,
+            ..Default::default()
+        };
         let mut core = TrackCore::new(config(), limits)?;
         core.advance(order(0), &[detection(0.0)])?;
         core.gap = true;
-        let mut next = order(1); next.decoder_epoch = 1;
+        let mut next = order(1);
+        next.decoder_epoch = 1;
         let (recovered, reset) = core.advance(next, &[detection(0.0)])?;
         assert_eq!(reset, Some(RtpTrackReset::SourceGap));
         assert_eq!(core.epoch, 1);
         assert_eq!(recovered.output.tracks[0].hits, 1);
         assert_eq!(recovered.output.tracks[0].status, TrackStatus::Tentative);
-        next.index = 2; next.decoder_epoch = 2;
-        assert!(matches!(core.advance(next, &[detection(0.0)]), Err(RtpTrackingError::Limit)));
+        next.index = 2;
+        next.decoder_epoch = 2;
+        assert!(matches!(
+            core.advance(next, &[detection(0.0)]),
+            Err(RtpTrackingError::Limit)
+        ));
         assert_eq!(core.epoch, 1);
         assert_eq!(core.assignments, 2);
         Ok(())
@@ -526,69 +721,125 @@ mod tests {
     fn display_and_projection_breaks_are_explicit() -> TestResult {
         let mut core = TrackCore::new(config(), RtpTrackingLimits::default())?;
         core.advance(order(0), &[])?;
-        assert_eq!(core.advance(order(2), &[])?.1, Some(RtpTrackReset::DisplayGap));
-        let mut changed = order(3); changed.dimensions = [320, 240];
-        assert_eq!(core.advance(changed, &[])?.1, Some(RtpTrackReset::ProjectionChanged));
-        changed.index = 4; changed.policy = Some(ContentDigest::sha256(b"mask"));
-        assert_eq!(core.advance(changed, &[])?.1, Some(RtpTrackReset::ProjectionChanged));
+        assert_eq!(
+            core.advance(order(2), &[])?.1,
+            Some(RtpTrackReset::DisplayGap)
+        );
+        let mut changed = order(3);
+        changed.dimensions = [320, 240];
+        assert_eq!(
+            core.advance(changed, &[])?.1,
+            Some(RtpTrackReset::ProjectionChanged)
+        );
+        changed.index = 4;
+        changed.policy = Some(ContentDigest::sha256(b"mask"));
+        assert_eq!(
+            core.advance(changed, &[])?.1,
+            Some(RtpTrackReset::ProjectionChanged)
+        );
         assert_eq!(core.epoch, 3);
         Ok(())
     }
     #[test]
     fn reversed_source_order_is_not_an_implicit_new_session() -> TestResult {
         let mut core = TrackCore::new(config(), RtpTrackingLimits::default())?;
-        let mut start = order(1); start.decoder_epoch = 2;
+        let mut start = order(1);
+        start.decoder_epoch = 2;
         core.advance(start, &[detection(0.0)])?;
-        assert!(matches!(core.advance(start, &[]), Err(RtpTrackingError::SourceOrder)));
-        assert!(matches!(core.advance(order(2), &[]), Err(RtpTrackingError::SourceOrder)));
+        assert!(matches!(
+            core.advance(start, &[]),
+            Err(RtpTrackingError::SourceOrder)
+        ));
+        assert!(matches!(
+            core.advance(order(2), &[]),
+            Err(RtpTrackingError::SourceOrder)
+        ));
         assert_eq!(core.frames, 1);
         assert_eq!(core.assignments, 1);
         Ok(())
     }
     #[test]
     fn cumulative_work_is_not_a_per_frame_allowance() -> TestResult {
-        let limits = RtpTrackingLimits { max_assignment_work: 2, ..Default::default() };
+        let limits = RtpTrackingLimits {
+            max_assignment_work: 2,
+            ..Default::default()
+        };
         let mut core = TrackCore::new(config(), limits)?;
         core.advance(order(0), &[detection(0.0)])?;
         core.advance(order(1), &[detection(0.0)])?;
         assert_eq!(core.work, 2);
-        assert!(matches!(core.advance(order(2), &[detection(0.0)]), Err(RtpTrackingError::Limit)));
+        assert!(matches!(
+            core.advance(order(2), &[detection(0.0)]),
+            Err(RtpTrackingError::Limit)
+        ));
         assert_eq!(core.frames, 2);
         core.gap = true;
         core.advance(order(2), &[detection(0.0)])?;
         assert_eq!(core.work, 2);
-        assert!(matches!(core.advance(order(3), &[detection(0.0)]), Err(RtpTrackingError::Limit)));
+        assert!(matches!(
+            core.advance(order(3), &[detection(0.0)]),
+            Err(RtpTrackingError::Limit)
+        ));
         Ok(())
     }
     #[test]
     fn empty_frames_still_consume_lifetime_frame_budget() -> TestResult {
-        let limits = RtpTrackingLimits { max_frames: 1, ..Default::default() };
+        let limits = RtpTrackingLimits {
+            max_frames: 1,
+            ..Default::default()
+        };
         let mut core = TrackCore::new(config(), limits)?;
-        core.advance(order(0), &[])?; core.gap = true;
-        assert!(matches!(core.advance(order(1), &[]), Err(RtpTrackingError::Limit)));
+        core.advance(order(0), &[])?;
+        core.gap = true;
+        assert!(matches!(
+            core.advance(order(1), &[]),
+            Err(RtpTrackingError::Limit)
+        ));
         Ok(())
     }
     #[test]
     fn invalid_geometry_and_capacity_never_commit_partial_tracks() -> TestResult {
-        let limits = RtpTrackingLimits { step: TrackerLimits { max_tracks: 1,
-            ..Default::default() }, ..Default::default() };
+        let limits = RtpTrackingLimits {
+            step: TrackerLimits {
+                max_tracks: 1,
+                ..Default::default()
+            },
+            ..Default::default()
+        };
         let mut core = TrackCore::new(config(), limits)?;
-        assert!(matches!(core.advance(order(0), &[detection(0.0), detection(100.0)]),
-            Err(RtpTrackingError::Tracker(TrackerStepError::Limit))));
+        assert!(matches!(
+            core.advance(order(0), &[detection(0.0), detection(100.0)]),
+            Err(RtpTrackingError::Tracker(TrackerStepError::Limit))
+        ));
         assert_eq!(core.frames, 0);
         assert_eq!(core.active, 0);
         assert_eq!(core.assignments, 2);
-        assert!(matches!(core.advance(order(0), &[detection(f64::NAN)]),
-            Err(RtpTrackingError::Tracker(TrackerStepError::Detection))));
+        assert!(matches!(
+            core.advance(order(0), &[detection(f64::NAN)]),
+            Err(RtpTrackingError::Tracker(TrackerStepError::Detection))
+        ));
         assert_eq!(core.frames, 0);
         Ok(())
     }
     #[test]
     fn invalid_limits_are_refused_before_creating_a_source_owner() {
-        for limits in [RtpTrackingLimits { max_frames: 0, ..Default::default() },
-            RtpTrackingLimits { step: TrackerLimits { max_tracks: MAX_CHECKED_TRACKS + 1,
-                ..Default::default() }, ..Default::default() }] {
-            assert!(matches!(TrackCore::new(config(), limits), Err(RtpTrackingError::InvalidRequest)));
+        for limits in [
+            RtpTrackingLimits {
+                max_frames: 0,
+                ..Default::default()
+            },
+            RtpTrackingLimits {
+                step: TrackerLimits {
+                    max_tracks: MAX_CHECKED_TRACKS + 1,
+                    ..Default::default()
+                },
+                ..Default::default()
+            },
+        ] {
+            assert!(matches!(
+                TrackCore::new(config(), limits),
+                Err(RtpTrackingError::InvalidRequest)
+            ));
         }
     }
     #[test]
@@ -606,5 +857,4 @@ mod tests {
         }
         Ok(())
     }
-
 }

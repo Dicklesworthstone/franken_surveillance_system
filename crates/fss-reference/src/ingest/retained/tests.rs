@@ -167,10 +167,16 @@ fn allocation_budget_is_checked_before_source_io() -> Result<(), FileIngestError
         ..RetainedReadLimits::default()
     };
     assert!(
-        assemble_segment(&m, 0, limits, &mut VerifiedChunkCache::default(), |d, length| {
-            reads += 1;
-            read(d, length)
-        })
+        assemble_segment(
+            &m,
+            0,
+            limits,
+            &mut VerifiedChunkCache::default(),
+            |d, length| {
+                reads += 1;
+                read(d, length)
+            }
+        )
         .is_err()
     );
     assert_eq!(reads, 0);
@@ -234,10 +240,16 @@ fn a_verified_chunk_cache_reads_each_chunk_once_and_never_substitutes_bytes()
     let mut reads = 0;
     for _ in 0..3 {
         assert_eq!(
-            assemble_segment(&m, 0, RetainedReadLimits::default(), &mut cache, |d, length| {
-                reads += 1;
-                read(d, length)
-            })?,
+            assemble_segment(
+                &m,
+                0,
+                RetainedReadLimits::default(),
+                &mut cache,
+                |d, length| {
+                    reads += 1;
+                    read(d, length)
+                }
+            )?,
             b"cdabcdx"
         );
     }
@@ -266,13 +278,19 @@ fn a_verified_chunk_cache_reads_each_chunk_once_and_never_substitutes_bytes()
     assert_eq!(reads, 3);
     // A corrupt chunk is not cached: the next read verifies again.
     let mut fresh = VerifiedChunkCache::default();
-    let corrupt = assemble_segment(&m, 0, RetainedReadLimits::default(), &mut fresh, |d, length| {
-        if d == ContentDigest::sha256(b"xy") {
-            Ok(b"zz".to_vec())
-        } else {
-            read(d, length)
-        }
-    });
+    let corrupt = assemble_segment(
+        &m,
+        0,
+        RetainedReadLimits::default(),
+        &mut fresh,
+        |d, length| {
+            if d == ContentDigest::sha256(b"xy") {
+                Ok(b"zz".to_vec())
+            } else {
+                read(d, length)
+            }
+        },
+    );
     assert!(corrupt.is_err());
     assert_eq!(
         assemble_segment(&m, 0, RetainedReadLimits::default(), &mut fresh, read)?,
@@ -286,24 +304,42 @@ fn source_callbacks_receive_each_exact_payload_ceiling_including_the_final_chunk
 -> Result<(), FileIngestError> {
     let m = fixture()?;
     let mut requests = Vec::new();
-    assert_eq!(verify_source_chunks(&m, |digest, length| {
-        requests.push((digest, length));
-        read(digest, length)
-    })?, m.input_sha256);
-    assert_eq!(requests, vec![
-        (ContentDigest::sha256(b"abcd"), 4),
-        (ContentDigest::sha256(b"abcd"), 4),
-        (ContentDigest::sha256(b"xy"), 2),
-    ]);
+    assert_eq!(
+        verify_source_chunks(&m, |digest, length| {
+            requests.push((digest, length));
+            read(digest, length)
+        })?,
+        m.input_sha256
+    );
+    assert_eq!(
+        requests,
+        vec![
+            (ContentDigest::sha256(b"abcd"), 4),
+            (ContentDigest::sha256(b"abcd"), 4),
+            (ContentDigest::sha256(b"xy"), 2),
+        ]
+    );
     requests.clear();
     let mut cache = VerifiedChunkCache::default();
-    assert_eq!(assemble_segment(&m, 0, RetainedReadLimits::default(), &mut cache, |digest, length| {
-        requests.push((digest, length));
-        read(digest, length)
-    })?, b"cdabcdx");
-    assert_eq!(requests, vec![
-        (ContentDigest::sha256(b"abcd"), 4),
-        (ContentDigest::sha256(b"xy"), 2),
-    ]);
+    assert_eq!(
+        assemble_segment(
+            &m,
+            0,
+            RetainedReadLimits::default(),
+            &mut cache,
+            |digest, length| {
+                requests.push((digest, length));
+                read(digest, length)
+            }
+        )?,
+        b"cdabcdx"
+    );
+    assert_eq!(
+        requests,
+        vec![
+            (ContentDigest::sha256(b"abcd"), 4),
+            (ContentDigest::sha256(b"xy"), 2),
+        ]
+    );
     Ok(())
 }

@@ -349,7 +349,9 @@ fn guard(
     let slot = root_slot(retained.root).map_err(|_| CheckedRtpDecodeError::StaleBasis)?;
     if deployment.current_anchor() != &retained.basis
         || publisher.is_poisoned()
-        || publisher.tombstones().any(|digest| *digest == retained.root)
+        || publisher
+            .tombstones()
+            .any(|digest| *digest == retained.root)
         || !publisher.root(&slot).is_some_and(|root| {
             root.root == retained.root && root.state == LocalPublicationState::Durable
         })

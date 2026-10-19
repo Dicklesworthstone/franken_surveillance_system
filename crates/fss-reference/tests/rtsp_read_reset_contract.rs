@@ -409,7 +409,9 @@ fn real_tcp_reset_preserves_the_prefix_through_both_journals_and_cold_reopening(
                         break;
                     }
                     Ok(_) => {
-                        return Err("read reset became EOF, new intake or successful capture".into());
+                        return Err(
+                            "read reset became EOF, new intake or successful capture".into()
+                        );
                     }
                 }
             }

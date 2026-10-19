@@ -51,7 +51,8 @@ pub const ADP_UVC_MAX_BUFFER_FRAMES: u32 = 256;
 pub const ADP_UVC_REQUEST_TIMEOUT_NS: u64 = 10_000_000_000;
 
 /// The declared capability set. The UVC/UAC contract: streaming plus snapshot (specified; implementation pending).
-pub const ADP_UVC_CAPABILITIES: AdapterCapabilities = AdapterCapabilities::STREAMING.union(AdapterCapabilities::SNAPSHOT);
+pub const ADP_UVC_CAPABILITIES: AdapterCapabilities =
+    AdapterCapabilities::STREAMING.union(AdapterCapabilities::SNAPSHOT);
 
 /// Constructs the typed identity for the row, fully verified: structural
 /// invariants (`verify`) and NEG-002 standards compliance must both pass.

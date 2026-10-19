@@ -31,28 +31,49 @@ use fss_reference::rtsp::tcp::{
 
 type Test<T = ()> = Result<T, Box<dyn std::error::Error>>;
 const DEADLINE: u64 = 100_000_000_000;
-const KEY: StreamKey = StreamKey { ingress: 71, generation: 1, ssrc: 7 };
+const KEY: StreamKey = StreamKey {
+    ingress: 71,
+    generation: 1,
+    ssrc: 7,
+};
 const SDP: &str = "v=0\r\no=- 1 1 IN IP4 127.0.0.1\r\ns=fixture\r\nt=0 0\r\na=control:*\r\nm=video 0 RTP/AVP 96\r\na=rtpmap:96 H264/90000\r\na=fmtp:96 packetization-mode=1;sprop-parameter-sets=Z0LAC9oKEbARAAADAAEAAAMAMg8UKqA=,aM4PLIA=\r\na=control:trackID=0\r\n";
 
-struct Authority { binding: TcpBinding, revoked: Cell<bool> }
+struct Authority {
+    binding: TcpBinding,
+    revoked: Cell<bool>,
+}
 impl TcpAuthority for Authority {
-    fn checkpoint(&self, binding: &TcpBinding, _: TcpOperation, now: u64, until: u64)
-        -> Result<(), TcpDenial>
-    {
-        if binding != &self.binding { return Err(TcpDenial::Unauthorized); }
-        if self.revoked.get() { return Err(TcpDenial::Revoked); }
-        if until != DEADLINE || now >= until { return Err(TcpDenial::Deadline); }
+    fn checkpoint(
+        &self,
+        binding: &TcpBinding,
+        _: TcpOperation,
+        now: u64,
+        until: u64,
+    ) -> Result<(), TcpDenial> {
+        if binding != &self.binding {
+            return Err(TcpDenial::Unauthorized);
+        }
+        if self.revoked.get() {
+            return Err(TcpDenial::Revoked);
+        }
+        if until != DEADLINE || now >= until {
+            return Err(TcpDenial::Deadline);
+        }
         Ok(())
     }
 }
 #[derive(Debug)]
-enum Failure { Connection(LiveAvcFailure), Recording(LiveRecordingFailure) }
+enum Failure {
+    Connection(LiveAvcFailure),
+    Recording(LiveRecordingFailure),
+}
 impl Failure {
     fn reason(&self) -> Option<&LiveAvcError> {
         match self {
             Self::Connection(e) => Some(&e.reason),
             Self::Recording(e) => match &e.reason {
-                LiveRecordingError::Network(e) => Some(e), _ => None,
+                LiveRecordingError::Network(e) => Some(e),
+                _ => None,
             },
         }
     }
@@ -64,12 +85,18 @@ impl Failure {
     }
 }
 impl fmt::Display for Failure {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result { write!(f, "fixture refusal: {self:?}") }
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "fixture refusal: {self:?}")
+    }
 }
 impl std::error::Error for Failure {}
 
 #[derive(Debug)]
-enum Step { Queued(QueuedAvcRequest), Live(LiveAvcStep), Recording(LiveRecordingStep) }
+enum Step {
+    Queued(QueuedAvcRequest),
+    Live(LiveAvcStep),
+    Recording(LiveRecordingStep),
+}
 impl Step {
     fn live(&self) -> Option<&LiveAvcStep> {
         match self {
@@ -84,69 +111,129 @@ impl Step {
         }) if matches!(event.as_ref(), AvcClientPoll::Control(ClientProgress::Accepted(s)) if *s == state))
     }
     fn terminal(&self) -> bool {
-        matches!(self.live(), Some(LiveAvcStep::Protocol { transport: Some(_), .. }))
-            || matches!(self, Self::Recording(LiveRecordingStep::Stopped { .. } | LiveRecordingStep::Ended))
+        matches!(
+            self.live(),
+            Some(LiveAvcStep::Protocol {
+                transport: Some(_),
+                ..
+            })
+        ) || matches!(
+            self,
+            Self::Recording(LiveRecordingStep::Stopped { .. } | LiveRecordingStep::Ended)
+        )
     }
 }
-enum Driver { Connection(AutomaticAvcConnection), Recording(AutomaticAvcRecording) }
+enum Driver {
+    Connection(AutomaticAvcConnection),
+    Recording(AutomaticAvcRecording),
+}
 impl Driver {
     fn needs_credentials(&self) -> bool {
-        match self { Self::Connection(d) => d.needs_credentials(), Self::Recording(d) => d.needs_credentials() }
+        match self {
+            Self::Connection(d) => d.needs_credentials(),
+            Self::Recording(d) => d.needs_credentials(),
+        }
     }
     fn next_wake_ns(&self) -> Option<u64> {
-        match self { Self::Connection(d) => d.next_wake_ns(), Self::Recording(d) => d.next_wake_ns() }
+        match self {
+            Self::Connection(d) => d.next_wake_ns(),
+            Self::Recording(d) => d.next_wake_ns(),
+        }
     }
     fn totals(&self) -> Option<TcpTotals> {
-        match self { Self::Connection(d) => d.totals(), Self::Recording(d) => d.totals() }
+        match self {
+            Self::Connection(d) => d.totals(),
+            Self::Recording(d) => d.totals(),
+        }
     }
-    fn poll(&mut self, ready: SocketReadiness, now: u64, authority: &Authority)
-        -> Result<Step, Failure>
-    {
+    fn poll(
+        &mut self,
+        ready: SocketReadiness,
+        now: u64,
+        authority: &Authority,
+    ) -> Result<Step, Failure> {
         let credentials = DigestCredentials::new("fixture-user", "fixture-password")
             .expect("static fixture credentials");
         match self {
-            Self::Connection(d) => d.poll(ready, &credentials, [1; 16], now, authority)
-                .map(|step| match step { AutomaticAvcStep::Queued(q) => Step::Queued(q), AutomaticAvcStep::Live(s) => Step::Live(s) })
+            Self::Connection(d) => d
+                .poll(ready, &credentials, [1; 16], now, authority)
+                .map(|step| match step {
+                    AutomaticAvcStep::Queued(q) => Step::Queued(q),
+                    AutomaticAvcStep::Live(s) => Step::Live(s),
+                })
                 .map_err(Failure::Connection),
-            Self::Recording(d) => d.poll(ready, &credentials, [1; 16], now, authority)
+            Self::Recording(d) => d
+                .poll(ready, &credentials, [1; 16], now, authority)
                 .map(|step| match step {
                     AutomaticRecordingStep::Queued(q) => Step::Queued(q),
-                    AutomaticRecordingStep::Recording(LiveRecordingStep::Network(s)) => Step::Live(s),
+                    AutomaticRecordingStep::Recording(LiveRecordingStep::Network(s)) => {
+                        Step::Live(s)
+                    }
                     AutomaticRecordingStep::Recording(s) => Step::Recording(s),
-                }).map_err(Failure::Recording),
+                })
+                .map_err(Failure::Recording),
         }
     }
     fn cancel(&mut self) -> bool {
-        match self { Self::Connection(d) => d.cancel().is_some(), Self::Recording(d) => d.cancel().is_some() }
+        match self {
+            Self::Connection(d) => d.cancel().is_some(),
+            Self::Recording(d) => d.cancel().is_some(),
+        }
     }
 }
-struct Fixture { driver: Driver, peer: TcpStream, authority: Authority }
+struct Fixture {
+    driver: Driver,
+    peer: TcpStream,
+    authority: Authority,
+}
 impl Fixture {
     fn new(recording: bool, max_steps: u64) -> Test<Self> {
         let listener = TcpListener::bind((Ipv4Addr::LOCALHOST, 0))?;
-        let binding = TcpBinding::new(KEY, listener.local_addr()?, "camera.local",
-            TcpSecurityPolicy::OwnerApprovedPlaintext)?;
-        let authority = Authority { binding: binding.clone(), revoked: Cell::new(false) };
+        let binding = TcpBinding::new(
+            KEY,
+            listener.local_addr()?,
+            "camera.local",
+            TcpSecurityPolicy::OwnerApprovedPlaintext,
+        )?;
+        let authority = Authority {
+            binding: binding.clone(),
+            revoked: Cell::new(false),
+        };
         let config = LiveAvcConfig {
             protocol: ClientConfig {
                 presentation_uri: "rtsp://camera.local/live/".into(),
                 control_root_uri: "rtsp://camera.local/live".into(),
-                media_index: 0, channels: (0, 1), response_timeout_ns: 10_000_000_000,
+                media_index: 0,
+                channels: (0, 1),
+                response_timeout_ns: 10_000_000_000,
                 default_session_timeout_seconds: 60,
             },
-            binding, transport: TcpLimits::default(), media: AvcReceiveLimits::default(),
-            realm: "fixture-camera".into(), digest_policy: DigestPolicy::default(),
-            deadline_ns: DEADLINE, max_steps,
+            binding,
+            transport: TcpLimits::default(),
+            media: AvcReceiveLimits::default(),
+            realm: "fixture-camera".into(),
+            digest_policy: DigestPolicy::default(),
+            deadline_ns: DEADLINE,
+            max_steps,
         };
         let driver = if recording {
-            Driver::Recording(AutomaticAvcRecording::connect(config, LiveRecordingConfig {
-                scope: RecordingScope {
-                    sensor: SensorId::parse("sensor:control-drain")?,
-                    stream: StreamId::parse("stream:control-drain")?, generation: 1,
-                    anchor: ContentDigest::sha256(b"control fixture"),
-                    receive_clock: ContentDigest::sha256(b"control fixture clock"),
-                }, payload_type: 96, time_scale: 90_000, limits: CollectorLimits::default(),
-            }, 0, &authority)?)
+            Driver::Recording(AutomaticAvcRecording::connect(
+                config,
+                LiveRecordingConfig {
+                    scope: RecordingScope {
+                        sensor: SensorId::parse("sensor:control-drain")?,
+                        stream: StreamId::parse("stream:control-drain")?,
+                        generation: 1,
+                        anchor: ContentDigest::sha256(b"control fixture"),
+                        receive_clock: ContentDigest::sha256(b"control fixture clock"),
+                    },
+                    payload_type: 96,
+                    time_scale: 90_000,
+                    limits: CollectorLimits::default(),
+                },
+                0,
+                &authority,
+            )?)
         } else {
             Driver::Connection(AutomaticAvcConnection::connect(config, 0, &authority)?)
         };
@@ -154,7 +241,11 @@ impl Fixture {
         peer.set_read_timeout(Some(Duration::from_secs(2)))?;
         peer.set_write_timeout(Some(Duration::from_secs(2)))?;
         peer.set_nodelay(true)?;
-        Ok(Self { driver, peer, authority })
+        Ok(Self {
+            driver,
+            peer,
+            authority,
+        })
     }
     fn poll(&mut self, ready: SocketReadiness, now: u64) -> Result<Step, Failure> {
         self.driver.poll(ready, now, &self.authority)
@@ -164,13 +255,19 @@ impl Fixture {
             return Err("automatic command not queued".into());
         };
         for _ in 0..1024 {
-            match self.poll(SocketReadiness { readable: false, writable: true }, now)? {
+            match self.poll(
+                SocketReadiness {
+                    readable: false,
+                    writable: true,
+                },
+                now,
+            )? {
                 Step::Live(LiveAvcStep::Write(TcpWriteStep::Sent { bytes, cseq })) => {
                     assert_eq!((cseq, bytes), (queued.cseq, queued.bytes));
                     self.peer.read_exact(&mut vec![0; bytes])?;
                     return Ok(queued);
                 }
-                Step::Live(LiveAvcStep::Write(_) | LiveAvcStep::Pending(_)) => {},
+                Step::Live(LiveAvcStep::Write(_) | LiveAvcStep::Pending(_)) => {}
                 _ => return Err("unexpected request dispatch output".into()),
             }
         }
@@ -180,15 +277,26 @@ impl Fixture {
         self.peer.write_all(bytes)?;
         let mut original = Vec::new();
         for _ in 0..1024 {
-            let step = self.poll(SocketReadiness { readable: true, writable: false }, now)?;
+            let step = self.poll(
+                SocketReadiness {
+                    readable: true,
+                    writable: false,
+                },
+                now,
+            )?;
             if let Some(LiveAvcStep::Wire(chunk)) = step.live() {
                 original.extend_from_slice(chunk.expose());
             }
             if step.accepted(state) {
-                assert_eq!(original, bytes, "fixture must preload the complete coalesced input");
+                assert_eq!(
+                    original, bytes,
+                    "fixture must preload the complete coalesced input"
+                );
                 return Ok(());
             }
-            if step.terminal() { return Err("reply refused before expected acceptance".into()); }
+            if step.terminal() {
+                return Err("reply refused before expected acceptance".into());
+            }
             std::thread::yield_now();
         }
         Err("reply drain bound".into())
@@ -199,24 +307,42 @@ impl Fixture {
         bytes.extend_from_slice(suffix);
         self.receive(&bytes, ClientState::Described, 1)?;
         assert!(self.driver.needs_credentials());
-        let failure = self.poll(SocketReadiness::default(), 2).err().ok_or("queued over retained input")?;
-        assert!(matches!(failure.reason(), Some(LiveAvcError::Protocol(
-            fss_reference::rtsp::avc_client::authenticated::DigestAvcError::Backpressure))));
+        let failure = self
+            .poll(SocketReadiness::default(), 2)
+            .err()
+            .ok_or("queued over retained input")?;
+        assert!(matches!(
+            failure.reason(),
+            Some(LiveAvcError::Protocol(
+                fss_reference::rtsp::avc_client::authenticated::DigestAvcError::Backpressure
+            ))
+        ));
         assert!(!failure.retired());
         assert!(!self.driver.needs_credentials());
         if suffix == b"RTSP/1." {
             // First probe the queued partial frame. Before this native turn, its wake
             // denotes runnable parser work, not yet the fixed missing-input deadline.
-            assert!(matches!(self.poll(SocketReadiness::default(), 2)?,
-                Step::Live(LiveAvcStep::Pending(_))));
+            assert!(matches!(
+                self.poll(SocketReadiness::default(), 2)?,
+                Step::Live(LiveAvcStep::Pending(_))
+            ));
             assert!(!self.driver.needs_credentials());
         }
         Ok(())
     }
     fn drain_fault(&mut self, now: u64) -> Test {
         for _ in 0..1024 {
-            let step = self.poll(SocketReadiness { readable: true, writable: true }, now)?;
-            assert!(!matches!(step, Step::Queued(_)), "must not issue SETUP before rejecting unsolicited input");
+            let step = self.poll(
+                SocketReadiness {
+                    readable: true,
+                    writable: true,
+                },
+                now,
+            )?;
+            assert!(
+                !matches!(step, Step::Queued(_)),
+                "must not issue SETUP before rejecting unsolicited input"
+            );
             if step.terminal() {
                 assert!(!self.driver.needs_credentials());
                 assert_eq!(self.driver.next_wake_ns(), None);
@@ -229,7 +355,11 @@ impl Fixture {
     }
 }
 fn response(cseq: u32, fields: &str, body: &str) -> Vec<u8> {
-    format!("RTSP/1.0 200 OK\r\nCSeq: {cseq}\r\nContent-Length: {}\r\n{fields}\r\n{body}", body.len()).into_bytes()
+    format!(
+        "RTSP/1.0 200 OK\r\nCSeq: {cseq}\r\nContent-Length: {}\r\n{fields}\r\n{body}",
+        body.len()
+    )
+    .into_bytes()
 }
 
 #[test]
@@ -251,7 +381,10 @@ fn fragmented_input_waits_do_not_busy_prepare_or_refresh_the_wire_deadline() -> 
         let deadline = f.driver.next_wake_ns().ok_or("wire deadline missing")?;
         assert!(deadline > 10);
         for now in 3..10 {
-            assert!(matches!(f.poll(SocketReadiness::default(), now)?, Step::Live(LiveAvcStep::Pending(_))));
+            assert!(matches!(
+                f.poll(SocketReadiness::default(), now)?,
+                Step::Live(LiveAvcStep::Pending(_))
+            ));
             assert!(!f.driver.needs_credentials());
             assert_eq!(f.driver.next_wake_ns(), Some(deadline));
             assert_eq!(f.driver.totals().ok_or("totals missing")?.sent_bytes, sent);
@@ -267,8 +400,16 @@ fn revocation_during_deferred_control_retires_source_once() -> Test {
         let mut f = Fixture::new(recording, 10_000)?;
         f.blocked(b"RTSP/1.")?;
         f.authority.revoked.set(true);
-        let failure = f.poll(SocketReadiness::default(), 3).err().ok_or("revocation passed")?;
-        assert_eq!(failure.reason(), Some(&LiveAvcError::Transport(TcpError::Denied(TcpDenial::Revoked))));
+        let failure = f
+            .poll(SocketReadiness::default(), 3)
+            .err()
+            .ok_or("revocation passed")?;
+        assert_eq!(
+            failure.reason(),
+            Some(&LiveAvcError::Transport(TcpError::Denied(
+                TcpDenial::Revoked
+            )))
+        );
         assert!(failure.retired());
         assert!(!f.driver.needs_credentials());
         assert_eq!(f.driver.next_wake_ns(), None);
@@ -305,7 +446,10 @@ fn reversed_clock_during_drain_preserves_input_and_scheduling() -> Test {
         f.blocked(b"RTSP/1.")?;
         let totals = f.driver.totals();
         let wake = f.driver.next_wake_ns();
-        let failure = f.poll(SocketReadiness::default(), 1).err().ok_or("clock reversal passed")?;
+        let failure = f
+            .poll(SocketReadiness::default(), 1)
+            .err()
+            .ok_or("clock reversal passed")?;
         assert_eq!(failure.reason(), Some(&LiveAvcError::ClockReversed));
         assert!(!failure.retired());
         assert_eq!(f.driver.totals(), totals);
@@ -320,7 +464,10 @@ fn partial_wire_expiry_terminates_without_rearming_setup_or_renewing_time() -> T
     for recording in [false, true] {
         let mut f = Fixture::new(recording, 10_000)?;
         f.blocked(b"RTSP/1.")?;
-        let deadline = f.driver.next_wake_ns().ok_or("fixed wire deadline missing")?;
+        let deadline = f
+            .driver
+            .next_wake_ns()
+            .ok_or("fixed wire deadline missing")?;
         let step = f.poll(SocketReadiness::default(), deadline)?;
         assert!(step.terminal());
         assert!(!f.driver.needs_credentials());
@@ -334,19 +481,31 @@ fn ordinary_accepted_negotiation_and_keepalive_still_queue_once() -> Test {
     for recording in [false, true] {
         let mut f = Fixture::new(recording, 10_000)?;
         let describe = f.command(0)?;
-        f.receive(&response(describe.cseq, "Content-Type: application/sdp\r\n", SDP), ClientState::Described, 1)?;
+        f.receive(
+            &response(describe.cseq, "Content-Type: application/sdp\r\n", SDP),
+            ClientState::Described,
+            1,
+        )?;
         let setup = f.command(2)?;
         assert_eq!(setup.command, ClientCommand::Setup);
         f.receive(&response(setup.cseq,
             "Session: fixture;timeout=60\r\nTransport: RTP/AVP/TCP;unicast;interleaved=0-1;ssrc=7\r\n", ""), ClientState::Ready, 3)?;
         let play = f.command(4)?;
         assert_eq!(play.command, ClientCommand::Play);
-        f.receive(&response(play.cseq, "Session: fixture\r\n", ""), ClientState::Playing, 5)?;
+        f.receive(
+            &response(play.cseq, "Session: fixture\r\n", ""),
+            ClientState::Playing,
+            5,
+        )?;
         let due = f.driver.next_wake_ns().ok_or("keepalive missing")?;
         let _event = f.poll(SocketReadiness::default(), due)?;
         let keepalive = f.command(due)?;
         assert_eq!(keepalive.command, ClientCommand::KeepAlive);
-        f.receive(&response(keepalive.cseq, "Session: fixture\r\n", ""), ClientState::Playing, due + 1)?;
+        f.receive(
+            &response(keepalive.cseq, "Session: fixture\r\n", ""),
+            ClientState::Playing,
+            due + 1,
+        )?;
         assert!(!f.driver.needs_credentials());
         assert!(f.driver.cancel());
     }

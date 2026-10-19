@@ -40,15 +40,25 @@ pub struct RtpSampledAssociation {
 }
 impl RtpSampledAssociation {
     /// Actual assignments to complete-report indices, never coasting predictions.
-    pub fn observations(&self) -> &[RtpTrackObservation] { &self.observations }
+    pub fn observations(&self) -> &[RtpTrackObservation] {
+        &self.observations
+    }
     /// Disjoint association namespace after an intentional or source gap.
-    pub fn epoch(&self) -> u64 { self.epoch }
+    pub fn epoch(&self) -> u64 {
+        self.epoch
+    }
     /// Why this selected position cannot continue the preceding association epoch.
-    pub fn reset(&self) -> Option<RtpTrackReset> { self.reset }
+    pub fn reset(&self) -> Option<RtpTrackReset> {
+        self.reset
+    }
     /// Includes unobserved numerical predictions; it is not an object-presence count.
-    pub fn active_tracks(&self) -> usize { self.active_tracks }
+    pub fn active_tracks(&self) -> usize {
+        self.active_tracks
+    }
     /// Normal selected-update lifecycle retirements, not source or sampling resets.
-    pub fn deleted_tracks(&self) -> usize { self.deleted_tracks }
+    pub fn deleted_tracks(&self) -> usize {
+        self.deleted_tracks
+    }
 }
 
 /// Joint native sampling and temporal result, including positions without inference.
@@ -63,17 +73,29 @@ pub struct RtpSampledTrackFrame {
 }
 impl RtpSampledTrackFrame {
     /// Original cascade result and exact source-to-pixels receipt; no relabelled positions.
-    pub fn sample(&self) -> &RtpCascadeFrame { &self.sample }
+    pub fn sample(&self) -> &RtpCascadeFrame {
+        &self.sample
+    }
     /// None means association was NOT executed, not an empty observation update.
-    pub fn association(&self) -> Option<&RtpSampledAssociation> { self.association.as_ref() }
+    pub fn association(&self) -> Option<&RtpSampledAssociation> {
+        self.association.as_ref()
+    }
     /// Hypotheses retired on this explicit skip; they are not detector misses or exits.
-    pub fn retired_on_skip(&self) -> usize { self.retired_on_skip }
+    pub fn retired_on_skip(&self) -> usize {
+        self.retired_on_skip
+    }
     /// Previous joint result, including every intentional inference omission.
-    pub fn predecessor(&self) -> Option<ContentDigest> { self.predecessor }
+    pub fn predecessor(&self) -> Option<ContentDigest> {
+        self.predecessor
+    }
     /// Exact sampling, class, source implementation and association admission identity.
-    pub fn recipe(&self) -> ContentDigest { self.recipe }
+    pub fn recipe(&self) -> ContentDigest {
+        self.recipe
+    }
     /// Complete source-linked joint result identity, not a publication or signature.
-    pub fn digest(&self) -> ContentDigest { self.digest }
+    pub fn digest(&self) -> ContentDigest {
+        self.digest
+    }
 }
 
 /// Independent upstream and temporal accounting. No inference budget is replenished here.
@@ -97,21 +119,28 @@ impl RtpSampledTrackingStats {
     /// Every native output was accounted for and every selected result was associated.
     /// Source gaps, failed inference, missing required frames or outer failures prevent success.
     pub fn complete(&self) -> bool {
-        self.tracking.ended && self.tracking.failures == 0 && self.sampling.complete()
+        self.tracking.ended
+            && self.tracking.failures == 0
+            && self.sampling.complete()
             && self.delivered == self.sampling.delivered
             && self.skipped == self.sampling.skipped
             && self.tracking.frames == self.sampling.detection.frames
             && self.delivered.checked_sub(self.skipped) == Some(self.tracking.frames)
     }
     /// True only for successful runs that actually inferred and associated every native output.
-    pub fn exhaustive(&self) -> bool { self.complete() && self.skipped == 0 }
+    pub fn exhaustive(&self) -> bool {
+        self.complete() && self.skipped == 0
+    }
 }
 
 /// One original source fact, one joint sampled position, or explicit terminal accounting.
 #[derive(Debug)]
 pub enum RtpSampledTrackingStep {
     /// Unmodified source/decode progress; intentional sampling never suppresses these facts.
-    Progress { event: RetainedRtpEvent, effect: RtpDecodeEffect },
+    Progress {
+        event: RetainedRtpEvent,
+        effect: RtpDecodeEffect,
+    },
     /// Selected association or explicit skip with original receipts and chained identity.
     Frame(RtpSampledTrackFrame),
     /// Terminal queries cannot restart the owner or restore allowances.
@@ -143,30 +172,53 @@ impl<'a> RtpSampledTracker<'a> {
             return Err(RtpTrackingError::InvalidRequest);
         }
         let core = TrackCore::new(request.tracker, request.limits)?;
-        let cascade = RtpDetectionCascade::new(retained, package, request.cascade,
-            deployment, cx, scalar).map_err(RtpTrackingError::Detection)?;
+        let cascade =
+            RtpDetectionCascade::new(retained, package, request.cascade, deployment, cx, scalar)
+                .map_err(RtpTrackingError::Detection)?;
         let mut e = CanonicalEncoder::new();
         e.text(RTP_SAMPLED_TRACKING_DOMAIN);
         e.digest(ContentDigest::sha256(include_bytes!("sampled.rs")));
-        e.digest(tracking_recipe(cascade.recipe(), request.class_index, &core)?);
+        e.digest(tracking_recipe(
+            cascade.recipe(),
+            request.class_index,
+            &core,
+        )?);
         let recipe = digest(e)?;
         let stats = RtpSampledTrackingStats {
             sampling: cascade.stats(),
-            tracking: RtpTrackingStats { detection: cascade.stats().detection, ..Default::default() },
+            tracking: RtpTrackingStats {
+                detection: cascade.stats().detection,
+                ..Default::default()
+            },
             ..Default::default()
         };
-        Ok(Self { cascade: Some(cascade), core, class_index: request.class_index,
-            recipe, basis: deployment.current_anchor().clone(), stats })
+        Ok(Self {
+            cascade: Some(cascade),
+            core,
+            class_index: request.class_index,
+            recipe,
+            basis: deployment.current_anchor().clone(),
+            stats,
+        })
     }
     /// Complete immutable interpretation including intentional observation gaps.
-    pub fn recipe(&self) -> ContentDigest { self.recipe }
+    pub fn recipe(&self) -> ContentDigest {
+        self.recipe
+    }
     /// Current lifetime accounting, including work reserved before a failed delivery.
-    pub fn stats(&self) -> RtpSampledTrackingStats { self.stats }
+    pub fn stats(&self) -> RtpSampledTrackingStats {
+        self.stats
+    }
     /// Any refusal terminates the entire owner and drops queued media and numerical state.
-    pub fn step(&mut self, deployment: &ReferenceDeployment, cx: &ReplayCx,
-        scalar: &ScalarExecCx) -> Result<RtpSampledTrackingStep>
-    {
-        if self.cascade.is_none() { return Ok(RtpSampledTrackingStep::Ended(self.stats)); }
+    pub fn step(
+        &mut self,
+        deployment: &ReferenceDeployment,
+        cx: &ReplayCx,
+        scalar: &ScalarExecCx,
+    ) -> Result<RtpSampledTrackingStep> {
+        if self.cascade.is_none() {
+            return Ok(RtpSampledTrackingStep::Ended(self.stats));
+        }
         let mut result = self.advance(deployment, cx, scalar);
         self.stats.tracking.assignments_reserved = self.core.assignments;
         self.stats.tracking.assignment_work_reserved = self.core.work;
@@ -187,20 +239,30 @@ impl<'a> RtpSampledTracker<'a> {
             other => other,
         }
     }
-    fn advance(&mut self, deployment: &ReferenceDeployment, cx: &ReplayCx,
-        scalar: &ScalarExecCx) -> Result<RtpSampledTrackingStep>
-    {
+    fn advance(
+        &mut self,
+        deployment: &ReferenceDeployment,
+        cx: &ReplayCx,
+        scalar: &ScalarExecCx,
+    ) -> Result<RtpSampledTrackingStep> {
         checkpoint(cx, scalar, "rtp_sampled_track:step")?;
-        if deployment.current_anchor() != &self.basis { return Err(RtpTrackingError::StaleBasis); }
+        if deployment.current_anchor() != &self.basis {
+            return Err(RtpTrackingError::StaleBasis);
+        }
         let cascade = self.cascade.as_mut().ok_or(RtpTrackingError::Encoding)?;
         let result = cascade.step(deployment, cx, scalar);
         self.stats.sampling = cascade.stats();
         self.stats.tracking.detection = self.stats.sampling.detection;
         match result.map_err(RtpTrackingError::Detection)? {
             RtpCascadeStep::Progress { event, effect } => {
-                if matches!(&effect, RtpDecodeEffect::Refused { .. }
-                    | RtpDecodeEffect::WaitingForIdr { .. } | RtpDecodeEffect::Fenced)
-                { self.core.gap = true; }
+                if matches!(
+                    &effect,
+                    RtpDecodeEffect::Refused { .. }
+                        | RtpDecodeEffect::WaitingForIdr { .. }
+                        | RtpDecodeEffect::Fenced
+                ) {
+                    self.core.gap = true;
+                }
                 Ok(RtpSampledTrackingStep::Progress { event, effect })
             }
             RtpCascadeStep::Ended(_) => {
@@ -218,9 +280,16 @@ impl<'a> RtpSampledTracker<'a> {
                 let (association, retired_on_skip) = if let Some(detected) = sample.detection() {
                     let (assigned, reset, observations) =
                         associate(&mut self.core, detected, self.class_index, self.recipe)?;
-                    (Some(RtpSampledAssociation { observations, epoch: self.core.epoch, reset,
-                        active_tracks: assigned.output.tracks.len(),
-                        deleted_tracks: assigned.output.deleted_tracks }), 0)
+                    (
+                        Some(RtpSampledAssociation {
+                            observations,
+                            epoch: self.core.epoch,
+                            reset,
+                            active_tracks: assigned.output.tracks.len(),
+                            deleted_tracks: assigned.output.deleted_tracks,
+                        }),
+                        0,
+                    )
                 } else {
                     // No empty tracker step: retire stale hypotheses without adding misses,
                     // hits, sample-step velocities, frame charges or synthetic observations.
@@ -228,31 +297,44 @@ impl<'a> RtpSampledTracker<'a> {
                     // triggers the shared DisplayGap reset and cannot reuse an old identity.
                     (None, retire_on_skip(&mut self.core)?)
                 };
-                let mut frame = RtpSampledTrackFrame { sample, association, retired_on_skip,
-                    predecessor: self.stats.last_result, recipe: self.recipe,
-                    digest: ContentDigest::sha256(&[]) };
+                let mut frame = RtpSampledTrackFrame {
+                    sample,
+                    association,
+                    retired_on_skip,
+                    predecessor: self.stats.last_result,
+                    recipe: self.recipe,
+                    digest: ContentDigest::sha256(&[]),
+                };
                 let mut e = CanonicalEncoder::new();
                 e.text("fss.rtp_sampled_tracked_frame.v1");
                 e.digest(self.recipe);
                 e.digest(frame.sample.digest());
                 e.bool(frame.predecessor.is_some());
-                if let Some(previous) = frame.predecessor { e.digest(previous); }
+                if let Some(previous) = frame.predecessor {
+                    e.digest(previous);
+                }
                 e.u64(retired_on_skip as u64);
                 e.u64(self.core.work);
                 e.u64(self.core.assignments);
                 e.bool(frame.association.is_some());
                 if let Some(a) = &frame.association {
                     e.u64(a.epoch);
-                    e.u8(match a.reset { None => 0, Some(RtpTrackReset::Baseline) => 1,
-                        Some(RtpTrackReset::SourceGap) => 2, Some(RtpTrackReset::DisplayGap) => 3,
-                        Some(RtpTrackReset::ProjectionChanged) => 4 });
+                    e.u8(match a.reset {
+                        None => 0,
+                        Some(RtpTrackReset::Baseline) => 1,
+                        Some(RtpTrackReset::SourceGap) => 2,
+                        Some(RtpTrackReset::DisplayGap) => 3,
+                        Some(RtpTrackReset::ProjectionChanged) => 4,
+                    });
                     e.u64(a.active_tracks as u64);
                     e.u64(a.deleted_tracks as u64);
                     encode_observations(&mut e, &a.observations)?;
                 }
                 frame.digest = digest(e)?;
                 checkpoint(cx, scalar, "rtp_sampled_track:deliver")?;
-                if deployment.current_anchor() != &self.basis { return Err(RtpTrackingError::StaleBasis); }
+                if deployment.current_anchor() != &self.basis {
+                    return Err(RtpTrackingError::StaleBasis);
+                }
                 self.stats.delivered += 1;
                 self.stats.skipped += usize::from(frame.association.is_none());
                 self.stats.tracking.frames += usize::from(frame.association.is_some());
@@ -277,18 +359,39 @@ mod tests {
     use super::*;
     type Test = std::result::Result<(), Box<dyn std::error::Error>>;
     fn core(limits: RtpTrackingLimits) -> Result<TrackCore> {
-        TrackCore::new(TrackerConfig { min_hits: 2, max_misses: 2, iou_threshold: 0.1,
-            process_noise: 1.0, measurement_noise: 1.0 }, limits)
+        TrackCore::new(
+            TrackerConfig {
+                min_hits: 2,
+                max_misses: 2,
+                iou_threshold: 0.1,
+                process_noise: 1.0,
+                measurement_noise: 1.0,
+            },
+            limits,
+        )
     }
     fn order(index: usize) -> FrameOrder {
-        FrameOrder { index, decoder_epoch: 0, dimensions: [640, 480], policy: None }
+        FrameOrder {
+            index,
+            decoder_epoch: 0,
+            dimensions: [640, 480],
+            policy: None,
+        }
     }
     fn boxes() -> [Detection; 1] {
-        [Detection { box_x: 0.0, box_y: 0.0, box_w: 20.0, box_h: 20.0 }]
+        [Detection {
+            box_x: 0.0,
+            box_y: 0.0,
+            box_w: 20.0,
+            box_h: 20.0,
+        }]
     }
     #[test]
     fn skips_retire_without_negative_updates_or_replenishing_any_allowance() -> Test {
-        let mut c = core(RtpTrackingLimits { max_assignments: 3, ..Default::default() })?;
+        let mut c = core(RtpTrackingLimits {
+            max_assignments: 3,
+            ..Default::default()
+        })?;
         c.advance(order(0), &boxes())?;
         let (confirmed, _) = c.advance(order(1), &boxes())?;
         assert_eq!(confirmed.output.tracks[0].status, TrackStatus::Confirmed);
@@ -301,7 +404,10 @@ mod tests {
         assert_eq!(c.epoch, 1);
         assert_eq!(fresh.output.tracks[0].hits, 1);
         assert_eq!(fresh.output.tracks[0].status, TrackStatus::Tentative);
-        assert!(matches!(c.advance(order(5), &boxes()), Err(RtpTrackingError::Limit)));
+        assert!(matches!(
+            c.advance(order(5), &boxes()),
+            Err(RtpTrackingError::Limit)
+        ));
         assert_eq!(c.assignments, 3);
         Ok(())
     }
@@ -322,11 +428,19 @@ mod tests {
         let mut c = core(RtpTrackingLimits::default())?;
         c.advance(order(0), &boxes())?;
         let (confirmed, _) = c.advance(order(1), &boxes())?;
-        let confirmed = confirmed.output.tracks.first().ok_or("confirmed track missing")?;
+        let confirmed = confirmed
+            .output
+            .tracks
+            .first()
+            .ok_or("confirmed track missing")?;
         assert_eq!(confirmed.status, TrackStatus::Confirmed);
         assert_eq!((confirmed.hits, confirmed.misses), (2, 0));
         let (missed, _) = c.advance(order(2), &[])?;
-        let lost = missed.output.tracks.first().ok_or("confirmed track unexpectedly retired")?;
+        let lost = missed
+            .output
+            .tracks
+            .first()
+            .ok_or("confirmed track unexpectedly retired")?;
         assert_eq!(lost.id, confirmed.id);
         assert_eq!(lost.status, TrackStatus::Lost);
         assert_eq!((lost.hits, lost.misses), (2, 1));
@@ -342,14 +456,20 @@ mod tests {
     }
     #[test]
     fn skipping_preserves_source_gap_and_does_not_refill_selected_frame_limit() -> Test {
-        let mut c = core(RtpTrackingLimits { max_frames: 2, ..Default::default() })?;
+        let mut c = core(RtpTrackingLimits {
+            max_frames: 2,
+            ..Default::default()
+        })?;
         c.advance(order(0), &boxes())?;
         c.gap = true;
         retire_on_skip(&mut c)?;
         let (_, reset) = c.advance(order(3), &boxes())?;
         assert_eq!(reset, Some(RtpTrackReset::SourceGap));
         retire_on_skip(&mut c)?;
-        assert!(matches!(c.advance(order(5), &[]), Err(RtpTrackingError::Limit)));
+        assert!(matches!(
+            c.advance(order(5), &[]),
+            Err(RtpTrackingError::Limit)
+        ));
         assert_eq!(c.frames, 2);
         Ok(())
     }

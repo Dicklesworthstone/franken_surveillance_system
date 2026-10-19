@@ -51,7 +51,8 @@ fn complete_nominal_lineage_is_kept_even_when_the_screen_removes_witnesses() -> 
 }
 
 #[test]
-fn lineage_is_ordered_and_binds_the_unscreened_companion_not_just_the_calibrated_camera() -> TestResult {
+fn lineage_is_ordered_and_binds_the_unscreened_companion_not_just_the_calibrated_camera()
+-> TestResult {
     let (a, screen) = fixture(1, true)?;
     let (b, _) = fixture(2, false)?;
     let set = project(&a, &screen, &b)?;

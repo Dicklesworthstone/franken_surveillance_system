@@ -48,10 +48,14 @@ impl JournaledLiveHevcArchive<'_, '_> {
             || self.interrupted.is_some()
             || self.completion.is_some()
             || !self.ready
-            || self.writer.as_ref().is_none_or(|writer| writer.pending().is_some())
-            || self.capture.as_ref().is_none_or(|capture| {
-                capture.busy() || capture.collector().retained_samples() == 0
-            })
+            || self
+                .writer
+                .as_ref()
+                .is_none_or(|writer| writer.pending().is_some())
+            || self
+                .capture
+                .as_ref()
+                .is_none_or(|capture| capture.busy() || capture.collector().retained_samples() == 0)
         {
             return Err(self.network_failure(failure));
         }
@@ -130,7 +134,12 @@ impl JournaledLiveHevcArchive<'_, '_> {
     }
 
     pub(super) fn finish_interruption(&mut self) -> Option<LiveHevcArchiveFailure> {
-        let kind = self.interrupted.as_ref().filter(|state| state.drained)?.receipt.kind;
+        let kind = self
+            .interrupted
+            .as_ref()
+            .filter(|state| state.drained)?
+            .receipt
+            .kind;
         Some(self.fatal(
             LiveHevcArchiveError::Network(LiveHevcError::Transport(TcpError::Io {
                 operation: TcpOperation::Read,
@@ -146,7 +155,8 @@ fn abrupt_read_kind(reason: &LiveHevcError) -> Option<ErrorKind> {
     match reason {
         LiveHevcError::Transport(TcpError::Io {
             operation: TcpOperation::Read,
-            kind: kind @ (ErrorKind::ConnectionReset
+            kind:
+                kind @ (ErrorKind::ConnectionReset
                 | ErrorKind::ConnectionAborted
                 | ErrorKind::BrokenPipe
                 | ErrorKind::UnexpectedEof
@@ -162,17 +172,33 @@ mod tests {
 
     #[test]
     fn preservation_requires_a_typed_abrupt_read_not_a_write_or_connect_fault() {
-        for operation in [TcpOperation::Read, TcpOperation::Write, TcpOperation::Connect] {
+        for operation in [
+            TcpOperation::Read,
+            TcpOperation::Write,
+            TcpOperation::Connect,
+        ] {
             for kind in [
-                ErrorKind::ConnectionReset, ErrorKind::ConnectionAborted,
-                ErrorKind::BrokenPipe, ErrorKind::UnexpectedEof, ErrorKind::NotConnected,
-                ErrorKind::WouldBlock, ErrorKind::Interrupted, ErrorKind::TimedOut,
-                ErrorKind::PermissionDenied, ErrorKind::Other,
+                ErrorKind::ConnectionReset,
+                ErrorKind::ConnectionAborted,
+                ErrorKind::BrokenPipe,
+                ErrorKind::UnexpectedEof,
+                ErrorKind::NotConnected,
+                ErrorKind::WouldBlock,
+                ErrorKind::Interrupted,
+                ErrorKind::TimedOut,
+                ErrorKind::PermissionDenied,
+                ErrorKind::Other,
             ] {
                 let error = LiveHevcError::Transport(TcpError::Io { operation, kind });
-                let expected = operation == TcpOperation::Read && matches!(kind,
-                    ErrorKind::ConnectionReset | ErrorKind::ConnectionAborted
-                    | ErrorKind::BrokenPipe | ErrorKind::UnexpectedEof | ErrorKind::NotConnected);
+                let expected = operation == TcpOperation::Read
+                    && matches!(
+                        kind,
+                        ErrorKind::ConnectionReset
+                            | ErrorKind::ConnectionAborted
+                            | ErrorKind::BrokenPipe
+                            | ErrorKind::UnexpectedEof
+                            | ErrorKind::NotConnected
+                    );
                 assert_eq!(abrupt_read_kind(&error), expected.then_some(kind));
             }
         }
@@ -181,11 +207,18 @@ mod tests {
     #[test]
     fn preservation_never_reclassifies_authority_deadline_or_budget_refusals() {
         for error in [
-            TcpError::Deadline, TcpError::ReadDeadline, TcpError::WorkBudget,
-            TcpError::RequestBudget, TcpError::PeerMismatch, TcpError::Interrupted,
-            TcpError::WriteZero, TcpError::Denied(TcpDenial::Unauthorized),
-            TcpError::Denied(TcpDenial::Revoked), TcpError::Denied(TcpDenial::Cancelled),
-            TcpError::Denied(TcpDenial::Budget), TcpError::Denied(TcpDenial::Deadline),
+            TcpError::Deadline,
+            TcpError::ReadDeadline,
+            TcpError::WorkBudget,
+            TcpError::RequestBudget,
+            TcpError::PeerMismatch,
+            TcpError::Interrupted,
+            TcpError::WriteZero,
+            TcpError::Denied(TcpDenial::Unauthorized),
+            TcpError::Denied(TcpDenial::Revoked),
+            TcpError::Denied(TcpDenial::Cancelled),
+            TcpError::Denied(TcpDenial::Budget),
+            TcpError::Denied(TcpDenial::Deadline),
         ] {
             assert!(abrupt_read_kind(&LiveHevcError::Transport(error)).is_none());
         }

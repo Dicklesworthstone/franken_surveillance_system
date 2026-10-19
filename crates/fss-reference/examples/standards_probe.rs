@@ -8,7 +8,7 @@ use std::net::Ipv4Addr;
 use std::sync::atomic::AtomicBool;
 
 use fss_reference::discovery::standards::{
-    mdns_probe, ssdp_probe, wsdiscovery_probe, MDNS_CAMERA_TYPES,
+    MDNS_CAMERA_TYPES, mdns_probe, ssdp_probe, wsdiscovery_probe,
 };
 
 fn main() {

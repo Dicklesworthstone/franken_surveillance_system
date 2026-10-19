@@ -5,8 +5,8 @@ use std::error::Error;
 
 use fss_core::{CaptureInterval, ContentDigest, TimestampNs};
 use fss_reference::{
-    ClockOffsetSkewEstimator, ClockSyncEstimate, EstimatorConfig, ReferenceError,
-    SyncFitResidual, TimeSyncSample,
+    ClockOffsetSkewEstimator, ClockSyncEstimate, EstimatorConfig, ReferenceError, SyncFitResidual,
+    TimeSyncSample,
 };
 
 type TestResult = Result<(), Box<dyn Error>>;
@@ -57,11 +57,23 @@ fn inverse_scales_sensor_uncertainty_for_slow_and_fast_clocks() -> TestResult {
 #[test]
 fn forward_projection_rounds_both_signed_fractional_endpoints_outward() -> TestResult {
     let positive = model(500_000, 1, 0)?;
-    assert_eq!(bounds(positive.predict_sensor_interval(TimestampNs(1))?), (37, 40));
-    assert_eq!(bounds(positive.predict_sensor_interval(TimestampNs(-1))?), (34, 37));
+    assert_eq!(
+        bounds(positive.predict_sensor_interval(TimestampNs(1))?),
+        (37, 40)
+    );
+    assert_eq!(
+        bounds(positive.predict_sensor_interval(TimestampNs(-1))?),
+        (34, 37)
+    );
     let negative = model(-500_000, 1, 0)?;
-    assert_eq!(bounds(negative.predict_sensor_interval(TimestampNs(1))?), (36, 39));
-    assert_eq!(bounds(negative.predict_sensor_interval(TimestampNs(-1))?), (35, 38));
+    assert_eq!(
+        bounds(negative.predict_sensor_interval(TimestampNs(1))?),
+        (36, 39)
+    );
+    assert_eq!(
+        bounds(negative.predict_sensor_interval(TimestampNs(-1))?),
+        (35, 38)
+    );
     Ok(())
 }
 
@@ -83,8 +95,14 @@ fn composed_uncertainty_is_not_narrowed_by_u64_saturation() -> TestResult {
 #[test]
 fn zero_uncertainty_retains_the_one_nanosecond_floor() -> TestResult {
     let estimate = model(0, 0, 0)?;
-    assert_eq!(bounds(estimate.predict_sensor_interval(TimestampNs(0))?), (36, 38));
-    assert_eq!(bounds(estimate.predict_reference_interval(TimestampNs(37))?), (-1, 1));
+    assert_eq!(
+        bounds(estimate.predict_sensor_interval(TimestampNs(0))?),
+        (36, 38)
+    );
+    assert_eq!(
+        bounds(estimate.predict_reference_interval(TimestampNs(37))?),
+        (-1, 1)
+    );
     Ok(())
 }
 
@@ -99,8 +117,14 @@ fn fractional_nominal_inverse_cannot_round_back_into_validity() -> TestResult {
         ));
     }
     // Exact endpoints remain admitted; uncertainty is not clipped to the horizon.
-    assert_eq!(bounds(estimate.predict_reference_interval(TimestampNs(37))?), (-1, 1));
-    assert_eq!(bounds(estimate.predict_reference_interval(TimestampNs(187))?), (99, 101));
+    assert_eq!(
+        bounds(estimate.predict_reference_interval(TimestampNs(37))?),
+        (-1, 1)
+    );
+    assert_eq!(
+        bounds(estimate.predict_reference_interval(TimestampNs(187))?),
+        (99, 101)
+    );
     Ok(())
 }
 
@@ -191,10 +215,13 @@ fn projections_match_an_independent_exact_rational_oracle() -> TestResult {
                             assert_eq!(
                                 bounds(estimate.predict_sensor_interval(TimestampNs(reference))?),
                                 (
+                                    reference
+                                        + i128::from(offset)
+                                        + numerator.div_euclid(1_000_000)
+                                        - u,
                                     reference + i128::from(offset)
-                                        + numerator.div_euclid(1_000_000) - u,
-                                    reference + i128::from(offset)
-                                        - (-numerator).div_euclid(1_000_000) + u,
+                                        - (-numerator).div_euclid(1_000_000)
+                                        + u,
                                 )
                             );
                         }
@@ -242,7 +269,10 @@ fn fitted_slow_clock_uses_the_same_conservative_projection() -> TestResult {
         (3, 2_000_000, 1_000_037),
     ] {
         estimator.add_sample(TimeSyncSample::new(
-            sequence, TimestampNs(reference), TimestampNs(sensor), 10,
+            sequence,
+            TimestampNs(reference),
+            TimestampNs(sensor),
+            10,
         )?)?;
     }
     let estimate = estimator.fit()?;

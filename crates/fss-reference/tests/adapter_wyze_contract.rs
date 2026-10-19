@@ -34,7 +34,8 @@ fn identity_constructs_verified_and_compliant() {
     assert_eq!(id.isolation_mode, IsolationMode::SealedLaboratoryProcess);
     assert_eq!(id.credential_method, CredentialMethod::LocalSecret);
     id.verify().expect("structural verify");
-    id.verify_standards_compliance().expect("NEG-002 compliance");
+    id.verify_standards_compliance()
+        .expect("NEG-002 compliance");
 }
 
 #[test]

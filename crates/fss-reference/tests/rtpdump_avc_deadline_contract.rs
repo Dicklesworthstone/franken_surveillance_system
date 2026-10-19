@@ -94,7 +94,9 @@ fn sparse_arrival_visits_reorder_then_fragment_deadline_before_admitting_tail() 
                     }
                     let group = match &event {
                         AvcReceivePoll::Picture(p) => Some(p),
-                        AvcReceivePoll::Assembly(AvcAssemblyStep::Accepted(o)) => o.picture.as_ref(),
+                        AvcReceivePoll::Assembly(AvcAssemblyStep::Accepted(o)) => {
+                            o.picture.as_ref()
+                        }
                         AvcReceivePoll::Ended { tail: Some(o), .. } => o.picture.as_ref(),
                         _ => None,
                     };
@@ -115,7 +117,10 @@ fn sparse_arrival_visits_reorder_then_fragment_deadline_before_admitting_tail() 
                 other => return Err(format!("unexpected replay event: {other:?}").into()),
             }
         }
-        assert!(exhausted, "large source offsets must not cause timer spinning");
+        assert!(
+            exhausted,
+            "large source offsets must not cause timer spinning"
+        );
         assert_eq!(records, 4);
         assert_eq!(gaps, 1);
         assert_eq!(expired, usize::from(should_expire));

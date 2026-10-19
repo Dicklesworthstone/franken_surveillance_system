@@ -85,7 +85,8 @@ fn main() {
     let mut deployment = ReferenceDeployment::open(&root, &site, &cx).expect("open deployment");
 
     let sock = UdpSocket::bind((bind_ip.as_str(), 0u16)).expect("bind");
-    sock.set_read_timeout(Some(Duration::from_millis(20))).unwrap();
+    sock.set_read_timeout(Some(Duration::from_millis(20)))
+        .unwrap();
     let mut peer: std::net::SocketAddr = format!("{cam_ip}:{cam_port}").parse().unwrap();
 
     let seed = (std::time::SystemTime::now()
@@ -112,7 +113,11 @@ fn main() {
     };
     let mut ing = TutkIngest::new(cfg).expect("construct ingest");
 
-    println!("acquire: {cam_ip}:{cam_port} -> {} ({}s)", root.display(), secs);
+    println!(
+        "acquire: {cam_ip}:{cam_port} -> {} ({}s)",
+        root.display(),
+        secs
+    );
     let t0 = Instant::now();
     let mut last_phase = ing.session_phase();
     let mut buf = [0u8; 65535];
@@ -122,7 +127,9 @@ fn main() {
             let _ = sock.send_to(&d, peer);
         }
         if let Ok((n, src)) = sock.recv_from(&mut buf) {
-            if ing.session_phase() == fss_tutk::session::PhaseName::Discovery && src.ip() == peer.ip() {
+            if ing.session_phase() == fss_tutk::session::PhaseName::Discovery
+                && src.ip() == peer.ip()
+            {
                 peer = src;
             }
             ing.feed_datagram(&buf[..n], now_ns);
@@ -130,7 +137,12 @@ fn main() {
         ing.advance(now_ns);
         let phase = ing.session_phase();
         if phase != last_phase {
-            println!("acquire: [{:6.2?}] phase {:?} -> {:?}", t0.elapsed(), last_phase, phase);
+            println!(
+                "acquire: [{:6.2?}] phase {:?} -> {:?}",
+                t0.elapsed(),
+                last_phase,
+                phase
+            );
             last_phase = phase;
         }
         if matches!(
@@ -166,5 +178,8 @@ fn main() {
         seal.capsule_count,
         seal.input_bytes
     );
-    println!("acquire: inspect with: fss doctor --root {}", root.display());
+    println!(
+        "acquire: inspect with: fss doctor --root {}",
+        root.display()
+    );
 }

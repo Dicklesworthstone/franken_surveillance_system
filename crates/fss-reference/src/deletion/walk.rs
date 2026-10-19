@@ -417,7 +417,9 @@ impl Universe {
                 return Err(DeletionError::RecordMismatch);
             }
             let admitted = super::rtp::inspect(deployment, identity, cx)?;
-            let seeds = units.iter().enumerate()
+            let seeds = units
+                .iter()
+                .enumerate()
                 .filter_map(|(at, unit)| admitted.owns(&unit.id).then_some(at))
                 .collect();
             imports.insert(identity, seeds);
@@ -597,9 +599,11 @@ impl Universe {
             let mut sensors: BTreeMap<SensorId, BTreeSet<ContentDigest>> = BTreeMap::new();
             let mut unresolved = Vec::new();
             for import in self.imports.keys() {
-                let named = self.rtp_imports.get(import).map(|rtp| {
-                    BTreeSet::from([rtp.sensor.clone()])
-                }).or_else(|| import_sensors(deployment, *import));
+                let named = self
+                    .rtp_imports
+                    .get(import)
+                    .map(|rtp| BTreeSet::from([rtp.sensor.clone()]))
+                    .or_else(|| import_sensors(deployment, *import));
                 match named {
                     Some(named) => {
                         for sensor in named {
@@ -1153,9 +1157,10 @@ impl Universe {
     /// referencing a deletion subject is exactly how authority history is
     /// pulled into the closure and retained.
     fn foreign_refs_ok(&self, digest: ContentDigest, via: &[Option<ContentDigest>]) -> bool {
-        self.ref_holders
-            .get(&digest)
-            .is_none_or(|refs| refs.iter().all(|h| via[*h].is_some() || self.units[*h].authority))
+        self.ref_holders.get(&digest).is_none_or(|refs| {
+            refs.iter()
+                .all(|h| via[*h].is_some() || self.units[*h].authority)
+        })
     }
 
     /// Whether every unit holding `digest` is closure content.

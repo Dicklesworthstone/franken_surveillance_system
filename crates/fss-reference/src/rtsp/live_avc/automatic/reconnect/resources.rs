@@ -140,7 +140,12 @@ impl ReconnectBudget {
                 limit.received_bytes,
                 D::ReceivedBytes,
             )?,
-            sent_bytes: add(self.sent_bytes, cost.sent_bytes, limit.sent_bytes, D::SentBytes)?,
+            sent_bytes: add(
+                self.sent_bytes,
+                cost.sent_bytes,
+                limit.sent_bytes,
+                D::SentBytes,
+            )?,
             io_calls: add(self.io_calls, cost.io_calls, limit.io_calls, D::IoCalls)?,
             connection_steps: add(
                 self.connection_steps,
@@ -182,7 +187,9 @@ impl ReconnectBudgetState {
     pub fn remaining(self) -> Option<ReconnectBudget> {
         let limit = self.limit?;
         Some(ReconnectBudget {
-            received_bytes: limit.received_bytes.checked_sub(self.reserved.received_bytes)?,
+            received_bytes: limit
+                .received_bytes
+                .checked_sub(self.reserved.received_bytes)?,
             sent_bytes: limit.sent_bytes.checked_sub(self.reserved.sent_bytes)?,
             io_calls: limit.io_calls.checked_sub(self.reserved.io_calls)?,
             connection_steps: limit
@@ -265,7 +272,12 @@ mod tests {
     fn every_dimension_refuses_atomically_without_refunding_previous_attempts()
     -> Result<(), ReconnectBudgetRefusal> {
         use ReconnectBudgetDimension as D;
-        for dimension in [D::ReceivedBytes, D::SentBytes, D::IoCalls, D::ConnectionSteps] {
+        for dimension in [
+            D::ReceivedBytes,
+            D::SentBytes,
+            D::IoCalls,
+            D::ConnectionSteps,
+        ] {
             let mut ledger = ReservationLedger::bounded(budget(10))?;
             ledger.reserve(budget(4), 4)?;
             let before = ledger.state();
@@ -314,7 +326,9 @@ mod tests {
         let before = ledger.state();
         assert_eq!(
             ledger.reserve(budget(u64::MAX), 2),
-            Err(ReconnectBudgetRefusal::Overflow(ReconnectBudgetDimension::ReceivedBytes))
+            Err(ReconnectBudgetRefusal::Overflow(
+                ReconnectBudgetDimension::ReceivedBytes
+            ))
         );
         assert_eq!(ledger.state(), before);
         ledger.reserve(budget(1), 2)?;
@@ -330,7 +344,9 @@ mod tests {
         let before = ledger.state();
         assert_eq!(
             ledger.reserve(budget(2), 2),
-            Err(ReconnectBudgetRefusal::Overflow(ReconnectBudgetDimension::ReceivedBytes))
+            Err(ReconnectBudgetRefusal::Overflow(
+                ReconnectBudgetDimension::ReceivedBytes
+            ))
         );
         assert_eq!(ledger.state(), before);
         Ok(())

@@ -532,7 +532,6 @@ impl ReferenceError {
     pub const fn is_recover_corrupt_history(&self) -> bool {
         matches!(self, Self::RecoverCorruptHistory { .. })
     }
-
 }
 
 impl Error for ReferenceError {

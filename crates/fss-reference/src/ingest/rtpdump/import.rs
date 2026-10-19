@@ -120,8 +120,11 @@ impl std::fmt::Debug for RtpImportError {
             Self::Limit => f.write_str("Limit"),
             Self::Binding => f.write_str("Binding"),
             Self::Digest => f.write_str("Digest"),
-            Self::EvidenceDeleted { root, plan } => f.debug_struct("EvidenceDeleted")
-                .field("root", root).field("plan", plan).finish(),
+            Self::EvidenceDeleted { root, plan } => f
+                .debug_struct("EvidenceDeleted")
+                .field("root", root)
+                .field("plan", plan)
+                .finish(),
             Self::DeletionAuthority => f.write_str("DeletionAuthority"),
             Self::Cancelled => f.write_str("Cancelled"),
             Self::MissingReceiveTime => f.write_str("MissingReceiveTime"),
@@ -137,10 +140,13 @@ impl std::fmt::Debug for RtpImportError {
 impl std::fmt::Display for RtpImportError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
-            Self::EvidenceDeleted { root, plan } => write!(f,
-                "ERR-EVIDENCE-DELETED-001: recorded RTP root {root} is deleted under plan {plan}"),
+            Self::EvidenceDeleted { root, plan } => write!(
+                f,
+                "ERR-EVIDENCE-DELETED-001: recorded RTP root {root} is deleted under plan {plan}"
+            ),
             Self::DeletionAuthority => f.write_str(
-                "ERR-DELETION-STORAGE-001: recorded RTP deletion authority is unreadable"),
+                "ERR-DELETION-STORAGE-001: recorded RTP deletion authority is unreadable",
+            ),
             _ => write!(f, "recorded RTP import refusal: {self:?}"),
         }
     }

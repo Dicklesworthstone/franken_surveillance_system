@@ -92,8 +92,13 @@ fn clean(bytes: &[u8], expected_header_bytes: usize) -> Result<Seen, Error> {
                 seen.records += 1;
                 seen.reversed += usize::from(offset_reversed);
             }
-            HevcDumpStep::Progress(H265ReceivePoll::Packet { source, reconstruction }) => {
-                let original = replay.source_record(source.sequence()).ok_or("missing source")?;
+            HevcDumpStep::Progress(H265ReceivePoll::Packet {
+                source,
+                reconstruction,
+            }) => {
+                let original = replay
+                    .source_record(source.sequence())
+                    .ok_or("missing source")?;
                 assert_eq!(source.bytes(), original.packet());
                 let output = reconstruction?;
                 assert!(!output.gap_before);
@@ -104,7 +109,9 @@ fn clean(bytes: &[u8], expected_header_bytes: usize) -> Result<Seen, Error> {
                     assert_eq!(spans.len(), nal.sources().len());
                     for (span, kernel) in spans.into_iter().zip(nal.sources()) {
                         assert_eq!(&bytes[span.wire.clone()], &nal.bytes()[span.nal]);
-                        let packet = replay.source_record(kernel.sequence).ok_or("source record")?;
+                        let packet = replay
+                            .source_record(kernel.sequence)
+                            .ok_or("source record")?;
                         assert_eq!(span.record, packet.index());
                         assert!(
                             span.wire.start >= packet.packet_span().start + expected_header_bytes
@@ -119,7 +126,10 @@ fn clean(bytes: &[u8], expected_header_bytes: usize) -> Result<Seen, Error> {
                             );
                         }
                     }
-                    assert!(matches!(other_epoch.map_nal(&nal), Err(HevcDumpError::SourceMap)));
+                    assert!(matches!(
+                        other_epoch.map_nal(&nal),
+                        Err(HevcDumpError::SourceMap)
+                    ));
                     seen.markers.push(nal.marker());
                     seen.nals.push(nal.bytes().to_vec());
                 }
@@ -158,7 +168,12 @@ fn single_ap_and_fu_preserve_extensions_padding_sequence_wrap_and_first_original
     assert_eq!(seen.records, 6);
     assert_eq!(
         seen.nals,
-        vec![SINGLE.to_vec(), SINGLE.to_vec(), SECOND.to_vec(), MULTILAYER.to_vec()]
+        vec![
+            SINGLE.to_vec(),
+            SINGLE.to_vec(),
+            SECOND.to_vec(),
+            MULTILAYER.to_vec()
+        ]
     );
     assert_eq!(seen.markers, [true, false, true, true]);
     assert_eq!(seen.reversed, 0);
@@ -207,7 +222,10 @@ fn sparse_arrivals_cannot_grant_an_expired_fu_a_new_lifetime() -> TestResult {
         let mut exhausted = false;
         for _ in 0..128 {
             match replay.step(&cx) {
-                HevcDumpStep::Record { admission: HevcDumpAdmission::Rtp(_), .. } => {
+                HevcDumpStep::Record {
+                    admission: HevcDumpAdmission::Rtp(_),
+                    ..
+                } => {
                     records += 1;
                     if records == 4 {
                         assert_eq!(retirements > 0, expired, "arrival at {tail_ms} ms");
@@ -264,7 +282,10 @@ fn cancellation_between_deadline_events_never_admits_the_pending_tail() -> TestR
     let cx = cx()?;
     let mut replay = RecordedHevcReplay::new(&bytes, deadlines())?;
     for _ in 0..128 {
-        if matches!(replay.step(&cx), HevcDumpStep::Progress(H265ReceivePoll::Gap { .. })) {
+        if matches!(
+            replay.step(&cx),
+            HevcDumpStep::Progress(H265ReceivePoll::Gap { .. })
+        ) {
             cx.request_cancellation();
             assert!(matches!(replay.step(&cx), HevcDumpStep::Cancelled(_)));
             assert!(replay.source_record(13).is_some());
@@ -291,7 +312,9 @@ fn truncated_capture_fences_derivatives_but_keeps_all_following_originals() -> T
     let (mut records, mut prefix_seen, mut fenced) = (0, false, 0);
     for _ in 0..128 {
         match replay.step(&cx) {
-            HevcDumpStep::Record { source, admission, .. } => {
+            HevcDumpStep::Record {
+                source, admission, ..
+            } => {
                 assert_eq!(source.packet(), &bytes[source.packet_span()]);
                 records += 1;
                 match admission {
@@ -339,7 +362,9 @@ fn malformed_rtcp_and_ap_keep_exact_sources_without_destroying_independent_nals(
     let mut nals = Vec::new();
     for _ in 0..128 {
         match replay.step(&cx) {
-            HevcDumpStep::Record { source, admission, .. } => {
+            HevcDumpStep::Record {
+                source, admission, ..
+            } => {
                 assert_eq!(source.packet(), &bytes[source.packet_span()]);
                 records += 1;
                 match admission {
@@ -350,17 +375,18 @@ fn malformed_rtcp_and_ap_keep_exact_sources_without_destroying_independent_nals(
                     }
                 }
             }
-            HevcDumpStep::Progress(H265ReceivePoll::Packet { source, reconstruction }) => {
-                match reconstruction {
-                    Ok(output) => nals.extend(output.nals.into_iter().map(|n| n.bytes().to_vec())),
-                    Err(H265ReceiveError::Codec(error)) => {
-                        assert_eq!(source.bytes(), bad.as_slice());
-                        assert_eq!(error.reason, H265Error::Malformed);
-                        codec_errors += 1;
-                    }
-                    Err(error) => return Err(error.into()),
+            HevcDumpStep::Progress(H265ReceivePoll::Packet {
+                source,
+                reconstruction,
+            }) => match reconstruction {
+                Ok(output) => nals.extend(output.nals.into_iter().map(|n| n.bytes().to_vec())),
+                Err(H265ReceiveError::Codec(error)) => {
+                    assert_eq!(source.bytes(), bad.as_slice());
+                    assert_eq!(error.reason, H265Error::Malformed);
+                    codec_errors += 1;
                 }
-            }
+                Err(error) => return Err(error.into()),
+            },
             HevcDumpStep::Progress(H265ReceivePoll::Ended { discarded: None })
             | HevcDumpStep::InputEnded => {}
             HevcDumpStep::Exhausted => {
@@ -387,7 +413,9 @@ fn incomplete_eof_retires_fu_and_malformed_framing_never_becomes_clean_eof() -> 
         let mut retired = false;
         for _ in 0..128 {
             match replay.step(&cx) {
-                HevcDumpStep::Progress(H265ReceivePoll::Ended { discarded: Some(fragment) }) => {
+                HevcDumpStep::Progress(H265ReceivePoll::Ended {
+                    discarded: Some(fragment),
+                }) => {
                     assert!(!malformed);
                     assert_eq!(fragment.reason, H265Error::EndOfInput);
                     retired = true;
@@ -431,7 +459,10 @@ fn explicit_negotiation_and_container_ceilings_are_never_silently_broadened() ->
     let cx = cx()?;
     let mut replay = RecordedHevcReplay::new(&bytes, c)?;
     assert!(matches!(replay.step(&cx), HevcDumpStep::Record { .. }));
-    assert!(matches!(replay.step(&cx), HevcDumpStep::FramingRefused { .. }));
+    assert!(matches!(
+        replay.step(&cx),
+        HevcDumpStep::FramingRefused { .. }
+    ));
     assert!(matches!(replay.step(&cx), HevcDumpStep::Exhausted));
     Ok(())
 }
@@ -450,11 +481,16 @@ fn a_foreign_ssrc_fences_derivatives_without_hiding_refused_or_later_originals()
     let (mut records, mut refused, mut fenced) = (0, false, false);
     for _ in 0..128 {
         match replay.step(&cx) {
-            HevcDumpStep::Record { source, admission, .. } => {
+            HevcDumpStep::Record {
+                source, admission, ..
+            } => {
                 records += 1;
                 assert_eq!(source.packet(), &bytes[source.packet_span()]);
                 match admission {
-                    HevcDumpAdmission::Refused { error: HevcDumpError::Receiver(_), cancelled } => {
+                    HevcDumpAdmission::Refused {
+                        error: HevcDumpError::Receiver(_),
+                        cancelled,
+                    } => {
                         assert_eq!(source.packet(), wrong.as_slice());
                         assert!(cancelled.fragment.is_some());
                         refused = true;
@@ -512,12 +548,19 @@ fn identical_payload_at_a_different_media_timestamp_is_not_a_valid_source_mappin
         if let HevcDumpStep::Progress(H265ReceivePoll::Packet { reconstruction, .. }) =
             replay.step(&cx)
         {
-            let nal = reconstruction?.nals.into_iter().next().ok_or("original NAL")?;
+            let nal = reconstruction?
+                .nals
+                .into_iter()
+                .next()
+                .ok_or("original NAL")?;
             assert_eq!(nal.bytes(), candidate.bytes());
             assert_eq!(nal.key(), candidate.key());
             assert_ne!(nal.timestamp(), candidate.timestamp());
             assert!(!replay.map_nal(&nal)?.is_empty());
-            assert!(matches!(replay.map_nal(&candidate), Err(HevcDumpError::SourceMap)));
+            assert!(matches!(
+                replay.map_nal(&candidate),
+                Err(HevcDumpError::SourceMap)
+            ));
             return Ok(());
         }
     }

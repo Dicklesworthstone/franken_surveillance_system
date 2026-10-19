@@ -27,7 +27,9 @@ use fss_tutk::session::SessionConfig;
 fn lab_root() -> PathBuf {
     std::env::var("FSS_INTEROP_LAB")
         .map(PathBuf::from)
-        .unwrap_or_else(|_| PathBuf::from(std::env::var("HOME").unwrap()).join("projects/fss-interop-lab"))
+        .unwrap_or_else(|_| {
+            PathBuf::from(std::env::var("HOME").unwrap()).join("projects/fss-interop-lab")
+        })
 }
 
 struct SimGuard(Child);
@@ -62,7 +64,9 @@ fn main() {
         live_lane(&cfg_path, soak_secs);
     }
 
-    let mode = std::env::args().nth(1).unwrap_or_else(|| "normal".to_string());
+    let mode = std::env::args()
+        .nth(1)
+        .unwrap_or_else(|| "normal".to_string());
     let port: u16 = match mode.as_str() {
         "normal" => 32881,
         "expired" => 32882,
@@ -73,7 +77,9 @@ fn main() {
         "malformed" => 32887,
         "drop" => 32888,
         other => {
-            eprintln!("FATAL: unknown mode {other} (normal|expired|revoked|flaky|legacy-key|drift|malformed|drop)");
+            eprintln!(
+                "FATAL: unknown mode {other} (normal|expired|revoked|flaky|legacy-key|drift|malformed|drop)"
+            );
             std::process::exit(2);
         }
     };
@@ -96,7 +102,8 @@ fn main() {
 
     let sock = UdpSocket::bind("127.0.0.1:0").expect("bind client socket");
     sock.connect(("127.0.0.1", port)).expect("connect");
-    sock.set_read_timeout(Some(Duration::from_millis(20))).unwrap();
+    sock.set_read_timeout(Some(Duration::from_millis(20)))
+        .unwrap();
 
     // drift lane: empty allowlist — the unknown tuple itself must quarantine
     let sim_tuples: Vec<(String, String)> = if mode == "drift" {
@@ -143,7 +150,12 @@ fn main() {
         ing.advance(now_ns);
         let phase = ing.session_phase();
         if phase != last_phase {
-            println!("e2e: [{:6.2?}] phase {:?} -> {:?}", t0.elapsed(), last_phase, phase);
+            println!(
+                "e2e: [{:6.2?}] phase {:?} -> {:?}",
+                t0.elapsed(),
+                last_phase,
+                phase
+            );
             last_phase = phase;
         }
         let committed = ing.stats().capsules_committed + ing_pending(&ing);
@@ -156,7 +168,10 @@ fn main() {
                 ing.state()
             );
         }
-        if matches!(ing.state(), AcquisitionState::Failed { .. } | AcquisitionState::Indeterminate { .. }) {
+        if matches!(
+            ing.state(),
+            AcquisitionState::Failed { .. } | AcquisitionState::Indeterminate { .. }
+        ) {
             break;
         }
         // Stop the moment the requested frames are reassembled: the batch
@@ -192,7 +207,10 @@ fn main() {
     println!("e2e: batches committed      : {}", stats.batches_committed);
     println!("e2e: continuity gaps        : {}", stats.gaps);
     println!("e2e: video frames (session) : {}", sess.video_frames);
-    println!("e2e: audio dropped (policy) : {}", sess.audio_frames_dropped);
+    println!(
+        "e2e: audio dropped (policy) : {}",
+        sess.audio_frames_dropped
+    );
     println!("e2e: acks sent              : {}", sess.acks_sent);
     println!("e2e: AU frames collected    : {}", aus.len());
     println!("e2e: AU concat bytes        : {}", au_concat.len());
@@ -207,52 +225,97 @@ fn main() {
     };
     match mode.as_str() {
         "normal" | "legacy-key" => {
-            check("lifecycle ContinuityVerified", matches!(ing.state(), AcquisitionState::ContinuityVerified { .. }));
+            check(
+                "lifecycle ContinuityVerified",
+                matches!(ing.state(), AcquisitionState::ContinuityVerified { .. }),
+            );
             check("30 capsules committed", stats.capsules_committed == 30);
             check("no continuity gaps", stats.gaps == 0);
             check("ledger batches present", stats.batches_committed >= 1);
-            check("clip byte-identical (passthrough)", au_concat == fixture_bytes);
+            check(
+                "clip byte-identical (passthrough)",
+                au_concat == fixture_bytes,
+            );
         }
         "expired" | "revoked" => {
-            check("login refusal -> Failed", matches!(ing.state(), AcquisitionState::Failed { .. }));
-            check("no capsules from refused login", stats.capsules_committed == 0);
+            check(
+                "login refusal -> Failed",
+                matches!(ing.state(), AcquisitionState::Failed { .. }),
+            );
+            check(
+                "no capsules from refused login",
+                stats.capsules_committed == 0,
+            );
         }
         "flaky" => {
-            check("dropped session -> terminal honesty",
-                matches!(ing.state(), AcquisitionState::Failed { .. } | AcquisitionState::Indeterminate { .. }));
-            check("no capsules from dead session", stats.capsules_committed == 0);
+            check(
+                "dropped session -> terminal honesty",
+                matches!(
+                    ing.state(),
+                    AcquisitionState::Failed { .. } | AcquisitionState::Indeterminate { .. }
+                ),
+            );
+            check(
+                "no capsules from dead session",
+                stats.capsules_committed == 0,
+            );
         }
         "drift" => {
             match ing.state() {
                 AcquisitionState::Failed { reason } => {
                     check("drift quarantine -> Failed", reason.contains("quarantine"));
                 }
-                other => check(&format!("drift quarantine -> Failed (got {other:?})"), false),
+                other => check(
+                    &format!("drift quarantine -> Failed (got {other:?})"),
+                    false,
+                ),
             }
-            check("no capsules from quarantined camera", stats.capsules_committed == 0);
+            check(
+                "no capsules from quarantined camera",
+                stats.capsules_committed == 0,
+            );
         }
         "malformed" => {
             match ing.state() {
                 AcquisitionState::Failed { reason } => {
                     check("garbage discovery -> Failed", reason.contains("discovery"));
                 }
-                other => check(&format!("garbage discovery -> Failed (got {other:?})"), false),
+                other => check(
+                    &format!("garbage discovery -> Failed (got {other:?})"),
+                    false,
+                ),
             }
-            check("no capsules from malformed peer", stats.capsules_committed == 0);
+            check(
+                "no capsules from malformed peer",
+                stats.capsules_committed == 0,
+            );
         }
         "drop" => {
             match ing.state() {
                 AcquisitionState::Failed { reason } => {
-                    check("camera vanish -> stream-silence Failed", reason.contains("silent"));
+                    check(
+                        "camera vanish -> stream-silence Failed",
+                        reason.contains("silent"),
+                    );
                 }
                 other => check(&format!("camera vanish -> Failed (got {other:?})"), false),
             }
             // frames received before the vanish are committed (honest partial custody)
-            check("partial capsules before drop committed", stats.capsules_committed > 0 && stats.capsules_committed < 30);
+            check(
+                "partial capsules before drop committed",
+                stats.capsules_committed > 0 && stats.capsules_committed < 30,
+            );
         }
         _ => unreachable!(),
     }
-    println!("e2e: {}", if failures == 0 { "ALL CHECKS PASSED" } else { "FAILURES PRESENT" });
+    println!(
+        "e2e: {}",
+        if failures == 0 {
+            "ALL CHECKS PASSED"
+        } else {
+            "FAILURES PRESENT"
+        }
+    );
     std::process::exit(if failures == 0 { 0 } else { 1 });
 }
 /// Flat JSON string/number field extraction for the lab cfg files
@@ -288,9 +351,9 @@ fn live_lane(cfg_path: &str, soak_secs: Option<u64>) -> ! {
     // from a DIFFERENT source port and the session must adopt it (live-proven
     // 2026-10-07: responses arrived from 44650, not 32761).
     let sock = UdpSocket::bind((bind_ip.as_str(), 0u16)).expect("bind");
-    sock.set_read_timeout(Some(Duration::from_millis(20))).unwrap();
+    sock.set_read_timeout(Some(Duration::from_millis(20)))
+        .unwrap();
     let mut peer: std::net::SocketAddr = format!("{cam_ip}:{cam_port}").parse().unwrap();
-
 
     let cfg = TutkIngestConfig {
         session: SessionConfig {
@@ -305,7 +368,11 @@ fn live_lane(cfg_path: &str, soak_secs: Option<u64>) -> ! {
         sensor_id: SensorId::parse("sensor:tutk:live:01").unwrap(),
         stream_id: StreamId::parse("stream:tutk:live:01").unwrap(),
         site_lineage: "site:lab:tutk:live".to_string(),
-        audio: if audio { AudioPolicy::Enabled } else { AudioPolicy::Disabled },
+        audio: if audio {
+            AudioPolicy::Enabled
+        } else {
+            AudioPolicy::Disabled
+        },
         limits: TutkIngestLimits::default(),
         known_tuples: vec![("HL_CAM4".to_string(), "4.52.17.26".to_string())],
     };
@@ -315,7 +382,10 @@ fn live_lane(cfg_path: &str, soak_secs: Option<u64>) -> ! {
     let mut last_phase = ing.session_phase();
     let mut buf = [0u8; 65535];
     let deadline = soak_secs.unwrap_or(60);
-    println!("live: pumping (deadline {deadline}s real{})", soak_secs.map(|_| ", soak").unwrap_or(""));
+    println!(
+        "live: pumping (deadline {deadline}s real{})",
+        soak_secs.map(|_| ", soak").unwrap_or("")
+    );
     let mut bytes_received = 0u64;
     while t0.elapsed() < Duration::from_secs(deadline) {
         let now_ns = t0.elapsed().as_nanos() as u64;
@@ -325,7 +395,9 @@ fn live_lane(cfg_path: &str, soak_secs: Option<u64>) -> ! {
         if let Ok((n, src)) = sock.recv_from(&mut buf) {
             bytes_received += n as u64;
             // adopt the responder's address during discovery (live port hop)
-            if ing.session_phase() == fss_tutk::session::PhaseName::Discovery && src.ip() == peer.ip() {
+            if ing.session_phase() == fss_tutk::session::PhaseName::Discovery
+                && src.ip() == peer.ip()
+            {
                 peer = src;
             }
             ing.feed_datagram(&buf[..n], now_ns);
@@ -333,7 +405,12 @@ fn live_lane(cfg_path: &str, soak_secs: Option<u64>) -> ! {
         ing.advance(now_ns);
         let phase = ing.session_phase();
         if phase != last_phase {
-            println!("live: [{:6.2?}] phase {:?} -> {:?}", t0.elapsed(), last_phase, phase);
+            println!(
+                "live: [{:6.2?}] phase {:?} -> {:?}",
+                t0.elapsed(),
+                last_phase,
+                phase
+            );
             last_phase = phase;
         }
         if matches!(
@@ -361,9 +438,18 @@ fn live_lane(cfg_path: &str, soak_secs: Option<u64>) -> ! {
     println!("live: ---- cost rows ----");
     println!("live: wall_s               : {:.1}", wall.as_secs_f64());
     println!("live: bytes_received       : {}", bytes_received);
-    println!("live: bitrate_kbps         : {:.0}", (bytes_received * 8) as f64 / wall.as_secs_f64() / 1000.0);
-    println!("live: frames_per_sec       : {:.1}", sess.video_frames as f64 / wall.as_secs_f64());
-    println!("live: capsules_per_sec     : {:.1}", stats.capsules_committed as f64 / wall.as_secs_f64());
+    println!(
+        "live: bitrate_kbps         : {:.0}",
+        (bytes_received * 8) as f64 / wall.as_secs_f64() / 1000.0
+    );
+    println!(
+        "live: frames_per_sec       : {:.1}",
+        sess.video_frames as f64 / wall.as_secs_f64()
+    );
+    println!(
+        "live: capsules_per_sec     : {:.1}",
+        stats.capsules_committed as f64 / wall.as_secs_f64()
+    );
     println!("live: reconnects           : 0 (none requested)");
 
     let mut failures = 0;
@@ -377,12 +463,16 @@ fn live_lane(cfg_path: &str, soak_secs: Option<u64>) -> ! {
         "frames observed (FirstFrameObserved+)",
         matches!(
             ing.state(),
-            AcquisitionState::FirstFrameObserved { .. } | AcquisitionState::ContinuityVerified { .. }
+            AcquisitionState::FirstFrameObserved { .. }
+                | AcquisitionState::ContinuityVerified { .. }
         ),
     );
     check("30 capsules committed", stats.capsules_committed >= 30);
     if soak_secs.is_some() {
-        check("soak: streaming sustained to deadline", wall.as_secs() + 5 >= deadline);
+        check(
+            "soak: streaming sustained to deadline",
+            wall.as_secs() + 5 >= deadline,
+        );
         check("soak: zero resync bytes", sess.resync_bytes == 0);
     }
     check("ledger batches present", stats.batches_committed >= 1);
@@ -390,10 +480,16 @@ fn live_lane(cfg_path: &str, soak_secs: Option<u64>) -> ! {
         "live: continuity note   : {} gap(s) on the live path (data, not failure)",
         stats.gaps
     );
-    println!("live: {}", if failures == 0 { "ALL CHECKS PASSED" } else { "FAILURES PRESENT" });
+    println!(
+        "live: {}",
+        if failures == 0 {
+            "ALL CHECKS PASSED"
+        } else {
+            "FAILURES PRESENT"
+        }
+    );
     std::process::exit(if failures == 0 { 0 } else { 1 });
 }
-
 
 fn ing_pending(ing: &TutkIngest) -> u64 {
     ing.session_stats()

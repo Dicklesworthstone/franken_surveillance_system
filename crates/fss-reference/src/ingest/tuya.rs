@@ -344,7 +344,11 @@ fn parse_flat_dps(json: &str) -> Result<Vec<(String, String)>, TuyaMapError> {
         let (k, v) = pair
             .split_once(':')
             .ok_or(TuyaMapError::Malformed("pair missing colon"))?;
-        let key = k.trim().strip_prefix('"').and_then(|x| x.strip_suffix('"')).ok_or(TuyaMapError::Malformed("bad dp key"))?;
+        let key = k
+            .trim()
+            .strip_prefix('"')
+            .and_then(|x| x.strip_suffix('"'))
+            .ok_or(TuyaMapError::Malformed("bad dp key"))?;
         out.push((key.to_string(), v.trim().to_string()));
     }
     Ok(out)
@@ -627,12 +631,15 @@ impl TuyaEventMapper {
             observed.latest.0,
             VendorProvenance::DeviceStateReport.as_str()
         );
-        let object_id = ObjectId::parse(format!(
-            "object:aosu-device-state:{}",
-            self.cfg.homebase_id
+        let object_id =
+            ObjectId::parse(format!("object:aosu-device-state:{}", self.cfg.homebase_id))
+                .map_err(|_| TuyaMapError::Malformed("object id"))?;
+        Ok(self.stage_delta(
+            "aosu_device_state",
+            object_id,
+            observed,
+            payload.into_bytes(),
         ))
-        .map_err(|_| TuyaMapError::Malformed("object id"))?;
-        Ok(self.stage_delta("aosu_device_state", object_id, observed, payload.into_bytes()))
     }
 
     /// Maps one vendor event report (from a STATUS frame carrying event
@@ -755,9 +762,15 @@ impl TuyaEventMapper {
             observed.latest.0,
             VendorProvenance::DeviceStateReport.as_str()
         );
-        let object_id = ObjectId::parse(format!("object:aosu-device-state:{}", self.cfg.homebase_id))
-            .map_err(|_| TuyaMapError::Malformed("object id"))?;
-        Ok(Some(self.stage_delta("aosu_device_state", object_id, observed, payload.into_bytes())))
+        let object_id =
+            ObjectId::parse(format!("object:aosu-device-state:{}", self.cfg.homebase_id))
+                .map_err(|_| TuyaMapError::Malformed("object id"))?;
+        Ok(Some(self.stage_delta(
+            "aosu_device_state",
+            object_id,
+            observed,
+            payload.into_bytes(),
+        )))
     }
 
     /// Constructs the coverage witness for a negative-read over one cam's
@@ -790,11 +803,7 @@ impl TuyaEventMapper {
                 let cam_prefix = format!("{cam_id}:");
                 observed.retain(|d| d != cam_id && !d.starts_with(&cam_prefix));
                 excluded.insert(format!("{cam_id}:{}", reason.as_str()));
-                (
-                    CoverageContinuity::Unknown,
-                    Completeness::NotObservable,
-                    0,
-                )
+                (CoverageContinuity::Unknown, Completeness::NotObservable, 0)
             }
             CamObservability::Observable => {
                 // Battery cams are event-driven with structural blind

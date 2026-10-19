@@ -283,13 +283,19 @@ impl RecoveredRtpImport {
                 return Err(RtpImportError::Digest.into());
             };
             let header = if let Some(range) = &first.fragment_header {
-                let bytes = self.source.get(range.clone()).ok_or(RtpImportError::Digest)?;
+                let bytes = self
+                    .source
+                    .get(range.clone())
+                    .ok_or(RtpImportError::Digest)?;
                 if bytes.len() != 2 {
                     return Err(RtpImportError::Digest.into());
                 }
                 (bytes[0] & 0xe0) | (bytes[1] & 31)
             } else {
-                *self.source.get(first.wire.start).ok_or(RtpImportError::Digest)?
+                *self
+                    .source
+                    .get(first.wire.start)
+                    .ok_or(RtpImportError::Digest)?
             };
             let destination = match header & 31 {
                 7 => &mut result.sequence,
@@ -297,7 +303,9 @@ impl RecoveredRtpImport {
                 _ => continue,
             };
             if !destination.contains(&nal.digest) {
-                destination.try_reserve(1).map_err(|_| RetainedRtpDecodeError::Limit)?;
+                destination
+                    .try_reserve(1)
+                    .map_err(|_| RetainedRtpDecodeError::Limit)?;
                 destination.push(nal.digest);
             }
         }
@@ -318,7 +326,10 @@ impl RecoveredRtpImport {
         let RtpRecoveryState::Complete { anchor } = &self.state else {
             return Err(RetainedRtpDecodeError::ImportPending);
         };
-        let batch = deployment.ledger().batches().iter()
+        let batch = deployment
+            .ledger()
+            .batches()
+            .iter()
             .find(|batch| &batch.new_anchor == anchor)
             .ok_or(RtpImportError::Binding)?;
         let [delta] = batch.deltas.as_slice() else {
@@ -327,13 +338,18 @@ impl RecoveredRtpImport {
         if delta.family != "rtpdump_import" || delta.witness_digest != Some(self.root) {
             return Err(RtpImportError::Binding.into());
         }
-        let count = self.report.chunk_digests().len()
+        let count = self
+            .report
+            .chunk_digests()
+            .len()
             .checked_add(self.report.nals().len())
             .and_then(|n| n.checked_add(self.report.access_units().len().checked_mul(2)?))
             .and_then(|n| n.checked_add(2))
             .ok_or(RetainedRtpDecodeError::Limit)?;
         let mut protected = Vec::new();
-        protected.try_reserve_exact(count).map_err(|_| RetainedRtpDecodeError::Limit)?;
+        protected
+            .try_reserve_exact(count)
+            .map_err(|_| RetainedRtpDecodeError::Limit)?;
         protected.extend([self.root, delta.payload_digest]);
         protected.extend(self.report.chunk_digests());
         protected.extend(self.report.nals().iter().map(|nal| nal.digest));
@@ -362,7 +378,8 @@ impl RecoveredRtpImport {
             rtcp: stored.rtcp,
         };
         let mask = current_mask(deployment, &self.recipe.scope.sensor)?;
-        let decoder = RecordedRtpH264Decoder::new(&self.source, config, &sps, &pps, request.decode)?;
+        let decoder =
+            RecordedRtpH264Decoder::new(&self.source, config, &sps, &pps, request.decode)?;
         guard(self, &protected, deployment, cx)?;
         Ok(RetainedRtpH264Decoder {
             retained: self,
@@ -382,7 +399,9 @@ impl RetainedRtpH264Decoder<'_> {
     }
     /// Useful for scheduling; queued raw pictures still cannot bypass the next guard.
     pub fn queued_pictures(&self) -> usize {
-        self.decoder.as_ref().map_or(0, RecordedRtpH264Decoder::queued_pictures)
+        self.decoder
+            .as_ref()
+            .map_or(0, RecordedRtpH264Decoder::queued_pictures)
     }
     /// One bounded step. On authority/privacy failure the entire decoder is dropped and cannot
     /// be resumed; a fresh inspection and current privacy binding are required.
@@ -426,10 +445,15 @@ impl RetainedRtpH264Decoder<'_> {
                     RetainedRtpEvent::InputEnded => self.stats.input_ended = true,
                     _ => {}
                 }
-                if matches!(event, RetainedRtpEvent::RecordRefused { .. }
-                    | RetainedRtpEvent::FramingRefused | RetainedRtpEvent::ReceiverRefused)
-                    || matches!(effect, RtpDecodeEffect::Refused { .. } | RtpDecodeEffect::Fenced)
-                {
+                if matches!(
+                    event,
+                    RetainedRtpEvent::RecordRefused { .. }
+                        | RetainedRtpEvent::FramingRefused
+                        | RetainedRtpEvent::ReceiverRefused
+                ) || matches!(
+                    effect,
+                    RtpDecodeEffect::Refused { .. } | RtpDecodeEffect::Fenced
+                ) {
                     self.stats.refusals += 1;
                 }
                 if matches!(effect, RtpDecodeEffect::WaitingForIdr { .. }) {
@@ -486,10 +510,14 @@ fn guard(
     let publisher = deployment.publisher();
     if deployment.current_anchor() != &retained.basis
         || publisher.is_poisoned()
-        || !publisher.root(&root_slot(retained.root)?).is_some_and(|root| {
-            root.root == retained.root && root.state == LocalPublicationState::Durable
-        })
-        || publisher.tombstones().any(|digest| protected.binary_search(digest).is_ok())
+        || !publisher
+            .root(&root_slot(retained.root)?)
+            .is_some_and(|root| {
+                root.root == retained.root && root.state == LocalPublicationState::Durable
+            })
+        || publisher
+            .tombstones()
+            .any(|digest| protected.binary_search(digest).is_ok())
     {
         return Err(RtpImportError::Binding.into());
     }
@@ -497,7 +525,9 @@ fn guard(
 }
 fn copy_bytes(bytes: &[u8]) -> Result<Vec<u8>> {
     let mut result = Vec::new();
-    result.try_reserve_exact(bytes.len()).map_err(|_| RetainedRtpDecodeError::Limit)?;
+    result
+        .try_reserve_exact(bytes.len())
+        .map_err(|_| RetainedRtpDecodeError::Limit)?;
     result.extend_from_slice(bytes);
     Ok(result)
 }
@@ -507,28 +537,54 @@ fn parameter(
     maximum: usize,
     cx: &ReplayCx,
 ) -> Result<Vec<u8>> {
-    let nal = retained.report.nals().iter().find(|nal| nal.digest == digest
-        && retained.report.access_units().get(nal.access_unit).is_some_and(|unit| {
-            unit.generation == retained.recipe.config.key.generation
-                && unit.ssrc == retained.recipe.config.key.ssrc
-        })).ok_or(RetainedRtpDecodeError::ParametersUnavailable)?;
-    let length = nal.spans.iter().map(|span| span.nal.end).max().ok_or(RtpImportError::Digest)?;
+    let nal = retained
+        .report
+        .nals()
+        .iter()
+        .find(|nal| {
+            nal.digest == digest
+                && retained
+                    .report
+                    .access_units()
+                    .get(nal.access_unit)
+                    .is_some_and(|unit| {
+                        unit.generation == retained.recipe.config.key.generation
+                            && unit.ssrc == retained.recipe.config.key.ssrc
+                    })
+        })
+        .ok_or(RetainedRtpDecodeError::ParametersUnavailable)?;
+    let length = nal
+        .spans
+        .iter()
+        .map(|span| span.nal.end)
+        .max()
+        .ok_or(RtpImportError::Digest)?;
     if length == 0 || length > maximum {
         return Err(RetainedRtpDecodeError::Limit);
     }
     let mut bytes = Vec::new();
-    bytes.try_reserve_exact(length).map_err(|_| RetainedRtpDecodeError::Limit)?;
+    bytes
+        .try_reserve_exact(length)
+        .map_err(|_| RetainedRtpDecodeError::Limit)?;
     bytes.resize(length, 0);
     for span in &nal.spans {
         check_cancel(cx)?;
-        let original = retained.source.get(span.wire.clone()).ok_or(RtpImportError::Digest)?;
-        let target = bytes.get_mut(span.nal.clone()).ok_or(RtpImportError::Digest)?;
+        let original = retained
+            .source
+            .get(span.wire.clone())
+            .ok_or(RtpImportError::Digest)?;
+        let target = bytes
+            .get_mut(span.nal.clone())
+            .ok_or(RtpImportError::Digest)?;
         if original.len() != target.len() {
             return Err(RtpImportError::Digest.into());
         }
         target.copy_from_slice(original);
         if let Some(range) = &span.fragment_header {
-            let header = retained.source.get(range.clone()).ok_or(RtpImportError::Digest)?;
+            let header = retained
+                .source
+                .get(range.clone())
+                .ok_or(RtpImportError::Digest)?;
             if header.len() != 2 {
                 return Err(RtpImportError::Digest.into());
             }
@@ -542,20 +598,34 @@ fn parameter(
 }
 fn project_event(event: &AvcDumpStep<'_>) -> RetainedRtpEvent {
     match event {
-        AvcDumpStep::Record { source, offset_reversed, admission } => {
-            if matches!(admission, AvcDumpAdmission::CapturedPrefix(_)
-                | AvcDumpAdmission::Refused { .. } | AvcDumpAdmission::Fenced
-                | AvcDumpAdmission::Rtcp(Err(_)))
-            {
-                RetainedRtpEvent::RecordRefused { index: source.index() }
+        AvcDumpStep::Record {
+            source,
+            offset_reversed,
+            admission,
+        } => {
+            if matches!(
+                admission,
+                AvcDumpAdmission::CapturedPrefix(_)
+                    | AvcDumpAdmission::Refused { .. }
+                    | AvcDumpAdmission::Fenced
+                    | AvcDumpAdmission::Rtcp(Err(_))
+            ) {
+                RetainedRtpEvent::RecordRefused {
+                    index: source.index(),
+                }
             } else {
-                RetainedRtpEvent::Record { index: source.index(), offset_reversed: *offset_reversed }
+                RetainedRtpEvent::Record {
+                    index: source.index(),
+                    offset_reversed: *offset_reversed,
+                }
             }
         }
         AvcDumpStep::Progress(_) => RetainedRtpEvent::Progress,
         AvcDumpStep::InputEnded => RetainedRtpEvent::InputEnded,
         AvcDumpStep::FramingRefused { .. } => RetainedRtpEvent::FramingRefused,
-        AvcDumpStep::ReceiverRefused { .. } | AvcDumpStep::Cancelled(_) => RetainedRtpEvent::ReceiverRefused,
+        AvcDumpStep::ReceiverRefused { .. } | AvcDumpStep::Cancelled(_) => {
+            RetainedRtpEvent::ReceiverRefused
+        }
         AvcDumpStep::Exhausted => RetainedRtpEvent::ReceiverExhausted,
     }
 }

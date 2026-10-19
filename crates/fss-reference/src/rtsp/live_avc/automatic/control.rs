@@ -2,8 +2,8 @@
 //! Pure sequencing for the existing explicitly authorized AVC owners.
 //! This state machine performs no I/O, stores no credentials and grants no effects.
 
-use crate::rtsp::avc_client::{AvcClientError, AvcClientPoll};
 use crate::rtsp::avc_client::authenticated::{DigestAvcError, DigestAvcPoll};
+use crate::rtsp::avc_client::{AvcClientError, AvcClientPoll};
 use crate::rtsp::client::{ClientCommand, ClientProgress, ClientState};
 use crate::rtsp::live_avc::{LiveAvcError, LiveAvcStep};
 use crate::rtsp::tcp::{TcpError, TcpWriteStep};
@@ -64,15 +64,22 @@ impl ControlDriver {
                 transport: None,
             } => Some(Action::Respond),
             LiveAvcStep::Protocol {
-                event: DigestAvcPoll::Client { event, wire_retirement: None },
+                event:
+                    DigestAvcPoll::Client {
+                        event,
+                        wire_retirement: None,
+                    },
                 transport: None,
             } => match event.as_ref() {
-                AvcClientPoll::Control(ClientProgress::Accepted(ClientState::Described)) =>
-                    Some(Action::Request(ClientCommand::Setup)),
-                AvcClientPoll::Control(ClientProgress::Accepted(ClientState::Ready)) =>
-                    Some(Action::Request(ClientCommand::Play)),
-                AvcClientPoll::Control(ClientProgress::KeepAliveDue) =>
-                    Some(Action::Request(ClientCommand::KeepAlive)),
+                AvcClientPoll::Control(ClientProgress::Accepted(ClientState::Described)) => {
+                    Some(Action::Request(ClientCommand::Setup))
+                }
+                AvcClientPoll::Control(ClientProgress::Accepted(ClientState::Ready)) => {
+                    Some(Action::Request(ClientCommand::Play))
+                }
+                AvcClientPoll::Control(ClientProgress::KeepAliveDue) => {
+                    Some(Action::Request(ClientCommand::KeepAlive))
+                }
                 _ => None,
             },
             _ => None,
@@ -95,35 +102,66 @@ impl ControlDriver {
 }
 
 fn backpressured(reason: &LiveAvcError) -> bool {
-    matches!(reason,
+    matches!(
+        reason,
         LiveAvcError::Backpressure
-        | LiveAvcError::Transport(TcpError::Backpressure)
-        | LiveAvcError::Protocol(DigestAvcError::Backpressure)
-        | LiveAvcError::Protocol(DigestAvcError::Client(AvcClientError::Backpressure)))
+            | LiveAvcError::Transport(TcpError::Backpressure)
+            | LiveAvcError::Protocol(DigestAvcError::Backpressure)
+            | LiveAvcError::Protocol(DigestAvcError::Client(AvcClientError::Backpressure))
+    )
 }
 fn advanced(step: &LiveAvcStep) -> bool {
     match step {
         LiveAvcStep::Write(TcpWriteStep::Sent { .. }) => true,
         LiveAvcStep::Protocol {
-            event: DigestAvcPoll::Client { event, wire_retirement: None },
+            event:
+                DigestAvcPoll::Client {
+                    event,
+                    wire_retirement: None,
+                },
             transport: None,
-        } => matches!(event.as_ref(),
+        } => matches!(
+            event.as_ref(),
             AvcClientPoll::Control(ClientProgress::Interim | ClientProgress::Accepted(_))
-            | AvcClientPoll::Rtp { .. } | AvcClientPoll::Rtcp { .. } | AvcClientPoll::Media(_)),
+                | AvcClientPoll::Rtp { .. }
+                | AvcClientPoll::Rtcp { .. }
+                | AvcClientPoll::Media(_)
+        ),
         _ => false,
     }
 }
 fn terminal(step: &LiveAvcStep) -> bool {
     match step {
         LiveAvcStep::InputEnded | LiveAvcStep::Ended => true,
-        LiveAvcStep::Protocol { transport: Some(_), .. }
-        | LiveAvcStep::Protocol { event: DigestAvcPoll::Fault { .. }, .. } => true,
         LiveAvcStep::Protocol {
-            event: DigestAvcPoll::Client { event, wire_retirement }, ..
-        } => wire_retirement.is_some() || matches!(event.as_ref(),
-            AvcClientPoll::Fault { .. } | AvcClientPoll::Ended { .. }
-            | AvcClientPoll::Rtp { retirement: Some(_), .. }
-            | AvcClientPoll::Control(ClientProgress::Accepted(ClientState::Closed | ClientState::Failed))),
+            transport: Some(_), ..
+        }
+        | LiveAvcStep::Protocol {
+            event: DigestAvcPoll::Fault { .. },
+            ..
+        } => true,
+        LiveAvcStep::Protocol {
+            event:
+                DigestAvcPoll::Client {
+                    event,
+                    wire_retirement,
+                },
+            ..
+        } => {
+            wire_retirement.is_some()
+                || matches!(
+                    event.as_ref(),
+                    AvcClientPoll::Fault { .. }
+                        | AvcClientPoll::Ended { .. }
+                        | AvcClientPoll::Rtp {
+                            retirement: Some(_),
+                            ..
+                        }
+                        | AvcClientPoll::Control(ClientProgress::Accepted(
+                            ClientState::Closed | ClientState::Failed
+                        ))
+                )
+        }
         _ => false,
     }
 }
@@ -144,14 +182,19 @@ mod tests {
     }
     fn pending(at: u64) -> LiveAvcStep {
         LiveAvcStep::Pending(LiveAvcWait {
-            readable: true, writable: false, wake_at_ns: Some(at),
+            readable: true,
+            writable: false,
+            wake_at_ns: Some(at),
         })
     }
     #[test]
     fn safe_backpressure_drains_instead_of_repeating_preparation() {
         let mut c = ControlDriver::new(0);
         c.clear();
-        c.observe(&progress(ClientProgress::Accepted(ClientState::Described)), 1);
+        c.observe(
+            &progress(ClientProgress::Accepted(ClientState::Described)),
+            1,
+        );
         c.refused(&LiveAvcError::Protocol(DigestAvcError::Backpressure), false);
         assert_eq!(c.next, Some(Action::Request(ClientCommand::Setup)));
         assert_eq!(c.action(), None);
@@ -177,18 +220,26 @@ mod tests {
     fn held_challenge_is_answerable_without_another_drain_loop() {
         let mut c = ControlDriver::new(0);
         c.refused(&LiveAvcError::Backpressure, false);
-        c.observe(&LiveAvcStep::Protocol {
-            event: DigestAvcPoll::AuthenticationRequired { cseq: 1, wake_at_ns: Some(40) },
-            transport: None,
-        }, 2);
+        c.observe(
+            &LiveAvcStep::Protocol {
+                event: DigestAvcPoll::AuthenticationRequired {
+                    cseq: 1,
+                    wake_at_ns: Some(40),
+                },
+                transport: None,
+            },
+            2,
+        );
         assert_eq!(c.action(), Some(Action::Respond));
         assert_eq!(c.wake(Some(40)), Some(2));
     }
     #[test]
     fn terminal_or_fatal_progress_never_rearms_a_deferred_command() {
-        for terminal in [LiveAvcStep::InputEnded, LiveAvcStep::Ended,
-            progress(ClientProgress::Accepted(ClientState::Closed))]
-        {
+        for terminal in [
+            LiveAvcStep::InputEnded,
+            LiveAvcStep::Ended,
+            progress(ClientProgress::Accepted(ClientState::Closed)),
+        ] {
             let mut c = ControlDriver::new(0);
             c.refused(&LiveAvcError::Backpressure, false);
             c.observe(&terminal, 1);
@@ -221,7 +272,13 @@ mod tests {
     fn completed_write_rearms_but_a_short_write_does_not() {
         let mut c = ControlDriver::new(0);
         c.refused(&LiveAvcError::Backpressure, false);
-        c.observe(&LiveAvcStep::Write(TcpWriteStep::Sent { cseq: 7, bytes: 100 }), 1);
+        c.observe(
+            &LiveAvcStep::Write(TcpWriteStep::Sent {
+                cseq: 7,
+                bytes: 100,
+            }),
+            1,
+        );
         assert_eq!(c.action(), Some(Action::Request(ClientCommand::Describe)));
         c.clear();
         assert_eq!(c.action(), None);

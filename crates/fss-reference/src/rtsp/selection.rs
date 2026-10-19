@@ -518,17 +518,24 @@ mod tests {
         assert!(derived.contains("a=fmtp:98 arbitrary=other-codec\n"));
         assert!(!derived.contains("a=rtpmap:96"));
         assert!(!derived.contains("a=fmtp:96"));
-        assert_eq!(sdp, parse_sdp_bytes(derived.as_bytes()).map_err(|_| SelectionError::Description)?);
+        assert_eq!(
+            sdp,
+            parse_sdp_bytes(derived.as_bytes()).map_err(|_| SelectionError::Description)?
+        );
         // The original mixed offer is neither modified nor returned as the projection.
         assert!(body.contains("a=fmtp:96"));
         Ok(())
     }
 
     #[test]
-    fn hevc_alternatives_require_exact_selection_without_parameter_borrowing() -> Result<(), SelectionError> {
+    fn hevc_alternatives_require_exact_selection_without_parameter_borrowing()
+    -> Result<(), SelectionError> {
         let offer = "m=video 0 RTP/AVP 98 99\na=control:video\na=rtpmap:98 H265/90000\na=fmtp:98 sprop-max-don-diff=0;profile-id=1\na=rtpmap:99 H265/90000\n";
         let body = format!("{PREFIX}{offer}");
-        assert_eq!(select_h265_description(body.as_bytes(), 0, None), Err(SelectionError::Ambiguous));
+        assert_eq!(
+            select_h265_description(body.as_bytes(), 0, None),
+            Err(SelectionError::Ambiguous)
+        );
         let (sdp, derived) = select_h265_description(body.as_bytes(), 0, Some(99))?;
         assert_eq!(sdp.media[0].payload_type, 99);
         assert!(!derived.contains("fmtp:"));
@@ -541,16 +548,27 @@ mod tests {
     #[test]
     fn hevc_selection_is_codec_exact_and_does_not_fallback() {
         let body = format!("{PREFIX}{OFFER}");
-        for (pt, error) in [(96, SelectionError::Unsupported), (97, SelectionError::Payload), (255, SelectionError::Payload)] {
-            assert_eq!(select_h265_description(body.as_bytes(), 0, Some(pt)), Err(error));
+        for (pt, error) in [
+            (96, SelectionError::Unsupported),
+            (97, SelectionError::Payload),
+            (255, SelectionError::Payload),
+        ] {
+            assert_eq!(
+                select_h265_description(body.as_bytes(), 0, Some(pt)),
+                Err(error)
+            );
         }
         for mapping in ["H265/8000", "HEVC/90000", "H265/90000/2", "H265/90000 junk"] {
-            assert_eq!(select_h265_description(body.replace("H265/90000", mapping).as_bytes(), 0, None), Err(SelectionError::Unsupported));
+            assert_eq!(
+                select_h265_description(body.replace("H265/90000", mapping).as_bytes(), 0, None),
+                Err(SelectionError::Unsupported)
+            );
         }
     }
 
     #[test]
-    fn hevc_selection_normalizes_mapping_but_preserves_section_ordinals() -> Result<(), SelectionError> {
+    fn hevc_selection_normalizes_mapping_but_preserves_section_ordinals()
+    -> Result<(), SelectionError> {
         let offer = OFFER.replace("H265/90000", "h265/90000");
         let body = format!("{PREFIX}m=audio 0 RTP/AVP 0\na=control:audio\n{offer}");
         let (sdp, derived) = select_h265_description(body.as_bytes(), 1, Some(98))?;
@@ -558,31 +576,63 @@ mod tests {
         assert_eq!(sdp.media[0].media_type, "audio");
         assert_eq!(sdp.media[1].payload_type, 98);
         assert!(derived.contains("a=rtpmap:98 H265/90000\n"));
-        assert_eq!(select_h265_description(body.as_bytes(), 0, None), Err(SelectionError::Media));
+        assert_eq!(
+            select_h265_description(body.as_bytes(), 0, None),
+            Err(SelectionError::Media)
+        );
         let mut lines: Vec<_> = OFFER.lines().collect();
         lines[1..].reverse();
         let reordered = format!("{PREFIX}{}", lines.join("\n"));
-        assert_eq!(select_h265_description(reordered.as_bytes(), 0, None)?.0,
-            select_h265_description(format!("{PREFIX}{OFFER}").as_bytes(), 0, None)?.0);
+        assert_eq!(
+            select_h265_description(reordered.as_bytes(), 0, None)?.0,
+            select_h265_description(format!("{PREFIX}{OFFER}").as_bytes(), 0, None)?.0
+        );
         Ok(())
     }
 
     #[test]
     fn hevc_duplicate_bindings_and_selected_format_keys_refuse() {
         let base = format!("{PREFIX}{OFFER}");
-        for extra in ["a=rtpmap:98 H265/90000\n", "a=fmtp:98 profile-id=1\n", "a=control:other\n"] {
-            assert_eq!(select_h265_description(format!("{base}{extra}").as_bytes(), 0, None), Err(SelectionError::Duplicate));
+        for extra in [
+            "a=rtpmap:98 H265/90000\n",
+            "a=fmtp:98 profile-id=1\n",
+            "a=control:other\n",
+        ] {
+            assert_eq!(
+                select_h265_description(format!("{base}{extra}").as_bytes(), 0, None),
+                Err(SelectionError::Duplicate)
+            );
         }
-        assert_eq!(select_h265_description(base.replace("arbitrary=other-codec", "profile-id=1;PROFILE-ID=2").as_bytes(), 0, None), Err(SelectionError::Duplicate));
-        assert_eq!(select_h265_description(base.replace("98 96", "98 096 96").as_bytes(), 0, None), Err(SelectionError::Duplicate));
+        assert_eq!(
+            select_h265_description(
+                base.replace("arbitrary=other-codec", "profile-id=1;PROFILE-ID=2")
+                    .as_bytes(),
+                0,
+                None
+            ),
+            Err(SelectionError::Duplicate)
+        );
+        assert_eq!(
+            select_h265_description(base.replace("98 96", "98 096 96").as_bytes(), 0, None),
+            Err(SelectionError::Duplicate)
+        );
     }
 
     #[test]
     fn hevc_bounds_apply_to_original_input_before_projection() {
-        assert_eq!(select_h265_description(&vec![b'x'; MAX_SELECTION_BYTES + 1], 0, None), Err(SelectionError::Limit));
+        assert_eq!(
+            select_h265_description(&vec![b'x'; MAX_SELECTION_BYTES + 1], 0, None),
+            Err(SelectionError::Limit)
+        );
         let body = format!("{PREFIX}{OFFER}a=x:{}\n", "x".repeat(MAX_SDP_LINE_BYTES));
-        assert_eq!(select_h265_description(body.as_bytes(), 0, None), Err(SelectionError::Limit));
+        assert_eq!(
+            select_h265_description(body.as_bytes(), 0, None),
+            Err(SelectionError::Limit)
+        );
         let body = format!("{PREFIX}{OFFER}a=x:hidden\0value\n");
-        assert_eq!(select_h265_description(body.as_bytes(), 0, None), Err(SelectionError::Malformed));
+        assert_eq!(
+            select_h265_description(body.as_bytes(), 0, None),
+            Err(SelectionError::Malformed)
+        );
     }
 }

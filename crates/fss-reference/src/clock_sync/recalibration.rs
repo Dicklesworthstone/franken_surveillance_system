@@ -53,9 +53,11 @@ impl ClockOffsetSkewEstimator {
             .checked_add(1)
             .ok_or(ReferenceError::ArithmeticOverflow)?;
         let last = self.samples.last();
-        let highest_sequence = last
-            .map_or(0, |sample| sample.sequence)
-            .max(self.invalidation.as_ref().map_or(0, |fence| fence.highest_sequence));
+        let highest_sequence = last.map_or(0, |sample| sample.sequence).max(
+            self.invalidation
+                .as_ref()
+                .map_or(0, |fence| fence.highest_sequence),
+        );
         if first.sequence <= highest_sequence {
             return Err(ReferenceError::NonMonotonicSyncSequence {
                 previous: highest_sequence,
@@ -65,7 +67,11 @@ impl ClockOffsetSkewEstimator {
         let latest_reference = last
             .map(|sample| sample.reference_time)
             .into_iter()
-            .chain(self.invalidation.as_ref().map(|fence| fence.latest_reference))
+            .chain(
+                self.invalidation
+                    .as_ref()
+                    .map(|fence| fence.latest_reference),
+            )
             .max();
         if let Some(previous) = latest_reference
             && first.reference_time <= previous
@@ -100,11 +106,9 @@ impl ClockOffsetSkewEstimator {
                 match fence.first_sample.reference_time.0.checked_sub(1) {
                     Some(cutoff) if cutoff >= prior.validity.earliest.0 => {
                         let latest = prior.validity.latest.0.min(cutoff);
-                        prior.validity = CaptureInterval::new(
-                            prior.validity.earliest,
-                            TimestampNs(latest),
-                        )
-                        .map_err(ReferenceError::Contract)?;
+                        prior.validity =
+                            CaptureInterval::new(prior.validity.earliest, TimestampNs(latest))
+                                .map_err(ReferenceError::Contract)?;
                         Some(prior)
                     }
                     _ => None,

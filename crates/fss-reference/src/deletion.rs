@@ -37,16 +37,16 @@
 //!   current-time interval. Its v3 scope retains selection and timing provenance. It is one
 //!   union deletion, never a chain of stale per-import approvals, and never releases holds.
 
-mod commit;
 /// Deletion-owner adapter for durable belief verification.
 pub mod belief;
+mod commit;
 /// Approval-gated preservation of retained imports and their shared derivative closures.
 pub mod holds;
 mod index;
 mod plan;
-mod rtp;
 /// Conservative age selection and exact, crash-resumable cleanup of completed recordings.
 pub mod retention;
+mod rtp;
 pub mod scope;
 mod walk;
 

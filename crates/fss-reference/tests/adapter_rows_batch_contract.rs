@@ -24,7 +24,8 @@ macro_rules! row_tests {
             assert_eq!(id.isolation_mode, $isolation);
             assert_eq!(id.credential_method, $cred);
             id.verify().expect("structural verify");
-            id.verify_standards_compliance().expect("NEG-002 compliance");
+            id.verify_standards_compliance()
+                .expect("NEG-002 compliance");
             // Canonical round-trip is identity.
             let mut encoder = CanonicalEncoder::new();
             id.encode_canonical(&mut encoder);
@@ -96,12 +97,22 @@ row_tests!(
 #[test]
 fn all_row_digests_are_distinct() {
     let digests = [
-        adp_rtsp_adapter_identity().expect("rtsp").canonical_digest(),
+        adp_rtsp_adapter_identity()
+            .expect("rtsp")
+            .canonical_digest(),
         adp_uvc_adapter_identity().expect("uvc").canonical_digest(),
-        adp_insta_link_adapter_identity().expect("insta").canonical_digest(),
-        adp_onvif_t_adapter_identity().expect("onvif-t").canonical_digest(),
-        adp_onvif_m_adapter_identity().expect("onvif-m").canonical_digest(),
-        adp_dji_flip_adapter_identity().expect("dji").canonical_digest(),
+        adp_insta_link_adapter_identity()
+            .expect("insta")
+            .canonical_digest(),
+        adp_onvif_t_adapter_identity()
+            .expect("onvif-t")
+            .canonical_digest(),
+        adp_onvif_m_adapter_identity()
+            .expect("onvif-m")
+            .canonical_digest(),
+        adp_dji_flip_adapter_identity()
+            .expect("dji")
+            .canonical_digest(),
         adp_s3_adapter_identity().expect("s3").canonical_digest(),
     ];
     for i in 0..digests.len() {
@@ -118,12 +129,23 @@ fn capability_honesty_by_row() {
     assert_eq!(dji.capabilities, AdapterCapabilities::NONE);
     // ONVIF-M: metadata only — telemetry, no streaming.
     let onvif_m = adp_onvif_m_adapter_identity().expect("onvif-m");
-    assert!(onvif_m.capabilities.contains(AdapterCapabilities::TELEMETRY));
-    assert!(!onvif_m.capabilities.contains(AdapterCapabilities::STREAMING));
+    assert!(
+        onvif_m
+            .capabilities
+            .contains(AdapterCapabilities::TELEMETRY)
+    );
+    assert!(
+        !onvif_m
+            .capabilities
+            .contains(AdapterCapabilities::STREAMING)
+    );
     // RTSP/ONVIF-T: streaming + discovery.
     let rtsp = adp_rtsp_adapter_identity().expect("rtsp");
     assert!(rtsp.capabilities.contains(AdapterCapabilities::STREAMING));
-    assert!(rtsp.capabilities.contains(AdapterCapabilities::DEVICE_DISCOVERY));
+    assert!(
+        rtsp.capabilities
+            .contains(AdapterCapabilities::DEVICE_DISCOVERY)
+    );
     // UVC rows: streaming + snapshot.
     let uvc = adp_uvc_adapter_identity().expect("uvc");
     assert!(uvc.capabilities.contains(AdapterCapabilities::STREAMING));
@@ -139,7 +161,12 @@ fn standards_claims_cite_specifications() {
     let uvc = adp_uvc_adapter_identity().expect("uvc");
     assert!(uvc.protocol_profile.contains("uvc"));
     let onvif_t = adp_onvif_t_adapter_identity().expect("onvif-t");
-    assert!(onvif_t.protocol_profile.to_ascii_lowercase().contains("profile-t"));
+    assert!(
+        onvif_t
+            .protocol_profile
+            .to_ascii_lowercase()
+            .contains("profile-t")
+    );
 }
 
 #[test]
@@ -147,8 +174,8 @@ fn file_row_uses_the_canonical_registry_id() {
     // The runtime id stays the lane's identity of record (`adp:file-001`
     // normalizes to `adapter:file-001`); the registry row ADP-FILE-001 maps
     // to it via the ADP_FILE_ROW_ID/ADP_FILE_RUNTIME_ID constants.
-    let id = fss_reference::ingest::file_adapter::default_adapter_identity()
-        .expect("file identity");
+    let id =
+        fss_reference::ingest::file_adapter::default_adapter_identity().expect("file identity");
     assert_eq!(id.adapter_id.as_str(), "adapter:file-001");
     assert_eq!(id.adapter_kind, AdapterKind::FileArchive);
     id.verify().expect("verify");

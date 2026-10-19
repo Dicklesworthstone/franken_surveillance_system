@@ -142,7 +142,9 @@ impl RtpSamplingDecision {
             e.u8(*reason as u8);
         }
         e.u32(self.hold_remaining);
-        self.bytes = e.finish_checked().map_err(|_| RtpDetectionError::Encoding)?;
+        self.bytes = e
+            .finish_checked()
+            .map_err(|_| RtpDetectionError::Encoding)?;
         if self.bytes.len() as u64 > DECISION_RESERVATION {
             return Err(RtpDetectionError::Encoding);
         }
@@ -292,7 +294,10 @@ impl<'a> RtpDetectionCascade<'a> {
         scalar: &ScalarExecCx,
     ) -> Result<Self> {
         checkpoint(cx, scalar, "rtp_cascade:open")?;
-        request.policy.validate().map_err(|_| RtpDetectionError::InvalidRequest)?;
+        request
+            .policy
+            .validate()
+            .map_err(|_| RtpDetectionError::InvalidRequest)?;
         if request.max_baseline_bytes > 4_194_304
             || !(DECISION_RESERVATION..=64 * 1024 * 1024).contains(&request.max_decision_bytes)
             || request.required_frames.len() > MAX_REQUIRED
@@ -308,9 +313,8 @@ impl<'a> RtpDetectionCascade<'a> {
                 return Err(RtpDetectionError::InvalidRequest);
             }
         }
-        let inner = RtpPackageDetector::new(
-            retained, package, request.detection, deployment, cx, scalar,
-        )?;
+        let inner =
+            RtpPackageDetector::new(retained, package, request.detection, deployment, cx, scalar)?;
         let mut e = CanonicalEncoder::new();
         e.text(RTP_CASCADE_RECIPE_DOMAIN);
         e.digest(inner.recipe());
@@ -347,7 +351,8 @@ impl<'a> RtpDetectionCascade<'a> {
             e.digest(basis);
         }
         let recipe = ContentDigest::sha256(
-            &e.finish_checked().map_err(|_| RtpDetectionError::Encoding)?,
+            &e.finish_checked()
+                .map_err(|_| RtpDetectionError::Encoding)?,
         );
         let stats = RtpCascadeStats {
             detection: inner.stats(),
@@ -374,7 +379,10 @@ impl<'a> RtpDetectionCascade<'a> {
     }
     /// Current charged work and delivered results, including failures and unobserved floors.
     pub fn stats(&self) -> RtpCascadeStats {
-        RtpCascadeStats { detection: self.inner.stats(), ..self.stats }
+        RtpCascadeStats {
+            detection: self.inner.stats(),
+            ..self.stats
+        }
     }
     /// One bounded progress/result. Any error retires decoder and comparison state permanently.
     pub fn step(
@@ -401,9 +409,12 @@ impl<'a> RtpDetectionCascade<'a> {
     ) -> Result<RtpCascadeStep> {
         match self.inner.next_native(deployment, cx, scalar)? {
             ReceiptedRtpDecodeStep::Progress { event, effect } => {
-                if matches!(effect, RtpDecodeEffect::Refused { .. }
-                    | RtpDecodeEffect::WaitingForIdr { .. } | RtpDecodeEffect::Fenced)
-                {
+                if matches!(
+                    effect,
+                    RtpDecodeEffect::Refused { .. }
+                        | RtpDecodeEffect::WaitingForIdr { .. }
+                        | RtpDecodeEffect::Fenced
+                ) {
                     self.previous = None;
                     self.gap_pending = true;
                 }
@@ -415,7 +426,12 @@ impl<'a> RtpDetectionCascade<'a> {
                 Ok(RtpCascadeStep::Ended(self.stats()))
             }
             ReceiptedRtpDecodeStep::Frame { frame, receipt } => {
-                let index = self.inner.stats.native.frames.checked_sub(1)
+                let index = self
+                    .inner
+                    .stats
+                    .native
+                    .frames
+                    .checked_sub(1)
                     .ok_or(RtpDetectionError::Encoding)?;
                 if index != self.stats.considered {
                     return Err(RtpDetectionError::Encoding);
@@ -443,7 +459,8 @@ impl<'a> RtpDetectionCascade<'a> {
                     FrameResult::Skipped(receipt) => e.digest(receipt.digest()),
                 }
                 let digest = ContentDigest::sha256(
-                    &e.finish_checked().map_err(|_| RtpDetectionError::Encoding)?,
+                    &e.finish_checked()
+                        .map_err(|_| RtpDetectionError::Encoding)?,
                 );
                 match &result {
                     FrameResult::Inferred(frame) => {
@@ -457,7 +474,11 @@ impl<'a> RtpDetectionCascade<'a> {
                 }
                 self.stats.delivered += 1;
                 self.stats.last_result = Some(digest);
-                Ok(RtpCascadeStep::Frame(RtpCascadeFrame { decision, result, digest }))
+                Ok(RtpCascadeStep::Frame(RtpCascadeFrame {
+                    decision,
+                    result,
+                    digest,
+                }))
             }
         }
     }
@@ -473,12 +494,19 @@ impl<'a> RtpDetectionCascade<'a> {
         let dimensions = frame.dimensions();
         let [w, h] = dimensions;
         let pixels = u64::from(w) * u64::from(h);
-        if w == 0 || h == 0 || w > 4096 || h > 4096 || pixels > 4_194_304
+        if w == 0
+            || h == 0
+            || w > 4096
+            || h > 4096
+            || pixels > 4_194_304
             || pixels != frame.pixels().len() as u64
         {
             return Err(RtpDetectionError::InvalidRequest);
         }
-        self.stats.decision_bytes = self.stats.decision_bytes.checked_add(DECISION_RESERVATION)
+        self.stats.decision_bytes = self
+            .stats
+            .decision_bytes
+            .checked_add(DECISION_RESERVATION)
             .filter(|next| *next <= self.max_decision_bytes)
             .ok_or(RtpDetectionError::Limit("sampling_decisions"))?;
         let mut resets = BTreeSet::new();
@@ -509,10 +537,16 @@ impl<'a> RtpDetectionCascade<'a> {
         } else if resets.is_empty() {
             let previous = self.previous.as_ref().ok_or(RtpDetectionError::Encoding)?;
             match compare_pixels(
-                &previous.pixels, frame.pixels(), dimensions, self.policy.change,
-                self.max_comparisons, &mut self.stats.comparisons,
-                &mut || checkpoint(cx, scalar, "rtp_cascade:row")
-                    .map_err(|_| PixelChangeError::Cancelled),
+                &previous.pixels,
+                frame.pixels(),
+                dimensions,
+                self.policy.change,
+                self.max_comparisons,
+                &mut self.stats.comparisons,
+                &mut || {
+                    checkpoint(cx, scalar, "rtp_cascade:row")
+                        .map_err(|_| PixelChangeError::Cancelled)
+                },
             ) {
                 Ok(measured) => {
                     predecessor_receipt = Some(previous.receipt);
@@ -536,7 +570,11 @@ impl<'a> RtpDetectionCascade<'a> {
         };
         let required_basis = self.required.get(&index).copied();
         let (reasons, hold_remaining) = schedule(
-            self.policy, index as u64, self.hold_remaining, signal, required_basis.is_some(),
+            self.policy,
+            index as u64,
+            self.hold_remaining,
+            signal,
+            required_basis.is_some(),
         );
         let mut decision = RtpSamplingDecision {
             observation: RtpPixelChangeObservation {
@@ -571,12 +609,17 @@ impl<'a> RtpDetectionCascade<'a> {
             // Reuse the old luma allocation after comparison; do not retain another image.
             let mut previous_pixels = self.previous.take().map(|p| p.pixels).unwrap_or_default();
             previous_pixels.clear();
-            previous_pixels.try_reserve_exact(frame.pixels().len())
+            previous_pixels
+                .try_reserve_exact(frame.pixels().len())
                 .map_err(|_| RtpDetectionError::Limit("sampling_baseline_allocation"))?;
             previous_pixels.extend_from_slice(frame.pixels());
             self.previous = Some(Previous {
-                receipt: receipt.digest(), recipe: receipt.recipe(), root: frame.root(),
-                epoch: frame.source().decoder_epoch, dimensions, mask: frame.mask().digest(),
+                receipt: receipt.digest(),
+                recipe: receipt.recipe(),
+                root: frame.root(),
+                epoch: frame.source().decoder_epoch,
+                dimensions,
+                mask: frame.mask().digest(),
                 pixels: previous_pixels,
             });
         } else {

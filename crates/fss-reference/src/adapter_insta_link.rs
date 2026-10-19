@@ -51,7 +51,9 @@ pub const ADP_INSTA_LINK_MAX_BUFFER_FRAMES: u32 = 256;
 pub const ADP_INSTA_LINK_REQUEST_TIMEOUT_NS: u64 = 10_000_000_000;
 
 /// The declared capability set. The Insta360 Link tuple over standard UVC/UAC: streaming, snapshot, and PTZ-class gimbal control (researched, unimplemented).
-pub const ADP_INSTA_LINK_CAPABILITIES: AdapterCapabilities = AdapterCapabilities::STREAMING.union(AdapterCapabilities::SNAPSHOT).union(AdapterCapabilities::PTZ_CONTROL);
+pub const ADP_INSTA_LINK_CAPABILITIES: AdapterCapabilities = AdapterCapabilities::STREAMING
+    .union(AdapterCapabilities::SNAPSHOT)
+    .union(AdapterCapabilities::PTZ_CONTROL);
 
 /// Constructs the typed identity for the row, fully verified: structural
 /// invariants (`verify`) and NEG-002 standards compliance must both pass.

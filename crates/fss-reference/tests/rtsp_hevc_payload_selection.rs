@@ -139,11 +139,9 @@ impl Fixture {
 
     fn poll(&mut self, readable: bool, writable: bool) -> Test<LiveHevcStep> {
         let now = self.tick()?;
-        Ok(self.connection.poll(
-            SocketReadiness { readable, writable },
-            now,
-            &self.authority,
-        )?)
+        Ok(self
+            .connection
+            .poll(SocketReadiness { readable, writable }, now, &self.authority)?)
     }
 
     fn flush(&mut self, queued: &QueuedHevcRequest) -> Test<Vec<u8>> {
@@ -156,8 +154,7 @@ impl Fixture {
                     self.peer.read_exact(&mut wire)?;
                     return Ok(wire);
                 }
-                LiveHevcStep::Write(TcpWriteStep::Advanced { .. })
-                | LiveHevcStep::Pending(_) => {}
+                LiveHevcStep::Write(TcpWriteStep::Advanced { .. }) | LiveHevcStep::Pending(_) => {}
                 _ => return Err("unexpected event during bounded request write".into()),
             }
         }
@@ -167,13 +164,9 @@ impl Fixture {
     fn command(&mut self, command: ClientCommand) -> Test<(u32, Vec<u8>)> {
         let now = self.tick()?;
         let nonce = u128::from(now).to_be_bytes();
-        let queued = self.connection.request(
-            command,
-            &credentials()?,
-            nonce,
-            now,
-            &self.authority,
-        )?;
+        let queued =
+            self.connection
+                .request(command, &credentials()?, nonce, now, &self.authority)?;
         let wire = self.flush(&queued)?;
         Ok((queued.cseq, wire))
     }
@@ -199,7 +192,9 @@ impl Fixture {
                                         | HevcClientPoll::Rtp { .. }
                                 )
                         }
-                        LiveHevcStep::Protocol { transport: Some(_), .. } => true,
+                        LiveHevcStep::Protocol {
+                            transport: Some(_), ..
+                        } => true,
                         _ => false,
                     };
                     if significant {
@@ -219,7 +214,8 @@ fn accepted(step: LiveHevcStep, state: ClientState, original: &[u8]) -> Test {
     let LiveHevcStep::Protocol {
         event: HevcPictureClientPoll::Client { event, work: None },
         transport: None,
-    } = step else {
+    } = step
+    else {
         return Err("missing accepted native response".into());
     };
     let HevcClientPoll::Control { progress, source } = *event else {
@@ -235,7 +231,11 @@ fn mixed_offers_negotiate_over_short_io_and_preserve_original_rtp() -> Test {
     for (chunk, avc_first) in [(1, true), (7, false), (4096, true)] {
         let mut f = Fixture::new(chunk, 0)?;
         let (seq, _) = f.command(ClientCommand::Describe)?;
-        let original = response(seq, "Content-Type: application/sdp\r\n", &mixed_offer(avc_first));
+        let original = response(
+            seq,
+            "Content-Type: application/sdp\r\n",
+            &mixed_offer(avc_first),
+        );
         accepted(f.reply(&original)?, ClientState::Described, &original)?;
         let media = f.connection.media().ok_or("missing selected HEVC media")?;
         assert_eq!(media.payload_type(), 98);
@@ -246,7 +246,11 @@ fn mixed_offers_negotiate_over_short_io_and_preserve_original_rtp() -> Test {
         assert!(std::str::from_utf8(&original)?.contains("a=rtpmap:96 H264/90000"));
         let (seq, setup) = f.command(ClientCommand::Setup)?;
         assert!(setup.starts_with(b"SETUP rtsp://camera.local/live/trackID=0 RTSP/1.0\r\n"));
-        let original = response(seq, "Session: fixture;timeout=60\r\nTransport: RTP/AVP/TCP;unicast;interleaved=0-1;ssrc=7\r\n", "");
+        let original = response(
+            seq,
+            "Session: fixture;timeout=60\r\nTransport: RTP/AVP/TCP;unicast;interleaved=0-1;ssrc=7\r\n",
+            "",
+        );
         accepted(f.reply(&original)?, ClientState::Ready, &original)?;
         let (seq, _) = f.command(ClientCommand::Play)?;
         let original = response(seq, "Session: fixture\r\n", "");
@@ -263,10 +267,16 @@ fn mixed_offers_negotiate_over_short_io_and_preserve_original_rtp() -> Test {
             let LiveHevcStep::Protocol {
                 event: HevcPictureClientPoll::Client { event, work: None },
                 transport: None,
-            } = f.reply(&wire)? else {
+            } = f.reply(&wire)?
+            else {
                 return Err("native RTP admission missing".into());
             };
-            let HevcClientPoll::Rtp { source, retirement: None, .. } = *event else {
+            let HevcClientPoll::Rtp {
+                source,
+                retirement: None,
+                ..
+            } = *event
+            else {
                 return Err("selected RTP was not admitted to the HEVC owner".into());
             };
             assert_eq!(source.expose_wire(), wire);
@@ -289,20 +299,37 @@ fn digest_selected_description_keeps_original_challenge_and_scope() -> Test {
     let LiveHevcStep::Protocol {
         event: HevcPictureClientPoll::Client { event, work: None },
         transport: None,
-    } = f.reply(challenge.as_bytes())? else {
+    } = f.reply(challenge.as_bytes())?
+    else {
         return Err("matching Digest challenge not surfaced".into());
     };
     assert!(matches!(*event, HevcClientPoll::AuthenticationRequired { cseq, .. } if cseq == seq));
     let now = f.tick()?;
-    let queued = f.connection.respond(&credentials()?, [42; 16], now, &f.authority)?;
-    assert_eq!(queued.challenge.as_ref().ok_or("lost challenge")?.expose_wire(), challenge.as_bytes());
+    let queued = f
+        .connection
+        .respond(&credentials()?, [42; 16], now, &f.authority)?;
+    assert_eq!(
+        queued
+            .challenge
+            .as_ref()
+            .ok_or("lost challenge")?
+            .expose_wire(),
+        challenge.as_bytes()
+    );
     let signed = f.flush(&queued)?;
     let signed = std::str::from_utf8(&signed)?;
     assert!(signed.contains("Authorization: Digest "));
     assert!(!signed.contains(PASSWORD));
-    let original = response(queued.cseq, "Content-Type: application/sdp\r\n", &mixed_offer(true));
+    let original = response(
+        queued.cseq,
+        "Content-Type: application/sdp\r\n",
+        &mixed_offer(true),
+    );
     accepted(f.reply(&original)?, ClientState::Described, &original)?;
-    assert_eq!(f.connection.media().ok_or("missing media")?.payload_type(), 98);
+    assert_eq!(
+        f.connection.media().ok_or("missing media")?.payload_type(),
+        98
+    );
     let (_, setup) = f.command(ClientCommand::Setup)?;
     let setup = std::str::from_utf8(&setup)?;
     assert!(setup.starts_with("SETUP rtsp://camera.local/live/trackID=0 RTSP/1.0\r\n"));
@@ -320,12 +347,19 @@ fn ambiguous_or_unsupported_selected_sdp_never_sends_setup() -> Test {
         ambiguous,
         body.replace("H265/90000", "H265/8000"),
         body.replace("sprop-vps=", "sprop-max-don-diff=1;sprop-vps="),
-        body.replace("a=control:trackID=0", "a=control:rtsp://other.local/live/video"),
+        body.replace(
+            "a=control:trackID=0",
+            "a=control:rtsp://other.local/live/video",
+        ),
     ] {
         let mut f = Fixture::new(7, 0)?;
         let (seq, describe) = f.command(ClientCommand::Describe)?;
         let original = response(seq, "Content-Type: application/sdp\r\n", &rejected);
-        let LiveHevcStep::Protocol { transport: Some(retired), .. } = f.reply(&original)? else {
+        let LiveHevcStep::Protocol {
+            transport: Some(retired),
+            ..
+        } = f.reply(&original)?
+        else {
             return Err("unsupported SDP did not retire native connection".into());
         };
         assert_eq!(retired.totals.sent_bytes, u64::try_from(describe.len())?);
@@ -346,7 +380,10 @@ fn native_selection_preserves_video_index_after_audio() -> Test {
     let (seq, _) = f.command(ClientCommand::Describe)?;
     let original = response(seq, "Content-Type: application/sdp\r\n", &body);
     accepted(f.reply(&original)?, ClientState::Described, &original)?;
-    assert_eq!(f.connection.media().ok_or("missing video")?.payload_type(), 98);
+    assert_eq!(
+        f.connection.media().ok_or("missing video")?.payload_type(),
+        98
+    );
     let (_, setup) = f.command(ClientCommand::Setup)?;
     assert!(setup.starts_with(b"SETUP rtsp://camera.local/live/trackID=0 RTSP/1.0\r\n"));
     let _retirement = f.connection.cancel().ok_or("lost native owner")?;

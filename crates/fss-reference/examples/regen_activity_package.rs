@@ -10,8 +10,7 @@
 //! ```
 
 fn main() {
-    let bytes =
-        fss_reference::executor_activity_package::build_activity_package().expect("build");
+    let bytes = fss_reference::executor_activity_package::build_activity_package().expect("build");
     let path = "models/fss-activity/fss_activity_v1.fmpk";
     std::fs::write(path, &bytes).expect("write fmpk");
     println!("wrote {path} ({} bytes)", bytes.len());
