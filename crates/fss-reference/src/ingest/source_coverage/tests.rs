@@ -2654,7 +2654,7 @@ fn network_outage_and_rediscovery_cannot_reuse_a_prior_absence_witness() -> Test
     fn binding() -> Result<DeviceEnrollment, Box<dyn Error>> {
         Ok(DeviceEnrollment::with_thresholds(
             "192.168.4.10".parse()?,
-            SensorId::parse(FRONT.0)?,
+            SensorId::parse(format!("sensor:{}", FRONT.0))?,
             DeviceClass::Onvif,
             (10, 20),
         )?)
@@ -2666,7 +2666,18 @@ fn network_outage_and_rediscovery_cannot_reuse_a_prior_absence_witness() -> Test
         }
     }
     fn before_coverage(deployment: &mut ReferenceDeployment, cx: &ReplayCx) -> TestResult {
-        retain_discovery_sweep(deployment, &[binding()?], &fresh_report(), 0, cx)?;
+        // The existing verifier deliberately examines pre-basis observations when
+        // their validity overlaps the certified source interval. Initialize after
+        // this fixture's historical [0, TICKS seconds] interval, before its basis;
+        // the later outage must invalidate a certificate that first really exists.
+        let initialized_at_ns = TICKS * 1_000_000_000 + 1;
+        retain_discovery_sweep(
+            deployment,
+            &[binding()?],
+            &fresh_report(),
+            initialized_at_ns,
+            cx,
+        )?;
         Ok(())
     }
     let mut quiet = Quiet::run_after("liveness-outage", everything, true, before_coverage)?;
@@ -2693,6 +2704,35 @@ fn network_outage_and_rediscovery_cannot_reuse_a_prior_absence_witness() -> Test
     )?;
     assert_eq!(returned[0].record.state(), WatchState::Observable);
     assert_eq!(returned[0].record.last_unobserved_ns(), Some(6_000_000_000));
+    assert_not_certified(&mut quiet, "coverage-relevant commit")?;
+    quiet.cleanup();
+    Ok(())
+}
+
+#[test]
+fn overlapping_prior_liveness_cannot_be_hidden_by_a_new_coverage_basis() -> TestResult {
+    use crate::discovery::DiscoverReport;
+    use crate::discovery::retained_liveness::{DeviceEnrollment, retain_discovery_sweep};
+    use crate::discovery::watchdog::DeviceClass;
+
+    fn overlapping_observation(deployment: &mut ReferenceDeployment, cx: &ReplayCx) -> TestResult {
+        let binding = DeviceEnrollment::with_thresholds(
+            "192.168.4.10".parse()?,
+            SensorId::parse(format!("sensor:{}", FRONT.0))?,
+            DeviceClass::Onvif,
+            (10, 20),
+        )?;
+        let fresh = DiscoverReport {
+            beacons: vec![("192.168.4.10:6667".into(), 7)],
+            ..DiscoverReport::default()
+        };
+        retain_discovery_sweep(deployment, &[binding], &fresh, 0, cx)?;
+        Ok(())
+    }
+    let mut quiet =
+        Quiet::run_after("liveness-overlap", everything, true, overlapping_observation)?;
+    // A healthy network response and its metadata are not analysed source pixels.
+    // Choosing a later witness basis cannot turn them into absence evidence.
     assert_not_certified(&mut quiet, "coverage-relevant commit")?;
     quiet.cleanup();
     Ok(())

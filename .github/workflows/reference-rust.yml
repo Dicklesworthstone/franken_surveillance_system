@@ -61,6 +61,7 @@ jobs:
           cargo +nightly-2026-08-31 test --locked --offline -p fss-reference --test discovery_watchdog_contract || discovery_exit=1
           cargo +nightly-2026-08-31 test --locked --offline -p fss-reference --lib discovery::retained_liveness || discovery_exit=1
           cargo +nightly-2026-08-31 test --locked --offline -p fss-reference --lib network_outage_and_rediscovery_cannot_reuse_a_prior_absence_witness || discovery_exit=1
+          cargo +nightly-2026-08-31 test --locked --offline -p fss-reference --lib overlapping_prior_liveness_cannot_be_hidden_by_a_new_coverage_basis || discovery_exit=1
           cargo +nightly-2026-08-31 test --locked --offline -p fss-cli --bin fss-discover || discovery_exit=1
           exit "$discovery_exit"
       - name: Verify retained native frame localization and owner command
