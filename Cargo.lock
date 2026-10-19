@@ -522,6 +522,7 @@ dependencies = [
  "fss-provision",
  "fss-publication",
  "fss-reference",
+ "fss-runtime",
  "fss-tutk",
  "fss-tuya",
  "fss-twin",

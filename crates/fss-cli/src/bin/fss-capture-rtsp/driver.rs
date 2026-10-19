@@ -6,15 +6,13 @@
 use std::cell::Cell;
 use std::io::{self, Write};
 use std::path::{Path, PathBuf};
-use std::time::{Duration, Instant};
+use std::time::Duration;
 
 use fss_cli::agent_json::{object, string};
-use fss_core::region::{ContextAuthority, RootAuthoritySpec};
-use fss_core::{BudgetVector, ContentDigest, OperationId};
+use fss_core::{ContentDigest, TimestampNs};
 use fss_publication::{
     LocalPublicationState, LocalRootPublisher, PublishCancellation, PublishCutPoint,
 };
-use fss_reference::ReplayCx;
 use fss_reference::rtsp::archive_pins::live::{
     JournaledLiveArchiveError, JournaledLiveArchiveStep, JournaledLiveAvcArchive,
     JournaledLiveFailure,
@@ -33,6 +31,7 @@ use fss_reference::rtsp::recording_archive::{
 use fss_reference::rtsp::recording_capture::{CaptureError, CapturePoll, TimedCapture};
 use fss_reference::rtsp::recording_collector::CollectorError;
 use fss_reference::rtsp::tcp::{TcpAuthority, TcpBinding, TcpDenial, TcpError, TcpOperation};
+use fss_runtime::execution::TaskCx;
 
 use super::authentication::{CredentialLease, Entropy, MAX_CREDENTIAL_BYTES, SecretError};
 use super::plan::Options;
@@ -59,13 +58,9 @@ use report::{
 mod source_retention;
 use super::source_mode::SourceConfig;
 use source_retention::SourceCustody;
-
-const STORAGE_CAPS: [&str; 4] = [
-    "CAP-READ-MEDIA-001",
-    "CAP-OBJECT-STAGE-001",
-    "CAP-OBJECT-PUBLISH-001",
-    "CAP-RETENTION-COMMIT-001",
-];
+#[path = "runtime.rs"]
+mod runtime;
+use runtime::{CaptureRuntime, Resources, TaskClock};
 
 #[derive(Clone, Copy, Debug)]
 enum Failure {
@@ -148,49 +143,11 @@ fn secret_failure(error: SecretError) -> Failure {
     }
 }
 
-fn secret_check(
-    authority: &ContextAuthority,
-    start: Instant,
-    deadline: u64,
-) -> Result<(), SecretError> {
-    if !authority.has_capability("CAP-ADAPTER-AUTH-001") {
-        return Err(SecretError::Authority);
-    }
-    context_check(authority, start, deadline)
-        .map(|_| ())
-        .map_err(|error| {
-            if matches!(error, Failure::Deadline) {
-                SecretError::Deadline
-            } else {
-                SecretError::Authority
-            }
-        })
-}
-
-fn elapsed(start: Instant) -> Result<u64, Failure> {
-    u64::try_from(start.elapsed().as_nanos()).map_err(|_| Failure::Deadline)
-}
-fn context_check(
-    authority: &ContextAuthority,
-    start: Instant,
-    deadline: u64,
-) -> Result<u64, Failure> {
-    if authority.cancellation_reason.is_some()
-        || !STORAGE_CAPS.iter().all(|cap| authority.has_capability(cap))
-    {
-        return Err(Failure::Authority);
-    }
-    let now = elapsed(start)?;
-    if now >= deadline {
-        return Err(Failure::Deadline);
-    }
-    Ok(now)
-}
-struct Owner<'a> {
-    cx: &'a ReplayCx,
-    authority: &'a ContextAuthority,
+struct Owner<'a, 'task> {
+    task: &'a TaskCx<'task>,
+    clock: &'a TaskClock,
+    resources: &'a Resources,
     binding: TcpBinding,
-    start: Instant,
     live_deadline: u64,
     storage_deadline: u64,
     drain_timeout: u64,
@@ -198,7 +155,13 @@ struct Owner<'a> {
     credentials: Option<&'a CredentialLease>,
     supervision: Option<Supervision>,
 }
-impl Owner<'_> {
+
+struct NativeContext<'a, 'task> {
+    task: &'a TaskCx<'task>,
+    clock: &'a TaskClock,
+    resources: &'a Resources,
+}
+impl Owner<'_, '_> {
     fn admit_stall<W: Write>(
         &self,
         stall: Stall,
@@ -225,21 +188,60 @@ impl Owner<'_> {
     }
 
     fn now(&self) -> Result<u64, Failure> {
-        self.cx
-            .checkpoint("capture_rtsp:owner")
-            .map_err(|_| Failure::Authority)?;
-        context_check(
-            self.authority,
-            self.start,
-            self.drain_deadline.get().unwrap_or(self.storage_deadline),
-        )
+        let now = self
+            .clock
+            .now(self.task, self.drain_deadline.get().is_some())?;
+        self.check_storage_deadline(now)?;
+        Ok(now)
+    }
+    fn check_storage_deadline(&self, now: u64) -> Result<(), Failure> {
+        if now >= self.drain_deadline.get().unwrap_or(self.storage_deadline) {
+            Err(Failure::Deadline)
+        } else {
+            Ok(())
+        }
+    }
+    fn storage_check(&self) -> Result<u64, Failure> {
+        let now = self.clock.storage(
+            self.task,
+            self.resources,
+            self.drain_deadline.get().is_some(),
+        )?;
+        self.check_storage_deadline(now)?;
+        Ok(now)
+    }
+    fn startup_check(&self) -> Result<(), Failure> {
+        let now = self.storage_check()?;
+        if now >= self.live_deadline {
+            return Err(Failure::Deadline);
+        }
+        Ok(())
+    }
+    fn secret_check(&self) -> Result<(), SecretError> {
+        let now = self
+            .clock
+            .secret(self.task, self.resources)
+            .map_err(|error| {
+                if matches!(error, Failure::Deadline) {
+                    SecretError::Deadline
+                } else {
+                    SecretError::Authority
+                }
+            })?;
+        if now >= self.live_deadline {
+            return Err(SecretError::Deadline);
+        }
+        Ok(())
     }
     fn begin_drain(&self) -> Result<(), Failure> {
-        let now = self.now()?;
+        let now = self.clock.metadata_now(self.task)?;
         if self.drain_deadline.get().is_none() {
             let deadline = now
                 .checked_add(self.drain_timeout)
                 .ok_or(Failure::Deadline)?;
+            self.task
+                .begin_drain(TimestampNs(i128::from(now)))
+                .map_err(|error| runtime::failure(&error))?;
             self.drain_deadline
                 .set(Some(deadline.min(self.storage_deadline)));
         }
@@ -256,9 +258,7 @@ impl Owner<'_> {
             .min(self.live_deadline - now);
         if delay != 0 {
             // One explicit owner-clock wait, only following a Pending network poll.
-            self.cx
-                .checkpoint("capture_rtsp:wait")
-                .map_err(|_| Failure::Authority)?;
+            self.clock.network(self.task, self.resources)?;
             std::thread::sleep(Duration::from_nanos(delay));
         }
         self.now()?;
@@ -269,7 +269,7 @@ impl Owner<'_> {
         &self,
         entropy: &mut Entropy,
     ) -> Result<(DigestCredentials<'_>, [u8; 16]), Failure> {
-        let check = || secret_check(self.authority, self.start, self.live_deadline);
+        let check = || self.secret_check();
         let lease = self.credentials.ok_or(Failure::Authentication)?;
         lease.revalidate(&check).map_err(secret_failure)?;
         let nonce = entropy.next(&check).map_err(secret_failure)?;
@@ -277,7 +277,7 @@ impl Owner<'_> {
         Ok((credentials, nonce))
     }
 }
-impl TcpAuthority for Owner<'_> {
+impl TcpAuthority for Owner<'_, '_> {
     fn checkpoint(
         &self,
         binding: &TcpBinding,
@@ -285,23 +285,29 @@ impl TcpAuthority for Owner<'_> {
         now: u64,
         deadline: u64,
     ) -> Result<(), TcpDenial> {
-        self.cx
-            .checkpoint("capture_rtsp:network")
-            .map_err(|_| TcpDenial::Cancelled)?;
-        if self.authority.cancellation_reason.is_some() {
-            return Err(TcpDenial::Cancelled);
-        }
-        if binding != &self.binding
-            || deadline != self.live_deadline
-            || !self.authority.has_capability("CAP-ADAPTER-NET-001")
-            || !STORAGE_CAPS
-                .iter()
-                .all(|cap| self.authority.has_capability(cap))
-        {
+        if binding != &self.binding || deadline != self.live_deadline {
             return Err(TcpDenial::Unauthorized);
         }
+        if self.drain_deadline.get().is_some() {
+            return Err(TcpDenial::Cancelled);
+        }
+        if self
+            .task
+            .is_cancel_requested()
+            .map_err(|_| TcpDenial::Unauthorized)?
+        {
+            return Err(TcpDenial::Cancelled);
+        }
+        let denial = |error| match error {
+            Failure::Deadline => TcpDenial::Deadline,
+            Failure::WorkBudget => TcpDenial::Budget,
+            _ => TcpDenial::Unauthorized,
+        };
+        self.clock
+            .network(self.task, self.resources)
+            .map_err(denial)?;
         if let Some(lease) = self.credentials {
-            let check = || secret_check(self.authority, self.start, self.live_deadline);
+            let check = || self.secret_check();
             lease.revalidate(&check).map_err(|error| match error {
                 SecretError::Deadline => TcpDenial::Deadline,
                 SecretError::Revoked | SecretError::Credentials => TcpDenial::Revoked,
@@ -310,15 +316,19 @@ impl TcpAuthority for Owner<'_> {
         }
         // Re-read the actual clock at every native pre/post-syscall probe. A caller's
         // old admission timestamp cannot extend network authority during storage/output.
-        if now >= deadline || elapsed(self.start).map_err(|_| TcpDenial::Deadline)? >= deadline {
+        let observed = self
+            .clock
+            .network(self.task, self.resources)
+            .map_err(denial)?;
+        if now >= deadline || observed >= deadline {
             return Err(TcpDenial::Deadline);
         }
         Ok(())
     }
 }
-impl PublishCancellation for Owner<'_> {
+impl PublishCancellation for Owner<'_, '_> {
     fn cancel_requested(&self, _: PublishCutPoint) -> bool {
-        self.now().is_err()
+        self.storage_check().is_err()
     }
 }
 
@@ -355,7 +365,10 @@ fn failure(error: JournaledLiveFailure, stats: &mut Statistics) -> Failure {
                     DigestAvcError::Authentication(_) | DigestAvcError::AuthenticationAtEof,
                 )) => Failure::AuthenticationRefused,
                 LiveRecordingError::Network(LiveAvcError::Transport(error))
-                    if abrupt_read_failure(&error) => Failure::ReadInterrupted,
+                    if abrupt_read_failure(&error) =>
+                {
+                    Failure::ReadInterrupted
+                }
                 _ => Failure::Protocol,
             },
             _ => Failure::State,
@@ -697,7 +710,7 @@ fn archive_progress<C: ArchiveCodec, W: Write>(
 
 fn begin_archive_drain(
     capture: &mut JournaledLiveAvcArchive<'_, '_>,
-    owner: &Owner<'_>,
+    owner: &Owner<'_, '_>,
     stats: &mut Statistics,
 ) -> Result<(), Failure> {
     let retired = capture
@@ -778,7 +791,7 @@ fn drive<W: Write>(
     options: &Options,
     source: &mut Option<SourceCustody>,
     capture: &mut JournaledLiveAvcArchive<'_, '_>,
-    owner: &Owner<'_>,
+    owner: &Owner<'_, '_>,
     mut entropy: Option<&mut Entropy>,
     stats: &mut Statistics,
     log: &mut Transcript<'_, W>,
@@ -1191,39 +1204,36 @@ fn drive<W: Write>(
 }
 
 /// Refuse any existing path before creating either owner, including symlinks and old attempts.
-fn require_new(path: &Path) -> Result<(), Failure> {
-    match std::fs::symlink_metadata(path) {
+fn require_new(path: &Path, owner: &Owner<'_, '_>) -> Result<(), Failure> {
+    owner.startup_check()?;
+    let result = match std::fs::symlink_metadata(path) {
         Err(error) if error.kind() == io::ErrorKind::NotFound => Ok(()),
         _ => Err(Failure::Root),
-    }
+    };
+    owner.startup_check()?;
+    result
 }
 
 /// Bind both outputs to their existing canonical parents before creating either owner.
 /// Lexically different paths may otherwise alias through a symlinked ancestor.
-fn resolve_new_parent(
-    path: &Path,
-    authority: &ContextAuthority,
-    start: Instant,
-    deadline: u64,
-) -> Result<PathBuf, Failure> {
-    context_check(authority, start, deadline)?;
+fn resolve_new_parent(path: &Path, owner: &Owner<'_, '_>) -> Result<PathBuf, Failure> {
+    owner.startup_check()?;
     let parent =
         std::fs::canonicalize(path.parent().ok_or(Failure::Root)?).map_err(|_| Failure::Root)?;
-    context_check(authority, start, deadline)?;
+    owner.startup_check()?;
     if !std::fs::metadata(&parent)
         .map_err(|_| Failure::Root)?
         .is_dir()
     {
         return Err(Failure::Root);
     }
-    context_check(authority, start, deadline)?;
+    owner.startup_check()?;
     let resolved = parent.join(path.file_name().ok_or(Failure::Root)?);
-    require_new(&resolved)?;
-    context_check(authority, start, deadline)?;
+    require_new(&resolved, owner)?;
     Ok(resolved)
 }
 
-fn create_root(path: &Path) -> Result<(), Failure> {
+fn create_root(path: &Path, owner: &Owner<'_, '_>) -> Result<(), Failure> {
     let mut builder = std::fs::DirBuilder::new();
     #[cfg(unix)]
     {
@@ -1232,17 +1242,20 @@ fn create_root(path: &Path) -> Result<(), Failure> {
     }
     // Exclusive creation closes the check/create race at the final path component.
     // Parent directories must already exist; no hidden ancestor creation or repair.
+    owner.startup_check()?;
     builder.create(path).map_err(|_| Failure::Root)?;
-    std::fs::File::open(path.parent().ok_or(Failure::Root)?)
-        .and_then(|directory| directory.sync_all())
-        .map_err(|_| Failure::Root)
+    owner.startup_check()?;
+    let parent =
+        std::fs::File::open(path.parent().ok_or(Failure::Root)?).map_err(|_| Failure::Root)?;
+    owner.startup_check()?;
+    parent.sync_all().map_err(|_| Failure::Root)?;
+    owner.startup_check()
 }
 
 fn run_owned<W: Write>(
     options: &Options,
     source_config: Option<&SourceConfig>,
-    authority: &ContextAuthority,
-    start: Instant,
+    context: NativeContext<'_, '_>,
     stats: &mut Statistics,
     log: &mut Transcript<'_, W>,
     supervision: Option<Supervision>,
@@ -1251,7 +1264,19 @@ fn run_owned<W: Write>(
         .timeout_ns
         .checked_add(options.drain_timeout_ns)
         .ok_or(Failure::Configuration)?;
-    let check_secret = || secret_check(authority, start, options.timeout_ns);
+    let mut owner = Owner {
+        task: context.task,
+        clock: context.clock,
+        resources: context.resources,
+        binding: options.binding(),
+        live_deadline: options.timeout_ns,
+        storage_deadline,
+        drain_timeout: options.drain_timeout_ns,
+        drain_deadline: Cell::new(None),
+        credentials: None,
+        supervision,
+    };
+    let check_secret = || owner.secret_check();
     let credentials = options
         .authentication
         .as_ref()
@@ -1263,20 +1288,18 @@ fn run_owned<W: Write>(
     } else {
         None
     };
-    context_check(authority, start, options.timeout_ns)?;
-    require_new(&options.root)?;
-    context_check(authority, start, options.timeout_ns)?;
-    require_new(&options.pins)?;
-    let root = resolve_new_parent(&options.root, authority, start, options.timeout_ns)?;
-    let pin_root = resolve_new_parent(&options.pins, authority, start, options.timeout_ns)?;
+    owner.credentials = credentials.as_ref();
+    require_new(&options.root, &owner)?;
+    require_new(&options.pins, &owner)?;
+    let root = resolve_new_parent(&options.root, &owner)?;
+    let pin_root = resolve_new_parent(&options.pins, &owner)?;
     if root.starts_with(&pin_root) || pin_root.starts_with(&root) {
         return Err(Failure::Root);
     }
     let source_root = source_config
         .map(|config| {
-            context_check(authority, start, options.timeout_ns)?;
-            require_new(&config.root)?;
-            let path = resolve_new_parent(&config.root, authority, start, options.timeout_ns)?;
+            require_new(&config.root, &owner)?;
+            let path = resolve_new_parent(&config.root, &owner)?;
             if [&root, &pin_root]
                 .iter()
                 .any(|other| path.starts_with(other) || other.starts_with(&path))
@@ -1286,28 +1309,12 @@ fn run_owned<W: Write>(
             Ok(path)
         })
         .transpose()?;
-    context_check(authority, start, options.timeout_ns)?;
-    create_root(&root)?;
-    context_check(authority, start, options.timeout_ns)?;
-    let cx =
-        ReplayCx::from_context_authority(authority, root.clone()).map_err(|_| Failure::Root)?;
-    let owner = Owner {
-        cx: &cx,
-        authority,
-        binding: options.binding(),
-        start,
-        live_deadline: options.timeout_ns,
-        storage_deadline,
-        drain_timeout: options.drain_timeout_ns,
-        drain_deadline: Cell::new(None),
-        credentials: credentials.as_ref(),
-        supervision,
-    };
-    let result = (|| {
-        owner.now()?;
+    create_root(&root, &owner)?;
+    (|| {
+        owner.storage_check()?;
         let mut publisher = LocalRootPublisher::open(&root, options.publication_limits())
             .map_err(|_| Failure::Storage)?;
-        owner.now()?;
+        owner.storage_check()?;
         let mut source = source_config
             .zip(source_root.as_ref())
             .map(|(config, path)| SourceCustody::open(config, path, &owner))
@@ -1391,9 +1398,7 @@ fn run_owned<W: Write>(
             stats.source_custody = Some(custody.summary());
         }
         capture_result
-    })();
-    cx.drain_and_finalize();
-    result
+    })()
 }
 
 pub(super) fn execute(options: &Options) -> Result<(), &'static str> {
@@ -1434,54 +1439,7 @@ fn execute_owned_attempt(
     if options.approve != Some(approval) {
         return Err(Failure::Approval.code());
     }
-    let publication = options.publication_limits();
-    let byte_budget = publication
-        .spool
-        .max_total_bytes
-        .checked_add(options.max_received_bytes())
-        .and_then(|budget| {
-            budget.checked_add(source.map_or(0, |s| s.storage.spool.max_total_bytes))
-        })
-        .and_then(|budget| {
-            budget.checked_add(if options.authentication.is_some() {
-                MAX_CREDENTIAL_BYTES as u64 + 1 + 16 * options.max_steps
-            } else {
-                0
-            })
-        })
-        .ok_or(Failure::Configuration.code())?;
-    let mut capabilities: Vec<String> = STORAGE_CAPS.iter().map(|cap| (*cap).into()).collect();
-    capabilities.extend(["ADP-REPLAY-001".into(), "CAP-ADAPTER-NET-001".into()]);
-    if options.authentication.is_some() {
-        capabilities.push("CAP-ADAPTER-AUTH-001".into());
-    }
-    let authority = ContextAuthority::new_root(RootAuthoritySpec {
-        trace_id: "trace:rtsp-capture".into(),
-        operation_id: OperationId::parse("operation:rtsp-capture")
-            .map_err(|_| Failure::Configuration.code())?,
-        principal: options.principal.clone(),
-        capabilities,
-        deadline: None,
-        priority: 10,
-        budgets: BudgetVector::builder()
-            .bytes(byte_budget)
-            .storage_operations(
-                options
-                    .max_steps
-                    .saturating_mul(64)
-                    .saturating_add(source.map_or(0, |s| s.limits.max_datagrams as u64 * 64)),
-            )
-            .build()
-            .map_err(|_| Failure::Configuration.code())?,
-        privacy_scope: "privacy:owner-original-rtsp-custody".into(),
-        retention_scope: "retention:explicit-original-rtsp-scope".into(),
-        anchor_universe: approval,
-        generation: options.recording_config().scope.generation,
-    })
-    .map_err(|_| Failure::Configuration.code())?;
-    authority
-        .validate()
-        .map_err(|_| Failure::Configuration.code())?;
+    let mut runtime = CaptureRuntime::new(options, source, approval).map_err(Failure::code)?;
     let stdout = io::stdout();
     let mut out = stdout.lock();
     let mut log = Transcript {
@@ -1491,63 +1449,73 @@ fn execute_owned_attempt(
         sequence: 0,
         io_failed: false,
     };
-    // A refused output sink cannot leave an archive or start a TCP connection.
-    log.emit(
-        "started",
-        object(&[
-            ("approval_digest", string(&approval.to_text())),
-            (
-                "archive_namespace",
-                string(&options.pin_scope().archive_namespace.to_text()),
-            ),
-            (
-                "journal_id",
-                string(&options.pin_scope().journal_id.to_text()),
-            ),
-            ("source", scope_json(&options.recording_config().scope)),
-            (
-                "requested_pictures",
-                options.stop_after_pictures.to_string(),
-            ),
-            ("frame_duration_ticks", options.frame_duration.to_string()),
-            (
-                "decode_clock",
-                string(&options.catalog_scope().decode_clock.to_text()),
-            ),
-            ("time_scale", options.time_scale.to_string()),
-            ("codec", string(options.codec())),
-            ("keepalive_method", string(options.keepalive.wire_method())),
-            ("keepalive_fallback", "false".into()),
-            ("authentication", string(options.authentication_mode())),
-            ("server_identity_verified", "false".into()),
-            ("transport_encrypted", "false".into()),
-            ("capture_time", string("unknown")),
-        ]),
-        false,
-    )
-    .map_err(Failure::code)?;
-    if let Some(source) = source {
-        log.emit("source_custody_started", source.report(), false)
-            .map_err(Failure::code)?;
-    }
-    if let Some(policy) = supervision {
-        log.emit("recording_supervision", policy.report(), false)
-            .map_err(Failure::code)?;
-    }
-    let start = Instant::now();
     let mut stats = Statistics::default();
-    let result = run_owned(
-        options,
-        source,
-        &authority,
-        start,
-        &mut stats,
-        &mut log,
-        supervision,
-    );
+    let execution = runtime.run(&mut stats, |task, clock, resources, stats| {
+        // A refused output sink cannot leave an archive or start a TCP connection.
+        log.emit(
+            "started",
+            object(&[
+                ("approval_digest", string(&approval.to_text())),
+                (
+                    "archive_namespace",
+                    string(&options.pin_scope().archive_namespace.to_text()),
+                ),
+                (
+                    "journal_id",
+                    string(&options.pin_scope().journal_id.to_text()),
+                ),
+                ("source", scope_json(&options.recording_config().scope)),
+                (
+                    "requested_pictures",
+                    options.stop_after_pictures.to_string(),
+                ),
+                ("frame_duration_ticks", options.frame_duration.to_string()),
+                (
+                    "decode_clock",
+                    string(&options.catalog_scope().decode_clock.to_text()),
+                ),
+                ("time_scale", options.time_scale.to_string()),
+                ("codec", string(options.codec())),
+                ("keepalive_method", string(options.keepalive.wire_method())),
+                ("keepalive_fallback", "false".into()),
+                ("authentication", string(options.authentication_mode())),
+                ("server_identity_verified", "false".into()),
+                ("transport_encrypted", "false".into()),
+                ("capture_time", string("unknown")),
+            ]),
+            false,
+        )?;
+        if let Some(source) = source {
+            log.emit("source_custody_started", source.report(), false)?;
+        }
+        if let Some(policy) = supervision {
+            log.emit("recording_supervision", policy.report(), false)?;
+        }
+        run_owned(
+            options,
+            source,
+            NativeContext {
+                task,
+                clock,
+                resources,
+            },
+            stats,
+            &mut log,
+            supervision,
+        )
+    });
+    stats.runtime = Some(execution.report);
+    let result = execution.result;
     log.emit("terminal", terminal(options, &stats, &result), true)
         .map_err(Failure::code)?;
-    Ok(AttemptOutcome::new(result, &stats))
+    let mut outcome = AttemptOutcome::new(result, &stats);
+    if execution.closure_failed {
+        // No successor may bypass canonical task/custody recovery merely because
+        // the native protocol result would otherwise permit a new generation.
+        outcome.retry = None;
+        outcome.recovery_required = true;
+    }
+    Ok(outcome)
 }
 
 #[cfg(test)]
