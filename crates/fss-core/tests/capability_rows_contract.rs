@@ -138,7 +138,10 @@ fn adapter_rows_exist_once_with_exact_normative_fields() -> Result<(), Box<dyn E
             "{id} denial reason must name its own row"
         );
         assert!(!row.safe_alternative.is_empty(), "{id} safe alternative");
-        assert_eq!(row.generation, "gen:fss1:capabilities-v2", "{id} generation");
+        assert_eq!(
+            row.generation, "gen:fss1:capabilities-v2",
+            "{id} generation"
+        );
         // The typed grant resolves and round-trips.
         let grant = RuntimeGrant::from_id(id)?;
         assert_eq!(grant.as_str(), id);
@@ -172,7 +175,15 @@ fn registry_rows_are_unique_complete_and_current_generation() -> Result<(), Box<
         // carry secret-shaped material.
         for text in [&row.denial_reason, &row.safe_alternative] {
             let lower = text.to_ascii_lowercase();
-            for marker in ["password", "token=", "secret=", "bearer ", "api_key", "apikey", "-----begin"] {
+            for marker in [
+                "password",
+                "token=",
+                "secret=",
+                "bearer ",
+                "api_key",
+                "apikey",
+                "-----begin",
+            ] {
                 assert!(
                     !lower.contains(marker),
                     "row {} carries secret-shaped text ({marker})",
@@ -228,10 +239,7 @@ fn registry_digest_declaration_matches_contract_basis_pin() -> Result<(), Box<dy
         "registry-declared digest must equal the ContractBasis pin"
     );
     // And the superseded v1 digest differs (never reused).
-    assert_ne!(
-        declared,
-        fss_core::SUPERSEDED_CAPABILITY_REGISTRY_DIGEST_V1
-    );
+    assert_ne!(declared, fss_core::SUPERSEDED_CAPABILITY_REGISTRY_DIGEST_V1);
     Ok(())
 }
 
@@ -275,5 +283,8 @@ fn mutating_registry_text_is_caught_by_field_validation() {
     assert_ne!(row.capability, "resolve one adapter secret handle");
     // And the field-level check flags the drift against the normative text.
     let (_id, capability, _scope, _plane, _role) = NORMATIVE_ADAPTER_ROWS[0];
-    assert_ne!(row.capability, capability, "mutation must mismatch normative");
+    assert_ne!(
+        row.capability, capability,
+        "mutation must mismatch normative"
+    );
 }

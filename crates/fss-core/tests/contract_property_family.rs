@@ -9,10 +9,10 @@
 //! stay the hard gate. Reproduce independently:
 //! `cargo test -p fss-core --test contract_property_family -- --nocapture`.
 
-use fss_core::{CanonicalDecode, CanonicalDecoder, CanonicalEncoder, CanonicalEncode};
-use fss_core::{EventEvidence, EvidenceClass, EvidenceEdgeRelation};
+use fss_core::{CanonicalDecode, CanonicalDecoder, CanonicalEncode, CanonicalEncoder};
 use fss_core::{CaptureInterval, TimestampNs};
-use fss_core::{validate_id, EffectState, ObligationState};
+use fss_core::{EffectState, ObligationState, validate_id};
+use fss_core::{EventEvidence, EvidenceClass, EvidenceEdgeRelation};
 
 /// Deterministic 64-bit LCG (Knuth constants). Same seed, same sequence.
 struct Lcg(u64);
@@ -46,7 +46,7 @@ fn emit(property: &str, cases: u64, seed: u64) {
 
 #[test]
 fn p1_timestamp_arithmetic_roundtrip_and_symmetry() -> Result<(), Box<dyn std::error::Error>> {
-    const SEED: u64 = 0x51_54_53_31;
+    const SEED: u64 = 0x0051_5453_3100;
     let mut cases = 0u64;
     let anchors = [
         i128::from(i64::MIN),
@@ -91,11 +91,11 @@ fn p1_timestamp_arithmetic_roundtrip_and_symmetry() -> Result<(), Box<dyn std::e
 
 #[test]
 fn p2_capture_interval_conservative_lattice() -> Result<(), Box<dyn std::error::Error>> {
-    const SEED: u64 = 0x49_43_49_32;
+    const SEED: u64 = 0x0049_4349_3200;
     const N: u64 = 500;
     let mut rng = Lcg::new(SEED);
     let span = 1_000_000_000_000i128;
-    let mut interval = |rng: &mut Lcg| -> (i128, i128) {
+    let interval = |rng: &mut Lcg| -> (i128, i128) {
         let a = (rng.below(2 * span as u64) as i128) - span;
         let b = (rng.below(2 * span as u64) as i128) - span;
         if a <= b { (a, b) } else { (b, a) }
@@ -120,9 +120,7 @@ fn p2_capture_interval_conservative_lattice() -> Result<(), Box<dyn std::error::
             assert!(x.overlaps(y));
         }
         // Conservativity: anything both contain, the intersection contains.
-        let probe = TimestampNs(
-            (rng.below(2 * span as u64) as i128) - span,
-        );
+        let probe = TimestampNs((rng.below(2 * span as u64) as i128) - span);
         let in_both = x.contains_timestamp(probe) && y.contains_timestamp(probe);
         if in_both {
             let Some(ix) = x.intersection(y) else {
@@ -144,7 +142,7 @@ fn p2_capture_interval_conservative_lattice() -> Result<(), Box<dyn std::error::
 
 #[test]
 fn p3_effect_state_machine_exhaustive() -> Result<(), Box<dyn std::error::Error>> {
-    const SEED: u64 = 0x45_53_4d;
+    const SEED: u64 = 0x0000_0000_4553;
     let states = [
         EffectState::Prepared,
         EffectState::Committed,
@@ -195,13 +193,13 @@ fn p3_effect_state_machine_exhaustive() -> Result<(), Box<dyn std::error::Error>
 
 #[test]
 fn p4_stable_id_grammar_boundaries() -> Result<(), Box<dyn std::error::Error>> {
-    const SEED: u64 = 0x49_44_47;
+    const SEED: u64 = 0x0000_0000_4944;
     let mut cases = 0u64;
     // Allowed alphabet: alphanumerics + - _ . :
     let allowed: Vec<char> = "abzABZ09-_.:".chars().collect();
     for &len in &[0usize, 1, 2, 127, 128, 129] {
         for &c in &allowed {
-            let id: String = std::iter::repeat(c).take(len).collect();
+            let id: String = std::iter::repeat_n(c, len).collect();
             let expect_ok = (1..=128).contains(&len);
             assert_eq!(
                 validate_id(&id).is_ok(),
@@ -213,7 +211,7 @@ fn p4_stable_id_grammar_boundaries() -> Result<(), Box<dyn std::error::Error>> {
     }
     // Rejected bytes never pass, at any length.
     for bad in [' ', '/', ';', '\0', 'é', '\t', '#', '@'] {
-        let id: String = std::iter::repeat(bad).take(8).collect();
+        let id: String = std::iter::repeat_n(bad, 8).collect();
         assert!(validate_id(&id).is_err(), "rejected char {bad:?} passed");
         cases += 1;
     }
@@ -229,7 +227,7 @@ fn p4_stable_id_grammar_boundaries() -> Result<(), Box<dyn std::error::Error>> {
 
 #[test]
 fn p5_canonical_roundtrips_for_state_enums() -> Result<(), Box<dyn std::error::Error>> {
-    const SEED: u64 = 0x43_52_54;
+    const SEED: u64 = 0x0000_0000_4352;
     let effects = [
         EffectState::Prepared,
         EffectState::Committed,
@@ -271,8 +269,9 @@ fn p5_canonical_roundtrips_for_state_enums() -> Result<(), Box<dyn std::error::E
 // ------------------------------------------ P6: tamper/revision ordering
 
 #[test]
-fn p6_restoration_retires_only_strictly_later_revisions() -> Result<(), Box<dyn std::error::Error>> {
-    const SEED: u64 = 0x52_45_56;
+fn p6_restoration_retires_only_strictly_later_revisions() -> Result<(), Box<dyn std::error::Error>>
+{
+    const SEED: u64 = 0x0000_0000_5245;
     let mut cases = 0u64;
     let mk_evidence = |relation: EvidenceEdgeRelation, identity: [u8; 32]| EventEvidence {
         digest: fss_core::ContentDigest::sha256(&identity),
@@ -284,10 +283,7 @@ fn p6_restoration_retires_only_strictly_later_revisions() -> Result<(), Box<dyn 
         identity_digest: Some(fss_core::ContentDigest::sha256(b"identity")),
     };
     let tamper = mk_evidence(EvidenceEdgeRelation::SensorTamper, [1u8; 32]);
-    let restoration = mk_evidence(
-        EvidenceEdgeRelation::SensorIntegrityRestoration,
-        [2u8; 32],
-    );
+    let restoration = mk_evidence(EvidenceEdgeRelation::SensorIntegrityRestoration, [2u8; 32]);
     assert!(tamper.reports_sensor_tamper());
     assert!(restoration.reports_integrity_restoration());
 
@@ -306,8 +302,7 @@ fn p6_restoration_retires_only_strictly_later_revisions() -> Result<(), Box<dyn 
                 let restore_window = CaptureInterval::new(
                     TimestampNs(restore_start),
                     TimestampNs(restore_start + 100),
-                )
-                ?;
+                )?;
                 let restore_rev = tamper_rev + restore_rev_delta;
                 fss_core::event::apply_evidence_batch(
                     &mut status,

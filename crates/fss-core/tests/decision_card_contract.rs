@@ -6,7 +6,7 @@
 //! combination), not sampled.
 
 use fss_core::decision_card::{
-    CardDefinition, CardEvaluation, CardStatus, Candidate, DecisionCardEvaluator,
+    Candidate, CardDefinition, CardEvaluation, CardStatus, DecisionCardEvaluator,
 };
 
 fn card(status: CardStatus, shadow_first: bool) -> CardDefinition {
@@ -35,11 +35,16 @@ fn hard_clamps_precede_everything_exhaustively() {
                     let cand = candidate(clamps, paired);
                     let outcome = DecisionCardEvaluator::evaluate(&c, &cand);
                     match outcome {
-                        CardEvaluation::Blocked { clamps: got, safe_fallback } => {
+                        CardEvaluation::Blocked {
+                            clamps: got,
+                            safe_fallback,
+                        } => {
                             assert_eq!(got, cand.tripped_clamps);
                             assert_eq!(safe_fallback, "single authorized path");
                         }
-                        other => panic!("clamped candidate must be Blocked, got {}", other.as_str()),
+                        other => {
+                            panic!("clamped candidate must be Blocked, got {}", other.as_str())
+                        }
                     }
                 }
             }
@@ -54,7 +59,10 @@ fn planned_cards_are_never_executable() {
             let c = card(CardStatus::Planned, shadow_first);
             let cand = candidate(&[], paired);
             match DecisionCardEvaluator::evaluate(&c, &cand) {
-                CardEvaluation::Unavailable { status, safe_fallback } => {
+                CardEvaluation::Unavailable {
+                    status,
+                    safe_fallback,
+                } => {
                     assert_eq!(status, CardStatus::Planned);
                     assert_eq!(safe_fallback, "single authorized path");
                 }
@@ -76,7 +84,9 @@ fn shadow_first_never_activates_without_paired_evidence() {
     let with_evidence = candidate(&[], true);
     assert_eq!(
         DecisionCardEvaluator::evaluate(&c, &with_evidence),
-        CardEvaluation::Allowed { paired_evidence: true },
+        CardEvaluation::Allowed {
+            paired_evidence: true
+        },
         "shadow-first card with paired evidence may allow"
     );
 }
@@ -87,7 +97,9 @@ fn admitted_plain_cards_allow_unclamped_candidates() {
     let cand = candidate(&[], false);
     assert_eq!(
         DecisionCardEvaluator::evaluate(&c, &cand),
-        CardEvaluation::Allowed { paired_evidence: false }
+        CardEvaluation::Allowed {
+            paired_evidence: false
+        }
     );
 }
 
@@ -127,6 +139,10 @@ fn evaluation_digest_is_deterministic_and_distinguishes_outcomes() {
 fn registry_status_parse_fails_closed() {
     assert_eq!(CardStatus::parse("planned"), Some(CardStatus::Planned));
     assert_eq!(CardStatus::parse("admitted"), Some(CardStatus::Admitted));
-    assert_eq!(CardStatus::parse("production"), None, "unknown status refuses");
+    assert_eq!(
+        CardStatus::parse("production"),
+        None,
+        "unknown status refuses"
+    );
     assert_eq!(CardStatus::parse(""), None);
 }

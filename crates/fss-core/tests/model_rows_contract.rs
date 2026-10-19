@@ -13,14 +13,19 @@
 use std::collections::BTreeSet;
 use std::error::Error;
 
-
 /// Full canonical row-ID shape: `PREFIX-MIDDLE-NNN` — uppercase segments,
 /// exactly three trailing digits (rejects `COST-1` class of near-misses).
 fn canonical_row_id(id: &str, prefix: &str) -> bool {
-    let Some(rest) = id.strip_prefix(prefix) else { return false };
-    let Some((mid, num)) = rest.rsplit_once('-') else { return false };
+    let Some(rest) = id.strip_prefix(prefix) else {
+        return false;
+    };
+    let Some((mid, num)) = rest.rsplit_once('-') else {
+        return false;
+    };
     !mid.is_empty()
-        && mid.bytes().all(|b| b.is_ascii_uppercase() || b.is_ascii_digit() || b == b'-')
+        && mid
+            .bytes()
+            .all(|b| b.is_ascii_uppercase() || b.is_ascii_digit() || b == b'-')
         && num.len() == 3
         && num.bytes().all(|b| b.is_ascii_digit())
 }
@@ -126,17 +131,31 @@ fn no_model_is_admitted_and_restrictions_keep_markers() -> Result<(), Box<dyn Er
             );
         }
         assert!(
-            lower.contains("candidate") || lower.contains("research-only") || lower.contains("review"),
+            lower.contains("candidate")
+                || lower.contains("research-only")
+                || lower.contains("review"),
             "{}: eligibility '{}' is neither candidate-class nor research/review — unknown non-admission class",
             row.id,
             row.eligibility
         );
     }
     // License-restricted rows keep their exact restriction markers.
-    let avf = rows.iter().find(|r| r.id == "MOD-AVF-001").ok_or("AVF row")?;
-    assert!(avf.eligibility.contains("noncommercial"), "AVF restriction marker");
-    let gdino = rows.iter().find(|r| r.id == "MOD-GDINO-001").ok_or("GDINO row")?;
-    assert!(gdino.eligibility.contains("license review"), "GDINO review marker");
+    let avf = rows
+        .iter()
+        .find(|r| r.id == "MOD-AVF-001")
+        .ok_or("AVF row")?;
+    assert!(
+        avf.eligibility.contains("noncommercial"),
+        "AVF restriction marker"
+    );
+    let gdino = rows
+        .iter()
+        .find(|r| r.id == "MOD-GDINO-001")
+        .ok_or("GDINO row")?;
+    assert!(
+        gdino.eligibility.contains("license review"),
+        "GDINO review marker"
+    );
     Ok(())
 }
 

@@ -148,7 +148,11 @@ impl DecisionCardEvaluator {
 
     /// Deterministic digest of one evaluation (for receipts).
     #[must_use]
-    pub fn evaluation_digest(card: &CardDefinition, candidate: &Candidate, outcome: &CardEvaluation) -> ContentDigest {
+    pub fn evaluation_digest(
+        card: &CardDefinition,
+        candidate: &Candidate,
+        outcome: &CardEvaluation,
+    ) -> ContentDigest {
         let mut encoder = CanonicalEncoder::new();
         encoder.text(SCHEMA_CARD_EVALUATION);
         encoder.text(&card.card_id);

@@ -53,14 +53,19 @@ fn extract_effect_rows(md: &str) -> Result<Vec<EffectRow>, Box<dyn Error>> {
     Ok(rows)
 }
 
-
 /// Full canonical row-ID shape: `PREFIX-MIDDLE-NNN` — uppercase segments,
 /// exactly three trailing digits (rejects `COST-1` class of near-misses).
 fn canonical_row_id(id: &str, prefix: &str) -> bool {
-    let Some(rest) = id.strip_prefix(prefix) else { return false };
-    let Some((mid, num)) = rest.rsplit_once('-') else { return false };
+    let Some(rest) = id.strip_prefix(prefix) else {
+        return false;
+    };
+    let Some((mid, num)) = rest.rsplit_once('-') else {
+        return false;
+    };
     !mid.is_empty()
-        && mid.bytes().all(|b| b.is_ascii_uppercase() || b.is_ascii_digit() || b == b'-')
+        && mid
+            .bytes()
+            .all(|b| b.is_ascii_uppercase() || b.is_ascii_digit() || b == b'-')
         && num.len() == 3
         && num.bytes().all(|b| b.is_ascii_digit())
 }
@@ -118,12 +123,21 @@ fn camera_effect_rows_match_exact_normative_text() -> Result<(), Box<dyn Error>>
     let ptz = find("EFFECT-PTZ-001").ok_or("PTZ row missing")?;
     assert_eq!(ptz.effect, "move camera PTZ");
     assert_eq!(ptz.reversibility, "normally reversible");
-    assert_eq!(ptz.required_verification, "observed pose/scene and restore obligation");
+    assert_eq!(
+        ptz.required_verification,
+        "observed pose/scene and restore obligation"
+    );
     assert_eq!(ptz.disposition, "future after standards baseline");
     let setting = find("EFFECT-CAMERA-SETTING-001").ok_or("setting row missing")?;
-    assert_eq!(setting.effect, "change imaging/bitrate/audio/event settings");
+    assert_eq!(
+        setting.effect,
+        "change imaging/bitrate/audio/event settings"
+    );
     assert_eq!(setting.reversibility, "reversible where old value known");
-    assert_eq!(setting.required_verification, "readback + stream-generation rollover");
+    assert_eq!(
+        setting.required_verification,
+        "readback + stream-generation rollover"
+    );
     assert_eq!(setting.disposition, "future");
     Ok(())
 }
@@ -132,8 +146,19 @@ fn camera_effect_rows_match_exact_normative_text() -> Result<(), Box<dyn Error>>
 fn registry_declares_full_effect_lifecycle_semantics() {
     // The authority file declares the prepare→revalidate→commit→observe→
     // verify→cancel→reconcile lifecycle every effect must carry.
-    for phase in ["prepare", "revalidate", "commit", "observe", "verify", "cancel", "reconcile"] {
-        assert!(EFFECTS_MD.contains(phase), "lifecycle phase {phase} undeclared");
+    for phase in [
+        "prepare",
+        "revalidate",
+        "commit",
+        "observe",
+        "verify",
+        "cancel",
+        "reconcile",
+    ] {
+        assert!(
+            EFFECTS_MD.contains(phase),
+            "lifecycle phase {phase} undeclared"
+        );
     }
 }
 

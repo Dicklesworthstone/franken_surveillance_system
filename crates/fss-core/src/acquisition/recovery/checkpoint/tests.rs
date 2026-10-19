@@ -153,7 +153,11 @@ fn clean() -> TestResult<AcquisitionSession> {
     Ok(session)
 }
 
-fn gap(session: &AcquisitionSession, start: u64, end: u64) -> TestResult<WindowedDegradationEvidence> {
+fn gap(
+    session: &AcquisitionSession,
+    start: u64,
+    end: u64,
+) -> TestResult<WindowedDegradationEvidence> {
     let req = session.request();
     Ok(WindowedDegradationEvidence {
         request_digest: req.request_digest(),
@@ -207,8 +211,16 @@ fn every_active_state_restores_as_uncertain_with_exact_prior_witnesses() -> Test
         assert!(restored.check_absence_claim_allowed().is_err());
         assert_eq!(restored.request(), session.request());
         assert_eq!(restored.history.len(), session.history.len() + 1);
-        assert_eq!(&restored.history[..session.history.len()], session.history());
-        let AcquisitionState::Indeterminate { prior_state, witness, .. } = restored.state() else {
+        assert_eq!(
+            &restored.history[..session.history.len()],
+            session.history()
+        );
+        let AcquisitionState::Indeterminate {
+            prior_state,
+            witness,
+            ..
+        } = restored.state()
+        else {
             return Err("started checkpoint was not restored as indeterminate".into());
         };
         assert_eq!(prior_state.as_ref(), session.state());
@@ -222,14 +234,22 @@ fn every_active_state_restores_as_uncertain_with_exact_prior_witnesses() -> Test
 fn authentication_only_checkpoint_requires_fresh_authorization() -> TestResult {
     let session = authenticated()?;
     let restored = restore(&session)?;
-    let AcquisitionState::Failed { failure, prior_state, .. } = restored.state() else {
+    let AcquisitionState::Failed {
+        failure,
+        prior_state,
+        ..
+    } = restored.state()
+    else {
         return Err("old authorization was restored without reauthentication".into());
     };
     assert_eq!(*prior_state, AcquisitionStateKind::Authenticated);
     assert_eq!(failure.error_code, "restart_requires_reauthentication");
     assert!(failure.retryable);
     assert!(!restored.is_streaming());
-    assert_eq!(&restored.history[..session.history.len()], session.history());
+    assert_eq!(
+        &restored.history[..session.history.len()],
+        session.history()
+    );
     assert_eq!(restore(&restored)?, restored);
     Ok(())
 }
@@ -249,16 +269,24 @@ fn recorded_gaps_and_exact_predecessor_survive_restart_and_reconciliation() -> T
     let mut restored = restore(&original)?;
     let mut resolved = original.clone();
     resolved.verify_continuity(continuity(resolved.request(), 40, 49), NOW)?;
-    restored.reconcile(resolved.state().clone(), "verified next clean window", RESTART)?;
+    restored.reconcile(
+        resolved.state().clone(),
+        "verified next clean window",
+        RESTART,
+    )?;
     assert_eq!(restored.state(), resolved.state());
     assert!(restored.check_absence_claim_allowed().is_err());
     let generation = &restored.request().source_identity.stream_generation;
-    assert!(restored
-        .check_absence_claim_allowed_in_window(generation, 40, 49, pts(40), pts(49))
-        .is_ok());
-    assert!(restored
-        .check_absence_claim_allowed_in_window(generation, 20, 29, pts(20), pts(29))
-        .is_err());
+    assert!(
+        restored
+            .check_absence_claim_allowed_in_window(generation, 40, 49, pts(40), pts(49))
+            .is_ok()
+    );
+    assert!(
+        restored
+            .check_absence_claim_allowed_in_window(generation, 20, 29, pts(20), pts(29))
+            .is_err()
+    );
     let again = restore(&restored)?;
     assert!(again.has_windowed_gap);
     Ok(())
@@ -268,13 +296,23 @@ fn recorded_gaps_and_exact_predecessor_survive_restart_and_reconciliation() -> T
 fn restart_of_clean_stream_also_forbids_generation_wide_absence() -> TestResult {
     let original = clean()?;
     let mut restored = restore(&original)?;
-    restored.reconcile(original.state().clone(), "restore historical window only", RESTART)?;
+    restored.reconcile(
+        original.state().clone(),
+        "restore historical window only",
+        RESTART,
+    )?;
     assert!(restored.check_absence_claim_allowed().is_err());
-    assert!(restored
-        .check_absence_claim_allowed_in_window(
-            &original.request().source_identity.stream_generation, 10, 19, pts(10), pts(19),
-        )
-        .is_ok());
+    assert!(
+        restored
+            .check_absence_claim_allowed_in_window(
+                &original.request().source_identity.stream_generation,
+                10,
+                19,
+                pts(10),
+                pts(19),
+            )
+            .is_ok()
+    );
     Ok(())
 }
 
@@ -324,15 +362,17 @@ fn corruption_and_rollback_are_rejected_by_independent_custody_digest() -> TestR
     let latest = session.checkpoint_bytes()?;
     let latest_digest = ContentDigest::sha256(&latest);
     let request_digest = session.request().request_digest();
-    assert!(AcquisitionSession::restore_checkpoint(
-        &older, latest_digest, request_digest, RESTART,
-    ).is_err());
+    assert!(
+        AcquisitionSession::restore_checkpoint(&older, latest_digest, request_digest, RESTART,)
+            .is_err()
+    );
     let mut damaged = latest;
     let index = damaged.len() / 2;
     damaged[index] ^= 1;
-    assert!(AcquisitionSession::restore_checkpoint(
-        &damaged, latest_digest, request_digest, RESTART,
-    ).is_err());
+    assert!(
+        AcquisitionSession::restore_checkpoint(&damaged, latest_digest, request_digest, RESTART,)
+            .is_err()
+    );
     Ok(())
 }
 
@@ -343,14 +383,16 @@ fn request_configuration_and_generation_substitution_are_rejected() -> TestResul
     let digest = ContentDigest::sha256(&bytes);
     let mut other = session.request().clone();
     other.source_identity.stream_generation = StreamGeneration::parse("gen:stream:2")?;
-    assert!(AcquisitionSession::restore_checkpoint(
-        &bytes, digest, other.request_digest(), RESTART,
-    ).is_err());
+    assert!(
+        AcquisitionSession::restore_checkpoint(&bytes, digest, other.request_digest(), RESTART,)
+            .is_err()
+    );
     other = session.request().clone();
     other.source_identity.channel = "substream".to_owned();
-    assert!(AcquisitionSession::restore_checkpoint(
-        &bytes, digest, other.request_digest(), RESTART,
-    ).is_err());
+    assert!(
+        AcquisitionSession::restore_checkpoint(&bytes, digest, other.request_digest(), RESTART,)
+            .is_err()
+    );
     Ok(())
 }
 
@@ -361,21 +403,39 @@ fn authenticated_bytes_still_reject_truncation_trailing_data_and_unknown_schema(
     let request_digest = session.request().request_digest();
     for length in [0, 1, bytes.len() / 2, bytes.len() - 1] {
         let truncated = &bytes[..length];
-        assert!(AcquisitionSession::restore_checkpoint(
-            truncated, ContentDigest::sha256(truncated), request_digest, RESTART,
-        ).is_err());
+        assert!(
+            AcquisitionSession::restore_checkpoint(
+                truncated,
+                ContentDigest::sha256(truncated),
+                request_digest,
+                RESTART,
+            )
+            .is_err()
+        );
     }
     let mut trailing = bytes.clone();
     trailing.push(0);
-    assert!(AcquisitionSession::restore_checkpoint(
-        &trailing, ContentDigest::sha256(&trailing), request_digest, RESTART,
-    ).is_err());
+    assert!(
+        AcquisitionSession::restore_checkpoint(
+            &trailing,
+            ContentDigest::sha256(&trailing),
+            request_digest,
+            RESTART,
+        )
+        .is_err()
+    );
     let mut unknown = bytes;
     // Canonical text begins after its 8-byte big-endian length prefix.
     unknown[8] = b'X';
-    assert!(AcquisitionSession::restore_checkpoint(
-        &unknown, ContentDigest::sha256(&unknown), request_digest, RESTART,
-    ).is_err());
+    assert!(
+        AcquisitionSession::restore_checkpoint(
+            &unknown,
+            ContentDigest::sha256(&unknown),
+            request_digest,
+            RESTART,
+        )
+        .is_err()
+    );
     Ok(())
 }
 
@@ -385,7 +445,10 @@ fn size_history_and_nesting_are_bounded_before_untrusted_allocation() -> TestRes
     let oversized = vec![0; AcquisitionSession::MAX_CHECKPOINT_BYTES + 1];
     assert!(matches!(
         AcquisitionSession::restore_checkpoint(
-            &oversized, ContentDigest::sha256(b"irrelevant"), req.request_digest(), RESTART,
+            &oversized,
+            ContentDigest::sha256(b"irrelevant"),
+            req.request_digest(),
+            RESTART,
         ),
         Err(AcquisitionError::BoundsViolation { .. })
     ));
@@ -477,7 +540,10 @@ fn checkpoint_refuses_credential_method_mismatch() -> TestResult {
         NOW,
     )?;
     let r = session.checkpoint_bytes();
-    assert!(r.is_err(), "method-mismatched checkpoint must refuse to encode");
+    assert!(
+        r.is_err(),
+        "method-mismatched checkpoint must refuse to encode"
+    );
     Ok(())
 }
 
@@ -509,6 +575,9 @@ fn checkpoint_refuses_over_ceiling_buffer_allocation() -> TestResult {
     };
     session.accept(ack, NOW)?;
     let r = session.checkpoint_bytes();
-    assert!(r.is_err(), "over-ceiling allocation must refuse to checkpoint");
+    assert!(
+        r.is_err(),
+        "over-ceiling allocation must refuse to checkpoint"
+    );
     Ok(())
 }

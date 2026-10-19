@@ -13,14 +13,19 @@
 use std::collections::BTreeSet;
 use std::error::Error;
 
-
 /// Full canonical row-ID shape: `PREFIX-MIDDLE-NNN` — uppercase segments,
 /// exactly three trailing digits (rejects `COST-1` class of near-misses).
 fn canonical_row_id(id: &str, prefix: &str) -> bool {
-    let Some(rest) = id.strip_prefix(prefix) else { return false };
-    let Some((mid, num)) = rest.rsplit_once('-') else { return false };
+    let Some(rest) = id.strip_prefix(prefix) else {
+        return false;
+    };
+    let Some((mid, num)) = rest.rsplit_once('-') else {
+        return false;
+    };
     !mid.is_empty()
-        && mid.bytes().all(|b| b.is_ascii_uppercase() || b.is_ascii_digit() || b == b'-')
+        && mid
+            .bytes()
+            .all(|b| b.is_ascii_uppercase() || b.is_ascii_digit() || b == b'-')
         && num.len() == 3
         && num.bytes().all(|b| b.is_ascii_digit())
 }
@@ -91,7 +96,10 @@ fn camera_lane_risks_match_exact_normative_text() -> Result<(), Box<dyn Error>> 
     assert!(codec.mitigation.contains("checked arithmetic"));
     assert!(codec.mitigation.contains("bounded arenas"));
     let corr = find("RISK-CORRELATION-001").ok_or("row missing")?;
-    assert_eq!(corr.risk, "multiple cameras/vendor cloud share failure domain");
+    assert_eq!(
+        corr.risk,
+        "multiple cameras/vendor cloud share failure domain"
+    );
     Ok(())
 }
 

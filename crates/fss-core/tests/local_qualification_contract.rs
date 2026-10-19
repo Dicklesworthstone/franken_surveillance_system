@@ -85,7 +85,10 @@ fn toolchain_channel_agrees_with_the_repo_pin() -> Result<(), Box<dyn Error>> {
 #[test]
 fn tampering_is_detectable() {
     let mut tampered = LOCAL_QUAL_TOML.to_string();
-    tampered = tampered.replace("clean_snapshot_required = true", "clean_snapshot_required = false");
+    tampered = tampered.replace(
+        "clean_snapshot_required = true",
+        "clean_snapshot_required = false",
+    );
     assert!(tampered.contains("clean_snapshot_required = false"));
     assert!(!tampered.contains("clean_snapshot_required = true"));
 }

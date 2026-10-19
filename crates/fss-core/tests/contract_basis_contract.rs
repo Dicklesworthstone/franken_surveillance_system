@@ -24,9 +24,8 @@ use fss_core::contract_basis::{
     SUPERSEDED_CAPABILITY_REGISTRY_DIGEST_V1,
     SUPERSEDED_CONTRACT_BASIS_CANONICAL_DIGEST_CAPABILITIES_V1,
     SUPERSEDED_CONTRACT_BASIS_CANONICAL_DIGEST_COST_V1, SUPERSEDED_COST_REGISTRY_DIGEST_V1,
-    SUPERSEDED_REGISTRY_DIGESTS,
-    StaleBasisReason, check_basis_freshness, check_compatibility, compute_registry_digests,
-    decode_canonical_binary, encode_canonical_binary, negotiate_basis,
+    SUPERSEDED_REGISTRY_DIGESTS, StaleBasisReason, check_basis_freshness, check_compatibility,
+    compute_registry_digests, decode_canonical_binary, encode_canonical_binary, negotiate_basis,
     negotiate_basis_with_superseded, reference_contract_basis, refuse_stale_anchor,
     superseded_registry_digests, validate_contract_basis,
 };
@@ -721,7 +720,10 @@ fn test_superseded_capabilities_v1_client_is_refused_as_stale() -> Result<(), Bo
     // requires repairing both digests.
     let mut rebased = v1_client.clone();
     rebased.capability_registry_digest = server.capability_registry_digest;
-    assert_ne!(rebased, server, "cost-v1 drift remains after the capability repair");
+    assert_ne!(
+        rebased, server,
+        "cost-v1 drift remains after the capability repair"
+    );
     rebased.cost_registry_digest = server.cost_registry_digest;
     assert_eq!(rebased, server);
 
@@ -794,7 +796,10 @@ fn test_superseded_cost_v1_client_is_refused_as_stale() -> Result<(), Box<dyn Er
         v1_client.cost_registry_digest.to_text(),
         SUPERSEDED_COST_REGISTRY_DIGEST_V1
     );
-    assert_ne!(SUPERSEDED_COST_REGISTRY_DIGEST_V1, REFERENCE_COST_REGISTRY_DIGEST);
+    assert_ne!(
+        SUPERSEDED_COST_REGISTRY_DIGEST_V1,
+        REFERENCE_COST_REGISTRY_DIGEST
+    );
     assert!(SUPERSEDED_REGISTRY_DIGESTS.contains(&SUPERSEDED_COST_REGISTRY_DIGEST_V1));
 
     // Only the cost registry digest differs from the current reference basis.
@@ -816,15 +821,25 @@ fn test_superseded_cost_v1_client_is_refused_as_stale() -> Result<(), Box<dyn Er
     assert_eq!(err.error_id(), "ERR-AGENT-SESSION-STALE-001");
     match err {
         ContractBasisError::StaleBasis {
-            reason: StaleBasisReason::TombstonedRegistryDigest { registry, tombstoned_digest },
+            reason:
+                StaleBasisReason::TombstonedRegistryDigest {
+                    registry,
+                    tombstoned_digest,
+                },
         } => {
             assert_eq!(registry, "cost");
-            assert_eq!(tombstoned_digest.to_text(), SUPERSEDED_COST_REGISTRY_DIGEST_V1);
+            assert_eq!(
+                tombstoned_digest.to_text(),
+                SUPERSEDED_COST_REGISTRY_DIGEST_V1
+            );
         }
         other => return Err(format!("unexpected error variant: {other:?}").into()),
     }
 
     // A current (v2) client still negotiates through the supersession-aware path.
-    assert_eq!(negotiate_basis_with_superseded(&server, &server, &superseded)?, server);
+    assert_eq!(
+        negotiate_basis_with_superseded(&server, &server, &superseded)?,
+        server
+    );
     Ok(())
 }

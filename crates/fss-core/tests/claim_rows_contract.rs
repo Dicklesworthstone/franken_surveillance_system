@@ -43,8 +43,15 @@ const NORMATIVE_OPEN_ROWS: [(&str, &str); 5] = [
 #[test]
 fn all_nine_classes_exist_once_with_evidence_requirements() -> Result<(), Box<dyn Error>> {
     let expected = [
-        "invariant", "proof", "bounded_model", "statistical", "slo", "benchmark", "compatibility",
-        "agent_task", "agent_accretion",
+        "invariant",
+        "proof",
+        "bounded_model",
+        "statistical",
+        "slo",
+        "benchmark",
+        "compatibility",
+        "agent_task",
+        "agent_accretion",
     ];
     let mut ids = BTreeSet::new();
     for id in expected {
@@ -104,13 +111,23 @@ fn forbidden_promotions_stay_declared() {
 #[test]
 fn tampering_is_detectable() {
     let ids: BTreeSet<&str> = [
-        "invariant", "proof", "bounded_model", "statistical", "slo", "benchmark", "compatibility",
-        "agent_task", "agent_accretion",
+        "invariant",
+        "proof",
+        "bounded_model",
+        "statistical",
+        "slo",
+        "benchmark",
+        "compatibility",
+        "agent_task",
+        "agent_accretion",
     ]
     .into_iter()
     .collect();
     let mut tampered = ids.clone();
-    assert!(!tampered.insert("invariant"), "duplicate injection detectable");
+    assert!(
+        !tampered.insert("invariant"),
+        "duplicate injection detectable"
+    );
     assert_eq!(ids, tampered);
     // Count actual registry occurrences of each id (parsed content, not
     // constants): a duplicated row in claims.json is visible.

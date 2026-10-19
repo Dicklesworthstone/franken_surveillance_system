@@ -87,7 +87,10 @@ fn schema_files_exist_and_declare_their_identity() -> Result<(), Box<dyn Error>>
         // Basic JSON sanity (balanced braces) plus the repo convention that
         // the schema names itself: either `properties.schema` exists with a
         // const equal to the registry name, or a oneOf union of local defs.
-        assert!(text.trim_start().starts_with('{'), "{file}: not a JSON object");
+        assert!(
+            text.trim_start().starts_with('{'),
+            "{file}: not a JSON object"
+        );
         // The schema must name ITSELF at properties.schema.const (the repo
         // convention; a wrong-valued or property-only mention is drift).
         let const_marker = format!("\"const\": \"{schema}\"");

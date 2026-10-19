@@ -402,9 +402,21 @@ mod tests {
             };
             make_belief(
                 input.anchor,
-                &format!("sum {} minus {}", sum(input.supporting), sum(input.contradicting)),
-                input.supporting.iter().map(VerifiedBeliefEvidence::digest).collect(),
-                input.contradicting.iter().map(VerifiedBeliefEvidence::digest).collect(),
+                &format!(
+                    "sum {} minus {}",
+                    sum(input.supporting),
+                    sum(input.contradicting)
+                ),
+                input
+                    .supporting
+                    .iter()
+                    .map(VerifiedBeliefEvidence::digest)
+                    .collect(),
+                input
+                    .contradicting
+                    .iter()
+                    .map(VerifiedBeliefEvidence::digest)
+                    .collect(),
             )
         }
     }
@@ -415,20 +427,22 @@ mod tests {
         supporting_evidence: Vec<ContentDigest>,
         contradictions: Vec<ContentDigest>,
     ) -> Result<DerivedBelief, ContractError> {
-        DerivedBelief::new(DerivedBeliefParams {
-            belief_id: "belief:verified:001".to_owned(),
-            anchor: anchor.clone(),
-            generation: Generation(7),
-            algorithm_id: "alg:fixture-sum:v1".to_owned(),
-            statement: statement.to_owned(),
-            knowledge_state: KnowledgeState::Estimated,
-            provenance: ProvenanceClass::Derived,
-            uncertainty: BeliefInterval::new(200_000, 800_000)?,
-            supporting_evidence,
-            contradictions,
-            derivation_receipt: ContentDigest::sha256(b"unsealed"),
-        }
-        .with_computed_receipt()?)
+        DerivedBelief::new(
+            DerivedBeliefParams {
+                belief_id: "belief:verified:001".to_owned(),
+                anchor: anchor.clone(),
+                generation: Generation(7),
+                algorithm_id: "alg:fixture-sum:v1".to_owned(),
+                statement: statement.to_owned(),
+                knowledge_state: KnowledgeState::Estimated,
+                provenance: ProvenanceClass::Derived,
+                uncertainty: BeliefInterval::new(200_000, 800_000)?,
+                supporting_evidence,
+                contradictions,
+                derivation_receipt: ContentDigest::sha256(b"unsealed"),
+            }
+            .with_computed_receipt()?,
+        )
     }
 
     fn fixture(plane: Plane) -> Result<(ReferenceLedger, Store, DerivedBelief), ContractError> {
@@ -546,7 +560,9 @@ mod tests {
             Err(BeliefVerificationError::RootNotAnchored(_))
         ));
         let root = ContentDigest::sha256(b"retained but unanchored");
-        store.objects.insert(root, b"retained but unanchored".to_vec());
+        store
+            .objects
+            .insert(root, b"retained but unanchored".to_vec());
         let offered = make_belief(&ledger.current().anchor, "unanchored", vec![root], vec![])?;
         assert_eq!(
             verify(&offered, &ledger, &store).err(),
@@ -577,7 +593,9 @@ mod tests {
         let _ = ledger.append(batch)?;
         assert_eq!(
             verify(&offered, &ledger, &store).err(),
-            Some(BeliefVerificationError::Contract(ContractError::StaleAnchor))
+            Some(BeliefVerificationError::Contract(
+                ContractError::StaleAnchor
+            ))
         );
         assert_eq!(store.calls.get(), 0);
         Ok(())

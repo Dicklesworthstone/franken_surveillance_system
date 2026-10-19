@@ -7,7 +7,9 @@
 use fss_core::experiment::{
     ComparisonOutcome, ExperimentError, ExperimentKind, ExperimentReceipt, ExperimentRun,
 };
-use fss_core::{CanonicalDecode, CanonicalDecoder, CanonicalEncode, CanonicalEncoder, ContentDigest};
+use fss_core::{
+    CanonicalDecode, CanonicalDecoder, CanonicalEncode, CanonicalEncoder, ContentDigest,
+};
 
 fn run(id: &str, variant: Option<&str>, binary: u8, outcome: Option<u8>) -> ExperimentRun {
     ExperimentRun {
@@ -86,17 +88,26 @@ fn indeterminate_runs_never_force_a_verdict() {
 fn receipt_digest_is_deterministic_and_canonical_roundtrip() {
     let a = run("run-1", None, 1, Some(42));
     let b = run("run-2", None, 1, Some(42));
-    let r1 = ExperimentReceipt::compare("exp:1", ExperimentKind::Aa, a.clone(), b.clone()).expect("c1");
+    let r1 =
+        ExperimentReceipt::compare("exp:1", ExperimentKind::Aa, a.clone(), b.clone()).expect("c1");
     let r2 = ExperimentReceipt::compare("exp:1", ExperimentKind::Aa, a, b).expect("c2");
-    assert_eq!(r1.receipt_digest, r2.receipt_digest, "same inputs, same receipt digest");
-    assert_eq!(r1.computed_digest(), r1.receipt_digest, "stored digest is the computed digest");
+    assert_eq!(
+        r1.receipt_digest, r2.receipt_digest,
+        "same inputs, same receipt digest"
+    );
+    assert_eq!(
+        r1.computed_digest(),
+        r1.receipt_digest,
+        "stored digest is the computed digest"
+    );
 
     // The kind codec round-trips in isolation (the full receipt leads with
     // the experiment id; field order is pinned by the module's encoder).
     let mut encoder = CanonicalEncoder::new();
     ExperimentKind::Ab.encode_canonical(&mut encoder);
     let bytes = encoder.finish();
-    let kind = ExperimentKind::decode_canonical(&mut CanonicalDecoder::new(&bytes)).expect("kind decodes");
+    let kind =
+        ExperimentKind::decode_canonical(&mut CanonicalDecoder::new(&bytes)).expect("kind decodes");
     assert_eq!(kind, ExperimentKind::Ab);
     assert!(ExperimentKind::decode_canonical(&mut CanonicalDecoder::new(&[9u8])).is_err());
 }

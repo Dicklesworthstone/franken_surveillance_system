@@ -50,14 +50,19 @@ fn extract_error_rows(md: &str) -> Result<Vec<ErrorRow>, Box<dyn Error>> {
     Ok(rows)
 }
 
-
 /// Full canonical row-ID shape: `PREFIX-MIDDLE-NNN` — uppercase segments,
 /// exactly three trailing digits (rejects `COST-1` class of near-misses).
 fn canonical_row_id(id: &str, prefix: &str) -> bool {
-    let Some(rest) = id.strip_prefix(prefix) else { return false };
-    let Some((mid, num)) = rest.rsplit_once('-') else { return false };
+    let Some(rest) = id.strip_prefix(prefix) else {
+        return false;
+    };
+    let Some((mid, num)) = rest.rsplit_once('-') else {
+        return false;
+    };
     !mid.is_empty()
-        && mid.bytes().all(|b| b.is_ascii_uppercase() || b.is_ascii_digit() || b == b'-')
+        && mid
+            .bytes()
+            .all(|b| b.is_ascii_uppercase() || b.is_ascii_digit() || b == b'-')
         && num.len() == 3
         && num.bytes().all(|b| b.is_ascii_digit())
 }

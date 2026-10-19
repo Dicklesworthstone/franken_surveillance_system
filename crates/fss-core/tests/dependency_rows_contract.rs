@@ -23,8 +23,16 @@ const DOCTRINE_MD: &str = include_str!("../../../docs/DEPENDENCY_CONSTITUTION.md
 
 /// The ten DEP-INV invariants of the 30.88 family.
 const NORMATIVE_INVARIANTS: [&str; 10] = [
-    "DEP-INV-001", "DEP-INV-002", "DEP-INV-003", "DEP-INV-004", "DEP-INV-005", "DEP-INV-006",
-    "DEP-INV-007", "DEP-INV-008", "DEP-INV-009", "DEP-INV-010",
+    "DEP-INV-001",
+    "DEP-INV-002",
+    "DEP-INV-003",
+    "DEP-INV-004",
+    "DEP-INV-005",
+    "DEP-INV-006",
+    "DEP-INV-007",
+    "DEP-INV-008",
+    "DEP-INV-009",
+    "DEP-INV-010",
 ];
 
 /// The five DEP-CLASS rows of the machine constitution (id → name).
@@ -40,7 +48,10 @@ const NORMATIVE_CLASSES: [(&str, &str); 5] = [
 /// state declared in the mirror table).
 const NORMATIVE_CATEGORY_ROWS: [(&str, &str); 4] = [
     ("DEP-FUND-001", "serde / serde_json"),
-    ("DEP-LAB-001", "Pinned codec/model/vendor/reference executables"),
+    (
+        "DEP-LAB-001",
+        "Pinned codec/model/vendor/reference executables",
+    ),
     ("DEP-ORACLE-001", "Python/reference ecosystems"),
     ("DEP-EXCEPTION-001", "Any other external crate"),
 ];
@@ -80,16 +91,20 @@ fn invariants_are_declared_in_the_doctrine() {
 fn freeze_digest_matches_checker_expectation() {
     // The value scripts/dependency_registry_checker.py verifies against
     // (its run is the family's deterministic cross-registry validation).
-    assert!(DEPENDENCIES_JSON.contains(
-        "sha256:8f198c9ce7b3eca519c678beb4bde773fe42d8bc93b55b9f0af375d38208a9c1"
-    ));
+    assert!(
+        DEPENDENCIES_JSON
+            .contains("sha256:8f198c9ce7b3eca519c678beb4bde773fe42d8bc93b55b9f0af375d38208a9c1")
+    );
     assert!(DEPENDENCIES_JSON.contains("gen:fss1:dependencies-v2"));
 }
 
 #[test]
 fn category_rows_exist_in_mirror_and_machine_json() {
     for (id, subject) in NORMATIVE_CATEGORY_ROWS {
-        assert!(DEPENDENCIES_JSON.contains(&format!("\"id\": \"{id}\"")), "{id} missing from machine json");
+        assert!(
+            DEPENDENCIES_JSON.contains(&format!("\"id\": \"{id}\"")),
+            "{id} missing from machine json"
+        );
         // Category rows live in the mirror table and machine json; the
         // constitution doctrine carries classes and invariants, not these.
         let mirror = include_str!("../../../registries/DEPENDENCIES.md");
@@ -102,12 +117,18 @@ fn category_rows_exist_in_mirror_and_machine_json() {
 fn tampering_is_detectable() {
     let ids: BTreeSet<&str> = NORMATIVE_CLASSES.iter().map(|(id, _)| *id).collect();
     let mut tampered = ids.clone();
-    assert!(!tampered.insert("DEP-CLASS-F0"), "duplicate injection detectable");
+    assert!(
+        !tampered.insert("DEP-CLASS-F0"),
+        "duplicate injection detectable"
+    );
     assert_eq!(ids, tampered);
     // Count actual occurrences in the machine constitution JSON.
     for id in ids {
         let marker = format!("\"id\": \"{id}\"");
         let count = CONSTITUTION_JSON.matches(&marker).count();
-        assert_eq!(count, 1, "{id} appears {count} times in dependency_constitution.json");
+        assert_eq!(
+            count, 1,
+            "{id} appears {count} times in dependency_constitution.json"
+        );
     }
 }

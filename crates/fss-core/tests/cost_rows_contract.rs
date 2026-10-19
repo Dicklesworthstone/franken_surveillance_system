@@ -83,9 +83,7 @@ fn extract_cost_rows(toml: &str) -> Result<Vec<CostRow>, Box<dyn Error>> {
                     "slo_ids" => row.slo_ids = parse_string_array(value),
                     "status" => row.status = value.trim_matches('"').to_string(),
                     "proof_owner" => row.proof_owner = value.trim_matches('"').to_string(),
-                    "proof_reference" => {
-                        row.proof_reference = value.trim_matches('"').to_string()
-                    }
+                    "proof_reference" => row.proof_reference = value.trim_matches('"').to_string(),
                     _ => {}
                 }
             }
@@ -98,14 +96,19 @@ fn extract_cost_rows(toml: &str) -> Result<Vec<CostRow>, Box<dyn Error>> {
     Ok(rows)
 }
 
-
 /// Full canonical row-ID shape: `PREFIX-MIDDLE-NNN` — uppercase segments,
 /// exactly three trailing digits (rejects `COST-1` class of near-misses).
 fn canonical_row_id(id: &str, prefix: &str) -> bool {
-    let Some(rest) = id.strip_prefix(prefix) else { return false };
-    let Some((mid, num)) = rest.rsplit_once('-') else { return false };
+    let Some(rest) = id.strip_prefix(prefix) else {
+        return false;
+    };
+    let Some((mid, num)) = rest.rsplit_once('-') else {
+        return false;
+    };
     !mid.is_empty()
-        && mid.bytes().all(|b| b.is_ascii_uppercase() || b.is_ascii_digit() || b == b'-')
+        && mid
+            .bytes()
+            .all(|b| b.is_ascii_uppercase() || b.is_ascii_digit() || b == b'-')
         && num.len() == 3
         && num.bytes().all(|b| b.is_ascii_digit())
 }
@@ -165,7 +168,11 @@ fn rows_are_unique_canonical_and_complete() -> Result<(), Box<dyn Error>> {
             "{}: no semantic steps",
             row.id
         );
-        assert!(!row.variable_costs.is_empty(), "{}: no variable costs", row.id);
+        assert!(
+            !row.variable_costs.is_empty(),
+            "{}: no variable costs",
+            row.id
+        );
         assert!(!row.slo_ids.is_empty(), "{}: no SLO links", row.id);
         assert!(
             matches!(
@@ -177,7 +184,11 @@ fn rows_are_unique_canonical_and_complete() -> Result<(), Box<dyn Error>> {
             row.status
         );
         assert!(!row.proof_owner.is_empty(), "{}: no proof owner", row.id);
-        assert!(!row.proof_reference.is_empty(), "{}: no proof reference", row.id);
+        assert!(
+            !row.proof_reference.is_empty(),
+            "{}: no proof reference",
+            row.id
+        );
     }
     Ok(())
 }
@@ -218,7 +229,12 @@ fn proof_bindings_resolve_to_real_tests() -> Result<(), Box<dyn Error>> {
             continue;
         }
         let owner = root.join(&row.proof_owner);
-        assert!(owner.exists(), "{}: proof owner {} missing", row.id, row.proof_owner);
+        assert!(
+            owner.exists(),
+            "{}: proof owner {} missing",
+            row.id,
+            row.proof_owner
+        );
         let (file, test_name) = row
             .proof_reference
             .split_once("::")
@@ -259,9 +275,18 @@ fn rtsp_stream_second_row_matches_its_normative_text() -> Result<(), Box<dyn Err
     assert_eq!(row.unit, "stream_second");
     assert_eq!(
         row.semantic_steps,
-        vec!["session_keepalive", "packet_receive", "rtcp_update", "continuity_accounting", "bounded_buffer"]
+        vec![
+            "session_keepalive",
+            "packet_receive",
+            "rtcp_update",
+            "continuity_accounting",
+            "bounded_buffer"
+        ]
     );
-    assert_eq!(row.variable_costs, vec!["packets", "jitter", "loss", "auth_refresh"]);
+    assert_eq!(
+        row.variable_costs,
+        vec!["packets", "jitter", "loss", "auth_refresh"]
+    );
     assert_eq!(row.slo_ids, vec!["SLO-INGEST-001"]);
     assert_eq!(row.proof_owner, "crates/fss-packet");
     Ok(())
@@ -293,6 +318,9 @@ fn mutating_registry_text_is_caught_by_field_validation() {
     // normative field check must see the drift.
     let corrupted = COST_TOML.replacen("stream_second", "stream_minute", 1);
     let rows = extract_cost_rows(&corrupted).expect("corrupted text parses");
-    let row = rows.iter().find(|r| r.id == "COST-RTSP-001").expect("row present");
+    let row = rows
+        .iter()
+        .find(|r| r.id == "COST-RTSP-001")
+        .expect("row present");
     assert_ne!(row.unit, "stream_second", "mutation is visible post-parse");
 }

@@ -35,13 +35,21 @@ fn json_string_field<'a>(span: &'a str, key: &str) -> Result<&'a str, Box<dyn Er
 /// value per row, from the normative registry text).
 const NORMATIVE_TOWER_ROWS: [(&str, &str, &str); 8] = [
     ("AGT-LAYER-005", "situation_capsule", "SituationCapsule"),
-    ("AGT-LAYER-006", "investigation_and_hypotheses", "hypotheses"),
+    (
+        "AGT-LAYER-006",
+        "investigation_and_hypotheses",
+        "hypotheses",
+    ),
     ("AGT-LAYER-007", "affordance_frontier", "frontier"),
     ("AGT-LAYER-008", "plan_and_effect", "plan"),
     ("AGT-LAYER-009", "outcome_and_episode", "episode"),
     ("AGT-LAYER-010", "learning_and_memory", "learning"),
     ("AGT-LAYER-011", "workspace_and_handoff", "handoff"),
-    ("H3", "source_evidence", "authorized original encoded packets"),
+    (
+        "H3",
+        "source_evidence",
+        "authorized original encoded packets",
+    ),
 ];
 
 #[test]
@@ -73,11 +81,10 @@ fn open_tower_rows_match_normative_text() -> Result<(), Box<dyn Error>> {
             .ok_or(format!("row {id} missing from stack JSON"))?;
         let span = &STACK_JSON[start..STACK_JSON.len().min(start + 1200)];
         assert_eq!(json_string_field(span, "name")?, name, "{id} name");
-        let question_or_content = json_string_field(span, "question")
-            .or_else(|_| json_string_field(span, "content"))?;
+        let question_or_content =
+            json_string_field(span, "question").or_else(|_| json_string_field(span, "content"))?;
         assert!(
-            question_or_content.contains(distinctive)
-                || span.contains(distinctive),
+            question_or_content.contains(distinctive) || span.contains(distinctive),
             "{id}: expected distinctive text '{distinctive}'"
         );
         assert!(
@@ -117,6 +124,11 @@ fn tampering_is_detectable() {
     for layer in AgentAbstractionLayer::ALL {
         let marker = format!("\"id\": \"{}\"", layer.id());
         let count = STACK_JSON.matches(&marker).count();
-        assert_eq!(count, 1, "{} appears {count} times in the stack JSON", layer.id());
+        assert_eq!(
+            count,
+            1,
+            "{} appears {count} times in the stack JSON",
+            layer.id()
+        );
     }
 }

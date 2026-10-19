@@ -100,7 +100,10 @@ fn publication_states_vocabulary_is_declared_and_distinct() -> Result<(), Box<dy
 fn tampering_is_detectable() {
     let ids: BTreeSet<&str> = NORMATIVE_PRIMS.iter().map(|(id, _)| *id).collect();
     let mut tampered = ids.clone();
-    assert!(!tampered.insert("PUB-AUTH-001"), "duplicate injection detectable");
+    assert!(
+        !tampered.insert("PUB-AUTH-001"),
+        "duplicate injection detectable"
+    );
     assert_eq!(ids, tampered);
     // Count actual occurrences in the primitives JSON.
     for id in ids {

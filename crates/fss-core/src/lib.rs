@@ -28,15 +28,15 @@ mod context_binding_metadata;
 mod continuation;
 mod contract;
 pub mod contract_basis;
+pub mod decision_card;
 mod delta;
 mod digest;
 pub mod durable;
-pub mod decision_card;
 pub mod effect;
-pub mod experiment;
 pub mod event;
 pub mod event_store;
 mod evidence;
+pub mod experiment;
 pub mod graph_witness;
 pub mod hydration;
 pub mod identity;
@@ -153,11 +153,10 @@ pub use contract_basis::{
     SUPERSEDED_CAPABILITY_REGISTRY_DIGEST_V1,
     SUPERSEDED_CONTRACT_BASIS_CANONICAL_DIGEST_CAPABILITIES_V1,
     SUPERSEDED_CONTRACT_BASIS_CANONICAL_DIGEST_COST_V1, SUPERSEDED_COST_REGISTRY_DIGEST_V1,
-    SUPERSEDED_REGISTRY_DIGESTS,
-    StaleBasisReason, check_basis_freshness, check_compatibility, decode_canonical_binary,
-    encode_canonical_binary, negotiate_basis, negotiate_basis_with_superseded,
-    reference_contract_basis, refuse_stale_anchor, registered_operation,
-    superseded_registry_digests, validate_contract_basis,
+    SUPERSEDED_REGISTRY_DIGESTS, StaleBasisReason, check_basis_freshness, check_compatibility,
+    decode_canonical_binary, encode_canonical_binary, negotiate_basis,
+    negotiate_basis_with_superseded, reference_contract_basis, refuse_stale_anchor,
+    registered_operation, superseded_registry_digests, validate_contract_basis,
 };
 pub use delta::{DeltaPriority, MeaningfulDelta, MeaningfulDeltaClass, SilenceCertificate};
 pub use digest::{ContentDigest, DigestAlgorithm, Sha256Hasher, sha256};

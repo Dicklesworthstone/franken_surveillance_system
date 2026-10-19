@@ -31,15 +31,25 @@ fn readiness_dimensions_registry_is_complete_and_distinct() -> Result<(), Box<dy
         let id = chunk.split('"').next().ok_or("unterminated id")?;
         assert!(ids.insert(id.to_string()), "duplicate readiness id {id}");
         // readiness dimension ids are R1..R18
-        assert!(id.starts_with('R') && id[1..].chars().all(|c| c.is_ascii_digit()), "id {id} non-canonical");
+        assert!(
+            id.starts_with('R') && id[1..].chars().all(|c| c.is_ascii_digit()),
+            "id {id} non-canonical"
+        );
     }
     assert_eq!(ids.len(), 18, "18 readiness dimensions");
     // The 9 orthogonal states are declared exactly once each.
     // The readiness ladder (implementation-readiness states — distinct from
     // the epistemic-state vocabulary, which is a different axis entirely).
     let states = [
-        "absent", "specified", "reference_implemented", "implemented", "positively_verified",
-        "qualified", "blocked", "revoked", "not_applicable",
+        "absent",
+        "specified",
+        "reference_implemented",
+        "implemented",
+        "positively_verified",
+        "qualified",
+        "blocked",
+        "revoked",
+        "not_applicable",
     ];
     let states_section = READINESS_JSON
         .split("\"states\"")
@@ -56,10 +66,18 @@ fn readiness_dimensions_registry_is_complete_and_distinct() -> Result<(), Box<dy
 
 #[test]
 fn repository_manifest_parses_with_declared_structure() -> Result<(), Box<dyn Error>> {
-    assert!(MANIFEST_JSON.contains("\"schema\": \"fss.repository_manifest"), "registry schema");
+    assert!(
+        MANIFEST_JSON.contains("\"schema\": \"fss.repository_manifest"),
+        "registry schema"
+    );
     // The repository manifest is a policy manifest: normative doc list,
     // generated-integrity rules, deep-dive index, canonical mirror policy.
-    for key in ["\"normative\"", "\"generatedIntegrity\"", "\"deepDiveIndex\"", "\"canonicalMirrorPolicy\""] {
+    for key in [
+        "\"normative\"",
+        "\"generatedIntegrity\"",
+        "\"deepDiveIndex\"",
+        "\"canonicalMirrorPolicy\"",
+    ] {
         assert!(MANIFEST_JSON.contains(key), "manifest missing {key}");
     }
     Ok(())

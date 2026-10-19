@@ -1469,7 +1469,8 @@ impl ContinuityWitness {
             .checked_sub(self.window_start_seq)
             .and_then(|difference| difference.checked_add(1))
             .ok_or_else(|| AcquisitionError::ContinuityGapDetected {
-                detail: "inclusive continuity span exceeds the representable frame count".to_owned(),
+                detail: "inclusive continuity span exceeds the representable frame count"
+                    .to_owned(),
             })?;
         if self.frames_observed != expected_frames {
             return Err(AcquisitionError::ContinuityGapDetected {
@@ -3278,8 +3279,9 @@ impl AcquisitionSession {
     ) -> Result<(), AcquisitionError> {
         if self.state_kind() == AcquisitionStateKind::Indeterminate {
             return Err(AcquisitionError::IndeterminateStateUnresolved {
-                detail: "reconnect requires explicit reconciliation of the prior acquisition outcome"
-                    .to_owned(),
+                detail:
+                    "reconnect requires explicit reconciliation of the prior acquisition outcome"
+                        .to_owned(),
             });
         }
         let current = self.request();
@@ -3288,7 +3290,8 @@ impl AcquisitionSession {
             || new_request.device_identity.device_id != current.device_identity.device_id
         {
             return Err(AcquisitionError::WitnessMismatch {
-                detail: "reconnect must preserve the stable source and device identities".to_owned(),
+                detail: "reconnect must preserve the stable source and device identities"
+                    .to_owned(),
             });
         }
         if now_ns.0 < 0

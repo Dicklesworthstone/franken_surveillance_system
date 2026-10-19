@@ -1090,14 +1090,8 @@ impl AdapterIdentity {
             }
             AdapterKind::Rtsp => {
                 let has_spec = [
-                    "rfc2326",
-                    "rfc 2326",
-                    "rfc7826",
-                    "rfc 7826",
-                    "rfc3550",
-                    "rfc 3550",
-                    "gate 030",
-                    "gate-030",
+                    "rfc2326", "rfc 2326", "rfc7826", "rfc 7826", "rfc3550", "rfc 3550",
+                    "gate 030", "gate-030",
                 ]
                 .iter()
                 .any(|&s| profile_raw_lower.contains(s) || profile_normalized.contains(s));
@@ -1124,9 +1118,16 @@ impl AdapterIdentity {
                 }
             }
             AdapterKind::OnvifProfileM => {
-                let has_spec = ["profile m", "profile-m", "profile_m", "onvif profile m", "gate 030", "gate-030"]
-                    .iter()
-                    .any(|&s| profile_raw_lower.contains(s) || profile_normalized.contains(s));
+                let has_spec = [
+                    "profile m",
+                    "profile-m",
+                    "profile_m",
+                    "onvif profile m",
+                    "gate 030",
+                    "gate-030",
+                ]
+                .iter()
+                .any(|&s| profile_raw_lower.contains(s) || profile_normalized.contains(s));
                 if !has_spec {
                     return Err(StandardsComplianceError::UnverifiedStandardsClaim {
                         detail: format!(
@@ -1184,7 +1185,9 @@ impl AdapterIdentity {
             self.adapter_kind,
             AdapterKind::TuyaLan | AdapterKind::TutkIotc
         );
-        if (is_proprietary || is_vendor_lab_kind) && self.isolation_mode == IsolationMode::NativePureRust {
+        if (is_proprietary || is_vendor_lab_kind)
+            && self.isolation_mode == IsolationMode::NativePureRust
+        {
             return Err(StandardsComplianceError::ProprietaryNativePromotion {
                 detail: format!(
                     "adapter '{}' is proprietary/vendor path but specifies NativePureRust; NEG-002 requires SealedLaboratoryProcess isolation",
