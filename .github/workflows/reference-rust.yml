@@ -177,6 +177,10 @@ jobs:
           rustup run nightly-2026-08-31 rustfmt --check --edition 2024 --config skip_children=true
           crates/fss-reference/src/ingest/twin_localization.rs
           crates/fss-reference/src/ingest/twin_localization/receipt.rs
+          crates/fss-reference/src/ingest/twin_localization/retained.rs
+          crates/fss-reference/src/ingest/twin_localization/retained/wire.rs
+          crates/fss-reference/tests/recorded_twin_localization/retained.rs
+          crates/fss-reference/tests/recorded_twin_localization/archive_fixture.rs
           crates/fss-reference/src/ingest/mod.rs
           crates/fss-reference/tests/recorded_twin_localization_contract.rs
           crates/fss-cli/src/bin/fss-file.rs

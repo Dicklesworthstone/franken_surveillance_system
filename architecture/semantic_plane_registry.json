@@ -498,6 +498,8 @@
   "crates/fss-reference/src/ingest/tuya.rs": "authority",
   "crates/fss-reference/src/ingest/twin_localization.rs": "cognition",
   "crates/fss-reference/src/ingest/twin_localization/receipt.rs": "cognition",
+  "crates/fss-reference/src/ingest/twin_localization/retained.rs": "support",
+  "crates/fss-reference/src/ingest/twin_localization/retained/wire.rs": "support",
   "crates/fss-reference/src/ingest/virtual_mjpeg.rs": "support",
   "crates/fss-reference/src/ingest/virtual_mjpeg/scene.rs": "support",
   "crates/fss-reference/src/ingest/virtual_mjpeg/tests.rs": "support",
