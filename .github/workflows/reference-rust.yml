@@ -205,6 +205,9 @@ jobs:
         run: >-
           rustup run nightly-2026-08-31 rustfmt --check --edition 2024 --config skip_children=true
           crates/fss-reference/src/ingest/long_dwell.rs
+          crates/fss-reference/src/ingest/long_dwell/incremental.rs
+          crates/fss-reference/src/ingest/long_dwell/tests.rs
+          crates/fss-reference/src/ingest/long_dwell/tests/incremental.rs
           crates/fss-reference/src/ingest/long_event_replay.rs
           crates/fss-reference/src/ingest/long_event_replay/watch.rs
           crates/fss-reference/src/ingest/long_event_replay/dwell.rs
