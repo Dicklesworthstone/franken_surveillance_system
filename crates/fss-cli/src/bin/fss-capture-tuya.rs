@@ -114,9 +114,20 @@ fn parse_hex16(s: &str) -> Option<[u8; 16]> {
     let bytes = b.as_bytes();
     let mut out = [0u8; 16];
     for i in 0..16 {
-        out[i] = (bytes[2 * i].to_digit(16)? * 16 + bytes[2 * i + 1].to_digit(16)?) as u8;
+        let hi = hex_nibble(bytes[2 * i])?;
+        let lo = hex_nibble(bytes[2 * i + 1])?;
+        out[i] = hi * 16 + lo;
     }
     Some(out)
+}
+
+fn hex_nibble(b: u8) -> Option<u8> {
+    match b {
+        b'0'..=b'9' => Some(b - b'0'),
+        b'a'..=b'f' => Some(b - b'a' + 10),
+        b'A'..=b'F' => Some(b - b'A' + 10),
+        _ => None,
+    }
 }
 
 /// Fresh per-message client nonces / GCM IVs. A bounded capture opens ONE
