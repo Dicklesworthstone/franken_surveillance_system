@@ -36,9 +36,14 @@ FOREIGN_MODEL_RUNTIME_CRATES: frozenset[str] = frozenset({
     "ncnn", "tensorflow-lite", "tflite",
 })
 
+def _code_identifiers(names: frozenset[str]) -> list[str]:
+    """Rust code identifiers for crate names: hyphens become underscores."""
+    return sorted(name.replace("-", "_") for name in names)
+
+
 FOREIGN_BINDING_CONSTRUCT = re.compile(
-    r"\b(?:use|extern\s+crate)\s+(?:\w+::)*("
-    + "|".join(sorted(re.escape(c) for c in FOREIGN_MODEL_RUNTIME_CRATES))
+    r"\b(?:use|extern\s+crate)\s+(?:::)?(?:\w+::)*("
+    + "|".join(re.escape(c) for c in _code_identifiers(FOREIGN_MODEL_RUNTIME_CRATES))
     + r")\b"
 )
 
@@ -93,7 +98,7 @@ def rule_sources() -> None:
                 violation("ERR-FR-MODEL-BIND-002", str(rel), f"foreign runtime binding '{m.group(1)}'")
             # Foreign process invocation and dynamic loading keep literals
             # visible (they ARE the offense), so scan the raw text.
-            if "/tests/" not in rs.as_posix():
+            if not any(seg in rs.as_posix() for seg in ("/tests/", "/benches/")):
                 # Production surface only: the release closure is src/bin/
                 # examples. Test harnesses may drive foreign tools by design
                 # (sealed qualification drivers), which is NOT a production
@@ -105,9 +110,14 @@ def rule_sources() -> None:
                     violation("ERR-FR-MODEL-DYN-004", str(rel), "dynamic loading of a native library")
 
 
+def _strip_rust_comments(text: str) -> str:
+    text = re.sub(r"/\*[\s\S]*?\*/", "", text)
+    return re.sub(r"//[^\n]*", "", text)
+
+
 def rule_build_scripts() -> None:
     for bs in sorted(REPO.glob("crates/*/build.rs")):
-        text = bs.read_text(encoding="utf-8")
+        text = _strip_rust_comments(bs.read_text(encoding="utf-8"))
         if BUILD_SCRIPT_NATIVE.search(text):
             rel = bs.relative_to(REPO)
             violation("ERR-FR-MODEL-BUILD-005", str(rel), "build script links/generates/downloads a foreign or network-acquired artifact")
@@ -123,7 +133,7 @@ def mask_rust(text: str) -> str:
     return mask_string_literals(text)
 
 
-def rule_negative_controls() -> int:
+def rule_negative_controls() -> tuple[int, int]:
     """Adversarial fixtures that MUST fail. Returns the number of controls
     that correctly fired; any control that does NOT fire is itself a
     violation (a blind scanner proves nothing)."""
@@ -132,6 +142,9 @@ def rule_negative_controls() -> int:
         # (rule-family, sample that must trip one of the patterns)
         ("binding", "use ort::session::Session;"),
         ("binding", "extern crate tch;"),
+        ("binding", "use ffmpeg_next::codec;"),
+        ("binding", "use tract_onnx::model;"),
+        ("binding", "use ::torch_sys::lib_torch;"),
         ("process", 'Command::new("ffmpeg")'),
         ("dyn", "let l = libloading::Library::new(\"x\").ok();"),
         ("build", "println!(\"cargo:rustc-link-lib=onnxruntime\");"),
@@ -151,19 +164,19 @@ def rule_negative_controls() -> int:
             )
         else:
             fired += 1
-    return fired
+    return fired, len(fixtures)
 
 
 def main() -> int:
     rule_lockfile()
     rule_sources()
     rule_build_scripts()
-    controls = rule_negative_controls()
+    controls, control_total = rule_negative_controls()
     report = {
         "schema": "fss.foreign_model_runtime_absence.v1",
-        "lockfileCrates": len(FOREIGN_MODEL_RUNTIME_CRATES),
+        "foreignCrateSetSize": len(FOREIGN_MODEL_RUNTIME_CRATES),
         "negativeControlsFired": controls,
-        "negativeControlsTotal": 5,
+        "negativeControlsTotal": control_total,
         "violations": VIOLATIONS,
         "verdict": "pass" if not VIOLATIONS else "fail",
     }
@@ -175,7 +188,7 @@ def main() -> int:
     print(
         "FOREIGN-MODEL-RUNTIME ABSENCE: proven "
         "(lockfile clean, no bindings/process/dynamic-loading/build-script paths, "
-        f"{controls}/5 negative controls fired)",
+        f"{controls}/{control_total} negative controls fired)",
         file=sys.stderr,
     )
     return 0
