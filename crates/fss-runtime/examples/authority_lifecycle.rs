@@ -1,9 +1,11 @@
+#![forbid(unsafe_code)]
 //! Deterministic authority-lifecycle e2e for FSS-021 slice 2.
 //!
 //! Exercises the public semantic surface end to end and records one JSONL
 //! transition per step: root construction → legal narrowing → obligation
 //! register/leak/resolve → budget spend + typed overdraft refusal →
-//! cancellation cascade → drain request → finalize leak report.
+//! cancellation cascade → canonical child/parent quiescence proofs →
+//! one-shot refund of unused child capacity.
 //!
 //! Reproduce: `cargo run -p fss-runtime --example authority_lifecycle`.
 //! Output is secret-free: ids, kinds, counts, and digests only.
@@ -32,6 +34,8 @@ fn spec(trace: &str, op: &str) -> Result<RootAuthoritySpec, Box<dyn std::error::
         deadline: None,
         priority: 10,
         budgets: BudgetVector::builder()
+            .tokens(100)
+            .cpu_millis(10_000)
             .bytes(1024)
             .storage_operations(64)
             .build()?,
@@ -83,7 +87,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         "capture ring drained and receipt published",
     )?;
     child.register_obligation(&mut tree, ob)?;
-    let leaks = child.leaked_obligations(&tree);
+    let leaks = child.leaked_obligations(&tree)?;
     step(
         2,
         "obligation-registered",
@@ -100,9 +104,11 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     step(3, "obligation-resolved", "terminal=Verified proof=present");
 
     // Budget: spend inside bounds; typed refusal on overdraft.
-    child.budget_mut().spend(BudgetDimension::Tokens, 50)?;
+    child
+        .budget_mut(&tree)?
+        .spend(BudgetDimension::Tokens, 50)?;
     let refused = child
-        .budget_mut()
+        .budget_mut(&tree)?
         .spend(BudgetDimension::Bytes, 501)
         .is_err();
     step(
@@ -111,30 +117,50 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         &format!("overdraft_refused={refused}"),
     );
 
-    // Cancellation cascades through the chain; drain requested on the subtree.
-    root.request_cancellation();
-    let cascaded = child.is_cancel_requested();
+    // Canonical cancellation propagates to descendants, preserving siblings.
+    root.request_cancellation(&mut tree, TimestampNs(3_000))?;
+    let cascaded = child.is_cancel_requested(&tree)?;
     step(
         5,
         "cancellation-cascade",
         &format!("child_observed={cascaded}"),
     );
-    tree.request_drain(
-        &RegionId::new("region:process")?,
-        Some("authority-lifecycle teardown"),
-        TimestampNs(3_000),
-    )?;
-    step(6, "drain-requested", "subtree=region:process");
+    root.begin_drain(&mut tree, TimestampNs(3_100))?;
+    child.begin_drain(&mut tree, TimestampNs(3_100))?;
+    step(6, "drain-started", "subtree=region:process");
 
-    // Finalize: the leak oracle reads the tree; no pending obligations remain.
-    let report = child.finalize_report(&tree);
-    step(7, "finalize-report", &format!("leaked={}", report.len()));
-
+    // An empty local leak report alone cannot prove subtree closure.
+    let report = child.finalize_report(&tree)?;
+    let child_proof = child.finalize(&mut tree, TimestampNs(3_200))?;
+    step(
+        7,
+        "child-finalized",
+        &format!("obligations={}", child_proof.total_obligations),
+    );
+    let refunded = root.release_scope_reservation(&tree, &mut child)?;
+    step(
+        8,
+        "unused-budget-returned",
+        &format!(
+            "tokens={} bytes={} cpu_millis={}",
+            refunded.tokens, refunded.bytes, refunded.cpu_millis,
+        ),
+    );
+    let proof = root.finalize(&mut tree, TimestampNs(3_300))?;
+    step(
+        9,
+        "subtree-finalized",
+        &format!(
+            "obligations={} leaked={}",
+            proof.total_obligations,
+            report.len(),
+        ),
+    );
     if refused && cascaded && report.is_empty() {
-        step(8, "outcome", "Completed");
+        step(10, "outcome", "Completed");
         Ok(())
     } else {
-        step(8, "outcome", "Indeterminate");
+        step(10, "outcome", "Indeterminate");
         Err("lifecycle invariant violated".into())
     }
 }

@@ -47,8 +47,9 @@ rather than reordered by guesswork. Tested on a 300-frame libx264 B-picture MP4 
 scene as the MJPEG test (`crates/fss-reference/tests/fixtures/long_dwell_h264/`). The image-coordinate zone
 must fit the decoded frame. `--first-segment` selects a range start. With no segment count,
 the complete remaining recording is selected only when it fits the 65,536-segment ceiling;
-nothing is silently truncated. A separate invocation starts a new analysis: it does not resume
-an in-flight tracker or import state from a caller-provided checkpoint.
+nothing is silently truncated. An ordinary separate invocation starts a new analysis. For a
+flat retained MJPEG import, `--dwell-step-frames` can instead retain a bounded native prefix and
+resume it using exact checkpoint pins; see [incremental dwell](incremental_dwell.md).
 
 The bare `--stream-dwell` flag requires the existing explicit dwell-duration and sampling-gap
 options. It is echoed in every approval command. Existing foreground thresholds, tracker
@@ -130,8 +131,9 @@ presence between frames, loitering intent, threat, detection quality, or absence
 
 ## Whole-scan budgets
 
-Every aggregate counter applies to the entire invocation. It is never refilled at a frame,
-chunk, track or episode boundary. Raising a ceiling may admit more work but does not change
+Every aggregate counter applies to the entire logical analysis. It is never refilled at a frame,
+chunk, track, episode or incremental-checkpoint boundary. Cold incremental reconstruction has
+separate explicit admission and reports the extra native replay work. Raising a ceiling may admit more work but does not change
 a successful model-free result's semantic identity. A detector-enabled analysis also binds its
 complete admitted decoder and resource ceilings into the retained native detector recipe.
 Inter-coded source reservations include range-open checks and recovery probes and are charged
@@ -225,5 +227,7 @@ zero-inference nonqualifying/privacy-excluded scans, H.264 B-picture position ma
 custody, cold native replay and refusal when the retained package is missing. The CLI regression
 removes the original input and loose model before inspecting and replaying the committed event.
 Synthetic fixtures demonstrate executable behavior; they do not qualify detection accuracy.
-Durable incremental checkpoints, cross-camera dwell, live operation and real-footage quality
-evaluation remain open.
+Bounded durable incremental MJPEG checkpoints and exact cold native continuation are implemented;
+see [incremental dwell](incremental_dwell.md) for their admitted source modes, costs and CLI.
+Incremental inter-coded/classifier/health processing, cross-camera dwell, live operation and
+real-footage quality evaluation remain open.

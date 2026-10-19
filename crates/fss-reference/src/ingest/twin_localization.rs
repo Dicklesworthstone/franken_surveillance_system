@@ -7,6 +7,7 @@
 //! reproducible candidate receipts, not calibration certificates, coverage, or activation.
 
 mod receipt;
+pub mod retained;
 
 use fss_core::{CanonicalEncode, CanonicalEncoder, ContentDigest, LedgerAnchor, SensorCapsule};
 use fss_geometry::{GeometryError, WorkBudget};
@@ -140,6 +141,16 @@ pub enum RecordedLocalizationError {
     Localization(LocalizationError),
     /// Existing source-to-pinhole owner refused the model or raw frame.
     Rectification(RectificationError),
+    /// A retained package has no current ledgered publication or disagrees with its recipe.
+    RetainedPackage,
+    /// Native recomputation disagrees with the immutable candidate receipt.
+    ReplayDiverged,
+    /// V1 packages require a flat source root whose complete native closure can be retained.
+    PartitionedSource,
+    /// Exact property archive could not be imported.
+    Twin(fss_twin::TwinError),
+    /// Exact descriptor archive could not be imported.
+    Atlas(fss_twin::atlas_archive::ArchiveError),
 }
 impl RecordedLocalizationError {
     /// Stable parent or existing nested refusal identity for operator tooling.
@@ -167,6 +178,17 @@ impl std::fmt::Display for RecordedLocalizationError {
             Self::Geometry(e) => write!(f, "{e}"),
             Self::Localization(e) => write!(f, "{e}"),
             Self::Rectification(e) => write!(f, "{e}"),
+            Self::RetainedPackage => {
+                f.write_str("retained localization package unavailable or inconsistent")
+            }
+            Self::ReplayDiverged => {
+                f.write_str("native localization replay diverged from retained receipt")
+            }
+            Self::PartitionedSource => {
+                f.write_str("retained localization v1 requires an unpartitioned source import")
+            }
+            Self::Twin(e) => write!(f, "{e}"),
+            Self::Atlas(e) => write!(f, "{e}"),
         }
     }
 }
@@ -202,6 +224,16 @@ impl From<RawLocalizationError> for RecordedLocalizationError {
             RawLocalizationError::Rectification(e) => Self::Rectification(e),
             RawLocalizationError::Localization(e) => Self::Localization(e),
         }
+    }
+}
+impl From<fss_twin::TwinError> for RecordedLocalizationError {
+    fn from(error: fss_twin::TwinError) -> Self {
+        Self::Twin(error)
+    }
+}
+impl From<fss_twin::atlas_archive::ArchiveError> for RecordedLocalizationError {
+    fn from(error: fss_twin::atlas_archive::ArchiveError) -> Self {
+        Self::Atlas(error)
     }
 }
 
@@ -405,9 +437,13 @@ fn validate(plan: RecordedLocalizationPlan<'_>, source: &RecordedLocalizationSou
     {
         return Err(RecordedLocalizationError::InvalidRequest);
     }
-    let e = plan.options.extraction;
-    let m = plan.options.matching;
-    let s = plan.options.solving;
+    validate_options(plan.options)
+}
+
+fn validate_options(options: ImageLocalizationOptions) -> Result<()> {
+    let e = options.extraction;
+    let m = options.matching;
+    let s = options.solving;
     if !(1..=254).contains(&e.threshold)
         || !(1..=512).contains(&e.maximum_features)
         || !(1..=128).contains(&e.separation)
@@ -433,11 +469,19 @@ fn decode(
     video: &mut RecordedVideoDecodeBudget,
     geometry: &mut WorkBudget<'_>,
     cx: &ReplayCx,
+    replay_jpeg: bool,
 ) -> Result<Frame> {
     match source {
-        RecordedLocalizationSource::Jpeg(request) => Ok(Frame::Jpeg(
-            RecordedFrame::decode_and_publish(deployment, request, jpeg, cx)?,
-        )),
+        RecordedLocalizationSource::Jpeg(request) => {
+            let frame = if replay_jpeg {
+                let frame = RecordedFrame::open(deployment, request, cx)?;
+                frame.verify_by_replay(deployment, request, jpeg, cx)?;
+                frame
+            } else {
+                RecordedFrame::decode_and_publish(deployment, request, jpeg, cx)?
+            };
+            Ok(Frame::Jpeg(frame))
+        }
         RecordedLocalizationSource::H264 { request, segment } => {
             // Enforce this image consumer's ceiling before the codec allocates its DPB.
             let mut request = request.clone();
@@ -541,6 +585,28 @@ pub fn localize_recorded_frame(
     geometry_budget: &mut WorkBudget<'_>,
     cx: &ReplayCx,
 ) -> Result<RecordedLocalization> {
+    localize_inner(
+        deployment,
+        source,
+        plan,
+        jpeg_budget,
+        video_budget,
+        geometry_budget,
+        cx,
+        false,
+    )
+}
+
+fn localize_inner(
+    deployment: &mut ReferenceDeployment,
+    source: &RecordedLocalizationSource,
+    plan: RecordedLocalizationPlan<'_>,
+    jpeg_budget: &mut DecodeBudget<'_>,
+    video_budget: &mut RecordedVideoDecodeBudget,
+    geometry_budget: &mut WorkBudget<'_>,
+    cx: &ReplayCx,
+    replay_jpeg: bool,
+) -> Result<RecordedLocalization> {
     checkpoint(cx, STAGE_LOCALIZATION_SOURCE)?;
     validate(plan, source)?;
     let work_start = geometry_budget.used();
@@ -557,6 +623,7 @@ pub fn localize_recorded_frame(
         video_budget,
         geometry_budget,
         cx,
+        replay_jpeg,
     )?;
     let retained =
         RetainedFileImport::open(deployment, source.import_identity(), source.limits(), cx)

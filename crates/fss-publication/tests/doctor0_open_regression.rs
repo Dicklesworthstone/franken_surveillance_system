@@ -47,7 +47,7 @@ fn limits() -> LocalPublicationLimits {
 }
 
 fn slot(name: &str) -> Result<SlotName, Box<dyn Error>> {
-    Ok(SlotName::parse(name)? )
+    Ok(SlotName::parse(name)?)
 }
 
 fn roots_entry(root: &Path, name: &str) -> PathBuf {

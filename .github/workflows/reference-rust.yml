@@ -72,7 +72,7 @@ jobs:
         run: |
           localization_exit=0
           cargo +nightly-2026-08-31 test --locked --offline -p fss-reference --test recorded_twin_localization_contract || localization_exit=1
-          cargo +nightly-2026-08-31 test --locked --offline -p fss-cli --bin fss-file || localization_exit=1
+          cargo +nightly-2026-08-31 test --locked --offline -p fss-cli --bin fss-file --test retained_localization_cli || localization_exit=1
           exit "$localization_exit"
       - name: Verify whole-recording dwell and retained detector replay
         if: success() || failure()
@@ -177,10 +177,16 @@ jobs:
           rustup run nightly-2026-08-31 rustfmt --check --edition 2024 --config skip_children=true
           crates/fss-reference/src/ingest/twin_localization.rs
           crates/fss-reference/src/ingest/twin_localization/receipt.rs
+          crates/fss-reference/src/ingest/twin_localization/retained.rs
+          crates/fss-reference/src/ingest/twin_localization/retained/wire.rs
+          crates/fss-reference/tests/recorded_twin_localization/retained.rs
+          crates/fss-reference/tests/recorded_twin_localization/archive_fixture.rs
           crates/fss-reference/src/ingest/mod.rs
           crates/fss-reference/tests/recorded_twin_localization_contract.rs
           crates/fss-cli/src/bin/fss-file.rs
           crates/fss-cli/src/bin/fss-file/localize.rs
+          crates/fss-cli/src/bin/fss-file/localization_replay.rs
+          crates/fss-cli/tests/retained_localization_cli.rs
           crates/fss-reference/tests/reference_deployment_contract.rs
       - name: Check retained liveness source formatting
         if: always()
@@ -201,12 +207,19 @@ jobs:
         run: >-
           rustup run nightly-2026-08-31 rustfmt --check --edition 2024 --config skip_children=true
           crates/fss-reference/src/ingest/long_dwell.rs
+          crates/fss-reference/src/ingest/long_dwell/incremental.rs
+          crates/fss-reference/src/ingest/long_dwell/tests.rs
+          crates/fss-reference/src/ingest/long_dwell/tests/incremental.rs
           crates/fss-reference/src/ingest/long_event_replay.rs
           crates/fss-reference/src/ingest/long_event_replay/watch.rs
           crates/fss-reference/src/ingest/long_event_replay/dwell.rs
           crates/fss-cli/src/bin/fss-event/replay.rs
           crates/fss-cli/src/bin/fss-event/replay/tests.rs
           crates/fss-cli/src/bin/fss-event.rs
+          crates/fss-cli/src/bin/fss-event/watch.rs
+          crates/fss-cli/src/bin/fss-event/watch/incremental.rs
+          crates/fss-cli/tests/watch_stream_dwell_cli.rs
+          crates/fss-cli/tests/watch_stream_dwell_cli/incremental.rs
           crates/fss-reference/src/ingest/long_event_replay/tests.rs
           crates/fss-reference/src/ingest/long_event_replay/tests/dwell.rs
           crates/fss-cli/tests/long_event_replay_cli.rs

@@ -13,6 +13,9 @@ use fss_reference::ingest::recorded_decode::video_budget::RecordedVideoDecodeBud
 use fss_reference::ingest::recorded_decode::{
     ComponentInterpretation, DecodeBudget, DecodeLimits, RecordedDecodeRequest,
 };
+use fss_reference::ingest::twin_localization::retained::{
+    RetainedLocalizationPlan, localize_and_retain,
+};
 use fss_reference::ingest::twin_localization::{
     RecordedImageMode, RecordedLocalization, RecordedLocalizationPlan, RecordedLocalizationSource,
     localize_recorded_frame,
@@ -47,6 +50,7 @@ pub(super) struct Action {
     geometry_work: u64,
     report: PathBuf,
     receipt: Option<PathBuf>,
+    retain_result: bool,
 }
 impl Action {
     pub(super) fn identity(&self) -> ContentDigest {
@@ -87,6 +91,7 @@ pub(super) fn accepts_option(command: &str, option: &str) -> bool {
                 | "--ransac-trials"
                 | "--report-out"
                 | "--receipt-out"
+                | "--retain-result"
         )
 }
 fn digest(values: &Values, key: &str) -> ParseResult<[u8; 32]> {
@@ -268,6 +273,14 @@ pub(super) fn parse(
     if decode_work == 0 || geometry_work == 0 {
         return Err(malformed("positive work budgets required"));
     }
+    let retain_result = if values.contains_key("--retain-result") {
+        if text(values, "--retain-result")? != "yes" {
+            return Err(malformed("--retain-result requires explicit yes"));
+        }
+        true
+    } else {
+        false
+    };
     Ok(Action {
         identity,
         segment,
@@ -298,6 +311,7 @@ pub(super) fn parse(
         geometry_work,
         report: value(values, "--report-out")?.into(),
         receipt: values.get("--receipt-out").map(PathBuf::from),
+        retain_result,
     })
 }
 
@@ -381,7 +395,7 @@ fn source(a: &Action, format: &str) -> RunResult<RecordedLocalizationSource> {
         _ => return Err(std::io::Error::other("unsupported retained localization media").into()),
     })
 }
-fn report(
+pub(super) fn report(
     result: &RecordedLocalization,
     twin: [u8; 32],
     atlas: [u8; 32],
@@ -493,43 +507,62 @@ pub(super) fn run(
     let source = source(action, &retained.manifest().format)?;
     let mut geometry = WorkBudget::new(action.geometry_work);
     let limits = ImportLimits::default();
-    let twin = import_twin(
-        &read(&action.twin_path, limits.bytes, cx)?,
-        action.twin_expected,
-        limits,
-        &mut geometry,
-    )?;
-    let atlas = decode_atlas(
-        &read(&action.atlas_path, MAX_ATLAS_BYTES, cx)?,
-        &twin,
-        action.atlas_expected,
-        &mut geometry,
-    )?;
-    let result = localize_recorded_frame(
-        deployment,
-        &source,
-        RecordedLocalizationPlan {
-            twin: &twin,
-            atlas: atlas.atlas(),
-            image: action.image,
-            options: action.options,
-        },
-        &mut DecodeBudget::new(action.decode_work),
-        &mut RecordedVideoDecodeBudget::new(action.decode_work),
-        &mut geometry,
-        cx,
-    )?;
+    let twin_bytes = read(&action.twin_path, limits.bytes, cx)?;
+    let atlas_bytes = read(&action.atlas_path, MAX_ATLAS_BYTES, cx)?;
+    let mut jpeg = DecodeBudget::new(action.decode_work);
+    let mut video = RecordedVideoDecodeBudget::new(action.decode_work);
+    let (result, publication) = if action.retain_result {
+        let (result, package) = localize_and_retain(
+            deployment,
+            &source,
+            RetainedLocalizationPlan {
+                twin_bytes: &twin_bytes,
+                twin: action.twin_expected,
+                atlas_bytes: &atlas_bytes,
+                atlas: action.atlas_expected,
+                image: action.image,
+                options: action.options,
+            },
+            &mut jpeg,
+            &mut video,
+            &mut geometry,
+            cx,
+        )?;
+        (result, Some(package))
+    } else {
+        let twin = import_twin(&twin_bytes, action.twin_expected, limits, &mut geometry)?;
+        let atlas = decode_atlas(&atlas_bytes, &twin, action.atlas_expected, &mut geometry)?;
+        let result = localize_recorded_frame(
+            deployment,
+            &source,
+            RecordedLocalizationPlan {
+                twin: &twin,
+                atlas: atlas.atlas(),
+                image: action.image,
+                options: action.options,
+            },
+            &mut jpeg,
+            &mut video,
+            &mut geometry,
+            cx,
+        )?;
+        (result, None)
+    };
     let report = report(
         &result,
-        twin.digest(),
-        atlas.atlas().digest(),
-        atlas.package(),
+        action.twin_expected.package_sha256,
+        result.result().localization.matches.atlas,
+        action.atlas_expected.package,
     );
     if let Some(path) = &action.receipt {
         write_new(path, result.encoded(), root, cx)?;
     }
     write_new(&action.report, report.as_bytes(), root, cx)?;
     writeln!(out, "localization_receipt={}", result.digest())?;
+    if let Some(package) = publication {
+        writeln!(out, "localization_identity={}", package.identity())?;
+        writeln!(out, "localization_root={}", package.publication_root())?;
+    }
     writeln!(out, "localization_report={report}")?;
     Ok(())
 }

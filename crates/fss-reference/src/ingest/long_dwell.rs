@@ -46,6 +46,8 @@ use crate::{
 };
 
 pub(super) mod detector;
+/// Bounded native MJPEG continuation and source-verified durable checkpoints.
+pub mod incremental;
 pub(in crate::ingest) mod limits;
 pub(super) mod reader;
 /// Verified immutable trained classifier and its bounded native inference policy.
@@ -1113,17 +1115,25 @@ pub(super) fn run_observed_scan(
     )
 }
 
-#[allow(clippy::too_many_arguments)]
-fn run_scan_inner(
+struct ScanPreparation {
+    retained: RetainedFileImport,
+    first_capsule: SensorCapsule,
+    sensor: SensorId,
+    privacy: MaskBinding,
+    publication_guard: SourcePublicationGuard,
+    masked: BTreeSet<usize>,
+    time_reliable: bool,
+    inter: bool,
+}
+
+fn prepare_scan(
     deployment: &ReferenceDeployment,
     plan: &WatchPlan,
     rule: ScanRule,
     options: WatchOptions,
     limits: &LongDwellLimits,
     cx: &ReplayCx,
-    screened: bool,
-    observer: Option<&mut dyn ScanObserver>,
-) -> Result<ScanData> {
+) -> Result<ScanPreparation> {
     checkpoint(cx, "long_dwell:analyze")?;
     if cx.root_dir() != deployment.root() {
         return Err(WatchError::Conflict);
@@ -1239,15 +1249,6 @@ fn run_scan_inner(
                 .map(|_| i)
         })
         .collect();
-    let health = if screened {
-        Some(Screening::new(
-            plan.segment_count,
-            limits.maximum_pixel_samples,
-        )?)
-    } else {
-        None
-    };
-    let health_source = super::recorded_watch::masked_plan_digest(plan.digest(), &privacy);
     // MP4 container structure is accounted, not lost media (never an MJPEG reason).
     let first_offset = source.segment_spans[plan.first_segment].offset;
     let time_reliable = !source.omission_spans.iter().any(|span| {
@@ -1256,15 +1257,44 @@ fn run_scan_inner(
     }) && !source.segment_spans[..=plan.first_segment]
         .iter()
         .any(|s| s.gap_before);
-    let mut scan = Scan {
+    Ok(ScanPreparation {
+        retained,
+        first_capsule,
+        sensor,
+        privacy,
+        publication_guard,
+        masked,
+        time_reliable,
+        inter,
+    })
+}
+
+fn start_scan<'a, 'observer>(
+    prepared: &'a ScanPreparation,
+    plan: &'a WatchPlan,
+    rule: ScanRule,
+    limits: &'a LongDwellLimits,
+    screened: bool,
+    observer: Option<&'observer mut dyn ScanObserver>,
+) -> Result<Scan<'a, 'observer>> {
+    let health = if screened {
+        Some(Screening::new(
+            plan.segment_count,
+            limits.maximum_pixel_samples,
+        )?)
+    } else {
+        None
+    };
+    let health_source = super::recorded_watch::masked_plan_digest(plan.digest(), &prepared.privacy);
+    Ok(Scan {
         plan,
         rule,
-        masked: &masked,
+        masked: &prepared.masked,
         limits,
-        privacy: &privacy,
+        privacy: &prepared.privacy,
         health_source,
         health,
-        time_reliable,
+        time_reliable: prepared.time_reliable,
         tracker: MultiObjectTracker::new(tracker_config(plan))?,
         background: None,
         dimensions: None,
@@ -1280,100 +1310,119 @@ fn run_scan_inner(
         refusals: Vec::new(),
         pixel_samples: 0,
         assignment_work: 0,
-    };
-    let (source_bytes, jpeg_work) = if inter {
-        let bytes = scan
-            .inter_frames(
-                deployment,
-                &first_capsule,
-                options,
-                end,
-                source.format.as_str(),
-                screened,
-                cx,
-            )
-            .map_err(source_read_error)?;
-        (bytes, 0)
-    } else {
-        let mut cursor = ChunkCursor::new(limits.maximum_source_chunk_bytes);
-        let mut codec_budget = DecodeBudget::new(limits.decode.jpeg_work_units);
-        // `segment` is a source position (capsule lookup, cursor), not only a span index.
-        #[allow(clippy::needless_range_loop)]
-        for segment in plan.first_segment..end {
-            checkpoint(cx, "long_dwell:frame")?;
-            let gap = source.segment_spans[segment].gap_before && segment > plan.first_segment;
-            if gap {
+    })
+}
+
+#[allow(clippy::too_many_arguments)]
+fn scan_mjpeg_range(
+    scan: &mut Scan<'_, '_>,
+    deployment: &ReferenceDeployment,
+    prepared: &ScanPreparation,
+    options: WatchOptions,
+    first: usize,
+    end: usize,
+    cursor: &mut ChunkCursor,
+    codec_budget: &mut DecodeBudget<'_>,
+    screened: bool,
+    cx: &ReplayCx,
+) -> Result<()> {
+    let plan = scan.plan;
+    let limits = scan.limits;
+    let rule = scan.rule;
+    let retained = &prepared.retained;
+    let source = retained.manifest();
+    let sensor = &prepared.sensor;
+    let first_capsule = &prepared.first_capsule;
+    // `segment` is a source position (capsule lookup, cursor), not only a span index.
+    #[allow(clippy::needless_range_loop)]
+    for segment in first..end {
+        checkpoint(cx, "long_dwell:frame")?;
+        let gap = source.segment_spans[segment].gap_before && segment > plan.first_segment;
+        if gap {
+            if let Some(screen) = &mut scan.health {
+                screen.discontinuity();
+            }
+            scan.time_reliable = false;
+            scan.restart()?;
+        }
+        let (capsule, capsule_digest) = source_capsule(deployment, retained, segment)?;
+        if &capsule.sensor_id != sensor {
+            return Err(RecordedDecodeError::InvalidReceipt.into());
+        }
+        if screened && capsule.stream_id != first_capsule.stream_id {
+            return Err(RecordedDecodeError::InvalidReceipt.into());
+        }
+        if source.segment_spans[segment].len > limits.decode.jpeg_limits.maximum_bytes as u64 {
+            return Err(WatchError::Limit);
+        }
+        let bytes = cursor.segment(deployment, retained, segment, limits.decode.read_limits, cx)?;
+        let mut frame_record = CanonicalEncoder::new();
+        frame_record.text(rule.frame_domain());
+        frame_record.u64(segment as u64);
+        frame_record.digest(capsule_digest);
+        capsule.capture.encode_canonical(&mut frame_record);
+        frame_record.bool(scan.time_reliable);
+        frame_record.bool(gap);
+        let image = match decode_luma(
+            &bytes,
+            capsule.source_digest.bytes(),
+            plan.interpretation,
+            limits.decode.jpeg_limits,
+            codec_budget,
+        )
+        .map_err(RecordedDecodeError::from)
+        {
+            Ok(image) => image,
+            Err(error) if options.tolerate_decode_refusals && tolerable(&error) => {
                 if let Some(screen) = &mut scan.health {
                     screen.discontinuity();
                 }
-                scan.time_reliable = false;
+                frame_record.bool(false);
+                frame_record.text(error.stable_id());
+                append_trace(
+                    &mut scan.trace,
+                    &frame_record.finish_checked()?,
+                    limits.maximum_trace_bytes,
+                )?;
+                scan.refused(segment, segment, error.stable_id())?;
                 scan.restart()?;
+                continue;
             }
-            let (capsule, capsule_digest) = source_capsule(deployment, &retained, segment)?;
-            if capsule.sensor_id != sensor {
-                return Err(RecordedDecodeError::InvalidReceipt.into());
-            }
-            if screened && capsule.stream_id != first_capsule.stream_id {
-                return Err(RecordedDecodeError::InvalidReceipt.into());
-            }
-            if source.segment_spans[segment].len > limits.decode.jpeg_limits.maximum_bytes as u64 {
-                return Err(WatchError::Limit);
-            }
-            let bytes = cursor.segment(
-                deployment,
-                &retained,
-                segment,
-                limits.decode.read_limits,
-                cx,
-            )?;
-            let mut frame_record = CanonicalEncoder::new();
-            frame_record.text(rule.frame_domain());
-            frame_record.u64(segment as u64);
-            frame_record.digest(capsule_digest);
-            capsule.capture.encode_canonical(&mut frame_record);
-            frame_record.bool(scan.time_reliable);
-            frame_record.bool(gap);
-            let image = match decode_luma(
-                &bytes,
-                capsule.source_digest.bytes(),
-                plan.interpretation,
-                limits.decode.jpeg_limits,
-                &mut codec_budget,
-            )
-            .map_err(RecordedDecodeError::from)
-            {
-                Ok(image) => image,
-                Err(error) if options.tolerate_decode_refusals && tolerable(&error) => {
-                    if let Some(screen) = &mut scan.health {
-                        screen.discontinuity();
-                    }
-                    frame_record.bool(false);
-                    frame_record.text(error.stable_id());
-                    append_trace(
-                        &mut scan.trace,
-                        &frame_record.finish_checked()?,
-                        limits.maximum_trace_bytes,
-                    )?;
-                    scan.refused(segment, segment, error.stable_id())?;
-                    scan.restart()?;
-                    continue;
-                }
-                Err(error) => return Err(error.into()),
-            };
-            scan.frame(
-                segment,
-                segment,
-                &capsule,
-                capsule_digest,
-                gap,
-                image.dimensions(),
-                image.pixels().to_vec(),
-                frame_record,
-                cx,
-            )?;
-        }
-        (cursor.bytes_read(), codec_budget.used())
-    };
+            Err(error) => return Err(error.into()),
+        };
+        scan.frame(
+            segment,
+            segment,
+            &capsule,
+            capsule_digest,
+            gap,
+            image.dimensions(),
+            image.pixels().to_vec(),
+            frame_record,
+            cx,
+        )?;
+    }
+    Ok(())
+}
+
+#[allow(clippy::too_many_arguments)]
+fn finish_scan(
+    scan: Scan<'_, '_>,
+    deployment: &ReferenceDeployment,
+    prepared: &ScanPreparation,
+    plan: &WatchPlan,
+    rule: ScanRule,
+    options: WatchOptions,
+    limits: &LongDwellLimits,
+    source_bytes: u64,
+    jpeg_work: u64,
+    screened: bool,
+    cx: &ReplayCx,
+) -> Result<ScanData> {
+    let source = prepared.retained.manifest();
+    let first_capsule = &prepared.first_capsule;
+    let retained = &prepared.retained;
+    let end = plan.first_segment + plan.segment_count;
     let Scan {
         mut temporal,
         trace,
@@ -1403,7 +1452,7 @@ fn run_scan_inner(
         let mut hull = first_capsule.capture;
         for segment in plan.first_segment + 1..end {
             checkpoint(cx, "historical_health:requested_capture")?;
-            let (capsule, _) = source_capsule(deployment, &retained, segment)?;
+            let (capsule, _) = source_capsule(deployment, retained, segment)?;
             if capsule.sensor_id != first_capsule.sensor_id
                 || capsule.stream_id != first_capsule.stream_id
             {
@@ -1425,10 +1474,10 @@ fn run_scan_inner(
                 rule,
                 options,
                 limits,
-                &retained,
-                &first_capsule,
-                &privacy,
-                &publication_guard,
+                &prepared.retained,
+                &prepared.first_capsule,
+                &prepared.privacy,
+                &prepared.publication_guard,
                 capture_scope.ok_or(WatchError::Conflict)?,
                 unreliable,
                 restarts,
@@ -1444,18 +1493,18 @@ fn run_scan_inner(
         })
         .transpose()?;
     Ok(ScanData {
-        import_root: retained.import_root(),
-        manifest_digest: retained.manifest_digest(),
-        import_anchor: retained.authority_anchor().clone(),
-        sensor,
-        privacy,
-        publication_guard,
+        import_root: prepared.retained.import_root(),
+        manifest_digest: prepared.retained.manifest_digest(),
+        import_anchor: prepared.retained.authority_anchor().clone(),
+        sensor: prepared.sensor.clone(),
+        privacy: prepared.privacy.clone(),
+        publication_guard: prepared.publication_guard.clone(),
         trace,
         episodes,
         entries,
         decoded,
         unreliable,
-        masked_zones: masked.len(),
+        masked_zones: prepared.masked.len(),
         restarts,
         refusals,
         source_bytes,
@@ -1466,6 +1515,65 @@ fn run_scan_inner(
         health_diagnostic,
         media_format: source.format.clone(),
     })
+}
+
+#[allow(clippy::too_many_arguments)]
+fn run_scan_inner(
+    deployment: &ReferenceDeployment,
+    plan: &WatchPlan,
+    rule: ScanRule,
+    options: WatchOptions,
+    limits: &LongDwellLimits,
+    cx: &ReplayCx,
+    screened: bool,
+    observer: Option<&mut dyn ScanObserver>,
+) -> Result<ScanData> {
+    let prepared = prepare_scan(deployment, plan, rule, options, limits, cx)?;
+    let mut scan = start_scan(&prepared, plan, rule, limits, screened, observer)?;
+    let end = plan.first_segment + plan.segment_count;
+    let (source_bytes, jpeg_work) = if prepared.inter {
+        let bytes = scan
+            .inter_frames(
+                deployment,
+                &prepared.first_capsule,
+                options,
+                end,
+                prepared.retained.manifest().format.as_str(),
+                screened,
+                cx,
+            )
+            .map_err(source_read_error)?;
+        (bytes, 0)
+    } else {
+        let mut cursor = ChunkCursor::new(limits.maximum_source_chunk_bytes);
+        let mut codec_budget = DecodeBudget::new(limits.decode.jpeg_work_units);
+        scan_mjpeg_range(
+            &mut scan,
+            deployment,
+            &prepared,
+            options,
+            plan.first_segment,
+            end,
+            &mut cursor,
+            &mut codec_budget,
+            screened,
+            cx,
+        )?;
+        (cursor.bytes_read(), codec_budget.used())
+    };
+    finish_scan(
+        scan,
+        deployment,
+        &prepared,
+        plan,
+        rule,
+        options,
+        limits,
+        source_bytes,
+        jpeg_work,
+        screened,
+        cx,
+    )
 }
 
 impl LongDwellReport {
@@ -1575,6 +1683,18 @@ impl LongDwellReport {
             }
             None => None,
         };
+        Self::from_scan(deployment, plan, rule, options, scan, detector, cx)
+    }
+
+    fn from_scan(
+        deployment: &ReferenceDeployment,
+        plan: &WatchPlan,
+        rule: DwellPolicy,
+        options: WatchOptions,
+        scan: ScanData,
+        detector: Option<super::long_watch::detector::Completed>,
+        cx: &ReplayCx,
+    ) -> Result<Self> {
         let ScanData {
             import_root,
             manifest_digest,

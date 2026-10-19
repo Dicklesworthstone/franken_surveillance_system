@@ -19,6 +19,7 @@ pub mod custody_audit;
 mod error;
 mod ledger;
 mod local;
+pub mod packet_replay;
 mod publisher;
 mod replay;
 

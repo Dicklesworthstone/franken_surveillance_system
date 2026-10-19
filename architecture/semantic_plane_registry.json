@@ -381,10 +381,12 @@
   "crates/fss-reference/src/ingest/long_dwell/detector.rs": "cognition",
   "crates/fss-reference/src/ingest/long_dwell/health.rs": "support",
   "crates/fss-reference/src/ingest/long_dwell/health_tests.rs": "support",
+  "crates/fss-reference/src/ingest/long_dwell/incremental.rs": "support",
   "crates/fss-reference/src/ingest/long_dwell/limits.rs": "support",
   "crates/fss-reference/src/ingest/long_dwell/reader.rs": "support",
   "crates/fss-reference/src/ingest/long_dwell/tests.rs": "support",
   "crates/fss-reference/src/ingest/long_dwell/tests/detector.rs": "support",
+  "crates/fss-reference/src/ingest/long_dwell/tests/incremental.rs": "support",
   "crates/fss-reference/src/ingest/long_dwell_replay.rs": "support",
   "crates/fss-reference/src/ingest/long_dwell_replay/recipe.rs": "support",
   "crates/fss-reference/src/ingest/long_dwell_replay/tests.rs": "support",
@@ -498,6 +500,8 @@
   "crates/fss-reference/src/ingest/tuya.rs": "authority",
   "crates/fss-reference/src/ingest/twin_localization.rs": "cognition",
   "crates/fss-reference/src/ingest/twin_localization/receipt.rs": "cognition",
+  "crates/fss-reference/src/ingest/twin_localization/retained.rs": "support",
+  "crates/fss-reference/src/ingest/twin_localization/retained/wire.rs": "support",
   "crates/fss-reference/src/ingest/virtual_mjpeg.rs": "support",
   "crates/fss-reference/src/ingest/virtual_mjpeg/scene.rs": "support",
   "crates/fss-reference/src/ingest/virtual_mjpeg/tests.rs": "support",
@@ -892,6 +896,11 @@
    "file": "crates/fss-core/src/region.rs",
    "plane": "authority",
    "description": "Authoritative hierarchy of execution regions"
+  },
+  "RegionTreeIdentity": {
+   "file": "crates/fss-core/src/region.rs",
+   "plane": "authority",
+   "description": "Opaque in-process owner binding distinguishing a live region tree from independent snapshots"
   },
   "RootAuthoritySpec": {
    "file": "crates/fss-core/src/region.rs",

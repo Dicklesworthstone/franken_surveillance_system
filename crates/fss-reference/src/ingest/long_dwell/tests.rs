@@ -20,6 +20,7 @@ const HEIGHT: u32 = 32;
 const PERIOD: u64 = 100_000_000;
 
 mod detector;
+mod incremental;
 
 struct Directory(PathBuf);
 impl Directory {

@@ -16,6 +16,9 @@ type Test<T = ()> = Result<T, Box<dyn std::error::Error>>;
 const SITE: &str = "site:stream-dwell-cli";
 const FRAMES: usize = 300;
 
+#[path = "watch_stream_dwell_cli/incremental.rs"]
+mod incremental;
+
 struct Directory(PathBuf);
 impl Directory {
     fn new(label: &str) -> Test<Self> {

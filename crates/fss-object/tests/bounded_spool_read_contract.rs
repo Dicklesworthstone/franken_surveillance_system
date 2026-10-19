@@ -9,7 +9,9 @@ use std::path::{Path, PathBuf};
 type Test<T = ()> = Result<T, Box<dyn std::error::Error>>;
 
 fn root(name: &str) -> Test<PathBuf> {
-    let path = Path::new(env!("CARGO_TARGET_TMPDIR")).join("bounded_spool_read").join(name);
+    let path = Path::new(env!("CARGO_TARGET_TMPDIR"))
+        .join("bounded_spool_read")
+        .join(name);
     match fs::remove_dir_all(&path) {
         Ok(()) => {}
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
@@ -17,7 +19,9 @@ fn root(name: &str) -> Test<PathBuf> {
     }
     Ok(path)
 }
-fn limits() -> SpoolLimits { SpoolLimits::new(16, 64 * 1024, 4096, 64) }
+fn limits() -> SpoolLimits {
+    SpoolLimits::new(16, 64 * 1024, 4096, 64)
+}
 
 #[test]
 fn narrower_read_refuses_oversize_without_poisoning_or_promoting_the_object() -> Test {
@@ -49,9 +53,15 @@ fn bounded_read_rechecks_actual_custody_and_cannot_admit_an_unindexed_file() -> 
     assert!(spool.read_bounded(digest, 4096).is_err());
     let missing = ContentDigest::sha256(b"not indexed");
     fs::write(spool.object_path(missing), b"not indexed")?;
-    assert!(matches!(spool.read_bounded(missing, 4096), Err(SpoolError::Missing(d)) if d == missing));
+    assert!(
+        matches!(spool.read_bounded(missing, 4096), Err(SpoolError::Missing(d)) if d == missing)
+    );
     assert_eq!(spool.object_count(), 1);
     drop(spool);
-    assert!(StagingSpool::open(&path, limits())?.read_bounded(digest, 4096).is_err());
+    assert!(
+        StagingSpool::open(&path, limits())?
+            .read_bounded(digest, 4096)
+            .is_err()
+    );
     Ok(())
 }

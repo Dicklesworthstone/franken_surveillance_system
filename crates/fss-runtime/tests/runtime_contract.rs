@@ -265,6 +265,8 @@ fn authority_lifecycle_end_to_end() -> Result<(), Box<dyn std::error::Error>> {
         deadline: None,
         priority: 10,
         budgets: fss_core::BudgetVector::builder()
+            .tokens(100)
+            .cpu_millis(10_000)
             .bytes(1024)
             .storage_operations(64)
             .build()?,
@@ -303,6 +305,8 @@ fn authority_lifecycle_end_to_end() -> Result<(), Box<dyn std::error::Error>> {
             deadline: None,
             priority: 10,
             budgets: fss_core::BudgetVector::builder()
+                .tokens(50)
+                .cpu_millis(5_000)
                 .bytes(512)
                 .storage_operations(32)
                 .build()?,
@@ -326,7 +330,7 @@ fn authority_lifecycle_end_to_end() -> Result<(), Box<dyn std::error::Error>> {
         "capture ring drained",
     )?;
     child.register_obligation(&mut tree, ob)?;
-    assert_eq!(child.leaked_obligations(&tree).len(), 1);
+    assert_eq!(child.leaked_obligations(&tree)?.len(), 1);
     child.resolve_obligation(
         &mut tree,
         &ObligationId::parse("obl:capture-drain")?,
@@ -334,23 +338,25 @@ fn authority_lifecycle_end_to_end() -> Result<(), Box<dyn std::error::Error>> {
         Some(ContentDigest::sha256(b"proof")),
         None,
     )?;
-    assert!(child.finalize_report(&tree).is_empty());
+    assert!(child.finalize_report(&tree)?.is_empty());
 
     // Budget: spend within bounds, overdraft refused.
     use fss_core::BudgetDimension;
-    child.budget_mut().spend(BudgetDimension::Tokens, 50)?;
+    child
+        .budget_mut(&tree)?
+        .spend(BudgetDimension::Tokens, 50)?;
     assert!(
         child
-            .budget_mut()
+            .budget_mut(&tree)?
             .spend(BudgetDimension::Bytes, 501)
             .is_err()
     );
 
     // Cancellation cascades: request on root, child chain sees it.
-    root.request_cancellation();
-    assert!(root.is_cancel_requested());
+    root.request_cancellation(&mut tree, TimestampNs(3_000))?;
+    assert!(root.is_cancel_requested(&tree)?);
     assert!(
-        child.is_cancel_requested(),
+        child.is_cancel_requested(&tree)?,
         "cancellation must cascade through the chain"
     );
     Ok(())
@@ -371,6 +377,8 @@ fn scope_down_refuses_illegal_kind_and_budget_widening() -> Result<(), Box<dyn s
         deadline: None,
         priority: 10,
         budgets: fss_core::BudgetVector::builder()
+            .tokens(100)
+            .cpu_millis(10_000)
             .bytes(1024)
             .storage_operations(64)
             .build()?,
@@ -409,6 +417,8 @@ fn scope_down_refuses_illegal_kind_and_budget_widening() -> Result<(), Box<dyn s
             deadline: None,
             priority: 10,
             budgets: fss_core::BudgetVector::builder()
+                .tokens(1)
+                .cpu_millis(1)
                 .bytes(64)
                 .storage_operations(8)
                 .build()?,
@@ -433,13 +443,15 @@ fn scope_down_refuses_illegal_kind_and_budget_widening() -> Result<(), Box<dyn s
             .build()
             ?,
         RootAuthoritySpec {
-            trace_id: "trace:greedy".to_string(),
+            trace_id: "trace:test".to_string(),
             operation_id: OperationId::parse("op:greedy")?,
             principal: "principal:test".to_string(),
             capabilities: Vec::new(),
             deadline: None,
             priority: 10,
             budgets: fss_core::BudgetVector::builder()
+                .tokens(50)
+                .cpu_millis(5_000)
                 .bytes(512)
                 .storage_operations(32)
                 .build()?,
@@ -450,7 +462,19 @@ fn scope_down_refuses_illegal_kind_and_budget_widening() -> Result<(), Box<dyn s
         },
         TimestampNs(2_000),
     );
-    assert!(r.is_err(), "budget widening must refuse");
+    assert!(
+        matches!(
+            r,
+            Err(fss_runtime::authority::AuthorityError::Budget(
+                fss_runtime::budget::LedgerError::Overdraft {
+                    dimension: fss_core::BudgetDimension::Tokens,
+                    requested: 11,
+                    remaining: 10,
+                }
+            ))
+        ),
+        "budget widening must refuse on the exhausted dimension"
+    );
     Ok(())
 }
 
@@ -473,7 +497,7 @@ fn tree_wide_leak_oracle_reports_counts_and_inv006_coverage()
         capabilities: Vec::new(),
         deadline: None,
         priority: 10,
-        budgets: BudgetVector::builder().bytes(1024).build()?,
+        budgets: BudgetVector::builder().tokens(100).bytes(1024).build()?,
         privacy_scope: "privacy:test".to_string(),
         retention_scope: "retention:test".to_string(),
         anchor_universe: ContentDigest::sha256(b"oracle-universe"),
@@ -550,7 +574,10 @@ fn test_spec(
         capabilities: caps,
         deadline: None,
         priority: 10,
-        budgets: fss_core::BudgetVector::builder().bytes(1024).build()?,
+        budgets: fss_core::BudgetVector::builder()
+            .tokens(100)
+            .bytes(4096)
+            .build()?,
         privacy_scope: "privacy:test".to_string(),
         retention_scope: "retention:test".to_string(),
         anchor_universe: fss_core::ContentDigest::sha256(b"grant-universe"),
@@ -887,9 +914,10 @@ fn effect_happy_path_prepare_commit_observe_verify() -> Result<(), Box<dyn std::
     )?;
     assert_eq!(prepared.state(), fss_core::EffectState::Prepared);
     // Obligation registered and pending: the leak oracle sees it.
-    assert_eq!(auth.leaked_obligations(&tree).len(), 1);
+    assert_eq!(auth.leaked_obligations(&tree)?.len(), 1);
 
-    let mut committed = EffectCoordinator::commit(&auth, &mut leases, prepared, TimestampNs(200))?;
+    let mut committed =
+        EffectCoordinator::commit(&auth, &tree, &mut leases, prepared, TimestampNs(200))?;
     assert_eq!(committed.state(), fss_core::EffectState::Committed);
 
     EffectCoordinator::adapter_accepted(&mut committed)?;
@@ -901,7 +929,7 @@ fn effect_happy_path_prepare_commit_observe_verify() -> Result<(), Box<dyn std::
         ContentDigest::sha256(b"preset-3-proof"),
     )?;
     // Obligation terminal: no leaks remain.
-    assert!(auth.finalize_report(&tree).is_empty());
+    assert!(auth.finalize_report(&tree)?.is_empty());
     Ok(())
 }
 
@@ -934,14 +962,19 @@ fn effect_commit_refused_on_stale_fence_and_missing_grant() -> Result<(), Box<dy
 
     // Zombie: lease revoked between prepare and commit.
     leases.revoke(&lease.id)?;
-    let err = EffectCoordinator::commit(&auth, &mut leases, prepared, TimestampNs(200))
+    let err = EffectCoordinator::commit(&auth, &tree, &mut leases, prepared, TimestampNs(200))
         .err()
         .ok_or("stale fence must refuse commit")?;
     assert!(matches!(err, EffectCoordError::Fence { .. }));
 
     // Missing commit grant: prepare-only authority.
     let (auth2, mut tree2) = effect_authority(vec!["CAP-PTZ-PREPARE-001".to_string()])?;
-    let lease2 = leases.acquire("device:ptz:porch", "region:fx2", None, TimestampNs(300))?;
+    let lease2 = leases.acquire(
+        "device:ptz:porch",
+        auth2.region().as_str(),
+        None,
+        TimestampNs(300),
+    )?;
     let prepared2 = EffectCoordinator::prepare(
         &auth2,
         &mut tree2,
@@ -955,7 +988,7 @@ fn effect_commit_refused_on_stale_fence_and_missing_grant() -> Result<(), Box<dy
             terminal_predicate: "predicate",
         },
     )?;
-    let err = EffectCoordinator::commit(&auth2, &mut leases, prepared2, TimestampNs(400))
+    let err = EffectCoordinator::commit(&auth2, &tree2, &mut leases, prepared2, TimestampNs(400))
         .err()
         .ok_or("commit grant missing")?;
     assert!(matches!(err, EffectCoordError::Grant { .. }));
@@ -990,7 +1023,7 @@ fn effect_cancel_and_indeterminate_semantics() -> Result<(), Box<dyn std::error:
         },
     )?;
     EffectCoordinator::cancel_prepared(&mut tree, &auth, prepared)?;
-    assert!(auth.finalize_report(&tree).is_empty());
+    assert!(auth.finalize_report(&tree)?.is_empty());
 
     // Indeterminate requires a reconciliation note (INV-006).
     let prepared2 = EffectCoordinator::prepare(
@@ -1006,7 +1039,8 @@ fn effect_cancel_and_indeterminate_semantics() -> Result<(), Box<dyn std::error:
             terminal_predicate: "alert delivered",
         },
     )?;
-    let committed2 = EffectCoordinator::commit(&auth, &mut leases, prepared2, TimestampNs(10))?;
+    let committed2 =
+        EffectCoordinator::commit(&auth, &tree, &mut leases, prepared2, TimestampNs(10))?;
     let err = EffectCoordinator::indeterminate(&mut tree, &auth, committed2, None)
         .err()
         .ok_or("note required")?;
@@ -1029,7 +1063,8 @@ fn effect_cancel_and_indeterminate_semantics() -> Result<(), Box<dyn std::error:
             terminal_predicate: "alert delivered",
         },
     )?;
-    let committed3 = EffectCoordinator::commit(&auth, &mut leases, prepared3, TimestampNs(20))?;
+    let committed3 =
+        EffectCoordinator::commit(&auth, &tree, &mut leases, prepared3, TimestampNs(20))?;
     EffectCoordinator::indeterminate(
         &mut tree,
         &auth,
@@ -1072,9 +1107,9 @@ fn effect_illegal_transitions_are_typed_refusals() -> Result<(), Box<dyn std::er
             terminal_predicate: "predicate",
         },
     )?;
-    let mut committed = EffectCoordinator::commit(&auth, &mut leases, prepared, TimestampNs(5))?;
-    // Committed → Verified directly is illegal (must pass through
-    // AdapterAccepted → Observed).
+    let mut committed =
+        EffectCoordinator::commit(&auth, &tree, &mut leases, prepared, TimestampNs(5))?;
+    // Committed → Observed directly is illegal (must first reach AdapterAccepted).
     let err = EffectCoordinator::observed(&mut committed)
         .err()
         .ok_or("skip is illegal")?;
@@ -1166,7 +1201,7 @@ fn crash_after_prepare_leaves_named_leak_and_reconciles() -> Result<(), Box<dyn 
 
     let (auth, mut tree, leases, fence) = fx_setup()?;
     let prepared = prepared_fx(&auth, &mut tree, &leases, fence, "op:crash-1")?;
-    let obligation = prepared.obligation.clone();
+    let obligation = prepared.obligation().clone();
 
     // CRASH: the prepared session is dropped before commit. Nothing about
     // the operation survives except the durable obligation on the tree.
@@ -1187,7 +1222,7 @@ fn crash_after_prepare_leaves_named_leak_and_reconciles() -> Result<(), Box<dyn 
         Some(ContentDigest::sha256(b"crashed-before-commit")),
         None,
     )?;
-    assert!(auth.finalize_report(&tree).is_empty());
+    assert!(auth.finalize_report(&tree)?.is_empty());
     let _ = TimestampNs(0);
     Ok(())
 }
@@ -1201,7 +1236,8 @@ fn crash_after_commit_is_indeterminate_with_mandatory_note()
 
     let (auth, mut tree, mut leases, fence) = fx_setup()?;
     let prepared = prepared_fx(&auth, &mut tree, &leases, fence, "op:crash-2")?;
-    let committed = EffectCoordinator::commit(&auth, &mut leases, prepared, TimestampNs(10))?;
+    let committed =
+        EffectCoordinator::commit(&auth, &tree, &mut leases, prepared, TimestampNs(10))?;
 
     // CRASH after commit: the dispatch may have happened. The honest
     // reconciliation is Indeterminate with a durable note — NOT success,
@@ -1243,7 +1279,8 @@ fn crash_after_observe_preserves_pending_verify_obligation()
 
     let (auth, mut tree, mut leases, fence) = fx_setup()?;
     let prepared = prepared_fx(&auth, &mut tree, &leases, fence, "op:crash-3")?;
-    let mut committed = EffectCoordinator::commit(&auth, &mut leases, prepared, TimestampNs(10))?;
+    let mut committed =
+        EffectCoordinator::commit(&auth, &tree, &mut leases, prepared, TimestampNs(10))?;
     EffectCoordinator::adapter_accepted(&mut committed)?;
     EffectCoordinator::observed(&mut committed)?;
 
@@ -1257,7 +1294,7 @@ fn crash_after_observe_preserves_pending_verify_obligation()
         Some(ContentDigest::sha256(b"observed-before-crash")),
         None,
     )?;
-    assert!(auth.finalize_report(&tree).is_empty());
+    assert!(auth.finalize_report(&tree)?.is_empty());
     Ok(())
 }
 
@@ -1270,8 +1307,8 @@ fn cancellation_mid_drain_never_strands_orphans() -> Result<(), Box<dyn std::err
     let (auth, mut tree, leases, fence) = fx_setup()?;
     let _prepared = prepared_fx(&auth, &mut tree, &leases, fence, "op:crash-4")?;
 
-    auth.request_cancellation();
-    assert!(auth.is_cancel_requested());
+    auth.request_cancellation(&mut tree, TimestampNs(100))?;
+    assert!(auth.is_cancel_requested(&tree)?);
     // Drain is refused while obligations are pending: no silent orphaning.
     let drain = tree.request_drain(auth.region(), Some("cancel"), TimestampNs(100));
     assert!(drain.is_ok(), "drain request is idempotent-accepted");

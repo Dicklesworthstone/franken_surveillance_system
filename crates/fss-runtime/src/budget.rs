@@ -37,6 +37,15 @@ pub const CRITICAL_AT: f64 = 0.95;
 /// quantity, and what remained — never a clamp, never a silent truncation.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum LedgerError {
+    /// A checked reservation settlement would return uncharged capacity.
+    RefundExceedsConsumed {
+        /// The dimension that would be over-refunded.
+        dimension: BudgetDimension,
+        /// The requested refund.
+        requested: u64,
+        /// The quantity still charged to the parent.
+        consumed: u64,
+    },
     /// The spend would exceed the remaining budget in one dimension.
     Overdraft {
         /// The dimension whose limit would be exceeded.
@@ -51,6 +60,15 @@ pub enum LedgerError {
 impl std::fmt::Display for LedgerError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
+            Self::RefundExceedsConsumed {
+                dimension,
+                requested,
+                consumed,
+            } => write!(
+                f,
+                "budget refund in {} exceeds consumption: requested {requested}, consumed {consumed}",
+                dimension.as_str()
+            ),
             Self::Overdraft {
                 dimension,
                 requested,
@@ -230,6 +248,40 @@ impl BudgetLedger {
         sub(&mut self.consumed, dimension, qty);
     }
 
+    /// Return only metered capacity. Contract-owned continuous quantities
+    /// are never represented as runtime refunds.
+    pub(crate) fn unused_metered(&self) -> BudgetVector {
+        let mut unused = BudgetVector::ZERO;
+        for dimension in METERED {
+            add(
+                &mut unused,
+                dimension,
+                read_dim(&self.limit, dimension) - read_dim(&self.consumed, dimension),
+            );
+        }
+        unused
+    }
+
+    /// Settle a scope-owned reservation through checked atomic subtraction.
+    /// Unlike the standalone ledger adjustment API, over-refunds are refused.
+    pub(crate) fn refund_vector(&mut self, refund: &BudgetVector) -> Result<(), LedgerError> {
+        for dimension in METERED {
+            let requested = read_dim(refund, dimension);
+            let consumed = read_dim(&self.consumed, dimension);
+            if requested > consumed {
+                return Err(LedgerError::RefundExceedsConsumed {
+                    dimension,
+                    requested,
+                    consumed,
+                });
+            }
+        }
+        for dimension in METERED {
+            sub(&mut self.consumed, dimension, read_dim(refund, dimension));
+        }
+        Ok(())
+    }
+
     /// Utilization of one metered dimension: `consumed / limit`, or `None`
     /// when the dimension is unmetered (zero limit).
     #[must_use]
@@ -262,5 +314,34 @@ impl BudgetLedger {
         } else {
             ResourcePressure::Nominal
         }
+    }
+}
+
+/// Spending access to an authority's immutable allowance. It cannot replace or
+/// refund the ledger. Its authority constructor ties the lifetime to the bound
+/// region tree so closure cannot race outstanding spending access.
+pub struct BudgetSpender<'a> {
+    ledger: &'a mut BudgetLedger,
+}
+
+impl<'a> BudgetSpender<'a> {
+    pub(crate) fn new(ledger: &'a mut BudgetLedger) -> Self {
+        Self { ledger }
+    }
+
+    /// Account for work without admitting new work or conferring I/O authority.
+    pub fn spend(&mut self, dimension: BudgetDimension, qty: u64) -> Result<(), LedgerError> {
+        self.ledger.spend(dimension, qty)
+    }
+
+    /// Account for a complete numeric vector atomically.
+    pub fn spend_vector(&mut self, delta: &BudgetVector) -> Result<(), LedgerError> {
+        self.ledger.spend_vector(delta)
+    }
+
+    /// The allowance left before this spend.
+    #[must_use]
+    pub fn remaining(&self) -> BudgetVector {
+        self.ledger.remaining()
     }
 }

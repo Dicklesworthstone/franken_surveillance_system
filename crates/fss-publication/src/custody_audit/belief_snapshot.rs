@@ -10,16 +10,16 @@ use std::fmt;
 use std::path::Path;
 
 use fss_core::ContentDigest;
-use fss_core::belief_verification::{BeliefEvidenceReadError, RetainedBeliefEvidence};
 use fss_core::belief_verification::graph::RetainedBeliefGraph;
+use fss_core::belief_verification::{BeliefEvidenceReadError, RetainedBeliefEvidence};
 use fss_object::SpoolIo;
 
+use super::io::AuditIo;
 use super::{
     CustodyAuditError, CustodyAuditLimits, CustodyObjectState, CustodyRootBasis, LocalCustodyAudit,
-    audit_roots, catalogue, check, classify, sha, MAX_AUDIT_OBJECTS, MAX_AUDIT_READ_BYTES,
-    MAX_AUDIT_ROOTS,
+    MAX_AUDIT_OBJECTS, MAX_AUDIT_READ_BYTES, MAX_AUDIT_ROOTS, audit_roots, catalogue, check,
+    classify, sha,
 };
-use super::io::AuditIo;
 use crate::{SlotName, read_verified_with_io};
 
 /// Durable-journal binding and independently rederived beliefs over ledgered local slots.
@@ -42,17 +42,24 @@ impl fmt::Display for CustodyCaptureError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             Self::Audit(error) => write!(f, "custody capture: {error}"),
-            Self::Object { digest, state } => write!(f, "custody capture {digest}: {}", state.as_str()),
+            Self::Object { digest, state } => {
+                write!(f, "custody capture {digest}: {}", state.as_str())
+            }
         }
     }
 }
 impl std::error::Error for CustodyCaptureError {
     fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
-        match self { Self::Audit(error) => Some(error), Self::Object { .. } => None }
+        match self {
+            Self::Audit(error) => Some(error),
+            Self::Object { .. } => None,
+        }
     }
 }
 impl From<CustodyAuditError> for CustodyCaptureError {
-    fn from(error: CustodyAuditError) -> Self { Self::Audit(error) }
+    fn from(error: CustodyAuditError) -> Self {
+        Self::Audit(error)
+    }
 }
 
 /// Immutable native bytes and graph roles bracketed by matching publication observations.
@@ -78,28 +85,58 @@ impl fmt::Debug for CapturedBeliefCustody {
 impl CapturedBeliefCustody {
     /// Verified observations; counters include ALL audit, capture and catalogue filesystem calls.
     #[must_use]
-    pub const fn audit(&self) -> &LocalCustodyAudit { &self.audit }
+    pub const fn audit(&self) -> &LocalCustodyAudit {
+        &self.audit
+    }
     /// Owned payload bytes, excluding graph-index and allocator overhead.
     #[must_use]
-    pub const fn retained_bytes(&self) -> u64 { self.retained_bytes }
+    pub const fn retained_bytes(&self) -> u64 {
+        self.retained_bytes
+    }
 }
 impl RetainedBeliefEvidence for CapturedBeliefCustody {
-    fn read_belief_evidence(&self, digest: ContentDigest, max_bytes: usize) -> Result<Vec<u8>, BeliefEvidenceReadError> {
-        let bytes = self.payloads.get(&digest).ok_or(BeliefEvidenceReadError::Missing)?;
-        if bytes.len() > max_bytes { return Err(BeliefEvidenceReadError::LimitExceeded); }
+    fn read_belief_evidence(
+        &self,
+        digest: ContentDigest,
+        max_bytes: usize,
+    ) -> Result<Vec<u8>, BeliefEvidenceReadError> {
+        let bytes = self
+            .payloads
+            .get(&digest)
+            .ok_or(BeliefEvidenceReadError::Missing)?;
+        if bytes.len() > max_bytes {
+            return Err(BeliefEvidenceReadError::LimitExceeded);
+        }
         // No filesystem work or publication side effect; the core independently hashes the copy.
         Ok(bytes.clone())
     }
 }
 impl RetainedBeliefGraph for CapturedBeliefCustody {
-    fn belief_children(&self, digest: ContentDigest, verified_bytes: &[u8], max_children: usize) -> Result<Vec<ContentDigest>, BeliefEvidenceReadError> {
-        let bytes = self.payloads.get(&digest).ok_or(BeliefEvidenceReadError::Missing)?;
-        if bytes.as_slice() != verified_bytes { return Err(BeliefEvidenceReadError::Corrupt); }
-        let index = self.audit.objects.binary_search_by_key(&digest, |row| row.digest)
+    fn belief_children(
+        &self,
+        digest: ContentDigest,
+        verified_bytes: &[u8],
+        max_children: usize,
+    ) -> Result<Vec<ContentDigest>, BeliefEvidenceReadError> {
+        let bytes = self
+            .payloads
+            .get(&digest)
+            .ok_or(BeliefEvidenceReadError::Missing)?;
+        if bytes.as_slice() != verified_bytes {
+            return Err(BeliefEvidenceReadError::Corrupt);
+        }
+        let index = self
+            .audit
+            .objects
+            .binary_search_by_key(&digest, |row| row.digest)
             .map_err(|_| BeliefEvidenceReadError::Unavailable)?;
         let row = &self.audit.objects[index];
-        if row.state != CustodyObjectState::Verified { return Err(BeliefEvidenceReadError::NotVerified); }
-        if row.children.len() > max_children { return Err(BeliefEvidenceReadError::LimitExceeded); }
+        if row.state != CustodyObjectState::Verified {
+            return Err(BeliefEvidenceReadError::NotVerified);
+        }
+        if row.children.len() > max_children {
+            return Err(BeliefEvidenceReadError::LimitExceeded);
+        }
         // The auditor decoded these edges from bytes with this same content identity. Opaque
         // payloads never acquire edges merely because their bytes resemble a native manifest.
         Ok(row.children.clone())
@@ -136,43 +173,87 @@ pub fn capture_belief_custody(
     check(cancelled)?;
     limits.validate()?;
     if max_retained_bytes > MAX_AUDIT_READ_BYTES
-        || selected_roots.is_empty() || selected_roots.len() > MAX_AUDIT_ROOTS
+        || selected_roots.is_empty()
+        || selected_roots.len() > MAX_AUDIT_ROOTS
         || selected_roots.iter().any(|d| !sha(*d))
-        || denied.len() > MAX_AUDIT_OBJECTS || denied.iter().any(|(d, proof)| !sha(*d) || !sha(*proof))
-        || selected_roots.iter().copied().collect::<std::collections::BTreeSet<_>>().len() != selected_roots.len()
-    { return Err(CustodyAuditError::InvalidRequest.into()); }
+        || denied.len() > MAX_AUDIT_OBJECTS
+        || denied.iter().any(|(d, proof)| !sha(*d) || !sha(*proof))
+        || selected_roots
+            .iter()
+            .copied()
+            .collect::<std::collections::BTreeSet<_>>()
+            .len()
+            != selected_roots.len()
+    {
+        return Err(CustodyAuditError::InvalidRequest.into());
+    }
     let metered = AuditIo::new(io, limits, cancelled);
     let result = (|| {
         let before = catalogue(&metered, root, limits.max_catalogue_entries)?;
-        let mut audit = audit_roots(&metered, root, selected_roots, denied, limits, cancelled, basis)?;
-        if let Some(row) = audit.objects.iter().find(|row| row.state != CustodyObjectState::Verified) {
-            return Err(CustodyCaptureError::Object { digest: row.digest, state: row.state });
+        let mut audit = audit_roots(
+            &metered,
+            root,
+            selected_roots,
+            denied,
+            limits,
+            cancelled,
+            basis,
+        )?;
+        if let Some(row) = audit
+            .objects
+            .iter()
+            .find(|row| row.state != CustodyObjectState::Verified)
+        {
+            return Err(CustodyCaptureError::Object {
+                digest: row.digest,
+                state: row.state,
+            });
         }
         let mut payloads = BTreeMap::new();
         let mut retained_bytes = 0_u64;
         for row in &audit.objects {
             check(cancelled)?;
-            let length = row.verified_payload_bytes.ok_or(CustodyAuditError::IoContract)?;
-            let next = retained_bytes.checked_add(length)
+            let length = row
+                .verified_payload_bytes
+                .ok_or(CustodyAuditError::IoContract)?;
+            let next = retained_bytes
+                .checked_add(length)
                 .ok_or(CustodyAuditError::Limit("retained_payload_bytes"))?;
-            if next > max_retained_bytes { return Err(CustodyAuditError::Limit("retained_payload_bytes").into()); }
-            let length_limit = usize::try_from(length).map_err(|_| CustodyAuditError::InvalidRequest)?;
-            let bytes = read_verified_with_io(root, row.digest, length_limit, &metered)
-                .map_err(|error| CustodyCaptureError::Object { digest: row.digest, state: classify(error) })?;
+            if next > max_retained_bytes {
+                return Err(CustodyAuditError::Limit("retained_payload_bytes").into());
+            }
+            let length_limit =
+                usize::try_from(length).map_err(|_| CustodyAuditError::InvalidRequest)?;
+            let bytes = read_verified_with_io(root, row.digest, length_limit, &metered).map_err(
+                |error| CustodyCaptureError::Object {
+                    digest: row.digest,
+                    state: classify(error),
+                },
+            )?;
             if bytes.len() as u64 != length || ContentDigest::sha256(&bytes) != row.digest {
-                return Err(CustodyCaptureError::Object { digest: row.digest, state: CustodyObjectState::Corrupt });
+                return Err(CustodyCaptureError::Object {
+                    digest: row.digest,
+                    state: CustodyObjectState::Corrupt,
+                });
             }
             payloads.insert(row.digest, bytes);
             retained_bytes = next;
         }
         let after = catalogue(&metered, root, limits.max_catalogue_entries)?;
-        if before != after { return Err(CustodyAuditError::CatalogueChanged.into()); }
+        if before != after {
+            return Err(CustodyAuditError::CatalogueChanged.into());
+        }
         check(cancelled)?;
         // Do not expose the inner audit's smaller counters as the cost of the whole capture.
         audit.charged_read_bytes = metered.bytes();
         audit.peak_reserved_read_bytes = metered.peak();
         audit.io_calls = metered.calls();
-        Ok(CapturedBeliefCustody { audit, payloads, retained_bytes, records: before.records })
+        Ok(CapturedBeliefCustody {
+            audit,
+            payloads,
+            retained_bytes,
+            records: before.records,
+        })
     })();
     // An outer budget/cancellation failure must not be flattened by an inner reader's error map.
     metered.check()?;

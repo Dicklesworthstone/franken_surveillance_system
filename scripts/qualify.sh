@@ -314,6 +314,7 @@ policy_lane() {
   run seed-requirements python3 scripts/seed_requirement_checker.py
   run dependency-audit python3 scripts/dependency_audit.py
   run lab-oracle-absence python3 scripts/lab_oracle_absence.py
+  run foreign-model-runtime-absence python3 scripts/foreign_model_runtime_absence.py
   run schema-validate-tests env PYTHONPYCACHEPREFIX="$RECEIPT_DIR/pycache" python3 tests/test_schema_validate.py
   run slo-validate-tests env PYTHONPYCACHEPREFIX="$RECEIPT_DIR/pycache" python3 tests/test_slo_validate.py
   run slo-cost-consistency-tests env PYTHONPYCACHEPREFIX="$RECEIPT_DIR/pycache" python3 tests/test_slo_operation_cost_consistency.py

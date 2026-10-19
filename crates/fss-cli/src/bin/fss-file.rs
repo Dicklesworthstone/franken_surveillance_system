@@ -28,13 +28,16 @@ use fss_reference::ingest::{
 };
 use fss_reference::{ReferenceDeployment, ReplayCx};
 
+#[path = "fss-file/localization_replay.rs"]
+mod localization_replay;
 #[path = "fss-file/localize.rs"]
 mod localize;
 #[path = "fss-file/media.rs"]
 mod media;
 
-const HELP: &str = "fss-file <import|inspect|verify|extract|decode|read-decoded|verify-decoded|motion|localize> [options]\n\
-  All commands: --root DIR --site SITE [--principal ID] [--manifest-out FILE]\n\
+const HELP: &str = "fss-file <import|inspect|verify|extract|decode|read-decoded|verify-decoded|motion|localize|read-localization|verify-localization> [options]\n\
+  All commands: --root DIR --site SITE [--principal ID]\n\
+  Source commands also accept --manifest-out FILE.\n\
   import: --input FILE --sensor ID --stream ID --receive-time-ns N\n\
           [--media-format auto|mjpeg|annexb|hevc|mp4avc|mp4hevc|mkvavc|mkvhevc|rtpplay]\n\
           (annexb is H.264, hevc is H.265, mp4avc/mp4hevc an MP4/MOV with one H.264 avc1 /\n\
@@ -74,6 +77,19 @@ const HELP: &str = "fss-file <import|inspect|verify|extract|decode|read-decoded|
           --maximum-radius N --calibration-sha256 sha256:HEX --luma-range full|video\n\
           [--feature-threshold N --maximum-features N --ransac-trials N].\n\
           Produces current-privacy-screened pose proposals; never activates calibration.\n\
+          [--retain-result yes] publishes exact twin/atlas archives, source linkage, recipe\n\
+          and candidate receipt as one immutable localization package. V1 requires a flat\n\
+          source import; partitioned imports are refused before native work or publication.\n\
+  read-localization/verify-localization: --localization-id sha256:HEX\n\
+          --expected-root sha256:HEX --expected-receipt sha256:HEX\n\
+          [--geometry-work-units N] [--receipt-out FILE]\n\
+          Reopens only retained deployment bytes; no external twin, atlas or image options.\n\
+          read-localization checks custody and current privacy, without running perception.\n\
+          verify-localization requires --execute-perception yes and natively decodes original\n\
+          retained JPEG/AVC/HEVC, reruns localization, and compares the whole candidate receipt.\n\
+          [--work-units N] [--report-out FILE.json]; neither command changes authority.\n\
+          The 2B default geometry budget includes conservative bounded archive reads;\n\
+          total_geometry_work_units includes those admissions, geometry_work_units does not.\n\
   Options use separate values. Paths accept native OS strings. Outputs must be new files\n\
   outside the deployment. Import requires explicit receive time; no host clock is inferred.\n\
   decode uses the canonical JPEG codec, retains source-linked luma and publishes a receipt.\n\
@@ -102,6 +118,7 @@ enum Action {
     },
     Media(media::Action),
     Localize(Box<localize::Action>),
+    LocalizationReplay(localization_replay::Action),
 }
 
 #[derive(Debug)]
@@ -159,6 +176,7 @@ fn parse(args: &[OsString]) -> ParseResult<Option<Options>> {
     if !matches!(command, "import" | "inspect" | "verify" | "extract")
         && !media::is_command(command)
         && command != "localize"
+        && !localization_replay::is_command(command)
     {
         return Err((
             ERR_CLI_UNKNOWN_COMMAND,
@@ -197,12 +215,14 @@ fn parse(args: &[OsString]) -> ParseResult<Option<Options>> {
                 "option names must be UTF-8".to_owned(),
             )
         })?;
-        let allowed = common.contains(&key)
+        let replay = localization_replay::is_command(command);
+        let allowed = (common.contains(&key) && !(replay && key == "--manifest-out"))
             || (command == "import" && import.contains(&key))
-            || (command != "import" && key == "--import-id")
+            || (command != "import" && !replay && key == "--import-id")
             || (command == "extract" && matches!(key, "--segment" | "--output"))
             || media::accepts_option(command, key)
-            || localize::accepts_option(command, key);
+            || localize::accepts_option(command, key)
+            || localization_replay::accepts_option(command, key);
         if !allowed {
             return Err((
                 ERR_CLI_UNKNOWN_OPTION,
@@ -367,6 +387,8 @@ fn parse(args: &[OsString]) -> ParseResult<Option<Options>> {
             );
         }
         Action::Import(Box::new(request))
+    } else if localization_replay::is_command(command) {
+        Action::LocalizationReplay(localization_replay::parse(command, &values)?)
     } else {
         let identity = ContentDigest::parse(text(&values, "--import-id")?)
             .map_err(|_| malformed("invalid import digest"))?;
@@ -479,6 +501,16 @@ fn run(options: Options, out: &mut impl Write) -> RunResult<()> {
             Action::Extract { identity, .. } => (*identity, "extract"),
             Action::Media(action) => (action.identity(), action.name()),
             Action::Localize(action) => (action.identity(), "localize"),
+            Action::LocalizationReplay(action) => {
+                return localization_replay::run(
+                    action,
+                    &mut deployment,
+                    options.limits,
+                    &options.root,
+                    &cx,
+                    out,
+                );
+            }
         };
         let retained = RetainedFileImport::open(&deployment, identity, options.limits, &cx)?;
         let manifest = retained.manifest();
@@ -560,7 +592,7 @@ fn run(options: Options, out: &mut impl Write) -> RunResult<()> {
             Action::Localize(action) => {
                 localize::run(action, &retained, &mut deployment, &options.root, &cx, out)?
             }
-            Action::Inspect(_) => {}
+            Action::Inspect(_) | Action::LocalizationReplay(_) => {}
         }
         if let Some(path) = &options.manifest_output {
             write_new(path, &manifest.canonical_bytes(), &options.root, &cx)?;

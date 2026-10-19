@@ -46,7 +46,7 @@ fn camera(e: &mut CanonicalEncoder, intrinsics: PinholeIntrinsics) {
         number(e, value);
     }
 }
-fn mode(e: &mut CanonicalEncoder, mode: RecordedImageMode) {
+pub(super) fn mode(e: &mut CanonicalEncoder, mode: RecordedImageMode) {
     match mode {
         RecordedImageMode::Pinhole(c) => {
             e.u8(0);
@@ -82,7 +82,7 @@ fn mode(e: &mut CanonicalEncoder, mode: RecordedImageMode) {
         }
     }
 }
-fn options(e: &mut CanonicalEncoder, o: ImageLocalizationOptions) {
+pub(super) fn options(e: &mut CanonicalEncoder, o: ImageLocalizationOptions) {
     e.u8(o.extraction.threshold);
     e.u64(o.extraction.maximum_features as u64);
     e.u32(u32::from(o.extraction.separation));

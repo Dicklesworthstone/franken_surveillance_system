@@ -6,28 +6,28 @@
 //! that validates the complete committed deletion history and returns its deny set. It is not a
 //! production engine registry or a permission grant. Native read and replay are independently bounded.
 
-use std::collections::{BTreeMap, BTreeSet};
-use std::fmt;
-use fss_core::belief_verification::{RegisteredBeliefDeriver, BeliefVerificationError};
+use super::super::{
+    CustodyAuditLimits, CustodyRootBasis, LocalCustodyAudit, MAX_AUDIT_OBJECTS,
+    MAX_AUDIT_READ_BYTES, MAX_AUDIT_ROOTS, sha,
+};
+use super::{CapturedBeliefCustody, CustodyCaptureError, capture_belief_custody};
+use crate::{
+    LocalPublicationState, LocalRootPublisher, ROOT_REACHABILITY_FAMILY, ROOT_RETRACTION_FAMILY,
+    SlotName, root_reachability_object_id,
+};
 use fss_core::belief_verification::graph::{
     BeliefEvidenceAncestry, BeliefGraphFailure, BeliefGraphLimits, BeliefGraphRequest,
     BeliefGraphUsage, verify_derived_belief_graph,
 };
+use fss_core::belief_verification::{BeliefVerificationError, RegisteredBeliefDeriver};
 use fss_core::{
     CanonicalDecode, ContentDigest, ContractError, DerivedBelief, KnowledgeCell, LedgerAnchor,
     Plane, ReferenceLedger,
 };
 use fss_ledger::{DurableLedgerError, DurableReferenceLedger};
 use fss_object::SpoolIo;
-use crate::{
-    LocalPublicationState, LocalRootPublisher, ROOT_REACHABILITY_FAMILY, ROOT_RETRACTION_FAMILY,
-    SlotName, root_reachability_object_id,
-};
-use super::{CapturedBeliefCustody, CustodyCaptureError, capture_belief_custody};
-use super::super::{
-    CustodyAuditLimits, CustodyRootBasis, LocalCustodyAudit, MAX_AUDIT_ROOTS,
-    MAX_AUDIT_OBJECTS, MAX_AUDIT_READ_BYTES, sha,
-};
+use std::collections::{BTreeMap, BTreeSet};
+use std::fmt;
 
 /// Explicit memory/work ceilings for replay of an already-opened journal.
 /// Replay is a deterministic reference adapter, not a direct production MVCC view.
@@ -55,10 +55,13 @@ pub struct DurableBeliefLimits {
 impl Default for DurableBeliefLimits {
     fn default() -> Self {
         Self {
-            max_encoded_bytes: 256 * 1024, max_batches: 256,
-            max_history_entries: 16_384, max_replay_snapshot_entries: 65_536,
+            max_encoded_bytes: 256 * 1024,
+            max_batches: 256,
+            max_history_entries: 16_384,
+            max_replay_snapshot_entries: 65_536,
             max_replay_text_bytes: 4 * 1024 * 1024,
-            custody: CustodyAuditLimits::default(), max_retained_bytes: 64 * 1024 * 1024,
+            custody: CustodyAuditLimits::default(),
+            max_retained_bytes: 64 * 1024 * 1024,
             graph: BeliefGraphLimits::default(),
         }
     }
@@ -140,11 +143,21 @@ impl fmt::Display for DurableBeliefError {
             Self::Ledger(error) => write!(f, "durable belief ledger: {error}"),
             Self::Capture(error) => write!(f, "durable belief {error}"),
             Self::Graph(error) => write!(f, "durable belief {error}"),
-            Self::Selection => f.write_str("belief slots are not an exact current ledgered selection"),
-            Self::StoreIdentity => f.write_str("belief authority store identity cannot be established"),
-            Self::AuthorityChanged => f.write_str("belief authority changed during the observation"),
-            Self::DeletionAdapterRequired => f.write_str("deletion-bearing history requires the deletion-owner belief adapter"),
-            Self::DeletionAuthorityInvalid => f.write_str("deletion-owner belief authority could not validate complete deletion history"),
+            Self::Selection => {
+                f.write_str("belief slots are not an exact current ledgered selection")
+            }
+            Self::StoreIdentity => {
+                f.write_str("belief authority store identity cannot be established")
+            }
+            Self::AuthorityChanged => {
+                f.write_str("belief authority changed during the observation")
+            }
+            Self::DeletionAdapterRequired => {
+                f.write_str("deletion-bearing history requires the deletion-owner belief adapter")
+            }
+            Self::DeletionAuthorityInvalid => f.write_str(
+                "deletion-owner belief authority could not validate complete deletion history",
+            ),
             Self::Limit(dimension) => write!(f, "durable belief {dimension} budget exhausted"),
             Self::Cancelled => f.write_str("durable belief verification cancelled"),
         }
@@ -153,36 +166,63 @@ impl fmt::Display for DurableBeliefError {
 impl std::error::Error for DurableBeliefError {
     fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
         match self {
-            Self::Contract(error) => Some(error), Self::Ledger(error) => Some(error),
-            Self::Capture(error) => Some(error), Self::Graph(error) => Some(error), _ => None,
+            Self::Contract(error) => Some(error),
+            Self::Ledger(error) => Some(error),
+            Self::Capture(error) => Some(error),
+            Self::Graph(error) => Some(error),
+            _ => None,
         }
     }
 }
 impl From<ContractError> for DurableBeliefError {
-    fn from(error: ContractError) -> Self { Self::Contract(error) }
+    fn from(error: ContractError) -> Self {
+        Self::Contract(error)
+    }
 }
 impl From<DurableLedgerError> for DurableBeliefError {
-    fn from(error: DurableLedgerError) -> Self { Self::Ledger(error) }
+    fn from(error: DurableLedgerError) -> Self {
+        Self::Ledger(error)
+    }
 }
 impl From<CustodyCaptureError> for DurableBeliefError {
-    fn from(error: CustodyCaptureError) -> Self { Self::Capture(error) }
+    fn from(error: CustodyCaptureError) -> Self {
+        Self::Capture(error)
+    }
 }
 impl From<BeliefGraphFailure> for DurableBeliefError {
-    fn from(error: BeliefGraphFailure) -> Self { Self::Graph(error) }
+    fn from(error: BeliefGraphFailure) -> Self {
+        Self::Graph(error)
+    }
 }
 
 fn checkpoint(cancelled: &impl Fn() -> bool) -> Result<(), DurableBeliefError> {
-    if cancelled() { Err(DurableBeliefError::Cancelled) } else { Ok(()) }
+    if cancelled() {
+        Err(DurableBeliefError::Cancelled)
+    } else {
+        Ok(())
+    }
 }
-fn charge(used: &mut usize, count: usize, maximum: usize, name: &'static str) -> Result<(), DurableBeliefError> {
-    let next = used.checked_add(count).ok_or(DurableBeliefError::Limit(name))?;
-    if next > maximum { return Err(DurableBeliefError::Limit(name)); }
+fn charge(
+    used: &mut usize,
+    count: usize,
+    maximum: usize,
+    name: &'static str,
+) -> Result<(), DurableBeliefError> {
+    let next = used
+        .checked_add(count)
+        .ok_or(DurableBeliefError::Limit(name))?;
+    if next > maximum {
+        return Err(DurableBeliefError::Limit(name));
+    }
     *used = next;
     Ok(())
 }
 fn check_head(
-    ledger: &DurableReferenceLedger, publisher: &LocalRootPublisher,
-    pin: ContentDigest, head: ContentDigest, anchor: &LedgerAnchor,
+    ledger: &DurableReferenceLedger,
+    publisher: &LocalRootPublisher,
+    pin: ContentDigest,
+    head: ContentDigest,
+    anchor: &LedgerAnchor,
     cancelled: &impl Fn() -> bool,
 ) -> Result<(), DurableBeliefError> {
     checkpoint(cancelled)?;
@@ -191,7 +231,10 @@ fn check_head(
     }
     ledger.verify_durable_head()?;
     checkpoint(cancelled)?;
-    if publisher.is_poisoned() || ledger.journal_root() != head || &ledger.current().anchor != anchor {
+    if publisher.is_poisoned()
+        || ledger.journal_root() != head
+        || &ledger.current().anchor != anchor
+    {
         return Err(DurableBeliefError::AuthorityChanged);
     }
     Ok(())
@@ -215,24 +258,34 @@ pub struct VerifiedDurableBelief<'a> {
 }
 impl fmt::Debug for VerifiedDurableBelief<'_> {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.debug_struct("VerifiedDurableBelief").field("usage", &self.usage)
+        f.debug_struct("VerifiedDurableBelief")
+            .field("usage", &self.usage)
             .field("replay_usage", &self.replay_usage)
-            .field("retained_bytes", &self.custody.retained_bytes()).finish_non_exhaustive()
+            .field("retained_bytes", &self.custody.retained_bytes())
+            .finish_non_exhaustive()
     }
 }
 impl VerifiedDurableBelief<'_> {
     /// Cognition-plane result, not an effect grant or absence certificate.
     #[must_use]
-    pub const fn belief(&self) -> &DerivedBelief { &self.belief }
+    pub const fn belief(&self) -> &DerivedBelief {
+        &self.belief
+    }
     /// Logical graph work, separate from native custody and bounded ledger-head checks.
     #[must_use]
-    pub const fn graph_usage(&self) -> BeliefGraphUsage { self.usage }
+    pub const fn graph_usage(&self) -> BeliefGraphUsage {
+        self.usage
+    }
     /// Conservative reservations for the independently bounded reference replay.
     #[must_use]
-    pub const fn replay_usage(&self) -> DurableBeliefReplayUsage { self.replay_usage }
+    pub const fn replay_usage(&self) -> DurableBeliefReplayUsage {
+        self.replay_usage
+    }
     /// Native custody observation and complete capture's physical-read accounting.
     #[must_use]
-    pub fn custody_audit(&self) -> &LocalCustodyAudit { self.custody.audit() }
+    pub fn custody_audit(&self) -> &LocalCustodyAudit {
+        self.custody.audit()
+    }
     /// Typed ancestry within the independently selected slots.
     #[must_use]
     pub fn ancestry(&self, root: ContentDigest) -> Option<&[BeliefEvidenceAncestry]> {
@@ -240,9 +293,21 @@ impl VerifiedDurableBelief<'_> {
     }
     /// Rechecks durable authority before projecting cognition. Native bounded tail checks are
     /// not a full historical scrub and are separate from the custody-audit cost counters.
-    pub fn to_knowledge_cell(&self, cancelled: &impl Fn() -> bool) -> Result<KnowledgeCell, DurableBeliefError> {
-        check_head(self.ledger, self.publisher, self.pin, self.head, self.belief.anchor(), cancelled)?;
-        Ok(self.belief.to_knowledge_cell(&self.ledger.current().anchor)?)
+    pub fn to_knowledge_cell(
+        &self,
+        cancelled: &impl Fn() -> bool,
+    ) -> Result<KnowledgeCell, DurableBeliefError> {
+        check_head(
+            self.ledger,
+            self.publisher,
+            self.pin,
+            self.head,
+            self.belief.anchor(),
+            cancelled,
+        )?;
+        Ok(self
+            .belief
+            .to_knowledge_cell(&self.ledger.current().anchor)?)
     }
 }
 
@@ -291,7 +356,13 @@ pub fn verify_durable_belief_with_deletion_authority<'a, C: Fn() -> bool + Sync>
     request: DurableBeliefRequest<'_, C>,
 ) -> Result<VerifiedDurableBelief<'a>, DurableBeliefError> {
     verify_durable_belief_inner(
-        encoded, ledger, publisher, io, engine, Some(deletion_authority), request,
+        encoded,
+        ledger,
+        publisher,
+        io,
+        engine,
+        Some(deletion_authority),
+        request,
     )
 }
 
@@ -307,40 +378,65 @@ fn verify_durable_belief_inner<'a, C: Fn() -> bool + Sync>(
     checkpoint(request.cancelled)?;
     let limits = request.limits;
     // Count ceilings precede scans of caller-owned collections or any native I/O.
-    if request.slots.len() > MAX_AUDIT_ROOTS || request.slots.len() > limits.graph.max_authority_objects
-        || request.slots.len() > limits.graph.verification.max_snapshot_objects {
+    if request.slots.len() > MAX_AUDIT_ROOTS
+        || request.slots.len() > limits.graph.max_authority_objects
+        || request.slots.len() > limits.graph.verification.max_snapshot_objects
+    {
         return Err(DurableBeliefError::Limit("selected slots"));
     }
     if request.slots.is_empty() || !request.slots.windows(2).all(|pair| pair[0] < pair[1]) {
         return Err(DurableBeliefError::Selection);
     }
-    if request.denied.len() > MAX_AUDIT_OBJECTS || limits.max_retained_bytes > MAX_AUDIT_READ_BYTES {
+    if request.denied.len() > MAX_AUDIT_OBJECTS || limits.max_retained_bytes > MAX_AUDIT_READ_BYTES
+    {
         return Err(DurableBeliefError::Limit("custody request"));
     }
-    if request.denied.iter().any(|(root, proof)| !sha(*root) || !sha(*proof)) {
+    if request
+        .denied
+        .iter()
+        .any(|(root, proof)| !sha(*root) || !sha(*proof))
+    {
         return Err(DurableBeliefError::Selection);
     }
-    limits.custody.validate().map_err(CustodyCaptureError::from)?;
-    if encoded.len() > limits.max_encoded_bytes { return Err(DurableBeliefError::Limit("encoded bytes")); }
+    limits
+        .custody
+        .validate()
+        .map_err(CustodyCaptureError::from)?;
+    if encoded.len() > limits.max_encoded_bytes {
+        return Err(DurableBeliefError::Limit("encoded bytes"));
+    }
     let offered = DerivedBelief::from_canonical_bytes(encoded)?;
     let anchor = &ledger.current().anchor;
     offered.validate_anchor_freshness(anchor)?;
-    let graph_failure = |error| DurableBeliefError::Graph(BeliefGraphFailure {
-        reason: error, usage: BeliefGraphUsage::default(),
-    });
+    let graph_failure = |error| {
+        DurableBeliefError::Graph(BeliefGraphFailure {
+            reason: error,
+            usage: BeliefGraphUsage::default(),
+        })
+    };
     if offered.derivation_inputs().algorithm_id != engine.algorithm_id() {
-        return Err(graph_failure(BeliefVerificationError::AlgorithmMismatch.into()));
+        return Err(graph_failure(
+            BeliefVerificationError::AlgorithmMismatch.into(),
+        ));
     }
     if offered.generation() != engine.generation() {
-        return Err(graph_failure(BeliefVerificationError::GenerationMismatch.into()));
+        return Err(graph_failure(
+            BeliefVerificationError::GenerationMismatch.into(),
+        ));
     }
-    if offered.supporting_evidence().len() + offered.contradictions().len() > limits.graph.verification.max_roots {
+    if offered.supporting_evidence().len() + offered.contradictions().len()
+        > limits.graph.verification.max_roots
+    {
         return Err(graph_failure(BeliefVerificationError::RootLimit.into()));
     }
-    let pin = ledger.store_pin().ok_or(DurableBeliefError::StoreIdentity)?;
+    let pin = ledger
+        .store_pin()
+        .ok_or(DurableBeliefError::StoreIdentity)?;
     let head = ledger.journal_root();
     check_head(ledger, publisher, pin, head, anchor, request.cancelled)?;
-    if ledger.batches().len() > limits.max_batches { return Err(DurableBeliefError::Limit("replay batches")); }
+    if ledger.batches().len() > limits.max_batches {
+        return Err(DurableBeliefError::Limit("replay batches"));
+    }
     let mut replay_usage = DurableBeliefReplayUsage::default();
     let mut deletion_history = false;
     // Complete deletion/history preflight before reading any selected custody payload.
@@ -349,23 +445,56 @@ fn verify_durable_belief_inner<'a, C: Fn() -> bool + Sync>(
         if batch.batch_id.as_str().starts_with("batch:deletion:") {
             deletion_history = true;
         }
-        charge(&mut replay_usage.history_entries, batch.children.len(), limits.max_history_entries, "history entries")?;
-        charge(&mut replay_usage.history_entries, batch.deltas.len(), limits.max_history_entries, "history entries")?;
+        charge(
+            &mut replay_usage.history_entries,
+            batch.children.len(),
+            limits.max_history_entries,
+            "history entries",
+        )?;
+        charge(
+            &mut replay_usage.history_entries,
+            batch.deltas.len(),
+            limits.max_history_entries,
+            "history entries",
+        )?;
         // Batch identity is also copied into the replay's idempotency index.
-        for text in [batch.batch_id.as_str(), batch.batch_id.as_str(),
-            &batch.basis_anchor.site_lineage, &batch.new_anchor.site_lineage] {
-            charge(&mut replay_usage.text_bytes, text.len(), limits.max_replay_text_bytes, "replay text")?;
+        for text in [
+            batch.batch_id.as_str(),
+            batch.batch_id.as_str(),
+            &batch.basis_anchor.site_lineage,
+            &batch.new_anchor.site_lineage,
+        ] {
+            charge(
+                &mut replay_usage.text_bytes,
+                text.len(),
+                limits.max_replay_text_bytes,
+                "replay text",
+            )?;
         }
         for delta in &batch.deltas {
             checkpoint(request.cancelled)?;
             if delta.family.starts_with("deletion_") || delta.family == ROOT_RETRACTION_FAMILY {
                 deletion_history = true;
             }
-            for text in [delta.delta_id.as_str(), delta.family.as_str(), delta.object_id.as_str()] {
-                charge(&mut replay_usage.text_bytes, text.len(), limits.max_replay_text_bytes, "replay text")?;
+            for text in [
+                delta.delta_id.as_str(),
+                delta.family.as_str(),
+                delta.object_id.as_str(),
+            ] {
+                charge(
+                    &mut replay_usage.text_bytes,
+                    text.len(),
+                    limits.max_replay_text_bytes,
+                    "replay text",
+                )?;
             }
             if let Some(id) = &delta.operation_id {
-                charge(&mut replay_usage.text_bytes, id.as_str().len(), limits.max_replay_text_bytes, "replay text")?;
+                charge(
+                    &mut replay_usage.text_bytes,
+                    id.as_str().len(),
+                    limits.max_replay_text_bytes,
+                    "replay text",
+                )?;
             }
         }
     }
@@ -376,8 +505,13 @@ fn verify_durable_belief_inner<'a, C: Fn() -> bool + Sync>(
         let verified = authority.verified_denials(ledger, publisher)?;
         checkpoint(request.cancelled)?;
         if verified.len() > MAX_AUDIT_OBJECTS
-            || denied.len().checked_add(verified.len()).is_none_or(|n| n > MAX_AUDIT_OBJECTS)
-            || verified.iter().any(|(root, proof)| !sha(*root) || !sha(*proof))
+            || denied
+                .len()
+                .checked_add(verified.len())
+                .is_none_or(|n| n > MAX_AUDIT_OBJECTS)
+            || verified
+                .iter()
+                .any(|(root, proof)| !sha(*root) || !sha(*proof))
         {
             return Err(DurableBeliefError::DeletionAuthorityInvalid);
         }
@@ -396,60 +530,144 @@ fn verify_durable_belief_inner<'a, C: Fn() -> bool + Sync>(
     for slot in request.slots {
         checkpoint(request.cancelled)?;
         let id = root_reachability_object_id(slot).map_err(|_| DurableBeliefError::Selection)?;
-        let revision = ledger.current().objects.get(&id).ok_or(DurableBeliefError::Selection)?;
+        let revision = ledger
+            .current()
+            .objects
+            .get(&id)
+            .ok_or(DurableBeliefError::Selection)?;
         let local = publisher.root(slot).ok_or(DurableBeliefError::Selection)?;
-        if revision.family != ROOT_REACHABILITY_FAMILY || revision.plane != Plane::Authority
-            || revision.generation != 1 || revision.payload_digest != local.root
-            || local.state != LocalPublicationState::Durable {
+        if revision.family != ROOT_REACHABILITY_FAMILY
+            || revision.plane != Plane::Authority
+            || revision.generation != 1
+            || revision.payload_digest != local.root
+            || local.state != LocalPublicationState::Durable
+        {
             return Err(DurableBeliefError::Selection);
         }
         selected.push(id);
         roots.insert(revision.payload_digest);
     }
-    charge(&mut replay_usage.text_bytes, anchor.site_lineage.len(), limits.max_replay_text_bytes, "replay text")?;
+    charge(
+        &mut replay_usage.text_bytes,
+        anchor.site_lineage.len(),
+        limits.max_replay_text_bytes,
+        "replay text",
+    )?;
     let mut replay = ReferenceLedger::new(anchor.site_lineage.clone());
     for batch in ledger.batches() {
         checkpoint(request.cancelled)?;
-        let upper = replay.current().objects.len().checked_add(batch.deltas.len())
+        let upper = replay
+            .current()
+            .objects
+            .len()
+            .checked_add(batch.deltas.len())
             .ok_or(DurableBeliefError::Limit("replay snapshots"))?;
-        charge(&mut replay_usage.snapshot_entries, upper, limits.max_replay_snapshot_entries, "replay snapshots")?;
+        charge(
+            &mut replay_usage.snapshot_entries,
+            upper,
+            limits.max_replay_snapshot_entries,
+            "replay snapshots",
+        )?;
         // Count overwritten rows and their replacements conservatively before cloning any state.
-        charge(&mut replay_usage.text_bytes, batch.new_anchor.site_lineage.len(), limits.max_replay_text_bytes, "replay text")?;
+        charge(
+            &mut replay_usage.text_bytes,
+            batch.new_anchor.site_lineage.len(),
+            limits.max_replay_text_bytes,
+            "replay text",
+        )?;
         for (id, revision) in &replay.current().objects {
             checkpoint(request.cancelled)?;
-            charge(&mut replay_usage.text_bytes, id.as_str().len(), limits.max_replay_text_bytes, "replay text")?;
-            charge(&mut replay_usage.text_bytes, revision.family.len(), limits.max_replay_text_bytes, "replay text")?;
+            charge(
+                &mut replay_usage.text_bytes,
+                id.as_str().len(),
+                limits.max_replay_text_bytes,
+                "replay text",
+            )?;
+            charge(
+                &mut replay_usage.text_bytes,
+                revision.family.len(),
+                limits.max_replay_text_bytes,
+                "replay text",
+            )?;
         }
         for delta in &batch.deltas {
             checkpoint(request.cancelled)?;
-            charge(&mut replay_usage.text_bytes, delta.object_id.as_str().len(), limits.max_replay_text_bytes, "replay text")?;
-            charge(&mut replay_usage.text_bytes, delta.family.len(), limits.max_replay_text_bytes, "replay text")?;
+            charge(
+                &mut replay_usage.text_bytes,
+                delta.object_id.as_str().len(),
+                limits.max_replay_text_bytes,
+                "replay text",
+            )?;
+            charge(
+                &mut replay_usage.text_bytes,
+                delta.family.len(),
+                limits.max_replay_text_bytes,
+                "replay text",
+            )?;
         }
         let _ = replay.append(batch.clone())?;
         replay_usage.batches += 1;
     }
-    if replay.current() != ledger.current() { return Err(DurableBeliefError::AuthorityChanged); }
+    if replay.current() != ledger.current() {
+        return Err(DurableBeliefError::AuthorityChanged);
+    }
     let roots: Vec<_> = roots.into_iter().collect();
-    let custody = capture_belief_custody(io, publisher.root_dir(), &roots, &denied,
-        limits.custody, request.cancelled, CustodyRootBasis::LocalPublicationRecords, limits.max_retained_bytes)?;
+    let custody = capture_belief_custody(
+        io,
+        publisher.root_dir(),
+        &roots,
+        &denied,
+        limits.custody,
+        request.cancelled,
+        CustodyRootBasis::LocalPublicationRecords,
+        limits.max_retained_bytes,
+    )?;
     // Another slot publishing an equal digest cannot substitute for the exact selected record.
     for slot in request.slots {
-        let local = publisher.root(slot).ok_or(DurableBeliefError::AuthorityChanged)?;
-        if custody.records.get(slot) != Some(&(local.root, local.child_count as u64, local.record_digest)) {
+        let local = publisher
+            .root(slot)
+            .ok_or(DurableBeliefError::AuthorityChanged)?;
+        if custody.records.get(slot)
+            != Some(&(local.root, local.child_count as u64, local.record_digest))
+        {
             return Err(DurableBeliefError::AuthorityChanged);
         }
     }
-    let verified = verify_derived_belief_graph(&offered, &replay, &custody, engine, BeliefGraphRequest {
-        authority_objects: &selected, limits: limits.graph, cancelled: request.cancelled,
-    })?;
+    let verified = verify_derived_belief_graph(
+        &offered,
+        &replay,
+        &custody,
+        engine,
+        BeliefGraphRequest {
+            authority_objects: &selected,
+            limits: limits.graph,
+            cancelled: request.cancelled,
+        },
+    )?;
     let belief = verified.proof().belief().clone();
     let usage = verified.usage();
     let mut ancestry = BTreeMap::new();
-    for root in offered.supporting_evidence().iter().chain(offered.contradictions()) {
-        let paths = verified.ancestry(*root).ok_or(DurableBeliefError::AuthorityChanged)?;
+    for root in offered
+        .supporting_evidence()
+        .iter()
+        .chain(offered.contradictions())
+    {
+        let paths = verified
+            .ancestry(*root)
+            .ok_or(DurableBeliefError::AuthorityChanged)?;
         ancestry.insert(*root, paths.to_vec());
     }
     drop(verified);
     check_head(ledger, publisher, pin, head, anchor, request.cancelled)?;
-    Ok(VerifiedDurableBelief { belief, ledger, publisher, pin, head, custody, usage, replay_usage, ancestry })
+    Ok(VerifiedDurableBelief {
+        belief,
+        ledger,
+        publisher,
+        pin,
+        head,
+        custody,
+        usage,
+        replay_usage,
+        ancestry,
+    })
 }
