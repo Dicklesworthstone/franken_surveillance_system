@@ -486,8 +486,8 @@ mod tests {
             "lab:shared-name",
             OperationId::parse("op:shared-operation")?,
         )?;
-        let first_before = first_tree.clone();
-        let second_before = second_tree.clone();
+        let first_before = first_tree.to_topology_fixture("before-first");
+        let second_before = second_tree.to_topology_fixture("before-second");
 
         assert!(matches!(
             first_session.consult(&second, &second_tree, b"frame"),
@@ -502,8 +502,11 @@ mod tests {
             0,
             "a different owner must never run the oracle"
         );
-        assert_eq!(first_tree, first_before);
-        assert_eq!(second_tree, second_before);
+        assert_eq!(first_tree.to_topology_fixture("before-first"), first_before);
+        assert_eq!(
+            second_tree.to_topology_fixture("before-second"),
+            second_before
+        );
         assert_eq!(first.finalize_report(&first_tree)?.len(), 1);
         assert_eq!(second.finalize_report(&second_tree)?.len(), 1);
         second_session.finalize(&mut second_tree, &second)?;
@@ -525,8 +528,8 @@ mod tests {
         )?;
         let mut snapshot = tree.clone();
         auth.request_cancellation(&mut tree, TimestampNs(2))?;
-        let original_before = tree.clone();
-        let snapshot_before = snapshot.clone();
+        let original_before = tree.to_topology_fixture("before-tree");
+        let snapshot_before = snapshot.to_topology_fixture("before-snapshot");
 
         assert!(matches!(
             session.consult(&auth, &snapshot, b"frame"),
@@ -537,8 +540,11 @@ mod tests {
             Err(LabError::Region { .. })
         ));
         assert_eq!(calls.get(), 0, "a stale active snapshot must not run work");
-        assert_eq!(tree, original_before);
-        assert_eq!(snapshot, snapshot_before);
+        assert_eq!(tree.to_topology_fixture("before-tree"), original_before);
+        assert_eq!(
+            snapshot.to_topology_fixture("before-snapshot"),
+            snapshot_before
+        );
         assert_eq!(auth.finalize_report(&tree)?.len(), 1);
         Ok(())
     }
@@ -645,7 +651,8 @@ mod tests {
             ));
             assert_eq!(calls.get(), 0, "a settled obligation cannot admit work");
             assert_eq!(
-                tree, settled,
+                tree.to_topology_fixture("settled"),
+                settled.to_topology_fixture("settled"),
                 "existing evidence and reconciliation survive"
             );
         }
