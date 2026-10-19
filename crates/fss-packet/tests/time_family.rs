@@ -39,7 +39,10 @@ fn report(rtp_ts: u32) -> SenderReport {
     }
 }
 
-fn clock(uncertainty_ns: u64, max_distance: u32) -> Result<SenderReportClock, fss_packet::ContinuityError> {
+fn clock(
+    uncertainty_ns: u64,
+    max_distance: u32,
+) -> Result<SenderReportClock, fss_packet::ContinuityError> {
     SenderReportClock::new(
         key(7, 1),
         90_000,
