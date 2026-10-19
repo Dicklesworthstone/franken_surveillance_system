@@ -153,6 +153,11 @@ pub enum ProviderError {
     },
     /// The object is unknown to this provider.
     UnknownObject(ContentDigest),
+    /// A root activation named no children (a meaningless root).
+    EmptyRoot {
+        /// The root that was refused.
+        root: ContentDigest,
+    },
     /// Retrievability probe failed (bytes unreadable or digest mismatch).
     NotRetrievable {
         /// The object.
@@ -189,6 +194,7 @@ impl std::fmt::Display for ProviderError {
                 )
             }
             Self::UnknownObject(digest) => write!(f, "unknown object {digest:?}"),
+            Self::EmptyRoot { root } => write!(f, "root {root:?} named no children"),
             Self::NotRetrievable { digest, reason } => {
                 write!(f, "object {digest:?} not retrievable: {reason}")
             }

@@ -163,11 +163,7 @@ impl ObjectStoreProvider for InMemoryObjectStoreProvider {
         // Root-last (R1): every child must be at least Durable, and a root
         // with no children is meaningless.
         if children.is_empty() {
-            return Err(ProviderError::RootBeforeDurableChildren {
-                root,
-                child: root,
-                child_state: PublicationState::Retired,
-            });
+            return Err(ProviderError::EmptyRoot { root });
         }
         for &child in children {
             let child_state = self.record(child)?.state;

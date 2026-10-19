@@ -13,8 +13,7 @@ use std::fmt;
 use std::path::Path;
 
 use fss_core::{
-    CanonicalDecode, CanonicalDecoder, ContentDigest, DigestAlgorithm,
-    TombstoneRecord,
+    CanonicalDecode, CanonicalDecoder, ContentDigest, DigestAlgorithm, TombstoneRecord,
 };
 use fss_object::{CorruptionKind, ObjectManifest, SpoolError, SpoolIo};
 
@@ -225,33 +224,55 @@ pub struct LocalCustodyAudit {
 }
 impl LocalCustodyAudit {
     /// The selected roots' manifest-role basis, not a newly established authority claim.
-    pub const fn root_basis(&self) -> CustodyRootBasis { self.root_basis }
+    pub const fn root_basis(&self) -> CustodyRootBasis {
+        self.root_basis
+    }
     /// Exact sorted selected roots. No root was silently filtered.
-    pub fn roots(&self) -> &[ContentDigest] { &self.roots }
+    pub fn roots(&self) -> &[ContentDigest] {
+        &self.roots
+    }
     /// Complete observations of every discovered object, including failures.
-    pub fn objects(&self) -> &[CustodyObjectObservation] { &self.objects }
+    pub fn objects(&self) -> &[CustodyObjectObservation] {
+        &self.objects
+    }
     /// Publication records compared in each metadata pass, including aliases.
-    pub const fn publication_records(&self) -> usize { self.publication_records }
+    pub const fn publication_records(&self) -> usize {
+        self.publication_records
+    }
     /// Local tombstone records compared in each metadata pass.
-    pub const fn local_tombstones(&self) -> usize { self.local_tombstones }
+    pub const fn local_tombstones(&self) -> usize {
+        self.local_tombstones
+    }
     /// Successfully returned read bytes plus full reserved allowances for failed reads.
     /// Includes spool headers and bounded probes; this is an upper bound, not allocator usage.
-    pub const fn charged_read_bytes(&self) -> u64 { self.charged_read_bytes }
+    pub const fn charged_read_bytes(&self) -> u64 {
+        self.charged_read_bytes
+    }
     /// Largest charged byte total while one bounded read allowance was reserved.
     /// This is the required reservation envelope of this run, not resident memory.
-    pub const fn peak_reserved_read_bytes(&self) -> u64 { self.peak_reserved_read_bytes }
+    pub const fn peak_reserved_read_bytes(&self) -> u64 {
+        self.peak_reserved_read_bytes
+    }
     /// Charged filesystem calls, including EOF directory probes and unsuccessful calls.
-    pub const fn io_calls(&self) -> u64 { self.io_calls }
+    pub const fn io_calls(&self) -> u64 {
+        self.io_calls
+    }
     /// Inspected manifest edges; shared references still cost one edge each.
-    pub const fn edges(&self) -> usize { self.edges }
+    pub const fn edges(&self) -> usize {
+        self.edges
+    }
     /// Every discovered manifest was expanded. False means undiscovered descendants may exist.
     pub fn manifest_expansion_complete(&self) -> bool {
-        self.objects.iter().all(|o| !o.declared_manifest || o.state == CustodyObjectState::Verified)
+        self.objects
+            .iter()
+            .all(|o| !o.declared_manifest || o.state == CustodyObjectState::Verified)
     }
     /// All selected publication-closure bytes verified during this bounded sequential read.
     /// Not a lease, atomic snapshot, remote-retrieval proof, or complete semantic provenance proof.
     pub fn all_verified(&self) -> bool {
-        self.objects.iter().all(|o| o.state == CustodyObjectState::Verified)
+        self.objects
+            .iter()
+            .all(|o| o.state == CustodyObjectState::Verified)
     }
 }
 
@@ -266,10 +287,18 @@ fn sha(d: ContentDigest) -> bool {
     d.algorithm() == DigestAlgorithm::Sha256 && d.bytes() != [0; 32]
 }
 fn check(cancelled: &(impl Fn() -> bool + Sync)) -> Result<(), CustodyAuditError> {
-    if cancelled() { Err(CustodyAuditError::Cancelled) } else { Ok(()) }
+    if cancelled() {
+        Err(CustodyAuditError::Cancelled)
+    } else {
+        Ok(())
+    }
 }
 fn bounded(value: usize, limit: usize, what: &'static str) -> Result<(), CustodyAuditError> {
-    if value > limit { Err(CustodyAuditError::Limit(what)) } else { Ok(()) }
+    if value > limit {
+        Err(CustodyAuditError::Limit(what))
+    } else {
+        Ok(())
+    }
 }
 
 // Reconstruct using the existing public encoder: no permissive parallel record interpretation.
@@ -279,12 +308,20 @@ fn root_record(bytes: &[u8], slot: &SlotName) -> Result<(ContentDigest, u64), Cu
     if d.text().map_err(|_| invalid())? != LOCAL_ROOT_RECORD_DOMAIN
         || d.u64().map_err(|_| invalid())? != LOCAL_ROOT_RECORD_FORMAT_VERSION
         || d.text().map_err(|_| invalid())? != slot.as_str()
-    { return Err(invalid()); }
+    {
+        return Err(invalid());
+    }
     let root = d.digest().map_err(|_| invalid())?;
     let count = d.u64().map_err(|_| invalid())?;
-    if !sha(root) || count > fss_object::MAX_MANIFEST_CHILDREN as u64
-        || root_record_bytes(slot, root, count as usize).map_err(|_| invalid())?.as_slice() != bytes
-    { return Err(invalid()); }
+    if !sha(root)
+        || count > fss_object::MAX_MANIFEST_CHILDREN as u64
+        || root_record_bytes(slot, root, count as usize)
+            .map_err(|_| invalid())?
+            .as_slice()
+            != bytes
+    {
+        return Err(invalid());
+    }
     Ok((root, count))
 }
 fn tombstone_record(bytes: &[u8]) -> Result<(), CustodyAuditError> {
@@ -292,31 +329,56 @@ fn tombstone_record(bytes: &[u8]) -> Result<(), CustodyAuditError> {
     let mut d = CanonicalDecoder::new(bytes);
     if d.text().map_err(|_| invalid())? != LOCAL_TOMBSTONE_RECORD_DOMAIN
         || d.u64().map_err(|_| invalid())? != LOCAL_ROOT_RECORD_FORMAT_VERSION
-    { return Err(invalid()); }
+    {
+        return Err(invalid());
+    }
     let record = TombstoneRecord::from_canonical_bytes(d.bytes().map_err(|_| invalid())?)
         .map_err(|_| invalid())?;
-    if tombstone_record_bytes(&record).map_err(|_| invalid())?.as_slice() != bytes { return Err(invalid()); }
+    if tombstone_record_bytes(&record)
+        .map_err(|_| invalid())?
+        .as_slice()
+        != bytes
+    {
+        return Err(invalid());
+    }
     Ok(())
 }
 fn small_read(io: &dyn SpoolIo, path: &Path, maximum: u64) -> Result<Vec<u8>, CustodyAuditError> {
-    let mut file = io.open_read(path).map_err(|_| CustodyAuditError::CatalogueInvalid)?;
-    let bytes = io.read_bounded(&mut file, maximum + 1)
+    let mut file = io
+        .open_read(path)
         .map_err(|_| CustodyAuditError::CatalogueInvalid)?;
-    if bytes.len() as u64 > maximum { return Err(CustodyAuditError::CatalogueInvalid); }
+    let bytes = io
+        .read_bounded(&mut file, maximum + 1)
+        .map_err(|_| CustodyAuditError::CatalogueInvalid)?;
+    if bytes.len() as u64 > maximum {
+        return Err(CustodyAuditError::CatalogueInvalid);
+    }
     Ok(bytes)
 }
 
 fn catalogue(io: &dyn SpoolIo, root: &Path, limit: usize) -> Result<Catalogue, CustodyAuditError> {
     let invalid = || CustodyAuditError::CatalogueInvalid;
-    if !io.symlink_metadata(root).map_err(|_| invalid())?.file_type().is_dir() {
+    if !io
+        .symlink_metadata(root)
+        .map_err(|_| invalid())?
+        .file_type()
+        .is_dir()
+    {
         return Err(invalid());
     }
     let mut result = Catalogue {
-        records: BTreeMap::new(), manifests: BTreeMap::new(), tombstones: BTreeMap::new(),
+        records: BTreeMap::new(),
+        manifests: BTreeMap::new(),
+        tombstones: BTreeMap::new(),
     };
     for directory in [LOCAL_ROOTS_DIR, LOCAL_TOMBSTONES_DIR] {
         let dir = root.join(directory);
-        if !io.symlink_metadata(&dir).map_err(|_| invalid())?.file_type().is_dir() {
+        if !io
+            .symlink_metadata(&dir)
+            .map_err(|_| invalid())?
+            .file_type()
+            .is_dir()
+        {
             return Err(invalid());
         }
         let mut entries = io.read_dir(&dir).map_err(|_| invalid())?;
@@ -328,34 +390,55 @@ fn catalogue(io: &dyn SpoolIo, root: &Path, limit: usize) -> Result<Catalogue, C
                 return Err(invalid());
             }
             let name = entry.file_name().into_string().map_err(|_| invalid())?;
-            if !names.insert(name) { return Err(invalid()); }
+            if !names.insert(name) {
+                return Err(invalid());
+            }
         }
         for name in names {
             let path = dir.join(&name);
             // Recheck after enumeration; never deliberately follow a substituted symlink.
-            if !io.symlink_metadata(&path).map_err(|_| invalid())?.file_type().is_file() {
+            if !io
+                .symlink_metadata(&path)
+                .map_err(|_| invalid())?
+                .file_type()
+                .is_file()
+            {
                 return Err(invalid());
             }
             if directory == LOCAL_ROOTS_DIR {
                 if name.ends_with(".root.tmp") || name.ends_with(".root.indeterminate") {
                     return Err(CustodyAuditError::PublicationInFlight);
                 }
-                let slot = SlotName::parse(name.strip_suffix(ROOT_RECORD_SUFFIX).ok_or_else(invalid)?)
-                    .map_err(|_| invalid())?;
+                let slot =
+                    SlotName::parse(name.strip_suffix(ROOT_RECORD_SUFFIX).ok_or_else(invalid)?)
+                        .map_err(|_| invalid())?;
                 let bytes = small_read(io, &path, MAX_ROOT_RECORD_BYTES)?;
                 let (root, count) = root_record(&bytes, &slot)?;
-                if result.manifests.insert(root, count).is_some_and(|old| old != count) {
+                if result
+                    .manifests
+                    .insert(root, count)
+                    .is_some_and(|old| old != count)
+                {
                     return Err(invalid());
                 }
-                result.records.insert(slot, (root, count, ContentDigest::sha256(&bytes)));
+                result
+                    .records
+                    .insert(slot, (root, count, ContentDigest::sha256(&bytes)));
             } else {
-                let stem = name.strip_suffix(TOMBSTONE_RECORD_SUFFIX).ok_or_else(invalid)?;
+                let stem = name
+                    .strip_suffix(TOMBSTONE_RECORD_SUFFIX)
+                    .ok_or_else(invalid)?;
                 let (algorithm, hex) = stem.split_once('-').ok_or_else(invalid)?;
-                let digest = ContentDigest::parse(format!("{algorithm}:{hex}")).map_err(|_| invalid())?;
-                if !sha(digest) || digest.to_text().replacen(':', "-", 1) != stem { return Err(invalid()); }
+                let digest =
+                    ContentDigest::parse(format!("{algorithm}:{hex}")).map_err(|_| invalid())?;
+                if !sha(digest) || digest.to_text().replacen(':', "-", 1) != stem {
+                    return Err(invalid());
+                }
                 let bytes = small_read(io, &path, MAX_TOMBSTONE_RECORD_BYTES)?;
                 tombstone_record(&bytes)?;
-                result.tombstones.insert(digest, ContentDigest::sha256(&bytes));
+                result
+                    .tombstones
+                    .insert(digest, ContentDigest::sha256(&bytes));
             }
         }
     }
@@ -365,9 +448,13 @@ fn catalogue(io: &dyn SpoolIo, root: &Path, limit: usize) -> Result<Catalogue, C
 fn classify(error: LocalPublicationError) -> CustodyObjectState {
     match error {
         LocalPublicationError::Spool(SpoolError::Missing(_))
-        | LocalPublicationError::Spool(SpoolError::Corrupt { kind: CorruptionKind::Vanished, .. }) => CustodyObjectState::Missing,
+        | LocalPublicationError::Spool(SpoolError::Corrupt {
+            kind: CorruptionKind::Vanished,
+            ..
+        }) => CustodyObjectState::Missing,
         LocalPublicationError::Spool(SpoolError::Corrupt {
-            kind: CorruptionKind::DeclaredLengthExceedsLimit { .. }, ..
+            kind: CorruptionKind::DeclaredLengthExceedsLimit { .. },
+            ..
         }) => CustodyObjectState::ObjectOverLimit,
         LocalPublicationError::Spool(SpoolError::Corrupt { .. }) => CustodyObjectState::Corrupt,
         _ => CustodyObjectState::Unreadable,
@@ -391,8 +478,15 @@ pub fn audit_local_roots(
     limits: CustodyAuditLimits,
     cancelled: &(impl Fn() -> bool + Sync),
 ) -> Result<LocalCustodyAudit, CustodyAuditError> {
-    audit_roots(io, root, selected_roots, denied, limits, cancelled,
-        CustodyRootBasis::LocalPublicationRecords)
+    audit_roots(
+        io,
+        root,
+        selected_roots,
+        denied,
+        limits,
+        cancelled,
+        CustodyRootBasis::LocalPublicationRecords,
+    )
 }
 
 /// Audit exact manifest roots selected by a caller that has verified their canonical authority.
@@ -421,8 +515,15 @@ pub fn audit_authority_roots(
     limits: CustodyAuditLimits,
     cancelled: &(impl Fn() -> bool + Sync),
 ) -> Result<LocalCustodyAudit, CustodyAuditError> {
-    audit_roots(io, root, selected_roots, denied, limits, cancelled,
-        CustodyRootBasis::CallerVerifiedAuthority)
+    audit_roots(
+        io,
+        root,
+        selected_roots,
+        denied,
+        limits,
+        cancelled,
+        CustodyRootBasis::CallerVerifiedAuthority,
+    )
 }
 
 fn audit_roots(
@@ -436,13 +537,18 @@ fn audit_roots(
 ) -> Result<LocalCustodyAudit, CustodyAuditError> {
     check(cancelled)?;
     limits.validate()?;
-    if selected_roots.is_empty() || selected_roots.len() > MAX_AUDIT_ROOTS
+    if selected_roots.is_empty()
+        || selected_roots.len() > MAX_AUDIT_ROOTS
         || denied.len() > MAX_AUDIT_OBJECTS
         || selected_roots.iter().any(|d| !sha(*d))
         || denied.iter().any(|(d, proof)| !sha(*d) || !sha(*proof))
-    { return Err(CustodyAuditError::InvalidRequest); }
+    {
+        return Err(CustodyAuditError::InvalidRequest);
+    }
     let roots: BTreeSet<_> = selected_roots.iter().copied().collect();
-    if roots.len() != selected_roots.len() { return Err(CustodyAuditError::InvalidRequest); }
+    if roots.len() != selected_roots.len() {
+        return Err(CustodyAuditError::InvalidRequest);
+    }
     bounded(roots.len(), limits.max_objects, "objects")?;
     let metered = AuditIo::new(io, limits, cancelled);
     let result = walk(&metered, root, roots, denied, limits, cancelled, root_basis);
@@ -476,8 +582,12 @@ fn walk(
         let declared_manifest = expected_count.is_some()
             || (root_basis == CustodyRootBasis::CallerVerifiedAuthority && roots.contains(&digest));
         let mut row = CustodyObjectObservation {
-            digest, declared_manifest, state: CustodyObjectState::Unreadable,
-            verified_payload_bytes: None, children: Vec::new(), denial_digest: None,
+            digest,
+            declared_manifest,
+            state: CustodyObjectState::Unreadable,
+            verified_payload_bytes: None,
+            children: Vec::new(),
+            denial_digest: None,
         };
         if let Some(proof) = denied.get(&digest) {
             row.state = CustodyObjectState::Deleted;
@@ -487,21 +597,31 @@ fn walk(
             row.denial_digest = Some(*proof);
         } else {
             match read_verified_with_io(root, digest, limits.max_object_bytes, io) {
-                Err(error) => { io.check()?; row.state = classify(error); }
+                Err(error) => {
+                    io.check()?;
+                    row.state = classify(error);
+                }
                 Ok(bytes) => {
                     io.check()?;
                     row.verified_payload_bytes = Some(bytes.len() as u64);
                     row.state = CustodyObjectState::Verified;
                     if declared_manifest {
                         match ObjectManifest::from_canonical_bytes(&bytes) {
-                            Ok(manifest) if manifest.root() == digest
-                                && expected_count.is_none_or(|count| manifest.children().len() as u64 == *count) => {
-                                edges = edges.checked_add(manifest.children().len())
+                            Ok(manifest)
+                                if manifest.root() == digest
+                                    && expected_count.is_none_or(|count| {
+                                        manifest.children().len() as u64 == *count
+                                    }) =>
+                            {
+                                edges = edges
+                                    .checked_add(manifest.children().len())
                                     .ok_or(CustodyAuditError::Limit("edges"))?;
                                 bounded(edges, limits.max_edges, "edges")?;
                                 for child in manifest.children() {
                                     check(cancelled)?;
-                                    if !sha(*child) { return Err(CustodyAuditError::CatalogueInvalid); }
+                                    if !sha(*child) {
+                                        return Err(CustodyAuditError::CatalogueInvalid);
+                                    }
                                     if !seen.contains(child) {
                                         bounded(seen.len() + 1, limits.max_objects, "objects")?;
                                         seen.insert(*child);
@@ -519,7 +639,9 @@ fn walk(
         objects.insert(digest, row);
     }
     let after = catalogue(io, root, limits.max_catalogue_entries)?;
-    if before != after { return Err(CustodyAuditError::CatalogueChanged); }
+    if before != after {
+        return Err(CustodyAuditError::CatalogueChanged);
+    }
     io.check()?;
     check(cancelled)?;
     Ok(LocalCustodyAudit {
