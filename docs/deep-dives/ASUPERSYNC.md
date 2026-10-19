@@ -5,6 +5,12 @@
 **Status:** design import; no runtime readiness claim
 **Audit basis:** repository architecture, v4 design bible, ATP architecture and DoD, adaptive RaptorQ design, deterministic-lab and evidence surfaces inspected 2026-08-31
 
+**Admission record (DEEP-ASUPERSYNC-001):**
+- Source pin: `asupersync =0.5.0`, crates.io registry (`Cargo.lock`), vendored tree SHA-256 prefix `e8b73bdcdc23e0c4…` (`Cargo.toml` of the pinned crate).
+- License: `LicenseRef-MIT-OpenAI-Anthropic-Rider` (LICENSE file ships with the crate); usage stays within its rider terms for this owner-authorized system.
+- Per-mechanism admission rows (substitute prohibition, reference model, failure boundary, gate) live in `architecture/franken_imports.json` under `IMP-AS-*`; the registry is the machine-readable authority for this document.
+- Landed reference implementation (2026-10-18/19): `fss-runtime` (`AuthorityCx`, `RegionTree` composition, canonical-vector budgets + pressure, obligation facade + tree-wide leak oracle, grants/scopes, leases/fencing, two-phase effect coordinator, sealed lab-oracle sessions) with retained evidence in `qualification-artifacts/local/20261019T-WP020-runtime-evidence/`. Runtime readiness (INT-AS-001 full-lane qualification) is still NOT claimed.
+
 ## 1. Why this project is load-bearing
 
 The superficial import would be “use Asupersync instead of Tokio.” That would miss almost all of the value. The load-bearing idea is that execution, cancellation, authority, partial effects, evidence, and transfer all share one explicit semantic model:
@@ -266,15 +272,16 @@ Metrics are not allowed to mutate answers. Missing optional telemetry may reduce
 
 ## 3. FSS semantic owners
 
-| Imported mechanism | Owning FSS component | Replacement prohibition |
-|---|---|---|
-| Regions, `Cx`, budgets, outcomes | `fss-runtime` | No second async runtime or detached worker model |
-| Two-phase channels/effects | `fss-runtime`, `fss-effect` | No “send then hope” mutation path |
-| Obligations and leases | `fss-obligation`, `fss-effect` | No untracked committed external work |
-| LabRuntime and trace canonicalization | `fss-lab` | No production-only time/randomness path |
-| ATP object graphs | `fss-transfer` | No ad hoc multipart uploader as authoritative transfer |
-| Adaptive decision cards | `fss-decision` | No opaque online threshold mutation |
-| Evidence receipts | `fss-evidence` | No log-line-only readiness claims |
+| Imported mechanism | Owning FSS component | Replacement prohibition | Import rows |
+|---|---|---|---|
+| Regions, `Cx`, budgets, outcomes | `fss-runtime` | No second async runtime or detached worker model | `IMP-AS-REGION-001`, `IMP-AS-CANCEL-001` |
+| Two-phase channels/effects | `fss-runtime`, `fss-effect` | No “send then hope” mutation path | `IMP-DFMCP-EFFECT-001` (effect plane), coordinator in `fss-runtime` |
+| Obligations and leases | `fss-obligation`, `fss-effect` | No untracked committed external work | `IMP-AS-REGION-001` (obligations ride the region tree) |
+| LabRuntime and trace canonicalization | `fss-lab` | No production-only time/randomness path | `IMP-AS-LAB-001` |
+| ATP object graphs | `fss-transfer` | No ad hoc multipart uploader as authoritative transfer | `IMP-AS-ATP-001` |
+| Adaptive decision cards | `fss-decision` | No opaque online threshold mutation | (census pending an `IMP-AS-*` admission row) |
+| Evidence receipts | `fss-evidence` | No log-line-only readiness claims | `IMP-DFMCP-ANCHOR-001` (anchor/delta evidence spine) |
+| Subject fabric | `fss-subject` | No transport-invented parallel vocabulary | `IMP-AS-SUBJECT-001` |
 
 ## 4. Superficial imitations that would fail
 

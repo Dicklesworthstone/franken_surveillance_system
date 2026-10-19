@@ -220,9 +220,7 @@ impl<E: LabOracleExecutor> LabSession<E> {
         mut self,
         tree: &mut RegionTree,
         authority: &AuthorityCx,
-        now: TimestampNs,
     ) -> Result<LabTaint, LabError> {
-        let _ = now;
         if self.state == LabState::Finalized {
             return Err(LabError::AlreadyFinalized {
                 oracle: self.oracle.clone(),
@@ -320,7 +318,7 @@ mod tests {
             Err(LabError::AlreadyDraining { .. })
         ));
 
-        let taint = session.finalize(&mut tree, &auth, TimestampNs(1_000))?;
+        let taint = session.finalize(&mut tree, &auth)?;
         assert!(taint.drained);
         assert!(
             auth.finalize_report(&tree).is_empty(),
@@ -373,7 +371,7 @@ mod tests {
         ));
         assert_eq!(session.state(), LabState::Sealed);
         session.request_drain();
-        session.finalize(&mut tree, &auth, TimestampNs(2))?;
+        session.finalize(&mut tree, &auth)?;
         Ok(())
     }
 }
