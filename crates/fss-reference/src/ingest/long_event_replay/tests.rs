@@ -2,19 +2,20 @@
 //! Real retained media and current authority, then independent read-only native recomputation.
 
 mod corroboration_detector;
+mod dwell;
 
 use super::*;
 use crate::ingest::long_watch::LongWatchReport;
 use crate::ingest::privacy_mask::{PrivacyMaskPolicy, declare_mask, preview_mask};
-use crate::ingest::recorded_decode::ComponentInterpretation;
-use crate::ingest::recorded_watch::{
-    WatchDetectorConfig, WatchOptions, WatchPlan, WatchTrackerConfig, WatchZone,
-};
+use crate::ingest::recorded_corroboration::streaming::LongCorroborationReport;
 use crate::ingest::recorded_corroboration::{
     CorroborationCamera, CorroborationDependencies, CorroborationGates, CorroborationOptions,
     CorroborationPlan, FailureDomainDeclaration, GroundHomography, GroundZone,
 };
-use crate::ingest::recorded_corroboration::streaming::LongCorroborationReport;
+use crate::ingest::recorded_decode::ComponentInterpretation;
+use crate::ingest::recorded_watch::{
+    WatchDetectorConfig, WatchOptions, WatchPlan, WatchTrackerConfig, WatchZone,
+};
 use crate::ingest::{CaptureHint, FileIngestAdapter, FileIngestLimits, FileIngestRequest};
 use crate::media_fixture::jpeg::{JpegConfig, Subsampling, encode_jpeg};
 use crate::{ReferencePolicyAction, ReferencePolicyDecision};
@@ -66,7 +67,10 @@ fn context(root: &Path, principal: &str) -> Test<ReplayCx> {
         anchor_universe: ContentDigest::sha256(SITE.as_bytes()),
         generation: 1,
     })?;
-    Ok(ReplayCx::from_context_authority(&authority, root.to_path_buf())?)
+    Ok(ReplayCx::from_context_authority(
+        &authority,
+        root.to_path_buf(),
+    )?)
 }
 fn scene(frames: usize, appearance: usize, moving: bool) -> Test<Vec<u8>> {
     let config = JpegConfig {
@@ -80,7 +84,11 @@ fn scene(frames: usize, appearance: usize, moving: bool) -> Test<Vec<u8>> {
         // Avoid repeated whole frames when the screened profile is selected.
         let mut pixels = vec![40_u8 + (position % 2) as u8 * 8; 48 * 32];
         if position >= appearance {
-            let left = if moving { 4 + position.saturating_sub(128).min(20) } else { 8 };
+            let left = if moving {
+                4 + position.saturating_sub(128).min(20)
+            } else {
+                8
+            };
             for y in 8..24 {
                 for x in left..left + 16 {
                     pixels[y * 48 + x] = 220;
@@ -103,9 +111,18 @@ impl Fixture {
         let root = directory.0.join("deployment");
         let cx = context(&root, "principal:long-event-replay")?;
         let deployment = ReferenceDeployment::open(&root, SITE, &cx)?;
-        Ok(Self { deployment, cx, directory })
+        Ok(Self {
+            deployment,
+            cx,
+            directory,
+        })
     }
-    fn import(&mut self, name: &str, bytes: &[u8], extension: &str) -> Test<(ContentDigest, usize)> {
+    fn import(
+        &mut self,
+        name: &str,
+        bytes: &[u8],
+        extension: &str,
+    ) -> Test<(ContentDigest, usize)> {
         let input = self.directory.0.join(format!("{name}.{extension}"));
         fs::write(&input, bytes)?;
         let mut limits = FileIngestLimits::standard();
@@ -124,7 +141,12 @@ impl Fixture {
         Ok((receipt.import_identity, receipt.capsule_count))
     }
     fn watch(
-        &mut self, bytes: &[u8], extension: &str, size: [u32; 2], late: bool, screened: bool,
+        &mut self,
+        bytes: &[u8],
+        extension: &str,
+        size: [u32; 2],
+        late: bool,
+        screened: bool,
     ) -> Test<(WatchPlan, EventId, LongEventReplayPins)> {
         let (identity, count) = self.import("watch", bytes, extension)?;
         let plan = WatchPlan {
@@ -155,18 +177,32 @@ impl Fixture {
             LongWatchReport::analyze
         };
         let mut report = run(
-            &self.deployment, &plan, WatchOptions::default(), &LongDwellLimits::default(), &self.cx,
+            &self.deployment,
+            &plan,
+            WatchOptions::default(),
+            &LongDwellLimits::default(),
+            &self.cx,
         )?;
-        let candidate = report.candidates().first().ok_or("native watch entry missing")?;
+        let candidate = report
+            .candidates()
+            .first()
+            .ok_or("native watch entry missing")?;
         if late {
             assert!(candidate.entry().position() > 140);
         }
         let event = candidate.event().event_id.clone();
         let approval = candidate.proposal_digest();
-        assert_eq!(report.publish(&mut self.deployment, &BTreeSet::from([approval]), &self.cx)?, 1);
+        assert_eq!(
+            report.publish(&mut self.deployment, &BTreeSet::from([approval]), &self.cx)?,
+            1
+        );
         let pins = inspect_long_event(
-            &self.deployment, &event, &LongEventReplayLimits::default(), &self.cx,
-        )?.pins();
+            &self.deployment,
+            &event,
+            &LongEventReplayLimits::default(),
+            &self.cx,
+        )?
+        .pins();
         Ok((plan, event, pins))
     }
     fn snapshot(&self) -> (LedgerAnchor, ContentDigest, usize) {
@@ -179,13 +215,17 @@ impl Fixture {
 }
 
 #[test]
-fn cold_watch_replays_a_late_entry_across_three_hundred_frames_without_the_original_input() -> Test {
+fn cold_watch_replays_a_late_entry_across_three_hundred_frames_without_the_original_input() -> Test
+{
     let mut f = Fixture::new("late")?;
     let (plan, event, pins) = f.watch(&scene(300, 3, true)?, "mjpeg", [48, 32], true, false)?;
     let before = f.snapshot();
     let root = f.deployment.root().to_path_buf();
     let inspected = inspect_long_event(
-        &f.deployment, &event, &LongEventReplayLimits::default(), &f.cx,
+        &f.deployment,
+        &event,
+        &LongEventReplayLimits::default(),
+        &f.cx,
     )?;
     let LongEventReplayRecipe::Watch(recipe) = inspected.recipe() else {
         return Err("watch recipe expected".into());
@@ -201,7 +241,11 @@ fn cold_watch_replays_a_late_entry_across_three_hundred_frames_without_the_origi
     let reopened = ReferenceDeployment::reopen(&root, SITE, &f.cx)?;
     let reader = context(&root, "principal:another-authorized-reader")?;
     let verified = replay_long_event(
-        &reopened, &event, pins, &LongEventReplayLimits::default(), &reader,
+        &reopened,
+        &event,
+        pins,
+        &LongEventReplayLimits::default(),
+        &reader,
     )?;
     assert_eq!(verified.frames_replayed(), 300);
     assert_eq!(verified.inspection().pins(), pins);
@@ -235,7 +279,11 @@ fn native_avc_b_pictures_and_hevc_parameter_sets_replay_the_complete_original_an
         drop(f.deployment);
         let reopened = ReferenceDeployment::reopen(&root, SITE, &f.cx)?;
         let verified = replay_long_event(
-            &reopened, &event, pins, &LongEventReplayLimits::default(), &f.cx,
+            &reopened,
+            &event,
+            pins,
+            &LongEventReplayLimits::default(),
+            &f.cx,
         )?;
         assert_eq!(verified.frames_replayed(), frames);
         assert_eq!(verified.inspection().pins(), pins);
@@ -255,7 +303,11 @@ fn screened_recipe_and_every_retained_scan_reservation_survive_cold_reconstructi
     let (_, event, pins) = f.watch(&scene(40, 3, false)?, "mjpeg", [48, 32], false, true)?;
     let before = f.snapshot();
     let verified = replay_long_event(
-        &f.deployment, &event, pins, &LongEventReplayLimits::default(), &f.cx,
+        &f.deployment,
+        &event,
+        pins,
+        &LongEventReplayLimits::default(),
+        &f.cx,
     )?;
     let LongEventReplayRecipe::Watch(recipe) = verified.inspection().recipe() else {
         return Err("watch recipe expected".into());
@@ -285,24 +337,44 @@ fn stale_pins_and_changed_privacy_refuse_before_any_native_perception() -> Test 
     f.cx.set_cancel_at_checkpoint("long_event_replay:execute");
     let before = f.snapshot();
     for stale in [
-        LongEventReplayPins { event_revision: ContentDigest::sha256(b"other event"), ..pins },
-        LongEventReplayPins { provenance_root: ContentDigest::sha256(b"other root"), ..pins },
+        LongEventReplayPins {
+            event_revision: ContentDigest::sha256(b"other event"),
+            ..pins
+        },
+        LongEventReplayPins {
+            provenance_root: ContentDigest::sha256(b"other root"),
+            ..pins
+        },
     ] {
         assert!(matches!(
-            replay_long_event(&f.deployment, &event, stale, &LongEventReplayLimits::default(), &f.cx),
+            replay_long_event(
+                &f.deployment,
+                &event,
+                stale,
+                &LongEventReplayLimits::default(),
+                &f.cx
+            ),
             Err(LongEventReplayError::StaleSelection)
         ));
         assert!(!f.cx.is_cancelled());
         assert_eq!(f.snapshot(), before);
     }
     let policy = PrivacyMaskPolicy::new(
-        SensorId::parse("sensor:long-event-watch")?, [48, 32], &[[40, 0, 8, 32]],
+        SensorId::parse("sensor:long-event-watch")?,
+        [48, 32],
+        &[[40, 0, 8, 32]],
     )?;
     let approval = preview_mask(&f.deployment, &policy)?.approval;
     declare_mask(&mut f.deployment, &policy, approval, &f.cx)?;
     let before = f.snapshot();
     assert!(matches!(
-        replay_long_event(&f.deployment, &event, pins, &LongEventReplayLimits::default(), &f.cx),
+        replay_long_event(
+            &f.deployment,
+            &event,
+            pins,
+            &LongEventReplayLimits::default(),
+            &f.cx
+        ),
         Err(LongEventReplayError::PrivacyChanged)
     ));
     assert!(!f.cx.is_cancelled());
@@ -314,9 +386,13 @@ fn stale_pins_and_changed_privacy_refuse_before_any_native_perception() -> Test 
 fn quiet_source_capsules_and_original_chunks_remain_required_after_event_publication() -> Test {
     for capsule in [false, true] {
         let mut f = Fixture::new(if capsule { "capsule" } else { "chunk" })?;
-        let (plan, event, pins) = f.watch(&scene(40, 3, false)?, "mjpeg", [48, 32], false, false)?;
+        let (plan, event, pins) =
+            f.watch(&scene(40, 3, false)?, "mjpeg", [48, 32], false, false)?;
         let retained = RetainedFileImport::open(
-            &f.deployment, plan.import_identity, Default::default(), &f.cx,
+            &f.deployment,
+            plan.import_identity,
+            Default::default(),
+            &f.cx,
         )?;
         let damaged = if capsule {
             // Background frame 1 does not supply the selected event's direct source edge.
@@ -327,13 +403,26 @@ fn quiet_source_capsules_and_original_chunks_remain_required_after_event_publica
         fs::remove_file(f.deployment.publisher().spool().object_path(damaged))?;
         let before = f.snapshot();
         if capsule {
-            assert!(inspect_long_event(
-                &f.deployment, &event, &LongEventReplayLimits::default(), &f.cx,
-            ).is_err());
+            assert!(
+                inspect_long_event(
+                    &f.deployment,
+                    &event,
+                    &LongEventReplayLimits::default(),
+                    &f.cx,
+                )
+                .is_err()
+            );
         }
-        assert!(replay_long_event(
-            &f.deployment, &event, pins, &LongEventReplayLimits::default(), &f.cx,
-        ).is_err());
+        assert!(
+            replay_long_event(
+                &f.deployment,
+                &event,
+                pins,
+                &LongEventReplayLimits::default(),
+                &f.cx,
+            )
+            .is_err()
+        );
         assert_eq!(f.snapshot(), before);
     }
     Ok(())
@@ -346,16 +435,41 @@ fn source_capsule_bindings_refuse_a_different_valid_segment_payload() -> Test {
     let limits = LongEventReplayLimits::default();
     let (event, _) = f.deployment.current_event_authority(&event_id)?;
     let identity = event_identity(&event_id, "event:long-watch:")?;
-    let reader = || MetadataReader { remaining: limits.maximum_metadata_bytes, used: 0, objects: 0 };
+    let reader = || MetadataReader {
+        remaining: limits.maximum_metadata_bytes,
+        used: 0,
+        objects: 0,
+    };
     let loaded = watch::load(
-        &f.deployment, &event, identity, pins.provenance_root, &limits, &mut reader(), &f.cx,
+        &f.deployment,
+        &event,
+        identity,
+        pins.provenance_root,
+        &limits,
+        &mut reader(),
+        &f.cx,
     )?;
-    let mut source = loaded.sources.into_iter().next().ok_or("watch source missing")?;
-    let (&segment, &expected) = source.capsule_bindings.iter().next().ok_or("entry binding missing")?;
+    let mut source = loaded
+        .sources
+        .into_iter()
+        .next()
+        .ok_or("watch source missing")?;
+    let (&segment, &expected) = source
+        .capsule_bindings
+        .iter()
+        .next()
+        .ok_or("entry binding missing")?;
     let retained = RetainedFileImport::open(
-        &f.deployment, source.import_identity, limits.execution.decode.read_limits, &f.cx,
+        &f.deployment,
+        source.import_identity,
+        limits.execution.decode.read_limits,
+        &f.cx,
     )?;
-    let other_segment = if segment == source.first { source.first + 1 } else { source.first };
+    let other_segment = if segment == source.first {
+        source.first + 1
+    } else {
+        source.first
+    };
     let other = source_capsule(&f.deployment, &retained, other_segment)?.1;
     assert_ne!(expected, other);
     let before = f.snapshot();
@@ -379,11 +493,20 @@ fn reviewed_successors_are_not_silently_verified_as_the_original_observation() -
     revised.supersedes = Some(revised.revision_digest());
     revised.revision = 2;
     f.deployment.publish_event(
-        &ReferencePolicyDecision { event: revised, action: ReferencePolicyAction::Hold }, &f.cx,
+        &ReferencePolicyDecision {
+            event: revised,
+            action: ReferencePolicyAction::Hold,
+        },
+        &f.cx,
     )?;
     let before = f.snapshot();
     assert!(matches!(
-        inspect_long_event(&f.deployment, &event, &LongEventReplayLimits::default(), &f.cx),
+        inspect_long_event(
+            &f.deployment,
+            &event,
+            &LongEventReplayLimits::default(),
+            &f.cx
+        ),
         Err(LongEventReplayError::UnsupportedProfile)
     ));
     assert_eq!(f.snapshot(), before);
@@ -396,28 +519,40 @@ fn cancellation_during_native_health_work_returns_no_verified_result_and_no_writ
     let (_, event, pins) = f.watch(&scene(40, 3, false)?, "mjpeg", [48, 32], false, true)?;
     let before = f.snapshot();
     f.cx.set_cancel_at_checkpoint_occurrence("sensor_health:row", 3);
-    assert!(replay_long_event(
-        &f.deployment, &event, pins, &LongEventReplayLimits::default(), &f.cx,
-    ).is_err());
+    assert!(
+        replay_long_event(
+            &f.deployment,
+            &event,
+            pins,
+            &LongEventReplayLimits::default(),
+            &f.cx,
+        )
+        .is_err()
+    );
     assert!(f.cx.is_drain_completed());
     assert_eq!(f.snapshot(), before);
     Ok(())
 }
 
 fn corroboration_plan(
-    left: ContentDigest, right: ContentDigest, size: [u32; 2], interpretation: ComponentInterpretation,
+    left: ContentDigest,
+    right: ContentDigest,
+    size: [u32; 2],
+    interpretation: ComponentInterpretation,
     late: bool,
 ) -> CorroborationPlan {
     CorroborationPlan {
         cameras: [
             CorroborationCamera {
-                name: "east".into(), import_identity: left,
+                name: "east".into(),
+                import_identity: left,
                 homography: GroundHomography {
                     matrix: [1.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 1.0],
                 },
             },
             CorroborationCamera {
-                name: "west".into(), import_identity: right,
+                name: "west".into(),
+                import_identity: right,
                 homography: GroundHomography {
                     matrix: [1.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 1.0],
                 },
@@ -431,21 +566,38 @@ fn corroboration_plan(
             width: f64::from(size[0]) - if late { 28.0 } else { 0.0 },
             height: f64::from(size[1]),
         }],
-        gates: CorroborationGates { time_gate_ns: 200_000_000, distance_gate: 4.0 },
-        detector: WatchDetectorConfig { learning_rate_num: 0, ..WatchDetectorConfig::default() },
+        gates: CorroborationGates {
+            time_gate_ns: 200_000_000,
+            distance_gate: 4.0,
+        },
+        detector: WatchDetectorConfig {
+            learning_rate_num: 0,
+            ..WatchDetectorConfig::default()
+        },
         tracker: WatchTrackerConfig::default(),
     }
 }
 
 fn cold_corroboration(
-    label: &str, bytes: &[u8], extension: &str, size: [u32; 2], late: bool, shared: bool,
+    label: &str,
+    bytes: &[u8],
+    extension: &str,
+    size: [u32; 2],
+    late: bool,
+    shared: bool,
 ) -> Test {
     let mut f = Fixture::new(label)?;
     let (left, left_frames) = f.import("east", bytes, extension)?;
     let (right, right_frames) = f.import("west", bytes, extension)?;
     let plan = corroboration_plan(
-        left, right, size,
-        if extension == "mjpeg" { ComponentInterpretation::Grayscale } else { ComponentInterpretation::YCbCr },
+        left,
+        right,
+        size,
+        if extension == "mjpeg" {
+            ComponentInterpretation::Grayscale
+        } else {
+            ComponentInterpretation::YCbCr
+        },
         late,
     );
     let declarations = if shared {
@@ -464,21 +616,45 @@ fn cold_corroboration(
         ..LongDwellLimits::default()
     };
     let mut report = LongCorroborationReport::analyze(
-        &f.deployment, &plan, CorroborationOptions::default(), &limits, &declarations, &f.cx,
+        &f.deployment,
+        &plan,
+        CorroborationOptions::default(),
+        &limits,
+        &declarations,
+        &f.cx,
     )?;
     let recipe_digest = report.plan_digest();
     if late {
-        assert!(report.samples().iter().all(|sample| sample.entry_position > 140));
+        assert!(
+            report
+                .samples()
+                .iter()
+                .all(|sample| sample.entry_position > 140)
+        );
     }
-    let candidate = report.candidates().first().ok_or("native cross-camera candidate missing")?;
+    let candidate = report
+        .candidates()
+        .first()
+        .ok_or("native cross-camera candidate missing")?;
     let event = candidate.event().event_id.clone();
     let original = candidate.event().clone();
-    assert_eq!(original.state, if shared { EventState::Witnessed } else { EventState::Corroborated });
+    assert_eq!(
+        original.state,
+        if shared {
+            EventState::Witnessed
+        } else {
+            EventState::Corroborated
+        }
+    );
     let pins = LongEventReplayPins {
-        event_revision: original.revision_digest(), provenance_root: candidate.provenance_root(),
+        event_revision: original.revision_digest(),
+        provenance_root: candidate.provenance_root(),
     };
     let approval = candidate.proposal_digest();
-    assert_eq!(report.publish(&mut f.deployment, &BTreeSet::from([approval]), &f.cx)?, 1);
+    assert_eq!(
+        report.publish(&mut f.deployment, &BTreeSet::from([approval]), &f.cx)?,
+        1
+    );
     let before = f.snapshot();
     let root = f.deployment.root().to_path_buf();
     drop(f.deployment);
@@ -495,8 +671,14 @@ fn cold_corroboration(
     };
     assert_eq!(recipe.digest(), recipe_digest);
     assert_eq!(recipe.dependencies(), &declarations);
-    assert_eq!(recipe.limits().maximum_source_chunk_bytes, limits.maximum_source_chunk_bytes);
-    assert_eq!(recipe.limits().maximum_pixel_samples, limits.maximum_pixel_samples);
+    assert_eq!(
+        recipe.limits().maximum_source_chunk_bytes,
+        limits.maximum_source_chunk_bytes
+    );
+    assert_eq!(
+        recipe.limits().maximum_pixel_samples,
+        limits.maximum_pixel_samples
+    );
     assert!(!recipe.health_screened());
     let verified = replay_long_event(&reopened, &event, pins, &admitted, &f.cx)?;
     assert_eq!(verified.frames_replayed(), left_frames + right_frames);
@@ -519,8 +701,16 @@ fn cold_two_camera_replay_preserves_both_independent_and_declared_common_cause_s
     let bytes = scene(300, 3, true)?;
     for shared in [false, true] {
         cold_corroboration(
-            if shared { "shared-cause" } else { "separate-causes" },
-            &bytes, "mjpeg", [48, 32], true, shared,
+            if shared {
+                "shared-cause"
+            } else {
+                "separate-causes"
+            },
+            &bytes,
+            "mjpeg",
+            [48, 32],
+            true,
+            shared,
         )?;
     }
     Ok(())
@@ -546,8 +736,12 @@ fn both_inter_coded_camera_profiles_replay_the_full_retained_recipe_after_restar
 }
 
 fn publish_graph(
-    deployment: &mut ReferenceDeployment, prefix: &str, identity: ContentDigest,
-    manifest: &ObjectManifest, interval: fss_core::CaptureInterval, cx: &ReplayCx,
+    deployment: &mut ReferenceDeployment,
+    prefix: &str,
+    identity: ContentDigest,
+    manifest: &ObjectManifest,
+    interval: fss_core::CaptureInterval,
+    cx: &ReplayCx,
 ) -> Test {
     let slot = slot(prefix, identity)?;
     deployment.publisher_mut().stage_manifest(&slot, manifest)?;
@@ -560,13 +754,18 @@ fn self_consistent_forged_trace_hashes_are_inspectable_but_fail_actual_native_re
     let mut f = Fixture::new("forged")?;
     let (_, event_id, pins) = f.watch(&scene(40, 3, false)?, "mjpeg", [48, 32], false, false)?;
     let inspection = inspect_long_event(
-        &f.deployment, &event_id, &LongEventReplayLimits::default(), &f.cx,
+        &f.deployment,
+        &event_id,
+        &LongEventReplayLimits::default(),
+        &f.cx,
     )?;
     let old_analysis_digest = inspection.analysis_digests()[0];
     let old_analysis_root = inspection.analysis_roots()[0];
     let mut analysis = f.deployment.publisher().spool().read(old_analysis_digest)?;
     let marker = b"fss.long_watch_frame.v1";
-    let start = analysis.windows(marker.len()).position(|window| window == marker)
+    let start = analysis
+        .windows(marker.len())
+        .position(|window| window == marker)
         .ok_or("native watch frame missing")?;
     // Alter a claimed luma identity in the first JPEG frame, preserving all source and recipe
     // bindings. Rehash every containing publication through ordinary guarded owners.
@@ -579,7 +778,11 @@ fn self_consistent_forged_trace_hashes_are_inspectable_but_fail_actual_native_re
     let new_analysis_manifest = ObjectManifest::new(
         "recorded-long-watch-analysis-v1",
         old_analysis_manifest.children().iter().map(|&child| {
-            if child == old_analysis_digest { new_analysis_digest } else { child }
+            if child == old_analysis_digest {
+                new_analysis_digest
+            } else {
+                child
+            }
         }),
         None,
     )?;
@@ -589,7 +792,9 @@ fn self_consistent_forged_trace_hashes_are_inspectable_but_fail_actual_native_re
     record[root_offset..root_offset + 32].copy_from_slice(&new_analysis_manifest.root().bytes());
     let identity = ContentDigest::sha256(&record);
     let entry = ObjectManifest::new(
-        "recorded-long-watch-entry-v1", [new_analysis_manifest.root(), identity], None,
+        "recorded-long-watch-entry-v1",
+        [new_analysis_manifest.root(), identity],
+        None,
     )?;
     let mut forged = inspection.event().clone();
     forged.event_id = EventId::parse(format!("event:long-watch:{}", hex(identity)))?;
@@ -606,21 +811,44 @@ fn self_consistent_forged_trace_hashes_are_inspectable_but_fail_actual_native_re
         f.deployment.publisher_mut().verify_object(digest)?;
     }
     publish_graph(
-        &mut f.deployment, "lw-a", new_analysis_digest, &new_analysis_manifest, forged.interval, &f.cx,
+        &mut f.deployment,
+        "lw-a",
+        new_analysis_digest,
+        &new_analysis_manifest,
+        forged.interval,
+        &f.cx,
     )?;
-    publish_graph(&mut f.deployment, "lw-e", identity, &entry, forged.interval, &f.cx)?;
+    publish_graph(
+        &mut f.deployment,
+        "lw-e",
+        identity,
+        &entry,
+        forged.interval,
+        &f.cx,
+    )?;
     f.deployment.publish_event(
-        &ReferencePolicyDecision { event: forged.clone(), action: ReferencePolicyAction::Hold }, &f.cx,
+        &ReferencePolicyDecision {
+            event: forged.clone(),
+            action: ReferencePolicyAction::Hold,
+        },
+        &f.cx,
     )?;
     let inspected = inspect_long_event(
-        &f.deployment, &forged.event_id, &LongEventReplayLimits::default(), &f.cx,
+        &f.deployment,
+        &forged.event_id,
+        &LongEventReplayLimits::default(),
+        &f.cx,
     )?;
     assert_eq!(inspected.analysis_digests(), &[new_analysis_digest]);
     assert_ne!(inspected.pins(), pins);
     let before = f.snapshot();
     assert!(matches!(
         replay_long_event(
-            &f.deployment, &forged.event_id, inspected.pins(), &LongEventReplayLimits::default(), &f.cx,
+            &f.deployment,
+            &forged.event_id,
+            inspected.pins(),
+            &LongEventReplayLimits::default(),
+            &f.cx,
         ),
         Err(LongEventReplayError::Diverged)
     ));

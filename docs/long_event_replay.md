@@ -1,7 +1,7 @@
 # Cold inspection and native replay of whole-recording events
 
-Published `event:long-watch:` and `event:long-corroborated:` candidates can be reopened by
-identity, without the original command, exported report or input file. The reader recovers the
+Published `event:long-watch:`, `event:long-dwell:` and `event:long-corroborated:` candidates
+can be reopened by identity, without the original command, exported report or input file. The reader recovers the
 committed event and its retained analysis closure. A separate explicit verification operation
 decodes the retained source and reruns the native computation.
 
@@ -34,14 +34,17 @@ fingerprint can substitute for it.
 
 Inspection checks the retained metadata, capsule authority and source closure without
 performing native image decoding. A stored analysis is not reported as an executed replay.
-For a detector-backed watch or corroboration event, the response also includes `retained_detector`: the package,
+For a detector-backed watch, dwell or corroboration event, the response also includes
+`retained_detector`: the package,
 manifest, model, recipe and threshold-contract digests, kernel generation and inference
 selection bounds. The complete archived package and every class-evidence record must be in
 the analysis closure. Entry and class-frame capsule digests must match the exact retained
 coding segments, rather than merely naming some valid capsule from the same camera.
-For both profiles, an entry's retained capture interval must also equal that exact source
-capsule's interval, including native container presentation-time mapping. Consistent outer
-event bounds cannot conceal a substituted entry time.
+An entry's retained capture interval must also equal that exact source capsule's interval,
+including native container presentation-time mapping. Dwell inspection binds each episode's
+first, triggering and final sample to its exact source capsule, epoch and reliable capture
+interval. Display positions remain distinct from coding-segment identities for B-pictures.
+Consistent outer event bounds cannot conceal a substituted sample time.
 Corroboration inspection also checks the two ground observations, the selected pair's exact
 class-record lists, complete per-camera model closures and continuous global admission/head-work
 counters. Its policy evidence is reconstructed from ground witnesses and declared common causes;
@@ -71,11 +74,14 @@ threshold, zone, interpretation, health-policy or publication override.
 Verification opens the exact retained imports, applies current sensor privacy, decodes the
 selected MJPEG, H.264 or H.265 recording in native display order, and reruns the complete
 foreground/tracker analysis. Watch replay preserves the original selected subrange and
-absolute entry position. Corroboration replay runs both complete camera scans and reconstructs
+absolute entry position. Dwell replay restores the original duration, maximum sampling gap,
+minimum observation count and completed-episode boundaries. Corroboration replay runs both
+complete camera scans and reconstructs
 their ground transforms, association gates, common-cause declarations and optional health
 screen.
 
-Detector-backed watch and corroboration replay additionally load the exact retained package archive, verify
+Detector-backed watch, dwell and corroboration replay additionally load the exact retained
+package archive, verify
 its manifest, model, threshold contract and kernel generation, and run the original bounded
 native RGB inference and class association. The original model file can be deleted after
 publication. No loose package path or model/threshold/backend substitution is accepted.
@@ -84,6 +90,13 @@ source/JPEG/pixel work are part of the reproduced analysis.
 For corroboration, the rerun shares one inference allowance and one detection-head work budget
 across both native recordings, preserving the original camera/selection/execution ordering.
 Neither the loose package nor either original input file is required after complete publication.
+
+Dwell classification preserves the producer's qualifying-episode selection: the first actual
+matched samples inside each completed qualifying span, with `dwell_start` on its first selection.
+It does not select a different sample at the duration threshold. Class records remain under the
+shared analysis root; episode manifests keep their original two children. Every dwell class
+edge remains non-supporting `DerivedFrom`, and replay cannot turn a class annotation into an
+occupancy, identity or alert claim.
 
 The full analyses, candidate provenance and committed event must match. A matching event alone
 cannot hide a changed background scan or omitted frame. Divergence or a bound failure returns
@@ -104,11 +117,17 @@ retained settings and uses the caller's current bounded native codec/read limits
 compares the complete native output with the retained analysis. The response describes this
 scope explicitly; it does not invent missing historical settings or change the stored format.
 
-Detector-backed whole-recording watch publications add a canonical recipe with the complete
-original native scan ceilings and package settings. Replay checks every numeric reservation
+Historical model-free dwell publications retain their semantic temporal recipe, but no original
+aggregate source, codec or per-object execution ceilings. Dwell replay uses the current caller's
+bounded execution ceilings and labels that scope explicitly. It accepts native MJPEG, AVC and
+HEVC imports, including supported MP4 and Matroska containers, while preserving the original
+JPEG or display-order inter-coded policy identity.
+
+Detector-backed whole-recording watch and dwell publications add a canonical recipe with the
+complete original native scan ceilings and package settings. Replay checks every numeric reservation
 against current caller ceilings and restores the original values. Model-free historical
 publications keep their existing bytes and interpretation. The JSON identifies the complete
-detector recipe separately from the historical five-budget watch recipe.
+detector recipe separately from the historical five-budget watch or semantic-only dwell recipe.
 
 Detector-backed corroboration recipes retain the same complete model execution component inside
 their distinct ground-selection composition. Native limits must exactly agree with the enclosing
@@ -138,7 +157,8 @@ All numeric options require positive unsigned decimal values. Source, pixel, ass
 trace and JPEG-work execution ceilings apply separately to each camera's complete recording.
 They never refill at frame or chunk boundaries. For corroboration the complete two-camera
 reservation is therefore twice the selected per-camera reservation.
-For detector-backed watch and corroboration, source, JPEG and pixel ceilings span both native passes of each camera. The
+For detector-backed watch, dwell and corroboration, source, JPEG and pixel ceilings span both
+native passes of each camera. The
 retained package archive is charged to the cumulative metadata-read bound. The recipe's
 inference allowance remains global to the selected analysis (both cameras for corroboration); at most 64 selected frames can enter
 the native inference pipeline. Cooperative cancellation is checked at frame and inference
@@ -170,7 +190,9 @@ the deployment. Existing files are not overwritten. An export failure may leave 
 external file, but neither export success nor failure changes event authority.
 
 The ordinary short-watch/corroboration and package-event readers retain their existing
-contracts. Long-dwell uses its existing `fss-replay-dwell` workflow.
+contracts. The dedicated MJPEG `fss-replay-dwell` workflow remains available with its existing
+analysis-root pin and output contract. Use the generic `fss-event read`/`verify` workflow above
+for native AVC/HEVC dwell replay; its second pin is the selected episode's `provenance_root`.
 
 ## Focused validation
 
@@ -211,3 +233,11 @@ These runs used the same pinned native compiler, offline dependencies, one Cargo
 test debug information and incremental compilation, and a local serial frontend/backend
 setting for the large reference crate. The serial setting resolved shared build-memory kills;
 it changes neither the retained inference backend nor the project's toolchain or dependencies.
+
+The additional sampled-dwell cases exercise the existing upstream producer through general
+cold inspection and replay: model-free and trained JPEG/AVC/HEVC, a 300-frame AVC episode
+whose selected classes precede its 20-second threshold, separate display/coding associations,
+exact retained model custody after loose input removal, current privacy and reservation
+refusals, missing source/capsule payloads, cancellation, and self-consistently rehashed opaque
+trace claims that still fail actual native recomputation. Separate test modules preserve the
+existing dedicated MJPEG and trained producer regressions.

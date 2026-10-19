@@ -1,5 +1,11 @@
 # Native replay of retained dwell events
 
+This page documents the dedicated MJPEG `fss-replay-dwell` command. The generic
+[`fss-event read` and `verify` commands](long_event_replay.md) also support retained sampled-dwell
+events from native AVC and HEVC recordings, including trained classifier replay. Their second
+selection pin is the episode provenance root; the dedicated command below keeps its existing
+shared-analysis-root pin.
+
 `fss-replay-dwell` recovers the original perception recipe from a committed whole-recording
 MJPEG dwell event and can execute that recipe again from retained source. The original source
 file and the original `fss-event watch` command are not required. Detector-enabled events also

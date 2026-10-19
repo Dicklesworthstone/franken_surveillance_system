@@ -73,12 +73,12 @@ const HELP: &str = "fss-event <report|prepare|publish|read|verify|watch|corrobor
     exact analysis and the authoritative event/provenance graphs. Package reads do not run\n\
     the model. Missing, damaged or superseded evidence is refused; exact retries preserve\n\
     the original revision, event root and publication anchor.\n\
-    event:long-watch: and event:long-corroborated: use a bounded cold inspection of the\n\
+    event:long-watch:, event:long-dwell: and event:long-corroborated: use bounded cold inspection of the\n\
     committed event and retained recipe. Their JSON says inspected_not_replayed and provides\n\
     an exact verification command; inspection does not decode or certify perception.\n\
   verify: --event-id ID --expected-event-revision sha256:HEX\n\
           --expected-provenance-root sha256:HEX --execute-perception yes\n\
-    Replays a committed whole-recording watch/corroboration event from retained sources,\n\
+    Replays a committed whole-recording watch/dwell/corroboration event from retained sources,\n\
     current privacy and its original recipe. Every analysis and the exact event must match.\n\
     Source paths, thresholds, zones, detector packages and event approvals are not inputs.\n\
     Use fss-event verify --help for metadata, per-camera execution and report bounds.\n\

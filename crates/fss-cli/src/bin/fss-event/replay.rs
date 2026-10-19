@@ -29,14 +29,15 @@ const HELP: &str = "fss-event read --root EXISTING_DIR --site SITE --event-id EV
 fss-event verify --root EXISTING_DIR --site SITE --event-id EVENT\n\
   --expected-event-revision sha256:HEX --expected-provenance-root sha256:HEX\n\
   --execute-perception yes\n\
-Supports committed event:long-watch: and event:long-corroborated: candidates.\n\
+Supports committed event:long-watch:, event:long-dwell: and event:long-corroborated: candidates.\n\
 Read inspects retained event/analysis custody without decoding media. Its JSON contains exact\n\
 verification pins and a verification command. Model-free watch retains its semantic recipe\n\
-and five aggregate budgets; historical codec/read ceilings use current caller bounds.\n\
-Detector-backed watch and corroboration retain complete canonical execution recipes.\n\
+and five aggregate budgets; model-free dwell retains its semantic temporal recipe only.\n\
+Missing historical execution ceilings use current caller bounds. Trained watch and dwell,\n\
+and complete corroboration profiles, retain their exact canonical execution recipes.\n\
 Verify natively decodes retained MJPEG/H.264/H.265, applies current privacy and reruns the\n\
-original foreground/tracker, zone or ground gates, dependencies and optional health screen.\n\
-Detector-backed watch also reloads its retained model archive and reruns the exact bounded\n\
+original foreground/tracker, zone/ground or sampled-dwell gates and optional health screen.\n\
+Trained profiles also reload their retained model archive and rerun the exact bounded\n\
 RGB inference, threshold and association policy with the original kernel generation.\n\
 Every complete analysis and the committed event must match. No source file, saved report,\n\
 threshold, zone, model, screening override, publication approval or network is accepted.\n\
@@ -91,7 +92,9 @@ struct Options {
 }
 
 fn supported(value: &str) -> bool {
-    value.starts_with("event:long-watch:") || value.starts_with("event:long-corroborated:")
+    value.starts_with("event:long-watch:")
+        || value.starts_with("event:long-dwell:")
+        || value.starts_with("event:long-corroborated:")
 }
 
 /// Keep every existing non-stream event read on its original parser and output contract.
@@ -185,8 +188,9 @@ fn parse(args: &[OsString]) -> Result<Options, String> {
     let suffix = event
         .as_str()
         .strip_prefix("event:long-watch:")
+        .or_else(|| event.as_str().strip_prefix("event:long-dwell:"))
         .or_else(|| event.as_str().strip_prefix("event:long-corroborated:"))
-        .ok_or("cold read/verify requires a long-watch or long-corroborated event")?;
+        .ok_or("cold read/verify requires a long-watch, long-dwell or long-corroborated event")?;
     if suffix.len() != 64
         || !suffix
             .bytes()
@@ -364,6 +368,10 @@ fn report(
             recipe.detector_recipe(),
             recipe.complete_codec_limits_retained(),
         ),
+        LongEventReplayRecipe::Dwell(recipe) => (
+            recipe.detector_recipe(),
+            recipe.complete_codec_limits_retained(),
+        ),
         LongEventReplayRecipe::Corroboration(recipe) => (recipe.detector_recipe(), true),
     };
     let mut fields = vec![
@@ -453,13 +461,19 @@ fn report(
         ),
         (
             "configuration_source",
-            string(if detector.is_some() {
-                "retained_canonical_watch_and_detector_recipe"
-            } else if inspection.profile() == "long_watch" {
-                "retained_semantic_recipe_and_five_aggregate_budgets"
-            } else {
-                "retained_canonical_recipe"
-            }),
+            string(
+                if detector.is_some() && inspection.profile() == "long_dwell" {
+                    "retained_canonical_dwell_and_detector_recipe"
+                } else if detector.is_some() {
+                    "retained_canonical_watch_and_detector_recipe"
+                } else if inspection.profile() == "long_dwell" {
+                    "retained_semantic_dwell_recipe"
+                } else if inspection.profile() == "long_watch" {
+                    "retained_semantic_recipe_and_five_aggregate_budgets"
+                } else {
+                    "retained_canonical_recipe"
+                },
+            ),
         ),
         (
             "decoder_and_read_ceiling_source",

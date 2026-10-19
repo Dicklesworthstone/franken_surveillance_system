@@ -38,11 +38,11 @@ pub struct WatchReplayRecipe {
 }
 
 #[derive(Clone)]
-struct RetainedDetector {
-    recipe: LongWatchDetectorRecipe,
-    inventory: RetainedInventory,
-    outcome_digest: ContentDigest,
-    archive: Vec<u8>,
+pub(super) struct RetainedDetector {
+    pub(super) recipe: LongWatchDetectorRecipe,
+    pub(super) inventory: RetainedInventory,
+    pub(super) outcome_digest: ContentDigest,
+    pub(super) archive: Vec<u8>,
 }
 impl std::fmt::Debug for RetainedDetector {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
@@ -284,27 +284,16 @@ fn watch_extensions(
     Ok((screened, detector))
 }
 
-fn decode(
-    bytes: &[u8],
-    limits: &LongEventReplayLimits,
-    cx: &ReplayCx,
-) -> Result<WatchReplayRecipe> {
-    if bytes.len() > MAX_LONG_EVENT_ANALYSIS_BYTES {
-        return Err(Error::Limit);
-    }
-    let mut d = CanonicalDecoder::new(bytes);
-    if d.text()? != ANALYSIS_DOMAIN || digest(&mut d)? != ContentDigest::sha256(POLICY) {
-        return Err(Error::UnsupportedProfile);
-    }
-    let site = site(&mut d)?;
-    let plan_digest = digest(&mut d)?;
-    let import_identity = digest(&mut d)?;
+pub(super) fn read_plan(d: &mut CanonicalDecoder<'_>) -> Result<(String, WatchPlan)> {
+    let site = site(d)?;
+    let plan_digest = digest(d)?;
+    let import_identity = digest(d)?;
     let first_segment = usize::try_from(d.u64()?).map_err(|_| Error::Limit)?;
-    let segment_count = count(&mut d, MAX_LONG_DWELL_FRAMES)?;
+    let segment_count = count(d, MAX_LONG_DWELL_FRAMES)?;
     if segment_count == 0 || first_segment.checked_add(segment_count).is_none() {
         return Err(Error::InvalidRecord);
     }
-    let zone_count = count(&mut d, 16)?;
+    let zone_count = count(d, 16)?;
     let mut zones = Vec::with_capacity(zone_count);
     for _ in 0..zone_count {
         let zone_id = d.text()?;
@@ -358,6 +347,25 @@ fn decode(
     if plan.digest() != plan_digest {
         return Err(Error::InvalidRecord);
     }
+    Ok((site, plan))
+}
+
+fn decode(
+    bytes: &[u8],
+    limits: &LongEventReplayLimits,
+    cx: &ReplayCx,
+) -> Result<WatchReplayRecipe> {
+    if bytes.len() > MAX_LONG_EVENT_ANALYSIS_BYTES {
+        return Err(Error::Limit);
+    }
+    let mut d = CanonicalDecoder::new(bytes);
+    if d.text()? != ANALYSIS_DOMAIN || digest(&mut d)? != ContentDigest::sha256(POLICY) {
+        return Err(Error::UnsupportedProfile);
+    }
+    let (site, plan) = read_plan(&mut d)?;
+    let import_identity = plan.import_identity;
+    let first_segment = plan.first_segment;
+    let segment_count = plan.segment_count;
     let import_root = digest(&mut d)?;
     let manifest = digest(&mut d)?;
     let anchor = LedgerAnchor::decode_canonical(&mut d)?;

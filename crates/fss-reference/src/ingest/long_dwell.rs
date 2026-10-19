@@ -68,20 +68,21 @@ pub const MAX_LONG_DWELL_ASSIGNMENT: u64 = 64 * 1024 * 1024 * 1024;
 const MAX_TRACKS: usize = 64;
 const MAX_REFUSAL_RUNS: usize = 128;
 const MAX_REPORT_BYTES: usize = 1024 * 1024;
-const POLICY: &[u8] = b"fss.long-dwell.policy.v1:mjpeg-native-luma:masked-before-perception:\
+pub(super) const POLICY: &[u8] =
+    b"fss.long-dwell.policy.v1:mjpeg-native-luma:masked-before-perception:\
 running-variance:kalman-global-iou:confirmed-actual-matches:strict-rounded-zone-interior:\
 conservative-capture-endpoints:reset-background-and-tracker-on-source-or-decode-gap:\
 one-whole-range-budget:unclassified:indeterminate:hold:no-absence:no-alert";
 /// Policy of inter-coded (H.264/H.265, Annex-B or MP4) scans: frames in display order, dwell
 /// positions are display positions, and decoding restarts only at IDR/IRAP pictures.
-const POLICY_INTER: &[u8] = b"fss.long-dwell.policy.v1:inter-coded-display-order-luma:\
+pub(super) const POLICY_INTER: &[u8] = b"fss.long-dwell.policy.v1:inter-coded-display-order-luma:\
 display-order-positions:idr-or-irap-restart:masked-before-perception:running-variance:\
 kalman-global-iou:confirmed-actual-matches:strict-rounded-zone-interior:\
 conservative-capture-endpoints:reset-background-and-tracker-on-source-or-decode-gap:\
 one-whole-range-budget:unclassified:indeterminate:hold:no-absence:no-alert";
-const ANALYSIS_DOMAIN: &str = "fss.long_dwell_analysis.v1";
+pub(super) const ANALYSIS_DOMAIN: &str = "fss.long_dwell_analysis.v1";
 const FRAME_DOMAIN: &str = "fss.long_dwell_frame.v1";
-const EPISODE_DOMAIN: &str = "fss.long_dwell_episode.v1";
+pub(super) const EPISODE_DOMAIN: &str = "fss.long_dwell_episode.v1";
 const APPROVAL_DOMAIN: &str = "fss.long_dwell_approval.v1";
 const UNCERTAINTY: &str = "Consecutive actual foreground-track samples meet an owner-selected dwell rule. Capture times are operator assumptions; one sensor, uncalibrated, no continuous occupancy or intent proof.";
 type Result<T> = std::result::Result<T, WatchError>;
@@ -1732,6 +1733,10 @@ impl LongDwellReport {
     /// Exact canonical per-frame trace and its source/rule bindings.
     pub fn analysis_digest(&self) -> ContentDigest {
         ContentDigest::sha256(&self.analysis)
+    }
+    /// Complete root recomputed by the read-only retained replay owner.
+    pub(crate) fn replay_analysis_root(&self) -> ContentDigest {
+        self.analysis_manifest.root()
     }
     /// Actual source-chunk bytes fetched, not per-segment logical lengths.
     pub const fn source_chunk_bytes_read(&self) -> u64 {

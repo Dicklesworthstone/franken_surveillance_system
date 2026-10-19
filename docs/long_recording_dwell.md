@@ -94,10 +94,11 @@ and every event stays **Unclassified, Indeterminate, probability [0,1], Hold**. 
 does not extend a temporal span, certify continuous occupancy, or authorize an alert.
 
 Publication retains the exact package archive, complete native detector recipe, complete outcome
-and every class record under the shared analysis root. For MJPEG events, `fss-replay-dwell` can
-reconstruct and execute the trained stage entirely from custody after both loose source and model
-files disappear; see [native dwell replay](native_dwell_replay.md). Inter-coded analysis and
-classification are supported, while the dedicated dwell replay command still admits MJPEG only.
+and every class record under the shared analysis root. `fss-event read` and `fss-event verify`
+can reconstruct and execute the native temporal and trained stages entirely from custody for
+MJPEG, AVC and HEVC events after both loose source and model files disappear; see
+[whole-recording event replay](long_event_replay.md). The dedicated `fss-replay-dwell` command
+keeps its existing MJPEG-only contract; see [native dwell replay](native_dwell_replay.md).
 
 ## Temporal semantics
 
