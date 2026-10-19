@@ -70,11 +70,16 @@ fn natural_completion_and_failure_are_distinct_outcomes() -> Result<(), Box<dyn 
 {
     let mut a = CancellationLifecycle::new(["w".to_string()], 1_000);
     a.work_completed();
+    assert!(a.outcome().is_none());
+    a.begin_drain(1);
+    a.worker_done("w")?;
     assert_eq!(a.outcome(), Some(&CancelOutcome::Completed));
     let mut b = CancellationLifecycle::new(["w".to_string()], 1_000);
     b.request(1);
     b.begin_drain(2);
     b.work_failed("sensor fault");
+    assert!(b.outcome().is_none());
+    b.worker_done("w")?;
     assert_eq!(
         b.outcome(),
         Some(&CancelOutcome::Failed {

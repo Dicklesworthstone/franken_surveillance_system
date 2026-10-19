@@ -20,11 +20,15 @@
 //!   evidence (INV-007: provenance is orthogonal and preserved).
 //! - `finalize` resolves the exact sealing obligation through its original
 //!   owner, including during cancellation, and returns the taint record for
-//!   the evidence ledger. A snapshot or another session cannot supply proof.
+//!   the evidence ledger. Refusal preserves the session and executor for retry;
+//!   a snapshot or another session cannot supply proof.
 //!
 //! The executor is caller-injected: the deterministic reference tests use a
 //! scripted executor; a real process adapter (spawned under the same seal)
-//! is laboratory-only code and lives outside production crates.
+//! is laboratory-only code and lives outside production crates. Finalization
+//! records session bookkeeping; it does not signal, wait for, or prove the exit
+//! of an operating-system process. A process adapter must finish that lifecycle
+//! before finalizing its session.
 
 use fss_core::{ObligationState, OperationId, RegionTree};
 
@@ -107,7 +111,7 @@ pub struct LabTaint {
     pub oracle: String,
     /// Number of consultations issued before this taint was minted.
     pub consultations: u64,
-    /// Drain state at mint time.
+    /// Session drain state at mint time, not an operating-system exit receipt.
     pub drained: bool,
 }
 
@@ -141,7 +145,7 @@ pub enum LabState {
 
 /// One sealed lab-oracle session owned by an authority's region.
 pub struct LabSession<E: LabOracleExecutor> {
-    executor: E,
+    executor: Option<E>,
     oracle: String,
     authority: AuthorityBinding,
     operation: OperationId,
@@ -175,7 +179,7 @@ impl<E: LabOracleExecutor> LabSession<E> {
                 detail: format!("{e}"),
             })?;
         Ok(Self {
-            executor,
+            executor: Some(executor),
             oracle: oracle.to_string(),
             authority: authority.binding().clone(),
             operation,
@@ -207,7 +211,6 @@ impl<E: LabOracleExecutor> LabSession<E> {
         tree: &RegionTree,
         input: &[u8],
     ) -> Result<LabOutput, LabError> {
-        self.require_scope(authority, tree)?;
         match self.state {
             LabState::Sealed => {}
             LabState::Draining => {
@@ -221,6 +224,7 @@ impl<E: LabOracleExecutor> LabSession<E> {
                 });
             }
         }
+        self.require_scope(authority, tree)?;
         authority
             .require_active(tree)
             .map_err(|error| LabError::Region {
@@ -228,6 +232,10 @@ impl<E: LabOracleExecutor> LabSession<E> {
             })?;
         let bytes = self
             .executor
+            .as_mut()
+            .ok_or_else(|| LabError::AlreadyFinalized {
+                oracle: self.oracle.clone(),
+            })?
             .run_oracle(input)
             .map_err(|reason| LabError::OracleFailure {
                 oracle: self.oracle.clone(),
@@ -257,9 +265,12 @@ impl<E: LabOracleExecutor> LabSession<E> {
     /// Terminal close: resolves the drain obligation and returns the final
     /// taint record for the evidence ledger. Cleanup remains permitted while
     /// the owning region is cancelling or draining. The original obligation
-    /// must still be pending; another settlement cannot be rewritten.
+    /// must still be pending; another settlement cannot be rewritten. Refusal
+    /// leaves the session and executor unchanged so the same owner can retry.
+    /// Success releases the executor before returning the taint record. This
+    /// bookkeeping transition does not certify an external process's exit.
     pub fn finalize(
-        mut self,
+        &mut self,
         tree: &mut RegionTree,
         authority: &AuthorityCx,
     ) -> Result<LabTaint, LabError> {
@@ -281,6 +292,7 @@ impl<E: LabOracleExecutor> LabSession<E> {
                 detail: format!("{e}"),
             })?;
         self.state = LabState::Finalized;
+        drop(self.executor.take());
         Ok(LabTaint {
             oracle: self.oracle.clone(),
             consultations: self.consultations,
@@ -384,6 +396,24 @@ mod tests {
         }
     }
 
+    struct TrackedOracle {
+        calls: Rc<Cell<usize>>,
+        drops: Rc<Cell<usize>>,
+    }
+
+    impl LabOracleExecutor for TrackedOracle {
+        fn run_oracle(&mut self, input: &[u8]) -> Result<Vec<u8>, String> {
+            self.calls.set(self.calls.get() + 1);
+            Ok(input.to_vec())
+        }
+    }
+
+    impl Drop for TrackedOracle {
+        fn drop(&mut self) {
+            self.drops.set(self.drops.get() + 1);
+        }
+    }
+
     #[test]
     fn seal_consult_drain_finalize() -> Result<(), Box<dyn std::error::Error>> {
         let (auth, mut tree) = authority()?;
@@ -411,6 +441,17 @@ mod tests {
 
         let taint = session.finalize(&mut tree, &auth)?;
         assert!(taint.drained);
+        assert_eq!(session.state(), LabState::Finalized);
+        session.request_drain();
+        assert_eq!(session.state(), LabState::Finalized);
+        assert!(matches!(
+            session.consult(&auth, &tree, b"after finalization"),
+            Err(LabError::AlreadyFinalized { .. })
+        ));
+        assert!(matches!(
+            session.finalize(&mut tree, &auth),
+            Err(LabError::AlreadyFinalized { .. })
+        ));
         assert!(
             auth.finalize_report(&tree)?.is_empty(),
             "no lab obligation leaks"
@@ -479,7 +520,7 @@ mod tests {
             "lab:shared-name",
             OperationId::parse("op:shared-operation")?,
         )?;
-        let second_session = LabSession::seal(
+        let mut second_session = LabSession::seal(
             &second,
             &mut second_tree,
             CountingOracle(Rc::clone(&calls)),
@@ -524,6 +565,15 @@ mod tests {
         );
         assert_eq!(first.finalize_report(&first_tree)?.len(), 1);
         assert_eq!(second.finalize_report(&second_tree)?.len(), 1);
+        assert_eq!(first_session.state(), LabState::Sealed);
+        let output = first_session.consult(&first, &first_tree, b"correct owner retry")?;
+        assert_eq!(output.taint.consultations, 1);
+        assert_eq!(calls.get(), 1, "the original executor remains usable");
+        first_session.request_drain();
+        let taint = first_session.finalize(&mut first_tree, &first)?;
+        assert!(taint.drained);
+        assert_eq!(taint.consultations, 1);
+        assert!(first.finalize_report(&first_tree)?.is_empty());
         second_session.finalize(&mut second_tree, &second)?;
         assert!(second.finalize_report(&second_tree)?.is_empty());
         Ok(())
@@ -576,6 +626,98 @@ mod tests {
             snapshot_before
         );
         assert_eq!(auth.finalize_report(&tree)?.len(), 1);
+        assert_eq!(session.state(), LabState::Sealed);
+        session.request_drain();
+        auth.begin_drain(&mut tree, TimestampNs(3))?;
+        let taint = session.finalize(&mut tree, &auth)?;
+        assert!(taint.drained);
+        assert_eq!(taint.consultations, 0);
+        assert_eq!(session.state(), LabState::Finalized);
+        assert!(auth.finalize_report(&tree)?.is_empty());
+        assert_eq!(
+            auth.finalize(&mut tree, TimestampNs(4))?.total_obligations,
+            1
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn refused_finalization_preserves_the_same_executor_and_drain_state_for_retry()
+    -> Result<(), Box<dyn std::error::Error>> {
+        for draining in [false, true] {
+            let (auth, mut tree) = authority()?;
+            let (other, mut other_tree) = authority()?;
+            let calls = Rc::new(Cell::new(0));
+            let drops = Rc::new(Cell::new(0));
+            let mut session = LabSession::seal(
+                &auth,
+                &mut tree,
+                TrackedOracle {
+                    calls: Rc::clone(&calls),
+                    drops: Rc::clone(&drops),
+                },
+                "lab:retained-executor",
+                OperationId::parse("op:retained-executor")?,
+            )?;
+            session.consult(&auth, &tree, b"before refusal")?;
+            let mut snapshot = tree.clone();
+            if draining {
+                session.request_drain();
+            }
+            let original_state = session.state();
+            let original_obligation = tree.get(auth.region())?.obligations.clone();
+            assert!(matches!(
+                session.finalize(&mut other_tree, &other),
+                Err(LabError::WrongAuthority { .. })
+            ));
+            assert_eq!(session.state(), original_state);
+            assert_eq!(drops.get(), 0, "a refused owner must not drop the executor");
+            assert!(matches!(
+                session.finalize(&mut snapshot, &auth),
+                Err(LabError::Region { .. })
+            ));
+            assert_eq!(session.state(), original_state);
+            assert_eq!(
+                drops.get(),
+                0,
+                "a refused snapshot must not drop the executor"
+            );
+            assert_eq!(tree.get(auth.region())?.obligations, original_obligation);
+            assert_eq!(
+                snapshot.get(auth.region())?.obligations,
+                original_obligation
+            );
+            if draining {
+                assert!(matches!(
+                    session.consult(&auth, &tree, b"drain remains closed"),
+                    Err(LabError::AlreadyDraining { .. })
+                ));
+            } else {
+                session.consult(&auth, &tree, b"same executor after refusal")?;
+            }
+            assert_eq!(calls.get(), if draining { 1 } else { 2 });
+            auth.request_cancellation(&mut tree, TimestampNs(2))?;
+            auth.begin_drain(&mut tree, TimestampNs(3))?;
+            let taint = session.finalize(&mut tree, &auth)?;
+            assert!(taint.drained);
+            assert_eq!(taint.consultations, if draining { 1 } else { 2 });
+            assert_eq!(session.state(), LabState::Finalized);
+            assert_eq!(
+                drops.get(),
+                1,
+                "successful finalization releases the executor"
+            );
+            assert_eq!(
+                auth.finalize(&mut tree, TimestampNs(4))?.total_obligations,
+                1
+            );
+            drop(session);
+            assert_eq!(
+                drops.get(),
+                1,
+                "the finalized session cannot release it twice"
+            );
+        }
         Ok(())
     }
 
@@ -682,6 +824,13 @@ mod tests {
                 session.finalize(&mut tree, &auth),
                 Err(LabError::ObligationMismatch { .. })
             ));
+            assert_eq!(session.state(), LabState::Sealed);
+            session.request_drain();
+            assert!(matches!(
+                session.finalize(&mut tree, &auth),
+                Err(LabError::ObligationMismatch { .. })
+            ));
+            assert_eq!(session.state(), LabState::Draining);
             assert_eq!(calls.get(), 0, "a settled obligation cannot admit work");
             assert_eq!(
                 (
