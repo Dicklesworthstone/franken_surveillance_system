@@ -32,7 +32,10 @@ impl std::fmt::Display for MediaKernelContractError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
             Self::BoundsViolation { field } => {
-                write!(f, "media kernel contract: {field} exceeds its documented ceiling")
+                write!(
+                    f,
+                    "media kernel contract: {field} exceeds its documented ceiling"
+                )
             }
             Self::ZeroVersion => write!(f, "media kernel contract: version is zero"),
         }
@@ -150,7 +153,8 @@ pub const MJPEG_CONTRACT: MediaKernelContract = MediaKernelContract {
 };
 
 /// The full registry, in canonical kernel order.
-pub const KERNEL_CONTRACTS: [MediaKernelContract; 3] = [H264_CONTRACT, H265_CONTRACT, MJPEG_CONTRACT];
+pub const KERNEL_CONTRACTS: [MediaKernelContract; 3] =
+    [H264_CONTRACT, H265_CONTRACT, MJPEG_CONTRACT];
 
 impl MediaKernelContract {
     /// Validates the contract row against the documented ceilings.
@@ -164,9 +168,7 @@ impl MediaKernelContract {
             MediaKernelId::Mjpeg => MAX_MJPEG_DIMENSION,
         };
         if self.bounds.max_axis > axis_ceiling {
-            return Err(MediaKernelContractError::BoundsViolation {
-                field: "max_axis",
-            });
+            return Err(MediaKernelContractError::BoundsViolation { field: "max_axis" });
         }
         if self.bounds.max_encoded_bytes > MAX_ENCODED_BYTES {
             return Err(MediaKernelContractError::BoundsViolation {
