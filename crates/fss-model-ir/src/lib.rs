@@ -14,6 +14,8 @@ pub mod canonical;
 pub mod decode;
 pub mod error;
 pub mod graph;
+/// Model invocation/receipt protocol (FSS-072).
+pub mod invocation;
 pub mod memory;
 pub mod node;
 /// Bounded offline ONNX conversion; no external execution, downloads or model activation.
