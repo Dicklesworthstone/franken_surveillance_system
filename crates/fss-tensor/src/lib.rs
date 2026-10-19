@@ -10,6 +10,8 @@
 //! - Checked arithmetic prevents panics and overflows on hostile metadata.
 //! - Out-of-bounds aliasing is strictly prohibited.
 
+/// Canonical tensor byte encoding and digests (FSS-138).
+pub mod canonical;
 pub mod dtype;
 pub mod error;
 pub mod shape;
