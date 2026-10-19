@@ -19,6 +19,8 @@ const WIDTH: u32 = 48;
 const HEIGHT: u32 = 32;
 const PERIOD: u64 = 100_000_000;
 
+mod detector;
+
 struct Directory(PathBuf);
 impl Directory {
     fn new(label: &str) -> Test<Self> {
@@ -553,12 +555,34 @@ fn an_h264_mp4_recording_dwells_across_the_whole_range_in_display_order() -> Tes
     assert!(span.first.position < 10);
     assert_eq!(span.trigger.position, span.first.position + 200);
     assert!(report.source_chunk_bytes_read() > 0);
-    assert!(report.source_chunk_bytes_read() <= f.input_bytes + 4096);
-    // Deterministic: an independent second scan reproduces the analysis exactly.
-    assert_eq!(
-        f.analyze(rule())?.analysis_digest(),
-        report.analysis_digest()
-    );
+    // Source admission includes range-open and codec reads. The reported exact allowance must
+    // admit a repeat scan; one byte less must refuse, even though input bytes remain in custody.
+    let mut exact_limits = LongDwellLimits {
+        maximum_source_chunk_bytes: report.source_chunk_bytes_read(),
+        ..LongDwellLimits::default()
+    };
+    let exact = LongDwellReport::analyze(
+        &f.deployment,
+        &f.plan,
+        rule(),
+        WatchOptions::default(),
+        &exact_limits,
+        &f.cx,
+    )?;
+    assert_eq!(exact.analysis_digest(), report.analysis_digest());
+    exact_limits.maximum_source_chunk_bytes -= 1;
+    assert!(matches!(
+        LongDwellReport::analyze(
+            &f.deployment,
+            &f.plan,
+            rule(),
+            WatchOptions::default(),
+            &exact_limits,
+            &f.cx,
+        ),
+        Err(WatchError::Limit)
+    ));
+    assert_eq!(f.snapshot(), before);
     // The same scene as MJPEG uses a different policy, so the identities never collide.
     let mjpeg = Fixture::new("mp4-twin", &scene(true, None, None, false)?, true)?;
     assert_ne!(

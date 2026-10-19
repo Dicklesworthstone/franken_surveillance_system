@@ -79,6 +79,14 @@ pub struct DwellReplayRecipe {
     pub(super) sensor: SensorId,
     pub(super) privacy: ContentDigest,
     pub(super) screened: bool,
+    pub(super) detector: Option<RetainedDetector>,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub(super) struct RetainedDetector {
+    pub(super) recipe: Vec<u8>,
+    pub(super) outcome: Vec<u8>,
+    pub(super) package: ContentDigest,
 }
 impl DwellReplayRecipe {
     /// Exact original range, image zones and foreground/tracker parameters.
@@ -100,6 +108,10 @@ impl DwellReplayRecipe {
     /// Sensor whose current privacy projection must still match the retained recipe.
     pub fn sensor(&self) -> &SensorId {
         &self.sensor
+    }
+    /// Exact archived detector package required by replay, absent for model-free history.
+    pub fn detector_package_digest(&self) -> Option<ContentDigest> {
+        self.detector.as_ref().map(|detector| detector.package)
     }
 
     pub(super) fn decode(bytes: &[u8], check: &mut impl FnMut() -> Result<()>) -> Result<Self> {
@@ -201,9 +213,14 @@ impl DwellReplayRecipe {
         if trace.len() > super::MAX_LONG_DWELL_TRACE_BYTES {
             return Err(Error::Limit);
         }
-        let screened = d.remaining() != 0;
+        let mut section = if d.remaining() == 0 {
+            None
+        } else {
+            Some(d.text()?)
+        };
+        let screened = section == Some("sensor_health");
         if screened {
-            if d.text()? != "sensor_health" || d.bytes()? != policy_bytes() {
+            if d.bytes()? != policy_bytes() {
                 return Err(Error::UnsupportedProfile);
             }
             // A committed screened event is admitted only by a complete, no-findings scan.
@@ -215,7 +232,38 @@ impl DwellReplayRecipe {
             if samples == 0 || samples > segment_count as u64 * 4_194_304 || d.u64()? != 0 {
                 return Err(Error::InvalidRecord);
             }
+            section = if d.remaining() == 0 {
+                None
+            } else {
+                Some(d.text()?)
+            };
         }
+        let detector = match section {
+            None => None,
+            Some("detector_cascade") => {
+                if d.bytes()? != crate::ingest::long_dwell::detector::SELECTION_POLICY {
+                    return Err(Error::UnsupportedProfile);
+                }
+                let recipe = d.bytes()?;
+                let parsed =
+                    crate::ingest::long_watch::detector::LongWatchDetectorRecipe::from_bytes(
+                        recipe,
+                    )?;
+                let outcome = d.bytes()?;
+                let inventory = crate::ingest::long_watch::detector::retained_inventory(outcome)?;
+                if inventory.recipe != parsed.digest()
+                    || inventory.import_identity != plan.import_identity
+                {
+                    return Err(Error::InvalidRecord);
+                }
+                Some(RetainedDetector {
+                    recipe: recipe.to_vec(),
+                    outcome: outcome.to_vec(),
+                    package: parsed.package_digest(),
+                })
+            }
+            Some(_) => return Err(Error::UnsupportedProfile),
+        };
         d.ensure_finished()?;
         let mut frames = CanonicalDecoder::new(trace);
         for segment in first_segment..first_segment + segment_count {
@@ -244,6 +292,7 @@ impl DwellReplayRecipe {
             sensor,
             privacy,
             screened,
+            detector,
         })
     }
 }

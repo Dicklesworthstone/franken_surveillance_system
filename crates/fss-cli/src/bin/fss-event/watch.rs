@@ -26,7 +26,8 @@
 //! Add `--stream-dwell` for one whole MJPEG, H.264 or H.265 (Annex-B or MP4) range (up to 65536
 //! segments; inter-coded frames in display order), with persistent
 //! foreground/tracker state and aggregate source-byte, pixel, assignment and trace ceilings.
-//! This mode refuses detector-package flags rather than silently dropping a requested model.
+//! Explicit detector-package flags classify bounded actual samples from qualifying dwell
+//! episodes, sharing the whole-recording source/pixel/JPEG and model-work allowances.
 //! `--sensor-health conservative-v1` additionally screens the same masked pixels in entry
 //! mode. Suspect runs cannot contribute candidates or coverage witnesses. Whole-recording
 //! `--stream-dwell` uses its existing whole-scan publication gate instead; short dwell is refused.
@@ -519,7 +520,10 @@ pub(super) fn run(
         return result;
     }
     if let Some(limits) = &action.stream_dwell {
-        return run_streaming(action, deployment, root, limits, cx, out);
+        let scalar = ScalarExecCx::new();
+        let result = run_streaming(action, deployment, root, limits, cx, &scalar, out);
+        scalar.drain_and_finalize();
+        return result;
     }
     if action.health_screen && action.dwell.is_some() {
         return Err(
@@ -595,7 +599,10 @@ fn run_streaming_watch(
         !action.approvals.is_empty() || action.retain_health.is_some(),
     )?;
     let fusion_profile = super::detector::load_fusion(action.cascade.as_ref(), cx)?;
-    if fusion_profile.as_ref().is_some_and(|p| p.long_watch_analysis_root().is_none()) {
+    if fusion_profile
+        .as_ref()
+        .is_some_and(|p| p.long_watch_analysis_root().is_none())
+    {
         return Err(EventFusionError::Scope.into());
     }
     // Verify the requested package before reading any source. The same archive is retained
@@ -668,8 +675,13 @@ fn run_streaming_watch(
     if fusion.is_some() {
         super::detector::with_fusion(
             super::health::with_watch_diagnostic(
-                report.to_json(deployment.current_anchor().commit_sequence, Some(&action.rerun))?,
-                report.health_diagnostic(), None, &action.rerun,
+                report.to_json(
+                    deployment.current_anchor().commit_sequence,
+                    Some(&action.rerun),
+                )?,
+                report.health_diagnostic(),
+                None,
+                &action.rerun,
             )?,
             fusion.as_ref(),
         )?;
@@ -707,9 +719,14 @@ fn run_streaming_watch(
             deployment.current_anchor().commit_sequence,
             Some(&action.rerun),
         )?,
-        report.health_diagnostic(), retention.as_ref(), &action.rerun,
+        report.health_diagnostic(),
+        retention.as_ref(),
+        &action.rerun,
     )?;
-    let json = format!("{}\n", super::detector::with_fusion(native, fusion.as_ref())?);
+    let json = format!(
+        "{}\n",
+        super::detector::with_fusion(native, fusion.as_ref())?
+    );
     if fusion.is_some() {
         report.revalidate_derived_source(deployment, cx)?;
         cx.checkpoint("long_watch_fusion:output")?;
@@ -735,7 +752,10 @@ fn run_with(
 ) -> RunResult<()> {
     // Calibration bytes and package bytes are pinned before any retained source is read.
     let fusion_profile = super::detector::load_fusion(action.cascade.as_ref(), cx)?;
-    if fusion_profile.as_ref().is_some_and(|p| p.long_watch_analysis_root().is_some()) {
+    if fusion_profile
+        .as_ref()
+        .is_some_and(|p| p.long_watch_analysis_root().is_some())
+    {
         return Err(EventFusionError::Scope.into());
     }
     // The package is verified (digest before parsing) before any source is read.
@@ -919,12 +939,6 @@ fn streaming_limits(
         }
         return Ok(None);
     }
-    if values
-        .iter()
-        .any(|(key, _)| super::detector::OPTIONS.contains(&key.as_str()))
-    {
-        return Err("--stream-dwell does not admit detector-package options".to_owned());
-    }
     let defaults = LongDwellLimits::default();
     let limits = LongDwellLimits {
         decode,
@@ -949,20 +963,37 @@ fn streaming_limits(
     Ok(Some(limits))
 }
 
+#[allow(clippy::too_many_arguments)]
 fn run_streaming(
     action: &WatchAction,
     deployment: &mut ReferenceDeployment,
     root: &Path,
     limits: &LongDwellLimits,
     cx: &ReplayCx,
+    scalar: &ScalarExecCx,
     out: &mut impl Write,
 ) -> RunResult<()> {
     // Refuse inapplicable modes even when a future internal caller bypasses parse.
-    if action.cascade.is_some() || action.retain_coverage.is_some() {
-        return Err(
-            WatchError::InvalidPlan("streaming dwell has no model or coverage owner").into(),
-        );
+    if action.retain_coverage.is_some() {
+        return Err(WatchError::InvalidPlan("streaming dwell has no coverage owner").into());
     }
+    super::detector::check_watch_fusion_mode(action.cascade.as_ref(), false, false)?;
+    let package = action
+        .cascade
+        .as_ref()
+        .map(|options| super::detector::load_with_archive(options, cx, scalar))
+        .transpose()?;
+    let detector = match (&action.cascade, &package) {
+        (Some(options), Some((package, archive))) => Some(LongWatchDetector::new(
+            package,
+            archive,
+            options.config,
+            PackageDetectLimits::default(),
+            scalar,
+        )?),
+        (None, None) => None,
+        _ => return Err(WatchError::Conflict.into()),
+    };
     let rule = action
         .dwell
         .ok_or(WatchError::InvalidPlan("streaming dwell requires a rule"))?;
@@ -992,12 +1023,22 @@ fn run_streaming(
         detector: action.detector,
         tracker: action.tracker,
     };
-    let analyze = if action.health_screen {
-        LongDwellReport::analyze_screened
-    } else {
-        LongDwellReport::analyze
+    let mut report = match &detector {
+        Some(detector) => LongDwellReport::analyze_with_detector(
+            deployment,
+            &plan,
+            rule,
+            action.options,
+            limits,
+            detector,
+            action.health_screen,
+            cx,
+        )?,
+        None if action.health_screen => {
+            LongDwellReport::analyze_screened(deployment, &plan, rule, action.options, limits, cx)?
+        }
+        None => LongDwellReport::analyze(deployment, &plan, rule, action.options, limits, cx)?,
     };
-    let mut report = analyze(deployment, &plan, rule, action.options, limits, cx)?;
     let sequence = if report.health_diagnostic().is_some() {
         u64::MAX
     } else {

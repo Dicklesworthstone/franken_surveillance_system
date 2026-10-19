@@ -1,5 +1,5 @@
 #![forbid(unsafe_code)]
-//! Real CLI on long retained MJPEG sources. No external encoder, model or network service.
+//! Real CLI on long retained MJPEG sources and the repository's pinned native detector package.
 
 use std::ffi::OsString;
 use std::fs;
@@ -213,6 +213,91 @@ fn long_preview_publish_and_cold_retry_use_one_event_after_original_file_removal
         field(&retry, "analysis_digest")?,
         field(&preview, "analysis_digest")?
     );
+    assert_eq!(f.snapshot()?, after);
+    Ok(())
+}
+
+#[test]
+fn trained_dwell_cli_publishes_and_cold_replays_without_loose_source_or_model() -> Test {
+    const PACKAGE: &[u8] = include_bytes!(concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/../../models/yolox-nano/yolox_nano.fmpk"
+    ));
+    const DIGEST: &str = "sha256:5b6568750faa375de3742e5eb310fbd4e22ff26e1ba727f193b79ab984a68c74";
+    let f = Fixture::new("trained-cold", true, true)?;
+    let path = f.directory.0.join("detector package.fmpk");
+    fs::write(&path, PACKAGE)?;
+    let mut args = f.args();
+    args.extend([
+        "--detector-package".into(),
+        path.as_os_str().to_owned(),
+        "--detector-digest".into(),
+        DIGEST.into(),
+        "--detector-max-inferences".into(),
+        "1".into(),
+        "--detector-frames-per-track".into(),
+        "3".into(),
+    ]);
+    let before = f.snapshot()?;
+    let preview = good(run(&args)?)?;
+    assert_eq!(f.snapshot()?, before);
+    assert!(preview.contains("\"frames_decoded\":300"));
+    assert!(preview.contains("\"inferred_segments\":[5]"));
+    assert!(preview.contains("\"budget_skipped_segments\":[6,7]"));
+    assert!(preview.contains("\"selection\":\"dwell_start\""));
+    assert!(preview.contains("\"model_invoked\":true"));
+    assert!(preview.contains("\"event_state\":\"indeterminate\""));
+    let event = preview
+        .split_once("\"event_id\":\"")
+        .ok_or("event ID")?
+        .1
+        .split_once('"')
+        .ok_or("event ID terminator")?
+        .0
+        .to_owned();
+    fss_core::EventId::parse(&event)?;
+    args.extend([
+        "--approve".into(),
+        field(&preview, "proposal_digest")?.into(),
+    ]);
+    let published = good(run(&args)?)?;
+    assert!(published.contains("\"status\":\"published\""));
+    let after = f.snapshot()?;
+    fs::remove_file(path)?;
+    let mut replay_args: Vec<OsString> = vec![
+        "inspect".into(),
+        "--root".into(),
+        f.root.as_os_str().to_owned(),
+        "--site".into(),
+        SITE.into(),
+        "--event-id".into(),
+        event.into(),
+    ];
+    let inspected = good(
+        Command::new(env!("CARGO_BIN_EXE_fss-replay-dwell"))
+            .args(&replay_args)
+            .output()?,
+    )?;
+    assert!(inspected.contains("\"native_replayed\":false"));
+    assert_eq!(field(&inspected, "detector_package_digest")?, DIGEST);
+    assert_eq!(f.snapshot()?, after);
+    replay_args[0] = "verify".into();
+    replay_args.extend([
+        "--expected-event-revision".into(),
+        field(&inspected, "event_revision_digest")?.into(),
+        "--expected-analysis-root".into(),
+        field(&inspected, "analysis_root")?.into(),
+        "--execute-perception".into(),
+        "yes".into(),
+    ]);
+    let verified = good(
+        Command::new(env!("CARGO_BIN_EXE_fss-replay-dwell"))
+            .args(&replay_args)
+            .output()?,
+    )?;
+    assert!(verified.contains("\"status\":\"native_replay_matched\""));
+    assert!(verified.contains("\"frames_replayed\":300"));
+    assert!(verified.contains("\"alert_authorized\":false"));
     assert_eq!(f.snapshot()?, after);
     Ok(())
 }

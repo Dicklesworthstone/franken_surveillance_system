@@ -25,7 +25,8 @@ fss-replay-dwell verify --root EXISTING_DIR --site SITE --event-id EVENT\n\
   --execute-perception yes [bounds]\n\
 Inspect reconstructs the original retained recipe; it does NOT execute or verify perception.\n\
 Verify natively decodes retained MJPEG, applies current privacy, and reruns foreground, tracking,\n\
-dwell and the original optional health screen. The entire trace and committed event must match.\n\
+dwell, the original optional health screen and any retained native detector recipe.\n\
+The entire trace, classifier output and committed event must match.\n\
 No original input path, saved CLI command, external model, network or pixel export is needed.\n\
 Changed privacy, missing custody, stale pins, unsupported profiles and divergence fail closed.\n\
 Common bounds: --max-metadata-bytes N --max-report-bytes N [--principal ID]\n\
@@ -163,7 +164,7 @@ fn parse(args: &[OsString]) -> Result<Options, String> {
         &values,
         "--max-metadata-bytes",
         limits.maximum_metadata_bytes as u64,
-        32 * 1024 * 1024,
+        fss_reference::ingest::long_dwell_replay::MAX_REPLAY_METADATA_BYTES as u64,
     )? as usize;
     let maximum_report_bytes = number(&values, "--max-report-bytes", 65_536, 1024 * 1024)? as usize;
     let execution = &mut limits.execution;
@@ -201,6 +202,13 @@ fn parse(args: &[OsString]) -> Result<Options, String> {
         number(&values, "--max-dimension", 4096, 4096)? as u32;
     execution.decode.jpeg_limits.maximum_pixels =
         number(&values, "--max-pixels", 4_194_304, 4_194_304)? as usize;
+    // Watch applies its declared dimension ceiling to every codec. A retained detector recipe
+    // includes inactive codec settings too, so replay must admit that same explicit ceiling.
+    let dimension = execution.decode.jpeg_limits.maximum_dimension;
+    execution.decode.h264_limits.max_width = dimension;
+    execution.decode.h264_limits.max_height = dimension;
+    execution.decode.h265_limits.max_width = dimension;
+    execution.decode.h265_limits.max_height = dimension;
     execution.decode.read_limits.max_segment_bytes = number(
         &values,
         "--max-segment-bytes",
@@ -339,6 +347,12 @@ fn report(
         ),
         ("anchor", evidence_anchor(inspected.basis())),
         ("native_replayed", verified.to_string()),
+        (
+            "detector_package_digest",
+            recipe
+                .detector_package_digest()
+                .map_or_else(|| "null".into(), |digest| string(&digest.to_text())),
+        ),
         (
             "frames_replayed",
             execution.map_or_else(|| "null".into(), |(frames, _)| frames.to_string()),

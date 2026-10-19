@@ -45,8 +45,11 @@ use crate::{
     ReferenceDeployment, ReferenceError, ReferencePolicyAction, ReferencePolicyDecision, ReplayCx,
 };
 
+pub(super) mod detector;
 pub(in crate::ingest) mod limits;
 pub(super) mod reader;
+/// Verified immutable trained classifier and its bounded native inference policy.
+pub use super::long_watch::LongWatchDetector as LongDwellDetector;
 use reader::ChunkCursor;
 mod health;
 use health::Screening;
@@ -140,6 +143,7 @@ struct Episode {
 #[derive(Clone, Debug)]
 pub struct LongDwellCandidate {
     episode: Episode,
+    class_evidence: Vec<super::detector_cascade::ClassEvidence>,
     event: EventHypothesis,
     record: Vec<u8>,
     manifest: ObjectManifest,
@@ -164,6 +168,10 @@ impl LongDwellCandidate {
     pub const fn status(&self) -> WatchStatus {
         self.status
     }
+    /// Uncalibrated class annotations from actual observations within this episode only.
+    pub fn class_evidence(&self) -> &[super::detector_cascade::ClassEvidence] {
+        &self.class_evidence
+    }
 }
 
 /// Complete bounded result. Analysis writes no objects or authority; publication is separate.
@@ -178,6 +186,7 @@ pub struct LongDwellReport {
     basis: LedgerAnchor,
     import_root: ContentDigest,
     sensor: SensorId,
+    media_format: String,
     privacy: MaskBinding,
     publication_guard: SourcePublicationGuard,
     analysis: Vec<u8>,
@@ -197,6 +206,7 @@ pub struct LongDwellReport {
     policy: &'static [u8],
     health: Option<LongDwellHealthSummary>,
     health_diagnostic: Option<super::historical_health::HistoricalHealthDiagnostic>,
+    detector: Option<super::long_watch::detector::Completed>,
 }
 
 fn checkpoint(cx: &ReplayCx, stage: &'static str) -> Result<()> {
@@ -601,8 +611,7 @@ impl Scan<'_, '_> {
         let plan = self.plan;
         let decode = self.limits.decode;
         let mut position = plan.first_segment;
-        let source_budget = (!matches!(self.rule, ScanRule::Dwell(_)))
-            .then(|| SourceReadBudget::new(self.limits.maximum_source_chunk_bytes));
+        let source_budget = SourceReadBudget::new(self.limits.maximum_source_chunk_bytes);
         if options.tolerate_decode_refusals {
             let request = TolerantRequest {
                 import_identity: plan.import_identity,
@@ -615,12 +624,8 @@ impl Scan<'_, '_> {
                 h265_limits: decode.h265_limits,
                 stream: true,
             };
-            let mut source = match &source_budget {
-                Some(budget) => {
-                    TolerantSource::open_with_source_budget(deployment, request, budget, cx)
-                }
-                None => TolerantSource::open(deployment, request, cx),
-            }?;
+            let mut source =
+                TolerantSource::open_with_source_budget(deployment, request, &source_budget, cx)?;
             let mut budget = DecodeBudget::new(decode.jpeg_work_units);
             while let Some(item) = source.next(deployment, &mut budget, cx)? {
                 checkpoint(cx, "long_dwell:frame")?;
@@ -690,12 +695,12 @@ impl Scan<'_, '_> {
                 read_limits: decode.read_limits,
                 decoder_limits: decode.h264_limits,
             };
-            let mut range = match &source_budget {
-                Some(budget) => RecordedH264Range::open_stream_with_source_budget(
-                    deployment, request, budget, cx,
-                ),
-                None => RecordedH264Range::open_stream(deployment, request, cx),
-            }?;
+            let mut range = RecordedH264Range::open_stream_with_source_budget(
+                deployment,
+                request,
+                &source_budget,
+                cx,
+            )?;
             while let Some(decoded) = range.next_frame(deployment, cx)? {
                 checkpoint(cx, "long_dwell:frame")?;
                 let frame = frame(
@@ -708,9 +713,7 @@ impl Scan<'_, '_> {
                 self.inter_frame(position, frame, first_capsule, screened, cx)?;
                 position = position.checked_add(1).ok_or(WatchError::Limit)?;
             }
-            Ok(source_budget
-                .as_ref()
-                .map_or(range.chunk_bytes_read(), SourceReadBudget::used))
+            Ok(source_budget.used())
         } else {
             let request = RecordedH265Request {
                 import_identity: plan.import_identity,
@@ -720,12 +723,12 @@ impl Scan<'_, '_> {
                 read_limits: decode.read_limits,
                 decoder_limits: decode.h265_limits,
             };
-            let mut range = match &source_budget {
-                Some(budget) => RecordedH265Range::open_stream_with_source_budget(
-                    deployment, request, budget, cx,
-                ),
-                None => RecordedH265Range::open_stream(deployment, request, cx),
-            }?;
+            let mut range = RecordedH265Range::open_stream_with_source_budget(
+                deployment,
+                request,
+                &source_budget,
+                cx,
+            )?;
             while let Some(decoded) = range.next_frame(deployment, cx)? {
                 checkpoint(cx, "long_dwell:frame")?;
                 let frame = frame(
@@ -738,9 +741,7 @@ impl Scan<'_, '_> {
                 self.inter_frame(position, frame, first_capsule, screened, cx)?;
                 position = position.checked_add(1).ok_or(WatchError::Limit)?;
             }
-            Ok(source_budget
-                .as_ref()
-                .map_or(range.chunk_bytes_read(), SourceReadBudget::used))
+            Ok(source_budget.used())
         }
     }
 }
@@ -1467,7 +1468,7 @@ fn run_scan_inner(
 }
 
 impl LongDwellReport {
-    /// Decode a whole MJPEG range once, preserving foreground/tracker/dwell state between frames.
+    /// Decode a whole native recording, preserving foreground/tracker/dwell state between frames.
     /// No 128-frame windows, model calls, pixel history, implicit retries, or coverage claims.
     pub fn analyze(
         deployment: &ReferenceDeployment,
@@ -1477,7 +1478,7 @@ impl LongDwellReport {
         limits: &LongDwellLimits,
         cx: &ReplayCx,
     ) -> Result<Self> {
-        Self::analyze_inner(deployment, plan, rule, options, limits, cx, false)
+        Self::analyze_inner(deployment, plan, rule, options, limits, cx, false, None)
     }
 
     /// Opt-in conservative-v1 screening over the same masked pixels, before perception.
@@ -1491,9 +1492,36 @@ impl LongDwellReport {
         limits: &LongDwellLimits,
         cx: &ReplayCx,
     ) -> Result<Self> {
-        Self::analyze_inner(deployment, plan, rule, options, limits, cx, true)
+        Self::analyze_inner(deployment, plan, rule, options, limits, cx, true, None)
     }
 
+    /// Analyze the complete recording, then classify bounded actual observations belonging to
+    /// qualifying dwell episodes. Source, pixels, JPEG work, inference slots and detection-head
+    /// work share one whole-invocation allowance. Publication retains the exact model package.
+    #[allow(clippy::too_many_arguments)]
+    pub fn analyze_with_detector(
+        deployment: &ReferenceDeployment,
+        plan: &WatchPlan,
+        rule: DwellPolicy,
+        options: WatchOptions,
+        limits: &LongDwellLimits,
+        detector: &LongDwellDetector<'_>,
+        screened: bool,
+        cx: &ReplayCx,
+    ) -> Result<Self> {
+        Self::analyze_inner(
+            deployment,
+            plan,
+            rule,
+            options,
+            limits,
+            cx,
+            screened,
+            Some(detector),
+        )
+    }
+
+    #[allow(clippy::too_many_arguments)]
     fn analyze_inner(
         deployment: &ReferenceDeployment,
         plan: &WatchPlan,
@@ -1502,7 +1530,50 @@ impl LongDwellReport {
         limits: &LongDwellLimits,
         cx: &ReplayCx,
         screened: bool,
+        detector: Option<&LongDwellDetector<'_>>,
     ) -> Result<Self> {
+        if let Some(detector) = detector {
+            let _ = super::long_watch::detector::LongWatchDetectorRecipe::new(
+                detector.package,
+                detector.config,
+                detector.limits,
+                limits,
+            )?;
+        }
+        let scan = run_scan(
+            deployment,
+            plan,
+            ScanRule::Dwell(rule),
+            options,
+            limits,
+            cx,
+            screened,
+        )?;
+        let detector = match detector {
+            Some(detector) => {
+                let selected = detector::select(&scan, detector.config, cx)?;
+                let mut allowance = super::long_watch::detector::AnalysisBudget::new(detector);
+                let mut completed = super::long_watch::detector::run_selected(
+                    deployment,
+                    plan,
+                    options,
+                    &scan,
+                    limits,
+                    detector,
+                    selected,
+                    &mut allowance,
+                    cx,
+                )?;
+                let _ = allowance.witness()?;
+                completed.policy_json = completed.policy_json.replacen(
+                    "\"frame_selection\":\"whole_recording_entry_then_following_actual_matches\"",
+                    "\"frame_selection\":\"qualifying_dwell_episode_first_actual_matches_only\"",
+                    1,
+                );
+                Some(completed)
+            }
+            None => None,
+        };
         let ScanData {
             import_root,
             manifest_digest,
@@ -1525,15 +1596,7 @@ impl LongDwellReport {
             media_format,
             publication_guard,
             ..
-        } = run_scan(
-            deployment,
-            plan,
-            ScanRule::Dwell(rule),
-            options,
-            limits,
-            cx,
-            screened,
-        )?;
+        } = scan;
         let policy: &'static [u8] = if media_format == "mjpeg" {
             POLICY
         } else {
@@ -1580,6 +1643,12 @@ impl LongDwellReport {
             e.bytes(health_policy_bytes());
             summary.encode(&mut e);
         }
+        if let Some(detector) = &detector {
+            e.text("detector_cascade");
+            e.bytes(detector::SELECTION_POLICY);
+            e.bytes(&detector.recipe.to_bytes());
+            e.bytes(&detector.bytes);
+        }
         let analysis = e.finish_checked()?;
         let analysis_digest = ContentDigest::sha256(&analysis);
         let mut children = BTreeSet::from([
@@ -1594,12 +1663,15 @@ impl LongDwellReport {
         if health.is_some() {
             children.insert(health_policy_digest());
         }
+        if let Some(detector) = &detector {
+            children.extend(detector.children());
+        }
         let analysis_manifest =
             ObjectManifest::new("recorded-long-dwell-analysis-v1", children, None)?;
         let analysis_slot = slot("ld-a", analysis_digest)?;
         let principal = cx.io_authority().principal().to_owned();
         let mut candidates = Vec::new();
-        for episode in episodes {
+        for (index, episode) in episodes.into_iter().enumerate() {
             candidates.push(prepare_candidate(
                 deployment,
                 episode,
@@ -1609,6 +1681,7 @@ impl LongDwellReport {
                 &principal,
                 &privacy,
                 policy,
+                detector.as_ref().map(|detector| (detector, index)),
             )?);
         }
         let report = Self {
@@ -1621,6 +1694,7 @@ impl LongDwellReport {
             basis: deployment.current_anchor().clone(),
             import_root,
             sensor,
+            media_format,
             privacy,
             publication_guard,
             analysis,
@@ -1632,13 +1706,20 @@ impl LongDwellReport {
             masked_zones,
             restarts,
             refusals,
-            source_bytes,
-            pixel_samples,
+            source_bytes: source_bytes
+                .checked_add(detector.as_ref().map_or(0, |d| d.source_bytes))
+                .ok_or(WatchError::Limit)?,
+            pixel_samples: pixel_samples
+                .checked_add(detector.as_ref().map_or(0, |d| d.pixel_samples))
+                .ok_or(WatchError::Limit)?,
             assignment_work,
-            jpeg_work,
+            jpeg_work: jpeg_work
+                .checked_add(detector.as_ref().map_or(0, |d| d.jpeg_work))
+                .ok_or(WatchError::Limit)?,
             policy,
             health,
             health_diagnostic,
+            detector,
         };
         report.to_json(deployment.current_anchor().commit_sequence, None)?;
         Ok(report)
@@ -1659,6 +1740,14 @@ impl LongDwellReport {
     /// Successfully decoded source segments.
     pub const fn frames_decoded(&self) -> usize {
         self.decoded
+    }
+    /// Complete trained-stage output, including refused and budget-exhausted selected samples.
+    pub fn detector_cascade(&self) -> Option<&super::detector_cascade::CascadeOutcome> {
+        self.detector.as_ref().map(|detector| &detector.outcome)
+    }
+    /// Exact retained native decoder, model, kernel and whole-scan budget recipe.
+    pub fn detector_recipe(&self) -> Option<&super::long_watch::detector::LongWatchDetectorRecipe> {
+        self.detector.as_ref().map(|detector| &detector.recipe)
     }
     /// Explicit opt-in diagnostics; `None` means no screening was requested, never healthy.
     pub fn health_summary(&self) -> Option<&LongDwellHealthSummary> {
@@ -1721,6 +1810,16 @@ impl LongDwellReport {
             self.sensor.as_str().as_bytes(),
         ] {
             let digest = deployment.publisher_mut().stage_object(bytes)?;
+            deployment.publisher_mut().verify_object(digest)?;
+        }
+        if let Some(detector) = &self.detector {
+            for bytes in detector.staged() {
+                let digest = deployment.publisher_mut().stage_object(bytes)?;
+                deployment.publisher_mut().verify_object(digest)?;
+            }
+            let digest = deployment
+                .publisher_mut()
+                .stage_object(&detector.recipe.to_bytes())?;
             deployment.publisher_mut().verify_object(digest)?;
         }
         if self.health.is_some() {
@@ -1799,14 +1898,17 @@ impl LongDwellReport {
                 (WatchStatus::Prepared, Some(hint)) => json(&format!("{hint} --approve {}", c.approval)),
                 _ => "null".to_owned(),
             };
+            let class_evidence = if self.detector.is_some() {
+                format!(",\"class_evidence\":{}", super::detector_cascade::class_evidence_json(&c.class_evidence))
+            } else { String::new() };
             format!(concat!("{{\"event_id\":{},\"zone_id\":{},\"tracker_epoch\":{},\"track_id\":{},",
                 "\"first_segment\":{},\"trigger_segment\":{},\"last_segment\":{},\"matched_observations\":{},",
                 "\"trigger_minimum_ns\":{},\"minimum_duration_ns\":{},\"proposal_digest\":{},",
-                "\"provenance_root\":{},\"status\":{},\"publish_command\":{command}}}"),
+                "\"provenance_root\":{},\"status\":{},\"publish_command\":{command}{class_evidence}}}"),
                 json(c.event.event_id.as_str()), json(&self.plan.zones[c.episode.zone].zone_id),
                 c.episode.epoch, c.episode.track, span.first.position, span.trigger.position, span.last.position,
                 span.observations, json(&span.trigger_minimum_ns.to_string()), json(&span.minimum_duration_ns.to_string()),
-                json(&c.approval.to_text()), json(&c.manifest.root().to_text()), json(c.status.as_str()), command = command)
+                json(&c.approval.to_text()), json(&c.manifest.root().to_text()), json(c.status.as_str()), command = command, class_evidence = class_evidence)
         }).collect::<Vec<_>>().join(",");
         let refusals = self
             .refusals
@@ -1831,10 +1933,10 @@ impl LongDwellReport {
                 "\"tolerate_decode_refusals\":{},\"decode_refusals\":[{}],\"source_chunk_bytes_read\":{},",
                 "\"pixel_samples_processed\":{},\"assignment_work_admitted\":{},\"jpeg_work_units\":{},\"trace_record_bytes\":{},",
                 "\"privacy_binding\":{},\"candidate_count\":{},\"candidates\":[{}],",
-                "\"media_format\":\"mjpeg\",\"capture_time_label\":\"operator_assumption\",",
+                "\"media_format\":{},\"capture_time_label\":\"operator_assumption\",",
                 "\"event_kind\":\"unclassified\",\"event_state\":\"indeterminate\",\"policy_action\":\"hold\",",
                 "\"calibrated\":false,\"corroborated\":false,\"continuous_occupancy_proved\":false,",
-                "\"absence_certifiable\":false,\"alert_authorized\":false,\"model_invoked\":false,",
+                "\"absence_certifiable\":false,\"alert_authorized\":false,\"model_invoked\":{},",
                 "\"qualification\":\"implemented_not_qualified\"}}"
             ),
             json(&self.site),
@@ -1865,7 +1967,11 @@ impl LongDwellReport {
             self.analysis.len(),
             json(&self.privacy.digest().to_text()),
             self.candidates.len(),
-            candidates
+            candidates,
+            json(&self.media_format),
+            self.detector
+                .as_ref()
+                .is_some_and(|detector| detector.inference_pipeline_attempts != 0)
         );
         if let Some(summary) = &self.health {
             if text.pop() != Some('}') {
@@ -1874,6 +1980,17 @@ impl LongDwellReport {
             text.push_str(",\"sensor_health\":");
             text.push_str(&summary.to_json());
             text.push('}');
+        }
+        if let Some(detector) = &self.detector {
+            if text.pop() != Some('}') {
+                return Err(WatchError::Conflict);
+            }
+            text.push_str(&format!(
+                ",\"detector_cascade\":{{{},{},\"recipe_digest\":{},\"source_chunk_bytes_read\":{},\"jpeg_work_units\":{},\"additional_pixel_samples_processed\":{},\"inference_pipeline_attempts\":{},\"inferences_completed\":{},\"model_invocation_semantics\":\"native_pipeline_attempted_model_mac_execution_not_guaranteed\"}}}}",
+                detector.policy_json, super::detector_cascade::cascade_outcome_json(&detector.outcome),
+                json(&detector.recipe.digest().to_text()), detector.source_bytes, detector.jpeg_work,
+                detector.pixel_samples, detector.inference_pipeline_attempts, detector.outcome.inferred_segments().len(),
+            ));
         }
         if text.len() > MAX_REPORT_BYTES {
             return Err(WatchError::Limit);
@@ -1918,6 +2035,7 @@ fn prepare_candidate(
     principal: &str,
     privacy: &MaskBinding,
     policy: &[u8],
+    detector: Option<(&super::long_watch::detector::Completed, usize)>,
 ) -> Result<LongDwellCandidate> {
     let mut e = CanonicalEncoder::new();
     e.text(EPISODE_DOMAIN);
@@ -1967,6 +2085,33 @@ fn prepare_candidate(
         capsule_digest: None,
         identity_digest: Some(sensor_digest),
     }];
+    let class_evidence = match detector {
+        Some((detector, index)) => {
+            let classes = detector
+                .outcome
+                .evidence
+                .get(index)
+                .ok_or(WatchError::Conflict)?
+                .clone();
+            let selected = detector.entries.get(index).ok_or(WatchError::Conflict)?;
+            if classes.len() != selected.frames.len() {
+                return Err(WatchError::Conflict);
+            }
+            for (class, frame) in classes.iter().zip(&selected.frames) {
+                evidence.push(EventEvidence {
+                    digest: class.digest,
+                    class: EvidenceClass::Derived,
+                    failure_domain: failure_domain.clone(),
+                    supports: false,
+                    relation: EvidenceEdgeRelation::DerivedFrom,
+                    capsule_digest: Some(frame.capsule),
+                    identity_digest: Some(sensor_digest),
+                });
+            }
+            classes
+        }
+        None => Vec::new(),
+    };
     if let Some(policy) = privacy.policy() {
         evidence.push(EventEvidence {
             digest: policy.digest(),
@@ -2001,6 +2146,7 @@ fn prepare_candidate(
     let status = event_status(d, &event)?;
     Ok(LongDwellCandidate {
         episode,
+        class_evidence,
         event,
         record,
         manifest,

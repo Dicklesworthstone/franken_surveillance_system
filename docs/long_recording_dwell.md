@@ -1,7 +1,7 @@
 # Whole-recording sampled dwell
 
 `fss-event watch --stream-dwell` scans a bounded MJPEG, H.264 or H.265 recording (Annex-B, MP4
-or QuickTime import) in one forward pass, keeping
+or QuickTime import) in one forward native perception pass, keeping
 the foreground model, Kalman tracker and sampled-occupancy state between frames. It removes
 the ordinary watch path's 128-frame analysis-window restriction for this explicit mode.
 A qualifying episode may begin before frame 128 and reach its duration threshold after frame
@@ -12,7 +12,7 @@ It is not a live daemon or a general temporal model. It creates no effect or ale
 
 ## Run an existing retained recording
 
-The recording must be a completed MJPEG/JPEG import with explicit capture-time hints. Those
+The recording must be a completed supported import with explicit capture-time hints. Those
 hints remain owner assertions, not independently calibrated time. For example, request a
 20-second conservative endpoint span with at least five actual matched observations:
 
@@ -55,10 +55,49 @@ options. It is echoed in every approval command. Existing foreground thresholds,
 configuration, JPEG work/image limits, `--tolerate-decode-refusals`, `--approve`, and
 `--report-out` remain available. The default entry and short-dwell paths remain unchanged.
 
-This first whole-range implementation **admits MJPEG only**. H.264/HEVC inter-picture ranges
-retain their existing decoders and limits; they are not split arbitrarily or relabelled MJPEG.
-Detector-package options are refused before deployment I/O, not ignored or replaced by motion
-scores. `--retain-coverage` remains refused in dwell mode: no dwell-absence certificate exists.
+`--retain-coverage` remains refused in dwell mode: no dwell-absence certificate exists.
+
+## Trained classification of qualifying episodes
+
+The existing detector options also work with `--stream-dwell`. For example, add the repository's
+digest-pinned YOLOX-Nano package to the same retained recording and explicit dwell rule:
+
+```sh
+fss-event watch \
+  --root /path/to/deployment --site site:home \
+  --import-id "${IMPORT_ID:?supply the completed import identity}" \
+  --interpretation gray --zone porch:100,80,400,300 \
+  --stream-dwell --segment-count 3000 \
+  --dwell-for-ns 20000000000 --dwell-max-gap-ns 200000000 \
+  --detector-package models/yolox-nano/yolox_nano.fmpk \
+  --detector-digest sha256:5b6568750faa375de3742e5eb310fbd4e22ff26e1ba727f193b79ab984a68c74 \
+  --detector-max-inferences 8 --detector-frames-per-track 3
+```
+
+The native temporal scan completes before model selection. Only actual confirmed-track matches
+inside completed qualifying episodes are eligible. `--detector-frames-per-track` selects up to
+1..8 first actual samples **per qualifying episode** in this mode. Its first selection is labelled
+`dwell_start`; a later visit with the same tracker ID cannot lend its images to an earlier episode.
+Nonqualifying visits and privacy-excluded zones spend no inference slots. H.264/H.265 selection
+uses display positions and resolves each selected sample to its retained coding segment/capsule.
+
+A bounded second native RGB pass applies current privacy before inference. One explicit
+`--detector-max-inferences` allowance (1..64 unique selected frames) and one detection-head
+allowance cover all episodes and decoder recovery epochs. Inference refusals and selections
+skipped by the allowance remain explicit class records. Samples shared by overlapping episodes
+reuse the same frame result and do not become independent sensor evidence.
+
+The report includes the exact package/contract/recipe identities, selected/inferred/refused/skipped
+segments, inference-pipeline attempts, additional decoder costs and each episode's class evidence.
+These are uncalibrated annotations: every event class edge remains non-supporting `DerivedFrom`
+and every event stays **Unclassified, Indeterminate, probability [0,1], Hold**. The classifier
+does not extend a temporal span, certify continuous occupancy, or authorize an alert.
+
+Publication retains the exact package archive, complete native detector recipe, complete outcome
+and every class record under the shared analysis root. For MJPEG events, `fss-replay-dwell` can
+reconstruct and execute the trained stage entirely from custody after both loose source and model
+files disappear; see [native dwell replay](native_dwell_replay.md). Inter-coded analysis and
+classification are supported, while the dedicated dwell replay command still admits MJPEG only.
 
 ## Temporal semantics
 
@@ -92,15 +131,18 @@ presence between frames, loitering intent, threat, detection quality, or absence
 
 Every aggregate counter applies to the entire invocation. It is never refilled at a frame,
 chunk, track or episode boundary. Raising a ceiling may admit more work but does not change
-a successful result's semantic identity.
+a successful model-free result's semantic identity. A detector-enabled analysis also binds its
+complete admitted decoder and resource ceilings into the retained native detector recipe.
+Inter-coded source reservations include range-open checks and recovery probes and are charged
+before the custody read, including in model-free dwell mode.
 
 | Option | Default | What is counted |
 |---|---:|---|
-| `--dwell-read-bytes` | 536,870,912 | Verified source-chunk bytes fetched by the forward source cursor |
-| `--dwell-pixel-budget` | 1,073,741,824 | Sum of decoded luma samples, charged before foreground processing |
+| `--dwell-read-bytes` | 536,870,912 | Verified source-chunk bytes fetched across temporal and optional classifier passes |
+| `--dwell-pixel-budget` | 1,073,741,824 | Native temporal luma samples plus additional classifier-pass image pixels |
 | `--dwell-assignment-work` | 1,073,741,824 | Sum of the existing checked tracker solver's admission bound |
 | `--dwell-trace-bytes` | 8,388,608 | Complete length-framed per-source-position metadata trace |
-| `--work-units` | Existing JPEG default | Native JPEG decoding work across the full range |
+| `--work-units` | Existing JPEG default | Native JPEG decoding work shared by both passes |
 
 Source-read ceiling is at most 512 MiB, pixel/assignment ceilings at most 68,719,476,736 each,
 and trace ceiling at most 8 MiB; all must be positive. Aggregate options without
@@ -127,7 +169,9 @@ Review each `publish_command`, then execute the exact command or repeat the requ
 `--approve sha256:PROPOSAL`. Approval binds the current actor, site, event revision and complete
 provenance. Entry-mode and short-dwell approvals cannot authorize this mode. Changing the rule,
 source, selected range, zone, perception recipe, tolerance mode or privacy changes the proposal.
-Resource ceilings alone are not policy changes when the full successful result stays identical.
+For a model-free analysis, resource ceilings alone are not policy changes when the full successful
+result stays identical. A trained analysis additionally binds the exact package, threshold,
+selection allowance, kernel backend and complete decoder/resource recipe into its approval.
 
 Before staging, publication validates all supplied approvals, the durable authority head,
 retained import identity and current privacy binding. It retains a shared analysis graph
@@ -155,8 +199,9 @@ New derived digest domains are `fss.long_dwell_analysis.v1`, `fss.long_dwell_fra
 `fss.long_dwell_episode.v1`, and `fss.long_dwell_approval.v1`. They do not change existing watch,
 dwell, capsule, event or coverage bytes. The analysis/episode object-manifest kinds are
 `recorded-long-dwell-analysis-v1` and `recorded-long-dwell-episode-v1`. Central schema/domain
-registration and retained native qualification remain pending; no registry, formatting or
-release-gate pass is claimed by this document.
+registration is recorded in `registries/DIGEST_DOMAINS.md`; retained real-footage quality and
+release qualification remain separate work. The optional detector suffix preserves existing
+model-free analysis bytes and uses the existing classifier recipe/outcome/class domains.
 
 ```sh
 cargo test -p fss-reference --lib streaming_dwell
@@ -165,16 +210,19 @@ cargo test -p fss-cli --test watch_stream_dwell_cli
 cargo test -p fss-cli --test watch_dwell_cli
 ```
 
-Eight streaming-core tests include exhaustive equivalence to the existing batch oracle and
-4,096-sample episodes under multiple caller chunkings. Twelve real-import library tests cover
+Streaming-core tests include exhaustive equivalence to the existing batch oracle and
+4,096-sample episodes under multiple caller chunkings. Real-import library tests cover
 300-frame native decoding/tracking, source assembly, all aggregate ceilings, actual misses,
 unknown timing, privacy invalidation, source gaps, decode refusal and interrupted publication.
-Seven real-process CLI tests cover long preview/approval/cold retry, invalid modes before I/O,
+Real-process CLI tests cover long preview/approval/cold retry, invalid modes before I/O,
 whole-scan budget refusal, changed-rule/short-mode approvals, unknown time and complete report
 export after removing the original input file.
 
-**Rust compilation, these Rust tests, and rustfmt were not run in the authoring environment,**
-which has no Rust toolchain. Executed independent Python models matched on 16,565 temporal cases
-and 5,000 source-assembly cases, seed 20261005. Those comparisons are not execution of this Rust
-implementation. Native long H.264/HEVC, a trained cascade in this mode, durable incremental
-checkpoints, cross-camera dwell, live operation and real-footage quality evaluation remain open.
+Trained-stage regressions use the actual pinned YOLOX-Nano package and native decoders. They
+cover a 300-frame episode, same-tracker separate episodes, shared source/pixel limits, cancellation,
+zero-inference nonqualifying/privacy-excluded scans, H.264 B-picture position mapping, exact model
+custody, cold native replay and refusal when the retained package is missing. The CLI regression
+removes the original input and loose model before inspecting and replaying the committed event.
+Synthetic fixtures demonstrate executable behavior; they do not qualify detection accuracy.
+Durable incremental checkpoints, cross-camera dwell, live operation and real-footage quality
+evaluation remain open.

@@ -3,7 +3,8 @@
 //!
 //! Inspection proves selected custody and decodes the original recipe; it does not validate
 //! perception. Verification runs the real decoder, current privacy projection, foreground,
-//! tracker, dwell and optional health screen, then compares the entire canonical trace and event.
+//! tracker, dwell, optional health screen and retained classifier, then compares the entire
+//! canonical trace, class evidence and event.
 //! Nothing is staged, published, repaired, sent or marked verified in persistent authority.
 
 use super::long_dwell::{
@@ -30,11 +31,13 @@ mod recipe;
 pub use recipe::DwellReplayRecipe;
 use recipe::{ANALYSIS_DOMAIN, POLICY, episode_analysis};
 
-/// Existing trace ceiling plus bounded recipe and optional health metadata.
-pub const MAX_ANALYSIS_BYTES: usize = MAX_LONG_DWELL_TRACE_BYTES + 32 * 1024;
+/// Existing trace ceiling plus bounded recipe, optional health metadata and classifier outcome.
+pub const MAX_ANALYSIS_BYTES: usize =
+    MAX_LONG_DWELL_TRACE_BYTES + 32 * 1024 + super::long_watch::detector::MAX_OUTCOME_BYTES;
 /// Hard cumulative selected-metadata read ceiling, excluding deployment open and source replay.
-pub const MAX_REPLAY_METADATA_BYTES: usize = 32 * 1024 * 1024;
-const MAX_METADATA_OBJECTS: usize = 16;
+pub const MAX_REPLAY_METADATA_BYTES: usize =
+    super::rgb_package::MAX_RGB_PACKAGE_BYTES + 32 * 1024 * 1024;
+const MAX_METADATA_OBJECTS: usize = 16 + super::zone_dwell::MAX_DWELL_EPISODES * 8;
 const ANALYSIS_KIND: &str = "recorded-long-dwell-analysis-v1";
 const EPISODE_KIND: &str = "recorded-long-dwell-episode-v1";
 
@@ -72,7 +75,7 @@ impl DwellReplayLimits {
 pub struct DwellReplayPins {
     /// Canonical event revision, not an approval or an event identifier alone.
     pub event_revision: ContentDigest,
-    /// Complete shared analysis graph, including its source, recipe and optional screening.
+    /// Complete shared analysis graph, including source, recipe, optional screening and model.
     pub analysis_root: ContentDigest,
 }
 
@@ -301,6 +304,7 @@ impl VerifiedDwellReplay {
 struct Loaded {
     inspection: DwellReplayInspection,
     analysis: Vec<u8>,
+    detector_package: Option<Vec<u8>>,
 }
 fn published_root(
     deployment: &ReferenceDeployment,
@@ -411,14 +415,19 @@ fn load(
     }
     published_root(deployment, "ld-e", record_digest, episode_root)?;
     let shared = manifest(
-        &reader.read(deployment, analysis_root, 4096, cx)?,
+        &reader.read(deployment, analysis_root, 16 * 1024, cx)?,
         ANALYSIS_KIND,
-        6,
+        9 + super::zone_dwell::MAX_DWELL_EPISODES * 8,
     )?;
     let mut objects = BTreeMap::new();
     let mut selected = None;
     for &child in shared.children() {
-        let bytes = reader.read(deployment, child, MAX_ANALYSIS_BYTES, cx)?;
+        let bytes = reader.read(
+            deployment,
+            child,
+            MAX_ANALYSIS_BYTES.max(super::rgb_package::MAX_RGB_PACKAGE_BYTES),
+            cx,
+        )?;
         let mut header = fss_core::CanonicalDecoder::new(&bytes);
         if header.text().ok() == Some(ANALYSIS_DOMAIN) && selected.replace(child).is_some() {
             return Err(DwellReplayError::InvalidRecord);
@@ -468,6 +477,37 @@ fn load(
         }
         expected.insert(health_policy_digest());
     }
+    let detector_package = match &recipe.detector {
+        Some(detector) => {
+            let parsed =
+                super::long_watch::detector::LongWatchDetectorRecipe::from_bytes(&detector.recipe)?;
+            parsed.validate_within(
+                &limits.execution,
+                &super::package_detect::PackageDetectLimits::default(),
+            )?;
+            let inventory = super::long_watch::detector::retained_inventory(&detector.outcome)?;
+            for bytes in [detector.recipe.as_slice(), detector.outcome.as_slice()] {
+                let digest = ContentDigest::sha256(bytes);
+                if objects.get(&digest).map(Vec::as_slice) != Some(bytes) {
+                    return Err(DwellReplayError::InvalidRecord);
+                }
+                expected.insert(digest);
+            }
+            for class in inventory.classes {
+                if !objects.contains_key(&class.digest) {
+                    return Err(DwellReplayError::InvalidRecord);
+                }
+                expected.insert(class.digest);
+            }
+            expected.insert(detector.package);
+            Some(
+                objects
+                    .remove(&detector.package)
+                    .ok_or(DwellReplayError::InvalidRecord)?,
+            )
+        }
+        None => None,
+    };
     if shared.children().iter().copied().collect::<BTreeSet<_>>() != expected {
         return Err(DwellReplayError::InvalidRecord);
     }
@@ -495,6 +535,7 @@ fn load(
     }
     Ok(Loaded {
         analysis,
+        detector_package,
         inspection: DwellReplayInspection {
             pins: DwellReplayPins {
                 event_revision: event.revision_digest(),
@@ -534,22 +575,68 @@ pub fn replay_dwell(
     let Loaded {
         inspection,
         analysis,
+        detector_package,
     } = load(deployment, event, Some(pins), limits, cx)?;
     checkpoint(cx, "long_dwell_replay:execute")?;
     let recipe = &inspection.recipe;
-    let run = if recipe.screened {
-        LongDwellReport::analyze_screened
-    } else {
-        LongDwellReport::analyze
+    let actual = match (&recipe.detector, detector_package) {
+        (Some(retained), Some(archive)) => {
+            let detector_recipe =
+                super::long_watch::detector::LongWatchDetectorRecipe::from_bytes(&retained.recipe)?;
+            let scalar = crate::ScalarExecCx::new();
+            let result = (|| -> Result<LongDwellReport> {
+                let package = super::rgb_package::RgbDetectorPackage::load_with_backend(
+                    &archive,
+                    retained.package,
+                    detector_recipe.import_work_units(),
+                    detector_recipe.backend(),
+                    cx,
+                    &scalar,
+                )
+                .map_err(|error| match error {
+                    super::rgb_package::RgbPackageError::Cancelled => DwellReplayError::Cancelled,
+                    super::rgb_package::RgbPackageError::Limit => DwellReplayError::Limit,
+                    _ => DwellReplayError::InvalidRecord,
+                })?;
+                detector_recipe.verify_package(&package)?;
+                let detector = super::long_dwell::LongDwellDetector::new(
+                    &package,
+                    &archive,
+                    detector_recipe.config(),
+                    *detector_recipe.package_limits(),
+                    &scalar,
+                )?;
+                Ok(LongDwellReport::analyze_with_detector(
+                    deployment,
+                    &recipe.plan,
+                    recipe.rule,
+                    recipe.options,
+                    detector_recipe.watch_limits(),
+                    &detector,
+                    recipe.screened,
+                    cx,
+                )?)
+            })();
+            scalar.drain_and_finalize();
+            result?
+        }
+        (None, None) => {
+            let run = if recipe.screened {
+                LongDwellReport::analyze_screened
+            } else {
+                LongDwellReport::analyze
+            };
+            run(
+                deployment,
+                &recipe.plan,
+                recipe.rule,
+                recipe.options,
+                &limits.execution,
+                cx,
+            )?
+        }
+        _ => return Err(DwellReplayError::InvalidRecord),
     };
-    let actual = run(
-        deployment,
-        &recipe.plan,
-        recipe.rule,
-        recipe.options,
-        &limits.execution,
-        cx,
-    )?;
     if actual.analysis_digest() != ContentDigest::sha256(&analysis) || actual.publication_blocked()
     {
         return Err(DwellReplayError::Diverged);

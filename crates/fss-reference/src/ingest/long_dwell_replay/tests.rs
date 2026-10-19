@@ -440,6 +440,7 @@ fn self_consistent_forged_hashes_pass_inspection_but_fail_actual_native_replay()
     let Loaded {
         inspection,
         mut analysis,
+        ..
     } = load(
         &f.deployment,
         &f.event,

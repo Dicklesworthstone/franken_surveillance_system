@@ -162,6 +162,8 @@ pub enum SelectionReason {
     Confirmation,
     /// A later matched frame of the confirmed track.
     FollowingMatch,
+    /// First actual matched sample of a completed qualifying dwell episode.
+    DwellStart,
 }
 impl SelectionReason {
     /// Stable spelling.
@@ -171,6 +173,7 @@ impl SelectionReason {
             Self::ZoneEntry => "zone_entry",
             Self::Confirmation => "confirmation",
             Self::FollowingMatch => "following_match",
+            Self::DwellStart => "dwell_start",
         }
     }
     fn tag(self) -> u8 {
@@ -178,6 +181,7 @@ impl SelectionReason {
             Self::ZoneEntry => 0,
             Self::Confirmation => 1,
             Self::FollowingMatch => 2,
+            Self::DwellStart => 3,
         }
     }
 }

@@ -2,7 +2,8 @@
 
 `fss-replay-dwell` recovers the original perception recipe from a committed whole-recording
 MJPEG dwell event and can execute that recipe again from retained source. The original source
-file and the original `fss-event watch` command are not required. This connects the retained
+file and the original `fss-event watch` command are not required. Detector-enabled events also
+retain their exact native model package, so no loose model file is needed. This connects the retained
 trace to executable verification instead of treating consistent metadata hashes as proof that
 perception actually produced the claimed result.
 
@@ -60,16 +61,18 @@ frames, non-finite geometry and inconsistent source bindings are refused.
 
 The verifier then calls the actual `LongDwellReport` execution path. It reads and hashes source
 chunks, decodes JPEG frames, applies the sensor's current mask, runs foreground detection,
-Kalman/global-IoU tracking, sampled dwell and the original optional visual screen. It compares
+Kalman/global-IoU tracking, sampled dwell and the original optional visual screen. For trained
+events it also reconstructs qualifying-episode-only actual-sample selection and reruns the retained
+native classifier with its exact package, threshold, kernel backend and budgets. It compares
 the complete regenerated canonical analysis digest, the selected event's revision digest and its
-current publication state. A successful result is `native_replay_matched`; the result type is
+current publication state, including every class record and typed budget/refusal outcome. A
+successful result is `native_replay_matched`; the result type is
 constructible only after those checks. A valid stored trace alone cannot produce that result.
 
 The adversarial library regression rebuilds every hash and containing manifest after falsifying
 one claimed decoded-luma digest, and publishes the resulting internally consistent claim through
 normal reference publishers. Inspection can read that validly addressed metadata; actual source
-replay must reject it as `dwell_native_replay_diverged`. This regression has been added but has
-not yet been executed in the authoring environment.
+replay must reject it as `dwell_native_replay_diverged`.
 
 Matching proves deterministic reproduction from the retained source under this implementation.
 It does not prove physical truth, correct tracking of one physical object, continuous occupancy
@@ -100,15 +103,17 @@ anchor records the consumed snapshot; an authority change during the request ref
 
 ## Budgets and output
 
-The original semantic recipe is immutable, but sufficient resource ceilings may be selected for
-this replay. Raising a ceiling never changes the expected analysis or event; insufficient work
-returns a refusal instead of a partial verification.
+The original semantic recipe is immutable, but sufficient current safety ceilings may be selected
+for this replay. A trained event retains all original native scan and package ceilings; replay
+requires them to fit the current bounds and then executes those exact retained limits. It never
+substitutes a smaller inference allowance, new threshold or another backend to force a match.
+Insufficient work returns a refusal instead of a partial verification.
 
 | Option | Default | Scope |
 |---|---:|---|
-| `--max-metadata-bytes` | 16 MiB | Aggregate selected provenance payloads read by this adapter; hard maximum 32 MiB |
+| `--max-metadata-bytes` | 16 MiB | Aggregate selected provenance payloads, including the optional retained model; hard maximum 64 MiB |
 | `--source-read-bytes` | 512 MiB | Actual verified source-chunk bytes fetched by native replay |
-| `--pixel-budget` | 1,073,741,824 | Whole-scan foreground luma samples; the optional health screen has its own counter under the same ceiling |
+| `--pixel-budget` | 1,073,741,824 | Temporal luma samples plus optional classifier-pass pixels; health screening has its own counter under the same ceiling |
 | `--assignment-work` | 1,073,741,824 | Whole-scan checked tracker admission bound |
 | `--trace-bytes` | 8 MiB | Complete regenerated length-framed metadata trace |
 | `--decode-work` | 100,000,000 | Whole-scan native JPEG work allowance |
@@ -120,13 +125,15 @@ and report bounds apply to both commands. Arguments are bounded, duplicates and 
 are refused, and an absent deployment is rejected before creating a context directory. Existing
 regular journals of at most 64 MiB each are required by this CLI's startup preflight.
 
-Selected provenance traversal has at most sixteen payload reads, fixed manifest shapes and
+Selected provenance traversal has at most 272 payload reads (the base graph plus up to 32 episodes
+with 8 class records each), fixed manifest shapes and
 per-object allocation bounds applied by the existing read-only spool owner. The original
 65,536-position, 64-track, 32-episode and trace ceilings remain in force. Metadata parsing and
 native stages poll cancellation; the health screen polls every row. No deadline or hard-real-time
 preemption is claimed for filesystem operations or compute kernels.
 
-The report distinguishes actual replay frame/source-read counts from configured ceilings.
+The report names the retained detector package digest when present and distinguishes actual
+replay frame/source-read counts from configured ceilings.
 Metadata counts exclude the existing deployment-open/current-event reader and native source
 reader's own costs; these are not total-system I/O, RAM, energy or latency measurements. An error
 produces no JSON prefix, and an oversized complete report is refused. The CLI writes only stdout
@@ -135,23 +142,27 @@ hint is null rather than lossy; repeat the original OS-byte path with the return
 
 ## Compatibility and validation
 
-No existing producer encoding, digest domain, event schema, screening policy, dependency or
-publication behavior is changed. The decoder owns the existing v1 long-dwell wire profile and
-its explicit health extension; unknown incompatible profiles are refused. The local JSON is an
-operation result, not a new durable authority format. The inherited long-dwell central-format
-registration and native qualification work remain pending.
+Existing model-free producer bytes, digest domains, event schema, screening policy, dependencies
+and publication semantics are preserved. The decoder owns the v1 long-dwell wire profile,
+its health extension and the optional classifier selection/recipe/outcome suffix; unknown
+incompatible profiles are refused. The local JSON is an operation result, not a durable authority
+format. Native qualification remains separate from deterministic replay.
 
 ```sh
 cargo test -p fss-reference --lib long_dwell_replay
+cargo test -p fss-reference --lib long_dwell::tests::detector
 cargo test -p fss-cli --test replay_dwell_cli
+cargo test -p fss-cli --test watch_stream_dwell_cli
 ```
 
-Eleven library regressions cover real imports, cold 300-frame replay, screened replay, exact
+Library regressions cover real imports, cold 300-frame replay, screened replay, exact
 pins, preview refusal, privacy invalidation, cumulative limits, cancellation, missing source,
 malformed encodings, internally consistent forged derivation and an independent authorized reader.
-Six actual-process regressions cover both CLI modes, cold source-only operation, mandatory
+Actual-process regressions cover both CLI modes, cold source-only operation, mandatory
 acknowledgement/pins, refusal of overrides, malformed/missing deployments, budgets and privacy.
 
-Rust compilation, these Rust tests and rustfmt have not run in the authoring environment, which
-lacks the Rust toolchain. No native passing result, performance or production qualification is
-claimed. Existing source/dependency/toolchain and release gates are unchanged.
+Trained native regressions additionally remove the loose source/model files before replay,
+require retained package and class custody, and preserve exact inference exhaustion across
+episode boundaries. These synthetic recordings test reproducibility and refusal behavior;
+they do not establish accuracy, performance or production qualification. Existing
+source/dependency/toolchain and release gates are unchanged.
