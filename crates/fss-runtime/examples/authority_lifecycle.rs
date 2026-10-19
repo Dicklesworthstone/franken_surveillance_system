@@ -1,3 +1,4 @@
+#![forbid(unsafe_code)]
 //! Deterministic authority-lifecycle e2e for FSS-021 slice 2.
 //!
 //! Exercises the public semantic surface end to end and records one JSONL
