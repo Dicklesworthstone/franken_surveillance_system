@@ -35,6 +35,8 @@ pub mod durable;
 pub mod effect;
 pub mod event;
 pub mod event_store;
+/// Cross-kernel media contracts and limits (FSS-052).
+pub mod media_kernel;
 mod evidence;
 pub mod experiment;
 pub mod graph_witness;
