@@ -3,8 +3,9 @@
 //! with a corroborated event and a loopback relay:
 //!
 //! orient -> session open -> investigate (open, activate, claim the probe, cite, assess) ->
-//! plan (rests on the case) -> approve (prepare) -> handoff -> resume -> commit (exactly one
-//! dispatch) -> wait -> reconcile (owner attestation) -> close (immutable execution episode) ->
+//! plan (rests on the case) -> approve (prepare) -> handoff -> resume -> rebase and readmit the
+//! case -> refresh the plan -> commit (exactly one dispatch) -> wait -> reconcile (owner
+//! attestation) -> close both plan records (immutable execution episodes) ->
 //! learn (advisory feedback citing the episode) -> conclude the case -> final handoff.
 //!
 //! Every answer is validated against `agent_response_envelope.v1` and its payload schema, and the
@@ -745,7 +746,7 @@ fn orient_investigate_plan_commit_verify_learn_handoff_rehearsal() -> TestResult
     assert!(texts(&handed, &["payload", "leases"])?.is_empty());
     let handoff_id = text(&handed, &["payload", "handoffId"])?.to_owned();
 
-    // A cold driver resumes and commits: exactly one dispatch.
+    // A cold driver resumes, refreshes the case and plan, and dispatches exactly once.
     let resumed = driver.ok("resume", &["session", "resume", "--handoff", &handoff_id])?;
     // The prepare moved the head past the handoff's anchor: the resume names the new obligation
     // and the anchor-bound assumptions it invalidated, never resuming silently.
@@ -762,6 +763,123 @@ fn orient_investigate_plan_commit_verify_learn_handoff_rehearsal() -> TestResult
             .any(|line| line.contains("assumption:anchor-current")),
         "{invalidated:#?}"
     );
+    // Resume changed the exact situation basis. The old plan must refuse before
+    // recording a commitment or contacting the relay.
+    let effects_path = directory.root().join("effects/journal.fssj");
+    let prepared_journal = fs::read(&effects_path)?;
+    let (code, refused) = driver.run(
+        "commit-stale-plan",
+        &["commit", "--plan", &plan_id, "--approve", &dispatch],
+    )?;
+    assert_eq!(code, Some(5), "{refused:?}");
+    assert_eq!(
+        text(&refused, &["errorId"])?,
+        "ERR-AGENT-AFFORDANCE-INVALIDATED-001"
+    );
+    assert_eq!(fs::read(&effects_path)?, prepared_journal);
+    assert_eq!(relay.connections(), 0);
+    assert_eq!(relay.requests()?, 0);
+
+    // The evidence owner still resolves both exact event objects at the new head.
+    // Use its fingerprint as the explicit readmission rationale.
+    let current = driver.ok(
+        "explain-after-resume",
+        &["explain", "--event-id", &event_id],
+    )?;
+    let current_handles = field(&current, &["payload", "evidenceHandles"])?
+        .array()
+        .ok_or("current evidence handles")?;
+    assert_eq!(text(&current_handles[0], &["objectDigest"])?, revision);
+    assert_eq!(text(&current_handles[1], &["objectDigest"])?, manifest);
+    let readmission = fingerprint(&current)?;
+    let rebased = case_step(
+        &mut driver,
+        "case-rebase",
+        "rebase",
+        &["--case", CASE, "--expected", &head],
+    )?;
+    assert_eq!(text(&rebased, &["payload", "state"])?, "awaiting_evidence");
+    head = fingerprint(&rebased)?;
+    head = fingerprint(&case_step(
+        &mut driver,
+        "case-reactivate",
+        "activate",
+        &["--case", CASE, "--expected", &head],
+    )?)?;
+    for (hypothesis, evidence, side, disposition) in [
+        ("h:intruder", revision.as_str(), "support", "supported"),
+        ("h:artifact", manifest.as_str(), "contradiction", "refuted"),
+    ] {
+        head = fingerprint(&case_step(
+            &mut driver,
+            &format!("readmit-{hypothesis}"),
+            "readmit",
+            &[
+                "--case",
+                CASE,
+                "--expected",
+                &head,
+                "--hypothesis",
+                hypothesis,
+                "--evidence",
+                evidence,
+                "--side",
+                side,
+                "--witness",
+                &readmission,
+            ],
+        )?)?;
+        head = fingerprint(&case_step(
+            &mut driver,
+            &format!("reassess-{hypothesis}"),
+            "assess",
+            &[
+                "--case",
+                CASE,
+                "--expected",
+                &head,
+                "--hypothesis",
+                hypothesis,
+                "--disposition",
+                disposition,
+                "--evidence",
+                evidence,
+            ],
+        )?)?;
+    }
+
+    // A fresh plan binds the resumed anchor and readmitted case. Its unchanged
+    // event and route reuse the existing prepared operation and idempotency key.
+    let refreshed = driver.ok("plan-refresh", &as_str(&plan_args(&[])))?;
+    let refreshed_id = text(&refreshed, &["payload", "planId"])?.to_owned();
+    assert_ne!(refreshed_id, plan_id);
+    let refreshed_approval = pointers(&refreshed)?[2].clone();
+    let refreshed = driver.ok(
+        "plan-refresh-approve",
+        &as_str(&plan_args(&["--approve", &refreshed_approval])),
+    )?;
+    assert_eq!(text(&refreshed, &["payload", "planId"])?, refreshed_id);
+    let refreshed_steps = field(&refreshed, &["payload", "steps"])?
+        .array()
+        .ok_or("refreshed steps")?;
+    let refreshed_operation = refreshed_steps
+        .iter()
+        .find(|step| text(step, &["stepId"]).is_ok_and(|id| id == "step:prepare"))
+        .map(|step| texts(step, &["writeWitnesses"]))
+        .ok_or("refreshed prepare step")??[0]
+        .clone();
+    assert_eq!(refreshed_operation, operation);
+    let refreshed_dispatch = pointers(&refreshed)?
+        .last()
+        .cloned()
+        .ok_or("refreshed dispatch approval")?;
+    assert_eq!(refreshed_dispatch, dispatch);
+    assert_eq!(fs::read(&effects_path)?, prepared_journal);
+    assert_eq!(relay.connections(), 0);
+    let superseded_plan_id = plan_id;
+    let plan_id = refreshed_id;
+    let dispatch = refreshed_dispatch;
+
     let committed = driver.ok(
         "commit",
         &["commit", "--plan", &plan_id, "--approve", &dispatch],
@@ -830,6 +948,18 @@ fn orient_investigate_plan_commit_verify_learn_handoff_rehearsal() -> TestResult
         vec!["warranted".to_owned()]
     );
     let episode_digest = pointers(&closed)?[2].clone();
+    // Both plan records name the same verified operation. Each has its own
+    // immutable episode, so the superseded plan is no longer listed as active.
+    driver.ok(
+        "close-superseded-plan",
+        &[
+            "plan",
+            "--session",
+            &session,
+            "--close",
+            &superseded_plan_id,
+        ],
+    )?;
 
     // Learn: an advisory, evidence-linked proposal citing the episode; nothing activates.
     let learned = driver.ok(

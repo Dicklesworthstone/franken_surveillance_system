@@ -2729,8 +2729,12 @@ fn overlapping_prior_liveness_cannot_be_hidden_by_a_new_coverage_basis() -> Test
         retain_discovery_sweep(deployment, &[binding], &fresh, 0, cx)?;
         Ok(())
     }
-    let mut quiet =
-        Quiet::run_after("liveness-overlap", everything, true, overlapping_observation)?;
+    let mut quiet = Quiet::run_after(
+        "liveness-overlap",
+        everything,
+        true,
+        overlapping_observation,
+    )?;
     // A healthy network response and its metadata are not analysed source pixels.
     // Choosing a later witness basis cannot turn them into absence evidence.
     assert_not_certified(&mut quiet, "coverage-relevant commit")?;
