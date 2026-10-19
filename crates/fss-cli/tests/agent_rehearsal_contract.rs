@@ -780,11 +780,20 @@ fn orient_investigate_plan_commit_verify_learn_handoff_rehearsal() -> TestResult
     assert_eq!(relay.connections(), 0);
     assert_eq!(relay.requests()?, 0);
 
-    // The evidence owner still resolves both exact event objects at the new head.
-    // Use its fingerprint as the explicit readmission rationale.
+    // The prepared operation adds protected context at the new head. Explicitly admit the
+    // forensic allowance for the complete support explanation; the compact view must not
+    // silently grow or drop that context. Use its fingerprint as the readmission rationale.
     let current = driver.ok(
         "explain-after-resume",
-        &["explain", "--event-id", &event_id],
+        &[
+            "explain",
+            "--event-id",
+            &event_id,
+            "--view",
+            "forensic",
+            "--budget-tokens",
+            "8000",
+        ],
     )?;
     let current_handles = field(&current, &["payload", "evidenceHandles"])?
         .array()
