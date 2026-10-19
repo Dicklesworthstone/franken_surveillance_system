@@ -128,7 +128,10 @@ pub fn canonical_tensor_bytes(
     out.extend_from_slice(CANONICAL_TENSOR_MAGIC);
     put_u32(&mut out, CANONICAL_TENSOR_VERSION);
     out.push(dtype.type_tag());
-    put_u32(&mut out, shape.rank() as u32);
+    let rank = u32::try_from(shape.rank()).map_err(|_| CanonicalTensorError::Inconsistent {
+        reason: "rank exceeds u32",
+    })?;
+    put_u32(&mut out, rank);
     for dim in shape.dims() {
         put_u64(
             &mut out,
