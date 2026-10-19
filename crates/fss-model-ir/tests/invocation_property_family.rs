@@ -72,6 +72,7 @@ fn binding(name: &str, salt: &[u8]) -> InputBinding {
         name: name.to_string(),
         digest: ContentDigest::sha256(salt),
         generation: Generation::GENESIS,
+        declared_bytes: Some(24),
     }
 }
 
@@ -89,7 +90,7 @@ fn p1_determinism_and_idempotency() -> Result<(), Box<dyn std::error::Error>> {
     let InvocationOutcome::Completed {
         outputs,
         nodes_evaluated,
-        ..
+        declared_input_bytes,
     } = &r1.outcome
     else {
         return Err("expected completion".into());
@@ -97,6 +98,11 @@ fn p1_determinism_and_idempotency() -> Result<(), Box<dyn std::error::Error>> {
     assert_eq!(*nodes_evaluated, 2);
     assert_eq!(outputs.len(), 1);
     assert_eq!(outputs[0].0, "activated");
+    assert_eq!(
+        *declared_input_bytes,
+        Some(48),
+        "declared sizes sum exactly"
+    );
 
     let s2 = spec(vec![
         binding("x", b"tensor-x-CHANGED"),
@@ -122,6 +128,7 @@ fn p2_stale_generation_refused_at_prepare() -> Result<(), Box<dyn std::error::Er
         name: "x".to_string(),
         digest: ContentDigest::sha256(b"tensor-x"),
         generation: Generation::from_u64(7),
+        declared_bytes: Some(24),
     };
     let err = prepare(&graph, &spec(vec![stale, binding("y", b"y")])).err();
     assert!(matches!(
@@ -262,5 +269,77 @@ fn p5_receipt_binds_graph_identity() -> Result<(), Box<dyn std::error::Error>> {
     let r3 = execute(&g3, &prepare(&g3, &s)?)?;
     assert_eq!(r1.outcome, r3.outcome, "storage order must not matter");
     emit("graph-identity-binding", 3);
+    Ok(())
+}
+
+/// P6 ABSTENTION + BYTE HONESTY: a narrowed kernel table makes the
+/// invocation abstain at the named node with zero oracle theater; a
+/// digest-only binding propagates None byte accounting (never invented).
+#[test]
+fn p6_abstention_and_byte_honesty() -> Result<(), Box<dyn std::error::Error>> {
+    use fss_model_ir::invocation::{KernelAdmission, execute_with_admission};
+    let graph = two_node_graph()?;
+    let s = spec(vec![binding("x", b"x"), binding("y", b"y")]);
+    let prepared = prepare(&graph, &s)?;
+    let narrowed = KernelAdmission::admit_all().exclude_op("OP-RELU-001");
+    let receipt = execute_with_admission(&graph, &prepared, &narrowed)?;
+    match receipt.outcome {
+        InvocationOutcome::Abstained {
+            ref node_id,
+            ref op,
+            nodes_evaluated,
+        } => {
+            assert_eq!(node_id, "n-relu");
+            assert_eq!(op, "OP-RELU-001");
+            assert_eq!(nodes_evaluated, 1, "add evaluated before relu abstains");
+        }
+        other => return Err(format!("expected abstention, got {other:?}").into()),
+    }
+    // Digest-only bindings: receipt says None, never a fabricated total.
+    let mut ghost = binding("x", b"x");
+    ghost.declared_bytes = None;
+    let s2 = spec(vec![ghost, binding("y", b"y")]);
+    let r2 = execute(&graph, &prepare(&graph, &s2)?)?;
+    match r2.outcome {
+        InvocationOutcome::Completed {
+            declared_input_bytes,
+            ..
+        } => assert_eq!(declared_input_bytes, None),
+        other => return Err(format!("expected completion, got {other:?}").into()),
+    }
+    emit("abstention-byte-honesty", 2);
+    Ok(())
+}
+
+/// P7 IDEMPOTENCY-KEY INJECTIVITY: high calibration generations that share
+/// truncated low bytes must NOT collide (regression for the encoding bug).
+#[test]
+fn p7_spec_digest_is_injective_in_generations() -> Result<(), Box<dyn std::error::Error>> {
+    let base = || ModelInvocationSpec {
+        model_root: ContentDigest::sha256(b"root"),
+        preprocess_generation: Generation::GENESIS,
+        calibration_generation: None,
+        inputs: vec![],
+        max_nodes: 10,
+    };
+    let mut a = base();
+    a.calibration_generation = Some(Generation::from_u64(1));
+    let mut b = base();
+    b.calibration_generation = Some(Generation::from_u64(65_537));
+    assert_ne!(
+        a.digest()?,
+        b.digest()?,
+        "calibration generations 1 and 65537 must not collide"
+    );
+    let mut c = base();
+    c.preprocess_generation = Generation::from_u64(1 << 40);
+    let mut d = base();
+    d.preprocess_generation = Generation::from_u64(1);
+    assert_ne!(
+        c.digest()?,
+        d.digest()?,
+        "preprocess generations must not collide"
+    );
+    emit("spec-digest-injectivity", 2);
     Ok(())
 }

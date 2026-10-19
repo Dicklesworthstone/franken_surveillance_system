@@ -45,6 +45,10 @@ pub struct InputBinding {
     pub digest: ContentDigest,
     /// Tensor generation (must equal the graph input port's generation).
     pub generation: Generation,
+    /// Caller-declared tensor byte size, when known. The receipt sums ONLY
+    /// declared sizes; it never invents byte costs for digest-only
+    /// bindings (None propagates to the receipt).
+    pub declared_bytes: Option<u64>,
 }
 
 /// An immutable invocation request. The digest of its canonical form is
@@ -72,11 +76,15 @@ impl ModelInvocationSpec {
         let mut bytes = Vec::new();
         bytes.extend_from_slice(&self.model_root.bytes());
         bytes.extend_from_slice(&self.preprocess_generation.get().to_be_bytes());
-        if let Some(cal) = self.calibration_generation {
-            bytes.extend_from_slice(&[1, cal.get() as u8]);
-            bytes.extend_from_slice(&(cal.get() >> 8).to_be_bytes());
-        } else {
-            bytes.push(0);
+        match self.calibration_generation {
+            // Full 64-bit encoding: the idempotency key must be injective
+            // in every generation value (a truncated encoding would let
+            // distinct specs collide).
+            Some(cal) => {
+                bytes.push(1);
+                bytes.extend_from_slice(&cal.get().to_be_bytes());
+            }
+            None => bytes.push(0),
         }
         for input in &self.inputs {
             bytes.extend_from_slice(input.name.as_bytes());
@@ -98,8 +106,9 @@ pub enum InvocationOutcome {
         outputs: Vec<(String, ContentDigest)>,
         /// Nodes evaluated.
         nodes_evaluated: usize,
-        /// Bytes absorbed across input bindings.
-        input_bytes: u64,
+        /// Sum of caller-declared input sizes; None when any binding is
+        /// digest-only (never an invented figure).
+        declared_input_bytes: Option<u64>,
     },
     /// A named node had no reference binding (typed abstention, never a
     /// silent skip).
@@ -289,6 +298,18 @@ pub fn execute(
     graph: &ModelIrGraph,
     prepared: &PreparedInvocation,
 ) -> Result<ModelReceipt, InvocationError> {
+    execute_with_admission(graph, prepared, &KernelAdmission::admit_all())
+}
+
+/// [`execute`] with an explicit kernel-admission table.
+///
+/// # Errors
+/// Same typed refusals as [`execute`].
+pub fn execute_with_admission(
+    graph: &ModelIrGraph,
+    prepared: &PreparedInvocation,
+    admission: &KernelAdmission,
+) -> Result<ModelReceipt, InvocationError> {
     let invocation = prepared.spec.digest()?;
     // Re-validate: the receipt records quarantine honestly.
     if let Err(e) = graph.validate() {
@@ -303,10 +324,13 @@ pub fn execute(
         });
     }
     let mut values: BTreeMap<String, ContentDigest> = BTreeMap::new();
-    let mut input_bytes = 0u64;
+    let mut declared_total: Option<u64> = Some(0);
     for input in &prepared.spec.inputs {
         values.insert(input.name.clone(), input.digest);
-        input_bytes += 32;
+        declared_total = match (declared_total, input.declared_bytes) {
+            (Some(acc), Some(bytes)) => Some(acc.checked_add(bytes).unwrap_or(u64::MAX)),
+            _ => None,
+        };
     }
     let mut nodes_evaluated = 0usize;
     let mut node_outputs: BTreeMap<&str, Vec<String>> = BTreeMap::new();
@@ -316,7 +340,7 @@ pub fn execute(
                 max_nodes: prepared.spec.max_nodes,
             });
         }
-        if !reference_binding(node) {
+        if !admission.binds(node) {
             return Ok(ModelReceipt {
                 invocation,
                 ir_digest: prepared.ir_digest,
@@ -385,7 +409,7 @@ pub fn execute(
         outcome: InvocationOutcome::Completed {
             outputs,
             nodes_evaluated,
-            input_bytes,
+            declared_input_bytes: declared_total,
         },
     })
 }
@@ -394,11 +418,33 @@ fn material_attr_sep(out: &mut Vec<u8>) {
     out.push(0xFF);
 }
 
-/// Reference kernel binding table (digest-binding mode currently admits
-/// every validated op structurally; numeric bindings arrive with the
-/// WP-080 kernel beads and will narrow this table).
-fn reference_binding(_node: &GraphNode) -> bool {
-    true
+/// Which ops the evaluation mode will bind. The default table admits every
+/// validated op structurally; kernel beads narrow it as numeric modes
+/// arrive. A test-local table can exclude ops to exercise [`InvocationOutcome::Abstained`].
+#[derive(Clone, Debug, Default)]
+pub struct KernelAdmission {
+    excluded: std::collections::BTreeSet<&'static str>,
+}
+
+impl KernelAdmission {
+    /// The default admission: every validated op binds in digest-binding
+    /// mode.
+    #[must_use]
+    pub fn admit_all() -> Self {
+        Self::default()
+    }
+
+    /// Excludes one op (by stable id) from binding; invocations reaching
+    /// it abstain.
+    #[must_use]
+    pub fn exclude_op(mut self, stable_id: &'static str) -> Self {
+        self.excluded.insert(stable_id);
+        self
+    }
+
+    fn binds(&self, node: &GraphNode) -> bool {
+        !self.excluded.contains(node.op().stable_id())
+    }
 }
 
 /// Topological order over the graph's nodes (Kahn). The validator already
