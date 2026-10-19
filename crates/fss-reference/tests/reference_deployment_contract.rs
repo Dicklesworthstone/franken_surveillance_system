@@ -891,8 +891,12 @@ fn exported_constants_and_tables_integrity() -> Result<(), Box<dyn Error>> {
     // 15 = 12 + FAMILY_DELETION_{RECORD,TOMBSTONE,COMPLETION} (fss-x4a.9.7).
     // 16 = 15 + FAMILY_EVIDENCE_HOLD (owner evidence holds, 83f58e5).
     // 17 = 16 + the irreversible current-format deployment restore fence.
-    // 18 = 17 + retained historical sensor-health diagnostics.
-    assert_eq!(KNOWN_LEDGER_DELTA_FAMILIES.len(), 18);
+    // 19 = 17 + retained historical diagnostics + owner-enrolled network observations.
+    assert_eq!(KNOWN_LEDGER_DELTA_FAMILIES.len(), 19);
+    assert!(
+        KNOWN_LEDGER_DELTA_FAMILIES
+            .contains(&fss_reference::discovery::retained_liveness::FAMILY_SENSOR_LIVENESS)
+    );
     assert!(
         KNOWN_LEDGER_DELTA_FAMILIES
             .contains(&fss_reference::ingest::historical_health::FAMILY_HISTORICAL_HEALTH)

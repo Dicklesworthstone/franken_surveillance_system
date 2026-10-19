@@ -28,10 +28,10 @@ use fss_reference::ingest::{
 };
 use fss_reference::{ReferenceDeployment, ReplayCx};
 
-#[path = "fss-file/media.rs"]
-mod media;
 #[path = "fss-file/localize.rs"]
 mod localize;
+#[path = "fss-file/media.rs"]
+mod media;
 
 const HELP: &str = "fss-file <import|inspect|verify|extract|decode|read-decoded|verify-decoded|motion|localize> [options]\n\
   All commands: --root DIR --site SITE [--principal ID] [--manifest-out FILE]\n\
@@ -157,7 +157,8 @@ fn parse(args: &[OsString]) -> ParseResult<Option<Options>> {
         return Ok(None);
     }
     if !matches!(command, "import" | "inspect" | "verify" | "extract")
-        && !media::is_command(command) && command != "localize"
+        && !media::is_command(command)
+        && command != "localize"
     {
         return Err((
             ERR_CLI_UNKNOWN_COMMAND,

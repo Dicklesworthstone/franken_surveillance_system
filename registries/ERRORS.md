@@ -609,3 +609,9 @@ Canonical machine error codes returned by `ContractError::code()` (AGT-LAYER-002
 | ID | Meaning | Retry policy |
 |---|---|---|
 | `ERR-RECORDED-LOCALIZATION-REFUSED-001` | The exact retained query, explicit image/lens interpretation, twin/atlas binding, bounded geometry work or cancellation boundary refused a complete pose proposal | Correct the explicit source/model/grid binding or supply reviewed supported work limits; current privacy and original custody must still verify. An abstention or failed decode never activates calibration. Existing nested decode and privacy errors retain their own identities. |
+
+## Retained owner-enrolled network observations
+
+| ID | Meaning | Retry policy |
+|---|---|---|
+| `ERR-DISCOVER-LIVENESS-001` | Retaining an explicitly enrolled discovery sweep failed scope, immutable binding, bounded inventory, chronology, custody or publication admission | Inspect the existing deployment and committed prefix. Preserve exact enrollment and sweep window/evidence for an interrupted retry; do not rebind an address, restage a conflicting visible root, repair corruption implicitly or claim media continuity from network return. |

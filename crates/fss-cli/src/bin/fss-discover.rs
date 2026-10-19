@@ -15,7 +15,10 @@ use std::process::ExitCode;
 use std::sync::atomic::AtomicBool;
 
 use fss_cli::ExitIdentity;
-use fss_reference::discovery::{DiscoverConfig, DiscoverReport, Readiness, discover};
+use fss_reference::discovery::{DiscoverConfig, DiscoverReport, discover};
+
+#[path = "fss-discover/liveness.rs"]
+mod liveness;
 
 const HELP: &str = "fss-discover --subnet CIDR [--subnet CIDR ...] [--iface IP] [--beacon-seconds N] [--watch N]\n\
                     \x20 [--standards-seconds N] --owner-authorized --json\n\
@@ -24,9 +27,17 @@ const HELP: &str = "fss-discover --subnet CIDR [--subnet CIDR ...] [--iface IP] 
                     WS-Discovery), then a bounded census (ping -> ARP -> OUI -> registered\n\
                     port connects), typed brand classification and adapter dispatch with\n\
                     the exact missing owner-auth ingredient per candidate. Owner-network\n\
-                    scope only. Report: fss.discover_cli.v1 JSON on stdout.";
+                    scope only. Report: fss.discover_cli.v1 JSON on stdout.\n\
+                    \n\
+                    Retain network health in an existing deployment with:\n\
+                    --root ABS_DIR --site SITE --bind IP=SENSOR[,CLASS] [--bind ...]\n\
+                    Bind each retained endpoint within --subnet (at most 64).\n\
+                    Classes: tutk, tuya, onvif, battery_event_driven, unknown (default),\n\
+                    provisioned_agent. Responses are bounded by each sweep window;\n\
+                    network return never proves pixel continuity. Retained observations\n\
+                    appear in fss orient and fss follow.";
 
-const MAX_ARGS: usize = 24; // 8 subnets (16) + --json + --owner-authorized + --beacon/--standards/--watch pairs
+const MAX_ARGS: usize = 160; // 64 bindings, 8 subnets, and bounded options
 
 #[derive(Debug)]
 struct Options {
@@ -37,6 +48,7 @@ struct Options {
     /// `--watch N`: sweep every N seconds, emitting one report per sweep
     /// plus typed device_state_change records from the liveness watchdog.
     watch_seconds: Option<u64>,
+    retention: Option<liveness::Options>,
 }
 
 fn parse(args: &[std::ffi::OsString]) -> Result<Options, &'static str> {
@@ -48,6 +60,9 @@ fn parse(args: &[std::ffi::OsString]) -> Result<Options, &'static str> {
     let mut beacon_seconds = 10u64;
     let mut standards_seconds = 5u64;
     let mut watch_seconds: Option<u64> = None;
+    let mut root = None;
+    let mut site = None;
+    let mut bindings = Vec::new();
     let mut i = 0;
     while i < args.len() {
         let Some(flag) = args[i].to_str() else {
@@ -105,6 +120,20 @@ fn parse(args: &[std::ffi::OsString]) -> Result<Options, &'static str> {
                 watch_seconds = Some(v);
                 i += 2;
             }
+            "--root" | "--site" | "--bind" => {
+                let value = args
+                    .get(i + 1)
+                    .and_then(|value| value.to_str())
+                    .ok_or("missing liveness option value")?
+                    .to_owned();
+                match flag {
+                    "--root" if root.is_none() => root = Some(value),
+                    "--site" if site.is_none() => site = Some(value),
+                    "--bind" => bindings.push(value),
+                    _ => return Err("duplicate --root or --site"),
+                }
+                i += 2;
+            }
             _ => return Err("unknown flag; use fss-discover --help"),
         }
     }
@@ -125,6 +154,7 @@ fn parse(args: &[std::ffi::OsString]) -> Result<Options, &'static str> {
         beacon_seconds,
         standards_seconds,
         watch_seconds,
+        retention: liveness::Options::parse(root, site, bindings)?,
     })
 }
 
@@ -151,13 +181,23 @@ fn run_typed(o: &Options) -> Result<(DiscoverReport, DiscoverConfig), &'static s
         ..cfg
     };
     let cancel = AtomicBool::new(false);
+    if let Some(retention) = &o.retention {
+        retention.preflight(&cfg)?;
+    }
     let report = discover(&cfg, &cancel).map_err(|_| "ERR-DISCOVER-CENSUS-001: census failed")?;
     Ok((report, cfg))
 }
 
 fn run(o: &Options) -> Result<String, &'static str> {
+    let mut clock = SweepClock::new();
+    let sweep_started_ns = clock.next_ns();
     let (report, cfg) = run_typed(o)?;
-    Ok(format_report(&report, &cfg))
+    let sweep_completed_ns = clock.next_ns();
+    let mut lines = vec![format_report(&report, &cfg)];
+    if let Some(retention) = &o.retention {
+        lines.extend(retention.retain(&report, sweep_started_ns, sweep_completed_ns)?);
+    }
+    Ok(lines.join("\n"))
 }
 
 fn format_report(report: &DiscoverReport, cfg: &DiscoverConfig) -> String {
@@ -244,11 +284,25 @@ fn watch_loop(o: &Options, period_secs: u64) -> ExitCode {
     let mut clock = SweepClock::new();
     loop {
         let sweep_start = std::time::Instant::now();
+        let sweep_started_ns = clock.next_ns();
         match run_typed(o) {
             Ok((report, cfg)) => {
-                println!("{}", format_report(&report, &cfg));
                 let now_ns = clock.next_ns();
-                update_watchdog(&mut watchdog, &report, now_ns);
+                let retained = match &o.retention {
+                    Some(retention) => match retention.retain(&report, sweep_started_ns, now_ns) {
+                        Ok(retained) => retained,
+                        Err(error) => {
+                            eprintln!("{error}");
+                            return ExitCode::from(ExitIdentity::RUNTIME_FAILURE.code);
+                        }
+                    },
+                    None => Vec::new(),
+                };
+                println!("{}", format_report(&report, &cfg));
+                for record in retained {
+                    println!("{record}");
+                }
+                update_watchdog_window(&mut watchdog, &report, sweep_started_ns, now_ns);
                 for change in watchdog.drain_changes() {
                     println!("{}", change.to_record());
                 }
@@ -265,10 +319,22 @@ fn watch_loop(o: &Options, period_secs: u64) -> ExitCode {
     }
 }
 
-/// Register identity hints without treating cached metadata as a fresh response.
+/// Zero-duration replay seam for the watchdog regression fixtures.
+#[cfg(test)]
 fn update_watchdog(
     watchdog: &mut fss_reference::discovery::watchdog::DeviceWatchdog,
     report: &DiscoverReport,
+    now_ns: u64,
+) {
+    update_watchdog_window(watchdog, report, now_ns, now_ns);
+}
+
+/// Cached metadata is not a response. Age accepted responses from sweep start so
+/// a long scan cannot report every response as if it just arrived at completion.
+fn update_watchdog_window(
+    watchdog: &mut fss_reference::discovery::watchdog::DeviceWatchdog,
+    report: &DiscoverReport,
+    sweep_started_ns: u64,
     now_ns: u64,
 ) {
     use fss_reference::discovery::Brand;
@@ -285,7 +351,7 @@ fn update_watchdog(
         };
         watchdog.register(&id, class, None);
         if fresh.contains(&candidate.host.ip) {
-            watchdog.observe(&id, now_ns);
+            watchdog.observe(&id, sweep_started_ns);
         }
     }
     watchdog.evaluate(now_ns);
@@ -304,14 +370,16 @@ impl SweepClock {
         Self {
             base_ns: SystemTime::now()
                 .duration_since(UNIX_EPOCH)
-                .map(|d| d.as_nanos() as u64)
+                .map(|d| u64::try_from(d.as_nanos()).unwrap_or(u64::MAX))
                 .unwrap_or(0),
             base_instant: std::time::Instant::now(),
         }
     }
 
     fn next_ns(&mut self) -> u64 {
-        self.base_ns + self.base_instant.elapsed().as_nanos() as u64
+        self.base_ns.saturating_add(
+            u64::try_from(self.base_instant.elapsed().as_nanos()).unwrap_or(u64::MAX),
+        )
     }
 }
 
@@ -547,5 +615,17 @@ mod tests {
             watchdog.state_of(id),
             Some(&WatchState::Silent { silent_for_ns: 10 })
         );
+    }
+
+    #[test]
+    fn default_watch_ages_responses_across_the_whole_sweep() {
+        use fss_reference::discovery::watchdog::{DeviceClass, DeviceWatchdog, WatchState};
+        let mut watchdog = DeviceWatchdog::new();
+        watchdog.register("192.168.4.10", DeviceClass::Unknown, Some((10, 20)));
+        update_watchdog_window(&mut watchdog, &watchdog_report(Some(554)), 100, 130);
+        assert!(matches!(
+            watchdog.state_of("192.168.4.10"),
+            Some(WatchState::NotObservable { .. })
+        ));
     }
 }

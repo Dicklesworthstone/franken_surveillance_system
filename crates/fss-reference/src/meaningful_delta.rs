@@ -322,6 +322,16 @@ fn classify(
     {
         classes.insert(MeaningfulDeltaClass::SensorHealth);
     }
+    // Network observations retain their sweep window and never mint coverage recovery.
+    if changed_cells
+        .iter()
+        .any(|cell| crate::agent_orient::liveness::is_sensor_liveness_claim(cell.claim_id()))
+        || removed_claim_ids
+            .iter()
+            .any(|claim| crate::agent_orient::liveness::is_sensor_liveness_claim(claim))
+    {
+        classes.insert(MeaningfulDeltaClass::SensorHealth);
+    }
     if contradiction_changed(
         &basis_frame.knowledge_cells,
         &result_frame.knowledge_cells,

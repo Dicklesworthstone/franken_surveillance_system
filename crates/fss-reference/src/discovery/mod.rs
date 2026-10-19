@@ -10,6 +10,7 @@ pub mod census;
 pub mod dispatch;
 pub mod fingerprint;
 pub mod liveness;
+pub mod retained_liveness;
 pub mod service;
 pub mod standards;
 pub mod watchdog;

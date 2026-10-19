@@ -73,6 +73,7 @@ use crate::{MockModelResult, ReferenceError};
 
 pub mod coverage;
 pub mod historical_health;
+pub mod liveness;
 use crate::situation::EffectCellKind;
 use crate::situation::{
     physical_knowledge_state, physical_statement, policy_hypothesis, reconciliation_basis_for,
@@ -341,6 +342,8 @@ pub struct DeploymentSnapshot {
     /// Independent historical heuristic diagnostics in receipt-digest order. Reading this
     /// metadata does not rerun perception or establish current sensor health or coverage.
     pub historical_health: Vec<RetainedHistoricalHealth>,
+    /// Latest verified network observations, each pinned to its retained sweep window.
+    pub sensor_liveness: Vec<crate::discovery::retained_liveness::RetainedSensorLiveness>,
     /// Retained coverage records in commit order.
     pub coverage: Vec<RetainedCoverage>,
     /// Retained source coverage records (live or virtual sources, fss-tch7u) in commit order,
@@ -883,7 +886,9 @@ impl DeploymentHistory {
                 event_ledger_root = Some(record_root);
             }
             if batch.deltas.iter().any(|delta| {
-                delta.family == FAMILY_SENSOR_CAPSULE || delta.family == FAMILY_COVERAGE_WITNESS
+                delta.family == FAMILY_SENSOR_CAPSULE
+                    || delta.family == FAMILY_COVERAGE_WITNESS
+                    || delta.family == crate::discovery::retained_liveness::FAMILY_SENSOR_LIVENESS
             }) {
                 evidence_ledger_root = Some(record_root);
             }
@@ -1138,6 +1143,17 @@ impl DeploymentHistory {
             |digest, max| reader.read_object(objects, digest, max),
         )?;
 
+        let sensor_liveness =
+            crate::discovery::retained_liveness::read_liveness_inventory(batches, |digest, max| {
+                if deletions.object(digest).is_some() {
+                    return Err(crate::discovery::retained_liveness::LivenessError::Corrupt);
+                }
+                reader
+                    .read_object(objects, digest, max.min(limits.max_object_bytes))
+                    .map_err(|_| crate::discovery::retained_liveness::LivenessError::Corrupt)
+            })
+            .map_err(|error| corrupt(format!("retained sensor liveness: {error}")))?;
+
         Ok(DeploymentSnapshot {
             site_lineage: self.site_lineage.clone(),
             doctor_verdict: self.doctor_verdict,
@@ -1158,6 +1174,7 @@ impl DeploymentHistory {
             operations,
             events,
             historical_health,
+            sensor_liveness,
             coverage,
             source_coverage,
             retained_absences,
@@ -1240,7 +1257,7 @@ pub struct AttentionItem {
     /// Stable item identity.
     pub item_id: String,
     /// Item kind (`event`, `coverage_gap`, `obligation`, `indeterminate_effect`,
-    /// `historical_sensor_health`).
+    /// `historical_sensor_health`, `sensor_liveness`).
     pub kind: &'static str,
     /// Registered priority class.
     pub priority_class: &'static str,
@@ -2095,6 +2112,11 @@ fn compile_capsule(
     unknown.extend(historical_health.unknown);
     at_risk.extend(historical_health.at_risk);
     degradation.extend(historical_health.degradation);
+    let sensor_liveness = liveness::project(&snapshot.sensor_liveness)?;
+    cells.extend(sensor_liveness.cells);
+    proof_roots.extend(sensor_liveness.proof_roots);
+    unknown.extend(sensor_liveness.unknown);
+    at_risk.extend(sensor_liveness.at_risk);
     let mut nominal = BTreeSet::from([
         CLAIM_LEDGER_HEAD.to_owned(),
         CLAIM_IMPORTS.to_owned(),
@@ -2629,6 +2651,7 @@ fn compile_capsule(
     let mut attention =
         attention_frontier(snapshot, &planned, &deployment_handle, coverage.as_ref());
     attention.extend(historical_health.attention);
+    attention.extend(sensor_liveness.attention);
     attention.truncate(128);
     let epistemic_debt = epistemic_debt(snapshot, &planned, coverage.as_ref());
     Ok(CompiledSituation {

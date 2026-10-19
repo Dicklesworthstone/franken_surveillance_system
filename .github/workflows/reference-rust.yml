@@ -59,6 +59,8 @@ jobs:
         run: |
           discovery_exit=0
           cargo +nightly-2026-08-31 test --locked --offline -p fss-reference --test discovery_watchdog_contract || discovery_exit=1
+          cargo +nightly-2026-08-31 test --locked --offline -p fss-reference --lib discovery::retained_liveness || discovery_exit=1
+          cargo +nightly-2026-08-31 test --locked --offline -p fss-reference --lib network_outage_and_rediscovery_cannot_reuse_a_prior_absence_witness || discovery_exit=1
           cargo +nightly-2026-08-31 test --locked --offline -p fss-cli --bin fss-discover || discovery_exit=1
           exit "$discovery_exit"
       - name: Verify retained native frame localization and owner command
@@ -166,3 +168,17 @@ jobs:
           crates/fss-cli/src/bin/fss-file.rs
           crates/fss-cli/src/bin/fss-file/localize.rs
           crates/fss-reference/tests/reference_deployment_contract.rs
+      - name: Check retained liveness source formatting
+        if: always()
+        run: >-
+          rustup run nightly-2026-08-31 rustfmt --check --edition 2024 --config skip_children=true
+          crates/fss-reference/src/discovery/mod.rs
+          crates/fss-reference/src/discovery/retained_liveness.rs
+          crates/fss-reference/src/discovery/retained_liveness/tests.rs
+          crates/fss-reference/src/reference_deployment.rs
+          crates/fss-reference/src/agent_orient.rs
+          crates/fss-reference/src/agent_orient/liveness.rs
+          crates/fss-reference/src/meaningful_delta.rs
+          crates/fss-reference/src/ingest/source_coverage/tests.rs
+          crates/fss-cli/src/bin/fss-discover.rs
+          crates/fss-cli/src/bin/fss-discover/liveness.rs

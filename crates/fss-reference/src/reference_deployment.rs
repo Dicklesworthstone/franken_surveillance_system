@@ -118,6 +118,7 @@ pub const KNOWN_LEDGER_DELTA_FAMILIES: &[&str] = &[
     FAMILY_DELETION_COMPLETION,
     crate::deployment_backup::FAMILY_RESTORE_FENCE,
     crate::ingest::historical_health::FAMILY_HISTORICAL_HEALTH,
+    crate::discovery::retained_liveness::FAMILY_SENSOR_LIVENESS,
 ];
 
 /// Replay cancellation stage: open deployment.
@@ -181,6 +182,9 @@ fn reserved_family_entry_point(family: &str) -> Option<&'static str> {
         crate::deployment_backup::FAMILY_RESTORE_FENCE => Some("deployment_backup::restore_backup"),
         crate::ingest::historical_health::FAMILY_HISTORICAL_HEALTH => {
             Some("ingest::historical_health::HistoricalHealthDiagnostic::retain")
+        }
+        crate::discovery::retained_liveness::FAMILY_SENSOR_LIVENESS => {
+            Some("discovery::retained_liveness::retain_discovery_window")
         }
         ROOT_REACHABILITY_FAMILY => Some("publish_and_commit"),
         FAMILY_EVIDENCE_HOLD => Some("deletion::holds::commit_hold"),
@@ -1529,6 +1533,17 @@ impl ReferenceDeployment {
                 entry_point: "deployment_backup::restore_backup",
             });
         }
+        if deltas.iter().any(|delta| {
+            delta
+                .object_id
+                .as_str()
+                .starts_with(crate::discovery::retained_liveness::LIVENESS_OBJECT_PREFIX)
+        }) {
+            return Err(ReferenceError::ReservedDeltaFamily {
+                family: crate::discovery::retained_liveness::FAMILY_SENSOR_LIVENESS.to_owned(),
+                entry_point: "discovery::retained_liveness::retain_discovery_window",
+            });
+        }
         // Reserve the namespace too: changing family must not shadow an effective hold.
         if deltas.iter().any(|delta| {
             delta
@@ -1561,6 +1576,41 @@ impl ReferenceDeployment {
                 family,
                 entry_point,
             });
+        }
+        self.append_checked_batch(batch_id, deltas, children)
+    }
+
+    /// Commits one sensor liveness generation only after enrollment and metadata validation.
+    /// Generic appends cannot manufacture liveness or shadow its sensor namespace.
+    pub(crate) fn append_sensor_liveness_batch(
+        &mut self,
+        batch_id: BatchId,
+        deltas: Vec<EvidenceDelta>,
+        children: Vec<ContentDigest>,
+        cx: &ReplayCx,
+    ) -> Result<LedgerAnchor, ReferenceError> {
+        if cx.is_cancelled() {
+            cx.drain_and_finalize();
+            return Err(ReferenceError::CancellationRequested {
+                stage: STAGE_APPEND_BATCH,
+            });
+        }
+        if deltas.len() != 1
+            || deltas.iter().any(|delta| {
+                delta.family != crate::discovery::retained_liveness::FAMILY_SENSOR_LIVENESS
+                    || !delta
+                        .object_id
+                        .as_str()
+                        .starts_with(crate::discovery::retained_liveness::LIVENESS_OBJECT_PREFIX)
+                    || delta.plane != Plane::Authority
+                    || delta.new_generation == 0
+                    || delta.prior_generation
+                        != delta.new_generation.checked_sub(1).filter(|g| *g != 0)
+                    || delta.witness_digest.is_none()
+                    || delta.operation_id.is_some()
+            })
+        {
+            return Err(ReferenceError::InvalidSpec("invalid sensor liveness batch"));
         }
         self.append_checked_batch(batch_id, deltas, children)
     }
