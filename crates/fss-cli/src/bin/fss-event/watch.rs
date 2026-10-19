@@ -2,8 +2,9 @@
 //! `fss-event watch`: model-free single-camera candidates from a retained recording.
 //!
 //! Runs retained decode → foreground → Kalman tracker → zone gate through
-//! `fss_reference::ingest::recorded_watch`. Without an event or retention approval it writes nothing to the
-//! deployment and prints the JSON report with each candidate's exact proposal digest and the
+//! `fss_reference::ingest::recorded_watch`. Ordinary previews write nothing to the deployment
+//! without an event or retention approval. Explicit incremental steps retain a work checkpoint.
+//! The complete JSON report contains each candidate's exact proposal digest and the
 //! rerun command that would publish it. With `--approve DIGEST[,DIGEST...]` it publishes only
 //! those exact proposals as unclassified, indeterminate, single-sensor candidates through the
 //! deployment's guarded event publisher; already-published candidates are never republished.
@@ -37,6 +38,10 @@
 //! rule, coverage-retention or alert authority. The same explicit detector-package options
 //! select native RGB inference at entries and following actual track matches; the complete
 //! recording shares one inference allowance and retains the verified package for cold replay.
+//! `--dwell-step-frames N` advances a bounded MJPEG prefix and retains an immutable source-bound
+//! checkpoint. Its emitted continuation names both exact checkpoint pins and explicitly admits
+//! the cold prefix reconstruction with `--dwell-restore-max-frames`. A partial prefix emits no
+//! completed dwell event. Existing final proposal approvals remain required.
 //! Screened whole-recording reports separately offer `--retain-health` for source-bound
 //! historical diagnostics, including runs with no candidate or a blocking health finding.
 
@@ -66,6 +71,9 @@ use fss_reference::ingest::zone_dwell::DwellPolicy;
 use fss_reference::{ReferenceDeployment, ReplayCx, ScalarExecCx};
 
 use super::{RunResult, export};
+
+#[path = "watch/incremental.rs"]
+mod incremental;
 
 const OPTIONS: &[&str] = &[
     "--root",
@@ -103,6 +111,10 @@ const OPTIONS: &[&str] = &[
     "--stream-assignment-work",
     "--stream-trace-bytes",
     "--sensor-health",
+    "--dwell-step-frames",
+    "--dwell-checkpoint",
+    "--dwell-checkpoint-root",
+    "--dwell-restore-max-frames",
 ];
 
 const STREAM_BUDGET_OPTIONS: &[&str] = &[
@@ -143,6 +155,7 @@ pub(super) struct WatchAction {
     stream_dwell: Option<LongDwellLimits>,
     stream_watch: Option<LongWatchLimits>,
     health_screen: bool,
+    incremental: Option<incremental::StepOptions>,
     rerun: String,
 }
 
@@ -303,6 +316,9 @@ pub(super) fn parse(args: &[OsString]) -> Result<WatchAction, String> {
             "--report-out",
             "--fusion-profile",
             "--fusion-digest",
+            "--dwell-checkpoint",
+            "--dwell-checkpoint-root",
+            "--dwell-restore-max-frames",
         ]
         .contains(&key)
         {
@@ -441,6 +457,7 @@ pub(super) fn parse(args: &[OsString]) -> Result<WatchAction, String> {
     if stream_dwell && dwell.is_none() {
         return Err("--stream-dwell requires the explicit dwell duration and gap rule".to_owned());
     }
+    let incremental = incremental::parse(&values, stream_dwell, health_screen, cascade.is_some())?;
     let stream_dwell = streaming_limits(&values, stream_dwell, limits)?;
     let stream_watch = streaming_watch_limits(&values, stream_watch, limits)?;
     if stream_dwell.is_some() && (site.len() > 256 || principal.len() > 128) {
@@ -484,6 +501,7 @@ pub(super) fn parse(args: &[OsString]) -> Result<WatchAction, String> {
         stream_dwell,
         stream_watch,
         health_screen,
+        incremental,
         rerun,
     })
 }
@@ -978,6 +996,9 @@ fn run_streaming(
         return Err(WatchError::InvalidPlan("streaming dwell has no coverage owner").into());
     }
     super::detector::check_watch_fusion_mode(action.cascade.as_ref(), false, false)?;
+    if action.incremental.is_some() {
+        return incremental::run(action, deployment, root, limits, cx, out);
+    }
     let package = action
         .cascade
         .as_ref()

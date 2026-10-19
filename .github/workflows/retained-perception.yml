@@ -1,0 +1,49 @@
+# Local DSR/direct receipts are authoritative. GitHub-hosted execution is supplementary only.
+# Existing qualification gates remain unchanged; focused native checks are additional feedback.
+name: Retained perception native checks
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'crates/**'
+      - 'models/**'
+      - 'tests/fixtures/**'
+      - 'Cargo.toml'
+      - 'Cargo.lock'
+      - 'rust-toolchain.toml'
+      - 'scripts/bootstrap_toolchain.sh'
+      - 'scripts/qualify.sh'
+      - 'scripts/check_retained_perception.sh'
+      - '.github/workflows/retained-perception.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: fss-retained-perception-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  native:
+    name: Retained localization, incremental dwell and operator contracts
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    env:
+      CARGO_BUILD_JOBS: '2'
+      CARGO_INCREMENTAL: '0'
+      CARGO_PROFILE_DEV_DEBUG: '0'
+      CARGO_PROFILE_TEST_DEBUG: '0'
+      CARGO_NET_OFFLINE: 'true'
+      RUSTUP_AUTO_INSTALL: '0'
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+      - name: Bootstrap the repository-pinned compiler and locked dependencies
+        id: bootstrap
+        run: bash scripts/bootstrap_toolchain.sh
+      - name: Execute the unchanged repository policy lane
+        run: bash scripts/qualify.sh --lane policy --receipt-dir "${{ runner.temp }}/retained-perception-policy"
+      - name: Execute the retained-perception native contracts
+        if: ${{ !cancelled() && steps.bootstrap.outcome == 'success' }}
+        run: bash scripts/check_retained_perception.sh
