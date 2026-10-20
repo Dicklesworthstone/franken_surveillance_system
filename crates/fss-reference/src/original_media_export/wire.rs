@@ -5,10 +5,34 @@ use fss_core::{CanonicalDecode, CanonicalDecoder, CanonicalEncoder};
 
 use super::*;
 
+mod reviewed;
+
 impl OriginalMediaExportRecord {
     /// Exact request bound to this record.
     pub fn request(&self) -> &OriginalMediaExportRequest {
         &self.request
+    }
+    /// Explicit portable disclosure profile. Original revision-one records remain byte-identical.
+    pub fn profile(&self) -> &'static str {
+        if self.review_lineage.is_some() {
+            REVIEWED_ORIGINAL_MEDIA_EXPORT_PROFILE
+        } else {
+            ORIGINAL_MEDIA_EXPORT_PROFILE
+        }
+    }
+    fn domain(&self) -> &'static str {
+        if self.review_lineage.is_some() {
+            REVIEWED_ORIGINAL_MEDIA_EXPORT_DOMAIN
+        } else {
+            ORIGINAL_MEDIA_EXPORT_DOMAIN
+        }
+    }
+    pub(super) fn policy(&self) -> &'static [u8] {
+        if self.review_lineage.is_some() {
+            REVIEWED_POLICY
+        } else {
+            POLICY
+        }
     }
     /// Exact metadata child digest.
     pub fn digest(&self) -> ContentDigest {
@@ -30,9 +54,9 @@ impl OriginalMediaExportRecord {
     pub fn to_bytes(&self) -> Vec<u8> {
         let mut e = CanonicalEncoder::new();
         e.bytes(b"FSSEXM01");
-        e.u32(1);
-        e.text(ORIGINAL_MEDIA_EXPORT_DOMAIN);
-        e.bytes(POLICY);
+        e.u32(if self.review_lineage.is_some() { 2 } else { 1 });
+        e.text(self.domain());
+        e.bytes(self.policy());
         e.bytes(&self.event_summary.to_bytes());
         e.digest(self.request.import_identity);
         e.digest(self.request.expected_import_root);
@@ -58,19 +82,27 @@ impl OriginalMediaExportRecord {
         e.u64(self.source_segments);
         self.source_interval.encode_canonical(&mut e);
         e.text(&self.source_capture_label);
+        if let Some(lineage) = &self.review_lineage {
+            lineage.encode(&mut e);
+        }
         e.finish()
     }
-    /// Decode only the fixed current profile; unknown/trailing fields and oversized data fail closed.
+    /// Decode only explicit v1-original or v2-reviewed profiles. Unknown/trailing fields fail closed.
     pub fn from_bytes(bytes: &[u8]) -> Result<Self> {
         if bytes.len() > MAX_ORIGINAL_MEDIA_RECORD_BYTES {
             return Err(OriginalMediaExportError::Limit);
         }
         let mut d = CanonicalDecoder::new(bytes);
-        if d.bytes()? != b"FSSEXM01"
-            || d.u32()? != 1
-            || d.text()? != ORIGINAL_MEDIA_EXPORT_DOMAIN
-            || d.bytes()? != POLICY
-        {
+        if d.bytes()? != b"FSSEXM01" {
+            return Err(OriginalMediaExportError::UnsupportedProfile);
+        }
+        let version = d.u32()?;
+        let (domain, policy) = match version {
+            1 => (ORIGINAL_MEDIA_EXPORT_DOMAIN, POLICY),
+            2 => (REVIEWED_ORIGINAL_MEDIA_EXPORT_DOMAIN, REVIEWED_POLICY),
+            _ => return Err(OriginalMediaExportError::UnsupportedProfile),
+        };
+        if d.text()? != domain || d.bytes()? != policy {
             return Err(OriginalMediaExportError::UnsupportedProfile);
         }
         let summary_bytes = d.bytes()?;
@@ -112,6 +144,11 @@ impl OriginalMediaExportRecord {
         let source_segments = d.u64()?;
         let source_interval = CaptureInterval::decode_canonical(&mut d)?;
         let source_capture_label = d.text()?.to_owned();
+        let review_lineage = if version == 2 {
+            Some(ReviewedMediaLineage::decode(&mut d)?)
+        } else {
+            None
+        };
         d.ensure_finished()?;
         let record = Self {
             request,
@@ -131,6 +168,7 @@ impl OriginalMediaExportRecord {
             source_segments,
             source_interval,
             source_capture_label,
+            review_lineage,
         };
         record.validate()?;
         if record.to_bytes() != bytes {
@@ -140,6 +178,12 @@ impl OriginalMediaExportRecord {
     }
     pub(super) fn validate(&self) -> Result<()> {
         self.request.validate()?;
+        if let Some(lineage) = &self.review_lineage {
+            lineage.validate(self)?;
+        } else if self.event_summary.event_revision() != 1 {
+            // V1 has never authorized a successor: a reviewed event must carry its v2 proof pins.
+            return Err(OriginalMediaExportError::CustodyMismatch);
+        }
         if self.event_summary.request() != &self.request.event
             || self.source_bytes == 0
             || self.source_bytes > self.request.max_source_bytes
@@ -186,7 +230,7 @@ impl OriginalMediaExportRecord {
             .map(|root| json(&root.to_text()))
             .collect::<Vec<_>>()
             .join(",");
-        format!(
+        let mut result = format!(
             concat!(
                 "{{\"schema\":{},\"profile\":{},\"record_digest\":{},\"event_summary\":{},",
                 "\"authority_sequence\":{},\"authority_anchor_digest\":{},\"authority_binding\":{},",
@@ -205,8 +249,8 @@ impl OriginalMediaExportRecord {
                 "\"live_archive_namespace_exposed\":false,\"external_copies_auto_erased\":false,",
                 "\"delivery_status\":\"not_observed_by_preparation\",\"offline_verification\":\"exact_package_root_and_child_bytes_only\"}}"
             ),
-            json(ORIGINAL_MEDIA_EXPORT_DOMAIN),
-            json(ORIGINAL_MEDIA_EXPORT_PROFILE),
+            json(self.domain()),
+            json(self.profile()),
             json(&self.digest().to_text()),
             self.event_summary.to_redacted_json(),
             self.basis.commit_sequence,
@@ -240,7 +284,15 @@ impl OriginalMediaExportRecord {
             json(&self.request.destination_binding.to_text()),
             self.request.max_source_bytes,
             json(&binding_digest(None).to_text()),
-        )
+        );
+        if let Some(lineage) = &self.review_lineage {
+            // Keep every v1 JSON byte unchanged: only the separately versioned reviewed profile
+            // gains these fields, which disclose pins without review rationale or identity.
+            result.pop();
+            result.push_str(&lineage.json_fields());
+            result.push('}');
+        }
+        result
     }
 }
 

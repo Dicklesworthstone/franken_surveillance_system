@@ -424,6 +424,51 @@ fn history(
     id: &EventId,
     cx: &ReplayCx,
 ) -> Result<Vec<Revision>, ReviewError> {
+    history_budgeted(
+        d,
+        id,
+        cx,
+        &mut ReviewReadBudget::new(MAX_REVIEW_HISTORY_BYTES),
+    )
+}
+
+struct ReviewReadBudget {
+    used: usize,
+    maximum: usize,
+}
+impl ReviewReadBudget {
+    fn new(maximum: usize) -> Self {
+        Self { used: 0, maximum }
+    }
+    fn reserve(&mut self, bytes: usize) -> Result<(), ReviewError> {
+        self.used = self.used.checked_add(bytes).ok_or(ReviewError::Limit)?;
+        if self.used > self.maximum {
+            return Err(ReviewError::Limit);
+        }
+        Ok(())
+    }
+    fn read(
+        &mut self,
+        d: &ReferenceDeployment,
+        digest: ContentDigest,
+        maximum: usize,
+    ) -> Result<Vec<u8>, ReviewError> {
+        let maximum = maximum.min(self.maximum.saturating_sub(self.used));
+        if maximum == 0 {
+            return Err(ReviewError::Limit);
+        }
+        let bytes = d.publisher().spool().read_bounded(digest, maximum)?;
+        self.reserve(bytes.len())?;
+        Ok(bytes)
+    }
+}
+
+fn history_budgeted(
+    d: &ReferenceDeployment,
+    id: &EventId,
+    cx: &ReplayCx,
+    reader: &mut ReviewReadBudget,
+) -> Result<Vec<Revision>, ReviewError> {
     if d.ledger().batches().len() > MAX_REVIEW_LEDGER_BATCHES {
         return Err(ReviewError::Limit);
     }
@@ -442,7 +487,11 @@ fn history(
             if history.len() >= MAX_LINEAGE_DEPTH {
                 return Err(ReviewError::Limit);
             }
-            let manifest_bytes = d.publisher().spool().read(delta.payload_digest)?;
+            let manifest_bytes = reader.read(
+                d,
+                delta.payload_digest,
+                MAX_REVIEW_HISTORY_BYTES.saturating_sub(used),
+            )?;
             used = used
                 .checked_add(manifest_bytes.len())
                 .ok_or(ReviewError::Limit)?;
@@ -453,7 +502,7 @@ fn history(
             let payload = manifest
                 .metadata_digest()
                 .ok_or(ReviewError::CustodyMismatch)?;
-            let bytes = d.publisher().spool().read(payload)?;
+            let bytes = reader.read(d, payload, MAX_REVIEW_HISTORY_BYTES.saturating_sub(used))?;
             used = used.checked_add(bytes.len()).ok_or(ReviewError::Limit)?;
             if used > MAX_REVIEW_HISTORY_BYTES {
                 return Err(ReviewError::Limit);
@@ -716,3 +765,5 @@ mod tests;
 
 mod inspection;
 pub use inspection::read_current_review;
+
+pub(crate) mod lineage;

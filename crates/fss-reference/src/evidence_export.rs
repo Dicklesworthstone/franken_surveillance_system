@@ -126,6 +126,14 @@ impl EventExportRecord {
     pub fn event_anchor(&self) -> &LedgerAnchor {
         &self.event_anchor
     }
+    /// Exact current event generation represented by this redacted summary.
+    pub const fn event_revision(&self) -> u64 {
+        self.event_revision
+    }
+    /// Lifecycle state of that exact event generation; review is not sensor recomputation.
+    pub const fn event_state(&self) -> EventState {
+        self.event_state
+    }
     /// Number of redacted evidence summaries.
     pub fn evidence_count(&self) -> usize {
         self.evidence.len()

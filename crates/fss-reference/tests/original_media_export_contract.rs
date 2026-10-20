@@ -40,6 +40,8 @@ use fss_reference::original_media_export::{
 use fss_reference::{ReferenceDeployment, ReplayCx};
 
 type Test<T = ()> = Result<T, Box<dyn std::error::Error>>;
+#[path = "original_media_export_contract/reviewed.rs"]
+mod reviewed;
 const SITE: &str = "site:original-media-export";
 const ACTOR: &str = "principal:original-media-owner";
 
@@ -269,6 +271,9 @@ fn cold_event_export_keeps_all_playable_original_bytes_and_explicit_context_with
     assert_eq!(preview.media_digest(), ContentDigest::sha256(&f.source));
     assert_eq!(preview.media_filename(), "source.mjpeg");
     let json = preview.record_json();
+    assert_eq!(preview.profile(), "event-original-media-whole-source-v1");
+    assert!(json.contains("\"schema\":\"fss.original_media_export.v1\""));
+    assert!(!json.contains("review_chain"));
     for field in [
         "\"whole_source_authorized\":true",
         "\"frame_precise_trim\":false",

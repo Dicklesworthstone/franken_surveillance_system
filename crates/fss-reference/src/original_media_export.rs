@@ -19,16 +19,21 @@ use std::fmt;
 use fss_core::region::ContextAuthority;
 use fss_core::{
     CanonicalEncode, CaptureInterval, ContentDigest, ContractError, DigestAlgorithm, LedgerAnchor,
-    PrincipalId, SensorId,
+    ObjectId, PrincipalId, SensorId,
 };
 use fss_object::{ObjectError, ObjectManifest, SpoolError};
 
+use crate::event_review::{
+    ReviewError,
+    lineage::{VerifiedReviewLink, inspect_review_lineage},
+};
 use crate::evidence_export::{
     CAP_EXPORT_COMMIT, CAP_EXPORT_PREPARE, EventExportRecord, EventExportRequest, ExportError,
     preview_export,
 };
 use crate::ingest::long_event_replay::{
     LongEventReplayError, LongEventReplayLimits, LongEventReplayRecipe, inspect_long_event,
+    inspect_review_origin,
 };
 use crate::ingest::privacy_mask::{PrivacyMaskError, binding_digest, refuse_unmasked_source};
 use crate::ingest::recorded_decode::{RecordedDecodeError, retained_source_capsule};
@@ -42,6 +47,9 @@ mod wire;
 pub const CAP_EXPORT_ORIGINAL_MEDIA: &str = "CAP-READ-MEDIA-001";
 /// Fixed whole-source disclosure profile. The existing metadata-only profile is unchanged.
 pub const ORIGINAL_MEDIA_EXPORT_PROFILE: &str = "event-original-media-whole-source-v1";
+/// Complete verified operator-review lineage plus the original native source computation.
+pub const REVIEWED_ORIGINAL_MEDIA_EXPORT_PROFILE: &str =
+    "event-reviewed-original-media-whole-source-v2";
 /// Largest returned original source allocation; no implicit stream or unbounded concatenation.
 pub const MAX_ORIGINAL_MEDIA_BYTES: u64 = 64 * 1024 * 1024;
 /// Maximum source capsules whose camera, interval and privacy scope are checked before disclosure.
@@ -50,7 +58,10 @@ pub const MAX_ORIGINAL_MEDIA_SEGMENTS: usize = 16_384;
 pub const MAX_ORIGINAL_MEDIA_RECORD_BYTES: usize = 128 * 1024;
 /// Canonical custody record domain.
 pub const ORIGINAL_MEDIA_EXPORT_DOMAIN: &str = "fss.original_media_export.v1";
+/// Explicit version for reviewed-event custody; original revision-one records remain v1.
+pub const REVIEWED_ORIGINAL_MEDIA_EXPORT_DOMAIN: &str = "fss.original_media_export.v2";
 const POLICY: &[u8] = b"fss.original_media_export.policy.v1:current-original-long-event:exact-import-root:whole-source-explicit:video-only-native-rtsp-or-complete-mjpeg:no-mask-override:recipient-purpose-expiry-attestation:destination-bound:separate-original-media-capability:revalidate-before-root-last-output:no-delivery-claim-before-readback";
+const REVIEWED_POLICY: &[u8] = b"fss.original_media_export.policy.v2:current-reviewed-long-event:complete-exact-operator-review-derivation:native-origin-source-closure:no-new-sensor-support:review-rationale-and-principal-redacted:exact-import-root:whole-source-explicit:video-only-native-rtsp-or-complete-mjpeg:no-mask-override:recipient-purpose-expiry-attestation:destination-bound:separate-original-media-capability:revalidate-before-root-last-output:no-delivery-claim-before-readback";
 type Result<T> = std::result::Result<T, OriginalMediaExportError>;
 
 /// Exact source and recipient disclosure reviewed by the owner.
@@ -122,6 +133,17 @@ pub struct OriginalMediaExportRecord {
     source_segments: u64,
     source_interval: CaptureInterval,
     source_capture_label: String,
+    review_lineage: Option<ReviewedMediaLineage>,
+}
+
+/// Immutable redacted proof pins. The complete plaintext review chain is checked only in the
+/// deployment; an offline package binds these pins without making them independent sensor truth.
+#[derive(Clone, Debug, Eq, PartialEq)]
+struct ReviewedMediaLineage {
+    original_revision: ContentDigest,
+    original_root: ContentDigest,
+    original_anchor: LedgerAnchor,
+    links: Vec<VerifiedReviewLink>,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -160,7 +182,7 @@ impl OriginalMediaExportPreview {
     pub fn approval(&self) -> ContentDigest {
         let mut e = fss_core::CanonicalEncoder::new();
         e.text("fss.original_media_export_approval.v1");
-        e.digest(ContentDigest::sha256(POLICY));
+        e.digest(ContentDigest::sha256(self.record.policy()));
         e.digest(self.record.digest());
         e.digest(self.root);
         ContentDigest::sha256(&e.finish())
@@ -168,6 +190,10 @@ impl OriginalMediaExportPreview {
     /// Independently pin this root when verifying a delivered package.
     pub const fn root(&self) -> ContentDigest {
         self.root
+    }
+    /// Versioned disclosure profile, distinct for original and reviewed current events.
+    pub fn profile(&self) -> &'static str {
+        self.record.profile()
     }
     /// Human/machine projection; canonical bytes define identity.
     pub fn record_json(&self) -> String {
@@ -246,6 +272,8 @@ pub enum OriginalMediaExportError {
     Event(ExportError),
     /// Existing source-closed event inspector refused.
     Inspection(Box<LongEventReplayError>),
+    /// Complete operator-review lineage or exact immutable derivation could not be verified.
+    Review(Box<ReviewError>),
     /// Existing retained-source owner refused, including committed deletion.
     Source(Box<FileIngestError>),
     /// Existing source-capsule custody owner refused.
@@ -273,6 +301,7 @@ impl OriginalMediaExportError {
             Self::Cancelled => "ERR-EXPORT-CANCELLED-001",
             Self::Event(e) => e.stable_id(),
             Self::Inspection(e) => e.stable_id(),
+            Self::Review(e) => e.stable_id(),
             Self::Source(e) => e.stable_id().unwrap_or("ERR-EXPORT-CUSTODY-001"),
             Self::Capsule(e) => e.stable_id(),
             Self::Privacy(e) => e.stable_id(),
@@ -306,6 +335,7 @@ impl fmt::Display for OriginalMediaExportError {
             Self::Cancelled => f.write_str("original-media export cancelled"),
             Self::Event(e) => write!(f, "{e}"),
             Self::Inspection(e) => write!(f, "{e}"),
+            Self::Review(e) => write!(f, "{e}"),
             Self::Source(e) => write!(f, "{e}"),
             Self::Capsule(e) => write!(f, "{e}"),
             Self::Privacy(e) => write!(f, "{e}"),
@@ -334,6 +364,7 @@ macro_rules! from_error {
 }
 from_error!(ExportError, Event);
 from_error!(LongEventReplayError, Inspection, boxed);
+from_error!(ReviewError, Review, boxed);
 from_error!(FileIngestError, Source, boxed);
 from_error!(RecordedDecodeError, Capsule, boxed);
 from_error!(PrivacyMaskError, Privacy);
@@ -407,15 +438,42 @@ fn prepare_record(
     // The existing owner verifies current event authority, exact source capsules, source roots,
     // native analysis provenance and current privacy. A caller-selected import alone proves none
     // of those relationships. Inspection never runs a model or changes event interpretation.
-    let inspection = inspect_long_event(
-        deployment,
-        &request.event.event_id,
-        &LongEventReplayLimits::default(),
-        cx,
-    )?;
-    if inspection.pins().event_revision != request.event.expected_revision {
-        return Err(ExportError::StaleRevision.into());
-    }
+    let object = ObjectId::parse(format!("object:event:{}", request.event.event_id.as_str()))?;
+    let current = deployment
+        .ledger()
+        .current()
+        .objects
+        .get(&object)
+        .ok_or(OriginalMediaExportError::CustodyMismatch)?;
+    let (inspection, review_lineage) = if current.generation == 1 {
+        let inspection = inspect_long_event(
+            deployment,
+            &request.event.event_id,
+            &LongEventReplayLimits::default(),
+            cx,
+        )?;
+        if inspection.pins().event_revision != request.event.expected_revision {
+            return Err(ExportError::StaleRevision.into());
+        }
+        (inspection, None)
+    } else {
+        // The sealed review owner verifies every link before the original native recipe can be
+        // inspected. A reviewed event is never passed to the revision-one replay API as though
+        // an operator assertion had recomputed sensor evidence.
+        let lineage = inspect_review_lineage(deployment, &request.event.event_id, cx)?;
+        if lineage.current().revision_digest() != request.event.expected_revision {
+            return Err(ExportError::StaleRevision.into());
+        }
+        let inspection =
+            inspect_review_origin(deployment, &lineage, &LongEventReplayLimits::default(), cx)?;
+        let redacted = ReviewedMediaLineage {
+            original_revision: lineage.original().revision_digest(),
+            original_root: lineage.original_root(),
+            original_anchor: lineage.original_anchor().clone(),
+            links: lineage.links().to_vec(),
+        };
+        (inspection, Some(redacted))
+    };
     let (belongs, event_source_count) = match inspection.recipe() {
         LongEventReplayRecipe::Watch(recipe) => {
             (recipe.plan().import_identity == request.import_identity, 1)
@@ -509,6 +567,7 @@ fn prepare_record(
         source_segments: manifest.segment_spans.len() as u64,
         source_interval: interval.ok_or(OriginalMediaExportError::CustodyMismatch)?,
         source_capture_label: manifest.capture_time_label.clone(),
+        review_lineage,
     };
     record.validate()?;
     if &basis != deployment.current_anchor() || inspection.basis() != &basis {
@@ -572,7 +631,7 @@ pub fn preview_original_media_export(
     checkpoint(cx, "original_media_export:source_verified")?;
     let record_bytes = record.to_bytes();
     let manifest = ObjectManifest::new(
-        ORIGINAL_MEDIA_EXPORT_PROFILE,
+        record.profile(),
         [record.source_digest],
         Some(record.digest()),
     )?;
@@ -650,7 +709,7 @@ pub fn verify_original_media_export(
     let manifest = ObjectManifest::from_canonical_bytes(manifest_bytes)?;
     let record = OriginalMediaExportRecord::from_bytes(record_bytes)?;
     let expected = ObjectManifest::new(
-        ORIGINAL_MEDIA_EXPORT_PROFILE,
+        record.profile(),
         [record.source_digest],
         Some(record.digest()),
     )?;

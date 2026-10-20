@@ -522,15 +522,7 @@ fn load(
     limits.validate()?;
     check_context(deployment, cx)?;
     let basis = deployment.current_anchor().clone();
-    let (prefix, kind) = if event_id.as_str().starts_with("event:long-watch:") {
-        ("lw-e", "long_watch")
-    } else if event_id.as_str().starts_with("event:long-dwell:") {
-        ("ld-e", "long_dwell")
-    } else if event_id.as_str().starts_with("event:long-corroborated:") {
-        ("lc", "long_corroboration")
-    } else {
-        return Err(LongEventReplayError::UnsupportedProfile);
-    };
+    native_event_profile(event_id)?;
     if let Some(pins) = pins {
         valid_digest(pins.event_revision)?;
         valid_digest(pins.provenance_root)?;
@@ -588,6 +580,98 @@ fn load(
     if pins.is_some_and(|pins| pins.event_revision != event.revision_digest()) {
         return Err(LongEventReplayError::StaleSelection);
     }
+    load_native_profile(
+        deployment,
+        event,
+        receipt.event_root,
+        pins,
+        limits,
+        reader,
+        basis,
+        cx,
+    )
+}
+
+fn native_event_profile(event_id: &EventId) -> Result<(&'static str, &'static str)> {
+    if event_id.as_str().starts_with("event:long-watch:") {
+        Ok(("lw-e", "long_watch"))
+    } else if event_id.as_str().starts_with("event:long-dwell:") {
+        Ok(("ld-e", "long_dwell"))
+    } else if event_id.as_str().starts_with("event:long-corroborated:") {
+        Ok(("lc", "long_corroboration"))
+    } else {
+        Err(LongEventReplayError::UnsupportedProfile)
+    }
+}
+
+/// Inspect the original computation only after the review owner has sealed the complete current
+/// lineage. This internal custody path does not make a reviewed event eligible for native replay.
+pub(crate) fn inspect_review_origin(
+    deployment: &ReferenceDeployment,
+    lineage: &crate::event_review::lineage::VerifiedReviewLineage,
+    limits: &LongEventReplayLimits,
+    cx: &ReplayCx,
+) -> Result<LongEventReplayInspection> {
+    limits.validate()?;
+    check_context(deployment, cx)?;
+    lineage
+        .revalidate_basis(deployment, cx)
+        .map_err(review_basis_error)?;
+    let basis = deployment.current_anchor().clone();
+    let mut reader = MetadataReader {
+        remaining: limits.maximum_metadata_bytes,
+        used: 0,
+        objects: 0,
+    };
+    let root = lineage.original_root();
+    let root_bytes = reader.read(deployment, root, MAX_MANIFEST_BYTES, cx)?;
+    let manifest = ObjectManifest::from_canonical_bytes(&root_bytes)
+        .map_err(|_| LongEventReplayError::InvalidRecord)?;
+    if manifest.children().len() > 512 {
+        return Err(LongEventReplayError::Limit);
+    }
+    let payload = manifest
+        .metadata_digest()
+        .ok_or(LongEventReplayError::InvalidRecord)?;
+    let bytes = reader.read(deployment, payload, 512 * 1024, cx)?;
+    for &child in manifest.children() {
+        let _ = reader.read(deployment, child, MAX_LONG_EVENT_ANALYSIS_BYTES, cx)?;
+    }
+    let event = EventHypothesis::from_canonical_bytes(&bytes)
+        .map_err(|_| LongEventReplayError::InvalidRecord)?;
+    if &event != lineage.original()
+        || event.revision != 1
+        || event.supersedes.is_some()
+        || event.kind != EventKind::Unclassified
+    {
+        return Err(LongEventReplayError::UnsupportedProfile);
+    }
+    let inspection = load_native_profile(deployment, event, root, None, limits, reader, basis, cx)?;
+    lineage
+        .revalidate_basis(deployment, cx)
+        .map_err(review_basis_error)?;
+    Ok(inspection)
+}
+
+fn review_basis_error(error: crate::event_review::ReviewError) -> LongEventReplayError {
+    match error {
+        crate::event_review::ReviewError::Cancelled => LongEventReplayError::Cancelled,
+        _ => LongEventReplayError::AuthorityChanged,
+    }
+}
+
+fn load_native_profile(
+    deployment: &ReferenceDeployment,
+    event: EventHypothesis,
+    event_root: ContentDigest,
+    pins: Option<LongEventReplayPins>,
+    limits: &LongEventReplayLimits,
+    mut reader: MetadataReader,
+    basis: LedgerAnchor,
+    cx: &ReplayCx,
+) -> Result<LongEventReplayInspection> {
+    let event_id = &event.event_id;
+    let (prefix, kind) = native_event_profile(event_id)?;
     let identity = event_identity(
         event_id,
         match kind {
@@ -641,7 +725,7 @@ fn load(
             provenance_root,
         },
         event,
-        event_root: receipt.event_root,
+        event_root,
         recipe: loaded.recipe,
         analysis_roots: loaded.analysis_roots,
         analysis_digests: loaded.analysis_digests,

@@ -4,8 +4,9 @@
 package contains the exact playable source, a canonical custody record and their shared manifest
 root. A recipient can verify the files without the deployment or the original input file.
 
-This is the fixed `event-original-media-whole-source-v1` profile. It supports original revision-one
-long-watch, long-dwell and long-corroboration events. A corroboration export includes **one explicitly
+The `event-original-media-whole-source-v1` profile supports original revision-one long-watch,
+long-dwell and long-corroboration events. Verified operator-reviewed successors use the separate
+`event-reviewed-original-media-whole-source-v2` profile. A corroboration export includes **one explicitly
 selected source**, and reports the excluded camera count. Supported media are omission-free MJPEG
 and video-only AVC/HEVC MP4 created by the native RTSP window/catalog/page import owners. Generic
 MP4 imports can contain unexamined audio or other tracks and are refused. The selected source is
@@ -46,9 +47,37 @@ continues to export only redacted metadata. No capability registry generation is
 If a library caller supplies an authority deadline, the complete attested time interval must also
 precede that deadline at preview, approval and final revalidation, independently of package expiry.
 
+## Export a reviewed incident
+
+An operator can investigate, resolve or reject a native event with `fss-review`, then export its
+original recording with the same `fss-export media` command. Use the **current reviewed revision**
+as `--expected-revision`; an approval obtained before review is stale. No extra source-read or
+export authority is implied by the review itself.
+
+The export owner verifies the complete ordered review chain back to the original native event.
+Each successor must be exactly the event that its retained operator statement derives from its
+predecessor. Source evidence, model receipts, classification, probability, capture bounds and
+sensor-integrity uncertainty remain subject to the existing review invariants. Missing, altered,
+unsupported or excessive review history refuses export; the command never silently skips a link.
+The complete chain is bounded to 255 reviews. Event history is capped at 32 MiB, combined lineage
+read reservations at 64 MiB, and the complete exported custody record at 128 KiB.
+
+The version-two custody record distinguishes the current reviewed revision from the original
+native event and records the ordered review and statement roots, revision identities, authority
+anchors and dispositions. Reviews remain explicitly labelled operator assertions. Reviewer names
+and reason text are not disclosed by this profile. Inspection of the original source computation
+does not claim that a native model reproduced the operator's lifecycle decision.
+
+Approval binds the reviewed record as well as the exact source bytes. A later review, privacy
+change or deletion invalidates the prepared output. Offline verification checks the versioned
+record and package against the trusted export root; it cannot determine whether a newer review
+exists in a deployment it does not open. Existing version-one canonical records, display records
+and package roots retain their original interpretation.
+
 ## Source custody and publication
 
-The source must belong to the exact retained computation that produced the current event. The
+The source must belong to the exact retained computation that produced the original native event;
+reviewed exports additionally prove the complete chain to its current successor. The
 existing event/source owners verify original native analysis roots, completed import authority,
 capsule identity, deletion state and current privacy. Native RTSP imports additionally verify the
 original packet/wire custody that produced the retained MP4. Whole-source reconstruction checks
@@ -103,11 +132,13 @@ deletion cannot erase copies that have already been exported.
 
 ```sh
 cargo test --locked --offline -p fss-reference --test original_media_export_contract
-cargo test --locked --offline -p fss-cli --bin fss-export --test rtsp_event_media_export_cli
+cargo test --locked --offline -p fss-cli --bin fss-export --bin fss-review --test rtsp_event_media_export_cli
 ```
 
 These exercise native retained event/source custody, exact approvals, scope/clock/byte boundaries,
 privacy and deletion invalidation, corruption, cancellation, create-only output, process restart
-and offline verification. They do not qualify detector accuracy or arbitrary camera/browser codec
+and offline verification. Reviewed-event cases cover native AVC, HEVC and MJPEG, multi-review
+chains, stale approvals, missing or corrupt review custody, private rationale redaction, and
+continued refusal to replay an operator decision as native model output. They do not qualify detector accuracy or arbitrary camera/browser codec
 profiles. This implementation advances FSS-068; broader incident clip editing and multi-camera
 handoff remain separate work.

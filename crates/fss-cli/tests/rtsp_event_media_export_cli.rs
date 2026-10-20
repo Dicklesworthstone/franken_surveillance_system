@@ -153,6 +153,15 @@ struct Fixture {
     revision: ContentDigest,
 }
 
+struct ReviewWitness {
+    revision: i128,
+    event_revision: ContentDigest,
+    event_root: ContentDigest,
+    statement_digest: ContentDigest,
+    statement_root: ContentDigest,
+    disposition: String,
+}
+
 struct FixtureOwner;
 impl RtspImportAuthority for FixtureOwner {
     fn permit(&self, request: &RtspImportRequest, deployment: &ReferenceDeployment) -> bool {
@@ -434,6 +443,81 @@ impl Fixture {
         ))
     }
 
+    fn review_show(&self) -> Test<Value> {
+        let report = success(&execute_binary(
+            env!("CARGO_BIN_EXE_fss-review"),
+            &[
+                "show".into(),
+                "--root".into(),
+                self.root.as_os_str().to_owned(),
+                "--site".into(),
+                SITE.into(),
+                "--event-id".into(),
+                self.event_id.as_str().into(),
+            ],
+        )?)?;
+        assert_eq!(text(field(&report, "result")?, "status")?, "read_verified");
+        Ok(report)
+    }
+
+    fn review(&mut self, disposition: &str, reviewer: &str, reason: &str) -> Test<ReviewWitness> {
+        let args = vec![
+            disposition.into(),
+            "--root".into(),
+            self.root.as_os_str().to_owned(),
+            "--site".into(),
+            SITE.into(),
+            "--event-id".into(),
+            self.event_id.as_str().into(),
+            "--expected-revision".into(),
+            self.revision.to_text().into(),
+            "--principal".into(),
+            reviewer.into(),
+            "--reason".into(),
+            reason.into(),
+        ];
+        let before = self.journals()?;
+        let preview = success(&execute_binary(env!("CARGO_BIN_EXE_fss-review"), &args)?)?;
+        let proposed = field(&preview, "result")?;
+        assert_eq!(text(proposed, "status")?, "proposed");
+        assert_eq!(field(proposed, "published")?.boolean(), Some(false));
+        assert_eq!(self.journals()?, before, "review preview must not publish");
+        let committed = success(&execute_binary(
+            env!("CARGO_BIN_EXE_fss-review"),
+            &approved(args, text(proposed, "approval_digest")?),
+        )?)?;
+        let result = field(&committed, "result")?;
+        assert_eq!(text(result, "status")?, "published");
+        assert_eq!(field(result, "published")?.boolean(), Some(true));
+        assert_eq!(
+            field(result, "revision_digest")?,
+            field(proposed, "revision_digest")?
+        );
+        assert_eq!(
+            field(&committed, "effects_performed")?.boolean(),
+            Some(false)
+        );
+        assert_eq!(self.journals()?.1, before.1);
+        self.revision = ContentDigest::parse(text(result, "revision_digest")?)?;
+        let shown = self.review_show()?;
+        let current = field(&shown, "result")?;
+        assert_eq!(text(current, "review_status")?, "verified_current_review");
+        assert_eq!(text(current, "revision_digest")?, self.revision.to_text());
+        let statement = field(result, "record")?;
+        assert_eq!(text(statement, "principal")?, reviewer);
+        assert_eq!(text(statement, "reason")?, reason);
+        Ok(ReviewWitness {
+            revision: field(field(result, "event")?, "revision")?
+                .integer()
+                .ok_or("review event revision missing")?,
+            event_revision: self.revision,
+            event_root: ContentDigest::parse(text(current, "event_root")?)?,
+            statement_digest: ContentDigest::parse(text(statement, "record_digest")?)?,
+            statement_root: ContentDigest::parse(text(result, "provenance_root")?)?,
+            disposition: disposition.to_owned(),
+        })
+    }
+
     fn update(&self, action: impl FnOnce(&mut ReferenceDeployment, &ReplayCx) -> Test) -> Test {
         let cx = context(&self.root)?;
         let mut deployment = ReferenceDeployment::open(&self.root, SITE, &cx)?;
@@ -454,11 +538,15 @@ impl Drop for OwnedChild {
     }
 }
 fn execute(args: &[OsString]) -> Test<Output> {
+    execute_binary(env!("CARGO_BIN_EXE_fss-export"), args)
+}
+
+fn execute_binary(binary: &str, args: &[OsString]) -> Test<Output> {
     let capture = Directory::new("process")?;
     let stdout = capture.0.join("stdout");
     let stderr = capture.0.join("stderr");
     let mut child = OwnedChild(
-        Command::new(env!("CARGO_BIN_EXE_fss-export"))
+        Command::new(binary)
             .args(args)
             .stdin(Stdio::null())
             .stdout(Stdio::from(fs::File::create(&stdout)?))
@@ -480,7 +568,7 @@ fn execute(args: &[OsString]) -> Test<Output> {
             });
         }
         if Instant::now() >= deadline {
-            return Err("fss-export child exceeded 60-second deadline".into());
+            return Err("CLI child exceeded 60-second deadline".into());
         }
         std::thread::sleep(Duration::from_millis(10));
     }
@@ -547,6 +635,78 @@ fn package_snapshot(path: &Path) -> Test<Vec<(OsString, Vec<u8>)>> {
     }
     files.sort_by(|a, b| a.0.cmp(&b.0));
     Ok(files)
+}
+
+fn assert_reviewed_record(
+    record: &Value,
+    original: &Value,
+    reviews: &[ReviewWitness],
+    current_state: &str,
+) -> Test {
+    assert_eq!(text(record, "schema")?, "fss.original_media_export.v2");
+    assert_eq!(
+        text(record, "profile")?,
+        "event-reviewed-original-media-whole-source-v2"
+    );
+    assert_eq!(field(record, "reviewed_event")?.boolean(), Some(true));
+    assert_eq!(
+        field(record, "native_origin_revision")?,
+        field(original, "revision_digest")?
+    );
+    assert_eq!(
+        field(record, "native_origin_event_root")?,
+        field(original, "event_root")?
+    );
+    assert_eq!(
+        field(record, "native_origin_authority_sequence")?.integer(),
+        field(field(original, "event_anchor")?, "capsuleSequence")?.integer()
+    );
+    ContentDigest::parse(text(record, "native_origin_authority_anchor_digest")?)?;
+    assert_eq!(
+        field(record, "review_count")?.integer(),
+        Some(reviews.len() as i128)
+    );
+    let chain = field(record, "review_chain")?
+        .array()
+        .ok_or("review chain must be an array")?;
+    assert_eq!(chain.len(), reviews.len());
+    for (entry, expected) in chain.iter().zip(reviews) {
+        assert_eq!(field(entry, "revision")?.integer(), Some(expected.revision));
+        assert_eq!(
+            text(entry, "event_revision")?,
+            expected.event_revision.to_text()
+        );
+        assert_eq!(text(entry, "event_root")?, expected.event_root.to_text());
+        assert_eq!(
+            text(entry, "statement_digest")?,
+            expected.statement_digest.to_text()
+        );
+        assert_eq!(
+            text(entry, "statement_root")?,
+            expected.statement_root.to_text()
+        );
+        assert_eq!(text(entry, "disposition")?, expected.disposition);
+        assert_eq!(text(entry, "assertion_class")?, "operator");
+        assert_eq!(field(entry, "sensor_support_added")?.boolean(), Some(false));
+    }
+    for name in [
+        "review_reasons_included",
+        "reviewer_identity_included",
+        "review_is_sensor_recomputation",
+    ] {
+        assert_eq!(field(record, name)?.boolean(), Some(false));
+    }
+    let summary = field(record, "event_summary")?;
+    assert_eq!(text(summary, "state")?, current_state);
+    assert_eq!(
+        text(summary, "event_revision_digest")?,
+        reviews
+            .last()
+            .ok_or("no expected reviews")?
+            .event_revision
+            .to_text()
+    );
+    Ok(())
 }
 
 #[test]
@@ -766,6 +926,235 @@ fn native_avc_and_hevc_events_export_exact_video_after_the_camera_archive_goes_o
         );
         assert!(!fixture.root.exists());
     }
+    Ok(())
+}
+
+#[test]
+fn reviewed_native_avc_and_hevc_exports_keep_original_video_and_operator_assertions_separate()
+-> Test {
+    let _guard = SERIAL.lock().map_err(|_| "test lock poisoned")?;
+    const REVIEWER: &str = "principal:private-native-reviewer";
+    const REASON: &str = "Private synthetic-case rationale excluded from the recipient package";
+    for (codec, disposition, state) in [
+        (RtspImportCodec::Avc, "investigate", "indeterminate"),
+        (RtspImportCodec::Hevc, "reject", "rejected"),
+    ] {
+        let mut fixture = Fixture::native(codec)?;
+        let original = fixture.review_show()?;
+        let review = fixture.review(disposition, REVIEWER, REASON)?;
+        let reviews = [review];
+        let journals = fixture.journals()?;
+        let exported = fixture.publish()?;
+        assert_eq!(
+            text(&exported, "profile")?,
+            "event-reviewed-original-media-whole-source-v2"
+        );
+        assert_reviewed_record(
+            field(&exported, "record")?,
+            field(&original, "result")?,
+            &reviews,
+            state,
+        )?;
+        assert_eq!(fs::read(fixture.output.join("source.mp4"))?, fixture.source);
+        for name in ["record.canonical", "record.json"] {
+            let bytes = fs::read(fixture.output.join(name))?;
+            for private in [REVIEWER, REASON] {
+                assert!(
+                    !bytes
+                        .windows(private.len())
+                        .any(|part| part == private.as_bytes()),
+                    "recipient {name} must not disclose private review attribution or rationale"
+                );
+            }
+        }
+
+        // Source export may follow verified review lineage. Native replay must still refuse
+        // to present the operator's successor as the original sensor computation.
+        let native_read = execute_binary(
+            env!("CARGO_BIN_EXE_fss-event"),
+            &[
+                "read".into(),
+                "--root".into(),
+                fixture.root.as_os_str().to_owned(),
+                "--site".into(),
+                SITE.into(),
+                "--event-id".into(),
+                fixture.event_id.as_str().into(),
+            ],
+        )?;
+        refused(&native_read);
+        assert!(
+            String::from_utf8_lossy(&native_read.stderr)
+                .contains("unsupported_long_event_replay_profile")
+        );
+        assert_eq!(fixture.journals()?, journals);
+        let root = text(&exported, "export_root")?;
+        fs::rename(
+            &fixture.root,
+            fixture.directory.0.join("reviewed-deployment-offline"),
+        )?;
+        let verified = success(&execute(&fixture.verify_args(root))?)?;
+        assert_eq!(text(&verified, "status")?, "verified_original_media");
+        assert_eq!(
+            text(&verified, "profile")?,
+            "event-reviewed-original-media-whole-source-v2"
+        );
+        assert_eq!(field(&verified, "record")?, field(&exported, "record")?);
+        assert_eq!(
+            text(&verified, "media_digest")?,
+            ContentDigest::sha256(&fixture.source).to_text()
+        );
+        assert!(!fixture.root.exists());
+    }
+    Ok(())
+}
+
+#[test]
+fn successive_operator_reviews_require_fresh_export_approval_and_preserve_the_complete_chain()
+-> Test {
+    let _guard = SERIAL.lock().map_err(|_| "test lock poisoned")?;
+    let mut fixture = Fixture::new("review-chain")?;
+    let original = fixture.review_show()?;
+    let unreviewed_preview = fixture.preview()?;
+    let before_review = approved(
+        fixture.args(),
+        text(&unreviewed_preview, "approval_digest")?,
+    );
+    let first = fixture.review(
+        "investigate",
+        "principal:first-private-reviewer",
+        "Initial synthetic-case review remains unresolved",
+    )?;
+    let intermediate = fixture.preview()?;
+    let before_resolution = approved(fixture.args(), text(&intermediate, "approval_digest")?);
+    let second = fixture.review(
+        "investigate",
+        "principal:second-private-reviewer",
+        "Independent operator investigation continues without new sensor support",
+    )?;
+    let third = fixture.review(
+        "resolve",
+        "principal:third-private-reviewer",
+        "Owner closes the synthetic case without asserting scene truth",
+    )?;
+    let reviews = [first, second, third];
+    let journals = fixture.journals()?;
+    for obsolete in [before_review, before_resolution] {
+        refused(&execute(&obsolete)?);
+        assert!(!fixture.output.exists());
+    }
+    // Replacing the old command's revision with the current one cannot transfer its approval.
+    refused(&execute(&approved(
+        fixture.args(),
+        text(&unreviewed_preview, "approval_digest")?,
+    ))?);
+    assert!(!fixture.output.exists());
+    let preview = fixture.preview()?;
+    assert_reviewed_record(
+        field(&preview, "record")?,
+        field(&original, "result")?,
+        &reviews,
+        "resolved",
+    )?;
+    let args = approved(fixture.args(), text(&preview, "approval_digest")?);
+    let exported = success(&execute(&args)?)?;
+    assert_eq!(text(&exported, "status")?, "exported_original_media");
+    assert_eq!(
+        field(&exported, "export_root")?,
+        field(&preview, "export_root")?
+    );
+    assert_eq!(
+        fs::read(fixture.output.join("source.mjpeg"))?,
+        fixture.source
+    );
+    let package = package_snapshot(&fixture.output)?;
+    assert_eq!(
+        text(&success(&execute(&args)?)?, "status")?,
+        "already_exported_original_media"
+    );
+    assert_eq!(package_snapshot(&fixture.output)?, package);
+    assert_eq!(fixture.journals()?, journals);
+    fs::rename(
+        &fixture.root,
+        fixture.directory.0.join("resolved-deployment-offline"),
+    )?;
+    let verified = success(&execute(
+        &fixture.verify_args(text(&exported, "export_root")?),
+    )?)?;
+    assert_eq!(text(&verified, "status")?, "verified_original_media");
+    assert_reviewed_record(
+        field(&verified, "record")?,
+        field(&original, "result")?,
+        &reviews,
+        "resolved",
+    )?;
+    Ok(())
+}
+
+#[test]
+fn missing_or_corrupted_earlier_review_custody_refuses_export_without_repair_or_output() -> Test {
+    let _guard = SERIAL.lock().map_err(|_| "test lock poisoned")?;
+    let mut fixture = Fixture::new("review-custody")?;
+    let first = fixture.review(
+        "investigate",
+        "principal:review-one",
+        "First exact assertion",
+    )?;
+    let middle = fixture.review(
+        "investigate",
+        "principal:review-two",
+        "Second exact assertion",
+    )?;
+    fixture.review("resolve", "principal:review-three", "Final exact assertion")?;
+    let preview = fixture.preview()?;
+    let approved_args = approved(fixture.args(), text(&preview, "approval_digest")?);
+    let mut objects = Vec::new();
+    fixture.update(|deployment, _| {
+        for digest in [
+            first.statement_digest,
+            first.statement_root,
+            middle.statement_digest,
+            middle.statement_root,
+        ] {
+            objects.push(deployment.publisher().spool().object_path(digest));
+        }
+        Ok(())
+    })?;
+    let journals = fixture.journals()?;
+    for path in objects {
+        let original = fs::read(&path)?;
+        let mut changed = original.clone();
+        *changed.last_mut().ok_or("empty retained review object")? ^= 1;
+        fs::write(&path, changed)?;
+        for missing in [false, true] {
+            if missing {
+                fs::remove_file(&path)?;
+            }
+            refused(&execute(&approved_args)?);
+            refused(&execute(&fixture.args())?);
+            assert!(!fixture.output.exists());
+            assert_eq!(fixture.journals()?, journals);
+            if missing {
+                assert!(
+                    !path.exists(),
+                    "failed export must not recreate missing review custody"
+                );
+            }
+        }
+        fs::write(&path, original)?;
+        let restored = fixture.preview()?;
+        assert_eq!(
+            field(&restored, "approval_digest")?,
+            field(&preview, "approval_digest")?
+        );
+    }
+    let exported = success(&execute(&approved_args)?)?;
+    assert_eq!(text(&exported, "status")?, "exported_original_media");
+    assert_eq!(
+        fs::read(fixture.output.join("source.mjpeg"))?,
+        fixture.source
+    );
+    assert_eq!(fixture.journals()?, journals);
     Ok(())
 }
 

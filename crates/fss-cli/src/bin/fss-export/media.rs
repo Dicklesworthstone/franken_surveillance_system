@@ -35,7 +35,9 @@ Previews a separate original-footage profile. Repeat the exact request with its 
 to write verified source media, canonical custody record and manifest; COMPLETE.json appears last.\n\
 The ENTIRE selected source recording is disclosed, including time outside the event. No trimming\n\
 or masking is performed. Only verified video-only native RTSP MP4 and omission-free MJPEG sources\n\
-are supported; masked, deleted, unsupported, stale or unverified sources are refused. At most 64 MiB.\n\
+are supported, including sources of a verified operator-reviewed event. Review chains bind the\n\
+current revision to the original native event; operator assertions are not new sensor evidence.\n\
+Masked, deleted, unsupported, stale or unverified sources are refused. At most 64 MiB.\n\
 Approval binds the current event, source root, actor, recipient, purpose, expiry, clock attestation,\n\
 byte bound and actual destination parent. Preview creates no output. New directories are 0700 and\n\
 files 0600. Destination parent must exist outside the deployment and forbid group/world writes.\n\
@@ -258,6 +260,7 @@ fn report(
     bounded_report(object(&[
         ("format", string("fss.original_media_export_cli.v1")),
         ("status", string(status)),
+        ("profile", string(preview.profile())),
         ("published", published.to_string()),
         ("approval_digest", string(&preview.approval().to_text())),
         ("export_root", string(&preview.root().to_text())),
@@ -395,6 +398,7 @@ fn run_verify(options: &VerifyOptions) -> RunResult<String> {
     bounded_report(object(&[
         ("format", string("fss.original_media_verification_cli.v1")),
         ("status", string("verified_original_media")),
+        ("profile", string(record.profile())),
         ("export_root", string(&options.root.to_text())),
         (
             "media_digest",
