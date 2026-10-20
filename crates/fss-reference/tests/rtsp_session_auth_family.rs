@@ -317,7 +317,6 @@ fn p7_cancellation_is_receipted() -> Result<(), Box<dyn std::error::Error>> {
     // session's existence is explicitly uncertain rather than assumed gone.
     assert!(receipt.pending_cseq.is_some());
     assert_eq!(session.state(), ClientState::Closed);
-    assert!(session.server_ssrc().is_none() || true); // ssrc survives as record
     for command in [
         ClientCommand::Options,
         ClientCommand::Play,

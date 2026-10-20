@@ -17,12 +17,12 @@ fn emit(property: &str, cases: u64) {
     );
 }
 
-fn contract(kernel: MediaKernelId) -> MediaKernelContract {
+fn contract(kernel: MediaKernelId) -> Result<MediaKernelContract, Box<dyn std::error::Error>> {
     KERNEL_CONTRACTS
         .iter()
         .copied()
         .find(|c| c.kernel == kernel)
-        .unwrap_or(KERNEL_CONTRACTS[0])
+        .ok_or("kernel missing from registry")
 }
 
 /// P1 REGISTRY: every row validates; digests are deterministic and
@@ -40,32 +40,32 @@ fn p1_registry_validity_and_digest_identity() -> Result<(), Box<dyn std::error::
         }
     }
     // Bounds violations are named per field.
-    let mut bad_axis = contract(MediaKernelId::H264);
+    let mut bad_axis = contract(MediaKernelId::H264)?;
     bad_axis.bounds.max_axis = MAX_CODED_AXIS + 1;
     assert_eq!(
         bad_axis.validate(),
         Err(MediaKernelContractError::BoundsViolation { field: "max_axis" })
     );
-    let mut bad_bytes = contract(MediaKernelId::Mjpeg);
+    let mut bad_bytes = contract(MediaKernelId::Mjpeg)?;
     bad_bytes.bounds.max_encoded_bytes = MAX_ENCODED_BYTES + 1;
     assert!(matches!(
         bad_bytes.validate(),
         Err(MediaKernelContractError::BoundsViolation { .. })
     ));
-    let mut zero_pics = contract(MediaKernelId::H265);
+    let mut zero_pics = contract(MediaKernelId::H265)?;
     zero_pics.bounds.max_pictures = 0;
     assert!(matches!(
         zero_pics.validate(),
         Err(MediaKernelContractError::BoundsViolation { .. })
     ));
-    let mut zero_version = contract(MediaKernelId::H264);
+    let mut zero_version = contract(MediaKernelId::H264)?;
     zero_version.version = 0;
     assert_eq!(
         zero_version.validate(),
         Err(MediaKernelContractError::ZeroVersion)
     );
     // MJPEG's tighter dimension ceiling is enforced per kernel.
-    let mut mjpeg_over = contract(MediaKernelId::Mjpeg);
+    let mut mjpeg_over = contract(MediaKernelId::Mjpeg)?;
     mjpeg_over.bounds.max_axis = MAX_MJPEG_DIMENSION + 1;
     assert!(mjpeg_over.validate().is_err());
     emit("registry-validity", 12);
@@ -77,20 +77,20 @@ fn p1_registry_validity_and_digest_identity() -> Result<(), Box<dyn std::error::
 #[test]
 fn p2_codec_defaults_within_contract() -> Result<(), Box<dyn std::error::Error>> {
     let h264 = fss_codec_h264::DecoderLimits::default();
-    let h264_contract = contract(MediaKernelId::H264);
+    let h264_contract = contract(MediaKernelId::H264)?;
     assert!(h264.max_width <= h264_contract.bounds.max_axis);
     assert!(h264.max_height <= h264_contract.bounds.max_axis);
     assert!(h264.max_nal_bytes as u64 <= h264_contract.bounds.max_encoded_bytes);
     assert!(h264.max_pictures <= h264_contract.bounds.max_pictures);
 
     let h265 = fss_codec_h265::DecoderLimits::default();
-    let h265_contract = contract(MediaKernelId::H265);
+    let h265_contract = contract(MediaKernelId::H265)?;
     assert!(h265.max_width <= h265_contract.bounds.max_axis);
     assert!(h265.max_height <= h265_contract.bounds.max_axis);
     assert!(h265.max_nal_bytes as u64 <= h265_contract.bounds.max_encoded_bytes);
 
     let mjpeg = fss_codec_mjpeg::DecodeLimits::default();
-    let mjpeg_contract = contract(MediaKernelId::Mjpeg);
+    let mjpeg_contract = contract(MediaKernelId::Mjpeg)?;
     assert!(mjpeg.maximum_dimension <= mjpeg_contract.bounds.max_axis);
     assert!(mjpeg.maximum_bytes as u64 <= mjpeg_contract.bounds.max_encoded_bytes);
     emit("codec-defaults-agreement", 9);

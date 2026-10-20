@@ -104,7 +104,9 @@ pub struct MediaKernelBounds {
     pub max_axis: u32,
     /// Maximum one-unit encoded size admitted (NAL or frame).
     pub max_encoded_bytes: u64,
-    /// Lifetime work bound in decoded frames (never zero).
+    /// Lifetime work bound in decoded frames. `u64::MAX` means no
+    /// documented ceiling (the codecs validate only nonzero); a real
+    /// ceiling is recorded the day one is documented.
     pub max_pictures: u64,
 }
 
