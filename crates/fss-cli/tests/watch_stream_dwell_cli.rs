@@ -19,6 +19,9 @@ const FRAMES: usize = 300;
 #[path = "watch_stream_dwell_cli/incremental.rs"]
 mod incremental;
 
+#[path = "watch_stream_dwell_cli/fusion.rs"]
+mod fusion;
+
 struct Directory(PathBuf);
 impl Directory {
     fn new(label: &str) -> Test<Self> {

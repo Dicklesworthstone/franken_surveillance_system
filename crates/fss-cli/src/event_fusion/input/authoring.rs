@@ -44,6 +44,25 @@ impl EventFusionProfile {
         )
     }
 
+    /// Author a version-four profile for the complete sampled-dwell analysis and its exact
+    /// detector recipe. The count request cannot replace any of these native source pins.
+    pub fn from_long_dwell_counts_json(
+        bytes: &[u8],
+        expected: ContentDigest,
+        analysis: ContentDigest,
+        detector_recipe: ContentDigest,
+        analysis_root: ContentDigest,
+    ) -> Result<Self> {
+        Self::from_counts_scoped(
+            bytes,
+            expected,
+            analysis,
+            detector_recipe,
+            &BTreeSet::new(),
+            Some(WholeRecordingScope::Dwell(analysis_root)),
+        )
+    }
+
     /// Author a version-three profile pinned to both complete camera analyses in native order.
     /// Supplied scope comes from the actual paired report, never from fields in the count request.
     pub fn from_long_corroboration_counts_json(
@@ -194,6 +213,10 @@ fn encode_scope(fields: &mut Object, scope: Option<WholeRecordingScope>) {
             fields.insert("schema".to_owned(), text_value(LONG_CORROBORATION_SCHEMA));
             fields.insert("long_corroboration_analysis_roots".to_owned(),
                 Value::Array(roots.iter().map(text_value).collect()));
+        }
+        Some(WholeRecordingScope::Dwell(root)) => {
+            fields.insert("schema".to_owned(), text_value(LONG_DWELL_SCHEMA));
+            fields.insert("long_dwell_analysis_root".to_owned(), text_value(root));
         }
         None => {}
     }

@@ -159,7 +159,10 @@ const HELP: &str = "fss-event <report|prepare|publish|read|verify|watch|corrobor
     analysis_digest, analysis_root and detector_cascade.recipe_digest; coverage_digests is [].\n\
     Adds read-only calibrated_class_advice without another inference pass. No publication or\n\
     coverage/health retention in the same invocation; no class-absence or effect authority.\n\
-    Whole-recording dwell remains unsupported; two-camera scans use version-three profiles below.\n\
+    Whole-recording dwell uses a version-four profile with long_dwell_analysis_root, bound to its\n\
+    complete dwell analysis and retained detector recipe. It preserves sampled occupancy, gaps,\n\
+    omitted inferences and one-sensor dependence; incremental checkpoints cannot use fusion.\n\
+    Author with fss-fusion-profile --scope dwell. Two-camera scans use version three below.\n\
   corroborate (two recordings, two sensors): --camera NAME:sha256:IMPORT (exactly twice)\n\
           --ground NAME:h11,h12,h13,h21,h22,h23,h31,h32,h33 (one per camera; image pixels ->\n\
           ground units; an owner assertion like a zone, NOT a calibration certificate)\n\

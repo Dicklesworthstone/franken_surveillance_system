@@ -18,7 +18,7 @@ The native calibration owner rebuilds every interval and calibration digest.
 First preserve the complete native analysis report. Set `ANALYSIS` to its
 `analysis_digest` and `RECIPE` to `detector_cascade.recipe_digest`, not to the
 smaller input plan or the model archive. For a single-camera whole-recording
-watch, set `ROOTS` to `analysis_root`. For two-camera corroboration, join
+watch or sampled dwell, set `ROOTS` to `analysis_root`. For two-camera corroboration, join
 `cameras[0].analysis_root` and `cameras[1].analysis_root` with a comma in native
 camera order. Roots must be distinct, nonzero SHA-256 digests. The counts file
 cannot override these separately supplied scope identities.
@@ -31,8 +31,18 @@ fss-fusion-profile --scope corroborate \
   < counts.json > paired-profile.json
 ```
 
-Use `--scope watch` and exactly one root for the single-camera version-two
-profile. Corroboration emits version three. Default output is a complete profile
+Select the scope of that native analysis:
+
+| Scope | Native analysis | Profile schema | Roots |
+|---|---|---|---|
+| `watch` | `watch --stream-watch` | `fss.event_class_fusion_profile.v2` | One `analysis_root` |
+| `corroborate` | `corroborate --stream-corroborate` | `fss.event_class_fusion_profile.v3` | Both camera roots, in native order |
+| `dwell` | `watch --stream-dwell` | `fss.event_class_fusion_profile.v4` | One `analysis_root` |
+
+Dwell profiles bind the complete sampled-occupancy rule and detector analysis;
+they cannot be substituted for entry-watch profiles. See
+[whole-recording dwell](long_recording_dwell.md#calibrated-class-advice).
+Default output is a complete profile
 plus **one newline**, directly readable by the native fusion consumer. Input is
 bounded to 256 KiB and digest-checked before JSON parsing. Unknown/duplicate
 options, missing assumptions, count tampering, extra roots, duplicate roots and

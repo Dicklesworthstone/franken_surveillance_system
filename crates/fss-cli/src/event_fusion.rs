@@ -21,11 +21,13 @@ use fss_reference::ingest::recorded_watch::WatchReport;
 use fss_reference::{ReferenceDeployment, ReplayCx};
 
 mod corroboration;
+mod dwell;
 mod guarded;
 mod input;
 mod render;
 mod streaming;
 pub use corroboration::MAX_LONG_CORROBORATION_CANDIDATES;
+pub use dwell::MAX_LONG_DWELL_CANDIDATES;
 pub use input::MAX_PROFILE_BYTES;
 pub use streaming::MAX_LONG_CANDIDATES;
 
@@ -122,11 +124,12 @@ type Result<T> = std::result::Result<T, EventFusionError>;
 enum WholeRecordingScope {
     Watch(ContentDigest),
     Corroboration([ContentDigest; 2]),
+    Dwell(ContentDigest),
 }
 impl WholeRecordingScope {
     fn roots(&self) -> &[ContentDigest] {
         match self {
-            Self::Watch(root) => std::slice::from_ref(root),
+            Self::Watch(root) | Self::Dwell(root) => std::slice::from_ref(root),
             Self::Corroboration(roots) => roots,
         }
     }
@@ -237,6 +240,12 @@ impl EventFusionProfile {
                     e.digest(root);
                 }
                 e.u64(MAX_LONG_CORROBORATION_CANDIDATES as u64);
+                e.u64(MAX_TOTAL_EVIDENCE as u64);
+            }
+            Some(WholeRecordingScope::Dwell(root)) => {
+                e.text(dwell::SCOPE);
+                e.digest(root);
+                e.u64(MAX_LONG_DWELL_CANDIDATES as u64);
                 e.u64(MAX_TOTAL_EVIDENCE as u64);
             }
             None => {}

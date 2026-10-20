@@ -118,18 +118,17 @@ fn dwell_fusion_keeps_temporal_health_and_range_admission() {
 }
 
 #[test]
-fn dwell_fusion_cannot_publish_retain_or_enter_a_streaming_owner() -> Test {
+fn dwell_fusion_cannot_publish_retain_or_replace_the_requested_temporal_owner() -> Test {
     let pin = ContentDigest::sha256(b"unusable authority approval").to_text();
     for flag in ["--approve", "--retain-coverage", "--retain-health"] {
         let mut values = with_profile(args(DWELL));
         values.extend([OsString::from(flag), OsString::from(&pin)]);
-        let error = parse(&values).expect_err("fusion must remain read-only");
+        let error = parse(&values).err().ok_or("fusion must remain read-only")?;
         assert!(error.contains("calibrated fusion is read-only"), "{error}");
     }
-    // Complete stream-watch fusion has its own entry owner. Dwell options must conflict
-    // with that owner; stream-dwell must reject the requested fusion itself.
+    // A complete dwell scan now has its own fusion scope. It cannot enter the entry owner
+    // or publish an incremental checkpoint in a read-only advice invocation.
     for (flag, reason) in [
-        ("--stream-dwell", "not streaming dwell"),
         (
             "--stream-watch",
             "--stream-watch cannot be combined with --stream-dwell or dwell options",
@@ -137,9 +136,22 @@ fn dwell_fusion_cannot_publish_retain_or_enter_a_streaming_owner() -> Test {
     ] {
         let mut values = with_profile(args(DWELL));
         values.push(OsString::from(flag));
-        let error = parse(&values).expect_err("streaming must not drop requested dwell semantics");
+        let error = parse(&values).err().ok_or("streaming must not drop requested dwell semantics")?;
         assert!(error.contains(reason), "{error}");
     }
+    let mut whole = with_profile(args(DWELL));
+    whole.push(OsString::from("--stream-dwell"));
+    assert!(parse(&whole)?.stream_dwell.is_some());
+    for flag in ["--approve", "--retain-coverage", "--retain-health"] {
+        let mut values = whole.clone();
+        values.extend([OsString::from(flag), OsString::from(&pin)]);
+        let error = parse(&values)
+            .err()
+            .ok_or("complete dwell advice remains read-only")?;
+        assert!(error.contains("calibrated fusion is read-only"), "{error}");
+    }
+    whole.extend(["--dwell-step-frames".into(), "128".into()]);
+    assert!(parse(&whole).is_err());
     // Absence of a fusion request must preserve the original command's admission.
     let plain = parse(&args(DWELL))?;
     assert!(

@@ -203,8 +203,8 @@ pub(super) fn check_fusion_mode(
     Ok(())
 }
 
-/// Short entry, sampled dwell and complete whole-recording watch have explicit adapters.
-/// Whole-recording dwell has a different temporal contract and still refuses fusion.
+/// Short entry, sampled dwell and complete whole-recording watch/dwell have explicit adapters.
+/// Incremental checkpoints are incomplete temporal scans and cannot produce class advice.
 /// Reuse the read-only authority gate without broadening corroborate's admission.
 pub(super) fn check_watch_fusion_mode(
     options: Option<&DetectorOptions>,
@@ -213,7 +213,7 @@ pub(super) fn check_watch_fusion_mode(
 ) -> Result<(), String> {
     if !supported_window && options.is_some_and(|options| options.fusion.is_some()) {
         return Err(
-            "calibrated watch fusion supports short entry, sampled dwell or whole-recording watch, not streaming dwell"
+            "calibrated watch fusion requires a complete analysis; incremental dwell is unsupported"
                 .to_owned(),
         );
     }

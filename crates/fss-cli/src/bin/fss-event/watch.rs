@@ -21,9 +21,9 @@
 //! sustained actual zone observations. It uses the same pipeline once, emits separately approved
 //! dwell hypotheses, and refuses coverage retention: entry coverage is not dwell-absence proof.
 //! Optional `--fusion-profile PATH --fusion-digest sha256:HEX` adds read-only calibrated
-//! class advice to short sampled-dwell episodes. The profile pins the dwell analysis digest,
-//! not the entry plan, and only scores observed in that episode may contribute. Neither an
-//! entry coverage record nor class advice certifies continuous occupancy or dwell absence.
+//! class advice to sampled-dwell episodes. Short and whole-recording dwell use distinct profiles,
+//! each pinning the complete dwell analysis; only scores observed in that episode may contribute.
+//! Neither an entry coverage record nor class advice certifies continuous occupancy or dwell absence.
 //! Add `--stream-dwell` for one whole MJPEG, H.264 or H.265 (Annex-B or MP4) range (up to 65536
 //! segments; inter-coded frames in display order), with persistent
 //! foreground/tracker state and aggregate source-byte, pixel, assignment and trace ceilings.
@@ -330,7 +330,7 @@ pub(super) fn parse(args: &[OsString]) -> Result<WatchAction, String> {
     let cascade = super::detector::parse(&values)?;
     super::detector::check_watch_fusion_mode(
         cascade.as_ref(),
-        !stream_dwell,
+        true,
         values.iter().any(|(key, _)| {
             ["--approve", "--retain-coverage", "--retain-health"].contains(&key.as_str())
         }),
@@ -516,7 +516,7 @@ pub(super) fn run(
 ) -> RunResult<()> {
     super::detector::check_watch_fusion_mode(
         action.cascade.as_ref(),
-        action.stream_dwell.is_none(),
+        action.incremental.is_none(),
         !action.approvals.is_empty()
             || action.retain_coverage.is_some()
             || action.retain_health.is_some(),
@@ -772,7 +772,9 @@ fn run_with(
     let fusion_profile = super::detector::load_fusion(action.cascade.as_ref(), cx)?;
     if fusion_profile
         .as_ref()
-        .is_some_and(|p| p.long_watch_analysis_root().is_some())
+        .is_some_and(|p| p.long_watch_analysis_root().is_some()
+            || p.long_dwell_analysis_root().is_some()
+            || p.long_corroboration_analysis_roots().is_some())
     {
         return Err(EventFusionError::Scope.into());
     }
@@ -995,9 +997,20 @@ fn run_streaming(
     if action.retain_coverage.is_some() {
         return Err(WatchError::InvalidPlan("streaming dwell has no coverage owner").into());
     }
-    super::detector::check_watch_fusion_mode(action.cascade.as_ref(), false, false)?;
+    super::detector::check_watch_fusion_mode(
+        action.cascade.as_ref(),
+        action.incremental.is_none(),
+        !action.approvals.is_empty() || action.retain_health.is_some(),
+    )?;
     if action.incremental.is_some() {
         return incremental::run(action, deployment, root, limits, cx, out);
+    }
+    let fusion_profile = super::detector::load_fusion(action.cascade.as_ref(), cx)?;
+    if fusion_profile
+        .as_ref()
+        .is_some_and(|profile| profile.long_dwell_analysis_root().is_none())
+    {
+        return Err(EventFusionError::Scope.into());
     }
     let package = action
         .cascade
@@ -1060,6 +1073,13 @@ fn run_streaming(
         }
         None => LongDwellReport::analyze(deployment, &plan, rule, action.options, limits, cx)?,
     };
+    let fusion = match (&fusion_profile, &package) {
+        (Some(profile), Some((package, _))) => Some(EventFusionReport::long_dwell(
+            &report, package, profile, deployment, cx,
+        )?),
+        (None, _) => None,
+        _ => return Err(EventFusionError::Scope.into()),
+    };
     let sequence = if report.health_diagnostic().is_some() {
         u64::MAX
     } else {
@@ -1086,20 +1106,29 @@ fn run_streaming(
                 .map_err(Into::into)
         })
         .transpose()?;
+    let native = super::health::with_watch_diagnostic(
+        report.to_json(
+            deployment.current_anchor().commit_sequence,
+            Some(&action.rerun),
+        )?,
+        report.health_diagnostic(),
+        retention.as_ref(),
+        &action.rerun,
+    )?;
     let json = format!(
         "{}\n",
-        super::health::with_watch_diagnostic(
-            report.to_json(
-                deployment.current_anchor().commit_sequence,
-                Some(&action.rerun),
-            )?,
-            report.health_diagnostic(),
-            retention.as_ref(),
-            &action.rerun,
-        )?
+        super::detector::with_fusion(native, fusion.as_ref())?
     );
+    if fusion.is_some() {
+        report.revalidate_derived_source(deployment, cx)?;
+        cx.checkpoint("long_dwell_fusion:output")?;
+    }
     if let Some(path) = &action.report_out {
         export(path, json.as_bytes(), root, cx)?;
+    }
+    if fusion.is_some() {
+        report.revalidate_derived_source(deployment, cx)?;
+        cx.checkpoint("long_dwell_fusion:stdout")?;
     }
     out.write_all(json.as_bytes())?;
     Ok(())

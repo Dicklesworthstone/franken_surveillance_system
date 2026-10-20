@@ -18,16 +18,16 @@ use fss_core::{
 const MAX_ARGUMENTS: usize = 14;
 const MAX_OUTPUT_BYTES: usize = MAX_PROFILE_BYTES + 4096;
 const INTERRUPT_LIMIT: u8 = 8;
-const HELP: &str = "fss-fusion-profile --scope watch|corroborate \\\n  --counts-digest sha256:HEX --analysis-digest sha256:HEX \\\n  --detector-recipe-digest sha256:HEX --analysis-roots sha256:HEX[,sha256:HEX] \\\n  [--format profile|report] [--principal principal:ID] < counts.json\n\n\
+const HELP: &str = "fss-fusion-profile --scope watch|dwell|corroborate \\\n  --counts-digest sha256:HEX --analysis-digest sha256:HEX \\\n  --detector-recipe-digest sha256:HEX --analysis-roots sha256:HEX[,sha256:HEX] \\\n  [--format profile|report] [--principal principal:ID] < counts.json\n\n\
 Reads at most 256 KiB of labelled-count JSON from stdin, verifies its exact digest BEFORE\n\
 parsing, and rebuilds calibration through the native count-calibration owner. Every prior,\n\
 policy, consequence, look count and evidence-clock value must be explicit in the counts.\n\
-Scope pins are owner-selected metadata: watch needs one complete analysis root;\n\
+Scope pins are owner-selected metadata: watch or dwell needs one complete analysis root;\n\
 corroborate needs two distinct roots in native camera order. No coverage is invented.\n\
 Default format profile emits the exact reusable profile plus one newline. Format report\n\
 embeds that profile and reports its semantic digest and the SHA-256 of those exact file\n\
 bytes (INCLUDING the newline), suitable for --fusion-digest. Repeat with format profile\n\
-and unchanged inputs to produce the named bytes. Existing v2/v3 profile formats are used.\n\
+and unchanged inputs to produce the named bytes. Watch uses v2, corroboration v3, dwell v4.\n\
 No source/model/credential files, deployment, camera, wall clock or network are accessed.\n\
 No event, calibration, coverage, retention or alert policy is activated or published.\n\
 The principal is an audit label, not camera authentication. Profile authoring does not\n\
@@ -58,8 +58,15 @@ impl From<EventFusionError> for Failure {
     }
 }
 
+#[derive(Clone, Copy, Eq, PartialEq)]
+enum Scope {
+    Watch,
+    Dwell,
+    Corroboration,
+}
+
 struct Options {
-    paired: bool,
+    scope: Scope,
     counts: ContentDigest,
     analysis: ContentDigest,
     recipe: ContentDigest,
@@ -90,9 +97,10 @@ impl Options {
                 return Err(Failure::Argument);
             }
         }
-        let paired = match values.remove("--scope") {
-            Some("watch") => false,
-            Some("corroborate") => true,
+        let scope = match values.remove("--scope") {
+            Some("watch") => Scope::Watch,
+            Some("dwell") => Scope::Dwell,
+            Some("corroborate") => Scope::Corroboration,
             _ => return Err(Failure::Argument),
         };
         let counts = digest(values.remove("--counts-digest").ok_or(Failure::Argument)?)?;
@@ -112,6 +120,7 @@ impl Options {
             .split(',')
             .map(digest)
             .collect::<Result<_>>()?;
+        let paired = scope == Scope::Corroboration;
         if roots.len() != if paired { 2 } else { 1 } || (paired && roots[0] == roots[1]) {
             return Err(Failure::Argument);
         }
@@ -130,7 +139,7 @@ impl Options {
             return Err(Failure::Argument);
         }
         Ok(Self {
-            paired,
+            scope,
             counts,
             analysis,
             recipe,
@@ -141,22 +150,28 @@ impl Options {
     }
 
     fn render(&self, bytes: &[u8]) -> Result<String> {
-        let profile = if self.paired {
-            EventFusionProfile::from_long_corroboration_counts_json(
+        let profile = match self.scope {
+            Scope::Corroboration => EventFusionProfile::from_long_corroboration_counts_json(
                 bytes,
                 self.counts,
                 self.analysis,
                 self.recipe,
                 [self.roots[0], self.roots[1]],
-            )?
-        } else {
-            EventFusionProfile::from_long_watch_counts_json(
+            )?,
+            Scope::Watch => EventFusionProfile::from_long_watch_counts_json(
                 bytes,
                 self.counts,
                 self.analysis,
                 self.recipe,
                 self.roots[0],
-            )?
+            )?,
+            Scope::Dwell => EventFusionProfile::from_long_dwell_counts_json(
+                bytes,
+                self.counts,
+                self.analysis,
+                self.recipe,
+                self.roots[0],
+            )?,
         };
         let json = profile.to_json()?;
         let file_bytes = format!("{json}\n");

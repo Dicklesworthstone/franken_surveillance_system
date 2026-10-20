@@ -255,6 +255,7 @@ pub(super) fn report(r: &EventFusionReport) -> String {
         ("schema", text(match r.profile.whole_recording {
             Some(WholeRecordingScope::Watch(_)) => "fss.event_class_fusion_report.v2",
             Some(WholeRecordingScope::Corroboration(_)) => "fss.event_class_fusion_report.v3",
+            Some(WholeRecordingScope::Dwell(_)) => "fss.event_class_fusion_report.v4",
             None => "fss.event_class_fusion_report.v1",
         })),
         ("recipe", text(RECIPE)),
@@ -353,6 +354,27 @@ pub(super) fn report(r: &EventFusionReport) -> String {
             ("detector_recipe_digest", text(&r.profile.spec.cascade_digest.to_text())),
             ("maximum_candidates", MAX_LONG_CORROBORATION_CANDIDATES.to_string()),
             ("maximum_total_evidence", MAX_TOTAL_EVIDENCE.to_string()),
+            ("coverage_witness_supplied", "false".to_owned()),
+        ]);
+    }
+    if let Some(root) = r.profile.long_dwell_analysis_root() {
+        fields.extend([
+            ("source_scope", text(dwell::SCOPE)),
+            (
+                "analysis_digest",
+                text(&r.profile.spec.plan_digest.to_text()),
+            ),
+            ("analysis_root", text(&root.to_text())),
+            (
+                "detector_recipe_digest",
+                text(&r.profile.spec.cascade_digest.to_text()),
+            ),
+            ("maximum_candidates", MAX_LONG_DWELL_CANDIDATES.to_string()),
+            ("maximum_total_evidence", MAX_TOTAL_EVIDENCE.to_string()),
+            (
+                "temporal_claim",
+                text("sampled_dwell_only_no_continuous_occupancy"),
+            ),
             ("coverage_witness_supplied", "false".to_owned()),
         ]);
     }

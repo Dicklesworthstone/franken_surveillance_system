@@ -113,6 +113,52 @@ fn both_scopes_emit_exact_reusable_native_profiles() -> Test {
 }
 
 #[test]
+fn dwell_counts_authoring_emits_an_isolated_v4_profile_with_exact_file_identity() -> Test {
+    let mut requested = args(false, COUNTS.as_bytes());
+    requested[1] = "dwell".into();
+    let file = run(&requested, COUNTS.as_bytes())?;
+    let text = success(&file)?;
+    let profile = EventFusionProfile::from_json(&file.stdout, pin(&file.stdout))?;
+    assert_eq!(profile.long_dwell_analysis_root(), Some(pin("camera a")));
+    assert!(profile.long_watch_analysis_root().is_none());
+    assert!(profile.long_corroboration_analysis_roots().is_none());
+    assert!(profile.spec().coverage_digests.is_empty());
+    assert_eq!(
+        field(&parse(text)?, "schema")?.text(),
+        Some("fss.event_class_fusion_profile.v4")
+    );
+    let expected = EventFusionProfile::from_long_dwell_counts_json(
+        COUNTS.as_bytes(),
+        pin(COUNTS),
+        pin("complete analysis"),
+        pin("native recipe"),
+        pin("camera a"),
+    )?;
+    assert_eq!(expected.digest(), profile.digest());
+    assert_eq!(text, expected.to_json()? + "\n");
+    requested.extend(["--format".into(), "report".into()]);
+    let output = run(&requested, COUNTS.as_bytes())?;
+    let report = parse(success(&output)?)?;
+    assert_eq!(
+        field(&report, "profile_file_digest")?.text(),
+        Some(pin(&file.stdout).to_text().as_str())
+    );
+    assert_eq!(
+        field(&report, "profile_digest")?.text(),
+        Some(profile.digest().to_text().as_str())
+    );
+    for key in ["source_scope_verified", "published", "effect_authority"] {
+        assert_eq!(field(&report, key)?.boolean(), Some(false));
+    }
+    // Dwell must not accept a pair of roots even though corroboration supports pairs.
+    requested[9] = format!("{},{}", pin("camera a"), pin("camera b"));
+    let refused = run(&requested, b"")?;
+    assert_eq!(refused.status.code(), Some(2));
+    assert!(refused.stdout.is_empty());
+    Ok(())
+}
+
+#[test]
 fn report_digest_names_exact_profile_file_bytes_including_newline() -> Test {
     let plain_args = args(true, COUNTS.as_bytes());
     let plain = run(&plain_args, COUNTS.as_bytes())?;

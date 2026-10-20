@@ -101,6 +101,60 @@ MJPEG, AVC and HEVC events after both loose source and model files disappear; se
 [whole-recording event replay](long_event_replay.md). The dedicated `fss-replay-dwell` command
 keeps its existing MJPEG-only contract; see [native dwell replay](native_dwell_replay.md).
 
+## Calibrated class advice
+
+Complete detector-enabled `--stream-dwell` scans also accept
+`--fusion-profile FILE --fusion-digest sha256:HEX`. Preserve the native report
+from the same recording, range, zone, dwell rule, detector options and explicit
+health policy. Its `analysis_digest`, `analysis_root` and
+`detector_cascade.recipe_digest` bind a separate version-four dwell profile.
+Entry-watch and corroboration profiles cannot authorize this scope.
+
+Prepare measured, operator-labelled calibration counts applicable to the selected
+class and sensor mode, with explicit prior, policy, consequence, look count and
+evidence-clock assumptions. The [profile authoring command](fusion_profile_cli.md)
+rebuilds all likelihood intervals and identities through the native calibration
+owner. It supplies no built-in field calibration:
+
+```sh
+fss-fusion-profile --scope dwell \
+  --counts-digest "$COUNTS_DIGEST" --analysis-digest "$ANALYSIS_DIGEST" \
+  --detector-recipe-digest "$RECIPE_DIGEST" --analysis-roots "$ANALYSIS_ROOT" \
+  < counts.json > dwell-profile.json
+```
+
+Repeat these authoring inputs with `--format report` to obtain
+`profile_file_digest`, which hashes the emitted profile including its final
+newline. Repeat the original complete dwell invocation with
+`--fusion-profile dwell-profile.json --fusion-digest "$PROFILE_FILE_DIGEST"`.
+This read-only invocation refuses event approval, coverage/health retention and
+incremental checkpoints. Those actions keep their separate existing contracts.
+
+The original native episode, proposal, provenance, decoded-frame counters and
+classifier work remain unchanged. The result adds `calibrated_class_advice`
+with schema `fss.event_class_fusion_report.v4`. Each episode includes its source
+class-record bindings, outward-rounded score interval, calibrated milliban
+likelihoods, common-cause clusters, posterior bounds, exclusions and recomputed
+counterfactuals. Fusion consumes the existing episode's records and performs no
+additional inference. All samples from one sensor remain dependent; a repeated
+sample, shared model or package cannot supply independent support.
+
+At most 32 complete episodes and 256 class records are admitted together.
+An episode with no usable classification still spends an explicit missing-input
+slot. Budget-refused or unobserved records remain visible without invented zero
+scores; an empty episode inventory carries no class-absence claim. The native
+sampling gaps, decode refusals and uncertain intervals remain in the full report.
+Advice cannot extend a duration, bridge a gap or establish continuous occupancy.
+
+The profile is digest-checked before model/source reads. Original source custody,
+owner, authority anchor, privacy and any requested whole-scan health guard are
+revalidated for derived use and again before output, including empty scans.
+Changing the dwell rule, detector recipe or source root requires a new profile.
+All advice authority flags remain false, and native event classification and
+publication policy remain unchanged. Calibration applicability and look counts
+are explicit owner assertions, not deployment qualification or persistent
+sequential-look accounting.
+
 ## Temporal semantics
 
 Only confirmed tracks with a current actual match may accumulate occupancy. The rounded center
@@ -165,8 +219,9 @@ RAM, latency or energy accounting claim. No throughput benchmark is claimed.
 The complete report is `fss.long_dwell_report.v1`. It records source/rule/analysis identities,
 authority basis, privacy binding, per-scan resource counters, explicit decode refusals,
 unreliable timing and every qualifying episode's first/trigger/final source positions. Exact
-nanosecond durations are decimal strings. Complete JSON is capped at 1 MiB and approval-command
-hints at 8 KiB before publication.
+nanosecond durations are decimal strings. Native JSON is capped at 1 MiB and approval-command
+hints at 8 KiB before publication. Read-only output with calibrated advice is bounded as one
+complete document to 2 MiB, including its final newline.
 
 Review each `publish_command`, then execute the exact command or repeat the request with its
 `--approve sha256:PROPOSAL`. Approval binds the current actor, site, event revision and complete

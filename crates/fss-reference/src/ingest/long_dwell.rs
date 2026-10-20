@@ -46,6 +46,7 @@ use crate::{
 };
 
 pub(super) mod detector;
+mod fusion;
 /// Bounded native MJPEG continuation and source-verified durable checkpoints.
 pub mod incremental;
 pub(in crate::ingest) mod limits;
