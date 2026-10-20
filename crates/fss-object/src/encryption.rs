@@ -52,11 +52,6 @@ impl CipherSuite {
 pub enum EncryptionManifestError {
     /// A key id is empty or malformed.
     InvalidKeyId,
-    /// The salt is not exactly 16 bytes.
-    InvalidSaltLen {
-        /// Observed length.
-        len: usize,
-    },
     /// The protected-object list is empty or over the bound.
     InvalidObjectCount {
         /// Observed count.
@@ -82,9 +77,6 @@ impl std::fmt::Display for EncryptionManifestError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
             Self::InvalidKeyId => write!(f, "key id must be non-empty and ≤128 bytes"),
-            Self::InvalidSaltLen { len } => {
-                write!(f, "salt must be 16 bytes, got {len}")
-            }
             Self::InvalidObjectCount { count } => {
                 write!(f, "protected-object count {count} outside 1..=65536")
             }
