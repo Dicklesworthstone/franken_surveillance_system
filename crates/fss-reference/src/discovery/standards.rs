@@ -18,8 +18,7 @@
 //! owner networks differ; a negative probe result is typed evidence, never
 //! absence-of-device. Oracle: lab `discover.py`.
 
-use std::io::Read;
-use std::net::{Ipv4Addr, SocketAddrV4, UdpSocket};
+use std::net::{Ipv4Addr, SocketAddr, SocketAddrV4, UdpSocket};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::Duration;
 
@@ -45,16 +44,53 @@ pub const MDNS_CAMERA_TYPES: [&str; 7] = [
     "_googlecast._tcp",
 ];
 
-/// Sanity bound on a parsed label or rdata text.
-const MAX_NAME_BYTES: usize = 256;
+/// The expanded DNS wire name includes label lengths and the root octet.
+const MAX_NAME_BYTES: usize = 255;
+const MAX_PACKET_BYTES: usize = 4096;
+const MAX_QUESTIONS: usize = 16;
+const MAX_RECORDS_PER_PACKET: usize = 256;
+const MAX_RECEIVE_ATTEMPTS: usize = 256;
+const MAX_RECORDS_PER_SWEEP: usize = 1024;
+const MAX_PROBE_SECONDS: u64 = 120;
 
 // ---- mDNS core ------------------------------------------------------------
 
 /// Builds one mDNS query packet (one question per camera service type).
-/// Query packets: header flags 0, one question per type, unicast-response
-/// bit NOT set (standard browsing behavior).
+/// Service types are qualified under `.local`; an existing suffix is preserved.
+/// The ephemeral source port requests legacy unicast replies (RFC 6762 §6.7),
+/// so the unicast-response bit is not needed. Invalid/oversized input produces
+/// no packet rather than silently truncating names or the question count.
 #[must_use]
 pub fn build_mdns_query(types: &[&str], start_id: u16) -> Vec<u8> {
+    if types.is_empty() || types.len() > MAX_QUESTIONS {
+        return Vec::new();
+    }
+    let mut names = Vec::with_capacity(types.len());
+    for name in types {
+        if name.len() > MAX_NAME_BYTES {
+            return Vec::new();
+        }
+        let labels: Vec<_> = name.strip_suffix('.').unwrap_or(name).split('.').collect();
+        if labels.iter().any(|label| {
+            label.is_empty()
+                || label.len() > 63
+                || !label
+                    .bytes()
+                    .all(|b| b.is_ascii_alphanumeric() || matches!(b, b'_' | b'-'))
+        }) {
+            return Vec::new();
+        }
+        let needs_local = !labels
+            .last()
+            .is_some_and(|label| label.eq_ignore_ascii_case("local"));
+        let wire_len = labels.iter().map(|label| label.len() + 1).sum::<usize>()
+            + 1
+            + usize::from(needs_local) * 6;
+        if wire_len > MAX_NAME_BYTES {
+            return Vec::new();
+        }
+        names.push((labels, needs_local));
+    }
     let mut out = Vec::with_capacity(12 + types.len() * 32);
     out.extend_from_slice(&start_id.to_be_bytes());
     out.extend_from_slice(&0u16.to_be_bytes()); // flags
@@ -63,28 +99,28 @@ pub fn build_mdns_query(types: &[&str], start_id: u16) -> Vec<u8> {
     out.extend_from_slice(&0u16.to_be_bytes()); // ANCOUNT
     out.extend_from_slice(&0u16.to_be_bytes()); // NSCOUNT
     out.extend_from_slice(&0u16.to_be_bytes()); // ARCOUNT
-    for t in types {
-        for label in t.split('.') {
-            push_label(&mut out, label);
+    for (labels, needs_local) in names {
+        for label in labels {
+            out.push(label.len() as u8);
+            out.extend_from_slice(label.as_bytes());
+        }
+        if needs_local {
+            out.extend_from_slice(b"\x05local");
         }
         out.push(0);
         out.extend_from_slice(&12u16.to_be_bytes()); // PTR
         out.extend_from_slice(&1u16.to_be_bytes()); // IN
     }
+    if out.len() > MAX_PACKET_BYTES {
+        return Vec::new();
+    }
     out
 }
 
-fn push_label(out: &mut Vec<u8>, label: &str) {
-    let b = label.as_bytes();
-    let n = b.len().min(63);
-    out.push(n as u8);
-    out.extend_from_slice(&b[..n]);
-}
-
 /// One mDNS answer.
-#[derive(Clone, Debug, Eq, PartialEq)]
+#[derive(Clone, Debug, Eq, Ord, PartialEq, PartialOrd)]
 pub struct MdnsAnswer {
-    /// Owner name (service type or instance).
+    /// Owner name; literal dots/backslashes within a label are escaped.
     pub name: String,
     /// RR type code (12 = PTR, 1 = A, 33 = SRV, 16 = TXT).
     pub rr_type: u16,
@@ -92,35 +128,62 @@ pub struct MdnsAnswer {
     pub ttl: u32,
     /// Decoded rdata (PTR target / A dotted / SRV target / TXT text).
     pub rdata: String,
+    /// Port for an SRV record; advertisement alone does not prove reachability.
+    pub srv_port: Option<u16>,
 }
 
-/// Parses an mDNS response packet into answers. Compression-pointer SAFE
-/// (bounded chase); malformed records stop the parse (answers so far are
-/// returned only via Result — a corrupt packet is an error, not partial
-/// evidence).
+/// Records received in one datagram, bound to its actual UDP responder.
+/// An advertised A/SRV target can differ from this address (for example, a
+/// sleep proxy); it must not inherit the sender's current-response evidence.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct MdnsObservation {
+    /// Source address of the accepted response datagram.
+    pub responder: Ipv4Addr,
+    /// Internet-class records from answer, authority, and additional sections.
+    pub answers: Vec<MdnsAnswer>,
+}
+
+/// Parses a bounded, complete DNS response, including authority/additional
+/// records required to connect a service instance to its SRV and A records.
+/// Queries, truncation, DNS errors, pointer loops, and malformed RDATA reject
+/// the entire packet; already parsed records are never partial evidence.
 pub fn parse_mdns_response(data: &[u8]) -> Result<Vec<MdnsAnswer>, StandardsError> {
     if data.len() < 12 {
         return Err(StandardsError::ShortPacket);
     }
+    if data.len() > MAX_PACKET_BYTES {
+        return Err(StandardsError::Malformed);
+    }
+    let flags = u16::from_be_bytes([data[2], data[3]]);
+    if flags & 0x8000 == 0 || flags & 0x7a0f != 0 {
+        return Err(StandardsError::Malformed);
+    }
     let qdcount = u16::from_be_bytes([data[4], data[5]]) as usize;
-    let ancount = u16::from_be_bytes([data[6], data[7]]) as usize;
+    let record_count = [6, 8, 10]
+        .into_iter()
+        .map(|i| u16::from_be_bytes([data[i], data[i + 1]]) as usize)
+        .sum::<usize>();
+    if qdcount > MAX_QUESTIONS || record_count > MAX_RECORDS_PER_PACKET {
+        return Err(StandardsError::Malformed);
+    }
     let mut off = 12usize;
     // skip questions
     for _ in 0..qdcount {
-        off = skip_name(data, off)?;
+        off += read_name(data, off)?.1;
         off = off.checked_add(4).ok_or(StandardsError::Malformed)?;
         if off > data.len() {
             return Err(StandardsError::ShortPacket);
         }
     }
-    let mut answers = Vec::with_capacity(ancount.min(64));
-    for _ in 0..ancount {
-        let name_off = off;
-        off = skip_name(data, off)?;
+    let mut answers = Vec::with_capacity(record_count);
+    for _ in 0..record_count {
+        let (name, consumed) = read_name(data, off)?;
+        off += consumed;
         if off + 10 > data.len() {
             return Err(StandardsError::ShortPacket);
         }
         let rr_type = u16::from_be_bytes([data[off], data[off + 1]]);
+        let rr_class = u16::from_be_bytes([data[off + 2], data[off + 3]]) & 0x7fff;
         let ttl = u32::from_be_bytes([data[off + 4], data[off + 5], data[off + 6], data[off + 7]]);
         let rdlen = u16::from_be_bytes([data[off + 8], data[off + 9]]) as usize;
         off += 10;
@@ -129,8 +192,23 @@ pub fn parse_mdns_response(data: &[u8]) -> Result<Vec<MdnsAnswer>, StandardsErro
             return Err(StandardsError::ShortPacket);
         }
         off += rdlen;
+        if rr_class != 1 {
+            continue;
+        }
+        let mut srv_port = None;
         let rdata = match rr_type {
-            12 | 33 => read_name(data, rdata_off)?.0, // PTR / SRV target (rough)
+            12 => read_rdata_name(data, rdata_off, rdlen)?,
+            33 => {
+                if rdlen < 7 {
+                    return Err(StandardsError::Malformed);
+                }
+                // RFC 2782: priority, weight, port (three u16s), then target.
+                srv_port = Some(u16::from_be_bytes([
+                    data[rdata_off + 4],
+                    data[rdata_off + 5],
+                ]));
+                read_rdata_name(data, rdata_off + 6, rdlen - 6)?
+            }
             1 => {
                 if rdlen != 4 {
                     return Err(StandardsError::Malformed);
@@ -143,82 +221,112 @@ pub fn parse_mdns_response(data: &[u8]) -> Result<Vec<MdnsAnswer>, StandardsErro
                 )
                 .to_string()
             }
-            16 => String::from_utf8_lossy(&data[rdata_off..rdata_off + rdlen]).into_owned(),
+            16 => read_txt(&data[rdata_off..off])?,
             _ => hex_prefix(&data[rdata_off..rdata_off + rdlen.min(32)]),
         };
         answers.push(MdnsAnswer {
-            name: read_name(data, name_off)?.0,
+            name,
             rr_type,
             ttl,
             rdata,
+            srv_port,
         });
+    }
+    if off != data.len() {
+        return Err(StandardsError::Malformed);
     }
     Ok(answers)
 }
 
-fn skip_name(data: &[u8], mut off: usize) -> Result<usize, StandardsError> {
+fn read_rdata_name(data: &[u8], off: usize, len: usize) -> Result<String, StandardsError> {
+    let (name, consumed) = read_name(data, off)?;
+    if consumed != len {
+        return Err(StandardsError::Malformed);
+    }
+    Ok(name)
+}
+
+// Return the bytes consumed at the original cursor separately from the
+// expanded name size. Following a pointer must never move the caller's cursor.
+fn read_name(data: &[u8], mut off: usize) -> Result<(String, usize), StandardsError> {
+    let mut labels: Vec<String> = Vec::new();
     let mut jumps = 0;
+    let mut consumed = 0usize;
+    let mut expanded = 1usize;
+    let mut jumped = false;
     loop {
         if off >= data.len() {
             return Err(StandardsError::ShortPacket);
         }
         let len = data[off] as usize;
         if len == 0 {
-            return Ok(off + 1);
+            if !jumped {
+                consumed += 1;
+            }
+            return Ok((labels.join("."), consumed));
         }
         if len & 0xC0 == 0xC0 {
-            // compression pointer: 2 bytes, done
             if off + 1 >= data.len() {
                 return Err(StandardsError::ShortPacket);
             }
             jumps += 1;
-            if jumps > 8 {
+            if jumps > 16 {
                 return Err(StandardsError::Malformed);
             }
             let target = ((len & 0x3F) << 8) | data[off + 1] as usize;
+            if target < 12 || target >= off {
+                return Err(StandardsError::Malformed);
+            }
+            if !jumped {
+                consumed += 2;
+            }
+            jumped = true;
             off = target;
         } else {
-            off = off.checked_add(1 + len).ok_or(StandardsError::Malformed)?;
+            if len & 0xc0 != 0 {
+                return Err(StandardsError::Malformed);
+            }
+            let end = off + 1 + len;
+            expanded += 1 + len;
+            if end > data.len() || expanded > MAX_NAME_BYTES {
+                return Err(StandardsError::Malformed);
+            }
+            labels.push(escaped_octets(&data[off + 1..end]));
+            if !jumped {
+                consumed += 1 + len;
+            }
+            off = end;
         }
     }
 }
 
-fn read_name(data: &[u8], mut off: usize) -> Result<(String, usize), StandardsError> {
-    let mut labels: Vec<String> = Vec::new();
-    let mut jumps = 0;
-    let mut total = 0usize;
-    loop {
-        if off >= data.len() {
-            return Err(StandardsError::ShortPacket);
-        }
-        let len = data[off] as usize;
-        if len == 0 {
-            total += 1;
-            return Ok((labels.join("."), total));
-        }
-        if len & 0xC0 == 0xC0 {
-            if off + 1 >= data.len() {
-                return Err(StandardsError::ShortPacket);
+fn escaped_octets(bytes: &[u8]) -> String {
+    let mut text = String::new();
+    for &byte in bytes {
+        match byte {
+            b'.' | b'\\' => {
+                text.push('\\');
+                text.push(char::from(byte));
             }
-            jumps += 1;
-            if jumps > 8 {
-                return Err(StandardsError::Malformed);
-            }
-            let target = ((len & 0x3F) << 8) | data[off + 1] as usize;
-            if total == 0 {
-                total += 2;
-            }
-            off = target;
-        } else {
-            let end = off + 1 + len;
-            if end > data.len() || total + len > MAX_NAME_BYTES {
-                return Err(StandardsError::Malformed);
-            }
-            labels.push(String::from_utf8_lossy(&data[off + 1..end]).into_owned());
-            total += 1 + len;
-            off = end;
+            0x21..=0x7e => text.push(char::from(byte)),
+            _ => text.push_str(&format!("\\{byte:03}")),
         }
     }
+    text
+}
+
+fn read_txt(bytes: &[u8]) -> Result<String, StandardsError> {
+    let mut strings = Vec::new();
+    let mut off = 0;
+    while off < bytes.len() {
+        let end = off + 1 + usize::from(bytes[off]);
+        if end > bytes.len() {
+            return Err(StandardsError::Malformed);
+        }
+        strings.push(escaped_octets(&bytes[off + 1..end]));
+        off = end;
+    }
+    Ok(strings.join(" "))
 }
 
 fn hex_prefix(b: &[u8]) -> String {
@@ -253,8 +361,12 @@ pub struct SsdpResponse {
 
 /// Parses an SSDP M-SEARCH response (HTTP/1.1 200 OK + headers).
 pub fn parse_ssdp_response(ip: &str, data: &[u8]) -> Option<SsdpResponse> {
+    if data.len() > MAX_PACKET_BYTES {
+        return None;
+    }
     let text = std::str::from_utf8(data).ok()?;
-    if !text.starts_with("HTTP/1.1 200") && !text.starts_with("HTTP/1.0 200") {
+    let mut status = text.split("\r\n").next()?.split_ascii_whitespace();
+    if !matches!(status.next(), Some("HTTP/1.1" | "HTTP/1.0")) || status.next() != Some("200") {
         return None;
     }
     Some(SsdpResponse {
@@ -310,15 +422,19 @@ pub struct WsdMatch {
 /// Parses a WS-Discovery Probe Match (extracts XAddrs/Scopes/Types by bounded
 /// tag scanning; tag prefixes vary — `d:`, `tns:` or bare).
 pub fn parse_wsd_match(ip: &str, data: &[u8]) -> Option<WsdMatch> {
-    let text = std::str::from_utf8(data).ok()?;
-    if !text.contains("ProbeMatch") {
+    if data.len() > MAX_PACKET_BYTES {
         return None;
     }
+    let text = std::str::from_utf8(data).ok()?;
+    let open = find_tag_open(text, "ProbeMatch")?;
+    let start = open + text[open..].find('>')? + 1;
+    let end = start + find_tag_close(&text[start..], "ProbeMatch")?;
+    let body = &text[start..end];
     Some(WsdMatch {
         ip: ip.to_owned(),
-        xaddrs: extract_tags(text, "XAddrs"),
-        scopes: extract_tags(text, "Scopes"),
-        types: extract_tags(text, "Types"),
+        xaddrs: extract_tags(body, "XAddrs"),
+        scopes: extract_tags(body, "Scopes"),
+        types: extract_tags(body, "Types"),
     })
 }
 
@@ -345,11 +461,16 @@ fn find_tag_open(text: &str, tag: &str) -> Option<usize> {
         let after = &text[abs + 1..];
         let skip = after
             .chars()
-            .take_while(|c| c.is_ascii_alphanumeric() || *c == ':' || *c == '-')
+            .take_while(|c| c.is_ascii_alphanumeric() || matches!(c, ':' | '-' | '_' | '.'))
             .count();
         let name = &after[..skip];
         let base = name.rsplit(':').next().unwrap_or(name);
-        if base.eq_ignore_ascii_case(tag) && !after.starts_with('/') {
+        if base == tag
+            && after
+                .as_bytes()
+                .get(skip)
+                .is_some_and(|c| c.is_ascii_whitespace() || matches!(c, b'>' | b'/'))
+        {
             return Some(abs);
         }
         from = abs + 1;
@@ -364,11 +485,16 @@ fn find_tag_close(text: &str, tag: &str) -> Option<usize> {
         let after = &text[abs + 2..];
         let skip = after
             .chars()
-            .take_while(|c| c.is_ascii_alphanumeric() || *c == ':' || *c == '-')
+            .take_while(|c| c.is_ascii_alphanumeric() || matches!(c, ':' | '-' | '_' | '.'))
             .count();
         let name = &after[..skip];
         let base = name.rsplit(':').next().unwrap_or(name);
-        if base.eq_ignore_ascii_case(tag) {
+        if base == tag
+            && after
+                .as_bytes()
+                .get(skip)
+                .is_some_and(|c| c.is_ascii_whitespace() || *c == b'>')
+        {
             return Some(abs);
         }
         from = abs + 2;
@@ -377,15 +503,20 @@ fn find_tag_close(text: &str, tag: &str) -> Option<usize> {
 }
 
 impl WsdMatch {
-    /// Camera evidence from the ProbeMatch: an ONVIF NetworkVideoTransmitter
-    /// type with Profile/Streaming scopes. True even when the SOAP listener
-    /// is gated (advertisement alone proves an ONVIF camera stack).
+    /// Whether the ProbeMatch advertises the exact ONVIF camera type or
+    /// streaming scope. This vendor claim proves neither conformance nor
+    /// authentication, streaming, or source custody.
     #[must_use]
     pub fn is_onvif_camera(&self) -> bool {
         self.types
             .iter()
-            .any(|t| t.contains("NetworkVideoTransmitter"))
-            || self.scopes.iter().any(|s| s.contains("Profile/Streaming"))
+            .flat_map(|text| text.split_ascii_whitespace())
+            .any(|token| token.rsplit(':').next() == Some("NetworkVideoTransmitter"))
+            || self
+                .scopes
+                .iter()
+                .flat_map(|text| text.split_ascii_whitespace())
+                .any(|token| token == "onvif://www.onvif.org/Profile/Streaming")
     }
 }
 
@@ -411,102 +542,179 @@ impl std::error::Error for StandardsError {}
 
 // ---- IO shells ------------------------------------------------------------
 
-/// Sends an mDNS query for the camera types and collects answers for
-/// `seconds`. Multicast loopback enabled; per-recv cancellation.
+/// Sends a bounded one-shot mDNS query and retains actual responder identity.
+/// This is the legacy unicast mode of RFC 6762 §6.7: response ID must match
+/// the query and the sender must use the mDNS port. No advertised address or
+/// service URI is contacted. The caller applies its configured subnet scope.
+pub fn mdns_observe(
+    iface_ip: Ipv4Addr,
+    types: &[&str],
+    seconds: u64,
+    cancel: &AtomicBool,
+) -> Vec<MdnsObservation> {
+    // Admit names before opening a socket or emitting any traffic.
+    let mut query = build_mdns_query(types, 0);
+    if query.is_empty() {
+        return Vec::new();
+    }
+    let Some(sock) = probe_socket(iface_ip, seconds, cancel) else {
+        return Vec::new();
+    };
+    let Ok(local) = sock.local_addr() else {
+        return Vec::new();
+    };
+    let query_id = local.port();
+    query[..2].copy_from_slice(&query_id.to_be_bytes());
+    let group = SocketAddrV4::new(MDNS_GROUP, MDNS_PORT);
+    for _ in 0..3 {
+        if cancel.load(Ordering::Relaxed) {
+            return Vec::new();
+        }
+        let _ = sock.send_to(&query, group);
+    }
+    let mut retained = 0;
+    collect_datagrams(
+        seconds,
+        cancel,
+        |buf| sock.recv_from(buf),
+        |source, data| {
+            let observation = parse_mdns_datagram(source, query_id, data)?;
+            if observation.answers.len() > MAX_RECORDS_PER_SWEEP - retained {
+                return None;
+            }
+            retained += observation.answers.len();
+            Some(observation)
+        },
+    )
+}
+
+/// Compatibility projection for callers needing records without liveness.
+/// Use [`mdns_observe`] when associating current responses with candidates.
 pub fn mdns_probe(
     iface_ip: Ipv4Addr,
     types: &[&str],
     seconds: u64,
     cancel: &AtomicBool,
 ) -> Vec<MdnsAnswer> {
-    let sock = match UdpSocket::bind(SocketAddrV4::new(iface_ip, 0)) {
-        Ok(s) => s,
-        Err(_) => return Vec::new(),
-    };
-    let _ = set_multicast_if(&sock, iface_ip);
-    sock.set_read_timeout(Some(Duration::from_millis(200))).ok();
-    let query = build_mdns_query(types, 0);
-    let group = SocketAddrV4::new(MDNS_GROUP, MDNS_PORT);
-    for _ in 0..3 {
-        let _ = sock.send_to(&query, group);
-    }
-    let deadline = std::time::Instant::now() + Duration::from_secs(seconds);
-    let mut answers = Vec::new();
-    let mut buf = [0u8; 4096];
-    while std::time::Instant::now() < deadline {
-        if cancel.load(Ordering::Relaxed) {
-            break;
-        }
-        match sock.recv_from(&mut buf) {
-            Ok((n, _src)) => {
-                if let Ok(mut parsed) = parse_mdns_response(&buf[..n]) {
-                    answers.append(&mut parsed);
-                }
-            }
-            Err(_) => continue,
-        }
-    }
-    answers
+    mdns_observe(iface_ip, types, seconds, cancel)
+        .into_iter()
+        .flat_map(|observation| observation.answers)
+        .collect()
 }
 
-/// Sends M-SEARCH (ssdp:all + upnp:rootdevice) and collects responses.
-pub fn ssdp_probe(iface_ip: Ipv4Addr, seconds: u64, cancel: &AtomicBool) -> Vec<SsdpResponse> {
-    let sock = match UdpSocket::bind(SocketAddrV4::new(iface_ip, 0)) {
-        Ok(s) => s,
-        Err(_) => return Vec::new(),
+fn parse_mdns_datagram(source: SocketAddr, query_id: u16, data: &[u8]) -> Option<MdnsObservation> {
+    let SocketAddr::V4(source) = source else {
+        return None;
     };
-    let _ = set_multicast_if(&sock, iface_ip);
-    sock.set_read_timeout(Some(Duration::from_millis(200))).ok();
+    if source.port() != MDNS_PORT || data.get(..2)? != query_id.to_be_bytes() {
+        return None;
+    }
+    let answers = parse_mdns_response(data).ok()?;
+    if answers.is_empty() {
+        return None;
+    }
+    Some(MdnsObservation {
+        responder: *source.ip(),
+        answers,
+    })
+}
+
+/// Sends M-SEARCH (ssdp:all + upnp:rootdevice) and collects bounded responses.
+pub fn ssdp_probe(iface_ip: Ipv4Addr, seconds: u64, cancel: &AtomicBool) -> Vec<SsdpResponse> {
+    let Some(sock) = probe_socket(iface_ip, seconds, cancel) else {
+        return Vec::new();
+    };
     let group = SocketAddrV4::new(SSDP_GROUP, SSDP_PORT);
     for st in ["ssdp:all", "upnp:rootdevice"] {
+        if cancel.load(Ordering::Relaxed) {
+            return Vec::new();
+        }
         let _ = sock.send_to(&build_msearch(st, 2), group);
     }
-    let deadline = std::time::Instant::now() + Duration::from_secs(seconds);
-    let mut out = Vec::new();
-    let mut buf = [0u8; 4096];
-    while std::time::Instant::now() < deadline {
-        if cancel.load(Ordering::Relaxed) {
-            break;
-        }
-        match sock.recv_from(&mut buf) {
-            Ok((n, src)) => {
-                if let Some(resp) = parse_ssdp_response(&src.ip().to_string(), &buf[..n]) {
-                    out.push(resp);
-                }
-            }
-            Err(_) => continue,
-        }
-    }
-    out
+    collect_datagrams(
+        seconds,
+        cancel,
+        |buf| sock.recv_from(buf),
+        |source, data| parse_ssdp_response(&source.ip().to_string(), data),
+    )
 }
 
-/// Sends the ONVIF WS-Discovery Probe and collects Probe Matches.
+/// Sends the ONVIF WS-Discovery Probe and collects bounded Probe Matches.
 pub fn wsdiscovery_probe(iface_ip: Ipv4Addr, seconds: u64, cancel: &AtomicBool) -> Vec<WsdMatch> {
-    let sock = match UdpSocket::bind(SocketAddrV4::new(iface_ip, 0)) {
-        Ok(s) => s,
-        Err(_) => return Vec::new(),
+    let Some(sock) = probe_socket(iface_ip, seconds, cancel) else {
+        return Vec::new();
     };
-    let _ = set_multicast_if(&sock, iface_ip);
-    sock.set_read_timeout(Some(Duration::from_millis(200))).ok();
     let group = SocketAddrV4::new(SSDP_GROUP, WSD_PORT);
     let probe = build_wsdiscovery_probe();
     for _ in 0..3 {
+        if cancel.load(Ordering::Relaxed) {
+            return Vec::new();
+        }
         let _ = sock.send_to(&probe, group);
+    }
+    collect_datagrams(
+        seconds,
+        cancel,
+        |buf| sock.recv_from(buf),
+        |source, data| parse_wsd_match(&source.ip().to_string(), data),
+    )
+}
+
+fn probe_socket(iface_ip: Ipv4Addr, seconds: u64, cancel: &AtomicBool) -> Option<UdpSocket> {
+    if !(1..=MAX_PROBE_SECONDS).contains(&seconds) || cancel.load(Ordering::Relaxed) {
+        return None;
+    }
+    let sock = UdpSocket::bind(SocketAddrV4::new(iface_ip, 0)).ok()?;
+    set_multicast_if(&sock, iface_ip).ok()?;
+    // A failed timeout installation must not turn a bounded probe into a
+    // blocking receive. The source-bound/default-route limitation is below.
+    sock.set_read_timeout(Some(Duration::from_millis(200)))
+        .ok()?;
+    sock.set_write_timeout(Some(Duration::from_millis(200)))
+        .ok()?;
+    Some(sock)
+}
+
+// The injected receive seam tests the exact network collector without sockets.
+// Malformed packets and transient failures consume the same attempt budget as
+// accepted packets, so traffic cannot force unbounded parse work or retention.
+fn collect_datagrams<T>(
+    seconds: u64,
+    cancel: &AtomicBool,
+    mut receive: impl FnMut(&mut [u8]) -> std::io::Result<(usize, SocketAddr)>,
+    mut parse: impl FnMut(SocketAddr, &[u8]) -> Option<T>,
+) -> Vec<T> {
+    if !(1..=MAX_PROBE_SECONDS).contains(&seconds) || cancel.load(Ordering::Relaxed) {
+        return Vec::new();
     }
     let deadline = std::time::Instant::now() + Duration::from_secs(seconds);
     let mut out = Vec::new();
-    let mut buf = [0u8; 4096];
-    while std::time::Instant::now() < deadline {
+    // One extra byte distinguishes oversized/truncated datagrams from exactly
+    // full valid packets; discarded packets still consume the attempt budget.
+    let mut buf = [0u8; MAX_PACKET_BYTES + 1];
+    for _ in 0..MAX_RECEIVE_ATTEMPTS {
+        if cancel.load(Ordering::Relaxed) || std::time::Instant::now() >= deadline {
+            break;
+        }
+        let received = receive(&mut buf);
         if cancel.load(Ordering::Relaxed) {
             break;
         }
-        match sock.recv_from(&mut buf) {
-            Ok((n, src)) => {
-                if let Some(m) = parse_wsd_match(&src.ip().to_string(), &buf[..n]) {
-                    out.push(m);
+        match received {
+            Ok((n, source)) if n <= MAX_PACKET_BYTES => {
+                if let Some(value) = parse(source, &buf[..n]) {
+                    out.push(value);
                 }
             }
-            Err(_) => continue,
+            Ok(_) => {}
+            Err(error)
+                if matches!(
+                    error.kind(),
+                    std::io::ErrorKind::TimedOut
+                        | std::io::ErrorKind::WouldBlock
+                        | std::io::ErrorKind::Interrupted
+                ) => {}
+            Err(_) => break,
         }
     }
     out
@@ -539,95 +747,5 @@ fn libc_setsockopt_mcast_if(fd: i32, octets: [u8; 4]) -> std::io::Result<()> {
 }
 
 #[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn mdns_query_roundtrip_shape() {
-        let q = build_mdns_query(&["_rtsp._tcp", "_onvif._tcp"], 7);
-        // header: id, flags, QDCOUNT=2, AN/NS/AR=0
-        assert_eq!(&q[0..2], &7u16.to_be_bytes());
-        assert_eq!(u16::from_be_bytes([q[4], q[5]]), 2);
-        assert_eq!(&q[6..12], &[0u8; 6]);
-        // first question: 5_rtsp 4_tcp root PTR IN
-        assert_eq!(&q[12..23], b"\x05_rtsp\x04_tcp");
-        assert_eq!(q[23], 0); // root
-        assert_eq!(&q[24..26], &12u16.to_be_bytes()); // PTR
-        assert_eq!(&q[26..28], &1u16.to_be_bytes()); // IN
-    }
-
-    #[test]
-    fn mdns_response_parse_with_compression() {
-        // Synthetic response: 1 answer, PTR, compressed name+target.
-        let mut p = Vec::new();
-        p.extend_from_slice(&1u16.to_be_bytes()); // id
-        p.extend_from_slice(&0x8400u16.to_be_bytes()); // response
-        p.extend_from_slice(&0u16.to_be_bytes()); // qd
-        p.extend_from_slice(&1u16.to_be_bytes()); // an
-        p.extend_from_slice(&0u16.to_be_bytes()); // ns
-        p.extend_from_slice(&0u16.to_be_bytes()); // ar
-        let name_off = p.len();
-        for label in ["_rtsp", "_tcp", "local"] {
-            p.push(label.len() as u8);
-            p.extend_from_slice(label.as_bytes());
-        }
-        p.push(0);
-        p.extend_from_slice(&12u16.to_be_bytes()); // PTR
-        p.extend_from_slice(&1u16.to_be_bytes()); // class
-        p.extend_from_slice(&4500u32.to_be_bytes()); // ttl
-        // rdata: pointer back to name
-        p.extend_from_slice(&2u16.to_be_bytes());
-        let ptr = ((0xC000 | name_off) as u16).to_be_bytes();
-        p.extend_from_slice(&ptr);
-        let answers = parse_mdns_response(&p).unwrap();
-        assert_eq!(answers.len(), 1);
-        assert_eq!(answers[0].name, "_rtsp._tcp.local");
-        assert_eq!(answers[0].rr_type, 12);
-        assert_eq!(answers[0].rdata, "_rtsp._tcp.local");
-    }
-
-    #[test]
-    fn mdns_short_packet_refused() {
-        assert!(matches!(
-            parse_mdns_response(&[0u8; 8]),
-            Err(StandardsError::ShortPacket)
-        ));
-    }
-
-    #[test]
-    fn ssdp_build_and_parse() {
-        let msg = build_msearch("ssdp:all", 2);
-        let text = String::from_utf8(msg.clone()).unwrap();
-        assert!(text.contains("M-SEARCH * HTTP/1.1"));
-        assert!(text.contains("ST: ssdp:all"));
-        let resp = b"HTTP/1.1 200 OK\r\nCACHE-CONTROL: max-age=1800\r\nSERVER: eeroOS UPnP/1.0\r\nST: upnp:rootdevice\r\nLOCATION: http://192.168.4.1:5000/desc.xml\r\nUSN: uuid:abc::upnp:rootdevice\r\n\r\n";
-        let parsed = parse_ssdp_response("192.168.4.1", resp).unwrap();
-        assert_eq!(parsed.server, "eeroOS UPnP/1.0");
-        assert_eq!(parsed.st, "upnp:rootdevice");
-        assert_eq!(parsed.location, "http://192.168.4.1:5000/desc.xml");
-        assert_eq!(parsed.usn, "uuid:abc::upnp:rootdevice");
-        // non-200 ignored
-        assert!(parse_ssdp_response("x", b"HTTP/1.1 404 Not Found\r\n\r\n").is_none());
-    }
-
-    #[test]
-    fn wsd_probe_and_parse() {
-        let probe = build_wsdiscovery_probe();
-        let text = String::from_utf8(probe.clone()).unwrap();
-        assert!(text.contains("dn:NetworkVideoTransmitter"));
-        let match_xml = b"<?xml version=\"1.0\"?><s:Envelope><s:Body><d:ProbeMatch><d:XAddrs>http://192.168.1.50/onvif/device_service</d:XAddrs><d:Scopes>onvif://www.onvif.org/Profile/Streaming</d:Scopes><d:Types>dn:NetworkVideoTransmitter</d:Types></d:ProbeMatch></s:Body></s:Envelope>";
-        let m = parse_wsd_match("192.168.1.50", match_xml).unwrap();
-        assert_eq!(m.xaddrs, vec!["http://192.168.1.50/onvif/device_service"]);
-        assert_eq!(m.types, vec!["dn:NetworkVideoTransmitter"]);
-        assert!(m.scopes.iter().any(|s| s.contains("Streaming")));
-        // non-match ignored
-        assert!(parse_wsd_match("x", b"<a/>").is_none());
-    }
-
-    #[test]
-    fn camera_types_registered() {
-        assert!(MDNS_CAMERA_TYPES.contains(&"_onvif._tcp"));
-        assert!(MDNS_CAMERA_TYPES.contains(&"_rtsp._tcp"));
-        assert!(MDNS_CAMERA_TYPES.len() <= 16);
-    }
-}
+#[path = "standards/tests.rs"]
+mod tests;
