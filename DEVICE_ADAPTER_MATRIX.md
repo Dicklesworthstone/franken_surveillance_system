@@ -86,8 +86,11 @@ MITM); TCP 51028 is a tinyproxy/1.11.2 instance that does NOT openly forward; no
 As of 2026-10-19 the client is also a runnable operator command, `fss-capture-tuya`
 (fss-cli): it opens a direct owner-authorized Tuya LAN session (negotiate cmd 3/4/5 →
 heartbeat → dp_query) and captures the live device data points, demuxing 55AA/6699
-frames from a bounded TCP reassembly buffer. The live session is proven end-to-end
-against `HomebaseSim` over a real loopback socket (dps captured); media continuity
+frames from a bounded TCP reassembly buffer, and each captured dps is mapped through the
+finished `TuyaEventMapper` (fss-reference `ingest/tuya.rs`) and sealed into a durable deployment
+under `--root` as `EvidenceDeltaBatch` evidence (`fss.tuya_capture_cli.v2`). The live session is
+proven end-to-end against `HomebaseSim` over a real loopback socket (dps captured, batch committed);
+media continuity
 stays `unverified` (Tuya video rides the iotbing OEM stream), and the live run against
 the physical homebase is still gated on the owner local_key (NEG-003).
 

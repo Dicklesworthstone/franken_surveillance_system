@@ -8,8 +8,10 @@
 //! bounded heartbeat + dp_query loop that reads the device's live status
 //! (dps). The camera cfg (ip/port/local_key/proto) is read from a secrets
 //! file (mode 600 expected); the `local_key` never appears in argv, the report,
-//! or logs. The report JSON (`fss.tuya_capture_cli.v1`) is the machine
-//! contract and the device data points are the captured evidence.
+//! or logs. Every live dps STATUS is mapped through the finished
+//! `fss_reference::ingest::tuya::TuyaEventMapper` (vendor-derived, never ground
+//! truth) and sealed into a durable `ReferenceDeployment` under `--root`. The
+//! report JSON (`fss.tuya_capture_cli.v2`) is the machine contract.
 //!
 //! Media continuity is NOT established here: the Tuya live-video channel rides
 //! the OEM iotbing stream (a separate, login-keyed lane) and is reported
@@ -22,18 +24,26 @@ use std::path::PathBuf;
 use std::process::ExitCode;
 use std::time::{Duration, Instant};
 
+use fss_core::region::{ContextAuthority, RootAuthoritySpec};
+use fss_core::{BudgetVector, CaptureInterval, ContentDigest, OperationId, TimestampNs};
+use fss_reference::ingest::tuya::{DpsRegistry, TuyaEventMapper, TuyaMapperConfig};
+use fss_reference::{ADP_REPLAY_ROW_ID, ReferenceDeployment, ReplayCx};
+
 use fss_cli::ExitIdentity;
 use fss_tuya::client::{Proto, TuyaClient};
 use fss_tuya::wire::{cmd, parse_header};
 
-const HELP: &str = "fss-capture-tuya --cfg CAMERA_CFG [--secs N] --owner-authorized\n\n\
+const HELP: &str = "fss-capture-tuya --root ABSOLUTE_DEPLOYMENT --cfg CAMERA_CFG [--secs N] --owner-authorized\n\n\
                     Open a direct, owner-authorized Tuya LAN (3.4/3.5) session to a camera on\n\
                     the operator's network and capture its live data points (no vendor cloud).\n\
-                    The cfg JSON (mode 600) holds ip / port / local_key[hex] / proto[3.4|3.5];\n\
-                    the local_key is never printed. --owner-authorized attests the device is yours.\n\
-                    Report: fss.tuya_capture_cli.v1 JSON on stdout.";
+                    Each dps is mapped through the TuyaEventMapper and sealed into a durable\n\
+                    deployment under --root. The cfg JSON (mode 600) holds ip / port / local_key[hex]\n\
+                    / proto[3.4|3.5] [/ homebase / model]; the local_key is never printed.\n\
+                    --owner-authorized attests the device is yours. Report: fss.tuya_capture_cli.v2 JSON.";
 
-const FORMAT: &str = "fss.tuya_capture_cli.v1";
+const FORMAT: &str = "fss.tuya_capture_cli.v2";
+/// Deployment site lineage for the AOSU capture (fixed, so reports are root-independent).
+const SITE: &str = "site:lab-aosu-capture";
 const MAX_ARGS: usize = 16;
 /// Reassembly buffer bound: a well-behaved device streams small frames, so
 /// overflow means a corrupt prefix we resync past rather than an unbounded grow.
@@ -41,6 +51,7 @@ const MAX_BUF: usize = 4 * 1024 * 1024;
 
 #[derive(Debug)]
 struct Options {
+    root: PathBuf,
     cfg: PathBuf,
     secs: u64,
     owner_authorized: bool,
@@ -51,6 +62,7 @@ fn parse(args: &[OsString]) -> Result<Options, &'static str> {
         return Err("invalid argument count or bound");
     }
     let mut o = Options {
+        root: PathBuf::new(),
         cfg: PathBuf::new(),
         secs: 5,
         owner_authorized: false,
@@ -64,6 +76,7 @@ fn parse(args: &[OsString]) -> Result<Options, &'static str> {
             args.get(i + 1).ok_or("missing flag value")
         };
         match flag {
+            "--root" => o.root = PathBuf::from(need_value(i)?),
             "--cfg" => o.cfg = PathBuf::from(need_value(i)?),
             "--secs" => {
                 let v = need_value(i)?;
@@ -80,6 +93,9 @@ fn parse(args: &[OsString]) -> Result<Options, &'static str> {
             _ => return Err("unknown flag"),
         }
         i += 2;
+    }
+    if o.root.as_os_str().is_empty() {
+        return Err("--root is required");
     }
     if o.cfg.as_os_str().is_empty() {
         return Err("--cfg is required");
@@ -217,6 +233,8 @@ struct PumpOutcome {
     heartbeats: u64,
     dp_queries: u64,
     last_dps: Option<String>,
+    /// Every live dps STATUS report (raw json + observed session-relative ns).
+    status_reports: Vec<(String, u64)>,
     error: Option<String>,
 }
 
@@ -313,6 +331,7 @@ fn pump(stream: &mut TcpStream, local_key: [u8; 16], proto: Proto, budget: Durat
                     if inbound.cmd == cmd::STATUS {
                         let dps = String::from_utf8_lossy(&inbound.payload).into_owned();
                         if !dps.is_empty() {
+                            out.status_reports.push((dps.clone(), t0.elapsed().as_nanos() as u64));
                             out.last_dps = Some(dps);
                         }
                     }
@@ -339,6 +358,8 @@ fn run(o: &Options) -> Result<String, &'static str> {
     };
     let local_key =
         parse_hex16(&key_hex).ok_or("ERR-TUYA-CAPTURE-CONFIG-005: local_key must be 32 hex chars")?;
+    let homebase = cfg_field(&raw, "homebase").unwrap_or_else(|| format!("h-{ip}"));
+    let model = cfg_field(&raw, "model").unwrap_or_else(|| "unknown".to_owned());
 
     let addr: SocketAddr =
         format!("{ip}:{port}").parse().map_err(|_| "ERR-TUYA-CAPTURE-CONFIG-006: invalid ip:port")?;
@@ -348,20 +369,86 @@ fn run(o: &Options) -> Result<String, &'static str> {
         .set_read_timeout(Some(Duration::from_millis(100)))
         .map_err(|_| "ERR-TUYA-CAPTURE-SESSION-001: socket options")?;
     let outcome = pump(&mut stream, local_key, proto, Duration::from_secs(o.secs));
+    let root_str = o.root.display().to_string();
+
+    // Durable acquisition lane: every live dps is mapped through the finished
+    // TuyaEventMapper (vendor-derived, never ground truth) and sealed into the
+    // deployment. The homebase inventory is the operator's; the camera list is
+    // empty for a homebase-state capture.
+    let authority = ContextAuthority::new_root(RootAuthoritySpec {
+        trace_id: format!("trace:aosu-capture:{SITE}"),
+        operation_id: OperationId::parse("op:aosu-capture:01")
+            .map_err(|_| "ERR-TUYA-CAPTURE-AUTHORITY-001: operation id")?,
+        principal: "operator:lab".to_owned(),
+        capabilities: vec![ADP_REPLAY_ROW_ID.to_owned()],
+        deadline: None,
+        priority: 10,
+        budgets: BudgetVector::builder()
+            .bytes(1u64 << 30)
+            .build()
+            .map_err(|_| "ERR-TUYA-CAPTURE-AUTHORITY-002: budgets")?,
+        privacy_scope: "privacy:owner-authorized-lan".into(),
+        retention_scope: "retention:existing-deployment-policy".into(),
+        anchor_universe: ContentDigest::sha256(SITE.as_bytes()),
+        generation: 1,
+    })
+    .map_err(|_| "ERR-TUYA-CAPTURE-AUTHORITY-003: authority rejected")?;
+    let cx = ReplayCx::from_context_authority(&authority, &o.root)
+        .map_err(|_| "ERR-TUYA-CAPTURE-AUTHORITY-004: replay context refused")?;
+
     let proto_label = match proto {
         Proto::V34 => "3.4",
         Proto::V35 => "3.5",
     };
-    Ok(format!(
-        "{{\"schema\":\"{FORMAT}\",\"device\":\"{ip}:{port}\",\"proto\":\"{proto_label}\",\"owner_authorized\":true,\"established\":{established},\"frames_sent\":{frames_sent},\"frames_recv\":{frames_recv},\"heartbeats\":{heartbeats},\"dp_queries\":{dp_queries},\"dps\":{dps},\"error\":{error},\"media_continuity\":\"unverified\",\"note\":\"direct LAN session; device data points captured; Tuya video rides the OEM iotbing stream (not wired here)\"}}",
-        established = outcome.established,
-        frames_sent = outcome.frames_sent,
-        frames_recv = outcome.frames_recv,
-        heartbeats = outcome.heartbeats,
-        dp_queries = outcome.dp_queries,
-        dps = json_or_null(&outcome.last_dps),
-        error = json_or_null(&outcome.error),
-    ))
+    let report = (|| -> Result<String, &'static str> {
+        let mut deployment = ReferenceDeployment::open(&o.root, SITE, &cx)
+            .map_err(|_| "ERR-TUYA-CAPTURE-DEPLOYMENT-001: open failed")?;
+        let mapper_cfg = TuyaMapperConfig {
+            site_lineage: SITE.to_owned(),
+            homebase_id: homebase,
+            cams: Vec::new(),
+            registry: DpsRegistry::laboratory_fixtures(),
+            offline_window_ns: 30_000_000_000,
+        };
+        let mut mapper = TuyaEventMapper::new(mapper_cfg);
+        let mut map_errors = 0u64;
+        for (dps, observed_ns) in &outcome.status_reports {
+            let observed = match CaptureInterval::new(
+                TimestampNs(*observed_ns as i128),
+                TimestampNs(*observed_ns as i128),
+            ) {
+                Ok(iv) => iv,
+                Err(_) => {
+                    map_errors += 1;
+                    continue;
+                }
+            };
+            if mapper.map_device_state(&model, dps, observed).is_err() {
+                map_errors += 1;
+            }
+        }
+        let seal = mapper
+            .seal_to_deployment(&mut deployment, &cx)
+            .map_err(|_| "ERR-TUYA-CAPTURE-COMMIT-001: seal refused")?;
+        let batch_ids_csv: Vec<String> = seal.batch_ids.iter().map(|s| json_string(s)).collect();
+        Ok(format!(
+            "{{\"schema\":\"{FORMAT}\",\"device\":\"{ip}:{port}\",\"proto\":\"{proto_label}\",\"owner_authorized\":true,\"root\":\"{root_str}\",\"established\":{established},\"frames_sent\":{frames_sent},\"frames_recv\":{frames_recv},\"heartbeats\":{heartbeats},\"dp_queries\":{dp_queries},\"dps_reports\":{reports},\"map_errors\":{map_errors},\"dps\":{dps},\"batches_committed\":{batches},\"payloads_staged\":{payloads},\"batch_ids\":[{ids}],\"error\":{error},\"media_continuity\":\"unverified\",\"note\":\"direct LAN session; each dps mapped through TuyaEventMapper and sealed into the deployment; Tuya video rides the OEM iotbing stream (not wired here)\"}}",
+            established = outcome.established,
+            frames_sent = outcome.frames_sent,
+            frames_recv = outcome.frames_recv,
+            heartbeats = outcome.heartbeats,
+            dp_queries = outcome.dp_queries,
+            reports = outcome.status_reports.len(),
+            map_errors = map_errors,
+            dps = json_or_null(&outcome.last_dps),
+            batches = seal.batches_committed,
+            payloads = seal.payloads_staged,
+            ids = batch_ids_csv.join(","),
+            error = json_or_null(&outcome.error),
+        ))
+    })();
+    cx.drain_and_finalize();
+    report
 }
 
 fn json_string(s: &str) -> String {
@@ -427,7 +514,7 @@ mod tests {
     use fss_tuya::sim::{HomebaseSim, SimConfig};
 
     fn base_args() -> Vec<OsString> {
-        ["--cfg", "/tmp/c.json", "--owner-authorized"].into_iter().map(OsString::from).collect()
+        ["--root", "/tmp/root", "--cfg", "/tmp/c.json", "--owner-authorized"].into_iter().map(OsString::from).collect()
     }
 
     #[test]
@@ -435,11 +522,12 @@ mod tests {
         let o = parse(&base_args()).unwrap();
         assert_eq!(o.secs, 5);
         assert!(o.owner_authorized);
+        assert!(!o.root.as_os_str().is_empty());
     }
 
     #[test]
     fn refuses_missing_owner_attestation() {
-        let args: Vec<OsString> = ["--cfg", "/tmp/c.json"].into_iter().map(OsString::from).collect();
+        let args: Vec<OsString> = ["--root", "/tmp/root", "--cfg", "/tmp/c.json"].into_iter().map(OsString::from).collect();
         let e = parse(&args).unwrap_err();
         assert!(e.contains("owner-authorized"), "{e}");
     }
@@ -448,6 +536,13 @@ mod tests {
     fn refuses_missing_cfg() {
         let args: Vec<OsString> = vec![OsString::from("--owner-authorized")];
         assert!(parse(&args).is_err());
+    }
+
+    #[test]
+    fn refuses_missing_root() {
+        let args: Vec<OsString> = ["--cfg", "/tmp/c.json", "--owner-authorized"].into_iter().map(OsString::from).collect();
+        let e = parse(&args).unwrap_err();
+        assert!(e.contains("root"), "{e}");
     }
 
     #[test]
@@ -557,6 +652,55 @@ mod tests {
             outcome.last_dps
         );
         assert!(outcome.heartbeats >= 1, "at least one heartbeat in a 3s run");
+        assert!(!outcome.status_reports.is_empty(), "pump must record the sim's dps");
+        assert!(
+            outcome.status_reports.iter().any(|(d, _)| d.contains("armed_away")),
+            "a captured dps report must carry the sim's state: {:?}",
+            outcome.status_reports
+        );
+        let root = std::env::temp_dir().join(format!("fss-tuya-seal-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        let authority = ContextAuthority::new_root(RootAuthoritySpec {
+            trace_id: "trace:aosu-seal-test".to_owned(),
+            operation_id: OperationId::parse("op:aosu-seal-test:01").unwrap(),
+            principal: "operator:lab".to_owned(),
+            capabilities: vec![ADP_REPLAY_ROW_ID.to_owned()],
+            deadline: None,
+            priority: 10,
+            budgets: BudgetVector::builder().bytes(1u64 << 30).build().unwrap(),
+            privacy_scope: "privacy:owner-authorized-lan".into(),
+            retention_scope: "retention:existing-deployment-policy".into(),
+            anchor_universe: ContentDigest::sha256(SITE.as_bytes()),
+            generation: 1,
+        })
+        .unwrap();
+        let cx = ReplayCx::from_context_authority(&authority, &root).unwrap();
+        let mut deployment = ReferenceDeployment::open(&root, SITE, &cx).unwrap();
+        let mut mapper = TuyaEventMapper::new(TuyaMapperConfig {
+            site_lineage: SITE.to_owned(),
+            homebase_id: "h2e".to_owned(),
+            cams: Vec::new(),
+            registry: DpsRegistry::laboratory_fixtures(),
+            offline_window_ns: 30_000_000_000,
+        });
+        for (dps, observed_ns) in &outcome.status_reports {
+            let observed = CaptureInterval::new(
+                TimestampNs(*observed_ns as i128),
+                TimestampNs(*observed_ns as i128),
+            )
+            .unwrap();
+            mapper.map_device_state("fsssimhomebase00", dps, observed).unwrap();
+        }
+        let seal = mapper.seal_to_deployment(&mut deployment, &cx).unwrap();
+        cx.drain_and_finalize();
+        let _ = std::fs::remove_dir_all(&root);
+        assert!(seal.batches_committed >= 1, "the committed dps must seal into the deployment");
+        assert!(!seal.batch_ids.is_empty());
+        assert!(seal.payloads_staged >= 1);
+        let committed = mapper.ledger().batches()[0].deltas[0].payload_digest;
+        let text = String::from_utf8_lossy(mapper.custody(&committed).unwrap());
+        assert!(text.contains("armed_away"), "raw dps preserved: {text}");
+        assert!(text.contains("\"ground_truth\":false"), "{text}");
         assert!(server.join().unwrap(), "sim must have established a session");
     }
 }

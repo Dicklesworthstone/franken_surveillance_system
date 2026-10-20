@@ -301,6 +301,8 @@ pub enum TuyaMapError {
     Malformed(&'static str),
     /// Cam identity not in the owner inventory.
     UnknownCam(String),
+    /// Durable-deployment seal refused (object staging or batch append).
+    Deployment(String),
 }
 
 impl core::fmt::Display for TuyaMapError {
@@ -309,6 +311,7 @@ impl core::fmt::Display for TuyaMapError {
             Self::Contract(e) => write!(f, "contract error: {e}"),
             Self::Malformed(m) => write!(f, "malformed input: {m}"),
             Self::UnknownCam(c) => write!(f, "cam not in inventory: {c}"),
+            Self::Deployment(e) => write!(f, "deployment seal: {e}"),
         }
     }
 }
@@ -484,6 +487,18 @@ pub struct TuyaEventMapper {
     trackers: BTreeMap<String, CamTracker>,
     generations: BTreeMap<ObjectId, u64>,
     batch_seq: u64,
+}
+
+/// Receipt for [`TuyaEventMapper::seal_to_deployment`]: the durable-deployment
+/// commit of every committed ledger batch.
+#[derive(Clone, Debug)]
+pub struct TuyaSeal {
+    /// Committed ledger batches appended to the deployment.
+    pub batches_committed: usize,
+    /// Distinct custody payloads staged as deployment objects.
+    pub payloads_staged: usize,
+    /// Committed batch identities (for the report).
+    pub batch_ids: Vec<String>,
 }
 
 impl TuyaEventMapper {
@@ -831,6 +846,51 @@ impl TuyaEventMapper {
             stop_reason,
             authorized_generation,
             observed_generation,
+        })
+    }
+
+    /// Seals every committed ledger batch into the durable deployment: stage
+    /// each custody payload as a deployment object, then append each committed
+    /// batch via the deployment's idempotent `append_batch`. The input is the
+    /// mapper's own committed batches — the durable AOSU acquisition lane
+    /// (live traffic lands with LAB-AOSU-2; until then the simulator drives
+    /// it). Idempotent by batch identity: a re-seal after the batches are
+    /// already committed appends nothing new.
+    pub fn seal_to_deployment(
+        &mut self,
+        deployment: &mut crate::ReferenceDeployment,
+        cx: &crate::ReplayCx,
+    ) -> Result<TuyaSeal, TuyaMapError> {
+        // Flush any pending deltas so the seal covers the full run.
+        self.commit_pending()?;
+        // Stage every custody payload as a deployment object. Each batch's
+        // children are exactly these payload digests, so the append below
+        // references objects that exist in the spool.
+        let payloads_staged = self.custody.len();
+        for payload in self.custody.values() {
+            deployment
+                .publisher_mut()
+                .stage_object(payload)
+                .map_err(|e| TuyaMapError::Deployment(e.to_string()))?;
+        }
+        // Append each committed batch. Idempotent by batch identity, so a
+        // re-seal re-appends nothing.
+        let mut batch_ids = Vec::new();
+        for batch in self.ledger.batches().to_vec() {
+            deployment
+                .append_batch(
+                    batch.batch_id.clone(),
+                    batch.deltas.clone(),
+                    batch.children.clone(),
+                    cx,
+                )
+                .map_err(|e| TuyaMapError::Deployment(e.to_string()))?;
+            batch_ids.push(batch.batch_id.as_str().to_owned());
+        }
+        Ok(TuyaSeal {
+            batches_committed: batch_ids.len(),
+            payloads_staged,
+            batch_ids,
         })
     }
 }
