@@ -39,6 +39,9 @@ jobs:
       - name: Verify event replay admission and approved recovery rehearsal
         if: success() || failure()
         run: cargo +nightly-2026-08-31 test --no-fail-fast --locked --offline -p fss-cli --bin fss-event --bin fss-replay-dwell --test agent_rehearsal_contract
+      - name: Verify owned multipart upload and uncertain acknowledgement recovery
+        if: success() || failure()
+        run: cargo +nightly-2026-08-31 test --no-fail-fast --locked --offline -p fss-object --test multipart_family --test uploader_family
       - name: Verify deployment status inventory and bounded admission
         run: |
           cargo +nightly-2026-08-31 test --locked --offline -p fss-reference --lib deployment_status::tests

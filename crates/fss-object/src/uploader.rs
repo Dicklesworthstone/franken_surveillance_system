@@ -1,276 +1,431 @@
 #![forbid(unsafe_code)]
-//! Asupersync-owned S3-compatible staged uploader (FSS-063).
+//! Authority-owned multipart upload with explicit, recoverable terminal work.
 //!
-//! The composition vertical that wires the landed layers into one
-//! authority-owned upload: the FSS-067 [`ChunkPlan`] chunks the object,
-//! the FSS-130 [`MultipartSession`] drives the store protocol, and the
-//! FSS-021 [`AuthorityCx`] owns every step — the upload runs inside a
-//! scoped child region with a durable drain obligation that only
-//! terminal completion or cancellation-with-receipt resolves.
+//! Preparation owns the actual ObjectStore child, its reserved allowance and its
+//! pending obligation. Every transport call uses that child. Neither a failed
+//! dispatch nor cancellation consumes the owner: completion/abort uncertainty
+//! must be reconciled. Only a conclusive terminal receipt resolves the obligation,
+//! drains/finalizes the child and returns unused allowance to its exact parent.
 //!
-//! Ownership semantics:
-//! - `stage_upload` scopes a child region (kind-legal under the caller's
-//!   authority), reserves the transfer budget, registers the obligation
-//!   "upload completed or cancelled with receipt", and initiates the
-//!   multipart session. The staged handle carries the region, the plan
-//!   binding, and the session.
-//! - `upload_chunks` streams parts through the plan; cancellation is
-//!   honored BETWEEN parts (checked before each transport call) — an
-//!   in-flight part completes, then the upload transitions to cancelled.
-//! - `finish` completes root-last and resolves the obligation `Completed`
-//!   with the closure witness digest as proof.
-//! - `cancel` aborts the store session and resolves the obligation
-//!   `Drained` (cooperative cancellation before external commitment).
-//!
-//! No ambient state: the caller supplies authority, tree, transport, and
-//! time. The uploader allocates nothing beyond the plan's own bounds.
+//! The region tree is an in-process owner, not a durable transfer journal. Dropping
+//! unfinished work leaves a visible pending child obligation and charged reservation.
+//! No network transport, encryption implementation or retrievability claim is added.
 
-use fss_core::{ContentDigest, TimestampNs};
-
-use crate::multipart::{MultipartSession, MultipartTransport};
-use crate::planner::{ChunkPlan, ChunkPolicy, PlannerError, plan_chunks};
-use fss_core::BudgetVector;
+use fss_core::{
+    BudgetVector, ContentDigest, ContextAuthority, ObligationId, OperationId, RegionId, RegionKind,
+    RegionState, RegionTree, RootAuthoritySpec, RuntimeGrant, TimestampNs,
+};
 use fss_runtime::authority::{AuthorityCx, AuthorityError};
+use fss_runtime::grant::GrantSet;
 use fss_runtime::obligation::{ObligationTerminal, new_obligation};
 
-use fss_core::{Generation, OperationId, RegionId, RegionKind, RootAuthoritySpec};
+use crate::multipart::{
+    AbortReceipt, CompletionReceipt, MultipartError, MultipartPhase, MultipartSession,
+    MultipartTransport, PartReceipt, UploadIntent, UploadIo,
+};
+use crate::planner::{ChunkPlan, ChunkPolicy, PlannerError, plan_chunks};
 
-/// Typed uploader refusal.
+/// Upload refusal. All methods after preparation borrow rather than consume the owner.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum UploaderError {
-    /// The authority refused a scope/budget/obligation step.
+    /// Scope, obligation, grant, deadline or allowance refusal.
     Authority(String),
-    /// The planner refused the object/policy.
+    /// Invalid bounded chunk plan.
     Planner(PlannerError),
-    /// The transport protocol refused (multipart discipline).
-    Protocol(String),
-    /// Cancellation arrived; the upload is terminal with a receipt.
-    Cancelled {
-        /// Parts confirmed before the cancellation was observed.
+    /// Typed protocol, I/O admission or uncertain-dispatch result.
+    Protocol(MultipartError),
+    /// Cancellation was observed before further work, but staging is still owned.
+    CancellationRequested {
+        /// Exactly acknowledged parts; an abort/reconciliation is still required.
         confirmed_parts: usize,
     },
 }
-
 impl std::fmt::Display for UploaderError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
-            Self::Authority(detail) => write!(f, "authority refusal: {detail}"),
-            Self::Planner(e) => write!(f, "planner refusal: {e}"),
-            Self::Protocol(detail) => write!(f, "protocol refusal: {detail}"),
-            Self::Cancelled { confirmed_parts } => {
-                write!(f, "upload cancelled after {confirmed_parts} parts")
-            }
+            Self::Authority(detail) => write!(f, "upload authority refusal: {detail}"),
+            Self::Planner(error) => write!(f, "upload plan refusal: {error}"),
+            Self::Protocol(error) => write!(f, "{error}"),
+            Self::CancellationRequested { confirmed_parts } => write!(
+                f,
+                "upload cancellation requested after {confirmed_parts} confirmed parts; explicit drain required"
+            ),
         }
     }
 }
-
 impl std::error::Error for UploaderError {}
-
 impl From<AuthorityError> for UploaderError {
-    fn from(e: AuthorityError) -> Self {
-        Self::Authority(format!("{e}"))
+    fn from(error: AuthorityError) -> Self {
+        Self::Authority(error.to_string())
     }
 }
-
 impl From<PlannerError> for UploaderError {
-    fn from(e: PlannerError) -> Self {
-        Self::Planner(e)
+    fn from(error: PlannerError) -> Self {
+        Self::Planner(error)
     }
 }
+impl From<MultipartError> for UploaderError {
+    fn from(error: MultipartError) -> Self {
+        Self::Protocol(error)
+    }
+}
+fn authority(error: impl std::fmt::Display) -> UploaderError {
+    UploaderError::Authority(error.to_string())
+}
 
-/// One staged upload: authority region + obligation + session binding.
+/// Minimum allowance for payload plus initiation, completion, two reconciliations
+/// and one abort. Additional attempts require explicit additional reservation.
+/// Network bytes cover payload here; a real transport must separately admit its
+/// framing/response I/O rather than treating this estimate as measured wire usage.
+pub fn minimum_upload_budget(
+    object_bytes: u64,
+    policy: ChunkPolicy,
+) -> Result<BudgetVector, UploaderError> {
+    let plan = plan_chunks(object_bytes, policy)?;
+    let mut budget = BudgetVector::ZERO;
+    budget.bytes = object_bytes;
+    budget.network_bytes = object_bytes;
+    budget.storage_operations = plan.chunks.len() as u64 + 5;
+    Ok(budget)
+}
+
+/// An unfinished upload must stay owned until it is completed or conclusively aborted.
+#[must_use = "retain the upload owner until completion, abort or explicit reconciliation"]
 pub struct StagedUpload<'a, T: MultipartTransport> {
-    authority: &'a mut AuthorityCx,
-    region: RegionId,
-    obligation: fss_core::ObligationId,
+    parent: &'a mut AuthorityCx,
+    authority: AuthorityCx,
+    obligation: ObligationId,
     session: MultipartSession<'a, T>,
     plan: ChunkPlan,
-    manifest_root: ContentDigest,
-    confirmed: usize,
+    settled: bool,
 }
 
 impl<T: MultipartTransport> StagedUpload<'_, T> {
-    /// Stages an upload under `authority`: child region (Property under
-    /// Process or narrower), budget reservation sized to the object,
-    /// drain obligation, initiated multipart session.
-    ///
-    /// # Errors
-    /// Typed authority/planner/protocol refusals.
+    /// Pure owned preparation: validate intent and grants, reserve the caller's
+    /// exact allowance, and register the pending obligation on the child itself.
+    /// No provider call is hidden in this fallible constructor.
     #[allow(clippy::too_many_arguments)]
     pub fn stage<'a>(
-        authority: &'a mut AuthorityCx,
-        tree: &mut fss_core::RegionTree,
+        parent: &'a mut AuthorityCx,
+        tree: &mut RegionTree,
         transport: &'a mut T,
         operation: OperationId,
         object_bytes: u64,
         policy: ChunkPolicy,
         manifest_root: ContentDigest,
-        child_authority_spec: RootAuthoritySpec,
+        child_spec: RootAuthoritySpec,
+        resource: &str,
         now: TimestampNs,
     ) -> Result<StagedUpload<'a, T>, UploaderError> {
         let plan = plan_chunks(object_bytes, policy)?;
-        // Budget: bytes + one storage operation per part, inside the parent.
-        let mut budget = BudgetVector::builder()
-            .build()
-            .map_err(|e| UploaderError::Authority(format!("{e:?}")))?;
-        budget.bytes = object_bytes;
-        budget.storage_operations = plan.chunks.len() as u64;
-        // The child authority's own canonical budgets must cover the
-        // reservation (validate_allowance checks reservation <= child
-        // canonical; the parent-remaining gate is the real admission).
-        let mut spec = child_authority_spec;
-        spec.budgets = budget;
-        let region = RegionId::new(format!("region:upload:{}", operation.as_str()))
-            .map_err(|e| UploaderError::Authority(format!("{e}")))?;
-        let upload_authority = AuthorityCx::scope_down(
-            authority,
-            tree,
-            region.clone(),
-            RegionKind::ObjectStore,
-            budget,
-            spec,
-            now,
-        )?;
-        let _ = upload_authority; // scoped region exists; the session binds it
+        let minimum = minimum_upload_budget(object_bytes, policy)?;
+        if child_spec.operation_id != operation || !minimum.fits_within(child_spec.budgets) {
+            return Err(authority(
+                "operation mismatch or insufficient explicit upload allowance",
+            ));
+        }
+        if child_spec.deadline.is_some_and(|deadline| now >= deadline) {
+            return Err(MultipartError::Deadline.into());
+        }
+        let canonical = ContextAuthority::new_root(child_spec.clone()).map_err(authority)?;
+        canonical.validate().map_err(authority)?;
+        let grants = parent
+            .grants()
+            .scope_for_child(&canonical)
+            .map_err(authority)?;
+        for grant in [
+            RuntimeGrant::ObjectStage,
+            RuntimeGrant::ObjectPublish,
+            RuntimeGrant::AdapterNet,
+        ] {
+            grants
+                .require_grant_for(grant, resource)
+                .map_err(authority)?;
+        }
         let obligation = new_obligation(
             format!("obligation:upload:{}:drain", operation.as_str()),
             operation.clone(),
-            "upload completed or cancelled with receipt",
+            "exact multipart intent completed or staging conclusively aborted",
         )
-        .map_err(|e| UploaderError::Authority(format!("{e}")))?;
-        let obligation_id = obligation.obligation_id.clone();
-        authority
-            .register_obligation(tree, obligation)
-            .map_err(|e| UploaderError::Authority(format!("{e}")))?;
-        let session = MultipartSession::initiate(transport, &plan, manifest_root)
-            .map_err(|e| UploaderError::Protocol(format!("{e}")))?;
-        Ok(StagedUpload {
-            authority,
+        .map_err(authority)?;
+        let region =
+            RegionId::new(format!("region:upload:{}", operation.as_str())).map_err(authority)?;
+        let session =
+            MultipartSession::prepare(transport, &plan, manifest_root, operation, resource, now)?;
+        // Preserve the caller's actual grants, deadline and allowance. Never enlarge
+        // a zero/insufficient child budget merely to make scope construction pass.
+        let child = parent.scope_down(
+            tree,
             region,
+            RegionKind::ObjectStore,
+            child_spec.budgets,
+            child_spec,
+            now,
+        )?;
+        let obligation_id = obligation.obligation_id.clone();
+        // The exclusive tree borrow has not escaped: this freshly attached child
+        // is active, empty and unique. Registration's absent/inactive/duplicate/
+        // capacity refusals therefore cannot occur after successful attachment.
+        child.register_obligation(tree, obligation)?;
+        Ok(StagedUpload {
+            parent,
+            authority: child,
             obligation: obligation_id,
             session,
             plan,
-            manifest_root,
-            confirmed: 0,
+            settled: false,
         })
     }
 
-    /// Streams every chunk's bytes through the session, honoring
-    /// cancellation between parts. `bytes_for` supplies the slice for a
-    /// chunk index (the caller owns the object bytes).
-    ///
-    /// # Errors
-    /// Typed protocol refusals; `Cancelled` when the authority's chain
-    /// observed a cancellation request.
+    /// Explicit initiation; failures retain the stable intent and pending child.
+    pub fn start(&mut self, tree: &RegionTree, now: TimestampNs) -> Result<(), UploaderError> {
+        self.session.start(UploadIo {
+            authority: &mut self.authority,
+            tree,
+            now,
+        })?;
+        Ok(())
+    }
+
+    /// Upload one part. Retry and conflicting bytes are checked against the first
+    /// dispatched digest even if that dispatch lost its acknowledgement.
+    pub fn upload_part(
+        &mut self,
+        tree: &RegionTree,
+        now: TimestampNs,
+        index: u64,
+        bytes: &[u8],
+    ) -> Result<PartReceipt, UploaderError> {
+        Ok(self.session.upload_part(
+            UploadIo {
+                authority: &mut self.authority,
+                tree,
+                now,
+            },
+            &self.plan,
+            index,
+            bytes,
+        )?)
+    }
+
+    /// Start if necessary, then supply and upload every remaining part. The clock
+    /// is sampled before source access and again after it, before each dispatch.
+    /// Cancellation never implies that the provider staging has been aborted.
     pub fn upload_chunks(
         &mut self,
-        tree: &fss_core::RegionTree,
-        bytes_for: impl Fn(u64) -> Vec<u8>,
+        tree: &RegionTree,
+        mut clock: impl FnMut() -> TimestampNs,
+        mut bytes_for: impl FnMut(u64) -> Vec<u8>,
     ) -> Result<(), UploaderError> {
-        for chunk in self.plan.chunks.clone() {
-            if self.authority.is_cancel_requested(tree).unwrap_or(false) {
-                return Err(UploaderError::Cancelled {
-                    confirmed_parts: self.confirmed,
-                });
+        let now = clock();
+        self.check_source_access(tree, now)?;
+        if self.session.phase() == MultipartPhase::Prepared {
+            self.start(tree, now)?;
+        }
+        if let MultipartPhase::Uncertain(operation) = self.session.phase() {
+            return Err(MultipartError::RequiresReconciliation { operation }.into());
+        }
+        if self.session.phase() != MultipartPhase::Uploading {
+            return Err(MultipartError::WrongState {
+                operation: crate::multipart::TransportOperation::UploadPart,
+                state: self.session.phase(),
             }
+            .into());
+        }
+        for chunk in self.plan.chunks.clone() {
+            if self.session.confirmed_part(chunk.index).is_some() {
+                continue;
+            }
+            self.check_source_access(tree, clock())?;
             let bytes = bytes_for(chunk.index);
-            self.session
-                .upload_part(&self.plan, chunk.index, &bytes)
-                .map_err(|e| UploaderError::Protocol(format!("{e}")))?;
-            self.confirmed += 1;
+            self.upload_part(tree, clock(), chunk.index, &bytes)?;
         }
         Ok(())
     }
 
-    /// Completes root-last and resolves the obligation with the closure
-    /// witness as proof.
-    ///
-    /// # Errors
-    /// Typed refusals from completion or obligation resolution.
+    fn check_source_access(
+        &self,
+        tree: &RegionTree,
+        now: TimestampNs,
+    ) -> Result<(), UploaderError> {
+        if self.authority.is_cancel_requested(tree)? {
+            return Err(UploaderError::CancellationRequested {
+                confirmed_parts: self.confirmed_parts(),
+            });
+        }
+        if now < self.session.observed_at() {
+            return Err(MultipartError::ClockRegression.into());
+        }
+        let node = tree.get(self.authority.region()).map_err(authority)?;
+        if node
+            .authority
+            .deadline
+            .is_some_and(|deadline| now >= deadline)
+        {
+            return Err(MultipartError::Deadline.into());
+        }
+        self.authority
+            .require_grant_for(RuntimeGrant::ObjectStage, self.intent().resource())
+            .map_err(authority)?;
+        self.authority
+            .require_grant_for(RuntimeGrant::AdapterNet, self.intent().resource())
+            .map_err(authority)?;
+        Ok(())
+    }
+
+    /// Publish the bound root, then resolve and finalize the actual owning child.
+    /// On any error, retain this handle and reconcile or retry the remaining local
+    /// terminal work. A lost completion ACK never authorizes a blind abort.
     pub fn finish(
-        self,
-        tree: &mut fss_core::RegionTree,
-    ) -> Result<crate::multipart::CompletionReceipt, UploaderError> {
-        let receipt = self
-            .session
-            .complete(&self.plan, self.manifest_root)
-            .map_err(|e| UploaderError::Protocol(format!("{e}")))?;
-        self.authority
-            .resolve_obligation(
+        &mut self,
+        tree: &mut RegionTree,
+        now: TimestampNs,
+    ) -> Result<CompletionReceipt, UploaderError> {
+        let root = self.session.intent().manifest_root();
+        let receipt = self.session.complete(
+            UploadIo {
+                authority: &mut self.authority,
                 tree,
-                &self.obligation,
-                ObligationTerminal::Completed,
-                Some(receipt.manifest_root),
-                None,
-            )
-            .map_err(|e| UploaderError::Authority(format!("{e}")))?;
+                now,
+            },
+            &self.plan,
+            root,
+        )?;
+        self.settle(tree, now, ObligationTerminal::Completed, receipt.digest())?;
         Ok(receipt)
     }
 
-    /// Cancels cooperatively: aborts the store session and resolves the
-    /// obligation `Drained` with the abort receipt digest as proof.
-    ///
-    /// # Errors
-    /// Typed refusals.
+    /// Explicitly abort known uncommitted staging, then resolve/finalize its owner.
+    /// Cleanup remains bounded and grant-checked after cancellation or deadline.
     pub fn cancel(
-        self,
-        tree: &mut fss_core::RegionTree,
-    ) -> Result<crate::multipart::AbortReceipt, UploaderError> {
-        let receipt = self
-            .session
-            .abort()
-            .map_err(|e| UploaderError::Protocol(format!("{e}")))?;
-        self.authority
-            .resolve_obligation(
-                tree,
-                &self.obligation,
-                ObligationTerminal::Drained,
-                Some(fss_core::ContentDigest::sha256(receipt.upload.0.as_bytes())),
-                None,
-            )
-            .map_err(|e| UploaderError::Authority(format!("{e}")))?;
+        &mut self,
+        tree: &mut RegionTree,
+        now: TimestampNs,
+    ) -> Result<AbortReceipt, UploaderError> {
+        let receipt = self.session.abort(UploadIo {
+            authority: &mut self.authority,
+            tree,
+            now,
+        })?;
+        self.settle(tree, now, ObligationTerminal::Drained, receipt.digest())?;
         Ok(receipt)
     }
 
-    /// The bound drain obligation.
+    /// Query an uncertain dispatch. Unknown leaves its obligation pending. A
+    /// conclusive terminal result settles the owner without repeating the effect.
+    pub fn reconcile(
+        &mut self,
+        tree: &mut RegionTree,
+        now: TimestampNs,
+    ) -> Result<MultipartPhase, UploaderError> {
+        let phase = self.session.reconcile(UploadIo {
+            authority: &mut self.authority,
+            tree,
+            now,
+        })?;
+        match phase {
+            MultipartPhase::Completed => {
+                let receipt = self.session.completion_receipt()?;
+                self.settle(tree, now, ObligationTerminal::Completed, receipt.digest())?;
+            }
+            MultipartPhase::Aborted => {
+                self.cancel(tree, now)?;
+            }
+            _ => {}
+        }
+        Ok(phase)
+    }
+
+    fn settle(
+        &mut self,
+        tree: &mut RegionTree,
+        now: TimestampNs,
+        terminal: ObligationTerminal,
+        proof: ContentDigest,
+    ) -> Result<(), UploaderError> {
+        self.authority.is_cancel_requested(tree)?;
+        // A transport can advance its explicit clock while an admitted call is
+        // in flight. Never date terminal closure before that observed boundary.
+        let now = now.max(self.session.observed_at());
+        if self.settled {
+            return Ok(());
+        }
+        let region = self.authority.region().clone();
+        if tree.get(&region).map_err(authority)?.state != RegionState::Closed {
+            self.authority.resolve_obligation(
+                tree,
+                &self.obligation,
+                terminal,
+                Some(proof),
+                None,
+            )?;
+            match tree.get(&region).map_err(authority)?.state {
+                RegionState::Active => {
+                    tree.request_drain(&region, Some("multipart terminal receipt recorded"), now)
+                        .map_err(authority)?;
+                    self.authority.begin_drain(tree, now)?;
+                }
+                RegionState::DrainRequested => {
+                    self.authority.begin_drain(tree, now)?;
+                }
+                RegionState::Draining | RegionState::Finalizing => {}
+                RegionState::Closed => {}
+            }
+            self.authority.finalize(tree, now)?;
+        } else {
+            let recorded = tree
+                .get(&region)
+                .map_err(authority)?
+                .obligations
+                .get(&self.obligation)
+                .ok_or_else(|| authority("closed upload has no terminal obligation"))?;
+            if recorded.state != terminal.to_state() || recorded.proof_digest != Some(proof) {
+                return Err(authority("closed upload terminal receipt mismatch"));
+            }
+        }
+        self.parent
+            .release_scope_reservation(tree, &mut self.authority)?;
+        self.settled = true;
+        Ok(())
+    }
+
+    /// Narrow or revoke this child's actual resource grants; widening is refused.
+    pub fn narrow_grants(&mut self, grants: GrantSet) -> Result<(), UploaderError> {
+        self.authority.narrow_grants(grants).map_err(authority)
+    }
+    /// Current immutable child grants, including inherited resource restrictions.
     #[must_use]
-    pub fn obligation(&self) -> &fss_core::ObligationId {
+    pub fn grants(&self) -> &GrantSet {
+        self.authority.grants()
+    }
+    /// Actual consumed/remaining child allowance.
+    #[must_use]
+    pub fn budget(&self) -> &fss_runtime::budget::BudgetLedger {
+        self.authority.budget()
+    }
+    /// Pending or terminal obligation on this exact child.
+    #[must_use]
+    pub const fn obligation(&self) -> &ObligationId {
         &self.obligation
     }
-
-    /// The scoped child region owning this upload.
+    /// Actual child region, not a label attached to work owned by its parent.
     #[must_use]
     pub fn region(&self) -> &RegionId {
-        &self.region
+        self.authority.region()
     }
-
-    /// Confirmed part count.
+    /// Immutable upload identity for reconciliation.
+    #[must_use]
+    pub fn intent(&self) -> &UploadIntent {
+        self.session.intent()
+    }
+    /// Current protocol knowledge; cancellation requests are not terminal states.
+    #[must_use]
+    pub fn phase(&self) -> MultipartPhase {
+        self.session.phase()
+    }
+    /// Exactly confirmed parts, unaffected by idempotent replay.
     #[must_use]
     pub fn confirmed_parts(&self) -> usize {
-        self.confirmed
-    }
-}
-
-/// Default child authority spec for uploads: same trace/principal,
-/// object-store-scoped generation.
-#[must_use]
-pub fn upload_authority_spec(trace: &str, operation: &str) -> RootAuthoritySpec {
-    RootAuthoritySpec {
-        trace_id: trace.to_string(),
-        operation_id: match OperationId::parse(operation)
-            .or_else(|_| OperationId::parse("op:upload-fallback"))
-        {
-            Ok(id) => id,
-            Err(_) => unreachable!("valid literal"),
-        },
-        principal: "principal:local-operator".to_string(),
-        capabilities: Vec::new(),
-        deadline: None,
-        priority: 10,
-        budgets: BudgetVector::ZERO,
-        privacy_scope: "privacy:local-authorized".to_string(),
-        retention_scope: "retention:existing-deployment-policy".to_string(),
-        anchor_universe: ContentDigest::sha256(b"upload-authority-universe"),
-        generation: Generation::GENESIS.get(),
+        self.session.confirmed_parts()
     }
 }
