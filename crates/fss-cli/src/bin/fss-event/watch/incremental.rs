@@ -2,6 +2,7 @@
 //! Operator scheduling and exact cold continuation for the native incremental dwell owner.
 
 use super::*;
+use fss_reference::ingest::long_dwell::LongDwellDetector;
 use fss_reference::ingest::long_dwell::incremental::{
     DwellCheckpointPin, DwellRestoreLimits, PreparedIncrementalDwell, RetainedDwellCheckpoint,
 };
@@ -17,7 +18,6 @@ pub(super) fn parse(
     values: &[(String, String)],
     stream_dwell: bool,
     health_screen: bool,
-    detector: bool,
 ) -> Result<Option<StepOptions>, String> {
     let has = |key: &str| values.iter().any(|(name, _)| name == key);
     let keys = [
@@ -34,9 +34,9 @@ pub(super) fn parse(
             "incremental options require --stream-dwell and --dwell-step-frames".to_owned(),
         );
     }
-    if health_screen || detector {
+    if health_screen || has("--fusion-profile") || has("--fusion-digest") {
         return Err(
-            "incremental dwell currently excludes classifier and sensor-health modes".to_owned(),
+            "incremental dwell excludes sensor-health and calibrated fusion modes".to_owned(),
         );
     }
     let step_frames = number(values, "--dwell-step-frames", 0_usize)?;
@@ -86,18 +86,21 @@ pub(super) fn run(
     root: &Path,
     limits: &LongDwellLimits,
     cx: &ReplayCx,
+    scalar: &ScalarExecCx,
     out: &mut impl Write,
 ) -> RunResult<()> {
     let options = action.incremental.ok_or(WatchError::Conflict)?;
-    if action.health_screen
-        || action.cascade.is_some()
-        || action.retain_health.is_some()
-        || action.retain_coverage.is_some()
-    {
+    if action.health_screen || action.retain_health.is_some() || action.retain_coverage.is_some() {
         return Err(WatchError::InvalidPlan(
-            "incremental dwell currently excludes classifiers, sensor-health and coverage retention",
-        ).into());
+            "incremental dwell excludes sensor-health and coverage retention",
+        )
+        .into());
     }
+    super::super::detector::check_watch_fusion_mode(
+        action.cascade.as_ref(),
+        false,
+        !action.approvals.is_empty(),
+    )?;
     let count = match action.segment_count {
         Some(count) => count,
         None => {
@@ -177,6 +180,22 @@ pub(super) fn run(
     }
     let event_report = if complete {
         let mut report = running.finish(deployment, cx)?;
+        if let Some(options) = &action.cascade {
+            // The temporal checkpoint above remains usable if verification or the terminal
+            // classifier refuses. Partial steps never open the package or run the model.
+            let (package, archive) =
+                super::super::detector::load_with_archive(options, cx, scalar)?;
+            let detector = LongDwellDetector::new(
+                &package,
+                &archive,
+                options.config,
+                PackageDetectLimits::default(),
+                scalar,
+            )?;
+            // The completed native report owns the original scan's remaining allowances.
+            // Classification never creates a fresh foreground/tracker or whole-scan budget.
+            report.classify_with_detector(deployment, &detector, cx)?;
+        }
         // Existing owner validates every approval and source/privacy witness before any event.
         if !action.approvals.is_empty() {
             report.publish(deployment, &action.approvals, cx)?;
@@ -208,6 +227,27 @@ pub(super) fn run(
         restoration.to_json(),
         json(&continuation),
     );
+    if let Some(options) = &action.cascade {
+        output.push_str(&format!(
+            concat!(
+                ",\"detector_stage\":{},\"detector_request\":{{",
+                "\"max_inferences\":{},\"frames_per_track\":{},",
+                "\"minimum_association_iou_ppm\":{},\"minimum_score_ppm\":{}}}"
+            ),
+            json(if complete {
+                "complete"
+            } else {
+                "deferred_until_complete"
+            }),
+            options.config.max_inferences,
+            options.config.frames_per_track,
+            options.config.minimum_association_iou_ppm,
+            options
+                .config
+                .minimum_score_ppm
+                .map_or_else(|| "null".to_owned(), |score| score.to_string()),
+        ));
+    }
     if let Some(report) = event_report {
         output.push_str(",\"event_report\":");
         output.push_str(&report);
@@ -237,12 +277,24 @@ mod tests {
     #[test]
     fn incremental_admission_is_explicit_and_refuses_incompatible_modes() {
         let base = values(&[("--dwell-step-frames", "128")]);
-        assert!(parse(&base, true, false, false).unwrap().is_some());
-        assert!(parse(&base, false, false, false).is_err());
-        assert!(parse(&base, true, true, false).is_err());
-        assert!(parse(&base, true, false, true).is_err());
+        assert!(parse(&base, true, false).unwrap().is_some());
+        assert!(parse(&base, false, false).is_err());
+        assert!(parse(&base, true, true).is_err());
+        let mut classifier = base.clone();
+        let detector_digest = ContentDigest::sha256(b"classifier package").to_text();
+        classifier.extend(values(&[
+            ("--detector-package", "/deferred/package"),
+            ("--detector-digest", &detector_digest),
+            ("--detector-max-inferences", "1"),
+        ]));
+        assert!(parse(&classifier, true, false).unwrap().is_some());
+        for field in ["--fusion-profile", "--fusion-digest"] {
+            let mut fusion = classifier.clone();
+            fusion.push((field.to_owned(), "not-opened".to_owned()));
+            assert!(parse(&fusion, true, false).is_err());
+        }
         for n in ["0", "65537"] {
-            assert!(parse(&values(&[("--dwell-step-frames", n)]), true, false, false).is_err());
+            assert!(parse(&values(&[("--dwell-step-frames", n)]), true, false).is_err());
         }
     }
 
@@ -253,16 +305,15 @@ mod tests {
             ("--dwell-step-frames", "128"),
             ("--dwell-checkpoint", &digest),
         ]);
-        assert!(parse(&v, true, false, false).is_err());
+        assert!(parse(&v, true, false).is_err());
         v.push(("--dwell-checkpoint-root".into(), digest));
-        assert!(parse(&v, true, false, false).is_err());
+        assert!(parse(&v, true, false).is_err());
         v.push(("--dwell-restore-max-frames".into(), "127".into()));
-        assert!(parse(&v, true, false, false).unwrap().is_some());
+        assert!(parse(&v, true, false).unwrap().is_some());
         assert!(
             parse(
                 &values(&[("--dwell-restore-max-frames", "127")]),
                 true,
-                false,
                 false
             )
             .is_err()

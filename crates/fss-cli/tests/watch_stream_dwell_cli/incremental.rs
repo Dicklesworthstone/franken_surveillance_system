@@ -4,6 +4,8 @@
 use super::*;
 use fss_cli::json_input::{Value, parse};
 
+mod classifier;
+
 fn member<'a>(value: &'a Value, key: &str) -> Test<&'a Value> {
     value
         .object()
@@ -246,6 +248,7 @@ fn incremental_modes_and_missing_resume_admission_refuse_before_deployment_io() 
             pin.as_str(),
         ],
         vec!["--dwell-restore-max-frames", "128"],
+        vec!["--detector-max-inferences", "1"],
         vec![
             "--detector-package",
             "/unused/model",
@@ -253,6 +256,10 @@ fn incremental_modes_and_missing_resume_admission_refuse_before_deployment_io() 
             pin.as_str(),
             "--detector-max-inferences",
             "1",
+            "--fusion-profile",
+            "/unused/profile",
+            "--fusion-digest",
+            pin.as_str(),
         ],
     ] {
         let mut args = prefix.clone();

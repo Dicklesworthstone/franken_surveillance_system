@@ -114,7 +114,8 @@ const HELP: &str = "fss-event <report|prepare|publish|read|verify|watch|corrobor
     coverage pipeline generation binds the detector generation. Without it, output is unchanged.\n\
     Retained decode -> running-variance foreground -> Kalman tracker -> zone gate. Prints a\n\
     JSON report of candidates (zone, track, frame range, evidence digests, proposal digest).\n\
-    Without an event or retention approval nothing is written; each prepared candidate lists the exact rerun\n\
+    Event/retention approval or explicit incremental checkpointing may write deployment state.\n\
+    Each prepared candidate lists the exact rerun\n\
     command that publishes it. --approve publishes only those exact proposals as\n\
     unclassified, indeterminate, single-sensor candidates (never corroborated, no alert);\n\
     reruns never republish. Thresholds are uncalibrated; synthetic scenes prove wiring,\n\
@@ -163,6 +164,14 @@ const HELP: &str = "fss-event <report|prepare|publish|read|verify|watch|corrobor
     complete dwell analysis and retained detector recipe. It preserves sampled occupancy, gaps,\n\
     omitted inferences and one-sensor dependence; incremental checkpoints cannot use fusion.\n\
     Author with fss-fusion-profile --scope dwell. Two-camera scans use version three below.\n\
+    Bounded MJPEG dwell continuation: --stream-dwell --dwell-step-frames N (1..65536).\n\
+    Supply the explicit dwell duration/gap rule. Each step retains a native temporal checkpoint\n\
+    and prints its exact continuation command with --dwell-checkpoint, --dwell-checkpoint-root\n\
+    and --dwell-restore-max-frames. Cold resume replays the admitted prefix without refilling\n\
+    original scan allowances. Partial steps defer any requested detector package; complete\n\
+    steps verify it and classify qualifying episodes under the original remaining budgets.\n\
+    Complete reports supply exact trained publish commands; checkpointing grants no event or\n\
+    alert approval. Incremental mode excludes inter-coded sources, health and calibrated fusion.\n\
   corroborate (two recordings, two sensors): --camera NAME:sha256:IMPORT (exactly twice)\n\
           --ground NAME:h11,h12,h13,h21,h22,h23,h31,h32,h33 (one per camera; image pixels ->\n\
           ground units; an owner assertion like a zone, NOT a calibration certificate)\n\

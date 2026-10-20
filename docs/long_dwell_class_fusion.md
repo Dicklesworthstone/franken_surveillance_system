@@ -117,8 +117,9 @@ report. A health-blocked scan cannot produce calibrated advice.
 
 Fusion cannot be combined with `--approve`, `--retain-health` or
 `--retain-coverage`. Parsing and execution both enforce that rule. The explicit
-`--dwell-step-frames` checkpoint path still excludes classifiers and fusion:
-its partial prefix does not have a complete episode inventory. Existing complete
+`--dwell-step-frames` checkpoint path can defer native trained classification until the
+complete temporal boundary; see [incremental classification](incremental_dwell.md#finish-with-trained-classification).
+It still excludes calibrated fusion, and partial prefixes have no complete episode inventory. Existing complete
 dwell publication, checkpoint continuation, short sampled dwell, whole-recording
 entry fusion and paired-entry corroboration keep their separate owners.
 

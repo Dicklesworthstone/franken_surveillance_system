@@ -45,6 +45,7 @@ use crate::{
     ReferenceDeployment, ReferenceError, ReferencePolicyAction, ReferencePolicyDecision, ReplayCx,
 };
 
+mod classify;
 pub(super) mod detector;
 mod fusion;
 /// Bounded native MJPEG continuation and source-verified durable checkpoints.
@@ -211,6 +212,8 @@ pub struct LongDwellReport {
     health: Option<LongDwellHealthSummary>,
     health_diagnostic: Option<super::historical_health::HistoricalHealthDiagnostic>,
     detector: Option<super::long_watch::detector::Completed>,
+    /// Original native work reservation and a slice of the existing immutable analysis trace.
+    classification: Option<classify::ClassificationSource>,
 }
 
 fn checkpoint(cx: &ReplayCx, stage: &'static str) -> Result<()> {
@@ -1036,6 +1039,7 @@ fn source_read_error(error: WatchError) -> WatchError {
 
 /// Private completed native scan. It contains bounded scalar trace/evidence, never pixel history.
 pub(super) struct ScanData {
+    limits: LongDwellLimits,
     pub(super) import_root: ContentDigest,
     pub(super) manifest_digest: ContentDigest,
     pub(super) import_anchor: LedgerAnchor,
@@ -1494,6 +1498,7 @@ fn finish_scan(
         })
         .transpose()?;
     Ok(ScanData {
+        limits: *limits,
         import_root: prepared.retained.import_root(),
         manifest_digest: prepared.retained.manifest_digest(),
         import_anchor: prepared.retained.authority_anchor().clone(),
@@ -1659,31 +1664,11 @@ impl LongDwellReport {
             cx,
             screened,
         )?;
-        let detector = match detector {
-            Some(detector) => {
-                let selected = detector::select(&scan, detector.config, cx)?;
-                let mut allowance = super::long_watch::detector::AnalysisBudget::new(detector);
-                let mut completed = super::long_watch::detector::run_selected(
-                    deployment,
-                    plan,
-                    options,
-                    &scan,
-                    limits,
-                    detector,
-                    selected,
-                    &mut allowance,
-                    cx,
-                )?;
-                let _ = allowance.witness()?;
-                completed.policy_json = completed.policy_json.replacen(
-                    "\"frame_selection\":\"whole_recording_entry_then_following_actual_matches\"",
-                    "\"frame_selection\":\"qualifying_dwell_episode_first_actual_matches_only\"",
-                    1,
-                );
-                Some(completed)
-            }
-            None => None,
-        };
+        let detector = detector
+            .map(|detector| {
+                classify::run_native_detector(deployment, plan, options, &scan, detector, cx)
+            })
+            .transpose()?;
         Self::from_scan(deployment, plan, rule, options, scan, detector, cx)
     }
 
@@ -1697,6 +1682,7 @@ impl LongDwellReport {
         cx: &ReplayCx,
     ) -> Result<Self> {
         let ScanData {
+            limits,
             import_root,
             manifest_digest,
             import_anchor,
@@ -1759,6 +1745,26 @@ impl LongDwellReport {
         e.u64(rule.minimum_observations as u64);
         e.bool(options.tolerate_decode_refusals);
         e.u64(plan.segment_count as u64);
+        // Keep only a range into the canonical record, not another retained copy of the trace.
+        // This private context enables a completed untrained scan to enter the existing
+        // classifier stage later without decoding its foreground/tracker prefix again.
+        let classification = if detector.is_none() {
+            let start = e
+                .clone()
+                .finish_checked()?
+                .len()
+                .checked_add(std::mem::size_of::<u64>())
+                .ok_or(WatchError::Limit)?;
+            let end = start.checked_add(trace.len()).ok_or(WatchError::Limit)?;
+            Some(classify::ClassificationSource {
+                limits,
+                manifest_digest,
+                import_anchor: import_anchor.clone(),
+                trace: start..end,
+            })
+        } else {
+            None
+        };
         e.bytes(&trace);
         if let Some(summary) = &health {
             e.text("sensor_health");
@@ -1842,6 +1848,7 @@ impl LongDwellReport {
             health,
             health_diagnostic,
             detector,
+            classification,
         };
         report.to_json(deployment.current_anchor().commit_sequence, None)?;
         Ok(report)

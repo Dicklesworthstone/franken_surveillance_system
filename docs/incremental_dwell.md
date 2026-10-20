@@ -50,6 +50,8 @@ reconstructs 256 and advances the final 44.
 
 When the declared full range completes, the wrapper has status `complete` and includes
 `event_report`, the existing `fss.long_dwell_report.v1` with its complete qualifying episodes.
+If detector options were requested, its terminal trained stage must also succeed before this
+complete response is emitted.
 Review an episode's `event_report.candidates[].publish_command` to publish its exact proposal.
 That command reconstructs the complete checkpoint and passes the original event approval
 through the existing guarded publisher. A completed checkpoint advances zero new positions.
@@ -64,6 +66,62 @@ owner. The emitted continuation omits the old output path so it can be executed 
 Checkpoint or event publication can finish before a later report-file/stdout failure. Retry
 the exact request to recover the same durable result.
 
+## Finish with trained classification
+
+Add the existing verified detector options to the bounded-step command:
+
+```text
+--detector-package /path/to/model.fmpk
+--detector-digest sha256:EXACT_PACKAGE_DIGEST
+--detector-max-inferences 8
+--detector-frames-per-track 3
+```
+
+Partial responses explicitly report `detector_stage: "deferred_until_complete"` and the
+effective `detector_request`: inference allowance, selected frames per episode, association
+threshold and optional score override. They do not open the package or run the model.
+The exact package path, digest and every explicit detector option remain in the emitted
+`continuation_command`. Supply the pinned package at that path before the final step.
+
+On the final step, the native owner first retains the completed temporal checkpoint. It then
+verifies the exact package and classifies only actual observations belonging to qualifying
+episodes. The final response reports `detector_stage: "complete"` and includes the existing
+trained `event_report.detector_cascade`, recipe, selected/refused/skipped samples, model work
+and proposal identities. A zero-episode stage still verifies its package but executes no
+inference; stage completion does not itself mean that a model was invoked. Requests without a
+detector preserve the original progress output and omit both detector fields.
+
+Classification spends the remainder of the original temporal scan's source-byte, pixel and
+JPEG allowances. It does not restart foreground detection or tracking, and it cannot obtain a
+fresh full-scan budget by reopening a checkpoint. All episodes share the explicit inference
+allowance. The wrapper's `logical_scan_work` remains temporal work; the complete native event
+report includes the added classifier costs.
+
+The checkpoint pins the temporal request. Detector options are a separate explicit terminal
+request preserved by the continuation command; changing those options does not rewrite the
+temporal prefix. The resulting trained recipe, analysis and proposals bind the exact verified
+model, selection policy and full native execution limits. An old untrained approval cannot
+publish the trained candidate. Review and use the new complete report's `publish_command`.
+
+A missing package, wrong digest, exhausted original allowance or native classifier refusal
+leaves the retained temporal checkpoint intact and emits no successful report or event.
+The failed command returns no new checkpoint pins. Repeating the prior saved continuation
+reconstructs its admitted prefix and repeats the final temporal suffix before exact checkpoint
+reuse. A separately known completed checkpoint advances zero new positions, while still
+reporting its cold-prefix reconstruction. An exhausted original allowance requires a new
+temporal request with sufficient limits; it cannot be raised while resuming the old checkpoint.
+Each terminal attempt owns its classifier work separately; a failed attempt's extra work is not accumulated
+into the immutable temporal checkpoint. Callers must account for those retry costs, in addition
+to the explicitly reported cold reconstruction. A successfully trained in-memory report cannot
+run the terminal stage again.
+
+Publication uses the existing guarded event owner and retains the exact model archive and
+native replay recipe. After publication, `fss-replay-dwell inspect/verify` can replay this MJPEG
+event from retained custody after the loose recording and model files are removed. Reusing an
+event publication command still requires its explicit model input. The event remains
+Unclassified, Indeterminate and Hold; these annotations grant no alert or class-absence
+authority.
+
 ## Admission and accounting
 
 | Option | Contract |
@@ -73,7 +131,7 @@ the exact request to recover the same durable result.
 | `--dwell-checkpoint-root DIGEST` | Pin the exact published, ledgered checkpoint graph. Requires the body pin. |
 | `--dwell-restore-max-frames N` | Explicitly admit 1–65,536 old positions for cold reconstruction. Required only with checkpoint pins. |
 
-The complete original request is pinned: import identity/root/manifest/completion anchor,
+The complete original temporal request is pinned: import identity/root/manifest/completion anchor,
 selected range, sensor, current privacy digest and generation, actor and site, image
 interpretation, zones, foreground and tracker settings, dwell rule, refusal behavior, native
 decoder identity, analysis policy and every original decoder/read/aggregate ceiling. A changed
@@ -116,6 +174,11 @@ The reusable API is `fss_reference::ingest::long_dwell::incremental`:
 4. `running.retain(&mut deployment, &cx)` publishes an immutable checkpoint when desired.
 5. Once `running.complete()` is true, `running.finish(&deployment, &cx)` returns the existing
    complete `LongDwellReport`; the original explicit event publication API applies.
+6. To request a trained terminal stage, call
+   `report.classify_with_detector(&deployment, &detector, &cx)` with an explicitly verified
+   `LongDwellDetector`. The method replaces the report only after native classification,
+   encoding and exact source/authority/privacy checks succeed. Refusal preserves the untrained
+   report and its original scan reservation.
 
 After a process restart, `RetainedDwellCheckpoint::open` validates exact pins, graph custody,
 current source and original recipe without executing perception. `saved.resume` admits and
@@ -143,9 +206,11 @@ native owner or cached metadata never repairs a missing published checkpoint bod
 
 Partitioned imports are explicitly refused before native decoding. Their aggregate metadata
 names typed part roots which are not graph children; the first checkpoint format deliberately
-does not claim that retaining only the aggregate closes all part custody. H.264/H.265,
-classifier packages, sensor-health screening, health retention and coverage retention are also
-refused in incremental mode. Existing whole-recording paths retain those supported capabilities.
+does not claim that retaining only the aggregate closes all part custody. H.264/H.265
+checkpoint continuation, sensor-health screening, health retention, coverage retention and
+calibrated fusion are also refused in incremental mode. Trained packages run only at the
+completed temporal boundary described above. Existing whole-recording paths retain their
+supported codec, health and fusion capabilities.
 
 The capture-time assumptions, masked-zone exclusions, actual-match rule, misses, excessive time
 gaps and decode-refusal resets remain the existing dwell semantics. Scheduling boundaries add
@@ -170,8 +235,16 @@ regressions execute the emitted continuation and event-publication commands in n
 with paths containing spaces, after the original source file is removed. They cover progress
 export, changed-recipe refusal and one event after multiple steps and exact retries.
 
+Terminal-classifier contracts compare complete native results with uninterrupted trained
+analysis, exercise late cancellation and original-budget refusal, and preserve positive/empty
+source, actor, privacy and health fences. Real CLI processes defer a missing package across
+128/256-frame prefixes, finish at 300, publish/retry exactly once, and execute retained-model
+replay after loose inputs disappear. Wrong-package and exhausted-budget attempts preserve the
+completed temporal checkpoint; untrained approvals remain invalid for trained candidates.
+
 ```sh
 cargo test -p fss-reference --lib ingest::long_dwell::tests::incremental
+cargo test -p fss-reference --lib ingest::long_dwell::tests::classify
 cargo test -p fss-cli --bin fss-event watch::incremental
 cargo test -p fss-cli --test watch_stream_dwell_cli incremental
 ```

@@ -82,6 +82,13 @@ inside completed qualifying episodes are eligible. `--detector-frames-per-track`
 Nonqualifying visits and privacy-excluded zones spend no inference slots. H.264/H.265 selection
 uses display positions and resolves each selected sample to its retained coding segment/capsule.
 
+For completed flat MJPEG recordings, add `--dwell-step-frames N` to advance and retain
+bounded temporal prefixes before this trained stage. Partial responses explicitly defer the
+model; the final step verifies the requested package and uses the same complete episode
+selection and original remaining budgets. Exact continuations preserve the detector inputs.
+See [incremental dwell classification](incremental_dwell.md#finish-with-trained-classification)
+for checkpoint recovery, per-attempt costs and complete trained approvals.
+
 A bounded second native RGB pass applies current privacy before inference. One explicit
 `--detector-max-inferences` allowance (1..64 unique selected frames) and one detection-head
 allowance cover all episodes and decoder recovery epochs. Inference refusals and selections
@@ -287,5 +294,5 @@ removes the original input and loose model before inspecting and replaying the c
 Synthetic fixtures demonstrate executable behavior; they do not qualify detection accuracy.
 Bounded durable incremental MJPEG checkpoints and exact cold native continuation are implemented;
 see [incremental dwell](incremental_dwell.md) for their admitted source modes, costs and CLI.
-Incremental inter-coded/classifier/health processing, cross-camera dwell, live operation and
+Incremental inter-coded and health processing, cross-camera dwell, live operation and
 real-footage quality evaluation remain open.

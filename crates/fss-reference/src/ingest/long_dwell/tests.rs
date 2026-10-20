@@ -19,6 +19,7 @@ const WIDTH: u32 = 48;
 const HEIGHT: u32 = 32;
 const PERIOD: u64 = 100_000_000;
 
+mod classify;
 mod detector;
 mod fusion;
 mod incremental;

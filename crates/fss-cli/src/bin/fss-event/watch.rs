@@ -330,7 +330,7 @@ pub(super) fn parse(args: &[OsString]) -> Result<WatchAction, String> {
     let cascade = super::detector::parse(&values)?;
     super::detector::check_watch_fusion_mode(
         cascade.as_ref(),
-        true,
+        !values.iter().any(|(key, _)| key == "--dwell-step-frames"),
         values.iter().any(|(key, _)| {
             ["--approve", "--retain-coverage", "--retain-health"].contains(&key.as_str())
         }),
@@ -457,7 +457,7 @@ pub(super) fn parse(args: &[OsString]) -> Result<WatchAction, String> {
     if stream_dwell && dwell.is_none() {
         return Err("--stream-dwell requires the explicit dwell duration and gap rule".to_owned());
     }
-    let incremental = incremental::parse(&values, stream_dwell, health_screen, cascade.is_some())?;
+    let incremental = incremental::parse(&values, stream_dwell, health_screen)?;
     let stream_dwell = streaming_limits(&values, stream_dwell, limits)?;
     let stream_watch = streaming_watch_limits(&values, stream_watch, limits)?;
     if stream_dwell.is_some() && (site.len() > 256 || principal.len() > 128) {
@@ -1002,7 +1002,7 @@ fn run_streaming(
         !action.approvals.is_empty() || action.retain_health.is_some(),
     )?;
     if action.incremental.is_some() {
-        return incremental::run(action, deployment, root, limits, cx, out);
+        return incremental::run(action, deployment, root, limits, cx, scalar, out);
     }
     let fusion_profile = super::detector::load_fusion(action.cascade.as_ref(), cx)?;
     if fusion_profile
