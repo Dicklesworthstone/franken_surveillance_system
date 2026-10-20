@@ -96,6 +96,10 @@ name = "fss-import-rtsp"
 path = "src/bin/fss-import-rtsp.rs"
 
 [[bin]]
+name = "fss-import-s3"
+path = "src/bin/fss-import-s3.rs"
+
+[[bin]]
 name = "fss-watch-http-history"
 path = "src/bin/fss-watch-http-history.rs"
 
