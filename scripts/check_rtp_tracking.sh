@@ -4,4 +4,4 @@ set -euo pipefail
 cd "$(dirname "$0")/.."
 cargo +nightly-2026-08-31 test --locked --offline -p fss-reference --lib ingest::rtpdump::track::
 cargo +nightly-2026-08-31 test --locked --offline -p fss-reference --test rtpdump_tracking_contract --test rtpdump_detection_contract --test rtpdump_tracking_stream_contract --test rtpdump_sampled_tracking_contract
-cargo +nightly-2026-08-31 test --locked --offline -p fss-cli --bin fss-decode-rtp --test rtp_tracking_cli --test rtp_detection_cli
+cargo +nightly-2026-08-31 test --locked --offline -p fss-cli --bin fss-decode-rtp --test rtp_tracking_cli --test rtp_detection_cli --test rtp_report_verification_cli

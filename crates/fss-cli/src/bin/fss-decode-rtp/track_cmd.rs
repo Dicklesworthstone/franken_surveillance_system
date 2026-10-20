@@ -33,6 +33,9 @@ const MAX_REPORT_BYTES: u64 = 128 * 1024 * 1024;
 
 #[path = "trajectory_cmd.rs"]
 mod trajectory_cmd;
+#[path = "verify_tracking.rs"]
+mod verify_tracking;
+use super::detect_cmd::report_verification::ReportDestination;
 
 #[derive(Debug)]
 struct TrackOptions {
@@ -52,6 +55,9 @@ struct TrackSettings {
 }
 
 pub(super) fn dispatch(args: &[OsString]) -> Option<ExitCode> {
+    if let Some(exit) = verify_tracking::dispatch(args) {
+        return Some(exit);
+    }
     if let Some(exit) = trajectory_cmd::dispatch(args) {
         return Some(exit);
     }
@@ -206,7 +212,7 @@ fn execute_inner(
     root: &Path,
     cx: &ReplayCx,
     scalar: &ScalarExecCx,
-    destination: &PrivateOutputPath,
+    destination: &impl ReportDestination,
     out: &mut impl Write,
 ) -> Result<()> {
     let bytes = read_package(&settings.package)?;
@@ -310,7 +316,7 @@ fn execute_inner(
     let finish = (|| -> Result<(ContentDigest, u64)> {
         report.record(summary.as_bytes(), &mut check)?;
         report.writer.flush()?;
-        destination.sync(&report.writer, cx)?;
+        destination.sync(&mut report.writer, cx)?;
         Ok((
             ContentDigest::new(DigestAlgorithm::Sha256, report.hash.finalize()?),
             report.bytes,
