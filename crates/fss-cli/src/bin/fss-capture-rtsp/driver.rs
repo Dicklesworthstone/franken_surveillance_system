@@ -3,7 +3,7 @@
 //! Selected original RTP datagrams are archived. Raw TCP/control/RTCP, startup pictures,
 //! and unsealed terminal work are explicitly accounted for, never called durable recordings.
 
-use std::cell::Cell;
+use std::cell::{Cell, RefCell};
 use std::io::{self, Write};
 use std::path::{Path, PathBuf};
 use std::time::Duration;
@@ -25,6 +25,8 @@ use fss_reference::rtsp::client::{ClientCommand, ClientProgress, ClientState};
 use fss_reference::rtsp::live_archive::{LiveArchiveCompletion, LiveArchiveError, LiveArchiveStep};
 use fss_reference::rtsp::live_avc::recording::{LiveRecordingError, LiveRecordingStep};
 use fss_reference::rtsp::live_avc::{LiveAvcError, LiveAvcStep, SocketReadiness};
+use fss_reference::rtsp::preview::{PreviewAuthority, PreviewCodec, PreviewError, PreviewScope};
+use fss_reference::rtsp::recording::PreparedRecording;
 use fss_reference::rtsp::recording_archive::{
     ArchiveCodec, ArchiveWriteProgress, CodecArchiveSnapshot,
 };
@@ -58,6 +60,10 @@ use report::{
 mod source_retention;
 use super::source_mode::SourceConfig;
 use source_retention::SourceCustody;
+
+#[path = "preview.rs"]
+mod preview;
+use preview::{Gateway, GatewayAuthority};
 #[path = "runtime.rs"]
 mod runtime;
 use runtime::{CaptureRuntime, Resources, TaskClock};
@@ -154,6 +160,8 @@ struct Owner<'a, 'task> {
     drain_deadline: Cell<Option<u64>>,
     credentials: Option<&'a CredentialLease>,
     supervision: Option<Supervision>,
+    preview_scope: Option<PreviewScope>,
+    preview: RefCell<Option<Gateway>>,
 }
 
 struct NativeContext<'a, 'task> {
@@ -162,6 +170,73 @@ struct NativeContext<'a, 'task> {
     resources: &'a Resources,
 }
 impl Owner<'_, '_> {
+    fn preview_stage(&self, recording: &PreparedRecording) {
+        if let Ok(mut preview) = self.preview.try_borrow_mut()
+            && let Some(gateway) = preview.as_mut()
+        {
+            gateway.stage(recording, &PreviewOwner(self));
+        }
+    }
+
+    fn preview_publish(&self, root: ContentDigest) {
+        if let Ok(mut preview) = self.preview.try_borrow_mut()
+            && let Some(gateway) = preview.as_mut()
+        {
+            gateway.publish(root, &PreviewOwner(self));
+        }
+    }
+
+    fn preview_pump(&self) {
+        if let Ok(mut preview) = self.preview.try_borrow_mut()
+            && let Some(gateway) = preview.as_mut()
+        {
+            gateway.pump(&PreviewOwner(self));
+        }
+    }
+
+    fn close_preview(&self) -> Option<String> {
+        let Ok(mut preview) = self.preview.try_borrow_mut() else {
+            return None;
+        };
+        preview.as_mut().map(|gateway| {
+            gateway.close();
+            gateway.report()
+        })
+    }
+
+    fn start_preview(&self, options: &Options, stats: &mut Statistics) {
+        let Some(plan) = &options.live_preview else {
+            return;
+        };
+        let Some(scope) = self.preview_scope.clone() else {
+            return;
+        };
+        let result = Gateway::open(plan, scope, &PreviewOwner(self)).and_then(|gateway| {
+            // Disclosure is bounded and happens before camera input starts. The fragment
+            // capability is deliberately absent from the JSONL/evidence transcript.
+            GatewayAuthority::now(&PreviewOwner(self)).map_err(PreviewError::as_str)?;
+            writeln!(
+                io::stderr().lock(),
+                "FSS live preview: {}",
+                gateway.operator_url()
+            )
+            .map_err(|_| "preview_operator_sink_unavailable")?;
+            GatewayAuthority::now(&PreviewOwner(self)).map_err(PreviewError::as_str)?;
+            self.preview
+                .try_borrow_mut()
+                .map_err(|_| "preview_owner_busy")?
+                .replace(gateway);
+            Ok(())
+        });
+        if let Err(reason) = result {
+            stats.live_preview = Some(object(&[
+                ("enabled", "true".into()),
+                ("listening", "false".into()),
+                ("last_refusal", string(reason)),
+            ]));
+        }
+    }
+
     fn admit_stall<W: Write>(
         &self,
         stall: Stall,
@@ -234,6 +309,8 @@ impl Owner<'_, '_> {
         Ok(())
     }
     fn begin_drain(&self) -> Result<(), Failure> {
+        // A viewer cannot prolong capture or admit new network work during drain.
+        self.close_preview();
         let now = self.clock.metadata_now(self.task)?;
         if self.drain_deadline.get().is_none() {
             let deadline = now
@@ -277,6 +354,59 @@ impl Owner<'_, '_> {
         Ok((credentials, nonce))
     }
 }
+
+struct PreviewOwner<'a, 'b, 'task>(&'a Owner<'b, 'task>);
+
+impl GatewayAuthority for PreviewOwner<'_, '_, '_> {
+    fn now(&self) -> Result<u64, PreviewError> {
+        if self.0.drain_deadline.get().is_some() {
+            return Err(PreviewError::Cancelled);
+        }
+        let scope = self
+            .0
+            .preview_scope
+            .as_ref()
+            .ok_or(PreviewError::Unauthorized)?;
+        let now = self
+            .0
+            .clock
+            .preview(self.0.task, self.0.resources)
+            .map_err(|_| PreviewError::Unauthorized)?;
+        if now >= scope.expires_at_ns {
+            return Err(PreviewError::Expired);
+        }
+        Ok(now)
+    }
+
+    fn secret(&self) -> Result<(), SecretError> {
+        if self.0.preview_scope.is_none() || self.0.drain_deadline.get().is_some() {
+            return Err(SecretError::Authority);
+        }
+        let now = self
+            .0
+            .clock
+            .preview_secret(self.0.task, self.0.resources)
+            .map_err(|_| SecretError::Authority)?;
+        if now >= self.0.live_deadline {
+            return Err(SecretError::Deadline);
+        }
+        Ok(())
+    }
+}
+
+impl PreviewAuthority for PreviewOwner<'_, '_, '_> {
+    fn checkpoint(&self, scope: &PreviewScope, observed: u64) -> Result<(), PreviewError> {
+        if self.0.preview_scope.as_ref() != Some(scope) {
+            return Err(PreviewError::Scope);
+        }
+        let now = GatewayAuthority::now(self)?;
+        if now < observed {
+            return Err(PreviewError::ClockRegression);
+        }
+        Ok(())
+    }
+}
+
 impl TcpAuthority for Owner<'_, '_> {
     fn checkpoint(
         &self,
@@ -585,15 +715,25 @@ fn network_step<W: Write>(
     Ok(None)
 }
 
+struct ArchiveOutput<'a, 'b, 'task> {
+    namespace: ContentDigest,
+    codec: &'static str,
+    owner: &'a Owner<'b, 'task>,
+}
+
 fn archive_progress<C: ArchiveCodec, W: Write>(
     progress: ArchiveWriteProgress,
     snapshot: Option<&CodecArchiveSnapshot<C>>,
-    namespace: ContentDigest,
-    codec: &str,
+    output: &ArchiveOutput<'_, '_, '_>,
     stats: &mut Statistics,
     ready: &mut bool,
     log: &mut Transcript<'_, W>,
 ) -> Result<(), Failure> {
+    let ArchiveOutput {
+        namespace,
+        codec,
+        owner,
+    } = output;
     match progress {
         ArchiveWriteProgress::Ready {
             durable_windows,
@@ -620,6 +760,7 @@ fn archive_progress<C: ArchiveCodec, W: Write>(
             let source_only_nals = std::mem::take(&mut stats.pending_source_only_nals);
             stats.durable_source_only_nals += source_only_nals;
             stats.snapshot(snapshot);
+            owner.preview_publish(receipt.root);
             let interval = entry.decode_interval();
             log.emit(
                 "window_durable",
@@ -797,6 +938,11 @@ fn drive<W: Write>(
     log: &mut Transcript<'_, W>,
 ) -> Result<(), Failure> {
     let namespace = options.pin_scope().archive_namespace;
+    let output = ArchiveOutput {
+        namespace,
+        codec: "avc",
+        owner,
+    };
     let mut timing =
         FixedTiming::with_reorder(options.frame_duration, options.max_reorder_pictures)
             .map_err(|_| Failure::Timing)?;
@@ -819,6 +965,7 @@ fn drive<W: Write>(
         stats.steps += 1;
         stats.observe(capture);
         let now = owner.now()?;
+        owner.preview_pump();
         if !draining && capture.interruption().is_some() {
             // A source-verified archive prefix is not proof of a closed display
             // group. Preserve unresolved presentation timing as a fatal failure.
@@ -1028,8 +1175,7 @@ fn drive<W: Write>(
                     archive_progress(
                         progress,
                         capture.snapshot(),
-                        namespace,
-                        "avc",
+                        &output,
                         stats,
                         &mut ready,
                         log,
@@ -1043,6 +1189,7 @@ fn drive<W: Write>(
                 }
                 stats.pending_window =
                     Some((admission.root, pending.objects().source.len() as u64));
+                owner.preview_stage(pending);
                 ready = false;
                 if sealing && sealed && !draining {
                     // This is the final explicitly sealed window, not an earlier IDR cut.
@@ -1066,23 +1213,14 @@ fn drive<W: Write>(
                 archive_progress(
                     progress,
                     capture.snapshot(),
-                    namespace,
-                    "avc",
+                    &output,
                     stats,
                     &mut ready,
                     log,
                 )?;
             }
             JournaledLiveArchiveStep::Live(LiveArchiveStep::Finished { archive, cause }) => {
-                archive_progress(
-                    archive,
-                    capture.snapshot(),
-                    namespace,
-                    "avc",
-                    stats,
-                    &mut ready,
-                    log,
-                )?;
+                archive_progress(archive, capture.snapshot(), &output, stats, &mut ready, log)?;
                 stats.observe(capture);
                 if stats.collected_pictures != 0 {
                     timing.finish().map_err(|_| Failure::Timing)?;
@@ -1275,6 +1413,23 @@ fn run_owned<W: Write>(
         drain_deadline: Cell::new(None),
         credentials: None,
         supervision,
+        preview_scope: if options.live_preview.is_some() {
+            Some(PreviewScope {
+                recording: options.recording_config().scope,
+                codec: if options.codec() == "hevc" {
+                    PreviewCodec::Hevc
+                } else {
+                    PreviewCodec::Avc
+                },
+                time_scale: options.time_scale,
+                decode_clock: options.catalog_scope().decode_clock,
+                privacy_binding: options.digest().map_err(|_| Failure::Configuration)?,
+                expires_at_ns: options.timeout_ns,
+            })
+        } else {
+            None
+        },
+        preview: RefCell::new(None),
     };
     let check_secret = || owner.secret_check();
     let credentials = options
@@ -1310,7 +1465,8 @@ fn run_owned<W: Write>(
         })
         .transpose()?;
     create_root(&root, &owner)?;
-    (|| {
+    owner.start_preview(options, stats);
+    let result = (|| {
         owner.storage_check()?;
         let mut publisher = LocalRootPublisher::open(&root, options.publication_limits())
             .map_err(|_| Failure::Storage)?;
@@ -1398,7 +1554,11 @@ fn run_owned<W: Write>(
             stats.source_custody = Some(custody.summary());
         }
         capture_result
-    })()
+    })();
+    if let Some(report) = owner.close_preview() {
+        stats.live_preview = Some(report);
+    }
+    result
 }
 
 pub(super) fn execute(options: &Options) -> Result<(), &'static str> {

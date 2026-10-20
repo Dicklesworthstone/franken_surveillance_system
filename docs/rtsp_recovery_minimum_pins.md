@@ -62,6 +62,32 @@ not proof that media exists, that a camera session completed, that every other
 attempt is protected, or that physical absence is certifiable. Source custody
 remains a separate native verification step.
 
+## Independently saved raw source prefixes
+
+Source-retained reconnect recovery also accepts `--minimum-source-pins` with
+`--recover yes` or `--recover index`, alongside all original source options:
+
+```sh
+fss-capture-rtsp reconnect [ORIGINAL RECONNECT AND SOURCE OPTIONS] \
+  --recover yes \
+  --minimum-pin-anchors "1:${SAVED_SEQUENCE}:${SAVED_ROOT}" \
+  --minimum-source-pins "1:${SAVED_DATAGRAMS}:${SAVED_PAYLOAD_BYTES}:${SAVED_SOURCE_HEAD}"
+```
+
+The two maps protect different histories. The source map takes the original
+one-based attempt, cumulative datagram count, cumulative payload byte count and
+complete `sha256:HEX` source head from an independently retained `datagram_durable`
+receipt. Its scope comes from the original attempt's binding, receive clock,
+channels and retention evidence. It does not replace the journal minimum.
+
+Every listed source prefix must match all coordinates in the complete currently
+durable source chain. A valid later descendant is accepted for a fresh preview;
+corruption anywhere in that newer chain still refuses. The actual latest head and
+source directory identity also bind the separate recovery approval. Source maps
+contain at most 16 unique attempts and 1,900 UTF-8 bytes. Counts must fit the
+original source ceilings. An all-missing attempt with a saved source minimum
+refuses instead of becoming unknown. See [source-retained recovery](rtsp_source_recovery.md).
+
 ## Bounds and limitations
 
 The shared representation is a comma-separated map of unique

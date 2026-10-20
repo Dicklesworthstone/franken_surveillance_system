@@ -56,6 +56,20 @@ fn inventory<C: ArchiveCodec>(
             clock,
         )
         .map_err(|_| STORAGE)?;
+        if let Some(source) = &mut entry.source {
+            for descriptor in snapshot.windows() {
+                clock.now()?;
+                let recording = C::load_recording(
+                    &publisher,
+                    descriptor.slot(),
+                    descriptor.root(),
+                    &attempt.catalog_scope().recording,
+                    clock,
+                )
+                .map_err(|_| STORAGE)?;
+                source.verify_recording(C::plan(&recording), clock)?;
+            }
+        }
         let tail = snapshot
             .windows()
             .len()
@@ -184,7 +198,7 @@ fn preview_codec<C: ArchiveCodec>(plan: &impl RecoveryPlan, timeout: u64) -> Res
                     string(if quote.is_some() {
                         "source_verified_inventory"
                     } else {
-                        "both_stores_unobserved"
+                        observation(entry)
                     }),
                 ),
                 ("index", quote_json(quote.as_ref())),
@@ -209,6 +223,7 @@ fn preview_codec<C: ArchiveCodec>(plan: &impl RecoveryPlan, timeout: u64) -> Res
         ("capture_complete", "false".into()),
         ("continuity_across_attempts", "false".into()),
     ]);
+    let report = source_recovery::annotate(plan, &entries, report)?;
     clock.now()?;
     if report.len() > REPORT_LIMIT {
         return Err(OUTPUT);
@@ -243,7 +258,7 @@ fn pages_json<C: ArchiveCodec>(snapshot: &CodecArchiveSnapshot<C>) -> String {
     format!("[{}]", rows.join(","))
 }
 
-fn execute_codec<C: ArchiveCodec>(
+pub(super) fn execute_codec<C: ArchiveCodec>(
     plan: &impl RecoveryPlan,
     timeout: u64,
     emit: impl FnMut(&[u8]) -> Result<()>,
@@ -297,11 +312,13 @@ fn execute_codec<C: ArchiveCodec>(
         ]),
     )?;
     recheck(plan, &mut entries, &clock)?;
+    source_recovery::emit(plan, &entries, &mut reports, INDEX_FORMAT)?;
     let mut checked = 0_usize;
     let mut created = 0_usize;
     for index in 0..entries.len() {
         locations_unchanged(plan, &entries, &clock)?;
         let entry = &mut entries[index];
+        source_recovery::revalidate(plan, index, entry.source.as_mut(), &clock)?;
         let attempt = &plan.attempts()[index];
         let Some(quote) = &quotes[index] else {
             reports.row_with_schema(
@@ -309,7 +326,7 @@ fn execute_codec<C: ArchiveCodec>(
                 "attempt_index",
                 object(&[
                     ("attempt", (index + 1).to_string()),
-                    ("observation", string("both_stores_unobserved")),
+                    ("observation", string(observation(entry))),
                     ("index_complete", "false".into()),
                 ]),
             )?;
@@ -348,6 +365,12 @@ fn execute_codec<C: ArchiveCodec>(
                     {
                         return Err(ROOT);
                     }
+                    source_recovery::location_unchanged(
+                        plan,
+                        index,
+                        entry.source.as_ref(),
+                        &clock,
+                    )?;
                     match writer.step(clock.now()?, &clock).map_err(|_| STORAGE)? {
                         JournaledArchiveProgress::Archive(
                             ArchiveWriteProgress::CatalogPrepared { root },
@@ -370,6 +393,14 @@ fn execute_codec<C: ArchiveCodec>(
                                     ("work_root", string(&checkpoint.root().to_text())),
                                     ("journal", anchor_json(Some(pin_receipt.anchor()))),
                                 ]),
+                            )?;
+                            // Recheck source after fallible output and before the native
+                            // writer can stage or publish the new catalog.
+                            source_recovery::revalidate(
+                                plan,
+                                index,
+                                entry.source.as_mut(),
+                                &clock,
                             )?;
                         }
                         JournaledArchiveProgress::Archive(

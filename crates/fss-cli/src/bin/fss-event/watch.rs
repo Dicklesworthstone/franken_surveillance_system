@@ -770,12 +770,11 @@ fn run_with(
 ) -> RunResult<()> {
     // Calibration bytes and package bytes are pinned before any retained source is read.
     let fusion_profile = super::detector::load_fusion(action.cascade.as_ref(), cx)?;
-    if fusion_profile
-        .as_ref()
-        .is_some_and(|p| p.long_watch_analysis_root().is_some()
+    if fusion_profile.as_ref().is_some_and(|p| {
+        p.long_watch_analysis_root().is_some()
             || p.long_dwell_analysis_root().is_some()
-            || p.long_corroboration_analysis_roots().is_some())
-    {
+            || p.long_corroboration_analysis_roots().is_some()
+    }) {
         return Err(EventFusionError::Scope.into());
     }
     // The package is verified (digest before parsing) before any source is read.

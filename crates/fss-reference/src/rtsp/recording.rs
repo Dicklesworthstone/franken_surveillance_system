@@ -185,6 +185,12 @@ impl PreparedRecording {
     pub fn summary(&self) -> &RecordingSummary {
         &self.summary
     }
+    /// Borrow the exact original RTP datagrams and their unchanged receive times.
+    /// This uses the recording owner's bounded source parser, including for a HEVC
+    /// publication plan; it grants neither source access nor capture continuity.
+    pub fn packets(&self) -> Result<Vec<RecordingPacket<'_>>> {
+        wire::decode_packets(&self.source)
+    }
     /// Combined retained payload bytes including the root manifest.
     pub fn byte_len(&self) -> usize {
         self.source.len()

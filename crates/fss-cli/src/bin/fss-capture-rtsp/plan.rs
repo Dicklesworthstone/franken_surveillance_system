@@ -34,6 +34,10 @@ use super::authentication::{AuthPlan, MAX_CREDENTIAL_BYTES, MAX_SECRET_IO_CALLS}
 mod hevc;
 use hevc::HevcPlan;
 
+#[path = "preview_plan.rs"]
+pub(super) mod live_preview;
+use live_preview::PreviewPlan;
+
 pub(super) const MAX_ARGUMENTS: usize = 128;
 pub(super) const FORMAT: &str = "fss.rtsp_capture_cli.v1";
 const POLICY: &str = "one-literal-ip:owner-approved-plaintext:opt-in-scoped-digest:no-reconnect:\
@@ -100,6 +104,14 @@ Run limits: --timeout-ms 30000 --drain-timeout-ms 10000 --max-steps 100000\n\
             --read-bytes 4096 --connect-timeout-ms 5000 --response-timeout-ms 5000\n\
 Storage: --max-window-pictures 128 --max-windows 32 --max-storage-bytes 536870912\n\
          --max-storage-pause-ms 10000\n\
+Optional live view: --preview-port 0 --allow-local-unredacted-preview yes\n\
+The approved process serves independent durable AVC/HEVC windows on loopback only.\n\
+The private viewer link appears on stderr; its fragment token is never in JSONL.\n\
+Window-close latency applies; no transcode or redaction is implied. Slow viewers\n\
+are disconnected within fixed limits and cannot apply recording backpressure.\n\
+Bounds: --preview-max-clients 4 --preview-max-bytes 16777216\n\
+        --preview-max-fragment-bytes 4194304 --preview-max-output-bytes 134217728\n\
+        --preview-max-age-ms 30000. The viewer closes with the capture attempt.\n\
 All effective native limits are included in the approval and its JSON preview.\n\
 A successful requested stop closes the socket and drains recording/catalog publication;\n\
 it never certifies remote EOF, complete scene coverage, detection, alerts or absence.\n\
@@ -135,6 +147,7 @@ pub(super) struct Options {
     pin_limits: ArchivePinLimits,
     timing_evidence: ContentDigest,
     pub(super) authentication: Option<AuthPlan>,
+    pub(super) live_preview: Option<PreviewPlan>,
 }
 
 // Keep every byte of the legacy policy/clock/approval when the option is absent or zero.
@@ -296,6 +309,13 @@ impl Options {
             "--auth-realm",
             "--legacy-md5",
             "--legacy-no-qop",
+            "--preview-port",
+            "--allow-local-unredacted-preview",
+            "--preview-max-clients",
+            "--preview-max-bytes",
+            "--preview-max-fragment-bytes",
+            "--preview-max-output-bytes",
+            "--preview-max-age-ms",
         ];
         let mut values = BTreeMap::new();
         for pair in args.as_chunks::<2>().0 {
@@ -321,7 +341,11 @@ impl Options {
                 return Err("explicit owner, plaintext and original-retention approval required");
             }
         }
-        let keepalive = match values.get("--keepalive-method").copied().unwrap_or("options") {
+        let keepalive = match values
+            .get("--keepalive-method")
+            .copied()
+            .unwrap_or("options")
+        {
             "options" => ClientCommand::KeepAlive,
             "get-parameter" => ClientCommand::KeepAliveGetParameter,
             _ => return Err("keepalive method must be options or get-parameter"),
@@ -600,6 +624,7 @@ impl Options {
             )? as usize,
             timing_evidence,
             authentication,
+            live_preview: PreviewPlan::parse(&values)?,
             approve: values
                 .get("--approve")
                 .map(|text| digest(text))
@@ -783,6 +808,9 @@ impl Options {
         if self.max_reorder_pictures != 0 {
             numbers.push(("max_reorder_pictures", u64::from(self.max_reorder_pictures)));
         }
+        if let Some(preview) = &self.live_preview {
+            numbers.extend(preview.numbers());
+        }
         numbers
     }
 
@@ -844,6 +872,9 @@ impl Options {
         // method needs new approval, but cannot change recording clocks or source identities.
         if self.keepalive == ClientCommand::KeepAliveGetParameter {
             e.text(GET_PARAMETER_POLICY);
+        }
+        if self.live_preview.is_some() {
+            e.text(live_preview::POLICY);
         }
         let bytes = e
             .finish_checked()
@@ -922,6 +953,9 @@ impl Options {
         ];
         if let Some(parameters) = self.hevc.as_ref().and_then(|plan| plan.supplied.as_ref()) {
             fields.push(("hevc_configuration", parameters.preview()));
+        }
+        if let Some(preview) = &self.live_preview {
+            fields.push(("live_preview", preview.report()));
         }
         Ok(object(&fields))
     }

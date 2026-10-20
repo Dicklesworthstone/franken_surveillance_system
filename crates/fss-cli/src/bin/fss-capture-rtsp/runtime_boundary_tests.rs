@@ -51,6 +51,7 @@ fn resources() -> Resources {
         network: "rtsp-route:approved-fixture".into(),
         storage: "rtsp-custody:approved-fixture".into(),
         secret: "rtsp-credential:approved-fixture".into(),
+        preview: "rtsp-local-preview:approved-fixture".into(),
     }
 }
 
@@ -79,6 +80,8 @@ fn owner<'a, 'task>(
         drain_deadline: Cell::new(None),
         credentials: None,
         supervision: None,
+        preview_scope: None,
+        preview: std::cell::RefCell::new(None),
     })
 }
 

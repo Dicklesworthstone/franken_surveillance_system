@@ -61,21 +61,38 @@ source EOF or continuity claim. `--continue-after-success yes` retains its
 all-planned-attempts-success contract; later success cannot erase an interruption.
 This remains bounded repeated capture, not gap-free always-on recording.
 
-`--recover yes` and `--recover index` currently REFUSE source-retained reconnect
-plans before effects. Existing recording recovery does not verify the extra
-source stores, so accepting those options would silently omit custody. Preserve
-all stores and their exact scopes/pins. The existing `DatagramArchive` library
-can reopen and verify retained source prefixes; this command does not resume or
-automatically reconstruct them, change retention, or grant a new network epoch.
+`--recover yes` and `--recover index` support source-retained reconnect plans.
+Repeat **all original source options** with the original reconnect plan and remove
+the capture approval. The storage-only preview binds each source directory's
+identity and complete verified current datagram head. Restoration and indexing
+require every original recording RTP packet, including lookahead packets outside
+the decoded samples, to exist in that source chain with its unchanged receive
+time. All three stores stay locked; a missing or damaged later source blocks
+restoration of earlier media during preflight.
+
+An optional `--minimum-source-pins` map binds independently retained
+`datagram_durable` prefix receipts. Source stores are never created, appended,
+reconstructed or resumed by recovery. The operation has no camera connection,
+credential lease or new network epoch. See [source-retained recovery](rtsp_source_recovery.md)
+for commands, exact source coordinates, retry behavior and bounds.
 
 ## Initial validation scope
 
 201 capture-binary unit tests passed with pinned `nightly-2026-08-31`, locked
 offline Cargo and debug assertions. Fourteen new cases cover source grants,
 independent scopes and summed limits, stale approvals, fail-closed delegation,
-unsettled source custody, recovery refusal and source-publication clock accounting.
+unsettled source custody, the initial recovery refusal and source-publication clock accounting.
 A real loopback AVC smoke run completed two independent source-retaining sessions.
 The capture modules were verified against `40681520`; unrelated dependency source
 came from the independently verified `caa59a97` source/compiler artifact. This
 initial result is not full current-workspace, physical-camera, power-loss or
 release qualification. The repository's qualification gates remain unchanged.
+
+The storage-only recovery extension passed all **215 capture-binary unit tests**
+with the repository's pinned toolchain, locked offline Cargo and debug assertions.
+Twelve new native disk cases cover AVC/HEVC original-window restoration, catalog
+completion, exact retries, missing or corrupt source, source prefix and directory
+changes, complete original RTP membership, retained locks, cancellation and
+cumulative work. Two additional parser cases cover canonical minimum-source maps
+and their bounds. This validates the capture binary and native fixture paths;
+it does not establish physical-camera, full-workspace or release qualification.

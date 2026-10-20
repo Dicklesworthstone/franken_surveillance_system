@@ -596,3 +596,6 @@ fn recovery_parser_rejects_ambiguous_modes_and_preserves_capture_identity() -> T
     assert!(ReconnectPlan::parse(&invalid).is_err());
     Ok(())
 }
+
+#[path = "source_recovery_tests.rs"]
+mod source_tests;

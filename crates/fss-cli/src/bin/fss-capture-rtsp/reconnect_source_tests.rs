@@ -369,10 +369,23 @@ fn a_controller_without_source_support_cannot_fall_back_to_ordinary_capture() ->
 }
 
 #[test]
-fn recording_only_recovery_cannot_ignore_an_approved_source_spool() {
+fn recovery_preserves_all_original_source_scopes_and_capture_identity() -> Test {
     for mode in ["yes", "index"] {
         let mut input = retained_args("avc");
+        let capture = ReconnectPlan::parse(&input)?;
         set(&mut input, "--recover", mode);
-        assert!(ReconnectPlan::parse(&input).is_err());
+        let recovery = ReconnectPlan::parse(&input)?;
+        assert_eq!(capture.digest()?, recovery.digest()?);
+        for index in 0..capture.attempts.len() {
+            assert_eq!(
+                capture.child_approval(index)?,
+                recovery.child_approval(index)?
+            );
+            let before = capture.sources.as_ref().ok_or(STATE)?.get(index)?;
+            let after = recovery.sources.as_ref().ok_or(STATE)?.get(index)?;
+            assert_eq!(before.root, after.root);
+            assert_eq!(before.scope, after.scope);
+        }
     }
+    Ok(())
 }

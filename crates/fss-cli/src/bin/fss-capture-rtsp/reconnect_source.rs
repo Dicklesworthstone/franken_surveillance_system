@@ -153,7 +153,7 @@ impl SourcePlans {
             ),
             ("maximum_source_work_all_attempts", self.work.to_string()),
             ("limits_scope", string("per_attempt_no_carryover")),
-            ("source_recovery_supported", "false".into()),
+            ("source_recovery_supported", "true".into()),
             ("source_epoch_reused", "false".into()),
             ("attempts", format!("[{}]", entries.join(","))),
         ]))

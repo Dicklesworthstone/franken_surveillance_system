@@ -10,6 +10,29 @@ Franken Surveillance System now has a coherent, dependency-light Rust reference 
 
 It is also not a complete surveillance product. Native device adapters, production media/model/graph/storage services, persistent distributed operation, every human and agent surface, complete qualification matrices, and the aggregate release root remain open. Status below distinguishes implemented reference semantics from production completion.
 
+## Source-retained reconnect recovery (2026-10-19, reference)
+
+`fss-capture-rtsp reconnect --recover yes` and `--recover index` now accept the
+original source-retention options. A separate approval binds the exact observed
+recording archive, independent work journal and complete datagram source chain
+for every original attempt. All journal minima pass before original source reads;
+all selected native work and original RTP byte/time witnesses pass before the
+first media restoration. Source owners remain locked throughout the operation,
+and custody is checked again before restoration and catalog publication.
+
+Optional `--minimum-source-pins` binds independently saved original-attempt source
+prefixes by exact datagram count, payload bytes and head. Missing/partial stores,
+corrupt newer source, unmatched packets and replaced roots refuse. All three
+unobserved stores remain unknown. Repeated checks share the original per-attempt
+source work ceiling. Recovery creates no camera connection or source writes and
+uses the existing native AVC/HEVC recovery and publication owners.
+
+The focused capture binary contracts cover exact retries, independent minima,
+source-only boundary packets, corruption, owner locks, output-cut revalidation,
+and cumulative work/cancellation. See [the operator workflow](docs/rtsp_source_recovery.md).
+This closes the source-retention recovery refusal; it does not authenticate
+cameras, recover continuous coverage or qualify physical devices and release gates.
+
 ## Runtime authority core (2026-10-18, reference)
 
 `fss-runtime` is enrolled as the program's runtime/authority core: `AuthorityCx`

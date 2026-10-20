@@ -60,6 +60,80 @@ fn set(args: &mut Vec<OsString>, key: &str, value: &str) {
 }
 
 #[test]
+fn preview_requires_disclosure_permission_and_preserves_recording_identity()
+-> Result<(), &'static str> {
+    let original = Options::parse(&args())?;
+    assert!(original.live_preview.is_none());
+    let mut input = args();
+    set(&mut input, "--preview-port", "0");
+    assert!(Options::parse(&input).is_err());
+    set(&mut input, "--allow-local-unredacted-preview", "no");
+    assert!(Options::parse(&input).is_err());
+    set(&mut input, "--allow-local-unredacted-preview", "yes");
+    let enabled = Options::parse(&input)?;
+    assert_ne!(original.digest()?, enabled.digest()?);
+    assert_eq!(original.recording.scope, enabled.recording.scope);
+    assert_eq!(original.catalog_scope(), enabled.catalog_scope());
+    assert_eq!(original.pin_scope(), enabled.pin_scope());
+    assert!(enabled.authentication.is_none());
+    assert!(
+        enabled
+            .preview()?
+            .contains("\"privacy\":\"explicit-local-unredacted\"")
+    );
+    set(&mut input, "--approve", &enabled.digest()?.to_text());
+    assert_eq!(Options::parse(&input)?.digest()?, enabled.digest()?);
+    let mut stray = args();
+    set(&mut stray, "--allow-local-unredacted-preview", "yes");
+    assert!(Options::parse(&stray).is_err());
+    Ok(())
+}
+
+#[test]
+fn every_preview_resource_limit_is_approval_bound_and_hard_bounded() -> Result<(), &'static str> {
+    let mut input = args();
+    set(&mut input, "--preview-port", "0");
+    set(&mut input, "--allow-local-unredacted-preview", "yes");
+    let original = Options::parse(&input)?;
+    for (key, value) in [
+        ("--preview-port", "8555"),
+        ("--preview-max-clients", "2"),
+        ("--preview-max-bytes", "8388608"),
+        ("--preview-max-fragment-bytes", "1048576"),
+        ("--preview-max-output-bytes", "1048576"),
+        ("--preview-max-age-ms", "1000"),
+    ] {
+        let mut changed = input.clone();
+        set(&mut changed, key, value);
+        let plan = Options::parse(&changed)?;
+        assert_ne!(plan.digest()?, original.digest()?, "{key}");
+        assert_eq!(plan.catalog_scope(), original.catalog_scope());
+    }
+    for (key, value) in [
+        ("--preview-port", "65536"),
+        ("--preview-max-clients", "17"),
+        ("--preview-max-bytes", "67108865"),
+        ("--preview-max-fragment-bytes", "8388609"),
+        ("--preview-max-output-bytes", "1073741825"),
+        ("--preview-max-age-ms", "60001"),
+    ] {
+        let mut changed = input.clone();
+        set(&mut changed, key, value);
+        assert!(Options::parse(&changed).is_err(), "{key}");
+    }
+    set(&mut input, "--preview-max-fragment-bytes", "1024");
+    assert_eq!(
+        Options::parse(&input)?
+            .live_preview
+            .ok_or("preview missing")?
+            .limits
+            .max_initialization_bytes,
+        1024
+    );
+    Ok(())
+}
+
+#[test]
 fn exact_approval_excludes_only_approval_itself_and_argument_order() {
     let mut input = args();
     let options = Options::parse(&input).expect("valid plan");
