@@ -488,6 +488,7 @@ pub struct StagedUpload<'a, T: MultipartTransport> {
     session: MultipartSession<'a, T>,
     plan: ChunkPlan,
     observed_at: TimestampNs,
+    cancellation_requested: bool,
     settled: bool,
 }
 
@@ -575,6 +576,7 @@ impl<'a, T: MultipartTransport> StagedUpload<'a, T> {
             session,
             plan,
             observed_at: now,
+            cancellation_requested: false,
             settled: false,
         })
     }
@@ -741,7 +743,8 @@ impl<'a, T: MultipartTransport> StagedUpload<'a, T> {
                 Some(note),
             )?;
         }
-        if record.cancelled || recovery.cancelled() {
+        let cancellation_requested = record.cancelled || recovery.cancelled();
+        if cancellation_requested {
             child.request_cancellation(tree, now)?;
         }
         let session = MultipartSession::restore_prevalidated(
@@ -764,8 +767,47 @@ impl<'a, T: MultipartTransport> StagedUpload<'a, T> {
             session,
             plan,
             observed_at: now,
+            cancellation_requested,
             settled: false,
         })
+    }
+
+    /// Request a stop of this exact runtime child without claiming provider
+    /// rollback or resolving its upload obligation. Journaled owners persist
+    /// the cancellation intent before mutating the live tree or reporting success.
+    /// A crash at that boundary therefore cannot authorize new work on recovery.
+    ///
+    /// Failed persistence retains the owner and its allowance; ambiguous writes
+    /// require cold recovery. An accepted request is monotone and idempotent,
+    /// including after later closure. A new request on a finalizing or closed
+    /// child is refused. Abort, reconciliation, and known terminal receipt reads
+    /// remain available; they still require their normal authority and budget.
+    pub fn request_cancellation(
+        &mut self,
+        tree: &mut RegionTree,
+        now: TimestampNs,
+    ) -> Result<(), UploaderError> {
+        self.validate_owner(tree, now)?;
+        let state = tree.get(self.region()).map_err(authority)?.state;
+        if self.cancellation_requested && state != RegionState::Active {
+            self.observed_at = now;
+            return Ok(());
+        }
+        if matches!(state, RegionState::Finalizing | RegionState::Closed) {
+            return Err(authority(
+                "upload owner cannot accept a new cancellation after finalization",
+            ));
+        }
+        self.observed_at = now;
+        let mut record = self.owner_record(tree)?;
+        record.cancelled = true;
+        self.persist_record(tree, now, record)?;
+        // Keep the committed stop even if the following live mutation refuses.
+        // A later retry dates its live change after a new durable clock boundary.
+        // Forward work cannot erase or bypass this restriction.
+        self.cancellation_requested = true;
+        self.authority.request_cancellation(tree, now)?;
+        Ok(())
     }
 
     /// Persist the current authority restrictions, cancellation, and canonical
@@ -823,7 +865,7 @@ impl<'a, T: MultipartTransport> StagedUpload<'a, T> {
             original_authority: self.original_authority.clone(),
             effective_authority,
             grants,
-            cancelled: self.authority.is_cancel_requested(tree)?,
+            cancelled: self.authority.is_cancel_requested(tree)? || self.cancellation_requested,
             obligation,
             reconciliation_note,
             indeterminate_receipt: self.indeterminate_receipt.clone(),
@@ -852,6 +894,7 @@ impl<'a, T: MultipartTransport> StagedUpload<'a, T> {
     /// Explicit initiation; failures retain the stable intent and pending child.
     pub fn start(&mut self, tree: &RegionTree, now: TimestampNs) -> Result<(), UploaderError> {
         self.validate_dispatch_owner(tree, now)?;
+        self.require_forward_work()?;
         self.session.start(UploadIo {
             authority: &mut self.authority,
             tree,
@@ -870,6 +913,7 @@ impl<'a, T: MultipartTransport> StagedUpload<'a, T> {
         bytes: &[u8],
     ) -> Result<PartReceipt, UploaderError> {
         self.validate_dispatch_owner(tree, now)?;
+        self.require_forward_work()?;
         Ok(self.session.upload_part(
             UploadIo {
                 authority: &mut self.authority,
@@ -923,7 +967,7 @@ impl<'a, T: MultipartTransport> StagedUpload<'a, T> {
         now: TimestampNs,
     ) -> Result<(), UploaderError> {
         self.validate_dispatch_owner(tree, now)?;
-        if self.authority.is_cancel_requested(tree)? {
+        if self.authority.is_cancel_requested(tree)? || self.cancellation_requested {
             return Err(UploaderError::CancellationRequested {
                 confirmed_parts: self.confirmed_parts(),
             });
@@ -957,6 +1001,9 @@ impl<'a, T: MultipartTransport> StagedUpload<'a, T> {
         now: TimestampNs,
     ) -> Result<CompletionReceipt, UploaderError> {
         self.validate_dispatch_owner(tree, now)?;
+        if self.session.phase() != MultipartPhase::Completed {
+            self.require_forward_work()?;
+        }
         let root = self.session.intent().manifest_root();
         let receipt = self.session.complete(
             UploadIo {
@@ -1123,6 +1170,18 @@ impl<'a, T: MultipartTransport> StagedUpload<'a, T> {
             // Capture cancellation and any fresh recovery restrictions before
             // the protocol is allowed to dispatch or touch a payload source.
             self.checkpoint(tree, now)?;
+        }
+        Ok(())
+    }
+
+    fn require_forward_work(&self) -> Result<(), UploaderError> {
+        // Preserve the original uncertain operation rather than implying that
+        // cancellation made an unresolved dispatch safe to retry or abort.
+        if let MultipartPhase::Uncertain(operation) = self.session.phase() {
+            return Err(MultipartError::RequiresReconciliation { operation }.into());
+        }
+        if self.cancellation_requested {
+            return Err(MultipartError::CancellationRequested.into());
         }
         Ok(())
     }

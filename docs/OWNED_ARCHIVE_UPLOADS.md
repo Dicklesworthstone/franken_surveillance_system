@@ -113,11 +113,22 @@ explicitly indeterminate ownership records reach the journal before canonical ob
 resolution, child closure or refund. If local finalization is blocked after that record is durable,
 an exact retry can finish it without contacting the provider again.
 
+Use `request_cancellation(tree, now)` to stop this upload. For a journaled owner, the request
+persists its stop intent before changing the runtime tree or reporting success. It performs no
+provider call, does not release allowance, and does not claim that provider staging was aborted.
+A committed checkpoint whose acknowledgment is lost still restores the stop on cold recovery.
+Further source reads, initiation, part dispatch and forward publication refuse; explicit abort,
+reconciliation, indeterminate settlement and an already known completion receipt remain available.
+If completion was uncertain when the stop was requested, reconcile its real outcome before deciding
+which cleanup remains valid. Successful stop retries are local and do not append another record.
+A new stop request against a finalizing or closed owner refuses.
+
 Use `narrow_grants_durable` for a journaled owner's grant changes. The legacy in-memory
 `narrow_grants` method refuses on durable owners. `checkpoint(tree, now)` records externally
 observed cancellation or other narrower authority and returns a new pin for independent retention.
 Cancellation changes made directly to an external runtime tree become restart evidence only when
-checkpointed; callers must persist that boundary before treating the change as durably recorded.
+checkpointed; use the upload owner's request method when the stop acknowledgment itself must be
+durable.
 
 Any ambiguous append failure blocks further provider effects and refunds through that owner.
 The child, reservation and pending work remain retained. Drop the failed journal handle and cold
@@ -159,7 +170,11 @@ duplicate preparation, wrong trees and parent quiescence.
 The additional unresolved-settlement and owner-integrity contracts cover exhausted recovery,
 task-blocked local finalization, exact retained receipts and notes, altered obligations,
 backdated preparation and cleanup, and refused transport/source clock boundaries. The pinned
-nightly passed 50 focused tests and 337 tests across the full object crate (one existing test
-requires an unprivileged process and remains explicitly ignored). The durable contract suite uses fresh file, transport and region
+nightly passed 337 tests across the full object crate for the restart milestone (one existing test
+requires an unprivileged process and remains explicitly ignored). The final focused run passed 55
+tests, including 22 durable contracts. The durable contract suite uses fresh file, transport and region
 owners across abrupt after-effect exits, minimum-pin and semantic-rewind checks, filesystem fault
 cuts, original cumulative budgets, authority restrictions and terminal/refund recovery.
+Cancellation and revocation tests additionally cover before-commit refusal, committed stop or grant
+revocation with a lost append acknowledgement, all three unfinished protocol phases, exact retry,
+clock/owner refusal and preservation of a previously completed provider outcome.

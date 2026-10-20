@@ -72,6 +72,16 @@ lost acknowledgements, dynamic budget charges through repeated restarts, corrupt
 and forked records, owner replacement, tightened deadlines, persistence refusal,
 and completion/indeterminate finalization without provider replay or double refund.
 
+The follow-on durable cancellation API persists a stop request before live runtime
+cancellation or a successful acknowledgment. It retains the pending owner and
+reservation, blocks new source/provider work across restart, and preserves abort,
+reconciliation, indeterminate settlement and known terminal receipts. Five further
+contracts cover the committed-record-before-live-mutation cut, persistence refusal,
+Prepared/Uploading/Uncertain owners, exact retries and durable publication-grant
+revocation; the final focused run passed all 55 tests, including 22 durable contracts.
+The supplementary reference workflow executes these restart contracts alongside
+the existing multipart and uploader tests.
+
 ## Multipart unresolved-outcome recovery (2026-10-20, reference)
 
 The authority-owned multipart uploader now supports explicit local settlement of
