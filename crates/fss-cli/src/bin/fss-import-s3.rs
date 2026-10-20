@@ -17,11 +17,11 @@ use std::path::PathBuf;
 use std::time::Duration;
 
 use fss_core::region::{ContextAuthority, RootAuthoritySpec};
-use fss_core::{sha256, BudgetVector, ContentDigest, OperationId, SensorId, StreamId, TimestampNs};
+use fss_core::{BudgetVector, ContentDigest, OperationId, SensorId, StreamId, TimestampNs, sha256};
 use fss_reference::ingest::{
     FileFormatHint, FileIngestAdapter, FileIngestRequest, RetainedFileImport, RetainedReadLimits,
 };
-use fss_reference::{ReferenceDeployment, ReplayCx, ADP_REPLAY_ROW_ID};
+use fss_reference::{ADP_REPLAY_ROW_ID, ReferenceDeployment, ReplayCx};
 
 /// Report schema identity.
 const REPORT_SCHEMA: &str = "fss.s3_import_cli.v1";
@@ -70,13 +70,13 @@ struct Options {
     max_source_bytes: u64,
 }
 
-fn malformed(message: &str) -> Result<String, &'static str> {
-    Err(message)
+fn malformed<T>(message: impl Into<String>) -> Result<T, String> {
+    Err(message.into())
 }
 
 /// Splits a `http://host:port/path?query` URL into host, port, object path and the presigned
 /// query (kept out of the report). Only `http://` is supported; TLS is the NAS's own concern.
-fn parse_url(url: &str) -> Result<(String, u16, String, String), &'static str> {
+fn parse_url(url: &str) -> Result<(String, u16, String, String), String> {
     let rest = url
         .strip_prefix("http://")
         .ok_or("only http:// presigned URLs are supported; TLS is the NAS's own concern")?;
@@ -87,7 +87,9 @@ fn parse_url(url: &str) -> Result<(String, u16, String, String), &'static str> {
     let (host, port) = match hostport.rfind(':') {
         Some(i) => (
             hostport[..i].trim_end_matches('[').to_owned(),
-            hostport[i + 1..].parse::<u16>().map_err(|_| "port must be a number")?,
+            hostport[i + 1..]
+                .parse::<u16>()
+                .map_err(|_| "port must be a number")?,
         ),
         None => (hostport.to_owned(), 80),
     };
@@ -109,13 +111,15 @@ fn http_get(host: &str, port: u16, request_path: &str, max_bytes: u64) -> Result
         .map_err(|e| format!("resolve {host}:{port}: {e}"))?
         .next()
         .ok_or_else(|| format!("no address for {host}:{port}"))?;
-    let mut stream =
-        TcpStream::connect_timeout(&addr, CONNECT_TIMEOUT).map_err(|e| format!("connect {host}:{port}: {e}"))?;
+    let mut stream = TcpStream::connect_timeout(&addr, CONNECT_TIMEOUT)
+        .map_err(|e| format!("connect {host}:{port}: {e}"))?;
     stream
         .set_read_timeout(Some(READ_TIMEOUT))
         .map_err(|e| format!("set read timeout: {e}"))?;
     let req = format!("GET {request_path} HTTP/1.1\r\nHost: {host}\r\nConnection: close\r\n\r\n");
-    stream.write_all(req.as_bytes()).map_err(|e| format!("send request: {e}"))?;
+    stream
+        .write_all(req.as_bytes())
+        .map_err(|e| format!("send request: {e}"))?;
     stream.flush().map_err(|e| format!("flush: {e}"))?;
     let mut buf: Vec<u8> = Vec::new();
     let mut tmp = [0u8; CHUNK];
@@ -142,7 +146,10 @@ fn http_get(host: &str, port: u16, request_path: &str, max_bytes: u64) -> Result
     }
     let body = &buf[header_end..];
     if (body.len() as u64) > max_bytes {
-        return Err(format!("object {} bytes exceeds --max-source-bytes {max_bytes}", body.len()));
+        return Err(format!(
+            "object {} bytes exceeds --max-source-bytes {max_bytes}",
+            body.len()
+        ));
     }
     Ok(body.to_vec())
 }
@@ -205,27 +212,41 @@ fn run(options: &Options) -> Result<String, String> {
     let object_sha256 = sha256(&bytes);
     let staging = stage(&bytes)?;
     let cx = context(&options.root)?;
-    let report = run_in(options, &staging, &cx);
+    let report = run_in(options, &staging, object_sha256, &cx);
     let _ = std::fs::remove_file(&staging);
     cx.drain_and_finalize();
     report
 }
 
-fn run_in(options: &Options, staging: &std::path::Path, cx: &ReplayCx) -> Result<String, String> {
-    let mut deployment =
-        ReferenceDeployment::open(&options.root, SITE, cx).map_err(|e| format!("s3 import deployment: {e}"))?;
+fn run_in(
+    options: &Options,
+    staging: &std::path::Path,
+    object_sha256: [u8; 32],
+    cx: &ReplayCx,
+) -> Result<String, String> {
+    let mut deployment = ReferenceDeployment::open(&options.root, SITE, cx)
+        .map_err(|e| format!("s3 import deployment: {e}"))?;
     let sensor = SensorId::parse(&options.sensor_id).map_err(|e| format!("sensor-id: {e}"))?;
     let stream = StreamId::parse(&options.stream_id).map_err(|e| format!("stream-id: {e}"))?;
-    let mut request =
-        FileIngestRequest::new(staging.to_path_buf(), sensor, stream).with_receive_time(TimestampNs(options.receive_time_ns));
+    let mut request = FileIngestRequest::new(staging.to_path_buf(), sensor, stream)
+        .with_receive_time(TimestampNs(options.receive_time_ns));
     if let Some(hint) = options.media_format {
         request.format_hint = Some(hint);
     }
-    let imported =
-        FileIngestAdapter::ingest(request, cx, &mut deployment).map_err(|e| format!("s3 import ingest: {e}"))?;
-    let retained = RetainedFileImport::open(&deployment, imported.import_identity, RetainedReadLimits::default(), cx)
-        .map_err(|e| format!("s3 import retained: {e}"))?;
+    let imported = FileIngestAdapter::ingest(request, cx, &mut deployment)
+        .map_err(|e| format!("s3 import ingest: {e}"))?;
+    let retained = RetainedFileImport::open(
+        &deployment,
+        imported.import_identity,
+        RetainedReadLimits::default(),
+        cx,
+    )
+    .map_err(|e| format!("s3 import retained: {e}"))?;
     let manifest = retained.manifest().clone();
+    // The report names the fetched body, not a different staged file or a chunk digest.
+    if manifest.input_sha256.bytes() != object_sha256 {
+        return Err("fetched object SHA-256 differs from retained input SHA-256".to_owned());
+    }
     let (host, port, object_path, _) = parse_url(&options.url)?;
     Ok(render(&Report {
         host,
@@ -259,7 +280,11 @@ fn render(r: &Report) -> String {
     let _ = writeln!(out, "    \"object_path\": \"{}\"", r.object_path);
     let _ = writeln!(out, "  }},");
     let _ = writeln!(out, "  \"bytes\": {},", r.bytes);
-    let _ = writeln!(out, "  \"object_sha256\": \"sha256:{}\",", hex(&r.object_sha256));
+    let _ = writeln!(
+        out,
+        "  \"object_sha256\": \"sha256:{}\",",
+        hex(&r.object_sha256)
+    );
     let _ = writeln!(out, "  \"import_identity\": \"{}\",", r.import_identity);
     let _ = writeln!(out, "  \"import_outcome\": \"{}\",", r.import_outcome);
     let _ = writeln!(out, "  \"media_format\": \"{}\",", r.media_format);
@@ -273,7 +298,7 @@ fn render(r: &Report) -> String {
     out
 }
 
-fn parse(args: &[String]) -> Result<Options, &'static str> {
+fn parse(args: &[String]) -> Result<Options, String> {
     if args.len() > MAX_ARGS {
         return malformed("too many arguments");
     }
@@ -290,7 +315,11 @@ fn parse(args: &[String]) -> Result<Options, &'static str> {
     let mut i = 0;
     while i < args.len() {
         let a = &args[i];
-        let next = if i + 1 < args.len() { Some(args[i + 1].as_str()) } else { None };
+        let next = if i + 1 < args.len() {
+            Some(args[i + 1].as_str())
+        } else {
+            None
+        };
         match a.as_str() {
             "--url" => {
                 let v = next.ok_or("--url requires a value")?;
@@ -314,7 +343,9 @@ fn parse(args: &[String]) -> Result<Options, &'static str> {
             }
             "--receive-time-ns" => {
                 let v = next.ok_or("--receive-time-ns requires a value")?;
-                opts.receive_time_ns = v.parse().map_err(|_| "--receive-time-ns must be an integer")?;
+                opts.receive_time_ns = v
+                    .parse()
+                    .map_err(|_| "--receive-time-ns must be an integer")?;
                 i += 2;
             }
             "--media-format" => {
@@ -324,7 +355,9 @@ fn parse(args: &[String]) -> Result<Options, &'static str> {
             }
             "--max-source-bytes" => {
                 let v = next.ok_or("--max-source-bytes requires a value")?;
-                let n: u64 = v.parse().map_err(|_| "--max-source-bytes must be a number")?;
+                let n: u64 = v
+                    .parse()
+                    .map_err(|_| "--max-source-bytes must be a number")?;
                 if n == 0 || n > MAX_ALLOWED_SOURCE_BYTES {
                     return malformed("--max-source-bytes must be 1..=1073741824");
                 }
@@ -339,7 +372,7 @@ fn parse(args: &[String]) -> Result<Options, &'static str> {
                 print!("{HELP}");
                 std::process::exit(0);
             }
-            other => return malformed(&format!("unknown argument: {other}")),
+            other => return malformed(format!("unknown argument: {other}")),
         }
     }
     if opts.url.is_empty() {
@@ -376,7 +409,12 @@ fn parse_format(s: &str) -> Result<Option<FileFormatHint>, &'static str> {
 /// Exit identity: runtime failure (parse, network, authority, or ingest refused).
 fn main() -> std::process::ExitCode {
     let args: Vec<String> = std::env::args().skip(1).collect();
-    if args.is_empty() || matches!(args.first().map(String::as_str), Some("help" | "--help" | "-h")) {
+    if args.is_empty()
+        || matches!(
+            args.first().map(String::as_str),
+            Some("help" | "--help" | "-h")
+        )
+    {
         print!("{HELP}");
         return std::process::ExitCode::from(0);
     }
@@ -405,6 +443,32 @@ fn main() -> std::process::ExitCode {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::path::Path;
+
+    type Test<T = ()> = Result<T, Box<dyn std::error::Error>>;
+
+    struct Directory(PathBuf);
+    impl Directory {
+        fn new(label: &str) -> Test<Self> {
+            for attempt in 0..100 {
+                let path = std::env::temp_dir().join(format!(
+                    "fss-s3-import-{label}-{}-{attempt}",
+                    std::process::id()
+                ));
+                match std::fs::create_dir(&path) {
+                    Ok(()) => return Ok(Self(path)),
+                    Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => {}
+                    Err(error) => return Err(error.into()),
+                }
+            }
+            Err("temporary directory capacity".into())
+        }
+    }
+    impl Drop for Directory {
+        fn drop(&mut self) {
+            let _ = std::fs::remove_dir_all(&self.0);
+        }
+    }
 
     /// A minimal one-shot loopback HTTP server: serves `body` once, then closes.
     fn serve_loopback(body: Vec<u8>, status: &'static str, port_tx: std::sync::mpsc::Sender<u16>) {
@@ -419,7 +483,10 @@ mod tests {
             s.set_read_timeout(Some(Duration::from_secs(5))).unwrap();
             let mut req = [0u8; 4096];
             let _ = s.read(&mut req);
-            let resp = format!("HTTP/1.1 {status}\r\nContent-Length: {}\r\nConnection: close\r\n\r\n", body.len());
+            let resp = format!(
+                "HTTP/1.1 {status}\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
+                body.len()
+            );
             let _ = s.write_all(resp.as_bytes());
             let _ = s.write_all(&body);
             let _ = s.flush();
@@ -429,7 +496,10 @@ mod tests {
 
     #[test]
     fn parse_url_splits_host_port_path_query() {
-        let (host, port, path, query) = parse_url("http://192.168.5.211:9000/bucket/clip.mjpeg?X-Amz-Signature=abc&X-Amz-Expires=600").unwrap();
+        let (host, port, path, query) = parse_url(
+            "http://192.168.5.211:9000/bucket/clip.mjpeg?X-Amz-Signature=abc&X-Amz-Expires=600",
+        )
+        .unwrap();
         assert_eq!(host, "192.168.5.211");
         assert_eq!(port, 9000);
         assert_eq!(path, "/bucket/clip.mjpeg");
@@ -455,11 +525,12 @@ mod tests {
     #[test]
     fn http_get_fetches_bounded_body() {
         let body = b"hello nas object".to_vec();
+        let expected = body.clone();
         let (tx, rx) = std::sync::mpsc::channel();
-        let t = std::thread::spawn(move || serve_loopback(body.clone(), "200 OK", tx));
+        let t = std::thread::spawn(move || serve_loopback(body, "200 OK", tx));
         let port = rx.recv().unwrap();
         let got = http_get("127.0.0.1", port, "/o.bin", 1024).unwrap();
-        assert_eq!(got, body);
+        assert_eq!(got, expected);
         t.join().unwrap();
     }
 
@@ -502,18 +573,19 @@ mod tests {
     }
 
     #[test]
-    fn loopback_fetch_and_ingest_end_to_end() {
+    fn loopback_fetch_and_ingest_end_to_end() -> Test {
         let fixture = Path::new(env!("CARGO_MANIFEST_DIR"))
             .join("../../tests/fixtures/media/mjpeg/mjpeg_clean_3frames.mjpeg");
-        let body = std::fs::read(&fixture).unwrap();
+        let body = std::fs::read(&fixture)?;
+        let expected_hash = ContentDigest::sha256(&body);
+        let expected_bytes = body.len() as u64;
         let (tx, rx) = std::sync::mpsc::channel();
-        let t = std::thread::spawn(move || serve_loopback(body.clone(), "200 OK", tx));
-        let port = rx.recv().unwrap();
-        let root = std::env::temp_dir().join(format!("fss-s3-import-e2e-{}", std::process::id()));
-        let _ = std::fs::remove_dir_all(&root);
+        let t = std::thread::spawn(move || serve_loopback(body, "200 OK", tx));
+        let port = rx.recv_timeout(Duration::from_secs(5))?;
+        let directory = Directory::new("e2e")?;
         let opts = Options {
             url: format!("http://127.0.0.1:{port}/bucket/clip.mjpeg?X-Amz-Signature=s3cr3t"),
-            root,
+            root: directory.0.join("deployment"),
             sensor_id: "sensor:s3-e2e".to_owned(),
             stream_id: "stream:s3-e2e".to_owned(),
             receive_time_ns: 1_000_000_000,
@@ -521,17 +593,94 @@ mod tests {
             media_format: Some(FileFormatHint::JpegStream),
             max_source_bytes: DEFAULT_MAX_SOURCE_BYTES,
         };
-        let report = run(&opts).unwrap();
-        t.join().unwrap();
-        assert!(report.contains(RREPORT_SCHEMA()), "report:\n{report}");
-        assert!(report.contains("\"import_identity\":\"sha256:") || report.contains("\"import_identity\": \"sha256:"), "report:\n{report}");
+        let report = run(&opts)?;
+        t.join().map_err(|_| "loopback server panicked")?;
+        let parsed = fss_cli::json_input::parse(&report)?;
+        let fields = parsed.object().ok_or("report object")?;
+        assert_eq!(
+            fields.get("schema").and_then(|value| value.text()),
+            Some(REPORT_SCHEMA)
+        );
+        assert_eq!(
+            fields.get("object_sha256").and_then(|value| value.text()),
+            Some(expected_hash.to_text().as_str()),
+        );
+        assert_eq!(
+            fields.get("bytes").and_then(|value| value.integer()),
+            Some(i128::from(expected_bytes))
+        );
+        let import_identity = ContentDigest::parse(
+            fields
+                .get("import_identity")
+                .and_then(|value| value.text())
+                .ok_or("import identity")?,
+        )?;
+        let cx = context(&opts.root)?;
+        let deployment = ReferenceDeployment::open(&opts.root, SITE, &cx)?;
+        let limits = RetainedReadLimits::default();
+        let retained = RetainedFileImport::open(&deployment, import_identity, limits, &cx)?;
+        assert_eq!(retained.manifest().input_sha256, expected_hash);
+        assert_eq!(retained.manifest().input_bytes, expected_bytes);
+        assert_eq!(
+            retained.verify_source(&deployment, limits, &cx)?,
+            expected_hash
+        );
+        assert_eq!(
+            fields.get("import_root").and_then(|value| value.text()),
+            Some(retained.import_root().to_text().as_str()),
+        );
+        cx.drain_and_finalize();
         assert!(report.contains("127.0.0.1"), "report:\n{report}");
         assert!(report.contains("/bucket/clip.mjpeg"), "report:\n{report}");
-        assert!(!report.contains("X-Amz-Signature"), "presigned query leaked: {report}");
-        assert!(!report.contains("s3cr3t"), "presigned signature leaked: {report}");
+        assert!(
+            !report.contains("X-Amz-Signature"),
+            "presigned query leaked: {report}"
+        );
+        assert!(
+            !report.contains("s3cr3t"),
+            "presigned signature leaked: {report}"
+        );
+        Ok(())
     }
 
-    const fn RREPORT_SCHEMA() -> &'static str {
-        REPORT_SCHEMA
+    #[test]
+    fn unknown_argument_diagnostic_owns_its_formatted_message() -> Test {
+        let error = {
+            let arguments = vec!["--not-an-option".to_owned()];
+            parse(&arguments).err().ok_or("unknown option accepted")?
+        };
+        assert_eq!(error, "unknown argument: --not-an-option");
+        Ok(())
+    }
+
+    #[test]
+    fn a_different_fetched_hash_cannot_be_reported_for_the_retained_input() -> Test {
+        let directory = Directory::new("hash-binding")?;
+        let staging = directory.0.join("staged.mjpeg");
+        let body = include_bytes!(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../../tests/fixtures/media/mjpeg/mjpeg_clean_3frames.mjpeg"
+        ));
+        std::fs::write(&staging, body)?;
+        let options = Options {
+            url: "http://127.0.0.1:1/bucket/clip.mjpeg".to_owned(),
+            root: directory.0.join("deployment"),
+            sensor_id: "sensor:s3-hash-binding".to_owned(),
+            stream_id: "stream:s3-hash-binding".to_owned(),
+            receive_time_ns: 1_000_000_000,
+            owner_authorized: true,
+            media_format: Some(FileFormatHint::JpegStream),
+            max_source_bytes: DEFAULT_MAX_SOURCE_BYTES,
+        };
+        let cx = context(&options.root)?;
+        let result = run_in(&options, &staging, sha256(b"different fetched object"), &cx);
+        cx.drain_and_finalize();
+        assert_eq!(
+            result
+                .err()
+                .ok_or("mismatched source hash produced a report")?,
+            "fetched object SHA-256 differs from retained input SHA-256",
+        );
+        Ok(())
     }
 }

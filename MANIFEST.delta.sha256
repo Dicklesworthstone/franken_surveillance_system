@@ -30,6 +30,7 @@ c1124ce716dd7f4d17182e5805ca949926c185cf6464f112adb53f6ae6cadb18  crates/fss-cli
 3e7b5376e512fe9065abbab1273b7810380d31ba9b78a5ca93a57b052f2fccb8  crates/fss-cli/src/bin/fss-file/localization_replay.rs
 f05d06478bc07644e6b50c112fd20dda35b0b07f887636330ee9fd73963c5b49  crates/fss-cli/src/bin/fss-file/localize.rs
 89d432a7d8c0db5e06d1eb30c8a4d31b7b8ff8c4f260d729fcd387f2c95fb056  crates/fss-cli/src/bin/fss-fusion-profile.rs
+eeda58671d7ab4d6b4bf817f5c3617b2d8eaebde45028348c703ca60313854d9  crates/fss-cli/src/bin/fss-import-s3.rs
 1207bfd573ee0203d5c53409654e2c05b14319efdb3adcaf68587a1138771d21  crates/fss-cli/src/bin/fss-replay-dwell.rs
 6690f95518d015668096c7af40cd3388a42ac80ed13ae892a10f288b4ecdb3fe  crates/fss-cli/src/bin/fss-scene-fuse.rs
 2acc2b18158bbf6884176679d19f733bdd53834985ca47782c55fccdf4339618  crates/fss-cli/src/bin/fss-scene-fuse/fixtures.rs
