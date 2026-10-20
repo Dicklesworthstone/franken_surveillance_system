@@ -79,6 +79,39 @@ human delivery. This slice does not implement native independent-provider reconc
 
 ## Bounds and validation
 
+### Owner-attested reconciliation
+
+The canonical operation-addressed reconciliation path is available separately:
+
+```sh
+fss commit --json --root /path/to/deployment \
+  --reconcile delivered --operation operation:example \
+  --evidence sha256:OWNER_EVIDENCE_DIGEST --statement 'Recipient confirmed receipt'
+```
+
+Inspect the preview and repeat the exact request with its `--approve` digest. The alternative
+outcome is `not_delivered`. This is an explicit owner attestation with `operator_asserted`
+provenance; it does not contact the provider, resend the alert, or turn relay acceptance into
+independent delivery evidence.
+
+Before appending a reconciliation transition, and before reporting an exact prior reconciliation
+as successful, the owner re-reads and verifies the canonical attestation record and its one-child
+manifest against the exact ledgered publication. Reads use the expected canonical byte lengths
+as allocation ceilings. A missing, corrupt or oversized record or manifest refuses with
+`ERR-ALERT-AUTHORITY-001`, even when the effect journal already names its digest. The refusal
+does not append an effect transition, republish the request, or erase the existing terminal state.
+Repairing the retained bytes permits the original approved retry to resume.
+
+The reconciliation integration contract covers both outcomes, cold exact retry, cancellation
+after request publication, interrupted `observed` delivery, and lost/corrupt custody before or
+after terminal commitment:
+
+```sh
+cargo test -p fss-reference --test alert_reconciliation_contract --locked --offline
+```
+
+### Cancellation and status bounds
+
 Requests admit at most 4096 operations/obligations and at most 64 MiB per journal at CLI
 preflight; status retains the snapshot reader's existing limits too. A complete JSON report is
 bounded by 8 MiB. Size/refusal errors produce no JSON prefix. Low-level deployment open,

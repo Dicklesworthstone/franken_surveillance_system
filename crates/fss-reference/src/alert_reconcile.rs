@@ -416,6 +416,56 @@ fn request_is_ledgered(deployment: &ReferenceDeployment, record: ContentDigest) 
     })
 }
 
+fn record_slot(record: ContentDigest) -> Result<SlotName, AlertReconcileError> {
+    let hex: String = record.bytes().iter().map(|b| format!("{b:02x}")).collect();
+    SlotName::parse(&format!("alert-reconcile-{hex}"))
+        .map_err(|_| AlertReconcileError::Inconsistent)
+}
+
+/// A journal reference is not current custody. Re-read the exact retained record and its
+/// canonical manifest, including on retries, before adding or reporting a terminal proof.
+fn verify_record_custody(
+    deployment: &ReferenceDeployment,
+    plan: &AlertReconciliationPlan,
+) -> Result<(), AlertReconcileError> {
+    let slot = record_slot(plan.record)?;
+    let manifest = ObjectManifest::new(slot.as_str(), vec![plan.record], None)
+        .map_err(ReferenceError::from)?;
+    let root_id = fss_publication::root_reachability_object_id(&slot)
+        .map_err(|_| AlertReconcileError::Inconsistent)?;
+    if !deployment.ledger().batches().iter().any(|batch| {
+        batch.children.contains(&plan.record)
+            && batch.deltas.iter().any(|delta| {
+                delta.family == ROOT_REACHABILITY_FAMILY
+                    && delta.object_id == root_id
+                    && delta.payload_digest == manifest.root()
+            })
+    }) {
+        return Err(AlertReconcileError::Inconsistent);
+    }
+    let bytes = record_bytes(
+        &plan.site,
+        &plan.principal,
+        &plan.prepared,
+        &plan.attestation,
+        plan.observed,
+    );
+    for (digest, expected) in [
+        (plan.record, bytes),
+        (manifest.root(), manifest.canonical_bytes()),
+    ] {
+        let retained = deployment
+            .publisher()
+            .spool()
+            .read_bounded(digest, expected.len())
+            .map_err(|_| AlertReconcileError::Inconsistent)?;
+        if retained != expected {
+            return Err(AlertReconcileError::Inconsistent);
+        }
+    }
+    Ok(())
+}
+
 /// Previews exactly one reconciliation. Writes nothing and contacts nothing.
 pub fn preview_alert_reconciliation(
     deployment: &ReferenceDeployment,
@@ -485,15 +535,25 @@ fn resume(
         .result_digest
         .filter(|digest| request_is_ledgered(deployment, *digest))
         .ok_or(AlertReconcileError::NotReconcilable(operation.state))?;
-    let bytes = deployment
-        .publisher()
-        .spool()
-        .read(bound)
-        .map_err(|_| AlertReconcileError::Inconsistent)?;
     let prepared = deployment
         .effects()
         .effect_journal()
         .prepared_record(operation_id)?;
+    // The unknown prior receipt is a fixed-width digest, so the live receipt gives the
+    // exact length ceiling without trusting a stored object's claimed size.
+    let maximum = record_bytes(
+        deployment.site_lineage(),
+        &authority.principal,
+        &prepared,
+        attestation,
+        operation.receipt_digest(),
+    )
+    .len();
+    let bytes = deployment
+        .publisher()
+        .spool()
+        .read_bounded(bound, maximum)
+        .map_err(|_| AlertReconcileError::Inconsistent)?;
     let observed = recorded_observation(
         &bytes,
         deployment.site_lineage(),
@@ -513,6 +573,7 @@ fn resume(
     if plan.record != bound || plan.approval != approval {
         return Err(AlertReconcileError::ApprovalMismatch);
     }
+    verify_record_custody(deployment, &plan)?;
     match (attestation.outcome, current.state) {
         (AlertReconciliationOutcome::Delivered, EffectState::Observed) => {
             complete(deployment, &plan, now, cx)
@@ -543,25 +604,15 @@ fn publish_record(
         plan.observed,
     );
     if request_is_ledgered(deployment, plan.record) {
-        return Ok(());
+        return verify_record_custody(deployment, plan);
     }
-    let hex: String = plan
-        .record
-        .bytes()
-        .iter()
-        .map(|b| format!("{b:02x}"))
-        .collect();
-    let slot = SlotName::parse(&format!("alert-reconcile-{hex}"))
-        .map_err(|_| AlertReconcileError::Inconsistent)?;
+    let slot = record_slot(plan.record)?;
     let _staged = deployment.stage_and_publish(&slot, &[bytes.as_slice()], cx)?;
     let manifest = ObjectManifest::new(slot.as_str(), vec![plan.record], None)
         .map_err(ReferenceError::from)?;
     let validity = CaptureInterval::new(plan.prepared.prepared_at, plan.prepared.prepared_at)?;
     deployment.publish_and_commit(&slot, &manifest, validity, cx)?;
-    if !request_is_ledgered(deployment, plan.record) {
-        return Err(AlertReconcileError::Inconsistent);
-    }
-    Ok(())
+    verify_record_custody(deployment, plan)
 }
 
 fn complete(
