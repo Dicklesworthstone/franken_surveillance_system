@@ -25,8 +25,8 @@ fn slice(first_mb: u32) -> Vec<u8> {
     while bits.len() < 8 {
         bits.push('1');
     }
-    let byte = u8::from_str_radix(&bits[..8], 2).ok().and_then(|b| Some(b));
-    vec![0x41, byte.unwrap_or(0xFF)]
+    let byte = u8::from_str_radix(&bits[..8], 2).map_or(0xFF, |b| b);
+    vec![0x41, byte]
 }
 
 /// Builds a VCL slice NAL (type 1) with first_mb 0 and pps_id `pps`.
@@ -99,7 +99,7 @@ fn p3_idr_and_parameter_ids() -> Result<(), Box<dyn std::error::Error>> {
         .push(&slice_with_pps(3))?
         .ok_or("slice after IDR splits the picture")?;
     assert!(au.contains_idr);
-    assert_eq!(au.sps_ids, vec![0]);
+    assert_eq!(au.sps_ids, [0]);
     assert_eq!(
         au.pps_ids,
         vec![0],
@@ -107,7 +107,7 @@ fn p3_idr_and_parameter_ids() -> Result<(), Box<dyn std::error::Error>> {
     );
     // The splitting slice's pps 3 belongs to the NEXT picture.
     let tail = asm.flush().ok_or("tail")?;
-    assert_eq!(tail.pps_ids, vec![3]);
+    assert_eq!(tail.pps_ids, [3]);
     emit("idr-parameter-ids", 3);
     Ok(())
 }
