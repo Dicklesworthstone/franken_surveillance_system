@@ -33,6 +33,33 @@ and cumulative work/cancellation. See [the operator workflow](docs/rtsp_source_r
 This closes the source-retention recovery refusal; it does not authenticate
 cameras, recover continuous coverage or qualify physical devices and release gates.
 
+## Runtime effect evidence and recovery (2026-10-20, reference)
+
+`fss-runtime::EffectCoordinator` retains a canonical `fss-core::EffectJournal`
+and the original preparation bindings independently of caller handles. Preparation
+binds the operation, idempotency key, request and precondition digests, obligation,
+terminal predicate, authority, owner region, resource, fence and registered
+prepare/commit grant pair. Exact preparation retries recover an inert handle;
+only the first successfully approved commit issues a dispatch permit. Dropping a
+handle cannot erase the receipt, authorize another dispatch or discharge an
+outstanding obligation.
+
+Adapter acceptance remains distinct from observation. Verification requires the
+same evidence digest recorded by observation; failure requires evidence and a
+reason, and cancellation uses the core cancellation-proof binding. A recovered
+inert handle can reconcile canonical state without regaining dispatch authority.
+Terminal settlement validates a candidate journal before resolving the matching
+region obligation, preserving state and caller tokens when authority, proof or
+region checks refuse. Indeterminate outcomes retain reconciliation provenance.
+
+The authority, lifecycle and effect-proof contract suites exercise duplicate
+requests, exact approval and precondition mismatches, all six registered effect
+families, wrong owner/tree/lease boundaries, dropped handles, proof mismatches,
+terminal retries and reconciliation after uncertainty. This coordinator is bounded
+to 4,096 retained operations in memory; it does not provide crash-persistent effect
+storage, authenticate adapter evidence or replace the existing durable effect
+owners. The pinned nightly passed all 117 runtime tests with `cargo test --locked --offline -p fss-runtime --all-targets --all-features`, including 63 tests in the affected contract suites. Repository qualification and native DSR receipts remain release authority.
+
 ## Runtime authority core (2026-10-18, reference)
 
 `fss-runtime` is enrolled as the program's runtime/authority core: `AuthorityCx`

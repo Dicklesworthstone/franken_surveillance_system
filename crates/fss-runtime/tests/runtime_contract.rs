@@ -886,93 +886,136 @@ fn effect_authority(
     )?)
 }
 
+use fss_core::{ContentDigest, EffectState, OperationId, RuntimeGrant, TimestampNs};
+use fss_runtime::effect::{
+    CommitApproval, EffectCoordinator, PrepareSpec, PreparedEffect, Reconciliation,
+};
+
+fn effect_preconditions() -> ContentDigest {
+    ContentDigest::sha256(b"approved physical state and device generation")
+}
+
+fn effect_spec<'a>(
+    operation: &'a OperationId,
+    resource: &'a str,
+    fence: u64,
+    grants: [RuntimeGrant; 2],
+    terminal_predicate: &'a str,
+) -> Result<PrepareSpec<'a>, Box<dyn std::error::Error>> {
+    Ok(PrepareSpec {
+        operation,
+        idempotency_key: fss_core::IdempotencyKey::parse(operation.as_str())?,
+        request_digest: ContentDigest::sha256(operation.as_str().as_bytes()),
+        precondition_digest: effect_preconditions(),
+        resource,
+        fence,
+        prepare_grant: grants[0],
+        commit_grant: grants[1],
+        terminal_predicate,
+    })
+}
+
+fn effect_approval(prepared: &PreparedEffect) -> CommitApproval {
+    CommitApproval {
+        prepared_digest: prepared.digest(),
+        current_precondition_digest: effect_preconditions(),
+    }
+}
+
 #[test]
 fn effect_happy_path_prepare_commit_observe_verify() -> Result<(), Box<dyn std::error::Error>> {
-    use fss_core::{ContentDigest, OperationId, RuntimeGrant, TimestampNs};
-    use fss_runtime::effect::EffectCoordinator;
-    use fss_runtime::lease::LeaseRegistry;
-
     let (auth, mut tree) = effect_authority(vec![
         "CAP-PTZ-PREPARE-001".to_string(),
         "CAP-PTZ-COMMIT-001".to_string(),
     ])?;
-    let mut leases = LeaseRegistry::new();
+    let mut leases = fss_runtime::lease::LeaseRegistry::new();
     let lease = leases.acquire(
         "device:ptz:porch",
         "region:fx",
         Some(10_000),
         TimestampNs(100),
     )?;
-
-    let prepared = EffectCoordinator::prepare(
+    let mut effects = EffectCoordinator::new();
+    let operation = OperationId::parse("op:ptz-1")?;
+    let prepared = effects.prepare(
         &auth,
         &mut tree,
-        &leases,
-        fss_runtime::effect::PrepareSpec {
-            operation: &OperationId::parse("op:ptz-1")?,
-            resource: "device:ptz:porch",
-            fence: lease.fence,
-            prepare_grant: RuntimeGrant::PtzPrepare,
-            commit_grant: RuntimeGrant::PtzCommit,
-            terminal_predicate: "camera panned to preset 3",
-        },
+        &mut leases,
+        effect_spec(
+            &operation,
+            "device:ptz:porch",
+            lease.fence,
+            [RuntimeGrant::PtzPrepare, RuntimeGrant::PtzCommit],
+            "camera panned to preset 3",
+        )?,
+        TimestampNs(101),
     )?;
-    assert_eq!(prepared.state(), fss_core::EffectState::Prepared);
-    // Obligation registered and pending: the leak oracle sees it.
+    assert_eq!(effects.state(&prepared)?, EffectState::Prepared);
     assert_eq!(auth.leaked_obligations(&tree)?.len(), 1);
-
-    let mut committed =
-        EffectCoordinator::commit(&auth, &tree, &mut leases, prepared, TimestampNs(200))?;
-    assert_eq!(committed.state(), fss_core::EffectState::Committed);
-
-    EffectCoordinator::adapter_accepted(&mut committed)?;
-    EffectCoordinator::observed(&mut committed)?;
-    EffectCoordinator::verified(
-        &mut tree,
+    let approval = effect_approval(&prepared);
+    let mut committed = effects.commit(
         &auth,
-        committed,
-        ContentDigest::sha256(b"preset-3-proof"),
+        &tree,
+        &mut leases,
+        prepared,
+        TimestampNs(200),
+        approval,
     )?;
-    // Obligation terminal: no leaks remain.
+    assert_eq!(effects.state(&committed)?, EffectState::Committed);
+    effects.adapter_accepted(&mut committed, None, TimestampNs(201))?;
+    let proof = ContentDigest::sha256(b"preset-3-proof");
+    effects.observed(&mut committed, proof, TimestampNs(202))?;
+    effects.verified(&mut tree, &auth, committed, proof, TimestampNs(203))?;
     assert!(auth.finalize_report(&tree)?.is_empty());
+    let receipt = effects
+        .journal()
+        .operation(&operation)
+        .ok_or("receipt missing")?;
+    assert_eq!(receipt.state, EffectState::Verified);
+    assert_eq!(receipt.result_digest, Some(proof));
     Ok(())
 }
 
 #[test]
 fn effect_commit_refused_on_stale_fence_and_missing_grant() -> Result<(), Box<dyn std::error::Error>>
 {
-    use fss_core::{OperationId, RuntimeGrant, TimestampNs};
-    use fss_runtime::effect::{EffectCoordError, EffectCoordinator};
-    use fss_runtime::lease::LeaseRegistry;
-
+    use fss_runtime::effect::EffectCoordError;
     let (auth, mut tree) = effect_authority(vec![
         "CAP-PTZ-PREPARE-001".to_string(),
         "CAP-PTZ-COMMIT-001".to_string(),
     ])?;
-    let mut leases = LeaseRegistry::new();
+    let mut effects = EffectCoordinator::new();
+    let mut leases = fss_runtime::lease::LeaseRegistry::new();
     let lease = leases.acquire("device:ptz:porch", "region:fx", None, TimestampNs(100))?;
-    let prepared = EffectCoordinator::prepare(
+    let operation = OperationId::parse("op:ptz-2")?;
+    let prepared = effects.prepare(
         &auth,
         &mut tree,
-        &leases,
-        fss_runtime::effect::PrepareSpec {
-            operation: &OperationId::parse("op:ptz-2")?,
-            resource: "device:ptz:porch",
-            fence: lease.fence,
-            prepare_grant: RuntimeGrant::PtzPrepare,
-            commit_grant: RuntimeGrant::PtzCommit,
-            terminal_predicate: "predicate",
-        },
+        &mut leases,
+        effect_spec(
+            &operation,
+            "device:ptz:porch",
+            lease.fence,
+            [RuntimeGrant::PtzPrepare, RuntimeGrant::PtzCommit],
+            "predicate",
+        )?,
+        TimestampNs(101),
     )?;
-
-    // Zombie: lease revoked between prepare and commit.
+    let approval = effect_approval(&prepared);
     leases.revoke(&lease.id)?;
-    let err = EffectCoordinator::commit(&auth, &tree, &mut leases, prepared, TimestampNs(200))
-        .err()
-        .ok_or("stale fence must refuse commit")?;
+    let err = effects
+        .commit(
+            &auth,
+            &tree,
+            &mut leases,
+            prepared,
+            TimestampNs(200),
+            approval,
+        )
+        .expect_err("stale fence must refuse commit");
     assert!(matches!(err.error(), EffectCoordError::Fence { .. }));
+    assert_eq!(effects.state(err.token())?, EffectState::Prepared);
 
-    // Missing commit grant: prepare-only authority.
     let (auth2, mut tree2) = effect_authority(vec!["CAP-PTZ-PREPARE-001".to_string()])?;
     let lease2 = leases.acquire(
         "device:ptz:porch",
@@ -980,101 +1023,126 @@ fn effect_commit_refused_on_stale_fence_and_missing_grant() -> Result<(), Box<dy
         None,
         TimestampNs(300),
     )?;
-    let prepared2 = EffectCoordinator::prepare(
+    let operation2 = OperationId::parse("op:ptz-3")?;
+    let prepared2 = effects.prepare(
         &auth2,
         &mut tree2,
-        &leases,
-        fss_runtime::effect::PrepareSpec {
-            operation: &OperationId::parse("op:ptz-3")?,
-            resource: "device:ptz:porch",
-            fence: lease2.fence,
-            prepare_grant: RuntimeGrant::PtzPrepare,
-            commit_grant: RuntimeGrant::PtzCommit,
-            terminal_predicate: "predicate",
-        },
+        &mut leases,
+        effect_spec(
+            &operation2,
+            "device:ptz:porch",
+            lease2.fence,
+            [RuntimeGrant::PtzPrepare, RuntimeGrant::PtzCommit],
+            "predicate",
+        )?,
+        TimestampNs(301),
     )?;
-    let err = EffectCoordinator::commit(&auth2, &tree2, &mut leases, prepared2, TimestampNs(400))
-        .err()
-        .ok_or("commit grant missing")?;
+    let approval2 = effect_approval(&prepared2);
+    let err = effects
+        .commit(
+            &auth2,
+            &tree2,
+            &mut leases,
+            prepared2,
+            TimestampNs(400),
+            approval2,
+        )
+        .expect_err("commit grant missing");
     assert!(matches!(err.error(), EffectCoordError::Grant { .. }));
+    assert_eq!(effects.state(err.token())?, EffectState::Prepared);
     Ok(())
 }
 
 #[test]
 fn effect_cancel_and_indeterminate_semantics() -> Result<(), Box<dyn std::error::Error>> {
-    use fss_core::{OperationId, RuntimeGrant, TimestampNs};
-    use fss_runtime::effect::{EffectCoordError, EffectCoordinator};
-    use fss_runtime::lease::LeaseRegistry;
-
+    use fss_runtime::effect::EffectCoordError;
     let (auth, mut tree) = effect_authority(vec![
         "CAP-ALERT-PREPARE-001".to_string(),
         "CAP-ALERT-COMMIT-001".to_string(),
     ])?;
-    let mut leases = LeaseRegistry::new();
+    let mut effects = EffectCoordinator::new();
+    let mut leases = fss_runtime::lease::LeaseRegistry::new();
     let lease = leases.acquire("webhook:ops", "region:fx", None, TimestampNs(0))?;
-
-    // Cancel before commit: obligation drains, no leak.
-    let prepared = EffectCoordinator::prepare(
+    let grants = [RuntimeGrant::AlertPrepare, RuntimeGrant::AlertCommit];
+    let operation = OperationId::parse("op:alert-1")?;
+    let prepared = effects.prepare(
         &auth,
         &mut tree,
-        &leases,
-        fss_runtime::effect::PrepareSpec {
-            operation: &OperationId::parse("op:alert-1")?,
-            resource: "webhook:ops",
-            fence: lease.fence,
-            prepare_grant: RuntimeGrant::AlertPrepare,
-            commit_grant: RuntimeGrant::AlertCommit,
-            terminal_predicate: "alert delivered",
-        },
+        &mut leases,
+        effect_spec(
+            &operation,
+            "webhook:ops",
+            lease.fence,
+            grants,
+            "alert delivered",
+        )?,
+        TimestampNs(2),
     )?;
-    EffectCoordinator::cancel_prepared(&mut tree, &auth, prepared)?;
+    let cancel_evidence = ContentDigest::sha256(b"owner withdrew pending alert");
+    effects.cancel_prepared(&mut tree, &auth, prepared, cancel_evidence, TimestampNs(3))?;
     assert!(auth.finalize_report(&tree)?.is_empty());
 
-    // Indeterminate requires a reconciliation note (INV-006).
-    let prepared2 = EffectCoordinator::prepare(
+    let operation2 = OperationId::parse("op:alert-2")?;
+    let prepared2 = effects.prepare(
         &auth,
         &mut tree,
-        &leases,
-        fss_runtime::effect::PrepareSpec {
-            operation: &OperationId::parse("op:alert-2")?,
-            resource: "webhook:ops",
-            fence: lease.fence,
-            prepare_grant: RuntimeGrant::AlertPrepare,
-            commit_grant: RuntimeGrant::AlertCommit,
-            terminal_predicate: "alert delivered",
-        },
+        &mut leases,
+        effect_spec(
+            &operation2,
+            "webhook:ops",
+            lease.fence,
+            grants,
+            "alert delivered",
+        )?,
+        TimestampNs(4),
     )?;
-    let committed2 =
-        EffectCoordinator::commit(&auth, &tree, &mut leases, prepared2, TimestampNs(10))?;
-    let err = EffectCoordinator::indeterminate(&mut tree, &auth, committed2, None)
-        .err()
-        .ok_or("note required")?;
+    let approval2 = effect_approval(&prepared2);
+    let committed2 = effects.commit(
+        &auth,
+        &tree,
+        &mut leases,
+        prepared2,
+        TimestampNs(10),
+        approval2,
+    )?;
+    let err = effects
+        .indeterminate(&mut tree, &auth, committed2, None, TimestampNs(11))
+        .expect_err("note required");
     assert!(matches!(
         err.error(),
         EffectCoordError::IndeterminateWithoutNote { .. }
     ));
+    assert_eq!(effects.state(err.token())?, EffectState::Committed);
 
-    // With a note it lands; the tree-wide oracle reports note coverage.
-    let prepared3 = EffectCoordinator::prepare(
+    let operation3 = OperationId::parse("op:alert-3")?;
+    let prepared3 = effects.prepare(
         &auth,
         &mut tree,
-        &leases,
-        fss_runtime::effect::PrepareSpec {
-            operation: &OperationId::parse("op:alert-3")?,
-            resource: "webhook:ops",
-            fence: lease.fence,
-            prepare_grant: RuntimeGrant::AlertPrepare,
-            commit_grant: RuntimeGrant::AlertCommit,
-            terminal_predicate: "alert delivered",
-        },
+        &mut leases,
+        effect_spec(
+            &operation3,
+            "webhook:ops",
+            lease.fence,
+            grants,
+            "alert delivered",
+        )?,
+        TimestampNs(12),
     )?;
-    let committed3 =
-        EffectCoordinator::commit(&auth, &tree, &mut leases, prepared3, TimestampNs(20))?;
-    EffectCoordinator::indeterminate(
+    let approval3 = effect_approval(&prepared3);
+    let committed3 = effects.commit(
+        &auth,
+        &tree,
+        &mut leases,
+        prepared3,
+        TimestampNs(20),
+        approval3,
+    )?;
+    effects.indeterminate(
         &mut tree,
         &auth,
         committed3,
         Some("webhook ack lost in partition; reconcile on reconnect"),
+        TimestampNs(21),
     )?;
     let report = fss_runtime::obligation::tree_report(&tree);
     let root = &report[0];
@@ -1084,55 +1152,67 @@ fn effect_cancel_and_indeterminate_semantics() -> Result<(), Box<dyn std::error:
         vec!["obligation:op:alert-3:terminal".to_string()]
     );
     assert!(root.indeterminate_without_note.is_empty());
+    assert_eq!(
+        effects
+            .journal()
+            .operation(&operation3)
+            .ok_or("receipt missing")?
+            .state,
+        EffectState::Indeterminate
+    );
     Ok(())
 }
 
 #[test]
 fn effect_illegal_transitions_are_typed_refusals() -> Result<(), Box<dyn std::error::Error>> {
-    use fss_core::{OperationId, RuntimeGrant, TimestampNs};
-    use fss_runtime::effect::{EffectCoordError, EffectCoordinator};
-    use fss_runtime::lease::LeaseRegistry;
-
+    use fss_runtime::effect::EffectCoordError;
     let (auth, mut tree) = effect_authority(vec![
         "CAP-PTZ-PREPARE-001".to_string(),
         "CAP-PTZ-COMMIT-001".to_string(),
     ])?;
-    let mut leases = LeaseRegistry::new();
+    let mut effects = EffectCoordinator::new();
+    let mut leases = fss_runtime::lease::LeaseRegistry::new();
     let lease = leases.acquire("device:ptz:x", "region:fx", None, TimestampNs(0))?;
-    let prepared = EffectCoordinator::prepare(
+    let operation = OperationId::parse("op:ptz-9")?;
+    let prepared = effects.prepare(
         &auth,
         &mut tree,
-        &leases,
-        fss_runtime::effect::PrepareSpec {
-            operation: &OperationId::parse("op:ptz-9")?,
-            resource: "device:ptz:x",
-            fence: lease.fence,
-            prepare_grant: RuntimeGrant::PtzPrepare,
-            commit_grant: RuntimeGrant::PtzCommit,
-            terminal_predicate: "predicate",
-        },
+        &mut leases,
+        effect_spec(
+            &operation,
+            "device:ptz:x",
+            lease.fence,
+            [RuntimeGrant::PtzPrepare, RuntimeGrant::PtzCommit],
+            "predicate",
+        )?,
+        TimestampNs(2),
     )?;
-    let mut committed =
-        EffectCoordinator::commit(&auth, &tree, &mut leases, prepared, TimestampNs(5))?;
-    // Committed → Observed directly is illegal (must first reach AdapterAccepted).
-    let err = EffectCoordinator::observed(&mut committed)
-        .err()
-        .ok_or("skip is illegal")?;
+    let approval = effect_approval(&prepared);
+    let mut committed = effects.commit(
+        &auth,
+        &tree,
+        &mut leases,
+        prepared,
+        TimestampNs(5),
+        approval,
+    )?;
+    let before = effects.journal().clone();
+    let err = effects
+        .observed(
+            &mut committed,
+            ContentDigest::sha256(b"premature observation"),
+            TimestampNs(6),
+        )
+        .expect_err("committed cannot skip adapter acceptance");
     assert!(matches!(err, EffectCoordError::IllegalTransition { .. }));
+    assert_eq!(effects.journal(), &before);
     Ok(())
 }
 
-// ---------- crash/cancellation cut-point harness (FSS-028) ----------
-//
-// The harness models a crash as dropping every in-memory session struct at
-// an exact transition boundary while the DURABLE state (region-tree
-// obligations) survives. After each cut, a fresh authority view over the
-// same tree must (a) surface the wreck through the leak oracle and (b)
-// offer a typed reconciliation path. No threads, no process kills: this is
-// the deterministic reference harness; hostile-process crash lanes belong
-// to the qualification bundle.
+// ---------- dropped-handle / cancellation cut-point harness (FSS-028) ----------
+// The application-owned journal and region survive caller-handle loss. These are
+// in-memory reference cuts, not claims about durable storage or process crashes.
 
-/// Cut-point inventory: every coordinator boundary where a crash can land.
 fn cut_point_inventory() -> Vec<&'static str> {
     vec![
         "after_prepare_before_commit",
@@ -1145,182 +1225,271 @@ fn cut_point_inventory() -> Vec<&'static str> {
 
 #[test]
 fn every_cut_point_is_enumerated_and_survivable() -> Result<(), Box<dyn std::error::Error>> {
-    // The inventory is stable and non-empty — a regression that deletes a
-    // cut point fails here.
     assert_eq!(cut_point_inventory().len(), 5);
     Ok(())
 }
 
-fn fx_setup() -> Result<
-    (
-        fss_runtime::authority::AuthorityCx,
-        fss_core::RegionTree,
-        fss_runtime::lease::LeaseRegistry,
-        u64,
-    ),
-    Box<dyn std::error::Error>,
-> {
-    let (auth, tree) = effect_authority(vec![
-        "CAP-PTZ-PREPARE-001".to_string(),
-        "CAP-PTZ-COMMIT-001".to_string(),
-    ])?;
-    let mut leases = fss_runtime::lease::LeaseRegistry::new();
-    let lease = leases.acquire(
-        "device:ptz:crash",
-        "region:fx",
-        None,
-        fss_core::TimestampNs(0),
-    )?;
-    Ok((auth, tree, leases, lease.fence))
+struct EffectFixture {
+    auth: fss_runtime::authority::AuthorityCx,
+    tree: fss_core::RegionTree,
+    leases: fss_runtime::lease::LeaseRegistry,
+    effects: EffectCoordinator,
+    fence: u64,
 }
 
-fn prepared_fx(
-    auth: &fss_runtime::authority::AuthorityCx,
-    tree: &mut fss_core::RegionTree,
-    leases: &fss_runtime::lease::LeaseRegistry,
-    fence: u64,
-    op: &str,
-) -> Result<fss_runtime::effect::PreparedEffect, Box<dyn std::error::Error>> {
-    let operation = fss_core::OperationId::parse(op)?;
-    let prepared = fss_runtime::effect::EffectCoordinator::prepare(
-        auth,
-        tree,
-        leases,
-        fss_runtime::effect::PrepareSpec {
-            operation: &operation,
-            resource: "device:ptz:crash",
-            fence,
-            prepare_grant: fss_core::RuntimeGrant::PtzPrepare,
-            commit_grant: fss_core::RuntimeGrant::PtzCommit,
-            terminal_predicate: "crash cut-point predicate",
-        },
-    )?;
-    Ok(prepared)
+impl EffectFixture {
+    fn new() -> Result<Self, Box<dyn std::error::Error>> {
+        let (auth, tree) = effect_authority(vec![
+            "CAP-PTZ-PREPARE-001".to_string(),
+            "CAP-PTZ-COMMIT-001".to_string(),
+        ])?;
+        let mut leases = fss_runtime::lease::LeaseRegistry::new();
+        let lease = leases.acquire("device:ptz:crash", "region:fx", None, TimestampNs(0))?;
+        Ok(Self {
+            auth,
+            tree,
+            leases,
+            effects: EffectCoordinator::new(),
+            fence: lease.fence,
+        })
+    }
+
+    fn prepare(&mut self, op: &str) -> Result<PreparedEffect, Box<dyn std::error::Error>> {
+        let operation = OperationId::parse(op)?;
+        Ok(self.effects.prepare(
+            &self.auth,
+            &mut self.tree,
+            &mut self.leases,
+            effect_spec(
+                &operation,
+                "device:ptz:crash",
+                self.fence,
+                [RuntimeGrant::PtzPrepare, RuntimeGrant::PtzCommit],
+                "crash cut-point predicate",
+            )?,
+            TimestampNs(2),
+        )?)
+    }
 }
 
 #[test]
 fn crash_after_prepare_leaves_named_leak_and_reconciles() -> Result<(), Box<dyn std::error::Error>>
 {
-    use fss_core::{ContentDigest, ObligationId, TimestampNs};
-    use fss_runtime::obligation::{ObligationTerminal, tree_report};
-
-    let (auth, mut tree, leases, fence) = fx_setup()?;
-    let prepared = prepared_fx(&auth, &mut tree, &leases, fence, "op:crash-1")?;
+    let mut f = EffectFixture::new()?;
+    let prepared = f.prepare("op:crash-1")?;
+    let operation = prepared.operation().clone();
     let obligation = prepared.obligation().clone();
-
-    // CRASH: the prepared session is dropped before commit. Nothing about
-    // the operation survives except the durable obligation on the tree.
     drop(prepared);
-
-    // Recovery view: the leak oracle names the wrecked operation.
-    let report = tree_report(&tree);
+    let report = fss_runtime::obligation::tree_report(&f.tree);
     assert_eq!(report[0].leaked.len(), 1);
     assert_eq!(report[0].leaked[0].id, obligation.as_str());
-
-    // Reconcile: the effect provably never dispatched (commit never ran),
-    // so the obligation resolves to a terminal failure with a digest of the
-    // crash-cut record — never silently dropped.
-    auth.resolve_obligation(
-        &mut tree,
-        &ObligationId::parse(obligation.as_str())?,
-        ObligationTerminal::Failed,
-        Some(ContentDigest::sha256(b"crashed-before-commit")),
-        None,
+    let recovered = f
+        .effects
+        .prepared(&operation)
+        .ok_or("retained preparation missing")?;
+    assert_eq!(f.effects.state(&recovered)?, EffectState::Prepared);
+    f.effects.reconcile(
+        &mut f.tree,
+        &f.auth,
+        &recovered,
+        Reconciliation::Failed {
+            proof: ContentDigest::sha256(b"dropped-before-commit"),
+            reason: "caller lost before dispatch",
+        },
+        TimestampNs(3),
     )?;
-    assert!(auth.finalize_report(&tree)?.is_empty());
-    let _ = TimestampNs(0);
+    assert!(f.auth.finalize_report(&f.tree)?.is_empty());
+    assert_eq!(f.effects.state(&recovered)?, EffectState::Failed);
+    assert_eq!(f.effects.journal().operations().count(), 1);
     Ok(())
 }
 
 #[test]
 fn crash_after_commit_is_indeterminate_with_mandatory_note()
 -> Result<(), Box<dyn std::error::Error>> {
-    use fss_core::TimestampNs;
-    use fss_runtime::effect::EffectCoordinator;
-    use fss_runtime::obligation::tree_report;
-
-    let (auth, mut tree, mut leases, fence) = fx_setup()?;
-    let prepared = prepared_fx(&auth, &mut tree, &leases, fence, "op:crash-2")?;
-    let committed =
-        EffectCoordinator::commit(&auth, &tree, &mut leases, prepared, TimestampNs(10))?;
-
-    // CRASH after commit: the dispatch may have happened. The honest
-    // reconciliation is Indeterminate with a durable note — NOT success,
-    // NOT failure.
+    let mut f = EffectFixture::new()?;
+    let prepared = f.prepare("op:crash-2")?;
+    let approval = effect_approval(&prepared);
+    let committed = f.effects.commit(
+        &f.auth,
+        &f.tree,
+        &mut f.leases,
+        prepared,
+        TimestampNs(10),
+        approval,
+    )?;
     let operation = committed.operation().clone();
     drop(committed);
-
-    let report = tree_report(&tree);
+    let report = fss_runtime::obligation::tree_report(&f.tree);
     assert_eq!(
         report[0].leaked.len(),
         1,
-        "pending obligation survives the crash"
+        "pending obligation survives handle loss"
     );
-
-    // The tree refuses Indeterminate without a note (INV-006) — verified in
-    // the oracle test. Reconcile WITH a note:
-    tree.resolve_obligation(
-        auth.region(),
-        &fss_core::ObligationId::parse(format!("obligation:{operation}:terminal"))?,
-        fss_core::ObligationState::Indeterminate,
-        None,
-        Some("crashed after commit; device state unknown until next telemetry"),
+    let recovered = f
+        .effects
+        .prepared(&operation)
+        .ok_or("retained preparation missing")?;
+    let before = f.effects.journal().clone();
+    assert!(
+        f.effects
+            .reconcile(
+                &mut f.tree,
+                &f.auth,
+                &recovered,
+                Reconciliation::Indeterminate(""),
+                TimestampNs(11)
+            )
+            .is_err()
+    );
+    assert_eq!(f.effects.journal(), &before);
+    f.effects.reconcile(
+        &mut f.tree,
+        &f.auth,
+        &recovered,
+        Reconciliation::Indeterminate(
+            "caller lost after commit; device state unknown until next telemetry",
+        ),
+        TimestampNs(11),
     )?;
-    let report = tree_report(&tree);
+    let report = fss_runtime::obligation::tree_report(&f.tree);
     assert_eq!(report[0].counts[3], 1);
     assert_eq!(
         report[0].leaked.len(),
         0,
         "indeterminate is not a pending leak"
     );
+    assert_eq!(f.effects.state(&recovered)?, EffectState::Indeterminate);
+    assert!(
+        f.effects
+            .commit(
+                &f.auth,
+                &f.tree,
+                &mut f.leases,
+                recovered.clone(),
+                TimestampNs(12),
+                effect_approval(&recovered)
+            )
+            .is_err()
+    );
+    Ok(())
+}
+
+#[test]
+fn crash_after_accept_retains_acceptance_without_claiming_observation()
+-> Result<(), Box<dyn std::error::Error>> {
+    let mut f = EffectFixture::new()?;
+    let prepared = f.prepare("op:crash-accepted")?;
+    let operation = prepared.operation().clone();
+    let approval = effect_approval(&prepared);
+    let mut committed = f.effects.commit(
+        &f.auth,
+        &f.tree,
+        &mut f.leases,
+        prepared,
+        TimestampNs(10),
+        approval,
+    )?;
+    let acceptance = ContentDigest::sha256(b"adapter accepted command");
+    f.effects
+        .adapter_accepted(&mut committed, Some(acceptance), TimestampNs(11))?;
+    drop(committed);
+    let recovered = f
+        .effects
+        .prepared(&operation)
+        .ok_or("retained preparation missing")?;
+    assert_eq!(
+        f.effects.receipt(&recovered)?.state,
+        EffectState::AdapterAccepted
+    );
+    assert_eq!(
+        f.effects.receipt(&recovered)?.result_digest,
+        Some(acceptance)
+    );
+    assert_eq!(f.auth.leaked_obligations(&f.tree)?.len(), 1);
+    let observed = ContentDigest::sha256(b"camera reached intended pose");
+    f.effects.reconcile(
+        &mut f.tree,
+        &f.auth,
+        &recovered,
+        Reconciliation::Observed(observed),
+        TimestampNs(12),
+    )?;
+    assert_eq!(f.auth.leaked_obligations(&f.tree)?.len(), 1);
+    f.effects.reconcile(
+        &mut f.tree,
+        &f.auth,
+        &recovered,
+        Reconciliation::Verified(observed),
+        TimestampNs(13),
+    )?;
+    assert!(f.auth.finalize_report(&f.tree)?.is_empty());
     Ok(())
 }
 
 #[test]
 fn crash_after_observe_preserves_pending_verify_obligation()
 -> Result<(), Box<dyn std::error::Error>> {
-    use fss_core::{ContentDigest, TimestampNs};
-    use fss_runtime::effect::EffectCoordinator;
-
-    let (auth, mut tree, mut leases, fence) = fx_setup()?;
-    let prepared = prepared_fx(&auth, &mut tree, &leases, fence, "op:crash-3")?;
-    let mut committed =
-        EffectCoordinator::commit(&auth, &tree, &mut leases, prepared, TimestampNs(10))?;
-    EffectCoordinator::adapter_accepted(&mut committed)?;
-    EffectCoordinator::observed(&mut committed)?;
-
-    // CRASH after observe: the observation WAS recorded, so reconciliation
-    // can complete verification against the retained observation digest.
-    drop(committed);
-    auth.resolve_obligation(
-        &mut tree,
-        &fss_core::ObligationId::parse("obligation:op:crash-3:terminal")?,
-        fss_runtime::obligation::ObligationTerminal::Completed,
-        Some(ContentDigest::sha256(b"observed-before-crash")),
-        None,
+    let mut f = EffectFixture::new()?;
+    let prepared = f.prepare("op:crash-3")?;
+    let operation = prepared.operation().clone();
+    let approval = effect_approval(&prepared);
+    let mut committed = f.effects.commit(
+        &f.auth,
+        &f.tree,
+        &mut f.leases,
+        prepared,
+        TimestampNs(10),
+        approval,
     )?;
-    assert!(auth.finalize_report(&tree)?.is_empty());
+    f.effects
+        .adapter_accepted(&mut committed, None, TimestampNs(11))?;
+    let proof = ContentDigest::sha256(b"observed-before-handle-loss");
+    f.effects.observed(&mut committed, proof, TimestampNs(12))?;
+    drop(committed);
+    let recovered = f
+        .effects
+        .prepared(&operation)
+        .ok_or("retained preparation missing")?;
+    assert_eq!(f.effects.receipt(&recovered)?.result_digest, Some(proof));
+    assert_eq!(f.auth.leaked_obligations(&f.tree)?.len(), 1);
+    f.effects.reconcile(
+        &mut f.tree,
+        &f.auth,
+        &recovered,
+        Reconciliation::Verified(proof),
+        TimestampNs(13),
+    )?;
+    assert!(f.auth.finalize_report(&f.tree)?.is_empty());
+    assert_eq!(f.effects.state(&recovered)?, EffectState::Verified);
     Ok(())
 }
 
 #[test]
 fn cancellation_mid_drain_never_strands_orphans() -> Result<(), Box<dyn std::error::Error>> {
-    use fss_core::TimestampNs;
-
-    // Cancellation requested while a subtree holds a pending obligation:
-    // the drain path surfaces the obligation instead of orphaning it.
-    let (auth, mut tree, leases, fence) = fx_setup()?;
-    let _prepared = prepared_fx(&auth, &mut tree, &leases, fence, "op:crash-4")?;
-
-    auth.request_cancellation(&mut tree, TimestampNs(100))?;
-    assert!(auth.is_cancel_requested(&tree)?);
-    // Drain is refused while obligations are pending: no silent orphaning.
-    let drain = tree.request_drain(auth.region(), Some("cancel"), TimestampNs(100));
+    let mut f = EffectFixture::new()?;
+    let prepared = f.prepare("op:crash-4")?;
+    f.auth.request_cancellation(&mut f.tree, TimestampNs(100))?;
+    assert!(f.auth.is_cancel_requested(&f.tree)?);
+    let drain = f
+        .tree
+        .request_drain(f.auth.region(), Some("cancel"), TimestampNs(100));
     assert!(drain.is_ok(), "drain request is idempotent-accepted");
-    // Finalize with a pending obligation must refuse (the tree owns this
-    // refusal; the oracle already names the leak).
-    let fin = tree.finalize(auth.region(), TimestampNs(200));
-    assert!(fin.is_err(), "finalize with pending obligation must refuse");
+    f.auth.begin_drain(&mut f.tree, TimestampNs(101))?;
+    assert!(
+        f.tree.finalize(f.auth.region(), TimestampNs(200)).is_err(),
+        "pending obligation must prevent finalize"
+    );
+    f.effects.cancel_prepared(
+        &mut f.tree,
+        &f.auth,
+        prepared,
+        ContentDigest::sha256(b"cancel before dispatch"),
+        TimestampNs(201),
+    )?;
+    let proof = f.auth.finalize(&mut f.tree, TimestampNs(202))?;
+    assert_eq!(proof.total_obligations, 1);
+    assert_eq!(proof.indeterminate_obligations, 0);
     Ok(())
 }
 
