@@ -7,6 +7,8 @@
 //! spool that holds staged and verified bytes and never claims visibility or durability.
 
 pub mod belief_verification;
+/// Encryption-context manifest (FSS-065).
+pub mod encryption;
 mod error;
 mod manifest;
 mod memory;
