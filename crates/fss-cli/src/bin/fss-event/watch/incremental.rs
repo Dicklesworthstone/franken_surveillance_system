@@ -124,7 +124,7 @@ pub(super) fn run(
         && action
             .cascade
             .as_ref()
-            .is_some_and(|options| options.fusion.is_some())
+            .is_some_and(|options| options.has_fusion())
     {
         return Err(WatchError::InvalidPlan(
             "calibrated incremental dwell excludes sensor-health screening",

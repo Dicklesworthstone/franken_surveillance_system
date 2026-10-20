@@ -207,8 +207,18 @@ fn dwell_advice_cannot_write_authority_or_bypass_health_and_native_budgets() -> 
         assert_eq!(f.snapshot()?, before);
     }
     let mut partial = with_profile(&f, &base, &p, "partial")?;
-    partial.extend(["--dwell-step-frames".into(), "64".into()]);
-    refuses(run(&partial)?, "excludes incremental dwell");
+    let partial_export = f.directory.0.join("unstarted-dwell-advice.json");
+    partial.extend([
+        "--dwell-step-frames".into(),
+        "64".into(),
+        "--report-out".into(),
+        partial_export.clone().into_os_string(),
+    ]);
+    refuses(
+        run(&partial)?,
+        "incremental dwell is unsupported without an exact completed checkpoint",
+    );
+    assert!(!partial_export.exists());
     assert_eq!(f.snapshot()?, before);
     let mut exhausted = with_profile(&f, &base, &p, "budget")?;
     exhausted.extend(["--dwell-pixel-budget".into(), "1".into()]);

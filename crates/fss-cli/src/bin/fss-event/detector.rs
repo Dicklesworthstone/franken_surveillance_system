@@ -50,6 +50,13 @@ pub(super) struct DetectorOptions {
     fusion: Option<FusionOptions>,
 }
 
+impl DetectorOptions {
+    /// Whether the request includes calibrated fusion, before any profile or package I/O.
+    pub(super) const fn has_fusion(&self) -> bool {
+        self.fusion.is_some()
+    }
+}
+
 fn find<'a>(values: &'a [(String, String)], key: &str) -> Option<&'a str> {
     values
         .iter()

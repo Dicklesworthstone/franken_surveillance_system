@@ -29,7 +29,7 @@ check() {
 check retained-localization cargo "+$channel" test --locked --offline --no-fail-fast \
     -p fss-reference --test recorded_twin_localization_contract
 check incremental-dwell cargo "+$channel" test --locked --offline --no-fail-fast \
-    -p fss-reference --lib ingest::long_dwell::tests
+    -p fss-reference --lib ingest::long_dwell
 check event-fusion cargo "+$channel" test --locked --offline --no-fail-fast \
     -p fss-cli --lib event_fusion::
 check operator-unit cargo "+$channel" test --locked --offline --no-fail-fast \
