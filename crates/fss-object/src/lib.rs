@@ -3,8 +3,9 @@
 //!
 //! The crate intentionally owns no network, async runtime, database, or remote archive behavior.
 //! It is the deterministic oracle that later FrankenFS/ATP/provider adapters must match.
-//! [`StagingSpool`] is its one local-filesystem backend: a crash-safe content-addressed staging
-//! spool that holds staged and verified bytes and never claims visibility or durability.
+//! [`StagingSpool`] retains content-addressed staged and verified bytes. The optional
+//! [`upload_journal`] composes it into bounded multipart restart custody; neither backend
+//! alone claims archive visibility, replication or retrievability.
 
 pub mod belief_verification;
 /// Encryption-context manifest (FSS-065).
@@ -23,6 +24,8 @@ pub mod provider;
 /// Graph-aware local retention, evidence holds, and bounded expiry execution.
 pub mod retention;
 mod spool;
+/// Durable, bounded multipart restart journal with an independently pinned history.
+pub mod upload_journal;
 /// Asupersync-owned staged uploader (FSS-063).
 pub mod uploader;
 

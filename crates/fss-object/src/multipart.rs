@@ -8,10 +8,19 @@
 //! Only a conclusive, intent-bound provider reconciliation permits further work.
 
 mod authority;
+pub mod recovery;
 
 pub use authority::{TransportCx, UploadIo};
+pub use recovery::{
+    MultipartRecovery, UploadJournal, UploadJournalPin, validate_checkpoint_transition,
+};
 
-use fss_core::{CanonicalEncoder, ContentDigest, DigestAlgorithm, OperationId, TimestampNs};
+use fss_core::{
+    BudgetVector, CanonicalEncoder, ContentDigest, DigestAlgorithm, OperationId, TimestampNs,
+};
+use fss_runtime::authority::AuthorityCx;
+
+use recovery::{Checkpoint, DispatchJournal, DurableState, TransportPersistence};
 
 use crate::planner::{ChunkPlan, ChunkPolicy, PlannedChunk, plan_chunks};
 
@@ -197,6 +206,14 @@ pub trait MultipartTransport {
 pub enum MultipartError {
     /// Authority, scope, capability or budget refused before transport dispatch.
     Authority(String),
+    /// The explicit durable journal refused or could not confirm a write.
+    Persistence(String),
+    /// Checkpoint bytes or their monotone state transition are invalid.
+    InvalidCheckpoint,
+    /// The independently retained head is absent, stale or belongs to another chain.
+    RecoveryPinMismatch,
+    /// A previous persistence failure requires a cold journal/session reopen.
+    DurabilityFailed,
     /// Canonical chunk layout, bounds, root or target is invalid.
     InvalidIntent,
     /// Another owner attempted to use an already-bound session.
@@ -344,6 +361,7 @@ pub struct MultipartSession<'a, T: MultipartTransport> {
     parts: Vec<Option<PartReceipt>>,
     owner: Option<(fss_core::RegionTreeIdentity, fss_core::RegionId)>,
     observed_at: TimestampNs,
+    durable: Option<DurableState<'a>>,
 }
 
 fn valid_label(value: &str) -> bool {
@@ -352,9 +370,9 @@ fn valid_label(value: &str) -> bool {
         && !value.chars().any(char::is_control)
 }
 
-impl<T: MultipartTransport> MultipartSession<'_, T> {
+impl<'a, T: MultipartTransport> MultipartSession<'a, T> {
     /// Pure preparation. No provider mutation occurs until `start` is admitted.
-    pub fn prepare<'a>(
+    pub fn prepare(
         transport: &'a mut T,
         plan: &ChunkPlan,
         manifest_root: ContentDigest,
@@ -400,7 +418,221 @@ impl<T: MultipartTransport> MultipartSession<'_, T> {
             parts: vec![None; plan.chunks.len()],
             owner: None,
             observed_at: now,
+            durable: None,
         })
+    }
+
+    /// Attach an empty, exclusively owned journal before the first dispatch.
+    /// Initial persistence is mandatory. Failure retains the live owner and
+    /// attached journal but blocks further effects until cold recovery.
+    /// `owner_metadata` is empty for protocol-only use or canonical StagedUpload
+    /// metadata; it cannot be replaced by an unrelated ownership format later.
+    pub fn attach_journal(
+        &mut self,
+        journal: &'a mut dyn UploadJournal,
+        io: UploadIo<'_>,
+        owner_metadata: Vec<u8>,
+    ) -> Result<UploadJournalPin, MultipartError> {
+        if self.durable.is_some()
+            || self.phase != MultipartPhase::Prepared
+            || journal.head().is_some()
+            || journal.latest().is_some()
+        {
+            return Err(MultipartError::InvalidCheckpoint);
+        }
+        authority::validate_binding(&io, &self.intent, &self.owner, self.observed_at)?;
+        let context = recovery::context(io.authority, io.tree)?;
+        let cancelled = io
+            .authority
+            .is_cancel_requested(io.tree)
+            .map_err(|error| MultipartError::Authority(error.to_string()))?;
+        let checkpoint = Checkpoint {
+            plan: self.plan.clone(),
+            intent: self.intent.clone(),
+            upload: self.upload.clone(),
+            phase: self.phase,
+            intended: self.intended.clone(),
+            parts: self.parts.clone(),
+            observed_at: io.now,
+            original_authority: context.clone(),
+            effective_authority: context,
+            consumed: *io.authority.budget().consumed(),
+            grant_mask: recovery::grant_mask(io.authority, self.intent.resource()),
+            cancelled,
+            owner_metadata,
+        };
+        // Validate before storing the borrow; a malformed owner recipe has not
+        // attempted persistence and must not consume the empty journal.
+        checkpoint.encode()?;
+        self.owner = Some((
+            io.tree.owner_identity().clone(),
+            io.authority.region().clone(),
+        ));
+        self.observed_at = io.now;
+        self.durable = Some(DurableState {
+            journal,
+            expected: None,
+            historical_consumed: BudgetVector::ZERO,
+            last: checkpoint.clone(),
+            poisoned: false,
+        });
+        self.durable
+            .as_mut()
+            .ok_or(MultipartError::InvalidCheckpoint)?
+            .persist(checkpoint)
+    }
+
+    /// Rebind inert recovery data to a fresh explicitly authorized child. Only
+    /// the remaining allowance is reserved; historical spending is not charged
+    /// a second time to this parent. This method performs no persistence or I/O.
+    pub fn restore(
+        transport: &'a mut T,
+        journal: &'a mut dyn UploadJournal,
+        recovery: &MultipartRecovery,
+        io: UploadIo<'_>,
+    ) -> Result<Self, MultipartError> {
+        // Uploader-owned journals must return through their obligation-aware
+        // constructor, including a retained indeterminate terminal settlement.
+        if !recovery.owner_metadata().is_empty() {
+            return Err(MultipartError::OwnerMismatch);
+        }
+        recovery.validate_restore(journal, io.now)?;
+        authority::validate_binding(&io, recovery.intent(), &None, recovery.observed_at())?;
+        let context = recovery::context(io.authority, io.tree)?;
+        recovery.validate_authority(&context, io.authority.grants())?;
+        if *io.authority.budget().consumed() != BudgetVector::ZERO
+            || recovery.cancelled()
+                && !io
+                    .authority
+                    .is_cancel_requested(io.tree)
+                    .map_err(|error| MultipartError::Authority(error.to_string()))?
+        {
+            return Err(MultipartError::OwnerMismatch);
+        }
+        Ok(Self::restore_prevalidated(transport, journal, recovery, io))
+    }
+
+    /// The owning uploader validates the complete recipe before reserving its
+    /// fresh child. Construction afterward cannot fail and strand that child.
+    pub(crate) fn restore_prevalidated(
+        transport: &'a mut T,
+        journal: &'a mut dyn UploadJournal,
+        recovery: &MultipartRecovery,
+        io: UploadIo<'_>,
+    ) -> Self {
+        let state = &recovery.checkpoint;
+        Self {
+            transport,
+            plan: state.plan.clone(),
+            intent: state.intent.clone(),
+            upload: state.upload.clone(),
+            phase: state.phase,
+            intended: state.intended.clone(),
+            parts: state.parts.clone(),
+            owner: Some((
+                io.tree.owner_identity().clone(),
+                io.authority.region().clone(),
+            )),
+            observed_at: state.observed_at,
+            durable: Some(DurableState {
+                journal,
+                expected: Some(recovery.head()),
+                historical_consumed: state.consumed,
+                last: state.clone(),
+                poisoned: false,
+            }),
+        }
+    }
+
+    /// Persist canonical owner restrictions or terminal settlement before the
+    /// runtime owner can close/refund its child. An ambiguous failure is sticky.
+    pub fn persist_owner(
+        &mut self,
+        io: UploadIo<'_>,
+        owner_metadata: Vec<u8>,
+    ) -> Result<UploadJournalPin, MultipartError> {
+        self.ensure_durable_ready()?;
+        authority::validate_binding(&io, &self.intent, &self.owner, self.observed_at)?;
+        let mut checkpoint = self
+            .checkpoint(io.authority, io.tree, io.now)?
+            .ok_or(MultipartError::InvalidCheckpoint)?;
+        checkpoint.owner_metadata = owner_metadata;
+        self.observed_at = io.now;
+        self.durable
+            .as_mut()
+            .ok_or(MultipartError::InvalidCheckpoint)?
+            .persist(checkpoint)
+    }
+
+    /// Independently retain this pin outside the journal to detect rollback.
+    #[must_use]
+    pub fn journal_pin(&self) -> Option<UploadJournalPin> {
+        self.durable.as_ref().and_then(|durable| durable.expected)
+    }
+    /// Whether write-ahead persistence is mandatory for this session.
+    #[must_use]
+    pub const fn is_durable(&self) -> bool {
+        self.durable.is_some()
+    }
+    /// A failed append blocks every subsequent effect until cold reopen.
+    #[must_use]
+    pub fn durability_failed(&self) -> bool {
+        self.durable
+            .as_ref()
+            .is_some_and(|durable| durable.poisoned)
+    }
+    /// Historical plus current-epoch consumption, without double charging it.
+    pub fn cumulative_consumed(
+        &self,
+        authority: &AuthorityCx,
+    ) -> Result<BudgetVector, MultipartError> {
+        self.durable
+            .as_ref()
+            .map_or(Ok(*authority.budget().consumed()), |durable| {
+                durable.cumulative(*authority.budget().consumed())
+            })
+    }
+
+    fn ensure_durable_ready(&self) -> Result<(), MultipartError> {
+        if let Some(durable) = &self.durable {
+            durable.ensure_ready()?;
+        }
+        Ok(())
+    }
+
+    fn checkpoint(
+        &self,
+        authority: &AuthorityCx,
+        tree: &fss_core::RegionTree,
+        now: TimestampNs,
+    ) -> Result<Option<Checkpoint>, MultipartError> {
+        let Some(durable) = &self.durable else {
+            return Ok(None);
+        };
+        let mut checkpoint = durable.last.clone();
+        checkpoint.upload = self.upload.clone();
+        checkpoint.phase = self.phase;
+        checkpoint.intended = self.intended.clone();
+        checkpoint.parts = self.parts.clone();
+        checkpoint.observed_at = now;
+        checkpoint.effective_authority = recovery::context(authority, tree)?;
+        checkpoint.consumed = durable.cumulative(*authority.budget().consumed())?;
+        checkpoint.grant_mask = recovery::grant_mask(authority, self.intent.resource());
+        checkpoint.cancelled |= authority
+            .is_cancel_requested(tree)
+            .map_err(|error| MultipartError::Authority(error.to_string()))?;
+        Ok(Some(checkpoint))
+    }
+
+    fn persist_local(&mut self, io: &UploadIo<'_>) -> Result<(), MultipartError> {
+        if let Some(checkpoint) = self.checkpoint(io.authority, io.tree, io.now)? {
+            self.durable
+                .as_mut()
+                .ok_or(MultipartError::InvalidCheckpoint)?
+                .persist(checkpoint)?;
+            self.observed_at = io.now;
+        }
+        Ok(())
     }
 
     /// The bound intent, including its stable reconciliation key.
@@ -446,6 +678,7 @@ impl<T: MultipartTransport> MultipartSession<'_, T> {
         operation: TransportOperation,
         expected: MultipartPhase,
     ) -> Result<(), MultipartError> {
+        self.ensure_durable_ready()?;
         if let MultipartPhase::Uncertain(operation) = self.phase {
             return Err(MultipartError::RequiresReconciliation { operation });
         }
@@ -461,30 +694,132 @@ impl<T: MultipartTransport> MultipartSession<'_, T> {
         self.parts.iter().flatten().cloned().collect()
     }
 
-    /// Start the stable intent. Lost initiation ACKs remain reconcilable by its key.
-    pub fn start(&mut self, io: UploadIo<'_>) -> Result<UploadId, MultipartError> {
-        self.require_phase(TransportOperation::Initiate, MultipartPhase::Prepared)?;
-        let mut cx = authority::admit(
+    /// One mandatory write-ahead boundary shared by every provider operation.
+    /// Reconciliation retains the original uncertain operation, so a crash in
+    /// the observation call never manufactures a new effect identity.
+    #[allow(clippy::too_many_arguments)]
+    fn dispatch<R, O>(
+        &mut self,
+        io: UploadIo<'_>,
+        operation: TransportOperation,
+        payload_bytes: u64,
+        intended_part: Option<(usize, ContentDigest)>,
+        invoke: impl FnOnce(
+            &mut T,
+            &mut TransportCx<'_>,
+            &UploadIntent,
+            Option<&UploadId>,
+        ) -> Result<R, String>,
+        observe: impl FnOnce(&mut Self, R) -> Result<O, MultipartError>,
+    ) -> Result<O, MultipartError> {
+        self.ensure_durable_ready()?;
+        if self
+            .durable
+            .as_ref()
+            .is_some_and(|durable| durable.last.cancelled)
+            && !matches!(
+                operation,
+                TransportOperation::Abort | TransportOperation::Reconcile
+            )
+        {
+            return Err(MultipartError::CancellationRequested);
+        }
+        let cx = authority::admit(
             io,
             &self.intent,
-            TransportOperation::Initiate,
-            0,
+            operation,
+            payload_bytes,
             &mut self.owner,
             &mut self.observed_at,
         )?;
-        self.phase = MultipartPhase::Uncertain(TransportOperation::Initiate);
-        let result = self.transport.initiate(&mut cx, &self.intent);
-        self.observed_at = cx.now();
-        let upload = result.map_err(|detail| MultipartError::Transport {
-            operation: TransportOperation::Initiate,
-            detail,
-        })?;
-        if !valid_label(&upload.0) {
-            return Err(MultipartError::ReconciliationMismatch);
+        if let Some((index, digest)) = intended_part {
+            self.intended[index] = Some(digest);
         }
-        self.upload = Some(upload.clone());
-        self.phase = MultipartPhase::Uploading;
-        Ok(upload)
+        if operation != TransportOperation::Reconcile {
+            self.phase = MultipartPhase::Uncertain(operation);
+        }
+        let pending = self.checkpoint(cx.authority(), cx.tree(), cx.now())?;
+        let (result, observed_at, consumed, cancelled) = {
+            let mut writer = match (&mut self.durable, &pending) {
+                (Some(durable), Some(checkpoint)) => Some(DispatchJournal {
+                    durable,
+                    checkpoint: checkpoint.clone(),
+                }),
+                _ => None,
+            };
+            if let Some(writer) = &mut writer {
+                // The first-dispatched part digest, uncertain operation and its
+                // entire cost are durable before the adapter sees any context.
+                writer.record(
+                    *cx.authority().budget().consumed(),
+                    cx.now(),
+                    cx.cancelled(),
+                )?;
+            }
+            let persistence = writer
+                .as_mut()
+                .map(|writer| writer as &mut dyn TransportPersistence);
+            let mut cx = cx.with_persistence(persistence);
+            let result = invoke(self.transport, &mut cx, &self.intent, self.upload.as_ref());
+            (
+                result,
+                cx.now(),
+                *cx.authority().budget().consumed(),
+                cx.cancelled(),
+            )
+        };
+        self.observed_at = observed_at;
+        // Even an adapter that catches a failed dynamic charge cannot return a
+        // success which would erase the failed durable admission.
+        if self.durability_failed() {
+            return Err(MultipartError::DurabilityFailed);
+        }
+        let result = match result {
+            Ok(response) => observe(self, response),
+            Err(detail) => Err(MultipartError::Transport { operation, detail }),
+        };
+        if let Some(durable) = &mut self.durable {
+            let mut checkpoint = durable.last.clone();
+            checkpoint.upload = self.upload.clone();
+            checkpoint.phase = self.phase;
+            checkpoint.intended = self.intended.clone();
+            checkpoint.parts = self.parts.clone();
+            checkpoint.observed_at = observed_at;
+            checkpoint.consumed = durable.cumulative(consumed)?;
+            checkpoint.cancelled |= cancelled;
+            if let Err(error) = durable.persist(checkpoint) {
+                // Withhold unpersisted knowledge and never allow terminal
+                // settlement/refund from an acknowledgement lost at this cut.
+                if let Some(pending) = pending {
+                    self.upload = pending.upload;
+                    self.phase = pending.phase;
+                    self.intended = pending.intended;
+                    self.parts = pending.parts;
+                }
+                return Err(error);
+            }
+        }
+        result
+    }
+
+    /// Start the stable intent. Lost initiation ACKs remain reconcilable by its key.
+    pub fn start(&mut self, io: UploadIo<'_>) -> Result<UploadId, MultipartError> {
+        self.require_phase(TransportOperation::Initiate, MultipartPhase::Prepared)?;
+        self.dispatch(
+            io,
+            TransportOperation::Initiate,
+            0,
+            None,
+            |transport, cx, intent, _| transport.initiate(cx, intent),
+            |session, upload| {
+                if !valid_label(&upload.0) {
+                    return Err(MultipartError::ReconciliationMismatch);
+                }
+                session.upload = Some(upload.clone());
+                session.phase = MultipartPhase::Uploading;
+                Ok(upload)
+            },
+        )
     }
 
     /// Upload one exact part. Identical confirmed replay has no transport traffic.
@@ -518,39 +853,36 @@ impl<T: MultipartTransport> MultipartSession<'_, T> {
             return Err(MultipartError::PartConflict { index });
         }
         if let Some(receipt) = &self.parts[position] {
-            return Ok(receipt.clone());
+            let receipt = receipt.clone();
+            self.persist_local(&io)?;
+            return Ok(receipt);
         }
-        let mut cx = authority::admit(
+        self.dispatch(
             io,
-            &self.intent,
             TransportOperation::UploadPart,
             chunk.len,
-            &mut self.owner,
-            &mut self.observed_at,
-        )?;
-        self.intended[position] = Some(digest);
-        self.phase = MultipartPhase::Uncertain(TransportOperation::UploadPart);
-        let upload = self
-            .upload
-            .as_ref()
-            .ok_or(MultipartError::ReconciliationMismatch)?;
-        let result = self
-            .transport
-            .upload_part(&mut cx, upload, &chunk, bytes, digest);
-        self.observed_at = cx.now();
-        let receipt = result.map_err(|detail| MultipartError::Transport {
-            operation: TransportOperation::UploadPart,
-            detail,
-        })?;
-        if receipt.index != index
-            || receipt.content_digest != digest
-            || !valid_label(&receipt.etag.0)
-        {
-            return Err(MultipartError::InvalidPartReceipt { index });
-        }
-        self.parts[position] = Some(receipt.clone());
-        self.phase = MultipartPhase::Uploading;
-        Ok(receipt)
+            Some((position, digest)),
+            |transport, cx, _, upload| {
+                transport.upload_part(
+                    cx,
+                    upload.ok_or_else(|| "missing owned upload identity".to_owned())?,
+                    &chunk,
+                    bytes,
+                    digest,
+                )
+            },
+            |session, receipt| {
+                if receipt.index != index
+                    || receipt.content_digest != digest
+                    || !valid_label(&receipt.etag.0)
+                {
+                    return Err(MultipartError::InvalidPartReceipt { index });
+                }
+                session.parts[position] = Some(receipt.clone());
+                session.phase = MultipartPhase::Uploading;
+                Ok(receipt)
+            },
+        )
     }
 
     /// Complete the bound root. Any failure keeps this owner and its part inventory.
@@ -560,6 +892,7 @@ impl<T: MultipartTransport> MultipartSession<'_, T> {
         plan: &ChunkPlan,
         manifest_root: ContentDigest,
     ) -> Result<CompletionReceipt, MultipartError> {
+        self.ensure_durable_ready()?;
         self.require_plan(plan)?;
         if manifest_root != self.intent.manifest_root {
             return Err(MultipartError::StaleRoot {
@@ -580,40 +913,36 @@ impl<T: MultipartTransport> MultipartSession<'_, T> {
             });
         }
         let parts = self.parts();
-        let mut cx = authority::admit(
+        self.dispatch(
             io,
-            &self.intent,
             TransportOperation::Complete,
             0,
-            &mut self.owner,
-            &mut self.observed_at,
-        )?;
-        self.phase = MultipartPhase::Uncertain(TransportOperation::Complete);
-        let result = self.transport.complete(
-            &mut cx,
-            self.upload
-                .as_ref()
-                .ok_or(MultipartError::ReconciliationMismatch)?,
-            &self.intent,
-            &parts,
-        );
-        self.observed_at = cx.now();
-        result.map_err(|detail| MultipartError::Transport {
-            operation: TransportOperation::Complete,
-            detail,
-        })?;
-        self.phase = MultipartPhase::Completed;
-        self.completion_receipt()
+            None,
+            |transport, cx, intent, upload| {
+                transport.complete(
+                    cx,
+                    upload.ok_or_else(|| "missing owned upload identity".to_owned())?,
+                    intent,
+                    &parts,
+                )
+            },
+            |session, ()| {
+                session.phase = MultipartPhase::Completed;
+                session.completion_receipt()
+            },
+        )
     }
 
     /// Abort known uncommitted staging. Uncertain completion must be reconciled first.
     pub fn abort(&mut self, io: UploadIo<'_>) -> Result<AbortReceipt, MultipartError> {
+        self.ensure_durable_ready()?;
         authority::validate_binding(&io, &self.intent, &self.owner, self.observed_at)?;
         if matches!(
             self.phase,
             MultipartPhase::Prepared | MultipartPhase::Aborted
         ) {
-            if self.phase == MultipartPhase::Prepared {
+            let previous_phase = self.phase;
+            if previous_phase == MultipartPhase::Prepared {
                 // A local no-dispatch abort is still an owner-bound outcome. It must not
                 // become a reusable receipt for another region with the same operation ID.
                 self.owner = Some((
@@ -623,56 +952,57 @@ impl<T: MultipartTransport> MultipartSession<'_, T> {
                 self.observed_at = io.now;
             }
             self.phase = MultipartPhase::Aborted;
+            if previous_phase == MultipartPhase::Prepared
+                && let Err(error) = self.persist_local(&io)
+            {
+                self.phase = previous_phase;
+                return Err(error);
+            }
             return Ok(self.abort_receipt());
         }
         self.require_phase(TransportOperation::Abort, MultipartPhase::Uploading)?;
-        let mut cx = authority::admit(
+        self.dispatch(
             io,
-            &self.intent,
             TransportOperation::Abort,
             0,
-            &mut self.owner,
-            &mut self.observed_at,
-        )?;
-        self.phase = MultipartPhase::Uncertain(TransportOperation::Abort);
-        let result = self.transport.abort(
-            &mut cx,
-            self.upload
-                .as_ref()
-                .ok_or(MultipartError::ReconciliationMismatch)?,
-            &self.intent,
-        );
-        self.observed_at = cx.now();
-        result.map_err(|detail| MultipartError::Transport {
-            operation: TransportOperation::Abort,
-            detail,
-        })?;
-        self.phase = MultipartPhase::Aborted;
-        Ok(self.abort_receipt())
+            None,
+            |transport, cx, intent, upload| {
+                transport.abort(
+                    cx,
+                    upload.ok_or_else(|| "missing owned upload identity".to_owned())?,
+                    intent,
+                )
+            },
+            |session, ()| {
+                session.phase = MultipartPhase::Aborted;
+                Ok(session.abort_receipt())
+            },
+        )
     }
 
     /// Observe an uncertain dispatch without retrying it or manufacturing a terminal result.
     pub fn reconcile(&mut self, io: UploadIo<'_>) -> Result<MultipartPhase, MultipartError> {
+        self.ensure_durable_ready()?;
         if !matches!(self.phase, MultipartPhase::Uncertain(_)) {
             return Err(MultipartError::WrongState {
                 operation: TransportOperation::Reconcile,
                 state: self.phase,
             });
         }
-        let mut cx = authority::admit(
+        self.dispatch(
             io,
-            &self.intent,
             TransportOperation::Reconcile,
             0,
-            &mut self.owner,
-            &mut self.observed_at,
-        )?;
-        let result = self.transport.reconcile(&mut cx, &self.intent);
-        self.observed_at = cx.now();
-        let response = result.map_err(|detail| MultipartError::Transport {
-            operation: TransportOperation::Reconcile,
-            detail,
-        })?;
+            None,
+            |transport, cx, intent, _| transport.reconcile(cx, intent),
+            Self::observe_reconciliation,
+        )
+    }
+
+    fn observe_reconciliation(
+        &mut self,
+        response: Reconciliation,
+    ) -> Result<MultipartPhase, MultipartError> {
         if response.intent_digest != self.intent.digest {
             return Err(MultipartError::ReconciliationMismatch);
         }

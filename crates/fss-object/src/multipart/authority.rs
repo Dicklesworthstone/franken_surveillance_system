@@ -6,6 +6,7 @@ use fss_core::{
 };
 use fss_runtime::authority::AuthorityCx;
 
+use super::recovery::TransportPersistence;
 use super::{MultipartError, TransportOperation, UploadIntent};
 
 /// Caller-supplied execution authority and time. Construction grants no I/O;
@@ -23,12 +24,13 @@ pub struct UploadIo<'a> {
 pub struct TransportCx<'a> {
     authority: &'a mut AuthorityCx,
     tree: &'a RegionTree,
-    resource: &'a str,
+    resource: String,
     operation: TransportOperation,
     now: TimestampNs,
+    persistence: Option<&'a mut dyn TransportPersistence>,
 }
 
-impl TransportCx<'_> {
+impl<'a> TransportCx<'a> {
     /// Owning child authority, for the transport's own effect boundary.
     #[must_use]
     pub fn authority(&self) -> &AuthorityCx {
@@ -37,7 +39,7 @@ impl TransportCx<'_> {
     /// Exact admitted resource, not an arbitrary destination chosen by the adapter.
     #[must_use]
     pub fn resource(&self) -> &str {
-        self.resource
+        &self.resource
     }
     /// Protocol operation admitted for this call.
     #[must_use]
@@ -58,14 +60,17 @@ impl TransportCx<'_> {
         // Observing a later clock boundary is not undone by a deadline/cancellation refusal.
         // The session retains this time even when the transport returns an error afterward.
         self.now = now;
-        check(
+        let result = check(
             self.authority,
             self.tree,
-            self.resource,
+            &self.resource,
             self.operation,
             now,
-        )?;
-        Ok(())
+        );
+        // Even refused later time/cancellation observations must survive reopen.
+        // An adapter cannot turn a failed journal append into another I/O attempt.
+        self.persist()?;
+        result
     }
 
     /// Admit framing, response buffers and other transport-specific byte costs
@@ -85,7 +90,46 @@ impl TransportCx<'_> {
             .budget_mut(self.tree)
             .map_err(authority)?
             .spend_vector(&cost)
-            .map_err(authority)
+            .map_err(authority)?;
+        // Returning admission is the effect boundary: the budget charge must
+        // already be durable before the transport may perform its extra I/O.
+        self.persist()
+    }
+
+    pub(super) fn tree(&self) -> &RegionTree {
+        self.tree
+    }
+
+    pub(super) fn cancelled(&self) -> bool {
+        // An invalidated authority is never a reason to forget cancellation.
+        self.authority
+            .is_cancel_requested(self.tree)
+            .unwrap_or(true)
+    }
+
+    pub(super) fn with_persistence<'call>(
+        self,
+        persistence: Option<&'call mut dyn TransportPersistence>,
+    ) -> TransportCx<'call>
+    where
+        'a: 'call,
+    {
+        TransportCx {
+            authority: self.authority,
+            tree: self.tree,
+            resource: self.resource,
+            operation: self.operation,
+            now: self.now,
+            persistence,
+        }
+    }
+
+    fn persist(&mut self) -> Result<(), MultipartError> {
+        let cancelled = self.cancelled();
+        if let Some(persistence) = &mut self.persistence {
+            persistence.record(*self.authority.budget().consumed(), self.now, cancelled)?;
+        }
+        Ok(())
     }
 }
 
@@ -195,7 +239,7 @@ pub(super) fn validate_owner(
 
 pub(super) fn admit<'a>(
     io: UploadIo<'a>,
-    intent: &'a UploadIntent,
+    intent: &UploadIntent,
     operation: TransportOperation,
     payload_bytes: u64,
     owner: &mut Option<(RegionTreeIdentity, RegionId)>,
@@ -231,8 +275,9 @@ pub(super) fn admit<'a>(
     Ok(TransportCx {
         authority: io.authority,
         tree: io.tree,
-        resource: intent.resource(),
+        resource: intent.resource().to_owned(),
         operation,
         now: io.now,
+        persistence: None,
     })
 }

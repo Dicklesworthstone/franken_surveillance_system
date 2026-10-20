@@ -8,22 +8,28 @@
 //! Conclusive receipts prove completion/abort; unresolved closure preserves uncertainty
 //! and its follow-up note. Both drain/finalize the child and return only unused allowance.
 //!
-//! The region tree is an in-process owner, not a durable transfer journal. Dropping
-//! unsettled work leaves a visible child obligation and charged reservation.
+//! An optional bounded journal preserves exact transfer knowledge and ownership
+//! across restart. Recovery validates an independently pinned intent and creates
+//! a fresh explicitly authorized child; persisted bytes never recreate live authority.
+//! Dropping unsettled work leaves a visible child obligation and charged reservation.
 //! No network transport, encryption implementation or retrievability claim is added.
 
+use std::collections::BTreeSet;
+
 use fss_core::{
-    BudgetVector, CanonicalEncoder, ContentDigest, ContextAuthority, DigestAlgorithm, Obligation,
-    ObligationId, ObligationState, OperationId, RegionId, RegionKind, RegionState, RegionTree,
-    RootAuthoritySpec, RuntimeGrant, TimestampNs,
+    BudgetVector, CanonicalDecode, CanonicalDecoder, CanonicalEncode, CanonicalEncoder,
+    ContentDigest, ContextAuthority, DigestAlgorithm, Obligation, ObligationId, ObligationState,
+    OperationId, RegionId, RegionKind, RegionState, RegionTree, RootAuthoritySpec, RuntimeGrant,
+    TimestampNs,
 };
 use fss_runtime::authority::{AuthorityCx, AuthorityError};
 use fss_runtime::grant::GrantSet;
 use fss_runtime::obligation::{ObligationTerminal, new_obligation};
 
 use crate::multipart::{
-    AbortReceipt, CompletionReceipt, MultipartError, MultipartPhase, MultipartSession,
-    MultipartTransport, PartReceipt, TransportOperation, UploadIntent, UploadIo,
+    AbortReceipt, CompletionReceipt, MultipartError, MultipartPhase, MultipartRecovery,
+    MultipartSession, MultipartTransport, PartReceipt, TransportOperation, UploadIntent, UploadIo,
+    UploadJournal, UploadJournalPin,
 };
 use crate::planner::{ChunkPlan, ChunkPolicy, PlannerError, plan_chunks};
 
@@ -80,8 +86,9 @@ pub const MAX_UPLOAD_RECOVERY_NOTE_BYTES: usize = 256;
 
 /// Local ownership closure with an explicitly unresolved provider outcome.
 ///
-/// This records a follow-up reference, not provider rollback, completion, or durable external
-/// journal persistence. The exact bound note and proof remain on the canonical child obligation.
+/// This records a follow-up reference, not provider rollback or completion. The exact
+/// bound note and proof remain on the canonical child obligation and, when attached,
+/// the upload journal before the child's unused allowance can be released.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct IndeterminateUploadReceipt {
     intent_digest: ContentDigest,
@@ -131,6 +138,327 @@ impl IndeterminateUploadReceipt {
     }
 }
 
+const MAX_UPLOAD_OWNER_BYTES: usize = 64 * 1024;
+const UPLOAD_TERMINAL_PREDICATE: &str =
+    "exact multipart intent completed or staging conclusively aborted";
+
+fn checkpoint_error(_: impl std::fmt::Display) -> MultipartError {
+    MultipartError::InvalidCheckpoint
+}
+
+fn operation_tag(operation: TransportOperation) -> (u8, &'static str) {
+    match operation {
+        TransportOperation::Initiate => (1, "initiate"),
+        TransportOperation::UploadPart => (2, "upload_part"),
+        TransportOperation::Complete => (3, "complete"),
+        TransportOperation::Abort => (4, "abort"),
+        TransportOperation::Reconcile => (5, "reconcile"),
+    }
+}
+
+fn decode_operation(tag: u8) -> Result<TransportOperation, MultipartError> {
+    match tag {
+        1 => Ok(TransportOperation::Initiate),
+        2 => Ok(TransportOperation::UploadPart),
+        3 => Ok(TransportOperation::Complete),
+        4 => Ok(TransportOperation::Abort),
+        5 => Ok(TransportOperation::Reconcile),
+        _ => Err(MultipartError::InvalidCheckpoint),
+    }
+}
+
+fn unresolved_prefix(
+    intent: ContentDigest,
+    operation: TransportOperation,
+    reference: ContentDigest,
+) -> String {
+    format!(
+        "multipart unresolved; intent={intent}; operation={}; reference={reference}; note=",
+        operation_tag(operation).1,
+    )
+}
+
+fn make_indeterminate_receipt(
+    intent_digest: ContentDigest,
+    region: RegionId,
+    obligation: ObligationId,
+    operation: TransportOperation,
+    reconciliation_reference: ContentDigest,
+    note: &str,
+) -> Result<IndeterminateUploadReceipt, UploaderError> {
+    if note.trim().is_empty()
+        || note.len() > MAX_UPLOAD_RECOVERY_NOTE_BYTES
+        || note.chars().any(char::is_control)
+        || reconciliation_reference.algorithm() != DigestAlgorithm::Sha256
+        || reconciliation_reference.bytes() == [0; 32]
+    {
+        return Err(authority(
+            "invalid unresolved-upload note or follow-up reference",
+        ));
+    }
+    let note = format!(
+        "{}{note}",
+        unresolved_prefix(intent_digest, operation, reconciliation_reference),
+    );
+    if note.len() > 512 {
+        return Err(authority("bound unresolved-upload note exceeds its limit"));
+    }
+    let mut encoder = CanonicalEncoder::new();
+    encoder.text("fss.multipart_indeterminate.v1");
+    encoder.digest(intent_digest);
+    encoder.text(region.as_str());
+    encoder.text(obligation.as_str());
+    encoder.u8(operation_tag(operation).0);
+    encoder.digest(reconciliation_reference);
+    encoder.text(&note);
+    let digest = ContentDigest::sha256(&encoder.finish_checked().map_err(authority)?);
+    Ok(IndeterminateUploadReceipt {
+        intent_digest,
+        region,
+        obligation,
+        operation,
+        reconciliation_reference,
+        note,
+        digest,
+    })
+}
+
+/// Inert canonical ownership facts carried by the protocol checkpoint. These are
+/// never an execution context. Effective authority can only narrow, and its
+/// resource grants refer solely to the checkpoint's immutable upload intent.
+#[derive(Clone, Debug, PartialEq)]
+struct UploadOwnerRecord {
+    intent_digest: ContentDigest,
+    original_authority: ContextAuthority,
+    effective_authority: ContextAuthority,
+    grants: Vec<String>,
+    cancelled: bool,
+    obligation: Obligation,
+    reconciliation_note: Option<String>,
+    indeterminate_receipt: Option<IndeterminateUploadReceipt>,
+}
+
+impl UploadOwnerRecord {
+    fn validate(&self) -> Result<(), MultipartError> {
+        self.original_authority
+            .validate()
+            .map_err(checkpoint_error)?;
+        self.effective_authority
+            .validate()
+            .map_err(checkpoint_error)?;
+        self.effective_authority
+            .verify_narrowing_of(&self.original_authority)
+            .map_err(checkpoint_error)?;
+        GrantSet::from_authority(&self.original_authority).map_err(checkpoint_error)?;
+        if self.intent_digest.algorithm() != DigestAlgorithm::Sha256
+            || self.intent_digest.bytes() == [0; 32]
+            || self.original_authority.cancellation_reason.is_some()
+            || self.effective_authority.cancellation_reason.is_some()
+            || self.effective_authority.operation_id != self.original_authority.operation_id
+            || self.effective_authority.privacy_scope != self.original_authority.privacy_scope
+            || self.effective_authority.retention_scope != self.original_authority.retention_scope
+            || self.effective_authority.lease_fence != self.original_authority.lease_fence
+            || self.effective_authority.idempotency_key != self.original_authority.idempotency_key
+            || self.effective_authority.lab_controls != self.original_authority.lab_controls
+            || self.grants.len() > self.effective_authority.capabilities().len()
+            || self.grants.windows(2).any(|pair| pair[0] >= pair[1])
+            || self.grants.iter().any(|grant| {
+                !self.effective_authority.has_capability(grant)
+                    || RuntimeGrant::from_id(grant).is_err()
+            })
+        {
+            return Err(MultipartError::InvalidCheckpoint);
+        }
+        let operation = &self.original_authority.operation_id;
+        let pending = new_obligation(
+            format!("obligation:upload:{}:drain", operation.as_str()),
+            operation.clone(),
+            UPLOAD_TERMINAL_PREDICATE,
+        )
+        .map_err(checkpoint_error)?;
+        if self.obligation.obligation_id != pending.obligation_id
+            || self.obligation.operation_id != pending.operation_id
+            || self.obligation.terminal_predicate != pending.terminal_predicate
+        {
+            return Err(MultipartError::InvalidCheckpoint);
+        }
+        match self.obligation.state {
+            ObligationState::Pending
+                if self.obligation.proof_digest.is_none()
+                    && self.reconciliation_note.is_none()
+                    && self.indeterminate_receipt.is_none() => {}
+            ObligationState::Verified | ObligationState::Cancelled
+                if self.obligation.proof_digest.is_some_and(|digest| {
+                    digest.algorithm() == DigestAlgorithm::Sha256 && digest.bytes() != [0; 32]
+                }) && self.reconciliation_note.is_none()
+                    && self.indeterminate_receipt.is_none() => {}
+            ObligationState::Indeterminate => {
+                let receipt = self
+                    .indeterminate_receipt
+                    .as_ref()
+                    .ok_or(MultipartError::InvalidCheckpoint)?;
+                let prefix = unresolved_prefix(
+                    self.intent_digest,
+                    receipt.operation,
+                    receipt.reconciliation_reference,
+                );
+                let raw_note = receipt
+                    .note
+                    .strip_prefix(&prefix)
+                    .ok_or(MultipartError::InvalidCheckpoint)?;
+                let expected = make_indeterminate_receipt(
+                    self.intent_digest,
+                    RegionId::new(format!("region:upload:{}", operation.as_str()))
+                        .map_err(checkpoint_error)?,
+                    self.obligation.obligation_id.clone(),
+                    receipt.operation,
+                    receipt.reconciliation_reference,
+                    raw_note,
+                )
+                .map_err(checkpoint_error)?;
+                if receipt != &expected
+                    || self.obligation.proof_digest != Some(receipt.digest())
+                    || self.reconciliation_note.as_deref() != Some(receipt.note())
+                {
+                    return Err(MultipartError::InvalidCheckpoint);
+                }
+            }
+            _ => return Err(MultipartError::InvalidCheckpoint),
+        }
+        Ok(())
+    }
+
+    fn encode(&self) -> Result<Vec<u8>, MultipartError> {
+        self.validate()?;
+        let mut encoder = CanonicalEncoder::new();
+        encoder.text("fss.multipart_owner.v1");
+        encoder.digest(self.intent_digest);
+        self.original_authority.encode_canonical(&mut encoder);
+        self.effective_authority.encode_canonical(&mut encoder);
+        encoder.u64(self.grants.len() as u64);
+        for grant in &self.grants {
+            encoder.text(grant);
+        }
+        encoder.bool(self.cancelled);
+        self.obligation.encode_canonical(&mut encoder);
+        encoder.bool(self.reconciliation_note.is_some());
+        if let Some(note) = &self.reconciliation_note {
+            encoder.text(note);
+        }
+        encoder.bool(self.indeterminate_receipt.is_some());
+        if let Some(receipt) = &self.indeterminate_receipt {
+            encoder.u8(operation_tag(receipt.operation).0);
+            encoder.digest(receipt.reconciliation_reference);
+            encoder.text(&receipt.note);
+            encoder.digest(receipt.digest);
+        }
+        let bytes = encoder.finish_checked().map_err(checkpoint_error)?;
+        if bytes.len() > MAX_UPLOAD_OWNER_BYTES {
+            return Err(MultipartError::InvalidCheckpoint);
+        }
+        Ok(bytes)
+    }
+
+    fn decode(bytes: &[u8]) -> Result<Self, MultipartError> {
+        if bytes.len() > MAX_UPLOAD_OWNER_BYTES {
+            return Err(MultipartError::InvalidCheckpoint);
+        }
+        let mut decoder = CanonicalDecoder::new(bytes);
+        if decoder.text().map_err(checkpoint_error)? != "fss.multipart_owner.v1" {
+            return Err(MultipartError::InvalidCheckpoint);
+        }
+        let intent_digest = decoder.digest().map_err(checkpoint_error)?;
+        let original_authority =
+            ContextAuthority::decode_canonical(&mut decoder).map_err(checkpoint_error)?;
+        let effective_authority =
+            ContextAuthority::decode_canonical(&mut decoder).map_err(checkpoint_error)?;
+        let count = decoder.u64().map_err(checkpoint_error)?;
+        if count > 64 {
+            return Err(MultipartError::InvalidCheckpoint);
+        }
+        let mut grants = Vec::with_capacity(count as usize);
+        for _ in 0..count {
+            grants.push(decoder.text().map_err(checkpoint_error)?.to_string());
+        }
+        let cancelled = decoder.bool().map_err(checkpoint_error)?;
+        let obligation = Obligation::decode_canonical(&mut decoder).map_err(checkpoint_error)?;
+        let reconciliation_note = if decoder.bool().map_err(checkpoint_error)? {
+            Some(decoder.text().map_err(checkpoint_error)?.to_string())
+        } else {
+            None
+        };
+        let indeterminate_receipt = if decoder.bool().map_err(checkpoint_error)? {
+            Some(IndeterminateUploadReceipt {
+                intent_digest,
+                region: RegionId::new(format!(
+                    "region:upload:{}",
+                    original_authority.operation_id.as_str(),
+                ))
+                .map_err(checkpoint_error)?,
+                obligation: obligation.obligation_id.clone(),
+                operation: decode_operation(decoder.u8().map_err(checkpoint_error)?)?,
+                reconciliation_reference: decoder.digest().map_err(checkpoint_error)?,
+                note: decoder.text().map_err(checkpoint_error)?.to_string(),
+                digest: decoder.digest().map_err(checkpoint_error)?,
+            })
+        } else {
+            None
+        };
+        decoder.ensure_finished().map_err(checkpoint_error)?;
+        let record = Self {
+            intent_digest,
+            original_authority,
+            effective_authority,
+            grants,
+            cancelled,
+            obligation,
+            reconciliation_note,
+            indeterminate_receipt,
+        };
+        if record.encode()? != bytes {
+            return Err(MultipartError::InvalidCheckpoint);
+        }
+        Ok(record)
+    }
+}
+
+/// Check the uploader-owned part of every journal transition without admitting
+/// execution authority. Empty metadata is reserved for a protocol-only session.
+pub(crate) fn validate_recovery_owner_transition(
+    previous: Option<&[u8]>,
+    next: &[u8],
+) -> Result<(), MultipartError> {
+    if next.is_empty() {
+        return if previous.is_none_or(<[u8]>::is_empty) {
+            Ok(())
+        } else {
+            Err(MultipartError::InvalidCheckpoint)
+        };
+    }
+    let next = UploadOwnerRecord::decode(next)?;
+    if let Some(previous) = previous {
+        let previous = UploadOwnerRecord::decode(previous)?;
+        next.effective_authority
+            .verify_narrowing_of(&previous.effective_authority)
+            .map_err(checkpoint_error)?;
+        if previous.intent_digest != next.intent_digest
+            || previous.original_authority != next.original_authority
+            || (previous.cancelled && !next.cancelled)
+            || next
+                .grants
+                .iter()
+                .any(|grant| !previous.grants.contains(grant))
+            || (previous.obligation.state != ObligationState::Pending
+                && (previous.obligation != next.obligation
+                    || previous.reconciliation_note != next.reconciliation_note
+                    || previous.indeterminate_receipt != next.indeterminate_receipt))
+        {
+            return Err(MultipartError::InvalidCheckpoint);
+        }
+    }
+    Ok(())
+}
+
 /// Minimum allowance for payload plus initiation, completion, two reconciliations
 /// and one abort. Additional attempts require explicit additional reservation.
 /// Network bytes cover payload here; a real transport must separately admit its
@@ -153,6 +481,7 @@ pub fn minimum_upload_budget(
 pub struct StagedUpload<'a, T: MultipartTransport> {
     parent: &'a mut AuthorityCx,
     authority: AuthorityCx,
+    original_authority: ContextAuthority,
     obligation: Obligation,
     reconciliation_note: Option<String>,
     indeterminate_receipt: Option<IndeterminateUploadReceipt>,
@@ -162,12 +491,12 @@ pub struct StagedUpload<'a, T: MultipartTransport> {
     settled: bool,
 }
 
-impl<T: MultipartTransport> StagedUpload<'_, T> {
+impl<'a, T: MultipartTransport> StagedUpload<'a, T> {
     /// Pure owned preparation: validate intent and grants, reserve the caller's
     /// exact allowance, and register the pending obligation on the child itself.
     /// No provider call is hidden in this fallible constructor.
     #[allow(clippy::too_many_arguments)]
-    pub fn stage<'a>(
+    pub fn stage(
         parent: &'a mut AuthorityCx,
         tree: &mut RegionTree,
         transport: &'a mut T,
@@ -215,7 +544,7 @@ impl<T: MultipartTransport> StagedUpload<'_, T> {
         let obligation = new_obligation(
             format!("obligation:upload:{}:drain", operation.as_str()),
             operation.clone(),
-            "exact multipart intent completed or staging conclusively aborted",
+            UPLOAD_TERMINAL_PREDICATE,
         )
         .map_err(authority)?;
         let region =
@@ -239,6 +568,7 @@ impl<T: MultipartTransport> StagedUpload<'_, T> {
         Ok(StagedUpload {
             parent,
             authority: child,
+            original_authority: canonical,
             obligation,
             reconciliation_note: None,
             indeterminate_receipt: None,
@@ -247,6 +577,276 @@ impl<T: MultipartTransport> StagedUpload<'_, T> {
             observed_at: now,
             settled: false,
         })
+    }
+
+    /// Attach write-ahead persistence before the first provider effect. This
+    /// borrows the existing owner: an append refusal cannot discard its child,
+    /// pending obligation, or reserved allowance. Ambiguous append failures
+    /// require cold journal recovery before further effects or refunds.
+    pub fn attach_journal(
+        &mut self,
+        tree: &RegionTree,
+        now: TimestampNs,
+        journal: &'a mut dyn UploadJournal,
+    ) -> Result<UploadJournalPin, UploaderError> {
+        self.validate_owner(tree, now)?;
+        if self.session.is_durable()
+            || self.session.phase() != MultipartPhase::Prepared
+            || self.obligation.state != ObligationState::Pending
+            || self.settled
+            || *self.authority.budget().consumed() != BudgetVector::ZERO
+        {
+            return Err(authority(
+                "attach the upload journal before any provider dispatch",
+            ));
+        }
+        let metadata = self.owner_record(tree)?.encode()?;
+        self.observed_at = now;
+        Ok(self.session.attach_journal(
+            journal,
+            UploadIo {
+                authority: &mut self.authority,
+                tree,
+                now,
+            },
+            metadata,
+        )?)
+    }
+
+    /// Rebind a validated, independently pinned checkpoint to fresh caller-owned
+    /// runtime authority. The expected intent must come from the caller's saved
+    /// workflow identity, not be inferred from an untrusted checkpoint alone.
+    ///
+    /// The fresh child reserves exactly the persisted remaining allowance.
+    /// Historical consumption remains charged to the workflow and can never be
+    /// refunded through this new parent. This constructor performs no transport
+    /// or journal writes; the next checkpoint or operation persists any further
+    /// caller restrictions before a provider effect can be admitted.
+    #[allow(clippy::too_many_arguments)]
+    pub fn recover(
+        parent: &'a mut AuthorityCx,
+        tree: &mut RegionTree,
+        transport: &'a mut T,
+        journal: &'a mut dyn UploadJournal,
+        recovery: MultipartRecovery,
+        expected_intent: &UploadIntent,
+        child_spec: RootAuthoritySpec,
+        now: TimestampNs,
+    ) -> Result<Self, UploaderError> {
+        recovery.validate_restore(journal, now)?;
+        parent.is_cancel_requested(tree)?;
+        let parent_node = tree.get(parent.region()).map_err(authority)?;
+        if now < parent_node.created_at
+            || parent_node.drain_requested_at.is_some_and(|at| now < at)
+            || parent_node.closed_at.is_some_and(|at| now < at)
+        {
+            return Err(MultipartError::ClockRegression.into());
+        }
+        let record = UploadOwnerRecord::decode(recovery.owner_metadata())?;
+        if recovery.intent() != expected_intent
+            || record.intent_digest != expected_intent.digest()
+            || record.original_authority.operation_id != *expected_intent.operation()
+            || record.original_authority.budgets != recovery.original_budget()
+            || &record.original_authority != recovery.original_authority()
+        {
+            return Err(MultipartError::InvalidCheckpoint.into());
+        }
+        match record.obligation.state {
+            ObligationState::Pending => {}
+            ObligationState::Verified
+                if recovery.phase() == MultipartPhase::Completed
+                    && record.obligation.proof_digest
+                        == Some(recovery.completion_receipt()?.digest()) => {}
+            ObligationState::Cancelled
+                if recovery.phase() == MultipartPhase::Aborted
+                    && record.obligation.proof_digest
+                        == Some(recovery.abort_receipt()?.digest()) => {}
+            ObligationState::Indeterminate
+                if record
+                    .indeterminate_receipt
+                    .as_ref()
+                    .is_some_and(|receipt| {
+                        recovery.phase() == MultipartPhase::Uncertain(receipt.operation())
+                    }) => {}
+            _ => return Err(MultipartError::InvalidCheckpoint.into()),
+        }
+        let canonical = ContextAuthority::new_root(child_spec.clone()).map_err(authority)?;
+        canonical.validate().map_err(authority)?;
+        canonical
+            .verify_narrowing_of(&record.effective_authority)
+            .map_err(authority)?;
+        canonical
+            .verify_narrowing_of(recovery.effective_authority())
+            .map_err(authority)?;
+        if canonical.operation_id != *expected_intent.operation()
+            || canonical.privacy_scope != record.effective_authority.privacy_scope
+            || canonical.retention_scope != record.effective_authority.retention_scope
+            || canonical.lease_fence != record.effective_authority.lease_fence
+            || canonical.idempotency_key != record.effective_authority.idempotency_key
+            || canonical.lab_controls != record.effective_authority.lab_controls
+            || child_spec.budgets != recovery.remaining_budget()
+        {
+            return Err(authority(
+                "recovery authority changed the upload scope or remaining allowance",
+            ));
+        }
+        let offered_grants = parent
+            .grants()
+            .scope_for_child(&canonical)
+            .map_err(authority)?;
+        // The decoded grant strings constrain the fresh caller's authority;
+        // they never supply it. Narrow the result to this one immutable resource.
+        let mut grants = GrantSet::empty();
+        for capability in canonical.capabilities() {
+            let grant = RuntimeGrant::from_id(capability).map_err(authority)?;
+            if record.grants.contains(capability)
+                && offered_grants
+                    .require_grant_for(grant, expected_intent.resource())
+                    .is_ok()
+            {
+                grants = grants.with_scope(
+                    grant,
+                    BTreeSet::from([expected_intent.resource().to_string()]),
+                );
+            }
+        }
+        offered_grants
+            .verify_narrowed_by(&grants)
+            .map_err(authority)?;
+        recovery.validate_authority(&canonical, &grants)?;
+        let region = RegionId::new(format!(
+            "region:upload:{}",
+            expected_intent.operation().as_str(),
+        ))
+        .map_err(authority)?;
+        let plan = recovery.plan().clone();
+        let mut child = parent.scope_down(
+            tree,
+            region,
+            RegionKind::ObjectStore,
+            recovery.remaining_budget(),
+            child_spec,
+            now,
+        )?;
+        // Every following precondition was validated above. This exclusive new
+        // child has no competing task, obligation, or mutable authority owner.
+        child.narrow_grants(grants).map_err(authority)?;
+        child.register_obligation(tree, record.obligation.clone())?;
+        if let Some(note) = &record.reconciliation_note {
+            child.resolve_obligation(
+                tree,
+                &record.obligation.obligation_id,
+                ObligationTerminal::Indeterminate,
+                record.obligation.proof_digest,
+                Some(note),
+            )?;
+        }
+        if record.cancelled || recovery.cancelled() {
+            child.request_cancellation(tree, now)?;
+        }
+        let session = MultipartSession::restore_prevalidated(
+            transport,
+            journal,
+            &recovery,
+            UploadIo {
+                authority: &mut child,
+                tree,
+                now,
+            },
+        );
+        Ok(Self {
+            parent,
+            authority: child,
+            original_authority: record.original_authority,
+            obligation: record.obligation,
+            reconciliation_note: record.reconciliation_note,
+            indeterminate_receipt: record.indeterminate_receipt,
+            session,
+            plan,
+            observed_at: now,
+            settled: false,
+        })
+    }
+
+    /// Persist the current authority restrictions, cancellation, and canonical
+    /// ownership facts without touching the provider. A successful returned pin
+    /// can be retained independently to reject a truncated or stale journal.
+    pub fn checkpoint(
+        &mut self,
+        tree: &RegionTree,
+        now: TimestampNs,
+    ) -> Result<UploadJournalPin, UploaderError> {
+        self.validate_owner(tree, now)?;
+        if !self.session.is_durable() {
+            return Err(authority("upload has no attached journal"));
+        }
+        let metadata = self.owner_record(tree)?.encode()?;
+        self.observed_at = now;
+        Ok(self.session.persist_owner(
+            UploadIo {
+                authority: &mut self.authority,
+                tree,
+                now,
+            },
+            metadata,
+        )?)
+    }
+
+    fn owner_record(&self, tree: &RegionTree) -> Result<UploadOwnerRecord, UploaderError> {
+        let mut effective_authority = tree
+            .get(self.region())
+            .map_err(authority)?
+            .authority
+            .clone();
+        effective_authority.cancellation_reason = None;
+        let mut grants = Vec::new();
+        for capability in effective_authority.capabilities() {
+            let grant = RuntimeGrant::from_id(capability).map_err(authority)?;
+            if self
+                .authority
+                .grants()
+                .require_grant_for(grant, self.intent().resource())
+                .is_ok()
+            {
+                grants.push(capability.clone());
+            }
+        }
+        let mut obligation = self.obligation.clone();
+        let mut reconciliation_note = self.reconciliation_note.clone();
+        if let Some(receipt) = &self.indeterminate_receipt {
+            obligation.state = ObligationState::Indeterminate;
+            obligation.proof_digest = Some(receipt.digest());
+            reconciliation_note = Some(receipt.note().to_string());
+        }
+        Ok(UploadOwnerRecord {
+            intent_digest: self.intent().digest(),
+            original_authority: self.original_authority.clone(),
+            effective_authority,
+            grants,
+            cancelled: self.authority.is_cancel_requested(tree)?,
+            obligation,
+            reconciliation_note,
+            indeterminate_receipt: self.indeterminate_receipt.clone(),
+        })
+    }
+
+    fn persist_record(
+        &mut self,
+        tree: &RegionTree,
+        now: TimestampNs,
+        record: UploadOwnerRecord,
+    ) -> Result<(), UploaderError> {
+        if self.session.is_durable() {
+            self.session.persist_owner(
+                UploadIo {
+                    authority: &mut self.authority,
+                    tree,
+                    now,
+                },
+                record.encode()?,
+            )?;
+        }
+        Ok(())
     }
 
     /// Explicit initiation; failures retain the stable intent and pending child.
@@ -431,57 +1031,32 @@ impl<T: MultipartTransport> StagedUpload<'_, T> {
                 "only an uncertain dispatch can close as indeterminate",
             ));
         };
-        if note.trim().is_empty()
-            || note.len() > MAX_UPLOAD_RECOVERY_NOTE_BYTES
-            || note.chars().any(char::is_control)
-            || reconciliation_reference.algorithm() != DigestAlgorithm::Sha256
-            || reconciliation_reference.bytes() == [0; 32]
-        {
-            return Err(authority(
-                "invalid unresolved-upload note or follow-up reference",
-            ));
-        }
-        let (operation_tag, operation_name) = match operation {
-            TransportOperation::Initiate => (1, "initiate"),
-            TransportOperation::UploadPart => (2, "upload_part"),
-            TransportOperation::Complete => (3, "complete"),
-            TransportOperation::Abort => (4, "abort"),
-            TransportOperation::Reconcile => (5, "reconcile"),
-        };
-        let note = format!(
-            "multipart unresolved; intent={}; operation={operation_name}; reference={reconciliation_reference}; note={note}",
+        let receipt = make_indeterminate_receipt(
             self.intent().digest(),
-        );
-        // The human note plus fixed SHA-256 bindings remain within the canonical note budget.
-        if note.len() > 512 {
-            return Err(authority("bound unresolved-upload note exceeds its limit"));
-        }
-        let mut encoder = CanonicalEncoder::new();
-        encoder.text("fss.multipart_indeterminate.v1");
-        encoder.digest(self.intent().digest());
-        encoder.text(self.region().as_str());
-        encoder.text(self.obligation.obligation_id.as_str());
-        encoder.u8(operation_tag);
-        encoder.digest(reconciliation_reference);
-        encoder.text(&note);
-        let bytes = encoder.finish_checked().map_err(authority)?;
-        let receipt = IndeterminateUploadReceipt {
-            intent_digest: self.intent().digest(),
-            region: self.region().clone(),
-            obligation: self.obligation.obligation_id.clone(),
+            self.region().clone(),
+            self.obligation.obligation_id.clone(),
             operation,
             reconciliation_reference,
             note,
-            digest: ContentDigest::sha256(&bytes),
-        };
+        )?;
         if let Some(existing) = &self.indeterminate_receipt {
             if existing != &receipt {
                 return Err(authority("unresolved-upload settlement request changed"));
+            }
+            if self.settled {
+                return Ok(receipt);
             }
         } else {
             if self.obligation.state != ObligationState::Pending {
                 return Err(authority("upload already has a different terminal outcome"));
             }
+            // Retain the proposed receipt even if persistence refuses. The
+            // provider must remain relinquished while its durable outcome is
+            // uncertain; the canonical pending obligation is not yet resolved.
+            self.indeterminate_receipt = Some(receipt.clone());
+        }
+        self.persist_record(tree, now, self.owner_record(tree)?)?;
+        if self.obligation.state == ObligationState::Pending {
             self.authority.resolve_obligation(
                 tree,
                 &self.obligation.obligation_id,
@@ -492,7 +1067,11 @@ impl<T: MultipartTransport> StagedUpload<'_, T> {
             self.obligation.state = ObligationState::Indeterminate;
             self.obligation.proof_digest = Some(receipt.digest());
             self.reconciliation_note = Some(receipt.note().to_string());
-            self.indeterminate_receipt = Some(receipt.clone());
+        } else if self.obligation.state != ObligationState::Indeterminate
+            || self.obligation.proof_digest != Some(receipt.digest())
+            || self.reconciliation_note.as_deref() != Some(receipt.note())
+        {
+            return Err(authority("unresolved-upload terminal receipt mismatch"));
         }
         self.close_and_release(tree, now)?;
         Ok(receipt)
@@ -540,6 +1119,11 @@ impl<T: MultipartTransport> StagedUpload<'_, T> {
             ));
         }
         self.observed_at = now;
+        if self.session.is_durable() && !self.settled {
+            // Capture cancellation and any fresh recovery restrictions before
+            // the protocol is allowed to dispatch or touch a payload source.
+            self.checkpoint(tree, now)?;
+        }
         Ok(())
     }
 
@@ -554,6 +1138,20 @@ impl<T: MultipartTransport> StagedUpload<'_, T> {
         // in flight. Never date terminal closure before that observed boundary.
         let now = now.max(self.session.observed_at());
         self.validate_owner(tree, now)?;
+        if self.obligation.state != ObligationState::Pending
+            && (self.obligation.state != terminal.to_state()
+                || self.obligation.proof_digest != Some(proof)
+                || self.reconciliation_note.is_some())
+        {
+            return Err(authority("upload terminal receipt mismatch"));
+        }
+        if self.settled {
+            return Ok(());
+        }
+        let mut record = self.owner_record(tree)?;
+        record.obligation.state = terminal.to_state();
+        record.obligation.proof_digest = Some(proof);
+        self.persist_record(tree, now, record)?;
         if self.obligation.state == ObligationState::Pending {
             self.authority.resolve_obligation(
                 tree,
@@ -564,11 +1162,6 @@ impl<T: MultipartTransport> StagedUpload<'_, T> {
             )?;
             self.obligation.state = terminal.to_state();
             self.obligation.proof_digest = Some(proof);
-        } else if self.obligation.state != terminal.to_state()
-            || self.obligation.proof_digest != Some(proof)
-            || self.reconciliation_note.is_some()
-        {
-            return Err(authority("upload terminal receipt mismatch"));
         }
         self.close_and_release(tree, now)
     }
@@ -609,8 +1202,45 @@ impl<T: MultipartTransport> StagedUpload<'_, T> {
     }
 
     /// Narrow or revoke this child's actual resource grants; widening is refused.
+    /// Journaled owners must use `narrow_grants_durable` so a crash cannot erase
+    /// a successful revocation.
     pub fn narrow_grants(&mut self, grants: GrantSet) -> Result<(), UploaderError> {
+        if self.session.is_durable() {
+            return Err(authority(
+                "journaled grant changes require narrow_grants_durable",
+            ));
+        }
         self.authority.narrow_grants(grants).map_err(authority)
+    }
+
+    /// Durably narrow resource grants before applying the live revocation.
+    /// Persistence failure preserves the owner and blocks further dispatch.
+    pub fn narrow_grants_durable(
+        &mut self,
+        tree: &RegionTree,
+        now: TimestampNs,
+        grants: GrantSet,
+    ) -> Result<(), UploaderError> {
+        self.validate_owner(tree, now)?;
+        if !self.session.is_durable() {
+            return Err(authority("upload has no attached journal"));
+        }
+        self.authority
+            .grants()
+            .verify_narrowed_by(&grants)
+            .map_err(authority)?;
+        let mut record = self.owner_record(tree)?;
+        record.grants.retain(|capability| {
+            RuntimeGrant::from_id(capability).is_ok_and(|grant| {
+                grants
+                    .require_grant_for(grant, self.intent().resource())
+                    .is_ok()
+            })
+        });
+        self.persist_record(tree, now, record)?;
+        self.authority.narrow_grants(grants).map_err(authority)?;
+        self.observed_at = now;
+        Ok(())
     }
     /// Current immutable child grants, including inherited resource restrictions.
     #[must_use]
@@ -621,6 +1251,31 @@ impl<T: MultipartTransport> StagedUpload<'_, T> {
     #[must_use]
     pub fn budget(&self) -> &fss_runtime::budget::BudgetLedger {
         self.authority.budget()
+    }
+
+    /// Consumption across every recovered execution epoch, including the
+    /// current child's actual ledger. Historical work is never a fresh allowance.
+    pub fn cumulative_consumed(&self) -> Result<BudgetVector, UploaderError> {
+        Ok(self.session.cumulative_consumed(&self.authority)?)
+    }
+
+    /// Latest successfully persisted checkpoint pin for independent retention.
+    #[must_use]
+    pub fn journal_pin(&self) -> Option<UploadJournalPin> {
+        self.session.journal_pin()
+    }
+
+    /// Whether this owner requires journal persistence before further effects.
+    #[must_use]
+    pub fn is_durable(&self) -> bool {
+        self.session.is_durable()
+    }
+
+    /// An ambiguous append cannot be retried in place; cold recovery must first
+    /// establish which exact checkpoint is durable.
+    #[must_use]
+    pub fn durability_failed(&self) -> bool {
+        self.session.durability_failed()
     }
     /// Pending or terminal obligation on this exact child.
     #[must_use]

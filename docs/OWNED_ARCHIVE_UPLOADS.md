@@ -64,7 +64,8 @@ unused allowance, preserving charges for every attempted request and byte.
 The receipt establishes local ownership settlement. It does not establish provider completion,
 abort, rollback or the authenticity of the supplied follow-up reference. The caller must retain
 the receipt and follow up through an independently authorized owner. In-memory tree retention
-does not provide persistence across process loss.
+alone does not provide persistence across process loss; attach the durable journal below before
+the first provider operation when restart recovery is required.
 
 All staged operations check the original obligation and reconciliation state before source access
 or transport dispatch. An altered obligation cannot silently become permission for another effect.
@@ -72,16 +73,82 @@ Owner lifecycle timestamps also bound execution. A transport checkpoint that obs
 retains that observation even when deadline or cancellation checks refuse, preventing a subsequent
 call from moving execution back before that observed boundary.
 
+## Durable restart recovery
+
+`FileUploadJournal` retains canonical upload checkpoints in the existing explicitly authorized
+local `StagingSpool`. `StagedUpload::attach_journal` attaches it to an already prepared owner,
+before the first provider dispatch. Attachment writes the original intent, complete chunk plan,
+manifest root, authority restrictions, original budget and deadline, and pending obligation.
+The caller retains the returned `UploadJournalPin` independently of the journal, together with
+the expected `UploadIntent`. Checkpoint bytes are inert data; they never contain a reusable
+`AuthorityCx` or reconstruct permission to contact a provider.
+
+Every provider dispatch first persists its uncertain phase, intended part checksum and consumed
+request/payload allowance. `TransportCx::charge_io` also persists additional framing and response
+charges before admitting that I/O. A valid provider acknowledgement is persisted before the owner
+reports success. A crash after a provider effect but before its acknowledgement therefore recovers
+an uncertain operation, and requires intent-bound reconciliation rather than blindly repeating it.
+Even when provider reconciliation reports an empty active inventory, a part's first dispatched
+checksum remains fixed.
+
+The recovery sequence is explicit:
+
+1. Open the same journal with `FileUploadJournal::open(root, limits, io, minimum_pin)`. The root
+   must be an absolute path with a pre-existing parent. The journal holds an exclusive lock and
+   validates every record's digest, predecessor, canonical encoding and semantic transition.
+2. Read an inert `MultipartRecovery` from that journal and the independently retained minimum.
+   The journal must contain that exact pin; a newer valid descendant may be selected. Missing
+   records, a fork, changed intent, removed receipts, decreased spend or broadened authority refuse.
+3. Call `StagedUpload::recover` with a fresh caller-owned parent/tree, transport, journal, decoded
+   recovery, independently saved expected intent and explicit child authority. Its budget must
+   equal the recorded remaining allowance, and its scope and deadline may only narrow.
+4. Reconcile any uncertain provider operation before continuing. Exact completed or aborted
+   observations allow local closure without repeating that effect. Original cancellation and
+   grant revocations survive restart; expired work can only perform authorized cleanup and
+   reconciliation. `cumulative_consumed()` includes earlier execution epochs.
+
+The recovered child reserves only the original unspent allowance. Historical charges remain in
+the checkpoint and cannot become spendable or refundable through the new parent. Terminal and
+explicitly indeterminate ownership records reach the journal before canonical obligation
+resolution, child closure or refund. If local finalization is blocked after that record is durable,
+an exact retry can finish it without contacting the provider again.
+
+Use `narrow_grants_durable` for a journaled owner's grant changes. The legacy in-memory
+`narrow_grants` method refuses on durable owners. `checkpoint(tree, now)` records externally
+observed cancellation or other narrower authority and returns a new pin for independent retention.
+Cancellation changes made directly to an external runtime tree become restart evidence only when
+checkpointed; callers must persist that boundary before treating the change as durably recorded.
+
+Any ambiguous append failure blocks further provider effects and refunds through that owner.
+The child, reservation and pending work remain retained. Drop the failed journal handle and cold
+open against a previously saved pin to establish whether the append reached durable storage.
+If initial attachment failed before producing any pin, no provider effect was dispatched; the
+live owner still holds its reservation. Do not reinterpret that failure as successful cleanup.
+
+The file backend defaults to 4,096 records, 512 KiB per checkpoint, 64 MiB of retained record and
+orphan bytes, and 256 MiB of read work per handle. All are explicit bounds; exhaustion refuses
+instead of pruning history or replenishing provider allowance. Recognized torn staging remnants
+remain charged and are never admitted as checkpoints. Corrupt committed objects and foreign
+entries refuse recovery. Symlink components and changed directory/lock identities refuse; current
+file identity support is Unix, with unsupported platforms refusing explicitly. Advisory locking
+coordinates cooperating local writers, rather than defending against an actor that can arbitrarily
+rewrite the same filesystem.
+
+A pin is a commitment to known history, not authentication. It detects a missing or replaced
+prefix at or below that retained anchor, but cannot reveal a lost newer suffix that the caller
+never independently pinned. Persist pins outside the upload journal according to the caller's
+existing authority and custody policy.
+
 ## Scope and verification
 
-This implements the injected multipart protocol and **in-process** ownership/recovery boundary for
-FSS-063/FSS-064/FSS-130. It does not implement a native network S3 transport, durable upload restart
-journal, byte encryption or independent archive retrievability verification. A real provider adapter
+This implements the injected multipart protocol, in-process ownership, and optional durable local
+restart recovery for FSS-063/FSS-064/FSS-130. It does not implement a native network S3 transport,
+byte encryption or independent archive retrievability verification. A real provider adapter
 must enforce intent idempotency and checksum conditions, use the admitted context at its actual I/O
 boundary, and return `Unknown` when its consistency guarantees cannot resolve an uncertain effect.
 
 ```sh
-cargo test --locked --offline -p fss-object --test multipart_family --test uploader_family
+cargo test --locked --offline -p fss-object --test multipart_family --test uploader_family --test durable_upload_contract
 ```
 
 The focused fault-injection targets cover lost acknowledgements at all four effect boundaries,
@@ -92,5 +159,7 @@ duplicate preparation, wrong trees and parent quiescence.
 The additional unresolved-settlement and owner-integrity contracts cover exhausted recovery,
 task-blocked local finalization, exact retained receipts and notes, altered obligations,
 backdated preparation and cleanup, and refused transport/source clock boundaries. The pinned
-nightly passed 33 focused tests and 320 tests across the full object crate (one existing test
-remains explicitly ignored).
+nightly passed 50 focused tests and 337 tests across the full object crate (one existing test
+requires an unprivileged process and remains explicitly ignored). The durable contract suite uses fresh file, transport and region
+owners across abrupt after-effect exits, minimum-pin and semantic-rewind checks, filesystem fault
+cuts, original cumulative budgets, authority restrictions and terminal/refund recovery.

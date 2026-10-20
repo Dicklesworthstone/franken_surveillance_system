@@ -33,6 +33,45 @@ and cumulative work/cancellation. See [the operator workflow](docs/rtsp_source_r
 This closes the source-retention recovery refusal; it does not authenticate
 cameras, recover continuous coverage or qualify physical devices and release gates.
 
+## Durable multipart restart recovery (2026-10-20, reference)
+
+The authority-owned uploader can now attach a bounded `FileUploadJournal` before
+its first provider operation. Canonical checkpoints retain the original intent,
+complete chunk plan, manifest root, provider identity, first dispatched part
+hashes, confirmed receipts, uncertainty, original authority/deadline, cumulative
+consumption, narrowed grants, cancellation and local settlement evidence.
+Every dispatch and dynamic framing/response charge reaches the journal before
+provider I/O; acknowledged outcomes reach it before success is reported.
+
+Cold recovery validates the entire linked history against an independently saved
+minimum pin and the caller's original expected intent. A fresh caller-owned child
+reserves only the remaining allowance. Historical costs never become refundable
+or spendable again, changed part bytes refuse, and an uncertain provider effect
+requires reconciliation before retry. Terminal and indeterminate records precede
+canonical closure/refund, so a blocked local finalization can resume without
+repeating a provider effect.
+
+The file backend uses the existing explicit spool I/O capability and exclusive
+lock, rehashes canonical records, rejects forks/gaps/corruption and semantic
+rewinds, bounds storage and read work, and retains torn staging without admitting
+it. Any ambiguous append blocks further effects until cold reopen. Directory and
+lock identities are checked on supported Unix filesystems. Pins are commitments
+to known history, not provider authentication or detection of unpinned newer loss.
+
+This supplies the missing persist-intent-before-dispatch and restart boundary in
+FSS-064. Native S3 transport, provider qualification, byte encryption, independent
+retrievability and the aggregate release gates remain separate work. Existing
+in-memory APIs remain available. See [owned multipart uploads](docs/OWNED_ARCHIVE_UPLOADS.md)
+for the attachment, independent pin, recovery and durable revocation contracts.
+
+The pinned nightly passed all 50 focused multipart/uploader/restart contracts,
+including 17 new cold-reopen and filesystem-fault tests. The complete object
+crate passed 337 tests with one existing permission test ignored because it
+requires an unprivileged process. Tests include actual after-effect crashes,
+lost acknowledgements, dynamic budget charges through repeated restarts, corrupt
+and forked records, owner replacement, tightened deadlines, persistence refusal,
+and completion/indeterminate finalization without provider replay or double refund.
+
 ## Multipart unresolved-outcome recovery (2026-10-20, reference)
 
 The authority-owned multipart uploader now supports explicit local settlement of
@@ -47,8 +86,9 @@ Local finalization failures retain that receipt for an exact retry. Recording th
 unresolved settlement disables further provider calls immediately. Successful
 child closure returns only unused allowance to its original parent, while every
 attempted request and byte remains charged. Changed notes or references refuse.
-The caller must preserve the receipt and arrange independent provider follow-up;
-this remains an in-memory ownership boundary, not crash-persistent upload storage.
+The caller must preserve the receipt and arrange independent provider follow-up.
+Without an attached durable upload journal this remains an in-memory boundary;
+the optional restart path above persists the receipt before local closure.
 
 Every staged source or transport boundary also checks the original obligation and
 reconciliation state. Altered obligations cannot authorize additional publication.
