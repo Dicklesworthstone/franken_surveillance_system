@@ -41,6 +41,8 @@ pub mod graph_witness;
 pub mod hydration;
 pub mod identity;
 mod ids;
+/// Cross-kernel media contracts and limits (FSS-052).
+pub mod media_kernel;
 pub mod negative_evidence;
 mod outcome;
 pub mod pricing;

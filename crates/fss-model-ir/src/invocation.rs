@@ -127,6 +127,16 @@ pub enum InvocationOutcome {
     },
 }
 
+impl ModelReceipt {
+    /// Whether this outcome counts against an invocation-count quota
+    /// (completed outcomes only; abstained and quarantined work did not
+    /// run and must not consume budget).
+    #[must_use]
+    pub fn outcome_is_counted(&self) -> bool {
+        matches!(self.outcome, InvocationOutcome::Completed { .. })
+    }
+}
+
 /// The invocation receipt: durable proof of what was bound and produced.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct ModelReceipt {
@@ -171,6 +181,9 @@ pub enum InvocationError {
     },
     /// Digest computation failed.
     Digest(String),
+    /// Admission control refused the invocation (quota or memory
+    /// pressure), with the exact cause.
+    Quota(crate::quotas::QuotaError),
 }
 
 impl std::fmt::Display for InvocationError {
@@ -193,11 +206,23 @@ impl std::fmt::Display for InvocationError {
                 write!(f, "too many inputs ({count} > {MAX_INVOCATION_INPUTS})")
             }
             Self::Digest(detail) => write!(f, "digest failure: {detail}"),
+            Self::Quota(e) => write!(f, "{e}"),
         }
     }
 }
 
 impl std::error::Error for InvocationError {}
+
+impl InvocationError {
+    /// Whether this refusal carries an embedded quota/pressure cause.
+    #[must_use]
+    pub fn quota_cause(&self) -> Option<&crate::quotas::QuotaError> {
+        match self {
+            Self::Quota(e) => Some(e),
+            _ => None,
+        }
+    }
+}
 
 /// A validated, generation-bound invocation ready to evaluate.
 #[derive(Clone, Debug)]
@@ -212,6 +237,12 @@ impl PreparedInvocation {
     #[must_use]
     pub fn ir_digest(&self) -> ContentDigest {
         self.ir_digest
+    }
+
+    /// The invocation spec bound at prepare time.
+    #[must_use]
+    pub fn spec(&self) -> &ModelInvocationSpec {
+        &self.spec
     }
 }
 
