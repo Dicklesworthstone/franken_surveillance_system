@@ -1,8 +1,9 @@
 #![forbid(unsafe_code)]
 //! Storage-only recovery of exact single-capture or reconnect epochs.
 //!
-//! Planning checks protected journal metadata, not source custody. A separate approval binds
-//! every observed tip, selected work pin, directory identity, original limit and recovery deadline.
+//! Planning checks protected journal metadata and, when originally requested, complete raw
+//! datagram custody. A separate approval binds every observed tip, selected work pin, directory
+//! identity, original limit and recovery deadline.
 //! Execution locks all journals, checks that approval, and replays ALL selected work before the
 //! first confirmation/publication. Restoration is incremental, not an atomic multi-store commit.
 //! No socket, credential lease, new epoch, tail repair or additional catalog page is created here.
@@ -25,10 +26,17 @@ use fss_reference::rtsp::archive_pins::{
 use fss_reference::rtsp::recording_archive::{ArchiveCodec, AvcArchiveCodec, HevcArchiveCodec};
 
 use super::{Options, ReconnectPlan};
+use crate::source_mode::SourceConfig;
 
 #[path = "minimum_pins.rs"]
 mod minimum_pins;
 pub(crate) use minimum_pins::MinimumPins;
+#[path = "minimum_source_pins.rs"]
+mod minimum_source_pins;
+pub(crate) use minimum_source_pins::MinimumSourcePins;
+#[path = "source_recovery.rs"]
+mod source_recovery;
+use source_recovery::SourceEntry;
 
 /// Immutable capture scope consumed by the one storage-only recovery owner.
 ///
@@ -44,6 +52,12 @@ pub(crate) trait RecoveryPlan {
     fn index_catalogs(&self) -> bool;
     fn maximum_storage_bytes(&self) -> u64;
     fn minimum_pins(&self) -> Option<&MinimumPins> {
+        None
+    }
+    fn source(&self, _index: usize) -> Result<Option<&SourceConfig>> {
+        Ok(None)
+    }
+    fn minimum_sources(&self) -> Option<&MinimumSourcePins> {
         None
     }
 }
@@ -66,6 +80,15 @@ impl RecoveryPlan for ReconnectPlan {
     }
     fn minimum_pins(&self) -> Option<&MinimumPins> {
         self.minimum_pins.as_ref()
+    }
+    fn source(&self, index: usize) -> Result<Option<&SourceConfig>> {
+        self.sources
+            .as_ref()
+            .map(|sources| sources.get(index))
+            .transpose()
+    }
+    fn minimum_sources(&self) -> Option<&MinimumSourcePins> {
+        self.minimum_sources.as_ref()
     }
 }
 
@@ -227,6 +250,7 @@ struct Entry<C: ArchiveCodec> {
     publisher: Option<LocalRootPublisher>,
     window_slot: Option<String>,
     catalog_slot: Option<String>,
+    source: Option<SourceEntry>,
 }
 
 fn load<C: ArchiveCodec>(plan: &impl RecoveryPlan, clock: &Clock<'_>) -> Result<Vec<Entry<C>>> {
@@ -236,21 +260,40 @@ fn load<C: ArchiveCodec>(plan: &impl RecoveryPlan, clock: &Clock<'_>) -> Result<
     if let Some(minimum) = plan.minimum_pins() {
         minimum.validate(plan.attempts())?;
     }
+    if let Some(minimum) = plan.minimum_sources() {
+        minimum.validate(plan)?;
+    }
     let mut locations = Vec::new();
-    for attempt in plan.attempts() {
+    let mut source_locations = Vec::new();
+    for (index, attempt) in plan.attempts().iter().enumerate() {
         clock.now()?;
         locations.push(locate(&attempt.root)?);
         locations.push(locate(&attempt.pins)?);
+        source_locations.push(
+            plan.source(index)?
+                .map(|source| locate(&source.root))
+                .transpose()?,
+        );
     }
-    disjoint(&locations)?;
+    let mut all_locations = locations.clone();
+    all_locations.extend(source_locations.iter().flatten().cloned());
+    disjoint(&all_locations)?;
     // A lone archive is not an empty journal. A lone journal is not permission to initialize
     // a replacement archive. Check every layout before opening any native owner.
-    for pair in locations.as_chunks::<2>().0 {
+    for (index, pair) in locations.as_chunks::<2>().0.iter().enumerate() {
         if pair[0].directory.is_some() != pair[1].directory.is_some() {
             return Err(ROOT);
         }
         if pair[0].directory.is_some() {
             archive_layout(&pair[0].canonical)?;
+        }
+        if let Some(source) = &source_locations[index] {
+            if source.directory.is_some() != pair[0].directory.is_some() {
+                return Err(ROOT);
+            }
+            if source.directory.is_some() {
+                archive_layout(&source.canonical)?;
+            }
         }
     }
     let mut entries = Vec::new();
@@ -303,7 +346,23 @@ fn load<C: ArchiveCodec>(plan: &impl RecoveryPlan, clock: &Clock<'_>) -> Result<
             publisher: None,
             window_slot: None,
             catalog_slot: None,
+            source: None,
         });
+    }
+    // Check and hold every complete journal/minimum before any raw-source read. A later
+    // journal failure cannot grant access to an earlier attempt's retained datagrams.
+    for (index, entry) in entries.iter_mut().enumerate() {
+        entry.source = match (plan.source(index)?, source_locations[index].as_ref()) {
+            (Some(config), Some(location)) => Some(SourceEntry::load(
+                config,
+                &plan.attempts()[index],
+                location.clone(),
+                plan.minimum_sources().and_then(|pins| pins.get(index)),
+                clock,
+            )?),
+            (None, None) => None,
+            _ => return Err(STATE),
+        };
     }
     recheck(plan, &mut entries, clock)?;
     Ok(entries)
@@ -314,11 +373,12 @@ fn locations_unchanged<C: ArchiveCodec>(
     entries: &[Entry<C>],
     clock: &Clock<'_>,
 ) -> Result<()> {
-    for (attempt, entry) in plan.attempts().iter().zip(entries) {
+    for (index, (attempt, entry)) in plan.attempts().iter().zip(entries).enumerate() {
         clock.now()?;
         if locate(&attempt.root)? != entry.root || locate(&attempt.pins)? != entry.pins {
             return Err(ROOT);
         }
+        source_recovery::location_unchanged(plan, index, entry.source.as_ref(), clock)?;
     }
     Ok(())
 }
@@ -329,13 +389,14 @@ fn recheck<C: ArchiveCodec>(
     clock: &Clock<'_>,
 ) -> Result<()> {
     locations_unchanged(plan, entries, clock)?;
-    for entry in entries {
+    for (index, entry) in entries.iter_mut().enumerate() {
         if let Some(journal) = &mut entry.journal {
             journal.verify(clock).map_err(|_| STORAGE)?;
             if Some(journal.anchor()) != entry.anchor {
                 return Err(STATE);
             }
         }
+        source_recovery::revalidate(plan, index, entry.source.as_mut(), clock)?;
     }
     clock.now()?;
     Ok(())
@@ -388,6 +449,7 @@ fn digest<C: ArchiveCodec>(
     if let Some(minimum) = plan.minimum_pins() {
         minimum.encode(&mut e);
     }
+    source_recovery::encode(plan, entries, &mut e)?;
     Ok(ContentDigest::sha256(
         &e.finish_checked().map_err(|_| STATE)?,
     ))
@@ -448,7 +510,11 @@ fn receipt_json(receipt: Option<&LocalPublicationReceipt>, slot: Option<&str>) -
 
 fn observation<C: ArchiveCodec>(entry: &Entry<C>) -> &'static str {
     if entry.journal.is_none() {
-        "both_stores_unobserved"
+        if entry.source.is_some() {
+            "all_three_stores_unobserved"
+        } else {
+            "both_stores_unobserved"
+        }
     } else if entry.selected.is_none() {
         "no_saved_work_pin"
     } else {
@@ -509,12 +575,17 @@ fn preview_codec<C: ArchiveCodec>(plan: &impl RecoveryPlan, timeout: u64) -> Res
         ),
         (
             "effects",
-            string("metadata-inspection-only:no-original-read-or-publication"),
+            string(if entries.iter().any(|entry| entry.source.is_some()) {
+                "datagram-source-and-journal-inspection:no-recording-read-or-publication"
+            } else {
+                "metadata-inspection-only:no-original-read-or-publication"
+            }),
         ),
         ("network_requested", "false".into()),
         ("capture_complete", "false".into()),
         ("continuity_across_attempts", "false".into()),
     ]);
+    let report = source_recovery::annotate(plan, &entries, report)?;
     clock.now()?;
     if report.len() > REPORT_LIMIT {
         return Err(OUTPUT);
@@ -588,6 +659,23 @@ fn preflight<C: ArchiveCodec>(
                 .ok_or(STATE)?
                 .load_work(*phase, &publisher, attempt.work_limits(), clock)
                 .map_err(|_| STORAGE)?;
+            if let Some(source) = &mut entry.source {
+                for descriptor in work.snapshot.windows() {
+                    clock.now()?;
+                    let recording = C::load_recording(
+                        &publisher,
+                        descriptor.slot(),
+                        descriptor.root(),
+                        &attempt.catalog_scope().recording,
+                        clock,
+                    )
+                    .map_err(|_| STORAGE)?;
+                    source.verify_recording(C::plan(&recording), clock)?;
+                }
+                if let Some(recording) = &work.pending {
+                    source.verify_recording(C::plan(recording), clock)?;
+                }
+            }
             let namespace = work.snapshot.namespace();
             // Keep the original typed slots, not a scan for the newest recording. These allow
             // subsequent import even when the original capture stdout was lost.
@@ -630,6 +718,7 @@ fn restore<C: ArchiveCodec>(
     for index in 0..entries.len() {
         locations_unchanged(plan, entries, clock)?;
         let entry = &mut entries[index];
+        source_recovery::revalidate(plan, index, entry.source.as_mut(), clock)?;
         let attempt = &plan.attempts()[index];
         let detail = if let Some((_, expected)) = &entry.selected {
             let journal = entry.journal.as_mut().ok_or(STATE)?;
@@ -805,6 +894,7 @@ fn execute_codec<C: ArchiveCodec>(
             ("publication_started", "false".into()),
         ]),
     )?;
+    source_recovery::emit(plan, &entries, &mut reports, FORMAT)?;
     restore(plan, &mut entries, &clock, &mut reports)
 }
 

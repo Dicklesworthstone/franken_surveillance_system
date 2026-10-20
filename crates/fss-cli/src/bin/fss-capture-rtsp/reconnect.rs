@@ -21,7 +21,7 @@ mod retained;
 #[path = "recovery.rs"]
 pub(super) mod recovery;
 
-pub(super) const MAX_ARGUMENTS: usize = plan::MAX_ARGUMENTS + 30;
+pub(super) const MAX_ARGUMENTS: usize = plan::MAX_ARGUMENTS + 32;
 const FORMAT: &str = "fss.rtsp_reconnect_cli.v1";
 const MAX_CONTROL_REPORT_BYTES: usize = 262_144;
 const POLICY: &str = "bounded-owner-approved-attempts:literal-peer-only:fresh-generation-and-clocks:\
@@ -103,7 +103,8 @@ Reconnect is not crash resume, loss concealment, scene coverage or an absence ce
 \n\
 Explicit offline recovery: repeat the ORIGINAL reconnect options with --recover yes.\n\
 Remove the capture --approve value. The returned recovery preview reads protected journal\n\
-metadata, but NOT original media or credential files, and opens NO camera connection.\n\
+metadata; source-retained plans also reverify their complete original datagram chains.\n\
+It reads no recording or credential files and opens NO camera connection.\n\
 Repeat with its separate --approve digest to verify all selected work before restoring\n\
 any original pending window/catalog. --recovery-timeout-ms 30000 bounds the ENTIRE operation.\n\
 The recovery approval binds all observed journal tips, directory identities, scopes and limits.\n\
@@ -127,7 +128,7 @@ repair, new camera input, archive deletion or cross-epoch merge occurs.\n\
 Optional independent rollback fences for either recovery mode:\n\
   --minimum-pin-anchors 1:SEQUENCE:sha256:HEX,2:SEQUENCE:sha256:HEX\n\
 Supply journal anchors saved independently for the ORIGINAL one-based attempt ordinals.\n\
-Each listed prefix must occur in its current journal before any source read/publication.\n\
+Every listed journal prefix must pass before any source read/publication.\n\
 Missing listed stores refuse; unlisted attempts do not acquire an independent guarantee.\n\
 The bounded map changes recovery approval only, never original capture epochs or paths.\n\
 \n\
@@ -141,7 +142,16 @@ Source storage/work/output failure or uncertainty STOPS, without retry or replen
 Progress/duration/retry/campaign rules still apply; all native deadlines remain unchanged.\n\
 This adds neither retention by default, new retry causes, automatic source recovery nor\n\
 continuous coverage. Preserve the preview, every datagram_durable receipt and all stores.\n\
---recover is refused for source-retained plans: existing recovery does not verify source stores.\n";
+\n\
+Source-retained offline recovery supports --recover yes and --recover index with ALL original\n\
+source options. It binds all three stores, holds source/journal owners and verifies source chains,\n\
+and requires every original recording RTP packet with its unchanged receive time before writing.\n\
+Source stores are never created, appended, reconstructed or resumed by recovery. Any missing,\n\
+corrupt, stale or replaced source refuses; all three absent stores remain UNKNOWN.\n\
+Optional --minimum-source-pins 1:DATAGRAMS:PAYLOAD_BYTES:sha256:HEAD binds independently saved\n\
+datagram_durable coordinates for original attempt ordinals. Each exact prefix must occur in\n\
+the complete current chain; damaged newer source is never replaced by an older prefix.\n\
+Repeated native source checks share one original --source-work allowance per attempt.\n";
 
 pub(super) struct ReconnectPlan {
     attempts: Vec<Options>,
@@ -155,6 +165,7 @@ pub(super) struct ReconnectPlan {
     recovery_timeout_ns: Option<u64>,
     index_catalogs: bool,
     minimum_pins: Option<recovery::MinimumPins>,
+    minimum_sources: Option<recovery::MinimumSourcePins>,
     approve: Option<ContentDigest>,
     maximum_source_bytes: u64,
     maximum_storage_bytes: u64,
@@ -223,7 +234,9 @@ impl ReconnectPlan {
         let continue_after_success = match values.remove("--continue-after-success").as_deref() {
             None => false,
             Some("yes") => true,
-            Some(_) => return Err("continuing after success requires --continue-after-success yes"),
+            Some(_) => {
+                return Err("continuing after success requires --continue-after-success yes");
+            }
         };
         let retry_interrupted = match values.remove("--retry-interrupted").as_deref() {
             None => false,
@@ -236,6 +249,13 @@ impl ReconnectPlan {
             .transpose()?;
         if !recover && minimum_pins.is_some() {
             return Err("minimum pin anchors require --recover yes or --recover index");
+        }
+        let minimum_sources = values
+            .remove("--minimum-source-pins")
+            .map(|text| recovery::MinimumSourcePins::parse(&text))
+            .transpose()?;
+        if !recover && minimum_sources.is_some() {
+            return Err("minimum source pins require --recover yes or --recover index");
         }
         let recovery_timeout = values.remove("--recovery-timeout-ms");
         if !recover && recovery_timeout.is_some() {
@@ -287,10 +307,8 @@ impl ReconnectPlan {
         // Reuse every native codec, route, credentials and resource check before deriving any
         // attempt. The extra mode does not maintain a second version of those contracts.
         let source_arguments = retained::SourceArguments::take(&mut values);
-        if recover && source_arguments.is_some() {
-            // Existing recovery restores recording windows, not source-datagram
-            // stores. Never silently ignore the third store or claim it recovered.
-            return Err("source-retained reconnect recovery is unsupported; preserve all three stores");
+        if minimum_sources.is_some() && source_arguments.is_none() {
+            return Err("minimum source pins require the original source-retention options");
         }
         let base = Options::parse(&arguments(&values))?;
         if let Some(source) = &source_arguments {
@@ -308,7 +326,9 @@ impl ReconnectPlan {
         let receive_clock = base.recording_config().scope.receive_clock;
         let journal = base.pin_scope().journal_id;
         let mut attempts = Vec::new();
-        let mut sources = source_arguments.as_ref().map(|_| retained::SourcePlans::new());
+        let mut sources = source_arguments
+            .as_ref()
+            .map(|_| retained::SourcePlans::new());
         let mut maximum_source_bytes = 0_u64;
         let mut maximum_storage_bytes = 0_u64;
         let mut maximum_report_bytes = 0_u64;
@@ -336,7 +356,10 @@ impl ReconnectPlan {
             );
             let attempt = if let Some(source) = &source_arguments {
                 let retained = source.attempt(&child, index as usize)?;
-                sources.as_mut().ok_or("source plan state")?.push(retained.source)?;
+                sources
+                    .as_mut()
+                    .ok_or("source plan state")?
+                    .push(retained.source)?;
                 retained.capture
             } else {
                 Options::parse(&arguments(&child))?
@@ -371,6 +394,7 @@ impl ReconnectPlan {
             recovery_timeout_ns,
             index_catalogs,
             minimum_pins,
+            minimum_sources,
             approve,
             maximum_source_bytes,
             maximum_storage_bytes,
@@ -381,11 +405,17 @@ impl ReconnectPlan {
         out.maximum_backoff_ms = (0..out.attempts.len().saturating_sub(1))
             .map(|index| out.delay_ms(index))
             .sum();
+        if let Some(minimum) = &out.minimum_sources {
+            minimum.validate(&out)?;
+        }
         Ok(out)
     }
 
     fn child_approval(&self, index: usize) -> Result<ContentDigest, &'static str> {
-        let attempt = self.attempts.get(index).ok_or("ERR-CAPTURE-RTSP-STATE-001")?;
+        let attempt = self
+            .attempts
+            .get(index)
+            .ok_or("ERR-CAPTURE-RTSP-STATE-001")?;
         match &self.sources {
             Some(sources) => sources.get(index)?.digest(attempt),
             None => attempt.digest(),
@@ -630,13 +660,12 @@ fn run(plan: &ReconnectPlan, effects: &mut impl Effects) -> Result<(), &'static 
             && !outcome.recovery_required
             && outcome.retry == Some(driver::RetryReason::SettledSuccess)
             && picture_total_valid;
-        let continuation_blocked = plan.continue_after_success
-            && outcome.result.is_ok()
-            && !settled_success;
+        let continuation_blocked =
+            plan.continue_after_success && outcome.result.is_ok() && !settled_success;
         // Pending remote control can block a successor independently of media completion.
         // Neither mode may hide unresolved archive work or an invalid picture total.
-        let completion_invalid = outcome.result.is_ok()
-            && (outcome.recovery_required || !picture_total_valid);
+        let completion_invalid =
+            outcome.result.is_ok() && (outcome.recovery_required || !picture_total_valid);
         let capture_result = if completion_invalid {
             Err("ERR-CAPTURE-RTSP-STATE-001")
         } else {
@@ -670,9 +699,8 @@ fn run(plan: &ReconnectPlan, effects: &mut impl Effects) -> Result<(), &'static 
             && !outcome.recovery_required
             && retry_admitted
             && index + 1 < plan.attempts.len();
-        let continuing_after_success = plan.continue_after_success
-            && settled_success
-            && index + 1 < plan.attempts.len();
+        let continuing_after_success =
+            plan.continue_after_success && settled_success && index + 1 < plan.attempts.len();
         let mut finished_fields = vec![
             ("approval", string(&approval.to_text())),
             ("attempt", (index + 1).to_string()),
@@ -749,7 +777,7 @@ fn run(plan: &ReconnectPlan, effects: &mut impl Effects) -> Result<(), &'static 
                     (index + 1 == plan.attempts.len()
                         && (plan.continue_after_success
                             || (outcome.result.is_err() && retry_admitted)))
-                    .to_string(),
+                        .to_string(),
                 ),
                 ("recovery_required", outcome.recovery_required.to_string()),
                 ("durable_pictures_all_attempts", durable.to_string()),
@@ -973,8 +1001,8 @@ mod custody_tests {
     }
 
     fn approved_plan(campaign: bool) -> ReconnectPlan {
-        let mut plan = ReconnectPlan::parse(&plan_arguments(campaign))
-            .expect("valid pure reconnect plan");
+        let mut plan =
+            ReconnectPlan::parse(&plan_arguments(campaign)).expect("valid pure reconnect plan");
         plan.approve = Some(plan.digest().expect("outer approval"));
         for attempt in &mut plan.attempts {
             attempt.approve = Some(attempt.digest().expect("child approval"));
@@ -1016,7 +1044,10 @@ mod custody_tests {
         }
 
         fn capture(&mut self, options: &Options) -> Result<AttemptOutcome, &'static str> {
-            assert_eq!(options.approve, Some(options.digest().expect("child approval")));
+            assert_eq!(
+                options.approve,
+                Some(options.digest().expect("child approval"))
+            );
             self.captures += 1;
             Ok(self.outcome.take().expect("no successor capture may run"))
         }
@@ -1054,9 +1085,7 @@ mod custody_tests {
                 let terminal = effects.row("reconnect_terminal");
                 assert!(terminal.contains("\"complete\":false"));
                 assert!(terminal.contains("\"error_id\":\"ERR-CAPTURE-RTSP-STATE-001\""));
-                assert!(terminal.contains(&format!(
-                    "\"recovery_required\":{recovery_required}"
-                )));
+                assert!(terminal.contains(&format!("\"recovery_required\":{recovery_required}")));
                 if campaign {
                     assert!(terminal.contains("\"successful_attempts\":0"));
                 }
@@ -1079,12 +1108,16 @@ mod custody_tests {
                 Err("ERR-CAPTURE-RTSP-STORAGE-001")
             );
             assert_eq!(effects.captures, 1);
-            assert!(effects.row("attempt_finished").contains(
-                "\"error_id\":\"ERR-CAPTURE-RTSP-STORAGE-001\""
-            ));
-            assert!(effects.row("reconnect_terminal").contains(
-                "\"error_id\":\"ERR-CAPTURE-RTSP-STORAGE-001\""
-            ));
+            assert!(
+                effects
+                    .row("attempt_finished")
+                    .contains("\"error_id\":\"ERR-CAPTURE-RTSP-STORAGE-001\"")
+            );
+            assert!(
+                effects
+                    .row("reconnect_terminal")
+                    .contains("\"error_id\":\"ERR-CAPTURE-RTSP-STORAGE-001\"")
+            );
         }
     }
 
@@ -1124,12 +1157,25 @@ mod custody_tests {
         let args = plan_arguments(false);
         let legacy = ReconnectPlan::parse(&args).unwrap();
         let mut timed_args = args.clone();
-        timed_args.extend([OsString::from("--capture-duration-ms"), OsString::from("1000")]);
+        timed_args.extend([
+            OsString::from("--capture-duration-ms"),
+            OsString::from("1000"),
+        ]);
         let timed = ReconnectPlan::parse(&timed_args).unwrap();
         assert_eq!(timed.capture_duration_ns, Some(1_000_000_000));
         assert_ne!(legacy.digest().unwrap(), timed.digest().unwrap());
-        assert!(legacy.supervision(legacy.digest().unwrap()).unwrap().is_none());
-        assert!(timed.supervision(timed.digest().unwrap()).unwrap().is_some());
+        assert!(
+            legacy
+                .supervision(legacy.digest().unwrap())
+                .unwrap()
+                .is_none()
+        );
+        assert!(
+            timed
+                .supervision(timed.digest().unwrap())
+                .unwrap()
+                .is_some()
+        );
         assert_eq!(legacy.maximum_capture_ns, timed.maximum_capture_ns);
         assert_eq!(legacy.maximum_source_bytes, timed.maximum_source_bytes);
         assert_eq!(legacy.maximum_storage_bytes, timed.maximum_storage_bytes);
@@ -1147,32 +1193,55 @@ mod custody_tests {
             assert!(preview.contains(expected), "missing {expected}");
         }
         *timed_args.last_mut().unwrap() = OsString::from("1001");
-        assert_ne!(timed.digest().unwrap(), ReconnectPlan::parse(&timed_args).unwrap().digest().unwrap());
-        timed_args.extend([OsString::from("--progress-timeout-ms"), OsString::from("100")]);
+        assert_ne!(
+            timed.digest().unwrap(),
+            ReconnectPlan::parse(&timed_args).unwrap().digest().unwrap()
+        );
+        timed_args.extend([
+            OsString::from("--progress-timeout-ms"),
+            OsString::from("100"),
+        ]);
         let combined = ReconnectPlan::parse(&timed_args).unwrap();
-        assert!(combined.supervision(combined.digest().unwrap()).unwrap().is_some());
-        assert!(combined.preview().unwrap().contains(driver::Supervision::TIMED_POLICY));
+        assert!(
+            combined
+                .supervision(combined.digest().unwrap())
+                .unwrap()
+                .is_some()
+        );
+        assert!(
+            combined
+                .preview()
+                .unwrap()
+                .contains(driver::Supervision::TIMED_POLICY)
+        );
     }
 
     #[test]
     fn invalid_or_unreachable_duration_is_refused_before_effects() {
         for value in ["0", "-1", "1.5", "600001", "18446744073709551615", "bad"] {
             let mut args = plan_arguments(false);
-            args.extend([OsString::from("--capture-duration-ms"), OsString::from(value)]);
+            args.extend([
+                OsString::from("--capture-duration-ms"),
+                OsString::from(value),
+            ]);
             assert!(ReconnectPlan::parse(&args).is_err(), "accepted {value}");
         }
         for duration in ["1000", "1001"] {
             let mut args = plan_arguments(false);
             args.extend([
-                OsString::from("--timeout-ms"), OsString::from("1000"),
-                OsString::from("--capture-duration-ms"), OsString::from(duration),
+                OsString::from("--timeout-ms"),
+                OsString::from("1000"),
+                OsString::from("--capture-duration-ms"),
+                OsString::from(duration),
             ]);
             assert!(ReconnectPlan::parse(&args).is_err());
         }
         let mut duplicate = plan_arguments(false);
         duplicate.extend([
-            OsString::from("--capture-duration-ms"), OsString::from("1"),
-            OsString::from("--capture-duration-ms"), OsString::from("2"),
+            OsString::from("--capture-duration-ms"),
+            OsString::from("1"),
+            OsString::from("--capture-duration-ms"),
+            OsString::from("2"),
         ]);
         assert!(ReconnectPlan::parse(&duplicate).is_err());
     }
@@ -1187,13 +1256,20 @@ mod custody_tests {
             recovery_required: false,
             durable_pictures: 1,
         });
-        assert_eq!(run(&plan, &mut effects), Err("ERR-CAPTURE-RTSP-APPROVAL-001"));
+        assert_eq!(
+            run(&plan, &mut effects),
+            Err("ERR-CAPTURE-RTSP-APPROVAL-001")
+        );
         assert_eq!(effects.captures, 0);
         assert!(effects.rows.is_empty());
         plan.approve = Some(plan.digest().unwrap());
         assert_eq!(run(&plan, &mut effects), Ok(()));
         assert_eq!(effects.captures, 1);
-        assert!(effects.row("attempt_finished").contains("\"picture_ceiling_reached\":false"));
+        assert!(
+            effects
+                .row("attempt_finished")
+                .contains("\"picture_ceiling_reached\":false")
+        );
     }
 
     #[test]
@@ -1218,7 +1294,10 @@ mod custody_tests {
                 recovery_required: false,
                 durable_pictures: 0,
             });
-            assert_eq!(run(&plan, &mut empty), Err("ERR-CAPTURE-RTSP-EMPTY-DURATION-001"));
+            assert_eq!(
+                run(&plan, &mut empty),
+                Err("ERR-CAPTURE-RTSP-EMPTY-DURATION-001")
+            );
             assert_eq!(empty.captures, 1);
         }
     }
@@ -1226,7 +1305,10 @@ mod custody_tests {
     #[test]
     fn offline_recovery_retains_original_timed_capture_identity() {
         let mut args = plan_arguments(true);
-        args.extend([OsString::from("--capture-duration-ms"), OsString::from("1000")]);
+        args.extend([
+            OsString::from("--capture-duration-ms"),
+            OsString::from("1000"),
+        ]);
         let original = ReconnectPlan::parse(&args).unwrap();
         for mode in ["yes", "index"] {
             let mut recovery_args = args.clone();
