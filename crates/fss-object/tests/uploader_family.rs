@@ -232,7 +232,6 @@ fn p2_cancellation_drains() -> Result<(), Box<dyn std::error::Error>> {
         matches!(result, Err(UploaderError::Cancelled { confirmed_parts: 0 })),
         "cancelled before any part"
     );
-    let obligation = upload.obligation().clone();
     let abort = upload.cancel(&mut tree)?;
     assert_eq!(abort.confirmed_parts, 0, "no part was in flight");
     assert!(authority.finalize_report(&tree)?.is_empty());
