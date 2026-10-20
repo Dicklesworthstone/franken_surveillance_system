@@ -29,7 +29,7 @@
 | `ADP-YI-IPC-LAB-001` | Yi IPC (Zowee ODM `b0:d5:9d`, generic-IPC ONVIF stack; 192.168.6.156) | **Observed 2026-10-09:** answers WS-Discovery `dn:NetworkVideoTransmitter` with Profile/Streaming + ptz + video_analytics scopes (full WS-Addressing header required); ONVIF SOAP service gated behind vendor-app provisioning — TCP closed across the full range in every state (NEG-006) | T3 | owner-auth lab (GATE-090); any ONVIF/RTSP promotion requires GATE-030 conformance evidence after owner provisioning (fss-u3e43) | **WSD-announced, service gated (NEG-006); owner paths: one-time Yi-app provisioning OR yi-hack via the camera's own SD-card updater (RTSP+ONVIF+PTZ+SSH, cloud disableable) — need SN prefix + fw version for variant match (fss-u3e43)** |
 | `ADP-CANARY-LAB-001` | Canary camera (model TBD) | **Device not yet located on owner LAN** — 2026-10-09 census found no Canary OUI/signature; owner to power it up / confirm model | T4 | research-target | needs device presence before any protocol work |
 | `ADP-DJI-FLIP-LAB-001` | DJI Flip | DJI Fly live view and QuickTransfer; not listed in current Mobile SDK products | T3/T4 | manual calibration capture bridge or bounded import | research target only |
-| `ADP-S3-IMPORT-001` | owner bucket/NVR export | S3-compatible objects | T4 | immutable import and manifest reconciliation | specified |
+| `ADP-S3-IMPORT-001` | owner bucket/NVR export | S3-compatible objects (owner presigned URL) | T4 | immutable import and manifest reconciliation | **fss-import-s3 import lane live** (loopback e2e: bounded presigned-URL fetch → stage → FileIngestAdapter → `verify_source` re-hash; presigned query stripped from report); live NAS + GATE-040 pending |
 
 ## 3. Important corrections
 
