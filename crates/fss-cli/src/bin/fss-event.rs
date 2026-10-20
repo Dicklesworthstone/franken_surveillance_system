@@ -172,9 +172,13 @@ const HELP: &str = "fss-event <report|prepare|publish|read|verify|watch|corrobor
     original scan allowances. Partial steps defer any requested detector package; complete\n\
     steps verify it and classify qualifying episodes under the original remaining budgets.\n\
     Complete reports supply exact trained publish commands; checkpointing grants no event or\n\
-    alert approval. Incremental mode excludes inter-coded sources and health. To request class\n\
+    alert approval. Incremental mode excludes inter-coded sources. To request class\n\
     advice, add exact dwell fusion-profile/digest pins to a completed checkpoint continuation.\n\
     Its cold restore and classifier are explicit; no checkpoint or event is appended.\n\
+    --sensor-health conservative-v1 preserves native screening across steps in version-two\n\
+    checkpoints, with separate logical/cold health counters and the same publication fence.\n\
+    Existing unscreened checkpoints remain readable. Screening cannot change on resume;\n\
+    incremental health with calibrated fusion or health/coverage retention is refused.\n\
   corroborate (two recordings, two sensors): --camera NAME:sha256:IMPORT (exactly twice)\n\
           --ground NAME:h11,h12,h13,h21,h22,h23,h31,h32,h33 (one per camera; image pixels ->\n\
           ground units; an owner assertion like a zone, NOT a calibration certificate)\n\

@@ -41,7 +41,9 @@
 //! `--dwell-step-frames N` advances a bounded MJPEG prefix and retains an immutable source-bound
 //! checkpoint. Its emitted continuation names both exact checkpoint pins and explicitly admits
 //! the cold prefix reconstruction with `--dwell-restore-max-frames`. A partial prefix emits no
-//! completed dwell event. Exact completed checkpoints can instead supply read-only calibrated
+//! completed dwell event. Optional conservative health screening preserves its findings and
+//! sample allowance across steps using an explicitly versioned checkpoint. Exact completed
+//! unscreened checkpoints can instead supply read-only calibrated
 //! advice without another checkpoint append. Existing final proposal approvals remain required.
 //! Screened whole-recording reports separately offer `--retain-health` for source-bound
 //! historical diagnostics, including runs with no candidate or a blocking health finding.

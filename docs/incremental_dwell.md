@@ -122,6 +122,49 @@ event publication command still requires its explicit model input. The event rem
 Unclassified, Indeterminate and Hold; these annotations grant no alert or class-absence
 authority.
 
+## Preserve sensor-health screening across steps
+
+Add `--sensor-health conservative-v1` to the initial incremental request to screen the same
+privacy-masked native luma frames throughout the recording. Every emitted continuation keeps
+the option. For example, append both options to an otherwise complete dwell request:
+
+```sh
+--dwell-step-frames 128 --sensor-health conservative-v1
+```
+
+A live owner preserves the health screen's comparison baseline, finding runs, replay checks and
+spent sample allowance between steps. Cold recovery reconstructs that state from the retained
+source and compares the complete screened trace and work counters. It does not start a new
+health baseline at a checkpoint boundary. Frozen imagery, persistent dark/bright fields,
+contrast collapse, missing decoded positions and source discontinuities retain the same
+conservative meaning as the existing whole-recording health screen.
+
+Screened progress adds `sensor_health_policy`, `sensor_health_policy_digest` and
+`sensor_health_stage`, plus `logical_health_scan_work` and `cold_health_restoration_work`.
+Each work object contains `frames_screened` and `samples_screened`. Screening samples are
+separate from foreground pixel work: each owner has the same original
+`--dwell-pixel-budget` ceiling, and neither allowance is refilled at a step or restore boundary.
+Cold health work is reported separately from the logical whole-scan work, just as decoding and
+tracking restoration already are. The `complete` stage means the declared scan finished;
+`event_report.sensor_health.complete` separately states whether screening covered every position
+with admitted continuity and timing.
+
+Partial progress contains no completed diagnostic or event report. The completed report embeds
+the native `sensor_health` summary, including finding runs, their observation identities and
+whether publication is blocked. A degraded or incomplete screen blocks event publication even
+if the temporal scan found a qualifying dwell episode and the caller supplies its proposal
+approval. An empty candidate inventory still returns the complete diagnostic. A no-findings
+screen certifies neither current camera health nor physical absence.
+
+The initial option selects a version-two screened checkpoint, including custody of the exact
+health policy. Version-one unscreened checkpoints keep their original bytes and remain readable.
+Adding or removing screening while resuming changes the request identity and is refused before
+native reconstruction. A missing or damaged retained health policy cannot be repaired by a
+retry. Trained classification remains a separate terminal stage and is subject to the completed
+native health gate. Incremental calibrated fusion, historical-health retention and coverage
+retention are not admitted together with this new screening path; their existing whole-recording
+owners remain available.
+
 ## Calibrated advice from a completed checkpoint
 
 After the terminal trained stage succeeds, its complete response supplies the native
@@ -251,8 +294,8 @@ native owner or cached metadata never repairs a missing published checkpoint bod
 Partitioned imports are explicitly refused before native decoding. Their aggregate metadata
 names typed part roots which are not graph children; the first checkpoint format deliberately
 does not claim that retaining only the aggregate closes all part custody. H.264/H.265
-checkpoint continuation, sensor-health screening, health retention and coverage retention
-remain refused in incremental mode. Trained packages run only at the completed temporal
+checkpoint continuation, health retention and coverage retention remain refused in incremental
+mode. Explicit conservative sensor-health screening uses version-two checkpoints. Trained packages run only at the completed temporal
 boundary described above. Calibrated fusion requires an already complete, exactly pinned
 checkpoint and uses the separate read-only path; partial checkpoint advice is refused.
 Existing whole-recording paths retain their supported codec, health and fusion capabilities.
@@ -269,7 +312,13 @@ source growth and an automatic long-running scheduling daemon are separate capab
 
 The canonical checkpoint body domain is `fss.incremental_dwell_checkpoint.v1` (FMT-010), its
 complete recipe domain is `fss.incremental-dwell.recipe.v1`, and its manifest kind is
-`recorded-incremental-dwell-checkpoint-v1`. The source-closed graph uses the existing
+`recorded-incremental-dwell-checkpoint-v1`. Screened checkpoints use
+`fss.incremental_dwell_checkpoint.v2` (FMT-012), `fss.incremental-dwell.recipe.v2` and
+`recorded-incremental-dwell-checkpoint-v2`. Their recipe additionally pins the health-policy
+digest after the decoder identity, and their record adds two cumulative health-work counters
+before the trace. The version-two root also retains the policy bytes. Both formats require
+whole consumption and byte-identical native replay; the version cannot be changed on resume.
+The source-closed graph uses the existing
 `local_root_reachability` publication owner. No checkpoint authority family, mutable serialized
 tracker format, new effect authority or changed whole-recording event encoding is introduced.
 
@@ -297,6 +346,7 @@ contracts do not qualify detector accuracy or field calibration.
 ```sh
 cargo test -p fss-reference --lib ingest::long_dwell::tests::incremental
 cargo test -p fss-reference --lib ingest::long_dwell::tests::classify
+cargo test -p fss-reference --lib ingest::long_dwell::health_tests::incremental
 cargo test -p fss-cli --bin fss-event watch::incremental
 cargo test -p fss-cli --test watch_stream_dwell_cli incremental
 ```

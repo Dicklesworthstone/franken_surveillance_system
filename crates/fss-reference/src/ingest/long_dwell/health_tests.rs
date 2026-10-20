@@ -12,6 +12,8 @@ use fss_core::region::{ContextAuthority, RootAuthoritySpec};
 use fss_core::{BudgetVector, OperationId, StreamId, TimestampNs};
 use std::fs;
 
+mod incremental;
+
 type Test<T = ()> = std::result::Result<T, Box<dyn std::error::Error>>;
 const SITE: &str = "site:long-dwell-health";
 const FRAMES: usize = 300;

@@ -208,6 +208,14 @@ impl Screening {
             reset_pending: false,
         })
     }
+    /// Successfully completed screening observations, without finalizing the diagnostic.
+    pub(super) const fn frames_screened(&self) -> usize {
+        self.summary.frames
+    }
+    /// Actual sample work, including rows processed before a refused or cancelled observation.
+    pub(super) const fn samples_screened(&self) -> u64 {
+        self.screen.samples_used()
+    }
     /// Reset comparisons only. The same screen owns the whole-scan budget and replay set.
     pub(super) fn discontinuity(&mut self) {
         self.summary.complete = false;

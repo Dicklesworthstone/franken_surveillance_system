@@ -299,5 +299,7 @@ removes the original input and loose model before inspecting and replaying the c
 Synthetic fixtures demonstrate executable behavior; they do not qualify detection accuracy.
 Bounded durable incremental MJPEG checkpoints and exact cold native continuation are implemented;
 see [incremental dwell](incremental_dwell.md) for their admitted source modes, costs and CLI.
-Incremental inter-coded and health processing, cross-camera dwell, live operation and
+Incremental MJPEG scans can preserve conservative sensor-health screening through version-two
+checkpoints, with separate logical/cold health work and the same completed publication gate.
+Incremental inter-coded processing, cross-camera dwell, live operation and
 real-footage quality evaluation remain open.

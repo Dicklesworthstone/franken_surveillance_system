@@ -5,7 +5,7 @@ use super::*;
 use fss_cli::event_fusion::{EventFusionProfile, MAX_REPORT_BYTES};
 use fss_reference::ingest::long_dwell::LongDwellDetector;
 use fss_reference::ingest::long_dwell::incremental::{
-    DwellCheckpointPin, DwellRestoreLimits, DwellWork, PreparedIncrementalDwell,
+    DwellCheckpointPin, DwellHealthWork, DwellRestoreLimits, DwellWork, PreparedIncrementalDwell,
     RetainedDwellCheckpoint,
 };
 
@@ -43,8 +43,11 @@ pub(super) fn parse(
             "incremental options require --stream-dwell and --dwell-step-frames".to_owned(),
         );
     }
-    if health_screen {
-        return Err("incremental dwell excludes sensor-health screening".to_owned());
+    if has("--retain-health") || has("--retain-coverage") {
+        return Err("incremental dwell excludes sensor-health and coverage retention".to_owned());
+    }
+    if health_screen && (has("--fusion-profile") || has("--fusion-digest")) {
+        return Err("calibrated incremental dwell excludes sensor-health screening".to_owned());
     }
     let step_frames = number(values, "--dwell-step-frames", 0_usize)?;
     if !(1..=MAX_LONG_DWELL_FRAMES).contains(&step_frames) {
@@ -111,9 +114,20 @@ pub(super) fn run(
             || action.retain_health.is_some()
             || action.retain_coverage.is_some(),
     )?;
-    if action.health_screen || action.retain_health.is_some() || action.retain_coverage.is_some() {
+    if action.retain_health.is_some() || action.retain_coverage.is_some() {
         return Err(WatchError::InvalidPlan(
             "incremental dwell excludes sensor-health and coverage retention",
+        )
+        .into());
+    }
+    if action.health_screen
+        && action
+            .cascade
+            .as_ref()
+            .is_some_and(|options| options.fusion.is_some())
+    {
+        return Err(WatchError::InvalidPlan(
+            "calibrated incremental dwell excludes sensor-health screening",
         )
         .into());
     }
@@ -145,7 +159,12 @@ pub(super) fn run(
     let rule = action
         .dwell
         .ok_or(WatchError::InvalidPlan("incremental dwell requires a rule"))?;
-    let prepared = PreparedIncrementalDwell::new(
+    let prepare = if action.health_screen {
+        PreparedIncrementalDwell::new_screened
+    } else {
+        PreparedIncrementalDwell::new
+    };
+    let prepared = prepare(
         deployment,
         WatchPlan {
             import_identity: action.import,
@@ -205,6 +224,14 @@ pub(super) fn run(
     };
     let work = running.advance(deployment, options.step_frames, cx)?;
     let restoration = running.restoration_work();
+    let health = match (running.health_work(), running.restoration_health_work()) {
+        (None, None) => None,
+        (Some(logical), Some(restoration)) => Some(HealthProgress {
+            logical,
+            restoration,
+        }),
+        _ => return Err(WatchError::Conflict.into()),
+    };
     let complete = running.complete();
     let pin = running.retain(deployment, cx)?;
     let continuation = continuation_command(action, pin, work.source_positions)?;
@@ -243,6 +270,7 @@ pub(super) fn run(
             pin,
             work,
             restoration,
+            health,
             prefix,
             count,
             complete,
@@ -275,11 +303,18 @@ fn continuation_command(
     Ok(command)
 }
 
+/// Screening uses its own native sample allowance; it is not folded into foreground work.
+struct HealthProgress {
+    logical: DwellHealthWork,
+    restoration: DwellHealthWork,
+}
+
 /// Rendering shares the existing progress schema without changing ordinary scheduling output.
 struct Progress {
     pin: DwellCheckpointPin,
     work: DwellWork,
     restoration: DwellWork,
+    health: Option<HealthProgress>,
     prefix: usize,
     count: usize,
     complete: bool,
@@ -296,6 +331,7 @@ fn render_progress(
         pin,
         work,
         restoration,
+        health,
         prefix,
         count,
         complete,
@@ -322,6 +358,23 @@ fn render_progress(
         restoration.to_json(),
         json(&continuation),
     );
+    if let Some(health) = health {
+        output.push_str(&format!(
+            concat!(
+                ",\"sensor_health_policy\":{},\"sensor_health_policy_digest\":{},",
+                "\"sensor_health_stage\":{},\"logical_health_scan_work\":{{",
+                "\"frames_screened\":{},\"samples_screened\":{}}},",
+                "\"cold_health_restoration_work\":{{\"frames_screened\":{},\"samples_screened\":{}}}"
+            ),
+            json(HEALTH_POLICY_NAME),
+            json(&fss_reference::ingest::sensor_health::policy_digest().to_text()),
+            json(if complete { "complete" } else { "screening" }),
+            health.logical.frames_screened,
+            health.logical.samples_screened,
+            health.restoration.frames_screened,
+            health.restoration.samples_screened,
+        ));
+    }
     if let Some(options) = &action.cascade {
         output.push_str(&format!(
             concat!(
@@ -375,6 +428,12 @@ fn run_completed_fusion(
             || action.retain_health.is_some()
             || action.retain_coverage.is_some(),
     )?;
+    if action.health_screen || saved.prepared().screened() {
+        return Err(WatchError::InvalidPlan(
+            "calibrated incremental dwell excludes sensor-health screening",
+        )
+        .into());
+    }
     // Tolerated decode refusals still consume positions. A step which could finish a partial
     // prefix is insufficient: advice cannot advance or retain any new temporal work.
     let count = saved.prepared().plan().segment_count;
@@ -417,6 +476,7 @@ fn run_completed_fusion(
             pin,
             work,
             restoration,
+            health: None,
             prefix: work.source_positions,
             count,
             complete: true,
@@ -452,7 +512,7 @@ mod tests {
         let base = values(&[("--dwell-step-frames", "128")]);
         assert!(parse(&base, true, false).unwrap().is_some());
         assert!(parse(&base, false, false).is_err());
-        assert!(parse(&base, true, true).is_err());
+        assert!(parse(&base, true, true).unwrap().is_some());
         let mut classifier = base.clone();
         let detector_digest = ContentDigest::sha256(b"classifier package").to_text();
         classifier.extend(values(&[
@@ -465,6 +525,7 @@ mod tests {
             let mut fusion = classifier.clone();
             fusion.push((field.to_owned(), "not-opened".to_owned()));
             assert!(parse(&fusion, true, false).is_err());
+            assert!(parse(&fusion, true, true).is_err());
         }
         for n in ["0", "65537"] {
             assert!(parse(&values(&[("--dwell-step-frames", n)]), true, false).is_err());

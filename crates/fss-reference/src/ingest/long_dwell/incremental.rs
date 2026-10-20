@@ -10,14 +10,20 @@
 use super::*;
 use fss_core::{CanonicalDecode, CanonicalDecoder, DigestAlgorithm, Plane, PrincipalId};
 use fss_publication::ROOT_REACHABILITY_FAMILY;
+use std::cell::Cell;
 
 /// Canonical versioned checkpoint domain. Existing whole-recording event formats are unchanged.
 pub const CHECKPOINT_DOMAIN: &str = "fss.incremental_dwell_checkpoint.v1";
+/// Screened checkpoint domain, binding separate health work and the exact screening policy.
+pub const CHECKPOINT_DOMAIN_V2: &str = "fss.incremental_dwell_checkpoint.v2";
 /// Maximum checkpoint body, including its complete bounded native trace and original recipe.
 pub const MAX_CHECKPOINT_BYTES: usize = MAX_LONG_DWELL_TRACE_BYTES + 16 * 1024;
 /// Durable manifest kind of this source-closed derived computation checkpoint.
 pub const CHECKPOINT_MANIFEST_KIND: &str = "recorded-incremental-dwell-checkpoint-v1";
+/// Durable manifest kind of a checkpoint retaining the complete health-screening recipe.
+pub const CHECKPOINT_MANIFEST_KIND_V2: &str = "recorded-incremental-dwell-checkpoint-v2";
 const RECIPE_DOMAIN: &str = "fss.incremental-dwell.recipe.v1";
+const RECIPE_DOMAIN_V2: &str = "fss.incremental-dwell.recipe.v2";
 
 /// Exact immutable checkpoint handles. Neither digest is authority to publish an event.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -92,6 +98,30 @@ impl DwellWork {
     }
 }
 
+/// Actual health-screening work, separate from the foreground and decoder counters.
+/// These measurements alone are neither a complete diagnostic nor a health certificate.
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub struct DwellHealthWork {
+    /// Successfully screened native decoded frames.
+    pub frames_screened: usize,
+    /// Luma samples processed by the same screen, including work before cancellation.
+    pub samples_screened: u64,
+}
+
+impl DwellHealthWork {
+    fn encode(self, encoder: &mut CanonicalEncoder) {
+        encoder.u64(self.frames_screened as u64);
+        encoder.u64(self.samples_screened);
+    }
+
+    fn decode(decoder: &mut CanonicalDecoder<'_>) -> Result<Self> {
+        Ok(Self {
+            frames_screened: count(decoder, MAX_LONG_DWELL_FRAMES)?,
+            samples_screened: decoder.u64()?,
+        })
+    }
+}
+
 /// Independent explicit permission to pay cold reconstruction cost. The stored original scan
 /// ceilings must fit this admission; they remain unchanged for the resumed logical analysis.
 #[derive(Clone, Copy, Debug)]
@@ -109,6 +139,7 @@ pub struct PreparedIncrementalDwell {
     rule: DwellPolicy,
     options: WatchOptions,
     limits: LongDwellLimits,
+    screened: bool,
     source: ScanPreparation,
     root: PathBuf,
     site: String,
@@ -127,14 +158,39 @@ impl std::fmt::Debug for PreparedIncrementalDwell {
 
 impl PreparedIncrementalDwell {
     /// Admit one full MJPEG range and temporal rule without decoding or creating a checkpoint.
-    /// The first version intentionally excludes inter-coded decoder state, classifiers and
-    /// sensor-health screens. Those modes retain their existing whole-recording APIs.
+    /// The original unscreened v1 checkpoint bytes remain unchanged. Inter-coded decoder state
+    /// is excluded; trained classification belongs to the completed native report.
     pub fn new(
         deployment: &ReferenceDeployment,
         plan: WatchPlan,
         rule: DwellPolicy,
         options: WatchOptions,
         limits: LongDwellLimits,
+        cx: &ReplayCx,
+    ) -> Result<Self> {
+        Self::new_inner(deployment, plan, rule, options, limits, false, cx)
+    }
+
+    /// Admit the same native range with conservative whole-scan sensor-health screening.
+    /// The v2 recipe retains the exact policy and original work ceilings across every step.
+    pub fn new_screened(
+        deployment: &ReferenceDeployment,
+        plan: WatchPlan,
+        rule: DwellPolicy,
+        options: WatchOptions,
+        limits: LongDwellLimits,
+        cx: &ReplayCx,
+    ) -> Result<Self> {
+        Self::new_inner(deployment, plan, rule, options, limits, true, cx)
+    }
+
+    fn new_inner(
+        deployment: &ReferenceDeployment,
+        plan: WatchPlan,
+        rule: DwellPolicy,
+        options: WatchOptions,
+        limits: LongDwellLimits,
+        screened: bool,
         cx: &ReplayCx,
     ) -> Result<Self> {
         let source = prepare_scan(
@@ -164,6 +220,7 @@ impl PreparedIncrementalDwell {
             rule,
             options,
             limits,
+            screened,
             source,
             root: deployment.root().to_path_buf(),
             site: deployment.site_lineage().to_owned(),
@@ -187,6 +244,10 @@ impl PreparedIncrementalDwell {
     pub const fn limits(&self) -> &LongDwellLimits {
         &self.limits
     }
+    /// Whether the original recipe requires the same sensor-health screen over the full range.
+    pub const fn screened(&self) -> bool {
+        self.screened
+    }
 
     /// Begin an owned native scan. No deployment/source borrow is held between steps.
     pub fn start(&self) -> Result<IncrementalDwell<'_>> {
@@ -197,7 +258,7 @@ impl PreparedIncrementalDwell {
                 &self.plan,
                 ScanRule::Dwell(self.rule),
                 &self.limits,
-                false,
+                self.screened,
                 None,
             )?,
             cursor: ChunkCursor::new(self.limits.maximum_source_chunk_bytes),
@@ -205,6 +266,8 @@ impl PreparedIncrementalDwell {
             next: self.plan.first_segment,
             poisoned: false,
             restoration_work: DwellWork::default(),
+            restoration_health_work: self.screened.then_some(DwellHealthWork::default()),
+            retained_health_policy: Cell::new(false),
         })
     }
 
@@ -250,9 +313,16 @@ impl PreparedIncrementalDwell {
 
     fn recipe(&self) -> Result<Vec<u8>> {
         let mut e = CanonicalEncoder::new();
-        e.text(RECIPE_DOMAIN);
+        e.text(if self.screened {
+            RECIPE_DOMAIN_V2
+        } else {
+            RECIPE_DOMAIN
+        });
         e.digest(ContentDigest::sha256(POLICY));
         e.digest(ContentDigest::sha256(&fss_codec_mjpeg::decoder_identity()));
+        if self.screened {
+            e.digest(health_policy_digest());
+        }
         e.text(&self.site);
         e.text(&self.principal);
         e.digest(self.plan.digest());
@@ -304,8 +374,15 @@ impl PreparedIncrementalDwell {
         if let Some(policy) = self.source.privacy.policy() {
             children.insert(policy.digest());
         }
+        if self.screened {
+            children.insert(health_policy_digest());
+        }
         Ok(ObjectManifest::new(
-            CHECKPOINT_MANIFEST_KIND,
+            if self.screened {
+                CHECKPOINT_MANIFEST_KIND_V2
+            } else {
+                CHECKPOINT_MANIFEST_KIND
+            },
             children,
             None,
         )?)
@@ -322,6 +399,8 @@ pub struct IncrementalDwell<'a> {
     next: usize,
     poisoned: bool,
     restoration_work: DwellWork,
+    restoration_health_work: Option<DwellHealthWork>,
+    retained_health_policy: Cell<bool>,
 }
 
 impl std::fmt::Debug for IncrementalDwell<'_> {
@@ -334,6 +413,17 @@ impl std::fmt::Debug for IncrementalDwell<'_> {
 }
 
 impl IncrementalDwell<'_> {
+    fn revalidate_retained_health_policy(
+        &self,
+        deployment: &ReferenceDeployment,
+        cx: &ReplayCx,
+    ) -> Result<()> {
+        if self.retained_health_policy.get() {
+            verify_health_policy(deployment, cx)?;
+        }
+        Ok(())
+    }
+
     /// Continue at most this many positions, preserving native foreground, tracker, clock and
     /// dwell state. A successful step never closes the still-active temporal episode.
     pub fn advance(
@@ -353,6 +443,7 @@ impl IncrementalDwell<'_> {
         // Set before any authority check or mutable work; an error cannot leave a reusable
         // partially advanced foreground model, cursor, tracker or decoder allowance.
         self.poisoned = true;
+        self.revalidate_retained_health_policy(deployment, cx)?;
         self.prepared.check(deployment, cx)?;
         checkpoint(cx, "incremental_dwell:advance")?;
         let end = self.prepared.plan.first_segment + self.prepared.plan.segment_count;
@@ -366,7 +457,7 @@ impl IncrementalDwell<'_> {
             stop,
             &mut self.cursor,
             &mut self.codec,
-            false,
+            self.prepared.screened,
             cx,
         )?;
         self.prepared.check(deployment, cx)?;
@@ -394,6 +485,21 @@ impl IncrementalDwell<'_> {
         self.restoration_work
     }
 
+    /// Cumulative native screening work, including any reconstructed prefix. Unscreened v1
+    /// owners return None; a successful step counts every decoded frame exactly once.
+    pub fn health_work(&self) -> Option<DwellHealthWork> {
+        self.scan.health.as_ref().map(|screen| DwellHealthWork {
+            frames_screened: screen.frames_screened(),
+            samples_screened: screen.samples_screened(),
+        })
+    }
+
+    /// Additional screening work spent reconstructing the prefix in this process. A freshly
+    /// started screened owner reports zero; its original logical allowance is never replenished.
+    pub const fn restoration_health_work(&self) -> Option<DwellHealthWork> {
+        self.restoration_health_work
+    }
+
     /// Whether all requested positions were admitted; this does not imply an event or coverage.
     pub fn complete(&self) -> bool {
         !self.poisoned
@@ -407,9 +513,16 @@ impl IncrementalDwell<'_> {
             ));
         }
         let mut e = CanonicalEncoder::new();
-        e.text(CHECKPOINT_DOMAIN);
+        e.text(if self.prepared.screened {
+            CHECKPOINT_DOMAIN_V2
+        } else {
+            CHECKPOINT_DOMAIN
+        });
         e.bytes(&self.prepared.recipe()?);
         self.work().encode(&mut e);
+        if let Some(health) = self.health_work() {
+            health.encode(&mut e);
+        }
         e.bytes(&self.scan.trace);
         let bytes = e.finish_checked()?;
         if bytes.len() > MAX_CHECKPOINT_BYTES {
@@ -425,6 +538,7 @@ impl IncrementalDwell<'_> {
         deployment: &mut ReferenceDeployment,
         cx: &ReplayCx,
     ) -> Result<DwellCheckpointPin> {
+        self.revalidate_retained_health_policy(deployment, cx)?;
         self.prepared.check(deployment, cx)?;
         let bytes = self.record()?;
         let record_digest = ContentDigest::sha256(&bytes);
@@ -443,9 +557,16 @@ impl IncrementalDwell<'_> {
             if original != bytes {
                 return Err(WatchError::Conflict);
             }
+            if self.prepared.screened {
+                verify_health_policy(deployment, cx)?;
+            }
         } else {
             for body in [bytes.as_slice(), POLICY] {
                 let digest = deployment.stage_payload(body)?;
+                deployment.publisher_mut().verify_object(digest)?;
+            }
+            if self.prepared.screened {
+                let digest = deployment.stage_payload(health_policy_bytes())?;
                 deployment.publisher_mut().verify_object(digest)?;
             }
             if let Some(policy) = self.prepared.source.privacy.policy() {
@@ -462,6 +583,7 @@ impl IncrementalDwell<'_> {
             latest: first.latest.max(last.capture.latest),
         };
         super::publish_manifest(deployment, &target, &manifest, validity, cx)?;
+        self.retained_health_policy.set(self.prepared.screened);
         Ok(DwellCheckpointPin {
             record_digest,
             provenance_root: manifest.root(),
@@ -480,6 +602,7 @@ impl IncrementalDwell<'_> {
                 "incremental dwell range is incomplete",
             ));
         }
+        self.revalidate_retained_health_policy(deployment, cx)?;
         self.prepared.check(deployment, cx)?;
         self.prepared
             .source
@@ -496,7 +619,7 @@ impl IncrementalDwell<'_> {
             &prepared.limits,
             self.cursor.bytes_read(),
             self.codec.used(),
-            false,
+            prepared.screened,
             cx,
         )?;
         LongDwellReport::from_scan(
@@ -518,6 +641,7 @@ pub struct RetainedDwellCheckpoint {
     prepared: PreparedIncrementalDwell,
     pin: DwellCheckpointPin,
     expected: DwellWork,
+    expected_health: Option<DwellHealthWork>,
     bytes: Vec<u8>,
 }
 
@@ -569,10 +693,15 @@ impl RetainedDwellCheckpoint {
             .spool()
             .read_bounded(pin.provenance_root, 1024)?;
         let manifest = ObjectManifest::from_canonical_bytes(&manifest_bytes)?;
+        let screened = match manifest.kind() {
+            CHECKPOINT_MANIFEST_KIND => false,
+            CHECKPOINT_MANIFEST_KIND_V2 => true,
+            _ => return Err(WatchError::Conflict),
+        };
+        let maximum_children = if screened { 5 } else { 4 };
         if manifest.root() != pin.provenance_root
-            || manifest.kind() != CHECKPOINT_MANIFEST_KIND
             || manifest.metadata_digest().is_some()
-            || manifest.children().len() > 4
+            || manifest.children().len() > maximum_children
         {
             return Err(WatchError::Conflict);
         }
@@ -589,7 +718,12 @@ impl RetainedDwellCheckpoint {
             return Err(WatchError::Conflict);
         }
         let mut d = CanonicalDecoder::new(&bytes);
-        if d.text()? != CHECKPOINT_DOMAIN {
+        let domain = if screened {
+            CHECKPOINT_DOMAIN_V2
+        } else {
+            CHECKPOINT_DOMAIN
+        };
+        if d.text()? != domain {
             return Err(WatchError::InvalidPlan(
                 "unsupported incremental dwell checkpoint",
             ));
@@ -599,8 +733,16 @@ impl RetainedDwellCheckpoint {
             return Err(WatchError::Limit);
         }
         let decoded = decode_recipe(recipe)?;
+        if decoded.screened != screened {
+            return Err(WatchError::Conflict);
+        }
         super::limits::validate_within(&decoded.limits, &allowed.execution)?;
         let expected = DwellWork::decode(&mut d)?;
+        let expected_health = if screened {
+            Some(DwellHealthWork::decode(&mut d)?)
+        } else {
+            None
+        };
         let trace = d.bytes()?;
         d.ensure_finished()?;
         if expected.source_positions == 0
@@ -611,17 +753,27 @@ impl RetainedDwellCheckpoint {
             || expected.pixel_samples > decoded.limits.maximum_pixel_samples
             || expected.assignment_work > decoded.limits.maximum_assignment_work
             || expected.jpeg_work > decoded.limits.decode.jpeg_work_units
+            || expected_health.is_some_and(|health| {
+                health.frames_screened != expected.frames_decoded
+                    || health.samples_screened > decoded.limits.maximum_pixel_samples
+                    || health.samples_screened < health.frames_screened as u64
+                    || (health.frames_screened == 0 && health.samples_screened != 0)
+            })
             || expected.trace_bytes != trace.len()
             || trace.len() > decoded.limits.maximum_trace_bytes
         {
             return Err(WatchError::Limit);
         }
-        let prepared = PreparedIncrementalDwell::new(
+        if screened {
+            verify_health_policy(deployment, cx)?;
+        }
+        let prepared = PreparedIncrementalDwell::new_inner(
             deployment,
             decoded.plan,
             decoded.rule,
             decoded.options,
             decoded.limits,
+            screened,
             cx,
         )?;
         // Exact re-encoding also verifies original site, actor, source/import anchor, native
@@ -637,6 +789,7 @@ impl RetainedDwellCheckpoint {
             prepared,
             pin,
             expected,
+            expected_health,
             bytes,
         })
     }
@@ -653,6 +806,11 @@ impl RetainedDwellCheckpoint {
     pub const fn prefix_work(&self) -> DwellWork {
         self.expected
     }
+    /// Expected original screening work. Opening verifies bounds; only native resume verifies
+    /// its derivation. Unscreened v1 checkpoints return None.
+    pub const fn prefix_health_work(&self) -> Option<DwellHealthWork> {
+        self.expected_health
+    }
 
     /// Rebuild state by replaying the exact retained prefix. Actual work is reported separately
     /// and original logical counters are reproduced, not reset. No opaque state is accepted.
@@ -667,9 +825,16 @@ impl RetainedDwellCheckpoint {
         }
         super::limits::validate_within(&self.prepared.limits, &allowed.execution)?;
         checkpoint(cx, "incremental_dwell:restore")?;
+        if self.prepared.screened {
+            // Cached metadata must not reconstruct against a missing or replaced policy object.
+            verify_health_policy(deployment, cx)?;
+        }
         let mut running = self.prepared.start()?;
         running.advance(deployment, self.expected.source_positions, cx)?;
-        if running.work() != self.expected || running.record()? != self.bytes {
+        if running.work() != self.expected
+            || running.health_work() != self.expected_health
+            || running.record()? != self.bytes
+        {
             return Err(WatchError::InvalidPlan(
                 "native checkpoint reconstruction diverged",
             ));
@@ -681,7 +846,9 @@ impl RetainedDwellCheckpoint {
             return Err(WatchError::Conflict);
         }
         running.restoration_work = running.work();
+        running.restoration_health_work = running.health_work();
         checkpoint(cx, "incremental_dwell:restored")?;
+        running.retained_health_policy.set(self.prepared.screened);
         Ok(running)
     }
 }
@@ -691,6 +858,22 @@ struct DecodedRecipe {
     rule: DwellPolicy,
     options: WatchOptions,
     limits: LongDwellLimits,
+    screened: bool,
+}
+
+fn verify_health_policy(deployment: &ReferenceDeployment, cx: &ReplayCx) -> Result<()> {
+    if cx.root_dir() != deployment.root() {
+        return Err(WatchError::Conflict);
+    }
+    checkpoint(cx, "incremental_dwell:health_policy")?;
+    let bytes = deployment
+        .publisher()
+        .spool()
+        .read_bounded(health_policy_digest(), health_policy_bytes().len())?;
+    if bytes != health_policy_bytes() {
+        return Err(WatchError::Conflict);
+    }
+    Ok(())
 }
 
 fn validate_digest(value: ContentDigest) -> Result<()> {
@@ -711,9 +894,18 @@ fn decode_recipe(bytes: &[u8]) -> Result<DecodedRecipe> {
     use super::super::recorded_decode::ComponentInterpretation;
     use super::super::recorded_watch::{WatchDetectorConfig, WatchTrackerConfig};
     let mut d = CanonicalDecoder::new(bytes);
-    if d.text()? != RECIPE_DOMAIN
-        || d.digest()? != ContentDigest::sha256(POLICY)
+    let screened = match d.text()? {
+        RECIPE_DOMAIN => false,
+        RECIPE_DOMAIN_V2 => true,
+        _ => {
+            return Err(WatchError::InvalidPlan(
+                "unsupported incremental dwell recipe",
+            ));
+        }
+    };
+    if d.digest()? != ContentDigest::sha256(POLICY)
         || d.digest()? != ContentDigest::sha256(&fss_codec_mjpeg::decoder_identity())
+        || (screened && d.digest()? != health_policy_digest())
     {
         return Err(WatchError::InvalidPlan(
             "unsupported incremental dwell recipe",
@@ -819,5 +1011,6 @@ fn decode_recipe(bytes: &[u8]) -> Result<DecodedRecipe> {
         rule,
         options,
         limits,
+        screened,
     })
 }

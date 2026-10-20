@@ -7,6 +7,9 @@ use fss_cli::json_input::{Value, parse};
 #[path = "incremental/classifier.rs"]
 mod classifier;
 
+#[path = "incremental/health.rs"]
+mod health;
+
 fn member<'a>(value: &'a Value, key: &str) -> Test<&'a Value> {
     value
         .object()
@@ -240,7 +243,12 @@ fn incremental_modes_and_missing_resume_admission_refuse_before_deployment_io() 
     );
     let pin = ContentDigest::sha256(b"not a retained checkpoint").to_text();
     for extra in [
-        vec!["--sensor-health", "conservative-v1"],
+        vec![
+            "--sensor-health",
+            "conservative-v1",
+            "--retain-health",
+            "yes",
+        ],
         vec!["--dwell-checkpoint", pin.as_str()],
         vec![
             "--dwell-checkpoint",
