@@ -546,7 +546,7 @@ FSS is not:
 
 ## Current status
 
-Reality-checked on 2026-09-23. Everything below is a deterministic reference implementation
+Reality-checked on 2026-09-23; runtime/authority core updated 2026-10-20. Everything below is a deterministic reference implementation
 tested on generated fixtures; **nothing is release-qualified**, and no capability has been measured
 on real camera footage.
 
@@ -617,7 +617,10 @@ Not implemented:
 - any detection-quality or calibration result for the shipped YOLOX-Nano package (it is checked
   only for conformance to its upstream ONNX graph), and any event-quality evaluation (AUPRC, recall
   at a false-alert budget) on real data (its cascade and package-report evidence is uncalibrated);
-- Asupersync (the workspace has zero third-party crates; I/O is blocking `std`);
+- Asupersync integration beyond the runtime core: `fss-runtime` composes the
+  Asupersync `Cx` (cancellation, regions, obligations — landed 2026-10-19),
+  but production I/O remains blocking `std` and the deterministic LabRuntime
+  schedule lanes are not yet wired;
 - cloud archive/ATP transport, property reconstruction, privacy masking, deletion closure,
   search/memory, live operator view, and the DSR release matrix.
 
