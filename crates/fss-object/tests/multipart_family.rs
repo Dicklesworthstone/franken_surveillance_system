@@ -458,3 +458,223 @@ fn out_of_order_parts_complete_only_with_the_entire_canonical_inventory() -> Tes
     emit("out-of-order-complete-inventory", 5);
     Ok(())
 }
+
+#[test]
+fn preparation_cannot_dispatch_or_abort_before_its_owner_exists() -> Test {
+    for abort in [false, true] {
+        let (_root, mut property, mut tree) = property()?;
+        let mut child = property.scope_down(
+            &mut tree,
+            RegionId::new("region:store")?,
+            RegionKind::ObjectStore,
+            budget(),
+            spec("operation:multipart", budget())?,
+            TimestampNs(10),
+        )?;
+        let mut transport = MemoryTransport::default();
+        let store = transport.store.clone();
+        let plan = plan()?;
+        let mut session = prepare(&mut transport, &plan)?;
+        let consumed = *child.budget().consumed();
+        let io = UploadIo {
+            authority: &mut child,
+            tree: &tree,
+            now: TimestampNs(9),
+        };
+        let result = if abort {
+            session.abort(io).map(|_| ())
+        } else {
+            session.start(io).map(|_| ())
+        };
+        assert_eq!(result, Err(MultipartError::ClockRegression));
+        assert_eq!(session.phase(), MultipartPhase::Prepared);
+        assert_eq!(*child.budget().consumed(), consumed);
+        assert!(store.borrow().calls.is_empty());
+        let io = UploadIo {
+            authority: &mut child,
+            tree: &tree,
+            now: TimestampNs(10),
+        };
+        if abort {
+            assert_eq!(session.abort(io)?.upload, None);
+            assert!(store.borrow().calls.is_empty());
+        } else {
+            session.start(io)?;
+            assert_eq!(store.borrow().calls, vec![TransportOperation::Initiate]);
+        }
+    }
+    emit("owner-creation-clock-before-io-or-local-abort", 2);
+    Ok(())
+}
+
+#[test]
+fn cleanup_and_terminal_replay_cannot_predate_owner_drain_or_closure() -> Test {
+    for reconcile in [false, true] {
+        let mut owner = Owner::new(None)?;
+        let mut transport = MemoryTransport::default();
+        let store = transport.store.clone();
+        let plan = plan()?;
+        let mut session = prepare(&mut transport, &plan)?;
+        session.start(owner.io(1))?;
+        if reconcile {
+            store.borrow_mut().fault_once = Some(TransportOperation::UploadPart);
+            assert!(session.upload_part(owner.io(2), &plan, 0, b"abc").is_err());
+        }
+        owner
+            .child
+            .request_cancellation(&mut owner.tree, TimestampNs(10))?;
+        let calls = store.borrow().calls.clone();
+        let consumed = *owner.child.budget().consumed();
+        let result = if reconcile {
+            session.reconcile(owner.io(9)).map(|_| ())
+        } else {
+            session.abort(owner.io(9)).map(|_| ())
+        };
+        assert_eq!(result, Err(MultipartError::ClockRegression));
+        assert_eq!(store.borrow().calls, calls);
+        assert_eq!(*owner.child.budget().consumed(), consumed);
+        if reconcile {
+            assert_eq!(session.reconcile(owner.io(10))?, MultipartPhase::Uploading);
+        }
+        let receipt = session.abort(owner.io(10))?;
+        owner.child.begin_drain(&mut owner.tree, TimestampNs(10))?;
+        owner.child.finalize(&mut owner.tree, TimestampNs(20))?;
+        let calls = store.borrow().calls.clone();
+        assert_eq!(
+            session.abort(owner.io(19)),
+            Err(MultipartError::ClockRegression)
+        );
+        assert_eq!(session.abort(owner.io(20))?, receipt);
+        assert_eq!(store.borrow().calls, calls);
+    }
+
+    let mut owner = Owner::new(None)?;
+    let mut transport = MemoryTransport::default();
+    let store = transport.store.clone();
+    let plan = plan()?;
+    let mut session = prepare(&mut transport, &plan)?;
+    session.start(owner.io(1))?;
+    session.upload_part(owner.io(2), &plan, 0, b"abc")?;
+    let receipt = session.complete(owner.io(3), &plan, root())?;
+    owner
+        .child
+        .request_cancellation(&mut owner.tree, TimestampNs(10))?;
+    owner.child.begin_drain(&mut owner.tree, TimestampNs(10))?;
+    owner.child.finalize(&mut owner.tree, TimestampNs(20))?;
+    assert_eq!(
+        session.complete(owner.io(19), &plan, root()),
+        Err(MultipartError::ClockRegression)
+    );
+    assert_eq!(session.complete(owner.io(20), &plan, root())?, receipt);
+    assert_eq!(store.borrow().calls.len(), 3);
+    emit("cleanup-and-terminal-owner-clock", 3);
+    Ok(())
+}
+
+#[test]
+fn prepared_abort_binds_exact_operation_and_owner_without_provider_io() -> Test {
+    let mut owner = Owner::new(None)?;
+    let mut other_owner = Owner::new(None)?;
+    let mut transport = MemoryTransport::default();
+    let store = transport.store.clone();
+    let plan = plan()?;
+    let mut mismatched = MultipartSession::prepare(
+        &mut transport,
+        &plan,
+        root(),
+        OperationId::parse("operation:different-upload")?,
+        RESOURCE,
+        TimestampNs(0),
+    )?;
+    assert_eq!(
+        mismatched.abort(owner.io(1)),
+        Err(MultipartError::OwnerMismatch)
+    );
+    assert_eq!(mismatched.phase(), MultipartPhase::Prepared);
+    drop(mismatched);
+
+    let mut session = prepare(&mut transport, &plan)?;
+    let consumed = *owner.child.budget().consumed();
+    let receipt = session.abort(owner.io(5))?;
+    assert_eq!(receipt.upload, None);
+    assert_eq!(receipt.intent_digest, session.intent().digest());
+    assert_eq!(receipt.confirmed_parts, 0);
+    assert_eq!(
+        session.abort(other_owner.io(6)),
+        Err(MultipartError::OwnerMismatch)
+    );
+    assert_eq!(
+        session.abort(owner.io(4)),
+        Err(MultipartError::ClockRegression)
+    );
+    assert_eq!(session.abort(owner.io(6))?, receipt);
+    assert_eq!(*owner.child.budget().consumed(), consumed);
+    assert!(store.borrow().calls.is_empty());
+    emit("prepared-abort-exact-owner-no-effect", 4);
+    Ok(())
+}
+
+#[test]
+fn refused_transport_checkpoint_remains_the_recovery_clock_boundary() -> Test {
+    let mut owner = Owner::new(Some(TimestampNs(10)))?;
+    let mut transport = MemoryTransport::default();
+    let store = transport.store.clone();
+    store.borrow_mut().checkpoint_once = Some(TimestampNs(20));
+    let plan = plan()?;
+    let mut session = prepare(&mut transport, &plan)?;
+    assert!(matches!(
+        session.start(owner.io(1)),
+        Err(MultipartError::Transport {
+            operation: TransportOperation::Initiate,
+            ..
+        })
+    ));
+    assert_eq!(
+        session.phase(),
+        MultipartPhase::Uncertain(TransportOperation::Initiate)
+    );
+    assert_eq!(session.observed_at(), TimestampNs(20));
+    assert!(store.borrow().calls.is_empty());
+    let consumed = *owner.child.budget().consumed();
+    assert_eq!(
+        session.reconcile(owner.io(5)),
+        Err(MultipartError::ClockRegression)
+    );
+    assert!(store.borrow().calls.is_empty());
+    assert_eq!(*owner.child.budget().consumed(), consumed);
+    assert_eq!(session.reconcile(owner.io(20))?, MultipartPhase::Prepared);
+    assert_eq!(store.borrow().calls, vec![TransportOperation::Reconcile]);
+    assert_eq!(session.start(owner.io(21)), Err(MultipartError::Deadline));
+    assert_eq!(store.borrow().calls, vec![TransportOperation::Reconcile]);
+    emit("refused-checkpoint-retains-observed-time", 5);
+    Ok(())
+}
+
+#[test]
+fn negative_part_readback_never_allows_substituting_the_dispatched_payload() -> Test {
+    let mut owner = Owner::new(None)?;
+    let mut transport = MemoryTransport::default();
+    let store = transport.store.clone();
+    let plan = plan()?;
+    let mut session = prepare(&mut transport, &plan)?;
+    session.start(owner.io(1))?;
+    store.borrow_mut().fault_once = Some(TransportOperation::UploadPart);
+    store.borrow_mut().fail_before_effect = true;
+    assert!(session.upload_part(owner.io(2), &plan, 0, b"abc").is_err());
+    assert_eq!(session.reconcile(owner.io(3))?, MultipartPhase::Uploading);
+    assert_eq!(session.confirmed_parts(), 0);
+    let calls = store.borrow().calls.clone();
+    let consumed = *owner.child.budget().consumed();
+    assert_eq!(
+        session.upload_part(owner.io(4), &plan, 0, b"abd"),
+        Err(MultipartError::PartConflict { index: 0 })
+    );
+    assert_eq!(store.borrow().calls, calls);
+    assert_eq!(*owner.child.budget().consumed(), consumed);
+    let receipt = session.upload_part(owner.io(4), &plan, 0, b"abc")?;
+    assert_eq!(receipt.content_digest, ContentDigest::sha256(b"abc"));
+    assert_eq!(owner.child.budget().consumed().bytes, 6);
+    session.complete(owner.io(5), &plan, root())?;
+    emit("negative-readback-preserves-dispatched-content", 4);
+    Ok(())
+}

@@ -55,6 +55,9 @@ impl TransportCx<'_> {
         if now < self.now {
             return Err(MultipartError::ClockRegression);
         }
+        // Observing a later clock boundary is not undone by a deadline/cancellation refusal.
+        // The session retains this time even when the transport returns an error afterward.
+        self.now = now;
         check(
             self.authority,
             self.tree,
@@ -62,7 +65,6 @@ impl TransportCx<'_> {
             self.operation,
             now,
         )?;
-        self.now = now;
         Ok(())
     }
 
@@ -99,6 +101,7 @@ fn check(
     now: TimestampNs,
 ) -> Result<(), MultipartError> {
     let cancelled = cx.is_cancel_requested(tree).map_err(authority)?;
+    validate_lifetime(cx, tree, now)?;
     if cx.kind() != RegionKind::ObjectStore {
         return Err(MultipartError::OwnerMismatch);
     }
@@ -129,8 +132,24 @@ fn check(
     Ok(())
 }
 
+fn validate_lifetime(
+    cx: &AuthorityCx,
+    tree: &RegionTree,
+    now: TimestampNs,
+) -> Result<(), MultipartError> {
+    let node = tree.get(cx.region()).map_err(authority)?;
+    if now < node.created_at
+        || node.drain_requested_at.is_some_and(|at| now < at)
+        || node.closed_at.is_some_and(|at| now < at)
+    {
+        return Err(MultipartError::ClockRegression);
+    }
+    Ok(())
+}
+
 pub(super) fn validate_binding(
     io: &UploadIo<'_>,
+    intent: &UploadIntent,
     owner: &Option<(RegionTreeIdentity, RegionId)>,
     observed_at: TimestampNs,
 ) -> Result<(), MultipartError> {
@@ -141,25 +160,6 @@ pub(super) fn validate_binding(
     if io.authority.kind() != RegionKind::ObjectStore {
         return Err(MultipartError::OwnerMismatch);
     }
-    if owner.as_ref().is_some_and(|(tree, region)| {
-        tree != io.tree.owner_identity() || region != io.authority.region()
-    }) {
-        return Err(MultipartError::OwnerMismatch);
-    }
-    if io.now < observed_at {
-        return Err(MultipartError::ClockRegression);
-    }
-    Ok(())
-}
-
-pub(super) fn validate_owner(
-    io: &UploadIo<'_>,
-    intent: &UploadIntent,
-    operation: TransportOperation,
-    owner: &Option<(RegionTreeIdentity, RegionId)>,
-    observed_at: TimestampNs,
-) -> Result<(), MultipartError> {
-    validate_binding(io, owner, observed_at)?;
     if io
         .tree
         .get(io.authority.region())
@@ -170,6 +170,26 @@ pub(super) fn validate_owner(
     {
         return Err(MultipartError::OwnerMismatch);
     }
+    if owner.as_ref().is_some_and(|(tree, region)| {
+        tree != io.tree.owner_identity() || region != io.authority.region()
+    }) {
+        return Err(MultipartError::OwnerMismatch);
+    }
+    if io.now < observed_at {
+        return Err(MultipartError::ClockRegression);
+    }
+    validate_lifetime(io.authority, io.tree, io.now)?;
+    Ok(())
+}
+
+pub(super) fn validate_owner(
+    io: &UploadIo<'_>,
+    intent: &UploadIntent,
+    operation: TransportOperation,
+    owner: &Option<(RegionTreeIdentity, RegionId)>,
+    observed_at: TimestampNs,
+) -> Result<(), MultipartError> {
+    validate_binding(io, intent, owner, observed_at)?;
     check(io.authority, io.tree, intent.resource(), operation, io.now)
 }
 

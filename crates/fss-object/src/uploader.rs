@@ -4,16 +4,18 @@
 //! Preparation owns the actual ObjectStore child, its reserved allowance and its
 //! pending obligation. Every transport call uses that child. Neither a failed
 //! dispatch nor cancellation consumes the owner: completion/abort uncertainty
-//! must be reconciled. Only a conclusive terminal receipt resolves the obligation,
-//! drains/finalizes the child and returns unused allowance to its exact parent.
+//! must be reconciled or explicitly closed locally with a bound unresolved receipt.
+//! Conclusive receipts prove completion/abort; unresolved closure preserves uncertainty
+//! and its follow-up note. Both drain/finalize the child and return only unused allowance.
 //!
 //! The region tree is an in-process owner, not a durable transfer journal. Dropping
-//! unfinished work leaves a visible pending child obligation and charged reservation.
+//! unsettled work leaves a visible child obligation and charged reservation.
 //! No network transport, encryption implementation or retrievability claim is added.
 
 use fss_core::{
-    BudgetVector, ContentDigest, ContextAuthority, ObligationId, OperationId, RegionId, RegionKind,
-    RegionState, RegionTree, RootAuthoritySpec, RuntimeGrant, TimestampNs,
+    BudgetVector, CanonicalEncoder, ContentDigest, ContextAuthority, DigestAlgorithm, Obligation,
+    ObligationId, ObligationState, OperationId, RegionId, RegionKind, RegionState, RegionTree,
+    RootAuthoritySpec, RuntimeGrant, TimestampNs,
 };
 use fss_runtime::authority::{AuthorityCx, AuthorityError};
 use fss_runtime::grant::GrantSet;
@@ -21,7 +23,7 @@ use fss_runtime::obligation::{ObligationTerminal, new_obligation};
 
 use crate::multipart::{
     AbortReceipt, CompletionReceipt, MultipartError, MultipartPhase, MultipartSession,
-    MultipartTransport, PartReceipt, UploadIntent, UploadIo,
+    MultipartTransport, PartReceipt, TransportOperation, UploadIntent, UploadIo,
 };
 use crate::planner::{ChunkPlan, ChunkPolicy, PlannerError, plan_chunks};
 
@@ -73,6 +75,62 @@ fn authority(error: impl std::fmt::Display) -> UploaderError {
     UploaderError::Authority(error.to_string())
 }
 
+/// Maximum UTF-8 byte length of an operator's unresolved-upload recovery note.
+pub const MAX_UPLOAD_RECOVERY_NOTE_BYTES: usize = 256;
+
+/// Local ownership closure with an explicitly unresolved provider outcome.
+///
+/// This records a follow-up reference, not provider rollback, completion, or durable external
+/// journal persistence. The exact bound note and proof remain on the canonical child obligation.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct IndeterminateUploadReceipt {
+    intent_digest: ContentDigest,
+    region: RegionId,
+    obligation: ObligationId,
+    operation: TransportOperation,
+    reconciliation_reference: ContentDigest,
+    note: String,
+    digest: ContentDigest,
+}
+
+impl IndeterminateUploadReceipt {
+    /// Original immutable intent whose provider outcome remains unresolved.
+    #[must_use]
+    pub const fn intent_digest(&self) -> ContentDigest {
+        self.intent_digest
+    }
+    /// Exact child whose local ownership is being closed.
+    #[must_use]
+    pub fn region(&self) -> &RegionId {
+        &self.region
+    }
+    /// The canonical obligation carrying the unresolved outcome.
+    #[must_use]
+    pub fn obligation(&self) -> &ObligationId {
+        &self.obligation
+    }
+    /// Original dispatched operation, not a claim that it was performed or rolled back.
+    #[must_use]
+    pub const fn operation(&self) -> TransportOperation {
+        self.operation
+    }
+    /// Caller-owned follow-up record; it does not authenticate a provider outcome.
+    #[must_use]
+    pub const fn reconciliation_reference(&self) -> ContentDigest {
+        self.reconciliation_reference
+    }
+    /// Exact bounded note recorded in the tree, including intent, operation and reference.
+    #[must_use]
+    pub fn note(&self) -> &str {
+        &self.note
+    }
+    /// Proof identity binding every field of this unresolved ownership receipt.
+    #[must_use]
+    pub const fn digest(&self) -> ContentDigest {
+        self.digest
+    }
+}
+
 /// Minimum allowance for payload plus initiation, completion, two reconciliations
 /// and one abort. Additional attempts require explicit additional reservation.
 /// Network bytes cover payload here; a real transport must separately admit its
@@ -89,14 +147,18 @@ pub fn minimum_upload_budget(
     Ok(budget)
 }
 
-/// An unfinished upload must stay owned until it is completed or conclusively aborted.
-#[must_use = "retain the upload owner until completion, abort or explicit reconciliation"]
+/// An unfinished upload stays owned until completion, conclusive abort, or explicit local
+/// indeterminate settlement with its unresolved follow-up record retained.
+#[must_use = "retain the upload owner until completion, abort or explicit indeterminate settlement"]
 pub struct StagedUpload<'a, T: MultipartTransport> {
     parent: &'a mut AuthorityCx,
     authority: AuthorityCx,
-    obligation: ObligationId,
+    obligation: Obligation,
+    reconciliation_note: Option<String>,
+    indeterminate_receipt: Option<IndeterminateUploadReceipt>,
     session: MultipartSession<'a, T>,
     plan: ChunkPlan,
+    observed_at: TimestampNs,
     settled: bool,
 }
 
@@ -117,6 +179,14 @@ impl<T: MultipartTransport> StagedUpload<'_, T> {
         resource: &str,
         now: TimestampNs,
     ) -> Result<StagedUpload<'a, T>, UploaderError> {
+        parent.is_cancel_requested(tree)?;
+        let parent_node = tree.get(parent.region()).map_err(authority)?;
+        if now < parent_node.created_at
+            || parent_node.drain_requested_at.is_some_and(|at| now < at)
+            || parent_node.closed_at.is_some_and(|at| now < at)
+        {
+            return Err(MultipartError::ClockRegression.into());
+        }
         let plan = plan_chunks(object_bytes, policy)?;
         let minimum = minimum_upload_budget(object_bytes, policy)?;
         if child_spec.operation_id != operation || !minimum.fits_within(child_spec.budgets) {
@@ -162,23 +232,26 @@ impl<T: MultipartTransport> StagedUpload<'_, T> {
             child_spec,
             now,
         )?;
-        let obligation_id = obligation.obligation_id.clone();
         // The exclusive tree borrow has not escaped: this freshly attached child
         // is active, empty and unique. Registration's absent/inactive/duplicate/
         // capacity refusals therefore cannot occur after successful attachment.
-        child.register_obligation(tree, obligation)?;
+        child.register_obligation(tree, obligation.clone())?;
         Ok(StagedUpload {
             parent,
             authority: child,
-            obligation: obligation_id,
+            obligation,
+            reconciliation_note: None,
+            indeterminate_receipt: None,
             session,
             plan,
+            observed_at: now,
             settled: false,
         })
     }
 
     /// Explicit initiation; failures retain the stable intent and pending child.
     pub fn start(&mut self, tree: &RegionTree, now: TimestampNs) -> Result<(), UploaderError> {
+        self.validate_dispatch_owner(tree, now)?;
         self.session.start(UploadIo {
             authority: &mut self.authority,
             tree,
@@ -196,6 +269,7 @@ impl<T: MultipartTransport> StagedUpload<'_, T> {
         index: u64,
         bytes: &[u8],
     ) -> Result<PartReceipt, UploaderError> {
+        self.validate_dispatch_owner(tree, now)?;
         Ok(self.session.upload_part(
             UploadIo {
                 authority: &mut self.authority,
@@ -244,10 +318,11 @@ impl<T: MultipartTransport> StagedUpload<'_, T> {
     }
 
     fn check_source_access(
-        &self,
+        &mut self,
         tree: &RegionTree,
         now: TimestampNs,
     ) -> Result<(), UploaderError> {
+        self.validate_dispatch_owner(tree, now)?;
         if self.authority.is_cancel_requested(tree)? {
             return Err(UploaderError::CancellationRequested {
                 confirmed_parts: self.confirmed_parts(),
@@ -281,6 +356,7 @@ impl<T: MultipartTransport> StagedUpload<'_, T> {
         tree: &mut RegionTree,
         now: TimestampNs,
     ) -> Result<CompletionReceipt, UploaderError> {
+        self.validate_dispatch_owner(tree, now)?;
         let root = self.session.intent().manifest_root();
         let receipt = self.session.complete(
             UploadIo {
@@ -302,6 +378,7 @@ impl<T: MultipartTransport> StagedUpload<'_, T> {
         tree: &mut RegionTree,
         now: TimestampNs,
     ) -> Result<AbortReceipt, UploaderError> {
+        self.validate_dispatch_owner(tree, now)?;
         let receipt = self.session.abort(UploadIo {
             authority: &mut self.authority,
             tree,
@@ -318,6 +395,7 @@ impl<T: MultipartTransport> StagedUpload<'_, T> {
         tree: &mut RegionTree,
         now: TimestampNs,
     ) -> Result<MultipartPhase, UploaderError> {
+        self.validate_dispatch_owner(tree, now)?;
         let phase = self.session.reconcile(UploadIo {
             authority: &mut self.authority,
             tree,
@@ -329,11 +407,140 @@ impl<T: MultipartTransport> StagedUpload<'_, T> {
                 self.settle(tree, now, ObligationTerminal::Completed, receipt.digest())?;
             }
             MultipartPhase::Aborted => {
-                self.cancel(tree, now)?;
+                self.cancel(tree, now.max(self.session.observed_at()))?;
             }
             _ => {}
         }
         Ok(phase)
+    }
+
+    /// Close local ownership of a currently uncertain dispatch with a bounded follow-up
+    /// record. This makes no provider rollback/completion claim and performs no transport I/O.
+    /// Spent work stays charged. Once recorded, further source/transport work is refused even
+    /// if local finalization still needs retrying; identical settlement retries retain the proof.
+    pub fn settle_indeterminate(
+        &mut self,
+        tree: &mut RegionTree,
+        now: TimestampNs,
+        note: &str,
+        reconciliation_reference: ContentDigest,
+    ) -> Result<IndeterminateUploadReceipt, UploaderError> {
+        self.validate_owner(tree, now)?;
+        let MultipartPhase::Uncertain(operation) = self.session.phase() else {
+            return Err(authority(
+                "only an uncertain dispatch can close as indeterminate",
+            ));
+        };
+        if note.trim().is_empty()
+            || note.len() > MAX_UPLOAD_RECOVERY_NOTE_BYTES
+            || note.chars().any(char::is_control)
+            || reconciliation_reference.algorithm() != DigestAlgorithm::Sha256
+            || reconciliation_reference.bytes() == [0; 32]
+        {
+            return Err(authority(
+                "invalid unresolved-upload note or follow-up reference",
+            ));
+        }
+        let (operation_tag, operation_name) = match operation {
+            TransportOperation::Initiate => (1, "initiate"),
+            TransportOperation::UploadPart => (2, "upload_part"),
+            TransportOperation::Complete => (3, "complete"),
+            TransportOperation::Abort => (4, "abort"),
+            TransportOperation::Reconcile => (5, "reconcile"),
+        };
+        let note = format!(
+            "multipart unresolved; intent={}; operation={operation_name}; reference={reconciliation_reference}; note={note}",
+            self.intent().digest(),
+        );
+        // The human note plus fixed SHA-256 bindings remain within the canonical note budget.
+        if note.len() > 512 {
+            return Err(authority("bound unresolved-upload note exceeds its limit"));
+        }
+        let mut encoder = CanonicalEncoder::new();
+        encoder.text("fss.multipart_indeterminate.v1");
+        encoder.digest(self.intent().digest());
+        encoder.text(self.region().as_str());
+        encoder.text(self.obligation.obligation_id.as_str());
+        encoder.u8(operation_tag);
+        encoder.digest(reconciliation_reference);
+        encoder.text(&note);
+        let bytes = encoder.finish_checked().map_err(authority)?;
+        let receipt = IndeterminateUploadReceipt {
+            intent_digest: self.intent().digest(),
+            region: self.region().clone(),
+            obligation: self.obligation.obligation_id.clone(),
+            operation,
+            reconciliation_reference,
+            note,
+            digest: ContentDigest::sha256(&bytes),
+        };
+        if let Some(existing) = &self.indeterminate_receipt {
+            if existing != &receipt {
+                return Err(authority("unresolved-upload settlement request changed"));
+            }
+        } else {
+            if self.obligation.state != ObligationState::Pending {
+                return Err(authority("upload already has a different terminal outcome"));
+            }
+            self.authority.resolve_obligation(
+                tree,
+                &self.obligation.obligation_id,
+                ObligationTerminal::Indeterminate,
+                Some(receipt.digest()),
+                Some(receipt.note()),
+            )?;
+            self.obligation.state = ObligationState::Indeterminate;
+            self.obligation.proof_digest = Some(receipt.digest());
+            self.reconciliation_note = Some(receipt.note().to_string());
+            self.indeterminate_receipt = Some(receipt.clone());
+        }
+        self.close_and_release(tree, now)?;
+        Ok(receipt)
+    }
+
+    fn validate_owner(&self, tree: &RegionTree, now: TimestampNs) -> Result<(), UploaderError> {
+        // Validate both actual contexts, not only region labels or a session's terminal flag.
+        self.parent.is_cancel_requested(tree)?;
+        self.authority.is_cancel_requested(tree)?;
+        if now < self.observed_at.max(self.session.observed_at()) {
+            return Err(MultipartError::ClockRegression.into());
+        }
+        for region in [self.parent.region(), self.authority.region()] {
+            let node = tree.get(region).map_err(authority)?;
+            if now < node.created_at
+                || node.drain_requested_at.is_some_and(|at| now < at)
+                || node.closed_at.is_some_and(|at| now < at)
+            {
+                return Err(MultipartError::ClockRegression.into());
+            }
+        }
+        let node = tree.get(self.authority.region()).map_err(authority)?;
+        if node.obligations.get(&self.obligation.obligation_id) != Some(&self.obligation)
+            || node
+                .reconciliation_obligations
+                .get(&self.obligation.obligation_id)
+                != self.reconciliation_note.as_ref()
+        {
+            return Err(authority(
+                "owned upload obligation or reconciliation note changed",
+            ));
+        }
+        Ok(())
+    }
+
+    fn validate_dispatch_owner(
+        &mut self,
+        tree: &RegionTree,
+        now: TimestampNs,
+    ) -> Result<(), UploaderError> {
+        self.validate_owner(tree, now)?;
+        if self.indeterminate_receipt.is_some() {
+            return Err(authority(
+                "upload ownership is closing as indeterminate; transport is relinquished",
+            ));
+        }
+        self.observed_at = now;
+        Ok(())
     }
 
     fn settle(
@@ -343,25 +550,47 @@ impl<T: MultipartTransport> StagedUpload<'_, T> {
         terminal: ObligationTerminal,
         proof: ContentDigest,
     ) -> Result<(), UploaderError> {
-        self.authority.is_cancel_requested(tree)?;
         // A transport can advance its explicit clock while an admitted call is
         // in flight. Never date terminal closure before that observed boundary.
         let now = now.max(self.session.observed_at());
-        if self.settled {
-            return Ok(());
-        }
-        let region = self.authority.region().clone();
-        if tree.get(&region).map_err(authority)?.state != RegionState::Closed {
+        self.validate_owner(tree, now)?;
+        if self.obligation.state == ObligationState::Pending {
             self.authority.resolve_obligation(
                 tree,
-                &self.obligation,
+                &self.obligation.obligation_id,
                 terminal,
                 Some(proof),
                 None,
             )?;
+            self.obligation.state = terminal.to_state();
+            self.obligation.proof_digest = Some(proof);
+        } else if self.obligation.state != terminal.to_state()
+            || self.obligation.proof_digest != Some(proof)
+            || self.reconciliation_note.is_some()
+        {
+            return Err(authority("upload terminal receipt mismatch"));
+        }
+        self.close_and_release(tree, now)
+    }
+
+    fn close_and_release(
+        &mut self,
+        tree: &mut RegionTree,
+        now: TimestampNs,
+    ) -> Result<(), UploaderError> {
+        self.validate_owner(tree, now)?;
+        self.observed_at = now;
+        if self.settled {
+            return Ok(());
+        }
+        if self.obligation.state == ObligationState::Pending {
+            return Err(authority("pending upload has no terminal closure record"));
+        }
+        let region = self.authority.region().clone();
+        if tree.get(&region).map_err(authority)?.state != RegionState::Closed {
             match tree.get(&region).map_err(authority)?.state {
                 RegionState::Active => {
-                    tree.request_drain(&region, Some("multipart terminal receipt recorded"), now)
+                    tree.request_drain(&region, Some("multipart ownership receipt recorded"), now)
                         .map_err(authority)?;
                     self.authority.begin_drain(tree, now)?;
                 }
@@ -372,16 +601,6 @@ impl<T: MultipartTransport> StagedUpload<'_, T> {
                 RegionState::Closed => {}
             }
             self.authority.finalize(tree, now)?;
-        } else {
-            let recorded = tree
-                .get(&region)
-                .map_err(authority)?
-                .obligations
-                .get(&self.obligation)
-                .ok_or_else(|| authority("closed upload has no terminal obligation"))?;
-            if recorded.state != terminal.to_state() || recorded.proof_digest != Some(proof) {
-                return Err(authority("closed upload terminal receipt mismatch"));
-            }
         }
         self.parent
             .release_scope_reservation(tree, &mut self.authority)?;
@@ -406,7 +625,13 @@ impl<T: MultipartTransport> StagedUpload<'_, T> {
     /// Pending or terminal obligation on this exact child.
     #[must_use]
     pub const fn obligation(&self) -> &ObligationId {
-        &self.obligation
+        &self.obligation.obligation_id
+    }
+
+    /// Retained unresolved receipt, including while local finalization is still blocked.
+    #[must_use]
+    pub fn indeterminate_receipt(&self) -> Option<&IndeterminateUploadReceipt> {
+        self.indeterminate_receipt.as_ref()
     }
     /// Actual child region, not a label attached to work owned by its parent.
     #[must_use]

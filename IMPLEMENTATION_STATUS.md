@@ -33,6 +33,36 @@ and cumulative work/cancellation. See [the operator workflow](docs/rtsp_source_r
 This closes the source-retention recovery refusal; it does not authenticate
 cameras, recover continuous coverage or qualify physical devices and release gates.
 
+## Multipart unresolved-outcome recovery (2026-10-20, reference)
+
+The authority-owned multipart uploader now supports explicit local settlement of
+an uncertain upload when provider reconciliation remains unavailable or its
+bounded allowance is exhausted. `settle_indeterminate` retains a typed receipt
+binding the original intent, actual child region and obligation, uncertain
+operation, bounded operator note and independent follow-up reference. The
+canonical obligation remains `Indeterminate`, with its exact reconciliation note;
+the receipt never claims provider completion, abort or rollback.
+
+Local finalization failures retain that receipt for an exact retry. Recording the
+unresolved settlement disables further provider calls immediately. Successful
+child closure returns only unused allowance to its original parent, while every
+attempted request and byte remains charged. Changed notes or references refuse.
+The caller must preserve the receipt and arrange independent provider follow-up;
+this remains an in-memory ownership boundary, not crash-persistent upload storage.
+
+Every staged source or transport boundary also checks the original obligation and
+reconciliation state. Altered obligations cannot authorize additional publication.
+Lifecycle timestamps and the latest observed transport clock bound subsequent
+work, including a later timestamp at which a transport checkpoint refused.
+Prepared local aborts bind the same operation and owner as initiated sessions.
+See [owned multipart uploads](docs/OWNED_ARCHIVE_UPLOADS.md).
+
+The pinned nightly passed all 33 focused uploader/multipart tests, including 12
+new regressions. The complete `fss-object --all-targets --all-features` suite
+passed 320 tests with one existing ignored test. Runtime effect, RTSP capture,
+native dwell and agent rehearsal checks also passed in this session; these do
+not replace provider qualification or crash-persistence work.
+
 ## Runtime effect evidence and recovery (2026-10-20, reference)
 
 `fss-runtime::EffectCoordinator` retains a canonical `fss-core::EffectJournal`

@@ -568,7 +568,7 @@ impl<T: MultipartTransport> MultipartSession<'_, T> {
             });
         }
         if self.phase == MultipartPhase::Completed {
-            authority::validate_binding(&io, &self.owner, self.observed_at)?;
+            authority::validate_binding(&io, &self.intent, &self.owner, self.observed_at)?;
             return self.completion_receipt();
         }
         self.require_phase(TransportOperation::Complete, MultipartPhase::Uploading)?;
@@ -608,11 +608,20 @@ impl<T: MultipartTransport> MultipartSession<'_, T> {
 
     /// Abort known uncommitted staging. Uncertain completion must be reconciled first.
     pub fn abort(&mut self, io: UploadIo<'_>) -> Result<AbortReceipt, MultipartError> {
-        authority::validate_binding(&io, &self.owner, self.observed_at)?;
+        authority::validate_binding(&io, &self.intent, &self.owner, self.observed_at)?;
         if matches!(
             self.phase,
             MultipartPhase::Prepared | MultipartPhase::Aborted
         ) {
+            if self.phase == MultipartPhase::Prepared {
+                // A local no-dispatch abort is still an owner-bound outcome. It must not
+                // become a reusable receipt for another region with the same operation ID.
+                self.owner = Some((
+                    io.tree.owner_identity().clone(),
+                    io.authority.region().clone(),
+                ));
+                self.observed_at = io.now;
+            }
             self.phase = MultipartPhase::Aborted;
             return Ok(self.abort_receipt());
         }

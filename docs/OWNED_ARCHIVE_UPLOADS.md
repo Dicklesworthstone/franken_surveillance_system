@@ -45,6 +45,33 @@ Only a conclusive terminal receipt resolves the child's obligation, drains/final
 child and refunds its exact parent's unused reservation. Dropping an unfinished handle leaves a
 pending canonical child obligation that prevents a false parent shutdown claim.
 
+## Explicit local settlement when the provider outcome stays unknown
+
+An uncertain upload can outlive its available reconciliation allowance or an unreachable provider.
+`StagedUpload::settle_indeterminate(tree, now, note, reference_digest)` records that unresolved
+outcome and closes the local owner without inventing a provider result. The caller supplies a
+bounded follow-up note and a nonzero SHA-256 reference to the independent reconciliation record
+it will retain. The returned `IndeterminateUploadReceipt` binds those inputs to the exact original
+intent, child region, obligation and uncertain operation.
+
+This transition is available only after an uncertain dispatch. The canonical obligation stays
+`Indeterminate`, and its reconciliation note remains attached to the closed child. The protocol
+phase stays uncertain. Recording the settlement prevents every further provider call through this
+handle, even if local finalization initially refuses. An exact retry finishes local cleanup and
+returns the same receipt; a changed note or reference refuses. Successful closure refunds only
+unused allowance, preserving charges for every attempted request and byte.
+
+The receipt establishes local ownership settlement. It does not establish provider completion,
+abort, rollback or the authenticity of the supplied follow-up reference. The caller must retain
+the receipt and follow up through an independently authorized owner. In-memory tree retention
+does not provide persistence across process loss.
+
+All staged operations check the original obligation and reconciliation state before source access
+or transport dispatch. An altered obligation cannot silently become permission for another effect.
+Owner lifecycle timestamps also bound execution. A transport checkpoint that observes a later time
+retains that observation even when deadline or cancellation checks refuse, preventing a subsequent
+call from moving execution back before that observed boundary.
+
 ## Scope and verification
 
 This implements the injected multipart protocol and **in-process** ownership/recovery boundary for
@@ -61,3 +88,9 @@ The focused fault-injection targets cover lost acknowledgements at all four effe
 opaque ETags, altered bytes/root/plan, incomplete or forged reconciliation, actual child authority,
 grant revocation, cancellation, deadlines, minimum cleanup allowance, framing I/O, exact refunds,
 duplicate preparation, wrong trees and parent quiescence.
+
+The additional unresolved-settlement and owner-integrity contracts cover exhausted recovery,
+task-blocked local finalization, exact retained receipts and notes, altered obligations,
+backdated preparation and cleanup, and refused transport/source clock boundaries. The pinned
+nightly passed 33 focused tests and 320 tests across the full object crate (one existing test
+remains explicitly ignored).

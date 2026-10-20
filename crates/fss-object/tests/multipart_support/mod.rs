@@ -93,6 +93,7 @@ pub struct Store {
     pub unknown: bool,
     pub observation: Option<Reconciliation>,
     pub envelope_bytes: u64,
+    pub checkpoint_once: Option<TimestampNs>,
 }
 impl Default for Store {
     fn default() -> Self {
@@ -108,6 +109,7 @@ impl Default for Store {
             unknown: false,
             observation: None,
             envelope_bytes: 0,
+            checkpoint_once: None,
         }
     }
 }
@@ -123,6 +125,10 @@ impl MemoryTransport {
         cx: &mut TransportCx<'_>,
         operation: TransportOperation,
     ) -> Result<(bool, bool), String> {
+        let checkpoint = self.store.borrow_mut().checkpoint_once.take();
+        if let Some(now) = checkpoint {
+            cx.checkpoint(now).map_err(|error| error.to_string())?;
+        }
         cx.checkpoint(cx.now()).map_err(|error| error.to_string())?;
         let envelope_bytes = self.store.borrow().envelope_bytes;
         cx.charge_io(cx.now(), envelope_bytes, envelope_bytes)
