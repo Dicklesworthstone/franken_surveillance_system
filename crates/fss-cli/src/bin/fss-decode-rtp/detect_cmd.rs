@@ -30,6 +30,11 @@ const MAX_REPORT_BYTES: u64 = 128 * 1024 * 1024;
 
 #[path = "cascade_cmd.rs"]
 mod cascade_cmd;
+#[path = "report_verification.rs"]
+pub(super) mod report_verification;
+#[path = "verify_detection.rs"]
+mod verify_detection;
+use report_verification::ReportDestination;
 
 #[derive(Debug)]
 struct DetectOptions {
@@ -46,6 +51,9 @@ struct DetectSettings {
 }
 
 pub(super) fn dispatch(args: &[OsString]) -> Option<ExitCode> {
+    if let Some(exit) = verify_detection::dispatch(args) {
+        return Some(exit);
+    }
     if let Some(exit) = cascade_cmd::dispatch(args) {
         return Some(exit);
     }
@@ -160,7 +168,7 @@ fn execute_inner(
     root: &Path,
     cx: &ReplayCx,
     scalar: &ScalarExecCx,
-    destination: &PrivateOutputPath,
+    destination: &impl ReportDestination,
     out: &mut impl Write,
 ) -> Result<()> {
     let package_bytes = read_package(&settings.package)?;
@@ -237,7 +245,7 @@ fn execute_inner(
     let finish = (|| -> Result<(ContentDigest, u64)> {
         report.record(summary.as_bytes(), &mut check)?;
         report.writer.flush()?;
-        destination.sync(&report.writer, cx)?;
+        destination.sync(&mut report.writer, cx)?;
         Ok((
             ContentDigest::new(DigestAlgorithm::Sha256, report.hash.finalize()?),
             report.bytes,
