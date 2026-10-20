@@ -16,13 +16,12 @@ fn emit(property: &str, cases: u64) {
 /// payload byte whose MSB is `first_slice`.
 fn nal(kind: u8, first_slice: bool) -> Vec<u8> {
     // Header: forbidden_zero(1) + type(6) + layer(6, 0) + tid(3, 1).
-    let h0 = ((kind as u16) << 1) >> 1; // type in bits 1..6
-    let h0 = ((kind & 0x3F) << 1) as u8;
+    let h0 = (kind & 0x3F) << 1;
     vec![h0, 0x01, if first_slice { 0x80 } else { 0x00 }, 0xFF]
 }
 
 fn simple_nal(kind: u8) -> Vec<u8> {
-    let h0 = ((kind & 0x3F) << 1) as u8;
+    let h0 = (kind & 0x3F) << 1;
     vec![h0, 0x01, 0xFF]
 }
 
