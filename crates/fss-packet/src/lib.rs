@@ -10,6 +10,8 @@
 pub mod access_unit;
 pub mod avc;
 pub mod cadence;
+/// Bounded H.265 access-unit/VPS/SPS/PPS parser (FSS-114).
+pub mod h265_access_unit;
 pub mod hevc;
 
 mod continuity;
