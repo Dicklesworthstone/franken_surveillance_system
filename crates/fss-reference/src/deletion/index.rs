@@ -7,7 +7,7 @@
 //! `deleted` from the moment the record is durable, even while an interrupted commit has not yet
 //! unlinked its bytes: content is never served after the tombstone.
 
-mod proof;
+pub(super) mod proof;
 
 use std::collections::{BTreeMap, BTreeSet};
 

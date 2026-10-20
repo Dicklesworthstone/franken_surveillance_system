@@ -1,9 +1,14 @@
 #![forbid(unsafe_code)]
 //! Deletion-owner bridge for durable retained-belief verification.
 //!
-//! This module is the only reference-layer adapter that turns committed deletion authority into
-//! native custody denials. It reuses the canonical deletion proof reader; it never infers deletion
-//! from missing files, never repairs history, and never grants read authority.
+//! This module turns committed deletion authority into native custody denials. It reuses the
+//! canonical deletion proof reader; it never infers deletion from missing files, repairs history,
+//! or grants read authority. A committed header denies its complete closure before unlinking.
+
+mod bounded;
+pub use bounded::{
+    BoundedCommittedDeletionBeliefAuthority, DeletionBeliefLimits, DeletionBeliefUsage,
+};
 
 use std::collections::BTreeMap;
 
@@ -17,14 +22,12 @@ use fss_publication::custody_audit::belief_snapshot::durable::{
     VerifiedDurableBelief, verify_durable_belief_with_deletion_authority,
 };
 
-use super::{DeletionError, DeletionIndex, has_records};
 use crate::ReferenceDeployment;
 
-/// Trusted reference deletion owner.
+/// Compatibility entry point using default, per-call deletion-proof admission.
 ///
-/// Construction is intentionally trivial: authority comes from the implementation, not a token
-/// supplied by serialized input. The implementation validates the complete deletion transition
-/// history against retained plan/completion bytes every time it is asked for denials.
+/// Authority comes from the implementation, not a serialized token. For cancellation and retained
+/// failure accounting, use a request-owned [`BoundedCommittedDeletionBeliefAuthority`] instead.
 #[derive(Clone, Copy, Debug, Default)]
 pub struct CommittedDeletionBeliefAuthority;
 
@@ -34,41 +37,19 @@ impl DurableBeliefDeletionAuthority for CommittedDeletionBeliefAuthority {
         ledger: &DurableReferenceLedger,
         publisher: &LocalRootPublisher,
     ) -> Result<BTreeMap<ContentDigest, ContentDigest>, DurableBeliefError> {
-        if !has_records(ledger.batches()) {
-            return Ok(BTreeMap::new());
-        }
-        let index: DeletionIndex = DeletionIndex::from_batches(ledger.batches(), |digest| {
-            publisher
-                .spool()
-                .read(digest)
-                .map(|bytes| bytes.to_vec())
-                .map_err(DeletionError::from)
-        })
-        .map_err(|_: DeletionError| DurableBeliefError::DeletionAuthorityInvalid)?;
-
-        let mut denied = BTreeMap::new();
-        for entry in index.entries() {
-            for object in &entry.plan.deletable {
-                if let Some(previous) = denied.insert(object.digest, entry.plan_digest)
-                    && previous != entry.plan_digest
-                {
-                    // One object cannot have two different canonical deletion authorities in the
-                    // same verified history without an explicit supersession contract.
-                    return Err(DurableBeliefError::DeletionAuthorityInvalid);
-                }
-            }
-        }
-        Ok(denied)
+        BoundedCommittedDeletionBeliefAuthority::new(DeletionBeliefLimits::default(), &|| false)
+            .verified_denials(ledger, publisher)
     }
 }
 
 /// Verify a saved belief against an opened reference deployment while honoring committed deletion
-/// authority.
+/// authority, with default deletion-history limits and the request's cancellation owner.
 ///
-/// The deployment's deletion history is validated before selected payload custody is copied. Every
-/// deleted object is added to the native deny set; explicit request denials can only narrow it.
-/// Unrelated, intact selected slots may therefore remain verifiable after another evidence closure
-/// was deleted. This wrapper does not authenticate the caller or apply privacy policy on its behalf.
+/// Every deleted object is added to the native deny set before selected payload custody is copied;
+/// explicit request denials only narrow it. Unrelated intact slots may remain verifiable after
+/// another closure was deleted. This wrapper neither authenticates callers nor applies privacy
+/// policy on their behalf. Each call is a fresh admission. To retain deletion work across refusals,
+/// explicitly construct a bounded authority and use the publication-layer entry point with it.
 pub fn verify_durable_belief_with_committed_deletions<'a, C: Fn() -> bool + Sync>(
     encoded: &[u8],
     deployment: &'a ReferenceDeployment,
@@ -76,13 +57,17 @@ pub fn verify_durable_belief_with_committed_deletions<'a, C: Fn() -> bool + Sync
     engine: &(impl RegisteredBeliefDeriver + ?Sized),
     request: DurableBeliefRequest<'_, C>,
 ) -> Result<VerifiedDurableBelief<'a>, DurableBeliefError> {
+    let authority = BoundedCommittedDeletionBeliefAuthority::new(
+        DeletionBeliefLimits::default(),
+        request.cancelled,
+    );
     verify_durable_belief_with_deletion_authority(
         encoded,
         deployment.ledger(),
         deployment.publisher(),
         io,
         engine,
-        &CommittedDeletionBeliefAuthority,
+        &authority,
         request,
     )
 }

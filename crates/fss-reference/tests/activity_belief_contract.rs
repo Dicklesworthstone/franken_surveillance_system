@@ -168,7 +168,11 @@ fn fixture(quiet: bool, altered_result: bool) -> TestResult<Fixture> {
         rgb_decode_receipt_bytes(&reference.receipt()),
     ];
     let source_slot = SlotName::parse("activity-originals")?;
-    let refs: Vec<_> = source_objects.iter().map(Vec::as_slice).collect();
+    // Publication has a canonical set of objects, while the engine keeps all named roles.
+    // Identical frames also share their decode record; neither alias is a second object.
+    let mut refs: Vec<_> = source_objects.iter().map(Vec::as_slice).collect();
+    refs.sort_unstable();
+    refs.dedup();
     let staged = deployment.stage_and_publish(&source_slot, &refs, &cx)?;
     let _ = deployment.publish_and_commit(&source_slot, &staged.manifest, fc.capture, &cx)?;
     // Use the pre-existing real retention writer; it stores native result/receipt as cognition.

@@ -17,8 +17,8 @@ on:
       - 'crates/fss-reference/src/activity_replay/**'
       - 'crates/fss-reference/src/executor_activity*.rs'
       - 'crates/fss-reference/tests/activity_*'
-      - 'crates/fss-reference/src/deletion/belief.rs'
-      - 'crates/fss-reference/tests/deletion_belief_contract.rs'
+      - 'crates/fss-reference/src/deletion/**'
+      - 'crates/fss-reference/tests/deletion_*'
       - 'scripts/test_belief_provenance.sh'
       - '.github/workflows/belief-provenance.yml'
   workflow_dispatch:
@@ -44,6 +44,7 @@ jobs:
       - name: Execute repository-owned Rust lane
         run: bash scripts/qualify.sh --lane rust --receipt-dir "${{ runner.temp }}/qualification-receipt"
       - name: Native direct and graph provenance contracts
+        if: ${{ !cancelled() }}
         run: bash scripts/test_belief_provenance.sh "$RUNNER_TEMP/belief-provenance"
       - name: Retain exact native results
         if: ${{ !cancelled() }}

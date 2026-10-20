@@ -148,12 +148,25 @@ impl Progress {
 
 pub(super) fn read<E: From<DeletionError>>(
     batches: &[EvidenceDeltaBatch],
+    read: impl FnMut(ContentDigest) -> Result<Vec<u8>, E>,
+) -> Result<Vec<DeletionEntry>, E> {
+    read_controlled(batches, read, || Ok(()), |_| Ok(()))
+}
+
+/// The same canonical proof, with request-owned cancellation and plan admission. The plan
+/// callback runs after bounded canonical decoding but BEFORE expected transitions are allocated.
+/// No intermediate progress escapes when a callback or the semantic proof refuses.
+pub(in crate::deletion) fn read_controlled<E: From<DeletionError>>(
+    batches: &[EvidenceDeltaBatch],
     mut read: impl FnMut(ContentDigest) -> Result<Vec<u8>, E>,
+    mut checkpoint: impl FnMut() -> Result<(), E>,
+    mut admit_plan: impl FnMut(&DeletionPlan) -> Result<(), E>,
 ) -> Result<Vec<DeletionEntry>, E> {
     let mut states: Vec<Progress> = Vec::new();
     let mut plans: BTreeMap<ContentDigest, usize> = BTreeMap::new();
     let mut records: BTreeMap<String, usize> = BTreeMap::new();
     for batch in batches {
+        checkpoint()?;
         if !candidate(batch) {
             continue;
         }
@@ -164,7 +177,9 @@ pub(super) fn read<E: From<DeletionError>>(
         {
             let digest = marker.payload_digest;
             let bytes = read(digest)?;
+            checkpoint()?;
             let plan = DeletionPlan::decode(&bytes, digest)?;
+            admit_plan(&plan)?;
             let object = plan.record_object_id_of(digest);
             if plans.contains_key(&digest)
                 || records.contains_key(&object)
@@ -194,6 +209,7 @@ pub(super) fn read<E: From<DeletionError>>(
             let progress = &mut states[*position];
             let digest = progress.complete(batch)?;
             let bytes = read(digest)?;
+            checkpoint()?;
             let completion = DeletionCompletion::decode(&bytes, digest)?;
             if completion != DeletionCompletion::of(&progress.entry.plan)? {
                 return Err(DeletionError::RecordMismatch.into());
@@ -221,5 +237,6 @@ pub(super) fn read<E: From<DeletionError>>(
                 .ok_or(DeletionError::RecordMismatch)?;
         }
     }
+    checkpoint()?;
     Ok(states.into_iter().map(|state| state.entry).collect())
 }
