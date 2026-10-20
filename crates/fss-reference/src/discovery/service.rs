@@ -88,6 +88,8 @@ pub fn discover(
     cfg: &DiscoverConfig,
     cancel: &AtomicBool,
 ) -> Result<DiscoverReport, crate::discovery::census::CensusError> {
+    // Reject invalid/unbounded scope before any passive or active probe starts.
+    cfg.census.plan()?;
     // Stage 1: passive-first listening + standards probes.
     let beacons = listen(cfg.beacon_seconds, 256, cancel).unwrap_or_default();
     let beacon_index: std::collections::BTreeMap<String, Vec<&TuyaBeaconObs>> = {
@@ -108,6 +110,7 @@ pub fn discover(
     let CensusReport {
         hosts,
         ping_targets,
+        ..
     } = run_census(&cfg.census, &oui, cancel)?;
 
     // NOTE (negative finding, 2026-10-09): TUTK-NEW discovery corroboration

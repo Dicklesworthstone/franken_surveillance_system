@@ -16,8 +16,7 @@
 //! Reference oracle: `~/projects/fss-interop-lab/discover.py` (byte-shape
 //! parity for the `arp -a` parser).
 
-use std::collections::BTreeMap;
-use std::io::BufRead;
+use std::collections::{BTreeMap, BTreeSet};
 use std::net::{IpAddr, Ipv4Addr, SocketAddr, TcpStream};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc;
@@ -38,6 +37,8 @@ pub const REGISTERED_PORTS: [u16; 11] = [
 
 /// Absolute bounds (a census that exceeds any of these is misconfigured).
 pub const MAX_SUBNET_HOSTS: u32 = 65_536;
+/// Maximum CIDR declarations admitted before expanding any addresses.
+pub const MAX_SUBNETS: usize = 8;
 pub const MIN_WORKERS: usize = 1;
 pub const MAX_WORKERS: usize = 256;
 pub const MIN_TCP_TIMEOUT: Duration = Duration::from_millis(50);
@@ -50,7 +51,8 @@ pub const MAX_TCP_TIMEOUT: Duration = Duration::from_secs(5);
 pub struct HostObs {
     /// IPv4 address of the host.
     pub ip: Ipv4Addr,
-    /// Normalized MAC (lowercase colon-separated).
+    /// Normalized MAC (lowercase colon-separated), or empty when unavailable
+    /// or conflicting. A current network response does not establish a MAC.
     pub mac: String,
     /// OUI organization, when the snapshot resolves the MAC prefix.
     pub oui_vendor: Option<String>,
@@ -224,20 +226,22 @@ impl CensusConfig {
         if self.tcp_timeout < MIN_TCP_TIMEOUT || self.tcp_timeout > MAX_TCP_TIMEOUT {
             return Err(CensusError::InvalidTimeout);
         }
-        let mut ips = Vec::new();
+        if self.subnets.is_empty() || self.subnets.len() > MAX_SUBNETS {
+            return Err(CensusError::SubnetCount(self.subnets.len()));
+        }
+        let mut ips = BTreeSet::new();
         for subnet in &self.subnets {
             let expanded = expand_cidr(subnet)?;
-            if expanded.len() > MAX_SUBNET_HOSTS as usize {
-                return Err(CensusError::SubnetTooLarge(subnet.clone()));
+            for ip in expanded {
+                ips.insert(ip);
+                if ips.len() > MAX_SUBNET_HOSTS as usize {
+                    return Err(CensusError::SubnetTooLarge("*".to_owned()));
+                }
             }
-            ips.extend(expanded);
         }
-        ips.sort();
-        ips.dedup();
-        if ips.len() > MAX_SUBNET_HOSTS as usize {
-            return Err(CensusError::SubnetTooLarge("*".to_owned()));
-        }
-        Ok(CensusPlan { ping_targets: ips })
+        Ok(CensusPlan {
+            ping_targets: ips.into_iter().collect(),
+        })
     }
 }
 
@@ -248,6 +252,88 @@ pub struct CensusPlan {
     pub ping_targets: Vec<Ipv4Addr>,
 }
 
+impl CensusPlan {
+    /// Whether an address belongs to the exact admitted host set. Plans
+    /// produced by [`CensusConfig::plan`] keep this set sorted and unique.
+    #[must_use]
+    pub fn contains(&self, ip: Ipv4Addr) -> bool {
+        self.ping_targets.binary_search(&ip).is_ok()
+    }
+
+    /// Filters cached neighbors before they may become TCP probe targets.
+    /// The operating system's ARP table can include other interfaces, VPNs,
+    /// and unrelated networks; cache presence confers no discovery authority.
+    #[must_use]
+    pub fn scoped_neighbors(&self, rows: Vec<ArpRow>) -> Vec<ArpRow> {
+        let mut rows: Vec<_> = rows.into_iter().filter(|r| self.contains(r.ip)).collect();
+        rows.sort_by(|a, b| (&a.ip, &a.mac, &a.iface).cmp(&(&b.ip, &b.mac, &b.iface)));
+        rows.dedup();
+        rows
+    }
+
+    /// Replays one sweep from scoped cache rows and actual network responses.
+    /// Inventory and liveness remain separate: a stale neighbor is retained
+    /// without a heartbeat, while a routed responder needs no ARP entry.
+    /// Multiple MACs for one IP leave its hardware identity unresolved.
+    #[must_use]
+    pub fn assemble_report(
+        &self,
+        neighbors: Vec<ArpRow>,
+        icmp_responders: &[Ipv4Addr],
+        open_ports: &BTreeMap<Ipv4Addr, Vec<u16>>,
+        oui: &OuiTable,
+    ) -> CensusReport {
+        let mut macs: BTreeMap<Ipv4Addr, BTreeSet<String>> = BTreeMap::new();
+        for row in self.scoped_neighbors(neighbors) {
+            macs.entry(row.ip).or_default().insert(row.mac);
+        }
+        let mut responders: BTreeSet<_> = icmp_responders
+            .iter()
+            .copied()
+            .filter(|ip| self.contains(*ip))
+            .collect();
+        let mut open = BTreeMap::new();
+        for (ip, ports) in open_ports {
+            if !self.contains(*ip) {
+                continue;
+            }
+            let ports: BTreeSet<_> = ports
+                .iter()
+                .copied()
+                .filter(|p| REGISTERED_PORTS.contains(p))
+                .collect();
+            if !ports.is_empty() {
+                open.insert(*ip, ports.into_iter().collect::<Vec<_>>());
+                responders.insert(*ip);
+            }
+        }
+        let targets: BTreeSet<_> = macs.keys().chain(responders.iter()).copied().collect();
+        let hosts = targets
+            .into_iter()
+            .map(|ip| {
+                let mac = macs
+                    .get(&ip)
+                    .filter(|values| values.len() == 1)
+                    .and_then(|values| values.first())
+                    .cloned()
+                    .unwrap_or_default();
+                HostObs {
+                    ip,
+                    oui_vendor: oui.lookup(&mac).map(str::to_owned),
+                    mac,
+                    open_ports: open.remove(&ip).unwrap_or_default(),
+                    rtt_ms: None,
+                }
+            })
+            .collect();
+        CensusReport {
+            hosts,
+            ping_targets: self.ping_targets.len(),
+            responders: responders.into_iter().collect(),
+        }
+    }
+}
+
 /// Typed census errors.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum CensusError {
@@ -255,6 +341,8 @@ pub enum CensusError {
     InvalidWorkers(usize),
     /// TCP timeout outside bounds.
     InvalidTimeout,
+    /// No CIDRs configured, or more than the bounded declaration count.
+    SubnetCount(usize),
     /// Subnet too large (or unparseable, text carried for the log).
     SubnetTooLarge(String),
 }
@@ -264,6 +352,9 @@ impl core::fmt::Display for CensusError {
         match self {
             CensusError::InvalidWorkers(n) => write!(f, "worker count {n} outside 1..=256"),
             CensusError::InvalidTimeout => write!(f, "tcp timeout outside 50ms..=5s"),
+            CensusError::SubnetCount(n) => {
+                write!(f, "subnet count {n} outside 1..={MAX_SUBNETS}")
+            }
             CensusError::SubnetTooLarge(s) => {
                 write!(f, "subnet {s} invalid or above the host bound")
             }
@@ -273,8 +364,8 @@ impl core::fmt::Display for CensusError {
 
 impl std::error::Error for CensusError {}
 
-/// Expands a CIDR (host addresses only, network+broadcast excluded like the
-/// oracle's `ipaddress.hosts()`).
+/// Expands a CIDR after checking its cardinality. Network/broadcast addresses
+/// are excluded except in /31 and /32, matching `ipaddress.hosts()` semantics.
 fn expand_cidr(cidr: &str) -> Result<Vec<Ipv4Addr>, CensusError> {
     let (addr, prefix) = cidr
         .split_once('/')
@@ -290,8 +381,17 @@ fn expand_cidr(cidr: &str) -> Result<Vec<Ipv4Addr>, CensusError> {
     }
     let base = u32::from(ip) & (!0u32 << (32 - prefix));
     let count = 1u64 << (32 - prefix);
-    let mut out = Vec::new();
-    for i in 1..count.saturating_sub(1) {
+    let (first, end) = if prefix >= 31 {
+        (0, count)
+    } else {
+        (1, count - 1)
+    };
+    let hosts = end - first;
+    if hosts > u64::from(MAX_SUBNET_HOSTS) {
+        return Err(CensusError::SubnetTooLarge(cidr.to_owned()));
+    }
+    let mut out = Vec::with_capacity(hosts as usize);
+    for i in first..end {
         out.push(Ipv4Addr::from(base + i as u32));
     }
     Ok(out)
@@ -308,10 +408,22 @@ pub fn run_census(
     cancel: &AtomicBool,
 ) -> Result<CensusReport, CensusError> {
     let plan = cfg.plan()?;
-    ping_sweep(&plan.ping_targets, cfg.workers, cancel);
+    if cancel.load(Ordering::Relaxed) {
+        return Ok(plan.assemble_report(Vec::new(), &[], &BTreeMap::new(), oui));
+    }
+    let responders = ping_sweep(&plan.ping_targets, cfg.workers, cancel);
+    if cancel.load(Ordering::Relaxed) {
+        return Ok(plan.assemble_report(Vec::new(), &responders, &BTreeMap::new(), oui));
+    }
     let arp_output = arp_a();
-    let rows = parse_arp_a(&arp_output);
-    let targets: Vec<Ipv4Addr> = rows.iter().map(|r| r.ip).collect();
+    let rows = plan.scoped_neighbors(parse_arp_a(&arp_output));
+    let targets: Vec<Ipv4Addr> = rows
+        .iter()
+        .map(|r| r.ip)
+        .chain(responders.iter().copied())
+        .collect::<BTreeSet<_>>()
+        .into_iter()
+        .collect();
     let open = tcp_connect_scan(
         &targets,
         &REGISTERED_PORTS,
@@ -319,20 +431,7 @@ pub fn run_census(
         cfg.tcp_timeout,
         cancel,
     );
-    let hosts = rows
-        .into_iter()
-        .map(|r| HostObs {
-            ip: r.ip,
-            oui_vendor: oui.lookup(&r.mac).map(str::to_owned),
-            open_ports: open.get(&r.ip).cloned().unwrap_or_default(),
-            mac: r.mac,
-            rtt_ms: None,
-        })
-        .collect();
-    Ok(CensusReport {
-        hosts,
-        ping_targets: plan.ping_targets.len(),
-    })
+    Ok(plan.assemble_report(rows, &responders, &open, oui))
 }
 
 /// The census result.
@@ -340,37 +439,61 @@ pub fn run_census(
 pub struct CensusReport {
     /// Observed hosts, ascending by IP.
     pub hosts: Vec<HostObs>,
-    /// Number of ping targets the sweep covered.
+    /// Number of admitted ping targets; cancellation may stop before all are tried.
     pub ping_targets: usize,
+    /// Sorted unique IPs with an actual successful ICMP reply or accepted TCP
+    /// connection in this sweep. Cached neighbors alone never appear here.
+    pub responders: Vec<Ipv4Addr>,
 }
 
 /// Shells out to system `ping` (oracle parity; no raw-socket privilege).
 /// Short-lived child processes join before return; cancellation skips
 /// outstanding targets.
-fn ping_sweep(ips: &[Ipv4Addr], workers: usize, cancel: &AtomicBool) {
-    let (tx, rx) = mpsc::channel::<Ipv4Addr>();
+fn ping_sweep(ips: &[Ipv4Addr], workers: usize, cancel: &AtomicBool) -> Vec<Ipv4Addr> {
+    let (tx, rx) = mpsc::sync_channel::<Ipv4Addr>(workers.max(1));
     let rx = std::sync::Mutex::new(rx);
+    let responders = std::sync::Mutex::new(BTreeSet::new());
     std::thread::scope(|s| {
         for _ in 0..workers.min(ips.len().max(1)) {
             let rx = &rx;
+            let responders = &responders;
             s.spawn(move || {
                 while let Ok(ip) = rx.lock().map(|r| r.recv()).unwrap_or(Err(mpsc::RecvError)) {
                     if cancel.load(Ordering::Relaxed) {
                         continue; // drain without spawning
                     }
-                    let _ = std::process::Command::new("ping")
-                        .args(["-c", "1", "-W", "150", "-t", "1", &ip.to_string()])
+                    // macOS uses milliseconds for -W and -t for a deadline;
+                    // Linux uses seconds for -W and -w for the total deadline.
+                    #[cfg(target_os = "macos")]
+                    let flags = ["-c", "1", "-W", "150", "-t", "1"];
+                    #[cfg(not(target_os = "macos"))]
+                    let flags = ["-c", "1", "-W", "1", "-w", "1"];
+                    let status = std::process::Command::new("ping")
+                        .args(flags)
+                        .arg(ip.to_string())
                         .stdout(std::process::Stdio::null())
                         .stderr(std::process::Stdio::null())
                         .status();
+                    if status.is_ok_and(|status| status.success())
+                        && let Ok(mut replies) = responders.lock()
+                    {
+                        replies.insert(ip);
+                    }
                 }
             });
         }
         for ip in ips {
-            let _ = tx.send(*ip);
+            if cancel.load(Ordering::Relaxed) || tx.send(*ip).is_err() {
+                break;
+            }
         }
         drop(tx);
     });
+    responders
+        .into_inner()
+        .unwrap_or_default()
+        .into_iter()
+        .collect()
 }
 
 /// Runs `arp -a` and returns its stdout.
@@ -390,11 +513,11 @@ fn tcp_connect_scan(
     timeout: Duration,
     cancel: &AtomicBool,
 ) -> BTreeMap<Ipv4Addr, Vec<u16>> {
-    let (tx, rx) = mpsc::channel::<(Ipv4Addr, u16)>();
+    let (tx, rx) = mpsc::sync_channel::<(Ipv4Addr, u16)>(workers.max(1));
     let rx = std::sync::Mutex::new(rx);
-    let (result_tx, result_rx) = mpsc::channel::<(Ipv4Addr, u16)>();
-    let results = std::thread::Builder::new()
-        .spawn(move || {
+    let (result_tx, result_rx) = mpsc::sync_channel::<(Ipv4Addr, u16)>(workers.max(1));
+    std::thread::scope(|s| {
+        let results = s.spawn(move || {
             let mut open: BTreeMap<Ipv4Addr, Vec<u16>> = BTreeMap::new();
             while let Ok((ip, port)) = result_rx.recv() {
                 open.entry(ip).or_default().push(port);
@@ -403,13 +526,10 @@ fn tcp_connect_scan(
                 v.sort_unstable();
             }
             open
-        })
-        .expect("result collector thread");
-    std::thread::scope(|s| {
-        for _ in 0..workers.min(ips.len() * ports.len().max(1)) {
+        });
+        for _ in 0..workers.min(ips.len().saturating_mul(ports.len())) {
             let rx = &rx;
-            let result_tx = &result_tx;
-            let cancel = cancel;
+            let result_tx = result_tx.clone();
             s.spawn(move || {
                 while let Ok((ip, port)) =
                     rx.lock().map(|r| r.recv()).unwrap_or(Err(mpsc::RecvError))
@@ -426,15 +546,17 @@ fn tcp_connect_scan(
                 }
             });
         }
-        for ip in ips {
+        'targets: for ip in ips {
             for port in ports {
-                let _ = tx.send((*ip, *port));
+                if cancel.load(Ordering::Relaxed) || tx.send((*ip, *port)).is_err() {
+                    break 'targets;
+                }
             }
         }
         drop(tx);
-    });
-    drop(result_tx);
-    results.join().unwrap_or_default()
+        drop(result_tx);
+        results.join().unwrap_or_default()
+    })
 }
 
 #[cfg(test)]
