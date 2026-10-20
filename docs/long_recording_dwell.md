@@ -103,6 +103,9 @@ keeps its existing MJPEG-only contract; see [native dwell replay](native_dwell_r
 
 ## Calibrated class advice
 
+See [calibrated dwell class advice](long_dwell_class_fusion.md) for the complete
+profile, invocation, custody and refusal contract.
+
 Complete detector-enabled `--stream-dwell` scans also accept
 `--fusion-profile FILE --fusion-digest sha256:HEX`. Preserve the native report
 from the same recording, range, zone, dwell rule, detector options and explicit

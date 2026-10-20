@@ -252,12 +252,15 @@ pub(super) fn count_calibration(c: &ScoreCalibration) -> String {
 }
 pub(super) fn report(r: &EventFusionReport) -> String {
     let mut fields = vec![
-        ("schema", text(match r.profile.whole_recording {
-            Some(WholeRecordingScope::Watch(_)) => "fss.event_class_fusion_report.v2",
-            Some(WholeRecordingScope::Corroboration(_)) => "fss.event_class_fusion_report.v3",
-            Some(WholeRecordingScope::Dwell(_)) => "fss.event_class_fusion_report.v4",
-            None => "fss.event_class_fusion_report.v1",
-        })),
+        (
+            "schema",
+            text(match r.profile.whole_recording {
+                Some(WholeRecordingScope::Watch(_)) => "fss.event_class_fusion_report.v2",
+                Some(WholeRecordingScope::Corroboration(_)) => "fss.event_class_fusion_report.v3",
+                Some(WholeRecordingScope::Dwell(_)) => "fss.event_class_fusion_report.v4",
+                None => "fss.event_class_fusion_report.v1",
+            }),
+        ),
         ("recipe", text(RECIPE)),
         ("profile_digest", text(&r.profile.digest.to_text())),
         (
@@ -338,10 +341,19 @@ pub(super) fn report(r: &EventFusionReport) -> String {
     if let Some(root) = r.profile.long_watch_analysis_root() {
         fields.extend([
             ("source_scope", text(streaming::SCOPE)),
-            ("analysis_digest", text(&r.profile.spec.plan_digest.to_text())),
+            (
+                "analysis_digest",
+                text(&r.profile.spec.plan_digest.to_text()),
+            ),
             ("analysis_root", text(&root.to_text())),
-            ("detector_recipe_digest", text(&r.profile.spec.cascade_digest.to_text())),
-            ("maximum_candidates", streaming::MAX_LONG_CANDIDATES.to_string()),
+            (
+                "detector_recipe_digest",
+                text(&r.profile.spec.cascade_digest.to_text()),
+            ),
+            (
+                "maximum_candidates",
+                streaming::MAX_LONG_CANDIDATES.to_string(),
+            ),
             ("maximum_total_evidence", MAX_TOTAL_EVIDENCE.to_string()),
             ("coverage_witness_supplied", "false".to_owned()),
         ]);
@@ -349,10 +361,22 @@ pub(super) fn report(r: &EventFusionReport) -> String {
     if let Some(roots) = r.profile.long_corroboration_analysis_roots() {
         fields.extend([
             ("source_scope", text(corroboration::SCOPE)),
-            ("analysis_digest", text(&r.profile.spec.plan_digest.to_text())),
-            ("long_corroboration_analysis_roots", array(roots.iter().map(|root| text(&root.to_text())))),
-            ("detector_recipe_digest", text(&r.profile.spec.cascade_digest.to_text())),
-            ("maximum_candidates", MAX_LONG_CORROBORATION_CANDIDATES.to_string()),
+            (
+                "analysis_digest",
+                text(&r.profile.spec.plan_digest.to_text()),
+            ),
+            (
+                "long_corroboration_analysis_roots",
+                array(roots.iter().map(|root| text(&root.to_text()))),
+            ),
+            (
+                "detector_recipe_digest",
+                text(&r.profile.spec.cascade_digest.to_text()),
+            ),
+            (
+                "maximum_candidates",
+                MAX_LONG_CORROBORATION_CANDIDATES.to_string(),
+            ),
             ("maximum_total_evidence", MAX_TOTAL_EVIDENCE.to_string()),
             ("coverage_witness_supplied", "false".to_owned()),
         ]);
@@ -376,6 +400,7 @@ pub(super) fn report(r: &EventFusionReport) -> String {
                 text("sampled_dwell_only_no_continuous_occupancy"),
             ),
             ("coverage_witness_supplied", "false".to_owned()),
+            ("continuous_occupancy_certified", "false".to_owned()),
         ]);
     }
     object(&fields)

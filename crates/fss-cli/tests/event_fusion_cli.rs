@@ -9,10 +9,8 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::{SystemTime, UNIX_EPOCH};
 
 static NEXT_CASE: AtomicU64 = AtomicU64::new(0);
-const PIN: &str =
-    "sha256:0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef";
-const OTHER_PIN: &str =
-    "sha256:abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789";
+const PIN: &str = "sha256:0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef";
+const OTHER_PIN: &str = "sha256:abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789";
 
 struct Invocation {
     args: Vec<OsString>,
@@ -35,18 +33,17 @@ impl Invocation {
         assert!(!root.exists());
         assert!(!report.exists());
         let mut invocation = Self {
-            args: vec![command.into(), "--root".into(), root.clone().into_os_string()],
+            args: vec![
+                command.into(),
+                "--root".into(),
+                root.clone().into_os_string(),
+            ],
             root,
             report,
         };
         invocation.add(&["--site", "site:fusion-cli", "--interpretation", "gray"]);
         match command {
-            "watch" => invocation.add(&[
-                "--import-id",
-                PIN,
-                "--zone",
-                "door:4,4,16,16",
-            ]),
+            "watch" => invocation.add(&["--import-id", PIN, "--zone", "door:4,4,16,16"]),
             "corroborate" => invocation.add(&[
                 "--camera",
                 &format!("east:{PIN}"),
@@ -73,7 +70,8 @@ impl Invocation {
     }
 
     fn add(&mut self, args: &[&str]) {
-        self.args.extend(args.iter().map(|arg| OsString::from(*arg)));
+        self.args
+            .extend(args.iter().map(|arg| OsString::from(*arg)));
     }
 
     fn detector(&mut self) {
@@ -111,7 +109,10 @@ impl Invocation {
             stderr.contains(reason),
             "expected admission refusal {reason:?}, got {stderr:?}",
         );
-        assert!(output.stdout.is_empty(), "a refused request emitted a report");
+        assert!(
+            output.stdout.is_empty(),
+            "a refused request emitted a report"
+        );
         assert!(!self.root.exists(), "admission touched the deployment root");
         assert!(!self.report.exists(), "admission created an export");
     }
@@ -171,7 +172,7 @@ fn neither_command_can_publish_or_retain_authority_with_fusion() {
 }
 
 #[test]
-fn unsupported_streaming_dwell_cannot_silently_drop_requested_fusion() {
+fn incremental_dwell_cannot_silently_drop_requested_fusion() {
     let mut invocation = Invocation::new("watch");
     invocation.detector();
     invocation.fusion();
@@ -181,8 +182,10 @@ fn unsupported_streaming_dwell_cannot_silently_drop_requested_fusion() {
         "1000000000",
         "--dwell-max-gap-ns",
         "250000000",
+        "--dwell-step-frames",
+        "32",
     ]);
-    invocation.refused("not streaming");
+    invocation.refused("incremental dwell is unsupported");
 }
 
 #[test]
@@ -191,7 +194,12 @@ fn full_camera_fusion_still_requires_complete_valid_calibration_pins() {
         (vec!["--calibration", "calibration.json"], "go together"),
         (vec!["--calibration-digest", OTHER_PIN], "go together"),
         (
-            vec!["--calibration", "calibration.json", "--calibration-digest", "invalid"],
+            vec![
+                "--calibration",
+                "calibration.json",
+                "--calibration-digest",
+                "invalid",
+            ],
             "invalid digest for --calibration-digest",
         ),
     ] {
@@ -228,7 +236,12 @@ fn short_dwell_fusion_preserves_authority_and_temporal_refusals_before_io() {
         invocation.detector();
         invocation.fusion();
         invocation.add(&[
-            "--dwell-for-ns", "200000000", "--dwell-max-gap-ns", "100000000", flag, PIN,
+            "--dwell-for-ns",
+            "200000000",
+            "--dwell-max-gap-ns",
+            "100000000",
+            flag,
+            PIN,
         ]);
         invocation.refused("calibrated fusion is read-only");
     }
@@ -242,8 +255,12 @@ fn short_dwell_fusion_preserves_authority_and_temporal_refusals_before_io() {
     unsupported_health.detector();
     unsupported_health.fusion();
     unsupported_health.add(&[
-        "--dwell-for-ns", "200000000", "--dwell-max-gap-ns", "100000000",
-        "--sensor-health", "conservative-v1",
+        "--dwell-for-ns",
+        "200000000",
+        "--dwell-max-gap-ns",
+        "100000000",
+        "--sensor-health",
+        "conservative-v1",
     ]);
     unsupported_health.refused("short dwell screening is unsupported");
 }

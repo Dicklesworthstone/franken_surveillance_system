@@ -132,7 +132,12 @@ fn import(
         .args(["--sensor", sensor, "--stream", &format!("stream:{sensor}")])
         // Captured and received at wall-clock time: the evidence clock is realistic, so later
         // wall-clock effect records (a cancellation request) never jump it past a session lease.
-        .args(["--receive-time-ns", &now_ns()?.to_string(), "--media-format", "mjpeg"])
+        .args([
+            "--receive-time-ns",
+            &now_ns()?.to_string(),
+            "--media-format",
+            "mjpeg",
+        ])
         .args(["--capture-start-ns", &capture_start.to_string()])
         .args(["--capture-uncertainty-ns", "1000000", "--assumed-fps", "10"])
         .output()?;
@@ -746,10 +751,20 @@ fn orient_investigate_plan_commit_verify_learn_handoff_rehearsal() -> TestResult
     assert!(texts(&handed, &["payload", "leases"])?.is_empty());
     let handoff_id = text(&handed, &["payload", "handoffId"])?.to_owned();
 
+    // Preparation advances the effect journal, but case rebase requires a later authority
+    // ledger commit. Retain bounded source evidence through the real import command without
+    // republishing or revising either of the event's exact evidence objects.
+    import(
+        &directory,
+        true,
+        "sensor:resume",
+        now_ns()? - 10_000_000_000,
+    )?;
+
     // A cold driver resumes, refreshes the case and plan, and dispatches exactly once.
     let resumed = driver.ok("resume", &["session", "resume", "--handoff", &handoff_id])?;
-    // The prepare moved the head past the handoff's anchor: the resume names the new obligation
-    // and the anchor-bound assumptions it invalidated, never resuming silently.
+    // Preparation added an obligation; the new source import moved the ledger beyond the
+    // case's basis. Resume must surface both changes and invalidate its anchor assumptions.
     let invalidated = texts(&resumed, &["executionBoundary", "invalidated"])?;
     assert!(
         invalidated
@@ -761,6 +776,12 @@ fn orient_investigate_plan_commit_verify_learn_handoff_rehearsal() -> TestResult
         invalidated
             .iter()
             .any(|line| line.contains("assumption:anchor-current")),
+        "{invalidated:#?}"
+    );
+    assert!(
+        invalidated
+            .iter()
+            .any(|line| line.starts_with(&format!("investigation {CASE} invalidated:"))),
         "{invalidated:#?}"
     );
     // Resume changed the exact situation basis. The old plan must refuse before

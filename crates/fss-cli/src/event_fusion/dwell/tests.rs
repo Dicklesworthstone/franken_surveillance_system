@@ -5,6 +5,8 @@ use super::*;
 use fss_fusion::{Decision, Reason};
 use fss_reference::ingest::detector_cascade::{CascadeDetection, SelectionReason};
 
+mod native;
+
 type Test<T = ()> = std::result::Result<T, Box<dyn std::error::Error>>;
 
 fn pin(text: &str) -> ContentDigest {

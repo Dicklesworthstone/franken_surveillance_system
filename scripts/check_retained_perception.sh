@@ -30,11 +30,14 @@ check retained-localization cargo "+$channel" test --locked --offline --no-fail-
     -p fss-reference --test recorded_twin_localization_contract
 check incremental-dwell cargo "+$channel" test --locked --offline --no-fail-fast \
     -p fss-reference --lib ingest::long_dwell::tests
+check event-fusion cargo "+$channel" test --locked --offline --no-fail-fast \
+    -p fss-cli --lib event_fusion::
 check operator-unit cargo "+$channel" test --locked --offline --no-fail-fast \
-    -p fss-cli --bin fss-file --bin fss-event
+    -p fss-cli --bin fss-file --bin fss-event --bin fss-fusion-profile
 # Integration targets require Cargo's normal executable builds. These suites also invoke
 # fss and fss-replay-dwell; limiting unit-test binaries does not suppress those executable builds.
 check operator-integration cargo "+$channel" test --locked --offline --no-fail-fast \
     -p fss-cli --test retained_localization_cli --test watch_stream_dwell_cli \
-    --test agent_rehearsal_contract
+    --test agent_rehearsal_contract --test watch_stream_detector_cli \
+    --test event_fusion_cli --test fusion_profile_cli
 exit "$status"

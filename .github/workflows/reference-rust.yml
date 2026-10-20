@@ -226,3 +226,9 @@ jobs:
           crates/fss-reference/src/ingest/long_event_replay/tests/dwell.rs
           crates/fss-cli/tests/long_event_replay_cli.rs
           crates/fss-cli/tests/long_event_replay_cli/dwell.rs
+          crates/fss-cli/src/event_fusion/dwell/tests.rs
+          crates/fss-cli/src/event_fusion/dwell/tests/native.rs
+          crates/fss-cli/src/event_fusion/render.rs
+          crates/fss-cli/tests/event_fusion_cli.rs
+          crates/fss-cli/tests/watch_stream_detector_cli/fusion.rs
+          crates/fss-cli/tests/watch_stream_detector_cli/fusion/dwell.rs
