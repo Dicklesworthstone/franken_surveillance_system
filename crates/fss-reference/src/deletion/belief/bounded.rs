@@ -2,11 +2,12 @@
 //! Request-owned admission for the existing canonical deletion proof reader.
 
 use std::cell::Cell;
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 
 use fss_core::ContentDigest;
 use fss_ledger::DurableReferenceLedger;
-use fss_publication::LocalRootPublisher;
+use fss_publication::{LocalRootPublisher, SlotName};
+use fss_publication::custody_audit::MAX_AUDIT_ROOTS;
 use fss_publication::custody_audit::belief_snapshot::durable::{
     DurableBeliefDeletionAuthority, DurableBeliefError,
 };
@@ -190,27 +191,24 @@ impl<'a, C: Fn() -> bool + ?Sized> BoundedCommittedDeletionBeliefAuthority<'a, C
         }
         Ok(())
     }
-}
 
-struct ProofFailure(DurableBeliefError);
-impl From<DeletionError> for ProofFailure {
-    fn from(_: DeletionError) -> Self {
-        Self(DurableBeliefError::DeletionAuthorityInvalid)
-    }
-}
-
-impl<C: Fn() -> bool + ?Sized> DurableBeliefDeletionAuthority
-    for BoundedCommittedDeletionBeliefAuthority<'_, C>
-{
-    fn verified_denials(
+    fn verify(
         &self,
         ledger: &DurableReferenceLedger,
         publisher: &LocalRootPublisher,
+        slots: &[SlotName],
     ) -> Result<BTreeMap<ContentDigest, ContentDigest>, DurableBeliefError> {
         if self.attempted.replace(true) {
             return Err(DurableBeliefError::Limit("deletion admission attempts"));
         }
         self.checkpoint()?;
+        if slots.len() > MAX_AUDIT_ROOTS {
+            return Err(DurableBeliefError::Limit("deletion selected slots"));
+        }
+        if !slots.windows(2).all(|pair| pair[0] < pair[1]) {
+            return Err(DurableBeliefError::Selection);
+        }
+        let selected: BTreeSet<&str> = slots.iter().map(SlotName::as_str).collect();
         // Complete admission precedes every metadata read, including for a standalone trait call.
         for batch in ledger.batches() {
             self.checkpoint()?;
@@ -235,8 +233,6 @@ impl<C: Fn() -> bool + ?Sized> DurableBeliefDeletionAuthority
                 }
             }
         }
-        // Reuse the sole canonical transition proof, without materializing the auxiliary import
-        // and unit indexes needed by other deletion readers. No second parse or proof shortcut.
         let entries = proof::read_controlled(
             ledger.batches(),
             |digest| self.read_record(publisher, digest).map_err(ProofFailure),
@@ -246,6 +242,15 @@ impl<C: Fn() -> bool + ?Sized> DurableBeliefDeletionAuthority
         .map_err(|failure| failure.0)?;
         let mut denied = BTreeMap::new();
         for entry in entries {
+            // Revocation is a SLOT decision, not a property of the shared content digest.
+            // A durable header suffices even before its retraction deltas have been appended.
+            // Do not globally deny the root: another authorized slot may legitimately retain it.
+            for retraction in &entry.plan.retractions {
+                self.checkpoint()?;
+                if selected.contains(retraction.slot.as_str()) {
+                    return Err(DurableBeliefError::Selection);
+                }
+            }
             for object in &entry.plan.deletable {
                 self.checkpoint()?;
                 if let Some(previous) = denied.get(&object.digest) {
@@ -262,5 +267,33 @@ impl<C: Fn() -> bool + ?Sized> DurableBeliefDeletionAuthority
         }
         self.checkpoint()?;
         Ok(denied)
+    }
+}
+
+struct ProofFailure(DurableBeliefError);
+impl From<DeletionError> for ProofFailure {
+    fn from(_: DeletionError) -> Self {
+        Self(DurableBeliefError::DeletionAuthorityInvalid)
+    }
+}
+
+impl<C: Fn() -> bool + ?Sized> DurableBeliefDeletionAuthority
+    for BoundedCommittedDeletionBeliefAuthority<'_, C>
+{
+    fn verified_denials(
+        &self,
+        ledger: &DurableReferenceLedger,
+        publisher: &LocalRootPublisher,
+    ) -> Result<BTreeMap<ContentDigest, ContentDigest>, DurableBeliefError> {
+        self.verify(ledger, publisher, &[])
+    }
+
+    fn verified_denials_for_slots(
+        &self,
+        ledger: &DurableReferenceLedger,
+        publisher: &LocalRootPublisher,
+        slots: &[SlotName],
+    ) -> Result<BTreeMap<ContentDigest, ContentDigest>, DurableBeliefError> {
+        self.verify(ledger, publisher, slots)
     }
 }

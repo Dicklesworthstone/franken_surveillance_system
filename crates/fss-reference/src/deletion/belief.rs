@@ -16,7 +16,7 @@ use fss_core::ContentDigest;
 use fss_core::belief_verification::RegisteredBeliefDeriver;
 use fss_ledger::DurableReferenceLedger;
 use fss_object::SpoolIo;
-use fss_publication::LocalRootPublisher;
+use fss_publication::{LocalRootPublisher, SlotName};
 use fss_publication::custody_audit::belief_snapshot::durable::{
     DurableBeliefDeletionAuthority, DurableBeliefError, DurableBeliefRequest,
     VerifiedDurableBelief, verify_durable_belief_with_deletion_authority,
@@ -40,16 +40,28 @@ impl DurableBeliefDeletionAuthority for CommittedDeletionBeliefAuthority {
         BoundedCommittedDeletionBeliefAuthority::new(DeletionBeliefLimits::default(), &|| false)
             .verified_denials(ledger, publisher)
     }
+
+    fn verified_denials_for_slots(
+        &self,
+        ledger: &DurableReferenceLedger,
+        publisher: &LocalRootPublisher,
+        slots: &[SlotName],
+    ) -> Result<BTreeMap<ContentDigest, ContentDigest>, DurableBeliefError> {
+        BoundedCommittedDeletionBeliefAuthority::new(DeletionBeliefLimits::default(), &|| false)
+            .verified_denials_for_slots(ledger, publisher, slots)
+    }
 }
 
 /// Verify a saved belief against an opened reference deployment while honoring committed deletion
 /// authority, with default deletion-history limits and the request's cancellation owner.
 ///
 /// Every deleted object is added to the native deny set before selected payload custody is copied;
-/// explicit request denials only narrow it. Unrelated intact slots may remain verifiable after
-/// another closure was deleted. This wrapper neither authenticates callers nor applies privacy
-/// policy on their behalf. Each call is a fresh admission. To retain deletion work across refusals,
-/// explicitly construct a bounded authority and use the publication-layer entry point with it.
+/// explicit request denials only narrow it. Committed slot retractions are checked independently
+/// of object deletion, so shared retained bytes cannot revive a revoked slot. Unrelated intact
+/// slots may remain verifiable after another closure was deleted. This wrapper neither
+/// authenticates callers nor applies privacy policy on their behalf. Each call is a fresh admission.
+/// To retain deletion work across refusals, explicitly construct a bounded authority and use the
+/// publication-layer entry point with it.
 pub fn verify_durable_belief_with_committed_deletions<'a, C: Fn() -> bool + Sync>(
     encoded: &[u8],
     deployment: &'a ReferenceDeployment,

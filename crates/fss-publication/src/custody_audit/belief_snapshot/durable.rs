@@ -89,12 +89,28 @@ pub struct DurableBeliefRequest<'a, C: Fn() -> bool + Sync> {
 /// registered derivation engine, and is never supplied by the offered belief. It must not repair,
 /// undelete, publish, or widen access.
 pub trait DurableBeliefDeletionAuthority {
-    /// Validate the complete deletion history and return its exact deny map.
+    /// Validate the complete deletion history and return its exact object deny map.
+    /// This object-only result does not prove that a selected publication slot is still authorized.
     fn verified_denials(
         &self,
         ledger: &DurableReferenceLedger,
         publisher: &LocalRootPublisher,
     ) -> Result<BTreeMap<ContentDigest, ContentDigest>, DurableBeliefError>;
+
+    /// Validate the same history AND refuse any selected slot retracted by a committed plan,
+    /// including a header whose individual retraction deltas have not yet been appended.
+    /// Shared retained bytes cannot restore a revoked slot; unrelated authorized aliases must
+    /// not be globally denied merely because they share a root digest. Implementations admit the
+    /// proof once under the same allowance, not by silently retrying the object-only method.
+    /// Older object-only implementations fail closed until they explicitly implement this scope.
+    fn verified_denials_for_slots(
+        &self,
+        _ledger: &DurableReferenceLedger,
+        _publisher: &LocalRootPublisher,
+        _slots: &[SlotName],
+    ) -> Result<BTreeMap<ContentDigest, ContentDigest>, DurableBeliefError> {
+        Err(DurableBeliefError::DeletionAuthorityInvalid)
+    }
 }
 
 /// Logical replay reservations, distinct from native I/O and derivation-engine CPU cost.
@@ -343,9 +359,9 @@ pub fn verify_durable_belief<'a, C: Fn() -> bool + Sync>(
 /// Verify a saved belief while admitting a deletion-bearing deployment only through a trusted
 /// deletion owner that validates the complete committed deletion history.
 ///
-/// The deletion authority can only add denials. Its map is merged with the explicit request deny
-/// set, validated, and passed to native custody before any selected payload is copied. The ordinary
-/// `verify_durable_belief` remains fail-closed for every deletion marker.
+/// The owner checks selected slot retractions as well as object denials. Its map is merged with
+/// the explicit request deny set and passed to native custody before any selected payload is copied.
+/// The ordinary `verify_durable_belief` remains fail-closed for every deletion marker.
 pub fn verify_durable_belief_with_deletion_authority<'a, C: Fn() -> bool + Sync>(
     encoded: &[u8],
     ledger: &'a DurableReferenceLedger,
@@ -502,7 +518,7 @@ fn verify_durable_belief_inner<'a, C: Fn() -> bool + Sync>(
     if deletion_history {
         let authority = deletion_authority.ok_or(DurableBeliefError::DeletionAdapterRequired)?;
         checkpoint(request.cancelled)?;
-        let verified = authority.verified_denials(ledger, publisher)?;
+        let verified = authority.verified_denials_for_slots(ledger, publisher, request.slots)?;
         checkpoint(request.cancelled)?;
         if verified.len() > MAX_AUDIT_OBJECTS
             || denied

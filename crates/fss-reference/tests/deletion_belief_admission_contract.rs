@@ -313,8 +313,9 @@ fn assert_pending_denial(h: &Harness) -> TestResult {
     assert!(denials.contains_key(&h.victim_root));
     assert_eq!(owner.usage().record_reads, 1);
     assert!(!DeletionIndex::read(&h.deployment)?.plan(h.plan.digest()?).ok_or("no header")?.is_complete());
-    // The victim slot still has its original generation and all its bytes. Only committed
-    // deletion authority can exclude it at this cut, before a root retraction or unlink.
+    // The victim slot still has its original generation and all its bytes. The committed
+    // plan now refuses its slot selection BEFORE native capture, not only when the capture
+    // eventually encounters a denied root. This also covers roots retained under another slot.
     let victim = offered(h.deployment.current_anchor(), h.victim_root)?;
     let engine = ByteEngine::default();
     let denied = BTreeMap::new();
@@ -322,7 +323,7 @@ fn assert_pending_denial(h: &Harness) -> TestResult {
         &victim.canonical_bytes(), &h.deployment, &HostSpoolIo, &engine,
         DurableBeliefRequest { slots: &[h.victim_slot.clone()], denied: &denied,
             limits: DurableBeliefLimits::default(), cancelled: &|| false },
-    ), Err(DurableBeliefError::Capture(_))));
+    ), Err(DurableBeliefError::Selection)));
     assert_eq!(engine.calls.get(), 0);
     let survivor = offered(h.deployment.current_anchor(), ContentDigest::sha256(&[7]))?;
     let verified = verify_durable_belief_with_committed_deletions(
@@ -351,4 +352,57 @@ fn cold_reopen_preserves_header_denials_without_finishing_or_repairing_deletion(
     let deployment = open(&root, limits)?;
     let h = Harness { deployment, root, limits, plan, victim_slot, victim_root, survivor_slot };
     assert_pending_denial(&h)
+}
+
+#[test]
+fn selected_slot_proof_is_one_attempt_and_is_not_an_object_map_shortcut() -> TestResult {
+    let h = setup("slot-admission", true)?;
+    assert!(h.plan.retractions.iter().any(|r| r.slot == h.victim_slot.as_str()));
+    let owner = BoundedCommittedDeletionBeliefAuthority::new(DeletionBeliefLimits::default(), &|| false);
+    assert!(matches!(owner.verified_denials_for_slots(
+        h.deployment.ledger(), h.deployment.publisher(), &[h.victim_slot.clone()]),
+        Err(DurableBeliefError::Selection)));
+    let used = owner.usage();
+    assert_eq!(used.record_reads, 1);
+    assert!(matches!(owner.verified_denials(h.deployment.ledger(), h.deployment.publisher()),
+        Err(DurableBeliefError::Limit("deletion admission attempts"))));
+    assert_eq!(owner.usage(), used);
+    let owner = BoundedCommittedDeletionBeliefAuthority::new(DeletionBeliefLimits::default(), &|| false);
+    assert_eq!(owner.verified_denials_for_slots(
+        h.deployment.ledger(), h.deployment.publisher(), &[h.survivor_slot.clone()])?, expected(&h)?);
+    Ok(())
+}
+
+#[test]
+fn legacy_object_only_authority_cannot_claim_unchecked_slot_authority() -> TestResult {
+    struct ObjectOnly;
+    impl DurableBeliefDeletionAuthority for ObjectOnly {
+        fn verified_denials(&self, _: &fss_ledger::DurableReferenceLedger, _: &fss_publication::LocalRootPublisher)
+            -> Result<BTreeMap<ContentDigest, ContentDigest>, DurableBeliefError> { Ok(BTreeMap::new()) }
+    }
+    let h = setup("object-only", true)?;
+    assert!(matches!(ObjectOnly.verified_denials_for_slots(
+        h.deployment.ledger(), h.deployment.publisher(), &[h.victim_slot.clone()]),
+        Err(DurableBeliefError::DeletionAuthorityInvalid)));
+    let engine = ByteEngine::default();
+    let belief = offered(h.deployment.current_anchor(), ContentDigest::sha256(&[7]))?;
+    let denied = BTreeMap::new();
+    assert!(matches!(fss_publication::custody_audit::belief_snapshot::durable::verify_durable_belief_with_deletion_authority(
+        &belief.canonical_bytes(), h.deployment.ledger(), h.deployment.publisher(), &HostSpoolIo,
+        &engine, &ObjectOnly, DurableBeliefRequest { slots: &[h.survivor_slot.clone()], denied: &denied,
+            limits: DurableBeliefLimits::default(), cancelled: &|| false }),
+        Err(DurableBeliefError::DeletionAuthorityInvalid)));
+    assert_eq!(engine.calls.get(), 0);
+    Ok(())
+}
+
+#[test]
+fn duplicate_selected_slots_are_refused_before_deletion_metadata_reads() -> TestResult {
+    let h = setup("duplicate-slot", true)?;
+    let owner = BoundedCommittedDeletionBeliefAuthority::new(DeletionBeliefLimits::default(), &|| false);
+    assert!(matches!(owner.verified_denials_for_slots(
+        h.deployment.ledger(), h.deployment.publisher(), &[h.survivor_slot.clone(), h.survivor_slot.clone()]),
+        Err(DurableBeliefError::Selection)));
+    assert_eq!(owner.usage(), DeletionBeliefUsage::default());
+    Ok(())
 }
