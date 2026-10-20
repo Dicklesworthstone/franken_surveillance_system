@@ -8,6 +8,7 @@
 mod multipart_support;
 
 use std::cell::{Cell, RefCell};
+use std::collections::BTreeSet;
 use std::fs;
 use std::io;
 use std::panic::{AssertUnwindSafe, catch_unwind};
@@ -18,7 +19,7 @@ use std::sync::atomic::{AtomicU64, Ordering};
 
 use fss_core::{
     BudgetVector, ContentDigest, ObligationState, OperationId, RegionId, RegionKind, RegionState,
-    TaskId, TimestampNs,
+    RuntimeGrant, TaskId, TimestampNs,
 };
 use fss_object::multipart::{
     MultipartError, MultipartPhase, MultipartRecovery, MultipartSession, MultipartTransport,
@@ -78,6 +79,7 @@ struct DispatchControl {
     crash_after: Cell<Option<TransportOperation>>,
     fail_journal_after: Cell<Option<TransportOperation>>,
     fail_next_append: Cell<bool>,
+    fail_after_append: Cell<bool>,
 }
 
 /// Wrap the existing provider oracle; its independent store survives every cold reopen.
@@ -375,7 +377,13 @@ impl UploadJournal for GuardedJournal {
                 "injected durable checkpoint failure".into(),
             ));
         }
-        self.inner.append(expected, checkpoint)
+        let pin = self.inner.append(expected, checkpoint)?;
+        if self.control.fail_after_append.replace(false) {
+            return Err(MultipartError::Persistence(
+                "checkpoint committed but append acknowledgement was lost".into(),
+            ));
+        }
+        Ok(pin)
     }
 }
 
@@ -1353,5 +1361,403 @@ fn narrowed_deadline_survives_a_third_process_and_expired_cleanup_remains_owned(
     assert_eq!(call_count(&store, TransportOperation::Abort), 1);
     assert_eq!(tree.get(upload.region())?.state, RegionState::Closed);
     emit("third-process-retains-narrowed-deadline-and-cleanup", 6);
+    Ok(())
+}
+
+#[test]
+fn durable_stop_preserves_pending_prepared_uploading_and_uncertain_owners_across_restart() -> Test {
+    for phase in 0..3 {
+        let directory = Directory::new()?;
+        let store = MemoryTransport::default().store;
+        let control = Rc::new(DispatchControl::default());
+        let (minimum, expected, stopped_phase, spent) = {
+            let mut journal = create(&directory)?;
+            let (_root_owner, mut parent, mut tree) = property()?;
+            let before = parent.budget().remaining();
+            let mut transport = CrashTransport::new(store.clone(), control.clone());
+            let mut upload = stage(&mut parent, &mut tree, &mut transport)?;
+            upload.attach_journal(&tree, TimestampNs(1), &mut journal)?;
+            let expected = upload.intent().clone();
+            if phase != 0 {
+                upload.start(&tree, TimestampNs(2))?;
+                if phase == 2 {
+                    store.borrow_mut().fault_once = Some(TransportOperation::UploadPart);
+                    assert!(
+                        upload
+                            .upload_part(&tree, TimestampNs(3), 0, b"abc")
+                            .is_err()
+                    );
+                } else {
+                    upload.upload_part(&tree, TimestampNs(3), 0, b"abc")?;
+                }
+            }
+            let stopped_phase = upload.phase();
+            let spent = upload.cumulative_consumed()?;
+            let calls = store.borrow().calls.clone();
+            upload.request_cancellation(&mut tree, TimestampNs(4))?;
+            let minimum = upload.journal_pin().ok_or("durable stop pin missing")?;
+            assert_eq!(upload.phase(), stopped_phase);
+            assert_eq!(upload.cumulative_consumed()?, spent);
+            let node = tree.get(upload.region())?;
+            assert!(node.authority.cancellation_reason.is_some());
+            assert_eq!(
+                node.obligations[upload.obligation()].state,
+                ObligationState::Pending
+            );
+            assert!(node.quiescence_proof.is_none());
+            assert!(upload.finish(&mut tree, TimestampNs(4)).is_err());
+            assert!(
+                upload
+                    .upload_chunks(
+                        &tree,
+                        || TimestampNs(4),
+                        |_| panic!("stopped owner read a payload source"),
+                    )
+                    .is_err()
+            );
+            assert_eq!(store.borrow().calls, calls);
+            assert_eq!(upload.cumulative_consumed()?, spent);
+            drop(upload);
+            assert_eq!(
+                before.bytes - parent.budget().remaining().bytes,
+                allowance().bytes
+            );
+            (minimum, expected, stopped_phase, spent)
+        };
+
+        let mut journal = reopen(&directory, minimum)?;
+        let (_root_owner, mut parent, mut tree) = property()?;
+        let mut transport = CrashTransport::new(store.clone(), control);
+        let mut upload = recover(
+            &mut parent,
+            &mut tree,
+            &mut transport,
+            &mut journal,
+            minimum,
+            &expected,
+            TimestampNs(5),
+        )?;
+        assert_eq!(upload.phase(), stopped_phase);
+        assert_eq!(upload.cumulative_consumed()?, spent);
+        assert!(
+            tree.get(upload.region())?
+                .authority
+                .cancellation_reason
+                .is_some()
+        );
+        let calls = store.borrow().calls.clone();
+        assert!(upload.finish(&mut tree, TimestampNs(5)).is_err());
+        assert!(
+            upload
+                .upload_chunks(
+                    &tree,
+                    || TimestampNs(5),
+                    |_| panic!("recovered stopped owner read a payload source"),
+                )
+                .is_err()
+        );
+        assert_eq!(store.borrow().calls, calls);
+        if phase == 2 {
+            assert_eq!(
+                upload.reconcile(&mut tree, TimestampNs(6))?,
+                MultipartPhase::Uploading,
+            );
+        }
+        upload.cancel(&mut tree, TimestampNs(7))?;
+        assert_eq!(tree.get(upload.region())?.state, RegionState::Closed);
+        assert_eq!(call_count(&store, TransportOperation::Complete), 0);
+        assert_eq!(
+            call_count(&store, TransportOperation::Abort),
+            usize::from(phase != 0)
+        );
+    }
+    emit("durable-stop-preserves-owned-cleanup-through-restart", 3);
+    Ok(())
+}
+
+#[test]
+fn stop_append_refusal_and_lost_ack_recover_only_the_record_that_committed() -> Test {
+    for committed in [false, true] {
+        let directory = Directory::new()?;
+        let store = MemoryTransport::default().store;
+        let control = Rc::new(DispatchControl::default());
+        let (minimum, expected) = {
+            let mut journal = GuardedJournal {
+                inner: create(&directory)?,
+                control: control.clone(),
+            };
+            let (_root_owner, mut parent, mut tree) = property()?;
+            let before = parent.budget().remaining();
+            let mut transport = CrashTransport::new(store.clone(), control.clone());
+            let mut upload = stage(&mut parent, &mut tree, &mut transport)?;
+            let minimum = upload.attach_journal(&tree, TimestampNs(1), &mut journal)?;
+            let expected = upload.intent().clone();
+            upload.upload_chunks(&tree, || TimestampNs(2), |_| b"abc".to_vec())?;
+            let calls = store.borrow().calls.clone();
+            let spent = upload.cumulative_consumed()?;
+            control.fail_next_append.set(!committed);
+            control.fail_after_append.set(committed);
+            assert!(
+                upload
+                    .request_cancellation(&mut tree, TimestampNs(3))
+                    .is_err()
+            );
+            assert!(upload.durability_failed());
+            assert!(!control.fail_next_append.get());
+            assert!(!control.fail_after_append.get());
+            let node = tree.get(upload.region())?;
+            assert!(node.authority.cancellation_reason.is_none());
+            assert_eq!(
+                node.obligations[upload.obligation()].state,
+                ObligationState::Pending
+            );
+            assert!(node.quiescence_proof.is_none());
+            assert!(
+                upload
+                    .request_cancellation(&mut tree, TimestampNs(4))
+                    .is_err()
+            );
+            assert!(upload.finish(&mut tree, TimestampNs(4)).is_err());
+            assert!(upload.cancel(&mut tree, TimestampNs(4)).is_err());
+            assert!(
+                upload
+                    .upload_chunks(
+                        &tree,
+                        || TimestampNs(4),
+                        |_| panic!("failed stop persistence released payload access"),
+                    )
+                    .is_err()
+            );
+            assert_eq!(upload.cumulative_consumed()?, spent);
+            assert_eq!(store.borrow().calls, calls);
+            drop(upload);
+            assert_eq!(
+                before.bytes - parent.budget().remaining().bytes,
+                allowance().bytes
+            );
+            (minimum, expected)
+        };
+
+        let mut journal = reopen(&directory, minimum)?;
+        let (_root_owner, mut parent, mut tree) = property()?;
+        let mut transport = CrashTransport::new(store.clone(), control);
+        let mut upload = recover(
+            &mut parent,
+            &mut tree,
+            &mut transport,
+            &mut journal,
+            minimum,
+            &expected,
+            TimestampNs(5),
+        )?;
+        assert_eq!(
+            tree.get(upload.region())?
+                .authority
+                .cancellation_reason
+                .is_some(),
+            committed,
+        );
+        let calls = store.borrow().calls.clone();
+        let recovered_pin = upload.journal_pin();
+        upload.request_cancellation(&mut tree, TimestampNs(5))?;
+        if committed {
+            assert_eq!(upload.journal_pin(), recovered_pin);
+        }
+        assert!(upload.finish(&mut tree, TimestampNs(6)).is_err());
+        assert_eq!(store.borrow().calls, calls);
+        upload.cancel(&mut tree, TimestampNs(7))?;
+        assert_eq!(call_count(&store, TransportOperation::Abort), 1);
+        assert_eq!(call_count(&store, TransportOperation::Complete), 0);
+        assert_eq!(tree.get(upload.region())?.state, RegionState::Closed);
+    }
+    emit("stop-persistence-before-and-after-commit-faults", 2);
+    Ok(())
+}
+
+#[test]
+fn stop_retry_is_local_but_wrong_owner_and_backdated_requests_are_refused() -> Test {
+    let directory = Directory::new()?;
+    let store = MemoryTransport::default().store;
+    let control = Rc::new(DispatchControl::default());
+    let mut journal = create(&directory)?;
+    let (_root_owner, mut parent, mut tree) = property()?;
+    let (_other_root, _other_parent, mut wrong_tree) = property()?;
+    let mut transport = CrashTransport::new(store.clone(), control);
+    let mut upload = stage(&mut parent, &mut tree, &mut transport)?;
+    upload.attach_journal(&tree, TimestampNs(1), &mut journal)?;
+    let initial = upload.journal_pin();
+    assert!(
+        upload
+            .request_cancellation(&mut wrong_tree, TimestampNs(2))
+            .is_err()
+    );
+    assert!(
+        upload
+            .request_cancellation(&mut tree, TimestampNs(0))
+            .is_err()
+    );
+    assert_eq!(upload.journal_pin(), initial);
+    assert!(
+        tree.get(upload.region())?
+            .authority
+            .cancellation_reason
+            .is_none()
+    );
+
+    upload.request_cancellation(&mut tree, TimestampNs(2))?;
+    let accepted = upload.journal_pin();
+    assert_ne!(accepted, initial);
+    upload.request_cancellation(&mut tree, TimestampNs(2))?;
+    upload.request_cancellation(&mut tree, TimestampNs(3))?;
+    assert_eq!(upload.journal_pin(), accepted);
+    assert!(
+        upload
+            .request_cancellation(&mut wrong_tree, TimestampNs(3))
+            .is_err()
+    );
+    assert!(
+        upload
+            .request_cancellation(&mut tree, TimestampNs(1))
+            .is_err()
+    );
+    let receipt = upload.cancel(&mut tree, TimestampNs(4))?;
+    let closed = upload.journal_pin();
+    upload.request_cancellation(&mut tree, TimestampNs(5))?;
+    assert_eq!(upload.journal_pin(), closed);
+    assert!(
+        upload
+            .request_cancellation(&mut tree, TimestampNs(3))
+            .is_err()
+    );
+    assert_eq!(upload.cancel(&mut tree, TimestampNs(6))?, receipt);
+    assert!(store.borrow().calls.is_empty());
+    assert_eq!(upload.cumulative_consumed()?, BudgetVector::ZERO);
+    emit("stop-retry-clock-owner-and-closed-idempotence", 8);
+    Ok(())
+}
+
+#[test]
+fn stop_does_not_erase_a_completed_provider_outcome_or_replay_its_publication() -> Test {
+    for lost_ack in [false, true] {
+        let directory = Directory::new()?;
+        let store = MemoryTransport::default().store;
+        let control = Rc::new(DispatchControl::default());
+        let mut journal = create(&directory)?;
+        let (_root_owner, mut parent, mut tree) = property()?;
+        let mut transport = CrashTransport::new(store.clone(), control);
+        let mut upload = stage(&mut parent, &mut tree, &mut transport)?;
+        upload.attach_journal(&tree, TimestampNs(1), &mut journal)?;
+        upload.upload_chunks(&tree, || TimestampNs(2), |_| b"abc".to_vec())?;
+        let receipt = if lost_ack {
+            store.borrow_mut().fault_once = Some(TransportOperation::Complete);
+            assert!(upload.finish(&mut tree, TimestampNs(3)).is_err());
+            upload.request_cancellation(&mut tree, TimestampNs(4))?;
+            assert_eq!(
+                upload.reconcile(&mut tree, TimestampNs(5))?,
+                MultipartPhase::Completed,
+            );
+            upload.finish(&mut tree, TimestampNs(6))?
+        } else {
+            let receipt = upload.finish(&mut tree, TimestampNs(3))?;
+            let closed = upload.journal_pin();
+            assert!(
+                upload
+                    .request_cancellation(&mut tree, TimestampNs(4))
+                    .is_err()
+            );
+            assert_eq!(upload.journal_pin(), closed);
+            receipt
+        };
+        let calls = store.borrow().calls.clone();
+        let spent = upload.cumulative_consumed()?;
+        assert_eq!(upload.finish(&mut tree, TimestampNs(7))?, receipt);
+        if lost_ack {
+            let pin = upload.journal_pin();
+            upload.request_cancellation(&mut tree, TimestampNs(8))?;
+            assert_eq!(upload.journal_pin(), pin);
+        }
+        let node = tree.get(upload.region())?;
+        assert_eq!(node.state, RegionState::Closed);
+        assert_eq!(
+            node.obligations[upload.obligation()].state,
+            ObligationState::Verified
+        );
+        assert_eq!(
+            node.obligations[upload.obligation()].proof_digest,
+            Some(receipt.digest())
+        );
+        assert_eq!(store.borrow().calls, calls);
+        assert_eq!(upload.cumulative_consumed()?, spent);
+        assert_eq!(call_count(&store, TransportOperation::Complete), 1);
+        assert_eq!(call_count(&store, TransportOperation::Abort), 0);
+    }
+    emit("stop-preserves-known-completion-and-local-receipts", 2);
+    Ok(())
+}
+
+#[test]
+fn durable_publish_revocation_survives_cold_recovery_and_an_acknowledgement_loss() -> Test {
+    for lost_ack in [false, true] {
+        let directory = Directory::new()?;
+        let store = MemoryTransport::default().store;
+        let control = Rc::new(DispatchControl::default());
+        let (minimum, expected) = {
+            let mut journal = GuardedJournal {
+                inner: create(&directory)?,
+                control: control.clone(),
+            };
+            let (_root_owner, mut parent, mut tree) = property()?;
+            let mut transport = CrashTransport::new(store.clone(), control.clone());
+            let mut upload = stage(&mut parent, &mut tree, &mut transport)?;
+            let minimum = upload.attach_journal(&tree, TimestampNs(1), &mut journal)?;
+            let expected = upload.intent().clone();
+            upload.upload_chunks(&tree, || TimestampNs(2), |_| b"abc".to_vec())?;
+            let restricted = upload.grants().clone().with_scope(
+                RuntimeGrant::ObjectPublish,
+                BTreeSet::from(["archive:somewhere-else".into()]),
+            );
+            control.fail_after_append.set(lost_ack);
+            let result = upload.narrow_grants_durable(&tree, TimestampNs(3), restricted);
+            assert_eq!(result.is_err(), lost_ack);
+            assert_eq!(upload.durability_failed(), lost_ack);
+            let calls = store.borrow().calls.clone();
+            assert!(upload.finish(&mut tree, TimestampNs(4)).is_err());
+            assert_eq!(store.borrow().calls, calls);
+            (minimum, expected)
+        };
+
+        let mut journal = reopen(&directory, minimum)?;
+        let (_root_owner, mut parent, mut tree) = property()?;
+        let mut transport = CrashTransport::new(store.clone(), control);
+        let mut upload = recover(
+            &mut parent,
+            &mut tree,
+            &mut transport,
+            &mut journal,
+            minimum,
+            &expected,
+            TimestampNs(5),
+        )?;
+        assert!(
+            upload
+                .grants()
+                .require_grant_for(RuntimeGrant::ObjectPublish, RESOURCE)
+                .is_err()
+        );
+        upload
+            .grants()
+            .require_grant_for(RuntimeGrant::ObjectStage, RESOURCE)?;
+        upload
+            .grants()
+            .require_grant_for(RuntimeGrant::AdapterNet, RESOURCE)?;
+        let calls = store.borrow().calls.clone();
+        assert!(upload.finish(&mut tree, TimestampNs(6)).is_err());
+        assert_eq!(store.borrow().calls, calls);
+        upload.cancel(&mut tree, TimestampNs(7))?;
+        assert_eq!(call_count(&store, TransportOperation::Complete), 0);
+        assert_eq!(call_count(&store, TransportOperation::Abort), 1);
+        assert_eq!(tree.get(upload.region())?.state, RegionState::Closed);
+    }
+    emit("cold-recovery-retains-publication-revocation", 2);
     Ok(())
 }
