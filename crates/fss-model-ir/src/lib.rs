@@ -22,6 +22,8 @@ pub mod node;
 pub mod onnx;
 pub mod op;
 pub mod port;
+/// Model invocation quotas and memory-pressure admission (FSS-073).
+pub mod quotas;
 pub mod shape_inference;
 pub mod validator;
 
