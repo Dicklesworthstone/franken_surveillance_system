@@ -19,6 +19,10 @@ on:
       - 'crates/fss-reference/tests/activity_*'
       - 'crates/fss-reference/src/deletion/**'
       - 'crates/fss-reference/tests/deletion_*'
+      - 'crates/fss-reference/src/hydration*'
+      - 'crates/fss-reference/src/hydration/**'
+      - 'crates/fss-reference/tests/local_source_hydration_contract.rs'
+      - 'crates/fss-reference/tests/deployment_source_hydration_contract.rs'
       - 'scripts/test_belief_provenance.sh'
       - '.github/workflows/belief-provenance.yml'
   workflow_dispatch:

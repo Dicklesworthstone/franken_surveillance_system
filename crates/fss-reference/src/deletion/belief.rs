@@ -9,6 +9,8 @@ mod bounded;
 pub use bounded::{
     BoundedCommittedDeletionBeliefAuthority, DeletionBeliefLimits, DeletionBeliefUsage,
 };
+/// Deployment-backed H3 disclosure honoring committed deletion and exact slot authority.
+pub mod hydration;
 
 use std::collections::BTreeMap;
 

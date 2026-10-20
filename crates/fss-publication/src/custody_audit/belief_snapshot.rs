@@ -93,6 +93,21 @@ impl CapturedBeliefCustody {
     pub const fn retained_bytes(&self) -> u64 {
         self.retained_bytes
     }
+
+    /// Checks an independently selected slot's exact native record identity without enumerating
+    /// the catalogue. An uncaptured root cannot match. This predicate does not authorize a slot:
+    /// its caller must independently establish current ledger, privacy and deletion authority.
+    #[must_use]
+    pub fn matches_publication_record(
+        &self,
+        slot: &SlotName,
+        root: ContentDigest,
+        child_count: u64,
+        record_digest: ContentDigest,
+    ) -> bool {
+        self.payloads.contains_key(&root)
+            && self.records.get(slot) == Some(&(root, child_count, record_digest))
+    }
 }
 impl RetainedBeliefEvidence for CapturedBeliefCustody {
     fn read_belief_evidence(

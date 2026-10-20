@@ -26,6 +26,9 @@ pub enum SourceHydrationError {
     Object(ObjectError),
     /// The local publication or its on-disk source custody failed verification.
     Publication(Box<fss_publication::LocalPublicationError>),
+    /// Current durable authority, deletion admission, cancellation or native capture refused
+    /// a deployment-backed disclosure. Never treated as physical absence.
+    Deployment(Box<fss_publication::custody_audit::belief_snapshot::durable::DurableBeliefError>),
     /// A fresh disk inspection disagrees with the live lock-owning publication authority.
     SnapshotChanged,
     /// The source is not reachable from the explicitly authorized publication root.
@@ -46,6 +49,7 @@ impl SourceHydrationError {
             Self::Hydration(error) => error.code(),
             Self::Object(_) => "source_hydration_custody_failed",
             Self::Publication(_) => "source_hydration_local_publication_failed",
+            Self::Deployment(_) => "source_hydration_deployment_authority_failed",
             Self::SnapshotChanged => "source_hydration_snapshot_changed",
             Self::NotReachable => "source_hydration_not_reachable",
             Self::TransformedSource => "source_hydration_transform_required",
@@ -67,6 +71,7 @@ impl std::error::Error for SourceHydrationError {
             Self::Hydration(error) => Some(error),
             Self::Object(error) => Some(error),
             Self::Publication(error) => Some(error.as_ref()),
+            Self::Deployment(error) => Some(error.as_ref()),
             _ => None,
         }
     }
@@ -90,6 +95,14 @@ impl From<fss_publication::LocalPublicationError> for SourceHydrationError {
     }
 }
 
+impl From<fss_publication::custody_audit::belief_snapshot::durable::DurableBeliefError>
+    for SourceHydrationError
+{
+    fn from(error: fss_publication::custody_audit::belief_snapshot::durable::DurableBeliefError) -> Self {
+        Self::Deployment(Box::new(error))
+    }
+}
+
 /// Explicit read-only custody capability supplied by the authority-owning caller.
 ///
 /// Implementations must reverify publication, complete closure, tombstones, and exact bytes on
@@ -97,6 +110,8 @@ impl From<fss_publication::LocalPublicationError> for SourceHydrationError {
 /// allocating output and route I/O through their owning capability. No implementation may infer
 /// authority from the requested digest. The hydration service checks grants before calling this
 /// boundary and independently checks returned bytes. This trait itself authenticates no user.
+/// Deployment sources additionally require committed deletion authority: use
+/// `crate::deletion::belief::hydration::DeletionAwareSourceReader`, not a publisher alone.
 pub trait PublishedSourceReader {
     /// Opens one exact object reachable from a currently published, verified root.
     fn read_published_source(
