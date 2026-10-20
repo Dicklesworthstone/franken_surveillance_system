@@ -10,7 +10,6 @@ use fss_object::multipart::MultipartTransport;
 use fss_object::planner::ChunkPolicy;
 use fss_object::uploader::{StagedUpload, UploaderError};
 use fss_runtime::authority::AuthorityCx;
-use fss_runtime::obligation::{ObligationState, tree_report};
 
 fn emit(property: &str, cases: u64) {
     println!(
@@ -61,41 +60,47 @@ impl MultipartTransport for MemTransport {
 fn root_authority() -> (AuthorityCx, fss_core::RegionTree) {
     let spec = RootAuthoritySpec {
         trace_id: "trace:upload-family".to_string(),
-        operation_id: OperationId::parse("op:family-root")
-            .ok()
-            .map_or_else(|| unreachable!("valid"), |v| v),
+        operation_id: match OperationId::parse("op:family-root") {
+            Ok(v) => v,
+            Err(_) => unreachable!("valid"),
+        },
         principal: "principal:test".to_string(),
         capabilities: Vec::new(),
         deadline: None,
         priority: 10,
-        budgets: BudgetVector::builder()
+        budgets: match BudgetVector::builder()
             .bytes(1 << 30)
             .storage_operations(10_000)
             .build()
-            .ok()
-            .map_or_else(|| unreachable!("valid"), |b| b),
+        {
+            Ok(b) => b,
+            Err(_) => unreachable!("valid"),
+        },
         privacy_scope: "privacy:test".to_string(),
         retention_scope: "retention:test".to_string(),
         anchor_universe: ContentDigest::sha256(b"upload-family-universe"),
         generation: Generation::GENESIS.get(),
     };
-    AuthorityCx::root(
+    match AuthorityCx::root(
         spec,
-        RegionId::new("region:process")
-            .ok()
-            .map_or_else(|| unreachable!("valid"), |v| v),
+        match RegionId::new("region:process") {
+            Ok(v) => v,
+            Err(_) => unreachable!("valid"),
+        },
         RegionKind::Process,
-        BudgetVector::builder()
+        match BudgetVector::builder()
             .bytes(1 << 30)
             .storage_operations(10_000)
             .build()
-            .ok()
-            .map_or_else(|| unreachable!("valid"), |b| b),
+        {
+            Ok(b) => b,
+            Err(_) => unreachable!("valid"),
+        },
         TimestampNs(1),
-    )
-    .map(|(cx, tree)| (cx, tree))
-    .ok()
-    .map_or_else(|| unreachable!("root constructs"), |pair| pair)
+    ) {
+        Ok(pair) => pair,
+        Err(_) => unreachable!("root constructs"),
+    }
 }
 
 fn root_with_property()
@@ -103,19 +108,22 @@ fn root_with_property()
     let (mut root, mut tree) = root_authority();
     let property_spec = RootAuthoritySpec {
         trace_id: "trace:upload-family".to_string(),
-        operation_id: OperationId::parse("op:family-property")
-            .ok()
-            .map_or_else(|| unreachable!("valid"), |v| v),
+        operation_id: match OperationId::parse("op:family-property") {
+            Ok(v) => v,
+            Err(_) => unreachable!("valid"),
+        },
         principal: "principal:test".to_string(),
         capabilities: Vec::new(),
         deadline: None,
         priority: 10,
-        budgets: BudgetVector::builder()
+        budgets: match BudgetVector::builder()
             .bytes(1 << 29)
             .storage_operations(5_000)
             .build()
-            .ok()
-            .map_or_else(|| unreachable!("valid"), |b| b),
+        {
+            Ok(b) => b,
+            Err(_) => unreachable!("valid"),
+        },
         privacy_scope: "privacy:test".to_string(),
         retention_scope: "retention:test".to_string(),
         anchor_universe: ContentDigest::sha256(b"upload-family-universe"),
@@ -124,16 +132,19 @@ fn root_with_property()
     let property = AuthorityCx::scope_down(
         &mut root,
         &mut tree,
-        RegionId::new("region:property")
-            .ok()
-            .map_or_else(|| unreachable!("valid"), |v| v),
+        match RegionId::new("region:property") {
+            Ok(v) => v,
+            Err(_) => unreachable!("valid"),
+        },
         RegionKind::Property,
-        BudgetVector::builder()
+        match BudgetVector::builder()
             .bytes(1 << 29)
             .storage_operations(5_000)
             .build()
-            .ok()
-            .map_or_else(|| unreachable!("valid"), |b| b),
+        {
+            Ok(b) => b,
+            Err(_) => unreachable!("valid"),
+        },
         property_spec,
         TimestampNs(1),
     )?;
@@ -143,9 +154,10 @@ fn root_with_property()
 fn family_spec(op: &str) -> RootAuthoritySpec {
     RootAuthoritySpec {
         trace_id: "trace:upload-family".to_string(),
-        operation_id: OperationId::parse(op)
-            .ok()
-            .map_or_else(|| unreachable!("valid"), |v| v),
+        operation_id: match OperationId::parse(op) {
+            Ok(v) => v,
+            Err(_) => unreachable!("valid"),
+        },
         principal: "principal:test".to_string(),
         capabilities: Vec::new(),
         deadline: None,
@@ -168,9 +180,10 @@ fn stage<'a>(
         authority,
         tree,
         transport,
-        OperationId::parse(op)
-            .ok()
-            .map_or_else(|| unreachable!("valid"), |v| v),
+        match OperationId::parse(op) {
+            Ok(v) => v,
+            Err(_) => unreachable!("valid"),
+        },
         4 * 64 * MIB, // 4 equal parts
         ChunkPolicy::default(),
         ContentDigest::sha256(b"manifest-root"),
@@ -205,9 +218,10 @@ fn p1_happy_path_obligation_resolved() -> Result<(), Box<dyn std::error::Error>>
 /// resolves Drained — never orphaned, never upgraded to Completed.
 #[test]
 fn p2_cancellation_drains() -> Result<(), Box<dyn std::error::Error>> {
-    let (mut root, mut authority, mut tree) = root_with_property()?;
+    let (root, mut authority, mut tree) = root_with_property()?;
     let mut transport = MemTransport;
     let mut upload = stage(&mut authority, &mut tree, &mut transport, "op:u2")?;
+    let _obligation = upload.obligation().clone();
     // Cancel through the ROOT chain: the shared Cx propagates to every
     // derived scope; the property region itself stays active (the upload's
     // own region owns its drain), and the between-parts check observes it
@@ -222,7 +236,6 @@ fn p2_cancellation_drains() -> Result<(), Box<dyn std::error::Error>> {
     let abort = upload.cancel(&mut tree)?;
     assert_eq!(abort.confirmed_parts, 0, "no part was in flight");
     assert!(authority.finalize_report(&tree)?.is_empty());
-    let _ = obligation;
     emit("cancellation-drains", 2);
     Ok(())
 }
