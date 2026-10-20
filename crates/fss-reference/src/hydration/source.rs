@@ -113,6 +113,22 @@ impl From<fss_publication::custody_audit::belief_snapshot::durable::DurableBelie
 /// Deployment sources additionally require committed deletion authority: use
 /// `crate::deletion::belief::hydration::DeletionAwareSourceReader`, not a publisher alone.
 pub trait PublishedSourceReader {
+    /// Admits the exact current catalog descriptor against this reader's independent scope.
+    ///
+    /// Called before every source read, including registration through a trait object. On
+    /// disclosure, request identity, grants, retention, quote and continuation are checked first.
+    /// A refusal must not be downgraded into cached evidence. Implementations must perform no
+    /// I/O, mutate no state and grant no authority here; live custody is still checked by the read.
+    /// Standalone object/publication owners have no ledger-anchor constraint by default. A
+    /// deployment-backed reader must override this hook; a typed convenience method alone is
+    /// insufficient because session and durable consumers also use this generic boundary.
+    fn validate_source_descriptor(
+        &self,
+        _descriptor: &SemanticHandle,
+    ) -> Result<(), SourceHydrationError> {
+        Ok(())
+    }
+
     /// Opens one exact object reachable from a currently published, verified root.
     fn read_published_source(
         &self,
@@ -290,6 +306,7 @@ impl ReferenceHydrationCatalog {
             .estimated_cost(HydrationLevel::H3)
             .ok_or(HydrationError::LevelUnavailable)?;
         let ceiling = quote.bytes.min(self.source_payload_ceiling());
+        reader.validate_source_descriptor(descriptor)?;
         let payload =
             reader.read_published_source(publication_root, descriptor.subject_digest, ceiling)?;
         let artifact = source_artifact(descriptor, publication_root, payload, ceiling)?;
@@ -381,6 +398,9 @@ impl ReferenceHydrationCatalog {
             }
             return Err(error.into());
         }
+        // Keep reader-specific authority checks inside the generic path. Type erasure must
+        // not let a session serve an old descriptor through a reader pinned to a newer head.
+        reader.validate_source_descriptor(&descriptor)?;
         let payload = reader.read_published_source(
             binding.publication_root,
             binding.subject_digest,

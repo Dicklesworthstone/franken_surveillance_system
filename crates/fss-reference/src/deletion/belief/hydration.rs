@@ -10,7 +10,7 @@ use std::cell::Cell;
 use fss_core::belief_verification::{BeliefEvidenceReadError, RetainedBeliefEvidence};
 use fss_core::{
     ContentDigest, HydrationError, HydrationRequest, HydrationResponse, LedgerAnchor, Plane,
-    TimestampNs,
+    SemanticHandle, TimestampNs,
 };
 use fss_object::{ObjectError, SpoolIo};
 use fss_publication::custody_audit::belief_snapshot::capture_belief_custody;
@@ -233,6 +233,16 @@ impl<'a, C: Fn() -> bool + Sync> DeletionAwareSourceReader<'a, C> {
 }
 
 impl<C: Fn() -> bool + Sync> PublishedSourceReader for DeletionAwareSourceReader<'_, C> {
+    fn validate_source_descriptor(
+        &self,
+        descriptor: &SemanticHandle,
+    ) -> Result<(), SourceHydrationError> {
+        if &descriptor.anchor != self.anchor {
+            return Err(DurableBeliefError::AuthorityChanged.into());
+        }
+        Ok(())
+    }
+
     fn read_published_source(
         &self,
         root: ContentDigest,
@@ -253,7 +263,7 @@ impl ReferenceHydrationCatalog {
         reader: &DeletionAwareSourceReader<'_, C>,
     ) -> Result<SourceObjectBinding, SourceHydrationError> {
         let descriptor = self.descriptor(handle_id, descriptor_digest)
-            .ok_or(HydrationError::UnknownHandle)?;
+            .ok_or(HydrationError::DescriptorNotFound)?;
         if &descriptor.anchor != reader.anchor {
             return Err(DurableBeliefError::AuthorityChanged.into());
         }
