@@ -25,7 +25,7 @@ fn slice(first_mb: u32) -> Vec<u8> {
     while bits.len() < 8 {
         bits.push('1');
     }
-    let byte = u8::from_str_radix(&bits[..8], 2).map_or(0xFF, |b| b);
+    let byte = u8::from_str_radix(&bits[..8], 2).unwrap_or(0xFF);
     vec![0x41, byte]
 }
 
@@ -93,8 +93,8 @@ fn p2_aud_and_param_set_boundaries() -> Result<(), Box<dyn std::error::Error>> {
 fn p3_idr_and_parameter_ids() -> Result<(), Box<dyn std::error::Error>> {
     let mut asm = AccessUnitAssembler::new(AccessUnitLimits::default());
     asm.push(&nal(7))?; // SPS id 0 prefix (ue(0)='1')
-    asm.push(&vec![0xE8, 0xC0])?; // PPS: ue(0) ue(0) -> pps 0 referencing sps 0
-    asm.push(&vec![0x65, 0xFF])?; // IDR slice (type 5), first_mb 0
+    asm.push(&[0xE8, 0xC0])?; // PPS: ue(0) ue(0) -> pps 0 referencing sps 0
+    asm.push(&[0x65, 0xFF])?; // IDR slice (type 5), first_mb 0
     let au = asm
         .push(&slice_with_pps(3))?
         .ok_or("slice after IDR splits the picture")?;
