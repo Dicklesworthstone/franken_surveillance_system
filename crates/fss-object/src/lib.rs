@@ -15,6 +15,8 @@ mod memory;
 pub mod model_license_policy;
 pub mod model_manifest;
 pub mod model_package;
+/// Focused S3-compatible multipart/conditional protocol (FSS-130).
+pub mod multipart;
 /// Archive cost/chunk planner (FSS-067).
 pub mod planner;
 pub mod provider;
