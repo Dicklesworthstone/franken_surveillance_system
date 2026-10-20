@@ -82,6 +82,21 @@ revocation; the final focused run passed all 55 tests, including 22 durable cont
 The supplementary reference workflow executes these restart contracts alongside
 the existing multipart and uploader tests.
 
+Further recovery now durably retains accepted later times, narrowed deadlines and
+revoked grants before a fresh owner can escape. File journals preflight room for
+provider acknowledgements and local terminal/follow-up records, while known
+terminal recovery can use its reserved final slot and already durable settlement
+can close without another append. New v2 records bind the original path/root/lock;
+copied, renamed or lock-replaced journals refuse. V1 history stays readable and
+requires explicit original-authority namespace adoption before writes.
+`fss-archive upload-inspect` provides a bounded, metered, read-only status projection
+from the complete verified history and an independent minimum pin. It retains
+unknown outcomes, cancellation, expiry and indeterminate follow-up references while
+excluding private provider tokens and notes. It performs no provider operation and
+makes no independent retrievability claim.
+The follow-on pinned validation passed all 73 focused object contracts and five
+fresh-process archive inspection tests against the normal production binary.
+
 ## Multipart unresolved-outcome recovery (2026-10-20, reference)
 
 The authority-owned multipart uploader now supports explicit local settlement of

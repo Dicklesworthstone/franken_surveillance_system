@@ -401,6 +401,7 @@ All authoritative schemas cataloged from `registries/SCHEMAS.md`:
 | `SCHEMA-STATUS-001` | `fss.status.v1` | `CLI output` | `product boundary` | `status fields cannot imply unsupported readiness` |
 | `SCHEMA-TRANSFER-MANIFEST-001` | `fss.transfer_manifest.v1` | `schemas/transfer_manifest.v1.json` | `authority/transfer` | `root-last; object and closure identities immutable` |
 | `SCHEMA-TRANSFER-RECEIPT-001` | `fss.transfer_receipt.v1` | `schemas/transfer_receipt.v1.json` | `transfer evidence` | `path, repair, closure, publication, and retrievability states remain distinct` |
+| `SCHEMA-UPLOAD-JOURNAL-INSPECTION-001` | `fss.upload_journal_inspection.v1` | `CLI output` | `historical upload status` | `Owner: fss-cli::fss-archive::upload and fss-object::upload_journal. At most 16 KiB of redacted JSON from complete verified journal history: immutable intent/plan/manifest, phase and uncertain operation, acknowledged part count, cumulative spend and remaining allowance, independent minimum and durable head, time/cancellation/deadline, physical namespace binding, legacy status and local settlement/follow-up digest. Every read uses separately metered exact-resource ObserveStatus authority. Provider tokens, free-form notes and raw checkpoints are excluded. No writer lock, creation, adoption, repair or provider call. Explicit bounds and caller-attested time; no independent retrievability claim. Changed meaning requires a new schema.` |
 
 ## 7. Required Capabilities
 

@@ -7,8 +7,8 @@
 
 use fss_core::{
     BudgetVector, CanonicalDecode, CanonicalDecoder, CanonicalEncode, CanonicalEncoder,
-    ContentDigest, ContextAuthority, DigestAlgorithm, OperationId, RegionTree, RuntimeGrant,
-    TimestampNs,
+    ContentDigest, ContextAuthority, DigestAlgorithm, ObligationState, OperationId, RegionTree,
+    RuntimeGrant, TimestampNs,
 };
 use fss_runtime::authority::AuthorityCx;
 use fss_runtime::grant::GrantSet;
@@ -48,6 +48,19 @@ pub trait UploadJournal {
     fn latest(&self) -> Option<&[u8]>;
     /// Whether this exact pin occurs in the verified complete chain.
     fn contains(&self, pin: UploadJournalPin) -> bool;
+    /// Admit room for the next checkpoint and its bounded follow-up records.
+    /// `additional_records` includes the next append; `max_checkpoint_bytes`
+    /// excludes the storage implementation's envelope. A bounded journal must
+    /// override this method and account for both committed and retained staging
+    /// bytes. Unbounded or externally prepaid implementations may use the default.
+    /// This preflight performs no append and must not poison an unchanged journal.
+    fn reserve_capacity(
+        &mut self,
+        _additional_records: usize,
+        _max_checkpoint_bytes: usize,
+    ) -> Result<(), MultipartError> {
+        Ok(())
+    }
     /// Append only if the current head equals `expected`.
     fn append(
         &mut self,
@@ -130,24 +143,44 @@ impl MultipartRecovery {
         let mut canonical = canonical.clone();
         canonical.cancellation_reason = None;
         validate_context_narrowing(&canonical, &self.checkpoint.effective_authority)?;
-        let mask = [
-            RuntimeGrant::ObjectStage,
-            RuntimeGrant::ObjectPublish,
-            RuntimeGrant::AdapterNet,
-        ]
-        .into_iter()
-        .enumerate()
-        .fold(0, |mask, (index, grant)| {
-            mask | (u8::from(
-                grants
-                    .require_grant_for(grant, self.intent().resource())
-                    .is_ok(),
-            ) << index)
-        });
+        let mask = grants_mask(grants, self.intent().resource());
         if canonical.budgets != self.remaining_budget() || mask & !self.checkpoint.grant_mask != 0 {
             return Err(MultipartError::OwnerMismatch);
         }
         Ok(())
+    }
+
+    /// Commit an accepted nonterminal recovery boundary before a new owner can
+    /// escape. This only records the already validated caller restrictions: no
+    /// provider action or runtime child is synthesized from checkpoint bytes.
+    #[allow(clippy::too_many_arguments)]
+    pub(crate) fn persist_restore(
+        &self,
+        journal: &mut dyn UploadJournal,
+        canonical: &ContextAuthority,
+        grants: &GrantSet,
+        cancelled: bool,
+        now: TimestampNs,
+        owner_metadata: Vec<u8>,
+    ) -> Result<Self, MultipartError> {
+        self.validate_restore(journal, now)?;
+        self.validate_authority(canonical, grants)?;
+        let mut checkpoint = self.checkpoint.clone();
+        checkpoint.effective_authority = canonical.clone();
+        checkpoint.effective_authority.cancellation_reason = None;
+        checkpoint.grant_mask = grants_mask(grants, self.intent().resource());
+        checkpoint.cancelled |= cancelled;
+        checkpoint.observed_at = now;
+        checkpoint.owner_metadata = owner_metadata;
+        let mut durable = DurableState {
+            journal,
+            expected: Some(self.head),
+            historical_consumed: self.consumed(),
+            last: self.checkpoint.clone(),
+            poisoned: false,
+        };
+        let head = durable.persist(checkpoint.clone())?;
+        Ok(Self { checkpoint, head })
     }
 
     /// Exact canonical chunk layout, including its cost row.
@@ -164,6 +197,27 @@ impl MultipartRecovery {
     #[must_use]
     pub const fn phase(&self) -> MultipartPhase {
         self.checkpoint.phase
+    }
+    /// Count of checksum-confirmed parts without exposing provider tokens.
+    #[must_use]
+    pub fn confirmed_parts(&self) -> usize {
+        self.checkpoint.parts.iter().flatten().count()
+    }
+    /// Local obligation state, absent for a protocol-only journal. This never
+    /// returns the private recovery note or provider-issued identifiers.
+    pub fn owner_state(&self) -> Result<Option<ObligationState>, MultipartError> {
+        crate::uploader::recovery_owner_state(self)
+    }
+    /// Stop intent persisted by an owning uploader before runtime cancellation
+    /// was applied. Inspectors must combine this with [`Self::cancelled`].
+    /// Owner identity and any terminal proof are checked against this checkpoint.
+    pub fn owner_cancelled(&self) -> Result<bool, MultipartError> {
+        crate::uploader::recovery_owner_cancelled(self)
+    }
+    /// Retained follow-up reference for an explicitly unresolved local closure.
+    /// It is not an observation of the provider's outcome.
+    pub fn reconciliation_reference(&self) -> Result<Option<ContentDigest>, MultipartError> {
+        crate::uploader::recovery_reconciliation_reference(self)
     }
     /// Latest durably observed time; recovery may not move it backwards.
     #[must_use]
@@ -381,6 +435,10 @@ pub(super) fn context(
 }
 
 pub(super) fn grant_mask(authority: &AuthorityCx, resource: &str) -> u8 {
+    grants_mask(authority.grants(), resource)
+}
+
+fn grants_mask(grants: &GrantSet, resource: &str) -> u8 {
     [
         RuntimeGrant::ObjectStage,
         RuntimeGrant::ObjectPublish,
@@ -389,7 +447,7 @@ pub(super) fn grant_mask(authority: &AuthorityCx, resource: &str) -> u8 {
     .into_iter()
     .enumerate()
     .fold(0, |mask, (index, grant)| {
-        mask | (u8::from(authority.require_grant_for(grant, resource).is_ok()) << index)
+        mask | (u8::from(grants.require_grant_for(grant, resource).is_ok()) << index)
     })
 }
 
@@ -789,6 +847,26 @@ impl TransportPersistence for DispatchJournal<'_, '_> {
         self.checkpoint.consumed = self.durable.cumulative(consumed)?;
         self.checkpoint.observed_at = now;
         self.checkpoint.cancelled |= cancelled;
+        // Admission must leave room for the provider acknowledgement and its
+        // local closure/follow-up. The growth allowance covers one bounded
+        // upload ID/ETag and the bounded unresolved-owner receipt. Repeated
+        // transport framing checkpoints cannot consume this reserve.
+        self.durable.ensure_ready()?;
+        let bytes = self.checkpoint.encode()?;
+        if self.durable.journal.latest() != Some(bytes.as_slice())
+            && let Err(error) = self.durable.journal.reserve_capacity(
+                3,
+                bytes
+                    .len()
+                    .checked_add(4 * 1024)
+                    .ok_or(MultipartError::InvalidCheckpoint)?,
+            )
+        {
+            // A transport must not catch a refused framing persistence and then
+            // present a success as if the missing admission had been durable.
+            self.durable.poisoned = true;
+            return Err(error);
+        }
         self.durable.persist(self.checkpoint.clone())?;
         Ok(())
     }

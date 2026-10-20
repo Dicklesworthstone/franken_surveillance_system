@@ -367,6 +367,15 @@ impl UploadJournal for GuardedJournal {
         self.inner.contains(pin)
     }
 
+    fn reserve_capacity(
+        &mut self,
+        additional_records: usize,
+        max_checkpoint_bytes: usize,
+    ) -> Result<(), MultipartError> {
+        self.inner
+            .reserve_capacity(additional_records, max_checkpoint_bytes)
+    }
+
     fn append(
         &mut self,
         expected: Option<UploadJournalPin>,
@@ -466,29 +475,35 @@ fn corrupted_missing_and_rolled_back_records_cannot_be_recovered() -> Test {
 
 #[test]
 fn two_valid_successors_of_one_checkpoint_are_a_fork_not_a_latest_choice() -> Test {
+    use fss_core::CanonicalEncoder;
+    use fss_object::upload_journal::BOUND_UPLOAD_JOURNAL_RECORD_DOMAIN;
+    use fss_object::{SpoolLimits, StagingSpool};
+
     let initiated = checkpoint_trace(false)?;
     let aborted = checkpoint_trace(true)?;
     assert_eq!(initiated[0], aborted[0]);
     assert_ne!(initiated[1], aborted[1]);
     let left = Directory::new()?;
-    let right = Directory::new()?;
     let mut left_journal = create(&left)?;
     let common = left_journal.append(None, &initiated[0])?;
+    let namespace = left_journal.namespace_binding();
     left_journal.append(Some(common), &initiated[1])?;
     drop(left_journal);
-    let mut right_journal = create(&right)?;
-    assert_eq!(right_journal.append(None, &aborted[0])?, common);
-    right_journal.append(Some(common), &aborted[1])?;
-    drop(right_journal);
-    for source in right.objects()? {
-        let target = left
-            .0
-            .join(SPOOL_OBJECTS_DIR)
-            .join(source.file_name().ok_or("record filename missing")?);
-        if !target.exists() {
-            fs::copy(source, target)?;
-        }
-    }
+    // A second directory now has a different namespace and cannot manufacture a
+    // shared prefix. Inject the independently valid successor into this exact
+    // original spool to exercise fork detection beyond namespace admission.
+    let mut encoder = CanonicalEncoder::new();
+    encoder.text(BOUND_UPLOAD_JOURNAL_RECORD_DOMAIN);
+    encoder.digest(namespace);
+    encoder.u64(2);
+    encoder.bool(true);
+    encoder.digest(common.root);
+    encoder.bytes(&aborted[1]);
+    let alternative = encoder.finish_checked()?;
+    let mut spool = StagingSpool::open(&left.0, SpoolLimits::new(128, 512 * 1024, 32 * 1024, 272))?;
+    let receipt = spool.stage_bytes(&alternative)?;
+    spool.verify(receipt.digest)?;
+    drop(spool);
     assert!(reopen(&left, common).is_err());
     emit("valid-fork-is-not-provider-recovery", 1);
     Ok(())
@@ -576,9 +591,17 @@ fn symlink_aliases_and_replaced_live_roots_cannot_redirect_journal_ownership() -
     assert_eq!(journal.head(), Some(first));
     assert_eq!(fs::read_dir(&root_path)?.count(), 0);
     drop(journal);
-    let reopened = FileUploadJournal::open(&moved, limits(), Arc::new(HostSpoolIo), first)?;
+    assert!(matches!(
+        FileUploadJournal::open(&moved, limits(), Arc::new(HostSpoolIo), first),
+        Err(MultipartError::JournalNamespaceMismatch)
+    ));
+    // Returning the exact original directory and lock to their committed path
+    // restores custody; a new namespace cannot silently adopt the same intent.
+    fs::remove_dir(&root_path)?;
+    fs::rename(&moved, &root_path)?;
+    let reopened = FileUploadJournal::open(&root_path, limits(), Arc::new(HostSpoolIo), first)?;
     assert_eq!(reopened.head(), Some(first));
-    emit("symlink-and-root-replacement-refused", 4);
+    emit("symlink-and-root-replacement-refused", 5);
     Ok(())
 }
 

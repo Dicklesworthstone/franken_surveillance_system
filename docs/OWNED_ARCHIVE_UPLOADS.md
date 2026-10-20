@@ -101,7 +101,10 @@ The recovery sequence is explicit:
    records, a fork, changed intent, removed receipts, decreased spend or broadened authority refuse.
 3. Call `StagedUpload::recover` with a fresh caller-owned parent/tree, transport, journal, decoded
    recovery, independently saved expected intent and explicit child authority. Its budget must
-   equal the recorded remaining allowance, and its scope and deadline may only narrow.
+   equal the recorded remaining allowance, and its scope and deadline may only narrow. Recovery
+   durably records an accepted later time, narrower deadline, revoked grants and cancellation before
+   returning an active owner. Dropping that owner before its next provider call cannot erase those
+   restrictions on another restart. Failed persistence before child reservation creates no new child.
 4. Reconcile any uncertain provider operation before continuing. Exact completed or aborted
    observations allow local closure without repeating that effect. Original cancellation and
    grant revocations survive restart; expired work can only perform authorized cleanup and
@@ -112,6 +115,14 @@ the checkpoint and cannot become spendable or refundable through the new parent.
 explicitly indeterminate ownership records reach the journal before canonical obligation
 resolution, child closure or refund. If local finalization is blocked after that record is durable,
 an exact retry can finish it without contacting the provider again.
+
+Before a provider dispatch or additional framing I/O, the file journal checks that its record and
+byte limits can still retain the acknowledgement and the local terminal or follow-up receipt. A full
+journal refuses admission before provider I/O. This capacity check does not guarantee disk writes
+will succeed: a failed or ambiguous write still retains uncertainty and requires cold recovery.
+Known terminal recovery and exact settlement retries avoid redundant checkpoints, so an existing
+receipt can be settled with the reserved final slot and a durably settled owner can close without
+rewriting its proof.
 
 Use `request_cancellation(tree, now)` to stop this upload. For a journaled owner, the request
 persists its stop intent before changing the runtime tree or reporting success. It performs no
@@ -145,10 +156,71 @@ file identity support is Unix, with unsupported platforms refusing explicitly. A
 coordinates cooperating local writers, rather than defending against an actor that can arbitrarily
 rewrite the same filesystem.
 
+### Physical ownership and legacy journal adoption
+
+New journals write `fss.multipart_journal_record.v2` envelopes. In addition to the existing exact
+sequence, predecessor and checkpoint, each record binds the absolute journal path and the filesystem
+identities of its root and writer lock. Layout directory identities remain pinned while a handle is
+open. Opening a copied or renamed journal, or
+replacing its lock, refuses with a namespace mismatch. A copied checkpoint therefore cannot create
+a second live uploader with another copy of the original remaining allowance. Keep a live journal
+at its original path; moving a deployment is not an implicit authorization to resume an upload.
+
+Existing v1 records retain their original bytes and remain available to read-only inspection. Normal
+writer open refuses an unbound v1-only history. To resume one, first retire every legacy writer and
+independently inspect the selected original journal. Then call `FileUploadJournal::adopt_legacy`
+with its retained minimum pin, inspected namespace digest and exact upload resource. Adoption also
+requires a live authority with the original operation, principal, privacy and retention scopes,
+anchor universe and generation, plus a scoped `LedgerAppend` grant and separately admitted local
+I/O allowance. It verifies the entire old history and appends one v2 binding record before returning
+the writer. Independently retain the returned journal's new v2 head before subsequent recovery;
+the old v1 minimum alone commits only to the old unbound prefix, not the new binding successor.
+Subsequent v1 downgrade records refuse. Adoption cannot prove that a v1 copy was never
+active before this explicit boundary. Adoption records local storage custody and preserves the old
+execution checkpoint; a subsequent recovery separately persists its accepted execution time and
+restrictions.
+
 A pin is a commitment to known history, not authentication. It detects a missing or replaced
 prefix at or below that retained anchor, but cannot reveal a lost newer suffix that the caller
 never independently pinned. Persist pins outside the upload journal according to the caller's
 existing authority and custody policy.
+
+## Inspect an interrupted upload without resuming it
+
+`fss-archive upload-inspect` reads the same complete verified history through a separately admitted
+`ObserveStatus` authority. The exact `--journal-resource` must match the upload's recorded archive
+resource. Supply the independently retained minimum pin; an optional expected head additionally
+requires the observed head to match exactly. Inspection reports a verified observed prefix; it does
+not promise a linearizable latest head while another writer remains active.
+
+```sh
+fss-archive upload-inspect \
+  --journal /absolute/path/to/upload-journal \
+  --journal-resource archive:site/evidence \
+  --minimum-sequence 1 --minimum-root "$MINIMUM_ROOT" \
+  --attested-now-ns "$NOW_NS" \
+  --max-journal-bytes 67108864 --max-records 4096 \
+  --max-checkpoint-bytes 524288 --max-read-bytes 268435456
+```
+
+The bounded `fss.upload_journal_inspection.v1` JSON report identifies the immutable intent, plan and
+manifest, durable protocol phase, acknowledged part count, cumulative transfer consumption and
+remaining allowance, verified head and minimum pin, observed time, cancellation and deadline state,
+physical namespace binding and any retained indeterminate follow-up digest. It distinguishes local
+settlement from a known provider outcome and suggests a next action consistent with the recorded
+uncertainty, cancellation and caller-attested time. Provider upload IDs, ETags, private owner notes
+and raw checkpoints are excluded.
+
+Inspection creates no directory, takes no writer lock, performs no repair or adoption, and contacts
+no provider. Every read, directory entry and metadata operation is charged to the live inspection
+authority; that work cannot refill or spend the upload's retained transfer allowance. Reads are
+bound to verified directory descriptors on Linux x86-64 and AArch64; other hosts refuse explicitly.
+A concurrent change can cause a refusal rather than an invented status. The command caps its output
+at 16 KiB and requires explicit journal, record, checkpoint and read bounds. Its maximum retained
+size is 64 MiB, with up to 65,536 records, 16 MiB per checkpoint and 256 MiB of read work.
+
+Neither a journal inspection nor a provider completion receipt establishes independent archive
+retrievability. The report states that distinction explicitly.
 
 ## Scope and verification
 
@@ -159,7 +231,8 @@ must enforce intent idempotency and checksum conditions, use the admitted contex
 boundary, and return `Unknown` when its consistency guarantees cannot resolve an uncertain effect.
 
 ```sh
-cargo test --locked --offline -p fss-object --test multipart_family --test uploader_family --test durable_upload_contract
+cargo test --locked --offline -p fss-object --test multipart_family --test uploader_family --test durable_upload_contract --test recovered_upload_authority --test upload_journal_namespace
+cargo test --locked --offline -p fss-cli --test archive_upload_journal_cli
 ```
 
 The focused fault-injection targets cover lost acknowledgements at all four effect boundaries,
@@ -171,10 +244,21 @@ The additional unresolved-settlement and owner-integrity contracts cover exhaust
 task-blocked local finalization, exact retained receipts and notes, altered obligations,
 backdated preparation and cleanup, and refused transport/source clock boundaries. The pinned
 nightly passed 337 tests across the full object crate for the restart milestone (one existing test
-requires an unprivileged process and remains explicitly ignored). The final focused run passed 55
-tests, including 22 durable contracts. The durable contract suite uses fresh file, transport and region
+requires an unprivileged process and remains explicitly ignored). The current focused object run
+passed 73 tests: 22 durable, 14 multipart, 19 uploader, nine recovered-authority and nine namespace
+contracts. The durable contract suite uses fresh file, transport and region
 owners across abrupt after-effect exits, minimum-pin and semantic-rewind checks, filesystem fault
 cuts, original cumulative budgets, authority restrictions and terminal/refund recovery.
 Cancellation and revocation tests additionally cover before-commit refusal, committed stop or grant
 revocation with a lost append acknowledgement, all three unfinished protocol phases, exact retry,
 clock/owner refusal and preservation of a previously completed provider outcome.
+The additional recovery contracts cover an immediate exit after accepted narrower authority,
+pre-commit and lost-ack restore failures, final-slot receipt settlement, full-history local closure,
+dispatch capacity refusal and inconsistent owner proofs. Namespace contracts use real filesystem
+objects to exercise copied/renamed roots, replaced locks, explicit v1 adoption and a lost adoption
+acknowledgement, bounded read-only authority, retained torn staging and private-token exclusion.
+All five fresh-process archive inspection tests also pass against the normal production binary:
+prepared-pin inspection, uncertain transfer accounting and redaction, independent-pin/bound/path/
+corruption refusal without mutation, indeterminate follow-up redaction, and cancelled or expired
+uploads restricted to cleanup. Production compilation uses the repository's pinned compiler and
+unchanged dependency closure.

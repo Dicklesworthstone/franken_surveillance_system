@@ -41,7 +41,10 @@ jobs:
         run: cargo +nightly-2026-08-31 test --no-fail-fast --locked --offline -p fss-cli --bin fss-event --bin fss-replay-dwell --test agent_rehearsal_contract
       - name: Verify owned multipart upload and durable restart recovery
         if: success() || failure()
-        run: cargo +nightly-2026-08-31 test --no-fail-fast --locked --offline -p fss-object --test multipart_family --test uploader_family --test durable_upload_contract
+        run: cargo +nightly-2026-08-31 test --no-fail-fast --locked --offline -p fss-object --test multipart_family --test uploader_family --test durable_upload_contract --test recovered_upload_authority --test upload_journal_namespace
+      - name: Verify read-only upload inspection in a fresh process
+        if: success() || failure()
+        run: cargo +nightly-2026-08-31 test --locked --offline -p fss-cli --test archive_upload_journal_cli
       - name: Verify original and reviewed event footage export and offline custody
         if: success() || failure()
         run: |

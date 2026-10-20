@@ -459,6 +459,63 @@ pub(crate) fn validate_recovery_owner_transition(
     Ok(())
 }
 
+pub(crate) fn recovery_owner_state(
+    recovery: &MultipartRecovery,
+) -> Result<Option<ObligationState>, MultipartError> {
+    Ok(validated_recovery_owner(recovery)?.map(|record| record.obligation.state))
+}
+
+pub(crate) fn recovery_owner_cancelled(
+    recovery: &MultipartRecovery,
+) -> Result<bool, MultipartError> {
+    Ok(validated_recovery_owner(recovery)?.is_some_and(|record| record.cancelled))
+}
+
+pub(crate) fn recovery_reconciliation_reference(
+    recovery: &MultipartRecovery,
+) -> Result<Option<ContentDigest>, MultipartError> {
+    Ok(validated_recovery_owner(recovery)?
+        .and_then(|record| record.indeterminate_receipt)
+        .map(|receipt| receipt.reconciliation_reference()))
+}
+
+fn validated_recovery_owner(
+    recovery: &MultipartRecovery,
+) -> Result<Option<UploadOwnerRecord>, MultipartError> {
+    if recovery.owner_metadata().is_empty() {
+        return Ok(None);
+    }
+    let record = UploadOwnerRecord::decode(recovery.owner_metadata())?;
+    if record.intent_digest != recovery.intent().digest()
+        || &record.original_authority != recovery.original_authority()
+        || &record.effective_authority != recovery.effective_authority()
+    {
+        return Err(MultipartError::InvalidCheckpoint);
+    }
+    // These summaries are used without constructing live execution authority.
+    // A syntactically valid private owner record is insufficient to advertise
+    // local closure: it must bind the exact protocol state and its receipt.
+    match record.obligation.state {
+        ObligationState::Pending => {}
+        ObligationState::Verified
+            if recovery.phase() == MultipartPhase::Completed
+                && record.obligation.proof_digest
+                    == Some(recovery.completion_receipt()?.digest()) => {}
+        ObligationState::Cancelled
+            if recovery.phase() == MultipartPhase::Aborted
+                && record.obligation.proof_digest == Some(recovery.abort_receipt()?.digest()) => {}
+        ObligationState::Indeterminate
+            if record
+                .indeterminate_receipt
+                .as_ref()
+                .is_some_and(|receipt| {
+                    recovery.phase() == MultipartPhase::Uncertain(receipt.operation())
+                }) => {}
+        _ => return Err(MultipartError::InvalidCheckpoint),
+    }
+    Ok(Some(record))
+}
+
 /// Minimum allowance for payload plus initiation, completion, two reconciliations
 /// and one abort. Additional attempts require explicit additional reservation.
 /// Network bytes cover payload here; a real transport must separately admit its
@@ -621,9 +678,12 @@ impl<'a, T: MultipartTransport> StagedUpload<'a, T> {
     ///
     /// The fresh child reserves exactly the persisted remaining allowance.
     /// Historical consumption remains charged to the workflow and can never be
-    /// refunded through this new parent. This constructor performs no transport
-    /// or journal writes; the next checkpoint or operation persists any further
-    /// caller restrictions before a provider effect can be admitted.
+    /// refunded through this new parent. Nonterminal clock and restriction
+    /// acceptance is persisted before attaching a fresh child. An append
+    /// refusal leaves the caller's tree and reservation unchanged; an ambiguous
+    /// append must be cold-recovered. No provider call occurs here.
+    /// Already terminal receipts cannot admit new provider work, so their
+    /// pending local settlement retains the final available journal slot.
     #[allow(clippy::too_many_arguments)]
     pub fn recover(
         parent: &'a mut AuthorityCx,
@@ -636,7 +696,9 @@ impl<'a, T: MultipartTransport> StagedUpload<'a, T> {
         now: TimestampNs,
     ) -> Result<Self, UploaderError> {
         recovery.validate_restore(journal, now)?;
-        parent.is_cancel_requested(tree)?;
+        if parent.is_cancel_requested(tree)? {
+            return Err(MultipartError::CancellationRequested.into());
+        }
         let parent_node = tree.get(parent.region()).map_err(authority)?;
         if now < parent_node.created_at
             || parent_node.drain_requested_at.is_some_and(|at| now < at)
@@ -644,7 +706,14 @@ impl<'a, T: MultipartTransport> StagedUpload<'a, T> {
         {
             return Err(MultipartError::ClockRegression.into());
         }
-        let record = UploadOwnerRecord::decode(recovery.owner_metadata())?;
+        if parent_node
+            .authority
+            .deadline
+            .is_some_and(|deadline| now >= deadline)
+        {
+            return Err(MultipartError::Deadline.into());
+        }
+        let mut record = UploadOwnerRecord::decode(recovery.owner_metadata())?;
         if recovery.intent() != expected_intent
             || record.intent_digest != expected_intent.digest()
             || record.original_authority.operation_id != *expected_intent.operation()
@@ -674,6 +743,9 @@ impl<'a, T: MultipartTransport> StagedUpload<'a, T> {
         }
         let canonical = ContextAuthority::new_root(child_spec.clone()).map_err(authority)?;
         canonical.validate().map_err(authority)?;
+        canonical
+            .verify_narrowing_of(&parent_node.authority)
+            .map_err(authority)?;
         canonical
             .verify_narrowing_of(&record.effective_authority)
             .map_err(authority)?;
@@ -722,6 +794,31 @@ impl<'a, T: MultipartTransport> StagedUpload<'a, T> {
         ))
         .map_err(authority)?;
         let plan = recovery.plan().clone();
+        let recovery = if matches!(
+            recovery.phase(),
+            MultipartPhase::Completed | MultipartPhase::Aborted
+        ) || record.obligation.state != ObligationState::Pending
+        {
+            recovery
+        } else {
+            record.effective_authority = canonical.clone();
+            record.grants.retain(|capability| {
+                RuntimeGrant::from_id(capability).is_ok_and(|grant| {
+                    grants
+                        .require_grant_for(grant, expected_intent.resource())
+                        .is_ok()
+                })
+            });
+            record.cancelled |= recovery.cancelled();
+            recovery.persist_restore(
+                journal,
+                &canonical,
+                &grants,
+                record.cancelled,
+                now,
+                record.encode()?,
+            )?
+        };
         let mut child = parent.scope_down(
             tree,
             region,
@@ -1102,8 +1199,8 @@ impl<'a, T: MultipartTransport> StagedUpload<'a, T> {
             // uncertain; the canonical pending obligation is not yet resolved.
             self.indeterminate_receipt = Some(receipt.clone());
         }
-        self.persist_record(tree, now, self.owner_record(tree)?)?;
         if self.obligation.state == ObligationState::Pending {
+            self.persist_record(tree, now, self.owner_record(tree)?)?;
             self.authority.resolve_obligation(
                 tree,
                 &self.obligation.obligation_id,
@@ -1166,7 +1263,13 @@ impl<'a, T: MultipartTransport> StagedUpload<'a, T> {
             ));
         }
         self.observed_at = now;
-        if self.session.is_durable() && !self.settled {
+        if self.session.is_durable()
+            && !self.settled
+            && !matches!(
+                self.session.phase(),
+                MultipartPhase::Completed | MultipartPhase::Aborted
+            )
+        {
             // Capture cancellation and any fresh recovery restrictions before
             // the protocol is allowed to dispatch or touch a payload source.
             self.checkpoint(tree, now)?;
@@ -1207,11 +1310,11 @@ impl<'a, T: MultipartTransport> StagedUpload<'a, T> {
         if self.settled {
             return Ok(());
         }
-        let mut record = self.owner_record(tree)?;
-        record.obligation.state = terminal.to_state();
-        record.obligation.proof_digest = Some(proof);
-        self.persist_record(tree, now, record)?;
         if self.obligation.state == ObligationState::Pending {
+            let mut record = self.owner_record(tree)?;
+            record.obligation.state = terminal.to_state();
+            record.obligation.proof_digest = Some(proof);
+            self.persist_record(tree, now, record)?;
             self.authority.resolve_obligation(
                 tree,
                 &self.obligation.obligation_id,

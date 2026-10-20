@@ -4043,6 +4043,13 @@
       "file": "schemas/transfer_receipt.v1.json",
       "id": "SCHEMA-TRANSFER-RECEIPT-001",
       "schema": "fss.transfer_receipt.v1"
+    },
+    {
+      "authority": "historical upload status",
+      "compatibilityRule": "Owner: fss-cli::fss-archive::upload and fss-object::upload_journal. At most 16 KiB of redacted JSON from complete verified journal history: immutable intent/plan/manifest, phase and uncertain operation, acknowledged part count, cumulative spend and remaining allowance, independent minimum and durable head, time/cancellation/deadline, physical namespace binding, legacy status and local settlement/follow-up digest. Every read uses separately metered exact-resource ObserveStatus authority. Provider tokens, free-form notes and raw checkpoints are excluded. No writer lock, creation, adoption, repair or provider call. Explicit bounds and caller-attested time; no independent retrievability claim. Changed meaning requires a new schema.",
+      "file": "CLI output",
+      "id": "SCHEMA-UPLOAD-JOURNAL-INSPECTION-001",
+      "schema": "fss.upload_journal_inspection.v1"
     }
   ],
   "semanticProtocol": "fss/1",

@@ -212,6 +212,10 @@ pub enum MultipartError {
     InvalidCheckpoint,
     /// The independently retained head is absent, stale or belongs to another chain.
     RecoveryPinMismatch,
+    /// Legacy history is inspectable but needs explicit physical-owner adoption.
+    UnboundJournal,
+    /// A committed journal namespace differs from its current directory or lock.
+    JournalNamespaceMismatch,
     /// A previous persistence failure requires a cold journal/session reopen.
     DurabilityFailed,
     /// Canonical chunk layout, bounds, root or target is invalid.
@@ -484,7 +488,9 @@ impl<'a, T: MultipartTransport> MultipartSession<'a, T> {
 
     /// Rebind inert recovery data to a fresh explicitly authorized child. Only
     /// the remaining allowance is reserved; historical spending is not charged
-    /// a second time to this parent. This method performs no persistence or I/O.
+    /// a second time to this parent. An accepted nonterminal time/restriction
+    /// boundary is durable before return. A refusal leaves the caller's child
+    /// in its ownership and requires cold recovery after an ambiguous append.
     pub fn restore(
         transport: &'a mut T,
         journal: &'a mut dyn UploadJournal,
@@ -509,7 +515,28 @@ impl<'a, T: MultipartTransport> MultipartSession<'a, T> {
         {
             return Err(MultipartError::OwnerMismatch);
         }
-        Ok(Self::restore_prevalidated(transport, journal, recovery, io))
+        let restored = if matches!(
+            recovery.phase(),
+            MultipartPhase::Completed | MultipartPhase::Aborted
+        ) {
+            // No provider dispatch can follow a terminal receipt. Preserve the
+            // final local-closure slot instead of appending a redundant clock.
+            recovery.clone()
+        } else {
+            recovery.persist_restore(
+                journal,
+                &context,
+                io.authority.grants(),
+                io.authority
+                    .is_cancel_requested(io.tree)
+                    .map_err(|error| MultipartError::Authority(error.to_string()))?,
+                io.now,
+                Vec::new(),
+            )?
+        };
+        Ok(Self::restore_prevalidated(
+            transport, journal, &restored, io,
+        ))
     }
 
     /// The owning uploader validates the complete recipe before reserving its
@@ -533,7 +560,7 @@ impl<'a, T: MultipartTransport> MultipartSession<'a, T> {
                 io.tree.owner_identity().clone(),
                 io.authority.region().clone(),
             )),
-            observed_at: state.observed_at,
+            observed_at: io.now,
             durable: Some(DurableState {
                 journal,
                 expected: Some(recovery.head()),
@@ -635,6 +662,23 @@ impl<'a, T: MultipartTransport> MultipartSession<'a, T> {
         Ok(())
     }
 
+    fn validate_observed_owner(
+        &mut self,
+        io: &UploadIo<'_>,
+        operation: TransportOperation,
+    ) -> Result<(), MultipartError> {
+        authority::validate_binding(io, &self.intent, &self.owner, self.observed_at)?;
+        if let Err(error) =
+            authority::validate_owner(io, &self.intent, operation, &self.owner, self.observed_at)
+        {
+            // A real bound owner may have observed cancellation, revocation or
+            // an expired deadline. A cold restart cannot erase that refusal.
+            self.persist_local(io)?;
+            return Err(error);
+        }
+        Ok(())
+    }
+
     /// The bound intent, including its stable reconciliation key.
     #[must_use]
     pub const fn intent(&self) -> &UploadIntent {
@@ -713,6 +757,7 @@ impl<'a, T: MultipartTransport> MultipartSession<'a, T> {
         observe: impl FnOnce(&mut Self, R) -> Result<O, MultipartError>,
     ) -> Result<O, MultipartError> {
         self.ensure_durable_ready()?;
+        self.validate_observed_owner(&io, operation)?;
         if self
             .durable
             .as_ref()
@@ -723,6 +768,20 @@ impl<'a, T: MultipartTransport> MultipartSession<'a, T> {
             )
         {
             return Err(MultipartError::CancellationRequested);
+        }
+        if let Some(durable) = &mut self.durable {
+            // Refuse a known capacity shortfall before charging the request or
+            // changing its phase. An intended part adds at most one digest;
+            // bounded acknowledgement/receipt growth is reserved separately.
+            durable.journal.reserve_capacity(
+                3,
+                durable
+                    .last
+                    .encode()?
+                    .len()
+                    .checked_add(4 * 1024 + 33)
+                    .ok_or(MultipartError::InvalidCheckpoint)?,
+            )?;
         }
         let cx = authority::admit(
             io,
@@ -832,13 +891,7 @@ impl<'a, T: MultipartTransport> MultipartSession<'a, T> {
     ) -> Result<PartReceipt, MultipartError> {
         self.require_plan(plan)?;
         self.require_phase(TransportOperation::UploadPart, MultipartPhase::Uploading)?;
-        authority::validate_owner(
-            &io,
-            &self.intent,
-            TransportOperation::UploadPart,
-            &self.owner,
-            self.observed_at,
-        )?;
+        self.validate_observed_owner(&io, TransportOperation::UploadPart)?;
         let position = usize::try_from(index).map_err(|_| MultipartError::UnknownPart { index })?;
         let chunk = *self
             .plan

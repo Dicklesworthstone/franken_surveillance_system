@@ -4,6 +4,9 @@ use std::fs::{DirEntry, File, FileType, Metadata, ReadDir, TryLockError};
 use std::io;
 use std::path::Path;
 use std::sync::{Arc, Mutex};
+use std::time::UNIX_EPOCH;
+
+use fss_core::CanonicalEncoder;
 
 use crate::SpoolIo;
 
@@ -12,6 +15,7 @@ pub(super) struct FileIdentity {
     device: u64,
     inode: u64,
     directory: bool,
+    born: Option<(u64, u32)>,
 }
 
 impl FileIdentity {
@@ -29,6 +33,11 @@ impl FileIdentity {
                 device: metadata.dev(),
                 inode: metadata.ino(),
                 directory: metadata.is_dir(),
+                born: metadata.created().ok().and_then(|at| {
+                    at.duration_since(UNIX_EPOCH)
+                        .ok()
+                        .map(|at| (at.as_secs(), at.subsec_nanos()))
+                }),
             })
         }
         #[cfg(not(unix))]
@@ -37,6 +46,17 @@ impl FileIdentity {
                 io::ErrorKind::Unsupported,
                 "upload journal requires stable file identity on this platform",
             ))
+        }
+    }
+
+    pub(super) fn encode(self, encoder: &mut CanonicalEncoder) {
+        encoder.u64(self.device);
+        encoder.u64(self.inode);
+        encoder.bool(self.directory);
+        encoder.bool(self.born.is_some());
+        if let Some((seconds, nanos)) = self.born {
+            encoder.u64(seconds);
+            encoder.u32(nanos);
         }
     }
 }
