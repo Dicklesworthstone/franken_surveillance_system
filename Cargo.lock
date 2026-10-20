@@ -599,6 +599,7 @@ name = "fss-object"
 version = "0.0.1"
 dependencies = [
  "fss-core",
+ "fss-runtime",
 ]
 
 [[package]]

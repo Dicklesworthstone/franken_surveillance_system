@@ -12,6 +12,7 @@ repository.workspace = true
 workspace = true
 
 [dependencies]
+fss-runtime = { path = "../fss-runtime" }
 fss-core = { path = "../fss-core" }
 
 [dev-dependencies]

@@ -23,6 +23,8 @@ pub mod provider;
 /// Graph-aware local retention, evidence holds, and bounded expiry execution.
 pub mod retention;
 mod spool;
+/// Asupersync-owned staged uploader (FSS-063).
+pub mod uploader;
 
 #[cfg(test)]
 mod tests;
