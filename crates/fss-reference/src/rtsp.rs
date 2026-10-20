@@ -35,6 +35,8 @@ pub mod live_avc;
 /// Selected-SDP native HEVC capture with independently journaled archive protection.
 pub mod live_hevc_archive;
 pub mod message;
+/// Bounded local preview fan-out over source-linked, independently decodable native MP4 windows.
+pub mod preview;
 /// Sealed source-linked recording windows and byte-provenance verification.
 pub mod recording;
 /// Bounded local archive discovery, restart recovery, and cross-page retrieval.

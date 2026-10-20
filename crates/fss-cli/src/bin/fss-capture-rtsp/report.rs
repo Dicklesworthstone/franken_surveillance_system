@@ -85,6 +85,7 @@ impl<W: Write> Transcript<'_, W> {
 #[derive(Default)]
 pub(super) struct Statistics {
     pub(super) runtime: Option<String>,
+    pub(super) live_preview: Option<String>,
     pub(super) source_custody: Option<String>,
     pub(super) source_custody_unsettled: bool,
     pub(super) steps: u64,
@@ -429,6 +430,9 @@ pub(super) fn terminal(
         ("coverage_certified", "false".into()),
         ("qualification", string("implemented_not_qualified")),
     ];
+    if let Some(preview) = &stats.live_preview {
+        fields.push(("live_preview", preview.clone()));
+    }
     if let Some(source) = &stats.source_custody {
         for (key, value) in &mut fields {
             if *key == "control_and_rtcp_retention" {

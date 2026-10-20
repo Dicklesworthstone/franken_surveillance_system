@@ -43,6 +43,7 @@ pub(super) struct Resources {
     network: String,
     storage: String,
     secret: String,
+    preview: String,
 }
 
 /// Every clock read, wait, filesystem, secret and socket callback carries its
@@ -149,6 +150,30 @@ impl TaskClock {
         )
     }
 
+    pub(super) fn preview(&self, task: &TaskCx<'_>, resources: &Resources) -> Result<u64, Failure> {
+        self.admit(
+            task,
+            &[RuntimeGrant::AdapterNet, RuntimeGrant::ReadMedia],
+            &resources.preview,
+            false,
+            false,
+        )
+    }
+
+    pub(super) fn preview_secret(
+        &self,
+        task: &TaskCx<'_>,
+        resources: &Resources,
+    ) -> Result<u64, Failure> {
+        self.admit(
+            task,
+            &[RuntimeGrant::AdapterAuth],
+            &resources.preview,
+            true,
+            false,
+        )
+    }
+
     pub(super) fn metadata_now(&self, task: &TaskCx<'_>) -> Result<u64, Failure> {
         // Cancellation closes work admission, not the owner's ability to enter
         // drain or record the real time of already-closed resources.
@@ -180,6 +205,7 @@ pub(super) struct CaptureRuntime {
     deadline_ns: u64,
     task_id: TaskId,
     custody_id: ObligationId,
+    preview_enabled: bool,
 }
 
 pub(super) struct RuntimeResult {
@@ -221,10 +247,26 @@ impl CaptureRuntime {
                     0
                 })
             })
+            .and_then(|budget| {
+                budget.checked_add(
+                    options
+                        .live_preview
+                        .as_ref()
+                        .map_or(0, |p| p.memory_budget()),
+                )
+            })
             .ok_or(Failure::Configuration)?;
         let network_budget = transport
             .max_received_bytes
             .checked_add(transport.max_sent_bytes)
+            .and_then(|budget| {
+                budget.checked_add(
+                    options
+                        .live_preview
+                        .as_ref()
+                        .map_or(0, |p| p.network_budget()),
+                )
+            })
             .ok_or(Failure::Configuration)?;
         let storage_budget = options
             .max_steps
@@ -245,7 +287,7 @@ impl CaptureRuntime {
             .map(|grant| grant.as_str().to_owned())
             .collect::<Vec<_>>();
         capabilities.push(RuntimeGrant::AdapterNet.as_str().to_owned());
-        if options.authentication.is_some() {
+        if options.authentication.is_some() || options.live_preview.is_some() {
             capabilities.push(RuntimeGrant::AdapterAuth.as_str().to_owned());
         }
         let spec = RootAuthoritySpec {
@@ -257,7 +299,12 @@ impl CaptureRuntime {
             deadline: Some(TimestampNs(i128::from(deadline_ns))),
             priority: 10,
             budgets: allowance,
-            privacy_scope: "privacy:owner-original-rtsp-custody".into(),
+            privacy_scope: if options.live_preview.is_some() {
+                "privacy:owner-original-rtsp-custody-and-local-unredacted-preview"
+            } else {
+                "privacy:owner-original-rtsp-custody"
+            }
+            .into(),
             retention_scope: "retention:explicit-original-rtsp-scope".into(),
             anchor_universe: approval,
             generation: options.recording_config().scope.generation,
@@ -266,6 +313,7 @@ impl CaptureRuntime {
             network: format!("rtsp-route:{}", approval.to_text()),
             storage: format!("rtsp-custody:{}", approval.to_text()),
             secret: format!("rtsp-credential:{}", approval.to_text()),
+            preview: format!("rtsp-local-preview:{}", approval.to_text()),
         };
         let (mut process, mut tree) = AuthorityCx::root(
             spec.clone(),
@@ -275,18 +323,30 @@ impl CaptureRuntime {
             TimestampNs(0),
         )
         .map_err(|_| Failure::Authority)?;
-        let mut grants = process.grants().clone().with_scope(
-            RuntimeGrant::AdapterNet,
-            BTreeSet::from([resources.network.clone()]),
-        );
-        for grant in STORAGE_GRANTS {
-            grants = grants.with_scope(grant, BTreeSet::from([resources.storage.clone()]));
+        let mut network_scope = BTreeSet::from([resources.network.clone()]);
+        if options.live_preview.is_some() {
+            network_scope.insert(resources.preview.clone());
         }
-        if options.authentication.is_some() {
-            grants = grants.with_scope(
-                RuntimeGrant::AdapterAuth,
-                BTreeSet::from([resources.secret.clone()]),
-            );
+        let mut grants = process
+            .grants()
+            .clone()
+            .with_scope(RuntimeGrant::AdapterNet, network_scope);
+        for grant in STORAGE_GRANTS {
+            let mut scope = BTreeSet::from([resources.storage.clone()]);
+            if grant == RuntimeGrant::ReadMedia && options.live_preview.is_some() {
+                scope.insert(resources.preview.clone());
+            }
+            grants = grants.with_scope(grant, scope);
+        }
+        if options.authentication.is_some() || options.live_preview.is_some() {
+            let mut scope = BTreeSet::new();
+            if options.authentication.is_some() {
+                scope.insert(resources.secret.clone());
+            }
+            if options.live_preview.is_some() {
+                scope.insert(resources.preview.clone());
+            }
+            grants = grants.with_scope(RuntimeGrant::AdapterAuth, scope);
         }
         process
             .narrow_grants(grants)
@@ -325,6 +385,7 @@ impl CaptureRuntime {
             deadline_ns,
             task_id: TaskId::new("task:rtsp-capture").map_err(|_| Failure::Configuration)?,
             custody_id: ObligationId::parse(CUSTODY_ID).map_err(|_| Failure::Configuration)?,
+            preview_enabled: options.live_preview.is_some(),
         })
     }
 
@@ -547,7 +608,11 @@ impl CaptureRuntime {
             ("native_resources_closed", entered.to_string()),
             (
                 "closed_resource_scope",
-                string("local_capture_socket_archives_publishers_credentials_entropy"),
+                string(if self.preview_enabled {
+                    "local_capture_socket_archives_publishers_credentials_entropy_preview_listener_clients_media"
+                } else {
+                    "local_capture_socket_archives_publishers_credentials_entropy"
+                }),
             ),
             (
                 "quiescent",

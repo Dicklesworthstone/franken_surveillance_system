@@ -186,6 +186,11 @@ fn drive<W: Write>(
     log: &mut Transcript<'_, W>,
 ) -> Result<(), Failure> {
     let namespace = options.pin_scope().archive_namespace;
+    let output = ArchiveOutput {
+        namespace,
+        codec: "hevc",
+        owner,
+    };
     let unsigned = DigestCredentials::new("unused", "").map_err(|_| Failure::Configuration)?;
     let mut timing =
         FixedTiming::with_reorder(options.frame_duration, options.max_reorder_pictures)
@@ -203,6 +208,7 @@ fn drive<W: Write>(
         stats.steps += 1;
         stats.hevc_observe(capture);
         let now = owner.now()?;
+        owner.preview_pump();
         if !draining && let Some(interruption) = capture.interruption() {
             // The native owner has already retired the socket and replay-verified
             // the collected prefix. Do not synthesize finish_capture, another
@@ -371,8 +377,7 @@ fn drive<W: Write>(
                     archive_progress(
                         progress,
                         capture.snapshot(),
-                        namespace,
-                        "hevc",
+                        &output,
                         stats,
                         &mut ready,
                         log,
@@ -387,6 +392,7 @@ fn drive<W: Write>(
                 stats.pending_window =
                     Some((admission.root, pending.objects().source.len() as u64));
                 stats.pending_source_only_nals = pending.source_only_nals() as u64;
+                owner.preview_stage(pending.publication_plan());
                 ready = false;
                 if sealing && sealed && !draining {
                     // Retire input before the final window's first checkpoint. No EOF boundary,
@@ -406,15 +412,7 @@ fn drive<W: Write>(
                 )?;
             }
             LiveHevcArchiveStep::Finished { archive, cause } => {
-                archive_progress(
-                    archive,
-                    capture.snapshot(),
-                    namespace,
-                    "hevc",
-                    stats,
-                    &mut ready,
-                    log,
-                )?;
+                archive_progress(archive, capture.snapshot(), &output, stats, &mut ready, log)?;
                 stats.hevc_observe(capture);
                 if stats.collected_pictures != 0 {
                     timing.finish().map_err(|_| Failure::Timing)?;

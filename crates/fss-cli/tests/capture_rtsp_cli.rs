@@ -10,6 +10,10 @@
 #[path = "capture_rtsp_cli/runtime.rs"]
 mod runtime;
 
+#[cfg(target_os = "linux")]
+#[path = "capture_rtsp_cli/preview.rs"]
+mod preview;
+
 use std::ffi::OsString;
 use std::fs;
 use std::io::{self, Read, Write};

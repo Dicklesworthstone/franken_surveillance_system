@@ -577,6 +577,7 @@
   "crates/fss-reference/src/rtsp/live_avc/recording/tests.rs": "support",
   "crates/fss-reference/src/rtsp/live_avc/tests.rs": "support",
   "crates/fss-reference/src/rtsp/message.rs": "support",
+  "crates/fss-reference/src/rtsp/preview.rs": "cognition",
   "crates/fss-reference/src/rtsp/recording.rs": "support",
   "crates/fss-reference/src/rtsp/recording/hevc.rs": "support",
   "crates/fss-reference/src/rtsp/recording/hevc/local.rs": "support",
