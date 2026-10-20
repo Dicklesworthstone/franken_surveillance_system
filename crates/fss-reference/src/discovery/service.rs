@@ -16,11 +16,49 @@
 
 use std::sync::atomic::AtomicBool;
 
-use crate::discovery::census::{CensusConfig, CensusReport, OUI_SNAPSHOT, OuiTable, run_census};
-use crate::discovery::dispatch::{AdapterDispatch, dispatch};
-use crate::discovery::fingerprint::{Brand, BrandConfidence, Confidence, Signal, classify_host};
-use crate::discovery::standards::{SsdpResponse, mdns_probe, ssdp_probe, wsdiscovery_probe};
-use crate::discovery::tuya_beacon::{TuyaBeaconObs, listen};
+use crate::discovery::census::{CensusConfig, CensusError, OUI_SNAPSHOT, OuiTable, run_census};
+use crate::discovery::dispatch::AdapterDispatch;
+use crate::discovery::fingerprint::{Brand, BrandConfidence};
+use crate::discovery::standards::{build_mdns_query, mdns_observe, ssdp_probe, wsdiscovery_probe};
+use crate::discovery::tuya_beacon::listen;
+
+mod evidence;
+pub use evidence::{
+    CameraServiceHint, DiscoveryResponse, DiscoverySighting, MAX_SERVICE_HINTS, assemble_discovery,
+};
+
+/// Discovery admission failures produce no partial candidate report.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub enum DiscoveryError {
+    /// Configured census scope or resource limits are invalid.
+    Census(CensusError),
+    /// Probe timing or service questions exceed the admitted bounds.
+    InvalidProbeConfig,
+    /// Raw observations or their composed service hints exceed the report bound.
+    ObservationLimit,
+}
+
+impl From<CensusError> for DiscoveryError {
+    fn from(error: CensusError) -> Self {
+        Self::Census(error)
+    }
+}
+
+impl std::fmt::Display for DiscoveryError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Census(error) => error.fmt(f),
+            Self::InvalidProbeConfig => {
+                f.write_str("invalid discovery probe window or service questions")
+            }
+            Self::ObservationLimit => {
+                f.write_str("discovery observation or service-hint bound exceeded")
+            }
+        }
+    }
+}
+
+impl std::error::Error for DiscoveryError {}
 
 /// Service configuration: subnets plus timing budgets.
 #[derive(Clone, Debug)]
@@ -71,47 +109,50 @@ pub struct DeviceCandidate {
 pub struct DiscoverReport {
     /// Classified candidates, ascending by IP.
     pub candidates: Vec<DeviceCandidate>,
-    /// Ping targets the census covered.
+    /// Admitted ping targets; cancellation can stop before all are attempted.
     pub ping_targets: usize,
     /// Beaçons captured (cmd + source), for provenance.
     pub beacons: Vec<(String, u32)>,
-    /// Standards-probe observations (SSDP responders; mDNS answers count).
+    /// Distinct in-scope SSDP responders.
     pub ssdp_responders: usize,
     /// mDNS answers observed.
     pub mdns_answers: usize,
-    /// WS-Discovery probe matches (0 is a typed negative).
+    /// Distinct in-scope WS-Discovery responders; zero never proves device absence.
     pub wsd_matches: usize,
+    /// Actual current responders, independent of advertised device addresses.
+    pub current_responses: Vec<DiscoveryResponse>,
+    /// Source-attributed camera service claims requiring owner enrollment.
+    pub advertised_services: Vec<CameraServiceHint>,
 }
 
 /// Runs the full discovery sweep (owner-network scope only).
 pub fn discover(
     cfg: &DiscoverConfig,
     cancel: &AtomicBool,
-) -> Result<DiscoverReport, crate::discovery::census::CensusError> {
+) -> Result<DiscoverReport, DiscoveryError> {
     // Reject invalid/unbounded scope before any passive or active probe starts.
-    cfg.census.plan()?;
+    let scope = cfg.census.plan()?;
+    if !(1..=120).contains(&cfg.beacon_seconds)
+        || !(1..=120).contains(&cfg.standards_seconds)
+        || build_mdns_query(&cfg.mdns_types, 0).is_empty()
+    {
+        return Err(DiscoveryError::InvalidProbeConfig);
+    }
+    if cancel.load(std::sync::atomic::Ordering::Relaxed) {
+        return Ok(DiscoverReport {
+            ping_targets: scope.ping_targets.len(),
+            ..DiscoverReport::default()
+        });
+    }
     // Stage 1: passive-first listening + standards probes.
     let beacons = listen(cfg.beacon_seconds, 256, cancel).unwrap_or_default();
-    let beacon_index: std::collections::BTreeMap<String, Vec<&TuyaBeaconObs>> = {
-        let mut m: std::collections::BTreeMap<String, Vec<&TuyaBeaconObs>> =
-            std::collections::BTreeMap::new();
-        for b in &beacons {
-            let ip = b.source.split(':').next().unwrap_or("").to_owned();
-            m.entry(ip).or_default().push(b);
-        }
-        m
-    };
-    let mdns = mdns_probe(cfg.iface_ip, &cfg.mdns_types, cfg.standards_seconds, cancel);
-    let ssdp: Vec<SsdpResponse> = ssdp_probe(cfg.iface_ip, cfg.standards_seconds, cancel);
+    let mdns = mdns_observe(cfg.iface_ip, &cfg.mdns_types, cfg.standards_seconds, cancel);
+    let ssdp = ssdp_probe(cfg.iface_ip, cfg.standards_seconds, cancel);
     let wsd = wsdiscovery_probe(cfg.iface_ip, cfg.standards_seconds, cancel);
 
     // Stage 2: census.
     let oui = OuiTable::parse_snapshot(OUI_SNAPSHOT);
-    let CensusReport {
-        hosts,
-        ping_targets,
-        ..
-    } = run_census(&cfg.census, &oui, cancel)?;
+    let census = run_census(&cfg.census, &oui, cancel)?;
 
     // NOTE (negative finding, 2026-10-09): TUTK-NEW discovery corroboration
     // is NOT credential-less — the 0x1002 HMAC is keyed by the CAMERA's own
@@ -121,39 +162,18 @@ pub fn discover(
     // Possible until the owner provisions credentials, which both corroborate
     // and onboard. See NEG-005 in docs/NEGATIVE_EVIDENCE.md.
 
-    // Stage 3+4: classify each host with beacon corroboration, dispatch.
-    let mut candidates = Vec::with_capacity(hosts.len());
-    for host in hosts {
-        let refs: Vec<&TuyaBeaconObs> = beacon_index
-            .get(&host.ip.to_string())
-            .map(|v| v.iter().copied().collect())
-            .unwrap_or_default();
-        let brand = classify_host(&host, &refs, None);
-        let dp = dispatch(&brand);
-        candidates.push(DeviceCandidate {
-            host,
-            brand,
-            dispatch: dp,
-        });
-    }
-    Ok(DiscoverReport {
-        candidates,
-        ping_targets,
-        beacons: beacons.iter().map(|b| (b.source.clone(), b.cmd)).collect(),
-        ssdp_responders: ssdp.len(),
-        mdns_answers: mdns.len(),
-        wsd_matches: wsd.len(),
-    })
+    // Stage 3+4: combine all attributed responders and service chains, then
+    // classify and dispatch only within the original authorized host set.
+    assemble_discovery(&scope, census, &beacons, &mdns, &ssdp, &wsd)
 }
 
 impl DiscoverReport {
     /// Candidate endpoints that actually responded during this sweep.
     ///
     /// The host table also contains ARP-cache entries; MAC/OUI classification and
-    /// aggregate standards counts are not heartbeats. Only a registered TCP port
-    /// accepting a connection or a received beacon from the same candidate IP
-    /// refreshes liveness. Beacon-only addresses outside the census candidate set
-    /// are excluded, preserving the configured subnet boundary.
+    /// aggregate standards counts are not heartbeats. Actual census, beacon and
+    /// standards responders refresh only their own endpoint; an advertised A
+    /// record or URL cannot refresh a different device's liveness.
     #[must_use]
     pub fn fresh_candidate_ips(&self) -> std::collections::BTreeSet<std::net::Ipv4Addr> {
         let candidates: std::collections::BTreeSet<_> = self
@@ -173,6 +193,12 @@ impl DiscoverReport {
             })
             .map(|candidate| candidate.host.ip)
             .collect();
+        fresh.extend(
+            self.current_responses
+                .iter()
+                .map(|response| response.endpoint)
+                .filter(|endpoint| candidates.contains(endpoint)),
+        );
         for (source, _) in &self.beacons {
             if let Ok(std::net::SocketAddr::V4(source)) = source.parse::<std::net::SocketAddr>()
                 && candidates.contains(source.ip())

@@ -118,6 +118,7 @@ fn canonical_decoder_refuses_invented_or_intra_sweep_unobserved_history() -> Tes
         last_unobserved_ns: None,
         tcp_ports: vec![554],
         beacon_commands: Vec::new(),
+        protocol_responses: Vec::new(),
     };
     assert_eq!(current.state(), WatchState::Observable);
     SensorLivenessRecord::from_bytes(&current.to_bytes())?;
@@ -140,6 +141,7 @@ fn canonical_decoder_refuses_invented_or_intra_sweep_unobserved_history() -> Tes
         last_unobserved_ns: Some(100),
         tcp_ports: Vec::new(),
         beacon_commands: Vec::new(),
+        protocol_responses: Vec::new(),
     };
     SensorLivenessRecord::from_bytes(&previous.to_bytes())?;
     current.generation = 2;

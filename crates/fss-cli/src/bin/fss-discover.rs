@@ -184,7 +184,11 @@ fn run_typed(o: &Options) -> Result<(DiscoverReport, DiscoverConfig), &'static s
     if let Some(retention) = &o.retention {
         retention.preflight(&cfg)?;
     }
-    let report = discover(&cfg, &cancel).map_err(|_| "ERR-DISCOVER-CENSUS-001: census failed")?;
+    let report = discover(&cfg, &cancel).map_err(|error| match error {
+        fss_reference::discovery::DiscoveryError::Census(_) => "ERR-DISCOVER-CENSUS-001: invalid census scope or resource bounds",
+        fss_reference::discovery::DiscoveryError::InvalidProbeConfig => "ERR-DISCOVER-ARGUMENT-001: invalid probe timing or service questions",
+        fss_reference::discovery::DiscoveryError::ObservationLimit => "ERR-DISCOVER-LIMIT-001: observation or service-hint bound exceeded; narrow the authorized subnet",
+    })?;
     Ok((report, cfg))
 }
 
@@ -201,6 +205,24 @@ fn run(o: &Options) -> Result<String, &'static str> {
 }
 
 fn format_report(report: &DiscoverReport, cfg: &DiscoverConfig) -> String {
+    let fresh = report.fresh_candidate_ips();
+    let mut responses = std::collections::BTreeMap::<_, std::collections::BTreeSet<_>>::new();
+    for response in &report.current_responses {
+        responses
+            .entry(response.endpoint)
+            .or_default()
+            .insert(response.kind.as_str());
+    }
+    let mut services = std::collections::BTreeMap::<_, Vec<_>>::new();
+    for hint in &report.advertised_services {
+        services.entry(hint.candidate).or_default().push(format!(
+            "{{\"service\":{},\"responder\":{},\"port\":{}}}",
+            json_escape(hint.service.as_str()),
+            json_escape(&hint.responder.to_string()),
+            hint.port
+                .map_or_else(|| "null".into(), |port| port.to_string()),
+        ));
+    }
     let mut rows = Vec::new();
     for c in &report.candidates {
         let signals: Vec<String> = c
@@ -227,10 +249,13 @@ fn format_report(report: &DiscoverReport, cfg: &DiscoverConfig) -> String {
                 fss_reference::discovery::Signal::TutkListener(port) => {
                     format!("\"tutk-listener:{port}\"")
                 }
+                fss_reference::discovery::Signal::AdvertisedService(service) => {
+                    json_escape(&format!("advertised-service:{}", service.as_str()))
+                }
             })
             .collect();
         rows.push(format!(
-            "{{\"ip\":\"{}\",\"mac\":\"{}\",\"vendor\":{},\"open_ports\":{:?},\"brand\":\"{:?}\",\"confidence\":\"{:?}\",\"signals\":[{}],\"adapter\":\"{:?}\",\"readiness\":\"{:?}\",\"missing\":{},\"blocked_reason\":{}}}",
+            "{{\"ip\":\"{}\",\"mac\":\"{}\",\"vendor\":{},\"open_ports\":{:?},\"brand\":\"{:?}\",\"confidence\":\"{:?}\",\"signals\":[{}],\"adapter\":\"{:?}\",\"readiness\":\"{:?}\",\"missing\":{},\"blocked_reason\":{},\"observed_this_sweep\":{},\"response_kinds\":[{}],\"advertised_services\":[{}]}}",
             c.host.ip,
             c.host.mac,
             c.host.oui_vendor.as_deref().map(json_escape).unwrap_or_else(|| "null".into()),
@@ -249,6 +274,9 @@ fn format_report(report: &DiscoverReport, cfg: &DiscoverConfig) -> String {
                 .blocked_reason
                 .map(json_escape)
                 .unwrap_or_else(|| "null".into()),
+            fresh.contains(&c.host.ip),
+            responses.remove(&c.host.ip).unwrap_or_default().into_iter().map(json_escape).collect::<Vec<_>>().join(","),
+            services.remove(&c.host.ip).unwrap_or_default().join(","),
         ));
     }
     format!(
@@ -627,5 +655,110 @@ mod tests {
             watchdog.state_of("192.168.4.10"),
             Some(WatchState::NotObservable { .. })
         ));
+    }
+
+    #[test]
+    fn standards_report_and_watchdog_distinguish_proxy_from_advertised_camera()
+    -> Result<(), Box<dyn std::error::Error>> {
+        use fss_cli::json_input::{Value, parse};
+        use fss_reference::discovery::watchdog::{DeviceClass, DeviceWatchdog, WatchState};
+        use fss_reference::discovery::{
+            CensusReport, MdnsAnswer, MdnsObservation, assemble_discovery,
+        };
+        let proxy = Ipv4Addr::new(192, 168, 4, 2);
+        let camera = Ipv4Addr::new(192, 168, 4, 44);
+        let cfg = DiscoverConfig::for_subnets(vec!["192.168.4.0/24".into()], proxy);
+        let scope = cfg.census.plan()?;
+        let report = assemble_discovery(
+            &scope,
+            CensusReport {
+                hosts: Vec::new(),
+                responders: Vec::new(),
+                ping_targets: scope.ping_targets.len(),
+            },
+            &[],
+            &[MdnsObservation {
+                responder: proxy,
+                answers: vec![
+                    MdnsAnswer {
+                        name: "Front._rtsp._tcp.local".into(),
+                        rr_type: 33,
+                        ttl: 120,
+                        rdata: "front.local".into(),
+                        srv_port: Some(8554),
+                    },
+                    MdnsAnswer {
+                        name: "front.local".into(),
+                        rr_type: 1,
+                        ttl: 120,
+                        rdata: camera.to_string(),
+                        srv_port: None,
+                    },
+                ],
+            }],
+            &[],
+            &[],
+        )?;
+        let encoded = parse(&format_report(&report, &cfg))?;
+        let object = encoded.object().ok_or("report is not an object")?;
+        assert_eq!(
+            object.get("schema").and_then(Value::text),
+            Some("fss.discover_cli.v1")
+        );
+        let rows = object
+            .get("hosts")
+            .and_then(Value::array)
+            .ok_or("missing hosts")?;
+        let row = |ip: &str| {
+            rows.iter()
+                .filter_map(Value::object)
+                .find(|row| row.get("ip").and_then(Value::text) == Some(ip))
+        };
+        let camera_row = row("192.168.4.44").ok_or("missing camera")?;
+        assert_eq!(
+            camera_row
+                .get("observed_this_sweep")
+                .and_then(Value::boolean),
+            Some(false)
+        );
+        assert_eq!(
+            camera_row.get("missing").and_then(Value::text),
+            Some("StandardsEndpointCredentials")
+        );
+        let hint = camera_row
+            .get("advertised_services")
+            .and_then(Value::array)
+            .and_then(|hints| hints.first())
+            .and_then(Value::object)
+            .ok_or("missing service hint")?;
+        assert_eq!(hint.get("port").and_then(Value::integer), Some(8554));
+        assert_eq!(
+            hint.get("responder").and_then(Value::text),
+            Some("192.168.4.2")
+        );
+        let proxy_row = row("192.168.4.2").ok_or("missing proxy")?;
+        assert_eq!(
+            proxy_row
+                .get("observed_this_sweep")
+                .and_then(Value::boolean),
+            Some(true)
+        );
+        assert_eq!(
+            proxy_row.get("response_kinds").and_then(Value::array),
+            Some([Value::Text("mdns_response".into())].as_slice())
+        );
+        let mut watchdog = DeviceWatchdog::new();
+        watchdog.register("192.168.4.2", DeviceClass::Unknown, Some((10, 20)));
+        watchdog.register("192.168.4.44", DeviceClass::Onvif, Some((10, 20)));
+        update_watchdog_window(&mut watchdog, &report, 100, 105);
+        assert_eq!(
+            watchdog.state_of("192.168.4.2"),
+            Some(&WatchState::Observable)
+        );
+        assert!(matches!(
+            watchdog.state_of("192.168.4.44"),
+            Some(WatchState::NotObservable { .. })
+        ));
+        Ok(())
     }
 }

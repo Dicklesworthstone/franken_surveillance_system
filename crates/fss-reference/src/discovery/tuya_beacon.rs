@@ -13,8 +13,9 @@
 //! Framing and cryptography live in the `fss-tuya` crate (LAB-AOSU-4): the
 //! 55AA/6699 header parser, IEEE CRC32, and the first-party AES-128 core are
 //! reused from there — this module carries only beacon-specific observation
-//! semantics. Bad CRC/suffix never drops the observation silently —
-//! `crc_good: false` carries the truth.
+//! semantics. Unverified CRC/GCM/suffix checks never drop the observation
+//! silently. [`TuyaBeaconObs::integrity_verified`] separates accepted protocol
+//! evidence from malformed or still-encrypted diagnostic observations.
 //!
 //! Oracle: lab `tuya_client/tuya_lan.py` (32/32 vectors), byte-differential
 //! verified including a real captured AOSU homebase beacon.
@@ -47,14 +48,33 @@ pub struct TuyaBeaconObs {
     pub cmd_name: &'static str,
     /// Payload byte count.
     pub payload_len: usize,
-    /// Whether CRC32 + suffix verified.
+    /// Whether the 55AA CRC32 + suffix verified; false for 6699 frames.
     pub crc_good: bool,
+    /// Whether the 6699 GCM tag + suffix verified with the well-known broadcast
+    /// key; false for 55AA frames. This proves frame integrity, not device identity
+    /// or owner authority, because the broadcast key is public.
+    pub gcm_good: bool,
     /// Decrypted JSON payload, when the well-known udpkey path applied.
     pub payload_json: Option<String>,
     /// Why the payload is not decrypted, when it is not.
     pub encrypted: Option<&'static str>,
     /// Protocol version hint from framing and command.
     pub version_hint: &'static str,
+}
+
+impl TuyaBeaconObs {
+    /// Whether this frame passed its family's integrity check. Raw observations
+    /// can remain available when false, but cannot establish an accepted Tuya
+    /// candidate or current protocol response. Neither a CRC nor the public
+    /// broadcast key authenticates the device or grants owner authority.
+    #[must_use]
+    pub fn integrity_verified(&self) -> bool {
+        match self.frame {
+            "55AA" => self.crc_good,
+            "6699" => self.gcm_good,
+            _ => false,
+        }
+    }
 }
 
 /// Stable command name.
@@ -80,12 +100,13 @@ pub fn cmd_name(cmd: u32) -> &'static str {
 /// required). `source` is the sender as `ip:port`.
 ///
 /// Unlike the strict session-channel decoder, a beacon with a corrupt
-/// integrity trailer is still returned (as `crc_good: false`): for passive
-/// discovery a malformed announcement is itself evidence.
+/// integrity trailer is still returned with `integrity_verified() == false`:
+/// a malformed announcement is diagnostic evidence, not an accepted response.
 pub fn decode_beacon(source: &str, data: &[u8]) -> Result<TuyaBeaconObs, tuya_wire::WireError> {
     let h = tuya_wire::parse_header(data)?;
     let is_55aa = h.prefix == tuya_wire::PREFIX_55AA;
     let mut crc_good = false;
+    let mut gcm_good = false;
     let mut payload: &[u8] = &[];
     if is_55aa {
         // layout: header16 | retcode4 | payload | crc4 | suffix4
@@ -116,6 +137,7 @@ pub fn decode_beacon(source: &str, data: &[u8]) -> Result<TuyaBeaconObs, tuya_wi
                 cmd_name: cmd_name(h.cmd),
                 payload_len: payload.len(),
                 crc_good,
+                gcm_good,
                 payload_json: Some(String::from_utf8_lossy(payload).into_owned()),
                 encrypted: None,
                 version_hint: version_hint(h.cmd, payload),
@@ -154,15 +176,18 @@ pub fn decode_beacon(source: &str, data: &[u8]) -> Result<TuyaBeaconObs, tuya_wi
             &tuya_wire::UDP_BROADCAST_KEY,
             tuya_wire::RetcodeMode::Auto,
         ) {
-            Ok(m) => (
-                Some(
-                    String::from_utf8_lossy(&m.payload)
-                        .trim_end_matches('\0')
-                        .to_owned(),
-                ),
-                None,
-            ),
-            Err(_) => (None, Some("3.5 GCM requires device local_key")),
+            Ok(m) => {
+                gcm_good = true;
+                (
+                    Some(
+                        String::from_utf8_lossy(&m.payload)
+                            .trim_end_matches('\0')
+                            .to_owned(),
+                    ),
+                    None,
+                )
+            }
+            Err(_) => (None, Some("6699 GCM not verified with broadcast key")),
         }
     } else {
         // 55AA, not UDP_NEW: the payload needs the device local_key.
@@ -193,6 +218,7 @@ pub fn decode_beacon(source: &str, data: &[u8]) -> Result<TuyaBeaconObs, tuya_wi
         cmd_name: cmd_name(h.cmd),
         payload_len: payload.len(),
         crc_good,
+        gcm_good,
         payload_json,
         encrypted,
         version_hint: vh,
@@ -281,6 +307,8 @@ mod tests {
         assert_eq!(obs.cmd_name, "BOARDCAST_LPV34");
         assert_eq!(obs.payload_len, 192);
         assert!(obs.crc_good, "CRC + suffix must verify");
+        assert!(!obs.gcm_good);
+        assert!(obs.integrity_verified());
         assert!(obs.payload_json.is_none());
         assert_eq!(obs.encrypted, Some("device local_key required"));
         assert_eq!(
@@ -296,6 +324,8 @@ mod tests {
         assert_eq!(obs.cmd, 0x13);
         assert_eq!(obs.cmd_name, "UDP_NEW");
         assert!(obs.crc_good);
+        assert!(!obs.gcm_good);
+        assert!(obs.integrity_verified());
         let json = obs.payload_json.as_deref().expect("udpkey decrypts 0x13");
         assert!(json.contains("\"gwId\":\"aostest123\""), "json: {json}");
         assert!(json.contains("\"ip\":\"192.168.4.99\""));
@@ -333,30 +363,121 @@ mod tests {
         data[last] ^= 0xFF;
         let obs = decode_beacon("x", &data).unwrap();
         assert!(!obs.crc_good);
+        assert!(!obs.gcm_good);
+        assert!(!obs.integrity_verified());
     }
 
     #[test]
-    fn beacon_6699_udp_new_decrypts_with_udpkey_gcm() {
-        // 3.5 LAN discovery: 6699-framed UDP announcement sealed with the
-        // well-known udpkey (AES-128-GCM) — decrypts WITHOUT the device key.
-        let payload = b"{\"ip\":\"192.0.2.90\",\"gwId\":\"sim6699\",\"version\":\"3.5\"}";
-        let frame = fss_tuya::wire::pack_6699(
+    fn plaintext_55aa_integrity_does_not_depend_on_readable_json()
+    -> Result<(), tuya_wire::WireError> {
+        let mut data =
+            tuya_wire::pack_55aa(1, tcmd::UDP_NEW, Some(0), br#"{"ip":"192.0.2.90"}"#, None)?;
+        let valid = decode_beacon("192.0.2.90:6667", &data)?;
+        assert!(valid.crc_good);
+        assert!(!valid.gcm_good);
+        assert!(valid.integrity_verified());
+        assert!(valid.payload_json.is_some());
+
+        data[22] ^= 1;
+        let corrupt = decode_beacon("192.0.2.90:6667", &data)?;
+        assert!(!corrupt.crc_good);
+        assert!(!corrupt.gcm_good);
+        assert!(!corrupt.integrity_verified());
+        assert!(corrupt.payload_json.is_some());
+        Ok(())
+    }
+
+    #[test]
+    fn corrupt_55aa_suffix_remains_unverified_diagnostic() -> Result<(), tuya_wire::WireError> {
+        let mut data = captured_beacon_bytes();
+        let suffix_byte = data.len() - 1;
+        data[suffix_byte] ^= 1;
+        let obs = decode_beacon("192.0.2.90:6667", &data)?;
+        assert_eq!(obs.frame, "55AA");
+        assert!(!obs.crc_good);
+        assert!(!obs.gcm_good);
+        assert!(!obs.integrity_verified());
+        Ok(())
+    }
+
+    const BEACON_6699_JSON: &str = r#"{"ip":"192.0.2.90","gwId":"sim6699","version":"3.5"}"#;
+
+    fn beacon_6699_fixture(key: &[u8; 16]) -> Result<Vec<u8>, tuya_wire::WireError> {
+        // Deterministic nonce for this synthetic offline fixture only.
+        tuya_wire::pack_6699(
             1,
             tcmd::UDP_NEW,
             None,
-            payload,
-            &tuya_wire::UDP_BROADCAST_KEY,
+            BEACON_6699_JSON.as_bytes(),
+            key,
             *b"0123456789ab",
         )
-        .expect("pack");
-        let obs = decode_beacon("192.0.2.90:6667", &frame).expect("decode 6699");
+    }
+
+    #[test]
+    fn beacon_6699_udp_new_decrypts_with_udpkey_gcm() -> Result<(), tuya_wire::WireError> {
+        // The public broadcast key permits verification without a device key;
+        // the integrity result must not be mislabeled as a successful CRC.
+        let frame = beacon_6699_fixture(&tuya_wire::UDP_BROADCAST_KEY)?;
+        let obs = decode_beacon("192.0.2.90:6667", &frame)?;
         assert_eq!(obs.frame, "6699");
-        let json = obs.payload_json.as_deref().expect("udpkey GCM decrypts");
-        assert!(json.contains("\"gwId\":\"sim6699\""), "{json}");
+        assert!(!obs.crc_good);
+        assert!(obs.gcm_good);
+        assert!(obs.integrity_verified());
+        assert_eq!(obs.payload_json.as_deref(), Some(BEACON_6699_JSON));
+        assert_eq!(obs.encrypted, None);
         assert_eq!(
             obs.version_hint,
             "3.5 UDP announcement (6699, udpkey payload)"
         );
+        Ok(())
+    }
+
+    #[test]
+    fn tampered_6699_frames_remain_unverified_diagnostics() -> Result<(), tuya_wire::WireError> {
+        let frame = beacon_6699_fixture(&tuya_wire::UDP_BROADCAST_KEY)?;
+        // Each mutation preserves parseable framing but invalidates either
+        // authenticated bytes or the separately checked suffix.
+        for (part, index) in [
+            ("header", 8),
+            ("nonce", 20),
+            ("ciphertext", 32),
+            ("tag", frame.len() - 5),
+            ("suffix", frame.len() - 1),
+        ] {
+            let mut data = frame.clone();
+            data[index] ^= 1;
+            let obs = decode_beacon("192.0.2.90:6667", &data)?;
+            assert_eq!(obs.frame, "6699", "{part}");
+            assert!(!obs.crc_good, "{part}");
+            assert!(!obs.gcm_good, "{part}");
+            assert!(!obs.integrity_verified(), "{part}");
+            assert_eq!(obs.payload_json, None, "{part}");
+            assert_eq!(
+                obs.encrypted,
+                Some("6699 GCM not verified with broadcast key"),
+                "{part}"
+            );
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn device_keyed_6699_does_not_claim_broadcast_verification() -> Result<(), tuya_wire::WireError>
+    {
+        // Synthetic non-secret device key: the decoder only has the public
+        // broadcast key, so it must preserve uncertainty about this frame.
+        let frame = beacon_6699_fixture(b"fixture-key-6699")?;
+        let obs = decode_beacon("192.0.2.90:6667", &frame)?;
+        assert!(!obs.crc_good);
+        assert!(!obs.gcm_good);
+        assert!(!obs.integrity_verified());
+        assert_eq!(obs.payload_json, None);
+        assert_eq!(
+            obs.encrypted,
+            Some("6699 GCM not verified with broadcast key")
+        );
+        Ok(())
     }
 
     #[test]

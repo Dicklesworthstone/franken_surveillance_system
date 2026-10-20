@@ -49,6 +49,8 @@ pub enum AuthIngredient {
     AosuLocalKey,
     /// Resideo: web credentials for the embedded Digest-auth surface.
     ResideoWebCredentials,
+    /// Owner-approved ONVIF/RTSP endpoint and its scoped device credentials.
+    StandardsEndpointCredentials,
 }
 
 /// Onboarding readiness.
@@ -92,7 +94,7 @@ pub fn dispatch(brand: &BrandConfidence) -> AdapterDispatch {
         (Brand::Standards, true) => AdapterDispatch {
             adapter: AdapterPath::Standards,
             readiness: Readiness::NeedsIngredient,
-            missing: None,
+            missing: Some(AuthIngredient::StandardsEndpointCredentials),
             blocked_reason: None,
         },
         (Brand::Infrastructure, _) => AdapterDispatch {

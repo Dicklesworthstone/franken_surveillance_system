@@ -217,6 +217,8 @@ fn discovery_validates_scope_before_starting_any_probe() {
     cfg.standards_seconds = u64::MAX;
     assert_eq!(
         discover(&cfg, &AtomicBool::new(false)),
-        Err(CensusError::SubnetCount(0)),
+        Err(fss_reference::discovery::DiscoveryError::Census(
+            CensusError::SubnetCount(0)
+        )),
     );
 }

@@ -2,6 +2,8 @@
 
 use super::*;
 
+type Test<T = ()> = Result<T, Box<dyn std::error::Error>>;
+
 #[test]
 fn mdns_query_roundtrip_shape() {
     let q = build_mdns_query(&["_rtsp._tcp", "_onvif._tcp"], 7);
@@ -18,7 +20,7 @@ fn mdns_query_roundtrip_shape() {
 }
 
 #[test]
-fn mdns_response_parse_with_compression() {
+fn mdns_response_parse_with_compression() -> Test {
     // Synthetic response: 1 answer, PTR, compressed name+target.
     let mut p = Vec::new();
     p.extend_from_slice(&1u16.to_be_bytes()); // id
@@ -40,11 +42,12 @@ fn mdns_response_parse_with_compression() {
     p.extend_from_slice(&2u16.to_be_bytes());
     let ptr = ((0xC000 | name_off) as u16).to_be_bytes();
     p.extend_from_slice(&ptr);
-    let answers = parse_mdns_response(&p).unwrap();
+    let answers = parse_mdns_response(&p)?;
     assert_eq!(answers.len(), 1);
     assert_eq!(answers[0].name, "_rtsp._tcp.local");
     assert_eq!(answers[0].rr_type, 12);
     assert_eq!(answers[0].rdata, "_rtsp._tcp.local");
+    Ok(())
 }
 
 #[test]
@@ -56,33 +59,37 @@ fn mdns_short_packet_refused() {
 }
 
 #[test]
-fn ssdp_build_and_parse() {
+fn ssdp_build_and_parse() -> Test {
     let msg = build_msearch("ssdp:all", 2);
-    let text = String::from_utf8(msg.clone()).unwrap();
+    let text = String::from_utf8(msg)?;
     assert!(text.contains("M-SEARCH * HTTP/1.1"));
     assert!(text.contains("ST: ssdp:all"));
     let resp = b"HTTP/1.1 200 OK\r\nCACHE-CONTROL: max-age=1800\r\nSERVER: eeroOS UPnP/1.0\r\nST: upnp:rootdevice\r\nLOCATION: http://192.168.4.1:5000/desc.xml\r\nUSN: uuid:abc::upnp:rootdevice\r\n\r\n";
-    let parsed = parse_ssdp_response("192.168.4.1", resp).unwrap();
+    let parsed =
+        parse_ssdp_response("192.168.4.1", resp).ok_or("valid SSDP fixture was refused")?;
     assert_eq!(parsed.server, "eeroOS UPnP/1.0");
     assert_eq!(parsed.st, "upnp:rootdevice");
     assert_eq!(parsed.location, "http://192.168.4.1:5000/desc.xml");
     assert_eq!(parsed.usn, "uuid:abc::upnp:rootdevice");
     // non-200 ignored
     assert!(parse_ssdp_response("x", b"HTTP/1.1 404 Not Found\r\n\r\n").is_none());
+    Ok(())
 }
 
 #[test]
-fn wsd_probe_and_parse() {
+fn wsd_probe_and_parse() -> Test {
     let probe = build_wsdiscovery_probe();
-    let text = String::from_utf8(probe.clone()).unwrap();
+    let text = String::from_utf8(probe)?;
     assert!(text.contains("dn:NetworkVideoTransmitter"));
     let match_xml = b"<?xml version=\"1.0\"?><s:Envelope><s:Body><d:ProbeMatch><d:XAddrs>http://192.168.1.50/onvif/device_service</d:XAddrs><d:Scopes>onvif://www.onvif.org/Profile/Streaming</d:Scopes><d:Types>dn:NetworkVideoTransmitter</d:Types></d:ProbeMatch></s:Body></s:Envelope>";
-    let m = parse_wsd_match("192.168.1.50", match_xml).unwrap();
+    let m = parse_wsd_match("192.168.1.50", match_xml)
+        .ok_or("valid WS-Discovery fixture was refused")?;
     assert_eq!(m.xaddrs, vec!["http://192.168.1.50/onvif/device_service"]);
     assert_eq!(m.types, vec!["dn:NetworkVideoTransmitter"]);
     assert!(m.scopes.iter().any(|s| s.contains("Streaming")));
     // non-match ignored
     assert!(parse_wsd_match("x", b"<a/>").is_none());
+    Ok(())
 }
 
 #[test]
@@ -99,61 +106,72 @@ fn header_packet(questions: u16, answers: u16, authority: u16, additional: u16) 
         .collect()
 }
 
-fn name_bytes(labels: &[&[u8]]) -> Vec<u8> {
+fn name_bytes(labels: &[&[u8]]) -> Test<Vec<u8>> {
     let mut out = Vec::new();
     for label in labels {
-        out.push(u8::try_from(label.len()).unwrap());
+        out.push(u8::try_from(label.len())?);
         out.extend_from_slice(label);
     }
     out.push(0);
-    out
+    Ok(out)
 }
 
-fn pointer(offset: usize) -> [u8; 2] {
-    (0xc000 | u16::try_from(offset).unwrap()).to_be_bytes()
+fn pointer(offset: usize) -> Test<[u8; 2]> {
+    Ok((0xc000 | u16::try_from(offset)?).to_be_bytes())
 }
 
-fn add_record(packet: &mut Vec<u8>, name: &[u8], kind: u16, class: u16, rdata: &[u8]) -> usize {
+fn add_record(
+    packet: &mut Vec<u8>,
+    name: &[u8],
+    kind: u16,
+    class: u16,
+    rdata: &[u8],
+) -> Test<usize> {
     packet.extend_from_slice(name);
     packet.extend_from_slice(&kind.to_be_bytes());
     packet.extend_from_slice(&class.to_be_bytes());
     packet.extend_from_slice(&120u32.to_be_bytes());
-    packet.extend_from_slice(&u16::try_from(rdata.len()).unwrap().to_be_bytes());
+    packet.extend_from_slice(&u16::try_from(rdata.len())?.to_be_bytes());
     let offset = packet.len();
     packet.extend_from_slice(rdata);
-    offset
+    Ok(offset)
 }
 
-fn service_packet() -> Vec<u8> {
+fn service_packet() -> Test<Vec<u8>> {
     let mut packet = header_packet(1, 1, 0, 2);
     let question = packet.len();
-    packet.extend_from_slice(&name_bytes(&[b"_rtsp", b"_tcp", b"local"]));
+    packet.extend_from_slice(&name_bytes(&[b"_rtsp", b"_tcp", b"local"])?);
     packet.extend_from_slice(&12u16.to_be_bytes());
     packet.extend_from_slice(&1u16.to_be_bytes());
     let mut instance = vec![6];
     instance.extend_from_slice(b"Camera");
-    instance.extend_from_slice(&pointer(question));
-    let instance_offset = add_record(&mut packet, &pointer(question), 12, 1, &instance);
+    instance.extend_from_slice(&pointer(question)?);
+    let instance_offset = add_record(&mut packet, &pointer(question)?, 12, 1, &instance)?;
     let mut service = [0, 1, 8554]
         .into_iter()
         .flat_map(u16::to_be_bytes)
         .collect::<Vec<_>>();
-    service.extend_from_slice(&name_bytes(&[b"camera", b"local"]));
-    let target_offset =
-        add_record(&mut packet, &pointer(instance_offset), 33, 0x8001, &service) + 6;
+    service.extend_from_slice(&name_bytes(&[b"camera", b"local"])?);
+    let target_offset = add_record(
+        &mut packet,
+        &pointer(instance_offset)?,
+        33,
+        0x8001,
+        &service,
+    )? + 6;
     add_record(
         &mut packet,
-        &pointer(target_offset),
+        &pointer(target_offset)?,
         1,
         0x8001,
         &[192, 168, 4, 44],
-    );
-    packet
+    )?;
+    Ok(packet)
 }
 
 #[test]
-fn mdns_service_chain_uses_compressed_owners_and_additional_records() {
-    let answers = parse_mdns_response(&service_packet()).unwrap();
+fn mdns_service_chain_uses_compressed_owners_and_additional_records() -> Test {
+    let answers = parse_mdns_response(&service_packet()?)?;
     assert_eq!(answers.len(), 3);
     assert_eq!(answers[0].name, "_rtsp._tcp.local");
     assert_eq!(answers[0].rdata, "Camera._rtsp._tcp.local");
@@ -163,36 +181,36 @@ fn mdns_service_chain_uses_compressed_owners_and_additional_records() {
     assert_eq!(answers[2].name, "camera.local");
     assert_eq!(answers[2].rdata, "192.168.4.44");
     assert_eq!(answers[2].srv_port, None);
+    Ok(())
 }
 
 #[test]
-fn mdns_authority_records_are_retained_without_becoming_answers_to_other_classes() {
-    let name = name_bytes(&[b"camera", b"local"]);
+fn mdns_authority_records_are_retained_without_becoming_answers_to_other_classes() -> Test {
+    let name = name_bytes(&[b"camera", b"local"])?;
     let mut packet = header_packet(0, 0, 2, 0);
-    add_record(&mut packet, &name, 1, 1, &[192, 168, 4, 44]);
-    add_record(&mut packet, &pointer(12), 1, 3, b"not an IN address");
-    let answers = parse_mdns_response(&packet).unwrap();
+    add_record(&mut packet, &name, 1, 1, &[192, 168, 4, 44])?;
+    add_record(&mut packet, &pointer(12)?, 1, 3, b"not an IN address")?;
+    let answers = parse_mdns_response(&packet)?;
     assert_eq!(answers.len(), 1);
     assert_eq!(answers[0].rdata, "192.168.4.44");
+    Ok(())
 }
 
 #[test]
-fn compressed_name_preserves_the_original_cursor_after_a_literal_prefix() {
+fn compressed_name_preserves_the_original_cursor_after_a_literal_prefix() -> Test {
     let mut packet = vec![0; 12];
-    packet.extend_from_slice(&name_bytes(&[b"local"]));
+    packet.extend_from_slice(&name_bytes(&[b"local"])?);
     let offset = packet.len();
     packet.extend_from_slice(b"\x03cam");
-    packet.extend_from_slice(&pointer(12));
+    packet.extend_from_slice(&pointer(12)?);
     packet.extend_from_slice(b"unrelated following bytes");
-    assert_eq!(
-        read_name(&packet, offset).unwrap(),
-        ("cam.local".to_owned(), 6)
-    );
+    assert_eq!(read_name(&packet, offset)?, ("cam.local".to_owned(), 6));
+    Ok(())
 }
 
 #[test]
-fn mdns_rejects_queries_errors_truncation_and_excess_counts_before_records() {
-    let packet = service_packet();
+fn mdns_rejects_queries_errors_truncation_and_excess_counts_before_records() -> Test {
+    let packet = service_packet()?;
     for flags in [0u16, 0x8403, 0x8600, 0x8c00] {
         let mut bad = packet.clone();
         bad[2..4].copy_from_slice(&flags.to_be_bytes());
@@ -204,57 +222,61 @@ fn mdns_rejects_queries_errors_truncation_and_excess_counts_before_records() {
     for len in 0..packet.len() {
         assert!(parse_mdns_response(&packet[..len]).is_err(), "prefix {len}");
     }
+    Ok(())
 }
 
 #[test]
-fn mdns_rdata_name_cannot_read_into_the_following_record() {
+fn mdns_rdata_name_cannot_read_into_the_following_record() -> Test {
     let mut packet = header_packet(0, 1, 0, 0);
-    let offset = add_record(&mut packet, &name_bytes(&[b"local"]), 12, 1, &pointer(12));
+    let offset = add_record(&mut packet, &name_bytes(&[b"local"])?, 12, 1, &pointer(12)?)?;
     packet[offset - 2..offset].copy_from_slice(&1u16.to_be_bytes());
     assert_eq!(parse_mdns_response(&packet), Err(StandardsError::Malformed));
     let mut packet = header_packet(0, 1, 0, 0);
     add_record(
         &mut packet,
-        &name_bytes(&[b"camera", b"_rtsp", b"_tcp", b"local"]),
+        &name_bytes(&[b"camera", b"_rtsp", b"_tcp", b"local"])?,
         33,
         1,
         &[0; 6],
-    );
+    )?;
     assert_eq!(parse_mdns_response(&packet), Err(StandardsError::Malformed));
+    Ok(())
 }
 
 #[test]
-fn malformed_additional_record_rejects_whole_response() {
-    let mut packet = service_packet();
+fn malformed_additional_record_rejects_whole_response() -> Test {
+    let mut packet = service_packet()?;
     packet.pop();
     assert!(parse_mdns_response(&packet).is_err());
-    let mut packet = service_packet();
+    let mut packet = service_packet()?;
     packet.push(0);
     assert_eq!(parse_mdns_response(&packet), Err(StandardsError::Malformed));
+    Ok(())
 }
 
 #[test]
-fn mdns_names_preserve_label_boundaries_and_arbitrary_octets() {
+fn mdns_names_preserve_label_boundaries_and_arbitrary_octets() -> Test {
     let mut packet = vec![0; 12];
-    packet.extend_from_slice(&name_bytes(&[b"Fake._rtsp", b"_tcp", b"local"]));
-    assert_eq!(read_name(&packet, 12).unwrap().0, "Fake\\._rtsp._tcp.local");
+    packet.extend_from_slice(&name_bytes(&[b"Fake._rtsp", b"_tcp", b"local"])?);
+    assert_eq!(read_name(&packet, 12)?.0, "Fake\\._rtsp._tcp.local");
     let offset = packet.len();
-    packet.extend_from_slice(&name_bytes(&[b"cam\\one", &[0, 255, b' '], b"local"]));
+    packet.extend_from_slice(&name_bytes(&[b"cam\\one", &[0, 255, b' '], b"local"])?);
     assert_eq!(
-        read_name(&packet, offset).unwrap().0,
+        read_name(&packet, offset)?.0,
         "cam\\\\one.\\000\\255\\032.local"
     );
+    Ok(())
 }
 
 #[test]
-fn mdns_name_expansion_and_compression_are_bounded() {
+fn mdns_name_expansion_and_compression_are_bounded() -> Test {
     let long = [b'a'; 63];
     let exact = [b'b'; 61];
     let mut packet = vec![0; 12];
-    packet.extend_from_slice(&name_bytes(&[&long, &long, &long, &exact]));
-    assert_eq!(read_name(&packet, 12).unwrap().1, 255);
+    packet.extend_from_slice(&name_bytes(&[&long, &long, &long, &exact])?);
+    assert_eq!(read_name(&packet, 12)?.1, 255);
     let mut packet = vec![0; 12];
-    packet.extend_from_slice(&name_bytes(&[&long, &long, &long, &long]));
+    packet.extend_from_slice(&name_bytes(&[&long, &long, &long, &long])?);
     assert_eq!(read_name(&packet, 12), Err(StandardsError::Malformed));
     for bytes in [
         vec![0x40, 0],
@@ -268,6 +290,7 @@ fn mdns_name_expansion_and_compression_are_bounded() {
         packet.extend_from_slice(&bytes);
         assert!(read_name(&packet, 12).is_err(), "{bytes:?}");
     }
+    Ok(())
 }
 
 #[test]
@@ -284,15 +307,17 @@ fn mdns_query_refuses_oversize_or_malformed_names_without_truncation() {
 }
 
 #[test]
-fn mdns_observation_binds_sender_port_and_query_id_not_advertised_address() {
-    let packet = service_packet();
+fn mdns_observation_binds_sender_port_and_query_id_not_advertised_address() -> Test {
+    let packet = service_packet()?;
     let sender = SocketAddr::from(([192, 168, 4, 2], 5353));
-    let parsed = parse_mdns_datagram(sender, 7, &packet).unwrap();
+    let parsed =
+        parse_mdns_datagram(sender, 7, &packet).ok_or("valid mDNS datagram was refused")?;
     assert_eq!(parsed.responder, Ipv4Addr::new(192, 168, 4, 2));
     assert_eq!(parsed.answers[2].rdata, "192.168.4.44");
     assert!(parse_mdns_datagram(sender, 8, &packet).is_none());
     assert!(parse_mdns_datagram(SocketAddr::from(([192, 168, 4, 2], 1234)), 7, &packet).is_none());
     assert!(parse_mdns_datagram(sender, 7, &header_packet(0, 0, 0, 0)).is_none());
+    Ok(())
 }
 
 #[test]
@@ -316,12 +341,17 @@ fn collector_bounds_malformed_and_oversized_traffic_without_sockets() {
     assert!(result.is_empty());
     assert_eq!(received, MAX_RECEIVE_ATTEMPTS);
     assert_eq!(parsed, MAX_RECEIVE_ATTEMPTS);
+    let mut oversized_parses = 0;
     let result: Vec<()> = collect_datagrams(
         1,
         &cancel,
         |buf| Ok((buf.len(), SocketAddr::from(([192, 168, 4, 1], 5353)))),
-        |_, _| panic!("oversized datagram reached parser"),
+        |_, _| {
+            oversized_parses += 1;
+            None
+        },
     );
+    assert_eq!(oversized_parses, 0);
     assert!(result.is_empty());
 }
 
@@ -330,12 +360,22 @@ fn collector_refuses_precancelled_and_unbounded_windows_before_receive() {
     let cancelled = AtomicBool::new(true);
     let active = AtomicBool::new(false);
     for (seconds, cancel) in [(1, &cancelled), (0, &active), (u64::MAX, &active)] {
+        let mut receives = 0;
+        let mut parses = 0;
         let result: Vec<()> = collect_datagrams(
             seconds,
             cancel,
-            |_| panic!("unexpected receive"),
-            |_, _| panic!("unexpected parse"),
+            |_| {
+                receives += 1;
+                Ok((0, SocketAddr::from(([192, 168, 4, 1], 5353))))
+            },
+            |_, _| {
+                parses += 1;
+                None
+            },
         );
+        assert_eq!(receives, 0);
+        assert_eq!(parses, 0);
         assert!(result.is_empty());
         assert!(mdns_observe(Ipv4Addr::UNSPECIFIED, &["_rtsp._tcp"], seconds, cancel).is_empty());
         assert!(ssdp_probe(Ipv4Addr::UNSPECIFIED, seconds, cancel).is_empty());
@@ -376,6 +416,7 @@ fn ssdp_status_and_wsdiscovery_matches_require_exact_tokens() {
 fn collector_honors_cancellation_during_receive_before_retaining_data() {
     let cancel = AtomicBool::new(false);
     let mut receives = 0;
+    let mut parses = 0;
     let result: Vec<()> = collect_datagrams(
         1,
         &cancel,
@@ -384,27 +425,32 @@ fn collector_honors_cancellation_during_receive_before_retaining_data() {
             cancel.store(true, Ordering::Relaxed);
             Ok((0, SocketAddr::from(([192, 168, 4, 1], 5353))))
         },
-        |_, _| panic!("cancelled receive became retained evidence"),
+        |_, _| {
+            parses += 1;
+            None
+        },
     );
     assert_eq!(receives, 1);
+    assert_eq!(parses, 0);
     assert!(result.is_empty());
 }
 
 #[test]
-fn mdns_txt_character_strings_enforce_each_declared_length() {
+fn mdns_txt_character_strings_enforce_each_declared_length() -> Test {
     let mut packet = header_packet(0, 1, 0, 0);
     add_record(
         &mut packet,
-        &name_bytes(&[b"Camera", b"_rtsp", b"_tcp", b"local"]),
+        &name_bytes(&[b"Camera", b"_rtsp", b"_tcp", b"local"])?,
         16,
         1,
         b"\x03one\x03two",
-    );
-    let records = parse_mdns_response(&packet).unwrap();
+    )?;
+    let records = parse_mdns_response(&packet)?;
     assert_eq!(records[0].rdata, "one two");
     packet.pop();
     assert!(parse_mdns_response(&packet).is_err());
     let mut packet = header_packet(0, 1, 0, 0);
-    add_record(&mut packet, &name_bytes(&[b"local"]), 16, 1, b"\xffshort");
+    add_record(&mut packet, &name_bytes(&[b"local"])?, 16, 1, b"\xffshort")?;
     assert_eq!(parse_mdns_response(&packet), Err(StandardsError::Malformed));
+    Ok(())
 }

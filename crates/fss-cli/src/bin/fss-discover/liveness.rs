@@ -159,6 +159,18 @@ impl Options {
                         ("endpoint", string(&binding.endpoint().to_string())),
                         ("class", string(binding.class().as_str())),
                         ("network_state", string(record.state().as_str())),
+                        (
+                            "protocol_responses",
+                            format!(
+                                "[{}]",
+                                record
+                                    .protocol_responses()
+                                    .iter()
+                                    .map(|kind| string(kind.as_str()))
+                                    .collect::<Vec<_>>()
+                                    .join(",")
+                            ),
+                        ),
                         ("generation", record.generation().to_string()),
                         ("sweep_started_ns", record.sweep_started_ns().to_string()),
                         ("sweep_completed_ns", record.observed_at_ns().to_string()),

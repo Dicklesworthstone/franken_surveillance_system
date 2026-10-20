@@ -4,9 +4,9 @@
 //! discovery sweep, and conservative aging includes its duration. Network responses
 //! establish neither authenticated identity nor decoded pixels or media continuity.
 
-use super::DiscoverReport;
 use super::census::REGISTERED_PORTS;
 use super::watchdog::{DeviceClass, DeviceWatchdog, WatchOfflineReason, WatchState};
+use super::{DiscoverReport, DiscoverySighting};
 use crate::{ReferenceDeployment, ReplayCx};
 use fss_core::{
     BatchId, CanonicalDecoder, CanonicalEncode, CanonicalEncoder, CaptureInterval, ContentDigest,
@@ -23,6 +23,8 @@ pub const FAMILY_SENSOR_LIVENESS: &str = "sensor_liveness";
 pub const LIVENESS_OBJECT_PREFIX: &str = "object:sensor-liveness:";
 /// Canonical observation compatibility domain.
 pub const LIVENESS_RECORD_DOMAIN: &str = "fss.sensor_liveness_record.v1";
+/// Source-attributed protocol responses extend v1 without changing old payloads.
+pub const LIVENESS_RECORD_DOMAIN_V2: &str = "fss.sensor_liveness_record.v2";
 /// Canonical immutable owner-binding compatibility domain.
 pub const LIVENESS_ENROLLMENT_DOMAIN: &str = "fss.sensor_liveness_enrollment.v1";
 /// Maximum retained enrollment inventory.
@@ -206,6 +208,7 @@ pub struct SensorLivenessRecord {
     last_unobserved_ns: Option<u64>,
     tcp_ports: Vec<u16>,
     beacon_commands: Vec<u32>,
+    protocol_responses: Vec<DiscoverySighting>,
 }
 impl SensorLivenessRecord {
     /// Immutable owner binding.
@@ -244,9 +247,16 @@ impl SensorLivenessRecord {
     pub const fn previous_digest(&self) -> Option<ContentDigest> {
         self.previous
     }
-    /// Whether this sweep has an actual registered TCP response or received beacon.
+    /// Source-attributed protocol responses in this sweep, ordered by stable spelling.
+    /// These are responses from the enrolled endpoint, not advertised remote targets.
+    pub fn protocol_responses(&self) -> &[DiscoverySighting] {
+        &self.protocol_responses
+    }
+    /// Whether this sweep has an actual TCP, beacon, or source-attributed protocol response.
     pub fn fresh_sighting(&self) -> bool {
-        !self.tcp_ports.is_empty() || !self.beacon_commands.is_empty()
+        !self.tcp_ports.is_empty()
+            || !self.beacon_commands.is_empty()
+            || !self.protocol_responses.is_empty()
     }
     /// Network state at sweep completion; even Observable proves no media continuity.
     pub fn state(&self) -> WatchState {
@@ -270,7 +280,11 @@ impl SensorLivenessRecord {
     /// Canonical bytes independent of report JSON.
     pub fn to_bytes(&self) -> Vec<u8> {
         let mut e = CanonicalEncoder::new();
-        e.text(LIVENESS_RECORD_DOMAIN);
+        e.text(if self.protocol_responses.is_empty() {
+            LIVENESS_RECORD_DOMAIN
+        } else {
+            LIVENESS_RECORD_DOMAIN_V2
+        });
         e.text(&self.site);
         self.enrollment.encode(&mut e);
         e.u64(self.generation);
@@ -298,6 +312,12 @@ impl SensorLivenessRecord {
         for command in &self.beacon_commands {
             e.u32(*command);
         }
+        if !self.protocol_responses.is_empty() {
+            e.u64(self.protocol_responses.len() as u64);
+            for response in &self.protocol_responses {
+                e.text(response.as_str());
+            }
+        }
         e.finish()
     }
     /// Exact payload identity.
@@ -310,9 +330,11 @@ impl SensorLivenessRecord {
             return Err(LivenessError::Limit);
         }
         let mut d = CanonicalDecoder::new(bytes);
-        if d.text()? != LIVENESS_RECORD_DOMAIN {
-            return Err(LivenessError::Corrupt);
-        }
+        let has_protocol_responses = match d.text()? {
+            LIVENESS_RECORD_DOMAIN => false,
+            LIVENESS_RECORD_DOMAIN_V2 => true,
+            _ => return Err(LivenessError::Corrupt),
+        };
         let site = d.text()?.to_owned();
         crate::reference_deployment::validate_site_lineage(&site)?;
         if site.len() > 256 {
@@ -352,6 +374,26 @@ impl SensorLivenessRecord {
             }
             beacon_commands.push(command);
         }
+        let mut protocol_responses: Vec<DiscoverySighting> = Vec::new();
+        if has_protocol_responses {
+            let count = d.u64()?;
+            if count == 0 {
+                return Err(LivenessError::Corrupt);
+            }
+            if count > DiscoverySighting::COUNT as u64 {
+                return Err(LivenessError::Limit);
+            }
+            for _ in 0..count {
+                let response = DiscoverySighting::parse(d.text()?).ok_or(LivenessError::Corrupt)?;
+                if protocol_responses
+                    .last()
+                    .is_some_and(|last| last.as_str() >= response.as_str())
+                {
+                    return Err(LivenessError::Corrupt);
+                }
+                protocol_responses.push(response);
+            }
+        }
         d.ensure_finished()?;
         let record = Self {
             site,
@@ -365,6 +407,7 @@ impl SensorLivenessRecord {
             last_unobserved_ns,
             tcp_ports,
             beacon_commands,
+            protocol_responses,
         };
         if generation == 0
             || (generation == 1) != previous.is_none()
@@ -544,7 +587,10 @@ pub fn read_liveness_inventory(
     }
     Ok(inventory)
 }
-fn fresh_evidence(report: &DiscoverReport, endpoint: Ipv4Addr) -> (BTreeSet<u16>, BTreeSet<u32>) {
+fn fresh_evidence(
+    report: &DiscoverReport,
+    endpoint: Ipv4Addr,
+) -> (BTreeSet<u16>, BTreeSet<u32>, Vec<DiscoverySighting>) {
     let ports = report
         .candidates
         .iter()
@@ -563,12 +609,21 @@ fn fresh_evidence(report: &DiscoverReport, endpoint: Ipv4Addr) -> (BTreeSet<u16>
                 .map(|_| *command)
         })
         .collect();
-    (ports, commands)
+    let mut responses: Vec<_> = report
+        .current_responses
+        .iter()
+        .filter(|response| response.endpoint == endpoint)
+        .map(|response| response.kind)
+        .collect::<BTreeSet<_>>()
+        .into_iter()
+        .collect();
+    responses.sort_unstable_by_key(|response| response.as_str());
+    (ports, commands, responses)
 }
 /// Concrete fresh endpoint evidence, excluding cached metadata and unattributed probe counts.
 pub fn has_fresh_sighting(report: &DiscoverReport, endpoint: Ipv4Addr) -> bool {
-    let (ports, commands) = fresh_evidence(report, endpoint);
-    !ports.is_empty() || !commands.is_empty()
+    let (ports, commands, responses) = fresh_evidence(report, endpoint);
+    !ports.is_empty() || !commands.is_empty() || !responses.is_empty()
 }
 /// Retains a zero-duration replay/fixture observation. Live discovery uses the actual
 /// interval through retain_discovery_window.
@@ -606,6 +661,8 @@ pub fn retain_discovery_window(
     }
     if report.candidates.len() > super::census::MAX_SUBNET_HOSTS as usize
         || report.beacons.len() > 256
+        || report.current_responses.len()
+            > super::census::MAX_SUBNET_HOSTS as usize * DiscoverySighting::COUNT
     {
         return Err(LivenessError::Limit);
     }
@@ -619,8 +676,8 @@ pub fn retain_discovery_window(
         let previous = retained
             .iter()
             .find(|old| old.record.enrollment.sensor == enrollment.sensor);
-        let (ports, commands) = fresh_evidence(report, enrollment.endpoint);
-        let seen = !ports.is_empty() || !commands.is_empty();
+        let (ports, commands, responses) = fresh_evidence(report, enrollment.endpoint);
+        let seen = !ports.is_empty() || !commands.is_empty() || !responses.is_empty();
         if let Some(old) = previous {
             if observed_at_ns < old.record.observed_at_ns {
                 return Err(LivenessError::ClockOrReplayConflict);
@@ -629,6 +686,7 @@ pub fn retain_discovery_window(
                 if sweep_started_ns != old.record.sweep_started_ns
                     || old.record.tcp_ports != ports.iter().copied().collect::<Vec<_>>()
                     || old.record.beacon_commands != commands.iter().copied().collect::<Vec<_>>()
+                    || old.record.protocol_responses != responses
                 {
                     return Err(LivenessError::ClockOrReplayConflict);
                 }
@@ -661,6 +719,7 @@ pub fn retain_discovery_window(
             last_unobserved_ns: previous.and_then(|old| old.record.last_unobserved_ns),
             tcp_ports: ports.into_iter().collect(),
             beacon_commands: commands.into_iter().collect(),
+            protocol_responses: responses,
         };
         if record.state() != WatchState::Observable {
             record.last_unobserved_ns = Some(observed_at_ns);

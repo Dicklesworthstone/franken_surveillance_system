@@ -16,17 +16,23 @@ pub mod standards;
 pub mod watchdog;
 pub mod watchdog_provision;
 
-pub use service::{DeviceCandidate, DiscoverConfig, DiscoverReport, discover};
+pub use service::{
+    CameraServiceHint, DeviceCandidate, DiscoverConfig, DiscoverReport, DiscoveryError,
+    DiscoveryResponse, DiscoverySighting, MAX_SERVICE_HINTS, assemble_discovery, discover,
+};
 
 pub use standards::{
-    MDNS_CAMERA_TYPES, MdnsAnswer, SsdpResponse, WsdMatch, build_mdns_query, build_msearch,
-    build_wsdiscovery_probe, mdns_probe, parse_mdns_response, parse_ssdp_response, parse_wsd_match,
-    ssdp_probe, wsdiscovery_probe,
+    MDNS_CAMERA_TYPES, MdnsAnswer, MdnsObservation, SsdpResponse, WsdMatch, build_mdns_query,
+    build_msearch, build_wsdiscovery_probe, mdns_observe, mdns_probe, parse_mdns_response,
+    parse_ssdp_response, parse_wsd_match, ssdp_probe, wsdiscovery_probe,
 };
 
 pub use dispatch::{AdapterDispatch, AdapterPath, AuthIngredient, Readiness, dispatch};
 
-pub use fingerprint::{Brand, BrandConfidence, Confidence, Signal, classify_host};
+pub use fingerprint::{
+    Brand, BrandConfidence, CameraService, Confidence, Signal, classify_host,
+    classify_host_with_services,
+};
 
 pub use census::{
     CensusConfig, CensusError, CensusPlan, CensusReport, HostObs, OUI_SNAPSHOT,

@@ -34,6 +34,32 @@ pub enum Signal {
     /// probe (any response — even auth-failing — proves a live 0xCC51
     /// listener; evidence: responder port).
     TutkListener(u16),
+    /// A camera service advertised by an attributed standards response.
+    AdvertisedService(CameraService),
+}
+
+/// Camera-relevant service claims. Advertising a service proves neither device
+/// identity nor ONVIF conformance, and never grants permission to open a stream.
+#[derive(Clone, Copy, Debug, Eq, Ord, PartialEq, PartialOrd)]
+pub enum CameraService {
+    /// ONVIF network video transmitter or DNS-SD service.
+    Onvif,
+    /// DNS-SD RTSP service.
+    Rtsp,
+    /// Axis video DNS-SD service.
+    AxisVideo,
+}
+
+impl CameraService {
+    /// Stable report spelling.
+    #[must_use]
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::Onvif => "onvif",
+            Self::Rtsp => "rtsp",
+            Self::AxisVideo => "axis_video",
+        }
+    }
 }
 
 /// Brand hypothesis with confidence and evidence.
@@ -93,11 +119,6 @@ pub fn classify_host(
         .is_some_and(|b| b & 0x02 != 0);
     if is_laa {
         signals.push(Signal::LocallyAdministeredMac);
-        return BrandConfidence {
-            brand: Brand::Unknown,
-            confidence: Confidence::Possible,
-            signals,
-        };
     }
 
     // TUTK listener corroboration (credential-less probe answered).
@@ -106,7 +127,10 @@ pub fn classify_host(
     }
 
     // Tuya beacon: decisive.
-    if let Some(b) = beacons_from_host.first() {
+    if let Some(b) = beacons_from_host
+        .iter()
+        .find(|beacon| beacon.integrity_verified())
+    {
         signals.push(Signal::TuyaBeacon(b.cmd_name));
         return BrandConfidence {
             brand: Brand::Tuya,
@@ -116,7 +140,11 @@ pub fn classify_host(
     }
 
     // OUI vendor signal.
-    let vendor = host.oui_vendor.as_deref().unwrap_or("");
+    let vendor = if is_laa {
+        ""
+    } else {
+        host.oui_vendor.as_deref().unwrap_or("")
+    };
     let mut oui_brand: Option<Brand> = None;
     if vendor.contains("Wyze Labs") {
         oui_brand = Some(Brand::Tutk);
@@ -181,6 +209,27 @@ pub fn classify_host(
         confidence,
         signals,
     }
+}
+
+/// Combines host metadata with source-attributed camera service claims.
+/// Repeated advertisements are not independent corroboration: even several
+/// advertised protocols remain a `Likely` candidate until separately verified.
+#[must_use]
+pub fn classify_host_with_services(
+    host: &HostObs,
+    beacons_from_host: &[&TuyaBeaconObs],
+    services: &[CameraService],
+) -> BrandConfidence {
+    let mut result = classify_host(host, beacons_from_host, None);
+    let services: std::collections::BTreeSet<_> = services.iter().copied().collect();
+    if !services.is_empty() {
+        result.brand = Brand::Standards;
+        result.confidence = Confidence::Likely;
+        result
+            .signals
+            .extend(services.into_iter().map(Signal::AdvertisedService));
+    }
+    result
 }
 
 #[cfg(test)]
