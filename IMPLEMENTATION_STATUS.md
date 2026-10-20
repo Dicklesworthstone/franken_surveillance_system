@@ -493,9 +493,10 @@ limits](docs/ACQUISITION_CONTINUITY_RECOVERY.md).
   generations are refused. Exact raw scores and selected prior identity remain separately
   digest-bound even when their numerical intervals coincide. See the
   [input migration and provenance contract](docs/FUSION_CALIBRATION.md).
-  All eight native calibration-adapter CLI regressions pass on the pinned Rust toolchain. No detector has
-  a measured deployment calibration, and fusion is not yet wired into
-  `fss-event watch`/`corroborate` (their probability stays `[0, 1]`).
+  All eight native calibration-adapter CLI regressions pass on the pinned Rust toolchain. No detector
+  has a measured deployment calibration. Calibrated fusion is wired into `fss-event watch` and
+  `fss-event corroborate` as digest-pinned, read-only advice: it names the exact detector package and
+  fusion profile and never changes the native approval or report.
 ## Media, perception and I/O added since 2026-09-03 (reference, unqualified)
 
 All of this is tested only on generated fixtures (FFmpeg `testsrc` encodes, procedural JPEGs,
