@@ -77,6 +77,8 @@ mod extrinsics;
 /// Durable native reconnect boundaries and bounded cold history verification.
 pub mod http_reconnect_history;
 mod hydration;
+/// Scalar image resize/color/normalize reference kernels (FSS-122).
+pub mod image_kernels;
 pub mod ingest;
 mod meaningful_delta;
 pub mod media_fixture;
