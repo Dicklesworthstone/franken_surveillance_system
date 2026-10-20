@@ -72,8 +72,8 @@ impl MultipartTransport for MemoryTransport {
     }
 }
 
-fn make_plan(parts: u64) -> fss_object::planner::ChunkPlan {
-    plan_chunks(parts * 64 * MIB - 1, ChunkPolicy::default()).map_err(|e| format!("plan: {e}"))?
+fn make_plan_f(parts: u64) -> Result<fss_object::planner::ChunkPlan, Box<dyn std::error::Error>> {
+    Ok(plan_chunks(parts * 64 * MIB - 1, ChunkPolicy::default())?)
 }
 
 fn part_bytes(chunk: &fss_object::planner::PlannedChunk) -> Vec<u8> {
@@ -87,7 +87,7 @@ fn part_bytes(chunk: &fss_object::planner::PlannedChunk) -> Vec<u8> {
 #[test]
 fn p1_happy_path_root_last() -> Result<(), Box<dyn std::error::Error>> {
     let mut transport = MemoryTransport::default();
-    let chunk_plan = make_plan(3);
+    let chunk_plan = make_plan_f(3)?;
     let root = ContentDigest::sha256(b"manifest-root");
     let mut session = MultipartSession::initiate(&mut transport, &chunk_plan, root)?;
     for chunk in &chunk_plan.chunks {
@@ -107,7 +107,7 @@ fn p1_happy_path_root_last() -> Result<(), Box<dyn std::error::Error>> {
 #[test]
 fn p2_idempotent_replay_and_conflict() -> Result<(), Box<dyn std::error::Error>> {
     let mut transport = MemoryTransport::default();
-    let chunk_plan = make_plan(2);
+    let chunk_plan = make_plan_f(2)?;
     let root = ContentDigest::sha256(b"root");
     let mut session = MultipartSession::initiate(&mut transport, &chunk_plan, root)?;
     let first = session.upload_part(&chunk_plan, 0, &part_bytes(&chunk_plan.chunks[0]))?;
@@ -139,7 +139,7 @@ fn p3_preconditions() -> Result<(), Box<dyn std::error::Error>> {
         corrupt_next_etag: true,
         ..MemoryTransport::default()
     };
-    let chunk_plan = make_plan(2);
+    let chunk_plan = make_plan_f(2)?;
     let root = ContentDigest::sha256(b"root");
     let mut session = MultipartSession::initiate(&mut transport, &chunk_plan, root)?;
     assert!(matches!(
@@ -150,7 +150,7 @@ fn p3_preconditions() -> Result<(), Box<dyn std::error::Error>> {
         session.upload_part(&chunk_plan, 99, b"x"),
         Err(MultipartError::UnknownPart { index: 99 })
     ));
-    let other_plan = make_plan(5);
+    let other_plan = make_plan_f(5)?;
     assert!(matches!(
         session.upload_part(&other_plan, 0, &part_bytes(&other_plan.chunks[0])),
         Err(MultipartError::StalePlan { .. })
@@ -165,7 +165,7 @@ fn p3_preconditions() -> Result<(), Box<dyn std::error::Error>> {
 #[test]
 fn p4_completion_and_abort_discipline() -> Result<(), Box<dyn std::error::Error>> {
     let mut transport = MemoryTransport::default();
-    let chunk_plan = make_plan(3);
+    let chunk_plan = make_plan_f(3)?;
     let root = ContentDigest::sha256(b"root");
     let mut session = MultipartSession::initiate(&mut transport, &chunk_plan, root)?;
     session.upload_part(&chunk_plan, 0, &part_bytes(&chunk_plan.chunks[0]))?;
@@ -186,7 +186,7 @@ fn p4_completion_and_abort_discipline() -> Result<(), Box<dyn std::error::Error>
 #[test]
 fn p5_incomplete_counts() -> Result<(), Box<dyn std::error::Error>> {
     let mut transport = MemoryTransport::default();
-    let chunk_plan = make_plan(4);
+    let chunk_plan = make_plan_f(4)?;
     let root = ContentDigest::sha256(b"root");
     let mut session = MultipartSession::initiate(&mut transport, &chunk_plan, root)?;
     session.upload_part(&chunk_plan, 2, &part_bytes(&chunk_plan.chunks[2]))?;
