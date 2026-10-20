@@ -5,8 +5,10 @@
 //! sender, and does not turn packet acceptance into continuity or capture truth.
 //! The owning adapter retains the original datagram and its stream generation.
 
-pub mod avc;
 /// Explicit fixed-cadence presentation reordering, independent of capture-time truth.
+/// Bounded H.264 access-unit/SPS/PPS parser (FSS-113).
+pub mod access_unit;
+pub mod avc;
 pub mod cadence;
 pub mod hevc;
 
