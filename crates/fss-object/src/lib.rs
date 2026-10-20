@@ -13,6 +13,8 @@ mod memory;
 pub mod model_license_policy;
 pub mod model_manifest;
 pub mod model_package;
+/// Archive cost/chunk planner (FSS-067).
+pub mod planner;
 pub mod provider;
 /// Graph-aware local retention, evidence holds, and bounded expiry execution.
 pub mod retention;
