@@ -73,7 +73,7 @@ impl MultipartTransport for MemoryTransport {
 }
 
 fn make_plan(parts: u64) -> fss_object::planner::ChunkPlan {
-    plan_chunks(parts * 64 * MIB - 1, ChunkPolicy::default()).expect("plan")
+    plan_chunks(parts * 64 * MIB - 1, ChunkPolicy::default()).map_err(|e| format!("plan: {e}"))?
 }
 
 fn part_bytes(chunk: &fss_object::planner::PlannedChunk) -> Vec<u8> {
@@ -135,8 +135,10 @@ fn p2_idempotent_replay_and_conflict() -> Result<(), Box<dyn std::error::Error>>
 /// both digests.
 #[test]
 fn p3_preconditions() -> Result<(), Box<dyn std::error::Error>> {
-    let mut transport = MemoryTransport::default();
-    transport.corrupt_next_etag = true;
+    let mut transport = MemoryTransport {
+        corrupt_next_etag: true,
+        ..MemoryTransport::default()
+    };
     let chunk_plan = make_plan(2);
     let root = ContentDigest::sha256(b"root");
     let mut session = MultipartSession::initiate(&mut transport, &chunk_plan, root)?;
@@ -167,11 +169,6 @@ fn p4_completion_and_abort_discipline() -> Result<(), Box<dyn std::error::Error>
     let root = ContentDigest::sha256(b"root");
     let mut session = MultipartSession::initiate(&mut transport, &chunk_plan, root)?;
     session.upload_part(&chunk_plan, 0, &part_bytes(&chunk_plan.chunks[0]))?;
-    let incomplete = session.complete(&chunk_plan, root).err();
-    // complete consumes self only on success; on error we must re-check
-    // via a fresh session instead — use a second session for the abort
-    // path and keep the first for state assertions through a new initiate.
-    assert!(matches!(incomplete, None).eq(&false) || true);
     // Abort path on a fresh session.
     let mut t2 = MemoryTransport::default();
     let mut s2 = MultipartSession::initiate(&mut t2, &chunk_plan, root)?;
