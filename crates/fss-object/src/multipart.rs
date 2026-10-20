@@ -251,10 +251,16 @@ impl<T: MultipartTransport> MultipartSession<'_, T> {
         if bytes.len() != chunk.len as usize {
             return Err(MultipartError::PartConflict { index });
         }
-        // Idempotent replay: identical bytes return the recorded ETag.
+        // Idempotent replay: identical bytes return the recorded ETag —
+        // and the recorded ETag IS the part's content digest, so a
+        // same-length replay with DIFFERENT bytes is a typed conflict,
+        // never a false idempotent hit.
         let digest = ContentDigest::sha256(bytes);
         if let Some(recorded) = &self.etags[index as usize] {
-            return Ok(recorded.clone());
+            if recorded.0 == digest.to_string() {
+                return Ok(recorded.clone());
+            }
+            return Err(MultipartError::PartConflict { index });
         }
         let etag = self
             .transport

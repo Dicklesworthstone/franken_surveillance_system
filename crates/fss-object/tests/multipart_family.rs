@@ -120,13 +120,24 @@ fn p2_idempotent_replay_and_conflict() -> Result<(), Box<dyn std::error::Error>>
         session.upload_part(&chunk_plan, 0, b"different-length"),
         Err(MultipartError::PartConflict { index: 0 })
     ));
+    // SAME length, different bytes: still a conflict (the recorded ETag
+    // is the part's content digest — replay must compare digests, not
+    // lengths). Regression for the false-idempotent-hit bug.
+    let original = part_bytes(&chunk_plan.chunks[0]);
+    let mut mutated = original.clone();
+    mutated[0] ^= 0xFF;
+    assert_eq!(mutated.len(), original.len());
+    assert!(matches!(
+        session.upload_part(&chunk_plan, 0, &mutated),
+        Err(MultipartError::PartConflict { index: 0 })
+    ));
     drop(session);
     assert_eq!(
         transport.uploads["upload-0"].len(),
         1,
         "no duplicate traffic"
     );
-    emit("idempotent-replay-conflict", 3);
+    emit("idempotent-replay-conflict", 4);
     Ok(())
 }
 
