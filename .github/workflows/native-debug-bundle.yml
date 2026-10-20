@@ -6,6 +6,7 @@ on:
     branches: [main]
     paths:
       - '.github/workflows/native-debug-bundle.yml'
+      - 'scripts/package_native_debug_dependencies.sh'
       - 'crates/fss-cli/src/bin/fss-capture-rtsp/reconnect_source.rs'
       - 'crates/fss-cli/tests/capture_rtsp_source_reconnect_cli.rs'
   workflow_dispatch:
@@ -32,6 +33,8 @@ jobs:
           tar -C "$toolchain" -czf "$RUNNER_TEMP/fss-debug/toolchain.tar.gz" bin lib
           git rev-parse HEAD > "$RUNNER_TEMP/fss-debug/commit.txt"
           (cd "$RUNNER_TEMP/fss-debug" && sha256sum source.tar.gz toolchain.tar.gz > SHA256SUMS)
+      - name: Package locked public dependency closure
+        run: bash scripts/package_native_debug_dependencies.sh "$RUNNER_TEMP/fss-debug"
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
           name: offline-native-debug
