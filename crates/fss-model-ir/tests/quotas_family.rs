@@ -286,7 +286,6 @@ fn p6_would_admit_is_pure() -> Result<(), Box<dyn std::error::Error>> {
     let prepared = ledger.prepare(&graph, &spec(model_a()), ResourcePressure::Nominal)?;
     ledger.execute_and_debit(&graph, &prepared, fss_core::TimestampNs(0))?;
     assert!(!ledger.would_admit(model_a(), ResourcePressure::Nominal));
-    let _ = InvocationError::Digest("x".into());
     emit("would-admit-purity", 3);
     Ok(())
 }
