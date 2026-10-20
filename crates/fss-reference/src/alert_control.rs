@@ -13,6 +13,9 @@
 //! The operation's actual state is checked again under the deployment lock at commit. Exact
 //! retries of this principal's cancellation are no-ops, including after a cold restart.
 
+/// Read-only operation and obligation inventory independent of source-object custody.
+pub mod status;
+
 use std::fmt;
 
 use fss_core::{

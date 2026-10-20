@@ -17,11 +17,12 @@ use fss_core::{
     IndeterminateEffectReason, Obligation, OperationId, OperationReceipt, PrincipalId,
     RootAuthoritySpec, TimestampNs,
 };
-use fss_reference::agent_orient::{OrientLimits, obligation_state_str, read_deployment};
+use fss_reference::agent_orient::obligation_state_str;
+use fss_reference::alert_control::status::read_alert_operations;
 use fss_reference::alert_control::{
     AlertCancellationPlan, AlertControlError, CAP_ALERT_CANCEL, CAP_ALERT_STATUS,
-    MAX_ALERT_OPERATIONS, MAX_CANCEL_PRINCIPAL_BYTES, MAX_CONTROL_JOURNAL_BYTES,
-    cancel_prepared_alert, preview_alert_cancellation,
+    MAX_CANCEL_PRINCIPAL_BYTES, MAX_CONTROL_JOURNAL_BYTES, cancel_prepared_alert,
+    preview_alert_cancellation,
 };
 use fss_reference::{DeploymentLayout, ReferenceDeployment, ReplayCx};
 
@@ -32,6 +33,8 @@ const HELP: &str = "fss-alert status --root DIR --site SITE [--operation-id ID]\
   status reads a bounded committed snapshot without creating, locking, repairing or\n\
   changing the deployment. It includes durable operation and obligation identities,\n\
   proof digests, and explicit uncommitted-tail warnings. An absent journal is UNKNOWN.\n\
+  It reads LAYOUT and the two journals; source and terminal-proof custody are not\n\
+  inspected. Lost event or media objects do not hide recoverable operation identities.\n\
   cancel previews an exact approval unless --approve is supplied. Only a prepared,\n\
   never-committed alert can be cancelled. The old event, source media and relay route\n\
   are not needed. Approval binds the full preparation, actor and physical journals.\n\
@@ -226,18 +229,11 @@ fn operation_json(op: &OperationReceipt, obligation: &Obligation, complete: bool
 fn status(options: &Options) -> RunResult<String> {
     // Deliberately not ReferenceDeployment::open: status cannot trigger restart reclassification.
     // Like fss orient, this is an owner-local read boundary, not a remote authentication service.
-    let snapshot = read_deployment(&options.root, &OrientLimits::default())?;
+    let snapshot = read_alert_operations(&options.root)?;
     if snapshot.site_lineage != options.site {
         return Err(io::Error::other("deployment site mismatch").into());
     }
-    if snapshot.operations.len() > MAX_ALERT_OPERATIONS
-        || snapshot.obligations.len() > MAX_ALERT_OPERATIONS
-    {
-        return Err(AlertControlError::Limit.into());
-    }
-    let complete = snapshot.effect_journal_present
-        && !snapshot.effect_tail_uncommitted
-        && !snapshot.ledger_tail_uncommitted;
+    let complete = snapshot.complete_committed_snapshot();
     let mut obligations = BTreeMap::new();
     for obligation in &snapshot.obligations {
         if obligations
@@ -268,7 +264,7 @@ fn status(options: &Options) -> RunResult<String> {
         }
         rows.push(row);
     }
-    if options.operation.is_some() && rows.is_empty() {
+    if options.operation.is_some() && rows.is_empty() && complete {
         return Err(AlertControlError::NotAlert.into());
     }
     Ok(object(&[
@@ -279,6 +275,10 @@ fn status(options: &Options) -> RunResult<String> {
         (
             "effect_journal_root",
             string(&snapshot.effect_journal_root.to_text()),
+        ),
+        (
+            "ledger_journal_present",
+            snapshot.ledger_journal_present.to_string(),
         ),
         (
             "effect_journal_present",
@@ -302,6 +302,25 @@ fn status(options: &Options) -> RunResult<String> {
         ),
         ("operation_count", rows.len().to_string()),
         ("operations", array(&rows)),
+        (
+            "requested_operation_id",
+            options
+                .operation
+                .as_ref()
+                .map_or_else(|| "null".into(), |id| string(id.as_str())),
+        ),
+        (
+            "operation_lookup",
+            string(if options.operation.is_none() {
+                "not_requested"
+            } else if rows.is_empty() {
+                "unknown_beyond_committed_prefix"
+            } else {
+                "found_in_committed_prefix"
+            }),
+        ),
+        ("source_custody", string("not_inspected")),
+        ("terminal_proof_custody", string("not_inspected")),
         ("read_capability", string(CAP_ALERT_STATUS)),
         ("writes", string("none")),
         ("network_access", "false".into()),

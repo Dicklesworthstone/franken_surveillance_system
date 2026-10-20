@@ -11,17 +11,28 @@ fss-alert status --root /path/to/deployment --site site:home
 fss-alert status --root /path/to/deployment --site site:home --operation-id operation:example
 ```
 
-Status uses the existing read-only deployment snapshot reader, not the locked open/recovery
-path. It never creates a deployment, rewrites history, contacts a relay or reclassifies a
-committed operation. Results carry the authority anchor, committed effect-journal root,
+Status reads a bounded snapshot of `LAYOUT` and the authority and effect journals. It never
+creates a deployment, rewrites history, contacts a relay or reclassifies a committed operation.
+Results carry the authority anchor, committed effect-journal root,
 operation and obligation states, request/precondition/receipt/proof digests, exact timestamps
 as decimal strings, and explicit journal-tail warnings. The inventory is complete only for
-the named committed snapshot with both journal tails clean and the effect journal present.
+the named committed snapshot with both journals present and both tails clean.
 An absent journal or an uncommitted tail remains unknown, not proof that no dispatch occurred.
-An unknown requested operation is refused rather than reported as a successful cancellation.
+A requested operation absent from a complete committed inventory is refused. If either journal
+is absent or has an uncommitted tail, a missing match instead reports the requested identity and
+`operation_lookup: "unknown_beyond_committed_prefix"`; the command cannot prove its absence.
 
-This reuses the existing snapshot reader's custody and size checks. Corrupt deployment evidence
-can refuse status; the command does not silently discard those errors to return a partial list.
+Lost or corrupt event, source-media or proof objects cannot hide the durable operation identity
+needed for recovery. This inventory deliberately reports `source_custody: "not_inspected"` and
+`terminal_proof_custody: "not_inspected"`. A recorded `verified`, `failed` or `cancelled` state is
+the journal's state; status does not certify that its referenced proof remains available.
+
+Both journals pass strict framing verification over the entire bounded input before their
+existing typed-semantic replay checks. Corrupt complete records and foreign trailing bytes
+refuse the command with no JSON prefix; a genuinely incomplete final record remains explicitly
+outside the committed inventory. Every input file is read again before returning,
+and a changed layout or history refuses the read. This does not acquire a deployment lock,
+perform restart recovery, inspect source custody, or authorize a mutation.
 
 ## Cancel an unsent prepared alert
 
@@ -112,24 +123,27 @@ cargo test -p fss-reference --test alert_reconciliation_contract --locked --offl
 
 ### Cancellation and status bounds
 
-Requests admit at most 4096 operations/obligations and at most 64 MiB per journal at CLI
-preflight; status retains the snapshot reader's existing limits too. A complete JSON report is
-bounded by 8 MiB. Size/refusal errors produce no JSON prefix. Low-level deployment open,
+Requests admit at most 4096 operations/obligations and at most 64 MiB per journal. Status admits
+a 4096-byte layout and checks each file's metadata before allocating its contents; a bounded
+read also catches growth beyond the limit. A complete JSON report is bounded by 8 MiB.
+Size/refusal errors produce no JSON prefix. Low-level deployment open,
 publication and journal owners retain their own existing allocation, I/O and recovery contracts;
 the new counters are not a replacement whole-system storage budget.
 
 ```sh
 cargo test -p fss-reference --lib alert_control
-cargo test -p fss-cli --test alert_lifecycle_cli
+cargo test -p fss-reference --test alert_operation_status_contract --locked --offline
+cargo test -p fss-cli --test alert_lifecycle_cli --locked --offline
 ```
 
 Nine library tests cover exact approval, state races, actor and store-pin substitution, cold
 retry, interrupted publication, cancellation cut points, and the real reference situation
-guard. Six real-process tests exercise status, preview/commit/retry, committed-state refusal,
-uncommitted-tail warnings, malformed requests and actor mismatch. Fixtures use durable local
-journals and synthetic reference events; no live provider or device is contacted.
+guard. Four operation-inventory integration tests cover exact journal-root compatibility,
+read-only committed-state inspection, changed inputs, pre-allocation size bounds and absent or
+torn journals. Nine real-process tests exercise status, preview/commit/retry, committed-state
+refusal, lost/corrupt event objects, missing cancellation evidence, journal corruption, absent
+journals, uncommitted-tail warnings, malformed requests and actor mismatch. Fixtures use
+durable local journals and synthetic reference events; no live provider or device is contacted.
 
-Native compilation, Rust test execution and rustfmt were unavailable in the editing environment
-when these changes were authored. These executable tests are not retained passing receipts.
 The implementation remains `implemented_not_qualified`; production qualification and native
 provider reconciliation remain open.

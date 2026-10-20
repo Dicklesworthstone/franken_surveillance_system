@@ -9,11 +9,15 @@ use std::path::{Path, PathBuf};
 use std::process::{Command, Output};
 
 use fss_core::{
-    BudgetVector, ContentDigest, ContextAuthority, EffectIntent, EffectState, IdempotencyKey,
-    ObligationId, OperationId, RootAuthoritySpec, TimestampNs,
+    BudgetVector, CaptureInterval, ContentDigest, ContextAuthority, DecisionPath, EffectIntent,
+    EffectState, EventHypothesis, EventId, EventKind, EventState, IdempotencyKey, ObligationId,
+    OperationId, ProbabilityInterval, RootAuthoritySpec, TimestampNs,
 };
+use fss_reference::agent_orient::{OrientLimits, read_deployment};
 use fss_reference::alert_control::CAP_ALERT_CANCEL;
-use fss_reference::{ReferenceDeployment, ReplayCx};
+use fss_reference::{
+    ReferenceDeployment, ReferencePolicyAction, ReferencePolicyDecision, ReplayCx,
+};
 
 type TestResult<T = ()> = Result<T, Box<dyn Error>>;
 const SITE: &str = "site:alert-lifecycle-cli";
@@ -108,6 +112,46 @@ fn fixture(root: &Path, committed: bool) -> TestResult {
     Ok(())
 }
 
+fn publish_hypothesis(root: &Path) -> TestResult<PathBuf> {
+    let cx = context(root)?;
+    let mut deployment = open(root, &cx)?;
+    let event = EventHypothesis {
+        schema: EventHypothesis::SCHEMA.into(),
+        event_id: EventId::parse("event:alert-status-source")?,
+        revision: 1,
+        supersedes: None,
+        state: EventState::Hypothesized,
+        kind: EventKind::UnknownPresence,
+        interval: CaptureInterval::new(TimestampNs(10), TimestampNs(20))?,
+        uncertainty_reason: None,
+        zone_ids: vec!["door".into()],
+        track_ids: Vec::new(),
+        probability: ProbabilityInterval::new(0.0, 1.0)?,
+        evidence: Vec::new(),
+        model_receipts: Vec::new(),
+        decision_path: DecisionPath {
+            policy_generation: ContentDigest::sha256(b"synthetic source fixture"),
+            fingerprint: ContentDigest::sha256(b"unclassified source hypothesis"),
+            abstained: true,
+            abstention_reason: Some("synthetic reference hypothesis only".into()),
+        },
+    };
+    let receipt = deployment.publish_event(
+        &ReferencePolicyDecision {
+            event,
+            action: ReferencePolicyAction::Hold,
+        },
+        &cx,
+    )?;
+    let path = deployment
+        .publisher()
+        .spool()
+        .object_path(receipt.event_root);
+    drop(deployment);
+    cx.drain_and_finalize();
+    Ok(path)
+}
+
 fn invoke(root: &Path, mode: &str, args: &[&str]) -> TestResult<Output> {
     for _ in 0..100 {
         let output = Command::new(env!("CARGO_BIN_EXE_fss-alert"))
@@ -180,6 +224,8 @@ fn status_is_read_only_even_for_a_crash_interrupted_commit() -> TestResult {
     assert!(status.contains("\"cancellation_candidate\":false"));
     assert!(status.contains("\"dispatch_authorized\":false"));
     assert!(status.contains("not_inferred_from_local_state"));
+    assert!(status.contains("\"source_custody\":\"not_inspected\""));
+    assert!(status.contains("\"terminal_proof_custody\":\"not_inspected\""));
     assert_eq!(
         before,
         files(&dir.0)?,
@@ -233,6 +279,103 @@ fn preview_cancel_and_cold_exact_retry_retire_only_the_named_operation() -> Test
         digest_field(&status, "receipt_digest")?
     );
     assert_eq!(after, files(&dir.0)?);
+    let evidence = digest_field(&committed, "evidence_digest")?;
+    fs::remove_file(
+        dir.0
+            .join("objects/spool/objects")
+            .join(evidence.trim_start_matches("sha256:")),
+    )?;
+    let without_evidence = files(&dir.0)?;
+    let recorded = success(invoke(&dir.0, "status", &args)?)?;
+    assert!(recorded.contains("\"state\":\"cancelled\""));
+    assert!(recorded.contains("\"terminal_proof_custody\":\"not_inspected\""));
+    assert_eq!(without_evidence, files(&dir.0)?);
+    Ok(())
+}
+
+#[test]
+fn lost_or_corrupt_event_objects_do_not_hide_recoverable_alert_operations() -> TestResult {
+    for missing in [false, true] {
+        let dir = Directory::new("source-loss")?;
+        fixture(&dir.0, false)?;
+        let event_manifest = publish_hypothesis(&dir.0)?;
+        read_deployment(&dir.0, &OrientLimits::default())?;
+        let healthy_status = success(invoke(&dir.0, "status", &[])?)?;
+        if missing {
+            fs::remove_file(event_manifest)?;
+        } else {
+            fs::write(event_manifest, b"corrupt event manifest")?;
+        }
+        assert!(
+            read_deployment(&dir.0, &OrientLimits::default()).is_err(),
+            "the original whole-deployment reader must encounter the damaged event"
+        );
+        let before = files(&dir.0)?;
+        let status = success(invoke(&dir.0, "status", &[])?)?;
+        assert_eq!(
+            status, healthy_status,
+            "journal inventory does not certify source custody"
+        );
+        assert!(status.contains(OPERATION));
+        assert!(status.contains("\"state\":\"prepared\""));
+        assert!(status.contains("\"source_custody\":\"not_inspected\""));
+        assert!(status.contains("\"terminal_proof_custody\":\"not_inspected\""));
+        assert_eq!(before, files(&dir.0)?);
+    }
+    Ok(())
+}
+
+#[test]
+fn degraded_source_custody_does_not_relax_either_committed_journal_check() -> TestResult {
+    for relative in ["ledger/journal.fssj", "effects/journal.fssj"] {
+        let dir = Directory::new("journal-corruption")?;
+        fixture(&dir.0, false)?;
+        fs::remove_file(publish_hypothesis(&dir.0)?)?;
+        let path = dir.0.join(relative);
+        let mut bytes = fs::read(&path)?;
+        // The 88-byte FSS journal header precedes a committed, checksummed payload.
+        *bytes
+            .get_mut(88)
+            .ok_or("fixture has no committed payload")? ^= 1;
+        fs::write(&path, bytes)?;
+        let before = files(&dir.0)?;
+        let refused = invoke(&dir.0, "status", &[])?;
+        assert!(!refused.status.success(), "corrupt {relative} was accepted");
+        assert!(refused.stdout.is_empty());
+        assert!(String::from_utf8_lossy(&refused.stderr).contains("failed verification"));
+        assert_eq!(before, files(&dir.0)?);
+    }
+    Ok(())
+}
+
+#[test]
+fn an_absent_authority_or_effect_journal_is_unknown_and_is_never_recreated() -> TestResult {
+    for relative in ["ledger/journal.fssj", "effects/journal.fssj"] {
+        let dir = Directory::new("absent-journal")?;
+        fixture(&dir.0, false)?;
+        fs::remove_file(dir.0.join(relative))?;
+        let before = files(&dir.0)?;
+        let status = success(invoke(&dir.0, "status", &[])?)?;
+        assert!(status.contains("unknown_beyond_committed_prefix"));
+        assert!(!status.contains("\"cancellation_candidate\":true"));
+        if relative == "ledger/journal.fssj" {
+            assert!(status.contains("\"ledger_journal_present\":false"));
+            assert!(status.contains(OPERATION));
+        } else {
+            assert!(status.contains("\"effect_journal_present\":false"));
+            assert!(status.contains("\"operation_count\":0"));
+        }
+        let lookup = success(invoke(
+            &dir.0,
+            "status",
+            &["--operation-id", "operation:possibly-in-missing-history"],
+        )?)?;
+        assert!(
+            lookup.contains("\"requested_operation_id\":\"operation:possibly-in-missing-history\"")
+        );
+        assert!(lookup.contains("\"operation_lookup\":\"unknown_beyond_committed_prefix\""));
+        assert_eq!(before, files(&dir.0)?);
+    }
     Ok(())
 }
 
@@ -268,6 +411,13 @@ fn incomplete_tail_is_visible_and_never_makes_a_cancellation_candidate() -> Test
     assert!(status.contains("\"effect_tail_uncommitted\":true"));
     assert!(status.contains("unknown_beyond_committed_prefix"));
     assert!(status.contains("\"cancellation_candidate\":false"));
+    let lookup = success(invoke(
+        &dir.0,
+        "status",
+        &["--operation-id", "operation:possibly-in-uncommitted-tail"],
+    )?)?;
+    assert!(lookup.contains("\"operation_lookup\":\"unknown_beyond_committed_prefix\""));
+    assert!(lookup.contains("operation:possibly-in-uncommitted-tail"));
     assert_eq!(before, files(&dir.0)?);
     Ok(())
 }
