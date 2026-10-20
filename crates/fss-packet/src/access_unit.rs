@@ -205,8 +205,9 @@ pub struct AccessUnitAssembler {
 impl AccessUnitAssembler {
     /// Opens an assembler with explicit budgets.
     #[must_use]
-    pub fn new(limits: AccessUnitLimits) -> Self {
-        Self {
+    pub fn new(limits: AccessUnitLimits) -> Result<Self, AccessUnitError> {
+        Self::validate_limits(&limits)?;
+        Ok(Self {
             limits,
             current: AccessUnit {
                 nals: Vec::new(),
@@ -216,7 +217,16 @@ impl AccessUnitAssembler {
             },
             saw_vcl: false,
             emitted: 0,
+        })
+    }
+
+    fn validate_limits(limits: &AccessUnitLimits) -> Result<(), AccessUnitError> {
+        if limits.max_nals == 0 || limits.max_bytes == 0 {
+            return Err(AccessUnitError::TooManyNals {
+                maximum: limits.max_nals,
+            });
         }
+        Ok(())
     }
 
     /// Total access units emitted so far.

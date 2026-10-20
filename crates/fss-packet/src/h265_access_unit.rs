@@ -125,8 +125,9 @@ pub struct H265AccessUnitAssembler {
 impl H265AccessUnitAssembler {
     /// Opens an assembler with explicit budgets.
     #[must_use]
-    pub fn new(limits: H265AccessUnitLimits) -> Self {
-        Self {
+    pub fn new(limits: H265AccessUnitLimits) -> Result<Self, H265AccessUnitError> {
+        Self::validate_limits(&limits)?;
+        Ok(Self {
             limits,
             current: H265AccessUnit {
                 nals: Vec::new(),
@@ -138,7 +139,16 @@ impl H265AccessUnitAssembler {
             },
             saw_vcl: false,
             emitted: 0,
+        })
+    }
+
+    fn validate_limits(limits: &H265AccessUnitLimits) -> Result<(), H265AccessUnitError> {
+        if limits.max_nals == 0 || limits.max_bytes == 0 {
+            return Err(H265AccessUnitError::TooManyNals {
+                maximum: limits.max_nals,
+            });
         }
+        Ok(())
     }
 
     /// Total access units emitted so far.

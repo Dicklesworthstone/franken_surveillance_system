@@ -29,7 +29,7 @@ fn simple_nal(kind: u8) -> Vec<u8> {
 /// splits; continuation segments (bit clear) never split.
 #[test]
 fn p1_first_slice_boundary() -> Result<(), Box<dyn std::error::Error>> {
-    let mut asm = H265AccessUnitAssembler::new(H265AccessUnitLimits::default());
+    let mut asm = H265AccessUnitAssembler::new(H265AccessUnitLimits::default())?;
     asm.push(&nal(1, true))?; // first slice of picture 1
     assert!(asm.push(&nal(1, false))?.is_none(), "continuation attaches");
     let done = asm
@@ -48,7 +48,7 @@ fn p1_first_slice_boundary() -> Result<(), Box<dyn std::error::Error>> {
 /// after VCL data split (parameter sets belong to the NEXT picture).
 #[test]
 fn p2_aud_and_param_boundaries() -> Result<(), Box<dyn std::error::Error>> {
-    let mut asm = H265AccessUnitAssembler::new(H265AccessUnitLimits::default());
+    let mut asm = H265AccessUnitAssembler::new(H265AccessUnitLimits::default())?;
     asm.push(&nal(1, true))?;
     asm.push(&simple_nal(39))?; // SEI attaches
     assert!(asm.push(&simple_nal(33))?.is_some(), "SPS after VCL splits");
@@ -70,7 +70,7 @@ fn p2_aud_and_param_boundaries() -> Result<(), Box<dyn std::error::Error>> {
 /// distinct from an ordinary trailing picture.
 #[test]
 fn p3_idr_cra_marking() -> Result<(), Box<dyn std::error::Error>> {
-    let mut asm = H265AccessUnitAssembler::new(H265AccessUnitLimits::default());
+    let mut asm = H265AccessUnitAssembler::new(H265AccessUnitLimits::default())?;
     asm.push(&simple_nal(32))?;
     asm.push(&simple_nal(33))?;
     asm.push(&simple_nal(34))?;
@@ -99,7 +99,7 @@ fn p4_budgets_and_atomicity() -> Result<(), Box<dyn std::error::Error>> {
     let mut asm = H265AccessUnitAssembler::new(H265AccessUnitLimits {
         max_nals: 2,
         max_bytes: 1_000,
-    });
+    })?;
     assert_eq!(asm.push(&[0x26]), Err(H265AccessUnitError::TruncatedHeader));
     asm.push(&nal(1, true))?;
     asm.push(&nal(1, false))?;
@@ -131,8 +131,8 @@ fn p5_determinism() -> Result<(), Box<dyn std::error::Error>> {
             nal(1, true),
         ]
     };
-    let mut a = H265AccessUnitAssembler::new(H265AccessUnitLimits::default());
-    let mut b = H265AccessUnitAssembler::new(H265AccessUnitLimits::default());
+    let mut a = H265AccessUnitAssembler::new(H265AccessUnitLimits::default())?;
+    let mut b = H265AccessUnitAssembler::new(H265AccessUnitLimits::default())?;
     let mut aus_a = Vec::new();
     let mut aus_b = Vec::new();
     for n in stream() {

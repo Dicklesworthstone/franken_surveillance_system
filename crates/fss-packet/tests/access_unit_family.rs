@@ -55,7 +55,7 @@ fn nal(kind: u8) -> Vec<u8> {
 /// splits; continuation slices (first_mb > 0) never split.
 #[test]
 fn p1_first_vcl_boundary() -> Result<(), Box<dyn std::error::Error>> {
-    let mut asm = AccessUnitAssembler::new(AccessUnitLimits::default());
+    let mut asm = AccessUnitAssembler::new(AccessUnitLimits::default())?;
     // Picture 1: first slice (mb 0), then a continuation slice (mb 5).
     assert!(asm.push(&slice(0))?.is_none());
     assert!(asm.push(&slice(5))?.is_none());
@@ -75,7 +75,7 @@ fn p1_first_vcl_boundary() -> Result<(), Box<dyn std::error::Error>> {
 /// VCL data split (parameter sets belong to the NEXT picture).
 #[test]
 fn p2_aud_and_param_set_boundaries() -> Result<(), Box<dyn std::error::Error>> {
-    let mut asm = AccessUnitAssembler::new(AccessUnitLimits::default());
+    let mut asm = AccessUnitAssembler::new(AccessUnitLimits::default())?;
     asm.push(&slice(0))?;
     asm.push(&nal(6))?; // SEI attaches
     assert!(asm.push(&nal(7))?.is_some(), "SPS after VCL splits");
@@ -91,7 +91,7 @@ fn p2_aud_and_param_set_boundaries() -> Result<(), Box<dyn std::error::Error>> {
 /// ids are parsed and deduplicated.
 #[test]
 fn p3_idr_and_parameter_ids() -> Result<(), Box<dyn std::error::Error>> {
-    let mut asm = AccessUnitAssembler::new(AccessUnitLimits::default());
+    let mut asm = AccessUnitAssembler::new(AccessUnitLimits::default())?;
     asm.push(&nal(7))?; // SPS id 0 prefix (ue(0)='1')
     asm.push(&[0xE8, 0xC0])?; // PPS: ue(0) ue(0) -> pps 0 referencing sps 0
     asm.push(&[0x65, 0xFF])?; // IDR slice (type 5), first_mb 0
@@ -118,7 +118,7 @@ fn p4_budgets() -> Result<(), Box<dyn std::error::Error>> {
     let mut asm = AccessUnitAssembler::new(AccessUnitLimits {
         max_nals: 2,
         max_bytes: 4,
-    });
+    })?;
     asm.push(&slice(0))?;
     asm.push(&slice(5))?;
     assert_eq!(
@@ -128,7 +128,7 @@ fn p4_budgets() -> Result<(), Box<dyn std::error::Error>> {
     let mut tiny = AccessUnitAssembler::new(AccessUnitLimits {
         max_nals: 10,
         max_bytes: 3,
-    });
+    })?;
     assert_eq!(
         tiny.push(&[0x41, 0xFF, 0xFF, 0xFF]),
         Err(AccessUnitError::TooManyBytes { maximum: 3 })
@@ -151,8 +151,8 @@ fn p5_determinism() -> Result<(), Box<dyn std::error::Error>> {
             vec![0x65, 0xFF],
         ]
     };
-    let mut a = AccessUnitAssembler::new(AccessUnitLimits::default());
-    let mut b = AccessUnitAssembler::new(AccessUnitLimits::default());
+    let mut a = AccessUnitAssembler::new(AccessUnitLimits::default())?;
+    let mut b = AccessUnitAssembler::new(AccessUnitLimits::default())?;
     let mut aus_a = Vec::new();
     let mut aus_b = Vec::new();
     for nal in stream() {
@@ -184,7 +184,7 @@ fn p6_budget_refusal_atomicity() -> Result<(), Box<dyn std::error::Error>> {
         max_nals: 2,
         max_bytes: 1_000,
     };
-    let mut asm = AccessUnitAssembler::new(limits);
+    let mut asm = AccessUnitAssembler::new(limits)?;
     asm.push(&slice(0))?;
     asm.push(&slice(5))?;
     // Third NAL in one AU exceeds max_nals=2 AND starts a new picture:
