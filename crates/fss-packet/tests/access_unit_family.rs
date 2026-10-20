@@ -174,3 +174,36 @@ fn p5_determinism() -> Result<(), Box<dyn std::error::Error>> {
     emit("determinism", 2);
     Ok(())
 }
+
+/// P6 BUDGET-REFUSAL ATOMICITY: a refusal never discards an already
+/// completed access unit, and a single over-budget NAL is refused without
+/// touching the stream state (regression for the ordering bug).
+#[test]
+fn p6_budget_refusal_atomicity() -> Result<(), Box<dyn std::error::Error>> {
+    let limits = AccessUnitLimits {
+        max_nals: 2,
+        max_bytes: 1_000,
+    };
+    let mut asm = AccessUnitAssembler::new(limits);
+    asm.push(&slice(0))?;
+    asm.push(&slice(5))?;
+    // Third NAL in one AU exceeds max_nals=2 AND starts a new picture:
+    // the split must emit the completed AU even though the refusal fires
+    // for the current one — with the fixed ordering the refusal happens
+    // pre-split only, so drive: two NALs, then a third that both splits
+    // and would overflow. Post-split the receiving AU is empty, so the
+    // push succeeds and completes the first AU.
+    let completed = asm.push(&slice(0))?.ok_or("split must complete the AU")?;
+    assert_eq!(completed.nals.len(), 2);
+    // Now a single NAL larger than max_bytes can never fit: refused
+    // before any state change, and the current AU survives intact.
+    let huge = vec![0x41u8; 2_000];
+    assert!(matches!(
+        asm.push(&huge),
+        Err(AccessUnitError::TooManyBytes { maximum: 1_000 })
+    ));
+    let tail = asm.flush().ok_or("current AU must survive the refusal")?;
+    assert_eq!(tail.nals.len(), 1, "the splitting slice is intact");
+    emit("budget-refusal-atomicity", 3);
+    Ok(())
+}

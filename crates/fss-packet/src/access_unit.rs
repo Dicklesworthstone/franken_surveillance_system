@@ -234,6 +234,13 @@ impl AccessUnitAssembler {
         let kind = nal_type(nal).ok_or(AccessUnitError::TooManyNals {
             maximum: self.limits.max_nals,
         })?;
+        // A single NAL larger than the byte budget can never fit ANY
+        // access unit: refuse before any state changes.
+        if nal.len() > self.limits.max_bytes {
+            return Err(AccessUnitError::TooManyBytes {
+                maximum: self.limits.max_bytes,
+            });
+        }
         let starts_new = match kind {
             9 => true,
             7 | 8 => self.saw_vcl,
@@ -248,6 +255,23 @@ impl AccessUnitAssembler {
             }
             _ => false,
         };
+        // AU-level budgets are checked BEFORE the split decision: after a
+        // split the receiving AU is empty (the prechecked single NAL
+        // always fits), so a refusal here can only fire pre-split and
+        // leaves the assembler untouched — a completed AU is never
+        // discarded by a budget refusal.
+        if !starts_new {
+            if self.current.nals.len() >= self.limits.max_nals {
+                return Err(AccessUnitError::TooManyNals {
+                    maximum: self.limits.max_nals,
+                });
+            }
+            if self.current_byte_total() + nal.len() > self.limits.max_bytes {
+                return Err(AccessUnitError::TooManyBytes {
+                    maximum: self.limits.max_bytes,
+                });
+            }
+        }
         let completed = if starts_new && !self.current.nals.is_empty() {
             let done = std::mem::replace(
                 &mut self.current,
@@ -264,16 +288,6 @@ impl AccessUnitAssembler {
         } else {
             None
         };
-        if self.current.nals.len() >= self.limits.max_nals {
-            return Err(AccessUnitError::TooManyNals {
-                maximum: self.limits.max_nals,
-            });
-        }
-        if self.current_byte_total() + nal.len() > self.limits.max_bytes {
-            return Err(AccessUnitError::TooManyBytes {
-                maximum: self.limits.max_bytes,
-            });
-        }
         if (1..=5).contains(&kind) {
             self.saw_vcl = true;
             if kind == 5 {
