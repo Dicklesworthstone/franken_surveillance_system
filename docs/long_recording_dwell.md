@@ -137,8 +137,13 @@ Repeat these authoring inputs with `--format report` to obtain
 `profile_file_digest`, which hashes the emitted profile including its final
 newline. Repeat the original complete dwell invocation with
 `--fusion-profile dwell-profile.json --fusion-digest "$PROFILE_FILE_DIGEST"`.
-This read-only invocation refuses event approval, coverage/health retention and
-incremental checkpoints. Those actions keep their separate existing contracts.
+This read-only invocation refuses event approval and coverage/health retention.
+An already complete incremental MJPEG checkpoint can supply the same trained analysis under
+its exact pins and original remaining allowances, with explicit cold reconstruction and no
+checkpoint append. Use that complete response's `event_report` identities to author the
+profile, then add the fusion pins to its continuation command; see
+[completed-checkpoint advice](incremental_dwell.md#calibrated-advice-from-a-completed-checkpoint).
+Fresh or partial incremental scans must finish in a separate invocation first.
 
 The original native episode, proposal, provenance, decoded-frame counters and
 classifier work remain unchanged. The result adds `calibrated_class_advice`

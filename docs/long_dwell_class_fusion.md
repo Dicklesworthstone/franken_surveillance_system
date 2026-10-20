@@ -117,11 +117,19 @@ report. A health-blocked scan cannot produce calibrated advice.
 
 Fusion cannot be combined with `--approve`, `--retain-health` or
 `--retain-coverage`. Parsing and execution both enforce that rule. The explicit
-`--dwell-step-frames` checkpoint path can defer native trained classification until the
-complete temporal boundary; see [incremental classification](incremental_dwell.md#finish-with-trained-classification).
-It still excludes calibrated fusion, and partial prefixes have no complete episode inventory. Existing complete
-dwell publication, checkpoint continuation, short sampled dwell, whole-recording
-entry fusion and paired-entry corroboration keep their separate owners.
+`--dwell-step-frames` path can defer native trained classification until the complete temporal
+boundary. An already complete checkpoint can then produce read-only calibrated advice; see
+[completed-checkpoint advice](incremental_dwell.md#calibrated-advice-from-a-completed-checkpoint).
+Use the complete response's `event_report` identities to author the profile, then append its
+exact file pins to that response's continuation command. The original checkpoint is cold
+reconstructed and the terminal classifier executes under the original remaining ceilings;
+fusion consumes those class records without another inference pass. The invocation advances
+zero new positions and appends no checkpoint or event. Partial prefixes have no complete
+episode inventory and are refused even when one more step could finish them. The complete
+progress wrapper contains `event_report.calibrated_class_advice` and is subject to the same
+2 MiB output bound, including its final newline. Existing dwell publication, checkpoint
+advancement, short sampled dwell, whole-recording entry fusion and paired-entry corroboration
+keep their separate owners.
 
 The real-process contracts cover late MJPEG episodes beyond frame 128, AVC and
 HEVC display-order scans, exact native work and proposal preservation, skipped

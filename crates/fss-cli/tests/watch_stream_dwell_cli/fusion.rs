@@ -8,6 +8,9 @@ use fss_cli::json_input::{Value, parse};
 use fss_fusion::{FusionPolicy, LlrInterval, ScoreCalibration, Severity};
 use std::collections::BTreeSet;
 
+#[path = "fusion/incremental.rs"]
+mod incremental;
+
 const PACKAGE: &[u8] = include_bytes!(concat!(
     env!("CARGO_MANIFEST_DIR"),
     "/../../models/yolox-nano/yolox_nano.fmpk"

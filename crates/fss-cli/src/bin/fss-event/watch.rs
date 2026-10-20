@@ -41,7 +41,8 @@
 //! `--dwell-step-frames N` advances a bounded MJPEG prefix and retains an immutable source-bound
 //! checkpoint. Its emitted continuation names both exact checkpoint pins and explicitly admits
 //! the cold prefix reconstruction with `--dwell-restore-max-frames`. A partial prefix emits no
-//! completed dwell event. Existing final proposal approvals remain required.
+//! completed dwell event. Exact completed checkpoints can instead supply read-only calibrated
+//! advice without another checkpoint append. Existing final proposal approvals remain required.
 //! Screened whole-recording reports separately offer `--retain-health` for source-bound
 //! historical diagnostics, including runs with no candidate or a blocking health finding.
 
@@ -330,7 +331,14 @@ pub(super) fn parse(args: &[OsString]) -> Result<WatchAction, String> {
     let cascade = super::detector::parse(&values)?;
     super::detector::check_watch_fusion_mode(
         cascade.as_ref(),
-        !values.iter().any(|(key, _)| key == "--dwell-step-frames"),
+        !values.iter().any(|(key, _)| key == "--dwell-step-frames")
+            || [
+                "--dwell-checkpoint",
+                "--dwell-checkpoint-root",
+                "--dwell-restore-max-frames",
+            ]
+            .iter()
+            .all(|required| values.iter().any(|(key, _)| key == required)),
         values.iter().any(|(key, _)| {
             ["--approve", "--retain-coverage", "--retain-health"].contains(&key.as_str())
         }),
@@ -516,7 +524,9 @@ pub(super) fn run(
 ) -> RunResult<()> {
     super::detector::check_watch_fusion_mode(
         action.cascade.as_ref(),
-        action.incremental.is_none(),
+        action
+            .incremental
+            .is_none_or(|options| action.stream_dwell.is_some() && options.has_checkpoint()),
         !action.approvals.is_empty()
             || action.retain_coverage.is_some()
             || action.retain_health.is_some(),
@@ -998,7 +1008,9 @@ fn run_streaming(
     }
     super::detector::check_watch_fusion_mode(
         action.cascade.as_ref(),
-        action.incremental.is_none(),
+        action
+            .incremental
+            .is_none_or(|options| options.has_checkpoint()),
         !action.approvals.is_empty() || action.retain_health.is_some(),
     )?;
     if action.incremental.is_some() {

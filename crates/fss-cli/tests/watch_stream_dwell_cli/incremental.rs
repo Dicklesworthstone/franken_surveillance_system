@@ -4,6 +4,7 @@
 use super::*;
 use fss_cli::json_input::{Value, parse};
 
+#[path = "incremental/classifier.rs"]
 mod classifier;
 
 fn member<'a>(value: &'a Value, key: &str) -> Test<&'a Value> {

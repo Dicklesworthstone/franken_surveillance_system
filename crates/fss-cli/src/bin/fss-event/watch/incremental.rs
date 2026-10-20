@@ -2,9 +2,11 @@
 //! Operator scheduling and exact cold continuation for the native incremental dwell owner.
 
 use super::*;
+use fss_cli::event_fusion::{EventFusionProfile, MAX_REPORT_BYTES};
 use fss_reference::ingest::long_dwell::LongDwellDetector;
 use fss_reference::ingest::long_dwell::incremental::{
-    DwellCheckpointPin, DwellRestoreLimits, PreparedIncrementalDwell, RetainedDwellCheckpoint,
+    DwellCheckpointPin, DwellRestoreLimits, DwellWork, PreparedIncrementalDwell,
+    RetainedDwellCheckpoint,
 };
 
 #[derive(Clone, Copy, Debug)]
@@ -12,6 +14,13 @@ pub(super) struct StepOptions {
     step_frames: usize,
     checkpoint: Option<DwellCheckpointPin>,
     restore_maximum_frames: usize,
+}
+
+impl StepOptions {
+    /// Syntax-level admission only; the retained native prefix must still prove completeness.
+    pub(super) const fn has_checkpoint(self) -> bool {
+        self.checkpoint.is_some()
+    }
 }
 
 pub(super) fn parse(
@@ -34,10 +43,8 @@ pub(super) fn parse(
             "incremental options require --stream-dwell and --dwell-step-frames".to_owned(),
         );
     }
-    if health_screen || has("--fusion-profile") || has("--fusion-digest") {
-        return Err(
-            "incremental dwell excludes sensor-health and calibrated fusion modes".to_owned(),
-        );
+    if health_screen {
+        return Err("incremental dwell excludes sensor-health screening".to_owned());
     }
     let step_frames = number(values, "--dwell-step-frames", 0_usize)?;
     if !(1..=MAX_LONG_DWELL_FRAMES).contains(&step_frames) {
@@ -69,6 +76,12 @@ pub(super) fn parse(
     } else if has("--dwell-restore-max-frames") {
         return Err("restore admission requires an exact dwell checkpoint".to_owned());
     }
+    if (has("--fusion-profile") || has("--fusion-digest")) && checkpoint.is_none() {
+        return Err(
+            "calibrated fusion: incremental dwell is unsupported without an exact completed checkpoint"
+                .to_owned(),
+        );
+    }
     Ok(Some(StepOptions {
         step_frames,
         checkpoint,
@@ -90,17 +103,29 @@ pub(super) fn run(
     out: &mut impl Write,
 ) -> RunResult<()> {
     let options = action.incremental.ok_or(WatchError::Conflict)?;
+    // Syntax admission never proves completeness or grants checkpoint/event authority.
+    super::super::detector::check_watch_fusion_mode(
+        action.cascade.as_ref(),
+        options.has_checkpoint(),
+        !action.approvals.is_empty()
+            || action.retain_health.is_some()
+            || action.retain_coverage.is_some(),
+    )?;
     if action.health_screen || action.retain_health.is_some() || action.retain_coverage.is_some() {
         return Err(WatchError::InvalidPlan(
             "incremental dwell excludes sensor-health and coverage retention",
         )
         .into());
     }
-    super::super::detector::check_watch_fusion_mode(
-        action.cascade.as_ref(),
-        false,
-        !action.approvals.is_empty(),
-    )?;
+    // Both preparation and checkpoint opening read source custody. Admit the bounded,
+    // exact profile and temporal scope before either source owner or the model is touched.
+    let fusion_profile = super::super::detector::load_fusion(action.cascade.as_ref(), cx)?;
+    if fusion_profile
+        .as_ref()
+        .is_some_and(|profile| profile.long_dwell_analysis_root().is_none())
+    {
+        return Err(EventFusionError::Scope.into());
+    }
     let count = match action.segment_count {
         Some(count) => count,
         None => {
@@ -152,6 +177,19 @@ pub(super) fn run(
         )
         .into());
     }
+    if let Some(profile) = &fusion_profile {
+        return run_completed_fusion(
+            action,
+            deployment,
+            root,
+            saved.as_ref().ok_or(EventFusionError::Scope)?,
+            &restore,
+            profile,
+            cx,
+            scalar,
+            out,
+        );
+    }
     let prefix = saved
         .as_ref()
         .map_or(0, |checkpoint| checkpoint.prefix_work().source_positions);
@@ -169,15 +207,7 @@ pub(super) fn run(
     let restoration = running.restoration_work();
     let complete = running.complete();
     let pin = running.retain(deployment, cx)?;
-    let continuation = format!(
-        "{} --dwell-checkpoint {} --dwell-checkpoint-root {} --dwell-restore-max-frames {}",
-        action.rerun, pin.record_digest, pin.provenance_root, work.source_positions,
-    );
-    if continuation.len() > 8192 {
-        return Err(
-            WatchError::InvalidPlan("incremental continuation exceeds command bound").into(),
-        );
-    }
+    let continuation = continuation_command(action, pin, work.source_positions)?;
     let event_report = if complete {
         let mut report = running.finish(deployment, cx)?;
         if let Some(options) = &action.cascade {
@@ -207,6 +237,71 @@ pub(super) fn run(
     } else {
         None
     };
+    let output = render_progress(
+        action,
+        Progress {
+            pin,
+            work,
+            restoration,
+            prefix,
+            count,
+            complete,
+            continuation,
+            event_report,
+        },
+        1024 * 1024 + 16 * 1024,
+    )?;
+    if let Some(path) = &action.report_out {
+        export(path, output.as_bytes(), root, cx)?;
+    }
+    out.write_all(output.as_bytes())?;
+    Ok(())
+}
+
+fn continuation_command(
+    action: &WatchAction,
+    pin: DwellCheckpointPin,
+    source_positions: usize,
+) -> RunResult<String> {
+    let command = format!(
+        "{} --dwell-checkpoint {} --dwell-checkpoint-root {} --dwell-restore-max-frames {}",
+        action.rerun, pin.record_digest, pin.provenance_root, source_positions,
+    );
+    if command.len() > 8192 {
+        return Err(
+            WatchError::InvalidPlan("incremental continuation exceeds command bound").into(),
+        );
+    }
+    Ok(command)
+}
+
+/// Rendering shares the existing progress schema without changing ordinary scheduling output.
+struct Progress {
+    pin: DwellCheckpointPin,
+    work: DwellWork,
+    restoration: DwellWork,
+    prefix: usize,
+    count: usize,
+    complete: bool,
+    continuation: String,
+    event_report: Option<String>,
+}
+
+fn render_progress(
+    action: &WatchAction,
+    progress: Progress,
+    maximum_bytes: usize,
+) -> RunResult<String> {
+    let Progress {
+        pin,
+        work,
+        restoration,
+        prefix,
+        count,
+        complete,
+        continuation,
+        event_report,
+    } = progress;
     let mut output = format!(
         concat!(
             "{{\"schema\":\"fss.incremental_dwell_progress.v1\",\"status\":{},",
@@ -253,12 +348,90 @@ pub(super) fn run(
         output.push_str(&report);
     }
     output.push_str("}\n");
-    if output.len() > 1024 * 1024 + 16 * 1024 {
+    if output.len() > maximum_bytes {
         return Err(WatchError::Limit.into());
     }
+    Ok(output)
+}
+
+/// A complete checkpoint supplies an immutable temporal result, not permission to append
+/// another prefix or publish an event. The shared deployment borrow preserves that boundary.
+#[allow(clippy::too_many_arguments)]
+fn run_completed_fusion(
+    action: &WatchAction,
+    deployment: &ReferenceDeployment,
+    root: &Path,
+    saved: &RetainedDwellCheckpoint,
+    restore: &DwellRestoreLimits,
+    profile: &EventFusionProfile,
+    cx: &ReplayCx,
+    scalar: &ScalarExecCx,
+    out: &mut impl Write,
+) -> RunResult<()> {
+    super::super::detector::check_watch_fusion_mode(
+        action.cascade.as_ref(),
+        true,
+        !action.approvals.is_empty()
+            || action.retain_health.is_some()
+            || action.retain_coverage.is_some(),
+    )?;
+    // Tolerated decode refusals still consume positions. A step which could finish a partial
+    // prefix is insufficient: advice cannot advance or retain any new temporal work.
+    let count = saved.prepared().plan().segment_count;
+    if saved.prefix_work().source_positions != count {
+        return Err(WatchError::InvalidPlan(
+            "calibrated incremental dwell requires an already complete checkpoint",
+        )
+        .into());
+    }
+    let options = action.cascade.as_ref().ok_or(EventFusionError::Scope)?;
+    // Refuse a bad archive before paying for complete cold-prefix reconstruction.
+    let (package, archive) = super::super::detector::load_with_archive(options, cx, scalar)?;
+    let detector = LongDwellDetector::new(
+        &package,
+        &archive,
+        options.config,
+        PackageDetectLimits::default(),
+        scalar,
+    )?;
+    let running = saved.resume(deployment, restore, cx)?;
+    let work = running.work();
+    let restoration = running.restoration_work();
+    let pin = saved.pin();
+    let continuation = continuation_command(action, pin, work.source_positions)?;
+    let mut report = running.finish(deployment, cx)?;
+    report.classify_with_detector(deployment, &detector, cx)?;
+    let fusion = EventFusionReport::long_dwell(&report, &package, profile, deployment, cx)?;
+    let event_report = super::super::detector::with_fusion(
+        report.to_json(
+            deployment.current_anchor().commit_sequence,
+            Some(&continuation),
+        )?,
+        Some(&fusion),
+    )?;
+    // The inner join is bounded too, but the progress metadata and final newline are part
+    // of the delivered document and must fit the same complete-output admission.
+    let output = render_progress(
+        action,
+        Progress {
+            pin,
+            work,
+            restoration,
+            prefix: work.source_positions,
+            count,
+            complete: true,
+            continuation,
+            event_report: Some(event_report),
+        },
+        MAX_REPORT_BYTES,
+    )?;
+    report.revalidate_derived_source(deployment, cx)?;
+    cx.checkpoint("incremental_dwell_fusion:output")?;
     if let Some(path) = &action.report_out {
         export(path, output.as_bytes(), root, cx)?;
     }
+    report.revalidate_derived_source(deployment, cx)?;
+    cx.checkpoint("incremental_dwell_fusion:stdout")?;
     out.write_all(output.as_bytes())?;
     Ok(())
 }

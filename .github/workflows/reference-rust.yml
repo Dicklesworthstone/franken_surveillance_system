@@ -236,5 +236,6 @@ jobs:
           crates/fss-cli/tests/watch_stream_detector_cli/fusion.rs
           crates/fss-cli/tests/watch_stream_detector_cli/fusion/dwell.rs
           crates/fss-cli/tests/watch_stream_dwell_cli/incremental/classifier.rs
+          crates/fss-cli/tests/watch_stream_dwell_cli/fusion/incremental.rs
           crates/fss-reference/src/ingest/long_dwell/classify.rs
           crates/fss-reference/src/ingest/long_dwell/tests/classify.rs

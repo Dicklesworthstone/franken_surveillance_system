@@ -204,7 +204,8 @@ pub(super) fn check_fusion_mode(
 }
 
 /// Short entry, sampled dwell and complete whole-recording watch/dwell have explicit adapters.
-/// Incremental checkpoints are incomplete temporal scans and cannot produce class advice.
+/// Incremental advice additionally requires an exact, already complete checkpoint; its caller
+/// verifies completion before native reconstruction and never advances or retains a new prefix.
 /// Reuse the read-only authority gate without broadening corroborate's admission.
 pub(super) fn check_watch_fusion_mode(
     options: Option<&DetectorOptions>,
@@ -213,7 +214,7 @@ pub(super) fn check_watch_fusion_mode(
 ) -> Result<(), String> {
     if !supported_window && options.is_some_and(|options| options.fusion.is_some()) {
         return Err(
-            "calibrated watch fusion requires a complete analysis; incremental dwell is unsupported"
+            "calibrated watch fusion requires a complete analysis; incremental dwell is unsupported without an exact completed checkpoint"
                 .to_owned(),
         );
     }
@@ -230,8 +231,7 @@ pub(super) fn load_fusion(
         return Ok(None);
     };
     cx.checkpoint("event_fusion:profile_read")?;
-    let metadata =
-        fs::symlink_metadata(&options.profile).map_err(|_| EventFusionError::Profile)?;
+    let metadata = fs::symlink_metadata(&options.profile).map_err(|_| EventFusionError::Profile)?;
     if !metadata.file_type().is_file() {
         return Err(EventFusionError::Profile.into());
     }
@@ -372,7 +372,10 @@ mod fusion_tests {
     fn fusion_join_prices_the_whole_report_including_newline() {
         let fixed = join_fusion("{}", "{}").unwrap().len() + 1;
         let advice = format!("{{{}}}", " ".repeat(MAX_REPORT_BYTES - fixed));
-        assert_eq!(join_fusion("{}", &advice).unwrap().len() + 1, MAX_REPORT_BYTES);
+        assert_eq!(
+            join_fusion("{}", &advice).unwrap().len() + 1,
+            MAX_REPORT_BYTES
+        );
         assert_eq!(
             join_fusion("{}", &(advice + " ")),
             Err(EventFusionError::Limit),

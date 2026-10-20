@@ -162,7 +162,8 @@ const HELP: &str = "fss-event <report|prepare|publish|read|verify|watch|corrobor
     coverage/health retention in the same invocation; no class-absence or effect authority.\n\
     Whole-recording dwell uses a version-four profile with long_dwell_analysis_root, bound to its\n\
     complete dwell analysis and retained detector recipe. It preserves sampled occupancy, gaps,\n\
-    omitted inferences and one-sensor dependence; incremental checkpoints cannot use fusion.\n\
+    omitted inferences and one-sensor dependence. Completed incremental checkpoints can supply\n\
+    the same exact analysis through their read-only advice path; partial prefixes are refused.\n\
     Author with fss-fusion-profile --scope dwell. Two-camera scans use version three below.\n\
     Bounded MJPEG dwell continuation: --stream-dwell --dwell-step-frames N (1..65536).\n\
     Supply the explicit dwell duration/gap rule. Each step retains a native temporal checkpoint\n\
@@ -171,7 +172,9 @@ const HELP: &str = "fss-event <report|prepare|publish|read|verify|watch|corrobor
     original scan allowances. Partial steps defer any requested detector package; complete\n\
     steps verify it and classify qualifying episodes under the original remaining budgets.\n\
     Complete reports supply exact trained publish commands; checkpointing grants no event or\n\
-    alert approval. Incremental mode excludes inter-coded sources, health and calibrated fusion.\n\
+    alert approval. Incremental mode excludes inter-coded sources and health. To request class\n\
+    advice, add exact dwell fusion-profile/digest pins to a completed checkpoint continuation.\n\
+    Its cold restore and classifier are explicit; no checkpoint or event is appended.\n\
   corroborate (two recordings, two sensors): --camera NAME:sha256:IMPORT (exactly twice)\n\
           --ground NAME:h11,h12,h13,h21,h22,h23,h31,h32,h33 (one per camera; image pixels ->\n\
           ground units; an owner assertion like a zone, NOT a calibration certificate)\n\

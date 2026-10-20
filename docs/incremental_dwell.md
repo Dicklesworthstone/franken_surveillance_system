@@ -122,6 +122,50 @@ event publication command still requires its explicit model input. The event rem
 Unclassified, Indeterminate and Hold; these annotations grant no alert or class-absence
 authority.
 
+## Calibrated advice from a completed checkpoint
+
+After the terminal trained stage succeeds, its complete response supplies the native
+`event_report` and an exact `continuation_command`. Author a
+[dwell-scoped fusion profile](long_dwell_class_fusion.md) from
+`event_report.analysis_digest`, `event_report.analysis_root` and
+`event_report.detector_cascade.recipe_digest`, using explicit applicable labelled counts.
+
+Execute that completed checkpoint's continuation command with the same detector options and
+append the exact profile pins:
+
+```text
+--fusion-profile dwell-profile.json --fusion-digest sha256:EXACT_PROFILE_FILE_DIGEST
+```
+
+The checkpoint must already cover the full original range. A fresh incremental request or a
+partial prefix is refused, even if its selected step could finish the remaining positions.
+Finish and retain that temporal scan in a separate invocation first. Fusion also refuses
+event approval, health/coverage retention and incremental health screening.
+
+This invocation opens the exact retained checkpoint, reconstructs its complete prefix under
+`--dwell-restore-max-frames`, finishes the native report and executes the requested terminal
+classifier under the original remaining scan ceilings. The fusion adapter then consumes those
+class records without another inference pass. It processes no new temporal positions, appends
+no checkpoint and publishes no event. The response keeps the original checkpoint pins, reports
+`new_source_positions: 0` and exposes the full cold reconstruction cost separately.
+
+The profile file digest and whole-dwell scope are checked before checkpoint/source or model
+work. After checkpoint completeness is admitted, the package is verified before cold replay.
+Native reconstruction must reproduce the exact checkpoint. After reconstruction and
+classification, the complete trained analysis, source root and detector recipe must match the
+profile. Source custody, current privacy, principal and the current analysis basis are
+revalidated for advice and immediately before each output delivery. Missing custody, a changed
+recipe or exhausted original allowance refuses the complete result.
+
+The response adds `event_report.calibrated_class_advice`, using the existing version-four
+dwell advice schema. Native episode/proposal fields and publication hints remain intact; the
+continuation and approval commands omit fusion so publication stays a separate operation.
+The complete progress response with advice, including its final newline, is bounded to 2 MiB.
+Existing model-free and trained progress responses retain their original 1 MiB plus 16 KiB
+bound. Calibrated advice adds no event, absence, continuous-occupancy or alert authority.
+Each explicit repeat pays cold reconstruction and terminal-classifier costs again; a checkpoint
+does not cache trained inference or make repeated observations independent.
+
 ## Admission and accounting
 
 | Option | Contract |
@@ -207,15 +251,17 @@ native owner or cached metadata never repairs a missing published checkpoint bod
 Partitioned imports are explicitly refused before native decoding. Their aggregate metadata
 names typed part roots which are not graph children; the first checkpoint format deliberately
 does not claim that retaining only the aggregate closes all part custody. H.264/H.265
-checkpoint continuation, sensor-health screening, health retention, coverage retention and
-calibrated fusion are also refused in incremental mode. Trained packages run only at the
-completed temporal boundary described above. Existing whole-recording paths retain their
-supported codec, health and fusion capabilities.
+checkpoint continuation, sensor-health screening, health retention and coverage retention
+remain refused in incremental mode. Trained packages run only at the completed temporal
+boundary described above. Calibrated fusion requires an already complete, exactly pinned
+checkpoint and uses the separate read-only path; partial checkpoint advice is refused.
+Existing whole-recording paths retain their supported codec, health and fusion capabilities.
 
 The capture-time assumptions, masked-zone exclusions, actual-match rule, misses, excessive time
 gaps and decode-refusal resets remain the existing dwell semantics. Scheduling boundaries add
 no resets or final samples. Neither a checkpoint nor a completed sampled-dwell hypothesis proves
-continuous occupancy, detection quality, absence, calibrated class evidence or alert authority.
+continuous occupancy, detection quality, absence or alert authority. Calibrated class advice
+requires its own applicable, explicitly pinned profile.
 This is bounded continuation over a completed recording; live camera acquisition, append-only
 source growth and an automatic long-running scheduling daemon are separate capabilities.
 
@@ -241,6 +287,12 @@ source, actor, privacy and health fences. Real CLI processes defer a missing pac
 128/256-frame prefixes, finish at 300, publish/retry exactly once, and execute retained-model
 replay after loose inputs disappear. Wrong-package and exhausted-budget attempts preserve the
 completed temporal checkpoint; untrained approvals remain invalid for trained candidates.
+
+Completed-checkpoint fusion regressions compare native results and advice with a one-shot
+analysis at the same authority basis, verify unchanged checkpoint pins and journals, refuse
+partial prefixes even when a step could finish them, and exercise empty inventories, stale
+profile/source/recipe bindings, explicit restoration limits and guarded output. These synthetic
+contracts do not qualify detector accuracy or field calibration.
 
 ```sh
 cargo test -p fss-reference --lib ingest::long_dwell::tests::incremental
