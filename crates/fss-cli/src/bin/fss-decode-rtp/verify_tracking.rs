@@ -3,17 +3,22 @@
 use super::super::detect_cmd::report_verification::{VerificationPath, arguments};
 use super::*;
 
+#[path = "tracking_route.rs"]
+mod tracking_route;
+
 pub(super) fn dispatch(args: &[OsString]) -> Option<ExitCode> {
-    if args.first().and_then(|v| v.to_str()) != Some("verify-tracks") {
+    if !tracking_route::is_report_verification(args) {
         return None;
     }
     if args.len() == 2 && matches!(args[1].to_str(), Some("--help" | "-h")) {
-        let help = "fss-decode-rtp verify-tracks --root DIR --site SITE --source-root sha256:HEX\n\
-  --custody current --package FILE --package-sha256 sha256:HEX\n\
+        let help = "fss-decode-rtp verify-track-report --root DIR --site SITE --source-root sha256:HEX\n\
+  --custody current --package FILE --package-sha256 sha256:HEX --class-index N\n\
   --report-in FILE --report-sha256 sha256:HEX\n\
   Supply the same explicit native decode, model threshold and class/tracker options as export.\n\
   --max-report-bytes bounds reads/comparison; no output paths are accepted.\n\
-  Only complete fresh native reproduction plus independent SHA-256 and exact EOF verifies.\n";
+  Only complete fresh native reproduction plus independent SHA-256 and exact EOF verifies.\n\
+  verify-tracks with --report-in/--report-sha256 remains a report-verification alias.\n\
+  verify-tracks with --tracks-in/--tracks-sha256 retains the original trajectory protocol.\n";
         return Some(match io::stdout().lock().write_all(help.as_bytes()) {
             Ok(()) => ExitCode::from(ExitIdentity::SUCCESS.code),
             Err(_) => ExitCode::from(ExitIdentity::RUNTIME_FAILURE.code),
