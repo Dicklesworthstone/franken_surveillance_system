@@ -85,6 +85,8 @@ pub mod media_fixture;
 mod model;
 pub mod model_receipt;
 pub mod optimized_executor;
+/// Exactly approved, event-linked original footage; separate from redacted metadata exports.
+pub mod original_media_export;
 mod outcome;
 mod packet_fault;
 /// Exact-graph peak-memory execution over the unchanged scalar kernel backend.

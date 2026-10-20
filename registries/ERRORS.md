@@ -538,6 +538,8 @@ or drifted IDs are rejected by the policy lane (`scripts/check-policy.py`).
 | `ERR-EXPORT-BOUND-001` | complete redacted export exceeds a registered bound | narrow the supported export request; nothing is truncated |
 | `ERR-EXPORT-CANCELLED-001` | export was cancelled before its authoritative commit | retry the exact request after reconciling any published root |
 | `ERR-EXPORT-STORAGE-001` | local root-last export publication or authority append failed | inspect local custody/recovery before retrying |
+| `ERR-EXPORT-MEDIA-PROFILE-001` | event or retained source does not meet the fixed complete video-only original-media disclosure profile | use an admitted native RTSP MP4 or omission-free MJPEG source and supported original long event; there is no mask or channel override |
+| `ERR-EXPORT-EXPIRED-001` | attested current-time interval reaches or crosses exclusive export expiry | obtain a new authorized expiry and preview the exact request again; existing plaintext copies are not erased |
 
 ## Process exit identity registry (EXIT)
 

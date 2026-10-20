@@ -528,6 +528,8 @@
   "crates/fss-reference/src/optimized_executor/layout.rs": "cognition",
   "crates/fss-reference/src/optimized_executor/pointwise.rs": "cognition",
   "crates/fss-reference/src/optimized_executor/tests.rs": "support",
+  "crates/fss-reference/src/original_media_export.rs": "support",
+  "crates/fss-reference/src/original_media_export/wire.rs": "support",
   "crates/fss-reference/src/outcome.rs": "support",
   "crates/fss-reference/src/outcome_tests.rs": "support",
   "crates/fss-reference/src/packet_fault.rs": "authority",

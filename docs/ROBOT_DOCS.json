@@ -1172,6 +1172,11 @@
       "id": "ERR-DEVICE-UNSUPPORTED-001"
     },
     {
+      "description": "Retaining an explicitly enrolled discovery sweep failed scope, immutable binding, bounded inventory, chronology, custody or publication admission",
+      "guidance": "Inspect the existing deployment and committed prefix. Preserve exact enrollment and sweep window/evidence for an interrupted retry; do not rebind an address, restage a conflicting visible root, repair corruption implicitly or claim media continuity from network return.",
+      "id": "ERR-DISCOVER-LIVENESS-001"
+    },
+    {
       "description": "doctor inspection detected deployment conditions requiring attention",
       "guidance": "inspect doctor report and follow next affordance",
       "id": "ERR-DOCTOR-ATTENTION-REQUIRED-001"
@@ -1265,6 +1270,16 @@
       "description": "retained export/event custody differs from the approved package",
       "guidance": "stop export and inspect deployment custody",
       "id": "ERR-EXPORT-CUSTODY-001"
+    },
+    {
+      "description": "attested current-time interval reaches or crosses exclusive export expiry",
+      "guidance": "obtain a new authorized expiry and preview the exact request again; existing plaintext copies are not erased",
+      "id": "ERR-EXPORT-EXPIRED-001"
+    },
+    {
+      "description": "event or retained source does not meet the fixed complete video-only original-media disclosure profile",
+      "guidance": "use an admitted native RTSP MP4 or omission-free MJPEG source and supported original long event; there is no mask or channel override",
+      "id": "ERR-EXPORT-MEDIA-PROFILE-001"
     },
     {
       "description": "event export request is malformed, unbounded, or has expiry not later than the event interval",
@@ -2230,6 +2245,11 @@
       "description": "region/process failed to drain",
       "guidance": "block shutdown/upgrade claim; force isolation path",
       "id": "ERR-QUIESCENCE-001"
+    },
+    {
+      "description": "The exact retained query, explicit image/lens interpretation, twin/atlas binding, bounded geometry work or cancellation boundary refused a complete pose proposal; retained package custody, unsupported partitioned sources or a native replay mismatch also refuse under this identity",
+      "guidance": "Correct the explicit source/model/grid binding or supply reviewed supported work limits; current privacy and original custody must still verify. An abstention or failed decode never activates calibration. Existing nested decode and privacy errors retain their own identities.",
+      "id": "ERR-RECORDED-LOCALIZATION-REFUSED-001"
     },
     {
       "description": "semantic decision fingerprint differs from proof",
@@ -3696,6 +3716,20 @@
       "schema": "fss.effect_reconciliation.v1"
     },
     {
+      "authority": "derived/configuration",
+      "compatibilityRule": "Owner: fss-cli::event_fusion::input. Exact-digest-verified JSON, at most 256 KiB. The required long_dwell_analysis_root binds one complete native whole-recording dwell analysis; plan_digest is its analysis digest and cascade_digest is its retained detector-recipe digest. Coverage must be empty and watch/corroboration scope fields must be absent. The profile retains the existing class, prior, decision policy, severity, look count, evidence-clock time and independently checked labelled-count calibration tables. Its identity includes the distinct whole-recording-dwell:sampled-episode-source-context-only:v1 discriminator, analysis root, 32-episode ceiling and shared 256-observation ceiling. Earlier profile versions retain their original identities; an analysis root cannot authorize coverage, continuous occupancy, calibration activation or effects.",
+      "file": "CLI input/output",
+      "id": "SCHEMA-EVENT-CLASS-FUSION-PROFILE-004",
+      "schema": "fss.event_class_fusion_profile.v4"
+    },
+    {
+      "authority": "derived/cognition",
+      "compatibilityRule": "Owner: fss-cli::event_fusion::dwell and render. Complete JSON, at most 2 MiB, for whole-recording-dwell:sampled-episode-source-context-only:v1. Binds the exact profile, current basis, native analysis digest/root, retained detector recipe/package, class and every episode's proposal, provenance and native class evidence. At most 32 episodes share one 256-observation allowance; omissions and uncalibrated observations consume that allowance, and an episode without observations still consumes one slot. Candidate and output limits admit the entire inventory or refuse, never return a successful prefix. Existing common-cause grouping and outward uncertainty bounds apply; source/capsule custody, current privacy, health and cancellation are rechecked before and after advice. Explicit coverage_witness_supplied=false and continuous_occupancy_certified=false; no event publication, approval or alert authority.",
+      "file": "CLI output",
+      "id": "SCHEMA-EVENT-CLASS-FUSION-REPORT-004",
+      "schema": "fss.event_class_fusion_report.v4"
+    },
+    {
       "authority": "authority",
       "compatibilityRule": "immutable revisions; evidence required after hypothesis; enum widening for relation additions (sensor_tamper, sensor_integrity_restoration)",
       "file": "schemas/event_hypothesis.v1.json",
@@ -3757,6 +3791,27 @@
       "file": "schemas/graph_algorithm_witness.v1.json",
       "id": "SCHEMA-GRAPH-WITNESS-001",
       "schema": "fss.graph_algorithm_witness.v1"
+    },
+    {
+      "authority": "derived/operator report",
+      "compatibilityRule": "preview versus approved recipe publication remains explicit; selected/observed source and incomplete input preserved; never capture completion or recording publication; incompatible meaning requires new version",
+      "file": "schemas/hevc_recipe_authoring.v1.json",
+      "id": "SCHEMA-HEVC-RECIPE-AUTHORING-001",
+      "schema": "fss.hevc_recipe_authoring.v1"
+    },
+    {
+      "authority": "operator input",
+      "compatibilityRule": "exact external file digest; original source prefix and parameter tuple; complete explicit timing schedule; unknown fields/versions and resource widening refuse; existing canonical HEVC recipe format unchanged",
+      "file": "schemas/hevc_recipe_draft.v1.json",
+      "id": "SCHEMA-HEVC-RECIPE-DRAFT-001",
+      "schema": "fss.hevc_recipe_draft.v1"
+    },
+    {
+      "authority": "derived progress",
+      "compatibilityRule": "Owner: fss-cli::fss-event::watch::incremental. Bounded JSON (1 MiB plus 16 KiB without calibrated advice) with exact checkpoint body/root pins, complete status, source cursor, remaining/new positions, all seven logical-scan and separately admitted cold-restoration counters, and an exact bounded continuation command. Cold replay is explicit; optional event_report appears only after the original full range completes and uses the existing long-dwell report/approval contract. When a terminal detector is explicitly requested, additive detector_stage and detector_request fields distinguish deferred_until_complete from a completed native stage and describe selection/inference bounds. Partial steps perform no model I/O; complete output requires verified terminal classification under the original remaining scan limits. Model-free output is unchanged. The checkpoint still contains temporal state only; failed terminal attempts preserve it and their retry costs are separately owned. Optional calibrated advice is admitted only from exact pins for an already complete checkpoint, with no new temporal positions, checkpoint append or event publication. It cold-reconstructs the complete native prefix and reruns the explicitly requested terminal classifier under the original remaining scan ceilings; fusion uses the existing version-four dwell profile/report contract. Additive event_report.calibrated_class_advice preserves native episode/proposal fields and separate publication hints. The entire progress wrapper with advice, including its final newline, is at most 2 MiB. Original progress responses without fusion retain their 1 MiB plus 16 KiB bound. Checkpoints are not events, absence certificates or alert authority. Changed meaning requires a new schema.",
+      "file": "CLI output",
+      "id": "SCHEMA-INCREMENTAL-DWELL-PROGRESS-001",
+      "schema": "fss.incremental_dwell_progress.v1"
     },
     {
       "authority": "investigation cognition",

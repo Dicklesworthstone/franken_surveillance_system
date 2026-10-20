@@ -42,6 +42,13 @@ jobs:
       - name: Verify owned multipart upload and uncertain acknowledgement recovery
         if: success() || failure()
         run: cargo +nightly-2026-08-31 test --no-fail-fast --locked --offline -p fss-object --test multipart_family --test uploader_family
+      - name: Verify approved original-footage export and offline custody
+        if: success() || failure()
+        run: |
+          export_exit=0
+          cargo +nightly-2026-08-31 test --locked --offline -p fss-reference --test original_media_export_contract || export_exit=1
+          cargo +nightly-2026-08-31 test --locked --offline -p fss-cli --bin fss-export --test rtsp_event_media_export_cli || export_exit=1
+          exit "$export_exit"
       - name: Verify deployment status inventory and bounded admission
         run: |
           cargo +nightly-2026-08-31 test --locked --offline -p fss-reference --lib deployment_status::tests

@@ -6,6 +6,9 @@ Status: implemented reference behavior; not production-qualified.
 current event revision. It publishes a new export root and authority record; it never exposes the
 live archive namespace and performs no network delivery.
 
+For playable footage, use the separately approved [`fss-export media` whole-source profile](ORIGINAL_MEDIA_EXPORT.md).
+The redacted event profile and its existing wire format remain unchanged.
+
 ## Preview and commit
 
 First read the event's current revision digest with the existing event/review tooling. Preview:
