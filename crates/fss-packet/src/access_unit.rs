@@ -204,7 +204,6 @@ pub struct AccessUnitAssembler {
 
 impl AccessUnitAssembler {
     /// Opens an assembler with explicit budgets.
-    #[must_use]
     pub fn new(limits: AccessUnitLimits) -> Result<Self, AccessUnitError> {
         Self::validate_limits(&limits)?;
         Ok(Self {

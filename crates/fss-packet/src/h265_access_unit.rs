@@ -124,7 +124,6 @@ pub struct H265AccessUnitAssembler {
 
 impl H265AccessUnitAssembler {
     /// Opens an assembler with explicit budgets.
-    #[must_use]
     pub fn new(limits: H265AccessUnitLimits) -> Result<Self, H265AccessUnitError> {
         Self::validate_limits(&limits)?;
         Ok(Self {
