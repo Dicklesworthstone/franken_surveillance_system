@@ -20,6 +20,8 @@
 //! (tag-based, hand-audited; distinct from any convenience JSON).
 
 pub mod memory;
+/// Provider conformance oracle (FSS-062).
+pub mod oracle;
 
 use fss_core::{CanonicalDecode, CanonicalDecoder, CanonicalEncode, CanonicalEncoder};
 use fss_core::{ContentDigest, TimestampNs};
