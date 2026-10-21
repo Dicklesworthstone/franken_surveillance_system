@@ -51,7 +51,7 @@ use crate::{
 };
 
 mod reader;
-mod source_validation;
+pub(in crate::ingest) mod source_validation;
 mod tracking;
 pub use reader::PackageEvent;
 pub use source_validation::PackageTrackingBoundary;
@@ -523,17 +523,17 @@ impl PackageDetectionRecord {
         Ok(record)
     }
 
-    fn slot(&self) -> Result<SlotName> {
+    pub(in crate::ingest) fn slot(&self) -> Result<SlotName> {
         SlotName::parse(&format!("pd-{}", hex(self.report_digest)))
             .map_err(|_| PackageEventError::Mismatch)
     }
-    fn batch_id(&self) -> Result<BatchId> {
+    pub(in crate::ingest) fn batch_id(&self) -> Result<BatchId> {
         Ok(BatchId::parse(format!(
             "batch:package-detection:{}",
             hex(self.report_digest)
         ))?)
     }
-    fn validity(&self) -> Result<CaptureInterval> {
+    pub(in crate::ingest) fn validity(&self) -> Result<CaptureInterval> {
         let first = self.frames.first().ok_or(PackageEventError::Limit)?.capture;
         let mut interval = first;
         for frame in &self.frames {
@@ -544,7 +544,10 @@ impl PackageDetectionRecord {
         }
         Ok(interval)
     }
-    fn manifest(&self, record_digest: ContentDigest) -> Result<ObjectManifest> {
+    pub(in crate::ingest) fn manifest(
+        &self,
+        record_digest: ContentDigest,
+    ) -> Result<ObjectManifest> {
         let mut children = BTreeSet::from([self.report_digest, self.import_root]);
         children.extend(self.frames.iter().map(|f| f.capsule_digest));
         children.remove(&record_digest);
@@ -554,7 +557,11 @@ impl PackageDetectionRecord {
             Some(record_digest),
         )?)
     }
-    fn delta(&self, record_digest: ContentDigest, root: ContentDigest) -> Result<EvidenceDelta> {
+    pub(in crate::ingest) fn delta(
+        &self,
+        record_digest: ContentDigest,
+        root: ContentDigest,
+    ) -> Result<EvidenceDelta> {
         let id = hex(self.report_digest);
         Ok(EvidenceDelta {
             delta_id: format!("delta:package-detection:{id}"),

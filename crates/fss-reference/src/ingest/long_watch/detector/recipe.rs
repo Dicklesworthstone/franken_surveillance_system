@@ -274,7 +274,7 @@ fn detector_contract(package: &RgbDetectorPackage, config: CascadeConfig) -> Res
     }
 }
 
-fn reservations_fit(stored: Vec<u8>, allowed: Vec<u8>) -> Result<()> {
+pub(in crate::ingest) fn reservations_fit(stored: Vec<u8>, allowed: Vec<u8>) -> Result<()> {
     let mut s = CanonicalDecoder::new(&stored);
     let mut a = CanonicalDecoder::new(&allowed);
     while s.remaining() != 0 {
@@ -290,7 +290,7 @@ fn watch_bytes(limits: &LongWatchLimits) -> Vec<u8> {
     encode_limits(&mut e, limits);
     e.finish()
 }
-fn package_bytes(limits: &PackageDetectLimits) -> Vec<u8> {
+pub(in crate::ingest) fn package_bytes(limits: &PackageDetectLimits) -> Vec<u8> {
     let mut e = CanonicalEncoder::new();
     encode_package(&mut e, limits);
     e.finish()
@@ -318,7 +318,7 @@ fn decode_rgb(d: &mut CanonicalDecoder<'_>) -> Result<RgbDecodeLimits> {
         maximum_output_bytes: usize_value(d)?,
     })
 }
-fn encode_package(e: &mut CanonicalEncoder, limits: &PackageDetectLimits) {
+pub(in crate::ingest) fn encode_package(e: &mut CanonicalEncoder, limits: &PackageDetectLimits) {
     // Preserve the caller's complete package settings, including inactive decoder fields. Native
     // custody/colour decode belongs to the shared watch owner; already-decoded FrameRun input
     // uses only preprocessing, graph execution, output and head fields from these settings.
@@ -348,7 +348,7 @@ fn encode_package(e: &mut CanonicalEncoder, limits: &PackageDetectLimits) {
         e.u64(value);
     }
 }
-fn decode_package(d: &mut CanonicalDecoder<'_>) -> Result<PackageDetectLimits> {
+pub(in crate::ingest) fn decode_package(d: &mut CanonicalDecoder<'_>) -> Result<PackageDetectLimits> {
     let codecs = decode_limits(d)?;
     let expected = LongWatchLimits::default();
     if codecs.maximum_source_chunk_bytes != expected.maximum_source_chunk_bytes

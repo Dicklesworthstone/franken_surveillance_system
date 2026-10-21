@@ -624,7 +624,7 @@ fn run_selected_detection<T>(
 }
 
 // Shared canonical rendering: ordinary detection and every sentinel burst use identical bytes.
-fn finish_report(
+pub(in crate::ingest) fn finish_report(
     package: &RgbDetectorPackage,
     request: &PackageDetectRequest,
     contract: &RgbDetectionContract,

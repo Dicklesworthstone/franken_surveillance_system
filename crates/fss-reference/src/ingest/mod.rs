@@ -43,6 +43,8 @@ pub mod long_dwell;
 pub mod long_dwell_replay;
 /// Current source-bound cold inspection and native replay of whole-recording entry events.
 pub mod long_event_replay;
+/// Whole-recording motion-independent detector bursts with shared finite resources.
+pub mod long_sentinel;
 /// Whole-recording zone-entry observation over the native streaming perception pipeline.
 pub mod long_watch;
 pub mod mjpeg;

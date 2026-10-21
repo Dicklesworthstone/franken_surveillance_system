@@ -35,6 +35,7 @@ use super::recorded_decode::h264::{DecoderLimits, RecordedH264Range, RecordedH26
 use super::recorded_decode::h265::{
     DecoderLimits as H265DecoderLimits, RecordedH265Range, RecordedH265Request,
 };
+use super::recorded_decode::video_budget::RecordedVideoDecodeBudget;
 use super::recorded_decode::{
     ComponentInterpretation, DecodeLimits, RecordedDecodeError, source_capsule,
 };
@@ -158,6 +159,8 @@ pub(crate) struct TolerantSource {
     closed_chunk_bytes: u64,
     /// All sub-ranges and failed recovery probes debit this same optional allowance.
     source_budget: Option<SourceReadBudget>,
+    /// Optional pre-codec admission for callers requiring a cumulative decode work bound.
+    video_budget: Option<RecordedVideoDecodeBudget>,
     /// Selected native colour output is opt-in and transferred before another source poll.
     selected_rgb: BTreeSet<usize>,
     pending_rgb: Option<SelectedRgb>,
@@ -207,7 +210,7 @@ impl TolerantSource {
         request: TolerantRequest,
         cx: &ReplayCx,
     ) -> Result<Self, RecordedDecodeError> {
-        Self::open_inner(deployment, request, None, cx)
+        Self::open_inner(deployment, request, None, None, cx)
     }
 
     /// Streaming source with a single nonrenewable custody-read allowance.
@@ -220,13 +223,41 @@ impl TolerantSource {
         if !request.stream {
             return Err(RecordedDecodeError::Limit);
         }
-        Self::open_inner(deployment, request, Some(source_budget), cx)
+        Self::open_inner(deployment, request, Some(source_budget), None, cx)
+    }
+
+    /// Streaming source with both source custody and native pre-decode work admission.
+    /// The optional work owner survives every recovery range and charges decode-ahead before
+    /// entering the codec. Existing callers retain their original source-only behavior.
+    pub(crate) fn open_with_budgets(
+        deployment: &ReferenceDeployment,
+        request: TolerantRequest,
+        source_budget: &SourceReadBudget,
+        video_budget: RecordedVideoDecodeBudget,
+        cx: &ReplayCx,
+    ) -> Result<Self, RecordedDecodeError> {
+        if !request.stream {
+            return Err(RecordedDecodeError::Limit);
+        }
+        Self::open_inner(
+            deployment,
+            request,
+            Some(source_budget),
+            Some(video_budget),
+            cx,
+        )
+    }
+
+    /// Actual pre-codec reservations, distinct from successful displayed pixel counts.
+    pub(crate) fn video_budget(&self) -> Option<&RecordedVideoDecodeBudget> {
+        self.video_budget.as_ref()
     }
 
     fn open_inner(
         deployment: &ReferenceDeployment,
         request: TolerantRequest,
         source_budget: Option<&SourceReadBudget>,
+        video_budget: Option<RecordedVideoDecodeBudget>,
         cx: &ReplayCx,
     ) -> Result<Self, RecordedDecodeError> {
         let retained =
@@ -259,6 +290,7 @@ impl TolerantSource {
             chunks: super::VerifiedChunkCache::with_source_budget(source_budget),
             closed_chunk_bytes: 0,
             source_budget: source_budget.cloned(),
+            video_budget,
             selected_rgb: BTreeSet::new(),
             pending_rgb: None,
         };
@@ -284,7 +316,7 @@ impl TolerantSource {
     }
 
     fn open_range(
-        &self,
+        &mut self,
         deployment: &ReferenceDeployment,
         codec: Codec,
         start: usize,
@@ -301,10 +333,23 @@ impl TolerantSource {
                     read_limits: self.request.read_limits,
                     decoder_limits: self.request.h264_limits,
                 };
-                let range = if let Some(budget) = &self.source_budget {
-                    RecordedH264Range::open_stream_with_source_budget(
-                        deployment, request, budget, cx,
-                    )
+                let range = if let Some(source_budget) = &self.source_budget {
+                    if let Some(budget) = &mut self.video_budget {
+                        RecordedH264Range::open_stream_with_budgets(
+                            deployment,
+                            request,
+                            source_budget,
+                            budget,
+                            cx,
+                        )
+                    } else {
+                        RecordedH264Range::open_stream_with_source_budget(
+                            deployment,
+                            request,
+                            source_budget,
+                            cx,
+                        )
+                    }
                 } else if self.request.stream {
                     RecordedH264Range::open_stream(deployment, request, cx)
                 } else {
@@ -321,10 +366,23 @@ impl TolerantSource {
                     read_limits: self.request.read_limits,
                     decoder_limits: self.request.h265_limits,
                 };
-                let range = if let Some(budget) = &self.source_budget {
-                    RecordedH265Range::open_stream_with_source_budget(
-                        deployment, request, budget, cx,
-                    )
+                let range = if let Some(source_budget) = &self.source_budget {
+                    if let Some(budget) = &mut self.video_budget {
+                        RecordedH265Range::open_stream_with_budgets(
+                            deployment,
+                            request,
+                            source_budget,
+                            budget,
+                            cx,
+                        )
+                    } else {
+                        RecordedH265Range::open_stream_with_source_budget(
+                            deployment,
+                            request,
+                            source_budget,
+                            cx,
+                        )
+                    }
                 } else if self.request.stream {
                     RecordedH265Range::open_stream(deployment, request, cx)
                 } else {
@@ -499,73 +557,89 @@ impl TolerantSource {
                         *codec,
                         *sub_start,
                         *sub_end,
-                        Box::new(range.next_frame(deployment, cx).map(|frame| {
-                            frame.map(|frame| {
-                                if usize::try_from(frame.segment_index())
-                                    .is_ok_and(|index| self.selected_rgb.contains(&index))
-                                {
-                                    let receipt = frame.receipt();
-                                    self.pending_rgb = Some(SelectedRgb {
-                                        segment: frame.segment_index() as usize,
-                                        frame: super::package_detect::DecodedFrame::video(
-                                            super::package_detect::VideoPicture {
-                                                segment: frame.segment_index(),
-                                                capsule: frame.capsule(),
-                                                capsule_digest: frame.capsule_digest(),
-                                                dimensions: frame.dimensions(),
-                                                codec_receipt: receipt.digest(),
-                                                i420: receipt.i420_sha256(),
-                                                rgb: frame.to_rgb(),
-                                                mask: frame.mask().clone(),
-                                            },
-                                        ),
-                                    });
+                        Box::new(
+                            match &mut self.video_budget {
+                                Some(budget) => {
+                                    range.next_frame_with_budget(deployment, budget, cx)
                                 }
-                                (
-                                    frame.segment_index(),
-                                    frame.capsule().clone(),
-                                    frame.capsule_digest(),
-                                    frame.dimensions(),
-                                    frame.pixels().to_vec(),
-                                )
-                            })
-                        })),
+                                None => range.next_frame(deployment, cx),
+                            }
+                            .map(|frame| {
+                                frame.map(|frame| {
+                                    if usize::try_from(frame.segment_index())
+                                        .is_ok_and(|index| self.selected_rgb.contains(&index))
+                                    {
+                                        let receipt = frame.receipt();
+                                        self.pending_rgb = Some(SelectedRgb {
+                                            segment: frame.segment_index() as usize,
+                                            frame: super::package_detect::DecodedFrame::video(
+                                                super::package_detect::VideoPicture {
+                                                    segment: frame.segment_index(),
+                                                    capsule: frame.capsule(),
+                                                    capsule_digest: frame.capsule_digest(),
+                                                    dimensions: frame.dimensions(),
+                                                    codec_receipt: receipt.digest(),
+                                                    i420: receipt.i420_sha256(),
+                                                    rgb: frame.to_rgb(),
+                                                    mask: frame.mask().clone(),
+                                                },
+                                            ),
+                                        });
+                                    }
+                                    (
+                                        frame.segment_index(),
+                                        frame.capsule().clone(),
+                                        frame.capsule_digest(),
+                                        frame.dimensions(),
+                                        frame.pixels().to_vec(),
+                                    )
+                                })
+                            }),
+                        ),
                     )),
                     Some(InterRange::H265(range)) => Some(Step::Inter(
                         *codec,
                         *sub_start,
                         *sub_end,
-                        Box::new(range.next_frame(deployment, cx).map(|frame| {
-                            frame.map(|frame| {
-                                if usize::try_from(frame.segment_index())
-                                    .is_ok_and(|index| self.selected_rgb.contains(&index))
-                                {
-                                    let receipt = frame.receipt();
-                                    self.pending_rgb = Some(SelectedRgb {
-                                        segment: frame.segment_index() as usize,
-                                        frame: super::package_detect::DecodedFrame::video(
-                                            super::package_detect::VideoPicture {
-                                                segment: frame.segment_index(),
-                                                capsule: frame.capsule(),
-                                                capsule_digest: frame.capsule_digest(),
-                                                dimensions: frame.dimensions(),
-                                                codec_receipt: receipt.digest(),
-                                                i420: receipt.i420_sha256(),
-                                                rgb: frame.to_rgb(),
-                                                mask: frame.mask().clone(),
-                                            },
-                                        ),
-                                    });
+                        Box::new(
+                            match &mut self.video_budget {
+                                Some(budget) => {
+                                    range.next_frame_with_budget(deployment, budget, cx)
                                 }
-                                (
-                                    frame.segment_index(),
-                                    frame.capsule().clone(),
-                                    frame.capsule_digest(),
-                                    frame.dimensions(),
-                                    frame.pixels().to_vec(),
-                                )
-                            })
-                        })),
+                                None => range.next_frame(deployment, cx),
+                            }
+                            .map(|frame| {
+                                frame.map(|frame| {
+                                    if usize::try_from(frame.segment_index())
+                                        .is_ok_and(|index| self.selected_rgb.contains(&index))
+                                    {
+                                        let receipt = frame.receipt();
+                                        self.pending_rgb = Some(SelectedRgb {
+                                            segment: frame.segment_index() as usize,
+                                            frame: super::package_detect::DecodedFrame::video(
+                                                super::package_detect::VideoPicture {
+                                                    segment: frame.segment_index(),
+                                                    capsule: frame.capsule(),
+                                                    capsule_digest: frame.capsule_digest(),
+                                                    dimensions: frame.dimensions(),
+                                                    codec_receipt: receipt.digest(),
+                                                    i420: receipt.i420_sha256(),
+                                                    rgb: frame.to_rgb(),
+                                                    mask: frame.mask().clone(),
+                                                },
+                                            ),
+                                        });
+                                    }
+                                    (
+                                        frame.segment_index(),
+                                        frame.capsule().clone(),
+                                        frame.capsule_digest(),
+                                        frame.dimensions(),
+                                        frame.pixels().to_vec(),
+                                    )
+                                })
+                            }),
+                        ),
                     )),
                 },
             };

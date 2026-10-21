@@ -262,7 +262,7 @@ fn invalid_burst(segment: usize, reason: &'static str) -> PackageDetectError {
     }
 }
 
-fn validate_burst(
+pub(in crate::ingest) fn validate_burst(
     burst: SentinelBurst,
     frames: &[PackageDetectFrame],
 ) -> Result<(), PackageDetectError> {

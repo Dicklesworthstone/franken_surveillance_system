@@ -52,7 +52,7 @@ pub(super) fn verify_current_privacy(
 /// search (model names, labels and other untrusted strings may contain misleading text).
 /// Prefix construction is bounded by the record's 512-byte text and mask's 32-region ceilings;
 /// it neither parses nor allocates another copy of the potentially large frame arrays.
-pub(super) fn verify_report_privacy(
+pub(in crate::ingest) fn verify_report_privacy(
     record: &PackageDetectionRecord,
     report_json: &[u8],
     privacy: &crate::ingest::privacy_mask::MaskBinding,
@@ -230,7 +230,7 @@ fn boundary(previous: SourcePoint, current: SourcePoint) -> Option<PackageTracki
 /// existing bounded custody reader (not decoded or repaired); deleted/corrupt data is refused.
 /// A maximum of 64 segments is verified, sequentially, with the existing 16 MiB per-segment and
 /// 512 MiB source ceilings. This is custody work, not an additional model call.
-pub(super) fn verify_sources(
+pub(in crate::ingest) fn verify_sources(
     deployment: &ReferenceDeployment,
     record: &PackageDetectionRecord,
     cx: &ReplayCx,

@@ -459,6 +459,24 @@ impl RecordedH264Range {
         )
     }
 
+    /// Whole-recording source custody and pre-codec work share nonrenewable owners.
+    pub(crate) fn open_stream_with_budgets(
+        deployment: &ReferenceDeployment,
+        request: RecordedH264Request,
+        source_budget: &SourceReadBudget,
+        budget: &mut RecordedVideoDecodeBudget,
+        cx: &ReplayCx,
+    ) -> Result<Self, RecordedDecodeError> {
+        Self::open_bounded(
+            deployment,
+            request,
+            cx,
+            MAX_H264_STREAM_SEGMENTS,
+            Some(budget),
+            Some(source_budget),
+        )
+    }
+
     fn open_bounded(
         deployment: &ReferenceDeployment,
         request: RecordedH264Request,
