@@ -9,6 +9,8 @@ use super::{
 use std::collections::BTreeMap;
 use super::source_checkpoint::{self, MAX_SOURCE_BINDINGS, SourceBindingPins};
 
+mod source_registration;
+
 const DOMAIN: &str = "fss.hydration_cursor_checkpoint.v1";
 const BOUND_DOMAIN: &str = "fss.hydration_cursor_checkpoint.v2";
 pub(crate) const MAX_RECORDS: usize = 65_536;

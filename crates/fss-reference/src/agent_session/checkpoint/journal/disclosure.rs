@@ -32,6 +32,9 @@ use crate::{BoundReferenceSituationPublication, PublishedSourceReader, Reference
 
 // Workspace operations share this exclusive session owner, never a second handle.
 mod workspace;
+mod source_registration;
+
+pub use source_registration::JournaledSourceBinding;
 
 const DOMAIN: &str = "fss.reference_session_disclosure.v1";
 const MAX_RECORD_BYTES: usize = 16 * 1024 * 1024;
@@ -284,6 +287,8 @@ impl DurableDisclosureStore {
 
     /// Binds exact source custody under an already registered current descriptor.
     /// The returned binding is metadata, not permission for an agent to read the source.
+    /// This compatibility method is volatile until a later disclosure commits its checkpoint.
+    /// Use [`Self::bind_source_object_durable`] to acknowledge registration only after persistence.
     pub fn bind_source_object(
         &mut self,
         handle: &str,
@@ -503,19 +508,21 @@ impl DurableDisclosureStore {
             return Err(DurableSessionError::RootMismatch.into());
         }
         let latest = report.records().iter().rev().find(|record| {
-            record.kind() == SESSION_CHECKPOINT_RECORD_KIND && is_record(record.payload())
+            record.kind() == SESSION_CHECKPOINT_RECORD_KIND
+                && source_registration::has_catalog_snapshot(record.payload())
         });
         if let Some(record) = latest {
-            let saved = decode(record.payload(), self.sessions.limits)?;
-            if now.is_some_and(|now| now < saved.admission.observed_at) {
+            let (cursors, observed_at) =
+                source_registration::catalog_snapshot(record.payload(), self.sessions.limits)?;
+            if now.is_some_and(|now| now < observed_at) {
                 return Err(DisclosureError::Session(
                     ReferenceSessionError::ClockRegression,
                 ));
             }
             self.catalog.restore_cursor_checkpoint(
-                saved.cursors,
+                cursors,
                 MAX_RECORD_BYTES,
-                saved.admission.observed_at,
+                observed_at,
             )?;
         } else if self.catalog.issued_cursor_count() != 0 {
             return Err(HydrationError::WrongContinuation.into());
@@ -575,11 +582,13 @@ impl DurableDisclosureStore {
                     }
                     for record in report.records() {
                         if record.kind() == SESSION_CHECKPOINT_RECORD_KIND
-                            && is_record(record.payload())
+                            && source_registration::has_catalog_snapshot(record.payload())
                         {
-                            let saved = decode(record.payload(), self.sessions.limits)?;
+                            let (cursors, _) = source_registration::catalog_snapshot(
+                                record.payload(), self.sessions.limits,
+                            )?;
                             cursor_history = Some(CursorCheckpoint::decode(
-                                saved.cursors,
+                                cursors,
                                 MAX_RECORD_BYTES,
                                 MAX_RECORDS,
                             )?);
@@ -752,6 +761,11 @@ pub(super) fn restore_record(
     cursor_history: &mut Option<CursorCheckpoint>,
     limits: DurableSessionLimits,
 ) -> Result<ReferenceSessionStore, DurableSessionError> {
+    if source_registration::is_record(payload) {
+        return source_registration::restore_record(
+            payload, payload_digest, previous, cursor_history, limits,
+        );
+    }
     if !is_record(payload) {
         return Ok(ReferenceSessionStore::restore_checkpoint(
             payload,
