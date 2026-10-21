@@ -749,13 +749,15 @@ fn make_request(
     let action = request.action();
     if !matches!(
         action,
-        "http://www.onvif.org/ver10/device/wsdl/GetCapabilities"
+        "http://www.onvif.org/ver10/device/wsdl/GetSystemDateAndTime"
+            | "http://www.onvif.org/ver10/device/wsdl/GetCapabilities"
             | "http://www.onvif.org/ver10/media/wsdl/GetProfiles"
             | "http://www.onvif.org/ver10/media/wsdl/GetStreamUri"
             | "http://www.onvif.org/ver10/device/wsdl/GetServices"
             | "http://www.onvif.org/ver20/media/wsdl/GetProfiles"
             | "http://www.onvif.org/ver20/media/wsdl/GetStreamUri"
     ) || request.body().len() > limit
+        || (authorization.is_some() && request.has_username_token())
     {
         return Err(HttpError::Configuration);
     }

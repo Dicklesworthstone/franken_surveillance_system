@@ -68,6 +68,7 @@ pub fn get_services_request() -> SoapRequest {
 fn media2_request(operation: OnvifOperation, content: &str) -> SoapRequest {
     SoapRequest {
         action: operation.action(),
+        username_token: false,
         body: format!(
             "<?xml version=\"1.0\" encoding=\"UTF-8\"?><s:Envelope xmlns:s=\"{SOAP_NS}\" xmlns:tr2=\"{MEDIA2_NS}\" xmlns:tt=\"{SCHEMA_NS}\"><s:Body>{content}</s:Body></s:Envelope>"
         )

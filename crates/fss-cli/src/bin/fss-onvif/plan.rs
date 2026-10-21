@@ -8,7 +8,9 @@ use std::path::PathBuf;
 
 use fss_cli::agent_json::{object, string};
 use fss_core::{CanonicalEncoder, ContentDigest, PrincipalId};
-use fss_reference::onvif::client::{ClientConfig, DigestConfig, RtspScope, validate_stream_uri};
+use fss_reference::onvif::client::{
+    AuthenticationConfig, ClientConfig, DigestConfig, RtspScope, validate_stream_uri,
+};
 use fss_reference::onvif::http::{HttpLimits, HttpRoute};
 use fss_reference::onvif::wire::{MediaVersion, get_stream_uri_request};
 
@@ -291,9 +293,11 @@ impl Plan {
             )
             .map_err(|_| ARGUMENT)?,
             service_root: self.service_root.clone(),
-            auth: self.auth.as_ref().map(|auth| DigestConfig {
-                expected_realm: auth.realm.clone(),
-                policy: auth.policy,
+            auth: self.auth.as_ref().map(|auth| {
+                AuthenticationConfig::HttpDigest(DigestConfig {
+                    expected_realm: auth.realm.clone(),
+                    policy: auth.policy,
+                })
             }),
             rtsp: self.rtsp.clone(),
             limits: self.limits,

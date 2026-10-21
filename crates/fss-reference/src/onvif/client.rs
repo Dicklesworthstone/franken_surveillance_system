@@ -8,9 +8,10 @@
 use std::fmt;
 use std::net::{IpAddr, Ipv6Addr, SocketAddr};
 
+use super::authentication::{UsernameToken, UtcDateTime};
 use super::http::{
-    HttpAuthority, HttpError, HttpExchange, HttpLimits, HttpOperation, HttpProgress, HttpResponse,
-    HttpRoute,
+    HttpAuthority, HttpDenial, HttpError, HttpExchange, HttpLimits, HttpOperation, HttpProgress,
+    HttpResponse, HttpRoute,
 };
 use super::wire::{
     self, Capabilities, Media2Service, Media2StreamUri, MediaProfile, MediaVersion, SoapRequest,
@@ -24,7 +25,7 @@ use crate::rtsp::client::validated_uri_parts;
 const MAX_SESSION_NS: u64 = 60_000_000_000;
 const MAX_STEPS: u32 = 100_000;
 
-/// Exact realm and explicitly opted-in legacy Digest policy. No Basic/WSSE fallback.
+/// Exact realm and explicitly opted-in legacy HTTP Digest policy.
 #[derive(Clone)]
 pub struct DigestConfig {
     /// Independently configured realm; never inferred from a challenge.
@@ -39,6 +40,17 @@ impl fmt::Debug for DigestConfig {
             .field("policy", &self.policy)
             .finish_non_exhaustive()
     }
+}
+
+/// Explicitly selected authentication mechanism. A challenge or SOAP fault never
+/// switches mechanisms, acquires a new credential scope, or weakens this choice.
+#[derive(Clone, Debug)]
+pub enum AuthenticationConfig {
+    /// Independently pinned realm and approved HTTP Digest algorithm policy.
+    HttpDigest(DigestConfig),
+    /// WS-Security PasswordDigest with fresh per-request nonce and camera UTC.
+    /// The unsigned PRE_AUTH time read is required before any credential callback.
+    UsernameTokenDigest,
 }
 
 /// Independent RTSP destination approval. No DNS lookup or URI-based peer substitution.
@@ -65,8 +77,8 @@ pub struct ClientConfig {
     pub device: HttpRoute,
     /// Absolute HTTP path subtree, such as `/onvif`; never a discovered grant.
     pub service_root: String,
-    /// Optional exact HTTP credential realm and Digest policy.
-    pub auth: Option<DigestConfig>,
+    /// Optional owner-selected HTTP Digest or UsernameToken PasswordDigest lane.
+    pub auth: Option<AuthenticationConfig>,
     /// Required for selection, optional for profile inventory.
     pub rtsp: Option<RtspScope>,
     /// Per-exchange wire, allocation, I/O and connect ceilings.
@@ -334,12 +346,27 @@ pub trait OnvifContext: HttpAuthority {
         route: &HttpRoute,
         challenge: &DigestChallenge,
     ) -> Result<DigestAuthorization, ClientError>;
+
+    /// Revalidate the exact route, operation, and current credential lease, then
+    /// create one fresh UsernameToken using unpredictable 128-bit entropy and
+    /// exactly `created`. The core supplies camera UTC advanced only by owned
+    /// monotonic elapsed time. Default refusal preserves existing owner contracts.
+    fn username_token(
+        &self,
+        _route: &HttpRoute,
+        _request: &SoapRequest,
+        _created: UtcDateTime,
+    ) -> Result<UsernameToken, ClientError> {
+        Err(ClientError::Credentials)
+    }
 }
 
 /// Read services/capabilities and profiles in the explicitly selected media lane,
 /// optionally obtaining one exact selected profile's URI.
 ///
-/// At most three read-only operations and one same-route Digest retry per operation occur.
+/// At most three media operations and one same-route HTTP Digest retry per operation occur.
+/// The explicit UsernameToken lane instead makes one unsigned time read and signs each
+/// media request once, with no mechanism fallback and the same six-exchange ceiling.
 /// There is no automatic profile choice, redirect, TLS downgrade, DNS resolution, retry of
 /// authentication failure, PTZ/configuration effect, or stream acquisition in this function.
 pub fn run(
@@ -359,6 +386,28 @@ pub fn run(
     let now = budget.now(config, cx)?;
     if config.deadline_ns.saturating_sub(now) > MAX_SESSION_NS {
         return Err(ClientError::Deadline);
+    }
+
+    if matches!(
+        config.auth.as_ref(),
+        Some(AuthenticationConfig::UsernameTokenDigest)
+    ) {
+        let request = wire::get_system_date_and_time_request();
+        let response = send(config, &config.device, &request, None, cx, &mut budget)?;
+        if response.status() == 401 {
+            return Err(ClientError::AuthenticationRefused);
+        }
+        let observed_ns = budget.now(config, cx)?;
+        let utc = wire::parse_system_date_and_time(soap_body(&response)?)?;
+        let now = budget.now(config, cx)?;
+        cx.checkpoint(
+            &config.device,
+            HttpOperation::Release,
+            now,
+            config.deadline_ns,
+        )
+        .map_err(wsse_checkpoint_error)?;
+        budget.authentication_time = Some(AuthenticationTime { utc, observed_ns });
     }
 
     let discovery_request = match config.media_version {
@@ -438,6 +487,21 @@ struct SessionBudget {
     last_ns: u64,
     steps: u32,
     exchanges: u32,
+    authentication_time: Option<AuthenticationTime>,
+}
+
+struct AuthenticationTime {
+    utc: UtcDateTime,
+    observed_ns: u64,
+}
+
+fn wsse_checkpoint_error(denial: HttpDenial) -> ClientError {
+    match denial {
+        HttpDenial::Cancelled => ClientError::Cancelled,
+        HttpDenial::Deadline => ClientError::Deadline,
+        HttpDenial::Budget => ClientError::Budget,
+        HttpDenial::Unauthorized | HttpDenial::Revoked => ClientError::Authority,
+    }
 }
 
 impl SessionBudget {
@@ -465,14 +529,43 @@ fn exchange(
     cx: &impl OnvifContext,
     budget: &mut SessionBudget,
 ) -> Result<HttpResponse, ClientError> {
+    if matches!(
+        config.auth.as_ref(),
+        Some(AuthenticationConfig::UsernameTokenDigest)
+    ) {
+        let now = budget.now(config, cx)?;
+        cx.checkpoint(route, HttpOperation::Write, now, config.deadline_ns)
+            .map_err(wsse_checkpoint_error)?;
+        let time = budget
+            .authentication_time
+            .as_ref()
+            .ok_or(ClientError::Clock)?;
+        let elapsed_ns = now
+            .checked_sub(time.observed_ns)
+            .ok_or(ClientError::Clock)?;
+        let created = time.utc.checked_add_seconds(elapsed_ns / 1_000_000_000)?;
+        let token = cx.username_token(route, request, created)?;
+        if token.created() != created {
+            return Err(ClientError::Credentials);
+        }
+        let signed = request.clone().with_username_token(&token)?;
+        let response = send(config, route, &signed, None, cx, budget)?;
+        if response.status() == 401 {
+            return Err(ClientError::AuthenticationRefused);
+        }
+        return Ok(response);
+    }
     let first = send(config, route, request, None, cx, budget)?;
     if first.status() != 401 {
         return Ok(first);
     }
-    let auth = config
-        .auth
-        .as_ref()
-        .ok_or(ClientError::AuthenticationRequired)?;
+    let auth = match config.auth.as_ref() {
+        Some(AuthenticationConfig::HttpDigest(auth)) => auth,
+        Some(AuthenticationConfig::UsernameTokenDigest) => {
+            return Err(ClientError::AuthenticationRefused);
+        }
+        None => return Err(ClientError::AuthenticationRequired),
+    };
     let header = first
         .digest_challenge()
         .ok_or(ClientError::AuthenticationRefused)?;
@@ -561,7 +654,7 @@ fn validate_config(config: &ClientConfig, token: Option<&str>) -> Result<(), Cli
     if !within_root(config.device.target(), &config.service_root) {
         return Err(ClientError::Scope);
     }
-    if let Some(auth) = &config.auth {
+    if let Some(AuthenticationConfig::HttpDigest(auth)) = &config.auth {
         if auth.expected_realm.is_empty()
             || auth.expected_realm.len() > 512
             || !auth.expected_realm.bytes().all(|b| (32..127).contains(&b))

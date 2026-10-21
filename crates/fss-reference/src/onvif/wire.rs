@@ -12,6 +12,8 @@ use std::fmt;
 
 #[path = "wire/media2.rs"]
 mod media2;
+#[path = "wire/time.rs"]
+mod time;
 #[path = "wire/xml.rs"]
 mod xml;
 
@@ -20,6 +22,7 @@ pub use media2::{
     get_media2_profiles_request, get_media2_stream_uri_request, get_services_request,
     parse_media2_profiles, parse_media2_service, parse_media2_stream_uri,
 };
+pub use time::{UtcDateTime, get_system_date_and_time_request, parse_system_date_and_time};
 
 /// Maximum complete SOAP response size, including unrelated extensions.
 pub const MAX_SOAP_BYTES: usize = 256 * 1024;
@@ -52,6 +55,8 @@ pub enum MediaVersion {
 /// The complete read-only operation set admitted by this module.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum OnvifOperation {
+    /// Read camera UTC before authentication; this grants no recording-time authority.
+    GetSystemDateAndTime,
     /// Find the Media1 service endpoint and advertised streaming capabilities.
     GetCapabilities,
     /// Enumerate existing media profiles without modifying the device.
@@ -73,6 +78,9 @@ impl OnvifOperation {
     #[must_use]
     pub const fn action(self) -> &'static str {
         match self {
+            Self::GetSystemDateAndTime => {
+                "http://www.onvif.org/ver10/device/wsdl/GetSystemDateAndTime"
+            }
             Self::GetCapabilities => "http://www.onvif.org/ver10/device/wsdl/GetCapabilities",
             Self::GetProfiles => "http://www.onvif.org/ver10/media/wsdl/GetProfiles",
             Self::GetStreamUri => "http://www.onvif.org/ver10/media/wsdl/GetStreamUri",
@@ -90,6 +98,7 @@ impl OnvifOperation {
 pub struct SoapRequest {
     action: &'static str,
     body: Vec<u8>,
+    username_token: bool,
 }
 
 impl SoapRequest {
@@ -103,6 +112,46 @@ impl SoapRequest {
     #[must_use]
     pub fn body(&self) -> &[u8] {
         &self.body
+    }
+
+    /// Whether this exact body already carries a WS-Security UsernameToken.
+    #[must_use]
+    pub const fn has_username_token(&self) -> bool {
+        self.username_token
+    }
+
+    pub(super) fn with_security_header(mut self, header: &[u8]) -> Result<Self, WireError> {
+        if self.username_token || self.action == OnvifOperation::GetSystemDateAndTime.action() {
+            return Err(WireError::UnsupportedHeader);
+        }
+        let length = self
+            .body
+            .len()
+            .checked_add(header.len())
+            .ok_or(WireError::InputTooLarge)?;
+        if length > MAX_SOAP_BYTES {
+            return Err(WireError::InputTooLarge);
+        }
+        let at = self
+            .body
+            .windows(b"<s:Body>".len())
+            .position(|part| part == b"<s:Body>")
+            .ok_or(WireError::UnexpectedEnvelope)?;
+        let mut body = Vec::with_capacity(length);
+        body.extend_from_slice(&self.body[..at]);
+        body.extend_from_slice(header);
+        body.extend_from_slice(&self.body[at..]);
+        self.body.fill(0);
+        self.body = body;
+        self.username_token = true;
+        Ok(self)
+    }
+}
+
+impl Drop for SoapRequest {
+    fn drop(&mut self) {
+        // Best-effort reduction of proof/token lifetime, not a secure-erasure guarantee.
+        self.body.fill(0);
     }
 }
 
@@ -350,6 +399,7 @@ impl std::error::Error for WireError {}
 fn request(operation: OnvifOperation, content: &str) -> SoapRequest {
     SoapRequest {
         action: operation.action(),
+        username_token: false,
         body: format!(
             "<?xml version=\"1.0\" encoding=\"UTF-8\"?><s:Envelope xmlns:s=\"{SOAP_NS}\" xmlns:tds=\"{DEVICE_NS}\" xmlns:trt=\"{MEDIA_NS}\" xmlns:tt=\"{SCHEMA_NS}\"><s:Body>{content}</s:Body></s:Envelope>"
         )
@@ -806,7 +856,8 @@ mod tests {
     );
 
     #[test]
-    fn parse_snapshot_uri_reads_uri_and_optional_expiry() -> Result<(), Box<dyn std::error::Error>> {
+    fn parse_snapshot_uri_reads_uri_and_optional_expiry() -> Result<(), Box<dyn std::error::Error>>
+    {
         let snap = parse_snapshot_uri(SNAPSHOT_URI_RESPONSE.as_bytes())?;
         assert_eq!(snap.uri, "http://192.168.5.211:8080/snap/image.jpg");
         assert_eq!(snap.valid_until.as_deref(), Some("2026-10-20T00:05:00Z"));

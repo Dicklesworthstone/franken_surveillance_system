@@ -11,14 +11,17 @@ use std::time::{Duration, Instant};
 
 use fss_core::ContentDigest;
 use fss_reference::onvif::client::{
-    ClientConfig, ClientError, DigestConfig, MediaDiscovery, OnvifContext, RtspScope,
-    StreamValidity, run, validate_stream_uri,
+    AuthenticationConfig, ClientConfig, ClientError, DigestConfig, MediaDiscovery, OnvifContext,
+    RtspScope, StreamValidity, run, validate_stream_uri,
 };
 use fss_reference::onvif::http::{HttpAuthority, HttpDenial, HttpLimits, HttpOperation, HttpRoute};
 use fss_reference::onvif::wire::{MediaVersion, ServiceVersion, VideoEncoding, WireError};
 use fss_reference::rtsp::authentication::{
     DigestAuthorization, DigestChallenge, DigestCredentials, DigestPolicy,
 };
+
+#[path = "onvif_onboarding_contract/username_token.rs"]
+mod username_token;
 
 const REALM: &str = "fixture-camera";
 const TOKEN: &str = "fixture-main";
@@ -210,10 +213,10 @@ fn config(peer: SocketAddr) -> ClientConfig {
         )
         .unwrap(),
         service_root: "/onvif".into(),
-        auth: Some(DigestConfig {
+        auth: Some(AuthenticationConfig::HttpDigest(DigestConfig {
             expected_realm: REALM.into(),
             policy: DigestPolicy::default(),
-        }),
+        })),
         rtsp: Some(RtspScope {
             peer: "127.0.0.1:554".parse().unwrap(),
             authority: "127.0.0.1:554".into(),

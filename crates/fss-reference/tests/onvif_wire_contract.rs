@@ -5,6 +5,9 @@
 #[path = "../src/onvif/wire.rs"]
 mod wire;
 
+#[path = "onvif_wire_contract/time.rs"]
+mod time;
+
 use wire::{
     OnvifOperation, SoapFault, SoapFaultCode, SoapFaultSubcode, VideoEncoding, WireError,
     get_capabilities_request, get_profiles_request, get_stream_uri_request, parse_capabilities,

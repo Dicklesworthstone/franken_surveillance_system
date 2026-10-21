@@ -113,6 +113,12 @@ impl<'a> DigestCredentials<'a> {
         }
         Ok(Self { username, password })
     }
+
+    /// Narrow borrowed access for the first-party SOAP PasswordDigest encoder.
+    /// This creates no owned credential and is not a public secret accessor.
+    pub(crate) fn username_token_parts(&self) -> (&str, &str) {
+        (self.username, self.password)
+    }
 }
 impl fmt::Debug for DigestCredentials<'_> {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
