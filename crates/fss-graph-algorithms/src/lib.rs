@@ -26,7 +26,9 @@
 
 pub mod assignment;
 pub mod bridges;
+pub mod centrality;
 pub mod certified;
+pub mod community;
 pub mod coverage;
 pub mod coverage_timeline;
 pub mod dominators;
@@ -37,15 +39,18 @@ pub mod evidence;
 pub mod evidence_brief;
 /// Exact historical event references with complete-lineage validation and witnessed support.
 pub mod evidence_history;
+pub mod factorized_join;
 pub mod failure_domains;
 pub mod flow;
 pub mod gomory_hu;
 pub mod graph;
+pub mod hits;
 pub mod interdiction;
 pub mod ksp;
 pub mod min_cost_flow;
 pub mod oracles;
 pub mod paths;
+pub mod ppr;
 pub mod reference;
 pub mod registry;
 pub mod reliability;
@@ -54,11 +59,14 @@ pub mod scc;
 /// Bounded unit-cost set cover with exact-small and explicitly heuristic selection.
 pub mod set_cover;
 pub mod spanning;
+pub mod spectral;
+pub mod steiner;
 /// Budgeted positive-weight coverage with exact integer ratio ranking and explicit omissions.
 pub mod submodular;
 pub mod temporal;
 pub mod topo;
 pub mod weighted;
+pub mod zset;
 
 pub use bridges::{
     BridgeAnalysis, BridgeCounters, BridgeSeparation, ComplexityBound, GraphBudget,

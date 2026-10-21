@@ -61,6 +61,8 @@ decision-path digests):
 - `ALG-DYNCONN-001`: offline segment tree over edge lifetimes with rollback union-find; strict insert/delete batches; certified against per-state BFS recomputation.
 - `ALG-RELIABILITY-001`: per-zone blindness probability bounds under independent interval-probability failure domains (outward 10^-18 fixed point) with minimal blinding domain sets; certified against a direct scenario sum over admissible probability vectors and exhaustive minimal cuts.
 - `ALG-INTERDICT-001`: minimum-cost sensor set whose loss opens an unobserved entry-to-target walk (exact up to 20 relevant sensors; explicitly approximate upper bound beyond), or an existing blind path; robust placement not implemented; certified against brute-force subsets.
+- `ALG-SETCOVER-001`: bounded unit-cost evidence/sensor set selection with mandatory and excluded constraints, exhaustive exact-small search up to 20 optional eligible sets, and greedy marginal-gain selection beyond; plus resilient failure-scenario coverage (`resilient_cover.rs`).
+- `ALG-SUBMOD-001`: budgeted positive-weight coverage selection with exact `u128` marginal-utility-to-cost ratio comparison, mandatory/excluded constraints, and explicit residual gap reporting (`submodular.rs`).
 
 Each is certified on seeded directed and undirected graphs (random, DAG, cycle, clique, star,
 path, layered, joined cycles, empty) or seeded assignment problems, insertion-order metamorphic

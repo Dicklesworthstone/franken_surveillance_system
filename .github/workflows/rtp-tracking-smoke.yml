@@ -1,4 +1,6 @@
-# Local DSR/direct receipts are authoritative. GitHub-hosted execution is supplementary only.
+# Local DSR/direct receipts via scripts/qualify.sh are authoritative. GitHub-hosted execution is supplementary only.
+# Portable supplementary specification only; local scripts/qualify.sh is release authority.
+# Hosted runners must never be treated as release authority (ADR-0005 / INV-059).
 name: Native RTP tracking reference smoke
 on:
   push:

@@ -535,6 +535,11 @@
      "name": "fss-handoff",
      "unsafe": "forbid",
      "status": "planned"
+    },
+    {
+     "name": "fss-reference",
+     "unsafe": "forbid",
+     "status": "implemented"
     }
    ]
   },
@@ -542,11 +547,6 @@
    "id": "L7",
    "name": "verification_and_release",
    "crates": [
-    {
-     "name": "fss-reference",
-     "unsafe": "forbid",
-     "status": "implemented"
-    },
     {
      "name": "fss-fixtures",
      "unsafe": "forbid",
@@ -578,13 +578,6 @@
      "status": "planned"
     }
    ]
-  }
- ],
- "layerWaivers": [
-  {
-   "from": "fss-cli",
-   "to": "fss-reference",
-   "reason": "fss-cli (L6) drives the deterministic fss-reference (L7) catalog rehearsal scenarios (commit 7b9e6ad); this upward edge is an explicit, reviewed exception and dependency_dag_checker reports it as WARN-DAG-LAYER-INVERSION-WAIVED-001 on every run (fails under --strict)"
   }
  ]
 }

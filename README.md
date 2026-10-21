@@ -547,8 +547,8 @@ FSS is not:
 ## Current status
 
 Reality-checked on 2026-09-23; runtime/authority core updated 2026-10-20. Everything below is a deterministic reference implementation
-tested on generated fixtures; **nothing is release-qualified**, and no capability has been measured
-on real camera footage.
+tested on generated fixtures and lab loopback harnesses; **nothing is release-qualified**, and no
+capability has been measured on real camera footage.
 
 Implemented (reference, unqualified):
 
@@ -559,33 +559,54 @@ Implemented (reference, unqualified):
   unknown-size; OBS and FFmpeg segment recorders), MJPEG and rtpplay recordings
   (`fss-file import`);
 - RTP depacketization for H.264/H.265, RTSP negotiation with Digest authentication over interleaved
-  TCP, native HTTP MJPEG capture, local capture archives with verify/export (`fss-archive`), and
-  fragmented-MP4 remux for AVC/HEVC;
-- baseline JPEG/MJPEG decode and bit-exact (vs FFmpeg) H.264 decode: Baseline, Main and High
-  profile, CABAC/CAVLC, I/P/B slices with display-order output, 8x8 transform, scaling matrices
-  (`fss-file decode`);
+  TCP (`fss-capture-rtsp`, `fss-capture-reconnect`), native HTTP MJPEG capture and history watch
+  (`fss-import-http`, `fss-watch-http-history`), TUTK P2P / NewProtocol live capture for the
+  Wyze Cam v4 (`HL_CAM4`) lab tuple (`fss-capture-tutk`), unified LAN camera discovery across
+  mDNS, SSDP, WS-Discovery, and UDP beacons (`fss-discover`), local capture archives with
+  verify/export (`fss-archive`), and fragmented-MP4 remux for AVC/HEVC;
+- baseline JPEG/MJPEG decode, bit-exact (vs FFmpeg) H.264 decode (Baseline, Main and High
+  profile, CABAC/CAVLC, I/P/B slices with display-order output, 8x8 transform, scaling matrices),
+  and bit-exact H.265 Main profile decode (`fss-file decode`, `fss-video`, `fss-decode-rtp`);
 - a model-free single-camera pipeline, decode -> foreground -> Kalman tracking -> zone candidates
-  -> approval-gated publication (`fss-event watch`);
-- two-sensor corroboration of recorded ground-zone entries through owner-supplied (uncalibrated)
-  homographies and gated global association (`fss-event corroborate`), and one approval-gated
-  plaintext webhook alert per corroborated event with a durable prepare/commit/observe record
-  (`fss-event alert`; wiring proven on synthetic scenes, not detection quality);
+  -> approval-gated publication (`fss-event watch`), plus H.264/H.265/MJPEG/RTP pixel-change
+  motion analysis (`fss-file motion`, `fss-decode-rtp motion`);
+- two-sensor corroboration of recorded ground-zone entries through owner-supplied or site-calibrated
+  homographies, optional 3D scene-mesh/pose visibility and covariance guards, and gated global
+  association (`fss-event corroborate`), plus one approval-gated plaintext webhook alert per
+  corroborated event with a durable prepare/commit/observe/reconcile record (`fss-event alert`);
+- calibrated evidence fusion (`fss-fusion`, `fss-fuse`) with integer milliban log-likelihood ratios,
+  common-cause failure-domain cluster hulls, Wilson score calibration intervals, and counterfactual
+  attribution;
 - opt-in `--sensor-health conservative-v1` for recorded `watch` and `corroborate`, screening
   privacy-masked pixels for repetition, persistent dark/bright fields and contrast loss before
   those runs can support candidates or coverage witnesses; reports retain bounded measurements,
   and a clear screen explicitly does not establish health (see
   [visual-degradation screening](docs/long_recording_health.md));
-- a deterministic event-level evaluation harness (AUPRC, recall at a false-alert budget,
-  not_observable accounting) with no real labelled corpus yet;
-- a scalar model executor over the frozen FSS IR with Safetensors weights (`fss-infer`);
+- a deterministic event-level evaluation harness (`fss-evaluate`: AUPRC, recall at a false-alert
+  budget, `not_observable` accounting) with no real labelled corpus yet;
+- a pure-Rust scalar and optimized CPU model executor (with deterministic multi-threaded Conv2d via
+  `ExecThreads`) over the frozen FSS IR with Safetensors weights and the verified YOLOX-Nano
+  COCO-80 package (`fss-infer`, `--detector-package` cascade in `fss-event watch`/`corroborate`);
 - background-model foreground detection, the OpenCV HOG people SVM, Kalman/Hungarian tracking,
   cross-camera assignment over caller-supplied ground-plane points, and zone-gated event candidates;
+- 19 of 27 registered certified graph algorithms in `fss-graph-algorithms` (`ALG-BRIDGE-001`,
+  `ALG-SCC-001`, `ALG-TOPO-001`, `ALG-DOM-001`, `ALG-SP-001`, `ALG-MSD-001`, `ALG-FLOW-001`,
+  `ALG-MST-001`, `ALG-GH-001`, `ALG-MCF-001`, `ALG-MATCH-001`, `ALG-MULTIMATCH-001`,
+  `ALG-KSP-001`, `ALG-TREACH-001`, `ALG-DYNCONN-001`, `ALG-RELIABILITY-001`, `ALG-INTERDICT-001`,
+  `ALG-SETCOVER-001`, `ALG-SUBMOD-001`) with complexity/output witnesses and oracle certification;
 - durable journal/ledger with torn-tail recovery, root-last local publication, a durable effect
-  journal with prepare/commit/observe/reconcile, and a read-only deployment doctor
-  (`fss doctor --json --root <dir>`);
-- camera pose (Horn, RANSAC PnP, planar homography) and image-to-atlas localization;
-- the agent semantic contracts (`SituationCapsule`, `WorldEnvelope`, affordances, meaningful deltas,
-  hydration, handoff) as typed, tested Rust;
+  journal with prepare/commit/observe/reconcile, deployment backup and fenced restore (`fss-backup`),
+  owner-defined rectangular privacy masking across live/replay decode and raw-export refusal,
+  local deletion closure (`fss-file delete`) and evidence holds (`fss-hold`), and a read-only
+  deployment doctor (`fss doctor --json --root <dir>`);
+- camera pose (Horn, RANSAC PnP, planar homography, site calibration from correspondences or loose
+  JPEG frames) and image-to-atlas localization;
+- the complete `fss/1` agent semantic contracts and all 14 registered agent operations (`AOP-001`
+  through `AOP-014`: `session.open`, `session.resume`, `session.orient`, `session.follow` with
+  durable adjacent-prefix delivery and explicit ACK, `query`, `investigate` with work claims and
+  shared findings, `plan` with episode closure, `commit` with owner-attested reconciliation,
+  `wait`, `cancel`, `explain`, `handoff`, `feedback`, and `doctor`) across both the `fss` CLI and
+  the synchronous stdio MCP server (`fss-mcp`);
 - the plan, registries, schemas, policy checkers and local qualification wrapper.
 - the factory-state camera onboarding substrate (`fss-provision`, LAB-PROVISION-001): a sans-IO,
   deterministic reference for turning a factory-state camera (Yi/Wyze/AOSU/OpenIPC-class-A/
@@ -596,17 +617,11 @@ Implemented (reference, unqualified):
 
 Partial:
 
-- the agent operating layer: `fss session orient`, `fss explain`, and `fss session follow`
-  (meaningful deltas since an orient anchor token, paged through exact continuations, with
-  certified silence across harmless successor commits; an optional
-  [bounded wait](docs/AGENT_FOLLOW_WAIT.md) on a certified quiet head, with exact-anchor
-  resnapshot on advance; `fss orient` and `fss follow` are aliases) are read-only CLI surfaces;
-  `fss session open`, `fss handoff` (alias `fss session handoff`), and
-  `fss session resume` (session.open, handoff, session.resume) persist mission-scoped sessions,
-  immutable workspace revisions, and root-last handoffs under the deployment's `agent/` directory
-  (never authority or effect state), and resume lists every assumption invalidated since the
-  handoff anchor before rebasing onto the head; the other fss/1 operations (query, investigate,
-  plan, commit, wait, cancel, feedback) and any MCP transport are not exposed;
+- certified graph intelligence: 19 of 27 registered algorithms are implemented and certified against
+  in-tree reference oracles; the remaining 8 algorithms (`ALG-STEINER-001`, `ALG-PPR-001`,
+  `ALG-HITS-001`, `ALG-CENTRAL-001`, `ALG-COMM-001`, `ALG-SPECTRAL-001`, `ALG-FACTOR-001`,
+  `ALG-ZSET-001`), retained-record projection builders beyond `SensorCoverageGraph` /
+  `EvidenceClaimGraph`, and `INT-FNX-001` FrankenNetworkX differentials remain open;
 - alert delivery: plaintext webhook relays only (no TLS, retries or provider adapters).
 
 Not implemented:
@@ -621,10 +636,12 @@ Not implemented:
   Asupersync `Cx` (cancellation, regions, obligations — landed 2026-10-19),
   but production I/O remains blocking `std` and the deterministic LabRuntime
   schedule lanes are not yet wired;
-- cloud archive/ATP transport, property reconstruction, privacy masking, deletion closure,
-  search/memory, live operator view, and the DSR release matrix.
+- cloud archive/ATP remote transport, property reconstruction, graph-complete remote/replica deletion
+  and cryptographic erasure, search/memory crates (`fss-search`, `fss-memory`), remote authenticated
+  MCP transport, live operator TUI view, and the DSR release matrix.
 
-That gap is tracked in `.beads/` (see the `reality-check-2026-09-23` label).
+That gap is tracked in `.beads/`.
+
 
 ## License
 

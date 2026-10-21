@@ -450,3 +450,139 @@ fn held_reference_changed_after_recovery_is_rechecked_before_publication() -> Te
     assert_eq!(io.reads.load(Ordering::SeqCst), 2);
     Ok(())
 }
+
+
+#[derive(Debug, Default)]
+struct CountingSpoolIo {
+    reads: std::sync::Mutex<std::collections::BTreeMap<PathBuf, u64>>,
+}
+
+impl CountingSpoolIo {
+    fn read_count(&self, path: &Path) -> u64 {
+        self.reads
+            .lock()
+            .expect("counting spool io mutex poisoned")
+            .get(path)
+            .copied()
+            .unwrap_or(0)
+    }
+}
+
+impl SpoolIo for CountingSpoolIo {
+    fn create_dir_all(&self, path: &Path) -> io::Result<()> {
+        HostSpoolIo.create_dir_all(path)
+    }
+    fn metadata(&self, path: &Path) -> io::Result<Metadata> {
+        HostSpoolIo.metadata(path)
+    }
+    fn symlink_metadata(&self, path: &Path) -> io::Result<Metadata> {
+        HostSpoolIo.symlink_metadata(path)
+    }
+    fn open_lock(&self, path: &Path) -> io::Result<File> {
+        HostSpoolIo.open_lock(path)
+    }
+    fn try_lock(&self, file: &File) -> Result<(), TryLockError> {
+        HostSpoolIo.try_lock(file)
+    }
+    fn create_dir(&self, path: &Path) -> io::Result<()> {
+        HostSpoolIo.create_dir(path)
+    }
+    fn read_dir(&self, path: &Path) -> io::Result<ReadDir> {
+        HostSpoolIo.read_dir(path)
+    }
+    fn next_dir_entry(&self, entries: &mut ReadDir) -> Option<io::Result<DirEntry>> {
+        HostSpoolIo.next_dir_entry(entries)
+    }
+    fn entry_file_type(&self, entry: &DirEntry) -> io::Result<FileType> {
+        HostSpoolIo.entry_file_type(entry)
+    }
+    fn create_new(&self, path: &Path) -> io::Result<File> {
+        HostSpoolIo.create_new(path)
+    }
+    fn write(&self, file: &mut File, bytes: &[u8]) -> io::Result<usize> {
+        HostSpoolIo.write(file, bytes)
+    }
+    fn sync_file(&self, file: &File) -> io::Result<()> {
+        HostSpoolIo.sync_file(file)
+    }
+    fn open_read(&self, path: &Path) -> io::Result<File> {
+        *self
+            .reads
+            .lock()
+            .expect("counting spool io mutex poisoned")
+            .entry(path.to_path_buf())
+            .or_insert(0) += 1;
+        HostSpoolIo.open_read(path)
+    }
+    fn read_bounded(&self, file: &mut File, limit: u64) -> io::Result<Vec<u8>> {
+        HostSpoolIo.read_bounded(file, limit)
+    }
+    fn rename(&self, from: &Path, to: &Path) -> io::Result<()> {
+        HostSpoolIo.rename(from, to)
+    }
+    fn remove_file(&self, path: &Path) -> io::Result<()> {
+        HostSpoolIo.remove_file(path)
+    }
+    fn sync_directory(&self, path: &Path) -> io::Result<()> {
+        HostSpoolIo.sync_directory(path)
+    }
+    fn hard_link(&self, from: &Path, to: &Path) -> io::Result<()> {
+        HostSpoolIo.hard_link(from, to)
+    }
+}
+
+/// Regression guard for PERF-003 (fss-7549c / fss-kx7gu):
+/// 1. Root manifests are verified and read in a single pass via `verify_and_read` during
+///    `classify_roots` (total 2 reads on open: 1 in `StagingSpool::open` + 1 in `classify_roots`,
+///    down from 3+).
+/// 2. A shared child referenced across multiple root slots (`archive`, `checkpoint`, `episodes`),
+///    even when another broken root triggers a second fixed-point pass in `classify_roots`, is
+///    verified at most once in `classify_roots` (total 2 reads on open, down from 1 + 3 * 2 = 7).
+#[test]
+fn shared_child_and_multi_pass_roots_verify_each_digest_once_in_classify_roots() -> TestResult {
+    let root = fresh_root("perf003_single_pass_memoized")?;
+    let mut publisher = LocalRootPublisher::open(&root, limits())?;
+
+    let shared_clip = publisher.stage_object(b"shared-clip-payload")?;
+    let archive_manifest = ObjectManifest::new("event_archive", [shared_clip], None)?;
+    publisher.publish(&slot("archive")?, &archive_manifest)?;
+
+    // Checkpoint references both `shared_clip` and `archive_manifest.root()` as children.
+    let checkpoint_manifest =
+        ObjectManifest::new("checkpoint", [shared_clip, archive_manifest.root()], None)?;
+    publisher.publish(&slot("checkpoint")?, &checkpoint_manifest)?;
+
+    let episodes_manifest = ObjectManifest::new("episodes", [shared_clip], None)?;
+    publisher.publish(&slot("episodes")?, &episodes_manifest)?;
+
+    // Also add a broken slot whose child is missing/corrupt so the fixed-point loop in
+    // `classify_roots` executes multiple passes over the remaining valid candidates.
+    let bad_child = publisher.stage_object(b"broken-child-payload")?;
+    let broken_manifest = ObjectManifest::new("broken_slot", [bad_child], None)?;
+    publisher.publish(&slot("broken")?, &broken_manifest)?;
+
+    let shared_clip_path = publisher.spool().object_path(shared_clip);
+    let archive_manifest_path = publisher.spool().object_path(archive_manifest.root());
+    let checkpoint_manifest_path = publisher.spool().object_path(checkpoint_manifest.root());
+    let episodes_manifest_path = publisher.spool().object_path(episodes_manifest.root());
+    let bad_child_path = publisher.spool().object_path(bad_child);
+    drop(publisher);
+
+    flip_last_byte(&bad_child_path)?;
+
+    let io = Arc::new(CountingSpoolIo::default());
+    let publisher = LocalRootPublisher::open_with_io(&root, limits(), io.clone())?;
+
+    assert_eq!(publisher.recovery_report().roots.len(), 3);
+    assert_eq!(publisher.recovery_report().broken_roots.len(), 1);
+
+    // Every intact object (including `shared_clip` referenced by 3 roots across 2 fixed-point
+    // passes, and `archive_manifest.root()` referenced both as a root and as a child of
+    // `checkpoint`) is read once by `StagingSpool::open` and once by `classify_roots`.
+    assert_eq!(io.read_count(&shared_clip_path), 2);
+    assert_eq!(io.read_count(&archive_manifest_path), 2);
+    assert_eq!(io.read_count(&checkpoint_manifest_path), 2);
+    assert_eq!(io.read_count(&episodes_manifest_path), 2);
+    Ok(())
+}
+

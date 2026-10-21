@@ -1,4 +1,4 @@
-# Local DSR/direct receipts are authoritative. GitHub-hosted execution is supplementary only.
+# Local DSR/direct receipts via scripts/qualify.sh are authoritative. GitHub-hosted execution is supplementary only.
 # Supplementary native fixture feedback, never a substitute for DSR qualification.
 name: Acquisition recovery reference
 

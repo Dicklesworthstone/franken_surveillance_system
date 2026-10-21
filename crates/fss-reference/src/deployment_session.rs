@@ -111,6 +111,9 @@ pub mod episode;
 /// Session-owned, restart-safe adjacent follow delivery with explicit acknowledgement.
 pub mod follow;
 
+/// Experiential operational memory and trauma-guard anti-pattern warning derivation (NS-13).
+pub mod trauma_guard;
+
 /// Agent-plane directory under a deployment root; nothing outside it is ever written.
 pub const AGENT_DIR: &str = "agent";
 /// Session journal directory, relative to the deployment root.

@@ -175,6 +175,7 @@ impl RetainedBeliefGraph for CapturedBeliefCustody {
 /// The native auditor may transiently allocate one max_object_bytes payload; captured payloads
 /// never exceed max_retained_bytes. Later core graph verification has an independent copy budget.
 /// No files, locks, holds, publication records or verification flags are written by this operation.
+#[allow(clippy::too_many_arguments)]
 pub fn capture_belief_custody(
     io: &dyn SpoolIo,
     root: &Path,

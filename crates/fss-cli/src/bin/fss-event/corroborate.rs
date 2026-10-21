@@ -65,6 +65,8 @@
 // Full calibration covariance is an additional coverage-denial gate, not an event classifier.
 #[path = "corroborate/calibration_coverage.rs"]
 mod calibration_coverage;
+#[path = "corroborate/fusion.rs"]
+mod fusion;
 #[path = "corroborate/streaming.rs"]
 mod streaming;
 
@@ -76,6 +78,7 @@ use std::path::{Path, PathBuf};
 
 use fss_cli::event_fusion::{EventFusionError, EventFusionReport};
 use fss_core::{ContentDigest, DigestAlgorithm, PrincipalId};
+use fss_fusion::FusionPolicy;
 use fss_reference::ingest::calibration_adoption::{
     CameraGeneration, adopted_currency, recording_sensor, retained_adoptions,
 };
@@ -133,6 +136,8 @@ const OPTIONS: &[&str] = &[
     "--calibration",
     "--calibration-digest",
     "--sensor-health",
+    "--score-calibration",
+    "--fusion-policy",
 ];
 
 /// Largest owner scene-mesh package read (the fss-twin format bound).
@@ -188,6 +193,8 @@ pub(super) struct CorroborateAction {
     poses: [Option<CameraPose>; 2],
     mesh: Option<SceneMeshOption>,
     calibration: Option<CalibrationOption>,
+    score_calibration: Option<PathBuf>,
+    fusion_policy: Option<FusionPolicy>,
     /// Owner-asserted current `(camera, intrinsics, extrinsics)` generations, in argument order.
     generations: Vec<(String, u64, u64)>,
     rerun: String,
@@ -485,6 +492,8 @@ pub(super) fn parse(args: &[OsString]) -> Result<CorroborateAction, String> {
             "--report-out",
             "--fusion-profile",
             "--fusion-digest",
+            "--score-calibration",
+            "--fusion-policy",
         ]
         .contains(&key)
         {
@@ -705,6 +714,14 @@ pub(super) fn parse(args: &[OsString]) -> Result<CorroborateAction, String> {
             }
         }
     }
+    let score_calibration = find(&values, "--score-calibration").map(PathBuf::from);
+    let fusion_policy = match find(&values, "--fusion-policy") {
+        None => None,
+        Some(_) if score_calibration.is_none() => {
+            return Err("--fusion-policy requires --score-calibration".to_owned());
+        }
+        Some(raw) => Some(fusion::parse_policy(raw)?),
+    };
     Ok(CorroborateAction {
         root: PathBuf::from(required(&values, "--root")?),
         site,
@@ -738,6 +755,8 @@ pub(super) fn parse(args: &[OsString]) -> Result<CorroborateAction, String> {
         poses: camera_poses,
         mesh,
         calibration,
+        score_calibration,
+        fusion_policy,
         generations,
         rerun,
     })
@@ -1050,6 +1069,8 @@ fn run_with(
     let fusion_profile = super::detector::load_fusion(action.cascade.as_ref(), cx)?;
     // The calibration is verified against its pinned digest before any source is read.
     let (poses, mut sources, calibration, covariances, calibration_record) = resolve_poses(action)?;
+    // Score calibration is verified against its recomputed Wilson bins before any source is read.
+    let loaded_score_calibration = fusion::load(action, cx)?;
     // Retained adoptions decide currency (or refuse a superseded calibration) before any frame is
     // decoded and before anything is appended.
     if let Some(calibration) = calibration {
@@ -1240,6 +1261,16 @@ fn run_with(
         }
         cx.checkpoint("event_fusion:corroborate_delivery")?;
     }
+    let fusion_report = fusion::assess(loaded_score_calibration.as_ref(), action, &report, cx)?;
+    let json = match fusion_report {
+        Some(assessment) => {
+            let body = json
+                .strip_suffix('}')
+                .ok_or_else(|| io::Error::other("report is not one JSON object"))?;
+            format!("{body},\"fusion_assessment\":{}}}", assessment.to_json())
+        }
+        None => json,
+    };
     let json = format!("{json}\n");
     if let Some(path) = &action.report_out {
         export(path, json.as_bytes(), root, cx)?;

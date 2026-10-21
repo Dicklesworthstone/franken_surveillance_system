@@ -1,4 +1,4 @@
-# Local DSR/direct receipts are authoritative. GitHub-hosted execution is supplementary only.
+# Local DSR/direct receipts via scripts/qualify.sh are authoritative. GitHub-hosted execution is supplementary only.
 # Supplementary native regression feedback, not a replacement for DSR qualification.
 name: supplementary recorded RTP decode
 on:

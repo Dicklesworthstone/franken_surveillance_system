@@ -50,6 +50,8 @@ pub mod scene_rig;
 pub mod session_cmd;
 /// `fss status --json [--root <dir>]`: read-only retained inventory (SCHEMA-STATUS-001).
 pub mod status_cmd;
+/// Bounded multi-camera supervisor coordinator with anytime-valid sequential Ville e-process (`fss-becce`).
+pub mod supervisor;
 pub mod token;
 
 pub use crosswalk::{

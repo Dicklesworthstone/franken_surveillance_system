@@ -446,7 +446,18 @@
       "outputSizeWitness": "<= |V| selected covering sets",
       "exactness": "approximate_or_exact_small",
       "gate": "INT-FNX-001",
-      "status": "specified"
+      "status": "implemented",
+      "implementationId": "fss-graph-algorithms:alg-setcover-001:cardinality-enumeration-or-marginal-gain:v1",
+      "tieBreakPolicyId": "tie:cardinality-then-stable-set-tuple-or-marginal-gain-then-stable-set-id:v1",
+      "policyId": "setcover-policy:unit-cost:mandatory-excluded:cardinality-then-stable-set-tuple-or-marginal-gain-then-stable-set-id:v1",
+      "complexityBoundId": "bound:alg-setcover-001:2-pow-20-exact-small-or-greedy-quadratic:v1",
+      "projectionBinding": "caller-built SetCoverProblem (fss.graph.set_cover_input.v1) or retained SensorCoverageProjection adapter; exact up to 20 optional eligible sets, explicitly approximate greedy beyond",
+      "qualification": "not_qualified: certified against exhaustive subset enumeration on small instances and fail-closed budget/tamper checks; no INT-FNX-001 differential exists",
+      "evidence": [
+        "crates/fss-graph-algorithms/src/set_cover.rs",
+        "crates/fss-graph-algorithms/src/resilient_cover.rs",
+        "crates/fss-graph-algorithms/tests/coverage_selection_certification.rs"
+      ]
     },
     {
       "id": "ALG-SUBMOD-001",
@@ -463,7 +474,17 @@
       "outputSizeWitness": "<= k <= |V| selected actions",
       "exactness": "approximate",
       "gate": "INT-FNX-001",
-      "status": "specified"
+      "status": "implemented",
+      "implementationId": "fss-graph-algorithms:alg-submod-001:eager-weighted-coverage:v1",
+      "tieBreakPolicyId": "tie:u128-utility-cost-ratio-then-stable-action-identity:v1",
+      "policyId": "submod-policy:positive-integer-utility-and-cost:ratio-then-stable-id:mandatory-excluded:v1",
+      "complexityBoundId": "bound:alg-submod-001:eager-ratio-evaluations:v1",
+      "projectionBinding": "caller-built SubmodularProblem (fss.graph.budgeted_coverage_input.v1) over SetCoverProblem with positive integer target utilities, action costs, and cost budget",
+      "qualification": "not_qualified: certified against reference eager u128 ratio selection, constraint preservation, and fail-closed budget/tamper checks; no INT-FNX-001 differential exists",
+      "evidence": [
+        "crates/fss-graph-algorithms/src/submodular.rs",
+        "crates/fss-graph-algorithms/tests/coverage_selection_certification.rs"
+      ]
     },
     {
       "id": "ALG-MST-001",
@@ -511,7 +532,19 @@
       "outputSizeWitness": "<= 2 * |Terminals| <= |V| tree nodes and edges",
       "exactness": "approximate",
       "gate": "INT-FNX-001",
-      "status": "specified"
+      "status": "implemented",
+      "implementationId": "fss-graph-algorithms:alg-steiner-001:kou-markowsky-berman-metric-closure-mst:v1",
+      "tieBreakPolicyId": "tie:total-weight-then-lexicographic-edge-identity-sequence:v1",
+      "policyId": "graph-policy:undirected:simple-strict:nonnegative-edge-weight:numeric:u64-exact:checked:unit-bound:v1:tie:total-weight-then-lexicographic-edge-identity-sequence:v1",
+      "complexityBoundId": "bound:alg-steiner-001:terminals-dijkstra-plus-closure-mst:v1",
+      "projectionBinding": "caller-built canonical undirected WeightedGraph plus terminal set bound into the inputDigest",
+      "qualification": "not_qualified: certified against exact Steiner tree subset enumeration on small seeded graphs; no INT-FNX-001 differential exists",
+      "evidence": [
+        "crates/fss-graph-algorithms/src/steiner.rs",
+        "crates/fss-graph-algorithms/src/weighted.rs",
+        "crates/fss-graph-algorithms/src/certified.rs",
+        "crates/fss-graph-algorithms/tests/atlas_completion_certification.rs"
+      ]
     },
     {
       "id": "ALG-PPR-001",
@@ -528,7 +561,19 @@
       "outputSizeWitness": "<= |V| stationary score entries",
       "exactness": "approximate_advisory",
       "gate": "INT-FNX-001",
-      "status": "specified"
+      "status": "implemented",
+      "implementationId": "fss-graph-algorithms:alg-ppr-001:fixed-point-power-iteration-1e9:v1",
+      "tieBreakPolicyId": "tie:score-ppb-descending-then-stable-node-identity-ascending:v1",
+      "policyId": "graph-policy:directed:simple-strict:fixed-point-1e9-power-iteration:tie:score-ppb-descending-then-stable-node-identity-ascending:v1",
+      "complexityBoundId": "bound:alg-ppr-001:power-iterations-times-n-plus-m:v1",
+      "projectionBinding": "caller-built canonical directed WeightedGraph plus seed personalization distribution and PprConfig bound into the inputDigest",
+      "qualification": "not_qualified: certified against reference Markov power iteration, stationary mass conservation, and CGSE tie-break invariants on seeded graphs; no INT-FNX-001 differential exists",
+      "evidence": [
+        "crates/fss-graph-algorithms/src/ppr.rs",
+        "crates/fss-graph-algorithms/src/weighted.rs",
+        "crates/fss-graph-algorithms/src/certified.rs",
+        "crates/fss-graph-algorithms/tests/atlas_completion_certification.rs"
+      ]
     },
     {
       "id": "ALG-HITS-001",
@@ -545,7 +590,19 @@
       "outputSizeWitness": "<= 2 * |V| hub and authority score entries",
       "exactness": "approximate_advisory",
       "gate": "INT-FNX-001",
-      "status": "specified"
+      "status": "implemented",
+      "implementationId": "fss-graph-algorithms:alg-hits-001:fixed-point-hub-authority-iteration-1e9:v1",
+      "tieBreakPolicyId": "tie:score-ppb-descending-then-stable-node-identity-ascending:v1",
+      "policyId": "graph-policy:directed:simple-strict:fixed-point-1e9-hub-authority-l1:tie:score-ppb-descending-then-stable-node-identity-ascending:v1",
+      "complexityBoundId": "bound:alg-hits-001:iterations-times-2m-plus-2n:v1",
+      "projectionBinding": "caller-built canonical directed WeightedGraph plus HitsConfig bound into the inputDigest",
+      "qualification": "not_qualified: certified against reference L1 hub/authority fixed-point updates and CGSE tie-break invariants on seeded graphs; no INT-FNX-001 differential exists",
+      "evidence": [
+        "crates/fss-graph-algorithms/src/hits.rs",
+        "crates/fss-graph-algorithms/src/weighted.rs",
+        "crates/fss-graph-algorithms/src/certified.rs",
+        "crates/fss-graph-algorithms/tests/atlas_completion_certification.rs"
+      ]
     },
     {
       "id": "ALG-CENTRAL-001",
@@ -563,7 +620,19 @@
       "outputSizeWitness": "<= |V| vertex and <= |E| edge centrality scores",
       "exactness": "exact_or_approximate_advisory",
       "gate": "INT-FNX-001",
-      "status": "specified"
+      "status": "implemented",
+      "implementationId": "fss-graph-algorithms:alg-central-001:brandes-shortest-path-betweenness-and-closeness-1e9:v1",
+      "tieBreakPolicyId": "tie:betweenness-ppb-descending-then-closeness-ppb-descending-then-stable-node-identity:v1",
+      "policyId": "graph-policy:directed-or-undirected:simple-strict:unweighted-shortest-paths-fixed-point-1e9:tie:betweenness-ppb-descending-then-closeness-ppb-descending-then-stable-node-identity:v1",
+      "complexityBoundId": "bound:alg-central-001:brandes-n-times-n-plus-2m:v1",
+      "projectionBinding": "caller-built canonical directed or undirected WeightedGraph bound into the inputDigest",
+      "qualification": "not_qualified: certified against exhaustive all-pairs shortest-path enumeration on seeded graphs; no INT-FNX-001 differential exists",
+      "evidence": [
+        "crates/fss-graph-algorithms/src/centrality.rs",
+        "crates/fss-graph-algorithms/src/weighted.rs",
+        "crates/fss-graph-algorithms/src/certified.rs",
+        "crates/fss-graph-algorithms/tests/atlas_completion_certification.rs"
+      ]
     },
     {
       "id": "ALG-COMM-001",
@@ -580,7 +649,19 @@
       "outputSizeWitness": "<= |V| community partition assignments",
       "exactness": "approximate_advisory",
       "gate": "INT-FNX-001",
-      "status": "specified"
+      "status": "implemented",
+      "implementationId": "fss-graph-algorithms:alg-comm-001:deterministic-modularity-local-moving:v1",
+      "tieBreakPolicyId": "tie:modularity-gain-scaled-2m-squared-then-smallest-member-community-id:v1",
+      "policyId": "graph-policy:undirected-or-symmetrized:simple-strict:nonnegative-weight:tie:modularity-gain-scaled-2m-squared-then-smallest-member-community-id:v1",
+      "complexityBoundId": "bound:alg-comm-001:passes-times-n-plus-2m-moves:v1",
+      "projectionBinding": "caller-built canonical WeightedGraph plus max_passes bound into the inputDigest",
+      "qualification": "not_qualified: certified for partition completeness, non-negative modularity improvement over singleton baseline, and permutation invariance on seeded graphs; no INT-FNX-001 differential exists",
+      "evidence": [
+        "crates/fss-graph-algorithms/src/community.rs",
+        "crates/fss-graph-algorithms/src/weighted.rs",
+        "crates/fss-graph-algorithms/src/certified.rs",
+        "crates/fss-graph-algorithms/tests/atlas_completion_certification.rs"
+      ]
     },
     {
       "id": "ALG-SPECTRAL-001",
@@ -597,7 +678,19 @@
       "outputSizeWitness": "<= k * |V| eigenvector entries and anomaly score",
       "exactness": "approximate_advisory",
       "gate": "INT-FNX-001",
-      "status": "specified"
+      "status": "implemented",
+      "implementationId": "fss-graph-algorithms:alg-spectral-001:deflated-laplacian-power-iteration-1e9:v1",
+      "tieBreakPolicyId": "tie:abs-eigenvector-ppb-descending-then-stable-node-identity:v1",
+      "policyId": "graph-policy:undirected-or-symmetrized:simple-strict:normalized-walk-laplacian-fixed-point-1e9:tie:abs-eigenvector-ppb-descending-then-stable-node-identity:v1",
+      "complexityBoundId": "bound:alg-spectral-001:iterations-times-n-plus-2m:v1",
+      "projectionBinding": "caller-built canonical WeightedGraph plus SpectralConfig bound into the inputDigest",
+      "qualification": "not_qualified: certified for degree-orthogonalization, Rayleigh quotient bounds, and permutation invariance on seeded graphs; no INT-FNX-001 differential exists",
+      "evidence": [
+        "crates/fss-graph-algorithms/src/spectral.rs",
+        "crates/fss-graph-algorithms/src/weighted.rs",
+        "crates/fss-graph-algorithms/src/certified.rs",
+        "crates/fss-graph-algorithms/tests/atlas_completion_certification.rs"
+      ]
     },
     {
       "id": "ALG-INTERDICT-001",
@@ -671,7 +764,19 @@
       "outputSizeWitness": "<= |V| * |Relations| factor nodes and edges",
       "exactness": "exact",
       "gate": "INT-FNX-001",
-      "status": "specified"
+      "status": "implemented",
+      "implementationId": "fss-graph-algorithms:alg-factor-001:leapfrog-triejoin-factorized-trie:v1",
+      "tieBreakPolicyId": "tie:lexicographic-variable-order-then-ascending-key-tuple:v1",
+      "policyId": "graph-policy:multiway-relational-pattern:sorted-deduplicated-relations:leapfrog-intersection:tie:lexicographic-variable-order-then-ascending-key-tuple:v1",
+      "complexityBoundId": "bound:alg-factor-001:seeks-plus-intersections-plus-emitted-factors:v1",
+      "projectionBinding": "caller-built canonical FactorJoinProblem (fss.graph.factor_projection.v1) bound into the inputDigest",
+      "qualification": "not_qualified: certified against brute-force relational natural-join enumeration on seeded pattern graphs; no INT-FNX-001 differential exists",
+      "evidence": [
+        "crates/fss-graph-algorithms/src/factorized_join.rs",
+        "crates/fss-graph-algorithms/src/weighted.rs",
+        "crates/fss-graph-algorithms/src/certified.rs",
+        "crates/fss-graph-algorithms/tests/atlas_completion_certification.rs"
+      ]
     },
     {
       "id": "ALG-ZSET-001",
@@ -696,7 +801,18 @@
       "outputSizeWitness": "<= |Delta| <= |V| + |E| delta tuple records",
       "exactness": "exact",
       "gate": "INT-FNX-001",
-      "status": "specified"
+      "status": "implemented",
+      "implementationId": "fss-graph-algorithms:alg-zset-001:dbsp-abelian-zset-bilinear-join-delta:v1",
+      "tieBreakPolicyId": "tie:commit-sequence-then-lexicographic-tuple-key:v1",
+      "policyId": "graph-policy:incremental-zset:signed-i64-multiplicity:zero-weight-consolidation:bilinear-delta-join:tie:commit-sequence-then-lexicographic-tuple-key:v1",
+      "complexityBoundId": "bound:alg-zset-001:delta-tuples-plus-circuit-activations:v1",
+      "projectionBinding": "caller-built canonical ZSetGraphState (fss.graph.zset_projection.v1) plus ZSetDeltaBatch bound into the inputDigest",
+      "qualification": "not_qualified: certified against full-recomputation Q(I(Delta)) == I(Delta Q) exactness oracle on seeded graph delta streams; no INT-FNX-001 differential exists",
+      "evidence": [
+        "crates/fss-graph-algorithms/src/zset.rs",
+        "crates/fss-graph-algorithms/src/certified.rs",
+        "crates/fss-graph-algorithms/tests/atlas_completion_certification.rs"
+      ]
     }
   ],
   "drifts": [

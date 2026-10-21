@@ -1,4 +1,4 @@
-# Local DSR/direct receipts are authoritative. GitHub-hosted execution is supplementary only.
+# Local DSR/direct receipts via scripts/qualify.sh are authoritative. GitHub-hosted execution is supplementary only.
 name: Retained belief provenance
 on:
   push:

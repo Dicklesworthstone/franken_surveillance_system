@@ -49,6 +49,8 @@ mod health;
 mod privacy_mask;
 #[path = "fss-event/replay.rs"]
 mod replay;
+#[path = "fss-event/supervise.rs"]
+mod supervise;
 #[path = "fss-event/watch.rs"]
 mod watch;
 
@@ -1152,6 +1154,9 @@ fn main() -> ExitCode {
     }
     if args.first().is_some_and(|command| command == "calibrate") {
         return calibrate::main(&args[1..]);
+    }
+    if args.first().is_some_and(|command| command == "supervise") {
+        return supervise::main(&args[1..]);
     }
     match parse(&args) {
         Ok(None) => match io::stdout().lock().write_all(HELP.as_bytes()) {

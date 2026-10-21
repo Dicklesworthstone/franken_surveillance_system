@@ -17,6 +17,7 @@ Enforces ADR-0001 three semantic planes doctrine from AGENTS.md:
 from __future__ import annotations
 
 import argparse
+import functools
 import json
 import os
 import re
@@ -681,6 +682,7 @@ MUTABLE_GENERATION_TOKENS: set[str] = {
 }
 
 
+@functools.lru_cache(maxsize=2048)
 def mask_comments_and_strings(source: str) -> str:
     """Masks comments and strings with spaces, preserving character offsets and newlines."""
     result = list(source)
@@ -852,6 +854,8 @@ def extract_use_renames(content: str, pub_only: bool = False) -> dict[str, str]:
     Returns dict mapping alias name to target path string.
     """
     masked = mask_comments_and_strings(content)
+    if " as " not in masked:
+        return {}
     renames: dict[str, str] = {}
     pattern = (
         r"\bpub(?:\s*\([^)]*\))?\s+use\s+([^;]+);"
@@ -860,6 +864,8 @@ def extract_use_renames(content: str, pub_only: bool = False) -> dict[str, str]:
     )
     for m in re.finditer(pattern, masked, re.DOTALL):
         decl = m.group(1).strip()
+        if " as " not in decl and "\nas " not in decl and "\tas " not in decl:
+            continue
         decl = " ".join(decl.split())
         for path, alias in parse_use_tree("", decl):
             if alias and alias != "_" and re.fullmatch(r"[A-Za-z0-9_]+", alias):
@@ -1394,29 +1400,24 @@ def check_module_imports(
         ) in extract_rust_functions(content):
             bounds = parse_all_generic_bounds(generics, where_clause, impl_header, file_alias_map)
 
+            param_tokens = re.findall(r"\b[A-Za-z0-9_]+\b", params)
+            param_token_set = set(param_tokens)
+            ret_tokens = re.findall(r"\b[A-Za-z0-9_]+\b", ret_type)
+            ret_token_set = set(ret_tokens)
+            full_fn_token_set = set(re.findall(r"\b[A-Za-z0-9_]+\b", full_fn))
+            impl_type_token_set = (
+                set(re.findall(r"\b[A-Za-z0-9_]+\b", impl_type)) if impl_type else set()
+            )
+
             # NEG-003: Model/VLM output can never reach an effect type directly
             is_model_input = (
-                any(
-                    re.search(r"\b" + re.escape(m_ty) + r"\b", params)
-                    for m_ty in eff_model
-                )
-                or any(
-                    m_ty == impl_type
-                    or (
-                        impl_type
-                        and re.search(r"\b" + re.escape(m_ty) + r"\b", impl_type)
-                    )
-                    for m_ty in eff_model
-                )
-                or any(
-                    re.search(r"\b" + re.escape(m_ty) + r"\b", full_fn)
-                    for m_ty in eff_model
-                )
+                bool(param_token_set & eff_model)
+                or bool(impl_type_token_set & eff_model)
+                or bool(full_fn_token_set & eff_model)
                 or "vlm" in fn_name.lower()
                 or "model" in fn_name.lower()
             )
             if not is_model_input:
-                param_tokens = re.findall(r"\b[A-Za-z0-9_]+\b", params)
                 for pt in param_tokens:
                     candidates = {pt, normalise_type_name(pt, file_alias_map)}
                     for cand in candidates:
@@ -1439,7 +1440,6 @@ def check_module_imports(
                 ret_type, registered_types, eff_effect, file_alias_map
             )
             if not is_effect_ret:
-                ret_tokens = re.findall(r"\b[A-Za-z0-9_]+\b", ret_type)
                 for t in ret_tokens:
                     candidates = {t, normalise_type_name(t, file_alias_map)}
                     for cand in candidates:
@@ -1498,11 +1498,11 @@ def check_module_imports(
                     )
                 )
             elif mod_plane == "cognition" and (
-                re.search(r"\bEffectAuthority\b", ret_type)
+                "EffectAuthority" in ret_token_set
+                or bool(ret_token_set & eff_auth)
                 or any(
-                    t in eff_auth
-                    or normalise_type_name(t, file_alias_map) in eff_auth
-                    for t in re.findall(r"\b[A-Za-z0-9_]+\b", ret_type)
+                    normalise_type_name(t, file_alias_map) in eff_auth
+                    for t in ret_tokens
                 )
                 or any(
                     any(
@@ -1514,7 +1514,7 @@ def check_module_imports(
                         )
                         for b in bounds.get(cand, [])
                     )
-                    for t in re.findall(r"\b[A-Za-z0-9_]+\b", ret_type)
+                    for t in ret_tokens
                     for cand in (t, normalise_type_name(t, file_alias_map))
                 )
             ):
@@ -1533,28 +1533,12 @@ def check_module_imports(
 
             # NEG-003: Abstention/failure is never negative evidence
             is_absten_input = (
-                any(
-                    re.search(r"\b" + re.escape(a_ty) + r"\b", params)
-                    for a_ty in eff_absten
-                )
-                or any(
-                    m_ty == impl_type
-                    or (
-                        impl_type
-                        and re.search(r"\b" + re.escape(m_ty) + r"\b", impl_type)
-                    )
-                    for m_ty in eff_absten
-                )
-                or any(
-                    re.search(r"\b" + re.escape(a_ty) + r"\b", full_fn)
-                    for a_ty in eff_absten
-                )
+                bool(param_token_set & eff_absten)
+                or bool(impl_type_token_set & eff_absten)
+                or bool(full_fn_token_set & eff_absten)
                 or "absten" in fn_name.lower()
             )
-            is_negative_evidence_ret = any(
-                re.search(r"\b" + re.escape(n_ty) + r"\b", ret_type)
-                for n_ty in eff_neg
-            )
+            is_negative_evidence_ret = bool(ret_token_set & eff_neg)
             if is_absten_input and is_negative_evidence_ret:
                 line_no = content[:start_pos].count("\n") + 1
                 findings.append(
@@ -1704,6 +1688,7 @@ def check_module_imports(
         # Check use statements for unauthorized cross-plane imports
         for match in use_pattern.finditer(content):
             stmt = match.group(0)
+            stmt_tokens = set(re.findall(r"\b[A-Za-z0-9_]+\b", stmt))
             line_no = content[: match.start()].count("\n") + 1
 
             for type_name, type_info in registered_types.items():
@@ -1719,7 +1704,7 @@ def check_module_imports(
                 elif mod_plane == "authority" and type_plane in ("cognition", "effect"):
                     is_cross = True
 
-                if is_cross and re.search(r"\b" + re.escape(type_name) + r"\b", stmt):
+                if is_cross and type_name in stmt_tokens:
                     findings.append(
                         SemanticPlaneFinding(
                             code=ERR_UNAUTHORIZED_CROSS_PLANE_IMPORT,

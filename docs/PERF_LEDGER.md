@@ -327,3 +327,36 @@ compares both fast paths with sixteen `predict_4x4` calls on 3,000 random macrob
 vectors (half whole-sample); they decline every fractional or out-of-picture case. All
 FFmpeg-oracle conformance fixtures (weighted prediction, B-pictures, direct modes) still match,
 and the end-to-end analysis digest is unchanged.
+
+## PERF-009 — Single-pass manifest verification and reference memoization in `classify_roots` (fss-7549c / fss-kx7gu)
+
+- **Commit:** working tree carrying `StagingSpool::verify_and_read` (`crates/fss-object/src/spool/mod.rs`)
+  and `ReferenceCheck::check_and_read_manifest` + `checked_references` memoization
+  (`crates/fss-publication/src/local/mod.rs`).
+- **Context (PERF-003 finding):** during `LocalRootPublisher::open` (`classify_roots`), every
+  published root manifest was previously read and SHA-256 hashed twice in `classify_roots`
+  (`check_reference` -> `StagingSpool::verify` followed immediately by `manifest_body` ->
+  `StagingSpool::read`), and every shared child or transitive descendant object referenced across
+  $K$ root slots and $P$ fixed-point passes was re-read and re-hashed $K \times P$ times during
+  `classify_roots` in addition to `StagingSpool::open`.
+- **Change:** (1) `StagingSpool::verify_and_read` verifies an object, places its durable verification
+  hold, and returns the verified payload bytes in a single disk read and SHA-256 pass;
+  `LocalRootPublisher::check_and_read_manifest` uses it when loading candidate root manifests.
+  (2) `classify_roots` memoizes `ContentDigest -> Result<(), BlockReason>` in `checked_references`
+  across candidate root manifests, direct children, and transitive descendants across all
+  fixed-point passes so each unique reachable digest is verified at most once in `classify_roots`.
+
+| Operation cost term (per `LocalRootPublisher::open`) | before | after |
+|---|---|---|
+| Root manifest reads + SHA-256 hashes (root referenced by $M$ other roots) | $3 + M \times P$ | $2$ (`1` in `StagingSpool::open` + `1` in `classify_roots`) |
+| Shared child object reads + SHA-256 hashes (referenced by $K$ roots across $P$ passes) | $1 + K \times P$ | $2$ (`1` in `StagingSpool::open` + `1` in `classify_roots`) |
+
+**Semantic equivalence:** identical `LocalRecoveryReport`, identical durable verification holds
+on all verified manifests and children, and identical post-classification corruption detection
+between `StagingSpool::open` and `classify_roots`. Certified in-tree by
+`crates/fss-publication/tests/doctor0_open_regression.rs`:
+`verify_failure_after_classification_breaks_the_root_not_the_open` (`reads == 2`) and
+`shared_child_and_multi_pass_roots_verify_each_digest_once_in_classify_roots` (3 roots sharing a
+child + 1 broken root forcing 2 fixed-point passes: `read_count == 2` for every intact object,
+down from `7`).
+

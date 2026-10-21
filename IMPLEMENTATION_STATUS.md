@@ -1,6 +1,6 @@
 # Implementation status
 
-**As of:** 2026-09-23 (reality check; earlier sections written 2026-09-03)  
+**As of:** 2026-10-14 (reality check; earlier sections written 2026-09-03 and 2026-09-23)
 **Project state:** pre-release deterministic reference implementation; not production-qualified  
 **Release authority:** repository-owned local qualification and retained DSR receipts, not hosted CI
 
@@ -1023,7 +1023,10 @@ one-time vendor-app provisioning (NEG-006) with the yi-hack owner-flash path doc
   `fss feedback` (AOP-013) publishes grounded, evidence-linked advisory
   proposals (`activePolicyMutation: false`). `fss-event alert` and the agent grammar share one
   alert core (`fss_cli::alert_effect`), so an operation prepared by either is the same operation.
-  The MCP adapter adds only the read-only `wait` tool. `fss commit --reconcile
+  The synchronous stdio MCP adapter (`fss-mcp`) exposes the full 14-operation `fss/1` surface
+  (`session_open`, `session_resume`, `handoff`, `session_orient`, `explain`, `session_follow`,
+  `query`, `investigate` with work claims and findings, `plan` with `--close`, `commit` with
+  `--reconcile`, `wait`, `cancel`, `feedback`, and `doctor`). `fss commit --reconcile
   delivered|not_delivered` (the AOP-008 reconcile intent) discharges a dispatched alert's
   obligation on the owner's attestation (evidence digest and statement, bound to the exact
   receipt): the attestation is published root-last to the ledger first, then the journal moves
@@ -1117,7 +1120,7 @@ A passing developer run demonstrates the exact checked tree only. It does not by
 - Native camera discovery, transport, codec/media, calibration, archive, drone, notification, and vendor-boundary implementations.
 - Persistent FrankenSQLite/FrankenFS/ATP integration beyond the deterministic in-process reference stores.
 - Production pure-Rust model runtime, package verification, generation management, batching, calibration, and fallback.
-- Certified graph/search kernels and incremental graph intelligence (17 families are implemented and oracle-certified, see "Graph intelligence" above; the other registered algorithms, retained-record projection builders and every graph qualification lane remain open).
+- Certified graph/search kernels and incremental graph intelligence (19 families are implemented and oracle-certified, see "Graph intelligence" above; the other 8 registered algorithms, retained-record projection builders beyond `SensorCoverageGraph` / `EvidenceClaimGraph`, and every graph qualification lane remain open).
 
 ### Agent operating system
 

@@ -14,6 +14,8 @@ mod custody;
 mod evidence;
 #[path = "orient_cmd/explain_options.rs"]
 mod explain_options;
+#[path = "orient_cmd/fusion.rs"]
+mod fusion;
 
 use std::path::PathBuf;
 
@@ -75,6 +77,11 @@ pub struct ExplainArgs {
     /// Explicitly rehash the current publication closure and revalidate its authority.
     /// Defaults to false; this never grants source-media disclosure or effect authority.
     pub custody: bool,
+    /// Optional `fss.score_calibration.v1` JSON artifact for calibrated posterior LLR and
+    /// minimal-flip counterfactual projection.
+    pub score_calibration: Option<PathBuf>,
+    /// Optional fusion policy thresholds (`alert_mban,corroborate_mban,conflict_floor_mban`).
+    pub fusion_policy: Option<String>,
 }
 
 /// Collects `--json` and `--name value` / `--name=value` options with exact exhaustion.
@@ -275,9 +282,12 @@ pub fn parse_explain_args(tokens: &[ArgToken]) -> Result<ExplainArgs, CliError> 
             "--custody",
             "--view",
             "--budget-tokens",
+            "--score-calibration",
+            "--fusion-policy",
         ],
     )?;
     let (view, budget_tokens) = explain_options::parse(&values)?;
+    let (score_calibration, fusion_policy) = fusion::parse(&values)?;
     let root = required_root("explain", &values)?;
     let (_, raw, index) = take(&values, "--event-id").ok_or_else(|| CliError::MissingValue {
         option: "--event-id".to_owned(),
@@ -298,6 +308,8 @@ pub fn parse_explain_args(tokens: &[ArgToken]) -> Result<ExplainArgs, CliError> 
         view,
         budget_tokens,
         custody: custody::parse(&values)?,
+        score_calibration,
+        fusion_policy,
     })
 }
 
@@ -1061,12 +1073,27 @@ pub fn execute_orient(args: &OrientArgs) -> (String, ExitIdentity) {
     };
     let request_digest = request.digest_at(&snapshot.anchor);
     match orient_deployment(&snapshot, &request, &limits) {
-        Ok(orientation) => rendered(
-            orient_response(&orientation),
-            ExitIdentity::SUCCESS,
-            "orient",
-            &args.root,
-        ),
+        Ok(mut orientation) => {
+            if let Ok(trauma_warnings) =
+                fss_reference::deployment_session::trauma_guard::derive_trauma_guard_warnings(
+                    &args.root,
+                    orientation.capsule().created_at.0.max(0),
+                )
+            {
+                for warning in trauma_warnings {
+                    let line = warning.summary();
+                    if !orientation.warnings.contains(&line) {
+                        orientation.warnings.push(line);
+                    }
+                }
+            }
+            rendered(
+                orient_response(&orientation),
+                ExitIdentity::SUCCESS,
+                "orient",
+                &args.root,
+            )
+        }
         Err(error @ OrientError::ContextBudgetExceeded { budget_tokens, .. }) => rendered(
             budget_refusal(
                 &snapshot,
@@ -1560,6 +1587,14 @@ pub fn execute_explain(args: &ExplainArgs) -> (String, ExitIdentity) {
             encoder.text("budget_tokens");
             encoder.u64(tokens);
         }
+        if let Some(path) = &args.score_calibration {
+            encoder.text("score_calibration");
+            encoder.text(&path.to_string_lossy());
+        }
+        if let Some(policy) = &args.fusion_policy {
+            encoder.text("fusion_policy");
+            encoder.text(policy);
+        }
     });
     let request = OrientRequest {
         view: AgentView::Brief,
@@ -1631,6 +1666,22 @@ pub fn execute_explain(args: &ExplainArgs) -> (String, ExitIdentity) {
                 if let Err(error) = checked {
                     return rendered(
                         custody::refusal(
+                            &orientation,
+                            &explanation,
+                            request_digest,
+                            &support,
+                            &error,
+                        ),
+                        ExitIdentity::AGENT_REFUSED,
+                        "explain",
+                        &args.root,
+                    );
+                }
+            }
+            if args.score_calibration.is_some() {
+                if let Err(error) = fusion::augment(&mut support, &explanation, args) {
+                    return rendered(
+                        fusion::refusal(
                             &orientation,
                             &explanation,
                             request_digest,

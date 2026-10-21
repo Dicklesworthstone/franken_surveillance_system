@@ -113,7 +113,8 @@ class TestLiveRepoConsistency(unittest.TestCase):
         # family and coverage schema rows landed 2026-09-24..28 (bd7186e8..3b451405); the pin
         # was found stale by the policy lane on 2026-10-10 (qualification is the ratchet).
         # 84 = 83 + SCHEMA-EXPERIMENT-RECEIPT-001 (fss.experiment_receipt.v1, fss-x4a.26.16).
-        self.assertEqual(summary["schemas_count"], 84)
+        # 87 = 84 + SCHEMA-FORMAL-MODEL-001, SCHEMA-PROOF-CHECK-RECEIPT-001, SCHEMA-BOUND-DERIVATION-001.
+        self.assertEqual(summary["schemas_count"], 87)
         self.assertGreater(summary["known_active_ids"], 800)
         self.assertGreaterEqual(summary["tombstone_ids"], 14)
 

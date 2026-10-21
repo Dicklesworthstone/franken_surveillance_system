@@ -759,8 +759,17 @@ impl StagingSpool {
     /// [`SpoolError::HoldIndeterminate`] is returned; the object is then treated as held, and a
     /// later `verify` retries the hold.
     pub fn verify(&mut self, digest: ContentDigest) -> Result<SpoolObjectState, SpoolError> {
+        self.verify_and_read(digest).map(|(state, _)| state)
+    }
+
+    /// Re-reads and rehashes one object from disk, places its durable verification hold, marks it
+    /// `Verified`, and returns the verified payload bytes alongside its state.
+    pub fn verify_and_read(
+        &mut self,
+        digest: ContentDigest,
+    ) -> Result<(SpoolObjectState, Vec<u8>), SpoolError> {
         self.require_live()?;
-        self.load_indexed_recording(digest)?;
+        let payload = self.load_indexed_recording(digest)?;
         let entry = *self.index.get(&digest).ok_or(SpoolError::Missing(digest))?;
         if entry.hold != Hold::Durable {
             let confirmed = self.place_hold(digest);
@@ -776,7 +785,8 @@ impl StagingSpool {
         if let Some(entry) = self.index.get_mut(&digest) {
             entry.state = SpoolObjectState::Verified;
         }
-        self.state(digest).ok_or(SpoolError::Missing(digest))
+        let state = self.state(digest).ok_or(SpoolError::Missing(digest))?;
+        Ok((state, payload))
     }
 
     /// Returns exact payload bytes after re-reading and rehashing them from disk.

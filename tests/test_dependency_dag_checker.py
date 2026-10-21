@@ -202,32 +202,28 @@ class TestLiveRepositoryDag(unittest.TestCase):
         self.assertGreater(summary["edge_count"], 20)
 
     def test_live_repository_crate_topology_is_clean(self) -> None:
-        """The real architecture/crate_topology.json and crates/*/Cargo.toml must have 0 cycles and 0 layer inversions."""
+        """The real architecture/crate_topology.json and crates/*/Cargo.toml must have 0 cycles, 0 layer inversions, and 0 waivers."""
         is_valid, findings, summary = validate_crate_topology_dag(ROOT)
         self.assertTrue(
             is_valid,
             f"Crate topology validation failed with {len(findings)} findings: {[f.message for f in findings]}",
         )
-        # The only permitted finding is the registry-declared fss-cli -> fss-reference
-        # waiver, which must stay visible as a warning (review-591 finding 10).
-        self.assertEqual(
-            [(f.code, f.severity, f.node_id, f.target_id) for f in findings],
-            [(ddc.WARN_DAG_LAYER_INVERSION_WAIVED, "warning", "fss-cli", "fss-reference")],
-        )
+        self.assertEqual(findings, [])
         self.assertEqual(summary["status"], "pass")
         self.assertEqual(summary["error_count"], 0)
+        self.assertEqual(summary["warning_count"], 0)
+        self.assertEqual(summary["waived_inversions"], [])
         self.assertTrue(summary["complete"])
         self.assertGreater(summary["crate_count"], 4)
 
     def test_validate_all_live_repository(self) -> None:
-        """validate_all over the live repository must pass with status 'pass'."""
+        """validate_all over the live repository must pass with status 'pass' and 0 findings."""
         is_valid, findings, summary = validate_all(ROOT)
         self.assertTrue(
             is_valid,
             f"validate_all failed with {len(findings)} findings: {[f.message for f in findings]}",
         )
-        self.assertEqual([f for f in findings if f.severity == "error"], [])
-        self.assertEqual([f.code for f in findings], [ddc.WARN_DAG_LAYER_INVERSION_WAIVED])
+        self.assertEqual(findings, [])
         self.assertEqual(summary["status"], "pass")
         self.assertTrue(summary["complete"])
 
@@ -236,8 +232,8 @@ class TestCliInvocation(unittest.TestCase):
     """Verifies CLI execution, exit codes, and JSON reporting format."""
 
     def test_cli_live_repo_passes(self) -> None:
-        """Running scripts/dependency_dag_checker.py against the repo passes with exit code 0."""
-        cmd = [sys.executable, str(ROOT / "scripts/dependency_dag_checker.py"), "--repo-root", str(ROOT)]
+        """Running scripts/dependency_dag_checker.py against the repo passes with exit code 0 even under --strict."""
+        cmd = [sys.executable, str(ROOT / "scripts/dependency_dag_checker.py"), "--repo-root", str(ROOT), "--strict"]
         res = subprocess.run(cmd, capture_output=True, text=True)
         self.assertEqual(res.returncode, 0, f"CLI stderr: {res.stderr}\nstdout: {res.stdout}")
         self.assertIn("[PASS]", res.stdout)

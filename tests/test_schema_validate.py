@@ -902,7 +902,10 @@ class TestSchemaConstitution(unittest.TestCase):
         # + complete RTSP page-list request, identity, origin and CLI approval = 335.
         # + SCHEMA-DOMAIN-DECISION-CARD-EVAL-001 = 336.
         # + HEVC protected work, retirement and pin journal; existing AVC retirement registration, then adjacent follow page and four durable delivery domains = 345; then the fss-bja6m inline-tag retirement batch 1 (14 durable domains) = 359.
-        self.assertEqual(result["digestDomainCount"], 359)
+        # + 18 RTP/activity/reconnect/video/acquisition-checkpoint/tracking digest domains (fss-e85iz) = 377.
+        # + 19 graph atlas domains (fss-esder/fss-8d1g1) + SCHEMA-DOMAIN-DEPLOYMENT-GRAPH-ANALYSIS-001 (fss-57i58) = 397.
+        # + SCHEMA-DOMAIN-ANTI-PATTERN-WARNING-001 (fss-gj2wd) = 398 + 4 supervisor/eprocess domains (fss-becce) + 5 RTP/RTSP domains = 407.
+        self.assertEqual(result["digestDomainCount"], 407)
 
         # Continuation cursor is verified implemented
         implemented_names = {s["name"] for s in result["schemas"] if s["status"] == "implemented"}
@@ -1451,7 +1454,12 @@ class TestSchemaConstitutionCrossReviewRegressions(unittest.TestCase):
         # + complete RTSP page-list request, identity, origin and CLI approval = 335.
         # + SCHEMA-DOMAIN-DECISION-CARD-EVAL-001 = 336.
         # + HEVC protected work, retirement and pin journal; existing AVC retirement registration, then adjacent follow page and four durable delivery domains = 345; then the fss-bja6m inline-tag retirement batch 1 (14 durable domains) = 359.
-        self.assertEqual(result["digestDomainCount"], 359)
+        # + 13 RTP/activity/reconnect/video/acquisition-checkpoint digest domains (fss-e85iz) = 372.
+        # + 5 RTP detection/tracking domains + 1 corroboration fusion assessment domain (fss-808pm)
+        # + 18 Certified Graph Atlas domains (ALG-PPR/HITS/CENTRAL/STEINER/COMM/SPECTRAL/FACTOR/ZSET, fss-6gf89)
+        # + 1 retained deployment graph analysis CLI domain (fss-57i58)
+        # + 1 trauma guard domain (fss-gj2wd) + 4 e-process/supervisor domains (fss-becce) + 5 RTP/RTSP domains = 407.
+        self.assertEqual(result["digestDomainCount"], 407)
         # 36 = 28 + fss.sensor_tamper_status.v1 (owner SensorTamperStatus, fss-2uftm)
         # + fss.agent_operations.v1 / fss.agent_views.v1 / fss.agent_request_envelope.v1
         #   (owners AgentOperation / AgentView / AgentRequestEnvelope, fss-x4a.30.83.17-40)

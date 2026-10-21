@@ -40,6 +40,7 @@
 //! decision is derived cognition: it grants no effect authority.
 
 pub mod calibration;
+pub mod eprocess;
 pub mod probability;
 
 mod decide;
@@ -48,6 +49,10 @@ mod model;
 
 pub use calibration::{ScoreBin, ScoreCalibration};
 pub use decide::fuse;
+pub use eprocess::{
+    EPROCESS_STEP_DOMAIN, EProcessConfig, EProcessStepOutcome, RegimeResetReason,
+    SequentialEProcess, ville_false_alarm_bound_ppm,
+};
 pub use model::{
     Calibration, Cluster, ClusterDirection, Counterfactual, Coverage, Decision, EvidenceItem,
     FusionError, FusionOutcome, FusionPolicy, FusionQuery, LlrInterval, MAX_ABS_LLR,

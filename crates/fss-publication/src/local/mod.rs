@@ -1994,6 +1994,21 @@ impl ReferenceCheck for RecoveryReferences<'_> {
         }
     }
 
+    fn check_and_read_manifest(
+        &mut self,
+        root: ContentDigest,
+    ) -> Result<Result<Vec<u8>, BlockReason>, LocalPublicationError> {
+        match self.spool.verify_and_read(root) {
+            Ok((SpoolObjectState::Verified, bytes)) => Ok(Ok(bytes)),
+            Ok((SpoolObjectState::Staged, _)) => Ok(Err(BlockReason::NotVerified)),
+            Ok((SpoolObjectState::Corrupt(_), _)) | Err(SpoolError::Corrupt { .. }) => {
+                Ok(Err(BlockReason::Corrupt))
+            }
+            Err(SpoolError::Missing(_)) => Ok(Err(BlockReason::Missing)),
+            Err(error) => Err(self.spool_error(error)),
+        }
+    }
+
     fn manifest_body(&mut self, root: ContentDigest) -> Result<Vec<u8>, LocalPublicationError> {
         self.publisher
             .spool
@@ -2065,6 +2080,16 @@ trait ReferenceCheck {
     ) -> Result<Result<(), BlockReason>, LocalPublicationError>;
     /// The rehashed body of a manifest whose reference check passed.
     fn manifest_body(&mut self, root: ContentDigest) -> Result<Vec<u8>, LocalPublicationError>;
+    /// Verifies and returns a manifest body in a single pass when backed by a spool.
+    fn check_and_read_manifest(
+        &mut self,
+        root: ContentDigest,
+    ) -> Result<Result<Vec<u8>, BlockReason>, LocalPublicationError> {
+        match self.check_reference(root)? {
+            Ok(()) => self.manifest_body(root).map(Ok),
+            Err(reason) => Ok(Err(reason)),
+        }
+    }
     /// Settles the root temp at `path`, whose target record exists.
     fn redundant_temp(&mut self, path: &Path) -> RedundantTemp;
 }
@@ -2140,15 +2165,50 @@ fn classify_local(
 }
 
 /// A reference named by a durable tombstone is blocked before `references` is asked.
-fn check_reference(
+/// Otherwise each unique content digest is checked at most once per `classify_roots` pass.
+fn check_reference_memoized(
     tombstones: &BTreeMap<ContentDigest, TombstoneRecord>,
     references: &mut dyn ReferenceCheck,
+    checked_references: &mut BTreeMap<ContentDigest, Result<(), BlockReason>>,
     object: ContentDigest,
 ) -> Result<Result<(), BlockReason>, LocalPublicationError> {
     if tombstones.contains_key(&object) {
         return Ok(Err(BlockReason::Tombstoned));
     }
-    references.check_reference(object)
+    if let Some(cached) = checked_references.get(&object).cloned() {
+        return Ok(cached);
+    }
+    let outcome = references.check_reference(object)?;
+    checked_references.insert(object, outcome.clone());
+    Ok(outcome)
+}
+
+/// Verifies and reads a candidate root manifest body in a single spool pass while recording its
+/// verification outcome in `checked_references` so child/descendant references do not re-verify it.
+fn check_and_read_manifest_memoized(
+    tombstones: &BTreeMap<ContentDigest, TombstoneRecord>,
+    references: &mut dyn ReferenceCheck,
+    checked_references: &mut BTreeMap<ContentDigest, Result<(), BlockReason>>,
+    root: ContentDigest,
+) -> Result<Result<Vec<u8>, BlockReason>, LocalPublicationError> {
+    if tombstones.contains_key(&root) {
+        return Ok(Err(BlockReason::Tombstoned));
+    }
+    match checked_references.get(&root).cloned() {
+        Some(Err(reason)) => Ok(Err(reason)),
+        Some(Ok(())) => references.manifest_body(root).map(Ok),
+        None => {
+            let outcome = references.check_and_read_manifest(root)?;
+            checked_references.insert(
+                root,
+                outcome
+                    .as_ref()
+                    .map(|_| ())
+                    .map_err(|reason| reason.clone()),
+            );
+            Ok(outcome)
+        }
+    }
 }
 
 fn classify_tombstones(
@@ -2237,6 +2297,7 @@ fn classify_roots(
     let mut broken_slot_roots: BTreeSet<ContentDigest> = BTreeSet::new();
     let mut indeterminate: BTreeMap<SlotName, PathBuf> = BTreeMap::new();
     let mut record_slots: BTreeSet<SlotName> = BTreeSet::new();
+    let mut checked_references: BTreeMap<ContentDigest, Result<(), BlockReason>> = BTreeMap::new();
 
     for (name, file_type) in entries {
         let relative = Path::new(LOCAL_ROOTS_DIR).join(&name);
@@ -2321,20 +2382,27 @@ fn classify_roots(
             continue;
         }
         let root_digest = decoded.root;
-        if let Err(reason) = check_reference(&classified.tombstones, references, root_digest)? {
-            broken_slot_roots.insert(root_digest);
-            classified.broken_slots.insert(slot);
-            classified.report.broken_roots.push(BrokenRoot {
-                path: relative,
-                reason: BrokenRootReason::ReferenceBlocked {
-                    object: root_digest,
-                    role: ReferenceRole::ManifestBody,
-                    reason,
-                },
-            });
-            continue;
-        }
-        let body = references.manifest_body(root_digest)?;
+        let body = match check_and_read_manifest_memoized(
+            &classified.tombstones,
+            references,
+            &mut checked_references,
+            root_digest,
+        )? {
+            Ok(body) => body,
+            Err(reason) => {
+                broken_slot_roots.insert(root_digest);
+                classified.broken_slots.insert(slot);
+                classified.report.broken_roots.push(BrokenRoot {
+                    path: relative,
+                    reason: BrokenRootReason::ReferenceBlocked {
+                        object: root_digest,
+                        role: ReferenceRole::ManifestBody,
+                        reason,
+                    },
+                });
+                continue;
+            }
+        };
         let manifest = match ObjectManifest::from_canonical_bytes(&body) {
             Ok(manifest) if manifest.root() == root_digest => manifest,
             _ => {
@@ -2423,7 +2491,12 @@ fn classify_roots(
                     });
                     break;
                 }
-                match check_reference(&classified.tombstones, references, *child)? {
+                match check_reference_memoized(
+                    &classified.tombstones,
+                    references,
+                    &mut checked_references,
+                    *child,
+                )? {
                     Ok(()) => {}
                     Err(reason) => {
                         broken_reason = Some(BrokenRootReason::ReferenceBlocked {
@@ -2461,7 +2534,12 @@ fn classify_roots(
                         });
                         break;
                     }
-                    match check_reference(&classified.tombstones, references, descendant)? {
+                    match check_reference_memoized(
+                        &classified.tombstones,
+                        references,
+                        &mut checked_references,
+                        descendant,
+                    )? {
                         Ok(()) => {}
                         Err(reason) => {
                             broken_reason = Some(BrokenRootReason::ReferenceBlocked {
