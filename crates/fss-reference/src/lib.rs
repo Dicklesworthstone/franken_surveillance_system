@@ -67,6 +67,8 @@ pub mod evaluation;
 pub mod event_review;
 /// Approval-gated, redacted P5 event evidence export roots.
 pub mod evidence_export;
+/// Certified EvidenceClaimGraph projection over verified deployment event heads.
+pub mod evidence_claim_graph;
 /// Executor-backed activity observations over decoded pixels (fss-2h5zq.51); cognition only.
 pub mod executor_activity;
 /// First-party activity model as an immutable, verified FMPK package (fss-2h5zq.49).
