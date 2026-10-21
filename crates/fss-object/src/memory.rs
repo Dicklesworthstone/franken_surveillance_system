@@ -2,6 +2,9 @@
 
 mod belief_verification;
 
+#[cfg(test)]
+mod deletion_publication_tests;
+
 use std::collections::{BTreeMap, BTreeSet};
 
 use fss_core::{CanonicalEncode, ContentDigest, TombstoneRecord};
@@ -198,6 +201,7 @@ impl InMemoryObjectStore {
     }
 
     /// Returns exact bytes only after verification and rechecks integrity on every read.
+    /// This establishes payload custody, not a manifest's current graph publication authority.
     pub fn read_verified(&self, digest: ContentDigest) -> Result<&[u8], ObjectError> {
         let object = self
             .objects
@@ -227,9 +231,10 @@ impl InMemoryObjectStore {
     /// # Root-Last Publication and Bottom-Up Ordering
     /// Manifests must be published bottom-up: every referenced sub-manifest must be published
     /// before any parent manifest that references it. `verify_closure` descends ONLY into children
-    /// present in `visible_manifests`; a child not present in `visible_manifests` is treated
-    /// strictly as an opaque leaf. An opaque leaf whose payload bytes happen to parse as an
-    /// `ObjectManifest` does not trigger closure descent unless it was explicitly published.
+    /// present in `visible_manifests`; a never-published child is treated as an opaque leaf.
+    /// An opaque leaf whose payload bytes happen to parse as an `ObjectManifest` does not trigger
+    /// closure descent unless it was explicitly published. A deletion-invalidated manifest is
+    /// never reclassified as opaque: wrapping it in a new parent cannot restore graph authority.
     ///
     /// The manifest object is staged and verified before its root enters `visible_manifests`.
     /// Re-publication of the same canonical manifest is idempotent. Re-publication over a stored
@@ -303,6 +308,16 @@ impl InMemoryObjectStore {
         }
     }
 
+    // Byte integrity and graph authority are different. Keep direct forensic payload reads
+    // available, but never use an invalidated former manifest as an opaque publication leaf.
+    fn require_graph_member(&self, digest: ContentDigest) -> Result<(), ObjectError> {
+        self.require_verified(digest)?;
+        if self.invalidated_manifests.contains_key(&digest) {
+            return Err(ObjectError::NotVerified(digest));
+        }
+        Ok(())
+    }
+
     /// Returns a published manifest by exact root, re-verifying content identity and custody.
     pub fn published_manifest(&self, root: ContentDigest) -> Result<&ObjectManifest, ObjectError> {
         let manifest = self
@@ -312,14 +327,15 @@ impl InMemoryObjectStore {
         if manifest.computed_root() != root {
             return Err(ObjectError::Corrupt(root));
         }
-        self.require_verified(root)?;
+        self.require_graph_member(root)?;
         Ok(manifest)
     }
 
     /// Verifies the complete reachable closure and returns unique object count including roots.
     ///
-    /// Descends ONLY into children present in `visible_manifests`. A child not present in
-    /// `visible_manifests` is an opaque leaf; opaque leaf bytes are never trial-parsed as manifests.
+    /// Descends ONLY into explicitly published children; never-published bytes remain opaque.
+    /// Known deletion-invalidated manifests refuse even when their own bytes are still verified.
+    /// Every cached manifest body must match the digest under which its edges are being followed.
     pub fn verify_closure(&self, root: ContentDigest) -> Result<usize, ObjectError> {
         if !self.visible_manifests.contains_key(&root) {
             return Err(ObjectError::ManifestNotPublished(root));
@@ -330,10 +346,13 @@ impl InMemoryObjectStore {
             if !seen.insert(digest) {
                 continue;
             }
-            self.require_verified(digest)?;
+            self.require_graph_member(digest)?;
             if let Some(manifest) = self.visible_manifests.get(&digest) {
+                if manifest.root() != digest || manifest.computed_root() != digest {
+                    return Err(ObjectError::Corrupt(digest));
+                }
                 for child in manifest.children().iter().rev() {
-                    self.require_verified(*child)?;
+                    self.require_graph_member(*child)?;
                     pending.push(*child);
                 }
             }

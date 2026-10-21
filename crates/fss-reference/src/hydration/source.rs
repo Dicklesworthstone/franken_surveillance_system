@@ -164,7 +164,9 @@ impl PublishedSourceReader for InMemoryObjectStore {
         subject_digest: ContentDigest,
         max_payload_bytes: u64,
     ) -> Result<Vec<u8>, SourceHydrationError> {
-        self.published_manifest(publication_root)?;
+        // The owner distinguishes never-published opaque bytes from deletion-invalidated graphs
+        // and verifies every cached edge identity before any source can be disclosed.
+        self.verify_closure(publication_root)?;
         let mut seen = BTreeSet::from([publication_root]);
         let mut pending = vec![publication_root];
         while let Some(digest) = pending.pop() {
