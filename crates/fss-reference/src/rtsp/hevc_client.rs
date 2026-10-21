@@ -179,9 +179,9 @@ struct HeldFrame {
 /// switch the codec or grant network authority. The original TCP source remains
 /// separately subject to the owner's custody/privacy policy.
 ///
-/// Outer frame received_ns is final-byte intake time. Ordered RTP received_ns is
-/// queue-admission time; backpressure may delay that admission. Neither is camera
-/// capture time. All codec work uses monotonic processing time after reordering.
+/// Outer frame and ordered RTP received_ns preserve the same final-byte intake
+/// time, even when backpressure delays queue admission. This is not camera capture
+/// time. Queue deadlines and codec work use the actual monotonic processing time.
 pub struct RtspHevcClient {
     session: RtspClientSession,
     intake: RtspWireIntake,
@@ -614,7 +614,9 @@ impl RtspHevcClient {
                     };
                 }
                 let result = match &mut self.video {
-                    Some(video) => video.ingest(self.key, span, now),
+                    Some(video) => {
+                        video.ingest_received(self.key, span, held.frame.received_ns(), now)
+                    }
                     None => return self.fault(HevcClientError::StreamBinding, Some(held.frame)),
                 };
                 match result {

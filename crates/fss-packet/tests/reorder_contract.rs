@@ -460,6 +460,74 @@ fn source_bytes_arrival_time_and_nondefault_limits_survive_delivery() -> TestRes
 }
 
 #[test]
+fn delayed_receipt_preserves_source_time_without_rebasing_queue_deadlines() -> TestResult {
+    let mut buffer = open(limits())?;
+    assert_eq!(buffer.poll(100)?, ReorderPoll::Pending { wake_at_ns: None });
+    let original = wire(12, &[0x65, 12]);
+    buffer.ingest_received(key(), &original, 5, 101)?;
+    assert_eq!(buffer.next_wake_ns(), Some(111));
+    assert_eq!(
+        buffer.poll(110)?,
+        ReorderPoll::Pending {
+            wake_at_ns: Some(111)
+        }
+    );
+    gap(&mut buffer, 111, 11, 11, ReorderGapReason::Deadline)?;
+    let ReorderPoll::Packet(delivered) = buffer.poll(111)? else {
+        return Err("expected delayed original packet".into());
+    };
+    assert_eq!(delivered.received_ns(), 5);
+    assert_eq!(delivered.bytes(), original);
+
+    let before = buffer.stats();
+    assert_eq!(
+        buffer.ingest_received(key(), &wire(13, &[13]), 114, 113),
+        Err(ReorderError::Continuity(ContinuityError::ClockReversed))
+    );
+    assert_eq!(buffer.stats(), before);
+    assert_eq!(buffer.queued_packets(), 0);
+    // The refused future receipt advanced neither sequence nor processing time.
+    buffer.ingest_received(key(), &wire(13, &[13]), 6, 112)?;
+    assert_eq!(
+        buffer.ingest_received(key(), &wire(14, &[14]), 7, 111),
+        Err(ReorderError::Continuity(ContinuityError::ClockReversed))
+    );
+    let ReorderPoll::Packet(delivered) = buffer.poll(112)? else {
+        return Err("expected packet after transactional refusal".into());
+    };
+    assert_eq!(delivered.sequence(), 13);
+    assert_eq!(delivered.received_ns(), 6);
+    Ok(())
+}
+
+#[test]
+fn delayed_receipt_survives_capacity_refusal_and_retry() -> TestResult {
+    let mut buffer = open(ReorderLimits {
+        max_packets: 1,
+        ..limits()
+    })?;
+    buffer.ingest_received(key(), &wire(12, &[12]), 1, 100)?;
+    let waiting = wire(13, &[13]);
+    let before = buffer.stats();
+    assert_eq!(
+        buffer.ingest_received(key(), &waiting, 2, 101),
+        Err(ReorderError::PacketCapacity)
+    );
+    assert_eq!(buffer.stats(), before);
+    assert_eq!(buffer.next_wake_ns(), Some(110));
+    gap(&mut buffer, 110, 11, 11, ReorderGapReason::Deadline)?;
+    packet(&mut buffer, 110, 12)?;
+    buffer.ingest_received(key(), &waiting, 2, 111)?;
+    let ReorderPoll::Packet(delivered) = buffer.poll(112)? else {
+        return Err("expected retained packet after capacity retry".into());
+    };
+    assert_eq!(delivered.sequence(), 13);
+    assert_eq!(delivered.received_ns(), 2);
+    assert_eq!(delivered.bytes(), waiting);
+    Ok(())
+}
+
+#[test]
 fn conflicting_queued_duplicate_is_not_silently_accepted() -> TestResult {
     let mut buffer = open(limits())?;
     buffer.ingest(key(), &wire(11, &[1]), 1)?;

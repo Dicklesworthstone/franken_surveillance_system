@@ -529,6 +529,41 @@ fn delivery_gap_and_late_recovery_cannot_resurrect_a_hevc_fragment_chain() -> Te
 }
 
 #[test]
+fn delayed_media_poll_keeps_original_intake_time_through_hevc_reconstruction() -> TestResult {
+    let mut client = primed(ReorderLimits::default(), H265Limits::default())?;
+    let original = rtp(4, true, &[0x26, 1, 4]);
+    let wire = interleaved(0, &original);
+    client.ingest(&wire, 20)?;
+    let events = drain(&mut client, 100)?;
+    let arrivals = events
+        .iter()
+        .filter_map(|event| match event {
+            P::Rtp { source, .. } => Some(source),
+            _ => None,
+        })
+        .collect::<Vec<_>>();
+    assert_eq!(arrivals.len(), 1);
+    assert_eq!(arrivals[0].expose_wire(), wire);
+    assert_eq!(arrivals[0].received_ns(), 20);
+    let originals = events
+        .iter()
+        .filter_map(|event| match event {
+            P::Media(H265ReceivePoll::Packet { source, .. }) => Some(source),
+            _ => None,
+        })
+        .collect::<Vec<_>>();
+    assert_eq!(originals.len(), 1);
+    assert_eq!(originals[0].bytes(), original);
+    assert_eq!(originals[0].received_ns(), 20);
+    assert_eq!(nals(&events), vec![vec![0x26, 1, 4]]);
+    assert!(matches!(
+        client.poll(99),
+        Err(E::Session(ClientError::ClockReversed))
+    ));
+    Ok(())
+}
+
+#[test]
 fn full_queue_retains_one_exact_retry_then_admits_it_once_after_timer_progress() -> TestResult {
     let reorder = ReorderLimits {
         max_packets: 1,
@@ -571,7 +606,7 @@ fn full_queue_retains_one_exact_retry_then_admits_it_once_after_timer_progress()
     );
     assert!(events.iter().any(
         |p| matches!(p, P::Media(H265ReceivePoll::Packet { source, .. })
-        if source.sequence() == 6 && source.received_ns() == 30)
+        if source.sequence() == 6 && source.received_ns() == 21)
     ));
     assert_eq!(nals(&events), vec![vec![0x26, 1, 5], vec![0x26, 1, 6]]);
     assert_eq!(client.buffered_wire_bytes(), 0);

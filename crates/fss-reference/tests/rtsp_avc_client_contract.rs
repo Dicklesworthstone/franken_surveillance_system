@@ -152,6 +152,45 @@ fn send(c: &mut RtspAvcClient, wire: &[u8], now: u64, out: &mut Vec<P>) -> TestR
 }
 
 #[test]
+fn delayed_media_poll_keeps_original_intake_time_through_avc_reconstruction() -> TestResult {
+    let mut client = playing(AvcReceiveLimits::default(), false)?;
+    let nal = nals(BASELINE)[0];
+    let first = packet(0, 90_000, nal);
+    let second = packet(1, 90_000, nal);
+    let wire = [interleaved(0, &first), interleaved(0, &second)].concat();
+    client.ingest(&wire, 6)?;
+    let mut events = Vec::new();
+    drain(&mut client, 100, &mut events)?;
+    let arrivals = events
+        .iter()
+        .filter_map(|event| match event {
+            P::Rtp { source, .. } => Some((source.payload(), source.received_ns())),
+            _ => None,
+        })
+        .collect::<Vec<_>>();
+    assert_eq!(
+        arrivals,
+        vec![(first.as_slice(), 6), (second.as_slice(), 6)]
+    );
+    let originals = events
+        .iter()
+        .filter_map(|event| match event {
+            P::Media(AvcReceivePoll::Source { source, .. }) => Some(source),
+            _ => None,
+        })
+        .collect::<Vec<_>>();
+    assert_eq!(originals.len(), 1);
+    assert_eq!(originals[0].bytes(), second);
+    assert_eq!(originals[0].received_ns(), 6);
+    // Receipt preservation cannot rewind the actual processing clock.
+    assert!(matches!(
+        client.poll(99),
+        Err(E::Session(ClientError::ClockReversed))
+    ));
+    Ok(())
+}
+
+#[test]
 fn tcp_chunking_preserves_real_source_bytes_and_all_four_picture_groups() -> TestResult {
     let nals = nals(BASELINE);
     for chunk_size in [1, 2, 3, 7, 127, 4_096] {

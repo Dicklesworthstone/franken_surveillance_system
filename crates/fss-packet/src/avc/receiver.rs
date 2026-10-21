@@ -261,10 +261,22 @@ impl AvcReceiver {
         wire: &[u8],
         now_ns: u64,
     ) -> Result<AvcReceiveAdmission, AvcReceiveError> {
+        self.ingest_received(key, wire, now_ns, now_ns)
+    }
+
+    /// Preserve source receipt time while admission, expiry and picture work use
+    /// the actual monotonic processing time. Failed admission preserves all state.
+    pub fn ingest_received(
+        &mut self,
+        key: StreamKey,
+        wire: &[u8],
+        received_ns: u64,
+        now_ns: u64,
+    ) -> Result<AvcReceiveAdmission, AvcReceiveError> {
         self.check_time(now_ns)?;
         let transport = self
             .transport
-            .ingest(key, wire, now_ns)
+            .ingest_received(key, wire, received_ns, now_ns)
             .map_err(AvcReceiveError::Transport)?;
         self.last_now_ns = now_ns;
         let (queued_nals, picture) =

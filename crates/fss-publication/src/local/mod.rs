@@ -1998,14 +1998,17 @@ impl ReferenceCheck for RecoveryReferences<'_> {
         &mut self,
         root: ContentDigest,
     ) -> Result<Result<Vec<u8>, BlockReason>, LocalPublicationError> {
-        match self.spool.verify_and_read(root) {
-            Ok((SpoolObjectState::Verified, bytes)) => Ok(Ok(bytes)),
+        match self.publisher.spool.verify_and_read(root) {
+            Ok((SpoolObjectState::Verified, bytes)) => {
+                self.verified.insert(root);
+                Ok(Ok(bytes))
+            }
             Ok((SpoolObjectState::Staged, _)) => Ok(Err(BlockReason::NotVerified)),
             Ok((SpoolObjectState::Corrupt(_), _)) | Err(SpoolError::Corrupt { .. }) => {
                 Ok(Err(BlockReason::Corrupt))
             }
             Err(SpoolError::Missing(_)) => Ok(Err(BlockReason::Missing)),
-            Err(error) => Err(self.spool_error(error)),
+            Err(error) => Err(self.publisher.spool_error(error)),
         }
     }
 

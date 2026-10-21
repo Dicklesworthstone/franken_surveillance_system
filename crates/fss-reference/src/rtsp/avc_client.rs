@@ -515,7 +515,9 @@ impl RtspAvcClient {
             return AvcClientPoll::Rtcp { source, validation };
         }
         let result = match &mut self.video {
-            Some(video) => video.ingest(self.key, &source.payload, now),
+            Some(video) => {
+                video.ingest_received(self.key, &source.payload, source.received_ns, now)
+            }
             None => return self.fault(AvcClientError::StreamBinding, Some(source)),
         };
         match result {

@@ -163,10 +163,22 @@ impl H264Receiver {
         wire: &[u8],
         now_ns: u64,
     ) -> Result<H264ReceiveAdmission, H264ReceiveError> {
+        self.ingest_received(key, wire, now_ns, now_ns)
+    }
+
+    /// Admit exact source bytes with their original receipt time after bounded delay.
+    /// Queue and reconstruction deadlines use `now_ns`, independently of custody time.
+    pub fn ingest_received(
+        &mut self,
+        key: StreamKey,
+        wire: &[u8],
+        received_ns: u64,
+        now_ns: u64,
+    ) -> Result<H264ReceiveAdmission, H264ReceiveError> {
         self.check_time(now_ns)?;
         let transport = self
             .reorder
-            .ingest(key, wire, now_ns)
+            .ingest_received(key, wire, received_ns, now_ns)
             .map_err(H264ReceiveError::Transport)?;
         self.last_now_ns = now_ns;
         let discarded = if transport.disposition == ReorderDisposition::RestartRequired {

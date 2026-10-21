@@ -535,9 +535,9 @@ impl SpoolIo for CountingSpoolIo {
 /// 1. Root manifests are verified and read in a single pass via `verify_and_read` during
 ///    `classify_roots` (total 2 reads on open: 1 in `StagingSpool::open` + 1 in `classify_roots`,
 ///    down from 3+).
-/// 2. A shared child referenced across multiple root slots (`archive`, `checkpoint`, `episodes`),
-///    even when another broken root triggers a second fixed-point pass in `classify_roots`, is
-///    verified at most once in `classify_roots` (total 2 reads on open, down from 1 + 3 * 2 = 7).
+/// 2. A held shared child referenced across multiple root slots (`archive`, `checkpoint`,
+///    `episodes`) reuses the fresh verification from the opening spool scan, even when another
+///    broken root triggers a second fixed-point pass in `classify_roots` (total 1 read on open).
 #[test]
 fn shared_child_and_multi_pass_roots_verify_each_digest_once_in_classify_roots() -> TestResult {
     let root = fresh_root("perf003_single_pass_memoized")?;
@@ -576,10 +576,11 @@ fn shared_child_and_multi_pass_roots_verify_each_digest_once_in_classify_roots()
     assert_eq!(publisher.recovery_report().roots.len(), 3);
     assert_eq!(publisher.recovery_report().broken_roots.len(), 1);
 
-    // Every intact object (including `shared_clip` referenced by 3 roots across 2 fixed-point
-    // passes, and `archive_manifest.root()` referenced both as a root and as a child of
-    // `checkpoint`) is read once by `StagingSpool::open` and once by `classify_roots`.
-    assert_eq!(io.read_count(&shared_clip_path), 2);
+    // The held `shared_clip` is read once by the opening spool scan; references from 3 roots
+    // across 2 fixed-point passes reuse that fresh verification. Root manifests need one
+    // additional body read in `classify_roots`, including `archive_manifest.root()` when it
+    // also appears as a child of `checkpoint`.
+    assert_eq!(io.read_count(&shared_clip_path), 1);
     assert_eq!(io.read_count(&archive_manifest_path), 2);
     assert_eq!(io.read_count(&checkpoint_manifest_path), 2);
     assert_eq!(io.read_count(&episodes_manifest_path), 2);

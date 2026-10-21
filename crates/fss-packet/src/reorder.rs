@@ -64,6 +64,7 @@ pub struct OrderedRtpPacket {
     key: StreamKey,
     sequence: u64,
     received_ns: u64,
+    admitted_ns: u64,
     bytes: Vec<u8>,
     limits: PacketLimits,
 }
@@ -79,7 +80,8 @@ impl OrderedRtpPacket {
         self.sequence
     }
 
-    /// Time supplied at receiver admission, not a claimed camera capture time.
+    /// Original owner-observed receipt time, not a claimed camera capture time.
+    /// Queue admission and later ordered delivery may occur after this observation.
     pub fn received_ns(&self) -> u64 {
         self.received_ns
     }
@@ -291,7 +293,7 @@ impl RtpReorderBuffer {
         }
         self.queue
             .iter()
-            .map(|packet| packet.received_ns)
+            .map(|packet| packet.admitted_ns)
             .min()?
             .checked_add(self.limits.max_delay_ns)
     }
@@ -303,6 +305,21 @@ impl RtpReorderBuffer {
         wire: &[u8],
         now_ns: u64,
     ) -> Result<ReorderAdmission, ReorderError> {
+        self.ingest_received(key, wire, now_ns, now_ns)
+    }
+
+    /// Preserve an original receipt independently of this queue's admission time.
+    /// Both times use the owner's monotonic clock; a receipt later than `now_ns`
+    /// is refused without consuming input or advancing any state. An older receipt
+    /// is valid after backpressure. Queue deadlines remain anchored to admission,
+    /// and every monotonic processing-time check still uses `now_ns`.
+    pub fn ingest_received(
+        &mut self,
+        key: StreamKey,
+        wire: &[u8],
+        received_ns: u64,
+        now_ns: u64,
+    ) -> Result<ReorderAdmission, ReorderError> {
         if key != self.key {
             return Err(ReorderError::Continuity(ContinuityError::StreamMismatch));
         }
@@ -310,6 +327,9 @@ impl RtpReorderBuffer {
             return Err(ReorderError::Closed);
         }
         self.check_time(now_ns)?;
+        if received_ns > now_ns {
+            return Err(ReorderError::Continuity(ContinuityError::ClockReversed));
+        }
         let packet = RtpPacket::parse(wire, self.limits.packet).map_err(ReorderError::Packet)?;
         let mut tracker = self.tracker.clone();
         let sequence = tracker
@@ -348,7 +368,8 @@ impl RtpReorderBuffer {
                     OrderedRtpPacket {
                         key,
                         sequence: extended,
-                        received_ns: now_ns,
+                        received_ns,
+                        admitted_ns: now_ns,
                         bytes: owned,
                         limits: self.limits.packet,
                     },
