@@ -33,6 +33,7 @@ use crate::{BoundReferenceSituationPublication, PublishedSourceReader, Reference
 // Workspace operations share this exclusive session owner, never a second handle.
 mod workspace;
 mod source_registration;
+mod recovery;
 
 pub use source_registration::JournaledSourceBinding;
 
@@ -174,21 +175,6 @@ impl DurableDisclosureStore {
         };
         owner.synchronize_catalog(None)?;
         Ok(owner)
-    }
-
-    /// Explicitly recovers a torn final append using the existing root-pinned recovery protocol.
-    pub fn recover_existing(
-        path: impl AsRef<Path>,
-        expected_root: ContentDigest,
-        limits: DurableSessionLimits,
-        policy: IncompleteTailPolicy,
-        catalog: ReferenceHydrationCatalog,
-    ) -> Result<(Self, super::coordination::SessionRecoveryReceipt), DisclosureError> {
-        let (sessions, receipt) =
-            DurableSessionStore::recover_existing(path, expected_root, limits, policy)?;
-        let mut owner = Self { sessions, catalog };
-        owner.synchronize_catalog(None)?;
-        Ok((owner, receipt))
     }
 
     /// Latest confirmed root; a fenced owner may have a later, indeterminate disk tip.
@@ -507,27 +493,7 @@ impl DurableDisclosureStore {
         {
             return Err(DurableSessionError::RootMismatch.into());
         }
-        let latest = report.records().iter().rev().find(|record| {
-            record.kind() == SESSION_CHECKPOINT_RECORD_KIND
-                && source_registration::has_catalog_snapshot(record.payload())
-        });
-        if let Some(record) = latest {
-            let (cursors, observed_at) =
-                source_registration::catalog_snapshot(record.payload(), self.sessions.limits)?;
-            if now.is_some_and(|now| now < observed_at) {
-                return Err(DisclosureError::Session(
-                    ReferenceSessionError::ClockRegression,
-                ));
-            }
-            self.catalog.restore_cursor_checkpoint(
-                cursors,
-                MAX_RECORD_BYTES,
-                observed_at,
-            )?;
-        } else if self.catalog.issued_cursor_count() != 0 {
-            return Err(HydrationError::WrongContinuation.into());
-        }
-        Ok(())
+        recovery::restore_catalog(&mut self.catalog, &report, self.sessions.limits, now)
     }
 
     fn deliver<T>(
