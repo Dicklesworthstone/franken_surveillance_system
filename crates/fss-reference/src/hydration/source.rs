@@ -346,6 +346,9 @@ impl ReferenceHydrationCatalog {
         let ceiling = quote.bytes.min(self.source_payload_ceiling());
         reader.validate_source_descriptor(descriptor)?;
         let deployment_authority = reader.deployment_authority_for(descriptor, publication_root)?;
+        self.check_source_binding_profile(
+            descriptor_digest, publication_root, descriptor.subject_digest, deployment_authority,
+        )?;
         if self
             .source_bindings
             .get(&key)
@@ -454,6 +457,10 @@ impl ReferenceHydrationCatalog {
             }
             return Err(error.into());
         }
+        self.check_source_binding_profile(
+            descriptor.descriptor_digest, binding.publication_root,
+            binding.subject_digest, binding.deployment_authority,
+        )?;
         // Keep reader-specific authority checks inside the generic path. Type erasure must
         // not let a session serve an old descriptor through a reader pinned to a newer head.
         reader.validate_source_descriptor(&descriptor)?;

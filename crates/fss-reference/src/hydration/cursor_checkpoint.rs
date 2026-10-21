@@ -7,8 +7,10 @@ use super::{
     SessionId, TimestampNs,
 };
 use std::collections::BTreeMap;
+use super::source_checkpoint::{self, MAX_SOURCE_BINDINGS, SourceBindingPins};
 
 const DOMAIN: &str = "fss.hydration_cursor_checkpoint.v1";
+const BOUND_DOMAIN: &str = "fss.hydration_cursor_checkpoint.v2";
 pub(crate) const MAX_RECORDS: usize = 65_536;
 const MAX_BYTES: usize = 8 * 1024 * 1024;
 const MAX_TEXT: usize = 4_096;
@@ -18,6 +20,7 @@ const MAX_TEXT: usize = 4_096;
 pub(crate) struct CursorCheckpoint {
     pub(crate) captured_at: TimestampNs,
     records: BTreeMap<ContentDigest, IssuedCursorRecord>,
+    source_requirements: SourceBindingPins,
 }
 
 impl CursorCheckpoint {
@@ -36,9 +39,11 @@ impl CursorCheckpoint {
         }
         outer.ensure_finished()?;
         let mut decoder = CanonicalDecoder::new(body);
-        if decoder.text()? != DOMAIN {
-            return Err(ContractError::GenerationConflict.into());
-        }
+        let bound = match decoder.text()? {
+            DOMAIN => false,
+            BOUND_DOMAIN => true,
+            _ => return Err(ContractError::GenerationConflict.into()),
+        };
         let captured_at = TimestampNs(decoder.i128()?);
         let count =
             usize::try_from(decoder.u64()?).map_err(|_| HydrationError::CapacityExceeded)?;
@@ -71,18 +76,21 @@ impl CursorCheckpoint {
             }
             records.insert(cursor_digest, record);
         }
+        let source_requirements = if bound {
+            source_checkpoint::decode(&mut decoder)?
+        } else {
+            BTreeMap::new()
+        };
         decoder.ensure_finished()?;
-        Ok(Self {
-            captured_at,
-            records,
-        })
+        Ok(Self { captured_at, records, source_requirements })
     }
 
     fn encode(&self, max_bytes: usize) -> Result<Vec<u8>, HydrationError> {
         let ceiling = max_bytes.min(MAX_BYTES);
         // Account for both length prefixes, time, count, and the checksum before allocation.
-        let mut length = 8 + 8 + DOMAIN.len() + 16 + 8 + 33;
-        if self.records.len() > MAX_RECORDS {
+        let domain = if self.source_requirements.is_empty() { DOMAIN } else { BOUND_DOMAIN };
+        let mut length = 8 + 8 + domain.len() + 16 + 8 + 33;
+        if self.records.len() > MAX_RECORDS || self.source_requirements.len() > MAX_SOURCE_BINDINGS {
             return Err(HydrationError::CapacityExceeded);
         }
         for record in self.records.values() {
@@ -96,11 +104,17 @@ impl CursorCheckpoint {
                 .checked_add(67 + record.session_id.as_str().len() + record.handle_id.len())
                 .ok_or(HydrationError::CapacityExceeded)?;
         }
+        if !self.source_requirements.is_empty() {
+            length = self.source_requirements.len().checked_mul(66)
+                .and_then(|bytes| bytes.checked_add(8))
+                .and_then(|bytes| length.checked_add(bytes))
+                .ok_or(HydrationError::CapacityExceeded)?;
+        }
         if length > ceiling {
             return Err(HydrationError::CapacityExceeded);
         }
         let mut encoder = CanonicalEncoder::new();
-        encoder.text(DOMAIN);
+        encoder.text(domain);
         encoder.i128(self.captured_at.0);
         encoder.u64(self.records.len() as u64);
         for record in self.records.values() {
@@ -110,6 +124,9 @@ impl CursorCheckpoint {
             encoder.i128(record.expires_at.0);
             encoder.u8(record.next_ordinal);
             encoder.bool(record.consumed);
+        }
+        if !self.source_requirements.is_empty() {
+            source_checkpoint::encode(&self.source_requirements, &mut encoder);
         }
         let body = encoder.finish_checked()?;
         let mut outer = CanonicalEncoder::new();
@@ -172,6 +189,7 @@ impl CursorCheckpoint {
         if self.captured_at < prior.captured_at {
             return Err(ContractError::StaleAnchor.into());
         }
+        source_checkpoint::validate_successor(&self.source_requirements, &prior.source_requirements)?;
         self.validate_resident(&prior.records)
     }
 
@@ -191,7 +209,11 @@ impl CursorCheckpoint {
 }
 
 impl ReferenceHydrationCatalog {
-    /// Exports bounded, checksummed issuance/consumption metadata without copying payloads.
+    /// Exports bounded cursor history and source-custody commitments without copying payloads.
+    ///
+    /// Catalogs with source bindings emit v2; empty source history preserves v1 bytes. The
+    /// existing durable disclosure owner commits these requirements with charges and cursors.
+    /// They never expire with cursor leases and cannot be omitted by a successor checkpoint.
     ///
     /// `now` is the authority owner's trusted nondecreasing clock. This does not persist data.
     /// A durable owner must commit this snapshot atomically with disclosure charges before
@@ -204,6 +226,7 @@ impl ReferenceHydrationCatalog {
         CursorCheckpoint {
             captured_at: now,
             records: self.issued_cursors.clone(),
+            source_requirements: self.checkpoint_source_bindings()?,
         }
         .encode(max_bytes)
     }
@@ -214,6 +237,9 @@ impl ReferenceHydrationCatalog {
     /// A checksum is not authorization: only the owning durable journal may select these bytes.
     /// Current descriptors, artifacts, source custody, session authority, and leases must still
     /// be rebuilt and revalidated by their existing owners. No source payload is restored.
+    /// V2 additionally pins each saved source binding. A different reconstructed binding or a
+    /// cached H3 substitute refuses atomically. Missing sources/descriptors remain permissible;
+    /// their requirements survive and fence later registration. V1 claims no historical pins.
     /// Resident consumed records cannot become active; unjournaled live records cause refusal.
     /// All validation and allocation precede mutation. `now` cannot precede capture time.
     pub fn restore_cursor_checkpoint(
@@ -228,6 +254,10 @@ impl ReferenceHydrationCatalog {
             return Err(ContractError::StaleAnchor.into());
         }
         checkpoint.validate_resident(&self.issued_cursors)?;
+        self.validate_source_requirements(&checkpoint.source_requirements)?;
+        // No fallible work remains. Missing sources stay missing; no payload or read grant is
+        // restored, and future registration must match these exact historical commitments.
+        self.source_requirements = checkpoint.source_requirements;
         self.issued_cursors = checkpoint.records;
         Ok(())
     }
@@ -423,3 +453,6 @@ mod tests {
         Ok(())
     }
 }
+
+#[cfg(test)]
+mod source_binding_tests;

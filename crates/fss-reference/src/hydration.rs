@@ -13,6 +13,7 @@ use fss_core::{
 
 pub(crate) mod cursor_checkpoint;
 mod source;
+mod source_checkpoint;
 
 pub use source::{
     PublishedSourceReader, SOURCE_OBJECT_CONTENT_TYPE, SourceHydrationError, SourceObjectBinding,
@@ -67,6 +68,8 @@ pub struct ReferenceHydrationCatalog {
     artifacts: BTreeMap<(String, ContentDigest, HydrationLevel), HydrationArtifact>,
     issued_cursors: BTreeMap<ContentDigest, IssuedCursorRecord>,
     source_bindings: BTreeMap<(String, ContentDigest), SourceObjectBinding>,
+    // Monotone recovery requirements survive absent descriptors and unavailable source bytes.
+    source_requirements: source_checkpoint::SourceBindingPins,
     limits: ReferenceHydrationLimits,
     stored_payload_bytes: usize,
 }
@@ -97,6 +100,7 @@ impl ReferenceHydrationCatalog {
             artifacts: BTreeMap::new(),
             issued_cursors: BTreeMap::new(),
             source_bindings: BTreeMap::new(),
+            source_requirements: BTreeMap::new(),
             limits,
             stored_payload_bytes: 0,
         }
@@ -210,9 +214,9 @@ impl ReferenceHydrationCatalog {
             return Err(ContractError::EvidenceRequired.into());
         }
         if artifact.level == HydrationLevel::H3
-            && self
-                .source_bindings
-                .contains_key(&(handle_id.to_owned(), descriptor_digest))
+            && (self.source_requirements.contains_key(&descriptor_digest)
+                || self.source_bindings
+                    .contains_key(&(handle_id.to_owned(), descriptor_digest)))
         {
             // Source custody cannot be bypassed by installing a separately retained payload.
             return Err(ContractError::DigestMismatch.into());
