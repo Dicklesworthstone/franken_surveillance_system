@@ -113,6 +113,10 @@ name = "fss-watch-http-history"
 path = "src/bin/fss-watch-http-history.rs"
 
 [[bin]]
+name = "fss-watch-rtsp-selected"
+path = "src/bin/fss-watch-rtsp-selected.rs"
+
+[[bin]]
 name = "fss-replay"
 path = "src/bin/fss-replay.rs"
 

@@ -13,6 +13,10 @@ verification, fragmented MP4 handling and retained file publication. It does not
 open a camera connection. The source archive and the destination deployment remain
 separate owners.
 
+To import a finite ordered collection of windows, catalogs or page selections and
+run independent whole-recording watch in one approved operation, use
+[`fss-watch-rtsp-selected`](RTSP_SELECTED_WATCH.md).
+
 The original single-page retained-origin profile is ADP-RTSP-CATALOG-ARCHIVE-001;
 the explicit page-list profile is ADP-RTSP-CATALOG-PAGES-001. These do not register
 or promote device adapters, qualify a camera, or change the frozen device-admission
