@@ -1,16 +1,25 @@
 #![forbid(unsafe_code)]
-//! Bounded, namespace-aware SOAP 1.2 wire subset for read-only ONVIF Media1
+//! Bounded, namespace-aware SOAP 1.2 wire subset for read-only ONVIF Media1/Media2
 //! onboarding. This module owns bytes, never network or credential authority.
 //!
 //! Contracts: `https://www.onvif.org/ver10/device/wsdl/devicemgmt.wsdl`,
-//! `https://www.onvif.org/ver10/media/wsdl/media.wsdl`, and
-//! `https://www.onvif.org/ver10/schema/onvif.xsd`. These three operations do not
+//! `https://www.onvif.org/ver10/media/wsdl/media.wsdl`,
+//! `https://www.onvif.org/ver20/media/wsdl/media.wsdl`, and
+//! `https://www.onvif.org/ver10/schema/onvif.xsd`. These read-only operations do not
 //! establish Profile T conformance, stream continuity, or device qualification.
 
 use std::fmt;
 
+#[path = "wire/media2.rs"]
+mod media2;
 #[path = "wire/xml.rs"]
 mod xml;
+
+pub use media2::{
+    MAX_ONVIF_SERVICES, Media2Service, Media2StreamUri, ServiceVersion,
+    get_media2_profiles_request, get_media2_stream_uri_request, get_services_request,
+    parse_media2_profiles, parse_media2_service, parse_media2_stream_uri,
+};
 
 /// Maximum complete SOAP response size, including unrelated extensions.
 pub const MAX_SOAP_BYTES: usize = 256 * 1024;
@@ -24,9 +33,21 @@ pub const MAX_VIDEO_DIMENSION: u32 = 32_768;
 const SOAP_NS: &str = "http://www.w3.org/2003/05/soap-envelope";
 const DEVICE_NS: &str = "http://www.onvif.org/ver10/device/wsdl";
 const MEDIA_NS: &str = "http://www.onvif.org/ver10/media/wsdl";
+const MEDIA2_NS: &str = "http://www.onvif.org/ver20/media/wsdl";
 const SCHEMA_NS: &str = "http://www.onvif.org/ver10/schema";
 const ERROR_NS: &str = "http://www.onvif.org/ver10/error";
 const MAX_REFERENCE_CHARS: usize = 64;
+
+/// Explicit owner-selected media service contract. A failed lane never falls
+/// back to another namespace or service without a new caller decision.
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub enum MediaVersion {
+    /// Original Media1 service, retained as the default lane.
+    #[default]
+    Media1,
+    /// Media2 service, including advertised H.265 encoder configurations.
+    Media2,
+}
 
 /// The complete read-only operation set admitted by this module.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -37,6 +58,12 @@ pub enum OnvifOperation {
     GetProfiles,
     /// Request the selected profile's unicast RTSP-over-TCP presentation URI.
     GetStreamUri,
+    /// Enumerate device services without requesting their untyped capabilities.
+    GetServices,
+    /// Enumerate Media2 profiles including their existing video encoder configuration.
+    GetMedia2Profiles,
+    /// Request the selected Media2 profile's RTSP-over-TCP presentation URI.
+    GetMedia2StreamUri,
 }
 
 impl OnvifOperation {
@@ -47,11 +74,14 @@ impl OnvifOperation {
             Self::GetCapabilities => "http://www.onvif.org/ver10/device/wsdl/GetCapabilities",
             Self::GetProfiles => "http://www.onvif.org/ver10/media/wsdl/GetProfiles",
             Self::GetStreamUri => "http://www.onvif.org/ver10/media/wsdl/GetStreamUri",
+            Self::GetServices => "http://www.onvif.org/ver10/device/wsdl/GetServices",
+            Self::GetMedia2Profiles => "http://www.onvif.org/ver20/media/wsdl/GetProfiles",
+            Self::GetMedia2StreamUri => "http://www.onvif.org/ver20/media/wsdl/GetStreamUri",
         }
     }
 }
 
-/// A complete request constructible only through the three read-only builders.
+/// A complete request constructible only through the read-only builders.
 /// Debug output never includes a profile token or SOAP body.
 #[derive(Clone, Eq, PartialEq)]
 pub struct SoapRequest {
@@ -100,11 +130,13 @@ impl fmt::Debug for Capabilities {
     }
 }
 
-/// Media1 codec vocabulary; unknown/vendor extensions remain unsupported.
+/// Advertised codec vocabulary; unknown/vendor extensions remain unsupported.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum VideoEncoding {
     /// H.264/AVC advertisement, independent of actual SPS/profile validation.
     H264,
+    /// H.265/HEVC advertisement, admitted only through Media2's codec vocabulary.
+    H265,
     /// JPEG video advertisement.
     Jpeg,
     /// MPEG-4 Part 2 advertisement.
@@ -124,7 +156,7 @@ pub struct VideoEncoder {
     pub height: u32,
 }
 
-/// A complete Media1 profile projection; text and tokens are untrusted metadata.
+/// A complete media profile projection; text and tokens are untrusted metadata.
 #[derive(Clone, Eq, PartialEq)]
 pub struct MediaProfile {
     /// Exact token used by `get_stream_uri_request`; never log it.
@@ -164,15 +196,22 @@ impl StreamUri {
     /// components are recognized without inventing a month-to-seconds conversion.
     #[must_use]
     pub fn is_stable(&self) -> bool {
-        !self.invalid_after_connect
-            && !self.invalid_after_reboot
-            && duration(&self.timeout).is_ok()
-            && self
-                .timeout
-                .bytes()
-                .filter(u8::is_ascii_digit)
-                .all(|digit| digit == b'0')
+        stable_lifetime(
+            self.invalid_after_connect,
+            self.invalid_after_reboot,
+            &self.timeout,
+        )
     }
+}
+
+pub(super) fn stable_lifetime(connect: bool, reboot: bool, timeout: &str) -> bool {
+    !connect
+        && !reboot
+        && duration(timeout).is_ok()
+        && timeout
+            .bytes()
+            .filter(u8::is_ascii_digit)
+            .all(|digit| digit == b'0')
 }
 
 impl fmt::Debug for StreamUri {
@@ -252,6 +291,8 @@ pub enum WireError {
     InvalidField,
     /// More profiles were supplied than can be represented completely.
     ProfileLimitExceeded,
+    /// More advertised services were supplied than can be checked completely.
+    ServiceLimitExceeded,
     /// A required header or SOAP encoding lies outside this wire subset.
     UnsupportedHeader,
     /// Typed SOAP fault, without reason text, detail, URLs, or credentials.
@@ -274,6 +315,7 @@ impl fmt::Display for WireError {
             Self::MissingField => f.write_str("missing ONVIF response field"),
             Self::InvalidField => f.write_str("invalid ONVIF response field"),
             Self::ProfileLimitExceeded => f.write_str("ONVIF profile count exceeds limit"),
+            Self::ServiceLimitExceeded => f.write_str("ONVIF service count exceeds limit"),
             Self::UnsupportedHeader => {
                 f.write_str("unsupported required ONVIF SOAP header or encoding")
             }
@@ -311,6 +353,16 @@ pub fn get_profiles_request() -> SoapRequest {
 /// Request RTP unicast over RTSP/TCP for an exact bounded token. XML metacharacters
 /// are escaped, so a token cannot alter the operation or introduce another body.
 pub fn get_stream_uri_request(profile_token: &str) -> Result<SoapRequest, WireError> {
+    let token = escaped_reference(profile_token)?;
+    Ok(request(
+        OnvifOperation::GetStreamUri,
+        &format!(
+            "<trt:GetStreamUri><trt:StreamSetup><tt:Stream>RTP_unicast</tt:Stream><tt:Transport><tt:Protocol>RTSP</tt:Protocol></tt:Transport></trt:StreamSetup><trt:ProfileToken>{token}</trt:ProfileToken></trt:GetStreamUri>"
+        ),
+    ))
+}
+
+fn escaped_reference(profile_token: &str) -> Result<String, WireError> {
     reference(profile_token)?;
     let mut token = String::with_capacity(profile_token.len());
     for ch in profile_token.chars() {
@@ -323,12 +375,7 @@ pub fn get_stream_uri_request(profile_token: &str) -> Result<SoapRequest, WireEr
             _ => token.push(ch),
         }
     }
-    Ok(request(
-        OnvifOperation::GetStreamUri,
-        &format!(
-            "<trt:GetStreamUri><trt:StreamSetup><tt:Stream>RTP_unicast</tt:Stream><tt:Transport><tt:Protocol>RTSP</tt:Protocol></tt:Transport></trt:StreamSetup><trt:ProfileToken>{token}</trt:ProfileToken></trt:GetStreamUri>"
-        ),
-    ))
+    Ok(token)
 }
 
 /// Parse the exact Media1 capability projection. Unrelated extensions are bounded

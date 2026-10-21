@@ -10,7 +10,7 @@ use fss_cli::agent_json::{object, string};
 use fss_core::{CanonicalEncoder, ContentDigest, PrincipalId};
 use fss_reference::onvif::client::{ClientConfig, DigestConfig, RtspScope, validate_stream_uri};
 use fss_reference::onvif::http::{HttpLimits, HttpRoute};
-use fss_reference::onvif::wire::get_stream_uri_request;
+use fss_reference::onvif::wire::{MediaVersion, get_stream_uri_request};
 
 use super::authentication::AuthPlan;
 use super::handoff::digest;
@@ -18,12 +18,16 @@ use super::private_file::absolute_path;
 
 pub(super) const MAX_ARGUMENTS: usize = 48;
 const ARGUMENT: &str = "ERR-ONVIF-ARGUMENT-001";
-const POLICY: &str = "read-only-media1:same-pinned-http-origin:explicit-service-subtree:\
+const MEDIA1_POLICY: &str = "read-only-media1:same-pinned-http-origin:explicit-service-subtree:\
 one-scoped-digest-retry:no-basic-no-wsse-no-tls:private-create-only-metadata:\
 independently-pinned-rtsp:stable-avc-uri:no-capture-authority:v1";
+const MEDIA2_POLICY: &str = "read-only-media2:same-pinned-http-origin:explicit-service-subtree:\
+one-scoped-digest-retry:no-basic-no-wsse-no-tls:private-create-only-metadata:\
+independently-pinned-rtsp:media2-indefinite-avc-hevc-uri:no-capture-authority:v2";
 pub(super) const HELP: &str = "fss-onvif --peer IP:PORT --authority HOST[:PORT]\n\
   --device-path /onvif/device_service --service-root /onvif\n\
   --output NEW_ABSOLUTE_PRIVATE_FILE --owner-authorized yes --plaintext yes\n\
+  [--media-version media1|media2]\n\
   [--credential-file /PRIVATE_CREDENTIAL_FILE --auth-realm EXACT_REALM]\n\
   [--legacy-md5 yes] [--legacy-no-qop yes]\n\
   [--profile TOKEN --rtsp-peer IP:PORT --rtsp-authority HOST[:PORT]]\n\
@@ -33,16 +37,18 @@ pub(super) const HELP: &str = "fss-onvif --peer IP:PORT --authority HOST[:PORT]\
 \n\
 Without --approve, output is a pure plan: no files, clock, credentials or network are opened.\n\
 Repeat the exact options with the returned approval for bounded owner-authorized SOAP requests.\n\
-GetCapabilities and GetProfiles enumerate a Media1 inventory. Read the private output to choose\n\
-an exact profile token. A subsequent approved --profile request retrieves its RTSP URI and writes\n\
+Media1 (default) uses GetCapabilities and GetProfiles. Explicit --media-version media2 uses\n\
+GetServices and Media2 GetProfiles with VideoEncoder configurations. Read the private inventory\n\
+to choose an exact profile token. An approved --profile request retrieves its RTSP URI and writes\n\
 a private handoff for `fss-capture-rtsp from-onvif`. This command never starts video capture.\n\
 \n\
 The HTTP peer is a literal address. Its exact Host origin and service subtree are approved;\n\
 advertised services outside that origin/subtree are refused. No DNS, redirect, account discovery,\n\
 device settings, PTZ, audio, transport fallback, Basic or WS-Security is performed.\n\
 For selection, independently approve the RTSP peer and exact authority. Returned URI spelling is\n\
-preserved and must match that scope. Only AVC/H.264 profiles and URIs with false invalidation\n\
-flags and zero timeout are supported. Other codecs and expiring URIs remain unsupported.\n\
+preserved and must match that scope. Media1 supports AVC/H.264 with false invalidation flags and\n\
+zero timeout. Media2 supports AVC/H.264 and HEVC/H.265 with Media2's indefinite URI contract; its\n\
+handoff records that validity basis explicitly. Native capture must verify the selected SDP codec.\n\
 \n\
 Optional HTTP Digest uses the existing Linux private regular-file credential owner. The file\n\
 contains exactly username LF password LF, has one link, owner-read permission and no group/other\n\
@@ -59,6 +65,7 @@ Successful onboarding does not establish media continuity, recording custody, Pr
 conformance, device firmware qualification, useful scene coverage or capture-time truth.\n";
 
 pub(super) struct Plan {
+    pub(super) media_version: MediaVersion,
     pub(super) peer: SocketAddr,
     pub(super) authority: String,
     pub(super) device_path: String,
@@ -91,6 +98,7 @@ impl Plan {
             "--output",
             "--owner-authorized",
             "--plaintext",
+            "--media-version",
             "--profile",
             "--rtsp-peer",
             "--rtsp-authority",
@@ -122,6 +130,11 @@ impl Plan {
         if required("--owner-authorized")? != "yes" || required("--plaintext")? != "yes" {
             return Err(ARGUMENT);
         }
+        let media_version = match values.get("--media-version").copied().unwrap_or("media1") {
+            "media1" => MediaVersion::Media1,
+            "media2" => MediaVersion::Media2,
+            _ => return Err(ARGUMENT),
+        };
         let number = |key, default, low, high| {
             let value = values.get(key).map_or(Ok(default), |text| {
                 if !text.bytes().all(|byte| byte.is_ascii_digit()) {
@@ -194,6 +207,7 @@ impl Plan {
             ..HttpLimits::default()
         };
         Ok(Self {
+            media_version,
             peer,
             authority,
             device_path,
@@ -216,8 +230,10 @@ impl Plan {
 
     pub(super) fn digest(&self) -> Result<ContentDigest, &'static str> {
         let mut encoded = CanonicalEncoder::new();
-        encoded.text("fss.onvif_operator_plan.v1");
-        encoded.text(POLICY);
+        // Existing Media1 plans retain their exact digest bytes. Selecting Media2
+        // changes both the domain and approved protocol policy before any I/O.
+        encoded.text(self.schema());
+        encoded.text(self.policy());
         for text in [
             self.peer.to_string().as_str(),
             &self.authority,
@@ -265,6 +281,7 @@ impl Plan {
 
     pub(super) fn config(&self, approval: ContentDigest) -> Result<ClientConfig, &'static str> {
         Ok(ClientConfig {
+            media_version: self.media_version,
             device: HttpRoute::new(
                 self.peer,
                 &self.authority,
@@ -287,10 +304,11 @@ impl Plan {
 
     pub(super) fn preview(&self) -> Result<String, &'static str> {
         Ok(object(&[
-            ("schema", string("fss.onvif_operator_plan.v1")),
+            ("schema", string(self.schema())),
             ("phase", string("planned")),
             ("approval", string(&self.digest()?.to_text())),
-            ("policy", string(POLICY)),
+            ("policy", string(self.policy())),
+            ("media_version", string(self.media_version_name())),
             ("peer", string(&self.peer.to_string())),
             ("authority", string(&self.authority)),
             ("device_path", string(&self.device_path)),
@@ -334,6 +352,27 @@ impl Plan {
             ("effects", string("none-until-exact-approval")),
         ]) + "\n")
     }
+
+    pub(super) fn media_version_name(&self) -> &'static str {
+        match self.media_version {
+            MediaVersion::Media1 => "media1",
+            MediaVersion::Media2 => "media2",
+        }
+    }
+
+    fn schema(&self) -> &'static str {
+        match self.media_version {
+            MediaVersion::Media1 => "fss.onvif_operator_plan.v1",
+            MediaVersion::Media2 => "fss.onvif_operator_plan.v2",
+        }
+    }
+
+    fn policy(&self) -> &'static str {
+        match self.media_version {
+            MediaVersion::Media1 => MEDIA1_POLICY,
+            MediaVersion::Media2 => MEDIA2_POLICY,
+        }
+    }
 }
 
 pub(super) fn in_service_root(path: &str, root: &str) -> bool {
@@ -342,4 +381,59 @@ pub(super) fn in_service_root(path: &str, root: &str) -> bool {
         || path
             .strip_prefix(root)
             .is_some_and(|tail| tail.starts_with('/'))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn media1_approval_is_compatible_and_media2_requires_a_distinct_approval() {
+        let mut args: Vec<_> = [
+            "--peer",
+            "127.0.0.1:8080",
+            "--authority",
+            "127.0.0.1:8080",
+            "--device-path",
+            "/onvif/device_service",
+            "--service-root",
+            "/onvif",
+            "--output",
+            "/tmp/fss-media-version-handoff.json",
+            "--owner-authorized",
+            "yes",
+            "--plaintext",
+            "yes",
+        ]
+        .into_iter()
+        .map(OsString::from)
+        .collect();
+        let default = Plan::parse(&args).unwrap();
+        // Retained from the original Media1 binary at commit 410a257.
+        let original = "sha256:208bbac9cd0f816ff3bc6c0c1ee922bc846cf09b5cae30ac1ca97615d1824060";
+        assert_eq!(default.digest().unwrap().to_text(), original);
+        args.extend([OsString::from("--media-version"), OsString::from("media1")]);
+        assert_eq!(
+            Plan::parse(&args).unwrap().digest().unwrap(),
+            default.digest().unwrap()
+        );
+        *args.last_mut().unwrap() = OsString::from("media2");
+        let media2 = Plan::parse(&args).unwrap();
+        assert_ne!(media2.digest().unwrap(), default.digest().unwrap());
+        assert_eq!(
+            media2
+                .config(media2.digest().unwrap())
+                .unwrap()
+                .media_version,
+            MediaVersion::Media2
+        );
+        assert!(
+            media2
+                .preview()
+                .unwrap()
+                .contains("\"media_version\":\"media2\"")
+        );
+        *args.last_mut().unwrap() = OsString::from("auto");
+        assert!(Plan::parse(&args).is_err());
+    }
 }

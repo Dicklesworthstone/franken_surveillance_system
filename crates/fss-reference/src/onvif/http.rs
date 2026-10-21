@@ -438,7 +438,7 @@ impl fmt::Debug for HttpExchange {
 
 impl HttpExchange {
     /// Connect once to the pinned address. The typed request can only be built by
-    /// the three read-only ONVIF request constructors. The caller supplies Digest
+    /// the read-only ONVIF request constructors. The caller supplies Digest
     /// authorization only for this exact origin/target and revalidates its secret
     /// lease through the live authority at every subsequent socket boundary.
     pub fn connect(
@@ -752,6 +752,9 @@ fn make_request(
         "http://www.onvif.org/ver10/device/wsdl/GetCapabilities"
             | "http://www.onvif.org/ver10/media/wsdl/GetProfiles"
             | "http://www.onvif.org/ver10/media/wsdl/GetStreamUri"
+            | "http://www.onvif.org/ver10/device/wsdl/GetServices"
+            | "http://www.onvif.org/ver20/media/wsdl/GetProfiles"
+            | "http://www.onvif.org/ver20/media/wsdl/GetStreamUri"
     ) || request.body().len() > limit
     {
         return Err(HttpError::Configuration);

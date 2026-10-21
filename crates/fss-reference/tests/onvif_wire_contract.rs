@@ -14,6 +14,7 @@ use wire::{
 const SOAP: &str = "http://www.w3.org/2003/05/soap-envelope";
 const DEVICE: &str = "http://www.onvif.org/ver10/device/wsdl";
 const MEDIA: &str = "http://www.onvif.org/ver10/media/wsdl";
+const MEDIA2: &str = "http://www.onvif.org/ver20/media/wsdl";
 const SCHEMA: &str = "http://www.onvif.org/ver10/schema";
 
 fn envelope(content: &str) -> String {
@@ -533,6 +534,313 @@ fn utf8_declaration_bom_and_line_endings_are_supported() -> Result<(), WireError
     assert_eq!(
         parse_profiles(wrong_version.as_bytes()),
         Err(WireError::UnsupportedXml)
+    );
+    Ok(())
+}
+
+fn media2_envelope(content: &str) -> String {
+    envelope(content).replace("<s:Body>", &format!("<s:Body xmlns:m2='{MEDIA2}'>"))
+}
+
+fn service(namespace: &str, uri: &str) -> String {
+    format!(
+        "<d:Service><d:Namespace>{namespace}</d:Namespace><d:XAddr>{uri}</d:XAddr><d:Version><t:Major>24</t:Major><t:Minor>06</t:Minor></d:Version></d:Service>"
+    )
+}
+
+fn services(content: &str) -> String {
+    envelope(&format!(
+        "<d:GetServicesResponse>{content}</d:GetServicesResponse>"
+    ))
+}
+
+fn media2_profile(token: &str, encoding: &str) -> String {
+    format!(
+        "<m2:Profiles token='{token}' fixed='false'><m2:Name>Private Media2 camera</m2:Name><m2:Configurations><m2:VideoEncoder token='encoder'><t:Encoding>{encoding}</t:Encoding><t:Resolution><t:Width>3840</t:Width><t:Height>2160</t:Height></t:Resolution></m2:VideoEncoder></m2:Configurations></m2:Profiles>"
+    )
+}
+
+fn media2_profiles(content: &str) -> String {
+    media2_envelope(&format!(
+        "<m2:GetProfilesResponse>{content}</m2:GetProfilesResponse>"
+    ))
+}
+
+#[test]
+fn media2_requests_pin_namespace_configuration_type_and_tcp_transport() -> Result<(), WireError> {
+    let request = wire::get_services_request();
+    assert_eq!(
+        request.action(),
+        "http://www.onvif.org/ver10/device/wsdl/GetServices"
+    );
+    assert!(
+        String::from_utf8_lossy(request.body())
+            .contains("<tds:IncludeCapability>false</tds:IncludeCapability>")
+    );
+    let request = wire::get_media2_profiles_request();
+    assert_eq!(
+        request.action(),
+        "http://www.onvif.org/ver20/media/wsdl/GetProfiles"
+    );
+    assert!(String::from_utf8_lossy(request.body()).contains("<tr2:Type>VideoEncoder</tr2:Type>"));
+    let request = wire::get_media2_stream_uri_request("private<&\"'>")?;
+    assert_eq!(
+        request.action(),
+        "http://www.onvif.org/ver20/media/wsdl/GetStreamUri"
+    );
+    let body = String::from_utf8_lossy(request.body());
+    assert!(body.contains("<tr2:Protocol>RTSP</tr2:Protocol>"));
+    assert!(body.contains("<tr2:ProfileToken>private&lt;&amp;&quot;&apos;&gt;</tr2:ProfileToken>"));
+    assert!(!body.contains("StreamSetup"));
+    assert!(!format!("{request:?}").contains("private"));
+    assert_eq!(
+        wire::get_media2_stream_uri_request(""),
+        Err(WireError::InvalidField)
+    );
+    assert_eq!(
+        wire::get_media2_stream_uri_request(&"é".repeat(65)),
+        Err(WireError::InvalidField)
+    );
+    Ok(())
+}
+
+#[test]
+fn media2_service_selection_is_exact_complete_and_never_a_route_grant() -> Result<(), WireError> {
+    let uri = "http://192.0.2.9:80/onvif/private_media2";
+    let inventory = services(&format!(
+        "{}{}",
+        service(MEDIA, "http://192.0.2.9/onvif/media1"),
+        service(MEDIA2, uri)
+    ));
+    let selected =
+        wire::parse_media2_service(inventory.as_bytes())?.ok_or(WireError::MissingField)?;
+    assert_eq!(selected.xaddr, uri);
+    assert_eq!(
+        selected.version,
+        wire::ServiceVersion {
+            major: 24,
+            minor: 6
+        }
+    );
+    assert!(!format!("{selected:?}").contains("private_media2"));
+    assert_eq!(
+        wire::parse_media2_service(services(&service(MEDIA, uri)).as_bytes())?,
+        None
+    );
+    assert_eq!(
+        wire::parse_media2_service(services(&service(&format!("{MEDIA2}/"), uri)).as_bytes())?,
+        None
+    );
+    // Endpoint authorization belongs to the client, never the XML parser.
+    assert_eq!(
+        wire::parse_media2_service(
+            services(&service(MEDIA2, "https://foreign.invalid/media")).as_bytes()
+        )?
+        .unwrap()
+        .xaddr,
+        "https://foreign.invalid/media"
+    );
+    assert_eq!(
+        wire::parse_media2_service(services("").as_bytes()),
+        Err(WireError::MissingField)
+    );
+    Ok(())
+}
+
+#[test]
+fn media2_service_spoofs_duplicates_and_overflow_refuse_the_inventory() {
+    let good = service(MEDIA2, "http://192.0.2.9/onvif/media2");
+    for bad in [
+        good.replace("<d:Namespace>", "<t:Namespace>")
+            .replace("</d:Namespace>", "</t:Namespace>"),
+        good.replace("<d:XAddr>", "<t:XAddr>")
+            .replace("</d:XAddr>", "</t:XAddr>"),
+        good.replace("<t:Major>24</t:Major>", ""),
+        good.replace("<t:Major>24</t:Major>", "<t:Major>-1</t:Major>"),
+        good.replace("<t:Minor>06</t:Minor>", "<t:Minor>65536</t:Minor>"),
+    ] {
+        assert!(wire::parse_media2_service(services(&bad).as_bytes()).is_err());
+    }
+    for duplicate in [
+        format!("{good}{good}"),
+        good.replace(
+            "</d:Namespace>",
+            &format!("</d:Namespace><d:Namespace>{MEDIA}</d:Namespace>"),
+        ),
+    ] {
+        assert_eq!(
+            wire::parse_media2_service(services(&duplicate).as_bytes()),
+            Err(WireError::DuplicateField)
+        );
+    }
+    let foreign = good
+        .replace("<d:Service>", "<t:Service>")
+        .replace("</d:Service>", "</t:Service>");
+    assert_eq!(
+        wire::parse_media2_service(services(&foreign).as_bytes()),
+        Err(WireError::UnexpectedResponse)
+    );
+    let mut content = String::new();
+    for index in 0..wire::MAX_ONVIF_SERVICES {
+        content.push_str(&service(
+            &format!("urn:fixture:service:{index}"),
+            "http://192.0.2.9/onvif/service",
+        ));
+    }
+    assert_eq!(
+        wire::parse_media2_service(services(&content).as_bytes()),
+        Ok(None)
+    );
+    content.push_str(&good);
+    assert_eq!(
+        wire::parse_media2_service(services(&content).as_bytes()),
+        Err(WireError::ServiceLimitExceeded)
+    );
+}
+
+#[test]
+fn media2_profiles_read_the_media2_configuration_shape_and_h265_vocabulary() -> Result<(), WireError>
+{
+    let content = format!(
+        "{}{}{}{}{}<m2:Profiles token='no-video'><m2:Name>Metadata only</m2:Name></m2:Profiles>",
+        media2_profile("hevc", "H265"),
+        media2_profile("avc", "H264"),
+        media2_profile("jpeg", "JPEG"),
+        media2_profile("mpeg4", "MPV4-ES"),
+        media2_profile("vendor", "vendor-private-codec")
+    );
+    let profiles = wire::parse_media2_profiles(media2_profiles(&content).as_bytes())?;
+    assert_eq!(profiles.len(), 6);
+    for (profile, expected) in profiles.iter().zip([
+        VideoEncoding::H265,
+        VideoEncoding::H264,
+        VideoEncoding::Jpeg,
+        VideoEncoding::Mpeg4,
+        VideoEncoding::Unsupported,
+    ]) {
+        let video = profile.video.as_ref().ok_or(WireError::MissingField)?;
+        assert_eq!(video.encoding, expected);
+        assert_eq!((video.width, video.height), (3840, 2160));
+    }
+    assert_eq!(profiles[5].video, None);
+    assert!(wire::parse_media2_profiles(media2_profiles("").as_bytes())?.is_empty());
+    assert!(!format!("{profiles:?}").contains("Private Media2 camera"));
+    Ok(())
+}
+
+#[test]
+fn media2_profiles_reject_ambiguous_fields_and_do_not_infer_missing_video() -> Result<(), WireError>
+{
+    let good = media2_profile("main", "H265");
+    for bad in [
+        good.replace("<m2:Name>", "<t:Name>")
+            .replace("</m2:Name>", "</t:Name>"),
+        good.replace("<t:Encoding>H265</t:Encoding>", ""),
+        good.replace("<t:Width>3840</t:Width>", "<t:Width>0</t:Width>"),
+    ] {
+        assert!(wire::parse_media2_profiles(media2_profiles(&bad).as_bytes()).is_err());
+    }
+    for duplicate in [
+        format!("{good}{good}"),
+        good.replace("</t:Width>", "</t:Width><t:Width>1920</t:Width>"),
+        good.replace("</m2:Name>", "</m2:Name><m2:Name>Second</m2:Name>"),
+        good.replace(
+            "</m2:Configurations>",
+            "</m2:Configurations><m2:Configurations/>",
+        ),
+    ] {
+        assert_eq!(
+            wire::parse_media2_profiles(media2_profiles(&duplicate).as_bytes()),
+            Err(WireError::DuplicateField)
+        );
+    }
+    let wrong_encoder_namespace = good
+        .replace("<m2:VideoEncoder ", "<t:VideoEncoder ")
+        .replace("</m2:VideoEncoder>", "</t:VideoEncoder>");
+    assert_eq!(
+        wire::parse_media2_profiles(media2_profiles(&wrong_encoder_namespace).as_bytes())?[0].video,
+        None
+    );
+    assert_eq!(
+        wire::parse_media2_profiles(profiles(&profile("main", "H264")).as_bytes()),
+        Err(WireError::UnexpectedResponse)
+    );
+    Ok(())
+}
+
+#[test]
+fn media2_profile_list_and_encoder_dimensions_obey_existing_bounds() {
+    let mut content = String::new();
+    for index in 0..wire::MAX_MEDIA_PROFILES {
+        content.push_str(&media2_profile(&format!("p{index}"), "H265"));
+    }
+    assert_eq!(
+        wire::parse_media2_profiles(media2_profiles(&content).as_bytes())
+            .unwrap()
+            .len(),
+        wire::MAX_MEDIA_PROFILES
+    );
+    content.push_str(&media2_profile("overflow", "H265"));
+    assert_eq!(
+        wire::parse_media2_profiles(media2_profiles(&content).as_bytes()),
+        Err(WireError::ProfileLimitExceeded)
+    );
+    for width in ["-1", "32769", "NaN", "4294967296", ""] {
+        let bad = media2_profile("main", "H265").replace(
+            "<t:Width>3840</t:Width>",
+            &format!("<t:Width>{width}</t:Width>"),
+        );
+        assert_eq!(
+            wire::parse_media2_profiles(media2_profiles(&bad).as_bytes()),
+            Err(WireError::InvalidField)
+        );
+    }
+}
+
+#[test]
+fn media2_uri_preserves_exact_query_without_inventing_media1_lifetime() -> Result<(), WireError> {
+    let good = media2_envelope(
+        "<m2:GetStreamUriResponse><m2:Uri>rtsp://192.0.2.9/live%20main?token=private&amp;channel=2</m2:Uri></m2:GetStreamUriResponse>",
+    );
+    let stream = wire::parse_media2_stream_uri(good.as_bytes())?;
+    assert_eq!(
+        stream.uri,
+        "rtsp://192.0.2.9/live%20main?token=private&channel=2"
+    );
+    assert!(!format!("{stream:?}").contains("token"));
+    assert_eq!(
+        wire::parse_media2_stream_uri(
+            good.replace("<m2:Uri>", "<t:Uri>")
+                .replace("</m2:Uri>", "</t:Uri>")
+                .as_bytes()
+        ),
+        Err(WireError::MissingField)
+    );
+    assert_eq!(
+        wire::parse_media2_stream_uri(
+            good.replace(
+                "</m2:Uri>",
+                "</m2:Uri><m2:Uri>rtsp://192.0.2.9/other</m2:Uri>"
+            )
+            .as_bytes()
+        ),
+        Err(WireError::DuplicateField)
+    );
+    assert_eq!(
+        wire::parse_media2_stream_uri(
+            good.replace(
+                "</m2:GetStreamUriResponse>",
+                "<t:Timeout>PT0S</t:Timeout></m2:GetStreamUriResponse>"
+            )
+            .as_bytes()
+        ),
+        Err(WireError::UnexpectedResponse)
+    );
+    assert_eq!(
+        wire::parse_media2_stream_uri(
+            uri_response("rtsp://192.0.2.9/live", "false", "false", "PT0S").as_bytes()
+        ),
+        Err(WireError::UnexpectedResponse)
     );
     Ok(())
 }

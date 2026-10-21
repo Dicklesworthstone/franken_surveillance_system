@@ -5,7 +5,7 @@ use std::cell::RefCell;
 
 use fss_cli::agent_json::{array, object, string};
 use fss_core::{ContentDigest, RuntimeGrant};
-use fss_reference::onvif::client::{self, ClientError, Onboarding, OnvifContext};
+use fss_reference::onvif::client::{self, ClientError, MediaDiscovery, Onboarding, OnvifContext};
 use fss_reference::onvif::http::{HttpAuthority, HttpDenial, HttpOperation, HttpRoute};
 use fss_reference::onvif::wire::VideoEncoding;
 use fss_reference::rtsp::authentication::{DigestAuthorization, DigestChallenge};
@@ -155,6 +155,7 @@ fn inventory(report: &Onboarding, approval: ContentDigest) -> String {
                             "encoding",
                             string(match video.encoding {
                                 VideoEncoding::H264 => "H264",
+                                VideoEncoding::H265 => "H265",
                                 VideoEncoding::Jpeg => "JPEG",
                                 VideoEncoding::Mpeg4 => "MPEG4",
                                 VideoEncoding::Unsupported => "unsupported",
@@ -164,7 +165,10 @@ fn inventory(report: &Onboarding, approval: ContentDigest) -> String {
                         ("height", video.height.to_string()),
                         (
                             "capture_supported",
-                            (video.encoding == VideoEncoding::H264).to_string(),
+                            (video.encoding == VideoEncoding::H264
+                                || (video.encoding == VideoEncoding::H265
+                                    && matches!(&report.discovery, MediaDiscovery::Media2(_))))
+                            .to_string(),
                         ),
                     ])
                 },
@@ -181,29 +185,45 @@ fn inventory(report: &Onboarding, approval: ContentDigest) -> String {
             ])
         })
         .collect();
-    object(&[
-        ("schema", string("fss.onvif_media1_inventory.v1")),
-        ("onboarding_plan", string(&approval.to_text())),
-        (
-            "media_xaddr",
-            report
-                .capabilities
-                .media_xaddr
-                .as_ref()
-                .map_or_else(|| "null".into(), |uri| string(uri)),
-        ),
-        (
-            "rtp_rtsp_tcp",
-            report
-                .capabilities
-                .rtp_rtsp_tcp
-                .map_or_else(|| "null".into(), |flag| flag.to_string()),
-        ),
+    let mut fields = match &report.discovery {
+        MediaDiscovery::Media1(capabilities) => vec![
+            ("schema", string("fss.onvif_media1_inventory.v1")),
+            ("onboarding_plan", string(&approval.to_text())),
+            (
+                "media_xaddr",
+                capabilities
+                    .media_xaddr
+                    .as_ref()
+                    .map_or_else(|| "null".into(), |uri| string(uri)),
+            ),
+            (
+                "rtp_rtsp_tcp",
+                capabilities
+                    .rtp_rtsp_tcp
+                    .map_or_else(|| "null".into(), |flag| flag.to_string()),
+            ),
+        ],
+        MediaDiscovery::Media2(service) => vec![
+            ("schema", string("fss.onvif_media2_inventory.v1")),
+            ("onboarding_plan", string(&approval.to_text())),
+            ("media_version", string("media2")),
+            ("media_xaddr", string(&service.xaddr)),
+            (
+                "service_version",
+                object(&[
+                    ("major", service.version.major.to_string()),
+                    ("minor", service.version.minor.to_string()),
+                ]),
+            ),
+        ],
+    };
+    fields.extend([
         ("profiles", array(&profiles)),
         ("capture_authorized", "false".into()),
         ("source_evidence", "false".into()),
         ("profile_t_conformance", string("not-established")),
-    ]) + "\n"
+    ]);
+    object(&fields) + "\n"
 }
 
 pub(super) fn execute(plan: &Plan) -> Result<String, &'static str> {
@@ -264,6 +284,7 @@ pub(super) fn execute(plan: &Plan) -> Result<String, &'static str> {
         Ok(object(&[
             ("schema", string("fss.onvif_operator_result.v1")),
             ("phase", string("completed")),
+            ("media_version", string(plan.media_version_name())),
             ("approval", string(&approval.to_text())),
             ("output_digest", string(&file_digest.to_text())),
             ("output_bytes", bytes.len().to_string()),

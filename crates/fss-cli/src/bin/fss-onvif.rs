@@ -1,5 +1,5 @@
 #![forbid(unsafe_code)]
-//! Bounded owner-authorized ONVIF Media1 onboarding and private RTSP handoff.
+//! Bounded owner-authorized ONVIF Media1/Media2 onboarding and private RTSP handoff.
 
 use std::io::{self, Write};
 use std::process::ExitCode;

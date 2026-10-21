@@ -12,7 +12,10 @@ use super::http::{
     HttpAuthority, HttpError, HttpExchange, HttpLimits, HttpOperation, HttpProgress, HttpResponse,
     HttpRoute,
 };
-use super::wire::{self, Capabilities, MediaProfile, SoapRequest, StreamUri, WireError};
+use super::wire::{
+    self, Capabilities, Media2Service, Media2StreamUri, MediaProfile, MediaVersion, SoapRequest,
+    StreamUri, WireError,
+};
 use crate::rtsp::authentication::{
     AuthenticationError, DigestAuthorization, DigestChallenge, DigestPolicy,
 };
@@ -56,6 +59,8 @@ impl fmt::Debug for RtspScope {
 /// One bounded onboarding session, supplied by an explicit owner.
 #[derive(Clone)]
 pub struct ClientConfig {
+    /// Explicit service lane; no automatic Media1/Media2 fallback or downgrade.
+    pub media_version: MediaVersion,
     /// Approved device-service route, including generation and plaintext consent.
     pub device: HttpRoute,
     /// Absolute HTTP path subtree, such as `/onvif`; never a discovered grant.
@@ -75,6 +80,7 @@ pub struct ClientConfig {
 impl fmt::Debug for ClientConfig {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.debug_struct("ClientConfig")
+            .field("media_version", &self.media_version)
             .field("authenticated", &self.auth.is_some())
             .field("rtsp_scope", &self.rtsp.is_some())
             .field("deadline_ns", &self.deadline_ns)
@@ -85,8 +91,8 @@ impl fmt::Debug for ClientConfig {
 
 /// A negotiated observation, not a conformance, camera-identity, or retained-media claim.
 pub struct Onboarding {
-    /// Device-reported Media1 endpoint and streaming capabilities.
-    pub capabilities: Capabilities,
+    /// Version-specific observed service advertisement, without inferred capabilities.
+    pub discovery: MediaDiscovery,
     /// Complete bounded profile projection, without automatic selection.
     pub profiles: Vec<MediaProfile>,
     /// The exact requested profile's scoped URI, if selection was requested.
@@ -98,6 +104,7 @@ pub struct Onboarding {
 impl fmt::Debug for Onboarding {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.debug_struct("Onboarding")
+            .field("media_version", &self.discovery.media_version())
             .field("profile_count", &self.profiles.len())
             .field("selected", &self.selection.is_some())
             .field("exchanges", &self.exchanges)
@@ -105,12 +112,116 @@ impl fmt::Debug for Onboarding {
     }
 }
 
+/// Service discovery preserves which protocol observation supplied the endpoint.
+/// Media2 GetServices does not report Media1 streaming capability flags.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub enum MediaDiscovery {
+    /// Media1 GetCapabilities result, including unknown/false/true transport state.
+    Media1(Capabilities),
+    /// Exact Media2 namespace selected from the complete GetServices response.
+    Media2(Media2Service),
+}
+
+impl MediaDiscovery {
+    /// Exact negotiated service contract.
+    #[must_use]
+    pub const fn media_version(&self) -> MediaVersion {
+        match self {
+            Self::Media1(_) => MediaVersion::Media1,
+            Self::Media2(_) => MediaVersion::Media2,
+        }
+    }
+
+    fn media_uri(&self) -> Result<&str, ClientError> {
+        match self {
+            Self::Media1(capabilities) => capabilities
+                .media_xaddr
+                .as_deref()
+                .ok_or(ClientError::Unsupported),
+            Self::Media2(service) => Ok(&service.xaddr),
+        }
+    }
+}
+
+/// URI lifetime basis remains explicit across service versions and handoffs.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub enum StreamValidity {
+    /// All mandatory validity fields actually observed in a Media1 response.
+    Media1 {
+        /// Device-reported connection invalidation flag.
+        invalid_after_connect: bool,
+        /// Device-reported reboot invalidation flag.
+        invalid_after_reboot: bool,
+        /// Device-reported bounded XML duration.
+        timeout: String,
+    },
+    /// Media2 specifies a stable indefinitely valid URI and returns no lifetime fields.
+    /// This records the protocol basis, not a separately measured device guarantee.
+    Media2Indefinite,
+}
+
+/// Selected URI and its observed or protocol-defined validity basis. This is
+/// negotiation metadata, not source continuity or ongoing device availability.
+#[derive(Clone, Eq, PartialEq)]
+pub struct NegotiatedStreamUri {
+    /// Exact decoded URI, validated against the owner's independent RTSP scope.
+    pub uri: String,
+    /// Explicit lifetime basis; never synthesize Media1 flags for Media2.
+    pub validity: StreamValidity,
+}
+
+impl NegotiatedStreamUri {
+    /// Whether this lane supports reuse without a device-reported expiry.
+    #[must_use]
+    pub fn is_stable(&self) -> bool {
+        match &self.validity {
+            StreamValidity::Media1 {
+                invalid_after_connect,
+                invalid_after_reboot,
+                timeout,
+            } => wire::stable_lifetime(*invalid_after_connect, *invalid_after_reboot, timeout),
+            StreamValidity::Media2Indefinite => true,
+        }
+    }
+}
+
+impl fmt::Debug for NegotiatedStreamUri {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("NegotiatedStreamUri")
+            .field("uri", &"[redacted]")
+            .field("validity", &self.validity)
+            .finish()
+    }
+}
+
+impl From<StreamUri> for NegotiatedStreamUri {
+    fn from(stream: StreamUri) -> Self {
+        Self {
+            uri: stream.uri,
+            validity: StreamValidity::Media1 {
+                invalid_after_connect: stream.invalid_after_connect,
+                invalid_after_reboot: stream.invalid_after_reboot,
+                timeout: stream.timeout,
+            },
+        }
+    }
+}
+
+impl From<Media2StreamUri> for NegotiatedStreamUri {
+    fn from(stream: Media2StreamUri) -> Self {
+        Self {
+            uri: stream.uri,
+            validity: StreamValidity::Media2Indefinite,
+        }
+    }
+}
+
 /// Exact server-returned URI with independent route pins. Never log this object as raw data.
 pub struct SelectedStream {
     /// Exact selected profile metadata, not a proof of received media properties.
     pub profile: MediaProfile,
-    /// Server-reported presentation and mandatory lifetime fields.
-    pub stream: StreamUri,
+    /// Server-reported presentation with explicit version-specific lifetime basis.
+    pub stream: NegotiatedStreamUri,
     /// Independently approved RTSP destination.
     pub peer: SocketAddr,
     /// Independently approved RTSP authority, matching the URI exactly.
@@ -225,7 +336,8 @@ pub trait OnvifContext: HttpAuthority {
     ) -> Result<DigestAuthorization, ClientError>;
 }
 
-/// Read capabilities and profiles, optionally obtaining one exact selected profile's URI.
+/// Read services/capabilities and profiles in the explicitly selected media lane,
+/// optionally obtaining one exact selected profile's URI.
 ///
 /// At most three read-only operations and one same-route Digest retry per operation occur.
 /// There is no automatic profile choice, redirect, TLS downgrade, DNS resolution, retry of
@@ -238,7 +350,10 @@ pub fn run(
     validate_config(config, profile_token)?;
     // Validate the owner's selection before any I/O; keep the exact escaped request.
     let selection_request = profile_token
-        .map(wire::get_stream_uri_request)
+        .map(|token| match config.media_version {
+            MediaVersion::Media1 => wire::get_stream_uri_request(token),
+            MediaVersion::Media2 => wire::get_media2_stream_uri_request(token),
+        })
         .transpose()?;
     let mut budget = SessionBudget::default();
     let now = budget.now(config, cx)?;
@@ -246,28 +361,31 @@ pub fn run(
         return Err(ClientError::Deadline);
     }
 
-    let response = exchange(
-        config,
-        &config.device,
-        &wire::get_capabilities_request(),
-        cx,
-        &mut budget,
-    )?;
-    let capabilities = wire::parse_capabilities(soap_body(&response)?)?;
-    let media_uri = capabilities
-        .media_xaddr
-        .as_deref()
-        .ok_or(ClientError::Unsupported)?;
+    let discovery_request = match config.media_version {
+        MediaVersion::Media1 => wire::get_capabilities_request(),
+        MediaVersion::Media2 => wire::get_services_request(),
+    };
+    let response = exchange(config, &config.device, &discovery_request, cx, &mut budget)?;
+    let discovery = match config.media_version {
+        MediaVersion::Media1 => {
+            MediaDiscovery::Media1(wire::parse_capabilities(soap_body(&response)?)?)
+        }
+        MediaVersion::Media2 => MediaDiscovery::Media2(
+            wire::parse_media2_service(soap_body(&response)?)?.ok_or(ClientError::Unsupported)?,
+        ),
+    };
+    let media_uri = discovery.media_uri()?;
     // No credential lookup or socket to an advertised endpoint until this scope check passes.
     let media = media_route(config, media_uri)?;
-    let response = exchange(
-        config,
-        &media,
-        &wire::get_profiles_request(),
-        cx,
-        &mut budget,
-    )?;
-    let profiles = wire::parse_profiles(soap_body(&response)?)?;
+    let profiles_request = match config.media_version {
+        MediaVersion::Media1 => wire::get_profiles_request(),
+        MediaVersion::Media2 => wire::get_media2_profiles_request(),
+    };
+    let response = exchange(config, &media, &profiles_request, cx, &mut budget)?;
+    let profiles = match config.media_version {
+        MediaVersion::Media1 => wire::parse_profiles(soap_body(&response)?)?,
+        MediaVersion::Media2 => wire::parse_media2_profiles(soap_body(&response)?)?,
+    };
 
     let selection = if let Some(token) = profile_token {
         let profile = profiles
@@ -277,7 +395,8 @@ pub fn run(
         if profile.video.is_none() {
             return Err(ClientError::Profile);
         }
-        if capabilities.rtp_rtsp_tcp == Some(false) {
+        if matches!(&discovery, MediaDiscovery::Media1(capabilities) if capabilities.rtp_rtsp_tcp == Some(false))
+        {
             return Err(ClientError::Unsupported);
         }
         let response = exchange(
@@ -287,7 +406,10 @@ pub fn run(
             cx,
             &mut budget,
         )?;
-        let stream = wire::parse_stream_uri(soap_body(&response)?)?;
+        let stream: NegotiatedStreamUri = match config.media_version {
+            MediaVersion::Media1 => wire::parse_stream_uri(soap_body(&response)?)?.into(),
+            MediaVersion::Media2 => wire::parse_media2_stream_uri(soap_body(&response)?)?.into(),
+        };
         let scope = config.rtsp.as_ref().ok_or(ClientError::Scope)?;
         validate_stream_uri(&stream.uri, scope)?;
         Some(SelectedStream {
@@ -304,7 +426,7 @@ pub fn run(
     cx.checkpoint(&media, HttpOperation::Release, now, config.deadline_ns)
         .map_err(|_| ClientError::Authority)?;
     Ok(Onboarding {
-        capabilities,
+        discovery,
         profiles,
         selection,
         exchanges: budget.exchanges,

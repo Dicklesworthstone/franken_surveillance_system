@@ -11,10 +11,11 @@ use std::time::{Duration, Instant};
 
 use fss_core::ContentDigest;
 use fss_reference::onvif::client::{
-    ClientConfig, ClientError, DigestConfig, OnvifContext, RtspScope, run, validate_stream_uri,
+    ClientConfig, ClientError, DigestConfig, MediaDiscovery, OnvifContext, RtspScope,
+    StreamValidity, run, validate_stream_uri,
 };
 use fss_reference::onvif::http::{HttpAuthority, HttpDenial, HttpLimits, HttpOperation, HttpRoute};
-use fss_reference::onvif::wire::{VideoEncoding, WireError};
+use fss_reference::onvif::wire::{MediaVersion, ServiceVersion, VideoEncoding, WireError};
 use fss_reference::rtsp::authentication::{
     DigestAuthorization, DigestChallenge, DigestCredentials, DigestPolicy,
 };
@@ -160,7 +161,7 @@ impl HttpAuthority for Context {
             || route.generation() != 1
             || !matches!(
                 route.target(),
-                "/onvif/device_service" | "/onvif/media_service"
+                "/onvif/device_service" | "/onvif/media_service" | "/onvif/media2_service"
             )
         {
             return Err(HttpDenial::Unauthorized);
@@ -199,6 +200,7 @@ impl OnvifContext for Context {
 
 fn config(peer: SocketAddr) -> ClientConfig {
     ClientConfig {
+        media_version: MediaVersion::Media1,
         device: HttpRoute::new(
             peer,
             &peer.to_string(),
@@ -477,4 +479,219 @@ fn stream_scope_accepts_safe_query_without_normalizing_private_tokens() {
         authority: scope.authority.clone(),
     };
     assert!(validate_stream_uri(STREAM, &changed).is_err());
+}
+
+fn media2_config(peer: SocketAddr) -> ClientConfig {
+    ClientConfig {
+        media_version: MediaVersion::Media2,
+        ..config(peer)
+    }
+}
+
+fn media2_soap(body: &str) -> String {
+    soap(body).replace(
+        "<s:Body>",
+        "<s:Body xmlns:tr2=\"http://www.onvif.org/ver20/media/wsdl\">",
+    )
+}
+
+fn media2_services(uri: &str) -> String {
+    ok(soap(&format!(
+        "<tds:GetServicesResponse><tds:Service><tds:Namespace>http://www.onvif.org/ver20/media/wsdl</tds:Namespace><tds:XAddr>{uri}</tds:XAddr><tds:Version><tt:Major>24</tt:Major><tt:Minor>6</tt:Minor></tds:Version></tds:Service></tds:GetServicesResponse>"
+    )))
+}
+
+fn media2_profiles(encoder: bool) -> String {
+    let configs = if encoder {
+        "<tr2:Configurations><tr2:VideoEncoder token=\"hevc-encoder\"><tt:Encoding>H265</tt:Encoding><tt:Resolution><tt:Width>3840</tt:Width><tt:Height>2160</tt:Height></tt:Resolution></tr2:VideoEncoder></tr2:Configurations>"
+    } else {
+        ""
+    };
+    ok(media2_soap(&format!(
+        "<tr2:GetProfilesResponse><tr2:Profiles token=\"{TOKEN}\"><tr2:Name>Private Media2 Main</tr2:Name>{configs}</tr2:Profiles></tr2:GetProfilesResponse>"
+    )))
+}
+
+fn media2_stream(uri: &str) -> String {
+    let uri = uri.replace('&', "&amp;");
+    ok(media2_soap(&format!(
+        "<tr2:GetStreamUriResponse><tr2:Uri>{uri}</tr2:Uri></tr2:GetStreamUriResponse>"
+    )))
+}
+
+#[test]
+fn media2_only_camera_negotiates_h265_with_scoped_digest_and_explicit_validity_basis() {
+    let server = Server::start(|peer| {
+        vec![
+            challenge(REALM),
+            media2_services(&format!("http://{peer}/onvif/media2_service")),
+            challenge(REALM),
+            media2_profiles(true),
+            challenge(REALM),
+            media2_stream(STREAM),
+        ]
+    });
+    let cx = Context::new(server.peer);
+    let result = run(&media2_config(server.peer), Some(TOKEN), &cx).unwrap();
+    assert_eq!(result.exchanges, 6);
+    assert_eq!(result.discovery.media_version(), MediaVersion::Media2);
+    assert!(matches!(&result.discovery, MediaDiscovery::Media2(service)
+        if service.version == ServiceVersion { major: 24, minor: 6 }));
+    let selected = result.selection.as_ref().unwrap();
+    assert_eq!(
+        selected.profile.video.as_ref().unwrap().encoding,
+        VideoEncoding::H265
+    );
+    assert_eq!(selected.stream.uri, STREAM);
+    assert_eq!(selected.stream.validity, StreamValidity::Media2Indefinite);
+    assert!(selected.stream.is_stable());
+    assert_eq!(cx.auth_calls.load(Ordering::SeqCst), 3);
+    let requests = server.requests();
+    assert_eq!(requests.len(), 6);
+    for (index, request) in requests.iter().enumerate() {
+        let target = if index < 2 {
+            "/onvif/device_service"
+        } else {
+            "/onvif/media2_service"
+        };
+        assert!(request.starts_with(&format!("POST {target} HTTP/1.1\r\n")));
+        assert_eq!(request.contains("Authorization: Digest "), index % 2 == 1);
+        if index % 2 == 1 {
+            assert!(request.contains(&format!("uri=\"{target}\"")));
+        }
+        assert!(!request.contains("fixture-password"));
+        assert!(!request.contains("GetCapabilities"));
+    }
+    assert!(requests[0].contains("<tds:IncludeCapability>false</tds:IncludeCapability>"));
+    assert!(requests[2].contains("<tr2:Type>VideoEncoder</tr2:Type>"));
+    assert!(requests[5].contains("<tr2:Protocol>RTSP</tr2:Protocol>"));
+    let debug = format!("{result:?} {:?} {:?}", result.discovery, selected.stream);
+    for private in [
+        STREAM,
+        TOKEN,
+        REALM,
+        "Private Media2 Main",
+        "media2_service",
+    ] {
+        assert!(!debug.contains(private));
+    }
+}
+
+#[test]
+fn media2_inventory_does_not_acquire_a_uri_and_preserves_missing_video() {
+    let server = Server::start(|peer| {
+        vec![
+            media2_services(&format!("http://{peer}/onvif/media2_service")),
+            media2_profiles(false),
+        ]
+    });
+    let mut cfg = media2_config(server.peer);
+    cfg.rtsp = None;
+    let result = run(&cfg, None, &Context::new(server.peer)).unwrap();
+    assert_eq!(result.exchanges, 2);
+    assert_eq!(result.profiles[0].video, None);
+    assert!(result.selection.is_none());
+    assert!(
+        server
+            .requests()
+            .iter()
+            .all(|request| !request.contains("GetStreamUri"))
+    );
+}
+
+#[test]
+fn media2_missing_service_does_not_fall_back_to_media1() {
+    let server = Server::start(|peer| {
+        let body = soap(&format!(
+            "<tds:GetServicesResponse><tds:Service><tds:Namespace>http://www.onvif.org/ver10/media/wsdl</tds:Namespace><tds:XAddr>http://{peer}/onvif/media_service</tds:XAddr><tds:Version><tt:Major>2</tt:Major><tt:Minor>0</tt:Minor></tds:Version></tds:Service></tds:GetServicesResponse>"
+        ));
+        vec![ok(body)]
+    });
+    let cx = Context::new(server.peer);
+    assert!(matches!(
+        run(&media2_config(server.peer), Some(TOKEN), &cx),
+        Err(ClientError::Unsupported)
+    ));
+    assert_eq!(server.requests().len(), 1);
+    assert_eq!(cx.auth_calls.load(Ordering::SeqCst), 0);
+}
+
+#[test]
+fn media2_foreign_service_origin_and_path_fail_before_followup_or_credentials() {
+    for variant in 0..5 {
+        let server = Server::start(|peer| {
+            let uri = match variant {
+                0 => format!("http://127.0.0.2:{}/onvif/media2_service", peer.port()),
+                1 => format!("http://{peer}/onvif-other/media"),
+                2 => format!("http://{peer}/onvif/../admin"),
+                3 => format!("https://{peer}/onvif/media2_service"),
+                _ => format!("http://{peer}/onvif/%2e%2e/admin"),
+            };
+            vec![media2_services(&uri)]
+        });
+        let cx = Context::new(server.peer);
+        assert!(matches!(
+            run(&media2_config(server.peer), None, &cx),
+            Err(ClientError::Scope)
+        ));
+        assert_eq!(server.requests().len(), 1);
+        assert_eq!(cx.auth_calls.load(Ordering::SeqCst), 0);
+    }
+}
+
+#[test]
+fn media2_missing_video_and_wrong_profile_namespace_refuse_before_uri_request() {
+    for variant in 0..3 {
+        let server = Server::start(|peer| {
+            vec![
+                media2_services(&format!("http://{peer}/onvif/media2_service")),
+                match variant {
+                    0 => media2_profiles(false),
+                    1 => profiles(),
+                    _ => media2_profiles(true),
+                },
+            ]
+        });
+        let selected = if variant == 2 {
+            "absent-profile"
+        } else {
+            TOKEN
+        };
+        let result = run(
+            &media2_config(server.peer),
+            Some(selected),
+            &Context::new(server.peer),
+        );
+        assert!(matches!(
+            result,
+            Err(ClientError::Profile | ClientError::Wire(WireError::UnexpectedResponse))
+        ));
+        assert_eq!(server.requests().len(), 2);
+        assert!(
+            server
+                .requests()
+                .iter()
+                .all(|request| !request.contains("GetStreamUri"))
+        );
+    }
+}
+
+#[test]
+fn media2_returned_uri_remains_independently_pinned() {
+    let server = Server::start(|peer| {
+        vec![
+            media2_services(&format!("http://{peer}/onvif/media2_service")),
+            media2_profiles(true),
+            media2_stream("rtsp://127.0.0.2:554/private-main"),
+        ]
+    });
+    assert!(matches!(
+        run(
+            &media2_config(server.peer),
+            Some(TOKEN),
+            &Context::new(server.peer)
+        ),
+        Err(ClientError::Scope)
+    ));
+    assert_eq!(server.requests().len(), 3);
 }
