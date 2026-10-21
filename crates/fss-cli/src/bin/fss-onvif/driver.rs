@@ -5,14 +5,15 @@ use std::cell::RefCell;
 
 use fss_cli::agent_json::{array, object, string};
 use fss_core::{ContentDigest, RuntimeGrant};
+use fss_reference::onvif::authentication::{UsernameToken, UtcDateTime};
 use fss_reference::onvif::client::{self, ClientError, MediaDiscovery, Onboarding, OnvifContext};
 use fss_reference::onvif::http::{HttpAuthority, HttpDenial, HttpOperation, HttpRoute};
-use fss_reference::onvif::wire::VideoEncoding;
+use fss_reference::onvif::wire::{self, MediaVersion, SoapRequest, VideoEncoding};
 use fss_reference::rtsp::authentication::{DigestAuthorization, DigestChallenge};
 
 use super::authentication::{CredentialLease, Entropy, MAX_CREDENTIAL_BYTES, SecretError};
 use super::handoff::Handoff;
-use super::plan::{Plan, in_service_root};
+use super::plan::{OnvifAuthPlan, Plan, in_service_root};
 use super::private_file::{MAX_FILE_BYTES, Output};
 use super::runtime::{self, Request, Scope};
 
@@ -59,6 +60,48 @@ fn denial(code: &'static str) -> HttpDenial {
         "ERR-ONVIF-BUDGET-001" => HttpDenial::Budget,
         _ => HttpDenial::Unauthorized,
     }
+}
+
+fn checkpoint_error(error: HttpDenial) -> ClientError {
+    match error {
+        HttpDenial::Cancelled => ClientError::Cancelled,
+        HttpDenial::Deadline => ClientError::Deadline,
+        HttpDenial::Budget => ClientError::Budget,
+        HttpDenial::Unauthorized | HttpDenial::Revoked => ClientError::Authority,
+    }
+}
+
+// The secret owner independently checks the exact typed operation, including its
+// profile token and media version. A valid origin alone never grants a generic
+// SOAP signer. Bootstrap and already-signed requests cannot equal these bodies.
+fn username_token_request_matches(plan: &Plan, route: &HttpRoute, request: &SoapRequest) -> bool {
+    if !plan.uses_username_token() {
+        return false;
+    }
+    let (discovery, profiles) = match plan.media_version {
+        MediaVersion::Media1 => (
+            wire::get_capabilities_request(),
+            wire::get_profiles_request(),
+        ),
+        MediaVersion::Media2 => (
+            wire::get_services_request(),
+            wire::get_media2_profiles_request(),
+        ),
+    };
+    if request == &discovery {
+        return route.target() == plan.device_path;
+    }
+    if request == &profiles {
+        return true;
+    }
+    let Some(profile) = plan.profile.as_deref() else {
+        return false;
+    };
+    let expected = match plan.media_version {
+        MediaVersion::Media1 => wire::get_stream_uri_request(profile),
+        MediaVersion::Media2 => wire::get_media2_stream_uri_request(profile),
+    };
+    expected.is_ok_and(|expected| request == &expected)
 }
 
 impl HttpAuthority for Owner<'_, '_, '_> {
@@ -118,6 +161,9 @@ impl OnvifContext for Owner<'_, '_, '_> {
         route: &HttpRoute,
         challenge: &DigestChallenge,
     ) -> Result<DigestAuthorization, ClientError> {
+        if !matches!(&self.plan.auth, Some(OnvifAuthPlan::HttpDigest(_))) {
+            return Err(ClientError::Authority);
+        }
         let now = self.now_ns()?;
         self.checkpoint(route, HttpOperation::Write, now, self.plan.timeout_ns)
             .map_err(|_| ClientError::Authority)?;
@@ -139,6 +185,39 @@ impl OnvifContext for Owner<'_, '_, '_> {
             .map_err(ClientError::Authentication)?;
         lease.revalidate(&check).map_err(secret_error)?;
         Ok(authorization)
+    }
+
+    fn username_token(
+        &self,
+        route: &HttpRoute,
+        request: &SoapRequest,
+        created: UtcDateTime,
+    ) -> Result<UsernameToken, ClientError> {
+        if !username_token_request_matches(self.plan, route, request) {
+            return Err(ClientError::Authority);
+        }
+        let now = self.now_ns()?;
+        self.checkpoint(route, HttpOperation::Write, now, self.plan.timeout_ns)
+            .map_err(checkpoint_error)?;
+        let check = || secret_check(self.scope);
+        let lease = self.credentials.ok_or(ClientError::Credentials)?;
+        lease.revalidate(&check).map_err(secret_error)?;
+        let mut entropy = self
+            .entropy
+            .try_borrow_mut()
+            .map_err(|_| ClientError::Entropy)?;
+        let nonce = entropy
+            .as_mut()
+            .ok_or(ClientError::Entropy)?
+            .next(&check)
+            .map_err(secret_error)?;
+        let credentials = lease.credentials().map_err(secret_error)?;
+        let token = UsernameToken::new(&credentials, nonce, created);
+        lease.revalidate(&check).map_err(secret_error)?;
+        let now = self.now_ns()?;
+        self.checkpoint(route, HttpOperation::Write, now, self.plan.timeout_ns)
+            .map_err(checkpoint_error)?;
+        Ok(token)
     }
 }
 
@@ -232,8 +311,8 @@ pub(super) fn execute(plan: &Plan) -> Result<String, &'static str> {
         return Err("ERR-ONVIF-APPROVAL-001");
     }
     let config = plan.config(approval)?;
-    let exchanges = if plan.profile.is_some() { 6_u64 } else { 4 };
-    let network = exchanges
+    let network = plan
+        .max_http_exchanges()
         .checked_mul((plan.limits.request_bytes + plan.limits.wire_bytes) as u64)
         .ok_or("ERR-ONVIF-BUDGET-001")?;
     let request = Request {
@@ -253,7 +332,7 @@ pub(super) fn execute(plan: &Plan) -> Result<String, &'static str> {
         let credentials = plan
             .auth
             .as_ref()
-            .map(|auth| CredentialLease::load(&auth.credential_file, &check))
+            .map(|auth| CredentialLease::load(auth.credential_file(), &check))
             .transpose()
             .map_err(|error| secret_error(error).code())?;
         let entropy = if credentials.is_some() {
@@ -296,4 +375,152 @@ pub(super) fn execute(plan: &Plan) -> Result<String, &'static str> {
             ("source_evidence", "false".into()),
         ]) + "\n")
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use fss_reference::rtsp::authentication::DigestCredentials;
+    use std::ffi::OsString;
+
+    fn plan(media: &str, profile: Option<&str>) -> Plan {
+        let mut args = vec![
+            "--peer",
+            "127.0.0.1:8080",
+            "--authority",
+            "127.0.0.1:8080",
+            "--device-path",
+            "/onvif/device_service",
+            "--service-root",
+            "/onvif",
+            "--output",
+            "/tmp/fss-onvif-owner-plan.json",
+            "--owner-authorized",
+            "yes",
+            "--plaintext",
+            "yes",
+            "--media-version",
+            media,
+            "--auth-mode",
+            "username-token",
+            "--credential-file",
+            "/tmp/fss-onvif-owner-credentials",
+        ];
+        if let Some(profile) = profile {
+            args.extend([
+                "--profile",
+                profile,
+                "--rtsp-peer",
+                "127.0.0.1:554",
+                "--rtsp-authority",
+                "127.0.0.1:554",
+            ]);
+        }
+        Plan::parse(&args.into_iter().map(OsString::from).collect::<Vec<_>>()).unwrap()
+    }
+
+    fn route(plan: &Plan, path: &str) -> HttpRoute {
+        HttpRoute::new(
+            plan.peer,
+            &plan.authority,
+            path,
+            plan.generation,
+            plan.digest().unwrap(),
+        )
+        .unwrap()
+    }
+
+    #[test]
+    fn token_owner_admits_only_exact_media_operations_and_selected_profile() {
+        for media in ["media1", "media2"] {
+            let plan = plan(media, Some("selected-profile"));
+            let device = route(&plan, &plan.device_path);
+            let service = route(&plan, "/onvif/media_service");
+            let (discovery, profiles, selected, other_discovery, other_profiles, other_selected) =
+                if media == "media1" {
+                    (
+                        wire::get_capabilities_request(),
+                        wire::get_profiles_request(),
+                        wire::get_stream_uri_request("selected-profile").unwrap(),
+                        wire::get_services_request(),
+                        wire::get_media2_profiles_request(),
+                        wire::get_media2_stream_uri_request("selected-profile").unwrap(),
+                    )
+                } else {
+                    (
+                        wire::get_services_request(),
+                        wire::get_media2_profiles_request(),
+                        wire::get_media2_stream_uri_request("selected-profile").unwrap(),
+                        wire::get_capabilities_request(),
+                        wire::get_profiles_request(),
+                        wire::get_stream_uri_request("selected-profile").unwrap(),
+                    )
+                };
+            assert!(username_token_request_matches(&plan, &device, &discovery));
+            assert!(!username_token_request_matches(&plan, &service, &discovery));
+            assert!(username_token_request_matches(&plan, &service, &profiles));
+            assert!(username_token_request_matches(&plan, &service, &selected));
+            for refused in [
+                other_discovery,
+                other_profiles,
+                other_selected,
+                wire::get_stream_uri_request("different-profile").unwrap(),
+                wire::get_media2_stream_uri_request("different-profile").unwrap(),
+                wire::get_snapshot_uri_request("selected-profile").unwrap(),
+                wire::get_system_date_and_time_request(),
+            ] {
+                assert!(!username_token_request_matches(&plan, &device, &refused));
+                assert!(!username_token_request_matches(&plan, &service, &refused));
+            }
+            let token = UsernameToken::new(
+                &DigestCredentials::new("fixture-user", "fixture-password").unwrap(),
+                [7; 16],
+                UtcDateTime::new(2026, 10, 21, 12, 0, 0).unwrap(),
+            );
+            let already_signed = profiles.with_username_token(&token).unwrap();
+            assert!(!username_token_request_matches(
+                &plan,
+                &service,
+                &already_signed
+            ));
+        }
+    }
+
+    #[test]
+    fn token_owner_refuses_stream_selection_without_a_profile_or_auth_mode() {
+        for media in ["media1", "media2"] {
+            let mut plan = plan(media, None);
+            let service = route(&plan, "/onvif/media_service");
+            for request in [
+                wire::get_stream_uri_request("main").unwrap(),
+                wire::get_media2_stream_uri_request("main").unwrap(),
+            ] {
+                assert!(!username_token_request_matches(&plan, &service, &request));
+            }
+            plan.auth = None;
+            assert!(!username_token_request_matches(
+                &plan,
+                &service,
+                &wire::get_profiles_request()
+            ));
+            assert!(!username_token_request_matches(
+                &plan,
+                &service,
+                &wire::get_media2_profiles_request()
+            ));
+        }
+    }
+
+    #[test]
+    fn token_owner_preserves_live_checkpoint_refusal_kinds() {
+        for (denied, code) in [
+            (HttpDenial::Cancelled, "ERR-ONVIF-CANCELLED-001"),
+            (HttpDenial::Deadline, "ERR-ONVIF-DEADLINE-001"),
+            (HttpDenial::Budget, "ERR-ONVIF-BUDGET-001"),
+            (HttpDenial::Revoked, "ERR-ONVIF-AUTHORITY-001"),
+            (HttpDenial::Unauthorized, "ERR-ONVIF-AUTHORITY-001"),
+        ] {
+            assert_eq!(checkpoint_error(denied).code(), code);
+        }
+    }
 }

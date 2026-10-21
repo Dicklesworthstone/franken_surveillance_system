@@ -41,21 +41,60 @@ canonical, with no symlink components. The directory must not be writable by
 group or other users. Each approved request creates a **new** file with mode
 0600. Existing files and symlinks are never overwritten.
 
-When the camera requires HTTP Digest, provide `--credential-file` and its exact
-`--auth-realm`. The credential file contains exactly `username LF password LF`;
+Choose the camera's authentication method explicitly:
+
+| Authentication | Options | Request policy |
+| --- | --- | --- |
+| No configured credentials | Omit credential options | Unsigned requests; an authentication challenge refuses |
+| HTTP Digest | `--credential-file` and exact `--auth-realm`; optional `--auth-mode http-digest` | One unsigned request and at most one authenticated retry per operation |
+| WS-Security UsernameToken PasswordDigest | `--auth-mode username-token` and `--credential-file` | One unsigned device-time query, then a fresh UsernameToken on every discovery, profile, and URI request |
+
+The credential file contains exactly `username LF password LF`;
 it is a private regular file with owner-read permission, no group/other
 permissions, and one link; the file itself cannot be a symlink. Provision it through the
 operator's secret-management workflow. Do not put a password in the command
 line, stream URI, shell history, or repository. The file is read only after the
 plan has been approved; replacement, modification, removal, or permission
 changes revoke its lease during the operation.
+Both authentication modes share the existing bounded printable-ASCII credential
+format; this command does not broaden the username/password character set.
 
 Digest defaults to SHA-256 with `qop=auth`. `--legacy-md5 yes` and
 `--legacy-no-qop yes` are separate explicit compatibility choices. Every signed
 SOAP retry uses a fresh operating-system nonce and the exact HTTP request
-target. Only one challenged retry is allowed per operation. There is no Basic,
-WS-Security, redirect, TLS, or transport fallback. Plaintext HTTP does not
+target. Only one challenged retry is allowed per operation. There is no automatic
+authentication fallback or simultaneous HTTP/WS-Security authentication. Basic,
+PasswordText, redirects, TLS, and transport fallback are unsupported. Plaintext HTTP does not
 authenticate the server identity or encrypt the exchange.
+
+### Cameras requiring UsernameToken authentication
+
+Use `--auth-mode username-token` in place of `--auth-realm` and the legacy Digest
+options. A realm, `--legacy-md5`, or `--legacy-no-qop` is rejected in this mode,
+including a legacy option set to `no`. The selected authentication method,
+media version, and device-time bootstrap policy are bound into the distinct
+`fss.onvif_operator_plan.v3` approval. Existing unsigned and HTTP Digest v1/v2
+approvals keep their original encoding and cannot authorize UsernameToken.
+
+After approval, the client requests `GetSystemDateAndTime` once from the exact
+pinned device endpoint without credentials. It requires one unambiguous, valid
+UTC date and time. The observed camera UTC is advanced by the operation's owned
+monotonic clock for subsequent token creation. This works when the camera and
+host clocks disagree without reading the host wall clock or changing device
+settings. Camera UTC is **only authentication freshness input**; it never becomes
+recording, event, receipt, or source-time authority. The supported UTC range is
+1970–9999; impossible dates and leap-second values are refused rather than
+assigned an inferred timestamp.
+
+Each authenticated request revalidates the private credential lease, obtains a
+fresh 128-bit operating-system nonce, and constructs the standard
+`Base64(SHA-1(raw nonce + Created + password))` digest. SHA-1 is limited to this
+legacy protocol requirement; retained evidence still uses its existing content
+identity. The password is never sent as PasswordText. A rejection, SOAP fault,
+missing or invalid camera UTC, revoked credential lease, entropy failure, or
+expired operation stops the session. A UsernameToken session uses at most three
+HTTP exchanges for inventory or four for selection and never retries with a
+different authentication method.
 
 ## 2. List the media profiles
 
@@ -77,6 +116,11 @@ onvif_options=(
 
 fss-onvif "${onvif_options[@]}"
 ```
+
+For a UsernameToken camera, replace the example's `--auth-realm
+OWNER_VERIFIED_REALM` pair with `--auth-mode username-token`. Keep the independent
+HTTP route, service subtree, credential-file, plaintext consent, and output
+choices. Apply the same authentication choice when selecting a stream below.
 
 Without `--approve`, this emits a pure plan. It opens no files, credentials,
 clock, or sockets. Review the exact peer, HTTP authority, subtree, output path,
@@ -150,8 +194,10 @@ and unsupported schemes are refused. URI text, camera names, credentials,
 realm, challenge nonce, and raw profile tokens do not appear in ordinary
 stdout/stderr. Retain the safe completion result's `output_digest` for capture.
 
-Selection does not open the RTSP endpoint or grant capture authority. HTTP
-Digest credentials and approvals are not transferred to the RTSP session.
+Selection does not open the RTSP endpoint or grant capture authority. ONVIF
+credentials and approvals are not transferred to the RTSP session. UsernameToken
+nonces, password digests, and camera authentication timestamps are never stored
+in the inventory or handoff, and ordinary stdout/stderr remain redacted.
 
 ## 4. Approve capture using the established source and timing owners
 
@@ -351,7 +397,7 @@ does not overwrite or silently delete it.
 No device settings, PTZ controls, audio channels, account discovery, vendor
 credentials, firmware changes, or provisioning bypass are implemented here.
 The native private-file integration is Linux-specific. Physical-camera
-interoperability, expiring URI lifecycle support, TLS/WS-Security,
+interoperability, expiring URI lifecycle support, TLS,
 Profile M, and full Profile T qualification remain separate work.
 
 ## Verification scope
@@ -367,6 +413,15 @@ takes the original capture archive offline, and decodes from the imported
 custody. A mismatching SDP codec refuses before remote SETUP. Wire and client
 tests also cover Media2 namespace/version selection, bounded service inventories,
 missing video configurations, and refusal of implicit service fallback.
+The UsernameToken-only process fixture independently checks each transmitted
+password digest and fresh nonce against an intentionally skewed camera UTC. It
+verifies private Media1 inventory and Media2 selection through real native HEVC
+capture, retained import, and cold decode. Additional cases refuse ambiguous or
+invalid UTC, mixed authentication flags, stale approval modes, foreign service
+origins, credential revocation, HTTP Digest challenges, and SOAP authentication
+faults without fallback or secret disclosure. Deterministic contracts cover
+known digest vectors, UTC rollover and overflow, exact XML namespaces, request
+size limits, and signed-request lifetime checks.
 The protected reconnect fixture exercises real source EOF, a successor with a
 fresh generation and independent retained datagrams, then separately approved
 offline recovery and indexing with no camera connection. A Media2 HEVC fixture
@@ -386,3 +441,6 @@ Protocol shapes follow the official [device WSDL](https://www.onvif.org/ver10/de
 [Media1 WSDL](https://www.onvif.org/ver10/media/wsdl/media.wsdl),
 [Media2 WSDL](https://www.onvif.org/ver20/media/wsdl/media.wsdl), and
 [ONVIF schema](https://www.onvif.org/ver10/schema/onvif.xsd).
+Authentication and the pre-authentication device-time operation follow
+[ONVIF Core 25.12, sections 5.9.1 and 8.3.6](https://www.onvif.org/specs/2512/ONVIF-Core-Spec-v2512.pdf)
+and [OASIS UsernameToken Profile 1.1.1, section 3.1](https://docs.oasis-open.org/wss-m/wss/v1.1.1/os/wss-UsernameTokenProfile-v1.1.1-os.html).

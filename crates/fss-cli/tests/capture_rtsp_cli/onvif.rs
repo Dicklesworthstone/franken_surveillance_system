@@ -8,6 +8,9 @@ use std::os::unix::fs::PermissionsExt;
 #[path = "onvif/reconnect.rs"]
 mod reconnect;
 
+#[path = "onvif/wsse.rs"]
+mod wsse;
+
 const PROFILE: &str = "ONVIF_PRIVATE_PROFILE_CANARY";
 const QUERY: &str = "ONVIF_PRIVATE_URI_CANARY";
 const USER: &str = "ONVIF_SYNTHETIC_USER_CANARY";
@@ -182,57 +185,68 @@ fn soap_server_with_media(
             );
             request = retry;
         }
-        let body = match operation {
-            0 => {
-                let endpoint = if hostile_media {
-                    format!("http://{rtsp}/onvif/media_service")
-                } else {
-                    format!("http://{http}/onvif/media_service")
-                };
-                if media2 {
-                    assert!(request.body.contains("GetServices"));
-                    assert!(request.body.contains(">false<"));
-                    envelope(&format!(
-                        "<d:GetServicesResponse><d:Service><d:Namespace>http://www.onvif.org/ver20/media/wsdl</d:Namespace><d:XAddr>{endpoint}</d:XAddr><d:Version><t:Major>2</t:Major><t:Minor>0</t:Minor></d:Version></d:Service></d:GetServicesResponse>"
-                    ))
-                } else {
-                    assert!(request.body.contains("GetCapabilities"));
-                    envelope(&format!(
-                        "<d:GetCapabilitiesResponse><d:Capabilities><t:Media><t:XAddr>{endpoint}</t:XAddr><t:StreamingCapabilities><t:RTP_RTSP_TCP>true</t:RTP_RTSP_TCP></t:StreamingCapabilities></t:Media></d:Capabilities></d:GetCapabilitiesResponse>"
-                    ))
-                }
-            }
-            1 => {
-                assert!(request.body.contains("GetProfiles"));
-                if media2 {
-                    assert!(request.body.contains(">VideoEncoder<"));
-                    envelope(&format!(
-                        "<m2:GetProfilesResponse><m2:Profiles token=\"{PROFILE}\"><m2:Name>Private camera name</m2:Name><m2:Configurations><m2:VideoEncoder token=\"video\"><t:Name>Encoder</t:Name><t:UseCount>1</t:UseCount><t:Encoding>H265</t:Encoding><t:Resolution><t:Width>64</t:Width><t:Height>48</t:Height></t:Resolution></m2:VideoEncoder></m2:Configurations></m2:Profiles><m2:Profiles token=\"audio_only\"><m2:Name>Audio disabled</m2:Name></m2:Profiles></m2:GetProfilesResponse>"
-                    ))
-                } else {
-                    envelope(&format!(
-                        "<m:GetProfilesResponse><m:Profiles token=\"{PROFILE}\"><t:Name>Private camera name</t:Name><t:VideoEncoderConfiguration><t:Encoding>H264</t:Encoding><t:Resolution><t:Width>160</t:Width><t:Height>120</t:Height></t:Resolution></t:VideoEncoderConfiguration></m:Profiles><m:Profiles token=\"audio_only\"><t:Name>Audio disabled</t:Name></m:Profiles></m:GetProfilesResponse>"
-                    ))
-                }
-            }
-            _ => {
-                assert!(request.body.contains("GetStreamUri") && request.body.contains(PROFILE));
-                if media2 {
-                    assert!(request.body.contains(">RTSP<"));
-                    envelope(&format!(
-                        "<m2:GetStreamUriResponse><m2:Uri>rtsp://{rtsp}/live/?channel=1&amp;selection={QUERY}%2B</m2:Uri></m2:GetStreamUriResponse>"
-                    ))
-                } else {
-                    envelope(&format!(
-                        "<m:GetStreamUriResponse><m:MediaUri><t:Uri>rtsp://{rtsp}/live/?channel=1&amp;selection={QUERY}%2B</t:Uri><t:InvalidAfterConnect>false</t:InvalidAfterConnect><t:InvalidAfterReboot>false</t:InvalidAfterReboot><t:Timeout>P0DT0H0M0S</t:Timeout></m:MediaUri></m:GetStreamUriResponse>"
-                    ))
-                }
-            }
-        };
+        let body = operation_body(operation, &request, http, rtsp, hostile_media, media2);
         soap_reply(&mut peer, &body)?;
     }
     no_connection(&listener)?;
     Ok(count * if authenticated { 2 } else { 1 })
+}
+
+fn operation_body(
+    operation: usize,
+    request: &HttpRequest,
+    http: SocketAddr,
+    rtsp: SocketAddr,
+    hostile_media: bool,
+    media2: bool,
+) -> String {
+    match operation {
+        0 => {
+            let endpoint = if hostile_media {
+                format!("http://{rtsp}/onvif/media_service")
+            } else {
+                format!("http://{http}/onvif/media_service")
+            };
+            if media2 {
+                assert!(request.body.contains("GetServices"));
+                assert!(request.body.contains(">false<"));
+                envelope(&format!(
+                    "<d:GetServicesResponse><d:Service><d:Namespace>http://www.onvif.org/ver20/media/wsdl</d:Namespace><d:XAddr>{endpoint}</d:XAddr><d:Version><t:Major>2</t:Major><t:Minor>0</t:Minor></d:Version></d:Service></d:GetServicesResponse>"
+                ))
+            } else {
+                assert!(request.body.contains("GetCapabilities"));
+                envelope(&format!(
+                    "<d:GetCapabilitiesResponse><d:Capabilities><t:Media><t:XAddr>{endpoint}</t:XAddr><t:StreamingCapabilities><t:RTP_RTSP_TCP>true</t:RTP_RTSP_TCP></t:StreamingCapabilities></t:Media></d:Capabilities></d:GetCapabilitiesResponse>"
+                ))
+            }
+        }
+        1 => {
+            assert!(request.body.contains("GetProfiles"));
+            if media2 {
+                assert!(request.body.contains(">VideoEncoder<"));
+                envelope(&format!(
+                    "<m2:GetProfilesResponse><m2:Profiles token=\"{PROFILE}\"><m2:Name>Private camera name</m2:Name><m2:Configurations><m2:VideoEncoder token=\"video\"><t:Name>Encoder</t:Name><t:UseCount>1</t:UseCount><t:Encoding>H265</t:Encoding><t:Resolution><t:Width>64</t:Width><t:Height>48</t:Height></t:Resolution></m2:VideoEncoder></m2:Configurations></m2:Profiles><m2:Profiles token=\"audio_only\"><m2:Name>Audio disabled</m2:Name></m2:Profiles></m2:GetProfilesResponse>"
+                ))
+            } else {
+                envelope(&format!(
+                    "<m:GetProfilesResponse><m:Profiles token=\"{PROFILE}\"><t:Name>Private camera name</t:Name><t:VideoEncoderConfiguration><t:Encoding>H264</t:Encoding><t:Resolution><t:Width>160</t:Width><t:Height>120</t:Height></t:Resolution></t:VideoEncoderConfiguration></m:Profiles><m:Profiles token=\"audio_only\"><t:Name>Audio disabled</t:Name></m:Profiles></m:GetProfilesResponse>"
+                ))
+            }
+        }
+        _ => {
+            assert!(request.body.contains("GetStreamUri") && request.body.contains(PROFILE));
+            if media2 {
+                assert!(request.body.contains(">RTSP<"));
+                envelope(&format!(
+                    "<m2:GetStreamUriResponse><m2:Uri>rtsp://{rtsp}/live/?channel=1&amp;selection={QUERY}%2B</m2:Uri></m2:GetStreamUriResponse>"
+                ))
+            } else {
+                envelope(&format!(
+                    "<m:GetStreamUriResponse><m:MediaUri><t:Uri>rtsp://{rtsp}/live/?channel=1&amp;selection={QUERY}%2B</t:Uri><t:InvalidAfterConnect>false</t:InvalidAfterConnect><t:InvalidAfterReboot>false</t:InvalidAfterReboot><t:Timeout>P0DT0H0M0S</t:Timeout></m:MediaUri></m:GetStreamUriResponse>"
+                ))
+            }
+        }
+    }
 }
 
 fn onvif_args(
