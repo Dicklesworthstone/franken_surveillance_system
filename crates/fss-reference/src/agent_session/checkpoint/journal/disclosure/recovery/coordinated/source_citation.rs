@@ -4,7 +4,8 @@
 use super::*;
 use crate::agent_session::SessionAlias;
 use crate::agent_session::checkpoint::journal::coordination::investigations::{
-    InvestigationError, SourceCitationError, SourceCitationReceipt, SourceCitationTarget,
+    InvestigationError, SourceCitationError, SourceCitationInspection, SourceCitationReceipt,
+    SourceCitationTarget,
 };
 use crate::agent_session::checkpoint::journal::disclosure::{
     MAX_RECORD_BYTES, SESSION_CHECKPOINT_RECORD_KIND, read_report, source_registration,
@@ -77,6 +78,34 @@ impl DurableDisclosureStore {
         let mut staged_catalog = self.catalog.clone();
         self.sessions.cite_investigation_source(
             principal, alias, target, request, &mut staged_catalog, reader, now,
+        )
+    }
+
+    /// Recovers an exact historical citation receipt after a lost acknowledgement, without source.
+    ///
+    /// Use the original target/predecessor and hydration request digest. Current case visibility
+    /// and the shared journal's complete-history/append rules still apply, including its ordinary
+    /// durable clock observation. No reader, descriptor or alias is required; source availability
+    /// is not a precondition for inspecting history. A new live session in the authorized mission
+    /// can inspect the old session's receipt without regaining a source-read grant.
+    ///
+    /// A missing receipt establishes only that this exact link is not committed at the inspected
+    /// root. It does NOT prove acquisition was uncharged, authorize retry, or refund any tokens.
+    /// The result ceiling includes both the saved citation record and its entire historical case
+    /// revision. This delegates to the native investigation owner and never mutates catalog
+    /// bindings, source requirements or active/consumed continuations. Append uncertainty fences
+    /// every operation on this owner; reconcile normally before asking again.
+    pub fn inspect_source_citation(
+        &mut self,
+        principal: &PrincipalId,
+        session: &SessionId,
+        target: &SourceCitationTarget,
+        request: ContentDigest,
+        max_receipt_bytes: usize,
+        now: TimestampNs,
+    ) -> Result<SourceCitationInspection, DurableInvestigationError> {
+        self.sessions.inspect_source_citation(
+            principal, session, target, request, max_receipt_bytes, now,
         )
     }
 

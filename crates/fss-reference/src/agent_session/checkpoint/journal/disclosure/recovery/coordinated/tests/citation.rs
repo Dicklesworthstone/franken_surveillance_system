@@ -6,6 +6,8 @@ use crate::agent_session::checkpoint::journal::coordination::investigations::{
     InvestigationError, SourceCitationError, SourceCitationTarget,
 };
 
+mod inspection;
+
 fn target(revision: &InvestigationRevision) -> SourceCitationTarget {
     SourceCitationTarget {
         case_id: revision.record().investigation_id.clone(), expected: revision.digest(),
