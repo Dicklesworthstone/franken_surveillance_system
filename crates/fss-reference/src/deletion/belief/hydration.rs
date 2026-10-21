@@ -208,8 +208,8 @@ impl<'a, C: Fn() -> bool + Sync> DeletionAwareSourceReader<'a, C> {
         )
         .map_err(DurableBeliefError::from)?;
         self.custody_usage.set(Some(SourceCustodyUsage {
-            charged_read_bytes: custody.audit().charged_read_bytes,
-            io_calls: custody.audit().io_calls,
+            charged_read_bytes: custody.audit().charged_read_bytes(),
+            io_calls: custody.audit().io_calls(),
             retained_bytes: custody.retained_bytes(),
         }));
         // Another slot publishing an equal manifest cannot replace this selected record.

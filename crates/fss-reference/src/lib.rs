@@ -84,6 +84,8 @@ mod meaningful_delta;
 pub mod media_fixture;
 mod model;
 pub mod model_receipt;
+/// Owner-scoped, read-only ONVIF Media1 negotiation into the native RTSP path.
+pub mod onvif;
 pub mod optimized_executor;
 /// Exactly approved, event-linked original footage; separate from redacted metadata exports.
 pub mod original_media_export;
