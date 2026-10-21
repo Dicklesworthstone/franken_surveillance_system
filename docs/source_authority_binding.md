@@ -67,12 +67,17 @@ Copying or restoring it to a different file does not. Another authorized slot ca
 its own binding in an independently reconstructed catalog; it does not replace the binding
 in an existing catalog. This is not global denial of every alias of shared content.
 
-Catalog bindings are still authority-owned reconstruction inputs, not records restored
-from the session journal. Cold-open callers must reconstruct the correct trusted binding;
-a session checkpoint does not itself authenticate that reconstruction. Existing receipts
-or continuations are never rewritten to new artifact identities. Adding authority roots
-changes newly established deployment artifact identities; incompatible old continuation
-state must be handled through the existing explicit recovery/session lifecycle, not an
+Actual catalog bindings remain authority-owned reconstruction inputs, not source objects
+restored from the session journal. Once a v2 disclosure checkpoint commits, recovery also
+compares rebuilt bindings with the saved monotone custody commitments. Missing sources may
+remain unavailable, but later binding or cached-H3 substitution cannot erase that history.
+See [source binding recovery](source_binding_recovery.md) for the exact bounds and restart
+contract. Initial registration alone remains in memory, and legacy v1 history does not
+retroactively prove its former source bindings. Independently trusted journal roots and
+fresh native custody checks remain necessary; saved comparison hashes are not read grants.
+Existing receipts or continuations are never rewritten to new artifact identities. Adding
+authority roots changes newly established deployment artifact identities; incompatible old
+continuation state requires the existing explicit recovery/session lifecycle, not an
 implicit upgrade or replay-history reset.
 
 This boundary prevents accidental weakening by the application's reader selection. The

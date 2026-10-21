@@ -12,5 +12,6 @@ cargo +nightly-2026-08-31 test --locked --offline --no-fail-fast -p fss-object -
 cargo +nightly-2026-08-31 test --locked --offline --no-fail-fast -p fss-publication --lib --tests 2>&1 | tee "$evidence/publication.log" || status=1
 cargo +nightly-2026-08-31 test --locked --offline --no-fail-fast -p fss-reference --test activity_model_contract --test activity_replay_contract --test activity_belief_contract 2>&1 | tee "$evidence/activity.log" || status=1
 cargo +nightly-2026-08-31 test --locked --offline --no-fail-fast -p fss-reference --test deletion_belief_contract --test deletion_belief_admission_contract --test deletion_index_proof_contract --test deletion_batches_contract 2>&1 | tee "$evidence/deletion.log" || status=1
-cargo +nightly-2026-08-31 test --locked --offline --no-fail-fast -p fss-reference --test local_source_hydration_contract --test deployment_source_hydration_contract --test deployment_disclosure_contract --test source_deletion_closure_contract 2>&1 | tee "$evidence/hydration.log" || status=1
+cargo +nightly-2026-08-31 test --locked --offline --no-fail-fast -p fss-reference --test local_source_hydration_contract --test deployment_source_hydration_contract --test deployment_disclosure_contract --test source_deletion_closure_contract --test source_binding_recovery_contract 2>&1 | tee "$evidence/hydration.log" || status=1
+cargo +nightly-2026-08-31 test --locked --offline --no-fail-fast -p fss-reference --lib hydration::cursor_checkpoint 2>&1 | tee "$evidence/custody-checkpoints.log" || status=1
 exit "$status"
