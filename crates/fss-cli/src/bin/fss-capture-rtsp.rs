@@ -26,7 +26,7 @@ mod timing;
 fn main() -> ExitCode {
     let args: Vec<_> = std::env::args_os()
         .skip(1)
-        .take(reconnect::MAX_ARGUMENTS + 2)
+        .take(from_onvif::MAX_ARGUMENTS + 2)
         .collect();
     if args.first().and_then(|arg| arg.to_str()) == Some("retain-source") {
         return source_main(&args[1..]);

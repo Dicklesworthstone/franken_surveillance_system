@@ -341,6 +341,64 @@ fn lost_first_restoration_output_stops_the_next_attempt_and_retries_original_slo
 }
 
 #[test]
+fn delegated_approval_is_checked_once_under_locks_before_any_restoration() -> Test {
+    let directory = Directory::new()?;
+    let mut plan = ReconnectPlan::parse(&args(&directory, "hevc"))?;
+    for attempt in &plan.attempts {
+        fixture(attempt, true)?;
+    }
+    // Even a valid native approval cannot bypass the enclosing owner's denial.
+    let expected = approve(&mut plan)?;
+    let before_journals = [journal(&plan.attempts[0])?, journal(&plan.attempts[1])?];
+    let before_roots = [roots(&plan.attempts[0])?, roots(&plan.attempts[1])?];
+    let calls = Cell::new(0);
+    let reports = Cell::new(0);
+    assert_eq!(
+        execute_codec_validated::<HevcArchiveCodec>(
+            &plan,
+            TIMEOUT,
+            |_| {
+                reports.set(reports.get() + 1);
+                Ok(())
+            },
+            &NeverCancel,
+            &|observed| {
+                calls.set(calls.get() + 1);
+                assert_eq!(observed, expected);
+                for attempt in &plan.attempts {
+                    assert!(matches!(
+                        HevcArchivePinJournal::open_complete(
+                            &attempt.pins,
+                            attempt.pin_scope(),
+                            None,
+                            attempt.pin_limits(),
+                            &NeverCancel,
+                        ),
+                        Err(ArchivePinError::Busy)
+                    ));
+                }
+                Err("ERR-CAPTURE-ONVIF-APPROVAL-001")
+            },
+        ),
+        Err("ERR-CAPTURE-ONVIF-APPROVAL-001")
+    );
+    assert_eq!(calls.get(), 1);
+    assert_eq!(reports.get(), 0);
+    assert_eq!(
+        before_journals,
+        [journal(&plan.attempts[0])?, journal(&plan.attempts[1])?]
+    );
+    assert_eq!(
+        before_roots,
+        [roots(&plan.attempts[0])?, roots(&plan.attempts[1])?]
+    );
+    for attempt in &plan.attempts {
+        assert!(!window_present(attempt)?);
+    }
+    Ok(())
+}
+
+#[test]
 fn all_journal_and_selected_archive_locks_remain_owned_through_preflight() -> Test {
     let directory = Directory::new()?;
     let mut plan = ReconnectPlan::parse(&args(&directory, "hevc"))?;

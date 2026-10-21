@@ -4,6 +4,7 @@
 
 use std::collections::BTreeMap;
 use std::ffi::OsString;
+use std::path::Path;
 use std::time::Duration;
 
 use fss_cli::agent_json::{object, string};
@@ -498,18 +499,36 @@ impl ReconnectPlan {
     }
 
     pub(super) fn preview(&self) -> Result<String, &'static str> {
+        self.prepared_preview(false).map(|(_, report)| report)
+    }
+
+    /// A protected metadata owner must redact even query-free private URIs in every
+    /// possible attempt. The returned digest belongs to this exact capture or the
+    /// freshly observed recovery/index plan, never to a parsed rendering.
+    pub(super) fn private_prepared_preview(&self) -> Result<(ContentDigest, String), &'static str> {
+        self.prepared_preview(true)
+    }
+
+    fn prepared_preview(&self, private: bool) -> Result<(ContentDigest, String), &'static str> {
         if let Some(timeout) = self.recovery_timeout_ns {
-            return recovery::preview(self, timeout);
+            return recovery::prepared_preview(self, timeout);
         }
+        let approval = self.digest()?;
         let children = self
             .attempts
             .iter()
-            .map(Options::preview)
+            .map(|attempt| {
+                if private {
+                    attempt.private_uri_preview()
+                } else {
+                    attempt.preview()
+                }
+            })
             .collect::<Result<Vec<_>, _>>()?;
         let mut fields = vec![
             ("schema", string(FORMAT)),
             ("phase", string("planned")),
-            ("approval", string(&self.digest()?.to_text())),
+            ("approval", string(&approval.to_text())),
             ("policy", string(self.policy())),
             ("max_attempts", self.attempts.len().to_string()),
             ("retry_delay_ms", self.retry_delay_ms.to_string()),
@@ -585,7 +604,47 @@ impl ReconnectPlan {
                 string("all_planned_attempts_settled_successfully"),
             ));
         }
-        Ok(object(&fields))
+        Ok((approval, object(&fields)))
+    }
+
+    /// Exact derived destinations, including all optional source stores. Enclosing
+    /// private input owners use these before any recovery read or capture mutation.
+    pub(super) fn output_paths(&self) -> Result<Vec<&Path>, &'static str> {
+        let mut paths = Vec::with_capacity(self.attempts.len() * 3);
+        for (index, attempt) in self.attempts.iter().enumerate() {
+            paths.push(attempt.root.as_path());
+            paths.push(attempt.pins.as_path());
+            if let Some(sources) = &self.sources {
+                paths.push(sources.get(index)?.root.as_path());
+            }
+        }
+        Ok(paths)
+    }
+
+    pub(super) fn operation_kind(&self) -> &'static str {
+        if self.recovery_timeout_ns.is_none() {
+            "capture"
+        } else if self.index_catalogs {
+            "index"
+        } else {
+            "recover"
+        }
+    }
+
+    /// Validate a containing plan at this owner's exact approval gate. Recovery
+    /// passes its locked observed digest to the callback in its sole execution
+    /// scan, preserving the original operation clock and cumulative work budgets.
+    pub(super) fn execute_validated(
+        &mut self,
+        validate_approval: &impl Fn(ContentDigest) -> Result<(), &'static str>,
+    ) -> Result<(), &'static str> {
+        if let Some(timeout) = self.recovery_timeout_ns {
+            return recovery::execute_validated(self, timeout, validate_approval);
+        }
+        let approval = self.digest()?;
+        validate_approval(approval)?;
+        self.approve = Some(approval);
+        execute(self)
     }
 
     pub(super) fn approved(&self) -> bool {

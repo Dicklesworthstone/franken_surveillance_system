@@ -5,6 +5,9 @@ use super::*;
 use std::collections::{BTreeMap, BTreeSet};
 use std::os::unix::fs::PermissionsExt;
 
+#[path = "onvif/reconnect.rs"]
+mod reconnect;
+
 const PROFILE: &str = "ONVIF_PRIVATE_PROFILE_CANARY";
 const QUERY: &str = "ONVIF_PRIVATE_URI_CANARY";
 const USER: &str = "ONVIF_SYNTHETIC_USER_CANARY";
@@ -14,7 +17,7 @@ const NONCE: &str = "ONVIF_SYNTHETIC_NONCE_CANARY";
 
 fn envelope(body: &str) -> String {
     format!(
-        "<s:Envelope xmlns:s=\"http://www.w3.org/2003/05/soap-envelope\" xmlns:d=\"http://www.onvif.org/ver10/device/wsdl\" xmlns:m=\"http://www.onvif.org/ver10/media/wsdl\" xmlns:t=\"http://www.onvif.org/ver10/schema\"><s:Body>{body}</s:Body></s:Envelope>"
+        "<s:Envelope xmlns:s=\"http://www.w3.org/2003/05/soap-envelope\" xmlns:d=\"http://www.onvif.org/ver10/device/wsdl\" xmlns:m=\"http://www.onvif.org/ver10/media/wsdl\" xmlns:m2=\"http://www.onvif.org/ver20/media/wsdl\" xmlns:t=\"http://www.onvif.org/ver10/schema\"><s:Body>{body}</s:Body></s:Envelope>"
     )
 }
 fn accept(listener: &TcpListener) -> Test<TcpStream> {
@@ -128,6 +131,24 @@ fn soap_server(
     selection: bool,
     hostile_media: bool,
 ) -> Test<usize> {
+    soap_server_with_media(
+        listener,
+        rtsp,
+        authenticated,
+        selection,
+        hostile_media,
+        false,
+    )
+}
+
+fn soap_server_with_media(
+    listener: TcpListener,
+    rtsp: SocketAddr,
+    authenticated: bool,
+    selection: bool,
+    hostile_media: bool,
+    media2: bool,
+) -> Test<usize> {
     let http = listener.local_addr()?;
     let mut nonces = BTreeSet::new();
     let count = if hostile_media {
@@ -163,27 +184,49 @@ fn soap_server(
         }
         let body = match operation {
             0 => {
-                assert!(request.body.contains("GetCapabilities"));
                 let endpoint = if hostile_media {
                     format!("http://{rtsp}/onvif/media_service")
                 } else {
                     format!("http://{http}/onvif/media_service")
                 };
-                envelope(&format!(
-                    "<d:GetCapabilitiesResponse><d:Capabilities><t:Media><t:XAddr>{endpoint}</t:XAddr><t:StreamingCapabilities><t:RTP_RTSP_TCP>true</t:RTP_RTSP_TCP></t:StreamingCapabilities></t:Media></d:Capabilities></d:GetCapabilitiesResponse>"
-                ))
+                if media2 {
+                    assert!(request.body.contains("GetServices"));
+                    assert!(request.body.contains(">false<"));
+                    envelope(&format!(
+                        "<d:GetServicesResponse><d:Service><d:Namespace>http://www.onvif.org/ver20/media/wsdl</d:Namespace><d:XAddr>{endpoint}</d:XAddr><d:Version><t:Major>2</t:Major><t:Minor>0</t:Minor></d:Version></d:Service></d:GetServicesResponse>"
+                    ))
+                } else {
+                    assert!(request.body.contains("GetCapabilities"));
+                    envelope(&format!(
+                        "<d:GetCapabilitiesResponse><d:Capabilities><t:Media><t:XAddr>{endpoint}</t:XAddr><t:StreamingCapabilities><t:RTP_RTSP_TCP>true</t:RTP_RTSP_TCP></t:StreamingCapabilities></t:Media></d:Capabilities></d:GetCapabilitiesResponse>"
+                    ))
+                }
             }
             1 => {
                 assert!(request.body.contains("GetProfiles"));
-                envelope(&format!(
-                    "<m:GetProfilesResponse><m:Profiles token=\"{PROFILE}\"><t:Name>Private camera name</t:Name><t:VideoEncoderConfiguration><t:Encoding>H264</t:Encoding><t:Resolution><t:Width>160</t:Width><t:Height>120</t:Height></t:Resolution></t:VideoEncoderConfiguration></m:Profiles><m:Profiles token=\"audio_only\"><t:Name>Audio disabled</t:Name></m:Profiles></m:GetProfilesResponse>"
-                ))
+                if media2 {
+                    assert!(request.body.contains(">VideoEncoder<"));
+                    envelope(&format!(
+                        "<m2:GetProfilesResponse><m2:Profiles token=\"{PROFILE}\"><m2:Name>Private camera name</m2:Name><m2:Configurations><m2:VideoEncoder token=\"video\"><t:Name>Encoder</t:Name><t:UseCount>1</t:UseCount><t:Encoding>H265</t:Encoding><t:Resolution><t:Width>64</t:Width><t:Height>48</t:Height></t:Resolution></m2:VideoEncoder></m2:Configurations></m2:Profiles><m2:Profiles token=\"audio_only\"><m2:Name>Audio disabled</m2:Name></m2:Profiles></m2:GetProfilesResponse>"
+                    ))
+                } else {
+                    envelope(&format!(
+                        "<m:GetProfilesResponse><m:Profiles token=\"{PROFILE}\"><t:Name>Private camera name</t:Name><t:VideoEncoderConfiguration><t:Encoding>H264</t:Encoding><t:Resolution><t:Width>160</t:Width><t:Height>120</t:Height></t:Resolution></t:VideoEncoderConfiguration></m:Profiles><m:Profiles token=\"audio_only\"><t:Name>Audio disabled</t:Name></m:Profiles></m:GetProfilesResponse>"
+                    ))
+                }
             }
             _ => {
                 assert!(request.body.contains("GetStreamUri") && request.body.contains(PROFILE));
-                envelope(&format!(
-                    "<m:GetStreamUriResponse><m:MediaUri><t:Uri>rtsp://{rtsp}/live/?channel=1&amp;selection={QUERY}%2B</t:Uri><t:InvalidAfterConnect>false</t:InvalidAfterConnect><t:InvalidAfterReboot>false</t:InvalidAfterReboot><t:Timeout>P0DT0H0M0S</t:Timeout></m:MediaUri></m:GetStreamUriResponse>"
-                ))
+                if media2 {
+                    assert!(request.body.contains(">RTSP<"));
+                    envelope(&format!(
+                        "<m2:GetStreamUriResponse><m2:Uri>rtsp://{rtsp}/live/?channel=1&amp;selection={QUERY}%2B</m2:Uri></m2:GetStreamUriResponse>"
+                    ))
+                } else {
+                    envelope(&format!(
+                        "<m:GetStreamUriResponse><m:MediaUri><t:Uri>rtsp://{rtsp}/live/?channel=1&amp;selection={QUERY}%2B</t:Uri><t:InvalidAfterConnect>false</t:InvalidAfterConnect><t:InvalidAfterReboot>false</t:InvalidAfterReboot><t:Timeout>P0DT0H0M0S</t:Timeout></m:MediaUri></m:GetStreamUriResponse>"
+                    ))
+                }
             }
         };
         soap_reply(&mut peer, &body)?;
@@ -635,4 +678,155 @@ fn onvif_digest_selected_query_uri_captures_and_cold_decodes_with_owner_pins() -
     assert!(boolean(terminal, "complete")?);
     assert_eq!(integer(terminal, "durable_pictures")?, 2);
     import_and_decode(&directory, &rows, 2)
+}
+
+#[test]
+fn onvif_media_version_is_explicit_and_bound_before_any_device_or_file_effect() -> Test {
+    let directory = Directory::new("onvif-media-version")?;
+    let http = listener()?;
+    let base = onvif_args(&directory, http.local_addr()?, None, false)?;
+    let legacy = parse(&good(run("onvif", &base)?)?)?;
+    let mut media1 = base.clone();
+    media1.extend(["--media-version".into(), "media1".into()]);
+    let explicit = parse(&good(run("onvif", &media1)?)?)?;
+    assert_eq!(text(&legacy, "approval")?, text(&explicit, "approval")?);
+    let mut media2 = base;
+    media2.extend(["--media-version".into(), "media2".into()]);
+    let next = parse(&good(run("onvif", &media2)?)?)?;
+    assert_ne!(text(&legacy, "approval")?, text(&next, "approval")?);
+    media2.extend(["--approve".into(), text(&legacy, "approval")?.into()]);
+    let refused = run("onvif", &media2)?;
+    assert!(!refused.status.success());
+    secret_free(&refused);
+    no_connection(&http)?;
+    assert!(!directory.0.join("onvif.json").exists());
+    Ok(())
+}
+
+fn media2_handoff(directory: &Directory, rtsp: SocketAddr, authenticated: bool) -> Test<String> {
+    let http = listener()?;
+    let mut options = onvif_args(directory, http.local_addr()?, Some(rtsp), authenticated)?;
+    options.extend(["--media-version".into(), "media2".into()]);
+    let options = approved_onvif(&options)?;
+    let output = thread::scope(|scope| -> Test<Output> {
+        let server = scope
+            .spawn(move || soap_server_with_media(http, rtsp, authenticated, true, false, true));
+        let output = run("onvif", &options)?;
+        assert_eq!(
+            server
+                .join()
+                .map_err(|_| "Media2 SOAP fixture panicked")??,
+            if authenticated { 6 } else { 3 }
+        );
+        Ok(output)
+    })?;
+    secret_free(&output);
+    let result = parse(&good(output)?)?;
+    assert!(boolean(&result, "handoff_ready")?);
+    let path = directory.0.join("onvif.json");
+    assert_eq!(fs::metadata(&path)?.permissions().mode() & 0o777, 0o600);
+    let bytes = fs::read(path)?;
+    let handoff = parse(std::str::from_utf8(&bytes)?)?;
+    assert_eq!(text(&handoff, "schema")?, "fss.onvif_rtsp_handoff.v2");
+    assert_eq!(text(&handoff, "codec")?, "hevc");
+    assert_eq!(text(&handoff, "media_version")?, "media2");
+    assert_eq!(
+        text(value(&handoff, "uri_validity")?, "basis")?,
+        "media2_indefinite_contract"
+    );
+    for key in ["invalid_after_connect", "invalid_after_reboot", "timeout"] {
+        assert!(!handoff.object().ok_or("handoff object")?.contains_key(key));
+    }
+    assert_eq!(
+        ContentDigest::sha256(&bytes).to_text(),
+        text(&result, "output_digest")?
+    );
+    Ok(text(&result, "output_digest")?.to_owned())
+}
+
+fn hevc_capture_arguments(
+    directory: &Directory,
+    peer: SocketAddr,
+    handoff: &str,
+) -> Test<Vec<OsString>> {
+    let mut args = capture_arguments(directory, peer, handoff);
+    replace(&mut args, "--frame-duration-ticks", "18000")?;
+    replace(
+        &mut args,
+        "--timing-evidence",
+        &digest("owner asserted fixed 5fps HEVC cadence"),
+    )?;
+    args.extend(["--payload-type".into(), "98".into()]);
+    Ok(args)
+}
+
+#[test]
+fn onvif_media2_digest_h265_handoff_records_and_cold_decodes_native_hevc() -> Test {
+    let directory = Directory::new("onvif-media2-hevc")?;
+    let rtsp = listener()?;
+    let address = rtsp.local_addr()?;
+    let digest = media2_handoff(&directory, address, true)?;
+    no_connection(&rtsp)?;
+    let mut options = hevc_capture_arguments(&directory, address, &digest)?;
+    let preview = run("capture", &options)?;
+    secret_free(&preview);
+    let plan = parse(&good(preview)?)?;
+    let native = value(&plan, "native_capture")?;
+    assert_eq!(text(native, "codec")?, "hevc");
+    assert_eq!(text(native, "presentation_uri")?, "[redacted]");
+    no_connection(&rtsp)?;
+    assert!(!directory.root().exists() && !directory.pins().exists());
+    options.extend(["--approve".into(), text(&plan, "approval")?.into()]);
+    let output = super::hevc::capture_onvif_and_cold_decode(&directory, rtsp, &options)?;
+    secret_free(&output);
+    Ok(())
+}
+
+#[test]
+fn onvif_media2_advertisement_cannot_override_the_selected_sdp_codec() -> Test {
+    let directory = Directory::new("onvif-media2-wrong-sdp")?;
+    let rtsp = listener()?;
+    let address = rtsp.local_addr()?;
+    let digest = media2_handoff(&directory, address, false)?;
+    let mut options = hevc_capture_arguments(&directory, address, &digest)?;
+    let preview = parse(&good(run("capture", &options)?)?)?;
+    options.extend(["--approve".into(), text(&preview, "approval")?.into()]);
+    let output = thread::scope(|scope| -> Test<Output> {
+        let server = scope.spawn(move || -> Test {
+            let mut peer = accept(&rtsp)?;
+            let (method, uri, cseq) = exact_rtsp_request(&mut peer)?.ok_or("missing DESCRIBE")?;
+            assert_eq!(method, "DESCRIBE");
+            assert_eq!(
+                uri,
+                format!("rtsp://{address}/live/?channel=1&selection={QUERY}%2B")
+            );
+            let wrong_codec = SDP.replace("96", "98");
+            response(
+                &mut peer,
+                cseq,
+                "Content-Type: application/sdp\r\n",
+                &wrong_codec,
+            )?;
+            assert!(
+                exact_rtsp_request(&mut peer)?.is_none(),
+                "codec mismatch acquired a SETUP session"
+            );
+            Ok(())
+        });
+        let output = run("capture", &options)?;
+        server
+            .join()
+            .map_err(|_| "codec refusal fixture panicked")??;
+        Ok(output)
+    })?;
+    secret_free(&output);
+    assert!(!output.status.success());
+    let rows = rows(&output)?;
+    assert_eq!(integer(detail(&rows, "terminal")?, "durable_pictures")?, 0);
+    assert!(
+        !rows
+            .iter()
+            .any(|row| text(row, "kind").ok() == Some("window_durable"))
+    );
+    Ok(())
 }

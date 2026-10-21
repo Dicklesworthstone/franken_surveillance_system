@@ -522,7 +522,10 @@ fn observation<C: ArchiveCodec>(entry: &Entry<C>) -> &'static str {
     }
 }
 
-fn preview_codec<C: ArchiveCodec>(plan: &impl RecoveryPlan, timeout: u64) -> Result<String> {
+fn preview_codec<C: ArchiveCodec>(
+    plan: &impl RecoveryPlan,
+    timeout: u64,
+) -> Result<(ContentDigest, String)> {
     let clock = Clock {
         start: Instant::now(),
         timeout,
@@ -590,12 +593,21 @@ fn preview_codec<C: ArchiveCodec>(plan: &impl RecoveryPlan, timeout: u64) -> Res
     if report.len() > REPORT_LIMIT {
         return Err(OUTPUT);
     }
-    Ok(report)
+    Ok((approval, report))
 }
 
 pub(crate) fn preview(plan: &impl RecoveryPlan, timeout: u64) -> Result<String> {
-    let report = if plan.index_catalogs() {
-        indexing::preview_index(plan, timeout)?
+    prepared_preview(plan, timeout).map(|(_, report)| report)
+}
+
+/// Keep the exact observed approval typed for a narrower enclosing owner. Execution
+/// still reacquires the original stores and revalidates this digest before mutation.
+pub(crate) fn prepared_preview(
+    plan: &impl RecoveryPlan,
+    timeout: u64,
+) -> Result<(ContentDigest, String)> {
+    let (approval, report) = if plan.index_catalogs() {
+        indexing::prepared_preview_index(plan, timeout)?
     } else {
         match plan.attempts().first().ok_or(STATE)?.codec() {
             "avc" => preview_codec::<AvcArchiveCodec>(plan, timeout)?,
@@ -610,7 +622,7 @@ pub(crate) fn preview(plan: &impl RecoveryPlan, timeout: u64) -> Result<String> 
     if report.len() > REPORT_LIMIT {
         return Err(OUTPUT);
     }
-    Ok(report)
+    Ok((approval, report))
 }
 
 struct Reports<F> {
@@ -832,6 +844,22 @@ fn execute_codec<C: ArchiveCodec>(
     emit: impl FnMut(&[u8]) -> Result<()>,
     cancellation: &dyn PublishCancellation,
 ) -> Result<()> {
+    execute_codec_validated::<C>(plan, timeout, emit, cancellation, &|approval| {
+        if plan.recovery_approval() == Some(approval) {
+            Ok(())
+        } else {
+            Err(APPROVAL)
+        }
+    })
+}
+
+fn execute_codec_validated<C: ArchiveCodec>(
+    plan: &impl RecoveryPlan,
+    timeout: u64,
+    emit: impl FnMut(&[u8]) -> Result<()>,
+    cancellation: &dyn PublishCancellation,
+    validate_approval: &impl Fn(ContentDigest) -> Result<()>,
+) -> Result<()> {
     let mut clock = Clock {
         start: Instant::now(),
         timeout,
@@ -840,9 +868,11 @@ fn execute_codec<C: ArchiveCodec>(
     };
     let mut entries = load::<C>(plan, &clock)?;
     let approval = digest(plan, &entries, timeout)?;
-    if plan.recovery_approval() != Some(approval) {
-        return Err(APPROVAL);
-    }
+    // One execution owns these exact locked observations. An enclosing protected
+    // input plan can bind the digest here without a second source scan, fresh work
+    // allowance or restarted recovery clock. No mutation precedes approval.
+    validate_approval(approval)?;
+    clock.now()?;
     let first = plan.attempts().first().ok_or(STATE)?;
     clock.authority = Some(
         ContextAuthority::new_root(RootAuthoritySpec {
@@ -909,6 +939,36 @@ pub(crate) fn execute(plan: &impl RecoveryPlan, timeout: u64) -> Result<()> {
         "hevc" => {
             execute_codec::<HevcArchiveCodec>(plan, timeout, crate::write_bounded, &NeverCancel)
         }
+        _ => Err(STATE),
+    }
+}
+
+/// Compose an exact enclosing approval at the existing observed-state gate. The
+/// callback runs once while all loaded owners remain held, within the original
+/// recovery deadline and before any source preflight or publication mutation.
+pub(crate) fn execute_validated(
+    plan: &impl RecoveryPlan,
+    timeout: u64,
+    validate_approval: &impl Fn(ContentDigest) -> Result<()>,
+) -> Result<()> {
+    if plan.index_catalogs() {
+        return indexing::execute_index_validated(plan, timeout, validate_approval);
+    }
+    match plan.attempts().first().ok_or(STATE)?.codec() {
+        "avc" => execute_codec_validated::<AvcArchiveCodec>(
+            plan,
+            timeout,
+            crate::write_bounded,
+            &NeverCancel,
+            validate_approval,
+        ),
+        "hevc" => execute_codec_validated::<HevcArchiveCodec>(
+            plan,
+            timeout,
+            crate::write_bounded,
+            &NeverCancel,
+            validate_approval,
+        ),
         _ => Err(STATE),
     }
 }

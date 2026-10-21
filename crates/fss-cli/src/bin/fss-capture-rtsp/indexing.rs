@@ -174,7 +174,10 @@ fn quote_json(quote: Option<&Quote>) -> String {
     )
 }
 
-fn preview_codec<C: ArchiveCodec>(plan: &impl RecoveryPlan, timeout: u64) -> Result<String> {
+fn preview_codec<C: ArchiveCodec>(
+    plan: &impl RecoveryPlan,
+    timeout: u64,
+) -> Result<(ContentDigest, String)> {
     let clock = Clock {
         start: Instant::now(),
         timeout,
@@ -228,10 +231,13 @@ fn preview_codec<C: ArchiveCodec>(plan: &impl RecoveryPlan, timeout: u64) -> Res
     if report.len() > REPORT_LIMIT {
         return Err(OUTPUT);
     }
-    Ok(report)
+    Ok((approval, report))
 }
 
-pub(super) fn preview_index(plan: &impl RecoveryPlan, timeout: u64) -> Result<String> {
+pub(super) fn prepared_preview_index(
+    plan: &impl RecoveryPlan,
+    timeout: u64,
+) -> Result<(ContentDigest, String)> {
     match plan.attempts().first().ok_or(STATE)?.codec() {
         "avc" => preview_codec::<AvcArchiveCodec>(plan, timeout),
         "hevc" => preview_codec::<HevcArchiveCodec>(plan, timeout),
@@ -264,6 +270,22 @@ pub(super) fn execute_codec<C: ArchiveCodec>(
     emit: impl FnMut(&[u8]) -> Result<()>,
     cancellation: &dyn PublishCancellation,
 ) -> Result<()> {
+    execute_codec_validated::<C>(plan, timeout, emit, cancellation, &|approval| {
+        if plan.recovery_approval() == Some(approval) {
+            Ok(())
+        } else {
+            Err(APPROVAL)
+        }
+    })
+}
+
+fn execute_codec_validated<C: ArchiveCodec>(
+    plan: &impl RecoveryPlan,
+    timeout: u64,
+    emit: impl FnMut(&[u8]) -> Result<()>,
+    cancellation: &dyn PublishCancellation,
+    validate_approval: &impl Fn(ContentDigest) -> Result<()>,
+) -> Result<()> {
     let mut clock = Clock {
         start: Instant::now(),
         timeout,
@@ -275,9 +297,10 @@ pub(super) fn execute_codec<C: ArchiveCodec>(
     // and settled pins are verified before accepting any publication approval.
     let quotes = inventory(plan, &mut entries, &clock)?;
     let approval = index_digest(plan, &entries, &quotes, timeout)?;
-    if plan.recovery_approval() != Some(approval) {
-        return Err(APPROVAL);
-    }
+    // An enclosing owner validates against the same locked inventory, without
+    // resetting the whole-operation clock or any cumulative source work budget.
+    validate_approval(approval)?;
+    clock.now()?;
     let first = plan.attempts().first().ok_or(STATE)?;
     clock.authority = Some(
         ContextAuthority::new_root(RootAuthoritySpec {
@@ -516,6 +539,30 @@ pub(super) fn execute_index(plan: &impl RecoveryPlan, timeout: u64) -> Result<()
         "hevc" => {
             execute_codec::<HevcArchiveCodec>(plan, timeout, crate::write_bounded, &NeverCancel)
         }
+        _ => Err(STATE),
+    }
+}
+
+pub(super) fn execute_index_validated(
+    plan: &impl RecoveryPlan,
+    timeout: u64,
+    validate_approval: &impl Fn(ContentDigest) -> Result<()>,
+) -> Result<()> {
+    match plan.attempts().first().ok_or(STATE)?.codec() {
+        "avc" => execute_codec_validated::<AvcArchiveCodec>(
+            plan,
+            timeout,
+            crate::write_bounded,
+            &NeverCancel,
+            validate_approval,
+        ),
+        "hevc" => execute_codec_validated::<HevcArchiveCodec>(
+            plan,
+            timeout,
+            crate::write_bounded,
+            &NeverCancel,
+            validate_approval,
+        ),
         _ => Err(STATE),
     }
 }

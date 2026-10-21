@@ -181,6 +181,64 @@ fn run(plan: &ReconnectPlan) -> Test<String> {
     Ok(String::from_utf8(rows)?)
 }
 #[test]
+fn delegated_index_approval_is_checked_once_before_catalog_or_pin_mutation() -> Test {
+    let directory = Directory::new()?;
+    let mut plan = plan(&directory)?;
+    for attempt in &plan.attempts {
+        fixture(attempt, true)?;
+    }
+    let expected = approve(&mut plan)?;
+    let before = [journal(&plan.attempts[0])?, journal(&plan.attempts[1])?];
+    let calls = Cell::new(0);
+    let reports = Cell::new(0);
+    assert_eq!(
+        execute_codec_validated::<HevcArchiveCodec>(
+            &plan,
+            TIMEOUT,
+            |_| {
+                reports.set(reports.get() + 1);
+                Ok(())
+            },
+            &NeverCancel,
+            &|observed| {
+                calls.set(calls.get() + 1);
+                assert_eq!(observed, expected);
+                for attempt in &plan.attempts {
+                    assert!(
+                        LocalRootPublisher::open(&attempt.root, attempt.publication_limits())
+                            .is_err()
+                    );
+                    assert!(matches!(
+                        HevcArchivePinJournal::open_complete(
+                            &attempt.pins,
+                            attempt.pin_scope(),
+                            None,
+                            attempt.pin_limits(),
+                            &NeverCancel,
+                        ),
+                        Err(ArchivePinError::Busy)
+                    ));
+                }
+                Err("ERR-CAPTURE-ONVIF-APPROVAL-001")
+            },
+        ),
+        Err("ERR-CAPTURE-ONVIF-APPROVAL-001")
+    );
+    assert_eq!(calls.get(), 1);
+    assert_eq!(reports.get(), 0);
+    assert_eq!(
+        before,
+        [journal(&plan.attempts[0])?, journal(&plan.attempts[1])?]
+    );
+    for attempt in &plan.attempts {
+        let snapshot = snapshot(attempt)?;
+        assert_eq!(snapshot.windows().len(), 1);
+        assert!(snapshot.pages().is_empty());
+    }
+    Ok(())
+}
+
+#[test]
 fn recovered_epochs_gain_importable_catalogs_and_repeated_indexing_is_read_only() -> Test {
     let directory = Directory::new()?;
     let mut plan = plan(&directory)?;

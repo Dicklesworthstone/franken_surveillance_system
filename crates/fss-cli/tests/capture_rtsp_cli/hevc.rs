@@ -719,6 +719,50 @@ fn requested_stop(explicit: bool) -> Test {
     import_and_cold_decode(&directory, &rows, 2, false)
 }
 
+/// Reuse the same real source and independent custody/decode checks for ONVIF onboarding.
+#[cfg(target_os = "linux")]
+pub(super) fn capture_onvif_and_cold_decode(
+    directory: &Directory,
+    listener: TcpListener,
+    args: &[OsString],
+) -> Test<Output> {
+    let (output, transcript) = captured(listener, args, camera(StreamCase::Target)?)?;
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    assert_eq!(&transcript.methods[..3], ["DESCRIBE", "SETUP", "PLAY"]);
+    assert!(!transcript.source_eof);
+    let rows = rows(&output)?;
+    stopped(&rows, 2, 1)?;
+    let windows = load_windows(directory, &rows)?;
+    assert_eq!(windows.len(), 1);
+    assert_eq!(windows[0].summary().decode_interval, 0..36_000);
+    exact_source(&windows[0], &transcript.packets)?;
+    import_and_cold_decode(directory, &rows, 2, false)?;
+    Ok(output)
+}
+
+/// Leave the attempt's archive in place for separately approved original-source recovery.
+#[cfg(target_os = "linux")]
+pub(super) fn capture_onvif_retained_source(
+    listener: TcpListener,
+    args: &[OsString],
+) -> Test<Output> {
+    let (output, transcript) = captured(listener, args, camera(StreamCase::Target)?)?;
+    assert!(
+        output.status.success(),
+        "stdout={} stderr={}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    );
+    assert_eq!(&transcript.methods[..3], ["DESCRIBE", "SETUP", "PLAY"]);
+    assert!(!transcript.source_eof);
+    assert_eq!(transcript.packets.len(), 6);
+    Ok(output)
+}
+
 #[test]
 fn two_hevc_windows_share_only_the_real_source_witness_and_import_as_one_catalog() -> Test {
     let directory = Directory::new("hevc-catalog")?;
