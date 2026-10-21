@@ -23,6 +23,9 @@ pub mod evolution;
 pub(super) mod journal;
 
 pub use journal::DurableInvestigationError;
+pub use journal::source_citation::{
+    SourceAcquisition, SourceCitationError, SourceCitationReceipt, SourceCitationTarget,
+};
 
 /// Registered cognition-write grant. It is never an effect grant.
 pub const CAPABILITY_INVESTIGATE: &str = "CAP-AGENT-INVESTIGATE-001";

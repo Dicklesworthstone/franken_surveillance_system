@@ -4,6 +4,11 @@
 use super::*;
 
 impl CursorCheckpoint {
+    /// Query validated checkpoint metadata, not a possibly uncommitted live catalog binding.
+    pub(crate) fn requires_source(&self, descriptor: ContentDigest, binding: ContentDigest) -> bool {
+        self.source_requirements.get(&descriptor) == Some(&binding)
+    }
+
     fn with_registered_source(
         prior: Option<&Self>,
         descriptor: ContentDigest,
@@ -75,6 +80,9 @@ mod tests {
     fn first_registration_and_exact_retry_have_no_cursor_effects() -> Value {
         let prior = checkpoint()?;
         prior.validate_source_registration(None, digest(b"descriptor"), digest(b"binding"))?;
+        assert!(prior.requires_source(digest(b"descriptor"), digest(b"binding")));
+        assert!(!prior.requires_source(digest(b"descriptor"), digest(b"other")));
+        assert!(!prior.requires_source(digest(b"absent"), digest(b"binding")));
         let encoded = CursorCheckpoint::register_source(
             Some(&prior), digest(b"descriptor"), digest(b"binding"), TimestampNs(11), 4096,
         )?;

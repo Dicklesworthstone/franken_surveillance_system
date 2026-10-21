@@ -18,6 +18,8 @@ use crate::agent_session::checkpoint::journal::coordination::investigations::{
 };
 use crate::agent_session::work_claims::WorkClaimRevision;
 
+mod source_citation;
+
 impl DurableDisclosureStore {
     /// Opens an existing coordinated journal and restores its disclosure replay protection.
     ///

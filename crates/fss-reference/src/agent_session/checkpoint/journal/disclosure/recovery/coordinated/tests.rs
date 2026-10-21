@@ -25,6 +25,8 @@ use fss_core::{
 use fss_ledger::AppendPhase;
 use fss_object::{InMemoryObjectStore, ObjectLimits, ObjectManifest};
 
+mod citation;
+
 type Value<T = ()> = Result<T, Box<dyn std::error::Error>>;
 const SOURCE: &[u8] = b"synthetic original; never a session or claim journal payload";
 
