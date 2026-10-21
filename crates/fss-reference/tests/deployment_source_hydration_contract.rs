@@ -4,6 +4,9 @@
 
 mod file_import_fault_support;
 
+#[path = "deployment_source_hydration/authority.rs"]
+mod authority;
+
 use std::collections::{BTreeMap, BTreeSet};
 use std::fs;
 use std::path::{Path, PathBuf};
@@ -161,7 +164,7 @@ fn tree(root: &Path) -> Value<BTreeMap<PathBuf, ContentDigest>> {
 
 fn no_io(io: &FaultInjectingSpoolIo) {
     for call in SpoolIoCall::ALL {
-        assert_eq!(io.calls(*call), 0, "unexpected {call}");
+        assert_eq!(io.calls(call), 0, "unexpected {call}");
     }
 }
 
@@ -191,7 +194,7 @@ fn cold_deployment_disclosure_retains_ordinary_receipts_without_source_caching_o
     assert!(usage.retained_bytes > SOURCE.len() as u64);
     assert_eq!(catalog.stored_payload_bytes(), cached);
     for call in SpoolIoCall::ALL {
-        if call.is_mutating() { assert_eq!(io.calls(*call), 0, "unexpected {call}"); }
+        if call.is_mutating() { assert_eq!(io.calls(call), 0, "unexpected {call}"); }
     }
     assert_eq!(tree(&root)?, before);
     Ok(())
@@ -349,11 +352,21 @@ fn another_slot_with_the_same_root_cannot_replace_the_exact_selected_record() ->
     );
     assert!(catalog.hydrate_from_deployment_source(&request(&handle)?, &reader, TimestampNs(20)).is_err());
     assert!(!path.exists());
-    // The remaining alias has its own current ledger authority and exact native record.
+    // Equal root bytes under another authorized slot do not retarget the existing binding.
     let reader = DeletionAwareSourceReader::new(
         &f.deployment, &HostSpoolIo, &alias, &handle.anchor, DeploymentSourceLimits::default(), &|| false,
     );
-    let response = catalog.hydrate_from_deployment_source(&request(&handle)?, &reader, TimestampNs(20))?;
+    assert!(matches!(catalog.hydrate_from_deployment_source(&request(&handle)?, &reader, TimestampNs(20)),
+        Err(SourceHydrationError::SourceMismatch)));
+    assert!(!reader.attempted());
+    // Its independent authority may instead establish a separate catalog binding explicitly.
+    let mut alias_catalog = ReferenceHydrationCatalog::new();
+    alias_catalog.register_descriptor(handle.clone())?;
+    alias_catalog.bind_deployment_source_object(&handle.handle_id, handle.descriptor_digest, &reader)?;
+    let reader = DeletionAwareSourceReader::new(
+        &f.deployment, &HostSpoolIo, &alias, &handle.anchor, DeploymentSourceLimits::default(), &|| false,
+    );
+    let response = alias_catalog.hydrate_from_deployment_source(&request(&handle)?, &reader, TimestampNs(20))?;
     assert_eq!(response.artifact.ok_or("no alias source")?.payload, SOURCE);
     Ok(())
 }
@@ -393,12 +406,26 @@ fn pending_deletion(cold: bool) -> Value {
     let retained = FileIngestAdapter::ingest(
         import_request(&input, frame.len() as u64, 8)?, &context, &mut deployment,
     )?;
-    let victim_root = retained.import_root;
-    let victim = deployment.publisher().visible_roots().find(|entry| entry.root == victim_root)
-        .ok_or("no import slot")?.slot.clone();
+    let subject = ContentDigest::sha256(&frame);
+    // Partitioned imports keep payload custody in independently published parts. The aggregate
+    // root contains only metadata; its typed part references are not native source reachability.
+    assert!(!retained.manifest.part_roots.is_empty());
+    assert!(!deployment.publisher().root_closure(&retained.root_slot)
+        .ok_or("no import closure")?.contains(&subject));
+    let victim = deployment.publisher().visible_roots().find(|entry| {
+        retained.manifest.part_roots.contains(&entry.root)
+            && deployment.publisher().root_closure(&entry.slot)
+                .is_some_and(|closure| closure.contains(&subject))
+    }).ok_or("no source publication part")?;
+    let victim_root = victim.root;
+    let victim = victim.slot.clone();
     let plan = plan_deletion(&deployment, retained.import_identity, &context)?;
     assert!(plan.blockers.is_empty());
     assert!(plan.tombstones.len() > limits.batch_entries_max);
+    assert!(plan.retractions.iter().any(|retraction| {
+        retraction.slot == victim.as_str() && retraction.root == victim_root
+    }));
+    assert!(plan.deletable.iter().any(|object| object.digest == subject));
     let stop = cx("hydrate-header-stop")?;
     stop.set_cancel_at_checkpoint_occurrence(STAGE_DELETION_AUTHORITY_BATCH_APPENDED, 1);
     assert!(matches!(commit_deletion(&mut deployment, plan.digest()?,
@@ -411,7 +438,7 @@ fn pending_deletion(cold: bool) -> Value {
     for object in &plan.deletable {
         assert!(deployment.publisher().object_name_present(object.digest));
     }
-    let handle = descriptor(&deployment, ContentDigest::sha256(&frame))?;
+    let handle = descriptor(&deployment, subject)?;
     assert_eq!(deployment.publisher().spool().read(handle.subject_digest)?, frame);
     let mut catalog = catalog(&handle)?;
     // Deliberately reproduce the old publication-only binding in the test. This is not the new

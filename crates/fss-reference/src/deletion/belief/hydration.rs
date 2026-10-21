@@ -28,6 +28,49 @@ use super::{
 use crate::hydration::{PublishedSourceReader, SourceObjectBinding};
 use crate::{ReferenceDeployment, ReferenceHydrationCatalog, SourceHydrationError};
 
+/// Exact custody identity observed by a deployment source reader at registration.
+///
+/// The store pin distinguishes a copied journal from its original. The canonical journal root
+/// commits the authority history, while the native publication-record digest commits the exact
+/// slot name, manifest and child count. Equal source or manifest bytes cannot substitute for this
+/// tuple. Fields are private, and no decoder or constructor accepts untrusted response metadata.
+///
+/// This is comparison metadata, not authentication, a transferable capability, a deletion proof
+/// or a lease. The trusted reader must still perform its complete live verification on each read.
+/// A restored/copied journal has a different store pin and requires explicit authority rebuilding.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct DeploymentSourceAuthority {
+    store_pin: ContentDigest,
+    journal_root: ContentDigest,
+    publication_record: ContentDigest,
+}
+
+impl DeploymentSourceAuthority {
+    /// Native identity of the opened authority journal; not just its content hash.
+    #[must_use]
+    pub const fn store_pin(&self) -> ContentDigest {
+        self.store_pin
+    }
+
+    /// Exact canonical authority history verified when the binding was registered.
+    #[must_use]
+    pub const fn journal_root(&self) -> ContentDigest {
+        self.journal_root
+    }
+
+    /// Canonical root-record commitment, including the independently selected slot name.
+    #[must_use]
+    pub const fn publication_record(&self) -> ContentDigest {
+        self.publication_record
+    }
+
+    /// Canonical commitments that can accompany the ordinary H3 artifact. The filesystem pin
+    /// stays local and is never advertised as evidence that a remote consumer can authenticate.
+    pub(crate) const fn proof_roots(self) -> [ContentDigest; 2] {
+        [self.journal_root, self.publication_record]
+    }
+}
+
 /// Independent allowances for one source disclosure. The descriptor's existing full-vector quote
 /// controls its artifact; these ceilings additionally bound native verification of its closure.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -208,8 +251,8 @@ impl<'a, C: Fn() -> bool + Sync> DeletionAwareSourceReader<'a, C> {
         )
         .map_err(DurableBeliefError::from)?;
         self.custody_usage.set(Some(SourceCustodyUsage {
-            charged_read_bytes: custody.audit().charged_read_bytes,
-            io_calls: custody.audit().io_calls,
+            charged_read_bytes: custody.audit().charged_read_bytes(),
+            io_calls: custody.audit().io_calls(),
             retained_bytes: custody.retained_bytes(),
         }));
         // Another slot publishing an equal manifest cannot replace this selected record.
@@ -241,6 +284,33 @@ impl<C: Fn() -> bool + Sync> PublishedSourceReader for DeletionAwareSourceReader
             return Err(DurableBeliefError::AuthorityChanged.into());
         }
         Ok(())
+    }
+
+    fn deployment_authority_for(
+        &self,
+        descriptor: &SemanticHandle,
+        root: ContentDigest,
+    ) -> Result<Option<DeploymentSourceAuthority>, SourceHydrationError> {
+        // Pure admission metadata only. The actual read still checks the opened file identity,
+        // durable head, canonical deletion proof and complete closure; this is not that proof.
+        // Keeping the anchor check here also protects callers using the generic trait API.
+        let ledger = self.deployment.ledger();
+        if &descriptor.anchor != self.anchor || &ledger.current().anchor != self.anchor {
+            return Err(DurableBeliefError::AuthorityChanged.into());
+        }
+        let local = self
+            .deployment
+            .publisher()
+            .root(self.slot)
+            .ok_or(DurableBeliefError::Selection)?;
+        if local.root != root {
+            return Err(DurableBeliefError::Selection.into());
+        }
+        Ok(Some(DeploymentSourceAuthority {
+            store_pin: ledger.store_pin().ok_or(DurableBeliefError::StoreIdentity)?,
+            journal_root: ledger.journal_root(),
+            publication_record: local.record_digest,
+        }))
     }
 
     fn read_published_source(

@@ -176,7 +176,7 @@ fn reseal(request: &mut HydrationRequest) {
 
 fn no_io(io: &FaultInjectingSpoolIo) {
     for call in SpoolIoCall::ALL {
-        assert_eq!(io.calls(*call), 0, "unexpected {call}");
+        assert_eq!(io.calls(call), 0, "unexpected {call}");
     }
 }
 

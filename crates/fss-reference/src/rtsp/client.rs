@@ -915,7 +915,13 @@ fn h264_media(m: &super::SdpMedia) -> Result<ClientMedia, ClientError> {
     })
 }
 
-fn uri_parts(uri: &str) -> Result<(&str, &str), ClientError> {
+/// Validate a bounded credential-free RTSP URI without resolving or rewriting it.
+///
+/// Returns the exact authority and path plus optional query. This only checks URI syntax;
+/// callers must independently authorize the peer, authority, control subtree, and transport.
+/// Encoded controls, separators, traversal, and double decoding are refused. The returned
+/// strings can contain private stream tokens and must not be included in diagnostics.
+pub fn validated_uri_parts(uri: &str) -> Result<(&str, &str), ClientError> {
     if uri.len() > MAX_URI
         || !uri.is_ascii()
         || uri
@@ -957,6 +963,9 @@ fn uri_parts(uri: &str) -> Result<(&str, &str), ClientError> {
         }
     }
     Ok((authority, path))
+}
+fn uri_parts(uri: &str) -> Result<(&str, &str), ClientError> {
+    validated_uri_parts(uri)
 }
 fn scoped(config: &ClientConfig, uri: &str) -> Result<(), ClientError> {
     let (root_authority, root_path) = uri_parts(&config.control_root_uri)?;

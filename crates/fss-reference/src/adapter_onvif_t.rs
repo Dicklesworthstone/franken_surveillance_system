@@ -2,8 +2,9 @@
 //! Typed registry-row realization for `ADP-ONVIF-T-001` (bead fss-x4a.30.89.6):
 //! the ONVIF Profile T adapter. Standards path (ONVIF Profile T); the WS-Discovery lane is
 //! live-proven in `discovery::standards` (Yi IPC ProbeMatch evidence). The
-//! SOAP service client is specified; the first concrete device (Yi IPC
-//! ADP-YI-IPC-LAB-001) lands after owner provisioning (NEG-006).
+//! bounded read-only Media1 SOAP onboarding subset is implemented in [`crate::onvif`].
+//! Full Profile T/Media2 conformance remains specified; the first concrete device
+//! (Yi IPC ADP-YI-IPC-LAB-001) still requires owner provisioning and qualification (NEG-006).
 //!
 //! Isolation/credentials/capabilities are declared to match the row's normative
 //! state ("specified") and NEG-002; see the sibling rows (`adapter_aosu`,

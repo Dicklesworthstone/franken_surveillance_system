@@ -211,6 +211,17 @@ fn uri_path(text: &str) -> Result<&str, &'static str> {
     Ok(text)
 }
 
+fn presentation_path(text: &str) -> Result<&str, &'static str> {
+    if !text.starts_with('/') || text.starts_with("//") || text.len() > 2048 {
+        return Err("bounded credential-free RTSP presentation path required");
+    }
+    // The protocol owner, also used by ONVIF, validates all raw/escaped delimiters,
+    // controls and traversal. Preserve exact query spelling for RTSP and Digest.
+    fss_reference::rtsp::client::validated_uri_parts(&format!("rtsp://validation.invalid{text}"))
+        .map_err(|_| "unsafe RTSP presentation URI")?;
+    Ok(text)
+}
+
 fn authority(text: &str) -> Result<&str, &'static str> {
     if text.is_empty() || text.len() > 256 || !text.is_ascii() {
         return Err("bounded ASCII RTSP authority required");
@@ -402,7 +413,7 @@ impl Options {
         let protocol = ClientConfig {
             presentation_uri: format!(
                 "rtsp://{authority}{}",
-                uri_path(required("--presentation")?)?
+                presentation_path(required("--presentation")?)?
             ),
             control_root_uri: format!(
                 "rtsp://{authority}{}",
@@ -883,6 +894,15 @@ impl Options {
     }
 
     pub(super) fn preview(&self) -> Result<String, &'static str> {
+        self.preview_with_uri_redaction(false)
+    }
+
+    pub(super) fn private_uri_preview(&self) -> Result<String, &'static str> {
+        self.preview_with_uri_redaction(true)
+    }
+
+    fn preview_with_uri_redaction(&self, private: bool) -> Result<String, &'static str> {
+        let private = private || self.protocol.presentation_uri.contains('?');
         let numbers: Vec<_> = self
             .bound_numbers()
             .into_iter()
@@ -906,8 +926,22 @@ impl Options {
             ),
             ("peer", string(&self.binding.peer().to_string())),
             ("authority", string(self.binding.authority())),
-            ("presentation_uri", string(&self.protocol.presentation_uri)),
-            ("control_root_uri", string(&self.protocol.control_root_uri)),
+            (
+                "presentation_uri",
+                string(if private {
+                    "[redacted]"
+                } else {
+                    &self.protocol.presentation_uri
+                }),
+            ),
+            (
+                "control_root_uri",
+                string(if private {
+                    "[redacted]"
+                } else {
+                    &self.protocol.control_root_uri
+                }),
+            ),
             ("principal", string(&self.principal)),
             ("sensor", string(self.recording.scope.sensor.as_str())),
             ("stream", string(self.recording.scope.stream.as_str())),
@@ -951,6 +985,16 @@ impl Options {
             ("capture_time", string("unknown")),
             ("effects", string("none-until-exact-approval")),
         ];
+        if private {
+            fields.push((
+                "presentation_uri_digest",
+                string(&ContentDigest::sha256(self.protocol.presentation_uri.as_bytes()).to_text()),
+            ));
+            fields.push((
+                "control_root_uri_digest",
+                string(&ContentDigest::sha256(self.protocol.control_root_uri.as_bytes()).to_text()),
+            ));
+        }
         if let Some(parameters) = self.hevc.as_ref().and_then(|plan| plan.supplied.as_ref()) {
             fields.push(("hevc_configuration", parameters.preview()));
         }
