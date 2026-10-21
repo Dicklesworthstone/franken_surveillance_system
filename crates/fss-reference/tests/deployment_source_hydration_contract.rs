@@ -4,6 +4,9 @@
 
 mod file_import_fault_support;
 
+#[path = "deployment_source_hydration/authority.rs"]
+mod authority;
+
 use std::collections::{BTreeMap, BTreeSet};
 use std::fs;
 use std::path::{Path, PathBuf};
@@ -349,11 +352,21 @@ fn another_slot_with_the_same_root_cannot_replace_the_exact_selected_record() ->
     );
     assert!(catalog.hydrate_from_deployment_source(&request(&handle)?, &reader, TimestampNs(20)).is_err());
     assert!(!path.exists());
-    // The remaining alias has its own current ledger authority and exact native record.
+    // Equal root bytes under another authorized slot do not retarget the existing binding.
     let reader = DeletionAwareSourceReader::new(
         &f.deployment, &HostSpoolIo, &alias, &handle.anchor, DeploymentSourceLimits::default(), &|| false,
     );
-    let response = catalog.hydrate_from_deployment_source(&request(&handle)?, &reader, TimestampNs(20))?;
+    assert!(matches!(catalog.hydrate_from_deployment_source(&request(&handle)?, &reader, TimestampNs(20)),
+        Err(SourceHydrationError::SourceMismatch)));
+    assert!(!reader.attempted());
+    // Its independent authority may instead establish a separate catalog binding explicitly.
+    let mut alias_catalog = ReferenceHydrationCatalog::new();
+    alias_catalog.register_descriptor(handle.clone())?;
+    alias_catalog.bind_deployment_source_object(&handle.handle_id, handle.descriptor_digest, &reader)?;
+    let reader = DeletionAwareSourceReader::new(
+        &f.deployment, &HostSpoolIo, &alias, &handle.anchor, DeploymentSourceLimits::default(), &|| false,
+    );
+    let response = alias_catalog.hydrate_from_deployment_source(&request(&handle)?, &reader, TimestampNs(20))?;
     assert_eq!(response.artifact.ok_or("no alias source")?.payload, SOURCE);
     Ok(())
 }

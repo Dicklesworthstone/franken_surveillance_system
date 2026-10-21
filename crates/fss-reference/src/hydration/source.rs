@@ -13,6 +13,7 @@ use fss_core::{Completeness, ContentDigest, TimestampNs};
 use fss_object::{InMemoryObjectStore, MAX_OBJECT_BYTES, ObjectError};
 
 use super::ReferenceHydrationCatalog;
+use crate::deletion::belief::hydration::DeploymentSourceAuthority;
 
 /// Media type for an exact, untransformed source object (the payload is not a wrapper).
 pub const SOURCE_OBJECT_CONTENT_TYPE: &str = "application/vnd.fss.h3-source-object";
@@ -37,7 +38,7 @@ pub enum SourceHydrationError {
     TransformedSource,
     /// A descriptor already has a different binding or a separately cached H3 artifact.
     BindingConflict,
-    /// A reader returned bytes inconsistent with the registered source identity or length.
+    /// A reader returned authority metadata or bytes inconsistent with the registered binding.
     SourceMismatch,
 }
 
@@ -129,6 +130,24 @@ pub trait PublishedSourceReader {
         Ok(())
     }
 
+    /// Describes deployment authority without I/O or source allocation, after ordinary admission.
+    ///
+    /// Standalone readers return `None`. Deployment readers validate the descriptor anchor here
+    /// and return their independently selected store, journal head and publication-record identity.
+    /// The subsequent read must verify those identities and committed deletion authority against
+    /// actual custody. This metadata alone is not a permission grant or a verification result.
+    ///
+    /// Wrappers around deployment readers must forward both metadata hooks and the payload read.
+    /// Once a binding carries deployment authority, returning `None` cannot downgrade it to a
+    /// standalone reader. The catalog compares this observation again after the bounded read.
+    fn deployment_authority_for(
+        &self,
+        _descriptor: &SemanticHandle,
+        _publication_root: ContentDigest,
+    ) -> Result<Option<DeploymentSourceAuthority>, SourceHydrationError> {
+        Ok(None)
+    }
+
     /// Opens one exact object reachable from a currently published, verified root.
     fn read_published_source(
         &self,
@@ -185,6 +204,7 @@ pub struct SourceObjectBinding {
     subject_digest: ContentDigest,
     payload_bytes: u64,
     artifact_digest: ContentDigest,
+    deployment_authority: Option<DeploymentSourceAuthority>,
 }
 
 impl SourceObjectBinding {
@@ -225,10 +245,26 @@ impl SourceObjectBinding {
             || artifact.completeness != Completeness::Complete
             || !artifact.proof_roots.contains(&self.publication_root)
             || !artifact.proof_roots.contains(&descriptor.descriptor_digest)
+            || self.deployment_authority.is_some_and(|authority| {
+                authority
+                    .proof_roots()
+                    .iter()
+                    .any(|root| !artifact.proof_roots.contains(root))
+            })
         {
             return Err(SourceHydrationError::SourceMismatch);
         }
         Ok(())
+    }
+
+    /// Exact deployment custody identity retained at registration, not a read grant.
+    ///
+    /// `None` denotes the original standalone contract; using a stronger reader for one such
+    /// disclosure does not silently upgrade the immutable binding. A deployment-bound revision
+    /// cannot be rebound to another slot or copied journal even when all content bytes match.
+    #[must_use]
+    pub const fn deployment_authority(&self) -> Option<DeploymentSourceAuthority> {
+        self.deployment_authority
     }
 
     /// Exact publication root which must be reverified at disclosure time.
@@ -307,14 +343,32 @@ impl ReferenceHydrationCatalog {
             .ok_or(HydrationError::LevelUnavailable)?;
         let ceiling = quote.bytes.min(self.source_payload_ceiling());
         reader.validate_source_descriptor(descriptor)?;
+        let deployment_authority = reader.deployment_authority_for(descriptor, publication_root)?;
+        if self
+            .source_bindings
+            .get(&key)
+            .is_some_and(|prior| prior.deployment_authority != deployment_authority)
+        {
+            return Err(SourceHydrationError::BindingConflict);
+        }
         let payload =
             reader.read_published_source(publication_root, descriptor.subject_digest, ceiling)?;
-        let artifact = source_artifact(descriptor, publication_root, payload, ceiling)?;
+        if reader.deployment_authority_for(descriptor, publication_root)? != deployment_authority {
+            return Err(SourceHydrationError::SourceMismatch);
+        }
+        let artifact = source_artifact(
+            descriptor,
+            publication_root,
+            payload,
+            ceiling,
+            deployment_authority,
+        )?;
         let binding = SourceObjectBinding {
             publication_root,
             subject_digest: descriptor.subject_digest,
             payload_bytes: artifact.payload.len() as u64,
             artifact_digest: artifact.artifact_digest,
+            deployment_authority,
         };
         if self
             .source_bindings
@@ -401,12 +455,28 @@ impl ReferenceHydrationCatalog {
         // Keep reader-specific authority checks inside the generic path. Type erasure must
         // not let a session serve an old descriptor through a reader pinned to a newer head.
         reader.validate_source_descriptor(&descriptor)?;
+        // Scope checks belong in the common path: session/context/durable callers also use it.
+        // A legacy standalone binding may use a stronger reader, but cannot acquire its proof
+        // claims implicitly. A deployment-bound revision may never use a weaker or different owner.
+        let authority = reader.deployment_authority_for(&descriptor, binding.publication_root)?;
+        if binding.deployment_authority.is_some() && authority != binding.deployment_authority {
+            return Err(SourceHydrationError::SourceMismatch);
+        }
         let payload = reader.read_published_source(
             binding.publication_root,
             binding.subject_digest,
             ceiling,
         )?;
-        let artifact = source_artifact(&descriptor, binding.publication_root, payload, ceiling)?;
+        if reader.deployment_authority_for(&descriptor, binding.publication_root)? != authority {
+            return Err(SourceHydrationError::SourceMismatch);
+        }
+        let artifact = source_artifact(
+            &descriptor,
+            binding.publication_root,
+            payload,
+            ceiling,
+            binding.deployment_authority,
+        )?;
         if artifact.artifact_digest != binding.artifact_digest
             || artifact.payload.len() as u64 != binding.payload_bytes
         {
@@ -429,6 +499,7 @@ fn source_artifact(
     publication_root: ContentDigest,
     payload: Vec<u8>,
     ceiling: u64,
+    deployment_authority: Option<DeploymentSourceAuthority>,
 ) -> Result<HydrationArtifact, SourceHydrationError> {
     if payload.len() as u64 > ceiling {
         return Err(HydrationError::BudgetExceeded.into());
@@ -439,15 +510,21 @@ fn source_artifact(
     if ContentDigest::sha256(&payload) != descriptor.subject_digest {
         return Err(SourceHydrationError::SourceMismatch);
     }
+    let mut proof_roots = BTreeSet::from([
+        descriptor.subject_digest,
+        descriptor.descriptor_digest,
+        publication_root,
+    ]);
+    if let Some(authority) = deployment_authority {
+        // Reuse existing canonical commitments, not a new authority-token format. The native
+        // store pin is retained locally; filesystem identity is not disclosed in the artifact.
+        proof_roots.extend(authority.proof_roots());
+    }
     Ok(HydrationArtifact::publish(
         HydrationLevel::H3,
         SOURCE_OBJECT_CONTENT_TYPE,
         payload,
-        [
-            descriptor.subject_digest,
-            descriptor.descriptor_digest,
-            publication_root,
-        ],
+        proof_roots,
         Completeness::Complete,
         None,
     )?)
