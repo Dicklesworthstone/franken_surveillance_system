@@ -440,3 +440,85 @@ fn receipt_truncation_and_wrong_tensor_shape_fail_closed() -> TestResult {
     assert!(decode_outputs(&suffix, &m).is_err());
     Ok(())
 }
+
+
+#[test]
+fn surveillance_admission_wraps_retained_execution_and_reopen() -> TestResult {
+    let (_dir, cx, mut deployment, request, frame) = fixture("surveillance-admission")?;
+    let runtime = model(&frame, 0.25, true)?;
+    let weights = b"source package weights".to_vec();
+    let license_text = b"Apache-2.0 exact legal text".to_vec();
+    let runtime_bytes = runtime.encoded().to_vec();
+    let weights_digest = ContentDigest::sha256(&weights);
+    let license_digest = ContentDigest::sha256(&license_text);
+    let runtime_digest = ContentDigest::sha256(&runtime_bytes);
+    assert_eq!(runtime_digest, runtime.digest());
+
+    let license = fss_object::ModelLicenseRecord::new(
+        "Apache-2.0",
+        Some(license_digest),
+        true,
+        vec![],
+        "https://example.invalid/recorded-inference",
+        vec![runtime_digest],
+        Some("immutable-revision-1".to_owned()),
+    )?;
+    let manifest = fss_object::ModelManifestV1::new(
+        fss_object::ModelId::parse("MOD-RECORDED-INFERENCE-001")?,
+        fss_core::ModelGeneration::parse("model:recorded-inference:v1")?,
+        weights_digest,
+        fss_core::SchemaId::parse("fss.model_input.v1")?,
+        fss_core::SchemaId::parse("fss.model_output.v1")?,
+        fss_core::CalibrationGeneration::parse("cal:recorded-inference:v1")?,
+        license,
+    )?;
+    let package = fss_object::ModelPackage::new(
+        manifest,
+        vec![
+            fss_object::ModelPackageArtifact::new("weights.bin", weights)?,
+            fss_object::ModelPackageArtifact::new("LICENSE.txt", license_text)?,
+            fss_object::ModelPackageArtifact::new("runtime.fssmodel", runtime_bytes)?,
+        ],
+    )?;
+    let mut policy = fss_object::ModelLicensePolicy::default_for_profile(
+        fss_object::ModelUseProfile::SurveillanceMonitoring,
+    );
+    policy.set_require_text_digest(true);
+    let admitted = AdmittedRecordedModel::admit(
+        runtime,
+        &package,
+        &policy,
+        &fss_object::ModelPackageLimits::default(),
+    )?;
+    let run = AdmittedRecordedInference::run_and_publish(
+        &mut deployment,
+        &request,
+        &admitted,
+        budget(),
+        &ScalarExecCx::new(),
+        &cx,
+    )?;
+    assert_eq!(run.manifest_digest(), package.manifest.manifest_digest()?);
+    assert_eq!(
+        run.license_decision_digest(),
+        admitted.license_decision().decision_digest()
+    );
+    let identity = run.run().identity();
+    let outputs = run.run().outputs().clone();
+    let reopened = AdmittedRecordedInference::open(
+        &deployment,
+        identity,
+        &request,
+        &admitted,
+        &cx,
+    )?;
+    assert_eq!(reopened.run().outputs(), &outputs);
+    reopened.verify_by_replay(
+        &deployment,
+        &request,
+        budget(),
+        &ScalarExecCx::new(),
+        &cx,
+    )?;
+    Ok(())
+}

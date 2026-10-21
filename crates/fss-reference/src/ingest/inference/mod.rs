@@ -20,7 +20,9 @@ use fss_publication::{LocalPublicationError, SlotName};
 use fss_tensor::{DType, Tensor, TensorError};
 use std::collections::BTreeMap;
 
+pub mod admission;
 mod model;
+pub use admission::{AdmittedRecordedInference, AdmittedRecordedModel, ModelAdmissionError};
 pub use model::{MAX_RECORDED_MODEL_BYTES, RECORDED_MODEL_DOMAIN, RecordedModel};
 
 /// Maximum input/intermediate tensor accounting admitted for one reference run.
