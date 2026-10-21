@@ -10,6 +10,8 @@ use fss_cli::ExitIdentity;
 mod authentication;
 #[path = "fss-capture-rtsp/driver.rs"]
 mod driver;
+#[path = "fss-capture-rtsp/from_onvif.rs"]
+mod from_onvif;
 #[path = "fss-capture-rtsp/plan.rs"]
 mod plan;
 #[path = "fss-capture-rtsp/reconnect.rs"]
@@ -32,10 +34,13 @@ fn main() -> ExitCode {
     if args.first().and_then(|arg| arg.to_str()) == Some("reconnect") {
         return reconnect_main(&args[1..]);
     }
+    if args.first().and_then(|arg| arg.to_str()) == Some("from-onvif") {
+        return onvif_main(&args[1..]);
+    }
     if args.len() == 1 && matches!(args[0].to_str(), Some("help" | "--help" | "-h")) {
         return match write_bounded(plan::HELP.as_bytes()).and_then(|()| {
             write_bounded(single::HELP.as_bytes()).and_then(|()| {
-                write_bounded(b"\nBounded reconnects: fss-capture-rtsp reconnect --help\nSource-first retention: fss-capture-rtsp retain-source --help\n")
+                write_bounded(b"\nBounded reconnects: fss-capture-rtsp reconnect --help\nSource-first retention: fss-capture-rtsp retain-source --help\nPrivate ONVIF handoff: fss-capture-rtsp from-onvif --help\n")
             })
         }) {
             Ok(()) => ExitCode::SUCCESS,
@@ -57,6 +62,25 @@ fn main() -> ExitCode {
             .and_then(|preview| write_bounded((preview + "\n").as_bytes()))
     };
     finish(result)
+}
+
+fn onvif_main(args: &[std::ffi::OsString]) -> ExitCode {
+    if args.len() == 1 && matches!(args[0].to_str(), Some("help" | "--help" | "-h")) {
+        return finish(write_bounded(from_onvif::HELP.as_bytes()));
+    }
+    let plan = match from_onvif::SourcePlan::parse(args) {
+        Ok(plan) => plan,
+        Err(code) => {
+            eprintln!("{code}: invalid private ONVIF handoff plan; use from-onvif --help");
+            return ExitCode::from(ExitIdentity::MALFORMED_VALUE.code);
+        }
+    };
+    finish(if plan.approved() {
+        plan.execute()
+    } else {
+        plan.preview()
+            .and_then(|preview| write_bounded((preview + "\n").as_bytes()))
+    })
 }
 
 fn source_main(args: &[std::ffi::OsString]) -> ExitCode {

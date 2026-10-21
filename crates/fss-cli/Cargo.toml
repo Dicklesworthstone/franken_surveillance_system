@@ -80,6 +80,10 @@ name = "fss-discover"
 path = "src/bin/fss-discover.rs"
 
 [[bin]]
+name = "fss-onvif"
+path = "src/bin/fss-onvif.rs"
+
+[[bin]]
 name = "fss-capture-reconnect"
 path = "src/bin/fss-capture-reconnect.rs"
 

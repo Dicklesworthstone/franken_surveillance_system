@@ -31,6 +31,10 @@ use fss_core::ContentDigest;
 #[path = "capture_rtsp_cli/auth.rs"]
 mod authentication;
 
+#[cfg(target_os = "linux")]
+#[path = "capture_rtsp_cli/onvif.rs"]
+mod onvif;
+
 #[path = "capture_rtsp_cli/campaign.rs"]
 mod campaign;
 
@@ -95,6 +99,7 @@ fn binary(name: &str) -> Test<PathBuf> {
             option_env!("CARGO_BIN_EXE_fss-import-rtsp"),
         ),
         "file" => ("FSS_FILE_BIN", option_env!("CARGO_BIN_EXE_fss-file")),
+        "onvif" => ("FSS_ONVIF_BIN", option_env!("CARGO_BIN_EXE_fss-onvif")),
         _ => return Err("unknown fixture binary".into()),
     };
     std::env::var_os(override_name)
