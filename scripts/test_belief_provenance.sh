@@ -15,4 +15,5 @@ cargo +nightly-2026-08-31 test --locked --offline --no-fail-fast -p fss-referenc
 cargo +nightly-2026-08-31 test --locked --offline --no-fail-fast -p fss-reference --test local_source_hydration_contract --test deployment_source_hydration_contract --test deployment_disclosure_contract --test source_deletion_closure_contract --test source_binding_recovery_contract --test source_binding_registration_contract 2>&1 | tee "$evidence/hydration.log" || status=1
 cargo +nightly-2026-08-31 test --locked --offline --no-fail-fast -p fss-reference --lib hydration::cursor_checkpoint 2>&1 | tee "$evidence/custody-checkpoints.log" || status=1
 cargo +nightly-2026-08-31 test --locked --offline --no-fail-fast -p fss-reference --lib agent_session::checkpoint::journal::disclosure 2>&1 | tee "$evidence/disclosure-journal.log" || status=1
+cargo +nightly-2026-08-31 test --locked --offline --no-fail-fast -p fss-reference --lib coordination::investigations::journal::source_citation 2>&1 | tee "$evidence/source-citation.log" || status=1
 exit "$status"

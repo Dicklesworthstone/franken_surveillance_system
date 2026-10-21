@@ -22,6 +22,9 @@ use crate::agent_session::checkpoint::journal::coordination::source_hydration::D
 use crate::agent_session::{ReferenceSessionStore, SessionAlias};
 use crate::{PublishedSourceReader, ReferenceHydrationCatalog, SourceHydrationError};
 
+mod inspection;
+pub use inspection::SourceCitationInspection;
+
 pub(super) const RECORD: &str = "fss.reference_source_citation_record.v1";
 const RECEIPT: &str = "fss.reference_source_citation_receipt.v1";
 const ACQUISITION: &str = "fss.reference_source_citation_acquisition.v1";
