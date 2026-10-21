@@ -91,6 +91,8 @@ pub mod optimized_executor;
 pub mod original_media_export;
 mod outcome;
 mod packet_fault;
+/// Certified structural projection of immutable control plans into PlanObligationGraph.
+pub mod plan_obligation_graph;
 /// Exact-graph peak-memory execution over the unchanged scalar kernel backend.
 pub mod planned_scalar;
 mod policy;
