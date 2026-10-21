@@ -58,6 +58,8 @@ pub enum OnvifOperation {
     GetProfiles,
     /// Request the selected profile's unicast RTSP-over-TCP presentation URI.
     GetStreamUri,
+    /// Request the selected profile's bounded JPEG snapshot URI.
+    GetSnapshotUri,
     /// Enumerate device services without requesting their untyped capabilities.
     GetServices,
     /// Enumerate Media2 profiles including their existing video encoder configuration.
@@ -74,6 +76,7 @@ impl OnvifOperation {
             Self::GetCapabilities => "http://www.onvif.org/ver10/device/wsdl/GetCapabilities",
             Self::GetProfiles => "http://www.onvif.org/ver10/media/wsdl/GetProfiles",
             Self::GetStreamUri => "http://www.onvif.org/ver10/media/wsdl/GetStreamUri",
+            Self::GetSnapshotUri => "http://www.onvif.org/ver10/media/wsdl/GetSnapshotUri",
             Self::GetServices => "http://www.onvif.org/ver10/device/wsdl/GetServices",
             Self::GetMedia2Profiles => "http://www.onvif.org/ver20/media/wsdl/GetProfiles",
             Self::GetMedia2StreamUri => "http://www.onvif.org/ver20/media/wsdl/GetStreamUri",
@@ -225,6 +228,25 @@ impl fmt::Debug for StreamUri {
     }
 }
 
+/// Reported snapshot URI with its optional device-declared expiry, without
+/// fabricated defaults. The caller must fetch it before expiry and validate scope.
+#[derive(Clone, Eq, PartialEq)]
+pub struct SnapshotUri {
+    /// Exact decoded URI; caller must validate its scope and credential policy.
+    pub uri: String,
+    /// Device-declared absolute expiry (ISO-8601), when the device supplied one.
+    pub valid_until: Option<String>,
+}
+
+impl fmt::Debug for SnapshotUri {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("SnapshotUri")
+            .field("uri", &"[redacted]")
+            .field("valid_until", &self.valid_until)
+            .finish()
+    }
+}
+
 /// Namespace-resolved SOAP 1.2 fault class; raw device text is never retained.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum SoapFaultCode {
@@ -362,6 +384,17 @@ pub fn get_stream_uri_request(profile_token: &str) -> Result<SoapRequest, WireEr
     ))
 }
 
+/// Request the selected profile's bounded JPEG snapshot URI for an exact bounded token.
+pub fn get_snapshot_uri_request(profile_token: &str) -> Result<SoapRequest, WireError> {
+    let token = escaped_reference(profile_token)?;
+    Ok(request(
+        OnvifOperation::GetSnapshotUri,
+        &format!(
+            "<trt:GetSnapshotUri><trt:ProfileToken>{token}</trt:ProfileToken></trt:GetSnapshotUri>"
+        ),
+    ))
+}
+
 fn escaped_reference(profile_token: &str) -> Result<String, WireError> {
     reference(profile_token)?;
     let mut token = String::with_capacity(profile_token.len());
@@ -488,6 +521,19 @@ pub fn parse_stream_uri(bytes: &[u8]) -> Result<StreamUri, WireError> {
         invalid_after_reboot,
         timeout: timeout.to_owned(),
     })
+}
+
+/// Parse a Media1 snapshot URI with its optional device-declared expiry. Fetching,
+/// byte bounds, and actual image custody belong to the caller.
+pub fn parse_snapshot_uri(bytes: &[u8]) -> Result<SnapshotUri, WireError> {
+    let (doc, response) = response(bytes, MEDIA_NS, "GetSnapshotUriResponse")?;
+    let media = required(&doc, response, MEDIA_NS, "MediaUri")?;
+    let uri = uri_text(&doc, required(&doc, media, SCHEMA_NS, "Uri")?)?.to_owned();
+    let valid_until = unique(&doc, media, SCHEMA_NS, "ValidUntil")?
+        .map(|id| scalar(&doc, id))
+        .transpose()?
+        .map(|s| s.to_owned());
+    Ok(SnapshotUri { uri, valid_until })
 }
 
 /// Parse only a SOAP 1.2 fault, including the error body of HTTP 400/500 responses.
@@ -737,4 +783,87 @@ fn duration(value: &str) -> Result<(), WireError> {
         return Err(WireError::InvalidField);
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    const SNAPSHOT_URI_RESPONSE: &str = concat!(
+        "<?xml version=\"1.0\" encoding=\"UTF-8\"?>",
+        "<s:Envelope xmlns:s=\"http://www.w3.org/2003/05/soap-envelope\"",
+        " xmlns:trt=\"http://www.onvif.org/ver10/media/wsdl\"",
+        " xmlns:tt=\"http://www.onvif.org/ver10/schema\">",
+        "<s:Body>",
+        "<trt:GetSnapshotUriResponse>",
+        "<trt:MediaUri>",
+        "<tt:Uri>http://192.168.5.211:8080/snap/image.jpg</tt:Uri>",
+        "<tt:ValidUntil>2026-10-20T00:05:00Z</tt:ValidUntil>",
+        "</trt:MediaUri>",
+        "</trt:GetSnapshotUriResponse>",
+        "</s:Body>",
+        "</s:Envelope>"
+    );
+
+    #[test]
+    fn parse_snapshot_uri_reads_uri_and_optional_expiry() -> Result<(), Box<dyn std::error::Error>> {
+        let snap = parse_snapshot_uri(SNAPSHOT_URI_RESPONSE.as_bytes())?;
+        assert_eq!(snap.uri, "http://192.168.5.211:8080/snap/image.jpg");
+        assert_eq!(snap.valid_until.as_deref(), Some("2026-10-20T00:05:00Z"));
+        Ok(())
+    }
+
+    #[test]
+    fn parse_snapshot_uri_without_expiry_is_valid() -> Result<(), Box<dyn std::error::Error>> {
+        let body = concat!(
+            "<?xml version=\"1.0\" encoding=\"UTF-8\"?>",
+            "<s:Envelope xmlns:s=\"http://www.w3.org/2003/05/soap-envelope\"",
+            " xmlns:trt=\"http://www.onvif.org/ver10/media/wsdl\"",
+            " xmlns:tt=\"http://www.onvif.org/ver10/schema\">",
+            "<s:Body>",
+            "<trt:GetSnapshotUriResponse>",
+            "<trt:MediaUri>",
+            "<tt:Uri>http://192.168.5.211:8080/snap/image.jpg</tt:Uri>",
+            "</trt:MediaUri>",
+            "</trt:GetSnapshotUriResponse>",
+            "</s:Body>",
+            "</s:Envelope>"
+        );
+        let snap = parse_snapshot_uri(body.as_bytes())?;
+        assert_eq!(snap.uri, "http://192.168.5.211:8080/snap/image.jpg");
+        assert!(snap.valid_until.is_none());
+        Ok(())
+    }
+
+    #[test]
+    fn parse_snapshot_uri_refuses_missing_media_uri() -> Result<(), Box<dyn std::error::Error>> {
+        let body = concat!(
+            "<?xml version=\"1.0\" encoding=\"UTF-8\"?>",
+            "<s:Envelope xmlns:s=\"http://www.w3.org/2003/05/soap-envelope\"",
+            " xmlns:trt=\"http://www.onvif.org/ver10/media/wsdl\">",
+            "<s:Body>",
+            "<trt:GetSnapshotUriResponse>",
+            "</trt:GetSnapshotUriResponse>",
+            "</s:Body>",
+            "</s:Envelope>"
+        );
+        assert_eq!(
+            parse_snapshot_uri(body.as_bytes()).err(),
+            Some(WireError::MissingField)
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn get_snapshot_uri_request_binds_action_and_token() -> Result<(), Box<dyn std::error::Error>> {
+        let req = get_snapshot_uri_request("Profile_1")?;
+        assert_eq!(
+            req.action(),
+            "http://www.onvif.org/ver10/media/wsdl/GetSnapshotUri"
+        );
+        let body = std::str::from_utf8(req.body())?;
+        assert!(body.contains("<trt:GetSnapshotUri>"));
+        assert!(body.contains("<trt:ProfileToken>Profile_1</trt:ProfileToken>"));
+        Ok(())
+    }
 }

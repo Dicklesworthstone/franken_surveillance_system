@@ -22,7 +22,7 @@ fn contract(kernel: MediaKernelId) -> Result<MediaKernelContract, Box<dyn std::e
         .iter()
         .copied()
         .find(|c| c.kernel == kernel)
-        .ok_or("kernel missing from registry")
+        .ok_or("kernel missing from registry".into())
 }
 
 /// P1 REGISTRY: every row validates; digests are deterministic and

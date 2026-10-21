@@ -85,6 +85,10 @@ name = "fss-onvif"
 path = "src/bin/fss-onvif.rs"
 
 [[bin]]
+name = "fss-capture-onvif"
+path = "src/bin/fss-capture-onvif.rs"
+
+[[bin]]
 name = "fss-capture-reconnect"
 path = "src/bin/fss-capture-reconnect.rs"
 
