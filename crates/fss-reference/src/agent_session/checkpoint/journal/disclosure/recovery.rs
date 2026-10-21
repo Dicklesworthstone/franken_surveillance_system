@@ -6,7 +6,10 @@
 //! catalog weakens a persisted source binding or cannot restore its replay protection.
 
 use super::*;
+use crate::agent_session::work_claims::WorkClaimLimits;
 use fss_ledger::{JournalError, RecoveryReport};
+
+mod coordinated;
 
 impl DurableDisclosureStore {
     /// Recovers a torn final append only after admitting the rebuilt catalog read-only.
@@ -22,37 +25,51 @@ impl DurableDisclosureStore {
     /// an I/O failure or external mutation after admission can still require explicit inspection.
     /// Exclusive protected path ownership and an independently trusted root remain mandatory.
     /// No source reader is called, no session is charged and no response is redelivered here.
+    /// Coordination history still requires the explicit coordinated entry point and its ceilings.
     pub fn recover_existing(
         path: impl AsRef<Path>,
         expected_root: ContentDigest,
         limits: DurableSessionLimits,
         policy: IncompleteTailPolicy,
-        mut catalog: ReferenceHydrationCatalog,
+        catalog: ReferenceHydrationCatalog,
     ) -> Result<(Self, super::super::coordination::SessionRecoveryReceipt), DisclosureError> {
-        let path = path.as_ref();
-        let report = read_report(path, limits)?;
-        if report.last_root() != expected_root {
-            return Err(DurableSessionError::RootMismatch.into());
-        }
-        // Validate the same complete semantic history the existing recovery owner will use.
-        // This wrapper does not admit coordination journals without independent claim ceilings.
-        let _ = super::super::replay(&report, limits, None)?;
-        if policy == IncompleteTailPolicy::Reject
-            && let Some(offset) = report.incomplete_tail()
-        {
-            return Err(DurableSessionError::Journal(JournalError::IncompleteTail { offset }).into());
-        }
-        // Only caller-owned, not-yet-returned memory is changed here. All persisted source and
-        // cursor requirements are admitted before any synchronization or truncation is requested.
-        restore_catalog(&mut catalog, &report, limits, None)?;
-        drop(report); // Release the bounded preflight history before native recovery rereads it.
-        let (sessions, receipt) =
-            DurableSessionStore::recover_existing(path, expected_root, limits, policy)?;
-        let mut owner = Self { sessions, catalog };
-        // Keep the live owner's existing post-recovery verification, including exact head checks.
-        owner.synchronize_catalog(None)?;
-        Ok((owner, receipt))
+        recover_profile(path.as_ref(), expected_root, limits, None, policy, catalog)
     }
+}
+
+/// Both profiles use identical pre-write catalog admission. An absent claim ceiling is never
+/// inferred from journal bytes; the legacy profile must continue rejecting coordination records.
+fn recover_profile(
+    path: &Path,
+    expected_root: ContentDigest,
+    limits: DurableSessionLimits,
+    claim_ceilings: Option<WorkClaimLimits>,
+    policy: IncompleteTailPolicy,
+    mut catalog: ReferenceHydrationCatalog,
+) -> Result<(DurableDisclosureStore, super::super::coordination::SessionRecoveryReceipt), DisclosureError> {
+    let report = read_report(path, limits)?;
+    if report.last_root() != expected_root {
+        return Err(DurableSessionError::RootMismatch.into());
+    }
+    let _ = super::super::replay(&report, limits, claim_ceilings)?;
+    if policy == IncompleteTailPolicy::Reject
+        && let Some(offset) = report.incomplete_tail()
+    {
+        return Err(DurableSessionError::Journal(JournalError::IncompleteTail { offset }).into());
+    }
+    // Only caller-owned, not-yet-returned memory is changed here. All persisted source and
+    // cursor requirements are admitted before any synchronization or truncation is requested.
+    restore_catalog(&mut catalog, &report, limits, None)?;
+    drop(report);
+    let (sessions, receipt) = match claim_ceilings {
+        Some(ceilings) => DurableSessionStore::recover_existing_with_coordination(
+            path, expected_root, limits, ceilings, policy,
+        )?,
+        None => DurableSessionStore::recover_existing(path, expected_root, limits, policy)?,
+    };
+    let mut owner = DurableDisclosureStore { sessions, catalog };
+    owner.synchronize_catalog(None)?;
+    Ok((owner, receipt))
 }
 
 /// One reconstruction rule for live synchronization and pre-write cold admission. Callers own
