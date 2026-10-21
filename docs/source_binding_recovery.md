@@ -21,9 +21,12 @@ that offers source continuation also pins the source binding; a successful direc
 disclosure pins it even when no continuation exists. Recovery, pending-append reconciliation and
 later disclosures reuse the same checkpoint decoder and monotone-history checks.
 
-Binding registration alone remains an in-memory operation. This increment makes the binding
-crash-durable when the enclosing disclosure checkpoint commits, not earlier. A failed append is
-still fenced by the existing durable owner; it cannot release a response or invent durability.
+The compatibility `bind_source_object` API and initial catalog construction remain in-memory
+operations until an enclosing checkpoint commits. `bind_source_object_durable` now provides an
+explicit earlier acknowledgement boundary: it commits the selected custody requirement in the
+same journal before returning, without a session charge or disclosure. See
+[durable source registration](durable_source_registration.md) for replay, capacity and append-fault
+semantics. A failed append remains fenced; no operation may invent durability.
 
 ## Missing is not permission to replace
 
