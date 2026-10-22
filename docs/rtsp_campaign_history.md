@@ -8,7 +8,11 @@ failed, empty and interrupted attempts that produced no usable catalog.
 
 This is an explicit option. Existing reconnect commands and their approval bytes
 are unchanged when no history option is present. History does not provide an
-always-on recorder, crash resume, continuity or scene coverage. The separate
+always-on recorder, continuity or scene coverage. The native history layer now
+supports an exact cold continuation primitive after restart, but only from an
+independently saved finish pin whose retained controller decision explicitly
+planned the next frozen attempt. The capture CLI does not yet expose that primitive
+as a live camera command. The separate
 [campaign watch command](rtsp_campaign_watch.md) can analyze the complete saved
 catalogs across independently retained attempts while preserving failed, empty
 and unknown states.
@@ -97,9 +101,18 @@ are required. The `root` identifies the exact immutable transition manifest;
 "latest" pointer.
 
 Any history publication failure stops further capture. There is no automatic
-retry of history writes, adoption of an existing history directory, budget
-replenishment, deletion or resume. Preserve every store and every complete
-receipt on failure.
+retry of history writes, adoption of an arbitrary existing history directory,
+budget replenishment or deletion. Preserve every store and every complete receipt
+on failure.
+
+At the native history layer, a fresh owner may invoke the explicit cold-continuation
+primitive with the original frozen plan, original writer limits, an independently
+saved exact finish pin, current authority and a fresh work account. The selected
+finish must have `next_attempt_planned=true`; a start-only tail remains an unknown
+native outcome and is refused, as are terminal campaigns and non-continuing
+finishes. The complete selected prefix is reverified through the live publisher
+before the next predeclared start can be appended. Historical work/time allowance
+is never reconstructed, refunded or made spendable again.
 
 Output failure remains separate from native capture. If native capture finalized
 successfully but its terminal stdout fails, the available typed native

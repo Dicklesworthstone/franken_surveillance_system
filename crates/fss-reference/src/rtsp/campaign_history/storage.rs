@@ -314,6 +314,7 @@ pub struct VerifiedCampaignHistory {
     pub(super) plan: CampaignPlan,
     pub(super) state: HistoryState,
     writer_limits: CampaignHistoryLimits,
+    retained_metadata_bytes: u64,
     durability_resynced: bool,
     possibly_stale: bool,
 }
@@ -390,6 +391,12 @@ impl VerifiedCampaignHistory {
     /// Reader limits remain independently supplied and can be narrower when sufficient.
     pub const fn writer_limits(&self) -> CampaignHistoryLimits {
         self.writer_limits
+    }
+    /// Exact canonical plan plus selected record/manifest bytes already charged to the writer's
+    /// immutable metadata ceiling. Restart continuation carries this forward instead of resetting
+    /// storage accounting.
+    pub const fn retained_metadata_bytes(&self) -> u64 {
+        self.retained_metadata_bytes
     }
     /// Every selected start in order, including failed, empty and unknown-outcome attempts.
     pub fn attempts(&self) -> &[CampaignAttemptHistory] {
@@ -479,6 +486,7 @@ fn load_source(
     )?;
     work.charge(4096 + plan_bytes.len() as u64 * 4)?;
     let plan = CampaignPlan::decode(&plan_bytes)?;
+    let mut retained_metadata_bytes = u64::try_from(plan_bytes.len()).map_err(|_| Error::Limit)?;
     if plan.approval != expected.approval
         || plan.digest()? != expected.plan
         || approved_plan.is_some_and(|approved| approved != &plan)
@@ -534,6 +542,12 @@ fn load_source(
         )?;
         work.charge(1024 + metadata.len() as u64 * 4)?;
         let record = CampaignRecord::decode(&metadata)?;
+        let raw_len = u64::try_from(raw.len()).map_err(|_| Error::Limit)?;
+        let metadata_len = u64::try_from(metadata.len()).map_err(|_| Error::Limit)?;
+        retained_metadata_bytes = retained_metadata_bytes
+            .checked_add(raw_len)
+            .and_then(|total| total.checked_add(metadata_len))
+            .ok_or(Error::Limit)?;
         if record.pin(manifest.root()) != pin
             || record.manifest()? != manifest
             || writer_limits.is_some_and(|frozen| record.limits != frozen)
@@ -580,11 +594,16 @@ fn load_source(
             inspection.possibly_stale || inspection.possibly_in_flight,
         ),
     };
+    let writer_limits = writer_limits.ok_or(Error::Mismatch)?;
+    if retained_metadata_bytes > writer_limits.maximum_metadata_bytes {
+        return Err(Error::Limit);
+    }
     Ok(VerifiedCampaignHistory {
         pin: expected,
         plan,
         state,
-        writer_limits: writer_limits.ok_or(Error::Mismatch)?,
+        writer_limits,
+        retained_metadata_bytes,
         durability_resynced,
         possibly_stale,
     })

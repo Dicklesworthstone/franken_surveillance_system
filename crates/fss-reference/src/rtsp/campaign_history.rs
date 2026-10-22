@@ -514,8 +514,11 @@ impl HistoryState {
     }
 }
 
-/// One live finite history owner. It never reacquires a camera and cannot resume a cold campaign.
-/// A failed append retains its exact pending transition; every different successor is blocked.
+/// One finite history owner. A fresh process may adopt one exact verified finished prefix through
+/// `CampaignWriter::resume_from_prefix`, but only when that retained finish explicitly planned
+/// the next predeclared attempt. A start-only tail, terminal campaign, or non-continuing finish
+/// remains non-resumable. A failed append retains its exact pending transition; every different
+/// successor is blocked.
 pub struct CampaignWriter {
     plan: CampaignPlan,
     limits: CampaignHistoryLimits,
@@ -547,6 +550,67 @@ impl CampaignWriter {
             last: None,
             pending: None,
             retained_bytes: plan_bytes.len() as u64,
+        })
+    }
+
+    /// Adopt one exact durable finished prefix after a process restart.
+    ///
+    /// This is deliberately not a generic "resume latest" operation. `expected` must be an
+    /// independently saved exact pin whose selected tail is a retained finish with
+    /// `next_attempt_planned=true`. Start-only tails preserve an unknown native outcome and are
+    /// refused; terminal campaigns and finishes that did not authorize a successor are refused.
+    ///
+    /// The caller supplies fresh current authority and a fresh work budget. Historical work,
+    /// time and provider allowances are never reconstructed, refunded, or made spendable again.
+    /// The frozen campaign plan and writer limits must match byte-for-byte, and the live publisher
+    /// re-verifies the complete selected prefix before this writer can append the next start.
+    pub fn resume_from_prefix(
+        publisher: &LocalRootPublisher,
+        plan: CampaignPlan,
+        expected: CampaignPin,
+        limits: CampaignHistoryLimits,
+        authority: &dyn CampaignAuthority,
+        cx: &ReplayCx,
+        work: &mut WorkBudget<'_>,
+    ) -> Result<Self> {
+        let fresh = Self::new(plan.clone(), limits)?;
+        if expected.approval != plan.approval || expected.plan != fresh.plan_digest {
+            return Err(CampaignHistoryError::Mismatch);
+        }
+        let verified = storage::load_live(
+            publisher,
+            expected,
+            limits,
+            authority,
+            cx,
+            work,
+            Some(&plan),
+        )?;
+        if verified.terminal().is_some() {
+            return Err(CampaignHistoryError::Mismatch);
+        }
+        let tail = verified
+            .attempts()
+            .last()
+            .ok_or(CampaignHistoryError::Mismatch)?;
+        if tail.finish_pin != Some(expected)
+            || tail
+                .finish
+                .as_ref()
+                .is_none_or(|finish| !finish.next_attempt_planned)
+            || tail.attempt.ordinal as usize >= plan.attempts.len()
+        {
+            return Err(CampaignHistoryError::Mismatch);
+        }
+        Ok(Self {
+            plan_digest: fresh.plan_digest,
+            plan,
+            limits,
+            state: verified.state.clone(),
+            tip: Some(expected),
+            last: None,
+            pending: None,
+            retained_bytes: verified.retained_metadata_bytes(),
         })
     }
     /// Frozen exact owner-approved campaign scope.

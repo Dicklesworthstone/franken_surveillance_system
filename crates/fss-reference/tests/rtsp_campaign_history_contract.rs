@@ -781,3 +781,163 @@ fn slot(pin: CampaignPin) -> Test<SlotName> {
         .collect::<String>();
     Ok(SlotName::parse(&format!("fssrtch1-{hex}-{}", pin.records))?)
 }
+
+#[test]
+fn cold_continuation_adopts_only_an_exact_finished_prefix_and_starts_the_next_frozen_attempt() -> Test {
+    let mut f = Fixture::new("cold-continuation", 3, true)?;
+    f.start(1)?;
+    let finished = f.finish(1, f.success(1, true))?;
+    let retained = f.inspect(finished)?.retained_metadata_bytes();
+    f.reopen()?;
+    let before = tree(&f.root)?;
+    let mut fresh_work = WorkBudget::new(WORK);
+    let mut resumed = CampaignWriter::resume_from_prefix(
+        f.publisher.as_ref().ok_or("publisher")?,
+        f.plan.clone(),
+        finished,
+        CampaignHistoryLimits::default(),
+        &f.owner,
+        &f.cx,
+        &mut fresh_work,
+    )?;
+    assert_eq!(resumed.tip(), Some(finished));
+    assert_eq!(resumed.plan(), &f.plan);
+    assert!(fresh_work.used() > 0, "restart verification uses only the fresh account");
+    assert_eq!(tree(&f.root)?, before, "adoption itself does not append");
+    let next = resumed.start_attempt(
+        f.publisher.as_mut().ok_or("publisher")?,
+        2,
+        &f.owner,
+        &f.cx,
+        &mut fresh_work,
+    )?;
+    assert_eq!(next.records, 3);
+    let verified = f.inspect(next)?;
+    assert_eq!(verified.attempts().len(), 2);
+    assert!(verified.attempts()[1].finish.is_none());
+    assert!(
+        verified.retained_metadata_bytes() > retained,
+        "new start extends rather than resets the frozen metadata account"
+    );
+    Ok(())
+}
+
+#[test]
+fn cold_continuation_refuses_unknown_terminal_and_noncontinuing_prefixes_without_writes() -> Test {
+    let mut started = Fixture::new("cold-continuation-start-only", 2, true)?;
+    let start = started.start(1)?;
+    started.reopen()?;
+    let before = tree(&started.root)?;
+    assert!(matches!(
+        CampaignWriter::resume_from_prefix(
+            started.publisher.as_ref().ok_or("publisher")?,
+            started.plan.clone(),
+            start,
+            CampaignHistoryLimits::default(),
+            &started.owner,
+            &started.cx,
+            &mut WorkBudget::new(WORK)
+        ),
+        Err(CampaignHistoryError::Mismatch)
+    ));
+    assert_eq!(tree(&started.root)?, before);
+
+    let mut stopped = Fixture::new("cold-continuation-stopped", 1, false)?;
+    stopped.start(1)?;
+    let finish = stopped.finish(1, stopped.success(1, false))?;
+    stopped.reopen()?;
+    let before = tree(&stopped.root)?;
+    assert!(CampaignWriter::resume_from_prefix(
+        stopped.publisher.as_ref().ok_or("publisher")?,
+        stopped.plan.clone(),
+        finish,
+        CampaignHistoryLimits::default(),
+        &stopped.owner,
+        &stopped.cx,
+        &mut WorkBudget::new(WORK)
+    )
+    .is_err());
+    assert_eq!(tree(&stopped.root)?, before);
+    let terminal = stopped.terminal(true, None)?;
+    stopped.reopen()?;
+    let before = tree(&stopped.root)?;
+    assert!(CampaignWriter::resume_from_prefix(
+        stopped.publisher.as_ref().ok_or("publisher")?,
+        stopped.plan.clone(),
+        terminal,
+        CampaignHistoryLimits::default(),
+        &stopped.owner,
+        &stopped.cx,
+        &mut WorkBudget::new(WORK)
+    )
+    .is_err());
+    assert_eq!(tree(&stopped.root)?, before);
+    Ok(())
+}
+
+#[test]
+fn cold_continuation_requires_fresh_current_work_and_exact_frozen_plan_without_mutation() -> Test {
+    let mut f = Fixture::new("cold-continuation-fresh-authority", 2, true)?;
+    f.start(1)?;
+    let finish = f.finish(1, f.success(1, true))?;
+    f.reopen()?;
+    let before = tree(&f.root)?;
+    let mut tiny = WorkBudget::new(1);
+    assert!(matches!(
+        CampaignWriter::resume_from_prefix(
+            f.publisher.as_ref().ok_or("publisher")?,
+            f.plan.clone(),
+            finish,
+            CampaignHistoryLimits::default(),
+            &f.owner,
+            &f.cx,
+            &mut tiny
+        ),
+        Err(CampaignHistoryError::Limit)
+    ));
+    assert_eq!(tree(&f.root)?, before);
+
+    let mut changed = f.plan.clone();
+    changed.continue_after_success = false;
+    assert!(CampaignWriter::resume_from_prefix(
+        f.publisher.as_ref().ok_or("publisher")?,
+        changed,
+        finish,
+        CampaignHistoryLimits::default(),
+        &f.owner,
+        &f.cx,
+        &mut WorkBudget::new(WORK)
+    )
+    .is_err());
+    assert_eq!(tree(&f.root)?, before);
+
+    let mut narrowed = CampaignHistoryLimits::default();
+    narrowed.maximum_metadata_bytes /= 2;
+    assert!(CampaignWriter::resume_from_prefix(
+        f.publisher.as_ref().ok_or("publisher")?,
+        f.plan.clone(),
+        finish,
+        narrowed,
+        &f.owner,
+        &f.cx,
+        &mut WorkBudget::new(WORK)
+    )
+    .is_err());
+    assert_eq!(tree(&f.root)?, before);
+
+    f.owner.enabled.store(false, Ordering::Release);
+    assert!(matches!(
+        CampaignWriter::resume_from_prefix(
+            f.publisher.as_ref().ok_or("publisher")?,
+            f.plan.clone(),
+            finish,
+            CampaignHistoryLimits::default(),
+            &f.owner,
+            &f.cx,
+            &mut WorkBudget::new(WORK)
+        ),
+        Err(CampaignHistoryError::Denied)
+    ));
+    assert_eq!(tree(&f.root)?, before);
+    Ok(())
+}
