@@ -30,6 +30,8 @@ machine `ingenic,marmot`. SoC identity is settled and no longer an open question
 | F10 | inside F3, IOCTRL `0x284C` (motion zone) `[WRITE]` | no | vendor handler, the CVE-2023-6322 class | `parse_ioctrl`/`parse_hl`, `plen` u16, `total = hl_off+16+plen` | 602 B and 2002 B payloads accepted, stream continues after | this pack §probe log |
 | F11 | inside F3, AV frame header (`ch 03/05/07`, ftype whitelist 00 01 04 05 08 09 0D) | no | parser | `payload_size` u16 checked against `buf.len()` before slicing; FRAMEINFO only stripped when 40 B and codec id in range | not exercised (needs a hostile sender, i.e. camera-side or MITM) | code read (`av.rs:360-403`) |
 | F12 | UDP 32761, `0x1008` PUBLIC cloud-redirect (CVE-2023-6323 class) | **yes** (no auth by design) | info-leak (AuthKey) | not confirmed here: two plausible layouts sent, camera never dialled back | 0/2 layouts | this pack §probe log |
+| F13 | inside F3, second `K10000` sent **while streaming** | no (needs a session) | **DoS, session-scoped** | same cJSON `audioEncoderList` path; ≥~1024 B JSON. Camera goes silent within ~10 s and the session dies; the camera itself is fine (fresh session streams immediately, no reboot) | 1/1, deterministic size threshold 967→1047 B | EV-208 `bb-k10000-stream-dos-sut` |
+| F14 | legacy `0x0601` → `0x0402` → AV login1 (TransCode) | yes (no auth in the frames) | attempted auth | `build_av_login1` puts the ENR in the password field (`pkt[280..]`, 256 B) | **0/9**: session req silent ×5 and login1 silent ×3 for each of empty/wrong/real ENR | EV-209 `bb-uid-only-no-auth-7gl` |
 
 Structural note: **the whole parse chain sits behind the discovery HMAC** except F1/F12. The
 device also leaks its own SDK build in the `[24:28]` of every discovery payload —
@@ -39,16 +41,22 @@ device also leaks its own SDK build in the `[24:28]` of every discovery payload 
 
 **No network-only chain to root exists today.** Shortest *structural* path and where it breaks:
 
-1. F1 leaks UID unauthenticated — works, 3/3 cameras.
+1. F1 leaks UID unauthenticated — works, 3/3 cameras. **But the UID alone buys nothing
+   further on this model**: the legacy channel answers discovery and then stops — `0x0402` and
+   AV login are silent even with the correct ENR (F14), so the v4 has no non-DTLS session path.
+   The login packet carries the ENR as its password, so "legacy session" would not have helped
+   anyway.
 2. F12 would leak AuthKey with UID alone (CVE-2023-6323) — **unconfirmed on this firmware**.
 3. Even with UID+AuthKey you cannot open DTLS: the PSK is `SHA256(ENR)` and the
    empty-buffer bypass (CVE-2023-6324) is gone (F6). So **the ENR is the irreducible
    requirement**, obtainable only from the owner's Wyze account (or a P2P-server impersonation
    that yields AuthKey, not ENR).
 4. With the ENR the session is fully ours (F3/F8, 592 frames proven) and F10 becomes reachable —
-   but no *unpatched* memory-unsafe sink is known in SDK 4.3.8.0-R2: the published RCE
-   (CVE-2023-6322, IOCTL `0x284C` stack overflow, 178-byte slices vs 255-byte copies) was fixed
-   by the vendor in Jan 2024 and this firmware is Nov 2025.
+   but no *unpatched* memory-unsafe sink is known in compatibility tuple
+   **`HL_CAM4` / `4.52.17.26` / SDK `4.3.8.0-1-gde9077a-R2_openssl_Mips_T41_7.2.0`**:
+   **CVE-2023-6322 is fixed in this build** (vendor fix Jan 2024; this build is Nov 2025), so the
+   `0x284C` zone overflow is not reproducible, and F10's 602 B / 2002 B writes are accepted
+   normally.
 5. So root requires **finding a new bug in the post-auth handler set** (F10/F11 and the
    `K100xx` JSON paths) — reachable with ENR only, which satisfies the "ENR-only" half of H-001 —
    or going physical (see H-002).
@@ -81,6 +89,43 @@ device also leaks its own SDK build in the `[24:28]` of every discovery payload 
 5. Also unproven: whether dm-verity is actually *enforced* on `mtdblock2` (the `fs_mgr ... 2`
    argument and the `verity_key` at `/` say yes; a boot log would confirm).
 
+## Verification semantics — what U-Boot actually gates on
+
+Main asked for the env/FIT config rather than the signer. Findings, in order of what a boot
+actually consults:
+
+1. **The shipped FIT carries no `verify` property.** `grep -n verify` over the extracted
+   `/configurations/conf` of `recovery_wcv4_4.52.9.5332.bin` returns **zero hits**. The conf node
+   holds only `description`, `fdt`, `kernel`, `ramdisk`, `signature`. So nothing in the artifact
+   itself asks for verification — it is all bootloader policy.
+2. **Default policy is verify-on, from the env.** `boot/bootm.c:247`:
+   `images.verify = env_get_yesno("verify");` (u-boot master, quoted verbatim). `env_get_yesno`
+   yields 1 / 0 / **-1 when the variable is unset**, and `images.verify` is an `int` — so an
+   unset `verify` is truthy and verification is *enabled*. Only an explicit `verify=no` turns it
+   off. `boot/image-fit-sig.c:696` `fit_config_verify()` then runs.
+3. **What that does depends on U-Boot's own control dtb, not the image.** `fit_config_verify_required_keys()`
+   walks the public-key nodes in the control dtb and honours only those carrying
+   `required = "conf"`:
+   `required = fdt_getprop(key_blob, noffset, FIT_KEY_REQUIRED, NULL); if (!required || strcmp(required, "conf")) continue;`
+   A failing required node returns `-EPERM` and `bootm` aborts (`Unable to verify required
+   signature`). **If no key node exists at all it returns 0 and verification is skipped silently**
+   (`if (key_node < 0) return 0;`).
+4. **Consequence.** This is exactly "required-if-present", but present-ness is a property of the
+   *bootloader*, not of the image. A raw `wz_flash-helper`-style write therefore succeeds at
+   *write* time (it is a partition copy, not a `bootm`), and the image is only judged on the next
+   boot — an unsigned/mismatched FIT is either accepted (no `required="conf"` key node) or refused
+   at load, leaving the old image intact. `wz_flash-helper` is not present in the extracted
+   rootfs/sysroot, i.e. it is a U-Boot-side routine, consistent with that split.
+5. **The control dtb is not in the shipped zip** — u-boot is mtdblock0, and Wyze does not publish
+   the loader. So whether `required = "conf"` is set on this model is not readable from the
+   artifact: see falsifier 3. The thingino maintainer's "No known workarounds since they validate
+   the bootloader signature" is evidence it *is* set; it is not proof.
+6. **`key-name-hint = kernel-dev`**: `kernel-dev` is u-boot's own documented example key name
+   (`openssl genpkey ... -out keys/dev.key`, then the cert is embedded as `kernel-dev`), so it is a
+   project key with a generic name rather than proof of a dev key. Thingino master carries v4 board
+   configs (`configs/cameras-exp/wyze_cam4_t41nq_*`) but publishes no key material. **A published
+   matching private key would let an owner sign — unresolvable from public sources in this pass.**
+
 ## Verdict
 
 * **H-001 — PARTIAL, confidence high.** A real pre-auth info leak exists (UID, F1) and the
@@ -90,7 +135,7 @@ device also leaks its own SDK build in the `[24:28]` of every discovery payload 
   an explicit length check, CVE-2023-6324 no longer applies, and the one published RCE
   (CVE-2023-6322) post-dates this build's fix. H-001's "pre-auth" half is too strong; its
   "ENR-only" half holds.
-* **H-002 — REFUTED for modified images, confidence high.** Wyze ships a **signed** image:
+* **H-002 — REFUTED for modified images, confidence high; the *gate* is bootloader-side and unread.** Wyze ships a **signed** image:
   RSA-2048/SHA-256 u-boot FIT, `sign-images = "fdt", "kernel", "ramdisk"`, `key-name-hint =
   "kernel-dev"`, signer `mkimage 2025.01`, on a secure-boot-enabled T41. The owner can *obtain and
   flash* an image with no signing key, but cannot *produce* one; the bootloader key is the gate,
@@ -125,6 +170,20 @@ p1_dtls_psize_ffff     silent x3 (listener alive)
 p1_dtls_big  (1451B)   silent x3 (listener alive)
 p2_keep                silent x3 (listener alive)
 ```
+
+Mid-stream oversized K10000 (`--ioctl 10000`, 1047 B), 192.168.5.242:
+
+```
+[402] STREAM STARTED
+[402] sent ioctl 0x2710 (1047B)
+[10544] FAILED stream: camera silent beyond stream budget (power loss or network drop)
+probe end phase=Terminal frames=4 gaps=0 acks=105
+# immediately after, fresh session: probe end phase=Streaming frames=274 gaps=0  -> camera alive
+```
+
+UID-only legacy auth, same camera (each line = 3 attempts, after a successful unauthenticated
+0x0601 discovery that returned the UID): `session 0x0402 silent x5`; `login1 empty-pwd silent x3`;
+`login1 wrong-enr silent x3`; `login1 real-enr silent x3`.
 
 K-auth size sweep: `enc 0/1/4/16/64/240/256 -> STREAM STARTED`; `280/320/512/768/1024/20000 -> FAILED
 kauth: phase deadline exceeded` (no crash). DTLS identity: `AUTHPWD_bogus + SHA256("") -> FAILED

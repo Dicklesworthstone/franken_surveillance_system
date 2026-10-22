@@ -3,6 +3,7 @@
 **Target:** 192.168.4.37 · `60:d5:61:21:4d:36` (Shenzhen Glazero OUI) · FCC ID `2BACU-H2E`, model `H2E`, grantee GLAZERO INTERNATIONAL INC, factory Shenzhen Anran Security Technology Co., Ltd, filed 2025-03-25.
 **Date:** 2026-10-22 · interface `en1` (192.168.4.170/22) · all probes unprivileged.
 **Hypotheses:** H-003 = 6668 accepts a key recoverable without the vendor developer program **and** exposes an exec/file-write datapoint. H-004 = **the cloud** OTA path accepts an attacker-supplied/re-signed image.
+**Also tried, negative:** the owner's AOSU account API — full read access, but it carries no `localKey` (see its own section).
 **Secondary claim, now primary for persistence:** a **LAN** OTA push (`0x1A/0x1B/0x1C`) exists inside the authenticated session — no cloud, no URL, no TLS — and is the only delivery path that satisfies every owner constraint. Its own section follows Findings.
 
 **Leverage:** this one box fronts 4 battery cams (AOSU homebase topology). Root here ≈ all 4 cams at once, and they are otherwise unreachable (no TCP service each). It is the highest-value target in the fleet after the Wyze pair.
@@ -52,6 +53,7 @@ Behaviour legend: port open check was done 3× before classification; each probe
 | F9 | TCP 6668 auth strength | yes | **auth-bypass = none** | `TuyaClient::new(local_key)` | — | The local_key is a static 16-byte per-device secret in the Wi-Fi module's flash; it is **not rotated** by anything in the LAN protocol. Compromise is durable but is *not* inherently root. |
 | F10 | 51028 → `127.0.0.1`, ports 1–1024 + 8000–10000 | yes | **negative: no loopback-only daemon** | — | deterministic | 3025 ports, twice (14-way then serial): only 443 and 8888 open from inside, and both are open from outside too — the internal set is a subset of the external set. No hidden admin UI, no sshd, no 8080. See §"Pivot result". |
 | F11 | 3.5 in-session OTA `0x1A/0x1B/0x1C` | no (needs session) | **firmware write → persistence** | `FRM_LAN_OTA_START/DATA/FINISH`, `tuya_protocol.h:43-45` | unproven | Constants exist in Tuya's 3.5 header beside `FRM_LAN_RESET (0x1D)`; the public `tuya_lan.c` dispatch has no case for them, so field set and digest policy are unknown. This is the only persistence-capable primitive found. |
+| F13 | HTTPS `api-us.aosulife.com` (owner account, no dev program) | no (needs the account password) | info-leak: inventory + firmware versions + OTA descriptor | `/v1/dev/getList`, `/v1/ota/getNewByApp` | deterministic | 5 devices enumerated, `localKey` absent from every response, `gz-sign = md5(path+query)` so a stolen `gz-sid` is replayable. Detail in its own section. |
 | F12 | 6699 header width | — | correctness (not security) | `lpv35_fixed_head_t` | was broken | Crate emitted 20 B + 16 B AAD; protocol is 18 B + 14 B AAD (three independent sources). Fixed, tests green. |
 
 **Port state anomaly (behaviour, not a finding):** after ~20 rapid connect/close probes, direct `SYN` to 6668 was refused for ~30 s while `CONNECT` via 51028 still succeeded (200) and frames through the tunnel were still accepted. The listener's accept backlog wedged; it self-healed without a reboot. Any automation must retry with backoff and must not treat `RST` as "closed" (`[WRITE]`-free).
@@ -103,7 +105,34 @@ Whichever it is, **the digest is MD5, not HMAC.** Neither candidate has an `hmac
 
 **Recovery if the good image is bad.** Partial answer, from the type enum: `TUYA_OTA_FULL = 1 ///< AB area switch, full package upgrade` (`tuya_cloud_types.h:1235-1237`) — the layout is **two banks (A/B), not a factory partition**, and there is no `TUYA_OTA_PATH_LAN` (LAN reuses `PATH_AIR = 0`). So a rejected or half-written image should leave the running bank untouched — though no public code proves the bootloader validates before switching, only that the HAL call carries a `reset` flag. **Unknown:** whether the bootloader commits the new bank only after the `tkl_ota_end_notify(BOOL_T reset)` validation or after the first successful boot. Nothing public says, and this is exactly the difference between a soft brick and a reflash. Treat the first real push as `[WRITE][RISK]`, on mains, with the unit not otherwise busy.
 
-**Operational constraint for any tool:** the device allows `CLIENT_LMT 3` concurrent LAN clients and only `ALLOW_NO_KEY_NUM 3` frames keyed by `localkey` instead of the derived session key (`tuya_lan.c:27-32`). A hand-rolled client gets three pre-session frames per connection, so do not spend them: negotiate, then send everything under the session key. Exceed either budget and the device faults the session.
+**Ready-to-run artifact:** `evidence/packs/ev-pack-h-003-send-ota-start.py` — default candidate B, correct 18-byte header and AAD, single-shot negotiation, `--dry` prints the bytes, `--selftest` needs no device (passes). One command once a key exists; it prints the retcode and, on `retcode 1`, the ASCII reason, then tells you to try the other candidate.
+
+**Operational constraint for any tool:** the device allows `CLIENT_LMT 3` concurrent LAN clients and only `ALLOW_NO_KEY_NUM 3` frames keyed by `localkey` instead of the derived session key (`tuya_lan.c:27-32`). A hand-rolled client gets three pre-session frames per connection, so do not spend them: negotiate, then send everything under the session key. Exceed either budget and the device faults the session — which means **negotiation must be single-shot**: no parallel retry of the 0x03/0x04/0x05 exchange on one connection, and no probing before it.
+
+---
+
+## Owner account API (`~/.config/fss-lab/aosu.env`) — inventory yes, `localKey` no
+
+Tried because it was the one path that could delete the button press. **It does not carry `localKey`.** Everything below is from the live API on the owner's own consumer account, no developer program.
+
+**Files.** `aosu.env` exists (`AOSU_EMAIL`, `AOSU_PASSWORD`) and is **current — login succeeds with it**. `aosu_session_new.json` is **stale**: its `gz-sid` gets `{"errno":202,"errmsg":"sid过期"}`.
+
+**Contract, recovered from the shipped APK** (`com.glazero.android` 161 MB from `d.apkpure.net`, decompiled with jadx):
+- `POST https://api-us.aosulife.com/v1/user/login`, `application/x-www-form-urlencoded`, fields `type=1&email&password&pwType&countryCode`.
+- Required header **`Gz-Pid`**, value **`glazero`** — from `com/glazero/biz/channel/AppChannel.java` (`channelPid` getter → `"glazero"`) via `AppConstant.APP_CHANNEL_PID`, set in `com/glazero/biz/base/http/interceptor/CommonInterceptor.java` (`linkedHashMap.put("Gz-Pid", AppConstant…)`). `pid` in query/body/plain header all fail `{"errno":104,"errmsg":"pid参数错误"}`; `Gz-Pid` is the only accepted spelling.
+- **`pwType=1` with the plaintext password is accepted.** `md5`, upper-case md5, base64(md5) and `pwType=2` all return `{"errno":503,"errmsg":"密码错误"}` — `SecurityCore.nativeEncryptP` (JNI, `libglazero-security.so`, not in the base split) is the app's own path, but it is not required from a script.
+- `gz-sign` is **`md5(full path with query)`** — no secret. Anyone who captures a `gz-sid` can replay the account, so the session is the whole credential.
+
+**Reachable, with that session:** `/v1/dev/getList` (5 devices: 4× `C8S2EA11` cams + `H2E`, honouring the owner's "no cloud account access" rule without a developer program), `/v1/dev/getInfoBySn`, `/v1/appSetting/getBySn`, `/v1/dev/getModelInfoBySn`, `/v1/dev/getListByCoopUUIDList`, `/v1/ota/getNewByApp`.
+
+**Grepped every response for `localKey|devKey|key|uuid|gwId|seckey`:**
+- `getList` / `getInfoBySn` / `appSetting/getBySn` / `getModelInfoBySn`: nothing but setting keys (`vision`, `face`, `fmOta.auto`, …). Device fields are `sn`, `snCoop` (Tuya-style devId, e.g. `eb28f4fa8cd86eb3669izf`), `baseSn`, `devType`, `model`, `pid`(=`glazero`), `tp`(= `AS`), `online`.
+- `getListByCoopUUIDList` with those `snCoop` ids returns `{"list":[]}`.
+- So **`localKey` is not in the gz API at all** — it lives on the Tuya side. Local control in the app goes through the bundled `ThingHomeSdk` (`TyAccountCenter.loginWithUid(countryCode, uid, password)`), i.e. Tuya's own signed cloud API, which needs the Tuya app session on top of this one.
+
+**Owner Tuya identity, for that next hop:** login returns **`tuyaUid` (`az174769…`, prefix only) and `tuyaUsername` (= the account email)**. With those, a consumer Tuya/Smart Life session is reachable *without* the developer program; that session is what would hand over `localKey` — and it is a separate implementation job (Tuya app `sign` scheme), not a URL to curl.
+
+**Unplanned bonus — the live OTA descriptor endpoint.** `POST /v1/ota/getNewByApp` (`sn`) returns `{currentVersion, desc, download, firmwareType, network, productID, sign, size, timeout, upgradeStatus, upgradeType, verify, version}`. No update is pending right now, so `download`/`sign`/`verify`/`size` are empty, but the field set is the cloud descriptor and it carries **two** digest fields (`sign` **and** `verify`) — corroborating the TuyaOS `hmac`+`md5` pair in §H-004 and confirming the descriptor is server-supplied per device. Current firmware: **H2E `2.10.5`**, cam `2.3.156`.
 
 ---
 
@@ -115,6 +144,7 @@ Whichever it is, **the digest is MD5, not HMAC.** Neither candidate has an `hmac
 [no-touch today]  L2 reach ──► 6668 (3.5) ──► silent, key required
                   ├─ 51028 open proxy ──► off-LAN pivot; loopback oracle (nothing hidden on lo)
                   └─ 8888/443 doors, unidentified, hold-and-never-answer
+[no-touch, no key] owner account API ──► inventory, firmware versions, OTA descriptor — but no localKey
 [one button press, LAN]  pairing mode ──► 0x25 REQ_DEVINFO/UDP:7000 (GCM under public udpkey)
                                      ──► local_key + gwId
                   ──► authenticated 6668 session ──► CONTROL/CONTROL_NEW dps, DP_QUERY, P2P signal
@@ -193,7 +223,7 @@ The old frame decodes under the device's parser as `seqno=0, cmd=7, len=10` with
 **The decisive missing test: get the local_key from a pairing-mode press and walk the authenticated lane.** Without it every claim about what a session *buys* is inference.
 
 In order:
-1. Press-and-hold pairing mode, then `REQ_DEVINFO (0x25)` → UDP **7000** (and `BOARDCAST_LPV34 (0x23)` → 6667 as the fallback). Expected (`tinytuya/scanner.py:86`): a GCM frame under the public `udpkey` whose JSON carries `ip, mac, name, key, gwId, active, ability, encrypt, productKey, version, token, wf_cfg`. The beacon decoder already handles exactly this shape (`discovery/tuya_beacon.rs:106,171-176` unpacks 6699 under `UDP_BROADCAST_KEY`). **Falsifier: if neither answers even in pairing mode, H-003(a) dies and the only road left is an app/cloud account.**
+1. Press-and-hold pairing mode, then `REQ_DEVINFO (0x25)` → UDP **7000** (and `BOARDCAST_LPV34 (0x23)` → 6667 as the fallback). Expected (`tinytuya/scanner.py:86`): a GCM frame under the public `udpkey` whose JSON carries `ip, mac, name, key, gwId, active, ability, encrypt, productKey, version, token, wf_cfg`. The beacon decoder already handles exactly this shape (`discovery/tuya_beacon.rs:106,171-176` unpacks 6699 under `UDP_BROADCAST_KEY`). **Falsifier: if neither answers even in pairing mode, H-003(a) dies and the only road left is the owner's Tuya consumer session** (obtainable from the `tuyaUid` the account API hands out, but that is a Tuya-side implementation job).
 2. With the key: `0x03→0x04→0x05`, then confirm the 18-byte header fix against hardware (the one thing the unit test cannot prove) and that a CONTROL write lands in a STATUS read. Budget the `ALLOW_NO_KEY_NUM 3` frames.
 3. **Decide the `0x1A` body encoding — free, no flash write.** Send a 512-byte body of the wrong shape. Retcode **1** plus an ASCII reason ⇒ wrong encoding, try the other candidate from the LAN OTA table; no retcode ⇒ shape parsed, move on. This is the step that tells you whether the chain is even drivable, and it costs nothing.
 4. **The one that decides the chain:** correct shape, correct `len`, deliberately wrong `md5`. Then read *which* stage faults:
@@ -209,7 +239,7 @@ Second falsifier on the proxy finding: if 51028 turns out to be the owner's inte
 
 ## Verdict
 
-- **H-003(a) — key without the developer program: PARTIAL, ~55%.** Real mechanism, no account, no cloud, no developer program: the pairing-mode broadcast leaks `local_key`+`gwId` under the *public* `udpkey`, and `local_key` is a static 16-byte secret that authenticates 6668 indefinitely thereafter. But it needs one physical button hold, and while paired the broadcast socket is not even bound (7000/6667 ICMP-closed, 6666 silent, `0x13/0x23/0x25` unanswered 3× each), so nothing was confirmed end-to-end. Naive "just connect to 6668" buys nothing — 3.5 is silent on GCM failure and leaks no identity.
+- **H-003(a) — key without the developer program: PARTIAL, ~55%, zero-touch road refuted.** The owner account API was tried and yields no `localKey` (it returns inventory, firmware versions and the OTA descriptor, and hands you the owner's `tuyaUid` for the next hop), so there is no no-touch key. What remains works: Real mechanism, no account, no cloud, no developer program: the pairing-mode broadcast leaks `local_key`+`gwId` under the *public* `udpkey`, and `local_key` is a static 16-byte secret that authenticates 6668 indefinitely thereafter. But it needs one physical button hold, and while paired the broadcast socket is not even bound (7000/6667 ICMP-closed, 6666 silent, `0x13/0x23/0x25` unanswered 3× each), so nothing was confirmed end-to-end. Naive "just connect to 6668" buys nothing — 3.5 is silent on GCM failure and leaks no identity.
 - **H-003(b) — exec / arbitrary file write via a DP: REFUTED, ~90%.** Now backed by the device-side dispatch, not just the header: `lan_protocol_process` handles only dps-write, dps-read, the two negotiation steps and P2P signalling. No exec, no path, no filename anywhere. In-tree DP coverage for this model is lab-only and partial, and no public H2E DP map exists. OTA is the only thing that writes bytes.
 - **H-004 (cloud path) — attacker-supplied image: PARTIAL, ~35%, unchanged.** The modern TuyaOS cloud path is *not* MD5-only: `tuya_ota.c:110-118` SHA-256s the file, HMACs the digest with the device's `activate.seckey` (`tal_sha256_mac`), hex-compares to the descriptor's `hmac` and only then calls `tal_ota_end_notify(TRUE)`. So a descriptor-rewriting MITM must also forge an HMAC keyed by a secret that is **not** the local_key. Remaining holes: `httpsUrl` is a plain string field (`tuya_ota.c:210`) with no scheme check, `md5` rides along unused for the final gate, and the **LAN** OTA frames `0x1A-0x1C` have no public implementation — if that path takes `hmac` from the LAN frame it inherits the seckey requirement, if it takes only `md5` the chain closes. Unproven either way.
 - **LAN OTA `0x1A/0x1B/0x1C` — the persistence mechanism: EXISTS, mechanism unconfirmed, ~60% that it is `local_key`-sufficient.** Command constants are real and land inside the authenticated session; neither candidate body encoding carries an `hmac` field, so MD5 is the expected gate and `seckey` would not be needed — but no public code implements the frames, so both the layout and that gate are inference. This is the highest-value open item in the fleet, above everything else in this pack.
@@ -253,5 +283,10 @@ All created in this repo, `-t task`, slug as listed:
 | `bb-lan-retcode-parse-error-48k` | parse failure is a visible retcode 1 + plaintext reason |
 | `bb-lan-ota-blind-probe-tny` | unauthenticated 0x1A is indistinguishable from a bogus cmd |
 | `bb-lan-ota-status-codes-3ht` | status codes 45/49 separate digest failure from shape error (cited 38-49; exact lines 41, 45) |
+| `bb-aosu-env-stale-blob-2uj` | `aosu.env` valid; saved `gz-sid` stale (errno 202) |
+| `bb-aosu-login-contract-nau` | login contract: `Gz-Pid: glazero`, `pwType=1`, plaintext password |
+| `bb-aosu-gz-sign-md5-tui` | `gz-sign` = md5(path+query), no secret |
+| `bb-aosu-no-localkey-x1n` | `localKey` absent from all five device endpoints |
+| `bb-aosu-ota-endpoint-8f8` | `/v1/ota/getNewByApp` returns the cloud descriptor (`sign`+`verify`) |
 
-Raw probe scripts: `/tmp/p2.py` (framing lanes), `/tmp/p3.py` (proxy), `/tmp/disc.py` (3.5 discovery), `/tmp/scan.py` (loopback oracle scan), `/tmp/hdrtest.py`+`/tmp/crctest.py` (byte-level acceptance).
+Deliverables in this directory: `ev-pack-h-003-send-ota-start.py` (the `0x1A` probe; `--selftest` and `--dry` verified). Scratch probes: `/tmp/p2.py`, `/tmp/p3.py`, `/tmp/scan.py`, `/tmp/disc.py`, `/tmp/hdrtest.py`, `/tmp/crctest.py`; APK + jadx output in `/tmp/aosu.apk` and `/tmp/jout`.
