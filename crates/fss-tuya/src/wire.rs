@@ -15,6 +15,20 @@ pub const PREFIX_6699: u32 = 0x0000_6699;
 pub const SUFFIX_55AA: [u8; 4] = [0x00, 0x00, 0xAA, 0x55];
 /// Frame suffix 0x00009966.
 pub const SUFFIX_6699: [u8; 4] = [0x00, 0x00, 0x99, 0x66];
+/// Fixed 6699 header size: `prefix(4) | reserved(2) | seqno(4) | cmd(4) | len(4)`.
+///
+/// The two reserved bytes are the on-wire form of TuyaOS `lpv35_fixed_head_t`'s
+/// `uint8_t version:4; uint8_t reserved:4; uint8_t reserved2;` — i.e.
+/// `LPV35_FRAME_HEAD_SIZE + LPV35_FRAME_VERSION_SIZE + LPV35_FRAME_RESERVE_SIZE`
+/// + sequence + type + datalen (`tuya_protocol.h`). They are **two** bytes, not a
+/// `u32`; a 20-byte header shifts every field the device parses.
+pub const HEADER_LEN_6699: usize = 18;
+/// The two reserved bytes, both zero (`version = 0`, no reserved flag).
+pub const RESERVED_6699: [u8; 2] = [0, 0];
+/// AAD span of a 6699 frame — `reserved | seqno | cmd | len`, the wire image of
+/// `lpv35_additional_data_t`, which both `lpv35_frame_serialize` and
+/// `lpv35_frame_deserialize` hand to GCM as `ad` (the magic prefix is excluded).
+pub const AAD_6699: core::ops::Range<usize> = 4..HEADER_LEN_6699;
 /// Sanity bound on a declared frame payload length.
 pub const MAX_PAYLOAD_LENGTH: usize = 1 << 20;
 
@@ -164,7 +178,7 @@ pub struct FrameHeader {
     pub total: usize,
 }
 
-/// Parses the 16-byte (55AA) or 20-byte (6699) header.
+/// Parses the 16-byte (55AA) or 18-byte (6699) header.
 pub fn parse_header(data: &[u8]) -> Result<FrameHeader, WireError> {
     if data.len() < 16 {
         return Err(WireError::ShortHeader);
@@ -195,16 +209,16 @@ pub fn parse_header(data: &[u8]) -> Result<FrameHeader, WireError> {
             })
         }
         PREFIX_6699 => {
-            if data.len() < 20 {
+            if data.len() < HEADER_LEN_6699 {
                 return Err(WireError::ShortHeader);
             }
-            let seqno = u32::from_be_bytes([data[8], data[9], data[10], data[11]]);
-            let cmd = u32::from_be_bytes([data[12], data[13], data[14], data[15]]);
-            let length = u32::from_be_bytes([data[16], data[17], data[18], data[19]]) as usize;
+            let seqno = u32::from_be_bytes([data[6], data[7], data[8], data[9]]);
+            let cmd = u32::from_be_bytes([data[10], data[11], data[12], data[13]]);
+            let length = u32::from_be_bytes([data[14], data[15], data[16], data[17]]) as usize;
             if length > MAX_PAYLOAD_LENGTH {
                 return Err(WireError::LengthOverBound(length));
             }
-            let total = 20 + length + 4;
+            let total = HEADER_LEN_6699 + length + 4;
             if data.len() < total {
                 return Err(WireError::Truncated {
                     need: total,
@@ -216,7 +230,7 @@ pub fn parse_header(data: &[u8]) -> Result<FrameHeader, WireError> {
                 seqno,
                 cmd,
                 length,
-                header_len: 20,
+                header_len: HEADER_LEN_6699,
                 total,
             })
         }
@@ -330,7 +344,7 @@ pub fn unpack_55aa(
 }
 
 /// Packs a 6699 frame (3.5): GCM-seals `[retcode?] | plaintext` under `key`
-/// with AAD = header bytes `[4..20]`; the wire body is
+/// with AAD = header bytes `[4..18]`; the wire body is
 /// `iv(12) | ciphertext | tag(16)`. The caller ALWAYS supplies the nonce;
 /// GCM nonce reuse under one key is catastrophic, so production callers MUST
 /// generate a fresh 12-byte IV per message. The simulator uses deterministic
@@ -356,14 +370,13 @@ pub fn pack_6699(
         return Err(WireError::LengthOverBound(length));
     }
     let length_u32 = u32::try_from(length).map_err(|_| WireError::LengthOverBound(length))?;
-    let mut out = Vec::with_capacity(20 + length + 4);
+    let mut out = Vec::with_capacity(HEADER_LEN_6699 + length + 4);
     out.extend_from_slice(&PREFIX_6699.to_be_bytes());
-    out.extend_from_slice(&0u32.to_be_bytes());
+    out.extend_from_slice(&RESERVED_6699);
     out.extend_from_slice(&seqno.to_be_bytes());
     out.extend_from_slice(&cmd.to_be_bytes());
     out.extend_from_slice(&length_u32.to_be_bytes());
-    let aad_start = out.len() - 16;
-    let sealed = crypto::aes128_gcm_encrypt(key, &iv, &out[aad_start..], &raw);
+    let sealed = crypto::aes128_gcm_encrypt(key, &iv, &out[AAD_6699], &raw);
     out.extend_from_slice(&iv);
     out.extend_from_slice(&sealed);
     out.extend_from_slice(&SUFFIX_6699);
@@ -386,7 +399,7 @@ pub enum RetcodeMode {
 }
 
 /// Unpacks a 6699 frame: verifies the suffix, GCM tag (AAD = header
-/// bytes `[4..20]`), and returns the decrypted payload.
+/// bytes `[4..18]`), and returns the decrypted payload.
 pub fn unpack_6699(data: &[u8], key: &[u8; 16]) -> Result<Message, WireError> {
     unpack_6699_mode(data, key, RetcodeMode::Auto)
 }
@@ -404,13 +417,13 @@ pub fn unpack_6699_mode(
     if data[h.total - 4..h.total] != SUFFIX_6699 {
         return Err(WireError::Integrity);
     }
-    let body = &data[20..h.total - 4];
+    let body = &data[HEADER_LEN_6699..h.total - 4];
     if body.len() < 12 + 16 {
         return Err(WireError::ShortBody);
     }
     let mut iv = [0u8; 12];
     iv.copy_from_slice(&body[..12]);
-    let raw = crypto::aes128_gcm_decrypt(key, &iv, &data[4..20], &body[12..])
+    let raw = crypto::aes128_gcm_decrypt(key, &iv, &data[AAD_6699], &body[12..])
         .ok_or(WireError::GcmAuth)?;
     let mode = match mode {
         RetcodeMode::Auto => {

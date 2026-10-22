@@ -66,7 +66,7 @@ fn frame_6699_golden() {
     // payload {"dps":{"1":true}}, key "0123456789abcdef",
     // iv 000102030405060708090a0b.
     let golden = unhex(
-        "0000669900000000000000070000000a00000032000102030405060708090a0bfd3fc41d65565f469b043d61e2aa921774a5229f7ace0a2e102475fe6af5ba5ef6523e9feeb000009966",
+        "000066990000000000070000000a00000032000102030405060708090a0bfd3fc41d65565f469b043d61e2aa921774a5229f7acee6ee6ef4951e47c17114fdb843c433e500009966",
     );
     let key = *b"0123456789abcdef";
     let iv: [u8; 12] = unhex("000102030405060708090a0b")
@@ -79,6 +79,25 @@ fn frame_6699_golden() {
     assert_eq!(msg.payload, b"{\"dps\":{\"1\":true}}");
     assert_eq!(msg.retcode, Some(0));
     assert_eq!(msg.iv, Some(iv));
+}
+
+#[test]
+fn frame_6699_header_shape_is_18_bytes() {
+    // TuyaOS `lpv35_fixed_head_t`: prefix | version:4+reserved:4 | reserved2 |
+    // seqno | cmd | len. The two reserved bytes (not a u32) are part of the
+    // GCM AAD, so getting the width wrong breaks every real 3.5 session.
+    let key = *b"0123456789abcdef";
+    let frame = pack_6699(7, cmd::DP_QUERY, Some(0), b"{}", &key, [9u8; 12]).expect("pack");
+    assert_eq!(frame[..4], [0x00, 0x00, 0x66, 0x99]);
+    assert_eq!(frame[4..6], wire::RESERVED_6699);
+    let h = parse_header(&frame).expect("header");
+    assert_eq!(h.header_len, wire::HEADER_LEN_6699);
+    assert_eq!(h.total, 18 + h.length + 4);
+    assert_eq!(h.seqno, 7);
+    assert_eq!(h.cmd, cmd::DP_QUERY);
+    assert_eq!(&frame[wire::AAD_6699], &frame[4..18]);
+    // One byte short of a header is still a short header, not a guess.
+    assert_eq!(parse_header(&frame[..17]), Err(WireError::ShortHeader));
 }
 
 #[test]

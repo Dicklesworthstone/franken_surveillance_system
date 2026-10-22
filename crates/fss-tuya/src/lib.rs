@@ -16,9 +16,11 @@
 //!   * 55AA frames: `prefix | seq | cmd | len` (16-byte header), then
 //!     `retcode? | payload | crc32 | 0x0000AA55`; with an HMAC key (3.4) the
 //!     CRC32 trailer is replaced by HMAC-SHA256(key, header|payload).
-//!   * 6699 frames (3.5): `prefix | 0 | seq | cmd | len` (20-byte header),
-//!     then `iv(12) | ciphertext | gcm-tag(16)` AES-128-GCM under the session
-//!     or device key with AAD = header bytes `[4..20]`, then `0x00009966`.
+//!   * 6699 frames (3.5): `prefix | reserved(2) | seq | cmd | len` (18-byte
+//!     header, per TuyaOS `lpv35_fixed_head_t`), then `iv(12) | ciphertext |
+//!     gcm-tag(16)` AES-128-GCM under the session or device key with
+//!     AAD = header bytes `[4..18]` (`lpv35_additional_data_t`), then
+//!     `0x00009966`.
 //!   * 3.4/3.5 session negotiation: client nonce (cmd 3) → device nonce +
 //!     HMAC-SHA256(local_key, client_nonce) (cmd 4) → client
 //!     HMAC-SHA256(local_key, device_nonce) (cmd 5); session key is

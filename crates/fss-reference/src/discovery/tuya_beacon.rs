@@ -144,8 +144,8 @@ pub fn decode_beacon(source: &str, data: &[u8]) -> Result<TuyaBeaconObs, tuya_wi
             });
         }
     } else {
-        // 6699 body layout: header20 | iv(12) | ciphertext | gcm tag(16) |
-        // suffix 0x00009966. The full sealed body is [20 .. total-4); the
+        // 6699 body layout: header18 | iv(12) | ciphertext | gcm tag(16) |
+        // suffix 0x00009966. The full sealed body is [18 .. total-4); the
         // previous total-16 boundary truncated the tag.
         payload = &data[h.header_len..h.total - 4];
         version_hint_6699();
