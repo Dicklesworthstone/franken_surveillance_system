@@ -188,6 +188,10 @@ fn run(o: &Options) -> Result<String, &'static str> {
                 psk_truncated: false,
                 seed,
                 known_tuples: vec![("HL_CAM4".to_string(), "4.52.17.26".to_string())],
+                psk_identity: None,
+                psk_override: None,
+                audio_encoder_list: None,
+                k10000_json: None,
             },
             sensor_id: SensorId::parse(&o.sensor_id)
                 .map_err(|_| "ERR-TUTK-CAPTURE-ARGUMENT-002: sensor id")?,
@@ -197,6 +201,7 @@ fn run(o: &Options) -> Result<String, &'static str> {
             audio: AudioPolicy::Disabled,
             limits: TutkIngestLimits::default(),
             known_tuples: vec![("HL_CAM4".to_string(), "4.52.17.26".to_string())],
+
         };
         let mut ing = TutkIngest::new(cfg).map_err(|_| "ERR-TUTK-CAPTURE-SESSION-003: config")?;
 

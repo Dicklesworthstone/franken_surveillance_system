@@ -120,6 +120,10 @@ fn main() {
             psk_truncated: false,
             seed: 0xCC51_2026_1007,
             known_tuples: sim_tuples.clone(),
+            psk_identity: None,
+            psk_override: None,
+            audio_encoder_list: None,
+            k10000_json: None,
         },
         sensor_id: SensorId::parse("sensor:tutk:sim:01").unwrap(),
         stream_id: StreamId::parse("stream:tutk:sim:e2e:01").unwrap(),
@@ -127,6 +131,7 @@ fn main() {
         audio: AudioPolicy::Disabled,
         limits: TutkIngestLimits::default(),
         known_tuples: sim_tuples,
+
     };
 
     let mut ing = TutkIngest::new(cfg).expect("construct ingest");
@@ -364,6 +369,10 @@ fn live_lane(cfg_path: &str, soak_secs: Option<u64>) -> ! {
             psk_truncated,
             seed: 0xCC51_2026_1008,
             known_tuples: vec![("HL_CAM4".to_string(), "4.52.17.26".to_string())],
+            psk_identity: None,
+            psk_override: None,
+            audio_encoder_list: None,
+            k10000_json: None,
         },
         sensor_id: SensorId::parse("sensor:tutk:live:01").unwrap(),
         stream_id: StreamId::parse("stream:tutk:live:01").unwrap(),
@@ -375,6 +384,7 @@ fn live_lane(cfg_path: &str, soak_secs: Option<u64>) -> ! {
         },
         limits: TutkIngestLimits::default(),
         known_tuples: vec![("HL_CAM4".to_string(), "4.52.17.26".to_string())],
+
     };
     let mut ing = TutkIngest::new(cfg).expect("construct ingest");
 

@@ -287,12 +287,26 @@ impl DtlsClient {
     /// to any passive observer. The PSK is never logged or persisted here.
     #[must_use]
     pub fn new(psk: &[u8], client_random: [u8; 32], eph_secret: [u8; 32]) -> Option<Self> {
+        Self::with_identity(psk, None, client_random, eph_secret)
+    }
+
+    /// Same as [`Self::new`] with an explicit PSK identity. `identity = None`
+    /// keeps the normal TUTK AV identity. Firmware that predates the
+    /// CVE-2023-6324 fix accepts any `AUTHTKN_*` identity and hashes an empty
+    /// buffer for the PSK, so `psk` may be any non-empty placeholder then.
+    #[must_use]
+    pub fn with_identity(
+        psk: &[u8],
+        identity: Option<Vec<u8>>,
+        client_random: [u8; 32],
+        eph_secret: [u8; 32],
+    ) -> Option<Self> {
         if psk.is_empty() {
             return None;
         }
         Some(Self {
             psk: psk.to_vec(),
-            identity: PSK_IDENTITY.to_vec(),
+            identity: identity.unwrap_or_else(|| PSK_IDENTITY.to_vec()),
             state: State::SendClientHello,
             client_random,
             eph_secret,

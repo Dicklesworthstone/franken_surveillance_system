@@ -103,6 +103,10 @@ fn main() {
             psk_truncated: false,
             seed,
             known_tuples: vec![("HL_CAM4".to_string(), "4.52.17.26".to_string())],
+            psk_identity: None,
+            psk_override: None,
+            audio_encoder_list: None,
+            k10000_json: None,
         },
         sensor_id: SensorId::parse("sensor:tutk:acquire:01").unwrap(),
         stream_id: StreamId::parse("stream:tutk:acquire:01").unwrap(),
@@ -110,6 +114,7 @@ fn main() {
         audio: AudioPolicy::Disabled,
         limits: TutkIngestLimits::default(),
         known_tuples: vec![("HL_CAM4".to_string(), "4.52.17.26".to_string())],
+
     };
     let mut ing = TutkIngest::new(cfg).expect("construct ingest");
 

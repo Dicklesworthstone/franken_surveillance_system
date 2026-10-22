@@ -42,6 +42,9 @@ pub const PENDING_FRAMES_MAX: usize = 64;
 /// session fails closed instead of streaming nothing forever.
 pub const STREAM_SILENCE_TIMEOUT_NS: u64 = 10_000_000_000;
 
+/// Codec preference list the reference client sends in K10000.
+pub const DEFAULT_AUDIO_ENCODERS: [u32; 3] = [137, 138, 140];
+
 /// Owner-supplied session configuration.
 #[derive(Debug, Clone)]
 pub struct SessionConfig {
@@ -65,6 +68,21 @@ pub struct SessionConfig {
     /// failure, and NO stream-start is ever dispatched. An empty list refuses
     /// every camera (default-deny).
     pub known_tuples: Vec<(String, String)>,
+    /// DTLS PSK identity override. `None` uses the normal TUTK AV identity
+    /// (`AUTHPWD_admin`). An `AUTHTKN_*` identity selects the legacy
+    /// arbitrary-PSK path that ignores the PSK value entirely
+    /// (CVE-2023-6324 shape): the caller may then pass an empty ENR and any
+    /// 32-byte `psk_override`.
+    pub psk_identity: Option<String>,
+    /// Explicit PSK override for the identity path above. `None` derives the
+    /// PSK from `enr` (`psk_truncated` still applies).
+    pub psk_override: Option<Vec<u8>>,
+    /// Override the K10000 `audioEncoderList` values. Long lists exercise the
+    /// vendor parser's fixed-size stack array.
+    pub audio_encoder_list: Option<Vec<u32>>,
+    /// Full override of the K10000 JSON body (wins over
+    /// `audio_encoder_list`). The body is the HL payload verbatim.
+    pub k10000_json: Option<String>,
 }
 
 /// A reassembled access unit with receive timing and continuity context.
@@ -123,6 +141,13 @@ pub enum SessionEvent {
         connection_res: String,
     },
 
+    /// Unconsumed IOCTRL command received while streaming (vendor-defined).
+    Ioctl {
+        /// HL command id.
+        cmd: u16,
+        /// Raw HL payload.
+        payload: Vec<u8>,
+    },
     /// Camera authenticated but its (model, firmware) tuple — or a
     /// self-reported non-"normal" `cameraInfo.type` — is absent from the
     /// owner-supplied allowlist; the session fails closed BEFORE any stream
@@ -466,6 +491,27 @@ impl TutkSession {
         self.phase = Phase::Terminal;
     }
 
+    /// Send raw pre-framed application data (already in the vendor's AV
+    /// framing) on the DTLS channel. Used by lab probes that must reproduce a
+    /// camera-side parser exactly; the frame is retained for retransmission.
+    pub fn send_raw(&mut self, frame: &[u8]) {
+        self.send_hl_raw(frame);
+    }
+
+    fn send_hl_raw(&mut self, frame: &[u8]) {
+        self.send_appdata(frame);
+        self.resend_frame = Some(frame.to_vec());
+        self.resend_next_ns = Some(self.now_ns + RESEND_INTERVAL_NS);
+    }
+
+    /// Send an IOCTRL (`0x7000`) command on the main channel. Valid once the
+    /// DTLS channel exists; commands are vendor-defined (see the camera's
+    /// ioctl descriptor table). The frame is retained for retransmission.
+    pub fn send_ioctl(&mut self, command_id: u16, payload: &[u8]) {
+        let hl = av::build_hl(command_id, payload);
+        self.send_hl(hl);
+    }
+
     // -- discovery ----------------------------------------------------------
 
     fn feed_discovery(&mut self, data: &[u8], now_ns: u64) {
@@ -501,16 +547,22 @@ impl TutkSession {
     // -- dtls ---------------------------------------------------------------
 
     fn start_dtls(&mut self, now_ns: u64) {
-        let psk = if self.cfg.psk_truncated {
-            wire::derive_psk_truncated(&self.cfg.enr)
-        } else {
-            wire::derive_psk(&self.cfg.enr).to_vec()
+        let psk = match (&self.cfg.psk_override, self.cfg.psk_truncated) {
+            (Some(p), _) => p.clone(),
+            (None, true) => wire::derive_psk_truncated(&self.cfg.enr),
+            (None, false) => wire::derive_psk(&self.cfg.enr).to_vec(),
         };
         let mut cr = [0u8; 32];
         self.rng.bytes(&mut cr);
         let mut es = [0u8; 32];
         self.rng.bytes(&mut es);
-        match DtlsClient::new(&psk, cr, es) {
+        let identity = self
+            .cfg
+            .psk_identity
+            .as_deref()
+            .map(str::as_bytes)
+            .map(<[u8]>::to_vec);
+        match DtlsClient::with_identity(&psk, identity, cr, es) {
             Some(mut c) => {
                 c.start();
                 self.dtls = Some(c);
@@ -640,7 +692,7 @@ impl TutkSession {
                 match self.phase {
                     Phase::KAuth => self.handle_kauth(cmd, &payload, now_ns),
                     Phase::StreamStart => self.handle_stream_start(cmd, &payload, now_ns),
-                    _ => {}
+                    _ => self.events.push_back(SessionEvent::Ioctl { cmd, payload }),
                 }
             }
             StreamMsg::ChanMsg(_, _wseq) => {
@@ -883,7 +935,15 @@ impl TutkSession {
     }
 
     fn send_k10000(&mut self) {
-        let hl = av::build_k10000();
+        let hl = match &self.cfg.k10000_json {
+            Some(json) => av::build_hl(10000, json.as_bytes()),
+            None => av::build_k10000_with(
+                self.cfg
+                    .audio_encoder_list
+                    .as_deref()
+                    .unwrap_or(&DEFAULT_AUDIO_ENCODERS),
+            ),
+        };
         self.send_hl(hl);
     }
 
@@ -954,6 +1014,10 @@ mod tests {
             psk_truncated: false,
             seed: 99,
             known_tuples: vec![("SIM-CAM".to_string(), "9.99.0.SIM".to_string())],
+            psk_identity: None,
+            psk_override: None,
+            audio_encoder_list: None,
+            k10000_json: None,
         }
     }
 

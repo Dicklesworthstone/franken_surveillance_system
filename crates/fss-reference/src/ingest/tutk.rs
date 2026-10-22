@@ -635,6 +635,7 @@ impl TutkIngest {
         match ev {
             SessionEvent::DiscoveryComplete { .. } | SessionEvent::DtlsEstablished => {}
             SessionEvent::LoginAccepted { .. } => {}
+            SessionEvent::Ioctl { .. } => {}
             SessionEvent::KAuthComplete { camera_info } => {
                 let auth_receipt = ContentDigest::sha256(camera_info.as_bytes());
                 self.state = AcquisitionState::Authenticated { auth_receipt };
@@ -851,6 +852,10 @@ mod tests {
                 psk_truncated: false,
                 seed: 42,
                 known_tuples: vec![("SIM-CAM".to_string(), "9.99.0.SIM".to_string())],
+                psk_identity: None,
+                psk_override: None,
+                audio_encoder_list: None,
+                k10000_json: None,
             },
             sensor_id: SensorId::parse("sensor:tutk:sim:01").unwrap(),
             stream_id: StreamId::parse("stream:tutk:sim:01").unwrap(),
@@ -858,6 +863,7 @@ mod tests {
             audio,
             limits: TutkIngestLimits::default(),
             known_tuples: vec![("SIM-CAM".to_string(), "9.99.0.SIM".to_string())],
+
         }
     }
     #[test]

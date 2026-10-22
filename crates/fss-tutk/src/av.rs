@@ -227,7 +227,26 @@ pub fn parse_ioctrl(data: &[u8]) -> Result<(u16, &[u8], usize), AvError> {
 /// K10000 auth request with the reference codec preference list.
 #[must_use]
 pub fn build_k10000() -> Vec<u8> {
-    build_hl(10000, br#"{"cameraInfo":{"audioEncoderList":[137,138,140]}}"#.as_slice())
+    build_k10000_with(&DEFAULT_AUDIO_ENCODERS)
+}
+
+/// Codec preference list the reference client sends in K10000.
+pub const DEFAULT_AUDIO_ENCODERS: [u32; 3] = [137, 138, 140];
+
+/// K10000 auth request with an arbitrary `audioEncoderList`. The vendor
+/// parser copies this array into a fixed stack array, so long lists are the
+/// natural fuzzing surface.
+#[must_use]
+pub fn build_k10000_with(encoders: &[u32]) -> Vec<u8> {
+    let mut json = String::from(r#"{"cameraInfo":{"audioEncoderList":["#);
+    for (i, e) in encoders.iter().enumerate() {
+        if i > 0 {
+            json.push(',');
+        }
+        json.push_str(&e.to_string());
+    }
+    json.push_str("]}}");
+    build_hl(10000, json.as_bytes())
 }
 
 /// K10002 challenge response (16B response + 4B session id + video + audio flags).
