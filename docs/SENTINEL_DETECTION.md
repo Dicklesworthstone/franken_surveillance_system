@@ -7,6 +7,11 @@ short, deterministic detector bursts independently of foreground, tracks, or eve
 It implements a bounded retained-recording slice of FSS-078 / RISK-007 / OPEN-006;
 it does not establish a real-world recall improvement or a production monitoring service.
 
+For recordings longer than 64 source segments, use the explicit
+[`--stream-sentinel yes` workflow](LONG_RECORDING_SENTINEL.md). It preserves the
+short-range behavior documented here and adds whole-range budgets, retained model
+custody and exact cold numerical replay.
+
 ## Run
 
 ```sh

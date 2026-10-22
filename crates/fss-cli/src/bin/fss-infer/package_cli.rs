@@ -22,6 +22,7 @@ use fss_reference::{
     ScalarExecCx,
 };
 
+use super::long_sentinel_cli;
 use super::{RunResult, Values, digest, export, number, text, value};
 
 const HELP: &str = "fss-infer package-detect [options]\n\
@@ -30,6 +31,8 @@ const HELP: &str = "fss-infer package-detect [options]\n\
   [--minimum-score-ppm N] [--max-macs N] [--max-tensor-bytes N] [--report-out FILE] [--principal ID]\n\
   [--retain yes]\n\
   [--sentinel-every-frames N --sentinel-max-inferences M [--sentinel-burst-frames K]]\n\
+  [--stream-sentinel yes --stream-read-bytes N --stream-pixel-budget N --max-report-bytes N]\n\
+  [--max-frame-pixels N (stream-sentinel only)]\n\
   [--kernels optimized-cpu|scalar-reference] [--threads N|auto]\n\
   Runs a digest-pinned, verified RGB detector package (for example models/yolox-nano/\n\
   yolox_nano.fmpk) over a retained MJPEG, H.264 or H.265 import. JPEG frames are decoded to\n\
@@ -52,6 +55,22 @@ const HELP: &str = "fss-infer package-detect [options]\n\
   --retain yes retains each child report independently for the existing event workflow;\n\
   a later failure does not undo earlier children. Retry exact inputs to resume idempotently.\n\
   No tracking bridges the gaps. No continuous coverage, absence, recall or alert claim is made.\n\
+  --stream-sentinel yes permits a complete source range and period up to 65536 frames,\n\
+  keeping burst length at most 8 and one shared inference allowance at most 64. It requires\n\
+  the explicit sentinel period and inference allowance. Source-read/pixel/report ceilings\n\
+  default to 536870912 bytes, 1073741824 luma samples and 16777216 report bytes.\n\
+  --max-frame-pixels accepts 256..9437184 and only narrows native JPEG/AVC/HEVC ceilings.\n\
+  AVC rounds down to whole 256-pixel macroblocks; omitted values preserve native defaults.\n\
+  Video admission charges configured coded-luma capacity before every access unit, including\n\
+  decode-ahead and skipped CRA leading pictures. This differs from actual returned raster\n\
+  usage. The default video capacity is 9437184 samples per access unit; a tighter known\n\
+  camera ceiling permits longer footage within the same whole-operation allowance.\n\
+  AVC/HEVC decode the full strict range once, including the suffix after the last sample;\n\
+  a source gap or decode refusal fails the computation. MJPEG decodes selected frames only.\n\
+  All source, JPEG and detection-head allowances are shared across bursts. Model MACs and\n\
+  tensor scratch remain per inference; the full inference/output reservation is admitted\n\
+  before source reads. Whole-recording retention also saves the exact package and recipe\n\
+  for fss-infer sentinel-replay without loose model or source files.\n\
   Without sentinel options the existing output and retention behavior are unchanged.\n\
   The default threshold is the package's own; --minimum-score-ppm is an explicit override.\n\
   --kernels selects the executor: optimized-cpu (default; certified bit-identical to the\n\
@@ -75,6 +94,7 @@ struct Options {
     report: Option<PathBuf>,
     retain: bool,
     sentinel: Option<SentinelConfig>,
+    stream_sentinel: Option<long_sentinel_cli::StreamOptions>,
 }
 
 fn parse(args: &[OsString]) -> Result<Option<Options>, String> {
@@ -112,7 +132,7 @@ fn parse(args: &[OsString]) -> Result<Option<Options>, String> {
     let mut values = Values::new();
     for pair in args.chunks(2) {
         let key = pair[0].to_str().ok_or("option names require UTF-8")?;
-        if !allowed.contains(&key) {
+        if !allowed.contains(&key) && !long_sentinel_cli::RUN_OPTIONS.contains(&key) {
             return Err("unknown or inapplicable package-detect option".into());
         }
         if values.contains_key(key) {
@@ -151,13 +171,22 @@ fn parse(args: &[OsString]) -> Result<Option<Options>, String> {
     } else {
         None
     };
-    if frames == 0
-        || frames > MAX_PACKAGE_DETECT_FRAMES
-        || first_segment.checked_add(frames).is_none()
-    {
-        return Err("frames must be 1..64 within the addressable range".into());
+    let stream_sentinel = long_sentinel_cli::enabled(&values)?;
+    let maximum_frames = if stream_sentinel {
+        fss_reference::ingest::long_watch::MAX_LONG_WATCH_FRAMES
+    } else {
+        MAX_PACKAGE_DETECT_FRAMES
+    };
+    if frames == 0 || frames > maximum_frames || first_segment.checked_add(frames).is_none() {
+        return Err(format!(
+            "frames must be 1..{maximum_frames} within the addressable range"
+        ));
     }
-    let sentinel = parse_sentinel(&values, first_segment, frames)?;
+    let sentinel = if stream_sentinel {
+        None
+    } else {
+        parse_sentinel(&values, first_segment, frames)?
+    };
     let kernels = if values.contains_key("--kernels") {
         match text(&values, "--kernels")? {
             "optimized-cpu" => KernelBackend::OptimizedCpuV1,
@@ -192,6 +221,7 @@ fn parse(args: &[OsString]) -> Result<Option<Options>, String> {
         number(&values, "--max-macs", Some(limits.run.execution.max_macs))?,
         max_bytes,
     );
+    let stream_sentinel = long_sentinel_cli::parse_run(&values, first_segment, frames, limits)?;
     Ok(Some(Options {
         root: PathBuf::from(value(&values, "--root")?),
         site,
@@ -201,6 +231,7 @@ fn parse(args: &[OsString]) -> Result<Option<Options>, String> {
         kernels,
         threads,
         sentinel,
+        stream_sentinel,
         request: PackageDetectRequest {
             import_identity: digest(&values, "--import-id")?,
             first_segment,
@@ -258,13 +289,10 @@ fn read_package(path: &Path) -> RunResult<Vec<u8>> {
 }
 
 fn run(options: Options, out: &mut impl Write) -> RunResult<()> {
-    if !fs::symlink_metadata(&options.root)?.file_type().is_dir()
-        || !fs::symlink_metadata(options.root.join("LAYOUT"))?
-            .file_type()
-            .is_file()
-    {
-        return Err(io::Error::other("existing non-symlink deployment required").into());
-    }
+    let authority_bytes = match &options.stream_sentinel {
+        Some(stream) => stream.authority_bytes()?,
+        None => 64 * 1024 * 1024,
+    };
     let authority = ContextAuthority::new_root(RootAuthoritySpec {
         trace_id: "trace:package-detect-cli".into(),
         operation_id: OperationId::parse("operation:package-detect-cli")?,
@@ -272,13 +300,20 @@ fn run(options: Options, out: &mut impl Write) -> RunResult<()> {
         capabilities: vec!["ADP-REPLAY-001".into()],
         deadline: None,
         priority: 10,
-        budgets: BudgetVector::builder().bytes(64 * 1024 * 1024).build()?,
+        budgets: BudgetVector::builder().bytes(authority_bytes).build()?,
         privacy_scope: "privacy:local-authorized-files".into(),
         retention_scope: "retention:existing-deployment-policy".into(),
         anchor_universe: ContentDigest::sha256(options.site.as_bytes()),
         generation: 1,
     })?;
     authority.validate()?;
+    if !fs::symlink_metadata(&options.root)?.file_type().is_dir()
+        || !fs::symlink_metadata(options.root.join("LAYOUT"))?
+            .file_type()
+            .is_file()
+    {
+        return Err(io::Error::other("existing non-symlink deployment required").into());
+    }
     let cx = ReplayCx::from_context_authority(&authority, options.root.clone())?;
     let scalar = ScalarExecCx::new();
     let result = (|| -> RunResult<()> {
@@ -293,6 +328,41 @@ fn run(options: Options, out: &mut impl Write) -> RunResult<()> {
         )?
         .with_execution_threads(options.threads);
         let mut deployment = ReferenceDeployment::open(&options.root, &options.site, &cx)?;
+        if let Some(stream) = &options.stream_sentinel {
+            let request = stream.request(&options.request);
+            let report = fss_reference::ingest::long_sentinel::run_long_sentinel_detection(
+                &deployment,
+                &package,
+                &request,
+                stream.config,
+                &stream.limits,
+                &cx,
+                &scalar,
+            )?;
+            if options.retain {
+                let retained = fss_reference::ingest::long_sentinel::retained::retain_long_sentinel_detection(
+                    &mut deployment, &package, &bytes, &report, &cx,
+                ).inspect_err(|_| {
+                    eprintln!("Earlier retained sentinel children may be durable; retry the exact source, package, schedule and ceilings to reconcile.");
+                })?;
+                eprintln!(
+                    "long_sentinel_retained={}\nstatus={}\nroot={}\nrecipe={}\npackage={}\nchildren={}\nauthority_sequence={}",
+                    retained.report_digest(),
+                    retained.status().as_str(),
+                    retained.root(),
+                    retained.recipe_digest(),
+                    retained.package_digest(),
+                    retained.child_reports().len(),
+                    retained.authority_anchor().commit_sequence,
+                );
+            }
+            if let Some(path) = &options.report {
+                export(path, report.json().as_bytes(), &options.root, &cx)?;
+            }
+            cx.checkpoint("long_sentinel:cli_release")?;
+            out.write_all(report.json().as_bytes())?;
+            return Ok(());
+        }
         if let Some(config) = options.sentinel {
             let report = run_sentinel_detection(
                 &deployment,
@@ -382,6 +452,7 @@ pub(super) fn dispatch(args: &[OsString], out: &mut impl Write) -> Option<ExitCo
                 let id = error.downcast_ref::<fss_reference::ingest::rgb_package::RgbPackageError>().map(|e| e.stable_id())
                     .or_else(|| error.downcast_ref::<fss_reference::ingest::package_detect::PackageDetectError>().map(|e| e.stable_id()))
                     .or_else(|| error.downcast_ref::<fss_reference::ingest::package_event::PackageEventError>().map(|e| e.stable_id()))
+                    .or_else(|| error.downcast_ref::<fss_reference::ingest::long_sentinel::retained::LongSentinelRetentionError>().map(|e| e.stable_id()))
                     .unwrap_or(fss_cli::ERR_CLI_RUNTIME_FAILURE);
                 eprintln!("{id}: {error}");
                 ExitCode::from(fss_cli::ExitIdentity::RUNTIME_FAILURE.code)
@@ -581,6 +652,212 @@ mod tests {
             })
         );
         assert!(parsed.retain);
+        Ok(())
+    }
+
+    fn stream_args() -> Vec<OsString> {
+        let mut input = args();
+        let frames = input
+            .iter()
+            .position(|value| value == "--frames")
+            .expect("fixture frames");
+        input[frames + 1] = "170".into();
+        input.extend(
+            [
+                "--stream-sentinel",
+                "yes",
+                "--sentinel-every-frames",
+                "130",
+                "--sentinel-burst-frames",
+                "3",
+                "--sentinel-max-inferences",
+                "6",
+            ]
+            .map(OsString::from),
+        );
+        input
+    }
+
+    fn replace(input: &mut [OsString], key: &str, value: &str) {
+        let at = input
+            .iter()
+            .position(|argument| argument == key)
+            .expect("fixture option");
+        input[at + 1] = value.into();
+    }
+
+    #[test]
+    fn whole_recording_sentinel_admits_late_bursts_without_widening_short_paths()
+    -> Result<(), String> {
+        let mut input = stream_args();
+        let parsed = parse(&input)?.ok_or("missing stream request")?;
+        assert!(parsed.sentinel.is_none());
+        let stream = parsed
+            .stream_sentinel
+            .ok_or("missing whole-recording mode")?;
+        let plan = fss_reference::ingest::long_sentinel::LongSentinelPlan::new(
+            parsed.request.first_segment,
+            parsed.request.segment_count,
+            stream.config,
+        )
+        .map_err(|error| error.to_string())?;
+        assert_eq!(
+            plan.selected_segments(),
+            std::collections::BTreeSet::from([0, 1, 2, 130, 131, 132])
+        );
+        let reservation = plan
+            .reservation(&stream.limits)
+            .map_err(|error| error.to_string())?;
+        assert_eq!(reservation.inferences, 6);
+        assert_eq!(
+            reservation.execution_macs,
+            6 * stream.limits.package.run.execution.max_macs
+        );
+        assert_eq!(
+            reservation.output_bytes,
+            6 * stream.limits.package.run.maximum_output_bytes as u64
+        );
+        let mode = input
+            .iter()
+            .position(|value| value == "--stream-sentinel")
+            .ok_or("mode")?;
+        input.drain(mode..mode + 2);
+        assert!(parse(&input).is_err());
+        assert!(parse(&args())?.ok_or("ordinary")?.stream_sentinel.is_none());
+        Ok(())
+    }
+
+    #[test]
+    fn whole_recording_ceiling_options_require_explicit_stream_mode() {
+        for flags in [
+            ["--stream-read-bytes", "1024"],
+            ["--stream-pixel-budget", "1024"],
+            ["--max-report-bytes", "1024"],
+            ["--max-frame-pixels", "1024"],
+            ["--stream-sentinel", "yes"],
+            ["--stream-sentinel", "no"],
+        ] {
+            let mut input = args();
+            input.extend(flags.map(OsString::from));
+            assert!(parse(&input).is_err(), "{flags:?}");
+        }
+        for (key, value) in [
+            ("--frames", "65537"),
+            ("--sentinel-every-frames", "65537"),
+            ("--sentinel-burst-frames", "9"),
+            ("--sentinel-max-inferences", "65"),
+            ("--sentinel-max-inferences", "2"),
+        ] {
+            let mut input = stream_args();
+            replace(&mut input, key, value);
+            assert!(parse(&input).is_err(), "{key}={value}");
+        }
+        for flags in [
+            ["--stream-read-bytes", "536870913"],
+            ["--stream-pixel-budget", "68719476737"],
+            ["--max-report-bytes", "16777217"],
+            ["--max-frame-pixels", "255"],
+            ["--max-frame-pixels", "9437185"],
+            ["--max-macs", "18446744073709551615"],
+            ["--stream-sentinel", "yes"],
+        ] {
+            let mut input = stream_args();
+            input.extend(flags.map(OsString::from));
+            assert!(parse(&input).is_err(), "{flags:?}");
+        }
+    }
+
+    #[test]
+    fn explicit_stream_allowances_are_admitted_together_before_source_reads() -> Result<(), String>
+    {
+        let mut input = stream_args();
+        input.extend(
+            [
+                "--stream-read-bytes",
+                "1048576",
+                "--stream-pixel-budget",
+                "262144",
+                "--max-report-bytes",
+                "524288",
+                "--max-frame-pixels",
+                "512",
+                "--max-macs",
+                "2000",
+                "--max-tensor-bytes",
+                "1048576",
+                "--retain",
+                "yes",
+            ]
+            .map(OsString::from),
+        );
+        let parsed = parse(&input)?.ok_or("request")?;
+        assert!(parsed.retain);
+        let stream = parsed.stream_sentinel.ok_or("stream")?;
+        let plan = fss_reference::ingest::long_sentinel::LongSentinelPlan::new(
+            parsed.request.first_segment,
+            parsed.request.segment_count,
+            stream.config,
+        )
+        .map_err(|error| error.to_string())?;
+        let reservation = plan
+            .reservation(&stream.limits)
+            .map_err(|error| error.to_string())?;
+        assert_eq!(reservation.source_chunk_bytes, 1048576);
+        assert_eq!(reservation.pixel_samples, 262144);
+        assert_eq!(reservation.report_bytes, 524288);
+        assert_eq!(reservation.execution_macs, 12000);
+        assert_eq!(stream.limits.package.run.execution.max_bytes, 1048576);
+        assert_eq!(stream.limits.package.jpeg.frame.maximum_pixels, 512);
+        assert_eq!(stream.limits.package.h264.max_macroblocks, 2);
+        assert_eq!(stream.limits.package.h265.max_luma_samples, 512);
+        assert_eq!(stream.request(&parsed.request).segment_count, 170);
+        Ok(())
+    }
+
+    #[test]
+    fn stream_frame_ceiling_never_rounds_up_or_raises_native_defaults() -> Result<(), String> {
+        let defaults = PackageDetectLimits::default();
+        let original = parse(&stream_args())?
+            .ok_or("stream request")?
+            .stream_sentinel
+            .ok_or("stream mode")?
+            .limits;
+        for (pixels, macroblocks) in [
+            (256_u64, 1_u32),
+            (257, 1),
+            (511, 1),
+            (512, 2),
+            (9437184, 36864),
+        ] {
+            let mut input = stream_args();
+            input.extend([
+                OsString::from("--max-frame-pixels"),
+                pixels.to_string().into(),
+            ]);
+            let limits = parse(&input)?
+                .ok_or("stream request")?
+                .stream_sentinel
+                .ok_or("stream mode")?
+                .limits;
+            assert_eq!(
+                limits.package.jpeg.frame.maximum_pixels,
+                defaults.jpeg.frame.maximum_pixels.min(pixels as usize)
+            );
+            assert_eq!(limits.package.h264.max_macroblocks, macroblocks);
+            assert_eq!(
+                limits.package.h265.max_luma_samples,
+                defaults.h265.max_luma_samples.min(pixels)
+            );
+            if pixels < 9437184 {
+                assert_ne!(
+                    limits.digest(),
+                    original.digest(),
+                    "retained recipe must bind codec ceilings"
+                );
+            } else {
+                assert_eq!(limits.digest(), original.digest());
+            }
+        }
         Ok(())
     }
 }
