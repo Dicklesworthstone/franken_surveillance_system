@@ -205,8 +205,11 @@ class SloValidatePlantedFaultTests(unittest.TestCase):
             codes = [f.code for f in findings]
             self.assertIn(slo_validate.CODE_ACHIEVED_WITHOUT_PROOF_ROOT, codes)
 
-    # Positive test: Achieved with real existing proof file passes
-    def test_achieved_with_real_proof_file_passes(self) -> None:
+    # Planted negative (fss-gyqyz): a directly-cited qualification receipt is not an achieved-SLO proof root
+    def test_achieved_citing_receipt_directly_is_rejected(self) -> None:
+        """A valid, passed fss.release_qualification_receipt.v1 cited directly as the proof root is
+        rejected: a qualification receipt binds no claim, so the proof root must be a fss.proof_bundle.v1
+        bundle bound to the SLO (the claim_proof_bundle_checker invariant; fss-gyqyz)."""
         proof_dir = ROOT / "qualification-artifacts"
         proof_dir.mkdir(parents=True, exist_ok=True)
         proof_file = proof_dir / "SLO-TEST-001-proof.receipt"
@@ -233,7 +236,9 @@ class SloValidatePlantedFaultTests(unittest.TestCase):
             real_proof_root = "qualification-artifacts/SLO-TEST-001-proof.receipt"
             planted = self.real_slos_text + f"\n| `SLO-TEST-001` | latency <= 5 ms | edge-GPU | achieved | {real_proof_root} |\n"
             is_valid, findings = self._validate_with_planted_slos(planted)
-            self.assertTrue(is_valid, f"Expected success with valid proof root, got findings: {[f.message for f in findings]}")
+            self.assertFalse(is_valid, f"Expected a directly-cited qualification receipt to be rejected, got: {[f.message for f in findings]}")
+            codes = [f.code for f in findings]
+            self.assertIn(slo_validate.CODE_ACHIEVED_WITHOUT_PROOF_ROOT, codes)
         finally:
             if proof_file.exists():
                 proof_file.unlink()

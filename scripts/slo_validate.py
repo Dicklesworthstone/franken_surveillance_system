@@ -663,7 +663,7 @@ def parse_slos(
                             code=CODE_PROOF_ROOT_NOT_FOUND,
                             path=path_str,
                             message=f"SLO {slo_id} referenced proof root '{proof_root}' points to qualification-artifacts root directory, not a file",
-                            remediation="Proof root must point to a specific qualification receipt file",
+                            remediation="Proof root must point to a specific proof bundle file, not the qualification-artifacts directory",
                             params={"slo_id": slo_id, "proof_root": proof_root},
                         ))
                     else:
@@ -741,16 +741,7 @@ def parse_slos(
 
                                 if isinstance(receipt_json, dict):
                                     receipt_schema = receipt_json.get("schema")
-                                    if receipt_schema not in ("fss.release_qualification_receipt.v1", "fss.proof_bundle.v1"):
-                                        findings.append(SloFinding(
-                                            severity="error",
-                                            code=CODE_ACHIEVED_WITHOUT_PROOF_ROOT,
-                                            path=path_str,
-                                            message=f"SLO {slo_id} referenced proof root '{proof_root}' schema is '{receipt_schema}'; expected 'fss.release_qualification_receipt.v1' or 'fss.proof_bundle.v1'",
-                                            remediation="Proof root must specify schema 'fss.release_qualification_receipt.v1' or 'fss.proof_bundle.v1'",
-                                            params={"slo_id": slo_id, "proof_root": proof_root, "schema": str(receipt_schema)},
-                                        ))
-                                    elif receipt_schema == "fss.proof_bundle.v1":
+                                    if receipt_schema == "fss.proof_bundle.v1":
                                         bundle_req = ["schema", "status"]
                                         missing_keys = [k for k in bundle_req if k not in receipt_json]
                                         bound_claim = receipt_json.get("claim_id") or receipt_json.get("claimId")
@@ -782,30 +773,19 @@ def parse_slos(
                                                 params={"slo_id": slo_id, "status": str(receipt_json.get("status"))},
                                             ))
                                     else:
-                                        receipt_req = [
-                                            "receiptId", "laneId", "sourceCommit", "sourceTree",
-                                            "siblingClosureDigest", "toolchain", "hostIdentity",
-                                            "target", "features", "commands", "status"
-                                        ]
-                                        missing_keys = [k for k in receipt_req if k not in receipt_json]
-                                        if missing_keys:
-                                            findings.append(SloFinding(
-                                                severity="error",
-                                                code=CODE_ACHIEVED_WITHOUT_PROOF_ROOT,
-                                                path=path_str,
-                                                message=f"SLO {slo_id} qualification receipt '{proof_root}' missing required fields: {missing_keys}",
-                                                remediation="Receipt must satisfy fss.release_qualification_receipt.v1 schema",
-                                                params={"slo_id": slo_id, "missing": missing_keys},
-                                            ))
-                                        elif receipt_json.get("status") != "passed":
-                                            findings.append(SloFinding(
-                                                severity="error",
-                                                code=CODE_ACHIEVED_WITHOUT_PROOF_ROOT,
-                                                path=path_str,
-                                                message=f"SLO {slo_id} qualification receipt '{proof_root}' status is '{receipt_json.get('status')}'; must be 'passed'",
-                                                remediation="Achieved SLO must reference a passed qualification receipt",
-                                                params={"slo_id": slo_id, "status": str(receipt_json.get("status"))},
-                                            ))
+                                        # An achieved SLO's proof root must be a fss.proof_bundle.v1
+                                        # bundle bound to the SLO id (the canonical SLO evidence path,
+                                        # fss-gyqyz). A qualification receipt binds no claim -- the
+                                        # claim_proof_bundle_checker invariant -- so it cannot be the
+                                        # proof root directly; any other schema is rejected the same way.
+                                        findings.append(SloFinding(
+                                            severity="error",
+                                            code=CODE_ACHIEVED_WITHOUT_PROOF_ROOT,
+                                            path=path_str,
+                                            message=f"SLO {slo_id} referenced proof root '{proof_root}' schema is '{receipt_schema}'; an achieved SLO must cite a 'fss.proof_bundle.v1' bundle bound to it (a qualification receipt binds no claim and cannot be the proof root directly)",
+                                            remediation="Cite a fss.proof_bundle.v1 proof bundle whose claim_id equals the SLO id; the bundle retains the SLO measurement evidence",
+                                            params={"slo_id": slo_id, "proof_root": proof_root, "schema": str(receipt_schema)},
+                                        ))
 
         # Tombstone validation
         if is_tombstone:
