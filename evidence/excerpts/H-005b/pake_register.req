@@ -1,0 +1,1 @@
+{"method":"login","params":{"cipher_suites":[1],"encryption":["aes_128_ccm"],"passcode_type":"userpw","sub_method":"pake_register","user_random":"DsfTPqGWkCf+tD69ltW5oNhaiBzAdJ6g4GtAPgwrbGk=","username":"21232f297a57a5a743894a0e4a801fc3"}}

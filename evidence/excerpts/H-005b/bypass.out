@@ -1,0 +1,4 @@
+  File "/Users/jemanuel/projects/franken_surveillance_system/evidence/excerpts/H-005b/bypass.py", line 43
+    {"method": "scanApList", "params": {"onboarding": {"scan": {}}}}]}}),
+                                                                    ^
+SyntaxError: closing parenthesis ']' does not match opening parenthesis '{' on line 42

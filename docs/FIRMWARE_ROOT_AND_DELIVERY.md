@@ -59,6 +59,12 @@ this table puts the two families whose chains are already reached first.
 
 ### 2b. Wyze OTA — the one chain that could still land
 
+> **Open conflict.** A second static pass over 4.52.17.26 (`docs/exploit/ota-path.md`) finds the v4
+> downloader rejects any URL not starting `https` and sets `CURLOPT_SSL_VERIFYPEER=1`,
+> `VERIFYHOST=2`, with a device CA path — i.e. plain HTTP may be v2-only, and the real gate would be
+> TLS trust for an Amazon-owned host we cannot get a certificate for. No allowlist was found in the
+> downloader, so a device-trusted CA would also suffice. This is unresolved and it decides the chain.
+
 The update channel is weak where it matters. Mechanism from v2-era evidence, `[INFERENCE]` for v4 —
 the v4 object is `<ver>.tar` and the handler's own strings say `/tmp/img`:
 `GET /firmware.bin` over **plain HTTP port 80** to an allowlisted host, `/tmp/img`, a

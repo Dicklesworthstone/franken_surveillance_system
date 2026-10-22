@@ -33,3 +33,6 @@ __pycache__/
 
 # TLC scratch state directories (regenerated per run)
 proofs/tla/states/
+
+# lab cracking corpora (regenerable, hundreds of MB)
+evidence/excerpts/**/digits8.txt
