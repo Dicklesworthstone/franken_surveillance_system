@@ -151,6 +151,28 @@ fn all_null_and_mixed_campaign_previews_are_pure_and_wrong_approval_has_no_io() 
 }
 
 #[test]
+fn shared_campaign_admission_preserves_published_watch_preview_bytes() -> Test {
+    // Independently captured from the published 51f45e20 production binary before extraction.
+    for (children, expected) in [
+        (
+            vec![None],
+            "sha256:bff42ce81d09f6bb8c9abccda74b0abb4428888ffc3c0b9a429df3d91e34dda3",
+        ),
+        (
+            vec![Some(child(1)), None, Some(child(3))],
+            "sha256:8d105028da67e5479103d331d5c506b1c1467fe9ca274cb7d9ad8e0241dc8d71",
+        ),
+    ] {
+        let preview = plan::Options::parse(&args(&children))?.preview()?;
+        assert_eq!(
+            ContentDigest::sha256(preview.as_bytes()).to_text(),
+            expected
+        );
+    }
+    Ok(())
+}
+
+#[test]
 fn approval_binds_exact_prefix_and_every_owner_or_execution_allowance() -> Test {
     let input = args(&[Some(child(1)), None]);
     let original = plan::Options::parse(&input)?.approval()?;

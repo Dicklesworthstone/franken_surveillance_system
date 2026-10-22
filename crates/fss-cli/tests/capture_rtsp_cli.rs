@@ -104,6 +104,11 @@ fn binary(name: &str) -> Test<PathBuf> {
             "FSS_WATCH_RTSP_CAMPAIGN_BIN",
             option_env!("CARGO_BIN_EXE_fss-watch-rtsp-campaign"),
         ),
+        "sentinel-campaign" => (
+            "FSS_SENTINEL_RTSP_CAMPAIGN_BIN",
+            option_env!("CARGO_BIN_EXE_fss-sentinel-rtsp-campaign"),
+        ),
+        "infer" => ("FSS_INFER_BIN", option_env!("CARGO_BIN_EXE_fss-infer")),
         "event" => ("FSS_EVENT_BIN", option_env!("CARGO_BIN_EXE_fss-event")),
         _ => return Err("unknown fixture binary".into()),
     };
@@ -125,6 +130,10 @@ fn output_bytes(reader: impl Read, output_limit: &AtomicBool) -> io::Result<Vec<
 }
 
 fn run(name: &str, args: &[OsString]) -> Test<Output> {
+    run_with_timeout(name, args, Duration::from_secs(20))
+}
+
+fn run_with_timeout(name: &str, args: &[OsString], timeout: Duration) -> Test<Output> {
     let mut child = Command::new(binary(name)?)
         .args(args)
         .stdin(Stdio::null())
@@ -139,7 +148,7 @@ fn run(name: &str, args: &[OsString]) -> Test<Output> {
         let limit = &output_limit;
         let stdout = scope.spawn(move || output_bytes(stdout, limit));
         let stderr = scope.spawn(move || output_bytes(stderr, limit));
-        let deadline = Instant::now() + Duration::from_secs(20);
+        let deadline = Instant::now() + timeout;
         let mut timed_out = false;
         let status = loop {
             if output_limit.load(Ordering::Acquire) {
@@ -300,6 +309,7 @@ fn listener() -> Test<TcpListener> {
 #[derive(Clone, Copy)]
 enum Behavior {
     Target,
+    StaticTarget,
     EofAfterOne,
     MalformedAfterOne,
     WrongCadence,
@@ -404,9 +414,6 @@ fn video(
     payload_type: u8,
     two_windows: bool,
 ) -> Test<Vec<u8>> {
-    let mut result = Vec::new();
-    let mut sequence = 1_u16;
-    let mut count = 0_u32;
     let source = nals();
     let source = if two_windows {
         let mut completed = 0;
@@ -426,6 +433,32 @@ fn video(
     } else {
         source
     };
+    video_nals(pictures, frame_duration, payload_type, source)
+}
+
+// Repeat the exact independently decodable first picture. Only native RTP coordinates rise;
+// native AVC decode therefore sees identical images without an alternate codec/runtime.
+fn static_video(pictures: usize, frame_duration: u32, payload_type: u8) -> Test<Vec<u8>> {
+    let source = nals();
+    let idr = source
+        .iter()
+        .position(|nal| nal[0] & 31 == 5)
+        .ok_or("first fixture IDR")?;
+    let source = std::iter::repeat_n(&source[..=idr], pictures)
+        .flat_map(|picture| picture.iter().copied())
+        .collect();
+    video_nals(pictures, frame_duration, payload_type, source)
+}
+
+fn video_nals(
+    pictures: usize,
+    frame_duration: u32,
+    payload_type: u8,
+    source: Vec<&[u8]>,
+) -> Test<Vec<u8>> {
+    let mut result = Vec::new();
+    let mut sequence = 1_u16;
+    let mut count = 0_u32;
     for nal in source {
         if count as usize == pictures {
             break;
@@ -524,7 +557,10 @@ fn serve(listener: TcpListener, behavior: Behavior) -> Test<Transcript> {
     transcript.methods.push(method);
     response(&mut peer, cseq, "Session: fixture\r\n", "")?;
     transcript.pictures = match behavior {
-        Behavior::Target | Behavior::WrongCadence | Behavior::Payload97 => 2,
+        Behavior::Target
+        | Behavior::StaticTarget
+        | Behavior::WrongCadence
+        | Behavior::Payload97 => 2,
         Behavior::TwoWindows => 4,
         _ => 1,
     };
@@ -538,12 +574,17 @@ fn serve(listener: TcpListener, behavior: Behavior) -> Test<Transcript> {
     } else {
         96
     };
-    peer.write_all(&video(
-        transcript.pictures,
-        cadence,
-        payload_type,
-        matches!(behavior, Behavior::TwoWindows),
-    )?)?;
+    let video = if matches!(behavior, Behavior::StaticTarget) {
+        static_video(transcript.pictures, cadence, payload_type)?
+    } else {
+        video(
+            transcript.pictures,
+            cadence,
+            payload_type,
+            matches!(behavior, Behavior::TwoWindows),
+        )?
+    };
+    peer.write_all(&video)?;
     if matches!(behavior, Behavior::MalformedAfterOne) {
         // Complete interleaved framing, deliberately truncated RTP header.
         peer.write_all(&[b'$', 0, 0, 4, 0x80, 96, 0, 9])?;

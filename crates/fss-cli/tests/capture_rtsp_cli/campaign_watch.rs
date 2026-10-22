@@ -4,7 +4,7 @@
 use super::*;
 use fss_cli::agent_json::{array, object, string};
 
-fn request(
+pub(super) fn request(
     directory: &Directory,
     root: &Path,
     child: &Value,
@@ -70,7 +70,7 @@ fn request(
     ))
 }
 
-fn requests_json(requests: &[Option<Vec<String>>]) -> String {
+pub(super) fn requests_json(requests: &[Option<Vec<String>>]) -> String {
     array(
         &requests
             .iter()
@@ -91,7 +91,7 @@ fn requests_json(requests: &[Option<Vec<String>>]) -> String {
     )
 }
 
-fn watch_args(
+pub(super) fn watch_args(
     directory: &Directory,
     root: &Path,
     pin: &Value,
@@ -127,7 +127,7 @@ fn watch_args(
     .collect())
 }
 
-fn approve_watch(input: &[OsString]) -> Test<Vec<OsString>> {
+pub(super) fn approve_watch(input: &[OsString]) -> Test<Vec<OsString>> {
     let preview = parse(&good(run("watch-campaign", input)?)?)?;
     assert_eq!(text(&preview, "kind")?, "plan");
     assert_eq!(text(&preview, "writes")?, "none_until_exact_outer_approval");
@@ -147,7 +147,7 @@ fn attempt_rows(report: &Value) -> Test<&[Value]> {
         .array()
         .ok_or("campaign rows")?)
 }
-fn journal_snapshot(root: &Path) -> Test<(Vec<u8>, Vec<u8>)> {
+pub(super) fn journal_snapshot(root: &Path) -> Test<(Vec<u8>, Vec<u8>)> {
     Ok((
         fs::read(root.join("ledger/journal.fssj"))?,
         fs::read(root.join("effects/journal.fssj"))?,
@@ -156,7 +156,7 @@ fn journal_snapshot(root: &Path) -> Test<(Vec<u8>, Vec<u8>)> {
 
 // Execute only the native binary; this decodes the small shell-quoted argument format emitted
 // by its report without invoking a shell, environment expansion or command substitution.
-fn command_words(command: &str) -> Test<Vec<OsString>> {
+pub(super) fn command_words(command: &str, expected_binary: &str) -> Test<Vec<OsString>> {
     let mut words = Vec::new();
     let mut word = String::new();
     let mut quoted = false;
@@ -179,7 +179,7 @@ fn command_words(command: &str) -> Test<Vec<OsString>> {
     if !word.is_empty() {
         words.push(word.into());
     }
-    if words.first().is_none_or(|word| word != "fss-event") {
+    if words.first().is_none_or(|word| word != expected_binary) {
         return Err("unexpected rerun binary".into());
     }
     Ok(words)
@@ -312,7 +312,7 @@ fn two_native_archives_and_empty_failed_attempt_survive_retry_and_cold_exact_wat
     assert_eq!(commands.len(), 3);
     assert_eq!(value(&commands[2], "command")?, &Value::Null);
     for index in 0..2 {
-        let words = command_words(text(&commands[index], "command")?)?;
+        let words = command_words(text(&commands[index], "command")?, "fss-event")?;
         let rerun = report(run("event", &words[1..])?)?;
         let watch = value(&attempts[index], "watch")?;
         assert_eq!(

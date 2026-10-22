@@ -8,6 +8,9 @@ use std::path::Path;
 #[path = "campaign_watch.rs"]
 mod watch;
 
+#[path = "campaign_sentinel.rs"]
+mod sentinel;
+
 fn set(input: &mut Vec<OsString>, key: &str, value: &str) {
     if let Some(index) = input.iter().position(|part| part == key) {
         input[index + 1] = value.into();

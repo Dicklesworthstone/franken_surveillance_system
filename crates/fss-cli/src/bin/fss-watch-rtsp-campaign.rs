@@ -1,6 +1,8 @@
 #![forbid(unsafe_code)]
 //! Exact saved RTSP campaign history → independent native retained recordings → native watch.
 
+#[path = "fss-watch-rtsp-campaign/admission.rs"]
+mod admission;
 #[path = "fss-watch-rtsp-campaign/archive_open.rs"]
 mod archive_open;
 #[path = "fss-watch-rtsp-campaign/driver.rs"]
@@ -9,6 +11,8 @@ mod driver;
 mod import_plan;
 #[path = "fss-watch-rtsp-campaign/plan.rs"]
 mod plan;
+#[path = "fss-watch-rtsp-campaign/preflight.rs"]
+mod preflight;
 #[path = "fss-watch-rtsp-campaign/rerun.rs"]
 mod rerun;
 #[cfg(test)]

@@ -121,6 +121,10 @@ name = "fss-watch-rtsp-campaign"
 path = "src/bin/fss-watch-rtsp-campaign.rs"
 
 [[bin]]
+name = "fss-sentinel-rtsp-campaign"
+path = "src/bin/fss-sentinel-rtsp-campaign.rs"
+
+[[bin]]
 name = "fss-replay"
 path = "src/bin/fss-replay.rs"
 

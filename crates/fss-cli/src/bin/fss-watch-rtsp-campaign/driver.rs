@@ -1,7 +1,6 @@
 #![forbid(unsafe_code)]
 //! One exact owner for cold history, independently retained source archives and destination watch.
 
-use std::io;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
@@ -87,42 +86,6 @@ impl RtspCampaignWatchAuthority for Owner<'_> {
     }
 }
 
-fn charge_boundary(owner: &Owner<'_>, work: &mut WorkBudget<'_>) -> Result<(), &'static str> {
-    owner.check()?;
-    work.charge(128).map_err(|_| LIMIT)
-}
-
-/// Resolve existing ancestors for overlap checks without creating not-yet-observed attempt stores.
-/// Pending or failed attempts are metadata-only; even an existing file is not opened as media.
-fn resolved(
-    path: &Path,
-    owner: &Owner<'_>,
-    work: &mut WorkBudget<'_>,
-) -> Result<PathBuf, &'static str> {
-    let mut candidate = path;
-    let mut missing = Vec::new();
-    for _ in 0..=2048 {
-        charge_boundary(owner, work)?;
-        match std::fs::symlink_metadata(candidate) {
-            Ok(_) => {
-                charge_boundary(owner, work)?;
-                let mut resolved = candidate.canonicalize().map_err(|_| REQUEST)?;
-                owner.check()?;
-                for component in missing.iter().rev() {
-                    resolved.push(component);
-                }
-                return Ok(resolved);
-            }
-            Err(error) if error.kind() == io::ErrorKind::NotFound => {
-                missing.push(candidate.file_name().ok_or(REQUEST)?.to_owned());
-                candidate = candidate.parent().ok_or(REQUEST)?;
-            }
-            Err(_) => return Err(REQUEST),
-        }
-    }
-    Err(LIMIT)
-}
-
 fn preflight(
     owner: &Owner<'_>,
     history: &VerifiedCampaignHistory,
@@ -133,48 +96,20 @@ fn preflight(
         .plan
         .validate_destination(history, &owner.options.root)
         .map_err(|error| error.stable_id())?;
-    let mut paths = vec![
-        owner.options.root.clone(),
-        owner.options.plan.history_root.clone(),
-    ];
-    // Protect every frozen custody domain, including unobserved later attempts: the new
-    // deployment must never create data inside their archive, journal or original-source roots.
-    for attempt in &history.plan().attempts {
-        paths.push(PathBuf::from(&attempt.archive_path));
-        paths.push(PathBuf::from(&attempt.pins_path));
-        if let Some(source) = &attempt.source {
-            paths.push(PathBuf::from(&source.path));
-        }
-    }
-    let canonical = paths
-        .iter()
-        .map(|path| resolved(path, owner, work))
-        .collect::<Result<Vec<_>, _>>()?;
-    for (index, left) in canonical.iter().enumerate() {
-        for right in &canonical[index + 1..] {
-            if left.starts_with(right) || right.starts_with(left) {
-                return Err(REQUEST);
-            }
-        }
-    }
-    let mut archives = Vec::new();
-    for (child, recorded) in owner.options.children.iter().zip(history.attempts()) {
-        let Some(child) = child else { continue };
-        if child.archive != Path::new(&recorded.attempt.archive_path) {
-            return Err(REQUEST);
-        }
-        for name in ["", "spool", "roots", "tombstones"] {
-            charge_boundary(owner, work)?;
-            if !std::fs::symlink_metadata(child.archive.join(name))
-                .is_ok_and(|metadata| metadata.file_type().is_dir())
-            {
-                return Err(SOURCE);
-            }
-            owner.check()?;
-        }
-        archives.push(child.archive.clone());
-    }
-    Ok(archives)
+    super::preflight::check(
+        &owner.options.root,
+        &owner.options.plan.history_root,
+        history,
+        &owner.options.children,
+        &[],
+        &|| owner.check(),
+        work,
+        super::preflight::Errors {
+            request: REQUEST,
+            source: SOURCE,
+            limit: LIMIT,
+        },
+    )
 }
 
 pub(super) fn execute(options: &Options) -> Result<String, &'static str> {

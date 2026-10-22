@@ -12,6 +12,11 @@ recorded attempts together, preserve empty and unknown attempts in the report,
 and rerun the resulting native watch after the original camera archives go
 offline. It neither starts capture nor publishes an event or alert.
 
+For trained detector sampling that also reaches stationary footage, see
+[campaign sentinel](rtsp_campaign_sentinel.md). It uses the same exact retained
+history/import contract with an explicit campaign inference allowance and optional
+source-closed model/report retention.
+
 ## Select one independently saved history prefix
 
 Save the complete `pin` from a `history_durable` capture receipt independently of
