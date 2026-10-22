@@ -77,7 +77,11 @@ fn main() {
         if !sent {
             if let Some(at) = streamed_at {
                 if at.elapsed() > Duration::from_millis(400) {
-                    session.send_ioctl(cmd, args[6].as_bytes());
+                    let payload = match args[6].strip_prefix("hex:") {
+                        Some(h) => (0..h.len()).step_by(2).map(|i| u8::from_str_radix(&h[i..i+2], 16).unwrap()).collect::<Vec<u8>>(),
+                        None => args[6].as_bytes().to_vec(),
+                    };
+                    session.send_ioctl(cmd, &payload);
                     sent = true;
                     println!("sent hl {cmd:#06x}");
                 }
