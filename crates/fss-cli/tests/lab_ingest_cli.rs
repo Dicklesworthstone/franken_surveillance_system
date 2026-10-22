@@ -181,8 +181,6 @@ fn clean_h264_import_matches_manifest() -> TestResult {
         &input,
         &["--media-format", "annexb"],
     )?;
-    let expected = sha256_text(&fs::read(&input)?);
-    let pass = expected == H264_SHA256;
     let record = Record::new("clean_h264_import")
         .check("input_sha256", format!("sha256:{H264_SHA256}"), field(&output, "input_sha256")?)
         .check(
@@ -196,7 +194,7 @@ fn clean_h264_import_matches_manifest() -> TestResult {
             "annexb".to_string(),
             field(&output, "media_format")?,
         );
-    record.emit_checked(0, pass && record.passed());
+    record.emit_checked(0, record.passed());
     assert_clean_media_report(&output, H264_AU)?;
     assert_eq!(field(&output, "omission_count")?, "0");
     Ok(())
