@@ -377,6 +377,13 @@ pub(super) struct Recorder {
     work: WorkBudget<'static>,
 }
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(super) struct ContinuationSeed {
+    pub(super) next_index: usize,
+    pub(super) durable_pictures: u64,
+    pub(super) successful_attempts: usize,
+}
+
 impl Recorder {
     pub(super) fn new(config: &Config, plan: &ReconnectPlan) -> Result<Self, &'static str> {
         config.validate(plan)?;
@@ -435,6 +442,119 @@ impl Recorder {
             cx,
             work: WorkBudget::new(config.work),
         })
+    }
+
+    /// Reopen one exact independently saved successful campaign prefix under fresh current
+    /// authority and a fresh history-work account. Only settled-success prefixes are exposed
+    /// through the live reconnect CLI in this first continuation mode; retry-after-failure
+    /// continuation remains explicit future work rather than silently rewriting terminal counts.
+    pub(super) fn resume(
+        config: &Config,
+        plan: &ReconnectPlan,
+        expected: CampaignPin,
+    ) -> Result<(Self, ContinuationSeed), &'static str> {
+        config.validate(plan)?;
+        let campaign = config.campaign(plan)?;
+        if !campaign.continue_after_success {
+            return Err(ERROR);
+        }
+        let mut authority = Authority::new(
+            &campaign.principal,
+            campaign.approval,
+            campaign.digest().map_err(|_| ERROR)?,
+            config.root.clone(),
+            config.root.clone(),
+            Some(expected),
+            true,
+        )?;
+        let root = resolved(&config.root, &authority)?;
+        if root != config.root {
+            return Err(ROOT);
+        }
+        for output in plan.output_paths()? {
+            if output != config.root && !separate(&root, &resolved(output, &authority)?) {
+                return Err(ROOT);
+            }
+        }
+        for attempt in &plan.attempts {
+            if let Some(auth) = &attempt.authentication
+                && !separate(&root, &resolved(&auth.credential_file, &authority)?)
+            {
+                return Err(ROOT);
+            }
+        }
+        authority.root = root.clone();
+        authority.check()?;
+        let cx =
+            ReplayCx::from_context_authority(&authority.context, &root).map_err(|_| AUTHORITY)?;
+        let publisher = LocalRootPublisher::open(&root, config.storage()).map_err(|_| ERROR)?;
+        authority.check()?;
+        let mut work = WorkBudget::new(config.work);
+        let verified = VerifiedCampaignHistory::load(
+            &publisher,
+            expected,
+            config.limits,
+            &authority,
+            &cx,
+            &mut work,
+        )
+        .map_err(|_| ERROR)?;
+        if verified.plan() != &campaign
+            || verified.writer_limits() != config.limits
+            || verified.terminal().is_some()
+            || verified.attempts().is_empty()
+            || verified.attempts().iter().any(|attempt| {
+                attempt
+                    .finish
+                    .as_ref()
+                    .is_none_or(|finish| !finish.settled_success)
+            })
+            || verified
+                .attempts()
+                .last()
+                .and_then(|attempt| attempt.finish.as_ref())
+                .is_none_or(|finish| !finish.next_attempt_planned)
+        {
+            return Err(ERROR);
+        }
+        let next_index = verified.attempts().len();
+        if next_index >= campaign.attempts.len() {
+            return Err(ERROR);
+        }
+        let durable_pictures = verified.attempts().iter().try_fold(0_u64, |sum, attempt| {
+            let pictures = attempt
+                .finish
+                .as_ref()
+                .and_then(|finish| finish.native.as_ref())
+                .map(|native| native.durable_pictures)
+                .ok_or(ERROR)?;
+            sum.checked_add(pictures).ok_or(ERROR)
+        })?;
+        let successful_attempts = next_index;
+        let writer = CampaignWriter::resume_from_prefix(
+            &publisher,
+            campaign,
+            expected,
+            config.limits,
+            &authority,
+            &cx,
+            &mut work,
+        )
+        .map_err(|_| ERROR)?;
+        Ok((
+            Self {
+                writer,
+                publisher,
+                authority,
+                cx,
+                work,
+            },
+            ContinuationSeed {
+                next_index,
+                durable_pictures,
+                successful_attempts,
+            },
+        ))
     }
 
     pub(super) fn start(&mut self, ordinal: u32) -> Result<CampaignPin, &'static str> {

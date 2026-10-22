@@ -11,8 +11,7 @@ are unchanged when no history option is present. History does not provide an
 always-on recorder, continuity or scene coverage. The native history layer now
 supports an exact cold continuation primitive after restart, but only from an
 independently saved finish pin whose retained controller decision explicitly
-planned the next frozen attempt. The capture CLI does not yet expose that primitive
-as a live camera command. The separate
+planned the next frozen attempt. The reconnect CLI exposes that primitive through the four --continue-history-* coordinates. It requires a newly reviewed continuation approval and currently accepts only prefixes whose selected attempts all settled successfully. The separate
 [campaign watch command](rtsp_campaign_watch.md) can analyze the complete saved
 catalogs across independently retained attempts while preserving failed, empty
 and unknown states.
@@ -107,7 +106,8 @@ on failure.
 
 At the native history layer, a fresh owner may invoke the explicit cold-continuation
 primitive with the original frozen plan, original writer limits, an independently
-saved exact finish pin, current authority and a fresh work account. The selected
+saved exact finish pin, current authority and a fresh work account. The reconnect CLI
+uses the same primitive when all four --continue-history-* coordinates are supplied. The selected
 finish must have `next_attempt_planned=true`; a start-only tail remains an unknown
 native outcome and is refused, as are terminal campaigns and non-continuing
 finishes. The complete selected prefix is reverified through the live publisher

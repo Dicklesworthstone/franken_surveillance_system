@@ -11,7 +11,7 @@ use fss_cli::agent_json::{object, string};
 use fss_core::{
     BudgetVector, CanonicalEncoder, ContentDigest, ContextAuthority, OperationId, RootAuthoritySpec,
 };
-use fss_reference::rtsp::campaign_history::{CampaignFinish, NativeAttemptObservation};
+use fss_reference::rtsp::campaign_history::{CampaignFinish, CampaignPin, NativeAttemptObservation};
 
 use super::driver::{self, AttemptOutcome};
 use super::plan::{self, Options};
@@ -26,7 +26,7 @@ pub(super) mod recovery;
 #[path = "campaign_history.rs"]
 pub(super) mod history;
 
-pub(super) const MAX_ARGUMENTS: usize = plan::MAX_ARGUMENTS + 46;
+pub(super) const MAX_ARGUMENTS: usize = plan::MAX_ARGUMENTS + 54;
 const FORMAT: &str = "fss.rtsp_reconnect_cli.v1";
 const MAX_CONTROL_REPORT_BYTES: usize = 262_144;
 const POLICY: &str = "bounded-owner-approved-attempts:literal-peer-only:fresh-generation-and-clocks:\
@@ -44,6 +44,9 @@ no-pending-custody-or-control:original-failure-retained:no-continuity-claim";
 // The conditional encoding below leaves all pre-existing reconnect approvals unchanged.
 const CAMPAIGN_POLICY: &str = "fss.rtsp_capture_campaign.v1:continue-after-settled-success:\
 every-approved-attempt-is-independent:all-attempts-must-settle-for-completion";
+const CONTINUATION_POLICY: &str = "fss.rtsp_capture_campaign_continuation.v1:\
+exact-independent-finish-pin:fresh-owner-approval:fresh-history-work:\
+settled-success-prefix-only:repeat-backoff-before-next-camera:no-budget-refund";
 pub(super) const HELP: &str = "fss-capture-rtsp reconnect [ordinary capture options]\n\
   --max-attempts 3 --retry-delay-ms 250 --retry-max-delay-ms 5000\n\
   [--progress-timeout-ms 5000] [--capture-duration-ms 10000]\n\
@@ -167,7 +170,8 @@ campaign metadata in a separate root-last immutable object store. Its path and w
 storage, record, metadata and work ceilings change the outer approval. Nothing is retained\n\
 there by default. Every start is durable BEFORE camera admission; every native observation\n\
 and controller decision is durable BEFORE a successor. A separate record seals completion.\n\
-History failure stops capture. No existing history directory is adopted, repaired or resumed.\n\
+History failure stops capture. Existing history is never adopted implicitly or repaired.\n\
+Only the separately approved exact --continue-history-* mode may reopen the selected prefix.\n\
 Save every history_durable pin independently. Cold inspection uses all four exact coordinates:\n\
 fss-capture-rtsp campaign-inspect --help. This opens no camera and grants no capture authority.\n\
 Failed, empty and interrupted attempts remain distinct; a start without a finish has UNKNOWN\n\
@@ -178,6 +182,7 @@ pub(super) struct ReconnectPlan {
     attempts: Vec<Options>,
     sources: Option<retained::SourcePlans>,
     history: Option<history::Config>,
+    continuation: Option<CampaignPin>,
     retry_delay_ms: u64,
     retry_max_delay_ms: u64,
     progress_timeout_ns: Option<u64>,
@@ -253,6 +258,27 @@ impl ReconnectPlan {
             Some("index") => (true, true),
             Some(_) => return Err("offline recovery requires --recover yes or --recover index"),
         };
+        let continuation = match (
+            values.remove("--continue-history-approval"),
+            values.remove("--continue-history-plan"),
+            values.remove("--continue-history-root-digest"),
+            values.remove("--continue-history-records"),
+        ) {
+            (None, None, None, None) => None,
+            (Some(approval), Some(plan), Some(root), Some(records)) => Some(CampaignPin {
+                approval: ContentDigest::parse(&approval)
+                    .map_err(|_| "invalid continuation history approval")?,
+                plan: ContentDigest::parse(&plan)
+                    .map_err(|_| "invalid continuation history plan")?,
+                root: ContentDigest::parse(&root)
+                    .map_err(|_| "invalid continuation history root")?,
+                records: positive(&records, 1, 33)? as u32,
+            }),
+            _ => return Err("cold continuation requires all four --continue-history-* coordinates"),
+        };
+        if recover && continuation.is_some() {
+            return Err("cold continuation cannot be combined with offline recovery");
+        }
         let continue_after_success = match values.remove("--continue-after-success").as_deref() {
             None => false,
             Some("yes") => true,
@@ -409,6 +435,7 @@ impl ReconnectPlan {
             attempts,
             sources,
             history,
+            continuation,
             retry_delay_ms,
             retry_max_delay_ms,
             progress_timeout_ns,
@@ -434,6 +461,23 @@ impl ReconnectPlan {
         }
         if let Some(history) = &out.history {
             history.validate(&out)?;
+        }
+        if let Some(pin) = out.continuation {
+            pin.validate()
+                .map_err(|_| "invalid cold continuation pin")?;
+            let history = out
+                .history
+                .as_ref()
+                .ok_or("cold continuation requires --history-root and original history limits")?;
+            if !out.continue_after_success
+                || pin.approval != out.digest()?
+                || pin.plan != history.campaign(&out)?.digest().map_err(|_| "history plan digest")?
+                || pin.records < 2
+                || pin.records % 2 != 0
+                || pin.records as usize / 2 >= out.attempts.len()
+            {
+                return Err("cold continuation requires an exact nonterminal settled campaign finish");
+            }
         }
         Ok(out)
     }
@@ -528,6 +572,24 @@ impl ReconnectPlan {
         ))
     }
 
+    fn approval_digest(&self) -> Result<ContentDigest, &'static str> {
+        let capture = self.digest()?;
+        let Some(pin) = self.continuation else {
+            return Ok(capture);
+        };
+        let mut e = CanonicalEncoder::new();
+        e.text(CONTINUATION_POLICY);
+        e.digest(capture);
+        e.digest(pin.approval);
+        e.digest(pin.plan);
+        e.digest(pin.root);
+        e.u32(pin.records);
+        Ok(ContentDigest::sha256(
+            &e.finish_checked()
+                .map_err(|_| "continuation approval encoding refused")?,
+        ))
+    }
+
     pub(super) fn preview(&self) -> Result<String, &'static str> {
         self.prepared_preview(false).map(|(_, report)| report)
     }
@@ -543,7 +605,7 @@ impl ReconnectPlan {
         if let Some(timeout) = self.recovery_timeout_ns {
             return recovery::prepared_preview(self, timeout);
         }
-        let approval = self.digest()?;
+        let approval = self.approval_digest()?;
         let children = self
             .attempts
             .iter()
@@ -602,6 +664,21 @@ impl ReconnectPlan {
         }
         if let Some(history) = &self.history {
             fields.push(("campaign_history", history.report(self)?));
+        }
+        if let Some(pin) = self.continuation {
+            fields.push((
+                "cold_continuation",
+                object(&[
+                    ("policy", string(CONTINUATION_POLICY)),
+                    ("approval", string(&pin.approval.to_text())),
+                    ("plan", string(&pin.plan.to_text())),
+                    ("root", string(&pin.root.to_text())),
+                    ("records", pin.records.to_string()),
+                    ("fresh_history_work", "true".into()),
+                    ("historical_budget_refunded", "false".into()),
+                    ("initial_backoff_repeated", "true".into()),
+                ]),
+            ));
         }
         if let Some(timeout) = self.progress_timeout_ns {
             fields.push(("progress_timeout_ns", timeout.to_string()));
@@ -677,7 +754,7 @@ impl ReconnectPlan {
         if let Some(timeout) = self.recovery_timeout_ns {
             return recovery::execute_validated(self, timeout, validate_approval);
         }
-        let approval = self.digest()?;
+        let approval = self.approval_digest()?;
         validate_approval(approval)?;
         self.approve = Some(approval);
         execute(self)
@@ -724,18 +801,52 @@ trait Effects {
 }
 
 fn run(plan: &ReconnectPlan, effects: &mut impl Effects) -> Result<(), &'static str> {
-    if plan.recovery_timeout_ns.is_some() {
+    run_from(plan, effects, 0, 0, 0)
+}
+
+fn run_from(
+    plan: &ReconnectPlan,
+    effects: &mut impl Effects,
+    start_index: usize,
+    durable_prefix: u64,
+    successful_prefix: usize,
+) -> Result<(), &'static str> {
+    if plan.recovery_timeout_ns.is_some() || start_index >= plan.attempts.len() {
         return Err("ERR-CAPTURE-RTSP-STATE-001");
     }
-    let approval = plan.digest()?;
+    let approval = plan.approval_digest()?;
     if plan.approve != Some(approval) {
         return Err("ERR-CAPTURE-RTSP-APPROVAL-001");
     }
     effects.checkpoint()?;
-    let mut durable = 0_u64;
-    let mut successful_attempts = 0_usize;
+    let mut durable = durable_prefix;
+    let mut successful_attempts = successful_prefix;
     let mut first_failure: Option<(usize, &'static str)> = None;
-    for (index, options) in plan.attempts.iter().enumerate() {
+    if start_index != 0 {
+        effects.emit(
+            "continuation_resumed",
+            object(&[
+                ("approval", string(&approval.to_text())),
+                ("prior_attempts", start_index.to_string()),
+                ("next_attempt", (start_index + 1).to_string()),
+                ("durable_pictures_prior_attempts", durable.to_string()),
+                ("historical_budget_refunded", "false".into()),
+            ]),
+        )?;
+        let delay = plan.delay_ms(start_index - 1);
+        effects.emit(
+            "backoff",
+            object(&[
+                ("next_attempt", (start_index + 1).to_string()),
+                ("delay_ms", delay.to_string()),
+                ("reason", string("restart_continuation")),
+            ]),
+        )?;
+        effects.checkpoint()?;
+        effects.pause(delay)?;
+        effects.checkpoint()?;
+    }
+    for (index, options) in plan.attempts.iter().enumerate().skip(start_index) {
         effects.checkpoint()?;
         let child_approval = plan.child_approval(index)?;
         if plan.history.is_some() {
@@ -1128,7 +1239,7 @@ pub(super) fn execute(plan: &mut ReconnectPlan) -> Result<(), &'static str> {
     if let Some(timeout) = plan.recovery_timeout_ns {
         return recovery::execute(plan, timeout);
     }
-    let approval = plan.digest()?;
+    let approval = plan.approval_digest()?;
     if plan.approve != Some(approval) {
         return Err("ERR-CAPTURE-RTSP-APPROVAL-001");
     }
@@ -1155,11 +1266,15 @@ pub(super) fn execute(plan: &mut ReconnectPlan) -> Result<(), &'static str> {
     })
     .map_err(|_| "ERR-CAPTURE-RTSP-CONFIG-001")?;
     let supervision = plan.supervision(approval)?;
-    let history = plan
-        .history
-        .as_ref()
-        .map(|config| history::Recorder::new(config, plan))
-        .transpose()?;
+    let (history, continuation) = match (&plan.history, plan.continuation) {
+        (None, None) => (None, None),
+        (Some(config), None) => (Some(history::Recorder::new(config, plan)?), None),
+        (Some(config), Some(pin)) => {
+            let (recorder, seed) = history::Recorder::resume(config, plan, pin)?;
+            (Some(recorder), Some(seed))
+        }
+        (None, Some(_)) => return Err("ERR-CAPTURE-RTSP-HISTORY-001"),
+    };
     let mut effects = NativeEffects {
         authority,
         sequence: 0,
@@ -1168,7 +1283,17 @@ pub(super) fn execute(plan: &mut ReconnectPlan) -> Result<(), &'static str> {
         history,
         native_observation: None,
     };
-    run(plan, &mut effects)
+    if let Some(seed) = continuation {
+        run_from(
+            plan,
+            &mut effects,
+            seed.next_index,
+            seed.durable_pictures,
+            seed.successful_attempts,
+        )
+    } else {
+        run(plan, &mut effects)
+    }
 }
 
 #[cfg(test)]

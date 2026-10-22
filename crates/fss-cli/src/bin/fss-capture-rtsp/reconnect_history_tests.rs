@@ -339,3 +339,118 @@ fn history_native_retry_failure_is_not_mislabeled_controller_failure() {
         [(1, None, false, true), (2, None, true, false)]
     );
 }
+
+fn continuation_args() -> Vec<OsString> {
+    let base = ReconnectPlan::parse(&history_args()).expect("base history plan");
+    let capture = base.digest().expect("capture identity");
+    let campaign = base
+        .history
+        .as_ref()
+        .expect("history config")
+        .campaign(&base)
+        .expect("campaign plan");
+    let mut input = history_args();
+    for (key, value) in [
+        ("--continue-history-approval", capture.to_text()),
+        (
+            "--continue-history-plan",
+            campaign.digest().expect("campaign digest").to_text(),
+        ),
+        (
+            "--continue-history-root-digest",
+            ContentDigest::sha256(b"independently saved finish root").to_text(),
+        ),
+        ("--continue-history-records", "2".into()),
+    ] {
+        input.extend([key.into(), value.into()]);
+    }
+    input
+}
+
+fn continued() -> ReconnectPlan {
+    let mut plan = ReconnectPlan::parse(&continuation_args()).expect("continuation plan");
+    plan.approve = Some(plan.approval_digest().expect("fresh continuation approval"));
+    for attempt in &mut plan.attempts {
+        attempt.approve = Some(attempt.digest().expect("child digest"));
+    }
+    plan
+}
+
+#[test]
+fn cold_continuation_preserves_original_campaign_identity_but_requires_a_fresh_outer_approval() {
+    let original = ReconnectPlan::parse(&history_args()).expect("original plan");
+    let continued = ReconnectPlan::parse(&continuation_args()).expect("continued plan");
+    assert_eq!(continued.digest().unwrap(), original.digest().unwrap());
+    assert_ne!(
+        continued.approval_digest().unwrap(),
+        original.approval_digest().unwrap()
+    );
+    for (before, after) in original.attempts.iter().zip(&continued.attempts) {
+        assert_eq!(before.digest().unwrap(), after.digest().unwrap());
+    }
+    let preview = continued.preview().unwrap();
+    for expected in [
+        "\"cold_continuation\"",
+        "\"fresh_history_work\":true",
+        "\"historical_budget_refunded\":false",
+        "\"initial_backoff_repeated\":true",
+    ] {
+        assert!(preview.contains(expected), "missing {expected}");
+    }
+}
+
+#[test]
+fn continuation_parser_refuses_partial_wrong_mode_and_impossible_finish_coordinates() {
+    for key in [
+        "--continue-history-approval",
+        "--continue-history-plan",
+        "--continue-history-root-digest",
+        "--continue-history-records",
+    ] {
+        let mut input = continuation_args();
+        let at = input.iter().position(|part| part == key).unwrap();
+        input.drain(at..at + 2);
+        assert!(ReconnectPlan::parse(&input).is_err(), "missing {key}");
+    }
+    let mut odd = continuation_args();
+    set(&mut odd, "--continue-history-records", "1");
+    assert!(ReconnectPlan::parse(&odd).is_err());
+    let mut terminal_sized = continuation_args();
+    set(&mut terminal_sized, "--continue-history-records", "4");
+    assert!(ReconnectPlan::parse(&terminal_sized).is_err());
+    let mut recovery = continuation_args();
+    recovery.extend(["--recover".into(), "yes".into()]);
+    assert!(ReconnectPlan::parse(&recovery).is_err());
+    let mut no_campaign = continuation_args();
+    let at = no_campaign
+        .iter()
+        .position(|part| part == "--continue-after-success")
+        .unwrap();
+    no_campaign.drain(at..at + 2);
+    assert!(ReconnectPlan::parse(&no_campaign).is_err());
+}
+
+#[test]
+fn resumed_controller_skips_prior_capture_and_repeats_backoff_before_next_camera() {
+    let plan = continued();
+    let mut effects = Ordered::default();
+    effects.outcomes.push_back(Ok(Ordered::success()));
+    assert_eq!(run_from(&plan, &mut effects, 1, 2, 1), Ok(()));
+    assert_eq!(effects.captures, 1);
+    assert_eq!(
+        effects.events,
+        [
+            "continuation_resumed",
+            "backoff",
+            "pause",
+            "durable_start",
+            "attempt_started",
+            "camera",
+            "durable_finish",
+            "attempt_finished",
+            "durable_terminal",
+            "reconnect_terminal",
+        ]
+    );
+    assert_eq!(effects.finished, [(2, None, true, false)]);
+}

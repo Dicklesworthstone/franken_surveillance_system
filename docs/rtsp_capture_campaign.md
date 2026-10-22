@@ -123,6 +123,39 @@ native range decoding must continue to work when the original capture archive is
 offline. Import retries preserve the same imported identity and do not append
 duplicate ledger/effect records. Import and replay do not rewrite recovery pins.
 
+## Explicit cold continuation after restart
+
+A process restart never silently adopts a history directory. To continue a finite
+campaign after a successfully finished attempt, repeat the **original reconnect
+options and original history limits** and add all four coordinates from the
+independently saved `attempt_finished` receipt:
+
+```text
+--continue-history-approval sha256:...
+--continue-history-plan sha256:...
+--continue-history-root-digest sha256:...
+--continue-history-records N
+```
+
+Preview again and approve the newly returned outer digest. The original capture
+identity and every child attempt identity remain unchanged; the new continuation
+approval separately binds the exact saved finish pin. The selected prefix must
+contain only settled-success attempts, have no campaign terminal, and end with
+`next_attempt_planned=true`. Start-only tails, failed/retry prefixes, terminal
+campaigns, changed plans, changed writer limits and partial coordinates refuse.
+
+The existing history graph is reopened and reverified through the live publisher
+before any new camera session. Verification uses a fresh `--history-work` account;
+historical time, work and provider allowances are never reconstructed, refunded or
+made spendable again. The approved inter-attempt backoff is conservatively repeated
+before the next predeclared attempt, because a dead process cannot prove whether it
+already completed that wait. Previously completed archives are not reopened as live
+capture destinations and no generation, clock or path is reused.
+
+This first operator continuation mode intentionally resumes only a clean
+settled-success prefix. Retry-after-failure continuation remains unsupported rather
+than losing the earlier failure when reconstructing terminal campaign statistics.
+
 ## Explicit offline recovery
 
 Repeat the original campaign options, including `--continue-after-success yes`,
