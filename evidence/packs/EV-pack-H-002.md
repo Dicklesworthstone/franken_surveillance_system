@@ -5,9 +5,10 @@ Target device: one of five `HL_CAM4` units owned by the operator, e.g. `80482C54
 (`~/.config/fss-lab/wyze_devices_full.json:1`). SoC: Ingenic T41NQ (FCC 2AUIUWYZEC4), 16 MB SPI-NOR.
 Pack answers: transport, TLS posture, image format, what verifies what, brick/recovery, exact trigger.
 
-**Verdict: PARTIAL.** The transport, the unsigned-code nature of the payload, and the payload key are all
-proven; what remains is the cloud-only trigger, the server-side URL allowlist, and the absence of a recovery
-path for a bad kernel. The AES key was the last *secret* on the chain and it is now known (§3.3.2).
+**Verdict: PARTIAL, split two ways.**
+**Install root — reachable:** device-fetched, unsigned tar, known AES-256-ECB key, root execution.
+**Reboot persistence — open:** `/configs` is executable but nothing runs from it, and the `system` image is
+dm-verity'ed, so a durable foothold means rewriting the boot image with verity turned off (§3.5, §4.5).
 
 ---
 
@@ -24,6 +25,8 @@ path for a bad kernel. The AES key was the last *secret* on the chain and it is 
 | F7 | Downgrade accepted? | Almost certainly yes and uninterrogated: no monotonic-version check exists in the accept path; the version is parsed out of the filename for bookkeeping only. v3 was routinely *downgraded* over OTA to unlock it. | `get_upgrade_target_version_by_url` strings; `WyzeHacks` history; v4 owners downgrade routinely via SD (`forums.wyze.com/t/cam-v4-cannot-downgrade-the-firmware/310873`) — **[INFERENCE]** for the OTA path on v4 |
 | F8 | Can it survive a bad image? | **Partly.** The update is written to a *backup* bank and copied by U-Boot on reboot, so a failed download changes nothing. A *successfully written but unbootable* image is only recoverable if the camera still reaches the network — otherwise SD. | `wz_mini_hacks/documentation/build.md:79` |
 | F9 | What carries the trigger? | **AWS IoT MQTT, i.e. the cloud.** `IOT_BACK_CMD_*` is an MQTT topic family (`iotclient`), not a TUTK opcode. Payload bytes ride the LAN; the command does not. | §5.1 |
+| F11 | Does a modified `system` image still boot? | **No.** mtd2 is mounted through `fs_mgr` with dm-verity and a ramdisk `verity_key`; the metadata is appended to the partition and its root is signed. A verity failure returns before mount, and then no daemon (including the network stack) ever starts. | §3.5 |
+| F12 | Can a script persist on its own? | **No.** `/configs` is exec but nothing boots from it; `.debug_flag` actually suppresses all daemons; no `fw_setenv`/`fw_printenv` exists, so `bootargs` is only reachable by hand-writing the env block. | §4.5 |
 | F10 | Is the payload key recoverable without a device? | **Yes** — it is a hardcoded 32-byte default in `libwyzeUtilsPlatform.so`, not a per-unit secret. | §3.3.2, §3.4 |
 
 ---
@@ -207,6 +210,25 @@ hand. Sibling defaults in the same table: log-encryption key at `0x67b8`, a `wca
   `0x7d7158`="url", `0x792cec`="md5", `0x79b248`="model"). So the vendor app cannot force a mode either; the
   device decides, and on these units `enableEncryptOta`/`encryptType:1` says ECB.
 
+### 3.3.4 Required payload recipe (do not improvise this)
+
+```
+key      : oU8XzEpbOD6pVTLwdz9pxRpN9MGPCo1P          # exactly 32 bytes, no hex decode
+cipher   : AES-256-ECB
+padding  : NONE  (EVP set_padding(0); every block must already be complete)
+input    : the tar, whole file
+output   : the ciphertext served on port 80
+md5      : MD5 of the file that is served — checked at 0x402e30 *before* decrypt. A second compare
+           runs on the decrypted file at 0x402f84, so if that one fires, the digest must be the
+           plaintext's (which of the two buffers carries the JSON value is not resolved).
+filename : <version>.tar   (parsed by get_upgrade_target_version_by_url)
+```
+
+CBC is the wrong path here: `encryption` length-checks the key against the cipher it selected
+(`EVP_CIPHER_CTX_key_length`, `0x400e9c-0x400eb8`), and the 32-byte key only fits AES-256; type 1 is ECB. If a
+payload is built with CBC while the device runs type 1 (or vice versa) the decrypt yields block garbage, `tar`
+fails, and nothing is written — so the mistake is cheap, but it is still a wasted cycle.
+
 ### 3.4 Handover block (for whoever is in `libwyzefdk.so` / the app)
 
 Everything above is reproducible from the public `recovery_wcv4_4.52.9.5332.bin` alone; no device access needed.
@@ -224,6 +246,29 @@ Everything above is reproducible from the public `recovery_wcv4_4.52.9.5332.bin`
 - **If the app's `libwyzefdk.so` "Unsupported encryption type" string is on the same call graph**, the enum is
   worth reading out: `assis` compares only against `1`, so values ≥2 land in the CBC branch, and any value
   that is not 1 is *not* rejected — "unsupported" may live app-side only.
+
+### 3.5 The real persistence wall: `system` is dm-verity'ed
+
+Found in the initramfs of the same image (`rd/` = the `ramdisk` node of the kernel FIT):
+
+- `etc/init.d/S18_mountall` defines the partition map: `mtdblock0=uboot, 1=boot, 2=system, 3=back, 4=cfg,
+  5=provisioning`, then `fs_mgr /dev/mtdblock2 /system squashfs 2` and `mount -t jffs2 /dev/mtdblock4 /configs`.
+- `usr/sbin/fs_mgr` builds a device-mapper `verity` target (`DM` ioctls, `/dev/dm-%u`), reads the verity metadata
+  *appended to the partition*, checks its signature against `/verity_key` (a file in the ramdisk), and then runs
+  `mount -t %s -o ro %s %s`. Its own usage line is `fs_mgr <dev> <mnt> [ext4|squashfs] [0|1|2]`.
+- Control flow at `0x40092c-0x40099c`: verity helper returns `0` → print `Verity success` and mount; returns
+  `-1` → print `Verity fail, %d` and return **without mounting**; any other non-zero → mount anyway.
+- `S18` then does `if [ $? -ne 0 ]; then exit 0; fi` → `/configs` is never mounted, and `S20init_app`'s
+  `[ -e /system/init/app_init.sh ]` is false, so **no daemon ever starts**: no assis, no iotclient, no iCamera,
+  no network.
+
+Consequence: the squashfs on mtd2 is signed *indirectly* — via a verity tree whose root is signed with Wyze's
+key. Write a modified squashfs there without a matching verity blob and the box does not come back. The key is
+**not** in the image; regenerating the tree does not help because the root hash is signed.
+
+Escape hatch: the mount mode (`2`) lives in the **ramdisk**, which is inside the kernel FIT — hash-only, no key
+(§3.1). So `2`→`0/1` plus a re-hashed FIT is a key-free way to switch verity off. **[INFERENCE]** on which of
+0/1 actually disables (one of them must, per the usage line, but the mode is not traced to a branch yet).
 
 ---
 
@@ -278,7 +323,10 @@ a completed write is applied by the bootloader, not by the running system.
    with physical write access to boot media can inject an init-table entry that disables the secure boot check"*).
    It is writable from an OTA root shell (the v3 unlocker did exactly `dd if=/tmp/boot.bin of=/dev/mtdblock0` from
    an OTA payload), but it is the one write that can make the device need SD.
-5. **No authenticity at all.** md5 is supplied by the caller, so a MITM/hostile DNS answer is indistinguishable
+5. **A modified `system` image without a verity blob is fatal, and it takes the network with it** (§3.5): no
+   mount → no `app_init.sh` → no daemons → no second OTA attempt. Unlike the kernel, this failure cannot be
+   fixed from the LAN, because the LAN stack is on the image that failed.
+6. **No authenticity at all.** md5 is supplied by the caller, so a MITM/hostile DNS answer is indistinguishable
    from the owner. On the plus side this is also the whole reason an owner image is installable.
 
 ### 4.4 Recoverability matrix (owner rule: no SD, no UART)
@@ -294,6 +342,29 @@ a completed write is applied by the bootloader, not by the running system.
 
 One-time physical action needed: **none** for the write itself (button not even required — the command path is
 remote). The only physical-ish dependency is the DNS override on the router, and it is config, not a card.
+
+---
+
+### 4.5 Reboot persistence: inventory (this is where it actually fails)
+
+A script that only runs once is an install, not a foothold. Everything the boot path will execute:
+
+- `/configs` **is** mounted rw with default options (`mount -t jffs2 /dev/mtdblock4 /configs`, no `noexec`) —
+  writable and executable, but **nothing in the boot path executes a file from it**.
+- What `/configs` is actually consumed for: `.county_code` (`S19insmod_driver`), `.product_config`
+  (`iCamera`/`assis`, read-only), `upGradeFlag` (deleted at boot, `app_init.sh:38-41`), `.debug_flag`.
+- `.debug_flag` is a trap: when present, `app_init.sh` takes the debug branch and starts **no** daemons.
+- `/tmp` is tmpfs; `/configs/app.ver` is only a *copy destination* (`cp /system/bin/app.ver /configs`).
+- `factorycheck /dev/mmcblk0p1` → `/tmp/factory` → `/tmp/Test/test.sh` runs only when an SD/USB `Test.tar`
+  exists, and that tar is itself signature-checked ("Test.tar Signature Verification failure").
+- **No `fw_setenv`, no `fw_printenv`** in the rootfs (checked against the busybox applet list and every binary),
+  so `bootargs` is not reachable through a tool: it is plain text in the U-Boot environment (CRC32, unsigned)
+  at the usual `0x40000` env block, and could only be rewritten with a hand-built `dd`.
+- Nothing in userspace touches `/dev/mtd0` or `bootargs` at runtime.
+
+**Honest verdict on persistence: none, by script alone.** A tar that drops files into `/configs` does not
+survive as *executed* code. Persistent root requires replacing mtd2 (modified squashfs, verity neutralised via
+the ramdisk mode in mtd1) or mtd1 itself — both hash-only, no key needed (§3.1, §3.5).
 
 ---
 
@@ -342,6 +413,24 @@ still moves only on the LAN.
 
 ---
 
+### 5.2 Trigger practicality: does an owner's tap work, and where must the URL point?
+
+- **Host allowlist (the only three names documented as accepted):** `d1fk93tz4plczb.cloudfront.net`,
+  `s3-us-west-2.amazonaws.com`, `d2h8pzxcxn71bo.cloudfront.net` (`WyzeUpdater` README, quoted in §2.3). For a
+  camera the shape used in practice is `s3-us-west-2.amazonaws.com/wuv2/upgrade/<MODEL>/firmware/<ver>.tar`.
+- **Does the manual "check for updates" produce the same delta?** Not provable statically, and our capture
+  contains no real update: `wyze_api_flows.json` shows only the *check* (`firmware_version/batch`) and no
+  `run_action`. So an owner tap is *probably* sufficient (the app must push a URL after a positive check) but
+  the chain is unverified end to end.
+- **Fallback that does not depend on the app at all:** if the spoof is in place, the operator POSTs
+  `run_action` themselves with the owner token (§2.2). That is one HTTPS request; nothing in the app needs to
+  cooperate, and it also makes the version string and the md5 ours.
+
+Practical ordering: set the DNS answer first, then fire the push. If the tap path is used, the spoof must
+already be live *before* the button is pressed or the real CDN answers and the camera updates from Wyze.
+
+---
+
 ## 6. Falsifiers
 
 The pack is wrong if any of these reproduce:
@@ -357,12 +446,16 @@ The pack is wrong if any of these reproduce:
 5. `recovery_wcv4.bin` is accepted after re-packing with the `INGE` init-table patch and no re-sign → contradicts
    §3.2 gate 1 (this would be the *good* outcome; it is untested here).
 6. The U-Boot on these units is shown to verify flash-resident kernels → F5 halves, and only a signed kernel boots.
+7. A modified squashfs written to mtd2 **mounts anyway** (verity tolerant, or `2` is only advisory) → §3.5 is
+   wrong and persistence is a script-and-reboot job after all.
+8. Anything on a real device executes from `/configs` (a different `app_init.sh`, a unit-local hook) → F12 falls,
+   and a file-drop payload persists with no boot-image work.
 
 ---
 
 ## 7. Verdict
 
-**PARTIAL — deliverable mechanism confirmed and fully de-secreted; the remaining gates are architectural.**
+**PARTIAL — install root: reachable. Reboot persistence: open.**
 
 Confirmed end-to-end with citations:
 - the device (not the phone) performs the fetch, over plain HTTP, on port 80, to a `…/firmware/<ver>.tar` path —
@@ -386,20 +479,18 @@ Not yet closed:
 - **No recovery without SD/UART** for the two failure classes that matter (bad kernel, bad bootloader). "Survives a
   bad image" is true for the download and for the rootfs/app banks, false for the kernel and the bootloader.
 
-Practical first install therefore needs one of two footholds:
+### 7.1 What is reachable, and what is not
 
-- **(a) Replay an official v4 OTA `.tar`.** None is published (Wyze ships only `recovery_wcv4_*.bin.zip` for SD);
-  they must be captured from a real update, or pulled from `https://upgrade-api.wyzecam.com:8605/get_upgrade_version_by_list.ashx`,
-  which returns `package[].url` (`WyzeUpdater:fetch_ota_info`). That endpoint answered HTTP 500 to a hand-rolled
-  request on 2026-10-22, so treat it as *shape documented, live status unproven*. Replaying an official tar proves
-  the transport and needs no key, because the bytes are already encrypted and the md5 can be recomputed.
-- **(b) Encrypt your own tar with the default key** and expect `type 1` → AES-256-ECB, no padding, over the whole
-  file. Two checks remain before first use: `/configs/.product_config` has no per-unit `OTA_APP_KEY` override
-  (one `cat` once a shell exists), and the ECB/CBC assumption is right (one push; wrong guess fails inert).
-  Once a shell exists, the same session buys the CVE-2026-50719 bootloader patch, which removes the
-  recovery-signature gate for good.
+- **Reachable in one pass:** install-time root. AES-256-ECB, no padding, key
+  `oU8XzEpbOD6pVTLwdz9pxRpN9MGPCo1P`, tar named `<ver>.tar`, served on port 80 under an allowlisted hostname,
+  fired with `run_action`. Everything in §3.3.4 and §5.
+- **Not reachable by a script alone:** persistence. `/configs` is executable but inert, and mtd2 is verity'ed.
+  A second-stage payload must replace the boot image (§3.5, §4.5) — still key-free, because the FIT is
+  hash-only, but it is boot-image surgery, not a one-liner, and it is the one place where a mistake is not
+  LAN-recoverable.
 
-Route (b) is cheaper than (a) and does not depend on ever capturing a vendor packet.
+So the honest end state of this ticket: *"install root: reachable; reboot persistence: open"*. Do not describe
+the tar path as a persistent unlock until a repacked mtd1/mtd2 pair has been proven to boot.
 
 ---
 
@@ -417,6 +508,10 @@ unzip r.zip && xxd -l 256 recovery_wcv4.bin && dtc -I dtb -O dts recovery_wcv4.b
 dd if=recovery_wcv4.bin of=sys.sqfs bs=1 skip=3960438 count=5763000
 unsquashfs -d sysroot sys.sqfs
 strings -n 4 sysroot/bin/assis | grep -iE 'encryption|upgraderun|md5|tar -xvf'
+
+# initramfs (mounting, verity, inittab) — ramdisk node of the kernel FIT at file offset 0x1918b8
+dd if=recovery_wcv4.bin of=rd.img bs=1 skip=1644728 count=2400000
+unsquashfs -d rd rd.img && cat rd/etc/init.d/S18_mountall && strings -n 5 rd/usr/sbin/fs_mgr | grep -i verity
 ```
 
 ---
