@@ -164,18 +164,39 @@ pub fn build_ack(avseq: u32, rx_seq_start: u16, rx_seq_end: u16, ack_flags: u16,
     pkt
 }
 
-/// Build an HL message (16-byte header + payload).
+/// Build an HL message (16-byte header + payload) with an explicit version
+/// byte. The vendor head is `"HL" | version | 0x00 | cmd u16 | len u16 | 8 zero`.
 #[must_use]
-pub fn build_hl(command_id: u16, payload: &[u8]) -> Vec<u8> {
+pub fn build_hl_versioned(command_id: u16, version: u8, payload: &[u8]) -> Vec<u8> {
     let mut out = Vec::with_capacity(16 + payload.len());
     out.extend_from_slice(b"HL");
-    out.push(5);
+    out.push(version);
     out.push(0);
     out.extend_from_slice(&command_id.to_le_bytes());
     out.extend_from_slice(&(payload.len() as u16).to_le_bytes());
     out.extend_from_slice(&[0; 8]);
     out.extend_from_slice(payload);
     out
+}
+
+/// Build an HL message with the **K-command** version byte (5). Used for the
+/// auth/stream commands in the 0x27xx range.
+#[must_use]
+pub fn build_hl(command_id: u16, payload: &[u8]) -> Vec<u8> {
+    build_hl_versioned(command_id, K_HL_VERSION, payload)
+}
+
+/// HL version byte for vendor IOCTRL commands (observed live 2026-10-22:
+/// the camera rejects version 5 for these; every accepted command uses 0x25).
+pub const IOCTL_HL_VERSION: u8 = 0x25;
+
+/// HL version byte for K-commands (auth, stream negotiation).
+pub const K_HL_VERSION: u8 = 5;
+
+/// Build a vendor IOCTRL HL message (version `0x25`).
+#[must_use]
+pub fn build_ioctl_hl(command_id: u16, payload: &[u8]) -> Vec<u8> {
+    build_hl_versioned(command_id, IOCTL_HL_VERSION, payload)
 }
 
 /// Parse an HL message -> (command_id, payload, total_len).
@@ -518,5 +539,30 @@ mod k10000_tests {
                 .unwrap()
                 .contains(r#""audioEncoderList":[7,4294967295]"#)
         );
+    }
+}
+
+#[cfg(test)]
+mod hl_version_tests {
+    use super::*;
+
+    #[test]
+    fn k_commands_keep_version_five() {
+        let hl = build_hl(10000, b"x");
+        assert_eq!(&hl[0..2], b"HL");
+        assert_eq!(hl[2], K_HL_VERSION);
+        assert_eq!(u16::from_le_bytes([hl[4], hl[5]]), 10000);
+    }
+
+    #[test]
+    fn vendor_ioctls_use_version_0x25() {
+        let hl = build_ioctl_hl(0x284c, &[1, 2, 3]);
+        
+        assert_eq!(hl[2], 0x25);
+        assert_eq!(u16::from_le_bytes([hl[4], hl[5]]), 0x284c);
+        assert_eq!(u16::from_le_bytes([hl[6], hl[7]]), 3);
+        assert_eq!(&hl[16..], &[1, 2, 3]);
+        let (cmd, payload) = (u16::from_le_bytes([hl[4], hl[5]]), &hl[16..]);
+        assert_eq!((cmd, payload.len()), (0x284c, 3));
     }
 }

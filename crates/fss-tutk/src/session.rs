@@ -508,7 +508,7 @@ impl TutkSession {
     /// DTLS channel exists; commands are vendor-defined (see the camera's
     /// ioctl descriptor table). The frame is retained for retransmission.
     pub fn send_ioctl(&mut self, command_id: u16, payload: &[u8]) {
-        let hl = av::build_hl(command_id, payload);
+        let hl = av::build_ioctl_hl(command_id, payload);
         self.send_hl(hl);
     }
 
