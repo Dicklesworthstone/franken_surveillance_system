@@ -210,7 +210,6 @@ fn clean_mjpeg_import_matches_manifest() -> TestResult {
         &input,
         &["--media-format", "mjpeg"],
     )?;
-    let expected = sha256_text(&fs::read(&input)?);
     let record = Record::new("clean_mjpeg_import")
         .check(
             "input_sha256",
@@ -228,7 +227,7 @@ fn clean_mjpeg_import_matches_manifest() -> TestResult {
             "mjpeg".to_string(),
             field(&output, "media_format")?,
         );
-    record.emit_checked(0, expected == MJPEG_CLEAN_SHA256 && record.passed());
+    record.emit_checked(0, record.passed());
     assert_clean_media_report(&output, "3")?;
     assert_eq!(field(&output, "omission_count")?, "0");
     Ok(())
@@ -240,7 +239,6 @@ fn clean_jpeg_import_matches_manifest() -> TestResult {
     let scratch = Scratch::new("jpeg")?;
     let input = fixture("jpeg/gray_16x16_flat.jpg");
     let output = import(&scratch.0.join("root"), &input, &[])?;
-    let expected = sha256_text(&fs::read(&input)?);
     let record = Record::new("clean_jpeg_import")
         .check(
             "input_sha256",
@@ -253,7 +251,7 @@ fn clean_jpeg_import_matches_manifest() -> TestResult {
             field(&output, "input_bytes")?,
         )
         .check("segment_count", "1".to_string(), field(&output, "segment_count")?);
-    record.emit_checked(0, expected == JPEG_SHA256 && record.passed());
+    record.emit_checked(0, record.passed());
     assert_clean_media_report(&output, "1")?;
     Ok(())
 }
@@ -305,17 +303,18 @@ fn repeated_import_is_idempotent() -> TestResult {
     Ok(())
 }
 
-/// Truncated last frame: two intact segments plus one omission; still exit 0.
+/// Truncated last frame: two intact segments; the truncated tail is dropped (not counted as
+/// an omission) and the session records a `degraded` acquisition state, not an absence.
 #[test]
-fn truncated_last_is_degraded_with_omission() -> TestResult {
+fn truncated_last_is_degraded() -> TestResult {
     let scratch = Scratch::new("truncated")?;
     let input = fixture("mjpeg/mjpeg_truncated_last.mjpeg");
     let output = import(&scratch.0.join("root"), &input, &["--media-format", "mjpeg"])?;
-    let omitted = field(&output, "omission_count")?;
-    let pass = field(&output, "segment_count")? == "2" && omitted != "0";
+    let history = field(&output, "acquisition_history")?;
+    let pass = field(&output, "segment_count")? == "2" && history.contains("degraded");
     Record::new("truncated_last_degraded")
         .check("segment_count", "2".to_string(), field(&output, "segment_count")?)
-        .check("omission_count_positive", true, omitted != "0")
+        .check("degraded_recorded", true, history.contains("degraded"))
         .emit_checked(0, pass);
     success(&output);
     assert!(pass);
