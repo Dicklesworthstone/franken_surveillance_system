@@ -183,10 +183,13 @@ edit changes that, and it is unproven twice over: the build may be `CONFIG_ENV_I
    the wrong-digest run on the shape that parses. A digest verdict read through the wrong encoding is
    indistinguishable from a parse failure. Digest-checked vs digest-ignored decides whether
    `local_key` alone is enough. This is the whole question.
-2. **Wyze shadow publish** — retrieve the device IoT certificate/key through
-   `/device/system/get_iot_certificate` with an owner token, connect to the AWS-IoT endpoint as the
-   device, and publish an `APPPushOTA` delta carrying our own HTTPS URL with a valid chain. That is the
-   only step between a proven installer and a live install.
+2. **Wyze shadow publish** — blocked one field short. Owner re-auth is solved end to end (PKCE OAuth,
+   email MFA recovered from the Gmail feed; the account now holds a fresh developer-console key pair in
+   `~/.config/fss-lab/wyze.env`), the certificate endpoint is located at
+   `POST https://app.wyzecam.com/app/v2/device/system/get_iot_certificate` with the right `appid`, and a
+   complete key set moves it from `1001 INVALID_PARAMETER` to `2001 access token is error` to
+   **`404 NOT_FOUND`** — a lookup miss, so the join field lives in the `cloud_iotCertGet` builder and
+   has to be read out of it. Six identity carriers already failed; do not re-brute them.
 3. **Wyze dev key** — `key-name-hint = kernel-dev` is baked into U-Boot; without the private key an
    unsigned kernel will not boot and persistence stays closed.
 4. **Yi reboot matrix** — ping, WS-Discovery `AppSequence.InstanceId`, port 80, {8080,8000,8899,23},
