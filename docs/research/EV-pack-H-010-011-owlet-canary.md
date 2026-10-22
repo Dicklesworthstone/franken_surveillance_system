@@ -22,6 +22,20 @@ All probing read-only. Nothing was written to either device.
 | O-1 | — | vendor stack | — | attribution | Owlet cameras run **ThroughTek Kalay / TUTK**: Bitdefender `PReport-owlet-7745` (2024-05) names *Owlet Cam 2* explicitly; npm `scrypted-owlet` implements TUTK/IOTC/P2P (keywords `tutk, iotc, p2p`) | EV-942 |
 | O-2 | — | UDP 32761 `0x0601` | yes | absence | **No Owlet found.** 2 032 hosts swept (192.168.0–7/24 + 192.168.1/24), 4 attempts each: only hits are the three Wyze units (`192.168.4.23`, `.24`, `192.168.5.242`) | EV-943 |
 
+**C-7 — the cloud name.** Under interception the device resolved, unauthenticated and in clear:
+
+```
+i.canaryis.com  CNAME  ingress-k8s-prod-edge.canaryis.com
+                A      3.88.207.232 3.80.249.120 54.162.109.124 3.86.253.116 54.226.75.137 98.93.194.248
+```
+
+So the backend is a Kubernetes ingress with six A records and no pinning to a single address. The
+device rotates endpoints on its own: one flow was RST by the device and three fresh SYNs went to
+three different A records inside the same second. Fresh SYNs do not complete through a pure
+forwarding path (the eero drops frames whose source MAC it does not associate with the source IP),
+which is why the NAT rule `nat on en1 from 192.168.6.0/24 to any -> 192.168.4.170` was added; the
+relay is a two-line `pf` rule plus `arp.spoof`. (EV-945, EV-947)
+
 Structural note on C-2/C-3: the split is diagnostic, not noise. A default-DROP firewall that also
 drops the ICMP unreachable produces `open|filtered` on every UDP port *and* `filtered` on every TCP
 port; here TCP returns RST on 3 231 ports, so the TCP stack is alive and simply has no listener —
@@ -50,6 +64,13 @@ a model the wire cannot prove:
 
 Consequence: the recent-CVE lane does not unlock `.70`. Model identification is the blocking step,
 and it is one label read (or an authenticated `getDeviceInfo`).
+
+**Owner correction (2026-10-22):** the two Tapo units are a **C660** and a **C460** — both newer than
+every model in the table above, and NVD has **zero** CVEs for either name. So all four recent Tapo
+entries are inapplicable by model, not by patch level. `.71` (`50:3d:d1:2f:49:b9`) is the second
+unit: it exposes only `8800/tcp` (Streamd), everything else closed, and `.70` behaves the same apart
+from also accepting `443`. That matches two cameras of one generation, and both need the
+`device_confirm` offline crack before any method is reachable.
 
 ---
 

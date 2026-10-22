@@ -2,7 +2,8 @@
 """Check candidate passwords against the device_confirm oracle for a given username."""
 import hashlib, json, os, ssl, sys, urllib.request
 
-URL = "https://192.168.4.70/"
+import os
+URL = "https://" + os.environ.get("TH","192.168.4.70") + "/"
 CTX = ssl._create_unverified_context()
 
 

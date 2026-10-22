@@ -18,7 +18,8 @@ branch. An unsigned FIT is loaded and then rejected. The only persistence routes
 (CVE-2026-50719 / SoC swap — §4).
 
 `upgraderun.sh` running as root at install time is by itself a working primitive the
-moment DNS + plain-HTTP redirection is in place, independent of the boot gate: it can
+moment DNS plus a certificate the stock CA bundle accepts is in place (§1.1),
+independent of the boot gate: it can
 read MTD0, pad the jffs2 `/configs`, `fw_setenv`-style write the env sector, or exfil
 `/configs/.product_config`.
 
@@ -45,9 +46,60 @@ The install sequence, in binary order (strings at file offsets, `bin/assis` from
 | 5 | `[ASSIS]after decryption, the md5 check failed` | second MD5, over the **plaintext** |
 | 6 | `[ASSIS] mv /tmp/img /tmp/Upgrade.tar` → `tar -xvf /tmp/Upgrade.tar -C /tmp/` → `sh /tmp/Upgrade/upgraderun.sh` | payload is a TAR with a root shell script |
 
+### 1.1 Transport — adjudicated: HTTPS only, no allowlist
+
+`docs/exploit/ota-path.md` and my earlier "plain HTTP/80" line described different
+functions; the second pass is right about the transport. Corrected here.
+
+**Call chain, URL field to socket** — one path, no HTTP branch:
+
+```
+message field "url"  ->  strncpy into $sp+0x28 (0x4064f8 function, 16-byte copy loop)
+   -> log "[ASSIS]url:%s, MD5:%s" (0x4065f4, fmt 0x40a9af, args $sp+0x28 / $sp+0x7f8)
+   -> retry loop, max 1000 (0x40683c/0x406840, counter $23)
+   -> https_download(url=$sp+0x28, out="/tmp/img", cb=0x406170, 0)   @0x40687c
+        |  stub 0x40ce40 -> module ops table
+        v
+      https_download (lib/libwyzeUtils.so:0x2ca28)  wrapper: module init, then
+        |    f_download(arg0..arg3) with args unchanged
+        v
+      https_download_linux_curl (same lib, 0x2c6c0)
+        0x2c708  addiu $6,$zero,5
+        0x2c70c  $5 = .rodata 0x49278            ; "https"
+        0x2c714  jalr strncmp                    ; strncmp(ARG0, "https", 5)
+        0x2c71c  bnez -> 0x2c9e4                 ; mismatch: log + return error
+        0x2c9e4  log level 4, "upload url is not https %s", url, line 0x60d
+        0x2c720  (fallthrough) -> curl_easy_init, CURLOPT_URL(arg0) …
+```
+
+`ARG0` is the URL: the callee saves it to `$19` (0x2c710) purely so the reject message
+can print it, and `$19` is exactly what is passed as the `%s` at 0x2ca04/0x2ca1c.
+There is no rewrite and no retry-with-prefix — the mismatch branch goes straight to the
+error logger and returns. An `http://…` URL therefore dies before any socket is opened.
+The nearby `"https://%s"` literal (0x4928f) belongs to the upload/post helpers.
+
+**No host allowlist** in the downloader or in `assis`; any hostname is fetched. (The
+`pcUrl%d:%.960s` string that seeded the earlier HTTP assumption is in **iCamera**, the
+app's copy path — not in `assis` and not in this function.)
+
+**CA and pinning.** `CURLOPT_SSL_VERIFYPEER=1`, `CURLOPT_SSL_VERIFYHOST=2`; the CA bundle
+is `CURLOPT_CAINFO` = **`/tmp/cacert.pem`**, passed as the 5th argument at `assis:0x4063b0`
+(literal `.rodata` 0x40a91c). It is a temp copy: `iCamera` runs `cp
+/system/local/cacert.pem /tmp/cacert.pem` at startup (strings `cp %s %s`,
+`/system/local/cacert.pem`, `/tmp/cacert.pem`, `iCamera:0x42ae9c`). The bundle is the
+stock Mozilla list (138 roots, including **ISRG Root X1** and Amazon Root CA 1-4), so a
+publicly-trusted Let's Encrypt certificate for any name passes. No key pin, no
+fingerprint check, no `--insecure` path.
+
+**Consequence.** A DNS spoof alone is *not* sufficient; the prerequisite is a
+certificate reaching a root in that bundle for whatever name we resolve to (free via
+Let's Encrypt), or a poisoned `/tmp/cacert.pem`. The CA file is writable — but only
+*after* we have code execution, so the first install uses the stock bundle; a poisoned
+CA only helps on a later download, and `iCamera` re-copies the stock file on restart.
+
+
 Disassembly of the dispatch (`bin/assis`, vaddr, `llvm-objdump -d` output kept at
 `/tmp/assis.s`):
-
 ```
 406c2c: lw   $3, 0xabc($sp)          ; encrypt_type
 406c30: addiu $2, $zero, 1
@@ -92,7 +144,7 @@ computes them.
 cloud (MQTT shadow, $aws/things/<did>/shadow/update; method APPPushOTA)
         │  {url, md5_plain, ver, model, md5_enc, key, encryptType}
         ▼
-camera: GET <url> over HTTP -> /tmp/img        (plain HTTP port 80 to an allowlisted host)
+camera: https_download(url) -> /tmp/img        (HTTPS only, no allowlist; stock CA bundle, no pin)
         MD5(/tmp/img) == firmwareEncryptMd5 ?
         encryptType == 1 ? aes_256_ecb(key, no padding) -> /tmp/Upgrade.tar
                          : /system/bin/encryption -d /tmp/img -f /tmp/Upgrade.tar -k <key>
@@ -160,8 +212,8 @@ accepted verbatim.
 
 **Install side — yes.** Payload = any TAR containing `upgraderun.sh`; encrypt it
 AES-256-ECB under the public default key, publish both MD5s. The camera fetches it over
-plain HTTP, decrypts, and runs the script **as root, before any verification of what the
-script then writes** — the installer itself has no signing check.
+HTTPS from any host with a publicly-trusted cert (§1.1), decrypts, and runs the script **as root, before any
+verification of what the script then writes** — the installer itself has no signing check.
 
 **Boot side — no, not yet.** Proven on wire from a real HL_CAM4 boot log
 (gtxaspec/wz_mini_hacks issue #760):

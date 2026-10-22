@@ -1,0 +1,21 @@
+{
+ "192.168.4.70": {
+  "device_type": "SMART.IPCAMERA",
+  "device_model": "C460",
+  "device_id": "1A9BE858292953388CB7780516C4A4D0",
+  "ip": "192.168.4.70",
+  "mac": "50-3D-D1-E3-E2-07",
+  "mgt_encrypt_schm": {
+   "is_support_https": true
+  },
+  "device_name": "Tapo C460",
+  "encrypt_type": [
+   "3"
+  ],
+  "firmware_version": "1.2.2 Build 260416 Rel.13928n",
+  "hardware_version": "1.0",
+  "owner": "09040B9674478F739BDF0889253BFD8F",
+  "factory_default": false,
+  "model": "C460"
+ }
+}

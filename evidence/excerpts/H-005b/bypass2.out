@@ -1,0 +1,6 @@
+200 -40401 outer connectAp, params requests
+200 -40401 outer scanApList, params requests
+200 -40401 outer getConnectStatus, params requests
+200 -40401 multi: public entry first, then ptz
+200 -40401 multi: ptz first, public entry second
+200 -40401 multi: onboarding key only
