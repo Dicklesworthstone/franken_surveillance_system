@@ -22,6 +22,8 @@ pub mod hevc_recording_collector;
 pub mod archive_pins;
 /// Exact storage-only resumption of unacknowledged archive windows and catalog pages.
 pub mod archive_recovery;
+/// Durable finite attempt history and independently pinned, read-only cold inspection.
+pub mod campaign_history;
 /// Capability-scoped, owner-driven RTSP/1.0 client session reference.
 pub mod client;
 /// Original RTP/RTCP custody and verified replay before recording windows seal.

@@ -202,6 +202,42 @@ impl ReplayIoAuthority {
         Self::from_context_authority(auth, root_dir)
     }
 
+    /// Validates an inspection context without creating, opening, locking or syncing its root.
+    ///
+    /// This constructor performs no filesystem operation. The reading owner must verify the
+    /// existing layout under its own current read capability; absence never creates a store.
+    pub fn from_context_authority_read_only(
+        auth: &ContextAuthority,
+        root_dir: impl Into<PathBuf>,
+    ) -> Result<Self, ReplayAdapterError> {
+        if auth.validate().is_err()
+            || auth.cancellation_reason.is_some()
+            || !auth.capabilities().iter().any(|capability| {
+                capability == ADP_REPLAY_ROW_ID || capability == "io:adapter:adp-replay-001"
+            })
+        {
+            return Err(ReplayAdapterError::Unauthorized {
+                reason: "current ContextAuthority does not grant inspection I/O authority",
+            });
+        }
+        let root_dir = root_dir.into();
+        if !root_dir.is_absolute()
+            || root_dir.components().any(|part| matches!(part,
+                std::path::Component::ParentDir | std::path::Component::CurDir))
+        {
+            return Err(ReplayAdapterError::Unauthorized {
+                reason: "inspection requires an exact absolute root",
+            });
+        }
+        Ok(Self {
+            principal: auth.principal.to_string(),
+            capability: ADP_REPLAY_ROW_ID.to_owned(),
+            root_dir,
+            state: Arc::new(AtomicU8::new(STATE_ACTIVE)),
+            dir_counter: Arc::new(AtomicUsize::new(0)),
+        })
+    }
+
     /// Authorized principal identity.
     #[must_use]
     pub fn principal(&self) -> &str {
@@ -310,6 +346,16 @@ impl ReplayCx {
         root_dir: impl Into<PathBuf>,
     ) -> Result<Self, ReplayAdapterError> {
         let io = ReplayIoAuthority::from_context_authority(auth, root_dir)?;
+        Ok(Self::new(io))
+    }
+
+    /// Constructs a current inspection context with no filesystem mutations, including when
+    /// the selected root is missing. The reading owner separately validates its existing layout.
+    pub fn from_context_authority_read_only(
+        auth: &ContextAuthority,
+        root_dir: impl Into<PathBuf>,
+    ) -> Result<Self, ReplayAdapterError> {
+        let io = ReplayIoAuthority::from_context_authority_read_only(auth, root_dir)?;
         Ok(Self::new(io))
     }
 
