@@ -188,11 +188,11 @@ Watchdog note that is specific and worth carrying: `rmm` is the app the watchdog
 
 ```
 # discovery, correct WS-Addressing; empty Probe is ignored
-python3 wsd.py 192.168.6.156   # ProbeMatch -> XAddrs (empty Probe gets no reply) http://192.168.6.156/onvif/device_service
+python3 /tmp/wsd.py 192.168.6.156   # ProbeMatch -> XAddrs (empty Probe gets no reply) http://192.168.6.156/onvif/device_service
 # TNP discovery (31208 does NOT answer on this unit, 32108 does)
 python3 -c "…"   # see Y4: plain nc -u does NOT print the reply (unconnected socket required)
 # absence proof
-python3 scan4.py 192.168.6.156 1024 40000   # OPEN [] probed 38976
+python3 /tmp/scan4.py 192.168.6.156 1024 40000   # OPEN [] probed 38976
 sudo tcpdump -i en1 -n -e -w p.pcap "host 192.168.6.156"; curl -m2 http 80   # RST from b0:d5:9d:9a:8e:c4
 # Home Mini
 openssl s_client -connect 192.168.4.20:8443 ; curl -k https://192.168.4.20:8443/setup/eureka_info?options=detail

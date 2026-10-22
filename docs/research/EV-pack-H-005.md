@@ -60,12 +60,12 @@ unsalted hash `hash(password)`**, and `device_confirm` is a complete, self-conta
 verifier. Field boundaries are proven, not assumed: the reply is exactly 96 chars and
 `[64:80] == nonce`, `[80:96] == cnonce`, leaving `[0:64]` as the 64-hex verifier (EV-936);
 re-issuing with a fresh nonce changes the verifier and not the layout. Raw capture:
-`evidence/excerpts/EV-920-oracle.txt`. There is no per-attempt server cost and therefore no lockout on the crack: the
+`evidence/excerpts/H-005b/login.hdr + login.body + login.cnonce`. There is no per-attempt server cost and therefore no lockout on the crack: the
 `time/max_time` 9/10 countdown only meters negotiation posts, not guesses.
 
 Measured cost, this Mac, single core, pure Python: **1,651,832 candidates in 6.1 s** (~270 k/s),
 end-to-end including the oracle fetch — against ≈10¹⁰ for an 8-char lowercase+digit space, i.e.
-minutes-to-hours, not weeks. Runnable as-is: `evidence/excerpts/crack-device-confirm.py`.
+minutes-to-hours, not weeks. Runnable as-is: `evidence/excerpts/H-005b/oracle.py`.
 
 Grading: the hash is **unsalted and un-stretched**, so precomputation and table reuse work
 across every Tapo on earth, not just this device. That is the weakness. It is a *password
