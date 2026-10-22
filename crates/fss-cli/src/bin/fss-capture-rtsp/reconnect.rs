@@ -11,6 +11,7 @@ use fss_cli::agent_json::{object, string};
 use fss_core::{
     BudgetVector, CanonicalEncoder, ContentDigest, ContextAuthority, OperationId, RootAuthoritySpec,
 };
+use fss_reference::rtsp::campaign_history::{CampaignFinish, NativeAttemptObservation};
 
 use super::driver::{self, AttemptOutcome};
 use super::plan::{self, Options};
@@ -22,7 +23,10 @@ mod retained;
 #[path = "recovery.rs"]
 pub(super) mod recovery;
 
-pub(super) const MAX_ARGUMENTS: usize = plan::MAX_ARGUMENTS + 32;
+#[path = "campaign_history.rs"]
+pub(super) mod history;
+
+pub(super) const MAX_ARGUMENTS: usize = plan::MAX_ARGUMENTS + 46;
 const FORMAT: &str = "fss.rtsp_reconnect_cli.v1";
 const MAX_CONTROL_REPORT_BYTES: usize = 262_144;
 const POLICY: &str = "bounded-owner-approved-attempts:literal-peer-only:fresh-generation-and-clocks:\
@@ -44,6 +48,10 @@ pub(super) const HELP: &str = "fss-capture-rtsp reconnect [ordinary capture opti
   --max-attempts 3 --retry-delay-ms 250 --retry-max-delay-ms 5000\n\
   [--progress-timeout-ms 5000] [--capture-duration-ms 10000]\n\
   [--continue-after-success yes] [--retry-interrupted yes]\n\
+  [--history-root NEW_ABSOLUTE_DIRECTORY]\n\
+  [--history-max-records 33 --history-object-bytes 262144]\n\
+  [--history-max-scan-entries 4096 --history-metadata-bytes 16777216]\n\
+  [--history-storage-bytes 33554432 --history-work 10000000000]\n\
   [--source-root NEW_PREFIX --source-retention-evidence sha256:HEX]\n\
   [--max-datagrams 8192 --source-storage-bytes 268435456 --source-work 1000000000]\n\
 \n\
@@ -152,11 +160,24 @@ corrupt, stale or replaced source refuses; all three absent stores remain UNKNOW
 Optional --minimum-source-pins 1:DATAGRAMS:PAYLOAD_BYTES:sha256:HEAD binds independently saved\n\
 datagram_durable coordinates for original attempt ordinals. Each exact prefix must occur in\n\
 the complete current chain; damaged newer source is never replaced by an older prefix.\n\
-Repeated native source checks share one original --source-work allowance per attempt.\n";
+Repeated native source checks share one original --source-work allowance per attempt.\n\
+\n\
+Optional durable campaign history: --history-root NEW_DIRECTORY explicitly retains bounded\n\
+campaign metadata in a separate root-last immutable object store. Its path and whole-run\n\
+storage, record, metadata and work ceilings change the outer approval. Nothing is retained\n\
+there by default. Every start is durable BEFORE camera admission; every native observation\n\
+and controller decision is durable BEFORE a successor. A separate record seals completion.\n\
+History failure stops capture. No existing history directory is adopted, repaired or resumed.\n\
+Save every history_durable pin independently. Cold inspection uses all four exact coordinates:\n\
+fss-capture-rtsp campaign-inspect --help. This opens no camera and grants no capture authority.\n\
+Failed, empty and interrupted attempts remain distinct; a start without a finish has UNKNOWN\n\
+completion. Catalog/journal/source bindings are native observations, not current media proofs.\n\
+Repeat history options unchanged for explicit native recovery; recovery does not rewrite history.\n";
 
 pub(super) struct ReconnectPlan {
     attempts: Vec<Options>,
     sources: Option<retained::SourcePlans>,
+    history: Option<history::Config>,
     retry_delay_ms: u64,
     retry_max_delay_ms: u64,
     progress_timeout_ns: Option<u64>,
@@ -307,6 +328,7 @@ impl ReconnectPlan {
             .transpose()?;
         // Reuse every native codec, route, credentials and resource check before deriving any
         // attempt. The extra mode does not maintain a second version of those contracts.
+        let history = history::Config::take(&mut values)?;
         let source_arguments = retained::SourceArguments::take(&mut values);
         if minimum_sources.is_some() && source_arguments.is_none() {
             return Err("minimum source pins require the original source-retention options");
@@ -386,6 +408,7 @@ impl ReconnectPlan {
         let mut out = Self {
             attempts,
             sources,
+            history,
             retry_delay_ms,
             retry_max_delay_ms,
             progress_timeout_ns,
@@ -408,6 +431,9 @@ impl ReconnectPlan {
             .sum();
         if let Some(minimum) = &out.minimum_sources {
             minimum.validate(&out)?;
+        }
+        if let Some(history) = &out.history {
+            history.validate(&out)?;
         }
         Ok(out)
     }
@@ -484,6 +510,10 @@ impl ReconnectPlan {
         }
         if let Some(sources) = &self.sources {
             sources.encode(&self.attempts, &mut e)?;
+        }
+        // No extension bytes in the historical mode: existing approvals stay exact.
+        if let Some(history) = &self.history {
+            history.encode(&mut e)?;
         }
         e.u64(MAX_CONTROL_REPORT_BYTES as u64);
         e.u64(self.retry_delay_ms);
@@ -570,6 +600,9 @@ impl ReconnectPlan {
         if let Some(sources) = &self.sources {
             fields.push(("datagram_source_custody", sources.report(&self.attempts)?));
         }
+        if let Some(history) = &self.history {
+            fields.push(("campaign_history", history.report(self)?));
+        }
         if let Some(timeout) = self.progress_timeout_ns {
             fields.push(("progress_timeout_ns", timeout.to_string()));
         }
@@ -617,6 +650,9 @@ impl ReconnectPlan {
             if let Some(sources) = &self.sources {
                 paths.push(sources.get(index)?.root.as_path());
             }
+        }
+        if let Some(history) = &self.history {
+            paths.push(history.root.as_path());
         }
         Ok(paths)
     }
@@ -668,6 +704,23 @@ trait Effects {
         Err("ERR-CAPTURE-RTSP-STATE-001")
     }
     fn pause(&mut self, milliseconds: u64) -> Result<(), &'static str>;
+    // Only called for the separately approved history mode. An owner that cannot
+    // preserve its durable barriers must refuse, never silently omit the grant.
+    fn history_start(&mut self, _ordinal: u32) -> Result<(), &'static str> {
+        Err("ERR-CAPTURE-RTSP-HISTORY-001")
+    }
+    fn history_finish(
+        &mut self,
+        _ordinal: u32,
+        _controller_error: Option<&'static str>,
+        _settled_success: bool,
+        _next_attempt_planned: bool,
+    ) -> Result<(), &'static str> {
+        Err("ERR-CAPTURE-RTSP-HISTORY-001")
+    }
+    fn history_terminal(&mut self, _result: Result<(), &'static str>) -> Result<(), &'static str> {
+        Err("ERR-CAPTURE-RTSP-HISTORY-001")
+    }
 }
 
 fn run(plan: &ReconnectPlan, effects: &mut impl Effects) -> Result<(), &'static str> {
@@ -685,6 +738,9 @@ fn run(plan: &ReconnectPlan, effects: &mut impl Effects) -> Result<(), &'static 
     for (index, options) in plan.attempts.iter().enumerate() {
         effects.checkpoint()?;
         let child_approval = plan.child_approval(index)?;
+        if plan.history.is_some() {
+            effects.history_start((index + 1) as u32)?;
+        }
         effects.emit(
             "attempt_started",
             object(&[
@@ -707,10 +763,22 @@ fn run(plan: &ReconnectPlan, effects: &mut impl Effects) -> Result<(), &'static 
             ]),
         )?;
         effects.checkpoint()?;
-        let outcome = match &plan.sources {
+        let captured = match &plan.sources {
             Some(sources) => effects.capture_retained(options, sources.get(index)?),
             None => effects.capture(options),
-        }?;
+        };
+        let outcome = match captured {
+            Ok(outcome) => outcome,
+            Err(error) => {
+                if plan.history.is_some() {
+                    // The native callback may hold a finalized observation even if its
+                    // terminal output failed. No callback means native work is unknown.
+                    effects.history_finish((index + 1) as u32, Some(error), false, false)?;
+                    effects.history_terminal(Err(error))?;
+                }
+                return Err(error);
+            }
+        };
         // The native owner proves the actual stop and publication barriers. The controller
         // independently checks the approved picture rule: exact count in legacy mode,
         // or a nonempty prefix no larger than the ceiling under explicit duration approval.
@@ -760,6 +828,14 @@ fn run(plan: &ReconnectPlan, effects: &mut impl Effects) -> Result<(), &'static 
             && index + 1 < plan.attempts.len();
         let continuing_after_success =
             plan.continue_after_success && settled_success && index + 1 < plan.attempts.len();
+        if plan.history.is_some() {
+            effects.history_finish(
+                (index + 1) as u32,
+                (attempt_result != outcome.result).then_some("ERR-CAPTURE-RTSP-STATE-001"),
+                settled_success,
+                retrying || continuing_after_success,
+            )?;
+        }
         let mut finished_fields = vec![
             ("approval", string(&approval.to_text())),
             ("attempt", (index + 1).to_string()),
@@ -870,6 +946,9 @@ fn run(plan: &ReconnectPlan, effects: &mut impl Effects) -> Result<(), &'static 
                 "error_id",
                 terminal_result.err().map_or_else(|| "null".into(), string),
             ));
+            if plan.history.is_some() {
+                effects.history_terminal(terminal_result)?;
+            }
             effects.emit("reconnect_terminal", object(&terminal_fields))?;
             return terminal_result;
         }
@@ -901,6 +980,8 @@ struct NativeEffects {
     sequence: u64,
     report_bytes: usize,
     supervision: Option<driver::Supervision>,
+    history: Option<history::Recorder>,
+    native_observation: Option<NativeAttemptObservation>,
 }
 impl Effects for NativeEffects {
     fn checkpoint(&mut self) -> Result<(), &'static str> {
@@ -932,7 +1013,19 @@ impl Effects for NativeEffects {
     }
     fn capture(&mut self, options: &Options) -> Result<AttemptOutcome, &'static str> {
         self.checkpoint()?;
-        driver::execute_supervised_attempt(options, self.supervision)
+        if self.history.is_some() {
+            self.native_observation = None;
+            driver::execute_observed_attempt(
+                options,
+                self.supervision,
+                None,
+                Some(&mut |observation| {
+                    self.native_observation = Some(observation);
+                }),
+            )
+        } else {
+            driver::execute_supervised_attempt(options, self.supervision)
+        }
     }
     fn capture_retained(
         &mut self,
@@ -940,7 +1033,19 @@ impl Effects for NativeEffects {
         source: &SourceConfig,
     ) -> Result<AttemptOutcome, &'static str> {
         self.checkpoint()?;
-        source.execute_supervised_capture(options, self.supervision)
+        if self.history.is_some() {
+            self.native_observation = None;
+            driver::execute_observed_attempt(
+                options,
+                self.supervision,
+                Some(source),
+                Some(&mut |observation| {
+                    self.native_observation = Some(observation);
+                }),
+            )
+        } else {
+            source.execute_supervised_capture(options, self.supervision)
+        }
     }
     fn pause(&mut self, milliseconds: u64) -> Result<(), &'static str> {
         // At most 600 bounded waits per backoff. Every wait has an explicit owner check;
@@ -953,6 +1058,69 @@ impl Effects for NativeEffects {
             remaining -= step;
         }
         self.checkpoint()
+    }
+    fn history_start(&mut self, ordinal: u32) -> Result<(), &'static str> {
+        self.checkpoint()?;
+        self.native_observation = None;
+        let pin = self
+            .history
+            .as_mut()
+            .ok_or("ERR-CAPTURE-RTSP-HISTORY-001")?
+            .start(ordinal)?;
+        self.emit(
+            "history_durable",
+            object(&[
+                ("transition", string("attempt_started")),
+                ("attempt", ordinal.to_string()),
+                ("pin", history::pin_json(pin)),
+                ("save_independently", "true".into()),
+            ]),
+        )
+    }
+    fn history_finish(
+        &mut self,
+        ordinal: u32,
+        controller_error: Option<&'static str>,
+        settled_success: bool,
+        next_attempt_planned: bool,
+    ) -> Result<(), &'static str> {
+        self.checkpoint()?;
+        let finish = CampaignFinish {
+            native: self.native_observation.take(),
+            controller_error: controller_error.map(str::to_owned),
+            settled_success,
+            next_attempt_planned,
+        };
+        let pin = self
+            .history
+            .as_mut()
+            .ok_or("ERR-CAPTURE-RTSP-HISTORY-001")?
+            .finish(ordinal, finish)?;
+        self.emit(
+            "history_durable",
+            object(&[
+                ("transition", string("attempt_finished")),
+                ("attempt", ordinal.to_string()),
+                ("pin", history::pin_json(pin)),
+                ("save_independently", "true".into()),
+            ]),
+        )
+    }
+    fn history_terminal(&mut self, result: Result<(), &'static str>) -> Result<(), &'static str> {
+        self.checkpoint()?;
+        let pin = self
+            .history
+            .as_mut()
+            .ok_or("ERR-CAPTURE-RTSP-HISTORY-001")?
+            .terminal(result)?;
+        self.emit(
+            "history_durable",
+            object(&[
+                ("transition", string("campaign_terminal")),
+                ("pin", history::pin_json(pin)),
+                ("save_independently", "true".into()),
+            ]),
+        )
     }
 }
 
@@ -987,11 +1155,18 @@ pub(super) fn execute(plan: &mut ReconnectPlan) -> Result<(), &'static str> {
     })
     .map_err(|_| "ERR-CAPTURE-RTSP-CONFIG-001")?;
     let supervision = plan.supervision(approval)?;
+    let history = plan
+        .history
+        .as_ref()
+        .map(|config| history::Recorder::new(config, plan))
+        .transpose()?;
     let mut effects = NativeEffects {
         authority,
         sequence: 0,
         report_bytes: 0,
         supervision,
+        history,
+        native_observation: None,
     };
     run(plan, &mut effects)
 }
@@ -1011,6 +1186,10 @@ mod interruption_tests;
 #[cfg(test)]
 #[path = "reconnect_campaign_tests.rs"]
 mod campaign_tests;
+
+#[cfg(test)]
+#[path = "reconnect_history_tests.rs"]
+mod history_tests;
 
 #[cfg(test)]
 mod custody_tests {

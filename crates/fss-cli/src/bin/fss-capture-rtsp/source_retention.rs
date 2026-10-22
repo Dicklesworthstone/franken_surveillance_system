@@ -120,6 +120,13 @@ impl SourceCustody {
         // fully drained recording window, an EOF, or a later transient read fault.
         stats.source_custody_unsettled |= self.failed || self.candidate.is_some();
         stats.source_custody = Some(self.summary());
+        let pin = self.archive.pin();
+        stats.source_pin = Some(fss_reference::rtsp::campaign_history::CampaignSourcePin {
+            scope: pin.scope,
+            head: pin.head,
+            datagrams: pin.datagrams,
+            bytes: pin.payload_bytes,
+        });
     }
 
     pub(super) fn summary(&self) -> String {

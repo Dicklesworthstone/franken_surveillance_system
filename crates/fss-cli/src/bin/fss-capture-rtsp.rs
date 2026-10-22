@@ -34,6 +34,9 @@ fn main() -> ExitCode {
     if args.first().and_then(|arg| arg.to_str()) == Some("reconnect") {
         return reconnect_main(&args[1..]);
     }
+    if args.first().and_then(|arg| arg.to_str()) == Some("campaign-inspect") {
+        return campaign_inspect_main(&args[1..]);
+    }
     if args.first().and_then(|arg| arg.to_str()) == Some("from-onvif") {
         return onvif_main(&args[1..]);
     }
@@ -62,6 +65,20 @@ fn main() -> ExitCode {
             .and_then(|preview| write_bounded((preview + "\n").as_bytes()))
     };
     finish(result)
+}
+
+fn campaign_inspect_main(args: &[std::ffi::OsString]) -> ExitCode {
+    if args.len() == 1 && matches!(args[0].to_str(), Some("help" | "--help" | "-h")) {
+        return finish(write_bounded(reconnect::history::HELP.as_bytes()));
+    }
+    let inspection = match reconnect::history::Inspection::parse(args) {
+        Ok(inspection) => inspection,
+        Err(reason) => {
+            eprintln!("ERR-CAPTURE-RTSP-ARGUMENT-001: {reason}; use campaign-inspect --help");
+            return ExitCode::from(ExitIdentity::MALFORMED_VALUE.code);
+        }
+    };
+    finish(inspection.execute())
 }
 
 fn onvif_main(args: &[std::ffi::OsString]) -> ExitCode {

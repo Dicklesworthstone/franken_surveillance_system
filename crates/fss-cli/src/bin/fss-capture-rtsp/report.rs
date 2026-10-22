@@ -84,6 +84,7 @@ impl<W: Write> Transcript<'_, W> {
 
 #[derive(Default)]
 pub(super) struct Statistics {
+    pub(super) retain_campaign_bindings: bool,
     pub(super) runtime: Option<String>,
     pub(super) live_preview: Option<String>,
     pub(super) source_custody: Option<String>,
@@ -118,6 +119,8 @@ pub(super) struct Statistics {
     pub(super) last_window: Option<(usize, String, ContentDigest)>,
     pub(super) snapshot_digest: Option<ContentDigest>,
     pub(super) journal_anchor: Option<ArchivePinAnchor>,
+    pub(super) catalogs: Vec<fss_reference::rtsp::campaign_history::CampaignCatalogBinding>,
+    pub(super) source_pin: Option<fss_reference::rtsp::campaign_history::CampaignSourcePin>,
     pub(super) pins: ArchivePinState,
     pub(super) unrecorded_work_receipt: Option<String>,
 }
@@ -126,6 +129,18 @@ impl Statistics {
         self.durable_windows = snapshot.windows().len();
         self.durable_pictures = snapshot.windows().iter().map(|e| e.samples() as u64).sum();
         self.indexed_windows = snapshot.indexed_windows();
+        if self.retain_campaign_bindings && self.catalogs.len() != snapshot.pages().len() {
+            self.catalogs = snapshot
+                .pages()
+                .iter()
+                .map(
+                    |page| fss_reference::rtsp::campaign_history::CampaignCatalogBinding {
+                        slot: page.slot().as_str().to_owned(),
+                        root: C::manifest(page.catalog()).root(),
+                    },
+                )
+                .collect();
+        }
         if let Some(entry) = snapshot.windows().last() {
             self.last_window = Some((
                 snapshot.windows().len() - 1,

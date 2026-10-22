@@ -21,6 +21,9 @@ use fss_reference::rtsp::archive_pins::{ArchivePinJournal, JournaledArchiveProgr
 use fss_reference::rtsp::authentication::DigestCredentials;
 use fss_reference::rtsp::avc_client::authenticated::{DigestAvcError, DigestAvcPoll};
 use fss_reference::rtsp::avc_client::{AvcClientError, AvcClientPoll};
+use fss_reference::rtsp::campaign_history::{
+    CampaignRetryReason, NativeAttemptObservation, NativeBindings,
+};
 use fss_reference::rtsp::client::{ClientCommand, ClientProgress, ClientState};
 use fss_reference::rtsp::live_archive::{LiveArchiveCompletion, LiveArchiveError, LiveArchiveStep};
 use fss_reference::rtsp::live_avc::recording::{LiveRecordingError, LiveRecordingStep};
@@ -1476,7 +1479,7 @@ fn run_owned<W: Write>(
             .map(|(config, path)| SourceCustody::open(config, path, &owner))
             .transpose()?;
         if let Some(custody) = &source {
-            stats.source_custody = Some(custody.summary());
+            custody.observe(stats);
         }
         let capture_result = (|| {
             if options.codec() == "hevc" {
@@ -1551,7 +1554,7 @@ fn run_owned<W: Write>(
             result
         })();
         if let Some(custody) = &source {
-            stats.source_custody = Some(custody.summary());
+            custody.observe(stats);
         }
         capture_result
     })();
@@ -1592,6 +1595,18 @@ fn execute_owned_attempt(
     supervision: Option<Supervision>,
     source: Option<&SourceConfig>,
 ) -> Result<AttemptOutcome, &'static str> {
+    execute_observed_attempt(options, supervision, source, None)
+}
+
+/// Observe the native owner after its drain/finalization barrier and before terminal output.
+/// This observation is evidence only: a failed output sink still refuses the returned outcome
+/// and cannot authorize the reconnect controller to start another camera session.
+pub(super) fn execute_observed_attempt(
+    options: &Options,
+    supervision: Option<Supervision>,
+    source: Option<&SourceConfig>,
+    observer: Option<&mut dyn FnMut(NativeAttemptObservation)>,
+) -> Result<AttemptOutcome, &'static str> {
     let approval = match source {
         Some(source) => source.digest(options)?,
         None => options.digest()?,
@@ -1609,7 +1624,10 @@ fn execute_owned_attempt(
         sequence: 0,
         io_failed: false,
     };
-    let mut stats = Statistics::default();
+    let mut stats = Statistics {
+        retain_campaign_bindings: observer.is_some(),
+        ..Statistics::default()
+    };
     let execution = runtime.run(&mut stats, |task, clock, resources, stats| {
         // A refused output sink cannot leave an archive or start a TCP connection.
         log.emit(
@@ -1666,8 +1684,6 @@ fn execute_owned_attempt(
     });
     stats.runtime = Some(execution.report);
     let result = execution.result;
-    log.emit("terminal", terminal(options, &stats, &result), true)
-        .map_err(Failure::code)?;
     let mut outcome = AttemptOutcome::new(result, &stats);
     if execution.closure_failed {
         // No successor may bypass canonical task/custody recovery merely because
@@ -1675,6 +1691,29 @@ fn execute_owned_attempt(
         outcome.retry = None;
         outcome.recovery_required = true;
     }
+    if let Some(observer) = observer {
+        observer(NativeAttemptObservation {
+            complete: outcome.result.is_ok(),
+            error_id: outcome.result.err().map(str::to_owned),
+            retry: outcome.retry.map(|reason| match reason {
+                RetryReason::ConnectionUnavailable => CampaignRetryReason::ConnectionUnavailable,
+                RetryReason::SourceEnded => CampaignRetryReason::SourceEnded,
+                RetryReason::ProgressStalled => CampaignRetryReason::ProgressStalled,
+                RetryReason::ReadInterrupted => CampaignRetryReason::ReadInterrupted,
+                RetryReason::SettledSuccess => CampaignRetryReason::SettledSuccess,
+            }),
+            durable_pictures: outcome.durable_pictures,
+            recovery_required: outcome.recovery_required,
+            bindings: NativeBindings {
+                snapshot_digest: stats.snapshot_digest,
+                journal_anchor: stats.journal_anchor,
+                catalogs: stats.catalogs.clone(),
+                source_pin: stats.source_pin,
+            },
+        });
+    }
+    log.emit("terminal", terminal(options, &stats, &result), true)
+        .map_err(Failure::code)?;
     Ok(outcome)
 }
 

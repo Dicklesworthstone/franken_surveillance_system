@@ -105,6 +105,12 @@ source generation. Import it with `fss-import-rtsp` under a separately reviewed
 import approval, using that epoch's receive clock, not the original pre-campaign
 receive-clock identity. The original capture plan lists the derived receive clocks.
 
+Opt in to `--history-root NEW_DIRECTORY` to retain durable campaign metadata,
+including failed and empty attempts, without relying solely on stdout. The
+[durable campaign history guide](rtsp_campaign_history.md) describes its separate
+approved limits, independently saved pins and exact read-only inspection. Keep
+the native stores and complete native reports for their full custody details.
+
 An imported catalog retains its original recording closure. `fss-file verify` and
 native range decoding must continue to work when the original capture archive is
 offline. Import retries preserve the same imported identity and do not append
