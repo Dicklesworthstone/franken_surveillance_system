@@ -23,7 +23,7 @@ this table puts the two families whose chains are already reached first.
 | **Yi IPC** | **mechanism only, never fired** — CVE-2018-3910 SSID command injection into `popen("/home/app/cloudAPI … -ssid \"%s\"")` → `sh -c` | one app re-provision onto an attacker AP; no card, no cable | H-006 Y8, Route A (:23-31, :126-152); proving test U1 |
 | **AOSU HomeBase** | **open question, and the best remaining candidate** — `FRM_LAN_OTA_START/DATA/FINISH (0x1A/0x1B/0x1C)` is a firmware push *inside* the authenticated LAN session: no cloud, no URL, and (derived, not confirmed) no TLS | whether the LAN frame carries `hmac` (needs `activate.seckey`) or only `md5`; plus one pairing-mode press for `local_key` | pack H-003 §LAN OTA |
 | **Wyze Cam v4** | **install-time root only** — OTA fetch is **plain HTTP 80**, MD5-only, and ends in `sh upgraderun.sh` as root, with a **public default AES key** | persistence: **no** script route — `/system` is dm-verity'd, `/configs` is writable but nothing boots from it, and the rootfs has no `fw_setenv` | pack H-002 §3.3/§4.5, H-002c |
-| **TP-Link Tapo** | **pre-auth root *if* the model is C200 hw v5 `<V5_1.4.6 Build 260709` or C120 v1 `<1.9.4 Build 260813`** (CVE-2026-102369, 8.7, `PR:N`), plus two new `PR:N` DS-API flaws (CVE-2026-105814/105815) and an authenticated overflow (CVE-2026-105810) | **model identification is the blocking step** — the wire cannot prove it (`CN=TAPO-DEVICE` for every model) | H-005; H-008 §0/§3a, F-5, F-8; H-010-011 |
+| **TP-Link Tapo** | **oracle only on this unit** — it is a **C460 v1.0, fw 1.2.2 Build 260416**, so it is *out of scope for all three new CVEs* (C210 V3.6 / C320WS V2). CVE-2026-102369 applies only to C200 hw v5 / C120 v1. | the admin password. 105814 refuted on this build (34/34 shapes denied); 105810 is built and needs a session; all of it is behind the `stok` gate | H-005b; H-005; H-008 §0/§3a, F-5, F-8; H-010-011 |
 | Canary | blocked — not present on the LAN | device absence | — |
 
 ## 2. What is dead, and why it matters
@@ -141,10 +141,20 @@ edit changes that, and it is unproven twice over: the build may be `CONFIG_ENV_I
 - Power loss during the boot-time copy leaves a partial main partition; there is no second copy.
 - The 2023-12 Tapo brick wave happened because the SD recovery script lives inside the firmware that
   broke. Tapo has no independent recovery.
-- **All four Tapo CVEs are model-locked and the wire cannot prove the model**: CVE-2026-102369
-  (C200 hw v5 / C120 v1), CVE-2026-105810 (C320WS v2), CVE-2026-105814 and -105815 (C210 v3.6). The
-  cert is `CN=TAPO-DEVICE` for every model and `554` is closed, which fits several. One chassis label
-  or an authenticated `getDeviceInfo` unblocks all of them; nothing else does.
+- **All four Tapo CVEs are model-locked, and UDP 20002 TDP settles it**: this unit is a **C460 v1.0**
+  on `1.2.2 Build 260416`, so none of the three new CVEs (C210 V3.6, C320WS V2) apply, and
+  CVE-2026-102369 (C200 hw v5 / C120 v1) does not either. A second unit on the same account is a
+  C660 v1.6 and gates the same way, so the platform behaviour is uniform. The cert is `CN=TAPO-DEVICE`
+  for every model, which is why the wire alone could not say so.
+- **The Tapo oracle is better than first measured.** `POST /stok=<anything>/ds` naming a whitelisted
+  method returns `-40407` *plus* a fresh nonce, a rotating 512-bit RSA SPKI and a valid
+  `device_confirm` computed over an **empty cnonce** — so the verifier consumes no login attempt
+  (`time/max_time` untouched) and the 10-attempt budget is not the limit. 1.24e9 candidates were
+  exhausted; the 10-digit space was still running when the unit left the segment.
+- **105810 is built but unsent.** The overflow is in base64 decoding into a 1024-byte stack buffer; the
+  payload is 1 476 base64 chars with `0xbc` confirmed at decoded `0x424` and the command at `0x458`.
+  An unauthenticated 4 KB password 401s in 0.4 s without restart, which proves the decode sits behind
+  the gate — a session is mandatory.
 
 ### AOSU brick contract (rank 2 has none yet, so here it is)
 
