@@ -82,6 +82,20 @@ pub(super) fn configure(
     zones: Vec<WatchZone>,
     selections: Vec<RtspWatchSelection>,
 ) -> Result<(RtspSelectedWatchPlan, RtspSelectedWatchLimits), &'static str> {
+    let (mut plan, limits) = configure_unselected(values, zones)?;
+    plan.selections = selections;
+    plan.digest(&limits).map_err(
+        |_| "invalid native selection, timing, watch configuration or aggregate reservation",
+    )?;
+    Ok((plan, limits))
+}
+
+/// Pure shared native watch settings. The caller must bind and validate its own complete
+/// selection before execution; an empty template is not an executable selected-watch plan.
+pub(super) fn configure_unselected(
+    values: &BTreeMap<&str, &str>,
+    zones: Vec<WatchZone>,
+) -> Result<(RtspSelectedWatchPlan, RtspSelectedWatchLimits), &'static str> {
     if values.get("--interpretation").copied() != Some("ycbcr") {
         return Err("explicit --interpretation ycbcr required for native AVC/HEVC watch");
     }
@@ -202,7 +216,7 @@ pub(super) fn configure(
         )? as u32,
     };
     let plan = RtspSelectedWatchPlan {
-        selections,
+        selections: Vec::new(),
         interpretation: ComponentInterpretation::YCbCr,
         zones,
         detector,
@@ -212,9 +226,6 @@ pub(super) fn configure(
         },
         screened: flag("--screened")?,
     };
-    plan.digest(&limits).map_err(
-        |_| "invalid native selection, timing, watch configuration or aggregate reservation",
-    )?;
     Ok((plan, limits))
 }
 

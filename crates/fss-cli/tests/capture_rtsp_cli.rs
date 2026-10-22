@@ -100,6 +100,11 @@ fn binary(name: &str) -> Test<PathBuf> {
         ),
         "file" => ("FSS_FILE_BIN", option_env!("CARGO_BIN_EXE_fss-file")),
         "onvif" => ("FSS_ONVIF_BIN", option_env!("CARGO_BIN_EXE_fss-onvif")),
+        "watch-campaign" => (
+            "FSS_WATCH_RTSP_CAMPAIGN_BIN",
+            option_env!("CARGO_BIN_EXE_fss-watch-rtsp-campaign"),
+        ),
+        "event" => ("FSS_EVENT_BIN", option_env!("CARGO_BIN_EXE_fss-event")),
         _ => return Err("unknown fixture binary".into()),
     };
     std::env::var_os(override_name)

@@ -7,8 +7,11 @@ independent attempts discoverable after the capture process exits, including
 failed, empty and interrupted attempts that produced no usable catalog.
 
 This is an explicit option. Existing reconnect commands and their approval bytes
-are unchanged when no history option is present. It does not provide an always-on
-recorder, crash resume, cross-archive event detection, continuity or scene coverage.
+are unchanged when no history option is present. History does not provide an
+always-on recorder, crash resume, continuity or scene coverage. The separate
+[campaign watch command](rtsp_campaign_watch.md) can analyze the complete saved
+catalogs across independently retained attempts while preserving failed, empty
+and unknown states.
 
 ## Approve metadata retention with capture
 
@@ -175,6 +178,13 @@ options, including the original history options, when using `--recover yes` or
 its own observed approval and original store barriers. It neither creates nor
 rewrites the campaign history. A later successful recovery cannot retroactively
 turn a retained failed native attempt into a successful capture.
+
+For downstream analysis, `fss-watch-rtsp-campaign` binds this same four-coordinate
+pin to one explicit catalog request or null row for every selected start. It
+verifies each original recording closure before native imports and watch, then
+reports the original history alongside independent attempt analyses. See the
+[campaign watch guide](rtsp_campaign_watch.md) for current approvals, complete
+catalog mapping, shared source-read ceilings and cold native rerun commands.
 
 The process contracts in `capture_rtsp_cli/history.rs` cover independent
 successful and failed epochs, exact earlier-prefix selection after restart,

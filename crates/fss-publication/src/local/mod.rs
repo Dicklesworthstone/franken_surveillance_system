@@ -59,11 +59,12 @@
 //! any admitted root are reported as `unreferenced_objects`; temporary records are reported as
 //! `orphaned_temps`. Nothing found on open is deleted implicitly.
 //!
-//! Filesystem access is scoped by the root path passed to `open`, matching `fss-object`'s spool
-//! and `fss-ledger`'s journal. No `Cx` capability is threaded yet. Every filesystem call the
-//! publisher makes, and every call its owned spool makes, goes through one
-//! [`fss_object::SpoolIo`] capability; [`LocalRootPublisher::open`] uses
-//! [`fss_object::HostSpoolIo`], which performs exactly the host `std::fs` call.
+//! Every filesystem call the publisher makes, and every call its owned spool makes, goes
+//! through one [`fss_object::SpoolIo`] capability. [`LocalRootPublisher::open`] uses
+//! [`fss_object::HostSpoolIo`], which performs exactly the host `std::fs` call and does not
+//! receive a current `Cx` capability. [`LocalRootPublisher::open_scoped`] accepts a production
+//! [`ScopedPublicationIo`] that enforces its immutable root, current authority, and aggregate
+//! I/O bounds throughout recovery and the resulting owner's lifetime.
 //!
 //! # Fault injection
 //!
@@ -629,6 +630,19 @@ struct RootEntry {
     children: Vec<ContentDigest>,
 }
 
+/// A current, root-scoped production filesystem capability.
+///
+/// Unlike the test-only I/O injection constructor, a scoped open requires an explicit policy
+/// boundary before and after recovery. Implementations must gate every [`SpoolIo`] operation
+/// against the same immutable root, current authority, and nonrenewable resource accounts. A
+/// denial or budget refusal must remain latched, including when a recovery classifier catches
+/// the underlying I/O error. Releasing an already-held lock must remain possible after denial.
+pub trait ScopedPublicationIo: SpoolIo {
+    /// Verify the exact requested root, current authority and any previously latched refusal.
+    /// This method must not grant a new root, reset allowances, or clear a prior refusal.
+    fn check_scope(&self, root: &Path) -> io::Result<()>;
+}
+
 /// Exclusive owner of one root-last local publication directory.
 #[derive(Debug)]
 pub struct LocalRootPublisher {
@@ -663,6 +677,28 @@ impl LocalRootPublisher {
         limits: LocalPublicationLimits,
     ) -> Result<Self, LocalPublicationError> {
         Self::open_through(root.as_ref(), limits, Arc::new(HostSpoolIo))
+    }
+
+    /// Opens through a current, root-scoped production capability and its aggregate I/O bounds.
+    ///
+    /// The ordinary recovery, verification, durable-hold and lock protocol is unchanged. Every
+    /// later source read or publication retains this capability; opening another owner must not
+    /// replenish its shared accounts. Scope checks surround recovery even when recovery fails,
+    /// so a caught I/O denial cannot be misreported as an admitted damaged source. The operation
+    /// may create recovery metadata, acquire locks, and fsync; it is not a read-only inspection.
+    pub fn open_scoped(
+        root: impl AsRef<Path>,
+        limits: LocalPublicationLimits,
+        io: Arc<dyn ScopedPublicationIo>,
+    ) -> Result<Self, LocalPublicationError> {
+        let root = root.as_ref();
+        io.check_scope(root)
+            .map_err(|error| io_error(LocalIoOperation::Inspect, root, &error))?;
+        let capability: Arc<dyn SpoolIo> = io.clone();
+        let result = Self::open_through(root, limits, capability);
+        io.check_scope(root)
+            .map_err(|error| io_error(LocalIoOperation::Inspect, root, &error))?;
+        result
     }
 
     /// Test-only constructor: [`Self::open`] with every filesystem call routed through `io`.

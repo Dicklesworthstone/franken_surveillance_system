@@ -111,6 +111,13 @@ including failed and empty attempts, without relying solely on stdout. The
 approved limits, independently saved pins and exact read-only inspection. Keep
 the native stores and complete native reports for their full custody details.
 
+With a saved history pin, `fss-watch-rtsp-campaign` can import and analyze all
+catalogued attempts under one reviewed operation. It validates the exact complete
+catalog mapping, keeps failed/empty/unknown attempts visible, and gives each
+recording independent native detection and tracking state. The
+[campaign watch guide](rtsp_campaign_watch.md) describes its explicit per-attempt
+bindings, aggregate budgets and retained-custody rerun commands.
+
 An imported catalog retains its original recording closure. `fss-file verify` and
 native range decoding must continue to work when the original capture archive is
 offline. Import retries preserve the same imported identity and do not append

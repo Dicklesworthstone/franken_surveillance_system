@@ -570,6 +570,9 @@ Implemented (reference, unqualified):
 - a model-free single-camera pipeline, decode -> foreground -> Kalman tracking -> zone candidates
   -> approval-gated publication (`fss-event watch`), plus H.264/H.265/MJPEG/RTP pixel-change
   motion analysis (`fss-file motion`, `fss-decode-rtp motion`);
+- [exact saved RTSP campaign watch](docs/rtsp_campaign_watch.md) across independent retained
+  AVC/HEVC archives (`fss-watch-rtsp-campaign`), preserving failed, empty and unknown attempts,
+  with separate tracking per attempt and native reruns from destination custody;
 - two-sensor corroboration of recorded ground-zone entries through owner-supplied or site-calibrated
   homographies, optional 3D scene-mesh/pose visibility and covariance guards, and gated global
   association (`fss-event corroborate`), plus one approval-gated plaintext webhook alert per

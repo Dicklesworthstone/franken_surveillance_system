@@ -444,8 +444,10 @@ pub(super) fn parse(args: &[OsString]) -> Result<WatchAction, String> {
     limits.jpeg_limits.maximum_pixels = pixels;
     limits.h264_limits.max_width = dimension;
     limits.h264_limits.max_height = dimension;
+    // Complete coded AVC macroblocks must fit the requested ceiling. Keep the existing
+    // one-macroblock placeholder for tiny JPEG-only requests, which never decode AVC.
     limits.h264_limits.max_macroblocks =
-        u32::try_from(pixels.div_ceil(256)).map_err(|_| "pixel ceiling")?;
+        u32::try_from((pixels / 256).max(1)).map_err(|_| "pixel ceiling")?;
     limits.h265_limits.max_width = dimension;
     limits.h265_limits.max_height = dimension;
     limits.h265_limits.max_luma_samples = pixels as u64;

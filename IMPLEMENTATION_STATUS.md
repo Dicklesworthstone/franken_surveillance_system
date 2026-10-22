@@ -734,6 +734,16 @@ one-time vendor-app provisioning (NEG-006) with the yi-hack owner-flash path doc
   screening apply. Eligible proposals include separate exact event-publication commands that
   need only retained destination custody. This finite synchronous workflow creates no daemon,
   reconnect authority, automatic event or absence claim. See [the workflow](docs/HTTP_HISTORY_WATCH.md).
+- **Exact RTSP campaign analysis (2026-10-22, reference):** `fss-watch-rtsp-campaign` verifies
+  an independently saved history prefix and binds every selected start to its complete native
+  catalogs or an explicit no-catalog state. Source-closed imports span independent archives;
+  native watch runs at one final destination anchor with separate tracking per attempt. Failed,
+  empty, unavailable, start-only and unindexed-picture observations stay explicit. Shared work
+  and lifetime source-IO ceilings apply; exact retries reuse imports, and native watch reruns
+  work with source archives offline. The focused native run passed 12 core, 4 scoped-publication,
+  10 new CLI, 7 existing selected-watch and 4 real-process tests. This grants no automatic event,
+  capture resume, cross-attempt continuity, absence or field qualification. See the
+  [workflow and focused proof](docs/rtsp_campaign_watch.md).
 - **Whole-recording zone observations:** `fss-event watch --stream-watch` follows one native
   foreground model and tracker across up to 65,536 retained MJPEG, AVC or HEVC segments, including
   the former 128-frame boundary. Each tracker epoch can produce one unclassified entry candidate
