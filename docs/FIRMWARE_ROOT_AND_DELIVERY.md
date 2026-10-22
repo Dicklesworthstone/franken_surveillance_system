@@ -256,3 +256,24 @@ So the Wyze row is no longer "gated on a secret" — it is **gated on a heap spr
 Pan v3 work, except the PoC's tail markers (`0x0095d020`) are Pan-v3 addresses and need v4 values.
 The operator path is now `fss-capture-tutk --ioctl 0x284C --payload-file …` (the CLI grew
 `--identity/--psk-hex/--encoders/--k10000-file/--ioctl/--payload-file`).
+
+## 6. Corrections and one dead end (GrayBadger, 2026-10-22 later)
+
+**HL version.** The vendor HL head is `"HL" | 0x25 | 0x00 | cmd u16 | len u16 | 8 zero`. Version **5
+is only for K-commands (1000x)**; every vendor IOCTRL carries `0x25`. `fss-tutk` now has
+`build_ioctl_hl` (0x25) and `build_hl` (5) with tests, and `send_ioctl` routes through the former.
+With the corrected header the camera answers `0x284D` on the first send (~100 ms) instead of only
+after a retransmit — but the payload is still rejected (`02`), so `02` is a generic result code, not
+a verdict on length.
+
+**Generic paracfg setter.** `0x2780` is not in the ioctl table yet the camera accepts it: it is a
+generic user-config setter taking the item id in the first payload byte, and it answers `0x2781` with
+the applied value. `0x2781` as a command is unhandled (echoes `0x0001`). Setting item 11 flips
+`settingParm.telnet` from `2` to `1`, and the value survives a reboot.
+
+**Telnet is not a shell path on this build.** The v4 system rootfs ships **no `/bin/sh`, no busybox
+and no `telnetd`** — only `iCamera`, `dmon`, `dnsmasq`, `iotclient` and friends. `system("telnetd &")`
+therefore cannot succeed. After setting item 11 and forcing a reboot via the crash primitive, TCP/23
+stays closed and a full TCP scan shows only `53/dnsmasq`. Consequences: (a) do not target `system()`
+in the ROP, use `exec_shell_sync` (`0x8be960`, `$a0` = command, no `$gp`); (b) any post-exploitation
+tooling must be pushed to the device, there is no shell waiting.
