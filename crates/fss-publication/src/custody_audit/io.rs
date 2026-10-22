@@ -63,7 +63,7 @@ impl<'a, F: Fn() -> bool + Sync> AuditIo<'a, F> {
             .map_err(|_| io::Error::from(io::ErrorKind::Interrupted))?;
         if self
             .calls
-            .fetch_update(Ordering::SeqCst, Ordering::SeqCst, |n| {
+            .try_update(Ordering::SeqCst, Ordering::SeqCst, |n| {
                 (n < self.limits.max_io_calls).then(|| n + 1)
             })
             .is_err()
@@ -146,7 +146,7 @@ impl<F: Fn() -> bool + Sync> SpoolIo for AuditIo<'_, F> {
         // stays charged. Only a successful bounded result can refund the unused reservation.
         match self
             .bytes
-            .fetch_update(Ordering::SeqCst, Ordering::SeqCst, |n| {
+            .try_update(Ordering::SeqCst, Ordering::SeqCst, |n| {
                 n.checked_add(limit)
                     .filter(|next| *next <= self.limits.max_read_bytes)
             }) {
