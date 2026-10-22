@@ -132,6 +132,7 @@
   "crates/fss-graph-algorithms/src/certified.rs": "support",
   "crates/fss-graph-algorithms/src/community.rs": "cognition",
   "crates/fss-graph-algorithms/src/coverage.rs": "cognition",
+  "crates/fss-graph-algorithms/src/coverage/builder.rs": "cognition",
   "crates/fss-graph-algorithms/src/coverage_build.rs": "cognition",
   "crates/fss-graph-algorithms/src/coverage_timeline.rs": "cognition",
   "crates/fss-graph-algorithms/src/dominators.rs": "cognition",

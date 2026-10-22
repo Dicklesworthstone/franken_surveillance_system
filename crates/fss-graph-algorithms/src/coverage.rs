@@ -19,6 +19,8 @@
 //! zone with no witness is `not_observable`, never evidence of absence.
 
 /// Incremental admission with cumulative input and canonical-shape limits.
+// Keep the public `coverage::build` path while avoiding RCH's build.rs source filter.
+#[path = "coverage/builder.rs"]
 pub mod build;
 pub use build::{CoverageBuildLimits, CoverageBuildUsage, CoverageProjectionBuilder};
 
