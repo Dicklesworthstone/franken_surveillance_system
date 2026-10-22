@@ -489,3 +489,34 @@ impl FrameReassembler {
         self.frames.len()
     }
 }
+
+#[cfg(test)]
+mod k10000_tests {
+    use super::*;
+
+    #[test]
+    fn k10000_default_still_sends_the_reference_codec_list() {
+        let hl = build_k10000();
+        let (cmd, payload, _) = parse_hl(&hl).expect("HL");
+        assert_eq!(cmd, 10000);
+        assert_eq!(
+            core::str::from_utf8(payload).unwrap(),
+            r#"{"cameraInfo":{"audioEncoderList":[137,138,140]}}"#
+        );
+    }
+
+    #[test]
+    fn k10000_override_replaces_the_array_verbatim() {
+        let hl = build_k10000_with(&[]);
+        let (_, payload, _) = parse_hl(&hl).expect("HL");
+        assert!(core::str::from_utf8(payload).unwrap().ends_with("[]}}"));
+
+        let hl = build_k10000_with(&[7, 4294967295]);
+        let (_, payload, _) = parse_hl(&hl).expect("HL");
+        assert!(
+            core::str::from_utf8(payload)
+                .unwrap()
+                .contains(r#""audioEncoderList":[7,4294967295]"#)
+        );
+    }
+}

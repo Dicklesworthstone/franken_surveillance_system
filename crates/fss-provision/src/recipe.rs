@@ -558,9 +558,13 @@ impl RecipeRegistry {
                     &[],
                     None,
                     DataLane::TutkNew,
-                    "No legitimate custom-firmware path (would need exploit development, out of \
-                     charter). Data goal met wirelessly via the TUTK NEW lane (live-proven, \
-                     zero touch).",
+                    "No legitimate custom-firmware path yet, but the blocking claim is now \
+                     narrower than 'needs exploit development, out of charter': firmware 4.52.17.26 \
+                     embeds TUTK SDK 4.3.8.0, inside CVE-2026-38698 (authenticated heap overflow in \
+                     tutk_packet_Alloc, public PoC), and a declared AV length over a raw DTLS frame \
+                     crashes the camera on demand. Transport stays None until root is delivered over \
+                     the wire. A shell may not even need the heap bug: paracfg item 11 starts \
+                     telnetd. Data goal is already met wirelessly via the live-proven TUTK NEW lane.",
                 ),
                 OnboardingRecipe::new(
                     CameraFamily::AosUP1Max,

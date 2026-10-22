@@ -115,3 +115,35 @@ negative constraints:
   while the SOAP listener is gated. AOSU-style vendor workarounds stay out of scope.
 - **Revival:** provisioning the device through the vendor app (which the owner controls),
   or a firmware generation that ships with the SOAP listener open.
+
+## NEG-006 — Wyze Cam v4 4.52.17.26 (2026-10-22, GrayBadger)
+
+**Hypothesis.** The published v3 TUTK chain still works on the v4, giving root over the LAN.
+
+| Attempt | Result | Decision |
+|---|---|---|
+| CVE-2023-6324 empty-PSK identity (`AUTHTKN_`, and `AUTHTKN_deadbeef`) | DTLS fatal alert 115 `unknown_psk_identity`; `AUTHPWD_admin` + owner ENR succeeds to streaming | refuted, owner ENR is mandatory on this build |
+| CVE-2023-6322 `audioEncoderList` overflow with 11/29/38/300 entries | K-auth fine up to the 900-byte payload guard; loop is hard-capped at 10 ints into a 10-int array | refuted, the v3 ROP chain cannot be reused |
+| 0x284C with 257/258/261/765 junk bytes | acked `0x284D=02`, no reboot | retained as "reachable but format unknown" (`bb-h001`) |
+| `AUTHTKN_` over the legacy 0x0402 path (stock PoC semantics) | discovery 0x0402/0x0001 answers and leaks the UID; `0x1b02` session request never answered | PoC stalls before `SSL_connect`; use the CC51 session instead |
+| Enabling telnet via `paracfg` item 11 over K10000 `cameraInfo` (`settingParm.telnet` string and number, `settingParm.telntSwitch`, top-level `telntSwitch`) | K-auth and stream unaffected, TCP/23 stays closed | `fss-wyze-telnet-item-11-g7xy3` |
+| Enabling telnet via ioctl 0x1f40 (JSON body, then raw LE pair `80 27 01 00`) | ack `0x0001` echoes the cmd, port 23 closed | same bead |
+
+**Revival:** a captured app→camera zone/settings save (the app can emit one), a firmware build
+below 4.52.17.26, or a decoded paracfg blob layout.
+
+## NEG-007 — CC51 frame disembodiment (same session)
+
+**Hypothesis.** The Pan-v3 PoC frame can be replayed byte-for-byte on the v4.
+
+| Framing tried | Result |
+|---|---|
+| PoC bytes verbatim (0x540 B) as raw DTLS appdata | accepted, no reaction |
+| `0c000000` + session id + PoC bytes | accepted, no reaction |
+| `0c000b00` + PoC bytes (v3 prefix duplicated) | accepted, no reaction |
+| `07 01` + PoC bytes minus 4 (channel/frame-type rewrite) | treated as AV data: stream slowed to ~1.4 fps |
+| same, declared size forced to `0x800` / `0xFFFF` at `[16..18]` | **crash + reboot in ~8 s** |
+
+**Decision.** The header is channel/type at `[0..2]` and declared size at `[16..18]`; a frame of
+1264 real bytes declaring `0xFFFF` is the crash primitive. Retained as the base for a heap spray.
+**Revival:** a v4 heap object with a controllable function pointer, or an info leak.

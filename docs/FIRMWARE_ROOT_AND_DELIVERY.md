@@ -229,3 +229,20 @@ Redaction: the probes carry one lab unit's UID/ENR/MAC (`192.168.4.24`, `S3X2…
 `80:48:2C:4B:CF:0B`) as literals. UID/MAC are identifiers; **the ENR is the device secret** — it
 authenticates the TUTK session and derives the DTLS PSK, so it is per-unit and not reproducible
 elsewhere.
+
+## 5. Live result (GrayBadger, same day) — CVE-2026-38698 reproduces on the v4
+
+The missing piece in §4 was framing. The client→camera AV frame on CC51 is
+`[0]=channel 0x07`, `[1]=frame type 0x01`, `u16 pkt_total @12`, `u16 declared payload size @16`, sent as
+raw DTLS application data (no HL wrapper, no `0x0c` prefix). With a 1264-byte frame declaring
+`0xFFFF` bytes the camera **crashes and reboots in ~8 s**; `0x800` also crashes, `0xEEEE` only stalls
+the stream to ~1.4 fps. Two of three attempts crashed, the third never established a session.
+
+Mechanism confirmed in the binary: `tutk_packet_Alloc(payload, len, …)` allocates `0x28 + len` and
+`memcpy(len)` from the decrypted payload, and `FUN_0067a0d4` additionally `memcpy`s the tail into a
+1280-byte stack buffer. The declared length is never checked against the datagram.
+
+So the Wyze row is no longer "gated on a secret" — it is **gated on a heap spray**, exactly like the
+Pan v3 work, except the PoC's tail markers (`0x0095d020`) are Pan-v3 addresses and need v4 values.
+The operator path is now `fss-capture-tutk --ioctl 0x284C --payload-file …` (the CLI grew
+`--identity/--psk-hex/--encoders/--k10000-file/--ioctl/--payload-file`).

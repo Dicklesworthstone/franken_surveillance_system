@@ -287,6 +287,16 @@ impl TutkIngest {
     pub fn session_stats(&self) -> SessionStats {
         self.session.stats()
     }
+    /// Send one vendor IOCTRL on the live session (lab/interop use).
+    pub fn send_ioctl(&mut self, command_id: u16, payload: &[u8]) {
+        self.session.send_ioctl(command_id, payload);
+    }
+
+    /// Send one raw pre-framed AV application frame on the live session.
+    pub fn send_raw(&mut self, frame: &[u8]) {
+        self.session.send_raw(frame);
+    }
+
     pub fn advance(&mut self, now_ns: u64) {
         self.session.advance(now_ns);
         self.pump(now_ns);

@@ -33,7 +33,7 @@ const HELP: &str = "fss-capture-tutk --root ARCHIVE_DIR --cfg CAMERA_CFG [--secs
                     Report: fss.tutk_capture_cli.v1 JSON on stdout.";
 
 const FORMAT: &str = "fss.tutk_capture_cli.v1";
-const MAX_ARGS: usize = 24;
+const MAX_ARGS: usize = 48;
 
 #[derive(Debug)]
 struct Options {
@@ -45,6 +45,12 @@ struct Options {
     stream_id: String,
     principal: String,
     owner_authorized: bool,
+    identity: Option<String>,
+    psk_hex: Option<Vec<u8>>,
+    encoders: Option<Vec<u32>>,
+    k10000: Option<String>,
+    ioctl: Option<u16>,
+    payload: Option<Vec<u8>>,
 }
 
 fn parse(args: &[OsString]) -> Result<Options, &'static str> {
@@ -60,6 +66,12 @@ fn parse(args: &[OsString]) -> Result<Options, &'static str> {
         stream_id: "stream:tutk:acquire:01".to_owned(),
         principal: "principal:operator:tutk-capture".to_owned(),
         owner_authorized: false,
+        identity: None,
+        psk_hex: None,
+        encoders: None,
+        k10000: None,
+        ioctl: None,
+        payload: None,
     };
     let mut i = 0;
     while i < args.len() {
@@ -91,6 +103,35 @@ fn parse(args: &[OsString]) -> Result<Options, &'static str> {
             "--principal" => {
                 o.principal = need_value(i)?.to_str().ok_or("invalid --principal")?.to_owned();
             }
+            "--identity" => {
+                o.identity = Some(need_value(i)?.to_str().ok_or("invalid --identity")?.to_owned());
+            }
+            "--psk-hex" => {
+                let v = need_value(i)?.to_str().ok_or("invalid --psk-hex")?;
+                o.psk_hex = Some(hex_bytes(v)?);
+            }
+            "--encoders" => {
+                let v = need_value(i)?.to_str().ok_or("invalid --encoders")?;
+                let mut out = Vec::new();
+                for part in v.split(',').filter(|p| !p.is_empty()) {
+                    out.push(part.trim().parse().map_err(|_| "invalid --encoders item")?);
+                }
+                o.encoders = Some(out);
+            }
+            "--k10000-file" => {
+                o.k10000 = Some(std::fs::read_to_string(need_value(i)?).map_err(|_| "read --k10000-file")?);
+            }
+            "--ioctl" => {
+                let v = need_value(i)?.to_str().ok_or("invalid --ioctl")?;
+                let t = v.trim_start_matches("0x").trim_start_matches("0X");
+                o.ioctl = Some(
+                    u16::from_str_radix(t, if v.len() > t.len() { 16 } else { 10 })
+                        .map_err(|_| "invalid --ioctl")?,
+                );
+            }
+            "--payload-file" => {
+                o.payload = Some(std::fs::read(need_value(i)?).map_err(|_| "read --payload-file")?);
+            }
             "--owner-authorized" => {
                 o.owner_authorized = true;
                 i += 1;
@@ -110,6 +151,20 @@ fn parse(args: &[OsString]) -> Result<Options, &'static str> {
         return Err("--owner-authorized attestation is required for live device access");
     }
     Ok(o)
+}
+
+fn hex_bytes(s: &str) -> Result<Vec<u8>, &'static str> {
+    let compact: Vec<u8> = s.bytes().filter(|b| !b.is_ascii_whitespace()).collect();
+    if compact.len() % 2 != 0 {
+        return Err("odd hex length");
+    }
+    let mut out = Vec::with_capacity(compact.len() / 2);
+    for pair in compact.chunks(2) {
+        let hi = (pair[0] as char).to_digit(16).ok_or("bad hex")?;
+        let lo = (pair[1] as char).to_digit(16).ok_or("bad hex")?;
+        out.push(((hi << 4) | lo) as u8);
+    }
+    Ok(out)
 }
 
 fn cfg_field(json: &str, key: &str) -> Option<String> {
@@ -188,10 +243,10 @@ fn run(o: &Options) -> Result<String, &'static str> {
                 psk_truncated: false,
                 seed,
                 known_tuples: vec![("HL_CAM4".to_string(), "4.52.17.26".to_string())],
-                psk_identity: None,
-                psk_override: None,
-                audio_encoder_list: None,
-                k10000_json: None,
+                psk_identity: o.identity.clone(),
+                psk_override: o.psk_hex.clone(),
+                audio_encoder_list: o.encoders.clone(),
+                k10000_json: o.k10000.clone(),
             },
             sensor_id: SensorId::parse(&o.sensor_id)
                 .map_err(|_| "ERR-TUTK-CAPTURE-ARGUMENT-002: sensor id")?,
@@ -207,6 +262,7 @@ fn run(o: &Options) -> Result<String, &'static str> {
 
         let t0 = Instant::now();
         let mut buf = [0u8; 65535];
+        let mut sent_probe = false;
         while t0.elapsed() < Duration::from_secs(o.secs) {
             let now_ns = t0.elapsed().as_nanos() as u64;
             while let Some(d) = ing.poll_send() {
@@ -221,6 +277,13 @@ fn run(o: &Options) -> Result<String, &'static str> {
                 ing.feed_datagram(&buf[..n], now_ns);
             }
             ing.advance(now_ns);
+            if !sent_probe
+                && ing.session_phase() == fss_tutk::session::PhaseName::Streaming
+                && let Some(cmd) = o.ioctl
+            {
+                ing.send_ioctl(cmd, o.payload.as_deref().unwrap_or(&[]));
+                sent_probe = true;
+            }
             if matches!(
                 ing.state(),
                 AcquisitionState::Failed { .. } | AcquisitionState::Indeterminate { .. }
