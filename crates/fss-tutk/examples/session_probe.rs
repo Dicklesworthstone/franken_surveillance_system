@@ -79,6 +79,7 @@ fn parse() -> Result<Args, String> {
             }
             "--capture-dir" => a.capture = Some(v()?),
             "--raw-wrap" => a.raw_wrap = true,
+            "--no-raw-wrap" => a.raw_wrap = false,
             "--raw-file" => { let p = v()?; a.raw = Some(std::fs::read(p).map_err(|_| "read raw")?); }
             "--payload-file" => {
                 let p = v()?;

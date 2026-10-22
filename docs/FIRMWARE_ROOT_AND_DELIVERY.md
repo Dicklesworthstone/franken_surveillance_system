@@ -16,7 +16,7 @@ evidence. That is now partly wrong in both directions, and this file records whi
 |---|---|---|---|
 | **Yi IPC** | **yes** — CVE-2018-3910 SSID command injection into `popen("/home/app/cloudAPI … -ssid \"%s\"")` → `sh -c` | one app re-provision onto an attacker AP; no card, no cable | pack H-006 §Y8, §Route A |
 | **AOSU HomeBase** | **open question, and the best remaining candidate** — `FRM_LAN_OTA_START/DATA/FINISH (0x1A/0x1B/0x1C)` is a firmware push *inside* the authenticated LAN session: no cloud, no URL, no TLS | whether the LAN frame carries `hmac` (needs `activate.seckey`) or only `md5`; plus one pairing-mode press for `local_key` | pack H-003 §LAN OTA |
-| **Wyze Cam v4** | **install-time root is reachable** — OTA fetch is **plain HTTP 80**, MD5-only, and ends in `sh upgraderun.sh` as root, with a **public default AES key** | reboot persistence: boot does a required-key FIT verify, so the payload may not be a kernel | pack H-002 §2-§7, H-002c |
+| **Wyze Cam v4** | **install-time root only** — OTA fetch is **plain HTTP 80**, MD5-only, and ends in `sh upgraderun.sh` as root, with a **public default AES key** | persistence: **no** script route — `/system` is dm-verity'd, `/configs` is writable but nothing boots from it, and the rootfs has no `fw_setenv` | pack H-002 §3.3/§4.5, H-002c |
 | **TP-Link Tapo** | **no without a downgrade** | encrypted, verified container ("`Firmware check failed!`"); the LAN surface is an unauthenticated password oracle, not an exec path | pack H-005 |
 | Canary | blocked — not present on the LAN | device absence | — |
 
@@ -63,15 +63,28 @@ Wrong-mode guesses fail inert (nothing is written).
 
 Consequence: the install path is open to an owner-supplied tar. The trigger is the only cloud
 dependency — it is an **AWS-IoT MQTT shadow delta** on `$aws/things/<id>/shadow/name/wyze-service/update/delta`,
-handed to `assis` over IPC, so the camera only starts a fetch when the cloud tells it to. A DNS spoof
-plus the owner's "check for updates" is enough; no broker compromise is needed.
+handed to `assis` over IPC, so the camera only starts a fetch when the cloud tells it to. The fetch host
+is one of three documented names (`d1fk93tz4plczb.cloudfront.net`, `s3-us-west-2.amazonaws.com`,
+`d2h8pzxcxn71bo.cloudfront.net`) and the path shape is
+`s3-us-west-2.amazonaws.com/wuv2/upgrade/<MODEL>/firmware/<ver>.tar`, so a DNS spoof plus the owner's
+"check for updates" is enough provided the spoof is up **before** the tap; no broker compromise is
+needed. A token-bearing `run_action` call from our side is the fallback if the tap does not raise a delta.
 
 The image format is a FIT wrapping an `RKAF` map of exactly `boot` and `system`; there is **no
 `uboot` entry**, so an OTA can never brick the bootloader, and updates land in a backup bank that
 U-Boot applies. A written-but-unbootable kernel still needs SD/UART. **Boot does a required-key FIT
-verify** (`sha256,rsa2048:kernel-dev+`), so an unsigned kernel will not boot — a script-only payload
-is the safe shape, and reboot persistence then depends on whether `bootargs` (env, writable via
-`fw_setenv` from our root) can point `init` at a writable partition.
+verify** (`sha256,rsa2048:kernel-dev+`), and `/system` is **dm-verity'd**: `fs_mgr` verifies metadata
+against `/verity_key` in the ramdisk and on failure returns *without mounting*, so S18 exits 0, `/configs`
+never mounts and no daemon starts — a camera that boots, joins nothing and does nothing. A modified
+squashfs without a matching verity blob is a one-way trip, and the root hash is signed.
+
+**There is no script persistence.** `/configs` is rw and exec but nothing boots from it; its only
+consumers are `.product_config` (read-only), `upGradeFlag` (deleted at boot) and `.debug_flag` (which
+selects a branch that starts *no* daemons). The rootfs ships no `fw_setenv` and busybox has no env
+applet, so `bootargs` cannot be edited from a shell at all — it is plain text with a CRC32 in the env
+block and needs a hand-built `dd`. `factorycheck`'s `/tmp/Test/test.sh` route needs an SD/USB `Test.tar`
+and that tar is itself signature-checked. So: **install root, not persistent.** Only the env `init=`
+edit (SD or a flashed boot image) changes that.
 
 ## 3. What is usable today
 
@@ -128,3 +141,36 @@ is the safe shape, and reboot persistence then depends on whether `bootargs` (en
 3. **Yi reboot matrix** — ping, WS-Discovery `AppSequence.InstanceId`, port 80, {8080,8000,8899,23},
    TNP, before and after a power cycle. InstanceId changes with 80 still RST proves the ONVIF daemon
    never starts and the advertised `XAddrs` is a static string.
+
+## 4. 2026-10-22 addendum (GrayBadger) — the memory-unsafe sink does exist, in Wyze's own SDK
+
+§2 above says "No memory-unsafe sink on Wyze". That holds for the TUTK handshake/AV parsers as
+independently fuzzed, but **not for the TUTK packet allocator**, and the IOCTL layer additionally
+accepts client-shaped data:
+
+- **CVE-2026-38698** (public 2026-09-18, pwn2own 2025 Ireland, PoC + report in
+  `github.com/vital-information-resource-under-siege/cve-2026-38698-and-cve-2026-38699`):
+  authenticated heap overflow in `tutk_packet_Alloc` — the AVPacket header length is forwarded to
+  `malloc(param_5+0x24+param_4+param_2)` (≈0x438) and then used as the `memcpy` length. Affected
+  TUTK SDK **3.1.10.0 … 4.3.8.1**. The 4.52.17.26 rootfs `bin/iCamera` embeds exactly
+  `4.3.8.0-5-gf554f2f-R2_openssl_Mips_T41_7.2.0_v2`, i.e. **4.3.8.0, inside the affected range.**
+- **CVE-2026-38699** is the pre-auth sibling: OOB read in `__Fill_ReadBuf` from an unvalidated
+  DTLS payload offset (`0x90000000`), reliable crash, no key required.
+- The vendor IOCTL table also takes client-shaped data post-auth: cmd **0x284C**
+  (`set_mutil_apart_alarm`, entry vaddr `0x8b8b1c`, handler `0x590c3c`, max `0x144`) parses a
+  client-declared length through inlined OpenCV. A 7-byte payload `01 00 01 0a 14 1e 28` is accepted
+  and persists `apartalarmParm` (observed `type:1 startX:18 longX:56 startY:22 heightY:55`).
+
+Transmission state: the legacy `0x0402` discovery is still answered by 4.52.17.26 and leaks the UID,
+but the `0x1b02` session request is not answered, so the stock PoC stalls before `SSL_connect`.
+Replaying its exact 0x540-byte frame (faulty size `0xEEEE` at offset `0x18`) as raw DTLS appdata over
+the working `0xCC51` session is accepted but does not crash — the remaining question is the
+client→camera AV header/framing, not reachability.
+
+A shell path needing no memory corruption also exists in the binary: paracfg user-config item 11
+(`telntSwitch`) drives `system("telnetd &")` (apply fn `0x462878`); the setter for key 11 has not yet
+been located on the wire.
+
+Lab tooling: `crates/fss-tutk/examples/session_probe.rs` (`--ioctl`, `--raw-file`, `--k10000-file`,
+`--identity`, `--psk-hex`, `--capture-dir`) plus `SessionEvent::Ioctl` for camera→client captures.
+Beads/evidence: `~/brennerbot_sessions/fss-camera-liberation-2026-10-22`.
