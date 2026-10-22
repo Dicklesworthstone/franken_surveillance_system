@@ -76,10 +76,13 @@ pub mod retained;
 pub mod rtp_continuity;
 /// Bounded recorded-RTP framing and source-preserving ingest.
 pub mod rtpdump;
-/// Source-preserving offline import of exact native AVC/HEVC recording windows.
-pub mod rtsp_import;
+/// Motion-independent trained detector bursts across exact retained RTSP campaign attempts.
+pub mod rtsp_campaign_sentinel;
+mod rtsp_campaign_sources;
 /// Exact retained RTSP campaigns through independent source-verified watch epochs.
 pub mod rtsp_campaign_watch;
+/// Source-preserving offline import of exact native AVC/HEVC recording windows.
+pub mod rtsp_import;
 /// Selected independent RTSP recordings through retained imports and whole-recording watch.
 pub mod rtsp_selected_watch;
 /// Owner site calibration: atlas localization, joint refinement, digest-bound record.

@@ -14,7 +14,7 @@ use crate::ingest::long_watch::LongWatchLimits;
 use crate::ingest::recorded_watch::{
     WatchDetectorConfig, WatchOptions, WatchPlan, WatchTrackerConfig, WatchZone,
 };
-use crate::ingest::rtsp_import::RtspImportCodec;
+use crate::ingest::rtsp_campaign_sources::{self, SourcePlan};
 use crate::ingest::rtsp_selected_watch::{
     MAX_REPORT_BYTES, RtspSelectedWatchLimits, RtspSelectedWatchPlan, RtspSelectedWatchReservation,
     RtspWatchSelection,
@@ -22,7 +22,6 @@ use crate::ingest::rtsp_selected_watch::{
 use crate::rtsp::campaign_history::{
     CampaignHistoryLimits, CampaignPin, MAX_CAMPAIGN_ATTEMPTS, VerifiedCampaignHistory,
 };
-use crate::rtsp::recording_archive::{ArchiveNamespace, hevc::HevcArchiveNamespace};
 
 /// One explicit row for every selected start, including failed and unknown native outcomes.
 #[derive(Clone, Debug)]
@@ -198,82 +197,15 @@ impl RtspCampaignWatchPlan {
     /// Pure whole-history mapping check, suitable before the CLI opens an archive or destination.
     /// A verified metadata object is not current source custody; execution revalidates both.
     pub fn validate_history(&self, history: &VerifiedCampaignHistory) -> Result<()> {
-        if history.pin() != self.history
-            || Path::new(&history.plan().history_path) != self.history_root
-            || history.attempts().len() != self.bindings.len()
-        {
-            return Err(RtspCampaignWatchError::Invalid("exact history selection"));
+        rtsp_campaign_sources::validate_history(self.source_plan(), history)
+    }
+
+    pub(super) fn source_plan(&self) -> SourcePlan<'_> {
+        SourcePlan {
+            pin: self.history,
+            root: &self.history_root,
+            bindings: &self.bindings,
         }
-        for (recorded, binding) in history.attempts().iter().zip(&self.bindings) {
-            if binding.ordinal != recorded.attempt.ordinal {
-                return Err(RtspCampaignWatchError::Invalid("attempt ordinal"));
-            }
-            let native = recorded.finish.as_ref().and_then(|f| f.native.as_ref());
-            let catalogs = native
-                .map(|n| n.bindings.catalogs.as_slice())
-                .unwrap_or(&[]);
-            let Some(selection) = &binding.selection else {
-                if !catalogs.is_empty() {
-                    return Err(RtspCampaignWatchError::Invalid("omitted recorded catalogs"));
-                }
-                continue;
-            };
-            if catalogs.is_empty() || selection.capture_origin().is_none() {
-                return Err(RtspCampaignWatchError::Invalid(
-                    "unobserved catalog or missing capture assumption",
-                ));
-            }
-            selection.digest()?;
-            let scope = match selection {
-                RtspWatchSelection::Catalog(request) => {
-                    if catalogs.len() != 1
-                        || catalogs[0].slot != request.slot.as_str()
-                        || catalogs[0].root != request.root
-                    {
-                        return Err(RtspCampaignWatchError::Invalid("exact catalog inventory"));
-                    }
-                    &request.scope
-                }
-                RtspWatchSelection::Pages(request) => {
-                    if catalogs.len() != request.pages.len()
-                        || catalogs
-                            .iter()
-                            .zip(&request.pages)
-                            .any(|(saved, supplied)| {
-                                saved.slot != supplied.slot.as_str() || saved.root != supplied.root
-                            })
-                    {
-                        return Err(RtspCampaignWatchError::Invalid(
-                            "exact ordered catalog inventory",
-                        ));
-                    }
-                    &request.scope
-                }
-                RtspWatchSelection::Window(_) => {
-                    return Err(RtspCampaignWatchError::Invalid(
-                        "complete catalog selection required",
-                    ));
-                }
-            };
-            let namespace = match selection.codec() {
-                RtspImportCodec::Avc => ArchiveNamespace::new(scope.clone()).map(|n| n.digest()),
-                RtspImportCodec::Hevc => {
-                    HevcArchiveNamespace::new(scope.clone()).map(|n| n.digest())
-                }
-            }
-            .map_err(|_| RtspCampaignWatchError::Invalid("native archive namespace"))?;
-            let attempt = &recorded.attempt;
-            if namespace != attempt.archive_namespace
-                || scope.recording.generation != attempt.generation
-                || scope.recording.receive_clock != attempt.receive_clock
-                || scope.decode_clock != attempt.decode_clock
-            {
-                return Err(RtspCampaignWatchError::Invalid(
-                    "archived codec, sensor, authority or clock namespace",
-                ));
-            }
-        }
-        Ok(())
     }
 
     /// Refuse overlap with every frozen acquisition owner, including pin journals, source bytes,
@@ -283,35 +215,7 @@ impl RtspCampaignWatchPlan {
         history: &VerifiedCampaignHistory,
         destination: &Path,
     ) -> Result<()> {
-        self.validate_history(history)?;
-        if !destination.is_absolute()
-            || destination.parent().is_none()
-            || !destination.components().all(|part| {
-                matches!(
-                    part,
-                    Component::RootDir | Component::Prefix(_) | Component::Normal(_)
-                )
-            })
-        {
-            return Err(RtspCampaignWatchError::Invalid(
-                "absolute normalized destination owner required",
-            ));
-        }
-        let overlaps = |path: &Path| destination.starts_with(path) || path.starts_with(destination);
-        if overlaps(&self.history_root)
-            || history.plan().attempts.iter().any(|a| {
-                overlaps(Path::new(&a.archive_path))
-                    || overlaps(Path::new(&a.pins_path))
-                    || a.source
-                        .as_ref()
-                        .is_some_and(|s| overlaps(Path::new(&s.path)))
-            })
-        {
-            return Err(RtspCampaignWatchError::Invalid(
-                "distinct history, source and destination owners required",
-            ));
-        }
-        Ok(())
+        rtsp_campaign_sources::validate_destination(self.source_plan(), history, destination)
     }
 
     /// Canonical approval identity binds the independent history pin, every native selection,

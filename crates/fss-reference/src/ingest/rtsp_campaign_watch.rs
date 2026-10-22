@@ -21,19 +21,12 @@ use fss_publication::LocalRootPublisher;
 
 use super::long_watch::LongWatchReport;
 use super::recorded_watch::{WatchError, WatchPlan};
-use super::rtsp_import::catalog::{
-    CatalogPreflight, RtspCatalogImportAuthority, RtspCatalogImportRequest, import_rtsp_catalog,
-    preflight_rtsp_catalog,
-};
-use super::rtsp_import::pages::{
-    RtspCatalogPagesImportAuthority, RtspCatalogPagesImportRequest, import_rtsp_catalog_pages,
-    preflight_rtsp_catalog_pages,
-};
+use super::rtsp_campaign_sources::{self, SourceLimits, Sources, Stages};
 use super::rtsp_import::{RtspImportError, RtspImportReceipt};
 use super::rtsp_selected_watch::{RtspSelectedWatchError, RtspWatchSelection};
 use crate::rtsp::campaign_history::{
     CampaignAttemptHistory, CampaignAuthority, CampaignHistoryError, CampaignOperation,
-    CampaignPin, CampaignPlan, VerifiedCampaignHistory,
+    CampaignPin, CampaignPlan,
 };
 use crate::{ReferenceDeployment, ReplayCx};
 
@@ -259,108 +252,22 @@ fn check(
     Ok(())
 }
 
-struct HistoryAccess<'a> {
+struct WatchAccess<'a> {
     authority: &'a dyn RtspCampaignWatchAuthority,
     plan: &'a RtspCampaignWatchPlan,
-    destination: &'a ReferenceDeployment,
-    cx: &'a ReplayCx,
 }
-impl CampaignAuthority for HistoryAccess<'_> {
+impl CampaignAuthority for WatchAccess<'_> {
     fn permit(&self, operation: CampaignOperation, plan: &CampaignPlan) -> bool {
-        operation == CampaignOperation::Read
-            && check(self.authority, self.plan, self.destination, self.cx).is_ok()
-            && self.authority.permit(operation, plan)
+        self.authority.permit(operation, plan)
     }
     fn permit_read(&self, pin: CampaignPin, root: &Path, principal: &str) -> bool {
-        pin == self.plan.history
-            && root == self.plan.history_root
-            && check(self.authority, self.plan, self.destination, self.cx).is_ok()
-            && self.authority.permit_read(pin, root, principal)
+        self.authority.permit_read(pin, root, principal)
     }
 }
-
-struct ImportAccess<'a> {
-    authority: &'a dyn RtspCampaignWatchAuthority,
-    plan: &'a RtspCampaignWatchPlan,
-    request: ContentDigest,
-    cx: &'a ReplayCx,
-}
-impl RtspCatalogImportAuthority for ImportAccess<'_> {
-    fn permit(
-        &self,
-        request: &RtspCatalogImportRequest,
-        destination: &ReferenceDeployment,
-    ) -> bool {
-        request.digest().is_ok_and(|digest| digest == self.request)
-            && check(self.authority, self.plan, destination, self.cx).is_ok()
+impl rtsp_campaign_sources::Authority for WatchAccess<'_> {
+    fn check(&self, destination: &ReferenceDeployment, cx: &ReplayCx) -> Result<()> {
+        check(self.authority, self.plan, destination, cx)
     }
-}
-impl RtspCatalogPagesImportAuthority for ImportAccess<'_> {
-    fn permit(
-        &self,
-        request: &RtspCatalogPagesImportRequest,
-        destination: &ReferenceDeployment,
-    ) -> bool {
-        request.digest().is_ok_and(|digest| digest == self.request)
-            && check(self.authority, self.plan, destination, self.cx).is_ok()
-    }
-}
-
-fn preflight(
-    archive: &LocalRootPublisher,
-    destination: &ReferenceDeployment,
-    selection: &RtspWatchSelection,
-    access: &ImportAccess<'_>,
-    cx: &ReplayCx,
-    work: &mut WorkBudget<'_>,
-) -> Result<CatalogPreflight> {
-    match selection {
-        RtspWatchSelection::Catalog(request) => Ok(preflight_rtsp_catalog(
-            archive,
-            destination,
-            request,
-            access,
-            cx,
-            work,
-        )?),
-        RtspWatchSelection::Pages(request) => Ok(preflight_rtsp_catalog_pages(
-            archive,
-            destination,
-            request,
-            access,
-            cx,
-            work,
-        )?),
-        RtspWatchSelection::Window(_) => Err(RtspCampaignWatchError::Invalid(
-            "whole catalog selection required",
-        )),
-    }
-}
-
-fn inspect_history(
-    plan: &RtspCampaignWatchPlan,
-    limits: &RtspCampaignWatchLimits,
-    authority: &dyn RtspCampaignWatchAuthority,
-    destination: &ReferenceDeployment,
-    history_cx: &ReplayCx,
-    cx: &ReplayCx,
-    work: &mut WorkBudget<'_>,
-) -> Result<VerifiedCampaignHistory> {
-    let access = HistoryAccess {
-        authority,
-        plan,
-        destination,
-        cx,
-    };
-    Ok(VerifiedCampaignHistory::inspect(
-        &plan.history_root,
-        plan.history,
-        limits.history,
-        limits.history_publication,
-        &access,
-        history_cx,
-        work,
-    )?)
 }
 
 /// Verify one exact metadata prefix and every saved original catalog before any import. Sources
@@ -381,150 +288,61 @@ pub fn process_rtsp_campaign(
 ) -> Result<RtspCampaignWatchReport> {
     let reservation = plan.reservation(limits)?;
     let plan_digest = plan.digest(limits)?;
-    if archives.len() != plan.bindings.len()
-        || cx.root_dir() != destination.root()
-        || history_cx.root_dir() != plan.history_root
-        || history_cx.io_authority().principal() != cx.io_authority().principal()
-    {
-        return Err(RtspCampaignWatchError::Invalid(
-            "source inventory or scoped owner contexts",
-        ));
-    }
-    check(authority, plan, destination, cx)?;
-    let history = inspect_history(plan, limits, authority, destination, history_cx, cx, work)?;
-    plan.validate_destination(&history, destination.root())?;
-    // Admit every source owner and exact mapping before reading the first original or importing.
-    for ((recorded, binding), archive) in
-        history.attempts().iter().zip(&plan.bindings).zip(archives)
-    {
-        match (&binding.selection, archive) {
-            (Some(_), Some(owner))
-                if owner.root_dir() == Path::new(&recorded.attempt.archive_path) => {}
-            (None, None) => {}
-            _ => {
-                return Err(RtspCampaignWatchError::Invalid(
-                    "exact per-attempt source owner",
-                ));
-            }
-        }
-    }
-    let mut verified = Vec::with_capacity(plan.bindings.len());
-    for ((recorded, binding), archive) in
-        history.attempts().iter().zip(&plan.bindings).zip(archives)
-    {
-        cx.checkpoint(STAGE_RTSP_CAMPAIGN_PREFLIGHT)
-            .map_err(|_| RtspCampaignWatchError::Denied)?;
-        check(authority, plan, destination, cx)?;
-        let summary = if let (Some(selection), Some(owner)) = (&binding.selection, archive) {
-            let access = ImportAccess {
-                authority,
-                plan,
-                request: selection.digest()?,
-                cx,
+    let access = WatchAccess { authority, plan };
+    let sources = Sources::prepare(
+        plan.source_plan(),
+        SourceLimits {
+            history: limits.history,
+            publication: limits.history_publication,
+        },
+        Stages {
+            preflight: STAGE_RTSP_CAMPAIGN_PREFLIGHT,
+            import: STAGE_RTSP_CAMPAIGN_IMPORT,
+            revalidate: STAGE_RTSP_CAMPAIGN_REVALIDATE,
+        },
+        archives,
+        &access,
+        destination,
+        history_cx,
+        cx,
+        work,
+    )?;
+    let mut attempts: Vec<_> = sources
+        .import_all(destination, cx, work)?
+        .into_iter()
+        .map(|row| {
+            let status = match row.recorded.finish.as_ref() {
+                None => RtspCampaignWatchStatus::StartedWithoutRetainedFinish,
+                Some(finish) => match &finish.native {
+                    None => RtspCampaignWatchStatus::NativeObservationUnavailable,
+                    Some(native)
+                        if native.bindings.catalogs.is_empty() && native.durable_pictures == 0 =>
+                    {
+                        RtspCampaignWatchStatus::RecordedNoDurablePictures
+                    }
+                    Some(native) if native.bindings.catalogs.is_empty() => {
+                        RtspCampaignWatchStatus::RecordedPicturesWithoutCatalog
+                    }
+                    Some(_) => RtspCampaignWatchStatus::Analyzed,
+                },
             };
-            let summary = preflight(owner, destination, selection, &access, cx, work)?;
-            let native = recorded
-                .finish
+            let watch_plan = row
+                .import
                 .as_ref()
-                .and_then(|f| f.native.as_ref())
-                .ok_or(RtspCampaignWatchError::Invalid(
-                    "native observation unavailable",
-                ))?;
-            if summary.frames as u64 > native.durable_pictures {
-                return Err(RtspCampaignWatchError::Invalid(
-                    "verified catalog exceeds recorded durable picture count",
-                ));
+                .map(|import| plan.watch_plan(import.import_identity, import.frames));
+            RtspCampaignWatchAttempt {
+                recorded: row.recorded,
+                selection: row.selection,
+                request_digest: row.request_digest,
+                status,
+                import: row.import,
+                windows: row.windows,
+                pages: row.pages,
+                watch_plan,
+                watch_report: None,
             }
-            Some(summary)
-        } else {
-            None
-        };
-        verified.push(summary);
-    }
-    let mut attempts = Vec::with_capacity(plan.bindings.len());
-    for (((recorded, binding), archive), summary) in history
-        .attempts()
-        .iter()
-        .zip(&plan.bindings)
-        .zip(archives)
-        .zip(&verified)
-    {
-        cx.checkpoint(STAGE_RTSP_CAMPAIGN_IMPORT)
-            .map_err(|_| RtspCampaignWatchError::Denied)?;
-        check(authority, plan, destination, cx)?;
-        let status = match recorded.finish.as_ref() {
-            None => RtspCampaignWatchStatus::StartedWithoutRetainedFinish,
-            Some(finish) => match &finish.native {
-                None => RtspCampaignWatchStatus::NativeObservationUnavailable,
-                Some(native)
-                    if native.bindings.catalogs.is_empty() && native.durable_pictures == 0 =>
-                {
-                    RtspCampaignWatchStatus::RecordedNoDurablePictures
-                }
-                Some(native) if native.bindings.catalogs.is_empty() => {
-                    RtspCampaignWatchStatus::RecordedPicturesWithoutCatalog
-                }
-                Some(_) => RtspCampaignWatchStatus::Analyzed,
-            },
-        };
-        let mut row = RtspCampaignWatchAttempt {
-            recorded: recorded.clone(),
-            selection: binding.selection.clone(),
-            request_digest: None,
-            status,
-            import: None,
-            windows: 0,
-            pages: 0,
-            watch_plan: None,
-            watch_report: None,
-        };
-        if let (Some(selection), Some(owner), Some(summary)) =
-            (&binding.selection, archive, summary)
-        {
-            let request = selection.digest()?;
-            let access = ImportAccess {
-                authority,
-                plan,
-                request,
-                cx,
-            };
-            let (import, windows, pages) = match selection {
-                RtspWatchSelection::Catalog(request) => {
-                    let receipt =
-                        import_rtsp_catalog(owner, destination, request, &access, cx, work)?;
-                    (receipt.import, receipt.windows, 1)
-                }
-                RtspWatchSelection::Pages(request) => {
-                    let receipt =
-                        import_rtsp_catalog_pages(owner, destination, request, &access, cx, work)?;
-                    (
-                        receipt.catalog.import,
-                        receipt.catalog.windows,
-                        receipt.pages,
-                    )
-                }
-                RtspWatchSelection::Window(_) => {
-                    return Err(RtspCampaignWatchError::Invalid(
-                        "whole catalog selection required",
-                    ));
-                }
-            };
-            if import.frames != summary.frames
-                || windows != summary.windows
-                || pages != summary.pages
-            {
-                return Err(RtspCampaignWatchError::Invalid(
-                    "native import differs from exact preflight",
-                ));
-            }
-            row.watch_plan = Some(plan.watch_plan(import.import_identity, import.frames));
-            row.request_digest = Some(request);
-            row.import = Some(import);
-            row.windows = windows;
-            row.pages = pages;
-        }
-        attempts.push(row);
-    }
+        })
+        .collect();
     let basis = destination.current_anchor().clone();
     for row in &mut attempts {
         cx.checkpoint(STAGE_RTSP_CAMPAIGN_ANALYZE)
@@ -544,29 +362,7 @@ pub fn process_rtsp_campaign(
             });
         }
     }
-    cx.checkpoint(STAGE_RTSP_CAMPAIGN_REVALIDATE)
-        .map_err(|_| RtspCampaignWatchError::Denied)?;
-    for ((binding, archive), expected) in plan.bindings.iter().zip(archives).zip(&verified) {
-        check(authority, plan, destination, cx)?;
-        if let (Some(selection), Some(owner), Some(expected)) =
-            (&binding.selection, archive, expected)
-        {
-            let access = ImportAccess {
-                authority,
-                plan,
-                request: selection.digest()?,
-                cx,
-            };
-            if preflight(owner, destination, selection, &access, cx, work)? != *expected {
-                return Err(RtspCampaignWatchError::Invalid(
-                    "final original inventory differs",
-                ));
-            }
-        }
-    }
-    let current_history =
-        inspect_history(plan, limits, authority, destination, history_cx, cx, work)?;
-    plan.validate_history(&current_history)?;
+    let current_history = sources.revalidate(destination, history_cx, cx, work)?;
     let report = RtspCampaignWatchReport {
         plan_digest,
         history: current_history,
