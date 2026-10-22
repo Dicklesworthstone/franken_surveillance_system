@@ -1740,6 +1740,84 @@ fn test_utf8_header_error_poisons_until_reset_b01() -> Result<(), Box<dyn Error>
 }
 
 #[test]
+fn test_utf8_nonframing_value_recovers_with_recover_flag_fss_0i0ue() -> Result<(), Box<dyn Error>> {
+    // fss-0i0ue option (b): a non-UTF-8 byte in a NON-framing header VALUE, with a
+    // single valid Content-Length, is a typed recoverable per-message error — the
+    // declared message is discarded exactly and the session keeps framing.
+    let mut wire = b"RTSP/1.0 200 OK\r\nCSeq: 1\r\nX: \xff\r\n".to_vec();
+    wire.extend_from_slice(format!("Content-Length: {}\r\n\r\n", SMUGGLED.len()).as_bytes());
+    wire.extend_from_slice(SMUGGLED);
+    let mut p = RtspParser::new();
+    p.set_recover_nonframing_utf8(true);
+    assert_eq!(
+        p.feed(&wire),
+        Err(RtspError::Utf8(Utf8Fault {
+            valid_up_to: 29,
+            error_len: Some(1)
+        }))
+    );
+    // The declared message (headers + body) was discarded exactly; not poisoned.
+    assert_eq!(p.buffered_bytes(), 0);
+    assert_eq!(p.poisoned(), None);
+    // The next message parses (the session kept framing).
+    assert_eq!(single_response_cseq(&p.feed(VALID_200)?)?, 2);
+    Ok(())
+}
+
+#[test]
+fn test_utf8_framing_value_still_poisons_with_recover_flag_fss_0i0ue() -> Result<(), Box<dyn Error>>
+{
+    // fss-0i0ue option (b): a non-UTF-8 byte in a FRAMING header's value (CSeq) is not
+    // recoverable — the framing depends on it, so the parser still poisons.
+    let mut wire = b"RTSP/1.0 200 OK\r\nCSeq: \xff\r\n".to_vec();
+    wire.extend_from_slice(format!("Content-Length: {}\r\n\r\n", SMUGGLED.len()).as_bytes());
+    wire.extend_from_slice(SMUGGLED);
+    let mut p = RtspParser::new();
+    p.set_recover_nonframing_utf8(true);
+    assert_eq!(
+        p.feed(&wire),
+        Err(RtspError::Utf8(Utf8Fault {
+            valid_up_to: 23,
+            error_len: Some(1)
+        }))
+    );
+    assert_eq!(p.buffered_bytes(), 0);
+    assert_eq!(p.poisoned(), Some(PoisonCause::InvalidUtf8Headers));
+    for _ in 0..2 {
+        let res = p.feed(VALID_200);
+        assert_not_smuggled("framing", &res);
+        assert_eq!(
+            res,
+            Err(RtspError::Poisoned(PoisonCause::InvalidUtf8Headers))
+        );
+        assert_eq!(p.buffered_bytes(), 0);
+    }
+    Ok(())
+}
+
+#[test]
+fn test_utf8_nonframing_value_ambiguous_length_still_poisons_fss_0i0ue()
+-> Result<(), Box<dyn Error>> {
+    // fss-0i0ue option (b): a non-UTF-8 byte in a NON-framing header VALUE, but with two
+    // conflicting Content-Length headers: no single valid length exists, so the parser
+    // still poisons (AmbiguousContentLength).
+    let mut wire = b"RTSP/1.0 200 OK\r\nCSeq: 1\r\nX: \xff\r\n".to_vec();
+    wire.extend_from_slice(b"Content-Length: 1\r\nContent-Length: 2\r\n\r\n");
+    let mut p = RtspParser::new();
+    p.set_recover_nonframing_utf8(true);
+    assert_eq!(
+        p.feed(&wire),
+        Err(RtspError::Utf8(Utf8Fault {
+            valid_up_to: 29,
+            error_len: Some(1)
+        }))
+    );
+    assert_eq!(p.buffered_bytes(), 0);
+    assert_eq!(p.poisoned(), Some(PoisonCause::AmbiguousContentLength));
+    Ok(())
+}
+
+#[test]
 fn test_oversize_interleaved_frame_discarded_exactly_b02() -> Result<(), Box<dyn Error>> {
     let limits = RtspLimits {
         max_interleaved_bytes: 16,

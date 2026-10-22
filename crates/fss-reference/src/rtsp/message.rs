@@ -895,6 +895,7 @@ pub struct RtspParser {
     pending_error: Option<RtspError>,
     discard_body_remaining: usize,
     poisoned: Option<PoisonCause>,
+    recover_nonframing_utf8: bool,
 }
 
 impl Default for RtspParser {
@@ -917,6 +918,7 @@ impl RtspParser {
             pending_error: None,
             discard_body_remaining: 0,
             poisoned: None,
+            recover_nonframing_utf8: false,
         }
     }
 
@@ -936,6 +938,15 @@ impl RtspParser {
     /// Returns why the parser is poisoned, or `None` while it still has message framing.
     pub fn poisoned(&self) -> Option<PoisonCause> {
         self.poisoned
+    }
+
+    /// Enable the option-(b) recoverable UTF-8 path (fss-0i0ue): a non-UTF-8 byte in a
+    /// non-framing header VALUE, with a single valid `Content-Length` within
+    /// `max_body_bytes`, is a typed recoverable per-message error — exactly the declared
+    /// message is discarded and the session keeps framing, instead of poisoning. The
+    /// default is strict (poison on any non-UTF-8 header byte).
+    pub fn set_recover_nonframing_utf8(&mut self, enabled: bool) {
+        self.recover_nonframing_utf8 = enabled;
     }
 
     fn declared_body_length(header_text: &str) -> DeclaredBody {
@@ -970,6 +981,136 @@ impl RtspParser {
             }
         }
         declared.map_or(DeclaredBody::Absent, DeclaredBody::Exact)
+    }
+
+    /// Trim trailing `\r` from a raw RTSP line (the `\r` of a `\r\n` terminator).
+    fn trim_trailing_cr(line: &[u8]) -> &[u8] {
+        let mut end = line.len();
+        while end > 0 && line[end - 1] == b'\r' {
+            end -= 1;
+        }
+        &line[..end]
+    }
+
+    /// Trim leading/trailing ASCII whitespace (spaces and tabs) from a `&[u8]`.
+    fn trim_ws(bytes: &[u8]) -> &[u8] {
+        let mut start = 0usize;
+        let mut end = bytes.len();
+        while start < end && (bytes[start] == b' ' || bytes[start] == b'\t') {
+            start += 1;
+        }
+        while end > start && (bytes[end - 1] == b' ' || bytes[end - 1] == b'\t') {
+            end -= 1;
+        }
+        &bytes[start..end]
+    }
+
+    /// Byte-oriented mirror of `declared_body_length` for a header block that is not
+    /// valid UTF-8 (fss-0i0ue): finds the single valid `Content-Length` without
+    /// decoding the whole block. The header name and `Content-Length` value are ASCII,
+    /// so each is decoded on its own; a non-UTF-8 name simply is not `Content-Length`.
+    fn declared_body_length_bytes(header_bytes: &[u8]) -> DeclaredBody {
+        let mut declared: Option<usize> = None;
+        let mut previous_was_content_length = false;
+        for raw_line in header_bytes.split(|&b| b == b'\n').skip(1) {
+            let line = Self::trim_trailing_cr(raw_line);
+            let folded = line.first().is_some_and(|b| *b == b' ' || *b == b'\t');
+            // A continuation line after Content-Length: a peer that honours obsolete
+            // folding reads a different length, so no single valid length exists.
+            if folded && previous_was_content_length {
+                return DeclaredBody::Ambiguous;
+            }
+            let mut parts = line.splitn(2, |&b| b == b':');
+            let name = parts.next().unwrap_or(&[]);
+            let value = parts.next();
+            let is_content_length = std::str::from_utf8(name)
+                .map(|n| n.trim().eq_ignore_ascii_case("content-length"))
+                .unwrap_or(false);
+            let content_length_value = if is_content_length { value } else { None };
+            previous_was_content_length = content_length_value.is_some();
+            let Some(value) = content_length_value else {
+                continue;
+            };
+            if folded {
+                return DeclaredBody::Ambiguous;
+            }
+            let Ok(value_str) = std::str::from_utf8(value) else {
+                return DeclaredBody::Ambiguous;
+            };
+            let Ok(len) = parse_content_length(value_str) else {
+                return DeclaredBody::Ambiguous;
+            };
+            match declared {
+                Some(prev) if prev != len => return DeclaredBody::Ambiguous,
+                _ => declared = Some(len),
+            }
+        }
+        declared.map_or(DeclaredBody::Absent, DeclaredBody::Exact)
+    }
+
+    /// Whether an RTSP header name is framing-critical: a non-UTF-8 byte in a framing
+    /// header's value (or name) is not recoverable, because the framing depends on it.
+    /// A non-UTF-8 name is never a known framing header (treated as non-framing).
+    fn is_framing_header(name: &[u8]) -> bool {
+        const FRAMING: [&str; 8] = [
+            "content-length",
+            "cseq",
+            "transport",
+            "session",
+            "authorization",
+            "proxy-authorization",
+            "www-authenticate",
+            "proxy-authenticate",
+        ];
+        std::str::from_utf8(name)
+            .map(|n| FRAMING.iter().any(|f| n.trim().eq_ignore_ascii_case(f)))
+            .unwrap_or(false)
+    }
+
+    /// Whether the byte at `pos` sits in a NON-framing header VALUE (fss-0i0ue option
+    /// (b)): the start line, a header NAME, and a framing header's value are never
+    /// recoverable. A continuation (folded) value inherits the previous header's name.
+    fn bad_byte_in_recoverable_value(header_bytes: &[u8], pos: usize) -> bool {
+        if pos >= header_bytes.len() {
+            return false;
+        }
+        let mut previous_header_name: Option<&[u8]> = None;
+        let mut offset = 0usize;
+        let mut line_index = 0usize;
+        for raw_line in header_bytes.split(|&b| b == b'\n') {
+            let line_end = offset.saturating_add(raw_line.len());
+            let in_line = pos >= offset && pos < line_end;
+            let line = Self::trim_trailing_cr(raw_line);
+            let folded =
+                line_index > 0 && line.first().is_some_and(|b| *b == b' ' || *b == b'\t');
+            if in_line {
+                if line_index == 0 {
+                    return false;
+                }
+                if folded {
+                    return previous_header_name
+                        .is_some_and(|name| !Self::is_framing_header(name));
+                }
+                let Some(colon_offset) = line.iter().position(|&b| b == b':') else {
+                    return false;
+                };
+                if pos < offset.saturating_add(colon_offset) {
+                    return false;
+                }
+                let name = &line[..colon_offset];
+                return !Self::is_framing_header(Self::trim_ws(name));
+            }
+            if line_index > 0 && !folded {
+                let colon_offset = line.iter().position(|&b| b == b':');
+                if let Some(colon_offset) = colon_offset {
+                    let name = &line[..colon_offset];
+                    previous_header_name = Some(Self::trim_ws(name));
+                }
+            }
+            line_index += 1;
+            offset = line_end.saturating_add(1);
+        }
+        false
     }
 
     fn discard_message_with_declared_body(&mut self, header_end: usize, declared_body: usize) {
@@ -1046,6 +1187,12 @@ impl RtspParser {
     /// and the parser is poisoned: `Utf8` (header block is not UTF-8),
     /// `BadContentLength`, `DuplicateContentLength`, `BodyLimit`, and
     /// `HeaderLimit(UnterminatedHeaderBlock)`.
+    ///
+    /// `Utf8` is recoverable under option (b) ([`RtspParser::set_recover_nonframing_utf8`]):
+    /// when the invalid byte sits in a NON-framing header value and the block declares
+    /// exactly one valid `Content-Length` within `max_body_bytes`, exactly that message
+    /// is discarded and framing resumes. A bad byte in the start line, a header name,
+    /// or a framing header's value (or with no single valid length) still poisons.
     ///
     /// `BadInterleavedLength`: the frame declares a single valid 16-bit length, so
     /// exactly the 4-byte prefix plus that payload are discarded (across later feeds
@@ -1143,7 +1290,21 @@ impl RtspParser {
             let header_text = match std::str::from_utf8(header_bytes) {
                 Ok(text) => text,
                 Err(utf8_err) => {
-                    let err = RtspError::Utf8(Utf8Fault::from_utf8_error(&utf8_err));
+                    let fault = Utf8Fault::from_utf8_error(&utf8_err);
+                    let err = RtspError::Utf8(fault);
+                    // Option (b) (fss-0i0ue): a non-UTF-8 byte in a non-framing header
+                    // VALUE is a typed recoverable per-message error — discard exactly
+                    // the declared message (or poison when no single valid length
+                    // exists); the session keeps framing. The default (strict) poisons.
+                    if self.recover_nonframing_utf8
+                        && Self::bad_byte_in_recoverable_value(header_bytes, fault.valid_up_to)
+                    {
+                        self.recover_from_header_error(
+                            header_boundary.start_of_body,
+                            Self::declared_body_length_bytes(header_bytes),
+                        );
+                        return self.fail(events, err);
+                    }
                     self.poison(PoisonCause::InvalidUtf8Headers);
                     return self.fail(events, err);
                 }
