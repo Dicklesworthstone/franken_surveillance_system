@@ -59,16 +59,21 @@ this table puts the two families whose chains are already reached first.
 
 ### 2b. Wyze OTA — the one chain that could still land
 
-> **Open conflict.** A second static pass over 4.52.17.26 (`docs/exploit/ota-path.md`) finds the v4
-> downloader rejects any URL not starting `https` and sets `CURLOPT_SSL_VERIFYPEER=1`,
-> `VERIFYHOST=2`, with a device CA path — i.e. plain HTTP may be v2-only, and the real gate would be
-> TLS trust for an Amazon-owned host we cannot get a certificate for. No allowlist was found in the
-> downloader, so a device-trusted CA would also suffice. This is unresolved and it decides the chain.
+**Resolved: HTTPS only, and no allowlist** (the earlier plain-HTTP line was from the app's own updater,
+not `assis`). The chain is url field → `https_download` (`libwyzeUtils:0x2ca28`) →
+`https_download_linux_curl` (`0x2c6c0`), which does a bare `strncmp(url,"https",5)` at `0x2c714` and
+returns with `upload url is not https %s` before `curl_easy_init`. TLS is `VERIFYPEER=1`,
+`VERIFYHOST=2`, `CAINFO=/tmp/cacert.pem` (a boot-time copy of `/system/local/cacert.pem`, the stock
+Mozilla bundle), **no pinning**. No host allowlist exists in either the downloader or `assis`.
 
-The update channel is weak where it matters. Mechanism from v2-era evidence, `[INFERENCE]` for v4 —
-the v4 object is `<ver>.tar` and the handler's own strings say `/tmp/img`:
-`GET /firmware.bin` over **plain HTTP port 80** to an allowlisted host, `/tmp/img`, a
-**caller-supplied MD5**, decryption, `tar -xvf /tmp/Upgrade.tar`, then `sh /tmp/Upgrade/upgraderun.sh`
+So the fetch is: our own HTTPS URL, any name we like, chain to a root in that bundle (Let's Encrypt
+is in it) — **provided we can make the camera fetch our URL instead of Wyze's.** That is the shadow:
+`$aws/things/<id>/shadow/name/wyze-service/update/delta` with the `APPPushOTA` payload. The device
+certificate and key are retrievable by their owner through `/device/system/get_iot_certificate`, so an
+owner can publish the delta directly. `/tmp/cacert.pem` is writable and re-copied on `iCamera` start,
+so a self-signed cert also works *after* a first root — but the first install needs the shadow route.
+
+Remaining mechanics: `/tmp/img`, a **caller-supplied MD5**, decryption, `tar -xvf /tmp/Upgrade.tar`, then `sh /tmp/Upgrade/upgraderun.sh`
 **as root**. No TLS, no pinning, and the key is a **compiled default constant**, not a per-unit
 secret: `oU8XzEpbOD6pVTLwdz9pxRpN9MGPCo1P` at `libwyzeUtilsPlatform.so` `.rodata 0x6224` in 4.52.17.26 (`0x67cc` in 4.52.9.5332), selected
 whenever the provisioned field equals the sentinel `"HLHL"`. `encrypt_type` is **not** caller-supplied
@@ -78,14 +83,11 @@ Wrong-mode guesses fail inert (nothing is written). A plaintext tar is accepted 
 `key[0] == 0` branch, which stock does not take because `product_config_get_ota_app_key` always fills
 the buffer.
 
-Consequence: the install path is open to an owner-supplied tar. The trigger is the only cloud
-dependency — it is an **AWS-IoT MQTT shadow delta** on `$aws/things/<id>/shadow/name/wyze-service/update/delta`,
-handed to `assis` over IPC, so the camera only starts a fetch when the cloud tells it to. The fetch host
-is one of three documented names (`d1fk93tz4plczb.cloudfront.net`, `s3-us-west-2.amazonaws.com`,
-`d2h8pzxcxn71bo.cloudfront.net`) and the path shape is
-`s3-us-west-2.amazonaws.com/wuv2/upgrade/<MODEL>/firmware/<ver>.tar`, so a DNS spoof plus the owner's
-"check for updates" is enough provided the spoof is up **before** the tap; no broker compromise is
-needed. A token-bearing `run_action` call from our side is the fallback if the tap does not raise a delta.
+Consequence: the install path accepts an owner-supplied tar from an owner-chosen HTTPS URL. The trigger
+is the only cloud dependency, and the two ways in are (a) spoof the pushed Amazon host **and** hold a
+certificate that validates for it — which we cannot mint — or (b) publish the delta ourselves with the
+device's IoT credentials. (b) is the real route; (a) only works if Wyze happens to push a host we can
+also serve. The documented path shape is `<host>/wuv2/upgrade/<MODEL>/firmware/<ver>.tar`.
 
 The image format is a FIT wrapping an `RKAF` map of exactly `boot` and `system`; the artifact never
 carries the bootloader, and the stock script writes to the backup bank only. That is not a guarantee:
@@ -171,9 +173,13 @@ edit changes that, and it is unproven twice over: the build may be `CONFIG_ENV_I
    the wrong-digest run on the shape that parses. A digest verdict read through the wrong encoding is
    indistinguishable from a parse failure. Digest-checked vs digest-ignored decides whether
    `local_key` alone is enough. This is the whole question.
-2. **Wyze dev key** — `key-name-hint = kernel-dev` is baked into U-Boot. If the matching private key
-   ships in an Ingenic/Wyze SDK, an owner can sign; if not, Wyze needs the card.
-3. **Yi reboot matrix** — ping, WS-Discovery `AppSequence.InstanceId`, port 80, {8080,8000,8899,23},
+2. **Wyze shadow publish** — retrieve the device IoT certificate/key through
+   `/device/system/get_iot_certificate` with an owner token, connect to the AWS-IoT endpoint as the
+   device, and publish an `APPPushOTA` delta carrying our own HTTPS URL with a valid chain. That is the
+   only step between a proven installer and a live install.
+3. **Wyze dev key** — `key-name-hint = kernel-dev` is baked into U-Boot; without the private key an
+   unsigned kernel will not boot and persistence stays closed.
+4. **Yi reboot matrix** — ping, WS-Discovery `AppSequence.InstanceId`, port 80, {8080,8000,8899,23},
    TNP, before and after a power cycle. InstanceId changes with 80 still RST proves the ONVIF daemon
    never starts and the advertised `XAddrs` is a static string.
 
