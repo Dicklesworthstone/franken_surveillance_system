@@ -147,3 +147,33 @@ below 4.52.17.26, or a decoded paracfg blob layout.
 **Decision.** The header is channel/type at `[0..2]` and declared size at `[16..18]`; a frame of
 1264 real bytes declaring `0xFFFF` is the crash primitive. Retained as the base for a heap spray.
 **Revival:** a v4 heap object with a controllable function pointer, or an info leak.
+
+## NEG-008 — paracfg telnet item 11 is reachable, but there is no telnetd (2026-10-22, FuchsiaCat)
+
+**Hypothesis.** The only shell-executing config path (`telnetd &`) can be triggered over the wire
+without cloud, giving a root shell.
+
+| Attempt | Result |
+|---|---|
+| Table audit | entry **is** present: `0x8d5da8 {0x2780,0x2781} -> 0x462878` (earlier "not in table" note was wrong) |
+| `0x2780` payload `01`, `02`, then `01` on .4.23 | each acked `0x2781=[01]`; handler calls `paracfg_set(0x0b,v)` + `exec_shell_async("telnetd &")` for v=1, `killall -9 telnetd` for v=2 |
+| TCP/23 after both transitions | refused every time |
+| Rootfs audit | **no `telnetd` anywhere**: not in busybox applets (`/bin`, `/sbin`), no dropbear; `exec_shell_async` fails silently |
+
+**Decision.** Item 11 is dead on 4.52.17.26 unless a `telnetd` binary is added. The command/response
+pair is retained for any build whose rootfs ships one. (`fss-wyze-telnet-item-11-g7xy3`)
+
+**Revival:** firmware with busybox `telnetd`; or a writable PATH entry plus a delivered binary.
+
+## NEG-009 — 0x284C (CVE-2023-6322 handler) is length-capped on the v4 (2026-10-22, FuchsiaCat)
+
+**Hypothesis.** The v3 motion-zone stack overflow survives on the v4 handler.
+
+| Check | Result |
+|---|---|
+| Handler 0x464258 | zone count must be `< 4`; each zone is a 32-byte rect + length byte |
+| Copy bound | data copied into 178-byte strides only when `1 <= len <= 144` (total 534 into 540, then 535) |
+| Wire test | count 1 and count 4 sends do not crash; high counts ack `02` (rejected), junk lengths are skipped |
+
+**Decision.** The 144-byte cap is the guard the v3 code lacked. Not re-exploitable via the same
+shape; a bug would need a different field of the handler.

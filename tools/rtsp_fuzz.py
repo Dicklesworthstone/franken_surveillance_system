@@ -845,6 +845,12 @@ def main(argv: list[str]) -> int:
     if args.jobs > MAX_JOBS:
         print("jobs must be <= 4", file=sys.stderr)
         return 4
+    if os.geteuid() != 0:
+        print(
+            "warning: not root; macOS Local Network Privacy can turn LAN connects\n"
+            "         into EHOSTUNREACH for unsigned interpreters. Re-run with sudo.",
+            file=sys.stderr,
+        )
     if args.limit > MAX_BATCH:
         print(f"limit clamped to {MAX_BATCH}", file=sys.stderr)
         args.limit = MAX_BATCH

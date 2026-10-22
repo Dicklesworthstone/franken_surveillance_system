@@ -88,5 +88,9 @@ fn main() {
             }
         }
     }
+    session.close();
+    while let Some(d) = session.poll_send() {
+        let _ = sock.send_to(&d, peer);
+    }
     println!("done");
 }
