@@ -215,6 +215,93 @@ pub(super) fn import_selection(
     cx: &ReplayCx,
     work: &mut WorkBudget<'_>,
 ) -> Result<RtspCatalogImportReceipt, RtspImportError> {
+    let prepared = prepare_selection(publisher, destination, request, permit, cx, work)?;
+    let authorize = |current: &ReferenceDeployment| {
+        checkpoint(cx)?;
+        if !permit(current) {
+            return Err(RtspImportError::Denied);
+        }
+        Ok(())
+    };
+    let imported = publish_import(
+        destination,
+        cx,
+        work,
+        prepared.input,
+        prepared.media,
+        prepared.scan,
+        prepared.payloads,
+        &authorize,
+    )?;
+    Ok(RtspCatalogImportReceipt {
+        import: imported,
+        windows: prepared.windows,
+        decode_interval: prepared.decode_interval,
+    })
+}
+
+/// Observation from the complete existing native verifier. It grants no publication authority
+/// and retains no original bytes; an importer must verify current custody again before staging.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) struct CatalogPreflight {
+    pub frames: usize,
+    pub windows: usize,
+    pub pages: usize,
+}
+
+/// Complete source-closure preflight for a campaign. The same pipeline as import verifies every
+/// original, initialization and sample map, then drops its bounded payloads without mutation.
+pub(crate) fn preflight_rtsp_catalog(
+    publisher: &LocalRootPublisher,
+    destination: &ReferenceDeployment,
+    request: &RtspCatalogImportRequest,
+    authority: &dyn RtspCatalogImportAuthority,
+    cx: &ReplayCx,
+    work: &mut WorkBudget<'_>,
+) -> Result<CatalogPreflight, RtspImportError> {
+    preflight_selection(
+        publisher,
+        destination,
+        &CatalogRequest::Single(request.clone()),
+        &|current| authority.permit(request, current),
+        cx,
+        work,
+    )
+}
+
+pub(super) fn preflight_selection(
+    publisher: &LocalRootPublisher,
+    destination: &ReferenceDeployment,
+    request: &CatalogRequest,
+    permit: &dyn Fn(&ReferenceDeployment) -> bool,
+    cx: &ReplayCx,
+    work: &mut WorkBudget<'_>,
+) -> Result<CatalogPreflight, RtspImportError> {
+    let prepared = prepare_selection(publisher, destination, request, permit, cx, work)?;
+    Ok(CatalogPreflight {
+        frames: prepared.input.frames,
+        windows: prepared.windows,
+        pages: request.page_count(),
+    })
+}
+
+struct PreparedSelection {
+    input: PublicationInput,
+    media: Vec<u8>,
+    scan: ScannedSegments,
+    payloads: BTreeMap<ContentDigest, Vec<u8>>,
+    windows: usize,
+    decode_interval: Range<u64>,
+}
+
+fn prepare_selection(
+    publisher: &LocalRootPublisher,
+    destination: &ReferenceDeployment,
+    request: &CatalogRequest,
+    permit: &dyn Fn(&ReferenceDeployment) -> bool,
+    cx: &ReplayCx,
+    work: &mut WorkBudget<'_>,
+) -> Result<PreparedSelection, RtspImportError> {
     request.validate()?;
     if cx.root_dir() != destination.root()
         || publisher.root_dir().starts_with(destination.root())
@@ -352,11 +439,8 @@ pub(super) fn import_selection(
         ));
     }
     let proof = CatalogProof::new(request.clone(), tables, windows, &media, &scan)?;
-    let imported = publish_import(
-        destination,
-        cx,
-        work,
-        PublicationInput {
+    Ok(PreparedSelection {
+        input: PublicationInput {
             identity: request.identity()?,
             limits_digest: request.digest()?,
             codec: request.codec,
@@ -370,10 +454,6 @@ pub(super) fn import_selection(
         media,
         scan,
         payloads,
-        &authorize,
-    )?;
-    Ok(RtspCatalogImportReceipt {
-        import: imported,
         windows: entries.len(),
         decode_interval: interval,
     })

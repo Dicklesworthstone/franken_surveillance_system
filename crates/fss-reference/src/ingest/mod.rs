@@ -78,6 +78,8 @@ pub mod rtp_continuity;
 pub mod rtpdump;
 /// Source-preserving offline import of exact native AVC/HEVC recording windows.
 pub mod rtsp_import;
+/// Exact retained RTSP campaigns through independent source-verified watch epochs.
+pub mod rtsp_campaign_watch;
 /// Selected independent RTSP recordings through retained imports and whole-recording watch.
 pub mod rtsp_selected_watch;
 /// Owner site calibration: atlas localization, joint refinement, digest-bound record.

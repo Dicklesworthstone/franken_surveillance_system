@@ -133,6 +133,26 @@ pub fn import_rtsp_catalog_pages(
     })
 }
 
+/// Read-only campaign preflight through the exact same native page/recording verification as
+/// import. Prepared payloads are dropped; publication always rechecks live original custody.
+pub(crate) fn preflight_rtsp_catalog_pages(
+    publisher: &LocalRootPublisher,
+    destination: &ReferenceDeployment,
+    request: &RtspCatalogPagesImportRequest,
+    authority: &dyn RtspCatalogPagesImportAuthority,
+    cx: &ReplayCx,
+    work: &mut WorkBudget<'_>,
+) -> Result<catalog::CatalogPreflight, RtspImportError> {
+    catalog::preflight_selection(
+        publisher,
+        destination,
+        &request.selection()?,
+        &|current| authority.permit(request, current),
+        cx,
+        work,
+    )
+}
+
 /// Versioned internal selection. Common fields use the first pin; all identity, encoding and scan
 /// operations dispatch here so a multi-page selection can never reuse the first page's identity.
 #[derive(Clone, Debug, Eq, PartialEq)]

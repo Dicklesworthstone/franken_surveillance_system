@@ -184,7 +184,25 @@ impl RtspSelectedWatchPlan {
         &self,
         limits: &RtspSelectedWatchLimits,
     ) -> Result<RtspSelectedWatchReservation> {
-        if !(1..=MAX_SELECTIONS).contains(&self.selections.len())
+        self.reservation_for_count(limits, false)
+    }
+
+    /// Campaign histories can consist entirely of failed or unknown attempts. Validate every
+    /// analysis choice without inventing a source selection or granting an empty public watch.
+    pub(crate) fn reservation_including_empty(
+        &self,
+        limits: &RtspSelectedWatchLimits,
+    ) -> Result<RtspSelectedWatchReservation> {
+        self.reservation_for_count(limits, true)
+    }
+
+    fn reservation_for_count(
+        &self,
+        limits: &RtspSelectedWatchLimits,
+        allow_empty: bool,
+    ) -> Result<RtspSelectedWatchReservation> {
+        if self.selections.len() > MAX_SELECTIONS
+            || (!allow_empty && self.selections.is_empty())
             || self.interpretation != ComponentInterpretation::YCbCr
             || !(1..=MAX_REPORT_BYTES).contains(&limits.maximum_report_bytes)
         {
