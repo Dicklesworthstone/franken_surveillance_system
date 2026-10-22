@@ -39,7 +39,7 @@ struct Args {
     ioctl: Option<u16>,
     payload: Option<Vec<u8>>,
     capture: Option<String>,
-    raw: Option<Vec<u8>>,
+    raws: Vec<Vec<u8>>,
     raw_wrap: bool,
 }
 
@@ -80,7 +80,7 @@ fn parse() -> Result<Args, String> {
             "--capture-dir" => a.capture = Some(v()?),
             "--raw-wrap" => a.raw_wrap = true,
             "--no-raw-wrap" => a.raw_wrap = false,
-            "--raw-file" => { let p = v()?; a.raw = Some(std::fs::read(p).map_err(|_| "read raw")?); }
+            "--raw-file" => { let p = v()?; a.raws.push(std::fs::read(p).map_err(|_| "read raw")?); }
             "--payload-file" => {
                 let p = v()?;
                 a.payload = Some(std::fs::read(p).map_err(|_| "read payload")?);
@@ -268,19 +268,24 @@ fn main() -> ExitCode {
             last_phase = sess.phase();
         }
 
-        if !sent_ioctl
-            && let Some(raw) = a.raw.as_ref()
-            && sess.phase() == PhaseName::Streaming
-        {
-            let mut frame = Vec::with_capacity(12 + raw.len());
-            if a.raw_wrap {
-                frame.extend_from_slice(&[0x0c, 0, 0, 0]);
-                frame.extend_from_slice(&sess.session_id());
+        if !sent_ioctl && !a.raws.is_empty() && sess.phase() == PhaseName::Streaming {
+            for raw in &a.raws {
+                let mut frame = Vec::with_capacity(12 + raw.len());
+                if a.raw_wrap {
+                    frame.extend_from_slice(&[0x0c, 0, 0, 0]);
+                    frame.extend_from_slice(&sess.session_id());
+                }
+                frame.extend_from_slice(raw);
+                sess.send_raw(&frame);
+                println!(
+                    "[{}] sent raw av {}B (wrapped={})",
+                    t0.elapsed().as_millis(),
+                    frame.len(),
+                    a.raw_wrap
+                );
+                std::thread::sleep(Duration::from_millis(25));
             }
-            frame.extend_from_slice(raw);
-            sess.send_raw(&frame);
             sent_ioctl = true;
-            println!("[{}] sent raw av {}B (wrapped={})", t0.elapsed().as_millis(), frame.len(), a.raw_wrap);
         }
 
         if !sent_ioctl
@@ -300,6 +305,16 @@ fn main() -> ExitCode {
             break;
         }
         std::thread::sleep(Duration::from_millis(2));
+    }
+
+    // Close cleanly so the camera releases the session for the next run;
+    // an abrupt stop leaves it half-open and the next probe stalls in DTLS.
+    sess.close();
+    for _ in 0..40 {
+        while let Some(d) = sess.poll_send() {
+            let _ = sock.send_to(&d, peer);
+        }
+        std::thread::sleep(Duration::from_millis(5));
     }
 
     let st = sess.stats();
