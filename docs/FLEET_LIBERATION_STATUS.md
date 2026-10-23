@@ -157,3 +157,55 @@ Client: `deliverables/scripts/aosu_cloud.py` (`login` / `devices` / `call`), smo
 replays successfully, so that session is alive, but generating a *new* action needs the signing
 routine inside `libthing_security.so`. That is the one remaining step before `0x1A/0x1B/0x1C` can be
 sent.
+
+## 23:4x — the flash path is staged end to end; one power cycle away
+
+Two things were broken and are fixed:
+
+- **The HTTPS server had died and a stray `python -m http.server` had grabbed 8443 on the IPv6
+  wildcard only**, so `ota.frankenfs.com` (an A record to the IPv4 address) refused connections for
+  roughly an hour. That alone can explain several of the failed deltas. It is restarted on
+  `192.168.4.160:8443` with the Let's Encrypt chain and verified `200`.
+- The image is now served over plain HTTP on `192.168.4.160:8080` (the device-side `wget` has no
+  TLS), and the capsule is served over the HTTPS path the OTA requires.
+
+A **dry run of `upgraderun.sh` in a sandbox** — fake `/proc/mtd` summing to exactly 16 MiB, stub
+`dd`/`nc`/`wget`, real image file — completed and produced: geometry accepted, six backups
+streamed, digest verified, all six partitions written with the exact sizes, **highest partition
+first and `uboot` last**, then reboot. The 13.5 MiB fake map was correctly refused first, so the
+guard works.
+
+Staged now:
+
+| Artefact | URL | MD5 |
+|---|---|---|
+| negative (20 B, no tar, no write) | `.../4.52.17.30.tar` | `6909e9ca42b912662c04e6e98d7c5821` |
+| real capsule (busybox + installer) | `.../4.52.17.31.tar` | `bf0535f59515f71a04ba00bd2176ffd2` |
+| image (tailnet build) | `http://192.168.4.160:8080/img.bin` | sha256 `546c24f8…` |
+
+`desired` currently holds the **negative**. Sequence is two power cycles: cycle 1 proves delivery
+and the MD5 gate with zero writes; then publish the capsule (`pub.py …/4.52.17.31.tar
+bf0535f5…`) and cycle 2 flashes.
+
+Also checked and negative: **no `paracfg` item reboots the box.** All 157 entries of the table at
+`0x8c5da8` were scanned for a reference to the `"reboot -f"` string (`0x834840`) — none. The only
+caller of the reboot block (`0x457010`) is a video-service-change path that our K10000 retry with
+changed resolution did not reach. So a reboot cannot be synthesised from the wire; it is a power
+cycle or nothing.
+
+## Tuya sign — what is now known, precisely
+
+The gateway resolves the action name *before* validating the signature, which let the coverage be
+measured empirically: changing `a` to an unknown name returns `API_OR_API_VERSION_WRONG`, changing it
+to a real one returns `SING_VALIDATE_FALED`. So `a` **is** signed, as are `sid` and `postData`;
+`t` is not (a request with only `t` replaced replays fine). Signing is
+`ThingApiSignManager.generateSignatureSdk` → sorted `k=v` joined with `||` (with `postData` replaced
+by a swapped MD5-base64) → `SecureNativeApi.doCommandNative(ctx, 1, bytes)`, i.e. a native command in
+`libthing_security.so`. That library exports no `Java_*` symbols — it registers through
+`JNICLibrary.loadSo` → `RegisterNatives`, so the address has to come from `JNI_OnLoad`'s table rather
+than `nm`. Reimplementing it needs either an ARM64 runtime or a careful read of the native command-1
+body; the userland guesses (HMAC/append/prepend over clientId, sid, deviceId, bundleId, empty) were
+all tested against a known pair and all miss.
+
+Both Wyze cameras now carry the negative delta; `docs/exploit/FINISH-WYZE.md` is the two-cycle
+runbook.

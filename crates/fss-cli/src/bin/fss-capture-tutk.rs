@@ -8,7 +8,7 @@
 //! secondary. Cancellation is request→drain→finalize via ReplayCx.
 
 use std::ffi::OsString;
-use std::io::{self, Write};
+use std::io::{self, Read, Write};
 use std::net::SocketAddr;
 use std::path::PathBuf;
 use std::process::ExitCode;
@@ -291,6 +291,9 @@ fn run(o: &Options) -> Result<String, &'static str> {
         let mut sent_rtsp = false;
         let mut rtsp_probe_at: Option<Instant> = None;
         let mut rtsp_listening: Option<bool> = None;
+        let mut rtsp_auth: Option<u16> = None;
+        let rtsp_deadline = Duration::from_secs(10);
+        let mut rtsp_probe_start: Option<Instant> = None;
         while t0.elapsed() < Duration::from_secs(o.secs) {
             let now_ns = t0.elapsed().as_nanos() as u64;
             while let Some(d) = ing.poll_send() {
@@ -326,23 +329,62 @@ fn run(o: &Options) -> Result<String, &'static str> {
                 ing.send_ioctl(0x29e8, payload.as_bytes());
                 sent_rtsp = true;
                 rtsp_probe_at = Some(Instant::now() + Duration::from_millis(1500));
+                rtsp_probe_start = Some(Instant::now());
                 println!("rtsp: sent 0x29e8 ({}B)", payload.len());
             }
 
             // 554 is the only truth: the ack means the config was accepted, not
-            // that the daemon bound. Probe once, bounded, and report both.
+            // that the daemon bound — and it binds late (sometimes only after a
+            // restart), so keep probing rather than sampling once. When it does
+            // answer, DESCRIBE with the credentials we just set: 200 means the
+            // account works, 401 means the listener is up but the account is not.
             if rtsp_listening.is_none()
                 && let Some(at) = rtsp_probe_at
                 && Instant::now() >= at
             {
                 let addr = std::net::SocketAddr::from((peer.ip(), 554));
-                rtsp_listening = Some(
-                    std::net::TcpStream::connect_timeout(&addr, Duration::from_millis(600)).is_ok(),
-                );
-                println!(
-                    "rtsp: 554 {} (config accepted is not proof of a listener)",
-                    if rtsp_listening == Some(true) { "listening" } else { "not listening" }
-                );
+                match std::net::TcpStream::connect_timeout(&addr, Duration::from_millis(600)) {
+                    Ok(mut stream) => {
+                        rtsp_listening = Some(true);
+                        if let Some((u, p)) = &o.rtsp {
+                            let cred = base64(format!("{u}:{p}").as_bytes());
+                            let req = format!(
+                                "DESCRIBE rtsp://{}:{}/stream1 RTSP/1.0\r\nCSeq: 1\r\nAuthorization: Basic {cred}\r\nAccept: application/sdp\r\n\r\n",
+                                peer.ip(),
+                                554
+                            );
+                            rtsp_auth = stream
+                                .write_all(req.as_bytes())
+                                .ok()
+                                .and_then(|()| {
+                                    let mut head = [0u8; 32];
+                                    stream
+                                        .set_read_timeout(Some(Duration::from_millis(900)))
+                                        .ok()?;
+                                    let n = stream.read(&mut head).ok()?;
+                                    rtsp_status(&head[..n])
+                                });
+                        }
+                        println!(
+                            "rtsp: 554 listening, DESCRIBE {}",
+                            match rtsp_auth {
+                                Some(200) => "accepted (account works)".to_owned(),
+                                Some(code) => format!("rejected ({code})"),
+                                None => "unanswered".to_owned(),
+                            }
+                        );
+                    }
+                    Err(_) if rtsp_probe_start.is_some_and(|s| s.elapsed() >= rtsp_deadline) => {
+                        rtsp_listening = Some(false);
+                        println!(
+                            "rtsp: 554 never bound within {}s (config accepted is not proof)",
+                            rtsp_deadline.as_secs()
+                        );
+                    }
+                    Err(_) => {
+                        rtsp_probe_at = Some(Instant::now() + Duration::from_secs(2));
+                    }
+                }
             }
 
             if !sent_probe
@@ -375,7 +417,7 @@ fn run(o: &Options) -> Result<String, &'static str> {
         let staged = (seal.capsule_count * 2) as u64;
         let frames = sess.video_frames;
         Ok(format!(
-            "{{\"schema\":\"{FORMAT}\",\"site\":\"{}\",\"root\":\"{}\",\"state\":{},\"frames\":{},\"capsules\":{},\"batches\":{},\"gaps\":{},\"resync_bytes\":{},\"acks\":{},\"rtsp_listening\":{},\"custody_staged\":{},\"anchors\":{:?}}}",
+            "{{\"schema\":\"{FORMAT}\",\"site\":\"{}\",\"root\":\"{}\",\"state\":{},\"frames\":{},\"capsules\":{},\"batches\":{},\"gaps\":{},\"resync_bytes\":{},\"acks\":{},\"rtsp_listening\":{},\"rtsp_describe\":{},\"custody_staged\":{},\"anchors\":{:?}}}",
             o.site,
             o.root.display(),
             json_string(&state_text),
@@ -386,12 +428,48 @@ fn run(o: &Options) -> Result<String, &'static str> {
             sess.resync_bytes,
             sess.acks_sent,
             rtsp_listening.map_or("null".to_owned(), |v| v.to_string()),
+            rtsp_auth.map_or("null".to_owned(), |v| v.to_string()),
             staged,
             committed
         ))
     })();
     cx.drain_and_finalize();
     result
+}
+
+/// Standard base64, for the RTSP Basic credential header.
+fn base64(input: &[u8]) -> String {
+    const T: &[u8; 64] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+    let mut out = String::with_capacity(input.len().div_ceil(3) * 4);
+    for chunk in input.chunks(3) {
+        let b = [
+            chunk[0],
+            *chunk.get(1).unwrap_or(&0),
+            *chunk.get(2).unwrap_or(&0),
+        ];
+        let n = (u32::from(b[0]) << 16) | (u32::from(b[1]) << 8) | u32::from(b[2]);
+        out.push(T[(n >> 18) as usize & 63] as char);
+        out.push(T[(n >> 12) as usize & 63] as char);
+        out.push(if chunk.len() > 1 {
+            T[(n >> 6) as usize & 63] as char
+        } else {
+            '='
+        });
+        out.push(if chunk.len() > 2 {
+            T[n as usize & 63] as char
+        } else {
+            '='
+        });
+    }
+    out
+}
+
+/// Status code from an RTSP status line (`RTSP/1.0 200 OK`).
+fn rtsp_status(head: &[u8]) -> Option<u16> {
+    let text = std::str::from_utf8(head).ok()?;
+    let mut parts = text.split_whitespace();
+    let _version = parts.next()?;
+    parts.next()?.parse().ok()
 }
 
 fn json_string(s: &str) -> String {
@@ -531,6 +609,20 @@ mod tests {
             o.rtsp_mode
         );
         assert_eq!(payload, r#"{"name":"op","pwd":"pa\"ss\\w","rtspMode":1}"#);
+    }
+
+    #[test]
+    fn base64_matches_rfc4648() {
+        assert_eq!(base64(b"fsslab:FssLab1234"), "ZnNzbGFiOkZzc0xhYjEyMzQ=");
+        assert_eq!(base64(b"a"), "YQ==");
+        assert_eq!(base64(b"ab"), "YWI=");
+    }
+
+    #[test]
+    fn rtsp_status_parses_the_code() {
+        assert_eq!(rtsp_status(b"RTSP/1.0 401 Unauthorized\r\nCSeq: 1\r\n"), Some(401));
+        assert_eq!(rtsp_status(b"RTSP/1.0 200 OK\r\n"), Some(200));
+        assert_eq!(rtsp_status(b"garbage"), None);
     }
 
     #[test]

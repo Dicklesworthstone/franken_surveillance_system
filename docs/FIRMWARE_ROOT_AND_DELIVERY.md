@@ -147,7 +147,12 @@ edit changes that, and it is unproven twice over: the build may be `CONFIG_ENV_I
   effect, just not instantly and only after the camera restarts for another reason. The remaining gap
   is the credential: `DESCRIBE` answers `401`, and none of the account/password pairs we set is
   accepted, so the RTSP account still needs wiring (likely a separate enable step, as Tapo needs
-  `setAccountEnabled` for RTSP).
+  `setAccountEnabled` for RTSP). The capture CLI now says so itself: after `--rtsp-enable` it probes
+  554 for 10 s and reports `rtsp_listening: false` with "config accepted is not proof" instead of
+  claiming success, and on a listener it issues an authenticated `DESCRIBE` and records the status
+  code (`rtsp_describe`). Re-enabling on a unit that already had it enabled returns `result: -3`
+  from the camera, which is a no-op marker, not a version problem — an earlier `-3` run was misread
+  as one.
   **Earlier re-check, same day:** the command is accepted on `.4.23` and `.5.242` (`0x29e9`,
   `{"result":1,...}` with both stream URLs, repeatedly, for `rtspMode` 1 and 2 and for `fsslab` and
   `admin`), but the listener did **not** come up within 10 s on either unit afterwards — `.5.242`
