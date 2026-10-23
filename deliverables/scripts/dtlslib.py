@@ -88,7 +88,9 @@ class Cam:
         master=prf(pm,b"master secret",self.cr+srv_random,48)
         kb=prf(master,b"key expansion",srv_random+self.cr,88)
         self.ck,self.sk,self.civ,self.siv=kb[0:32],kb[32:64],kb[64:76],kb[76:88]
-        cke_body=len(b"AUTHPWD_admin").to_bytes(2,'big')+b"AUTHPWD_admin"+bytes([32])+self.eph.public_key().public_bytes(Encoding.Raw,PublicFormat.Raw)
+        ident=self.identity if getattr(self,"identity",None) else "AUTHPWD_admin"
+        if isinstance(ident,str): ident=ident.encode()
+        cke_body=len(ident).to_bytes(2,'big')+ident+bytes([32])+self.eph.public_key().public_bytes(Encoding.Raw,PublicFormat.Raw)
         cke=b'\x10'+len(cke_body).to_bytes(3,'big')+b'\x00\x01'+b'\x00'*3+len(cke_body).to_bytes(3,'big')+cke_body
         self.transcript+=cke
         cv=prf(master,b"client finished",hashlib.sha256(self.transcript).digest(),12)

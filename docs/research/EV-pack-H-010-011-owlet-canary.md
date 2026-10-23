@@ -98,12 +98,20 @@ from also accepting `443`. That matches two cameras of one generation, and both 
 **Canary — no listener, so the chain is transport-level.** The device is not merely hardened; it
 has nothing to connect *to* from the LAN side. The only shapes left:
 
-1. **Cloud MITM.** ARP-spoof the gateway, answer its DNS, present a forged TLS endpoint. Requires the
-   device to actually talk — it currently does not, so this is gated on waking it (PIR trigger or
-   app open). Unknown and decisive: whether the Canary client pins or validates the certificate.
+1. **Cloud MITM.** This was executed end-to-end: ARP spoof → DNS answer → plain TCP to our listener.
+   The device **completes ARP, resolves, connects, and offers SNI** — then aborts with
+   `TLSV1_ALERT_UNKNOWN_CA` because our self-signed cert is not trusted (EV-947). So the transport
+   half of impersonation is *solved* and the remaining gate is trust-anchor, not reachability.
+   Hostnames seen: `i.canaryis.com` (DNS), `o.canaryis.com` and `v.canaryis.com` (SNI) — three
+   distinct services; SNI is sent in clear.
 2. **Onboarding/setup mode.** Every Canary has an AP/provisioning state; a factory reset re-enters it.
    That is a button press, inside the owner's rules, but it also drops the current pairing.
-3. **App-side channel (`*.canary.is`).** Owner account, not network-only.
+3. **App-side channel (`*.canaryis.com`).** Owner account, not network-only.
+
+What it would take to finish (1): a certificate the device trusts. `canaryis.com` is vendor-owned, so
+options are a vendor-issued leaf (not obtainable), a leaked vendor key, or a defect in the device's
+verification — e.g. a trust store that includes a CA whose key is public, or a version/clock check
+that can be skipped. Nothing about the *network* stands in the way any more.
 
 **Owlet — chain is known, reach is not.** If the unit is the Kalay consumer the vendor sources say it
 is, the Wyze lane transfers almost wholesale: `0x0601` UID leak → `0x1008` AuthKey (CVE-2023-6323

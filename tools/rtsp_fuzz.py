@@ -836,6 +836,7 @@ def main(argv: list[str]) -> int:
     ap.add_argument("--limit", type=int, default=MAX_BATCH)
     ap.add_argument("--jobs", type=int, default=1, choices=range(1, MAX_JOBS + 1))
     ap.add_argument("--classes", default="", help="comma-separated class filter")
+    ap.add_argument("--pace", type=float, default=0.4, help="seconds between cases")
     ap.add_argument("--log", default=LOG_DEFAULT)
     ap.add_argument("--dry-run", action="store_true")
     ap.add_argument("--list-classes", action="store_true")
@@ -908,7 +909,8 @@ def main(argv: list[str]) -> int:
         return 0
 
     canary = Canary(args.host, args.port)
-    baseline_ok, why = canary.ensure(attempts=30, gap=2.0)
+    print(f"waiting for {args.host}:{args.port} (up to 240s) ...", file=sys.stderr)
+    baseline_ok, why = canary.ensure(attempts=120, gap=2.0)
     if not baseline_ok:
         print(f"camera not answering OPTIONS: {why}", file=sys.stderr)
         return 3
@@ -921,7 +923,7 @@ def main(argv: list[str]) -> int:
     # across every agent on this host.
     if args.jobs == 1:
         for case in cases:
-            res = run_case(case, args.host, args.port, canary)
+            res = run_case(case, args.host, args.port, canary, pace=args.pace)
             res.seed = args.seed
             log.write(res)
             print(f"{case.id} {case.cls:16s} {res.outcome:10s} {case.note[:60]}")
@@ -932,7 +934,7 @@ def main(argv: list[str]) -> int:
         from concurrent.futures import ThreadPoolExecutor
 
         def work(case: Case) -> Result:
-            res = run_case(case, args.host, args.port, canary)
+            res = run_case(case, args.host, args.port, canary, pace=args.pace)
             res.seed = args.seed
             return res
 
