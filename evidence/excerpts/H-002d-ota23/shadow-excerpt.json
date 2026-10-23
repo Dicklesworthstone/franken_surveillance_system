@@ -1,0 +1,35 @@
+{
+ "note": "shadow read after delta; reported values are camera echoes",
+ "desired": {
+  "DeviceState": {
+   "TZ": "EST+0500EDT+0400,M3.2.0/02:00:00,M11.1.0/02:00:00"
+  },
+  "url": "https://batch-heard-quotations-lunch.trycloudflare.com/4.52.17.29.tar",
+  "md5": "00000000000000000000000000000000",
+  "model": "HL_CAM4",
+  "sub_mac": "80482C525905",
+  "APPPushOTA": {
+   "url": "https://ota.frankenfs.com/4.52.17.29.tar",
+   "md5": "00000000000000000000000000000000",
+   "model": "HL_CAM4",
+   "sub_mac": "80482C525905",
+   "pcUrl": "https://batch-heard-quotations-lunch.trycloudflare.com/4.52.17.29.tar",
+   "pcMd5": "00000000000000000000000000000000"
+  }
+ },
+ "reported": {
+  "DeviceState": {
+   "TZ": "EST+0500EDT+0400,M3.2.0/02:00:00,M11.1.0/02:00:00",
+   "ID": "80482C525905",
+   "DM": "HL_CAM4",
+   "HR": "0.0.0.0",
+   "FV": "4.52.17.26"
+  },
+  "url": "https://ota.frankenfs.com/firmware.bin",
+  "md5": "00000000000000000000000000000000",
+  "model": "HL_CAM4",
+  "sub_mac": "80482C525905",
+  "APPPushOTA": "{\"url\": \"https://ota.frankenfs.com/4.52.17.28.tar\", \"md5\": \"00000000000000000000000000000000\", \"model\": \"HL_CAM4\", \"sub_mac\": \"80482C525905\"}"
+ },
+ "version": 1436
+}

@@ -62,9 +62,14 @@ def main() -> int:
     ap.add_argument("--out-dir", required=True)
     ap.add_argument("--file", action="append", default=[])
     ap.add_argument("--no-aes", action="store_true")
+    ap.add_argument("--render", action="append", default=[],
+                    help="PLACEHOLDER=value substitution in the script")
     args = ap.parse_args()
 
     script = open(args.script).read()
+    for spec in args.render:
+        k, _, v = spec.partition("=")
+        script = script.replace("@" + k + "@", v)
     extra = []
     for spec in args.file:
         src, _, dst = spec.partition(":")

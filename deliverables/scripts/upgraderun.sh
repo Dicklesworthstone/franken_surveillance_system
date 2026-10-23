@@ -6,12 +6,15 @@
 # as absolute slices; the bootloader goes last. Backups are streamed to the
 # operator before any write.
 #
-# Substituted by build_ota_tar.py --render: @HOST@ @PORT@ @IMAGE@ @SHA256@ @SENSOR@
+# Substituted by build_ota_tar.py --render: @HOST@ @PORT@ @IMG_PORT@ @IMAGE@ @SHA256@ @SENSOR@
+# The capsule itself arrives over HTTPS through assis; the 16 MiB image is fetched by the
+# static busybox over plain HTTP and verified by SHA-256 before any write.
 set -e
 
 HOST=@HOST@
 PORT=@PORT@
-IMG_URL="http://$HOST:$PORT/@IMAGE@"
+IMG_PORT=@IMG_PORT@
+IMG_URL="http://$HOST:$IMG_PORT/@IMAGE@"
 IMG_SHA=@SHA256@
 SENSOR="@SENSOR@"
 CHIP=16777216
