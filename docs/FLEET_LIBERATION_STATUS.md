@@ -48,6 +48,20 @@ log shows a GET, the rest of the chain is already built and the negative capsule
 - The full-image write includes the bootloader; the only recovery from a bad boot write is TFTP/USB
   plus UART, which is outside the current constraint.
 
+## Resumption after a power cycle (the one thing that needs hands)
+
+`.4.24`'s MQTT client is dead and a cloud `restart` cannot revive it (the command rides MQTT). TUTK
+still answers, so only the client is gone. When someone can unplug it for five seconds:
+
+```sh
+sudo bash deliverables/scripts/wyze_mitm_up.sh      # dns + spoof + tls + proxy, prints a verdict each
+# wait for ping, then watch /tmp/mqproxy.log — SUBSCRIBE lines are the capture that has been missing
+```
+
+Then publish one delta to `https://s3-us-west-2.amazonaws.com/wuv2/upgrade/HL_CAM4/firmware/9.9.9.9.tar`
+with that file's md5 and watch `/tmp/tls.log` for the GET. The forged chain already verifies against the
+device bundle, so nothing else has to be rebuilt.
+
 ## Retest log, 2026-10-23 02:0x (MagentaOwl)
 
 | Unit | Reachability | Consequence |
