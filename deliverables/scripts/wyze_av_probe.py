@@ -44,6 +44,12 @@ def build_frame(args):
     if args.head_hex:
         head = bytes.fromhex(args.head_hex.replace(":", "").replace(" ", ""))
         buf[28:28 + len(head)] = head
+    if args.poison:
+        a, _, b = args.poison.partition(":")
+        start = int(a, 0)
+        end = int(b, 0) if b else n
+        for i in range(start, min(end, n)):
+            buf[i] = 0x41
     return bytes(buf)
 
 
@@ -103,6 +109,7 @@ def main():
     p.add_argument("--tail-hex", default="")
     p.add_argument("--tail-off", type=lambda s: int(s, 0), default=None)
     p.add_argument("--head-hex", default="")
+    p.add_argument("--poison", default="", help="START:END bytes set to 0x41")
     p.add_argument("--identity", default="AUTHPWD_admin")
     p.add_argument("--psk-hex", default="")
     p.add_argument("--no-login", action="store_true")
