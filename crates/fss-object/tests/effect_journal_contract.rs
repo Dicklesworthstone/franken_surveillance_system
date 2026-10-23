@@ -437,7 +437,7 @@ fn real_file_commit_ack_loss_recovers_for_reconciliation_without_dispatch() -> T
     let directory = Directory::new()?;
     let root = directory.0.join("runtime-history");
     let limits = EffectJournalLimits {
-        max_records: 16,
+        max_records: 5,
         max_record_bytes: 64 * 1024,
         max_total_bytes: 2 * 1024 * 1024,
         max_read_bytes: 8 * 1024 * 1024,
@@ -535,20 +535,29 @@ fn real_file_commit_ack_loss_recovers_for_reconciliation_without_dispatch() -> T
         refusal.error(),
         EffectCoordError::RecoveryOnly { .. }
     ));
+    // Exactly five slots must preserve this legal cold-recovery path after the
+    // unacknowledged commitment; saved history cannot recreate adapter acceptance.
+    recovered.reconcile(
+        &mut tree,
+        &authority,
+        &handle,
+        Reconciliation::Indeterminate("commit acknowledgement lost; independently query provider"),
+        TimestampNs(6),
+    )?;
     let proof = ContentDigest::sha256(b"independently checked camera pose");
     recovered.reconcile(
         &mut tree,
         &authority,
         &handle,
         Reconciliation::Observed(proof),
-        TimestampNs(6),
+        TimestampNs(7),
     )?;
     recovered.reconcile(
         &mut tree,
         &authority,
         &handle,
         Reconciliation::Verified(proof),
-        TimestampNs(7),
+        TimestampNs(8),
     )?;
     assert_eq!(
         tree.get(authority.region())?.obligations[handle.obligation()].state,
@@ -557,6 +566,10 @@ fn real_file_commit_ack_loss_recovers_for_reconciliation_without_dispatch() -> T
     let terminal = recovered
         .durable_pin()
         .ok_or("terminal receipt was not durable")?;
+    assert_eq!(
+        terminal.sequence, 5,
+        "the reserved settlement path fits exactly"
+    );
     drop(recovered);
 
     let store = FileEffectJournal::open(&root, limits, Arc::new(HostSpoolIo), terminal)?;

@@ -461,14 +461,16 @@ fn failed_terminal_append_preserves_obligation_until_cold_reconciliation() -> Te
         TimestampNs(4),
         approved,
     )?;
+    f.owner
+        .adapter_accepted(&mut committed, None, TimestampNs(5))?;
     let proof = digest(b"observed pose");
-    f.owner.observed(&mut committed, proof, TimestampNs(5))?;
+    f.owner.observed(&mut committed, proof, TimestampNs(6))?;
     let minimum = f.owner.durable_pin().expect("observed pin");
     let before = f.owner.journal().clone();
     f.disk.lock().expect("disk lock").fault = Fault::AfterAppend;
     assert!(
         f.owner
-            .verified(&mut f.tree, &f.authority, committed, proof, TimestampNs(6))
+            .verified(&mut f.tree, &f.authority, committed, proof, TimestampNs(7))
             .is_err()
     );
     assert_eq!(f.owner.journal(), &before);
@@ -484,7 +486,7 @@ fn failed_terminal_append_preserves_obligation_until_cold_reconciliation() -> Te
     );
     let (mut recovered, authority, mut tree) = f.recover(minimum)?;
     let handle =
-        recovered.adopt_recovered(&authority, &mut tree, &operation, expected, TimestampNs(7))?;
+        recovered.adopt_recovered(&authority, &mut tree, &operation, expected, TimestampNs(8))?;
     assert_eq!(recovered.state(&handle)?, EffectState::Verified);
     assert_eq!(
         tree.get(authority.region())?.obligations[handle.obligation()].state,
@@ -497,7 +499,7 @@ fn failed_terminal_append_preserves_obligation_until_cold_reconciliation() -> Te
 fn new_work_cannot_spend_another_operations_terminal_capacity() -> Test {
     let mut f = Fixture::new()?;
     let prepared = f.prepare("reserved")?;
-    f.disk.lock().expect("disk lock").limit = Some(3);
+    f.disk.lock().expect("disk lock").limit = Some(4);
     let approved = approval(&prepared);
     let refusal = f
         .owner
@@ -509,7 +511,7 @@ fn new_work_cannot_spend_another_operations_terminal_capacity() -> Test {
             TimestampNs(4),
             approved,
         )
-        .expect_err("commit needs retained observation and verification space");
+        .expect_err("commit needs acceptance, observation and verification space");
     assert!(matches!(
         refusal.error(),
         EffectCoordError::Persistence {
@@ -522,7 +524,10 @@ fn new_work_cannot_spend_another_operations_terminal_capacity() -> Test {
         "preflight refusal wrote nothing"
     );
     let prepared = refusal.into_token();
-    f.disk.lock().expect("disk lock").limit = Some(4);
+    assert_eq!(f.owner.state(&prepared)?, EffectState::Prepared);
+    assert_eq!(f.owner.durable_pin().expect("preparation pin").sequence, 1);
+    assert_eq!(f.disk.lock().expect("disk lock").records.len(), 1);
+    f.disk.lock().expect("disk lock").limit = Some(5);
     let approved = approval(&prepared);
     let mut committed = f.owner.commit(
         &f.authority,
@@ -534,11 +539,13 @@ fn new_work_cannot_spend_another_operations_terminal_capacity() -> Test {
     )?;
     assert!(f.prepare("capacity-thief").is_err());
     assert_eq!(f.owner.journal().operations().count(), 1);
-    let proof = digest(b"provider outcome");
-    f.owner.observed(&mut committed, proof, TimestampNs(5))?;
     f.owner
-        .verified(&mut f.tree, &f.authority, committed, proof, TimestampNs(6))?;
-    assert_eq!(f.owner.durable_pin().expect("terminal pin").sequence, 4);
+        .adapter_accepted(&mut committed, None, TimestampNs(5))?;
+    let proof = digest(b"provider outcome");
+    f.owner.observed(&mut committed, proof, TimestampNs(6))?;
+    f.owner
+        .verified(&mut f.tree, &f.authority, committed, proof, TimestampNs(7))?;
+    assert_eq!(f.owner.durable_pin().expect("terminal pin").sequence, 5);
     Ok(())
 }
 

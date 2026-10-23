@@ -448,8 +448,11 @@ impl EffectCoordinator {
             .operations()
             .map(|receipt| match receipt.state {
                 EffectState::Prepared | EffectState::Observed => 1,
+                // Commitment must first reach adapter acceptance or indeterminate
+                // recovery before observation and proof-bound verification are legal.
+                EffectState::Committed => 3,
+                EffectState::AdapterAccepted | EffectState::Indeterminate => 2,
                 EffectState::Verified | EffectState::Failed | EffectState::Cancelled => 0,
-                _ => 2,
             })
             .sum();
         let needed_records = remaining + 1;
