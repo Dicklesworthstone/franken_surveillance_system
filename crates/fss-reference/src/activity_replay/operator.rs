@@ -3,8 +3,9 @@
 //!
 //! The caller selects the source slots and original computation parameters. A conclusion cannot
 //! select its own authority or silently hydrate the rest of the deployment. Complete committed
-//! deletion history is checked before source reads. No deployment writer, lock, repair or effect
-//! is opened. The final head comparison is an observation, not a lease on future availability.
+//! deletion history and current privacy-mask authority are checked before source reads. No
+//! deployment writer, lock, repair or effect is opened. The final head comparison is an
+//! observation, not a lease on future availability.
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::fmt;
@@ -41,6 +42,7 @@ use crate::deletion::belief::{
 use crate::executor_activity::{
     ExecutorModelResult, retention_batch, retention_deltas, retention_slot,
 };
+use crate::ingest::privacy_mask::{PrivacyMaskError, refuse_unmasked_history};
 
 /// Small explicit source selection; no whole-deployment source expansion.
 pub const MAX_ACTIVITY_SOURCE_SLOTS: usize = 8;
@@ -52,7 +54,9 @@ pub struct ActivityVerificationLimits {
     pub history: OrientLimits,
     /// Complete deletion proof admission, including revoked aliases.
     pub deletion: DeletionBeliefLimits,
-    /// Replay, captured custody and graph verification ceilings.
+    /// Replay, captured custody and graph verification ceilings. The result-only privacy
+    /// preflight and subsequent complete capture share one custody allowance; rereads, repeated
+    /// object/edge visits and retained payload admissions are charged again, never refilled.
     pub verification: DurableBeliefLimits,
     /// Exact native metadata, input and decoded-frame ceilings.
     pub native: ActivityReplayLimits,
@@ -108,6 +112,8 @@ pub enum ActivityVerificationError {
     AuthorityChanged,
     /// Complete deletion authority could not be established.
     Deletion(DurableBeliefError),
+    /// This computation does not bind a mask generation and cannot honor a retained mask.
+    Privacy(PrivacyMaskError),
     /// Selected native custody was missing, corrupt, revoked, changed or over budget.
     Custody(fss_publication::custody_audit::belief_snapshot::CustodyCaptureError),
     /// Membership, bounded graph traversal or independent native derivation refused.
@@ -128,6 +134,7 @@ impl fmt::Display for ActivityVerificationError {
             Self::Anchor => f.write_str("activity deployment site or expected ledger root differs"),
             Self::AuthorityChanged => f.write_str("activity authority changed during verification"),
             Self::Deletion(error) => write!(f, "activity deletion authority: {error}"),
+            Self::Privacy(error) => write!(f, "{}: activity {error}", error.stable_id()),
             Self::Custody(error) => write!(f, "activity {error}"),
             Self::Graph(error) => write!(f, "activity {error}"),
             Self::Limit(dimension) => write!(f, "activity {dimension} allowance exhausted"),
@@ -147,6 +154,7 @@ pub struct VerifiedActivityObservation {
     result: ExecutorModelResult,
     ledger_root: ContentDigest,
     evidence: ActivityEvidenceSet,
+    result_custody: LocalCustodyAudit,
     custody: LocalCustodyAudit,
     deletion: DeletionBeliefUsage,
     graph: BeliefGraphUsage,
@@ -174,7 +182,14 @@ impl VerifiedActivityObservation {
     pub const fn evidence(&self) -> &ActivityEvidenceSet {
         &self.evidence
     }
-    /// Complete selected publication closure and physical read accounting.
+    /// Metadata-only result/receipt preflight, admitted before any source closure. Its physical
+    /// reads and object/edge visits share the allowance with [`Self::custody`].
+    #[must_use]
+    pub const fn result_custody(&self) -> &LocalCustodyAudit {
+        &self.result_custody
+    }
+    /// Complete selected publication closure. Physical read accounting for the whole request
+    /// also includes [`Self::result_custody`]; the two phases never refill their allowance.
     #[must_use]
     pub const fn custody(&self) -> &LocalCustodyAudit {
         &self.custody
@@ -369,6 +384,9 @@ fn source_bindings(
 ///
 /// The selected source closures are captured in full, including unused siblings. The existing
 /// canonical deletion owner checks all committed plans/completions before any source hydration.
+/// Current mask authority and a metadata-only result capture bind the actual retained sensor
+/// before source reads. This unmasked computation refuses any retained mask generation, including
+/// when its policy bytes are unavailable. An unrelated sensor's mask does not block this scope.
 /// A result is returned only after native JPEG decode and scalar inference reproduce both the
 /// complete invocation receipt and result bytes, and a second history read matches the first.
 /// Cancellation is cooperative; bounded filesystem calls and native replay are not preempted.
@@ -445,48 +463,23 @@ pub fn verify_retained_activity<C: Fn() -> bool + Sync>(
         selected_roots.insert(revision.payload_digest);
         selected.push((slot, id, revision));
     }
-    let custody = capture_belief_custody(
-        io,
-        history.replay_objects_root(),
-        &selected_roots.into_iter().collect::<Vec<_>>(),
-        &denied,
-        limits.verification.custody,
-        cancelled,
-        CustodyRootBasis::LocalPublicationRecords,
-        limits.verification.max_retained_bytes,
-    )
-    .map_err(Error::Custody)?;
-    for (slot, _, revision) in &selected {
-        let bytes = payload(
-            &custody,
-            revision.payload_digest,
-            limits.verification.custody.max_object_bytes,
-        )?;
-        let manifest =
-            ObjectManifest::from_canonical_bytes(&bytes).map_err(|_| Error::Selection)?;
-        let count = manifest.children().len();
-        let record = root_record_bytes(slot, revision.payload_digest, count)
-            .map_err(|_| Error::Selection)?;
-        if !custody.matches_publication_record(
-            slot,
-            revision.payload_digest,
-            count as u64,
-            ContentDigest::sha256(&record),
-        ) {
-            return Err(Error::Selection);
-        }
-    }
-    let result = ExecutorModelResult::decode_canonical(&payload(
-        &custody,
-        request.result,
-        limits.native.max_metadata_bytes,
-    )?)
-    .map_err(|_| Error::Selection)?;
+    refuse_unmasked_history(history.batches_through_head(), &request.plan.sensor_id)
+        .map_err(Error::Privacy)?;
+
+    // Establish the exact typed result publication before reading even its metadata. A caller
+    // cannot label an arbitrary raw source digest as a result to bypass the privacy preflight.
     let (_, result_id, result_revision) = selected
         .iter()
         .find(|(slot, _, _)| slot == &result_slot)
         .ok_or(Error::Selection)?;
-    let mut children = vec![request.result, result.invocation_receipt_object];
+    let batch_id = retention_batch(request.result).map_err(|_| Error::Selection)?;
+    let batch = ledger
+        .batches()
+        .iter()
+        .find(|b| b.batch_id == batch_id)
+        .ok_or(Error::Selection)?;
+    let receipt_object = batch.deltas.get(1).ok_or(Error::Selection)?.payload_digest;
+    let mut children = vec![request.result, receipt_object];
     children.sort_unstable();
     children.dedup();
     let manifest =
@@ -494,20 +487,9 @@ pub fn verify_retained_activity<C: Fn() -> bool + Sync>(
     if result_revision.payload_digest != manifest.root() {
         return Err(Error::Selection);
     }
-    let batch_id = retention_batch(request.result).map_err(|_| Error::Selection)?;
-    let batch = ledger
-        .batches()
-        .iter()
-        .find(|b| b.batch_id == batch_id)
-        .ok_or(Error::Selection)?;
     let validity = batch.deltas.first().ok_or(Error::Selection)?.validity;
-    let deltas = retention_deltas(
-        request.result,
-        result.invocation_receipt_object,
-        manifest.root(),
-        validity,
-    )
-    .map_err(|_| Error::Selection)?;
+    let deltas = retention_deltas(request.result, receipt_object, manifest.root(), validity)
+        .map_err(|_| Error::Selection)?;
     let mut children = manifest.children().to_vec();
     children.push(manifest.root());
     children.sort_unstable();
@@ -530,6 +512,94 @@ pub fn verify_retained_activity<C: Fn() -> bool + Sync>(
                 validity: delta.validity,
             })
         {
+            return Err(Error::Selection);
+        }
+    }
+
+    // Only the exact result, invocation and their manifest may be captured before sensor
+    // admission. The native custody owner still enforces local tombstones and deletion denials;
+    // metadata-shaped bytes cannot expand into an unrelated source graph under this edge bound.
+    let mut metadata_limits = limits.verification.custody;
+    metadata_limits.max_objects = metadata_limits.max_objects.min(3);
+    metadata_limits.max_edges = metadata_limits.max_edges.min(2);
+    metadata_limits.max_object_bytes = metadata_limits
+        .max_object_bytes
+        .min(limits.native.max_metadata_bytes);
+    let metadata = capture_belief_custody(
+        io,
+        history.replay_objects_root(),
+        &[manifest.root()],
+        &denied,
+        metadata_limits,
+        cancelled,
+        CustodyRootBasis::LocalPublicationRecords,
+        limits.verification.max_retained_bytes,
+    )
+    .map_err(Error::Custody)?;
+    let result = ExecutorModelResult::decode_canonical(&payload(
+        &metadata,
+        request.result,
+        limits.native.max_metadata_bytes,
+    )?)
+    .map_err(|_| Error::Selection)?;
+    if result.sensor_id != request.plan.sensor_id
+        || result.invocation_receipt_object != receipt_object
+    {
+        return Err(Error::Selection);
+    }
+    checkpoint(cancelled, cx)?;
+    let result_custody = metadata.audit().clone();
+    let mut remaining = limits.verification.custody;
+    remaining.max_read_bytes = remaining
+        .max_read_bytes
+        .checked_sub(result_custody.charged_read_bytes())
+        .ok_or(Error::Limit("custody read bytes"))?;
+    remaining.max_io_calls = remaining
+        .max_io_calls
+        .checked_sub(result_custody.io_calls())
+        .ok_or(Error::Limit("custody I/O calls"))?;
+    remaining.max_objects = remaining
+        .max_objects
+        .checked_sub(result_custody.objects().len())
+        .ok_or(Error::Limit("custody object visits"))?;
+    remaining.max_edges = remaining
+        .max_edges
+        .checked_sub(result_custody.edges())
+        .ok_or(Error::Limit("custody edge visits"))?;
+    let retained_remaining = limits
+        .verification
+        .max_retained_bytes
+        .checked_sub(metadata.retained_bytes())
+        .ok_or(Error::Limit("custody retained bytes"))?;
+    drop(metadata);
+    let custody = capture_belief_custody(
+        io,
+        history.replay_objects_root(),
+        &selected_roots.into_iter().collect::<Vec<_>>(),
+        &denied,
+        remaining,
+        cancelled,
+        CustodyRootBasis::LocalPublicationRecords,
+        retained_remaining,
+    )
+    .map_err(Error::Custody)?;
+    for (slot, _, revision) in &selected {
+        let bytes = payload(
+            &custody,
+            revision.payload_digest,
+            limits.verification.custody.max_object_bytes,
+        )?;
+        let manifest =
+            ObjectManifest::from_canonical_bytes(&bytes).map_err(|_| Error::Selection)?;
+        let count = manifest.children().len();
+        let record = root_record_bytes(slot, revision.payload_digest, count)
+            .map_err(|_| Error::Selection)?;
+        if !custody.matches_publication_record(
+            slot,
+            revision.payload_digest,
+            count as u64,
+            ContentDigest::sha256(&record),
+        ) {
             return Err(Error::Selection);
         }
     }
@@ -598,6 +668,7 @@ pub fn verify_retained_activity<C: Fn() -> bool + Sync>(
         result,
         ledger_root: roots.1,
         evidence,
+        result_custody,
         custody: custody.audit().clone(),
         deletion: deletion.usage(),
         graph,

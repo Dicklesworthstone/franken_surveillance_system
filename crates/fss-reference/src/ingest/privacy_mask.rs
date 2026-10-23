@@ -25,8 +25,8 @@ use std::fmt;
 
 use fss_core::{
     BatchId, CanonicalDecode, CanonicalDecoder, CanonicalEncode, CanonicalEncoder, CaptureInterval,
-    ContentDigest, ContractError, DigestAlgorithm, EvidenceDelta, ObjectId, Plane, RedactedRegion,
-    RedactionTransform, SensorId, TimestampNs,
+    ContentDigest, ContractError, DigestAlgorithm, EvidenceDelta, EvidenceDeltaBatch, ObjectId,
+    Plane, RedactedRegion, RedactionTransform, SensorId, TimestampNs,
 };
 
 use crate::reference_deployment::FAMILY_PRIVACY_MASK_POLICY;
@@ -481,10 +481,15 @@ fn retained_generations(
     deployment: &ReferenceDeployment,
     sensor: &SensorId,
 ) -> Result<Vec<(u64, ContentDigest, Option<u64>)>, PrivacyMaskError> {
+    retained_generations_from_batches(deployment.ledger().batches(), sensor)
+}
+
+fn retained_generations_from_batches(
+    batches: &[EvidenceDeltaBatch],
+    sensor: &SensorId,
+) -> Result<Vec<(u64, ContentDigest, Option<u64>)>, PrivacyMaskError> {
     let object = mask_object_id(sensor)?;
-    let mut generations: Vec<(u64, ContentDigest, Option<u64>)> = deployment
-        .ledger()
-        .batches()
+    let mut generations: Vec<(u64, ContentDigest, Option<u64>)> = batches
         .iter()
         .flat_map(|batch| batch.deltas.iter())
         .filter(|delta| delta.family == FAMILY_PRIVACY_MASK_POLICY && delta.object_id == object)
@@ -504,6 +509,21 @@ fn retained_generations(
         }
     }
     Ok(generations)
+}
+
+/// Read-only admission for a caller-verified, bounded complete authority history. There is no
+/// policy-removal operation, so any retained generation refuses an unmasked computation. This
+/// deliberately does not read policy custody: missing or corrupt policy bytes cannot turn a
+/// declared mask into the no-policy marker. It never grants a source-read capability.
+pub(crate) fn refuse_unmasked_history(
+    batches: &[EvidenceDeltaBatch],
+    sensor: &SensorId,
+) -> Result<(), PrivacyMaskError> {
+    if retained_generations_from_batches(batches, sensor)?.is_empty() {
+        Ok(())
+    } else {
+        Err(PrivacyMaskError::UnmaskedAccessRefused)
+    }
 }
 
 fn read_policy(

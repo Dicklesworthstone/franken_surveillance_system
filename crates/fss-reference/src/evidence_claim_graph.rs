@@ -165,7 +165,7 @@ mod tests {
     };
     use fss_graph_algorithms::evidence::{SupportReachability, object_node};
 
-    type TestResult = Result<(), Box<dyn std::error::Error>>;
+    type TestResult<T = ()> = Result<T, Box<dyn std::error::Error>>;
 
     fn edge(digest: ContentDigest, relation: EvidenceEdgeRelation) -> EventEvidence {
         EventEvidence {

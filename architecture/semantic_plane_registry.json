@@ -473,6 +473,7 @@
   "crates/fss-reference/src/ingest/recorded_coverage.rs": "support",
   "crates/fss-reference/src/ingest/recorded_coverage/currency.rs": "support",
   "crates/fss-reference/src/ingest/recorded_coverage/tests.rs": "support",
+  "crates/fss-reference/src/ingest/recorded_activity.rs": "cognition",
   "crates/fss-reference/src/ingest/recorded_decode.rs": "support",
   "crates/fss-reference/src/ingest/recorded_decode/h264.rs": "support",
   "crates/fss-reference/src/ingest/recorded_decode/h264/tests.rs": "support",

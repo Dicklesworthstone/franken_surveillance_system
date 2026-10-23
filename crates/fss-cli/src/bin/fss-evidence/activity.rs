@@ -38,6 +38,8 @@ const HELP: &str = "fss-evidence verify-activity --root DIR --site SITE\n\
   anchor membership, then decodes both original JPEGs and reruns the pinned native\n\
   scalar activity model. Complete invocation receipt AND result bytes must match.\n\
   No missing role, source slot, codec, model, policy or execution budget is inferred.\n\
+  A retained privacy mask for the result's sensor refuses before any source read;\n\
+  this computation does not bind a mask generation. Missing mask bytes still refuse.\n\
 \n\
   The reference threshold policy defaults to generation 1 and threshold 0.01f32.\n\
   --threshold-bits selects an exact nonnegative finite f32 using eight lowercase hex\n\
@@ -53,6 +55,8 @@ const HELP: &str = "fss-evidence verify-activity --root DIR --site SITE\n\
   JPEG work units, 2 MiB report, 30000 ms. History replay additionally admits at most\n\
   256 batches, 16384 delta/child entries, 65536 snapshot entries and 4 MiB copied text.\n\
   Custody, deletion, graph copies and native work have separate nonrefillable budgets.\n\
+  Result-only privacy preflight and complete source capture share the custody budget;\n\
+  repeated reads, object/edge visits and captured payloads are charged again.\n\
   Journal reads are bounded separately and are not included in custody byte counters.\n\
   Timeout is cooperative: bounded filesystem calls/native replay are not preempted.\n\
 \n\
@@ -302,6 +306,7 @@ fn render(request: &Request, value: &VerifiedActivityObservation) -> Result<Stri
     let graph = value.graph_usage();
     let deletion = value.deletion_usage();
     let audit = value.custody();
+    let preflight = value.result_custody();
     let limits = request.limits;
     let report = object(&[
         ("format", string("fss.activity_verification.v1")),
@@ -324,9 +329,13 @@ fn render(request: &Request, value: &VerifiedActivityObservation) -> Result<Stri
         ("usage", object(&[
             ("historyObservations", "2".to_owned()), ("historyBatches", deletion.history_batches.to_string()),
             ("deletionRecordReads", deletion.record_reads.to_string()), ("deletionRecordBytes", deletion.record_bytes.to_string()),
-            ("custodyReadBytes", audit.charged_read_bytes().to_string()),
-            ("custodyPeakReservedReadBytes", audit.peak_reserved_read_bytes().to_string()),
-            ("custodyIoCalls", audit.io_calls().to_string()), ("custodyObjects", audit.objects().len().to_string()),
+            ("resultPreflightReadBytes", preflight.charged_read_bytes().to_string()),
+            ("custodyReadBytes", (preflight.charged_read_bytes() + audit.charged_read_bytes()).to_string()),
+            ("custodyPeakReservedReadBytes", preflight.peak_reserved_read_bytes().max(preflight.charged_read_bytes() + audit.peak_reserved_read_bytes()).to_string()),
+            ("custodyIoCalls", (preflight.io_calls() + audit.io_calls()).to_string()),
+            ("custodyObjects", audit.objects().len().to_string()),
+            ("custodyObjectVisits", (preflight.objects().len() + audit.objects().len()).to_string()),
+            ("custodyEdgeVisits", (preflight.edges() + audit.edges()).to_string()),
             ("graphReadAttempts", graph.read_attempts.to_string()), ("graphInputBytes", graph.admitted_bytes.to_string()),
             ("graphVisits", graph.visits.to_string()), ("derivations", graph.derivations.to_string()),
             ("decodeWork", value.decode_work().to_string()),

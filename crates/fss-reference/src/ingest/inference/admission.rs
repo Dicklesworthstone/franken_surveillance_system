@@ -192,7 +192,7 @@ mod tests {
     use fss_object::{ModelId, ModelLicenseRecord, ModelManifestV1, ModelPackageArtifact};
     use fss_tensor::{DType, Shape};
     use std::collections::BTreeMap;
-    type TestResult = Result<(), Box<dyn std::error::Error>>;
+    type TestResult<T = ()> = Result<T, Box<dyn std::error::Error>>;
 
     fn model(value: f32) -> TestResult<RecordedModel> {
         let shape = Shape::new(vec![1, 1, 2, 2])?;

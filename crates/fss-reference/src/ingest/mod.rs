@@ -54,6 +54,8 @@ pub mod model_import;
 pub mod pixel_change;
 /// Owner-declared, approval-gated per-sensor privacy masks applied at retained decode.
 pub mod privacy_mask;
+/// Explicit native activity over two exact retained JPEG segments, with complete replay custody.
+pub mod recorded_activity;
 /// Two-sensor ground-zone entries associated under explicit gates into corroborated events.
 pub mod recorded_corroboration;
 /// Retained per-(sensor, zone, interval) coverage witnesses of the recorded pipelines.

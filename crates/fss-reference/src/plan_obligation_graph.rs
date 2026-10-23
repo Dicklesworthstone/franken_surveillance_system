@@ -236,7 +236,7 @@ mod tests {
         StepRisk, StepRobustness,
     };
 
-    type TestResult = Result<(), Box<dyn std::error::Error>>;
+    type TestResult<T = ()> = Result<T, Box<dyn std::error::Error>>;
 
     fn step(id: &str) -> ControlStep {
         ControlStep {

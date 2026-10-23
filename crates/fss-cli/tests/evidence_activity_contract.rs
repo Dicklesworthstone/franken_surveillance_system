@@ -5,6 +5,7 @@ use std::collections::BTreeMap;
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Output};
+use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
 
 use fss_codec_mjpeg::color::{RgbDecodeLimits, decode_rgb};
@@ -14,7 +15,7 @@ use fss_core::{
     ContextAuthority, OperationId, RootAuthoritySpec, SensorCapsule, SensorId,
     SensorSourceBytesSpec, StreamId, TimestampNs,
 };
-use fss_object::HostSpoolIo;
+use fss_object::{HostSpoolIo, RecordingSpoolIo};
 use fss_publication::{SlotName, root_reachability_object_id};
 use fss_reference::activity_replay::ActivityReplayPlan;
 use fss_reference::activity_replay::belief::{ActivityEvidenceBinding, ActivityEvidenceSet};
@@ -25,6 +26,9 @@ use fss_reference::activity_replay::operator::{
 use fss_reference::executor_activity::{
     ActivityExecutorModel, ActivityFrameBinding, ActivityThresholdPolicy, ExecutorModelOutcome,
     ExecutorModelResult, retain_executor_result, rgb_decode_receipt_bytes,
+};
+use fss_reference::ingest::privacy_mask::{
+    PrivacyMaskError, PrivacyMaskPolicy, declare_mask, preview_mask,
 };
 use fss_reference::{
     ADP_FILE_ROW_ID, ADP_REPLAY_ROW_ID, ExecBudget, ReferenceDeployment, ReplayCx,
@@ -298,6 +302,15 @@ fn refused(output: Output) {
     assert!(!output.stderr.is_empty());
 }
 
+fn retain_mask(f: &Fixture, sensor: &str) -> TestResult<PathBuf> {
+    let cx = context(&f._scratch.0)?;
+    let mut deployment = ReferenceDeployment::reopen(&f.root, "site:activity-belief", &cx)?;
+    let policy = PrivacyMaskPolicy::new(SensorId::parse(sensor)?, [16, 16], &[[0, 0, 8, 8]])?;
+    let approval = preview_mask(&deployment, &policy)?.approval;
+    declare_mask(&mut deployment, &policy, approval, &cx)?;
+    Ok(deployment.publisher().spool().object_path(policy.digest()))
+}
+
 #[test]
 fn cold_process_replays_actual_native_activity_without_writing() -> TestResult {
     let f = fixture(false, false)?;
@@ -411,6 +424,136 @@ fn missing_or_corrupt_original_custody_never_becomes_a_verified_result() -> Test
     fs::remove_file(&f.source_record)?;
     // Intact copied payload bytes cannot substitute for the exact selected slot record.
     refused(run(&f, &[])?);
+    Ok(())
+}
+
+#[test]
+fn newly_retained_mask_refuses_before_custody_even_when_policy_or_source_is_missing() -> TestResult
+{
+    let f = fixture(false, false)?;
+    let policy_path = retain_mask(&f, "sensor:belief")?;
+    let slots = [SlotName::parse("activity-originals")?];
+    let io = RecordingSpoolIo::new(Arc::new(HostSpoolIo));
+    for missing in [false, true] {
+        if missing {
+            fs::remove_file(&policy_path)?;
+            fs::remove_file(&f.source_object)?;
+        }
+        let before = tree(&f.root)?;
+        let result = verify_retained_activity(
+            ActivityVerificationRequest {
+                root: &f.root,
+                site: "site:activity-belief",
+                expected_ledger_root: None,
+                result: f.result.object_digest(),
+                reference_capsule: f.evidence.reference_capsule.digest,
+                source_slots: &slots,
+                plan: f.plan.clone(),
+            },
+            &io,
+            ActivityVerificationLimits::default(),
+            &ScalarExecCx::new(),
+            &|| false,
+        );
+        assert!(
+            matches!(
+                result,
+                Err(ActivityVerificationError::Privacy(
+                    PrivacyMaskError::UnmaskedAccessRefused
+                ))
+            ),
+            "{result:?}"
+        );
+        assert!(
+            io.calls().is_empty(),
+            "privacy refusal must precede object I/O"
+        );
+        let output = run(&f, &[])?;
+        assert!(
+            String::from_utf8_lossy(&output.stderr)
+                .contains("ERR-PRIVACY-UNMASKED-ACCESS-REFUSED-001")
+        );
+        refused(output);
+        assert_eq!(before, tree(&f.root)?);
+    }
+    Ok(())
+}
+
+#[test]
+fn unrelated_mask_does_not_block_but_sensor_substitution_cannot_bypass_a_mask() -> TestResult {
+    let f = fixture(false, false)?;
+    retain_mask(&f, "sensor:unrelated")?;
+    let output = run(&f, &[])?;
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    retain_mask(&f, "sensor:belief")?;
+    // A wrong independently supplied sensor must be rejected using result metadata, before the
+    // now-corrupt JPEG could even be read. Otherwise the refusal would be a custody error.
+    fs::write(&f.source_object, b"raw source must not be hydrated")?;
+    let before = tree(&f.root)?;
+    let slots = [SlotName::parse("activity-originals")?];
+    let mut plan = f.plan.clone();
+    plan.sensor_id = SensorId::parse("sensor:unmasked-substitution")?;
+    let result = verify_retained_activity(
+        ActivityVerificationRequest {
+            root: &f.root,
+            site: "site:activity-belief",
+            expected_ledger_root: None,
+            result: f.result.object_digest(),
+            reference_capsule: f.evidence.reference_capsule.digest,
+            source_slots: &slots,
+            plan,
+        },
+        &HostSpoolIo,
+        ActivityVerificationLimits::default(),
+        &ScalarExecCx::new(),
+        &|| false,
+    );
+    assert!(
+        matches!(result, Err(ActivityVerificationError::Selection)),
+        "{result:?}"
+    );
+    assert_eq!(before, tree(&f.root)?);
+    Ok(())
+}
+
+#[test]
+fn metadata_preflight_and_source_capture_share_one_io_allowance() -> TestResult {
+    let f = fixture(false, false)?;
+    let slots = [SlotName::parse("activity-originals")?];
+    let verify = |limits| {
+        verify_retained_activity(
+            ActivityVerificationRequest {
+                root: &f.root,
+                site: "site:activity-belief",
+                expected_ledger_root: None,
+                result: f.result.object_digest(),
+                reference_capsule: f.evidence.reference_capsule.digest,
+                source_slots: &slots,
+                plan: f.plan.clone(),
+            },
+            &HostSpoolIo,
+            limits,
+            &ScalarExecCx::new(),
+            &|| false,
+        )
+    };
+    let baseline = verify(ActivityVerificationLimits::default())?;
+    let preflight = baseline.result_custody().io_calls();
+    let complete = baseline.custody().io_calls();
+    assert!(preflight > 1 && complete > 1);
+    let mut limits = ActivityVerificationLimits::default();
+    limits.verification.custody.max_io_calls = preflight + complete - 1;
+    let before = tree(&f.root)?;
+    let result = verify(limits);
+    assert!(
+        matches!(result, Err(ActivityVerificationError::Custody(_))),
+        "{result:?}"
+    );
+    assert_eq!(before, tree(&f.root)?);
     Ok(())
 }
 
