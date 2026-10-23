@@ -19,11 +19,17 @@ registered JNI method by name.
 - `doCommandNative(ctx, 1, canonical_string)` reaches the signer and reads `assets/t_s.bmp`
   (a 100x75 24-bit BMP whose payload is the stego key).
 
+- The real Glazero signing certificate is recovered from the APK's **v2 signing block** (there are no
+  v1 `META-INF/*.RSA` files), so `Signature.toByteArray()` returns the genuine DER.
+
 ## What is still missing
 
 1. `assets/tecrkcehc_ext` — a literal asset name the signer opens; absent from the APK, so it is
    fetched or produced at runtime. The miss is logged by the stub.
-2. The **appSecret** passed to `doCommandNative(ctx, 0, secret, appId, false)` at SDK init
+2. `checkStatus` returns **-1** (anti-tamper failure) even with the real certificate and package
+   name, so the signer refuses. Whatever else it compares — likely the cert digest against a baked
+   value, or fields of `tecrkcehc_ext` (currently a copy of `t_s.bmp`, a guess).
+3. The **appSecret** passed to `doCommandNative(ctx, 0, secret, appId, false)` at SDK init
    (`ThingNetworkSecurity` line ~95). We only know the appId (`clientId`). With the clientId as a
    stand-in, `cmd 1` returns null.
 

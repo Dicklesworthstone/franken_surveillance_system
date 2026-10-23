@@ -219,7 +219,9 @@ assets served from disk. `computeDigest("abc","key")` → `aee1dd678aea01125dfc8
 crypto core runs, and `doCommandNative(ctx, 1, …)` reaches the signer and reads `assets/t_s.bmp`
 (100×75 BMP, stego key).
 
-Two gaps, both named: `assets/tecrkcehc_ext` (opened by the signer, absent from the APK) and the
-**appSecret** that `doCommandNative(ctx, 0, secret, appId, …)` needs at SDK init — we only have the
+The real Glazero signing certificate came out of the APK's v2 signing block (no v1 files exist), so
+the `Signature` field is genuine. Three gaps remain, all named: `assets/tecrkcehc_ext` (opened by the
+signer, absent from the APK — currently a copy of `t_s.bmp` as a guess), `checkStatus` still returning
+**-1** (anti-tamper) even with the real cert and package name, and the **appSecret** that `doCommandNative(ctx, 0, secret, appId, …)` needs at SDK init — we only have the
 appId (`clientId`). With the clientId substituted, `cmd 1` returns null, so the init path is where
 the next hour goes.
