@@ -50,7 +50,10 @@ log shows a GET, the rest of the chain is already built and the negative capsule
 
 ## Resumption after a power cycle (the one thing that needs hands)
 
-`.4.24`'s MQTT client is dead and a cloud `restart` cannot revive it (the command rides MQTT). TUTK
+**Any** lab unit's MQTT client is dead after one interaction — a publish or a proxy connect kills it and a
+cloud `restart` cannot revive it (the command rides MQTT). All three units ping and answer TUTK; only the
+client is gone. That makes a physical power cycle the single gate for the capture, and it applies to
+whichever unit is tried, not just `.4.24`. and a cloud `restart` cannot revive it (the command rides MQTT). TUTK
 still answers, so only the client is gone. When someone can unplug it for five seconds:
 
 ```sh
@@ -61,6 +64,11 @@ sudo bash deliverables/scripts/wyze_mitm_up.sh      # dns + spoof + tls + proxy,
 Then publish one delta to `https://s3-us-west-2.amazonaws.com/wuv2/upgrade/HL_CAM4/firmware/9.9.9.9.tar`
 with that file's md5 and watch `/tmp/tls.log` for the GET. The forged chain already verifies against the
 device bundle, so nothing else has to be rebuilt.
+
+The MITM no longer depends on the camera's DNS: `wyze_mitm_up.sh` installs an rdr rule that DNATs the
+unit's port 8883 to the proxy (macOS needs `rdr-anchor "fss"` + `load anchor "fss" from
+"/etc/pf.anchors/fss"` in the translation section of `/etc/pf.conf`; `/etc/pf.conf.fss-bak` is the backup).
+`wyze_ota_push.py` publishes the delta for a local payload in one command and PUBACKs.
 
 ## Retest log, 2026-10-23 02:0x (MagentaOwl)
 
