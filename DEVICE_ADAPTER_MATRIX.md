@@ -64,7 +64,8 @@ ROM header plus an `INGE` init table at `0x100`, i.e. the bootloader is replaced
 replacement runtime is a busybox initramfs with dropbear, ONVIF and prudynt RTSP — every property
 this matrix wants from T1 — and a full shell, which the stock firmware does not have (see
 `docs/FIRMWARE_ROOT_AND_DELIVERY.md` §9). Delivery over the wire is `assis` → HTTPS GET → tar →
-`sh upgraderun.sh` as root; see `docs/exploit/ota-path.md`.
+`sh upgraderun.sh` as root; see `docs/exploit/ota-path.md`. The live-camera evidence for this
+class (LAN control plane, RTSP enable, the AV over-read) is indexed in `docs/exploit/README.md`.
 
 ### AOSU P1 Max
 
