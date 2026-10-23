@@ -110,6 +110,7 @@ def handle(conn, addr, args):
                     base = {"cmd": c, "sub_mac": a.sub_mac, **inner}
                     modes = ["plain", "data_obj", "data_str", "ver", "ctype", "cmdstr"]
                     k = modes[(c - 1231) % len(modes)] if a.shapes else (a.wrap or "plain")
+                    k = {"str": "data_str", "obj": "data_obj"}.get(k, k)
                     if k == "data_obj":
                         base["data"] = inner
                     elif k == "data_str":
