@@ -290,3 +290,8 @@ lifted from the dex, including the clientId) all yield `cmd 1 = null`, which mea
 supplying the stego key, and neither the real blob nor `t_s_daily.bmp` ships in this APKPure build.
 No asset pack is present either — the splits are only `config.*` — so a Play-installed copy (or its
 data dir) is the surest source of the blob.
+
+Mirror attempts for a Play-style build: `apkmirror` answers the generic search page but has no
+`/apk/<dev>/<app>` for this package under `glazero` or `aosu`, and its `uploads/?appcategory=` view
+returns 403 to curl. `apkpure` is Cloudflare-walled. So the blob currently has no automated source;
+an installed copy on a device (`/data/data/com.glazero.android/…`) or a Play-signed bundle is the way.
