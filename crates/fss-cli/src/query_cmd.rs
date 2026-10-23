@@ -306,8 +306,12 @@ fn query_response(
     )?;
     let payload = agent_json::cognitive_envelope(&cognitive, &handles, &action_objects)
         .ok_or(RenderError("query cognitive envelope"))?;
-    let mut warnings =
-        vec!["Metadata-only query; no certified physical absence or effect authority.".to_owned()];
+    // Keep verified warnings even when this page matches no events. Current deletion
+    // denials and custody limits apply to historical metadata too.
+    let mut warnings = orientation.warnings.clone();
+    warnings.push(
+        "Metadata-only query; no certified physical absence or effect authority.".to_owned(),
+    );
     if let Some(scope) = historical {
         warnings.push(scope.warning());
     }

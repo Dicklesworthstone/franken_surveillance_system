@@ -762,14 +762,56 @@ fn historical_reads_keep_current_deletion_denials_and_never_restore_evidence() -
     success(&deleted);
     let before = tree(&fixture.root)?;
 
+    let assert_current_deletion = |answer: &str| -> TestResult {
+        let document = fss_cli::json_input::parse(answer)?;
+        let warnings = document
+            .object()
+            .and_then(|fields| fields.get("warnings"))
+            .and_then(fss_cli::json_input::Value::array)
+            .ok_or("response warnings")?;
+        assert!(
+            warnings
+                .iter()
+                .filter_map(fss_cli::json_input::Value::text)
+                .any(|warning| {
+                    warning.contains(&import)
+                        && warning.contains(&plan)
+                        && warning.contains("`deleted`")
+                }),
+            "current committed deletion warning was lost: {answer}"
+        );
+        Ok(())
+    };
+
     let catalogue = query(&fixture.root, &["--at", &at, "--event-id", &event])?;
     assert_eq!(catalogue.1, ExitIdentity::SUCCESS, "{}", catalogue.0);
     assert!(catalogue.0.contains("Historical metadata"));
-    assert!(catalogue.0.contains("deleted"));
+    assert_current_deletion(&catalogue.0)?;
+    conforms(&fixture, &catalogue.0)?;
     mcp(
         &fixture.root,
         &format!(r#"{{"at":{},"event_id":{}}}"#, quote(&at), quote(&event)),
         &catalogue,
+    )?;
+
+    let current = query(&fixture.root, &["--event-id", &event])?;
+    assert_eq!(current.1, ExitIdentity::SUCCESS, "{}", current.0);
+    assert_current_deletion(&current.0)?;
+    mcp(
+        &fixture.root,
+        &format!(r#"{{"event_id":{}}}"#, quote(&event)),
+        &current,
+    )?;
+
+    let absent_event = "event:query:absent-after-deletion";
+    let empty = query(&fixture.root, &["--at", &at, "--event-id", absent_event])?;
+    assert_eq!(empty.1, ExitIdentity::SUCCESS, "{}", empty.0);
+    assert!(empty.0.contains("0 match; this page returns 0 record(s)"));
+    assert_current_deletion(&empty.0)?;
+    mcp(
+        &fixture.root,
+        &format!(r#"{{"at":{},"event_id":{}}}"#, quote(&at), quote(absent_event)),
+        &empty,
     )?;
 
     let explanation = native_command(
