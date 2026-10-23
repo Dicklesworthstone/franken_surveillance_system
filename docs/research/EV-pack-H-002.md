@@ -102,7 +102,10 @@ appid `9319141212m2ik`. The upgrade API is a **different host** — `https://wyz
 — and `get_upgrade_firmware` takes `device_id`, `device_model`, `current_ver`, `testcode`,
 `hardware_ver`. With the signature accepted, requests pass auth only when the token is also sent as an
 **`access_token` header**, then answer `1000 Internal server error`: the console token we hold is the
-wrong audience for this service. An app-session token (the app login path) is the missing piece, and
+wrong audience for this service. An app-session token (the app login path) is the missing piece: `auth-prod.api.wyze.com/user/login`
+with the app's own `x-api-key` (`RckMFKbsds5p6QY3COEXc2ABwNTYY0q18ziEiSEm`, literal in the APK) and a
+double-MD5 password is the shape, but both that key and the console key answer `403` today, so the key
+or a required header is still wrong. Nothing about the signature or the params is, and
 with it the entire native upgrade flow — including `begin_upgrade`, which is what tells a camera to
 fetch — becomes reachable without any shadow or app interaction.
 
