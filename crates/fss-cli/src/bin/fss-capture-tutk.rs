@@ -52,6 +52,7 @@ struct Options {
     ioctl: Option<u16>,
     payload: Option<Vec<u8>>,
     rtsp: Option<(String, String)>,
+    rtsp_mode: u8,
     rtsp_off: bool,
 }
 
@@ -75,6 +76,7 @@ fn parse(args: &[OsString]) -> Result<Options, &'static str> {
         ioctl: None,
         payload: None,
         rtsp: None,
+        rtsp_mode: 1,
         rtsp_off: false,
     };
     let mut i = 0;
@@ -143,6 +145,14 @@ fn parse(args: &[OsString]) -> Result<Options, &'static str> {
                     return Err("--rtsp-enable user/pass must be 1..32 chars");
                 }
                 o.rtsp = Some((u.to_owned(), p.to_owned()));
+            }
+            "--rtsp-mode" => {
+                let m: u8 = need_value(i)?.to_str().ok_or("invalid --rtsp-mode")?
+                    .parse().map_err(|_| "--rtsp-mode must be 1 or 2")?;
+                if !(1..=2).contains(&m) {
+                    return Err("--rtsp-mode must be 1 (plain) or 2 (self-signed TLS)");
+                }
+                o.rtsp_mode = m;
             }
             "--rtsp-disable" => {
                 o.rtsp_off = true;
@@ -279,6 +289,8 @@ fn run(o: &Options) -> Result<String, &'static str> {
         let mut buf = [0u8; 65535];
         let mut sent_probe = false;
         let mut sent_rtsp = false;
+        let mut rtsp_probe_at: Option<Instant> = None;
+        let mut rtsp_listening: Option<bool> = None;
         while t0.elapsed() < Duration::from_secs(o.secs) {
             let now_ns = t0.elapsed().as_nanos() as u64;
             while let Some(d) = ing.poll_send() {
@@ -300,17 +312,37 @@ fn run(o: &Options) -> Result<String, &'static str> {
                 // 0x29e8 toggles the camera's own RTSP server; config persists in
                 // /configs/rtsp_config.json. 0x29e9 carries the link URLs back.
                 let payload = match (&o.rtsp, o.rtsp_off) {
+                    // Quote/backslash in either field must survive: a stripped
+                    // quote silently changes the credential.
                     (Some((u, p)), _) => format!(
-                        "{{\"name\":\"{}\",\"pwd\":\"{}\",\"rtspMode\":1}}",
-                        u.replace('"', ""),
-                        p.replace('"', "")
+                        "{{\"name\":{},\"pwd\":{},\"rtspMode\":{}}}",
+                        json_string(u),
+                        json_string(p),
+                        o.rtsp_mode
                     ),
                     (None, true) => "{\"name\":\"\",\"pwd\":\"\",\"rtspMode\":0}".to_owned(),
                     _ => String::new(),
                 };
                 ing.send_ioctl(0x29e8, payload.as_bytes());
                 sent_rtsp = true;
+                rtsp_probe_at = Some(Instant::now() + Duration::from_millis(1500));
                 println!("rtsp: sent 0x29e8 ({}B)", payload.len());
+            }
+
+            // 554 is the only truth: the ack means the config was accepted, not
+            // that the daemon bound. Probe once, bounded, and report both.
+            if rtsp_listening.is_none()
+                && let Some(at) = rtsp_probe_at
+                && Instant::now() >= at
+            {
+                let addr = std::net::SocketAddr::from((peer.ip(), 554));
+                rtsp_listening = Some(
+                    std::net::TcpStream::connect_timeout(&addr, Duration::from_millis(600)).is_ok(),
+                );
+                println!(
+                    "rtsp: 554 {} (config accepted is not proof of a listener)",
+                    if rtsp_listening == Some(true) { "listening" } else { "not listening" }
+                );
             }
 
             if !sent_probe
@@ -343,7 +375,7 @@ fn run(o: &Options) -> Result<String, &'static str> {
         let staged = (seal.capsule_count * 2) as u64;
         let frames = sess.video_frames;
         Ok(format!(
-            "{{\"schema\":\"{FORMAT}\",\"site\":\"{}\",\"root\":\"{}\",\"state\":{},\"frames\":{},\"capsules\":{},\"batches\":{},\"gaps\":{},\"resync_bytes\":{},\"acks\":{},\"custody_staged\":{},\"anchors\":{:?}}}",
+            "{{\"schema\":\"{FORMAT}\",\"site\":\"{}\",\"root\":\"{}\",\"state\":{},\"frames\":{},\"capsules\":{},\"batches\":{},\"gaps\":{},\"resync_bytes\":{},\"acks\":{},\"rtsp_listening\":{},\"custody_staged\":{},\"anchors\":{:?}}}",
             o.site,
             o.root.display(),
             json_string(&state_text),
@@ -353,6 +385,7 @@ fn run(o: &Options) -> Result<String, &'static str> {
             stats.gaps,
             sess.resync_bytes,
             sess.acks_sent,
+            rtsp_listening.map_or("null".to_owned(), |v| v.to_string()),
             staged,
             committed
         ))
@@ -457,6 +490,47 @@ mod tests {
         args.push(OsString::from("--secs"));
         args.push(OsString::from("99999"));
         assert!(parse(&args).is_err());
+    }
+
+    #[test]
+    fn parses_rtsp_enable_and_mode() {
+        let mut args = base_args();
+        args.push(OsString::from("--rtsp-enable"));
+        args.push(OsString::from("op:pa\"ss\\w"));
+        args.push(OsString::from("--rtsp-mode"));
+        args.push(OsString::from("2"));
+        let o = parse(&args).unwrap();
+        assert_eq!(o.rtsp, Some(("op".to_owned(), "pa\"ss\\w".to_owned())));
+        assert_eq!(o.rtsp_mode, 2);
+    }
+
+    #[test]
+    fn refuses_out_of_range_rtsp_mode() {
+        for bad in ["0", "3", "x"] {
+            let mut args = base_args();
+            args.push(OsString::from("--rtsp-enable"));
+            args.push(OsString::from("op:pw"));
+            args.push(OsString::from("--rtsp-mode"));
+            args.push(OsString::from(bad));
+            assert!(parse(&args).is_err(), "{bad} accepted");
+        }
+    }
+
+    #[test]
+    fn rtsp_payload_keeps_quote_and_backslash() {
+        // The camera parses this as JSON; stripping a quote would change the password.
+        let mut args = base_args();
+        args.push(OsString::from("--rtsp-enable"));
+        args.push(OsString::from("op:pa\"ss\\w"));
+        let o = parse(&args).unwrap();
+        let (u, p) = o.rtsp.clone().unwrap();
+        let payload = format!(
+            "{{\"name\":{},\"pwd\":{},\"rtspMode\":{}}}",
+            json_string(&u),
+            json_string(&p),
+            o.rtsp_mode
+        );
+        assert_eq!(payload, r#"{"name":"op","pwd":"pa\"ss\\w","rtspMode":1}"#);
     }
 
     #[test]

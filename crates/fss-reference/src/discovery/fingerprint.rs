@@ -84,6 +84,8 @@ pub enum Brand {
     EmbeddedWeb,
     /// Standards path (RTSP/ONVIF responder).
     Standards,
+    /// Cloud-only accessory with no local service surface (Govee-class).
+    CloudOnly,
     /// Infrastructure (routers, speakers — not camera candidates).
     Infrastructure,
     /// Not classified: no supporting signal.
@@ -152,6 +154,15 @@ pub fn classify_host(
         oui_brand = Some(Brand::Tuya);
     } else if vendor.contains("Resideo") || vendor.contains("Honeywell") {
         oui_brand = Some(Brand::EmbeddedWeb);
+    } else if vendor.contains("TP-Link Systems") || vendor.contains("TP-LINK") {
+        // Tapo exposes only a local HTTPS DS-JSON door; no standards surface.
+        oui_brand = Some(Brand::EmbeddedWeb);
+    } else if vendor.contains("Shenzhen Zowee") {
+        // Yi-class IPC: advertises WS-Discovery / ONVIF, so the standards lane.
+        oui_brand = Some(Brand::Standards);
+    } else if vendor.contains("Shenzhen Intellirocks") {
+        // Govee-class: zero local TCP surface even while awake.
+        oui_brand = Some(Brand::CloudOnly);
     } else if vendor.contains("eero") || vendor.contains("Sonos") || vendor.contains("Tesla") {
         oui_brand = Some(Brand::Infrastructure);
     }
@@ -243,6 +254,22 @@ mod tests {
             oui_vendor: vendor.map(str::to_owned),
             open_ports: ports.to_vec(),
             rtt_ms: None,
+        }
+    }
+
+    #[test]
+    fn vendor_table_covers_the_owner_families() {
+        let cases = [
+            ("60:d5:61:21:4d:36", "Shenzhen Glazero Technology Co., Ltd.", Brand::Tuya),
+            ("50:3d:d1:e3:e2:07", "TP-Link Systems Inc.", Brand::EmbeddedWeb),
+            ("b0:d5:9d:9a:8e:c4", "Shenzhen Zowee Technology Co., Ltd", Brand::Standards),
+            ("d4:ad:fc:4d:05:ed", "Shenzhen Intellirocks Tech. Co. Ltd.", Brand::CloudOnly),
+        ];
+        for (mac, vendor, want) in cases {
+            let h = host("192.168.4.9", mac, Some(vendor), &[]);
+            let c = classify_host(&h, &[], None);
+            assert_eq!(c.brand, want, "{vendor}");
+            assert_eq!(c.confidence, Confidence::Possible, "{vendor}");
         }
     }
 

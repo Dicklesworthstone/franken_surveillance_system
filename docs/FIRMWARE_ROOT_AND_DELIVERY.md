@@ -142,7 +142,13 @@ edit changes that, and it is unproven twice over: the build may be `CONFIG_ENV_I
   `/configs/rtsp_config.json` and was replayed independently with ffmpeg (H.264 High 2560x1440@20 +
   AAC). Runbook: `docs/exploit/rtsp-enable.md`; harness method: `docs/WYZE_TUTK_LAB_METHOD.md`.
   This is the shortest path to the owner's actual goal on this family, and it needs no root.
-  **Independent re-check, same day:** the command is accepted on `.4.23` and `.5.242` (`0x29e9`,
+  **Resolved on the serving question (later same day):** 554 does eventually open and answer —
+  `OPTIONS` returns `200 OK` with `Public: DESCRIBE, SETUP, TEARDOWN, PLAY` — so the enable takes
+  effect, just not instantly and only after the camera restarts for another reason. The remaining gap
+  is the credential: `DESCRIBE` answers `401`, and none of the account/password pairs we set is
+  accepted, so the RTSP account still needs wiring (likely a separate enable step, as Tapo needs
+  `setAccountEnabled` for RTSP).
+  **Earlier re-check, same day:** the command is accepted on `.4.23` and `.5.242` (`0x29e9`,
   `{"result":1,...}` with both stream URLs, repeatedly, for `rtspMode` 1 and 2 and for `fsslab` and
   `admin`), but the listener did **not** come up within 10 s on either unit afterwards — `.5.242`
   opened 554 once, immediately, then closed. So "takes effect immediately" is not reliable here and

@@ -105,3 +105,30 @@ a triple crash run on `.4.24` killed the stream at 10.6 s, the box answered ping
 `desired` URL was still un-fetched. For the same reason the cloud `restart`/`reboot` actions
 (`result 3`) do not help. `docs/exploit/ota-path.md` §9.7 lists the five dispatch variants that
 also failed. The box needs a real power cycle.
+
+## 02:3x — source-IP spoofing tried, and what it proved
+
+`sudo ifconfig en1 alias 192.168.6.200/22` plus `curl --interface` from three different source
+addresses (`.6.200`, `.4.222`, `.4.169` — the latter two were already aliased on this host). Result:
+identical, nothing. Combined with ARP resolving and ICMP answering, **the Tapos are not banning us —
+they are simply not serving TCP or UDP 20002**. They are asleep and only the AP's proxy answers
+ICMP. Waking them needs the app to open a stream. That closes the "ban" hypothesis and the
+"spoof our way back in" idea.
+
+## AOSU API is reachable now — and the exact blocker has a name
+
+Concrete progress from the same push:
+
+- `api-us.aosulife.com` answers again, but **only with the app User-Agent and POST**; a bare GET
+  returns `404 page not found`. That is why the earlier replay looked dead.
+- The captured `gz-sid` is genuinely expired (`202 sid过期`) — so re-login is mandatory.
+- `/v1/user/login` exists and answers `200` with `104 pid参数错误`: the login needs a **`pid`**, and
+  `pid` is not the bundle id (`com.glazero.ios`), not `com.glazero.android`, not the iotbing
+  `clientId`, not a small integer in body, query or `gz-pid` header (0..300 swept, plus 11 symbolic
+  candidates). It is the one unknown.
+- The device-side answer to "does the homebase take plaintext 3.3 frames without a key?" is **no**:
+  well-formed `0x000055AA` 3.3 frames for `HEART_BEAT` and `DP_QUERY` are accepted at TCP level and
+  never answered, matching the earlier probe log. There is no keyless control channel.
+
+So AOSU is exactly one integer away from an authenticated session, and nothing else on the network
+substitutes for it.

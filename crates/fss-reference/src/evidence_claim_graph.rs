@@ -234,6 +234,7 @@ mod tests {
             vec![edge(a.revision_digest(), EvidenceEdgeRelation::Supports)],
         )?;
         let anchor = LedgerAnchor::genesis("site:retained-evidence");
+        let b_rev = b.revision_digest();
         let records = vec![retained(a.clone(), vec![a]), retained(b.clone(), vec![b])];
         let report = analyze_retained(
             "site:retained-evidence",
@@ -243,7 +244,7 @@ mod tests {
         )?;
         assert_eq!(report.selected_events, 2);
         assert_eq!(report.analysis.witness.anchor(), &anchor);
-        assert_eq!(report.analysis.claims[1].revision, b.revision_digest());
+        assert_eq!(report.analysis.claims[1].revision, b_rev);
         assert_eq!(
             report.analysis.claims[1].reachability,
             SupportReachability::RootedInUnexpandedReference

@@ -306,7 +306,7 @@ fn gap_recovery_emits_an_unmeasured_baseline_and_never_hides_partial_history() -
         out.iter()
             .filter_map(|o| o.statistics.as_ref())
             .map(|s| s.compared_pixels)
-            .sum()
+            .sum::<u64>()
     );
     Ok(())
 }

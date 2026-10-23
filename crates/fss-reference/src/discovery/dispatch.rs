@@ -103,6 +103,12 @@ pub fn dispatch(brand: &BrandConfidence) -> AdapterDispatch {
             missing: None,
             blocked_reason: Some("infrastructure device, not a camera candidate"),
         },
+        (Brand::CloudOnly, _) => AdapterDispatch {
+            adapter: AdapterPath::ImportOnly,
+            readiness: Readiness::Unavailable,
+            missing: None,
+            blocked_reason: Some("cloud-only accessory: no local service surface observed"),
+        },
         (Brand::Unknown, _) => AdapterDispatch {
             adapter: AdapterPath::ImportOnly,
             readiness: Readiness::Unavailable,

@@ -218,7 +218,7 @@ fn presentation_path(text: &str) -> Result<&str, &'static str> {
     // The protocol owner, also used by ONVIF, validates all raw/escaped delimiters,
     // controls and traversal. Preserve exact query spelling for RTSP and Digest.
     fss_reference::rtsp::client::validated_uri_parts(&format!("rtsp://validation.invalid{text}"))
-        .map_err(|_| "unsafe RTSP presentation URI")?;
+        .map_err(|_| "unadmitted RTSP presentation URI")?;
     Ok(text)
 }
 
