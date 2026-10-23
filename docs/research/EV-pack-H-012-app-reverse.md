@@ -34,6 +34,21 @@ property (`tutkId`, threaded through `CameraV2SetupAction`), and it is also show
 screenshot of that drawer yields UID (and any AuthKey shown), after which
 `IOTC_WakeUp_WakeDevice` + `IOTC_Lan_Search` work without the cloud.
 
+### Ayla local transport, resolved
+
+`AylaHttpServer.DEFAULT_PORT = **10275**` ("Failed to create server on port 10275"), and
+`AylaLanModule` finds the device by **mDNS A-record for `<dsn>.local`**, re-querying on a 1 s
+interval. So:
+
+- detector: any host answering mDNS for its own `.local` name, or simply an open `10275/tcp`;
+- transport: plain HTTP on 10275, JSON, wrapped by `AylaEncryption`;
+- `AylaEncryption` derives per-session sign/crypto keys with HMAC from a `lanKey` held by
+  `AylaDevice` (cloud-provisioned), with the setup-only path `wifi_setup_rsa` for unprovisioned
+  units, plus `key_id`, sequence numbers and a session id.
+
+Consequence: reaching `10275` gets an unauthenticated `key_exchange` surface, but full control
+needs either the cloud `lanKey` or a camera still in setup mode.
+
 ## Canary — `is.yranac.canary`
 
 Confirms the REST host `https://api.canaryis.com` — the same domain family as the SNIs already
