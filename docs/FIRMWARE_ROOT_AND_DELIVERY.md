@@ -281,6 +281,15 @@ Pan v3 work, except the PoC's tail markers (`0x0095d020`) are Pan-v3 addresses a
 The operator path is now `fss-capture-tutk --ioctl 0x284C --payload-file …` (the CLI grew
 `--identity/--psk-hex/--encoders/--k10000-file/--ioctl/--payload-file`).
 
+**Superseded 2026-10-22 (MagentaOwl + AvWeaponize): the spray does not buy code execution.** The
+consumer was analysed instruction-by-instruction and the bug is read-side only — exact-sized
+allocation, the single declared-length copy is gated by a caller-capacity check that returns
+`-20013` instead of overflowing, and no wire-derived pointer is ever `jalr`ed (only allocator-owned
+self-pointers and the context vtable). Live: the crash frame survived 6/6 on a freshly established
+session, 40 spray frames plus the over-read survived, and a full `0xdeadbeef` dword payload was
+harmless. CVE-2026-38698 on this build is therefore a **remote DoS**, not a root primitive. Root on
+this family comes from `assis` OTA instead — see §9 and `docs/exploit/ota-path.md`.
+
 ## 6. Corrections and one dead end (GrayBadger, 2026-10-22 later)
 
 **HL version.** The vendor HL head is `"HL" | 0x25 | 0x00 | cmd u16 | len u16 | 8 zero`. Version **5
@@ -301,3 +310,36 @@ therefore cannot succeed. After setting item 11 and forcing a reboot via the cra
 stays closed and a full TCP scan shows only `53/dnsmasq`. Consequences: (a) do not target `system()`
 in the ROP, use `exec_shell_sync` (`0x8be960`, `$a0` = command, no `$gp`); (b) any post-exploitation
 tooling must be pushed to the device, there is no shell waiting.
+
+## 9. 2026-10-22 (MagentaOwl) — corrections, and the delivery target now exists
+
+Three corrections to §6/§7, each verified against the extracted boot ramdisk (`/tmp/rd`, from the
+same `recovery_wcv4.bin`) or the binary itself.
+
+**The runtime root is the initramfs, and it has a shell.** `/system` is a squashfs mounted *under*
+the initramfs by `S18_mountall`; there is no `switch_root`. The ramdisk is busybox and ships `sh`
+(`/bin/sh -> busybox`), `dd`, `tar`, `gzip`, `base64`, `sha256sum`, `mount`, and `S20init_app`
+literally runs `sh /system/init/app_init.sh`. So `exec_shell_sync` is a working ROP target and the
+only thing missing for `system("telnetd &")` is the `telnetd` applet. "No shell on the device" was
+true only for `/system`.
+
+**`tutk_packet_Alloc` is `0x688d10`, and it is exactly sized.** The body is
+`malloc(0x28 + p5 + p4 + p2)` then `memcpy(pkt+0x28, src1, p4)` and
+`memcpy(pkt+0x28+p4, src2, p2)`, so the two copies always fit. CVE-2026-38698 on this build is an
+**over-read**, not a destination overflow: only the wire lengths are unchecked. See
+`docs/exploit/av-overread.md`.
+
+**The delivery artefact now exists upstream.** `wltechblog/thingino-installers` publishes
+`wyze-cam-4/wyze-cam-4-sd.zip` (the README's own words: "as of October 2026 we have fully defeated
+[SecureBoot]"). It contains a 256 MiB SD image and, inside it,
+`thingino-wyze_cam4_t41nq_os04d10_atbm6062s.bin` and `..._gc4653_atbm6062s.bin` — both exactly
+16777216 bytes, both starting with the Ingenic ROM header `06 05 04 03 02 55 aa 55 aa`, i.e. full
+chip images including the bootloader. SHA-256 `e04f858f…2fbe8b` and `2a0d6420…4ccb434` match the
+digests already pinned in `docs/exploit/flash-plan.md`, so the plan's image is no longer
+hypothetical. Sensor variant is still unresolved (stock ships only `os04d10-t41.bin` and
+`gc4653-t41.bin` under `/system/etc/sensor/`, so detection is by I2C id at boot); `os04d10` is the
+installer author's confirmed unit and a wrong pick is recoverable because Thingino boots anyway.
+
+Census note: a 40-host `0x0601` sweep of the live /22 found three Wyze v4 (`VD46744…`, `S3X2PB…`,
+`DEC1UV…`) and no TUTK listener on the AOSU, Yi, Canary or Tapo units. Canary is present at
+`192.168.6.85` with zero open TCP ports.

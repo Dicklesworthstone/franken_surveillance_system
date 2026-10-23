@@ -56,6 +56,16 @@ PSK = SHA256(ENR) (NUL-truncated per TUTK SDK quirk), AV login, XXTEA K-auth, H.
 AV frames. Live python proof streams all 3 owner cams (fss-x4a.21.2.2). No RTSP/ONVIF
 surface exists; credential bypass was not used and is out of scope.
 
+**Firmware replacement (2026-10-22, research):** the stock firmware is no longer the end state. The
+v4 boot chain is defeatable without a vendor program: `wltechblog/thingino-installers` publishes a
+`wyze-cam-4` installer whose README states SecureBoot was "fully defeated" in October 2026, and the
+bundled 16 MiB chip images (sha256 `e04f858f…2fbe8b` / `2a0d6420…4ccb434`) begin with an Ingenic
+ROM header plus an `INGE` init table at `0x100`, i.e. the bootloader is replaced, not patched. The
+replacement runtime is a busybox initramfs with dropbear, ONVIF and prudynt RTSP — every property
+this matrix wants from T1 — and a full shell, which the stock firmware does not have (see
+`docs/FIRMWARE_ROOT_AND_DELIVERY.md` §9). Delivery over the wire is `assis` → HTTPS GET → tar →
+`sh upgraderun.sh` as root; see `docs/exploit/ota-path.md`.
+
 ### AOSU P1 Max
 
 Public pages describe 4K, Wi-Fi, local microSD, app/base and optional cloud behavior, but no stable

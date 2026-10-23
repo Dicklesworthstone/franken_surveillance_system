@@ -49,7 +49,7 @@ public class GhidraAvPath extends GhidraScript {
             if (f == null) {
                 continue;
             }
-            for (Reference ref : f.getReferencesTo(f.getEntryPoint())) {
+            for (Reference ref : currentProgram.getReferenceManager().getReferencesTo(f.getEntryPoint())) {
                 Function caller = getFunctionContaining(ref.getFromAddress());
                 if (caller == null) {
                     continue;
@@ -66,7 +66,7 @@ public class GhidraAvPath extends GhidraScript {
             if (f == null) {
                 continue;
             }
-            for (Reference ref : f.getReferencesTo(f.getEntryPoint())) {
+            for (Reference ref : currentProgram.getReferenceManager().getReferencesTo(f.getEntryPoint())) {
                 Function caller = getFunctionContaining(ref.getFromAddress());
                 if (caller == null) {
                     continue;
@@ -96,7 +96,7 @@ public class GhidraAvPath extends GhidraScript {
                 continue;
             }
             emit(t, "self");
-            for (Reference ref : f.getReferencesTo(f.getEntryPoint())) {
+            for (Reference ref : currentProgram.getReferenceManager().getReferencesTo(f.getEntryPoint())) {
                 Function caller = getFunctionContaining(ref.getFromAddress());
                 if (caller == null) {
                     continue;

