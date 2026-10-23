@@ -270,7 +270,7 @@ fn missing_or_corrupt_non_tip_record_refuses_the_next_live_append() -> Test {
         assert_eq!(journal.head(), Some(second));
         assert_eq!(journal.records().len(), 2);
         assert!(matches!(
-            journal.append(Some(second), b"unsafe retry"),
+            journal.append(Some(second), b"retry under uncertainty"),
             Err(EffectPersistenceError::Poisoned)
         ));
     }
@@ -316,7 +316,7 @@ fn ambiguous_rename_is_never_retried_and_cold_open_finds_committed_record() -> T
     assert_eq!(journal.head(), Some(first));
     assert_eq!(journal.records().len(), 1);
     assert!(matches!(
-        journal.append(Some(first), b"unsafe retry"),
+        journal.append(Some(first), b"retry under uncertainty"),
         Err(EffectPersistenceError::Poisoned)
     ));
     drop(journal);

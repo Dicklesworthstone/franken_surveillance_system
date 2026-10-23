@@ -52,7 +52,7 @@ eidetic_engine_cli = ["eidetic_engine_cli", "ee-*"]
 frankentui = ["frankentui", "frankentui-*"]
 
 [fundamental]
-allowed_subject_to_audit = ["serde", "serde_json"]
+allowed_subject_to_audit = ["serde", "serde_json", "zmij"]
 rule = "Fundamental means bounded data-shape plumbing only. It grants no runtime, networking, storage, cryptography, parser, model, device, durable-format, or background-work authority."
 
 [exception_candidates]

@@ -3,6 +3,7 @@
 //! RTSP server, HL cmd `0x29e9`, without the app or cloud).
 //!
 //! Usage: rtsp_probe <uid> <enr> <mac> <ip> <port> <hl_cmd_hex> <json> <secs>
+#![forbid(unsafe_code)]
 
 use std::net::UdpSocket;
 use std::time::{Duration, Instant};

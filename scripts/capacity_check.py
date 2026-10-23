@@ -21,6 +21,7 @@ identities — callers must not parse prose.
 """
 
 import json
+import os
 import shutil
 import subprocess
 import sys
@@ -37,9 +38,13 @@ def probe_sbh(need_bytes: int) -> dict:
             "state": "unavailable",
             "evidence": "sbh not installed on this host; capacity unproven",
         }
+    cmd = ["sbh", "check", "--need", str(need_bytes)]
+    target_free = os.environ.get("FSS_CAPACITY_TARGET_FREE", "").strip()
+    if target_free:
+        cmd += ["--target-free", target_free]
     try:
         proc = subprocess.run(
-            ["sbh", "check", "--need", str(need_bytes)],
+            cmd,
             capture_output=True,
             text=True,
             timeout=30,
