@@ -82,6 +82,15 @@ unauthorized operation`** on this account:
 - `appid` `9319141212m2ik` or `wc4p_5b0e5bc2788d4ff68c7b98a5656148d0`; with and without the
   `authorization` header; `firmware_ver` `9.9.9.9` or a plausible `4.52.30.1`
 
+**App-side ground truth (3.23.2 APK, decompiled):** the body shape in `DeviceActionRepositoryRemoteImplementation`
+is exactly ours plus `phone_system_type`; `sv` is *still* `011a6b42d80a4f32b4cc24bb721c9c96` in this
+version, so the constant was never stale. The real correction is `provider_key`: it is a **provider
+identity** (`WYZEC1`, `WYZEC1-BL`, `HL_PAN2`, …) chosen from `/app/v2/auto/get_provider_list`, not the
+product model — that call works and returns per-provider `trigger_list`/`action_list` with
+`action_params` field sets (`upgrade` takes exactly `url`/`md5`/`model`). Trying those provider keys
+(`WYZEC1`, `WYZEC1-JZ`, `WYZECP1_JEF`, `WYZEC1-BL`, `HLQF3`, `CameraGroup`) still answers 3005 though,
+so the provider list is not the whole gate either.
+
 `sc` must be present or the call 1001s. So the push primitive exists and parses, but this account is
 not entitled to it — the shadow delta is the working trigger, and `run_action` needs either an
 entitlement or a fresh `sv`. Recorded so the next run does not repeat the matrix.

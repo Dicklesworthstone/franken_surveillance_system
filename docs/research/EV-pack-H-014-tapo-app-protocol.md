@@ -71,3 +71,37 @@ unzip -p <xapk> com.tplink.iot.apk > /tmp/tapo.apk
 unzip -o -q /tmp/tapo.apk 'classes*.dex' -d /tmp/tapo-dex
 jadx --no-res --no-imports -d /tmp/tapo-src /tmp/tapo-dex/classes5.dex   # util/k, AccountInfo, SecureUtils
 ```
+
+## 6. Prior art that changes the C460/C660 plan (deadc0de.sh, C500, 2026)
+
+<https://deadc0de.sh/posts/tapo-c500-two-cves/> (CVE-2026-104944/104945) and
+<https://deadc0de.sh/posts/tapo-c500-root/>:
+
+- **A monitor respawns `/bin/main`** after a crash; UART shows `signal SIGILL caught` and the service
+  returns in ~13 s. A connectAp crash is therefore a ~15 s outage, not a reboot. Recoveries seen on
+  `.4.70` (24 s) match this.
+- **TDP** is an unauthenticated UDP protocol on 20002/20010 with a TLV dispatcher that indexes a
+  6-slot table up to type 0x18; type 6+ calls a name string as a pointer (SIGILL). Packet builder and
+  checksum are public (`anaskalt/CVE-2026-104944`). It is a device-independent DoS and a second
+  unauth parser surface; handler bodies were not fuzzed in that work.
+- **ONVIF** lives on TCP 2020 at `/onvif/service`, not 443; `RemovePreset` writes parsed ints past a
+  32-entry stack array and the loop is bounded by request offset, not the array. That handler is
+  authenticated but reachable with the third account. Media is RTSP 554 `/stream1|/stream2`, events
+  1024/1025, media 8800.
+- The app rootfs is **AES-128-CFB1 with the first 512 bytes encrypted at rest**; the key is compiled
+  into the kernel (`CONFIG_ENCRYPT_ROOTFS_KEY` in the matching GPL drop) with a fixed IV. The app
+  partition is therefore only readable from a flash dump, but a dump is offline-decryptable once the
+  GPL key for the exact model is read.
+- **Battery models sleep their Wi-Fi**; LAN probes do not wake them, the cloud path does. Every
+  interactive test needs an app-side wake, and a held TCP session does not prevent sleep.
+
+## 7. C460 observations (2026-10-23)
+
+- Port 2020 is **closed** even with the third account provisioned and `stok` root; ONVIF is either
+  disabled per model or needs `setOnvifSecurityConfig`/a later service start. 554/8800 behave the same.
+- `/bin/main` answers `401 {"data":{"code":-40407}}` with **no `WWW-Authenticate`**, and repeats the
+  same body for `/etc/passwd`; a `stok`-less cookie replay does not change it, so the path mapping is
+  unresolved rather than digest-protected.
+- Login is rate-limited while the app boots: during the wake window the second step can return a fresh
+  challenge (`code -40401`, `time`/`max_time` 9/10). Sleep ≥5 s after the first step before sending
+  `digest_passwd`.
