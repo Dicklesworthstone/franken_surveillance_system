@@ -225,3 +225,11 @@ signer, absent from the APK — currently a copy of `t_s.bmp` as a guess), `chec
 **-1** (anti-tamper) even with the real cert and package name, and the **appSecret** that `doCommandNative(ctx, 0, secret, appId, …)` needs at SDK init — we only have the
 appId (`clientId`). With the clientId substituted, `cmd 1` returns null, so the init path is where
 the next hour goes.
+
+`checkStatus` is raised by a JNI_OnLoad-spawned **thread**, so it is asynchronous: it reports `-1`
+first and then opens `tecrkcehc_ext`. The call chain is settled —
+`cmd 0 = init(secret, appId)` (return value ignored, so our null is normal), `cmd 1 = sign(string)`
+with a null second array, `cmd 2 = ecode`. Calling `cmd 1` *immediately* after load also returns
+null, before the check can report, which moves the gate off the status flag and onto the init key:
+the appSecret. `tecrkcehc_ext` and `t_s_daily.bmp` are both runtime-supplied; four placeholder
+formats (BMP copy, random bytes, hex digest, JSON digest) leave the status at -1 or bail earlier.

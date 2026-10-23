@@ -29,7 +29,10 @@ registered JNI method by name.
 2. `checkStatus` returns **-1** (anti-tamper failure) even with the real certificate and package
    name, so the signer refuses. Whatever else it compares — likely the cert digest against a baked
    value, or fields of `tecrkcehc_ext` (currently a copy of `t_s.bmp`, a guess).
-3. The **appSecret** passed to `doCommandNative(ctx, 0, secret, appId, false)` at SDK init
+3. `t_s_daily.bmp` — also absent, same family as `tecrkcehc_ext`; both are runtime-supplied rather
+   than bundled. Placeholder formats (BMP copy, random, hex digest, JSON digest) all keep the status
+   at `-1` or bail earlier.
+4. The **appSecret** passed to `doCommandNative(ctx, 0, secret, appId, false)` at SDK init
    (`ThingNetworkSecurity` line ~95). We only know the appId (`clientId`). With the clientId as a
    stand-in, `cmd 1` returns null.
 
