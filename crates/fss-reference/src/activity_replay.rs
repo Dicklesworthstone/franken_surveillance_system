@@ -9,6 +9,8 @@
 /// Statically selected first-party activity derivation over verified retained evidence.
 pub mod belief;
 mod native;
+/// Read-only operator verification of a cold retained native activity result.
+pub mod operator;
 
 pub use native::{
     ActivityReplayError, ActivityReplayInputs, ActivityReplayLimits, ActivityReplayPlan,

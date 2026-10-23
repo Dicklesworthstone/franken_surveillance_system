@@ -21,6 +21,8 @@ use fss_reference::agent_orient::{OrientLimits, read_deployment};
 
 #[path = "fss-evidence/history.rs"]
 mod history;
+#[path = "fss-evidence/activity.rs"]
+mod activity;
 
 const FORMAT: &str = "fss.evidence_support_analysis.v1";
 const MAX_ARGS: usize = 17;
@@ -59,6 +61,7 @@ const HELP: &str = "fss-evidence analyze --root DIR --site SITE\n\
   they do NOT preempt filesystem calls or the bounded algorithm. Oversized reports\n\
   fail before stdout; there is no partial-answer or heuristic fallback.\n\
   Historical expansion and artifact impact: fss-evidence analyze-history --help.\n\
+  Cold native activity verification: fss-evidence verify-activity --help.\n\
   Reference candidate: native tests and production qualification have not run.\n";
 
 #[derive(Clone, Debug)]
@@ -80,6 +83,7 @@ enum CommandError {
     Projection(EvidenceProjectionError),
     Stopped,
     OutputBound,
+    Activity(String),
 }
 
 fn text(value: &OsStr) -> Result<&str, CommandError> {
@@ -374,8 +378,10 @@ fn emit(writer: &mut impl Write, mut bytes: &[u8]) -> io::Result<()> {
 }
 
 fn main() -> ExitCode {
-    let args: Vec<_> = std::env::args_os().skip(1).take(MAX_ARGS + 1).collect();
-    let result = if matches!(args.first().and_then(|arg| arg.to_str()), Some("analyze-history" | "impact")) {
+    let args: Vec<_> = std::env::args_os().skip(1).take(activity::MAX_ARGS + 1).collect();
+    let result = if args.first().and_then(|arg| arg.to_str()) == Some("verify-activity") {
+        activity::run(&args)
+    } else if matches!(args.first().and_then(|arg| arg.to_str()), Some("analyze-history" | "impact")) {
         history::run(&args)
     } else {
         match parse(&args) {
@@ -407,6 +413,7 @@ fn main() -> ExitCode {
                 CommandError::Projection(_) => "graph input, budget or registered bound refused; no partial answer",
                 CommandError::Stopped => "deadline or cancellation reached; no report emitted",
                 CommandError::OutputBound => "complete report exceeds its byte budget; nothing was truncated",
+                CommandError::Activity(reason) => reason.as_str(),
             };
             eprintln!("{code}: {explanation}. No effect was authorized. Use fss-evidence --help.");
             ExitCode::from(if usage { ExitIdentity::MALFORMED_VALUE.code } else { ExitIdentity::RUNTIME_FAILURE.code })

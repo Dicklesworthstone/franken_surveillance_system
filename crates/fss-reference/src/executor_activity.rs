@@ -846,19 +846,19 @@ fn hex(digest: ContentDigest) -> String {
     digest.bytes().iter().map(|b| format!("{b:02x}")).collect()
 }
 
-fn retention_slot(result: ContentDigest) -> Result<SlotName, ExecutorActivityError> {
+pub(crate) fn retention_slot(result: ContentDigest) -> Result<SlotName, ExecutorActivityError> {
     SlotName::parse(&format!("xr-{}", hex(result)))
         .map_err(|_| ExecutorActivityError::RetentionMismatch("slot name"))
 }
 
-fn retention_batch(result: ContentDigest) -> Result<BatchId, ExecutorActivityError> {
+pub(crate) fn retention_batch(result: ContentDigest) -> Result<BatchId, ExecutorActivityError> {
     Ok(BatchId::parse(format!(
         "batch:executor-result:{}",
         hex(result)
     ))?)
 }
 
-fn retention_deltas(
+pub(crate) fn retention_deltas(
     result_digest: ContentDigest,
     receipt_object: ContentDigest,
     root: ContentDigest,

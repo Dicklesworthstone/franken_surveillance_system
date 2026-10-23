@@ -4,13 +4,13 @@
 use std::cell::Cell;
 use std::collections::{BTreeMap, BTreeSet};
 
-use fss_core::ContentDigest;
+use fss_core::{ContentDigest, EvidenceDeltaBatch};
 use fss_ledger::DurableReferenceLedger;
-use fss_publication::{LocalRootPublisher, SlotName};
 use fss_publication::custody_audit::MAX_AUDIT_ROOTS;
 use fss_publication::custody_audit::belief_snapshot::durable::{
     DurableBeliefDeletionAuthority, DurableBeliefError,
 };
+use fss_publication::{LocalRootPublisher, SlotName};
 
 use crate::deletion::index::proof;
 use crate::deletion::plan::MAX_DELETION_RECORD_BYTES;
@@ -139,15 +139,22 @@ impl<'a, C: Fn() -> bool + ?Sized> BoundedCommittedDeletionBeliefAuthority<'a, C
 
     fn read_record(
         &self,
-        publisher: &LocalRootPublisher,
         digest: ContentDigest,
+        read: &mut impl FnMut(ContentDigest, usize) -> Result<Vec<u8>, DurableBeliefError>,
     ) -> Result<Vec<u8>, DurableBeliefError> {
         self.checkpoint()?;
-        self.charge(1, self.limits.max_record_reads, "deletion record reads", |u| {
-            &mut u.record_reads
-        })?;
+        self.charge(
+            1,
+            self.limits.max_record_reads,
+            "deletion record reads",
+            |u| &mut u.record_reads,
+        )?;
         let remaining = self.limits.max_total_record_bytes - self.usage.get().record_bytes;
-        let allowance = self.limits.max_record_bytes.min(MAX_DELETION_RECORD_BYTES).min(remaining);
+        let allowance = self
+            .limits
+            .max_record_bytes
+            .min(MAX_DELETION_RECORD_BYTES)
+            .min(remaining);
         if allowance == 0 {
             return Err(DurableBeliefError::Limit("deletion record bytes"));
         }
@@ -158,10 +165,7 @@ impl<'a, C: Fn() -> bool + ?Sized> BoundedCommittedDeletionBeliefAuthority<'a, C
             |u| &mut u.record_bytes,
         )?;
         // Reserve before I/O. An error cannot refund unknown work into a retry loop.
-        let bytes = publisher
-            .spool()
-            .read_bounded(digest, allowance)
-            .map_err(|_| DurableBeliefError::DeletionAuthorityInvalid)?;
+        let bytes = read(digest, allowance)?;
         if bytes.len() > allowance {
             return Err(DurableBeliefError::DeletionAuthorityInvalid);
         }
@@ -185,18 +189,24 @@ impl<'a, C: Fn() -> bool + ?Sized> BoundedCommittedDeletionBeliefAuthority<'a, C
             plan.blockers.len(),
             plan.unknown_copies.len(),
         ] {
-            self.charge(count, self.limits.max_plan_entries, "deletion plan entries", |u| {
-                &mut u.plan_entries
-            })?;
+            self.charge(
+                count,
+                self.limits.max_plan_entries,
+                "deletion plan entries",
+                |u| &mut u.plan_entries,
+            )?;
         }
         Ok(())
     }
 
-    fn verify(
+    /// Reuses the canonical deletion owner for a caller-verified, read-only committed history.
+    /// The reader must rehash each exact object and enforce the supplied allocation ceiling.
+    /// Admission remains single-use and charges the same counters as the durable adapter.
+    pub(crate) fn verified_denials_from_batches(
         &self,
-        ledger: &DurableReferenceLedger,
-        publisher: &LocalRootPublisher,
+        batches: &[EvidenceDeltaBatch],
         slots: &[SlotName],
+        mut read: impl FnMut(ContentDigest, usize) -> Result<Vec<u8>, DurableBeliefError>,
     ) -> Result<BTreeMap<ContentDigest, ContentDigest>, DurableBeliefError> {
         if self.attempted.replace(true) {
             return Err(DurableBeliefError::Limit("deletion admission attempts"));
@@ -210,15 +220,21 @@ impl<'a, C: Fn() -> bool + ?Sized> BoundedCommittedDeletionBeliefAuthority<'a, C
         }
         let selected: BTreeSet<&str> = slots.iter().map(SlotName::as_str).collect();
         // Complete admission precedes every metadata read, including for a standalone trait call.
-        for batch in ledger.batches() {
+        for batch in batches {
             self.checkpoint()?;
-            self.charge(1, self.limits.max_history_batches, "deletion history batches", |u| {
-                &mut u.history_batches
-            })?;
+            self.charge(
+                1,
+                self.limits.max_history_batches,
+                "deletion history batches",
+                |u| &mut u.history_batches,
+            )?;
             for count in [batch.deltas.len(), batch.children.len()] {
-                self.charge(count, self.limits.max_history_entries, "deletion history entries", |u| {
-                    &mut u.history_entries
-                })?;
+                self.charge(
+                    count,
+                    self.limits.max_history_entries,
+                    "deletion history entries",
+                    |u| &mut u.history_entries,
+                )?;
             }
             for delta in &batch.deltas {
                 self.checkpoint()?;
@@ -226,7 +242,9 @@ impl<'a, C: Fn() -> bool + ?Sized> BoundedCommittedDeletionBeliefAuthority<'a, C
                 if delta.family.starts_with("deletion_")
                     && !matches!(
                         delta.family.as_str(),
-                        FAMILY_DELETION_RECORD | FAMILY_DELETION_TOMBSTONE | FAMILY_DELETION_COMPLETION
+                        FAMILY_DELETION_RECORD
+                            | FAMILY_DELETION_TOMBSTONE
+                            | FAMILY_DELETION_COMPLETION
                     )
                 {
                     return Err(DurableBeliefError::DeletionAuthorityInvalid);
@@ -234,8 +252,8 @@ impl<'a, C: Fn() -> bool + ?Sized> BoundedCommittedDeletionBeliefAuthority<'a, C
             }
         }
         let entries = proof::read_controlled(
-            ledger.batches(),
-            |digest| self.read_record(publisher, digest).map_err(ProofFailure),
+            batches,
+            |digest| self.read_record(digest, &mut read).map_err(ProofFailure),
             || self.checkpoint().map_err(ProofFailure),
             |plan| self.admit_plan(plan).map_err(ProofFailure),
         )
@@ -259,9 +277,12 @@ impl<'a, C: Fn() -> bool + ?Sized> BoundedCommittedDeletionBeliefAuthority<'a, C
                     }
                     continue;
                 }
-                self.charge(1, self.limits.max_denied_objects, "deletion denied objects", |u| {
-                    &mut u.denied_objects
-                })?;
+                self.charge(
+                    1,
+                    self.limits.max_denied_objects,
+                    "deletion denied objects",
+                    |u| &mut u.denied_objects,
+                )?;
                 denied.insert(object.digest, entry.plan_digest);
             }
         }
@@ -285,7 +306,12 @@ impl<C: Fn() -> bool + ?Sized> DurableBeliefDeletionAuthority
         ledger: &DurableReferenceLedger,
         publisher: &LocalRootPublisher,
     ) -> Result<BTreeMap<ContentDigest, ContentDigest>, DurableBeliefError> {
-        self.verify(ledger, publisher, &[])
+        self.verified_denials_from_batches(ledger.batches(), &[], |digest, allowance| {
+            publisher
+                .spool()
+                .read_bounded(digest, allowance)
+                .map_err(|_| DurableBeliefError::DeletionAuthorityInvalid)
+        })
     }
 
     fn verified_denials_for_slots(
@@ -294,6 +320,11 @@ impl<C: Fn() -> bool + ?Sized> DurableBeliefDeletionAuthority
         publisher: &LocalRootPublisher,
         slots: &[SlotName],
     ) -> Result<BTreeMap<ContentDigest, ContentDigest>, DurableBeliefError> {
-        self.verify(ledger, publisher, slots)
+        self.verified_denials_from_batches(ledger.batches(), slots, |digest, allowance| {
+            publisher
+                .spool()
+                .read_bounded(digest, allowance)
+                .map_err(|_| DurableBeliefError::DeletionAuthorityInvalid)
+        })
     }
 }
