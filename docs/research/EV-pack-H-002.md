@@ -91,6 +91,17 @@ product model — that call works and returns per-provider `trigger_list`/`actio
 (`WYZEC1`, `WYZEC1-JZ`, `WYZECP1_JEF`, `WYZEC1-BL`, `HLQF3`, `CameraGroup`) still answers 3005 though,
 so the provider list is not the whole gate either.
 
+**`restart` and `power_off` do work** — `provider_key:"WYZEC1"`, empty `action_params`, and the camera
+was down and back in ~20 s. That is a clean wake primitive and replaces the crash frame for ordinary
+use. Only `upgrade` answers 3005, with `HL_CAM4` present in the provider list and full params, so it is
+not the provider key.
+
+**Why `upgrade` is refused:** the modern upgrade endpoints in `WpkUpdatePlatform` are all built with
+`isDynamicSignature(true)` — `/app/v2/upgrade/{firmware_version,batch_get_upgrade_firmware,
+get_upgrade_firmware,begin_upgrade,auto_settings,…}` — i.e. the signature is derived, not the static
+`sc`/`sv` pair the legacy `run_action` uses. `run_action` + `action_key:"upgrade"` is the 2022 path and
+appears retired for v4.
+
 `sc` must be present or the call 1001s. So the push primitive exists and parses, but this account is
 not entitled to it — the shadow delta is the working trigger, and `run_action` needs either an
 entitlement or a fresh `sv`. Recorded so the next run does not repeat the matrix.
