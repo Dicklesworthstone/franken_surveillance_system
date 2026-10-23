@@ -1035,9 +1035,91 @@ fn read_package_event(
     cx: &ReplayCx,
     out: &mut impl Write,
 ) -> RunResult<()> {
+    use fss_cli::agent_json::{array, object, string};
+    use fss_reference::ingest::package_event::PackageEventError;
+
     let record = PackageEvent::open(deployment, id, cx)?;
     if record.report().encoded().len() > options.limits.maximum_report_bytes {
-        return Err(fss_reference::ingest::package_event::PackageEventError::Limit.into());
+        return Err(PackageEventError::Limit.into());
+    }
+    // Project only exact rows assigned by the verified analysis. No adjacent detections,
+    // supplied scores or additional source reads can enter this inventory.
+    let report = record.report();
+    let native = report.retained().record();
+    let track = report
+        .tracks()
+        .iter()
+        .find(|track| track.identity == record.track())
+        .ok_or(PackageEventError::Mismatch)?;
+    let mut observations = Vec::with_capacity(track.observations.len());
+    for observation in &track.observations {
+        cx.checkpoint("package_event:selector_inventory")?;
+        let (row, score_bits, bounds, _) =
+            observation.detection.ok_or(PackageEventError::Mismatch)?;
+        let frame = native
+            .frames
+            .iter()
+            .find(|frame| {
+                frame.segment == observation.segment
+                    && frame.capsule_digest == observation.capsule_digest
+            })
+            .ok_or(PackageEventError::Mismatch)?;
+        let detection = frame
+            .detections
+            .iter()
+            .find(|detection| {
+                detection.row == row && detection.class_index == report.class_index()
+            })
+            .ok_or(PackageEventError::Mismatch)?;
+        if detection.score_bits != score_bits || detection.bounds != bounds {
+            return Err(PackageEventError::Mismatch.into());
+        }
+        observations.push(object(&[
+            ("sensor_id", string(&frame.sensor_id)),
+            (
+                "capture_ns",
+                array(&[
+                    string(&frame.capture.earliest.0.to_string()),
+                    string(&frame.capture.latest.0.to_string()),
+                ]),
+            ),
+            ("score_f32_bits", score_bits.to_string()),
+            (
+                "selector",
+                object(&[
+                    ("event_id", string(id.as_str())),
+                    ("capsule_digest", string(&observation.capsule_digest.to_text())),
+                    ("segment", observation.segment.to_string()),
+                    ("detection_row", row.to_string()),
+                ]),
+            ),
+        ]));
+    }
+    let selectors = object(&[
+        ("site_lineage", string(deployment.site_lineage())),
+        (
+            "current_authority_sequence",
+            string(&deployment.current_anchor().commit_sequence.to_string()),
+        ),
+        (
+            "expected_authority_root",
+            string(&deployment.current_anchor().state_root.to_text()),
+        ),
+        ("event_id", string(id.as_str())),
+        ("expected_event_root", string(&record.root().to_text())),
+        ("report_digest", string(&report.digest().to_text())),
+        ("track", string(&record.track().to_text())),
+        ("package_digest", string(&native.package_digest.to_text())),
+        ("model_digest", string(&native.model_digest.to_text())),
+        ("contract_digest", string(&native.contract_digest.to_text())),
+        ("class_index", report.class_index().to_string()),
+        ("label", string(report.label())),
+        ("source_custody_verified", "true".to_owned()),
+        ("effects_authorized", "false".to_owned()),
+        ("observations", array(&observations)),
+    ]);
+    if selectors.len() > options.limits.maximum_report_bytes {
+        return Err(PackageEventError::Limit.into());
     }
     if let Some(path) = &options.event_out {
         export(
@@ -1052,11 +1134,12 @@ fn read_package_event(
     }
     writeln!(
         out,
-        "event_root={}\nauthority_sequence={}\nreport_digest={}\ntrack={}",
+        "event_root={}\nauthority_sequence={}\nreport_digest={}\ntrack={}\nretained_supervisor_sources={}",
         record.root(),
         record.authority_anchor().commit_sequence,
         record.report().digest(),
-        record.track()
+        record.track(),
+        selectors
     )?;
     print_package_event(record.event(), "read_verified", out)
 }

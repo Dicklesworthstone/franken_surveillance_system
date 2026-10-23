@@ -49,22 +49,43 @@ impl EventFusionProfile {
             ],
         )?;
         let whole_recording = match text_field(root, "schema")? {
-            SCHEMA if !root.contains_key("long_watch_analysis_root")
-                && !root.contains_key("long_corroboration_analysis_roots")
-                && !root.contains_key("long_dwell_analysis_root") => None,
-            LONG_WATCH_SCHEMA if !root.contains_key("long_corroboration_analysis_roots")
-                && !root.contains_key("long_dwell_analysis_root") => {
-                Some(WholeRecordingScope::Watch(sha(field(root, "long_watch_analysis_root")?)?))
+            SCHEMA
+                if !root.contains_key("long_watch_analysis_root")
+                    && !root.contains_key("long_corroboration_analysis_roots")
+                    && !root.contains_key("long_dwell_analysis_root") =>
+            {
+                None
             }
-            LONG_CORROBORATION_SCHEMA if !root.contains_key("long_watch_analysis_root")
-                && !root.contains_key("long_dwell_analysis_root") => {
+            LONG_WATCH_SCHEMA
+                if !root.contains_key("long_corroboration_analysis_roots")
+                    && !root.contains_key("long_dwell_analysis_root") =>
+            {
+                Some(WholeRecordingScope::Watch(sha(field(
+                    root,
+                    "long_watch_analysis_root",
+                )?)?))
+            }
+            LONG_CORROBORATION_SCHEMA
+                if !root.contains_key("long_watch_analysis_root")
+                    && !root.contains_key("long_dwell_analysis_root") =>
+            {
                 let roots = array(field(root, "long_corroboration_analysis_roots")?, 2)?;
-                let [first, second] = roots else { return Err(EventFusionError::Profile); };
-                Some(WholeRecordingScope::Corroboration([sha(first)?, sha(second)?]))
+                let [first, second] = roots else {
+                    return Err(EventFusionError::Profile);
+                };
+                Some(WholeRecordingScope::Corroboration([
+                    sha(first)?,
+                    sha(second)?,
+                ]))
             }
-            LONG_DWELL_SCHEMA if !root.contains_key("long_watch_analysis_root")
-                && !root.contains_key("long_corroboration_analysis_roots") => {
-                Some(WholeRecordingScope::Dwell(sha(field(root, "long_dwell_analysis_root")?)?))
+            LONG_DWELL_SCHEMA
+                if !root.contains_key("long_watch_analysis_root")
+                    && !root.contains_key("long_corroboration_analysis_roots") =>
+            {
+                Some(WholeRecordingScope::Dwell(sha(field(
+                    root,
+                    "long_dwell_analysis_root",
+                )?)?))
             }
             _ => return Err(EventFusionError::Profile),
         };
@@ -149,7 +170,9 @@ impl EventFusionProfile {
         };
         match whole_recording {
             Some(WholeRecordingScope::Watch(root)) => Self::for_long_watch(spec, root),
-            Some(WholeRecordingScope::Corroboration(roots)) => Self::for_long_corroboration(spec, roots),
+            Some(WholeRecordingScope::Corroboration(roots)) => {
+                Self::for_long_corroboration(spec, roots)
+            }
             Some(WholeRecordingScope::Dwell(root)) => Self::for_long_dwell(spec, root),
             None => Self::new(spec),
         }
@@ -196,7 +219,7 @@ fn interval(value: &Value) -> Result<LlrInterval> {
     }
     LlrInterval::new(number(&pair[0])?, number(&pair[1])?).map_err(|_| EventFusionError::Profile)
 }
-fn calibration(value: &Value) -> Result<ScoreCalibration> {
+pub(crate) fn calibration(value: &Value) -> Result<ScoreCalibration> {
     // Accept the score_calibration OBJECT emitted by fss-evaluate, not an arbitrary evaluation
     // report. Counts are authoritative for reconstruction; all supplied derived fields agree.
     let c = object(

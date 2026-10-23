@@ -1,27 +1,14 @@
 #![forbid(unsafe_code)]
-//! Bounded multi-camera supervisor coordinator with anytime-valid sequential Ville e-process
-//! corroboration (`fss-becce` / `GOAL-003` / `NS-1`).
+//! Bounded supervisor entry points with explicit observation and statistical assumptions.
 //!
-//! Steps a multi-camera deployment across sequential observation windows under an explicit
-//! [`WorkBudget`], authority-anchor pin, and cooperative cancellation contract
-//! (`request -> drain -> finalize`):
-//!
-//! * **Multi-camera independence (`INV-055`, `NEG-003`, `NEG-004`):** requires at least 2 cameras
-//!   with distinct `sensor_id` bindings. A single camera or a set of cameras connected by a shared
-//!   failure domain forms one common-cause cluster and can never cross the corroborated alert gate,
-//!   regardless of how many sequential windows it fires in.
-//! * **Degraded or occluded cameras (`NS-1`, `NEG-005`):** per-window camera health degradation or
-//!   occlusion is recorded as [`Observability::NotObservable`], contributing `0` millibans (never
-//!   evidence of absence) while remaining independent healthy cameras continue to corroborate.
-//! * **Sequential Ville e-process (`fss-fusion::eprocess`):** accumulates Wilson-calibrated
-//!   milliban log-likelihood ratios across windows with optional-stopping validity
-//!   ($\mathbb{P}_{H_0}(\sup_t M_t \ge \tau_{\text{mban}}) \le 10^{-\tau_{\text{mban}}/1000}$),
-//!   CUSUM floor clamping, and explicit regime resets when all supporting sensors degrade or clock
-//!   continuity breaks.
-//! * **Cooperative cancellation (`request -> drain -> finalize`):** checks cancellation at each
-//!   window boundary, drains in-flight window state, verifies zero uncommitted publication staging
-//!   artifacts and zero orphan pending obligations on the deployment, and emits a signed
-//!   [`SupervisorCancellationReceipt`].
+//! The retained module derives class advice from verified native package-event sources.
+//! The legacy run_supervisor entry point is a caller-supplied simulation. It does not reopen
+//! evidence identifiers or verify supplied scores, health, coverage or source custody.
+//! Its numeric Ville formulas are conditional on a valid test supermartingale. Arbitrary
+//! caller scores, repeated observations and floor-clamped accumulation do not establish
+//! that property or an anytime false-alarm guarantee.
+
+pub mod retained;
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::fmt;
@@ -473,6 +460,14 @@ impl SupervisorReport {
 
         object(&[
             ("schema", string(self.schema)),
+            ("observation_basis", string("caller_supplied_simulation")),
+            ("source_custody_verified", boolean(false)),
+            ("effects_authorized", boolean(false)),
+            ("anytime_bound_verified", boolean(false)),
+            (
+                "statistical_bound_assumption",
+                string("Ville bounds require a valid test-supermartingale; caller scores, repeated observations and floor-clamped accumulation do not establish that property"),
+            ),
             ("site_lineage", string(&self.site_lineage)),
             ("hypothesis_id", string(&self.hypothesis_id)),
             (
@@ -517,7 +512,10 @@ impl SupervisorReport {
     }
 }
 
-/// Executes the bounded multi-camera supervisor loop against `deployment`.
+/// Executes the bounded legacy caller-score simulation against the deployment anchor.
+///
+/// Source identifiers and supplied detector scores are not reopened or custody-verified.
+/// Numeric Ville fields remain conditional formulas, not a qualified anytime guarantee.
 ///
 /// # Errors
 ///

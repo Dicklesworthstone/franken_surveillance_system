@@ -685,7 +685,14 @@
   "crates/fss-reference/src/source.rs": "authority",
   "crates/fss-reference/src/source/atomic_tests.rs": "support",
   "crates/fss-reference/src/tests.rs": "support",
-  "crates/fss-reference/src/time_tolerance.rs": "authority"
+  "crates/fss-reference/src/time_tolerance.rs": "authority",
+  "crates/fss-object/src/spool/read_budget.rs": "support",
+  "crates/fss-cli/src/supervisor/retained.rs": "cognition",
+  "crates/fss-cli/src/supervisor/retained/input.rs": "support",
+  "crates/fss-cli/src/supervisor/retained/render.rs": "cognition",
+  "crates/fss-cli/src/supervisor/retained/clock.rs": "support",
+  "crates/fss-cli/src/supervisor/retained/budget.rs": "support",
+  "crates/fss-cli/src/bin/fss-event/supervise/retained.rs": "support"
  },
  "types": {
   "AlertEffectRecord": {
@@ -1015,6 +1022,36 @@
    "file": "crates/fss-core/src/region.rs",
    "plane": "authority",
    "description": "Topology node specification"
+  },
+  "RetainedSupervisorPlan": {
+   "file": "crates/fss-cli/src/supervisor/retained.rs",
+   "plane": "cognition",
+   "description": "Privately validated exact-source read-only detector-class advice plan; no runtime or effect authority"
+  },
+  "RetainedSupervisorObservation": {
+   "file": "crates/fss-cli/src/supervisor/retained.rs",
+   "plane": "cognition",
+   "description": "Verified original native detector row and clock provenance linked to calibrated or explicitly uncalibrated class advice"
+  },
+  "RetainedSupervisorWindowReport": {
+   "file": "crates/fss-cli/src/supervisor/retained.rs",
+   "plane": "cognition",
+   "description": "Cumulative unique-observation fusion query and full derived outcome, with missing-camera and repeated-selection accounting"
+  },
+  "RetainedSupervisorReport": {
+   "file": "crates/fss-cli/src/supervisor/retained.rs",
+   "plane": "cognition",
+   "description": "Complete source-backed advice bounded by current durable history, report capacity and a nonrefillable read allowance"
+  },
+  "RetainedSupervisorError": {
+   "file": "crates/fss-cli/src/supervisor/retained.rs",
+   "plane": "support",
+   "description": "Typed retained-supervisor refusal preserving source privacy/deletion and shared read-budget identities"
+  },
+  "SpoolReadBudgetUsage": {
+   "file": "crates/fss-object/src/spool/read_budget.rs",
+   "plane": "support",
+   "description": "Measured admitted stored-object read attempts and envelope reservations; no coverage, custody lease or effect authority"
   }
  }
 }

@@ -692,8 +692,14 @@ pub(crate) fn refuse_deleted(
     if !crate::deletion::has_records(deployment.ledger().batches()) {
         return Ok(());
     }
-    let index = crate::deletion::DeletionIndex::read(deployment)
-        .map_err(|error| invalid(&format!("deletion record unreadable: {error}")))?;
+    let index = crate::deletion::DeletionIndex::read(deployment).map_err(|error| match error {
+        // Keep aggregate read admission machine-readable across the deletion guard.
+        // Missing or corrupt deletion authority still uses the existing fail-closed refusal.
+        crate::deletion::DeletionError::Spool(
+            error @ fss_object::SpoolError::ReadBudgetExceeded { .. },
+        ) => FileIngestError::Spool(error),
+        other => invalid(&format!("deletion record unreadable: {other}")),
+    })?;
     match index.import(import_identity) {
         Some(entry) => Err(FileIngestError::EvidenceDeleted {
             import_identity,

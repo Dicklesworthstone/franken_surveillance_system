@@ -622,7 +622,7 @@ impl DeploymentHistory {
     }
 
     /// Exact source namespace offered to an adjacent-replay caller's I/O authority.
-    pub(crate) fn replay_objects_root(&self) -> &Path {
+    pub fn replay_objects_root(&self) -> &Path {
         &self.objects
     }
 

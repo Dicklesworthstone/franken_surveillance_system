@@ -24,11 +24,12 @@ mod corroboration;
 mod dwell;
 mod guarded;
 mod input;
-mod render;
+pub(crate) mod render;
 mod streaming;
 pub use corroboration::MAX_LONG_CORROBORATION_CANDIDATES;
 pub use dwell::MAX_LONG_DWELL_CANDIDATES;
 pub use input::MAX_PROFILE_BYTES;
+pub(crate) use input::calibration as parse_score_calibration;
 pub use streaming::MAX_LONG_CANDIDATES;
 
 /// Maximum short-window advice records. Whole-recording watch uses MAX_LONG_CANDIDATES;
@@ -603,34 +604,13 @@ fn fuse_input(
                     if detection.label != label {
                         return Err(EventFusionError::Evidence);
                     }
-                    let ppm = score_interval(detection.score)?;
+                    let (ppm, calibration) = calibrated_score(
+                        detection.score.to_bits(),
+                        binding.map(|b| &b.calibration),
+                    )?;
                     link.score_bits = Some(detection.score.to_bits());
                     link.score_ppm = Some(ppm);
-                    let calibration = match binding {
-                        Some(b) => {
-                            let lo = b
-                                .calibration
-                                .bin(ppm[0])
-                                .ok_or(EventFusionError::Evidence)?
-                                .llr;
-                            let hi = b
-                                .calibration
-                                .bin(ppm[1])
-                                .ok_or(EventFusionError::Evidence)?
-                                .llr;
-                            link.calibration = Some(b.calibration.digest);
-                            Calibration::Calibrated {
-                                generation: format!(
-                                    "{}@{}",
-                                    b.calibration.generation, b.calibration.digest
-                                ),
-                                llr: lo.hull(hi),
-                            }
-                        }
-                        None => Calibration::Uncalibrated {
-                            reason: "no calibration bound to this retained sensor".to_owned(),
-                        },
-                    };
+                    link.calibration = binding.map(|b| b.calibration.digest);
                     (calibration, Observability::Observed)
                 }
                 EvidenceOutcome::Associated { .. } | EvidenceOutcome::NoAssociation { .. } => (
@@ -712,6 +692,29 @@ fn fuse_input(
         scores,
         binding_digest: digest(e)?,
     })
+}
+
+/// Preserve native F32 score bits and conservatively cover every touched calibration bin.
+/// Both retained-event and live-cascade adapters use this one quantization contract.
+pub(crate) fn calibrated_score(
+    score_bits: u32,
+    calibration: Option<&ScoreCalibration>,
+) -> Result<([u32; 2], Calibration)> {
+    let ppm = score_interval(f32::from_bits(score_bits))?;
+    let calibrated = match calibration {
+        Some(c) => {
+            let lo = c.bin(ppm[0]).ok_or(EventFusionError::Evidence)?.llr;
+            let hi = c.bin(ppm[1]).ok_or(EventFusionError::Evidence)?.llr;
+            Calibration::Calibrated {
+                generation: format!("{}@{}", c.generation, c.digest),
+                llr: lo.hull(hi),
+            }
+        }
+        None => Calibration::Uncalibrated {
+            reason: "no calibration bound to this retained sensor".to_owned(),
+        },
+    };
+    Ok((ppm, calibrated))
 }
 
 fn score_interval(score: f32) -> Result<[u32; 2]> {

@@ -36,13 +36,15 @@ jobs:
         run: bash scripts/bootstrap_toolchain.sh
       - name: Verify owned runtime and recoverable effect transitions
         run: cargo +nightly-2026-08-31 test --no-fail-fast --locked --offline -p fss-runtime --all-targets --all-features
-      - name: Verify cold effect recovery and retained native activity
+      - name: Verify custody budgets, cold effects and retained native supervision
         if: success() || failure()
         run: |
           activity_exit=0
-          cargo +nightly-2026-08-31 test --locked --offline -p fss-object --test effect_journal_contract || activity_exit=1
+          cargo +nightly-2026-08-31 test --locked --offline -p fss-object --test effect_journal_contract --test spool_read_budget || activity_exit=1
           cargo +nightly-2026-08-31 test --locked --offline -p fss-reference --test recorded_activity_contract || activity_exit=1
           cargo +nightly-2026-08-31 test --locked --offline -p fss-cli --bin fss-infer --test recorded_activity_cli_contract --test evidence_activity_contract || activity_exit=1
+          cargo +nightly-2026-08-31 test --locked --offline -p fss-cli --lib supervisor::retained:: || activity_exit=1
+          cargo +nightly-2026-08-31 test --locked --offline -p fss-cli --test supervisor_retained_contract --test supervisor_e2e_contract --test query_surface_contract || activity_exit=1
           exit "$activity_exit"
       - name: Verify event replay admission and approved recovery rehearsal
         if: success() || failure()

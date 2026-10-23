@@ -1,6 +1,5 @@
 #![forbid(unsafe_code)]
-//! `fss-event supervise`: bounded multi-camera supervisor loop with anytime-valid sequential
-//! Ville e-process corroboration (`fss-becce` / `GOAL-003` / `NS-1`).
+//! Explicit retained native class advice and legacy caller-score simulation.
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::ffi::OsString;
@@ -19,10 +18,26 @@ use fss_core::{BudgetVector, ContentDigest, OperationId, PrincipalId};
 use fss_fusion::{EProcessConfig, ScoreCalibration};
 use fss_reference::{ReferenceDeployment, ReplayCx};
 
-const HELP: &str = "fss-event supervise --root DIR --site SITE --plan FILE [--principal ID] [--report-out FILE]\n\
-  Runs the bounded multi-camera supervisor loop (fss.supervisor_plan.v1 -> fss.supervisor_report.v1)\n\
-  with anytime-valid Ville e-process sequential milliban corroboration, explicit WorkBudget\n\
-  accounting, and cooperative request -> drain -> finalize cancellation.\n";
+#[path = "supervise/retained.rs"]
+mod retained;
+
+const HELP: &str = "fss-event supervise --root DIR --site SITE\n\
+  (--retained-plan FILE --retained-digest sha256:HEX | --plan FILE)\n\
+  [--principal ID] [--report-out FILE]\n\
+\n\
+  Retained mode reads a digest-pinned fss.retained_supervisor_plan.v1 from a regular file\n\
+  and reopens exact published package events from an existing deployment. Camera bindings\n\
+  pin native sensor, package, model, head contract and class. Each cumulative time window\n\
+  selects exact source capsules and detection rows; repeated selections add no evidence.\n\
+  Current privacy and deletion restrictions apply. Calibration is an explicit owner\n\
+  applicability assertion. No original media/model file or model execution is needed.\n\
+  Advice preserves shared failure domains and uncertainty. It establishes no coverage,\n\
+  class absence, physical identity, zone entry, anytime false-alarm guarantee or effect\n\
+  authorization. Retained mode never accepts caller-supplied detector scores.\n\
+\n\
+  --plan selects the legacy fss.supervisor_plan.v1 caller-score simulation. Its\n\
+  fss.supervisor_report.v1 explicitly labels unverified source custody and statistical\n\
+  assumptions. Its numeric Ville fields do not establish an anytime false-alarm guarantee.\n";
 
 fn field<'a>(map: &'a BTreeMap<String, Value>, key: &str) -> Result<&'a Value, String> {
     map.get(key)
@@ -281,6 +296,10 @@ pub(super) fn main(args: &[OsString]) -> ExitCode {
         let _ = io::stdout().lock().write_all(HELP.as_bytes());
         return ExitCode::from(0);
     }
+    if args.len() > 32 || args.iter().any(|arg| arg.as_encoded_bytes().len() > 4096) {
+        eprintln!("{ERR_CLI_MALFORMED_VALUE}: supervise argument bounds");
+        return ExitCode::from(ExitIdentity::MALFORMED_VALUE.code);
+    }
     let mut values: BTreeMap<String, OsString> = BTreeMap::new();
     let mut i = 0;
     while i < args.len() {
@@ -290,7 +309,13 @@ pub(super) fn main(args: &[OsString]) -> ExitCode {
         };
         if !matches!(
             flag,
-            "--root" | "--site" | "--principal" | "--plan" | "--report-out"
+            "--root"
+                | "--site"
+                | "--principal"
+                | "--plan"
+                | "--retained-plan"
+                | "--retained-digest"
+                | "--report-out"
         ) {
             eprintln!("{ERR_CLI_MALFORMED_VALUE}: unknown supervise option {flag}");
             return ExitCode::from(ExitIdentity::MALFORMED_VALUE.code);
@@ -304,6 +329,10 @@ pub(super) fn main(args: &[OsString]) -> ExitCode {
             return ExitCode::from(ExitIdentity::MALFORMED_VALUE.code);
         }
         i += 2;
+    }
+
+    if values.contains_key("--retained-plan") || values.contains_key("--retained-digest") {
+        return retained::main(&values);
     }
 
     let Some(root_os) = values.get("--root") else {

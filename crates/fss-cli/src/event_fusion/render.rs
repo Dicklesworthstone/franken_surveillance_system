@@ -65,7 +65,7 @@ fn observability(o: &Observability) -> String {
         Observability::NotObservable { reason } => object(&[("not_observable", text(reason))]),
     }
 }
-fn query(q: &FusionQuery) -> String {
+pub(crate) fn query(q: &FusionQuery) -> String {
     let p = &q.policy;
     let s = q.severity;
     object(&[
@@ -144,7 +144,7 @@ fn query(q: &FusionQuery) -> String {
         ("probes", "[]".to_owned()),
     ])
 }
-fn outcome(o: &FusionOutcome) -> String {
+pub(crate) fn outcome(o: &FusionOutcome) -> String {
     object(&[
         ("schema", text("fss.fusion_outcome.v1")),
         ("implementation", text(fss_fusion::IMPLEMENTATION_ID)),
@@ -227,7 +227,7 @@ fn scores(rows: &[ScoreLink]) -> String {
         ])
     }))
 }
-pub(super) fn count_calibration(c: &ScoreCalibration) -> String {
+pub(crate) fn count_calibration(c: &ScoreCalibration) -> String {
     object(&[
         ("schema", text("fss.score_calibration.v1")),
         ("generation", text(&c.generation)),

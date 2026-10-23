@@ -276,6 +276,18 @@ fn ns1_multi_camera_supervisor_corroborates_under_1500ms_and_cli_matches() -> Te
         String::from_utf8_lossy(&cli_out.stderr)
     );
     let parsed_cli = parse(String::from_utf8(cli_out.stdout)?.trim_end())?;
+    let labels = parsed_cli.object().ok_or("report object")?;
+    assert_eq!(
+        labels.get("observation_basis").and_then(|value| value.text()),
+        Some("caller_supplied_simulation")
+    );
+    for key in [
+        "source_custody_verified",
+        "effects_authorized",
+        "anytime_bound_verified",
+    ] {
+        assert_eq!(labels.get(key).and_then(|value| value.boolean()), Some(false));
+    }
     let cli_receipt = parsed_cli
         .object()
         .and_then(|o| o.get("receipt_digest"))

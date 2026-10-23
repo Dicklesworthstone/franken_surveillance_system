@@ -6,6 +6,12 @@ operation states rather than generic errors.
 
 | ID | Meaning | Retry policy |
 |---|---|---|
+| `ERR-SUPERVISOR-RETAINED-PLAN-001` | retained supervisor plan has malformed identities, duplicate native cameras/rows, inconsistent calibration counts or generations, unused event pins, or invalid cumulative windows | correct and repin the complete plan before any deployment read |
+| `ERR-SUPERVISOR-RETAINED-LIMIT-001` | retained supervisor exhausted an admitted source-object byte/read allowance, bounded plan dimension, canonical encoding, or complete report ceiling; nested custody read-budget refusals preserve this identity | stop this run; do not refill an already tightened publisher handle or emit a partial successful report |
+| `ERR-SUPERVISOR-RETAINED-SELECTION-001` | selected retained event, native sensor, package/model/head/class, assigned row, complete capture interval, or source clock basis does not match the plan | inspect verified retained source selectors; correct the exact pins or refuse unmapped clock coordinates |
+| `ERR-SUPERVISOR-STALE-ANCHOR-001` | supervisor expected authority differs from current authority, or a retained run's fresh durable ledger/effect/source namespace observations disagree | reopen current authority and explicitly repin the plan; never silently rebase advice |
+| `ERR-SUPERVISOR-RETAINED-HISTORY-001` | retained supervisor cannot read and verify the admitted durable history prefix | repair or admit sufficient bounded history before retry; no successful advice |
+| `ERR-SUPERVISOR-RETAINED-CANCELLED-001` | retained supervisor owner checkpoint observed cancellation or deadline expiry | drain and finalize the owned region; no partial successful advice or effects |
 | `ERR-AUTH-DENIED-001` | principal lacks exact capability | do not retry without new authority |
 | `ERR-SECRET-UNAVAILABLE-001` | secret handle cannot be resolved | repair/rotate; bounded retry if provider transient |
 | `ERR-DEVICE-UNSUPPORTED-001` | exact product/firmware/app tuple not certified | fail closed or explicit import-only mode |
