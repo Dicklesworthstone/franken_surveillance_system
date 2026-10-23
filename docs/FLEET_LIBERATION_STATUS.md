@@ -233,3 +233,25 @@ with a null second array, `cmd 2 = ecode`. Calling `cmd 1` *immediately* after l
 null, before the check can report, which moves the gate off the status flag and onto the init key:
 the appSecret. `tecrkcehc_ext` and `t_s_daily.bmp` are both runtime-supplied; four placeholder
 formats (BMP copy, random bytes, hex digest, JSON digest) leave the status at -1 or bail earlier.
+
+Caught while verifying: the file staged *as* the negative had been overwritten by a capsule (2.3 MB
+under a name whose advertised MD5 belonged to the 20-byte fixture). Restored, both digests re-checked
+against the values that are published, and `FINISH-WYZE.md` now opens with a four-command pre-flight.
+
+The armed delta itself was also stale: `desired` still pointed at a **port-less** URL (443, where the
+IPv6-only listener used to be) with the wrong MD5 (`6a56ddd8…`, the capsule that had overwritten the
+negative). Both shadows are now re-armed with `https://ota.frankenfs.com:8443/…/4.52.17.30.tar` and
+`6909e9ca…`, verified by reading `desired` back.
+
+Port 443 cannot be reused even as root: another daemon already listens there and answers `404` for
+our paths, so the operational port stays 8443 and every armed URL carries it. Also probed for the SDK
+credentials one more time — `/v1/app/getInfo` is a *region* probe and returns only `{"region":"us"}`
+on both `api.aosulife.com` and `api-us.aosulife.com`; the `clientId` is not a literal anywhere in the
+APK (plain, UTF-16 or in `resources.arsc`), which fits it and the secret being handed to the app at
+runtime.
+
+`genKey("a","b","c")` returns `3ba87e9e0c9bf5b6` **without any init and with the check at -1**, so the
+library is healthy and the gate is precisely `cmd 0`'s key material — not a general failure of the
+harness, and not the anti-tamper flag. `computeDigest` and `genKey` both answer; `cmd 1` is the only
+entry that returns null. That narrows the remaining work to a single value, and `.4.24`'s shadow was
+re-read to confirm the corrected negative URL/MD5 is what it actually holds.
