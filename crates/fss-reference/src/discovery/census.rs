@@ -186,6 +186,34 @@ pub fn parse_arp_a(output: &str) -> Vec<ArpRow> {
     rows
 }
 
+/// Parses the `netstat -rn` routing table, which on macOS also carries cached
+/// neighbour entries as `ip  mac  UHLWI  iface  expire`.
+///
+/// `arp -a` is the canonical source but returns an empty table when spawned
+/// from some sandboxed processes (observed on this host: status 0, 0 bytes),
+/// so the routing table is a second, independent read of the same state.
+pub fn parse_netstat_rn(output: &str) -> Vec<ArpRow> {
+    let mut rows = Vec::new();
+    for line in output.lines() {
+        let mut fields = line.split_whitespace();
+        let (Some(ip), Some(mac), Some(flags), Some(iface)) =
+            (fields.next(), fields.next(), fields.next(), fields.next())
+        else {
+            continue;
+        };
+        let Ok(ip) = ip.parse::<Ipv4Addr>() else { continue };
+        if !flags.contains('H') {
+            continue;
+        }
+        let Some(mac) = normalize_mac(mac) else { continue };
+        if mac == "ff:ff:ff:ff:ff:ff" || mac.starts_with("01:00:5e") {
+            continue;
+        }
+        rows.push(ArpRow { ip, mac, iface: iface.to_owned() });
+    }
+    rows
+}
+
 /// Lowercase-colon normalization; `None` for non-MAC tokens.
 fn normalize_mac(raw: &str) -> Option<String> {
     let parts: Vec<&str> = raw.split(':').collect();
@@ -415,8 +443,36 @@ pub fn run_census(
     if cancel.load(Ordering::Relaxed) {
         return Ok(plan.assemble_report(Vec::new(), &responders, &BTreeMap::new(), oui));
     }
-    let arp_output = arp_a();
-    let rows = plan.scoped_neighbors(parse_arp_a(&arp_output));
+    // A ping reply can arrive before the kernel has committed the neighbour
+    // entry, and the cache is read once per sweep otherwise: re-read briefly
+    // until every responder we can resolve has a MAC, so the vendor lookup is
+    // not silently starved (macOS also expires entries under sweep load).
+    let mut rows = Vec::new();
+    let debug = std::env::var_os("FSS_DISCOVER_DEBUG").is_some();
+    for attempt in 0..4 {
+        let mut raw = parse_arp_a(&arp_a());
+        raw.extend(parse_netstat_rn(&netstat_rn()));
+        if debug {
+            eprintln!("DEBUG raw={} first={:?}", raw.len(), raw.first());
+        }
+        rows = plan.scoped_neighbors(raw);
+        let resolved = rows.len();
+        if resolved >= responders.len() || attempt == 3 {
+            break;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(150));
+    }
+    if debug {
+        let n = netstat_rn();
+        eprintln!(
+            "DEBUG responders={} rows={} arp_len={} netstat_len={} sample={:?}",
+            responders.len(),
+            rows.len(),
+            arp_a().len(),
+            n.len(),
+            n.lines().filter(|l| l.contains("UHLW")).take(2).collect::<Vec<_>>()
+        );
+    }
     let targets: Vec<Ipv4Addr> = rows
         .iter()
         .map(|r| r.ip)
@@ -498,11 +554,44 @@ fn ping_sweep(ips: &[Ipv4Addr], workers: usize, cancel: &AtomicBool) -> Vec<Ipv4
 
 /// Runs `arp -a` and returns its stdout.
 fn arp_a() -> String {
-    std::process::Command::new("arp")
-        .arg("-a")
-        .output()
-        .map(|o| String::from_utf8_lossy(&o.stdout).into_owned())
-        .unwrap_or_default()
+    // `arp` lives in /usr/sbin on macOS, which is absent from the PATH of a
+    // GUI-spawned process; falling back by absolute path keeps the vendor
+    // lookup from silently starving (every MAC empty, every row Unknown).
+    for program in ["arp", "/usr/sbin/arp", "/sbin/arp"] {
+        match std::process::Command::new(program).arg("-a").output() {
+            Ok(o) => {
+                if std::env::var_os("FSS_DISCOVER_DEBUG").is_some() {
+                    eprintln!(
+                        "DEBUG arp prog={program} status={:?} out={} err={:?}",
+                        o.status.code(),
+                        o.stdout.len(),
+                        String::from_utf8_lossy(&o.stderr)
+                    );
+                }
+                if o.status.success() {
+                    return String::from_utf8_lossy(&o.stdout).into_owned();
+                }
+            }
+            Err(e) => {
+                if std::env::var_os("FSS_DISCOVER_DEBUG").is_some() {
+                    eprintln!("DEBUG arp prog={program} spawn_err={e:?}");
+                }
+            }
+        }
+    }
+    String::new()
+}
+
+/// Neighbour view from the routing table (`arp` may be unavailable in sandboxes).
+fn netstat_rn() -> String {
+    for program in ["/usr/sbin/netstat", "/usr/bin/netstat", "netstat"] {
+        if let Ok(o) = std::process::Command::new(program).arg("-rn").output() {
+            if o.status.success() {
+                return String::from_utf8_lossy(&o.stdout).into_owned();
+            }
+        }
+    }
+    String::new()
 }
 
 /// TCP connect-only scan (drop closes; cancellation skips remaining targets).
@@ -562,6 +651,17 @@ fn tcp_connect_scan(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn netstat_rows_become_neighbors() {
+        let out = "192.168.4.23       80:48:2c:52:59:5   UHLWI   en1   1197\n\
+                   192.168.4.1        aa:bb:cc:dd:ee:ff   UHLWI   en0   12\n\
+                   default            192.168.1.1         UGScg   en0\n";
+        let rows = parse_netstat_rn(out);
+        assert_eq!(rows.len(), 2, "{rows:?}");
+        assert_eq!(rows[0].mac, "80:48:2c:52:59:05");
+        assert_eq!(rows[0].iface, "en1");
+    }
 
     #[test]
     fn snapshot_digest_pinned() {

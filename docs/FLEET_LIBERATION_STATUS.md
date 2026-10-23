@@ -132,3 +132,28 @@ Concrete progress from the same push:
 
 So AOSU is exactly one integer away from an authenticated session, and nothing else on the network
 substitutes for it.
+
+## 03:2x — AOSU cloud session obtained (login fully reversed from the 5.10.12 APK)
+
+The `pid` blocker is solved and the login is no longer opaque. Everything below was read out of
+`Aosu_5.10.12_APKPure.xapk`, not guessed:
+
+| Element | Where it comes from |
+|---|---|
+| `Gz-Pid` must be **`glazero`** | `AppConstant.APP_CHANNEL_PID` → `AppChannelPlatform.OooO0OO()` → `AppChannel.OooO0oO()` |
+| login is **form-encoded** `POST /v1/user/login` with `region,countryCode,countryAbbr,type=1,email,password,pwType=2` | `AccountCenter.OooOooO` → `AccountWebService.OooO0oO` |
+| `password` = base64(AES-128-CBC/PKCS7), **key = iv = `PZR1ryiUhJloWoRd`** | `SecurityCore.nativeEncryptP` → `libglazero-security.so:0x18bc4`, passed as both key and IV to `aes_encrypt_pkcs7` |
+| `Gz-Sign = md5("uuid:<u>:t:<t>:&sM&GGlUCSXjZqQNxmkdU^scUs**0R@C")` | `SignInterceptor` |
+| app UA + `uuid`/`t` query params are mandatory | `CommonInterceptor`; a bare GET 404s |
+
+Verified live: `errno 0 成功`, a session, and a full inventory — `Rear Door Cam`,
+`Solarium Cam`, `Front Door Cam`, `Driveway Cam`, `HomeBase` (`H2E`, sn `H2E2DA110000807`).
+Client: `deliverables/scripts/aosu_cloud.py` (`login` / `devices` / `call`), smoke-tested.
+
+**`local_key` is still not in this API.** Checked and negative: `getList` (incl. `{"detail":1}`),
+`getInfoBySn`, `getModelInfoBySn`, `getInfoByCode`, `capability` (base and child sn), `bind/getToken`
+(returns a pairing token, not a key), `sts/getMultiMqttInfo`. It comes from the Tuya
+`a1-us.iotbing.com/api.json` gateway, which needs its own sign; the captured iotbing call still
+replays successfully, so that session is alive, but generating a *new* action needs the signing
+routine inside `libthing_security.so`. That is the one remaining step before `0x1A/0x1B/0x1C` can be
+sent.

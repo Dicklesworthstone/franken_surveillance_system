@@ -213,6 +213,17 @@ edit changes that, and it is unproven twice over: the build may be `CONFIG_ENV_I
 - `CLIENT_LIMT 3` and `ALLOW_NO_KEY_NUM 3` allow three pre-session-key frames per connection, so
   negotiation must be single-shot; exceeding either faults the session (H-003:110).
 
+### 4f. Harness quirk that costs an hour if unknown
+
+`fss-discover` resolves vendors from the ARP table. In this agent harness, a process spawned by a
+built binary sees an **empty** neighbour table: `arp -an` returns `status 0` with zero bytes and
+`netstat -rn` shows only interface routes (no per-host `UHLW` entries), while the same commands typed
+into the shell list ~290 entries. Both are spawned identically, so it is a sandbox view difference,
+not a bug in the code. Consequence: live `fss-discover` runs here classify every row `Unknown`; on a
+normal terminal the same binary classifies Wyze as `Tutk` and Tapo as `EmbeddedWeb` off the OUI.
+The census now reads both `arp -a` and `netstat -rn` and falls back by absolute path, so it is
+robust to either source being unavailable — it cannot be robust to both being empty.
+
 ## 5. Repository defects found on the way
 
 - **Fixed:** `fss-tuya` framed `0x6699` with a 20-byte header and a 16-byte AAD. TuyaOS
