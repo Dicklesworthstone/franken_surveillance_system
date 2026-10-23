@@ -22,7 +22,7 @@ this table puts the two families whose chains are already reached first.
 |---|---|---|---|
 | **Yi IPC** | **mechanism only, never fired** — CVE-2018-3910 SSID command injection into `popen("/home/app/cloudAPI … -ssid \"%s\"")` → `sh -c` | one app re-provision onto an attacker AP; no card, no cable | H-006 Y8, Route A (:23-31, :126-152); proving test U1 |
 | **AOSU HomeBase** | **open question, and the best remaining candidate** — `FRM_LAN_OTA_START/DATA/FINISH (0x1A/0x1B/0x1C)` is a firmware push *inside* the authenticated LAN session: no cloud, no URL, and (derived, not confirmed) no TLS | whether the LAN frame carries `hmac` (needs `activate.seckey`) or only `md5`; plus one pairing-mode press for `local_key` | pack H-003 §LAN OTA |
-| **Wyze Cam v4** | **install-time root only** — OTA fetch is **plain HTTP 80**, MD5-only, and ends in `sh upgraderun.sh` as root, with a **public default AES key** | persistence: **no** script route — `/system` is dm-verity'd, `/configs` is writable but nothing boots from it, and the rootfs has no `fw_setenv` | pack H-002 §3.3/§4.5, H-002c |
+| **Wyze Cam v4** | **fetch proven end-to-end; decrypt/install unproven** — OTA fetch is **plain HTTP 80**, MD5-only, and ends in `sh upgraderun.sh` as root, with a **public default AES key** | persistence: **no** script route — `/system` is dm-verity'd, `/configs` is writable but nothing boots from it, and the rootfs has no `fw_setenv` | pack H-002 §3.3/§4.5, H-002c |
 | **TP-Link Tapo** | **oracle only on this unit** — it is a **C460 v1.0, fw 1.2.2 Build 260416**, so it is *out of scope for all three new CVEs* (C210 V3.6 / C320WS V2). CVE-2026-102369 applies only to C200 hw v5 / C120 v1. | the admin password. 105814 refuted on this build (34/34 shapes denied); 105810 is built and needs a session; all of it is behind the `stok` gate | H-005b; H-005; H-008 §0/§3a, F-5, F-8; H-010-011 |
 | Canary | **no LAN listener** (0/65535 TCP, 0 answering UDP) — but the cloud side is fully interceptable: ARP/DNS/TCP succeed, SNI leaks, TLS aborts `unknown-CA` | trust anchor (cert for `*.canaryis.com`), not reachability | `EV-pack-H-010-011` |
 | Owlet | **blocked — not reachable**; 2 032-host discovery + 1 343-port sweep + ARP diff all negative, and no Owlet OUI exists | device presence | `EV-pack-H-010-011` |
@@ -98,6 +98,14 @@ verify** (`sha256,rsa2048:kernel-dev+`), and `/system` is **dm-verity'd**: `fs_m
 against `/verity_key` in the ramdisk and on failure returns *without mounting*, so S18 exits 0, `/configs`
 never mounts and no daemon starts — a camera that boots, joins nothing and does nothing. A modified
 squashfs without a matching verity blob is a one-way trip, and the root hash is signed.
+
+**Where the chain stands (measured).** TLS accept at the origin, then `GET /firmware.bin` -> `200` forty
+seconds after a single delta, with no TUTK session held: the delivery path works. Decrypt and install
+could not be observed (no console), and the probe produced no reboot and no callback, so the
+`upgraderun.sh` step is unproven. Two behaviours constrain the next run: the camera first retries its
+*previous* failed URL (the retry queue outlives the delta) and then stops applying new deltas — roughly
+one delta per wake, so drive it by repointing an already-fetched path rather than publishing more.
+`md5` in the delta is the **ciphertext** digest, the value `assis` logs before its call.
 
 **There is no script persistence.** `/configs` is rw and exec but nothing boots from it; its only
 consumers are `.product_config` (read-only), `upGradeFlag` (deleted at boot) and `.debug_flag` (which

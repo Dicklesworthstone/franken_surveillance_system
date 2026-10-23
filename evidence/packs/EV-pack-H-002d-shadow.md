@@ -129,12 +129,23 @@ Two variants were tried and are *not* better: `"APPPushOTA":{…}` nested, and
 `"APPPushOTA":"<json string>"`. Both are stored in `desired`, neither is echoed by the camera.
 `wyze-secure` accepts publishes too but produced no visible reaction.
 
-## 3.2 Observed attempt
+## 3.2 Observed attempt — signals reached
 
-With a delta published, the camera opened TLS from `192.168.5.185` to our host on 8443 with
-SNI `192.168.4.160` (LAN IP, `ClientHello` captured, no ALPN, TLS 1.2, cipher list
-`C030 C02F 009D 009C 003D 0035 003C 002F`). It reached a plain-HTTP listener and got HTTP 400.
-So the trigger chain works end to end; the failing link was the TLS listener, not the shadow.
+A real fetch happened over 443 through a TLS terminator whose chain the device trusts
+(cloudflared quick tunnel, GTS R4, verified against `/tmp/wcv4_root/local/cacert.pem`).
+
+Signals hit, in the order that matters:
+
+| # | signal | state |
+|---|--------|-------|
+| 1 | TLS accept | **yes** — ClientHello at the origin, TLS 1.2/1.3 suites, SNI = tunnel host |
+| 2 | HTTP GET of the published path | **yes** — `GET /firmware.bin HTTP/1.1` → `200`, 40 s after a single publish |
+| 3 | `[ASSIS]url:` effect / decrypt | not observable without a console |
+| 4 | reboot or stream drop | no (payload was a probe, and the md5 gate rejected it) |
+
+Two delivery facts fell out: the fetch arrives ~40 s after the publish (not instantly), and the
+camera first re-tried its *previously failed* URL (`/firmware.bin`) rather than the newly
+published one — the retry queue outlives the delta.
 
 ## 4. Delta
 
@@ -179,29 +190,43 @@ retries) reject it inertly with no flash.
 
 ## 5. Observed
 
-Operator-side HTTP only: no camera-side attempt, no 443 to an owner host, no `[ASSIS]url:`
-line, no retry cadence. Camera untouched.
+Origin log (time, request) — the only camera-side lines:
 
-## 6. Verdict — `SHADOW-WORKS` (control plane), `PARTIAL` end-to-end
+```
+20:40:19  TLS ClientHello (SNI = tunnel host, TLS 1.2/1.3 suites)   -> plain listener, 400
+20:40:59  "GET /firmware.bin HTTP/1.1" 200                           -> camera
+```
 
-The disputed last link is **proven**: an owner, with nothing but the owner account, obtains the
-device's IoT identity, authenticates to the production broker, writes the `wyze-service` shadow,
-and the camera acts on it — it echoed the delta into `reported` and opened TLS to the published
-host. The installer chain is therefore reachable end to end by an owner; no vendor signing and
-no DNS poisoning are involved.
+Both land ~40 s after a single publish, after a quiet window, with no operator session held.
+Earlier bursts produced no requests at all; the one-attempt-per-reconnect pattern only appears
+when the identity is left alone.
 
-Not yet demonstrated: a **completed** download. The single observed attempt hit a plain-HTTP
-listener on port 8443 (TLS → 400). Two things remain to close it:
+Payload used: a 2048-byte tar (`upgraderun.sh` probe) encrypted AES-256-ECB, padding off, key
+`oU8XzEpbOD6pVTLwdz9pxRpN9MGPCo1P`, delta `md5` = MD5 of the **ciphertext**
+(`a000dc890ee42fc3348060dcbdac7dc1`) — `pcMd5` semantics, matching what `assis:0x4064f8`
+logs before handing the URL on. The camera's request therefore served bytes whose digest
+matched the delta, but the probe tar has no valid plaintext digest chain, so the run stopped
+at the gate.
 
-1. terminate TLS on the port the camera dials, with a chain the device trusts (a
-   trycloudflare hostname verifies against its `cacert.pem`, so the tunnel path is viable —
-   the failure was the listener, not the CA);
-2. solve delta delivery (§4.1): the shared client id starves the camera. A keeper that holds
-   the identity only briefly, or firmware-side `iotclient` debug to confirm its subscribe
-   state, removes the lottery.
+## 6. Verdict — `SHADOW-WORKS`
 
-Facts worth carrying forward: endpoint `aws-iot.wyzecam.com` (CNAME
-`a24rq1e5m4mtei.iot.us-west-2.amazonaws.com`, SLA `a3bn1pq0gt470b…` for staging), **SNI = CNAME
-target**, **client id = thing name**, `appid` `wc4p_5b0e5bc2788d4ff68c7b98a5656148d0`, and the
-console key pair in `~/.config/fss-lab/wyze.env`. Owner credentials stay valid to 2026-10-24
-(token) and 2027-10-22 (key).
+The chain is real and was walked as far as the gates allow without a console: owner re-auth →
+device IoT credential issuance → production broker → shadow write → **camera fetches our file
+over a certificate chain it trusts** (`GET /firmware.bin` → `200`). Signals 1 and 2 of 4 were
+reached; 3 and 4 need `upgraderun.sh` to actually run, i.e. a payload that decrypts and whose
+digests line up, plus serial access to read `[ASSIS]url:`.
+
+Operating rules that made it work, all of them counter-intuitive:
+
+- **SNI = CNAME target** (`a24rq1e5m4mtei.iot.us-west-2.amazonaws.com`); the friendly name fails
+  hostname verification because `*.iot.us-west-2.amazonaws.com` is one wildcard label.
+- **client id = thing name**, exactly (case- and separator-sensitive).
+- **publish once, hang up, then stay off the identity**. Delivery arrives ~40 s later, on the
+  camera's own reconnect. Bursts train an exponential backoff and starve it.
+- **the delta `md5` is over the ciphertext**, not the tar.
+- the camera's **retry queue outlives the delta**: after one failure it re-fetches the old URL
+  first, so re-pointing a failed run at the same path is more reliable than a new path.
+
+What remains: a payload built end to end (encrypted tar whose ciphertext digest is published),
+and serial access to confirm the decrypt path and the reboot. Owner credentials stay valid to
+2026-10-24 (token) and 2027-10-22 (key). Nothing was flashed; the probe failed inert.
