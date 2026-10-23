@@ -343,3 +343,19 @@ armed negative to both cameras so a power cycle never finds a stale delta; it mu
 publishing the capsule or it will revert the shadow. Yi re-tested while responsive to ICMP: TUTK on
 32761, 10001 and 9999 all silent, so the userland really is down and a power cycle is the only remote
 lever there too.
+
+Yi after the owner's power cycle: answers ICMP at 12-16 ms (awake, no longer in power-save) but TCP
+80/554/23 stay closed, WS-Discovery is silent again and TUTK on 32761/10001/9999 is silent. So the
+unit is up with **no userland services**, i.e. the pre-provisioning state — which is exactly the state
+U1 needs. `deliverables/scripts/yi_u1.py serve` is listening on `192.168.4.160:4444` (log
+`/tmp/yi_listener.log`) and now survives a non-tty stdin by logging device output only. CoreWLAN SSID
+enumeration was attempted to confirm its setup AP but TCC reports `denied` for the CLI binary, so the
+AP name is unverified; joining it is not required for U1, which works through the app's Wi-Fi field.
+
+Tapo masks since then: owner first name/surname and common theme words (`Aardvark`, `Franken…`,
+`Dicklesworth`) with 0-9999 and symbol/year tails — another ~150 k, all miss. Roughly 24.2 M
+candidates total. The verifier is exhausted for name/word families; the value is random or
+non-obvious.
+
+`docs/exploit/yi-u1.md` now carries the whole U1 procedure, the observation table that distinguishes a
+working injection from a stripped metacharacter, and the post-shell order (`id` first, never assumed).
