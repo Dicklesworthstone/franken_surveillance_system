@@ -113,6 +113,12 @@ frame is 1264 bytes, channel `0x05`, type `0x04`, total `1264` at `[12:14]`, dec
 `[16:18]`, `A`-filled, sent as raw appdata; it rebooted one unit twice and never moved another in 14
 attempts, so treat it as a probabilistic wake and not a control.
 
+The shadow `get` topic is not usable from our side: a publish to `.../shadow/name/wyze-service/get`
+closes the connection even though the SUBACK to `get/accepted` was granted, so `reported` cannot be read
+back — which leaves "consumed but not acted on" and "never delivered" indistinguishable for a replay.
+Subscribing to the delta topic closes the link the same way. The one reliable shape is CONNECT →
+publish update → read PUBACK → hang up.
+
 A replay 40 min later could not raise a second fetch: five publishes across three paths (including a
 fresh path with a matching digest), eight crash-frame reboot attempts on that unit, and a four-minute
 quiet window all produced nothing, while the unit stayed at 5–30 ms ping and served streams. So the
