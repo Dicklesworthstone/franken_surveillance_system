@@ -51,6 +51,8 @@ struct Options {
     k10000: Option<String>,
     ioctl: Option<u16>,
     payload: Option<Vec<u8>>,
+    rtsp: Option<(String, String)>,
+    rtsp_off: bool,
 }
 
 fn parse(args: &[OsString]) -> Result<Options, &'static str> {
@@ -72,6 +74,8 @@ fn parse(args: &[OsString]) -> Result<Options, &'static str> {
         k10000: None,
         ioctl: None,
         payload: None,
+        rtsp: None,
+        rtsp_off: false,
     };
     let mut i = 0;
     while i < args.len() {
@@ -131,6 +135,17 @@ fn parse(args: &[OsString]) -> Result<Options, &'static str> {
             }
             "--payload-file" => {
                 o.payload = Some(std::fs::read(need_value(i)?).map_err(|_| "read --payload-file")?);
+            }
+            "--rtsp-enable" => {
+                let v = need_value(i)?.to_str().ok_or("invalid --rtsp-enable")?;
+                let (u, p) = v.split_once(':').ok_or("--rtsp-enable wants user:pass")?;
+                if u.is_empty() || p.is_empty() || u.len() > 32 || p.len() > 32 {
+                    return Err("--rtsp-enable user/pass must be 1..32 chars");
+                }
+                o.rtsp = Some((u.to_owned(), p.to_owned()));
+            }
+            "--rtsp-disable" => {
+                o.rtsp_off = true;
             }
             "--owner-authorized" => {
                 o.owner_authorized = true;
@@ -263,6 +278,7 @@ fn run(o: &Options) -> Result<String, &'static str> {
         let t0 = Instant::now();
         let mut buf = [0u8; 65535];
         let mut sent_probe = false;
+        let mut sent_rtsp = false;
         while t0.elapsed() < Duration::from_secs(o.secs) {
             let now_ns = t0.elapsed().as_nanos() as u64;
             while let Some(d) = ing.poll_send() {
@@ -277,6 +293,26 @@ fn run(o: &Options) -> Result<String, &'static str> {
                 ing.feed_datagram(&buf[..n], now_ns);
             }
             ing.advance(now_ns);
+            if !sent_rtsp
+                && ing.session_phase() == fss_tutk::session::PhaseName::Streaming
+                && (o.rtsp.is_some() || o.rtsp_off)
+            {
+                // 0x29e8 toggles the camera's own RTSP server; config persists in
+                // /configs/rtsp_config.json. 0x29e9 carries the link URLs back.
+                let payload = match (&o.rtsp, o.rtsp_off) {
+                    (Some((u, p)), _) => format!(
+                        "{{\"name\":\"{}\",\"pwd\":\"{}\",\"rtspMode\":1}}",
+                        u.replace('"', ""),
+                        p.replace('"', "")
+                    ),
+                    (None, true) => "{\"name\":\"\",\"pwd\":\"\",\"rtspMode\":0}".to_owned(),
+                    _ => String::new(),
+                };
+                ing.send_ioctl(0x29e8, payload.as_bytes());
+                sent_rtsp = true;
+                println!("rtsp: sent 0x29e8 ({}B)", payload.len());
+            }
+
             if !sent_probe
                 && ing.session_phase() == fss_tutk::session::PhaseName::Streaming
                 && let Some(cmd) = o.ioctl
