@@ -49,7 +49,10 @@ def serve(port: int = PORT) -> None:
         except OSError:
             pass
 
-    threading.Thread(target=pump, args=(sys.stdin.buffer, conn), daemon=True).start()
+    if sys.stdin.isatty():
+        threading.Thread(target=pump, args=(sys.stdin.buffer, conn), daemon=True).start()
+    else:
+        print("(non-tty stdin: device output is logged only)", flush=True)
     pump(conn, sys.stdout.buffer)
 
 

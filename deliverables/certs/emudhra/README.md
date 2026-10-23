@@ -34,4 +34,9 @@ Caveats: no CT enforcement on these clients, so unlogged leaves are fine; a clie
 CRL/OCSP would reject the chain, and the leaf must be served **with** the intermediate in the chain
 (the device has only the root).
 
-Source: https://emudhra.we-have-a-problem.com/ , Mozilla bug 2083449 (`d` is "below 256").
+Serve it with `deliverables/scripts/wyze_forge_serve.py` (binds :443, appends the intermediate, serves a
+directory). Something must still resolve the SAN host to the host running it — that is the remaining
+wiring, not the certificate.
+
+Source: https://emudhra.we-have-a-problem.com/ , Mozilla bug 2083449 (`d` is "below 256"), all eight
+keys at github.com/Fluepke/emudrahahahahaha.
