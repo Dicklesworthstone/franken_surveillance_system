@@ -381,3 +381,33 @@ non-obvious.
 
 `docs/exploit/yi-u1.md` now carries the whole U1 procedure, the observation table that distinguishes a
 working injection from a stripped metacharacter, and the post-shell order (`id` first, never assumed).
+
+## fss-discover: listener probe wired, and a host anomaly worth knowing
+
+Two real defects were fixed in the binary rather than described:
+
+- `arp -a` returns an **empty table on macOS 27**; the census only ever called `-a`, so every MAC
+  was empty, every OUI lookup starved and every Wyze unit fell out as `Unknown`/`ImportOnly`. The
+  harvest now tries `-an` first (immediate, numeric) with `-a` kept as a fallback.
+- `Signal::TutkListener` existed in the classifier but **nothing ever supplied it** — dead code.
+  A credential-less `0x0601` probe round now runs over the candidates before classification and
+  upgrades a responder to `Tutk`/`Likely` with `adapter=tutk`, 8 spaced rounds with a 300 ms drain
+  each (Wi-Fi power-save swallows the first frames; one attempt is never enough).
+
+Open anomaly: **any descendant of a `posix_spawn`ed process gets a degraded ARP/route view on this
+host.** `arp -an` and `netstat -rn` return rows when run from the interactive shell (or from
+perl/ruby spawned by it) but return an **empty table** when spawned by Rust (`std::process::Command`)
+or by Python — including forked grandchildren, and including `sh -c 'arp -an | cat'`. `ping` is
+unaffected. Rust only takes the `fork` path when `pre_exec` is used, and `pre_exec` needs
+`unsafe`, which every crate currently forbids. Until that is settled, the MAC/OUI lane stays dead in
+this binary and classification leans on beacons, service advertisements and the new TUTK probe.
+
+## fss-provision: Wyze is no longer "no software path"
+
+`Transport::None` with empty steps encoded the old belief that the v4 could only be ingested. The
+recipe now carries the real chain: `NetworkUpdate` with `publish_upgrade_descriptor` →
+`serve_owner_capsule` → `power_on_for_flash` → `verify_post_flash`, prerequisites
+`owner_account_token`, `trusted_tls_chain`, `web_update_endpoint`. Three new `StepKind`s and two new
+`Prerequisite`s were added; the rationale text now states the actual gate (caller-supplied MD5, root
+script, separate boot-chain verification) and the eMudhra TLS route. 37 provision tests pass, and the
+planner's Wyze expectation moved from `LaneIngest` to `Flashed`.

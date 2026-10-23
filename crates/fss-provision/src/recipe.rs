@@ -146,6 +146,10 @@ pub enum Prerequisite {
     LocalKey = 4,
     /// The one-time owner pairing (QR-to-lens); satisfied by the step itself.
     OneTimePairing = 5,
+    /// An owner account token able to publish the vendor's upgrade descriptor.
+    OwnerAccountToken = 6,
+    /// A TLS chain the device's own trust store accepts for the capsule host.
+    TrustedTlsChain = 7,
 }
 
 impl Prerequisite {
@@ -158,6 +162,8 @@ impl Prerequisite {
             Self::WebUpdateEndpoint => "web_update_endpoint",
             Self::LocalKey => "local_key",
             Self::OneTimePairing => "one_time_pairing",
+            Self::OwnerAccountToken => "owner_account_token",
+            Self::TrustedTlsChain => "trusted_tls_chain",
         }
     }
 }
@@ -223,6 +229,12 @@ pub enum StepKind {
     RegisterTuyaAccount = 14,
     /// Pair the device with the generic Smart Life app (owner account).
     SmartLifePairing = 15,
+    /// Publish an upgrade descriptor carrying the owner capsule URL and digest.
+    PublishUpgradeDescriptor = 16,
+    /// Serve the capsule over a TLS chain the camera validates, with its digest.
+    ServeOwnerCapsule = 17,
+    /// Verify the installed firmware identity and the tailnet endpoint after the reboot.
+    VerifyPostFlash = 18,
 }
 
 impl StepKind {
@@ -260,6 +272,9 @@ impl StepKind {
             Self::AppPairingQr => "app_pairing_qr",
             Self::RegisterTuyaAccount => "register_tuya_account",
             Self::SmartLifePairing => "smart_life_pairing",
+            Self::PublishUpgradeDescriptor => "publish_upgrade_descriptor",
+            Self::ServeOwnerCapsule => "serve_owner_capsule",
+            Self::VerifyPostFlash => "verify_post_flash",
         }
     }
 }
@@ -526,6 +541,30 @@ const GENERIC_STEPS: &[OnboardingStep] = &[
 
 const AOSU_PREREQS: &[Prerequisite] = &[Prerequisite::LocalKey];
 
+/// Wyze v4: the install is a device-initiated OTA fetch of an owner capsule.
+const WYZE_PREREQS: &[Prerequisite] = &[
+    Prerequisite::OwnerAccountToken,
+    Prerequisite::TrustedTlsChain,
+    // The device's own updater performs the fetch; the endpoint is ours.
+    Prerequisite::WebUpdateEndpoint,
+];
+
+const WYZE_STEPS: &[OnboardingStep] = &[
+    OnboardingStep::new(
+        StepKind::PublishUpgradeDescriptor,
+        "publish the upgrade descriptor (owner URL + digest) to the unit's shadow",
+    ),
+    OnboardingStep::new(
+        StepKind::ServeOwnerCapsule,
+        "serve the capsule over a TLS chain the stock cacert.pem validates",
+    ),
+    OnboardingStep::new(StepKind::PowerOnForFlash, "power-cycle the unit so it resyncs"),
+    OnboardingStep::new(
+        StepKind::VerifyPostFlash,
+        "verify the installed generation and the tailnet endpoint after the reboot",
+    ),
+];
+
 /// The closed registry of onboarding recipes over [`CameraFamily::ALL`].
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct RecipeRegistry {
@@ -553,23 +592,25 @@ impl RecipeRegistry {
                 OnboardingRecipe::new(
                     CameraFamily::WyzeV4,
                     FrictionClass::FLocked,
-                    Transport::None,
-                    &[],
-                    &[],
+                    Transport::NetworkUpdate,
+                    WYZE_PREREQS,
+                    WYZE_STEPS,
                     None,
                     DataLane::TutkNew,
-                    "Custom firmware still needs root first, and the reload route is unsigned: the \
-                     device fetches the OTA tar over plain HTTP with a caller-supplied MD5 and runs \
-                     upgraderun.sh as root, so a shell is the whole gate. Control flow is proven on \
-                     4.52.17.26: raw DTLS AV frame, declared length overrun, saved RA redirected into \
-                     exec_shell_sync (bead fss-wyze-cve-2026-38698-spray-fbgvp). Telnet is NOT the \
-                     shell path: paracfg item 11 flips the flag but neither telnetd nor a network \
-                     fetch client exists, so post-exploitation is an inline base64 payload \
-                     (docs/exploit/wyze-v4-lan-control-plane.md). Two LAN primitives are live and \
-                     independent of the bug: 0x29a0 re-provisions Wi-Fi and writes the wpa config \
-                     unescaped (steer the unit onto an owner AP, which owns DNS for the allowlisted \
-                     OTA host), and 0x29e8 enables RTSP once per boot for the data lane. Both are \
-                     config writes; neither is a shell.",
+                    "Software path (class F, wire-only): `assis` fetches an owner package over \
+                     HTTPS (chain-validated, no pinning, no host allowlist), checks only a \
+                     CALLER-SUPPLIED MD5, extracts it and runs `upgraderun.sh` as ROOT with no \
+                     signature gate, so the install needs no memory corruption. Publish the \
+                     descriptor to the unit's shadow with the owner's device credentials and \
+                     power-cycle it. The boot chain is separate: U-Boot verifies the FIT against \
+                     `kernel-dev` on every boot, so persistence rides a bootloader-bypassing image \
+                     (Thingino SPL/INGE), never the tar. TLS for our own host is met by a public \
+                     chain or by a leaf forged under the compromised eMudhra intermediate (EM DV TLS \
+                     CA - G3C chains to AAA Certificate Services in the stock bundle and the camera \
+                     checks no revocation). Telnet is NOT the shell path: paracfg item 11 flips the \
+                     flag but neither telnetd nor a fetch client exists. Two LAN primitives remain \
+                     live and independent: 0x29a0 re-provisions Wi-Fi and writes the wpa config \
+                     unescaped, and 0x29e8 enables RTSP once per boot for the data lane.",
                 ),
                 OnboardingRecipe::new(
                     CameraFamily::AosUP1Max,
@@ -757,8 +798,8 @@ mod tests {
             None => return,
         };
         assert_eq!(wyze.friction_class(), FrictionClass::FLocked);
-        assert_eq!(wyze.transport(), Transport::None);
-        assert!(wyze.steps().is_empty());
+        assert_eq!(wyze.transport(), Transport::NetworkUpdate);
+        assert!(!wyze.steps().is_empty());
         assert_eq!(wyze.data_lane(), DataLane::TutkNew);
 
         let aosu = match registry.get(CameraFamily::AosUP1Max) {

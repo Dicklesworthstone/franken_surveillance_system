@@ -557,12 +557,22 @@ fn arp_a() -> String {
     // `arp` lives in /usr/sbin on macOS, which is absent from the PATH of a
     // GUI-spawned process; falling back by absolute path keeps the vendor
     // lookup from silently starving (every MAC empty, every row Unknown).
-    for program in ["arp", "/usr/sbin/arp", "/sbin/arp"] {
-        match std::process::Command::new(program).arg("-a").output() {
+    // macOS 27 returns an empty table for `arp -a` (reverse-DNS form) while
+    // `arp -an` answers immediately; try the numeric form first and keep `-a`
+    // only as a fallback for older hosts.
+    for (program, flag) in [
+        ("arp", "-an"),
+        ("/usr/sbin/arp", "-an"),
+        ("/sbin/arp", "-an"),
+        ("arp", "-a"),
+        ("/usr/sbin/arp", "-a"),
+        ("/sbin/arp", "-a"),
+    ] {
+        match std::process::Command::new(program).arg(flag).output() {
             Ok(o) => {
                 if std::env::var_os("FSS_DISCOVER_DEBUG").is_some() {
                     eprintln!(
-                        "DEBUG arp prog={program} status={:?} out={} err={:?}",
+                        "DEBUG arp prog={program} {flag} status={:?} out={} err={:?}",
                         o.status.code(),
                         o.stdout.len(),
                         String::from_utf8_lossy(&o.stderr)

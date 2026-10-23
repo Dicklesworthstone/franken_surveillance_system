@@ -110,6 +110,9 @@ def presence(thing: str, mac: str) -> None:
     print("present" if alive and time.time() - alive > 1.0 else "ABSENT (camera not on broker)")
 
 
+SHADOW = os.environ.get("SHADOW", "wyze-service")
+
+
 def push(thing: str, mac: str, url: str, md5: str) -> None:
     """One delta, retried until the broker acks.
 
@@ -124,7 +127,7 @@ def push(thing: str, mac: str, url: str, md5: str) -> None:
     # shadow/app shape uses; sending both is harmless and covers either consumer.
     body = json.dumps({"state": {"desired": {"url": url, "md5": md5, "model": "HL_CAM4",
                                             "pcUrl": url, "pcMd5": md5}}}).encode()
-    topic = _s(f"$aws/things/{thing}/shadow/name/wyze-service/update")
+    topic = _s(f"$aws/things/{thing}/shadow/name/{SHADOW}/update")
     for attempt in range(5):
         try:
             w = ctx.wrap_socket(socket.create_connection(IOT, timeout=10), server_hostname=IOT_SNI)

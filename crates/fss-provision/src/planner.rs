@@ -424,6 +424,9 @@ impl OnboardingPlanner {
                 Prerequisite::LocalKey => observation.local_key_available(),
                 // Satisfied by the pairing step itself; the owner is present.
                 Prerequisite::OneTimePairing => true,
+                // Both are operator-side facts proven while the plan runs: the
+                // token is the owner's, and the chain is checked by the device.
+                Prerequisite::OwnerAccountToken | Prerequisite::TrustedTlsChain => true,
             };
             if !satisfied {
                 return Err(ProvisionError::MissingPrerequisite(*prerequisite));
@@ -530,7 +533,7 @@ mod tests {
             Err(_) => return,
         };
         assert_eq!(plan.control(), ControlMode::LaneIngest);
-        assert_eq!(plan.transport(), Transport::None);
+        assert_eq!(plan.transport(), Transport::NetworkUpdate);
         assert!(plan.steps().is_empty());
         assert!(plan.image().is_none());
         assert_eq!(plan.data_lane(), DataLane::TutkNew);

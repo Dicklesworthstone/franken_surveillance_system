@@ -115,8 +115,14 @@ def handle(conn, addr, args):
                     for i in range(args.repeat):
                         try:
                             c = cmds[i % len(cmds)]
-                            pl = json.dumps({"cmd": c, "sub_mac": args.sub_mac, "url": args.url,
-                                             "md5": args.md5, "model": args.model}).encode()
+                            inner = {"url": args.url, "md5": args.md5, "model": args.model,
+                                     "sub_mac": args.sub_mac}
+                            body_obj = {"cmd": c, "sub_mac": args.sub_mac, **inner}
+                            if args.wrap == "str":
+                                body_obj["data"] = json.dumps(inner)
+                            elif args.wrap:
+                                body_obj["data"] = inner
+                            pl = json.dumps(body_obj).encode()
                             tb = topic.encode() if isinstance(topic, str) else topic
                             bo = struct.pack(">H", len(tb)) + tb + struct.pack(">H", 1) + pl
                             conn.sendall(packet(3, bo, flags=0x02))  # QoS1
@@ -152,7 +158,7 @@ def handle(conn, addr, args):
                 except OSError:
                     pass
         elif t == 4:
-            pass
+            print(f"[{addr}] PUBACK", flush=True)
         elif t == 10:
             conn.sendall(packet(11, body[:2]))
         elif t == 14:
@@ -167,7 +173,7 @@ def main():
     ap.add_argument("--key", required=True)
     ap.add_argument("--mac", required=True)
     ap.add_argument("--sub-mac", required=True)
-    ap.add_argument("--model", default="HL_CAM4")
+    ap.add_argument("--model", default="HL_CFL")
     ap.add_argument("--url", required=True)
     ap.add_argument("--md5", required=True)
     ap.add_argument("--port", type=int, default=8883)
@@ -175,6 +181,7 @@ def main():
     ap.add_argument("--interval", type=float, default=5.0)
     ap.add_argument("--delay", type=float, default=15.0)
     ap.add_argument("--cmd", type=int, default=0, help="0 = sweep 1231..1242")
+    ap.add_argument("--wrap", nargs="?", const="obj", help="also nest the descriptor under data")
     a = ap.parse_args()
 
     ctx = ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER)

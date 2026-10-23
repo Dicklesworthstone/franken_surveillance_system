@@ -184,12 +184,95 @@ fn run_typed(o: &Options) -> Result<(DiscoverReport, DiscoverConfig), &'static s
     if let Some(retention) = &o.retention {
         retention.preflight(&cfg)?;
     }
-    let report = discover(&cfg, &cancel).map_err(|error| match error {
+    let mut report = discover(&cfg, &cancel).map_err(|error| match error {
         fss_reference::discovery::DiscoveryError::Census(_) => "ERR-DISCOVER-CENSUS-001: invalid census scope or resource bounds",
         fss_reference::discovery::DiscoveryError::InvalidProbeConfig => "ERR-DISCOVER-ARGUMENT-001: invalid probe timing or service questions",
         fss_reference::discovery::DiscoveryError::ObservationLimit => "ERR-DISCOVER-LIMIT-001: observation or service-hint bound exceeded; narrow the authorized subnet",
     })?;
+    probe_tutk_listeners(&mut report, &cancel);
     Ok((report, cfg))
+}
+
+/// Credential-less TUTK `0x0601` LAN-search round over the candidates.
+///
+/// The classifier already scores a TUTK listener (`Signal::TutkListener`) but
+/// nothing ever supplied one, so a Wyze-class unit — zero TCP ports, no OUI in
+/// this host's ARP view — fell through as `Unknown`/`ImportOnly`. The probe is
+/// the vendor's own discovery frame: no credentials, one bounded UDP round, and
+/// the answer proves a TUTK listener before the brand is upgraded.
+fn probe_tutk_listeners(report: &mut DiscoverReport, cancel: &AtomicBool) {
+    use fss_reference::discovery::{dispatch, Brand, BrandConfidence, Confidence};
+    use fss_tutk::oldproto::{build_probe, parse_response, ProbeResponse};
+    use std::net::UdpSocket;
+    use std::time::{Duration, Instant};
+
+    if report.candidates.is_empty() {
+        return;
+    }
+    let Ok(sock) = UdpSocket::bind((std::net::Ipv4Addr::UNSPECIFIED, 0)) else {
+        return;
+    };
+    let _ = sock.set_read_timeout(Some(Duration::from_millis(120)));
+    // Empty UID is silent on this fleet; the vendor reply echoes our placeholder.
+    let probe = build_probe(b"WYZE0123456789ABCDEF", 0x0601, [0xF5, 0x05, 0x20, 0x26, 0x10, 0x08]);
+    // Wi-Fi power-save swallows the first frames; the proven reference client
+    // needs several spaced attempts before a sleeping camera answers.
+    if std::env::var_os("FSS_DISCOVER_DEBUG").is_some() {
+        let hex: String = probe.iter().map(|b| format!("{b:02x}")).collect();
+        eprintln!("DEBUG tutk probe {hex}");
+    }
+    let mut answered = std::collections::BTreeMap::<std::net::Ipv4Addr, u16>::new();
+    for _round in 0..8 {
+        if cancel.load(std::sync::atomic::Ordering::Relaxed) {
+            break;
+        }
+        for candidate in &report.candidates {
+            let target = std::net::SocketAddr::from((candidate.host.ip, 32761));
+            let _ = sock.send_to(&probe, target);
+        }
+        let drain_until = Instant::now() + Duration::from_millis(300);
+        while Instant::now() < drain_until {
+            let mut buf = [0u8; 512];
+            let Ok((n, from)) = sock.recv_from(&mut buf) else {
+                continue;
+            };
+            let std::net::IpAddr::V4(ip) = from.ip() else {
+                continue;
+            };
+            let parsed = parse_response(&buf[..n]);
+            if std::env::var_os("FSS_DISCOVER_DEBUG").is_some() {
+                eprintln!("DEBUG tutk rx {ip}:{} n={n} {parsed:?}", from.port());
+            }
+            if matches!(parsed, ProbeResponse::Old { .. }) {
+                answered.insert(ip, from.port());
+            }
+        }
+    }
+    for candidate in &mut report.candidates {
+        let Some(port) = answered.get(&candidate.host.ip).copied() else {
+            continue;
+        };
+        if !matches!(candidate.brand.brand, Brand::Unknown | Brand::Tutk) {
+            continue;
+        }
+        if !candidate
+            .brand
+            .signals
+            .iter()
+            .any(|signal| matches!(signal, fss_reference::discovery::Signal::TutkListener(_)))
+        {
+            candidate
+                .brand
+                .signals
+                .push(fss_reference::discovery::Signal::TutkListener(port));
+        }
+        candidate.brand = BrandConfidence {
+            brand: Brand::Tutk,
+            confidence: Confidence::Likely,
+            signals: candidate.brand.signals.clone(),
+        };
+        candidate.dispatch = dispatch(&candidate.brand);
+    }
 }
 
 fn run(o: &Options) -> Result<String, &'static str> {

