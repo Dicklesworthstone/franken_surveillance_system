@@ -29,6 +29,7 @@ pub mod authority;
 pub mod budget;
 pub mod cancellation;
 pub mod effect;
+pub mod effect_journal;
 pub mod execution;
 pub mod grant;
 pub mod lease;

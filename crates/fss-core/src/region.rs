@@ -1382,17 +1382,16 @@ impl RegionTree {
         Ok(receipt)
     }
 
-    /// Registers a durable obligation in the specified region.
-    ///
-    /// Rejects with [`RegionError::OrphanWork`] if the region is not in `Active` state.
-    pub fn register_obligation(
-        &mut self,
+    /// Checks an obligation insertion without changing the tree. Durable owners
+    /// use this before publication; registration repeats exactly these checks.
+    pub fn validate_obligation_registration(
+        &self,
         region_id: &RegionId,
-        obligation: Obligation,
+        obligation: &Obligation,
     ) -> Result<(), RegionError> {
         let node = self
             .nodes
-            .get_mut(region_id)
+            .get(region_id)
             .ok_or_else(|| RegionError::RegionNotFound(region_id.clone()))?;
 
         if !node.state.is_active() {
@@ -1403,19 +1402,36 @@ impl RegionTree {
         }
 
         if node.obligations.contains_key(&obligation.obligation_id) {
-            return Err(RegionError::DuplicateObligation(obligation.obligation_id));
+            return Err(RegionError::DuplicateObligation(
+                obligation.obligation_id.clone(),
+            ));
         }
 
         if node.obligations.len() >= MAX_OBLIGATIONS_PER_REGION {
             return Err(RegionError::CapacityExceeded("obligations"));
         }
+        Ok(())
+    }
 
+    /// Registers a durable obligation in the specified region.
+    ///
+    /// Rejects with [`RegionError::OrphanWork`] if the region is not in `Active` state.
+    pub fn register_obligation(
+        &mut self,
+        region_id: &RegionId,
+        obligation: Obligation,
+    ) -> Result<(), RegionError> {
+        self.validate_obligation_registration(region_id, &obligation)?;
+        let node = self
+            .nodes
+            .get_mut(region_id)
+            .ok_or_else(|| RegionError::RegionNotFound(region_id.clone()))?;
         node.obligations
             .insert(obligation.obligation_id.clone(), obligation);
         Ok(())
     }
 
-    /// Resolves an obligation in the specified region without reopening it.
+    /// Checks obligation settlement without changing the tree or reopening it.
     ///
     /// Pending obligations may reach any resolved state. Indeterminate outcomes
     /// may reconcile to Verified or Failed with a proof digest. Verified, Failed,
@@ -1426,8 +1442,8 @@ impl RegionTree {
     /// without changing the outcome or proof. Reconciliation to a known terminal
     /// outcome retires the active note. Invalid transitions and conflicting
     /// retries leave both the obligation and its note unchanged.
-    pub fn resolve_obligation(
-        &mut self,
+    pub fn validate_obligation_resolution(
+        &self,
         region_id: &RegionId,
         obligation_id: &ObligationId,
         state: ObligationState,
@@ -1436,7 +1452,7 @@ impl RegionTree {
     ) -> Result<(), RegionError> {
         let node = self
             .nodes
-            .get_mut(region_id)
+            .get(region_id)
             .ok_or_else(|| RegionError::RegionNotFound(region_id.clone()))?;
 
         if node.state.is_closed() {
@@ -1476,7 +1492,7 @@ impl RegionTree {
             _ => return Err(invalid_transition()),
         }
 
-        let note = if state == ObligationState::Indeterminate {
+        if state == ObligationState::Indeterminate {
             let note = reconciliation_note
                 .filter(|n| !n.trim().is_empty())
                 .ok_or_else(|| {
@@ -1487,20 +1503,40 @@ impl RegionTree {
             {
                 return Err(conflict());
             }
-            Some(note)
-        } else {
-            if reconciliation_note.is_some() {
-                return Err(conflict());
-            }
-            None
-        };
+        } else if reconciliation_note.is_some() {
+            return Err(conflict());
+        }
+        Ok(())
+    }
 
+    /// Resolves an obligation after the same read-only validation exposed to
+    /// durable owners by [`Self::validate_obligation_resolution`]. Refusals leave
+    /// both the obligation and its reconciliation note unchanged.
+    pub fn resolve_obligation(
+        &mut self,
+        region_id: &RegionId,
+        obligation_id: &ObligationId,
+        state: ObligationState,
+        proof_digest: Option<ContentDigest>,
+        reconciliation_note: Option<&str>,
+    ) -> Result<(), RegionError> {
+        self.validate_obligation_resolution(
+            region_id,
+            obligation_id,
+            state,
+            proof_digest,
+            reconciliation_note,
+        )?;
+        let node = self
+            .nodes
+            .get_mut(region_id)
+            .ok_or_else(|| RegionError::RegionNotFound(region_id.clone()))?;
         let obligation = node
             .obligations
             .get_mut(obligation_id)
             .ok_or_else(|| RegionError::ObligationNotFound(obligation_id.clone()))?;
         // All lifecycle and retry checks precede mutation of either record.
-        if let Some(note) = note {
+        if let Some(note) = reconciliation_note {
             node.reconciliation_obligations
                 .insert(obligation_id.clone(), note.to_string());
         } else {

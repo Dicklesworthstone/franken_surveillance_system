@@ -8,6 +8,8 @@
 //! alone claims archive visibility, replication or retrievability.
 
 pub mod belief_verification;
+/// Bounded local custody of the runtime effect coordinator's canonical history.
+pub mod effect_journal;
 /// Encryption-context manifest (FSS-065).
 pub mod encryption;
 mod error;

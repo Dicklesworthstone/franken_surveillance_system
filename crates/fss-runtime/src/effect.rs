@@ -8,8 +8,11 @@
 //! Adapter acceptance is distinct from observation and verification. Evidence
 //! and reconciliation follow `fss-core::EffectJournal`; terminal settlement is
 //! checked against the original region obligation before either store advances.
-//! This bounded owner is in memory. Durable storage and provider-authenticity
-//! checks remain the responsibility of their existing owners.
+//! Optional explicit storage persists each transition before its live result is
+//! published. Cold recovery restores inert history for reconciliation only;
+//! provider-authenticity checks remain the responsibility of their existing owners.
+
+mod recovery;
 
 use std::collections::BTreeMap;
 use std::sync::Arc;
@@ -20,13 +23,16 @@ use fss_core::effect::{
 };
 use fss_core::{
     CanonicalEncode, CanonicalEncoder, ContentDigest, ContextAuthority, ContractError,
-    EffectJournal, EffectState, IdempotencyKey, ObligationId, ObligationState, OperationId,
-    OperationReceipt, RegionId, RegionTree, RuntimeGrant, TimestampNs,
+    EffectJournal, EffectJournalTransition, EffectState, IdempotencyKey, ObligationId,
+    ObligationState, OperationId, OperationReceipt, RegionId, RegionTree, RuntimeGrant,
+    TimestampNs,
 };
 
 use crate::authority::{AuthorityBinding, AuthorityCx};
+use crate::effect_journal::{EffectJournalPin, EffectJournalStore, EffectPersistenceError};
 use crate::grant::GrantError;
 use crate::lease::{LeaseError, LeaseRegistry, LeaseRegistryBinding, LeaseState};
+use recovery::{JournalEvent, RetainedPreparation};
 
 /// Hard bound on retained operations; terminal records are never silently evicted.
 pub const MAX_RETAINED_EFFECTS: usize = 4096;
@@ -90,6 +96,18 @@ pub enum Reconciliation<'a> {
 /// Typed coordinator refusal. Every variant carries the operation identity.
 #[derive(Clone, Debug, PartialEq)]
 pub enum EffectCoordError {
+    /// The durable owner refused a write or requires cold recovery after ambiguity.
+    Persistence {
+        /// The operation.
+        operation: String,
+        /// The persistence refusal.
+        error: EffectPersistenceError,
+    },
+    /// Recovered history can reconcile outcomes but cannot authorize dispatch.
+    RecoveryOnly {
+        /// The operation.
+        operation: String,
+    },
     /// The inert handle belongs to another live coordinator.
     WrongCoordinator {
         /// The operation.
@@ -213,6 +231,15 @@ pub enum EffectCoordError {
 impl std::fmt::Display for EffectCoordError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
+            Self::Persistence { operation, error } => {
+                write!(f, "effect {operation}: {error}")
+            }
+            Self::RecoveryOnly { operation } => {
+                write!(
+                    f,
+                    "effect {operation}: recovered owner permits reconciliation only"
+                )
+            }
             Self::WrongCoordinator { operation } => {
                 write!(
                     f,
@@ -386,7 +413,7 @@ impl<T: std::fmt::Debug> std::error::Error for EffectTransitionError<T> {
 struct PreparationBinding {
     prepared: CanonicalPreparedEffect,
     authority: AuthorityBinding,
-    lease_registry: LeaseRegistryBinding,
+    lease_registry: Option<LeaseRegistryBinding>,
     context: ContextAuthority,
     owner: RegionId,
     resource: String,
@@ -499,13 +526,19 @@ impl AsRef<PreparedEffect> for CommittedEffect {
     }
 }
 
-/// Bounded in-memory owner of canonical effect state and original authority bindings.
-/// The journal remains available even if every caller handle is dropped.
+/// Bounded owner of canonical effect state and original authority bindings.
+/// The journal remains available even if every caller handle is dropped. Use
+/// [`Self::with_journal`] to retain transitions across process restarts.
 #[derive(Debug)]
 pub struct EffectCoordinator {
     identity: Arc<()>,
     journal: EffectJournal,
     bindings: BTreeMap<OperationId, Arc<PreparationBinding>>,
+    unbound: BTreeMap<OperationId, RetainedPreparation>,
+    persistence: Option<Box<dyn EffectJournalStore>>,
+    durable_head: Option<EffectJournalPin>,
+    persistence_poisoned: bool,
+    reconciliation_only: bool,
 }
 
 impl Default for EffectCoordinator {
@@ -522,6 +555,11 @@ impl EffectCoordinator {
             identity: Arc::new(()),
             journal: EffectJournal::new(),
             bindings: BTreeMap::new(),
+            unbound: BTreeMap::new(),
+            persistence: None,
+            durable_head: None,
+            persistence_poisoned: false,
+            reconciliation_only: false,
         }
     }
 
@@ -571,6 +609,10 @@ impl EffectCoordinator {
     ) -> Result<PreparedEffect, EffectCoordError> {
         let operation = spec.operation;
         let op_str = operation.to_string();
+        self.require_persistence_ready(operation)?;
+        if self.reconciliation_only {
+            return Err(EffectCoordError::RecoveryOnly { operation: op_str });
+        }
         let effect_class = registered_effect_class(spec.prepare_grant, spec.commit_grant)
             .ok_or_else(|| EffectCoordError::InvalidGrantPair {
                 operation: op_str.clone(),
@@ -591,7 +633,7 @@ impl EffectCoordinator {
         if let Some(binding) = self.bindings.get(operation) {
             let handle = self.handle(binding.clone());
             self.require_scope(&handle, authority, tree)?;
-            if leases.binding() != &binding.lease_registry {
+            if binding.lease_registry.as_ref() != Some(leases.binding()) {
                 return Err(EffectCoordError::WrongLeaseRegistry { operation: op_str });
             }
             // The core journal compares intent on duplicate keys. The runtime additionally
@@ -694,7 +736,7 @@ impl EffectCoordinator {
         let binding = Arc::new(PreparationBinding {
             prepared: prepared.clone(),
             authority: authority.binding().clone(),
-            lease_registry: leases.binding().clone(),
+            lease_registry: Some(leases.binding().clone()),
             context,
             owner: authority.region().clone(),
             resource: spec.resource.to_owned(),
@@ -706,11 +748,25 @@ impl EffectCoordinator {
         candidate
             .prepare_effect(prepared, effect_authority)
             .map_err(|error| journal_error(operation, error))?;
+        // Validate the same tree insertion before making the preparation durable.
+        tree.validate_obligation_registration(authority.region(), &obligation)
+            .map_err(|error| EffectCoordError::Region {
+                operation: op_str.clone(),
+                detail: error.to_string(),
+            })?;
+        self.persist_event(
+            operation,
+            JournalEvent::Prepare(Box::new(RetainedPreparation::from_binding(&binding))),
+            &candidate,
+        )?;
         authority
             .register_obligation(tree, obligation)
-            .map_err(|error| EffectCoordError::Region {
-                operation: op_str,
-                detail: error.to_string(),
+            .map_err(|error| {
+                self.persistence_poisoned = self.persistence.is_some();
+                EffectCoordError::Region {
+                    operation: op_str,
+                    detail: error.to_string(),
+                }
             })?;
         // No fallible step remains after publishing the region obligation.
         self.journal = candidate;
@@ -733,6 +789,10 @@ impl EffectCoordinator {
             self.require_scope(prepared, authority, tree)?;
             let operation = prepared.operation();
             let op_str = operation.to_string();
+            self.require_persistence_ready(operation)?;
+            if self.reconciliation_only {
+                return Err(EffectCoordError::RecoveryOnly { operation: op_str });
+            }
             require_transition(self.state(prepared)?, EffectState::Committed, &op_str)?;
             let expected = prepared.digest();
             if approval.prepared_digest != expected {
@@ -763,7 +823,7 @@ impl EffectCoordinator {
                     operation: op_str.clone(),
                     error,
                 })?;
-            if leases.binding() != &prepared.binding.lease_registry {
+            if prepared.binding.lease_registry.as_ref() != Some(leases.binding()) {
                 return Err(EffectCoordError::WrongLeaseRegistry { operation: op_str });
             }
             require_current_lease(
@@ -782,9 +842,22 @@ impl EffectCoordinator {
                     operation: op_str,
                     error,
                 })?;
-            self.journal
+            let mut candidate = self.journal.clone();
+            candidate
                 .transition(operation, EffectState::Committed, now, None, None)
                 .map_err(|error| journal_error(operation, error))?;
+            self.persist_event(
+                operation,
+                JournalEvent::Transition(EffectJournalTransition::Transition {
+                    operation_id: operation.clone(),
+                    next: EffectState::Committed,
+                    now,
+                    result_digest: None,
+                    error_code: None,
+                }),
+                &candidate,
+            )?;
+            self.journal = candidate;
             Ok(())
         })?;
         Ok(CommittedEffect { inner: prepared })
@@ -911,7 +984,8 @@ impl EffectCoordinator {
     }
 
     /// Reconciles retained state using an inert handle without granting another dispatch.
-    /// The candidate journal and region obligation publish together, or neither changes.
+    /// Storage is durable before the matching region obligation and live journal
+    /// advance. An ambiguous write freezes this owner until cold recovery.
     pub fn reconcile(
         &mut self,
         tree: &mut RegionTree,
@@ -922,6 +996,7 @@ impl EffectCoordinator {
     ) -> Result<(), EffectCoordError> {
         self.require_scope(prepared, authority, tree)?;
         let operation = prepared.operation();
+        self.require_persistence_ready(operation)?;
         let mut candidate = self.journal.clone();
         apply_reconciliation(&mut candidate, operation, reconciliation, now)?;
         let obligation = candidate
@@ -937,12 +1012,30 @@ impl EffectCoordinator {
                 Some(crate::obligation::ObligationTerminal::Indeterminate)
             }
         };
+        let note = if obligation.state == ObligationState::Indeterminate {
+            Some(indeterminate_note(&candidate, operation)?)
+        } else {
+            None
+        };
+        if terminal.is_some() {
+            tree.validate_obligation_resolution(
+                authority.region(),
+                prepared.obligation(),
+                obligation.state,
+                obligation.proof_digest,
+                note,
+            )
+            .map_err(|error| EffectCoordError::Region {
+                operation: operation.to_string(),
+                detail: error.to_string(),
+            })?;
+        }
+        self.persist_event(
+            operation,
+            JournalEvent::reconciliation(&self.journal, operation, reconciliation, now)?,
+            &candidate,
+        )?;
         if let Some(terminal) = terminal {
-            let note = if obligation.state == ObligationState::Indeterminate {
-                Some(indeterminate_note(&candidate, operation)?)
-            } else {
-                None
-            };
             authority
                 .resolve_obligation(
                     tree,
@@ -951,9 +1044,12 @@ impl EffectCoordinator {
                     obligation.proof_digest,
                     note,
                 )
-                .map_err(|error| EffectCoordError::Region {
-                    operation: operation.to_string(),
-                    detail: error.to_string(),
+                .map_err(|error| {
+                    self.persistence_poisoned = self.persistence.is_some();
+                    EffectCoordError::Region {
+                        operation: operation.to_string(),
+                        detail: error.to_string(),
+                    }
                 })?;
         }
         self.journal = candidate;
@@ -1054,10 +1150,24 @@ impl EffectCoordinator {
     ) -> Result<(), EffectCoordError> {
         self.require_handle(&effect.inner)?;
         let operation = effect.operation();
+        self.require_persistence_ready(operation)?;
         require_transition(self.state(effect)?, target, operation.as_str())?;
-        self.journal
+        let mut candidate = self.journal.clone();
+        candidate
             .transition(operation, target, now, proof, None)
             .map_err(|error| journal_error(operation, error))?;
+        self.persist_event(
+            operation,
+            JournalEvent::Transition(EffectJournalTransition::Transition {
+                operation_id: operation.clone(),
+                next: target,
+                now,
+                result_digest: proof,
+                error_code: None,
+            }),
+            &candidate,
+        )?;
+        self.journal = candidate;
         Ok(())
     }
 }

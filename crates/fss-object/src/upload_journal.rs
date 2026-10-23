@@ -16,7 +16,7 @@
 //! complete prefix and appends a v2 namespace binding before any fresh writer is admitted.
 
 mod inspect;
-mod io;
+pub(crate) mod io;
 
 pub use inspect::{UploadJournalInspection, inspect_upload_journal};
 

@@ -11,7 +11,7 @@ use fss_core::CanonicalEncoder;
 use crate::SpoolIo;
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub(super) struct FileIdentity {
+pub(crate) struct FileIdentity {
     device: u64,
     inode: u64,
     directory: bool,
@@ -19,7 +19,7 @@ pub(super) struct FileIdentity {
 }
 
 impl FileIdentity {
-    pub(super) fn from_metadata(metadata: &Metadata) -> io::Result<Self> {
+    pub(crate) fn from_metadata(metadata: &Metadata) -> io::Result<Self> {
         if !metadata.file_type().is_file() && !metadata.file_type().is_dir() {
             return Err(io::Error::new(
                 io::ErrorKind::InvalidData,
@@ -49,7 +49,7 @@ impl FileIdentity {
         }
     }
 
-    pub(super) fn encode(self, encoder: &mut CanonicalEncoder) {
+    pub(crate) fn encode(self, encoder: &mut CanonicalEncoder) {
         encoder.u64(self.device);
         encoder.u64(self.inode);
         encoder.bool(self.directory);
@@ -62,13 +62,13 @@ impl FileIdentity {
 }
 
 #[derive(Debug)]
-pub(super) struct BudgetedJournalIo {
+pub(crate) struct BudgetedJournalIo {
     inner: Arc<dyn SpoolIo>,
     remaining: Mutex<u64>,
 }
 
 impl BudgetedJournalIo {
-    pub(super) fn new(inner: Arc<dyn SpoolIo>, allowance: u64) -> Self {
+    pub(crate) fn new(inner: Arc<dyn SpoolIo>, allowance: u64) -> Self {
         Self {
             inner,
             remaining: Mutex::new(allowance),
