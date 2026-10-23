@@ -37,7 +37,7 @@ def token() -> str:
 def post(path: str, body: dict) -> dict:
     raw = json.dumps(body, separators=(",", ":")).encode()
     key = hashlib.md5((token() + SECRET).encode()).hexdigest().encode()
-    sig = hmac.new(key, raw, hashlib.md5).hexdigest().upper()
+    sig = hmac.new(key, raw, hashlib.md5).hexdigest()  # lowercase hex, verified
     req = urllib.request.Request(HOST + path, data=raw, method="POST")
     req.add_header("Content-Type", "application/json")
     req.add_header("appid", APPID)
@@ -55,8 +55,8 @@ def main() -> int:
     cmd, mac = sys.argv[1], sys.argv[2].upper()
     if cmd == "version":
         print(json.dumps(post("/app/v2/upgrade/get_upgrade_firmware", {
-            "deviceId": mac, "deviceModel": sys.argv[3],
-            "currentVer": sys.argv[4], "hardwareVer": sys.argv[5]}), indent=2))
+            "device_id": mac, "device_model": sys.argv[3],
+            "current_ver": sys.argv[4], "hardware_ver": sys.argv[5]}), indent=2))
     elif cmd == "push":
         print(json.dumps(post("/app/v2/upgrade/begin_upgrade", {
             "deviceId": mac, "deviceModel": sys.argv[3], "currentVer": sys.argv[4],
@@ -64,7 +64,7 @@ def main() -> int:
             "targetVer": sys.argv[7], "testCode": "Test Version"}), indent=2))
     elif cmd == "status":
         print(json.dumps(post("/app/v2/upgrade/get_upgrade_status", {
-            "deviceId": mac, "deviceModel": sys.argv[3], "targetVer": sys.argv[4]}), indent=2))
+            "device_id": mac, "device_model": sys.argv[3], "target_ver": sys.argv[4]}), indent=2))
     else:
         print(__doc__)
         return 2

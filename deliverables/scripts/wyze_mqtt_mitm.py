@@ -86,9 +86,19 @@ def injector():
         time.sleep(3)
     print("inject: gave up",flush=True)
 
+def up_addr():
+    """Resolve the broker past our own DNS redirect (which would loop back to us)."""
+    try:
+        import subprocess
+        ip=subprocess.run(["dig","+short","+time=2","@1.1.1.1",UP[0]],capture_output=True,text=True).stdout.split()
+        for cand in ip:
+            if cand and cand[0].isdigit(): return (cand, UP[1])
+    except Exception: pass
+    return UP
+
 def handle(cli):
     try:
-        u=up_ctx().wrap_socket(socket.create_connection(UP,timeout=10),server_hostname=SNI)
+        u=up_ctx().wrap_socket(socket.create_connection(up_addr(),timeout=10),server_hostname=SNI)
         print("UP ok",flush=True)
     except Exception as e: print("upstream fail",repr(e),flush=True); cli.close(); return
     threading.Thread(target=pipe,args=(cli,u,"C"),daemon=True).start()
