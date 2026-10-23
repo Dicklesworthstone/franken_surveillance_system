@@ -81,3 +81,27 @@ digest rejection.
 `telnetd` fallback at 22) and a listener that gives an interactive root shell. Remaining human step:
 broadcast that SSID and re-provision the camera in the Yi app. Pass condition is a shell from
 `192.168.6.156`; the persistence pass is the same shell after `reboot` with the SSID unchanged.
+
+### Dispatch experiments that all failed (do not repeat)
+
+1. Delta with the stale `desired` still set → no GET.
+2. Fresh delta, `.tar` URL, both the zero MD5 and the *true* MD5 (i.e. one matching and one
+   not-matching the file) → no GET.
+3. Third delta with a deliberately different MD5 (`1111…`, neither the file's nor `reported`'s) so
+   the device could not dedupe on digest → no GET.
+4. Vendor-shaped path `/wuv2/upgrade/HL_CAM4/firmware/<ver>.tar` instead of a bare name → no GET.
+5. `run_action` after the params were understood (`app_ver` required, else `1001`) → `code 1`,
+   `result 3`, `session_id`, still no GET, no reboot after 25 s or 150 s.
+
+So the device consumes shadow state (`reported` tracks every key we set) but does not act on it
+without a resync. **The single remaining test is a power cycle**, or tapping the device's own MQTT
+session to see whether any `cmd` frame is delivered at all.
+
+### Why an iCamera crash is not enough to resync the shadow
+
+Crashing `iCamera` only restarts that one process; `iotclient` — the process that owns the MQTT
+session and the shadow subscription — keeps running, so the delta is never re-delivered. Verified:
+a triple crash run on `.4.24` killed the stream at 10.6 s, the box answered ping 5 s later, and the
+`desired` URL was still un-fetched. For the same reason the cloud `restart`/`reboot` actions
+(`result 3`) do not help. `docs/exploit/ota-path.md` §9.7 lists the five dispatch variants that
+also failed. The box needs a real power cycle.
