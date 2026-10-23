@@ -195,7 +195,7 @@ edit changes that, and it is unproven twice over: the build may be `CONFIG_ENV_I
    the wrong-digest run on the shape that parses. A digest verdict read through the wrong encoding is
    indistinguishable from a parse failure. Digest-checked vs digest-ignored decides whether
    `local_key` alone is enough. This is the whole question.
-2. **Wyze shadow publish** — blocked one field short. Owner re-auth is solved end to end (PKCE OAuth,
+2. **Wyze shadow publish** — the broker is `aws-iot.wyzecam.com` (CNAME `a24rq1e5m4mtei.iot.us-west-2.amazonaws.com:8883`, real AWS-IoT cert; `test-aws-iot.wyzecam.com` is the staging twin). Device certificate, key and root CA are obtainable: the earlier `404` was an empty `enr`, and the request body is `mac/product_model/product_type/hardware_ver/firmware_ver/enr` plus the literals `sc="verify_method"`, `sv=<access key>`. Owner re-auth is solved end to end (PKCE OAuth,
    email MFA recovered from the Gmail feed; the account now holds a fresh developer-console key pair in
    `~/.config/fss-lab/wyze.env`), the certificate endpoint is located at
    `POST https://app.wyzecam.com/app/v2/device/system/get_iot_certificate` with the right `appid`, and a
