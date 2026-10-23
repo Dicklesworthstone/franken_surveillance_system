@@ -67,6 +67,25 @@ The handler reads exactly three of these: `url`, `md5`, `model` (§3.3.3). `firm
 the target version is derived from the URL filename instead (`get_upgrade_target_version_by_url`), so the
 filename must look like a version.
 
+
+### 2.2.1 Live retry of `run_action` (2026-10-23) — schema solved, authorisation refused
+
+The body schema is discoverable by iterating on the error message: `app_ver is null or empty` then
+`ts is null` then `3005 unauthorized operation` — so `app_ver`, `app_version`, `ts` all belong in the
+body and the call is well-formed once they are present. Everything below still returns **`3005
+unauthorized operation`** on this account:
+
+- `provider_key` `HL_CAM4` / `Camera` / `Wyze_Device`; `instance_id` = MAC upper case, the 20-char UID,
+  or the MAC with the other provider keys
+- `sv` `011a6b42d80a4f32b4cc24bb721c9c96` (2022 script) or `5b0e5bc2788d4ff68c7b98a5656148d0` (this
+  firmware's constant)
+- `appid` `9319141212m2ik` or `wc4p_5b0e5bc2788d4ff68c7b98a5656148d0`; with and without the
+  `authorization` header; `firmware_ver` `9.9.9.9` or a plausible `4.52.30.1`
+
+`sc` must be present or the call 1001s. So the push primitive exists and parses, but this account is
+not entitled to it — the shadow delta is the working trigger, and `run_action` needs either an
+entitlement or a fresh `sv`. Recorded so the next run does not repeat the matrix.
+
 ### 2.3 Transport facts
 
 - **The device is the client.** `HclX/WyzeUpdater#5` log, plain HTTP, LAN IP, from the camera itself:
