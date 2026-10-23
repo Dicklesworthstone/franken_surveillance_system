@@ -18,7 +18,7 @@ All probing read-only. Nothing was written to either device.
 | C-2 | `192.168.6.85` | TCP 1–65535 | yes | absence | **0 open.** 62 304 filtered (no response), 3 231 closed (RST). `sudo nmap -sS -p- --min-rate 3000`: `Not shown: 62304 filtered tcp ports (no-response), 3231 closed tcp ports (reset)` | EV-941 |
 | C-3 | `192.168.6.85` | UDP top-60 | yes | absence | 51 `open|filtered` (no ICMP, no payload response), 9 closed with `port-unreach`. No service answered `\x00`×4, `\xf1\x30\x00\x00`, or TUTK `0x0601` | EV-941 |
 | C-4 | `192.168.6.85` | mDNS 5353 / SSDP 1900 | yes | absence | silent on `_services._dns-sd._udp`, `_canary._tcp`, `_rtsp._tcp`, `_onvif._tcp`, `_http._tcp`, and on multicast/unicast M-SEARCH | EV-941 |
-| C-5 | `192.168.6.85` | idle traffic | — | absence | 60 s on `en1`: ARP only, **no cloud connection**, no DNS for `owlet`/`canary` in a 60 s `:53` capture on either interface | EV-941 |
+| C-5 | `192.168.6.85` | idle traffic | — | absence | 60 s on `en1`: ARP only. **This is a measurement artefact, not device silence** — a Wi-Fi station only sees its own frames plus broadcast, so other hosts' unicast is invisible. The device does hold persistent cloud connections; they only appear under ARP interception (C-6). Use `en1` captures for *own* traffic and spoofing for anyone else's | EV-941, EV-945 |
 | O-1 | — | vendor stack | — | attribution | Owlet cameras run **ThroughTek Kalay / TUTK**: Bitdefender `PReport-owlet-7745` (2024-05) names *Owlet Cam 2* explicitly; npm `scrypted-owlet` implements TUTK/IOTC/P2P (keywords `tutk, iotc, p2p`) | EV-942 |
 | O-2 | — | UDP 32761 `0x0601` | yes | absence | **No Owlet found.** 2 032 hosts swept (192.168.0–7/24 + 192.168.1/24), 4 attempts each: only hits are the three Wyze units (`192.168.4.23`, `.24`, `192.168.5.242`) | EV-943 |
 
@@ -33,8 +33,9 @@ So the backend is a Kubernetes ingress with six A records and no pinning to a si
 device rotates endpoints on its own: one flow was RST by the device and three fresh SYNs went to
 three different A records inside the same second. Fresh SYNs do not complete through a pure
 forwarding path (the eero drops frames whose source MAC it does not associate with the source IP),
-which is why the NAT rule `nat on en1 from 192.168.6.0/24 to any -> 192.168.4.170` was added; the
-relay is a two-line `pf` rule plus `arp.spoof`. (EV-945, EV-947)
+which is why forwarding needed NAT; the final shape is an `rdr … -> (en1)` rule plus `arp.spoof`, and
+`(en1)` must be used instead of a literal address because DHCP moved this Mac through
+`.170 → .240 → .160/.169/.222` inside one hour. (EV-945, EV-947)
 
 **C-8 — reproduction recipe (owner LAN, macOS).** `bettercap` (brew) is the only extra tool.
 
@@ -159,4 +160,6 @@ State: Owlet reach is an open blocker, not a refuted hypothesis. Note the device
    power/app check from the owner is the cheapest discriminator.
 2. Wake the Canary and capture with `tcpdump -i en1 host 192.168.6.85`; if cloud traffic appears,
    fingerprint the endpoint and test certificate validation with an ARP/DNS redirect.
-3. Read the `.70` chassis label — one label settles three CVEs.
+3. `.70` is now identified as a **C460 v1.0, fw 1.2.2 Build 260416** by the Tapo lane, so the three
+   2026 CVEs are out by model; the live Tapo thread is the unauthenticated `stok` bypass plus the
+   `connectAp` overflow, not this pack.
