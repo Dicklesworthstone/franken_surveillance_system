@@ -137,7 +137,7 @@ def main():
             print("handshake finished without server Finished")
             return 1
         print("dtls established")
-        ok = cam.login()
+        ok = cam.login(secs=20)
         print("login ok" if ok else "login response not observed (continuing)")
         if not ok:
             # The v4 answers 0x1000-wrapped IOCTRL rather than a bare 0x2100;

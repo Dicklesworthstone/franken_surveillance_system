@@ -186,9 +186,11 @@ def build_ack(avseq,a,b,flags,ts):
 
 class Cam2(Cam):
     def __init__(self,*a,**kw):
-        super().__init__(*a,**kw); self.enr=a[3]; self.avseq=0; self.rx=0
+        super().__init__(*a,**kw); self.enr=a[3]; self.avseq=0; self.rx=0; self.sub=0; self.sub_auto=True
     def hl(self,cmd,payload,sub=0):
         self.avseq+=1
+        if sub==0 and getattr(self,'sub_auto',False):
+            sub=self.sub; self.sub=(self.sub+1)&0xffff
         self.send(self.encrypt(23,build_ioctrl(self.avseq,sub,build_hl(cmd,payload))))
     def k10000(self,encoders=None):
         import json
@@ -200,15 +202,19 @@ class Cam2(Cam):
         elif mode=='enr': r=xt_decrypt(bytes(challenge),self.enr.encode()[:16])
         else:
             r=xt_decrypt(xt_decrypt(bytes(challenge),self.enr.encode()[:16]),self.enr.encode()[16:32])
-        self.hl(10002,r+struct.pack('<I',self.rx)+b'\x01\x01')
+        self.hl(10002,r+os.urandom(4)+bytes([1,0]))
         return r
-    def login(self,tries=2):
-        rid=os.urandom(4); self.send(self.encrypt(23,av_login1(self.enr,rid)))
-        time.sleep(0.01)
-        self.send(self.encrypt(23,av_login2(av_login1(self.enr,rid))))
-        end=time.time()+5
+    def login(self,tries=5,secs=25):
+        import random
+        rid=os.urandom(4); self.rid=rid
+        end=time.time()+secs; nxt=0
         while time.time()<end:
-            q=self.recv_dtls(2.0)
+            if time.time()>=nxt:
+                self.send(self.encrypt(23,av_login1(self.enr,rid)))
+                time.sleep(0.01)
+                self.send(self.encrypt(23,av_login2(av_login1(self.enr,rid))))
+                nxt=time.time()+1.5
+            q=self.recv_dtls(1.0)
             if not q: continue
             if struct.unpack('<H',q[4:6])[0]==0x1302 and len(q)>=48:
                 cnt=struct.unpack('<I',q[16:20])[0]
@@ -218,24 +224,31 @@ class Cam2(Cam):
             if q[0]!=23 or ep!=1: continue
             d=self.decrypt(23,int.from_bytes(q[5:11],'big'),q[13:13+ln])
             off=0
-            while off+16<=len(d):
+            while off+2<=len(d):
+                if d[off:off+2]==b"\x00\x21" and not getattr(self,'_logged_in',False):
+                    self._logged_in=True; print("  login response 0x2100"); self.k10000(); off+=1; continue
                 if d[off:off+2]==b"HL":
                     plen=struct.unpack('<H',d[off+6:off+8])[0]; cmd=struct.unpack('<H',d[off+4:off+6])[0]
                     payload=d[off+16:off+16+plen]
+                    self._ack_ioctrl(cmd,payload)
                     if cmd==10001 and len(payload)>=17:
-                        st=payload[0]; ch=payload[1:17]; print("  K10001 status",st)
-                        r=self.k10002(st,ch); print("  sent K10002 resp",r.hex())
+                        print("  K10001 status",payload[0]); self.k10002(payload[0],payload[1:17])
                     if cmd==10003:
-                        print("  K10003:",payload[:120]); return True
+                        print("  K10003:",payload[:80]); self.hl(10010,b'\x01\x01'); return True
                     off+=16+plen
-                elif len(d)>=40 and d[off+16:off+18]==b'\x00\x70':
-                    plen=struct.unpack('<H',d[off+46:off+48])[0]; cmd=struct.unpack('<H',d[off+44:off+46])[0]
-                    payload=d[off+56:off+56+plen]
+                elif len(d)>=52 and d[off+16:off+18]==b'\x00\x70':
+                    plen=struct.unpack('<H',d[off+42:off+44])[0]; cmd=struct.unpack('<H',d[off+40:off+42])[0]
+                    payload=d[off+52:off+52+plen]
+                    self._ack_ioctrl(cmd,payload)
                     if cmd==10001 and len(payload)>=17:
-                        st=payload[0]; ch=payload[1:17]; print("  K10001 status",st)
-                        r=self.k10002(st,ch); print("  sent K10002 resp",r.hex())
+                        print("  K10001 status",payload[0]); self.k10002(payload[0],payload[1:17])
                     if cmd==10003:
-                        print("  K10003:",payload[:120]); return True
-                    off+=40+16+plen
+                        print("  K10003:",payload[:80]); self.hl(10010,b'\x01\x01'); return True
+                    off+=52+plen
                 else: off+=1
         return False
+    def _ack_ioctrl(self,cmd,payload):
+        try:
+            self.avseq+=1
+            self.send(self.encrypt(23,build_ack(self.avseq,0xffff,0xffff,0x0000,0)))
+        except Exception: pass

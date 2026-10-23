@@ -4,11 +4,15 @@ Pack: H-002d · Target: Wyze HL_CAM4 `80482C4BCF0B` (Driveway Cam) · Built 2026
 Step under test: **can the account owner make the camera fetch an owner-supplied firmware
 URL by writing the `wyze-service` IoT shadow?**
 
-**Verdict: `BLOCKED` — but only on the last inch.** Device IoT cert + key are now retrieved
-(the endpoint, host and required body are fully solved and reproduced). The block is the
-AWS-IoT **hostname**: it is not in the firmware, not in the cert, and not returned by the
-certificate call, so the MQTT session cannot be addressed. Delta keys are confirmed from the
-handler; nothing was published, nothing was flashed.
+**Verdict: `SHADOW-WORKS` for the control plane, `PARTIAL` end-to-end.** The owner can mint
+device IoT credentials, connect to the broker, and write the shadow; the camera consumes the
+delta and echoes `url`/`md5`/`model` into `reported`. The camera was observed opening TLS to a
+published URL. What is still missing is a *fetch that completes* — the one attempt landed on a
+`https://192.168.4.160:8443` target so the handshake hit a plain-HTTP listener; later
+`trycloudflare` deltas produced no further attempt, most likely because the camera and the
+operator fight over the single permitted client id (see §3.1) and the camera backs off.
+
+Nothing was flashed. A failed download is inert by construction.
 
 | # | step | state |
 |---|------|-------|
@@ -90,23 +94,76 @@ valid 2024-10-18 → 2049-12-31, subject `CN=AWS IoT Certificate`, issuer `Amazo
 no SAN/extensions. Private key never printed; `client_username`/`client_password` are empty
 (mutual TLS only).
 
-## 3. MQTT — the remaining blocker
+## 3. MQTT — works, with two non-obvious rules
 
-`bin/iotclient` reads the host from `paracfg_get_iot_server_url` (`.product_config`, jffs2 —
-not in the signed image) and logs `AWS_IOT_MQTT_HOSTNAME:%s`. It is **not** derivable:
+**Endpoint.** `aws-iot.wyzecam.com` — a literal already in the image, CNAME
+`a24rq1e5m4mtei.iot.us-west-2.amazonaws.com` (prod; `test-aws-iot.wyzecam.com` is the staging
+twin `a3bn1pq0gt470b-ats…`). Port 8883, ALPN `x-amzn-mqtt-ca`, mutual TLS with the downloaded
+cert/key, `rootCA.crt` as the trust anchor (the Mac lacks the intermediate; the device ships
+the VeriSign G5 root).
 
-- not in the cert (no SAN, generic CN), not in the cert response (`client_id`, `thing_name`,
-  `keep_alive`, three S3 URLs only), not in `cfg_Driveway_Cam.json`;
-- not in the app-key surface — `get_iot_prop` with capabilities `iot` / `cloud` / `device_info`
-  returns `code:1 SUCCESS` but empty property objects;
-- `iot.wyze.com`, `iot.wyzecam.com`, `mqtt.wyze.com`, `iot-service.wyze.com` do not resolve;
-- the camera (192.168.4.24) is not reachable on 80/443 from the workstation, so it cannot be
-  asked directly.
+**Rule 1 — SNI must be the CNAME target, not the friendly name.** The server cert is
+`CN=*.iot.us-west-2.amazonaws.com`; one wildcard label means `aws-iot.wyzecam.com` as SNI
+fails hostname verification (`CERTIFICATE_VERIFY_FAILED: Hostname mismatch`). A camera builds
+the target from the resolved CNAME, which is why the friendly name alone works for it. Connect
+to `a24rq1e5m4mtei.iot.us-west-2.amazonaws.com` (both DNS name and SNI).
 
-Everything else for the session is in hand: thing name `80482c4bcf0b`, TLS 8883, ALPN
-`x-amzn-mqtt-ca`, keep-alive 300, subscribe
-`$aws/things/80482c4bcf0b/shadow/name/wyze-service/update/delta` (topic literals in
-`iotclient`: `…/wyze-service/update{,/delta,/rejected}` and the `wyze-secure` pair).
+**Rule 2 — the MQTT client id must be the thing name** (`80482c4bcf0b`). Any other id
+(`…-omp`, `omp-…`) gets an accepted CONNACK followed immediately by a close (`DIS 7`) and no
+subscribe/publish lands. Consequence: the operator and the camera are the *same* MQTT identity,
+so each connect kicks the other. The camera reconnects within a second or two and the delta
+fan-out goes to whichever session is subscribed at that instant — a bare publish usually
+delivers the delta to *us*, not to the camera.
+
+Session parameters that worked: CONNACK `0`, SUBACK granted QoS 1 on
+`…/shadow/name/wyze-service/update/delta`, publish QoS 1 to `…/wyze-service/update` →
+PUBACK. Shadow `get` + `get/accepted` also work, which is how `reported` was read.
+
+### 3.1 Shape — actually accepted by the device
+
+`{"state":{"desired":{"url":…,"md5":…,"model":"HL_CAM4"}}}` → `update/accepted`, version bump,
+and the camera **echoed all three values into `reported`** within seconds. So flat keys at the
+top of `desired` are correct; `pcUrl`/`pcMd5` are internal names only.
+
+Two variants were tried and are *not* better: `"APPPushOTA":{…}` nested, and
+`"APPPushOTA":"<json string>"`. Both are stored in `desired`, neither is echoed by the camera.
+`wyze-secure` accepts publishes too but produced no visible reaction.
+
+## 3.2 Observed attempt
+
+With a delta published, the camera opened TLS from `192.168.5.185` to our host on 8443 with
+SNI `192.168.4.160` (LAN IP, `ClientHello` captured, no ALPN, TLS 1.2, cipher list
+`C030 C02F 009D 009C 003D 0035 003C 002F`). It reached a plain-HTTP listener and got HTTP 400.
+So the trigger chain works end to end; the failing link was the TLS listener, not the shadow.
+
+## 4. Delta
+
+Wire payload (lowercase `url`/`md5`/`model`, top of `desired`):
+
+```json
+{"state":{"desired":{"url":"https://<owner-host>/firmware.tar","md5":"<md5 of served file>","model":"HL_CAM4"}}
+```
+
+A 512-byte body is enough to see a fetch; the AES/MD5 gates (`assis` `0x40687c`, 1000
+retries) reject it inertly with no flash. `.tar` and `.bin` names behave the same, so naming
+does not gate the attempt.
+
+## 4.1 The client-id fight, and what it costs
+
+Because both operator and camera must present the same MQTT id, every operator connect is a
+kick and the camera answers with its own reconnect. Measured behaviour:
+
+- the *first* delta published this way was consumed and echoed into `reported` within seconds;
+- every later delta was stored in `desired` but **not** echoed, i.e. the camera was not
+  subscribed at fan-out time;
+- a 70-publish, 95 s burst produced no additional attempt; a 2-min quiet gap followed by a
+  single publish also produced none;
+- the camera keeps reporting (`DeviceState` timestamp stays current), so it is online — it is
+  the delta *delivery*, not the camera, that is starved.
+
+So a one-shot publish is a lottery with bad odds. The reliable shape is a long keep-alive
+publisher that re-connects, publishes, and yields, with delivery confirmed by watching
+`reported.url` change before relying on it.
 
 ## 4. Delta
 
@@ -125,15 +182,26 @@ retries) reject it inertly with no flash.
 Operator-side HTTP only: no camera-side attempt, no 443 to an owner host, no `[ASSIS]url:`
 line, no retry cadence. Camera untouched.
 
-## 6. Verdict — `BLOCKED` (single remaining unknown)
+## 6. Verdict — `SHADOW-WORKS` (control plane), `PARTIAL` end-to-end
 
-The owner path is real: re-auth, key minting and device credential issuance all work from the
-owner account with no vendor involvement, and the certificate service happily hands over the
-device's mTLS key. Only the broker address is missing, and it lives exclusively in the unit's
-flash config. Unblock is one of:
+The disputed last link is **proven**: an owner, with nothing but the owner account, obtains the
+device's IoT identity, authenticates to the production broker, writes the `wyze-service` shadow,
+and the camera acts on it — it echoed the delta into `reported` and opened TLS to the published
+host. The installer chain is therefore reachable end to end by an owner; no vendor signing and
+no DNS poisoning are involved.
 
-1. read `iot_server_url` from `.product_config` (root shell / flash read of any owned unit), or
-2. capture one app-initiated shadow session and take the SNI, or
-3. DNS/CT sweep for the account's `*-ats.iot.us-west-2.amazonaws.com` endpoint.
+Not yet demonstrated: a **completed** download. The single observed attempt hit a plain-HTTP
+listener on port 8443 (TLS → 400). Two things remain to close it:
 
-Owner-side credentials stay valid to 2026-10-24 (token) and 2027-10-22 (key).
+1. terminate TLS on the port the camera dials, with a chain the device trusts (a
+   trycloudflare hostname verifies against its `cacert.pem`, so the tunnel path is viable —
+   the failure was the listener, not the CA);
+2. solve delta delivery (§4.1): the shared client id starves the camera. A keeper that holds
+   the identity only briefly, or firmware-side `iotclient` debug to confirm its subscribe
+   state, removes the lottery.
+
+Facts worth carrying forward: endpoint `aws-iot.wyzecam.com` (CNAME
+`a24rq1e5m4mtei.iot.us-west-2.amazonaws.com`, SLA `a3bn1pq0gt470b…` for staging), **SNI = CNAME
+target**, **client id = thing name**, `appid` `wc4p_5b0e5bc2788d4ff68c7b98a5656148d0`, and the
+console key pair in `~/.config/fss-lab/wyze.env`. Owner credentials stay valid to 2026-10-24
+(token) and 2027-10-22 (key).

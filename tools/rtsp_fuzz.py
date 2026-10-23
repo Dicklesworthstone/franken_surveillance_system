@@ -103,10 +103,6 @@ class Digest:
         ).encode()
 
 
-def xml_quote(s: str) -> str:
-    return s.replace('"', '\\"')
-
-
 # --------------------------------------------------------------------------
 # Wire helpers
 # --------------------------------------------------------------------------
@@ -365,7 +361,6 @@ class Case:
     auth_first: bool = True
     settle: float = 0.0
     gap: float = 0.0
-    reply_after: bool = True
 
 
 @dataclass
