@@ -177,3 +177,32 @@ pair is retained for any build whose rootfs ships one. (`fss-wyze-telnet-item-11
 
 **Decision.** The 144-byte cap is the guard the v3 code lacked. Not re-exploitable via the same
 shape; a bug would need a different field of the handler.
+
+### NEG-010 — Tapo `sstarXZ` container is LZO1X-shaped but not decodable without its dictionary (2026-10-23, PinkPond)
+
+**Hypothesis.** The 0xA0-byte `sstarXZ` header in the C460 (and C660) image is followed by an
+LZO1X stream whose only missing input is a 64 KiB preset dictionary; a zero dictionary would
+produce a near-correct cpio with `/bin/main`, which is what CVE-2026-105810 needs for ROP offsets.
+
+**Setup.** `c460_fw.bin.dec` (decrypted with `tp-link-decrypt`, watchfulip 0.0.4). Partitions carry
+a 0x40-byte uImage header named `MVX4##I###g#######…`; payloads at KERNEL `0x70240` (0x223372) and
+RAMDISK `0x420240` (0x2d8e92), each `sstarXZ` + `0x04 0x20`. A standalone `lzo1x_decompress_safe`
+decoder with preset-dict support was written and validated (400 liblzo round-trips, 0 failures; 8
+hand-built token vectors; 100/100 truncations rejected) — `deliverables/scripts/lzo1x.py`.
+
+**Result.** Offset sweep 0x00–0x140 step 2 on both payloads: **0/324 rows** yield `070701`,
+`TRAILER!!!`, `\x7fELF` or `Linux version`. Syntax is accepted (decoder and liblzo agree
+byte-for-byte) but the content is identity-like: re-compressing the 2.09 MB output gives 1.44 MB
+while only 0.82 MB of input was consumed. Dictionaries tried: zeros, 0xFF, the 64 KiB before the
+stream, the header, the four record tags, stored-raw layouts at +0x100b0/+0x200b0, and LZO1Y/1Z all
+fail identically. The 0xA0 header itself parses cleanly as a load map (LE address/size pairs), so
+the container layout is right and the *codec/keys* are wrong.
+
+**Also refuted.** Decrypting the payload with the image's own firmware AES key
+(`2de29850…`, from the decryptor's log) in ECB/CBC/CTR and then LZO-decoding: no structure either.
+The region is AES-ECB-like by block repetition, so an extra cipher layer is likely, but not the
+tool's key.
+
+**Decision.** Retained: the decoder, the uImage/`sstarXZ` offset map, and the load-map header
+reading. Not retained: "zero dict is good enough". Revival: the true 64 KiB dictionary, a loader
+that shows the cipher, or a `sstarXZ` sample whose plaintext is known.
