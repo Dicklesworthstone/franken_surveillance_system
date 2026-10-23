@@ -27,14 +27,19 @@ def main() -> int:
     a = ap.parse_args()
 
     chain = os.path.join(CERTDIR, "serve.pem")
+    # leaf FIRST: load_cert_chain treats the first certificate as the subject, the rest as chain
     with open(chain, "wb") as out:
-        out.write(open(a.intermediate, "rb").read())
         out.write(open(a.cert, "rb").read())
+        out.write(open(a.intermediate, "rb").read())
     ctx = ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER)
     ctx.load_cert_chain(chain, a.key)
 
     handler = lambda *x, **kw: http.server.SimpleHTTPRequestHandler(*x, directory=a.dir, **kw)
-    srv = http.server.HTTPServer(("0.0.0.0", a.port), handler)
+
+    class Server(http.server.HTTPServer):
+        allow_reuse_address = True
+
+    srv = Server(("0.0.0.0", a.port), handler)
     srv.socket = ctx.wrap_socket(srv.socket, server_side=True)
     print(f"serving {a.dir} on :{a.port}, expecting SNI {a.sni}, chain {chain}", flush=True)
     srv.serve_forever()
