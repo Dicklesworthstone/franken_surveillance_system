@@ -122,7 +122,16 @@ back — which leaves "consumed but not acted on" and "never delivered" indistin
 Subscribing to the delta topic closes the link the same way. The one reliable shape is CONNECT →
 publish update → read PUBACK → hang up.
 
-A replay 40 min later could not raise a second fetch: five publishes across three paths (including a
+**The real mechanism behind the "latch" is the camera's MQTT client dying.** After a run of operator
+connections the camera stops being connected to the broker and never reconnects: hold the thing id from
+outside and the connection now survives (no competing client), `PINGRESP` works, and nothing is
+delivered to the camera. `restart` and even `power_off`/`power_on` through the cloud do not revive it;
+a physical power cycle is needed. So the rule is not "one delta per boot" but **the camera's broker
+session is a scarce resource**: connect → publish → hang up, and check first that the camera is
+connected (a fresh connect with the thing id should die within ~1 s if it is; if it survives, the
+camera is absent and publishing is pointless).
+
+An earlier reading of the same evidence — a per-boot install latch — was wrong; a replay 40 min later could not raise a second fetch five publishes across three paths (including a
 fresh path with a matching digest), eight crash-frame reboot attempts on that unit, and a four-minute
 quiet window all produced nothing, while the unit stayed at 5–30 ms ping and served streams. So the
 latch is on the camera, not on delivery: after one install attempt it stops applying deltas until it
