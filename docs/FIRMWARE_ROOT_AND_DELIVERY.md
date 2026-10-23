@@ -107,6 +107,14 @@ could not be observed (no console), and the probe produced no reboot and no call
 one delta per wake, so drive it by repointing an already-fetched path rather than publishing more.
 `md5` in the delta is the **ciphertext** digest, the value `assis` logs before its call.
 
+A replay 40 min later could not raise a second fetch: five publishes across three paths (including a
+fresh path with a matching digest), eight crash-frame reboot attempts on that unit, and a four-minute
+quiet window all produced nothing, while the unit stayed at 5–30 ms ping and served streams. So the
+latch is on the camera, not on delivery: after one install attempt it stops applying deltas until it
+reboots, and that unit does not reboot from the documented crash frame (another unit rebooted twice
+from it). Treat the crash as a *probabilistic* wake, not a control, and expect one install attempt per
+boot on the units where it works.
+
 **There is no script persistence.** `/configs` is rw and exec but nothing boots from it; its only
 consumers are `.product_config` (read-only), `upGradeFlag` (deleted at boot) and `.debug_flag` (which
 selects a branch that starts *no* daemons). No env tool exists (no `fw_setenv`, no busybox applet), so
