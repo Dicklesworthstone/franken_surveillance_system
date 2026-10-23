@@ -86,8 +86,31 @@ def handle(conn, addr, args):
                 }).encode()
                 topic = f"hl/devices/{args.mac}/cmd".encode()
                 body_out = struct.pack(">H", len(topic)) + topic + struct.pack(">H", 1) + payload
-                print(f"[{addr}] PUBLISH cmd 1234 -> {payload[:60]!r}", flush=True)
-                conn.sendall(packet(3, body_out, flags=0x02))  # QoS1
+
+                def delta():
+                    st = {"state": {"desired": {"url": args.url, "md5": args.md5,
+                                                "model": args.model, "sub_mac": args.sub_mac}},
+                          "version": 999}
+                    tp = f"$aws/things/{args.mac}/shadow/name/wyze-service/update/delta".encode()
+                    body = struct.pack(">H", len(tp)) + tp + json.dumps(st).encode()
+                    try:
+                        conn.sendall(packet(3, body, flags=0x00))
+                        print(f"[{addr}] PUBLISH delta", flush=True)
+                    except OSError:
+                        pass
+
+                threading.Thread(target=delta, daemon=True).start()
+
+                def blaster():
+                    for _ in range(args.repeat):
+                        try:
+                            conn.sendall(packet(3, body_out, flags=0x02))  # QoS1
+                            print(f"[{addr}] PUBLISH cmd 1234 -> {payload[:40]!r}", flush=True)
+                        except OSError:
+                            return
+                        time.sleep(args.interval)
+
+                threading.Thread(target=blaster, daemon=True).start()
         elif t == 12:  # PINGREQ
             conn.sendall(packet(13, b""))
         elif t == 3:  # PUBLISH from device
@@ -118,6 +141,8 @@ def main():
     ap.add_argument("--url", required=True)
     ap.add_argument("--md5", required=True)
     ap.add_argument("--port", type=int, default=8883)
+    ap.add_argument("--repeat", type=int, default=12)
+    ap.add_argument("--interval", type=float, default=5.0)
     a = ap.parse_args()
 
     ctx = ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER)
