@@ -255,3 +255,13 @@ library is healthy and the gate is precisely `cmd 0`'s key material — not a ge
 harness, and not the anti-tamper flag. `computeDigest` and `genKey` both answer; `cmd 1` is the only
 entry that returns null. That narrows the remaining work to a single value, and `.4.24`'s shadow was
 re-read to confirm the corrected negative URL/MD5 is what it actually holds.
+
+`cmd 0` is **length-sensitive**: a 20-character seed (the clientId) runs clean and yields `cmd 1 =
+null`; 7-, 4- and 0-character seeds crash in native code. `cmd 2` (ecode) crashes without a completed
+init. So the appSecret is a 20-character value like the appId, and every path — sign and ecode — runs
+through it.
+
+Corollary: `tecrkcehc_ext` is **parsed**, not ignored. Leaving a hex-digest or random-bytes file there
+makes `cmd 0` fault at `pc=0`; a BMP-shaped file (even the wrong one) runs clean to `INIT=null`. So
+the extension blob has a structured format, and its absence is currently masked by a stand-in that
+parses — which keeps the baseline stable but cannot satisfy the checker.
