@@ -1,7 +1,7 @@
 {
   "schema": "fss.dependencies.v2",
   "generation": "gen:fss1:dependencies-v2",
-  "freezeDigest": "sha256:8f198c9ce7b3eca519c678beb4bde773fe42d8bc93b55b9f0af375d38208a9c1",
+  "freezeDigest": "sha256:4ae20998cafa4a3f47262ef278349a3626111b89b1a76b63951df2cc07326e6e",
   "sourceDocument": "registries/DEPENDENCIES.md",
   "constitution": "architecture/dependency_constitution.json",
   "policy": "architecture/dependency_allowlist.toml",
@@ -119,6 +119,29 @@
       "owner": "scripts/dependency_audit.py",
       "producers": [
         "architecture/dependency_allowlist.toml#exception_candidates"
+      ],
+      "consumers": [
+        "scripts/dependency_audit.py",
+        "scripts/dependency_registry_checker.py",
+        "scripts/dependency_constitution_checker.py",
+        "scripts/check-policy.py"
+      ]
+    },
+    {
+      "id": "DEP-CLOSURE-001",
+      "constitutionClass": "DEP-CLASS-F3",
+      "constitutionClasses": [
+        "DEP-CLASS-F3"
+      ],
+      "class": "Pinned asupersync and control-plane transitive closure",
+      "rule": "exact Cargo.lock closure of admitted control-plane crates; no direct use without a mechanism owner",
+      "scope": "Production subject to audit",
+      "status": "active",
+      "supersededBy": null,
+      "tombstoneDecision": null,
+      "owner": "scripts/dependency_audit.py",
+      "producers": [
+        "architecture/dependency_allowlist.toml#asupersync_closure"
       ],
       "consumers": [
         "scripts/dependency_audit.py",

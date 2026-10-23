@@ -7,7 +7,7 @@ This file mirrors `architecture/dependencies.json` field by field. `scripts/depe
 |---|---|
 | `schema` | `fss.dependencies.v2` |
 | `generation` | `gen:fss1:dependencies-v2` |
-| `freezeDigest` | `sha256:8f198c9ce7b3eca519c678beb4bde773fe42d8bc93b55b9f0af375d38208a9c1` |
+| `freezeDigest` | `sha256:4ae20998cafa4a3f47262ef278349a3626111b89b1a76b63951df2cc07326e6e` |
 | `sourceDocument` | `registries/DEPENDENCIES.md` |
 | `constitution` | `architecture/dependency_constitution.json` |
 | `policy` | `architecture/dependency_allowlist.toml` |
@@ -22,5 +22,6 @@ This file mirrors `architecture/dependencies.json` field by field. `scripts/depe
 | `DEP-LAB-001` | `DEP-CLASS-F4` | `DEP-CLASS-F4` | Pinned codec/model/vendor/reference executables | sealed fixture/oracle lanes only; no production invocation path and absent from release closure | `Development/migration only` | `active` | — | — | `scripts/dependency_audit.py` | `architecture/dependency_allowlist.toml#laboratory_oracles` | `scripts/dependency_audit.py`, `scripts/dependency_registry_checker.py`, `scripts/dependency_constitution_checker.py`, `scripts/check-policy.py` |
 | `DEP-ORACLE-001` | `DEP-CLASS-F4` | `DEP-CLASS-F4` | Python/reference ecosystems | held-out conformance and lab fixtures only; absent from release closure | `Development only` | `active` | — | — | `scripts/dependency_audit.py` | `architecture/dependency_allowlist.toml#laboratory_oracles` | `scripts/dependency_audit.py`, `scripts/dependency_registry_checker.py`, `scripts/dependency_constitution_checker.py`, `scripts/check-policy.py` |
 | `DEP-EXCEPTION-001` | `DEP-CLASS-F3` | `DEP-CLASS-F3` | Any other external crate | requires DEP record, ADR, source/feature census, semantic owner, substitute prohibition, and removal plan | `Not admitted` | `active` | — | — | `scripts/dependency_audit.py` | `architecture/dependency_allowlist.toml#exception_candidates` | `scripts/dependency_audit.py`, `scripts/dependency_registry_checker.py`, `scripts/dependency_constitution_checker.py`, `scripts/check-policy.py` |
+| `DEP-CLOSURE-001` | `DEP-CLASS-F3` | `DEP-CLASS-F3` | Pinned asupersync and control-plane transitive closure | exact Cargo.lock closure of admitted control-plane crates; no direct use without a mechanism owner | `Production subject to audit` | `active` | — | — | `scripts/dependency_audit.py` | `architecture/dependency_allowlist.toml#asupersync_closure` | `scripts/dependency_audit.py`, `scripts/dependency_registry_checker.py`, `scripts/dependency_constitution_checker.py`, `scripts/check-policy.py` |
 
 No exception is implied by appearance in `Cargo.lock`. Release qualification computes and records the complete source/feature closure and fails closed on unknown provenance.

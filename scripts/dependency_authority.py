@@ -86,7 +86,7 @@ AUTHORITY_ERROR_CODES: tuple[str, ...] = (
 # also need a generation bump because each generation has exactly one pinned digest.
 # ---------------------------------------------------------------------------------------------
 BASELINE_DEPENDENCIES_GENERATION = "gen:fss1:dependencies-v2"
-BASELINE_DEPENDENCIES_FREEZE_DIGEST = "sha256:8f198c9ce7b3eca519c678beb4bde773fe42d8bc93b55b9f0af375d38208a9c1"
+BASELINE_DEPENDENCIES_FREEZE_DIGEST = "sha256:4ae20998cafa4a3f47262ef278349a3626111b89b1a76b63951df2cc07326e6e"
 EXPECTED_DEPENDENCIES_DIGESTS: dict[str, str] = {
     BASELINE_DEPENDENCIES_GENERATION: BASELINE_DEPENDENCIES_FREEZE_DIGEST,
 }
@@ -99,7 +99,7 @@ EXPECTED_CONSTITUTION_DIGESTS: dict[str, str] = {
 
 # The allowlist carries no self-declared digest, so its raw bytes are pinned per schema version.
 BASELINE_ALLOWLIST_SCHEMA = "fss.dependency_allowlist.v3"
-BASELINE_ALLOWLIST_FREEZE_DIGEST = "sha256:48826fc237a19087333f08e1c8733d5a32f82b3ca0e3a4d9db69ddad03401587"
+BASELINE_ALLOWLIST_FREEZE_DIGEST = "sha256:dbdd2a2366c76abefc2dcf9f6da92d1500f8d1aa1ce02eeb7c13afaea632c434"
 EXPECTED_ALLOWLIST_DIGESTS: dict[str, str] = {
     BASELINE_ALLOWLIST_SCHEMA: BASELINE_ALLOWLIST_FREEZE_DIGEST,
 }
@@ -483,6 +483,7 @@ ALLOWLIST_SPEC = Obj({
     "in_house": Obj({"allowed_families": List(Str()), "rule": Str(), "projects": Map(List(Str()))}),
     "fundamental": Obj({"allowed_subject_to_audit": List(Str(), nonempty=False), "rule": Str()}),
     "exception_candidates": Obj({"not_admitted_without_dep_record_adr_and_release_evidence": List(Str(), nonempty=False)}),
+    "asupersync_closure": Obj({"crates": List(Str(), nonempty=False), "rule": Str()}),
     "resolved_drifts": Map(Str()),
     "laboratory_oracles": Obj({
         "excluded_from_production_release_closure": List(Str(), nonempty=False),
@@ -501,6 +502,7 @@ CLASSIFICATION_TABLES: tuple[str, ...] = (
     "pending_owner_decisions",
     "laboratory_oracles",
     "exception_candidates",
+    "asupersync_closure",
 )
 
 CONSTITUTION_PRODUCTION_SPEC = Obj({
@@ -1310,6 +1312,7 @@ class ClassView:
     lab: frozenset[str]
     lab_row_of: dict[str, str]
     exception: frozenset[str]
+    closure: frozenset[str]
     forbidden: frozenset[str]
     table_rows: dict[str, tuple[str, ...]]
     row_scope: dict[str, str]
@@ -1352,6 +1355,9 @@ def _view_parts_from_allowlist(data: dict[str, Any]) -> dict[str, Any]:
     exception = data.get("exception_candidates")
     if isinstance(exception, dict) and isinstance(exception.get("not_admitted_without_dep_record_adr_and_release_evidence"), list):
         parts["exception"] = frozenset(_norm_set(set(str_list(exception["not_admitted_without_dep_record_adr_and_release_evidence"]))))
+    closure = data.get("asupersync_closure")
+    if isinstance(closure, dict) and isinstance(closure.get("crates"), list):
+        parts["closure"] = frozenset(_norm_set(set(str_list(closure["crates"]))))
     forbidden = data.get("forbidden")
     if isinstance(forbidden, dict) and isinstance(forbidden.get("crates"), list):
         parts["forbidden"] = frozenset(_norm_set(set(str_list(forbidden["crates"]))))
@@ -1392,6 +1398,7 @@ _VIEW_DEFAULTS: dict[str, Any] = {
     "lab": frozenset(),
     "lab_row_of": {},
     "exception": frozenset(),
+    "closure": frozenset(),
     "forbidden": frozenset(),
     "table_rows": {},
     "row_scope": {},
@@ -1483,6 +1490,11 @@ def classify_package(
             return Classification("unassigned", None, f"laboratory oracle '{name}' is not assigned to a DEP-CLASS-F4 registry row")
         if not _lane_allows(view, row, is_production):
             return Classification("scope", row, f"laboratory oracle package '{name}' ({row}) is reachable from production closure")
+        return Classification("admitted", row, None)
+    if norm in view.closure:
+        row = _first_row(view, "asupersync_closure")
+        if not _lane_allows(view, row, is_production):
+            return Classification("scope", row, f"pinned closure package '{name}' ({row}) is outside the scope of its registry row")
         return Classification("admitted", row, None)
     if norm in view.exception:
         row = _first_row(view, "exception_candidates")

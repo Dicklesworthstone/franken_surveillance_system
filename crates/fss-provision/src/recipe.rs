@@ -558,13 +558,18 @@ impl RecipeRegistry {
                     &[],
                     None,
                     DataLane::TutkNew,
-                    "No legitimate custom-firmware path yet, but the blocking claim is now \
-                     narrower than 'needs exploit development, out of charter': firmware 4.52.17.26 \
-                     embeds TUTK SDK 4.3.8.0, inside CVE-2026-38698 (authenticated heap overflow in \
-                     tutk_packet_Alloc, public PoC), and a declared AV length over a raw DTLS frame \
-                     crashes the camera on demand. Transport stays None until root is delivered over \
-                     the wire. A shell may not even need the heap bug: paracfg item 11 starts \
-                     telnetd. Data goal is already met wirelessly via the live-proven TUTK NEW lane.",
+                    "Custom firmware still needs root first, and the reload route is unsigned: the \
+                     device fetches the OTA tar over plain HTTP with a caller-supplied MD5 and runs \
+                     upgraderun.sh as root, so a shell is the whole gate. Control flow is proven on \
+                     4.52.17.26: raw DTLS AV frame, declared length overrun, saved RA redirected into \
+                     exec_shell_sync (bead fss-wyze-cve-2026-38698-spray-fbgvp). Telnet is NOT the \
+                     shell path: paracfg item 11 flips the flag but neither telnetd nor a network \
+                     fetch client exists, so post-exploitation is an inline base64 payload \
+                     (docs/exploit/wyze-v4-lan-control-plane.md). Two LAN primitives are live and \
+                     independent of the bug: 0x29a0 re-provisions Wi-Fi and writes the wpa config \
+                     unescaped (steer the unit onto an owner AP, which owns DNS for the allowlisted \
+                     OTA host), and 0x29e8 enables RTSP once per boot for the data lane. Both are \
+                     config writes; neither is a shell.",
                 ),
                 OnboardingRecipe::new(
                     CameraFamily::AosUP1Max,
