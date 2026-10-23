@@ -91,6 +91,10 @@ product model — that call works and returns per-provider `trigger_list`/`actio
 (`WYZEC1`, `WYZEC1-JZ`, `WYZECP1_JEF`, `WYZEC1-BL`, `HLQF3`, `CameraGroup`) still answers 3005 though,
 so the provider list is not the whole gate either.
 
+**MQTT trap:** the broker accepts a QoS-1 PUBLISH with **no packet identifier**; send one anyway
+(`00 01`) and it parses the topic one field late and closes the connection with no PUBACK — which reads
+exactly like "camera absent". `deliverables/scripts/wyze_cloud.py push` therefore omits the id.
+
 **`restart` and `power_off` do work** — `provider_key:"WYZEC1"`, empty `action_params`, and the camera
 was down and back in ~20 s. That is a clean wake primitive and replaces the crash frame for ordinary
 use. Only `upgrade` answers 3005, with `HL_CAM4` present in the provider list and full params, so it is
