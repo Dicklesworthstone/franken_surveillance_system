@@ -327,3 +327,13 @@ The unit itself is currently dormant: legacy `0x0601` on 32761 is silent and an 
 0x1002` discovery is silent too, matching the earlier dead TCP 80 and now-silent WS-Discovery. That is
 the same "nothing answers until it is awake" state the Wyze pair showed, so a power cycle is the
 precondition for any of this — not a new finding about the camera.
+
+Also from the Yi app: its Room schema carries `tnpServerString` and `tnpLicenseKey` next to `ssid`,
+`localIp`, `mac` — confirming a **TNP** control plane alongside TUTK for media, and that both the TNP
+server and a per-device licence key are issued at activation. Those two values, not just the Wi-Fi
+credentials, are what an activation actually provisions; that is why a bare SSID change is not enough
+for anything but the injection trick.
+
+Tapo masks: a further 8 M separator/case variants (`Dickles|dickles|DICKLES|Dickel|dickel` ×
+`"" . _ - # @ " " !` × 0-99999 × optional `$`) also miss. Together with rockyou and the earlier 2.1 M,
+that is ~24 M candidates with no hit, so the passphrase is generated rather than derived from the name.
