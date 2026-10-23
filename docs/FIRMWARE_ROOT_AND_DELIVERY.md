@@ -24,7 +24,8 @@ this table puts the two families whose chains are already reached first.
 | **AOSU HomeBase** | **open question, and the best remaining candidate** — `FRM_LAN_OTA_START/DATA/FINISH (0x1A/0x1B/0x1C)` is a firmware push *inside* the authenticated LAN session: no cloud, no URL, and (derived, not confirmed) no TLS | whether the LAN frame carries `hmac` (needs `activate.seckey`) or only `md5`; plus one pairing-mode press for `local_key` | pack H-003 §LAN OTA |
 | **Wyze Cam v4** | **install-time root only** — OTA fetch is **plain HTTP 80**, MD5-only, and ends in `sh upgraderun.sh` as root, with a **public default AES key** | persistence: **no** script route — `/system` is dm-verity'd, `/configs` is writable but nothing boots from it, and the rootfs has no `fw_setenv` | pack H-002 §3.3/§4.5, H-002c |
 | **TP-Link Tapo** | **oracle only on this unit** — it is a **C460 v1.0, fw 1.2.2 Build 260416**, so it is *out of scope for all three new CVEs* (C210 V3.6 / C320WS V2). CVE-2026-102369 applies only to C200 hw v5 / C120 v1. | the admin password. 105814 refuted on this build (34/34 shapes denied); 105810 is built and needs a session; all of it is behind the `stok` gate | H-005b; H-005; H-008 §0/§3a, F-5, F-8; H-010-011 |
-| Canary | blocked — not present on the LAN | device absence | — |
+| Canary | **no LAN listener** (0/65535 TCP, 0 answering UDP) — but the cloud side is fully interceptable: ARP/DNS/TCP succeed, SNI leaks, TLS aborts `unknown-CA` | trust anchor (cert for `*.canaryis.com`), not reachability | `EV-pack-H-010-011` |
+| Owlet | **blocked — not reachable**; 2 032-host discovery + 1 343-port sweep + ARP diff all negative, and no Owlet OUI exists | device presence | `EV-pack-H-010-011` |
 
 ## 2. What is dead, and why it matters
 

@@ -84,7 +84,7 @@ a model the wire cannot prove:
 Consequence: the recent-CVE lane does not unlock `.70`. Model identification is the blocking step,
 and it is one label read (or an authenticated `getDeviceInfo`).
 
-**Owner correction (2026-10-22):** the two Tapo units are a **C660** and a **C460** — both newer than
+**Owner correction (2026-10-22):** the two Tapo units are a **C660** and a **C460**; the one at `.70` is a **C460 v1.0, fw 1.2.2 Build 260416** per the other lane — both newer than
 every model in the table above, and NVD has **zero** CVEs for either name. So all four recent Tapo
 entries are inapplicable by model, not by patch level. `.71` (`50:3d:d1:2f:49:b9`) is the second
 unit: it exposes only `8800/tcp` (Streamd), everything else closed, and `.70` behaves the same apart
@@ -115,10 +115,26 @@ that can be skipped. Nothing about the *network* stands in the way any more.
 
 **Owlet — chain is known, reach is not.** If the unit is the Kalay consumer the vendor sources say it
 is, the Wyze lane transfers almost wholesale: `0x0601` UID leak → `0x1008` AuthKey (CVE-2023-6323
-class) → `0xCC51` DTLS with the empty-PSK bypass (CVE-2023-6324) → IOCTRL `0x284CVal` overflow
+class) → `0xCC51` DTLS with the empty-PSK bypass (CVE-2023-6324) → IOCTRL `0x284C` overflow
 (CVE-2023-6322) → root. Owlet is *less* likely than Wyze to carry the Jan-2024 hardening, because
 Owlet's app has not shipped a security firmware wave and the Bitdefender report treats the stack as
 unmaintained. The blocker is purely that no Owlet answers today.
+
+Reach was attacked four ways after the owner confirmed the unit is powered on, and all four are
+negative: full `/22` + `192.168.1.0/24` unicast `0x0601` (2 032 hosts), repeated broadcast `0x0601`
+(20 rounds over 200 s), a port sweep of 32760-32771 plus 32108/9000/10000 against every ARP entry
+(1 343 probes), and a 10-minute ARP diff. The three Wyze units answer in the same runs, so there is
+a positive control. Every remaining unidentified host turned out to be an **eero mesh node**: they
+all run the mesh DNS resolver on `53/udp`, answer `example.com`, and expose nothing else
+(`98:17:3c` is eero's "Private"-registered block, `.25/.46/.54/.67/.163/.208/.220` are the same
+nodes' locally-administered addresses). `.171` is a second Mac (NFS, rpcbind, `3283/tcp`).
+
+Hardware facts from FCC `2AIEP`: Owlet Cam V2 = `OC2A` (2022), Dream Sight = `OC3A` (2025, 2.4/5 GHz
++ BLE). There is **no Owlet OUI** in any IEEE registry, so a MAC-prefix search cannot find it — the
+device's address belongs to whatever Wi-Fi module the ODM chose. That closes the OUI route.
+
+State: Owlet reach is an open blocker, not a refuted hypothesis. Note the device may also be on a
+2.4 GHz-only or isolated VLAN where this Mac's `en1` never sees its ARP.
 
 ---
 
