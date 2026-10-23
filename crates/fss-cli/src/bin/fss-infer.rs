@@ -21,6 +21,8 @@ use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 use std::str::FromStr;
 
+#[path = "fss-infer/activity_cli.rs"]
+mod activity_cli;
 #[path = "fss-infer/detection_cli.rs"]
 mod detection_cli;
 #[path = "fss-infer/long_sentinel_cli.rs"]
@@ -30,7 +32,7 @@ mod package_cli;
 #[path = "fss-infer/recording_cli.rs"]
 mod recording_cli;
 
-const HELP: &str = "fss-infer <run|read|replay|detect|track|analyze|package-detect|sentinel-replay> [options]\n\
+const HELP: &str = "fss-infer <run|read|replay|activity|detect|track|analyze|package-detect|sentinel-replay> [options]\n\
   run/read/replay: --root DIR --site SITE --import-id sha256:HEX --segment N\n\
        --interpretation gray|ycbcr [--principal ID]\n\
   run: --model FILE --model-digest sha256:HEX [--decode-work-units N]\n\
@@ -41,6 +43,7 @@ const HELP: &str = "fss-infer <run|read|replay|detect|track|analyze|package-dete
   analyze: use fss-infer analyze --help for bounded recording-to-report execution.\n\
   package-detect: use fss-infer package-detect --help (verified RGB detector package).\n\
   sentinel-replay: use fss-infer sentinel-replay --help (retained whole-recording sampling).\n\
+  activity: use fss-infer activity --help (explicit native activity over two retained JPEG frames).\n\
   A run decodes the exact retained source and executes its frozen model. No models are\n\
   downloaded or activated. Outputs are uncalibrated tensors, not alerts or certified\n\
   absence. Exports must be new files outside the deployment. All paths accept native\n\
@@ -344,6 +347,9 @@ fn run(options: Options, out: &mut impl Write) -> RunResult<()> {
 }
 fn main() -> ExitCode {
     let args: Vec<_> = std::env::args_os().skip(1).collect();
+    if let Some(exit) = activity_cli::dispatch(&args, &mut io::stdout().lock()) {
+        return exit;
+    }
     if let Some(exit) = recording_cli::dispatch(&args, &mut io::stdout().lock()) {
         return exit;
     }
