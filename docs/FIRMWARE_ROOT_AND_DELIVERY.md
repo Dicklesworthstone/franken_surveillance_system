@@ -113,8 +113,9 @@ frame is 1264 bytes, channel `0x05`, type `0x04`, total `1264` at `[12:14]`, dec
 `[16:18]`, `A`-filled, sent as raw appdata; it rebooted one unit twice and never moved another in 14
 attempts, so treat it as a probabilistic wake and not a control. **Four frames fired back-to-back took that unit off
 the LAN entirely for 14+ minutes**: no ICMP, 554 closed, and its ARP entry aged out, so it is not a
-reboot in the "back in 30 s" sense. It had not returned when the check was abandoned; expect to need a
-power cycle. Budget one or two frames, then wait.
+reboot in the "back in 30 s" sense. It came back on its own after roughly 40 minutes (ping again, ARP
+re-established), so the outage is long and self-healing rather than permanent — do not power-cycle in
+a panic, and do not fire a second batch while one is recovering. Budget one or two frames, then wait.
 
 The shadow `get` topic is not usable from our side: a publish to `.../shadow/name/wyze-service/get`
 closes the connection even though the SUBACK to `get/accepted` was granted, so `reported` cannot be read
