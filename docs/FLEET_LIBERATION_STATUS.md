@@ -337,3 +337,9 @@ for anything but the injection trick.
 Tapo masks: a further 8 M separator/case variants (`Dickles|dickles|DICKLES|Dickel|dickel` ×
 `"" . _ - # @ " " !` × 0-99999 × optional `$`) also miss. Together with rockyou and the earlier 2.1 M,
 that is ~24 M candidates with no hit, so the passphrase is generated rather than derived from the name.
+
+A five-minute refresher (`/tmp/ota/keepfresh.sh`, log `/tmp/ota/keepfresh.log`) now re-publishes the
+armed negative to both cameras so a power cycle never finds a stale delta; it must be stopped before
+publishing the capsule or it will revert the shadow. Yi re-tested while responsive to ICMP: TUTK on
+32761, 10001 and 9999 all silent, so the userland really is down and a power cycle is the only remote
+lever there too.
