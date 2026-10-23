@@ -57,6 +57,7 @@
 mod capability;
 mod error;
 mod format;
+mod read_budget;
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::ffi::{OsStr, OsString};
@@ -77,6 +78,7 @@ pub use error::{CorruptionKind, SpoolError, SpoolIoOperation, SpoolLimitViolatio
 pub use format::{
     SPOOL_OBJECT_FORMAT_VERSION, SPOOL_OBJECT_HEADER_LEN, SPOOL_OBJECT_MAGIC, encode_spool_object,
 };
+pub use read_budget::SpoolReadBudgetUsage;
 
 /// Directory under the spool root holding enveloped objects.
 pub const SPOOL_OBJECTS_DIR: &str = "objects";
@@ -388,6 +390,7 @@ pub struct StagingSpool {
     recovery: SpoolRecoveryReport,
     injected_crash: Option<StagePhase>,
     poisoned: bool,
+    read_budget: read_budget::ReadBudget,
     // Keep ownership until every other spool field has been dropped.
     _lock: SpoolLock,
 }
@@ -481,6 +484,7 @@ impl StagingSpool {
             recovery: classification.report,
             injected_crash: None,
             poisoned: false,
+            read_budget: read_budget::ReadBudget::default(),
             _lock: lock,
         };
         spool.check_recovered_capacity()?;
@@ -552,6 +556,33 @@ impl StagingSpool {
     pub fn tighten_max_object_bytes(&mut self, maximum: usize) -> usize {
         self.limits.max_object_bytes = self.limits.max_object_bytes.min(maximum);
         self.limits.max_object_bytes
+    }
+
+    /// Installs or tightens one cumulative allowance for this owner's indexed object reads.
+    ///
+    /// The first call starts accounting after opening recovery. Later calls take the minimum
+    /// of the existing absolute cap and the supplied cap; they never reset consumed work or
+    /// add a new allowance. A cap below already consumed work is installed and returns an error.
+    /// Every indexed read, including verification and source/metadata/provenance reads, consumes
+    /// the same allowance. Failed admitted reads remain charged. Directory/metadata/open
+    /// syscalls, opening recovery and non-indexed staging writes are not counted.
+    ///
+    /// Byte reservations include the stored envelope header and one trailing-byte probe. The
+    /// owner refuses excess work before accessing the object file and never widens its existing
+    /// per-object bound. The cap lasts until this owner is dropped; it cannot be removed.
+    pub fn tighten_read_budget(
+        &mut self,
+        bytes: u64,
+        read_attempts: u64,
+    ) -> Result<SpoolReadBudgetUsage, SpoolError> {
+        self.require_live()?;
+        self.read_budget.tighten(bytes, read_attempts)
+    }
+
+    /// Cumulative indexed-read reservations and remaining allowance for this open owner.
+    #[must_use]
+    pub fn read_budget_usage(&self) -> SpoolReadBudgetUsage {
+        self.read_budget.usage()
     }
 
     /// Classification of every entry observed when this instance opened.
@@ -1285,6 +1316,7 @@ impl StagingSpool {
         digest: ContentDigest,
         maximum_payload_bytes: usize,
     ) -> Result<Vec<u8>, ReadOutcome> {
+        self.read_budget.attempt().map_err(ReadOutcome::Spool)?;
         let entry = self
             .index
             .get(&digest)
@@ -1293,20 +1325,33 @@ impl StagingSpool {
             return Err(ReadOutcome::Spool(SpoolError::Corrupt { digest, kind }));
         }
         let path = self.object_path(digest);
-        read_object_file(
-            self.io.as_ref(),
-            &path,
-            digest,
-            self.limits.max_object_bytes.min(maximum_payload_bytes),
+        let maximum = self.limits.max_object_bytes.min(maximum_payload_bytes);
+        let maximum = if self.read_budget.is_capped() {
+            // A non-corrupt index entry holds the exact payload length admitted at staging or
+            // recovery. A later oversized replacement cannot make this read consume more than
+            // that envelope plus its single trailing-byte probe.
+            let maximum = (maximum as u64).min(entry.charged) as usize;
+            let reserved = (SPOOL_OBJECT_HEADER_LEN as u64)
+                .checked_add(maximum as u64)
+                .and_then(|n| n.checked_add(1))
+                .ok_or(ReadOutcome::Spool(SpoolError::AccountingOverflow))?;
+            self.read_budget
+                .reserve_bytes(reserved)
+                .map_err(ReadOutcome::Spool)?;
+            maximum
+        } else {
+            maximum
+        };
+        read_object_file(self.io.as_ref(), &path, digest, maximum).map_err(
+            |failure| match failure {
+                ReadFailure::Corrupt { kind, file_len } => ReadOutcome::Corrupt { kind, file_len },
+                ReadFailure::Io { operation, kind } => ReadOutcome::Spool(SpoolError::Io {
+                    operation,
+                    path,
+                    kind,
+                }),
+            },
         )
-        .map_err(|failure| match failure {
-            ReadFailure::Corrupt { kind, file_len } => ReadOutcome::Corrupt { kind, file_len },
-            ReadFailure::Io { operation, kind } => ReadOutcome::Spool(SpoolError::Io {
-                operation,
-                path,
-                kind,
-            }),
-        })
     }
 
     fn create_staging_file(

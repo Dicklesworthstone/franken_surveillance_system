@@ -808,6 +808,21 @@ impl LocalRootPublisher {
         effective
     }
 
+    /// Installs or tightens this owner's non-refillable indexed object read allowance.
+    ///
+    /// Covers source, metadata, provenance and verification reads through the owned spool.
+    /// Accounting starts at the first explicit cap, after opening recovery. Byte reservations
+    /// include stored envelope overhead and one trailing-byte probe; metadata/open syscalls,
+    /// directory scans and non-indexed staging writes are separate. Further calls only lower
+    /// the absolute caps and never refill usage. See [`StagingSpool::tighten_read_budget`].
+    pub fn tighten_read_budget(
+        &mut self,
+        bytes: u64,
+        read_attempts: u64,
+    ) -> Result<fss_object::SpoolReadBudgetUsage, SpoolError> {
+        self.spool.tighten_read_budget(bytes, read_attempts)
+    }
+
     /// Read access to the owned staging spool.
     #[must_use]
     pub const fn spool(&self) -> &StagingSpool {

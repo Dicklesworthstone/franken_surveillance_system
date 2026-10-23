@@ -264,6 +264,17 @@ pub enum SpoolError {
         /// Maximum admitted bytes.
         maximum: u64,
     },
+    /// An explicitly capped owner cannot admit another indexed object read.
+    ReadBudgetExceeded {
+        /// `stored_object_read_bytes` or `indexed_read_attempts`.
+        resource: &'static str,
+        /// Previously consumed allowance; failed admitted work remains charged.
+        current: u64,
+        /// Additional reservation requested before any object-file access.
+        requested: u64,
+        /// Non-refillable maximum for this open owner.
+        maximum: u64,
+    },
     /// No object with this digest is indexed in the spool.
     Missing(ContentDigest),
     /// The bytes held under this digest cannot be trusted.
@@ -436,6 +447,15 @@ impl fmt::Display for SpoolError {
             } => write!(
                 formatter,
                 "spool bytes {current} + {requested} exceed quota {maximum}"
+            ),
+            Self::ReadBudgetExceeded {
+                resource,
+                current,
+                requested,
+                maximum,
+            } => write!(
+                formatter,
+                "spool {resource} {current} + {requested} exceed read allowance {maximum}"
             ),
             Self::Missing(digest) => write!(formatter, "object is not in the spool: {digest}"),
             Self::Corrupt { digest, kind } => {
